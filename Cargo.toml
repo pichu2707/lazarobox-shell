@@ -2,7 +2,8 @@
 name = "lazarobox-shell"
 version = "0.1.0"
 edition = "2024"
-author = ["Javi Lázaro <hola@javilazaro.es>"]
+rust-version = "1.88"
+authors = ["Javi Lázaro <hola@javilazaro.es>"]
 
 [dependencies]
 # Async Runtime & Red
@@ -11,8 +12,7 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 async-trait = "0.1"
 
 # TUI & Terminal Handling
-ratatui = "0.26"
-crossterm = "0.27"
+ratatui = "0.30"
 
 # Serialization & Config
 serde = { version = "1.0", features = ["derive"] }
@@ -27,3 +27,6 @@ oauth2 = "4.4"
 clap = { version = "4.5", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+
+[dev-dependencies]
+insta = "1"

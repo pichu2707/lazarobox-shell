@@ -1,0 +1,18 @@
+---
+source: src/ui/preview.rs
+expression: "buffer_text(&render(AppMode::Normal))"
+---
+ lazarobox-theme                                  
+         bg_base        #181E24                   
+         bg_panel       #202831                   
+         primary_cyan   #00E5FF                   
+         ai_purple      #CBA6F7                   
+         success_green  #A6E3A1                   
+         warning_orange #FAB387                   
+         error_red      #F38BA8                   
+         text_muted     #6C7086                   
+                                                  
+                                                  
+                                                  
+ Tab: next mode · q: quit                         
+ ◐ NORMAL  ~/lazarobox-shell  ollama · llama3.2
