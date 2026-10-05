@@ -9,11 +9,11 @@
 | Chained PRs recommended | Yes |
 | Suggested split | PR 1 (~350) -> PR 2 (~300) -> PR 3 (~450) -> PR 4 (~450) -> PR 5 (~200) |
 | Delivery strategy | ask-on-risk |
-| Chain strategy | pending |
+| Chain strategy | feature-branch-chain |
 
 Decision needed before apply: Yes
 Chained PRs recommended: Yes
-Chain strategy: pending
+Chain strategy: feature-branch-chain
 400-line budget risk: High
 
 ### Suggested Work Units
@@ -30,9 +30,9 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets`, `cargo fmt -
 
 ## PR 1: Deps, spike, pane
 
-- [ ] 1.1 SPIKE: edit `Cargo.toml` (portable-pty 0.9, vt100 0.16.2, crossterm 0.29 `event-stream`, futures); `cargo check` resolves a single crossterm.
-- [ ] 1.2 SPIKE: scratch tests in `examples/spike_vt100.rs` (or `#[test]`) confirming vt100 API shape: `Callbacks::unhandled_csi` signature; `\e[c`, `\e[6n` and DECSCUSR `\e[6 q` (intermediate `b' '`, Ps param) reach it; `set_scrollback(n)` clamps; `set_scrollback(usize::MAX)` + `scrollback()` gives length; offset > rows no panic. [auto]
-- [ ] 1.3 SPIKE: `examples/spike_vt100.rs` runs nvim in vt100 with the responder and a minimal view. [manual, Kitty]
+- [x] 1.1 SPIKE: edit `Cargo.toml` (portable-pty 0.9, vt100 0.16.2, crossterm 0.29 `event-stream`, futures); `cargo check` resolves a single crossterm.
+- [x] 1.2 SPIKE: scratch tests in `examples/spike_vt100.rs` (or `#[test]`) confirming vt100 API shape: `Callbacks::unhandled_csi` signature; `\e[c`, `\e[6n` and DECSCUSR `\e[6 q` (intermediate `b' '`, Ps param) reach it; `set_scrollback(n)` clamps; `set_scrollback(usize::MAX)` + `scrollback()` gives length; offset > rows no panic. [auto]
+- [x] 1.3 SPIKE: `examples/spike_vt100.rs` runs nvim in vt100 with the responder and a minimal view. [manual, Kitty]
 - [ ] 1.4 GATE [manual]: user checks all accept criteria (LazyVim <1 s, no DA/DSR stall, truecolor, arrows in insert/normal, DECSCUSR bar/block and reset after exit, alt screen clean on `:q`, htop, Ctrl+Space = `Char(' ')`+CONTROL). ACCEPT -> continue. REJECT -> re-do 1.5-1.8 on alacritty_terminal 0.26 behind the same `core/pane.rs` API; nothing outside `pane.rs` changes. If DECSCUSR is not routed, use the pre-scanner fallback in `Pane::feed`.
 - [ ] 1.5 RED: `src/core/pane.rs` tests: colors/text, mode tracking (Screen state); DA1/DSR 5n/6n replies and split-chunk single reply (Query responder).
 - [ ] 1.6 GREEN: create `src/core/mod.rs`, `pane.rs` (`Pane`, `PaneSize`, `CellView`, `TermColor`, `TermModes`, responder callbacks); add `pub mod core;` to `src/lib.rs`.
