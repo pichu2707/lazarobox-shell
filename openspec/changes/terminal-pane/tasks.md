@@ -43,10 +43,10 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets`, `cargo fmt -
 
 ## PR 2: Key encoder
 
-- [ ] 2.1 RED: `src/core/keys.rs` table tests: basics (`a`, `é`, Ctrl+c, Alt+x, Enter, BS, Shift+Tab), Home/End/PgUp/PgDn/Del/Ins, F-keys.
-- [ ] 2.2 RED: arrow tests for application cursor off/on.
-- [ ] 2.3 RED: `encode_paste` tests, bracketed enabled/disabled.
-- [ ] 2.4 GREEN: implement `encode_key`, `encode_paste`; register `keys` in `src/core/mod.rs`.
+- [x] 2.1 RED: `src/core/keys.rs` table tests: basics (`a`, `é`, Ctrl+c, Alt+x, Enter, BS, Shift+Tab), Home/End/PgUp/PgDn/Del/Ins, F-keys.
+- [x] 2.2 RED: arrow tests for application cursor off/on.
+- [x] 2.3 RED: `encode_paste` tests, bracketed enabled/disabled.
+- [x] 2.4 GREEN: implement `encode_key`, `encode_paste`; register `keys` in `src/core/mod.rs`.
 
 ## PR 3: Modal core, theme, statusline
 
