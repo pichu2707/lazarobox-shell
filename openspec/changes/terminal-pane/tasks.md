@@ -84,3 +84,4 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets`, `cargo fmt -
 - [ ] R.1 `LazaroboxTheme`: add `#[derive(Debug, Clone)]`.
 - [ ] R.2 Take `AppMode` by value in `mode_style` (it is `Copy`); add `accent(mode) -> Color` and drop the `unwrap_or(primary_cyan)` fallback in `statusline.rs`.
 - [ ] R.3 `statusline.rs` tests: compute widths with `chars().count()` (or `Line::width`) instead of `str::len`.
+- [ ] R.4 Consider caching history length so scrollback_len can take &self (render code in PR4/PR5 only has &Pane).

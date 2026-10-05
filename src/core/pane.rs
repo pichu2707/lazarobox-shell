@@ -95,6 +95,12 @@ impl CursorShape {
 
 /// vt100 callbacks: answers terminal queries that vt100 does not handle and
 /// records the last DECSCUSR cursor shape.
+///
+/// Known limitation: DSR 6n reports the absolute cursor position. With DECOM
+/// (origin mode) on, a real terminal reports it relative to the scroll region,
+/// but vt100 exposes no origin-mode or scroll-region accessor, so this is not
+/// tracked. Accepted: rare in practice. The reply is always the live cursor,
+/// even while the view is scrolled back.
 #[derive(Default)]
 struct Responder {
     replies: Vec<u8>,
@@ -112,9 +118,13 @@ impl Callbacks for Responder {
     ) {
         let first = params.first().and_then(|p| p.first()).copied().unwrap_or(0);
         match (i1, i2, c) {
-            // Only the plain request: `\e[>c` (DA2) carries an intermediate.
-            (None, None, 'c') if first == 0 => self.replies.extend_from_slice(DA1_REPLY),
-            (None, None, 'n') => match first {
+            // Only the plain request: `\e[>c` (DA2) carries an intermediate,
+            // and extra params make it a different sequence.
+            (None, None, 'c') if params.len() <= 1 && first == 0 => {
+                self.replies.extend_from_slice(DA1_REPLY)
+            }
+            // DSR takes exactly one param (5 or 6).
+            (None, None, 'n') if params.len() == 1 => match first {
                 5 => self.replies.extend_from_slice(DSR_OK_REPLY),
                 6 => {
                     let (row, col) = screen.cursor_position();
@@ -143,8 +153,8 @@ impl Pane {
     pub fn new(size: PaneSize, scrollback: usize) -> Self {
         Self {
             parser: Parser::new_with_callbacks(
-                size.rows,
-                size.cols,
+                size.rows.max(1),
+                size.cols.max(1),
                 scrollback,
                 Responder::default(),
             ),
@@ -158,7 +168,9 @@ impl Pane {
     }
 
     pub fn resize(&mut self, size: PaneSize) {
-        self.parser.screen_mut().set_size(size.rows, size.cols);
+        self.parser
+            .screen_mut()
+            .set_size(size.rows.max(1), size.cols.max(1));
     }
 
     pub fn cell(&self, row: u16, col: u16) -> Option<CellView<'_>> {
@@ -175,7 +187,8 @@ impl Pane {
         })
     }
 
-    /// Cursor position `(row, col)`, or `None` when the child hid it.
+    /// Cursor position `(row, col)`, or `None` when the child hid it or the
+    /// view is scrolled back into history.
     pub fn cursor(&self) -> Option<(u16, u16)> {
         let screen = self.parser.screen();
         (!screen.hide_cursor() && screen.scrollback() == 0).then(|| screen.cursor_position())
@@ -228,7 +241,7 @@ mod tests {
         p.cell(row, col).expect("cell in range").text.to_string()
     }
 
-    // Spec: pane renders child output (text and colors).
+    // Spec: pane renders child output (text).
     #[test]
     fn printed_text_lands_in_consecutive_cells() {
         let mut p = pane(3, 10);
@@ -491,7 +504,9 @@ mod tests {
         feed_lines(&mut p, 20);
         p.set_scrollback(9);
         assert_eq!(p.scrollback_offset(), 9);
-        assert!(text_at(&p, 0, 0).starts_with('l'));
+        // 20 lines + blank cursor row = 21 rows total; top visible = 21-3-9 = 9.
+        assert_eq!(text_at(&p, 0, 0), "l");
+        assert_eq!(text_at(&p, 0, 4), "9");
         p.set_scrollback(usize::MAX);
         assert_eq!(p.scrollback_offset(), p.scrollback_len());
         assert!(p.cell(2, 0).is_some());
@@ -538,7 +553,50 @@ mod tests {
         p.set_scrollback(10);
         p.resize(PaneSize { rows: 2, cols: 8 });
         assert!(p.cell(1, 7).is_some());
+        assert!(p.scrollback_offset() <= p.scrollback_len());
         p.resize(PaneSize { rows: 1, cols: 1 });
         assert!(p.cell(0, 0).is_some());
+        assert!(p.scrollback_offset() <= p.scrollback_len());
+    }
+
+    #[test]
+    fn zero_size_is_clamped_to_one_cell() {
+        let p = Pane::new(PaneSize { rows: 0, cols: 0 }, 10);
+        assert!(p.cell(0, 0).is_some());
+        assert!(p.cell(1, 0).is_none());
+        assert!(p.cell(0, 1).is_none());
+        let mut p = pane(3, 10);
+        p.resize(PaneSize { rows: 0, cols: 0 });
+        assert!(p.cell(0, 0).is_some());
+        assert!(p.cell(1, 0).is_none());
+        assert!(p.cell(0, 1).is_none());
+        p.resize(PaneSize { rows: 0, cols: 5 });
+        assert!(p.cell(0, 4).is_some());
+        assert!(p.cell(1, 0).is_none());
+    }
+
+    #[test]
+    fn dsr_6n_reports_live_cursor_while_scrolled_back() {
+        let mut p = Pane::new(PaneSize { rows: 3, cols: 10 }, 100);
+        feed_lines(&mut p, 10);
+        p.feed(b"\x1b[2;4H");
+        p.set_scrollback(3);
+        assert_eq!(p.cursor(), None);
+        assert_eq!(p.feed(b"\x1b[6n"), b"\x1b[2;4R");
+    }
+
+    #[test]
+    fn malformed_da1_and_dsr_variants_are_not_answered() {
+        for seq in [
+            &b"\x1b[1c"[..],
+            b"\x1b[?c",
+            b"\x1b[0;1c",
+            b"\x1b[?5n",
+            b"\x1b[5;6n",
+        ] {
+            let mut p = pane(24, 80);
+            let replies = p.feed(seq);
+            assert!(replies.is_empty(), "{seq:?} got {replies:?}");
+        }
     }
 }
