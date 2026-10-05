@@ -95,13 +95,16 @@ fn char_bytes(ch: char, ctrl: bool) -> Vec<u8> {
     if ctrl {
         let code = match ch {
             'a'..='z' | 'A'..='Z' => Some(ch.to_ascii_lowercase() as u8 - b'a' + 1),
-            ' ' | '@' => Some(0x00),
-            '[' => Some(0x1b),
-            '\\' => Some(0x1c),
-            ']' => Some(0x1d),
-            '^' => Some(0x1e),
-            '_' => Some(0x1f),
-            '?' => Some(0x7f),
+            // crossterm reports 0x00 as Ctrl+Space and 0x1C..=0x1F as Ctrl+'4'..='7',
+            // so the xterm Ctrl+digit mapping is what makes Ctrl+\\ etc. work.
+            // Ctrl+1, Ctrl+9 and Ctrl+0 have no code and send the plain char.
+            ' ' | '@' | '2' => Some(0x00),
+            '[' | '3' => Some(0x1b),
+            '\\' | '4' => Some(0x1c),
+            ']' | '5' => Some(0x1d),
+            '^' | '6' => Some(0x1e),
+            '_' | '7' | '/' => Some(0x1f),
+            '?' | '8' => Some(0x7f),
             _ => None,
         };
         if let Some(code) = code {
@@ -114,20 +117,52 @@ fn char_bytes(ch: char, ctrl: bool) -> Vec<u8> {
 
 /// Encode pasted text, wrapping it in bracketed-paste markers when the child asked for them.
 ///
-/// When bracketed, any embedded end marker is removed (repeatedly, so it cannot be
-/// re-assembled) so pasted content cannot break out of the paste and inject commands.
+/// When bracketed, any embedded end marker is removed (to a fixpoint, so a marker
+/// re-assembled by a removal is removed too) so pasted content cannot break out of the
+/// paste and inject commands. Otherwise the text is sent as if typed: `\r\n` and lone
+/// `\n` become `\r` (the Enter key), following the xterm/tmux convention.
 pub fn encode_paste(text: &str, modes: TermModes) -> Vec<u8> {
     if !modes.bracketed_paste {
-        return text.as_bytes().to_vec();
+        return normalize_newlines(text);
     }
-    let mut clean = text.to_owned();
-    while clean.contains(PASTE_END) {
-        clean = clean.replace(PASTE_END, "");
-    }
+    let clean = strip_marker(text.as_bytes(), PASTE_END.as_bytes());
     let mut out = Vec::with_capacity(clean.len() + 12);
     out.extend_from_slice(PASTE_START);
-    out.extend_from_slice(clean.as_bytes());
+    out.extend_from_slice(&clean);
     out.extend_from_slice(PASTE_END.as_bytes());
+    out
+}
+
+fn normalize_newlines(text: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len());
+    let mut bytes = text.bytes().peekable();
+    while let Some(b) = bytes.next() {
+        match b {
+            b'\r' => {
+                out.push(b'\r');
+                if bytes.peek() == Some(&b'\n') {
+                    bytes.next();
+                }
+            }
+            b'\n' => out.push(b'\r'),
+            _ => out.push(b),
+        }
+    }
+    out
+}
+
+/// Remove every occurrence of `marker` in a single linear pass, including occurrences
+/// that only appear once an earlier one is removed (same result as repeating
+/// `replace` until none is left). Output is pushed on a stack and truncated whenever its
+/// tail equals the marker. The marker is ASCII, so UTF-8 validity is preserved.
+fn strip_marker(input: &[u8], marker: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    for &b in input {
+        out.push(b);
+        if out.ends_with(marker) {
+            out.truncate(out.len() - marker.len());
+        }
+    }
     out
 }
 
@@ -228,9 +263,57 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_with_unmapped_char_sends_the_char() {
+    fn ctrl_digits_follow_xterm() {
         check(
-            &[(c('1'), CTRL, b"1"), (c('é'), CTRL, "é".as_bytes())],
+            &[
+                (c('2'), CTRL, &[0x00]),
+                (c('3'), CTRL, &[0x1b]),
+                (c('4'), CTRL, &[0x1c]),
+                (c('5'), CTRL, &[0x1d]),
+                (c('6'), CTRL, &[0x1e]),
+                (c('7'), CTRL, &[0x1f]),
+                (c('8'), CTRL, &[0x7f]),
+                (c('/'), CTRL, &[0x1f]),
+                (KeyCode::Char('4'), ALT | CTRL, &[0x1b, 0x1c]),
+            ],
+            NORMAL,
+        );
+    }
+
+    #[test]
+    fn crossterm_reports_ctrl_backslash_as_ctrl_4() {
+        // Real-world case: crossterm 0.29 parses byte 0x1C (Ctrl+\) as Char('4') + CONTROL.
+        // It must reach the child as 0x1C (SIGQUIT), not as the literal "4".
+        assert_eq!(enc(c('4'), CTRL, NORMAL), Some(vec![0x1c]));
+        // 0x00 arrives as Char(' ') + CONTROL.
+        assert_eq!(enc(c(' '), CTRL, NORMAL), Some(vec![0x00]));
+    }
+
+    #[test]
+    fn ctrl_with_unmapped_char_sends_the_char() {
+        // Ctrl+1, Ctrl+9 and Ctrl+0 have no xterm control code: the plain char is sent.
+        check(
+            &[
+                (c('1'), CTRL, b"1"),
+                (c('9'), CTRL, b"9"),
+                (c('0'), CTRL, b"0"),
+                (c('é'), CTRL, "é".as_bytes()),
+            ],
+            NORMAL,
+        );
+    }
+
+    #[test]
+    fn documented_limitations_are_pinned() {
+        check(
+            &[
+                // No distinct encoding without the Kitty protocol.
+                (KeyCode::Enter, CTRL, b"\r"),
+                (KeyCode::Tab, CTRL, b"\t"),
+                // Alt prefix on top of the Shift+Tab sequence.
+                (KeyCode::BackTab, ALT | SHIFT, b"\x1b\x1b[Z"),
+                (KeyCode::Backspace, CTRL | ALT, &[0x1b, 0x08]),
+            ],
             NORMAL,
         );
     }
@@ -442,9 +525,37 @@ mod tests {
     }
 
     #[test]
-    fn paste_unbracketed_is_raw() {
+    fn paste_unbracketed_normalizes_newlines_to_cr() {
         assert_eq!(encode_paste("hi", NORMAL), b"hi".to_vec());
-        assert_eq!(encode_paste("a\nb", APP), b"a\nb".to_vec());
+        assert_eq!(encode_paste("a\nb", APP), b"a\rb".to_vec());
+        assert_eq!(encode_paste("a\r\nb", NORMAL), b"a\rb".to_vec());
+        assert_eq!(encode_paste("a\r\n\nb\r", NORMAL), b"a\r\rb\r".to_vec());
+        assert_eq!(encode_paste("é\n€", NORMAL), "é\r€".as_bytes().to_vec());
+    }
+
+    #[test]
+    fn bracketed_paste_keeps_newlines_and_other_escapes() {
+        assert_eq!(
+            encode_paste("a\r\nb\x1b[31mc\x1b[200~d", BRACKETED),
+            b"\x1b[200~a\r\nb\x1b[31mc\x1b[200~d\x1b[201~".to_vec()
+        );
+    }
+
+    #[test]
+    fn bracketed_paste_strips_deeply_nested_reassembly() {
+        let depth = 50;
+        let mut text = String::new();
+        for _ in 0..depth {
+            text.push_str("\x1b[2");
+        }
+        text.push_str(PASTE_END);
+        // Closing tails "01~" re-assemble one marker per level.
+        for _ in 0..depth {
+            text.push_str("01~");
+        }
+        // Each removal re-assembles the next marker outward, so all 51 must vanish.
+        let out = encode_paste(&text, BRACKETED);
+        assert_eq!(out, b"\x1b[200~\x1b[201~".to_vec());
     }
 
     #[test]
