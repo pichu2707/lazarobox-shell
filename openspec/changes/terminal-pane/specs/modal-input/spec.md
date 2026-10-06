@@ -9,6 +9,8 @@ TERMINAL / PREFIX / COPY state machine plus quit confirmation, as a pure `update
 ### Requirement: TERMINAL mode
 In TERMINAL every key except the prefix MUST be encoded and sent to the PTY. Initial mode is TERMINAL.
 
+Key events of kind Release MUST be ignored. Repeat MUST be handled like Press in TERMINAL and COPY, and MUST be ignored in PREFIX and CONFIRM_QUIT so a held key never selects an action or confirms quitting.
+
 #### Scenario: Passthrough
 - GIVEN TERMINAL
 - WHEN `l` is pressed

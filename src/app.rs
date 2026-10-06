@@ -73,8 +73,7 @@ impl App {
 
     pub fn update(&mut self, event: AppEvent) -> Vec<Effect> {
         match event {
-            AppEvent::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
-            AppEvent::Key(_) => Vec::new(),
+            AppEvent::Key(key) => self.on_key(key),
             AppEvent::Paste(text) => self.on_paste(&text),
             AppEvent::Resize { cols, rows } => self.on_resize(cols, rows),
             AppEvent::Pty(event) => self.on_pty(event),
@@ -94,7 +93,18 @@ impl App {
         }
     }
 
+    /// Release is always ignored. Repeat acts like Press where holding a key
+    /// is meaningful (TERMINAL typing, COPY scrolling) and is dropped where a
+    /// held key could trigger a one-shot decision (PREFIX, CONFIRM_QUIT).
     fn on_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let repeat = match key.kind {
+            KeyEventKind::Press => false,
+            KeyEventKind::Repeat => true,
+            KeyEventKind::Release => return Vec::new(),
+        };
+        if repeat && matches!(self.input, InputMode::Prefix | InputMode::ConfirmQuit) {
+            return Vec::new();
+        }
         self.dirty = true;
         match self.input {
             InputMode::Terminal => self.on_terminal_key(key),
@@ -490,29 +500,85 @@ mod app_tests {
         assert_eq!(effects, vec![Effect::WritePty(b"\x1b[0n".to_vec())]);
     }
 
+    fn kinded(code: KeyCode, mods: KeyModifiers, kind: KeyEventKind) -> AppEvent {
+        AppEvent::Key(KeyEvent::new_with_kind(code, mods, kind))
+    }
+
+    fn repeat(c: char) -> AppEvent {
+        kinded(KeyCode::Char(c), KeyModifiers::NONE, KeyEventKind::Repeat)
+    }
+
     #[test]
-    fn non_press_key_events_are_ignored() {
-        for kind in [KeyEventKind::Release, KeyEventKind::Repeat] {
-            let mut a = app();
-            let ev = AppEvent::Key(KeyEvent::new_with_kind(
-                KeyCode::Char('l'),
-                KeyModifiers::NONE,
-                kind,
-            ));
-            assert_eq!(a.update(ev), vec![], "{kind:?}");
-        }
+    fn release_key_events_are_ignored_in_every_mode() {
+        let release = |c| kinded(KeyCode::Char(c), KeyModifiers::NONE, KeyEventKind::Release);
         let mut a = app();
-        let release = KeyEvent::new_with_kind(
+        assert_eq!(a.update(release('l')), vec![]);
+        let mut a = in_prefix();
+        assert_eq!(a.update(release('[')), vec![]);
+        assert_eq!(a.input, InputMode::Prefix);
+        let mut a = app();
+        a.update(kinded(
             KeyCode::Char(' '),
             KeyModifiers::CONTROL,
             KeyEventKind::Release,
-        );
-        a.update(AppEvent::Key(release));
+        ));
         assert_eq!(
             a.input,
             InputMode::Terminal,
             "release must not enter PREFIX"
         );
+    }
+
+    #[test]
+    fn repeat_in_terminal_writes_the_encoded_bytes() {
+        let mut a = app();
+        assert_eq!(a.update(repeat('l')), vec![Effect::WritePty(b"l".to_vec())]);
+    }
+
+    #[test]
+    fn repeat_of_k_in_copy_moves_the_view() {
+        let mut a = in_copy();
+        with_history(&mut a, 40);
+        a.update(repeat('k'));
+        assert_eq!(a.pane.scrollback_offset(), 1);
+        a.update(repeat('k'));
+        assert_eq!(a.pane.scrollback_offset(), 2);
+    }
+
+    #[test]
+    fn repeat_in_prefix_does_nothing_and_stays_in_prefix() {
+        let mut a = in_prefix();
+        assert_eq!(a.update(repeat('[')), vec![]);
+        assert_eq!(a.input, InputMode::Prefix);
+        let held = kinded(
+            KeyCode::Char(' '),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Repeat,
+        );
+        assert_eq!(a.update(held), vec![]);
+        assert_eq!(a.input, InputMode::Prefix);
+    }
+
+    #[test]
+    fn held_prefix_key_enters_prefix_once_and_repeats_are_dropped() {
+        let mut a = app();
+        a.update(ctrl_space());
+        let held = kinded(
+            KeyCode::Char(' '),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Repeat,
+        );
+        assert_eq!(a.update(held), vec![]);
+        assert_eq!(a.input, InputMode::Prefix);
+    }
+
+    #[test]
+    fn repeat_of_y_in_confirm_quit_does_not_quit() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        assert_eq!(a.input, InputMode::ConfirmQuit);
+        assert_eq!(a.update(repeat('y')), vec![]);
+        assert_eq!(a.input, InputMode::ConfirmQuit);
     }
 
     #[test]
