@@ -66,6 +66,25 @@ impl Drop for PortableHandle {
     }
 }
 
+/// Forwards everything `reader` produces to `sink` as `Output`. Returns `true`
+/// when the stream ended (EOF or a real error) and `false` when the sink asked
+/// to stop. A read interrupted by a signal is retried, not treated as the end.
+fn pump<R: Read + ?Sized>(reader: &mut R, sink: &mut PtySink) -> bool {
+    let mut buf = [0u8; READ_CHUNK];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => return true,
+            Ok(n) => {
+                if !sink(PtyEvent::Output(buf[..n].to_vec())) {
+                    return false;
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return true,
+        }
+    }
+}
+
 /// Starts the child described by `spec` on a new PTY. `sink` receives its
 /// output and, once, `Exited` when the PTY closes.
 pub fn spawn_portable(spec: &SpawnSpec, mut sink: PtySink) -> io::Result<Box<dyn PtyHandle>> {
@@ -86,18 +105,9 @@ pub fn spawn_portable(spec: &SpawnSpec, mut sink: PtySink) -> io::Result<Box<dyn
     let mut writer = pair.master.take_writer().map_err(io::Error::other)?;
 
     thread::spawn(move || {
-        let mut buf = [0u8; READ_CHUNK];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if !sink(PtyEvent::Output(buf[..n].to_vec())) {
-                        return;
-                    }
-                }
-            }
+        if pump(&mut reader, &mut sink) {
+            sink(PtyEvent::Exited);
         }
-        sink(PtyEvent::Exited);
     });
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
@@ -204,5 +214,68 @@ mod tests {
         assert!(Path::new(&format!("/proc/{pid}")).exists());
         drop(pty);
         assert!(!Path::new(&format!("/proc/{pid}")).exists());
+    }
+}
+
+#[cfg(test)]
+mod pump_tests {
+    use std::{cell::Cell, sync::mpsc};
+
+    use super::*;
+
+    /// Yields `Interrupted` once, then `data`, then EOF.
+    struct Flaky {
+        interrupted: Cell<bool>,
+        data: Option<Vec<u8>>,
+    }
+
+    impl Read for Flaky {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if !self.interrupted.replace(true) {
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            match self.data.take() {
+                Some(data) => {
+                    buf[..data.len()].copy_from_slice(&data);
+                    Ok(data.len())
+                }
+                None => Ok(0),
+            }
+        }
+    }
+
+    // EINTR must not be mistaken for the end of the stream.
+    #[test]
+    fn interrupted_reads_are_retried() {
+        let (tx, rx) = mpsc::channel();
+        let mut sink: PtySink = Box::new(move |event| tx.send(event).is_ok());
+        let mut reader = Flaky {
+            interrupted: Cell::new(false),
+            data: Some(b"hi".to_vec()),
+        };
+        assert!(pump(&mut reader, &mut sink));
+        assert_eq!(rx.try_recv().unwrap(), PtyEvent::Output(b"hi".to_vec()));
+    }
+
+    #[test]
+    fn a_real_read_error_ends_the_stream() {
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::Other.into())
+            }
+        }
+        let mut sink: PtySink = Box::new(|_| true);
+        assert!(pump(&mut Broken, &mut sink));
+    }
+
+    #[test]
+    fn a_closed_sink_stops_the_pump() {
+        let mut sink: PtySink = Box::new(|_| false);
+        let mut reader = Flaky {
+            interrupted: Cell::new(true),
+            data: Some(b"x".to_vec()),
+        };
+        assert!(!pump(&mut reader, &mut sink));
     }
 }
