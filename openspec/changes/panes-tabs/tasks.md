@@ -7,11 +7,11 @@
 | Estimated changed lines | ~3,800 total (range 3,500-4,200, tests ~1.5x code), 12 PRs of 200-410 lines |
 | 400-line budget risk | High (S3 and S4) |
 | Chained PRs recommended | Yes |
-| Suggested split | S1 -> S2a -> S2b -> S3 -> S4 -> S5a -> S5b -> S6 -> S7 -> S8a -> S8b -> S9 |
+| Suggested split | S1 -> S2a -> S2b -> S3a -> S3b -> S4 -> S5a -> S5b -> S6 -> S7 -> S8a -> S8b -> S9 |
 | Delivery strategy | ask-on-risk |
 | Chain strategy | feature-branch-chain |
 
-Decision needed before apply: Yes
+Decision needed before apply: Resolved (2026-10-06). The user chose to split S3 into S3a/S3b up front, giving 13 PRs. S4 stays whole and only splits (S4b shutdown) if it exceeds 400 lines during apply.
 Chained PRs recommended: Yes
 Chain strategy: feature-branch-chain
 400-line budget risk: High
@@ -29,8 +29,9 @@ The "Decision needed" is Yes because `ask-on-risk` applies: the orchestrator mus
 | S1 | `feat/panes-tabs-01-encapsulation` | `feat/panes-tabs` | ~330 | modal-input: Passthrough (WritePty to focused pane), Paste/resize (single pane); no behaviour change |
 | S2a | `feat/panes-tabs-02a-layout-tile` | S1 branch | ~240 | pane-layout: Ids never reused, Rects tile, Tiny terminal never panics, separators geometry |
 | S2b | `feat/panes-tabs-02b-layout-ops` | S2a branch | ~290 | pane-layout: Split (all 5), Geometric focus (3), Close and collapse (4) |
-| S3 | `feat/panes-tabs-03-prefix-tree` | S2b branch | ~410 (HIGH) | modal-input: Prefix tree, Group cancellation, Prefix key, Repeat/Release; statusline: hint function, Mode color mapping |
-| S4 | `feat/panes-tabs-04-runtime-panes` | S3 branch | ~370 (HIGH) | terminal-session: Per-pane PTY registry, Spawn failure (runtime part), Non-blocking close, Per-pane cwd poll, Quit leaves no orphan |
+| S3a | `feat/panes-tabs-03a-prefix-table` | S2b branch | ~230 | modal-input: Prefix tree (table, lookup, SHIFT); statusline: hint function (group and root) |
+| S3b | `feat/panes-tabs-03b-group-mode` | S3a branch | ~200 | modal-input: Group cancellation, Prefix key, Repeat/Release; statusline: Mode color mapping |
+| S4 | `feat/panes-tabs-04-runtime-panes` | S3b branch | ~370 (HIGH) | terminal-session: Per-pane PTY registry, Spawn failure (runtime part), Non-blocking close, Per-pane cwd poll, Quit leaves no orphan |
 | S5a | `feat/panes-tabs-05a-multipane` | S4 branch | ~360 | pane-layout: Split via keys; terminal-session: Split inherits cwd, Resize (changed panes only), Stale events dropped; modal-input: Focus keys, Focus follows new pane |
 | S5b | `feat/panes-tabs-05b-close` | S5a branch | ~340 | modal-input: Close confirmations, Quit confirmation, Focus change exits COPY; copy-mode: all; terminal-session: Failed split, Notice clears, Shell exit |
 | S6 | `feat/panes-tabs-06-ui` | S5b branch | ~280 | pane-layout: Separators; terminal-emulation: Focused-only cursor, Two panes clipped; statusline: Group/Root hint, Notice, Confirmation prompts, Live cwd, Shell segment; [manual] milestone |
@@ -69,7 +70,9 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 - [ ] S2b.6 GREEN: `neighbour`.
 - [ ] S2b.7 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
-## S3: Prefix tree + Group mode (split S3a/S3b if over 400)
+## S3: Prefix tree + Group mode
+
+Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs-03a-prefix-table`; S3b covers S3.6–S3.8 (+ S3.9) on `feat/panes-tabs-03b-group-mode`. Root hint shows only hinted entries: groups, `[` and `q` (user decision).
 
 - [ ] S3.1 RED: `src/core/prefix.rs` recursive walk tests: unique chords per group, non-empty descriptions/labels, `PREFIX_KEY` absent in groups, `?` reserved, every action reachable once [modal-input: Table integrity].
 - [ ] S3.2 GREEN: `KeyChord` (SHIFT dropped for `Char`, `label()`), `PrefixAction`, `Group`, `Target`, `Binding { .., hinted }`, `PREFIX_TREE` (groups, `[`, `q`, then unhinted), `Step`, `lookup`.
