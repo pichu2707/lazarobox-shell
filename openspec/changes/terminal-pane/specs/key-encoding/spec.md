@@ -31,7 +31,7 @@ Arrows MUST send `ESC O x` when application-cursor is enabled, else `ESC [ x`.
 - THEN arrow keys move the cursor
 
 ### Requirement: Bracketed paste
-Pasted text MUST be wrapped in `\e[200~`…`\e[201~` only if the inner app enabled bracketed paste; otherwise sent raw.
+Pasted text MUST be wrapped in `\e[200~`…`\e[201~` only if the inner app enabled bracketed paste; otherwise sent without markers, with `\r\n` and lone `\n` normalized to `\r` (paste behaves like typed Enter, per xterm/tmux). Bracketed paste content is kept verbatim except that embedded `\e[201~` end markers are stripped.
 
 #### Scenario: Enabled [auto]
 - GIVEN bracketed paste enabled and paste `hi`
@@ -40,3 +40,7 @@ Pasted text MUST be wrapped in `\e[200~`…`\e[201~` only if the inner app enabl
 #### Scenario: Disabled [auto]
 - GIVEN bracketed paste disabled
 - THEN bytes are `hi` with no markers
+
+#### Scenario: Disabled, multi-line [auto]
+- GIVEN bracketed paste disabled and paste `a\r\nb\nc`
+- THEN bytes are `a\rb\rc`

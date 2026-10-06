@@ -147,6 +147,8 @@ impl Callbacks for Responder {
 /// A terminal emulator screen fed with the child's output bytes.
 pub struct Pane {
     parser: Parser<Responder>,
+    /// Rows of history, refreshed whenever the screen changes (`feed`, `resize`).
+    history_len: usize,
 }
 
 impl Pane {
@@ -158,12 +160,14 @@ impl Pane {
                 scrollback,
                 Responder::default(),
             ),
+            history_len: 0,
         }
     }
 
     /// Processes child output and returns the bytes to answer its queries with.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
         self.parser.process(bytes);
+        self.refresh_history_len();
         std::mem::take(&mut self.parser.callbacks_mut().replies)
     }
 
@@ -171,6 +175,7 @@ impl Pane {
         self.parser
             .screen_mut()
             .set_size(size.rows.max(1), size.cols.max(1));
+        self.refresh_history_len();
     }
 
     pub fn cell(&self, row: u16, col: u16) -> Option<CellView<'_>> {
@@ -210,14 +215,18 @@ impl Pane {
         self.parser.screen().scrollback()
     }
 
-    /// Rows of history available. vt100 has no accessor, so clamp to the
-    /// maximum, read it back, and restore the previous offset.
-    pub fn scrollback_len(&mut self) -> usize {
+    /// Rows of history available (0 on the alternate screen).
+    pub fn scrollback_len(&self) -> usize {
+        self.history_len
+    }
+
+    /// vt100 has no accessor for the history length, so clamp to the maximum,
+    /// read it back, and restore the previous offset.
+    fn refresh_history_len(&mut self) {
         let previous = self.scrollback_offset();
         self.set_scrollback(usize::MAX);
-        let len = self.scrollback_offset();
+        self.history_len = self.scrollback_offset();
         self.set_scrollback(previous);
-        len
     }
 
     pub fn modes(&self) -> TermModes {
@@ -481,6 +490,31 @@ mod tests {
         p.set_scrollback(3);
         assert_eq!(p.scrollback_len(), 8);
         assert_eq!(p.scrollback_offset(), 3, "previous offset restored");
+    }
+
+    #[test]
+    fn scrollback_len_is_readable_through_a_shared_reference() {
+        fn len_of(p: &Pane) -> usize {
+            p.scrollback_len()
+        }
+        let mut p = Pane::new(PaneSize { rows: 3, cols: 10 }, 100);
+        assert_eq!(len_of(&p), 0);
+        feed_lines(&mut p, 10);
+        assert_eq!(len_of(&p), 8);
+        p.set_scrollback(4);
+        assert_eq!(
+            len_of(&p),
+            8,
+            "scrolling does not change the history length"
+        );
+        p.feed(b"\x1b[?1049h");
+        assert_eq!(len_of(&p), 0, "alternate screen has no history");
+        p.feed(b"\x1b[?1049l");
+        assert_eq!(len_of(&p), 8);
+        p.resize(PaneSize { rows: 6, cols: 10 });
+        let after_resize = len_of(&p);
+        p.set_scrollback(usize::MAX);
+        assert_eq!(after_resize, p.scrollback_offset(), "cache follows resize");
     }
 
     #[test]

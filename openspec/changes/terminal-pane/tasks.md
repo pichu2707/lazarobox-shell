@@ -7,7 +7,7 @@
 | Estimated changed lines | ~1,700 (range 1,400-1,800, incl. tests) |
 | 400-line budget risk | High |
 | Chained PRs recommended | Yes |
-| Suggested split | PR 1 (~350) -> PR 2 (~300) -> PR 3 (~450) -> PR 4 (~450) -> PR 5 (~200) |
+| Suggested split | PR 1 (~350) -> PR 2 (~300) -> PR 3a (~1,000 incl. tests) -> PR 3b (~250) -> PR 4 (~450) -> PR 5 (~200) |
 | Delivery strategy | ask-on-risk |
 | Chain strategy | feature-branch-chain |
 
@@ -22,8 +22,9 @@ Chain strategy: feature-branch-chain
 |------|------|-----------|-------|
 | 1 | Deps + spike gate + `core/pane` | PR 1 | Base = tracker/main. Gate: spike accepted |
 | 2 | `core/keys` encoder | PR 2 | Base = PR 1 (only needs `TermModes`) |
-| 3 | prefix, copy, `App`, theme, statusline | PR 3 | Base = PR 2. PR 3 may exceed 400; split statusline off if so |
-| 4 | pty, terminal_view, runtime, main (first runnable) | PR 4 | Base = PR 3 |
+| 3a | prefix (with action descriptions), copy, `App`, `Pane` history cache | PR 3a | Base = PR 2. Branch `feat/terminal-pane-03-modal` |
+| 3b | theme `input_mode_style`, statusline `input()` | PR 3b | Base = PR 3a. Branch `feat/terminal-pane-03b-ui` |
+| 4 | pty, terminal_view, runtime, main (first runnable) | PR 4 | Base = PR 3b |
 | 5 | Copy wiring + cwd polling + segments | PR 5 | Base = PR 4 |
 
 Every PR must be green: `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check`. Strict TDD: RED (failing test) -> GREEN -> REFACTOR. [manual] = user-run in Kitty.
@@ -43,18 +44,22 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets`, `cargo fmt -
 
 ## PR 2: Key encoder
 
-- [ ] 2.1 RED: `src/core/keys.rs` table tests: basics (`a`, `é`, Ctrl+c, Alt+x, Enter, BS, Shift+Tab), Home/End/PgUp/PgDn/Del/Ins, F-keys.
-- [ ] 2.2 RED: arrow tests for application cursor off/on.
-- [ ] 2.3 RED: `encode_paste` tests, bracketed enabled/disabled.
-- [ ] 2.4 GREEN: implement `encode_key`, `encode_paste`; register `keys` in `src/core/mod.rs`.
+- [x] 2.1 RED: `src/core/keys.rs` table tests: basics (`a`, `é`, Ctrl+c, Alt+x, Enter, BS, Shift+Tab), Home/End/PgUp/PgDn/Del/Ins, F-keys.
+- [x] 2.2 RED: arrow tests for application cursor off/on.
+- [x] 2.3 RED: `encode_paste` tests, bracketed enabled/disabled.
+- [x] 2.4 GREEN: implement `encode_key`, `encode_paste`; register `keys` in `src/core/mod.rs`.
 
-## PR 3: Modal core, theme, statusline
+## PR 3a: Modal core (3.1-3.5, 3.9, R.4)
 
-- [ ] 3.1 RED+GREEN: `src/core/prefix.rs` `PREFIX_KEY`, `PREFIX_BINDINGS`, `lookup` tests (Ctrl+Space, `q`, `[`, Esc/`z` -> None).
-- [ ] 3.2 RED+GREEN: `src/core/copy.rs` `CopyState::on_key`, `apply` tests: j/k, half page 12, `gg`/`G`, clamping, lone `g`, exit keys, alt screen offset 0.
-- [ ] 3.3 RED: `src/app.rs` tests for `App::update`: passthrough, enter PREFIX, literal `[0x00]`, cancel, confirm/decline quit, enter COPY, paste only in TERMINAL, Resize in all modes, resize math (39x100, 1x1 min), Pty Exited -> Quit, non-Press ignored, copy swallows keys.
-- [ ] 3.4 GREEN: add `InputMode`, `AppEvent`, `Effect`, `App::update`; keep `AppMode`.
-- [ ] 3.5 RED+GREEN: `App::cursor_shape()` tests (TERMINAL/PREFIX follow pane, COPY block steady, restore).
+- [x] 3.1 RED+GREEN: `src/core/prefix.rs` `PREFIX_KEY`, `PREFIX_BINDINGS`, `lookup` tests (Ctrl+Space, `q`, `[`, Esc/`z` -> None).
+- [x] 3.2 RED+GREEN: `src/core/copy.rs` `CopyState::on_key`, `apply` tests: j/k, half page 12, `gg`/`G`, clamping, lone `g`, exit keys, alt screen offset 0.
+- [x] 3.3 RED: `src/app.rs` tests for `App::update`: passthrough, enter PREFIX, literal `[0x00]`, cancel, confirm/decline quit, enter COPY, paste only in TERMINAL, Resize in all modes, resize math (39x100, 1x1 min), Pty Exited -> Quit, non-Press ignored, copy swallows keys.
+- [x] 3.4 GREEN: add `InputMode`, `AppEvent`, `Effect`, `App::update`; keep `AppMode`.
+  - NOTE: `AppEvent::Cwd`, `cwd`, `shell_name`, `home` are deferred to PR 5 (task 5.3). `PtyEvent` lives in a minimal `core/pty/mod.rs` that PR 4 extends. Also added `app::pane_size`.
+- [x] 3.5 RED+GREEN: `App::cursor_shape()` tests (TERMINAL/PREFIX follow pane, COPY block steady, restore).
+- [x] 3.9 RED+GREEN: `PrefixBinding { chord, action, description }`; `PREFIX_BINDINGS` is the single source of truth for a future which-key / help viewer. Tests: non-empty descriptions, unique keys and actions. (3a)
+## PR 3b: Theme and statusline (3.6-3.8, R.1-R.3), based on PR 3a
+
 - [ ] 3.6 RED+GREEN: `src/ui/theme.rs` `input_mode_style` color-mapping test.
 - [ ] 3.7 RED: `statusline.rs` insta snapshots per `InputMode`, "Quit? (y/n)", narrow width; confirm old snapshots unchanged.
 - [ ] 3.8 GREEN: `StatusLine::input()` constructor with label/style fields.
@@ -84,4 +89,5 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets`, `cargo fmt -
 - [ ] R.1 `LazaroboxTheme`: add `#[derive(Debug, Clone)]`.
 - [ ] R.2 Take `AppMode` by value in `mode_style` (it is `Copy`); add `accent(mode) -> Color` and drop the `unwrap_or(primary_cyan)` fallback in `statusline.rs`.
 - [ ] R.3 `statusline.rs` tests: compute widths with `chars().count()` (or `Line::width`) instead of `str::len`.
-- [ ] R.4 Consider caching history length so scrollback_len can take &self (render code in PR4/PR5 only has &Pane).
+- [x] R.4 Consider caching history length so scrollback_len can take &self (render code in PR4/PR5 only has &Pane).
+  - DONE (3a): `Pane` caches the history length (refreshed in `feed`/`resize`); `scrollback_len(&self)`.
