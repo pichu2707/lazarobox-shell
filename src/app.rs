@@ -165,8 +165,18 @@ impl App {
             state.offset = state.offset.min(self.pane.scrollback_len());
             self.pane.set_scrollback(state.offset);
         }
+        self.sync_copy_offset();
         self.dirty = true;
         vec![Effect::ResizePty(self.size)]
+    }
+
+    /// The emulator moves its own offset when output arrives while scrolled
+    /// (it pins the viewport) and clamps it at the history cap. In COPY, the
+    /// pane is the source of truth, so the state follows it.
+    fn sync_copy_offset(&mut self) {
+        if let InputMode::Copy(state) = &mut self.input {
+            state.offset = self.pane.scrollback_offset();
+        }
     }
 
     fn on_pty(&mut self, event: PtyEvent) -> Vec<Effect> {
@@ -174,6 +184,7 @@ impl App {
             PtyEvent::Output(bytes) => {
                 self.dirty = true;
                 let reply = self.pane.feed(&bytes);
+                self.sync_copy_offset();
                 if reply.is_empty() {
                     Vec::new()
                 } else {
@@ -561,15 +572,62 @@ mod app_tests {
         assert_eq!(a.pane.scrollback_offset(), 0);
     }
 
+    fn copy_offset(a: &App) -> usize {
+        match a.input {
+            InputMode::Copy(state) => state.offset,
+            other => panic!("not in COPY: {other:?}"),
+        }
+    }
+
     #[test]
-    fn copy_resize_keeps_the_offset_within_history() {
+    fn copy_resize_clamps_the_offset_and_keeps_it_in_sync_with_the_pane() {
         let mut a = in_copy();
         with_history(&mut a, 60);
         a.update(key('g'));
         a.update(key('g'));
+        let before = copy_offset(&a);
         a.update(AppEvent::Resize { cols: 80, rows: 60 });
-        assert!(a.pane.scrollback_offset() <= a.pane.scrollback_len());
+        let after = copy_offset(&a);
+        assert!(after <= a.pane.scrollback_len());
+        assert_eq!(after, a.pane.scrollback_offset());
         a.update(key('k'));
+        assert!(copy_offset(&a) <= a.pane.scrollback_len());
+        assert_eq!(copy_offset(&a), a.pane.scrollback_offset());
+        assert!(before > 0);
+    }
+
+    #[test]
+    fn copy_offset_follows_the_pane_when_output_arrives_while_scrolled() {
+        let mut a = in_copy();
+        with_history(&mut a, 40);
+        for _ in 0..10 {
+            a.update(key('k'));
+        }
+        assert_eq!(copy_offset(&a), 10);
+        with_history(&mut a, 5);
+        assert_eq!(copy_offset(&a), a.pane.scrollback_offset());
+        let anchored = a.pane.scrollback_offset();
+        assert!(anchored > 10, "the emulator pins the viewport");
+        a.update(key('j'));
+        assert_eq!(a.pane.scrollback_offset(), anchored - 1);
+        assert_eq!(copy_offset(&a), anchored - 1);
+        a.update(key('k'));
+        a.update(key('k'));
+        assert_eq!(a.pane.scrollback_offset(), anchored + 1);
+        assert_eq!(copy_offset(&a), anchored + 1);
+    }
+
+    #[test]
+    fn copy_output_past_the_scrollback_cap_does_not_panic_and_stays_in_sync() {
+        let mut a = in_copy();
+        with_history(&mut a, SCROLLBACK_LINES + 100);
+        a.update(key('g'));
+        a.update(key('g'));
+        with_history(&mut a, 50);
+        assert_eq!(copy_offset(&a), a.pane.scrollback_offset());
+        a.update(key('k'));
+        a.update(key('j'));
+        assert_eq!(copy_offset(&a), a.pane.scrollback_offset());
         assert!(a.pane.scrollback_offset() <= a.pane.scrollback_len());
     }
 
