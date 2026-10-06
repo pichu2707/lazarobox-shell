@@ -1,0 +1,8 @@
+---
+source: src/ui/components/terminal_view.rs
+expression: "text(&render(&pane, 40, 10))"
+---
+plain
+bold red
+rgb inv
+under ital

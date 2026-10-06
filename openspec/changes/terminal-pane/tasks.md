@@ -67,23 +67,32 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets`, `cargo fmt -
 
 ## PR 4: PTY, view, runtime (first runnable)
 
-- [ ] 4.1 RED+GREEN: `src/core/pty/{mod,fake}.rs` port, `FakePty`; spawn-spec tests (SHELL set/unset, TERM/COLORTERM).
-- [ ] 4.2 RED: `pty/portable.rs` linux tests: echo round trip, `stty size` after resize, exit -> `Exited`, drop leaves no orphan.
-- [ ] 4.3 GREEN: `spawn_portable` with detached reader thread and writer thread.
-- [ ] 4.4 RED: `terminal_view.rs` TestBackend+insta: styled snapshot, wide chars, hidden cursor.
-- [ ] 4.5 GREEN: `src/ui/components/terminal_view.rs`; `src/ui/mod.rs` `render(frame, &App, &theme)`.
-- [ ] 4.6 RED: `runtime.rs` tests (fake PTY/`Vec<u8>` writer): effects executed; cursor style applied only on change; `restore()` emits `DefaultUserShape`.
-- [ ] 4.7 GREEN: `src/runtime.rs` select loop, 16 ms tick, bounded channel 256, panic hook, `restore()`; `src/main.rs` -> `runtime::run()`; no mouse capture.
-- [ ] 4.8 [manual]: nvim colors/arrows/`:q`, htop, resize reflow, `exit` and prefix `q` `y` restore the terminal, Kitty cursor bar/block and reset, native mouse selection, Ctrl+Space twice.
+- [x] 4.1 RED+GREEN: `src/core/pty/{mod,fake}.rs` port, `FakePty`; spawn-spec tests (SHELL set/unset, TERM/COLORTERM).
+- [x] 4.2 RED: `pty/portable.rs` linux tests: echo round trip, `stty size` after resize, exit -> `Exited`, drop leaves no orphan.
+- [x] 4.3 GREEN: `spawn_portable` with detached reader thread and writer thread.
+- [x] 4.4 RED: `terminal_view.rs` TestBackend+insta: styled snapshot, wide chars, hidden cursor.
+- [x] 4.5 GREEN: `src/ui/components/terminal_view.rs`; `src/ui/mod.rs` `render(frame, &App, &theme)`.
+- [x] 4.6 RED: `runtime.rs` tests (fake PTY/`Vec<u8>` writer): effects executed; cursor style applied only on change; `restore()` emits `DefaultUserShape`.
+- [x] 4.7 GREEN: `src/runtime.rs` select loop, 16 ms tick, bounded channel 256, panic hook, `restore()`; `src/main.rs` -> `runtime::run()`; no mouse capture.
+  - NOTE: `SpawnSpec::new(shell, cwd, size)` is the pure spec builder. `ui::render` passes empty cwd/shell segments until PR 5. Default fg maps to `Color::Reset` and default bg to `theme.bg_base` (the theme has no foreground color). Headless smoke (python pty): shell starts, `echo` round trip, `exit` quits with code 0 and emits `ESC[0 q` plus `ESC[?1049l`.
+- [x] 4.8 [manual]: nvim colors/arrows/`:q`, htop, resize reflow, `exit` and prefix `q` `y` restore the terminal, Kitty cursor bar/block and reset, native mouse selection, Ctrl+Space twice.
+  - NOTE: manual Kitty check passed by the user on 2026-10-06.
+  - NOTE (PR 4 review fixes): `Exited` now comes from a waiter thread on `child.wait()` as well as PTY EOF (once, via a shared flag); reads interrupted by signals are retried; SIGTERM/SIGHUP end the event loop like Quit so the terminal is restored; teardown also `killpg`s the shell's process group.
+  - Deferred review suggestions: (a) the writer channel is unbounded, accepted by design (keystroke and paste volume is tiny and the writer must never block the UI); (b) background jobs in their own process group (interactive job control, e.g. `sleep 20 &` in bash) are not killed on teardown: only the shell's own group is, a session-wide kill would need a Linux-only `/proc` scan; (c) wide-char clipping at the pane edge is unreachable because the PTY width equals the pane width, so vt100 never places a wide cell across it. (d) the 100 ms `DRAIN_GRACE` before `Exited` is best-effort: with a huge backlog and a slow consumer, trailing output can be dropped on quit.
 
 ## PR 5: Copy wiring, cwd, segments
 
-- [ ] 5.1 RED: `app.rs` anchoring test (output during COPY keeps content; 10 up + 5 lines).
-- [ ] 5.2 GREEN: anchor offset by `scrollback_len()` delta around `feed`; entering COPY on alt screen shows the current screen.
-- [ ] 5.3 RED+GREEN: `AppEvent::Cwd` updates cwd, lookup failure retains it; `~` for `$HOME`; shell basename.
-- [ ] 5.4 GREEN: 1 s `/proc/<pid>/cwd` poll in `runtime.rs`; statusline cwd and right shell segments. Test: `cd /tmp` reflected [auto, unix PTY].
-- [ ] 5.5 [manual]: COPY j/k/Ctrl+u/Ctrl+d/gg/G on `ls -R`, exit lands at the bottom; cursor block in COPY.
-- [ ] 5.6 Final: `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check`.
+- [x] 5.1 RED: `app.rs` anchoring test (output during COPY keeps content; 10 up + 5 lines).
+  - DONE: `output_during_copy_keeps_the_same_content_visible` asserts the visible cell text (not only offsets) is identical after 5 new lines, then `j` moves by one line. It passed on first run (no RED): the behavior already exists, see 5.2.
+- [x] 5.2 GREEN: anchor offset by `scrollback_len()` delta around `feed`; entering COPY on alt screen shows the current screen.
+  - DONE, no new code: the anchoring is provided by vt100 pinning the viewport (it bumps its own scrollback offset when a row enters history) plus `App::sync_copy_offset` after `feed`/resize. A `scrollback_len()` delta on top would double-count, so it was deliberately NOT added (ADR 11 simplified). Alt screen: `entering_copy_on_the_alternate_screen_shows_the_current_screen` (content assertion) plus the existing clamp test.
+- [x] 5.3 RED+GREEN: `AppEvent::Cwd` updates cwd, lookup failure retains it; `~` for `$HOME`; shell basename.
+  - DONE: `App::with_env(shell, home, cwd)` builder keeps `update` pure; `cwd_label()` (`~`, `~/sub`, path-prefix safe, `/` or empty HOME ignored), `shell_basename` (fallback `sh`). A failed lookup is modeled as no event (`poll_cwd` returns `None`), so the previous value stays.
+- [x] 5.4 GREEN: 1 s `/proc/<pid>/cwd` poll in `runtime.rs`; statusline cwd and right shell segments. Test: `cd /tmp` reflected [auto, unix PTY].
+  - DONE: extra `select!` branch on a 1 s interval (`CWD_POLL`, Skip on missed ticks); `read_link` on /proc is resolved in-kernel and cannot stall the loop. `ui::render` fills both segments. Existing statusline snapshots untouched: the populated-segment snapshots already existed from 3b, so none were added.
+- [x] 5.5 [manual]: COPY j/k/Ctrl+u/Ctrl+d/gg/G on `ls -R`, exit lands at the bottom; cursor block in COPY. Passed in Kitty by the user on 2026-10-06 (COPY motions, stable view on output, cwd `~`/`~/Documents`/`/tmp`, shell name).
+- [x] 5.6 Final: `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check`.
+  - DONE: 201 tests pass (3 consecutive runs), clippy -D warnings and fmt clean.
 
 ## Carried-over review notes (apply in PR 3, which already touches `theme.rs`/`statusline.rs`)
 
