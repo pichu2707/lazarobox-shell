@@ -82,10 +82,14 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets`, `cargo fmt -
 
 ## PR 5: Copy wiring, cwd, segments
 
-- [ ] 5.1 RED: `app.rs` anchoring test (output during COPY keeps content; 10 up + 5 lines).
-- [ ] 5.2 GREEN: anchor offset by `scrollback_len()` delta around `feed`; entering COPY on alt screen shows the current screen.
-- [ ] 5.3 RED+GREEN: `AppEvent::Cwd` updates cwd, lookup failure retains it; `~` for `$HOME`; shell basename.
-- [ ] 5.4 GREEN: 1 s `/proc/<pid>/cwd` poll in `runtime.rs`; statusline cwd and right shell segments. Test: `cd /tmp` reflected [auto, unix PTY].
+- [x] 5.1 RED: `app.rs` anchoring test (output during COPY keeps content; 10 up + 5 lines).
+  - DONE: `output_during_copy_keeps_the_same_content_visible` asserts the visible cell text (not only offsets) is identical after 5 new lines, then `j` moves by one line. It passed on first run (no RED): the behavior already exists, see 5.2.
+- [x] 5.2 GREEN: anchor offset by `scrollback_len()` delta around `feed`; entering COPY on alt screen shows the current screen.
+  - DONE, no new code: the anchoring is provided by vt100 pinning the viewport (it bumps its own scrollback offset when a row enters history) plus `App::sync_copy_offset` after `feed`/resize. A `scrollback_len()` delta on top would double-count, so it was deliberately NOT added (ADR 11 simplified). Alt screen: `entering_copy_on_the_alternate_screen_shows_the_current_screen` (content assertion) plus the existing clamp test.
+- [x] 5.3 RED+GREEN: `AppEvent::Cwd` updates cwd, lookup failure retains it; `~` for `$HOME`; shell basename.
+  - DONE: `App::with_env(shell, home, cwd)` builder keeps `update` pure; `cwd_label()` (`~`, `~/sub`, path-prefix safe, `/` or empty HOME ignored), `shell_basename` (fallback `sh`). A failed lookup is modeled as no event (`poll_cwd` returns `None`), so the previous value stays.
+- [x] 5.4 GREEN: 1 s `/proc/<pid>/cwd` poll in `runtime.rs`; statusline cwd and right shell segments. Test: `cd /tmp` reflected [auto, unix PTY].
+  - DONE: extra `select!` branch on a 1 s interval (`CWD_POLL`, Skip on missed ticks); `read_link` on /proc is resolved in-kernel and cannot stall the loop. `ui::render` fills both segments. Existing statusline snapshots untouched: the populated-segment snapshots already existed from 3b, so none were added.
 - [ ] 5.5 [manual]: COPY j/k/Ctrl+u/Ctrl+d/gg/G on `ls -R`, exit lands at the bottom; cursor block in COPY.
 - [ ] 5.6 Final: `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check`.
 
