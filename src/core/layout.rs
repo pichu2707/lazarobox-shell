@@ -65,6 +65,18 @@ pub enum SplitError {
     NotFound,
 }
 
+/// Outcome of removing a pane from a tree.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Removal {
+    /// The pane is not in the tree; nothing changed.
+    NotFound,
+    /// The pane is gone and its sibling took its space.
+    Removed,
+    /// The pane is the only one left. The tree is unchanged: the caller closes
+    /// the tab.
+    WasLast,
+}
+
 /// The 1-cell line between the two children of a split. `axis` is the axis of
 /// the owning split: `X` is a vertical line (`len` rows), `Y` a horizontal one
 /// (`len` columns), starting at `(x, y)`.
@@ -161,6 +173,38 @@ impl Node {
             children: [Node::Leaf(target), Node::Leaf(new)],
         }));
         Ok(())
+    }
+
+    /// Removes the leaf `id`: its sibling replaces the parent split and so
+    /// takes all the freed space.
+    pub fn remove(&mut self, id: PaneId) -> Removal {
+        let split = match self {
+            Node::Leaf(leaf) if *leaf == id => return Removal::WasLast,
+            Node::Leaf(_) => return Removal::NotFound,
+            Node::Split(split) => split,
+        };
+        if let Some(removed) = split.children.iter().position(|c| *c == Node::Leaf(id)) {
+            let sibling = std::mem::replace(&mut split.children[1 - removed], Node::Leaf(id));
+            *self = sibling;
+            return Removal::Removed;
+        }
+        if split
+            .children
+            .iter_mut()
+            .any(|c| c.remove(id) == Removal::Removed)
+        {
+            Removal::Removed
+        } else {
+            Removal::NotFound
+        }
+    }
+
+    /// The panes of the tree in depth-first order.
+    pub fn leaves(&self) -> Vec<PaneId> {
+        match self {
+            Node::Leaf(id) => vec![*id],
+            Node::Split(split) => split.children.iter().flat_map(Node::leaves).collect(),
+        }
     }
 
     fn leaf_mut(&mut self, id: PaneId) -> Option<&mut Node> {
@@ -725,5 +769,112 @@ mod tests {
             Err(SplitError::NotFound)
         );
         assert_eq!(tree, before);
+    }
+
+    #[test]
+    fn remove_collapses_the_split_so_the_sibling_takes_the_whole_area() {
+        let [a, b] = ids(2)[..] else { unreachable!() };
+        let area = rect(0, 0, 81, 24);
+        // Either child can go; the other one must be the one that stays.
+        let mut tree = split(Axis::X, [40, 40], leaf(a), leaf(b));
+        assert_eq!(tree.remove(b), Removal::Removed);
+        assert_eq!(tree, leaf(a));
+        assert_eq!(tile(&tree, area).panes, vec![(a, area)]);
+
+        let mut tree = split(Axis::X, [40, 40], leaf(a), leaf(b));
+        assert_eq!(tree.remove(a), Removal::Removed);
+        assert_eq!(tree, leaf(b));
+        assert_eq!(tile(&tree, area).panes, vec![(b, area)]);
+    }
+
+    #[test]
+    fn remove_after_split_restores_the_parent_rect() {
+        let [a, b] = ids(2)[..] else { unreachable!() };
+        let area = rect(3, 2, 80, 24);
+        let mut tree = leaf(a);
+        let before = tile(&tree, area);
+        tree.split(area, a, b, Axis::Y).unwrap();
+        assert_eq!(tree.remove(b), Removal::Removed);
+        assert_eq!(tile(&tree, area), before);
+    }
+
+    #[test]
+    fn remove_in_a_nested_tree_keeps_the_rest_of_the_structure() {
+        let [a, b, c] = ids(3)[..] else {
+            unreachable!()
+        };
+        let area = rect(0, 0, 81, 21);
+        let right = split(Axis::Y, [5, 15], leaf(b), leaf(c));
+        let tree = split(Axis::X, [40, 40], leaf(a), right.clone());
+
+        let mut t = tree.clone();
+        assert_eq!(t.remove(b), Removal::Removed);
+        assert_eq!(t, split(Axis::X, [40, 40], leaf(a), leaf(c)));
+        assert_eq!(rect_of(&tile(&t, area), c), rect(41, 0, 40, 21));
+
+        let mut t = tree.clone();
+        assert_eq!(t.remove(a), Removal::Removed);
+        assert_eq!(t, right, "the surviving subtree keeps its own weights");
+        assert_eq!(rect_of(&tile(&t, area), b), rect(0, 0, 81, 5));
+
+        // A leaf in the first child's subtree collapses there.
+        let mut t = split(
+            Axis::X,
+            [40, 40],
+            split(Axis::Y, [5, 15], leaf(a), leaf(b)),
+            leaf(c),
+        );
+        assert_eq!(t.remove(b), Removal::Removed);
+        assert_eq!(t, split(Axis::X, [40, 40], leaf(a), leaf(c)));
+    }
+
+    #[test]
+    fn removing_the_last_pane_reports_was_last_and_an_unknown_one_not_found() {
+        let [a, b, c] = ids(3)[..] else {
+            unreachable!()
+        };
+        let mut tree = leaf(a);
+        assert_eq!(tree.remove(a), Removal::WasLast);
+        assert_eq!(tree, leaf(a), "the caller closes the tab");
+        assert_eq!(tree.remove(b), Removal::NotFound);
+        assert_eq!(tree, leaf(a));
+
+        let mut tree = split(Axis::X, [40, 40], leaf(a), leaf(b));
+        let before = tree.clone();
+        assert_eq!(tree.remove(c), Removal::NotFound);
+        assert_eq!(tree, before);
+    }
+
+    #[test]
+    fn leaves_lists_the_panes_depth_first() {
+        let [a, b, c, d] = ids(4)[..] else {
+            unreachable!()
+        };
+        assert_eq!(leaf(a).leaves(), vec![a]);
+        let tree = split(
+            Axis::X,
+            [1, 1],
+            split(Axis::Y, [1, 1], leaf(a), leaf(b)),
+            split(Axis::Y, [1, 1], leaf(c), leaf(d)),
+        );
+        assert_eq!(tree.leaves(), vec![a, b, c, d]);
+    }
+
+    #[test]
+    fn focus_after_closing_the_focused_pane_is_the_one_covering_its_old_top_left() {
+        let [a, b, c] = ids(3)[..] else {
+            unreachable!()
+        };
+        let area = rect(0, 0, 81, 21);
+        let right = split(Axis::Y, [10, 10], leaf(b), leaf(c));
+        let mut tree = split(Axis::X, [40, 40], leaf(a), right);
+        // B (top right) is closed: C expands over the right column.
+        let old = rect_of(&tile(&tree, area), b);
+        assert_eq!(tree.remove(b), Removal::Removed);
+        assert_eq!(pane_at(&tile(&tree, area), old.x, old.y), Some(c));
+        // Closing the right pane of two: the left one covers its old corner.
+        let old = rect_of(&tile(&tree, area), c);
+        assert_eq!(tree.remove(c), Removal::Removed);
+        assert_eq!(pane_at(&tile(&tree, area), old.x, old.y), Some(a));
     }
 }
