@@ -58,11 +58,12 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets`, `cargo fmt -
   - NOTE: `AppEvent::Cwd`, `cwd`, `shell_name`, `home` are deferred to PR 5 (task 5.3). `PtyEvent` lives in a minimal `core/pty/mod.rs` that PR 4 extends. Also added `app::pane_size`.
 - [x] 3.5 RED+GREEN: `App::cursor_shape()` tests (TERMINAL/PREFIX follow pane, COPY block steady, restore).
 - [x] 3.9 RED+GREEN: `PrefixBinding { chord, action, description }`; `PREFIX_BINDINGS` is the single source of truth for a future which-key / help viewer. Tests: non-empty descriptions, unique keys and actions. (3a)
+
 ## PR 3b: Theme and statusline (3.6-3.8, R.1-R.3), based on PR 3a
 
-- [ ] 3.6 RED+GREEN: `src/ui/theme.rs` `input_mode_style` color-mapping test.
-- [ ] 3.7 RED: `statusline.rs` insta snapshots per `InputMode`, "Quit? (y/n)", narrow width; confirm old snapshots unchanged.
-- [ ] 3.8 GREEN: `StatusLine::input()` constructor with label/style fields.
+- [x] 3.6 RED+GREEN: `src/ui/theme.rs` `input_mode_style` color-mapping test.
+- [x] 3.7 RED: `statusline.rs` insta snapshots per `InputMode`, "Quit? (y/n)", narrow width; confirm old snapshots unchanged.
+- [x] 3.8 GREEN: `StatusLine::input()` constructor with label/style fields.
 
 ## PR 4: PTY, view, runtime (first runnable)
 
@@ -86,8 +87,8 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets`, `cargo fmt -
 
 ## Carried-over review notes (apply in PR 3, which already touches `theme.rs`/`statusline.rs`)
 
-- [ ] R.1 `LazaroboxTheme`: add `#[derive(Debug, Clone)]`.
-- [ ] R.2 Take `AppMode` by value in `mode_style` (it is `Copy`); add `accent(mode) -> Color` and drop the `unwrap_or(primary_cyan)` fallback in `statusline.rs`.
-- [ ] R.3 `statusline.rs` tests: compute widths with `chars().count()` (or `Line::width`) instead of `str::len`.
+- [x] R.1 `LazaroboxTheme`: add `#[derive(Debug, Clone)]`.
+- [x] R.2 Take `AppMode` by value in `mode_style` (it is `Copy`); add `accent(mode) -> Color` and drop the `unwrap_or(primary_cyan)` fallback in `statusline.rs`.
+- [x] R.3 `statusline.rs` tests: compute widths with `chars().count()` (or `Line::width`) instead of `str::len`.
 - [x] R.4 Consider caching history length so scrollback_len can take &self (render code in PR4/PR5 only has &Pane).
   - DONE (3a): `Pane` caches the history length (refreshed in `feed`/`resize`); `scrollback_len(&self)`.
