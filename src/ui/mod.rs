@@ -14,14 +14,18 @@ use components::{
 };
 use theme::LazaroboxTheme;
 
-/// Draws the terminal pane over the statusline. The cwd and shell segments
-/// arrive with the cwd polling, so both are empty for now.
+/// Draws the terminal pane over the statusline, with the child's cwd on the
+/// left and the shell name on the right.
 pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
     let [body, status] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(frame.area());
 
     frame.render_widget(TerminalView::new(&app.pane, theme), body);
-    frame.render_widget(StatusLine::input(theme, app.input, "", ""), status);
+    let cwd = app.cwd_label();
+    frame.render_widget(
+        StatusLine::input(theme, app.input, &cwd, app.shell_name()),
+        status,
+    );
 
     if let Some(position) = cursor_position(&app.pane, body) {
         frame.set_cursor_position(position);
@@ -82,6 +86,22 @@ mod tests {
         assert_eq!(app.input, InputMode::Prefix);
         let (buf, _) = draw(&app);
         assert!(row(&buf, ROWS - 1).contains("PREFIX"));
+    }
+
+    #[test]
+    fn statusline_shows_the_cwd_and_the_shell_name() {
+        let mut app = app().with_env(
+            Some("/bin/zsh"),
+            Some("/home/ana".into()),
+            "/home/ana".into(),
+        );
+        let (buf, _) = draw(&app);
+        let line = row(&buf, ROWS - 1);
+        assert!(line.contains("~"), "{line:?}");
+        assert!(line.trim_end().ends_with("zsh"), "{line:?}");
+        app.update(AppEvent::Cwd("/tmp".into()));
+        let (buf, _) = draw(&app);
+        assert!(row(&buf, ROWS - 1).contains("/tmp"));
     }
 
     #[test]
