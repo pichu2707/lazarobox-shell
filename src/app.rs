@@ -465,7 +465,8 @@ mod app_tests {
     }
 
     #[test]
-    #[cfg_attr(debug_assertions, should_panic)]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "assertion `left == right` failed")]
     fn an_event_for_a_foreign_pane_id_trips_the_single_pane_assertion() {
         let mut ids = PaneIds::default();
         let (_first, foreign) = (ids.alloc(), ids.alloc());

@@ -286,6 +286,7 @@ mod tests {
         let b = alloc.alloc();
         let c = alloc.alloc();
         assert_eq!(a, PaneId::FIRST);
+        assert_eq!(a.0, 1, "ids start at 1");
         assert!(a < b && b < c, "ids grow monotonically");
     }
 
@@ -354,6 +355,9 @@ mod tests {
             (80, [1000, 1], 78), // clamped down to avail - 1
             (80, [0, 0], 39),    // zero weights behave as a tie
             (80, [0, 5], 1),
+            (80, [5, 0], 78),        // zero second weight: clamped to avail - 1
+            (80, [u16::MAX, 0], 78), // same at the weight extreme
+            (80, [0, u16::MAX], 1),  // mirrored
             (80, [u16::MAX, u16::MAX], 39), // no u16 overflow
         ];
         for (extent, weights, first) in cases {
@@ -492,5 +496,43 @@ mod tests {
         assert_eq!(left_sep.highlight(rect_of(&t, c)), None);
         assert_eq!(right_sep.highlight(rect_of(&t, c)), Some((0, 5)));
         assert_eq!(left_sep.highlight(Rect::default()), None);
+    }
+
+    #[test]
+    fn highlight_is_none_when_the_rect_edge_is_on_the_line_but_past_its_end() {
+        let sep = Separator {
+            axis: Axis::X,
+            x: 10,
+            y: 0,
+            len: 5,
+        };
+        // Right edge touches x = 10, but the rows 5..10 lie past the separator.
+        assert_eq!(sep.highlight(rect(0, 5, 10, 5)), None);
+        let sep = Separator {
+            axis: Axis::Y,
+            x: 0,
+            y: 10,
+            len: 5,
+        };
+        assert_eq!(sep.highlight(rect(5, 0, 5, 10)), None);
+    }
+
+    #[test]
+    fn highlight_is_clipped_to_the_separator_length() {
+        let sep = Separator {
+            axis: Axis::X,
+            x: 10,
+            y: 4,
+            len: 5,
+        };
+        // A tall pane next to a short split reaches beyond both ends.
+        assert_eq!(sep.highlight(rect(0, 0, 10, 20)), Some((0, 5)));
+        let sep = Separator {
+            axis: Axis::Y,
+            x: 4,
+            y: 10,
+            len: 5,
+        };
+        assert_eq!(sep.highlight(rect(0, 0, 20, 10)), Some((0, 5)));
     }
 }
