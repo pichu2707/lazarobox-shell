@@ -161,10 +161,6 @@ impl App {
     fn on_resize(&mut self, cols: u16, rows: u16) -> Vec<Effect> {
         self.size = pane_size(cols, rows);
         self.pane.resize(self.size);
-        if let InputMode::Copy(state) = &mut self.input {
-            state.offset = state.offset.min(self.pane.scrollback_len());
-            self.pane.set_scrollback(state.offset);
-        }
         self.sync_copy_offset();
         self.dirty = true;
         vec![Effect::ResizePty(self.size)]
