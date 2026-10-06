@@ -2,3 +2,4 @@
 
 pub mod keys;
 pub mod pane;
+pub mod prefix;
