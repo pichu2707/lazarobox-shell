@@ -75,7 +75,10 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets`, `cargo fmt -
 - [x] 4.6 RED: `runtime.rs` tests (fake PTY/`Vec<u8>` writer): effects executed; cursor style applied only on change; `restore()` emits `DefaultUserShape`.
 - [x] 4.7 GREEN: `src/runtime.rs` select loop, 16 ms tick, bounded channel 256, panic hook, `restore()`; `src/main.rs` -> `runtime::run()`; no mouse capture.
   - NOTE: `SpawnSpec::new(shell, cwd, size)` is the pure spec builder. `ui::render` passes empty cwd/shell segments until PR 5. Default fg maps to `Color::Reset` and default bg to `theme.bg_base` (the theme has no foreground color). Headless smoke (python pty): shell starts, `echo` round trip, `exit` quits with code 0 and emits `ESC[0 q` plus `ESC[?1049l`.
-- [ ] 4.8 [manual]: nvim colors/arrows/`:q`, htop, resize reflow, `exit` and prefix `q` `y` restore the terminal, Kitty cursor bar/block and reset, native mouse selection, Ctrl+Space twice.
+- [x] 4.8 [manual]: nvim colors/arrows/`:q`, htop, resize reflow, `exit` and prefix `q` `y` restore the terminal, Kitty cursor bar/block and reset, native mouse selection, Ctrl+Space twice.
+  - NOTE: manual Kitty check passed by the user on 2026-10-06.
+  - NOTE (PR 4 review fixes): `Exited` now comes from a waiter thread on `child.wait()` as well as PTY EOF (once, via a shared flag); reads interrupted by signals are retried; SIGTERM/SIGHUP end the event loop like Quit so the terminal is restored; teardown also `killpg`s the shell's process group.
+  - Deferred review suggestions: (a) the writer channel is unbounded, accepted by design (keystroke and paste volume is tiny and the writer must never block the UI); (b) background jobs in their own process group (interactive job control, e.g. `sleep 20 &` in bash) are not killed on teardown: only the shell's own group is, a session-wide kill would need a Linux-only `/proc` scan; (c) wide-char clipping at the pane edge is unreachable because the PTY width equals the pane width, so vt100 never places a wide cell across it.
 
 ## PR 5: Copy wiring, cwd, segments
 
