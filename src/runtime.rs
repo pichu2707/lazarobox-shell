@@ -21,6 +21,7 @@ use ratatui::{
     },
 };
 use tokio::{
+    signal::unix::{Signal, SignalKind, signal},
     sync::mpsc,
     time::{MissedTickBehavior, interval},
 };
@@ -41,6 +42,30 @@ const PTY_CHANNEL: usize = 256;
 /// PTY events handled per wake-up before yielding to the other branches.
 const EVENT_BUDGET: usize = 256;
 
+/// SIGTERM and SIGHUP (the host terminal closing). Without handling them the
+/// process would die with the host terminal still in raw mode.
+struct Shutdown {
+    term: Signal,
+    hup: Signal,
+}
+
+impl Shutdown {
+    fn new() -> io::Result<Self> {
+        Ok(Self {
+            term: signal(SignalKind::terminate())?,
+            hup: signal(SignalKind::hangup())?,
+        })
+    }
+
+    /// Resolves once either signal arrives.
+    async fn requested(&mut self) {
+        tokio::select! {
+            _ = self.term.recv() => {}
+            _ = self.hup.recv() => {}
+        }
+    }
+}
+
 /// Runs the terminal pane until the child exits or the user quits.
 pub async fn run() -> io::Result<()> {
     let (cols, rows) = terminal::size()?;
@@ -48,6 +73,7 @@ pub async fn run() -> io::Result<()> {
     let cwd = env::current_dir().unwrap_or_else(|_| "/".into());
     let spec = SpawnSpec::new(env::var("SHELL").ok().as_deref(), cwd, size);
 
+    let shutdown = Shutdown::new()?;
     let (tx, rx) = mpsc::channel(PTY_CHANNEL);
     let sink: PtySink = Box::new(move |event| tx.blocking_send(event).is_ok());
     let mut pty = spawn_portable(&spec, sink)?;
@@ -55,7 +81,7 @@ pub async fn run() -> io::Result<()> {
     let mut terminal = ratatui::init();
     install_panic_hook();
     let result = match execute!(stdout(), EnableBracketedPaste) {
-        Ok(()) => event_loop(&mut terminal, pty.as_mut(), rx, size).await,
+        Ok(()) => event_loop(&mut terminal, pty.as_mut(), rx, shutdown, size).await,
         Err(error) => Err(error),
     };
 
@@ -69,6 +95,7 @@ async fn event_loop(
     terminal: &mut DefaultTerminal,
     pty: &mut dyn PtyHandle,
     mut rx: mpsc::Receiver<PtyEvent>,
+    mut shutdown: Shutdown,
     size: PaneSize,
 ) -> io::Result<()> {
     let theme = LazaroboxTheme::default();
@@ -104,6 +131,8 @@ async fn event_loop(
                     }
                 }
             }
+            // Same exit path as Quit: the caller kills the child and restores.
+            () = shutdown.requested() => return Ok(()),
             _ = tick.tick() => {
                 if app.dirty {
                     app.dirty = false;
@@ -206,6 +235,21 @@ mod tests {
         core::pane::{CursorKind, CursorShape, PaneSize},
         core::pty::fake::FakePty,
     };
+
+    // Signals are process-wide, so both are raised from one test.
+    #[tokio::test]
+    async fn sigterm_and_sighup_request_shutdown() {
+        use std::time::Duration;
+
+        let mut shutdown = Shutdown::new().unwrap();
+        for signum in [libc::SIGTERM, libc::SIGHUP] {
+            // SAFETY: raising a signal that now has a handler installed.
+            unsafe { libc::raise(signum) };
+            tokio::time::timeout(Duration::from_secs(2), shutdown.requested())
+                .await
+                .unwrap_or_else(|_| panic!("signal {signum} did not request shutdown"));
+        }
+    }
 
     fn shape(kind: CursorKind, blinking: bool) -> CursorShape {
         CursorShape { kind, blinking }
