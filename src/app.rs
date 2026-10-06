@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::core::{
@@ -44,8 +46,13 @@ impl InputMode {
 pub enum AppEvent {
     Key(KeyEvent),
     Paste(String),
-    Resize { cols: u16, rows: u16 },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
     Pty(PtyEvent),
+    /// The child's working directory, as last read by the runtime.
+    Cwd(PathBuf),
 }
 
 /// Side effects requested by `App::update`, executed by the runtime.
@@ -65,12 +72,23 @@ pub fn pane_size(cols: u16, rows: u16) -> PaneSize {
     }
 }
 
+/// Name shown in the statusline for the shell at `path` (`sh` if unknown).
+pub fn shell_basename(path: Option<&str>) -> String {
+    path.and_then(|p| Path::new(p).file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or("sh")
+        .to_string()
+}
+
 /// Owns the emulator and the input state. Pure: it never touches IO.
 pub struct App {
     pub pane: Pane,
     pub input: InputMode,
     pub dirty: bool,
     size: PaneSize,
+    cwd: Option<PathBuf>,
+    home: Option<PathBuf>,
+    shell_name: String,
 }
 
 impl App {
@@ -80,6 +98,36 @@ impl App {
             input: InputMode::default(),
             dirty: true,
             size,
+            cwd: None,
+            home: None,
+            shell_name: shell_basename(None),
+        }
+    }
+
+    /// Sets the facts the statusline shows. They are inputs, not lookups, so
+    /// `update` stays free of IO.
+    pub fn with_env(mut self, shell: Option<&str>, home: Option<PathBuf>, cwd: PathBuf) -> Self {
+        self.shell_name = shell_basename(shell);
+        self.home = home;
+        self.cwd = Some(cwd);
+        self
+    }
+
+    pub fn shell_name(&self) -> &str {
+        &self.shell_name
+    }
+
+    /// The child's cwd for the statusline, with `$HOME` shown as `~`. Empty
+    /// until the first cwd is known.
+    pub fn cwd_label(&self) -> String {
+        let Some(cwd) = &self.cwd else {
+            return String::new();
+        };
+        let home = self.home.as_deref().filter(|home| home.parent().is_some());
+        match home.and_then(|home| cwd.strip_prefix(home).ok()) {
+            Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+            Some(rest) => format!("~/{}", rest.display()),
+            None => cwd.display().to_string(),
         }
     }
 
@@ -89,6 +137,7 @@ impl App {
             AppEvent::Paste(text) => self.on_paste(&text),
             AppEvent::Resize { cols, rows } => self.on_resize(cols, rows),
             AppEvent::Pty(event) => self.on_pty(event),
+            AppEvent::Cwd(cwd) => self.on_cwd(cwd),
         }
     }
 
@@ -195,6 +244,14 @@ impl App {
         if let InputMode::Copy(state) = &mut self.input {
             state.offset = self.pane.scrollback_offset();
         }
+    }
+
+    fn on_cwd(&mut self, cwd: PathBuf) -> Vec<Effect> {
+        if self.cwd.as_ref() != Some(&cwd) {
+            self.cwd = Some(cwd);
+            self.dirty = true;
+        }
+        Vec::new()
     }
 
     fn on_pty(&mut self, event: PtyEvent) -> Vec<Effect> {
@@ -760,6 +817,85 @@ mod app_tests {
         a.update(key('['));
         assert!(is_copy(&a));
         assert_eq!(visible_text(&a)[0], "ALT SCREEN");
+    }
+
+    fn cwd_event(path: &str) -> AppEvent {
+        AppEvent::Cwd(PathBuf::from(path))
+    }
+
+    #[test]
+    fn cwd_event_updates_the_cwd_and_marks_dirty() {
+        let mut a = app();
+        a.dirty = false;
+        assert_eq!(a.update(cwd_event("/tmp")), vec![]);
+        assert_eq!(a.cwd_label(), "/tmp");
+        assert!(a.dirty);
+    }
+
+    #[test]
+    fn unchanged_cwd_does_not_mark_dirty() {
+        let mut a = app();
+        a.update(cwd_event("/tmp"));
+        a.dirty = false;
+        a.update(cwd_event("/tmp"));
+        assert!(!a.dirty);
+    }
+
+    #[test]
+    fn cwd_label_is_empty_until_the_first_cwd() {
+        assert_eq!(app().cwd_label(), "");
+    }
+
+    // The runtime only sends `Cwd` when the lookup succeeds, so a failed
+    // lookup is the absence of an event: the previous value stays.
+    #[test]
+    fn cwd_is_retained_when_no_new_cwd_arrives() {
+        let mut a = app();
+        a.update(cwd_event("/tmp"));
+        a.update(key('l'));
+        a.update(AppEvent::Pty(PtyEvent::Output(b"x".to_vec())));
+        assert_eq!(a.cwd_label(), "/tmp");
+    }
+
+    #[test]
+    fn home_is_shown_as_a_tilde() {
+        let mut a = app().with_env(
+            Some("/bin/zsh"),
+            Some("/home/ana".into()),
+            "/home/ana".into(),
+        );
+        assert_eq!(a.cwd_label(), "~");
+        a.update(cwd_event("/home/ana/src/app"));
+        assert_eq!(a.cwd_label(), "~/src/app");
+        a.update(cwd_event("/home/anabel"));
+        assert_eq!(
+            a.cwd_label(),
+            "/home/anabel",
+            "prefix must be a path prefix"
+        );
+        a.update(cwd_event("/tmp"));
+        assert_eq!(a.cwd_label(), "/tmp");
+    }
+
+    #[test]
+    fn a_root_or_missing_home_never_produces_a_tilde() {
+        for home in [None, Some(PathBuf::from("/")), Some(PathBuf::new())] {
+            let a = app().with_env(None, home, "/usr/bin".into());
+            assert_eq!(a.cwd_label(), "/usr/bin");
+        }
+    }
+
+    #[test]
+    fn shell_name_is_the_basename_of_the_shell_with_an_sh_fallback() {
+        assert_eq!(shell_basename(Some("/bin/zsh")), "zsh");
+        assert_eq!(shell_basename(Some("fish")), "fish");
+        assert_eq!(shell_basename(Some("/usr/bin/")), "bin");
+        for shell in [None, Some(""), Some("/")] {
+            assert_eq!(shell_basename(shell), "sh", "{shell:?}");
+        }
+        assert_eq!(app().shell_name(), "sh");
+        let a = app().with_env(Some("/bin/zsh"), None, "/".into());
+        assert_eq!(a.shell_name(), "zsh");
     }
 
     fn shape(kind: CursorKind, blinking: bool) -> CursorShape {
