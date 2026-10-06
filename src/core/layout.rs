@@ -305,6 +305,49 @@ pub fn pane_at(t: &Tiling, x: u16, y: u16) -> Option<PaneId> {
         .map(|(id, _)| *id)
 }
 
+/// Reads the `[start, end)` run of a rect along one axis.
+type Span = fn(&Rect) -> (u32, u32);
+
+/// The `[start, end)` run of `r` along the x axis, widened so edges never overflow.
+fn span_x(r: &Rect) -> (u32, u32) {
+    (u32::from(r.x), u32::from(r.x) + u32::from(r.width))
+}
+
+fn span_y(r: &Rect) -> (u32, u32) {
+    (u32::from(r.y), u32::from(r.y) + u32::from(r.height))
+}
+
+/// The pane to focus when moving `dir` from `from`: a visible pane whose edge
+/// faces `from` across the 1-cell separator and overlaps it. The largest
+/// overlap wins; a tie goes to the lowest start. `None` at an edge (no wrap),
+/// for an unknown `from`, and never a zero-area pane.
+pub fn neighbour(t: &Tiling, from: PaneId, dir: Direction) -> Option<PaneId> {
+    let (_, f) = t.panes.iter().find(|(id, _)| *id == from)?;
+    // `along` runs in the direction of travel, `across` is perpendicular to it.
+    let (along, across): (Span, Span) = match dir {
+        Direction::Left | Direction::Right => (span_x, span_y),
+        Direction::Up | Direction::Down => (span_y, span_x),
+    };
+    let (f_along, f_across) = (along(f), across(f));
+    t.panes
+        .iter()
+        .filter(|(id, c)| *id != from && c.width > 0 && c.height > 0)
+        .filter(|(_, c)| match dir {
+            Direction::Left | Direction::Up => along(c).1 + 1 == f_along.0,
+            Direction::Right | Direction::Down => f_along.1 + 1 == along(c).0,
+        })
+        .filter_map(|(id, c)| {
+            let c_across = across(c);
+            let overlap = f_across
+                .1
+                .min(c_across.1)
+                .saturating_sub(f_across.0.max(c_across.0));
+            (overlap > 0).then_some((*id, overlap, c_across.0))
+        })
+        .max_by_key(|&(_, overlap, start)| (overlap, std::cmp::Reverse(start)))
+        .map(|(id, _, _)| id)
+}
+
 impl Separator {
     /// The `(offset, len)` run of this separator's cells that touch `focused`,
     /// counted from the separator's start; `None` when it does not touch it.
@@ -876,5 +919,176 @@ mod tests {
         let old = rect_of(&tile(&tree, area), c);
         assert_eq!(tree.remove(c), Removal::Removed);
         assert_eq!(pane_at(&tile(&tree, area), old.x, old.y), Some(a));
+    }
+
+    /// A hand-made tiling, so a test controls every rect exactly.
+    fn tiling(panes: &[(PaneId, Rect)]) -> Tiling {
+        Tiling {
+            panes: panes.to_vec(),
+            separators: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn neighbour_moves_across_the_separator_and_stops_at_the_edges() {
+        let [a, b] = ids(2)[..] else { unreachable!() };
+        let tree = split(Axis::X, [40, 40], leaf(a), leaf(b));
+        let t = tile(&tree, rect(0, 0, 81, 24));
+        assert_eq!(neighbour(&t, a, Direction::Right), Some(b));
+        assert_eq!(neighbour(&t, b, Direction::Left), Some(a));
+        // No wrap, and nothing above or below.
+        assert_eq!(neighbour(&t, a, Direction::Left), None);
+        assert_eq!(neighbour(&t, b, Direction::Right), None);
+        assert_eq!(neighbour(&t, a, Direction::Up), None);
+        assert_eq!(neighbour(&t, a, Direction::Down), None);
+
+        let tree = split(Axis::Y, [11, 12], leaf(a), leaf(b));
+        let t = tile(&tree, rect(0, 0, 80, 24));
+        assert_eq!(neighbour(&t, a, Direction::Down), Some(b));
+        assert_eq!(neighbour(&t, b, Direction::Up), Some(a));
+        assert_eq!(neighbour(&t, a, Direction::Up), None);
+        assert_eq!(neighbour(&t, b, Direction::Down), None);
+        assert_eq!(neighbour(&t, a, Direction::Left), None);
+    }
+
+    #[test]
+    fn neighbour_requires_exactly_one_separator_cell_between_the_rects() {
+        let [a, b] = ids(2)[..] else { unreachable!() };
+        let from = rect(10, 10, 5, 5);
+        let cases = [
+            // (candidate rect, direction, expected)
+            (rect(16, 10, 5, 5), Direction::Right, Some(b)), // 1-cell gap
+            (rect(15, 10, 5, 5), Direction::Right, None),    // touching
+            (rect(17, 10, 5, 5), Direction::Right, None),    // 2-cell gap
+            (rect(4, 10, 5, 5), Direction::Left, Some(b)),
+            (rect(5, 10, 5, 5), Direction::Left, None),
+            (rect(3, 10, 5, 5), Direction::Left, None),
+            (rect(10, 16, 5, 5), Direction::Down, Some(b)),
+            (rect(10, 15, 5, 5), Direction::Down, None),
+            (rect(10, 17, 5, 5), Direction::Down, None),
+            (rect(10, 4, 5, 5), Direction::Up, Some(b)),
+            (rect(10, 5, 5, 5), Direction::Up, None),
+            (rect(10, 3, 5, 5), Direction::Up, None),
+            // Wrong side for the direction.
+            (rect(16, 10, 5, 5), Direction::Left, None),
+            (rect(4, 10, 5, 5), Direction::Right, None),
+            // Adjacent but only diagonal: no overlap on the other axis.
+            (rect(16, 15, 5, 5), Direction::Right, None),
+            (rect(16, 5, 5, 4), Direction::Right, None),
+        ];
+        for (candidate, dir, expected) in cases {
+            let t = tiling(&[(a, from), (b, candidate)]);
+            assert_eq!(neighbour(&t, a, dir), expected, "{candidate:?} {dir:?}");
+        }
+    }
+
+    #[test]
+    fn neighbour_picks_the_largest_overlap_not_the_tree_order() {
+        let [a, b, c] = ids(3)[..] else {
+            unreachable!()
+        };
+        // b (top, 5 rows) comes first in the tree but c overlaps `a` on 15 rows.
+        let right = split(Axis::Y, [5, 15], leaf(b), leaf(c));
+        let tree = split(Axis::X, [40, 40], leaf(a), right);
+        let t = tile(&tree, rect(0, 0, 81, 21));
+        assert_eq!(neighbour(&t, a, Direction::Right), Some(c));
+        assert_eq!(neighbour(&t, b, Direction::Left), Some(a));
+        assert_eq!(neighbour(&t, c, Direction::Left), Some(a));
+        assert_eq!(neighbour(&t, b, Direction::Down), Some(c));
+        assert_eq!(neighbour(&t, c, Direction::Up), Some(b));
+
+        // Mirrored: the larger overlap is the first one in tree order.
+        let right = split(Axis::Y, [15, 5], leaf(b), leaf(c));
+        let tree = split(Axis::X, [40, 40], leaf(a), right);
+        let t = tile(&tree, rect(0, 0, 81, 21));
+        assert_eq!(neighbour(&t, a, Direction::Right), Some(b));
+    }
+
+    #[test]
+    fn neighbour_breaks_an_overlap_tie_by_the_lowest_start() {
+        let [a, b, c] = ids(3)[..] else {
+            unreachable!()
+        };
+        // Horizontal movement: b and c each overlap `a` on 10 rows.
+        let right = split(Axis::Y, [10, 10], leaf(b), leaf(c));
+        let tree = split(Axis::X, [40, 40], leaf(a), right);
+        let t = tile(&tree, rect(0, 0, 81, 21));
+        assert_eq!(neighbour(&t, a, Direction::Right), Some(b), "lowest y");
+
+        // Vertical movement: a and b each overlap `c` on 40 columns.
+        let top = split(Axis::X, [40, 40], leaf(a), leaf(b));
+        let tree = split(Axis::Y, [10, 10], top, leaf(c));
+        let t = tile(&tree, rect(0, 0, 81, 21));
+        assert_eq!(neighbour(&t, c, Direction::Up), Some(a), "lowest x");
+
+        // Tree order must not matter: the same tie with the panes swapped.
+        let tree = split(
+            Axis::X,
+            [40, 40],
+            leaf(a),
+            split(Axis::Y, [10, 10], leaf(c), leaf(b)),
+        );
+        let t = tile(&tree, rect(0, 0, 81, 21));
+        assert_eq!(neighbour(&t, a, Direction::Right), Some(c));
+    }
+
+    #[test]
+    fn neighbour_skips_zero_area_rects() {
+        let [a, b, c] = ids(3)[..] else {
+            unreachable!()
+        };
+        let from = rect(0, 0, 5, 5);
+        // A zero-width and a zero-height pane sitting exactly where a
+        // neighbour would be: focus must not land on an invisible pane.
+        let t = tiling(&[(a, from), (b, rect(6, 0, 0, 5))]);
+        assert_eq!(neighbour(&t, a, Direction::Right), None);
+        let t = tiling(&[(a, from), (b, rect(0, 6, 5, 0))]);
+        assert_eq!(neighbour(&t, a, Direction::Down), None);
+        // Left and up, too.
+        let from = rect(10, 10, 5, 5);
+        let t = tiling(&[(a, from), (b, rect(9, 10, 0, 5))]);
+        assert_eq!(neighbour(&t, a, Direction::Left), None);
+        let t = tiling(&[(a, from), (b, rect(10, 9, 5, 0))]);
+        assert_eq!(neighbour(&t, a, Direction::Up), None);
+        // A visible pane with less overlap wins over an invisible bigger one.
+        let t = tiling(&[
+            (a, rect(0, 0, 5, 5)),
+            (b, rect(6, 0, 0, 5)),
+            (c, rect(6, 3, 4, 5)),
+        ]);
+        assert_eq!(neighbour(&t, a, Direction::Right), Some(c));
+    }
+
+    #[test]
+    fn neighbour_ignores_the_origin_pane_and_an_unknown_one() {
+        let [a, b] = ids(2)[..] else { unreachable!() };
+        let t = tiling(&[(a, rect(0, 0, 5, 5))]);
+        for dir in [
+            Direction::Left,
+            Direction::Down,
+            Direction::Up,
+            Direction::Right,
+        ] {
+            assert_eq!(neighbour(&t, a, dir), None);
+            assert_eq!(neighbour(&t, b, dir), None, "unknown pane");
+        }
+    }
+
+    #[test]
+    fn neighbour_does_not_overflow_at_the_far_corner_of_the_plane() {
+        let [a, b] = ids(2)[..] else { unreachable!() };
+        let t = tiling(&[
+            (a, rect(u16::MAX - 4, u16::MAX - 4, 4, 4)),
+            (b, rect(0, 0, u16::MAX, u16::MAX)),
+        ]);
+        for dir in [
+            Direction::Left,
+            Direction::Down,
+            Direction::Up,
+            Direction::Right,
+        ] {
+            neighbour(&t, a, dir);
+            neighbour(&t, b, dir);
+        }
     }
 }
