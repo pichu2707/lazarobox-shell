@@ -67,7 +67,7 @@ pub enum Effect {
 
 /// Pane size for a terminal of `cols` x `rows`: the bottom row is the
 /// statusline, and the pane is never smaller than 1x1.
-pub fn pane_size(cols: u16, rows: u16) -> PaneSize {
+fn pane_size(cols: u16, rows: u16) -> PaneSize {
     PaneSize {
         rows: rows.saturating_sub(1).max(1),
         cols: cols.max(1),
@@ -203,7 +203,11 @@ impl App {
             AppEvent::Key(key) => self.on_key(key),
             AppEvent::Paste(text) => self.on_paste(&text),
             AppEvent::Resize { cols, rows } => self.on_resize(cols, rows),
-            AppEvent::Pty(_, event) => self.on_pty(event),
+            AppEvent::Pty(id, event) => {
+                // One pane for now; S4/S5a will route by id and drop stale ids.
+                debug_assert_eq!(id, self.id);
+                self.on_pty(event)
+            }
             AppEvent::Cwd(cwd) => self.on_cwd(cwd),
         }
     }
@@ -732,6 +736,17 @@ mod app_tests {
             a.update(AppEvent::Pty(PaneId::FIRST, PtyEvent::Exited)),
             vec![Effect::Quit]
         );
+    }
+
+    #[test]
+    fn pty_event_for_the_current_pane_is_handled() {
+        let mut a = app();
+        let id = a.focused();
+        assert_eq!(
+            a.update(AppEvent::Pty(id, PtyEvent::Output(b"x".to_vec()))),
+            vec![]
+        );
+        assert_eq!(a.focused_pane().cell(0, 0).unwrap().text, "x");
     }
 
     #[test]
