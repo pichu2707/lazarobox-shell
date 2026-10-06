@@ -67,13 +67,14 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets`, `cargo fmt -
 
 ## PR 4: PTY, view, runtime (first runnable)
 
-- [ ] 4.1 RED+GREEN: `src/core/pty/{mod,fake}.rs` port, `FakePty`; spawn-spec tests (SHELL set/unset, TERM/COLORTERM).
-- [ ] 4.2 RED: `pty/portable.rs` linux tests: echo round trip, `stty size` after resize, exit -> `Exited`, drop leaves no orphan.
-- [ ] 4.3 GREEN: `spawn_portable` with detached reader thread and writer thread.
-- [ ] 4.4 RED: `terminal_view.rs` TestBackend+insta: styled snapshot, wide chars, hidden cursor.
-- [ ] 4.5 GREEN: `src/ui/components/terminal_view.rs`; `src/ui/mod.rs` `render(frame, &App, &theme)`.
-- [ ] 4.6 RED: `runtime.rs` tests (fake PTY/`Vec<u8>` writer): effects executed; cursor style applied only on change; `restore()` emits `DefaultUserShape`.
-- [ ] 4.7 GREEN: `src/runtime.rs` select loop, 16 ms tick, bounded channel 256, panic hook, `restore()`; `src/main.rs` -> `runtime::run()`; no mouse capture.
+- [x] 4.1 RED+GREEN: `src/core/pty/{mod,fake}.rs` port, `FakePty`; spawn-spec tests (SHELL set/unset, TERM/COLORTERM).
+- [x] 4.2 RED: `pty/portable.rs` linux tests: echo round trip, `stty size` after resize, exit -> `Exited`, drop leaves no orphan.
+- [x] 4.3 GREEN: `spawn_portable` with detached reader thread and writer thread.
+- [x] 4.4 RED: `terminal_view.rs` TestBackend+insta: styled snapshot, wide chars, hidden cursor.
+- [x] 4.5 GREEN: `src/ui/components/terminal_view.rs`; `src/ui/mod.rs` `render(frame, &App, &theme)`.
+- [x] 4.6 RED: `runtime.rs` tests (fake PTY/`Vec<u8>` writer): effects executed; cursor style applied only on change; `restore()` emits `DefaultUserShape`.
+- [x] 4.7 GREEN: `src/runtime.rs` select loop, 16 ms tick, bounded channel 256, panic hook, `restore()`; `src/main.rs` -> `runtime::run()`; no mouse capture.
+  - NOTE: `SpawnSpec::new(shell, cwd, size)` is the pure spec builder. `ui::render` passes empty cwd/shell segments until PR 5. Default fg maps to `Color::Reset` and default bg to `theme.bg_base` (the theme has no foreground color). Headless smoke (python pty): shell starts, `echo` round trip, `exit` quits with code 0 and emits `ESC[0 q` plus `ESC[?1049l`.
 - [ ] 4.8 [manual]: nvim colors/arrows/`:q`, htop, resize reflow, `exit` and prefix `q` `y` restore the terminal, Kitty cursor bar/block and reset, native mouse selection, Ctrl+Space twice.
 
 ## PR 5: Copy wiring, cwd, segments
