@@ -141,6 +141,9 @@ impl Node {
     /// child). `area` is the area this tree is tiled in. The weights are set to
     /// the real cell sizes, so the first pane gets half of what is left after
     /// the separator and the new pane the rest.
+    ///
+    /// Caller contract (checked with `debug_assert!`): `new` differs from
+    /// `target`, and `new` is not already a leaf of this tree.
     pub fn split(
         &mut self,
         area: Rect,
@@ -148,6 +151,11 @@ impl Node {
         new: PaneId,
         axis: Axis,
     ) -> Result<(), SplitError> {
+        debug_assert!(new != target, "a pane cannot be split from itself");
+        debug_assert!(
+            !self.leaves().contains(&new),
+            "new pane id is already in use"
+        );
         let rect = tile(self, area)
             .panes
             .iter()
@@ -320,9 +328,15 @@ fn span_y(r: &Rect) -> (u32, u32) {
 /// The pane to focus when moving `dir` from `from`: a visible pane whose edge
 /// faces `from` across the 1-cell separator and overlaps it. The largest
 /// overlap wins; a tie goes to the lowest start. `None` at an edge (no wrap),
-/// for an unknown `from`, and never a zero-area pane.
+/// for an unknown `from`, for a zero-area `from`, and never a zero-area pane.
+///
+/// Caller contract: do not focus a zero-area pane. A pane squeezed to zero
+/// cells is not visible, so it cannot be the origin of a move either.
 pub fn neighbour(t: &Tiling, from: PaneId, dir: Direction) -> Option<PaneId> {
     let (_, f) = t.panes.iter().find(|(id, _)| *id == from)?;
+    if f.width == 0 || f.height == 0 {
+        return None;
+    }
     // `along` runs in the direction of travel, `across` is perpendicular to it.
     let (along, across): (Span, Span) = match dir {
         Direction::Left | Direction::Right => (span_x, span_y),
@@ -331,7 +345,7 @@ pub fn neighbour(t: &Tiling, from: PaneId, dir: Direction) -> Option<PaneId> {
     let (f_along, f_across) = (along(f), across(f));
     t.panes
         .iter()
-        .filter(|(id, c)| *id != from && c.width > 0 && c.height > 0)
+        .filter(|(_, c)| c.width > 0 && c.height > 0)
         .filter(|(_, c)| match dir {
             Direction::Left | Direction::Up => along(c).1 + 1 == f_along.0,
             Direction::Right | Direction::Down => f_along.1 + 1 == along(c).0,
@@ -386,6 +400,13 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+
+    const ALL_DIRS: [Direction; 4] = [
+        Direction::Left,
+        Direction::Down,
+        Direction::Up,
+        Direction::Right,
+    ];
 
     fn assert_id_traits<T: Copy + Eq + std::hash::Hash + Ord>() {}
 
@@ -721,40 +742,30 @@ mod tests {
         let mut tree = leaf(a);
         tree.split(rect(0, 0, 80, 24), a, b, Axis::X).unwrap();
         assert_eq!(tree, split(Axis::X, [39, 40], leaf(a), leaf(b)));
-        let t = tile(&tree, rect(0, 0, 80, 24));
-        assert_eq!(rect_of(&t, a).width, 39);
-        assert_eq!(rect_of(&t, b).width, 40);
     }
 
     #[test]
     fn split_applies_at_the_minimum_and_is_refused_one_cell_less() {
         let [a, b] = ids(2)[..] else { unreachable!() };
-        // Side by side needs 21 columns; the other extent is irrelevant.
-        for (width, height, ok) in [(21, 1, true), (20, 100, false)] {
+        // X needs 21 columns and Y 5 rows; the other extent is irrelevant.
+        let cases = [
+            (Axis::X, rect(0, 0, 21, 1), true),
+            (Axis::X, rect(0, 0, 20, 100), false),
+            (Axis::Y, rect(0, 0, 1, 5), true),
+            (Axis::Y, rect(0, 0, 100, 4), false),
+        ];
+        for (axis, area, ok) in cases {
             let mut tree = leaf(a);
-            let r = tree.split(rect(0, 0, width, height), a, b, Axis::X);
-            assert_eq!(r.is_ok(), ok, "X {width}x{height}");
+            let r = tree.split(area, a, b, axis);
+            assert_eq!(r.is_ok(), ok, "{axis:?} {area:?}");
             if ok {
-                let t = tile(&tree, rect(0, 0, width, height));
-                assert_eq!(rect_of(&t, a).width, 10);
-                assert_eq!(rect_of(&t, b).width, 10);
+                let t = tile(&tree, area);
+                let size = |r: Rect| if axis == Axis::X { r.width } else { r.height };
+                let min = if axis == Axis::X { 10 } else { 2 };
+                assert_eq!((size(rect_of(&t, a)), size(rect_of(&t, b))), (min, min));
             } else {
                 assert_eq!(r, Err(SplitError::TooSmall));
                 assert_eq!(tree, leaf(a), "refused split leaves the tree untouched");
-            }
-        }
-        // Stacked needs 5 rows; the other extent is irrelevant.
-        for (width, height, ok) in [(1, 5, true), (100, 4, false)] {
-            let mut tree = leaf(a);
-            let r = tree.split(rect(0, 0, width, height), a, b, Axis::Y);
-            assert_eq!(r.is_ok(), ok, "Y {width}x{height}");
-            if ok {
-                let t = tile(&tree, rect(0, 0, width, height));
-                assert_eq!(rect_of(&t, a).height, 2);
-                assert_eq!(rect_of(&t, b).height, 2);
-            } else {
-                assert_eq!(r, Err(SplitError::TooSmall));
-                assert_eq!(tree, leaf(a));
             }
         }
     }
@@ -805,13 +816,30 @@ mod tests {
         let [a, b, c] = ids(3)[..] else {
             unreachable!()
         };
+        let d = ids(4)[3];
         let mut tree = split(Axis::X, [40, 40], leaf(a), leaf(b));
         let before = tree.clone();
         assert_eq!(
-            tree.split(rect(0, 0, 81, 24), c, c, Axis::X),
+            tree.split(rect(0, 0, 81, 24), c, d, Axis::X),
             Err(SplitError::NotFound)
         );
         assert_eq!(tree, before);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "cannot be split from itself")]
+    fn split_debug_asserts_that_the_new_pane_is_not_the_target() {
+        let a = ids(1)[0];
+        let _ = leaf(a).split(rect(0, 0, 81, 24), a, a, Axis::X);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "already in use")]
+    fn split_debug_asserts_that_the_new_pane_is_not_already_a_leaf() {
+        let [a, b] = ids(2)[..] else { unreachable!() };
+        let _ = split(Axis::X, [40, 40], leaf(a), leaf(b)).split(rect(0, 0, 81, 24), a, b, Axis::Y);
     }
 
     #[test]
@@ -1037,19 +1065,18 @@ mod tests {
         let [a, b, c] = ids(3)[..] else {
             unreachable!()
         };
-        let from = rect(0, 0, 5, 5);
-        // A zero-width and a zero-height pane sitting exactly where a
-        // neighbour would be: focus must not land on an invisible pane.
-        let t = tiling(&[(a, from), (b, rect(6, 0, 0, 5))]);
-        assert_eq!(neighbour(&t, a, Direction::Right), None);
-        let t = tiling(&[(a, from), (b, rect(0, 6, 5, 0))]);
-        assert_eq!(neighbour(&t, a, Direction::Down), None);
-        // Left and up, too.
-        let from = rect(10, 10, 5, 5);
-        let t = tiling(&[(a, from), (b, rect(9, 10, 0, 5))]);
-        assert_eq!(neighbour(&t, a, Direction::Left), None);
-        let t = tiling(&[(a, from), (b, rect(10, 9, 5, 0))]);
-        assert_eq!(neighbour(&t, a, Direction::Up), None);
+        // A zero-width or zero-height pane sitting exactly where a neighbour
+        // would be: focus must not land on an invisible pane.
+        let cases = [
+            (rect(0, 0, 5, 5), rect(6, 0, 0, 5), Direction::Right),
+            (rect(0, 0, 5, 5), rect(0, 6, 5, 0), Direction::Down),
+            (rect(10, 10, 5, 5), rect(9, 10, 0, 5), Direction::Left),
+            (rect(10, 10, 5, 5), rect(10, 9, 5, 0), Direction::Up),
+        ];
+        for (from, hidden, dir) in cases {
+            let t = tiling(&[(a, from), (b, hidden)]);
+            assert_eq!(neighbour(&t, a, dir), None, "{hidden:?} {dir:?}");
+        }
         // A visible pane with less overlap wins over an invisible bigger one.
         let t = tiling(&[
             (a, rect(0, 0, 5, 5)),
@@ -1060,35 +1087,57 @@ mod tests {
     }
 
     #[test]
-    fn neighbour_ignores_the_origin_pane_and_an_unknown_one() {
+    fn neighbour_from_a_zero_area_pane_is_none() {
         let [a, b] = ids(2)[..] else { unreachable!() };
+        // Exactly 1 cell before a visible pane, but `from` itself is invisible.
+        let t = tiling(&[(a, rect(0, 0, 0, 5)), (b, rect(1, 0, 5, 5))]);
+        assert_eq!(neighbour(&t, a, Direction::Right), None);
+        let t = tiling(&[(a, rect(0, 0, 5, 0)), (b, rect(0, 1, 5, 5))]);
+        assert_eq!(neighbour(&t, a, Direction::Down), None);
+    }
+
+    #[test]
+    fn neighbour_counts_an_overlap_of_exactly_one_cell() {
+        let [a, b] = ids(2)[..] else { unreachable!() };
+        // Rows 4..5 are shared: a single cell of overlap is enough.
+        let t = tiling(&[(a, rect(0, 0, 5, 5)), (b, rect(6, 4, 5, 5))]);
+        assert_eq!(neighbour(&t, a, Direction::Right), Some(b));
+        // Same along the other axis: a single shared column.
+        let t = tiling(&[(a, rect(0, 0, 5, 5)), (b, rect(4, 6, 5, 5))]);
+        assert_eq!(neighbour(&t, a, Direction::Down), Some(b));
+    }
+
+    #[test]
+    fn neighbour_ignores_an_unknown_origin_even_with_a_real_neighbour() {
+        let [a, b, unknown] = ids(3)[..] else {
+            unreachable!()
+        };
+        let t = tiling(&[(a, rect(0, 0, 5, 5)), (b, rect(6, 0, 5, 5))]);
+        assert_eq!(neighbour(&t, a, Direction::Right), Some(b));
+        for dir in ALL_DIRS {
+            assert_eq!(neighbour(&t, unknown, dir), None, "{dir:?}");
+        }
+        // A lone pane has no neighbour of its own.
         let t = tiling(&[(a, rect(0, 0, 5, 5))]);
-        for dir in [
-            Direction::Left,
-            Direction::Down,
-            Direction::Up,
-            Direction::Right,
-        ] {
-            assert_eq!(neighbour(&t, a, dir), None);
-            assert_eq!(neighbour(&t, b, dir), None, "unknown pane");
+        for dir in ALL_DIRS {
+            assert_eq!(neighbour(&t, a, dir), None, "{dir:?}");
         }
     }
 
     #[test]
     fn neighbour_does_not_overflow_at_the_far_corner_of_the_plane() {
         let [a, b] = ids(2)[..] else { unreachable!() };
-        let t = tiling(&[
-            (a, rect(u16::MAX - 4, u16::MAX - 4, 4, 4)),
-            (b, rect(0, 0, u16::MAX, u16::MAX)),
-        ]);
-        for dir in [
-            Direction::Left,
-            Direction::Down,
-            Direction::Up,
-            Direction::Right,
+        // a ends at 65538: a plain u16 add overflows (debug panic) or wraps to
+        // 2 (release), which would make a look adjacent to b at x = 3.
+        for (ra, rb) in [
+            (rect(u16::MAX - 2, 0, 5, 5), rect(3, 0, 5, 5)),
+            (rect(0, u16::MAX - 2, 5, 5), rect(0, 3, 5, 5)),
         ] {
-            neighbour(&t, a, dir);
-            neighbour(&t, b, dir);
+            let t = tiling(&[(a, ra), (b, rb)]);
+            for dir in ALL_DIRS {
+                assert_eq!(neighbour(&t, a, dir), None, "a {dir:?}");
+                assert_eq!(neighbour(&t, b, dir), None, "b {dir:?}");
+            }
         }
     }
 }
