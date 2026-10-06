@@ -64,18 +64,34 @@ impl LazaroboxTheme {
             .fg(self.bg_base)
     }
 
-    /// Lists every theme color as `(name, hex, color)`, for previews.
-    pub fn palette(&self) -> [(&'static str, &'static str, Color); 8] {
+    /// Lists every theme color as `(name, hex, color)`, for previews. The hex
+    /// label is derived from the color, so the two can never disagree.
+    pub fn palette(&self) -> [(&'static str, String, Color); 8] {
         [
-            ("bg_base", "#181E24", self.bg_base),
-            ("bg_panel", "#202831", self.bg_panel),
-            ("primary_cyan", "#00E5FF", self.primary_cyan),
-            ("ai_purple", "#CBA6F7", self.ai_purple),
-            ("success_green", "#A6E3A1", self.success_green),
-            ("warning_orange", "#FAB387", self.warning_orange),
-            ("error_red", "#F38BA8", self.error_red),
-            ("text_muted", "#6C7086", self.text_muted),
+            ("bg_base", hex(self.bg_base), self.bg_base),
+            ("bg_panel", hex(self.bg_panel), self.bg_panel),
+            ("primary_cyan", hex(self.primary_cyan), self.primary_cyan),
+            ("ai_purple", hex(self.ai_purple), self.ai_purple),
+            ("success_green", hex(self.success_green), self.success_green),
+            (
+                "warning_orange",
+                hex(self.warning_orange),
+                self.warning_orange,
+            ),
+            ("error_red", hex(self.error_red), self.error_red),
+            ("text_muted", hex(self.text_muted), self.text_muted),
         ]
+    }
+}
+
+/// Formats a color as an uppercase `#RRGGBB` label.
+///
+/// Every theme color is `Color::Rgb`; any other variant falls back to its
+/// `Display` name (e.g. `Red`) instead of panicking.
+fn hex(color: Color) -> String {
+    match color {
+        Color::Rgb(r, g, b) => format!("#{r:02X}{g:02X}{b:02X}"),
+        other => other.to_string(),
     }
 }
 
@@ -159,13 +175,33 @@ mod tests {
     }
 
     #[test]
-    fn palette_lists_eight_entries_with_matching_hex_and_color() {
+    fn hex_formats_rgb_as_uppercase_hash_rrggbb() {
+        assert_eq!(hex(Color::from_u32(0x00181E24)), "#181E24");
+        assert_eq!(hex(Color::Rgb(0, 0, 0)), "#000000");
+        assert_eq!(hex(Color::Rgb(1, 171, 255)), "#01ABFF");
+    }
+
+    #[test]
+    fn hex_falls_back_to_the_color_name_for_non_rgb() {
+        assert_eq!(hex(Color::Red), "Red");
+    }
+
+    #[test]
+    fn palette_lists_eight_entries_with_hex_derived_from_color() {
         let t = LazaroboxTheme::default();
         let palette = t.palette();
         assert_eq!(palette.len(), 8);
-        for (name, hex, color) in palette {
-            let value = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap();
-            assert_eq!(color, Color::from_u32(value), "{name}");
+        for (name, label, color) in palette {
+            assert_eq!(label, hex(color), "{name}");
         }
+    }
+
+    #[test]
+    fn palette_hex_follows_a_changed_color() {
+        let t = LazaroboxTheme {
+            bg_base: Color::Rgb(1, 2, 3),
+            ..LazaroboxTheme::default()
+        };
+        assert_eq!(t.palette()[0].1, "#010203");
     }
 }
