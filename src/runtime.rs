@@ -29,7 +29,7 @@ use tokio::{
 use crate::{
     app::{App, AppEvent, Effect, pane_size},
     core::{
-        pane::{CursorKind, CursorShape, PaneSize},
+        pane::{CursorKind, CursorShape},
         pty::{PtyEvent, PtyHandle, PtySink, SpawnSpec, portable::spawn_portable},
     },
     ui::{self, theme::LazaroboxTheme},
@@ -41,6 +41,8 @@ const TICK: Duration = Duration::from_millis(16);
 const PTY_CHANNEL: usize = 256;
 /// PTY events handled per wake-up before yielding to the other branches.
 const EVENT_BUDGET: usize = 256;
+/// Time between reads of the child's working directory.
+const CWD_POLL: Duration = Duration::from_secs(1);
 
 /// SIGTERM and SIGHUP (the host terminal closing). Without handling them the
 /// process would die with the host terminal still in raw mode.
@@ -71,7 +73,9 @@ pub async fn run() -> io::Result<()> {
     let (cols, rows) = terminal::size()?;
     let size = pane_size(cols, rows);
     let cwd = env::current_dir().unwrap_or_else(|_| "/".into());
-    let spec = SpawnSpec::new(env::var("SHELL").ok().as_deref(), cwd, size);
+    let shell = env::var("SHELL").ok();
+    let spec = SpawnSpec::new(shell.as_deref(), cwd.clone(), size);
+    let app = App::new(size).with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
 
     let shutdown = Shutdown::new()?;
     let (tx, rx) = mpsc::channel(PTY_CHANNEL);
@@ -81,7 +85,7 @@ pub async fn run() -> io::Result<()> {
     let mut terminal = ratatui::init();
     install_panic_hook();
     let result = match execute!(stdout(), EnableBracketedPaste) {
-        Ok(()) => event_loop(&mut terminal, pty.as_mut(), rx, shutdown, size).await,
+        Ok(()) => event_loop(&mut terminal, pty.as_mut(), rx, shutdown, app).await,
         Err(error) => Err(error),
     };
 
@@ -96,13 +100,14 @@ async fn event_loop(
     pty: &mut dyn PtyHandle,
     mut rx: mpsc::Receiver<PtyEvent>,
     mut shutdown: Shutdown,
-    size: PaneSize,
+    mut app: App,
 ) -> io::Result<()> {
     let theme = LazaroboxTheme::default();
-    let mut app = App::new(size);
     let mut events = EventStream::new();
     let mut tick = interval(TICK);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut cwd_poll = interval(CWD_POLL);
+    cwd_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut out = stdout();
     let mut applied_cursor = CursorShape::default();
 
@@ -133,6 +138,11 @@ async fn event_loop(
             }
             // Same exit path as Quit: the caller kills the child and restores.
             () = shutdown.requested() => return Ok(()),
+            _ = cwd_poll.tick() => {
+                if let Some(event) = poll_cwd(pty.pid()) {
+                    step(&mut app, event, pty);
+                }
+            }
             _ = tick.tick() => {
                 if app.dirty {
                     app.dirty = false;
@@ -164,6 +174,17 @@ fn run_effects(effects: Vec<Effect>, pty: &mut dyn PtyHandle) -> bool {
         }
     }
     quit
+}
+
+/// The child's current working directory as an event, read from
+/// `/proc/<pid>/cwd`. `None` when there is no pid or the lookup fails (not
+/// Linux, process gone): the app then keeps its previous value. The link is
+/// resolved by the kernel without touching the disk, so it cannot stall the loop.
+fn poll_cwd(pid: Option<u32>) -> Option<AppEvent> {
+    let pid = pid?;
+    std::fs::read_link(format!("/proc/{pid}/cwd"))
+        .ok()
+        .map(AppEvent::Cwd)
 }
 
 fn to_app_event(event: Event) -> Option<AppEvent> {
@@ -249,6 +270,51 @@ mod tests {
                 .await
                 .unwrap_or_else(|_| panic!("signal {signum} did not request shutdown"));
         }
+    }
+
+    // Spec: a failed cwd lookup keeps the previous value (no event is sent).
+    #[test]
+    fn cwd_poll_yields_nothing_without_a_pid_or_when_the_lookup_fails() {
+        assert_eq!(poll_cwd(None), None);
+        // pid_t::MAX is never a live process.
+        assert_eq!(poll_cwd(Some(i32::MAX as u32)), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cwd_poll_reads_the_cwd_of_a_live_process() {
+        let expected = env::current_dir().unwrap();
+        assert_eq!(
+            poll_cwd(Some(std::process::id())),
+            Some(AppEvent::Cwd(expected))
+        );
+    }
+
+    // Spec: `cd /tmp` in the shell is reflected by the next poll [unix PTY].
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cd_in_a_real_shell_is_seen_by_the_poll() {
+        use std::time::Instant;
+
+        use crate::core::pty::{PtySink, SpawnSpec, portable::spawn_portable};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let sink: PtySink = Box::new(move |event| tx.send(event).is_ok());
+        let size = PaneSize { rows: 24, cols: 80 };
+        let spec = SpawnSpec::new(Some("/bin/sh"), "/".into(), size);
+        let mut pty = spawn_portable(&spec, sink).expect("spawn");
+
+        let mut app = App::new(size);
+        let tmp = std::fs::canonicalize("/tmp").unwrap();
+        pty.write(b"cd /tmp\n".to_vec());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.cwd_label() != tmp.display().to_string() && Instant::now() < deadline {
+            if let Some(event) = poll_cwd(pty.pid()) {
+                app.update(event);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(app.cwd_label(), tmp.display().to_string());
     }
 
     fn shape(kind: CursorKind, blinking: bool) -> CursorShape {
