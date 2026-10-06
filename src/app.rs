@@ -384,6 +384,18 @@ mod app_tests {
     }
 
     #[test]
+    fn confirm_quit_uppercase_y_declines() {
+        let shift_y = AppEvent::Key(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT));
+        let caps_y = AppEvent::Key(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::NONE));
+        for ev in [shift_y, caps_y] {
+            let mut a = in_prefix();
+            a.update(key('q'));
+            assert_eq!(a.update(ev.clone()), vec![], "{ev:?}");
+            assert_eq!(a.input, InputMode::Terminal, "{ev:?}");
+        }
+    }
+
+    #[test]
     fn prefix_open_bracket_enters_copy_without_writing() {
         let mut a = in_prefix();
         assert_eq!(a.update(key('[')), vec![]);

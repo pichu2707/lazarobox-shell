@@ -38,7 +38,7 @@ Ctrl+Space (reported as NUL 0x00) MUST enter PREFIX without writing to the PTY. 
 - THEN PREFIX is entered
 
 ### Requirement: Quit confirmation
-`q` in PREFIX MUST enter a confirmation state shown as "Quit? (y/n)". `y` MUST emit Quit; any other key (n, Esc, other) MUST return to TERMINAL, swallowed.
+`q` in PREFIX MUST enter a confirmation state shown as "Quit? (y/n)". `y` MUST emit Quit; any other key (n, Esc, other) MUST return to TERMINAL, swallowed. Only lowercase `y` with no modifiers confirms; `Y` (Shift or Caps Lock) declines.
 
 #### Scenario: Confirm
 - GIVEN confirmation pending
