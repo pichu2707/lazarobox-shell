@@ -631,6 +631,34 @@ mod app_tests {
         assert_eq!(a.input(), InputMode::ConfirmQuit);
     }
 
+    // S3b replaces this test when group mode is implemented: groups will then
+    // stay pending instead of returning to TERMINAL.
+    #[test]
+    fn group_and_reserved_keys_return_to_terminal_until_group_mode_lands() {
+        for c in ['w', 't', 'g', 'b', 'h', '?'] {
+            let mut a = in_prefix();
+            assert_eq!(a.update(key(c)), vec![], "{c}");
+            assert_eq!(a.input(), InputMode::Terminal, "{c}");
+        }
+    }
+
+    // Deliberate (design ADR 12, spec "SHIFT MUST be ignored for character
+    // keys"): terminals report a char with or without SHIFT.
+    #[test]
+    fn shift_is_ignored_for_character_keys_in_the_prefix_flow() {
+        let mut a = app();
+        let ctrl_shift_space = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        a.update(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char(' '),
+            ctrl_shift_space,
+        )));
+        assert_eq!(a.input(), InputMode::Prefix);
+
+        let shift_q = AppEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::SHIFT));
+        assert_eq!(a.update(shift_q), vec![]);
+        assert_eq!(a.input(), InputMode::ConfirmQuit);
+    }
+
     #[test]
     fn confirm_quit_y_quits() {
         let mut a = in_prefix();

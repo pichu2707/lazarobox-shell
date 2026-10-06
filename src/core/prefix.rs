@@ -409,6 +409,12 @@ mod tests {
     }
 
     #[test]
+    fn the_prefix_key_cancels_inside_a_group() {
+        let window = group(PREFIX_TREE, 'w');
+        assert_eq!(lookup(window.bindings, &event(PREFIX_KEY)), Step::Cancel);
+    }
+
+    #[test]
     fn descriptions_name_what_each_binding_does() {
         let describe = |table: &'static [Binding], c: char| {
             table
