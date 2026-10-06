@@ -28,6 +28,19 @@ pub enum Axis {
     Y,
 }
 
+/// A focus direction on screen.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Direction {
+    Left,
+    Down,
+    Up,
+    Right,
+}
+
+/// Smallest usable pane as `(rows, cols)`: a prompt plus one output line, and
+/// room for a short prompt.
+pub const MIN_PANE: (u16, u16) = (2, 10);
+
 /// Binary layout tree of one tab. Leaves are panes.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Node {
@@ -41,6 +54,15 @@ pub struct Split {
     pub axis: Axis,
     pub weights: [u16; 2],
     pub children: [Node; 2],
+}
+
+/// Why a split was not applied. The tree is left untouched.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SplitError {
+    /// The target pane is too small to hold two panes of at least `MIN_PANE`.
+    TooSmall,
+    /// The target pane is not in the tree.
+    NotFound,
 }
 
 /// The 1-cell line between the two children of a split. `axis` is the axis of
@@ -100,6 +122,54 @@ fn divide(extent: u16, weights: [u16; 2]) -> (u16, u16, u16) {
     let first = (u32::from(avail) * u32::from(w0) / total).clamp(1, u32::from(avail) - 1);
     let first = first as u16; // <= avail <= u16::MAX
     (first, avail - first, 1)
+}
+
+impl Node {
+    /// Splits the leaf `target` into itself and the new pane `new` (second
+    /// child). `area` is the area this tree is tiled in. The weights are set to
+    /// the real cell sizes, so the first pane gets half of what is left after
+    /// the separator and the new pane the rest.
+    pub fn split(
+        &mut self,
+        area: Rect,
+        target: PaneId,
+        new: PaneId,
+        axis: Axis,
+    ) -> Result<(), SplitError> {
+        let rect = tile(self, area)
+            .panes
+            .iter()
+            .find(|(id, _)| *id == target)
+            .map(|(_, r)| *r)
+            .ok_or(SplitError::NotFound)?;
+        let (extent, min) = match axis {
+            Axis::X => (rect.width, MIN_PANE.1),
+            Axis::Y => (rect.height, MIN_PANE.0),
+        };
+        // Two minimum panes plus the separator.
+        if u32::from(extent) < 2 * u32::from(min) + 1 {
+            return Err(SplitError::TooSmall);
+        }
+        let avail = extent - 1;
+        let first = avail / 2;
+        let leaf = self
+            .leaf_mut(target)
+            .expect("the target was found in the tiling");
+        *leaf = Node::Split(Box::new(Split {
+            axis,
+            weights: [first, avail - first],
+            children: [Node::Leaf(target), Node::Leaf(new)],
+        }));
+        Ok(())
+    }
+
+    fn leaf_mut(&mut self, id: PaneId) -> Option<&mut Node> {
+        match self {
+            Node::Leaf(leaf) if *leaf == id => Some(self),
+            Node::Leaf(_) => None,
+            Node::Split(split) => split.children.iter_mut().find_map(|c| c.leaf_mut(id)),
+        }
+    }
 }
 
 /// Computes the rect of every pane and the separators inside `area`.
@@ -534,5 +604,126 @@ mod tests {
             len: 5,
         };
         assert_eq!(sep.highlight(rect(0, 0, 20, 10)), Some((0, 5)));
+    }
+
+    fn leaf(id: PaneId) -> Node {
+        Node::Leaf(id)
+    }
+
+    #[test]
+    fn split_right_and_below_make_two_panes_with_weights_equal_to_cell_sizes() {
+        let [a, b] = ids(2)[..] else { unreachable!() };
+        let mut tree = leaf(a);
+        assert_eq!(tree.split(rect(0, 0, 81, 24), a, b, Axis::X), Ok(()));
+        assert_eq!(tree, split(Axis::X, [40, 40], leaf(a), leaf(b)));
+        let t = tile(&tree, rect(0, 0, 81, 24));
+        assert_eq!(rect_of(&t, a), rect(0, 0, 40, 24));
+        assert_eq!(rect_of(&t, b), rect(41, 0, 40, 24));
+
+        let mut tree = leaf(a);
+        assert_eq!(tree.split(rect(0, 0, 80, 11), a, b, Axis::Y), Ok(()));
+        assert_eq!(tree, split(Axis::Y, [5, 5], leaf(a), leaf(b)));
+        let t = tile(&tree, rect(0, 0, 80, 11));
+        assert_eq!(rect_of(&t, a), rect(0, 0, 80, 5));
+        assert_eq!(rect_of(&t, b), rect(0, 6, 80, 5));
+    }
+
+    #[test]
+    fn split_gives_the_odd_cell_to_the_new_pane() {
+        let [a, b] = ids(2)[..] else { unreachable!() };
+        let mut tree = leaf(a);
+        tree.split(rect(0, 0, 80, 24), a, b, Axis::X).unwrap();
+        assert_eq!(tree, split(Axis::X, [39, 40], leaf(a), leaf(b)));
+        let t = tile(&tree, rect(0, 0, 80, 24));
+        assert_eq!(rect_of(&t, a).width, 39);
+        assert_eq!(rect_of(&t, b).width, 40);
+    }
+
+    #[test]
+    fn split_applies_at_the_minimum_and_is_refused_one_cell_less() {
+        let [a, b] = ids(2)[..] else { unreachable!() };
+        // Side by side needs 21 columns; the other extent is irrelevant.
+        for (width, height, ok) in [(21, 1, true), (20, 100, false)] {
+            let mut tree = leaf(a);
+            let r = tree.split(rect(0, 0, width, height), a, b, Axis::X);
+            assert_eq!(r.is_ok(), ok, "X {width}x{height}");
+            if ok {
+                let t = tile(&tree, rect(0, 0, width, height));
+                assert_eq!(rect_of(&t, a).width, 10);
+                assert_eq!(rect_of(&t, b).width, 10);
+            } else {
+                assert_eq!(r, Err(SplitError::TooSmall));
+                assert_eq!(tree, leaf(a), "refused split leaves the tree untouched");
+            }
+        }
+        // Stacked needs 5 rows; the other extent is irrelevant.
+        for (width, height, ok) in [(1, 5, true), (100, 4, false)] {
+            let mut tree = leaf(a);
+            let r = tree.split(rect(0, 0, width, height), a, b, Axis::Y);
+            assert_eq!(r.is_ok(), ok, "Y {width}x{height}");
+            if ok {
+                let t = tile(&tree, rect(0, 0, width, height));
+                assert_eq!(rect_of(&t, a).height, 2);
+                assert_eq!(rect_of(&t, b).height, 2);
+            } else {
+                assert_eq!(r, Err(SplitError::TooSmall));
+                assert_eq!(tree, leaf(a));
+            }
+        }
+    }
+
+    #[test]
+    fn split_checks_the_target_rect_not_the_whole_area() {
+        let [a, b, c] = ids(3)[..] else {
+            unreachable!()
+        };
+        // 41 columns: a and b get 20 each, below the 21 a further split needs.
+        let mut tree = split(Axis::X, [20, 20], leaf(a), leaf(b));
+        let before = tree.clone();
+        assert_eq!(
+            tree.split(rect(0, 0, 41, 10), b, c, Axis::X),
+            Err(SplitError::TooSmall)
+        );
+        assert_eq!(tree, before);
+    }
+
+    #[test]
+    fn split_replaces_the_target_leaf_in_place_inside_a_nested_tree() {
+        let [a, b, c] = ids(3)[..] else {
+            unreachable!()
+        };
+        let area = rect(0, 0, 81, 24);
+        let mut tree = split(Axis::X, [40, 40], leaf(a), leaf(b));
+        assert_eq!(tree.split(area, b, c, Axis::Y), Ok(()));
+        assert_eq!(
+            tree,
+            split(
+                Axis::X,
+                [40, 40],
+                leaf(a),
+                split(Axis::Y, [11, 12], leaf(b), leaf(c))
+            )
+        );
+        // The first child splits too, keeping its position.
+        let d = ids(4)[3];
+        assert_eq!(tree.split(area, a, d, Axis::Y), Ok(()));
+        let Node::Split(root) = &tree else {
+            unreachable!()
+        };
+        assert_eq!(root.children[0], split(Axis::Y, [11, 12], leaf(a), leaf(d)));
+    }
+
+    #[test]
+    fn split_of_an_unknown_target_is_not_found_and_changes_nothing() {
+        let [a, b, c] = ids(3)[..] else {
+            unreachable!()
+        };
+        let mut tree = split(Axis::X, [40, 40], leaf(a), leaf(b));
+        let before = tree.clone();
+        assert_eq!(
+            tree.split(rect(0, 0, 81, 24), c, c, Axis::X),
+            Err(SplitError::NotFound)
+        );
+        assert_eq!(tree, before);
     }
 }
