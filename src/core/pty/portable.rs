@@ -99,9 +99,11 @@ impl PtyHandle for PortableHandle {
             return;
         }
         self.killed = true;
-        // A reaped child's pid may be reused, so only a running shell gets the
-        // polite SIGHUP first (what a closing terminal sends): it lets zsh or
-        // bash save history and run their HUP/exit traps.
+        // Escalate: SIGHUP, then HUP_GRACE to react, then SIGKILL. SIGHUP (what
+        // a closing terminal sends) is only worth sending while the shell is
+        // still running: that is the only case where there is someone to ask
+        // politely, so zsh or bash can save history and run their HUP/exit
+        // traps.
         let running = matches!(self.reaped.try_recv(), Err(TryRecvError::Empty));
         if running {
             self.signal_group(libc::SIGHUP);
@@ -112,8 +114,8 @@ impl PtyHandle for PortableHandle {
             }
         }
         // Shell already gone, or it ignored SIGHUP: nothing is left to ask.
-        // Jobs the shell left behind can outlive it, so the group goes too.
-        // Not `self.killer`: it only sends SIGHUP, which a shell can ignore.
+        // The group always gets SIGKILL to clean up jobs the shell left
+        // behind, even after the reap: see `signal_group` for why that is safe.
         self.signal_group(libc::SIGKILL);
         if running {
             // The waiter reaps the child, so no zombie is left behind. SIGKILL
