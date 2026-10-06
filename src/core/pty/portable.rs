@@ -21,7 +21,7 @@ use std::{
     time::Duration,
 };
 
-use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use super::{PtyEvent, PtyHandle, PtySink, SpawnSpec};
 use crate::core::pane::PaneSize;
@@ -29,7 +29,14 @@ use crate::core::pane::PaneSize;
 const READ_CHUNK: usize = 8 * 1024;
 /// How long the waiter lets the reader drain the last output after the child
 /// died, before reporting `Exited` anyway.
+///
+/// Best-effort: with a huge backlog and a slow consumer, trailing output can
+/// still be dropped when quitting.
 const DRAIN_GRACE: Duration = Duration::from_millis(100);
+/// How long a shell gets to handle SIGHUP before its group is SIGKILLed.
+const HUP_GRACE: Duration = Duration::from_millis(300);
+/// Upper bound on waiting for the waiter to reap a SIGKILLed child.
+const KILL_WAIT: Duration = Duration::from_secs(2);
 
 /// The sink shared by the reader and the waiter, plus the once-only guard.
 struct Events {
@@ -64,7 +71,6 @@ fn pty_size(size: PaneSize) -> PtySize {
 
 struct PortableHandle {
     master: Box<dyn MasterPty + Send>,
-    killer: Box<dyn ChildKiller + Send + Sync>,
     /// Signalled by the waiter right after `wait()` returns, i.e. once the
     /// child has been reaped. Deliberately not a join handle: the waiter may
     /// still be blocked delivering `Exited` to a sink nobody drains anymore.
@@ -93,28 +99,43 @@ impl PtyHandle for PortableHandle {
             return;
         }
         self.killed = true;
-        // Jobs the shell left behind can outlive it, so the group is always
-        // signalled. A reaped child's pid, though, may be reused: only the
-        // child itself is signalled while it still runs.
+        // A reaped child's pid may be reused, so only a running shell gets the
+        // polite SIGHUP first (what a closing terminal sends): it lets zsh or
+        // bash save history and run their HUP/exit traps.
         let running = matches!(self.reaped.try_recv(), Err(TryRecvError::Empty));
-        self.kill_process_group();
         if running {
-            let _ = self.killer.kill();
-            // The waiter reaps the child, so no zombie is left behind.
-            let _ = self.reaped.recv();
+            self.signal_group(libc::SIGHUP);
+            if self.reaped.recv_timeout(HUP_GRACE).is_ok() {
+                // Shell gone; jobs it left behind can outlive it.
+                self.signal_group(libc::SIGKILL);
+                return;
+            }
+        }
+        // Shell already gone, or it ignored SIGHUP: nothing is left to ask.
+        // Jobs the shell left behind can outlive it, so the group goes too.
+        // Not `self.killer`: it only sends SIGHUP, which a shell can ignore.
+        self.signal_group(libc::SIGKILL);
+        if running {
+            // The waiter reaps the child, so no zombie is left behind. SIGKILL
+            // cannot be ignored, so this wait is short; it is bounded anyway.
+            let _ = self.reaped.recv_timeout(KILL_WAIT);
         }
     }
 }
 
 impl PortableHandle {
-    /// The child is a session leader, so its pid is also its process group:
-    /// background jobs started from the shell die with it instead of
-    /// outliving the app.
-    fn kill_process_group(&self) {
+    /// The child is a session leader (portable-pty calls `setsid`), so its pid
+    /// is also its process group: background jobs started from the shell get
+    /// the signal too instead of outliving the app.
+    ///
+    /// This is also safe on an already-reaped child: Linux does not reuse a
+    /// pid while a process group with that id still has members, and with no
+    /// members left the call just fails with ESRCH.
+    fn signal_group(&self, signal: i32) {
         if let Some(pid) = self.pid.and_then(|pid| i32::try_from(pid).ok()) {
             // SAFETY: killpg only sends a signal; it touches no memory.
             unsafe {
-                libc::killpg(pid, libc::SIGKILL);
+                libc::killpg(pid, signal);
             }
         }
     }
@@ -195,7 +216,6 @@ pub fn spawn_portable(spec: &SpawnSpec, sink: PtySink) -> io::Result<Box<dyn Pty
     });
 
     let pid = child.process_id();
-    let killer = child.clone_killer();
     let (reaped_tx, reaped) = mpsc::channel::<()>();
     thread::spawn(move || {
         let mut child = child;
@@ -208,7 +228,6 @@ pub fn spawn_portable(spec: &SpawnSpec, sink: PtySink) -> io::Result<Box<dyn Pty
 
     Ok(Box::new(PortableHandle {
         master: pair.master,
-        killer,
         reaped,
         writer: tx,
         pid,
@@ -361,6 +380,44 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(!is_alive(job), "background job survived the drop");
+    }
+
+    /// Starts `/bin/sh`, installs `setup`, then spins so signals are handled
+    /// promptly. Returns once the shell reported it is ready.
+    fn spawn_spinning_shell(setup: &str) -> (Box<dyn PtyHandle>, Receiver<PtyEvent>) {
+        let (mut pty, rx) = spawn("/bin/sh", size(24, 80));
+        // The split quotes keep the tty echo of the command line from matching.
+        pty.write(format!("{setup}\necho rea\"\"dy; while :; do :; done\n").into_bytes());
+        assert!(wait_for(&rx, "ready").contains("ready"), "shell not ready");
+        (pty, rx)
+    }
+
+    // Quit must let the shell handle SIGHUP (save history, run traps) before
+    // the group is force-killed.
+    #[test]
+    fn kill_lets_the_shell_handle_sighup() {
+        let marker = std::env::temp_dir().join(format!("lazarobox-hup-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let (mut pty, _rx) =
+            spawn_spinning_shell(&format!("trap 'echo bye > {}; exit' HUP", marker.display()));
+        pty.kill();
+        let said = std::fs::read_to_string(&marker);
+        let _ = std::fs::remove_file(&marker);
+        assert_eq!(
+            said.map(|s| s.trim().to_owned()).ok().as_deref(),
+            Some("bye")
+        );
+    }
+
+    // A shell that ignores SIGHUP is still killed, and kill() does not hang.
+    #[test]
+    fn kill_force_kills_a_shell_ignoring_sighup() {
+        let (mut pty, _rx) = spawn_spinning_shell("trap '' HUP");
+        let pid = pty.pid().expect("pid");
+        let started = Instant::now();
+        pty.kill();
+        assert!(started.elapsed() < Duration::from_secs(3), "kill() hung");
+        assert!(!Path::new(&format!("/proc/{pid}")).exists());
     }
 
     // Spec: quit leaves no orphan.
