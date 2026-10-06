@@ -1,3 +1,4 @@
-fn main() {
-    println!("Hello, world!");
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    lazarobox_shell::runtime::run().await
 }

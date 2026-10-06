@@ -1,0 +1,341 @@
+use ratatui::{
+    buffer::Buffer,
+    layout::{Constraint, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Paragraph, Widget},
+};
+
+use crate::app::{AppMode, InputMode};
+use crate::ui::theme::LazaroboxTheme;
+
+/// Nerd Font powerline glyph "upper left triangle" (U+E0BC).
+/// Placed right after a left-hand block: `fg` = that block's bg, `bg` = the
+/// next segment's bg. The filled upper-left half continues the block and the
+/// edge slants like "/".
+const SLANT_RIGHT: &str = "\u{E0BC}";
+
+/// Nerd Font powerline glyph "lower right triangle" (U+E0BA).
+/// Placed right before a right-hand block: `fg` = that block's bg, `bg` = the
+/// surrounding bg. The filled lower-right half starts the block with a "/" edge.
+const SLANT_LEFT: &str = "\u{E0BA}";
+
+/// Powerline-style status line: `[ mode ][ path ]` on the left, `[ right ]`
+/// on the right, with a flexible `bg_base` fill in between.
+pub struct StatusLine<'a> {
+    theme: &'a LazaroboxTheme,
+    label: &'a str,
+    accent: Color,
+    path: &'a str,
+    right: &'a str,
+}
+
+impl<'a> StatusLine<'a> {
+    pub fn new(theme: &'a LazaroboxTheme, mode: AppMode, path: &'a str, model: &'a str) -> Self {
+        Self {
+            theme,
+            label: mode.label(),
+            accent: theme.accent(mode),
+            path,
+            right: model,
+        }
+    }
+
+    /// Status line for an input mode (TERMINAL, PREFIX, COPY, quit prompt).
+    pub fn input(
+        theme: &'a LazaroboxTheme,
+        mode: InputMode,
+        path: &'a str,
+        right: &'a str,
+    ) -> Self {
+        Self {
+            theme,
+            label: mode.label(),
+            accent: theme.input_accent(mode),
+            path,
+            right,
+        }
+    }
+
+    fn mode_block_text(&self) -> String {
+        format!(" \u{25D0} {} ", self.label)
+    }
+
+    /// Columns taken by the mode block and the slant that closes it.
+    fn mode_block_width(&self) -> usize {
+        Line::from(self.mode_block_text()).width() + 1
+    }
+
+    fn left_line(&self) -> Line<'a> {
+        let t = self.theme;
+        let mode_style = Style::new().bg(self.accent).fg(t.bg_base);
+        Line::from(vec![
+            Span::styled(
+                self.mode_block_text(),
+                mode_style.add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(SLANT_RIGHT, Style::new().fg(self.accent).bg(t.bg_panel)),
+            Span::styled(
+                format!(" {} ", self.path),
+                Style::new().fg(t.text_muted).bg(t.bg_panel),
+            ),
+            Span::styled(SLANT_RIGHT, Style::new().fg(t.bg_panel).bg(t.bg_base)),
+        ])
+    }
+
+    fn right_line(&self) -> Line<'a> {
+        let t = self.theme;
+        Line::from(vec![
+            Span::styled(SLANT_LEFT, Style::new().fg(t.bg_panel).bg(t.bg_base)),
+            Span::styled(
+                format!(" {} ", self.right),
+                Style::new().fg(t.primary_cyan).bg(t.bg_panel),
+            ),
+        ])
+    }
+}
+
+impl Widget for StatusLine<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        Block::new()
+            .style(Style::new().bg(self.theme.bg_base))
+            .render(area, buf);
+
+        let right = self.right_line();
+        // The mode block has priority: the right segment is dropped when it
+        // would not fit next to it.
+        let right_width = if right.width() + self.mode_block_width() <= usize::from(area.width) {
+            u16::try_from(right.width()).unwrap_or(u16::MAX)
+        } else {
+            0
+        };
+        let [left_area, right_area] =
+            Layout::horizontal([Constraint::Min(0), Constraint::Length(right_width)]).areas(area);
+
+        Paragraph::new(self.left_line()).render(left_area, buf);
+        Paragraph::new(right).render(right_area, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::copy::CopyState;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    const WIDTH: u16 = 60;
+    const PATH: &str = "~/lazarobox-shell";
+    const MODEL: &str = "ollama \u{b7} llama3.2";
+
+    fn render_with(theme: &LazaroboxTheme, mode: AppMode) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(WIDTH, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(StatusLine::new(theme, mode, PATH, MODEL), frame.area())
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn render(mode: AppMode) -> Buffer {
+        render_with(&LazaroboxTheme::default(), mode)
+    }
+
+    fn line_text(buf: &Buffer) -> String {
+        (0..WIDTH).map(|x| buf[(x, 0)].symbol()).collect()
+    }
+
+    #[test]
+    fn mode_block_follows_mode_accent_and_is_bold() {
+        let t = LazaroboxTheme::default();
+        let cases = [
+            (AppMode::Normal, t.primary_cyan),
+            (AppMode::AiChat, t.ai_purple),
+            (AppMode::Metrics, t.success_green),
+            (AppMode::Settings, t.warning_orange),
+        ];
+        for (mode, accent) in cases {
+            let buf = render(mode);
+            let cell = &buf[(1, 0)];
+            assert_eq!(cell.bg, accent, "bg for {mode:?}");
+            assert_eq!(cell.fg, t.bg_base, "fg for {mode:?}");
+            assert!(cell.modifier.contains(Modifier::BOLD), "bold for {mode:?}");
+        }
+    }
+
+    #[test]
+    fn mode_label_is_rendered() {
+        assert!(line_text(&render(AppMode::Normal)).contains("NORMAL"));
+        assert!(line_text(&render(AppMode::AiChat)).contains("AI CHAT"));
+    }
+
+    #[test]
+    fn path_segment_uses_panel_bg_and_muted_fg() {
+        let t = LazaroboxTheme::default();
+        let text = line_text(&render(AppMode::Normal));
+        let idx = text.chars().position(|c| c == '~').unwrap() as u16;
+        let buf = render(AppMode::Normal);
+        assert_eq!(buf[(idx, 0)].bg, t.bg_panel);
+        assert_eq!(buf[(idx, 0)].fg, t.text_muted);
+    }
+
+    #[test]
+    fn model_text_ends_at_right_edge() {
+        let buf = render(AppMode::Normal);
+        let text = line_text(&buf);
+        assert!(text.ends_with(&format!("{MODEL} ")));
+        let last = &buf[(WIDTH - 1, 0)];
+        assert_eq!(last.bg, LazaroboxTheme::default().bg_panel);
+        assert_eq!(last.fg, LazaroboxTheme::default().primary_cyan);
+    }
+
+    #[test]
+    fn middle_fill_uses_bg_base() {
+        let t = LazaroboxTheme::default();
+        let buf = render(AppMode::Normal);
+        // Cells strictly between the left cluster and the right cluster.
+        let left_w = Line::from(" \u{25D0} NORMAL ").width() + 1 + (PATH.chars().count() + 2) + 1;
+        let right_w = 1 + MODEL.chars().count() + 2;
+        for x in left_w..(WIDTH as usize - right_w) {
+            assert_eq!(buf[(x as u16, 0)].bg, t.bg_base, "x={x}");
+        }
+    }
+
+    #[test]
+    fn colors_come_from_the_theme() {
+        let theme = LazaroboxTheme {
+            primary_cyan: Color::Rgb(1, 2, 3),
+            bg_base: Color::Rgb(4, 5, 6),
+            bg_panel: Color::Rgb(7, 8, 9),
+            text_muted: Color::Rgb(10, 11, 12),
+            ..LazaroboxTheme::default()
+        };
+        let buf = render_with(&theme, AppMode::Normal);
+        assert_eq!(buf[(1, 0)].bg, Color::Rgb(1, 2, 3));
+        assert_eq!(buf[(1, 0)].fg, Color::Rgb(4, 5, 6));
+        assert_eq!(buf[(WIDTH - 1, 0)].fg, Color::Rgb(1, 2, 3));
+        assert_eq!(buf[(WIDTH - 1, 0)].bg, Color::Rgb(7, 8, 9));
+        assert_eq!(buf[(WIDTH / 2, 0)].bg, Color::Rgb(4, 5, 6));
+    }
+
+    #[test]
+    fn snapshot_normal_mode() {
+        insta::assert_snapshot!(line_text(&render(AppMode::Normal)));
+    }
+
+    const SHELL: &str = "zsh";
+
+    fn input_modes() -> [InputMode; 4] {
+        [
+            InputMode::Terminal,
+            InputMode::Prefix,
+            InputMode::Copy(CopyState::default()),
+            InputMode::ConfirmQuit,
+        ]
+    }
+
+    fn render_input_at(mode: InputMode, width: u16) -> Buffer {
+        let theme = LazaroboxTheme::default();
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(StatusLine::input(&theme, mode, PATH, SHELL), frame.area())
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn text_of(buf: &Buffer) -> String {
+        (0..buf.area.width).map(|x| buf[(x, 0)].symbol()).collect()
+    }
+
+    #[test]
+    fn input_label_is_rendered_per_mode() {
+        let expected = [
+            (InputMode::Terminal, "TERMINAL"),
+            (InputMode::Prefix, "PREFIX"),
+            (InputMode::Copy(CopyState::default()), "COPY"),
+            (InputMode::ConfirmQuit, "Quit? (y/n)"),
+        ];
+        for (mode, label) in expected {
+            let text = text_of(&render_input_at(mode, WIDTH));
+            assert!(text.contains(label), "{label:?} in {text:?}");
+        }
+    }
+
+    #[test]
+    fn input_block_uses_the_input_mode_color_and_bold() {
+        let t = LazaroboxTheme::default();
+        for mode in input_modes() {
+            let buf = render_input_at(mode, WIDTH);
+            let cell = &buf[(1, 0)];
+            assert_eq!(cell.bg, t.input_accent(mode), "bg for {mode:?}");
+            assert_eq!(cell.fg, t.bg_base, "fg for {mode:?}");
+            assert!(cell.modifier.contains(Modifier::BOLD), "bold for {mode:?}");
+        }
+    }
+
+    #[test]
+    fn input_block_slant_continues_the_mode_color() {
+        let t = LazaroboxTheme::default();
+        for mode in input_modes() {
+            let buf = render_input_at(mode, WIDTH);
+            let slant_x = (0..WIDTH)
+                .find(|&x| buf[(x, 0)].symbol() == SLANT_RIGHT)
+                .unwrap();
+            assert_eq!(buf[(slant_x, 0)].fg, t.input_accent(mode), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn input_shows_path_and_right_segment() {
+        let buf = render_input_at(InputMode::Terminal, WIDTH);
+        let text = text_of(&buf);
+        assert!(text.contains(PATH));
+        assert!(text.ends_with(&format!("{SHELL} ")));
+    }
+
+    #[test]
+    fn narrow_width_keeps_the_mode_block_and_drops_the_right_segment() {
+        // " ◐ TERMINAL " (12) + slant (1) leaves no room for path or shell.
+        let buf = render_input_at(InputMode::Terminal, 14);
+        let text = text_of(&buf);
+        assert!(text.contains("TERMINAL"), "{text:?}");
+        assert!(!text.contains(SHELL), "{text:?}");
+    }
+
+    #[test]
+    fn degenerate_widths_do_not_panic() {
+        for width in [0, 1, 2, 5] {
+            for mode in input_modes() {
+                render_input_at(mode, width);
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_input_terminal() {
+        insta::assert_snapshot!(text_of(&render_input_at(InputMode::Terminal, WIDTH)));
+    }
+
+    #[test]
+    fn snapshot_input_prefix() {
+        insta::assert_snapshot!(text_of(&render_input_at(InputMode::Prefix, WIDTH)));
+    }
+
+    #[test]
+    fn snapshot_input_copy() {
+        let mode = InputMode::Copy(CopyState::default());
+        insta::assert_snapshot!(text_of(&render_input_at(mode, WIDTH)));
+    }
+
+    #[test]
+    fn snapshot_input_confirm_quit() {
+        insta::assert_snapshot!(text_of(&render_input_at(InputMode::ConfirmQuit, WIDTH)));
+    }
+
+    #[test]
+    fn snapshot_input_narrow() {
+        insta::assert_snapshot!(text_of(&render_input_at(InputMode::Terminal, 14)));
+    }
+}

@@ -1,0 +1,35 @@
+schema: spec-driven
+context: |
+  Project: lazarobox-shell (Rust 2024 crate, lib + bin).
+  Stack: ratatui 0.30 (crossterm via ratatui::crossterm), tokio, reqwest, serde, toml, keyring, oauth2, clap, tracing.
+  Layout: src/lib.rs, src/main.rs, src/app.rs (AppMode), src/ui/{theme,preview,components/statusline}.rs, examples/theme_preview.rs.
+  Tests: in-module #[cfg(test)] with ratatui TestBackend + insta snapshots.
+  Artifacts in English.
+strict_tdd: true
+testing:
+  runner: "cargo test"
+  framework: "built-in Rust test harness + insta 1.x"
+  layers:
+    unit: true
+    integration: false
+    e2e: false
+  coverage:
+    available: false
+    command: null
+  quality:
+    linter: "cargo clippy --all-targets"
+    type_checker: "cargo check (rustc)"
+    formatter: "cargo fmt --check"
+rules:
+  proposal: {}
+  specs: {}
+  design: {}
+  tasks: {}
+  apply:
+    tdd: true
+    test_command: "cargo test"
+  verify:
+    test_command: "cargo test"
+    lint_command: "cargo clippy --all-targets"
+    format_command: "cargo fmt --check"
+  archive: {}

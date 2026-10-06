@@ -1,0 +1,5 @@
+---
+source: src/ui/components/statusline.rs
+expression: "line_text(&render(AppMode::Normal))"
+---
+ ◐ NORMAL  ~/lazarobox-shell           ollama · llama3.2
