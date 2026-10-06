@@ -30,30 +30,45 @@ pub const PREFIX_KEY: KeyChord = KeyChord {
     mods: KeyModifiers::CONTROL,
 };
 
-pub const PREFIX_BINDINGS: &[(KeyChord, PrefixAction)] = &[
-    (PREFIX_KEY, PrefixAction::SendPrefixLiteral),
-    (
-        KeyChord {
+/// One prefix binding. `description` is the human-readable text for a
+/// future which-key / help viewer, so this table is the single source of truth.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PrefixBinding {
+    pub chord: KeyChord,
+    pub action: PrefixAction,
+    pub description: &'static str,
+}
+
+pub const PREFIX_BINDINGS: &[PrefixBinding] = &[
+    PrefixBinding {
+        chord: PREFIX_KEY,
+        action: PrefixAction::SendPrefixLiteral,
+        description: "Send the prefix key to the program",
+    },
+    PrefixBinding {
+        chord: KeyChord {
             code: KeyCode::Char('q'),
             mods: KeyModifiers::NONE,
         },
-        PrefixAction::RequestQuit,
-    ),
-    (
-        KeyChord {
+        action: PrefixAction::RequestQuit,
+        description: "Quit",
+    },
+    PrefixBinding {
+        chord: KeyChord {
             code: KeyCode::Char('['),
             mods: KeyModifiers::NONE,
         },
-        PrefixAction::EnterCopy,
-    ),
+        action: PrefixAction::EnterCopy,
+        description: "Copy mode (scrollback)",
+    },
 ];
 
 /// Action bound to `key` after the prefix; `None` (including Esc) cancels.
 pub fn lookup(key: &KeyEvent) -> Option<PrefixAction> {
     PREFIX_BINDINGS
         .iter()
-        .find(|(chord, _)| chord.matches(key))
-        .map(|(_, action)| *action)
+        .find(|binding| binding.chord.matches(key))
+        .map(|binding| binding.action)
 }
 
 #[cfg(test)]
@@ -111,9 +126,50 @@ mod tests {
 
     #[test]
     fn every_binding_is_reachable_through_lookup() {
-        for (chord, action) in PREFIX_BINDINGS {
-            let ev = key(chord.code, chord.mods);
-            assert_eq!(lookup(&ev), Some(*action));
+        for binding in PREFIX_BINDINGS {
+            let ev = key(binding.chord.code, binding.chord.mods);
+            assert_eq!(lookup(&ev), Some(binding.action));
+        }
+    }
+
+    #[test]
+    fn every_binding_has_a_non_empty_description() {
+        assert!(!PREFIX_BINDINGS.is_empty());
+        for binding in PREFIX_BINDINGS {
+            assert!(
+                !binding.description.trim().is_empty(),
+                "{:?} has no description",
+                binding.action
+            );
+        }
+    }
+
+    #[test]
+    fn descriptions_name_what_each_action_does() {
+        let describe = |c: char, m| {
+            PREFIX_BINDINGS
+                .iter()
+                .find(|b| b.chord.matches(&key(KeyCode::Char(c), m)))
+                .map(|b| b.description)
+        };
+        assert_eq!(describe('q', KeyModifiers::NONE), Some("Quit"));
+        assert_eq!(
+            describe('[', KeyModifiers::NONE),
+            Some("Copy mode (scrollback)")
+        );
+        assert_eq!(
+            describe(' ', KeyModifiers::CONTROL),
+            Some("Send the prefix key to the program")
+        );
+    }
+
+    #[test]
+    fn binding_keys_and_actions_are_unique() {
+        for (i, a) in PREFIX_BINDINGS.iter().enumerate() {
+            for b in &PREFIX_BINDINGS[i + 1..] {
+                assert_ne!(a.chord, b.chord, "duplicate key for {:?}", a.action);
+                assert_ne!(a.action, b.action, "duplicate action {:?}", a.action);
+            }
         }
     }
 }
