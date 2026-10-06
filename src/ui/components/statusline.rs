@@ -41,8 +41,8 @@ impl<'a> StatusLine<'a> {
 
     fn left_line(&self) -> Line<'a> {
         let t = self.theme;
-        let mode_style = t.mode_style(&self.mode);
-        let mode_bg = mode_style.bg.unwrap_or(t.primary_cyan);
+        let mode_style = t.mode_style(self.mode);
+        let mode_bg = t.accent(self.mode);
         Line::from(vec![
             Span::styled(
                 format!(" \u{25D0} {} ", self.mode.label()),
