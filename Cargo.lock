@@ -1719,6 +1719,7 @@ dependencies = [
  "futures",
  "insta",
  "keyring",
+ "libc",
  "oauth2",
  "portable-pty",
  "ratatui",

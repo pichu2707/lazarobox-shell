@@ -1,22 +1,57 @@
 //! portable-pty adapter.
 //!
-//! The reader and the writer each run on a detached `std::thread` (a
+//! The reader, the writer and a waiter each run on a detached `std::thread` (a
 //! `spawn_blocking` task would hang the runtime's shutdown). The reader hands
 //! events to a `PtySink`; the writer is fed by a `std::sync::mpsc` channel so a
 //! stalled child can never block the caller.
+//!
+//! The waiter owns the `Child` and blocks on `wait()`, so `Exited` is reported
+//! when the shell dies even if a background job still holds the PTY open and
+//! the reader never sees EOF. `Exited` is sent at most once, by whichever of
+//! the reader (EOF) or the waiter gets there first.
 
 use std::{
     io::{self, Read, Write},
-    sync::mpsc::{self, Sender},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender, TryRecvError},
+    },
     thread,
+    time::Duration,
 };
 
-use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use super::{PtyEvent, PtyHandle, PtySink, SpawnSpec};
 use crate::core::pane::PaneSize;
 
 const READ_CHUNK: usize = 8 * 1024;
+/// How long the waiter lets the reader drain the last output after the child
+/// died, before reporting `Exited` anyway.
+const DRAIN_GRACE: Duration = Duration::from_millis(100);
+
+/// The sink shared by the reader and the waiter, plus the once-only guard.
+struct Events {
+    sink: Mutex<PtySink>,
+    exited: AtomicBool,
+}
+
+impl Events {
+    fn send(&self, event: PtyEvent) -> bool {
+        match self.sink.lock() {
+            Ok(mut sink) => sink(event),
+            Err(_) => false,
+        }
+    }
+
+    /// Emits `Exited` unless it was already emitted.
+    fn exited(&self) {
+        if !self.exited.swap(true, Ordering::SeqCst) {
+            self.send(PtyEvent::Exited);
+        }
+    }
+}
 
 fn pty_size(size: PaneSize) -> PtySize {
     PtySize {
@@ -29,7 +64,11 @@ fn pty_size(size: PaneSize) -> PtySize {
 
 struct PortableHandle {
     master: Box<dyn MasterPty + Send>,
-    child: Box<dyn Child + Send + Sync>,
+    killer: Box<dyn ChildKiller + Send + Sync>,
+    /// Signalled by the waiter right after `wait()` returns, i.e. once the
+    /// child has been reaped. Deliberately not a join handle: the waiter may
+    /// still be blocked delivering `Exited` to a sink nobody drains anymore.
+    reaped: Receiver<()>,
     writer: Sender<Vec<u8>>,
     pid: Option<u32>,
     killed: bool,
@@ -54,9 +93,30 @@ impl PtyHandle for PortableHandle {
             return;
         }
         self.killed = true;
-        let _ = self.child.kill();
-        // Reap it so no zombie is left behind.
-        let _ = self.child.wait();
+        // Jobs the shell left behind can outlive it, so the group is always
+        // signalled. A reaped child's pid, though, may be reused: only the
+        // child itself is signalled while it still runs.
+        let running = matches!(self.reaped.try_recv(), Err(TryRecvError::Empty));
+        self.kill_process_group();
+        if running {
+            let _ = self.killer.kill();
+            // The waiter reaps the child, so no zombie is left behind.
+            let _ = self.reaped.recv();
+        }
+    }
+}
+
+impl PortableHandle {
+    /// The child is a session leader, so its pid is also its process group:
+    /// background jobs started from the shell die with it instead of
+    /// outliving the app.
+    fn kill_process_group(&self) {
+        if let Some(pid) = self.pid.and_then(|pid| i32::try_from(pid).ok()) {
+            // SAFETY: killpg only sends a signal; it touches no memory.
+            unsafe {
+                libc::killpg(pid, libc::SIGKILL);
+            }
+        }
     }
 }
 
@@ -87,7 +147,7 @@ fn pump<R: Read + ?Sized>(reader: &mut R, sink: &mut PtySink) -> bool {
 
 /// Starts the child described by `spec` on a new PTY. `sink` receives its
 /// output and, once, `Exited` when the PTY closes.
-pub fn spawn_portable(spec: &SpawnSpec, mut sink: PtySink) -> io::Result<Box<dyn PtyHandle>> {
+pub fn spawn_portable(spec: &SpawnSpec, sink: PtySink) -> io::Result<Box<dyn PtyHandle>> {
     let pair = native_pty_system()
         .openpty(pty_size(spec.size))
         .map_err(io::Error::other)?;
@@ -104,9 +164,20 @@ pub fn spawn_portable(spec: &SpawnSpec, mut sink: PtySink) -> io::Result<Box<dyn
     let mut reader = pair.master.try_clone_reader().map_err(io::Error::other)?;
     let mut writer = pair.master.take_writer().map_err(io::Error::other)?;
 
+    let events = Arc::new(Events {
+        sink: Mutex::new(sink),
+        exited: AtomicBool::new(false),
+    });
+
+    // Dropped when the reader is done, which tells the waiter it may report.
+    let (eof_tx, eof_rx) = mpsc::channel::<()>();
+    let reader_events = Arc::clone(&events);
     thread::spawn(move || {
+        let _eof = eof_tx;
+        let events = Arc::clone(&reader_events);
+        let mut sink: PtySink = Box::new(move |event| events.send(event));
         if pump(&mut reader, &mut sink) {
-            sink(PtyEvent::Exited);
+            reader_events.exited();
         }
     });
 
@@ -124,9 +195,21 @@ pub fn spawn_portable(spec: &SpawnSpec, mut sink: PtySink) -> io::Result<Box<dyn
     });
 
     let pid = child.process_id();
+    let killer = child.clone_killer();
+    let (reaped_tx, reaped) = mpsc::channel::<()>();
+    thread::spawn(move || {
+        let mut child = child;
+        let _ = child.wait();
+        let _ = reaped_tx.send(());
+        // Let the reader flush what the child wrote before it died.
+        let _ = eof_rx.recv_timeout(DRAIN_GRACE);
+        events.exited();
+    });
+
     Ok(Box::new(PortableHandle {
         master: pair.master,
-        child,
+        killer,
+        reaped,
         writer: tx,
         pid,
         killed: false,
@@ -204,6 +287,80 @@ mod tests {
             }
         };
         assert!(exited, "no Exited event");
+    }
+
+    /// Counts `Exited` events seen until `window` passes.
+    fn count_exited(rx: &Receiver<PtyEvent>, window: Duration) -> usize {
+        let deadline = Instant::now() + window;
+        let mut exited = 0;
+        while Instant::now() < deadline {
+            if let Ok(PtyEvent::Exited) = rx.recv_timeout(Duration::from_millis(50)) {
+                exited += 1;
+            }
+        }
+        exited
+    }
+
+    // Spec: child exits -> app quits, even when a background job still holds
+    // the PTY open (so the reader never sees EOF).
+    #[test]
+    fn exit_is_reported_while_a_background_job_holds_the_pty() {
+        let (mut pty, rx) = spawn("/bin/sh", size(24, 80));
+        pty.write(b"sleep 20 &\nexit\n".to_vec());
+        assert_eq!(count_exited(&rx, Duration::from_secs(3)), 1);
+    }
+
+    #[test]
+    fn exited_is_emitted_exactly_once() {
+        let (mut pty, rx) = spawn("/bin/sh", size(24, 80));
+        pty.write(b"exit\n".to_vec());
+        assert_eq!(count_exited(&rx, Duration::from_secs(1)), 1);
+    }
+
+    fn is_alive(pid: u32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .map(|stat| {
+                !stat
+                    .rsplit(')')
+                    .next()
+                    .unwrap_or("")
+                    .trim_start()
+                    .starts_with('Z')
+            })
+            .unwrap_or(false)
+    }
+
+    // Spec: quit leaves no orphan, background jobs included.
+    #[test]
+    fn drop_kills_background_jobs() {
+        let (mut pty, rx) = spawn("/bin/sh", size(24, 80));
+        // Job control off: the job shares the shell's process group.
+        pty.write(b"set +m; sleep 20 & echo job=$!\n".to_vec());
+        // The tty echoes the command line too, so look for `job=` + digits.
+        let deadline = Instant::now() + TIMEOUT;
+        let mut seen = String::new();
+        let job = loop {
+            seen.push_str(&wait_for(&rx, "\n"));
+            let parsed = seen
+                .split("job=")
+                .filter_map(|rest| {
+                    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                    digits.parse::<u32>().ok()
+                })
+                .next();
+            match parsed {
+                Some(job) => break job,
+                None if Instant::now() > deadline => panic!("no job pid in {seen:?}"),
+                None => {}
+            }
+        };
+        assert!(is_alive(job));
+        drop(pty);
+        let deadline = Instant::now() + TIMEOUT;
+        while is_alive(job) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!is_alive(job), "background job survived the drop");
     }
 
     // Spec: quit leaves no orphan.
