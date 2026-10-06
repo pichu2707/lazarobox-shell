@@ -91,7 +91,8 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets`, `cargo fmt -
 - [x] 5.4 GREEN: 1 s `/proc/<pid>/cwd` poll in `runtime.rs`; statusline cwd and right shell segments. Test: `cd /tmp` reflected [auto, unix PTY].
   - DONE: extra `select!` branch on a 1 s interval (`CWD_POLL`, Skip on missed ticks); `read_link` on /proc is resolved in-kernel and cannot stall the loop. `ui::render` fills both segments. Existing statusline snapshots untouched: the populated-segment snapshots already existed from 3b, so none were added.
 - [ ] 5.5 [manual]: COPY j/k/Ctrl+u/Ctrl+d/gg/G on `ls -R`, exit lands at the bottom; cursor block in COPY.
-- [ ] 5.6 Final: `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check`.
+- [x] 5.6 Final: `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check`.
+  - DONE: 201 tests pass (3 consecutive runs), clippy -D warnings and fmt clean.
 
 ## Carried-over review notes (apply in PR 3, which already touches `theme.rs`/`statusline.rs`)
 
