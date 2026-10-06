@@ -73,7 +73,7 @@ The emulator MUST capture the cursor style requested by the child via DECSCUSR (
 #### Scenario: Restore on exit [auto, runtime executor with fake writer]
 - GIVEN the app has applied a Bar shape
 - WHEN the runtime shuts down (normal exit or panic hook)
-- THEN `DefaultUserShape` is emitted after leaving the alternate screen
+- THEN `DefaultUserShape` is emitted as part of the terminal restore (the cursor style is terminal-global, so its order relative to leaving the alternate screen does not matter)
 
 #### Scenario: Cursor shape in nvim [manual]
 - GIVEN nvim running in the pane inside Kitty
@@ -81,7 +81,7 @@ The emulator MUST capture the cursor style requested by the child via DECSCUSR (
 - THEN the cursor is a bar in insert mode and a block in normal mode, and after quitting nvim and exiting the app the Kitty cursor is back to its configured default
 
 ### Requirement: Terminal view rendering
-The view MUST render the emulator screen into the pane area (colors and attributes mapped, default colors from the theme, wide-char continuation cells skipped) and place the real cursor unless hidden.
+The view MUST render the emulator screen into the pane area (colors and attributes mapped; the default background comes from the theme, while the default foreground is the host terminal's default (`Reset`) because the theme defines no foreground; wide-char continuation cells skipped) and place the real cursor unless hidden.
 
 #### Scenario: Snapshot [auto, TestBackend + insta]
 - GIVEN styled bytes fed to a 10x40 emulator

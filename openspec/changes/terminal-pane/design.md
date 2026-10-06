@@ -6,23 +6,23 @@ Ports-and-adapters around a pure core. `App` owns the emulator (`Pane`) and inpu
 
 ## Architecture Decisions
 
-| # | Topic | Options | Decision / rationale |
-|---|---|---|---|
-| 1 | Mode model | (a) add TERMINAL/PREFIX/COPY to `AppMode`; (b) a separate `InputMode` axis | **(b)**. `AppMode` answers "what am I viewing" and `InputMode` answers "where do my keys go". Mixing them causes N×M variants once AI views arrive. `AppMode` stays as it is (the theme preview uses it, and future views will too). The multiplexer does not use it yet. |
-| 2 | Mode colors | new theme fields vs. reuse the palette | Reuse, following the vim analogy: TERMINAL≈insert→`success_green`, PREFIX≈pending→`warning_orange`, COPY≈normal→`primary_cyan`, CONFIRM_QUIT→`error_red`. New method `input_mode_style`. `mode_style(&AppMode)` is unchanged. |
-| 3 | StatusLine API | change `new()` signature vs. add a constructor | Keep `new(theme, AppMode, path, model)`. Add `StatusLine::input(theme, InputMode, path, right)`. Internally the widget stores `label: &str, style: Style`. Existing tests and snapshots pass byte-for-byte. New snapshots get new names. |
-| 4 | Emulator seam | `trait Emulator` vs. a concrete `Pane` with its own cell DTOs | Concrete `Pane` exposing `CellView`/`TermColor` (our own types). Only one implementation exists at any time, so a trait is YAGNI. The seam is the module boundary. |
-| 5 | Reader thread | `spawn_blocking` vs. a detached `std::thread` | Detached thread: `spawn_blocking` would hang runtime shutdown. |
-| 6 | Reader → loop | unbounded vs. bounded channel | Bounded tokio mpsc (256) with `blocking_send`. Floods like `cat big` get backpressure instead of unbounded memory growth. |
-| 7 | Writer | direct write in the loop vs. a writer thread | Writer thread fed by `std::sync::mpsc`. A big paste to a stalled child must never block the UI loop. |
-| 8 | Redraw | draw per event vs. dirty flag + tick | Drain all ready events (budget 256), set `dirty`, draw on a 16 ms tick (`MissedTickBehavior::Skip`). This caps output at about 60 fps under floods. |
-| 9 | cwd | OSC 7 vs. `/proc/<pid>/cwd` | Poll `read_link` every 1 s in the runtime, then send `AppEvent::Cwd(PathBuf)`. The OSC 7 override comes later. |
-| 10 | Prefix key | Ctrl+G (exploration) vs. Ctrl+Space (approved proposal) | **Ctrl+Space**, as approved. It is data (`PREFIX_KEY`), so changing it later is one line. |
-| 11 | Copy viewport on new output | drift vs. anchored | Anchored. Before and after `feed` in COPY, compare `scrollback_len()` and add the difference to the offset (clamped). Once the 10k cap is reached the view drifts, which is accepted. |
-| 12 | Cursor shape (DECSCUSR) | (a) `Effect::SetCursorShape` emitted by `update`; (b) pure derived value applied at render time | **(b)**. `Pane` stores the last requested `CursorShape` (pure DTO, no crossterm/vt100 types). `App::cursor_shape()` is a pure function: COPY → Block steady, otherwise `pane.cursor_shape()`. The runtime compares it with the last applied shape after each draw and emits `SetCursorStyle` only on change. No new Effect, `update` stays pure, and the rule is unit-testable without a terminal. |
-| 13 | Cursor shape restore | restore only on clean exit vs. also on panic | Both: `restore()` emits `SetCursorStyle::DefaultUserShape` (also chained into the panic hook). Ps 0 from the child maps to `Default` and is applied the same way. |
-| 14 | COPY cursor | show child's shape vs. fixed block | Fixed steady block: in COPY the viewport can be away from the child's cursor, and block matches vim normal mode. TERMINAL restores the child's last request automatically since the value is derived. |
-| 15 | Alt screen in COPY | special-case vs. natural clamp | Natural clamp: there is no scrollback on the alt screen (`scrollback_len() == 0`), so offsets stay 0. Accepted limitation, same as tmux. |
+| #   | Topic                       | Options                                                                                         | Decision / rationale                                                                                                                                                                                                                                                                                                                                                                               |
+| --- | --------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Mode model                  | (a) add TERMINAL/PREFIX/COPY to `AppMode`; (b) a separate `InputMode` axis                      | **(b)**. `AppMode` answers "what am I viewing" and `InputMode` answers "where do my keys go". Mixing them causes N×M variants once AI views arrive. `AppMode` stays as it is (the theme preview uses it, and future views will too). The multiplexer does not use it yet.                                                                                                                          |
+| 2   | Mode colors                 | new theme fields vs. reuse the palette                                                          | Reuse, following the vim analogy: TERMINAL≈insert→`success_green`, PREFIX≈pending→`warning_orange`, COPY≈normal→`primary_cyan`, CONFIRM_QUIT→`error_red`. New method `input_mode_style`. `mode_style(&AppMode)` is unchanged.                                                                                                                                                                      |
+| 3   | StatusLine API              | change `new()` signature vs. add a constructor                                                  | Keep `new(theme, AppMode, path, model)`. Add `StatusLine::input(theme, InputMode, path, right)`. Internally the widget stores `label: &str, style: Style`. Existing tests and snapshots pass byte-for-byte. New snapshots get new names.                                                                                                                                                           |
+| 4   | Emulator seam               | `trait Emulator` vs. a concrete `Pane` with its own cell DTOs                                   | Concrete `Pane` exposing `CellView`/`TermColor` (our own types). Only one implementation exists at any time, so a trait is YAGNI. The seam is the module boundary.                                                                                                                                                                                                                                 |
+| 5   | Reader thread               | `spawn_blocking` vs. a detached `std::thread`                                                   | Detached thread: `spawn_blocking` would hang runtime shutdown.                                                                                                                                                                                                                                                                                                                                     |
+| 6   | Reader → loop               | unbounded vs. bounded channel                                                                   | Bounded tokio mpsc (256) with `blocking_send`. Floods like `cat big` get backpressure instead of unbounded memory growth.                                                                                                                                                                                                                                                                          |
+| 7   | Writer                      | direct write in the loop vs. a writer thread                                                    | Writer thread fed by `std::sync::mpsc`. A big paste to a stalled child must never block the UI loop.                                                                                                                                                                                                                                                                                               |
+| 8   | Redraw                      | draw per event vs. dirty flag + tick                                                            | Drain all ready events (budget 256), set `dirty`, draw on a 16 ms tick (`MissedTickBehavior::Skip`). This caps output at about 60 fps under floods.                                                                                                                                                                                                                                                |
+| 9   | cwd                         | OSC 7 vs. `/proc/<pid>/cwd`                                                                     | Poll `read_link` every 1 s in the runtime, then send `AppEvent::Cwd(PathBuf)`. The OSC 7 override comes later.                                                                                                                                                                                                                                                                                     |
+| 10  | Prefix key                  | Ctrl+G (exploration) vs. Ctrl+Space (approved proposal)                                         | **Ctrl+Space**, as approved. It is data (`PREFIX_KEY`), so changing it later is one line.                                                                                                                                                                                                                                                                                                          |
+| 11  | Copy viewport on new output | drift vs. anchored                                                                              | Anchored. vt100 already pins a scrolled-back viewport when output arrives, so `App::sync_copy_offset` copies the pane's offset into `CopyState` after `feed` and resize; no `scrollback_len()` delta (it would double-count). Once the 10k cap is reached the view drifts, which is accepted.                                                                                                                                                                                                              |
+| 12  | Cursor shape (DECSCUSR)     | (a) `Effect::SetCursorShape` emitted by `update`; (b) pure derived value applied at render time | **(b)**. `Pane` stores the last requested `CursorShape` (pure DTO, no crossterm/vt100 types). `App::cursor_shape()` is a pure function: COPY → Block steady, otherwise `pane.cursor_shape()`. The runtime compares it with the last applied shape after each draw and emits `SetCursorStyle` only on change. No new Effect, `update` stays pure, and the rule is unit-testable without a terminal. |
+| 13  | Cursor shape restore        | restore only on clean exit vs. also on panic                                                    | Both: `restore()` emits `SetCursorStyle::DefaultUserShape` (also chained into the panic hook). Ps 0 from the child maps to `Default` and is applied the same way.                                                                                                                                                                                                                                  |
+| 14  | COPY cursor                 | show child's shape vs. fixed block                                                              | Fixed steady block: in COPY the viewport can be away from the child's cursor, and block matches vim normal mode. TERMINAL restores the child's last request automatically since the value is derived.                                                                                                                                                                                              |
+| 15  | Alt screen in COPY          | special-case vs. natural clamp                                                                  | Natural clamp: there is no scrollback on the alt screen (`scrollback_len() == 0`), so offsets stay 0. Accepted limitation, same as tmux.                                                                                                                                                                                                                                                           |
 
 ## Data Flow
 
@@ -43,23 +43,23 @@ Ports-and-adapters around a pure core. `App` owns the emulator (`Pane`) and inpu
 
 ## File Changes
 
-| File | Action | Description |
-|---|---|---|
-| `Cargo.toml` | Modify | `portable-pty = "0.9"`, `vt100 = "0.16.2"`, `crossterm = { version = "0.29", features = ["event-stream"] }`, `futures = "0.3"`. The lock already resolves a single crossterm 0.29.0. The direct dep only turns on `event-stream`, and the code keeps importing through `ratatui::crossterm`. |
-| `src/lib.rs` | Modify | `pub mod core; pub mod runtime;` |
-| `src/core/mod.rs` | Create | `pty`, `pane`, `keys`, `prefix`, `copy` |
-| `src/core/pty/{mod,portable,fake}.rs` | Create | port, adapter (writer/reader threads), fake |
-| `src/core/pane.rs` | Create | vt100 parser, responder `Callbacks` (DA1/DSR + DECSCUSR capture), `CellView`, `CursorShape` |
-| `src/core/keys.rs` | Create | pure encoder |
-| `src/core/prefix.rs` | Create | prefix key and action table |
-| `src/core/copy.rs` | Create | `CopyState`, motions |
-| `src/app.rs` | Modify | add `InputMode`, `App`, `AppEvent`, `Effect`; keep `AppMode` |
-| `src/runtime.rs` | Create | `ratatui::init` + `EnableBracketedPaste`; `restore()` = `SetCursorStyle::DefaultUserShape` + `DisableBracketedPaste` + `ratatui::restore` (also chained into the panic hook); select loop; effect executor; applies `App::cursor_shape()` via `SetCursorStyle` when it changes |
-| `src/ui/components/terminal_view.rs` | Create | `Pane` → Buffer, cursor |
-| `src/ui/components/statusline.rs` | Modify | `input()` constructor, label/style fields |
-| `src/ui/theme.rs` | Modify | `input_mode_style` |
-| `src/ui/mod.rs` | Modify | `render(frame, &App, &theme)` |
-| `src/main.rs` | Modify | `#[tokio::main]` → `runtime::run()` |
+| File                                  | Action | Description                                                                                                                                                                                                                                                                                  |
+| ------------------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Cargo.toml`                          | Modify | `portable-pty = "0.9"`, `vt100 = "0.16.2"`, `crossterm = { version = "0.29", features = ["event-stream"] }`, `futures = "0.3"`. The lock already resolves a single crossterm 0.29.0. The direct dep only turns on `event-stream`, and the code keeps importing through `ratatui::crossterm`. |
+| `src/lib.rs`                          | Modify | `pub mod core; pub mod runtime;`                                                                                                                                                                                                                                                             |
+| `src/core/mod.rs`                     | Create | `pty`, `pane`, `keys`, `prefix`, `copy`                                                                                                                                                                                                                                                      |
+| `src/core/pty/{mod,portable,fake}.rs` | Create | port, adapter (writer/reader threads), fake                                                                                                                                                                                                                                                  |
+| `src/core/pane.rs`                    | Create | vt100 parser, responder `Callbacks` (DA1/DSR + DECSCUSR capture), `CellView`, `CursorShape`                                                                                                                                                                                                  |
+| `src/core/keys.rs`                    | Create | pure encoder                                                                                                                                                                                                                                                                                 |
+| `src/core/prefix.rs`                  | Create | prefix key and action table                                                                                                                                                                                                                                                                  |
+| `src/core/copy.rs`                    | Create | `CopyState`, motions                                                                                                                                                                                                                                                                         |
+| `src/app.rs`                          | Modify | add `InputMode`, `App`, `AppEvent`, `Effect`; keep `AppMode`                                                                                                                                                                                                                                 |
+| `src/runtime.rs`                      | Create | `ratatui::init` + `EnableBracketedPaste`; `restore()` = `SetCursorStyle::DefaultUserShape` + `DisableBracketedPaste` + `ratatui::restore` (also chained into the panic hook); select loop; effect executor; applies `App::cursor_shape()` via `SetCursorStyle` when it changes               |
+| `src/ui/components/terminal_view.rs`  | Create | `Pane` → Buffer, cursor                                                                                                                                                                                                                                                                      |
+| `src/ui/components/statusline.rs`     | Modify | `input()` constructor, label/style fields                                                                                                                                                                                                                                                    |
+| `src/ui/theme.rs`                     | Modify | `input_mode_style`                                                                                                                                                                                                                                                                           |
+| `src/ui/mod.rs`                       | Modify | `render(frame, &App, &theme)`                                                                                                                                                                                                                                                                |
+| `src/main.rs`                         | Modify | `#[tokio::main]` → `runtime::run()`                                                                                                                                                                                                                                                          |
 
 ## Interfaces / Contracts
 
@@ -143,6 +143,7 @@ The same callback captures DECSCUSR: final byte `q` with intermediate `b' '` and
 Scope: a throwaway `examples/spike_vt100.rs` (deleted or kept unwired) that runs `nvim` in vt100 with the responder and draws through a minimal view.
 
 Accept if all of these hold:
+
 - LazyVim starts in under 1 s with no DA/DSR timeout stall.
 - Truecolor theme is correct.
 - Arrows work in insert and normal mode (application cursor).
@@ -152,6 +153,7 @@ Accept if all of these hold:
 - crossterm reports Ctrl+Space as `Char(' ')` + CONTROL.
 
 The spike must also confirm these vt100 0.16 APIs (the crate is not in the local registry):
+
 - `Callbacks::unhandled_csi` signature, and that 6n and `c` reach it.
 - DECSCUSR (`CSI Ps SP q`) reaches `unhandled_csi` with intermediate `b' '` and the Ps param exposed (otherwise use the pre-scanner fallback).
 - `screen_mut().set_scrollback(n)` semantics: offset in rows from the bottom, clamped.
@@ -162,22 +164,23 @@ Reject if any stall or corruption cannot be fixed with callbacks. Fallback: re-i
 
 ## Testing Strategy (strict TDD, `cargo test`)
 
-| Module | Approach |
-|---|---|
-| `keys` | table-driven: chars, Ctrl, Alt, Enter/BS/Tab/BackTab, arrows × app-cursor, F-keys, paste ± bracketed |
-| `prefix`, `copy` | pure tables: lookup, motions, `gg`, clamping, exit |
-| `pane` | feed bytes → cells/colors/cursor; `\e[6n`/`\e[c`/`\e[5n` → reply bytes; scrollback anchoring; DECSCUSR `\e[0..6 q` → `CursorShape` (incl. unknown Ps, split chunks, no reply bytes) |
-| `app` | `update` → effects and mode transitions; resize math; quit flow; Pty Exited → Quit; `cursor_shape()`: TERMINAL/PREFIX follow the pane, COPY → Block steady, back to TERMINAL restores |
-| `terminal_view` | TestBackend + insta (colors, wide chars, cursor, scrolled view) |
-| `statusline` | existing tests untouched; new snapshots per `InputMode`; cwd/shell segments |
-| `runtime` executor | `FakePty` records writes and resizes; cursor-style application only on change; `restore()` emits `DefaultUserShape` (writer-generic helper, tested against a `Vec<u8>`) |
-| `pty/portable` | `#[cfg(all(test, target_os = "linux"))]`, 2–3 tests with `recv_timeout`: echo, `stty size` after resize, exit → `Exited` |
+| Module             | Approach                                                                                                                                                                              |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `keys`             | table-driven: chars, Ctrl, Alt, Enter/BS/Tab/BackTab, arrows × app-cursor, F-keys, paste ± bracketed                                                                                  |
+| `prefix`, `copy`   | pure tables: lookup, motions, `gg`, clamping, exit                                                                                                                                    |
+| `pane`             | feed bytes → cells/colors/cursor; `\e[6n`/`\e[c`/`\e[5n` → reply bytes; scrollback anchoring; DECSCUSR `\e[0..6 q` → `CursorShape` (incl. unknown Ps, split chunks, no reply bytes)   |
+| `app`              | `update` → effects and mode transitions; resize math; quit flow; Pty Exited → Quit; `cursor_shape()`: TERMINAL/PREFIX follow the pane, COPY → Block steady, back to TERMINAL restores |
+| `terminal_view`    | TestBackend + insta (colors, wide chars, cursor, scrolled view)                                                                                                                       |
+| `statusline`       | existing tests untouched; new snapshots per `InputMode`; cwd/shell segments                                                                                                           |
+| `runtime` executor | `FakePty` records writes and resizes; cursor-style application only on change; `restore()` emits `DefaultUserShape` (writer-generic helper, tested against a `Vec<u8>`)               |
+| `pty/portable`     | `#[cfg(all(test, target_os = "linux"))]`, 2–3 tests with `recv_timeout`: echo, `stty size` after resize, exit → `Exited`                                                              |
 
 ## Migration / Rollout
 
 No migration required. `examples/theme_preview.rs` keeps using `AppMode` + `run_preview`.
 
 Suggested chained PRs (each one green on test, clippy, and fmt):
+
 1. deps + spike + `core/pane` (responder + `CursorShape`/DECSCUSR capture)
 2. `core/keys`
 3. `core/prefix` + `core/copy` + `InputMode`/`App::update` + `App::cursor_shape` + theme/statusline

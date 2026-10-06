@@ -1,3 +1,4 @@
-fn main() -> std::io::Result<()> {
-    lazarobox_shell::ui::preview::run_preview()
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    lazarobox_shell::runtime::run().await
 }

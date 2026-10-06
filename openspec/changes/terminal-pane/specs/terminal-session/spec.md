@@ -58,6 +58,8 @@ When the child exits the app MUST quit with the host terminal restored. On quit 
 - WHEN the session is dropped/shut down
 - THEN the child pid no longer exists
 
+Teardown sends SIGHUP to the shell's process group, waits a short grace so the shell can save history and run its traps, then sends SIGKILL to the group. Accepted limitation: jobs that an interactive shell with job control moved into their own process group are not reached and may outlive the app, as with tmux.
+
 #### Scenario: Terminal restored [manual]
 - GIVEN `exit` typed, or prefix `q` then `y`
 - WHEN the app ends
