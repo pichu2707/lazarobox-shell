@@ -54,11 +54,11 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 
 ## S2a: Layout tile (pure)
 
-- [ ] S2a.1 RED: `src/core/layout.rs` table tests for `tile`: rect sums equal the area incl. separators; `avail = extent - 1`; rounding; degenerate extents 0/1/2 [pane-layout: Rects tile the area, Tiny terminal never panics].
-- [ ] S2a.2 GREEN: `Axis`, `Direction`, `MIN_PANE`, `Node`, `Split`, `Separator`, `Tiling`, `tile`.
-- [ ] S2a.3 RED+GREEN: `pane_at`, `Separator::highlight(focused)` (offset,len adjacent to focus) tests.
-- [ ] S2a.4 RED+GREEN: PaneId allocation helper test: ids start at 1, never reused [pane-layout: Ids are never reused].
-- [ ] S2a.5 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] S2a.1 RED: `src/core/layout.rs` table tests for `tile`: rect sums equal the area incl. separators; `avail = extent - 1`; rounding; degenerate extents 0/1/2 [pane-layout: Rects tile the area, Tiny terminal never panics].
+- [x] S2a.2 GREEN: `Axis`, `Direction`, `MIN_PANE`, `Node`, `Split`, `Separator`, `Tiling`, `tile`.
+- [x] S2a.3 RED+GREEN: `pane_at`, `Separator::highlight(focused)` (offset,len adjacent to focus) tests.
+- [x] S2a.4 RED+GREEN: PaneId allocation helper test: ids start at 1, never reused [pane-layout: Ids are never reused].
+- [x] S2a.5 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## S2b: Layout split, remove, neighbour
 
