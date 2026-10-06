@@ -28,6 +28,18 @@ pub enum InputMode {
     ConfirmQuit,
 }
 
+impl InputMode {
+    /// Text of the statusline mode block.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Terminal => "TERMINAL",
+            Self::Prefix => "PREFIX",
+            Self::Copy(_) => "COPY",
+            Self::ConfirmQuit => "Quit? (y/n)",
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
