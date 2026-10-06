@@ -2,12 +2,9 @@ pub mod components;
 pub mod preview;
 pub mod theme;
 
-use ratatui::{
-    Frame,
-    layout::{Constraint, Layout},
-};
+use ratatui::Frame;
 
-use crate::app::App;
+use crate::{app::App, core::layout::Rect};
 use components::{
     statusline::StatusLine,
     terminal_view::{TerminalView, cursor_position},
@@ -17,19 +14,26 @@ use theme::LazaroboxTheme;
 /// Draws the terminal pane over the statusline, with the child's cwd on the
 /// left and the shell name on the right.
 pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
-    let [body, status] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(frame.area());
+    let screen = app.screen();
+    let body = within(frame, screen.body);
+    let status = within(frame, screen.status);
 
-    frame.render_widget(TerminalView::new(&app.pane, theme), body);
+    let pane = app.focused_pane();
+    frame.render_widget(TerminalView::new(pane, theme), body);
     let cwd = app.cwd_label();
     frame.render_widget(
-        StatusLine::input(theme, app.input, &cwd, app.shell_name()),
+        StatusLine::input(theme, app.input(), &cwd, app.shell_name()),
         status,
     );
 
-    if let Some(position) = cursor_position(&app.pane, body) {
+    if let Some(position) = cursor_position(pane, body) {
         frame.set_cursor_position(position);
     }
+}
+
+/// `rect` as a ratatui rect, cut to what the frame can actually draw.
+fn within(frame: &Frame, rect: Rect) -> ratatui::layout::Rect {
+    ratatui::layout::Rect::new(rect.x, rect.y, rect.width, rect.height).intersection(frame.area())
 }
 
 #[cfg(test)]
@@ -40,18 +44,18 @@ mod tests {
     use super::*;
     use crate::{
         app::{App, AppEvent, InputMode},
-        core::{pane::PaneSize, pty::PtyEvent},
+        core::{layout::PaneId, pty::PtyEvent},
     };
 
     const COLS: u16 = 60;
     const ROWS: u16 = 6;
 
     fn app() -> App {
-        let mut app = App::new(PaneSize {
-            rows: ROWS - 1,
-            cols: COLS,
-        });
-        app.update(AppEvent::Pty(PtyEvent::Output(b"hi there".to_vec())));
+        let mut app = App::new(COLS, ROWS);
+        app.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(b"hi there".to_vec()),
+        ));
         app
     }
 
@@ -83,7 +87,7 @@ mod tests {
             KeyCode::Char(' '),
             KeyModifiers::CONTROL,
         )));
-        assert_eq!(app.input, InputMode::Prefix);
+        assert_eq!(app.input(), InputMode::Prefix);
         let (buf, _) = draw(&app);
         assert!(row(&buf, ROWS - 1).contains("PREFIX"));
     }
