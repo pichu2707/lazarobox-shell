@@ -4,3 +4,4 @@ pub mod copy;
 pub mod keys;
 pub mod pane;
 pub mod prefix;
+pub mod pty;
