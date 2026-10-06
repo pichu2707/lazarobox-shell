@@ -62,6 +62,8 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 
 ## S2b: Layout split, remove, neighbour
 
+> Note: RED evidence was compile-only for the initial tasks. Behaviour coverage was confirmed by review mutation testing (41/45 killed); the survivors were fixed in a follow-up.
+
 - [x] S2b.1 RED: `Node::split` tests: right/below, weights equal cell sizes, 21 cols / 5 rows applied, one less refused (`TooSmall`) [pane-layout: Split right, Split below, Refused below minimum, Minimum split sizes].
 - [x] S2b.2 GREEN: `Direction`, `MIN_PANE`, `Node::split` + `SplitError`.
 - [x] S2b.3 RED: `Node::remove` tests: sibling expands, `WasLast`, `NotFound`, parent rect restored [pane-layout: Sibling expands, Last pane closes the tab].
