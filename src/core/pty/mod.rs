@@ -5,6 +5,7 @@ use std::{io, path::PathBuf};
 use crate::core::pane::PaneSize;
 
 pub mod fake;
+pub mod portable;
 
 /// Shell used when `$SHELL` is unset or empty.
 const FALLBACK_SHELL: &str = "/bin/sh";
