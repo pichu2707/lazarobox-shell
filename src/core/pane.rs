@@ -27,13 +27,13 @@ pub enum TermColor {
     Rgb(u8, u8, u8),
 }
 
-impl From<vt100::Color> for TermColor {
-    fn from(color: vt100::Color) -> Self {
-        match color {
-            vt100::Color::Default => Self::Default,
-            vt100::Color::Idx(i) => Self::Idx(i),
-            vt100::Color::Rgb(r, g, b) => Self::Rgb(r, g, b),
-        }
+/// Maps a vt100 color to [`TermColor`]. Private on purpose: no vt100 type
+/// crosses the module boundary.
+fn to_term_color(color: vt100::Color) -> TermColor {
+    match color {
+        vt100::Color::Default => TermColor::Default,
+        vt100::Color::Idx(i) => TermColor::Idx(i),
+        vt100::Color::Rgb(r, g, b) => TermColor::Rgb(r, g, b),
     }
 }
 
@@ -177,8 +177,8 @@ impl Pane {
         let cell = self.parser.screen().cell(row, col)?;
         Some(CellView {
             text: cell.contents(),
-            fg: cell.fgcolor().into(),
-            bg: cell.bgcolor().into(),
+            fg: to_term_color(cell.fgcolor()),
+            bg: to_term_color(cell.bgcolor()),
             bold: cell.bold(),
             italic: cell.italic(),
             underline: cell.underline(),
