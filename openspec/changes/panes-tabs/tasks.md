@@ -44,13 +44,13 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 
 ## S1: Encapsulation, `App::new(cols, rows)`, `PaneId` (single pane)
 
-- [ ] S1.1 RED: `src/core/layout.rs` (new, only `PaneId(u32)` + `Rect` for now) test: `PaneId` is `Copy + Eq + Hash + Ord`; register in `src/core/mod.rs`.
-- [ ] S1.2 GREEN: define `PaneId`, `Rect`.
-- [ ] S1.3 RED: `src/app.rs` tests via accessors only (`input()`, `take_dirty()`, `focused_pane()`, `screen()`), `App::new(80, 25)` body is 24 rows [modal-input: Passthrough, Resize in any mode].
-- [ ] S1.4 GREEN: make `App` fields private; add accessors, `take_dirty`, `screen()` (no bar), `initial_spawn()`; `AppEvent::Pty(PaneId, ..)`, `Effect::{WritePty,ResizePty}(PaneId, ..)` with one pane id 1.
-- [ ] S1.5 REFACTOR: migrate in-module tests (`a.input`->`a.input()`, `a.dirty=false`->`a.take_dirty();`, `a.size`->`a.focused_size()`).
-- [ ] S1.6 RED+GREEN: `src/runtime.rs` uses `take_dirty()` and tagged events (single handle); `src/ui/mod.rs` uses accessors; existing snapshots unchanged.
-- [ ] S1.7 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] S1.1 RED: `src/core/layout.rs` (new, only `PaneId(u32)` + `Rect` for now) test: `PaneId` is `Copy + Eq + Hash + Ord`; register in `src/core/mod.rs`.
+- [x] S1.2 GREEN: define `PaneId`, `Rect`.
+- [x] S1.3 RED: `src/app.rs` tests via accessors only (`input()`, `take_dirty()`, `focused_pane()`, `screen()`), `App::new(80, 25)` body is 24 rows [modal-input: Passthrough, Resize in any mode].
+- [x] S1.4 GREEN: make `App` fields private; add accessors, `take_dirty`, `screen()` (no bar), `initial_spawn()`; `AppEvent::Pty(PaneId, ..)`, `Effect::{WritePty,ResizePty}(PaneId, ..)` with one pane id 1.
+- [x] S1.5 REFACTOR: migrate in-module tests (`a.input`->`a.input()`, `a.dirty=false`->`a.take_dirty();`, `a.size`->`a.focused_size()`).
+- [x] S1.6 RED+GREEN: `src/runtime.rs` uses `take_dirty()` and tagged events (single handle); `src/ui/mod.rs` uses accessors; existing snapshots unchanged.
+- [x] S1.7 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## S2a: Layout tile (pure)
 
