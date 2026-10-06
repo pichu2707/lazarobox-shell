@@ -208,7 +208,7 @@ Ctrl+Space (reported as NUL 0x00) MUST enter PREFIX without writing to the PTY. 
 #### Scenario: Real terminal reports NUL [manual, Kitty]
 - GIVEN Kitty
 - WHEN Ctrl+Space is pressed
-- THEN PREFIX is entered and nothing is written to the PTY (the which-key hint appears once a group such as `w` is pending; see statusline)
+- THEN PREFIX is entered and nothing is written to the PTY (the root which-key hint appears in the statusline while PREFIX is pending, and the group hint once a group such as `w` is pending; see statusline)
 
 ### Requirement: Quit confirmation
 `q` in PREFIX MUST enter a confirmation state shown as "Quit? (y/n)" (the same prompt as the quit variants of `w q` and `t c`). `y` MUST emit Quit; any other key (n, Esc, other) MUST return to TERMINAL, swallowed. Only lowercase `y` with no modifiers confirms; `Y` (Shift or Caps Lock) declines. Quit MUST shut down all panes of all tabs.

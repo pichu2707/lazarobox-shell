@@ -42,9 +42,9 @@ This keeps the functional-core / imperative-shell split from slice 1 and follows
 | 24 | Separator accent | fixed cyan vs mode accent | `theme.input_accent(app.input())` on the separator cells next to the focused pane. Other separator cells use `text_muted`. In RESIZE this highlights the border that is about to move. Glyphs are `│` and `─`, with no junction glyphs. |
 | 25 | Tab placement | after the active tab vs at the end | **Appended at the end**, so `b N` numbers never shift when a tab is created. Closing tab *i* focuses the tab that takes index *i*, or the last tab. `g b`/`g B` wrap. `b N` beyond the count is a no-op. Closing an inactive tab (its last shell exited) keeps the active tab. |
 | 27 | Focus after split | stay on the original; move to the new pane | **Move to the new pane** (nvim behaviour). The original pane keeps its content. |
-| 28 | Key hint while a group is pending | none; hint built from `Group.bindings`; full viewer | A one-line **minimal which-key** in the statusline path segment (user decision). It is built by a pure `prefix::hint(group, max_cols) -> String` from `Group.bindings`: each entry is `{key label} {description}` (`KeyChord::label()`: the character itself for `Char`, so `v split right`), entries joined by ` · ` in table order. Example for `w`: `v split right · h split below · q close · r resize · z zoom`. **Clipping** is by whole entries, measured in terminal cells: entries are added while they fit; if some do not, the last fitting entry is followed by `…` (the `…` is reserved when counting). If not even the first entry fits, the hint is empty. Never a panic, never a partial entry. The mode block shows the group label in the PREFIX style and takes priority over the hint. No hint is built for plain PREFIX. The full `?` viewer stays out of scope. |
+| 28 | Key hint while PREFIX or a group is pending | none; hint built from the binding tables; full viewer | A one-line **minimal which-key** in the statusline path segment (user decision), shown both at the **root** (plain PREFIX) and inside a group. It is built by a pure `prefix::hint(bindings: &[Binding], max_cols) -> String`; a group passes `Group.bindings`, plain PREFIX passes `PREFIX_TREE`. Each entry is `{key label} {description}` (`KeyChord::label()`: the character itself for `Char`, so `v split right`), entries joined by ` · ` in table order. Example for `w`: `v split right · h split below · q close · r resize · z zoom`. **Clipping** is by whole entries, measured in terminal cells: entries are added while they fit; if some do not, the last fitting entry is followed by `…` (the `…` is reserved when counting). If not even the first entry fits, the hint is empty. Never a panic, never a partial entry. The mode block shows the group label in the PREFIX style and takes priority over the hint. **Root hint:** with plain PREFIX the same function renders the root of the tree, e.g. `w window · t tab · g go · b buffer · [ copy · q quit`. A group entry shows its description (`window`, `tab`, `go`, `buffer`); leaf entries show their description. The root hint lists only entries marked `hinted: true` on `Binding` (groups, `[`, `q`); focus keys `h/j/k/l`, the literal Ctrl+Space and the reserved `?` are `hinted: false` (all group bindings are `true`). `PREFIX_TREE` is ordered groups first, then `[`, `q`, then the unhinted entries, so hint order equals table order. The prefix tree stays a static table; keymap configuration stays out of scope, and so does the full `?` viewer. |
 | 29 | Tab label | index only, cwd path, `N cwd-basename` | **`N cwd-basename`** of the tab's focused pane (effective cwd). Root is shown as `/`; with no known cwd the label is just `N`. Labels are clipped with `…` on overflow (see UI). |
-| 30 | Statusline notice priority | — | In the path segment, precedence is: spawn-failure notice, then group key hint, then cwd. The notice is cleared by the next key, so it never coexists with a hint. |
+| 30 | Statusline notice priority | — | In the path segment, precedence is: spawn-failure notice, then key hint (root hint in PREFIX, group hint in a group), then cwd. The notice is cleared by the next key, so it never coexists with a hint. |
 | 26 | Screen geometry | ratatui `Layout` in the UI vs computed by `App` | `App::screen() -> ScreenLayout { tab_bar: Option<Rect>, body, status }` from `(cols, rows, tabs > 1)`. The body is `y = bar as u16`, `height = rows - 1 - bar` (minimum 1), `width = cols` (minimum 1). The UI draws exactly these rects, so App and UI can never disagree. |
 
 ## Data Flow
@@ -93,11 +93,11 @@ pub enum PrefixAction { SendPrefixLiteral, RequestQuit, EnterCopy, ShowCommands,
     SplitRight, SplitBelow, ClosePane, EnterResize, ToggleZoom, NewTab, CloseTab, NextTab, PrevTab, GotoTab(u8) }
 pub struct Group { pub label: &'static str, pub bindings: &'static [Binding] }
 pub enum Target { Action(PrefixAction), Group(&'static Group) }
-pub struct Binding { pub chord: KeyChord, pub description: &'static str, pub target: Target }
-pub const PREFIX_TREE: &[Binding]; // q [ ? Ctrl+Space h j k l, w{v h q r z}, t{n c}, g{b B}, b{1..9}
+pub struct Binding { pub chord: KeyChord, pub description: &'static str, pub target: Target, pub hinted: bool }
+pub const PREFIX_TREE: &[Binding]; // w{v h q r z}, t{n c}, g{b B}, b{1..9}, [ q (hinted), then h j k l ? Ctrl+Space (unhinted)
 pub enum Step { Run(PrefixAction), Enter(&'static Group), Cancel }
 pub fn lookup(table: &'static [Binding], key: &KeyEvent) -> Step; // unknown/Esc ⇒ Cancel
-pub fn hint(group: &Group, max_cols: u16) -> String; // ADR 28: "v split right · h split below · …", clipped by whole entries
+pub fn hint(bindings: &[Binding], max_cols: u16) -> String; // ADR 28: "v split right · h split below · …" (group) or "w window · t tab · …" (root); hinted entries only, clipped by whole entries
 // const fn helpers act()/group() keep the table to one line per binding.
 
 // core/osc7.rs — pure
@@ -130,7 +130,7 @@ impl App {
     pub fn view(&self) -> Tiling;            // active tab, absolute coords
     pub fn focused(&self) -> PaneId; pub fn focused_pane(&self) -> &Pane; pub fn pane(&self, id: PaneId) -> Option<&Pane>;
     pub fn tab_labels(&self) -> Vec<String>; pub fn active_tab(&self) -> usize;
-    pub fn status_path(&self, max_cols: u16) -> String; // notice, else key hint (group pending), else cwd_label() of the focused pane
+    pub fn status_path(&self, max_cols: u16) -> String; // notice, else key hint (PREFIX or group pending), else cwd_label() of the focused pane
     pub fn zoomed(&self) -> bool;            // drives the `[Z]` statusline indicator
     pub fn shell_name(&self) -> &str; pub fn cursor_shape(&self) -> CursorShape;
 }

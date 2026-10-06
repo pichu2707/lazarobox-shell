@@ -7,6 +7,18 @@ Bottom row (always reserved). Existing statusline snapshots for TERMINAL, PREFIX
 ### Requirement: Group-pending key hint
 While a group is pending (after `w`, `t`, `g` or `b`) the mode block MUST show the group label (`WINDOW`, `TAB`, `GO`, `BUFFER`) in the PREFIX color, and the path segment MUST show a one-line key hint generated from the prefix tree: each binding of the group as `{key} {description}`, in table order, joined by ` · `. For group `w` the hint is `v split right · h split below · q close · r resize · z zoom`. When the hint does not fit the available width it MUST be clipped by whole entries and end with `…`; it MUST never show a partial entry. The hint is minimal: the full `?` command viewer is out of scope.
 
+With plain PREFIX (no group yet) the path segment MUST show the same kind of hint built from the root of the prefix tree, using the same function and clipping rule: `w window · t tab · g go · b buffer · [ copy · q quit`. A group entry shows its short description; focus keys, the literal Ctrl+Space and the reserved `?` are not listed.
+
+#### Scenario: Root hint in PREFIX [auto, TestBackend + insta]
+- GIVEN PREFIX with no group pending on a wide terminal
+- WHEN rendered
+- THEN the mode block shows `PREFIX` and the path segment shows `w window · t tab · g go · b buffer · [ copy · q quit`
+
+#### Scenario: Root hint clipped and cleared [auto]
+- GIVEN PREFIX and a path segment too narrow for the full root hint
+- WHEN rendered, and then Esc is pressed
+- THEN the hint shows only whole entries followed by `…`, and after Esc the statusline shows TERMINAL and the cwd
+
 #### Scenario: Group hint [auto, TestBackend + insta]
 - GIVEN group `w` pending on a wide terminal
 - WHEN rendered
@@ -107,7 +119,7 @@ While a confirmation is pending the statusline MUST show its prompt: "Close pane
 - THEN "Quit? (y/n)" is visible
 
 ### Requirement: Live cwd
-The statusline MUST show the focused pane's current working directory in the path segment (unless a notice or group hint replaces it). The value comes from OSC 7 when that pane has reported one, otherwise from the periodic (~1 s) `/proc` poll, and the last value MUST be kept if it cannot be read. Focus changes MUST switch the shown cwd immediately.
+The statusline MUST show the focused pane's current working directory in the path segment (unless a notice or a key hint replaces it). The value comes from OSC 7 when that pane has reported one, otherwise from the periodic (~1 s) `/proc` poll, and the last value MUST be kept if it cannot be read. Focus changes MUST switch the shown cwd immediately.
 (Previously: one shell's cwd from the poll only)
 
 #### Scenario: cwd changes [auto, unix PTY]
