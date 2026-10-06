@@ -717,6 +717,51 @@ mod app_tests {
         assert!(a.pane.scrollback_offset() <= a.pane.scrollback_len());
     }
 
+    fn visible_text(a: &App) -> Vec<String> {
+        (0..a.size.rows)
+            .map(|row| {
+                (0..a.size.cols)
+                    .filter_map(|col| a.pane.cell(row, col))
+                    .map(|cell| cell.text)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    // Spec: output during COPY keeps the same content visible. The anchoring
+    // comes from the emulator pinning the viewport plus `sync_copy_offset`.
+    #[test]
+    fn output_during_copy_keeps_the_same_content_visible() {
+        let mut a = in_copy();
+        with_history(&mut a, 60);
+        for _ in 0..10 {
+            a.update(key('k'));
+        }
+        let before = visible_text(&a);
+        assert_eq!(before.first().map(String::as_str), Some("line27"));
+        with_history(&mut a, 5);
+        assert_eq!(visible_text(&a), before);
+        assert!(is_copy(&a));
+        a.update(key('j'));
+        assert_eq!(visible_text(&a)[0], "line28");
+    }
+
+    // Spec: entering COPY on the alternate screen shows the current screen.
+    #[test]
+    fn entering_copy_on_the_alternate_screen_shows_the_current_screen() {
+        let mut a = app();
+        with_history(&mut a, 60);
+        a.update(AppEvent::Pty(PtyEvent::Output(
+            b"\x1b[?1049h\x1b[HALT SCREEN".to_vec(),
+        )));
+        a.update(ctrl_space());
+        a.update(key('['));
+        assert!(is_copy(&a));
+        assert_eq!(visible_text(&a)[0], "ALT SCREEN");
+    }
+
     fn shape(kind: CursorKind, blinking: bool) -> CursorShape {
         CursorShape { kind, blinking }
     }
