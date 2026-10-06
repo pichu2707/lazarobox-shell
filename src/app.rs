@@ -7,7 +7,7 @@ use crate::core::{
     keys::{encode_key, encode_paste},
     layout::{PaneId, Rect},
     pane::{CursorKind, CursorShape, Pane, PaneSize},
-    prefix::{self, PREFIX_KEY, PrefixAction},
+    prefix::{self, PREFIX_KEY, PREFIX_TREE, PrefixAction, Step},
     pty::{PtyEvent, SpawnSpec},
 };
 
@@ -257,14 +257,15 @@ impl App {
     }
 
     fn on_prefix_key(&mut self, key: &KeyEvent) -> Vec<Effect> {
-        let action = prefix::lookup(key);
-        self.input = match action {
-            Some(PrefixAction::RequestQuit) => InputMode::ConfirmQuit,
-            Some(PrefixAction::EnterCopy) => InputMode::Copy(CopyState::default()),
-            Some(PrefixAction::SendPrefixLiteral) | None => InputMode::Terminal,
+        // Groups are not entered yet: they cancel like any unmapped key.
+        let step = prefix::lookup(PREFIX_TREE, key);
+        self.input = match step {
+            Step::Run(PrefixAction::RequestQuit) => InputMode::ConfirmQuit,
+            Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(CopyState::default()),
+            _ => InputMode::Terminal,
         };
-        match action {
-            Some(PrefixAction::SendPrefixLiteral) => {
+        match step {
+            Step::Run(PrefixAction::SendPrefixLiteral) => {
                 vec![Effect::WritePty(self.id, vec![PREFIX_LITERAL])]
             }
             _ => Vec::new(),
