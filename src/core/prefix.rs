@@ -1,6 +1,7 @@
 //! Prefix key and its action tree, kept as data so rebinding is a one-line change.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::text::Line;
 
 use super::layout::Direction;
 
@@ -210,6 +211,29 @@ pub fn lookup(table: &'static [Binding], key: &KeyEvent) -> Step {
             Target::Action(action) => Step::Run(action),
             Target::Group(group) => Step::Enter(group),
         })
+}
+
+/// One-line key hint (`v split right · h split below · …`) from the hinted
+/// bindings, in table order, clipped by whole entries to `max_cols` columns.
+pub fn hint(bindings: &[Binding], max_cols: u16) -> String {
+    const SEP: &str = " · ";
+    const ELLIPSIS: &str = "…";
+    let fits = |text: &str| Line::from(text).width() <= usize::from(max_cols);
+    let entries: Vec<String> = bindings
+        .iter()
+        .filter(|binding| binding.hinted)
+        .map(|binding| format!("{} {}", binding.chord.label(), binding.description))
+        .collect();
+    let full = entries.join(SEP);
+    if fits(&full) {
+        return full;
+    }
+    (1..entries.len())
+        .rev()
+        .map(|kept| format!("{}{SEP}{ELLIPSIS}", entries[..kept].join(SEP)))
+        .find(|clipped| fits(clipped))
+        .or_else(|| fits(ELLIPSIS).then(|| ELLIPSIS.to_string()))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -520,6 +544,103 @@ mod tests {
         KeyChord {
             code: KeyCode::Char(c),
             mods,
+        }
+    }
+
+    // --- hint ---
+
+    fn width(text: &str) -> u16 {
+        Line::from(text).width() as u16
+    }
+
+    const FULL_ROOT: &str = "w window · t tab · g go · b buffer · [ copy · q quit";
+
+    #[test]
+    fn group_hints_list_every_binding_in_table_order() {
+        let expected = [
+            (
+                'w',
+                "v split right · h split below · q close · r resize · z zoom",
+            ),
+            ('t', "n new · c close"),
+            ('g', "b next · B prev"),
+            (
+                'b',
+                "1 tab 1 · 2 tab 2 · 3 tab 3 · 4 tab 4 · 5 tab 5 · 6 tab 6 · 7 tab 7 · 8 tab 8 · 9 tab 9",
+            ),
+        ];
+        for (c, text) in expected {
+            assert_eq!(hint(group(PREFIX_TREE, c).bindings, 200), text);
+        }
+    }
+
+    #[test]
+    fn root_hint_lists_only_the_hinted_entries() {
+        assert_eq!(hint(PREFIX_TREE, 200), FULL_ROOT);
+    }
+
+    #[test]
+    fn hint_follows_the_hinted_flag_not_the_position() {
+        let table = [
+            act('a', "alpha", PrefixAction::NewTab),
+            unhinted(act('b', "beta", PrefixAction::CloseTab)),
+            act('c', "gamma", PrefixAction::NextTab),
+        ];
+        assert_eq!(hint(&table, 200), "a alpha · c gamma");
+        assert_eq!(hint(&table[1..2], 200), "");
+        assert_eq!(hint(&[], 200), "");
+    }
+
+    #[test]
+    fn hint_uses_the_chord_label() {
+        let table = [Binding {
+            chord: PREFIX_KEY,
+            ..act('x', "send", PrefixAction::SendPrefixLiteral)
+        }];
+        assert_eq!(hint(&table, 200), "Ctrl+Space send");
+    }
+
+    #[test]
+    fn hint_fits_exactly_at_its_own_width() {
+        assert_eq!(width(FULL_ROOT), 52);
+        assert_eq!(hint(PREFIX_TREE, 52), FULL_ROOT);
+    }
+
+    #[test]
+    fn hint_is_clipped_by_whole_entries_with_an_ellipsis() {
+        assert_eq!(
+            hint(PREFIX_TREE, 51),
+            "w window · t tab · g go · b buffer · [ copy · …"
+        );
+        // the clipped text is 47 columns, so 47 still fits and 46 drops one more
+        assert_eq!(hint(PREFIX_TREE, 47), hint(PREFIX_TREE, 51));
+        assert_eq!(
+            hint(PREFIX_TREE, 46),
+            "w window · t tab · g go · b buffer · …"
+        );
+    }
+
+    #[test]
+    fn narrow_widths_degrade_to_an_ellipsis_then_nothing() {
+        assert_eq!(hint(PREFIX_TREE, 12), "w window · …");
+        assert_eq!(hint(PREFIX_TREE, 11), "…");
+        assert_eq!(hint(PREFIX_TREE, 1), "…");
+        assert_eq!(hint(PREFIX_TREE, 0), "");
+    }
+
+    #[test]
+    fn hint_never_exceeds_the_width_nor_shows_a_partial_entry() {
+        let entries: Vec<&str> = FULL_ROOT.split(" · ").collect();
+        for max in 0..=60u16 {
+            let text = hint(PREFIX_TREE, max);
+            assert!(width(&text) <= max, "{text:?} is wider than {max}");
+            if text == FULL_ROOT || text.is_empty() {
+                continue;
+            }
+            let shown = text.strip_suffix('…').expect("clipped hint ends with …");
+            let shown = shown.strip_suffix(" · ").unwrap_or(shown);
+            let shown: Vec<&str> = shown.split(" · ").filter(|e| !e.is_empty()).collect();
+            assert_eq!(shown, entries[..shown.len()], "partial entry at {max}");
         }
     }
 }
