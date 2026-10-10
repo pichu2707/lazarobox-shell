@@ -127,20 +127,20 @@ Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs
 - [x] S6.4 GREEN: `src/ui/mod.rs` renders from `screen()`/`view()`; per-pane `terminal_view`; focused-only `cursor_position`; rendering skips zero-size pane rects and separators with `len == 0`.
 - [x] S6.5 RED: statusline render snapshots: root hint in PREFIX `w window · t tab · g go · b buffer · [ copy · q quit`, group hint, clipped hint, hint gone after resolve, notice precedence, prompts, cwd/shell of the focused pane [statusline: Root hint in PREFIX, Root hint clipped and cleared, Group hint, Hint gone after the group resolves, Narrow width, Notice shown, Close pane/tab/Quit prompt, Focus switches cwd, Shell name].
 - [x] S6.6 GREEN: `App::status_path(max_cols)` (notice, else `prefix::hint` root/group, else cwd), `shell_name()` of the focused pane; wire in `ui/mod.rs`.
-- [ ] S6.7 [manual] Kitty: `w v`/`w h` split, focus with prefix `h/j/k/l` (separator accent follows), nvim in two panes (typing goes only to the focused one), `w q` then `y`, `exit` collapses a pane; PREFIX shows the root hint, `w` shows the group hint, hint disappears on resolve [pane-layout: nvim in split panes, Focus/close, `exit` collapses its pane; statusline hint scenarios].
+- [x] S6.7 [manual] (verified by user in Kitty 2026-10-10) Kitty: `w v`/`w h` split, focus with prefix `h/j/k/l` (separator accent follows), nvim in two panes (typing goes only to the focused one), `w q` then `y`, `exit` collapses a pane; PREFIX shows the root hint, `w` shows the group hint, hint disappears on resolve [pane-layout: nvim in split panes, Focus/close, `exit` collapses its pane; statusline hint scenarios].
 - [x] S6.8 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## S7: Resize and zoom
 
-- [ ] S7.1 RED: `resize_step` tests: exactly 1 cell, normalisation after terminal resize, refusal at minimum, no-op without a matching axis, single pane [pane-layout: Border moves one cell, Focused pane shrinks, Clamped at minimum, No border on that axis, Single pane].
-- [ ] S7.2 GREEN: `Node::resize_step`.
-- [ ] S7.3 RED: `w r` enters RESIZE; `h/j/k/l` sticky and Repeat-allowed; Esc exits; other keys and Ctrl+Space swallowed; single pane allowed [modal-input: Sticky, Repeat allowed, Esc exits, Keys swallowed, Single pane RESIZE].
-- [ ] S7.4 GREEN: `InputMode::Resize` handling in `update`; `ResizePty` diff after each step; accent `ai_purple`.
-- [ ] S7.5 RED: `w z` toggles `Tab.zoom`; zoomed tiling is only the focused pane, no separators; split/focus/`w r`/removal unzoom first; only the zoomed pane gets `ResizePty` [pane-layout: Zoom and restore, Split/Focus change/RESIZE while zoomed; terminal-session: Zoom resizes only the zoomed pane].
-- [ ] S7.6 GREEN: zoom-aware `Tab::tiling`, `App::zoomed()`.
-- [ ] S7.7 RED+GREEN: statusline `[Z]` shown only while zoomed; `RESIZE` label [statusline: Zoomed, Unzoomed].
+- [x] S7.1 RED: `resize_step` tests: exactly 1 cell, normalisation after terminal resize, refusal at minimum, no-op without a matching axis, single pane [pane-layout: Border moves one cell, Focused pane shrinks, Clamped at minimum, No border on that axis, Single pane].
+- [x] S7.2 GREEN: `Node::resize_step`.
+- [x] S7.3 RED: `w r` enters RESIZE; `h/j/k/l` sticky and Repeat-allowed; Esc exits; other keys and Ctrl+Space swallowed; single pane allowed [modal-input: Sticky, Repeat allowed, Esc exits, Keys swallowed, Single pane RESIZE].
+- [x] S7.4 GREEN: `InputMode::Resize` handling in `update`; `ResizePty` diff after each step; accent `ai_purple`.
+- [x] S7.5 RED: `w z` toggles `Tab.zoom`; zoomed tiling is only the focused pane, no separators; split/focus/`w r`/removal unzoom first; only the zoomed pane gets `ResizePty` [pane-layout: Zoom and restore, Split/Focus change/RESIZE while zoomed; terminal-session: Zoom resizes only the zoomed pane].
+- [x] S7.6 GREEN: zoom-aware `Tab::tiling`, `App::zoomed()`.
+- [x] S7.7 RED+GREEN: statusline `[Z]` shown only while zoomed; `RESIZE` label [statusline: Zoomed, Unzoomed].
 - [ ] S7.8 [manual] Kitty: `w r` + `h/j/k/l` moves the border visibly, nvim reflows, `w z` zoom/unzoom keeps nvim intact with `[Z]` [terminal-session: Reflow in nvim; pane-layout: Focus, close, resize, zoom].
-- [ ] S7.9 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] S7.9 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## S8a: Tabs in `App`
 
