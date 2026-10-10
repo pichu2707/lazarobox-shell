@@ -28,6 +28,8 @@ pub struct StatusLine<'a> {
     accent: Color,
     path: &'a str,
     right: &'a str,
+    zoomed: bool,
+    copy_position: Option<(usize, usize)>,
 }
 
 impl<'a> StatusLine<'a> {
@@ -38,6 +40,8 @@ impl<'a> StatusLine<'a> {
             accent: theme.accent(mode),
             path,
             right: model,
+            zoomed: false,
+            copy_position: None,
         }
     }
 
@@ -54,11 +58,47 @@ impl<'a> StatusLine<'a> {
             accent: theme.input_accent(mode),
             path,
             right,
+            zoomed: false,
+            copy_position: None,
         }
     }
 
+    /// Marks the active tab as zoomed (`[Z]` right after the mode label).
+    pub fn zoomed(mut self, zoomed: bool) -> Self {
+        self.zoomed = zoomed;
+        self
+    }
+
+    /// COPY viewport position `(rows above the live bottom, history rows)`,
+    /// shown as `↑offset/total` right after the mode label.
+    pub fn copy_position(mut self, position: Option<(usize, usize)>) -> Self {
+        self.copy_position = position;
+        self
+    }
+
+    /// Columns left for the path text in a statusline `width` columns wide:
+    /// what the mode block, the right segment (when it fits) and the path
+    /// padding and slant leave over.
+    pub fn path_budget(&self, width: u16) -> u16 {
+        // Padding on both sides of the path plus the slant that closes it.
+        const PATH_DECORATION: usize = 3;
+        let left = self.mode_block_width() + PATH_DECORATION;
+        let right = self.right_line().width();
+        let right = if right + self.mode_block_width() <= usize::from(width) {
+            right
+        } else {
+            0
+        };
+        u16::try_from(usize::from(width).saturating_sub(left + right)).unwrap_or(u16::MAX)
+    }
+
     fn mode_block_text(&self) -> String {
-        format!(" \u{25D0} {} ", self.label)
+        let zoom = if self.zoomed { " [Z]" } else { "" };
+        let position = self
+            .copy_position
+            .map(|(offset, total)| format!(" \u{2191}{offset}/{total}"))
+            .unwrap_or_default();
+        format!(" \u{25D0} {}{position}{zoom} ", self.label)
     }
 
     /// Columns taken by the mode block and the slant that closes it.
@@ -120,7 +160,20 @@ impl Widget for StatusLine<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::copy::CopyState;
+    use crate::app::Confirm;
+    use crate::core::{
+        copy::CopyState,
+        prefix::{self, PREFIX_TREE, Step},
+    };
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn group(c: char) -> InputMode {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        match prefix::lookup(PREFIX_TREE, &key) {
+            Step::Enter(group) => InputMode::Group(group),
+            other => panic!("{c} is not a group: {other:?}"),
+        }
+    }
     use ratatui::{Terminal, backend::TestBackend};
 
     const WIDTH: u16 = 60;
@@ -225,12 +278,16 @@ mod tests {
 
     const SHELL: &str = "zsh";
 
-    fn input_modes() -> [InputMode; 4] {
+    fn input_modes() -> [InputMode; 8] {
         [
             InputMode::Terminal,
             InputMode::Prefix,
             InputMode::Copy(CopyState::default()),
-            InputMode::ConfirmQuit,
+            InputMode::Confirm(Confirm::Quit),
+            group('w'),
+            group('g'),
+            InputMode::Resize,
+            group('b'),
         ]
     }
 
@@ -255,7 +312,12 @@ mod tests {
             (InputMode::Terminal, "TERMINAL"),
             (InputMode::Prefix, "PREFIX"),
             (InputMode::Copy(CopyState::default()), "COPY"),
-            (InputMode::ConfirmQuit, "Quit? (y/n)"),
+            (InputMode::Confirm(Confirm::Quit), "Quit? (y/n)"),
+            (group('w'), "WINDOW"),
+            (group('t'), "TAB"),
+            (group('g'), "GO"),
+            (group('b'), "BUFFER"),
+            (InputMode::Resize, "RESIZE"),
         ];
         for (mode, label) in expected {
             let text = text_of(&render_input_at(mode, WIDTH));
@@ -331,11 +393,156 @@ mod tests {
 
     #[test]
     fn snapshot_input_confirm_quit() {
-        insta::assert_snapshot!(text_of(&render_input_at(InputMode::ConfirmQuit, WIDTH)));
+        insta::assert_snapshot!(text_of(&render_input_at(
+            InputMode::Confirm(Confirm::Quit),
+            WIDTH
+        )));
+    }
+
+    #[test]
+    fn snapshot_input_group_window() {
+        insta::assert_snapshot!(text_of(&render_input_at(group('w'), WIDTH)));
+    }
+
+    #[test]
+    fn snapshot_input_group_tab() {
+        insta::assert_snapshot!(text_of(&render_input_at(group('t'), WIDTH)));
+    }
+
+    #[test]
+    fn snapshot_input_group_go() {
+        insta::assert_snapshot!(text_of(&render_input_at(group('g'), WIDTH)));
+    }
+
+    #[test]
+    fn snapshot_input_group_buffer() {
+        insta::assert_snapshot!(text_of(&render_input_at(group('b'), WIDTH)));
+    }
+
+    #[test]
+    fn snapshot_input_resize() {
+        insta::assert_snapshot!(text_of(&render_input_at(InputMode::Resize, WIDTH)));
     }
 
     #[test]
     fn snapshot_input_narrow() {
         insta::assert_snapshot!(text_of(&render_input_at(InputMode::Terminal, 14)));
+    }
+
+    fn render_zoomed(mode: InputMode, zoomed: bool) -> Buffer {
+        let theme = LazaroboxTheme::default();
+        let mut terminal = Terminal::new(TestBackend::new(WIDTH, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                let line = StatusLine::input(&theme, mode, PATH, SHELL).zoomed(zoomed);
+                frame.render_widget(line, frame.area())
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    // Spec: Zoomed; the indicator sits in the mode block, before the path.
+    #[test]
+    fn the_zoom_indicator_follows_the_mode_label() {
+        let t = LazaroboxTheme::default();
+        for mode in input_modes() {
+            let buf = render_zoomed(mode, true);
+            let text = text_of(&buf);
+            let label = text.find(mode.label()).unwrap();
+            let zoom = text
+                .find("[Z]")
+                .unwrap_or_else(|| panic!("no [Z] in {text:?}"));
+            assert!(label < zoom && zoom < text.find(PATH).unwrap(), "{text:?}");
+            let x = text[..zoom].chars().count() as u16;
+            assert_eq!(buf[(x, 0)].bg, t.input_accent(mode), "{mode:?}");
+        }
+    }
+
+    // Spec: Unzoomed.
+    #[test]
+    fn the_zoom_indicator_is_absent_when_not_zoomed() {
+        for mode in input_modes() {
+            let text = text_of(&render_zoomed(mode, false));
+            assert!(!text.contains("[Z]"), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn the_path_budget_accounts_for_the_zoom_indicator() {
+        let theme = LazaroboxTheme::default();
+        let plain = StatusLine::input(&theme, InputMode::Terminal, "", SHELL);
+        let zoomed = StatusLine::input(&theme, InputMode::Terminal, "", SHELL).zoomed(true);
+        assert_eq!(zoomed.path_budget(WIDTH) + 4, plain.path_budget(WIDTH));
+    }
+
+    fn render_copy(position: Option<(usize, usize)>, width: u16) -> Buffer {
+        let theme = LazaroboxTheme::default();
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                let mode = InputMode::Copy(CopyState::default());
+                let line = StatusLine::input(&theme, mode, PATH, SHELL).copy_position(position);
+                frame.render_widget(line, frame.area())
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    // Spec: Position indicator; sits in the mode block, before the path.
+    #[test]
+    fn the_copy_position_follows_the_mode_label_in_the_mode_block() {
+        let t = LazaroboxTheme::default();
+        let buf = render_copy(Some((12, 340)), WIDTH);
+        let text = text_of(&buf);
+        let at = text
+            .find("COPY \u{2191}12/340")
+            .unwrap_or_else(|| panic!("{text:?}"));
+        assert!(at < text.find(PATH).unwrap(), "{text:?}");
+        let x = text[..at].chars().count() as u16 + 8;
+        assert_eq!(
+            buf[(x, 0)].bg,
+            t.input_accent(InputMode::Copy(CopyState::default()))
+        );
+        insta::assert_snapshot!(text);
+    }
+
+    // Spec: Bottom of the history shows an explicit zero.
+    #[test]
+    fn the_copy_position_shows_an_explicit_zero_offset() {
+        let text = text_of(&render_copy(Some((0, 340)), WIDTH));
+        assert!(text.contains("COPY \u{2191}0/340"), "{text:?}");
+    }
+
+    // Spec: No history shows the bare label.
+    #[test]
+    fn no_copy_position_leaves_the_bare_label() {
+        let text = text_of(&render_copy(None, WIDTH));
+        assert!(text.contains("COPY "), "{text:?}");
+        assert!(!text.contains('\u{2191}'), "{text:?}");
+    }
+
+    #[test]
+    fn the_path_budget_accounts_for_the_copy_position() {
+        let theme = LazaroboxTheme::default();
+        let mode = InputMode::Copy(CopyState::default());
+        let plain = StatusLine::input(&theme, mode, "", SHELL);
+        let placed = StatusLine::input(&theme, mode, "", SHELL).copy_position(Some((12, 340)));
+        // " \u{2191}12/340" is 8 columns wide.
+        assert_eq!(placed.path_budget(WIDTH) + 8, plain.path_budget(WIDTH));
+    }
+
+    // Spec: Narrow width never panics.
+    #[test]
+    fn a_narrow_copy_statusline_never_panics() {
+        for width in 0..40 {
+            for position in [
+                None,
+                Some((0, 0)),
+                Some((12, 340)),
+                Some((usize::MAX, usize::MAX)),
+            ] {
+                render_copy(position, width);
+            }
+        }
     }
 }
