@@ -120,7 +120,7 @@ In MENU every key not listed above MUST be swallowed with no effect. The PTY MUS
 - THEN no WritePty is emitted and the menu is unchanged
 
 ### Requirement: Footer
-The menu footer MUST show the hint `j/k move · h/l change · Enter save · Esc cancel` while there is no error. When an error exists it MUST replace the hint with the error message. A pending error MUST be cleared by the next handled key press (Repeat and Release excluded), which then acts normally.
+The menu footer MUST show the hint `j/k move · h/l change · Enter save · Esc cancel` while there is no error. When an error exists it MUST replace the hint with the error message. A pending error MUST be cleared by the next key press (Press, not Repeat or Release), which then acts normally; an unlisted key clears it and has no other effect.
 
 #### Scenario: Footer hint [auto, TestBackend + insta]
 - GIVEN MENU just opened
