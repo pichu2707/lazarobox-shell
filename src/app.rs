@@ -555,7 +555,11 @@ impl App {
         match menu.on_key(key, repeat, &mut self.config) {
             MenuCommand::Changed => self.apply_config(),
             MenuCommand::Cancel => self.close_menu(Outcome::Reverted),
-            MenuCommand::None | MenuCommand::Save => Vec::new(),
+            // An unchanged draft has nothing to save. A changed one is kept
+            // for this session only and never written to disk.
+            // replaced in CM4b: emit `SaveConfig(edits)` and close on its result.
+            MenuCommand::Save => self.close_menu(Outcome::Saved),
+            MenuCommand::None => Vec::new(),
         }
     }
 
@@ -3455,5 +3459,70 @@ mod app_tests {
         a.update(key('l'));
         a.update(esc());
         assert_eq!(a.config, start);
+    }
+
+    // Spec: modal-input MENU mode; config-menu Input is swallowed.
+    // Characterization: the swallow rules held from the moment the MENU
+    // branch delegated to `MenuState`, so these pass at once.
+    #[test]
+    fn unlisted_keys_and_release_emit_nothing_and_stay_in_menu() {
+        let ctrl = AppEvent::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        let events = [
+            key('x'),
+            code(KeyCode::Tab),
+            ctrl,
+            kind(KeyCode::Char('l'), KeyEventKind::Release),
+        ];
+        for ev in events {
+            let mut a = menu_app();
+            assert_eq!(a.update(ev.clone()), vec![], "{ev:?}");
+            assert_eq!(a.input(), InputMode::Menu, "{ev:?}");
+            assert_eq!(a.config, Config::default(), "{ev:?}");
+        }
+    }
+
+    #[test]
+    fn paste_in_menu_writes_nothing() {
+        let mut a = menu_app();
+        assert_eq!(a.update(AppEvent::Paste("hi".into())), vec![]);
+        assert_eq!(a.input(), InputMode::Menu);
+    }
+
+    // `repeat` comes from `key.kind` in `App::on_key` only.
+    #[test]
+    fn a_held_enter_or_esc_does_nothing_but_a_held_j_moves() {
+        for held in [KeyCode::Enter, KeyCode::Esc] {
+            let mut a = menu_app();
+            a.update(key('l'));
+            assert_eq!(a.update(kind(held, KeyEventKind::Repeat)), vec![]);
+            assert_eq!(a.input(), InputMode::Menu, "{held:?}");
+            assert_eq!(a.config.bars.statusline, BarPosition::Top, "{held:?}");
+        }
+        let mut a = menu_app();
+        a.update(kind(KeyCode::Char('j'), KeyEventKind::Repeat));
+        a.update(key('l'));
+        assert_eq!(
+            a.config.bars.tabbar,
+            BarPosition::Bottom,
+            "j moved to row 2"
+        );
+    }
+
+    // Spec: Enter with an unchanged draft closes without saving.
+    #[test]
+    fn enter_with_an_unchanged_draft_closes_the_menu() {
+        let mut a = menu_app();
+        assert_eq!(a.update(code(KeyCode::Enter)), vec![]);
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert!(a.menu().is_none());
+    }
+
+    #[test]
+    fn enter_with_a_changed_draft_closes_for_the_session_only() {
+        let mut a = menu_app();
+        a.update(key('l'));
+        assert_eq!(a.update(code(KeyCode::Enter)), vec![]);
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.config.bars.statusline, BarPosition::Top, "draft kept");
     }
 }
