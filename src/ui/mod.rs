@@ -20,9 +20,9 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
 
     let pane = app.focused_pane();
     frame.render_widget(TerminalView::new(pane, theme), body);
-    let cwd = app.cwd_label();
+    let path = app.status_path();
     frame.render_widget(
-        StatusLine::input(theme, app.input(), &cwd, app.shell_name()),
+        StatusLine::input(theme, app.input(), &path, app.shell_name()),
         status,
     );
 
@@ -112,5 +112,22 @@ mod tests {
     fn real_cursor_follows_the_pane_cursor() {
         let (_, cursor) = draw(&app());
         assert_eq!(cursor, Position::new(8, 0));
+    }
+
+    #[test]
+    fn a_spawn_failure_notice_replaces_the_cwd_until_the_next_key() {
+        let mut app = app().with_env(None, None, "/home/ana".into());
+        let key = |c, mods| AppEvent::Key(KeyEvent::new(KeyCode::Char(c), mods));
+        app.update(key(' ', KeyModifiers::CONTROL));
+        app.update(key('w', KeyModifiers::NONE));
+        app.update(key('v', KeyModifiers::NONE));
+        app.update(AppEvent::SpawnFailed(PaneId::for_test(2), "boom".into()));
+        let (buf, _) = draw(&app);
+        let line = row(&buf, ROWS - 1);
+        assert!(line.contains("spawn failed: boom"), "{line:?}");
+        assert!(!line.contains("/home/ana"), "{line:?}");
+        app.update(key('x', KeyModifiers::NONE));
+        let (buf, _) = draw(&app);
+        assert!(row(&buf, ROWS - 1).contains("/home/ana"));
     }
 }

@@ -109,15 +109,15 @@ Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs
 
 ## S5b: Close, confirmations, exit cascade
 
-- [ ] S5b.1 RED: `w q` prompts "Close pane? (y/n)" (or "Quit? (y/n)" for the last pane of the only tab); `y` closes, `n`/Esc/`x`/`Y` decline [modal-input: Close pane confirmed/declined, Last pane prompts quit, Confirm, Decline].
-- [ ] S5b.2 GREEN: `Confirm::{ClosePane, CloseTab}` handling, strict lowercase `y`.
-- [ ] S5b.3 RED: `Pty(id, Exited)` collapses the pane; unfocused removal keeps focus; focused removal focuses `pane_at(top-left)`; last shell emits Quit; any removal cancels an open `Confirm` [terminal-session: One of two shells exits, Last shell exits; modal-input: Removal cancels the prompt, Last pane of one of two tabs prompts close pane].
-- [ ] S5b.4 GREEN: remove-pane cascade, `ClosePane` effect, confirm cancel.
-- [ ] S5b.5 RED: focus change by removal exits COPY (pane scrollback reset to 0) and RESIZE; removal that keeps focus leaves RESIZE [modal-input: Pane close in COPY, Focus change in RESIZE, Removal that keeps focus leaves RESIZE; copy-mode: Focus move exits COPY, Focused pane exits while in COPY, Cursor shape restored, Offsets are independent, Other panes keep running, Keys act on the focused pane].
-- [ ] S5b.6 GREEN: mode exit on focus change.
-- [ ] S5b.7 RED: `SpawnFailed(id, err)` removes the pane and sets `notice`; notice cleared by the next Press/Repeat; newer replaces older [terminal-session: Failed split removes the pane, Notice clears on next key; statusline: Notice shown, Notice cleared by next key].
-- [ ] S5b.8 GREEN: `notice` field and clearing in `update`; statusline `status_path` (notice first).
-- [ ] S5b.9 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] S5b.1 RED: `w q` prompts "Close pane? (y/n)" (or "Quit? (y/n)" for the last pane of the only tab); `y` closes, `n`/Esc/`x`/`Y` decline [modal-input: Close pane confirmed/declined, Last pane prompts quit, Confirm, Decline].
+- [x] S5b.2 GREEN: `Confirm::{ClosePane, CloseTab}` handling, strict lowercase `y`.
+- [x] S5b.3 RED: `Pty(id, Exited)` collapses the pane; unfocused removal keeps focus; focused removal focuses `pane_at(top-left)`; last shell emits Quit; any removal cancels an open `Confirm` [terminal-session: One of two shells exits, Last shell exits; modal-input: Removal cancels the prompt, Last pane of one of two tabs prompts close pane].
+- [x] S5b.4 GREEN: remove-pane cascade, `ClosePane` effect, confirm cancel.
+- [x] S5b.5 RED: focus change by removal exits COPY (pane scrollback reset to 0) and RESIZE; removal that keeps focus leaves RESIZE [modal-input: Pane close in COPY, Focus change in RESIZE, Removal that keeps focus leaves RESIZE; copy-mode: Focus move exits COPY, Focused pane exits while in COPY, Cursor shape restored, Offsets are independent, Other panes keep running, Keys act on the focused pane].
+- [x] S5b.6 GREEN: mode exit on focus change.
+- [x] S5b.7 RED: `SpawnFailed(id, err)` removes the pane and sets `notice`; notice cleared by the next Press/Repeat; newer replaces older [terminal-session: Failed split removes the pane, Notice clears on next key; statusline: Notice shown, Notice cleared by next key].
+- [x] S5b.8 GREEN: `notice` field and clearing in `update`; statusline `status_path` (notice first).
+- [x] S5b.9 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## S6: UI renders `screen()`/`view()` (first visible milestone)
 
