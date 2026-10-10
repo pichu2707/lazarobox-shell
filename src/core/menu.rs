@@ -2,7 +2,7 @@
 //! drives it. The popup only renders `MenuState::rows`, so a new setting is a
 //! table entry and never a widget change.
 
-use ratatui::crossterm::event::{KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::config::{BarPosition, Config, ConfigEdit};
 
@@ -155,20 +155,74 @@ impl MenuState {
         rows
     }
 
-    pub fn on_key(&mut self, _key: &KeyEvent, _repeat: bool, _config: &mut Config) -> MenuCommand {
-        let _ = (KeyEventKind::Press, KeyModifiers::NONE, BarPosition::Top);
+    /// Interprets a key. Release is ignored; a repeat moves and cycles but
+    /// never saves or cancels; a pending error is cleared by the next press.
+    pub fn on_key(&mut self, key: &KeyEvent, repeat: bool, config: &mut Config) -> MenuCommand {
+        if key.kind == KeyEventKind::Release {
+            return MenuCommand::None;
+        }
+        if !repeat {
+            self.error = None;
+        }
+        if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
+            return MenuCommand::None;
+        }
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => self.step_selection(true),
+            KeyCode::Char('k') | KeyCode::Up => self.step_selection(false),
+            KeyCode::Char('l' | ' ') | KeyCode::Right => self.cycle(true, config),
+            KeyCode::Char('h') | KeyCode::Left => self.cycle(false, config),
+            KeyCode::Enter if !repeat => MenuCommand::Save,
+            KeyCode::Esc if !repeat => MenuCommand::Cancel,
+            _ => MenuCommand::None,
+        }
+    }
+
+    fn step_selection(&mut self, forward: bool) -> MenuCommand {
+        let count = choices().count();
+        self.selected = self.selected.map(|index| {
+            if forward {
+                (index + 1) % count
+            } else {
+                (index + count - 1) % count
+            }
+        });
         MenuCommand::None
     }
 
-    /// The keys that differ from the config captured at open.
-    pub fn edits(&self, _live: &Config) -> Vec<ConfigEdit> {
-        Vec::new()
+    fn cycle(&self, forward: bool, config: &mut Config) -> MenuCommand {
+        let Some((_, choice)) = self.selected.and_then(|index| choices().nth(index)) else {
+            return MenuCommand::None;
+        };
+        let len = choice.values.len();
+        let current = (choice.get)(config);
+        let next = if forward {
+            (current + 1) % len
+        } else {
+            (current + len - 1) % len
+        };
+        (choice.set)(config, next);
+        MenuCommand::Changed
     }
 
-    pub fn set_error(&mut self, _message: String) {}
+    /// The keys that differ from the config captured at open.
+    pub fn edits(&self, live: &Config) -> Vec<ConfigEdit> {
+        choices()
+            .filter(|(_, c)| (c.get)(live) != (c.get)(&self.original))
+            .map(|(_, c)| ConfigEdit {
+                table: c.table,
+                key: c.key,
+                value: c.values[(c.get)(live)],
+            })
+            .collect()
+    }
+
+    pub fn set_error(&mut self, message: String) {
+        self.error = Some(message);
+    }
 
     pub fn error(&self) -> Option<&str> {
-        None
+        self.error.as_deref()
     }
 }
 
@@ -236,6 +290,141 @@ mod tests {
     fn open_selects_the_first_row_with_no_error() {
         let menu = MenuState::open(&Config::default());
         assert_eq!(menu.selected, Some(0));
+        assert_eq!(menu.error(), None);
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ch(c: char) -> KeyEvent {
+        key(KeyCode::Char(c))
+    }
+
+    fn selected(menu: &MenuState) -> Option<usize> {
+        menu.selected
+    }
+
+    #[test]
+    fn move_keys_wrap_in_both_directions() {
+        for (down, up) in [(ch('j'), ch('k')), (key(KeyCode::Down), key(KeyCode::Up))] {
+            let mut menu = MenuState::open(&Config::default());
+            let mut config = Config::default();
+            assert_eq!(menu.on_key(&down, false, &mut config), MenuCommand::None);
+            assert_eq!(selected(&menu), Some(1));
+            menu.on_key(&down, false, &mut config);
+            assert_eq!(selected(&menu), Some(0), "wraps past the last row");
+            menu.on_key(&up, false, &mut config);
+            assert_eq!(selected(&menu), Some(1), "wraps before the first row");
+            menu.on_key(&up, false, &mut config);
+            assert_eq!(selected(&menu), Some(0));
+        }
+    }
+
+    #[test]
+    fn repeat_moves_like_a_press() {
+        let mut menu = MenuState::open(&Config::default());
+        menu.on_key(&ch('j'), true, &mut Config::default());
+        assert_eq!(selected(&menu), Some(1));
+    }
+
+    #[test]
+    fn cycle_keys_change_the_selected_value() {
+        let forward = [ch('l'), key(KeyCode::Right), ch(' ')];
+        let backward = [ch('h'), key(KeyCode::Left)];
+        for k in forward.iter().chain(&backward) {
+            let mut menu = MenuState::open(&Config::default());
+            let mut config = Config::default();
+            assert_eq!(menu.on_key(k, false, &mut config), MenuCommand::Changed);
+            assert_eq!(config.bars.statusline, BarPosition::Top, "{k:?}");
+            menu.on_key(k, true, &mut config);
+            assert_eq!(config.bars.statusline, BarPosition::Bottom, "wraps");
+        }
+    }
+
+    #[test]
+    fn cycling_acts_on_the_selected_row() {
+        let mut menu = MenuState::open(&Config::default());
+        let mut config = Config::default();
+        menu.on_key(&ch('j'), false, &mut config);
+        menu.on_key(&ch('h'), false, &mut config);
+        assert_eq!(config.bars.tabbar, BarPosition::Bottom);
+        assert_eq!(config.bars.statusline, BarPosition::Bottom);
+    }
+
+    #[test]
+    fn enter_saves_and_esc_cancels_on_press_only() {
+        let mut menu = MenuState::open(&Config::default());
+        let mut config = Config::default();
+        assert_eq!(
+            menu.on_key(&key(KeyCode::Enter), false, &mut config),
+            MenuCommand::Save
+        );
+        assert_eq!(
+            menu.on_key(&key(KeyCode::Esc), false, &mut config),
+            MenuCommand::Cancel
+        );
+        assert_eq!(
+            menu.on_key(&key(KeyCode::Enter), true, &mut config),
+            MenuCommand::None
+        );
+        assert_eq!(
+            menu.on_key(&key(KeyCode::Esc), true, &mut config),
+            MenuCommand::None
+        );
+    }
+
+    #[test]
+    fn release_ctrl_space_and_unknown_keys_are_swallowed() {
+        let mut menu = MenuState::open(&Config::default());
+        let mut config = Config::default();
+        let mut release = ch('l');
+        release.kind = KeyEventKind::Release;
+        let ctrl_space = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL);
+        for k in [release, ctrl_space, ch('x'), key(KeyCode::Tab)] {
+            assert_eq!(
+                menu.on_key(&k, false, &mut config),
+                MenuCommand::None,
+                "{k:?}"
+            );
+        }
+        assert_eq!(config, Config::default());
+    }
+
+    #[test]
+    fn edits_list_only_the_changed_keys() {
+        let menu = MenuState::open(&Config::default());
+        assert!(menu.edits(&Config::default()).is_empty());
+        let mut live = Config::default();
+        live.bars.statusline = BarPosition::Top;
+        let edit = |table, value| ConfigEdit {
+            table,
+            key: "position",
+            value,
+        };
+        assert_eq!(menu.edits(&live), vec![edit("statusline", "top")]);
+        live.bars.tabbar = BarPosition::Bottom;
+        assert_eq!(
+            menu.edits(&live),
+            vec![edit("statusline", "top"), edit("tabbar", "bottom")]
+        );
+    }
+
+    #[test]
+    fn the_error_clears_on_the_next_press_which_then_acts() {
+        let mut menu = MenuState::open(&Config::default());
+        let mut config = Config::default();
+        menu.set_error("boom".to_owned());
+        assert_eq!(menu.error(), Some("boom"));
+        menu.on_key(&ch('j'), true, &mut config);
+        let mut release = ch('j');
+        release.kind = KeyEventKind::Release;
+        menu.on_key(&release, false, &mut config);
+        assert_eq!(menu.error(), Some("boom"), "repeat and release keep it");
+        assert_eq!(
+            menu.on_key(&ch('l'), false, &mut config),
+            MenuCommand::Changed
+        );
         assert_eq!(menu.error(), None);
     }
 }
