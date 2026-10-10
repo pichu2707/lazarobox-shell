@@ -55,6 +55,8 @@ impl LazaroboxTheme {
             InputMode::Copy(_) => self.primary_cyan,
             InputMode::Resize => self.ai_purple,
             InputMode::Confirm(_) => self.error_red,
+            // Placeholder: MENU gets its own accent with the statusline slice.
+            InputMode::Menu => self.primary_cyan,
         }
     }
 
