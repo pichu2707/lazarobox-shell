@@ -62,13 +62,15 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 
 ## S2b: Layout split, remove, neighbour
 
-- [ ] S2b.1 RED: `Node::split` tests: right/below, weights equal cell sizes, 21 cols / 5 rows applied, one less refused (`TooSmall`) [pane-layout: Split right, Split below, Refused below minimum, Minimum split sizes].
-- [ ] S2b.2 GREEN: `Direction`, `MIN_PANE`, `Node::split` + `SplitError`.
-- [ ] S2b.3 RED: `Node::remove` tests: sibling expands, `WasLast`, `NotFound`, parent rect restored [pane-layout: Sibling expands, Last pane closes the tab].
-- [ ] S2b.4 GREEN: `Node::remove`, `leaves`.
-- [ ] S2b.5 RED: `neighbour` tests: adjacency across 1-cell separator, largest overlap, lowest-start tie-break, no wrap [pane-layout: Move focus, Edge no-op, Geometry beats tree order]; close-focus rule via `pane_at(old.x, old.y)` [Focus goes to the pane covering the old top-left].
-- [ ] S2b.6 GREEN: `neighbour`; it skips zero-area rects (legal per ADR 5/6) so focus never lands on an invisible pane (test included).
-- [ ] S2b.7 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+> Note: RED evidence was compile-only for the initial tasks. Behaviour coverage was confirmed by review mutation testing (41/45 killed); the survivors were fixed in a follow-up.
+
+- [x] S2b.1 RED: `Node::split` tests: right/below, weights equal cell sizes, 21 cols / 5 rows applied, one less refused (`TooSmall`) [pane-layout: Split right, Split below, Refused below minimum, Minimum split sizes].
+- [x] S2b.2 GREEN: `Direction`, `MIN_PANE`, `Node::split` + `SplitError`.
+- [x] S2b.3 RED: `Node::remove` tests: sibling expands, `WasLast`, `NotFound`, parent rect restored [pane-layout: Sibling expands, Last pane closes the tab].
+- [x] S2b.4 GREEN: `Node::remove`, `leaves`.
+- [x] S2b.5 RED: `neighbour` tests: adjacency across 1-cell separator, largest overlap, lowest-start tie-break, no wrap [pane-layout: Move focus, Edge no-op, Geometry beats tree order]; close-focus rule via `pane_at(old.x, old.y)` [Focus goes to the pane covering the old top-left].
+- [x] S2b.6 GREEN: `neighbour`; it skips zero-area rects (legal per ADR 5/6) so focus never lands on an invisible pane (test included).
+- [x] S2b.7 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## S3: Prefix tree + Group mode
 
