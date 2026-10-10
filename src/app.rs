@@ -8,7 +8,9 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crate::core::{
     copy::{CopyCommand, CopyState},
     keys::{encode_key, encode_paste},
-    layout::{Axis, Direction, Node, PaneId, PaneIds, Rect, SplitError, neighbour, tile},
+    layout::{
+        Axis, Direction, Node, PaneId, PaneIds, Rect, Removal, SplitError, neighbour, pane_at, tile,
+    },
     pane::{CursorKind, CursorShape, Pane, PaneSize},
     prefix::{self, Binding, Group, PREFIX_KEY, PREFIX_TREE, PrefixAction, Step},
     pty::{PtyEvent, SpawnSpec},
@@ -43,6 +45,8 @@ pub enum InputMode {
 pub enum Confirm {
     /// Waiting for `y` to quit.
     Quit,
+    /// Waiting for `y` to close the focused pane.
+    ClosePane,
 }
 
 impl InputMode {
@@ -55,6 +59,7 @@ impl InputMode {
             Self::Group(group) => group.label,
             Self::Resize => "RESIZE",
             Self::Confirm(Confirm::Quit) => "Quit? (y/n)",
+            Self::Confirm(Confirm::ClosePane) => "Close pane? (y/n)",
         }
     }
 }
@@ -160,6 +165,8 @@ pub struct App {
     tab: Tab,
     ids: PaneIds,
     input: InputMode,
+    /// Shown in the statusline path segment until the next key press.
+    notice: Option<String>,
     dirty: bool,
     screen: ScreenLayout,
     /// Where the first pane starts, and the fallback for panes with no known cwd.
@@ -182,6 +189,7 @@ impl App {
             },
             ids,
             input: InputMode::default(),
+            notice: None,
             dirty: true,
             screen,
             launch_cwd: None,
@@ -198,6 +206,16 @@ impl App {
         self.focused_state_mut().cwd = Some(cwd.clone());
         self.launch_cwd = Some(cwd);
         self
+    }
+
+    /// The spawn-failure notice, if one is showing.
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+
+    /// What the statusline path segment shows: the notice, else the cwd.
+    pub fn status_path(&self) -> String {
+        self.notice.clone().unwrap_or_else(|| self.cwd_label())
     }
 
     pub fn shell_name(&self) -> &str {
@@ -242,8 +260,8 @@ impl App {
         self.focused_state().size
     }
 
-    // The focus always names a live pane: only `split` adds panes and it
-    // focuses what it adds.
+    // The focus always names a live pane: `split` focuses what it adds, and
+    // `remove_pane` moves the focus off a pane before dropping it.
     fn focused_state(&self) -> &PaneState {
         &self.panes[&self.tab.focus]
     }
@@ -282,7 +300,11 @@ impl App {
             AppEvent::Pty(id, event) if self.panes.contains_key(&id) => self.on_pty(id, event),
             AppEvent::Cwd(id, cwd) if self.panes.contains_key(&id) => self.on_cwd(id, cwd),
             AppEvent::Pty(..) | AppEvent::Cwd(..) => Vec::new(),
-            // Undoing a failed split arrives with the close rules (S5b).
+            AppEvent::SpawnFailed(id, error) if self.panes.contains_key(&id) => {
+                let effects = self.remove_pane(id);
+                self.notice = Some(format!("spawn failed: {error}"));
+                effects
+            }
             AppEvent::SpawnFailed(..) => Vec::new(),
         }
     }
@@ -309,6 +331,7 @@ impl App {
             KeyEventKind::Repeat => true,
             KeyEventKind::Release => return Vec::new(),
         };
+        self.dirty |= self.notice.take().is_some();
         if repeat
             && matches!(
                 self.input,
@@ -324,7 +347,7 @@ impl App {
             InputMode::Group(group) => self.on_pending_key(group.bindings, &key),
             InputMode::Copy(state) => self.on_copy_key(state, &key),
             InputMode::Resize => self.on_resize_key(),
-            InputMode::Confirm(Confirm::Quit) => self.on_confirm_key(&key),
+            InputMode::Confirm(confirm) => self.on_confirm_key(confirm, &key),
         }
     }
 
@@ -347,6 +370,13 @@ impl App {
             Step::Enter(group) => InputMode::Group(group),
             Step::Run(PrefixAction::RequestQuit) => InputMode::Confirm(Confirm::Quit),
             Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(CopyState::default()),
+            Step::Run(PrefixAction::ClosePane) if self.panes.len() > 1 => {
+                InputMode::Confirm(Confirm::ClosePane)
+            }
+            // Closing the last pane of the only tab quits; so does closing the only tab.
+            Step::Run(PrefixAction::ClosePane | PrefixAction::CloseTab) => {
+                InputMode::Confirm(Confirm::Quit)
+            }
             Step::Cancel
             | Step::Run(
                 PrefixAction::SendPrefixLiteral
@@ -356,11 +386,9 @@ impl App {
             ) => InputMode::Terminal,
             Step::Run(
                 PrefixAction::ShowCommands
-                | PrefixAction::ClosePane
                 | PrefixAction::EnterResize
                 | PrefixAction::ToggleZoom
                 | PrefixAction::NewTab
-                | PrefixAction::CloseTab
                 | PrefixAction::NextTab
                 | PrefixAction::PrevTab
                 | PrefixAction::GotoTab(_),
@@ -396,7 +424,7 @@ impl App {
             .or_else(|| self.launch_cwd.clone());
         let size = self.layout_sizes()[&new];
         self.panes.insert(new, PaneState::new(size));
-        self.tab.focus = new;
+        self.set_focus(new);
         let mut effects = self.relayout();
         effects.push(Effect::SpawnPane(new, self.spawn_spec(cwd, size)));
         effects
@@ -405,8 +433,49 @@ impl App {
     fn move_focus(&mut self, dir: Direction) {
         let tiling = tile(&self.tab.tree, self.screen.body);
         if let Some(next) = neighbour(&tiling, self.tab.focus, dir) {
-            self.tab.focus = next;
+            self.set_focus(next);
         }
+    }
+
+    /// Focuses `next`. Leaving a pane ends COPY (its viewport goes back to the
+    /// bottom) and RESIZE.
+    fn set_focus(&mut self, next: PaneId) {
+        if next == self.tab.focus {
+            return;
+        }
+        if let Some(left) = self.panes.get_mut(&self.tab.focus) {
+            left.emu.set_scrollback(0);
+        }
+        if matches!(self.input, InputMode::Copy(_) | InputMode::Resize) {
+            self.input = InputMode::Terminal;
+        }
+        self.tab.focus = next;
+    }
+
+    /// Drops pane `id` and gives its space to its sibling. If it had the focus,
+    /// the pane now covering its old top-left cell takes it. Any removal
+    /// cancels a pending confirmation. The last pane asks to quit instead.
+    fn remove_pane(&mut self, id: PaneId) -> Vec<Effect> {
+        let tiling = tile(&self.tab.tree, self.screen.body);
+        let Some(&(_, old)) = tiling.panes.iter().find(|(pane, _)| *pane == id) else {
+            return Vec::new();
+        };
+        match self.tab.tree.remove(id) {
+            Removal::NotFound => return Vec::new(),
+            Removal::WasLast => return vec![Effect::Quit],
+            Removal::Removed => {}
+        }
+        self.panes.remove(&id);
+        self.dirty = true;
+        if matches!(self.input, InputMode::Confirm(_)) {
+            self.input = InputMode::Terminal;
+        }
+        if id == self.tab.focus {
+            let tiling = tile(&self.tab.tree, self.screen.body);
+            let next = pane_at(&tiling, old.x, old.y).unwrap_or(self.tab.tree.leaves()[0]);
+            self.set_focus(next);
+        }
+        self.relayout()
     }
 
     /// What each pane's PTY size should be, from the current layout.
@@ -443,12 +512,20 @@ impl App {
         Vec::new()
     }
 
-    fn on_confirm_key(&mut self, key: &KeyEvent) -> Vec<Effect> {
-        if key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::NONE {
-            return vec![Effect::Quit];
-        }
+    fn on_confirm_key(&mut self, confirm: Confirm, key: &KeyEvent) -> Vec<Effect> {
         self.input = InputMode::Terminal;
-        Vec::new()
+        if key.code != KeyCode::Char('y') || key.modifiers != KeyModifiers::NONE {
+            return Vec::new();
+        }
+        match confirm {
+            Confirm::Quit => vec![Effect::Quit],
+            Confirm::ClosePane => {
+                let id = self.tab.focus;
+                let mut effects = self.remove_pane(id);
+                effects.push(Effect::ClosePane(id));
+                effects
+            }
+        }
     }
 
     fn on_copy_key(&mut self, mut state: CopyState, key: &KeyEvent) -> Vec<Effect> {
@@ -524,7 +601,7 @@ impl App {
                     vec![Effect::WritePty(id, reply)]
                 }
             }
-            PtyEvent::Exited => vec![Effect::Quit],
+            PtyEvent::Exited => self.remove_pane(id),
         }
     }
 }
@@ -1680,5 +1757,229 @@ mod app_tests {
         assert_eq!(a.cwd_label(), "/b");
         press(&mut a, "h");
         assert_eq!(a.cwd_label(), "/a");
+    }
+    fn exited(id: PaneId) -> AppEvent {
+        AppEvent::Pty(id, PtyEvent::Exited)
+    }
+
+    fn id3() -> PaneId {
+        PaneId::for_test(3)
+    }
+
+    /// Left pane 1, top-right pane 2, bottom-right pane 3 (focused).
+    fn three_panes() -> App {
+        let mut a = split_right();
+        press(&mut a, "wh");
+        a
+    }
+
+    // Spec: Close pane confirmed; Last pane prompts quit.
+    #[test]
+    fn close_pane_asks_then_y_closes_the_focused_pane() {
+        let mut a = split_right();
+        press(&mut a, "wq");
+        assert_eq!(a.input(), InputMode::Confirm(Confirm::ClosePane));
+        assert_eq!(a.input().label(), "Close pane? (y/n)");
+        let effects = a.update(key('y'));
+        assert_eq!(
+            effects,
+            vec![
+                Effect::ResizePty(PaneId::FIRST, sized(24, 80)),
+                Effect::ClosePane(id2())
+            ]
+        );
+        assert_eq!(
+            (a.focused(), a.input()),
+            (PaneId::FIRST, InputMode::Terminal)
+        );
+        assert!(a.pane(id2()).is_none());
+        let mut one = launched(80, 25);
+        press(&mut one, "wq");
+        assert_eq!(one.input(), InputMode::Confirm(Confirm::Quit));
+        assert_eq!(one.update(key('y')), vec![Effect::Quit]);
+    }
+
+    // Spec: Close pane declined; Confirm is strict lowercase y.
+    #[test]
+    fn close_pane_is_declined_by_anything_but_a_plain_y() {
+        for decline in [key('n'), esc(), key('x'), key('Y')] {
+            let mut a = split_right();
+            press(&mut a, "wq");
+            assert_eq!(a.update(decline.clone()), vec![], "{decline:?}");
+            assert_eq!(a.input(), InputMode::Terminal);
+            assert!(a.pane(id2()).is_some());
+        }
+    }
+
+    // Spec: Only tab prompts quit.
+    #[test]
+    fn close_tab_on_the_only_tab_asks_to_quit() {
+        let mut a = launched(80, 25);
+        press(&mut a, "tc");
+        assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
+    }
+
+    // Spec: One of two shells exits; sibling expands.
+    #[test]
+    fn an_unfocused_shell_exit_collapses_its_pane_and_keeps_focus() {
+        let mut a = split_right();
+        let effects = a.update(exited(PaneId::FIRST));
+        assert_eq!(effects, vec![Effect::ResizePty(id2(), sized(24, 80))]);
+        assert_eq!(a.focused(), id2());
+        assert!(a.pane(PaneId::FIRST).is_none());
+    }
+
+    // Spec: focus goes to the pane covering the closed pane's top-left.
+    #[test]
+    fn a_focused_shell_exit_focuses_the_pane_covering_its_top_left() {
+        let mut a = three_panes();
+        assert_eq!(
+            a.update(exited(id3())),
+            vec![Effect::ResizePty(id2(), sized(24, 40))]
+        );
+        assert_eq!(a.focused(), id2());
+        press(&mut a, "h");
+        let effects = a.update(exited(PaneId::FIRST));
+        assert!(!effects.contains(&Effect::Quit));
+        assert_eq!(a.focused(), id2());
+    }
+
+    // Spec: Last shell exits.
+    #[test]
+    fn the_last_shell_exiting_quits() {
+        let mut a = split_right();
+        a.update(exited(PaneId::FIRST));
+        assert_eq!(a.update(exited(id2())), vec![Effect::Quit]);
+    }
+
+    // Spec: Removal cancels the prompt.
+    #[test]
+    fn any_removal_cancels_a_pending_confirmation() {
+        for victim in [PaneId::FIRST, id2()] {
+            let mut a = split_right();
+            press(&mut a, "wq");
+            a.update(exited(victim));
+            assert_eq!(a.input(), InputMode::Terminal, "{victim:?}");
+            let survivor = a.focused();
+            assert_eq!(
+                a.update(key('y')),
+                vec![Effect::WritePty(survivor, b"y".to_vec())]
+            );
+        }
+    }
+
+    fn scrolled_split() -> App {
+        let mut a = split_right();
+        for id in [PaneId::FIRST, id2()] {
+            for i in 0..60 {
+                let line = format!("l{i}\r\n").into_bytes();
+                a.update(AppEvent::Pty(id, PtyEvent::Output(line)));
+            }
+        }
+        a.update(ctrl_space());
+        a.update(key('['));
+        a.update(key('k'));
+        a
+    }
+
+    // Spec: Focused pane exits while in COPY; Pane close in COPY.
+    #[test]
+    fn the_focused_pane_exiting_in_copy_returns_to_a_live_terminal() {
+        let mut a = scrolled_split();
+        assert!(is_copy(&a));
+        a.update(exited(id2()));
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.focused(), PaneId::FIRST);
+        assert_eq!(a.focused_pane().scrollback_offset(), 0);
+    }
+
+    // Spec: Offsets are independent; Other panes keep running; Keys act on the focused pane.
+    #[test]
+    fn copy_is_per_pane_and_other_panes_keep_running() {
+        let mut a = scrolled_split();
+        assert_eq!(a.pane(PaneId::FIRST).unwrap().scrollback_offset(), 0);
+        a.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(b"live".to_vec()),
+        ));
+        assert_eq!(a.pane(PaneId::FIRST).unwrap().cell(0, 0).unwrap().text, "l");
+        a.update(key('k'));
+        assert_eq!(a.pane(PaneId::FIRST).unwrap().scrollback_offset(), 0);
+        assert_eq!(a.pane(id2()).unwrap().scrollback_offset(), 2);
+        // Removing another pane keeps COPY when the focus does not move.
+        a.update(exited(PaneId::FIRST));
+        assert!(is_copy(&a));
+    }
+
+    // Spec: Focus change / removal that keeps focus, in RESIZE.
+    #[test]
+    fn resize_ends_when_the_focus_moves_but_not_when_it_stays() {
+        let mut a = three_panes();
+        a.input = InputMode::Resize;
+        a.update(exited(PaneId::FIRST));
+        assert_eq!(a.input(), InputMode::Resize);
+        a.update(exited(id3()));
+        assert_eq!(a.input(), InputMode::Terminal);
+    }
+
+    // Spec: Failed split removes the pane.
+    #[test]
+    fn a_failed_split_removes_the_pane_and_restores_focus() {
+        let mut a = split_right();
+        let effects = a.update(AppEvent::SpawnFailed(id2(), "boom".into()));
+        assert_eq!(
+            effects,
+            vec![Effect::ResizePty(PaneId::FIRST, sized(24, 80))]
+        );
+        assert_eq!(a.focused(), PaneId::FIRST);
+        assert!(a.pane(id2()).is_none());
+        assert_eq!(a.notice(), Some("spawn failed: boom"));
+        assert_eq!(a.status_path(), "spawn failed: boom");
+        // A failed pane that is not focused leaves the focus alone.
+        let mut b = three_panes();
+        b.update(AppEvent::SpawnFailed(id2(), "x".into()));
+        assert_eq!(b.focused(), id3());
+    }
+
+    // Spec: Notice clears on next key; a newer notice replaces an older one.
+    #[test]
+    fn the_notice_lasts_until_the_next_press_or_repeat() {
+        let mut a = three_panes();
+        a.update(AppEvent::SpawnFailed(id2(), "a".into()));
+        a.update(AppEvent::SpawnFailed(id3(), "b".into()));
+        assert_eq!(a.notice(), Some("spawn failed: b"));
+        a.update(kinded(
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        ));
+        assert_eq!(a.notice(), Some("spawn failed: b"));
+        a.update(key('x'));
+        assert_eq!(a.notice(), None);
+        a.update(AppEvent::SpawnFailed(id2(), "c".into()));
+        a.update(repeat('x'));
+        assert_eq!(a.notice(), None);
+    }
+
+    #[test]
+    fn a_failed_spawn_for_the_only_pane_quits() {
+        let mut a = launched(80, 25);
+        assert_eq!(
+            a.update(AppEvent::SpawnFailed(PaneId::FIRST, "no".into())),
+            vec![Effect::Quit]
+        );
+    }
+
+    // A refused split must leave no trace: ids are never reused, but the
+    // consumed id is the only side effect.
+    #[test]
+    fn a_refused_split_leaves_the_tree_and_panes_unchanged() {
+        let mut a = launched(20, 25);
+        press(&mut a, "wv");
+        assert_eq!(a.tab.tree, Node::Leaf(PaneId::FIRST));
+        assert_eq!(a.panes.len(), 1);
+        a.update(AppEvent::Resize { cols: 80, rows: 25 });
+        press(&mut a, "wv");
+        assert_eq!(a.focused(), id3());
     }
 }
