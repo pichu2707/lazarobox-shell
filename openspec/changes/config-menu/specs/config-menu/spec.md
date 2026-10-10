@@ -107,7 +107,7 @@ Every change of a draft value MUST be applied immediately to the running layout 
 - THEN the positions are those the app had when the menu opened
 
 ### Requirement: Input is swallowed
-In MENU every key not listed above MUST be swallowed with no effect. The PTY MUST NOT receive any key or paste while the menu is open. Release events MUST be ignored. Ctrl+Space MUST be swallowed (not cancel, not literal NUL).
+In MENU every key not listed above MUST be swallowed with no effect. The PTY MUST NOT receive any key or paste while the menu is open. Release events MUST be ignored. Ctrl+Space MUST be swallowed (not cancel, not literal NUL). Shift is ignored for listed keys (Shift+Space cycles, Shift+Enter saves); uppercase letters such as `J` are unlisted and swallowed.
 
 #### Scenario: Unknown key [auto]
 - GIVEN MENU
