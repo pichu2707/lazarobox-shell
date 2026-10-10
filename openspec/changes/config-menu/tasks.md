@@ -95,10 +95,10 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 - [x] CM3.5 GREEN: `Clear` + bordered ` Menu ` block rendered from `MenuState::rows`; footer from `error()` or hint.
 - [x] CM3.6 RED: fallback `MENU · Esc cancel · Enter save` on the middle row below threshold, clipped with `…`; 0x0 and every size from 0..30 cols/rows never panic; key handling unchanged at tiny sizes (Esc reverts) [No panic at any size, Minimal message and Esc works].
 - [x] CM3.7 GREEN: fallback path and zero-area guard.
-- [ ] CM3.8 RED: `src/ui/mod.rs` draws the overlay last when `menu()` is `Some`; snapshot of one-tab forced bar with popup; real cursor not placed in MENU; cursor unchanged outside MENU (characterization) [tabs: Bar forced with one tab (render)].
-- [ ] CM3.9 GREEN: overlay draw after the statusline; skip `cursor_position` while MENU.
+- [x] CM3.8 RED: `src/ui/mod.rs` draws the overlay last when `menu()` is `Some`; snapshot of one-tab forced bar with popup; real cursor not placed in MENU; cursor unchanged outside MENU (characterization) [tabs: Bar forced with one tab (render)].
+- [x] CM3.9 GREEN: overlay draw after the statusline; skip `cursor_position` while MENU.
 - [ ] CM3.10 [manual] Kitty: `Ctrl+Space m` shows the popup; `j/k` move, `l` changes the statusline/tab bar position live with nvim reflowing; the one-tab bar appears and disappears on open/close (resize accepted); Esc restores; popup survives a small window (fallback line) [config-menu: Menu in Kitty (open, preview, Esc)].
-- [ ] CM3.11 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] CM3.11 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## CM4a: `apply_edit` (pure) and dependencies
 
