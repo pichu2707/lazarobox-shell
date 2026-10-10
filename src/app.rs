@@ -319,6 +319,27 @@ impl App {
         self.active
     }
 
+    /// One label per tab: `N cwd-basename`, or just `N` without a cwd.
+    pub fn tab_labels(&self) -> Vec<String> {
+        self.tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                let number = index + 1;
+                match self.panes[&tab.focus].cwd.as_deref() {
+                    Some(cwd) => {
+                        let name = cwd.file_name().map_or_else(
+                            || "/".to_string(),
+                            |name| name.to_string_lossy().into_owned(),
+                        );
+                        format!("{number} {name}")
+                    }
+                    None => number.to_string(),
+                }
+            })
+            .collect()
+    }
+
     fn tab(&self) -> &Tab {
         &self.tabs[self.active]
     }
@@ -811,7 +832,9 @@ impl App {
             && state.cwd.as_ref() != Some(&cwd)
         {
             state.cwd = Some(cwd);
-            self.dirty |= id == self.tab().focus;
+            // The tab bar labels show the focused pane's cwd of every tab.
+            let labelled = self.tabs.len() > 1 && self.tabs.iter().any(|tab| tab.focus == id);
+            self.dirty |= labelled || id == self.tab().focus;
         }
         Vec::new()
     }
@@ -819,7 +842,8 @@ impl App {
     fn on_pty(&mut self, id: PaneId, event: PtyEvent) -> Vec<Effect> {
         match event {
             PtyEvent::Output(bytes) => {
-                self.dirty = true;
+                // Panes of hidden tabs are not on screen: feed them, don't redraw.
+                self.dirty |= self.tab().tree.leaves().contains(&id);
                 let reply = self
                     .panes
                     .get_mut(&id)
@@ -2915,5 +2939,104 @@ mod app_tests {
                 Effect::ClosePane(id2())
             ]
         );
+    }
+
+    fn output(n: u32) -> AppEvent {
+        AppEvent::Pty(pid(n), PtyEvent::Output(b"zz".to_vec()))
+    }
+
+    // Spec: Close tab confirmed; only live panes get a ClosePane.
+    #[test]
+    fn closing_a_tab_with_an_exited_pane_closes_only_the_live_panes() {
+        let mut a = tabs(2);
+        press(&mut a, "wv");
+        a.update(exited(pid(2)));
+        press(&mut a, "tc");
+        let effects = a.update(key('y'));
+        let closed: Vec<_> = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::ClosePane(_)))
+            .collect();
+        assert_eq!(closed, vec![&Effect::ClosePane(id3())]);
+    }
+
+    // A prompt is cancelled by a removal, in any tab.
+    #[test]
+    fn a_pending_confirm_is_cancelled_when_a_pane_of_an_inactive_tab_exits() {
+        for keys in ["tc", "wq"] {
+            let mut a = tabs(3);
+            press(&mut a, keys);
+            assert!(matches!(a.input(), InputMode::Confirm(_)), "{keys}");
+            a.update(exited(pid(1)));
+            assert_eq!(a.input(), InputMode::Terminal, "{keys}");
+            let count = a.tab_count();
+            let effects = a.update(key('y'));
+            assert_eq!(a.tab_count(), count, "{keys}");
+            assert!(
+                !effects.iter().any(|e| matches!(e, Effect::ClosePane(_))),
+                "{keys}: {effects:?}"
+            );
+        }
+    }
+
+    // Hidden tabs are not on screen: their output must not redraw.
+    #[test]
+    fn output_of_a_pane_in_a_hidden_tab_does_not_mark_dirty() {
+        let mut a = tabs(2);
+        a.take_dirty();
+        a.update(output(1));
+        assert!(!a.take_dirty());
+        a.update(output(2));
+        assert!(a.take_dirty());
+    }
+
+    #[test]
+    fn a_hidden_pane_still_receives_its_output() {
+        let mut a = tabs(2);
+        a.update(output(1));
+        press(&mut a, "b1");
+        assert_eq!(a.focused_pane().cell(0, 0).unwrap().text, "z");
+    }
+
+    // The tab label shows the focused pane's cwd, so its change redraws.
+    #[test]
+    fn a_cwd_change_in_a_hidden_tab_marks_dirty_while_the_bar_is_shown() {
+        let mut a = tabs(2);
+        a.take_dirty();
+        a.update(AppEvent::Cwd(pid(1), "/tmp".into()));
+        assert!(a.take_dirty());
+        a.update(AppEvent::Cwd(pid(1), "/tmp".into()));
+        assert!(!a.take_dirty());
+    }
+
+    // --- S8b: labels ---
+
+    // Spec: Tab label.
+    #[test]
+    fn tab_labels_are_the_number_and_the_cwd_basename() {
+        let mut a = tabs(2);
+        a.update(AppEvent::Cwd(pid(1), "/home/u/proj".into()));
+        a.update(AppEvent::Cwd(pid(2), "/tmp".into()));
+        assert_eq!(a.tab_labels(), ["1 proj", "2 tmp"]);
+        a.update(AppEvent::Cwd(pid(2), "/".into()));
+        assert_eq!(a.tab_labels(), ["1 proj", "2 /"]);
+    }
+
+    // Spec: Label without cwd.
+    #[test]
+    fn a_tab_label_without_a_cwd_is_its_number() {
+        let a = tabs(2);
+        assert_eq!(a.tab_labels(), ["1 launch", "2"]);
+    }
+
+    #[test]
+    fn a_tab_label_follows_the_focused_pane_of_that_tab() {
+        let mut a = tabs(2);
+        a.update(AppEvent::Cwd(pid(2), "/a".into()));
+        press(&mut a, "wv");
+        a.update(AppEvent::Cwd(pid(3), "/b".into()));
+        assert_eq!(a.tab_labels(), ["1 launch", "2 b"]);
+        press(&mut a, "h");
+        assert_eq!(a.tab_labels(), ["1 launch", "2 a"]);
     }
 }
