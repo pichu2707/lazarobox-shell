@@ -856,7 +856,9 @@ mod tests {
         spawn_two(&mut panes);
         panes.apply(vec![Effect::ClosePane(id(2))]);
         app.take_dirty();
-        assert!((rec.borrow_mut().sinks[1])(PtyEvent::Output(b"late".to_vec())));
+        assert!((rec.borrow_mut().sinks[1])(PtyEvent::Output(
+            b"late".to_vec()
+        )));
         assert!((rec.borrow_mut().sinks[1])(PtyEvent::Exited));
         while let Ok((pane, event)) = rx.try_recv() {
             assert!(!step(&mut app, AppEvent::Pty(pane, event), &mut panes));
