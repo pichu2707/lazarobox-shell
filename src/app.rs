@@ -13,6 +13,7 @@ use crate::core::{
         Axis, Direction, Node, PaneId, PaneIds, Rect, Removal, SplitError, Tiling, neighbour,
         pane_at, tile,
     },
+    menu::{MenuCommand, MenuState},
     pane::{CursorKind, CursorShape, Pane, PaneSize},
     prefix::{self, Binding, Group, PREFIX_KEY, PREFIX_TREE, PrefixAction, Step},
     pty::{PtyEvent, SpawnSpec},
@@ -40,6 +41,9 @@ pub enum InputMode {
     Resize,
     /// Waiting for a yes/no answer.
     Confirm(Confirm),
+    /// The config menu is open; `App.menu` holds its state (invariant:
+    /// `menu.is_some() == (input == Menu)`).
+    Menu,
 }
 
 /// What a pending confirmation asks about.
@@ -65,6 +69,7 @@ impl InputMode {
             Self::Confirm(Confirm::Quit) => "Quit? (y/n)",
             Self::Confirm(Confirm::ClosePane) => "Close pane? (y/n)",
             Self::Confirm(Confirm::CloseTab) => "Close tab? (y/n)",
+            Self::Menu => "MENU",
         }
     }
 }
@@ -83,6 +88,15 @@ pub enum AppEvent {
     Cwd(PaneId, PathBuf),
     /// Spawning the child of a pane failed; carries the error text.
     SpawnFailed(PaneId, String),
+}
+
+/// How the menu closed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Outcome {
+    /// The draft stays as the live config.
+    Saved,
+    /// The config returns to the values captured at open.
+    Reverted,
 }
 
 /// Side effects requested by `App::update`, executed by the runtime.
@@ -217,7 +231,9 @@ pub struct App {
     notice: Option<String>,
     dirty: bool,
     screen: ScreenLayout,
-    bars: BarPositions,
+    /// The live config; while the menu is open it doubles as the draft.
+    config: Config,
+    menu: Option<MenuState>,
     /// Where the first pane starts, and the fallback for panes with no known cwd.
     launch_cwd: Option<PathBuf>,
     home: Option<PathBuf>,
@@ -227,8 +243,8 @@ pub struct App {
 impl App {
     /// An app for a terminal of `cols` x `rows`, with one pane in the body.
     pub fn new(cols: u16, rows: u16) -> Self {
-        let bars = BarPositions::default();
-        let screen = ScreenLayout::new(cols, rows, false, bars);
+        let config = Config::default();
+        let screen = ScreenLayout::new(cols, rows, false, config.bars);
         let mut ids = PaneIds::default();
         let first = ids.alloc();
         Self {
@@ -245,7 +261,8 @@ impl App {
             notice: None,
             dirty: true,
             screen,
-            bars,
+            config,
+            menu: None,
             launch_cwd: None,
             home: None,
             shell: None,
@@ -264,7 +281,7 @@ impl App {
 
     /// Places the statusline and the tab bar as the config says.
     pub fn with_config(mut self, config: &Config) -> Self {
-        self.bars = config.bars;
+        self.config = *config;
         self.refresh_screen();
         // Nothing runs yet, so there is no PTY to tell about the new size.
         self.relayout();
@@ -310,6 +327,11 @@ impl App {
 
     pub fn input(&self) -> InputMode {
         self.input
+    }
+
+    /// The open menu, if any.
+    pub fn menu(&self) -> Option<&MenuState> {
+        self.menu.as_ref()
     }
 
     /// Whether a redraw is due. Reading it clears it.
@@ -429,7 +451,7 @@ impl App {
     }
 
     pub fn update(&mut self, event: AppEvent) -> Vec<Effect> {
-        match event {
+        let effects = match event {
             AppEvent::Key(key) => self.on_key(key),
             AppEvent::Paste(text) => self.on_paste(&text),
             AppEvent::Resize { cols, rows } => self.on_resize(cols, rows),
@@ -443,7 +465,13 @@ impl App {
                 effects
             }
             AppEvent::SpawnFailed(..) => Vec::new(),
-        }
+        };
+        debug_assert_eq!(
+            self.menu.is_some(),
+            self.input == InputMode::Menu,
+            "the menu state and the MENU mode go together"
+        );
+        effects
     }
 
     /// Cursor shape the outer terminal should show: a steady block in COPY
@@ -485,6 +513,53 @@ impl App {
             InputMode::Copy(state) => self.on_copy_key(state, &key),
             InputMode::Resize => self.on_resize_key(&key),
             InputMode::Confirm(confirm) => self.on_confirm_key(confirm, &key),
+            InputMode::Menu => self.on_menu_key(&key, repeat),
+        }
+    }
+
+    /// Opens the menu: captures the live config as the original.
+    fn open_menu(&mut self) {
+        self.menu = Some(MenuState::open(&self.config));
+        self.input = InputMode::Menu;
+    }
+
+    /// The only way out of MENU. `Reverted` restores the config captured at
+    /// open; `Saved` keeps the draft.
+    fn close_menu(&mut self, outcome: Outcome) -> Vec<Effect> {
+        let reverted = match self.menu.take() {
+            Some(menu) if outcome == Outcome::Reverted => {
+                self.config = menu.original();
+                true
+            }
+            _ => false,
+        };
+        self.input = InputMode::Terminal;
+        if reverted {
+            self.apply_config()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Lays the screen out again for the live config, telling only the panes
+    /// whose size changed.
+    fn apply_config(&mut self) -> Vec<Effect> {
+        self.refresh_screen();
+        self.relayout()
+    }
+
+    fn on_menu_key(&mut self, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
+        let Some(menu) = self.menu.as_mut() else {
+            return Vec::new();
+        };
+        match menu.on_key(key, repeat, &mut self.config) {
+            MenuCommand::Changed => self.apply_config(),
+            MenuCommand::Cancel => self.close_menu(Outcome::Reverted),
+            // An unchanged draft has nothing to save. A changed one is kept
+            // for this session only and never written to disk.
+            // replaced in CM4b: emit `SaveConfig(edits)` and close on its result.
+            MenuCommand::Save => self.close_menu(Outcome::Saved),
+            MenuCommand::None => Vec::new(),
         }
     }
 
@@ -523,7 +598,8 @@ impl App {
                 | PrefixAction::SplitRight
                 | PrefixAction::SplitBelow
                 | PrefixAction::ToggleZoom
-                | PrefixAction::Focus(_),
+                | PrefixAction::Focus(_)
+                | PrefixAction::OpenMenu,
             ) => InputMode::Terminal,
             Step::Run(
                 PrefixAction::ShowCommands
@@ -536,6 +612,10 @@ impl App {
         match step {
             Step::Run(PrefixAction::SendPrefixLiteral) => {
                 vec![Effect::WritePty(self.tab().focus, vec![PREFIX_LITERAL])]
+            }
+            Step::Run(PrefixAction::OpenMenu) => {
+                self.open_menu();
+                Vec::new()
             }
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
             Step::Run(PrefixAction::SplitBelow) => self.split(Axis::Y),
@@ -632,7 +712,12 @@ impl App {
     /// Recomputes the screen rects: the tab bar exists while there is more
     /// than one tab.
     fn refresh_screen(&mut self) {
-        self.screen = ScreenLayout::new(self.term.0, self.term.1, self.tabs.len() > 1, self.bars);
+        self.screen = ScreenLayout::new(
+            self.term.0,
+            self.term.1,
+            self.tabs.len() > 1,
+            self.config.bars,
+        );
     }
 
     /// Splits the focused pane and focuses the new one. A split the layout
@@ -967,6 +1052,7 @@ mod app_tests {
 
     use crate::core::{
         copy::CopyState,
+        menu::Row,
         pane::{CursorKind, CursorShape, PaneSize},
         pty::PtyEvent,
     };
@@ -3216,5 +3302,227 @@ mod app_tests {
         assert_eq!(a.notice(), None);
         let b = launched(80, 25).with_notice(None);
         assert_eq!(b.notice(), None);
+    }
+
+    // Spec: config-menu Open and close; modal-input MENU mode.
+    // `m` joins the prefix table in the next slice, so these tests inject
+    // `OpenMenu` through a one-binding table.
+    static OPEN_MENU: &[Binding] = &[Binding {
+        chord: prefix::KeyChord {
+            code: KeyCode::Char('m'),
+            mods: KeyModifiers::NONE,
+        },
+        description: "menu",
+        target: prefix::Target::Action(PrefixAction::OpenMenu),
+        hinted: true,
+    }];
+
+    fn open_menu(a: &mut App) -> Vec<Effect> {
+        a.update(ctrl_space());
+        let m = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE);
+        a.on_pending_key(OPEN_MENU, &m)
+    }
+
+    fn menu_app() -> App {
+        let mut a = launched(80, 25);
+        open_menu(&mut a);
+        a
+    }
+
+    fn code(c: KeyCode) -> AppEvent {
+        AppEvent::Key(KeyEvent::new(c, KeyModifiers::NONE))
+    }
+
+    fn kind(c: KeyCode, kind: KeyEventKind) -> AppEvent {
+        let mut ev = KeyEvent::new(c, KeyModifiers::NONE);
+        ev.kind = kind;
+        AppEvent::Key(ev)
+    }
+
+    fn config_of(statusline: BarPosition, tabbar: BarPosition) -> Config {
+        Config {
+            bars: BarPositions { statusline, tabbar },
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn opening_the_menu_enters_menu_without_writing() {
+        let mut a = launched(80, 25);
+        assert_eq!(open_menu(&mut a), vec![]);
+        assert_eq!(a.input(), InputMode::Menu);
+        assert!(a.menu().is_some());
+    }
+
+    #[test]
+    fn esc_closes_the_menu_back_to_terminal() {
+        let mut a = menu_app();
+        assert_eq!(a.update(esc()), vec![]);
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert!(a.menu().is_none());
+    }
+
+    #[test]
+    fn reopening_starts_on_the_first_row_with_the_reverted_values() {
+        let mut a = menu_app();
+        a.update(key('j'));
+        a.update(key('h'));
+        a.update(esc());
+        open_menu(&mut a);
+        let rows = a.menu().unwrap().rows(&a.config);
+        assert!(matches!(
+            rows[1],
+            Row::Item {
+                selected: true,
+                value: Some("bottom"),
+                ..
+            }
+        ));
+        assert!(matches!(
+            rows[2],
+            Row::Item {
+                selected: false,
+                value: Some("top"),
+                ..
+            }
+        ));
+    }
+
+    // Spec: config-menu Live preview and revert.
+    fn body_y(a: &App) -> u16 {
+        a.screen().body.y
+    }
+
+    #[test]
+    fn cycling_the_statusline_moves_the_screen_live() {
+        let mut a = launched(80, 25);
+        press(&mut a, "wv");
+        open_menu(&mut a);
+        let panes_before = a.tiling().panes.len();
+        // Same body height both ways, so no pane needs a new PTY size.
+        assert_eq!(a.update(key('l')), vec![]);
+        assert_eq!(a.screen().status.y, 0);
+        assert_eq!(body_y(&a), 1);
+        assert!(a.tiling().panes.iter().all(|(_, rect)| rect.y == 1));
+        assert_eq!(a.tiling().panes.len(), panes_before);
+    }
+
+    #[test]
+    fn cycling_the_tab_bar_moves_it_live() {
+        let mut a = launched(80, 25);
+        press(&mut a, "tn");
+        open_menu(&mut a);
+        assert_eq!(a.screen().tab_bar.map(|r| r.y), Some(0));
+        a.update(key('j'));
+        assert_eq!(a.update(key('l')), vec![]);
+        assert_eq!(a.screen().tab_bar.map(|r| r.y), Some(24));
+    }
+
+    #[test]
+    fn a_preview_emits_resize_only_for_panes_whose_size_changed() {
+        // Every position change keeps the body height, so nothing resizes:
+        // the diff in `relayout` is what keeps it that way.
+        let mut a = launched(80, 25);
+        press(&mut a, "wv");
+        open_menu(&mut a);
+        for k in ['l', 'l', 'h'] {
+            let effects = a.update(key(k));
+            assert!(
+                !effects.iter().any(|e| matches!(e, Effect::ResizePty(..))),
+                "{effects:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn esc_restores_the_original_positions_and_relayouts() {
+        let mut a = launched(80, 25);
+        press(&mut a, "tn");
+        let before = a.screen();
+        open_menu(&mut a);
+        a.update(key('l'));
+        a.update(key('j'));
+        a.update(key('l'));
+        assert_ne!(a.screen(), before);
+        a.update(esc());
+        assert_eq!(a.screen(), before);
+        assert_eq!(a.config, Config::default());
+    }
+
+    #[test]
+    fn an_external_edit_is_not_reloaded_because_the_app_never_reads_the_file() {
+        // Characterization: `App` is pure, so Esc can only restore what it
+        // captured at open, whatever the file says meanwhile.
+        let start = config_of(BarPosition::Top, BarPosition::Bottom);
+        let mut a = launched(80, 25).with_config(&start);
+        open_menu(&mut a);
+        a.update(key('l'));
+        a.update(esc());
+        assert_eq!(a.config, start);
+    }
+
+    // Spec: modal-input MENU mode; config-menu Input is swallowed.
+    // Characterization: the swallow rules held from the moment the MENU
+    // branch delegated to `MenuState`, so these pass at once.
+    #[test]
+    fn unlisted_keys_and_release_emit_nothing_and_stay_in_menu() {
+        let ctrl = AppEvent::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        let events = [
+            key('x'),
+            code(KeyCode::Tab),
+            ctrl,
+            kind(KeyCode::Char('l'), KeyEventKind::Release),
+        ];
+        for ev in events {
+            let mut a = menu_app();
+            assert_eq!(a.update(ev.clone()), vec![], "{ev:?}");
+            assert_eq!(a.input(), InputMode::Menu, "{ev:?}");
+            assert_eq!(a.config, Config::default(), "{ev:?}");
+        }
+    }
+
+    #[test]
+    fn paste_in_menu_writes_nothing() {
+        let mut a = menu_app();
+        assert_eq!(a.update(AppEvent::Paste("hi".into())), vec![]);
+        assert_eq!(a.input(), InputMode::Menu);
+    }
+
+    // `repeat` comes from `key.kind` in `App::on_key` only.
+    #[test]
+    fn a_held_enter_or_esc_does_nothing_but_a_held_j_moves() {
+        for held in [KeyCode::Enter, KeyCode::Esc] {
+            let mut a = menu_app();
+            a.update(key('l'));
+            assert_eq!(a.update(kind(held, KeyEventKind::Repeat)), vec![]);
+            assert_eq!(a.input(), InputMode::Menu, "{held:?}");
+            assert_eq!(a.config.bars.statusline, BarPosition::Top, "{held:?}");
+        }
+        let mut a = menu_app();
+        a.update(kind(KeyCode::Char('j'), KeyEventKind::Repeat));
+        a.update(key('l'));
+        assert_eq!(
+            a.config.bars.tabbar,
+            BarPosition::Bottom,
+            "j moved to row 2"
+        );
+    }
+
+    // Spec: Enter with an unchanged draft closes without saving.
+    #[test]
+    fn enter_with_an_unchanged_draft_closes_the_menu() {
+        let mut a = menu_app();
+        assert_eq!(a.update(code(KeyCode::Enter)), vec![]);
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert!(a.menu().is_none());
+    }
+
+    #[test]
+    fn enter_with_a_changed_draft_closes_for_the_session_only() {
+        let mut a = menu_app();
+        a.update(key('l'));
+        assert_eq!(a.update(code(KeyCode::Enter)), vec![]);
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.config.bars.statusline, BarPosition::Top, "draft kept");
     }
 }

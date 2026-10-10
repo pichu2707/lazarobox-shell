@@ -222,6 +222,11 @@ impl MenuState {
             .collect()
     }
 
+    /// The config captured when the menu opened.
+    pub fn original(&self) -> Config {
+        self.original
+    }
+
     pub fn set_error(&mut self, message: String) {
         self.error = Some(message);
     }
