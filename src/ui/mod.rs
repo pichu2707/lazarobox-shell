@@ -8,6 +8,7 @@ use crate::{app::App, core::layout::Rect};
 use components::{
     separators::SeparatorView,
     statusline::StatusLine,
+    tab_bar::TabBar,
     terminal_view::{TerminalView, cursor_position},
 };
 use theme::LazaroboxTheme;
@@ -18,11 +19,18 @@ impl From<Rect> for ratatui::layout::Rect {
     }
 }
 
-/// Draws every pane in its tile, the separators between them and the
-/// statusline. Only the focused pane places the real cursor.
+/// Draws the tab bar (with several tabs), every pane in its tile, the
+/// separators between them and the statusline. Only the focused pane places the real cursor.
 pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
     let screen = app.screen();
     let status = within(frame, screen.status);
+    if let Some(bar) = screen.tab_bar {
+        let labels = app.tab_labels();
+        frame.render_widget(
+            TabBar::new(&labels, app.active_tab(), theme),
+            within(frame, bar),
+        );
+    }
 
     let tiling = app.tiling();
     let focused = app.focused();
@@ -451,5 +459,69 @@ mod tests {
         assert_eq!(right_text, "right");
         assert!((right.x + 5..right.x + right.width).all(|x| buf[(x, 0)].symbol() == " "));
         assert!(row(&buf, 1).starts_with(&"x".repeat(usize::from(sep.x))));
+    }
+
+    fn prefixed(app: &mut App, keys: &str) {
+        press(app, ' ', KeyModifiers::CONTROL);
+        for c in keys.chars() {
+            press(app, c, KeyModifiers::NONE);
+        }
+    }
+
+    // Spec: Hidden with one tab.
+    #[test]
+    fn no_tab_bar_is_drawn_with_one_tab() {
+        let (buf, _) = draw(&app());
+        assert!(row(&buf, 0).starts_with("hi there"));
+    }
+
+    // Spec: Shown with two tabs; the body starts below the bar.
+    #[test]
+    fn the_tab_bar_is_drawn_on_the_top_row_with_two_tabs() {
+        let mut app = app();
+        prefixed(&mut app, "tn");
+        app.update(AppEvent::Cwd(PaneId::FIRST, "/home/u/proj".into()));
+        app.update(AppEvent::Cwd(PaneId::for_test(2), "/tmp".into()));
+        app.update(AppEvent::Pty(
+            PaneId::for_test(2),
+            PtyEvent::Output(b"second".to_vec()),
+        ));
+        let (buf, _) = draw(&app);
+        insta::assert_snapshot!(
+            (0..ROWS)
+                .map(|y| row(&buf, y))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let theme = theme::LazaroboxTheme::default();
+        assert_eq!(buf[(9, 0)].bg, theme.primary_cyan);
+        assert_ne!(buf[(1, 0)].bg, theme.primary_cyan);
+    }
+
+    // Spec: Bar disappears on close.
+    #[test]
+    fn the_bar_disappears_when_one_tab_is_left() {
+        let mut app = app();
+        prefixed(&mut app, "tn");
+        prefixed(&mut app, "tc");
+        press(&mut app, 'y', KeyModifiers::NONE);
+        let (buf, _) = draw(&app);
+        assert!(row(&buf, 0).starts_with("hi there"), "{:?}", row(&buf, 0));
+    }
+
+    // Spec: Narrow width.
+    #[test]
+    fn many_tabs_keep_the_active_one_visible_and_never_panic() {
+        let mut app = App::new(20, 6);
+        for _ in 0..8 {
+            prefixed(&mut app, "tn");
+        }
+        let mut terminal = Terminal::new(TestBackend::new(20, 6)).unwrap();
+        terminal
+            .draw(|frame| render(frame, &app, &theme::LazaroboxTheme::default()))
+            .unwrap();
+        let line = row(terminal.backend().buffer(), 0);
+        assert!(line.contains('9'), "{line:?}");
+        assert!(!line.contains('1'), "{line:?}");
     }
 }

@@ -161,11 +161,11 @@ Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs
 
 ## S8b: Tab bar widget
 
-- [ ] S8b.1 RED: `src/ui/components/tab_bar.rs` TestBackend+insta: hidden with one tab; two tabs with the second active; narrow width clips and keeps the active tab; no panic [tabs: Hidden with one tab, Shown with two tabs, Narrow width].
-- [ ] S8b.2 RED: `App::tab_labels()`: `1 proj`, `2 tmp`, `/` for root, number only without cwd [tabs: Tab label, Label without cwd].
-- [ ] S8b.3 GREEN: `TabBar` widget, `tab_labels()`, `active_tab()`, register in `components/mod.rs`, draw in `ui/mod.rs` when `screen().tab_bar` is `Some`.
+- [x] S8b.1 RED: `src/ui/components/tab_bar.rs` TestBackend+insta: hidden with one tab; two tabs with the second active; narrow width clips and keeps the active tab; no panic [tabs: Hidden with one tab, Shown with two tabs, Narrow width].
+- [x] S8b.2 RED: `App::tab_labels()`: `1 proj`, `2 tmp`, `/` for root, number only without cwd [tabs: Tab label, Label without cwd].
+- [x] S8b.3 GREEN: `TabBar` widget, `tab_labels()`, `active_tab()`, register in `components/mod.rs`, draw in `ui/mod.rs` when `screen().tab_bar` is `Some`.
 - [ ] S8b.4 [manual] Kitty: `t n` shows the bar, `g b`/`g B`/`b 1` navigate and wrap, `t c` then `y`, the bar vanishes with one tab [tabs: Tabs and tab bar].
-- [ ] S8b.5 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] S8b.5 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## S9: OSC 7 cwd
 
