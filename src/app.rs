@@ -361,7 +361,7 @@ impl App {
             InputMode::Prefix => self.on_pending_key(PREFIX_TREE, &key),
             InputMode::Group(group) => self.on_pending_key(group.bindings, &key),
             InputMode::Copy(state) => self.on_copy_key(state, &key),
-            InputMode::Resize => self.on_resize_key(),
+            InputMode::Resize => self.on_resize_key(&key),
             InputMode::Confirm(confirm) => self.on_confirm_key(confirm, &key),
         }
     }
@@ -377,7 +377,7 @@ impl App {
     }
 
     /// Resolve a key against the pending table (the root or an open group).
-    /// Actions of later slices (close, resize, zoom, tabs) are no-ops until
+    /// Actions of later slices (zoom, tabs) are no-ops until
     /// they land.
     fn on_pending_key(&mut self, table: &'static [Binding], key: &KeyEvent) -> Vec<Effect> {
         let step = prefix::lookup(table, key);
@@ -385,6 +385,7 @@ impl App {
             Step::Enter(group) => InputMode::Group(group),
             Step::Run(PrefixAction::RequestQuit) => InputMode::Confirm(Confirm::Quit),
             Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(CopyState::default()),
+            Step::Run(PrefixAction::EnterResize) => InputMode::Resize,
             Step::Run(PrefixAction::ClosePane) if self.panes.len() > 1 => {
                 InputMode::Confirm(Confirm::ClosePane)
             }
@@ -401,7 +402,6 @@ impl App {
             ) => InputMode::Terminal,
             Step::Run(
                 PrefixAction::ShowCommands
-                | PrefixAction::EnterResize
                 | PrefixAction::ToggleZoom
                 | PrefixAction::NewTab
                 | PrefixAction::NextTab
@@ -521,9 +521,27 @@ impl App {
         effects
     }
 
-    /// RESIZE has no keys yet and nothing enters it; leave it safely.
-    fn on_resize_key(&mut self) -> Vec<Effect> {
-        self.input = InputMode::Terminal;
+    /// RESIZE is sticky: `h/j/k/l` move the focused pane's border by one cell,
+    /// Esc leaves, and every other key (Ctrl+Space included) is swallowed.
+    fn on_resize_key(&mut self, key: &KeyEvent) -> Vec<Effect> {
+        if key.code == KeyCode::Esc {
+            self.input = InputMode::Terminal;
+            return Vec::new();
+        }
+        let dir = match (key.code, key.modifiers) {
+            (KeyCode::Char('h'), KeyModifiers::NONE) => Direction::Left,
+            (KeyCode::Char('j'), KeyModifiers::NONE) => Direction::Down,
+            (KeyCode::Char('k'), KeyModifiers::NONE) => Direction::Up,
+            (KeyCode::Char('l'), KeyModifiers::NONE) => Direction::Right,
+            _ => return Vec::new(),
+        };
+        if self
+            .tab
+            .tree
+            .resize_step(self.screen.body, self.tab.focus, dir)
+        {
+            return self.relayout();
+        }
         Vec::new()
     }
 
@@ -1952,7 +1970,8 @@ mod app_tests {
     #[test]
     fn resize_ends_when_the_focus_moves_but_not_when_it_stays() {
         let mut a = three_panes();
-        a.input = InputMode::Resize;
+        press(&mut a, "wr");
+        assert_eq!(a.input(), InputMode::Resize);
         a.update(exited(PaneId::FIRST));
         assert_eq!(a.input(), InputMode::Resize);
         a.update(exited(id3()));
@@ -2071,5 +2090,152 @@ mod app_tests {
         a.update(key('q'));
         assert_eq!(a.input(), InputMode::Confirm(Confirm::ClosePane));
         assert_eq!(a.status_path(200), "/work");
+    }
+
+    // --- RESIZE mode (S7) --------------------------------------------------
+
+    fn in_resize(mut a: App) -> App {
+        press(&mut a, "wr");
+        a
+    }
+
+    /// Two panes, left 39 and right 40 wide; the focus is on the right one.
+    fn resizing() -> App {
+        in_resize(split_right())
+    }
+
+    // Spec: Sticky (entering RESIZE emits nothing).
+    #[test]
+    fn w_r_enters_resize_without_effects() {
+        let mut a = split_right();
+        assert_eq!(press(&mut a, "wr"), vec![]);
+        assert_eq!(a.input(), InputMode::Resize);
+    }
+
+    // Spec: Sticky; Border moves one cell (both panes told, in tile order).
+    #[test]
+    fn h_and_l_move_the_border_and_tell_both_panes() {
+        let mut a = resizing();
+        assert_eq!(
+            a.update(key('l')),
+            vec![
+                Effect::ResizePty(PaneId::FIRST, sized(24, 40)),
+                Effect::ResizePty(id2(), sized(24, 39)),
+            ]
+        );
+        assert_eq!(
+            a.update(key('h')),
+            vec![
+                Effect::ResizePty(PaneId::FIRST, sized(24, 39)),
+                Effect::ResizePty(id2(), sized(24, 40)),
+            ]
+        );
+        assert_eq!(a.update(key('h')).len(), 2);
+        assert_eq!(a.tiling().panes[0].1.width, 38);
+    }
+
+    #[test]
+    fn j_and_k_move_a_stacked_border() {
+        let mut a = in_resize(split_below());
+        let before = a.tiling().panes[0].1.height;
+        assert_eq!(a.update(key('k')).len(), 2);
+        assert_eq!(a.tiling().panes[0].1.height, before - 1);
+        assert_eq!(a.update(key('j')).len(), 2);
+        assert_eq!(a.tiling().panes[0].1.height, before);
+    }
+
+    // Spec: Sticky until Esc.
+    #[test]
+    fn resize_stays_until_esc_across_many_steps() {
+        let mut a = resizing();
+        for c in "hhlkjhl".chars() {
+            a.update(key(c));
+            assert_eq!(a.input(), InputMode::Resize, "after {c}");
+        }
+    }
+
+    // Spec: Repeat allowed.
+    #[test]
+    fn repeat_steps_like_press_in_resize() {
+        let mut a = resizing();
+        assert_eq!(a.update(repeat('l')).len(), 2);
+        assert_eq!(a.update(repeat('l')).len(), 2);
+        assert_eq!(a.tiling().panes[0].1.width, 41);
+        assert_eq!(a.input(), InputMode::Resize);
+    }
+
+    // Spec: Esc exits.
+    #[test]
+    fn esc_returns_to_terminal_without_effects() {
+        let mut a = resizing();
+        assert_eq!(a.update(esc()), vec![]);
+        assert_eq!(a.input(), InputMode::Terminal);
+    }
+
+    // Spec: Keys swallowed (including Ctrl+Space and unknown keys).
+    #[test]
+    fn other_keys_and_ctrl_space_are_swallowed_and_resize_stays() {
+        let mut a = resizing();
+        let swallowed = [
+            key('x'),
+            key('H'),
+            key('w'),
+            key('q'),
+            ctrl_space(),
+            kinded(KeyCode::Enter, KeyModifiers::NONE, KeyEventKind::Press),
+            kinded(
+                KeyCode::Char('l'),
+                KeyModifiers::CONTROL,
+                KeyEventKind::Press,
+            ),
+        ];
+        for event in swallowed {
+            assert_eq!(a.update(event.clone()), vec![], "{event:?}");
+            assert_eq!(a.input(), InputMode::Resize, "{event:?}");
+        }
+        assert_eq!(a.tiling().panes[0].1.width, 39);
+    }
+
+    #[test]
+    fn release_is_ignored_in_resize() {
+        let mut a = resizing();
+        let up = kinded(
+            KeyCode::Char('l'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        assert_eq!(a.update(up), vec![]);
+        assert_eq!(a.tiling().panes[0].1.width, 39);
+        assert_eq!(a.input(), InputMode::Resize);
+    }
+
+    // Spec: a step with no border on that axis emits nothing.
+    #[test]
+    fn a_step_without_a_border_on_that_axis_emits_nothing() {
+        let mut a = in_resize(split_below());
+        assert_eq!(a.update(key('h')), vec![]);
+        assert_eq!(a.update(key('l')), vec![]);
+        assert_eq!(a.input(), InputMode::Resize);
+    }
+
+    // Spec: Single pane RESIZE.
+    #[test]
+    fn resize_with_a_single_pane_is_allowed_and_a_no_op() {
+        let mut a = in_resize(launched(80, 25));
+        assert_eq!(a.input(), InputMode::Resize);
+        for c in "hjkl".chars() {
+            assert_eq!(a.update(key(c)), vec![]);
+        }
+        assert_eq!(a.input(), InputMode::Resize);
+        a.update(esc());
+        assert_eq!(a.input(), InputMode::Terminal);
+    }
+
+    #[test]
+    fn a_step_marks_the_screen_dirty() {
+        let mut a = resizing();
+        a.take_dirty();
+        a.update(key('l'));
+        assert!(a.take_dirty());
     }
 }
