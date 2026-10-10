@@ -180,7 +180,10 @@ impl MenuState {
 
     fn step_selection(&mut self, forward: bool) -> MenuCommand {
         let count = choices().count();
-        debug_assert!(count > 0 || self.selected.is_none(), "selection without rows");
+        debug_assert!(
+            count > 0 || self.selected.is_none(),
+            "selection without rows"
+        );
         self.selected = self.selected.map(|index| {
             if forward {
                 (index + 1) % count
