@@ -55,6 +55,8 @@ pub enum PrefixAction {
     SplitBelow,
     ClosePane,
     EnterResize,
+    /// Opens the config menu. Not in the table until the `m` binding lands.
+    OpenMenu,
     ToggleZoom,
     NewTab,
     CloseTab,
