@@ -222,12 +222,9 @@ impl App {
             AppEvent::Key(key) => self.on_key(key),
             AppEvent::Paste(text) => self.on_paste(&text),
             AppEvent::Resize { cols, rows } => self.on_resize(cols, rows),
-            AppEvent::Pty(id, event) => {
-                // One pane for now; S4/S5a will route by id and drop stale ids.
-                debug_assert_eq!(id, self.id);
-                self.on_pty(event)
-            }
             // Events for panes that no longer exist are dropped.
+            AppEvent::Pty(id, event) if id == self.id => self.on_pty(event),
+            AppEvent::Pty(..) => Vec::new(),
             AppEvent::Cwd(id, cwd) if id == self.id => self.on_cwd(cwd),
             AppEvent::Cwd(..) => Vec::new(),
             // The app emits no SpawnPane yet (S5a), so there is nothing to undo.
@@ -1196,6 +1193,18 @@ mod app_tests {
 
     fn cwd_event(path: &str) -> AppEvent {
         AppEvent::Cwd(PaneId::FIRST, PathBuf::from(path))
+    }
+
+    // Spec: stale events dropped.
+    #[test]
+    fn pty_events_from_unknown_panes_are_dropped() {
+        let mut a = app();
+        a.take_dirty();
+        let unknown = PaneId::for_test(9);
+        for event in [PtyEvent::Output(b"late".to_vec()), PtyEvent::Exited] {
+            assert_eq!(a.update(AppEvent::Pty(unknown, event)), vec![]);
+        }
+        assert!(!a.take_dirty());
     }
 
     #[test]
