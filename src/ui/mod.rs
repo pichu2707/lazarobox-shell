@@ -52,13 +52,10 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
         within(frame, screen.body),
     );
 
-    let budget =
-        StatusLine::input(theme, app.input(), "", app.shell_name()).path_budget(status.width);
-    let path = app.status_path(budget);
-    frame.render_widget(
-        StatusLine::input(theme, app.input(), &path, app.shell_name()),
-        status,
-    );
+    let line =
+        |path| StatusLine::input(theme, app.input(), path, app.shell_name()).zoomed(app.zoomed());
+    let path = app.status_path(line("").path_budget(status.width));
+    frame.render_widget(line(&path), status);
 }
 
 /// `rect` as a ratatui rect, cut to what the frame can actually draw.
@@ -362,5 +359,74 @@ mod tests {
         press(&mut app, ' ', KeyModifiers::CONTROL);
         keys(&mut app, "h");
         assert!(status(&app).contains("/left"));
+    }
+
+    fn zoom_toggled(app: &mut App) {
+        press(app, ' ', KeyModifiers::CONTROL);
+        keys(app, "wz");
+    }
+
+    // Spec: Zoomed / Unzoomed, end to end through the app.
+    #[test]
+    fn the_statusline_shows_z_only_while_zoomed() {
+        let mut app = split_app();
+        assert!(!status(&app).contains("[Z]"));
+        zoom_toggled(&mut app);
+        assert!(status(&app).contains("[Z]"), "{:?}", status(&app));
+        zoom_toggled(&mut app);
+        assert!(!status(&app).contains("[Z]"));
+    }
+
+    // Spec: a zoomed pane fills the body and draws no separator.
+    #[test]
+    fn a_zoomed_pane_fills_the_body_without_separators() {
+        let mut app = split_app();
+        zoom_toggled(&mut app);
+        let (buf, _) = draw(&app);
+        assert!(row(&buf, 0).starts_with("right"), "{:?}", row(&buf, 0));
+        for y in 0..ROWS - 1 {
+            assert!(!row(&buf, y).contains('\u{2502}'), "row {y}");
+        }
+    }
+
+    fn separator_fg_after(keys_: &str) -> ratatui::style::Color {
+        let mut app = split_app();
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        keys(&mut app, keys_);
+        let sep = app.tiling().separators[0];
+        let (buf, _) = draw(&app);
+        cell_fg(&buf, sep.x, 0)
+    }
+
+    // Spec: Accent follows the input mode (RESIZE, COPY, confirmation).
+    #[test]
+    fn the_separator_accent_follows_resize_copy_and_confirmation() {
+        let theme = theme::LazaroboxTheme::default();
+        assert_eq!(separator_fg_after("wr"), theme.ai_purple);
+        assert_eq!(separator_fg_after("["), theme.primary_cyan);
+        assert_eq!(separator_fg_after("wq"), theme.error_red);
+    }
+
+    // Spec: Two panes clipped. A long line in the left pane must not spill over
+    // the separator or the right pane.
+    #[test]
+    fn a_long_line_in_the_left_pane_leaves_the_separator_and_right_pane_intact() {
+        let mut app = split_app();
+        app.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(b"\r\n".iter().chain(&[b'x'; 200]).copied().collect()),
+        ));
+        let sep = app.tiling().separators[0];
+        let (_, right) = app.tiling().panes[1];
+        let (buf, _) = draw(&app);
+        for y in 0..sep.len {
+            assert_eq!(buf[(sep.x, y)].symbol(), "\u{2502}", "separator row {y}");
+        }
+        let right_text: String = (right.x..right.x + 5)
+            .map(|x| buf[(x, 0)].symbol())
+            .collect();
+        assert_eq!(right_text, "right");
+        assert!((right.x + 5..right.x + right.width).all(|x| buf[(x, 0)].symbol() == " "));
+        assert!(row(&buf, 1).starts_with(&"x".repeat(usize::from(sep.x))));
     }
 }

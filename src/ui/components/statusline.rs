@@ -28,6 +28,7 @@ pub struct StatusLine<'a> {
     accent: Color,
     path: &'a str,
     right: &'a str,
+    zoomed: bool,
 }
 
 impl<'a> StatusLine<'a> {
@@ -38,6 +39,7 @@ impl<'a> StatusLine<'a> {
             accent: theme.accent(mode),
             path,
             right: model,
+            zoomed: false,
         }
     }
 
@@ -54,7 +56,14 @@ impl<'a> StatusLine<'a> {
             accent: theme.input_accent(mode),
             path,
             right,
+            zoomed: false,
         }
+    }
+
+    /// Marks the active tab as zoomed (`[Z]` right after the mode label).
+    pub fn zoomed(mut self, zoomed: bool) -> Self {
+        self.zoomed = zoomed;
+        self
     }
 
     /// Columns left for the path text in a statusline `width` columns wide:
@@ -74,7 +83,8 @@ impl<'a> StatusLine<'a> {
     }
 
     fn mode_block_text(&self) -> String {
-        format!(" \u{25D0} {} ", self.label)
+        let zoom = if self.zoomed { " [Z]" } else { "" };
+        format!(" \u{25D0} {}{zoom} ", self.label)
     }
 
     /// Columns taken by the mode block and the slant that closes it.
@@ -403,5 +413,51 @@ mod tests {
     #[test]
     fn snapshot_input_narrow() {
         insta::assert_snapshot!(text_of(&render_input_at(InputMode::Terminal, 14)));
+    }
+
+    fn render_zoomed(mode: InputMode, zoomed: bool) -> Buffer {
+        let theme = LazaroboxTheme::default();
+        let mut terminal = Terminal::new(TestBackend::new(WIDTH, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                let line = StatusLine::input(&theme, mode, PATH, SHELL).zoomed(zoomed);
+                frame.render_widget(line, frame.area())
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    // Spec: Zoomed; the indicator sits in the mode block, before the path.
+    #[test]
+    fn the_zoom_indicator_follows_the_mode_label() {
+        let t = LazaroboxTheme::default();
+        for mode in input_modes() {
+            let buf = render_zoomed(mode, true);
+            let text = text_of(&buf);
+            let label = text.find(mode.label()).unwrap();
+            let zoom = text
+                .find("[Z]")
+                .unwrap_or_else(|| panic!("no [Z] in {text:?}"));
+            assert!(label < zoom && zoom < text.find(PATH).unwrap(), "{text:?}");
+            let x = text[..zoom].chars().count() as u16;
+            assert_eq!(buf[(x, 0)].bg, t.input_accent(mode), "{mode:?}");
+        }
+    }
+
+    // Spec: Unzoomed.
+    #[test]
+    fn the_zoom_indicator_is_absent_when_not_zoomed() {
+        for mode in input_modes() {
+            let text = text_of(&render_zoomed(mode, false));
+            assert!(!text.contains("[Z]"), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn the_path_budget_accounts_for_the_zoom_indicator() {
+        let theme = LazaroboxTheme::default();
+        let plain = StatusLine::input(&theme, InputMode::Terminal, "", SHELL);
+        let zoomed = StatusLine::input(&theme, InputMode::Terminal, "", SHELL).zoomed(true);
+        assert_eq!(zoomed.path_budget(WIDTH) + 4, plain.path_budget(WIDTH));
     }
 }
