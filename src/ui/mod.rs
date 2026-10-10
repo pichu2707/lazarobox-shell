@@ -52,8 +52,11 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
         within(frame, screen.body),
     );
 
-    let line =
-        |path| StatusLine::input(theme, app.input(), path, app.shell_name()).zoomed(app.zoomed());
+    let line = |path| {
+        StatusLine::input(theme, app.input(), path, app.shell_name())
+            .zoomed(app.zoomed())
+            .copy_position(app.copy_position())
+    };
     let path = app.status_path(line("").path_budget(status.width));
     frame.render_widget(line(&path), status);
 }
@@ -375,6 +378,26 @@ mod tests {
         assert!(status(&app).contains("[Z]"), "{:?}", status(&app));
         zoom_toggled(&mut app);
         assert!(!status(&app).contains("[Z]"));
+    }
+
+    // Spec: Position indicator, end to end through the app.
+    #[test]
+    fn the_statusline_shows_the_copy_position_while_scrolling() {
+        let mut app = App::new(100, 10);
+        for i in 0..60 {
+            let out = format!("line{i}\r\n").into_bytes();
+            app.update(AppEvent::Pty(PaneId::FIRST, PtyEvent::Output(out)));
+        }
+        assert!(!status(&app).contains('\u{2191}'));
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        keys(&mut app, "[kk");
+        let (offset, total) = app.copy_position().expect("history");
+        assert_eq!(offset, 2);
+        let line = status(&app);
+        assert!(
+            line.contains(&format!("COPY \u{2191}2/{total}")),
+            "{line:?}"
+        );
     }
 
     // Spec: a zoomed pane fills the body and draws no separator.

@@ -46,6 +46,7 @@ This keeps the functional-core / imperative-shell split from slice 1 and follows
 | 29 | Tab label | index only, cwd path, `N cwd-basename` | **`N cwd-basename`** of the tab's focused pane (effective cwd). Root is shown as `/`; with no known cwd the label is just `N`. Labels are clipped with `…` on overflow (see UI). |
 | 30 | Statusline notice priority | — | In the path segment, precedence is: spawn-failure notice, then key hint (root hint in PREFIX, group hint in a group), then cwd. The notice is cleared by the next key, so it never coexists with a hint. |
 | 26 | Screen geometry | ratatui `Layout` in the UI vs computed by `App` | `App::screen() -> ScreenLayout { tab_bar: Option<Rect>, body, status }` from `(cols, rows, tabs > 1)`. The body is `y = bar as u16`, `height = rows - 1 - bar` (minimum 1), `width = cols` (minimum 1). The UI draws exactly these rects, so App and UI can never disagree. |
+| 31 | COPY position indicator | `↑12/340`; `12/340`; percentage; `[12/340]` | **`COPY ↑{offset}/{total}`** inside the mode block, right after the label (before `[Z]`), like tmux's `[offset/total]` but keeping the label readable. `offset` = rows above the live bottom (`CopyState.offset`, synced from the emulator), `total` = `scrollback_len()`. At the bottom it shows `↑0/{total}` (explicit zero confirms that COPY is on and live). With no history (`total == 0`, e.g. alternate screen) just `COPY`, because `↑0/0` carries no information. The path budget shrinks by the indicator width; `App::copy_position()` is the pure source. |
 
 ## Data Flow
 
