@@ -48,6 +48,8 @@ pub enum Confirm {
     Quit,
     /// Waiting for `y` to close the focused pane.
     ClosePane,
+    /// Waiting for `y` to close the active tab.
+    CloseTab,
 }
 
 impl InputMode {
@@ -61,6 +63,7 @@ impl InputMode {
             Self::Resize => "RESIZE",
             Self::Confirm(Confirm::Quit) => "Quit? (y/n)",
             Self::Confirm(Confirm::ClosePane) => "Close pane? (y/n)",
+            Self::Confirm(Confirm::CloseTab) => "Close tab? (y/n)",
         }
     }
 }
@@ -113,19 +116,28 @@ pub fn shell_basename(path: Option<&str>) -> &str {
 /// the app and the UI cannot disagree.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ScreenLayout {
+    /// The top row, present only with more than one tab.
+    pub tab_bar: Option<Rect>,
     pub body: Rect,
     pub status: Rect,
 }
 
 impl ScreenLayout {
-    fn new(cols: u16, rows: u16) -> Self {
+    fn new(cols: u16, rows: u16, bar: bool) -> Self {
         let size = pane_size(cols, rows);
+        let bar_rows = u16::from(bar);
         Self {
-            body: Rect {
+            tab_bar: bar.then_some(Rect {
                 x: 0,
                 y: 0,
                 width: size.cols,
-                height: size.rows,
+                height: 1,
+            }),
+            body: Rect {
+                x: 0,
+                y: bar_rows,
+                width: size.cols,
+                height: size.rows.saturating_sub(bar_rows).max(1),
             },
             status: Rect {
                 x: 0,
@@ -179,8 +191,12 @@ impl Tab {
 
 /// Owns the panes and the input state. Pure: it never touches IO.
 pub struct App {
+    /// Every pane of every tab; ids are global and never reused.
     panes: HashMap<PaneId, PaneState>,
-    tab: Tab,
+    tabs: Vec<Tab>,
+    active: usize,
+    /// Host terminal size, kept to recompute the screen when the tab bar toggles.
+    term: (u16, u16),
     ids: PaneIds,
     input: InputMode,
     /// Shown in the statusline path segment until the next key press.
@@ -196,16 +212,18 @@ pub struct App {
 impl App {
     /// An app for a terminal of `cols` x `rows`, with one pane in the body.
     pub fn new(cols: u16, rows: u16) -> Self {
-        let screen = ScreenLayout::new(cols, rows);
+        let screen = ScreenLayout::new(cols, rows, false);
         let mut ids = PaneIds::default();
         let first = ids.alloc();
         Self {
             panes: HashMap::from([(first, PaneState::new(body_size(screen.body)))]),
-            tab: Tab {
+            tabs: vec![Tab {
                 tree: Node::Leaf(first),
                 focus: first,
                 zoom: false,
-            },
+            }],
+            active: 0,
+            term: (cols, rows),
             ids,
             input: InputMode::default(),
             notice: None,
@@ -253,7 +271,7 @@ impl App {
     /// The pane to start before the first event, and how to start it.
     pub fn initial_spawn(&self) -> (PaneId, SpawnSpec) {
         (
-            self.tab.focus,
+            self.tab().focus,
             self.spawn_spec(self.launch_cwd.clone(), self.focused_size()),
         )
     }
@@ -273,12 +291,12 @@ impl App {
 
     /// Where every pane and separator of the tab goes inside the body.
     pub fn tiling(&self) -> Tiling {
-        self.tab.tiling(self.screen.body)
+        self.tab().tiling(self.screen.body)
     }
 
     /// Whether the focused pane is zoomed over the others.
     pub fn zoomed(&self) -> bool {
-        self.tab.zoom
+        self.tab().zoom
     }
 
     /// COPY viewport position `(rows above the live bottom, history rows)`;
@@ -287,12 +305,30 @@ impl App {
         let InputMode::Copy(state) = &self.input else {
             return None;
         };
-        let total = self.panes[&self.tab.focus].emu.scrollback_len();
+        let total = self.panes[&self.tab().focus].emu.scrollback_len();
         (total > 0).then_some((state.offset, total))
     }
 
+    /// How many tabs are open.
+    pub fn tab_count(&self) -> usize {
+        self.tabs.len()
+    }
+
+    /// Index of the active tab.
+    pub fn active_tab(&self) -> usize {
+        self.active
+    }
+
+    fn tab(&self) -> &Tab {
+        &self.tabs[self.active]
+    }
+
+    fn tab_mut(&mut self) -> &mut Tab {
+        &mut self.tabs[self.active]
+    }
+
     pub fn focused(&self) -> PaneId {
-        self.tab.focus
+        self.tab().focus
     }
 
     /// The emulator of pane `id`, if it exists.
@@ -311,12 +347,12 @@ impl App {
     // The focus always names a live pane: `split` focuses what it adds, and
     // `remove_pane` moves the focus off a pane before dropping it.
     fn focused_state(&self) -> &PaneState {
-        &self.panes[&self.tab.focus]
+        &self.panes[&self.tab().focus]
     }
 
     fn focused_state_mut(&mut self) -> &mut PaneState {
         self.panes
-            .get_mut(&self.tab.focus)
+            .get_mut(&self.tabs[self.active].focus)
             .expect("the focused pane exists")
     }
 
@@ -405,13 +441,12 @@ impl App {
             return Vec::new();
         }
         encode_key(key, self.focused_pane().modes())
-            .map(|bytes| vec![Effect::WritePty(self.tab.focus, bytes)])
+            .map(|bytes| vec![Effect::WritePty(self.tab().focus, bytes)])
             .unwrap_or_default()
     }
 
     /// Resolve a key against the pending table (the root or an open group).
-    /// Actions of later slices (zoom, tabs) are no-ops until
-    /// they land.
+    /// `ShowCommands` is a no-op until the command viewer lands.
     fn on_pending_key(&mut self, table: &'static [Binding], key: &KeyEvent) -> Vec<Effect> {
         let step = prefix::lookup(table, key);
         self.input = match step {
@@ -421,6 +456,9 @@ impl App {
             Step::Run(PrefixAction::EnterResize) => InputMode::Resize,
             Step::Run(PrefixAction::ClosePane) if self.panes.len() > 1 => {
                 InputMode::Confirm(Confirm::ClosePane)
+            }
+            Step::Run(PrefixAction::CloseTab) if self.tabs.len() > 1 => {
+                InputMode::Confirm(Confirm::CloseTab)
             }
             // Closing the last pane of the only tab quits; so does closing the only tab.
             Step::Run(PrefixAction::ClosePane | PrefixAction::CloseTab) => {
@@ -444,30 +482,97 @@ impl App {
         };
         match step {
             Step::Run(PrefixAction::SendPrefixLiteral) => {
-                vec![Effect::WritePty(self.tab.focus, vec![PREFIX_LITERAL])]
+                vec![Effect::WritePty(self.tab().focus, vec![PREFIX_LITERAL])]
             }
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
             Step::Run(PrefixAction::SplitBelow) => self.split(Axis::Y),
             Step::Run(PrefixAction::Focus(dir)) => self.move_focus(dir),
             Step::Run(PrefixAction::EnterResize) => {
-                self.tab.zoom = false;
+                self.tab_mut().zoom = false;
                 self.relayout()
             }
             Step::Run(PrefixAction::ToggleZoom) => {
-                self.tab.zoom = !self.tab.zoom;
+                let zoom = !self.tab().zoom;
+                self.tab_mut().zoom = zoom;
                 self.relayout()
             }
+            Step::Run(PrefixAction::NewTab) => self.new_tab(),
             _ => Vec::new(),
         }
+    }
+
+    /// Makes tab `index` the active one; a missing tab or the active one is a
+    /// no-op. Leaving a tab ends COPY (its viewport goes back to the bottom)
+    /// and RESIZE.
+    fn activate(&mut self, index: usize) {
+        if index >= self.tabs.len() || index == self.active {
+            return;
+        }
+        if let Some(left) = self.panes.get_mut(&self.tabs[self.active].focus) {
+            left.emu.set_scrollback(0);
+        }
+        if matches!(self.input, InputMode::Copy(_) | InputMode::Resize) {
+            self.input = InputMode::Terminal;
+        }
+        self.active = index;
+    }
+
+    /// Appends a tab with one pane, activates it and spawns its shell in the
+    /// focused pane's cwd. The tab bar may appear, which resizes every tab.
+    fn new_tab(&mut self) -> Vec<Effect> {
+        let cwd = self
+            .focused_state()
+            .cwd
+            .clone()
+            .or_else(|| self.launch_cwd.clone());
+        let id = self.ids.alloc();
+        self.tabs.push(Tab {
+            tree: Node::Leaf(id),
+            focus: id,
+            zoom: false,
+        });
+        self.activate(self.tabs.len() - 1);
+        self.refresh_screen();
+        let size = body_size(self.screen.body);
+        self.panes.insert(id, PaneState::new(size));
+        let mut effects = self.relayout();
+        effects.push(Effect::SpawnPane(id, self.spawn_spec(cwd, size)));
+        effects
+    }
+
+    /// Drops tab `index` and its panes. The tab that takes its index becomes
+    /// active (the last one if it was last); closing a tab before the active
+    /// one keeps the active tab. The bar may disappear, which resizes every tab.
+    fn drop_tab(&mut self, index: usize) -> Vec<Effect> {
+        for id in self.tabs.remove(index).tree.leaves() {
+            self.panes.remove(&id);
+        }
+        if index == self.active {
+            self.active = index.min(self.tabs.len() - 1);
+            if matches!(self.input, InputMode::Copy(_) | InputMode::Resize) {
+                self.input = InputMode::Terminal;
+            }
+        } else if index < self.active {
+            self.active -= 1;
+        }
+        self.refresh_screen();
+        self.relayout()
+    }
+
+    /// Recomputes the screen rects: the tab bar exists while there is more
+    /// than one tab.
+    fn refresh_screen(&mut self) {
+        self.screen = ScreenLayout::new(self.term.0, self.term.1, self.tabs.len() > 1);
     }
 
     /// Splits the focused pane and focuses the new one. A split the layout
     /// refuses (too small) changes nothing.
     fn split(&mut self, axis: Axis) -> Vec<Effect> {
-        self.tab.zoom = false;
-        let target = self.tab.focus;
+        self.tab_mut().zoom = false;
+        let target = self.tab().focus;
         let new = self.ids.alloc();
-        match self.tab.tree.split(self.screen.body, target, new, axis) {
+        let body = self.screen.body;
+        match self.tab_mut().tree.split(body, target, new, axis) {
             Ok(()) => {}
             Err(SplitError::TooSmall | SplitError::NotFound) => return self.relayout(),
         }
@@ -487,9 +592,9 @@ impl App {
     /// Moves the focus to the neighbour in `dir`. A zoomed tab is unzoomed
     /// first, even at an edge, so the other panes come back into view.
     fn move_focus(&mut self, dir: Direction) -> Vec<Effect> {
-        self.tab.zoom = false;
-        let tiling = tile(&self.tab.tree, self.screen.body);
-        if let Some(next) = neighbour(&tiling, self.tab.focus, dir) {
+        self.tab_mut().zoom = false;
+        let tiling = tile(&self.tab().tree, self.screen.body);
+        if let Some(next) = neighbour(&tiling, self.tab().focus, dir) {
             self.set_focus(next);
         }
         self.relayout()
@@ -498,40 +603,40 @@ impl App {
     /// Focuses `next`. Leaving a pane ends COPY (its viewport goes back to the
     /// bottom) and RESIZE.
     fn set_focus(&mut self, next: PaneId) {
-        if next == self.tab.focus {
+        if next == self.tab().focus {
             return;
         }
-        if let Some(left) = self.panes.get_mut(&self.tab.focus) {
+        if let Some(left) = self.panes.get_mut(&self.tabs[self.active].focus) {
             left.emu.set_scrollback(0);
         }
         if matches!(self.input, InputMode::Copy(_) | InputMode::Resize) {
             self.input = InputMode::Terminal;
         }
-        self.tab.focus = next;
+        self.tab_mut().focus = next;
     }
 
     /// Drops pane `id` and gives its space to its sibling. If it had the focus,
     /// the pane now covering its old top-left cell takes it. Any removal
     /// cancels a pending confirmation. The last pane asks to quit instead.
     fn remove_pane(&mut self, id: PaneId) -> Vec<Effect> {
-        let tiling = tile(&self.tab.tree, self.screen.body);
+        let tiling = tile(&self.tab().tree, self.screen.body);
         let Some(&(_, old)) = tiling.panes.iter().find(|(pane, _)| *pane == id) else {
             return Vec::new();
         };
-        match self.tab.tree.remove(id) {
+        match self.tab_mut().tree.remove(id) {
             Removal::NotFound => return Vec::new(),
             Removal::WasLast => return vec![Effect::Quit],
             Removal::Removed => {}
         }
         self.panes.remove(&id);
-        self.tab.zoom = false;
+        self.tab_mut().zoom = false;
         self.dirty = true;
         if matches!(self.input, InputMode::Confirm(_)) {
             self.input = InputMode::Terminal;
         }
-        if id == self.tab.focus {
-            let tiling = tile(&self.tab.tree, self.screen.body);
-            let next = pane_at(&tiling, old.x, old.y).unwrap_or(self.tab.tree.leaves()[0]);
+        if id == self.tab().focus {
+            let tiling = tile(&self.tab().tree, self.screen.body);
+            let next = pane_at(&tiling, old.x, old.y).unwrap_or(self.tab().tree.leaves()[0]);
             self.set_focus(next);
         }
         self.relayout()
@@ -539,7 +644,7 @@ impl App {
 
     /// What each pane's PTY size should be, from the current layout.
     fn layout_sizes(&self) -> HashMap<PaneId, PaneSize> {
-        self.tab
+        self.tab()
             .tiling(self.screen.body)
             .panes
             .into_iter()
@@ -550,17 +655,18 @@ impl App {
     /// Brings every pane to its layout size, telling only the panes that
     /// changed. Panes new to the layout keep the size they were created with.
     fn relayout(&mut self) -> Vec<Effect> {
-        let tiling = self.tab.tiling(self.screen.body);
         let mut effects = Vec::new();
-        for (id, rect) in tiling.panes {
-            let size = body_size(rect);
-            let Some(state) = self.panes.get_mut(&id) else {
-                continue;
-            };
-            if state.size != size {
-                state.emu.resize(size);
-                state.size = size;
-                effects.push(Effect::ResizePty(id, size));
+        for tab in &self.tabs {
+            for (id, rect) in tab.tiling(self.screen.body).panes {
+                let size = body_size(rect);
+                let Some(state) = self.panes.get_mut(&id) else {
+                    continue;
+                };
+                if state.size != size {
+                    state.emu.resize(size);
+                    state.size = size;
+                    effects.push(Effect::ResizePty(id, size));
+                }
             }
         }
         effects
@@ -580,11 +686,8 @@ impl App {
             (KeyCode::Char('l'), KeyModifiers::NONE) => Direction::Right,
             _ => return Vec::new(),
         };
-        if self
-            .tab
-            .tree
-            .resize_step(self.screen.body, self.tab.focus, dir)
-        {
+        let (body, focus) = (self.screen.body, self.tab().focus);
+        if self.tab_mut().tree.resize_step(body, focus, dir) {
             return self.relayout();
         }
         Vec::new()
@@ -597,13 +700,25 @@ impl App {
         }
         match confirm {
             Confirm::Quit => vec![Effect::Quit],
+            Confirm::CloseTab => self.close_tab(),
             Confirm::ClosePane => {
-                let id = self.tab.focus;
+                let id = self.tab().focus;
                 let mut effects = self.remove_pane(id);
                 effects.push(Effect::ClosePane(id));
                 effects
             }
         }
+    }
+
+    /// Closes the active tab with all its panes; the only tab quits instead.
+    fn close_tab(&mut self) -> Vec<Effect> {
+        if self.tabs.len() == 1 {
+            return vec![Effect::Quit];
+        }
+        let ids = self.tab().tree.leaves();
+        let mut effects = self.drop_tab(self.active);
+        effects.extend(ids.into_iter().map(Effect::ClosePane));
+        effects
     }
 
     fn on_copy_key(&mut self, mut state: CopyState, key: &KeyEvent) -> Vec<Effect> {
@@ -627,7 +742,7 @@ impl App {
     fn on_paste(&mut self, text: &str) -> Vec<Effect> {
         match self.input {
             InputMode::Terminal => vec![Effect::WritePty(
-                self.tab.focus,
+                self.tab().focus,
                 encode_paste(text, self.focused_pane().modes()),
             )],
             _ => Vec::new(),
@@ -635,7 +750,8 @@ impl App {
     }
 
     fn on_resize(&mut self, cols: u16, rows: u16) -> Vec<Effect> {
-        self.screen = ScreenLayout::new(cols, rows);
+        self.term = (cols, rows);
+        self.refresh_screen();
         let effects = self.relayout();
         self.sync_copy_offset();
         self.dirty = true;
@@ -647,7 +763,9 @@ impl App {
     /// pane is the source of truth, so the state follows it.
     fn sync_copy_offset(&mut self) {
         if let InputMode::Copy(state) = &mut self.input {
-            state.offset = self.panes[&self.tab.focus].emu.scrollback_offset();
+            state.offset = self.panes[&self.tabs[self.active].focus]
+                .emu
+                .scrollback_offset();
         }
     }
 
@@ -656,7 +774,7 @@ impl App {
             && state.cwd.as_ref() != Some(&cwd)
         {
             state.cwd = Some(cwd);
-            self.dirty |= id == self.tab.focus;
+            self.dirty |= id == self.tab().focus;
         }
         Vec::new()
     }
@@ -670,7 +788,7 @@ impl App {
                     .get_mut(&id)
                     .map(|state| state.emu.feed(&bytes))
                     .unwrap_or_default();
-                if id == self.tab.focus {
+                if id == self.tab().focus {
                     self.sync_copy_offset();
                 }
                 if reply.is_empty() {
@@ -807,6 +925,7 @@ mod app_tests {
         assert_eq!(
             a.screen(),
             ScreenLayout {
+                tab_bar: None,
                 body: Rect {
                     x: 0,
                     y: 0,
@@ -982,7 +1101,7 @@ mod app_tests {
 
     #[test]
     fn a_binding_in_a_group_returns_to_terminal_with_no_effect_yet() {
-        for (g, c) in [('w', 'z'), ('t', 'n'), ('g', 'b'), ('b', '3')] {
+        for (g, c) in [('w', 'z'), ('g', 'b'), ('b', '3')] {
             let mut a = in_group(g);
             assert_eq!(a.update(key(c)), vec![], "{g} {c}");
             assert_eq!(a.input(), InputMode::Terminal, "{g} {c}");
@@ -2117,7 +2236,7 @@ mod app_tests {
     fn a_refused_split_leaves_the_tree_and_panes_unchanged() {
         let mut a = launched(20, 25);
         press(&mut a, "wv");
-        assert_eq!(a.tab.tree, Node::Leaf(PaneId::FIRST));
+        assert_eq!(a.tab().tree, Node::Leaf(PaneId::FIRST));
         assert_eq!(a.panes.len(), 1);
         a.update(AppEvent::Resize { cols: 80, rows: 25 });
         press(&mut a, "wv");
@@ -2444,5 +2563,143 @@ mod app_tests {
         a.take_dirty();
         press(&mut a, "wz");
         assert!(a.take_dirty());
+    }
+
+    // --- S8a: tabs ---
+
+    /// `n` tabs, the last one active; tab k holds pane k.
+    fn tabs(n: usize) -> App {
+        let mut a = launched(80, 25);
+        for _ in 1..n {
+            press(&mut a, "tn");
+        }
+        a
+    }
+
+    // Spec: New tab; Hidden tabs stay sized.
+    #[test]
+    fn new_tab_is_appended_activated_and_spawns_in_the_focused_cwd() {
+        let mut a = launched(80, 25);
+        a.update(AppEvent::Cwd(PaneId::FIRST, "/tmp".into()));
+        let effects = press(&mut a, "tn");
+        assert_eq!((a.tab_count(), a.active_tab()), (2, 1));
+        assert_eq!(a.focused(), id2());
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(
+            effects,
+            vec![
+                Effect::ResizePty(PaneId::FIRST, sized(23, 80)),
+                Effect::SpawnPane(id2(), spec("/tmp", sized(23, 80))),
+            ]
+        );
+    }
+
+    // Spec: Unknown cwd falls back to the launch cwd.
+    #[test]
+    fn new_tab_falls_back_to_the_launch_cwd() {
+        let mut a = tabs(1);
+        let effects = press(&mut a, "tn");
+        assert!(effects.contains(&Effect::SpawnPane(id2(), spec(LAUNCH, sized(23, 80)))));
+    }
+
+    // Spec: Close tab confirmed.
+    #[test]
+    fn close_tab_asks_then_y_closes_the_tab_and_its_panes() {
+        let mut a = tabs(2);
+        press(&mut a, "wv");
+        press(&mut a, "tc");
+        assert_eq!(a.input(), InputMode::Confirm(Confirm::CloseTab));
+        let effects = a.update(key('y'));
+        assert_eq!((a.tab_count(), a.active_tab()), (1, 0));
+        assert_eq!(a.focused(), PaneId::FIRST);
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.screen().tab_bar, None);
+        assert_eq!(
+            effects,
+            vec![
+                Effect::ResizePty(PaneId::FIRST, sized(24, 80)),
+                Effect::ClosePane(id2()),
+                Effect::ClosePane(id3()),
+            ]
+        );
+        assert!(a.pane(id2()).is_none() && a.pane(id3()).is_none());
+    }
+
+    #[test]
+    fn close_tab_prompt_reads_close_tab() {
+        assert_eq!(
+            InputMode::Confirm(Confirm::CloseTab).label(),
+            "Close tab? (y/n)"
+        );
+    }
+
+    // Spec: Close tab declined.
+    #[test]
+    fn close_tab_is_declined_by_anything_but_a_plain_y() {
+        for decline in [key('n'), esc(), key('Y')] {
+            let mut a = tabs(2);
+            press(&mut a, "tc");
+            assert_eq!(a.update(decline.clone()), vec![], "{decline:?}");
+            assert_eq!((a.tab_count(), a.input()), (2, InputMode::Terminal));
+        }
+    }
+
+    // Spec: Close the only tab quits.
+    #[test]
+    fn closing_the_only_tab_quits() {
+        let mut a = tabs(1);
+        press(&mut a, "tc");
+        assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
+        assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+    }
+
+    // Spec: Body math.
+    #[test]
+    fn the_body_starts_below_the_tab_bar_when_there_are_several_tabs() {
+        let mut a = tabs(1);
+        assert_eq!(a.screen().tab_bar, None);
+        assert_eq!(
+            a.screen().body,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 24
+            }
+        );
+        press(&mut a, "tn");
+        let bar = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 1,
+        };
+        assert_eq!(a.screen().tab_bar, Some(bar));
+        assert_eq!(
+            a.screen().body,
+            Rect {
+                x: 0,
+                y: 1,
+                width: 80,
+                height: 23
+            }
+        );
+    }
+
+    // Spec: Resize touches panes of every tab.
+    #[test]
+    fn a_host_resize_resizes_the_panes_of_every_tab() {
+        let mut a = tabs(2);
+        let effects = a.update(AppEvent::Resize {
+            cols: 100,
+            rows: 30,
+        });
+        assert_eq!(
+            effects,
+            vec![
+                Effect::ResizePty(PaneId::FIRST, sized(28, 100)),
+                Effect::ResizePty(id2(), sized(28, 100)),
+            ]
+        );
     }
 }

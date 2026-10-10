@@ -152,7 +152,7 @@ Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs
 ## S8a: Tabs in `App`
 
 - [ ] S8a.1 RED: `t n` appends and activates a tab, `SpawnPane` has the focused cwd; `b N` unaffected; `t c` then `y` closes, next tab takes index i; declined with `n`/Esc/`Y`; only tab asks Quit [tabs: New tab, Close tab confirmed, Next tab becomes active, New tab is appended, Close tab declined, Close the only tab asks Quit/quits].
-- [ ] S8a.2 GREEN: `Vec<Tab>`, `active`, `NewTab`/`CloseTab` handling, `Confirm::CloseTab`.
+- [x] S8a.2 GREEN: `Vec<Tab>`, `active`, `NewTab`/`CloseTab` handling, `Confirm::CloseTab`.
 - [ ] S8a.3 RED: `g b`/`g B` wrap; `b N` and missing tab no-op; single tab no-op [tabs: Next wraps, Previous wraps, Go to tab N, Missing tab is a no-op, Single tab navigation].
 - [ ] S8a.4 GREEN: `NextTab`, `PrevTab`, `GotoTab`.
 - [ ] S8a.5 RED: tab state preserved; background output parsed; inactive tab removal keeps the active tab; last pane of a tab closes it, last tab quits; tab switch exits COPY/RESIZE; failed `t n` removes the new tab [tabs: State preserved, Background output, Last shell exits, Last pane of a tab with sibling tabs; modal-input: Tab switch in RESIZE; copy-mode: Tab switch exits COPY; terminal-session: Failed new tab].
