@@ -41,6 +41,15 @@ pub struct Config {
     pub mouse: bool,
 }
 
+/// One changed, menu-owned key to write back to `config.toml`:
+/// `[table] key = "value"`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ConfigEdit {
+    pub table: &'static str,
+    pub key: &'static str,
+    pub value: &'static str,
+}
+
 /// Why a config file was rejected; the text is one short line.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ConfigError(String);

@@ -55,6 +55,8 @@ pub enum PrefixAction {
     SplitBelow,
     ClosePane,
     EnterResize,
+    /// Opens the config menu. Not in the table until the `m` binding lands.
+    OpenMenu,
     ToggleZoom,
     NewTab,
     CloseTab,
@@ -176,6 +178,7 @@ pub const PREFIX_TREE: &[Binding] = &[
     group('g', "go", &GO),
     group('b', "buffer", &BUFFER),
     act('[', "copy", PrefixAction::EnterCopy),
+    act('m', "menu", PrefixAction::OpenMenu),
     act('q', "quit", PrefixAction::RequestQuit),
     unhinted(act('h', "focus left", PrefixAction::Focus(Direction::Left))),
     unhinted(act('j', "focus down", PrefixAction::Focus(Direction::Down))),
@@ -345,6 +348,28 @@ mod tests {
         }
     }
 
+    // Spec: modal-input `m` is in the table; Not from other modes.
+    #[test]
+    fn m_is_a_hinted_root_leaf_that_opens_the_menu() {
+        let binding = PREFIX_TREE
+            .iter()
+            .find(|b| b.chord.matches(&plain('m')))
+            .expect("m is bound at the root");
+        assert_eq!(binding.target, Target::Action(PrefixAction::OpenMenu));
+        assert_eq!(binding.description, "menu");
+        assert!(binding.hinted);
+    }
+
+    #[test]
+    fn m_inside_a_group_does_not_open_the_menu() {
+        for table in &tables()[1..] {
+            assert_ne!(
+                lookup(table, &plain('m')),
+                Step::Run(PrefixAction::OpenMenu)
+            );
+        }
+    }
+
     #[test]
     fn question_mark_is_reserved_and_unhinted() {
         let binding = PREFIX_TREE
@@ -361,8 +386,8 @@ mod tests {
         for (i, a) in all.iter().enumerate() {
             assert!(!all[i + 1..].contains(a), "duplicate action {a:?}");
         }
-        // literal + quit + copy + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
-        assert_eq!(all.len(), 26);
+        // literal + quit + copy + menu + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
+        assert_eq!(all.len(), 27);
     }
 
     #[test]
@@ -388,7 +413,7 @@ mod tests {
             .iter()
             .map(|b| b.chord.label())
             .collect();
-        assert_eq!(labels, ["w", "t", "g", "b", "[", "q"]);
+        assert_eq!(labels, ["w", "t", "g", "b", "[", "m", "q"]);
     }
 
     #[test]
@@ -559,7 +584,7 @@ mod tests {
         Line::from(text).width() as u16
     }
 
-    const FULL_ROOT: &str = "w window · t tab · g go · b buffer · [ copy · q quit";
+    const FULL_ROOT: &str = "w window · t tab · g go · b buffer · [ copy · m menu · q quit";
 
     #[test]
     fn group_hints_list_every_binding_in_table_order() {
@@ -608,21 +633,21 @@ mod tests {
 
     #[test]
     fn hint_fits_exactly_at_its_own_width() {
-        assert_eq!(width(FULL_ROOT), 52);
-        assert_eq!(hint(PREFIX_TREE, 52), FULL_ROOT);
+        assert_eq!(width(FULL_ROOT), 61);
+        assert_eq!(hint(PREFIX_TREE, 61), FULL_ROOT);
     }
 
     #[test]
     fn hint_is_clipped_by_whole_entries_with_an_ellipsis() {
         assert_eq!(
-            hint(PREFIX_TREE, 51),
-            "w window · t tab · g go · b buffer · [ copy · …"
+            hint(PREFIX_TREE, 60),
+            "w window · t tab · g go · b buffer · [ copy · m menu · …"
         );
-        // the clipped text is 47 columns, so 47 still fits and 46 drops one more
-        assert_eq!(hint(PREFIX_TREE, 47), hint(PREFIX_TREE, 51));
+        // the clipped text is 56 columns, so 56 still fits and 55 drops one more
+        assert_eq!(hint(PREFIX_TREE, 56), hint(PREFIX_TREE, 60));
         assert_eq!(
-            hint(PREFIX_TREE, 46),
-            "w window · t tab · g go · b buffer · …"
+            hint(PREFIX_TREE, 55),
+            "w window · t tab · g go · b buffer · [ copy · …"
         );
     }
 
