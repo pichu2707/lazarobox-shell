@@ -108,11 +108,11 @@ impl Config {
         };
         match Self::parse(&text) {
             Ok(Parsed { config, problems }) if !problems.is_empty() => {
-                let more = match problems.len() {
-                    1 => String::new(),
-                    n => format!(" (+{} more)", n - 1),
+                let head = match problems.len() {
+                    1 => "config".to_owned(),
+                    n => format!("config ({n} problems)"),
                 };
-                (config, Some(format!("config: {}{more}", problems[0])))
+                (config, Some(format!("{head}: {}", problems[0])))
             }
             Ok(Parsed { config, .. }) if config.mouse => (
                 config,
@@ -148,12 +148,15 @@ fn read_position(table: &Table, section: &str, problems: &mut Vec<String>) -> Op
 }
 
 /// `$XDG_CONFIG_HOME/lazarobox/config.toml`, else `$HOME/.config/...`. Per
-/// the XDG spec, an empty or relative `XDG_CONFIG_HOME` is ignored.
+/// the XDG spec, an empty or relative `XDG_CONFIG_HOME` or `HOME` is ignored.
 pub fn config_path(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
     let base = xdg
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
-        .or_else(|| home.map(|home| PathBuf::from(home).join(".config")))?;
+        .or_else(|| {
+            let home = PathBuf::from(home?);
+            home.is_absolute().then(|| home.join(".config"))
+        })?;
     Some(base.join("lazarobox").join("config.toml"))
 }
 
@@ -316,13 +319,13 @@ mod tests {
     }
 
     #[test]
-    fn several_invalid_keys_report_the_first_and_count_the_rest() {
+    fn several_invalid_keys_report_the_count_then_the_first() {
         let text = "mouse = 3\n[statusline]\nposition = \"x\"\n[tabbar]\nposition = \"y\"";
         let (config, notice) = Config::load(Ok(text.into()));
         assert_eq!(config, Config::default());
         assert_eq!(
             notice.as_deref(),
-            Some(r#"config: statusline.position: expected "top" or "bottom" (+2 more)"#)
+            Some(r#"config (3 problems): statusline.position: expected "top" or "bottom""#)
         );
     }
 
@@ -364,5 +367,9 @@ mod tests {
         assert_eq!(p(Some(""), Some("/h")), home);
         assert_eq!(p(Some("rel"), Some("/h")), home);
         assert_eq!(p(None, None), None);
+        // Spec: Relative or empty HOME is ignored.
+        assert_eq!(p(None, Some("")), None);
+        assert_eq!(p(None, Some("rel")), None);
+        assert_eq!(p(Some("/x"), Some("")), xdg);
     }
 }
