@@ -4,6 +4,7 @@ pub mod config;
 pub mod copy;
 pub mod keys;
 pub mod layout;
+pub mod menu;
 pub mod osc7;
 pub mod pane;
 pub mod prefix;
