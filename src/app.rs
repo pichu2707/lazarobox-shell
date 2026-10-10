@@ -3362,9 +3362,12 @@ mod app_tests {
     #[test]
     fn opening_the_menu_enters_menu_without_writing() {
         let mut a = launched(80, 25);
-        // The forced bar shrinks the body, so the only effect is a resize.
+        // The forced bar shrinks the body by one row: exactly one resize.
         let effects = open_menu(&mut a);
-        assert!(effects.iter().all(|e| matches!(e, Effect::ResizePty(..))));
+        assert_eq!(
+            effects,
+            vec![Effect::ResizePty(PaneId::FIRST, sized(23, 80))]
+        );
         assert_eq!(a.input(), InputMode::Menu);
         assert!(a.menu().is_some());
     }
@@ -3373,7 +3376,10 @@ mod app_tests {
     fn esc_closes_the_menu_back_to_terminal() {
         let mut a = menu_app();
         let effects = a.update(esc());
-        assert!(effects.iter().all(|e| matches!(e, Effect::ResizePty(..))));
+        assert_eq!(
+            effects,
+            vec![Effect::ResizePty(PaneId::FIRST, sized(24, 80))]
+        );
         assert_eq!(a.input(), InputMode::Terminal);
         assert!(a.menu().is_none());
     }
@@ -3529,7 +3535,10 @@ mod app_tests {
     fn enter_with_an_unchanged_draft_closes_the_menu() {
         let mut a = menu_app();
         let effects = a.update(code(KeyCode::Enter));
-        assert!(effects.iter().all(|e| matches!(e, Effect::ResizePty(..))));
+        assert_eq!(
+            effects,
+            vec![Effect::ResizePty(PaneId::FIRST, sized(24, 80))]
+        );
         assert_eq!(a.input(), InputMode::Terminal);
         assert!(a.menu().is_none());
     }
@@ -3539,7 +3548,10 @@ mod app_tests {
         let mut a = menu_app();
         a.update(key('l'));
         let effects = a.update(code(KeyCode::Enter));
-        assert!(effects.iter().all(|e| matches!(e, Effect::ResizePty(..))));
+        assert_eq!(
+            effects,
+            vec![Effect::ResizePty(PaneId::FIRST, sized(24, 80))]
+        );
         assert_eq!(a.input(), InputMode::Terminal);
         assert_eq!(a.config.bars.statusline, BarPosition::Top, "draft kept");
     }
@@ -3574,6 +3586,28 @@ mod app_tests {
             assert_eq!(a.screen().body.height, 24);
             assert_eq!(resizes(&effects), vec![(PaneId::FIRST, 24)]);
         }
+    }
+
+    #[test]
+    fn with_two_panes_the_menu_resizes_each_pane_once_on_open_and_on_close() {
+        let mut a = launched(80, 25);
+        press(&mut a, "wv");
+        let id2 = id2();
+        let opened = open_menu(&mut a);
+        assert_eq!(
+            opened,
+            vec![
+                Effect::ResizePty(PaneId::FIRST, sized(23, 39)),
+                Effect::ResizePty(id2, sized(23, 40)),
+            ]
+        );
+        assert_eq!(
+            a.update(esc()),
+            vec![
+                Effect::ResizePty(PaneId::FIRST, sized(24, 39)),
+                Effect::ResizePty(id2, sized(24, 40)),
+            ]
+        );
     }
 
     #[test]
