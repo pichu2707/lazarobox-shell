@@ -9,7 +9,8 @@ use crate::core::{
     copy::{CopyCommand, CopyState},
     keys::{encode_key, encode_paste},
     layout::{
-        Axis, Direction, Node, PaneId, PaneIds, Rect, Removal, SplitError, neighbour, pane_at, tile,
+        Axis, Direction, Node, PaneId, PaneIds, Rect, Removal, SplitError, Tiling, neighbour,
+        pane_at, tile,
     },
     pane::{CursorKind, CursorShape, Pane, PaneSize},
     prefix::{self, Binding, Group, PREFIX_KEY, PREFIX_TREE, PrefixAction, Step},
@@ -241,6 +242,11 @@ impl App {
 
     pub fn screen(&self) -> ScreenLayout {
         self.screen
+    }
+
+    /// Where every pane and separator of the tab goes inside the body.
+    pub fn tiling(&self) -> Tiling {
+        tile(&self.tab.tree, self.screen.body)
     }
 
     pub fn focused(&self) -> PaneId {
@@ -1514,6 +1520,28 @@ mod app_tests {
         a.update(ctrl_space());
         assert_eq!(a.input(), InputMode::Prefix);
         assert_eq!(a.cursor_shape(), shape(CursorKind::Bar, false));
+    }
+
+    #[test]
+    fn cursor_shape_follows_the_focused_pane_and_ignores_the_others() {
+        let mut a = app();
+        let second = PaneId::for_test(2);
+        let output = |id, bytes: &[u8]| AppEvent::Pty(id, PtyEvent::Output(bytes.to_vec()));
+        a.update(output(PaneId::FIRST, b"\x1b[6 q"));
+        a.update(ctrl_space());
+        a.update(key('w'));
+        a.update(key('v'));
+        assert_eq!(a.focused(), second);
+        assert_eq!(a.cursor_shape(), CursorShape::default());
+        a.update(output(second, b"\x1b[2 q"));
+        assert_eq!(a.cursor_shape(), shape(CursorKind::Block, false));
+        // The unfocused left pane changes shape: the outer shape stays.
+        a.update(output(PaneId::FIRST, b"\x1b[4 q"));
+        assert_eq!(a.cursor_shape(), shape(CursorKind::Block, false));
+        a.update(ctrl_space());
+        a.update(key('h'));
+        assert_eq!(a.focused(), PaneId::FIRST);
+        assert_eq!(a.cursor_shape(), shape(CursorKind::Underline, false));
     }
 
     #[test]
