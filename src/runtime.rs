@@ -51,6 +51,11 @@ const CWD_POLL: Duration = Duration::from_secs(1);
 const QUIT_KILL_BOUND: Duration = Duration::from_secs(3);
 /// How often `Panes::shutdown` checks whether the kills are done.
 const SHUTDOWN_POLL: Duration = Duration::from_millis(5);
+/// Most events one `drive` call processes (the first one plus its feedback).
+/// Feedback comes from reactions run on the UI thread; a future
+/// `SpawnFailed` -> `SpawnPane` reaction on a persistently failing spawn would
+/// otherwise spin there forever and freeze the UI.
+const MAX_DRIVE_STEPS: usize = 64;
 
 /// SIGTERM and SIGHUP (the host terminal closing). Without handling them the
 /// process would die with the host terminal still in raw mode.
@@ -272,14 +277,18 @@ impl Panes {
 }
 
 /// Runs `event` and the events its effects feed back until none is left.
-/// Returns `true` as soon as a quit is requested.
+/// Returns `true` as soon as a quit is requested. Gives up (dropping the
+/// pending feedback) after `MAX_DRIVE_STEPS` events.
 fn drive(
     mut update: impl FnMut(AppEvent) -> Vec<Effect>,
     event: AppEvent,
     panes: &mut Panes,
 ) -> bool {
     let mut queue = VecDeque::from([event]);
-    while let Some(event) = queue.pop_front() {
+    for _ in 0..MAX_DRIVE_STEPS {
+        let Some(event) = queue.pop_front() else {
+            break;
+        };
         let (outcome, feedback) = panes.apply(update(event));
         if outcome == Outcome::Quit {
             return true;
@@ -817,5 +826,85 @@ mod tests {
             events,
             vec![AppEvent::Cwd(id(1), cwd.clone()), AppEvent::Cwd(id(2), cwd)]
         );
+    }
+
+    // Spec: per-pane order is preserved through the shared channel.
+    #[test]
+    fn events_from_one_sink_arrive_in_order_even_when_interleaved() {
+        let (mut panes, mut rx, rec) = fake_panes(None);
+        spawn_two(&mut panes);
+        for n in 0..5u8 {
+            assert!((rec.borrow_mut().sinks[0])(PtyEvent::Output(vec![n])));
+            assert!((rec.borrow_mut().sinks[1])(PtyEvent::Output(vec![100 + n])));
+        }
+        let mut per_pane: HashMap<PaneId, Vec<u8>> = HashMap::new();
+        while let Ok((pane, event)) = rx.try_recv() {
+            let PtyEvent::Output(bytes) = event else {
+                panic!("unexpected {event:?}");
+            };
+            per_pane.entry(pane).or_default().extend(bytes);
+        }
+        assert_eq!(per_pane[&id(1)], vec![0, 1, 2, 3, 4]);
+        assert_eq!(per_pane[&id(2)], vec![100, 101, 102, 103, 104]);
+    }
+
+    // Spec: stale events dropped (late output / exit of a closed pane).
+    #[test]
+    fn late_events_from_a_closed_pane_have_no_effect() {
+        let (mut panes, mut rx, rec) = fake_panes(None);
+        let mut app = App::new(80, 24);
+        spawn_two(&mut panes);
+        panes.apply(vec![Effect::ClosePane(id(2))]);
+        app.take_dirty();
+        assert!((rec.borrow_mut().sinks[1])(PtyEvent::Output(b"late".to_vec())));
+        assert!((rec.borrow_mut().sinks[1])(PtyEvent::Exited));
+        while let Ok((pane, event)) = rx.try_recv() {
+            assert!(!step(&mut app, AppEvent::Pty(pane, event), &mut panes));
+        }
+        assert!(!app.take_dirty(), "the app state is untouched");
+    }
+
+    #[test]
+    fn drive_stops_at_the_step_cap() {
+        let (tx, _rx) = mpsc::channel(PTY_CHANNEL);
+        let spawn: SpawnFn = Box::new(|_, _| Err(io::Error::other("boom")));
+        let mut panes = Panes::new(tx, spawn);
+        let mut calls = 0;
+        let quit = drive(
+            |_| {
+                calls += 1;
+                if calls >= 1000 {
+                    return vec![Effect::Quit];
+                }
+                vec![Effect::SpawnPane(id(2), spec())]
+            },
+            AppEvent::Resize { cols: 1, rows: 1 },
+            &mut panes,
+        );
+        assert!(!quit);
+        assert_eq!(calls, MAX_DRIVE_STEPS);
+    }
+
+    // Spec: a pane without a pid, or whose lookup fails, is skipped.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn poll_cwds_skips_panes_without_a_usable_pid() {
+        for pid in [None, Some(i32::MAX as u32)] {
+            let (mut panes, _rx, _rec) = fake_panes(pid);
+            panes.apply(vec![Effect::SpawnPane(id(1), spec())]);
+            // The second pane reports normally.
+            let live: SpawnFn = Box::new(|_, _| {
+                Ok(Box::new(FakePty {
+                    pid: Some(std::process::id()),
+                    ..FakePty::default()
+                }))
+            });
+            panes.spawn = live;
+            panes.apply(vec![Effect::SpawnPane(id(2), spec())]);
+            assert_eq!(
+                panes.poll_cwds(),
+                vec![AppEvent::Cwd(id(2), env::current_dir().unwrap())]
+            );
+        }
     }
 }
