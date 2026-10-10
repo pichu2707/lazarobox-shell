@@ -1,6 +1,6 @@
 # Delta for Statusline
 
-Bottom row (always reserved). Existing statusline snapshots for TERMINAL, PREFIX, COPY and Quit MUST remain valid. All scenarios [auto] unless tagged.
+One row at the configured edge (default bottom), always reserved. Existing statusline snapshots for TERMINAL, PREFIX, COPY and Quit MUST remain valid. All scenarios [auto] unless tagged.
 
 ## ADDED Requirements
 
@@ -71,7 +71,7 @@ After a spawn failure the path segment MUST show `spawn failed: {error}` instead
 - THEN the path segment shows the cwd again
 
 ### Requirement: Statusline position
-The statusline MUST occupy one row at the edge set by `[statusline] position` (default `"bottom"`, so "Bottom row" above is the default). On the same edge as the tab bar, the tab bar is the outermost row and the statusline sits between it and the body. The body keeps `rows - 1 - (tab bar ? 1 : 0)` rows (minimum 1) wherever the bars are.
+The statusline MUST occupy one row at the edge set by `[statusline] position` (default `"bottom"`). On the same edge as the tab bar, the tab bar is the outermost row and the statusline sits between it and the body. The body keeps `rows - 1 - (tab bar ? 1 : 0)` rows (minimum 1) wherever the bars are.
 
 #### Scenario: Statusline on top [auto]
 - GIVEN `position = "top"`, one tab, a 80x25 terminal

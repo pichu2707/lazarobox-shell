@@ -86,17 +86,17 @@ Each tab MUST keep its own layout, focus and zoom state. Switching tabs MUST pre
 - THEN the output is present on its screen
 
 ### Requirement: Tab bar
-The tab bar MUST be drawn on the top row and MUST appear only when there is more than one tab. The body (pane area) MUST start at row 0 without the bar or row 1 with it, and its height MUST be rows - 1 (statusline) - 1 (bar, when visible), at least 1. The active tab MUST be visually distinct. With one tab, the layout MUST match the pre-tabs layout (no reserved row). Each tab label MUST be `N cwd-basename`, where N is the 1-based tab number and cwd-basename is the basename of the tab's focused pane cwd (`/` for the root; just `N` when the cwd is unknown). Labels that do not fit MUST be clipped, and the active tab MUST stay visible.
+The tab bar MUST be drawn at the configured edge (default top; see the configuration spec) and MUST appear only when there is more than one tab. With the default positions the body (pane area) MUST start at row 0 without the bar or row 1 with it; in general it sits between the bars, and its height MUST be rows - 1 (statusline) - 1 (bar, when visible), at least 1. The active tab MUST be visually distinct. With one tab, the layout MUST match the pre-tabs layout (no reserved row). Each tab label MUST be `N cwd-basename`, where N is the 1-based tab number and cwd-basename is the basename of the tab's focused pane cwd (`/` for the root; just `N` when the cwd is unknown). Labels that do not fit MUST be clipped, and the active tab MUST stay visible.
 
 #### Scenario: Hidden with one tab [auto, TestBackend + insta]
 - GIVEN one tab
 - WHEN rendered
-- THEN no tab bar row is drawn and the pane area starts at the top row
+- THEN no tab bar row is drawn and the pane area starts at the top row (default top bar position)
 
 #### Scenario: Shown with two tabs [auto, TestBackend + insta]
 - GIVEN two tabs with the second active
 - WHEN rendered
-- THEN the top row shows both tabs with the second marked active
+- THEN the top row (default position) shows both tabs with the second marked active
 
 #### Scenario: Tab label [auto]
 - GIVEN two tabs whose focused panes have cwd `/home/u/proj` and `/tmp`
@@ -109,7 +109,7 @@ The tab bar MUST be drawn on the top row and MUST appear only when there is more
 - THEN the label is its number only
 
 #### Scenario: Body math [auto]
-- GIVEN a 80x25 terminal
+- GIVEN a 80x25 terminal with default bar positions
 - WHEN there is one tab, then two tabs
 - THEN the body is 80x24 at row 0, then 80x23 at row 1
 
