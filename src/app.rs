@@ -518,27 +518,24 @@ impl App {
     }
 
     /// Opens the menu: captures the live config as the original.
-    fn open_menu(&mut self) {
+    /// The forced tab bar may resize the panes.
+    fn open_menu(&mut self) -> Vec<Effect> {
         self.menu = Some(MenuState::open(&self.config));
         self.input = InputMode::Menu;
+        self.apply_config()
     }
 
     /// The only way out of MENU. `Reverted` restores the config captured at
     /// open; `Saved` keeps the draft.
     fn close_menu(&mut self, outcome: Outcome) -> Vec<Effect> {
-        let reverted = match self.menu.take() {
-            Some(menu) if outcome == Outcome::Reverted => {
-                self.config = menu.original();
-                true
-            }
-            _ => false,
-        };
-        self.input = InputMode::Terminal;
-        if reverted {
-            self.apply_config()
-        } else {
-            Vec::new()
+        if let Some(menu) = self.menu.take()
+            && outcome == Outcome::Reverted
+        {
+            self.config = menu.original();
         }
+        self.input = InputMode::Terminal;
+        // The forced tab bar goes away with the menu, whatever the outcome.
+        self.apply_config()
     }
 
     /// Lays the screen out again for the live config, telling only the panes
@@ -550,6 +547,7 @@ impl App {
 
     fn on_menu_key(&mut self, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
         let Some(menu) = self.menu.as_mut() else {
+            debug_assert!(false, "MENU mode without menu state");
             return Vec::new();
         };
         match menu.on_key(key, repeat, &mut self.config) {
@@ -613,10 +611,7 @@ impl App {
             Step::Run(PrefixAction::SendPrefixLiteral) => {
                 vec![Effect::WritePty(self.tab().focus, vec![PREFIX_LITERAL])]
             }
-            Step::Run(PrefixAction::OpenMenu) => {
-                self.open_menu();
-                Vec::new()
-            }
+            Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
             Step::Run(PrefixAction::SplitBelow) => self.split(Axis::Y),
             Step::Run(PrefixAction::Focus(dir)) => self.move_focus(dir),
@@ -710,12 +705,13 @@ impl App {
     }
 
     /// Recomputes the screen rects: the tab bar exists while there is more
-    /// than one tab.
+    /// than one tab, and while the menu is open so the preview shows the
+    /// real geometry (CM-8).
     fn refresh_screen(&mut self) {
         self.screen = ScreenLayout::new(
             self.term.0,
             self.term.1,
-            self.tabs.len() > 1,
+            self.tabs.len() > 1 || self.menu.is_some(),
             self.config.bars,
         );
     }
@@ -3349,7 +3345,9 @@ mod app_tests {
     #[test]
     fn opening_the_menu_enters_menu_without_writing() {
         let mut a = launched(80, 25);
-        assert_eq!(open_menu(&mut a), vec![]);
+        // The forced bar shrinks the body, so the only effect is a resize.
+        let effects = open_menu(&mut a);
+        assert!(effects.iter().all(|e| matches!(e, Effect::ResizePty(..))));
         assert_eq!(a.input(), InputMode::Menu);
         assert!(a.menu().is_some());
     }
@@ -3357,7 +3355,8 @@ mod app_tests {
     #[test]
     fn esc_closes_the_menu_back_to_terminal() {
         let mut a = menu_app();
-        assert_eq!(a.update(esc()), vec![]);
+        let effects = a.update(esc());
+        assert!(effects.iter().all(|e| matches!(e, Effect::ResizePty(..))));
         assert_eq!(a.input(), InputMode::Terminal);
         assert!(a.menu().is_none());
     }
@@ -3401,9 +3400,9 @@ mod app_tests {
         let panes_before = a.tiling().panes.len();
         // Same body height both ways, so no pane needs a new PTY size.
         assert_eq!(a.update(key('l')), vec![]);
-        assert_eq!(a.screen().status.y, 0);
-        assert_eq!(body_y(&a), 1);
-        assert!(a.tiling().panes.iter().all(|(_, rect)| rect.y == 1));
+        assert_eq!(a.screen().status.y, 1, "below the forced top tab bar");
+        assert_eq!(body_y(&a), 2);
+        assert!(a.tiling().panes.iter().all(|(_, rect)| rect.y == 2));
         assert_eq!(a.tiling().panes.len(), panes_before);
     }
 
@@ -3512,7 +3511,8 @@ mod app_tests {
     #[test]
     fn enter_with_an_unchanged_draft_closes_the_menu() {
         let mut a = menu_app();
-        assert_eq!(a.update(code(KeyCode::Enter)), vec![]);
+        let effects = a.update(code(KeyCode::Enter));
+        assert!(effects.iter().all(|e| matches!(e, Effect::ResizePty(..))));
         assert_eq!(a.input(), InputMode::Terminal);
         assert!(a.menu().is_none());
     }
@@ -3521,8 +3521,192 @@ mod app_tests {
     fn enter_with_a_changed_draft_closes_for_the_session_only() {
         let mut a = menu_app();
         a.update(key('l'));
-        assert_eq!(a.update(code(KeyCode::Enter)), vec![]);
+        let effects = a.update(code(KeyCode::Enter));
+        assert!(effects.iter().all(|e| matches!(e, Effect::ResizePty(..))));
         assert_eq!(a.input(), InputMode::Terminal);
         assert_eq!(a.config.bars.statusline, BarPosition::Top, "draft kept");
+    }
+    // Spec: tabs Bar forced with one tab; config-menu Esc reverts the one-tab bar.
+    fn resizes(effects: &[Effect]) -> Vec<(PaneId, u16)> {
+        effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::ResizePty(id, size) => Some((*id, size.rows)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_menu_forces_a_tab_bar_with_one_tab() {
+        let mut a = launched(80, 25);
+        assert_eq!(a.screen().tab_bar, None);
+        assert_eq!(a.screen().body.height, 24);
+        let effects = open_menu(&mut a);
+        assert_eq!(a.screen().tab_bar.map(|r| r.y), Some(0));
+        assert_eq!(a.screen().body.height, 23);
+        assert_eq!(resizes(&effects), vec![(PaneId::FIRST, 23)]);
+    }
+
+    #[test]
+    fn esc_and_enter_hide_the_forced_bar_and_resize_back() {
+        for close in [esc(), code(KeyCode::Enter)] {
+            let mut a = menu_app();
+            let effects = a.update(close);
+            assert_eq!(a.screen().tab_bar, None);
+            assert_eq!(a.screen().body.height, 24);
+            assert_eq!(resizes(&effects), vec![(PaneId::FIRST, 24)]);
+        }
+    }
+
+    #[test]
+    fn with_several_tabs_the_menu_never_resizes_for_the_bar() {
+        let mut a = launched(80, 25);
+        press(&mut a, "tn");
+        let bar = a.screen().tab_bar;
+        assert!(open_menu(&mut a).is_empty());
+        assert_eq!(a.screen().tab_bar, bar);
+        assert!(a.update(esc()).is_empty());
+        assert_eq!(a.screen().tab_bar, bar);
+    }
+
+    #[test]
+    fn a_preview_with_several_tabs_moves_the_bar_without_a_resize() {
+        let mut a = launched(80, 25);
+        press(&mut a, "tn");
+        open_menu(&mut a);
+        a.update(key('j'));
+        assert!(a.update(key('l')).is_empty());
+        assert_eq!(a.screen().tab_bar.map(|r| r.y), Some(24));
+        assert!(a.update(esc()).is_empty());
+    }
+
+    #[test]
+    fn a_preview_with_one_tab_keeps_the_forced_body_height() {
+        let mut a = menu_app();
+        for k in ['l', 'j', 'l', 'h'] {
+            let effects = a.update(key(k));
+            assert!(resizes(&effects).is_empty(), "{effects:?}");
+            assert_eq!(a.screen().body.height, 23);
+        }
+    }
+
+    #[test]
+    fn a_host_resize_between_open_and_esc_keeps_the_forced_bar_then_reverts() {
+        let mut a = menu_app();
+        let effects = a.update(AppEvent::Resize {
+            cols: 100,
+            rows: 30,
+        });
+        assert_eq!(resizes(&effects), vec![(PaneId::FIRST, 28)]);
+        assert_eq!(a.screen().body.height, 28);
+        assert_eq!(a.input(), InputMode::Menu);
+        let effects = a.update(esc());
+        assert_eq!(resizes(&effects), vec![(PaneId::FIRST, 29)]);
+        assert_eq!(a.screen().tab_bar, None);
+        assert_eq!(a.focused_size(), sized(29, 100));
+    }
+
+    #[test]
+    fn the_forced_bar_never_panics_on_tiny_terminals() {
+        for cols in 0..6 {
+            for rows in 0..6 {
+                let mut a = launched(cols, rows);
+                open_menu(&mut a);
+                let body = a.screen().body;
+                assert!(body.width >= 1 && body.height >= 1, "{cols}x{rows}");
+                a.update(esc());
+                assert!(a.screen().body.height >= 1, "{cols}x{rows}");
+            }
+        }
+    }
+
+    // Spec: config-menu Events while open; modal-input Focus change keeps MENU.
+    fn assert_still_open(a: &App) {
+        assert_eq!(a.input(), InputMode::Menu);
+        assert!(a.menu().is_some());
+    }
+
+    #[test]
+    fn pane_output_is_still_parsed_while_the_menu_is_open() {
+        let mut a = menu_app();
+        a.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(b"x".to_vec()),
+        ));
+        assert_eq!(a.focused_pane().cell(0, 0).unwrap().text, "x");
+        assert_still_open(&a);
+    }
+
+    #[test]
+    fn another_pane_exiting_keeps_the_menu_and_the_draft() {
+        let mut a = launched(80, 25);
+        press(&mut a, "wv");
+        open_menu(&mut a);
+        a.update(key('l'));
+        a.update(AppEvent::Pty(PaneId::FIRST, PtyEvent::Exited));
+        assert_still_open(&a);
+        assert_eq!(a.config.bars.statusline, BarPosition::Top, "draft kept");
+        assert_eq!(a.focused(), id2());
+        assert_eq!(a.screen().body.height, 23);
+        assert_eq!(a.focused_size().rows, 23);
+    }
+
+    #[test]
+    fn the_focused_pane_exiting_moves_the_focus_and_keeps_the_menu() {
+        let mut a = launched(80, 25);
+        press(&mut a, "wv");
+        open_menu(&mut a);
+        a.update(AppEvent::Pty(id2(), PtyEvent::Exited));
+        assert_still_open(&a);
+        assert_eq!(a.focused(), PaneId::FIRST);
+    }
+
+    #[test]
+    fn a_background_tab_pane_exiting_keeps_the_menu_and_the_forced_bar() {
+        let mut a = launched(80, 25);
+        press(&mut a, "tn");
+        open_menu(&mut a);
+        // Closing the first tab leaves one tab: the bar stays because MENU is open.
+        let effects = a.update(AppEvent::Pty(PaneId::FIRST, PtyEvent::Exited));
+        assert_still_open(&a);
+        assert_eq!(a.tab_count(), 1);
+        assert!(a.screen().tab_bar.is_some());
+        assert_eq!(a.screen().body.height, 23);
+        assert!(resizes(&effects).is_empty(), "{effects:?}");
+        let effects = a.update(esc());
+        assert_eq!(a.screen().tab_bar, None);
+        assert_eq!(resizes(&effects), vec![(id2(), 24)]);
+    }
+
+    #[test]
+    fn a_spawn_failure_keeps_the_menu_and_leaves_its_error_alone() {
+        let mut a = launched(80, 25);
+        press(&mut a, "wv");
+        open_menu(&mut a);
+        a.update(AppEvent::SpawnFailed(id2(), "boom".into()));
+        assert_still_open(&a);
+        assert_eq!(a.menu().unwrap().error(), None);
+        assert_eq!(a.notice(), Some("spawn failed: boom"));
+    }
+
+    #[test]
+    fn a_host_resize_keeps_the_menu_with_the_forced_bar_and_preview() {
+        let mut a = menu_app();
+        a.update(key('l'));
+        a.update(AppEvent::Resize { cols: 60, rows: 20 });
+        assert_still_open(&a);
+        assert_eq!(a.screen().tab_bar.map(|r| r.y), Some(0));
+        assert_eq!(a.screen().status.y, 1);
+        assert_eq!(a.screen().body.y, 2);
+        assert_eq!(a.screen().body.height, 18);
+    }
+
+    #[test]
+    fn closing_the_last_pane_of_the_last_tab_quits_with_the_menu_open() {
+        let mut a = menu_app();
+        let effects = a.update(AppEvent::Pty(PaneId::FIRST, PtyEvent::Exited));
+        assert_eq!(effects, vec![Effect::Quit]);
+        assert_still_open(&a);
     }
 }
