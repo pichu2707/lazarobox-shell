@@ -5,6 +5,7 @@
 //! terminal keeps its native selection.
 
 use std::{
+    collections::{HashMap, VecDeque},
     env,
     io::{self, Write, stdout},
     panic,
@@ -31,7 +32,7 @@ use crate::{
     core::{
         layout::PaneId,
         pane::{CursorKind, CursorShape},
-        pty::{PtyEvent, PtyHandle, PtySink, portable::spawn_portable},
+        pty::{PtyEvent, PtyHandle, PtySink, SpawnSpec, portable::spawn_portable},
     },
     ui::{self, theme::LazaroboxTheme},
 };
@@ -80,18 +81,19 @@ pub async fn run() -> io::Result<()> {
 
     let shutdown = Shutdown::new()?;
     let (tx, rx) = mpsc::channel(PTY_CHANNEL);
-    let sink = tagged_sink(id, tx);
-    let mut pty = spawn_portable(&spec, sink)?;
+    let mut panes = Panes::new(tx, Box::new(spawn_portable));
+    // The first pane is spawned before the UI starts: a failure is fatal.
+    panes.spawn_pane(id, &spec)?;
 
     let mut terminal = ratatui::init();
     install_panic_hook();
     let result = match execute!(stdout(), EnableBracketedPaste) {
-        Ok(()) => event_loop(&mut terminal, pty.as_mut(), rx, shutdown, app).await,
+        Ok(()) => event_loop(&mut terminal, &mut panes, rx, shutdown, app).await,
         Err(error) => Err(error),
     };
 
-    pty.kill();
-    drop(pty);
+    // Dropping the registry kills the children (S4b bounds this).
+    drop(panes);
     restore();
     result
 }
@@ -103,7 +105,7 @@ fn tagged_sink(id: PaneId, tx: mpsc::Sender<(PaneId, PtyEvent)>) -> PtySink {
 
 async fn event_loop(
     terminal: &mut DefaultTerminal,
-    pty: &mut dyn PtyHandle,
+    panes: &mut Panes,
     mut rx: mpsc::Receiver<(PaneId, PtyEvent)>,
     mut shutdown: Shutdown,
     mut app: App,
@@ -122,7 +124,7 @@ async fn event_loop(
             event = events.next() => match event {
                 Some(Ok(event)) => {
                     if let Some(event) = to_app_event(event)
-                        && step(&mut app, event, pty)
+                        && step(&mut app, event, panes)
                     {
                         return Ok(());
                     }
@@ -132,21 +134,21 @@ async fn event_loop(
             },
             event = rx.recv() => {
                 let Some((id, event)) = event else { return Ok(()) };
-                if step(&mut app, AppEvent::Pty(id, event), pty) {
+                if step(&mut app, AppEvent::Pty(id, event), panes) {
                     return Ok(());
                 }
                 for _ in 1..EVENT_BUDGET {
                     let Ok((id, event)) = rx.try_recv() else { break };
-                    if step(&mut app, AppEvent::Pty(id, event), pty) {
+                    if step(&mut app, AppEvent::Pty(id, event), panes) {
                         return Ok(());
                     }
                 }
             }
-            // Same exit path as Quit: the caller kills the child and restores.
+            // Same exit path as Quit: the caller restores and kills the children.
             () = shutdown.requested() => return Ok(()),
             _ = cwd_poll.tick() => {
-                if let Some(event) = poll_cwd(pty.pid()) {
-                    step(&mut app, event, pty);
+                for event in panes.poll_cwds() {
+                    step(&mut app, event, panes);
                 }
             }
             _ = tick.tick() => {
@@ -159,38 +161,116 @@ async fn event_loop(
     }
 }
 
-/// Feeds one event to the app and runs the effects it asks for.
-/// Returns `true` when the app wants to quit.
-fn step(app: &mut App, event: AppEvent, pty: &mut dyn PtyHandle) -> bool {
-    run_effects(app.update(event), pty)
+/// Builds the child of a pane; the production one is `spawn_portable`.
+type SpawnFn = Box<dyn FnMut(&SpawnSpec, PtySink) -> io::Result<Box<dyn PtyHandle>>>;
+
+/// Whether the loop keeps running after a batch of effects.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Outcome {
+    Continue,
+    Quit,
 }
 
-/// Executes effects against the PTY (the only pane there is for now, so the
-/// pane id they carry is not routed on). Returns `true` if one of them was `Quit`.
-fn run_effects(effects: Vec<Effect>, pty: &mut dyn PtyHandle) -> bool {
-    let mut quit = false;
-    for effect in effects {
-        match effect {
-            Effect::WritePty(_, bytes) => pty.write(bytes),
-            // A failed resize leaves the child at the old size; nothing to recover.
-            Effect::ResizePty(_, size) => {
-                let _ = pty.resize(size);
-            }
-            Effect::Quit => quit = true,
+/// The live children, by pane.
+struct Panes {
+    handles: HashMap<PaneId, Box<dyn PtyHandle>>,
+    tx: mpsc::Sender<(PaneId, PtyEvent)>,
+    spawn: SpawnFn,
+}
+
+impl Panes {
+    fn new(tx: mpsc::Sender<(PaneId, PtyEvent)>, spawn: SpawnFn) -> Self {
+        Self {
+            handles: HashMap::new(),
+            tx,
+            spawn,
         }
     }
-    quit
+
+    /// Starts the child of pane `id`, tagging everything it emits with `id`.
+    fn spawn_pane(&mut self, id: PaneId, spec: &SpawnSpec) -> io::Result<()> {
+        let handle = (self.spawn)(spec, tagged_sink(id, self.tx.clone()))?;
+        self.handles.insert(id, handle);
+        Ok(())
+    }
+
+    /// Executes `effects` in order, ignoring ids with no live child. Failed
+    /// spawns come back as events for the app.
+    fn apply(&mut self, effects: Vec<Effect>) -> (Outcome, Vec<AppEvent>) {
+        let mut outcome = Outcome::Continue;
+        let mut feedback = Vec::new();
+        for effect in effects {
+            match effect {
+                Effect::WritePty(id, bytes) => {
+                    if let Some(handle) = self.handles.get_mut(&id) {
+                        handle.write(bytes);
+                    }
+                }
+                // A failed resize leaves the child at the old size; nothing to recover.
+                Effect::ResizePty(id, size) => {
+                    if let Some(handle) = self.handles.get_mut(&id) {
+                        let _ = handle.resize(size);
+                    }
+                }
+                Effect::SpawnPane(id, spec) => {
+                    if let Err(error) = self.spawn_pane(id, &spec) {
+                        feedback.push(AppEvent::SpawnFailed(id, error.to_string()));
+                    }
+                }
+                Effect::ClosePane(id) => self.close(id),
+                Effect::Quit => outcome = Outcome::Quit,
+            }
+        }
+        (outcome, feedback)
+    }
+
+    /// Drops the child of `id`, which kills it (blocking until S4b).
+    fn close(&mut self, id: PaneId) {
+        self.handles.remove(&id);
+    }
+
+    /// The working directory of every child whose lookup succeeds.
+    fn poll_cwds(&self) -> Vec<AppEvent> {
+        self.handles
+            .iter()
+            .filter_map(|(id, handle)| poll_cwd(*id, handle.pid()))
+            .collect()
+    }
+}
+
+/// Runs `event` and the events its effects feed back until none is left.
+/// Returns `true` as soon as a quit is requested.
+fn drive(
+    mut update: impl FnMut(AppEvent) -> Vec<Effect>,
+    event: AppEvent,
+    panes: &mut Panes,
+) -> bool {
+    let mut queue = VecDeque::from([event]);
+    while let Some(event) = queue.pop_front() {
+        let (outcome, feedback) = panes.apply(update(event));
+        if outcome == Outcome::Quit {
+            return true;
+        }
+        queue.extend(feedback);
+    }
+    false
+}
+
+/// Feeds one event to the app and runs the effects it asks for.
+/// Returns `true` when the app wants to quit.
+fn step(app: &mut App, event: AppEvent, panes: &mut Panes) -> bool {
+    drive(|event| app.update(event), event, panes)
 }
 
 /// The child's current working directory as an event, read from
 /// `/proc/<pid>/cwd`. `None` when there is no pid or the lookup fails (not
 /// Linux, process gone): the app then keeps its previous value. The link is
 /// resolved by the kernel without touching the disk, so it cannot stall the loop.
-fn poll_cwd(pid: Option<u32>) -> Option<AppEvent> {
+fn poll_cwd(id: PaneId, pid: Option<u32>) -> Option<AppEvent> {
     let pid = pid?;
     std::fs::read_link(format!("/proc/{pid}/cwd"))
         .ok()
-        .map(AppEvent::Cwd)
+        .map(|cwd| AppEvent::Cwd(id, cwd))
 }
 
 fn to_app_event(event: Event) -> Option<AppEvent> {
@@ -281,9 +361,9 @@ mod tests {
     // Spec: a failed cwd lookup keeps the previous value (no event is sent).
     #[test]
     fn cwd_poll_yields_nothing_without_a_pid_or_when_the_lookup_fails() {
-        assert_eq!(poll_cwd(None), None);
+        assert_eq!(poll_cwd(PaneId::FIRST, None), None);
         // pid_t::MAX is never a live process.
-        assert_eq!(poll_cwd(Some(i32::MAX as u32)), None);
+        assert_eq!(poll_cwd(PaneId::FIRST, Some(i32::MAX as u32)), None);
     }
 
     #[cfg(target_os = "linux")]
@@ -291,8 +371,8 @@ mod tests {
     fn cwd_poll_reads_the_cwd_of_a_live_process() {
         let expected = env::current_dir().unwrap();
         assert_eq!(
-            poll_cwd(Some(std::process::id())),
-            Some(AppEvent::Cwd(expected))
+            poll_cwd(PaneId::FIRST, Some(std::process::id())),
+            Some(AppEvent::Cwd(PaneId::FIRST, expected))
         );
     }
 
@@ -315,7 +395,7 @@ mod tests {
         pty.write(b"cd /tmp\n".to_vec());
         let deadline = Instant::now() + Duration::from_secs(5);
         while app.cwd_label() != tmp.display().to_string() && Instant::now() < deadline {
-            if let Some(event) = poll_cwd(pty.pid()) {
+            if let Some(event) = poll_cwd(PaneId::FIRST, pty.pid()) {
                 app.update(event);
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -347,49 +427,6 @@ mod tests {
         let mut out = Vec::new();
         apply_cursor_style(&mut out, want, last).unwrap();
         out
-    }
-
-    // Spec: effects are executed against the PTY.
-    #[test]
-    fn write_and_resize_effects_reach_the_pty() {
-        let mut pty = FakePty::default();
-        let log = pty.log.clone();
-        let size = PaneSize {
-            rows: 39,
-            cols: 100,
-        };
-        let quit = run_effects(
-            vec![
-                Effect::WritePty(PaneId::FIRST, b"ls\r".to_vec()),
-                Effect::ResizePty(PaneId::FIRST, size),
-            ],
-            &mut pty,
-        );
-        assert!(!quit);
-        let log = log.lock().unwrap();
-        assert_eq!(log.writes, vec![b"ls\r".to_vec()]);
-        assert_eq!(log.resizes, vec![size]);
-    }
-
-    #[test]
-    fn quit_effect_is_reported() {
-        let mut pty = FakePty::default();
-        assert!(run_effects(vec![Effect::Quit], &mut pty));
-    }
-
-    #[test]
-    fn effects_are_executed_in_order() {
-        let mut pty = FakePty::default();
-        let log = pty.log.clone();
-        run_effects(
-            vec![
-                Effect::WritePty(PaneId::FIRST, vec![1]),
-                Effect::WritePty(PaneId::FIRST, vec![2]),
-                Effect::WritePty(PaneId::FIRST, vec![3]),
-            ],
-            &mut pty,
-        );
-        assert_eq!(log.lock().unwrap().writes, vec![vec![1], vec![2], vec![3]]);
     }
 
     // Spec: cursor style is applied only when it changes.
@@ -483,5 +520,169 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         };
         assert_eq!(to_app_event(Event::Mouse(mouse)), None);
+    }
+
+    // --- Panes registry, against a fake SpawnFn ---
+
+    use std::{
+        cell::RefCell,
+        rc::Rc,
+        sync::{Arc, Mutex},
+    };
+
+    use crate::core::pty::{SpawnSpec, fake::FakeLog};
+
+    const SIZE: PaneSize = PaneSize { rows: 24, cols: 80 };
+
+    fn id(n: u32) -> PaneId {
+        PaneId::for_test(n)
+    }
+
+    fn spec() -> SpawnSpec {
+        SpawnSpec::new(Some("/bin/sh"), "/".into(), SIZE)
+    }
+
+    /// What the fake `SpawnFn` saw, in spawn order.
+    #[derive(Default)]
+    struct Rec {
+        specs: Vec<SpawnSpec>,
+        logs: Vec<Arc<Mutex<FakeLog>>>,
+        sinks: Vec<PtySink>,
+    }
+
+    fn fake_panes(
+        pid: Option<u32>,
+    ) -> (Panes, mpsc::Receiver<(PaneId, PtyEvent)>, Rc<RefCell<Rec>>) {
+        let rec = Rc::new(RefCell::new(Rec::default()));
+        let seen = Rc::clone(&rec);
+        let spawn: SpawnFn = Box::new(move |spec, sink| {
+            let pty = FakePty {
+                pid,
+                ..FakePty::default()
+            };
+            let mut rec = seen.borrow_mut();
+            rec.specs.push(spec.clone());
+            rec.logs.push(pty.log.clone());
+            rec.sinks.push(sink);
+            Ok(Box::new(pty))
+        });
+        let (tx, rx) = mpsc::channel(PTY_CHANNEL);
+        (Panes::new(tx, spawn), rx, rec)
+    }
+
+    fn spawn_two(panes: &mut Panes) {
+        panes.apply(vec![
+            Effect::SpawnPane(id(1), spec()),
+            Effect::SpawnPane(id(2), spec()),
+        ]);
+    }
+
+    // Spec: output routed by id.
+    #[test]
+    fn spawned_panes_tag_their_events_with_their_id() {
+        let (mut panes, mut rx, rec) = fake_panes(None);
+        spawn_two(&mut panes);
+        assert!((rec.borrow_mut().sinks[1])(PtyEvent::Output(
+            b"two".to_vec()
+        )));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            (id(2), PtyEvent::Output(b"two".to_vec()))
+        );
+    }
+
+    #[test]
+    fn write_and_resize_are_routed_by_id() {
+        let (mut panes, _rx, rec) = fake_panes(None);
+        spawn_two(&mut panes);
+        let size = PaneSize { rows: 9, cols: 7 };
+        let (outcome, _) = panes.apply(vec![
+            Effect::WritePty(id(2), b"ls\r".to_vec()),
+            Effect::ResizePty(id(2), size),
+        ]);
+        assert_eq!(outcome, Outcome::Continue);
+        let rec = rec.borrow();
+        let second = rec.logs[1].lock().unwrap();
+        assert_eq!(second.writes, vec![b"ls\r".to_vec()]);
+        assert_eq!(second.resizes, vec![size]);
+        let first = rec.logs[0].lock().unwrap();
+        assert!(first.writes.is_empty() && first.resizes.is_empty());
+    }
+
+    // Spec: stale events dropped (effects for unknown ids are ignored).
+    #[test]
+    fn effects_for_unknown_ids_are_ignored() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let (outcome, feedback) = panes.apply(vec![
+            Effect::WritePty(id(9), vec![1]),
+            Effect::ResizePty(id(9), SIZE),
+            Effect::ClosePane(id(9)),
+        ]);
+        assert_eq!(outcome, Outcome::Continue);
+        assert!(feedback.is_empty());
+    }
+
+    #[test]
+    fn quit_effect_is_reported() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        assert_eq!(panes.apply(vec![Effect::Quit]).0, Outcome::Quit);
+    }
+
+    // Spec: spawn failure is fed back, not fatal.
+    #[test]
+    fn a_failed_spawn_is_fed_back_as_an_event() {
+        let (tx, _rx) = mpsc::channel(PTY_CHANNEL);
+        let spawn: SpawnFn = Box::new(|_, _| Err(io::Error::other("boom")));
+        let mut panes = Panes::new(tx, spawn);
+        let (outcome, feedback) = panes.apply(vec![Effect::SpawnPane(id(2), spec())]);
+        assert_eq!(outcome, Outcome::Continue);
+        assert_eq!(feedback, vec![AppEvent::SpawnFailed(id(2), "boom".into())]);
+        assert!(panes.handles.is_empty());
+    }
+
+    #[test]
+    fn step_loops_feedback_until_it_is_empty() {
+        let (tx, _rx) = mpsc::channel(PTY_CHANNEL);
+        let spawn: SpawnFn = Box::new(|_, _| Err(io::Error::other("boom")));
+        let mut panes = Panes::new(tx, spawn);
+        let mut seen = Vec::new();
+        let quit = drive(
+            |event| {
+                seen.push(event.clone());
+                match event {
+                    AppEvent::Resize { .. } => vec![Effect::SpawnPane(id(2), spec())],
+                    AppEvent::SpawnFailed(..) => vec![Effect::Quit],
+                    _ => Vec::new(),
+                }
+            },
+            AppEvent::Resize { cols: 1, rows: 1 },
+            &mut panes,
+        );
+        assert!(quit, "the effect from the feedback event is honoured");
+        assert_eq!(
+            seen,
+            vec![
+                AppEvent::Resize { cols: 1, rows: 1 },
+                AppEvent::SpawnFailed(id(2), "boom".into())
+            ]
+        );
+    }
+
+    // Spec: fallback poll, one event per live pid.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn poll_cwds_reports_each_live_pane() {
+        let (mut panes, _rx, _rec) = fake_panes(Some(std::process::id()));
+        spawn_two(&mut panes);
+        let mut events = panes.poll_cwds();
+        events.sort_by_key(|event| match event {
+            AppEvent::Cwd(id, _) => Some(*id),
+            _ => None,
+        });
+        let cwd = env::current_dir().unwrap();
+        assert_eq!(
+            events,
+            vec![AppEvent::Cwd(id(1), cwd.clone()), AppEvent::Cwd(id(2), cwd)]
+        );
     }
 }

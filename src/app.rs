@@ -66,8 +66,10 @@ pub enum AppEvent {
     },
     /// Something a pane's child did.
     Pty(PaneId, PtyEvent),
-    /// The child's working directory, as last read by the runtime.
-    Cwd(PathBuf),
+    /// A pane's child working directory, as last read by the runtime.
+    Cwd(PaneId, PathBuf),
+    /// Spawning the child of a pane failed; carries the error text.
+    SpawnFailed(PaneId, String),
 }
 
 /// Side effects requested by `App::update`, executed by the runtime.
@@ -75,6 +77,10 @@ pub enum AppEvent {
 pub enum Effect {
     WritePty(PaneId, Vec<u8>),
     ResizePty(PaneId, PaneSize),
+    /// Start a child for a new pane.
+    SpawnPane(PaneId, SpawnSpec),
+    /// Terminate a pane's child without blocking the loop.
+    ClosePane(PaneId),
     Quit,
 }
 
@@ -221,7 +227,11 @@ impl App {
                 debug_assert_eq!(id, self.id);
                 self.on_pty(event)
             }
-            AppEvent::Cwd(cwd) => self.on_cwd(cwd),
+            // Events for panes that no longer exist are dropped.
+            AppEvent::Cwd(id, cwd) if id == self.id => self.on_cwd(cwd),
+            AppEvent::Cwd(..) => Vec::new(),
+            // The app emits no SpawnPane yet (S5a), so there is nothing to undo.
+            AppEvent::SpawnFailed(..) => Vec::new(),
         }
     }
 
@@ -1185,7 +1195,7 @@ mod app_tests {
     }
 
     fn cwd_event(path: &str) -> AppEvent {
-        AppEvent::Cwd(PathBuf::from(path))
+        AppEvent::Cwd(PaneId::FIRST, PathBuf::from(path))
     }
 
     #[test]
