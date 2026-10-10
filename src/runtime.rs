@@ -6,7 +6,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    env,
+    env, fs,
     io::{self, Write, stdout},
     panic,
     thread::{self, JoinHandle},
@@ -31,6 +31,7 @@ use tokio::{
 use crate::{
     app::{App, AppEvent, Effect},
     core::{
+        config::{Config, config_path},
         layout::PaneId,
         pane::{CursorKind, CursorShape},
         pty::{PtyEvent, PtyHandle, PtySink, SpawnSpec, portable::spawn_portable},
@@ -86,8 +87,11 @@ pub async fn run() -> io::Result<()> {
     let (cols, rows) = terminal::size()?;
     let cwd = env::current_dir().unwrap_or_else(|_| "/".into());
     let shell = env::var("SHELL").ok();
-    let app =
-        App::new(cols, rows).with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
+    let (config, notice) = load_config();
+    let app = App::new(cols, rows)
+        .with_config(&config)
+        .with_notice(notice)
+        .with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
     let (id, spec) = app.initial_spawn();
 
     let shutdown = Shutdown::new()?;
@@ -108,6 +112,15 @@ pub async fn run() -> io::Result<()> {
     restore();
     panes.shutdown(QUIT_KILL_BOUND);
     result
+}
+
+/// Reads the config once at startup; a missing file is silent defaults.
+fn load_config() -> (Config, Option<String>) {
+    let path = config_path(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"));
+    match path {
+        Some(path) => Config::load(fs::read_to_string(path)),
+        None => (Config::default(), None),
+    }
 }
 
 /// A sink that tags each event with the pane it came from.

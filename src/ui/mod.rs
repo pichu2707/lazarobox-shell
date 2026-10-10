@@ -82,7 +82,11 @@ mod tests {
     use super::*;
     use crate::{
         app::{App, AppEvent, InputMode},
-        core::{layout::PaneId, pty::PtyEvent},
+        core::{
+            config::{BarPosition, BarPositions, Config},
+            layout::PaneId,
+            pty::PtyEvent,
+        },
     };
 
     const COLS: u16 = 60;
@@ -523,5 +527,85 @@ mod tests {
         let line = row(terminal.backend().buffer(), 0);
         assert!(line.contains('9'), "{line:?}");
         assert!(!line.contains('1'), "{line:?}");
+    }
+
+    fn configured(statusline: BarPosition, tabbar: BarPosition, tabs: usize) -> App {
+        let config = Config {
+            bars: BarPositions { statusline, tabbar },
+            ..Config::default()
+        };
+        let mut app = app().with_config(&config);
+        for _ in 1..tabs {
+            for event in [
+                KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+            ] {
+                app.update(AppEvent::Key(event));
+            }
+        }
+        app
+    }
+
+    fn rows(buf: &Buffer) -> Vec<String> {
+        (0..ROWS).map(|y| row(buf, y)).collect()
+    }
+
+    // Spec: Bar positions.
+    #[test]
+    fn a_statusline_on_top_leaves_the_pane_below_it() {
+        let app = configured(BarPosition::Top, BarPosition::Top, 1);
+        let (buf, cursor) = draw(&app);
+        let rows = rows(&buf);
+        assert!(rows[0].contains("TERMINAL"), "{rows:?}");
+        assert!(rows[1].starts_with("hi there"), "{rows:?}");
+        assert!(!rows[ROWS as usize - 1].contains("TERMINAL"), "{rows:?}");
+        // The cursor follows the body's new origin.
+        assert_eq!(cursor, Position::new(8, 1));
+    }
+
+    #[test]
+    fn both_bars_at_the_bottom_end_with_the_tab_bar() {
+        let app = configured(BarPosition::Bottom, BarPosition::Bottom, 2);
+        let (buf, cursor) = draw(&app);
+        let rows = rows(&buf);
+        let last = ROWS as usize - 1;
+        assert!(
+            rows[last].contains('1') && rows[last].contains('2'),
+            "{rows:?}"
+        );
+        assert!(!rows[last].contains("TERMINAL"), "{rows:?}");
+        assert!(rows[last - 1].contains("TERMINAL"), "{rows:?}");
+        assert!(rows[0].trim().is_empty(), "{rows:?}");
+        assert_eq!(cursor, Position::new(0, 0));
+    }
+
+    #[test]
+    fn both_bars_on_top_stack_the_tab_bar_over_the_statusline() {
+        let app = configured(BarPosition::Top, BarPosition::Top, 2);
+        let (buf, cursor) = draw(&app);
+        let rows = rows(&buf);
+        assert!(rows[0].contains('1') && rows[0].contains('2'), "{rows:?}");
+        assert!(rows[1].contains("TERMINAL"), "{rows:?}");
+        assert_eq!(cursor, Position::new(0, 2));
+    }
+
+    #[test]
+    fn the_statusline_on_top_and_the_tab_bar_at_the_bottom() {
+        let app = configured(BarPosition::Top, BarPosition::Bottom, 2);
+        let (buf, cursor) = draw(&app);
+        let rows = rows(&buf);
+        assert!(rows[0].contains("TERMINAL"), "{rows:?}");
+        assert!(rows[ROWS as usize - 1].contains('2'), "{rows:?}");
+        assert_eq!(cursor, Position::new(0, 1));
+    }
+
+    // Spec: Startup notice.
+    #[test]
+    fn the_startup_notice_shows_in_the_statusline_wherever_it_is() {
+        let app = configured(BarPosition::Top, BarPosition::Top, 1)
+            .with_notice(Some("config: bad value".into()));
+        let (buf, _) = draw(&app);
+        assert!(row(&buf, 0).contains("config: bad value"));
     }
 }
