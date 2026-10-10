@@ -121,10 +121,10 @@ Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs
 
 ## S6: UI renders `screen()`/`view()` (first visible milestone)
 
-- [ ] S6.1 RED: `src/ui/components/separators.rs` TestBackend+insta: two panes with separator `│`/`─`, accent cells only next to the focused pane, recolor on focus change, accent follows mode [pane-layout: Separators x3].
-- [ ] S6.2 GREEN: `SeparatorView`; `impl From<layout::Rect> for ratatui::Rect`.
-- [ ] S6.3 RED: terminal_view in two panes: clipped, cursor offset to the pane rect, only the focused pane sets the cursor, shape follows focus [terminal-emulation: Two panes clipped, Cursor offset, Unfocused pane has no cursor, Shape follows focus, Unfocused shape change ignored].
-- [ ] S6.4 GREEN: `src/ui/mod.rs` renders from `screen()`/`view()`; per-pane `terminal_view`; focused-only `cursor_position`; rendering skips zero-size pane rects and separators with `len == 0`.
+- [x] S6.1 RED: `src/ui/components/separators.rs` TestBackend+insta: two panes with separator `│`/`─`, accent cells only next to the focused pane, recolor on focus change, accent follows mode [pane-layout: Separators x3].
+- [x] S6.2 GREEN: `SeparatorView`; `impl From<layout::Rect> for ratatui::Rect`.
+- [x] S6.3 RED: terminal_view in two panes: clipped, cursor offset to the pane rect, only the focused pane sets the cursor, shape follows focus [terminal-emulation: Two panes clipped, Cursor offset, Unfocused pane has no cursor, Shape follows focus, Unfocused shape change ignored].
+- [x] S6.4 GREEN: `src/ui/mod.rs` renders from `screen()`/`view()`; per-pane `terminal_view`; focused-only `cursor_position`; rendering skips zero-size pane rects and separators with `len == 0`.
 - [ ] S6.5 RED: statusline render snapshots: root hint in PREFIX `w window · t tab · g go · b buffer · [ copy · q quit`, group hint, clipped hint, hint gone after resolve, notice precedence, prompts, cwd/shell of the focused pane [statusline: Root hint in PREFIX, Root hint clipped and cleared, Group hint, Hint gone after the group resolves, Narrow width, Notice shown, Close pane/tab/Quit prompt, Focus switches cwd, Shell name].
 - [ ] S6.6 GREEN: `App::status_path(max_cols)` (notice, else `prefix::hint` root/group, else cwd), `shell_name()` of the focused pane; wire in `ui/mod.rs`.
 - [ ] S6.7 [manual] Kitty: `w v`/`w h` split, focus with prefix `h/j/k/l` (separator accent follows), nvim in two panes (typing goes only to the focused one), `w q` then `y`, `exit` collapses a pane; PREFIX shows the root hint, `w` shows the group hint, hint disappears on resolve [pane-layout: nvim in split panes, Focus/close, `exit` collapses its pane; statusline hint scenarios].
