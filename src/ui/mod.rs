@@ -304,7 +304,7 @@ mod tests {
         let line = status(&app);
         assert!(line.contains("PREFIX"), "{line:?}");
         assert!(
-            line.contains("w window · t tab · g go · b buffer · [ copy · q quit"),
+            line.contains("w window · t tab · g go · b buffer · [ copy · m menu · q quit"),
             "{line:?}"
         );
         insta::assert_snapshot!("root_hint", line.trim_end());
@@ -322,6 +322,20 @@ mod tests {
             "{line:?}"
         );
         assert!(!line.contains("split right"), "{line:?}");
+    }
+
+    // Spec: statusline MENU label; the path segment never shows the root hint.
+    #[test]
+    fn menu_mode_shows_its_label_and_the_cwd_never_the_hint() {
+        let mut app = App::new(100, 3).with_env(None, None, "/work".into());
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        keys(&mut app, "m");
+        let line = status(&app);
+        assert!(line.contains("MENU") && line.contains("/work"), "{line:?}");
+        assert!(
+            !line.contains("window") && !line.contains("quit"),
+            "{line:?}"
+        );
     }
 
     // Spec: Root hint clipped and cleared; Narrow width.

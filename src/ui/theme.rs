@@ -7,6 +7,7 @@ pub struct LazaroboxTheme {
     pub bg_base: Color,
     pub bg_panel: Color,
     pub primary_cyan: Color,
+    pub info_blue: Color,
     pub ai_purple: Color,
     pub success_green: Color,
     pub warning_orange: Color,
@@ -20,6 +21,7 @@ impl Default for LazaroboxTheme {
             bg_base: Color::from_u32(0x00181E24),
             bg_panel: Color::from_u32(0x00202831),
             primary_cyan: Color::from_u32(0x0000E5FF),
+            info_blue: Color::from_u32(0x0089B4FA),
             ai_purple: Color::from_u32(0x00CBA6F7),
             success_green: Color::from_u32(0x00A6E3A1),
             warning_orange: Color::from_u32(0x00FAB387),
@@ -55,8 +57,7 @@ impl LazaroboxTheme {
             InputMode::Copy(_) => self.primary_cyan,
             InputMode::Resize => self.ai_purple,
             InputMode::Confirm(_) => self.error_red,
-            // Placeholder: MENU gets its own accent with the statusline slice.
-            InputMode::Menu => self.primary_cyan,
+            InputMode::Menu => self.info_blue,
         }
     }
 
@@ -179,6 +180,35 @@ mod tests {
             assert_eq!(style.bg, Some(bg), "bg for {mode:?}");
             assert_eq!(style.fg, Some(t.bg_base), "fg for {mode:?}");
             assert_eq!(t.input_accent(mode), bg, "accent for {mode:?}");
+        }
+    }
+
+    // Spec: statusline MENU label and color; Mode color mapping includes MENU.
+    #[test]
+    fn info_blue_is_the_catppuccin_blue() {
+        assert_eq!(
+            LazaroboxTheme::default().info_blue,
+            Color::from_u32(0x0089B4FA)
+        );
+    }
+
+    #[test]
+    fn menu_has_its_own_accent_distinct_from_every_other_mode() {
+        let t = LazaroboxTheme::default();
+        assert_eq!(t.input_accent(InputMode::Menu), t.info_blue);
+        let style = t.input_mode_style(InputMode::Menu);
+        assert_eq!(style.bg, Some(t.info_blue));
+        assert_eq!(style.fg, Some(t.bg_base));
+        let others = [
+            InputMode::Terminal,
+            InputMode::Prefix,
+            InputMode::Copy(CopyState::default()),
+            InputMode::Confirm(Confirm::Quit),
+            group('w'),
+            InputMode::Resize,
+        ];
+        for mode in others {
+            assert_ne!(t.input_accent(mode), t.info_blue, "{mode:?}");
         }
     }
 
