@@ -221,6 +221,75 @@ impl Node {
         }
     }
 
+    /// Moves, by one cell, the border between `focus` and its neighbour along
+    /// the axis of `dir`: the separator of the nearest enclosing split on that
+    /// axis. Returns whether the tree changed. Refused when a side would drop
+    /// below the minimum size of its panes.
+    pub fn resize_step(&mut self, area: Rect, focus: PaneId, dir: Direction) -> bool {
+        self.step(area, focus, dir).unwrap_or(false)
+    }
+
+    /// `None` when no split on the axis of `dir` encloses `focus` (the caller
+    /// may try an outer one); `Some(changed)` once a split decided.
+    fn step(&mut self, area: Rect, focus: PaneId, dir: Direction) -> Option<bool> {
+        let Node::Split(split) = self else {
+            return None;
+        };
+        let (rects, sep) = halves(split, area);
+        let (child, rect) = split
+            .children
+            .iter_mut()
+            .zip(rects)
+            .find(|(child, _)| child.leaves().contains(&focus))?;
+        if let Some(done) = child.step(rect, focus, dir) {
+            return Some(done);
+        }
+        let (axis, grow) = match dir {
+            Direction::Left => (Axis::X, false),
+            Direction::Right => (Axis::X, true),
+            Direction::Up => (Axis::Y, false),
+            Direction::Down => (Axis::Y, true),
+        };
+        if split.axis != axis {
+            return None;
+        }
+        let extent = |r: &Rect| if axis == Axis::X { r.width } else { r.height };
+        let (first, second) = (extent(&rects[0]), extent(&rects[1]));
+        let moved = if grow {
+            first.checked_add(1)
+        } else {
+            first.checked_sub(1)
+        };
+        // The weights become the drawn cell sizes, so a step is always one cell.
+        let ok = sep == 1
+            && moved.is_some_and(|new| {
+                let other = (first + second).saturating_sub(new);
+                new >= split.children[0].min_extent(axis)
+                    && other >= split.children[1].min_extent(axis)
+            });
+        if ok {
+            let new = moved.unwrap_or(first);
+            split.weights = [new, first + second - new];
+        }
+        Some(ok)
+    }
+
+    /// The least width (`X`) or height (`Y`) the panes of this subtree need.
+    fn min_extent(&self, axis: Axis) -> u16 {
+        match self {
+            Node::Leaf(_) if axis == Axis::X => MIN_PANE.1,
+            Node::Leaf(_) => MIN_PANE.0,
+            Node::Split(split) => {
+                let [a, b] = split.children.each_ref().map(|c| c.min_extent(axis));
+                if split.axis == axis {
+                    a.saturating_add(b).saturating_add(1)
+                } else {
+                    a.max(b)
+                }
+            }
+        }
+    }
+
     fn leaf_mut(&mut self, id: PaneId) -> Option<&mut Node> {
         match self {
             Node::Leaf(leaf) if *leaf == id => Some(self),
@@ -245,65 +314,63 @@ fn tile_into(node: &Node, area: Rect, out: &mut Tiling) {
         }
         Node::Split(split) => split,
     };
+    let (rects, sep) = halves(split, area);
+    if sep == 1 {
+        out.separators.push(match split.axis {
+            Axis::X => Separator {
+                axis: Axis::X,
+                x: area.x.saturating_add(rects[0].width),
+                y: area.y,
+                len: area.height,
+            },
+            Axis::Y => Separator {
+                axis: Axis::Y,
+                x: area.x,
+                y: area.y.saturating_add(rects[0].height),
+                len: area.width,
+            },
+        });
+    }
     let [a, b] = &split.children;
+    tile_into(a, rects[0], out);
+    tile_into(b, rects[1], out);
+}
+
+/// The areas of the two children of `split` inside `area`, and the number of
+/// cells (0 or 1) taken by the separator between them.
+fn halves(split: &Split, area: Rect) -> ([Rect; 2], u16) {
     match split.axis {
         Axis::X => {
             let (first, second, sep) = divide(area.width, split.weights);
             let x2 = area.x.saturating_add(first).saturating_add(sep);
-            if sep == 1 {
-                out.separators.push(Separator {
-                    axis: Axis::X,
-                    x: area.x.saturating_add(first),
-                    y: area.y,
-                    len: area.height,
-                });
-            }
-            tile_into(
-                a,
+            let rects = [
                 Rect {
                     width: first,
                     ..area
                 },
-                out,
-            );
-            tile_into(
-                b,
                 Rect {
                     x: x2,
                     width: second,
                     ..area
                 },
-                out,
-            );
+            ];
+            (rects, sep)
         }
         Axis::Y => {
             let (first, second, sep) = divide(area.height, split.weights);
             let y2 = area.y.saturating_add(first).saturating_add(sep);
-            if sep == 1 {
-                out.separators.push(Separator {
-                    axis: Axis::Y,
-                    x: area.x,
-                    y: area.y.saturating_add(first),
-                    len: area.width,
-                });
-            }
-            tile_into(
-                a,
+            let rects = [
                 Rect {
                     height: first,
                     ..area
                 },
-                out,
-            );
-            tile_into(
-                b,
                 Rect {
                     y: y2,
                     height: second,
                     ..area
                 },
-                out,
-            );
+            ];
+            (rects, sep)
         }
     }
 }
@@ -1145,5 +1212,191 @@ mod tests {
                 assert_eq!(neighbour(&t, b, dir), None, "b {dir:?}");
             }
         }
+    }
+
+    // --- resize_step -------------------------------------------------------
+
+    const AREA: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 24,
+    };
+
+    /// Left | right, 40 and 39 cells wide.
+    fn pair() -> (Node, PaneId, PaneId) {
+        let [a, b] = ids(2)[..] else { unreachable!() };
+        (split(Axis::X, [40, 39], Node::Leaf(a), Node::Leaf(b)), a, b)
+    }
+
+    fn widths(tree: &Node, area: Rect) -> Vec<u16> {
+        tile(tree, area)
+            .panes
+            .iter()
+            .map(|(_, r)| r.width)
+            .collect()
+    }
+
+    // Spec: Border moves one cell.
+    #[test]
+    fn resize_right_grows_the_left_pane_by_exactly_one_cell() {
+        let (mut tree, a, _) = pair();
+        assert!(tree.resize_step(AREA, a, Direction::Right));
+        assert_eq!(widths(&tree, AREA), vec![41, 38]);
+    }
+
+    // Spec: Focused pane shrinks.
+    #[test]
+    fn resize_left_shrinks_the_focused_left_pane_by_one_cell() {
+        let (mut tree, a, _) = pair();
+        assert!(tree.resize_step(AREA, a, Direction::Left));
+        assert_eq!(widths(&tree, AREA), vec![39, 40]);
+    }
+
+    #[test]
+    fn the_border_moves_in_the_key_direction_whichever_pane_has_the_focus() {
+        let (mut tree, _, b) = pair();
+        assert!(tree.resize_step(AREA, b, Direction::Right));
+        assert_eq!(widths(&tree, AREA), vec![41, 38]);
+        assert!(tree.resize_step(AREA, b, Direction::Left));
+        assert!(tree.resize_step(AREA, b, Direction::Left));
+        assert_eq!(widths(&tree, AREA), vec![39, 40]);
+    }
+
+    #[test]
+    fn vertical_steps_move_a_stacked_border() {
+        let [a, b] = ids(2)[..] else { unreachable!() };
+        let mut tree = split(Axis::Y, [11, 12], Node::Leaf(a), Node::Leaf(b));
+        assert!(tree.resize_step(AREA, a, Direction::Down));
+        let heights: Vec<u16> = tile(&tree, AREA)
+            .panes
+            .iter()
+            .map(|(_, r)| r.height)
+            .collect();
+        assert_eq!(heights, vec![12, 11]);
+        assert!(tree.resize_step(AREA, a, Direction::Up));
+        assert!(tree.resize_step(AREA, a, Direction::Up));
+        let heights: Vec<u16> = tile(&tree, AREA)
+            .panes
+            .iter()
+            .map(|(_, r)| r.height)
+            .collect();
+        assert_eq!(heights, vec![10, 13]);
+    }
+
+    // After a terminal resize the weights are proportions, not cell sizes: a
+    // step must move the border one cell from where it is drawn.
+    #[test]
+    fn a_step_after_a_terminal_resize_moves_one_cell_from_the_drawn_border() {
+        let (mut tree, a, _) = pair();
+        let wide = Rect { width: 100, ..AREA };
+        let drawn = widths(&tree, wide)[0];
+        assert!(tree.resize_step(wide, a, Direction::Right));
+        assert_eq!(widths(&tree, wide), vec![drawn + 1, 99 - drawn - 1]);
+        assert!(tree.resize_step(wide, a, Direction::Left));
+        assert!(tree.resize_step(wide, a, Direction::Left));
+        assert_eq!(widths(&tree, wide)[0], drawn - 1);
+    }
+
+    // Spec: Clamped at minimum.
+    #[test]
+    fn a_step_that_would_cross_the_minimum_is_refused_and_changes_nothing() {
+        let [a, b] = ids(2)[..] else { unreachable!() };
+        let min = MIN_PANE.1;
+        let mut tree = split(Axis::X, [79 - min, min], Node::Leaf(a), Node::Leaf(b));
+        let before = tree.clone();
+        assert!(!tree.resize_step(AREA, a, Direction::Right));
+        assert_eq!(tree, before);
+        assert!(tree.resize_step(AREA, a, Direction::Left));
+        let mut tree = split(Axis::X, [min, 79 - min], Node::Leaf(a), Node::Leaf(b));
+        let before = tree.clone();
+        assert!(!tree.resize_step(AREA, a, Direction::Left));
+        assert_eq!(tree, before);
+    }
+
+    #[test]
+    fn the_last_cell_before_the_minimum_is_still_allowed() {
+        let [a, b] = ids(2)[..] else { unreachable!() };
+        let min = MIN_PANE.1;
+        let mut tree = split(Axis::X, [78 - min, min + 1], Node::Leaf(a), Node::Leaf(b));
+        assert!(tree.resize_step(AREA, a, Direction::Right));
+        assert_eq!(widths(&tree, AREA), vec![79 - min, min]);
+    }
+
+    // Spec: No border on that axis.
+    #[test]
+    fn a_step_along_an_axis_without_a_split_is_a_no_op() {
+        let [a, b] = ids(2)[..] else { unreachable!() };
+        let mut tree = split(Axis::Y, [11, 12], Node::Leaf(a), Node::Leaf(b));
+        let before = tree.clone();
+        assert!(!tree.resize_step(AREA, a, Direction::Left));
+        assert!(!tree.resize_step(AREA, a, Direction::Right));
+        assert_eq!(tree, before);
+    }
+
+    // Spec: Single pane.
+    #[test]
+    fn a_single_pane_ignores_every_step() {
+        let mut tree = Node::Leaf(PaneId::FIRST);
+        for dir in ALL_DIRS {
+            assert!(!tree.resize_step(AREA, PaneId::FIRST, dir));
+        }
+        assert_eq!(tree, Node::Leaf(PaneId::FIRST));
+    }
+
+    #[test]
+    fn an_unknown_pane_changes_nothing() {
+        let (mut tree, _, _) = pair();
+        let before = tree.clone();
+        assert!(!tree.resize_step(AREA, PaneId::for_test(99), Direction::Right));
+        assert_eq!(tree, before);
+    }
+
+    #[test]
+    fn the_nearest_enclosing_split_on_the_axis_is_the_one_that_moves() {
+        let [a, b, c] = ids(3)[..] else {
+            unreachable!()
+        };
+        // a | (b over c)
+        let inner = split(Axis::Y, [11, 12], Node::Leaf(b), Node::Leaf(c));
+        let mut tree = split(Axis::X, [40, 39], Node::Leaf(a), inner);
+        assert!(tree.resize_step(AREA, b, Direction::Down));
+        let t = tile(&tree, AREA);
+        assert_eq!(rect_of(&t, b).height, 12);
+        assert_eq!(rect_of(&t, a).width, 40);
+        // No Y split encloses `a`, and an X step on `b` climbs to the outer split.
+        assert!(!tree.resize_step(AREA, a, Direction::Down));
+        assert!(tree.resize_step(AREA, b, Direction::Right));
+        assert_eq!(rect_of(&tile(&tree, AREA), a).width, 41);
+    }
+
+    #[test]
+    fn a_refusal_in_the_nearest_split_does_not_climb_to_an_outer_one() {
+        let [a, b, c] = ids(3)[..] else {
+            unreachable!()
+        };
+        let min = MIN_PANE.1;
+        // (a | b) | c with `b` at the minimum: growing `a` is refused, and the
+        // outer border (b | c) must not move instead.
+        let inner = split(Axis::X, [20, min], Node::Leaf(a), Node::Leaf(b));
+        let mut tree = split(Axis::X, [31, 48], inner, Node::Leaf(c));
+        let before = tree.clone();
+        assert!(!tree.resize_step(AREA, b, Direction::Right));
+        assert_eq!(tree, before);
+    }
+
+    #[test]
+    fn shrinking_a_side_never_squeezes_a_nested_pane_below_the_minimum() {
+        let [a, b, c] = ids(3)[..] else {
+            unreachable!()
+        };
+        let min = MIN_PANE.1;
+        // a | (b | c) where the right side holds exactly two minimum panes.
+        let inner = split(Axis::X, [min, min], Node::Leaf(b), Node::Leaf(c));
+        let right = 2 * min + 1;
+        let mut tree = split(Axis::X, [79 - right, right], Node::Leaf(a), inner);
+        let before = tree.clone();
+        assert!(!tree.resize_step(AREA, a, Direction::Right));
+        assert_eq!(tree, before);
     }
 }
