@@ -139,7 +139,7 @@ Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs
 - [x] S7.5 RED: `w z` toggles `Tab.zoom`; zoomed tiling is only the focused pane, no separators; split/focus/`w r`/removal unzoom first; only the zoomed pane gets `ResizePty` [pane-layout: Zoom and restore, Split/Focus change/RESIZE while zoomed; terminal-session: Zoom resizes only the zoomed pane].
 - [x] S7.6 GREEN: zoom-aware `Tab::tiling`, `App::zoomed()`.
 - [x] S7.7 RED+GREEN: statusline `[Z]` shown only while zoomed; `RESIZE` label [statusline: Zoomed, Unzoomed].
-- [ ] S7.8 [manual] Kitty: `w r` + `h/j/k/l` moves the border visibly, nvim reflows, `w z` zoom/unzoom keeps nvim intact with `[Z]` [terminal-session: Reflow in nvim; pane-layout: Focus, close, resize, zoom].
+- [x] S7.8 [manual] Kitty: `w r` + `h/j/k/l` moves the border visibly, nvim reflows, `w z` zoom/unzoom keeps nvim intact with `[Z]` [terminal-session: Reflow in nvim; pane-layout: Focus, close, resize, zoom]. (verified by user in Kitty 2026-10-10)
 - [x] S7.9 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## S7d: Copy-mode position indicator
