@@ -78,13 +78,13 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 - [x] CM2b.2 GREEN: `bar = tabs > 1 || menu.is_some()` in `refresh_screen`; relayout on open and close (CM-8).
 - [x] CM2b.3 RED: events while open: pane output still parsed; other pane exit keeps MENU and the draft; focus/active-tab change keeps MENU; spawn failure keeps MENU and does not touch `menu.error`; host Resize recomputes with preview and forced bar; last pane of last tab emits `Quit` [config-menu: Events while open (all); modal-input: Focus change keeps MENU].
 - [x] CM2b.4 GREEN: audit `activate`, `drop_tab`, `set_focus_in`, `remove_pane` so none resets `Menu`; Quit path unchanged. Characterization if already passing.
-- [ ] CM2b.5 RED: `src/core/prefix.rs` `m` is a root leaf, hinted, `OpenMenu`, description `menu`; table integrity holds; `lookup` of `m` in a group, COPY, RESIZE or a confirmation does not open MENU [modal-input: `m` is in the table, Not from other modes].
-- [ ] CM2b.6 GREEN: add `m` after `[` and before `q` in `PREFIX_TREE` (CM-7).
-- [ ] CM2b.7 RED (update existing, CM-7): root hint exact string `w window · t tab · g go · b buffer · [ copy · m menu · q quit`; clipping tests recomputed for the new widths (previously 52/51/47/46); `root_hint` and `clipped_hint` snapshots updated with `cargo insta review` [statusline: Root hint with menu, Root hint stays table-generated, Existing snapshots].
-- [ ] CM2b.8 GREEN: adjust expected strings/widths and accept the new snapshots; no other snapshot changes.
-- [ ] CM2b.9 RED: `src/ui/theme.rs` `info_blue` (0x89B4FA); `input_accent(Menu)` differs from every other mode, other mappings unchanged; `InputMode::label` is `MENU`; statusline label snapshot; MENU path segment shows cwd/notice, never the root hint [statusline: MENU label and color, Mode color mapping includes MENU].
-- [ ] CM2b.10 GREEN: add `info_blue`, MENU arm in `input_accent`/`input_mode_style`/`label`.
-- [ ] CM2b.11 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] CM2b.5 RED: `src/core/prefix.rs` `m` is a root leaf, hinted, `OpenMenu`, description `menu`; table integrity holds; `lookup` of `m` in a group, COPY, RESIZE or a confirmation does not open MENU [modal-input: `m` is in the table, Not from other modes].
+- [x] CM2b.6 GREEN: add `m` after `[` and before `q` in `PREFIX_TREE` (CM-7).
+- [x] CM2b.7 RED (update existing, CM-7): root hint exact string `w window · t tab · g go · b buffer · [ copy · m menu · q quit`; clipping tests recomputed for the new widths (previously 52/51/47/46); `root_hint` and `clipped_hint` snapshots updated with `cargo insta review` [statusline: Root hint with menu, Root hint stays table-generated, Existing snapshots].
+- [x] CM2b.8 GREEN: adjust expected strings/widths and accept the new snapshots; no other snapshot changes.
+- [x] CM2b.9 RED: `src/ui/theme.rs` `info_blue` (0x89B4FA); `input_accent(Menu)` differs from every other mode, other mappings unchanged; `InputMode::label` is `MENU`; statusline label snapshot; MENU path segment shows cwd/notice, never the root hint [statusline: MENU label and color, Mode color mapping includes MENU].
+- [x] CM2b.10 GREEN: add `info_blue`, MENU arm in `input_accent`/`input_mode_style`/`label`.
+- [x] CM2b.11 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## CM3: Popup widget and overlay
 
