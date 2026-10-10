@@ -427,4 +427,15 @@ mod tests {
         );
         assert_eq!(menu.error(), None);
     }
+
+    #[test]
+    fn an_unlisted_key_clears_the_error_with_no_other_effect() {
+        let mut menu = MenuState::open(&Config::default());
+        let mut config = Config::default();
+        menu.set_error("boom".to_owned());
+        assert_eq!(menu.on_key(&ch('x'), false, &mut config), MenuCommand::None);
+        assert_eq!(menu.error(), None);
+        assert_eq!(selected(&menu), Some(0));
+        assert_eq!(config, Config::default());
+    }
 }
