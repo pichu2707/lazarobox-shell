@@ -1,0 +1,16 @@
+---
+source: src/ui/mod.rs
+expression: "(0..12).map(|y|\nrow(&buf, y).trim_end().to_string()).collect::<Vec<_>>().join(\"\\n\")"
+---
+ 1
+hi there
+    ┌ Menu ───────────────────────────────────────────┐
+    │ Settings                                        │
+    │ Statusline position                      bottom │
+    │ Tab bar position                            top │
+    │ Mouse: off (coming soon)                        │
+    │                                                 │
+    │ j/k move · h/l change · Enter save · Esc cancel │
+    └─────────────────────────────────────────────────┘
+
+ ◐ MENU                                               sh

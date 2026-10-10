@@ -6,6 +6,7 @@ use ratatui::Frame;
 
 use crate::{app::App, core::layout::Rect};
 use components::{
+    menu::MenuPopup,
     separators::SeparatorView,
     statusline::StatusLine,
     tab_bar::TabBar,
@@ -20,7 +21,7 @@ impl From<Rect> for ratatui::layout::Rect {
 }
 
 /// Draws the tab bar (with several tabs), every pane in its tile, the
-/// separators between them and the statusline. Only the focused pane places the real cursor.
+/// separators between them, the statusline and, in MENU, the popup. Only the focused pane places the real cursor.
 pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
     let screen = app.screen();
     let status = within(frame, screen.status);
@@ -44,7 +45,10 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
         frame.render_widget(TerminalView::new(pane, theme), area);
         if id == focused {
             focused_rect = rect;
-            if let Some(position) = cursor_position(pane, area) {
+            // MENU hides the real cursor: it would blink under the popup.
+            if app.menu().is_none()
+                && let Some(position) = cursor_position(pane, area)
+            {
                 frame.set_cursor_position(position);
             }
         }
@@ -67,6 +71,12 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
     };
     let path = app.status_path(line("").path_budget(status.width));
     frame.render_widget(line(&path), status);
+
+    // The menu popup goes over everything else.
+    if let Some(menu) = app.menu() {
+        let popup = MenuPopup::new(menu, app.config(), theme);
+        frame.render_widget(popup, frame.area());
+    }
 }
 
 /// `rect` as a ratatui rect, cut to what the frame can actually draw.
@@ -621,5 +631,74 @@ mod tests {
             .with_notice(Some("config: bad value".into()));
         let (buf, _) = draw(&app);
         assert!(row(&buf, 0).contains("config: bad value"));
+    }
+
+    fn draw_at(app: &App, cols: u16, rows: u16) -> (Buffer, Position) {
+        let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+        terminal
+            .draw(|frame| render(frame, app, &theme::LazaroboxTheme::default()))
+            .unwrap();
+        let cursor = terminal.get_cursor_position().unwrap();
+        (terminal.backend().buffer().clone(), cursor)
+    }
+
+    fn menu_app(cols: u16, rows: u16) -> App {
+        let mut app = App::new(cols, rows);
+        app.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(b"hi there".to_vec()),
+        ));
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        press(&mut app, 'm', KeyModifiers::NONE);
+        assert_eq!(app.input(), InputMode::Menu);
+        app
+    }
+
+    // Spec: tabs: Bar forced with one tab (render); the popup is drawn last.
+    #[test]
+    fn menu_popup_is_drawn_over_the_panes_after_the_bars() {
+        let app = menu_app(60, 12);
+        let (buf, _) = draw_at(&app, 60, 12);
+        assert!(row(&buf, 0).contains(" 1 "), "{:?}", row(&buf, 0));
+        assert!(row(&buf, 2).contains(" Menu "), "{:?}", row(&buf, 2));
+        assert!(row(&buf, 11).contains("MENU"), "{:?}", row(&buf, 11));
+        insta::assert_snapshot!(
+            (0..12)
+                .map(|y| row(&buf, y).trim_end().to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    #[test]
+    fn real_cursor_is_not_placed_while_the_menu_is_open() {
+        let mut app = menu_app(60, 12);
+        let (_, cursor) = draw_at(&app, 60, 12);
+        // Nothing placed it, so it stays at the backend default.
+        assert_eq!(cursor, Position::new(0, 0));
+        // Characterization: closing the menu gives the cursor back (the
+        // forced bar is gone, so the pane starts at row 0 again).
+        app.update(AppEvent::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
+        let (_, cursor) = draw_at(&app, 60, 12);
+        assert_eq!(cursor, Position::new(8, 0));
+    }
+
+    // Spec: Tiny terminals: the minimal message, and Esc still works.
+    #[test]
+    fn a_tiny_terminal_shows_the_fallback_and_esc_still_reverts() {
+        let mut app = menu_app(20, 5);
+        let (buf, _) = draw_at(&app, 20, 5);
+        assert_eq!(row(&buf, 2), "MENU · Esc cancel ·…");
+        app.update(AppEvent::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.input(), InputMode::Terminal);
+        assert!(app.menu().is_none());
+        let (buf, _) = draw_at(&app, 20, 5);
+        assert!(!row(&buf, 2).contains("MENU"));
     }
 }
