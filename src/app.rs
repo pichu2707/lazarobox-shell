@@ -158,6 +158,23 @@ impl PaneState {
 struct Tab {
     tree: Node,
     focus: PaneId,
+    /// The focused pane fills the whole body; the others keep running hidden.
+    zoom: bool,
+}
+
+impl Tab {
+    /// The geometry inside `area`: the whole tree, or only the focused pane
+    /// when zoomed (no separators).
+    fn tiling(&self, area: Rect) -> Tiling {
+        if self.zoom {
+            Tiling {
+                panes: vec![(self.focus, area)],
+                separators: Vec::new(),
+            }
+        } else {
+            tile(&self.tree, area)
+        }
+    }
 }
 
 /// Owns the panes and the input state. Pure: it never touches IO.
@@ -187,6 +204,7 @@ impl App {
             tab: Tab {
                 tree: Node::Leaf(first),
                 focus: first,
+                zoom: false,
             },
             ids,
             input: InputMode::default(),
@@ -255,7 +273,12 @@ impl App {
 
     /// Where every pane and separator of the tab goes inside the body.
     pub fn tiling(&self) -> Tiling {
-        tile(&self.tab.tree, self.screen.body)
+        self.tab.tiling(self.screen.body)
+    }
+
+    /// Whether the focused pane is zoomed over the others.
+    pub fn zoomed(&self) -> bool {
+        self.tab.zoom
     }
 
     pub fn focused(&self) -> PaneId {
@@ -398,11 +421,11 @@ impl App {
                 PrefixAction::SendPrefixLiteral
                 | PrefixAction::SplitRight
                 | PrefixAction::SplitBelow
+                | PrefixAction::ToggleZoom
                 | PrefixAction::Focus(_),
             ) => InputMode::Terminal,
             Step::Run(
                 PrefixAction::ShowCommands
-                | PrefixAction::ToggleZoom
                 | PrefixAction::NewTab
                 | PrefixAction::NextTab
                 | PrefixAction::PrevTab
@@ -415,9 +438,14 @@ impl App {
             }
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
             Step::Run(PrefixAction::SplitBelow) => self.split(Axis::Y),
-            Step::Run(PrefixAction::Focus(dir)) => {
-                self.move_focus(dir);
-                Vec::new()
+            Step::Run(PrefixAction::Focus(dir)) => self.move_focus(dir),
+            Step::Run(PrefixAction::EnterResize) => {
+                self.tab.zoom = false;
+                self.relayout()
+            }
+            Step::Run(PrefixAction::ToggleZoom) => {
+                self.tab.zoom = !self.tab.zoom;
+                self.relayout()
             }
             _ => Vec::new(),
         }
@@ -426,11 +454,12 @@ impl App {
     /// Splits the focused pane and focuses the new one. A split the layout
     /// refuses (too small) changes nothing.
     fn split(&mut self, axis: Axis) -> Vec<Effect> {
+        self.tab.zoom = false;
         let target = self.tab.focus;
         let new = self.ids.alloc();
         match self.tab.tree.split(self.screen.body, target, new, axis) {
             Ok(()) => {}
-            Err(SplitError::TooSmall | SplitError::NotFound) => return Vec::new(),
+            Err(SplitError::TooSmall | SplitError::NotFound) => return self.relayout(),
         }
         let cwd = self
             .focused_state()
@@ -445,11 +474,15 @@ impl App {
         effects
     }
 
-    fn move_focus(&mut self, dir: Direction) {
+    /// Moves the focus to the neighbour in `dir`. A zoomed tab is unzoomed
+    /// first, even at an edge, so the other panes come back into view.
+    fn move_focus(&mut self, dir: Direction) -> Vec<Effect> {
+        self.tab.zoom = false;
         let tiling = tile(&self.tab.tree, self.screen.body);
         if let Some(next) = neighbour(&tiling, self.tab.focus, dir) {
             self.set_focus(next);
         }
+        self.relayout()
     }
 
     /// Focuses `next`. Leaving a pane ends COPY (its viewport goes back to the
@@ -481,6 +514,7 @@ impl App {
             Removal::Removed => {}
         }
         self.panes.remove(&id);
+        self.tab.zoom = false;
         self.dirty = true;
         if matches!(self.input, InputMode::Confirm(_)) {
             self.input = InputMode::Terminal;
@@ -495,7 +529,8 @@ impl App {
 
     /// What each pane's PTY size should be, from the current layout.
     fn layout_sizes(&self) -> HashMap<PaneId, PaneSize> {
-        tile(&self.tab.tree, self.screen.body)
+        self.tab
+            .tiling(self.screen.body)
             .panes
             .into_iter()
             .map(|(id, rect)| (id, body_size(rect)))
@@ -505,7 +540,7 @@ impl App {
     /// Brings every pane to its layout size, telling only the panes that
     /// changed. Panes new to the layout keep the size they were created with.
     fn relayout(&mut self) -> Vec<Effect> {
-        let tiling = tile(&self.tab.tree, self.screen.body);
+        let tiling = self.tab.tiling(self.screen.body);
         let mut effects = Vec::new();
         for (id, rect) in tiling.panes {
             let size = body_size(rect);
@@ -2236,6 +2271,128 @@ mod app_tests {
         let mut a = resizing();
         a.take_dirty();
         a.update(key('l'));
+        assert!(a.take_dirty());
+    }
+
+    // --- Zoom (S7) ---------------------------------------------------------
+
+    fn body(a: &App) -> crate::core::layout::Rect {
+        a.screen().body
+    }
+
+    // Spec: Zoom and restore; Zoom resizes only the zoomed pane.
+    #[test]
+    fn w_z_zooms_the_focused_pane_over_the_whole_body() {
+        let mut a = split_right();
+        let effects = press(&mut a, "wz");
+        assert!(a.zoomed());
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(effects, vec![Effect::ResizePty(id2(), sized(24, 80))]);
+        let tiling = a.tiling();
+        assert_eq!(tiling.panes, vec![(id2(), body(&a))]);
+        assert_eq!(tiling.separators, vec![]);
+    }
+
+    #[test]
+    fn zooming_twice_restores_the_layout_and_the_pane_size() {
+        let mut a = split_right();
+        let before = a.tiling();
+        press(&mut a, "wz");
+        let effects = press(&mut a, "wz");
+        assert!(!a.zoomed());
+        assert_eq!(effects, vec![Effect::ResizePty(id2(), sized(24, 40))]);
+        assert_eq!(a.tiling(), before);
+    }
+
+    #[test]
+    fn a_host_resize_while_zoomed_resizes_only_the_zoomed_pane_until_unzoom() {
+        let mut a = split_right();
+        press(&mut a, "wz");
+        let effects = a.update(AppEvent::Resize { cols: 90, rows: 25 });
+        assert_eq!(effects, vec![Effect::ResizePty(id2(), sized(24, 90))]);
+        let effects = press(&mut a, "wz");
+        assert_eq!(
+            effects,
+            vec![
+                Effect::ResizePty(PaneId::FIRST, sized(24, 43)),
+                Effect::ResizePty(id2(), sized(24, 46)),
+            ]
+        );
+    }
+
+    #[test]
+    fn zooming_a_single_pane_changes_no_size() {
+        let mut a = launched(80, 25);
+        assert_eq!(press(&mut a, "wz"), vec![]);
+        assert!(a.zoomed());
+        assert_eq!(press(&mut a, "wz"), vec![]);
+        assert!(!a.zoomed());
+    }
+
+    // Spec: Split while zoomed.
+    #[test]
+    fn a_split_while_zoomed_unzooms_first_and_then_splits() {
+        let mut a = split_right();
+        press(&mut a, "wz");
+        let effects = press(&mut a, "wh");
+        assert!(!a.zoomed());
+        assert_eq!(a.tiling().panes.len(), 3);
+        assert!(effects.iter().any(|e| matches!(e, Effect::SpawnPane(..))));
+    }
+
+    #[test]
+    fn a_refused_split_while_zoomed_still_unzooms() {
+        let mut a = launched(20, 25);
+        press(&mut a, "wz");
+        let effects = press(&mut a, "wv");
+        assert!(!a.zoomed());
+        assert_eq!(a.tiling().panes.len(), 1);
+        assert!(!effects.iter().any(|e| matches!(e, Effect::SpawnPane(..))));
+    }
+
+    // Spec: Focus change while zoomed.
+    #[test]
+    fn a_focus_key_while_zoomed_unzooms_and_moves_to_the_neighbour() {
+        let mut a = split_right();
+        press(&mut a, "wz");
+        let effects = press(&mut a, "h");
+        assert!(!a.zoomed());
+        assert_eq!(a.focused(), PaneId::FIRST);
+        assert_eq!(effects, vec![Effect::ResizePty(id2(), sized(24, 40))]);
+    }
+
+    // Spec: RESIZE while zoomed.
+    #[test]
+    fn entering_resize_while_zoomed_unzooms_first() {
+        let mut a = split_right();
+        press(&mut a, "wz");
+        let effects = press(&mut a, "wr");
+        assert!(!a.zoomed());
+        assert_eq!(a.input(), InputMode::Resize);
+        assert_eq!(effects, vec![Effect::ResizePty(id2(), sized(24, 40))]);
+    }
+
+    // Spec: any pane removal while zoomed unzooms first.
+    #[test]
+    fn removing_a_pane_while_zoomed_unzooms() {
+        let mut a = three_panes();
+        press(&mut a, "wz");
+        a.update(exited(PaneId::FIRST));
+        assert!(!a.zoomed());
+        assert_eq!(a.tiling().panes.len(), 2);
+        let mut b = three_panes();
+        press(&mut b, "wz");
+        press(&mut b, "wq");
+        b.update(key('y'));
+        assert!(!b.zoomed());
+        assert_eq!(b.tiling().panes.len(), 2);
+    }
+
+    #[test]
+    fn a_zoom_toggle_marks_the_screen_dirty() {
+        let mut a = split_right();
+        a.take_dirty();
+        press(&mut a, "wz");
         assert!(a.take_dirty());
     }
 }
