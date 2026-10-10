@@ -1,0 +1,12 @@
+---
+source: src/ui/components/menu.rs
+expression: text(&buf)
+---
+┌ Menu ───────────────────────────────────────────┐
+│ Settings                                        │
+│ Statusline position                      bottom │
+│ Tab bar position                            top │
+│ Mouse: off (coming soon)                        │
+│                                                 │
+│ config.toml: statusline is not a table; fix it …│
+└─────────────────────────────────────────────────┘
