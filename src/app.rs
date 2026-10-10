@@ -526,13 +526,26 @@ impl App {
     /// The only way out of MENU. `Reverted` restores the config captured at
     /// open; `Saved` keeps the draft.
     fn close_menu(&mut self, outcome: Outcome) -> Vec<Effect> {
-        if let Some(menu) = self.menu.take()
-            && outcome == Outcome::Reverted
-        {
-            self.config = menu.original();
-        }
+        let reverted = match self.menu.take() {
+            Some(menu) if outcome == Outcome::Reverted => {
+                self.config = menu.original();
+                true
+            }
+            _ => false,
+        };
         self.input = InputMode::Terminal;
-        Vec::new()
+        if reverted {
+            self.apply_config()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Lays the screen out again for the live config, telling only the panes
+    /// whose size changed.
+    fn apply_config(&mut self) -> Vec<Effect> {
+        self.refresh_screen();
+        self.relayout()
     }
 
     fn on_menu_key(&mut self, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
@@ -540,8 +553,9 @@ impl App {
             return Vec::new();
         };
         match menu.on_key(key, repeat, &mut self.config) {
+            MenuCommand::Changed => self.apply_config(),
             MenuCommand::Cancel => self.close_menu(Outcome::Reverted),
-            MenuCommand::None | MenuCommand::Changed | MenuCommand::Save => Vec::new(),
+            MenuCommand::None | MenuCommand::Save => Vec::new(),
         }
     }
 
@@ -3368,5 +3382,78 @@ mod app_tests {
                 ..
             }
         ));
+    }
+
+    // Spec: config-menu Live preview and revert.
+    fn body_y(a: &App) -> u16 {
+        a.screen().body.y
+    }
+
+    #[test]
+    fn cycling_the_statusline_moves_the_screen_live() {
+        let mut a = launched(80, 25);
+        press(&mut a, "wv");
+        open_menu(&mut a);
+        let panes_before = a.tiling().panes.len();
+        // Same body height both ways, so no pane needs a new PTY size.
+        assert_eq!(a.update(key('l')), vec![]);
+        assert_eq!(a.screen().status.y, 0);
+        assert_eq!(body_y(&a), 1);
+        assert!(a.tiling().panes.iter().all(|(_, rect)| rect.y == 1));
+        assert_eq!(a.tiling().panes.len(), panes_before);
+    }
+
+    #[test]
+    fn cycling_the_tab_bar_moves_it_live() {
+        let mut a = launched(80, 25);
+        press(&mut a, "tn");
+        open_menu(&mut a);
+        assert_eq!(a.screen().tab_bar.map(|r| r.y), Some(0));
+        a.update(key('j'));
+        assert_eq!(a.update(key('l')), vec![]);
+        assert_eq!(a.screen().tab_bar.map(|r| r.y), Some(24));
+    }
+
+    #[test]
+    fn a_preview_emits_resize_only_for_panes_whose_size_changed() {
+        // Every position change keeps the body height, so nothing resizes:
+        // the diff in `relayout` is what keeps it that way.
+        let mut a = launched(80, 25);
+        press(&mut a, "wv");
+        open_menu(&mut a);
+        for k in ['l', 'l', 'h'] {
+            let effects = a.update(key(k));
+            assert!(
+                !effects.iter().any(|e| matches!(e, Effect::ResizePty(..))),
+                "{effects:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn esc_restores_the_original_positions_and_relayouts() {
+        let mut a = launched(80, 25);
+        press(&mut a, "tn");
+        let before = a.screen();
+        open_menu(&mut a);
+        a.update(key('l'));
+        a.update(key('j'));
+        a.update(key('l'));
+        assert_ne!(a.screen(), before);
+        a.update(esc());
+        assert_eq!(a.screen(), before);
+        assert_eq!(a.config, Config::default());
+    }
+
+    #[test]
+    fn an_external_edit_is_not_reloaded_because_the_app_never_reads_the_file() {
+        // Characterization: `App` is pure, so Esc can only restore what it
+        // captured at open, whatever the file says meanwhile.
+        let start = config_of(BarPosition::Top, BarPosition::Bottom);
+        let mut a = launched(80, 25).with_config(&start);
+        open_menu(&mut a);
+        a.update(key('l'));
+        a.update(esc());
+        assert_eq!(a.config, start);
     }
 }
