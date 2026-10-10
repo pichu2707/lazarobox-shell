@@ -108,11 +108,11 @@ impl Config {
         };
         match Self::parse(&text) {
             Ok(Parsed { config, problems }) if !problems.is_empty() => {
-                let more = match problems.len() {
-                    1 => String::new(),
-                    n => format!(" (+{} more)", n - 1),
+                let head = match problems.len() {
+                    1 => "config".to_owned(),
+                    n => format!("config ({n} problems)"),
                 };
-                (config, Some(format!("config: {}{more}", problems[0])))
+                (config, Some(format!("{head}: {}", problems[0])))
             }
             Ok(Parsed { config, .. }) if config.mouse => (
                 config,
@@ -319,13 +319,13 @@ mod tests {
     }
 
     #[test]
-    fn several_invalid_keys_report_the_first_and_count_the_rest() {
+    fn several_invalid_keys_report_the_count_then_the_first() {
         let text = "mouse = 3\n[statusline]\nposition = \"x\"\n[tabbar]\nposition = \"y\"";
         let (config, notice) = Config::load(Ok(text.into()));
         assert_eq!(config, Config::default());
         assert_eq!(
             notice.as_deref(),
-            Some(r#"config: statusline.position: expected "top" or "bottom" (+2 more)"#)
+            Some(r#"config (3 problems): statusline.position: expected "top" or "bottom""#)
         );
     }
 

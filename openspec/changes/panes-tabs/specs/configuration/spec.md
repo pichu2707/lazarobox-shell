@@ -40,7 +40,7 @@ The file is TOML with `[statusline] position` and `[tabbar] position`, each `"to
 ### Requirement: Fallback and startup notice
 A missing file MUST silently give the defaults. An unreadable file or unparseable TOML (a syntax error) MUST give all the defaults and a startup notice `config: <short error>` (one line) shown through the existing statusline notice until the next key.
 
-An invalid value or type MUST fall back to the default for THAT KEY ONLY; every other key in the file is respected. The notice names the failing key, for example `config: statusline.position: expected "top" or "bottom"`; when several keys fail it reports the first and appends ` (+N more)`. A non-table section (`statusline = 3`) reports `statusline: expected a table`, and a non-boolean `mouse` reports `mouse: expected true or false`.
+An invalid value or type MUST fall back to the default for THAT KEY ONLY; every other key in the file is respected. The notice names the failing key, for example `config: statusline.position: expected "top" or "bottom"`; when several keys fail it reports the count and the first: `config (N problems): <first problem>`. A non-table section (`statusline = 3`) reports `statusline: expected a table`, and a non-boolean `mouse` reports `mouse: expected true or false`.
 
 `mouse = true` MUST be accepted with no effect and the notice `config: mouse is not supported yet` (a key problem notice wins over it).
 
@@ -57,7 +57,7 @@ An invalid value or type MUST fall back to the default for THAT KEY ONLY; every 
 #### Scenario: Several invalid keys [auto]
 - GIVEN invalid values for `mouse`, `statusline.position` and `tabbar.position`
 - WHEN the app starts
-- THEN all three use their defaults and the notice reports the first key followed by ` (+2 more)`
+- THEN all three use their defaults and the notice is `config (3 problems): ` followed by the first key's problem
 
 #### Scenario: Unparseable file [auto]
 - GIVEN a file with a TOML syntax error
