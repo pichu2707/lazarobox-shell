@@ -454,7 +454,7 @@ impl App {
             Step::Run(PrefixAction::RequestQuit) => InputMode::Confirm(Confirm::Quit),
             Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(CopyState::default()),
             Step::Run(PrefixAction::EnterResize) => InputMode::Resize,
-            Step::Run(PrefixAction::ClosePane) if self.panes.len() > 1 => {
+            Step::Run(PrefixAction::ClosePane) if self.tabs.len() > 1 || self.tab_panes() > 1 => {
                 InputMode::Confirm(Confirm::ClosePane)
             }
             Step::Run(PrefixAction::CloseTab) if self.tabs.len() > 1 => {
@@ -497,8 +497,25 @@ impl App {
                 self.relayout()
             }
             Step::Run(PrefixAction::NewTab) => self.new_tab(),
+            Step::Run(PrefixAction::NextTab) => {
+                self.activate((self.active + 1) % self.tabs.len());
+                Vec::new()
+            }
+            Step::Run(PrefixAction::PrevTab) => {
+                self.activate((self.active + self.tabs.len() - 1) % self.tabs.len());
+                Vec::new()
+            }
+            Step::Run(PrefixAction::GotoTab(n)) => {
+                self.activate(usize::from(n).wrapping_sub(1));
+                Vec::new()
+            }
             _ => Vec::new(),
         }
+    }
+
+    /// How many panes the active tab holds.
+    fn tab_panes(&self) -> usize {
+        self.tab().tree.leaves().len()
     }
 
     /// Makes tab `index` the active one; a missing tab or the active one is a
@@ -603,43 +620,63 @@ impl App {
     /// Focuses `next`. Leaving a pane ends COPY (its viewport goes back to the
     /// bottom) and RESIZE.
     fn set_focus(&mut self, next: PaneId) {
-        if next == self.tab().focus {
-            return;
-        }
-        if let Some(left) = self.panes.get_mut(&self.tabs[self.active].focus) {
-            left.emu.set_scrollback(0);
-        }
-        if matches!(self.input, InputMode::Copy(_) | InputMode::Resize) {
-            self.input = InputMode::Terminal;
-        }
-        self.tab_mut().focus = next;
+        self.set_focus_in(self.active, next);
     }
 
-    /// Drops pane `id` and gives its space to its sibling. If it had the focus,
-    /// the pane now covering its old top-left cell takes it. Any removal
-    /// cancels a pending confirmation. The last pane asks to quit instead.
+    /// Focuses `next` in tab `t`. Only a change in the active tab touches the
+    /// input mode.
+    fn set_focus_in(&mut self, t: usize, next: PaneId) {
+        let left = self.tabs[t].focus;
+        if next == left {
+            return;
+        }
+        if let Some(left) = self.panes.get_mut(&left) {
+            left.emu.set_scrollback(0);
+        }
+        if t == self.active && matches!(self.input, InputMode::Copy(_) | InputMode::Resize) {
+            self.input = InputMode::Terminal;
+        }
+        self.tabs[t].focus = next;
+    }
+
+    /// Drops pane `id` of whichever tab holds it and gives its space to its
+    /// sibling. If it had its tab's focus, the pane now covering its old
+    /// top-left cell takes it. The last pane of a tab closes the tab; the last
+    /// pane of the last tab quits. Any removal cancels a pending confirmation.
     fn remove_pane(&mut self, id: PaneId) -> Vec<Effect> {
-        let tiling = tile(&self.tab().tree, self.screen.body);
+        let Some(t) = self
+            .tabs
+            .iter()
+            .position(|tab| tab.tree.leaves().contains(&id))
+        else {
+            return Vec::new();
+        };
+        let body = self.screen.body;
+        let tiling = tile(&self.tabs[t].tree, body);
         let Some(&(_, old)) = tiling.panes.iter().find(|(pane, _)| *pane == id) else {
             return Vec::new();
         };
-        match self.tab_mut().tree.remove(id) {
+        let effects = match self.tabs[t].tree.remove(id) {
             Removal::NotFound => return Vec::new(),
-            Removal::WasLast => return vec![Effect::Quit],
-            Removal::Removed => {}
-        }
-        self.panes.remove(&id);
-        self.tab_mut().zoom = false;
+            Removal::WasLast if self.tabs.len() == 1 => return vec![Effect::Quit],
+            Removal::WasLast => self.drop_tab(t),
+            Removal::Removed => {
+                self.panes.remove(&id);
+                self.tabs[t].zoom = false;
+                if id == self.tabs[t].focus {
+                    let tiling = tile(&self.tabs[t].tree, body);
+                    let next =
+                        pane_at(&tiling, old.x, old.y).unwrap_or(self.tabs[t].tree.leaves()[0]);
+                    self.set_focus_in(t, next);
+                }
+                self.relayout()
+            }
+        };
         self.dirty = true;
         if matches!(self.input, InputMode::Confirm(_)) {
             self.input = InputMode::Terminal;
         }
-        if id == self.tab().focus {
-            let tiling = tile(&self.tab().tree, self.screen.body);
-            let next = pane_at(&tiling, old.x, old.y).unwrap_or(self.tab().tree.leaves()[0]);
-            self.set_focus(next);
-        }
-        self.relayout()
+        effects
     }
 
     /// What each pane's PTY size should be, from the current layout.
@@ -2576,6 +2613,10 @@ mod app_tests {
         a
     }
 
+    fn pid(n: u32) -> PaneId {
+        PaneId::for_test(n)
+    }
+
     // Spec: New tab; Hidden tabs stay sized.
     #[test]
     fn new_tab_is_appended_activated_and_spawns_in_the_focused_cwd() {
@@ -2600,6 +2641,19 @@ mod app_tests {
         let mut a = tabs(1);
         let effects = press(&mut a, "tn");
         assert!(effects.contains(&Effect::SpawnPane(id2(), spec(LAUNCH, sized(23, 80)))));
+    }
+
+    // Spec: New tab is appended.
+    #[test]
+    fn a_new_tab_never_shifts_the_numbers() {
+        let mut a = tabs(3);
+        press(&mut a, "b1");
+        press(&mut a, "tn");
+        assert_eq!((a.tab_count(), a.active_tab()), (4, 3));
+        for (keys, pane) in [("b1", 1), ("b2", 2), ("b3", 3), ("b4", 4)] {
+            press(&mut a, keys);
+            assert_eq!(a.focused(), pid(pane), "{keys}");
+        }
     }
 
     // Spec: Close tab confirmed.
@@ -2633,6 +2687,21 @@ mod app_tests {
         );
     }
 
+    // Spec: Next tab becomes active; closing the last tab picks the new last.
+    #[test]
+    fn closing_a_tab_activates_the_one_that_takes_its_index() {
+        let mut a = tabs(3);
+        press(&mut a, "b2");
+        press(&mut a, "tc");
+        a.update(key('y'));
+        assert_eq!((a.tab_count(), a.active_tab()), (2, 1));
+        assert_eq!(a.focused(), pid(3));
+        press(&mut a, "tc");
+        a.update(key('y'));
+        assert_eq!((a.tab_count(), a.active_tab()), (1, 0));
+        assert_eq!(a.focused(), PaneId::FIRST);
+    }
+
     // Spec: Close tab declined.
     #[test]
     fn close_tab_is_declined_by_anything_but_a_plain_y() {
@@ -2651,6 +2720,134 @@ mod app_tests {
         press(&mut a, "tc");
         assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
         assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+    }
+
+    // Spec: Next wraps; Previous wraps.
+    #[test]
+    fn next_and_previous_tab_wrap_around() {
+        let mut a = tabs(3);
+        press(&mut a, "gb");
+        assert_eq!(a.active_tab(), 0);
+        press(&mut a, "gB");
+        assert_eq!(a.active_tab(), 2);
+        press(&mut a, "gB");
+        assert_eq!(a.active_tab(), 1);
+        assert_eq!(a.input(), InputMode::Terminal);
+    }
+
+    // Spec: Go to tab N; Missing tab is a no-op.
+    #[test]
+    fn goto_selects_the_tab_and_ignores_a_missing_one() {
+        let mut a = tabs(3);
+        press(&mut a, "b2");
+        assert_eq!(a.active_tab(), 1);
+        press(&mut a, "b9");
+        assert_eq!((a.active_tab(), a.input()), (1, InputMode::Terminal));
+    }
+
+    // Spec: Single tab navigation.
+    #[test]
+    fn navigation_with_one_tab_changes_nothing() {
+        let mut a = tabs(1);
+        for keys in ["gb", "gB", "b1", "b2"] {
+            assert_eq!(press(&mut a, keys), vec![], "{keys}");
+            assert_eq!((a.active_tab(), a.input()), (0, InputMode::Terminal));
+        }
+    }
+
+    // Spec: State preserved (layout, focus and zoom per tab).
+    #[test]
+    fn each_tab_keeps_its_layout_focus_and_zoom() {
+        let mut a = split_right();
+        press(&mut a, "wz");
+        press(&mut a, "tn");
+        assert!(!a.zoomed());
+        assert_eq!(a.tiling().panes.len(), 1);
+        press(&mut a, "b1");
+        assert_eq!(a.focused(), id2());
+        assert!(a.zoomed());
+        press(&mut a, "wz");
+        assert_eq!(a.tiling().panes.len(), 2);
+    }
+
+    // Spec: Background output.
+    #[test]
+    fn output_for_a_background_tab_is_parsed() {
+        let mut a = tabs(2);
+        a.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(b"x".to_vec()),
+        ));
+        press(&mut a, "b1");
+        assert_eq!(a.focused_pane().cell(0, 0).unwrap().text, "x");
+    }
+
+    // Spec: Inactive tab removal keeps the active tab.
+    #[test]
+    fn an_inactive_tab_closing_keeps_the_active_tab() {
+        let mut a = tabs(3);
+        a.update(exited(PaneId::FIRST));
+        assert_eq!((a.tab_count(), a.active_tab()), (2, 1));
+        assert_eq!(a.focused(), pid(3));
+        let mut b = tabs(3);
+        press(&mut b, "b1");
+        b.update(exited(id2()));
+        assert_eq!((b.tab_count(), b.active_tab()), (2, 0));
+        assert_eq!(b.focused(), PaneId::FIRST);
+    }
+
+    // Spec: Last pane of a tab with sibling tabs; Bar disappears on close.
+    #[test]
+    fn the_last_pane_of_a_tab_closes_the_tab_without_quitting() {
+        let mut a = tabs(2);
+        let effects = a.update(exited(id2()));
+        assert_eq!((a.tab_count(), a.active_tab()), (1, 0));
+        assert_eq!(a.screen().tab_bar, None);
+        assert_eq!(a.screen().body.height, 24);
+        assert_eq!(
+            effects,
+            vec![Effect::ResizePty(PaneId::FIRST, sized(24, 80))]
+        );
+    }
+
+    // Spec: Last shell exits.
+    #[test]
+    fn the_last_pane_of_the_last_tab_quits() {
+        let mut a = tabs(1);
+        assert_eq!(a.update(exited(PaneId::FIRST)), vec![Effect::Quit]);
+    }
+
+    // Spec: Tab switch in RESIZE; Tab switch exits COPY.
+    #[test]
+    fn a_tab_change_exits_resize_and_copy() {
+        let mut a = tabs(2);
+        press(&mut a, "wr");
+        assert_eq!(a.input(), InputMode::Resize);
+        a.update(exited(id2()));
+        assert_eq!(a.input(), InputMode::Terminal);
+        let mut b = tabs(2);
+        press(&mut b, "[");
+        assert!(matches!(b.input(), InputMode::Copy(_)));
+        b.update(exited(id2()));
+        assert_eq!(b.input(), InputMode::Terminal);
+    }
+
+    // Spec: Failed new tab.
+    #[test]
+    fn a_failed_new_tab_is_removed_and_the_previous_tab_stays() {
+        let mut a = tabs(1);
+        press(&mut a, "tn");
+        let effects = a.update(AppEvent::SpawnFailed(id2(), "boom".into()));
+        assert_eq!((a.tab_count(), a.active_tab()), (1, 0));
+        assert_eq!(a.focused(), PaneId::FIRST);
+        assert_eq!(a.notice(), Some("spawn failed: boom"));
+        assert_eq!(
+            effects,
+            vec![Effect::ResizePty(PaneId::FIRST, sized(24, 80))]
+        );
+        let mut b = tabs(3);
+        b.update(AppEvent::SpawnFailed(pid(3), "x".into()));
+        assert_eq!((b.tab_count(), b.active_tab()), (2, 1));
     }
 
     // Spec: Body math.
@@ -2699,6 +2896,23 @@ mod app_tests {
             vec![
                 Effect::ResizePty(PaneId::FIRST, sized(28, 100)),
                 Effect::ResizePty(id2(), sized(28, 100)),
+            ]
+        );
+    }
+
+    // Spec: Last pane of one of two tabs prompts close pane.
+    #[test]
+    fn the_last_pane_of_one_of_two_tabs_asks_to_close_the_pane() {
+        let mut a = tabs(2);
+        press(&mut a, "wq");
+        assert_eq!(a.input(), InputMode::Confirm(Confirm::ClosePane));
+        let effects = a.update(key('y'));
+        assert_eq!((a.tab_count(), a.active_tab()), (1, 0));
+        assert_eq!(
+            effects,
+            vec![
+                Effect::ResizePty(PaneId::FIRST, sized(24, 80)),
+                Effect::ClosePane(id2())
             ]
         );
     }
