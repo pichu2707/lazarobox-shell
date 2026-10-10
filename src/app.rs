@@ -455,7 +455,6 @@ mod app_tests {
 
     use crate::core::{
         copy::CopyState,
-        layout::PaneIds,
         pane::{CursorKind, CursorShape, PaneSize},
         pty::PtyEvent,
     };
