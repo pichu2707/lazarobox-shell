@@ -9,7 +9,8 @@ use std::{
     env,
     io::{self, Write, stdout},
     panic,
-    time::Duration,
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use futures::StreamExt;
@@ -45,6 +46,11 @@ const PTY_CHANNEL: usize = 256;
 const EVENT_BUDGET: usize = 256;
 /// Time between reads of the child's working directory.
 const CWD_POLL: Duration = Duration::from_secs(1);
+/// Longest a quit waits for the children to die: HUP grace (300 ms) plus the
+/// reap wait (2 s) plus margin.
+const QUIT_KILL_BOUND: Duration = Duration::from_secs(3);
+/// How often `Panes::shutdown` checks whether the kills are done.
+const SHUTDOWN_POLL: Duration = Duration::from_millis(5);
 
 /// SIGTERM and SIGHUP (the host terminal closing). Without handling them the
 /// process would die with the host terminal still in raw mode.
@@ -92,9 +98,10 @@ pub async fn run() -> io::Result<()> {
         Err(error) => Err(error),
     };
 
-    // Dropping the registry kills the children (S4b bounds this).
-    drop(panes);
+    // The user gets the prompt back first; the children are killed after.
+    // `rx` went away with the loop, so readers stuck on a full channel stopped.
     restore();
+    panes.shutdown(QUIT_KILL_BOUND);
     result
 }
 
@@ -176,6 +183,7 @@ struct Panes {
     handles: HashMap<PaneId, Box<dyn PtyHandle>>,
     tx: mpsc::Sender<(PaneId, PtyEvent)>,
     spawn: SpawnFn,
+    reapers: Vec<JoinHandle<()>>,
 }
 
 impl Panes {
@@ -184,6 +192,7 @@ impl Panes {
             handles: HashMap::new(),
             tx,
             spawn,
+            reapers: Vec::new(),
         }
     }
 
@@ -224,9 +233,17 @@ impl Panes {
         (outcome, feedback)
     }
 
-    /// Drops the child of `id`, which kills it (blocking until S4b).
+    /// Takes the child of `id` out of the registry and kills it on a detached
+    /// thread: the SIGHUP / grace / SIGKILL teardown can take seconds.
     fn close(&mut self, id: PaneId) {
-        self.handles.remove(&id);
+        let Some(mut handle) = self.handles.remove(&id) else {
+            return;
+        };
+        self.reapers.retain(|reaper| !reaper.is_finished());
+        self.reapers.push(thread::spawn(move || {
+            handle.kill();
+            drop(handle);
+        }));
     }
 
     /// The working directory of every child whose lookup succeeds.
@@ -235,6 +252,22 @@ impl Panes {
             .iter()
             .filter_map(|(id, handle)| poll_cwd(*id, handle.pid()))
             .collect()
+    }
+
+    /// Kills every child in parallel and waits for the reapers, giving up at
+    /// `bound`. Threads still running then are left detached: the process is
+    /// about to exit.
+    fn shutdown(mut self, bound: Duration) {
+        for (_, mut handle) in self.handles.drain() {
+            self.reapers.push(thread::spawn(move || {
+                handle.kill();
+                drop(handle);
+            }));
+        }
+        let deadline = Instant::now() + bound;
+        while !self.reapers.iter().all(JoinHandle::is_finished) && Instant::now() < deadline {
+            thread::sleep(SHUTDOWN_POLL);
+        }
     }
 }
 
@@ -527,7 +560,8 @@ mod tests {
     use std::{
         cell::RefCell,
         rc::Rc,
-        sync::{Arc, Mutex},
+        sync::{Arc, Mutex, mpsc as std_mpsc},
+        time::Instant,
     };
 
     use crate::core::pty::{SpawnSpec, fake::FakeLog};
@@ -666,6 +700,105 @@ mod tests {
                 AppEvent::SpawnFailed(id(2), "boom".into())
             ]
         );
+    }
+
+    /// A child whose kill waits for a gate (or `wait`), like a shell that
+    /// ignores SIGHUP.
+    struct SlowPty {
+        log: Arc<Mutex<FakeLog>>,
+        gate: std_mpsc::Receiver<()>,
+        wait: Duration,
+    }
+
+    impl PtyHandle for SlowPty {
+        fn write(&mut self, _bytes: Vec<u8>) {}
+        fn resize(&mut self, _size: PaneSize) -> io::Result<()> {
+            Ok(())
+        }
+        fn pid(&self) -> Option<u32> {
+            None
+        }
+        fn kill(&mut self) {
+            let _ = self.gate.recv_timeout(self.wait);
+            self.log.lock().unwrap().kills += 1;
+        }
+    }
+
+    /// Registers a slow child; dropping the returned sender releases its kill.
+    fn add_slow(
+        panes: &mut Panes,
+        n: u32,
+        wait: Duration,
+    ) -> (Arc<Mutex<FakeLog>>, std_mpsc::Sender<()>) {
+        let log = Arc::new(Mutex::new(FakeLog::default()));
+        let (gate_tx, gate) = std_mpsc::channel();
+        let pty = SlowPty {
+            log: log.clone(),
+            gate,
+            wait,
+        };
+        panes.handles.insert(id(n), Box::new(pty));
+        (log, gate_tx)
+    }
+
+    // Spec: the ClosePane effect returns immediately; the child is killed off-loop.
+    #[test]
+    fn close_kills_off_the_loop() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let (log, gate) = add_slow(&mut panes, 1, Duration::from_secs(30));
+        let started = Instant::now();
+        panes.apply(vec![Effect::ClosePane(id(1))]);
+        assert!(started.elapsed() < Duration::from_secs(5), "apply blocked");
+        assert!(panes.handles.is_empty());
+        assert_eq!(panes.reapers.len(), 1);
+        assert_eq!(log.lock().unwrap().kills, 0, "the kill is still blocked");
+        drop(gate);
+        for reaper in panes.reapers.drain(..) {
+            reaper.join().unwrap();
+        }
+        assert_eq!(log.lock().unwrap().kills, 1);
+    }
+
+    #[test]
+    fn finished_reapers_are_pruned() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        spawn_two(&mut panes);
+        panes.close(id(1));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !panes.reapers.iter().all(JoinHandle::is_finished) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panes.close(id(2));
+        assert_eq!(panes.reapers.len(), 1, "the finished reaper was dropped");
+    }
+
+    // Spec: quit leaves no orphan; the kills run in parallel.
+    #[test]
+    fn shutdown_kills_every_child_in_parallel() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let held: Vec<_> = (1..=3)
+            .map(|n| add_slow(&mut panes, n, Duration::from_millis(200)))
+            .collect();
+        let started = Instant::now();
+        panes.shutdown(Duration::from_secs(5));
+        let elapsed = started.elapsed();
+        assert!(elapsed < Duration::from_millis(550), "serial: {elapsed:?}");
+        for (log, _gate) in &held {
+            assert_eq!(log.lock().unwrap().kills, 1);
+        }
+    }
+
+    #[test]
+    fn shutdown_gives_up_at_the_bound() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let (log, gate) = add_slow(&mut panes, 1, Duration::from_secs(30));
+        let started = Instant::now();
+        panes.shutdown(Duration::from_millis(150));
+        let elapsed = started.elapsed();
+        assert!(elapsed >= Duration::from_millis(150), "early: {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(2), "unbounded: {elapsed:?}");
+        assert_eq!(log.lock().unwrap().kills, 0);
+        drop(gate);
     }
 
     // Spec: fallback poll, one event per live pid.
