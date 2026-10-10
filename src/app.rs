@@ -214,9 +214,18 @@ impl App {
         self.notice.as_deref()
     }
 
-    /// What the statusline path segment shows: the notice, else the cwd.
-    pub fn status_path(&self) -> String {
-        self.notice.clone().unwrap_or_else(|| self.cwd_label())
+    /// What the statusline path segment shows, in order of precedence: the
+    /// notice, the key hint while PREFIX or a group is pending (clipped to
+    /// `max_cols` cells, so possibly empty), else the cwd.
+    pub fn status_path(&self, max_cols: u16) -> String {
+        if let Some(notice) = &self.notice {
+            return notice.clone();
+        }
+        match self.input {
+            InputMode::Prefix => prefix::hint(PREFIX_TREE, max_cols),
+            InputMode::Group(group) => prefix::hint(group.bindings, max_cols),
+            _ => self.cwd_label(),
+        }
     }
 
     pub fn shell_name(&self) -> &str {
@@ -1962,7 +1971,7 @@ mod app_tests {
         assert_eq!(a.focused(), PaneId::FIRST);
         assert!(a.pane(id2()).is_none());
         assert_eq!(a.notice(), Some("spawn failed: boom"));
-        assert_eq!(a.status_path(), "spawn failed: boom");
+        assert_eq!(a.status_path(80), "spawn failed: boom");
         // A failed pane that is not focused leaves the focus alone.
         let mut b = three_panes();
         b.update(AppEvent::SpawnFailed(id2(), "x".into()));
@@ -2009,5 +2018,58 @@ mod app_tests {
         a.update(AppEvent::Resize { cols: 80, rows: 25 });
         press(&mut a, "wv");
         assert_eq!(a.focused(), id3());
+    }
+
+    const ROOT_HINT: &str = "w window · t tab · g go · b buffer · [ copy · q quit";
+    const WINDOW_HINT: &str = "v split right · h split below · q close · r resize · z zoom";
+
+    // Spec: Root hint in PREFIX; Group hint; Hint gone after the group resolves.
+    #[test]
+    fn the_path_segment_shows_the_root_then_the_group_hint_then_the_cwd() {
+        let mut a = app().with_env(None, None, "/work".into());
+        assert_eq!(a.status_path(200), "/work");
+        a.update(ctrl_space());
+        assert_eq!(a.status_path(200), ROOT_HINT);
+        a.update(key('w'));
+        assert_eq!(a.status_path(200), WINDOW_HINT);
+        // A new pane has no cwd yet, so resolve with Esc to keep the focus.
+        a.update(esc());
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.status_path(200), "/work");
+    }
+
+    // Spec: Root hint clipped and cleared; Hint clipped by whole entries.
+    #[test]
+    fn the_hint_is_clipped_by_whole_entries_to_the_budget() {
+        let mut a = in_prefix().with_env(None, None, "/work".into());
+        assert_eq!(a.status_path(30), "w window · t tab · g go · …");
+        a.update(key('w'));
+        assert_eq!(a.status_path(30), "v split right · …");
+        // Not even one entry fits: just the ellipsis, then nothing; never the cwd.
+        assert_eq!(a.status_path(2), "…");
+        assert_eq!(a.status_path(0), "");
+        a.update(esc());
+        assert_eq!(a.status_path(2), "/work");
+    }
+
+    // Spec: Notice shown. ADR 30: notice > hint > cwd.
+    #[test]
+    fn a_notice_wins_over_the_hint() {
+        let mut a = split_right();
+        a.update(ctrl_space());
+        a.update(AppEvent::SpawnFailed(id2(), "late".into()));
+        assert_eq!(a.input(), InputMode::Prefix);
+        assert_eq!(a.status_path(200), "spawn failed: late");
+    }
+
+    // Spec: COPY, RESIZE and prompts show the cwd, not a hint.
+    #[test]
+    fn modes_without_a_hint_show_the_cwd() {
+        let mut a = split_right().with_env(None, None, "/work".into());
+        a.update(ctrl_space());
+        a.update(key('w'));
+        a.update(key('q'));
+        assert_eq!(a.input(), InputMode::Confirm(Confirm::ClosePane));
+        assert_eq!(a.status_path(200), "/work");
     }
 }

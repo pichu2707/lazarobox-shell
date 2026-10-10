@@ -1,0 +1,5 @@
+---
+source: src/ui/mod.rs
+expression: line.trim_end()
+---
+ ◐ PREFIX  w window · t tab · g go · b buffer · …     sh
