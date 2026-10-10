@@ -40,22 +40,22 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 
 ## CM1: Core menu (pure)
 
-- [ ] CM1.1 Stubs (compile only): `src/core/menu.rs` with `Section`, `Item`, `ItemKind::{Choice, Disabled}`, `Choice`, `SECTIONS`, `MenuState`, `MenuCommand`, `Row`; register in `src/core/mod.rs`; add `ConfigEdit { table, key, value }` to `src/core/config.rs`. Stubs return empty/default values.
-- [ ] CM1.2 RED: descriptor integrity test walks `SECTIONS`: non-empty titles/labels, settings have key and >=2 values, no duplicate key paths; rows are Statusline, Tab bar, disabled `Mouse: off (coming soon)` in order [config-menu: Descriptor integrity].
-- [ ] CM1.3 GREEN: fill `SECTIONS` with `get`/`set` fn pointers over `Config`; confirm `Config` derives `Copy + PartialEq` (add if missing).
-- [ ] CM1.4 RED: `MenuState::open` selects the first row; `rows(&Config)` returns Title + Item rows with current values, selected flag, disabled row not selectable [config-menu: Settings rows (data part), Reopen starts fresh].
-- [ ] CM1.5 GREEN: `open`, `rows`.
-- [ ] CM1.6 RED: `on_key` navigation: `j`/`k`/Down/Up move, wrap both ways, disabled row skipped, Repeat moves [Move down and up, Wrap, Disabled row is skipped, Repeat moves].
-- [ ] CM1.7 GREEN: selection over selectable items (`None` when empty).
-- [ ] CM1.8 RED: cycling: `l`/Right/Space advance, `h`/Left go back, wrap with two values, mutate the live `Config`, return `Changed`; no effect without a selectable row [Cycle forward, Cycle backward and Space, Arrow keys].
-- [ ] CM1.9 GREEN: cycling via descriptor `set`.
-- [ ] CM1.10 RED: Enter -> `Save`, Esc -> `Cancel` on Press; both ignored (`None`) on Repeat; Release, Ctrl+Space and unlisted keys swallowed (`None`) [Repeat on Enter and Esc ignored, Unknown key, Release ignored].
-- [ ] CM1.11 GREEN: Enter/Esc/swallow handling.
-- [ ] CM1.12 RED: `edits(&live)` returns only changed keys vs `original` (empty when equal; one entry; both entries) with `"top"`/`"bottom"` values.
-- [ ] CM1.13 GREEN: `edits` as a diff over descriptors.
-- [ ] CM1.14 RED: `set_error`/`error()`: footer error stored; the next handled Press clears it and then acts normally; Repeat/Release do not clear it [Footer: Error replaces hint].
-- [ ] CM1.15 GREEN: error field and clearing.
-- [ ] CM1.16 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] CM1.1 Stubs (compile only): `src/core/menu.rs` with `Section`, `Item`, `ItemKind::{Choice, Disabled}`, `Choice`, `SECTIONS`, `MenuState`, `MenuCommand`, `Row`; register in `src/core/mod.rs`; add `ConfigEdit { table, key, value }` to `src/core/config.rs`. Stubs return empty/default values.
+- [x] CM1.2 RED: descriptor integrity test walks `SECTIONS`: non-empty titles/labels, settings have key and >=2 values, no duplicate key paths; rows are Statusline, Tab bar, disabled `Mouse: off (coming soon)` in order [config-menu: Descriptor integrity].
+- [x] CM1.3 GREEN: fill `SECTIONS` with `get`/`set` fn pointers over `Config`; confirm `Config` derives `Copy + PartialEq` (add if missing).
+- [x] CM1.4 RED: `MenuState::open` selects the first row; `rows(&Config)` returns Title + Item rows with current values, selected flag, disabled row not selectable [config-menu: Settings rows (data part), Reopen starts fresh].
+- [x] CM1.5 GREEN: `open`, `rows`.
+- [x] CM1.6 RED: `on_key` navigation: `j`/`k`/Down/Up move, wrap both ways, disabled row skipped, Repeat moves [Move down and up, Wrap, Disabled row is skipped, Repeat moves].
+- [x] CM1.7 GREEN: selection over selectable items (`None` when empty).
+- [x] CM1.8 RED: cycling: `l`/Right/Space advance, `h`/Left go back, wrap with two values, mutate the live `Config`, return `Changed`; no effect without a selectable row [Cycle forward, Cycle backward and Space, Arrow keys].
+- [x] CM1.9 GREEN: cycling via descriptor `set`.
+- [x] CM1.10 RED: Enter -> `Save`, Esc -> `Cancel` on Press; both ignored (`None`) on Repeat; Release, Ctrl+Space and unlisted keys swallowed (`None`) [Repeat on Enter and Esc ignored, Unknown key, Release ignored].
+- [x] CM1.11 GREEN: Enter/Esc/swallow handling.
+- [x] CM1.12 RED: `edits(&live)` returns only changed keys vs `original` (empty when equal; one entry; both entries) with `"top"`/`"bottom"` values.
+- [x] CM1.13 GREEN: `edits` as a diff over descriptors.
+- [x] CM1.14 RED: `set_error`/`error()`: footer error stored; the next handled Press clears it and then acts normally; Repeat/Release do not clear it [Footer: Error replaces hint].
+- [x] CM1.15 GREEN: error field and clearing.
+- [x] CM1.16 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## CM2a: App state, open/close, live preview
 
