@@ -120,7 +120,20 @@ impl Widget for StatusLine<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::copy::CopyState;
+    use crate::app::Confirm;
+    use crate::core::{
+        copy::CopyState,
+        prefix::{self, PREFIX_TREE, Step},
+    };
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn group(c: char) -> InputMode {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        match prefix::lookup(PREFIX_TREE, &key) {
+            Step::Enter(group) => InputMode::Group(group),
+            other => panic!("{c} is not a group: {other:?}"),
+        }
+    }
     use ratatui::{Terminal, backend::TestBackend};
 
     const WIDTH: u16 = 60;
@@ -225,12 +238,16 @@ mod tests {
 
     const SHELL: &str = "zsh";
 
-    fn input_modes() -> [InputMode; 4] {
+    fn input_modes() -> [InputMode; 8] {
         [
             InputMode::Terminal,
             InputMode::Prefix,
             InputMode::Copy(CopyState::default()),
-            InputMode::ConfirmQuit,
+            InputMode::Confirm(Confirm::Quit),
+            group('w'),
+            group('g'),
+            InputMode::Resize,
+            group('b'),
         ]
     }
 
@@ -255,7 +272,12 @@ mod tests {
             (InputMode::Terminal, "TERMINAL"),
             (InputMode::Prefix, "PREFIX"),
             (InputMode::Copy(CopyState::default()), "COPY"),
-            (InputMode::ConfirmQuit, "Quit? (y/n)"),
+            (InputMode::Confirm(Confirm::Quit), "Quit? (y/n)"),
+            (group('w'), "WINDOW"),
+            (group('t'), "TAB"),
+            (group('g'), "GO"),
+            (group('b'), "BUFFER"),
+            (InputMode::Resize, "RESIZE"),
         ];
         for (mode, label) in expected {
             let text = text_of(&render_input_at(mode, WIDTH));
@@ -331,7 +353,35 @@ mod tests {
 
     #[test]
     fn snapshot_input_confirm_quit() {
-        insta::assert_snapshot!(text_of(&render_input_at(InputMode::ConfirmQuit, WIDTH)));
+        insta::assert_snapshot!(text_of(&render_input_at(
+            InputMode::Confirm(Confirm::Quit),
+            WIDTH
+        )));
+    }
+
+    #[test]
+    fn snapshot_input_group_window() {
+        insta::assert_snapshot!(text_of(&render_input_at(group('w'), WIDTH)));
+    }
+
+    #[test]
+    fn snapshot_input_group_tab() {
+        insta::assert_snapshot!(text_of(&render_input_at(group('t'), WIDTH)));
+    }
+
+    #[test]
+    fn snapshot_input_group_go() {
+        insta::assert_snapshot!(text_of(&render_input_at(group('g'), WIDTH)));
+    }
+
+    #[test]
+    fn snapshot_input_group_buffer() {
+        insta::assert_snapshot!(text_of(&render_input_at(group('b'), WIDTH)));
+    }
+
+    #[test]
+    fn snapshot_input_resize() {
+        insta::assert_snapshot!(text_of(&render_input_at(InputMode::Resize, WIDTH)));
     }
 
     #[test]

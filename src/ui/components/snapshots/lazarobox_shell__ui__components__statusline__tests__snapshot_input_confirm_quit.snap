@@ -1,5 +1,5 @@
 ---
 source: src/ui/components/statusline.rs
-expression: "text_of(&render_input_at(InputMode::ConfirmQuit, WIDTH))"
+expression: "text_of(&render_input_at(InputMode::Confirm(Confirm::Quit), WIDTH))"
 ---
  ◐ Quit? (y/n)  ~/lazarobox-shell                    zsh
