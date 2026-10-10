@@ -88,13 +88,13 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 
 ## CM3: Popup widget and overlay
 
-- [ ] CM3.1 Stubs: `src/ui/components/menu.rs` with `popup_area`, `MenuPopup` widget (draws nothing), registered in `src/ui/components/mod.rs`.
-- [ ] CM3.2 RED: `popup_area(area, w, h)` table tests: centred, clamped to `min(w, 51) x 8`, zero area, odd sizes; full popup needs width >=24 and height >=7 [Tiny terminals (geometry)].
-- [ ] CM3.3 GREEN: pure `popup_area` and the size-threshold helper.
-- [ ] CM3.4 RED: TestBackend + insta: Settings title, three rows with current values, selected row reversed, Mouse row muted, footer `j/k move · h/l change · Enter save · Esc cancel`; error text replaces the hint and is clipped with `…`; blank row dropped first on short height [Settings rows, Footer hint, Error replaces hint].
-- [ ] CM3.5 GREEN: `Clear` + bordered ` Menu ` block rendered from `MenuState::rows`; footer from `error()` or hint.
-- [ ] CM3.6 RED: fallback `MENU · Esc cancel · Enter save` on the middle row below threshold, clipped with `…`; 0x0 and every size from 0..30 cols/rows never panic; key handling unchanged at tiny sizes (Esc reverts) [No panic at any size, Minimal message and Esc works].
-- [ ] CM3.7 GREEN: fallback path and zero-area guard.
+- [x] CM3.1 Stubs: `src/ui/components/menu.rs` with `popup_area`, `MenuPopup` widget (draws nothing), registered in `src/ui/components/mod.rs`.
+- [x] CM3.2 RED: `popup_area(area, w, h)` table tests: centred, clamped to `min(w, 51) x 8`, zero area, odd sizes; full popup needs width >=24 and height >=7 [Tiny terminals (geometry)].
+- [x] CM3.3 GREEN: pure `popup_area` and the size-threshold helper.
+- [x] CM3.4 RED: TestBackend + insta: Settings title, three rows with current values, selected row reversed, Mouse row muted, footer `j/k move · h/l change · Enter save · Esc cancel`; error text replaces the hint and is clipped with `…`; blank row dropped first on short height [Settings rows, Footer hint, Error replaces hint].
+- [x] CM3.5 GREEN: `Clear` + bordered ` Menu ` block rendered from `MenuState::rows`; footer from `error()` or hint.
+- [x] CM3.6 RED: fallback `MENU · Esc cancel · Enter save` on the middle row below threshold, clipped with `…`; 0x0 and every size from 0..30 cols/rows never panic; key handling unchanged at tiny sizes (Esc reverts) [No panic at any size, Minimal message and Esc works].
+- [x] CM3.7 GREEN: fallback path and zero-area guard.
 - [ ] CM3.8 RED: `src/ui/mod.rs` draws the overlay last when `menu()` is `Some`; snapshot of one-tab forced bar with popup; real cursor not placed in MENU; cursor unchanged outside MENU (characterization) [tabs: Bar forced with one tab (render)].
 - [ ] CM3.9 GREEN: overlay draw after the statusline; skip `cursor_position` while MENU.
 - [ ] CM3.10 [manual] Kitty: `Ctrl+Space m` shows the popup; `j/k` move, `l` changes the statusline/tab bar position live with nvim reflowing; the one-tab bar appears and disappears on open/close (resize accepted); Esc restores; popup survives a small window (fallback line) [config-menu: Menu in Kitty (open, preview, Esc)].

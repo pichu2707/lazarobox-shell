@@ -1,3 +1,4 @@
+pub mod menu;
 pub mod separators;
 pub mod statusline;
 pub mod tab_bar;

@@ -22,7 +22,7 @@ pub struct TabBar<'a> {
 }
 
 /// Terminal cells `text` takes.
-fn cells(text: &str) -> usize {
+pub(super) fn cells(text: &str) -> usize {
     Span::raw(text).width()
 }
 
@@ -77,7 +77,7 @@ impl Widget for TabBar<'_> {
 }
 
 /// `text` cut to `width` cells, ending in `…` when it had to be cut.
-fn clip(text: &str, width: usize) -> String {
+pub(super) fn clip(text: &str, width: usize) -> String {
     if cells(text) <= width {
         return text.to_string();
     }
