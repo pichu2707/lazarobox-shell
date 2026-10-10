@@ -164,8 +164,18 @@ Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs
 - [x] S8b.1 RED: `src/ui/components/tab_bar.rs` TestBackend+insta: hidden with one tab; two tabs with the second active; narrow width clips and keeps the active tab; no panic [tabs: Hidden with one tab, Shown with two tabs, Narrow width].
 - [x] S8b.2 RED: `App::tab_labels()`: `1 proj`, `2 tmp`, `/` for root, number only without cwd [tabs: Tab label, Label without cwd].
 - [x] S8b.3 GREEN: `TabBar` widget, `tab_labels()`, `active_tab()`, register in `components/mod.rs`, draw in `ui/mod.rs` when `screen().tab_bar` is `Some`.
-- [ ] S8b.4 [manual] Kitty: `t n` shows the bar, `g b`/`g B`/`b 1` navigate and wrap, `t c` then `y`, the bar vanishes with one tab [tabs: Tabs and tab bar].
+- [x] S8b.4 [manual] Kitty: `t n` shows the bar, `g b`/`g B`/`b 1` navigate and wrap, `t c` then `y`, the bar vanishes with one tab [tabs: Tabs and tab bar]. (verified by user in Kitty 2026-10-11)
 - [x] S8b.5 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+
+## S8c: Config file with bar positions
+
+- [x] S8c.1 RED (PR S8c-i): `core::config` tests: defaults, each value, partial file, `mouse`, per-key fallback for invalid values/types (notice names the key, `(+N more)`), unparseable TOML, unknown keys, `load` (missing silent, unreadable and invalid notice, mouse notice), `config_path` [configuration: File location, Schema and defaults, Fallback and startup notice].
+- [x] S8c.2 GREEN: `src/core/config.rs` (`Config`, `BarPositions`, `BarPosition`, `ConfigError`, `Config::parse`/`load`, `config_path`).
+- [x] S8c.3 RED: `screen()` for the four combinations with 1 and 2 tabs, bar drop on close, resize keeps positions, PTY sizes, tiny terminals, `with_notice` [statusline: Statusline position; tabs: Body math with configured positions].
+- [x] S8c.4 GREEN: `ScreenLayout::new(.., BarPositions)`, `App::with_config`, `App::with_notice`.
+- [x] S8c.5 RED+GREEN: UI draws the bars where `screen()` puts them (statusline top, both top, both bottom, split edges), cursor offset follows the body, startup notice visible; `runtime::load_config` wiring.
+- [ ] S8c.6 [manual] Kitty: each of the four combinations with 1 and 3 tabs, nvim layout intact; a bad value shows `config: ...`; `mouse = true` shows the reserved notice [configuration: Positions in Kitty].
+- [x] S8c.7 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## S9: OSC 7 cwd
 

@@ -113,6 +113,13 @@ The tab bar MUST be drawn on the top row and MUST appear only when there is more
 - WHEN there is one tab, then two tabs
 - THEN the body is 80x24 at row 0, then 80x23 at row 1
 
+#### Scenario: Body math with configured positions [auto]
+- GIVEN a 80x25 terminal and two tabs
+- WHEN the bars are placed (the tab bar is the outermost row of its edge)
+- THEN statusline bottom + tabbar top (default): bar row 0, body from row 1, status row 24; both top: bar row 0, status row 1, body from row 2; both bottom: body from row 0, status row 23, bar row 24; statusline top + tabbar bottom: status row 0, body from row 1, bar row 24. The body is 23 rows in all four
+
+(Position comes from `[tabbar] position`, default `"top"`; see the configuration spec.)
+
 #### Scenario: Bar disappears on close [auto]
 - GIVEN two tabs
 - WHEN one is closed
