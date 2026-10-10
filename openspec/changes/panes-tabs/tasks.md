@@ -54,20 +54,20 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 
 ## S2a: Layout tile (pure)
 
-- [ ] S2a.1 RED: `src/core/layout.rs` table tests for `tile`: rect sums equal the area incl. separators; `avail = extent - 1`; rounding; degenerate extents 0/1/2 [pane-layout: Rects tile the area, Tiny terminal never panics].
-- [ ] S2a.2 GREEN: `Axis`, `Direction`, `MIN_PANE`, `Node`, `Split`, `Separator`, `Tiling`, `tile`.
-- [ ] S2a.3 RED+GREEN: `pane_at`, `Separator::highlight(focused)` (offset,len adjacent to focus) tests.
-- [ ] S2a.4 RED+GREEN: PaneId allocation helper test: ids start at 1, never reused [pane-layout: Ids are never reused].
-- [ ] S2a.5 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] S2a.1 RED: `src/core/layout.rs` table tests for `tile`: rect sums equal the area incl. separators; `avail = extent - 1`; rounding; degenerate extents 0/1/2 [pane-layout: Rects tile the area, Tiny terminal never panics].
+- [x] S2a.2 GREEN: `Axis`, `Node`, `Split`, `Separator`, `Tiling`, `tile`. `Direction` and `MIN_PANE` were intentionally moved to S2b, where they are first used.
+- [x] S2a.3 RED+GREEN: `pane_at`, `Separator::highlight(focused)` (offset,len adjacent to focus) tests.
+- [x] S2a.4 RED+GREEN: PaneId allocation helper test: ids start at 1, never reused [pane-layout: Ids are never reused].
+- [x] S2a.5 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## S2b: Layout split, remove, neighbour
 
 - [ ] S2b.1 RED: `Node::split` tests: right/below, weights equal cell sizes, 21 cols / 5 rows applied, one less refused (`TooSmall`) [pane-layout: Split right, Split below, Refused below minimum, Minimum split sizes].
-- [ ] S2b.2 GREEN: `Node::split` + `SplitError`.
+- [ ] S2b.2 GREEN: `Direction`, `MIN_PANE`, `Node::split` + `SplitError`.
 - [ ] S2b.3 RED: `Node::remove` tests: sibling expands, `WasLast`, `NotFound`, parent rect restored [pane-layout: Sibling expands, Last pane closes the tab].
 - [ ] S2b.4 GREEN: `Node::remove`, `leaves`.
 - [ ] S2b.5 RED: `neighbour` tests: adjacency across 1-cell separator, largest overlap, lowest-start tie-break, no wrap [pane-layout: Move focus, Edge no-op, Geometry beats tree order]; close-focus rule via `pane_at(old.x, old.y)` [Focus goes to the pane covering the old top-left].
-- [ ] S2b.6 GREEN: `neighbour`.
+- [ ] S2b.6 GREEN: `neighbour`; it skips zero-area rects (legal per ADR 5/6) so focus never lands on an invisible pane (test included).
 - [ ] S2b.7 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## S3: Prefix tree + Group mode
@@ -102,7 +102,7 @@ Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs
 - [ ] S5a.1 RED: `src/app.rs` tests: `w v`/`w h` split, new pane focused, `SpawnPane` carries cwd of focused pane, refused split is a no-op, focus keys h/j/k/l [pane-layout: Split right/below, Refused below minimum; terminal-session: Split inherits cwd, Unknown cwd falls back; modal-input: Focus follows the new pane, Focus keys].
 - [ ] S5a.2 GREEN: `HashMap<PaneId, PaneState>`, one `Tab { tree, focus, zoom }`, `next_id` with `checked_add`, split and focus handling.
 - [ ] S5a.3 RED: `ResizePty` only for panes whose stored size changed; unaffected pane untouched; stale ids dropped by `update` [terminal-session: Only changed panes resized, Unaffected pane untouched, Stale events dropped; modal-input: Resize only changed panes; Input goes to the focused pane only].
-- [ ] S5a.4 GREEN: tiling diff after geometry-changing updates, size clamped to >= 1x1; WritePty/Paste to the focused pane.
+- [ ] S5a.4 GREEN: tiling diff after geometry-changing updates, size clamped to >= 1x1 (every PTY size goes through a `PaneSize` helper built from a layout rect, since zero-size rects are legal per ADR 5/6); WritePty/Paste to the focused pane.
 - [ ] S5a.5 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## S5b: Close, confirmations, exit cascade
@@ -122,7 +122,7 @@ Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs
 - [ ] S6.1 RED: `src/ui/components/separators.rs` TestBackend+insta: two panes with separator `│`/`─`, accent cells only next to the focused pane, recolor on focus change, accent follows mode [pane-layout: Separators x3].
 - [ ] S6.2 GREEN: `SeparatorView`; `impl From<layout::Rect> for ratatui::Rect`.
 - [ ] S6.3 RED: terminal_view in two panes: clipped, cursor offset to the pane rect, only the focused pane sets the cursor, shape follows focus [terminal-emulation: Two panes clipped, Cursor offset, Unfocused pane has no cursor, Shape follows focus, Unfocused shape change ignored].
-- [ ] S6.4 GREEN: `src/ui/mod.rs` renders from `screen()`/`view()`; per-pane `terminal_view`; focused-only `cursor_position`.
+- [ ] S6.4 GREEN: `src/ui/mod.rs` renders from `screen()`/`view()`; per-pane `terminal_view`; focused-only `cursor_position`; rendering skips zero-size pane rects and separators with `len == 0`.
 - [ ] S6.5 RED: statusline render snapshots: root hint in PREFIX `w window · t tab · g go · b buffer · [ copy · q quit`, group hint, clipped hint, hint gone after resolve, notice precedence, prompts, cwd/shell of the focused pane [statusline: Root hint in PREFIX, Root hint clipped and cleared, Group hint, Hint gone after the group resolves, Narrow width, Notice shown, Close pane/tab/Quit prompt, Focus switches cwd, Shell name].
 - [ ] S6.6 GREEN: `App::status_path(max_cols)` (notice, else `prefix::hint` root/group, else cwd), `shell_name()` of the focused pane; wire in `ui/mod.rs`.
 - [ ] S6.7 [manual] Kitty: `w v`/`w h` split, focus with prefix `h/j/k/l` (separator accent follows), nvim in two panes (typing goes only to the focused one), `w q` then `y`, `exit` collapses a pane; PREFIX shows the root hint, `w` shows the group hint, hint disappears on resolve [pane-layout: nvim in split panes, Focus/close, `exit` collapses its pane; statusline hint scenarios].

@@ -418,6 +418,7 @@ mod app_tests {
 
     use crate::core::{
         copy::CopyState,
+        layout::PaneIds,
         pane::{CursorKind, CursorShape, PaneSize},
         pty::PtyEvent,
     };
@@ -461,6 +462,15 @@ mod app_tests {
 
     fn is_copy(a: &App) -> bool {
         matches!(a.input(), InputMode::Copy(_))
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "assertion `left == right` failed")]
+    fn an_event_for_a_foreign_pane_id_trips_the_single_pane_assertion() {
+        let mut ids = PaneIds::default();
+        let (_first, foreign) = (ids.alloc(), ids.alloc());
+        app().update(AppEvent::Pty(foreign, PtyEvent::Output(b"x".to_vec())));
     }
 
     #[test]
