@@ -2418,7 +2418,7 @@ mod app_tests {
         assert_eq!(a.focused(), id3());
     }
 
-    const ROOT_HINT: &str = "w window · t tab · g go · b buffer · [ copy · q quit";
+    const ROOT_HINT: &str = "w window · t tab · g go · b buffer · [ copy · m menu · q quit";
     const WINDOW_HINT: &str = "v split right · h split below · q close · r resize · z zoom";
 
     // Spec: Root hint in PREFIX; Group hint; Hint gone after the group resolves.
@@ -3301,22 +3301,39 @@ mod app_tests {
     }
 
     // Spec: config-menu Open and close; modal-input MENU mode.
-    // `m` joins the prefix table in the next slice, so these tests inject
-    // `OpenMenu` through a one-binding table.
-    static OPEN_MENU: &[Binding] = &[Binding {
-        chord: prefix::KeyChord {
-            code: KeyCode::Char('m'),
-            mods: KeyModifiers::NONE,
-        },
-        description: "menu",
-        target: prefix::Target::Action(PrefixAction::OpenMenu),
-        hinted: true,
-    }];
-
     fn open_menu(a: &mut App) -> Vec<Effect> {
+        press(a, "m")
+    }
+
+    // Spec: modal-input `m` is in the table; Not from other modes.
+    #[test]
+    fn prefix_m_opens_the_menu_from_the_real_table() {
+        let mut a = launched(80, 25);
         a.update(ctrl_space());
-        let m = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE);
-        a.on_pending_key(OPEN_MENU, &m)
+        assert_eq!(a.input(), InputMode::Prefix);
+        a.update(key('m'));
+        assert_eq!(a.input(), InputMode::Menu);
+        assert!(a.menu().is_some());
+    }
+
+    #[test]
+    fn m_does_not_open_the_menu_from_other_modes() {
+        let mut modes = Vec::new();
+        for keys in ["[", "wr", "q", "tx"] {
+            let mut a = launched(80, 25);
+            press(&mut a, "wv");
+            press(&mut a, keys);
+            modes.push(a);
+        }
+        let mut group = launched(80, 25);
+        press(&mut group, "w");
+        modes.push(group);
+        for mut a in modes {
+            let before = a.input();
+            a.update(key('m'));
+            assert_ne!(a.input(), InputMode::Menu, "from {before:?}");
+            assert!(a.menu().is_none(), "from {before:?}");
+        }
     }
 
     fn menu_app() -> App {
