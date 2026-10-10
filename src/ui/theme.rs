@@ -46,14 +46,15 @@ impl LazaroboxTheme {
     }
 
     /// Accent color for an input mode, following the vim analogy:
-    /// TERMINAL is insert (green), PREFIX is pending (orange), COPY is normal
-    /// (cyan) and the quit prompt is a warning (red).
+    /// TERMINAL is insert (green), PREFIX and its groups are pending (orange),
+    /// COPY is normal (cyan), RESIZE is purple and confirmations are warnings (red).
     pub fn input_accent(&self, mode: InputMode) -> Color {
         match mode {
             InputMode::Terminal => self.success_green,
-            InputMode::Prefix => self.warning_orange,
+            InputMode::Prefix | InputMode::Group(_) => self.warning_orange,
             InputMode::Copy(_) => self.primary_cyan,
-            InputMode::ConfirmQuit => self.error_red,
+            InputMode::Resize => self.ai_purple,
+            InputMode::Confirm(_) => self.error_red,
         }
     }
 
@@ -98,7 +99,20 @@ fn hex(color: Color) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::copy::CopyState;
+    use crate::app::Confirm;
+    use crate::core::{
+        copy::CopyState,
+        prefix::{self, PREFIX_TREE, Step},
+    };
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn group(c: char) -> InputMode {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        match prefix::lookup(PREFIX_TREE, &key) {
+            Step::Enter(group) => InputMode::Group(group),
+            other => panic!("{c} is not a group: {other:?}"),
+        }
+    }
 
     #[test]
     fn default_colors_match_readme_hex_values() {
@@ -153,7 +167,10 @@ mod tests {
             (InputMode::Terminal, t.success_green),
             (InputMode::Prefix, t.warning_orange),
             (InputMode::Copy(CopyState::default()), t.primary_cyan),
-            (InputMode::ConfirmQuit, t.error_red),
+            (InputMode::Confirm(Confirm::Quit), t.error_red),
+            (group('w'), t.warning_orange),
+            (group('b'), t.warning_orange),
+            (InputMode::Resize, t.ai_purple),
         ];
         for (mode, bg) in cases {
             let style = t.input_mode_style(mode);
@@ -171,7 +188,10 @@ mod tests {
             ..LazaroboxTheme::default()
         };
         assert_eq!(t.input_accent(InputMode::Terminal), Color::Rgb(1, 2, 3));
-        assert_eq!(t.input_accent(InputMode::ConfirmQuit), Color::Rgb(4, 5, 6));
+        assert_eq!(
+            t.input_accent(InputMode::Confirm(Confirm::Quit)),
+            Color::Rgb(4, 5, 6)
+        );
     }
 
     #[test]

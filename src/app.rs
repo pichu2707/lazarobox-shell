@@ -7,7 +7,7 @@ use crate::core::{
     keys::{encode_key, encode_paste},
     layout::{PaneId, Rect},
     pane::{CursorKind, CursorShape, Pane, PaneSize},
-    prefix::{self, PREFIX_KEY, PREFIX_TREE, PrefixAction, Step},
+    prefix::{self, Binding, Group, PREFIX_KEY, PREFIX_TREE, PrefixAction, Step},
     pty::{PtyEvent, SpawnSpec},
 };
 
@@ -27,8 +27,19 @@ pub enum InputMode {
     Prefix,
     /// Read-only scrollback navigation.
     Copy(CopyState),
+    /// A group is open (WINDOW, TAB, GO, BUFFER); the next key picks its binding.
+    Group(&'static Group),
+    /// Pane resize mode; its keys arrive with the resize slice.
+    Resize,
+    /// Waiting for a yes/no answer.
+    Confirm(Confirm),
+}
+
+/// What a pending confirmation asks about.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Confirm {
     /// Waiting for `y` to quit.
-    ConfirmQuit,
+    Quit,
 }
 
 impl InputMode {
@@ -38,7 +49,9 @@ impl InputMode {
             Self::Terminal => "TERMINAL",
             Self::Prefix => "PREFIX",
             Self::Copy(_) => "COPY",
-            Self::ConfirmQuit => "Quit? (y/n)",
+            Self::Group(group) => group.label,
+            Self::Resize => "RESIZE",
+            Self::Confirm(Confirm::Quit) => "Quit? (y/n)",
         }
     }
 }
@@ -227,22 +240,29 @@ impl App {
 
     /// Release is always ignored. Repeat acts like Press where holding a key
     /// is meaningful (TERMINAL typing, COPY scrolling) and is dropped where a
-    /// held key could trigger a one-shot decision (PREFIX, CONFIRM_QUIT).
+    /// held key could trigger a one-shot decision (PREFIX, GROUP, CONFIRM).
     fn on_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let repeat = match key.kind {
             KeyEventKind::Press => false,
             KeyEventKind::Repeat => true,
             KeyEventKind::Release => return Vec::new(),
         };
-        if repeat && matches!(self.input, InputMode::Prefix | InputMode::ConfirmQuit) {
+        if repeat
+            && matches!(
+                self.input,
+                InputMode::Prefix | InputMode::Group(_) | InputMode::Confirm(_)
+            )
+        {
             return Vec::new();
         }
         self.dirty = true;
         match self.input {
             InputMode::Terminal => self.on_terminal_key(key),
-            InputMode::Prefix => self.on_prefix_key(&key),
+            InputMode::Prefix => self.on_pending_key(PREFIX_TREE, &key),
+            InputMode::Group(group) => self.on_pending_key(group.bindings, &key),
             InputMode::Copy(state) => self.on_copy_key(state, &key),
-            InputMode::ConfirmQuit => self.on_confirm_key(&key),
+            InputMode::Resize => self.on_resize_key(),
+            InputMode::Confirm(Confirm::Quit) => self.on_confirm_key(&key),
         }
     }
 
@@ -256,11 +276,14 @@ impl App {
             .unwrap_or_default()
     }
 
-    fn on_prefix_key(&mut self, key: &KeyEvent) -> Vec<Effect> {
-        // Groups are not entered yet: they cancel like any unmapped key.
-        let step = prefix::lookup(PREFIX_TREE, key);
+    /// Resolve a key against the pending table (the root or an open group).
+    /// Actions beyond quit, copy and the literal prefix are no-ops until the
+    /// slices that implement them land.
+    fn on_pending_key(&mut self, table: &'static [Binding], key: &KeyEvent) -> Vec<Effect> {
+        let step = prefix::lookup(table, key);
         self.input = match step {
-            Step::Run(PrefixAction::RequestQuit) => InputMode::ConfirmQuit,
+            Step::Enter(group) => InputMode::Group(group),
+            Step::Run(PrefixAction::RequestQuit) => InputMode::Confirm(Confirm::Quit),
             Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(CopyState::default()),
             _ => InputMode::Terminal,
         };
@@ -270,6 +293,12 @@ impl App {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// RESIZE has no keys yet and nothing enters it; leave it safely.
+    fn on_resize_key(&mut self) -> Vec<Effect> {
+        self.input = InputMode::Terminal;
+        Vec::new()
     }
 
     fn on_confirm_key(&mut self, key: &KeyEvent) -> Vec<Effect> {
@@ -628,18 +657,96 @@ mod app_tests {
     fn prefix_q_asks_for_confirmation() {
         let mut a = in_prefix();
         assert_eq!(a.update(key('q')), vec![]);
-        assert_eq!(a.input(), InputMode::ConfirmQuit);
+        assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
     }
 
-    // S3b replaces this test when group mode is implemented: groups will then
-    // stay pending instead of returning to TERMINAL.
+    fn group_label(a: &App) -> &'static str {
+        match a.input() {
+            InputMode::Group(group) => group.label,
+            other => panic!("expected a group, got {other:?}"),
+        }
+    }
+
+    fn in_group(c: char) -> App {
+        let mut a = in_prefix();
+        a.update(key(c));
+        a
+    }
+
     #[test]
-    fn group_and_reserved_keys_return_to_terminal_until_group_mode_lands() {
-        for c in ['w', 't', 'g', 'b', 'h', '?'] {
+    fn group_keys_open_their_group_without_effects() {
+        for (c, label) in [('w', "WINDOW"), ('t', "TAB"), ('g', "GO"), ('b', "BUFFER")] {
+            let mut a = in_prefix();
+            assert_eq!(a.update(key(c)), vec![], "{c}");
+            assert_eq!(group_label(&a), label, "{c}");
+        }
+    }
+
+    #[test]
+    fn a_binding_in_a_group_returns_to_terminal_with_no_effect_yet() {
+        for (g, c) in [('w', 'v'), ('w', 'z'), ('t', 'n'), ('g', 'b'), ('b', '3')] {
+            let mut a = in_group(g);
+            assert_eq!(a.update(key(c)), vec![], "{g} {c}");
+            assert_eq!(a.input(), InputMode::Terminal, "{g} {c}");
+        }
+    }
+
+    #[test]
+    fn group_esc_unmapped_and_prefix_key_cancel_and_are_swallowed() {
+        for ev in [esc(), key('x'), ctrl_space()] {
+            let mut a = in_group('w');
+            assert_eq!(a.update(ev.clone()), vec![], "{ev:?}");
+            assert_eq!(a.input(), InputMode::Terminal, "{ev:?}");
+        }
+    }
+
+    #[test]
+    fn question_mark_returns_to_terminal_with_no_effect() {
+        let mut a = in_prefix();
+        assert_eq!(a.update(key('?')), vec![]);
+        assert_eq!(a.input(), InputMode::Terminal);
+    }
+
+    #[test]
+    fn root_focus_keys_return_to_terminal_with_no_effect_yet() {
+        for c in ['h', 'j', 'k', 'l'] {
             let mut a = in_prefix();
             assert_eq!(a.update(key(c)), vec![], "{c}");
             assert_eq!(a.input(), InputMode::Terminal, "{c}");
         }
+    }
+
+    #[test]
+    fn repeat_is_ignored_in_group_and_keeps_the_group_pending() {
+        let mut a = in_group('w');
+        assert_eq!(a.update(repeat('v')), vec![]);
+        assert_eq!(group_label(&a), "WINDOW");
+        let held = kinded(
+            KeyCode::Char(' '),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Repeat,
+        );
+        assert_eq!(a.update(held), vec![]);
+        assert_eq!(group_label(&a), "WINDOW");
+    }
+
+    #[test]
+    fn release_is_ignored_in_group() {
+        let mut a = in_group('w');
+        let up = kinded(
+            KeyCode::Char('v'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        assert_eq!(a.update(up), vec![]);
+        assert_eq!(group_label(&a), "WINDOW");
+    }
+
+    #[test]
+    fn input_mode_labels_cover_group_resize_and_confirm() {
+        assert_eq!(in_group('t').input().label(), "TAB");
+        assert_eq!(InputMode::Resize.label(), "RESIZE");
+        assert_eq!(InputMode::Confirm(Confirm::Quit).label(), "Quit? (y/n)");
     }
 
     // Deliberate (design ADR 12, spec "SHIFT MUST be ignored for character
@@ -656,7 +763,7 @@ mod app_tests {
 
         let shift_q = AppEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::SHIFT));
         assert_eq!(a.update(shift_q), vec![]);
-        assert_eq!(a.input(), InputMode::ConfirmQuit);
+        assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
     }
 
     #[test]
@@ -895,9 +1002,9 @@ mod app_tests {
     fn repeat_of_y_in_confirm_quit_does_not_quit() {
         let mut a = in_prefix();
         a.update(key('q'));
-        assert_eq!(a.input(), InputMode::ConfirmQuit);
+        assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
         assert_eq!(a.update(repeat('y')), vec![]);
-        assert_eq!(a.input(), InputMode::ConfirmQuit);
+        assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
     }
 
     #[test]

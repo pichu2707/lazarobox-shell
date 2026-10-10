@@ -81,10 +81,10 @@ Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs
 - [x] S3.3 RED: `lookup` tests: `B` with/without SHIFT, exact Ctrl, Esc/unknown -> Cancel; existing `q`/`[`/Ctrl+Space tests kept [modal-input: Shift on `g B`, Cancel/unknown].
 - [x] S3.4 RED: `hint(bindings, max_cols)` exact strings for `w`, `t`, `g`, `b` and the ROOT `w window · t tab · g go · b buffer · [ copy · q quit`; clipping by whole entries with `…`; width 0 and tiny; unhinted entries absent [statusline: Hint is generated from the table, Hint clipped by whole entries, Root hint clipped, Narrow width].
 - [x] S3.5 GREEN: `prefix::hint` (same function for group and root).
-- [ ] S3.6 RED (S3b): `src/app.rs` tests: `InputMode::Group`, group opens, binding in a group returns to TERMINAL (new actions are no-ops), Esc/unmapped/Ctrl+Space cancel swallowed, Repeat ignored in Prefix/Group/Confirm, `?` returns to TERMINAL with no effect [modal-input: Group opens, Binding in a group, Group cancellation x3, Reserved `?`, Repeat ignored].
-- [ ] S3.7 GREEN: `InputMode::{Group, Resize, Confirm(Confirm)}` enum shape (`Confirm::Quit` replaces `ConfirmQuit`), `App::update` group handling.
-- [ ] S3.8 RED+GREEN: `src/ui/theme.rs` `input_accent`/`input_mode_style`: Group `warning_orange`, Resize `ai_purple`, Confirm `error_red`; `statusline.rs` label snapshots for `WINDOW`/`TAB`/`GO`/`BUFFER`/`RESIZE` [statusline: Label and color, Mode color mapping, Existing snapshots].
-- [ ] S3.9 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`. (S3a checks green; closes with S3b)
+- [x] S3.6 RED (S3b): `src/app.rs` tests: `InputMode::Group`, group opens, binding in a group returns to TERMINAL (new actions are no-ops), Esc/unmapped/Ctrl+Space cancel swallowed, Repeat ignored in Prefix/Group/Confirm, `?` returns to TERMINAL with no effect [modal-input: Group opens, Binding in a group, Group cancellation x3, Reserved `?`, Repeat ignored].
+- [x] S3.7 GREEN: `InputMode::{Group, Resize, Confirm(Confirm)}` enum shape (`Confirm::Quit` replaces `ConfirmQuit`), `App::update` group handling.
+- [x] S3.8 RED+GREEN: `src/ui/theme.rs` `input_accent`/`input_mode_style`: Group `warning_orange`, Resize `ai_purple`, Confirm `error_red`; `statusline.rs` label snapshots for `WINDOW`/`TAB`/`GO`/`BUFFER`/`RESIZE` [statusline: Label and color, Mode color mapping, Existing snapshots].
+- [x] S3.9 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## S4: Runtime `Panes` registry (fake `SpawnFn`)
 
