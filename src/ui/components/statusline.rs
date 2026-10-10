@@ -29,6 +29,7 @@ pub struct StatusLine<'a> {
     path: &'a str,
     right: &'a str,
     zoomed: bool,
+    copy_position: Option<(usize, usize)>,
 }
 
 impl<'a> StatusLine<'a> {
@@ -40,6 +41,7 @@ impl<'a> StatusLine<'a> {
             path,
             right: model,
             zoomed: false,
+            copy_position: None,
         }
     }
 
@@ -57,12 +59,20 @@ impl<'a> StatusLine<'a> {
             path,
             right,
             zoomed: false,
+            copy_position: None,
         }
     }
 
     /// Marks the active tab as zoomed (`[Z]` right after the mode label).
     pub fn zoomed(mut self, zoomed: bool) -> Self {
         self.zoomed = zoomed;
+        self
+    }
+
+    /// COPY viewport position `(rows above the live bottom, history rows)`,
+    /// shown as `↑offset/total` right after the mode label.
+    pub fn copy_position(mut self, position: Option<(usize, usize)>) -> Self {
+        self.copy_position = position;
         self
     }
 
@@ -84,7 +94,11 @@ impl<'a> StatusLine<'a> {
 
     fn mode_block_text(&self) -> String {
         let zoom = if self.zoomed { " [Z]" } else { "" };
-        format!(" \u{25D0} {}{zoom} ", self.label)
+        let position = self
+            .copy_position
+            .map(|(offset, total)| format!(" \u{2191}{offset}/{total}"))
+            .unwrap_or_default();
+        format!(" \u{25D0} {}{position}{zoom} ", self.label)
     }
 
     /// Columns taken by the mode block and the slant that closes it.
@@ -459,5 +473,76 @@ mod tests {
         let plain = StatusLine::input(&theme, InputMode::Terminal, "", SHELL);
         let zoomed = StatusLine::input(&theme, InputMode::Terminal, "", SHELL).zoomed(true);
         assert_eq!(zoomed.path_budget(WIDTH) + 4, plain.path_budget(WIDTH));
+    }
+
+    fn render_copy(position: Option<(usize, usize)>, width: u16) -> Buffer {
+        let theme = LazaroboxTheme::default();
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                let mode = InputMode::Copy(CopyState::default());
+                let line = StatusLine::input(&theme, mode, PATH, SHELL).copy_position(position);
+                frame.render_widget(line, frame.area())
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    // Spec: Position indicator; sits in the mode block, before the path.
+    #[test]
+    fn the_copy_position_follows_the_mode_label_in_the_mode_block() {
+        let t = LazaroboxTheme::default();
+        let buf = render_copy(Some((12, 340)), WIDTH);
+        let text = text_of(&buf);
+        let at = text
+            .find("COPY \u{2191}12/340")
+            .unwrap_or_else(|| panic!("{text:?}"));
+        assert!(at < text.find(PATH).unwrap(), "{text:?}");
+        let x = text[..at].chars().count() as u16 + 8;
+        assert_eq!(
+            buf[(x, 0)].bg,
+            t.input_accent(InputMode::Copy(CopyState::default()))
+        );
+        insta::assert_snapshot!(text);
+    }
+
+    // Spec: Bottom of the history shows an explicit zero.
+    #[test]
+    fn the_copy_position_shows_an_explicit_zero_offset() {
+        let text = text_of(&render_copy(Some((0, 340)), WIDTH));
+        assert!(text.contains("COPY \u{2191}0/340"), "{text:?}");
+    }
+
+    // Spec: No history shows the bare label.
+    #[test]
+    fn no_copy_position_leaves_the_bare_label() {
+        let text = text_of(&render_copy(None, WIDTH));
+        assert!(text.contains("COPY "), "{text:?}");
+        assert!(!text.contains('\u{2191}'), "{text:?}");
+    }
+
+    #[test]
+    fn the_path_budget_accounts_for_the_copy_position() {
+        let theme = LazaroboxTheme::default();
+        let mode = InputMode::Copy(CopyState::default());
+        let plain = StatusLine::input(&theme, mode, "", SHELL);
+        let placed = StatusLine::input(&theme, mode, "", SHELL).copy_position(Some((12, 340)));
+        // " \u{2191}12/340" is 8 columns wide.
+        assert_eq!(placed.path_budget(WIDTH) + 8, plain.path_budget(WIDTH));
+    }
+
+    // Spec: Narrow width never panics.
+    #[test]
+    fn a_narrow_copy_statusline_never_panics() {
+        for width in 0..40 {
+            for position in [
+                None,
+                Some((0, 0)),
+                Some((12, 340)),
+                Some((usize::MAX, usize::MAX)),
+            ] {
+                render_copy(position, width);
+            }
+        }
     }
 }

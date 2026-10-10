@@ -281,6 +281,16 @@ impl App {
         self.tab.zoom
     }
 
+    /// COPY viewport position `(rows above the live bottom, history rows)`;
+    /// `None` outside COPY and when the pane has no history (alternate screen).
+    pub fn copy_position(&self) -> Option<(usize, usize)> {
+        let InputMode::Copy(state) = &self.input else {
+            return None;
+        };
+        let total = self.panes[&self.tab.focus].emu.scrollback_len();
+        (total > 0).then_some((state.offset, total))
+    }
+
     pub fn focused(&self) -> PaneId {
         self.tab.focus
     }
@@ -1470,6 +1480,46 @@ mod app_tests {
         a.update(key('['));
         assert!(is_copy(&a));
         assert_eq!(visible_text(&a)[0], "ALT SCREEN");
+    }
+
+    // Spec: Position indicator follows the motions and live output.
+    #[test]
+    fn the_copy_position_tracks_motions_and_output_while_scrolled() {
+        let mut a = app();
+        with_history(&mut a, 60);
+        assert_eq!(a.copy_position(), None, "outside COPY");
+        a.update(ctrl_space());
+        a.update(key('['));
+        let total = a.focused_pane().scrollback_len();
+        assert!(total > 0);
+        assert_eq!(a.copy_position(), Some((0, total)));
+        for _ in 0..10 {
+            a.update(key('k'));
+        }
+        assert_eq!(a.copy_position(), Some((10, total)));
+        with_history(&mut a, 5);
+        let grown = a.focused_pane().scrollback_len();
+        assert_eq!(a.copy_position(), Some((15, grown)));
+        a.update(key('G'));
+        assert_eq!(a.copy_position(), Some((0, grown)));
+        a.update(key('g'));
+        a.update(key('g'));
+        assert_eq!(a.copy_position(), Some((grown, grown)));
+    }
+
+    // Spec: No history shows the bare label (alternate screen).
+    #[test]
+    fn the_copy_position_is_absent_without_history() {
+        let mut a = app();
+        with_history(&mut a, 60);
+        a.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(b"\x1b[?1049h".to_vec()),
+        ));
+        a.update(ctrl_space());
+        a.update(key('['));
+        assert!(is_copy(&a));
+        assert_eq!(a.copy_position(), None);
     }
 
     fn cwd_event(path: &str) -> AppEvent {
