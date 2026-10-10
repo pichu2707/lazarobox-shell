@@ -101,11 +101,11 @@ Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs
 
 ## S5a: Multi-pane `App`: split + focus
 
-- [ ] S5a.1 RED: `src/app.rs` tests: `w v`/`w h` split, new pane focused, `SpawnPane` carries cwd of focused pane, refused split is a no-op, focus keys h/j/k/l [pane-layout: Split right/below, Refused below minimum; terminal-session: Split inherits cwd, Unknown cwd falls back; modal-input: Focus follows the new pane, Focus keys].
-- [ ] S5a.2 GREEN: `HashMap<PaneId, PaneState>`, one `Tab { tree, focus, zoom }`, `next_id` with `checked_add`, split and focus handling.
-- [ ] S5a.3 RED: `ResizePty` only for panes whose stored size changed; unaffected pane untouched; stale ids dropped by `update` [terminal-session: Only changed panes resized, Unaffected pane untouched, Stale events dropped; modal-input: Resize only changed panes; Input goes to the focused pane only].
-- [ ] S5a.4 GREEN: tiling diff after geometry-changing updates, size clamped to >= 1x1 (every PTY size goes through a `PaneSize` helper built from a layout rect, since zero-size rects are legal per ADR 5/6); WritePty/Paste to the focused pane.
-- [ ] S5a.5 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] S5a.1 RED: `src/app.rs` tests: `w v`/`w h` split, new pane focused, `SpawnPane` carries cwd of focused pane, refused split is a no-op, focus keys h/j/k/l [pane-layout: Split right/below, Refused below minimum; terminal-session: Split inherits cwd, Unknown cwd falls back; modal-input: Focus follows the new pane, Focus keys].
+- [x] S5a.2 GREEN: `HashMap<PaneId, PaneState>`, one `Tab { tree, focus, zoom }`, `next_id` with `checked_add`, split and focus handling.
+- [x] S5a.3 RED: `ResizePty` only for panes whose stored size changed; unaffected pane untouched; stale ids dropped by `update` [terminal-session: Only changed panes resized, Unaffected pane untouched, Stale events dropped; modal-input: Resize only changed panes; Input goes to the focused pane only].
+- [x] S5a.4 GREEN: tiling diff after geometry-changing updates, size clamped to >= 1x1 (every PTY size goes through a `PaneSize` helper built from a layout rect, since zero-size rects are legal per ADR 5/6); WritePty/Paste to the focused pane.
+- [x] S5a.5 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## S5b: Close, confirmations, exit cascade
 
