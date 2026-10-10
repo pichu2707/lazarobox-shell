@@ -1,5 +1,6 @@
 //! Pure, IO-free core of the terminal pane (emulator, key encoding, modal input).
 
+pub mod config;
 pub mod copy;
 pub mod keys;
 pub mod layout;
