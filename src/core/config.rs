@@ -148,12 +148,15 @@ fn read_position(table: &Table, section: &str, problems: &mut Vec<String>) -> Op
 }
 
 /// `$XDG_CONFIG_HOME/lazarobox/config.toml`, else `$HOME/.config/...`. Per
-/// the XDG spec, an empty or relative `XDG_CONFIG_HOME` is ignored.
+/// the XDG spec, an empty or relative `XDG_CONFIG_HOME` or `HOME` is ignored.
 pub fn config_path(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
     let base = xdg
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
-        .or_else(|| home.map(|home| PathBuf::from(home).join(".config")))?;
+        .or_else(|| {
+            let home = PathBuf::from(home?);
+            home.is_absolute().then(|| home.join(".config"))
+        })?;
     Some(base.join("lazarobox").join("config.toml"))
 }
 
@@ -364,5 +367,9 @@ mod tests {
         assert_eq!(p(Some(""), Some("/h")), home);
         assert_eq!(p(Some("rel"), Some("/h")), home);
         assert_eq!(p(None, None), None);
+        // Spec: Relative or empty HOME is ignored.
+        assert_eq!(p(None, Some("")), None);
+        assert_eq!(p(None, Some("rel")), None);
+        assert_eq!(p(Some("/x"), Some("")), xdg);
     }
 }

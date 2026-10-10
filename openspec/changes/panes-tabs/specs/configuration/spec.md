@@ -7,12 +7,17 @@ A user config file read once at startup. For now it only places the statusline a
 ## ADDED Requirements
 
 ### Requirement: File location
-The config MUST be read from `$XDG_CONFIG_HOME/lazarobox/config.toml`. When `XDG_CONFIG_HOME` is unset, empty or relative, it MUST be read from `$HOME/.config/lazarobox/config.toml`. The file MUST be read once at startup; there is no hot reload.
+The config MUST be read from `$XDG_CONFIG_HOME/lazarobox/config.toml`. When `XDG_CONFIG_HOME` is unset, empty or relative, it MUST be read from `$HOME/.config/lazarobox/config.toml`, but only when `HOME` is absolute; an empty or relative `HOME` is treated as absent. The file MUST be read once at startup; there is no hot reload.
 
 #### Scenario: Path resolution [auto]
 - GIVEN `XDG_CONFIG_HOME=/x` and `HOME=/h`
 - WHEN the path is resolved
 - THEN it is `/x/lazarobox/config.toml`; without a usable XDG value it is `/h/.config/lazarobox/config.toml`; without either there is no path
+
+#### Scenario: Relative or empty HOME is ignored [auto]
+- GIVEN `XDG_CONFIG_HOME` is unusable and `HOME` is empty or relative
+- WHEN the path is resolved
+- THEN there is no path and the defaults apply (nothing is read relative to the working directory)
 
 ### Requirement: Schema and defaults
 The file is TOML with `[statusline] position` and `[tabbar] position`, each `"top"` or `"bottom"`, and a top-level `mouse` boolean. Defaults: statusline `"bottom"`, tabbar `"top"`, `mouse = false`. Any key may be omitted. Unknown keys and tables MUST be ignored. All four position combinations are valid.
