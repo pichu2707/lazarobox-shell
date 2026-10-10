@@ -59,18 +59,18 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 
 ## CM2a: App state, open/close, live preview
 
-- [ ] CM2a.1 Characterization (expected to pass immediately): before refactor, pin current `screen()` for the four bar-position combinations and ResizePty diffs so the `bars` -> `config` rename is proven behaviour-neutral.
-- [ ] CM2a.2 REFACTOR: `src/app.rs` `App.bars` becomes `App.config: Config`; all existing tests stay green.
-- [ ] CM2a.3 Stubs: `InputMode::Menu`, `App.menu: Option<MenuState>`, `menu()` accessor, `PrefixAction::OpenMenu` variant in `src/core/prefix.rs` (not yet in the table), `open_menu`/`close_menu(Outcome::{Saved, Reverted})` returning no-ops.
-- [ ] CM2a.4 RED: injecting `OpenMenu` from PREFIX sets MENU, `menu()` is `Some`, no `WritePty`; Esc returns to TERMINAL with `menu()` `None`; reopen starts on the first row with the reverted values [Enter MENU, Open, Esc closes, Reopen starts fresh].
-- [ ] CM2a.5 GREEN: `open_menu`, `close_menu`, MENU branch in `on_key` delegating to `MenuState::on_key`; `debug_assert!(menu.is_some() == (input == Menu))` at the end of `update` (CM-1).
-- [ ] CM2a.6 RED: cycling a value updates `screen()` positions live and emits `ResizePty` only for panes whose size changed (none when equal); Esc restores `original` and relayouts; external file edit is not reloaded (no I/O) [Statusline moves live, Preview emits ResizePty only for changed panes, Esc reverts, External edit is not reloaded].
-- [ ] CM2a.7 GREEN: `Changed` -> `refresh_screen` + `relayout`; `Cancel` -> `config = original`.
-- [ ] CM2a.8 RED: in MENU `x`, Tab, Ctrl+Space and Release emit nothing and stay MENU; paste writes no PTY; Repeat `j` moves, Repeat Enter/Esc do nothing [Unknown key, Paste ignored, Release ignored, Repeat in MENU, Paste in MENU].
-- [ ] CM2a.9 GREEN: swallow rules; paste writes only in TERMINAL.
-- [ ] CM2a.10 RED: Enter with an unchanged draft closes without `SaveConfig`; Enter with a changed draft is a temporary session-only close (documented stub until CM4b) [Unchanged draft].
-- [ ] CM2a.11 GREEN: Enter handling (`edits` empty -> `close_menu(Saved)`; non-empty -> session-only close, marked `// replaced in CM4b`).
-- [ ] CM2a.12 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] CM2a.1 Characterization (expected to pass immediately): before refactor, pin current `screen()` for the four bar-position combinations and ResizePty diffs so the `bars` -> `config` rename is proven behaviour-neutral.
+- [x] CM2a.2 REFACTOR: `src/app.rs` `App.bars` becomes `App.config: Config`; all existing tests stay green.
+- [x] CM2a.3 Stubs: `InputMode::Menu`, `App.menu: Option<MenuState>`, `menu()` accessor, `PrefixAction::OpenMenu` variant in `src/core/prefix.rs` (not yet in the table), `open_menu`/`close_menu(Outcome::{Saved, Reverted})` returning no-ops.
+- [x] CM2a.4 RED: injecting `OpenMenu` from PREFIX sets MENU, `menu()` is `Some`, no `WritePty`; Esc returns to TERMINAL with `menu()` `None`; reopen starts on the first row with the reverted values [Enter MENU, Open, Esc closes, Reopen starts fresh].
+- [x] CM2a.5 GREEN: `open_menu`, `close_menu`, MENU branch in `on_key` delegating to `MenuState::on_key`; `debug_assert!(menu.is_some() == (input == Menu))` at the end of `update` (CM-1).
+- [x] CM2a.6 RED: cycling a value updates `screen()` positions live and emits `ResizePty` only for panes whose size changed (none when equal); Esc restores `original` and relayouts; external file edit is not reloaded (no I/O) [Statusline moves live, Preview emits ResizePty only for changed panes, Esc reverts, External edit is not reloaded].
+- [x] CM2a.7 GREEN: `Changed` -> `refresh_screen` + `relayout`; `Cancel` -> `config = original`.
+- [x] CM2a.8 RED: in MENU `x`, Tab, Ctrl+Space and Release emit nothing and stay MENU; paste writes no PTY; Repeat `j` moves, Repeat Enter/Esc do nothing [Unknown key, Paste ignored, Release ignored, Repeat in MENU, Paste in MENU].
+- [x] CM2a.9 GREEN: swallow rules; paste writes only in TERMINAL.
+- [x] CM2a.10 RED: Enter with an unchanged draft closes without `SaveConfig`; Enter with a changed draft is a temporary session-only close (documented stub until CM4b) [Unchanged draft].
+- [x] CM2a.11 GREEN: Enter handling (`edits` empty -> `close_menu(Saved)`; non-empty -> session-only close, marked `// replaced in CM4b`).
+- [x] CM2a.12 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## CM2b: Forced bar, `m` binding, accent, events while open
 
