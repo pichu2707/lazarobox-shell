@@ -180,6 +180,7 @@ impl MenuState {
 
     fn step_selection(&mut self, forward: bool) -> MenuCommand {
         let count = choices().count();
+        debug_assert!(count > 0 || self.selected.is_none(), "selection without rows");
         self.selected = self.selected.map(|index| {
             if forward {
                 (index + 1) % count
@@ -195,6 +196,7 @@ impl MenuState {
             return MenuCommand::None;
         };
         let len = choice.values.len();
+        debug_assert!(len > 0, "a choice needs values to cycle");
         let current = (choice.get)(config);
         let next = if forward {
             (current + 1) % len
@@ -437,5 +439,38 @@ mod tests {
         assert_eq!(menu.error(), None);
         assert_eq!(selected(&menu), Some(0));
         assert_eq!(config, Config::default());
+    }
+
+    // Characterization: pins behaviour that already held, so they pass at once.
+    #[test]
+    fn shift_is_ignored_for_listed_keys_and_uppercase_is_swallowed() {
+        let mut menu = MenuState::open(&Config::default());
+        let mut config = Config::default();
+        let shift_space = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::SHIFT);
+        assert_eq!(
+            menu.on_key(&shift_space, false, &mut config),
+            MenuCommand::Changed
+        );
+        assert_eq!(config.bars.statusline, BarPosition::Top);
+        let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+        assert_eq!(
+            menu.on_key(&shift_enter, false, &mut config),
+            MenuCommand::Save
+        );
+        let upper_j = KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT);
+        assert_eq!(menu.on_key(&upper_j, false, &mut config), MenuCommand::None);
+        assert_eq!(selected(&menu), Some(0), "J is not j");
+    }
+
+    // Characterization: the descriptors already round-trip.
+    #[test]
+    fn every_choice_get_returns_what_set_stored() {
+        for (item, choice) in choices() {
+            for i in 0..choice.values.len() {
+                let mut config = Config::default();
+                (choice.set)(&mut config, i);
+                assert_eq!((choice.get)(&config), i, "{}", item.label);
+            }
+        }
     }
 }
