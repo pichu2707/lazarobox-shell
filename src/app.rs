@@ -1,11 +1,14 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::core::{
     copy::{CopyCommand, CopyState},
     keys::{encode_key, encode_paste},
-    layout::{PaneId, Rect},
+    layout::{Axis, Direction, Node, PaneId, PaneIds, Rect, SplitError, neighbour, tile},
     pane::{CursorKind, CursorShape, Pane, PaneSize},
     prefix::{self, Binding, Group, PREFIX_KEY, PREFIX_TREE, PrefixAction, Step},
     pty::{PtyEvent, SpawnSpec},
@@ -128,14 +131,39 @@ impl ScreenLayout {
     }
 }
 
-/// Owns the emulator and the input state. Pure: it never touches IO.
+/// A pane's emulator, the size its PTY was last told, and its last known cwd.
+struct PaneState {
+    emu: Pane,
+    size: PaneSize,
+    cwd: Option<PathBuf>,
+}
+
+impl PaneState {
+    fn new(size: PaneSize) -> Self {
+        Self {
+            emu: Pane::new(size, SCROLLBACK_LINES),
+            size,
+            cwd: None,
+        }
+    }
+}
+
+/// The layout of the panes and which one has the focus.
+struct Tab {
+    tree: Node,
+    focus: PaneId,
+}
+
+/// Owns the panes and the input state. Pure: it never touches IO.
 pub struct App {
-    id: PaneId,
-    pane: Pane,
+    panes: HashMap<PaneId, PaneState>,
+    tab: Tab,
+    ids: PaneIds,
     input: InputMode,
     dirty: bool,
     screen: ScreenLayout,
-    cwd: Option<PathBuf>,
+    /// Where the first pane starts, and the fallback for panes with no known cwd.
+    launch_cwd: Option<PathBuf>,
     home: Option<PathBuf>,
     shell: Option<String>,
 }
@@ -144,13 +172,19 @@ impl App {
     /// An app for a terminal of `cols` x `rows`, with one pane in the body.
     pub fn new(cols: u16, rows: u16) -> Self {
         let screen = ScreenLayout::new(cols, rows);
+        let mut ids = PaneIds::default();
+        let first = ids.alloc();
         Self {
-            id: PaneId::FIRST,
-            pane: Pane::new(body_size(screen.body), SCROLLBACK_LINES),
+            panes: HashMap::from([(first, PaneState::new(body_size(screen.body)))]),
+            tab: Tab {
+                tree: Node::Leaf(first),
+                focus: first,
+            },
+            ids,
             input: InputMode::default(),
             dirty: true,
             screen,
-            cwd: None,
+            launch_cwd: None,
             home: None,
             shell: None,
         }
@@ -161,7 +195,8 @@ impl App {
     pub fn with_env(mut self, shell: Option<&str>, home: Option<PathBuf>, cwd: PathBuf) -> Self {
         self.shell = shell.map(str::to_owned);
         self.home = home;
-        self.cwd = Some(cwd);
+        self.focused_state_mut().cwd = Some(cwd.clone());
+        self.launch_cwd = Some(cwd);
         self
     }
 
@@ -171,10 +206,9 @@ impl App {
 
     /// The pane to start before the first event, and how to start it.
     pub fn initial_spawn(&self) -> (PaneId, SpawnSpec) {
-        let cwd = self.cwd.clone().unwrap_or_else(|| "/".into());
         (
-            self.id,
-            SpawnSpec::new(self.shell.as_deref(), cwd, self.focused_size()),
+            self.tab.focus,
+            self.spawn_spec(self.launch_cwd.clone(), self.focused_size()),
         )
     }
 
@@ -192,21 +226,43 @@ impl App {
     }
 
     pub fn focused(&self) -> PaneId {
-        self.id
+        self.tab.focus
+    }
+
+    /// The emulator of pane `id`, if it exists.
+    pub fn pane(&self, id: PaneId) -> Option<&Pane> {
+        self.panes.get(&id).map(|state| &state.emu)
     }
 
     pub fn focused_pane(&self) -> &Pane {
-        &self.pane
+        &self.focused_state().emu
     }
 
     pub fn focused_size(&self) -> PaneSize {
-        body_size(self.screen.body)
+        self.focused_state().size
+    }
+
+    // The focus always names a live pane: only `split` adds panes and it
+    // focuses what it adds.
+    fn focused_state(&self) -> &PaneState {
+        &self.panes[&self.tab.focus]
+    }
+
+    fn focused_state_mut(&mut self) -> &mut PaneState {
+        self.panes
+            .get_mut(&self.tab.focus)
+            .expect("the focused pane exists")
+    }
+
+    fn spawn_spec(&self, cwd: Option<PathBuf>, size: PaneSize) -> SpawnSpec {
+        let cwd = cwd.unwrap_or_else(|| "/".into());
+        SpawnSpec::new(self.shell.as_deref(), cwd, size)
     }
 
     /// The child's cwd for the statusline, with `$HOME` shown as `~`. Empty
     /// until the first cwd is known.
     pub fn cwd_label(&self) -> String {
-        let Some(cwd) = &self.cwd else {
+        let Some(cwd) = &self.focused_state().cwd else {
             return String::new();
         };
         let home = self.home.as_deref().filter(|home| home.parent().is_some());
@@ -223,11 +279,10 @@ impl App {
             AppEvent::Paste(text) => self.on_paste(&text),
             AppEvent::Resize { cols, rows } => self.on_resize(cols, rows),
             // Events for panes that no longer exist are dropped.
-            AppEvent::Pty(id, event) if id == self.id => self.on_pty(event),
-            AppEvent::Pty(..) => Vec::new(),
-            AppEvent::Cwd(id, cwd) if id == self.id => self.on_cwd(cwd),
-            AppEvent::Cwd(..) => Vec::new(),
-            // The app emits no SpawnPane yet (S5a), so there is nothing to undo.
+            AppEvent::Pty(id, event) if self.panes.contains_key(&id) => self.on_pty(id, event),
+            AppEvent::Cwd(id, cwd) if self.panes.contains_key(&id) => self.on_cwd(id, cwd),
+            AppEvent::Pty(..) | AppEvent::Cwd(..) => Vec::new(),
+            // Undoing a failed split arrives with the close rules (S5b).
             AppEvent::SpawnFailed(..) => Vec::new(),
         }
     }
@@ -241,7 +296,7 @@ impl App {
                 kind: CursorKind::Block,
                 blinking: false,
             },
-            _ => self.pane.cursor_shape(),
+            _ => self.focused_pane().cursor_shape(),
         }
     }
 
@@ -278,28 +333,108 @@ impl App {
             self.input = InputMode::Prefix;
             return Vec::new();
         }
-        encode_key(key, self.pane.modes())
-            .map(|bytes| vec![Effect::WritePty(self.id, bytes)])
+        encode_key(key, self.focused_pane().modes())
+            .map(|bytes| vec![Effect::WritePty(self.tab.focus, bytes)])
             .unwrap_or_default()
     }
 
     /// Resolve a key against the pending table (the root or an open group).
-    /// Actions beyond quit, copy and the literal prefix are no-ops until the
-    /// slices that implement them land.
+    /// Actions of later slices (close, resize, zoom, tabs) are no-ops until
+    /// they land.
     fn on_pending_key(&mut self, table: &'static [Binding], key: &KeyEvent) -> Vec<Effect> {
         let step = prefix::lookup(table, key);
         self.input = match step {
             Step::Enter(group) => InputMode::Group(group),
             Step::Run(PrefixAction::RequestQuit) => InputMode::Confirm(Confirm::Quit),
             Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(CopyState::default()),
-            _ => InputMode::Terminal,
+            Step::Cancel
+            | Step::Run(
+                PrefixAction::SendPrefixLiteral
+                | PrefixAction::SplitRight
+                | PrefixAction::SplitBelow
+                | PrefixAction::Focus(_),
+            ) => InputMode::Terminal,
+            Step::Run(
+                PrefixAction::ShowCommands
+                | PrefixAction::ClosePane
+                | PrefixAction::EnterResize
+                | PrefixAction::ToggleZoom
+                | PrefixAction::NewTab
+                | PrefixAction::CloseTab
+                | PrefixAction::NextTab
+                | PrefixAction::PrevTab
+                | PrefixAction::GotoTab(_),
+            ) => InputMode::Terminal,
         };
         match step {
             Step::Run(PrefixAction::SendPrefixLiteral) => {
-                vec![Effect::WritePty(self.id, vec![PREFIX_LITERAL])]
+                vec![Effect::WritePty(self.tab.focus, vec![PREFIX_LITERAL])]
+            }
+            Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
+            Step::Run(PrefixAction::SplitBelow) => self.split(Axis::Y),
+            Step::Run(PrefixAction::Focus(dir)) => {
+                self.move_focus(dir);
+                Vec::new()
             }
             _ => Vec::new(),
         }
+    }
+
+    /// Splits the focused pane and focuses the new one. A split the layout
+    /// refuses (too small) changes nothing.
+    fn split(&mut self, axis: Axis) -> Vec<Effect> {
+        let target = self.tab.focus;
+        let new = self.ids.alloc();
+        match self.tab.tree.split(self.screen.body, target, new, axis) {
+            Ok(()) => {}
+            Err(SplitError::TooSmall | SplitError::NotFound) => return Vec::new(),
+        }
+        let cwd = self
+            .focused_state()
+            .cwd
+            .clone()
+            .or_else(|| self.launch_cwd.clone());
+        let size = self.layout_sizes()[&new];
+        self.panes.insert(new, PaneState::new(size));
+        self.tab.focus = new;
+        let mut effects = self.relayout();
+        effects.push(Effect::SpawnPane(new, self.spawn_spec(cwd, size)));
+        effects
+    }
+
+    fn move_focus(&mut self, dir: Direction) {
+        let tiling = tile(&self.tab.tree, self.screen.body);
+        if let Some(next) = neighbour(&tiling, self.tab.focus, dir) {
+            self.tab.focus = next;
+        }
+    }
+
+    /// What each pane's PTY size should be, from the current layout.
+    fn layout_sizes(&self) -> HashMap<PaneId, PaneSize> {
+        tile(&self.tab.tree, self.screen.body)
+            .panes
+            .into_iter()
+            .map(|(id, rect)| (id, body_size(rect)))
+            .collect()
+    }
+
+    /// Brings every pane to its layout size, telling only the panes that
+    /// changed. Panes new to the layout keep the size they were created with.
+    fn relayout(&mut self) -> Vec<Effect> {
+        let tiling = tile(&self.tab.tree, self.screen.body);
+        let mut effects = Vec::new();
+        for (id, rect) in tiling.panes {
+            let size = body_size(rect);
+            let Some(state) = self.panes.get_mut(&id) else {
+                continue;
+            };
+            if state.size != size {
+                state.emu.resize(size);
+                state.size = size;
+                effects.push(Effect::ResizePty(id, size));
+            }
+        }
+        effects
     }
 
     /// RESIZE has no keys yet and nothing enters it; leave it safely.
@@ -319,12 +454,14 @@ impl App {
     fn on_copy_key(&mut self, mut state: CopyState, key: &KeyEvent) -> Vec<Effect> {
         match state.on_key(key) {
             CopyCommand::Move(motion) => {
-                state.apply(motion, self.pane.scrollback_len(), self.focused_size().rows);
-                self.pane.set_scrollback(state.offset);
+                let rows = self.focused_size().rows;
+                let pane = &mut self.focused_state_mut().emu;
+                state.apply(motion, pane.scrollback_len(), rows);
+                pane.set_scrollback(state.offset);
                 self.input = InputMode::Copy(state);
             }
             CopyCommand::Exit => {
-                self.pane.set_scrollback(0);
+                self.focused_state_mut().emu.set_scrollback(0);
                 self.input = InputMode::Terminal;
             }
             CopyCommand::Ignore => self.input = InputMode::Copy(state),
@@ -335,8 +472,8 @@ impl App {
     fn on_paste(&mut self, text: &str) -> Vec<Effect> {
         match self.input {
             InputMode::Terminal => vec![Effect::WritePty(
-                self.id,
-                encode_paste(text, self.pane.modes()),
+                self.tab.focus,
+                encode_paste(text, self.focused_pane().modes()),
             )],
             _ => Vec::new(),
         }
@@ -344,11 +481,10 @@ impl App {
 
     fn on_resize(&mut self, cols: u16, rows: u16) -> Vec<Effect> {
         self.screen = ScreenLayout::new(cols, rows);
-        let size = self.focused_size();
-        self.pane.resize(size);
+        let effects = self.relayout();
         self.sync_copy_offset();
         self.dirty = true;
-        vec![Effect::ResizePty(self.id, size)]
+        effects
     }
 
     /// The emulator moves its own offset when output arrives while scrolled
@@ -356,28 +492,36 @@ impl App {
     /// pane is the source of truth, so the state follows it.
     fn sync_copy_offset(&mut self) {
         if let InputMode::Copy(state) = &mut self.input {
-            state.offset = self.pane.scrollback_offset();
+            state.offset = self.panes[&self.tab.focus].emu.scrollback_offset();
         }
     }
 
-    fn on_cwd(&mut self, cwd: PathBuf) -> Vec<Effect> {
-        if self.cwd.as_ref() != Some(&cwd) {
-            self.cwd = Some(cwd);
-            self.dirty = true;
+    fn on_cwd(&mut self, id: PaneId, cwd: PathBuf) -> Vec<Effect> {
+        if let Some(state) = self.panes.get_mut(&id)
+            && state.cwd.as_ref() != Some(&cwd)
+        {
+            state.cwd = Some(cwd);
+            self.dirty |= id == self.tab.focus;
         }
         Vec::new()
     }
 
-    fn on_pty(&mut self, event: PtyEvent) -> Vec<Effect> {
+    fn on_pty(&mut self, id: PaneId, event: PtyEvent) -> Vec<Effect> {
         match event {
             PtyEvent::Output(bytes) => {
                 self.dirty = true;
-                let reply = self.pane.feed(&bytes);
-                self.sync_copy_offset();
+                let reply = self
+                    .panes
+                    .get_mut(&id)
+                    .map(|state| state.emu.feed(&bytes))
+                    .unwrap_or_default();
+                if id == self.tab.focus {
+                    self.sync_copy_offset();
+                }
                 if reply.is_empty() {
                     Vec::new()
                 } else {
-                    vec![Effect::WritePty(self.id, reply)]
+                    vec![Effect::WritePty(id, reply)]
                 }
             }
             PtyEvent::Exited => vec![Effect::Quit],
@@ -385,10 +529,12 @@ impl App {
     }
 }
 
+/// PTY size for a layout rect. Rects may be empty in a tiny terminal, but a
+/// PTY is never smaller than 1x1.
 fn body_size(rect: Rect) -> PaneSize {
     PaneSize {
-        rows: rect.height,
-        cols: rect.width,
+        rows: rect.height.max(1),
+        cols: rect.width.max(1),
     }
 }
 
@@ -681,7 +827,7 @@ mod app_tests {
 
     #[test]
     fn a_binding_in_a_group_returns_to_terminal_with_no_effect_yet() {
-        for (g, c) in [('w', 'v'), ('w', 'z'), ('t', 'n'), ('g', 'b'), ('b', '3')] {
+        for (g, c) in [('w', 'z'), ('t', 'n'), ('g', 'b'), ('b', '3')] {
             let mut a = in_group(g);
             assert_eq!(a.update(key(c)), vec![], "{g} {c}");
             assert_eq!(a.input(), InputMode::Terminal, "{g} {c}");
@@ -705,7 +851,7 @@ mod app_tests {
     }
 
     #[test]
-    fn root_focus_keys_return_to_terminal_with_no_effect_yet() {
+    fn root_focus_keys_with_one_pane_are_no_ops() {
         for c in ['h', 'j', 'k', 'l'] {
             let mut a = in_prefix();
             assert_eq!(a.update(key(c)), vec![], "{c}");
@@ -1317,5 +1463,222 @@ mod app_tests {
         assert_eq!(a.cursor_shape(), shape(CursorKind::Block, false));
         a.update(key('q'));
         assert_eq!(a.cursor_shape(), shape(CursorKind::Underline, true));
+    }
+
+    // --- S5a: split and focus ---
+
+    const LAUNCH: &str = "/launch";
+
+    fn id2() -> PaneId {
+        PaneId::for_test(2)
+    }
+
+    fn sized(rows: u16, cols: u16) -> PaneSize {
+        PaneSize { rows, cols }
+    }
+
+    fn launched(cols: u16, rows: u16) -> App {
+        App::new(cols, rows).with_env(Some("/bin/zsh"), None, LAUNCH.into())
+    }
+
+    fn spec(cwd: &str, size: PaneSize) -> SpawnSpec {
+        SpawnSpec::new(Some("/bin/zsh"), cwd.into(), size)
+    }
+
+    /// Press the prefix, then each of `keys`.
+    fn press(a: &mut App, keys: &str) -> Vec<Effect> {
+        a.update(ctrl_space());
+        keys.chars().flat_map(|c| a.update(key(c))).collect()
+    }
+
+    fn split_right() -> App {
+        let mut a = launched(80, 25);
+        press(&mut a, "wv");
+        a
+    }
+
+    fn split_below() -> App {
+        let mut a = launched(80, 25);
+        press(&mut a, "wh");
+        a
+    }
+
+    // Spec: Split right; Focus follows the new pane.
+    #[test]
+    fn split_right_spawns_a_side_by_side_pane_and_focuses_it() {
+        let mut a = launched(80, 25);
+        let effects = press(&mut a, "wv");
+        assert_eq!(
+            effects,
+            vec![
+                Effect::ResizePty(PaneId::FIRST, sized(24, 39)),
+                Effect::SpawnPane(id2(), spec(LAUNCH, sized(24, 40))),
+            ]
+        );
+        assert_eq!(a.focused(), id2());
+        assert_eq!(a.input(), InputMode::Terminal);
+    }
+
+    // Spec: Split below.
+    #[test]
+    fn split_below_stacks_the_new_pane_and_focuses_it() {
+        let mut a = launched(80, 25);
+        let effects = press(&mut a, "wh");
+        assert_eq!(
+            effects,
+            vec![
+                Effect::ResizePty(PaneId::FIRST, sized(11, 80)),
+                Effect::SpawnPane(id2(), spec(LAUNCH, sized(12, 80))),
+            ]
+        );
+        assert_eq!(a.focused(), id2());
+    }
+
+    // Spec: Split inherits cwd.
+    #[test]
+    fn a_split_spawns_in_the_cwd_of_the_focused_pane() {
+        let mut a = launched(80, 25);
+        a.update(cwd_event("/tmp"));
+        let effects = press(&mut a, "wv");
+        assert_eq!(
+            effects.last(),
+            Some(&Effect::SpawnPane(id2(), spec("/tmp", sized(24, 40))))
+        );
+    }
+
+    // Spec: Unknown cwd falls back to the launch cwd.
+    #[test]
+    fn a_split_from_a_pane_without_a_known_cwd_uses_the_launch_cwd() {
+        let mut a = split_right();
+        let effects = press(&mut a, "wv");
+        match effects.last() {
+            Some(Effect::SpawnPane(id, spawn)) => {
+                assert_eq!(*id, PaneId::for_test(3));
+                assert_eq!(spawn.cwd, PathBuf::from(LAUNCH));
+            }
+            other => panic!("expected a spawn, got {other:?}"),
+        }
+    }
+
+    // Spec: Refused below minimum.
+    #[test]
+    fn a_refused_split_is_a_no_op() {
+        // 20 columns cannot hold two panes plus a separator; 4 rows neither.
+        for (cols, rows, keys) in [(20, 25, "wv"), (80, 5, "wh")] {
+            let mut a = launched(cols, rows);
+            a.take_dirty();
+            assert_eq!(press(&mut a, keys), vec![], "{keys}");
+            assert_eq!(a.focused(), PaneId::FIRST, "{keys}");
+            assert_eq!(a.input(), InputMode::Terminal, "{keys}");
+        }
+    }
+
+    // Spec: Focus keys.
+    #[test]
+    fn focus_keys_move_to_the_geometric_neighbour() {
+        let mut a = split_right();
+        assert_eq!(press(&mut a, "h"), vec![]);
+        assert_eq!(a.focused(), PaneId::FIRST);
+        assert_eq!(a.input(), InputMode::Terminal);
+        press(&mut a, "l");
+        assert_eq!(a.focused(), id2());
+        let mut a = split_below();
+        press(&mut a, "k");
+        assert_eq!(a.focused(), PaneId::FIRST);
+        press(&mut a, "j");
+        assert_eq!(a.focused(), id2());
+    }
+
+    // Spec: Edge no-op.
+    #[test]
+    fn focus_at_an_edge_stays_put() {
+        let mut a = split_right();
+        for keys in ["l", "j", "k"] {
+            assert_eq!(press(&mut a, keys), vec![], "{keys}");
+            assert_eq!(a.focused(), id2(), "{keys}");
+            assert_eq!(a.input(), InputMode::Terminal, "{keys}");
+        }
+    }
+
+    // Spec: Input goes to the focused pane only.
+    #[test]
+    fn keys_and_paste_go_to_the_focused_pane_only() {
+        let mut a = split_right();
+        assert_eq!(
+            a.update(key('x')),
+            vec![Effect::WritePty(id2(), b"x".to_vec())]
+        );
+        assert_eq!(
+            a.update(AppEvent::Paste("p".into())),
+            vec![Effect::WritePty(id2(), b"p".to_vec())]
+        );
+        press(&mut a, "h");
+        assert_eq!(
+            a.update(key('x')),
+            vec![Effect::WritePty(PaneId::FIRST, b"x".to_vec())]
+        );
+    }
+
+    // Spec: Only changed panes resized; Unaffected pane untouched.
+    #[test]
+    fn a_host_resize_resizes_only_the_panes_whose_size_changed() {
+        let mut a = split_below();
+        let effects = a.update(AppEvent::Resize { cols: 80, rows: 26 });
+        assert_eq!(effects, vec![Effect::ResizePty(id2(), sized(13, 80))]);
+        assert_eq!(a.update(AppEvent::Resize { cols: 80, rows: 26 }), vec![]);
+    }
+
+    #[test]
+    fn a_host_resize_resizes_every_pane_that_changed() {
+        let mut a = split_right();
+        let effects = a.update(AppEvent::Resize {
+            cols: 100,
+            rows: 40,
+        });
+        let sizes: Vec<_> = effects
+            .iter()
+            .map(|e| match e {
+                Effect::ResizePty(id, size) => (*id, size.rows, size.cols),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(sizes, vec![(PaneId::FIRST, 39, 48), (id2(), 39, 51)]);
+    }
+
+    // Spec: Stale events dropped; events route to their own pane.
+    #[test]
+    fn pty_output_is_routed_to_its_own_pane() {
+        let mut a = split_right();
+        a.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(b"a".to_vec()),
+        ));
+        a.update(AppEvent::Pty(id2(), PtyEvent::Output(b"b".to_vec())));
+        assert_eq!(a.pane(PaneId::FIRST).unwrap().cell(0, 0).unwrap().text, "a");
+        assert_eq!(a.pane(id2()).unwrap().cell(0, 0).unwrap().text, "b");
+    }
+
+    #[test]
+    fn events_for_unknown_panes_are_still_dropped_with_several_panes() {
+        let mut a = split_right();
+        a.take_dirty();
+        let unknown = PaneId::for_test(9);
+        assert_eq!(
+            a.update(AppEvent::Pty(unknown, PtyEvent::Output(b"x".to_vec()))),
+            vec![]
+        );
+        assert_eq!(a.update(AppEvent::Cwd(unknown, "/x".into())), vec![]);
+        assert!(!a.take_dirty());
+    }
+
+    #[test]
+    fn the_cwd_label_follows_the_focused_pane() {
+        let mut a = split_right();
+        a.update(AppEvent::Cwd(PaneId::FIRST, "/a".into()));
+        assert_eq!(a.cwd_label(), "");
+        a.update(AppEvent::Cwd(id2(), "/b".into()));
+        assert_eq!(a.cwd_label(), "/b");
+        press(&mut a, "h");
+        assert_eq!(a.cwd_label(), "/a");
     }
 }
