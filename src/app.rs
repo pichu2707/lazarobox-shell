@@ -217,7 +217,7 @@ pub struct App {
     notice: Option<String>,
     dirty: bool,
     screen: ScreenLayout,
-    bars: BarPositions,
+    config: Config,
     /// Where the first pane starts, and the fallback for panes with no known cwd.
     launch_cwd: Option<PathBuf>,
     home: Option<PathBuf>,
@@ -227,8 +227,8 @@ pub struct App {
 impl App {
     /// An app for a terminal of `cols` x `rows`, with one pane in the body.
     pub fn new(cols: u16, rows: u16) -> Self {
-        let bars = BarPositions::default();
-        let screen = ScreenLayout::new(cols, rows, false, bars);
+        let config = Config::default();
+        let screen = ScreenLayout::new(cols, rows, false, config.bars);
         let mut ids = PaneIds::default();
         let first = ids.alloc();
         Self {
@@ -245,7 +245,7 @@ impl App {
             notice: None,
             dirty: true,
             screen,
-            bars,
+            config,
             launch_cwd: None,
             home: None,
             shell: None,
@@ -264,7 +264,7 @@ impl App {
 
     /// Places the statusline and the tab bar as the config says.
     pub fn with_config(mut self, config: &Config) -> Self {
-        self.bars = config.bars;
+        self.config = *config;
         self.refresh_screen();
         // Nothing runs yet, so there is no PTY to tell about the new size.
         self.relayout();
@@ -632,7 +632,7 @@ impl App {
     /// Recomputes the screen rects: the tab bar exists while there is more
     /// than one tab.
     fn refresh_screen(&mut self) {
-        self.screen = ScreenLayout::new(self.term.0, self.term.1, self.tabs.len() > 1, self.bars);
+        self.screen = ScreenLayout::new(self.term.0, self.term.1, self.tabs.len() > 1, self.config.bars);
     }
 
     /// Splits the focused pane and focuses the new one. A split the layout
