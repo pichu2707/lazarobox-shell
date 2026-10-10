@@ -27,10 +27,11 @@ use tokio::{
 };
 
 use crate::{
-    app::{App, AppEvent, Effect, pane_size},
+    app::{App, AppEvent, Effect},
     core::{
+        layout::PaneId,
         pane::{CursorKind, CursorShape},
-        pty::{PtyEvent, PtyHandle, PtySink, SpawnSpec, portable::spawn_portable},
+        pty::{PtyEvent, PtyHandle, PtySink, portable::spawn_portable},
     },
     ui::{self, theme::LazaroboxTheme},
 };
@@ -71,15 +72,15 @@ impl Shutdown {
 /// Runs the terminal pane until the child exits or the user quits.
 pub async fn run() -> io::Result<()> {
     let (cols, rows) = terminal::size()?;
-    let size = pane_size(cols, rows);
     let cwd = env::current_dir().unwrap_or_else(|_| "/".into());
     let shell = env::var("SHELL").ok();
-    let spec = SpawnSpec::new(shell.as_deref(), cwd.clone(), size);
-    let app = App::new(size).with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
+    let app =
+        App::new(cols, rows).with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
+    let (id, spec) = app.initial_spawn();
 
     let shutdown = Shutdown::new()?;
     let (tx, rx) = mpsc::channel(PTY_CHANNEL);
-    let sink: PtySink = Box::new(move |event| tx.blocking_send(event).is_ok());
+    let sink = tagged_sink(id, tx);
     let mut pty = spawn_portable(&spec, sink)?;
 
     let mut terminal = ratatui::init();
@@ -95,10 +96,15 @@ pub async fn run() -> io::Result<()> {
     result
 }
 
+/// A sink that tags each event with the pane it came from.
+fn tagged_sink(id: PaneId, tx: mpsc::Sender<(PaneId, PtyEvent)>) -> PtySink {
+    Box::new(move |event| tx.blocking_send((id, event)).is_ok())
+}
+
 async fn event_loop(
     terminal: &mut DefaultTerminal,
     pty: &mut dyn PtyHandle,
-    mut rx: mpsc::Receiver<PtyEvent>,
+    mut rx: mpsc::Receiver<(PaneId, PtyEvent)>,
     mut shutdown: Shutdown,
     mut app: App,
 ) -> io::Result<()> {
@@ -125,13 +131,13 @@ async fn event_loop(
                 None => return Ok(()),
             },
             event = rx.recv() => {
-                let Some(event) = event else { return Ok(()) };
-                if step(&mut app, AppEvent::Pty(event), pty) {
+                let Some((id, event)) = event else { return Ok(()) };
+                if step(&mut app, AppEvent::Pty(id, event), pty) {
                     return Ok(());
                 }
                 for _ in 1..EVENT_BUDGET {
-                    let Ok(event) = rx.try_recv() else { break };
-                    if step(&mut app, AppEvent::Pty(event), pty) {
+                    let Ok((id, event)) = rx.try_recv() else { break };
+                    if step(&mut app, AppEvent::Pty(id, event), pty) {
                         return Ok(());
                     }
                 }
@@ -144,8 +150,7 @@ async fn event_loop(
                 }
             }
             _ = tick.tick() => {
-                if app.dirty {
-                    app.dirty = false;
+                if app.take_dirty() {
                     terminal.draw(|frame| ui::render(frame, &app, &theme))?;
                 }
                 apply_cursor_style(&mut out, app.cursor_shape(), &mut applied_cursor)?;
@@ -160,14 +165,15 @@ fn step(app: &mut App, event: AppEvent, pty: &mut dyn PtyHandle) -> bool {
     run_effects(app.update(event), pty)
 }
 
-/// Executes effects against the PTY. Returns `true` if one of them was `Quit`.
+/// Executes effects against the PTY (the only pane there is for now, so the
+/// pane id they carry is not routed on). Returns `true` if one of them was `Quit`.
 fn run_effects(effects: Vec<Effect>, pty: &mut dyn PtyHandle) -> bool {
     let mut quit = false;
     for effect in effects {
         match effect {
-            Effect::WritePty(bytes) => pty.write(bytes),
+            Effect::WritePty(_, bytes) => pty.write(bytes),
             // A failed resize leaves the child at the old size; nothing to recover.
-            Effect::ResizePty(size) => {
+            Effect::ResizePty(_, size) => {
                 let _ = pty.resize(size);
             }
             Effect::Quit => quit = true,
@@ -304,7 +310,7 @@ mod tests {
         let spec = SpawnSpec::new(Some("/bin/sh"), "/".into(), size);
         let mut pty = spawn_portable(&spec, sink).expect("spawn");
 
-        let mut app = App::new(size);
+        let mut app = App::new(80, 24);
         let tmp = std::fs::canonicalize("/tmp").unwrap();
         pty.write(b"cd /tmp\n".to_vec());
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -315,6 +321,22 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert_eq!(app.cwd_label(), tmp.display().to_string());
+    }
+
+    // Spec: the reader's events reach the loop tagged with their pane.
+    #[test]
+    fn the_sink_tags_events_with_the_pane_id() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut sink = tagged_sink(PaneId::FIRST, tx);
+        assert!(sink(PtyEvent::Output(b"hi".to_vec())));
+        assert!(sink(PtyEvent::Exited));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            (PaneId::FIRST, PtyEvent::Output(b"hi".to_vec()))
+        );
+        assert_eq!(rx.try_recv().unwrap(), (PaneId::FIRST, PtyEvent::Exited));
+        drop(rx);
+        assert!(!sink(PtyEvent::Exited), "a closed channel stops the reader");
     }
 
     fn shape(kind: CursorKind, blinking: bool) -> CursorShape {
@@ -337,7 +359,10 @@ mod tests {
             cols: 100,
         };
         let quit = run_effects(
-            vec![Effect::WritePty(b"ls\r".to_vec()), Effect::ResizePty(size)],
+            vec![
+                Effect::WritePty(PaneId::FIRST, b"ls\r".to_vec()),
+                Effect::ResizePty(PaneId::FIRST, size),
+            ],
             &mut pty,
         );
         assert!(!quit);
@@ -358,9 +383,9 @@ mod tests {
         let log = pty.log.clone();
         run_effects(
             vec![
-                Effect::WritePty(vec![1]),
-                Effect::WritePty(vec![2]),
-                Effect::WritePty(vec![3]),
+                Effect::WritePty(PaneId::FIRST, vec![1]),
+                Effect::WritePty(PaneId::FIRST, vec![2]),
+                Effect::WritePty(PaneId::FIRST, vec![3]),
             ],
             &mut pty,
         );
