@@ -88,16 +88,16 @@ Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs
 
 ## S4: Runtime `Panes` registry (fake `SpawnFn`)
 
-- [ ] S4.1 RED: `src/runtime.rs` tests with fake `SpawnFn`: spawn tags events by id; `WritePty`/`ResizePty` routed by id; unknown ids ignored [terminal-session: Output routed by id, Stale events dropped].
-- [ ] S4.2 GREEN: `AppEvent::{Cwd, SpawnFailed}`, `Effect::{SpawnPane, ClosePane}` variants (app emits none yet); `Panes { handles, tx, spawn, reapers }`, `apply`, one `mpsc::channel::<(PaneId, PtyEvent)>(256)`.
-- [ ] S4.3 RED: spawn `Err` yields `AppEvent::SpawnFailed` fed back; `step` loops feedback until empty [terminal-session: Spawn failure].
-- [ ] S4.4 GREEN: feedback loop in `step`; `src/core/pty/fake.rs` optional `pid`.
-- [ ] S4.5 RED: `Panes::close` kills off-thread (join reapers in the test); a blocking kill does not stall `apply` [terminal-session: UI stays responsive].
-- [ ] S4.6 GREEN: detached kill thread + pruning of finished `JoinHandle`s.
-- [ ] S4.7 RED: `shutdown(bound)` kills all handles in parallel within the bound; slow kill does not exceed it [terminal-session: Quit leaves no orphan].
-- [ ] S4.8 GREEN: `Panes::shutdown` (restore terminal first, `QUIT_KILL_BOUND = 3 s`, `rx` dropped before); panic and signal paths unchanged.
-- [ ] S4.9 RED+GREEN: `poll_cwds` emits `AppEvent::Cwd(id, path)` per live pid; failed poll emits nothing [terminal-session: Fallback for plain shell].
-- [ ] S4.10 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] S4.1 RED: `src/runtime.rs` tests with fake `SpawnFn`: spawn tags events by id; `WritePty`/`ResizePty` routed by id; unknown ids ignored [terminal-session: Output routed by id, Stale events dropped].
+- [x] S4.2 GREEN: `AppEvent::{Cwd, SpawnFailed}`, `Effect::{SpawnPane, ClosePane}` variants (app emits none yet); `Panes { handles, tx, spawn, reapers }`, `apply`, one `mpsc::channel::<(PaneId, PtyEvent)>(256)`.
+- [x] S4.3 RED: spawn `Err` yields `AppEvent::SpawnFailed` fed back; `step` loops feedback until empty [terminal-session: Spawn failure].
+- [x] S4.4 GREEN: feedback loop in `step`; `src/core/pty/fake.rs` optional `pid`.
+- [x] S4.5 RED: `Panes::close` kills off-thread (join reapers in the test); a blocking kill does not stall `apply` [terminal-session: UI stays responsive].
+- [x] S4.6 GREEN: detached kill thread + pruning of finished `JoinHandle`s.
+- [x] S4.7 RED: `shutdown(bound)` kills all handles in parallel within the bound; slow kill does not exceed it [terminal-session: Quit leaves no orphan].
+- [x] S4.8 GREEN: `Panes::shutdown` (restore terminal first, `QUIT_KILL_BOUND = 3 s`, `rx` dropped before); panic and signal paths unchanged.
+- [x] S4.9 RED+GREEN: `poll_cwds` emits `AppEvent::Cwd(id, path)` per live pid; failed poll emits nothing [terminal-session: Fallback for plain shell].
+- [x] S4.10 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## S5a: Multi-pane `App`: split + focus
 

@@ -103,7 +103,7 @@ mod tests {
         let line = row(&buf, ROWS - 1);
         assert!(line.contains("~"), "{line:?}");
         assert!(line.trim_end().ends_with("zsh"), "{line:?}");
-        app.update(AppEvent::Cwd("/tmp".into()));
+        app.update(AppEvent::Cwd(PaneId::FIRST, "/tmp".into()));
         let (buf, _) = draw(&app);
         assert!(row(&buf, ROWS - 1).contains("/tmp"));
     }

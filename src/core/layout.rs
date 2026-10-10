@@ -8,6 +8,12 @@ pub struct PaneId(u32);
 impl PaneId {
     /// The first id handed out.
     pub const FIRST: PaneId = PaneId(1);
+
+    /// An arbitrary id, for tests that need ids without building a layout.
+    #[cfg(test)]
+    pub const fn for_test(n: u32) -> PaneId {
+        PaneId(n)
+    }
 }
 
 /// A cell rectangle in terminal coordinates.
