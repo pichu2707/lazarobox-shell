@@ -57,6 +57,22 @@ impl<'a> StatusLine<'a> {
         }
     }
 
+    /// Columns left for the path text in a statusline `width` columns wide:
+    /// what the mode block, the right segment (when it fits) and the path
+    /// padding and slant leave over.
+    pub fn path_budget(&self, width: u16) -> u16 {
+        // Padding on both sides of the path plus the slant that closes it.
+        const PATH_DECORATION: usize = 3;
+        let left = self.mode_block_width() + PATH_DECORATION;
+        let right = self.right_line().width();
+        let right = if right + self.mode_block_width() <= usize::from(width) {
+            right
+        } else {
+            0
+        };
+        u16::try_from(usize::from(width).saturating_sub(left + right)).unwrap_or(u16::MAX)
+    }
+
     fn mode_block_text(&self) -> String {
         format!(" \u{25D0} {} ", self.label)
     }

@@ -52,7 +52,9 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
         within(frame, screen.body),
     );
 
-    let path = app.status_path();
+    let budget =
+        StatusLine::input(theme, app.input(), "", app.shell_name()).path_budget(status.width);
+    let path = app.status_path(budget);
     frame.render_widget(
         StatusLine::input(theme, app.input(), &path, app.shell_name()),
         status,
@@ -260,5 +262,105 @@ mod tests {
                 .draw(|frame| render(frame, &app, &theme::LazaroboxTheme::default()))
                 .unwrap();
         }
+    }
+
+    fn draw_sized(app: &App, cols: u16, rows: u16) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+        terminal
+            .draw(|frame| render(frame, app, &theme::LazaroboxTheme::default()))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// The statusline row of `app`, drawn at the size the app was built for.
+    fn status(app: &App) -> String {
+        let at = app.screen().status;
+        row(&draw_sized(app, at.width, at.y + 1), at.y)
+    }
+
+    fn keys(app: &mut App, keys: &str) {
+        for c in keys.chars() {
+            press(app, c, KeyModifiers::NONE);
+        }
+    }
+
+    // Spec: Root hint in PREFIX; Group hint; Hint gone after the group resolves.
+    #[test]
+    fn the_statusline_shows_the_root_and_group_hints_and_drops_them_on_resolve() {
+        let mut app = App::new(100, 3).with_env(None, None, "/work".into());
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        let line = status(&app);
+        assert!(line.contains("PREFIX"), "{line:?}");
+        assert!(
+            line.contains("w window · t tab · g go · b buffer · [ copy · q quit"),
+            "{line:?}"
+        );
+        insta::assert_snapshot!("root_hint", line.trim_end());
+        keys(&mut app, "w");
+        let line = status(&app);
+        assert!(line.contains("WINDOW"), "{line:?}");
+        insta::assert_snapshot!("group_hint", line.trim_end());
+        app.update(AppEvent::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
+        let line = status(&app);
+        assert!(
+            line.contains("TERMINAL") && line.contains("/work"),
+            "{line:?}"
+        );
+        assert!(!line.contains("split right"), "{line:?}");
+    }
+
+    // Spec: Root hint clipped and cleared; Narrow width.
+    #[test]
+    fn a_narrow_statusline_clips_the_hint_by_whole_entries_and_never_panics() {
+        let mut app = App::new(60, 3).with_env(None, None, "/work".into());
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        let line = status(&app);
+        assert!(line.contains("PREFIX"), "{line:?}");
+        assert!(line.contains('…') && !line.contains("quit"), "{line:?}");
+        insta::assert_snapshot!("clipped_hint", line.trim_end());
+        for cols in 1..=40 {
+            let mut app = App::new(cols, 3);
+            press(&mut app, ' ', KeyModifiers::CONTROL);
+            keys(&mut app, "w");
+            let _ = status(&app);
+        }
+    }
+
+    // Spec: Notice shown beats the hint.
+    #[test]
+    fn a_notice_is_drawn_instead_of_the_hint() {
+        let mut app = App::new(100, 3);
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        keys(&mut app, "wv");
+        app.update(AppEvent::SpawnFailed(PaneId::for_test(2), "boom".into()));
+        let line = status(&app);
+        assert!(line.contains("spawn failed: boom"), "{line:?}");
+        assert!(!line.contains("window"), "{line:?}");
+    }
+
+    // Spec: Close pane prompt.
+    #[test]
+    fn the_close_prompt_is_in_the_mode_block_and_the_cwd_stays() {
+        let mut app = split_app().with_env(None, None, "/work".into());
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        keys(&mut app, "wq");
+        let line = status(&app);
+        assert!(line.contains("Close pane? (y/n)"), "{line:?}");
+        assert!(!line.contains("split right"), "{line:?}");
+    }
+
+    // Spec: Focus switches cwd.
+    #[test]
+    fn focus_switches_the_cwd_shown() {
+        let mut app = split_app();
+        app.update(AppEvent::Cwd(PaneId::FIRST, "/left".into()));
+        app.update(AppEvent::Cwd(PaneId::for_test(2), "/right".into()));
+        assert!(status(&app).contains("/right"));
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        keys(&mut app, "h");
+        assert!(status(&app).contains("/left"));
     }
 }
