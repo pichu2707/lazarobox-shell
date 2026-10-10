@@ -6,6 +6,7 @@ use std::{
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::core::{
+    config::{BarPosition, BarPositions, Config},
     copy::{CopyCommand, CopyState},
     keys::{encode_key, encode_paste},
     layout::{
@@ -123,25 +124,38 @@ pub struct ScreenLayout {
 }
 
 impl ScreenLayout {
-    fn new(cols: u16, rows: u16, bar: bool) -> Self {
+    /// The tab bar is the outermost row of its edge and the statusline sits
+    /// between it and the body. Rows beyond a tiny terminal are clipped by
+    /// the UI; the body keeps at least 1x1.
+    fn new(cols: u16, rows: u16, bar: bool, bars: BarPositions) -> Self {
         let size = pane_size(cols, rows);
         let bar_rows = u16::from(bar);
+        let bar_top = bar && bars.tabbar == BarPosition::Top;
+        let bar_bottom = bar && bars.tabbar == BarPosition::Bottom;
+        let status_top = bars.statusline == BarPosition::Top;
+        let top_rows = u16::from(bar_top) + u16::from(status_top);
+        let from_bottom = |n: u16| rows.saturating_sub(n);
+        let status_gap = u16::from(bar_bottom) + 1;
         Self {
             tab_bar: bar.then_some(Rect {
                 x: 0,
-                y: 0,
+                y: if bar_top { 0 } else { from_bottom(1) },
                 width: size.cols,
                 height: 1,
             }),
             body: Rect {
                 x: 0,
-                y: bar_rows,
+                y: top_rows,
                 width: size.cols,
                 height: size.rows.saturating_sub(bar_rows).max(1),
             },
             status: Rect {
                 x: 0,
-                y: rows.saturating_sub(1),
+                y: if status_top {
+                    u16::from(bar_top)
+                } else {
+                    from_bottom(status_gap)
+                },
                 width: size.cols,
                 height: 1,
             },
@@ -203,6 +217,7 @@ pub struct App {
     notice: Option<String>,
     dirty: bool,
     screen: ScreenLayout,
+    bars: BarPositions,
     /// Where the first pane starts, and the fallback for panes with no known cwd.
     launch_cwd: Option<PathBuf>,
     home: Option<PathBuf>,
@@ -212,7 +227,8 @@ pub struct App {
 impl App {
     /// An app for a terminal of `cols` x `rows`, with one pane in the body.
     pub fn new(cols: u16, rows: u16) -> Self {
-        let screen = ScreenLayout::new(cols, rows, false);
+        let bars = BarPositions::default();
+        let screen = ScreenLayout::new(cols, rows, false, bars);
         let mut ids = PaneIds::default();
         let first = ids.alloc();
         Self {
@@ -229,6 +245,7 @@ impl App {
             notice: None,
             dirty: true,
             screen,
+            bars,
             launch_cwd: None,
             home: None,
             shell: None,
@@ -242,6 +259,21 @@ impl App {
         self.home = home;
         self.focused_state_mut().cwd = Some(cwd.clone());
         self.launch_cwd = Some(cwd);
+        self
+    }
+
+    /// Places the statusline and the tab bar as the config says.
+    pub fn with_config(mut self, config: &Config) -> Self {
+        self.bars = config.bars;
+        self.refresh_screen();
+        // Nothing runs yet, so there is no PTY to tell about the new size.
+        self.relayout();
+        self
+    }
+
+    /// Shows `notice` in the statusline path segment until the next key.
+    pub fn with_notice(mut self, notice: Option<String>) -> Self {
+        self.notice = notice;
         self
     }
 
@@ -600,7 +632,7 @@ impl App {
     /// Recomputes the screen rects: the tab bar exists while there is more
     /// than one tab.
     fn refresh_screen(&mut self) {
-        self.screen = ScreenLayout::new(self.term.0, self.term.1, self.tabs.len() > 1);
+        self.screen = ScreenLayout::new(self.term.0, self.term.1, self.tabs.len() > 1, self.bars);
     }
 
     /// Splits the focused pane and focuses the new one. A split the layout
@@ -3038,5 +3070,151 @@ mod app_tests {
         assert_eq!(a.tab_labels(), ["1 launch", "2 b"]);
         press(&mut a, "h");
         assert_eq!(a.tab_labels(), ["1 launch", "2 a"]);
+    }
+
+    // Spec: Bar positions (screen geometry).
+    fn configured(
+        cols: u16,
+        rows: u16,
+        statusline: BarPosition,
+        tabbar: BarPosition,
+        n: usize,
+    ) -> App {
+        let config = Config {
+            bars: BarPositions { statusline, tabbar },
+            ..Config::default()
+        };
+        let mut a = launched(cols, rows).with_config(&config);
+        for _ in 1..n {
+            press(&mut a, "tn");
+        }
+        a
+    }
+
+    fn row_rect(y: u16) -> Rect {
+        Rect {
+            x: 0,
+            y,
+            width: 80,
+            height: 1,
+        }
+    }
+
+    fn body_rect(y: u16, height: u16) -> Rect {
+        Rect {
+            x: 0,
+            y,
+            width: 80,
+            height,
+        }
+    }
+
+    fn expect(a: &App, bar: Option<u16>, body: (u16, u16), status: u16) {
+        let screen = a.screen();
+        assert_eq!(screen.tab_bar, bar.map(row_rect), "tab bar");
+        assert_eq!(screen.body, body_rect(body.0, body.1), "body");
+        assert_eq!(screen.status, row_rect(status), "status");
+    }
+
+    #[test]
+    fn one_tab_with_the_statusline_on_top_moves_the_body_down() {
+        let a = configured(80, 25, BarPosition::Top, BarPosition::Top, 1);
+        expect(&a, None, (1, 24), 0);
+        let a = configured(80, 25, BarPosition::Bottom, BarPosition::Bottom, 1);
+        expect(&a, None, (0, 24), 24);
+    }
+
+    #[test]
+    fn several_tabs_in_the_four_position_combinations() {
+        use BarPosition::{Bottom, Top};
+        // Default: the bar on top, the statusline at the bottom.
+        expect(&configured(80, 25, Bottom, Top, 2), Some(0), (1, 23), 24);
+        // Both on top: the bar is outermost (row 0), the statusline next to the body.
+        expect(&configured(80, 25, Top, Top, 2), Some(0), (2, 23), 1);
+        // Both at the bottom: body, statusline, bar on the last row.
+        expect(
+            &configured(80, 25, Bottom, Bottom, 2),
+            Some(24),
+            (0, 23),
+            23,
+        );
+        // One each, the other way round.
+        expect(&configured(80, 25, Top, Bottom, 2), Some(24), (1, 23), 0);
+    }
+
+    #[test]
+    fn closing_back_to_one_tab_drops_the_bar_in_any_position() {
+        let mut a = configured(80, 25, BarPosition::Bottom, BarPosition::Bottom, 2);
+        press(&mut a, "tc");
+        a.update(key('y'));
+        expect(&a, None, (0, 24), 24);
+    }
+
+    #[test]
+    fn a_resize_keeps_the_configured_positions() {
+        let mut a = configured(80, 25, BarPosition::Top, BarPosition::Bottom, 2);
+        a.update(AppEvent::Resize {
+            cols: 100,
+            rows: 40,
+        });
+        let screen = a.screen();
+        assert_eq!(screen.status.y, 0);
+        assert_eq!(screen.tab_bar.map(|r| r.y), Some(39));
+        assert_eq!((screen.body.y, screen.body.height), (1, 38));
+    }
+
+    #[test]
+    fn positions_change_the_ptys_body_and_emit_no_resize_for_a_same_height_move() {
+        // Statusline on top keeps the body height: the PTY size is unchanged.
+        let a = configured(80, 25, BarPosition::Top, BarPosition::Top, 1);
+        assert_eq!(a.focused_size(), sized(24, 80));
+        // A bar on top and the statusline at the bottom shrinks the body by one.
+        let b = configured(80, 25, BarPosition::Bottom, BarPosition::Top, 2);
+        assert_eq!(b.focused_size(), sized(23, 80));
+    }
+
+    #[test]
+    fn the_initial_spawn_uses_the_configured_body_size() {
+        let a = configured(80, 25, BarPosition::Top, BarPosition::Top, 1);
+        let (_, spec) = a.initial_spawn();
+        assert_eq!(spec.size, sized(24, 80));
+    }
+
+    #[test]
+    fn a_new_tab_under_a_configured_layout_resizes_every_pane_once() {
+        let mut a = configured(80, 25, BarPosition::Bottom, BarPosition::Bottom, 1);
+        let effects = press(&mut a, "tn");
+        let resizes: Vec<_> = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::ResizePty(..)))
+            .collect();
+        assert_eq!(resizes, [&Effect::ResizePty(PaneId::FIRST, sized(23, 80))]);
+    }
+
+    #[test]
+    fn tiny_terminals_never_panic_in_any_combination() {
+        use BarPosition::{Bottom, Top};
+        for (s, t) in [(Top, Top), (Top, Bottom), (Bottom, Top), (Bottom, Bottom)] {
+            for n in [1, 2] {
+                for (cols, rows) in [(0, 0), (1, 1), (1, 2), (3, 3), (5, 4)] {
+                    let a = configured(cols, rows, s, t, n);
+                    let screen = a.screen();
+                    assert!(screen.body.width >= 1 && screen.body.height >= 1);
+                    assert!(a.focused_size().rows >= 1 && a.focused_size().cols >= 1);
+                }
+            }
+        }
+    }
+
+    // Spec: Startup notice.
+    #[test]
+    fn a_startup_notice_shows_until_the_next_key() {
+        let mut a = launched(80, 25).with_notice(Some("config: bad".into()));
+        assert_eq!(a.notice(), Some("config: bad"));
+        assert_eq!(a.status_path(80), "config: bad");
+        a.update(key('x'));
+        assert_eq!(a.notice(), None);
+        let b = launched(80, 25).with_notice(None);
+        assert_eq!(b.notice(), None);
     }
 }
