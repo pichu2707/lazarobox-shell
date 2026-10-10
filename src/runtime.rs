@@ -786,12 +786,13 @@ mod tests {
     fn shutdown_kills_every_child_in_parallel() {
         let (mut panes, _rx, _rec) = fake_panes(None);
         let held: Vec<_> = (1..=3)
-            .map(|n| add_slow(&mut panes, n, Duration::from_millis(200)))
+            .map(|n| add_slow(&mut panes, n, Duration::from_millis(400)))
             .collect();
         let started = Instant::now();
         panes.shutdown(Duration::from_secs(5));
         let elapsed = started.elapsed();
-        assert!(elapsed < Duration::from_millis(550), "serial: {elapsed:?}");
+        // Sequential kills would take at least 3 x 400 ms = 1200 ms.
+        assert!(elapsed < Duration::from_millis(1000), "serial: {elapsed:?}");
         for (log, _gate) in &held {
             assert_eq!(log.lock().unwrap().kills, 1);
         }
