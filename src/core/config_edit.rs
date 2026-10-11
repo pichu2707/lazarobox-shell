@@ -23,16 +23,23 @@ pub enum EditError {
 /// Applies `edits` to the existing file text (`None` means no file yet) and
 /// returns the new text.
 ///
-/// Line endings: if the text contains any `\r\n`, the whole result uses
-/// `\r\n` (a mixed file is made uniformly CRLF); otherwise it uses `\n`.
+/// Line endings: `toml_edit` keeps a `\r\n` inside a multi-line string but
+/// turns every other one into `\n`. So the file's style is the ending of its
+/// first line break outside string content (`\n` when there is none), and
+/// that style is restored on every line break outside strings. Line breaks
+/// inside multi-line strings are never touched. A file that mixes endings
+/// outside strings therefore ends up uniform, in the style of its first one.
 ///
 /// Known limits, not fixed on purpose: a missing trailing newline gets
 /// added, and a leading UTF-8 BOM is dropped.
 pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String, EditError> {
-    let crlf = existing.is_some_and(|text| text.contains("\r\n"));
+    let crlf = existing.is_some_and(|text| {
+        breaks_outside_strings(text)
+            .first()
+            .is_some_and(|&at| at > 0 && text.as_bytes()[at - 1] == b'\r')
+    });
     let mut doc = match existing {
         Some(text) => text
-            .replace("\r\n", "\n")
             .parse::<DocumentMut>()
             .map_err(|_| EditError::Unparseable)?,
         None => DocumentMut::new(),
@@ -82,11 +89,67 @@ pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String
         }
     }
     let text = doc.to_string();
-    Ok(if crlf {
-        text.replace('\n', "\r\n")
-    } else {
-        text
-    })
+    if !crlf {
+        return Ok(text);
+    }
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut done = 0;
+    for at in breaks_outside_strings(&text) {
+        out.push_str(&text[done..at]);
+        if !out.ends_with('\r') {
+            out.push('\r');
+        }
+        done = at;
+    }
+    out.push_str(&text[done..]);
+    Ok(out)
+}
+
+/// Byte offsets of the `\n` that end a line outside any string literal.
+/// Comments and strings are skipped, so a quote inside a comment or a line
+/// break inside a multi-line string is not mistaken for structure. The text
+/// must be valid TOML.
+fn breaks_outside_strings(text: &str) -> Vec<usize> {
+    let b = text.as_bytes();
+    let mut breaks = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\n' => breaks.push(i),
+            b'#' => {
+                while i + 1 < b.len() && b[i + 1] != b'\n' {
+                    i += 1;
+                }
+            }
+            quote @ (b'"' | b'\'') => {
+                let triple = [quote; 3];
+                let multi = b[i..].starts_with(&triple);
+                i += if multi { 3 } else { 1 };
+                while i < b.len() {
+                    if quote == b'"' && b[i] == b'\\' {
+                        i += 2;
+                    } else if multi && b[i..].starts_with(&triple) {
+                        // Up to two more quotes may belong to the content.
+                        i += 3;
+                        for _ in 0..2 {
+                            i += usize::from(b.get(i) == Some(&quote));
+                        }
+                        break;
+                    } else if !multi && (b[i] == quote || b[i] == b'\n') {
+                        // A closing quote; the newline arm is only defensive.
+                        i += usize::from(b[i] == quote);
+                        break;
+                    } else {
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    breaks
 }
 
 #[cfg(test)]
@@ -244,9 +307,35 @@ other = 1
     }
 
     #[test]
-    fn a_mixed_file_with_any_crlf_is_written_with_crlf_throughout() {
+    fn a_mixed_file_follows_its_first_line_ending_outside_strings() {
         let out = apply_edit(Some("a = 1\r\nb = 2\n"), &[]).unwrap();
         assert_eq!(out, "a = 1\r\nb = 2\r\n");
+        let out = apply_edit(Some("a = 1\nb = 2\r\n"), &[]).unwrap();
+        assert_eq!(out, "a = 1\nb = 2\n");
+    }
+
+    #[test]
+    fn a_crlf_inside_a_string_does_not_make_the_file_crlf() {
+        let out = apply_edit(Some("s = '''a\r\nb'''\nx=1\n"), &[edit("tabbar", "top")]).unwrap();
+        assert_eq!(
+            out,
+            "s = '''a\r\nb'''\nx=1\n\n[tabbar]\nposition = \"top\"\n"
+        );
+    }
+
+    #[test]
+    fn an_lf_inside_a_string_is_never_rewritten() {
+        let out = apply_edit(Some("s = '''a\nb'''\r\nx=1\r\n"), &[edit("tabbar", "top")]).unwrap();
+        assert_eq!(
+            out,
+            "s = '''a\nb'''\r\nx=1\r\n\r\n[tabbar]\r\nposition = \"top\"\r\n"
+        );
+    }
+
+    #[test]
+    fn quotes_in_comments_and_strings_do_not_confuse_the_line_ending_scan() {
+        let text = "# it's\r\nq = \"say \\\"hi\\\"\"\r\nm = \"\"\"a\nb\"\"\"\"\r\nl = 'x'\r\n";
+        assert_eq!(apply_edit(Some(text), &[]).unwrap(), text);
     }
 
     #[test]
