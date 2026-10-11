@@ -229,6 +229,9 @@ pub struct App {
     home: Option<PathBuf>,
     /// This machine's hostname: OSC 7 reports naming it count as local.
     hostname: Option<String>,
+    /// Whether a directory exists. Injected so the core does no IO; the runtime
+    /// passes the real check.
+    dir_exists: fn(&Path) -> bool,
     shell: Option<String>,
 }
 
@@ -257,6 +260,7 @@ impl App {
             launch_cwd: None,
             home: None,
             hostname: None,
+            dir_exists: |_| true,
             shell: None,
         }
     }
@@ -268,6 +272,13 @@ impl App {
         self.home = home;
         self.focused_state_mut().proc_cwd = Some(cwd.clone());
         self.launch_cwd = Some(cwd);
+        self
+    }
+
+    /// Injects the directory-existence check used when a new pane or tab picks
+    /// the cwd it starts in.
+    pub fn with_dir_check(mut self, dir_exists: fn(&Path) -> bool) -> Self {
+        self.dir_exists = dir_exists;
         self
     }
 
@@ -425,6 +436,19 @@ impl App {
         self.panes
             .get_mut(&self.tabs[self.active].focus)
             .expect("the focused pane exists")
+    }
+
+    /// The cwd a new pane or tab starts in: the focused pane's effective cwd,
+    /// then the launch cwd, then `$HOME`, taking the first that still exists.
+    /// `None` when none does (the spawn then falls back to `/`).
+    fn inherited_cwd(&self) -> Option<PathBuf> {
+        let focused = self.focused_state().effective_cwd();
+        let home = self.home.as_deref().filter(|home| home.is_absolute());
+        [focused, self.launch_cwd.as_deref(), home]
+            .into_iter()
+            .flatten()
+            .find(|dir| (self.dir_exists)(dir))
+            .map(Path::to_path_buf)
     }
 
     fn spawn_spec(&self, cwd: Option<PathBuf>, size: PaneSize) -> SpawnSpec {
@@ -608,11 +632,7 @@ impl App {
     /// Appends a tab with one pane, activates it and spawns its shell in the
     /// focused pane's cwd. The tab bar may appear, which resizes every tab.
     fn new_tab(&mut self) -> Vec<Effect> {
-        let cwd = self
-            .focused_state()
-            .effective_cwd()
-            .map(Path::to_path_buf)
-            .or_else(|| self.launch_cwd.clone());
+        let cwd = self.inherited_cwd();
         let id = self.ids.alloc();
         self.tabs.push(Tab {
             tree: Node::Leaf(id),
@@ -665,11 +685,7 @@ impl App {
             Ok(()) => {}
             Err(SplitError::TooSmall | SplitError::NotFound) => return self.relayout(),
         }
-        let cwd = self
-            .focused_state()
-            .effective_cwd()
-            .map(Path::to_path_buf)
-            .or_else(|| self.launch_cwd.clone());
+        let cwd = self.inherited_cwd();
         let size = self.layout_sizes()[&new];
         self.panes
             .insert(new, PaneState::new(size, self.hostname.as_deref()));
@@ -2092,7 +2108,101 @@ mod app_tests {
         let mut a = launched(80, 25);
         a.update(osc7(PaneId::FIRST, "file:///srv"));
         let effects = press(&mut a, "tn");
-        assert!(effects.contains(&Effect::SpawnPane(id2(), spec("/srv", sized(23, 80)))));
+        assert_eq!(
+            effects.last(),
+            Some(&Effect::SpawnPane(id2(), spec("/srv", sized(23, 80))))
+        );
+    }
+
+    // Spec (terminal-session / tabs): a vanished inherited cwd falls back.
+    fn exists(path: &Path) -> bool {
+        path != Path::new("/gone") && path != Path::new("/launch-gone")
+    }
+
+    fn with_vanished_cwd() -> App {
+        let mut a = App::new(80, 25)
+            .with_env(Some("/bin/zsh"), Some("/home/ana".into()), LAUNCH.into())
+            .with_dir_check(exists);
+        a.update(osc7(PaneId::FIRST, "file:///gone"));
+        a
+    }
+
+    #[test]
+    fn a_split_from_a_vanished_cwd_uses_the_launch_cwd() {
+        let mut a = with_vanished_cwd();
+        let effects = press(&mut a, "wv");
+        assert_eq!(
+            effects.last(),
+            Some(&Effect::SpawnPane(id2(), spec(LAUNCH, sized(24, 40))))
+        );
+    }
+
+    #[test]
+    fn a_new_tab_from_a_vanished_cwd_uses_the_launch_cwd() {
+        let mut a = with_vanished_cwd();
+        let effects = press(&mut a, "tn");
+        assert_eq!(
+            effects.last(),
+            Some(&Effect::SpawnPane(id2(), spec(LAUNCH, sized(23, 80))))
+        );
+    }
+
+    #[test]
+    fn a_vanished_launch_cwd_falls_back_to_home() {
+        let mut a = App::new(80, 25)
+            .with_env(
+                Some("/bin/zsh"),
+                Some("/home/ana".into()),
+                "/launch-gone".into(),
+            )
+            .with_dir_check(exists);
+        a.update(osc7(PaneId::FIRST, "file:///gone"));
+        let effects = press(&mut a, "tn");
+        assert_eq!(
+            effects.last(),
+            Some(&Effect::SpawnPane(id2(), spec("/home/ana", sized(23, 80))))
+        );
+    }
+
+    #[test]
+    fn a_relative_home_is_never_a_spawn_fallback() {
+        let mut a = App::new(80, 25)
+            .with_env(
+                Some("/bin/zsh"),
+                Some("home/ana".into()),
+                "/launch-gone".into(),
+            )
+            .with_dir_check(exists);
+        a.update(osc7(PaneId::FIRST, "file:///gone"));
+        let effects = press(&mut a, "tn");
+        assert_eq!(
+            effects.last(),
+            Some(&Effect::SpawnPane(id2(), spec("/", sized(23, 80))))
+        );
+    }
+
+    #[test]
+    fn with_nothing_left_the_spawn_falls_back_to_the_root() {
+        let mut a = App::new(80, 25)
+            .with_env(Some("/bin/zsh"), None, "/launch-gone".into())
+            .with_dir_check(exists);
+        a.update(osc7(PaneId::FIRST, "file:///gone"));
+        let effects = press(&mut a, "wv");
+        assert_eq!(
+            effects.last(),
+            Some(&Effect::SpawnPane(id2(), spec("/", sized(24, 40))))
+        );
+    }
+
+    #[test]
+    fn an_existing_cwd_is_inherited_unchanged_with_a_dir_check() {
+        let mut a = launched(80, 25).with_dir_check(exists);
+        a.update(osc7(PaneId::FIRST, "file:///srv"));
+        let effects = press(&mut a, "wv");
+        assert_eq!(
+            effects.last(),
+            Some(&Effect::SpawnPane(id2(), spec("/srv", sized(24, 40))))
+        );
     }
 
     #[test]

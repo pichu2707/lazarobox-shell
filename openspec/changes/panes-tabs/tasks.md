@@ -188,6 +188,12 @@ Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs
 - [ ] S9.7 [manual] Kitty: `cd /tmp` in a shell with OSC 7 (or the poll) updates the statusline and the tab label; `t n` starts in `/tmp` [terminal-emulation: cwd follows `cd`; tabs: New tab inherits cwd].
 - [x] S9.8 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
+## S9c: OSC 7 follow-ups
+
+- [x] S9c.1 RED+GREEN: a new pane or tab whose inherited cwd no longer exists prefers the launch cwd, then an absolute `$HOME`, then `/` (a precedence preference: portable-pty already fell back to `$HOME`, ADR 18) (`App::with_dir_check`, runtime passes `Path::is_dir`); exact `SpawnPane` cwd asserted for split, new tab, existing cwd, no-home [terminal-session: Vanished cwd falls back; tabs: New tab from a vanished cwd].
+- [x] S9c.2 The `a_new_tab_inherits_the_osc7_cwd` assertion is exact (`effects.last()`).
+- [x] S9c.3 Design ADR 21 records OSC 7 as sticky by design (known limitation) and the FQDN-vs-short-hostname mismatch as a deferred follow-up.
+
 ## Deferred (out of scope)
 
 - The `?` command viewer (the `?` entry stays reserved; `PREFIX_TREE` is already its data source).

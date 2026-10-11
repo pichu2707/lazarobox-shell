@@ -18,12 +18,22 @@ Every pane MUST own exactly one PTY child. Events and effects MUST be addressed 
 - THEN it is ignored with no panic and no effect
 
 ### Requirement: Inherited working directory
-A new pane or tab MUST spawn its shell in the focused pane's effective cwd (the OSC 7 value once seen, otherwise the polled value). If that cwd is unknown, it MUST fall back to the launch cwd. A known cwd that no longer exists is not checked by the app: the spawn proceeds and the PTY layer falls back to `$HOME`; this is not a spawn failure.
+A new pane or tab MUST spawn its shell in the focused pane's effective cwd (the OSC 7 value once seen, otherwise the polled value). If that cwd is unknown, or is not an existing directory at spawn time, it MUST fall back to the launch cwd, then to an absolute `$HOME`, then to `/`, taking the first that exists. This is a precedence preference (the launch cwd over `$HOME`), not a failure fix: the PTY layer already starts the shell in `$HOME` when the cwd is not a directory. The existence check is injected into the app (the core does no IO); the runtime passes `Path::is_dir`.
 
 #### Scenario: Split inherits cwd [auto]
 - GIVEN the focused pane's cwd is `/tmp`
 - WHEN a split is requested
 - THEN the SpawnPane effect names `/tmp`
+
+#### Scenario: Vanished cwd falls back [auto]
+- GIVEN the focused pane's cwd was `/tmp/x` and the directory has since been removed
+- WHEN a split or a new tab is requested
+- THEN the SpawnPane effect names the launch cwd, or an absolute `$HOME` when the launch cwd is gone too, or `/` when nothing exists
+
+#### Scenario: Existing cwd is inherited unchanged [auto]
+- GIVEN the focused pane's cwd exists
+- WHEN a split is requested
+- THEN the SpawnPane effect names that cwd
 
 #### Scenario: Unknown cwd falls back [auto]
 - GIVEN the focused pane has no known cwd
