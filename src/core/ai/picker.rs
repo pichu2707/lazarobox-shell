@@ -532,6 +532,30 @@ impl Picker {
         }
     }
 
+    /// The identity of the row under the cursor.
+    pub fn key(&self, draft: &AiConfig, detection: Option<&Detection>) -> Option<PickKey> {
+        self.rows(draft, detection)
+            .get(self.cursor)
+            .map(|r| r.key.clone())
+    }
+
+    /// After the rows changed (a detection arrived), put the cursor back on
+    /// the row with the `previous` key, or clamp it when that row is gone.
+    pub fn reanchor(
+        &mut self,
+        previous: Option<PickKey>,
+        draft: &AiConfig,
+        detection: Option<&Detection>,
+    ) {
+        let rows = self.rows(draft, detection);
+        let found = previous.and_then(|key| rows.iter().position(|r| r.key == key));
+        self.cursor = found
+            .unwrap_or(self.cursor)
+            .min(rows.len().saturating_sub(1));
+        self.offset = self.offset.min(rows.len().saturating_sub(VIEW));
+        self.follow();
+    }
+
     /// The indexes of the rows inside the window.
     pub fn visible(&self, total: usize) -> std::ops::Range<usize> {
         let start = self.offset.min(total.saturating_sub(VIEW));
@@ -568,6 +592,8 @@ mod assign_tests;
 mod custom_tests;
 #[cfg(test)]
 mod machine_tests;
+#[cfg(test)]
+mod rekey_tests;
 #[cfg(test)]
 mod viewport_tests;
 
