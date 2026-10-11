@@ -4,7 +4,7 @@ use serde_json::Value;
 
 /// Models of a valid Ollama `/api/tags` body, or `None` for a foreign one.
 pub fn ollama_tags(body: &[u8]) -> Option<Vec<String>> {
-    Some(string_field(&array_field(body, "models")?, "name"))
+    Some(model_names(&array_field(body, "models")?, "name"))
 }
 
 /// The array under `key` of a JSON object body.
@@ -26,6 +26,17 @@ fn string_field(items: &[Value], key: &str) -> Vec<String> {
         .collect()
 }
 
+/// Model names under `key`: sanitized, non-empty, each capped at
+/// `MAX_NAME` characters, at most `MAX_MODELS` of them.
+fn model_names(items: &[Value], key: &str) -> Vec<String> {
+    string_field(items, key)
+        .into_iter()
+        .filter(|name| !name.is_empty())
+        .map(|name| name.chars().take(MAX_NAME).collect())
+        .take(MAX_MODELS)
+        .collect()
+}
+
 /// Models of a valid OpenAI-style `/v1/models` body. With an `owner`, at
 /// least one entry must carry that `owned_by` marker.
 pub fn openai_models(body: &[u8], owner: Option<&str>) -> Option<Vec<String>> {
@@ -35,11 +46,25 @@ pub fn openai_models(body: &[u8], owner: Option<&str>) -> Option<Vec<String>> {
     {
         return None;
     }
-    Some(string_field(&items, "id"))
+    Some(model_names(&items, "id"))
 }
 
-/// Drops ANSI CSI sequences (`ESC [ params final`) and any remaining control
-/// character, so engine output cannot inject terminal escapes into the UI.
+/// Longest model name kept, in characters.
+const MAX_NAME: usize = 128;
+
+/// Most models kept from one engine.
+const MAX_MODELS: usize = 256;
+
+/// Bidirectional and zero-width format characters: invisible, and able to
+/// reorder or hide the text around them.
+fn is_format(c: char) -> bool {
+    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+}
+
+/// Drops ANSI CSI sequences (`ESC [ params final`), OSC sequences
+/// (`ESC ] ... BEL` or `ESC ] ... ESC \`, to the end if unterminated), bidi
+/// and format characters, and any remaining control character, so engine
+/// output cannot inject terminal escapes or spoof the UI.
 fn sanitize(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -51,7 +76,14 @@ fn sanitize(text: &str) -> String {
                 .is_some()
             {}
             chars.next_if(|n| ('\u{40}'..='\u{7e}').contains(n));
-        } else if !c.is_control() {
+        } else if c == '\u{1b}' && chars.peek() == Some(&']') {
+            chars.next();
+            while let Some(n) = chars.next() {
+                if n == '\u{7}' || (n == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
+                    break;
+                }
+            }
+        } else if !c.is_control() && !is_format(c) {
             out.push(c);
         }
     }
@@ -187,5 +219,78 @@ mod tests {
     fn empty_output_has_no_version() {
         assert_eq!(parse_version(b""), None);
         assert_eq!(parse_version(b" \r\n\t\n"), None);
+    }
+
+    #[test]
+    fn sanitize_strips_osc_sequences_with_either_terminator() {
+        assert_eq!(sanitize("\x1b]0;title\x07x"), "x");
+        assert_eq!(sanitize("\x1b]0;title\x1b\\x"), "x");
+        assert_eq!(sanitize("a\x1b]8;;http://e\x07link\x1b]8;;\x07b"), "alinkb");
+        assert_eq!(sanitize("a\x1b]0;never ends"), "a");
+    }
+
+    #[test]
+    fn sanitize_covers_csi_intermediate_and_final_byte_edges() {
+        assert_eq!(sanitize("\x1b[1 qx"), "x");
+        assert_eq!(sanitize("\x1b[@x"), "x");
+        assert_eq!(sanitize("\x1b[?25~x"), "x");
+        assert_eq!(sanitize("\x1b[/~x"), "x");
+        assert_eq!(sanitize("\x1b[\u{7f}x"), "x");
+    }
+
+    #[test]
+    fn sanitize_drops_bidi_and_format_characters() {
+        assert_eq!(sanitize("exe\u{202e}gnp.txt"), "exegnp.txt");
+        for c in [
+            '\u{200b}', '\u{200f}', '\u{202a}', '\u{202e}', '\u{2066}', '\u{2069}', '\u{feff}',
+        ] {
+            assert_eq!(sanitize(&format!("a{c}b")), "ab", "U+{:04X}", c as u32);
+        }
+        assert_eq!(
+            sanitize("a\u{200a}\u{2010}\u{202f}\u{2065}\u{206a}b"),
+            "a\u{200a}\u{2010}\u{202f}\u{2065}\u{206a}b"
+        );
+    }
+
+    fn names(n: usize, len: usize) -> Vec<u8> {
+        let items: Vec<String> = (0..n)
+            .map(|i| {
+                format!(
+                    "{{\"name\":\"{}\"}}",
+                    format!("{i:x}")
+                        .repeat(len)
+                        .chars()
+                        .take(len)
+                        .collect::<String>()
+                )
+            })
+            .collect();
+        format!("{{\"models\":[{}]}}", items.join(",")).into_bytes()
+    }
+
+    #[test]
+    fn model_names_are_capped_at_128_characters() {
+        let long = |n: usize| format!("{{\"models\":[{{\"name\":\"{}\"}}]}}", "a".repeat(n));
+        assert_eq!(ollama_tags(long(128).as_bytes()), strs(&[&"a".repeat(128)]));
+        assert_eq!(ollama_tags(long(129).as_bytes()), strs(&[&"a".repeat(128)]));
+        let wide = format!("{{\"data\":[{{\"id\":\"{}\"}}]}}", "é".repeat(200));
+        assert_eq!(
+            openai_models(wide.as_bytes(), None),
+            strs(&[&"é".repeat(128)])
+        );
+    }
+
+    #[test]
+    fn the_model_list_is_capped_at_256_entries() {
+        assert_eq!(ollama_tags(&names(256, 3)).map(|m| m.len()), Some(256));
+        assert_eq!(ollama_tags(&names(257, 3)).map(|m| m.len()), Some(256));
+    }
+
+    #[test]
+    fn names_that_sanitize_to_empty_are_dropped() {
+        let body = "{\"models\":[{\"name\":\"\\u001b[0m\"},{\"name\":\"\"},{\"name\":\"\\u202e\"},{\"name\":\"ok\"}]}";
+        assert_eq!(ollama_tags(body.as_bytes()), strs(&["ok"]));
+        let openai = "{\"data\":[{\"id\":\"\\u001b]0;t\\u0007\"},{\"id\":\"m\"}]}";
+        assert_eq!(openai_models(openai.as_bytes(), None), strs(&["m"]));
     }
 }

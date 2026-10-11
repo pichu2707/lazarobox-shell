@@ -36,7 +36,11 @@ pub fn parse_response(raw: &[u8]) -> Option<(u16, Vec<u8>)> {
             }
             length = Some(n);
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
-            chunked = value.eq_ignore_ascii_case("chunked");
+            // Chunked framing is the last coding of the last header.
+            chunked = value
+                .rsplit(',')
+                .next()
+                .is_some_and(|last| last.trim().eq_ignore_ascii_case("chunked"));
         }
     }
     let body = if chunked {
@@ -178,6 +182,35 @@ mod tests {
         assert_eq!(parse_response(both), None);
         let signed = b"HTTP/1.1 200 OK\r\nContent-Length: +2\r\n\r\nok";
         assert_eq!(parse_response(signed), None);
+    }
+
+    #[test]
+    fn chunked_is_the_last_transfer_coding_of_the_last_header() {
+        let body = "2\r\nok\r\n0\r\n\r\n";
+        let raw = |te: &str| format!("HTTP/1.1 200 OK\r\n{te}\r\n\r\n{body}").into_bytes();
+        let plain = |te: &str| format!("HTTP/1.1 200 OK\r\n{te}\r\n\r\nok").into_bytes();
+        assert_eq!(
+            parse_response(&raw("Transfer-Encoding: gzip, chunked")),
+            ok("ok")
+        );
+        assert_eq!(
+            parse_response(&raw("Transfer-Encoding: gzip,CHUNKED ")),
+            ok("ok")
+        );
+        assert_eq!(
+            parse_response(&raw(
+                "Transfer-Encoding: gzip\r\nTransfer-Encoding: chunked"
+            )),
+            ok("ok")
+        );
+        assert_eq!(
+            parse_response(&plain("Transfer-Encoding: chunked, gzip")),
+            ok("ok")
+        );
+        assert_eq!(
+            parse_response(&plain("Transfer-Encoding: identity")),
+            ok("ok")
+        );
     }
 
     #[test]
