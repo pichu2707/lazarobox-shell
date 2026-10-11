@@ -22,7 +22,7 @@ fn array_field(body: &[u8], key: &str) -> Option<Vec<Value>> {
 fn string_field(items: &[Value], key: &str) -> Vec<String> {
     items
         .iter()
-        .filter_map(|item| item.get(key)?.as_str().map(str::to_owned))
+        .filter_map(|item| item.get(key)?.as_str().map(sanitize))
         .collect()
 }
 
@@ -38,13 +38,37 @@ pub fn openai_models(body: &[u8], owner: Option<&str>) -> Option<Vec<String>> {
     Some(string_field(&items, "id"))
 }
 
-/// First non-empty stdout line, trimmed and capped at 40 characters.
+/// Drops ANSI CSI sequences (`ESC [ params final`) and any remaining control
+/// character, so engine output cannot inject terminal escapes into the UI.
+fn sanitize(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            while chars
+                .next_if(|n| ('\u{20}'..='\u{3f}').contains(n))
+                .is_some()
+            {}
+            chars.next_if(|n| ('\u{40}'..='\u{7e}').contains(n));
+        } else if !c.is_control() {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// First non-empty stdout line, sanitized, trimmed and capped at 40
+/// characters.
 pub fn parse_version(stdout: &[u8]) -> Option<String> {
     String::from_utf8_lossy(stdout)
         .lines()
-        .map(str::trim)
+        .map(|line| sanitize(line).trim().to_string())
         .find(|line| !line.is_empty())
-        .map(|line| line.chars().take(40).collect())
+        .map(|line| {
+            let capped: String = line.chars().take(40).collect();
+            capped.trim_end().to_string()
+        })
 }
 
 #[cfg(test)]
@@ -131,6 +155,32 @@ mod tests {
             parse_version("a".repeat(41).as_bytes()),
             some("a".repeat(40))
         );
+    }
+
+    #[test]
+    fn version_strips_ansi_and_control_characters() {
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            parse_version(b"\x1b[31mcodex 1.0\x1b[0m\n"),
+            some("codex 1.0")
+        );
+        assert_eq!(parse_version(b"co\x07de\x00x 1\x1b"), some("codex 1"));
+        assert_eq!(parse_version("a\u{9b}b\u{85}c".as_bytes()), some("abc"));
+        assert_eq!(parse_version(b"\x1b[0m\ncodex 2"), some("codex 2"));
+    }
+
+    #[test]
+    fn version_is_trimmed_again_after_the_cap() {
+        let raw = format!("{} tail", "a".repeat(39));
+        assert_eq!(parse_version(raw.as_bytes()), Some("a".repeat(39)));
+    }
+
+    #[test]
+    fn model_names_are_sanitized() {
+        let body = "{\"models\":[{\"name\":\"ll\\u001b[31mama\\n3\"}]}";
+        assert_eq!(ollama_tags(body.as_bytes()), strs(&["llama3"]));
+        let openai = "{\"data\":[{\"id\":\"a\\u001b[0mb\\u0007\"}]}";
+        assert_eq!(openai_models(openai.as_bytes(), None), strs(&["ab"]));
     }
 
     #[test]
