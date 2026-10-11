@@ -5357,6 +5357,48 @@ mod app_tests {
         assert_eq!(a.ai(), &ai_of("claude", "default"));
     }
 
+    // Manual check VP.2: Engine to claude (a CLI engine), refresh, Enter must
+    // ask the runtime to write both AI keys, never close silently.
+    #[test]
+    fn enter_after_choosing_a_cli_engine_and_refreshing_asks_to_save_it() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        a.update(key('j'));
+        a.update(key('j'));
+        a.update(key('l'));
+        a.update(key('r'));
+        a.update(AppEvent::EnginesDetected(machine()));
+        assert_eq!(ai_values(&a), vec!["claude", "default", "available"]);
+        let edit = |key, value: &'static str| crate::core::config::ConfigEdit {
+            table: "ai",
+            key,
+            value: value.into(),
+        };
+        assert_eq!(
+            a.update(code(KeyCode::Enter)),
+            vec![Effect::SaveConfig(vec![
+                edit("engine", "claude"),
+                edit("model", "default")
+            ])]
+        );
+    }
+
+    // Characterization: before the first detection answers there is nothing
+    // to choose, so cycling does nothing and Enter closes with no save.
+    #[test]
+    fn enter_before_any_detection_has_nothing_to_save() {
+        let mut a = launched(80, 25).with_ai(AiConfig::default());
+        press(&mut a, "tn");
+        open_menu(&mut a);
+        a.update(key('j'));
+        a.update(key('j'));
+        a.update(key('l'));
+        assert_eq!(ai_values(&a), vec!["none", "none", "-"]);
+        assert_eq!(a.update(code(KeyCode::Enter)), Vec::<Effect>::new());
+        assert!(a.menu().is_none());
+    }
+
     // Spec: Unchanged AI draft.
     #[test]
     fn an_unchanged_ai_draft_closes_without_a_save() {

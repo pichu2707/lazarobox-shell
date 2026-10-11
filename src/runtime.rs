@@ -1043,6 +1043,65 @@ mod tests {
         assert_eq!(app.input(), crate::app::InputMode::Terminal);
     }
 
+    fn claude_detected() -> crate::core::ai::Detection {
+        use crate::core::ai::{CATALOG, Detection, EngineState, Status};
+        Detection {
+            engines: CATALOG
+                .iter()
+                .map(|e| EngineState {
+                    id: e.id,
+                    status: if e.id == "claude" || e.id == "ollama" {
+                        Status::Available
+                    } else {
+                        Status::NotInstalled
+                    },
+                    models: if e.id == "claude" {
+                        vec!["default".to_owned()]
+                    } else if e.id == "ollama" {
+                        vec!["llama3.2:3b-ctx".to_owned()]
+                    } else {
+                        Vec::new()
+                    },
+                    version: None,
+                })
+                .collect(),
+        }
+    }
+
+    // Manual check VP.2: change Engine to claude, refresh, Enter, and the
+    // choice must reach a config.toml that did not exist (nor its directory).
+    #[test]
+    fn saving_an_ai_engine_with_no_config_file_writes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".config/lazarobox/config.toml");
+        let mut panes = panes_saving_to(Some(path.clone()));
+        let mut app = App::new(80, 25).with_ai(AiConfig::default());
+        for event in [
+            menu_key(' ', KeyModifiers::CONTROL),
+            menu_key('m', KeyModifiers::NONE),
+            AppEvent::EnginesDetected(claude_detected()),
+        ] {
+            assert!(!step(&mut app, event, &mut panes));
+        }
+        while !app.menu().is_some_and(|menu| menu.on_ai_row()) {
+            step(&mut app, menu_key('j', KeyModifiers::NONE), &mut panes);
+        }
+        for event in [
+            menu_key('l', KeyModifiers::NONE),
+            menu_key('l', KeyModifiers::NONE),
+            menu_key('r', KeyModifiers::NONE),
+            AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        ] {
+            assert!(!step(&mut app, event, &mut panes));
+        }
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "[ai]\nengine = \"claude\"\nmodel = \"default\"\n"
+        );
+        assert!(app.menu().is_none());
+        assert_eq!(app.ai().engine.as_deref(), Some("claude"));
+    }
+
     #[test]
     fn a_failed_save_leaves_the_menu_open_with_the_error() {
         let mut panes = panes_saving_to(None);
