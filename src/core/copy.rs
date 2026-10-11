@@ -222,22 +222,6 @@ impl CopyState {
         self.selection = None;
         CopyCommand::Exit
     }
-
-    /// Moves the viewport, clamped to `0..=max` (`max` = rows of history).
-    /// `rows` is the pane height; a half page is `rows / 2`, at least 1.
-    pub fn apply(&mut self, motion: CopyMotion, max: usize, rows: u16) {
-        let half = usize::from(rows / 2).max(1);
-        let target = match motion {
-            CopyMotion::LineUp => self.offset.saturating_add(1),
-            CopyMotion::LineDown => self.offset.saturating_sub(1),
-            CopyMotion::HalfUp => self.offset.saturating_add(half),
-            CopyMotion::HalfDown => self.offset.saturating_sub(half),
-            CopyMotion::Top => max,
-            CopyMotion::Bottom => 0,
-            _ => self.offset,
-        };
-        self.offset = target.min(max);
-    }
 }
 
 /// Inclusive range of cells over stable line numbers (see `Pane::first_line`).
@@ -387,73 +371,22 @@ mod tests {
         assert_eq!(s.on_key(&press('g'), false), CopyCommand::Ignore);
     }
 
-    #[test]
-    fn line_motions_move_one_row_and_return() {
-        let mut s = at(0);
-        s.apply(CopyMotion::LineUp, 100, ROWS);
-        assert_eq!(s.offset, 1);
-        s.apply(CopyMotion::LineDown, 100, ROWS);
-        assert_eq!(s.offset, 0);
-    }
-
-    #[test]
-    fn half_page_moves_half_the_pane_height() {
-        let mut s = at(0);
-        s.apply(CopyMotion::HalfUp, 100, ROWS);
-        assert_eq!(s.offset, 12);
-        s.apply(CopyMotion::HalfDown, 100, ROWS);
-        assert_eq!(s.offset, 0);
-        s.apply(CopyMotion::HalfUp, 100, 10);
-        assert_eq!(s.offset, 5);
-    }
-
+    // Characterization (ported from the viewport-only `apply` tests).
     #[test]
     fn half_page_moves_at_least_one_row_on_a_tiny_pane() {
-        let mut s = at(0);
-        s.apply(CopyMotion::HalfUp, 100, 1);
-        assert_eq!(s.offset, 1);
+        let geo = Geometry { rows: 1, ..geo() };
+        let mut s = cursor_at(110, 0, 0);
+        s.apply_motion(CopyMotion::HalfUp, geo, 0);
+        assert_eq!((s.cursor.line, s.offset), (109, 1));
     }
 
     #[test]
-    fn top_and_bottom_jump_to_the_bounds() {
-        let mut s = at(40);
-        s.apply(CopyMotion::Top, 100, ROWS);
-        assert_eq!(s.offset, 100);
-        s.apply(CopyMotion::Bottom, 100, ROWS);
-        assert_eq!(s.offset, 0);
-    }
-
-    #[test]
-    fn motions_clamp_at_the_top() {
-        for motion in [CopyMotion::LineUp, CopyMotion::HalfUp, CopyMotion::Top] {
-            let mut s = at(100);
-            s.apply(motion, 100, ROWS);
-            assert_eq!(s.offset, 100, "{motion:?}");
-        }
-        let mut s = at(95);
-        s.apply(CopyMotion::HalfUp, 100, ROWS);
-        assert_eq!(s.offset, 100);
-    }
-
-    #[test]
-    fn motions_clamp_at_the_bottom() {
-        for motion in [
-            CopyMotion::LineDown,
-            CopyMotion::HalfDown,
-            CopyMotion::Bottom,
-        ] {
-            let mut s = at(0);
-            s.apply(motion, 100, ROWS);
-            assert_eq!(s.offset, 0, "{motion:?}");
-        }
-        let mut s = at(5);
-        s.apply(CopyMotion::HalfDown, 100, ROWS);
-        assert_eq!(s.offset, 0);
-    }
-
-    #[test]
-    fn no_history_keeps_every_motion_at_zero() {
-        // Alternate screen: scrollback is empty, so max == 0.
+    fn no_history_keeps_every_vertical_motion_at_zero() {
+        let geo = Geometry {
+            history: 0,
+            first_line: 0,
+            ..geo()
+        };
         for motion in [
             CopyMotion::LineUp,
             CopyMotion::LineDown,
@@ -462,17 +395,17 @@ mod tests {
             CopyMotion::Top,
             CopyMotion::Bottom,
         ] {
-            let mut s = at(0);
-            s.apply(motion, 0, ROWS);
+            let mut s = cursor_at(0, 0, 0);
+            s.apply_motion(motion, geo, 0);
             assert_eq!(s.offset, 0, "{motion:?}");
         }
     }
 
     #[test]
     fn stale_offset_beyond_history_is_clamped_on_move() {
-        let mut s = at(50);
-        s.apply(CopyMotion::LineDown, 10, ROWS);
-        assert_eq!(s.offset, 10);
+        let mut s = cursor_at(20, 0, 500);
+        s.apply_motion(CopyMotion::LineDown, geo(), 0);
+        assert_eq!(s.offset, 100);
     }
 
     // copy-selection: CopyState core.
