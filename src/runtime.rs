@@ -114,6 +114,11 @@ pub async fn run() -> io::Result<()> {
     result
 }
 
+/// This machine's hostname, for OSC 7 host checks. `None` when the lookup fails.
+fn local_hostname() -> Option<String> {
+    None
+}
+
 /// Reads the config once at startup; a missing file is silent defaults.
 fn load_config() -> (Config, Option<String>) {
     let path = config_path(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"));
@@ -411,6 +416,16 @@ mod tests {
                 .await
                 .unwrap_or_else(|_| panic!("signal {signum} did not request shutdown"));
         }
+    }
+
+    // Spec: OSC 7 accepts this machine's hostname, so the lookup must work.
+    #[test]
+    fn local_hostname_matches_the_kernel_hostname() {
+        let expected = std::fs::read_to_string("/proc/sys/kernel/hostname")
+            .expect("linux hostname")
+            .trim()
+            .to_owned();
+        assert_eq!(local_hostname(), Some(expected));
     }
 
     // Spec: a failed cwd lookup keeps the previous value (no event is sent).
