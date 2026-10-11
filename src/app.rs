@@ -5229,10 +5229,7 @@ mod app_tests {
     }
 
     fn ai_of(engine: &str, model: &str) -> AiConfig {
-        AiConfig {
-            engine: Some(engine.to_owned()),
-            model: Some(model.to_owned()),
-        }
+        AiConfig::general(Some(engine), Some(model))
     }
 
     /// The Engine, Model and Status values of the open menu.

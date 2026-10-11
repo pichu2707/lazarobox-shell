@@ -537,10 +537,7 @@ mod tests {
         let app = app_from_config(80, 25, Some(&path));
         assert_eq!(
             app.ai(),
-            &AiConfig {
-                engine: Some("ollama".into()),
-                model: Some("llama3:8b".into()),
-            }
+            &AiConfig::general(Some("ollama"), Some("llama3:8b"))
         );
     }
 
@@ -1099,7 +1096,10 @@ mod tests {
             "[ai]\nengine = \"claude\"\nmodel = \"default\"\n"
         );
         assert!(app.menu().is_none());
-        assert_eq!(app.ai().engine.as_deref(), Some("claude"));
+        assert_eq!(
+            app.ai(),
+            &AiConfig::general(Some("claude"), Some("default"))
+        );
     }
 
     #[test]

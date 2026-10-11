@@ -44,10 +44,7 @@ fn machine() -> Detection {
 }
 
 fn saved(engine: Option<&str>, model: Option<&str>) -> AiConfig {
-    AiConfig {
-        engine: engine.map(str::to_owned),
-        model: model.map(str::to_owned),
-    }
+    AiConfig::general(engine, model)
 }
 
 fn menu(engine: Option<&str>, model: Option<&str>, found: Option<Detection>) -> MenuState {

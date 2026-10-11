@@ -361,10 +361,7 @@ mod tests {
     }
 
     fn with_ai(model: &str) -> MenuState {
-        let saved = AiConfig {
-            engine: Some("ollama".to_owned()),
-            model: Some(model.to_owned()),
-        };
+        let saved = AiConfig::general(Some("ollama"), Some(model));
         fresh().with_ai(saved, Some(machine()))
     }
 
