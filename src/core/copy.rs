@@ -85,8 +85,28 @@ impl CopyState {
     }
 
     /// The selected cells, `None` without a selection.
-    pub fn span(&self, _cols: u16) -> Option<LineSpan> {
-        None
+    pub fn span(&self, cols: u16) -> Option<LineSpan> {
+        let sel = self.selection?;
+        let (a, b) = (sel.anchor, self.cursor);
+        Some(match sel.kind {
+            SelectionKind::Char => LineSpan::new((a.line, a.col), (b.line, b.col)),
+            SelectionKind::Line => LineSpan::new(
+                (a.line.min(b.line), 0),
+                (a.line.max(b.line), cols.saturating_sub(1)),
+            ),
+        })
+    }
+
+    /// `v`/`V`: start, clear (same key) or switch kind (other key).
+    fn toggle_selection(&mut self, kind: SelectionKind) {
+        self.selection = match self.selection {
+            Some(s) if s.kind == kind => None,
+            Some(s) => Some(Selection { kind, ..s }),
+            None => Some(Selection {
+                anchor: self.cursor,
+                kind,
+            }),
+        };
     }
 
     /// Moves the cursor (and the viewport only as far as needed).
@@ -151,10 +171,19 @@ impl CopyState {
 
     /// Interprets a key. A pending `g` is dropped by any key other than `g`,
     /// which is then handled on its own.
-    pub fn on_key(&mut self, key: &KeyEvent, _repeat: bool) -> CopyCommand {
+    pub fn on_key(&mut self, key: &KeyEvent, repeat: bool) -> CopyCommand {
         let was_pending = std::mem::take(&mut self.pending_g);
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
         let ctrl = key.modifiers == KeyModifiers::CONTROL;
+        // A held selection or exit key must not toggle, yank or leave COPY
+        // (the leftover repeats would reach the shell as typed text).
+        let one_shot = matches!(
+            key.code,
+            KeyCode::Char('v' | 'V' | 'y' | 'q' | 'i') | KeyCode::Esc
+        );
+        if repeat && plain && one_shot {
+            return CopyCommand::Ignore;
+        }
         match key.code {
             KeyCode::Char('g') if plain => {
                 if was_pending {
@@ -164,19 +193,33 @@ impl CopyState {
                     CopyCommand::Ignore
                 }
             }
+            KeyCode::Char('v') if plain => self.select(SelectionKind::Char),
+            KeyCode::Char('V') if plain => self.select(SelectionKind::Line),
+            KeyCode::Char('h') if plain => CopyCommand::Move(CopyMotion::Left),
+            KeyCode::Char('l') if plain => CopyCommand::Move(CopyMotion::Right),
+            KeyCode::Char('0') if plain => CopyCommand::Move(CopyMotion::LineStart),
+            KeyCode::Char('$') if plain => CopyCommand::Move(CopyMotion::LineEnd),
             KeyCode::Char('j') if plain => CopyCommand::Move(CopyMotion::LineDown),
             KeyCode::Char('k') if plain => CopyCommand::Move(CopyMotion::LineUp),
             KeyCode::Char('G') if plain => CopyCommand::Move(CopyMotion::Bottom),
             KeyCode::Char('d') if ctrl => CopyCommand::Move(CopyMotion::HalfDown),
             KeyCode::Char('u') if ctrl => CopyCommand::Move(CopyMotion::HalfUp),
             KeyCode::Char('q' | 'i') if plain => self.exit(),
+            KeyCode::Char('y') if plain && self.selection.is_some() => CopyCommand::Yank,
+            KeyCode::Esc if plain && self.selection.take().is_some() => CopyCommand::Ignore,
             KeyCode::Esc if plain => self.exit(),
             _ => CopyCommand::Ignore,
         }
     }
 
+    fn select(&mut self, kind: SelectionKind) -> CopyCommand {
+        self.toggle_selection(kind);
+        CopyCommand::Ignore
+    }
+
     fn exit(&mut self) -> CopyCommand {
         self.offset = 0;
+        self.selection = None;
         CopyCommand::Exit
     }
 
@@ -601,6 +644,214 @@ mod tests {
         assert_eq!((s.cursor, s.offset), (pt(10, 0), 100));
         s.apply_motion(CopyMotion::Bottom, geo(), 0);
         assert_eq!((s.cursor, s.offset), (pt(133, 0), 0));
+    }
+
+    fn sel(anchor: Point, kind: SelectionKind) -> Option<Selection> {
+        Some(Selection { anchor, kind })
+    }
+
+    #[test]
+    fn v_starts_a_character_selection_at_the_cursor() {
+        let mut s = cursor_at(115, 3, 0);
+        assert_eq!(s.on_key(&press('v'), false), CopyCommand::Ignore);
+        assert_eq!(s.selection, sel(pt(115, 3), SelectionKind::Char));
+    }
+
+    #[test]
+    fn shift_v_starts_a_line_selection_at_the_cursor() {
+        let mut s = cursor_at(115, 3, 0);
+        let key = KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT);
+        assert_eq!(s.on_key(&key, false), CopyCommand::Ignore);
+        assert_eq!(s.selection, sel(pt(115, 3), SelectionKind::Line));
+    }
+
+    #[test]
+    fn the_same_selection_key_again_clears() {
+        for key in [press('v'), press('V')] {
+            let mut s = cursor_at(115, 3, 0);
+            s.on_key(&key, false);
+            s.on_key(&key, false);
+            assert_eq!(s.selection, None, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn the_other_selection_key_switches_kind_and_keeps_the_anchor() {
+        let mut s = cursor_at(115, 3, 0);
+        s.on_key(&press('v'), false);
+        s.cursor = pt(118, 9);
+        s.on_key(&press('V'), false);
+        assert_eq!(s.selection, sel(pt(115, 3), SelectionKind::Line));
+        s.on_key(&press('v'), false);
+        assert_eq!(s.selection, sel(pt(115, 3), SelectionKind::Char));
+    }
+
+    #[test]
+    fn span_is_none_without_a_selection() {
+        assert_eq!(cursor_at(115, 3, 0).span(80), None);
+    }
+
+    #[test]
+    fn moving_left_extends_a_character_span_backwards() {
+        let mut s = cursor_at(115, 3, 0);
+        s.on_key(&press('v'), false);
+        s.apply_motion(CopyMotion::Left, geo(), 0);
+        s.apply_motion(CopyMotion::Left, geo(), 0);
+        assert_eq!(s.span(80), Some(LineSpan::new((115, 1), (115, 3))));
+        assert_eq!(
+            s.span(80),
+            Some(LineSpan {
+                first: 115,
+                last: 115,
+                first_col: 1,
+                last_col: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn moving_past_the_anchor_reorders_the_span() {
+        let mut s = cursor_at(115, 3, 0);
+        s.on_key(&press('v'), false);
+        s.apply_motion(CopyMotion::LineDown, geo(), 0);
+        assert_eq!(s.span(80), Some(LineSpan::new((115, 3), (116, 3))));
+        s.apply_motion(CopyMotion::LineUp, geo(), 0);
+        s.apply_motion(CopyMotion::LineUp, geo(), 0);
+        assert_eq!(
+            s.span(80),
+            Some(LineSpan {
+                first: 114,
+                last: 115,
+                first_col: 3,
+                last_col: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn a_line_selection_spans_whole_rows_in_either_direction() {
+        let mut s = cursor_at(115, 3, 0);
+        s.on_key(&press('V'), false);
+        s.apply_motion(CopyMotion::LineDown, geo(), 0);
+        s.apply_motion(CopyMotion::LineDown, geo(), 0);
+        let whole = LineSpan {
+            first: 115,
+            last: 117,
+            first_col: 0,
+            last_col: 79,
+        };
+        assert_eq!(s.span(80), Some(whole));
+        s.cursor = pt(113, 5);
+        assert_eq!(
+            s.span(80),
+            Some(LineSpan {
+                first: 113,
+                last: 115,
+                first_col: 0,
+                last_col: 79,
+            })
+        );
+    }
+
+    fn selecting(kind: SelectionKind) -> CopyState {
+        CopyState {
+            selection: sel(pt(115, 3), kind),
+            ..cursor_at(116, 4, 6)
+        }
+    }
+
+    fn esc() -> KeyEvent {
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn horizontal_keys_map_to_motions() {
+        let mut s = CopyState::default();
+        let cases = [
+            (press('h'), CopyMotion::Left),
+            (press('l'), CopyMotion::Right),
+            (press('0'), CopyMotion::LineStart),
+            (
+                KeyEvent::new(KeyCode::Char('$'), KeyModifiers::SHIFT),
+                CopyMotion::LineEnd,
+            ),
+            (press('$'), CopyMotion::LineEnd),
+        ];
+        for (key, motion) in cases {
+            assert_eq!(s.on_key(&key, false), CopyCommand::Move(motion), "{key:?}");
+        }
+    }
+
+    #[test]
+    fn y_with_a_selection_yanks_and_without_is_ignored() {
+        let mut s = selecting(SelectionKind::Char);
+        assert_eq!(s.on_key(&press('y'), false), CopyCommand::Yank);
+        let mut none = cursor_at(116, 4, 6);
+        assert_eq!(none.on_key(&press('y'), false), CopyCommand::Ignore);
+        assert_eq!(none, cursor_at(116, 4, 6));
+    }
+
+    #[test]
+    fn esc_with_a_selection_clears_it_and_stays() {
+        let mut s = selecting(SelectionKind::Line);
+        assert_eq!(s.on_key(&esc(), false), CopyCommand::Ignore);
+        assert_eq!(s.selection, None);
+        assert_eq!((s.cursor, s.offset), (pt(116, 4), 6));
+        // A second Esc, with nothing left to clear, leaves copy mode.
+        assert_eq!(s.on_key(&esc(), false), CopyCommand::Exit);
+    }
+
+    #[test]
+    fn q_and_i_exit_even_with_a_selection_and_drop_it() {
+        for key in [press('q'), press('i')] {
+            let mut s = selecting(SelectionKind::Char);
+            assert_eq!(s.on_key(&key, false), CopyCommand::Exit, "{key:?}");
+            assert_eq!((s.selection, s.offset), (None, 0), "{key:?}");
+        }
+    }
+
+    #[test]
+    fn unlisted_keys_stay_ignored_with_a_selection() {
+        let mut s = selecting(SelectionKind::Char);
+        for key in [press('x'), ctrl('x'), press('p')] {
+            assert_eq!(s.on_key(&key, false), CopyCommand::Ignore, "{key:?}");
+        }
+        assert_eq!(s, selecting(SelectionKind::Char));
+    }
+
+    #[test]
+    fn repeat_of_selection_and_exit_keys_changes_nothing() {
+        let held = [
+            press('v'),
+            press('V'),
+            press('y'),
+            esc(),
+            press('q'),
+            press('i'),
+        ];
+        for key in held {
+            let mut with = selecting(SelectionKind::Char);
+            assert_eq!(with.on_key(&key, true), CopyCommand::Ignore, "{key:?}");
+            assert_eq!(with, selecting(SelectionKind::Char), "{key:?}");
+            let mut without = cursor_at(116, 4, 6);
+            assert_eq!(without.on_key(&key, true), CopyCommand::Ignore, "{key:?}");
+            assert_eq!(without, cursor_at(116, 4, 6), "{key:?}");
+        }
+    }
+
+    #[test]
+    fn repeat_of_motions_moves_like_press() {
+        let cases = [
+            (press('j'), CopyMotion::LineDown),
+            (press('k'), CopyMotion::LineUp),
+            (press('h'), CopyMotion::Left),
+            (press('l'), CopyMotion::Right),
+            (ctrl('d'), CopyMotion::HalfDown),
+        ];
+        for (key, motion) in cases {
+            let mut s = CopyState::default();
+            assert_eq!(s.on_key(&key, true), CopyCommand::Move(motion), "{key:?}");
+        }
     }
 
     // copy-selection: LineSpan and join.
