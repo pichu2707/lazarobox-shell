@@ -3,7 +3,7 @@
 **Change**: config-menu
 **Mode**: Strict TDD (hybrid store: openspec + engram)
 **Verified commit**: origin/feat/config-menu @ 74b5d29
-**Verdict**: PASS WITH WARNINGS (0 CRITICAL, 6 WARNING, 4 SUGGESTION)
+**Verdict**: PASS WITH WARNINGS (0 CRITICAL, 6 WARNING of which W2 and W4 resolved in PR #46, 4 SUGGESTION)
 
 ## Completeness
 
@@ -157,9 +157,9 @@ None.
 
 ### WARNING
 - W1. Relative HOME: "save failed: no config path (HOME is not set)" is misleading when HOME is set but relative. The spec ("no usable XDG_CONFIG_HOME or absolute HOME") is met; only the wording is off. Deferred follow-up.
-- W2. Design CM-9 says "No newline normalisation is done, so untouched bytes stay identical", which contradicts the implemented and spec-covered rule (first line ending wins, mixed files normalised to it, missing final newline added). Update the CM-9 text. Mixed-ending normalisation is a deferred follow-up.
+- W2. RESOLVED in PR #46 (design CM-9 rewritten). Was: design CM-9 says "No newline normalisation is done, so untouched bytes stay identical", which contradicts the implemented and spec-covered rule (first line ending wins, mixed files normalised to it, missing final newline added). Update the CM-9 text. Mixed-ending normalisation is a deferred follow-up.
 - W3. Deferred robustness gaps, none violating an explicit scenario: ownership not preserved on the replaced file; no directory fsync after rename (atomic but not power-loss durable); a dangling parent chain yields "File exists (os error 17)"; a dangling target with a parent-dir component creates a stray directory; BOM and trailing-newline edge cases.
-- W4. tasks.md has no tasks for the CM4b-iii hardening (dangling symlinks, read-only refusal, KeyIsTable, line endings); CM4a.2 still lists EditError::{Unparseable, NotATable} only. The work is spec and test covered, but task traceability lags the code.
+- W4. RESOLVED in PR #46 (CM4a.2 updated, CM4a.14, CM4a.15 and CM4b.13 added, PR list added). Was: tasks.md has no tasks for the CM4b-iii hardening (dangling symlinks, read-only refusal, KeyIsTable, line endings); CM4a.2 still lists EditError::{Unparseable, NotATable} only. The work is spec and test covered, but task traceability lags the code.
 - W5. apply-progress has no per-task TDD Cycle Evidence table, so RED-first for most slices cannot be re-verified from the artifact (only from commit history and PR text). Process warning, not a code defect.
 - W6. "Minimal message and Esc works" has no single end-to-end test (render tiny, then Esc); it is covered by two independent tests (fallback render, size-independent key path).
 
