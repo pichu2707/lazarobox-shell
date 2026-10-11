@@ -225,7 +225,7 @@ pub fn model_rows(
             }
         }
         if names.is_empty() {
-            return vec![info("no models detected", Mark::Checking)];
+            return vec![info("checking…", Mark::Plain)];
         }
         return names
             .iter()
@@ -847,13 +847,7 @@ mod tests {
         assert_eq!(rows, expected);
         assert_eq!(
             model_rows("lmstudio", Target::Task(Task::Code), &draft, None),
-            [row(
-                PickKey::Info,
-                "no models detected",
-                Mark::Checking,
-                false,
-                false
-            )]
+            [info("checking…")]
         );
     }
 
