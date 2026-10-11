@@ -12,20 +12,48 @@ pub enum EditError {
     Unparseable,
     /// The named entry exists but is not a table.
     NotATable(&'static str),
+    /// The owned key exists but holds a table (`[table.key]` or an inline
+    /// table), so writing a plain value would destroy its content.
+    KeyIsTable {
+        table: &'static str,
+        key: &'static str,
+    },
 }
 
 /// Applies `edits` to the existing file text (`None` means no file yet) and
 /// returns the new text.
+///
+/// Line endings: if the text contains any `\r\n`, the whole result uses
+/// `\r\n` (a mixed file is made uniformly CRLF); otherwise it uses `\n`.
+///
+/// Known limits, not fixed on purpose: a missing trailing newline gets
+/// added, and a leading UTF-8 BOM is dropped.
 pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String, EditError> {
+    let crlf = existing.is_some_and(|text| text.contains("\r\n"));
     let mut doc = match existing {
         Some(text) => text
+            .replace("\r\n", "\n")
             .parse::<DocumentMut>()
             .map_err(|_| EditError::Unparseable)?,
         None => DocumentMut::new(),
     };
     for edit in edits {
         if doc.get(edit.table).is_none() {
-            doc.insert(edit.table, Item::Table(Table::new()));
+            let mut table = Table::new();
+            if doc.as_table().is_empty() {
+                // Comments of a file with no entries are the document's
+                // trailing text; move them in front of the new table.
+                let mut head = doc.trailing().as_str().unwrap_or_default().to_owned();
+                if !head.is_empty() {
+                    if !head.ends_with('\n') {
+                        head.push('\n');
+                    }
+                    head.push('\n');
+                }
+                doc.set_trailing("");
+                table.decor_mut().set_prefix(head);
+            }
+            doc.insert(edit.table, Item::Table(table));
         }
         let table = doc
             .get_mut(edit.table)
@@ -37,6 +65,12 @@ pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String
             // spacing) stays, and keep the old value's decor so a trailing
             // `# comment` survives.
             Some(slot) => {
+                if slot.is_table_like() {
+                    return Err(EditError::KeyIsTable {
+                        table: edit.table,
+                        key: edit.key,
+                    });
+                }
                 if let Some(old) = slot.as_value() {
                     *value.decor_mut() = old.decor().clone();
                 }
@@ -47,7 +81,12 @@ pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String
             }
         }
     }
-    Ok(doc.to_string())
+    let text = doc.to_string();
+    Ok(if crlf {
+        text.replace('\n', "\r\n")
+    } else {
+        text
+    })
 }
 
 #[cfg(test)]
@@ -161,6 +200,78 @@ other = 1
             apply_edit(Some("[statusline\n"), &one),
             Err(EditError::Unparseable)
         );
+    }
+
+    #[test]
+    fn empty_edits_leave_an_lf_file_byte_identical() {
+        assert_eq!(apply_edit(Some(COMMENTED), &[]).unwrap(), COMMENTED);
+    }
+
+    #[test]
+    fn the_last_of_two_edits_of_the_same_key_wins() {
+        let out = apply_edit(
+            Some("[tabbar]\nposition = \"top\"\n"),
+            &[edit("tabbar", "bottom"), edit("tabbar", "top")],
+        )
+        .unwrap();
+        assert_eq!(out, "[tabbar]\nposition = \"top\"\n");
+    }
+
+    #[test]
+    fn crlf_is_kept_with_empty_edits() {
+        let crlf = "# c\r\nx = 1\r\n[tabbar]\r\nposition = \"top\"\r\n";
+        assert_eq!(apply_edit(Some(crlf), &[]).unwrap(), crlf);
+    }
+
+    #[test]
+    fn crlf_is_kept_when_replacing_in_place() {
+        let crlf = "# c\r\n[tabbar]\r\nposition = \"top\"  # k\r\nx = 1\r\n";
+        let out = apply_edit(Some(crlf), &[edit("tabbar", "bottom")]).unwrap();
+        assert_eq!(
+            out,
+            "# c\r\n[tabbar]\r\nposition = \"bottom\"  # k\r\nx = 1\r\n"
+        );
+    }
+
+    #[test]
+    fn crlf_is_used_for_inserted_lines() {
+        let crlf = "# c\r\n[statusline]\r\nposition = \"top\"\r\n";
+        let out = apply_edit(Some(crlf), &[edit("tabbar", "bottom")]).unwrap();
+        assert_eq!(
+            out,
+            format!("{crlf}\r\n[tabbar]\r\nposition = \"bottom\"\r\n")
+        );
+    }
+
+    #[test]
+    fn a_mixed_file_with_any_crlf_is_written_with_crlf_throughout() {
+        let out = apply_edit(Some("a = 1\r\nb = 2\n"), &[]).unwrap();
+        assert_eq!(out, "a = 1\r\nb = 2\r\n");
+    }
+
+    #[test]
+    fn refuses_an_owned_key_that_holds_a_table() {
+        let refused = Err(EditError::KeyIsTable {
+            table: "statusline",
+            key: "position",
+        });
+        let one = [edit("statusline", "top")];
+        assert_eq!(
+            apply_edit(Some("[statusline.position]\nfoo = 1\n"), &one),
+            refused
+        );
+        assert_eq!(
+            apply_edit(Some("[statusline]\nposition = { foo = 1 }\n"), &one),
+            refused
+        );
+    }
+
+    #[test]
+    fn comments_stay_before_a_table_inserted_into_a_comment_only_file() {
+        let out = apply_edit(Some("# header\n# more\n"), &[edit("tabbar", "top")]).unwrap();
+        assert_eq!(out, "# header\n# more\n\n[tabbar]\nposition = \"top\"\n");
+        let out = apply_edit(Some("# no newline"), &[edit("tabbar", "top")]).unwrap();
+        assert_eq!(out, "# no newline\n\n[tabbar]\nposition = \"top\"\n");
     }
 
     const BROKEN: [&str; 5] = [
