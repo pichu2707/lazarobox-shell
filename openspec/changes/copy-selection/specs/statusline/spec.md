@@ -28,7 +28,7 @@ While in COPY with a selection, the mode block MUST show `VISUAL` (character sel
 - THEN rendering does not panic
 
 ### Requirement: Copy notices
-After a yank the path segment MUST show `Copied N characters`, where N is the number of Unicode characters of the copied text (newlines included), or `Copied 1 character` when N is 1. After an over-cap yank it MUST show `Selection too large to copy`. Both use the same notice slot as the spawn-failure notice: shown instead of the cwd until the next key press, replaced by any newer notice.
+After a yank the path segment MUST show `Copied N characters`, where N is the number of Unicode characters of the copied text (newlines included), or `Copied 1 character` when N is 1. After an over-cap yank it MUST show `Selection too large to copy`, and after a yank with empty text `Nothing to copy`. Both use the same notice slot as the spawn-failure notice: shown instead of the cwd until the next key press, replaced by any newer notice.
 
 #### Scenario: Copied notice
 - GIVEN the selection `hello`
@@ -49,6 +49,11 @@ After a yank the path segment MUST show `Copied N characters`, where N is the nu
 - GIVEN a selection over the size cap
 - WHEN `y` is pressed
 - THEN the path segment shows `Selection too large to copy`
+
+#### Scenario: Nothing-to-copy notice
+- GIVEN a selection whose text is empty (blank rows)
+- WHEN `y` is pressed
+- THEN the path segment shows `Nothing to copy` and the mode block shows `COPY`
 
 #### Scenario: Notice cleared by next key
 - GIVEN the `Copied 5 characters` notice is shown

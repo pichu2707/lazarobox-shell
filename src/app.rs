@@ -1075,7 +1075,8 @@ impl App {
     }
 
     /// `y`: reads the selection, hands it to the host as OSC 52 and leaves
-    /// COPY. A selection over the cap sends nothing and keeps COPY open.
+    /// COPY. A selection over the cap, or one with no text, sends nothing and keeps
+    /// COPY open.
     fn yank(&mut self, state: CopyState) -> Vec<Effect> {
         let cols = self.copy_geometry().cols;
         let Some(span) = state.span(cols) else {
@@ -1084,6 +1085,12 @@ impl App {
         };
         let pane = &mut self.focused_state_mut().emu;
         let text = join(&pane.read_lines(span));
+        if text.is_empty() {
+            // An empty OSC 52 would clobber the clipboard.
+            self.notice = Some("Nothing to copy".to_string());
+            self.input = InputMode::Copy(state);
+            return Vec::new();
+        }
         match osc52(&text) {
             Ok(sequence) => {
                 pane.set_scrollback(0);
@@ -2122,6 +2129,33 @@ mod app_tests {
         assert_eq!(a.input(), InputMode::Terminal);
         assert_eq!(a.focused_pane().scrollback_offset(), 0);
         assert_eq!(a.copy_cursor(), None);
+    }
+
+    // copy-selection: Empty extraction.
+    #[test]
+    fn yanking_only_blank_rows_sends_nothing_and_stays_in_copy() {
+        let mut a = App::new(20, 5);
+        copy_after(&mut a, b"abc");
+        press_n(&mut a, 'j', 2);
+        a.update(key('V'));
+        assert_eq!(a.update(key('y')), vec![]);
+        assert!(is_copy(&a));
+        assert!(selection_of(&a).is_some());
+        assert_eq!(a.notice(), Some("Nothing to copy"));
+    }
+
+    // copy-selection: Line yank drops trailing blank rows.
+    #[test]
+    fn a_line_yank_never_ends_in_a_newline() {
+        let mut a = app();
+        copy_after(&mut a, b"foo\r\n\r\nbar\r\n\r\n");
+        a.update(key('V'));
+        press_n(&mut a, 'k', 4);
+        assert_eq!(
+            a.update(key('y')),
+            vec![Effect::SetClipboard(osc52("foo\n\nbar").expect("fits"))]
+        );
+        assert_eq!(a.notice(), Some("Copied 8 characters"));
     }
 
     // copy-selection: Multi-row line selection.

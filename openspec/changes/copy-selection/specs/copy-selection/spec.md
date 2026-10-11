@@ -35,7 +35,7 @@ In COPY, `v` MUST start a character selection and `V` a line selection, anchored
 - THEN the selection covers (5, 1) through (5, 3) inclusive
 
 ### Requirement: Text extraction
-The selected text MUST be built from the pane's cells as follows. A character selection covers both end cells inclusively. A line selection covers whole rows. Rows are joined with `\n`, with no `\n` after the last row. Rows that are soft-wrapped into the next row MUST be joined with no `\n`. Trailing blank cells MUST be trimmed from every row that ends a logical line and from the last row of the selection. A soft-wrapped row that is not the last row MUST keep its trailing spaces, because they are real content at the wrap point. A wide character MUST be copied once, even when either of its two cells is selected. Rows outside the viewport MUST be included.
+The selected text MUST be built from the pane's cells as follows. A character selection covers both end cells inclusively. A line selection covers whole rows. Rows are joined with `\n`, with no `\n` after the last row. Trailing rows that are empty after trimming MUST be dropped, so the text never ends in `\n`; blank rows between content rows are kept. Rows that are soft-wrapped into the next row MUST be joined with no `\n`. Trailing blank cells MUST be trimmed from every row that ends a logical line and from the last row of the selection. A soft-wrapped row that is not the last row MUST keep its trailing spaces, because they are real content at the wrap point. A wide character MUST be copied once, even when either of its two cells is selected. Rows outside the viewport MUST be included.
 
 #### Scenario: Character selection within a row
 - GIVEN a row `hello world`, cursor at col 0
@@ -46,6 +46,11 @@ The selected text MUST be built from the pane's cells as follows. A character se
 - GIVEN rows `foo` and `bar` (padded with blanks)
 - WHEN the cursor is on `foo` and `V`, `j` are pressed
 - THEN the extracted text is `foo\nbar`
+
+#### Scenario: Trailing blank rows dropped
+- GIVEN rows `foo`, blank, `bar`, blank, blank
+- WHEN all five rows are selected with `V`
+- THEN the extracted text is `foo\n\nbar`
 
 #### Scenario: Soft-wrapped rows
 - GIVEN a 10-column pane where `abcdefghijklmn` wrapped onto two rows
@@ -73,12 +78,17 @@ The selected text MUST be built from the pane's cells as follows. A character se
 - THEN it includes the off-screen rows and the viewport offset is unchanged afterwards
 
 ### Requirement: Yank to the clipboard via OSC 52
-`y` with a selection MUST emit one `SetClipboard` effect carrying the extracted text, which the runtime writes to the host terminal as `ESC ] 52 ; c ; <base64 of the UTF-8 text> BEL`. After `y` the mode MUST be TERMINAL with the viewport at the bottom, and the selection dropped. `y` with no selection MUST do nothing. No key in COPY, including `y`, MUST be written to the PTY.
+`y` with a selection MUST emit one `SetClipboard` effect carrying the extracted text, which the runtime writes to the host terminal as `ESC ] 52 ; c ; <base64 of the UTF-8 text> BEL`. After `y` the mode MUST be TERMINAL with the viewport at the bottom, and the selection dropped. `y` with no selection MUST do nothing. A yank whose extracted text is empty MUST send nothing (no `SetClipboard`), keep COPY and the selection, and show the notice `Nothing to copy`. No key in COPY, including `y`, MUST be written to the PTY.
 
 #### Scenario: Yank emits OSC 52
 - GIVEN the extracted text `hello`
 - WHEN `y` is pressed
 - THEN the written sequence is `\x1b]52;c;aGVsbG8=\x07`, mode is TERMINAL, the viewport is at the bottom and no WritePty is emitted
+
+#### Scenario: Yank of blank rows
+- GIVEN a line selection over rows that are all blank
+- WHEN `y` is pressed
+- THEN no effect is emitted, mode stays COPY, the selection is kept and the notice is `Nothing to copy`
 
 #### Scenario: Yank without selection
 - GIVEN COPY with no selection
