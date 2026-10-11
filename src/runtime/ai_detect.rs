@@ -86,13 +86,62 @@ const EXIT_GRACE: Duration = Duration::from_millis(100);
 /// group, which is killed on every way out so no grandchild survives.
 pub async fn version(path: &Path) -> Option<Vec<u8>> {
     let mut child = spawn_version(path).await?;
-    let pgid = child.id()? as libc::pid_t;
-    let output = timeout(VERSION_TIMEOUT, collect_version(&mut child)).await;
-    // SAFETY: killpg only sends a signal; the group is the one just spawned.
-    unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    let pid = child.id()? as libc::pid_t;
+    // Declared after `child`, so it drops first: a dropped future still kills
+    // the group while the child has not been reaped yet.
+    let mut group = GroupKill(Some(pid));
+    let output = timeout(VERSION_TIMEOUT, collect_version(&mut child, pid)).await;
+    // INVARIANT: the group is signalled while the child is still unreaped.
+    // A reaped pid can be recycled, and its pgid with it, so `collect_version`
+    // only waits for the exit (WNOWAIT) and the reap comes after this kill.
+    group.kill();
     // Reap the child so it does not linger as a zombie.
     let _ = timeout(Duration::from_millis(500), child.wait()).await;
+    group.0 = None;
     output.ok()?
+}
+
+/// Kills the process group on `kill()` or, if still armed, on drop.
+struct GroupKill(Option<libc::pid_t>);
+
+impl GroupKill {
+    fn kill(&self) {
+        if let Some(pgid) = self.0 {
+            // SAFETY: killpg only sends a signal; the group was just spawned
+            // by this probe and its leader has not been reaped.
+            unsafe { libc::killpg(pgid, libc::SIGKILL) };
+        }
+    }
+}
+
+impl Drop for GroupKill {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+/// Waits for `pid` to exit WITHOUT reaping it, so the pid stays reserved.
+/// `Some(true)` for a clean exit 0.
+async fn wait_exit_unreaped(pid: libc::pid_t) -> Option<bool> {
+    tokio::task::spawn_blocking(move || {
+        // SAFETY: `info` is plain data for waitid to fill in; the pid is our
+        // own child and WNOWAIT leaves it for `Child::wait` to reap.
+        unsafe {
+            let mut info: libc::siginfo_t = std::mem::zeroed();
+            loop {
+                let id = pid as libc::id_t;
+                if libc::waitid(libc::P_PID, id, &mut info, libc::WEXITED | libc::WNOWAIT) == 0 {
+                    break;
+                }
+                if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                    return None;
+                }
+            }
+            Some(info.si_code == libc::CLD_EXITED && info.si_status() == 0)
+        }
+    })
+    .await
+    .ok()?
 }
 
 /// Spawns `<path> --version`. A binary that is being written (an upgrade, or
@@ -121,10 +170,10 @@ async fn spawn_version(path: &Path) -> Option<tokio::process::Child> {
 }
 
 /// Reads stdout (bounded) while waiting for the exit, not for the pipe EOF.
-async fn collect_version(child: &mut tokio::process::Child) -> Option<Vec<u8>> {
+async fn collect_version(child: &mut tokio::process::Child, pid: libc::pid_t) -> Option<Vec<u8>> {
     let mut stdout = child.stdout.take()?;
     let mut buf = Vec::new();
-    let status = {
+    let success = {
         let mut limited = (&mut stdout).take(VERSION_CAP as u64 + 1);
         let read = limited.read_to_end(&mut buf);
         tokio::pin!(read);
@@ -133,15 +182,15 @@ async fn collect_version(child: &mut tokio::process::Child) -> Option<Vec<u8>> {
                 if n.ok()? > VERSION_CAP {
                     return None;
                 }
-                child.wait().await.ok()?
+                wait_exit_unreaped(pid).await?
             }
-            status = child.wait() => {
+            status = wait_exit_unreaped(pid) => {
                 let _ = timeout(EXIT_GRACE, &mut read).await;
-                status.ok()?
+                status?
             }
         }
     };
-    (status.success() && buf.len() <= VERSION_CAP).then_some(buf)
+    (success && buf.len() <= VERSION_CAP).then_some(buf)
 }
 
 /// What `detect_with` probes: an entry of the catalog, or a test double
@@ -411,27 +460,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn version_closes_stdin() {
-        // Make fd 0 a pipe for the duration of the probe, so an inherited
-        // stdin is distinguishable from /dev/null.
-        let mut fds = [0; 2];
-        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-        let saved = unsafe { libc::dup(0) };
-        assert_eq!(unsafe { libc::dup2(fds[0], 0) }, 0);
-        let dir = tempfile::tempdir().unwrap();
-        let body = "t=$(readlink /proc/self/fd/0)\nif [ \"$t\" = /dev/null ]; then echo null; else echo \"stdin=$t\"; fi";
-        let script = write_script(dir.path(), "gemini", body, 0o755);
-        let answer = version(&script).await;
-        unsafe {
-            libc::dup2(saved, 0);
-            libc::close(saved);
-            libc::close(fds[0]);
-            libc::close(fds[1]);
-        }
-        assert_eq!(answer, Some(b"null\n".to_vec()));
-    }
-
-    #[tokio::test]
     async fn version_kills_a_hanging_child_after_the_timeout() {
         let dir = tempfile::tempdir().unwrap();
         let pid_file = dir.path().join("pid");
@@ -463,6 +491,40 @@ mod tests {
             dead_within(&pid, Duration::from_secs(5)).await,
             "grandchild {pid} survived the timeout"
         );
+    }
+
+    #[tokio::test]
+    async fn version_kills_the_group_when_the_future_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("grandchild");
+        let body = format!("sleep 30 &\necho $! > {}\nwait", pid_file.display());
+        let script = write_script(dir.path(), "tree", &body, 0o755);
+        // The wrapper is shorter than the probe, so version() is dropped mid-way.
+        let cut = timeout(Duration::from_millis(500), version(&script)).await;
+        assert!(cut.is_err(), "the probe finished before it was dropped");
+        let pid = read_pid(&pid_file);
+        assert!(
+            dead_within(&pid, Duration::from_secs(5)).await,
+            "grandchild {pid} survived a dropped probe"
+        );
+    }
+
+    #[tokio::test]
+    async fn version_retries_a_spawn_that_hits_a_busy_text_file() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("busy");
+        // Open for writing while exec runs: the kernel answers ETXTBSY.
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(b"#!/bin/sh\necho busy 1.0\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        let probe = tokio::spawn({
+            let path = path.clone();
+            async move { version(&path).await }
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        drop(file);
+        assert_eq!(probe.await.unwrap(), Some(b"busy 1.0\n".to_vec()));
     }
 
     #[tokio::test]

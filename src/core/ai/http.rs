@@ -20,7 +20,7 @@ pub fn parse_response(raw: &[u8]) -> Option<(u16, Vec<u8>)> {
         return None;
     }
     let status = code.parse().ok()?;
-    let (mut length, mut chunked) = (None, false);
+    let (mut length, mut chunked, mut seen_encoding) = (None, false, false);
     for (name, value) in lines.filter_map(|l| l.split_once(':')) {
         if name.is_empty() || name.contains(char::is_whitespace) {
             return None;
@@ -36,11 +36,18 @@ pub fn parse_response(raw: &[u8]) -> Option<(u16, Vec<u8>)> {
             }
             length = Some(n);
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
-            // Chunked framing is the last coding of the last header.
-            chunked = value
-                .rsplit(',')
-                .next()
-                .is_some_and(|last| last.trim().eq_ignore_ascii_case("chunked"));
+            // One header only, and its final coding decides the framing:
+            // chunked, or identity (none). Anything else cannot be decoded.
+            if seen_encoding {
+                return None;
+            }
+            seen_encoding = true;
+            let last = value.rsplit(',').next().unwrap_or("").trim();
+            if last.eq_ignore_ascii_case("chunked") {
+                chunked = true;
+            } else if !last.eq_ignore_ascii_case("identity") {
+                return None;
+            }
         }
     }
     let body = if chunked {
@@ -198,19 +205,28 @@ mod tests {
             ok("ok")
         );
         assert_eq!(
-            parse_response(&raw(
-                "Transfer-Encoding: gzip\r\nTransfer-Encoding: chunked"
-            )),
-            ok("ok")
-        );
-        assert_eq!(
-            parse_response(&plain("Transfer-Encoding: chunked, gzip")),
-            ok("ok")
-        );
-        assert_eq!(
             parse_response(&plain("Transfer-Encoding: identity")),
             ok("ok")
         );
+    }
+
+    #[test]
+    fn unsupported_transfer_encodings_are_rejected() {
+        let body = "2\r\nok\r\n0\r\n\r\n";
+        let raw = |te: &str| format!("HTTP/1.1 200 OK\r\n{te}\r\n\r\n{body}").into_bytes();
+        let plain = |te: &str| format!("HTTP/1.1 200 OK\r\n{te}\r\n\r\nok").into_bytes();
+        // More than one header: only one framing decision may exist.
+        let two = "Transfer-Encoding: gzip\r\nTransfer-Encoding: chunked";
+        assert_eq!(parse_response(&raw(two)), None);
+        let same = "Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked";
+        assert_eq!(parse_response(&raw(same)), None);
+        // The final coding must be chunked or identity.
+        assert_eq!(
+            parse_response(&plain("Transfer-Encoding: chunked, gzip")),
+            None
+        );
+        assert_eq!(parse_response(&plain("Transfer-Encoding: gzip")), None);
+        assert_eq!(parse_response(&plain("Transfer-Encoding: ")), None);
     }
 
     #[test]
