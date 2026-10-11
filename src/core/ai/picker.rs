@@ -71,17 +71,17 @@ pub struct PickRow {
     pub current: bool,
 }
 
-/// The assignment shared by every task a target writes to; `None` when a
-/// `Set all tasks` draft is mixed.
+/// The assignment shared by every task a target writes to (as resolved, like
+/// the aggregate row); `None` when a `Set all tasks` draft is mixed.
 fn current_assignment(target: Target, draft: &AiConfig) -> Option<Assignment> {
     match target {
         Target::Task(task) => Some(draft.get(task).clone()),
         Target::All => {
-            let first = draft.get(Task::ALL[0]);
+            let first = draft.resolve(Task::ALL[0]).0;
             Task::ALL
                 .iter()
-                .all(|t| draft.get(*t) == first)
-                .then(|| first.clone())
+                .all(|t| draft.resolve(*t).0 == first)
+                .then_some(first)
         }
     }
 }
@@ -1019,6 +1019,24 @@ mod tests {
         assert_eq!(
             mixed.iter().map(|r| r.current).collect::<Vec<_>>(),
             [false, false]
+        );
+    }
+
+    // The aggregate row resolves inheritance, so the bullet does too.
+    #[test]
+    fn set_all_marks_what_the_aggregate_row_shows() {
+        let d = detection(vec![state("claude", Status::Available, &[])]);
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::General, "claude", Some("opus"));
+        let currents = |rows: Vec<PickRow>| rows.iter().map(|r| r.current).collect::<Vec<_>>();
+        assert_eq!(draft.aggregate(), "claude › opus");
+        assert_eq!(
+            currents(engine_rows(Target::All, &draft, Some(&d))),
+            [false, true]
+        );
+        assert_eq!(
+            currents(model_rows("claude", Target::All, &draft, Some(&d))),
+            [false, true, false, false, false]
         );
     }
 
