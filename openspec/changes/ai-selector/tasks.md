@@ -71,8 +71,8 @@ AS4 (~850, 90% deletions) is split in three because two PRs cannot stay under 40
 
 ## PR5 / AS4a: Delete cycling tests in app (deletion only)
 
-- [ ] 5.1 Delete AI cycling/Engine/Model/Status tests in `src/app.rs` (list them in the commit body); keep generic menu tests.
-- [ ] 5.2 Gate (compiles, remaining tests green). Re-measure: if above 400, split by test group.
+- [x] 5.1 Delete AI cycling/Engine/Model/Status tests in `src/app.rs` (list them in the commit body); keep generic menu tests.
+- [x] 5.2 Gate (compiles, remaining tests green). Re-measure: if above 400, split by test group.
 
 ## PR6 / AS4b: Delete old menu AI tests and snapshots (deletion only)
 
