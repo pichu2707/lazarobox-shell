@@ -8,6 +8,8 @@ All scenarios [auto] unless tagged. Reason: COPY gains decision-like keys (`v`, 
 In TERMINAL every key except the prefix MUST be encoded and sent to the focused pane's PTY. Initial mode is TERMINAL.
 
 Key events of kind Release MUST be ignored in every mode. Repeat MUST be handled like Press in TERMINAL, COPY, RESIZE and in MENU for navigation and cycling keys only; it MUST be ignored for Enter and Esc in MENU, for `v`, `V`, `y`, Esc, `q` and `i` in COPY, and in decision states (PREFIX, group pending, and all confirmations) so a held key never selects an action, confirms, toggles a selection, yanks or exits.
+
+A key whose Press left COPY (`q`, `i`, Esc, or `y` after a successful yank) MUST NOT leak into TERMINAL: its Repeat events MUST be dropped until its Release or any other Press arrives.
 (Previously: Repeat was handled like Press in all of COPY, including `v`, `V`, `y`, Esc, `q` and `i`)
 
 #### Scenario: Passthrough
@@ -44,3 +46,10 @@ Key events of kind Release MUST be ignored in every mode. Repeat MUST be handled
 - GIVEN COPY
 - WHEN a Repeat event for `j` arrives
 - THEN the cursor moves one row down, as for Press
+
+#### Scenario: Held exit key does not leak into TERMINAL [auto]
+- GIVEN COPY, and `q` (or `i`, Esc, or `y` with a selection) is pressed, leaving COPY
+- WHEN Repeat events of that same key arrive in TERMINAL
+- THEN no WritePty is emitted
+- AND after its Release, or after any other Press, the key is passed through again
+- AND a Repeat of a different key is passed through normally

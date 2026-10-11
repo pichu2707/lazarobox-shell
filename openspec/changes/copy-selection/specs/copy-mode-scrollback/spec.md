@@ -5,7 +5,7 @@ All scenarios [auto] unless tagged. Note for archive: the Purpose line of the ma
 ## MODIFIED Requirements
 
 ### Requirement: Navigation
-COPY has a cursor (absolute row, column). On entry it MUST be at the position of the pane's live cursor, clamped into the pane. `h`/`l` MUST move it one column left/right, `0` to the first column of its row and `$` to the last non-blank column of its row (column 0 when the row is blank). `j`/`k` MUST move it one row down/up; the viewport MUST scroll only when the cursor would cross the top or bottom edge of the viewport. Ctrl+d/Ctrl+u MUST move the cursor and the viewport half a page down/up; `gg` MUST move to the top of scrollback; `G` to the bottom (live screen). Movement MUST clamp at all bounds.
+COPY has a cursor (absolute row, column). On entry it MUST be at the position of the pane's live cursor, clamped into the pane. `h`/`l` MUST move it one column left/right, `0` to the first column of its row and `$` to the last non-blank column of its row (column 0 when the row is blank). `j`/`k` MUST move it one row down/up; the viewport MUST scroll only when the cursor would cross the top or bottom edge of the viewport. Ctrl+d/Ctrl+u MUST move the cursor and the viewport half a page down/up; `gg` MUST move to the top of scrollback; `G` to the bottom (live screen). Movement MUST clamp at all bounds. If output scrolled the cursor off screen, the next motion of any kind (including `h`/`l`/`0`/`$`) MUST bring it back into view.
 (Previously: `j`/`k` moved the viewport one line; there was no cursor)
 
 #### Scenario: Line motion
@@ -32,6 +32,11 @@ COPY has a cursor (absolute row, column). On entry it MUST be at the position of
 - GIVEN the cursor on the top row of the scrollback
 - WHEN `k` or Ctrl+u is pressed
 - THEN the cursor and offset are unchanged (never beyond history); likewise `j`/Ctrl+d at the bottom
+
+#### Scenario: Horizontal motion brings an off-screen cursor back [auto]
+- GIVEN COPY with the cursor scrolled off screen by output
+- WHEN `l` is pressed
+- THEN the cursor moves one column right and is visible again
 
 #### Scenario: Lone g
 - GIVEN `g` pending

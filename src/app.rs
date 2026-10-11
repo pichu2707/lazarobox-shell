@@ -261,6 +261,9 @@ pub struct App {
     /// passes the real check.
     dir_exists: fn(&Path) -> bool,
     shell: Option<String>,
+    /// The key whose Press left COPY: its Repeat events are dropped in
+    /// TERMINAL until its Release or any other Press.
+    held_exit: Option<KeyCode>,
 }
 
 impl App {
@@ -291,6 +294,7 @@ impl App {
             hostname: None,
             dir_exists: |_| true,
             shell: None,
+            held_exit: None,
         }
     }
 
@@ -621,8 +625,21 @@ impl App {
         let repeat = match key.kind {
             KeyEventKind::Press => false,
             KeyEventKind::Repeat => true,
-            KeyEventKind::Release => return Vec::new(),
+            KeyEventKind::Release => {
+                if self.held_exit == Some(key.code) {
+                    self.held_exit = None;
+                }
+                return Vec::new();
+            }
         };
+        if repeat {
+            // A held key that left COPY must not reach the shell as typed text.
+            if self.input == InputMode::Terminal && self.held_exit == Some(key.code) {
+                return Vec::new();
+            }
+        } else {
+            self.held_exit = None;
+        }
         self.dirty |= self.notice.take().is_some();
         if repeat
             && matches!(
@@ -1043,15 +1060,23 @@ impl App {
             CopyCommand::Exit => {
                 self.focused_state_mut().emu.set_scrollback(0);
                 self.input = InputMode::Terminal;
+                self.held_exit = Some(key.code);
             }
-            CopyCommand::Yank => return self.yank(state),
+            CopyCommand::Yank => {
+                let effects = self.yank(state);
+                if self.input == InputMode::Terminal {
+                    self.held_exit = Some(key.code);
+                }
+                return effects;
+            }
             CopyCommand::Ignore => self.input = InputMode::Copy(state),
         }
         Vec::new()
     }
 
     /// `y`: reads the selection, hands it to the host as OSC 52 and leaves
-    /// COPY. A selection over the cap sends nothing and keeps COPY open.
+    /// COPY. A selection over the cap, or one with no text, sends nothing and keeps
+    /// COPY open.
     fn yank(&mut self, state: CopyState) -> Vec<Effect> {
         let cols = self.copy_geometry().cols;
         let Some(span) = state.span(cols) else {
@@ -1060,6 +1085,12 @@ impl App {
         };
         let pane = &mut self.focused_state_mut().emu;
         let text = join(&pane.read_lines(span));
+        if text.is_empty() {
+            // An empty OSC 52 would clobber the clipboard.
+            self.notice = Some("Nothing to copy".to_string());
+            self.input = InputMode::Copy(state);
+            return Vec::new();
+        }
         match osc52(&text) {
             Ok(sequence) => {
                 pane.set_scrollback(0);
@@ -1100,20 +1131,24 @@ impl App {
     /// Revalidates COPY against its pane after output or a relayout. The pane
     /// is the source of truth for the offset (the emulator pins the viewport
     /// and clamps it at the history cap). A new line generation (screen flip,
-    /// resize) makes line numbers incomparable, so the selection goes. The
-    /// cursor and the anchor are clamped into the retained lines; an evicted
-    /// anchor becomes `(first_line, 0)`, shrinking the selection.
+    /// resize) makes line numbers incomparable, so COPY starts over as when
+    /// entered: no selection, cursor on the live cursor, viewport at the
+    /// bottom. The cursor and the anchor are clamped into the retained lines;
+    /// an evicted anchor becomes `(first_line, 0)`, shrinking the selection.
+    /// The anchor needs no upper clamp: `first_line + history` never shrinks
+    /// and the row count only changes with a generation bump.
     fn sync_copy(&mut self) {
         let InputMode::Copy(mut state) = self.input else {
             return;
         };
         let geo = self.copy_geometry();
+        if state.generation != self.focused_pane().line_generation() {
+            // Line numbers are incomparable now: start over like entering COPY.
+            state = self.enter_copy();
+            self.focused_state_mut().emu.set_scrollback(0);
+        }
         let pane = self.focused_pane();
         state.offset = pane.scrollback_offset();
-        if state.generation != pane.line_generation() {
-            state.generation = pane.line_generation();
-            state.selection = None;
-        }
         let last_line = geo.first_line + geo.history + usize::from(geo.rows.max(1)) - 1;
         let last_col = geo.cols.saturating_sub(1);
         state.cursor.line = state.cursor.line.clamp(geo.first_line, last_line);
@@ -1126,7 +1161,6 @@ impl App {
                     col: 0,
                 };
             }
-            anchor.line = anchor.line.min(last_line);
             anchor.col = anchor.col.min(last_col);
         }
         self.input = InputMode::Copy(state);
@@ -2097,6 +2131,33 @@ mod app_tests {
         assert_eq!(a.copy_cursor(), None);
     }
 
+    // copy-selection: Empty extraction.
+    #[test]
+    fn yanking_only_blank_rows_sends_nothing_and_stays_in_copy() {
+        let mut a = App::new(20, 5);
+        copy_after(&mut a, b"abc");
+        press_n(&mut a, 'j', 2);
+        a.update(key('V'));
+        assert_eq!(a.update(key('y')), vec![]);
+        assert!(is_copy(&a));
+        assert!(selection_of(&a).is_some());
+        assert_eq!(a.notice(), Some("Nothing to copy"));
+    }
+
+    // copy-selection: Line yank drops trailing blank rows.
+    #[test]
+    fn a_line_yank_never_ends_in_a_newline() {
+        let mut a = app();
+        copy_after(&mut a, b"foo\r\n\r\nbar\r\n\r\n");
+        a.update(key('V'));
+        press_n(&mut a, 'k', 4);
+        assert_eq!(
+            a.update(key('y')),
+            vec![Effect::SetClipboard(osc52("foo\n\nbar").expect("fits"))]
+        );
+        assert_eq!(a.notice(), Some("Copied 8 characters"));
+    }
+
     // copy-selection: Multi-row line selection.
     #[test]
     fn a_line_selection_yanks_the_rows_joined_by_newline() {
@@ -2250,7 +2311,101 @@ mod app_tests {
             Some((Point { line: 127, col: 0 }, SelectionKind::Char))
         );
         assert_eq!(copy_state(&a).cursor, Point { line: 127, col: 3 });
+        assert_eq!(a.copy_cursor(), Some((0, 3)));
         assert!(is_copy(&a));
+    }
+
+    fn release(c: char) -> AppEvent {
+        kinded(KeyCode::Char(c), KeyModifiers::NONE, KeyEventKind::Release)
+    }
+
+    // modal-input: Held exit key does not leak into TERMINAL.
+    #[test]
+    fn a_held_q_or_i_does_not_leak_into_terminal_after_leaving_copy() {
+        for c in ['q', 'i'] {
+            let mut a = in_copy();
+            a.update(key(c));
+            assert_eq!(a.input(), InputMode::Terminal, "{c}");
+            assert_eq!(a.update(repeat(c)), vec![], "{c}");
+            assert_eq!(a.update(repeat(c)), vec![], "{c}");
+        }
+    }
+
+    #[test]
+    fn a_held_esc_does_not_leak_into_terminal_after_leaving_copy() {
+        let mut a = in_copy();
+        a.update(esc());
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.update(esc_kinded(KeyEventKind::Repeat)), vec![]);
+    }
+
+    #[test]
+    fn a_held_y_does_not_leak_into_terminal_after_a_yank() {
+        let mut a = app();
+        copy_after(&mut a, b"abc");
+        a.update(key('h'));
+        a.update(key('v'));
+        assert_eq!(a.update(key('y')).len(), 1);
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.update(repeat('y')), vec![]);
+        // The drop must not eat the yank notice.
+        assert_eq!(a.notice(), Some("Copied 1 character"));
+    }
+
+    #[test]
+    fn another_key_after_leaving_copy_is_passed_through() {
+        let mut a = in_copy();
+        a.update(key('q'));
+        assert_eq!(
+            a.update(repeat('x')),
+            vec![Effect::WritePty(PaneId::FIRST, b"x".to_vec())]
+        );
+    }
+
+    #[test]
+    fn a_fresh_press_after_the_release_is_passed_through() {
+        let mut a = in_copy();
+        a.update(key('q'));
+        assert_eq!(a.update(release('q')), vec![]);
+        assert_eq!(
+            a.update(repeat('q')),
+            vec![Effect::WritePty(PaneId::FIRST, b"q".to_vec())]
+        );
+        let mut a = in_copy();
+        a.update(key('q'));
+        a.update(key('x'));
+        assert_eq!(
+            a.update(repeat('q')),
+            vec![Effect::WritePty(PaneId::FIRST, b"q".to_vec())]
+        );
+    }
+
+    // copy-mode-scrollback: a horizontal motion also brings an off-screen
+    // cursor back into view.
+    #[test]
+    fn a_horizontal_motion_brings_an_off_screen_cursor_back() {
+        let mut a = app();
+        copy_after(&mut a, b"abc");
+        feed_focused(&mut a, "\r\n".repeat(40).as_bytes());
+        assert_eq!(a.copy_cursor(), None);
+        a.update(key('l'));
+        assert_eq!(a.copy_cursor(), Some((0, 4)));
+    }
+
+    // copy-mode-scrollback: a screen switch resets the cursor like entering COPY.
+    #[test]
+    fn a_screen_round_trip_puts_the_cursor_back_on_the_live_cursor() {
+        let mut a = app();
+        with_history(&mut a, 30);
+        feed_focused(&mut a, b"abc");
+        a.update(ctrl_space());
+        a.update(key('['));
+        assert_eq!(a.copy_cursor(), Some((23, 3)));
+        press_n(&mut a, 'k', 5);
+        feed_focused(&mut a, b"\x1b[?1049h");
+        feed_focused(&mut a, b"\x1b[?1049l");
+        assert!(is_copy(&a));
+        assert_eq!(a.copy_cursor(), Some((23, 3)));
     }
 
     // copy-selection: Screen switch drops it.
@@ -2266,12 +2421,14 @@ mod app_tests {
             copy_state(&a).generation,
             a.focused_pane().line_generation()
         );
-        // The new generation is adopted: a fresh selection survives output.
+        // The new generation is adopted and the cursor sits on the alternate
+        // screen's live cursor: a fresh selection survives output.
+        assert_eq!(copy_state(&a).cursor, Point { line: 0, col: 0 });
         a.update(key('v'));
         feed_focused(&mut a, b"x");
         assert_eq!(
             selection_of(&a),
-            Some((Point { line: 0, col: 3 }, SelectionKind::Char))
+            Some((Point { line: 0, col: 0 }, SelectionKind::Char))
         );
     }
 

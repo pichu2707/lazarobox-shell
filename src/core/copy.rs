@@ -120,6 +120,8 @@ impl CopyState {
             CopyMotion::LineEnd => self.cursor.col = line_end.min(last_col),
             _ => self.move_vertically(motion, geo),
         }
+        // Any motion brings an off-screen cursor back into view.
+        self.ensure_visible(geo);
     }
 
     fn move_vertically(&mut self, motion: CopyMotion, geo: Geometry) {
@@ -154,7 +156,6 @@ impl CopyState {
         }
         self.cursor.line = self.cursor.line.clamp(geo.first_line, last_line);
         self.offset = self.offset.min(geo.history);
-        self.ensure_visible(geo);
     }
 
     /// Scrolls the viewport just enough to show the cursor line.
@@ -273,7 +274,8 @@ pub struct LineText {
 /// A soft-wrapped row joins the next one with no separator and keeps its
 /// trailing spaces (real content at the wrap point); any other row is
 /// followed by `\n`. Trailing blanks are trimmed where a logical line ends and
-/// on the last row. No trailing `\n` is added.
+/// on the last row. Trailing blank rows are dropped, so the text never ends
+/// in `\n`.
 pub fn join(rows: &[LineText]) -> String {
     let mut out = String::new();
     for (i, row) in rows.iter().enumerate() {
@@ -287,6 +289,7 @@ pub fn join(rows: &[LineText]) -> String {
             }
         }
     }
+    out.truncate(out.trim_end_matches('\n').len());
     out
 }
 
@@ -975,8 +978,8 @@ mod tests {
     }
 
     #[test]
-    fn join_of_nothing_is_empty_and_a_blank_last_row_is_an_empty_line() {
+    fn join_of_nothing_is_empty_and_trailing_blank_rows_are_dropped() {
         assert_eq!(join(&[]), "");
-        assert_eq!(join(&[row("a", false), row("   ", false)]), "a\n");
+        assert_eq!(join(&[row("a", false), row("   ", false)]), "a");
     }
 }
