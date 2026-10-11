@@ -14,6 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub mod ai_detect;
 mod config_write;
 
 use config_write::save_config;
