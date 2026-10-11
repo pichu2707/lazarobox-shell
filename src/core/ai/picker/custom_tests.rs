@@ -141,3 +141,29 @@ fn leaving_the_field_discards_the_buffer() {
     p.enter(&draft, Some(&d));
     assert_eq!(p.text(), Some(""));
 }
+
+// Characterization: pins the cap by characters, not bytes.
+#[test]
+fn the_cap_counts_characters_not_bytes() {
+    let d = det(&[]);
+    let draft = AiConfig::default();
+    let mut p = custom(&draft, &d);
+    type_str(&mut p, &"é".repeat(200));
+    assert_eq!(p.text(), Some("é".repeat(128).as_str()));
+}
+
+// Characterization: a bare carriage return ends the pasted first line too.
+#[test]
+fn a_paste_stops_at_a_carriage_return() {
+    let d = det(&[]);
+    let draft = AiConfig::default();
+    let mut p = custom(&draft, &d);
+    p.paste("a\rb");
+    assert_eq!(p.text(), Some("a"));
+}
+
+#[test]
+fn validate_rejects_format_and_bidi_characters() {
+    assert_eq!(validate_custom("a\u{202e}b"), None);
+    assert_eq!(validate_custom("a\u{200b}b"), None);
+}

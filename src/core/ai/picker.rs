@@ -313,10 +313,10 @@ pub const VIEW: usize = 10;
 pub const MAX_NAME: usize = 128;
 
 /// A custom model name once trimmed and capped; `None` when blank or when
-/// it holds a control character.
+/// it holds a control or format (bidi, zero-width) character.
 pub fn validate_custom(name: &str) -> Option<String> {
     let name = name.trim();
-    if name.is_empty() || name.chars().any(char::is_control) {
+    if name.is_empty() || name.chars().any(|c| c.is_control() || is_format(c)) {
         return None;
     }
     Some(name.chars().take(MAX_NAME).collect())
