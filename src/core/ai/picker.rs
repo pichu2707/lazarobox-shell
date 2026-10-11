@@ -86,6 +86,12 @@ fn current_assignment(target: Target, draft: &AiConfig) -> Option<Assignment> {
     }
 }
 
+/// A detection that found nothing at all is a failed one: it says nothing
+/// about any engine, so it counts as no result.
+fn known(detection: Option<&Detection>) -> Option<&Detection> {
+    detection.filter(|d| !d.engines.is_empty())
+}
+
 fn is_available(detection: Option<&Detection>, id: &str) -> bool {
     detection.is_some_and(|d| {
         d.engines
@@ -102,6 +108,7 @@ pub fn engine_rows(
     draft: &AiConfig,
     detection: Option<&Detection>,
 ) -> Vec<PickRow> {
+    let detection = known(detection);
     let current = current_assignment(target, draft);
     let current_engine = current.as_ref().and_then(|a| a.engine.as_deref());
     let clear_label = match target {
@@ -266,6 +273,7 @@ pub fn model_rows(
 /// CLI assignments never get a model mark, and nothing is marked before the
 /// first detection result.
 pub fn task_label(config: &AiConfig, task: Task, detection: Option<&Detection>) -> String {
+    let detection = known(detection);
     let plain = config.label(task);
     let (
         Some(detection),
@@ -1033,21 +1041,19 @@ mod tests {
         );
     }
 
+    // A failed detection is an empty one: it says nothing, like no result.
     #[test]
-    fn an_empty_detection_lists_assigned_engines_as_not_detected() {
+    fn an_empty_detection_marks_nothing_as_not_detected() {
         let mut draft = AiConfig::default();
-        assign(&mut draft, Task::General, "mystery", None);
+        assign(&mut draft, Task::General, "mystery", Some("m"));
         let d = Detection::default();
         assert_eq!(
             compact(&engine_rows(Target::Task(Task::General), &draft, Some(&d))),
             [
                 ("none".to_owned(), Mark::Plain, true),
-                (
-                    "mystery".to_owned(),
-                    Mark::Status("(not detected)".to_owned()),
-                    true
-                ),
+                ("mystery".to_owned(), Mark::Checking, true),
             ]
         );
+        assert_eq!(task_label(&draft, Task::General, Some(&d)), "mystery › m");
     }
 }
