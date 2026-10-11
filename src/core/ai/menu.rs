@@ -63,6 +63,12 @@ impl AiMenu {
             .unwrap_or_default()
     }
 
+    /// Whether a detection result has arrived. An empty one found nothing
+    /// at all, so it counts as none, as in the picker rows.
+    pub fn has_result(&self) -> bool {
+        self.engines.as_ref().is_some_and(|d| !d.engines.is_empty())
+    }
+
     /// The row under the cursor of the open picker.
     pub fn cursor_row(&self) -> Option<PickRow> {
         let picker = self.picker.as_ref()?;
