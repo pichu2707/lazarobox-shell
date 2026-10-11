@@ -768,7 +768,8 @@ impl App {
             MenuCommand::Changed => self.apply_config(),
             MenuCommand::Cancel => self.close_menu(Outcome::Reverted),
             MenuCommand::Save => self.request_save(),
-            MenuCommand::None => Vec::new(),
+            // Wired to the detection trigger in the App slice.
+            MenuCommand::None | MenuCommand::Refresh => Vec::new(),
         }
     }
 

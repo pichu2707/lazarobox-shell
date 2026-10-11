@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 pub mod config;
 pub mod http;
+pub mod menu;
 pub mod parse;
 
 /// How an engine is detected.
