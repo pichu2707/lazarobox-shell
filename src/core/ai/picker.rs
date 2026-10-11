@@ -5,8 +5,9 @@
 //! The model catalogs behind these rows are informational and possibly
 //! stale (see `catalog`); nothing here downloads a model.
 
+use super::catalog::{cli_models, curated, same_model};
 use super::config::{AiConfig, Assignment, Task};
-use super::{CATALOG, Detection, Status, status_text};
+use super::{CATALOG, Detection, Kind, Status, status_text};
 
 /// What a picker is assigning to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -132,12 +133,115 @@ pub fn engine_rows(
 
 /// The Models level of a picker for `engine`.
 pub fn model_rows(
-    _engine: &str,
-    _target: Target,
-    _draft: &AiConfig,
-    _detection: Option<&Detection>,
+    engine: &str,
+    target: Target,
+    draft: &AiConfig,
+    detection: Option<&Detection>,
 ) -> Vec<PickRow> {
-    Vec::new()
+    let current = current_assignment(target, draft)
+        .filter(|a| a.engine.as_deref() == Some(engine))
+        .and_then(|a| a.model);
+    let is_current = |name: &str| {
+        current
+            .as_deref()
+            .is_some_and(|c| same_model(engine, c, name))
+    };
+    let row = |name: &str, mark: Mark, enabled: bool| PickRow {
+        key: PickKey::Model(name.to_owned()),
+        label: name.to_owned(),
+        mark,
+        enabled,
+        current: is_current(name),
+    };
+    let info = |label: &str, mark: Mark| PickRow {
+        key: PickKey::Info,
+        label: label.to_owned(),
+        mark,
+        enabled: false,
+        current: false,
+    };
+    // Every model assigned to this engine anywhere in the draft, once.
+    let mut assigned: Vec<&str> = Vec::new();
+    for task in Task::ALL {
+        let slot = draft.get(task);
+        let (Some(e), Some(m)) = (slot.engine.as_deref(), slot.model.as_deref()) else {
+            continue;
+        };
+        if e == engine && !assigned.iter().any(|a| same_model(engine, a, m)) {
+            assigned.push(m);
+        }
+    }
+    let is_cli = CATALOG
+        .iter()
+        .any(|e| e.id == engine && matches!(e.kind, Kind::Cli));
+
+    if is_cli {
+        let catalog = cli_models(engine);
+        let mut rows: Vec<PickRow> = catalog.iter().map(|m| row(m, Mark::Plain, true)).collect();
+        rows.extend(
+            assigned
+                .iter()
+                .filter(|m| !catalog.contains(m))
+                .map(|m| row(m, Mark::Plain, true)),
+        );
+        rows.push(PickRow {
+            key: PickKey::Custom,
+            label: "custom…".to_owned(),
+            mark: Mark::Plain,
+            enabled: true,
+            current: false,
+        });
+        return rows;
+    }
+
+    let Some(detection) = detection else {
+        let mut names: Vec<&str> = assigned;
+        for m in curated(engine) {
+            if !names.iter().any(|n| same_model(engine, n, m)) {
+                names.push(m);
+            }
+        }
+        if names.is_empty() {
+            return vec![info("no models detected", Mark::Checking)];
+        }
+        return names
+            .iter()
+            .map(|m| row(m, Mark::Checking, false))
+            .collect();
+    };
+
+    let state = detection
+        .engines
+        .iter()
+        .find(|s| s.id == engine && s.status == Status::Available);
+    let Some(state) = state else {
+        let mut rows: Vec<PickRow> = assigned
+            .iter()
+            .map(|m| row(m, Mark::Plain, false))
+            .collect();
+        rows.push(info("engine not detected", Mark::Plain));
+        return rows;
+    };
+
+    let mut listed: Vec<&str> = Vec::new();
+    let mut rows = Vec::new();
+    for m in &state.models {
+        if !listed.iter().any(|l| same_model(engine, l, m)) {
+            listed.push(m);
+            rows.push(row(m, Mark::Downloaded, true));
+        }
+    }
+    let missing = assigned.iter().chain(curated(engine).iter());
+    for m in missing {
+        if !listed.iter().any(|l| same_model(engine, l, m)) {
+            listed.push(m);
+            rows.push(row(m, Mark::DownloadRequired, false));
+        }
+    }
+    if rows.is_empty() {
+        rows.push(info("no models detected", Mark::Plain));
+    }
+    rows
 }
 
 /// The label of a task row with its detection marks.
@@ -197,6 +301,218 @@ mod tests {
         rows.iter()
             .map(|r| (r.label.clone(), r.mark.clone(), r.enabled))
             .collect()
+    }
+
+    fn model(label: &str, mark: Mark, enabled: bool, current: bool) -> PickRow {
+        row(
+            PickKey::Model(label.to_owned()),
+            label,
+            mark,
+            enabled,
+            current,
+        )
+    }
+
+    fn missing(label: &str) -> PickRow {
+        model(label, Mark::DownloadRequired, false, false)
+    }
+
+    fn curated_rows(skip: &[&str]) -> Vec<PickRow> {
+        crate::core::ai::catalog::OLLAMA_CURATED
+            .iter()
+            .filter(|m| !skip.contains(m))
+            .map(|m| missing(m))
+            .collect()
+    }
+
+    fn ollama(models: &[&str]) -> Detection {
+        detection(vec![state("ollama", Status::Available, models)])
+    }
+
+    fn info(label: &str) -> PickRow {
+        row(PickKey::Info, label, Mark::Plain, false, false)
+    }
+
+    // --- model_rows ------------------------------------------------------
+
+    #[test]
+    fn detected_models_come_first_then_the_curated_rest() {
+        let draft = AiConfig::default();
+        let d = ollama(&["llama3:8b", "mistral:7b"]);
+        let mut expected = vec![
+            model("llama3:8b", Mark::Downloaded, true, false),
+            model("mistral:7b", Mark::Downloaded, true, false),
+        ];
+        expected.extend(curated_rows(&["mistral:7b"]));
+        assert_eq!(
+            model_rows("ollama", Target::Task(Task::Code), &draft, Some(&d)),
+            expected
+        );
+    }
+
+    #[test]
+    fn a_tag_less_assignment_matches_the_detected_latest() {
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Code, "ollama", Some("llama3"));
+        let d = ollama(&["llama3:latest"]);
+        let mut expected = vec![model("llama3:latest", Mark::Downloaded, true, true)];
+        expected.extend(curated_rows(&[]));
+        assert_eq!(
+            model_rows("ollama", Target::Task(Task::Code), &draft, Some(&d)),
+            expected
+        );
+    }
+
+    #[test]
+    fn an_assigned_model_that_is_not_detected_sits_between_detected_and_curated() {
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Code, "ollama", Some("old:7b"));
+        assign(&mut draft, Task::Chat, "ollama", Some("mistral:7b"));
+        assign(&mut draft, Task::Review, "claude", Some("opus"));
+        let d = ollama(&["llama3:8b"]);
+        let mut expected = vec![
+            model("llama3:8b", Mark::Downloaded, true, false),
+            model("old:7b", Mark::DownloadRequired, false, true),
+            missing("mistral:7b"),
+        ];
+        expected.extend(curated_rows(&["mistral:7b"]));
+        assert_eq!(
+            model_rows("ollama", Target::Task(Task::Code), &draft, Some(&d)),
+            expected
+        );
+    }
+
+    #[test]
+    fn a_server_without_models_or_catalog_shows_one_empty_row() {
+        let draft = AiConfig::default();
+        let d = detection(vec![state("lmstudio", Status::Available, &[])]);
+        assert_eq!(
+            model_rows("lmstudio", Target::Task(Task::Code), &draft, Some(&d)),
+            [info("no models detected")]
+        );
+    }
+
+    #[test]
+    fn servers_other_than_ollama_have_no_curated_rows_and_no_custom() {
+        let draft = AiConfig::default();
+        let d = detection(vec![state("vllm", Status::Available, &["m"])]);
+        assert_eq!(
+            model_rows("vllm", Target::Task(Task::Code), &draft, Some(&d)),
+            [model("m", Mark::Downloaded, true, false)]
+        );
+    }
+
+    #[test]
+    fn an_unavailable_server_keeps_assigned_models_disabled_without_curated_rows() {
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Code, "ollama", Some("llama3:8b"));
+        assign(&mut draft, Task::Chat, "ollama", Some("qwen3:8b"));
+        let d = detection(vec![state("ollama", Status::NotRunning, &[])]);
+        assert_eq!(
+            model_rows("ollama", Target::Task(Task::Code), &draft, Some(&d)),
+            [
+                model("llama3:8b", Mark::Plain, false, true),
+                model("qwen3:8b", Mark::Plain, false, false),
+                info("engine not detected"),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_engine_missing_from_the_detection_is_not_detected() {
+        let draft = AiConfig::default();
+        assert_eq!(
+            model_rows(
+                "vllm",
+                Target::Task(Task::Code),
+                &draft,
+                Some(&Detection::default())
+            ),
+            [info("engine not detected")]
+        );
+    }
+
+    #[test]
+    fn before_the_first_detection_server_models_are_disabled_and_checking() {
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Code, "ollama", Some("llama3:8b"));
+        let rows = model_rows("ollama", Target::Task(Task::Code), &draft, None);
+        let mut expected = vec![model("llama3:8b", Mark::Checking, false, true)];
+        expected.extend(
+            crate::core::ai::catalog::OLLAMA_CURATED
+                .iter()
+                .map(|m| model(m, Mark::Checking, false, false)),
+        );
+        assert_eq!(rows, expected);
+        assert_eq!(
+            model_rows("lmstudio", Target::Task(Task::Code), &draft, None),
+            [row(
+                PickKey::Info,
+                "no models detected",
+                Mark::Checking,
+                false,
+                false
+            )]
+        );
+    }
+
+    #[test]
+    fn cli_models_are_the_catalog_then_custom() {
+        let draft = AiConfig::default();
+        let d = detection(vec![
+            state("claude", Status::Available, &[]),
+            state("codex", Status::Available, &[]),
+        ]);
+        let custom = row(PickKey::Custom, "custom…", Mark::Plain, true, false);
+        assert_eq!(
+            model_rows("claude", Target::Task(Task::Code), &draft, Some(&d)),
+            [
+                model("default", Mark::Plain, true, false),
+                model("opus", Mark::Plain, true, false),
+                model("sonnet", Mark::Plain, true, false),
+                model("fable", Mark::Plain, true, false),
+                custom.clone(),
+            ]
+        );
+        assert_eq!(
+            model_rows("codex", Target::Task(Task::Code), &draft, Some(&d)),
+            [model("default", Mark::Plain, true, false), custom]
+        );
+    }
+
+    #[test]
+    fn an_assigned_custom_cli_model_is_listed_before_custom() {
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Code, "gemini", Some("gem-exp"));
+        assign(&mut draft, Task::Chat, "gemini", Some("default"));
+        assign(&mut draft, Task::Review, "gemini", Some("gem-exp"));
+        let d = detection(vec![state("gemini", Status::Available, &[])]);
+        assert_eq!(
+            model_rows("gemini", Target::Task(Task::Code), &draft, Some(&d)),
+            [
+                model("default", Mark::Plain, true, false),
+                model("gem-exp", Mark::Plain, true, true),
+                row(PickKey::Custom, "custom…", Mark::Plain, true, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn set_all_marks_the_model_only_when_the_assignment_is_shared() {
+        let mut draft = AiConfig::default();
+        for task in Task::ALL {
+            assign(&mut draft, task, "claude", Some("opus"));
+        }
+        let d = detection(vec![state("claude", Status::Available, &[])]);
+        let current = |draft: &AiConfig| {
+            model_rows("claude", Target::All, draft, Some(&d))
+                .iter()
+                .map(|r| r.current)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(current(&draft), [false, true, false, false, false]);
+        assign(&mut draft, Task::Chat, "claude", Some("sonnet"));
+        assert_eq!(current(&draft), [false; 5]);
     }
 
     // --- engine_rows -----------------------------------------------------
