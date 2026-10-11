@@ -4,6 +4,8 @@
 
 A user config file read once at startup. It places the statusline and the tab bar, and records the default AI engine and model. Tags: [auto] = `cargo test`; [manual] = real Kitty.
 
+## Requirements
+
 ### Requirement: File location
 The config MUST be read from `$XDG_CONFIG_HOME/lazarobox/config.toml`. When `XDG_CONFIG_HOME` is unset, empty or relative, it MUST be read from `$HOME/.config/lazarobox/config.toml`, but only when `HOME` is absolute; an empty or relative `HOME` is treated as absent. The file MUST be read once at startup; there is no hot reload.
 
