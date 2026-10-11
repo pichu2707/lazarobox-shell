@@ -65,7 +65,7 @@ AS4 (~850, 90% deletions) is split in three because two PRs cannot stay under 40
 - [x] 4.1 RED: `Picker` open positions (cursor on current engine/model, else first selectable, else first), `step` wrap over all rows including disabled, `enter` outcomes (`Commit`/`Stay`/`Close`; Enter on disabled is `Stay`), `back` per level.
 - [x] 4.2 RED: viewport (VIEW=10, offset rules, wrap follows, `n/total` only when longer).
 - [x] 4.3 RED: custom buffer (filter control/format/whitespace, cap 128, paste first line, Ctrl+U, Backspace, blank refused) and `validate_custom` (`  my-model  `, empty, spaces, 129 chars).
-- [ ] 4.4 RED: assignment actions on `AiConfig` (assign one, Set all five, `none` clears all five, unassign) and "no download path" (every key on a disabled row yields no effect).
+- [x] 4.4 RED: assignment actions on `AiConfig` (assign one, Set all five, `none` clears all five, unassign) and "no download path" (every key on a disabled row yields no effect).
 - [ ] 4.5 GREEN: implement all of the above; `PickKey` re-anchor helper for later detection updates.
 - [ ] 4.6 Gate.
 

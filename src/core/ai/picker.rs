@@ -18,6 +18,21 @@ pub enum Target {
     Task(Task),
 }
 
+impl Target {
+    /// Write a committed choice into the draft: one task, or all five for
+    /// `Set all tasks`. The default assignment clears.
+    pub fn apply(self, draft: &mut AiConfig, assignment: Assignment) {
+        match self {
+            Self::Task(task) => draft.set(task, assignment),
+            Self::All => {
+                for task in Task::ALL {
+                    draft.set(task, assignment.clone());
+                }
+            }
+        }
+    }
+}
+
 /// Identity of a row, stable across detection results.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum PickKey {
@@ -547,6 +562,8 @@ impl Picker {
     }
 }
 
+#[cfg(test)]
+mod assign_tests;
 #[cfg(test)]
 mod custom_tests;
 #[cfg(test)]
