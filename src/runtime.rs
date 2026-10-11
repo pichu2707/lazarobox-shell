@@ -542,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_menu_open_shows_the_saved_engine_as_checking() {
+    fn the_first_menu_open_shows_the_saved_assignment_unmarked() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         fs::write(&path, SAVED_AI).unwrap();
@@ -555,11 +555,14 @@ mod tests {
             step(&mut app, event, &mut panes);
         }
         let rows = app.menu().unwrap().rows(&Config::default());
-        let engine = match &rows[5] {
-            crate::core::menu::Row::Item { value, .. } => value.as_deref().unwrap().to_owned(),
+        let general = match &rows[6] {
+            crate::core::menu::Row::Item { label, value, .. } => {
+                assert_eq!(*label, "general");
+                value.as_deref().unwrap().to_owned()
+            }
             other => panic!("not an item: {other:?}"),
         };
-        assert_eq!(engine, "ollama (checking)");
+        assert_eq!(general, "ollama › llama3:8b", "nothing is marked yet");
     }
 
     // Signals are process-wide, so both are raised from one test.

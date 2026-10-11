@@ -9,7 +9,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::{
     ai::{
         Detection,
-        config::AiConfig,
+        config::{AiConfig, Task},
         menu::{AiField, AiMenu},
     },
     config::{BarPosition, Config, ConfigEdit},
@@ -33,6 +33,8 @@ pub enum ItemKind {
     Dynamic(AiField),
     /// A display-only row computed from the AI draft.
     Derived(fn(&AiMenu) -> String),
+    /// An AI assignment row; `None` is `Set all tasks`.
+    Assign(Option<Task>),
 }
 
 pub struct Item {
@@ -90,21 +92,34 @@ pub static SECTIONS: &[Section] = &[Section {
     ],
 }];
 
-/// The AI section, attached only by [`MenuState::with_ai`].
+/// The AI section, attached only by [`MenuState::with_ai`]. The labels of
+/// the task rows are the task ids; their key path is `Task::table`.
 pub static AI_SECTION: Section = Section {
     title: "AI",
     items: &[
         Item {
-            label: "Engine",
-            kind: ItemKind::Dynamic(AiField::Engine),
+            label: "Set all tasks",
+            kind: ItemKind::Assign(None),
         },
         Item {
-            label: "Model",
-            kind: ItemKind::Dynamic(AiField::Model),
+            label: "general",
+            kind: ItemKind::Assign(Some(Task::General)),
         },
         Item {
-            label: "Status",
-            kind: ItemKind::Derived(AiMenu::status),
+            label: "code",
+            kind: ItemKind::Assign(Some(Task::Code)),
+        },
+        Item {
+            label: "chat",
+            kind: ItemKind::Assign(Some(Task::Chat)),
+        },
+        Item {
+            label: "review",
+            kind: ItemKind::Assign(Some(Task::Review)),
+        },
+        Item {
+            label: "summarize",
+            kind: ItemKind::Assign(Some(Task::Summarize)),
         },
     ],
 };
@@ -116,7 +131,10 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
         .flat_map(|section| section.items.iter())
         .filter_map(|item| match &item.kind {
             ItemKind::Choice(choice) => Some((item, choice)),
-            ItemKind::Disabled | ItemKind::Dynamic(_) | ItemKind::Derived(_) => None,
+            ItemKind::Disabled
+            | ItemKind::Dynamic(_)
+            | ItemKind::Derived(_)
+            | ItemKind::Assign(_) => None,
         })
 }
 
@@ -188,7 +206,7 @@ impl MenuState {
         self.ai.is_some()
     }
 
-    /// Whether the selection is on the Engine or Model row.
+    /// Whether the selection is on an AI task row.
     pub fn on_ai_row(&self) -> bool {
         self.ai.is_some()
             && self
@@ -196,9 +214,14 @@ impl MenuState {
                 .is_some_and(|index| index >= choices().count())
     }
 
-    /// Selectable rows: the settings, then Engine and Model.
+    /// Selectable rows: the settings, then the six AI rows.
     fn selectable(&self) -> usize {
-        choices().count() + if self.ai.is_some() { 2 } else { 0 }
+        choices().count()
+            + if self.ai.is_some() {
+                AI_SECTION.items.len()
+            } else {
+                0
+            }
     }
 
     pub fn rows(&self, config: &Config) -> Vec<Row> {
@@ -229,6 +252,16 @@ impl MenuState {
                         let row = Row::Item {
                             label: item.label,
                             value: Some(Cow::Borrowed(choice.values[(choice.get)(config)])),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Assign(task) => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self.ai.as_ref().map(|ai| Cow::Owned(ai.task_value(*task))),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
@@ -292,13 +325,6 @@ impl MenuState {
             return MenuCommand::None;
         };
         let Some((_, choice)) = choices().nth(index) else {
-            let field = match index - choices().count() {
-                0 => AiField::Engine,
-                _ => AiField::Model,
-            };
-            if let Some(ai) = &mut self.ai {
-                ai.cycle(field, forward);
-            }
             return MenuCommand::None;
         };
         let len = choice.values.len();

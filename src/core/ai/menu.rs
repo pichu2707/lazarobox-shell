@@ -60,6 +60,20 @@ impl AiMenu {
         self.draft != self.original
     }
 
+    /// The last detection result, `None` before the first.
+    pub fn engines(&self) -> Option<&Detection> {
+        self.engines.as_ref()
+    }
+
+    /// The value of a task row, or of `Set all tasks` (`None`): the shared
+    /// assignment or `(mixed)`.
+    pub fn task_value(&self, task: Option<Task>) -> String {
+        match task {
+            Some(task) => self.draft.label(task),
+            None => self.draft.aggregate(),
+        }
+    }
+
     /// Replaces the detection. The draft is never touched.
     pub fn set_engines(&mut self, engines: Option<Detection>) {
         self.engines = engines;
