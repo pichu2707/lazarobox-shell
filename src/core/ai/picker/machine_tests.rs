@@ -1,7 +1,7 @@
 use super::*;
 use crate::core::ai::EngineState;
 
-fn state(id: &'static str, status: Status, models: &[&str]) -> EngineState {
+pub(super) fn state(id: &'static str, status: Status, models: &[&str]) -> EngineState {
     EngineState {
         id,
         status,
@@ -10,7 +10,7 @@ fn state(id: &'static str, status: Status, models: &[&str]) -> EngineState {
     }
 }
 
-fn det(ollama_models: &[&str]) -> Detection {
+pub(super) fn det(ollama_models: &[&str]) -> Detection {
     Detection {
         engines: vec![
             state("ollama", Status::Available, ollama_models),
@@ -20,29 +20,29 @@ fn det(ollama_models: &[&str]) -> Detection {
     }
 }
 
-fn assigned(engine: &str, model: &str) -> Assignment {
+pub(super) fn assigned(engine: &str, model: &str) -> Assignment {
     Assignment {
         engine: Some(engine.to_owned()),
         model: Some(model.to_owned()),
     }
 }
 
-fn code_with(engine: &str, model: &str) -> AiConfig {
+pub(super) fn code_with(engine: &str, model: &str) -> AiConfig {
     let mut config = AiConfig::default();
     config.set(Task::Code, assigned(engine, model));
     config
 }
 
-fn index_of(rows: &[PickRow], key: PickKey) -> usize {
+pub(super) fn index_of(rows: &[PickRow], key: PickKey) -> usize {
     rows.iter().position(|r| r.key == key).unwrap()
 }
 
-fn engine_key(id: &str) -> PickKey {
+pub(super) fn engine_key(id: &str) -> PickKey {
     PickKey::Engine(id.to_owned())
 }
 
 /// A picker for code, moved to the Models level of `engine`.
-fn at_models(draft: &AiConfig, d: &Detection, engine: &str) -> Picker {
+pub(super) fn at_models(draft: &AiConfig, d: &Detection, engine: &str) -> Picker {
     let mut p = Picker::open(Target::Task(Task::Code), draft, Some(d));
     let rows = p.rows(draft, Some(d));
     p.cursor = index_of(&rows, engine_key(engine));

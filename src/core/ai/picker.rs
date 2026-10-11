@@ -377,6 +377,7 @@ impl Picker {
         } else {
             (self.cursor + len - 1) % len
         };
+        self.follow();
     }
 
     /// Choose the row under the cursor.
@@ -393,6 +394,7 @@ impl Picker {
                         self.level = Level::Models { engine: id.clone() };
                         self.offset = 0;
                         self.cursor = self.entry_cursor(draft, detection);
+                        self.follow();
                         Outcome::Stay
                     }
                     _ => Outcome::Stay,
@@ -432,6 +434,8 @@ impl Picker {
                     .iter()
                     .position(|r| r.key == PickKey::Engine(engine.clone()))
                     .unwrap_or(0);
+                self.offset = 0;
+                self.follow();
                 Outcome::Stay
             }
             Level::Custom { engine, .. } => {
@@ -441,8 +445,31 @@ impl Picker {
                     .iter()
                     .position(|r| r.key == PickKey::Custom)
                     .unwrap_or(0);
+                self.offset = 0;
+                self.follow();
                 Outcome::Stay
             }
+        }
+    }
+
+    /// The indexes of the rows inside the window.
+    pub fn visible(&self, total: usize) -> std::ops::Range<usize> {
+        let start = self.offset.min(total.saturating_sub(VIEW));
+        start..(start + VIEW).min(total)
+    }
+
+    /// `n/total`, only when the list is longer than the window.
+    pub fn counter(&self, total: usize) -> Option<String> {
+        (total > VIEW).then(|| format!("{}/{total}", self.cursor + 1))
+    }
+
+    /// Keep the cursor inside the window: a cursor above it becomes the
+    /// first row, one below it the last row.
+    fn follow(&mut self) {
+        if self.cursor < self.offset {
+            self.offset = self.cursor;
+        } else if self.cursor >= self.offset + VIEW {
+            self.offset = self.cursor + 1 - VIEW;
         }
     }
 
@@ -457,6 +484,8 @@ impl Picker {
 
 #[cfg(test)]
 mod machine_tests;
+#[cfg(test)]
+mod viewport_tests;
 
 #[cfg(test)]
 mod tests {
