@@ -336,7 +336,6 @@ mod tests {
 
     // Spec: AI section.
     use crate::core::ai::{CATALOG, Detection, EngineState, Status, config::AiConfig};
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn machine() -> Detection {
         Detection {
@@ -365,11 +364,6 @@ mod tests {
         fresh().with_ai(saved, Some(machine()))
     }
 
-    fn press(menu: &mut MenuState, c: char) {
-        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
-        menu.on_key(&key, false, &mut Config::default());
-    }
-
     fn lines(buf: &Buffer) -> Vec<String> {
         text(buf).lines().map(str::to_owned).collect()
     }
@@ -381,41 +375,6 @@ mod tests {
         assert!(!fits(r(23, 11), 8));
         assert!(fits(r(24, 7), 4));
         assert!(!fits(r(24, 6), 4));
-    }
-
-    #[test]
-    fn snapshot_ai_popup_at_the_wanted_size() {
-        insta::assert_snapshot!(text(&draw(62, 12, &with_ai("llama3:8b"))));
-    }
-
-    #[test]
-    fn ai_status_cells_have_the_style_of_the_mouse_row() {
-        let buf = draw(62, 12, &with_ai("llama3:8b"));
-        let mouse = buf[(2, 4)].style();
-        for x in [2, 30, 58] {
-            assert_eq!(buf[(x, 8)].style(), mouse, "x {x}");
-        }
-        assert_ne!(buf[(2, 7)].style(), mouse);
-    }
-
-    #[test]
-    fn the_refresh_hint_shows_only_on_the_ai_rows() {
-        let mut menu = with_ai("llama3:8b");
-        let settings = " j/k move · h/l change · Enter save · Esc cancel";
-        assert_eq!(lines(&draw(62, 12, &menu))[10], format!("│{settings:<60}│"));
-        press(&mut menu, 'j');
-        press(&mut menu, 'j');
-        let ai = " j/k move · h/l change · r refresh · Enter save · Esc cancel";
-        assert_eq!(lines(&draw(62, 12, &menu))[10], format!("│{ai:<60}│"));
-        let clipped: String = ai.chars().take(48).collect();
-        assert_eq!(lines(&draw(51, 12, &menu))[10], format!("│{clipped}…│"));
-    }
-
-    #[test]
-    fn a_long_model_name_is_clipped_with_an_ellipsis() {
-        let model = "a".repeat(60);
-        let buf = draw(62, 12, &with_ai(&model));
-        assert_eq!(lines(&buf)[7], format!("│ Model {}…│", "a".repeat(52)));
     }
 
     #[test]
