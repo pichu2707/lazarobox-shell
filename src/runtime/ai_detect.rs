@@ -2,22 +2,39 @@
 //! `--version`. The facts are classified by the pure `core::ai::reduce`.
 
 use std::{
-    ffi::OsStr, fs, net::SocketAddr, os::unix::fs::PermissionsExt, path::PathBuf, time::Duration,
+    ffi::OsStr,
+    fs,
+    net::SocketAddr,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
 };
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
+    process::Command,
+    sync::mpsc,
     time::timeout,
 };
 
-use crate::core::ai::http::{MAX_BODY, parse_response};
+use futures::future::join_all;
+
+use crate::core::ai::{
+    CATALOG, Detection, Engine, Kind, Probe,
+    http::{MAX_BODY, parse_response},
+    reduce,
+};
 
 /// Room for the status line and headers above the 1 MiB body cap.
 const READ_SLACK: usize = 16 * 1024;
 
 /// Covers connect, write and read of one loopback request.
 pub const HTTP_TIMEOUT: Duration = Duration::from_millis(800);
+
+/// Longest `--version` is allowed to run before the child is killed.
+pub const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// GETs `path` from `127.0.0.1:port`. `None` on any failure or timeout.
 pub async fn http_get(port: u16, path: &'static str) -> Option<(u16, Vec<u8>)> {
@@ -56,13 +73,118 @@ pub fn find_on_path(name: &str, path: &OsStr) -> Option<PathBuf> {
         })
 }
 
+/// Runs `<path> --version` and returns its stdout. `None` on a spawn
+/// failure, a non-zero exit or a timeout.
+pub async fn version(path: &Path) -> Option<Vec<u8>> {
+    // No shell: the resolved absolute path is the program. Dropping the
+    // future on a timeout drops the child, and `kill_on_drop` kills it.
+    let child = Command::new(path)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .ok()?;
+    let output = timeout(VERSION_TIMEOUT, child.wait_with_output())
+        .await
+        .ok()?
+        .ok()?;
+    output.status.success().then_some(output.stdout)
+}
+
+/// What `detect_with` probes: an entry of the catalog, or a test double
+/// that points at an ephemeral port.
+pub type Target = Engine;
+
+/// Probes every target concurrently and classifies the facts. `path` is the
+/// PATH value, read once by the caller.
+pub async fn detect_with(targets: &[Target], path: &OsStr) -> Detection {
+    let probes = join_all(targets.iter().map(|target| probe(target, path))).await;
+    reduce(&probes)
+}
+
+/// Detection over the real catalog and the process PATH.
+pub async fn detect_all() -> Detection {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    detect_with(CATALOG, &path).await
+}
+
+/// Runs `fut` off the caller and sends exactly one `Detection` to `tx`: the
+/// result, or an empty one if the future panicked. Returns at once.
+pub fn spawn_detection_of<F>(tx: mpsc::Sender<Detection>, fut: F)
+where
+    F: Future<Output = Detection> + Send + 'static,
+{
+    // The inner task isolates a panic: its `JoinError` becomes the empty
+    // `Detection` instead of leaving the app waiting for a result forever.
+    let inner = tokio::spawn(fut);
+    tokio::spawn(async move {
+        let _ = tx.send(inner.await.unwrap_or_default()).await;
+    });
+}
+
+/// Starts a real detection; its result arrives on `tx`.
+pub fn spawn_detection(tx: mpsc::Sender<Detection>) {
+    spawn_detection_of(tx, detect_all());
+}
+
+async fn probe(target: &Target, path: &OsStr) -> Probe {
+    let found = find_on_path(target.binary, path);
+    match target.kind {
+        Kind::Server { port, path, .. } => Probe::Server {
+            id: target.id,
+            on_path: found.is_some(),
+            reply: http_get(port, path).await,
+        },
+        Kind::Cli => {
+            // Only a resolved absolute path is ever run.
+            let stdout = match &found {
+                Some(file) => version(file).await,
+                None => None,
+            };
+            Probe::Cli {
+                id: target.id,
+                path: found,
+                stdout,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        path::Path,
-        sync::{Arc, Mutex},
-    };
+    use crate::core::ai::{EngineState, Status};
+    use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn spawn_detection_of_delivers_the_result() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let one = Detection {
+            engines: vec![state("codex", Status::Available, &["default"], None)],
+        };
+        let sent = one.clone();
+        spawn_detection_of(tx, async move { sent });
+        let got = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await;
+        assert_eq!(got, Ok(Some(one)));
+    }
+
+    #[tokio::test]
+    async fn spawn_detection_of_answers_with_an_empty_detection_on_panic() {
+        let (tx, mut rx) = mpsc::channel(1);
+        spawn_detection_of(tx, async { panic!("probe blew up") });
+        let got = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await;
+        assert_eq!(got, Ok(Some(Detection::default())));
+    }
+
+    #[tokio::test]
+    async fn spawn_detection_of_returns_without_waiting() {
+        let (tx, _rx) = mpsc::channel(1);
+        let started = std::time::Instant::now();
+        spawn_detection_of(tx, std::future::pending());
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
@@ -179,11 +301,65 @@ mod tests {
         assert_eq!(requests.lock().unwrap().len(), 1);
     }
 
-    fn write_file(dir: &Path, name: &str, mode: u32) -> PathBuf {
+    /// A file the probes treat as an executable. The `sh` shebang is only
+    /// this test fixture; production code never spawns a shell.
+    fn write_script(dir: &Path, name: &str, body: &str, mode: u32) -> PathBuf {
         let path = dir.join(name);
-        fs::write(&path, "#!/bin/sh\n").unwrap();
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
         path
+    }
+
+    fn write_file(dir: &Path, name: &str, mode: u32) -> PathBuf {
+        write_script(dir, name, "", mode)
+    }
+
+    #[tokio::test]
+    async fn version_returns_stdout() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_script(dir.path(), "codex", "echo codex 0.5.0", 0o755);
+        assert_eq!(version(&script).await, Some(b"codex 0.5.0\n".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn version_gives_none_on_a_non_zero_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_script(dir.path(), "claude", "echo oops\nexit 1", 0o755);
+        assert_eq!(version(&script).await, None);
+    }
+
+    #[tokio::test]
+    async fn version_closes_stdin() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_script(dir.path(), "gemini", "read x\necho done", 0o755);
+        assert_eq!(version(&script).await, Some(b"done\n".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn version_kills_a_hanging_child_after_the_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let body = format!("echo $$ > {}\nexec sleep 30", pid_file.display());
+        let script = write_script(dir.path(), "hang", &body, 0o755);
+        let started = std::time::Instant::now();
+        let answer = version(&script).await;
+        let elapsed = started.elapsed();
+        assert_eq!(
+            (answer, elapsed < Duration::from_millis(2500)),
+            (None, true)
+        );
+        let pid = fs::read_to_string(&pid_file).unwrap_or_default();
+        let pid = pid.trim().to_string();
+        assert!(pid.parse::<u32>().is_ok(), "the script never ran");
+        let mut gone = false;
+        for _ in 0..50 {
+            if !Path::new(&format!("/proc/{pid}")).exists() {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(gone, "child {pid} survived the timeout");
     }
 
     fn join(dirs: &[&Path]) -> std::ffi::OsString {
@@ -239,5 +415,158 @@ mod tests {
         let found = find_on_path("codex", OsStr::new(":.:bin:"));
         std::env::set_current_dir(previous).unwrap();
         assert_eq!(found, None);
+    }
+
+    fn ok_json(body: &str) -> Option<Vec<u8>> {
+        Some(
+            format!(
+                "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .into_bytes(),
+        )
+    }
+
+    fn state(id: &'static str, status: Status, models: &[&str], v: Option<&str>) -> EngineState {
+        EngineState {
+            id,
+            status,
+            models: models.iter().map(ToString::to_string).collect(),
+            version: v.map(ToString::to_string),
+        }
+    }
+
+    struct Fixture {
+        targets: Vec<Target>,
+        path: std::ffi::OsString,
+        servers: Vec<(u16, &'static str, Requests)>,
+        marker: PathBuf,
+        bystander: TcpListener,
+        _dir: tempfile::TempDir,
+    }
+
+    /// Four fake servers on ephemeral ports (ollama silent on request), a
+    /// PATH dir with fake binaries and a listener nobody should talk to.
+    async fn fixture(ollama_silent: bool) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ollama-was-executed");
+        write_script(
+            dir.path(),
+            "ollama",
+            &format!("echo x > {}", marker.display()),
+            0o755,
+        );
+        write_script(dir.path(), "vllm", "", 0o755);
+        write_script(dir.path(), "claude", "exit 1", 0o755);
+        write_script(dir.path(), "codex", "echo codex 0.5.0", 0o755);
+        write_script(dir.path(), "gemini", "exec sleep 30", 0o755);
+        let tags = ok_json(r#"{"models":[{"name":"llama3:8b"},{"name":"qwen2.5:7b"}]}"#);
+        let lms = ok_json(r#"{"data":[{"id":"gemma-3-4b"}]}"#);
+        let llama = ok_json(r#"{"data":[{"id":"m.gguf","owned_by":"llamacpp"}]}"#);
+        let foreign = ok_json(r#"{"data":[{"id":"x","owned_by":"localai"}]}"#);
+        let mut servers = Vec::new();
+        let mut targets = Vec::new();
+        let rows = [
+            (
+                "ollama",
+                "/api/tags",
+                None,
+                "ollama",
+                if ollama_silent { None } else { tags },
+            ),
+            ("lmstudio", "/v1/models", None, "lms", lms),
+            (
+                "llamacpp",
+                "/v1/models",
+                Some("llamacpp"),
+                "llama-server",
+                llama,
+            ),
+            ("vllm", "/v1/models", Some("vllm"), "vllm", foreign),
+        ];
+        for (id, path, owner, binary, reply) in rows {
+            let (port, requests) = fake_server(reply).await;
+            servers.push((port, path, requests));
+            targets.push(Engine {
+                id,
+                kind: Kind::Server { port, path, owner },
+                binary,
+            });
+        }
+        for id in ["claude", "codex", "gemini", "opencode"] {
+            targets.push(Engine {
+                id,
+                kind: Kind::Cli,
+                binary: id,
+            });
+        }
+        Fixture {
+            targets,
+            path: join(&[dir.path()]),
+            servers,
+            marker,
+            bystander: TcpListener::bind("127.0.0.1:0").await.unwrap(),
+            _dir: dir,
+        }
+    }
+
+    fn expected(ollama: EngineState) -> Detection {
+        Detection {
+            engines: vec![
+                ollama,
+                state("lmstudio", Status::Available, &["gemma-3-4b"], None),
+                state("llamacpp", Status::Available, &["m.gguf"], None),
+                state("vllm", Status::NotRunning, &[], None),
+                state("claude", Status::Available, &["default"], None),
+                state(
+                    "codex",
+                    Status::Available,
+                    &["default"],
+                    Some("codex 0.5.0"),
+                ),
+                state("gemini", Status::Available, &["default"], None),
+                state("opencode", Status::NotInstalled, &[], None),
+            ],
+        }
+    }
+
+    #[tokio::test]
+    async fn detect_with_probes_every_engine_and_nothing_else() {
+        let f = fixture(false).await;
+        let started = std::time::Instant::now();
+        let detection = detect_with(&f.targets, &f.path).await;
+        let ollama = state(
+            "ollama",
+            Status::Available,
+            &["llama3:8b", "qwen2.5:7b"],
+            None,
+        );
+        assert_eq!(
+            (detection, started.elapsed() < Duration::from_millis(2500)),
+            (expected(ollama), true)
+        );
+        for (port, path, requests) in &f.servers {
+            let get = format!(
+                "GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+            );
+            assert_eq!(*requests.lock().unwrap(), vec![get.into_bytes()]);
+        }
+        let bystander = tokio::time::timeout(Duration::from_millis(50), f.bystander.accept()).await;
+        assert!(bystander.is_err(), "an unrelated listener was contacted");
+        assert!(!f.marker.exists(), "a binary was run besides --version");
+    }
+
+    #[tokio::test]
+    async fn detect_with_answers_once_when_a_server_hangs() {
+        let f = fixture(true).await;
+        let started = std::time::Instant::now();
+        let detection = detect_with(&f.targets, &f.path).await;
+        assert_eq!(
+            (detection, started.elapsed() < Duration::from_millis(2500)),
+            (
+                expected(state("ollama", Status::NotRunning, &[], None)),
+                true
+            )
+        );
     }
 }
