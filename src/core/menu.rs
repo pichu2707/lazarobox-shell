@@ -183,7 +183,6 @@ impl MenuState {
             .unwrap_or_default()
     }
 
-    /// Whether the selection is on Engine or Model.
     /// Whether the menu has an AI section.
     pub fn has_ai(&self) -> bool {
         self.ai.is_some()
