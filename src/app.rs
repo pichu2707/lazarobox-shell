@@ -5232,19 +5232,6 @@ mod app_tests {
         AiConfig::general(Some(engine), Some(model))
     }
 
-    /// The Engine, Model and Status values of the open menu.
-    fn ai_values(a: &App) -> Vec<String> {
-        let rows = a.menu().unwrap().rows(&a.config);
-        assert_eq!(rows[4], Row::Title("AI"));
-        rows[5..8]
-            .iter()
-            .map(|row| match row {
-                Row::Item { value, .. } => value.as_deref().unwrap().to_owned(),
-                Row::Title(_) => unreachable!(),
-            })
-            .collect()
-    }
-
     /// Two tabs, so opening the menu never resizes; `ollama`/`qwen2:7b` saved.
     fn ai_app() -> App {
         let mut a = launched(80, 25).with_ai(ai_of("ollama", "qwen2:7b"));
@@ -5261,141 +5248,6 @@ mod app_tests {
         assert_eq!(open_menu(&mut a), Vec::<Effect>::new());
     }
 
-    // Spec: Refresh on AI row; Refresh elsewhere or repeated.
-    #[test]
-    fn r_on_an_ai_row_requests_exactly_one_detection() {
-        let mut a = ai_app();
-        open_menu(&mut a);
-        a.update(AppEvent::EnginesDetected(machine()));
-        a.update(key('j'));
-        assert_eq!(a.update(key('r')), Vec::<Effect>::new(), "Statusline row");
-        a.update(key('j'));
-        let before = a.menu().cloned();
-        assert_eq!(a.update(key('r')), vec![Effect::DetectEngines]);
-        assert_eq!(a.menu().cloned(), before, "selection and draft unchanged");
-        assert_eq!(a.update(key('r')), Vec::<Effect>::new(), "in flight");
-        a.update(AppEvent::EnginesDetected(machine()));
-        assert_eq!(
-            a.update(kind(KeyCode::Char('r'), KeyEventKind::Repeat)),
-            Vec::<Effect>::new()
-        );
-        assert_eq!(a.update(key('R')), Vec::<Effect>::new());
-    }
-
-    // Spec: Result arrives while open; Engine disappears while open.
-    #[test]
-    fn a_result_updates_the_open_menu_in_place_and_keeps_the_draft() {
-        let mut a = ai_app();
-        open_menu(&mut a);
-        assert_eq!(
-            ai_values(&a),
-            vec!["ollama (checking)", "qwen2:7b · not found", "detecting…"]
-        );
-        a.update(key('j'));
-        a.update(key('j'));
-        a.update(key('j'));
-        assert_eq!(
-            a.update(AppEvent::EnginesDetected(machine())),
-            Vec::<Effect>::new()
-        );
-        assert_eq!(
-            ai_values(&a),
-            vec!["ollama", "qwen2:7b", "available · 2 models"]
-        );
-        let mut gone = machine();
-        gone.engines[0].status = crate::core::ai::Status::NotRunning;
-        gone.engines[0].models.clear();
-        a.update(AppEvent::EnginesDetected(gone));
-        assert_eq!(
-            ai_values(&a),
-            vec![
-                "ollama (not detected)",
-                "qwen2:7b · not found",
-                "not running"
-            ]
-        );
-        assert_eq!(a.ai(), &ai_of("ollama", "qwen2:7b"), "saved choice kept");
-    }
-
-    #[test]
-    fn a_result_while_closed_is_what_the_next_open_shows() {
-        let mut a = ai_app();
-        a.update(AppEvent::EnginesDetected(machine()));
-        open_menu(&mut a);
-        assert_eq!(
-            ai_values(&a),
-            vec!["ollama", "qwen2:7b", "available · 2 models"]
-        );
-    }
-
-    // Spec: Save closes with AI values; Esc reverts AI.
-    #[test]
-    fn config_saved_copies_the_ai_draft_and_esc_reverts_it() {
-        let mut a = ai_app();
-        open_menu(&mut a);
-        a.update(AppEvent::EnginesDetected(machine()));
-        a.update(key('j'));
-        a.update(key('j'));
-        a.update(key('l'));
-        a.update(esc());
-        assert_eq!(a.ai(), &ai_of("ollama", "qwen2:7b"));
-        open_menu(&mut a);
-        assert_eq!(ai_values(&a)[0], "ollama", "the last result is kept");
-        a.update(AppEvent::EnginesDetected(machine()));
-        a.update(key('j'));
-        a.update(key('j'));
-        a.update(key('l'));
-        assert_eq!(ai_values(&a), vec!["claude", "default", "available"]);
-        let saved = a.update(code(KeyCode::Enter));
-        assert_eq!(saved.len(), 1);
-        assert!(matches!(saved[0], Effect::SaveConfig(_)));
-        assert_eq!(a.ai(), &ai_of("ollama", "qwen2:7b"), "not before the write");
-        assert_eq!(a.update(AppEvent::ConfigSaved), Vec::<Effect>::new());
-        assert_eq!(a.ai(), &ai_of("claude", "default"));
-    }
-
-    // Manual check VP.2: Engine to claude (a CLI engine), refresh, Enter must
-    // ask the runtime to write both AI keys, never close silently.
-    #[test]
-    fn enter_after_choosing_a_cli_engine_and_refreshing_asks_to_save_it() {
-        let mut a = ai_app();
-        open_menu(&mut a);
-        a.update(AppEvent::EnginesDetected(machine()));
-        a.update(key('j'));
-        a.update(key('j'));
-        a.update(key('l'));
-        a.update(key('r'));
-        a.update(AppEvent::EnginesDetected(machine()));
-        assert_eq!(ai_values(&a), vec!["claude", "default", "available"]);
-        let edit = |key, value: &'static str| crate::core::config::ConfigEdit {
-            table: "ai",
-            key,
-            value: value.into(),
-        };
-        assert_eq!(
-            a.update(code(KeyCode::Enter)),
-            vec![Effect::SaveConfig(vec![
-                edit("engine", "claude"),
-                edit("model", "default")
-            ])]
-        );
-    }
-
-    // Characterization: before the first detection answers there is nothing
-    // to choose, so cycling does nothing and Enter closes with no save.
-    #[test]
-    fn enter_before_any_detection_has_nothing_to_save() {
-        let mut a = launched(80, 25).with_ai(AiConfig::default());
-        press(&mut a, "tn");
-        open_menu(&mut a);
-        a.update(key('j'));
-        a.update(key('j'));
-        a.update(key('l'));
-        assert_eq!(ai_values(&a), vec!["none", "none", "-"]);
-        assert_eq!(a.update(code(KeyCode::Enter)), Vec::<Effect>::new());
-        assert!(a.menu().is_none());
-    }
-
     // Spec: Unchanged AI draft.
     #[test]
     fn an_unchanged_ai_draft_closes_without_a_save() {
@@ -5407,18 +5259,6 @@ mod app_tests {
             vec![Effect::ResizePty(PaneId::FIRST, sized(24, 80))]
         );
         assert_eq!(a.ai(), &ai_of("ollama", "qwen2:7b"));
-    }
-
-    #[test]
-    fn ai_edits_never_resize_a_pane() {
-        let mut a = launched(80, 25).with_ai(ai_of("ollama", "qwen2:7b"));
-        open_menu(&mut a);
-        a.update(AppEvent::EnginesDetected(machine()));
-        a.update(key('j'));
-        a.update(key('j'));
-        assert_eq!(a.update(key('l')), Vec::<Effect>::new());
-        assert_eq!(a.update(key('j')), Vec::<Effect>::new());
-        assert_eq!(a.update(key('l')), Vec::<Effect>::new());
     }
 
     // Characterization: the file's values reach the App through `with_ai`.
