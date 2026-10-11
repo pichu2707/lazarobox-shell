@@ -65,7 +65,7 @@ pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String
             // spacing) stays, and keep the old value's decor so a trailing
             // `# comment` survives.
             Some(slot) => {
-                if slot.is_table_like() {
+                if slot.is_table_like() || slot.is_array_of_tables() {
                     return Err(EditError::KeyIsTable {
                         table: edit.table,
                         key: edit.key,
@@ -264,6 +264,31 @@ other = 1
             apply_edit(Some("[statusline]\nposition = { foo = 1 }\n"), &one),
             refused
         );
+    }
+
+    #[test]
+    fn refuses_an_owned_key_that_holds_an_array_of_tables() {
+        let out = apply_edit(
+            Some("[[statusline.position]]\nfoo = 1\n"),
+            &[edit("statusline", "top")],
+        );
+        assert_eq!(
+            out,
+            Err(EditError::KeyIsTable {
+                table: "statusline",
+                key: "position"
+            })
+        );
+    }
+
+    #[test]
+    fn replaces_an_inline_array_of_tables() {
+        let out = apply_edit(
+            Some("[tabbar]\nposition = [{ a = 1 }]\n"),
+            &[edit("tabbar", "top")],
+        )
+        .unwrap();
+        assert_eq!(out, "[tabbar]\nposition = \"top\"\n");
     }
 
     #[test]
