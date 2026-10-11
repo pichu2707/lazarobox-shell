@@ -16,13 +16,14 @@ use crate::{
     ui::theme::LazaroboxTheme,
 };
 
-/// Widest popup wanted.
+/// Widest popup wanted without an AI section.
 pub const WANT_WIDTH: u16 = 51;
-/// Rows wanted: border, title, two settings, Mouse, blank, footer, border.
-pub const WANT_HEIGHT: u16 = 8;
-/// Smallest area that still shows the full popup.
+/// With the AI section the `r refresh` hint needs eleven more columns.
+pub const WANT_WIDTH_AI: u16 = 62;
+/// Rows around the body: two borders, the blank row and the footer.
+const CHROME: u16 = 4;
+/// Smallest width that still shows the full popup.
 pub const MIN_WIDTH: u16 = 24;
-pub const MIN_HEIGHT: u16 = 7;
 
 /// `want_w` x `want_h` centred in `area`, clamped to the area.
 pub fn popup_area(area: Rect, want_w: u16, want_h: u16) -> Rect {
@@ -36,9 +37,10 @@ pub fn popup_area(area: Rect, want_w: u16, want_h: u16) -> Rect {
     )
 }
 
-/// Whether `area` is big enough for the full popup.
-pub fn fits(area: Rect) -> bool {
-    area.width >= MIN_WIDTH && area.height >= MIN_HEIGHT
+/// Whether `area` is big enough for the full popup of `rows` body rows (the
+/// blank row is the first thing dropped, so the height may lose one).
+pub fn fits(area: Rect, rows: usize) -> bool {
+    area.width >= MIN_WIDTH && usize::from(area.height) >= rows + usize::from(CHROME) - 1
 }
 
 /// Draws `MenuState::rows` in a bordered box, or a one-line fallback.
@@ -59,6 +61,7 @@ impl<'a> MenuPopup<'a> {
 }
 
 const HINT: &str = "j/k move · h/l change · Enter save · Esc cancel";
+const HINT_AI: &str = "j/k move · h/l change · r refresh · Enter save · Esc cancel";
 const FALLBACK: &str = "MENU · Esc cancel · Enter save";
 
 impl MenuPopup<'_> {
@@ -113,11 +116,18 @@ impl Widget for MenuPopup<'_> {
         if area.is_empty() {
             return;
         }
-        if !fits(area) {
+        let rows = self.menu.rows(self.config);
+        if !fits(area, rows.len()) {
             self.render_fallback(area, buf);
             return;
         }
-        let popup = popup_area(area, WANT_WIDTH, WANT_HEIGHT);
+        let want_width = if self.menu.has_ai() {
+            WANT_WIDTH_AI
+        } else {
+            WANT_WIDTH
+        };
+        let want_height = rows.len() as u16 + CHROME;
+        let popup = popup_area(area, want_width, want_height);
         Clear.render(popup, buf);
         let accent = Style::default().fg(self.theme.info_blue);
         let block = Block::default()
@@ -129,13 +139,15 @@ impl Widget for MenuPopup<'_> {
         let inner = block.inner(popup);
         block.render(popup, buf);
 
-        let rows = self.menu.rows(self.config);
         // Body rows, then (height permitting) a blank row, then the footer.
         let blank = usize::from(inner.height) > rows.len() + 1;
         let width = usize::from(inner.width);
         for (offset, row) in rows.iter().enumerate() {
             let (text, style) = self.line(row, inner.width);
             let y = inner.y + offset as u16;
+            if y >= inner.bottom() {
+                break;
+            }
             buf.set_style(Rect::new(inner.x, y, inner.width, 1), style);
             buf.set_stringn(inner.x, y, clip(&text, width), width, style);
         }
@@ -143,6 +155,9 @@ impl Widget for MenuPopup<'_> {
         if footer_y < inner.bottom() {
             let (text, style) = match self.menu.error() {
                 Some(error) => (error, Style::default().fg(self.theme.error_red)),
+                None if self.menu.on_ai_row() => {
+                    (HINT_AI, Style::default().fg(self.theme.text_muted))
+                }
                 None => (HINT, Style::default().fg(self.theme.text_muted)),
             };
             let text = clip(&format!(" {text}"), width);
@@ -189,11 +204,11 @@ mod tests {
 
     #[test]
     fn the_full_popup_needs_exactly_24_by_7() {
-        assert!(fits(r(24, 7)));
-        assert!(!fits(r(23, 7)));
-        assert!(!fits(r(24, 6)));
-        assert!(fits(r(200, 50)));
-        assert!(!fits(r(0, 0)));
+        assert!(fits(r(24, 7), 4));
+        assert!(!fits(r(23, 7), 4));
+        assert!(!fits(r(24, 6), 4));
+        assert!(fits(r(200, 50), 4));
+        assert!(!fits(r(0, 0), 4));
     }
 
     use crate::core::config::Config;
@@ -317,5 +332,113 @@ mod tests {
         assert_eq!(draw(0, 0, &fresh()).content.len(), 0);
         assert_eq!(text(&draw(0, 9, &fresh())), "\n".repeat(8));
         assert_eq!(text(&draw(9, 0, &fresh())), "");
+    }
+
+    // Spec: AI section.
+    use crate::core::ai::{CATALOG, Detection, EngineState, Status, config::AiConfig};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn machine() -> Detection {
+        Detection {
+            engines: CATALOG
+                .iter()
+                .map(|e| EngineState {
+                    id: e.id,
+                    status: if e.id == "ollama" {
+                        Status::Available
+                    } else {
+                        Status::NotInstalled
+                    },
+                    models: if e.id == "ollama" {
+                        vec!["llama3:8b".to_owned(), "qwen2:7b".to_owned()]
+                    } else {
+                        Vec::new()
+                    },
+                    version: None,
+                })
+                .collect(),
+        }
+    }
+
+    fn with_ai(model: &str) -> MenuState {
+        let saved = AiConfig {
+            engine: Some("ollama".to_owned()),
+            model: Some(model.to_owned()),
+        };
+        fresh().with_ai(saved, Some(machine()))
+    }
+
+    fn press(menu: &mut MenuState, c: char) {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        menu.on_key(&key, false, &mut Config::default());
+    }
+
+    fn lines(buf: &Buffer) -> Vec<String> {
+        text(buf).lines().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn the_popup_height_follows_the_row_count() {
+        assert!(fits(r(24, 11), 8));
+        assert!(!fits(r(24, 10), 8));
+        assert!(!fits(r(23, 11), 8));
+        assert!(fits(r(24, 7), 4));
+        assert!(!fits(r(24, 6), 4));
+    }
+
+    #[test]
+    fn snapshot_ai_popup_at_the_wanted_size() {
+        insta::assert_snapshot!(text(&draw(62, 12, &with_ai("llama3:8b"))));
+    }
+
+    #[test]
+    fn ai_status_cells_have_the_style_of_the_mouse_row() {
+        let buf = draw(62, 12, &with_ai("llama3:8b"));
+        let mouse = buf[(2, 4)].style();
+        for x in [2, 30, 58] {
+            assert_eq!(buf[(x, 8)].style(), mouse, "x {x}");
+        }
+        assert_ne!(buf[(2, 7)].style(), mouse);
+    }
+
+    #[test]
+    fn the_refresh_hint_shows_only_on_the_ai_rows() {
+        let mut menu = with_ai("llama3:8b");
+        let settings = " j/k move · h/l change · Enter save · Esc cancel";
+        assert_eq!(lines(&draw(62, 12, &menu))[10], format!("│{settings:<60}│"));
+        press(&mut menu, 'j');
+        press(&mut menu, 'j');
+        let ai = " j/k move · h/l change · r refresh · Enter save · Esc cancel";
+        assert_eq!(lines(&draw(62, 12, &menu))[10], format!("│{ai:<60}│"));
+        let clipped: String = ai.chars().take(48).collect();
+        assert_eq!(lines(&draw(51, 12, &menu))[10], format!("│{clipped}…│"));
+    }
+
+    #[test]
+    fn a_long_model_name_is_clipped_with_an_ellipsis() {
+        let model = "a".repeat(60);
+        let buf = draw(62, 12, &with_ai(&model));
+        assert_eq!(lines(&buf)[7], format!("│ Model {}…│", "a".repeat(52)));
+    }
+
+    #[test]
+    fn ai_popups_never_panic_at_any_size() {
+        let mut menu = with_ai("llama3:8b");
+        for pass in 0..2 {
+            for w in 0..=40 {
+                for h in 0..=20 {
+                    draw(w, h, &menu);
+                }
+            }
+            if pass == 0 {
+                menu.set_error("config.toml: ai is not a table; fix it before saving".into());
+            }
+        }
+    }
+
+    #[test]
+    fn below_the_ai_height_the_fallback_is_drawn() {
+        let buf = draw(62, 10, &with_ai("llama3:8b"));
+        assert_eq!(lines(&buf)[5].trim_end(), "MENU · Esc cancel · Enter save");
     }
 }
