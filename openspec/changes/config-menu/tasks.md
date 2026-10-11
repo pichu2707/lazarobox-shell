@@ -119,18 +119,18 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 ## CM4b: Save effect, runtime write, feedback
 
 - [x] CM4b.1a Stubs, App side (CM4b-i): `Effect::SaveConfig(Vec<ConfigEdit>)`, `AppEvent::{ConfigSaved, ConfigSaveFailed(String)}`. `Panes::apply` gets a temporary arm that answers `ConfigSaved`, so the tip keeps the old session-only behaviour until CM4b-ii.
-- [ ] CM4b.1b Stubs, runtime side (CM4b-ii): `Panes::with_config_path(Option<PathBuf>)`; `save_config(path: Option<&Path>, edits) -> Result<(), String>` returning `Ok(())`.
+- [x] CM4b.1b Stubs, runtime side (CM4b-ii): `Panes::with_config_path(Option<PathBuf>)`; `save_config(path: Option<&Path>, edits) -> Result<(), String>` returning `Ok(())`.
 - [x] CM4b.2 RED: `src/app.rs`: Enter on a changed draft emits `SaveConfig(edits)` and the menu stays open; double Enter requests two idempotent saves; `ConfigSaved` closes with the draft kept and the bar rule restored; `ConfigSaveFailed(msg)` keeps MENU, draft and preview and sets the footer error; next key clears it; retry succeeds; Esc after failure reverts; both events ignored with no menu open [Save closes, Write fails, Retry and cancel after failure, No config path (app side)].
 - [x] CM4b.3 GREEN: replace the CM2a session-only stub; `SaveConfig` emission and feedback handling (CM-13).
-- [ ] CM4b.4 RED: `tempfile::tempdir` runtime tests: missing dirs and file are created; atomic replace leaves no `.config.toml.<pid>.tmp`; read-only target dir keeps the original unchanged and the temp is removed; `None` path gives `save failed: no config path (HOME is not set)` and writes nothing [Missing file and dirs, Atomic replace, Failure keeps the original, No config path].
-- [ ] CM4b.5 GREEN: `save_config`: read (`NotFound` -> `None`) -> `apply_edit` -> `create_dir_all` -> temp with `create_new` -> write -> `sync_all` -> permissions -> `rename`; best-effort temp cleanup (CM-11).
-- [ ] CM4b.6 RED: refusals map to messages: `Unparseable` -> `config.toml has errors; fix it before saving`, file byte-identical; `NotATable("statusline")` -> `config.toml: statusline is not a table; fix it before saving`; other read errors -> `save failed: <e>` [Unparseable file refused, Non-table collision refused].
-- [ ] CM4b.7 GREEN: error mapping.
-- [ ] CM4b.8 RED: symlinked `config.toml` is written through (link still a link, target updated, temp next to the real file); existing mode is preserved on the replaced file [CM-12].
-- [ ] CM4b.9 GREEN: `canonicalize` when the file exists; copy permissions to the temp.
-- [ ] CM4b.10 RED+GREEN: `Panes::apply` handles `SaveConfig` and feeds exactly one `ConfigSaved` or `ConfigSaveFailed` through `drive` before the next input; `run()` resolves `config_path` once and shares it with `load_config` and `with_config_path`; existing `Panes` tests untouched [Failure feedback: exactly one result].
+- [x] CM4b.4 RED: `tempfile::tempdir` runtime tests: missing dirs and file are created; atomic replace leaves no `.config.toml.<pid>.tmp`; read-only target dir keeps the original unchanged and the temp is removed; `None` path gives `save failed: no config path (HOME is not set)` and writes nothing [Missing file and dirs, Atomic replace, Failure keeps the original, No config path].
+- [x] CM4b.5 GREEN: `save_config`: read (`NotFound` -> `None`) -> `apply_edit` -> `create_dir_all` -> temp with `create_new` -> write -> `sync_all` -> permissions -> `rename`; best-effort temp cleanup (CM-11).
+- [x] CM4b.6 RED: refusals map to messages: `Unparseable` -> `config.toml has errors; fix it before saving`, file byte-identical; `NotATable("statusline")` -> `config.toml: statusline is not a table; fix it before saving`; `KeyIsTable { table, key }` -> `config.toml: <table>.<key> is a table; fix it before saving` (for example `statusline.position`), file byte-identical; other read errors -> `save failed: <e>` [Unparseable file refused, Non-table collision refused, Owned key holding a table refused].
+- [x] CM4b.7 GREEN: error mapping.
+- [x] CM4b.8 RED: symlinked `config.toml` is written through (link still a link, target updated, temp next to the real file); existing mode is preserved on the replaced file [CM-12].
+- [x] CM4b.9 GREEN: `canonicalize` when the file exists; copy permissions to the temp.
+- [x] CM4b.10 RED+GREEN: `Panes::apply` handles `SaveConfig` and feeds exactly one `ConfigSaved` or `ConfigSaveFailed` through `drive` before the next input; `run()` resolves `config_path` once and shares it with `load_config` and `with_config_path`; existing `Panes` tests untouched [Failure feedback: exactly one result].
 - [ ] CM4b.11 [manual] Kitty: change a position and press Enter, quit and restart, positions persist; a hand-commented `config.toml` keeps every comment and only the owned key changes; a deliberately broken file is not overwritten and the footer shows `config.toml has errors; fix it before saving`; a symlinked `config.toml` stays a symlink with the target updated; no stray temp file remains [config-persistence: Persistence in Kitty; config-menu: Menu in Kitty (restart shows saved positions)].
-- [ ] CM4b.12 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] CM4b.12 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## Deferred (out of scope)
 
