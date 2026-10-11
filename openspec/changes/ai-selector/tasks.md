@@ -76,8 +76,8 @@ AS4 (~850, 90% deletions) is split in three because two PRs cannot stay under 40
 
 ## PR6 / AS4b: Delete old menu AI tests and snapshots (deletion only)
 
-- [ ] 6.1 Delete obsolete tests in `src/core/menu/ai_tests.rs` and the insta snapshots of Engine/Model/Status rows in `src/ui/components/`.
-- [ ] 6.2 Gate; verify no orphan `.snap` files.
+- [x] 6.1 Delete obsolete tests in `src/core/menu/ai_tests.rs` and the insta snapshots of Engine/Model/Status rows in `src/ui/components/`.
+- [x] 6.2 Gate; verify no orphan `.snap` files.
 
 ## PR7 / AS4c: Retire cycling, read-only task rows (`src/core/ai/menu.rs`, `src/core/menu.rs`)
 
