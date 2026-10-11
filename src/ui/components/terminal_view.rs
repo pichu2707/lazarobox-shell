@@ -75,7 +75,12 @@ impl Widget for TerminalView<'_> {
 /// hid it, the view is scrolled back, or it falls outside `area`.
 pub fn cursor_position(pane: &Pane, area: Rect) -> Option<Position> {
     let (row, col) = pane.cursor()?;
-    (col < area.width && row < area.height).then(|| Position::new(area.x + col, area.y + row))
+    cell_position(area, row, col)
+}
+
+/// Buffer coordinates of the pane cell `(row, col)`, or `None` outside `area`.
+pub fn cell_position(area: Rect, row: u16, col: u16) -> Option<Position> {
+    (col < area.width && row < area.height).then_some(Position::new(area.x + col, area.y + row))
 }
 
 #[cfg(test)]
