@@ -6,7 +6,7 @@ use std::{
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::core::{
-    config::{BarPosition, BarPositions, Config},
+    config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{CopyCommand, CopyState},
     keys::{encode_key, encode_paste},
     layout::{
@@ -88,6 +88,10 @@ pub enum AppEvent {
     Cwd(PaneId, PathBuf),
     /// Spawning the child of a pane failed; carries the error text.
     SpawnFailed(PaneId, String),
+    /// The runtime wrote the menu draft to `config.toml`.
+    ConfigSaved,
+    /// The save was refused or failed; carries the one-line footer text.
+    ConfigSaveFailed(String),
 }
 
 /// How the menu closed.
@@ -108,6 +112,9 @@ pub enum Effect {
     SpawnPane(PaneId, SpawnSpec),
     /// Terminate a pane's child without blocking the loop.
     ClosePane(PaneId),
+    /// Write the menu-owned keys to `config.toml`. The runtime answers with
+    /// exactly one `ConfigSaved` or `ConfigSaveFailed`.
+    SaveConfig(Vec<ConfigEdit>),
     Quit,
 }
 
@@ -470,6 +477,19 @@ impl App {
                 effects
             }
             AppEvent::SpawnFailed(..) => Vec::new(),
+            // Results of a save are stale when the menu is gone.
+            AppEvent::ConfigSaved if self.menu.is_some() => {
+                self.dirty = true;
+                self.close_menu(Outcome::Saved)
+            }
+            AppEvent::ConfigSaveFailed(message) => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.set_error(message);
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
+            AppEvent::ConfigSaved => Vec::new(),
         };
         debug_assert_eq!(
             self.menu.is_some(),
@@ -558,11 +578,24 @@ impl App {
         match menu.on_key(key, repeat, &mut self.config) {
             MenuCommand::Changed => self.apply_config(),
             MenuCommand::Cancel => self.close_menu(Outcome::Reverted),
-            // An unchanged draft has nothing to save. A changed one is kept
-            // for this session only and never written to disk.
-            // replaced in CM4b: emit `SaveConfig(edits)` and close on its result.
-            MenuCommand::Save => self.close_menu(Outcome::Saved),
+            MenuCommand::Save => self.request_save(),
             MenuCommand::None => Vec::new(),
+        }
+    }
+
+    /// An unchanged draft has nothing to save and closes at once. A changed
+    /// one asks the runtime to write it; the menu stays open until the
+    /// answer (`ConfigSaved` or `ConfigSaveFailed`) arrives.
+    fn request_save(&mut self) -> Vec<Effect> {
+        let edits = self
+            .menu
+            .as_ref()
+            .map(|menu| menu.edits(&self.config))
+            .unwrap_or_default();
+        if edits.is_empty() {
+            self.close_menu(Outcome::Saved)
+        } else {
+            vec![Effect::SaveConfig(edits)]
         }
     }
 
@@ -3548,18 +3581,121 @@ mod app_tests {
         assert!(a.menu().is_none());
     }
 
+    fn statusline_top_edit() -> ConfigEdit {
+        ConfigEdit {
+            table: "statusline",
+            key: "position",
+            value: "top",
+        }
+    }
+
+    // Spec: config-persistence Save on Enter.
     #[test]
-    fn enter_with_a_changed_draft_closes_for_the_session_only() {
+    fn enter_with_a_changed_draft_requests_a_save_and_keeps_the_menu_open() {
         let mut a = menu_app();
         a.update(key('l'));
         let effects = a.update(code(KeyCode::Enter));
         assert_eq!(
             effects,
+            vec![Effect::SaveConfig(vec![statusline_top_edit()])]
+        );
+        assert_eq!(a.input(), InputMode::Menu);
+        assert!(a.menu().is_some());
+        assert_eq!(a.config.bars.statusline, BarPosition::Top, "preview kept");
+        assert_eq!(a.screen().tab_bar.map(|r| r.y), Some(0), "forced bar kept");
+    }
+
+    #[test]
+    fn a_double_enter_requests_two_identical_saves() {
+        let mut a = menu_app();
+        a.update(key('l'));
+        let first = a.update(code(KeyCode::Enter));
+        let second = a.update(code(KeyCode::Enter));
+        assert_eq!(first, vec![Effect::SaveConfig(vec![statusline_top_edit()])]);
+        assert_eq!(second, first);
+    }
+
+    // Spec: config-persistence Save closes.
+    #[test]
+    fn config_saved_closes_the_menu_and_keeps_the_draft() {
+        let mut a = menu_app();
+        a.update(key('l'));
+        a.update(code(KeyCode::Enter));
+        let effects = a.update(AppEvent::ConfigSaved);
+        assert_eq!(
+            effects,
             vec![Effect::ResizePty(PaneId::FIRST, sized(24, 80))]
         );
         assert_eq!(a.input(), InputMode::Terminal);
+        assert!(a.menu().is_none());
         assert_eq!(a.config.bars.statusline, BarPosition::Top, "draft kept");
+        assert_eq!(a.screen().tab_bar, None, "the one-tab bar rule is back");
     }
+
+    // Spec: config-persistence Write fails.
+    #[test]
+    fn config_save_failed_keeps_the_menu_the_draft_and_shows_the_error() {
+        let mut a = menu_app();
+        a.update(key('l'));
+        a.update(code(KeyCode::Enter));
+        a.take_dirty();
+        let effects = a.update(AppEvent::ConfigSaveFailed("save failed: disk full".into()));
+        assert_eq!(effects, Vec::new());
+        assert_eq!(a.input(), InputMode::Menu);
+        assert_eq!(a.config.bars.statusline, BarPosition::Top, "preview kept");
+        assert_eq!(a.screen().tab_bar.map(|r| r.y), Some(0), "forced bar kept");
+        assert_eq!(
+            a.menu().and_then(MenuState::error),
+            Some("save failed: disk full")
+        );
+        assert!(a.take_dirty(), "the footer needs a redraw");
+    }
+
+    // Spec: config-persistence Retry and cancel after failure.
+    #[test]
+    fn the_next_key_clears_the_error_and_a_retry_can_succeed() {
+        let mut a = menu_app();
+        a.update(key('l'));
+        a.update(code(KeyCode::Enter));
+        a.update(AppEvent::ConfigSaveFailed("save failed: x".into()));
+        let retry = a.update(code(KeyCode::Enter));
+        assert_eq!(a.menu().and_then(MenuState::error), None, "cleared");
+        assert_eq!(retry, vec![Effect::SaveConfig(vec![statusline_top_edit()])]);
+        a.update(AppEvent::ConfigSaved);
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.config.bars.statusline, BarPosition::Top);
+    }
+
+    #[test]
+    fn esc_after_a_failed_save_reverts_to_the_original() {
+        let mut a = menu_app();
+        a.update(key('l'));
+        a.update(code(KeyCode::Enter));
+        a.update(AppEvent::ConfigSaveFailed("save failed: x".into()));
+        a.update(esc());
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert!(a.menu().is_none());
+        assert_eq!(a.config.bars.statusline, BarPosition::Bottom, "reverted");
+    }
+
+    // Spec: config-menu Events while open; save results with no menu are stale.
+    #[test]
+    fn save_results_with_no_menu_open_are_ignored() {
+        for event in [
+            AppEvent::ConfigSaved,
+            AppEvent::ConfigSaveFailed("late".into()),
+        ] {
+            let mut a = launched(80, 25);
+            a.take_dirty();
+            let before = a.config;
+            assert_eq!(a.update(event), Vec::new());
+            assert_eq!(a.input(), InputMode::Terminal);
+            assert!(a.menu().is_none());
+            assert_eq!(a.config, before);
+            assert!(!a.take_dirty());
+        }
+    }
+
     // Spec: tabs Bar forced with one tab; config-menu Esc reverts the one-tab bar.
     fn resizes(effects: &[Effect]) -> Vec<(PaneId, u16)> {
         effects
