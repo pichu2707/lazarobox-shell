@@ -85,8 +85,28 @@ impl CopyState {
     }
 
     /// The selected cells, `None` without a selection.
-    pub fn span(&self, _cols: u16) -> Option<LineSpan> {
-        None
+    pub fn span(&self, cols: u16) -> Option<LineSpan> {
+        let sel = self.selection?;
+        let (a, b) = (sel.anchor, self.cursor);
+        Some(match sel.kind {
+            SelectionKind::Char => LineSpan::new((a.line, a.col), (b.line, b.col)),
+            SelectionKind::Line => LineSpan::new(
+                (a.line.min(b.line), 0),
+                (a.line.max(b.line), cols.saturating_sub(1)),
+            ),
+        })
+    }
+
+    /// `v`/`V`: start, clear (same key) or switch kind (other key).
+    fn toggle_selection(&mut self, kind: SelectionKind) {
+        self.selection = match self.selection {
+            Some(s) if s.kind == kind => None,
+            Some(s) => Some(Selection { kind, ..s }),
+            None => Some(Selection {
+                anchor: self.cursor,
+                kind,
+            }),
+        };
     }
 
     /// Moves the cursor (and the viewport only as far as needed).
@@ -164,6 +184,8 @@ impl CopyState {
                     CopyCommand::Ignore
                 }
             }
+            KeyCode::Char('v') if plain => self.select(SelectionKind::Char),
+            KeyCode::Char('V') if plain => self.select(SelectionKind::Line),
             KeyCode::Char('j') if plain => CopyCommand::Move(CopyMotion::LineDown),
             KeyCode::Char('k') if plain => CopyCommand::Move(CopyMotion::LineUp),
             KeyCode::Char('G') if plain => CopyCommand::Move(CopyMotion::Bottom),
@@ -173,6 +195,11 @@ impl CopyState {
             KeyCode::Esc if plain => self.exit(),
             _ => CopyCommand::Ignore,
         }
+    }
+
+    fn select(&mut self, kind: SelectionKind) -> CopyCommand {
+        self.toggle_selection(kind);
+        CopyCommand::Ignore
     }
 
     fn exit(&mut self) -> CopyCommand {
@@ -601,6 +628,113 @@ mod tests {
         assert_eq!((s.cursor, s.offset), (pt(10, 0), 100));
         s.apply_motion(CopyMotion::Bottom, geo(), 0);
         assert_eq!((s.cursor, s.offset), (pt(133, 0), 0));
+    }
+
+    fn sel(anchor: Point, kind: SelectionKind) -> Option<Selection> {
+        Some(Selection { anchor, kind })
+    }
+
+    #[test]
+    fn v_starts_a_character_selection_at_the_cursor() {
+        let mut s = cursor_at(115, 3, 0);
+        assert_eq!(s.on_key(&press('v'), false), CopyCommand::Ignore);
+        assert_eq!(s.selection, sel(pt(115, 3), SelectionKind::Char));
+    }
+
+    #[test]
+    fn shift_v_starts_a_line_selection_at_the_cursor() {
+        let mut s = cursor_at(115, 3, 0);
+        let key = KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT);
+        assert_eq!(s.on_key(&key, false), CopyCommand::Ignore);
+        assert_eq!(s.selection, sel(pt(115, 3), SelectionKind::Line));
+    }
+
+    #[test]
+    fn the_same_selection_key_again_clears() {
+        for key in [press('v'), press('V')] {
+            let mut s = cursor_at(115, 3, 0);
+            s.on_key(&key, false);
+            s.on_key(&key, false);
+            assert_eq!(s.selection, None, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn the_other_selection_key_switches_kind_and_keeps_the_anchor() {
+        let mut s = cursor_at(115, 3, 0);
+        s.on_key(&press('v'), false);
+        s.cursor = pt(118, 9);
+        s.on_key(&press('V'), false);
+        assert_eq!(s.selection, sel(pt(115, 3), SelectionKind::Line));
+        s.on_key(&press('v'), false);
+        assert_eq!(s.selection, sel(pt(115, 3), SelectionKind::Char));
+    }
+
+    #[test]
+    fn span_is_none_without_a_selection() {
+        assert_eq!(cursor_at(115, 3, 0).span(80), None);
+    }
+
+    #[test]
+    fn moving_left_extends_a_character_span_backwards() {
+        let mut s = cursor_at(115, 3, 0);
+        s.on_key(&press('v'), false);
+        s.apply_motion(CopyMotion::Left, geo(), 0);
+        s.apply_motion(CopyMotion::Left, geo(), 0);
+        assert_eq!(s.span(80), Some(LineSpan::new((115, 1), (115, 3))));
+        assert_eq!(
+            s.span(80),
+            Some(LineSpan {
+                first: 115,
+                last: 115,
+                first_col: 1,
+                last_col: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn moving_past_the_anchor_reorders_the_span() {
+        let mut s = cursor_at(115, 3, 0);
+        s.on_key(&press('v'), false);
+        s.apply_motion(CopyMotion::LineDown, geo(), 0);
+        assert_eq!(s.span(80), Some(LineSpan::new((115, 3), (116, 3))));
+        s.apply_motion(CopyMotion::LineUp, geo(), 0);
+        s.apply_motion(CopyMotion::LineUp, geo(), 0);
+        assert_eq!(
+            s.span(80),
+            Some(LineSpan {
+                first: 114,
+                last: 115,
+                first_col: 3,
+                last_col: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn a_line_selection_spans_whole_rows_in_either_direction() {
+        let mut s = cursor_at(115, 3, 0);
+        s.on_key(&press('V'), false);
+        s.apply_motion(CopyMotion::LineDown, geo(), 0);
+        s.apply_motion(CopyMotion::LineDown, geo(), 0);
+        let whole = LineSpan {
+            first: 115,
+            last: 117,
+            first_col: 0,
+            last_col: 79,
+        };
+        assert_eq!(s.span(80), Some(whole));
+        s.cursor = pt(113, 5);
+        assert_eq!(
+            s.span(80),
+            Some(LineSpan {
+                first: 113,
+                last: 115,
+                first_col: 0,
+                last_col: 79,
+            })
+        );
     }
 
     // copy-selection: LineSpan and join.
