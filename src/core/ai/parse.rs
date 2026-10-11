@@ -56,9 +56,21 @@ const MAX_NAME: usize = 128;
 const MAX_MODELS: usize = 256;
 
 /// Bidirectional and zero-width format characters: invisible, and able to
-/// reorder or hide the text around them.
+/// reorder or hide the text around them. Includes the line and paragraph
+/// separators, the soft hyphen, the word joiner and invisible operators, the
+/// deprecated U+206A..U+206F controls and the tag block.
 fn is_format(c: char) -> bool {
-    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+    matches!(
+        c,
+        '\u{00ad}'
+            | '\u{061c}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{e0000}'..='\u{e007f}'
+    )
 }
 
 /// Drops ANSI CSI sequences (`ESC [ params final`), OSC sequences
@@ -243,12 +255,14 @@ mod tests {
         assert_eq!(sanitize("exe\u{202e}gnp.txt"), "exegnp.txt");
         for c in [
             '\u{200b}', '\u{200f}', '\u{202a}', '\u{202e}', '\u{2066}', '\u{2069}', '\u{feff}',
+            '\u{061c}', '\u{2028}', '\u{2029}', '\u{00ad}', '\u{2060}', '\u{2064}', '\u{206a}',
+            '\u{206f}', '\u{e0000}', '\u{e0041}', '\u{e007f}',
         ] {
             assert_eq!(sanitize(&format!("a{c}b")), "ab", "U+{:04X}", c as u32);
         }
         assert_eq!(
-            sanitize("a\u{200a}\u{2010}\u{202f}\u{2065}\u{206a}b"),
-            "a\u{200a}\u{2010}\u{202f}\u{2065}\u{206a}b"
+            sanitize("a\u{200a}\u{2010}\u{2027}\u{202f}\u{2065}\u{2070}\u{00ac}\u{00ae}\u{e0080}b"),
+            "a\u{200a}\u{2010}\u{2027}\u{202f}\u{2065}\u{2070}\u{00ac}\u{00ae}\u{e0080}b"
         );
     }
 
