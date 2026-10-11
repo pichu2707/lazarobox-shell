@@ -115,6 +115,8 @@ pub enum Effect {
     /// Write the menu-owned keys to `config.toml`. The runtime answers with
     /// exactly one `ConfigSaved` or `ConfigSaveFailed`.
     SaveConfig(Vec<ConfigEdit>),
+    /// Hand a finished OSC 52 sequence to the host terminal.
+    SetClipboard(Vec<u8>),
     Quit,
 }
 
