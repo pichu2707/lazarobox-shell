@@ -2274,6 +2274,7 @@ mod app_tests {
             Some((Point { line: 127, col: 0 }, SelectionKind::Char))
         );
         assert_eq!(copy_state(&a).cursor, Point { line: 127, col: 3 });
+        assert_eq!(a.copy_cursor(), Some((0, 3)));
         assert!(is_copy(&a));
     }
 
