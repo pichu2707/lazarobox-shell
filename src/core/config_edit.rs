@@ -332,6 +332,53 @@ other = 1
         );
     }
 
+    fn appended(text: &str, newline: &str) -> String {
+        format!("{text}{newline}[tabbar]{newline}position = \"bottom\"{newline}")
+    }
+
+    #[test]
+    fn extra_quotes_before_a_closing_delimiter_stay_inside_the_string() {
+        for text in [
+            "m = \"\"\"a\"\"\"\"\r\nx = 1\r\n",
+            "m = '''a'''''\r\nx = 1\r\n",
+            "m = \"\"\"a\"\"\"\"\"\r\nx = 1\r\n",
+        ] {
+            let out = apply_edit(Some(text), &[edit("tabbar", "bottom")]).unwrap();
+            assert_eq!(out, appended(text, "\r\n"), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn an_escaped_backslash_before_the_closing_quote_ends_the_string() {
+        let text = "s = \"a\\\\\"\r\nx = 1\r\n";
+        let out = apply_edit(Some(text), &[edit("tabbar", "bottom")]).unwrap();
+        assert_eq!(out, appended(text, "\r\n"));
+    }
+
+    #[test]
+    fn a_line_continuation_inside_a_string_keeps_its_crlf() {
+        let text = "s = \"\"\"a \\\r\nb\"\"\"\r\nx = 1\r\n";
+        let out = apply_edit(Some(text), &[edit("tabbar", "bottom")]).unwrap();
+        assert_eq!(out, appended(text, "\r\n"));
+    }
+
+    #[test]
+    fn a_hash_in_a_quoted_key_does_not_start_a_comment() {
+        let text = "\"a#b\" = \"\"\"x\nq\"\"\"\r\nz = 1\r\n";
+        assert_eq!(apply_edit(Some(text), &[]).unwrap(), text);
+    }
+
+    #[test]
+    fn a_missing_trailing_newline_is_added_in_the_files_style() {
+        let out = apply_edit(Some("x = 1"), &[edit("tabbar", "bottom")]).unwrap();
+        assert_eq!(out, "x = 1\n\n[tabbar]\nposition = \"bottom\"\n");
+        let out = apply_edit(Some("x = 1\r\ny = 2"), &[edit("tabbar", "bottom")]).unwrap();
+        assert_eq!(
+            out,
+            "x = 1\r\ny = 2\r\n\r\n[tabbar]\r\nposition = \"bottom\"\r\n"
+        );
+    }
+
     #[test]
     fn quotes_in_comments_and_strings_do_not_confuse_the_line_ending_scan() {
         let text = "# it's\r\nq = \"say \\\"hi\\\"\"\r\nm = \"\"\"a\nb\"\"\"\"\r\nl = 'x'\r\n";
