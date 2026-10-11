@@ -126,7 +126,7 @@ Run after AE4 is merged into the tracker, on a build of the tracker branch.
 - [x] VP.3 [manual] README names both limits (custom endpoints/ports unsupported, aliases not detected) [ai-engine-detection: Docs mention limits].
 - [x] VP.4 [manual] Positions in Kitty regression: each of the four statusline/tabbar combinations with one and three tabs still lays out correctly with the new `[ai]` code in place [configuration: Positions in Kitty].
 - [x] VP.5 Verify prep: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` on the tracker; confirm every row of the coverage tables has a passing test or a ticked [manual] item; hand the tracker to `sdd-verify`.
-- [ ] VP.6 Archive prep: the Purpose lines of the main `config-menu` and `configuration` specs MUST be edited by hand at archive, as noted in the deltas (`config-persistence` needs none).
+- [x] VP.6 Archive prep: the Purpose lines of the main `config-menu` and `configuration` specs MUST be edited by hand at archive, as noted in the deltas (`config-persistence` needs none).
 
 ## Review-driven slices (post-plan)
 
