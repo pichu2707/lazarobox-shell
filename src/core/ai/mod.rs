@@ -117,6 +117,18 @@ pub fn reduce(probes: &[Probe]) -> Detection {
                 (Some(Probe::Server { on_path, reply, .. }), Kind::Server { owner, .. }) => {
                     server_state(engine.id, owner, *on_path, reply.as_ref())
                 }
+                (
+                    Some(Probe::Cli {
+                        path: Some(_),
+                        stdout,
+                        ..
+                    }),
+                    Kind::Cli,
+                ) => EngineState {
+                    models: vec!["default".to_string()],
+                    version: stdout.as_deref().and_then(parse::parse_version),
+                    ..bare(engine.id, Status::Available)
+                },
                 _ => bare(engine.id, Status::NotInstalled),
             }
         })
@@ -152,6 +164,33 @@ fn server_state(
         },
         None if on_path => bare(id, Status::NotRunning),
         None => bare(id, Status::NotInstalled),
+    }
+}
+
+/// Display text of an engine: `detecting…` before the first result,
+/// `not detected` for an id outside the catalog, `unknown` when the run
+/// produced nothing for it.
+pub fn status_text(detection: Option<&Detection>, id: &str) -> String {
+    let Some(detection) = detection else {
+        return "detecting…".to_string();
+    };
+    let Some(engine) = CATALOG.iter().find(|e| e.id == id) else {
+        return "not detected".to_string();
+    };
+    let Some(state) = detection.engines.iter().find(|s| s.id == id) else {
+        return "unknown".to_string();
+    };
+    match (state.status, engine.kind) {
+        (Status::NotRunning, _) => "not running".to_string(),
+        (Status::NotInstalled, _) => "not installed".to_string(),
+        (Status::Available, Kind::Server { .. }) => match state.models.len() {
+            1 => "available · 1 model".to_string(),
+            n => format!("available · {n} models"),
+        },
+        (Status::Available, Kind::Cli) => match &state.version {
+            Some(version) => format!("available · {version}"),
+            None => "available".to_string(),
+        },
     }
 }
 
@@ -331,5 +370,102 @@ mod tests {
             ),
             state("llamacpp", Status::NotInstalled, &[], None)
         );
+    }
+
+    fn cli(id: &'static str, path: Option<&str>, stdout: Option<&str>) -> Probe {
+        Probe::Cli {
+            id,
+            path: path.map(PathBuf::from),
+            stdout: stdout.map(|s| s.as_bytes().to_vec()),
+        }
+    }
+
+    #[test]
+    fn cli_on_path_is_available_with_version_and_default_model() {
+        let d = reduce(&[cli("codex", Some("/bin/codex"), Some("codex 0.5.0\n"))]);
+        assert_eq!(
+            get(&d, "codex"),
+            state(
+                "codex",
+                Status::Available,
+                &["default"],
+                Some("codex 0.5.0")
+            )
+        );
+    }
+
+    #[test]
+    fn cli_off_path_is_not_installed() {
+        let d = reduce(&[cli("opencode", None, None)]);
+        assert_eq!(
+            get(&d, "opencode"),
+            state("opencode", Status::NotInstalled, &[], None)
+        );
+    }
+
+    #[test]
+    fn cli_without_version_output_is_still_available() {
+        for stdout in [None, Some(""), Some(" \n")] {
+            let d = reduce(&[cli("claude", Some("/bin/claude"), stdout)]);
+            assert_eq!(
+                get(&d, "claude"),
+                state("claude", Status::Available, &["default"], None)
+            );
+        }
+    }
+
+    #[test]
+    fn reduce_returns_eight_entries_in_catalog_order() {
+        let d = reduce(&[
+            cli("opencode", None, None),
+            server("vllm", false, None),
+            cli("codex", Some("/bin/codex"), None),
+        ]);
+        let ids: Vec<_> = d.engines.iter().map(|e| e.id).collect();
+        assert_eq!(
+            ids,
+            [
+                "ollama", "lmstudio", "llamacpp", "vllm", "claude", "codex", "gemini", "opencode"
+            ]
+        );
+    }
+
+    fn text(d: &Detection, id: &str) -> String {
+        status_text(Some(d), id)
+    }
+
+    #[test]
+    fn status_text_formats_every_status() {
+        let models = |n: usize| vec!["m".to_string(); n];
+        let mk = |id, status, models, version: Option<&str>| EngineState {
+            models,
+            version: version.map(str::to_string),
+            ..bare(id, status)
+        };
+        let d = Detection {
+            engines: vec![
+                mk("ollama", Status::Available, models(2), None),
+                mk("lmstudio", Status::Available, models(1), None),
+                mk("llamacpp", Status::Available, models(0), None),
+                mk("vllm", Status::NotRunning, vec![], None),
+                mk("claude", Status::Available, models(1), None),
+                mk("codex", Status::Available, models(1), Some("0.5.0")),
+                mk("gemini", Status::NotInstalled, vec![], None),
+            ],
+        };
+        assert_eq!(text(&d, "ollama"), "available · 2 models");
+        assert_eq!(text(&d, "lmstudio"), "available · 1 model");
+        assert_eq!(text(&d, "llamacpp"), "available · 0 models");
+        assert_eq!(text(&d, "vllm"), "not running");
+        assert_eq!(text(&d, "claude"), "available");
+        assert_eq!(text(&d, "codex"), "available · 0.5.0");
+        assert_eq!(text(&d, "gemini"), "not installed");
+    }
+
+    #[test]
+    fn status_text_covers_pending_failed_and_foreign_ids() {
+        assert_eq!(status_text(None, "ollama"), "detecting…");
+        assert_eq!(text(&Detection::default(), "ollama"), "unknown");
+        assert_eq!(text(&reduce(&[]), "mystery"), "not detected");
     }
 }
