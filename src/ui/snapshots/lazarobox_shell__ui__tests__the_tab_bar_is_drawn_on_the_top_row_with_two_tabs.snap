@@ -1,0 +1,10 @@
+---
+source: src/ui/mod.rs
+expression: "(0..ROWS).map(|y| row(&buf, y)).collect::<Vec<_>>().join(\"\\n\")"
+---
+ 1 proj  2 tmp                                              
+second                                                      
+                                                            
+                                                            
+                                                            
+ ◐ TERMINAL  /tmp                                     sh

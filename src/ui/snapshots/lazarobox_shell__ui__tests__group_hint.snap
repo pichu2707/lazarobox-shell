@@ -1,0 +1,5 @@
+---
+source: src/ui/mod.rs
+expression: line.trim_end()
+---
+ ◐ WINDOW  v split right · h split below · q close · r resize · z zoom                        sh

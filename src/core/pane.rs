@@ -5,7 +5,11 @@
 //! (DA1, DSR 5n/6n) are produced here and returned from [`Pane::feed`]; the
 //! caller decides how to write them back to the child.
 
+use std::path::{Path, PathBuf};
+
 use vt100::{Callbacks, Parser, Screen};
+
+use super::osc7;
 
 /// DA1 reply: VT620-class terminal with no extensions.
 const DA1_REPLY: &[u8] = b"\x1b[?62;c";
@@ -105,9 +109,20 @@ impl CursorShape {
 struct Responder {
     replies: Vec<u8>,
     cursor_shape: CursorShape,
+    /// Last validated OSC 7 path; a rejected report leaves it untouched.
+    cwd: Option<PathBuf>,
+    /// This machine's hostname, accepted in OSC 7 URIs besides `localhost`.
+    host: Option<String>,
 }
 
 impl Callbacks for Responder {
+    // OSC 7 never replies: the payload is validated and kept, or dropped.
+    fn unhandled_osc(&mut self, _: &mut Screen, params: &[&[u8]]) {
+        if let Some(path) = osc7::parse(params, self.host.as_deref()) {
+            self.cwd = Some(path);
+        }
+    }
+
     fn unhandled_csi(
         &mut self,
         screen: &mut Screen,
@@ -169,6 +184,23 @@ impl Pane {
         self.parser.process(bytes);
         self.refresh_history_len();
         std::mem::take(&mut self.parser.callbacks_mut().replies)
+    }
+
+    /// Names this machine for OSC 7 host checks (`localhost` and an empty host
+    /// are always local).
+    pub fn with_host(mut self, host: Option<&str>) -> Self {
+        self.set_host(host);
+        self
+    }
+
+    /// In-place variant of [`Pane::with_host`].
+    pub fn set_host(&mut self, host: Option<&str>) {
+        self.parser.callbacks_mut().host = host.map(str::to_owned);
+    }
+
+    /// The last valid OSC 7 working directory the child reported.
+    pub fn cwd(&self) -> Option<&Path> {
+        self.parser.callbacks().cwd.as_deref()
     }
 
     pub fn resize(&mut self, size: PaneSize) {
@@ -632,5 +664,68 @@ mod tests {
             let replies = p.feed(seq);
             assert!(replies.is_empty(), "{seq:?} got {replies:?}");
         }
+    }
+
+    // Spec (terminal-emulation): OSC 7 working directory.
+    #[test]
+    fn osc7_with_bel_sets_the_cwd() {
+        let mut p = pane(3, 10);
+        p.feed(b"\x1b]7;file:///tmp\x07");
+        assert_eq!(p.cwd(), Some(Path::new("/tmp")));
+    }
+
+    #[test]
+    fn osc7_with_st_sets_the_cwd() {
+        let mut p = pane(3, 10);
+        p.feed(b"\x1b]7;file:///tmp\x1b\\");
+        assert_eq!(p.cwd(), Some(Path::new("/tmp")));
+    }
+
+    #[test]
+    fn osc7_semicolons_and_escapes_survive_the_parser_split() {
+        let mut p = pane(3, 10);
+        p.feed(b"\x1b]7;file:///tmp/a;b%20c\x07");
+        assert_eq!(p.cwd(), Some(Path::new("/tmp/a;b c")));
+    }
+
+    #[test]
+    fn osc7_split_across_chunks_is_reassembled() {
+        let mut p = pane(3, 10);
+        p.feed(b"\x1b]7;file:///t");
+        assert_eq!(p.cwd(), None);
+        p.feed(b"mp\x07");
+        assert_eq!(p.cwd(), Some(Path::new("/tmp")));
+    }
+
+    #[test]
+    fn a_rejected_osc7_keeps_the_previous_cwd() {
+        let mut p = pane(3, 10).with_host(Some("myhost"));
+        p.feed(b"\x1b]7;file:///tmp\x07");
+        for bad in [
+            &b"\x1b]7;file://other.example/etc\x07"[..],
+            b"\x1b]7;file://host\x07",
+            b"\x1b]7;http:///x\x07",
+            b"\x1b]7;file:///a%zz\x07",
+            b"\x1b]7;file:///a%00b\x07",
+        ] {
+            p.feed(bad);
+            assert_eq!(p.cwd(), Some(Path::new("/tmp")));
+        }
+    }
+
+    #[test]
+    fn osc7_accepts_the_configured_hostname_only() {
+        let mut p = pane(3, 10).with_host(Some("myhost"));
+        p.feed(b"\x1b]7;file://MyHost/a\x07");
+        assert_eq!(p.cwd(), Some(Path::new("/a")));
+        let mut q = pane(3, 10);
+        q.feed(b"\x1b]7;file://myhost/a\x07");
+        assert_eq!(q.cwd(), None);
+    }
+
+    #[test]
+    fn osc7_produces_no_reply_bytes() {
+        let mut p = pane(3, 10);
+        assert_eq!(p.feed(b"\x1b]7;file:///tmp\x07"), Vec::<u8>::new());
     }
 }

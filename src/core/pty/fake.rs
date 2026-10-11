@@ -20,6 +20,7 @@ pub struct FakeLog {
 #[derive(Default)]
 pub struct FakePty {
     pub log: Arc<Mutex<FakeLog>>,
+    pub pid: Option<u32>,
 }
 
 impl PtyHandle for FakePty {
@@ -33,7 +34,7 @@ impl PtyHandle for FakePty {
     }
 
     fn pid(&self) -> Option<u32> {
-        None
+        self.pid
     }
 
     fn kill(&mut self) {

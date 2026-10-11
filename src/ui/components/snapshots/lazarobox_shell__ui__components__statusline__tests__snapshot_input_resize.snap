@@ -1,0 +1,5 @@
+---
+source: src/ui/components/statusline.rs
+expression: "text_of(&render_input_at(InputMode::Resize, WIDTH))"
+---
+ ◐ RESIZE  ~/lazarobox-shell                         zsh

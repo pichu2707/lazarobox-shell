@@ -1,0 +1,9 @@
+---
+source: src/ui/mod.rs
+expression: "(0..ROWS -\n1).map(|y| row(&buf, y).trim_end().to_string()).collect::<Vec<_>>().join(\"\\n\")"
+---
+left                         │right
+                             │
+                             │
+                             │
+                             │
