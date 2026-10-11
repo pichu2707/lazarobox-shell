@@ -13,15 +13,52 @@ const MAX_PAYLOAD: usize = 1024;
 /// `params[0]` being `7`. Returns the reported path, or `None` when anything
 /// is malformed (the caller then keeps its previous cwd).
 pub fn parse(params: &[&[u8]], local_host: Option<&str>) -> Option<PathBuf> {
-    let _ = (params, local_host, MAX_PAYLOAD);
-    let _ = (OsStr::from_bytes(b""), percent_decode(b""));
-    None
+    let (cmd, uri_parts) = params.split_first()?;
+    if *cmd != b"7" || uri_parts.is_empty() {
+        return None;
+    }
+    // The VT parser splits on `;`, which is legal inside a path: rejoin.
+    let raw = uri_parts.join(&b';');
+    if raw.len() + 2 >= MAX_PAYLOAD {
+        return None;
+    }
+    let rest = raw.strip_prefix(b"file://")?;
+    let slash = rest.iter().position(|&b| b == b'/')?;
+    let (host, path) = rest.split_at(slash);
+    if !host_is_local(host, local_host) {
+        return None;
+    }
+    let decoded = percent_decode(path)?;
+    if decoded.first() != Some(&b'/') || decoded.iter().any(|&b| b < 0x20 || b == 0x7F) {
+        return None;
+    }
+    Some(PathBuf::from(OsStr::from_bytes(&decoded)))
+}
+
+fn host_is_local(host: &[u8], local_host: Option<&str>) -> bool {
+    host.is_empty()
+        || host.eq_ignore_ascii_case(b"localhost")
+        || local_host.is_some_and(|h| host.eq_ignore_ascii_case(h.as_bytes()))
 }
 
 /// Decodes `%XX` escapes. `None` on a truncated or non-hex escape.
 fn percent_decode(bytes: &[u8]) -> Option<Vec<u8>> {
-    let _ = bytes;
-    None
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut it = bytes.iter().copied();
+    while let Some(b) = it.next() {
+        if b == b'%' {
+            let hi = hex(it.next()?)?;
+            let lo = hex(it.next()?)?;
+            out.push(hi << 4 | lo);
+        } else {
+            out.push(b);
+        }
+    }
+    Some(out)
+}
+
+fn hex(b: u8) -> Option<u8> {
+    char::from(b).to_digit(16).map(|d| d as u8)
 }
 
 #[cfg(test)]
