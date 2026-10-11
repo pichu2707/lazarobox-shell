@@ -387,7 +387,7 @@ Enter on an AI task row MUST replace the task list with the picker, inside the s
 - THEN `codex` is listed with `(not detected)`, it is selectable (Enter reopens it), and the draft is unchanged until another choice is made
 
 ### Requirement: Custom model entry
-The `custom…` row exists only at level 2 of the CLI engines (`claude`, `codex`, `gemini`, `opencode`). Enter on it MUST focus the custom field, a text entry with an empty buffer. While it is focused: printable characters, including `s`, `r`, `j`, `k`, `h`, `l` and Space, are typed into the buffer; Backspace deletes the last character; `s` MUST NOT save; Enter with a valid name (see ai-task-models) assigns the engine and that model to the task, closes the picker and returns to the task list; Enter with an empty or blank buffer has no effect; Ctrl+U clears the buffer; Esc discards the buffer and returns to level 2 with the cursor on `custom…`, without changing the draft. A paste event while the custom field is focused MUST insert its text into the buffer, with newlines and control characters removed and the buffer capped at 128 characters, and MUST NOT reach any PTY. Outside the custom field a paste is ignored (see Input is swallowed).
+The `custom…` row exists only at level 2 of the CLI engines (`claude`, `codex`, `gemini`, `opencode`). Enter on it MUST focus the custom field, a text entry with an empty buffer. While it is focused: printable characters, including `s`, `r`, `j`, `k`, `h` and `l`, are typed into the buffer, but Space is NOT (model names have no spaces; whitespace, control and format characters are dropped); Backspace deletes the last character; `s` MUST NOT save; Enter with a valid name (see ai-task-models) assigns the engine and that model to the task, closes the picker and returns to the task list; Enter with an empty or blank buffer has no effect; Ctrl+U clears the buffer; Esc discards the buffer and returns to level 2 with the cursor on `custom…`, without changing the draft. A paste event while the custom field is focused MUST insert its first line into the buffer (text after the first line break is dropped), with whitespace, control and format characters removed and the buffer capped at 128 characters, and MUST NOT reach any PTY. Outside the custom field a paste is ignored (see Input is swallowed).
 
 #### Scenario: Type and accept [auto]
 - GIVEN the custom field focused for `claude` on `code`
@@ -402,7 +402,7 @@ The `custom…` row exists only at level 2 of the CLI engines (`claude`, `codex`
 #### Scenario: Paste goes to the field [auto]
 - GIVEN the custom field focused with buffer `ab`
 - WHEN a paste of `cd\nef` arrives
-- THEN the buffer is `abcdef` and no WritePty is emitted
+- THEN the buffer is `abcd` and no WritePty is emitted
 
 #### Scenario: Paste elsewhere ignored [auto]
 - GIVEN the picker at level 2 (field not focused)
