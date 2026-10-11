@@ -2,6 +2,7 @@
 //! file lookup and read live at the runtime edge.
 
 use std::{
+    borrow::Cow,
     ffi::OsString,
     fmt,
     io::{self, ErrorKind},
@@ -9,6 +10,8 @@ use std::{
 };
 
 use toml::{Table, Value};
+
+use super::ai::{self, config::AiConfig};
 
 /// Which edge of the screen a bar sits on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -43,11 +46,11 @@ pub struct Config {
 
 /// One changed, menu-owned key to write back to `config.toml`:
 /// `[table] key = "value"`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ConfigEdit {
     pub table: &'static str,
     pub key: &'static str,
-    pub value: &'static str,
+    pub value: Cow<'static, str>,
 }
 
 /// Why a config file was rejected; the text is one short line.
@@ -65,6 +68,7 @@ impl fmt::Display for ConfigError {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Parsed {
     pub config: Config,
+    pub ai: AiConfig,
     pub problems: Vec<String>,
 }
 
@@ -98,11 +102,13 @@ impl Config {
                 defaults.mouse
             }
         };
+        let ai = ai::config::read(&table, &mut problems);
         Ok(Parsed {
             config: Self {
                 bars: BarPositions { statusline, tabbar },
                 mouse,
             },
+            ai,
             problems,
         })
     }
@@ -110,25 +116,48 @@ impl Config {
     /// The config for the result of reading the file, plus the startup
     /// notice when something needs the user's attention.
     pub fn load(read: io::Result<String>) -> (Self, Option<String>) {
+        let (config, _, notice) = Self::load_with_ai(read);
+        (config, notice)
+    }
+
+    /// Like [`Config::load`], and the saved AI choice too.
+    pub fn load_with_ai(read: io::Result<String>) -> (Self, AiConfig, Option<String>) {
         let text = match read {
             Ok(text) => text,
-            Err(error) if error.kind() == ErrorKind::NotFound => return (Self::default(), None),
-            Err(error) => return (Self::default(), Some(format!("config: {error}"))),
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return (Self::default(), AiConfig::default(), None);
+            }
+            Err(error) => {
+                return (
+                    Self::default(),
+                    AiConfig::default(),
+                    Some(format!("config: {error}")),
+                );
+            }
         };
         match Self::parse(&text) {
-            Ok(Parsed { config, problems }) if !problems.is_empty() => {
+            Ok(Parsed {
+                config,
+                ai,
+                problems,
+            }) if !problems.is_empty() => {
                 let head = match problems.len() {
                     1 => "config".to_owned(),
                     n => format!("config ({n} problems)"),
                 };
-                (config, Some(format!("{head}: {}", problems[0])))
+                (config, ai, Some(format!("{head}: {}", problems[0])))
             }
-            Ok(Parsed { config, .. }) if config.mouse => (
+            Ok(Parsed { config, ai, .. }) if config.mouse => (
                 config,
+                ai,
                 Some("config: mouse is not supported yet".to_owned()),
             ),
-            Ok(Parsed { config, .. }) => (config, None),
-            Err(error) => (Self::default(), Some(format!("config: {error}"))),
+            Ok(Parsed { config, ai, .. }) => (config, ai, None),
+            Err(error) => (
+                Self::default(),
+                AiConfig::default(),
+                Some(format!("config: {error}")),
+            ),
         }
     }
 }
@@ -361,6 +390,78 @@ mod tests {
         assert_eq!(
             notice.as_deref(),
             Some("config: mouse is not supported yet")
+        );
+    }
+
+    fn ai(engine: Option<&str>, model: Option<&str>) -> AiConfig {
+        AiConfig {
+            engine: engine.map(str::to_owned),
+            model: model.map(str::to_owned),
+        }
+    }
+
+    // Spec: Defaults (AI unset).
+    #[test]
+    fn an_empty_file_has_unset_ai() {
+        assert_eq!(Config::parse("").unwrap().ai, AiConfig::default());
+        let (config, loaded, notice) = Config::load_with_ai(Ok(String::new()));
+        assert_eq!(
+            (config, loaded, notice),
+            (Config::default(), ai(None, None), None)
+        );
+    }
+
+    // Spec: AI keys parsed.
+    #[test]
+    fn load_with_ai_returns_the_saved_choice_without_a_notice() {
+        let text =
+            "[ai]\nengine = \"ollama\"\nmodel = \"llama3:8b\"\n[tabbar]\nposition = \"bottom\"";
+        let (config, loaded, notice) = Config::load_with_ai(Ok(text.into()));
+        assert_eq!(config.bars.tabbar, Bottom);
+        assert_eq!(loaded, ai(Some("ollama"), Some("llama3:8b")));
+        assert_eq!(notice, None);
+    }
+
+    // Spec: Invalid AI types fall back per key.
+    #[test]
+    fn a_bad_ai_key_keeps_the_rest_and_the_notice_names_it() {
+        let text = "[ai]\nengine = 3\n[tabbar]\nposition = \"bottom\"";
+        let (config, loaded, notice) = Config::load_with_ai(Ok(text.into()));
+        assert_eq!(config.bars.tabbar, Bottom);
+        assert_eq!(loaded, ai(None, None));
+        assert_eq!(
+            notice.as_deref(),
+            Some("config: ai.engine: expected a string")
+        );
+    }
+
+    // Spec: Non-table ai.
+    #[test]
+    fn a_non_table_ai_gives_one_notice() {
+        let (_, loaded, notice) = Config::load_with_ai(Ok("ai = 3".into()));
+        assert_eq!(loaded, ai(None, None));
+        assert_eq!(notice.as_deref(), Some("config: ai: expected a table"));
+    }
+
+    #[test]
+    fn a_valid_ai_table_survives_another_invalid_key() {
+        let text = "mouse = 3\n[ai]\nengine = \"ollama\"\nmodel = \"llama3:8b\"";
+        let (config, loaded, notice) = Config::load_with_ai(Ok(text.into()));
+        assert_eq!(config.mouse, Config::default().mouse);
+        assert_eq!(loaded, ai(Some("ollama"), Some("llama3:8b")));
+        assert_eq!(
+            notice.as_deref(),
+            Some("config: mouse: expected true or false")
+        );
+    }
+
+    #[test]
+    fn ai_problems_count_with_the_others() {
+        let text = "mouse = 3\n[ai]\nengine = 1\nmodel = 2";
+        let (_, _, notice) = Config::load_with_ai(Ok(text.into()));
+        assert_eq!(
+            notice.as_deref(),
+            Some("config (3 problems): mouse: expected true or false")
         );
     }
 

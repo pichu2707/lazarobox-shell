@@ -58,6 +58,21 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 
 ---
 
+## 🤖 Menú de IA
+
+Con `Ctrl+Espacio` y `m` se abre el menú. Su sección **AI** muestra tres filas: **Engine** y **Model** (se cambian con `h`/`l`) y **Status**, que solo informa. `r` sobre Engine o Model vuelve a detectar los motores. `Enter` guarda la elección en la tabla `[ai]` de `config.toml` (`engine` y `model`) y `Esc` la descarta.
+
+Se detectan estos motores: `ollama`, `lmstudio`, `llamacpp` y `vllm` (servidores locales) y los CLIs `claude`, `codex`, `gemini` y `opencode`. Los servidores se consultan en sus puertos habituales y los CLIs se buscan en el `PATH`.
+
+La detección es de solo lectura y solo usa `127.0.0.1`: no se envían credenciales ni datos de tus paneles, y no se ejecuta nada salvo `--version` de los CLIs encontrados.
+
+Límites de esta fase:
+
+- No se admiten endpoints ni puertos personalizados.
+- Los alias de shell no se detectan: el binario debe estar en el `PATH`.
+
+---
+
 ## 📁 Arquitectura del Workspace en Rust
 
 ```text

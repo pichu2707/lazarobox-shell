@@ -2,9 +2,18 @@
 //! drives it. The popup only renders `MenuState::rows`, so a new setting is a
 //! table entry and never a widget change.
 
+use std::borrow::Cow;
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use super::config::{BarPosition, Config, ConfigEdit};
+use super::{
+    ai::{
+        Detection,
+        config::AiConfig,
+        menu::{AiField, AiMenu},
+    },
+    config::{BarPosition, Config, ConfigEdit},
+};
 
 /// A setting that cycles through an ordered list of values. The value string
 /// is both the display text and the TOML value.
@@ -20,6 +29,10 @@ pub enum ItemKind {
     Choice(Choice),
     /// Drawn but never selectable.
     Disabled,
+    /// An AI row whose choices come from the last detection.
+    Dynamic(AiField),
+    /// A display-only row computed from the AI draft.
+    Derived(fn(&AiMenu) -> String),
 }
 
 pub struct Item {
@@ -77,6 +90,25 @@ pub static SECTIONS: &[Section] = &[Section {
     ],
 }];
 
+/// The AI section, attached only by [`MenuState::with_ai`].
+pub static AI_SECTION: Section = Section {
+    title: "AI",
+    items: &[
+        Item {
+            label: "Engine",
+            kind: ItemKind::Dynamic(AiField::Engine),
+        },
+        Item {
+            label: "Model",
+            kind: ItemKind::Dynamic(AiField::Model),
+        },
+        Item {
+            label: "Status",
+            kind: ItemKind::Derived(AiMenu::status),
+        },
+    ],
+};
+
 /// The selectable settings, in table order.
 fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
     SECTIONS
@@ -84,7 +116,7 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
         .flat_map(|section| section.items.iter())
         .filter_map(|item| match &item.kind {
             ItemKind::Choice(choice) => Some((item, choice)),
-            ItemKind::Disabled => None,
+            ItemKind::Disabled | ItemKind::Dynamic(_) | ItemKind::Derived(_) => None,
         })
 }
 
@@ -96,15 +128,17 @@ pub enum MenuCommand {
     Changed,
     Save,
     Cancel,
+    /// Run the engine detection again.
+    Refresh,
 }
 
 /// One line of the popup body.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Row {
     Title(&'static str),
     Item {
         label: &'static str,
-        value: Option<&'static str>,
+        value: Option<Cow<'static, str>>,
         selected: bool,
         enabled: bool,
     },
@@ -115,6 +149,7 @@ pub struct MenuState {
     selected: Option<usize>,
     original: Config,
     error: Option<String>,
+    ai: Option<AiMenu>,
 }
 
 impl MenuState {
@@ -123,20 +158,77 @@ impl MenuState {
             selected: (choices().count() > 0).then_some(0),
             original: *original,
             error: None,
+            ai: None,
         }
+    }
+
+    /// Adds the AI section, editing a draft of `ai` against `engines`.
+    pub fn with_ai(mut self, ai: AiConfig, engines: Option<Detection>) -> Self {
+        self.ai = Some(AiMenu::new(ai, engines));
+        self
+    }
+
+    /// Replaces the detection in place; selection and draft stay.
+    pub fn set_engines(&mut self, engines: Option<Detection>) {
+        if let Some(ai) = &mut self.ai {
+            ai.set_engines(engines);
+        }
+    }
+
+    /// The AI choice being edited (unset without an AI section).
+    pub fn ai_draft(&self) -> AiConfig {
+        self.ai
+            .as_ref()
+            .map(|ai| ai.draft().clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether the menu has an AI section.
+    pub fn has_ai(&self) -> bool {
+        self.ai.is_some()
+    }
+
+    /// Whether the selection is on the Engine or Model row.
+    pub fn on_ai_row(&self) -> bool {
+        self.ai.is_some()
+            && self
+                .selected
+                .is_some_and(|index| index >= choices().count())
+    }
+
+    /// Selectable rows: the settings, then Engine and Model.
+    fn selectable(&self) -> usize {
+        choices().count() + if self.ai.is_some() { 2 } else { 0 }
     }
 
     pub fn rows(&self, config: &Config) -> Vec<Row> {
         let mut rows = Vec::new();
         let mut index = 0;
-        for section in SECTIONS {
+        let ai_section = self.ai.as_ref().map(|_| &AI_SECTION);
+        for section in SECTIONS.iter().chain(ai_section) {
             rows.push(Row::Title(section.title));
             for item in section.items {
                 rows.push(match &item.kind {
+                    ItemKind::Dynamic(field) => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self.ai.as_ref().map(|ai| Cow::Owned(ai.value(*field))),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Derived(text) => Row::Item {
+                        label: item.label,
+                        value: self.ai.as_ref().map(|ai| Cow::Owned(text(ai))),
+                        selected: false,
+                        enabled: false,
+                    },
                     ItemKind::Choice(choice) => {
                         let row = Row::Item {
                             label: item.label,
-                            value: Some(choice.values[(choice.get)(config)]),
+                            value: Some(Cow::Borrowed(choice.values[(choice.get)(config)])),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
@@ -172,6 +264,7 @@ impl MenuState {
             KeyCode::Char('k') | KeyCode::Up => self.step_selection(false),
             KeyCode::Char('l' | ' ') | KeyCode::Right => self.cycle(true, config),
             KeyCode::Char('h') | KeyCode::Left => self.cycle(false, config),
+            KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
             KeyCode::Enter if !repeat => MenuCommand::Save,
             KeyCode::Esc if !repeat => MenuCommand::Cancel,
             _ => MenuCommand::None,
@@ -179,7 +272,7 @@ impl MenuState {
     }
 
     fn step_selection(&mut self, forward: bool) -> MenuCommand {
-        let count = choices().count();
+        let count = self.selectable();
         debug_assert!(
             count > 0 || self.selected.is_none(),
             "selection without rows"
@@ -194,8 +287,18 @@ impl MenuState {
         MenuCommand::None
     }
 
-    fn cycle(&self, forward: bool, config: &mut Config) -> MenuCommand {
-        let Some((_, choice)) = self.selected.and_then(|index| choices().nth(index)) else {
+    fn cycle(&mut self, forward: bool, config: &mut Config) -> MenuCommand {
+        let Some(index) = self.selected else {
+            return MenuCommand::None;
+        };
+        let Some((_, choice)) = choices().nth(index) else {
+            let field = match index - choices().count() {
+                0 => AiField::Engine,
+                _ => AiField::Model,
+            };
+            if let Some(ai) = &mut self.ai {
+                ai.cycle(field, forward);
+            }
             return MenuCommand::None;
         };
         let len = choice.values.len();
@@ -210,16 +313,28 @@ impl MenuState {
         MenuCommand::Changed
     }
 
-    /// The keys that differ from the config captured at open.
+    /// The keys that differ from the config captured at open, then both AI
+    /// keys when either changed (`none` is written as an empty string).
     pub fn edits(&self, live: &Config) -> Vec<ConfigEdit> {
-        choices()
+        let mut edits: Vec<ConfigEdit> = choices()
             .filter(|(_, c)| (c.get)(live) != (c.get)(&self.original))
             .map(|(_, c)| ConfigEdit {
                 table: c.table,
                 key: c.key,
-                value: c.values[(c.get)(live)],
+                value: Cow::Borrowed(c.values[(c.get)(live)]),
             })
-            .collect()
+            .collect();
+        if let Some(ai) = self.ai.as_ref().filter(|ai| ai.changed()) {
+            for field in [AiField::Engine, AiField::Model] {
+                let (table, key) = field.key_path();
+                edits.push(ConfigEdit {
+                    table,
+                    key,
+                    value: Cow::Owned(ai.saved_value(field)),
+                });
+            }
+        }
+        edits
     }
 
     /// The config captured when the menu opened.
@@ -268,7 +383,7 @@ mod tests {
     fn row(label: &'static str, value: Option<&'static str>, selected: bool) -> Row {
         Row::Item {
             label,
-            value,
+            value: value.map(Cow::Borrowed),
             selected,
             enabled: value.is_some(),
         }
@@ -410,7 +525,7 @@ mod tests {
         let edit = |table, value| ConfigEdit {
             table,
             key: "position",
-            value,
+            value: Cow::Borrowed(value),
         };
         assert_eq!(menu.edits(&live), vec![edit("statusline", "top")]);
         live.bars.tabbar = BarPosition::Bottom;
@@ -482,3 +597,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod ai_tests;

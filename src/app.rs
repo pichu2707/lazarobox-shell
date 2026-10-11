@@ -7,6 +7,7 @@ use std::{
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::core::{
+    ai::{Detection, config::AiConfig},
     config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{
         CopyCommand, CopyMotion, CopyState, Geometry, Highlight, Point, SelectionKind, TooLarge,
@@ -102,6 +103,8 @@ pub enum AppEvent {
     ConfigSaved,
     /// The save was refused or failed; carries the one-line footer text.
     ConfigSaveFailed(String),
+    /// One engine detection run finished. An empty `Detection` means it failed.
+    EnginesDetected(Detection),
 }
 
 /// How the menu closed.
@@ -127,6 +130,8 @@ pub enum Effect {
     SaveConfig(Vec<ConfigEdit>),
     /// Hand a finished OSC 52 sequence to the host terminal.
     SetClipboard(Vec<u8>),
+    /// Probe the AI engines; the runtime answers with one `EnginesDetected`.
+    DetectEngines,
     Quit,
 }
 
@@ -274,6 +279,12 @@ pub struct App {
     held_exit: Option<HeldExit>,
     /// Monotonic clock, injected so `update` stays deterministic.
     clock: fn() -> Instant,
+    /// The last finished detection; `None` until the first run ends.
+    engines: Option<Detection>,
+    /// A detection is in flight: further requests are dropped.
+    detecting: bool,
+    /// The saved AI choice; the menu edits a draft of it.
+    ai: AiConfig,
 }
 
 /// The key that left COPY and when it was last seen.
@@ -314,7 +325,36 @@ impl App {
             shell: None,
             held_exit: None,
             clock: Instant::now,
+            engines: None,
+            detecting: false,
+            ai: AiConfig::default(),
         }
+    }
+
+    /// Starts with the AI choice saved in `config.toml`.
+    pub fn with_ai(mut self, ai: AiConfig) -> Self {
+        self.ai = ai;
+        self
+    }
+
+    /// The saved AI choice.
+    pub fn ai(&self) -> &AiConfig {
+        &self.ai
+    }
+
+    /// The last finished AI engine detection, if any.
+    pub fn engines(&self) -> Option<&Detection> {
+        self.engines.as_ref()
+    }
+
+    /// Asks the runtime to detect the AI engines, unless a run is already
+    /// in flight (single flight: that run is at most a couple of seconds old).
+    pub fn request_detection(&mut self) -> Vec<Effect> {
+        if self.detecting {
+            return Vec::new();
+        }
+        self.detecting = true;
+        vec![Effect::DetectEngines]
     }
 
     /// Sets the facts the statusline shows. They are inputs, not lookups, so
@@ -621,6 +661,16 @@ impl App {
                 Vec::new()
             }
             AppEvent::ConfigSaved => Vec::new(),
+            // Even an empty (failed) result ends the run, so the triggers re-arm.
+            AppEvent::EnginesDetected(detection) => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.set_engines(Some(detection.clone()));
+                }
+                self.engines = Some(detection);
+                self.detecting = false;
+                self.dirty = true;
+                Vec::new()
+            }
         };
         debug_assert_eq!(
             self.menu.is_some(),
@@ -701,18 +751,22 @@ impl App {
     /// Opens the menu: captures the live config as the original.
     /// The forced tab bar may resize the panes.
     fn open_menu(&mut self) -> Vec<Effect> {
-        self.menu = Some(MenuState::open(&self.config));
+        self.menu =
+            Some(MenuState::open(&self.config).with_ai(self.ai.clone(), self.engines.clone()));
         self.input = InputMode::Menu;
-        self.apply_config()
+        let mut effects = self.apply_config();
+        effects.extend(self.request_detection());
+        effects
     }
 
     /// The only way out of MENU. `Reverted` restores the config captured at
     /// open; `Saved` keeps the draft.
     fn close_menu(&mut self, outcome: Outcome) -> Vec<Effect> {
-        if let Some(menu) = self.menu.take()
-            && outcome == Outcome::Reverted
-        {
-            self.config = menu.original();
+        if let Some(menu) = self.menu.take() {
+            match outcome {
+                Outcome::Reverted => self.config = menu.original(),
+                Outcome::Saved => self.ai = menu.ai_draft(),
+            }
         }
         self.input = InputMode::Terminal;
         // The forced tab bar goes away with the menu, whatever the outcome.
@@ -735,6 +789,7 @@ impl App {
             MenuCommand::Changed => self.apply_config(),
             MenuCommand::Cancel => self.close_menu(Outcome::Reverted),
             MenuCommand::Save => self.request_save(),
+            MenuCommand::Refresh => self.request_detection(),
             MenuCommand::None => Vec::new(),
         }
     }
@@ -4574,7 +4629,10 @@ mod app_tests {
         let effects = open_menu(&mut a);
         assert_eq!(
             effects,
-            vec![Effect::ResizePty(PaneId::FIRST, sized(23, 80))]
+            vec![
+                Effect::ResizePty(PaneId::FIRST, sized(23, 80)),
+                Effect::DetectEngines
+            ]
         );
         assert_eq!(a.input(), InputMode::Menu);
         assert!(a.menu().is_some());
@@ -4601,20 +4659,20 @@ mod app_tests {
         open_menu(&mut a);
         let rows = a.menu().unwrap().rows(&a.config);
         assert!(matches!(
-            rows[1],
+            &rows[1],
             Row::Item {
                 selected: true,
-                value: Some("bottom"),
+                value: Some(v),
                 ..
-            }
+            } if v == "bottom"
         ));
         assert!(matches!(
-            rows[2],
+            &rows[2],
             Row::Item {
                 selected: false,
-                value: Some("top"),
+                value: Some(v),
                 ..
-            }
+            } if v == "top"
         ));
     }
 
@@ -4755,7 +4813,7 @@ mod app_tests {
         ConfigEdit {
             table: "statusline",
             key: "position",
-            value: "top",
+            value: "top".into(),
         }
     }
 
@@ -4910,6 +4968,7 @@ mod app_tests {
             vec![
                 Effect::ResizePty(PaneId::FIRST, sized(23, 39)),
                 Effect::ResizePty(id2, sized(23, 40)),
+                Effect::DetectEngines,
             ]
         );
         assert_eq!(
@@ -4926,7 +4985,7 @@ mod app_tests {
         let mut a = launched(80, 25);
         press(&mut a, "tn");
         let bar = a.screen().tab_bar;
-        assert!(open_menu(&mut a).is_empty());
+        assert_eq!(open_menu(&mut a), vec![Effect::DetectEngines]);
         assert_eq!(a.screen().tab_bar, bar);
         assert!(a.update(esc()).is_empty());
         assert_eq!(a.screen().tab_bar, bar);
@@ -5070,5 +5129,311 @@ mod app_tests {
         let effects = a.update(AppEvent::Pty(PaneId::FIRST, PtyEvent::Exited));
         assert_eq!(effects, vec![Effect::Quit]);
         assert_still_open(&a);
+    }
+
+    fn detection(status: crate::core::ai::Status) -> Detection {
+        use crate::core::ai::CATALOG;
+        Detection {
+            engines: CATALOG
+                .iter()
+                .map(|e| crate::core::ai::EngineState {
+                    id: e.id,
+                    status,
+                    models: Vec::new(),
+                    version: None,
+                })
+                .collect(),
+        }
+    }
+
+    fn texts(a: &App) -> Vec<String> {
+        use crate::core::ai::{CATALOG, status_text};
+        CATALOG
+            .iter()
+            .map(|e| status_text(a.engines(), e.id))
+            .collect()
+    }
+
+    #[test]
+    fn detection_is_single_flight() {
+        let mut a = app();
+        assert_eq!(a.request_detection(), vec![Effect::DetectEngines]);
+        assert_eq!(a.request_detection(), Vec::<Effect>::new());
+    }
+
+    #[test]
+    fn a_result_stores_the_detection_and_rearms_the_trigger() {
+        use crate::core::ai::Status;
+        let mut a = app();
+        a.request_detection();
+        let found = detection(Status::NotRunning);
+        assert_eq!(
+            a.update(AppEvent::EnginesDetected(found.clone())),
+            Vec::<Effect>::new()
+        );
+        assert_eq!(a.engines(), Some(&found));
+        assert_eq!(a.request_detection(), vec![Effect::DetectEngines]);
+    }
+
+    #[test]
+    fn engines_read_detecting_until_the_whole_result_arrives() {
+        use crate::core::ai::Status;
+        let mut a = app();
+        a.request_detection();
+        assert_eq!(texts(&a), vec!["detecting…"; 8]);
+        a.update(AppEvent::EnginesDetected(detection(Status::NotInstalled)));
+        assert_eq!(texts(&a), vec!["not installed"; 8]);
+    }
+
+    #[test]
+    fn a_failed_run_clears_the_flag_and_reads_unknown() {
+        let mut a = app();
+        a.request_detection();
+        a.update(AppEvent::EnginesDetected(Detection::default()));
+        assert_eq!(texts(&a), vec!["unknown"; 8]);
+        assert_eq!(a.request_detection(), vec![Effect::DetectEngines]);
+    }
+
+    #[test]
+    fn typing_is_not_held_back_while_detecting() {
+        let mut a = app();
+        a.request_detection();
+        assert_eq!(
+            a.update(key('a')),
+            vec![Effect::WritePty(PaneId::FIRST, b"a".to_vec())]
+        );
+    }
+
+    // AI menu wiring (spec: config-menu AI section; ai-engine-detection triggers).
+    fn machine() -> Detection {
+        use crate::core::ai::{CATALOG, EngineState, Status};
+        let engine = |id: &'static str| match id {
+            "ollama" => (Status::Available, vec!["llama3:8b", "qwen2:7b"]),
+            "claude" => (Status::Available, vec!["default"]),
+            _ => (Status::NotInstalled, vec![]),
+        };
+        Detection {
+            engines: CATALOG
+                .iter()
+                .map(|e| {
+                    let (status, models) = engine(e.id);
+                    EngineState {
+                        id: e.id,
+                        status,
+                        models: models.into_iter().map(str::to_owned).collect(),
+                        version: None,
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    fn ai_of(engine: &str, model: &str) -> AiConfig {
+        AiConfig {
+            engine: Some(engine.to_owned()),
+            model: Some(model.to_owned()),
+        }
+    }
+
+    /// The Engine, Model and Status values of the open menu.
+    fn ai_values(a: &App) -> Vec<String> {
+        let rows = a.menu().unwrap().rows(&a.config);
+        assert_eq!(rows[4], Row::Title("AI"));
+        rows[5..8]
+            .iter()
+            .map(|row| match row {
+                Row::Item { value, .. } => value.as_deref().unwrap().to_owned(),
+                Row::Title(_) => unreachable!(),
+            })
+            .collect()
+    }
+
+    /// Two tabs, so opening the menu never resizes; `ollama`/`qwen2:7b` saved.
+    fn ai_app() -> App {
+        let mut a = launched(80, 25).with_ai(ai_of("ollama", "qwen2:7b"));
+        press(&mut a, "tn");
+        a
+    }
+
+    // Spec: Three triggers (menu); a trigger while a run is in flight is a no-op.
+    #[test]
+    fn opening_the_menu_requests_a_detection_unless_one_is_in_flight() {
+        let mut a = ai_app();
+        assert_eq!(open_menu(&mut a), vec![Effect::DetectEngines]);
+        a.update(esc());
+        assert_eq!(open_menu(&mut a), Vec::<Effect>::new());
+    }
+
+    // Spec: Refresh on AI row; Refresh elsewhere or repeated.
+    #[test]
+    fn r_on_an_ai_row_requests_exactly_one_detection() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        a.update(key('j'));
+        assert_eq!(a.update(key('r')), Vec::<Effect>::new(), "Statusline row");
+        a.update(key('j'));
+        let before = a.menu().cloned();
+        assert_eq!(a.update(key('r')), vec![Effect::DetectEngines]);
+        assert_eq!(a.menu().cloned(), before, "selection and draft unchanged");
+        assert_eq!(a.update(key('r')), Vec::<Effect>::new(), "in flight");
+        a.update(AppEvent::EnginesDetected(machine()));
+        assert_eq!(
+            a.update(kind(KeyCode::Char('r'), KeyEventKind::Repeat)),
+            Vec::<Effect>::new()
+        );
+        assert_eq!(a.update(key('R')), Vec::<Effect>::new());
+    }
+
+    // Spec: Result arrives while open; Engine disappears while open.
+    #[test]
+    fn a_result_updates_the_open_menu_in_place_and_keeps_the_draft() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        assert_eq!(
+            ai_values(&a),
+            vec!["ollama (checking)", "qwen2:7b · not found", "detecting…"]
+        );
+        a.update(key('j'));
+        a.update(key('j'));
+        a.update(key('j'));
+        assert_eq!(
+            a.update(AppEvent::EnginesDetected(machine())),
+            Vec::<Effect>::new()
+        );
+        assert_eq!(
+            ai_values(&a),
+            vec!["ollama", "qwen2:7b", "available · 2 models"]
+        );
+        let mut gone = machine();
+        gone.engines[0].status = crate::core::ai::Status::NotRunning;
+        gone.engines[0].models.clear();
+        a.update(AppEvent::EnginesDetected(gone));
+        assert_eq!(
+            ai_values(&a),
+            vec![
+                "ollama (not detected)",
+                "qwen2:7b · not found",
+                "not running"
+            ]
+        );
+        assert_eq!(a.ai(), &ai_of("ollama", "qwen2:7b"), "saved choice kept");
+    }
+
+    #[test]
+    fn a_result_while_closed_is_what_the_next_open_shows() {
+        let mut a = ai_app();
+        a.update(AppEvent::EnginesDetected(machine()));
+        open_menu(&mut a);
+        assert_eq!(
+            ai_values(&a),
+            vec!["ollama", "qwen2:7b", "available · 2 models"]
+        );
+    }
+
+    // Spec: Save closes with AI values; Esc reverts AI.
+    #[test]
+    fn config_saved_copies_the_ai_draft_and_esc_reverts_it() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        a.update(key('j'));
+        a.update(key('j'));
+        a.update(key('l'));
+        a.update(esc());
+        assert_eq!(a.ai(), &ai_of("ollama", "qwen2:7b"));
+        open_menu(&mut a);
+        assert_eq!(ai_values(&a)[0], "ollama", "the last result is kept");
+        a.update(AppEvent::EnginesDetected(machine()));
+        a.update(key('j'));
+        a.update(key('j'));
+        a.update(key('l'));
+        assert_eq!(ai_values(&a), vec!["claude", "default", "available"]);
+        let saved = a.update(code(KeyCode::Enter));
+        assert_eq!(saved.len(), 1);
+        assert!(matches!(saved[0], Effect::SaveConfig(_)));
+        assert_eq!(a.ai(), &ai_of("ollama", "qwen2:7b"), "not before the write");
+        assert_eq!(a.update(AppEvent::ConfigSaved), Vec::<Effect>::new());
+        assert_eq!(a.ai(), &ai_of("claude", "default"));
+    }
+
+    // Manual check VP.2: Engine to claude (a CLI engine), refresh, Enter must
+    // ask the runtime to write both AI keys, never close silently.
+    #[test]
+    fn enter_after_choosing_a_cli_engine_and_refreshing_asks_to_save_it() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        a.update(key('j'));
+        a.update(key('j'));
+        a.update(key('l'));
+        a.update(key('r'));
+        a.update(AppEvent::EnginesDetected(machine()));
+        assert_eq!(ai_values(&a), vec!["claude", "default", "available"]);
+        let edit = |key, value: &'static str| crate::core::config::ConfigEdit {
+            table: "ai",
+            key,
+            value: value.into(),
+        };
+        assert_eq!(
+            a.update(code(KeyCode::Enter)),
+            vec![Effect::SaveConfig(vec![
+                edit("engine", "claude"),
+                edit("model", "default")
+            ])]
+        );
+    }
+
+    // Characterization: before the first detection answers there is nothing
+    // to choose, so cycling does nothing and Enter closes with no save.
+    #[test]
+    fn enter_before_any_detection_has_nothing_to_save() {
+        let mut a = launched(80, 25).with_ai(AiConfig::default());
+        press(&mut a, "tn");
+        open_menu(&mut a);
+        a.update(key('j'));
+        a.update(key('j'));
+        a.update(key('l'));
+        assert_eq!(ai_values(&a), vec!["none", "none", "-"]);
+        assert_eq!(a.update(code(KeyCode::Enter)), Vec::<Effect>::new());
+        assert!(a.menu().is_none());
+    }
+
+    // Spec: Unchanged AI draft.
+    #[test]
+    fn an_unchanged_ai_draft_closes_without_a_save() {
+        let mut a = launched(80, 25).with_ai(ai_of("ollama", "qwen2:7b"));
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        assert_eq!(
+            a.update(code(KeyCode::Enter)),
+            vec![Effect::ResizePty(PaneId::FIRST, sized(24, 80))]
+        );
+        assert_eq!(a.ai(), &ai_of("ollama", "qwen2:7b"));
+    }
+
+    #[test]
+    fn ai_edits_never_resize_a_pane() {
+        let mut a = launched(80, 25).with_ai(ai_of("ollama", "qwen2:7b"));
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        a.update(key('j'));
+        a.update(key('j'));
+        assert_eq!(a.update(key('l')), Vec::<Effect>::new());
+        assert_eq!(a.update(key('j')), Vec::<Effect>::new());
+        assert_eq!(a.update(key('l')), Vec::<Effect>::new());
+    }
+
+    // Characterization: the file's values reach the App through `with_ai`.
+    #[test]
+    fn with_ai_carries_the_files_values() {
+        let text = "[ai]\nengine = \"codex\"\nmodel = \"default\"\n";
+        let (_, ai, notice) = Config::load_with_ai(Ok(text.to_owned()));
+        assert_eq!(notice, None);
+        assert_eq!(
+            App::new(80, 25).with_ai(ai).ai(),
+            &ai_of("codex", "default")
+        );
+        assert_eq!(App::new(80, 25).ai(), &AiConfig::default());
     }
 }

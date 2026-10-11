@@ -66,7 +66,7 @@ pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String
             .get_mut(edit.table)
             .and_then(Item::as_table_like_mut)
             .ok_or(EditError::NotATable(edit.table))?;
-        let mut value = Value::from(edit.value);
+        let mut value = Value::from(edit.value.as_ref());
         match table.get_mut(edit.key) {
             // Replace in the slot so the key's own decor (leading comment,
             // spacing) stays, and keep the old value's decor so a trailing
@@ -161,7 +161,7 @@ mod tests {
         ConfigEdit {
             table,
             key: "position",
-            value,
+            value: std::borrow::Cow::Borrowed(value),
         }
     }
 
@@ -489,5 +489,101 @@ other = 1
                 }
             }
         }
+    }
+
+    // Spec (config-persistence): the AI keys. Characterization: the generic
+    // table and key code already covers them, so these pass at once.
+    fn ai_edits(engine: &'static str, model: &'static str) -> [ConfigEdit; 2] {
+        let owned = |key, value: &'static str| ConfigEdit {
+            table: "ai",
+            key,
+            value: std::borrow::Cow::Borrowed(value),
+        };
+        [owned("engine", engine), owned("model", model)]
+    }
+
+    fn parsed_ai(text: &str) -> (crate::core::ai::config::AiConfig, Option<String>) {
+        let (_, ai, notice) = Config::load_with_ai(Ok(text.to_owned()));
+        (ai, notice)
+    }
+
+    #[test]
+    fn a_missing_ai_table_is_appended_after_the_existing_bytes() {
+        let existing = "# mine\n[statusline]\nposition = \"bottom\"\n";
+        let out = apply_edit(Some(existing), &ai_edits("ollama", "llama3:8b")).unwrap();
+        assert_eq!(
+            out,
+            format!("{existing}\n[ai]\nengine = \"ollama\"\nmodel = \"llama3:8b\"\n")
+        );
+    }
+
+    #[test]
+    fn existing_ai_keys_are_updated_in_place() {
+        let existing = "# mine\n[ai]\n# pick\nmodel = \"x\"  # m\nengine = \"claude\"\n";
+        let out = apply_edit(Some(existing), &ai_edits("ollama", "llama3:8b")).unwrap();
+        assert_eq!(
+            out,
+            "# mine\n[ai]\n# pick\nmodel = \"llama3:8b\"  # m\nengine = \"ollama\"\n"
+        );
+    }
+
+    #[test]
+    fn no_engine_is_written_as_empty_strings_and_reads_back_unset() {
+        let out = apply_edit(None, &ai_edits("", "")).unwrap();
+        assert_eq!(out, "[ai]\nengine = \"\"\nmodel = \"\"\n");
+        assert_eq!(
+            parsed_ai(&out),
+            (crate::core::ai::config::AiConfig::default(), None)
+        );
+    }
+
+    #[test]
+    fn special_characters_and_the_draft_round_trip_without_a_notice() {
+        let out = apply_edit(None, &ai_edits("ollama", "a\"b\\c")).unwrap();
+        let (ai, notice) = parsed_ai(&out);
+        assert_eq!(ai.engine.as_deref(), Some("ollama"));
+        assert_eq!(ai.model.as_deref(), Some("a\"b\\c"));
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn a_position_only_save_leaves_the_ai_table_alone() {
+        let saved = "[ai]\nengine = \"codex\"\nmodel = \"default\"\n";
+        let out = apply_edit(Some(saved), &[edit("statusline", "top")]).unwrap();
+        assert_eq!(out, format!("{saved}\n[statusline]\nposition = \"top\"\n"));
+        let out = apply_edit(None, &[edit("statusline", "top")]).unwrap();
+        assert_eq!(out, "[statusline]\nposition = \"top\"\n");
+    }
+
+    #[test]
+    fn collisions_with_the_ai_keys_are_refused() {
+        assert_eq!(
+            apply_edit(Some("ai = 3\n"), &ai_edits("ollama", "m")),
+            Err(EditError::NotATable("ai"))
+        );
+        assert_eq!(
+            apply_edit(Some("[ai.engine]\nx = 1\n"), &ai_edits("ollama", "m")),
+            Err(EditError::KeyIsTable {
+                table: "ai",
+                key: "engine"
+            })
+        );
+        let model_table = "[ai]\nengine = \"x\"\n[ai.model]\nx = 1\n";
+        assert_eq!(
+            apply_edit(Some(model_table), &ai_edits("a", "m")),
+            Err(EditError::KeyIsTable {
+                table: "ai",
+                key: "model"
+            })
+        );
+    }
+
+    #[test]
+    fn a_scalar_of_the_wrong_type_is_replaced_and_an_ignored_collision_is_kept() {
+        let out = apply_edit(Some("[ai]\nengine = 3\n"), &ai_edits("ollama", "m")).unwrap();
+        assert_eq!(out, "[ai]\nengine = \"ollama\"\nmodel = \"m\"\n");
+        let existing = "ai = 3\n[statusline]\nposition = \"bottom\"\n";
+        let out = apply_edit(Some(existing), &[edit("statusline", "top")]).unwrap();
+        assert_eq!(out, "ai = 3\n[statusline]\nposition = \"top\"\n");
     }
 }
