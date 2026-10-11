@@ -148,6 +148,258 @@ fn pick_engine(menu: &mut MenuState, id: &str) {
     panic!("engine {id} is not offered");
 }
 
+/// The label of the selected row.
+fn selected_label(menu: &MenuState) -> &'static str {
+    let rows = menu.rows(&Config::default());
+    let labels: Vec<_> = rows
+        .iter()
+        .filter_map(|row| match row {
+            Row::Item {
+                label,
+                selected: true,
+                ..
+            } => Some(*label),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(labels.len(), 1, "exactly one selected row");
+    labels[0]
+}
+
+// Spec: Move down and up, Wrap, Status row is skipped.
+#[test]
+fn navigation_visits_settings_engine_and_model_and_skips_status_and_mouse() {
+    let mut m = menu(Some("ollama"), None, Some(machine()));
+    let mut visited = vec![selected_label(&m)];
+    for _ in 0..4 {
+        press(&mut m, 'j');
+        visited.push(selected_label(&m));
+    }
+    assert_eq!(
+        visited,
+        [
+            "Statusline position",
+            "Tab bar position",
+            "Engine",
+            "Model",
+            "Statusline position"
+        ]
+    );
+    let mut back = Vec::new();
+    for _ in 0..4 {
+        press(&mut m, 'k');
+        back.push(selected_label(&m));
+    }
+    assert_eq!(
+        back,
+        ["Model", "Engine", "Tab bar position", "Statusline position"]
+    );
+}
+
+// Spec: Repeat moves.
+#[test]
+fn repeat_moves_into_the_ai_rows_like_a_press() {
+    let mut m = menu(Some("ollama"), None, Some(machine()));
+    m.on_key(&ch('j'), true, &mut Config::default());
+    m.on_key(&ch('j'), true, &mut Config::default());
+    assert_eq!(selected_label(&m), "Engine");
+}
+
+// Spec: Result arrives while open (menu part). Characterization: the
+// replacement was written with the stub, so this passes at once.
+#[test]
+fn a_result_updates_in_place_and_keeps_selection_and_draft() {
+    let mut m = menu(Some("ollama"), Some("llama3:8b"), None);
+    on_model(&mut m);
+    assert_eq!(shown(&m).2, "detecting…");
+    m.set_engines(Some(machine()));
+    assert_eq!(
+        shown(&m),
+        (
+            "ollama".into(),
+            "llama3:8b".into(),
+            "available · 2 models".into()
+        )
+    );
+    assert_eq!(selected_label(&m), "Model");
+    assert_eq!(m.ai_draft(), saved(Some("ollama"), Some("llama3:8b")));
+}
+
+// Spec: Engine disappears while open (menu part). Characterization.
+#[test]
+fn a_vanished_engine_stays_in_the_draft_as_not_detected() {
+    let mut m = menu(Some("ollama"), Some("llama3:8b"), Some(machine()));
+    m.set_engines(Some(detection(&[engine(
+        "ollama",
+        Status::NotRunning,
+        &[],
+        None,
+    )])));
+    assert_eq!(
+        shown(&m),
+        (
+            "ollama (not detected)".into(),
+            "llama3:8b · not found".into(),
+            "not running".into()
+        )
+    );
+    assert_eq!(m.ai_draft(), saved(Some("ollama"), Some("llama3:8b")));
+}
+
+// Spec: Refresh on AI row (menu part).
+#[test]
+fn r_on_the_engine_or_model_row_asks_for_a_refresh() {
+    let mut m = menu(Some("ollama"), Some("llama3:8b"), Some(machine()));
+    on_engine(&mut m);
+    assert_eq!(press(&mut m, 'r'), MenuCommand::Refresh);
+    on_model(&mut m);
+    assert_eq!(press(&mut m, 'r'), MenuCommand::Refresh);
+    assert_eq!(m.ai_draft(), saved(Some("ollama"), Some("llama3:8b")));
+}
+
+// Spec: Refresh elsewhere or repeated (menu part).
+#[test]
+fn r_elsewhere_repeated_or_shifted_gives_no_command() {
+    let mut m = menu(Some("ollama"), None, Some(machine()));
+    assert_eq!(press(&mut m, 'r'), MenuCommand::None, "Statusline row");
+    on_engine(&mut m);
+    assert_eq!(
+        m.on_key(&ch('r'), true, &mut Config::default()),
+        MenuCommand::None,
+        "repeat"
+    );
+    assert_eq!(press(&mut m, 'R'), MenuCommand::None);
+    let plain = MenuState::open(&Config::default());
+    let mut plain = plain;
+    assert_eq!(press(&mut plain, 'r'), MenuCommand::None, "no AI section");
+}
+
+fn ai_edit(key: &'static str, value: &str) -> ConfigEdit {
+    ConfigEdit {
+        table: "ai",
+        key,
+        value: value.to_owned().into(),
+    }
+}
+
+// Spec: Save writes both AI keys (edit part).
+#[test]
+fn a_changed_ai_draft_writes_both_keys_after_the_settings() {
+    let mut m = menu(Some("ollama"), Some("llama3:8b"), Some(machine()));
+    pick_engine(&mut m, "claude");
+    assert_eq!(
+        m.edits(&Config::default()),
+        vec![ai_edit("engine", "claude"), ai_edit("model", "default")]
+    );
+    let mut live = Config::default();
+    live.bars.tabbar = BarPosition::Bottom;
+    assert_eq!(
+        m.edits(&live),
+        vec![
+            ConfigEdit {
+                table: "tabbar",
+                key: "position",
+                value: "bottom".into()
+            },
+            ai_edit("engine", "claude"),
+            ai_edit("model", "default"),
+        ]
+    );
+}
+
+#[test]
+fn a_model_only_change_still_writes_both_keys() {
+    let mut m = menu(Some("ollama"), Some("llama3:8b"), Some(machine()));
+    on_model(&mut m);
+    press(&mut m, 'l');
+    assert_eq!(
+        m.edits(&Config::default()),
+        vec![ai_edit("engine", "ollama"), ai_edit("model", "qwen2:7b")]
+    );
+}
+
+// Spec: engine none is written as empty strings.
+#[test]
+fn none_is_written_as_empty_strings() {
+    let mut m = menu(Some("ollama"), Some("llama3:8b"), Some(machine()));
+    pick_engine(&mut m, "none");
+    assert_eq!(
+        m.edits(&Config::default()),
+        vec![ai_edit("engine", ""), ai_edit("model", "")]
+    );
+}
+
+// Spec: Unchanged AI draft, Undetected saved engine survives (edit part).
+#[test]
+fn an_unchanged_ai_draft_adds_no_edits() {
+    for m in [
+        menu(Some("ollama"), Some("llama3:8b"), Some(machine())),
+        menu(Some("codex"), Some("gone"), Some(detection(&[]))),
+        menu(Some("claude"), None, None),
+        menu(None, None, Some(machine())),
+    ] {
+        assert_eq!(m.edits(&Config::default()), vec![]);
+        let mut live = Config::default();
+        live.bars.statusline = BarPosition::Top;
+        assert_eq!(
+            m.edits(&live),
+            vec![ConfigEdit {
+                table: "statusline",
+                key: "position",
+                value: "top".into()
+            }]
+        );
+    }
+}
+
+// Spec: Esc reverts AI (menu part).
+#[test]
+fn reopening_shows_the_saved_values_again() {
+    let mut m = menu(Some("ollama"), Some("llama3:8b"), Some(machine()));
+    pick_engine(&mut m, "claude");
+    assert_eq!(m.ai_draft(), saved(Some("claude"), Some("default")));
+    let again = menu(Some("ollama"), Some("llama3:8b"), Some(machine()));
+    assert_eq!(again.ai_draft(), saved(Some("ollama"), Some("llama3:8b")));
+    assert_eq!(
+        MenuState::open(&Config::default()).ai_draft(),
+        saved(None, None)
+    );
+}
+
+// Spec: Descriptor integrity.
+#[test]
+fn the_ai_descriptors_are_well_formed() {
+    let mut paths: Vec<(&str, &str)> = SECTIONS
+        .iter()
+        .flat_map(|s| s.items)
+        .filter_map(|item| match &item.kind {
+            ItemKind::Choice(c) => Some((c.table, c.key)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(AI_SECTION.title, "AI");
+    assert_eq!(AI_SECTION.items.len(), 3);
+    for item in AI_SECTION.items {
+        assert!(!item.label.is_empty());
+        match &item.kind {
+            ItemKind::Dynamic(field) => paths.push(field.key_path()),
+            ItemKind::Derived(_) => {}
+            _ => panic!("{}: not an AI item", item.label),
+        }
+    }
+    let derived = AI_SECTION
+        .items
+        .iter()
+        .filter(|i| matches!(i.kind, ItemKind::Derived(_)))
+        .count();
+    assert_eq!(derived, 1, "only Status is display-only");
+    let mut unique = paths.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), paths.len(), "duplicate key path");
+    assert!(paths.contains(&("ai", "engine")) && paths.contains(&("ai", "model")));
+}
+
 // Spec: Status follows the draft engine.
 #[test]
 fn status_text_follows_the_draft_engine() {

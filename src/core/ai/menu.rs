@@ -79,6 +79,15 @@ impl AiMenu {
         choices
     }
 
+    /// The text written to `config.toml` for a row; unset is `""`.
+    pub fn saved_value(&self, field: AiField) -> String {
+        match field {
+            AiField::Engine => self.draft.engine.clone(),
+            AiField::Model => self.draft.model.clone(),
+        }
+        .unwrap_or_default()
+    }
+
     /// What the draft engine offers, when it is available.
     fn engine_models(&self) -> &[String] {
         let id = self.draft.engine.as_deref();

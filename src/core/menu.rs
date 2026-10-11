@@ -183,9 +183,17 @@ impl MenuState {
             .unwrap_or_default()
     }
 
+    /// Whether the selection is on Engine or Model.
+    fn on_ai_row(&self) -> bool {
+        self.ai.is_some()
+            && self
+                .selected
+                .is_some_and(|index| index >= choices().count())
+    }
+
     /// Selectable rows: the settings, then Engine and Model.
     fn selectable(&self) -> usize {
-        choices().count()
+        choices().count() + if self.ai.is_some() { 2 } else { 0 }
     }
 
     pub fn rows(&self, config: &Config) -> Vec<Row> {
@@ -251,6 +259,7 @@ impl MenuState {
             KeyCode::Char('k') | KeyCode::Up => self.step_selection(false),
             KeyCode::Char('l' | ' ') | KeyCode::Right => self.cycle(true, config),
             KeyCode::Char('h') | KeyCode::Left => self.cycle(false, config),
+            KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
             KeyCode::Enter if !repeat => MenuCommand::Save,
             KeyCode::Esc if !repeat => MenuCommand::Cancel,
             _ => MenuCommand::None,
@@ -299,16 +308,28 @@ impl MenuState {
         MenuCommand::Changed
     }
 
-    /// The keys that differ from the config captured at open.
+    /// The keys that differ from the config captured at open, then both AI
+    /// keys when either changed (`none` is written as an empty string).
     pub fn edits(&self, live: &Config) -> Vec<ConfigEdit> {
-        choices()
+        let mut edits: Vec<ConfigEdit> = choices()
             .filter(|(_, c)| (c.get)(live) != (c.get)(&self.original))
             .map(|(_, c)| ConfigEdit {
                 table: c.table,
                 key: c.key,
                 value: Cow::Borrowed(c.values[(c.get)(live)]),
             })
-            .collect()
+            .collect();
+        if let Some(ai) = self.ai.as_ref().filter(|ai| ai.changed()) {
+            for field in [AiField::Engine, AiField::Model] {
+                let (table, key) = field.key_path();
+                edits.push(ConfigEdit {
+                    table,
+                    key,
+                    value: Cow::Owned(ai.saved_value(field)),
+                });
+            }
+        }
+        edits
     }
 
     /// The config captured when the menu opened.
