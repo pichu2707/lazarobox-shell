@@ -4,6 +4,7 @@
 use super::{
     CATALOG, Detection, Status,
     config::{AiConfig, Assignment, Task},
+    picker::task_label,
     status_text,
 };
 
@@ -65,11 +66,11 @@ impl AiMenu {
         self.engines.as_ref()
     }
 
-    /// The value of a task row, or of `Set all tasks` (`None`): the shared
+    /// The value of a task row, with its detection marks, or of `Set all tasks` (`None`): the shared
     /// assignment or `(mixed)`.
     pub fn task_value(&self, task: Option<Task>) -> String {
         match task {
-            Some(task) => self.draft.label(task),
+            Some(task) => task_label(&self.draft, task, self.engines.as_ref()),
             None => self.draft.aggregate(),
         }
     }
