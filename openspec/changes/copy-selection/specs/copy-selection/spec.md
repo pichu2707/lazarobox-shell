@@ -141,6 +141,11 @@ The selection MUST be dropped on `q`, `i`, `y`, a host Resize (including a layou
 - WHEN the child switches to the alternate screen (or back)
 - THEN there is no selection and mode stays COPY
 
+#### Scenario: Screen switch resets the cursor [auto]
+- GIVEN COPY with the cursor moved up into scrollback
+- WHEN the child switches to the alternate screen and back (or the host resizes)
+- THEN the cursor is on the pane's live cursor, as when entering COPY, and the viewport is at the bottom
+
 #### Scenario: Focus change drops it
 - GIVEN a selection in COPY on the left pane
 - WHEN focus moves to the right pane

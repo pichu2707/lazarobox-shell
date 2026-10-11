@@ -1124,20 +1124,24 @@ impl App {
     /// Revalidates COPY against its pane after output or a relayout. The pane
     /// is the source of truth for the offset (the emulator pins the viewport
     /// and clamps it at the history cap). A new line generation (screen flip,
-    /// resize) makes line numbers incomparable, so the selection goes. The
-    /// cursor and the anchor are clamped into the retained lines; an evicted
-    /// anchor becomes `(first_line, 0)`, shrinking the selection.
+    /// resize) makes line numbers incomparable, so COPY starts over as when
+    /// entered: no selection, cursor on the live cursor, viewport at the
+    /// bottom. The cursor and the anchor are clamped into the retained lines;
+    /// an evicted anchor becomes `(first_line, 0)`, shrinking the selection.
+    /// The anchor needs no upper clamp: `first_line + history` never shrinks
+    /// and the row count only changes with a generation bump.
     fn sync_copy(&mut self) {
         let InputMode::Copy(mut state) = self.input else {
             return;
         };
         let geo = self.copy_geometry();
+        if state.generation != self.focused_pane().line_generation() {
+            // Line numbers are incomparable now: start over like entering COPY.
+            state = self.enter_copy();
+            self.focused_state_mut().emu.set_scrollback(0);
+        }
         let pane = self.focused_pane();
         state.offset = pane.scrollback_offset();
-        if state.generation != pane.line_generation() {
-            state.generation = pane.line_generation();
-            state.selection = None;
-        }
         let last_line = geo.first_line + geo.history + usize::from(geo.rows.max(1)) - 1;
         let last_col = geo.cols.saturating_sub(1);
         state.cursor.line = state.cursor.line.clamp(geo.first_line, last_line);
@@ -1150,7 +1154,6 @@ impl App {
                     col: 0,
                 };
             }
-            anchor.line = anchor.line.min(last_line);
             anchor.col = anchor.col.min(last_col);
         }
         self.input = InputMode::Copy(state);
@@ -2355,6 +2358,22 @@ mod app_tests {
         assert_eq!(a.copy_cursor(), Some((0, 4)));
     }
 
+    // copy-mode-scrollback: a screen switch resets the cursor like entering COPY.
+    #[test]
+    fn a_screen_round_trip_puts_the_cursor_back_on_the_live_cursor() {
+        let mut a = app();
+        with_history(&mut a, 30);
+        feed_focused(&mut a, b"abc");
+        a.update(ctrl_space());
+        a.update(key('['));
+        assert_eq!(a.copy_cursor(), Some((23, 3)));
+        press_n(&mut a, 'k', 5);
+        feed_focused(&mut a, b"\x1b[?1049h");
+        feed_focused(&mut a, b"\x1b[?1049l");
+        assert!(is_copy(&a));
+        assert_eq!(a.copy_cursor(), Some((23, 3)));
+    }
+
     // copy-selection: Screen switch drops it.
     #[test]
     fn a_screen_switch_drops_the_selection_and_keeps_copy() {
@@ -2368,12 +2387,14 @@ mod app_tests {
             copy_state(&a).generation,
             a.focused_pane().line_generation()
         );
-        // The new generation is adopted: a fresh selection survives output.
+        // The new generation is adopted and the cursor sits on the alternate
+        // screen's live cursor: a fresh selection survives output.
+        assert_eq!(copy_state(&a).cursor, Point { line: 0, col: 0 });
         a.update(key('v'));
         feed_focused(&mut a, b"x");
         assert_eq!(
             selection_of(&a),
-            Some((Point { line: 0, col: 3 }, SelectionKind::Char))
+            Some((Point { line: 0, col: 0 }, SelectionKind::Char))
         );
     }
 
