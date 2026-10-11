@@ -13,13 +13,47 @@ pub enum CopyMotion {
     HalfDown,
     Top,
     Bottom,
+    Left,
+    Right,
+    LineStart,
+    LineEnd,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CopyCommand {
     Move(CopyMotion),
+    Yank,
     Exit,
     Ignore,
+}
+
+/// A cell addressed by stable line number (see `Pane::first_line`) and column.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Point {
+    pub line: usize,
+    pub col: u16,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SelectionKind {
+    Char,
+    Line,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Selection {
+    pub anchor: Point,
+    pub kind: SelectionKind,
+}
+
+/// What the pane offers to copy mode: stable line numbers
+/// `first_line..first_line + history + rows`, `rows` of them on screen.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Geometry {
+    pub first_line: usize,
+    pub history: usize,
+    pub rows: u16,
+    pub cols: u16,
 }
 
 /// Viewport position in copy mode plus the half-typed `gg`.
@@ -27,13 +61,31 @@ pub enum CopyCommand {
 pub struct CopyState {
     /// Rows above the live screen (0 = bottom).
     pub offset: usize,
+    pub cursor: Point,
+    pub selection: Option<Selection>,
+    /// `Pane::line_generation` at entry; a different value drops the selection.
+    pub generation: u32,
     pending_g: bool,
 }
 
 impl CopyState {
+    /// Copy mode entered with the cursor on the pane's live cursor.
+    pub fn enter(_geo: Geometry, _live_cursor: Option<(u16, u16)>, _generation: u32) -> Self {
+        Self::default()
+    }
+
+    /// The selected cells, `None` without a selection.
+    pub fn span(&self, _cols: u16) -> Option<LineSpan> {
+        None
+    }
+
+    /// Moves the cursor (and the viewport only as far as needed).
+    /// `line_end` is the last non-blank column of the cursor's row, used by `$`.
+    pub fn apply_motion(&mut self, _motion: CopyMotion, _geo: Geometry, _line_end: u16) {}
+
     /// Interprets a key. A pending `g` is dropped by any key other than `g`,
     /// which is then handled on its own.
-    pub fn on_key(&mut self, key: &KeyEvent) -> CopyCommand {
+    pub fn on_key(&mut self, key: &KeyEvent, _repeat: bool) -> CopyCommand {
         let was_pending = std::mem::take(&mut self.pending_g);
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
         let ctrl = key.modifiers == KeyModifiers::CONTROL;
@@ -73,6 +125,7 @@ impl CopyState {
             CopyMotion::HalfDown => self.offset.saturating_sub(half),
             CopyMotion::Top => max,
             CopyMotion::Bottom => 0,
+            _ => self.offset,
         };
         self.offset = target.min(max);
     }
@@ -173,7 +226,7 @@ mod tests {
             (press('G'), CopyMotion::Bottom),
         ];
         for (key, motion) in cases {
-            assert_eq!(s.on_key(&key), CopyCommand::Move(motion), "{key:?}");
+            assert_eq!(s.on_key(&key, false), CopyCommand::Move(motion), "{key:?}");
         }
     }
 
@@ -185,7 +238,7 @@ mod tests {
             press('i'),
         ] {
             let mut s = at(7);
-            assert_eq!(s.on_key(&key), CopyCommand::Exit, "{key:?}");
+            assert_eq!(s.on_key(&key, false), CopyCommand::Exit, "{key:?}");
             assert_eq!(s.offset, 0, "exit resets the offset for {key:?}");
         }
     }
@@ -193,33 +246,36 @@ mod tests {
     #[test]
     fn unrelated_keys_are_ignored() {
         let mut s = CopyState::default();
-        assert_eq!(s.on_key(&press('x')), CopyCommand::Ignore);
+        assert_eq!(s.on_key(&press('x'), false), CopyCommand::Ignore);
         assert_eq!(
-            s.on_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            s.on_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), false),
             CopyCommand::Ignore
         );
-        assert_eq!(s.on_key(&ctrl('x')), CopyCommand::Ignore);
+        assert_eq!(s.on_key(&ctrl('x'), false), CopyCommand::Ignore);
     }
 
     #[test]
     fn double_g_goes_to_the_top() {
         let mut s = CopyState::default();
-        assert_eq!(s.on_key(&press('g')), CopyCommand::Ignore);
-        assert_eq!(s.on_key(&press('g')), CopyCommand::Move(CopyMotion::Top));
+        assert_eq!(s.on_key(&press('g'), false), CopyCommand::Ignore);
+        assert_eq!(
+            s.on_key(&press('g'), false),
+            CopyCommand::Move(CopyMotion::Top)
+        );
         // The pending state is consumed: a third g starts over.
-        assert_eq!(s.on_key(&press('g')), CopyCommand::Ignore);
+        assert_eq!(s.on_key(&press('g'), false), CopyCommand::Ignore);
     }
 
     #[test]
     fn lone_g_is_discarded_by_the_next_key() {
         let mut s = CopyState::default();
-        s.on_key(&press('g'));
+        s.on_key(&press('g'), false);
         assert_eq!(
-            s.on_key(&press('j')),
+            s.on_key(&press('j'), false),
             CopyCommand::Move(CopyMotion::LineDown)
         );
         // The g was dropped, so a single g afterwards must not reach the top.
-        assert_eq!(s.on_key(&press('g')), CopyCommand::Ignore);
+        assert_eq!(s.on_key(&press('g'), false), CopyCommand::Ignore);
     }
 
     #[test]

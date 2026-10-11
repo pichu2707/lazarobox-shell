@@ -967,7 +967,7 @@ impl App {
     }
 
     fn on_copy_key(&mut self, mut state: CopyState, key: &KeyEvent) -> Vec<Effect> {
-        match state.on_key(key) {
+        match state.on_key(key, false) {
             CopyCommand::Move(motion) => {
                 let rows = self.focused_size().rows;
                 let pane = &mut self.focused_state_mut().emu;
@@ -979,7 +979,8 @@ impl App {
                 self.focused_state_mut().emu.set_scrollback(0);
                 self.input = InputMode::Terminal;
             }
-            CopyCommand::Ignore => self.input = InputMode::Copy(state),
+            // Yank is wired in CS3.
+            CopyCommand::Yank | CopyCommand::Ignore => self.input = InputMode::Copy(state),
         }
         Vec::new()
     }
