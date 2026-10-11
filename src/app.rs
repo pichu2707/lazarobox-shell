@@ -7,7 +7,10 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::core::{
     config::{BarPosition, BarPositions, Config, ConfigEdit},
-    copy::{CopyCommand, CopyMotion, CopyState, Geometry, Point, TooLarge, join, osc52},
+    copy::{
+        CopyCommand, CopyMotion, CopyState, Geometry, Highlight, Point, SelectionKind, TooLarge,
+        join, osc52,
+    },
     keys::{encode_key, encode_paste},
     layout::{
         Axis, Direction, Node, PaneId, PaneIds, Rect, Removal, SplitError, Tiling, neighbour,
@@ -416,6 +419,27 @@ impl App {
         let top = (geo.first_line + geo.history).checked_sub(state.offset)?;
         let row = state.cursor.line.checked_sub(top)?;
         (row < usize::from(geo.rows)).then_some((row as u16, state.cursor.col))
+    }
+
+    /// The cells to paint as selected in the focused pane; `None` outside COPY
+    /// and without a selection.
+    pub fn copy_highlight(&self) -> Option<Highlight> {
+        let InputMode::Copy(state) = &self.input else {
+            return None;
+        };
+        let geo = self.copy_geometry();
+        Some(Highlight {
+            span: state.span(geo.cols)?,
+            top_line: (geo.first_line + geo.history).saturating_sub(state.offset),
+        })
+    }
+
+    /// The kind of the active selection, for the statusline marker.
+    pub fn copy_selection_kind(&self) -> Option<SelectionKind> {
+        let InputMode::Copy(state) = &self.input else {
+            return None;
+        };
+        state.selection.map(|s| s.kind)
     }
 
     /// What the focused pane offers to copy mode.

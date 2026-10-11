@@ -112,11 +112,11 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 - [x] CS3.11 GREEN: notice text with `text.chars().count()` and singular rule.
 - [x] CS3.12 RED: runtime: `Panes::apply(SetClipboard(bytes))` appends exactly `bytes` to `host_out` and writes nothing else; `flush_host` into a `Vec<u8>` writes the exact bytes, calls flush, and clears the buffer; an empty buffer writes nothing [copy-selection: Yank emits OSC 52 (runtime part)].
 - [x] CS3.13 GREEN: `host_out` buffering and `flush_host` in `event_loop` tick after the draw and `apply_cursor_style` (CS-9).
-- [ ] CS3.14 RED: highlight via TestBackend: `v` + `l` x2 on `hello` -> cells `h e l` have `Modifier::REVERSED` and `l o` do not (exact per-cell style equality); `V` -> every cell of the row reversed; no selection -> no cell reversed; an inverse cell under the selection is un-reversed (XOR); highlight follows scrolling; applied to the focused pane only [copy-selection: Character highlight, Line highlight, No selection].
-- [ ] CS3.15 GREEN: `copy_highlight`, `TerminalView::highlight` XOR REVERSED via `LineSpan::contains` (CS-11).
-- [ ] CS3.16 RED: statusline marker: 340-row history scrolled 12 up with `v` -> mode block exactly `COPY ↑12/340 VISUAL`; alternate screen with `V` -> exactly `COPY V-LINE`; Esc clears -> `COPY ↑12/340` with no marker; marker sits before `[Z]` when zoomed; widths 0..=40 never panic; `InputMode::label` still returns `COPY`; existing snapshots unchanged when no selection or notice [statusline: Marker with indicator, Line marker without history, Marker gone, Narrow width].
-- [ ] CS3.17 GREEN: marker rendering after the indicator, path budget reduced by marker width (CS-12); accept new snapshots with `cargo insta review`, no other snapshot changes.
-- [ ] CS3.18 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] CS3.14 RED: highlight via TestBackend: `v` + `l` x2 on `hello` -> cells `h e l` have `Modifier::REVERSED` and `l o` do not (exact per-cell style equality); `V` -> every cell of the row reversed; no selection -> no cell reversed; an inverse cell under the selection is un-reversed (XOR); highlight follows scrolling; applied to the focused pane only [copy-selection: Character highlight, Line highlight, No selection].
+- [x] CS3.15 GREEN: `copy_highlight`, `TerminalView::highlight` XOR REVERSED via `LineSpan::contains` (CS-11).
+- [x] CS3.16 RED: statusline marker: 340-row history scrolled 12 up with `v` -> mode block exactly `COPY ↑12/340 VISUAL`; alternate screen with `V` -> exactly `COPY V-LINE`; Esc clears -> `COPY ↑12/340` with no marker; marker sits before `[Z]` when zoomed; widths 0..=40 never panic; `InputMode::label` still returns `COPY`; existing snapshots unchanged when no selection or notice [statusline: Marker with indicator, Line marker without history, Marker gone, Narrow width].
+- [x] CS3.17 GREEN: marker rendering after the indicator, path budget reduced by marker width (CS-12); accept new snapshots with `cargo insta review`, no other snapshot changes.
+- [x] CS3.18 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## Verify prep: manual Kitty checks
 
