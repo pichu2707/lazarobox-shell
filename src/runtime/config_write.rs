@@ -24,7 +24,8 @@ fn resolve_target(path: &Path) -> Result<PathBuf, String> {
         return Ok(real);
     }
     let mut current = path.to_owned();
-    for _ in 0..MAX_LINK_HOPS {
+    // One extra pass checks the file reached after the last allowed hop.
+    for _ in 0..=MAX_LINK_HOPS {
         if !fs::symlink_metadata(&current).is_ok_and(|meta| meta.is_symlink()) {
             return Ok(current);
         }
@@ -309,6 +310,89 @@ mod tests {
             fs::read_to_string(dir.path().join("store/real.toml")).unwrap(),
             "[statusline]\nposition = \"top\"\n"
         );
+    }
+
+    /// `config.toml -> l1 -> ... -> l{n-1} -> store/real.toml` (n links, the
+    /// last target missing). Returns the path of the first link.
+    fn dangling_chain(dir: &Path, links: usize) -> PathBuf {
+        let name = |i: usize| match i {
+            0 => "config.toml".to_owned(),
+            i => format!("l{i}"),
+        };
+        for i in 0..links {
+            let target = if i + 1 == links {
+                "store/real.toml".to_owned()
+            } else {
+                name(i + 1)
+            };
+            symlink(target, dir.join(name(i))).unwrap();
+        }
+        dir.join(name(0))
+    }
+
+    // Boundary: at most 8 links are followed.
+    #[test]
+    fn a_dangling_chain_of_eight_links_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dangling_chain(dir.path(), 8);
+        assert_eq!(save_config(Some(&first), &[STATUSLINE_TOP]), Ok(()));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("store/real.toml")).unwrap(),
+            "[statusline]\nposition = \"top\"\n"
+        );
+        for i in 1..8 {
+            let link = dir.path().join(format!("l{i}"));
+            assert!(fs::symlink_metadata(link).unwrap().is_symlink());
+        }
+        assert!(fs::symlink_metadata(&first).unwrap().is_symlink());
+    }
+
+    #[test]
+    fn a_dangling_chain_of_nine_links_is_refused_and_creates_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dangling_chain(dir.path(), 9);
+        assert_eq!(
+            save_config(Some(&first), &[STATUSLINE_TOP]),
+            Err("save failed: too many symlink levels".to_owned())
+        );
+        assert!(!dir.path().join("store").exists());
+    }
+
+    // Characterization: an absolute dangling target is followed as is.
+    #[test]
+    fn an_absolute_dangling_target_is_followed_and_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let link_dir = dir.path().join("home");
+        fs::create_dir(&link_dir).unwrap();
+        let link = link_dir.join("config.toml");
+        let real = dir.path().join("elsewhere/config.toml");
+        symlink(&real, &link).unwrap();
+        assert_eq!(save_config(Some(&link), &[STATUSLINE_TOP]), Ok(()));
+        assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(
+            fs::read_to_string(&real).unwrap(),
+            "[statusline]\nposition = \"top\"\n"
+        );
+    }
+
+    // Characterization: the read-only check applies to the resolved target.
+    #[test]
+    fn a_read_only_target_behind_a_symlink_is_refused_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.toml");
+        let link = dir.path().join("config.toml");
+        fs::write(&real, "[statusline]\nposition = \"bottom\"\n").unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o444)).unwrap();
+        symlink(&real, &link).unwrap();
+        assert_eq!(
+            save_config(Some(&link), &[STATUSLINE_TOP]),
+            Err("config.toml is read-only".to_owned())
+        );
+        assert_eq!(
+            fs::read_to_string(&real).unwrap(),
+            "[statusline]\nposition = \"bottom\"\n"
+        );
+        assert_eq!(names(dir.path()), ["config.toml", "real.toml"]);
     }
 
     #[test]
