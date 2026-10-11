@@ -144,6 +144,18 @@ pub enum MenuCommand {
     Refresh,
 }
 
+const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
+const HINT_TASK: &str = "j/k move · Enter pick · r refresh · s save · Esc cancel";
+const HINT_PICKER: &str = "j/k move · Enter choose · r refresh · Esc back · s save";
+const HINT_CUSTOM: &str = "type a model · Enter ok · Ctrl+U clear · Esc back";
+
+/// The footer of the popup: the widget only styles it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Footer<'a> {
+    Error(&'a str),
+    Hint(Cow<'static, str>),
+}
+
 /// One line of the popup body.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Row {
@@ -461,6 +473,20 @@ impl MenuState {
         self.original
     }
 
+    /// The footer line: a pending error, else the hint of the current view.
+    pub fn footer(&self) -> Footer<'_> {
+        if let Some(error) = self.error() {
+            return Footer::Error(error);
+        }
+        let hint = match self.ai.as_ref().and_then(AiMenu::picker) {
+            Some(picker) if picker.text().is_some() => HINT_CUSTOM,
+            Some(_) => HINT_PICKER,
+            None if self.on_ai_row() => HINT_TASK,
+            None => HINT_SETTINGS,
+        };
+        Footer::Hint(Cow::Borrowed(hint))
+    }
+
     pub fn set_error(&mut self, message: String) {
         self.error = Some(message);
     }
@@ -729,3 +755,6 @@ mod reanchor_tests;
 
 #[cfg(test)]
 mod save_tests;
+
+#[cfg(test)]
+mod footer_tests;
