@@ -95,7 +95,7 @@ impl CopyState {
         let last_col = geo.cols.saturating_sub(1);
         match motion {
             CopyMotion::Left => self.cursor.col = self.cursor.col.saturating_sub(1),
-            CopyMotion::Right => self.cursor.col = (self.cursor.col + 1).min(last_col),
+            CopyMotion::Right => self.cursor.col = self.cursor.col.saturating_add(1).min(last_col),
             CopyMotion::LineStart => self.cursor.col = 0,
             CopyMotion::LineEnd => self.cursor.col = line_end.min(last_col),
             _ => self.move_vertically(motion, geo),
@@ -506,6 +506,16 @@ mod tests {
         assert_eq!(cols_after(0, 0, &[CopyMotion::Left]), [0]);
         assert_eq!(cols_after(79, 0, &[CopyMotion::Right]), [79]);
         assert_eq!(cols_after(78, 0, &[CopyMotion::Right]), [79]);
+    }
+
+    #[test]
+    fn line_end_beyond_the_last_column_clamps_to_it() {
+        assert_eq!(cols_after(4, 200, &[CopyMotion::LineEnd]), [79]);
+    }
+
+    #[test]
+    fn right_from_a_stale_maximal_column_clamps_without_overflow() {
+        assert_eq!(cols_after(u16::MAX, 0, &[CopyMotion::Right]), [79]);
     }
 
     #[test]
