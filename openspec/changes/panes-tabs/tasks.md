@@ -190,7 +190,7 @@ Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs
 
 ## S9c: OSC 7 follow-ups
 
-- [x] S9c.1 RED+GREEN: a new pane or tab whose inherited cwd no longer exists falls back to the launch cwd, then `$HOME`, then `/` (`App::with_dir_check`, runtime passes `Path::is_dir`); exact `SpawnPane` cwd asserted for split, new tab, existing cwd, no-home [terminal-session: Vanished cwd falls back; tabs: New tab from a vanished cwd].
+- [x] S9c.1 RED+GREEN: a new pane or tab whose inherited cwd no longer exists prefers the launch cwd, then an absolute `$HOME`, then `/` (a precedence preference: portable-pty already fell back to `$HOME`, ADR 18) (`App::with_dir_check`, runtime passes `Path::is_dir`); exact `SpawnPane` cwd asserted for split, new tab, existing cwd, no-home [terminal-session: Vanished cwd falls back; tabs: New tab from a vanished cwd].
 - [x] S9c.2 The `a_new_tab_inherits_the_osc7_cwd` assertion is exact (`effects.last()`).
 - [x] S9c.3 Design ADR 21 records OSC 7 as sticky by design (known limitation) and the FQDN-vs-short-hostname mismatch as a deferred follow-up.
 

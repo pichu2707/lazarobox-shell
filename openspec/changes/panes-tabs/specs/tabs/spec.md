@@ -152,7 +152,7 @@ When the last pane of the last tab closes (shell exit or confirmed close), the a
 #### Scenario: New tab from a vanished cwd [auto]
 - GIVEN the focused pane's cwd no longer exists
 - WHEN `t n` is pressed
-- THEN the new tab spawns in the launch cwd (then `$HOME`, then `/`) instead of failing
+- THEN the new tab spawns in the launch cwd, preferred over the `$HOME` that the PTY layer would otherwise pick (the app falls back to the launch cwd, then an absolute `$HOME`, then `/`)
 
 #### Scenario: New tab inherits cwd [manual, Kitty]
 - GIVEN a shell that ran `cd /tmp`

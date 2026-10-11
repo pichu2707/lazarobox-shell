@@ -443,7 +443,8 @@ impl App {
     /// `None` when none does (the spawn then falls back to `/`).
     fn inherited_cwd(&self) -> Option<PathBuf> {
         let focused = self.focused_state().effective_cwd();
-        [focused, self.launch_cwd.as_deref(), self.home.as_deref()]
+        let home = self.home.as_deref().filter(|home| home.is_absolute());
+        [focused, self.launch_cwd.as_deref(), home]
             .into_iter()
             .flatten()
             .find(|dir| (self.dir_exists)(dir))
@@ -2160,6 +2161,23 @@ mod app_tests {
         assert_eq!(
             effects.last(),
             Some(&Effect::SpawnPane(id2(), spec("/home/ana", sized(23, 80))))
+        );
+    }
+
+    #[test]
+    fn a_relative_home_is_never_a_spawn_fallback() {
+        let mut a = App::new(80, 25)
+            .with_env(
+                Some("/bin/zsh"),
+                Some("home/ana".into()),
+                "/launch-gone".into(),
+            )
+            .with_dir_check(exists);
+        a.update(osc7(PaneId::FIRST, "file:///gone"));
+        let effects = press(&mut a, "tn");
+        assert_eq!(
+            effects.last(),
+            Some(&Effect::SpawnPane(id2(), spec("/", sized(23, 80))))
         );
     }
 
