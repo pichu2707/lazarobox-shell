@@ -66,7 +66,7 @@ pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String
             .get_mut(edit.table)
             .and_then(Item::as_table_like_mut)
             .ok_or(EditError::NotATable(edit.table))?;
-        let mut value = Value::from(edit.value);
+        let mut value = Value::from(edit.value.as_ref());
         match table.get_mut(edit.key) {
             // Replace in the slot so the key's own decor (leading comment,
             // spacing) stays, and keep the old value's decor so a trailing
@@ -161,7 +161,7 @@ mod tests {
         ConfigEdit {
             table,
             key: "position",
-            value,
+            value: std::borrow::Cow::Borrowed(value),
         }
     }
 

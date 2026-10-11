@@ -2,6 +2,7 @@
 //! file lookup and read live at the runtime edge.
 
 use std::{
+    borrow::Cow,
     ffi::OsString,
     fmt,
     io::{self, ErrorKind},
@@ -43,11 +44,11 @@ pub struct Config {
 
 /// One changed, menu-owned key to write back to `config.toml`:
 /// `[table] key = "value"`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ConfigEdit {
     pub table: &'static str,
     pub key: &'static str,
-    pub value: &'static str,
+    pub value: Cow<'static, str>,
 }
 
 /// Why a config file was rejected; the text is one short line.

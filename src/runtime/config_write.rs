@@ -116,7 +116,7 @@ mod tests {
     const STATUSLINE_TOP: ConfigEdit = ConfigEdit {
         table: "statusline",
         key: "position",
-        value: "top",
+        value: std::borrow::Cow::Borrowed("top"),
     };
 
     fn names(dir: &Path) -> Vec<String> {

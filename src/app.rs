@@ -4634,20 +4634,20 @@ mod app_tests {
         open_menu(&mut a);
         let rows = a.menu().unwrap().rows(&a.config);
         assert!(matches!(
-            rows[1],
+            &rows[1],
             Row::Item {
                 selected: true,
-                value: Some("bottom"),
+                value: Some(v),
                 ..
-            }
+            } if v == "bottom"
         ));
         assert!(matches!(
-            rows[2],
+            &rows[2],
             Row::Item {
                 selected: false,
-                value: Some("top"),
+                value: Some(v),
                 ..
-            }
+            } if v == "top"
         ));
     }
 
@@ -4788,7 +4788,7 @@ mod app_tests {
         ConfigEdit {
             table: "statusline",
             key: "position",
-            value: "top",
+            value: "top".into(),
         }
     }
 
