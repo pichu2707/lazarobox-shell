@@ -46,11 +46,11 @@ AS4 (~850, 90% deletions) is split in three because two PRs cannot stay under 40
 
 ## PR2 / AS2: Nested edits (`src/core/config_edit.rs`, `src/runtime/config_write.rs`)
 
-- [ ] 2.1 RED: exact-string tests: new `[ai.tasks.code]` after `[ai]` appended with no empty parent header; existing nested edited in place; key added to existing task table; dotted and inline parents; CRLF kept; comment-only-file prefix.
-- [ ] 2.2 RED: collision tests per variant (`ai = 3`, `[ai] tasks = 3`, `[[ai.tasks]]`, `[ai.tasks] code = "x"`, `[ai.tasks.code.engine]`) with exact `NotATable`/`KeyIsTable` prefixes and footer messages; general table byte-identical; `chat = 3` untouched when only code changes.
-- [ ] 2.3 GREEN: `apply_edit` walks dotted `table` segments, implicit parents, static prefix slices.
-- [ ] 2.4 RED+GREEN: round trip through `Config::parse` (task tables, Set all five in order, `engine = ""`/`model = ""` for unassigned, `old:7b` kept).
-- [ ] 2.5 Gate.
+- [x] 2.1 RED: exact-string tests: new `[ai.tasks.code]` after `[ai]` appended with no empty parent header; existing nested edited in place; key added to existing task table; dotted and inline parents; CRLF kept; comment-only-file prefix.
+- [x] 2.2 RED: collision tests per variant (`ai = 3`, `[ai] tasks = 3`, `[[ai.tasks]]`, `[ai.tasks] code = "x"`, `[ai.tasks.code.engine]`) with exact `NotATable`/`KeyIsTable` prefixes and footer messages; general table byte-identical; `chat = 3` untouched when only code changes.
+- [x] 2.3 GREEN: `apply_edit` walks dotted `table` segments, implicit parents, static prefix slices.
+- [x] 2.4 RED+GREEN: round trip through `Config::parse` (task tables, Set all five in order, `engine = ""`/`model = ""` for unassigned, `old:7b` kept).
+- [x] 2.5 Gate.
 
 ## PR3 / AS3a: Catalog and row derivation (`src/core/ai/catalog.rs`, `picker.rs`)
 
