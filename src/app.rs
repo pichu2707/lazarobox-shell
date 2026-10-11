@@ -261,6 +261,9 @@ pub struct App {
     /// passes the real check.
     dir_exists: fn(&Path) -> bool,
     shell: Option<String>,
+    /// The key whose Press left COPY: its Repeat events are dropped in
+    /// TERMINAL until its Release or any other Press.
+    held_exit: Option<KeyCode>,
 }
 
 impl App {
@@ -291,6 +294,7 @@ impl App {
             hostname: None,
             dir_exists: |_| true,
             shell: None,
+            held_exit: None,
         }
     }
 
@@ -621,8 +625,21 @@ impl App {
         let repeat = match key.kind {
             KeyEventKind::Press => false,
             KeyEventKind::Repeat => true,
-            KeyEventKind::Release => return Vec::new(),
+            KeyEventKind::Release => {
+                if self.held_exit == Some(key.code) {
+                    self.held_exit = None;
+                }
+                return Vec::new();
+            }
         };
+        if repeat {
+            // A held key that left COPY must not reach the shell as typed text.
+            if self.input == InputMode::Terminal && self.held_exit == Some(key.code) {
+                return Vec::new();
+            }
+        } else {
+            self.held_exit = None;
+        }
         self.dirty |= self.notice.take().is_some();
         if repeat
             && matches!(
@@ -1043,8 +1060,15 @@ impl App {
             CopyCommand::Exit => {
                 self.focused_state_mut().emu.set_scrollback(0);
                 self.input = InputMode::Terminal;
+                self.held_exit = Some(key.code);
             }
-            CopyCommand::Yank => return self.yank(state),
+            CopyCommand::Yank => {
+                let effects = self.yank(state);
+                if self.input == InputMode::Terminal {
+                    self.held_exit = Some(key.code);
+                }
+                return effects;
+            }
             CopyCommand::Ignore => self.input = InputMode::Copy(state),
         }
         Vec::new()
@@ -2251,6 +2275,71 @@ mod app_tests {
         );
         assert_eq!(copy_state(&a).cursor, Point { line: 127, col: 3 });
         assert!(is_copy(&a));
+    }
+
+    fn release(c: char) -> AppEvent {
+        kinded(KeyCode::Char(c), KeyModifiers::NONE, KeyEventKind::Release)
+    }
+
+    // modal-input: Held exit key does not leak into TERMINAL.
+    #[test]
+    fn a_held_q_or_i_does_not_leak_into_terminal_after_leaving_copy() {
+        for c in ['q', 'i'] {
+            let mut a = in_copy();
+            a.update(key(c));
+            assert_eq!(a.input(), InputMode::Terminal, "{c}");
+            assert_eq!(a.update(repeat(c)), vec![], "{c}");
+            assert_eq!(a.update(repeat(c)), vec![], "{c}");
+        }
+    }
+
+    #[test]
+    fn a_held_esc_does_not_leak_into_terminal_after_leaving_copy() {
+        let mut a = in_copy();
+        a.update(esc());
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.update(esc_kinded(KeyEventKind::Repeat)), vec![]);
+    }
+
+    #[test]
+    fn a_held_y_does_not_leak_into_terminal_after_a_yank() {
+        let mut a = app();
+        copy_after(&mut a, b"abc");
+        a.update(key('h'));
+        a.update(key('v'));
+        assert_eq!(a.update(key('y')).len(), 1);
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.update(repeat('y')), vec![]);
+        // The drop must not eat the yank notice.
+        assert_eq!(a.notice(), Some("Copied 1 character"));
+    }
+
+    #[test]
+    fn another_key_after_leaving_copy_is_passed_through() {
+        let mut a = in_copy();
+        a.update(key('q'));
+        assert_eq!(
+            a.update(repeat('x')),
+            vec![Effect::WritePty(PaneId::FIRST, b"x".to_vec())]
+        );
+    }
+
+    #[test]
+    fn a_fresh_press_after_the_release_is_passed_through() {
+        let mut a = in_copy();
+        a.update(key('q'));
+        assert_eq!(a.update(release('q')), vec![]);
+        assert_eq!(
+            a.update(repeat('q')),
+            vec![Effect::WritePty(PaneId::FIRST, b"q".to_vec())]
+        );
+        let mut a = in_copy();
+        a.update(key('q'));
+        a.update(key('x'));
+        assert_eq!(
+            a.update(repeat('q')),
+            vec![Effect::WritePty(PaneId::FIRST, b"q".to_vec())]
+        );
     }
 
     // copy-selection: Screen switch drops it.
