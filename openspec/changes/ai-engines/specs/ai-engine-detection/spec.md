@@ -121,6 +121,72 @@ A CLI is `available` when a regular file with an execute permission bit exists u
 - WHEN codex is detected
 - THEN it is `not installed`
 
+### Requirement: Untrusted text is sanitized and bounded
+Every string taken from an engine (the first line of `--version` output and each model name from a server reply) is untrusted. Detection MUST strip ANSI CSI and OSC sequences (an OSC ends with BEL or ST), control characters, and bidi and format characters before the text is stored or shown. A version MUST be capped at 40 characters (and trimmed again after the cap), a model name at 128 characters, and a model list at 256 models per engine. A model name that is empty after sanitizing MUST be dropped. A duplicate model name MUST be offered only once in the menu.
+
+#### Scenario: ANSI sequences are stripped [auto]
+- GIVEN `--version` prints a first line with CSI colour codes, or a model name contains an OSC title sequence ended by BEL or by ST
+- WHEN the text is parsed
+- THEN the stored version or name contains none of those sequences or control characters
+
+#### Scenario: Bidi and format characters are dropped [auto]
+- GIVEN a model name contains a right-to-left override or another bidi or format character
+- WHEN the reply is parsed
+- THEN the stored name has those characters removed
+
+#### Scenario: Version is capped [auto]
+- GIVEN `--version` prints a first line longer than 40 characters
+- WHEN it is parsed
+- THEN the version has at most 40 characters and no trailing whitespace
+
+#### Scenario: Model name is capped [auto]
+- GIVEN a model name of 129 characters
+- WHEN the reply is parsed
+- THEN the stored name has 128 characters
+
+#### Scenario: Model list is capped [auto]
+- GIVEN a reply that lists 257 models
+- WHEN the reply is parsed
+- THEN the engine has exactly 256 models
+
+#### Scenario: Names empty after sanitizing are dropped [auto]
+- GIVEN a reply whose names are `""`, only an ANSI sequence, only a bidi character, and `ok`
+- WHEN the reply is parsed
+- THEN the only model is `ok`
+
+#### Scenario: Duplicate names are offered once [auto]
+- GIVEN a saved model `a` and an engine that lists `a`, `a`, `b`
+- WHEN the Model row is cycled forward twice
+- THEN it shows `b` and then `a`, with no repeated choice
+
+### Requirement: HTTP framing is strict
+The hand-written HTTP client MUST accept only an HTTP/1.x status line with status 200 as a valid reply; any other status or version is invalid and a redirect is never followed. The body MUST NOT exceed 1 MiB in any framing (Content-Length, chunked or close-delimited). Chunked framing MUST be strict (hex sizes, CRLF terminators, a final zero chunk). A reply with ambiguous framing MUST be rejected: conflicting Content-Length values, a signed Content-Length, or Content-Length together with Transfer-Encoding. A reply MUST carry at most one Transfer-Encoding header, and its final coding MUST be `chunked` or `identity`.
+
+#### Scenario: Only HTTP/1.x status 200 is accepted [auto]
+- GIVEN replies with an HTTP/2 or malformed status line, a signed status, or status 301
+- WHEN each is parsed
+- THEN none is a valid reply and no redirect is followed
+
+#### Scenario: Body over the cap is rejected in every framing [auto]
+- GIVEN a body of 1 MiB plus one byte framed by Content-Length, by chunks (one or several) or by close
+- WHEN it is parsed
+- THEN it is rejected, while a chunked body exactly at the cap is accepted
+
+#### Scenario: Chunked framing is strict [auto]
+- GIVEN a chunked body with a bad size, a missing terminator or no final zero chunk
+- WHEN it is parsed
+- THEN it is rejected, and a well-formed chunked body is decoded
+
+#### Scenario: Ambiguous framing is rejected [auto]
+- GIVEN replies with `Content-Length: 2` and `Content-Length: 3`, with `Content-Length: 2` and `Transfer-Encoding: chunked`, or with `Content-Length: +2`
+- WHEN each is parsed
+- THEN each is rejected, while two equal Content-Length values are accepted
+
+#### Scenario: Transfer-Encoding rules [auto]
+- GIVEN replies with two Transfer-Encoding headers, with `chunked, gzip`, with `gzip` alone, and with an empty value
+- WHEN each is parsed
+- THEN each is rejected, while `gzip, chunked` and `identity` are accepted
+
 ### Requirement: Concurrency and timeouts
 All 8 probes MUST run concurrently and in the background; the UI and the input MUST never wait on them. Each server probe MUST finish (success, failure or timeout) within 800 ms, covering connect, request and response; each `--version` run MUST finish or be killed within 2 s. The whole run therefore ends within about 2 s. The results of a run MUST be delivered together, as ONE `Detection` containing all 8 engines, once every probe has finished; a single run never delivers partial results.
 
