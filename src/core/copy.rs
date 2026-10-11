@@ -98,7 +98,54 @@ impl CopyState {
             CopyMotion::Right => self.cursor.col = (self.cursor.col + 1).min(last_col),
             CopyMotion::LineStart => self.cursor.col = 0,
             CopyMotion::LineEnd => self.cursor.col = line_end.min(last_col),
+            _ => self.move_vertically(motion, geo),
+        }
+    }
+
+    fn move_vertically(&mut self, motion: CopyMotion, geo: Geometry) {
+        let last_line = geo.first_line + geo.history + usize::from(geo.rows.max(1)) - 1;
+        let half = usize::from(geo.rows / 2).max(1);
+        match motion {
+            CopyMotion::LineUp => self.cursor.line = self.cursor.line.saturating_sub(1),
+            CopyMotion::LineDown => self.cursor.line += 1,
+            CopyMotion::HalfUp => {
+                self.cursor.line = self.cursor.line.saturating_sub(half);
+                self.offset += half;
+            }
+            CopyMotion::HalfDown => {
+                self.cursor.line += half;
+                self.offset = self.offset.saturating_sub(half);
+            }
+            CopyMotion::Top => {
+                self.cursor = Point {
+                    line: geo.first_line,
+                    col: 0,
+                };
+                self.offset = geo.history;
+            }
+            CopyMotion::Bottom => {
+                self.cursor = Point {
+                    line: last_line,
+                    col: 0,
+                };
+                self.offset = 0;
+            }
             _ => {}
+        }
+        self.cursor.line = self.cursor.line.clamp(geo.first_line, last_line);
+        self.offset = self.offset.min(geo.history);
+        self.ensure_visible(geo);
+    }
+
+    /// Scrolls the viewport just enough to show the cursor line.
+    fn ensure_visible(&mut self, geo: Geometry) {
+        let live_top = geo.first_line + geo.history;
+        let top = live_top - self.offset;
+        let bottom = top + usize::from(geo.rows.max(1)) - 1;
+        if self.cursor.line < top {
+            self.offset = live_top - self.cursor.line;
+        } else if self.cursor.line > bottom {
+            self.offset = self.offset.saturating_sub(self.cursor.line - bottom);
         }
     }
 
@@ -471,6 +518,79 @@ mod tests {
         let mut s = cursor_at(110, 3, 4);
         s.apply_motion(CopyMotion::Right, geo(), 0);
         assert_eq!((s.cursor.line, s.offset), (110, 4));
+    }
+
+    // Viewport with the geo above: offset 0 shows lines 110..=133.
+    #[test]
+    fn k_on_the_top_visible_row_scrolls_the_viewport_one_line() {
+        let mut s = cursor_at(110, 3, 0);
+        s.apply_motion(CopyMotion::LineUp, geo(), 0);
+        assert_eq!((s.cursor, s.offset), (pt(109, 3), 1));
+        // j moves back inside the viewport; the viewport stays put.
+        s.apply_motion(CopyMotion::LineDown, geo(), 0);
+        assert_eq!((s.cursor, s.offset), (pt(110, 3), 1));
+    }
+
+    #[test]
+    fn j_below_the_bottom_row_scrolls_down_only_as_needed() {
+        // Offset 2 shows lines 108..=131; the cursor is on the last one.
+        let mut s = cursor_at(131, 0, 2);
+        s.apply_motion(CopyMotion::LineDown, geo(), 0);
+        assert_eq!((s.cursor.line, s.offset), (132, 1));
+    }
+
+    #[test]
+    fn vertical_motion_inside_the_viewport_leaves_the_offset() {
+        let mut s = cursor_at(120, 3, 0);
+        s.apply_motion(CopyMotion::LineUp, geo(), 0);
+        assert_eq!((s.cursor, s.offset), (pt(119, 3), 0));
+    }
+
+    #[test]
+    fn vertical_motion_clamps_at_the_first_and_last_line() {
+        let mut top = cursor_at(10, 2, 100);
+        top.apply_motion(CopyMotion::LineUp, geo(), 0);
+        assert_eq!((top.cursor, top.offset), (pt(10, 2), 100));
+        let mut bottom = cursor_at(133, 2, 0);
+        bottom.apply_motion(CopyMotion::LineDown, geo(), 0);
+        assert_eq!((bottom.cursor, bottom.offset), (pt(133, 2), 0));
+    }
+
+    #[test]
+    fn a_cursor_scrolled_off_screen_returns_with_the_next_motion() {
+        // Output scrolled the live screen: the cursor sits above the viewport.
+        let mut s = cursor_at(105, 0, 0);
+        s.apply_motion(CopyMotion::LineDown, geo(), 0);
+        assert_eq!((s.cursor.line, s.offset), (106, 4));
+    }
+
+    #[test]
+    fn half_pages_move_cursor_and_offset_by_twelve() {
+        // Offset 20 shows lines 90..=113.
+        let mut s = cursor_at(100, 4, 20);
+        s.apply_motion(CopyMotion::HalfUp, geo(), 0);
+        assert_eq!((s.cursor, s.offset), (pt(88, 4), 32));
+        s.apply_motion(CopyMotion::HalfDown, geo(), 0);
+        assert_eq!((s.cursor, s.offset), (pt(100, 4), 20));
+    }
+
+    #[test]
+    fn half_pages_clamp_at_both_bounds() {
+        let mut top = cursor_at(10, 4, 100);
+        top.apply_motion(CopyMotion::HalfUp, geo(), 0);
+        assert_eq!((top.cursor, top.offset), (pt(10, 4), 100));
+        let mut bottom = cursor_at(133, 4, 0);
+        bottom.apply_motion(CopyMotion::HalfDown, geo(), 0);
+        assert_eq!((bottom.cursor, bottom.offset), (pt(133, 4), 0));
+    }
+
+    #[test]
+    fn top_and_bottom_jump_with_the_cursor() {
+        let mut s = cursor_at(125, 9, 20);
+        s.apply_motion(CopyMotion::Top, geo(), 0);
+        assert_eq!((s.cursor, s.offset), (pt(10, 0), 100));
+        s.apply_motion(CopyMotion::Bottom, geo(), 0);
+        assert_eq!((s.cursor, s.offset), (pt(133, 0), 0));
     }
 
     // copy-selection: LineSpan and join.
