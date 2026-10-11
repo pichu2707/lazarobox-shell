@@ -39,10 +39,10 @@ AS4 (~850, 90% deletions) is split in three because two PRs cannot stay under 40
 ## PR1 / AS1: Schema and reader (`src/core/ai/config.rs`)
 
 - [x] 1.1 RED: add `Task` (`ALL`, `id()`, `table()`), `Assignment`, slot `AiConfig` (`get/set/resolve`, `general(e,m)` helper) as compiling stubs; tests for task set integrity, resolve/inherit, labels `(not set)`/`(default)`/`<e> › <m>`/model-without-engine, aggregate `claude › opus`/`(not set)`/`claude › opus`/`(mixed)`.
-- [ ] 1.2 RED: `read_text` fixtures: task tables, `""`, `general` and unknown tasks ignored, unknown engine kept, wrong types per key, non-table `ai.tasks` and `ai.tasks.code`, problem count text (exact notices).
-- [ ] 1.3 GREEN: implement the model and the `[ai.tasks.<id>]` reader with per-key fallback.
+- [x] 1.2 RED: `read_text` fixtures: task tables, `""`, `general` and unknown tasks ignored, unknown engine kept, wrong types per key, non-table `ai.tasks` and `ai.tasks.code`, problem count text (exact notices).
+- [x] 1.3 GREEN: implement the model and the `[ai.tasks.<id>]` reader with per-key fallback.
 - [x] 1.4 GREEN: ripple `ai_of` helper through `src/app.rs` and `src/core/menu.rs` tests so everything compiles on `AiConfig::general`.
-- [ ] 1.5 Gate: cargo test, clippy, fmt.
+- [x] 1.5 Gate: cargo test, clippy, fmt.
 
 ## PR2 / AS2: Nested edits (`src/core/config_edit.rs`, `src/runtime/config_write.rs`)
 

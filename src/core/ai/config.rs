@@ -126,29 +126,55 @@ impl AiConfig {
     }
 }
 
-/// Reads `[ai]`. A key of the wrong type falls back to unset on its own and
-/// notes a problem; ids are kept verbatim, known or not.
-pub fn read(table: &Table, problems: &mut Vec<String>) -> AiConfig {
-    let section = match table.get("ai") {
-        None => return AiConfig::default(),
-        Some(Value::Table(section)) => section,
-        Some(_) => {
-            problems.push("ai: expected a table".to_owned());
-            return AiConfig::default();
-        }
-    };
+/// Reads one table's `engine` and `model`. A key of the wrong type falls
+/// back to unset on its own and notes a problem under `path`; ids are kept
+/// verbatim, known or not.
+fn read_assignment(section: &Table, path: &str, problems: &mut Vec<String>) -> Assignment {
     let mut key = |name: &str| match section.get(name) {
         None => None,
         Some(Value::String(id)) => Some(id.clone()).filter(|id| !id.is_empty()),
         Some(_) => {
-            problems.push(format!("ai.{name}: expected a string"));
+            problems.push(format!("{path}.{name}: expected a string"));
             None
         }
     };
     let engine = key("engine");
     let model = key("model");
+    Assignment { engine, model }
+}
+
+/// Reads `[ai]` (the general task) and `[ai.tasks.<id>]` (the others). Each
+/// key falls back to unset on its own; `general` and unknown names under
+/// `ai.tasks` are ignored.
+pub fn read(table: &Table, problems: &mut Vec<String>) -> AiConfig {
     let mut config = AiConfig::default();
-    config.set(Task::General, Assignment { engine, model });
+    let section = match table.get("ai") {
+        None => return config,
+        Some(Value::Table(section)) => section,
+        Some(_) => {
+            problems.push("ai: expected a table".to_owned());
+            return config;
+        }
+    };
+    config.set(Task::General, read_assignment(section, "ai", problems));
+    let tasks = match section.get("tasks") {
+        None => return config,
+        Some(Value::Table(tasks)) => tasks,
+        Some(_) => {
+            problems.push("ai.tasks: expected a table".to_owned());
+            return config;
+        }
+    };
+    for task in &Task::ALL[1..] {
+        let path = task.table();
+        match tasks.get(task.id()) {
+            None => {}
+            Some(Value::Table(section)) => {
+                config.set(*task, read_assignment(section, path, problems));
+            }
+            Some(_) => problems.push(format!("{path}: expected a table")),
+        }
+    }
     config
 }
 
@@ -352,6 +378,127 @@ mod tests {
     // Spec: Non-table ai.
     #[test]
     fn a_non_table_ai_is_one_problem() {
+        assert_eq!(
+            read_text("ai = 3\n"),
+            (AiConfig::default(), vec!["ai: expected a table".to_owned()])
+        );
+    }
+
+    // Spec: Task tables parsed.
+    #[test]
+    fn task_tables_are_read_next_to_general() {
+        let text = "[ai]\nengine = \"claude\"\nmodel = \"sonnet\"\n\
+                    [ai.tasks.code]\nengine = \"ollama\"\nmodel = \"llama3:8b\"\n";
+        assert_eq!(
+            read_text(text),
+            (
+                cfg(&[
+                    (Task::General, Some("claude"), Some("sonnet")),
+                    (Task::Code, Some("ollama"), Some("llama3:8b")),
+                ]),
+                vec![]
+            )
+        );
+    }
+
+    #[test]
+    fn task_tables_work_without_an_ai_engine() {
+        assert_eq!(
+            read_text("[ai.tasks.summarize]\nmodel = \"m\"\nengine = \"codex\"\n"),
+            (cfg(&[(Task::Summarize, Some("codex"), Some("m"))]), vec![])
+        );
+    }
+
+    // Spec: Empty task string is unset.
+    #[test]
+    fn an_empty_task_string_is_unset() {
+        assert_eq!(
+            read_text("[ai.tasks.chat]\nengine = \"\"\nmodel = \"\"\n"),
+            (AiConfig::default(), vec![])
+        );
+    }
+
+    // Spec: General task table and unknown tasks ignored.
+    #[test]
+    fn the_general_task_table_and_unknown_tasks_are_ignored() {
+        let text = "[ai.tasks.general]\nengine = \"codex\"\n\
+                    [ai.tasks.poetry]\nengine = \"claude\"\nmodel = 4\n\
+                    [ai]\nengine = \"ollama\"\n";
+        assert_eq!(read_text(text), (ai(Some("ollama"), None), vec![]));
+    }
+
+    // Spec: Unknown task engine kept.
+    #[test]
+    fn an_unknown_task_engine_is_kept() {
+        assert_eq!(
+            read_text("[ai.tasks.review]\nengine = \"future-engine\"\n"),
+            (cfg(&[(Task::Review, Some("future-engine"), None)]), vec![])
+        );
+    }
+
+    // Spec: Invalid task key type falls back per key.
+    #[test]
+    fn a_non_string_task_key_falls_back_alone() {
+        assert_eq!(
+            read_text("[ai.tasks.code]\nengine = 5\nmodel = \"opus\"\n"),
+            (
+                cfg(&[(Task::Code, None, Some("opus"))]),
+                vec!["ai.tasks.code.engine: expected a string".to_owned()]
+            )
+        );
+        assert_eq!(
+            read_text("[ai.tasks.code]\nengine = \"claude\"\nmodel = false\n"),
+            (
+                cfg(&[(Task::Code, Some("claude"), None)]),
+                vec!["ai.tasks.code.model: expected a string".to_owned()]
+            )
+        );
+    }
+
+    // Spec: Non-table ai.tasks.
+    #[test]
+    fn a_non_table_tasks_key_leaves_general_and_unsets_the_tasks() {
+        assert_eq!(
+            read_text("[ai]\nengine = \"claude\"\ntasks = 3\n"),
+            (
+                ai(Some("claude"), None),
+                vec!["ai.tasks: expected a table".to_owned()]
+            )
+        );
+    }
+
+    // Spec: Non-table task.
+    #[test]
+    fn a_non_table_task_is_unset_and_the_others_survive() {
+        assert_eq!(
+            read_text("[ai.tasks]\ncode = 3\n[ai.tasks.chat]\nengine = \"codex\"\n"),
+            (
+                cfg(&[(Task::Chat, Some("codex"), None)]),
+                vec!["ai.tasks.code: expected a table".to_owned()]
+            )
+        );
+    }
+
+    // Spec: Several task problems counted (order: general, then Task::ALL).
+    #[test]
+    fn problems_come_general_first_then_tasks_in_task_order() {
+        let text = "[ai.tasks.chat]\nmodel = 6\n[ai.tasks.code]\nengine = 5\n\
+                    [ai]\nmodel = 1\n";
+        assert_eq!(
+            read_text(text),
+            (
+                AiConfig::default(),
+                vec![
+                    "ai.model: expected a string".to_owned(),
+                    "ai.tasks.code.engine: expected a string".to_owned(),
+                    "ai.tasks.chat.model: expected a string".to_owned(),
+                ]
+            )
+        );
+    }
+
+    #[test]
+    fn a_non_table_ai_reports_no_task_problems() {
         assert_eq!(
             read_text("ai = 3\n"),
             (AiConfig::default(), vec!["ai: expected a table".to_owned()])
