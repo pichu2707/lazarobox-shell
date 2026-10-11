@@ -339,7 +339,7 @@ impl MenuState {
             KeyCode::Char('s') if !repeat => MenuCommand::Save,
             KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
             KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
-            KeyCode::Enter if !repeat => MenuCommand::Save,
+            KeyCode::Enter => self.cycle(true, config),
             KeyCode::Esc if !repeat => MenuCommand::Cancel,
             _ => MenuCommand::None,
         }
@@ -597,21 +597,15 @@ mod tests {
     }
 
     #[test]
-    fn enter_saves_and_esc_cancels_on_press_only() {
+    fn s_saves_and_esc_cancels_on_press_only() {
         let mut menu = MenuState::open(&Config::default());
         let mut config = Config::default();
-        assert_eq!(
-            menu.on_key(&key(KeyCode::Enter), false, &mut config),
-            MenuCommand::Save
-        );
+        assert_eq!(menu.on_key(&ch('s'), false, &mut config), MenuCommand::Save);
         assert_eq!(
             menu.on_key(&key(KeyCode::Esc), false, &mut config),
             MenuCommand::Cancel
         );
-        assert_eq!(
-            menu.on_key(&key(KeyCode::Enter), true, &mut config),
-            MenuCommand::None
-        );
+        assert_eq!(menu.on_key(&ch('s'), true, &mut config), MenuCommand::None);
         assert_eq!(
             menu.on_key(&key(KeyCode::Esc), true, &mut config),
             MenuCommand::None
@@ -697,8 +691,9 @@ mod tests {
         let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
         assert_eq!(
             menu.on_key(&shift_enter, false, &mut config),
-            MenuCommand::Save
+            MenuCommand::Changed
         );
+        assert_eq!(config.bars.statusline, BarPosition::Bottom, "cycled back");
         let upper_j = KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT);
         assert_eq!(menu.on_key(&upper_j, false, &mut config), MenuCommand::None);
         assert_eq!(selected(&menu), Some(0), "J is not j");

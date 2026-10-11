@@ -40,3 +40,69 @@ fn only_a_plain_press_of_s_saves() {
     release.kind = KeyEventKind::Release;
     assert_eq!(m.on_key(&release, false, &mut config), MenuCommand::None);
 }
+
+fn on_task_row(label: &str) -> MenuState {
+    let mut m = menu(None, None, Some(machine()));
+    while selected_label(&m) != label {
+        press(&mut m, 'j');
+    }
+    m
+}
+
+// Spec: Enter cycles a Settings row forward, like `l`, and never saves.
+#[test]
+fn enter_cycles_a_settings_row_forward_and_never_saves() {
+    let mut m = menu(None, None, Some(machine()));
+    let mut config = Config::default();
+    let enter = key(KeyCode::Enter);
+    assert_eq!(m.on_key(&enter, false, &mut config), MenuCommand::Changed);
+    assert_eq!(config.bars.statusline, BarPosition::Top);
+    assert_eq!(
+        m.on_key(&enter, true, &mut config),
+        MenuCommand::Changed,
+        "a repeat cycles like a press"
+    );
+    assert_eq!(config.bars.statusline, BarPosition::Bottom);
+    press(&mut m, 'j');
+    assert_eq!(m.on_key(&enter, false, &mut config), MenuCommand::Changed);
+    assert_eq!(config.bars.tabbar, BarPosition::Bottom);
+}
+
+// Spec: Enter on a task row opens the picker and never saves.
+#[test]
+fn enter_on_a_task_row_opens_the_picker_and_never_saves() {
+    let mut m = on_task_row("code");
+    assert_eq!(send(&mut m, key(KeyCode::Enter)), MenuCommand::None);
+    assert_eq!(title(&m), "Engine for code");
+}
+
+// Spec: Cycling keys do nothing on task rows.
+#[test]
+fn cycling_keys_do_nothing_on_task_rows() {
+    let mut m = on_task_row("code");
+    let before = m.clone();
+    for k in [
+        ch('h'),
+        ch('l'),
+        ch(' '),
+        key(KeyCode::Left),
+        key(KeyCode::Right),
+    ] {
+        assert_eq!(send(&mut m, k), MenuCommand::None, "{k:?}");
+    }
+    assert_eq!(m, before);
+}
+
+// Spec: Unknown key. `r` only acts on a task row press.
+#[test]
+fn r_acts_only_on_a_task_row_press_and_other_keys_are_swallowed() {
+    let mut m = menu(None, None, Some(machine()));
+    assert_eq!(press(&mut m, 'r'), MenuCommand::None, "settings row");
+    for k in [ch('R'), ch('S'), ch('x'), key(KeyCode::Tab)] {
+        assert_eq!(send(&mut m, k), MenuCommand::None, "{k:?}");
+    }
+    let mut m = on_task_row("code");
+    assert_eq!(press(&mut m, 'r'), MenuCommand::Refresh);
+    let mut config = Config::default();
+    assert_eq!(m.on_key(&ch('r'), true, &mut config), MenuCommand::None);
+}
