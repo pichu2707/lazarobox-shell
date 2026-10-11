@@ -121,12 +121,23 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 
 Run after AE4 is merged into the tracker, on a build of the tracker branch.
 
-- [ ] VP.1 [manual] Real machine: Ollama listening on 11434, `claude`/`codex`/`gemini` on PATH, `opencode` defined only as a shell alias, an unrelated service on `:8080`; the AI menu shows ollama `available · N models`, the three CLIs `available` with versions, opencode `not installed`, llamacpp not `available` (the foreign service is not counted) [ai-engine-detection: Real machine].
-- [ ] VP.2 [manual] AI menu in Kitty: open the menu, change Engine to `claude`, press `r`, Enter, restart; statuses match the machine, the UI never freezes, `config.toml` gains `[ai]` with `engine = "claude"` and `model = "default"`, the menu shows `claude` after restart [config-menu: AI menu in Kitty].
-- [ ] VP.3 [manual] README names both limits (custom endpoints/ports unsupported, aliases not detected) [ai-engine-detection: Docs mention limits].
-- [ ] VP.4 [manual] Positions in Kitty regression: each of the four statusline/tabbar combinations with one and three tabs still lays out correctly with the new `[ai]` code in place [configuration: Positions in Kitty].
-- [ ] VP.5 Verify prep: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` on the tracker; confirm every row of the coverage tables has a passing test or a ticked [manual] item; hand the tracker to `sdd-verify`.
+- [x] VP.1 [manual] Real machine: Ollama listening on 11434, `claude`/`codex`/`gemini` on PATH, `opencode` defined only as a shell alias, an unrelated service on `:8080`; the AI menu shows ollama `available · N models`, the three CLIs `available` with versions, opencode `not installed`, llamacpp not `available` (the foreign service is not counted) [ai-engine-detection: Real machine].
+- [x] VP.2 [manual] AI menu in Kitty: open the menu, change Engine to `claude`, press `r`, Enter, restart; statuses match the machine, the UI never freezes, `config.toml` gains `[ai]` with `engine = "claude"` and `model = "default"`, the menu shows `claude` after restart [config-menu: AI menu in Kitty]. Passed by the user on 2026-10-11 on re-check; the first attempt hit the silent path (Enter before the first detection answer closes without saving), pinned by `enter_before_any_detection_has_nothing_to_save` (#89) and carried to the AI selector change.
+- [x] VP.3 [manual] README names both limits (custom endpoints/ports unsupported, aliases not detected) [ai-engine-detection: Docs mention limits].
+- [x] VP.4 [manual] Positions in Kitty regression: each of the four statusline/tabbar combinations with one and three tabs still lays out correctly with the new `[ai]` code in place [configuration: Positions in Kitty].
+- [x] VP.5 Verify prep: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` on the tracker; confirm every row of the coverage tables has a passing test or a ticked [manual] item; hand the tracker to `sdd-verify`.
 - [ ] VP.6 Archive prep: the Purpose lines of the main `config-menu` and `configuration` specs MUST be edited by hand at archive, as noted in the deltas (`config-persistence` needs none).
+
+## Review-driven slices (post-plan)
+
+Delivered after the AE1-AE4 plan, in response to the adversarial reviews. All merged into the tracker.
+
+- [x] #77 `fix(ai)`: review fixes for the AE1 HTTP and parse robustness (stricter `parse_response`, bounds on parsed bodies).
+- [x] #82 `fix(ai)`: harden the version probe and sanitize engine output (ANSI/control stripping, version cap, process-group kill).
+- [x] #83 `fix(ai)`: probe review fixes (kill-before-reap with `waitid(WNOWAIT)`, sanitize edge cases, Transfer-Encoding rules, `tests/version_stdin.rs`).
+- [x] #84 `fix(menu)`: dedupe models and keep the saved model reachable while cycling.
+- [x] #88 `test(runtime)`: pin the saved AI choice at startup (`startup_effects`, `app_from_config`).
+- [x] #89 `test(ai)`: pin the save of a CLI engine choice after a refresh, and the silent path before the first detection answer.
 
 ## Spec Coverage Table
 
@@ -163,6 +174,23 @@ Every scenario in the four deltas maps to at least one task.
 | Traffic audit | AE2.2, AE2.10 |
 | Real machine [manual] | VP.1 |
 | Docs mention limits [manual] | AE4.13, VP.3 |
+
+### ai-engine-detection, review-driven additions (12)
+
+| Scenario | Tests |
+|---|---|
+| ANSI sequences are stripped | `core::ai::parse::tests::version_strips_ansi_and_control_characters`, `sanitize_strips_osc_sequences_with_either_terminator`, `sanitize_covers_csi_intermediate_and_final_byte_edges` |
+| Bidi and format characters are dropped | `core::ai::parse::tests::sanitize_drops_bidi_and_format_characters`, `model_names_are_sanitized` |
+| Version is capped | `core::ai::parse::tests::version_is_capped_at_forty_characters`, `version_is_trimmed_again_after_the_cap` |
+| Model name is capped | `core::ai::parse::tests::model_names_are_capped_at_128_characters` |
+| Model list is capped | `core::ai::parse::tests::the_model_list_is_capped_at_256_entries` |
+| Names empty after sanitizing are dropped | `core::ai::parse::tests::names_that_sanitize_to_empty_are_dropped` |
+| Duplicate names are offered once | `core::menu::ai_tests::duplicate_model_names_do_not_trap_cycling` |
+| Only HTTP/1.x status 200 is accepted | `core::ai::http::tests::only_http_1_x_status_lines_are_accepted`, `malformed_headers_and_status_are_rejected`, `redirects_are_returned_not_followed` |
+| Body over the cap is rejected in every framing | `core::ai::http::tests::one_byte_over_the_cap_is_rejected_in_every_framing`, `multi_chunk_bodies_over_the_cap_are_rejected`, `chunked_bodies_at_the_cap_are_accepted`, `runtime::ai_detect::tests::http_get_rejects_a_reply_over_the_cap` |
+| Chunked framing is strict | `core::ai::http::tests::chunked_framing_is_strict`, `chunked_body_is_decoded`, `runtime::ai_detect::tests::http_get_decodes_a_chunked_reply` |
+| Ambiguous framing is rejected | `core::ai::http::tests::ambiguous_framing_is_rejected` |
+| Transfer-Encoding rules | `core::ai::http::tests::chunked_is_the_last_transfer_coding_of_the_last_header`, `unsupported_transfer_encodings_are_rejected` |
 
 ### config-menu (30)
 
