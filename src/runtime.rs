@@ -102,11 +102,7 @@ pub async fn run() -> io::Result<()> {
     let shell = env::var("SHELL").ok();
     // Resolved once: the startup read and the menu's save use the same file.
     let config_path = config_path(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"));
-    let (config, ai, notice) = load_config(config_path.as_deref());
-    let mut app = App::new(cols, rows)
-        .with_config(&config)
-        .with_ai(ai)
-        .with_notice(notice)
+    let mut app = app_from_config(cols, rows, config_path.as_deref())
         .with_hostname(local_hostname().as_deref())
         .with_dir_check(|dir| dir.is_dir())
         .with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
@@ -148,6 +144,15 @@ fn local_hostname() -> Option<String> {
     let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     let name = String::from_utf8_lossy(&buf[..len]).into_owned();
     (!name.is_empty()).then_some(name)
+}
+
+/// The app as the saved config configures it: layout, AI choice and notice.
+fn app_from_config(cols: u16, rows: u16, config_path: Option<&Path>) -> App {
+    let (config, ai, notice) = load_config(config_path);
+    App::new(cols, rows)
+        .with_config(&config)
+        .with_ai(ai)
+        .with_notice(notice)
 }
 
 /// Reads the config once at startup; a missing file is silent defaults.
@@ -519,6 +524,45 @@ mod tests {
         assert_eq!(startup_effects(&mut app), vec![Effect::DetectEngines]);
         // Single flight: a second request while one is pending is empty.
         assert_eq!(app.request_detection(), Vec::new());
+    }
+
+    const SAVED_AI: &str = "[ai]\nengine = \"ollama\"\nmodel = \"llama3:8b\"\n";
+
+    // Spec: the saved AI choice reaches the app at startup.
+    #[test]
+    fn startup_carries_the_saved_ai_choice_into_the_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, SAVED_AI).unwrap();
+        let app = app_from_config(80, 25, Some(&path));
+        assert_eq!(
+            app.ai(),
+            &AiConfig {
+                engine: Some("ollama".into()),
+                model: Some("llama3:8b".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn the_first_menu_open_shows_the_saved_engine_as_checking() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, SAVED_AI).unwrap();
+        let mut app = app_from_config(80, 25, Some(&path));
+        let mut panes = panes_saving_to(None);
+        for event in [
+            menu_key(' ', KeyModifiers::CONTROL),
+            menu_key('m', KeyModifiers::NONE),
+        ] {
+            step(&mut app, event, &mut panes);
+        }
+        let rows = app.menu().unwrap().rows(&Config::default());
+        let engine = match &rows[5] {
+            crate::core::menu::Row::Item { value, .. } => value.as_deref().unwrap().to_owned(),
+            other => panic!("not an item: {other:?}"),
+        };
+        assert_eq!(engine, "ollama (checking)");
     }
 
     // Signals are process-wide, so both are raised from one test.
