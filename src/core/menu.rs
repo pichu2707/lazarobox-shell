@@ -693,3 +693,6 @@ mod ai_tests;
 
 #[cfg(test)]
 mod picker_tests;
+
+#[cfg(test)]
+mod disabled_tests;
