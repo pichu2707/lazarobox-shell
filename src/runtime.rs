@@ -152,9 +152,34 @@ fn tagged_sink(id: PaneId, tx: mpsc::Sender<(PaneId, PtyEvent)>) -> PtySink {
 async fn event_loop(
     terminal: &mut DefaultTerminal,
     panes: &mut Panes,
+    rx: mpsc::Receiver<(PaneId, PtyEvent)>,
+    shutdown: Shutdown,
+    app: App,
+) -> io::Result<()> {
+    let mut out = stdout();
+    let result = run_loop(terminal, panes, rx, shutdown, app, &mut out).await;
+    flush_on_exit(&mut out, &mut panes.host_out, result)
+}
+
+/// Flushes the pending host bytes whatever way the loop ended (Quit, shutdown,
+/// closed channel, error), so a yank right before quitting is not lost. The
+/// loop's own error wins over a flush error.
+fn flush_on_exit<W: Write>(
+    out: &mut W,
+    pending: &mut Vec<u8>,
+    result: io::Result<()>,
+) -> io::Result<()> {
+    let flushed = flush_host(out, pending);
+    result.and(flushed)
+}
+
+async fn run_loop(
+    terminal: &mut DefaultTerminal,
+    panes: &mut Panes,
     mut rx: mpsc::Receiver<(PaneId, PtyEvent)>,
     mut shutdown: Shutdown,
     mut app: App,
+    out: &mut impl Write,
 ) -> io::Result<()> {
     let theme = LazaroboxTheme::default();
     let mut events = EventStream::new();
@@ -162,7 +187,6 @@ async fn event_loop(
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut cwd_poll = interval(CWD_POLL);
     cwd_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut out = stdout();
     let mut applied_cursor = CursorShape::default();
 
     loop {
@@ -201,7 +225,8 @@ async fn event_loop(
                 if app.take_dirty() {
                     terminal.draw(|frame| ui::render(frame, &app, &theme))?;
                 }
-                apply_cursor_style(&mut out, app.cursor_shape(), &mut applied_cursor)?;
+                apply_cursor_style(out, app.cursor_shape(), &mut applied_cursor)?;
+                flush_host(out, &mut panes.host_out)?;
             }
         }
     }
@@ -225,6 +250,9 @@ struct Panes {
     reapers: Vec<JoinHandle<()>>,
     /// Where `SaveConfig` writes; `None` when no config path could be resolved.
     config_path: Option<PathBuf>,
+    /// Bytes for the host terminal (OSC 52), written by `flush_host` after
+    /// the draw so nothing lands in the middle of a frame.
+    host_out: Vec<u8>,
 }
 
 impl Panes {
@@ -235,6 +263,7 @@ impl Panes {
             spawn,
             reapers: Vec::new(),
             config_path: None,
+            host_out: Vec::new(),
         }
     }
 
@@ -285,6 +314,7 @@ impl Panes {
                         Err(message) => AppEvent::ConfigSaveFailed(message),
                     });
                 }
+                Effect::SetClipboard(bytes) => self.host_out.extend_from_slice(&bytes),
                 Effect::Quit => outcome = Outcome::Quit,
             }
         }
@@ -400,6 +430,17 @@ fn apply_cursor_style<W: Write>(
         *last = want;
     }
     Ok(())
+}
+
+/// Writes the pending host bytes, flushes, and empties the buffer. An empty
+/// buffer writes nothing.
+fn flush_host<W: Write>(out: &mut W, pending: &mut Vec<u8>) -> io::Result<()> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let result = out.write_all(pending).and_then(|()| out.flush());
+    pending.clear();
+    result
 }
 
 /// Undoes what the runtime changed in the host terminal, minus raw mode and
@@ -726,6 +767,77 @@ mod tests {
         ]);
         assert_eq!(outcome, Outcome::Continue);
         assert!(feedback.is_empty());
+    }
+
+    /// Records writes and the number of flushes.
+    #[derive(Default)]
+    struct SpyOut {
+        bytes: Vec<u8>,
+        writes: usize,
+        flushes: usize,
+    }
+
+    impl Write for SpyOut {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(buf);
+            self.writes += 1;
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
+
+    // copy-selection: Yank emits OSC 52 (runtime part).
+    #[test]
+    fn set_clipboard_is_buffered_and_touches_nothing_else() {
+        let (mut panes, _rx, rec) = fake_panes(None);
+        spawn_two(&mut panes);
+        let (outcome, feedback) = panes.apply(vec![
+            Effect::SetClipboard(b"\x1b]52;c;aGk=\x07".to_vec()),
+            Effect::SetClipboard(b"more".to_vec()),
+        ]);
+        assert_eq!(outcome, Outcome::Continue);
+        assert!(feedback.is_empty());
+        assert_eq!(panes.host_out, b"\x1b]52;c;aGk=\x07more".to_vec());
+        let rec = rec.borrow();
+        for log in &rec.logs {
+            let log = log.lock().unwrap();
+            assert!(log.writes.is_empty() && log.resizes.is_empty());
+        }
+    }
+
+    #[test]
+    fn flush_host_writes_the_exact_bytes_flushes_and_clears() {
+        let mut out = SpyOut::default();
+        let mut pending = b"\x1b]52;c;aGk=\x07".to_vec();
+        flush_host(&mut out, &mut pending).unwrap();
+        assert_eq!(out.bytes, b"\x1b]52;c;aGk=\x07".to_vec());
+        assert_eq!(out.flushes, 1);
+        assert_eq!(pending, Vec::<u8>::new());
+    }
+
+    #[test]
+    fn flush_on_exit_writes_pending_bytes_on_every_outcome() {
+        for result in [Ok(()), Err(io::Error::other("boom"))] {
+            let failed = result.is_err();
+            let mut out = Vec::new();
+            let mut pending = b"\x1b]52;c;aGk=\x07".to_vec();
+            let got = flush_on_exit(&mut out, &mut pending, result);
+            assert_eq!(out, b"\x1b]52;c;aGk=\x07".to_vec());
+            assert!(pending.is_empty());
+            assert_eq!(got.is_err(), failed);
+        }
+    }
+
+    #[test]
+    fn flush_host_with_nothing_pending_writes_nothing() {
+        let mut out = SpyOut::default();
+        let mut pending = Vec::new();
+        flush_host(&mut out, &mut pending).unwrap();
+        assert_eq!((out.bytes, out.writes, out.flushes), (vec![], 0, 0));
     }
 
     #[test]

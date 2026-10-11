@@ -4,13 +4,16 @@ pub mod theme;
 
 use ratatui::Frame;
 
-use crate::{app::App, core::layout::Rect};
+use crate::{
+    app::{App, InputMode},
+    core::layout::Rect,
+};
 use components::{
     menu::MenuPopup,
     separators::SeparatorView,
     statusline::StatusLine,
     tab_bar::TabBar,
-    terminal_view::{TerminalView, cursor_position},
+    terminal_view::{TerminalView, cell_position, cursor_position},
 };
 use theme::LazaroboxTheme;
 
@@ -42,12 +45,24 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
         if area.is_empty() {
             continue;
         }
-        frame.render_widget(TerminalView::new(pane, theme), area);
+        let highlight = if id == focused {
+            app.copy_highlight()
+        } else {
+            None
+        };
+        frame.render_widget(TerminalView::new(pane, theme).highlight(highlight), area);
         if id == focused {
             focused_rect = rect;
             // MENU hides the real cursor: it would blink under the popup.
+            // In COPY the real cursor is the COPY cursor, even if the child hid its own.
+            let position = match app.input() {
+                InputMode::Copy(_) => app
+                    .copy_cursor()
+                    .and_then(|(row, col)| cell_position(area, row, col)),
+                _ => cursor_position(pane, area),
+            };
             if app.menu().is_none()
-                && let Some(position) = cursor_position(pane, area)
+                && let Some(position) = position
             {
                 frame.set_cursor_position(position);
             }
@@ -68,6 +83,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
         StatusLine::input(theme, app.input(), path, app.shell_name())
             .zoomed(app.zoomed())
             .copy_position(app.copy_position())
+            .marker(app.copy_selection_kind())
     };
     let path = app.status_path(line("").path_budget(status.width));
     frame.render_widget(line(&path), status);
@@ -253,6 +269,39 @@ mod tests {
         assert_eq!(cursor, Position::new(0, 0));
     }
 
+    // copy-mode-scrollback: Block follows the COPY cursor.
+    #[test]
+    fn the_real_cursor_follows_the_copy_cursor_in_copy() {
+        let mut app = app();
+        assert_eq!(
+            draw(&app).1,
+            Position::new(8, 0),
+            "child cursor in TERMINAL"
+        );
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        keys(&mut app, "[jjhhhh");
+        assert_eq!(app.copy_cursor(), Some((2, 4)));
+        assert_eq!(draw(&app).1, Position::new(4, 2));
+    }
+
+    #[test]
+    fn the_copy_cursor_is_shown_even_when_the_child_hid_its_cursor() {
+        let mut app = app();
+        app.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(b"\x1b[?25l".to_vec()),
+        ));
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        keys(&mut app, "[");
+        assert_eq!(draw(&app).1, Position::new(0, ROWS - 2));
+        press(&mut app, 'q', KeyModifiers::NONE);
+        assert_eq!(
+            draw(&app).1,
+            Position::new(0, 0),
+            "hidden again in TERMINAL"
+        );
+    }
+
     #[test]
     fn the_separator_accent_follows_the_mode_and_the_focus() {
         let theme = theme::LazaroboxTheme::default();
@@ -426,7 +475,9 @@ mod tests {
         }
         assert!(!status(&app).contains('\u{2191}'));
         press(&mut app, ' ', KeyModifiers::CONTROL);
-        keys(&mut app, "[kk");
+        // The COPY cursor starts on the bottom of 9 body rows: 8 moves reach the top,
+        // 2 more scroll.
+        keys(&mut app, "[kkkkkkkkkk");
         let (offset, total) = app.copy_position().expect("history");
         assert_eq!(offset, 2);
         let line = status(&app);
@@ -700,5 +751,96 @@ mod tests {
         assert!(app.menu().is_none());
         let (buf, _) = draw_at(&app, 20, 5);
         assert!(!row(&buf, 2).contains("MENU"));
+    }
+
+    fn reversed_cells(buf: &Buffer, y: u16) -> Vec<u16> {
+        (0..COLS)
+            .filter(|&x| buf[(x, y)].modifier == ratatui::style::Modifier::REVERSED)
+            .collect()
+    }
+
+    // statusline: Marker with indicator, end to end through the app.
+    #[test]
+    fn the_statusline_shows_the_selection_marker_after_the_position() {
+        let mut app = App::new(100, 10);
+        for i in 0..60 {
+            let out = format!("line{i}\r\n").into_bytes();
+            app.update(AppEvent::Pty(PaneId::FIRST, PtyEvent::Output(out)));
+        }
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        keys(&mut app, "[kkkkkkkkkk");
+        keys(&mut app, "v");
+        let (offset, total) = app.copy_position().expect("history");
+        let line = status(&app);
+        assert!(
+            line.contains(&format!("COPY \u{2191}{offset}/{total} VISUAL ")),
+            "{line:?}"
+        );
+        keys(&mut app, "v");
+        let line = status(&app);
+        assert!(!line.contains("VISUAL"), "{line:?}");
+        keys(&mut app, "V");
+        assert!(status(&app).contains("V-LINE"), "{:?}", status(&app));
+    }
+
+    // statusline: Line marker without history (alternate screen).
+    #[test]
+    fn the_alternate_screen_shows_the_line_marker_without_an_indicator() {
+        let mut app = App::new(100, 10);
+        app.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(b"\x1b[?1049h".to_vec()),
+        ));
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        keys(&mut app, "[V");
+        let line = status(&app);
+        assert!(line.contains("COPY V-LINE "), "{line:?}");
+        assert!(!line.contains('\u{2191}'), "{line:?}");
+    }
+
+    // copy-selection: Character highlight, through the whole render.
+    #[test]
+    fn the_focused_pane_paints_the_selection_and_the_other_does_not() {
+        let mut app = split_app();
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        keys(&mut app, "[0vll");
+        let (buf, _) = draw(&app);
+        let right = app.tiling().panes[1].1;
+        assert_eq!(
+            reversed_cells(&buf, 0),
+            vec![right.x, right.x + 1, right.x + 2]
+        );
+        assert_eq!(app.focused(), PaneId::for_test(2));
+    }
+
+    // copy-selection: the highlight follows a scrolled viewport.
+    #[test]
+    fn the_highlight_lands_on_the_selected_rows_of_a_scrolled_viewport() {
+        let mut app = App::new(COLS, ROWS);
+        for i in 0..60 {
+            let out = format!("line{i}\r\n").into_bytes();
+            app.update(AppEvent::Pty(PaneId::FIRST, PtyEvent::Output(out)));
+        }
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        keys(&mut app, "[kkkkkkkkkkkkvj");
+        let (buf, _) = draw(&app);
+        let rows: Vec<(u16, String)> = (0..ROWS)
+            .filter(|&y| !reversed_cells(&buf, y).is_empty())
+            .map(|y| (y, row(&buf, y).trim_end().to_string()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![(0, "line48".to_string()), (1, "line49".to_string())]
+        );
+    }
+
+    #[test]
+    fn leaving_copy_removes_the_highlight() {
+        let mut app = split_app();
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        keys(&mut app, "[0vll");
+        keys(&mut app, "q");
+        let (buf, _) = draw(&app);
+        assert_eq!(reversed_cells(&buf, 0), Vec::<u16>::new());
     }
 }

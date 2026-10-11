@@ -8,7 +8,10 @@ use ratatui::{
 };
 
 use crate::{
-    core::pane::{CellView, Pane, TermColor},
+    core::{
+        copy::Highlight,
+        pane::{CellView, Pane, TermColor},
+    },
     ui::theme::LazaroboxTheme,
 };
 
@@ -17,11 +20,33 @@ use crate::{
 pub struct TerminalView<'a> {
     pane: &'a Pane,
     theme: &'a LazaroboxTheme,
+    highlight: Option<Highlight>,
 }
 
 impl<'a> TerminalView<'a> {
     pub fn new(pane: &'a Pane, theme: &'a LazaroboxTheme) -> Self {
-        Self { pane, theme }
+        Self {
+            pane,
+            theme,
+            highlight: None,
+        }
+    }
+
+    /// Paints the selected cells in reverse video (XOR with the cell's own).
+    pub fn highlight(mut self, highlight: Option<Highlight>) -> Self {
+        self.highlight = highlight;
+        self
+    }
+
+    /// Whether the cell at viewport `(row, col)` is inside the selection. A
+    /// wide character counts as selected from either of its two cells.
+    fn selected(&self, row: u16, col: u16) -> bool {
+        let Some(hl) = self.highlight else {
+            return false;
+        };
+        let line = hl.top_line + usize::from(row);
+        let wide_head = self.pane.cell(row, col + 1).is_some_and(|c| c.wide_cont);
+        hl.span.contains(line, col) || (wide_head && hl.span.contains(line, col + 1))
     }
 
     fn style(&self, cell: &CellView) -> Style {
@@ -63,9 +88,13 @@ impl Widget for TerminalView<'_> {
                     continue;
                 }
                 let symbol = if cell.text.is_empty() { " " } else { cell.text };
+                let mut style = self.style(&cell);
+                if self.selected(row, col) {
+                    style.add_modifier ^= Modifier::REVERSED;
+                }
                 buf[(area.x + col, area.y + row)]
                     .set_symbol(symbol)
-                    .set_style(self.style(&cell));
+                    .set_style(style);
             }
         }
     }
@@ -75,7 +104,12 @@ impl Widget for TerminalView<'_> {
 /// hid it, the view is scrolled back, or it falls outside `area`.
 pub fn cursor_position(pane: &Pane, area: Rect) -> Option<Position> {
     let (row, col) = pane.cursor()?;
-    (col < area.width && row < area.height).then(|| Position::new(area.x + col, area.y + row))
+    cell_position(area, row, col)
+}
+
+/// Buffer coordinates of the pane cell `(row, col)`, or `None` outside `area`.
+pub fn cell_position(area: Rect, row: u16, col: u16) -> Option<Position> {
+    (col < area.width && row < area.height).then_some(Position::new(area.x + col, area.y + row))
 }
 
 #[cfg(test)]
@@ -206,5 +240,89 @@ mod tests {
         let mut pane = pane_with(2, 10, b"one\r\ntwo\r\nthree");
         pane.set_scrollback(1);
         assert_eq!(cursor_position(&pane, Rect::new(0, 0, 10, 2)), None);
+    }
+
+    fn render_hl(pane: &Pane, width: u16, height: u16, hl: Option<Highlight>) -> Buffer {
+        let theme = LazaroboxTheme::default();
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        TerminalView::new(pane, &theme)
+            .highlight(hl)
+            .render(area, &mut buf);
+        buf
+    }
+
+    fn mods(buf: &Buffer, row: u16, cols: std::ops::Range<u16>) -> Vec<Modifier> {
+        cols.map(|x| buf[(x, row)].modifier).collect()
+    }
+
+    fn span_on(line: usize, a: u16, b: u16) -> Highlight {
+        Highlight {
+            span: crate::core::copy::LineSpan::new((line, a), (line, b)),
+            top_line: 0,
+        }
+    }
+
+    // copy-selection: Character highlight.
+    #[test]
+    fn a_character_selection_is_reversed_on_exactly_its_cells() {
+        let pane = pane_with(2, 10, b"hello");
+        let buf = render_hl(&pane, 10, 2, Some(span_on(0, 0, 2)));
+        let r = Modifier::REVERSED;
+        let n = Modifier::empty();
+        assert_eq!(mods(&buf, 0, 0..6), vec![r, r, r, n, n, n]);
+        assert_eq!(mods(&buf, 1, 0..10), vec![n; 10]);
+    }
+
+    // copy-selection: Line highlight.
+    #[test]
+    fn a_line_selection_reverses_the_whole_row() {
+        let pane = pane_with(2, 10, b"hello");
+        let buf = render_hl(&pane, 10, 2, Some(span_on(0, 0, 9)));
+        assert_eq!(mods(&buf, 0, 0..10), vec![Modifier::REVERSED; 10]);
+        assert_eq!(mods(&buf, 1, 0..10), vec![Modifier::empty(); 10]);
+    }
+
+    // copy-selection: No selection.
+    #[test]
+    fn without_a_highlight_nothing_is_reversed() {
+        let pane = pane_with(2, 10, b"hello");
+        let buf = render_hl(&pane, 10, 2, None);
+        assert_eq!(mods(&buf, 0, 0..10), vec![Modifier::empty(); 10]);
+    }
+
+    // An inverse cell under the selection is un-reversed (XOR).
+    #[test]
+    fn the_highlight_xors_with_inverse_cells() {
+        let pane = pane_with(1, 10, b"\x1b[7mabc\x1b[0mde");
+        let buf = render_hl(&pane, 10, 1, Some(span_on(0, 1, 3)));
+        let r = Modifier::REVERSED;
+        let n = Modifier::empty();
+        assert_eq!(mods(&buf, 0, 0..5), vec![r, n, n, r, n]);
+    }
+
+    // The highlight follows the viewport: lines are stable, rows move.
+    #[test]
+    fn the_highlight_follows_the_top_line_of_the_viewport() {
+        let pane = pane_with(3, 10, b"a\r\nb\r\nc");
+        let hl = Highlight {
+            span: crate::core::copy::LineSpan::new((5, 0), (5, 9)),
+            top_line: 4,
+        };
+        let buf = render_hl(&pane, 10, 3, Some(hl));
+        assert_eq!(mods(&buf, 0, 0..3), vec![Modifier::empty(); 3]);
+        assert_eq!(mods(&buf, 1, 0..10), vec![Modifier::REVERSED; 10]);
+        assert_eq!(mods(&buf, 2, 0..3), vec![Modifier::empty(); 3]);
+    }
+
+    // A span starting on the continuation cell still paints the wide char.
+    #[test]
+    fn a_wide_character_is_highlighted_from_either_of_its_cells() {
+        let pane = pane_with(1, 6, "a漢b".as_bytes());
+        let buf = render_hl(&pane, 6, 1, Some(span_on(0, 2, 2)));
+        assert_eq!(buf[(1, 0)].symbol(), "漢");
+        assert_eq!(buf[(1, 0)].modifier, Modifier::REVERSED);
+        assert_eq!(buf[(0, 0)].modifier, Modifier::empty());
+        assert_eq!(buf[(3, 0)].modifier, Modifier::empty());
     }
 }

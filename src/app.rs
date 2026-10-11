@@ -1,13 +1,17 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::core::{
     config::{BarPosition, BarPositions, Config, ConfigEdit},
-    copy::{CopyCommand, CopyState},
+    copy::{
+        CopyCommand, CopyMotion, CopyState, Geometry, Highlight, Point, SelectionKind, TooLarge,
+        join, osc52,
+    },
     keys::{encode_key, encode_paste},
     layout::{
         Axis, Direction, Node, PaneId, PaneIds, Rect, Removal, SplitError, Tiling, neighbour,
@@ -21,6 +25,12 @@ use crate::core::{
 
 /// Rows of history kept by the emulator.
 const SCROLLBACK_LINES: usize = 10_000;
+
+/// How long after leaving COPY a Press of the same key is taken as the key
+/// still being held (OS auto-repeat arrives as plain Press events when the
+/// terminal reports no event types). Trade-off: a deliberate retype of the
+/// exit key within this window is dropped.
+const HELD_EXIT_WINDOW: Duration = Duration::from_millis(500);
 
 /// Byte sent to the child when the prefix is pressed twice (NUL, Ctrl+Space).
 const PREFIX_LITERAL: u8 = 0x00;
@@ -115,6 +125,8 @@ pub enum Effect {
     /// Write the menu-owned keys to `config.toml`. The runtime answers with
     /// exactly one `ConfigSaved` or `ConfigSaveFailed`.
     SaveConfig(Vec<ConfigEdit>),
+    /// Hand a finished OSC 52 sequence to the host terminal.
+    SetClipboard(Vec<u8>),
     Quit,
 }
 
@@ -256,6 +268,20 @@ pub struct App {
     /// passes the real check.
     dir_exists: fn(&Path) -> bool,
     shell: Option<String>,
+    /// The key whose Press left COPY: its Repeat events are dropped in
+    /// TERMINAL until its Release or any other Press, and so are its Presses
+    /// arriving within `HELD_EXIT_WINDOW` of the previous such event.
+    held_exit: Option<HeldExit>,
+    /// Monotonic clock, injected so `update` stays deterministic.
+    clock: fn() -> Instant,
+}
+
+/// The key that left COPY and when it was last seen.
+#[derive(Debug, Clone, Copy)]
+struct HeldExit {
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    last: Instant,
 }
 
 impl App {
@@ -286,6 +312,8 @@ impl App {
             hostname: None,
             dir_exists: |_| true,
             shell: None,
+            held_exit: None,
+            clock: Instant::now,
         }
     }
 
@@ -303,6 +331,12 @@ impl App {
     /// the cwd it starts in.
     pub fn with_dir_check(mut self, dir_exists: fn(&Path) -> bool) -> Self {
         self.dir_exists = dir_exists;
+        self
+    }
+
+    /// Injects the monotonic clock used to debounce a held COPY exit key.
+    pub fn with_clock(mut self, clock: fn() -> Instant) -> Self {
+        self.clock = clock;
         self
     }
 
@@ -402,6 +436,61 @@ impl App {
         };
         let total = self.panes[&self.tab().focus].emu.scrollback_len();
         (total > 0).then_some((state.offset, total))
+    }
+
+    /// COPY cursor cell `(row, col)` inside the focused pane's viewport;
+    /// `None` outside COPY and when the cursor is scrolled off screen.
+    pub fn copy_cursor(&self) -> Option<(u16, u16)> {
+        let InputMode::Copy(state) = &self.input else {
+            return None;
+        };
+        let geo = self.copy_geometry();
+        let top = (geo.first_line + geo.history).checked_sub(state.offset)?;
+        let row = state.cursor.line.checked_sub(top)?;
+        (row < usize::from(geo.rows)).then_some((row as u16, state.cursor.col))
+    }
+
+    /// The cells to paint as selected in the focused pane; `None` outside COPY
+    /// and without a selection.
+    pub fn copy_highlight(&self) -> Option<Highlight> {
+        let InputMode::Copy(state) = &self.input else {
+            return None;
+        };
+        let geo = self.copy_geometry();
+        Some(Highlight {
+            span: state.span(geo.cols)?,
+            top_line: (geo.first_line + geo.history).saturating_sub(state.offset),
+        })
+    }
+
+    /// The kind of the active selection, for the statusline marker.
+    pub fn copy_selection_kind(&self) -> Option<SelectionKind> {
+        let InputMode::Copy(state) = &self.input else {
+            return None;
+        };
+        state.selection.map(|s| s.kind)
+    }
+
+    /// What the focused pane offers to copy mode.
+    fn copy_geometry(&self) -> Geometry {
+        let pane = self.focused_pane();
+        let size = self.focused_size();
+        Geometry {
+            first_line: pane.first_line(),
+            history: pane.scrollback_len(),
+            rows: size.rows,
+            cols: size.cols,
+        }
+    }
+
+    /// Fresh COPY state with the cursor on the focused pane's live cursor.
+    fn enter_copy(&self) -> CopyState {
+        let pane = self.focused_pane();
+        CopyState::enter(
+            self.copy_geometry(),
+            pane.live_cursor(),
+            pane.line_generation(),
+        )
     }
 
     /// How many tabs are open.
@@ -561,8 +650,33 @@ impl App {
         let repeat = match key.kind {
             KeyEventKind::Press => false,
             KeyEventKind::Repeat => true,
-            KeyEventKind::Release => return Vec::new(),
+            KeyEventKind::Release => {
+                if self.held_exit.is_some_and(|h| h.code == key.code) {
+                    self.held_exit = None;
+                }
+                return Vec::new();
+            }
         };
+        if repeat {
+            // A held key that left COPY must not reach the shell as typed text.
+            if self.input == InputMode::Terminal
+                && self.held_exit.is_some_and(|h| h.code == key.code)
+            {
+                return Vec::new();
+            }
+        } else if let Some(held) = self.held_exit.take() {
+            // Terminals that report no event types deliver auto-repeat as
+            // Presses: the same key within the window is still the hold.
+            let now = (self.clock)();
+            let same = held.code == key.code && held.modifiers == key.modifiers;
+            // `held_exit` is only armed on entering TERMINAL and every Press
+            // takes it, so the mode is always TERMINAL here.
+            debug_assert_eq!(self.input, InputMode::Terminal);
+            if same && now.saturating_duration_since(held.last) <= HELD_EXIT_WINDOW {
+                self.held_exit = Some(HeldExit { last: now, ..held });
+                return Vec::new();
+            }
+        }
         self.dirty |= self.notice.take().is_some();
         if repeat
             && matches!(
@@ -577,7 +691,7 @@ impl App {
             InputMode::Terminal => self.on_terminal_key(key),
             InputMode::Prefix => self.on_pending_key(PREFIX_TREE, &key),
             InputMode::Group(group) => self.on_pending_key(group.bindings, &key),
-            InputMode::Copy(state) => self.on_copy_key(state, &key),
+            InputMode::Copy(state) => self.on_copy_key(state, &key, repeat),
             InputMode::Resize => self.on_resize_key(&key),
             InputMode::Confirm(confirm) => self.on_confirm_key(confirm, &key),
             InputMode::Menu => self.on_menu_key(&key, repeat),
@@ -658,7 +772,7 @@ impl App {
         self.input = match step {
             Step::Enter(group) => InputMode::Group(group),
             Step::Run(PrefixAction::RequestQuit) => InputMode::Confirm(Confirm::Quit),
-            Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(CopyState::default()),
+            Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(self.enter_copy()),
             Step::Run(PrefixAction::EnterResize) => InputMode::Resize,
             Step::Run(PrefixAction::ClosePane) if self.tabs.len() > 1 || self.tab_panes() > 1 => {
                 InputMode::Confirm(Confirm::ClosePane)
@@ -914,6 +1028,7 @@ impl App {
                 }
             }
         }
+        self.sync_copy();
         effects
     }
 
@@ -966,25 +1081,83 @@ impl App {
         effects
     }
 
-    fn on_copy_key(&mut self, mut state: CopyState, key: &KeyEvent) -> Vec<Effect> {
-        match state.on_key(key) {
+    fn on_copy_key(&mut self, mut state: CopyState, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
+        match state.on_key(key, repeat) {
             CopyCommand::Move(motion) => {
-                let rows = self.focused_size().rows;
+                let geo = self.copy_geometry();
                 let pane = &mut self.focused_state_mut().emu;
-                state.apply(motion, pane.scrollback_len(), rows);
+                let line_end = match motion {
+                    CopyMotion::LineEnd => pane.line_end(state.cursor.line),
+                    _ => 0,
+                };
+                state.apply_motion(motion, geo, line_end);
                 pane.set_scrollback(state.offset);
                 self.input = InputMode::Copy(state);
             }
             CopyCommand::Exit => {
                 self.focused_state_mut().emu.set_scrollback(0);
                 self.input = InputMode::Terminal;
+                self.hold_exit(key);
+            }
+            CopyCommand::Yank => {
+                let effects = self.yank(state);
+                if self.input == InputMode::Terminal {
+                    self.hold_exit(key);
+                }
+                return effects;
             }
             CopyCommand::Ignore => self.input = InputMode::Copy(state),
         }
         Vec::new()
     }
 
+    fn hold_exit(&mut self, key: &KeyEvent) {
+        self.held_exit = Some(HeldExit {
+            code: key.code,
+            modifiers: key.modifiers,
+            last: (self.clock)(),
+        });
+    }
+
+    /// `y`: reads the selection, hands it to the host as OSC 52 and leaves
+    /// COPY. A selection over the cap, or one with no text, sends nothing and keeps
+    /// COPY open.
+    fn yank(&mut self, state: CopyState) -> Vec<Effect> {
+        let cols = self.copy_geometry().cols;
+        let Some(span) = state.span(cols) else {
+            self.input = InputMode::Copy(state);
+            return Vec::new();
+        };
+        let pane = &mut self.focused_state_mut().emu;
+        let text = join(&pane.read_lines(span));
+        if text.is_empty() {
+            // An empty OSC 52 would clobber the clipboard.
+            self.notice = Some("Nothing to copy".to_string());
+            self.input = InputMode::Copy(state);
+            return Vec::new();
+        }
+        match osc52(&text) {
+            Ok(sequence) => {
+                pane.set_scrollback(0);
+                let count = text.chars().count();
+                self.notice = Some(match count {
+                    1 => "Copied 1 character".to_string(),
+                    n => format!("Copied {n} characters"),
+                });
+                self.input = InputMode::Terminal;
+                vec![Effect::SetClipboard(sequence)]
+            }
+            Err(TooLarge) => {
+                self.notice = Some("Selection too large to copy".to_string());
+                self.input = InputMode::Copy(state);
+                Vec::new()
+            }
+        }
+    }
+
     fn on_paste(&mut self, text: &str) -> Vec<Effect> {
+        // A paste is not part of a held key: the debounce is over.
+        self.held_exit = None;
         match self.input {
             InputMode::Terminal => vec![Effect::WritePty(
                 self.tab().focus,
@@ -998,20 +1171,46 @@ impl App {
         self.term = (cols, rows);
         self.refresh_screen();
         let effects = self.relayout();
-        self.sync_copy_offset();
         self.dirty = true;
         effects
     }
 
-    /// The emulator moves its own offset when output arrives while scrolled
-    /// (it pins the viewport) and clamps it at the history cap. In COPY, the
-    /// pane is the source of truth, so the state follows it.
-    fn sync_copy_offset(&mut self) {
-        if let InputMode::Copy(state) = &mut self.input {
-            state.offset = self.panes[&self.tabs[self.active].focus]
-                .emu
-                .scrollback_offset();
+    /// Revalidates COPY against its pane after output or a relayout. The pane
+    /// is the source of truth for the offset (the emulator pins the viewport
+    /// and clamps it at the history cap). A new line generation (screen flip,
+    /// resize) makes line numbers incomparable, so COPY starts over as when
+    /// entered: no selection, cursor on the live cursor, viewport at the
+    /// bottom. The cursor and the anchor are clamped into the retained lines;
+    /// an evicted anchor becomes `(first_line, 0)`, shrinking the selection.
+    /// The anchor needs no upper clamp: `first_line + history` never shrinks
+    /// and the row count only changes with a generation bump.
+    fn sync_copy(&mut self) {
+        let InputMode::Copy(mut state) = self.input else {
+            return;
+        };
+        let geo = self.copy_geometry();
+        if state.generation != self.focused_pane().line_generation() {
+            // Line numbers are incomparable now: start over like entering COPY.
+            state = self.enter_copy();
+            self.focused_state_mut().emu.set_scrollback(0);
         }
+        let pane = self.focused_pane();
+        state.offset = pane.scrollback_offset();
+        let last_line = geo.first_line + geo.history + usize::from(geo.rows.max(1)) - 1;
+        let last_col = geo.cols.saturating_sub(1);
+        state.cursor.line = state.cursor.line.clamp(geo.first_line, last_line);
+        state.cursor.col = state.cursor.col.min(last_col);
+        if let Some(selection) = &mut state.selection {
+            let anchor = &mut selection.anchor;
+            if anchor.line < geo.first_line {
+                *anchor = Point {
+                    line: geo.first_line,
+                    col: 0,
+                };
+            }
+            anchor.col = anchor.col.min(last_col);
+        }
+        self.input = InputMode::Copy(state);
     }
 
     fn on_cwd(&mut self, id: PaneId, cwd: PathBuf) -> Vec<Effect> {
@@ -1052,7 +1251,7 @@ impl App {
                     self.mark_cwd_dirty(id);
                 }
                 if id == self.tab().focus {
-                    self.sync_copy_offset();
+                    self.sync_copy();
                 }
                 if reply.is_empty() {
                     Vec::new()
@@ -1136,7 +1335,7 @@ mod app_tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     use crate::core::{
-        copy::CopyState,
+        copy::{CopyState, Point, SelectionKind},
         menu::Row,
         pane::{CursorKind, CursorShape, PaneSize},
         pty::PtyEvent,
@@ -1177,6 +1376,18 @@ mod app_tests {
                 PtyEvent::Output(format!("line{i}\r\n").into_bytes()),
             ));
         }
+    }
+
+    /// Presses `c` `n` times. From the bottom row of a 24-row pane, scrolling
+    /// the viewport by `n` rows takes `23 + n` presses of `k`.
+    fn press_n(a: &mut App, c: char, n: usize) {
+        for _ in 0..n {
+            a.update(key(c));
+        }
+    }
+
+    fn ctrl_d() -> AppEvent {
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
     }
 
     fn is_copy(a: &App) -> bool {
@@ -1644,8 +1855,14 @@ mod app_tests {
 
     #[test]
     fn repeat_of_k_in_copy_moves_the_view() {
-        let mut a = in_copy();
+        let mut a = app();
         with_history(&mut a, 40);
+        a.update(ctrl_space());
+        a.update(key('['));
+        for _ in 0..23 {
+            a.update(repeat('k'));
+        }
+        assert_eq!(a.focused_pane().scrollback_offset(), 0);
         a.update(repeat('k'));
         assert_eq!(a.focused_pane().scrollback_offset(), 1);
         a.update(repeat('k'));
@@ -1703,11 +1920,13 @@ mod app_tests {
 
     #[test]
     fn copy_motions_scroll_the_pane() {
-        let mut a = in_copy();
+        let mut a = app();
         with_history(&mut a, 60);
+        a.update(ctrl_space());
+        a.update(key('['));
         let history = a.focused_pane().scrollback_len();
         assert!(history > 30);
-        a.update(key('k'));
+        press_n(&mut a, 'k', 24);
         assert_eq!(a.focused_pane().scrollback_offset(), 1);
         a.update(AppEvent::Key(KeyEvent::new(
             KeyCode::Char('u'),
@@ -1760,11 +1979,727 @@ mod app_tests {
         assert_eq!(a.focused_pane().scrollback_offset(), 0);
     }
 
-    fn copy_offset(a: &App) -> usize {
+    fn copy_state(a: &App) -> CopyState {
         match a.input() {
-            InputMode::Copy(state) => state.offset,
+            InputMode::Copy(state) => state,
             other => panic!("not in COPY: {other:?}"),
         }
+    }
+
+    fn copy_offset(a: &App) -> usize {
+        copy_state(a).offset
+    }
+
+    fn feed_focused(a: &mut App, bytes: &[u8]) {
+        a.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(bytes.to_vec()),
+        ));
+    }
+
+    // copy-mode-scrollback: Cursor starts at the live cursor.
+    #[test]
+    fn entering_copy_puts_the_cursor_on_the_childs_cursor() {
+        let mut a = app();
+        feed_focused(&mut a, b"\r\n\r\n\r\n\r\n\r\nabc");
+        a.update(ctrl_space());
+        a.update(key('['));
+        let state = copy_state(&a);
+        assert_eq!(state.cursor, Point { line: 5, col: 3 });
+        assert_eq!(state.offset, 0);
+        assert_eq!(state.selection, None);
+        assert_eq!(a.copy_cursor(), Some((5, 3)));
+    }
+
+    #[test]
+    fn entering_copy_with_a_hidden_cursor_uses_the_bottom_row() {
+        let mut a = app();
+        feed_focused(&mut a, b"abc\x1b[?25l");
+        a.update(ctrl_space());
+        a.update(key('['));
+        assert_eq!(copy_state(&a).cursor, Point { line: 23, col: 0 });
+        assert_eq!(a.copy_cursor(), Some((23, 0)));
+    }
+
+    fn copy_after(a: &mut App, bytes: &[u8]) {
+        feed_focused(a, bytes);
+        a.update(ctrl_space());
+        a.update(key('['));
+    }
+
+    fn esc_kinded(kind: KeyEventKind) -> AppEvent {
+        kinded(KeyCode::Esc, KeyModifiers::NONE, kind)
+    }
+
+    // copy-mode-scrollback: Horizontal motion, End of a blank row (app part).
+    #[test]
+    fn horizontal_keys_move_the_copy_cursor_and_dollar_uses_the_line_end() {
+        let mut a = app();
+        copy_after(&mut a, b"echo hi");
+        assert_eq!(copy_state(&a).cursor, Point { line: 0, col: 7 });
+        let mut cols = Vec::new();
+        for c in ['0', '$', 'l', 'h'] {
+            a.update(key(c));
+            cols.push(copy_state(&a).cursor.col);
+        }
+        assert_eq!(cols, [0, 6, 7, 6]);
+    }
+
+    #[test]
+    fn dollar_on_a_blank_row_goes_to_column_zero() {
+        let mut a = app();
+        copy_after(&mut a, b"echo hi\r\n");
+        a.update(key('l'));
+        assert_eq!(copy_state(&a).cursor, Point { line: 1, col: 1 });
+        a.update(key('$'));
+        assert_eq!(copy_state(&a).cursor, Point { line: 1, col: 0 });
+    }
+
+    // copy-mode-scrollback: Line motion, Cursor moves inside the viewport.
+    #[test]
+    fn vertical_keys_move_the_cursor_and_scroll_only_at_the_edge() {
+        let mut a = app();
+        let mut lines = Vec::new();
+        for i in 0..40 {
+            lines.extend_from_slice(format!("line{i}\r\n").as_bytes());
+        }
+        copy_after(&mut a, &lines);
+        assert_eq!(a.focused_pane().scrollback_len(), 17);
+        assert_eq!(copy_state(&a).cursor, Point { line: 40, col: 0 });
+        a.update(key('k'));
+        assert_eq!(copy_state(&a).cursor.line, 39);
+        assert_eq!(a.focused_pane().scrollback_offset(), 0);
+        for _ in 0..22 {
+            a.update(key('k'));
+        }
+        assert_eq!(copy_state(&a).cursor.line, 17);
+        assert_eq!(a.focused_pane().scrollback_offset(), 0);
+        a.update(key('k'));
+        assert_eq!(copy_state(&a).cursor.line, 16);
+        assert_eq!(a.focused_pane().scrollback_offset(), 1);
+        assert_eq!(copy_offset(&a), 1);
+        a.update(key('j'));
+        assert_eq!(copy_state(&a).cursor.line, 17);
+        assert_eq!(a.focused_pane().scrollback_offset(), 1);
+    }
+
+    // copy-selection: Esc clears then exits, `q` drops the selection.
+    #[test]
+    fn esc_clears_the_selection_then_leaves_copy_and_q_drops_it() {
+        let mut a = app();
+        copy_after(&mut a, b"");
+        a.update(key('v'));
+        assert_eq!(
+            copy_state(&a).selection.map(|s| s.anchor),
+            Some(Point::default())
+        );
+        assert_eq!(a.update(esc()), vec![]);
+        assert_eq!(copy_state(&a).selection, None);
+        assert_eq!(a.update(esc()), vec![]);
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.focused_pane().scrollback_offset(), 0);
+        a.update(ctrl_space());
+        a.update(key('['));
+        a.update(key('V'));
+        assert_eq!(a.update(key('q')), vec![]);
+        assert_eq!(a.input(), InputMode::Terminal);
+        a.update(ctrl_space());
+        a.update(key('['));
+        assert_eq!(copy_state(&a).selection, None);
+    }
+
+    // modal-input: Repeat of selection keys / motions in COPY.
+    #[test]
+    fn repeat_of_one_shot_keys_changes_nothing_in_copy() {
+        let mut a = app();
+        copy_after(&mut a, b"abc");
+        a.update(key('v'));
+        let before = a.input();
+        let held = [
+            repeat('v'),
+            repeat('V'),
+            repeat('y'),
+            repeat('q'),
+            repeat('i'),
+            esc_kinded(KeyEventKind::Repeat),
+        ];
+        for ev in held {
+            assert_eq!(a.update(ev.clone()), vec![], "{ev:?}");
+            assert_eq!(a.input(), before, "{ev:?}");
+        }
+    }
+
+    #[test]
+    fn repeat_of_j_moves_the_copy_cursor_one_row() {
+        let mut a = app();
+        copy_after(&mut a, b"");
+        assert_eq!(a.update(repeat('j')), vec![]);
+        assert_eq!(copy_state(&a).cursor, Point { line: 1, col: 0 });
+    }
+
+    fn selection_of(a: &App) -> Option<(Point, SelectionKind)> {
+        copy_state(a).selection.map(|s| (s.anchor, s.kind))
+    }
+
+    fn osc(text: &str) -> Vec<u8> {
+        crate::core::copy::osc52(text).expect("fits")
+    }
+
+    /// 1000 rows: 999 of 74 `x` and a last one of `last` `x` (no newline).
+    fn big_selection(a: &mut App, last: usize) {
+        let mut data = String::new();
+        for _ in 0..999 {
+            data.push_str(&"x".repeat(74));
+            data.push_str("\r\n");
+        }
+        data.push_str(&"x".repeat(last));
+        feed_focused(a, data.as_bytes());
+        a.update(ctrl_space());
+        a.update(key('['));
+        a.update(key('V'));
+        a.update(key('g'));
+        a.update(key('g'));
+    }
+
+    // copy-selection: Yank emits OSC 52, Character selection within a row.
+    #[test]
+    fn yank_emits_the_clipboard_sequence_and_leaves_copy() {
+        let mut a = app();
+        copy_after(&mut a, b"hello");
+        a.update(key('0'));
+        a.update(key('v'));
+        press_n(&mut a, 'l', 4);
+        assert_eq!(
+            a.update(key('y')),
+            vec![Effect::SetClipboard(b"\x1b]52;c;aGVsbG8=\x07".to_vec())]
+        );
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.focused_pane().scrollback_offset(), 0);
+        assert_eq!(a.copy_cursor(), None);
+    }
+
+    // copy-selection: Empty extraction.
+    #[test]
+    fn yanking_only_blank_rows_sends_nothing_and_stays_in_copy() {
+        let mut a = App::new(20, 5);
+        copy_after(&mut a, b"abc");
+        press_n(&mut a, 'j', 2);
+        a.update(key('V'));
+        assert_eq!(a.update(key('y')), vec![]);
+        assert!(is_copy(&a));
+        assert!(selection_of(&a).is_some());
+        assert_eq!(a.notice(), Some("Nothing to copy"));
+    }
+
+    // copy-selection: Line yank drops trailing blank rows.
+    #[test]
+    fn a_line_yank_never_ends_in_a_newline() {
+        let mut a = app();
+        copy_after(&mut a, b"foo\r\n\r\nbar\r\n\r\n");
+        a.update(key('V'));
+        press_n(&mut a, 'k', 4);
+        assert_eq!(
+            a.update(key('y')),
+            vec![Effect::SetClipboard(osc52("foo\n\nbar").expect("fits"))]
+        );
+        assert_eq!(a.notice(), Some("Copied 8 characters"));
+    }
+
+    // copy-selection: Multi-row line selection.
+    #[test]
+    fn a_line_selection_yanks_the_rows_joined_by_newline() {
+        let mut a = app();
+        copy_after(&mut a, b"foo\r\nbar");
+        a.update(key('k'));
+        a.update(key('V'));
+        a.update(key('j'));
+        assert_eq!(
+            a.update(key('y')),
+            vec![Effect::SetClipboard(osc("foo\nbar"))]
+        );
+        assert_eq!(a.notice(), Some("Copied 7 characters"));
+    }
+
+    // copy-selection: Wide character once.
+    #[test]
+    fn a_wide_character_is_yanked_once() {
+        let mut a = app();
+        copy_after(&mut a, "a漢b".as_bytes());
+        a.update(key('0'));
+        a.update(key('v'));
+        a.update(key('$'));
+        assert_eq!(a.update(key('y')), vec![Effect::SetClipboard(osc("a漢b"))]);
+        assert_eq!(a.notice(), Some("Copied 3 characters"));
+    }
+
+    // copy-selection: Selection spans scrollback (app part: offset restored).
+    #[test]
+    fn yanking_from_scrollback_restores_the_bottom_viewport() {
+        let mut a = app();
+        with_history(&mut a, 40);
+        a.update(ctrl_space());
+        a.update(key('['));
+        a.update(key('g'));
+        a.update(key('g'));
+        a.update(key('v'));
+        press_n(&mut a, 'l', 4);
+        assert_eq!(a.update(key('y')), vec![Effect::SetClipboard(osc("line0"))]);
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.focused_pane().scrollback_offset(), 0);
+    }
+
+    // copy-selection: Yank without selection.
+    #[test]
+    fn yank_without_a_selection_changes_nothing() {
+        let mut a = app();
+        copy_after(&mut a, b"abc");
+        assert_eq!(a.update(key('y')), vec![]);
+        assert!(is_copy(&a));
+        assert_eq!(a.notice(), None);
+    }
+
+    // copy-selection: At the cap.
+    #[test]
+    fn a_selection_of_exactly_the_cap_is_sent() {
+        let mut a = app();
+        big_selection(&mut a, 75);
+        let text = format!(
+            "{}{}",
+            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+                .repeat(999),
+            "x".repeat(75)
+        );
+        assert_eq!(text.len(), 75_000);
+        assert_eq!(a.update(key('y')), vec![Effect::SetClipboard(osc(&text))]);
+        assert_eq!(a.input(), InputMode::Terminal);
+    }
+
+    // copy-selection: Over the cap.
+    #[test]
+    fn an_oversized_selection_sends_nothing_and_stays_in_copy() {
+        let mut a = app();
+        big_selection(&mut a, 76);
+        let before = selection_of(&a);
+        assert!(before.is_some());
+        assert_eq!(a.update(key('y')), vec![]);
+        assert!(is_copy(&a));
+        assert_eq!(selection_of(&a), before);
+        assert_eq!(a.notice(), Some("Selection too large to copy"));
+    }
+
+    // statusline: Copied notice, Singular notice, Notice cleared by next key.
+    #[test]
+    fn the_copied_notice_counts_characters_and_clears_on_the_next_key() {
+        let mut a = app();
+        copy_after(&mut a, b"x");
+        a.update(key('0'));
+        a.update(key('v'));
+        a.update(key('y'));
+        assert_eq!(a.notice(), Some("Copied 1 character"));
+        assert_eq!(a.status_path(40), "Copied 1 character");
+        assert_eq!(a.input(), InputMode::Terminal);
+        a.update(key('z'));
+        assert_eq!(a.notice(), None);
+    }
+
+    // statusline: a newer notice replaces the copy notice.
+    #[test]
+    fn a_newer_notice_replaces_the_copied_notice() {
+        let mut a = app();
+        copy_after(&mut a, b"x");
+        a.update(key('0'));
+        a.update(key('v'));
+        a.update(key('y'));
+        a.update(AppEvent::SpawnFailed(PaneId::FIRST, "boom".into()));
+        assert_eq!(a.notice(), Some("spawn failed: boom"));
+    }
+
+    // copy-selection: Output keeps the selection on its content
+    // (characterization: stable line numbers need no adjustment).
+    #[test]
+    fn output_keeps_the_selection_on_its_content() {
+        let mut a = app();
+        with_history(&mut a, 40);
+        a.update(ctrl_space());
+        a.update(key('['));
+        a.update(key('v'));
+        let selected = selection_of(&a);
+        assert_eq!(
+            selected,
+            Some((Point { line: 40, col: 0 }, SelectionKind::Char))
+        );
+        with_history(&mut a, 5);
+        assert_eq!(selection_of(&a), selected);
+        assert_eq!(copy_state(&a).cursor, Point { line: 40, col: 0 });
+    }
+
+    // copy-selection: Eviction of the anchor.
+    #[test]
+    fn eviction_clamps_the_anchor_and_keeps_the_selection() {
+        let mut a = app();
+        with_history(&mut a, SCROLLBACK_LINES + 100);
+        a.update(ctrl_space());
+        a.update(key('['));
+        a.update(key('g'));
+        a.update(key('g'));
+        press_n(&mut a, 'l', 3);
+        a.update(key('v'));
+        let before = a.focused_pane().first_line();
+        assert_eq!(before, 77);
+        assert_eq!(
+            selection_of(&a).map(|s| s.0),
+            Some(Point { line: 77, col: 3 })
+        );
+        with_history(&mut a, 50);
+        let first = a.focused_pane().first_line();
+        assert_eq!(first, 127);
+        assert_eq!(
+            selection_of(&a),
+            Some((Point { line: 127, col: 0 }, SelectionKind::Char))
+        );
+        assert_eq!(copy_state(&a).cursor, Point { line: 127, col: 3 });
+        assert_eq!(a.copy_cursor(), Some((0, 3)));
+        assert!(is_copy(&a));
+    }
+
+    fn release(c: char) -> AppEvent {
+        kinded(KeyCode::Char(c), KeyModifiers::NONE, KeyEventKind::Release)
+    }
+
+    // modal-input: Held exit key does not leak into TERMINAL.
+    #[test]
+    fn a_held_q_or_i_does_not_leak_into_terminal_after_leaving_copy() {
+        for c in ['q', 'i'] {
+            let mut a = in_copy();
+            a.update(key(c));
+            assert_eq!(a.input(), InputMode::Terminal, "{c}");
+            assert_eq!(a.update(repeat(c)), vec![], "{c}");
+            assert_eq!(a.update(repeat(c)), vec![], "{c}");
+        }
+    }
+
+    #[test]
+    fn a_held_esc_does_not_leak_into_terminal_after_leaving_copy() {
+        let mut a = in_copy();
+        a.update(esc());
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.update(esc_kinded(KeyEventKind::Repeat)), vec![]);
+    }
+
+    #[test]
+    fn a_held_y_does_not_leak_into_terminal_after_a_yank() {
+        let mut a = app();
+        copy_after(&mut a, b"abc");
+        a.update(key('h'));
+        a.update(key('v'));
+        assert_eq!(a.update(key('y')).len(), 1);
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.update(repeat('y')), vec![]);
+        // The drop must not eat the yank notice.
+        assert_eq!(a.notice(), Some("Copied 1 character"));
+    }
+
+    #[test]
+    fn another_key_after_leaving_copy_is_passed_through() {
+        let mut a = in_copy();
+        a.update(key('q'));
+        assert_eq!(
+            a.update(repeat('x')),
+            vec![Effect::WritePty(PaneId::FIRST, b"x".to_vec())]
+        );
+    }
+
+    #[test]
+    fn a_fresh_press_after_the_release_is_passed_through() {
+        let mut a = in_copy();
+        a.update(key('q'));
+        assert_eq!(a.update(release('q')), vec![]);
+        assert_eq!(
+            a.update(repeat('q')),
+            vec![Effect::WritePty(PaneId::FIRST, b"q".to_vec())]
+        );
+        let mut a = in_copy();
+        a.update(key('q'));
+        a.update(key('x'));
+        assert_eq!(
+            a.update(repeat('q')),
+            vec![Effect::WritePty(PaneId::FIRST, b"q".to_vec())]
+        );
+    }
+
+    thread_local! {
+        static NOW_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        static BASE: Instant = Instant::now();
+    }
+
+    fn mock_now() -> Instant {
+        BASE.with(|b| *b + Duration::from_millis(NOW_MS.with(|n| n.get())))
+    }
+
+    /// Sends `ev` as if it arrived `ms` after the test's t0.
+    fn at(a: &mut App, ms: u64, ev: AppEvent) -> Vec<Effect> {
+        NOW_MS.with(|n| n.set(ms));
+        a.update(ev)
+    }
+
+    fn timed(a: App) -> App {
+        a.with_clock(mock_now)
+    }
+
+    fn q_pty() -> Vec<Effect> {
+        vec![Effect::WritePty(PaneId::FIRST, b"q".to_vec())]
+    }
+
+    // modal-input: Held exit key within the window (Presses only).
+    #[test]
+    fn a_held_exit_key_sent_as_presses_is_dropped_for_the_whole_hold() {
+        for c in ['q', 'i'] {
+            let mut a = timed(app());
+            at(&mut a, 0, ctrl_space());
+            at(&mut a, 0, key('['));
+            at(&mut a, 0, key(c));
+            assert_eq!(a.input(), InputMode::Terminal, "{c}");
+            for ms in [400, 433, 466] {
+                assert_eq!(at(&mut a, ms, key(c)), vec![], "{c} at {ms}");
+            }
+        }
+        let mut a = timed(app());
+        at(&mut a, 0, ctrl_space());
+        at(&mut a, 0, key('['));
+        at(&mut a, 0, esc());
+        for ms in [400, 433, 466] {
+            assert_eq!(at(&mut a, ms, esc()), vec![], "esc at {ms}");
+        }
+    }
+
+    #[test]
+    fn a_held_yank_key_sent_as_presses_is_dropped_and_keeps_the_notice() {
+        let mut a = timed(app());
+        copy_after(&mut a, b"abc");
+        at(&mut a, 0, key('h'));
+        at(&mut a, 0, key('v'));
+        assert_eq!(at(&mut a, 0, key('y')).len(), 1);
+        for ms in [400, 433, 466] {
+            assert_eq!(at(&mut a, ms, key('y')), vec![], "y at {ms}");
+        }
+        assert_eq!(a.notice(), Some("Copied 1 character"));
+    }
+
+    #[test]
+    fn a_long_hold_keeps_being_dropped_past_the_window_from_the_exit() {
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        for ms in [400, 800, 1200, 1600] {
+            assert_eq!(at(&mut a, ms, key('q')), vec![], "q at {ms}");
+        }
+    }
+
+    #[test]
+    fn a_deliberate_press_after_the_window_passes_through() {
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        assert_eq!(at(&mut a, 600, key('q')), q_pty());
+        // The debounce is over: the next one is typed text too.
+        assert_eq!(at(&mut a, 650, key('q')), q_pty());
+    }
+
+    #[test]
+    fn another_key_ends_the_debounce() {
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        assert_eq!(
+            at(&mut a, 100, key('x')),
+            vec![Effect::WritePty(PaneId::FIRST, b"x".to_vec())]
+        );
+        assert_eq!(at(&mut a, 150, key('q')), q_pty());
+    }
+
+    #[test]
+    fn a_release_of_the_exit_key_ends_the_debounce() {
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        at(&mut a, 50, release('q'));
+        assert_eq!(at(&mut a, 100, key('q')), q_pty());
+    }
+
+    #[test]
+    fn the_window_boundary_is_inclusive_at_500_ms() {
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        assert_eq!(at(&mut a, 500, key('q')), vec![]);
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        assert_eq!(at(&mut a, 501, key('q')), q_pty());
+    }
+
+    #[test]
+    fn each_dropped_press_refreshes_the_window() {
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        assert_eq!(at(&mut a, 499, key('q')), vec![]);
+        assert_eq!(at(&mut a, 998, key('q')), vec![]);
+        assert_eq!(at(&mut a, 1499, key('q')), q_pty());
+    }
+
+    #[test]
+    fn a_yank_that_stays_in_copy_does_not_arm_the_debounce() {
+        // Over the cap.
+        let mut a = timed(app());
+        big_selection(&mut a, 76);
+        assert_eq!(at(&mut a, 0, key('y')), vec![]);
+        assert!(is_copy(&a));
+        assert!(a.held_exit.is_none());
+        // Nothing to copy.
+        let mut a = timed(App::new(20, 5));
+        copy_after(&mut a, b"abc");
+        press_n(&mut a, 'j', 2);
+        a.update(key('V'));
+        assert_eq!(at(&mut a, 0, key('y')), vec![]);
+        assert!(is_copy(&a));
+        assert!(a.held_exit.is_none());
+        // Leaving COPY by another key, a `y` right after is typed text.
+        at(&mut a, 10, key('q'));
+        assert_eq!(
+            at(&mut a, 100, key('y')),
+            vec![Effect::WritePty(PaneId::FIRST, b"y".to_vec())]
+        );
+    }
+
+    #[test]
+    fn a_paste_ends_the_debounce() {
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        at(&mut a, 100, AppEvent::Paste("p".into()));
+        assert_eq!(at(&mut a, 200, key('q')), q_pty());
+    }
+
+    #[test]
+    fn the_debounce_needs_the_identical_key_and_modifiers() {
+        let shift_q = AppEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::SHIFT));
+        let ctrl_q = AppEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+        for ev in [shift_q, ctrl_q] {
+            let mut a = timed(in_copy());
+            at(&mut a, 0, key('q'));
+            assert_eq!(at(&mut a, 100, ev.clone()).len(), 1, "{ev:?}");
+        }
+    }
+
+    // copy-mode-scrollback: a horizontal motion also brings an off-screen
+    // cursor back into view.
+    #[test]
+    fn a_horizontal_motion_brings_an_off_screen_cursor_back() {
+        let mut a = app();
+        copy_after(&mut a, b"abc");
+        feed_focused(&mut a, "\r\n".repeat(40).as_bytes());
+        assert_eq!(a.copy_cursor(), None);
+        a.update(key('l'));
+        assert_eq!(a.copy_cursor(), Some((0, 4)));
+    }
+
+    // copy-mode-scrollback: a screen switch resets the cursor like entering COPY.
+    #[test]
+    fn a_screen_round_trip_puts_the_cursor_back_on_the_live_cursor() {
+        let mut a = app();
+        with_history(&mut a, 30);
+        feed_focused(&mut a, b"abc");
+        a.update(ctrl_space());
+        a.update(key('['));
+        assert_eq!(a.copy_cursor(), Some((23, 3)));
+        press_n(&mut a, 'k', 5);
+        feed_focused(&mut a, b"\x1b[?1049h");
+        feed_focused(&mut a, b"\x1b[?1049l");
+        assert!(is_copy(&a));
+        assert_eq!(a.copy_cursor(), Some((23, 3)));
+    }
+
+    // copy-selection: Screen switch drops it.
+    #[test]
+    fn a_screen_switch_drops_the_selection_and_keeps_copy() {
+        let mut a = app();
+        copy_after(&mut a, b"abc");
+        a.update(key('v'));
+        feed_focused(&mut a, b"\x1b[?1049h");
+        assert!(is_copy(&a));
+        assert_eq!(selection_of(&a), None);
+        assert_eq!(
+            copy_state(&a).generation,
+            a.focused_pane().line_generation()
+        );
+        // The new generation is adopted and the cursor sits on the alternate
+        // screen's live cursor: a fresh selection survives output.
+        assert_eq!(copy_state(&a).cursor, Point { line: 0, col: 0 });
+        a.update(key('v'));
+        feed_focused(&mut a, b"x");
+        assert_eq!(
+            selection_of(&a),
+            Some((Point { line: 0, col: 0 }, SelectionKind::Char))
+        );
+    }
+
+    // copy-selection: Resize drops it.
+    #[test]
+    fn a_host_resize_drops_the_selection_and_clamps_the_cursor() {
+        let mut a = app();
+        copy_after(&mut a, &[b'x'; 70]);
+        a.update(key('v'));
+        assert_eq!(copy_state(&a).cursor, Point { line: 0, col: 70 });
+        a.update(AppEvent::Resize { cols: 40, rows: 25 });
+        assert!(is_copy(&a));
+        assert_eq!(selection_of(&a), None);
+        assert_eq!(copy_state(&a).cursor, Point { line: 0, col: 39 });
+    }
+
+    #[test]
+    fn a_resize_that_shortens_the_pane_clamps_the_cursor_line() {
+        let mut a = app();
+        copy_after(&mut a, "\r\n".repeat(23).as_bytes());
+        assert_eq!(copy_state(&a).cursor, Point { line: 23, col: 0 });
+        a.update(AppEvent::Resize { cols: 80, rows: 10 });
+        let pane = a.focused_pane();
+        let last = pane.first_line() + pane.scrollback_len() + 8;
+        assert_eq!(copy_state(&a).cursor, Point { line: last, col: 0 });
+        assert_eq!(copy_state(&a).offset, pane.scrollback_offset());
+    }
+
+    #[test]
+    fn a_sibling_exit_that_resizes_the_focused_pane_drops_the_selection() {
+        let mut a = split_right();
+        a.update(ctrl_space());
+        a.update(key('['));
+        a.update(key('v'));
+        assert!(selection_of(&a).is_some());
+        let effects = a.update(exited(PaneId::FIRST));
+        assert_eq!(effects, vec![Effect::ResizePty(id2(), sized(24, 80))]);
+        assert!(is_copy(&a));
+        assert_eq!(selection_of(&a), None);
+    }
+
+    // copy-selection: Focus change drops it.
+    #[test]
+    fn leaving_copy_by_a_focus_change_forgets_the_selection() {
+        let mut a = scrolled_split();
+        a.update(key('v'));
+        a.update(exited(id2()));
+        assert_eq!(a.input(), InputMode::Terminal);
+        a.update(ctrl_space());
+        a.update(key('['));
+        assert_eq!(selection_of(&a), None);
+    }
+
+    // copy-mode-scrollback: Block follows the COPY cursor (app part).
+    #[test]
+    fn the_copy_cursor_is_none_outside_copy_and_when_scrolled_off_screen() {
+        let mut a = app();
+        assert_eq!(a.copy_cursor(), None, "TERMINAL");
+        a.update(ctrl_space());
+        a.update(key('['));
+        assert_eq!(a.copy_cursor(), Some((0, 0)));
+        feed_focused(&mut a, "\r\n".repeat(30).as_bytes());
+        assert_eq!(
+            a.copy_cursor(),
+            None,
+            "the cursor row scrolled into history"
+        );
     }
 
     #[test]
@@ -1786,21 +2721,20 @@ mod app_tests {
 
     #[test]
     fn copy_offset_follows_the_pane_when_output_arrives_while_scrolled() {
-        let mut a = in_copy();
+        let mut a = app();
         with_history(&mut a, 40);
-        for _ in 0..10 {
-            a.update(key('k'));
-        }
+        a.update(ctrl_space());
+        a.update(key('['));
+        press_n(&mut a, 'k', 23 + 10);
         assert_eq!(copy_offset(&a), 10);
         with_history(&mut a, 5);
         assert_eq!(copy_offset(&a), a.focused_pane().scrollback_offset());
         let anchored = a.focused_pane().scrollback_offset();
         assert!(anchored > 10, "the emulator pins the viewport");
-        a.update(key('j'));
-        assert_eq!(a.focused_pane().scrollback_offset(), anchored - 1);
-        assert_eq!(copy_offset(&a), anchored - 1);
-        a.update(key('k'));
-        a.update(key('k'));
+        a.update(ctrl_d());
+        assert_eq!(a.focused_pane().scrollback_offset(), anchored - 12);
+        assert_eq!(copy_offset(&a), anchored - 12);
+        press_n(&mut a, 'k', 13);
         assert_eq!(a.focused_pane().scrollback_offset(), anchored + 1);
         assert_eq!(copy_offset(&a), anchored + 1);
     }
@@ -1833,21 +2767,21 @@ mod app_tests {
     }
 
     // Spec: output during COPY keeps the same content visible. The anchoring
-    // comes from the emulator pinning the viewport plus `sync_copy_offset`.
+    // comes from the emulator pinning the viewport plus `sync_copy`.
     #[test]
     fn output_during_copy_keeps_the_same_content_visible() {
-        let mut a = in_copy();
+        let mut a = app();
         with_history(&mut a, 60);
-        for _ in 0..10 {
-            a.update(key('k'));
-        }
+        a.update(ctrl_space());
+        a.update(key('['));
+        press_n(&mut a, 'k', 23 + 10);
         let before = visible_text(&a);
         assert_eq!(before.first().map(String::as_str), Some("line27"));
         with_history(&mut a, 5);
         assert_eq!(visible_text(&a), before);
         assert!(is_copy(&a));
-        a.update(key('j'));
-        assert_eq!(visible_text(&a)[0], "line28");
+        a.update(ctrl_d());
+        assert_eq!(visible_text(&a)[0], "line39");
     }
 
     // Spec: entering COPY on the alternate screen shows the current screen.
@@ -1876,9 +2810,7 @@ mod app_tests {
         let total = a.focused_pane().scrollback_len();
         assert!(total > 0);
         assert_eq!(a.copy_position(), Some((0, total)));
-        for _ in 0..10 {
-            a.update(key('k'));
-        }
+        press_n(&mut a, 'k', 23 + 10);
         assert_eq!(a.copy_position(), Some((10, total)));
         with_history(&mut a, 5);
         let grown = a.focused_pane().scrollback_len();
@@ -2588,7 +3520,7 @@ mod app_tests {
         }
         a.update(ctrl_space());
         a.update(key('['));
-        a.update(key('k'));
+        press_n(&mut a, 'k', 24);
         a
     }
 

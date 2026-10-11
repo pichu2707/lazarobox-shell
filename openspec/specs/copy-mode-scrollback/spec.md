@@ -2,37 +2,62 @@
 
 ## Purpose
 
-Vim-style read-only navigation of ~10k lines of scrollback. Selection/yank is out of scope. All scenarios [auto] unless tagged.
+Vim-style navigation of ~10k lines of scrollback with character/line selection and yank (see copy-selection). All scenarios [auto] unless tagged.
 
 ## Requirements
 
 ### Requirement: Navigation
-In COPY, `j`/`k` MUST move the viewport one line down/up; Ctrl+d/Ctrl+u half a page down/up; `gg` to the top of scrollback; `G` to the bottom (live screen). Movement MUST clamp at both bounds.
+COPY has a cursor (absolute row, column). On entry it MUST be at the position of the pane's live cursor, clamped into the pane. `h`/`l` MUST move it one column left/right, `0` to the first column of its row and `$` to the last non-blank column of its row (column 0 when the row is blank). `j`/`k` MUST move it one row down/up; the viewport MUST scroll only when the cursor would cross the top or bottom edge of the viewport. Ctrl+d/Ctrl+u MUST move the cursor and the viewport half a page down/up; `gg` MUST move to the top of scrollback; `G` to the bottom (live screen). Movement MUST clamp at all bounds. If output scrolled the cursor off screen, the next motion of any kind (including `h`/`l`/`0`/`$`) MUST bring it back into view.
 
 #### Scenario: Line motion
-- GIVEN 100 lines of scrollback, viewport at bottom
+- GIVEN 100 lines of scrollback, viewport at bottom, cursor on the top visible row
 - WHEN `k` is pressed
-- THEN the viewport is 1 line above the bottom; `j` returns it
+- THEN the viewport is 1 line above the bottom and the cursor stays on the top visible row; `j` returns it
+
+#### Scenario: Cursor moves inside the viewport
+- GIVEN the cursor in the middle of the viewport
+- WHEN `k` is pressed
+- THEN the cursor is one row higher and the viewport offset is unchanged
 
 #### Scenario: Half page
 - GIVEN a 24-row pane
 - WHEN Ctrl+u is pressed
-- THEN the viewport moves up 12 lines (half pane height); Ctrl+d moves down 12
+- THEN the viewport moves up 12 lines (half pane height) and the cursor moves up 12 rows; Ctrl+d moves both down 12
 
 #### Scenario: Top and bottom
 - GIVEN mid scrollback
 - WHEN `g` `g` then `G` are pressed
-- THEN the viewport is at the top, then at the bottom
+- THEN the viewport and cursor are at the top, then at the bottom
 
 #### Scenario: Clamping
-- GIVEN viewport at the top
+- GIVEN the cursor on the top row of the scrollback
 - WHEN `k` or Ctrl+u is pressed
-- THEN the offset is unchanged (never negative or beyond history); likewise `j`/Ctrl+d at the bottom
+- THEN the cursor and offset are unchanged (never beyond history); likewise `j`/Ctrl+d at the bottom
+
+#### Scenario: Horizontal motion brings an off-screen cursor back [auto]
+- GIVEN COPY with the cursor scrolled off screen by output
+- WHEN `l` is pressed
+- THEN the cursor moves one column right and is visible again
 
 #### Scenario: Lone g
 - GIVEN `g` pending
 - WHEN any non-`g` key is pressed
 - THEN the pending `g` is discarded
+
+#### Scenario: Cursor starts at the live cursor
+- GIVEN the child's cursor at row 5, col 3
+- WHEN COPY is entered
+- THEN the COPY cursor is at row 5, col 3
+
+#### Scenario: Horizontal motion
+- GIVEN the cursor at col 3 of an 80-column pane whose row reads `echo hi` (last non-blank at col 6)
+- WHEN `h`, `0`, `h`, `$`, `l` are pressed
+- THEN the cursor is at col 2, 0, 0, 6, 7
+
+#### Scenario: End of a blank row
+- GIVEN the cursor at col 4 on a blank row
+- WHEN `$` is pressed
+- THEN the cursor is at col 0
 
 ### Requirement: Isolation from the PTY
 While in COPY no key MUST be written to the PTY.
@@ -64,7 +89,7 @@ When the child is on the alternate screen (e.g. nvim, htop) there is no scrollba
 - THEN the offset remains 0, no panic occurs and no error is shown
 
 ### Requirement: Cursor in COPY
-While in COPY the effective outer cursor MUST be a steady block, regardless of the shape requested by the child. On returning to TERMINAL the shape last requested by the child MUST be restored. (Chosen behavior: the child's cursor is not shown in COPY because the viewport may be scrolled away from it.)
+While in COPY the effective outer cursor MUST be a steady block placed on the COPY cursor's cell, regardless of the shape requested by the child. On returning to TERMINAL the shape last requested by the child MUST be restored. (Chosen behavior: the child's cursor is not shown in COPY because the viewport may be scrolled away from it.)
 
 #### Scenario: Block in COPY [auto]
 - GIVEN the child requested Bar steady (`\e[6 q`)
@@ -76,13 +101,28 @@ While in COPY the effective outer cursor MUST be a steady block, regardless of t
 - WHEN COPY exits
 - THEN the effective cursor shape is Bar steady again
 
+#### Scenario: Block follows the COPY cursor [auto]
+- GIVEN COPY with the cursor at pane cell (row 2, col 4)
+- WHEN rendered
+- THEN the host cursor is at that cell of the pane
+
 ### Requirement: Exit COPY
-`q`, Esc or `i` MUST return to TERMINAL with the viewport at the bottom.
+`q` or `i` MUST return to TERMINAL with the viewport at the bottom, dropping any selection. Esc with a selection MUST clear it and stay in COPY; Esc with no selection MUST return to TERMINAL with the viewport at the bottom. `y` with a selection also exits (see copy-selection).
 
 #### Scenario: Exit
-- GIVEN COPY scrolled up
+- GIVEN COPY scrolled up with no selection
 - WHEN `q` (or Esc, or `i`) is pressed
 - THEN mode is TERMINAL and the live screen is shown
+
+#### Scenario: Esc with selection
+- GIVEN COPY with a selection
+- WHEN Esc is pressed
+- THEN the selection is cleared and mode is still COPY
+
+#### Scenario: `q` with selection
+- GIVEN COPY with a selection
+- WHEN `q` is pressed
+- THEN mode is TERMINAL and the selection is dropped
 
 #### Scenario: Real session [manual]
 - GIVEN a long `ls -R` output
