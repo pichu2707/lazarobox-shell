@@ -282,6 +282,45 @@ pub fn join(rows: &[LineText]) -> String {
     out
 }
 
+/// Largest base64 payload (in bytes) sent in one OSC 52 sequence.
+pub const OSC52_MAX_PAYLOAD: usize = 100_000;
+
+/// The selection does not fit in one OSC 52 sequence.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TooLarge;
+
+/// Standard base64 (RFC 4648 section 4) with padding.
+pub fn encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, b)| acc | u32::from(*b) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(ALPHABET[(n >> (18 - 6 * i) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// `ESC ] 52 ; c ; <base64> BEL`, or `TooLarge` when the base64 payload would
+/// exceed `OSC52_MAX_PAYLOAD`. The size is checked before encoding.
+pub fn osc52(text: &str) -> Result<Vec<u8>, TooLarge> {
+    if text.len().div_ceil(3) * 4 > OSC52_MAX_PAYLOAD {
+        return Err(TooLarge);
+    }
+    let mut out = b"\x1b]52;c;".to_vec();
+    out.extend_from_slice(encode(text.as_bytes()).as_bytes());
+    out.push(0x07);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,6 +373,59 @@ mod tests {
             assert_eq!(s.on_key(&key, false), CopyCommand::Exit, "{key:?}");
             assert_eq!(s.offset, 0, "exit resets the offset for {key:?}");
         }
+    }
+
+    #[test]
+    fn encode_matches_the_rfc_4648_vectors() {
+        let cases: [(&str, &str); 7] = [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(encode(input.as_bytes()), want, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn encode_handles_multibyte_utf8_and_high_bytes() {
+        assert_eq!(encode("漢".as_bytes()), "5ryi");
+        assert_eq!(encode("é".as_bytes()), "w6k=");
+        assert_eq!(encode(&[0xfb, 0xff, 0xfe]), "+//+");
+    }
+
+    #[test]
+    fn osc52_wraps_the_base64_in_the_clipboard_sequence() {
+        assert_eq!(osc52("hello"), Ok(b"\x1b]52;c;aGVsbG8=\x07".to_vec()));
+    }
+
+    #[test]
+    fn osc52_accepts_exactly_the_cap_and_rejects_one_more_group() {
+        // 75_000 bytes -> 100_000 base64 bytes.
+        let at_cap = "a".repeat(75_000);
+        let ok = osc52(&at_cap).expect("at the cap");
+        assert_eq!(ok.len(), 7 + 100_000 + 1);
+        // 75_001 bytes -> 100_004 base64 bytes.
+        assert_eq!(osc52(&"a".repeat(75_001)), Err(TooLarge));
+        // Payload lengths just below the cap: 74_999 -> 100_000 (padded).
+        assert_eq!(
+            osc52(&"a".repeat(74_999)).expect("padded").len(),
+            7 + 100_000 + 1
+        );
+        // 74_996 bytes -> 24_999 groups -> 99_996 base64 bytes.
+        assert_eq!(
+            osc52(&"a".repeat(74_996)).expect("below").len(),
+            7 + 99_996 + 1
+        );
+    }
+
+    #[test]
+    fn osc52_rejects_on_size_without_needing_valid_encoding_work() {
+        assert_eq!(osc52(&"é".repeat(60_000)), Err(TooLarge));
     }
 
     #[test]
