@@ -152,9 +152,34 @@ fn tagged_sink(id: PaneId, tx: mpsc::Sender<(PaneId, PtyEvent)>) -> PtySink {
 async fn event_loop(
     terminal: &mut DefaultTerminal,
     panes: &mut Panes,
+    rx: mpsc::Receiver<(PaneId, PtyEvent)>,
+    shutdown: Shutdown,
+    app: App,
+) -> io::Result<()> {
+    let mut out = stdout();
+    let result = run_loop(terminal, panes, rx, shutdown, app, &mut out).await;
+    flush_on_exit(&mut out, &mut panes.host_out, result)
+}
+
+/// Flushes the pending host bytes whatever way the loop ended (Quit, shutdown,
+/// closed channel, error), so a yank right before quitting is not lost. The
+/// loop's own error wins over a flush error.
+fn flush_on_exit<W: Write>(
+    out: &mut W,
+    pending: &mut Vec<u8>,
+    result: io::Result<()>,
+) -> io::Result<()> {
+    let flushed = flush_host(out, pending);
+    result.and(flushed)
+}
+
+async fn run_loop(
+    terminal: &mut DefaultTerminal,
+    panes: &mut Panes,
     mut rx: mpsc::Receiver<(PaneId, PtyEvent)>,
     mut shutdown: Shutdown,
     mut app: App,
+    out: &mut impl Write,
 ) -> io::Result<()> {
     let theme = LazaroboxTheme::default();
     let mut events = EventStream::new();
@@ -162,7 +187,6 @@ async fn event_loop(
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut cwd_poll = interval(CWD_POLL);
     cwd_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut out = stdout();
     let mut applied_cursor = CursorShape::default();
 
     loop {
@@ -201,8 +225,8 @@ async fn event_loop(
                 if app.take_dirty() {
                     terminal.draw(|frame| ui::render(frame, &app, &theme))?;
                 }
-                apply_cursor_style(&mut out, app.cursor_shape(), &mut applied_cursor)?;
-                flush_host(&mut out, &mut panes.host_out)?;
+                apply_cursor_style(out, app.cursor_shape(), &mut applied_cursor)?;
+                flush_host(out, &mut panes.host_out)?;
             }
         }
     }
@@ -793,6 +817,19 @@ mod tests {
         assert_eq!(out.bytes, b"\x1b]52;c;aGk=\x07".to_vec());
         assert_eq!(out.flushes, 1);
         assert_eq!(pending, Vec::<u8>::new());
+    }
+
+    #[test]
+    fn flush_on_exit_writes_pending_bytes_on_every_outcome() {
+        for result in [Ok(()), Err(io::Error::other("boom"))] {
+            let failed = result.is_err();
+            let mut out = Vec::new();
+            let mut pending = b"\x1b]52;c;aGk=\x07".to_vec();
+            let got = flush_on_exit(&mut out, &mut pending, result);
+            assert_eq!(out, b"\x1b]52;c;aGk=\x07".to_vec());
+            assert!(pending.is_empty());
+            assert_eq!(got.is_err(), failed);
+        }
     }
 
     #[test]
