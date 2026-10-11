@@ -5269,6 +5269,55 @@ mod app_tests {
         assert_eq!(a.menu().cloned(), before);
     }
 
+    // Spec: config-menu Task picker; AI actions never touch the layout or the
+    // PTYs, so no key of the picker may produce an effect (no ResizePty).
+    #[test]
+    fn picker_keys_produce_no_effects() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        for _ in 0..4 {
+            a.update(key('j'));
+        }
+        let enter = || code(KeyCode::Enter);
+        let quiet = |a: &mut App, event: AppEvent| {
+            assert_eq!(a.update(event.clone()), Vec::<Effect>::new(), "{event:?}");
+        };
+        // Open, move, choose an engine, move, back out, and choose again.
+        quiet(&mut a, enter());
+        for event in [key('j'), key('j'), enter(), key('j'), key('k'), esc()] {
+            quiet(&mut a, event);
+        }
+        // Into the custom field of claude and type, delete, leave.
+        quiet(&mut a, enter());
+        for _ in 0..4 {
+            quiet(&mut a, key('j'));
+        }
+        for event in [enter(), key('m'), key('s'), code(KeyCode::Backspace)] {
+            quiet(&mut a, event);
+        }
+        for event in [esc(), esc(), esc()] {
+            quiet(&mut a, event);
+        }
+        assert_eq!(a.input(), InputMode::Menu);
+        assert!(a.menu().is_some());
+        // Assign a model: the picker closes and the draft changes.
+        for event in [enter(), key('j'), key('j'), enter(), key('j'), enter()] {
+            quiet(&mut a, event);
+        }
+        assert_eq!(a.input(), InputMode::Menu);
+        let draft = a.menu().unwrap().ai_draft();
+        assert_eq!(
+            draft.label(crate::core::ai::config::Task::Code),
+            "claude › opus"
+        );
+        assert_eq!(
+            a.ai(),
+            &ai_of("ollama", "qwen2:7b"),
+            "saved value untouched"
+        );
+    }
+
     // Spec: Unchanged AI draft.
     #[test]
     fn an_unchanged_ai_draft_closes_without_a_save() {
