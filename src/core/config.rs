@@ -444,6 +444,18 @@ mod tests {
     }
 
     #[test]
+    fn a_valid_ai_table_survives_another_invalid_key() {
+        let text = "mouse = 3\n[ai]\nengine = \"ollama\"\nmodel = \"llama3:8b\"";
+        let (config, loaded, notice) = Config::load_with_ai(Ok(text.into()));
+        assert_eq!(config.mouse, Config::default().mouse);
+        assert_eq!(loaded, ai(Some("ollama"), Some("llama3:8b")));
+        assert_eq!(
+            notice.as_deref(),
+            Some("config: mouse: expected true or false")
+        );
+    }
+
+    #[test]
     fn ai_problems_count_with_the_others() {
         let text = "mouse = 3\n[ai]\nengine = 1\nmodel = 2";
         let (_, _, notice) = Config::load_with_ai(Ok(text.into()));

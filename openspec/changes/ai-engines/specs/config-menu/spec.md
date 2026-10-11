@@ -48,6 +48,8 @@ The same keys as value cycling (`h`, `l`, Left, Right, Space) apply, with wrap, 
 - GIVEN the saved engine is `ollama` (models `llama3:8b`, `qwen2.5:7b`) and the saved model is `old:7b`
 - WHEN the menu is rendered, then `l` is pressed on Model
 - THEN the Model row shows `old:7b · not found` with the draft still `old:7b`, and then shows `llama3:8b`
+- AND `old:7b` stays the last Model choice while the menu is open (like the saved engine), so `h` on `llama3:8b` shows `old:7b · not found` again; it is offered only while the saved engine is the draft engine
+- AND repeated model names from a server are offered once, in first-seen order
 
 #### Scenario: Saved engine not available [auto]
 - GIVEN the saved engine is `codex`, its status is `not installed`, and only ollama is available

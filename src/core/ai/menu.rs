@@ -88,21 +88,32 @@ impl AiMenu {
         .unwrap_or_default()
     }
 
-    /// What the draft engine offers, when it is available.
-    fn engine_models(&self) -> &[String] {
+    /// What the draft engine offers, when it is available, without repeats
+    /// (the first of equal names wins).
+    fn engine_models(&self) -> Vec<String> {
         let id = self.draft.engine.as_deref();
-        self.engines
+        let listed = self
+            .engines
             .iter()
             .flat_map(|d| &d.engines)
             .find(|s| Some(s.id) == id && s.status == Status::Available)
-            .map_or(&[], |s| &s.models)
+            .map_or(&[][..], |s| &s.models[..]);
+        let mut models: Vec<String> = Vec::with_capacity(listed.len());
+        for model in listed {
+            if !models.contains(model) {
+                models.push(model.clone());
+            }
+        }
+        models
     }
 
-    /// The draft engine's models, then a draft model that is no longer
-    /// listed, so it is shown and never silently erased.
+    /// The draft engine's models, then the saved model when the saved engine
+    /// is the draft and no longer lists it, so it stays reachable (like the
+    /// engine) for as long as the menu is open.
     fn model_choices(&self) -> Vec<String> {
-        let mut choices = self.engine_models().to_vec();
-        if let Some(model) = &self.draft.model
+        let mut choices = self.engine_models();
+        if self.draft.engine == self.original.engine
+            && let Some(model) = &self.original.model
             && !choices.contains(model)
         {
             choices.push(model.clone());
@@ -135,16 +146,16 @@ impl AiMenu {
         }
     }
 
-    /// Moves a row to its next or previous choice. `false` when there is
-    /// nothing to move to.
-    pub fn cycle(&mut self, field: AiField, forward: bool) -> bool {
+    /// Moves a row to its next or previous choice; nothing to move to is a
+    /// no-op.
+    pub fn cycle(&mut self, field: AiField, forward: bool) {
         match field {
             AiField::Engine => {
                 let choices = self.engine_choices();
                 let at = choices.iter().position(|c| *c == self.draft.engine);
                 let len = choices.len();
                 if len < 2 {
-                    return false;
+                    return;
                 }
                 let next = match (at, forward) {
                     (Some(i), true) => (i + 1) % len,
@@ -153,7 +164,6 @@ impl AiMenu {
                 };
                 self.draft.engine.clone_from(&choices[next]);
                 self.draft.model = self.engine_models().first().cloned();
-                true
             }
             AiField::Model => {
                 let choices = self.model_choices();
@@ -167,12 +177,9 @@ impl AiMenu {
                     (None, true) => 0,
                     (None, false) => len.saturating_sub(1),
                 };
-                let model = choices.get(next).cloned();
-                let moved = model.is_some() && model != self.draft.model;
-                if moved {
-                    self.draft.model = model;
+                if let Some(model) = choices.get(next) {
+                    self.draft.model = Some(model.clone());
                 }
-                moved
             }
         }
     }

@@ -515,9 +515,90 @@ fn a_saved_model_that_is_gone_is_shown_and_kept() {
     assert_eq!(m.ai_draft(), saved(Some("ollama"), Some("old:7b")));
     press(&mut m, 'l');
     assert_eq!(shown(&m).1, "llama3:8b");
-    // Once left, the missing model is gone from the choices.
+    // The missing model stays offered, last, for as long as the menu is open.
+    press(&mut m, 'h');
+    assert_eq!(shown(&m).1, "old:7b · not found");
     press(&mut m, 'h');
     assert_eq!(shown(&m).1, "qwen2:7b");
+}
+
+// Spec: Saved model no longer listed (the model stays reachable).
+#[test]
+fn a_saved_model_that_is_gone_is_the_last_choice_while_open() {
+    let mut m = menu(Some("ollama"), Some("old:7b"), Some(machine()));
+    on_model(&mut m);
+    press(&mut m, 'h');
+    assert_eq!(shown(&m).1, "qwen2:7b");
+    press(&mut m, 'l');
+    assert_eq!(shown(&m).1, "old:7b · not found");
+    assert_eq!(m.ai_draft(), saved(Some("ollama"), Some("old:7b")));
+}
+
+fn with_models(models: &[&str]) -> Option<Detection> {
+    Some(detection(&[engine(
+        "ollama",
+        Status::Available,
+        models,
+        None,
+    )]))
+}
+
+#[test]
+fn duplicate_model_names_do_not_trap_cycling() {
+    let mut m = menu(Some("ollama"), Some("a"), with_models(&["a", "a", "b"]));
+    on_model(&mut m);
+    press(&mut m, 'l');
+    assert_eq!(shown(&m).1, "b");
+    press(&mut m, 'l');
+    assert_eq!(shown(&m).1, "a");
+}
+
+#[test]
+fn model_cycles_backward_through_three_choices() {
+    let mut m = menu(Some("ollama"), Some("b"), with_models(&["a", "b", "c"]));
+    on_model(&mut m);
+    for want in ["a", "c", "b"] {
+        press(&mut m, 'h');
+        assert_eq!(shown(&m).1, want);
+    }
+    press(&mut m, 'l');
+    assert_eq!(shown(&m).1, "c");
+}
+
+#[test]
+fn an_unset_model_starts_at_the_first_forward_and_the_last_backward() {
+    let mut m = menu(Some("ollama"), None, with_models(&["a", "b", "c"]));
+    on_model(&mut m);
+    press(&mut m, 'l');
+    assert_eq!(shown(&m).1, "a");
+    let mut m = menu(Some("ollama"), None, with_models(&["a", "b", "c"]));
+    on_model(&mut m);
+    press(&mut m, 'h');
+    assert_eq!(shown(&m).1, "c");
+}
+
+#[test]
+fn a_result_keeps_a_draft_that_differs_from_the_saved_choice() {
+    let mut m = menu(Some("ollama"), Some("llama3:8b"), Some(machine()));
+    on_model(&mut m);
+    press(&mut m, 'l');
+    m.set_engines(Some(machine()));
+    assert_eq!(m.ai_draft(), saved(Some("ollama"), Some("qwen2:7b")));
+    assert_eq!(shown(&m).1, "qwen2:7b");
+}
+
+#[test]
+fn a_draft_engine_that_vanishes_stays_a_choice_until_left() {
+    let mut m = menu(Some("ollama"), Some("llama3:8b"), Some(machine()));
+    pick_engine(&mut m, "codex");
+    let only_ollama = detection(&[engine("ollama", Status::Available, &["llama3:8b"], None)]);
+    m.set_engines(Some(only_ollama));
+    assert_eq!(shown(&m).0, "codex (not detected)");
+    press(&mut m, 'l');
+    assert_eq!(shown(&m).0, "none");
+    // Only the saved engine is kept once the draft has moved away.
+    press(&mut m, 'h');
+    assert_eq!(shown(&m).0, "ollama");
 }
 
 #[test]
@@ -530,4 +611,27 @@ fn the_model_row_cycles_the_engines_models() {
     assert_eq!(shown(&m).1, "llama3:8b");
     press(&mut m, 'h');
     assert_eq!(shown(&m).1, "qwen2:7b");
+}
+
+#[test]
+fn backward_from_a_vanished_draft_engine_reaches_the_one_before_it() {
+    let mut m = menu(Some("ollama"), Some("llama3:8b"), Some(machine()));
+    pick_engine(&mut m, "codex");
+    m.set_engines(Some(detection(&[engine(
+        "ollama",
+        Status::Available,
+        &["llama3:8b"],
+        None,
+    )])));
+    press(&mut m, 'h');
+    assert_eq!(shown(&m).0, "ollama");
+}
+
+#[test]
+fn the_saved_model_is_not_offered_to_another_engine() {
+    let mut m = menu(Some("ollama"), Some("old:7b"), Some(machine()));
+    pick_engine(&mut m, "claude");
+    on_model(&mut m);
+    press(&mut m, 'l');
+    assert_eq!(shown(&m).1, "default");
 }
