@@ -78,6 +78,64 @@ impl CopyState {
     }
 }
 
+/// Inclusive range of cells over stable line numbers (see `Pane::first_line`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LineSpan {
+    pub first: usize,
+    pub last: usize,
+    pub first_col: u16,
+    pub last_col: u16,
+}
+
+impl LineSpan {
+    /// Span between two `(line, col)` points given in any order.
+    pub fn new(a: (usize, u16), b: (usize, u16)) -> Self {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        Self {
+            first: lo.0,
+            last: hi.0,
+            first_col: lo.1,
+            last_col: hi.1,
+        }
+    }
+
+    /// Whether the cell `(line, col)` is inside the span, both ends included.
+    pub fn contains(&self, line: usize, col: u16) -> bool {
+        (self.first..=self.last).contains(&line)
+            && (line != self.first || col >= self.first_col)
+            && (line != self.last || col <= self.last_col)
+    }
+}
+
+/// Text of one screen row plus whether it soft-wraps into the next one.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LineText {
+    pub text: String,
+    pub wrapped: bool,
+}
+
+/// Joins extracted rows into the text to copy.
+///
+/// A soft-wrapped row joins the next one with no separator and keeps its
+/// trailing spaces (real content at the wrap point); any other row is
+/// followed by `\n`. Trailing blanks are trimmed where a logical line ends and
+/// on the last row. No trailing `\n` is added.
+pub fn join(rows: &[LineText]) -> String {
+    let mut out = String::new();
+    for (i, row) in rows.iter().enumerate() {
+        let last = i + 1 == rows.len();
+        if row.wrapped && !last {
+            out.push_str(&row.text);
+        } else {
+            out.push_str(row.text.trim_end_matches(' '));
+            if !last {
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +308,98 @@ mod tests {
         let mut s = at(50);
         s.apply(CopyMotion::LineDown, 10, ROWS);
         assert_eq!(s.offset, 10);
+    }
+
+    // copy-selection: LineSpan and join.
+    #[test]
+    fn span_contains_is_inclusive_at_both_end_cells() {
+        // (line, col) -> inside, for the span (2,3)..=(4,5).
+        let span = LineSpan::new((2, 3), (4, 5));
+        let table = [
+            ((1, 9), false, "line before first"),
+            ((2, 2), false, "before first cell"),
+            ((2, 3), true, "first cell"),
+            ((2, 79), true, "rest of the first row"),
+            ((3, 0), true, "middle row, col 0"),
+            ((3, 79), true, "middle row, last col"),
+            ((4, 0), true, "last row start"),
+            ((4, 5), true, "last cell"),
+            ((4, 6), false, "after last cell"),
+            ((5, 0), false, "line after last"),
+        ];
+        for ((line, col), inside, why) in table {
+            assert_eq!(span.contains(line, col), inside, "{why}");
+        }
+    }
+
+    #[test]
+    fn single_row_span_is_bounded_on_both_sides() {
+        let span = LineSpan::new((7, 2), (7, 4));
+        let cols: Vec<bool> = (0..7).map(|c| span.contains(7, c)).collect();
+        assert_eq!(cols, [false, false, true, true, true, false, false]);
+        assert!(!span.contains(6, 3));
+        assert!(!span.contains(8, 3));
+    }
+
+    #[test]
+    fn span_constructor_orders_reversed_points() {
+        let forward = LineSpan::new((5, 1), (5, 3));
+        let reversed = LineSpan::new((5, 3), (5, 1));
+        let expected = LineSpan {
+            first: 5,
+            last: 5,
+            first_col: 1,
+            last_col: 3,
+        };
+        assert_eq!(forward, expected);
+        assert_eq!(reversed, expected);
+        let up = LineSpan::new((9, 2), (4, 7));
+        assert_eq!(
+            up,
+            LineSpan {
+                first: 4,
+                last: 9,
+                first_col: 7,
+                last_col: 2,
+            }
+        );
+    }
+
+    fn row(text: &str, wrapped: bool) -> LineText {
+        LineText {
+            text: text.to_owned(),
+            wrapped,
+        }
+    }
+
+    #[test]
+    fn join_separates_logical_lines_with_a_newline() {
+        let rows = [row("foo", false), row("bar", false)];
+        assert_eq!(join(&rows), "foo\nbar");
+    }
+
+    #[test]
+    fn join_glues_soft_wrapped_rows_without_a_separator() {
+        let rows = [row("abcdefg", true), row("hijklmn", false)];
+        assert_eq!(join(&rows), "abcdefghijklmn");
+    }
+
+    #[test]
+    fn join_trims_trailing_blanks_at_logical_line_ends_and_the_last_row() {
+        let rows = [row("foo   ", false), row("bar  ", false)];
+        assert_eq!(join(&rows), "foo\nbar");
+        assert_eq!(join(&[row("only  ", true)]), "only");
+    }
+
+    #[test]
+    fn join_keeps_trailing_spaces_of_a_soft_wrapped_row() {
+        let rows = [row("hello     ", true), row("world", false)];
+        assert_eq!(join(&rows), "hello     world");
+    }
+
+    #[test]
+    fn join_of_nothing_is_empty_and_a_blank_last_row_is_an_empty_line() {
+        assert_eq!(join(&[]), "");
+        assert_eq!(join(&[row("a", false), row("   ", false)]), "a\n");
     }
 }
