@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use vt100::{Callbacks, Parser, Screen};
 
+use super::copy::{LineSpan, LineText};
 use super::osc7;
 
 /// DA1 reply: VT620-class terminal with no extensions.
@@ -164,6 +165,11 @@ pub struct Pane {
     parser: Parser<Responder>,
     /// Rows of history, refreshed whenever the screen changes (`feed`, `resize`).
     history_len: usize,
+    /// Configured scrollback capacity (rows).
+    cap: usize,
+    /// Rows evicted from the top of the scrollback so far.
+    first_line: usize,
+    line_generation: u32,
 }
 
 impl Pane {
@@ -176,13 +182,15 @@ impl Pane {
                 Responder::default(),
             ),
             history_len: 0,
+            cap: scrollback,
+            first_line: 0,
+            line_generation: 0,
         }
     }
 
     /// Processes child output and returns the bytes to answer its queries with.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
-        self.parser.process(bytes);
-        self.refresh_history_len();
+        self.process_counting_evictions(bytes);
         std::mem::take(&mut self.parser.callbacks_mut().replies)
     }
 
@@ -203,11 +211,65 @@ impl Pane {
         self.parser.callbacks().cwd.as_deref()
     }
 
+    /// Feeds `bytes` while counting rows evicted at the scrollback cap.
+    ///
+    /// On the main screen the view is pinned at offset 1 first: vt100 then
+    /// moves the offset once per scrolled row, so `offset - 1` is the exact
+    /// scroll count. The user's offset is restored as vt100 would have left it
+    /// (`o0 + scrolled`). When the count cannot be known (screen flip, empty
+    /// history, offset saturated at the cap) `line_generation` is bumped.
+    fn process_counting_evictions(&mut self, bytes: &[u8]) {
+        let was_alt = self.parser.screen().alternate_screen();
+        let (h0, o0) = (self.history_len, self.scrollback_offset());
+        if !was_alt {
+            self.set_scrollback(1);
+        }
+        let pinned = self.scrollback_offset() == 1;
+        self.parser.process(bytes);
+        self.refresh_history_len();
+        let h1 = self.history_len;
+        if self.parser.screen().alternate_screen() != was_alt {
+            self.bump_generation();
+            return;
+        }
+        if was_alt {
+            return;
+        }
+        let at_cap = self.cap > 0 && h1 >= self.cap;
+        let scrolled = self.scrollback_offset().saturating_sub(1);
+        if pinned {
+            let evicted = (h0 + scrolled).saturating_sub(h1);
+            self.first_line += evicted;
+            // Probe lost: vt100 reset the offset (RIS, alt round-trip inside
+            // one chunk) or history shrank by more than the scrolled rows can
+            // account for. Leave the offset at 0 like native vt100.
+            let probe_lost = self.scrollback_offset() == 0 || evicted > scrolled;
+            if probe_lost {
+                self.bump_generation();
+                return;
+            }
+            self.set_scrollback(if o0 == 0 { 0 } else { o0 + scrolled });
+            // Saturated: the offset hit the cap, so `scrolled` is a lower bound.
+            // Pushing exactly cap - 1 rows while pinned also lands here: a
+            // conservative bump.
+            if at_cap && h1 == scrolled + 1 {
+                self.bump_generation();
+            }
+        } else if at_cap {
+            self.bump_generation();
+        }
+    }
+
+    fn bump_generation(&mut self) {
+        self.line_generation = self.line_generation.wrapping_add(1);
+    }
+
     pub fn resize(&mut self, size: PaneSize) {
         self.parser
             .screen_mut()
             .set_size(size.rows.max(1), size.cols.max(1));
         self.refresh_history_len();
+        self.bump_generation();
     }
 
     pub fn cell(&self, row: u16, col: u16) -> Option<CellView<'_>> {
@@ -259,6 +321,111 @@ impl Pane {
         self.set_scrollback(usize::MAX);
         self.history_len = self.scrollback_offset();
         self.set_scrollback(previous);
+    }
+
+    /// Stable number of the oldest retained row; counts evicted rows.
+    pub fn first_line(&self) -> usize {
+        self.first_line
+    }
+
+    /// Changes whenever line numbers stop being comparable (screen flip,
+    /// resize, lost eviction count).
+    pub fn line_generation(&self) -> u32 {
+        self.line_generation
+    }
+
+    /// The child's cursor `(row, col)` on the live screen, ignoring the
+    /// scrollback offset; `None` when the child hid it.
+    pub fn live_cursor(&self) -> Option<(u16, u16)> {
+        let screen = self.parser.screen();
+        (!screen.hide_cursor()).then(|| screen.cursor_position())
+    }
+
+    /// Last non-blank column of stable line `line`; 0 for a blank or
+    /// unavailable line. The scrollback offset is restored.
+    pub fn line_end(&mut self, line: usize) -> u16 {
+        let saved = self.scrollback_offset();
+        let end = self.page_to(line).map_or(0, |row| {
+            let (_, cols) = self.parser.screen().size();
+            (0..cols)
+                .rev()
+                .find(|&col| {
+                    self.cell(row, col)
+                        .is_some_and(|c| !matches!(c.text, "" | " "))
+                })
+                .unwrap_or(0)
+        });
+        self.set_scrollback(saved);
+        end
+    }
+
+    /// Text of the cells of `span`, one entry per retained line. Both end
+    /// cells are included, empty cells read as `" "`, wide characters appear
+    /// once. The scrollback offset is restored.
+    pub fn read_lines(&mut self, span: LineSpan) -> Vec<LineText> {
+        let saved = self.scrollback_offset();
+        let (rows, cols) = self.parser.screen().size();
+        let end = self.first_line + self.history_len + usize::from(rows);
+        let mut out = Vec::new();
+        let mut line = span.first.max(self.first_line);
+        let last = span.last.min(end.saturating_sub(1));
+        // One page per pane height: each `page_to` exposes `rows` lines.
+        while line <= last {
+            let Some(mut row) = self.page_to(line) else {
+                break;
+            };
+            while row < rows && line <= last {
+                let from = if line == span.first {
+                    span.first_col
+                } else {
+                    0
+                };
+                let to = if line == span.last {
+                    span.last_col
+                } else {
+                    cols
+                };
+                out.push(self.row_text(row, from, to.min(cols.saturating_sub(1))));
+                line += 1;
+                row += 1;
+            }
+        }
+        self.set_scrollback(saved);
+        out
+    }
+
+    /// Cells `from..=to` of a viewport row. A range starting on the right half
+    /// of a wide character starts at its head; continuation cells add nothing.
+    fn row_text(&self, row: u16, from: u16, to: u16) -> LineText {
+        let wide_cont = |col| self.cell(row, col).is_some_and(|c| c.wide_cont);
+        let from = if from > 0 && wide_cont(from) {
+            from - 1
+        } else {
+            from
+        };
+        let text = (from..=to)
+            .filter_map(|col| self.cell(row, col))
+            .filter(|c| !c.wide_cont)
+            .map(|c| if c.text.is_empty() { " " } else { c.text })
+            .collect();
+        LineText {
+            text,
+            wrapped: self.parser.screen().row_wrapped(row),
+        }
+    }
+
+    /// Scrolls so stable line `line` is visible and returns its viewport row,
+    /// or `None` if the line was evicted or is past the screen. The caller
+    /// restores the offset.
+    fn page_to(&mut self, line: usize) -> Option<u16> {
+        let (rows, _) = self.parser.screen().size();
+        let base = self.first_line + self.history_len;
+        if line < self.first_line || line >= base + usize::from(rows) {
+            return None;
+        }
+        self.set_scrollback(base.saturating_sub(line));
+        let top = base - self.scrollback_offset();
+        u16::try_from(line - top).ok()
     }
 
     pub fn modes(&self) -> TermModes {
@@ -727,5 +894,273 @@ mod tests {
     fn osc7_produces_no_reply_bytes() {
         let mut p = pane(3, 10);
         assert_eq!(p.feed(b"\x1b]7;file:///tmp\x07"), Vec::<u8>::new());
+    }
+
+    // copy-selection: line model (first_line, line_generation, live_cursor).
+    fn small(rows: u16) -> Pane {
+        Pane::new(PaneSize { rows, cols: 10 }, 5)
+    }
+
+    // Characterization test: pins current behavior, not new logic.
+    #[test]
+    fn first_line_is_zero_below_the_cap() {
+        let mut p = small(3);
+        feed_lines(&mut p, 7); // 5 rows in history: exactly at the cap
+        assert_eq!(p.scrollback_len(), 5);
+        assert_eq!(p.first_line(), 0);
+    }
+
+    #[test]
+    fn first_line_counts_evictions_at_offset_zero() {
+        let mut p = small(3);
+        feed_lines(&mut p, 12); // 10 rows pushed, 5 evicted
+        assert_eq!(p.first_line(), 5);
+        assert_eq!(p.scrollback_offset(), 0);
+        p.feed(b"a\r\nb\r\nc\r\n"); // three more lines in one chunk
+        assert_eq!(p.first_line(), 8);
+        assert_eq!(p.scrollback_offset(), 0);
+    }
+
+    #[test]
+    fn first_line_counts_evictions_with_a_scrolled_view_and_keeps_vt100_pin() {
+        let mut p = small(3);
+        feed_lines(&mut p, 7);
+        p.set_scrollback(1);
+        feed_lines(&mut p, 2);
+        assert_eq!(p.first_line(), 2);
+        assert_eq!(p.scrollback_offset(), 3, "pinned as vt100 does natively");
+        assert_eq!(text_at(&p, 0, 4), "4", "viewport stays on the same content");
+    }
+
+    #[test]
+    fn first_line_ignores_scrolls_that_stay_in_history() {
+        let mut p = small(3);
+        feed_lines(&mut p, 4); // 2 rows of history, cap 5
+        p.set_scrollback(1);
+        feed_lines(&mut p, 2); // 4 rows of history
+        assert_eq!(p.first_line(), 0);
+        assert_eq!(p.scrollback_offset(), 3);
+    }
+
+    #[test]
+    fn line_generation_ignores_plain_output() {
+        let mut p = small(3);
+        assert_eq!(p.line_generation(), 0);
+        feed_lines(&mut p, 4);
+        assert_eq!(p.line_generation(), 0);
+        p.set_scrollback(1);
+        feed_lines(&mut p, 2);
+        assert_eq!(p.line_generation(), 0);
+    }
+
+    #[test]
+    fn line_generation_bumps_on_each_screen_flip() {
+        let mut p = small(3);
+        feed_lines(&mut p, 4);
+        p.feed(b"\x1b[?1049h");
+        assert_eq!(p.line_generation(), 1);
+        p.feed(b"\x1b[?1049l");
+        assert_eq!(p.line_generation(), 2);
+    }
+
+    #[test]
+    fn line_generation_bumps_on_resize() {
+        let mut p = small(3);
+        p.resize(PaneSize { rows: 4, cols: 10 });
+        assert_eq!(p.line_generation(), 1);
+    }
+
+    #[test]
+    fn line_generation_bumps_when_the_eviction_count_is_lost() {
+        let mut p = small(3);
+        // One chunk with empty history at the start: the probe cannot pin.
+        p.feed("x\r\n".repeat(20).as_bytes());
+        assert_eq!(p.line_generation(), 1);
+    }
+
+    #[test]
+    fn line_generation_bumps_when_an_alt_round_trip_hides_the_eviction_count() {
+        let mut p = small(3);
+        feed_lines(&mut p, 12);
+        p.set_scrollback(2);
+        let gen_before = p.line_generation();
+        p.feed(("n\r\n".repeat(3) + "\x1b[?1049h\x1b[?1049l").as_bytes());
+        assert_eq!(p.line_generation(), gen_before + 1);
+        assert_eq!(p.scrollback_offset(), 0, "left at 0 like native vt100");
+    }
+
+    #[test]
+    fn line_generation_bumps_on_ris() {
+        let mut p = small(3);
+        feed_lines(&mut p, 4);
+        p.set_scrollback(1);
+        p.feed(b"\x1bc");
+        assert_eq!(p.line_generation(), 1);
+    }
+
+    #[test]
+    fn line_generation_bumps_when_the_cap_saturates_the_pinned_offset() {
+        let mut p = small(3);
+        feed_lines(&mut p, 12); // history at the cap (5), first_line 5
+        assert_eq!(p.line_generation(), 0);
+        p.set_scrollback(1);
+        p.feed("n\r\n".repeat(8).as_bytes()); // more lines than the cap
+        assert_eq!(p.line_generation(), 1);
+        assert_eq!(p.first_line(), 9, "documented lower bound (5 + cap - 1)");
+    }
+
+    #[test]
+    fn a_zero_capacity_pane_never_bumps_the_line_generation() {
+        let mut p = Pane::new(PaneSize { rows: 3, cols: 10 }, 0);
+        feed_lines(&mut p, 5);
+        assert_eq!(p.line_generation(), 0);
+    }
+
+    #[test]
+    fn live_cursor_ignores_the_scrollback_offset() {
+        let mut p = small(3);
+        feed_lines(&mut p, 7);
+        p.feed(b"\x1b[2;4H");
+        assert_eq!(p.live_cursor(), Some((1, 3)));
+        p.set_scrollback(2);
+        assert_eq!(p.cursor(), None);
+        assert_eq!(p.live_cursor(), Some((1, 3)));
+        assert_eq!(p.scrollback_offset(), 2);
+    }
+
+    #[test]
+    fn line_end_is_the_last_non_blank_column() {
+        let mut p = pane(5, 20);
+        p.feed(b"echo hi\r\n\r\n  x  ");
+        assert_eq!(p.line_end(0), 6);
+        assert_eq!(p.line_end(1), 0, "blank row");
+        assert_eq!(p.line_end(2), 2, "trailing blanks are not content");
+        assert_eq!(p.line_end(99), 0, "unavailable line");
+    }
+
+    #[test]
+    fn line_end_reads_history_and_restores_the_offset() {
+        let mut p = small(3);
+        feed_lines(&mut p, 12); // lines 5..=9 are history: line5 .. line9
+        assert_eq!(p.first_line(), 5);
+        p.set_scrollback(2);
+        let top = text_at(&p, 0, 4);
+        assert_eq!(p.line_end(5), 4);
+        assert_eq!(p.line_end(9), 4);
+        assert_eq!(p.scrollback_offset(), 2);
+        assert_eq!(text_at(&p, 0, 4), top);
+        p.set_scrollback(0);
+        assert_eq!(p.line_end(6), 4);
+        assert_eq!(p.scrollback_offset(), 0);
+    }
+
+    fn padded(text: &str) -> String {
+        format!("{text:<10}")
+    }
+
+    fn lt(text: &str, wrapped: bool) -> LineText {
+        LineText {
+            text: text.to_owned(),
+            wrapped,
+        }
+    }
+
+    #[test]
+    fn read_lines_spans_history_and_screen_and_restores_the_offset() {
+        let mut p = pane(3, 10);
+        feed_lines(&mut p, 10); // lines 0..=7 history, 8 and 9 on screen
+        p.set_scrollback(1);
+        let span = LineSpan::new((6, 0), (9, 3));
+        assert_eq!(
+            p.read_lines(span),
+            [
+                lt(&padded("line6"), false),
+                lt(&padded("line7"), false),
+                lt(&padded("line8"), false),
+                lt("line", false),
+            ]
+        );
+        assert_eq!(p.scrollback_offset(), 1);
+        p.set_scrollback(0);
+        let above = p.read_lines(LineSpan::new((0, 0), (0, 4)));
+        assert_eq!(above, [lt("line0", false)]);
+        assert_eq!(p.scrollback_offset(), 0);
+    }
+
+    #[test]
+    fn read_lines_pages_across_more_rows_than_the_pane_height() {
+        let mut p = pane(3, 10);
+        feed_lines(&mut p, 30);
+        p.set_scrollback(4);
+        let got = p.read_lines(LineSpan::new((0, 0), (20, 9)));
+        let want: Vec<LineText> = (0..=20)
+            .map(|i| lt(&padded(&format!("line{i}")), false))
+            .collect();
+        assert_eq!(got, want);
+        assert_eq!(p.scrollback_offset(), 4);
+    }
+
+    #[test]
+    fn read_lines_includes_both_end_cells_and_reads_empty_cells_as_spaces() {
+        let mut p = pane(5, 10);
+        p.feed(b"hello");
+        assert_eq!(
+            p.read_lines(LineSpan::new((0, 1), (0, 3))),
+            [lt("ell", false)]
+        );
+        assert_eq!(
+            p.read_lines(LineSpan::new((0, 3), (0, 6))),
+            [lt("lo  ", false)]
+        );
+    }
+
+    #[test]
+    fn read_lines_reports_the_soft_wrap_flag_of_each_row() {
+        let mut p = pane(3, 5);
+        p.feed(b"abcdefgh");
+        assert_eq!(
+            p.read_lines(LineSpan::new((0, 0), (1, 4))),
+            [lt("abcde", true), lt("fgh  ", false)]
+        );
+    }
+
+    #[test]
+    fn read_lines_skips_evicted_lines() {
+        let mut p = small(3);
+        feed_lines(&mut p, 12);
+        assert_eq!(p.first_line(), 5);
+        assert_eq!(
+            p.read_lines(LineSpan::new((3, 1), (6, 2))),
+            [lt(&padded("line5"), false), lt("lin", false)]
+        );
+    }
+
+    #[test]
+    fn read_lines_emits_a_wide_character_once() {
+        let mut p = pane(3, 10);
+        p.feed("a漢b".as_bytes()); // a=0, 漢 head=1 continuation=2, b=3
+        assert_eq!(
+            p.read_lines(LineSpan::new((0, 0), (0, 3))),
+            [lt("a漢b", false)]
+        );
+        assert_eq!(
+            p.read_lines(LineSpan::new((0, 2), (0, 3))),
+            [lt("漢b", false)]
+        );
+        assert_eq!(
+            p.read_lines(LineSpan::new((0, 0), (0, 1))),
+            [lt("a漢", false)]
+        );
+        assert_eq!(
+            p.read_lines(LineSpan::new((0, 1), (0, 2))),
+            [lt("漢", false)]
+        );
+    }
+
+    #[test]
+    fn live_cursor_is_none_when_the_child_hides_it() {
+        let mut p = small(3);
+        p.feed(b"\x1b[?25l");
+        assert_eq!(p.live_cursor(), None);
     }
 }

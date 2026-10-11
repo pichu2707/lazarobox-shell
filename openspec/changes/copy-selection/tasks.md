@@ -38,47 +38,47 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 
 ## CS1: Pane line model and extraction (pure)
 
-- [ ] CS1.1 Stubs (compile only): in `src/core/copy.rs` add `LineSpan { first, last, first_col, last_col }` (`contains(line, col)` returns `false`), `LineText { text, wrapped }`, `join(&[LineText]) -> String` returning `String::new()`. In `src/core/pane.rs` add `first_line()` (returns `0`), `line_generation()` (returns `0`), `live_cursor() -> Option<(u16, u16)>` (returns `None`), `line_end(line) -> u16` (returns `0`), `read_lines(span) -> Vec<LineText>` (returns empty).
-- [ ] CS1.2 Characterization (expected to pass immediately): all existing scrollback tests in `core::pane` stay green before the probe lands; pin them as the safety net for CS1.4 [CS-2 risk].
-- [ ] CS1.3 RED: `first_line` counts evictions with `Pane::new(.., cap 5)` + `feed_lines`: below the cap `first_line == 0`; after N overflow lines at offset 0 `first_line == N`; with offset > 0 the same count, and the user's offset is pinned exactly as vt100 does natively (assert exact offset value) [copy-selection: Eviction of the anchor (pane part), Output keeps the selection on its content (pane part)].
-- [ ] CS1.4 GREEN: probe in `Pane::feed` (CS-2): on the main screen set offset to 1 before `process`, compute `scrolled = offset_after - 1`, `first_line += (h0 + scrolled) - h1`, restore offset `0` if it was `0` else `o0 + scrolled`.
-- [ ] CS1.5 RED: `line_generation` is unchanged by plain output, bumped by a screen flip (main -> alternate and back) and bumped by `resize`; bumped when the probe is lost (offset 0 afterwards) [copy-selection: Screen switch drops it (pane part), Resize drops it (pane part)].
-- [ ] CS1.6 GREEN: bump `line_generation` on screen flip, probe loss and resize.
-- [ ] CS1.7 RED: `live_cursor` returns the child's cursor `(row, col)` ignoring the scrollback offset (set offset > 0 and assert the same value); hidden cursor returns `None` [copy-mode-scrollback: Cursor starts at the live cursor (pane part)].
-- [ ] CS1.8 GREEN: `live_cursor`.
-- [ ] CS1.9 RED: `line_end(line)` on `echo hi` returns `6`; on a blank row returns `0`; on a row in history returns its last non-blank column; the offset is restored exactly afterwards [copy-mode-scrollback: Horizontal motion (pane part), End of a blank row (pane part)].
-- [ ] CS1.10 GREEN: `line_end` by paging `set_scrollback` and restoring.
-- [ ] CS1.11 RED: `LineSpan::contains` table test: inside, both end cells inclusive, before first, after last, middle rows full-width, single-row span, reversed anchor ordering normalised by constructor/`span` helper [copy-selection: Motion extends backwards (span part)].
-- [ ] CS1.12 GREEN: `LineSpan::contains` and the ordering helper.
-- [ ] CS1.13 RED: `read_lines` over history plus screen returns exact `LineText` values (text and `wrapped` flag); cells in `[from, to]` inclusive; empty cell counts as `" "`; the viewport offset is identical before and after, including for a span entirely above the viewport [copy-selection: Selection spans scrollback (pane part), Character selection within a row (pane part)].
-- [ ] CS1.14 GREEN: `read_lines` pages at most once per pane height and restores the offset (CS-6).
-- [ ] CS1.15 RED: wide characters: row `a漢b` with a range starting on the continuation cell (col 2) yields `漢b`; a range ending on the head cell yields the character once; continuation cells never emit text [copy-selection: Wide character once (pane part)].
-- [ ] CS1.16 GREEN: continuation skip and head snapping.
-- [ ] CS1.17 RED: `copy::join`: `foo` + `bar` (not wrapped) -> `foo\nbar`; wrapped first row joins with no separator -> `abcdefghijklmn`; trailing blanks trimmed on logical-line ends and on the last row; a soft-wrapped non-last row keeps its trailing spaces (`hello` + 5 spaces + `world` -> `hello     world`); no trailing `\n` [copy-selection: Multi-row line selection (join part), Soft-wrapped rows, Soft-wrapped row keeps trailing spaces, Trailing blanks trimmed].
-- [ ] CS1.18 GREEN: `join` per CS-6.
-- [ ] CS1.19 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] CS1.1 Stubs (compile only; pane stubs in CS1-i, `copy.rs` and `read_lines` in CS1-ii): in `src/core/copy.rs` add `LineSpan { first, last, first_col, last_col }` (`contains(line, col)` returns `false`), `LineText { text, wrapped }`, `join(&[LineText]) -> String` returning `String::new()`. In `src/core/pane.rs` add `first_line()` (returns `0`), `line_generation()` (returns `0`), `live_cursor() -> Option<(u16, u16)>` (returns `None`), `line_end(line) -> u16` (returns `0`), `read_lines(span) -> Vec<LineText>` (returns empty).
+- [x] CS1.2 Characterization (expected to pass immediately): all existing scrollback tests in `core::pane` stay green before the probe lands; pin them as the safety net for CS1.4 [CS-2 risk].
+- [x] CS1.3 RED: `first_line` counts evictions with `Pane::new(.., cap 5)` + `feed_lines`: below the cap `first_line == 0`; after N overflow lines at offset 0 `first_line == N`; with offset > 0 the same count, and the user's offset is pinned exactly as vt100 does natively (assert exact offset value) [copy-selection: Eviction of the anchor (pane part), Output keeps the selection on its content (pane part)].
+- [x] CS1.4 GREEN: probe in `Pane::feed` (CS-2): on the main screen set offset to 1 before `process`, compute `scrolled = offset_after - 1`, `first_line += (h0 + scrolled) - h1`, restore offset `0` if it was `0` else `o0 + scrolled`.
+- [x] CS1.5 RED: `line_generation` is unchanged by plain output, bumped by a screen flip (main -> alternate and back) and bumped by `resize`; bumped when the probe is lost (offset 0 afterwards) [copy-selection: Screen switch drops it (pane part), Resize drops it (pane part)].
+- [x] CS1.6 GREEN: bump `line_generation` on screen flip, probe loss and resize.
+- [x] CS1.7 RED: `live_cursor` returns the child's cursor `(row, col)` ignoring the scrollback offset (set offset > 0 and assert the same value); hidden cursor returns `None` [copy-mode-scrollback: Cursor starts at the live cursor (pane part)].
+- [x] CS1.8 GREEN: `live_cursor`.
+- [x] CS1.9 RED: `line_end(line)` on `echo hi` returns `6`; on a blank row returns `0`; on a row in history returns its last non-blank column; the offset is restored exactly afterwards [copy-mode-scrollback: Horizontal motion (pane part), End of a blank row (pane part)].
+- [x] CS1.10 GREEN: `line_end` by paging `set_scrollback` and restoring.
+- [x] CS1.11 RED: `LineSpan::contains` table test: inside, both end cells inclusive, before first, after last, middle rows full-width, single-row span, reversed anchor ordering normalised by constructor/`span` helper [copy-selection: Motion extends backwards (span part)].
+- [x] CS1.12 GREEN: `LineSpan::contains` and the ordering helper.
+- [x] CS1.13 RED: `read_lines` over history plus screen returns exact `LineText` values (text and `wrapped` flag); cells in `[from, to]` inclusive; empty cell counts as `" "`; the viewport offset is identical before and after, including for a span entirely above the viewport [copy-selection: Selection spans scrollback (pane part), Character selection within a row (pane part)].
+- [x] CS1.14 GREEN: `read_lines` pages at most once per pane height and restores the offset (CS-6).
+- [x] CS1.15 RED: wide characters: row `a漢b` with a range starting on the continuation cell (col 2) yields `漢b`; a range ending on the head cell yields the character once; continuation cells never emit text [copy-selection: Wide character once (pane part)].
+- [x] CS1.16 GREEN: continuation skip and head snapping.
+- [x] CS1.17 RED: `copy::join`: `foo` + `bar` (not wrapped) -> `foo\nbar`; wrapped first row joins with no separator -> `abcdefghijklmn`; trailing blanks trimmed on logical-line ends and on the last row; a soft-wrapped non-last row keeps its trailing spaces (`hello` + 5 spaces + `world` -> `hello     world`); no trailing `\n` [copy-selection: Multi-row line selection (join part), Soft-wrapped rows, Soft-wrapped row keeps trailing spaces, Trailing blanks trimmed].
+- [x] CS1.18 GREEN: `join` per CS-6.
+- [x] CS1.19 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## CS2a: Pure `CopyState` (cursor, selection, motions, keys)
 
-- [ ] CS2a.1 Stubs (compile only): `Point { line, col }`, `SelectionKind::{Char, Line}`, `Selection { anchor, kind }`, `Geometry { first_line, history, rows, cols }`, `CopyCommand::{Move(CopyMotion), Yank, Exit, Ignore}`; `CopyState` gains `cursor`, `selection`, `generation` and `enter(geo, live_cursor, generation)`; new methods return defaults. The old `apply` stays as a thin adapter so CS2b can land separately and the crate keeps compiling (design CS2 split).
-- [ ] CS2a.2 Characterization (expected to pass immediately): pin the current copy key map tests that remain valid after the rewrite (`gg`, `G`, Ctrl+u/d offsets) so the adapter is proven behaviour-neutral for existing callers.
-- [ ] CS2a.3 RED: `CopyState::enter`: cursor on the live cursor clamped into the pane (row 5, col 3 -> `Point { line: first_line + history + 5, col: 3 }`); hidden cursor (`None`) uses the bottom screen row at column 0; offset `0`; no selection [copy-mode-scrollback: Cursor starts at the live cursor].
-- [ ] CS2a.4 GREEN: `enter` (CS-3).
-- [ ] CS2a.5 RED: horizontal motions: `h`/`l` move one column and clamp at 0 and `cols-1`; `0` goes to column 0; `$` uses the supplied `line_end` value; with `line_end` = 6, the sequence `h 0 h $ l` from col 3 gives cols exactly `2, 0, 0, 6, 7`; `$` with `line_end` = 0 on a blank row gives col 0 [copy-mode-scrollback: Horizontal motion, End of a blank row].
-- [ ] CS2a.6 GREEN: horizontal motion and the `$` hook (the caller resolves `line_end`, `Move` carries the request).
-- [ ] CS2a.7 RED: vertical motions with edge scrolling: cursor on the top visible row at the bottom viewport, `k` gives offset exactly 1 and the cursor line decreased by 1 (still on the top visible row), `j` returns; cursor mid-viewport `k` changes only the line, offset unchanged; clamping at `first_line` and the last line for `j`/`k` leaves cursor and offset unchanged [copy-mode-scrollback: Line motion, Cursor moves inside the viewport, Clamping (j/k)].
-- [ ] CS2a.8 GREEN: `j`/`k` plus `ensure_visible` (CS-3).
-- [ ] CS2a.9 RED: Ctrl+u/Ctrl+d on a 24-row pane move the cursor line and the offset by exactly 12; clamp at both bounds (Ctrl+u at the top row leaves state unchanged); `gg` gives `(first_line, 0)` at offset = history; `G` gives the bottom row at column 0 and offset 0; a lone `g` followed by any non-`g` key discards the pending `g` [copy-mode-scrollback: Half page, Top and bottom, Clamping (Ctrl+u), Lone g].
-- [ ] CS2a.10 GREEN: half page, `gg`/`G`, pending-`g` handling.
-- [ ] CS2a.11 RED: selection start and toggling: `v` at (5, 3) gives `Selection { anchor: (5,3), kind: Char }`; `V` gives `kind: Line`; same key again clears; `v` then `V` switches kind and keeps the anchor line; `V` then `v` likewise [copy-selection: Start character selection, Start line selection, Same key clears, Other key switches kind].
-- [ ] CS2a.12 GREEN: `v`/`V` handling (CS-4).
-- [ ] CS2a.13 RED: motions extend from the anchor in either direction: `v` at (5,3), `h` twice gives `span()` exactly `(5,1)..=(5,3)`; moving down then up past the anchor reorders the span; a Line selection spans `(first, 0)..=(last, cols-1)` [copy-selection: Motion extends backwards, selection kinds extend].
-- [ ] CS2a.14 GREEN: `span()` (ordering and line-kind widening).
-- [ ] CS2a.15 RED: key map: `y` with a selection gives `Yank`, `y` without gives `Ignore`; `q` and `i` give `Exit`; Esc with a selection clears it and returns `Ignore`, Esc without gives `Exit`; unlisted keys are `Ignore`, never forwarded [copy-selection: Yank without selection (core part), Esc clears then exits (core part); copy-mode-scrollback: Esc with selection, `q` with selection, Exit (core part)].
-- [ ] CS2a.16 GREEN: `y`/Esc/`q`/`i` mapping.
-- [ ] CS2a.17 RED: `on_key(&key, repeat)`: Repeat of `v V y Esc q i` returns `Ignore` and leaves selection and cursor unchanged; Repeat of `j`, `h`, `l`, `k`, Ctrl+d moves exactly like Press [modal-input: Repeat of selection keys in COPY (core part), Repeat of motions in COPY (core part)].
-- [ ] CS2a.18 GREEN: Repeat filter (CS-4).
-- [ ] CS2a.19 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] CS2a.1 Stubs (compile only): `Point { line, col }`, `SelectionKind::{Char, Line}`, `Selection { anchor, kind }`, `Geometry { first_line, history, rows, cols }`, `CopyCommand::{Move(CopyMotion), Yank, Exit, Ignore}`; `CopyState` gains `cursor`, `selection`, `generation` and `enter(geo, live_cursor, generation)`; new methods return defaults. The old `apply` stays as a thin adapter so CS2b can land separately and the crate keeps compiling (design CS2 split).
+- [x] CS2a.2 Characterization (expected to pass immediately): pin the current copy key map tests that remain valid after the rewrite (`gg`, `G`, Ctrl+u/d offsets) so the adapter is proven behaviour-neutral for existing callers.
+- [x] CS2a.3 RED: `CopyState::enter`: cursor on the live cursor clamped into the pane (row 5, col 3 -> `Point { line: first_line + history + 5, col: 3 }`); hidden cursor (`None`) uses the bottom screen row at column 0; offset `0`; no selection [copy-mode-scrollback: Cursor starts at the live cursor].
+- [x] CS2a.4 GREEN: `enter` (CS-3).
+- [x] CS2a.5 RED: horizontal motions: `h`/`l` move one column and clamp at 0 and `cols-1`; `0` goes to column 0; `$` uses the supplied `line_end` value; with `line_end` = 6, the sequence `h 0 h $ l` from col 3 gives cols exactly `2, 0, 0, 6, 7`; `$` with `line_end` = 0 on a blank row gives col 0 [copy-mode-scrollback: Horizontal motion, End of a blank row].
+- [x] CS2a.6 GREEN: horizontal motion and the `$` hook (the caller resolves `line_end`, `Move` carries the request).
+- [x] CS2a.7 RED: vertical motions with edge scrolling: cursor on the top visible row at the bottom viewport, `k` gives offset exactly 1 and the cursor line decreased by 1 (still on the top visible row), `j` returns; cursor mid-viewport `k` changes only the line, offset unchanged; clamping at `first_line` and the last line for `j`/`k` leaves cursor and offset unchanged [copy-mode-scrollback: Line motion, Cursor moves inside the viewport, Clamping (j/k)].
+- [x] CS2a.8 GREEN: `j`/`k` plus `ensure_visible` (CS-3).
+- [x] CS2a.9 RED: Ctrl+u/Ctrl+d on a 24-row pane move the cursor line and the offset by exactly 12; clamp at both bounds (Ctrl+u at the top row leaves state unchanged); `gg` gives `(first_line, 0)` at offset = history; `G` gives the bottom row at column 0 and offset 0; a lone `g` followed by any non-`g` key discards the pending `g` [copy-mode-scrollback: Half page, Top and bottom, Clamping (Ctrl+u), Lone g].
+- [x] CS2a.10 GREEN: half page, `gg`/`G`, pending-`g` handling.
+- [x] CS2a.11 RED: selection start and toggling: `v` at (5, 3) gives `Selection { anchor: (5,3), kind: Char }`; `V` gives `kind: Line`; same key again clears; `v` then `V` switches kind and keeps the anchor line; `V` then `v` likewise [copy-selection: Start character selection, Start line selection, Same key clears, Other key switches kind].
+- [x] CS2a.12 GREEN: `v`/`V` handling (CS-4).
+- [x] CS2a.13 RED: motions extend from the anchor in either direction: `v` at (5,3), `h` twice gives `span()` exactly `(5,1)..=(5,3)`; moving down then up past the anchor reorders the span; a Line selection spans `(first, 0)..=(last, cols-1)` [copy-selection: Motion extends backwards, selection kinds extend].
+- [x] CS2a.14 GREEN: `span()` (ordering and line-kind widening).
+- [x] CS2a.15 RED: key map: `y` with a selection gives `Yank`, `y` without gives `Ignore`; `q` and `i` give `Exit`; Esc with a selection clears it and returns `Ignore`, Esc without gives `Exit`; unlisted keys are `Ignore`, never forwarded [copy-selection: Yank without selection (core part), Esc clears then exits (core part); copy-mode-scrollback: Esc with selection, `q` with selection, Exit (core part)].
+- [x] CS2a.16 GREEN: `y`/Esc/`q`/`i` mapping.
+- [x] CS2a.17 RED: `on_key(&key, repeat)`: Repeat of `v V y Esc q i` returns `Ignore` and leaves selection and cursor unchanged; Repeat of `j`, `h`, `l`, `k`, Ctrl+d moves exactly like Press [modal-input: Repeat of selection keys in COPY (core part), Repeat of motions in COPY (core part)].
+- [x] CS2a.18 GREEN: Repeat filter (CS-4).
+- [x] CS2a.19 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## CS2b: App wiring, revalidation, COPY cursor
 
