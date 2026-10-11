@@ -7,6 +7,7 @@
 
 use super::catalog::{cli_models, curated, same_model};
 use super::config::{AiConfig, Assignment, Task};
+use super::parse::is_format;
 use super::{CATALOG, Detection, Kind, Status, status_text};
 
 /// What a picker is assigning to.
@@ -285,6 +286,24 @@ pub fn task_label(config: &AiConfig, task: Task, detection: Option<&Detection>) 
 /// Rows visible at once in the picker body.
 pub const VIEW: usize = 10;
 
+/// Longest custom model name, in characters.
+pub const MAX_NAME: usize = 128;
+
+/// A custom model name once trimmed and capped; `None` when blank or when
+/// it holds a control character.
+pub fn validate_custom(name: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().any(char::is_control) {
+        return None;
+    }
+    Some(name.chars().take(MAX_NAME).collect())
+}
+
+/// Whether a character may be typed into the custom buffer.
+fn accepts(c: char) -> bool {
+    !c.is_control() && !is_format(c) && !c.is_whitespace()
+}
+
 /// Which list the picker is showing.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Level {
@@ -419,7 +438,13 @@ impl Picker {
                     _ => Outcome::Stay,
                 }
             }
-            Level::Custom { .. } => Outcome::Stay,
+            Level::Custom { engine, text } => match validate_custom(&text) {
+                Some(model) => Outcome::Commit(Assignment {
+                    engine: Some(engine),
+                    model: Some(model),
+                }),
+                None => Outcome::Stay,
+            },
         }
     }
 
@@ -449,6 +474,46 @@ impl Picker {
                 self.follow();
                 Outcome::Stay
             }
+        }
+    }
+
+    /// The custom buffer, when the field is focused.
+    pub fn text(&self) -> Option<&str> {
+        match &self.level {
+            Level::Custom { text, .. } => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Type one character into the custom buffer.
+    pub fn type_char(&mut self, c: char) {
+        if let Level::Custom { text, .. } = &mut self.level
+            && accepts(c)
+            && text.chars().count() < MAX_NAME
+        {
+            text.push(c);
+        }
+    }
+
+    /// Delete the last character of the custom buffer.
+    pub fn backspace(&mut self) {
+        if let Level::Custom { text, .. } = &mut self.level {
+            text.pop();
+        }
+    }
+
+    /// Ctrl+U: empty the custom buffer.
+    pub fn clear_text(&mut self) {
+        if let Level::Custom { text, .. } = &mut self.level {
+            text.clear();
+        }
+    }
+
+    /// Paste into the custom buffer; ignored outside the field.
+    pub fn paste(&mut self, pasted: &str) {
+        let first_line = pasted.split(['\n', '\r']).next().unwrap_or("");
+        for c in first_line.chars() {
+            self.type_char(c);
         }
     }
 
@@ -482,6 +547,8 @@ impl Picker {
     }
 }
 
+#[cfg(test)]
+mod custom_tests;
 #[cfg(test)]
 mod machine_tests;
 #[cfg(test)]
