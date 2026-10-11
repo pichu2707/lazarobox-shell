@@ -1,7 +1,7 @@
 //! Pure edit of `config.toml` text: changes only the menu-owned keys and
 //! keeps everything else byte-for-byte (comments, order, whitespace).
 
-use toml_edit::{DocumentMut, Item, Table, Value};
+use toml_edit::{DocumentMut, InlineTable, Item, Table, TableLike, Value};
 
 use super::config::ConfigEdit;
 
@@ -45,27 +45,20 @@ pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String
         None => DocumentMut::new(),
     };
     for edit in edits {
-        if doc.get(edit.table).is_none() {
-            let mut table = Table::new();
-            if doc.as_table().is_empty() {
-                // Comments of a file with no entries are the document's
-                // trailing text; move them in front of the new table.
-                let mut head = doc.trailing().as_str().unwrap_or_default().to_owned();
-                if !head.is_empty() {
-                    if !head.ends_with('\n') {
-                        head.push('\n');
-                    }
+        // Comments of a file with no entries are the document's trailing
+        // text; they move in front of the first table written.
+        let mut head = doc.as_table().is_empty().then(|| {
+            let mut head = doc.trailing().as_str().unwrap_or_default().to_owned();
+            if !head.is_empty() {
+                if !head.ends_with('\n') {
                     head.push('\n');
                 }
-                doc.set_trailing("");
-                table.decor_mut().set_prefix(head);
+                head.push('\n');
             }
-            doc.insert(edit.table, Item::Table(table));
-        }
-        let table = doc
-            .get_mut(edit.table)
-            .and_then(Item::as_table_like_mut)
-            .ok_or(EditError::NotATable(edit.table))?;
+            doc.set_trailing("");
+            head
+        });
+        let table = walk_to_table(&mut doc, edit, &mut head)?;
         let mut value = Value::from(edit.value.as_ref());
         match table.get_mut(edit.key) {
             // Replace in the slot so the key's own decor (leading comment,
@@ -103,6 +96,49 @@ pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String
     }
     out.push_str(&text[done..]);
     Ok(out)
+}
+
+/// Walks the dotted `edit.table` path from the root and returns the leaf
+/// table. A missing segment is created: parents implicit (no empty header),
+/// the leaf explicit, dotted under a dotted parent and inline under an inline
+/// one. `head` is the pending comment prefix of a comment-only file; it goes
+/// on the leaf table when that is created.
+fn walk_to_table<'a>(
+    doc: &'a mut DocumentMut,
+    edit: &ConfigEdit,
+    head: &mut Option<String>,
+) -> Result<&'a mut dyn TableLike, EditError> {
+    let mut table: &mut dyn TableLike = doc.as_table_mut();
+    let mut inline = false;
+    let mut end = 0;
+    let mut segments = edit.table.split('.').peekable();
+    while let Some(segment) = segments.next() {
+        end += segment.len();
+        let last = segments.peek().is_none();
+        if !table.contains_key(segment) {
+            let child = if inline {
+                Item::Value(Value::InlineTable(InlineTable::new()))
+            } else {
+                let mut child = Table::new();
+                child.set_implicit(!last);
+                child.set_dotted(table.is_dotted());
+                if last && let Some(head) = head.take() {
+                    child.decor_mut().set_prefix(head);
+                }
+                Item::Table(child)
+            };
+            table.insert(segment, child);
+        }
+        let item = table
+            .get_mut(segment)
+            .ok_or(EditError::NotATable(&edit.table[..end]))?;
+        inline = matches!(item, Item::Value(Value::InlineTable(_)));
+        table = item
+            .as_table_like_mut()
+            .ok_or(EditError::NotATable(&edit.table[..end]))?;
+        end += 1;
+    }
+    Ok(table)
 }
 
 /// Byte offsets of the `\n` that end a line outside any string literal.
@@ -587,5 +623,179 @@ other = 1
         let existing = "ai = 3\n[statusline]\nposition = \"bottom\"\n";
         let out = apply_edit(Some(existing), &[edit("statusline", "top")]).unwrap();
         assert_eq!(out, "ai = 3\n[statusline]\nposition = \"top\"\n");
+    }
+
+    // Spec (config-persistence): nested table edits. `table` is a dotted
+    // static path; missing parents become implicit tables.
+    fn code_edits(engine: &'static str, model: &'static str) -> [ConfigEdit; 2] {
+        let owned = |key, value: &'static str| ConfigEdit {
+            table: "ai.tasks.code",
+            key,
+            value: std::borrow::Cow::Borrowed(value),
+        };
+        [owned("engine", engine), owned("model", model)]
+    }
+
+    #[test]
+    fn a_nested_table_is_created_without_empty_parent_headers() {
+        let out = apply_edit(None, &code_edits("claude", "opus")).unwrap();
+        assert_eq!(
+            out,
+            "[ai.tasks.code]\nengine = \"claude\"\nmodel = \"opus\"\n"
+        );
+    }
+
+    #[test]
+    fn a_nested_table_is_appended_after_an_existing_ai_table() {
+        let existing = "# mine\n[ai]\nengine = \"x\"  # keep\nmodel = \"y\"\n";
+        let out = apply_edit(Some(existing), &code_edits("claude", "opus")).unwrap();
+        assert_eq!(
+            out,
+            format!("{existing}\n[ai.tasks.code]\nengine = \"claude\"\nmodel = \"opus\"\n")
+        );
+    }
+
+    #[test]
+    fn a_nested_table_keeps_crlf() {
+        let existing = "[ai]\r\nengine = \"x\"\r\n";
+        let out = apply_edit(Some(existing), &code_edits("claude", "opus")).unwrap();
+        assert_eq!(
+            out,
+            format!("{existing}\r\n[ai.tasks.code]\r\nengine = \"claude\"\r\nmodel = \"opus\"\r\n")
+        );
+    }
+
+    #[test]
+    fn comments_stay_before_a_nested_table_in_a_comment_only_file() {
+        let out = apply_edit(Some("# header\n"), &code_edits("claude", "opus")).unwrap();
+        assert_eq!(
+            out,
+            "# header\n\n[ai.tasks.code]\nengine = \"claude\"\nmodel = \"opus\"\n"
+        );
+    }
+
+    #[test]
+    fn an_existing_nested_table_is_edited_in_place() {
+        let existing = "[ai.tasks.code]\n# pick\nmodel = \"old:7b\"  # m\nengine = \"x\"\n";
+        let out = apply_edit(Some(existing), &code_edits("claude", "opus")).unwrap();
+        assert_eq!(
+            out,
+            "[ai.tasks.code]\n# pick\nmodel = \"opus\"  # m\nengine = \"claude\"\n"
+        );
+    }
+
+    #[test]
+    fn a_missing_key_is_added_to_an_existing_nested_table() {
+        let existing = "[ai]\nengine = \"x\"\n\n[ai.tasks.code]\nmodel = \"old\"\n\n[tabbar]\nposition = \"top\"\n";
+        let out = apply_edit(Some(existing), &code_edits("claude", "opus")).unwrap();
+        assert_eq!(
+            out,
+            "[ai]\nengine = \"x\"\n\n[ai.tasks.code]\nmodel = \"opus\"\nengine = \"claude\"\n\n[tabbar]\nposition = \"top\"\n"
+        );
+    }
+
+    #[test]
+    fn a_task_under_an_explicit_tasks_table_leaves_its_siblings_alone() {
+        let existing = "[ai.tasks]\nchat = 3\n";
+        let out = apply_edit(Some(existing), &code_edits("claude", "opus")).unwrap();
+        assert_eq!(
+            out,
+            format!("{existing}\n[ai.tasks.code]\nengine = \"claude\"\nmodel = \"opus\"\n")
+        );
+    }
+
+    #[test]
+    fn inline_parents_are_edited_in_place() {
+        let existing = "[ai]\ntasks = { code = { engine = \"a\", model = \"b\" } }\n";
+        let out = apply_edit(Some(existing), &code_edits("claude", "opus")).unwrap();
+        assert_eq!(
+            out,
+            "[ai]\ntasks = { code = { engine = \"claude\", model = \"opus\" } }\n"
+        );
+        let out = apply_edit(Some("[ai]\ntasks = {}\n"), &code_edits("claude", "opus")).unwrap();
+        assert_eq!(
+            out,
+            "[ai]\ntasks = { code = { engine = \"claude\", model = \"opus\" } }\n"
+        );
+    }
+
+    #[test]
+    fn dotted_parents_are_edited_in_place() {
+        let existing = "ai.tasks.code.engine = \"a\"\n";
+        let out = apply_edit(Some(existing), &code_edits("claude", "opus")).unwrap();
+        assert_eq!(
+            out,
+            "ai.tasks.code.engine = \"claude\"\nai.tasks.code.model = \"opus\"\n"
+        );
+    }
+
+    #[test]
+    fn nested_collisions_name_the_full_path() {
+        let refused = |text, err| {
+            assert_eq!(
+                apply_edit(Some(text), &code_edits("claude", "opus")),
+                Err(err),
+                "{text:?}"
+            );
+        };
+        refused("ai = 3\n", EditError::NotATable("ai"));
+        refused("[ai]\ntasks = 3\n", EditError::NotATable("ai.tasks"));
+        refused("[[ai.tasks]]\nx = 1\n", EditError::NotATable("ai.tasks"));
+        refused(
+            "[ai.tasks]\ncode = \"x\"\n",
+            EditError::NotATable("ai.tasks.code"),
+        );
+        refused(
+            "[ai.tasks.code.engine]\nx = 1\n",
+            EditError::KeyIsTable {
+                table: "ai.tasks.code",
+                key: "engine",
+            },
+        );
+    }
+
+    #[test]
+    fn the_general_table_stays_byte_identical_when_only_a_task_changes() {
+        let existing = "[ai]\nengine = \"x\"\nmodel = \"y\"\n";
+        let out = apply_edit(Some(existing), &code_edits("claude", "opus")).unwrap();
+        assert!(out.starts_with(existing), "{out:?}");
+    }
+
+    // Round trip: what the reader gets back is what was written.
+    #[test]
+    fn written_task_tables_read_back_to_the_same_assignments() {
+        use crate::core::ai::config::{AiConfig, Assignment, Task};
+        let values = [
+            ("claude", "opus"),
+            ("ollama", "old:7b"),
+            ("", ""),
+            ("codex", "default"),
+            ("lmstudio", "m"),
+        ];
+        let some = |v: &str| (!v.is_empty()).then(|| v.to_owned());
+        let mut edits = Vec::new();
+        let mut want = AiConfig::default();
+        for (task, (engine, model)) in Task::ALL.into_iter().zip(values) {
+            for (key, value) in [("engine", engine), ("model", model)] {
+                edits.push(ConfigEdit {
+                    table: task.table(),
+                    key,
+                    value: std::borrow::Cow::Borrowed(value),
+                });
+            }
+            want.set(
+                task,
+                Assignment {
+                    engine: some(engine),
+                    model: some(model),
+                },
+            );
+        }
+        for text in [None, Some("# c\n[statusline]\nposition = \"top\"\n")] {
+            let out = apply_edit(text, &edits).unwrap();
+            let (_, ai, notice) = Config::load_with_ai(Ok(out.clone()));
+            assert_eq!(ai, want, "{out:?}");
+            assert_eq!(notice, None, "{out:?}");
+        }
     }
 }
