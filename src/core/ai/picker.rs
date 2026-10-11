@@ -282,6 +282,182 @@ pub fn task_label(config: &AiConfig, task: Task, detection: Option<&Detection>) 
     }
 }
 
+/// Rows visible at once in the picker body.
+pub const VIEW: usize = 10;
+
+/// Which list the picker is showing.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Level {
+    Engines,
+    Models { engine: String },
+    Custom { engine: String, text: String },
+}
+
+/// What a picker action asks of the caller.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Outcome {
+    /// Nothing for the caller to do (the picker may have changed).
+    Stay,
+    /// A leaf was chosen: apply it to the target and close the picker. The
+    /// default assignment means "clear".
+    Commit(Assignment),
+    /// Leave the picker without choosing.
+    Close,
+    /// Run a new detection.
+    Refresh,
+}
+
+/// The picker state: where it is and where the cursor is. Rows are never
+/// stored; every call derives them from the draft and the detection.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Picker {
+    pub target: Target,
+    pub level: Level,
+    cursor: usize,
+    offset: usize,
+}
+
+impl Picker {
+    pub fn open(target: Target, draft: &AiConfig, detection: Option<&Detection>) -> Self {
+        let mut picker = Self {
+            target,
+            level: Level::Engines,
+            cursor: 0,
+            offset: 0,
+        };
+        picker.cursor = picker.entry_cursor(draft, detection);
+        picker
+    }
+
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    /// The rows of the current level (the Custom level sits on top of its
+    /// engine's model rows).
+    pub fn rows(&self, draft: &AiConfig, detection: Option<&Detection>) -> Vec<PickRow> {
+        match &self.level {
+            Level::Engines => engine_rows(self.target, draft, detection),
+            Level::Models { engine } | Level::Custom { engine, .. } => {
+                model_rows(engine, self.target, draft, detection)
+            }
+        }
+    }
+
+    /// Where the cursor starts on the current level: on the current engine,
+    /// or on the current model when selectable, else on the first
+    /// selectable row, else on the first row.
+    fn entry_cursor(&self, draft: &AiConfig, detection: Option<&Detection>) -> usize {
+        let rows = self.rows(draft, detection);
+        match self.level {
+            Level::Engines => rows
+                .iter()
+                .position(|r| r.current && matches!(r.key, PickKey::Engine(_)))
+                .unwrap_or(0),
+            _ => rows
+                .iter()
+                .position(|r| r.current && r.enabled)
+                .or_else(|| rows.iter().position(|r| r.enabled))
+                .unwrap_or(0),
+        }
+    }
+
+    /// Move the cursor one row, wrapping over every row (disabled included).
+    pub fn step(&mut self, forward: bool, draft: &AiConfig, detection: Option<&Detection>) {
+        let len = self.rows(draft, detection).len();
+        if len == 0 {
+            return;
+        }
+        self.cursor = if forward {
+            (self.cursor + 1) % len
+        } else {
+            (self.cursor + len - 1) % len
+        };
+    }
+
+    /// Choose the row under the cursor.
+    pub fn enter(&mut self, draft: &AiConfig, detection: Option<&Detection>) -> Outcome {
+        let rows = self.rows(draft, detection);
+        match self.level.clone() {
+            Level::Engines => {
+                let Some(row) = rows.get(self.cursor).filter(|r| r.enabled) else {
+                    return Outcome::Stay;
+                };
+                match &row.key {
+                    PickKey::Clear => Outcome::Commit(Assignment::default()),
+                    PickKey::Engine(id) => {
+                        self.level = Level::Models { engine: id.clone() };
+                        self.offset = 0;
+                        self.cursor = self.entry_cursor(draft, detection);
+                        Outcome::Stay
+                    }
+                    _ => Outcome::Stay,
+                }
+            }
+            Level::Models { engine } => {
+                let Some(row) = rows.get(self.cursor).filter(|r| r.enabled) else {
+                    return Outcome::Stay;
+                };
+                match &row.key {
+                    PickKey::Model(name) => Outcome::Commit(Assignment {
+                        engine: Some(engine),
+                        model: Some(name.clone()),
+                    }),
+                    PickKey::Custom => {
+                        self.level = Level::Custom {
+                            engine,
+                            text: String::new(),
+                        };
+                        Outcome::Stay
+                    }
+                    _ => Outcome::Stay,
+                }
+            }
+            Level::Custom { .. } => Outcome::Stay,
+        }
+    }
+
+    /// Go back one level; `Close` from the first level.
+    pub fn back(&mut self, draft: &AiConfig, detection: Option<&Detection>) -> Outcome {
+        match self.level.clone() {
+            Level::Engines => Outcome::Close,
+            Level::Models { engine } => {
+                self.level = Level::Engines;
+                let rows = self.rows(draft, detection);
+                self.cursor = rows
+                    .iter()
+                    .position(|r| r.key == PickKey::Engine(engine.clone()))
+                    .unwrap_or(0);
+                Outcome::Stay
+            }
+            Level::Custom { engine, .. } => {
+                self.level = Level::Models { engine };
+                let rows = self.rows(draft, detection);
+                self.cursor = rows
+                    .iter()
+                    .position(|r| r.key == PickKey::Custom)
+                    .unwrap_or(0);
+                Outcome::Stay
+            }
+        }
+    }
+
+    /// `r`: ask for a new detection, except where `r` is typed.
+    pub fn refresh(&self) -> Outcome {
+        match self.level {
+            Level::Custom { .. } => Outcome::Stay,
+            _ => Outcome::Refresh,
+        }
+    }
+}
+
+#[cfg(test)]
+mod machine_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
