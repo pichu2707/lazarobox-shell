@@ -334,6 +334,11 @@ impl App {
         self.menu.as_ref()
     }
 
+    /// The live config (the draft while the menu is open).
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
     /// Whether a redraw is due. Reading it clears it.
     pub fn take_dirty(&mut self) -> bool {
         std::mem::take(&mut self.dirty)
