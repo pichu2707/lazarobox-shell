@@ -11,6 +11,7 @@ use super::{
         Detection,
         config::{AiConfig, Task},
         menu::AiMenu,
+        picker::{Level, Mark, Outcome, Picker, Target},
     },
     config::{BarPosition, Config, ConfigEdit},
 };
@@ -146,13 +147,24 @@ pub enum MenuCommand {
 /// One line of the popup body.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Row {
-    Title(&'static str),
+    Title(Cow<'static, str>),
     Item {
         label: &'static str,
         value: Option<Cow<'static, str>>,
         selected: bool,
         enabled: bool,
     },
+    /// A picker row: the cursor row is `selected`, the current assignment of
+    /// the target is `current`, a row that cannot be chosen is not `enabled`.
+    Pick {
+        label: String,
+        mark: Mark,
+        selected: bool,
+        enabled: bool,
+        current: bool,
+    },
+    /// The custom model field and its buffer.
+    Field(String),
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -217,12 +229,55 @@ impl MenuState {
             }
     }
 
+    /// The picker view: a title and the window of rows around the cursor.
+    fn picker_rows(&self) -> Option<Vec<Row>> {
+        let ai = self.ai.as_ref()?;
+        let picker = ai.picker()?;
+        let all = ai.pick_rows();
+        let row = match picker.target {
+            Target::All => "Set all tasks",
+            Target::Task(task) => task.id(),
+        };
+        let mut title = match &picker.level {
+            Level::Engines => format!("Engine for {row}"),
+            Level::Models { engine } | Level::Custom { engine, .. } => {
+                format!("Model for {row} ({engine})")
+            }
+        };
+        if let Some(counter) = picker.counter(all.len()) {
+            title = format!("{title} {counter}");
+        }
+        let mut rows = vec![Row::Title(Cow::Owned(title))];
+        for index in picker.visible(all.len()) {
+            let pick = &all[index];
+            rows.push(Row::Pick {
+                label: pick.label.clone(),
+                mark: pick.mark.clone(),
+                selected: index == picker.cursor(),
+                enabled: pick.enabled,
+                current: pick.current,
+            });
+        }
+        Some(rows)
+    }
+
+    /// The target of the selected AI row.
+    fn selected_target(&self) -> Option<Target> {
+        match self.selected?.checked_sub(choices().count())? {
+            0 => Some(Target::All),
+            n => Task::ALL.get(n - 1).map(|task| Target::Task(*task)),
+        }
+    }
+
     pub fn rows(&self, config: &Config) -> Vec<Row> {
+        if let Some(rows) = self.picker_rows() {
+            return rows;
+        }
         let mut rows = Vec::new();
         let mut index = 0;
         let ai_section = self.ai.as_ref().map(|_| &AI_SECTION);
         for section in SECTIONS.iter().chain(ai_section) {
-            rows.push(Row::Title(section.title));
+            rows.push(Row::Title(Cow::Borrowed(section.title)));
             for item in section.items {
                 rows.push(match &item.kind {
                     ItemKind::Assign(task) => {
@@ -266,6 +321,9 @@ impl MenuState {
         if !repeat {
             self.error = None;
         }
+        if self.ai.as_ref().is_some_and(|ai| ai.picker().is_some()) {
+            return self.on_picker_key(key, repeat);
+        }
         if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
             return MenuCommand::None;
         }
@@ -275,10 +333,51 @@ impl MenuState {
             KeyCode::Char('l' | ' ') | KeyCode::Right => self.cycle(true, config),
             KeyCode::Char('h') | KeyCode::Left => self.cycle(false, config),
             KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
+            KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
             KeyCode::Enter if !repeat => MenuCommand::Save,
             KeyCode::Esc if !repeat => MenuCommand::Cancel,
             _ => MenuCommand::None,
         }
+    }
+
+    fn open_picker(&mut self) -> MenuCommand {
+        if let (Some(target), Some(ai)) = (self.selected_target(), &mut self.ai) {
+            ai.open_picker(target);
+        }
+        MenuCommand::None
+    }
+
+    /// Keys while the picker is open: nothing reaches the task list, and Esc
+    /// never cancels the menu.
+    fn on_picker_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
+        let Some(ai) = &mut self.ai else {
+            return MenuCommand::None;
+        };
+        if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
+            return MenuCommand::None;
+        }
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                ai.drive(|p, d, e| {
+                    p.step(true, d, e);
+                    Outcome::Stay
+                });
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                ai.drive(|p, d, e| {
+                    p.step(false, d, e);
+                    Outcome::Stay
+                });
+            }
+            KeyCode::Enter if !repeat => {
+                ai.drive(Picker::enter);
+            }
+            KeyCode::Esc if !repeat => {
+                ai.drive(Picker::back);
+            }
+            _ => {}
+        }
+        MenuCommand::None
     }
 
     fn step_selection(&mut self, forward: bool) -> MenuCommand {
@@ -386,7 +485,7 @@ mod tests {
         assert_eq!(
             menu.rows(&Config::default()),
             vec![
-                Row::Title("Settings"),
+                Row::Title("Settings".into()),
                 row("Statusline position", Some("bottom"), true),
                 row("Tab bar position", Some("top"), false),
                 row("Mouse: off (coming soon)", None, false),
@@ -591,3 +690,6 @@ mod tests {
 
 #[cfg(test)]
 mod ai_tests;
+
+#[cfg(test)]
+mod picker_tests;
