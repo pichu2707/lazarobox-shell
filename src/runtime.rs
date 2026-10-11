@@ -37,7 +37,7 @@ use tokio::{
 use crate::{
     app::{App, AppEvent, Effect},
     core::{
-        ai::Detection,
+        ai::{Detection, config::AiConfig},
         config::{Config, config_path},
         layout::PaneId,
         pane::{CursorKind, CursorShape},
@@ -102,9 +102,10 @@ pub async fn run() -> io::Result<()> {
     let shell = env::var("SHELL").ok();
     // Resolved once: the startup read and the menu's save use the same file.
     let config_path = config_path(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"));
-    let (config, notice) = load_config(config_path.as_deref());
+    let (config, ai, notice) = load_config(config_path.as_deref());
     let mut app = App::new(cols, rows)
         .with_config(&config)
+        .with_ai(ai)
         .with_notice(notice)
         .with_hostname(local_hostname().as_deref())
         .with_dir_check(|dir| dir.is_dir())
@@ -150,10 +151,10 @@ fn local_hostname() -> Option<String> {
 }
 
 /// Reads the config once at startup; a missing file is silent defaults.
-fn load_config(path: Option<&Path>) -> (Config, Option<String>) {
+fn load_config(path: Option<&Path>) -> (Config, AiConfig, Option<String>) {
     match path {
-        Some(path) => Config::load(fs::read_to_string(path)),
-        None => (Config::default(), None),
+        Some(path) => Config::load_with_ai(fs::read_to_string(path)),
+        None => (Config::default(), AiConfig::default(), None),
     }
 }
 
