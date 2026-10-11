@@ -10,7 +10,7 @@ use super::{
     ai::{
         Detection,
         config::{AiConfig, Task},
-        menu::{AiField, AiMenu},
+        menu::AiMenu,
     },
     config::{BarPosition, Config, ConfigEdit},
 };
@@ -29,10 +29,6 @@ pub enum ItemKind {
     Choice(Choice),
     /// Drawn but never selectable.
     Disabled,
-    /// An AI row whose choices come from the last detection.
-    Dynamic(AiField),
-    /// A display-only row computed from the AI draft.
-    Derived(fn(&AiMenu) -> String),
     /// An AI assignment row; `None` is `Set all tasks`.
     Assign(Option<Task>),
 }
@@ -131,10 +127,7 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
         .flat_map(|section| section.items.iter())
         .filter_map(|item| match &item.kind {
             ItemKind::Choice(choice) => Some((item, choice)),
-            ItemKind::Disabled
-            | ItemKind::Dynamic(_)
-            | ItemKind::Derived(_)
-            | ItemKind::Assign(_) => None,
+            ItemKind::Disabled | ItemKind::Assign(_) => None,
         })
 }
 
@@ -232,36 +225,20 @@ impl MenuState {
             rows.push(Row::Title(section.title));
             for item in section.items {
                 rows.push(match &item.kind {
-                    ItemKind::Dynamic(field) => {
+                    ItemKind::Assign(task) => {
                         let row = Row::Item {
                             label: item.label,
-                            value: self.ai.as_ref().map(|ai| Cow::Owned(ai.value(*field))),
+                            value: self.ai.as_ref().map(|ai| Cow::Owned(ai.value(*task))),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
                         index += 1;
                         row
                     }
-                    ItemKind::Derived(text) => Row::Item {
-                        label: item.label,
-                        value: self.ai.as_ref().map(|ai| Cow::Owned(text(ai))),
-                        selected: false,
-                        enabled: false,
-                    },
                     ItemKind::Choice(choice) => {
                         let row = Row::Item {
                             label: item.label,
                             value: Some(Cow::Borrowed(choice.values[(choice.get)(config)])),
-                            selected: self.selected == Some(index),
-                            enabled: true,
-                        };
-                        index += 1;
-                        row
-                    }
-                    ItemKind::Assign(task) => {
-                        let row = Row::Item {
-                            label: item.label,
-                            value: self.ai.as_ref().map(|ai| Cow::Owned(ai.task_value(*task))),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
@@ -339,28 +316,16 @@ impl MenuState {
         MenuCommand::Changed
     }
 
-    /// The keys that differ from the config captured at open, then both AI
-    /// keys when either changed (`none` is written as an empty string).
+    /// The keys that differ from the config captured at open.
     pub fn edits(&self, live: &Config) -> Vec<ConfigEdit> {
-        let mut edits: Vec<ConfigEdit> = choices()
+        choices()
             .filter(|(_, c)| (c.get)(live) != (c.get)(&self.original))
             .map(|(_, c)| ConfigEdit {
                 table: c.table,
                 key: c.key,
                 value: Cow::Borrowed(c.values[(c.get)(live)]),
             })
-            .collect();
-        if let Some(ai) = self.ai.as_ref().filter(|ai| ai.changed()) {
-            for field in [AiField::Engine, AiField::Model] {
-                let (table, key) = field.key_path();
-                edits.push(ConfigEdit {
-                    table,
-                    key,
-                    value: Cow::Owned(ai.saved_value(field)),
-                });
-            }
-        }
-        edits
+            .collect()
     }
 
     /// The config captured when the menu opened.
