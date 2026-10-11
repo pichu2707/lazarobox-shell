@@ -234,6 +234,46 @@ mod tests {
         }
     }
 
+    // Spec (config-persistence): AI collisions use the same footer wording.
+    // Characterization: the generic mapping already covers the `ai` keys.
+    #[test]
+    fn ai_collisions_map_to_their_message_and_stay_byte_identical() {
+        let engine = ConfigEdit {
+            table: "ai",
+            key: "engine",
+            value: std::borrow::Cow::Borrowed("ollama"),
+        };
+        let cases = [
+            (
+                "ai = 3\n",
+                "config.toml: ai is not a table; fix it before saving",
+            ),
+            (
+                "[ai.engine]\nx = 1\n",
+                "config.toml: ai.engine is a table; fix it before saving",
+            ),
+            (
+                "[ai]\nengine = \"x\"\n[ai.model]\nx = 1\n",
+                "config.toml: ai.model is a table; fix it before saving",
+            ),
+        ];
+        let model = ConfigEdit {
+            key: "model",
+            ..engine.clone()
+        };
+        for (text, message) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let path = config_in(&dir);
+            fs::write(&path, text).unwrap();
+            assert_eq!(
+                save_config(Some(&path), &[engine.clone(), model.clone()]),
+                Err(message.to_owned()),
+                "for {text:?}"
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        }
+    }
+
     #[test]
     fn other_read_errors_say_save_failed() {
         let dir = tempfile::tempdir().unwrap();
