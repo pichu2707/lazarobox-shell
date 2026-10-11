@@ -70,15 +70,15 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 - [x] CS2a.8 GREEN: `j`/`k` plus `ensure_visible` (CS-3).
 - [x] CS2a.9 RED: Ctrl+u/Ctrl+d on a 24-row pane move the cursor line and the offset by exactly 12; clamp at both bounds (Ctrl+u at the top row leaves state unchanged); `gg` gives `(first_line, 0)` at offset = history; `G` gives the bottom row at column 0 and offset 0; a lone `g` followed by any non-`g` key discards the pending `g` [copy-mode-scrollback: Half page, Top and bottom, Clamping (Ctrl+u), Lone g].
 - [x] CS2a.10 GREEN: half page, `gg`/`G`, pending-`g` handling.
-- [ ] CS2a.11 RED: selection start and toggling: `v` at (5, 3) gives `Selection { anchor: (5,3), kind: Char }`; `V` gives `kind: Line`; same key again clears; `v` then `V` switches kind and keeps the anchor line; `V` then `v` likewise [copy-selection: Start character selection, Start line selection, Same key clears, Other key switches kind].
-- [ ] CS2a.12 GREEN: `v`/`V` handling (CS-4).
-- [ ] CS2a.13 RED: motions extend from the anchor in either direction: `v` at (5,3), `h` twice gives `span()` exactly `(5,1)..=(5,3)`; moving down then up past the anchor reorders the span; a Line selection spans `(first, 0)..=(last, cols-1)` [copy-selection: Motion extends backwards, selection kinds extend].
-- [ ] CS2a.14 GREEN: `span()` (ordering and line-kind widening).
-- [ ] CS2a.15 RED: key map: `y` with a selection gives `Yank`, `y` without gives `Ignore`; `q` and `i` give `Exit`; Esc with a selection clears it and returns `Ignore`, Esc without gives `Exit`; unlisted keys are `Ignore`, never forwarded [copy-selection: Yank without selection (core part), Esc clears then exits (core part); copy-mode-scrollback: Esc with selection, `q` with selection, Exit (core part)].
-- [ ] CS2a.16 GREEN: `y`/Esc/`q`/`i` mapping.
-- [ ] CS2a.17 RED: `on_key(&key, repeat)`: Repeat of `v V y Esc q i` returns `Ignore` and leaves selection and cursor unchanged; Repeat of `j`, `h`, `l`, `k`, Ctrl+d moves exactly like Press [modal-input: Repeat of selection keys in COPY (core part), Repeat of motions in COPY (core part)].
-- [ ] CS2a.18 GREEN: Repeat filter (CS-4).
-- [ ] CS2a.19 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] CS2a.11 RED: selection start and toggling: `v` at (5, 3) gives `Selection { anchor: (5,3), kind: Char }`; `V` gives `kind: Line`; same key again clears; `v` then `V` switches kind and keeps the anchor line; `V` then `v` likewise [copy-selection: Start character selection, Start line selection, Same key clears, Other key switches kind].
+- [x] CS2a.12 GREEN: `v`/`V` handling (CS-4).
+- [x] CS2a.13 RED: motions extend from the anchor in either direction: `v` at (5,3), `h` twice gives `span()` exactly `(5,1)..=(5,3)`; moving down then up past the anchor reorders the span; a Line selection spans `(first, 0)..=(last, cols-1)` [copy-selection: Motion extends backwards, selection kinds extend].
+- [x] CS2a.14 GREEN: `span()` (ordering and line-kind widening).
+- [x] CS2a.15 RED: key map: `y` with a selection gives `Yank`, `y` without gives `Ignore`; `q` and `i` give `Exit`; Esc with a selection clears it and returns `Ignore`, Esc without gives `Exit`; unlisted keys are `Ignore`, never forwarded [copy-selection: Yank without selection (core part), Esc clears then exits (core part); copy-mode-scrollback: Esc with selection, `q` with selection, Exit (core part)].
+- [x] CS2a.16 GREEN: `y`/Esc/`q`/`i` mapping.
+- [x] CS2a.17 RED: `on_key(&key, repeat)`: Repeat of `v V y Esc q i` returns `Ignore` and leaves selection and cursor unchanged; Repeat of `j`, `h`, `l`, `k`, Ctrl+d moves exactly like Press [modal-input: Repeat of selection keys in COPY (core part), Repeat of motions in COPY (core part)].
+- [x] CS2a.18 GREEN: Repeat filter (CS-4).
+- [x] CS2a.19 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## CS2b: App wiring, revalidation, COPY cursor
 
