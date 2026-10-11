@@ -1,7 +1,7 @@
 //! Tests of the AI section of the menu, at the `MenuState` level.
 
 use super::*;
-use crate::core::ai::{CATALOG, EngineState, Status};
+use crate::core::ai::{CATALOG, EngineState, Status, config::Assignment};
 
 fn engine(id: &'static str, status: Status, models: &[&str], version: Option<&str>) -> EngineState {
     EngineState {
@@ -72,4 +72,264 @@ fn an_unchanged_ai_draft_adds_no_edits() {
             }]
         );
     }
+}
+
+fn ch(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+}
+
+fn press(menu: &mut MenuState, c: char) -> MenuCommand {
+    menu.on_key(&ch(c), false, &mut Config::default())
+}
+
+fn selected_label(menu: &MenuState) -> &'static str {
+    let labels: Vec<_> = menu
+        .rows(&Config::default())
+        .iter()
+        .filter_map(|row| match row {
+            Row::Item {
+                label,
+                selected: true,
+                ..
+            } => Some(*label),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(labels.len(), 1, "exactly one selected row");
+    labels[0]
+}
+
+const ORDER: [&str; 8] = [
+    "Statusline position",
+    "Tab bar position",
+    "Set all tasks",
+    "general",
+    "code",
+    "chat",
+    "review",
+    "summarize",
+];
+
+// Spec: Descriptor integrity, Sections and items are data.
+#[test]
+fn the_ai_descriptors_are_well_formed() {
+    assert_eq!(AI_SECTION.title, "AI");
+    let labels: Vec<_> = AI_SECTION.items.iter().map(|i| i.label).collect();
+    assert_eq!(labels, ORDER[2..]);
+    let mut paths: Vec<&str> = Vec::new();
+    for (item, task) in AI_SECTION.items[1..].iter().zip(Task::ALL) {
+        match item.kind {
+            ItemKind::Assign(Some(t)) => {
+                assert_eq!(t, task);
+                assert_eq!(item.label, t.id());
+                paths.push(t.table());
+            }
+            _ => panic!("{}: not a task row", item.label),
+        }
+    }
+    assert!(
+        matches!(AI_SECTION.items[0].kind, ItemKind::Assign(None)),
+        "Set all tasks has no task and so no key path"
+    );
+    let mut unique = paths.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), paths.len(), "duplicate key path");
+    assert_eq!(
+        paths,
+        [
+            "ai",
+            "ai.tasks.code",
+            "ai.tasks.chat",
+            "ai.tasks.review",
+            "ai.tasks.summarize"
+        ]
+    );
+}
+
+// Spec: Task rows in order, Wrap, Disabled row is skipped.
+#[test]
+fn navigation_visits_settings_then_the_six_ai_rows_and_wraps() {
+    let mut m = menu(None, None, Some(machine()));
+    let mut visited = vec![selected_label(&m)];
+    for _ in 0..8 {
+        press(&mut m, 'j');
+        visited.push(selected_label(&m));
+    }
+    assert_eq!(visited[..8], ORDER);
+    assert_eq!(visited[8], "Statusline position", "wraps past summarize");
+    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "summarize", "wraps before the first");
+    let mut back = Vec::new();
+    for _ in 0..7 {
+        press(&mut m, 'k');
+        back.push(selected_label(&m));
+    }
+    assert_eq!(
+        back,
+        [
+            "review",
+            "chat",
+            "code",
+            "general",
+            "Set all tasks",
+            "Tab bar position",
+            "Statusline position"
+        ]
+    );
+}
+
+#[test]
+fn the_mouse_row_is_skipped_in_both_directions() {
+    let mut m = menu(None, None, None);
+    press(&mut m, 'j');
+    press(&mut m, 'j');
+    assert_eq!(selected_label(&m), "Set all tasks");
+    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "Tab bar position");
+}
+
+// Spec: Repeat moves.
+#[test]
+fn repeat_moves_into_the_task_rows_like_a_press() {
+    let mut m = menu(None, None, None);
+    for _ in 0..3 {
+        m.on_key(&ch('j'), true, &mut Config::default());
+    }
+    assert_eq!(selected_label(&m), "general");
+}
+
+// Spec: Cycling keys do nothing on task rows.
+#[test]
+fn cycling_keys_do_nothing_on_task_rows() {
+    let mut m = menu(Some("ollama"), Some("llama3:8b"), Some(machine()));
+    for _ in 0..4 {
+        press(&mut m, 'j');
+    }
+    assert_eq!(selected_label(&m), "code");
+    let before = m.clone();
+    for key in [
+        ch('h'),
+        ch('l'),
+        ch(' '),
+        KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+    ] {
+        let mut live = Config::default();
+        assert_eq!(m.on_key(&key, false, &mut live), MenuCommand::None);
+        assert_eq!(live, Config::default());
+    }
+    assert_eq!(m, before);
+}
+
+// Spec: Refresh key on a task row (menu part).
+#[test]
+fn r_on_a_task_row_asks_for_a_refresh_and_elsewhere_does_not() {
+    let mut m = menu(None, None, Some(machine()));
+    assert_eq!(press(&mut m, 'r'), MenuCommand::None, "Statusline row");
+    press(&mut m, 'j');
+    press(&mut m, 'j');
+    assert_eq!(press(&mut m, 'r'), MenuCommand::Refresh, "Set all tasks");
+    press(&mut m, 'j');
+    press(&mut m, 'j');
+    assert_eq!(press(&mut m, 'r'), MenuCommand::Refresh, "code");
+    assert_eq!(
+        m.on_key(&ch('r'), true, &mut Config::default()),
+        MenuCommand::None,
+        "repeat"
+    );
+}
+
+fn assigned(entries: &[(Task, &str, &str)], found: Option<Detection>) -> MenuState {
+    let mut ai = AiConfig::default();
+    for (task, engine, model) in entries {
+        ai.set(
+            *task,
+            Assignment {
+                engine: Some((*engine).to_owned()),
+                model: Some((*model).to_owned()),
+            },
+        );
+    }
+    MenuState::open(&Config::default()).with_ai(ai, found)
+}
+
+fn value_of(menu: &MenuState, label: &str) -> String {
+    menu.rows(&Config::default())
+        .iter()
+        .find_map(|row| match row {
+            Row::Item {
+                label: l, value, ..
+            } if *l == label => value.as_deref().map(str::to_owned),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no row {label}"))
+}
+
+fn ai_rows(menu: &MenuState) -> Vec<(&'static str, String)> {
+    let rows = menu.rows(&Config::default());
+    let Some(at) = rows.iter().position(|r| *r == Row::Title("AI")) else {
+        panic!("no AI title");
+    };
+    rows[at + 1..]
+        .iter()
+        .map(|row| match row {
+            Row::Item {
+                label,
+                value,
+                enabled,
+                ..
+            } => {
+                assert!(enabled, "{label} is selectable");
+                (*label, value.as_deref().unwrap().to_owned())
+            }
+            Row::Title(_) => panic!("a second title"),
+        })
+        .collect()
+}
+
+// Spec: Settings rows (AI part): six rows, no Engine/Model/Status.
+#[test]
+fn the_ai_section_lists_the_six_rows_with_their_values() {
+    let m = assigned(&[(Task::General, "ollama", "llama3:8b")], Some(machine()));
+    let got: Vec<_> = ai_rows(&m)
+        .iter()
+        .map(|(l, v)| format!("{l}={v}"))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            "Set all tasks=ollama › llama3:8b",
+            "general=ollama › llama3:8b",
+            "code=(default)",
+            "chat=(default)",
+            "review=(default)",
+            "summarize=(default)",
+        ]
+    );
+    assert_eq!(
+        MenuState::open(&Config::default())
+            .rows(&Config::default())
+            .len(),
+        4,
+        "no AI section without AI"
+    );
+}
+
+// Spec: Aggregate values, Nothing assigned.
+#[test]
+fn unset_and_mixed_values() {
+    let m = menu(None, None, None);
+    assert_eq!(value_of(&m, "general"), "(not set)");
+    assert_eq!(value_of(&m, "Set all tasks"), "(not set)");
+    let mixed = assigned(
+        &[
+            (Task::General, "claude", "opus"),
+            (Task::Code, "ollama", "llama3:8b"),
+        ],
+        Some(machine()),
+    );
+    assert_eq!(value_of(&mixed, "Set all tasks"), "(mixed)");
+    assert_eq!(value_of(&mixed, "code"), "ollama › llama3:8b");
+    assert_eq!(value_of(&mixed, "chat"), "(default)");
 }
