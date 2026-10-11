@@ -148,7 +148,7 @@ Run after CS3 is merged into the tracker, on a build of the tracker branch.
 - [ ] VP.6 [manual] tmux note: confirm OSC 52 under tmux needs `set -g set-clipboard on` (or `external`); record the result for user docs (design risk). (deferred by user, 2026-10-11)
 - [x] VP.7 Verify prep: run `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` on the tracker; confirm every row of the coverage table below has a passing test or a ticked [manual] item; hand the tracker to `sdd-verify`.
 - [x] VP.9 [manual] Held `q` / `y` / Esc in real Kitty leaks nothing into the prompt; a deliberate `q` after about 1 s is typed [modal-input: Held exit key does not leak into TERMINAL].
-- [ ] VP.8 Archive prep: the Purpose line of the main copy-mode-scrollback spec ("Selection/yank is out of scope.") MUST be edited by hand at archive, as noted in the delta.
+- [x] VP.8 Archive prep: the Purpose line of the main copy-mode-scrollback spec ("Selection/yank is out of scope.") MUST be edited by hand at archive, as noted in the delta.
 
 ## Spec Coverage Table
 
