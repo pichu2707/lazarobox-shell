@@ -215,6 +215,15 @@ mod tests {
         }
     }
 
+    // Characterization: slots are indexed by discriminant, so `ALL` must
+    // list the variants in declaration order.
+    #[test]
+    fn the_discriminants_follow_the_order_of_all() {
+        for (i, task) in Task::ALL.iter().enumerate() {
+            assert_eq!(*task as usize, i, "{}", task.id());
+        }
+    }
+
     // Spec: Task set integrity.
     #[test]
     fn the_task_set_is_fixed_ordered_and_unique() {

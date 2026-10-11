@@ -71,19 +71,25 @@ pub struct PickRow {
     pub current: bool,
 }
 
-/// The assignment shared by every task a target writes to; `None` when a
-/// `Set all tasks` draft is mixed.
+/// The assignment shared by every task a target writes to (as resolved, like
+/// the aggregate row); `None` when a `Set all tasks` draft is mixed.
 fn current_assignment(target: Target, draft: &AiConfig) -> Option<Assignment> {
     match target {
         Target::Task(task) => Some(draft.get(task).clone()),
         Target::All => {
-            let first = draft.get(Task::ALL[0]);
+            let first = draft.resolve(Task::ALL[0]).0;
             Task::ALL
                 .iter()
-                .all(|t| draft.get(*t) == first)
-                .then(|| first.clone())
+                .all(|t| draft.resolve(*t).0 == first)
+                .then_some(first)
         }
     }
+}
+
+/// A detection that found nothing at all is a failed one: it says nothing
+/// about any engine, so it counts as no result.
+fn known(detection: Option<&Detection>) -> Option<&Detection> {
+    detection.filter(|d| !d.engines.is_empty())
 }
 
 fn is_available(detection: Option<&Detection>, id: &str) -> bool {
@@ -102,6 +108,7 @@ pub fn engine_rows(
     draft: &AiConfig,
     detection: Option<&Detection>,
 ) -> Vec<PickRow> {
+    let detection = known(detection);
     let current = current_assignment(target, draft);
     let current_engine = current.as_ref().and_then(|a| a.engine.as_deref());
     let clear_label = match target {
@@ -218,7 +225,7 @@ pub fn model_rows(
             }
         }
         if names.is_empty() {
-            return vec![info("no models detected", Mark::Checking)];
+            return vec![info("checking…", Mark::Plain)];
         }
         return names
             .iter()
@@ -266,6 +273,7 @@ pub fn model_rows(
 /// CLI assignments never get a model mark, and nothing is marked before the
 /// first detection result.
 pub fn task_label(config: &AiConfig, task: Task, detection: Option<&Detection>) -> String {
+    let detection = known(detection);
     let plain = config.label(task);
     let (
         Some(detection),
@@ -305,10 +313,10 @@ pub const VIEW: usize = 10;
 pub const MAX_NAME: usize = 128;
 
 /// A custom model name once trimmed and capped; `None` when blank or when
-/// it holds a control character.
+/// it holds a control or format (bidi, zero-width) character.
 pub fn validate_custom(name: &str) -> Option<String> {
     let name = name.trim();
-    if name.is_empty() || name.chars().any(char::is_control) {
+    if name.is_empty() || name.chars().any(|c| c.is_control() || is_format(c)) {
         return None;
     }
     Some(name.chars().take(MAX_NAME).collect())
@@ -839,13 +847,7 @@ mod tests {
         assert_eq!(rows, expected);
         assert_eq!(
             model_rows("lmstudio", Target::Task(Task::Code), &draft, None),
-            [row(
-                PickKey::Info,
-                "no models detected",
-                Mark::Checking,
-                false,
-                false
-            )]
+            [info("checking…")]
         );
     }
 
@@ -1020,6 +1022,24 @@ mod tests {
         );
     }
 
+    // The aggregate row resolves inheritance, so the bullet does too.
+    #[test]
+    fn set_all_marks_what_the_aggregate_row_shows() {
+        let d = detection(vec![state("claude", Status::Available, &[])]);
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::General, "claude", Some("opus"));
+        let currents = |rows: Vec<PickRow>| rows.iter().map(|r| r.current).collect::<Vec<_>>();
+        assert_eq!(draft.aggregate(), "claude › opus");
+        assert_eq!(
+            currents(engine_rows(Target::All, &draft, Some(&d))),
+            [false, true]
+        );
+        assert_eq!(
+            currents(model_rows("claude", Target::All, &draft, Some(&d))),
+            [false, true, false, false, false]
+        );
+    }
+
     #[test]
     fn before_the_first_detection_only_assigned_engines_show_as_checking() {
         let mut draft = AiConfig::default();
@@ -1033,21 +1053,19 @@ mod tests {
         );
     }
 
+    // A failed detection is an empty one: it says nothing, like no result.
     #[test]
-    fn an_empty_detection_lists_assigned_engines_as_not_detected() {
+    fn an_empty_detection_marks_nothing_as_not_detected() {
         let mut draft = AiConfig::default();
-        assign(&mut draft, Task::General, "mystery", None);
+        assign(&mut draft, Task::General, "mystery", Some("m"));
         let d = Detection::default();
         assert_eq!(
             compact(&engine_rows(Target::Task(Task::General), &draft, Some(&d))),
             [
                 ("none".to_owned(), Mark::Plain, true),
-                (
-                    "mystery".to_owned(),
-                    Mark::Status("(not detected)".to_owned()),
-                    true
-                ),
+                ("mystery".to_owned(), Mark::Checking, true),
             ]
         );
+        assert_eq!(task_label(&draft, Task::General, Some(&d)), "mystery › m");
     }
 }
