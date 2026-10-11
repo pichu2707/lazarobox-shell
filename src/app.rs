@@ -7,7 +7,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::core::{
     config::{BarPosition, BarPositions, Config, ConfigEdit},
-    copy::{CopyCommand, CopyState},
+    copy::{CopyCommand, CopyState, Geometry},
     keys::{encode_key, encode_paste},
     layout::{
         Axis, Direction, Node, PaneId, PaneIds, Rect, Removal, SplitError, Tiling, neighbour,
@@ -404,6 +404,40 @@ impl App {
         (total > 0).then_some((state.offset, total))
     }
 
+    /// COPY cursor cell `(row, col)` inside the focused pane's viewport;
+    /// `None` outside COPY and when the cursor is scrolled off screen.
+    pub fn copy_cursor(&self) -> Option<(u16, u16)> {
+        let InputMode::Copy(state) = &self.input else {
+            return None;
+        };
+        let geo = self.copy_geometry();
+        let top = (geo.first_line + geo.history).checked_sub(state.offset)?;
+        let row = state.cursor.line.checked_sub(top)?;
+        (row < usize::from(geo.rows)).then_some((row as u16, state.cursor.col))
+    }
+
+    /// What the focused pane offers to copy mode.
+    fn copy_geometry(&self) -> Geometry {
+        let pane = self.focused_pane();
+        let size = self.focused_size();
+        Geometry {
+            first_line: pane.first_line(),
+            history: pane.scrollback_len(),
+            rows: size.rows,
+            cols: size.cols,
+        }
+    }
+
+    /// Fresh COPY state with the cursor on the focused pane's live cursor.
+    fn enter_copy(&self) -> CopyState {
+        let pane = self.focused_pane();
+        CopyState::enter(
+            self.copy_geometry(),
+            pane.live_cursor(),
+            pane.line_generation(),
+        )
+    }
+
     /// How many tabs are open.
     pub fn tab_count(&self) -> usize {
         self.tabs.len()
@@ -658,7 +692,7 @@ impl App {
         self.input = match step {
             Step::Enter(group) => InputMode::Group(group),
             Step::Run(PrefixAction::RequestQuit) => InputMode::Confirm(Confirm::Quit),
-            Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(CopyState::default()),
+            Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(self.enter_copy()),
             Step::Run(PrefixAction::EnterResize) => InputMode::Resize,
             Step::Run(PrefixAction::ClosePane) if self.tabs.len() > 1 || self.tab_panes() > 1 => {
                 InputMode::Confirm(Confirm::ClosePane)
@@ -1137,7 +1171,7 @@ mod app_tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     use crate::core::{
-        copy::CopyState,
+        copy::{CopyState, Point},
         menu::Row,
         pane::{CursorKind, CursorShape, PaneSize},
         pty::PtyEvent,
@@ -1761,11 +1795,62 @@ mod app_tests {
         assert_eq!(a.focused_pane().scrollback_offset(), 0);
     }
 
-    fn copy_offset(a: &App) -> usize {
+    fn copy_state(a: &App) -> CopyState {
         match a.input() {
-            InputMode::Copy(state) => state.offset,
+            InputMode::Copy(state) => state,
             other => panic!("not in COPY: {other:?}"),
         }
+    }
+
+    fn copy_offset(a: &App) -> usize {
+        copy_state(a).offset
+    }
+
+    fn feed_focused(a: &mut App, bytes: &[u8]) {
+        a.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(bytes.to_vec()),
+        ));
+    }
+
+    // copy-mode-scrollback: Cursor starts at the live cursor.
+    #[test]
+    fn entering_copy_puts_the_cursor_on_the_childs_cursor() {
+        let mut a = app();
+        feed_focused(&mut a, b"\r\n\r\n\r\n\r\n\r\nabc");
+        a.update(ctrl_space());
+        a.update(key('['));
+        let state = copy_state(&a);
+        assert_eq!(state.cursor, Point { line: 5, col: 3 });
+        assert_eq!(state.offset, 0);
+        assert_eq!(state.selection, None);
+        assert_eq!(a.copy_cursor(), Some((5, 3)));
+    }
+
+    #[test]
+    fn entering_copy_with_a_hidden_cursor_uses_the_bottom_row() {
+        let mut a = app();
+        feed_focused(&mut a, b"abc\x1b[?25l");
+        a.update(ctrl_space());
+        a.update(key('['));
+        assert_eq!(copy_state(&a).cursor, Point { line: 23, col: 0 });
+        assert_eq!(a.copy_cursor(), Some((23, 0)));
+    }
+
+    // copy-mode-scrollback: Block follows the COPY cursor (app part).
+    #[test]
+    fn the_copy_cursor_is_none_outside_copy_and_when_scrolled_off_screen() {
+        let mut a = app();
+        assert_eq!(a.copy_cursor(), None, "TERMINAL");
+        a.update(ctrl_space());
+        a.update(key('['));
+        assert_eq!(a.copy_cursor(), Some((0, 0)));
+        feed_focused(&mut a, "\r\n".repeat(30).as_bytes());
+        assert_eq!(
+            a.copy_cursor(),
+            None,
+            "the cursor row scrolled into history"
+        );
     }
 
     #[test]
