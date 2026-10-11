@@ -7,7 +7,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::core::{
     config::{BarPosition, BarPositions, Config, ConfigEdit},
-    copy::{CopyCommand, CopyMotion, CopyState, Geometry, Point},
+    copy::{CopyCommand, CopyMotion, CopyState, Geometry, Point, TooLarge, join, osc52},
     keys::{encode_key, encode_paste},
     layout::{
         Axis, Direction, Node, PaneId, PaneIds, Rect, Removal, SplitError, Tiling, neighbour,
@@ -1020,10 +1020,39 @@ impl App {
                 self.focused_state_mut().emu.set_scrollback(0);
                 self.input = InputMode::Terminal;
             }
-            // Yank is wired in CS3; until then it changes nothing.
-            CopyCommand::Yank | CopyCommand::Ignore => self.input = InputMode::Copy(state),
+            CopyCommand::Yank => return self.yank(state),
+            CopyCommand::Ignore => self.input = InputMode::Copy(state),
         }
         Vec::new()
+    }
+
+    /// `y`: reads the selection, hands it to the host as OSC 52 and leaves
+    /// COPY. A selection over the cap sends nothing and keeps COPY open.
+    fn yank(&mut self, state: CopyState) -> Vec<Effect> {
+        let cols = self.copy_geometry().cols;
+        let Some(span) = state.span(cols) else {
+            self.input = InputMode::Copy(state);
+            return Vec::new();
+        };
+        let pane = &mut self.focused_state_mut().emu;
+        let text = join(&pane.read_lines(span));
+        match osc52(&text) {
+            Ok(sequence) => {
+                pane.set_scrollback(0);
+                let count = text.chars().count();
+                self.notice = Some(match count {
+                    1 => "Copied 1 character".to_string(),
+                    n => format!("Copied {n} characters"),
+                });
+                self.input = InputMode::Terminal;
+                vec![Effect::SetClipboard(sequence)]
+            }
+            Err(TooLarge) => {
+                self.notice = Some("Selection too large to copy".to_string());
+                self.input = InputMode::Copy(state);
+                Vec::new()
+            }
+        }
     }
 
     fn on_paste(&mut self, text: &str) -> Vec<Effect> {
@@ -2005,6 +2034,152 @@ mod app_tests {
 
     fn selection_of(a: &App) -> Option<(Point, SelectionKind)> {
         copy_state(a).selection.map(|s| (s.anchor, s.kind))
+    }
+
+    fn osc(text: &str) -> Vec<u8> {
+        crate::core::copy::osc52(text).expect("fits")
+    }
+
+    /// 1000 rows: 999 of 74 `x` and a last one of `last` `x` (no newline).
+    fn big_selection(a: &mut App, last: usize) {
+        let mut data = String::new();
+        for _ in 0..999 {
+            data.push_str(&"x".repeat(74));
+            data.push_str("\r\n");
+        }
+        data.push_str(&"x".repeat(last));
+        feed_focused(a, data.as_bytes());
+        a.update(ctrl_space());
+        a.update(key('['));
+        a.update(key('V'));
+        a.update(key('g'));
+        a.update(key('g'));
+    }
+
+    // copy-selection: Yank emits OSC 52, Character selection within a row.
+    #[test]
+    fn yank_emits_the_clipboard_sequence_and_leaves_copy() {
+        let mut a = app();
+        copy_after(&mut a, b"hello");
+        a.update(key('0'));
+        a.update(key('v'));
+        press_n(&mut a, 'l', 4);
+        assert_eq!(
+            a.update(key('y')),
+            vec![Effect::SetClipboard(b"\x1b]52;c;aGVsbG8=\x07".to_vec())]
+        );
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.focused_pane().scrollback_offset(), 0);
+        assert_eq!(a.copy_cursor(), None);
+    }
+
+    // copy-selection: Multi-row line selection.
+    #[test]
+    fn a_line_selection_yanks_the_rows_joined_by_newline() {
+        let mut a = app();
+        copy_after(&mut a, b"foo\r\nbar");
+        a.update(key('k'));
+        a.update(key('V'));
+        a.update(key('j'));
+        assert_eq!(
+            a.update(key('y')),
+            vec![Effect::SetClipboard(osc("foo\nbar"))]
+        );
+        assert_eq!(a.notice(), Some("Copied 7 characters"));
+    }
+
+    // copy-selection: Wide character once.
+    #[test]
+    fn a_wide_character_is_yanked_once() {
+        let mut a = app();
+        copy_after(&mut a, "a漢b".as_bytes());
+        a.update(key('0'));
+        a.update(key('v'));
+        a.update(key('$'));
+        assert_eq!(a.update(key('y')), vec![Effect::SetClipboard(osc("a漢b"))]);
+        assert_eq!(a.notice(), Some("Copied 3 characters"));
+    }
+
+    // copy-selection: Selection spans scrollback (app part: offset restored).
+    #[test]
+    fn yanking_from_scrollback_restores_the_bottom_viewport() {
+        let mut a = app();
+        with_history(&mut a, 40);
+        a.update(ctrl_space());
+        a.update(key('['));
+        a.update(key('g'));
+        a.update(key('g'));
+        a.update(key('v'));
+        press_n(&mut a, 'l', 4);
+        assert_eq!(a.update(key('y')), vec![Effect::SetClipboard(osc("line0"))]);
+        assert_eq!(a.input(), InputMode::Terminal);
+        assert_eq!(a.focused_pane().scrollback_offset(), 0);
+    }
+
+    // copy-selection: Yank without selection.
+    #[test]
+    fn yank_without_a_selection_changes_nothing() {
+        let mut a = app();
+        copy_after(&mut a, b"abc");
+        assert_eq!(a.update(key('y')), vec![]);
+        assert!(is_copy(&a));
+        assert_eq!(a.notice(), None);
+    }
+
+    // copy-selection: At the cap.
+    #[test]
+    fn a_selection_of_exactly_the_cap_is_sent() {
+        let mut a = app();
+        big_selection(&mut a, 75);
+        let text = format!(
+            "{}{}",
+            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+                .repeat(999),
+            "x".repeat(75)
+        );
+        assert_eq!(text.len(), 75_000);
+        assert_eq!(a.update(key('y')), vec![Effect::SetClipboard(osc(&text))]);
+        assert_eq!(a.input(), InputMode::Terminal);
+    }
+
+    // copy-selection: Over the cap.
+    #[test]
+    fn an_oversized_selection_sends_nothing_and_stays_in_copy() {
+        let mut a = app();
+        big_selection(&mut a, 76);
+        let before = selection_of(&a);
+        assert!(before.is_some());
+        assert_eq!(a.update(key('y')), vec![]);
+        assert!(is_copy(&a));
+        assert_eq!(selection_of(&a), before);
+        assert_eq!(a.notice(), Some("Selection too large to copy"));
+    }
+
+    // statusline: Copied notice, Singular notice, Notice cleared by next key.
+    #[test]
+    fn the_copied_notice_counts_characters_and_clears_on_the_next_key() {
+        let mut a = app();
+        copy_after(&mut a, b"x");
+        a.update(key('0'));
+        a.update(key('v'));
+        a.update(key('y'));
+        assert_eq!(a.notice(), Some("Copied 1 character"));
+        assert_eq!(a.status_path(40), "Copied 1 character");
+        assert_eq!(a.input(), InputMode::Terminal);
+        a.update(key('z'));
+        assert_eq!(a.notice(), None);
+    }
+
+    // statusline: a newer notice replaces the copy notice.
+    #[test]
+    fn a_newer_notice_replaces_the_copied_notice() {
+        let mut a = app();
+        copy_after(&mut a, b"x");
+        a.update(key('0'));
+        a.update(key('v'));
+        a.update(key('y'));
+        a.update(AppEvent::SpawnFailed(PaneId::FIRST, "boom".into()));
+        assert_eq!(a.notice(), Some("spawn failed: boom"));
     }
 
     // copy-selection: Output keeps the selection on its content
