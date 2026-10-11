@@ -253,6 +253,14 @@ impl LineSpan {
     }
 }
 
+/// What to paint as selected in a pane's viewport: the span and the stable
+/// line number shown on the top row.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Highlight {
+    pub span: LineSpan,
+    pub top_line: usize,
+}
+
 /// Text of one screen row plus whether it soft-wraps into the next one.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LineText {

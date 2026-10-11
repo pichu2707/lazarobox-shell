@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{AppMode, InputMode};
+use crate::core::copy::SelectionKind;
 use crate::ui::theme::LazaroboxTheme;
 
 /// Nerd Font powerline glyph "upper left triangle" (U+E0BC).
@@ -30,6 +31,7 @@ pub struct StatusLine<'a> {
     right: &'a str,
     zoomed: bool,
     copy_position: Option<(usize, usize)>,
+    marker: Option<SelectionKind>,
 }
 
 impl<'a> StatusLine<'a> {
@@ -42,6 +44,7 @@ impl<'a> StatusLine<'a> {
             right: model,
             zoomed: false,
             copy_position: None,
+            marker: None,
         }
     }
 
@@ -60,6 +63,7 @@ impl<'a> StatusLine<'a> {
             right,
             zoomed: false,
             copy_position: None,
+            marker: None,
         }
     }
 
@@ -73,6 +77,12 @@ impl<'a> StatusLine<'a> {
     /// shown as `↑offset/total` right after the mode label.
     pub fn copy_position(mut self, position: Option<(usize, usize)>) -> Self {
         self.copy_position = position;
+        self
+    }
+
+    /// Selection marker (`VISUAL` or `V-LINE`) after the position indicator.
+    pub fn marker(mut self, kind: Option<SelectionKind>) -> Self {
+        self.marker = kind;
         self
     }
 
@@ -98,7 +108,12 @@ impl<'a> StatusLine<'a> {
             .copy_position
             .map(|(offset, total)| format!(" \u{2191}{offset}/{total}"))
             .unwrap_or_default();
-        format!(" \u{25D0} {}{position}{zoom} ", self.label)
+        let marker = match self.marker {
+            Some(SelectionKind::Char) => " VISUAL",
+            Some(SelectionKind::Line) => " V-LINE",
+            None => "",
+        };
+        format!(" \u{25D0} {}{position}{marker}{zoom} ", self.label)
     }
 
     /// Columns taken by the mode block and the slant that closes it.
@@ -548,6 +563,99 @@ mod tests {
                 Some((usize::MAX, usize::MAX)),
             ] {
                 render_copy(position, width);
+            }
+        }
+    }
+
+    fn render_marker(
+        position: Option<(usize, usize)>,
+        kind: Option<SelectionKind>,
+        zoomed: bool,
+        width: u16,
+    ) -> Buffer {
+        let theme = LazaroboxTheme::default();
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                let mode = InputMode::Copy(CopyState::default());
+                let line = StatusLine::input(&theme, mode, PATH, SHELL)
+                    .copy_position(position)
+                    .marker(kind)
+                    .zoomed(zoomed);
+                frame.render_widget(line, frame.area())
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    // statusline: Marker with indicator.
+    #[test]
+    fn the_marker_follows_the_position_indicator() {
+        let text = text_of(&render_marker(
+            Some((12, 340)),
+            Some(SelectionKind::Char),
+            false,
+            WIDTH,
+        ));
+        assert!(text.contains("COPY \u{2191}12/340 VISUAL "), "{text:?}");
+        insta::assert_snapshot!(text);
+    }
+
+    // statusline: Line marker without history.
+    #[test]
+    fn the_line_marker_follows_the_label_without_history() {
+        let text = text_of(&render_marker(
+            None,
+            Some(SelectionKind::Line),
+            false,
+            WIDTH,
+        ));
+        assert!(text.contains("COPY V-LINE "), "{text:?}");
+    }
+
+    // statusline: Marker gone.
+    #[test]
+    fn no_marker_leaves_the_indicator_alone() {
+        let text = text_of(&render_marker(Some((12, 340)), None, false, WIDTH));
+        assert!(text.contains("COPY \u{2191}12/340 "), "{text:?}");
+        assert!(
+            !text.contains("VISUAL") && !text.contains("V-LINE"),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn the_marker_sits_before_the_zoom_indicator() {
+        let text = text_of(&render_marker(
+            Some((12, 340)),
+            Some(SelectionKind::Char),
+            true,
+            WIDTH,
+        ));
+        assert!(text.contains("COPY \u{2191}12/340 VISUAL [Z] "), "{text:?}");
+    }
+
+    #[test]
+    fn the_label_stays_copy_with_a_selection() {
+        assert_eq!(InputMode::Copy(CopyState::default()).label(), "COPY");
+    }
+
+    #[test]
+    fn the_path_budget_accounts_for_the_marker() {
+        let theme = LazaroboxTheme::default();
+        let mode = InputMode::Copy(CopyState::default());
+        let plain = StatusLine::input(&theme, mode, "", SHELL);
+        let marked = StatusLine::input(&theme, mode, "", SHELL).marker(Some(SelectionKind::Char));
+        // " VISUAL" and " V-LINE" are 7 columns wide.
+        assert_eq!(marked.path_budget(WIDTH) + 7, plain.path_budget(WIDTH));
+    }
+
+    // statusline: Narrow width.
+    #[test]
+    fn a_narrow_statusline_with_a_marker_never_panics() {
+        for width in 0..=40 {
+            for kind in [None, Some(SelectionKind::Char), Some(SelectionKind::Line)] {
+                render_marker(Some((12, 340)), kind, true, width);
             }
         }
     }

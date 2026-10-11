@@ -1,0 +1,5 @@
+---
+source: src/ui/components/statusline.rs
+expression: text
+---
+ ◐ COPY ↑12/340 VISUAL  ~/lazarobox-shell            zsh
