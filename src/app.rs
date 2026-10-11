@@ -167,16 +167,22 @@ impl ScreenLayout {
 struct PaneState {
     emu: Pane,
     size: PaneSize,
-    cwd: Option<PathBuf>,
+    /// The `/proc` poll result; the OSC 7 cwd, when seen, lives in `emu`.
+    proc_cwd: Option<PathBuf>,
 }
 
 impl PaneState {
-    fn new(size: PaneSize) -> Self {
+    fn new(size: PaneSize, host: Option<&str>) -> Self {
         Self {
-            emu: Pane::new(size, SCROLLBACK_LINES),
+            emu: Pane::new(size, SCROLLBACK_LINES).with_host(host),
             size,
-            cwd: None,
+            proc_cwd: None,
         }
+    }
+
+    /// OSC 7 wins once seen; the poll fills in for shells that never report.
+    fn effective_cwd(&self) -> Option<&Path> {
+        self.emu.cwd().or(self.proc_cwd.as_deref())
     }
 }
 
@@ -221,6 +227,8 @@ pub struct App {
     /// Where the first pane starts, and the fallback for panes with no known cwd.
     launch_cwd: Option<PathBuf>,
     home: Option<PathBuf>,
+    /// This machine's hostname: OSC 7 reports naming it count as local.
+    hostname: Option<String>,
     shell: Option<String>,
 }
 
@@ -232,7 +240,7 @@ impl App {
         let mut ids = PaneIds::default();
         let first = ids.alloc();
         Self {
-            panes: HashMap::from([(first, PaneState::new(body_size(screen.body)))]),
+            panes: HashMap::from([(first, PaneState::new(body_size(screen.body), None))]),
             tabs: vec![Tab {
                 tree: Node::Leaf(first),
                 focus: first,
@@ -248,6 +256,7 @@ impl App {
             bars,
             launch_cwd: None,
             home: None,
+            hostname: None,
             shell: None,
         }
     }
@@ -257,8 +266,17 @@ impl App {
     pub fn with_env(mut self, shell: Option<&str>, home: Option<PathBuf>, cwd: PathBuf) -> Self {
         self.shell = shell.map(str::to_owned);
         self.home = home;
-        self.focused_state_mut().cwd = Some(cwd.clone());
+        self.focused_state_mut().proc_cwd = Some(cwd.clone());
         self.launch_cwd = Some(cwd);
+        self
+    }
+
+    /// Names this machine so OSC 7 reports for it are accepted.
+    pub fn with_hostname(mut self, host: Option<&str>) -> Self {
+        self.hostname = host.map(str::to_owned);
+        for state in self.panes.values_mut() {
+            state.emu.set_host(host);
+        }
         self
     }
 
@@ -358,7 +376,7 @@ impl App {
             .enumerate()
             .map(|(index, tab)| {
                 let number = index + 1;
-                match self.panes[&tab.focus].cwd.as_deref() {
+                match self.panes[&tab.focus].effective_cwd() {
                     Some(cwd) => {
                         let name = cwd.file_name().map_or_else(
                             || "/".to_string(),
@@ -417,7 +435,7 @@ impl App {
     /// The child's cwd for the statusline, with `$HOME` shown as `~`. Empty
     /// until the first cwd is known.
     pub fn cwd_label(&self) -> String {
-        let Some(cwd) = &self.focused_state().cwd else {
+        let Some(cwd) = self.focused_state().effective_cwd() else {
             return String::new();
         };
         let home = self.home.as_deref().filter(|home| home.parent().is_some());
@@ -592,8 +610,8 @@ impl App {
     fn new_tab(&mut self) -> Vec<Effect> {
         let cwd = self
             .focused_state()
-            .cwd
-            .clone()
+            .effective_cwd()
+            .map(Path::to_path_buf)
             .or_else(|| self.launch_cwd.clone());
         let id = self.ids.alloc();
         self.tabs.push(Tab {
@@ -604,7 +622,8 @@ impl App {
         self.activate(self.tabs.len() - 1);
         self.refresh_screen();
         let size = body_size(self.screen.body);
-        self.panes.insert(id, PaneState::new(size));
+        self.panes
+            .insert(id, PaneState::new(size, self.hostname.as_deref()));
         let mut effects = self.relayout();
         effects.push(Effect::SpawnPane(id, self.spawn_spec(cwd, size)));
         effects
@@ -648,11 +667,12 @@ impl App {
         }
         let cwd = self
             .focused_state()
-            .cwd
-            .clone()
+            .effective_cwd()
+            .map(Path::to_path_buf)
             .or_else(|| self.launch_cwd.clone());
         let size = self.layout_sizes()[&new];
-        self.panes.insert(new, PaneState::new(size));
+        self.panes
+            .insert(new, PaneState::new(size, self.hostname.as_deref()));
         self.set_focus(new);
         let mut effects = self.relayout();
         effects.push(Effect::SpawnPane(new, self.spawn_spec(cwd, size)));
@@ -860,15 +880,21 @@ impl App {
     }
 
     fn on_cwd(&mut self, id: PaneId, cwd: PathBuf) -> Vec<Effect> {
-        if let Some(state) = self.panes.get_mut(&id)
-            && state.cwd.as_ref() != Some(&cwd)
-        {
-            state.cwd = Some(cwd);
-            // The tab bar labels show the focused pane's cwd of every tab.
-            let labelled = self.tabs.len() > 1 && self.tabs.iter().any(|tab| tab.focus == id);
-            self.dirty |= labelled || id == self.tab().focus;
+        if let Some(state) = self.panes.get_mut(&id) {
+            let before = state.effective_cwd().map(Path::to_path_buf);
+            state.proc_cwd = Some(cwd);
+            if state.effective_cwd() != before.as_deref() {
+                self.mark_cwd_dirty(id);
+            }
         }
         Vec::new()
+    }
+
+    /// Redraws when a pane's effective cwd changed and it is on screen: the
+    /// statusline shows the focused pane's, and the tab bar every tab's.
+    fn mark_cwd_dirty(&mut self, id: PaneId) {
+        let labelled = self.tabs.len() > 1 && self.tabs.iter().any(|tab| tab.focus == id);
+        self.dirty |= labelled || id == self.tab().focus;
     }
 
     fn on_pty(&mut self, id: PaneId, event: PtyEvent) -> Vec<Effect> {
@@ -876,11 +902,20 @@ impl App {
             PtyEvent::Output(bytes) => {
                 // Panes of hidden tabs are not on screen: feed them, don't redraw.
                 self.dirty |= self.tab().tree.leaves().contains(&id);
+                let mut cwd_changed = false;
                 let reply = self
                     .panes
                     .get_mut(&id)
-                    .map(|state| state.emu.feed(&bytes))
+                    .map(|state| {
+                        let before = state.effective_cwd().map(Path::to_path_buf);
+                        let reply = state.emu.feed(&bytes);
+                        cwd_changed = state.effective_cwd() != before.as_deref();
+                        reply
+                    })
                     .unwrap_or_default();
+                if cwd_changed {
+                    self.mark_cwd_dirty(id);
+                }
                 if id == self.tab().focus {
                     self.sync_copy_offset();
                 }
@@ -1973,6 +2008,99 @@ mod app_tests {
             effects.last(),
             Some(&Effect::SpawnPane(id2(), spec("/tmp", sized(24, 40))))
         );
+    }
+
+    fn osc7(id: PaneId, uri: &str) -> AppEvent {
+        AppEvent::Pty(
+            id,
+            PtyEvent::Output(format!("\x1b]7;{uri}\x07").into_bytes()),
+        )
+    }
+
+    // Spec (terminal-session): OSC 7 wins over the poll.
+    #[test]
+    fn osc7_cwd_is_shown_and_survives_a_later_poll() {
+        let mut a = launched(80, 25);
+        a.update(osc7(PaneId::FIRST, "file:///tmp"));
+        assert_eq!(a.cwd_label(), "/tmp");
+        a.update(cwd_event("/var"));
+        assert_eq!(a.cwd_label(), "/tmp");
+    }
+
+    // Spec (terminal-session): Fallback for plain shell.
+    #[test]
+    fn the_poll_fills_in_for_a_shell_that_never_reports() {
+        let mut a = launched(80, 25);
+        a.update(cwd_event("/var"));
+        assert_eq!(a.cwd_label(), "/var");
+    }
+
+    #[test]
+    fn a_rejected_osc7_leaves_the_poll_cwd_visible() {
+        let mut a = launched(80, 25);
+        a.update(cwd_event("/var"));
+        a.update(osc7(PaneId::FIRST, "file://other.example/etc"));
+        assert_eq!(a.cwd_label(), "/var");
+    }
+
+    // A hidden tab's pane output does not redraw, but its tab label may change.
+    #[test]
+    fn osc7_in_a_hidden_tab_redraws_only_when_its_label_changes() {
+        let mut a = launched(80, 25);
+        press(&mut a, "tn");
+        a.take_dirty();
+        a.update(osc7(PaneId::FIRST, "file:///srv"));
+        assert!(a.take_dirty());
+        a.update(osc7(PaneId::FIRST, "file:///srv"));
+        assert!(!a.take_dirty());
+    }
+
+    #[test]
+    fn a_hostname_makes_matching_osc7_reports_valid() {
+        let mut a = launched(80, 25).with_hostname(Some("myhost"));
+        a.update(osc7(PaneId::FIRST, "file://myhost/srv"));
+        assert_eq!(a.cwd_label(), "/srv");
+        let mut b = launched(80, 25);
+        b.update(osc7(PaneId::FIRST, "file://myhost/srv"));
+        assert_eq!(b.cwd_label(), LAUNCH);
+    }
+
+    // Spec (statusline): OSC 7 cwd shown; (tabs): label follows it.
+    #[test]
+    fn the_tab_label_follows_the_osc7_cwd() {
+        let mut a = launched(80, 25);
+        press(&mut a, "tn");
+        a.update(osc7(PaneId::FIRST, "file:///srv/www"));
+        assert_eq!(a.tab_labels(), vec!["1 www".to_string(), "2".to_string()]);
+    }
+
+    // Spec (terminal-session / tabs): new pane and tab inherit the OSC 7 cwd.
+    #[test]
+    fn a_split_inherits_the_osc7_cwd() {
+        let mut a = launched(80, 25);
+        a.update(cwd_event("/var"));
+        a.update(osc7(PaneId::FIRST, "file:///srv"));
+        let effects = press(&mut a, "wv");
+        assert_eq!(
+            effects.last(),
+            Some(&Effect::SpawnPane(id2(), spec("/srv", sized(24, 40))))
+        );
+    }
+
+    #[test]
+    fn a_new_tab_inherits_the_osc7_cwd() {
+        let mut a = launched(80, 25);
+        a.update(osc7(PaneId::FIRST, "file:///srv"));
+        let effects = press(&mut a, "tn");
+        assert!(effects.contains(&Effect::SpawnPane(id2(), spec("/srv", sized(23, 80)))));
+    }
+
+    #[test]
+    fn panes_created_after_with_hostname_accept_the_hostname_too() {
+        let mut a = launched(80, 25).with_hostname(Some("myhost"));
+        press(&mut a, "wv");
+        a.update(osc7(id2(), "file://myhost/srv"));
+        assert_eq!(a.cwd_label(), "/srv");
     }
 
     // Spec: Unknown cwd falls back to the launch cwd.
