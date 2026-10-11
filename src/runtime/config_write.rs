@@ -3,7 +3,8 @@
 use std::{
     fs::{self, OpenOptions},
     io::{self, ErrorKind, Write},
-    path::Path,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
     process,
 };
 
@@ -11,6 +12,28 @@ use crate::core::{
     config::ConfigEdit,
     config_edit::{EditError, apply_edit},
 };
+
+/// Most symlinks followed when the target does not exist yet.
+const MAX_LINK_HOPS: usize = 8;
+
+/// The file a save really writes. An existing file resolves through
+/// `canonicalize`. A dangling symlink is followed by hand so the save creates
+/// its target instead of replacing the link.
+fn resolve_target(path: &Path) -> Result<PathBuf, String> {
+    if let Ok(real) = fs::canonicalize(path) {
+        return Ok(real);
+    }
+    let mut current = path.to_owned();
+    for _ in 0..MAX_LINK_HOPS {
+        if !fs::symlink_metadata(&current).is_ok_and(|meta| meta.is_symlink()) {
+            return Ok(current);
+        }
+        let link = fs::read_link(&current).map_err(|error| format!("save failed: {error}"))?;
+        // `join` keeps an absolute link as is.
+        current = current.parent().map_or(link.clone(), |dir| dir.join(link));
+    }
+    Err("save failed: too many symlink levels".to_owned())
+}
 
 /// Applies `edits` to the config file at `path`. The error is the one-line
 /// footer text.
@@ -21,7 +44,11 @@ use crate::core::{
 pub(super) fn save_config(path: Option<&Path>, edits: &[ConfigEdit]) -> Result<(), String> {
     let failed = |error: io::Error| format!("save failed: {error}");
     let path = path.ok_or("save failed: no config path (HOME is not set)")?;
-    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+    let target = resolve_target(path)?;
+    // Replacing by rename would ignore a read-only file; refuse it instead.
+    if fs::metadata(&target).is_ok_and(|meta| meta.permissions().mode() & 0o200 == 0) {
+        return Err("config.toml is read-only".to_owned());
+    }
     let existing = match fs::read_to_string(&target) {
         Ok(text) => Some(text),
         Err(error) if error.kind() == ErrorKind::NotFound => None,
@@ -43,20 +70,28 @@ pub(super) fn save_config(path: Option<&Path>, edits: &[ConfigEdit]) -> Result<(
 }
 
 /// Writes `content` to `target` through a temp file in the same directory,
-/// so the rename is atomic. The temp file is removed on any failure after it
-/// exists, and an existing file's permissions carry over.
+/// so the rename is atomic. A stale temp from a crashed run is replaced once.
+/// The temp is removed on a failure only if this call created it, and an
+/// existing file's permissions carry over.
 fn write_atomic(target: &Path, content: &str) -> io::Result<()> {
     let name = target.file_name().unwrap_or_default().to_string_lossy();
     let temp = target.with_file_name(format!(".{name}.{}.tmp", process::id()));
-    let result = write_temp(&temp, target, content).and_then(|()| fs::rename(&temp, target));
+    let create = || OpenOptions::new().write(true).create_new(true).open(&temp);
+    let file = match create() {
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            fs::remove_file(&temp)?;
+            create()?
+        }
+        other => other?,
+    };
+    let result = fill_temp(file, target, content).and_then(|()| fs::rename(&temp, target));
     if result.is_err() {
         let _ = fs::remove_file(&temp);
     }
     result
 }
 
-fn write_temp(temp: &Path, target: &Path, content: &str) -> io::Result<()> {
-    let mut file = OpenOptions::new().write(true).create_new(true).open(temp)?;
+fn fill_temp(mut file: fs::File, target: &Path, content: &str) -> io::Result<()> {
     file.write_all(content.as_bytes())?;
     file.sync_all()?;
     if let Ok(existing) = fs::metadata(target) {
@@ -136,8 +171,10 @@ mod tests {
             eprintln!("skipped: running as root, directory permissions do not apply");
             return;
         }
-        let error = result.unwrap_err();
-        assert!(error.starts_with("save failed: "), "got {error:?}");
+        assert_eq!(
+            result,
+            Err("save failed: Permission denied (os error 13)".to_owned())
+        );
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             "[statusline]\nposition = \"bottom\"\n"
@@ -241,5 +278,89 @@ mod tests {
         assert_eq!(save_config(Some(&path), &[STATUSLINE_TOP]), Ok(()));
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o640);
+    }
+
+    // Spec: dangling symlinks are followed, never replaced.
+    #[test]
+    fn a_dangling_relative_link_is_followed_and_its_target_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("config.toml");
+        symlink("dotfiles/lazarobox/config.toml", &link).unwrap();
+        assert_eq!(save_config(Some(&link), &[STATUSLINE_TOP]), Ok(()));
+        assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("dotfiles/lazarobox/config.toml")).unwrap(),
+            "[statusline]\nposition = \"top\"\n"
+        );
+        assert_eq!(names(dir.path()), ["config.toml", "dotfiles"]);
+    }
+
+    #[test]
+    fn a_dangling_chain_is_followed_to_the_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("config.toml");
+        let middle = dir.path().join("middle");
+        symlink("middle", &link).unwrap();
+        symlink("store/real.toml", &middle).unwrap();
+        assert_eq!(save_config(Some(&link), &[STATUSLINE_TOP]), Ok(()));
+        assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert!(fs::symlink_metadata(&middle).unwrap().is_symlink());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("store/real.toml")).unwrap(),
+            "[statusline]\nposition = \"top\"\n"
+        );
+    }
+
+    #[test]
+    fn a_symlink_loop_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        symlink("b", &a).unwrap();
+        symlink("a", &b).unwrap();
+        assert_eq!(
+            save_config(Some(&a), &[STATUSLINE_TOP]),
+            Err("save failed: too many symlink levels".to_owned())
+        );
+        assert_eq!(names(dir.path()), ["a", "b"]);
+    }
+
+    // Spec: Read-only file refused.
+    #[test]
+    fn a_read_only_file_is_refused_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_in(&dir);
+        fs::write(&path, "[statusline]\nposition = \"bottom\"\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        assert_eq!(
+            save_config(Some(&path), &[STATUSLINE_TOP]),
+            Err("config.toml is read-only".to_owned())
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[statusline]\nposition = \"bottom\"\n"
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o444
+        );
+        assert_eq!(names(dir.path()), ["config.toml"]);
+    }
+
+    // Spec: a temp left by a crash does not block the first save.
+    #[test]
+    fn a_stale_temp_from_a_crash_does_not_block_the_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_in(&dir);
+        let stale = dir
+            .path()
+            .join(format!(".config.toml.{}.tmp", std::process::id()));
+        fs::write(&stale, "junk").unwrap();
+        assert_eq!(save_config(Some(&path), &[STATUSLINE_TOP]), Ok(()));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[statusline]\nposition = \"top\"\n"
+        );
+        assert_eq!(names(dir.path()), ["config.toml"]);
     }
 }
