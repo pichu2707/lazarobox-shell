@@ -19,7 +19,7 @@ pub(super) fn open(menu: &mut MenuState, label: &str) {
     assert_eq!(send(menu, key(KeyCode::Enter)), MenuCommand::None);
 }
 
-fn pick(label: &str, mark: Mark, selected: bool, current: bool) -> Row {
+pub(super) fn pick(label: &str, mark: Mark, selected: bool, current: bool) -> Row {
     Row::Pick {
         label: label.to_owned(),
         mark,
@@ -29,7 +29,7 @@ fn pick(label: &str, mark: Mark, selected: bool, current: bool) -> Row {
     }
 }
 
-fn status(text: &str) -> Mark {
+pub(super) fn status(text: &str) -> Mark {
     Mark::Status(text.to_owned())
 }
 
