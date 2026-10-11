@@ -172,9 +172,9 @@ struct PaneState {
 }
 
 impl PaneState {
-    fn new(size: PaneSize) -> Self {
+    fn new(size: PaneSize, host: Option<&str>) -> Self {
         Self {
-            emu: Pane::new(size, SCROLLBACK_LINES),
+            emu: Pane::new(size, SCROLLBACK_LINES).with_host(host),
             size,
             proc_cwd: None,
         }
@@ -182,7 +182,7 @@ impl PaneState {
 
     /// OSC 7 wins once seen; the poll fills in for shells that never report.
     fn effective_cwd(&self) -> Option<&Path> {
-        self.proc_cwd.as_deref()
+        self.emu.cwd().or(self.proc_cwd.as_deref())
     }
 }
 
@@ -227,6 +227,8 @@ pub struct App {
     /// Where the first pane starts, and the fallback for panes with no known cwd.
     launch_cwd: Option<PathBuf>,
     home: Option<PathBuf>,
+    /// This machine's hostname: OSC 7 reports naming it count as local.
+    hostname: Option<String>,
     shell: Option<String>,
 }
 
@@ -238,7 +240,7 @@ impl App {
         let mut ids = PaneIds::default();
         let first = ids.alloc();
         Self {
-            panes: HashMap::from([(first, PaneState::new(body_size(screen.body)))]),
+            panes: HashMap::from([(first, PaneState::new(body_size(screen.body), None))]),
             tabs: vec![Tab {
                 tree: Node::Leaf(first),
                 focus: first,
@@ -254,6 +256,7 @@ impl App {
             bars,
             launch_cwd: None,
             home: None,
+            hostname: None,
             shell: None,
         }
     }
@@ -269,8 +272,11 @@ impl App {
     }
 
     /// Names this machine so OSC 7 reports for it are accepted.
-    pub fn with_hostname(self, host: Option<&str>) -> Self {
-        let _ = host;
+    pub fn with_hostname(mut self, host: Option<&str>) -> Self {
+        self.hostname = host.map(str::to_owned);
+        for state in self.panes.values_mut() {
+            state.emu.set_host(host);
+        }
         self
     }
 
@@ -616,7 +622,8 @@ impl App {
         self.activate(self.tabs.len() - 1);
         self.refresh_screen();
         let size = body_size(self.screen.body);
-        self.panes.insert(id, PaneState::new(size));
+        self.panes
+            .insert(id, PaneState::new(size, self.hostname.as_deref()));
         let mut effects = self.relayout();
         effects.push(Effect::SpawnPane(id, self.spawn_spec(cwd, size)));
         effects
@@ -664,7 +671,8 @@ impl App {
             .map(Path::to_path_buf)
             .or_else(|| self.launch_cwd.clone());
         let size = self.layout_sizes()[&new];
-        self.panes.insert(new, PaneState::new(size));
+        self.panes
+            .insert(new, PaneState::new(size, self.hostname.as_deref()));
         self.set_focus(new);
         let mut effects = self.relayout();
         effects.push(Effect::SpawnPane(new, self.spawn_spec(cwd, size)));
@@ -872,15 +880,21 @@ impl App {
     }
 
     fn on_cwd(&mut self, id: PaneId, cwd: PathBuf) -> Vec<Effect> {
-        if let Some(state) = self.panes.get_mut(&id)
-            && state.proc_cwd.as_ref() != Some(&cwd)
-        {
+        if let Some(state) = self.panes.get_mut(&id) {
+            let before = state.effective_cwd().map(Path::to_path_buf);
             state.proc_cwd = Some(cwd);
-            // The tab bar labels show the focused pane's cwd of every tab.
-            let labelled = self.tabs.len() > 1 && self.tabs.iter().any(|tab| tab.focus == id);
-            self.dirty |= labelled || id == self.tab().focus;
+            if state.effective_cwd() != before.as_deref() {
+                self.mark_cwd_dirty(id);
+            }
         }
         Vec::new()
+    }
+
+    /// Redraws when a pane's effective cwd changed and it is on screen: the
+    /// statusline shows the focused pane's, and the tab bar every tab's.
+    fn mark_cwd_dirty(&mut self, id: PaneId) {
+        let labelled = self.tabs.len() > 1 && self.tabs.iter().any(|tab| tab.focus == id);
+        self.dirty |= labelled || id == self.tab().focus;
     }
 
     fn on_pty(&mut self, id: PaneId, event: PtyEvent) -> Vec<Effect> {
@@ -888,11 +902,20 @@ impl App {
             PtyEvent::Output(bytes) => {
                 // Panes of hidden tabs are not on screen: feed them, don't redraw.
                 self.dirty |= self.tab().tree.leaves().contains(&id);
+                let mut cwd_changed = false;
                 let reply = self
                     .panes
                     .get_mut(&id)
-                    .map(|state| state.emu.feed(&bytes))
+                    .map(|state| {
+                        let before = state.effective_cwd().map(Path::to_path_buf);
+                        let reply = state.emu.feed(&bytes);
+                        cwd_changed = state.effective_cwd() != before.as_deref();
+                        reply
+                    })
                     .unwrap_or_default();
+                if cwd_changed {
+                    self.mark_cwd_dirty(id);
+                }
                 if id == self.tab().focus {
                     self.sync_copy_offset();
                 }
@@ -1988,7 +2011,10 @@ mod app_tests {
     }
 
     fn osc7(id: PaneId, uri: &str) -> AppEvent {
-        AppEvent::Pty(id, PtyEvent::Output(format!("\x1b]7;{uri}\x07").into_bytes()))
+        AppEvent::Pty(
+            id,
+            PtyEvent::Output(format!("\x1b]7;{uri}\x07").into_bytes()),
+        )
     }
 
     // Spec (terminal-session): OSC 7 wins over the poll.

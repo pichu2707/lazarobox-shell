@@ -91,6 +91,7 @@ pub async fn run() -> io::Result<()> {
     let app = App::new(cols, rows)
         .with_config(&config)
         .with_notice(notice)
+        .with_hostname(local_hostname().as_deref())
         .with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
     let (id, spec) = app.initial_spawn();
 
@@ -116,7 +117,16 @@ pub async fn run() -> io::Result<()> {
 
 /// This machine's hostname, for OSC 7 host checks. `None` when the lookup fails.
 fn local_hostname() -> Option<String> {
-    None
+    let mut buf = [0u8; 256];
+    // SAFETY: `buf` is a valid writable buffer of the given length.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if rc != 0 {
+        return None;
+    }
+    // The name may be unterminated when truncated: stop at the buffer end.
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..len]).into_owned();
+    (!name.is_empty()).then_some(name)
 }
 
 /// Reads the config once at startup; a missing file is silent defaults.

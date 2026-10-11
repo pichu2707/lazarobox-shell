@@ -5,9 +5,11 @@
 //! (DA1, DSR 5n/6n) are produced here and returned from [`Pane::feed`]; the
 //! caller decides how to write them back to the child.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use vt100::{Callbacks, Parser, Screen};
+
+use super::osc7;
 
 /// DA1 reply: VT620-class terminal with no extensions.
 const DA1_REPLY: &[u8] = b"\x1b[?62;c";
@@ -107,9 +109,20 @@ impl CursorShape {
 struct Responder {
     replies: Vec<u8>,
     cursor_shape: CursorShape,
+    /// Last validated OSC 7 path; a rejected report leaves it untouched.
+    cwd: Option<PathBuf>,
+    /// This machine's hostname, accepted in OSC 7 URIs besides `localhost`.
+    host: Option<String>,
 }
 
 impl Callbacks for Responder {
+    // OSC 7 never replies: the payload is validated and kept, or dropped.
+    fn unhandled_osc(&mut self, _: &mut Screen, params: &[&[u8]]) {
+        if let Some(path) = osc7::parse(params, self.host.as_deref()) {
+            self.cwd = Some(path);
+        }
+    }
+
     fn unhandled_csi(
         &mut self,
         screen: &mut Screen,
@@ -175,14 +188,19 @@ impl Pane {
 
     /// Names this machine for OSC 7 host checks (`localhost` and an empty host
     /// are always local).
-    pub fn with_host(self, host: Option<&str>) -> Self {
-        let _ = host;
+    pub fn with_host(mut self, host: Option<&str>) -> Self {
+        self.set_host(host);
         self
+    }
+
+    /// In-place variant of [`Pane::with_host`].
+    pub fn set_host(&mut self, host: Option<&str>) {
+        self.parser.callbacks_mut().host = host.map(str::to_owned);
     }
 
     /// The last valid OSC 7 working directory the child reported.
     pub fn cwd(&self) -> Option<&Path> {
-        None
+        self.parser.callbacks().cwd.as_deref()
     }
 
     pub fn resize(&mut self, size: PaneSize) {
