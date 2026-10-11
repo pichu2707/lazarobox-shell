@@ -333,3 +333,79 @@ fn unset_and_mixed_values() {
     assert_eq!(value_of(&mixed, "code"), "ollama › llama3:8b");
     assert_eq!(value_of(&mixed, "chat"), "(default)");
 }
+// Spec: Row marks.
+#[test]
+fn rows_carry_download_and_not_detected_marks() {
+    let m = assigned(
+        &[
+            (Task::General, "ollama", "llama3:8b"),
+            (Task::Code, "ollama", "gone:7b"),
+            (Task::Chat, "claude", "opus"),
+            (Task::Review, "codex", "default"),
+            (Task::Summarize, "lmstudio", "m"),
+        ],
+        Some(detection(&[
+            engine("ollama", Status::Available, &["llama3:8b"], None),
+            engine("claude", Status::Available, &["default"], None),
+            engine("lmstudio", Status::NotRunning, &[], None),
+        ])),
+    );
+    assert_eq!(value_of(&m, "general"), "ollama › llama3:8b");
+    assert_eq!(value_of(&m, "code"), "ollama › gone:7b · download required");
+    assert_eq!(value_of(&m, "chat"), "claude › opus", "CLI: no model mark");
+    assert_eq!(value_of(&m, "review"), "codex (not detected) › default");
+    assert_eq!(value_of(&m, "summarize"), "lmstudio (not detected) › m");
+}
+
+// Spec: Before first detection.
+#[test]
+fn nothing_is_marked_before_the_first_detection() {
+    let m = assigned(
+        &[
+            (Task::General, "ollama", "llama3:8b"),
+            (Task::Code, "codex", "default"),
+        ],
+        None,
+    );
+    assert_eq!(value_of(&m, "general"), "ollama › llama3:8b");
+    assert_eq!(value_of(&m, "code"), "codex › default");
+}
+
+// Spec: Result arrives on the task list.
+#[test]
+fn a_result_marks_the_row_in_place_and_keeps_selection_and_draft() {
+    let mut m = assigned(&[(Task::Code, "ollama", "llama3:8b")], None);
+    for _ in 0..4 {
+        press(&mut m, 'j');
+    }
+    assert_eq!(value_of(&m, "code"), "ollama › llama3:8b");
+    let draft = m.ai_draft();
+    m.set_engines(Some(detection(&[engine(
+        "ollama",
+        Status::Available,
+        &["qwen2.5:7b"],
+        None,
+    )])));
+    assert_eq!(
+        value_of(&m, "code"),
+        "ollama › llama3:8b · download required"
+    );
+    assert_eq!(selected_label(&m), "code");
+    assert_eq!(m.ai_draft(), draft);
+}
+
+// Spec: Engine disappears while open.
+#[test]
+fn a_vanished_engine_stays_assigned_and_reads_not_detected() {
+    let mut m = assigned(&[(Task::Code, "ollama", "llama3:8b")], Some(machine()));
+    assert_eq!(value_of(&m, "code"), "ollama › llama3:8b");
+    let draft = m.ai_draft();
+    m.set_engines(Some(detection(&[engine(
+        "ollama",
+        Status::NotRunning,
+        &[],
+        None,
+    )])));
+    assert_eq!(value_of(&m, "code"), "ollama (not detected) › llama3:8b");
+    assert_eq!(m.ai_draft(), draft);
+}
