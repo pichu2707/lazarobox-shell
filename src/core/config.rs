@@ -394,10 +394,7 @@ mod tests {
     }
 
     fn ai(engine: Option<&str>, model: Option<&str>) -> AiConfig {
-        AiConfig {
-            engine: engine.map(str::to_owned),
-            model: model.map(str::to_owned),
-        }
+        AiConfig::general(engine, model)
     }
 
     // Spec: Defaults (AI unset).

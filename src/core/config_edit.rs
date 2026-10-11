@@ -541,8 +541,10 @@ other = 1
     fn special_characters_and_the_draft_round_trip_without_a_notice() {
         let out = apply_edit(None, &ai_edits("ollama", "a\"b\\c")).unwrap();
         let (ai, notice) = parsed_ai(&out);
-        assert_eq!(ai.engine.as_deref(), Some("ollama"));
-        assert_eq!(ai.model.as_deref(), Some("a\"b\\c"));
+        assert_eq!(
+            ai,
+            crate::core::ai::config::AiConfig::general(Some("ollama"), Some("a\"b\\c"))
+        );
         assert_eq!(notice, None);
     }
 
