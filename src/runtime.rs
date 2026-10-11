@@ -260,7 +260,9 @@ impl Panes {
                 }
                 Effect::ClosePane(id) => self.close(id),
                 // Synchronous: the file is tiny, and `drive` hands the answer
-                // to the app before the next input is polled.
+                // to the app before the next input is polled. The app relies
+                // on it: save results carry no session or draft id. An async
+                // save would need a generation/pending guard in `MenuState`.
                 Effect::SaveConfig(edits) => {
                     feedback.push(match save_config(self.config_path.as_deref(), &edits) {
                         Ok(()) => AppEvent::ConfigSaved,
@@ -782,6 +784,39 @@ mod tests {
             fs::read_to_string(path).unwrap(),
             "[statusline]\nposition = \"top\"\n"
         );
+    }
+
+    // Characterization (passes on arrival): pins the ordering the app relies
+    // on. The save result is processed before the next input, so a later key
+    // never meets a menu that is about to close.
+    #[test]
+    fn the_save_result_is_processed_before_the_next_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut panes = panes_saving_to(Some(dir.path().join("config.toml")));
+        let mut app = App::new(80, 25);
+        for event in [
+            menu_key(' ', KeyModifiers::CONTROL),
+            menu_key('m', KeyModifiers::NONE),
+            menu_key('l', KeyModifiers::NONE),
+        ] {
+            step(&mut app, event, &mut panes);
+        }
+        let enter = AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let next = menu_key('j', KeyModifiers::NONE);
+        let mut seen = Vec::new();
+        for event in [enter.clone(), next.clone()] {
+            drive(
+                |event| {
+                    seen.push(event.clone());
+                    app.update(event)
+                },
+                event,
+                &mut panes,
+            );
+        }
+        assert_eq!(seen, vec![enter, AppEvent::ConfigSaved, next]);
+        assert!(app.menu().is_none());
+        assert_eq!(app.input(), crate::app::InputMode::Terminal);
     }
 
     #[test]
