@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -24,6 +25,12 @@ use crate::core::{
 
 /// Rows of history kept by the emulator.
 const SCROLLBACK_LINES: usize = 10_000;
+
+/// How long after leaving COPY a Press of the same key is taken as the key
+/// still being held (OS auto-repeat arrives as plain Press events when the
+/// terminal reports no event types). Trade-off: a deliberate retype of the
+/// exit key within this window is dropped.
+const HELD_EXIT_WINDOW: Duration = Duration::from_millis(500);
 
 /// Byte sent to the child when the prefix is pressed twice (NUL, Ctrl+Space).
 const PREFIX_LITERAL: u8 = 0x00;
@@ -262,8 +269,19 @@ pub struct App {
     dir_exists: fn(&Path) -> bool,
     shell: Option<String>,
     /// The key whose Press left COPY: its Repeat events are dropped in
-    /// TERMINAL until its Release or any other Press.
-    held_exit: Option<KeyCode>,
+    /// TERMINAL until its Release or any other Press, and so are its Presses
+    /// arriving within `HELD_EXIT_WINDOW` of the previous such event.
+    held_exit: Option<HeldExit>,
+    /// Monotonic clock, injected so `update` stays deterministic.
+    clock: fn() -> Instant,
+}
+
+/// The key that left COPY and when it was last seen.
+#[derive(Debug, Clone, Copy)]
+struct HeldExit {
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    last: Instant,
 }
 
 impl App {
@@ -295,6 +313,7 @@ impl App {
             dir_exists: |_| true,
             shell: None,
             held_exit: None,
+            clock: Instant::now,
         }
     }
 
@@ -312,6 +331,12 @@ impl App {
     /// the cwd it starts in.
     pub fn with_dir_check(mut self, dir_exists: fn(&Path) -> bool) -> Self {
         self.dir_exists = dir_exists;
+        self
+    }
+
+    /// Injects the monotonic clock used to debounce a held COPY exit key.
+    pub fn with_clock(mut self, clock: fn() -> Instant) -> Self {
+        self.clock = clock;
         self
     }
 
@@ -626,7 +651,7 @@ impl App {
             KeyEventKind::Press => false,
             KeyEventKind::Repeat => true,
             KeyEventKind::Release => {
-                if self.held_exit == Some(key.code) {
+                if self.held_exit.is_some_and(|h| h.code == key.code) {
                     self.held_exit = None;
                 }
                 return Vec::new();
@@ -634,11 +659,23 @@ impl App {
         };
         if repeat {
             // A held key that left COPY must not reach the shell as typed text.
-            if self.input == InputMode::Terminal && self.held_exit == Some(key.code) {
+            if self.input == InputMode::Terminal
+                && self.held_exit.is_some_and(|h| h.code == key.code)
+            {
                 return Vec::new();
             }
-        } else {
-            self.held_exit = None;
+        } else if let Some(held) = self.held_exit.take() {
+            // Terminals that report no event types deliver auto-repeat as
+            // Presses: the same key within the window is still the hold.
+            let now = (self.clock)();
+            let same = held.code == key.code && held.modifiers == key.modifiers;
+            // `held_exit` is only armed on entering TERMINAL and every Press
+            // takes it, so the mode is always TERMINAL here.
+            debug_assert_eq!(self.input, InputMode::Terminal);
+            if same && now.saturating_duration_since(held.last) <= HELD_EXIT_WINDOW {
+                self.held_exit = Some(HeldExit { last: now, ..held });
+                return Vec::new();
+            }
         }
         self.dirty |= self.notice.take().is_some();
         if repeat
@@ -1060,18 +1097,26 @@ impl App {
             CopyCommand::Exit => {
                 self.focused_state_mut().emu.set_scrollback(0);
                 self.input = InputMode::Terminal;
-                self.held_exit = Some(key.code);
+                self.hold_exit(key);
             }
             CopyCommand::Yank => {
                 let effects = self.yank(state);
                 if self.input == InputMode::Terminal {
-                    self.held_exit = Some(key.code);
+                    self.hold_exit(key);
                 }
                 return effects;
             }
             CopyCommand::Ignore => self.input = InputMode::Copy(state),
         }
         Vec::new()
+    }
+
+    fn hold_exit(&mut self, key: &KeyEvent) {
+        self.held_exit = Some(HeldExit {
+            code: key.code,
+            modifiers: key.modifiers,
+            last: (self.clock)(),
+        });
     }
 
     /// `y`: reads the selection, hands it to the host as OSC 52 and leaves
@@ -1111,6 +1156,8 @@ impl App {
     }
 
     fn on_paste(&mut self, text: &str) -> Vec<Effect> {
+        // A paste is not part of a held key: the debounce is over.
+        self.held_exit = None;
         match self.input {
             InputMode::Terminal => vec![Effect::WritePty(
                 self.tab().focus,
@@ -2378,6 +2425,163 @@ mod app_tests {
             a.update(repeat('q')),
             vec![Effect::WritePty(PaneId::FIRST, b"q".to_vec())]
         );
+    }
+
+    thread_local! {
+        static NOW_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        static BASE: Instant = Instant::now();
+    }
+
+    fn mock_now() -> Instant {
+        BASE.with(|b| *b + Duration::from_millis(NOW_MS.with(|n| n.get())))
+    }
+
+    /// Sends `ev` as if it arrived `ms` after the test's t0.
+    fn at(a: &mut App, ms: u64, ev: AppEvent) -> Vec<Effect> {
+        NOW_MS.with(|n| n.set(ms));
+        a.update(ev)
+    }
+
+    fn timed(a: App) -> App {
+        a.with_clock(mock_now)
+    }
+
+    fn q_pty() -> Vec<Effect> {
+        vec![Effect::WritePty(PaneId::FIRST, b"q".to_vec())]
+    }
+
+    // modal-input: Held exit key within the window (Presses only).
+    #[test]
+    fn a_held_exit_key_sent_as_presses_is_dropped_for_the_whole_hold() {
+        for c in ['q', 'i'] {
+            let mut a = timed(app());
+            at(&mut a, 0, ctrl_space());
+            at(&mut a, 0, key('['));
+            at(&mut a, 0, key(c));
+            assert_eq!(a.input(), InputMode::Terminal, "{c}");
+            for ms in [400, 433, 466] {
+                assert_eq!(at(&mut a, ms, key(c)), vec![], "{c} at {ms}");
+            }
+        }
+        let mut a = timed(app());
+        at(&mut a, 0, ctrl_space());
+        at(&mut a, 0, key('['));
+        at(&mut a, 0, esc());
+        for ms in [400, 433, 466] {
+            assert_eq!(at(&mut a, ms, esc()), vec![], "esc at {ms}");
+        }
+    }
+
+    #[test]
+    fn a_held_yank_key_sent_as_presses_is_dropped_and_keeps_the_notice() {
+        let mut a = timed(app());
+        copy_after(&mut a, b"abc");
+        at(&mut a, 0, key('h'));
+        at(&mut a, 0, key('v'));
+        assert_eq!(at(&mut a, 0, key('y')).len(), 1);
+        for ms in [400, 433, 466] {
+            assert_eq!(at(&mut a, ms, key('y')), vec![], "y at {ms}");
+        }
+        assert_eq!(a.notice(), Some("Copied 1 character"));
+    }
+
+    #[test]
+    fn a_long_hold_keeps_being_dropped_past_the_window_from_the_exit() {
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        for ms in [400, 800, 1200, 1600] {
+            assert_eq!(at(&mut a, ms, key('q')), vec![], "q at {ms}");
+        }
+    }
+
+    #[test]
+    fn a_deliberate_press_after_the_window_passes_through() {
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        assert_eq!(at(&mut a, 600, key('q')), q_pty());
+        // The debounce is over: the next one is typed text too.
+        assert_eq!(at(&mut a, 650, key('q')), q_pty());
+    }
+
+    #[test]
+    fn another_key_ends_the_debounce() {
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        assert_eq!(
+            at(&mut a, 100, key('x')),
+            vec![Effect::WritePty(PaneId::FIRST, b"x".to_vec())]
+        );
+        assert_eq!(at(&mut a, 150, key('q')), q_pty());
+    }
+
+    #[test]
+    fn a_release_of_the_exit_key_ends_the_debounce() {
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        at(&mut a, 50, release('q'));
+        assert_eq!(at(&mut a, 100, key('q')), q_pty());
+    }
+
+    #[test]
+    fn the_window_boundary_is_inclusive_at_500_ms() {
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        assert_eq!(at(&mut a, 500, key('q')), vec![]);
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        assert_eq!(at(&mut a, 501, key('q')), q_pty());
+    }
+
+    #[test]
+    fn each_dropped_press_refreshes_the_window() {
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        assert_eq!(at(&mut a, 499, key('q')), vec![]);
+        assert_eq!(at(&mut a, 998, key('q')), vec![]);
+        assert_eq!(at(&mut a, 1499, key('q')), q_pty());
+    }
+
+    #[test]
+    fn a_yank_that_stays_in_copy_does_not_arm_the_debounce() {
+        // Over the cap.
+        let mut a = timed(app());
+        big_selection(&mut a, 76);
+        assert_eq!(at(&mut a, 0, key('y')), vec![]);
+        assert!(is_copy(&a));
+        assert!(a.held_exit.is_none());
+        // Nothing to copy.
+        let mut a = timed(App::new(20, 5));
+        copy_after(&mut a, b"abc");
+        press_n(&mut a, 'j', 2);
+        a.update(key('V'));
+        assert_eq!(at(&mut a, 0, key('y')), vec![]);
+        assert!(is_copy(&a));
+        assert!(a.held_exit.is_none());
+        // Leaving COPY by another key, a `y` right after is typed text.
+        at(&mut a, 10, key('q'));
+        assert_eq!(
+            at(&mut a, 100, key('y')),
+            vec![Effect::WritePty(PaneId::FIRST, b"y".to_vec())]
+        );
+    }
+
+    #[test]
+    fn a_paste_ends_the_debounce() {
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        at(&mut a, 100, AppEvent::Paste("p".into()));
+        assert_eq!(at(&mut a, 200, key('q')), q_pty());
+    }
+
+    #[test]
+    fn the_debounce_needs_the_identical_key_and_modifiers() {
+        let shift_q = AppEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::SHIFT));
+        let ctrl_q = AppEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+        for ev in [shift_q, ctrl_q] {
+            let mut a = timed(in_copy());
+            at(&mut a, 0, key('q'));
+            assert_eq!(at(&mut a, 100, ev.clone()).len(), 1, "{ev:?}");
+        }
     }
 
     // copy-mode-scrollback: a horizontal motion also brings an off-screen
