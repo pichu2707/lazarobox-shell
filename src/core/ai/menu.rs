@@ -1,7 +1,7 @@
 //! Pure model of the AI section of the config menu: a draft engine and
 //! model chosen from what the last detection found. No IO.
 
-use super::{CATALOG, Detection, Status, config::AiConfig};
+use super::{CATALOG, Detection, Status, config::AiConfig, status_text};
 
 /// The two editable AI rows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -79,6 +79,28 @@ impl AiMenu {
         choices
     }
 
+    /// What the draft engine offers, when it is available.
+    fn engine_models(&self) -> &[String] {
+        let id = self.draft.engine.as_deref();
+        self.engines
+            .iter()
+            .flat_map(|d| &d.engines)
+            .find(|s| Some(s.id) == id && s.status == Status::Available)
+            .map_or(&[], |s| &s.models)
+    }
+
+    /// The draft engine's models, then a draft model that is no longer
+    /// listed, so it is shown and never silently erased.
+    fn model_choices(&self) -> Vec<String> {
+        let mut choices = self.engine_models().to_vec();
+        if let Some(model) = &self.draft.model
+            && !choices.contains(model)
+        {
+            choices.push(model.clone());
+        }
+        choices
+    }
+
     /// The display value of an editable row.
     pub fn value(&self, field: AiField) -> String {
         match field {
@@ -88,13 +110,20 @@ impl AiMenu {
                 Some(id) if self.engines.is_none() => format!("{id} (checking)"),
                 Some(id) => format!("{id} (not detected)"),
             },
-            AiField::Model => String::new(),
+            AiField::Model => match &self.draft.model {
+                None => "none".to_owned(),
+                Some(model) if self.engine_models().contains(model) => model.clone(),
+                Some(model) => format!("{model} · not found"),
+            },
         }
     }
 
     /// The display text of the Status row.
     pub fn status(&self) -> String {
-        String::new()
+        match &self.draft.engine {
+            None => "-".to_owned(),
+            Some(id) => status_text(self.engines.as_ref(), id),
+        }
     }
 
     /// Moves a row to its next or previous choice. `false` when there is
@@ -114,9 +143,28 @@ impl AiMenu {
                     (None, _) => 0,
                 };
                 self.draft.engine.clone_from(&choices[next]);
+                self.draft.model = self.engine_models().first().cloned();
                 true
             }
-            AiField::Model => false,
+            AiField::Model => {
+                let choices = self.model_choices();
+                let len = choices.len();
+                let at = choices
+                    .iter()
+                    .position(|m| Some(m) == self.draft.model.as_ref());
+                let next = match (at, forward) {
+                    (Some(i), true) => (i + 1) % len.max(1),
+                    (Some(i), false) => (i + len - 1) % len.max(1),
+                    (None, true) => 0,
+                    (None, false) => len.saturating_sub(1),
+                };
+                let model = choices.get(next).cloned();
+                let moved = model.is_some() && model != self.draft.model;
+                if moved {
+                    self.draft.model = model;
+                }
+                moved
+            }
         }
     }
 }
