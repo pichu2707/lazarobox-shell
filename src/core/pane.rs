@@ -328,6 +328,38 @@ impl Pane {
         (!screen.hide_cursor()).then(|| screen.cursor_position())
     }
 
+    /// Last non-blank column of stable line `line`; 0 for a blank or
+    /// unavailable line. The scrollback offset is restored.
+    pub fn line_end(&mut self, line: usize) -> u16 {
+        let saved = self.scrollback_offset();
+        let end = self.page_to(line).map_or(0, |row| {
+            let (_, cols) = self.parser.screen().size();
+            (0..cols)
+                .rev()
+                .find(|&col| {
+                    self.cell(row, col)
+                        .is_some_and(|c| !matches!(c.text, "" | " "))
+                })
+                .unwrap_or(0)
+        });
+        self.set_scrollback(saved);
+        end
+    }
+
+    /// Scrolls so stable line `line` is visible and returns its viewport row,
+    /// or `None` if the line was evicted or is past the screen. The caller
+    /// restores the offset.
+    fn page_to(&mut self, line: usize) -> Option<u16> {
+        let (rows, _) = self.parser.screen().size();
+        let base = self.first_line + self.history_len;
+        if line < self.first_line || line >= base + usize::from(rows) {
+            return None;
+        }
+        self.set_scrollback(base.saturating_sub(line));
+        let top = base - self.scrollback_offset();
+        u16::try_from(line - top).ok()
+    }
+
     pub fn modes(&self) -> TermModes {
         let screen = self.parser.screen();
         TermModes {
@@ -887,6 +919,32 @@ mod tests {
         assert_eq!(p.cursor(), None);
         assert_eq!(p.live_cursor(), Some((1, 3)));
         assert_eq!(p.scrollback_offset(), 2);
+    }
+
+    #[test]
+    fn line_end_is_the_last_non_blank_column() {
+        let mut p = pane(5, 20);
+        p.feed(b"echo hi\r\n\r\n  x  ");
+        assert_eq!(p.line_end(0), 6);
+        assert_eq!(p.line_end(1), 0, "blank row");
+        assert_eq!(p.line_end(2), 2, "trailing blanks are not content");
+        assert_eq!(p.line_end(99), 0, "unavailable line");
+    }
+
+    #[test]
+    fn line_end_reads_history_and_restores_the_offset() {
+        let mut p = small(3);
+        feed_lines(&mut p, 12); // lines 5..=9 are history: line5 .. line9
+        assert_eq!(p.first_line(), 5);
+        p.set_scrollback(2);
+        let top = text_at(&p, 0, 4);
+        assert_eq!(p.line_end(5), 4);
+        assert_eq!(p.line_end(9), 4);
+        assert_eq!(p.scrollback_offset(), 2);
+        assert_eq!(text_at(&p, 0, 4), top);
+        p.set_scrollback(0);
+        assert_eq!(p.line_end(6), 4);
+        assert_eq!(p.scrollback_offset(), 0);
     }
 
     #[test]
