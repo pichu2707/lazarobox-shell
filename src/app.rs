@@ -669,10 +669,10 @@ impl App {
             // Presses: the same key within the window is still the hold.
             let now = (self.clock)();
             let same = held.code == key.code && held.modifiers == key.modifiers;
-            if self.input == InputMode::Terminal
-                && same
-                && now.saturating_duration_since(held.last) <= HELD_EXIT_WINDOW
-            {
+            // `held_exit` is only armed on entering TERMINAL and every Press
+            // takes it, so the mode is always TERMINAL here.
+            debug_assert_eq!(self.input, InputMode::Terminal);
+            if same && now.saturating_duration_since(held.last) <= HELD_EXIT_WINDOW {
                 self.held_exit = Some(HeldExit { last: now, ..held });
                 return Vec::new();
             }
@@ -1156,6 +1156,8 @@ impl App {
     }
 
     fn on_paste(&mut self, text: &str) -> Vec<Effect> {
+        // A paste is not part of a held key: the debounce is over.
+        self.held_exit = None;
         match self.input {
             InputMode::Terminal => vec![Effect::WritePty(
                 self.tab().focus,
@@ -2518,6 +2520,57 @@ mod app_tests {
         at(&mut a, 0, key('q'));
         at(&mut a, 50, release('q'));
         assert_eq!(at(&mut a, 100, key('q')), q_pty());
+    }
+
+    #[test]
+    fn the_window_boundary_is_inclusive_at_500_ms() {
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        assert_eq!(at(&mut a, 500, key('q')), vec![]);
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        assert_eq!(at(&mut a, 501, key('q')), q_pty());
+    }
+
+    #[test]
+    fn each_dropped_press_refreshes_the_window() {
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        assert_eq!(at(&mut a, 499, key('q')), vec![]);
+        assert_eq!(at(&mut a, 998, key('q')), vec![]);
+        assert_eq!(at(&mut a, 1499, key('q')), q_pty());
+    }
+
+    #[test]
+    fn a_yank_that_stays_in_copy_does_not_arm_the_debounce() {
+        // Over the cap.
+        let mut a = timed(app());
+        big_selection(&mut a, 76);
+        assert_eq!(at(&mut a, 0, key('y')), vec![]);
+        assert!(is_copy(&a));
+        assert!(a.held_exit.is_none());
+        // Nothing to copy.
+        let mut a = timed(App::new(20, 5));
+        copy_after(&mut a, b"abc");
+        press_n(&mut a, 'j', 2);
+        a.update(key('V'));
+        assert_eq!(at(&mut a, 0, key('y')), vec![]);
+        assert!(is_copy(&a));
+        assert!(a.held_exit.is_none());
+        // Leaving COPY by another key, a `y` right after is typed text.
+        at(&mut a, 10, key('q'));
+        assert_eq!(
+            at(&mut a, 100, key('y')),
+            vec![Effect::WritePty(PaneId::FIRST, b"y".to_vec())]
+        );
+    }
+
+    #[test]
+    fn a_paste_ends_the_debounce() {
+        let mut a = timed(in_copy());
+        at(&mut a, 0, key('q'));
+        at(&mut a, 100, AppEvent::Paste("p".into()));
+        assert_eq!(at(&mut a, 200, key('q')), q_pty());
     }
 
     #[test]
