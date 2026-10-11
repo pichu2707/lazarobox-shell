@@ -2343,6 +2343,18 @@ mod app_tests {
         );
     }
 
+    // copy-mode-scrollback: a horizontal motion also brings an off-screen
+    // cursor back into view.
+    #[test]
+    fn a_horizontal_motion_brings_an_off_screen_cursor_back() {
+        let mut a = app();
+        copy_after(&mut a, b"abc");
+        feed_focused(&mut a, "\r\n".repeat(40).as_bytes());
+        assert_eq!(a.copy_cursor(), None);
+        a.update(key('l'));
+        assert_eq!(a.copy_cursor(), Some((0, 4)));
+    }
+
     // copy-selection: Screen switch drops it.
     #[test]
     fn a_screen_switch_drops_the_selection_and_keeps_copy() {

@@ -120,6 +120,8 @@ impl CopyState {
             CopyMotion::LineEnd => self.cursor.col = line_end.min(last_col),
             _ => self.move_vertically(motion, geo),
         }
+        // Any motion brings an off-screen cursor back into view.
+        self.ensure_visible(geo);
     }
 
     fn move_vertically(&mut self, motion: CopyMotion, geo: Geometry) {
@@ -154,7 +156,6 @@ impl CopyState {
         }
         self.cursor.line = self.cursor.line.clamp(geo.first_line, last_line);
         self.offset = self.offset.min(geo.history);
-        self.ensure_visible(geo);
     }
 
     /// Scrolls the viewport just enough to show the cursor line.
