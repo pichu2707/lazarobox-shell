@@ -234,11 +234,23 @@ impl Pane {
         if was_alt {
             return;
         }
-        let at_cap = h1 >= self.cap;
+        let at_cap = self.cap > 0 && h1 >= self.cap;
         let scrolled = self.scrollback_offset().saturating_sub(1);
         if pinned {
-            self.first_line += (h0 + scrolled).saturating_sub(h1);
+            let evicted = (h0 + scrolled).saturating_sub(h1);
+            self.first_line += evicted;
+            // Probe lost: vt100 reset the offset (RIS, alt round-trip inside
+            // one chunk) or history shrank by more than the scrolled rows can
+            // account for. Leave the offset at 0 like native vt100.
+            let probe_lost = self.scrollback_offset() == 0 || evicted > scrolled;
+            if probe_lost {
+                self.bump_generation();
+                return;
+            }
             self.set_scrollback(if o0 == 0 { 0 } else { o0 + scrolled });
+            // Saturated: the offset hit the cap, so `scrolled` is a lower bound.
+            // Pushing exactly cap - 1 rows while pinned also lands here: a
+            // conservative bump.
             if at_cap && h1 == scrolled + 1 {
                 self.bump_generation();
             }
@@ -833,6 +845,7 @@ mod tests {
         Pane::new(PaneSize { rows, cols: 10 }, 5)
     }
 
+    // Characterization test: pins current behavior, not new logic.
     #[test]
     fn first_line_is_zero_below_the_cap() {
         let mut p = small(3);
@@ -907,6 +920,44 @@ mod tests {
         // One chunk with empty history at the start: the probe cannot pin.
         p.feed("x\r\n".repeat(20).as_bytes());
         assert_eq!(p.line_generation(), 1);
+    }
+
+    #[test]
+    fn line_generation_bumps_when_an_alt_round_trip_hides_the_eviction_count() {
+        let mut p = small(3);
+        feed_lines(&mut p, 12);
+        p.set_scrollback(2);
+        let gen_before = p.line_generation();
+        p.feed(("n\r\n".repeat(3) + "\x1b[?1049h\x1b[?1049l").as_bytes());
+        assert_eq!(p.line_generation(), gen_before + 1);
+        assert_eq!(p.scrollback_offset(), 0, "left at 0 like native vt100");
+    }
+
+    #[test]
+    fn line_generation_bumps_on_ris() {
+        let mut p = small(3);
+        feed_lines(&mut p, 4);
+        p.set_scrollback(1);
+        p.feed(b"\x1bc");
+        assert_eq!(p.line_generation(), 1);
+    }
+
+    #[test]
+    fn line_generation_bumps_when_the_cap_saturates_the_pinned_offset() {
+        let mut p = small(3);
+        feed_lines(&mut p, 12); // history at the cap (5), first_line 5
+        assert_eq!(p.line_generation(), 0);
+        p.set_scrollback(1);
+        p.feed("n\r\n".repeat(8).as_bytes()); // more lines than the cap
+        assert_eq!(p.line_generation(), 1);
+        assert_eq!(p.first_line(), 9, "documented lower bound (5 + cap - 1)");
+    }
+
+    #[test]
+    fn a_zero_capacity_pane_never_bumps_the_line_generation() {
+        let mut p = Pane::new(PaneSize { rows: 3, cols: 10 }, 0);
+        feed_lines(&mut p, 5);
+        assert_eq!(p.line_generation(), 0);
     }
 
     #[test]
