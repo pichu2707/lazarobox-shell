@@ -97,7 +97,7 @@ Legend: COMPLIANT = a covering test passed in the run above. MANUAL-OK = user co
 | Input goes to the focused pane only | `keys_and_paste_go_to_the_focused_pane_only` | COMPLIANT |
 | Enter PREFIX / Literal prefix | `prefix_key_enters_prefix_without_writing`, `held_prefix_key_enters_prefix_once_and_repeats_are_dropped`, `prefix_twice_sends_a_literal_nul` | COMPLIANT |
 | Cancel/unknown | `prefix_cancel_and_unmapped_keys_are_swallowed` | COMPLIANT |
-| Real terminal reports NUL (manual) | inherited from the base slice; no task in this change | WARN (W-2) |
+| Real terminal reports NUL (manual) | inherited from the base slice; confirmed in Kitty by the user on 2026-10-11, recorded as S9d.1 | OK (W-2 RESOLVED in PR #50) |
 | Confirm / Decline (quit) | `confirm_quit_y_quits`, `confirm_quit_declined_by_n_esc_or_other_keys`, `confirm_quit_uppercase_y_declines` | COMPLIANT |
 | Paste in COPY | `paste_goes_to_the_pty_only_in_terminal` | COMPLIANT |
 | Resize only changed panes | `a_host_resize_resizes_only_the_panes_whose_size_changed`, `a_host_resize_resizes_every_pane_that_changed` | COMPLIANT |
@@ -215,7 +215,7 @@ Legend: COMPLIANT = a covering test passed in the run above. MANUAL-OK = user co
 | Failed split removes the pane | `a_failed_split_removes_the_pane_and_restores_focus`, `runtime::tests::a_failed_spawn_is_fed_back_as_an_event` | COMPLIANT |
 | Failed new tab | `a_failed_new_tab_is_removed_and_the_previous_tab_stays` | COMPLIANT |
 | Notice clears on next key | `the_notice_lasts_until_the_next_press_or_repeat` | COMPLIANT |
-| Bad cwd is not a failure (auto, unix PTY) | no project test; library behaviour confirmed by source (`portable-pty` `as_command` falls back to the home dir when the cwd is not a directory) | WARN (W-1) |
+| Bad cwd is not a failure (auto, unix PTY) | `core::pty::portable::tests::a_missing_cwd_starts_the_shell_in_home` (characterization of `portable-pty`; HOME injected through the spawn env), recorded as S9d.2 | OK (W-1 RESOLVED in PR #50) |
 | UI stays responsive | `runtime::tests::close_kills_off_the_loop` (fake handle), `pty::portable::tests::kill_force_kills_a_shell_ignoring_sighup` (real PTY) | COMPLIANT |
 | Fallback for plain shell | `runtime::tests::cd_in_a_real_shell_is_seen_by_the_poll`, `the_poll_fills_in_for_a_shell_that_never_reports` | COMPLIANT |
 | OSC 7 wins | `osc7_cwd_is_shown_and_survives_a_later_poll`, `a_rejected_osc7_leaves_the_poll_cwd_visible` | COMPLIANT |
@@ -230,7 +230,7 @@ Legend: COMPLIANT = a covering test passed in the run above. MANUAL-OK = user co
 | One of two shells exits | `an_unfocused_shell_exit_collapses_its_pane_and_keeps_focus` | COMPLIANT |
 | Last shell exits | `the_last_shell_exiting_quits` | COMPLIANT |
 | Quit leaves no orphan | `runtime::tests::shutdown_kills_every_child_in_parallel`, `shutdown_gives_up_at_the_bound`, `portable::tests::drop_leaves_no_orphan`, `drop_kills_background_jobs` | COMPLIANT |
-| Terminal restored, No orphan shells after quit (manual, Kitty) | base slice; not tied to a task of this change | WARN (W-2) |
+| Terminal restored, No orphan shells after quit (manual, Kitty) | base slice; confirmed in Kitty by the user on 2026-10-11, recorded as S9d.1 | OK (W-2 RESOLVED in PR #50) |
 
 Summary: 0 scenarios failing; 1 auto scenario without a project test (W-1); 3 inherited manual scenarios without a recorded confirmation in this change (W-2). Every other scenario has a passing covering test or a user-confirmed manual check.
 
@@ -279,8 +279,8 @@ None.
 
 ### WARNING
 
-- **W-1**: Scenario "Bad cwd is not a failure [auto, unix PTY]" (terminal-session) has no project test. The behaviour is delegated to `portable-pty` (its unix `as_command` falls back to the home directory when the cwd is not a directory), and since S9c the app also avoids vanished cwds before spawning (tested). The behaviour is believed correct but there is no runtime evidence in this repo. A strict reading of the verify rules would classify an auto scenario without a covering test as CRITICAL; it is reported as WARNING because the behaviour is third-party and covered twice. The user decides. Suggested fix: one `portable::tests` case spawning `/bin/sh` with a non-existent cwd and HOME set, asserting `pwd`.
-- **W-2**: Three manual scenarios inherited from the base terminal slice appear in the delta specs but are not tied to any task of this change: "Real terminal reports NUL" (modal-input), "Terminal restored" and "No orphan shells after quit" (terminal-session). The Kitty checks confirmed for this change do not name them. The quit path is exercised in every manual session, but there is no explicit record.
+- **W-1 (RESOLVED in PR #50: test `a_missing_cwd_starts_the_shell_in_home`, task S9d.2)**: Scenario "Bad cwd is not a failure [auto, unix PTY]" (terminal-session) has no project test. The behaviour is delegated to `portable-pty` (its unix `as_command` falls back to the home directory when the cwd is not a directory), and since S9c the app also avoids vanished cwds before spawning (tested). The behaviour is believed correct but there is no runtime evidence in this repo. A strict reading of the verify rules would classify an auto scenario without a covering test as CRITICAL; it is reported as WARNING because the behaviour is third-party and covered twice. The user decides. Suggested fix: one `portable::tests` case spawning `/bin/sh` with a non-existent cwd and HOME set, asserting `pwd`.
+- **W-2 (RESOLVED in PR #50: the user confirmed all three in Kitty on 2026-10-11, task S9d.1)**: Three manual scenarios inherited from the base terminal slice appear in the delta specs but are not tied to any task of this change: "Real terminal reports NUL" (modal-input), "Terminal restored" and "No orphan shells after quit" (terminal-session). The Kitty checks confirmed for this change do not name them. The quit path is exercised in every manual session, but there is no explicit record.
 - **W-3**: Per-test TDD evidence tables exist only from S9 onward; S1 to S8 rely on task lines and PR text (process finding, no code impact).
 - **W-4**: The `sdd/panes-tabs/apply-progress` observation (#2733) is out of date against `tasks.md`: it still lists S7d.3, S8c.6 and S9.7 as open and S9c #49 as open, while `tasks.md` ticks them and the user confirmed them.
 

@@ -193,6 +193,12 @@ Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs
 - [x] S9c.1 RED+GREEN: a new pane or tab whose inherited cwd no longer exists prefers the launch cwd, then an absolute `$HOME`, then `/` (a precedence preference: portable-pty already fell back to `$HOME`, ADR 18) (`App::with_dir_check`, runtime passes `Path::is_dir`); exact `SpawnPane` cwd asserted for split, new tab, existing cwd, no-home [terminal-session: Vanished cwd falls back; tabs: New tab from a vanished cwd].
 - [x] S9c.2 The `a_new_tab_inherits_the_osc7_cwd` assertion is exact (`effects.last()`).
 - [x] S9c.3 Design ADR 21 records OSC 7 as sticky by design (known limitation) and the FQDN-vs-short-hostname mismatch as a deferred follow-up.
+- [x] S9c.4 RED+GREEN: a relative `$HOME` is never a spawn fallback (`a_relative_home_is_never_a_spawn_fallback`; fix in `inherited_cwd`).
+
+## S9d: Verify follow-ups
+
+- [x] S9d.1 [manual] Kitty, checked by the user on 2026-10-11: "Real terminal reports NUL" (Ctrl+Space enters PREFIX; `command cat -v` + Ctrl+Space Ctrl+Space + Enter shows `^@`), "Terminal restored" (prefix `q`, `y` leaves the host shell usable), "No orphan shells after quit" (`pgrep -a zsh` shows none).
+- [x] S9d.2 Characterization test `core::pty::portable::tests::a_missing_cwd_starts_the_shell_in_home` for terminal-session "Bad cwd is not a failure" (passes on arrival: third-party behaviour; HOME injected via the spawn env).
 
 ## Deferred (out of scope)
 

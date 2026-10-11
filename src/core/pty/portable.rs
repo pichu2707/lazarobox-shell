@@ -284,6 +284,28 @@ mod tests {
         assert!(wait_for(&rx, "hello").contains("hello"));
     }
 
+    // Spec (terminal-session): Bad cwd is not a failure. Characterization of
+    // third-party behaviour (portable-pty falls back to the home directory when
+    // the cwd is not a directory), so it passes on arrival. HOME is injected
+    // through the spawn spec's env, so the test does not depend on the real one.
+    #[test]
+    fn a_missing_cwd_starts_the_shell_in_home() {
+        let home = std::fs::canonicalize(std::env::temp_dir()).expect("temp dir");
+        let mut spec = SpawnSpec::new(
+            Some("/bin/sh"),
+            "/lazarobox-no-such-dir".into(),
+            size(24, 80),
+        );
+        spec.env.push(("HOME".into(), home.display().to_string()));
+        let (tx, rx) = mpsc::channel();
+        let sink: PtySink = Box::new(move |event| tx.send(event).is_ok());
+        let mut pty = spawn_portable(&spec, sink).expect("a bad cwd is not a spawn failure");
+        pty.write(b"echo CWD=$(pwd)\n".to_vec());
+        // The echoed command line holds `$(pwd)`, never the expanded path.
+        let expected = format!("CWD={}\r\n", home.display());
+        assert!(wait_for(&rx, &expected).contains(&expected));
+    }
+
     // Spec: resize propagates to the child.
     #[test]
     fn stty_size_reflects_a_resize() {
