@@ -4,7 +4,7 @@
 use super::{
     Detection,
     config::{AiConfig, Task},
-    picker::task_label,
+    picker::{Outcome, PickRow, Picker, Target, task_label},
 };
 
 /// The AI draft, edited in the menu and written only on save.
@@ -13,6 +13,7 @@ pub struct AiMenu {
     original: AiConfig,
     draft: AiConfig,
     engines: Option<Detection>,
+    picker: Option<Picker>,
 }
 
 impl AiMenu {
@@ -21,6 +22,7 @@ impl AiMenu {
             draft: original.clone(),
             original,
             engines,
+            picker: None,
         }
     }
 
@@ -33,8 +35,54 @@ impl AiMenu {
     }
 
     /// Replaces the detection. The draft is never touched.
+    /// An open picker keeps its level and its row.
     pub fn set_engines(&mut self, engines: Option<Detection>) {
+        let row = self
+            .picker
+            .as_ref()
+            .and_then(|p| p.key(&self.draft, self.engines.as_ref()));
         self.engines = engines;
+        if let Some(picker) = &mut self.picker {
+            picker.reanchor(row, &self.draft, self.engines.as_ref());
+        }
+    }
+
+    pub fn open_picker(&mut self, target: Target) {
+        self.picker = Some(Picker::open(target, &self.draft, self.engines.as_ref()));
+    }
+
+    pub fn picker(&self) -> Option<&Picker> {
+        self.picker.as_ref()
+    }
+
+    /// The rows of the open picker; none when it is closed.
+    pub fn pick_rows(&self) -> Vec<PickRow> {
+        self.picker
+            .as_ref()
+            .map(|p| p.rows(&self.draft, self.engines.as_ref()))
+            .unwrap_or_default()
+    }
+
+    /// Runs one picker action. A choice goes into the draft and closes the
+    /// picker, as does leaving the first level.
+    pub fn drive(
+        &mut self,
+        act: impl FnOnce(&mut Picker, &AiConfig, Option<&Detection>) -> Outcome,
+    ) -> Outcome {
+        let Some(picker) = &mut self.picker else {
+            return Outcome::Stay;
+        };
+        let target = picker.target;
+        let outcome = act(picker, &self.draft, self.engines.as_ref());
+        match &outcome {
+            Outcome::Commit(assignment) => {
+                target.apply(&mut self.draft, assignment.clone());
+                self.picker = None;
+            }
+            Outcome::Close => self.picker = None,
+            Outcome::Stay | Outcome::Refresh => {}
+        }
+        outcome
     }
 
     /// The value of a task row, with its detection marks, or of `Set all

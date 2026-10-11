@@ -3,7 +3,12 @@
 use super::*;
 use crate::core::ai::{CATALOG, EngineState, Status, config::Assignment};
 
-fn engine(id: &'static str, status: Status, models: &[&str], version: Option<&str>) -> EngineState {
+pub(super) fn engine(
+    id: &'static str,
+    status: Status,
+    models: &[&str],
+    version: Option<&str>,
+) -> EngineState {
     EngineState {
         id,
         status,
@@ -14,7 +19,7 @@ fn engine(id: &'static str, status: Status, models: &[&str], version: Option<&st
 
 /// All eight catalog engines in order; the ones not listed are
 /// `NotInstalled`.
-fn detection(found: &[EngineState]) -> Detection {
+pub(super) fn detection(found: &[EngineState]) -> Detection {
     Detection {
         engines: CATALOG
             .iter()
@@ -29,7 +34,7 @@ fn detection(found: &[EngineState]) -> Detection {
     }
 }
 
-fn machine() -> Detection {
+pub(super) fn machine() -> Detection {
     detection(&[
         engine(
             "ollama",
@@ -47,7 +52,11 @@ fn saved(engine: Option<&str>, model: Option<&str>) -> AiConfig {
     AiConfig::general(engine, model)
 }
 
-fn menu(engine: Option<&str>, model: Option<&str>, found: Option<Detection>) -> MenuState {
+pub(super) fn menu(
+    engine: Option<&str>,
+    model: Option<&str>,
+    found: Option<Detection>,
+) -> MenuState {
     MenuState::open(&Config::default()).with_ai(saved(engine, model), found)
 }
 
@@ -74,15 +83,15 @@ fn an_unchanged_ai_draft_adds_no_edits() {
     }
 }
 
-fn ch(c: char) -> KeyEvent {
+pub(super) fn ch(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
 }
 
-fn press(menu: &mut MenuState, c: char) -> MenuCommand {
+pub(super) fn press(menu: &mut MenuState, c: char) -> MenuCommand {
     menu.on_key(&ch(c), false, &mut Config::default())
 }
 
-fn selected_label(menu: &MenuState) -> &'static str {
+pub(super) fn selected_label(menu: &MenuState) -> &'static str {
     let labels: Vec<_> = menu
         .rows(&Config::default())
         .iter()
@@ -240,7 +249,7 @@ fn r_on_a_task_row_asks_for_a_refresh_and_elsewhere_does_not() {
     );
 }
 
-fn assigned(entries: &[(Task, &str, &str)], found: Option<Detection>) -> MenuState {
+pub(super) fn assigned(entries: &[(Task, &str, &str)], found: Option<Detection>) -> MenuState {
     let mut ai = AiConfig::default();
     for (task, engine, model) in entries {
         ai.set(
@@ -254,7 +263,7 @@ fn assigned(entries: &[(Task, &str, &str)], found: Option<Detection>) -> MenuSta
     MenuState::open(&Config::default()).with_ai(ai, found)
 }
 
-fn value_of(menu: &MenuState, label: &str) -> String {
+pub(super) fn value_of(menu: &MenuState, label: &str) -> String {
     menu.rows(&Config::default())
         .iter()
         .find_map(|row| match row {
@@ -268,7 +277,7 @@ fn value_of(menu: &MenuState, label: &str) -> String {
 
 fn ai_rows(menu: &MenuState) -> Vec<(&'static str, String)> {
     let rows = menu.rows(&Config::default());
-    let Some(at) = rows.iter().position(|r| *r == Row::Title("AI")) else {
+    let Some(at) = rows.iter().position(|r| *r == Row::Title("AI".into())) else {
         panic!("no AI title");
     };
     rows[at + 1..]
@@ -283,7 +292,7 @@ fn ai_rows(menu: &MenuState) -> Vec<(&'static str, String)> {
                 assert!(enabled, "{label} is selectable");
                 (*label, value.as_deref().unwrap().to_owned())
             }
-            Row::Title(_) => panic!("a second title"),
+            other => panic!("not an item: {other:?}"),
         })
         .collect()
 }

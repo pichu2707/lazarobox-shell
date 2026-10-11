@@ -5248,6 +5248,27 @@ mod app_tests {
         assert_eq!(open_menu(&mut a), Vec::<Effect>::new());
     }
 
+    // Spec: config-menu Refresh key. Only a Press of lowercase `r` on a task
+    // row runs a detection, and only when none is in flight.
+    #[test]
+    fn r_on_a_task_row_runs_one_detection_and_nothing_else_does() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        for _ in 0..4 {
+            a.update(key('j'));
+        }
+        let before = a.menu().cloned();
+        let upper = AppEvent::Key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT));
+        assert_eq!(a.update(upper), Vec::<Effect>::new(), "uppercase");
+        assert_eq!(a.update(key('R')), Vec::<Effect>::new(), "uppercase, bare");
+        let held = kind(KeyCode::Char('r'), KeyEventKind::Repeat);
+        assert_eq!(a.update(held), Vec::<Effect>::new(), "repeat");
+        assert_eq!(a.update(key('r')), vec![Effect::DetectEngines], "press");
+        assert_eq!(a.update(key('r')), Vec::<Effect>::new(), "in flight");
+        assert_eq!(a.menu().cloned(), before);
+    }
+
     // Spec: Unchanged AI draft.
     #[test]
     fn an_unchanged_ai_draft_closes_without_a_save() {

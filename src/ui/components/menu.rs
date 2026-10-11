@@ -106,6 +106,25 @@ impl MenuPopup<'_> {
                 };
                 (text, style)
             }
+            // Placeholder drawing; the picker render is its own change.
+            Row::Pick {
+                label,
+                selected,
+                enabled,
+                ..
+            } => {
+                let style = if !enabled {
+                    plain.fg(self.theme.text_muted)
+                } else if *selected {
+                    plain
+                        .fg(self.theme.info_blue)
+                        .add_modifier(Modifier::REVERSED)
+                } else {
+                    plain
+                };
+                (format!(" {label}"), style)
+            }
+            Row::Field(text) => (format!(" {text}"), plain),
         }
     }
 }
