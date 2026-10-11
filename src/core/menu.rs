@@ -11,7 +11,7 @@ use super::{
         Detection,
         config::{AiConfig, Task},
         menu::AiMenu,
-        picker::{Level, Mark, Outcome, Picker, Target},
+        picker::{Level, Mark, Outcome, PickKey, PickRow, Picker, Target},
     },
     config::{BarPosition, Config, ConfigEdit},
 };
@@ -148,6 +148,17 @@ const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
 const HINT_TASK: &str = "j/k move · Enter pick · r refresh · s save · Esc cancel";
 const HINT_PICKER: &str = "j/k move · Enter choose · r refresh · Esc back · s save";
 const HINT_CUSTOM: &str = "type a model · Enter ok · Ctrl+U clear · Esc back";
+
+/// Why a picker row cannot be chosen: its mark, or the text of an
+/// explanation row. A saved model of an engine that is gone has no mark.
+fn disabled_reason(row: &PickRow) -> &str {
+    match row.mark {
+        Mark::DownloadRequired => "download required",
+        Mark::Checking => "checking…",
+        _ if row.key == PickKey::Info => &row.label,
+        _ => "engine not detected",
+    }
+}
 
 /// The footer of the popup: the widget only styles it.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -480,7 +491,20 @@ impl MenuState {
         }
         let hint = match self.ai.as_ref().and_then(AiMenu::picker) {
             Some(picker) if picker.text().is_some() => HINT_CUSTOM,
-            Some(_) => HINT_PICKER,
+            Some(_) => {
+                if let Some(row) = self
+                    .ai
+                    .as_ref()
+                    .and_then(AiMenu::cursor_row)
+                    .filter(|row| !row.enabled)
+                {
+                    return Footer::Hint(Cow::Owned(format!(
+                        "{} · not selectable",
+                        disabled_reason(&row)
+                    )));
+                }
+                HINT_PICKER
+            }
             None if self.on_ai_row() => HINT_TASK,
             None => HINT_SETTINGS,
         };

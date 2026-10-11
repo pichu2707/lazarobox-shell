@@ -1,8 +1,10 @@
 //! Tests of the footer text at the `MenuState` level.
 
-use super::ai_tests::{machine, menu, press, selected_label};
+use super::ai_tests::{assigned, engine, machine, menu, press, selected_label};
+use super::disabled_tests::{engine_at_level_two, only};
 use super::picker_tests::{cursor_label, key, open, send};
 use super::*;
+use crate::core::ai::Status;
 
 pub(super) fn hint(menu: &MenuState) -> String {
     match menu.footer() {
@@ -77,4 +79,61 @@ fn an_error_replaces_the_hint_until_the_next_press() {
     open(&mut m, "code");
     m.set_error("boom".to_owned());
     assert_eq!(m.footer(), Footer::Error("boom"), "inside the picker");
+}
+
+fn not_selectable(reason: &str) -> String {
+    format!("{reason} · not selectable")
+}
+
+// Spec: Footer on a disabled row (download required).
+#[test]
+fn a_model_to_download_reads_download_required() {
+    let found = only(&[engine("ollama", Status::Available, &["llama3:8b"], None)]);
+    let mut m = menu(None, None, found);
+    engine_at_level_two(&mut m, "ollama");
+    assert_eq!(hint(&m), PICKER, "the downloaded model");
+    press(&mut m, 'j');
+    assert_eq!(cursor_label(&m), "llama3.2:3b");
+    assert_eq!(hint(&m), not_selectable("download required"));
+    press(&mut m, 'k');
+    assert_eq!(hint(&m), PICKER, "back on an enabled row");
+}
+
+// Spec: Footer on a disabled row (no models detected).
+#[test]
+fn an_empty_server_reads_no_models_detected() {
+    let found = only(&[engine("lmstudio", Status::Available, &[], None)]);
+    let mut m = menu(None, None, found);
+    engine_at_level_two(&mut m, "lmstudio");
+    assert_eq!(hint(&m), not_selectable("no models detected"));
+}
+
+// Spec: Footer on a disabled row (engine not detected).
+#[test]
+fn an_engine_that_is_gone_reads_engine_not_detected_on_both_rows() {
+    let found = only(&[engine("ollama", Status::NotRunning, &[], None)]);
+    let mut m = assigned(&[(Task::Code, "ollama", "old:7b")], found);
+    open(&mut m, "code");
+    while cursor_label(&m) != "ollama" {
+        press(&mut m, 'j');
+    }
+    send(&mut m, key(KeyCode::Enter));
+    assert_eq!(cursor_label(&m), "old:7b");
+    assert_eq!(hint(&m), not_selectable("engine not detected"));
+    press(&mut m, 'j');
+    assert_eq!(cursor_label(&m), "engine not detected");
+    assert_eq!(hint(&m), not_selectable("engine not detected"));
+}
+
+// Spec: Footer on a disabled row (checking…).
+#[test]
+fn a_server_before_the_first_result_reads_checking() {
+    let mut m = assigned(&[(Task::Code, "ollama", "old:7b")], None);
+    open(&mut m, "code");
+    while cursor_label(&m) != "ollama" {
+        press(&mut m, 'j');
+    }
+    send(&mut m, key(KeyCode::Enter));
+    assert_eq!(cursor_label(&m), "old:7b");
+    assert_eq!(hint(&m), not_selectable("checking…"));
 }
