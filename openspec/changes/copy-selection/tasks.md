@@ -118,17 +118,36 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 - [x] CS3.17 GREEN: marker rendering after the indicator, path budget reduced by marker width (CS-12); accept new snapshots with `cargo insta review`, no other snapshot changes.
 - [x] CS3.18 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
+## CS4: PR #65 review fixes
+
+- [x] CS4.1 Horizontal motions (`h l 0 $`) call `ensure_visible`, bringing an off-screen cursor back [copy-mode-scrollback: Horizontal motion brings an off-screen cursor back].
+- [x] CS4.2 A `line_generation` change (screen switch, resize) re-enters COPY: selection dropped, cursor on the live cursor, offset 0 [copy-selection: Screen switch resets the cursor].
+- [x] CS4.3 A screen round trip puts the cursor back on the live cursor.
+- [x] CS4.4 `join` drops trailing blank rows; a line yank never ends in `\n` [copy-selection: Trailing blank rows dropped].
+- [x] CS4.5 Empty yank sends nothing, stays in COPY with the selection, notice `Nothing to copy` [copy-selection: Yank of blank rows; statusline: Nothing-to-copy notice].
+- [x] CS4.6 `flush_on_exit` flushes `host_out` on every event loop outcome.
+- [x] CS4.7 Held exit key: Repeat of the exit key in TERMINAL is dropped until Release or another Press (`App.held_exit`).
+- [x] CS4.8 Mutation survivors covered (`copy_cursor` assert in the eviction test, `copy_highlight` formula test); README documents the 75,000-byte limit and the tmux `set-clipboard` setting.
+
+## CS5: PR #66 held-key debounce
+
+- [x] CS5.1 Injected clock `App::with_clock` for deterministic time tests.
+- [x] CS5.2 500 ms same-key (code + modifiers) Press debounce `HELD_EXIT_WINDOW`, refreshed by each drop [modal-input: Held exit key sent as Presses is dropped within the window; Deliberate press after the window passes through; Window boundary and refresh].
+- [x] CS5.3 Debounce ended by another Press, a Release of the key, or a paste [modal-input: Another key ends the debounce; A paste ends the debounce].
+- [x] CS5.4 A yank that stays in COPY (failed or empty) does not arm the debounce [modal-input: A yank that stays in COPY does not arm the debounce].
+
 ## Verify prep: manual Kitty checks
 
 Run after CS3 is merged into the tracker, on a build of the tracker branch.
 
-- [ ] VP.1 [manual] Paste elsewhere: `Ctrl+Space [`, `v`, a motion, `y`; paste into another application; the pasted text equals the selection exactly [copy-selection: Paste elsewhere].
-- [ ] VP.2 [manual] Line yank runs nothing: `V` on a shell command line, `y`, paste at a shell prompt; the text appears with no trailing newline and nothing runs [copy-selection: Line yank runs nothing].
-- [ ] VP.3 [manual] Yank over ssh: run lazarobox inside an ssh session, select and `y`; the text reaches the local clipboard [copy-selection: Yank over ssh].
-- [ ] VP.4 [manual] Oversized selection: select well over 75 KB of scrollback, `y`; the footer notice reads `Selection too large to copy` and the clipboard is unchanged [copy-selection: Oversized in a real terminal].
-- [ ] VP.5 [manual] Real session: long `ls -R`; `j`/`k`/Ctrl+u/Ctrl+d/`gg`/`G` navigate it with a visible block cursor, exit lands at the bottom [copy-mode-scrollback: Real session].
-- [ ] VP.6 [manual] tmux note: confirm OSC 52 under tmux needs `set -g set-clipboard on` (or `external`); record the result for user docs (design risk).
-- [ ] VP.7 Verify prep: run `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` on the tracker; confirm every row of the coverage table below has a passing test or a ticked [manual] item; hand the tracker to `sdd-verify`.
+- [x] VP.1 [manual] Paste elsewhere: `Ctrl+Space [`, `v`, a motion, `y`; paste into another application; the pasted text equals the selection exactly [copy-selection: Paste elsewhere].
+- [x] VP.2 [manual] Line yank runs nothing: `V` on a shell command line, `y`, paste at a shell prompt; the text appears with no trailing newline and nothing runs [copy-selection: Line yank runs nothing].
+- [ ] VP.3 [manual] Yank over ssh: run lazarobox inside an ssh session, select and `y`; the text reaches the local clipboard [copy-selection: Yank over ssh]. (deferred by user, 2026-10-11)
+- [x] VP.4 [manual] Oversized selection: select well over 75 KB of scrollback, `y`; the footer notice reads `Selection too large to copy` and the clipboard is unchanged [copy-selection: Oversized in a real terminal].
+- [x] VP.5 [manual] Real session: long `ls -R`; `j`/`k`/Ctrl+u/Ctrl+d/`gg`/`G` navigate it with a visible block cursor, exit lands at the bottom [copy-mode-scrollback: Real session].
+- [ ] VP.6 [manual] tmux note: confirm OSC 52 under tmux needs `set -g set-clipboard on` (or `external`); record the result for user docs (design risk). (deferred by user, 2026-10-11)
+- [x] VP.7 Verify prep: run `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` on the tracker; confirm every row of the coverage table below has a passing test or a ticked [manual] item; hand the tracker to `sdd-verify`.
+- [x] VP.9 [manual] Held `q` / `y` / Esc in real Kitty leaks nothing into the prompt; a deliberate `q` after about 1 s is typed [modal-input: Held exit key does not leak into TERMINAL].
 - [ ] VP.8 Archive prep: the Purpose line of the main copy-mode-scrollback spec ("Selection/yank is out of scope.") MUST be edited by hand at archive, as noted in the delta.
 
 ## Spec Coverage Table
@@ -169,6 +188,9 @@ Every scenario in the four deltas maps to at least one task.
 | Character highlight | CS3.14 |
 | Line highlight | CS3.14 |
 | No selection (highlight) | CS3.14 |
+| Trailing blank rows dropped | CS4.4 |
+| Yank of blank rows | CS4.5 |
+| Screen switch resets the cursor | CS4.2, CS4.3 |
 
 ### copy-mode-scrollback
 
@@ -189,6 +211,7 @@ Every scenario in the four deltas maps to at least one task.
 | Exit | CS2a.15, CS2b.5 |
 | Esc with selection | CS2a.15, CS2b.5 |
 | `q` with selection | CS2a.15, CS2b.5 |
+| Horizontal motion brings an off-screen cursor back | CS4.1 |
 | Real session [manual] | VP.5 |
 
 ### modal-input
@@ -202,6 +225,13 @@ Every scenario in the four deltas maps to at least one task.
 | Repeat in MENU | unchanged; existing config-menu tests stay green (CS2b.14) |
 | Repeat of selection keys in COPY | CS2a.17, CS2b.7 |
 | Repeat of motions in COPY | CS2a.17, CS2b.7 |
+| Held exit key does not leak into TERMINAL | CS4.7, VP.9 [manual] |
+| Held exit key sent as Presses is dropped within the window | CS5.2 |
+| Deliberate press after the window passes through | CS5.2 |
+| Another key ends the debounce | CS5.3 |
+| A paste ends the debounce | CS5.3 |
+| Window boundary and refresh | CS5.2 |
+| A yank that stays in COPY does not arm the debounce | CS4.5, CS5.4 |
 
 ### statusline
 
@@ -215,6 +245,7 @@ Every scenario in the four deltas maps to at least one task.
 | Multi-row count | CS3.10 |
 | Singular notice | CS3.10 |
 | Too-large notice | CS3.10 |
+| Nothing-to-copy notice | CS4.5 |
 | Notice cleared by next key | CS3.10 |
 
 ## Deferred (out of scope)
