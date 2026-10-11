@@ -59,7 +59,7 @@ const MAX_MODELS: usize = 256;
 /// reorder or hide the text around them. Includes the line and paragraph
 /// separators, the soft hyphen, the word joiner and invisible operators, the
 /// deprecated U+206A..U+206F controls and the tag block.
-fn is_format(c: char) -> bool {
+pub(crate) fn is_format(c: char) -> bool {
     matches!(
         c,
         '\u{00ad}'
