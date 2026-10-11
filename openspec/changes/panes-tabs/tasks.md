@@ -179,8 +179,8 @@ Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs
 
 ## S9: OSC 7 cwd
 
-- [ ] S9.1 RED: `src/core/osc7.rs` `parse` tests: BEL/ST, `%20`/`%3B`, `;` rejoin, bad `%zz`, NUL/control bytes, non-UTF-8 accepted, relative path, remote host rejected, empty/`localhost`/matching host (case-insensitive), 1024-byte cap, non-`file` scheme [terminal-emulation: BEL/ST terminator, Percent-decoding, Semicolon in path, Remote host rejected, Malformed ignored, Local hosts accepted, Non-UTF-8 path bytes].
-- [ ] S9.2 GREEN: `osc7::parse`, `percent_decode`; register in `core/mod.rs`.
+- [x] S9.1 RED: `src/core/osc7.rs` `parse` tests: BEL/ST, `%20`/`%3B`, `;` rejoin, bad `%zz`, NUL/control bytes, non-UTF-8 accepted, relative path, remote host rejected, empty/`localhost`/matching host (case-insensitive), 1024-byte cap, non-`file` scheme [terminal-emulation: BEL/ST terminator, Percent-decoding, Semicolon in path, Remote host rejected, Malformed ignored, Local hosts accepted, Non-UTF-8 path bytes].
+- [x] S9.2 GREEN: `osc7::parse`, `percent_decode`; register in `core/mod.rs`.
 - [ ] S9.3 RED: `Pane` feeds `\e]7;file:///tmp\a` -> `cwd()`; split across chunks; rejected OSC keeps the previous value; no reply bytes [terminal-emulation: Split across reads, No query reply].
 - [ ] S9.4 GREEN: `Responder::unhandled_osc`, `Pane::with_host`, `Pane::cwd()`.
 - [ ] S9.5 RED: effective cwd `osc7.or(proc)`; OSC 7 wins over the poll; poll fills for plain shells; new pane/tab inherits it [terminal-session: OSC 7 wins, Fallback for plain shell; statusline: OSC 7 cwd shown; tabs: New tab inherits cwd].
