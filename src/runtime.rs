@@ -261,6 +261,8 @@ impl Panes {
                     }
                 }
                 Effect::ClosePane(id) => self.close(id),
+                // replaced in CM4b-ii: the runtime write.
+                Effect::SaveConfig(_) => feedback.push(AppEvent::ConfigSaved),
                 Effect::Quit => outcome = Outcome::Quit,
             }
         }
