@@ -80,15 +80,15 @@ impl MenuPopup<'_> {
 
     fn line(&self, row: &Row, width: u16) -> (String, Style) {
         let plain = Style::default();
-        match *row {
+        match row {
             Row::Title(title) => (format!(" {title}"), plain.add_modifier(Modifier::BOLD)),
-            Row::Item {
+            &Row::Item {
                 label,
-                value,
+                ref value,
                 selected,
                 enabled,
             } => {
-                let value = value.unwrap_or("");
+                let value = value.as_deref().unwrap_or("");
                 let used = cells(label) + cells(value) + 2;
                 let gap = usize::from(width).saturating_sub(used).max(1);
                 let text = format!(" {label}{}{value} ", " ".repeat(gap));

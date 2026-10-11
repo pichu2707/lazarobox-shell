@@ -890,7 +890,7 @@ mod tests {
         Effect::SaveConfig(vec![crate::core::config::ConfigEdit {
             table: "statusline",
             key: "position",
-            value: "top",
+            value: "top".into(),
         }])
     }
 

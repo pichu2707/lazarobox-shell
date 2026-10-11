@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 
+pub mod config;
 pub mod http;
 pub mod parse;
 

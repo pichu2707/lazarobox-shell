@@ -2,6 +2,8 @@
 //! drives it. The popup only renders `MenuState::rows`, so a new setting is a
 //! table entry and never a widget change.
 
+use std::borrow::Cow;
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::config::{BarPosition, Config, ConfigEdit};
@@ -99,12 +101,12 @@ pub enum MenuCommand {
 }
 
 /// One line of the popup body.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Row {
     Title(&'static str),
     Item {
         label: &'static str,
-        value: Option<&'static str>,
+        value: Option<Cow<'static, str>>,
         selected: bool,
         enabled: bool,
     },
@@ -136,7 +138,7 @@ impl MenuState {
                     ItemKind::Choice(choice) => {
                         let row = Row::Item {
                             label: item.label,
-                            value: Some(choice.values[(choice.get)(config)]),
+                            value: Some(Cow::Borrowed(choice.values[(choice.get)(config)])),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
@@ -217,7 +219,7 @@ impl MenuState {
             .map(|(_, c)| ConfigEdit {
                 table: c.table,
                 key: c.key,
-                value: c.values[(c.get)(live)],
+                value: Cow::Borrowed(c.values[(c.get)(live)]),
             })
             .collect()
     }
@@ -268,7 +270,7 @@ mod tests {
     fn row(label: &'static str, value: Option<&'static str>, selected: bool) -> Row {
         Row::Item {
             label,
-            value,
+            value: value.map(Cow::Borrowed),
             selected,
             enabled: value.is_some(),
         }
@@ -410,7 +412,7 @@ mod tests {
         let edit = |table, value| ConfigEdit {
             table,
             key: "position",
-            value,
+            value: Cow::Borrowed(value),
         };
         assert_eq!(menu.edits(&live), vec![edit("statusline", "top")]);
         live.bars.tabbar = BarPosition::Bottom;
