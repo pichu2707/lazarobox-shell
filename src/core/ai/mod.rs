@@ -9,6 +9,7 @@ pub mod config;
 pub mod http;
 pub mod menu;
 pub mod parse;
+pub mod picker;
 
 /// How an engine is detected.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
