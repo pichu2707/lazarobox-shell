@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use vt100::{Callbacks, Parser, Screen};
 
+use super::copy::{LineSpan, LineText};
 use super::osc7;
 
 /// DA1 reply: VT620-class terminal with no extensions.
@@ -356,6 +357,61 @@ impl Pane {
         });
         self.set_scrollback(saved);
         end
+    }
+
+    /// Text of the cells of `span`, one entry per retained line. Both end
+    /// cells are included, empty cells read as `" "`, wide characters appear
+    /// once. The scrollback offset is restored.
+    pub fn read_lines(&mut self, span: LineSpan) -> Vec<LineText> {
+        let saved = self.scrollback_offset();
+        let (rows, cols) = self.parser.screen().size();
+        let end = self.first_line + self.history_len + usize::from(rows);
+        let mut out = Vec::new();
+        let mut line = span.first.max(self.first_line);
+        let last = span.last.min(end.saturating_sub(1));
+        // One page per pane height: each `page_to` exposes `rows` lines.
+        while line <= last {
+            let Some(mut row) = self.page_to(line) else {
+                break;
+            };
+            while row < rows && line <= last {
+                let from = if line == span.first {
+                    span.first_col
+                } else {
+                    0
+                };
+                let to = if line == span.last {
+                    span.last_col
+                } else {
+                    cols
+                };
+                out.push(self.row_text(row, from, to.min(cols.saturating_sub(1))));
+                line += 1;
+                row += 1;
+            }
+        }
+        self.set_scrollback(saved);
+        out
+    }
+
+    /// Cells `from..=to` of a viewport row. A range starting on the right half
+    /// of a wide character starts at its head; continuation cells add nothing.
+    fn row_text(&self, row: u16, from: u16, to: u16) -> LineText {
+        let wide_cont = |col| self.cell(row, col).is_some_and(|c| c.wide_cont);
+        let from = if from > 0 && wide_cont(from) {
+            from - 1
+        } else {
+            from
+        };
+        let text = (from..=to)
+            .filter_map(|col| self.cell(row, col))
+            .filter(|c| !c.wide_cont)
+            .map(|c| if c.text.is_empty() { " " } else { c.text })
+            .collect();
+        LineText {
+            text,
+            wrapped: self.parser.screen().row_wrapped(row),
+        }
     }
 
     /// Scrolls so stable line `line` is visible and returns its viewport row,
@@ -996,6 +1052,109 @@ mod tests {
         p.set_scrollback(0);
         assert_eq!(p.line_end(6), 4);
         assert_eq!(p.scrollback_offset(), 0);
+    }
+
+    fn padded(text: &str) -> String {
+        format!("{text:<10}")
+    }
+
+    fn lt(text: &str, wrapped: bool) -> LineText {
+        LineText {
+            text: text.to_owned(),
+            wrapped,
+        }
+    }
+
+    #[test]
+    fn read_lines_spans_history_and_screen_and_restores_the_offset() {
+        let mut p = pane(3, 10);
+        feed_lines(&mut p, 10); // lines 0..=7 history, 8 and 9 on screen
+        p.set_scrollback(1);
+        let span = LineSpan::new((6, 0), (9, 3));
+        assert_eq!(
+            p.read_lines(span),
+            [
+                lt(&padded("line6"), false),
+                lt(&padded("line7"), false),
+                lt(&padded("line8"), false),
+                lt("line", false),
+            ]
+        );
+        assert_eq!(p.scrollback_offset(), 1);
+        p.set_scrollback(0);
+        let above = p.read_lines(LineSpan::new((0, 0), (0, 4)));
+        assert_eq!(above, [lt("line0", false)]);
+        assert_eq!(p.scrollback_offset(), 0);
+    }
+
+    #[test]
+    fn read_lines_pages_across_more_rows_than_the_pane_height() {
+        let mut p = pane(3, 10);
+        feed_lines(&mut p, 30);
+        p.set_scrollback(4);
+        let got = p.read_lines(LineSpan::new((0, 0), (20, 9)));
+        let want: Vec<LineText> = (0..=20)
+            .map(|i| lt(&padded(&format!("line{i}")), false))
+            .collect();
+        assert_eq!(got, want);
+        assert_eq!(p.scrollback_offset(), 4);
+    }
+
+    #[test]
+    fn read_lines_includes_both_end_cells_and_reads_empty_cells_as_spaces() {
+        let mut p = pane(5, 10);
+        p.feed(b"hello");
+        assert_eq!(
+            p.read_lines(LineSpan::new((0, 1), (0, 3))),
+            [lt("ell", false)]
+        );
+        assert_eq!(
+            p.read_lines(LineSpan::new((0, 3), (0, 6))),
+            [lt("lo  ", false)]
+        );
+    }
+
+    #[test]
+    fn read_lines_reports_the_soft_wrap_flag_of_each_row() {
+        let mut p = pane(3, 5);
+        p.feed(b"abcdefgh");
+        assert_eq!(
+            p.read_lines(LineSpan::new((0, 0), (1, 4))),
+            [lt("abcde", true), lt("fgh  ", false)]
+        );
+    }
+
+    #[test]
+    fn read_lines_skips_evicted_lines() {
+        let mut p = small(3);
+        feed_lines(&mut p, 12);
+        assert_eq!(p.first_line(), 5);
+        assert_eq!(
+            p.read_lines(LineSpan::new((3, 1), (6, 2))),
+            [lt(&padded("line5"), false), lt("lin", false)]
+        );
+    }
+
+    #[test]
+    fn read_lines_emits_a_wide_character_once() {
+        let mut p = pane(3, 10);
+        p.feed("a漢b".as_bytes()); // a=0, 漢 head=1 continuation=2, b=3
+        assert_eq!(
+            p.read_lines(LineSpan::new((0, 0), (0, 3))),
+            [lt("a漢b", false)]
+        );
+        assert_eq!(
+            p.read_lines(LineSpan::new((0, 2), (0, 3))),
+            [lt("漢b", false)]
+        );
+        assert_eq!(
+            p.read_lines(LineSpan::new((0, 0), (0, 1))),
+            [lt("a漢", false)]
+        );
+        assert_eq!(
+            p.read_lines(LineSpan::new((0, 1), (0, 2))),
+            [lt("漢", false)]
+        );
     }
 
     #[test]
