@@ -88,12 +88,12 @@ AS4 (~850, 90% deletions) is split in three because two PRs cannot stay under 40
 
 ## PR8 / AS5a: Picker wiring (`src/core/menu.rs`)
 
-- [ ] 8.1 RED: Enter on task row opens level 1 (title, rows, cursor); assign CLI model; unassign; `none` for general/Set all; Set all five; Esc back one level to task list with task selected; reopen starts on task list.
-- [ ] 8.2 RED: disabled rows inert, no selectable row, saved model stays (`●`), undetected assigned engine selectable, no `custom…` on servers.
-- [ ] 8.3 RED: custom flow (type, `s` is a letter, Ctrl+U, blank refused, Esc to `custom…` row, paste, paste elsewhere ignored); `r` at levels 1 and 2 → `Refresh`, not in custom.
-- [ ] 8.4 RED: `set_engines` re-anchors by `PickKey` (cursor stays on a row that became disabled; clamp when removed); choosing changes only the draft.
-- [ ] 8.5 GREEN: implement `Option<Picker>` in `AiMenu`, `Row::Title`/`Row::Pick`, `on_paste`, key routing (custom before modifier guard).
-- [ ] 8.6 Gate.
+- [x] 8.1 RED: Enter on task row opens level 1 (title, rows, cursor); assign CLI model; unassign; `none` for general/Set all; Set all five; Esc back one level to task list with task selected; reopen starts on task list.
+- [x] 8.2 RED: disabled rows inert, no selectable row, saved model stays (`●`), undetected assigned engine selectable, no `custom…` on servers.
+- [x] 8.3 RED: custom flow (type, `s` is a letter, Ctrl+U, blank refused, Esc to `custom…` row, paste, paste elsewhere ignored); `r` at levels 1 and 2 → `Refresh`, not in custom.
+- [x] 8.4 RED: `set_engines` re-anchors by `PickKey` (cursor stays on a row that became disabled; clamp when removed); choosing changes only the draft.
+- [x] 8.5 GREEN: implement `Option<Picker>` in `AiMenu`, `Row::Title`/`Row::Pick`, `on_paste`, key routing (custom before modifier guard).
+- [x] 8.6 Gate.
 
 ## PR9 / AS5b: Footer, edits, save (`src/core/menu.rs`)
 
