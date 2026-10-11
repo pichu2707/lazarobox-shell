@@ -70,8 +70,18 @@ pub struct CopyState {
 
 impl CopyState {
     /// Copy mode entered with the cursor on the pane's live cursor.
-    pub fn enter(_geo: Geometry, _live_cursor: Option<(u16, u16)>, _generation: u32) -> Self {
-        Self::default()
+    pub fn enter(geo: Geometry, live_cursor: Option<(u16, u16)>, generation: u32) -> Self {
+        let (row, col) = live_cursor.unwrap_or((geo.rows, 0));
+        let row = row.min(geo.rows.saturating_sub(1));
+        let col = col.min(geo.cols.saturating_sub(1));
+        Self {
+            cursor: Point {
+                line: geo.first_line + geo.history + usize::from(row),
+                col,
+            },
+            generation,
+            ..Self::default()
+        }
     }
 
     /// The selected cells, `None` without a selection.
@@ -81,7 +91,16 @@ impl CopyState {
 
     /// Moves the cursor (and the viewport only as far as needed).
     /// `line_end` is the last non-blank column of the cursor's row, used by `$`.
-    pub fn apply_motion(&mut self, _motion: CopyMotion, _geo: Geometry, _line_end: u16) {}
+    pub fn apply_motion(&mut self, motion: CopyMotion, geo: Geometry, line_end: u16) {
+        let last_col = geo.cols.saturating_sub(1);
+        match motion {
+            CopyMotion::Left => self.cursor.col = self.cursor.col.saturating_sub(1),
+            CopyMotion::Right => self.cursor.col = (self.cursor.col + 1).min(last_col),
+            CopyMotion::LineStart => self.cursor.col = 0,
+            CopyMotion::LineEnd => self.cursor.col = line_end.min(last_col),
+            _ => {}
+        }
+    }
 
     /// Interprets a key. A pending `g` is dropped by any key other than `g`,
     /// which is then handled on its own.
@@ -364,6 +383,94 @@ mod tests {
         let mut s = at(50);
         s.apply(CopyMotion::LineDown, 10, ROWS);
         assert_eq!(s.offset, 10);
+    }
+
+    // copy-selection: CopyState core.
+    fn geo() -> Geometry {
+        Geometry {
+            first_line: 10,
+            history: 100,
+            rows: ROWS,
+            cols: 80,
+        }
+    }
+
+    fn pt(line: usize, col: u16) -> Point {
+        Point { line, col }
+    }
+
+    /// Copy state with the cursor at `(line, col)` and the given offset.
+    fn cursor_at(line: usize, col: u16, offset: usize) -> CopyState {
+        CopyState {
+            offset,
+            cursor: pt(line, col),
+            ..CopyState::default()
+        }
+    }
+
+    #[test]
+    fn enter_puts_the_cursor_on_the_live_cursor() {
+        let s = CopyState::enter(geo(), Some((5, 3)), 7);
+        assert_eq!(s.cursor, pt(10 + 100 + 5, 3));
+        assert_eq!(s.offset, 0);
+        assert_eq!(s.selection, None);
+        assert_eq!(s.generation, 7);
+    }
+
+    #[test]
+    fn enter_clamps_the_live_cursor_into_the_pane() {
+        let s = CopyState::enter(geo(), Some((99, 200)), 0);
+        assert_eq!(s.cursor, pt(10 + 100 + 23, 79));
+    }
+
+    #[test]
+    fn enter_with_a_hidden_cursor_uses_the_bottom_row_at_column_zero() {
+        let s = CopyState::enter(geo(), None, 0);
+        assert_eq!(s.cursor, pt(10 + 100 + 23, 0));
+        assert_eq!(s.offset, 0);
+    }
+
+    fn cols_after(start: u16, line_end: u16, motions: &[CopyMotion]) -> Vec<u16> {
+        let mut s = cursor_at(110, start, 0);
+        motions
+            .iter()
+            .map(|m| {
+                s.apply_motion(*m, geo(), line_end);
+                s.cursor.col
+            })
+            .collect()
+    }
+
+    #[test]
+    fn horizontal_motions_follow_the_spec_sequence() {
+        // h 0 h $ l from col 3 on `echo hi` (last non-blank col 6).
+        let seq = [
+            CopyMotion::Left,
+            CopyMotion::LineStart,
+            CopyMotion::Left,
+            CopyMotion::LineEnd,
+            CopyMotion::Right,
+        ];
+        assert_eq!(cols_after(3, 6, &seq), [2, 0, 0, 6, 7]);
+    }
+
+    #[test]
+    fn horizontal_motions_clamp_at_both_ends() {
+        assert_eq!(cols_after(0, 0, &[CopyMotion::Left]), [0]);
+        assert_eq!(cols_after(79, 0, &[CopyMotion::Right]), [79]);
+        assert_eq!(cols_after(78, 0, &[CopyMotion::Right]), [79]);
+    }
+
+    #[test]
+    fn line_end_on_a_blank_row_is_column_zero() {
+        assert_eq!(cols_after(4, 0, &[CopyMotion::LineEnd]), [0]);
+    }
+
+    #[test]
+    fn horizontal_motions_leave_line_and_offset_alone() {
+        let mut s = cursor_at(110, 3, 4);
+        s.apply_motion(CopyMotion::Right, geo(), 0);
+        assert_eq!((s.cursor.line, s.offset), (110, 4));
     }
 
     // copy-selection: LineSpan and join.
