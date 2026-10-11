@@ -143,3 +143,7 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 - More sections, string/number inputs, scrolling, keymap editing (a new setting is a table entry; a new kind is one `ItemKind` arm).
 - Polished visual design of the popup.
 - Rebase of `feat/config-menu` onto main once panes-tabs merges (CM-16); resolve conflicts in `app.rs`, `ui/mod.rs`, `prefix.rs`, `theme.rs` if S9 touched them.
+
+## Archive prep
+
+- The MODIFIED requirements in `specs/{tabs,statusline,modal-input}/spec.md` were completed to full requirement blocks (main scenarios kept, config-menu scenarios applied) so that archive replacement cannot drop scenarios (PR #52).
