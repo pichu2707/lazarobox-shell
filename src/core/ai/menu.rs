@@ -63,6 +63,19 @@ impl AiMenu {
             .unwrap_or_default()
     }
 
+    /// Changes the open picker without choosing anything.
+    pub fn edit(&mut self, change: impl FnOnce(&mut Picker)) {
+        self.edit_with(|picker, _, _| change(picker));
+    }
+
+    /// Like [`Self::edit`], with the draft and the detection at hand.
+    pub fn edit_with(&mut self, change: impl FnOnce(&mut Picker, &AiConfig, Option<&Detection>)) {
+        self.drive(|picker, draft, engines| {
+            change(picker, draft, engines);
+            Outcome::Stay
+        });
+    }
+
     /// Runs one picker action. A choice goes into the draft and closes the
     /// picker, as does leaving the first level.
     pub fn drive(

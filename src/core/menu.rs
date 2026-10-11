@@ -248,6 +248,10 @@ impl MenuState {
             title = format!("{title} {counter}");
         }
         let mut rows = vec![Row::Title(Cow::Owned(title))];
+        if let Some(text) = picker.text() {
+            rows.push(Row::Field(text.to_owned()));
+            return Some(rows);
+        }
         for index in picker.visible(all.len()) {
             let pick = &all[index];
             rows.push(Row::Pick {
@@ -353,27 +357,43 @@ impl MenuState {
         let Some(ai) = &mut self.ai else {
             return MenuCommand::None;
         };
-        if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
+        let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        // The custom field is checked before the modifier guard: Ctrl+U
+        // clears it, and every letter, shortcuts included, is typed.
+        if ai.picker().is_some_and(|p| p.text().is_some()) {
+            match key.code {
+                KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                    ai.edit(Picker::clear_text);
+                }
+                _ if !plain => {}
+                KeyCode::Char(c) => ai.edit(|p| p.type_char(c)),
+                KeyCode::Backspace => ai.edit(Picker::backspace),
+                KeyCode::Enter if !repeat => {
+                    ai.drive(Picker::enter);
+                }
+                KeyCode::Esc if !repeat => {
+                    ai.drive(Picker::back);
+                }
+                _ => {}
+            }
+            return MenuCommand::None;
+        }
+        if !plain {
             return MenuCommand::None;
         }
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                ai.drive(|p, d, e| {
-                    p.step(true, d, e);
-                    Outcome::Stay
-                });
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                ai.drive(|p, d, e| {
-                    p.step(false, d, e);
-                    Outcome::Stay
-                });
-            }
+            KeyCode::Char('j') | KeyCode::Down => ai.edit_with(|p, d, e| p.step(true, d, e)),
+            KeyCode::Char('k') | KeyCode::Up => ai.edit_with(|p, d, e| p.step(false, d, e)),
             KeyCode::Enter if !repeat => {
                 ai.drive(Picker::enter);
             }
             KeyCode::Esc if !repeat => {
                 ai.drive(Picker::back);
+            }
+            KeyCode::Char('r')
+                if !repeat && ai.drive(|p, _, _| p.refresh()) == Outcome::Refresh =>
+            {
+                return MenuCommand::Refresh;
             }
             _ => {}
         }
@@ -425,6 +445,13 @@ impl MenuState {
                 value: Cow::Borrowed(c.values[(c.get)(live)]),
             })
             .collect()
+    }
+
+    /// A paste: goes to the custom field when it is focused, else ignored.
+    pub fn on_paste(&mut self, text: &str) {
+        if let Some(ai) = &mut self.ai {
+            ai.edit(|p| p.paste(text));
+        }
     }
 
     /// The config captured when the menu opened.
@@ -696,3 +723,6 @@ mod picker_tests;
 
 #[cfg(test)]
 mod disabled_tests;
+
+#[cfg(test)]
+mod custom_flow_tests;
