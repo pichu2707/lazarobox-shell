@@ -36,6 +36,9 @@ pub const HTTP_TIMEOUT: Duration = Duration::from_millis(800);
 /// Longest `--version` is allowed to run before the child is killed.
 pub const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Most `--version` output kept; more than this means the probe gave up.
+const VERSION_CAP: usize = 64 * 1024;
+
 /// GETs `path` from `127.0.0.1:port`. `None` on any failure or timeout.
 pub async fn http_get(port: u16, path: &'static str) -> Option<(u16, Vec<u8>)> {
     timeout(HTTP_TIMEOUT, exchange(port, path)).await.ok()?
@@ -73,24 +76,72 @@ pub fn find_on_path(name: &str, path: &OsStr) -> Option<PathBuf> {
         })
 }
 
+/// How long the output is read after the child has exited, for a pipe a
+/// background process still holds open.
+const EXIT_GRACE: Duration = Duration::from_millis(100);
+
 /// Runs `<path> --version` and returns its stdout. `None` on a spawn
-/// failure, a non-zero exit or a timeout.
+/// failure, a non-zero exit, a timeout or more than `VERSION_CAP` bytes of
+/// output (it is dropped, not truncated). The child runs in its own process
+/// group, which is killed on every way out so no grandchild survives.
 pub async fn version(path: &Path) -> Option<Vec<u8>> {
-    // No shell: the resolved absolute path is the program. Dropping the
-    // future on a timeout drops the child, and `kill_on_drop` kills it.
-    let child = Command::new(path)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .ok()?;
-    let output = timeout(VERSION_TIMEOUT, child.wait_with_output())
-        .await
-        .ok()?
-        .ok()?;
-    output.status.success().then_some(output.stdout)
+    let mut child = spawn_version(path).await?;
+    let pgid = child.id()? as libc::pid_t;
+    let output = timeout(VERSION_TIMEOUT, collect_version(&mut child)).await;
+    // SAFETY: killpg only sends a signal; the group is the one just spawned.
+    unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    // Reap the child so it does not linger as a zombie.
+    let _ = timeout(Duration::from_millis(500), child.wait()).await;
+    output.ok()?
+}
+
+/// Spawns `<path> --version`. A binary that is being written (an upgrade, or
+/// a concurrent fork holding its write handle) fails with ETXTBSY for a
+/// moment, so that one error is retried briefly.
+async fn spawn_version(path: &Path) -> Option<tokio::process::Child> {
+    for attempt in 0..5 {
+        // No shell: the resolved absolute path is the program.
+        let spawned = Command::new(path)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .process_group(0)
+            .spawn();
+        match spawned {
+            Ok(child) => return Some(child),
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 4 => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// Reads stdout (bounded) while waiting for the exit, not for the pipe EOF.
+async fn collect_version(child: &mut tokio::process::Child) -> Option<Vec<u8>> {
+    let mut stdout = child.stdout.take()?;
+    let mut buf = Vec::new();
+    let status = {
+        let mut limited = (&mut stdout).take(VERSION_CAP as u64 + 1);
+        let read = limited.read_to_end(&mut buf);
+        tokio::pin!(read);
+        tokio::select! {
+            n = &mut read => {
+                if n.ok()? > VERSION_CAP {
+                    return None;
+                }
+                child.wait().await.ok()?
+            }
+            status = child.wait() => {
+                let _ = timeout(EXIT_GRACE, &mut read).await;
+                status.ok()?
+            }
+        }
+    };
+    (status.success() && buf.len() <= VERSION_CAP).then_some(buf)
 }
 
 /// What `detect_with` probes: an entry of the catalog, or a test double
@@ -328,11 +379,56 @@ mod tests {
         assert_eq!(version(&script).await, None);
     }
 
+    /// Dead for our purposes: gone, or a zombie waiting for a reaper.
+    fn is_dead(pid: &str) -> bool {
+        match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Err(_) => true,
+            Ok(stat) => stat
+                .rsplit(')')
+                .next()
+                .is_some_and(|r| r.trim_start().starts_with('Z')),
+        }
+    }
+
+    async fn dead_within(pid: &str, window: Duration) -> bool {
+        let deadline = std::time::Instant::now() + window;
+        while std::time::Instant::now() < deadline {
+            if is_dead(pid) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        is_dead(pid)
+    }
+
+    fn read_pid(file: &Path) -> String {
+        let pid = fs::read_to_string(file)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        assert!(pid.parse::<u32>().is_ok(), "the script never ran");
+        pid
+    }
+
     #[tokio::test]
     async fn version_closes_stdin() {
+        // Make fd 0 a pipe for the duration of the probe, so an inherited
+        // stdin is distinguishable from /dev/null.
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let saved = unsafe { libc::dup(0) };
+        assert_eq!(unsafe { libc::dup2(fds[0], 0) }, 0);
         let dir = tempfile::tempdir().unwrap();
-        let script = write_script(dir.path(), "gemini", "read x\necho done", 0o755);
-        assert_eq!(version(&script).await, Some(b"done\n".to_vec()));
+        let body = "t=$(readlink /proc/self/fd/0)\nif [ \"$t\" = /dev/null ]; then echo null; else echo \"stdin=$t\"; fi";
+        let script = write_script(dir.path(), "gemini", body, 0o755);
+        let answer = version(&script).await;
+        unsafe {
+            libc::dup2(saved, 0);
+            libc::close(saved);
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+        assert_eq!(answer, Some(b"null\n".to_vec()));
     }
 
     #[tokio::test]
@@ -348,18 +444,65 @@ mod tests {
             (answer, elapsed < Duration::from_millis(2500)),
             (None, true)
         );
-        let pid = fs::read_to_string(&pid_file).unwrap_or_default();
-        let pid = pid.trim().to_string();
-        assert!(pid.parse::<u32>().is_ok(), "the script never ran");
-        let mut gone = false;
-        for _ in 0..50 {
-            if !Path::new(&format!("/proc/{pid}")).exists() {
-                gone = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert!(gone, "child {pid} survived the timeout");
+        let pid = read_pid(&pid_file);
+        assert!(
+            dead_within(&pid, Duration::from_secs(5)).await,
+            "child {pid} survived the timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn version_kills_the_whole_process_group_on_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("grandchild");
+        let body = format!("sleep 30 &\necho $! > {}\nwait", pid_file.display());
+        let script = write_script(dir.path(), "tree", &body, 0o755);
+        assert_eq!(version(&script).await, None);
+        let pid = read_pid(&pid_file);
+        assert!(
+            dead_within(&pid, Duration::from_secs(5)).await,
+            "grandchild {pid} survived the timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn version_caps_the_output_it_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_script(dir.path(), "flood", "exec yes AAAAAAAAAAAAAAAA", 0o755);
+        let started = std::time::Instant::now();
+        let answer = version(&script).await;
+        assert_eq!(
+            (answer, started.elapsed() < Duration::from_millis(1500)),
+            (None, true)
+        );
+    }
+
+    #[tokio::test]
+    async fn version_accepts_output_exactly_at_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = format!("head -c {VERSION_CAP} /dev/zero | tr '\\0' a");
+        let script = write_script(dir.path(), "full", &body, 0o755);
+        let answer = version(&script).await;
+        assert_eq!(answer.map(|v| v.len()), Some(VERSION_CAP));
+    }
+
+    #[tokio::test]
+    async fn version_waits_for_the_child_not_for_the_pipe() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("bg");
+        let body = format!("sleep 30 &\necho $! > {}\necho v1.0", pid_file.display());
+        let script = write_script(dir.path(), "bg", &body, 0o755);
+        let started = std::time::Instant::now();
+        let answer = version(&script).await;
+        assert_eq!(
+            (answer, started.elapsed() < Duration::from_secs(1)),
+            (Some(b"v1.0\n".to_vec()), true)
+        );
+        let pid = read_pid(&pid_file);
+        assert!(
+            dead_within(&pid, Duration::from_secs(5)).await,
+            "background process {pid} survived"
+        );
     }
 
     fn join(dirs: &[&Path]) -> std::ffi::OsString {

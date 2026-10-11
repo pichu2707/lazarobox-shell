@@ -89,6 +89,12 @@ impl Shutdown {
     }
 }
 
+/// What runs before the UI starts.
+fn startup_effects(app: &mut App) -> Vec<Effect> {
+    // Startup trigger: the first result arrives on `ai_rx` once the loop runs.
+    app.request_detection()
+}
+
 /// Runs the terminal pane until the child exits or the user quits.
 pub async fn run() -> io::Result<()> {
     let (cols, rows) = terminal::size()?;
@@ -113,8 +119,7 @@ pub async fn run() -> io::Result<()> {
         .with_detector(Box::new(move || spawn_detection(ai_tx.clone())));
     // The first pane is spawned before the UI starts: a failure is fatal.
     panes.spawn_pane(id, &spec)?;
-    // Startup trigger: the first result arrives on `ai_rx` once the loop runs.
-    panes.apply(app.request_detection());
+    panes.apply(startup_effects(&mut app));
 
     let mut terminal = ratatui::init();
     install_panic_hook();
@@ -506,6 +511,14 @@ mod tests {
         core::pane::{CursorKind, CursorShape, PaneSize},
         core::pty::fake::FakePty,
     };
+
+    #[test]
+    fn startup_requests_exactly_one_engine_detection() {
+        let mut app = App::new(80, 24);
+        assert_eq!(startup_effects(&mut app), vec![Effect::DetectEngines]);
+        // Single flight: a second request while one is pending is empty.
+        assert_eq!(app.request_detection(), Vec::new());
+    }
 
     // Signals are process-wide, so both are raised from one test.
     #[tokio::test]
