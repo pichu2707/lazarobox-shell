@@ -18,6 +18,21 @@ pub enum Target {
     Task(Task),
 }
 
+impl Target {
+    /// Write a committed choice into the draft: one task, or all five for
+    /// `Set all tasks`. The default assignment clears.
+    pub fn apply(self, draft: &mut AiConfig, assignment: Assignment) {
+        match self {
+            Self::Task(task) => draft.set(task, assignment),
+            Self::All => {
+                for task in Task::ALL {
+                    draft.set(task, assignment.clone());
+                }
+            }
+        }
+    }
+}
+
 /// Identity of a row, stable across detection results.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum PickKey {
@@ -517,6 +532,30 @@ impl Picker {
         }
     }
 
+    /// The identity of the row under the cursor.
+    pub fn key(&self, draft: &AiConfig, detection: Option<&Detection>) -> Option<PickKey> {
+        self.rows(draft, detection)
+            .get(self.cursor)
+            .map(|r| r.key.clone())
+    }
+
+    /// After the rows changed (a detection arrived), put the cursor back on
+    /// the row with the `previous` key, or clamp it when that row is gone.
+    pub fn reanchor(
+        &mut self,
+        previous: Option<PickKey>,
+        draft: &AiConfig,
+        detection: Option<&Detection>,
+    ) {
+        let rows = self.rows(draft, detection);
+        let found = previous.and_then(|key| rows.iter().position(|r| r.key == key));
+        self.cursor = found
+            .unwrap_or(self.cursor)
+            .min(rows.len().saturating_sub(1));
+        self.offset = self.offset.min(rows.len().saturating_sub(VIEW));
+        self.follow();
+    }
+
     /// The indexes of the rows inside the window.
     pub fn visible(&self, total: usize) -> std::ops::Range<usize> {
         let start = self.offset.min(total.saturating_sub(VIEW));
@@ -548,9 +587,13 @@ impl Picker {
 }
 
 #[cfg(test)]
+mod assign_tests;
+#[cfg(test)]
 mod custom_tests;
 #[cfg(test)]
 mod machine_tests;
+#[cfg(test)]
+mod rekey_tests;
 #[cfg(test)]
 mod viewport_tests;
 
