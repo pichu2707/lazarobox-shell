@@ -102,19 +102,19 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 
 ## CM4a: `apply_edit` (pure) and dependencies
 
-- [ ] CM4a.1 Dependencies: `Cargo.toml` add `toml_edit = "0.22"` and dev-dependency `tempfile = "3"`; confirm `Cargo.lock` adds no new crate for `toml_edit` (CM-10) and `cargo build` stays green.
-- [ ] CM4a.2 Stubs: `src/core/config_edit.rs` with `apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String, EditError>` and `EditError::{Unparseable, NotATable(&'static str)}` returning `Ok(String::new())`; register in `src/core/mod.rs`.
-- [ ] CM4a.3 RED: comments, order, whitespace, unknown table and `mouse = false` preserved byte-for-byte except the changed value; trailing `# comment` on the value survives (decor kept) [config-persistence: Comments and order preserved].
-- [ ] CM4a.4 GREEN: parse with `toml_edit::DocumentMut`, replace value keeping decor.
-- [ ] CM4a.5 RED: missing `[tabbar]` table is inserted as `[tabbar]` with existing content untouched; `None` input builds a document; only listed edits are written (untouched owned keys not materialised) [Missing keys are created].
-- [ ] CM4a.6 GREEN: table insertion, `None` handling.
-- [ ] CM4a.7 RED: inline table `statusline = { position = "bottom" }` and dotted `statusline.position = "bottom"` are edited in place; `position = "middle"` is replaced with the valid value [Invalid value replaced].
-- [ ] CM4a.8 GREEN: `as_table_like_mut` path.
-- [ ] CM4a.9 RED: `mouse = true` kept as is, absent `mouse` not added [Mouse untouched]; `statusline = 3` and array-of-tables give `NotATable("statusline")` with no output [Non-table collision refused]; syntax error gives `Unparseable`.
-- [ ] CM4a.10 GREEN: refusal paths.
-- [ ] CM4a.11 RED: parity test (CM-10): the same broken inputs go to `Config::parse` and `apply_edit` and both reject them; property test: `Config::parse(apply_edit(..))` yields the draft positions with no problems over a matrix of inputs [Saved file parses back].
-- [ ] CM4a.12 GREEN: fix any divergence (expected none; characterization if both already agree).
-- [ ] CM4a.13 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] CM4a.1 Dependencies: `Cargo.toml` add `toml_edit = "0.22"` and dev-dependency `tempfile = "3"`; confirm `Cargo.lock` adds no new crate for `toml_edit` (CM-10) and `cargo build` stays green.
+- [x] CM4a.2 Stubs: `src/core/config_edit.rs` with `apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String, EditError>` and `EditError::{Unparseable, NotATable(&'static str)}` returning `Ok(String::new())`; register in `src/core/mod.rs`.
+- [x] CM4a.3 RED: comments, order, whitespace, unknown table and `mouse = false` preserved byte-for-byte except the changed value; trailing `# comment` on the value survives (decor kept) [config-persistence: Comments and order preserved].
+- [x] CM4a.4 GREEN: parse with `toml_edit::DocumentMut`, replace value keeping decor.
+- [x] CM4a.5 RED: missing `[tabbar]` table is inserted as `[tabbar]` with existing content untouched; `None` input builds a document; only listed edits are written (untouched owned keys not materialised) [Missing keys are created].
+- [x] CM4a.6 GREEN: table insertion, `None` handling.
+- [x] CM4a.7 RED: inline table `statusline = { position = "bottom" }` and dotted `statusline.position = "bottom"` are edited in place; `position = "middle"` is replaced with the valid value [Invalid value replaced].
+- [x] CM4a.8 GREEN: `as_table_like_mut` path.
+- [x] CM4a.9 RED: `mouse = true` kept as is, absent `mouse` not added [Mouse untouched]; `statusline = 3` and array-of-tables give `NotATable("statusline")` with no output [Non-table collision refused]; syntax error gives `Unparseable`.
+- [x] CM4a.10 GREEN: refusal paths.
+- [x] CM4a.11 RED: parity test (CM-10): the same broken inputs go to `Config::parse` and `apply_edit` and both reject them; property test: `Config::parse(apply_edit(..))` yields the draft positions with no problems over a matrix of inputs [Saved file parses back].
+- [x] CM4a.12 GREEN: fix any divergence (expected none; characterization if both already agree).
+- [x] CM4a.13 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## CM4b: Save effect, runtime write, feedback
 
