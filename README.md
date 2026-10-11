@@ -39,6 +39,17 @@ Inspirado en la paleta de colores de lazarobox (tonos oscuros suavizados con ace
 
 ---
 
+## 📦 Instalación
+
+```bash
+cargo install --path .           # instala lazarobox-shell en ~/.cargo/bin
+scripts/install-desktop.sh       # añade el lanzador "Lazarobox" (rofi, menú de aplicaciones)
+```
+
+El lanzador abre `lazarobox-shell` dentro de Kitty (`--class lazarobox`), así que no hace falta tener una terminal abierta. Requiere tener `kitty` y `lazarobox-shell` instalados; si falta alguno, el script termina con error. Las rutas de ambos se resuelven al instalar; si cambian, vuelve a ejecutar el script. Respeta `XDG_DATA_HOME` y `CARGO_HOME`. Para quitarlo: `scripts/install-desktop.sh --uninstall`.
+
+---
+
 ## 📁 Arquitectura del Workspace en Rust
 
 ```text
