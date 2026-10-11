@@ -97,7 +97,7 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 - [x] CM3.7 GREEN: fallback path and zero-area guard.
 - [x] CM3.8 RED: `src/ui/mod.rs` draws the overlay last when `menu()` is `Some`; snapshot of one-tab forced bar with popup; real cursor not placed in MENU; cursor unchanged outside MENU (characterization) [tabs: Bar forced with one tab (render)].
 - [x] CM3.9 GREEN: overlay draw after the statusline; skip `cursor_position` while MENU.
-- [ ] CM3.10 [manual] Kitty: `Ctrl+Space m` shows the popup; `j/k` move, `l` changes the statusline/tab bar position live with nvim reflowing; the one-tab bar appears and disappears on open/close (resize accepted); Esc restores; popup survives a small window (fallback line) [config-menu: Menu in Kitty (open, preview, Esc)].
+- [x] CM3.10 [manual] Kitty: `Ctrl+Space m` shows the popup; `j/k` move, `l` changes the statusline/tab bar position live with nvim reflowing; the one-tab bar appears and disappears on open/close (resize accepted); Esc restores; popup survives a small window (fallback line) [config-menu: Menu in Kitty (open, preview, Esc)].
 - [x] CM3.11 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## CM4a: `apply_edit` (pure) and dependencies
