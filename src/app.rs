@@ -7,6 +7,7 @@ use std::{
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::core::{
+    ai::Detection,
     config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{
         CopyCommand, CopyMotion, CopyState, Geometry, Highlight, Point, SelectionKind, TooLarge,
@@ -102,6 +103,8 @@ pub enum AppEvent {
     ConfigSaved,
     /// The save was refused or failed; carries the one-line footer text.
     ConfigSaveFailed(String),
+    /// One engine detection run finished. An empty `Detection` means it failed.
+    EnginesDetected(Detection),
 }
 
 /// How the menu closed.
@@ -127,6 +130,8 @@ pub enum Effect {
     SaveConfig(Vec<ConfigEdit>),
     /// Hand a finished OSC 52 sequence to the host terminal.
     SetClipboard(Vec<u8>),
+    /// Probe the AI engines; the runtime answers with one `EnginesDetected`.
+    DetectEngines,
     Quit,
 }
 
@@ -274,6 +279,10 @@ pub struct App {
     held_exit: Option<HeldExit>,
     /// Monotonic clock, injected so `update` stays deterministic.
     clock: fn() -> Instant,
+    /// The last finished detection; `None` until the first run ends.
+    engines: Option<Detection>,
+    /// A detection is in flight: further requests are dropped.
+    detecting: bool,
 }
 
 /// The key that left COPY and when it was last seen.
@@ -314,7 +323,24 @@ impl App {
             shell: None,
             held_exit: None,
             clock: Instant::now,
+            engines: None,
+            detecting: false,
         }
+    }
+
+    /// The last finished AI engine detection, if any.
+    pub fn engines(&self) -> Option<&Detection> {
+        self.engines.as_ref()
+    }
+
+    /// Asks the runtime to detect the AI engines, unless a run is already
+    /// in flight (single flight: that run is at most a couple of seconds old).
+    pub fn request_detection(&mut self) -> Vec<Effect> {
+        if self.detecting {
+            return Vec::new();
+        }
+        self.detecting = true;
+        vec![Effect::DetectEngines]
     }
 
     /// Sets the facts the statusline shows. They are inputs, not lookups, so
@@ -621,6 +647,13 @@ impl App {
                 Vec::new()
             }
             AppEvent::ConfigSaved => Vec::new(),
+            // Even an empty (failed) result ends the run, so the triggers re-arm.
+            AppEvent::EnginesDetected(detection) => {
+                self.engines = Some(detection);
+                self.detecting = false;
+                self.dirty = true;
+                Vec::new()
+            }
         };
         debug_assert_eq!(
             self.menu.is_some(),
@@ -5070,5 +5103,78 @@ mod app_tests {
         let effects = a.update(AppEvent::Pty(PaneId::FIRST, PtyEvent::Exited));
         assert_eq!(effects, vec![Effect::Quit]);
         assert_still_open(&a);
+    }
+
+    fn detection(status: crate::core::ai::Status) -> Detection {
+        use crate::core::ai::CATALOG;
+        Detection {
+            engines: CATALOG
+                .iter()
+                .map(|e| crate::core::ai::EngineState {
+                    id: e.id,
+                    status,
+                    models: Vec::new(),
+                    version: None,
+                })
+                .collect(),
+        }
+    }
+
+    fn texts(a: &App) -> Vec<String> {
+        use crate::core::ai::{CATALOG, status_text};
+        CATALOG
+            .iter()
+            .map(|e| status_text(a.engines(), e.id))
+            .collect()
+    }
+
+    #[test]
+    fn detection_is_single_flight() {
+        let mut a = app();
+        assert_eq!(a.request_detection(), vec![Effect::DetectEngines]);
+        assert_eq!(a.request_detection(), Vec::<Effect>::new());
+    }
+
+    #[test]
+    fn a_result_stores_the_detection_and_rearms_the_trigger() {
+        use crate::core::ai::Status;
+        let mut a = app();
+        a.request_detection();
+        let found = detection(Status::NotRunning);
+        assert_eq!(
+            a.update(AppEvent::EnginesDetected(found.clone())),
+            Vec::<Effect>::new()
+        );
+        assert_eq!(a.engines(), Some(&found));
+        assert_eq!(a.request_detection(), vec![Effect::DetectEngines]);
+    }
+
+    #[test]
+    fn engines_read_detecting_until_the_whole_result_arrives() {
+        use crate::core::ai::Status;
+        let mut a = app();
+        a.request_detection();
+        assert_eq!(texts(&a), vec!["detecting…"; 8]);
+        a.update(AppEvent::EnginesDetected(detection(Status::NotInstalled)));
+        assert_eq!(texts(&a), vec!["not installed"; 8]);
+    }
+
+    #[test]
+    fn a_failed_run_clears_the_flag_and_reads_unknown() {
+        let mut a = app();
+        a.request_detection();
+        a.update(AppEvent::EnginesDetected(Detection::default()));
+        assert_eq!(texts(&a), vec!["unknown"; 8]);
+        assert_eq!(a.request_detection(), vec![Effect::DetectEngines]);
+    }
+
+    #[test]
+    fn typing_is_not_held_back_while_detecting() {
+        let mut a = app();
+        a.request_detection();
+        assert_eq!(
+            a.update(key('a')),
+            vec![Effect::WritePty(PaneId::FIRST, b"a".to_vec())]
+        );
     }
 }

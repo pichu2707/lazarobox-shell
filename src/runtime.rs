@@ -17,6 +17,7 @@ use std::{
 pub mod ai_detect;
 mod config_write;
 
+use ai_detect::spawn_detection;
 use config_write::save_config;
 use futures::StreamExt;
 use ratatui::{
@@ -36,6 +37,7 @@ use tokio::{
 use crate::{
     app::{App, AppEvent, Effect},
     core::{
+        ai::Detection,
         config::{Config, config_path},
         layout::PaneId,
         pane::{CursorKind, CursorShape},
@@ -95,7 +97,7 @@ pub async fn run() -> io::Result<()> {
     // Resolved once: the startup read and the menu's save use the same file.
     let config_path = config_path(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"));
     let (config, notice) = load_config(config_path.as_deref());
-    let app = App::new(cols, rows)
+    let mut app = App::new(cols, rows)
         .with_config(&config)
         .with_notice(notice)
         .with_hostname(local_hostname().as_deref())
@@ -105,14 +107,19 @@ pub async fn run() -> io::Result<()> {
 
     let shutdown = Shutdown::new()?;
     let (tx, rx) = mpsc::channel(PTY_CHANNEL);
-    let mut panes = Panes::new(tx, Box::new(spawn_portable)).with_config_path(config_path);
+    let (ai_tx, ai_rx) = mpsc::channel(1);
+    let mut panes = Panes::new(tx, Box::new(spawn_portable))
+        .with_config_path(config_path)
+        .with_detector(Box::new(move || spawn_detection(ai_tx.clone())));
     // The first pane is spawned before the UI starts: a failure is fatal.
     panes.spawn_pane(id, &spec)?;
+    // Startup trigger: the first result arrives on `ai_rx` once the loop runs.
+    panes.apply(app.request_detection());
 
     let mut terminal = ratatui::init();
     install_panic_hook();
     let result = match execute!(stdout(), EnableBracketedPaste) {
-        Ok(()) => event_loop(&mut terminal, &mut panes, rx, shutdown, app).await,
+        Ok(()) => event_loop(&mut terminal, &mut panes, rx, ai_rx, shutdown, app).await,
         Err(error) => Err(error),
     };
 
@@ -154,11 +161,12 @@ async fn event_loop(
     terminal: &mut DefaultTerminal,
     panes: &mut Panes,
     rx: mpsc::Receiver<(PaneId, PtyEvent)>,
+    ai_rx: mpsc::Receiver<Detection>,
     shutdown: Shutdown,
     app: App,
 ) -> io::Result<()> {
     let mut out = stdout();
-    let result = run_loop(terminal, panes, rx, shutdown, app, &mut out).await;
+    let result = run_loop(terminal, panes, rx, ai_rx, shutdown, app, &mut out).await;
     flush_on_exit(&mut out, &mut panes.host_out, result)
 }
 
@@ -178,6 +186,7 @@ async fn run_loop(
     terminal: &mut DefaultTerminal,
     panes: &mut Panes,
     mut rx: mpsc::Receiver<(PaneId, PtyEvent)>,
+    mut ai_rx: mpsc::Receiver<Detection>,
     mut shutdown: Shutdown,
     mut app: App,
     out: &mut impl Write,
@@ -213,6 +222,12 @@ async fn run_loop(
                     if step(&mut app, AppEvent::Pty(id, event), panes) {
                         return Ok(());
                     }
+                }
+            }
+            // The detector keeps a sender alive, so this never reads a closed channel.
+            Some(detection) = ai_rx.recv() => {
+                if step(&mut app, AppEvent::EnginesDetected(detection), panes) {
+                    return Ok(());
                 }
             }
             // Same exit path as Quit: the caller restores and kills the children.
@@ -254,6 +269,9 @@ struct Panes {
     /// Bytes for the host terminal (OSC 52), written by `flush_host` after
     /// the draw so nothing lands in the middle of a frame.
     host_out: Vec<u8>,
+    /// Starts one AI engine detection; the answer arrives on the AI channel.
+    /// A no-op unless `with_detector` installs the production one.
+    detect: Box<dyn FnMut()>,
 }
 
 impl Panes {
@@ -265,7 +283,14 @@ impl Panes {
             reapers: Vec::new(),
             config_path: None,
             host_out: Vec::new(),
+            detect: Box::new(|| {}),
         }
+    }
+
+    /// Sets what `Effect::DetectEngines` runs.
+    fn with_detector(mut self, detect: Box<dyn FnMut()>) -> Self {
+        self.detect = detect;
+        self
     }
 
     /// Sets the file `SaveConfig` writes to.
@@ -316,6 +341,8 @@ impl Panes {
                     });
                 }
                 Effect::SetClipboard(bytes) => self.host_out.extend_from_slice(&bytes),
+                // Returns at once: the probes run on their own tasks.
+                Effect::DetectEngines => (self.detect)(),
                 Effect::Quit => outcome = Outcome::Quit,
             }
         }
@@ -973,6 +1000,56 @@ mod tests {
         assert_eq!(
             app.menu().and_then(|menu| menu.error()),
             Some("save failed: no config path (HOME is not set)")
+        );
+    }
+
+    #[test]
+    fn detect_engines_calls_the_injected_detector_once() {
+        let (panes, _rx, _rec) = fake_panes(None);
+        let calls = Rc::new(RefCell::new(0));
+        let seen = Rc::clone(&calls);
+        let mut panes = panes.with_detector(Box::new(move || *seen.borrow_mut() += 1));
+        let (outcome, feedback) = panes.apply(vec![Effect::DetectEngines]);
+        assert_eq!(
+            (outcome, feedback, *calls.borrow()),
+            (Outcome::Continue, Vec::new(), 1)
+        );
+    }
+
+    #[test]
+    fn the_default_detector_does_nothing() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let (outcome, feedback) = panes.apply(vec![Effect::DetectEngines]);
+        assert_eq!((outcome, feedback), (Outcome::Continue, Vec::new()));
+    }
+
+    #[test]
+    fn step_applies_a_detection_to_the_app_without_writing_to_a_pty() {
+        use crate::core::ai::{Detection, EngineState, Status};
+        let (mut panes, _rx, rec) = fake_panes(None);
+        let mut app = App::new(80, 25);
+        let (first, first_spec) = app.initial_spawn();
+        panes.spawn_pane(first, &first_spec).unwrap();
+        let found = Detection {
+            engines: vec![EngineState {
+                id: "codex",
+                status: Status::Available,
+                models: vec!["default".to_string()],
+                version: None,
+            }],
+        };
+        let quit = step(
+            &mut app,
+            AppEvent::EnginesDetected(found.clone()),
+            &mut panes,
+        );
+        assert_eq!(
+            (quit, app.engines().cloned(), rec.borrow().logs.len()),
+            (false, Some(found), 1)
+        );
+        assert_eq!(
+            rec.borrow().logs[0].lock().unwrap().writes,
+            Vec::<Vec<u8>>::new()
         );
     }
 
