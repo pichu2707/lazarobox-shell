@@ -426,7 +426,9 @@ mod tests {
         }
         assert!(!status(&app).contains('\u{2191}'));
         press(&mut app, ' ', KeyModifiers::CONTROL);
-        keys(&mut app, "[kk");
+        // The COPY cursor starts on the bottom of 9 body rows: 8 moves reach the top,
+        // 2 more scroll.
+        keys(&mut app, "[kkkkkkkkkk");
         let (offset, total) = app.copy_position().expect("history");
         assert_eq!(offset, 2);
         let line = status(&app);
