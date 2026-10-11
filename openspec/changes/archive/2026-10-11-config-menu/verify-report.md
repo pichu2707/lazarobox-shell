@@ -4,6 +4,7 @@
 **Mode**: Strict TDD (hybrid store: openspec + engram)
 **Verified commit**: origin/feat/config-menu @ 74b5d29
 **Verdict**: PASS WITH WARNINGS (0 CRITICAL, 6 WARNING of which W2 and W4 resolved in PR #46, 4 SUGGESTION)
+**Ledger**: S4 resolved by the CM-16 rebase; deltas completed in #52
 
 ## Completeness
 
@@ -167,7 +168,7 @@ None.
 - S1. "External edit is not reloaded" has no test that touches a real file while the menu is open; it holds because the menu path does no I/O. Add one if the I/O boundary moves.
 - S2. Add a pointer from design CM-9 to the spec's "Line endings kept" scenario so they cannot drift.
 - S3. Add a coverage run (cargo llvm-cov) to give quantitative Strict TDD evidence.
-- S4. The tracker rebase onto main (CM-16) is pending; re-run the full suite afterwards, since the app, ui, prefix and theme modules may conflict.
+- S4. RESOLVED. The tracker rebase onto main (CM-16) was done on 2026-10-11: `feat/config-menu` was rebased onto main at 3c683f2 (PR #10 merge) and force-pushed at tip 69f0034. The rebase had one trivial conflict, in `src/core/mod.rs`. 643 tests pass, clippy and fmt are clean, all 35 commits compile individually, no test was lost from either side, and a fresh review gave the verdict OK.
 
 ## Verdict
 
