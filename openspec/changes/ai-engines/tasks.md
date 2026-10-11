@@ -51,11 +51,11 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 - [x] AE1.11 GREEN: `parse_response` (AE-4, 1 MiB cap).
 - [x] AE1.12 RED: `reduce` servers: table of (valid, binary) x4 gives `available`, `available`, `not running`, `not installed` with exact `EngineState` and models; reply `None` follows the binary rule; 404, 503, 301, 2 MiB valid body are invalid; `:8080` foreign `localai` with `llama-server` on PATH and `vllm` absent gives llamacpp `NotRunning`, vllm `NotInstalled`; HTML without binary gives `NotInstalled`; `{"status":"ok"}`, `{"data":"x"}`, `{"data":[]}`, `[]` with binary give `NotRunning` [Server matrix, Non-200 or oversize, Port closed (reduce part), Foreign OpenAI-compatible service, Foreign service answers HTML, Foreign service answers other JSON].
 - [x] AE1.13 GREEN: server branch of `reduce` (AE-2); output in catalog order.
-- [ ] AE1.14 RED: `reduce` CLIs: path + `codex 0.5.0` gives `Available`, version `Some("codex 0.5.0")`, models `["default"]`; path `None` gives `NotInstalled` (alias case); stdout `None` or empty gives `Available` with no version; result always 8 entries in catalog order [Found with version, Absent or alias, Version fails].
-- [ ] AE1.15 GREEN: CLI branch of `reduce`.
-- [ ] AE1.16 RED: `status_text`: `available · 2 models`, `available · 1 model`, `available · 0 models`, `available · 0.5.0`, `available`, `not running`, `not installed`; `None` detection gives `detecting…`; `Some(empty)` gives `unknown`; id outside the catalog gives `not detected` [Display text, Engines show detecting until the result (display part), Failed run still answers (display part)].
-- [ ] AE1.17 GREEN: `status_text`.
-- [ ] AE1.18 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] AE1.14 RED: `reduce` CLIs: path + `codex 0.5.0` gives `Available`, version `Some("codex 0.5.0")`, models `["default"]`; path `None` gives `NotInstalled` (alias case); stdout `None` or empty gives `Available` with no version; result always 8 entries in catalog order [Found with version, Absent or alias, Version fails].
+- [x] AE1.15 GREEN: CLI branch of `reduce`.
+- [x] AE1.16 RED: `status_text`: `available · 2 models`, `available · 1 model`, `available · 0 models`, `available · 0.5.0`, `available`, `not running`, `not installed`; `None` detection gives `detecting…`; `Some(empty)` gives `unknown`; id outside the catalog gives `not detected` [Display text, Engines show detecting until the result (display part), Failed run still answers (display part)].
+- [x] AE1.17 GREEN: `status_text`.
+- [x] AE1.18 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## AE2: Probes, App single flight, runtime wiring
 
