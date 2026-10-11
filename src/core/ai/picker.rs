@@ -244,9 +244,42 @@ pub fn model_rows(
     rows
 }
 
-/// The label of a task row with its detection marks.
-pub fn task_label(_config: &AiConfig, _task: Task, _detection: Option<&Detection>) -> String {
-    String::new()
+/// The label of a task row with its detection marks. An assigned engine
+/// that is not available gets ` (not detected)` and no model mark; a model
+/// of an available server that is not detected gets ` · download required`.
+/// CLI assignments never get a model mark, and nothing is marked before the
+/// first detection result.
+pub fn task_label(config: &AiConfig, task: Task, detection: Option<&Detection>) -> String {
+    let plain = config.label(task);
+    let (
+        Some(detection),
+        Assignment {
+            engine: Some(id),
+            model,
+        },
+    ) = (detection, config.get(task))
+    else {
+        return plain;
+    };
+    let Some(state) = detection
+        .engines
+        .iter()
+        .find(|s| s.id == id && s.status == Status::Available)
+    else {
+        return match model {
+            Some(model) => format!("{id} (not detected) › {model}"),
+            None => format!("{id} (not detected)"),
+        };
+    };
+    let is_server = CATALOG
+        .iter()
+        .any(|e| e.id == id && matches!(e.kind, Kind::Server { .. }));
+    match model {
+        Some(model) if is_server && !state.models.iter().any(|m| same_model(id, m, model)) => {
+            format!("{plain} · download required")
+        }
+        _ => plain,
+    }
 }
 
 #[cfg(test)]
@@ -331,6 +364,51 @@ mod tests {
 
     fn info(label: &str) -> PickRow {
         row(PickKey::Info, label, Mark::Plain, false, false)
+    }
+
+    // --- task_label ------------------------------------------------------
+
+    #[test]
+    fn task_rows_carry_download_and_detection_marks() {
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Code, "ollama", Some("old:7b"));
+        assign(&mut draft, Task::Chat, "ollama", Some("llama3:8b"));
+        assign(&mut draft, Task::Review, "codex", Some("default"));
+        let d = detection(vec![
+            state("ollama", Status::Available, &["llama3:8b"]),
+            state("codex", Status::NotInstalled, &[]),
+        ]);
+        let label = |task| task_label(&draft, task, Some(&d));
+        assert_eq!(label(Task::Code), "ollama › old:7b · download required");
+        assert_eq!(label(Task::Chat), "ollama › llama3:8b");
+        assert_eq!(label(Task::Review), "codex (not detected) › default");
+        assert_eq!(label(Task::Summarize), "(default)");
+        assert_eq!(label(Task::General), "(not set)");
+    }
+
+    #[test]
+    fn task_rows_have_no_marks_before_the_first_detection() {
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Code, "ollama", Some("llama3:8b"));
+        assert_eq!(task_label(&draft, Task::Code, None), "ollama › llama3:8b");
+    }
+
+    #[test]
+    fn task_row_marks_follow_the_tag_less_rule_and_skip_clis_and_engine_only() {
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Code, "ollama", Some("llama3"));
+        assign(&mut draft, Task::Chat, "claude", Some("not-in-any-catalog"));
+        assign(&mut draft, Task::Review, "ollama", None);
+        assign(&mut draft, Task::Summarize, "vllm", None);
+        let d = detection(vec![
+            state("ollama", Status::Available, &["llama3:latest"]),
+            state("claude", Status::Available, &[]),
+        ]);
+        let label = |task| task_label(&draft, task, Some(&d));
+        assert_eq!(label(Task::Code), "ollama › llama3");
+        assert_eq!(label(Task::Chat), "claude › not-in-any-catalog");
+        assert_eq!(label(Task::Review), "ollama");
+        assert_eq!(label(Task::Summarize), "vllm (not detected)");
     }
 
     // --- model_rows ------------------------------------------------------
