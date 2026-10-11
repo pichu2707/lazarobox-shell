@@ -350,6 +350,45 @@ mod tests {
     }
 
     #[test]
+    fn lmstudio_valid_reply_is_available_with_exact_models() {
+        let body = r#"{"object":"list","data":[{"id":"gemma-3-4b"},{"id":"qwen3"}]}"#;
+        for on_path in [true, false] {
+            assert_eq!(
+                one("lmstudio", on_path, Some((200, body))),
+                state(
+                    "lmstudio",
+                    Status::Available,
+                    &["gemma-3-4b", "qwen3"],
+                    None
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn llamacpp_status_matrix() {
+        let ok = Some((200, LLAMA_OK));
+        for on_path in [true, false] {
+            assert_eq!(
+                one("llamacpp", on_path, ok),
+                state("llamacpp", Status::Available, &["m.gguf"], None)
+            );
+        }
+        assert_eq!(
+            one("llamacpp", true, Some((500, LLAMA_OK))),
+            state("llamacpp", Status::NotRunning, &[], None)
+        );
+        assert_eq!(
+            one("llamacpp", false, Some((500, LLAMA_OK))),
+            state("llamacpp", Status::NotInstalled, &[], None)
+        );
+        assert_eq!(
+            one("llamacpp", true, None),
+            state("llamacpp", Status::NotRunning, &[], None)
+        );
+    }
+
+    #[test]
     fn foreign_json_with_a_binary_is_not_running() {
         for body in [
             r#"{"status":"ok"}"#,

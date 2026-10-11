@@ -80,7 +80,7 @@ fn dechunk(mut rest: &[u8]) -> Option<Vec<u8>> {
             }
         }
         body.extend_from_slice(rest.get(..size)?);
-        if body.len() > MAX_BODY || rest.get(size..size + 2)? != b"\r\n" {
+        if rest.get(size..size + 2)? != b"\r\n" {
             return None;
         }
         rest = &rest[size + 2..];
@@ -185,6 +185,52 @@ mod tests {
         let space = b"HTTP/1.1 200 OK\r\nContent-Length : 2\r\n\r\nok";
         assert_eq!(parse_response(space), None);
         assert_eq!(parse_response(b"HTTP/1.1 +200 OK\r\n\r\nok"), None);
+    }
+
+    #[test]
+    fn one_byte_over_the_cap_is_rejected_in_every_framing() {
+        let body = vec![b'x'; MAX_BODY + 1];
+        let mut close = b"HTTP/1.0 200 OK\r\n\r\n".to_vec();
+        close.extend(&body);
+        assert_eq!(parse_response(&close), None);
+        let mut length =
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+        length.extend(&body);
+        assert_eq!(parse_response(&length), None);
+        let mut chunks = format!("{CHUNKED}{:x}\r\n", body.len()).into_bytes();
+        chunks.extend(&body);
+        chunks.extend(b"\r\n0\r\n\r\n");
+        assert_eq!(parse_response(&chunks), None);
+    }
+
+    #[test]
+    fn chunked_bodies_at_the_cap_are_accepted() {
+        let body = vec![b'x'; MAX_BODY];
+        let mut raw = format!("{CHUNKED}{:x}\r\n", body.len()).into_bytes();
+        raw.extend(&body);
+        raw.extend(b"\r\n0\r\n\r\n");
+        assert_eq!(parse_response(&raw), Some((200, body)));
+    }
+
+    #[test]
+    fn multi_chunk_bodies_over_the_cap_are_rejected() {
+        let half = vec![b'x'; MAX_BODY / 2 + 1];
+        let mut raw = CHUNKED.as_bytes().to_vec();
+        for _ in 0..2 {
+            raw.extend(format!("{:x}\r\n", half.len()).into_bytes());
+            raw.extend(&half);
+            raw.extend(b"\r\n");
+        }
+        raw.extend(b"0\r\n\r\n");
+        assert_eq!(parse_response(&raw), None);
+    }
+
+    #[test]
+    fn only_http_1_x_status_lines_are_accepted() {
+        assert_eq!(parse_response(b"HTTP/2 200\r\n\r\nok"), None);
+        assert_eq!(parse_response(b"HTTP/0.9 200 OK\r\n\r\nok"), None);
+        assert_eq!(parse_response(b"HTTP/1.1 200 OK\r\n\r\nok"), ok("ok"));
+        assert_eq!(parse_response(b"HTTP/1.0 200 OK\r\n\r\nok"), ok("ok"));
     }
 
     #[test]
