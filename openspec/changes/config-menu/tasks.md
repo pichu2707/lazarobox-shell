@@ -36,6 +36,8 @@ Tracker `feat/config-menu` is based on `feat/panes-tabs` (CM-16) and rebased ont
 | CM4a | `feat/config-menu-04a-apply-edit` | CM3 branch | ~270 | config-persistence: Owned keys only, Refuse on errors (pure part); `toml_edit` dependency, parity test (CM-10) |
 | CM4b | `feat/config-menu-04b-runtime-save` | CM4a branch | ~330 (HIGH) | config-persistence: Save on Enter, Create file and directories, Atomic write, Failure feedback; [manual] Kitty persistence |
 
+Delivered PRs: CM4a review fixes #41, CM4a-1 #42, CM4b-i #43, CM4b-ii #44, CM4b-iii #45, verify report #46.
+
 Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`. Strict TDD: RED is an assertion-level failing test written against compiling stubs (the stub exists and returns a wrong or default value, so the failure is a failed assertion, not a compile error); then GREEN, then REFACTOR. Characterization tests that pass immediately are labelled as such. [manual] = user-run in Kitty. Each PR states start/end, parent, follow-up, out of scope, and a dependency diagram with the current PR marked. Tests and code of one slice stay in the same commit set; no cross-slice commits.
 
 ## CM1: Core menu (pure)
@@ -103,7 +105,7 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 ## CM4a: `apply_edit` (pure) and dependencies
 
 - [x] CM4a.1 Dependencies: `Cargo.toml` add `toml_edit = "0.22"` and dev-dependency `tempfile = "3"`; confirm `Cargo.lock` adds no new crate for `toml_edit` (CM-10) and `cargo build` stays green.
-- [x] CM4a.2 Stubs: `src/core/config_edit.rs` with `apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String, EditError>` and `EditError::{Unparseable, NotATable(&'static str)}` returning `Ok(String::new())`; register in `src/core/mod.rs`.
+- [x] CM4a.2 Stubs: `src/core/config_edit.rs` with `apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String, EditError>` and `EditError::{Unparseable, NotATable(&'static str), KeyIsTable { table, key }}` (`KeyIsTable` added in review, see CM4a.14) returning `Ok(String::new())`; register in `src/core/mod.rs`.
 - [x] CM4a.3 RED: comments, order, whitespace, unknown table and `mouse = false` preserved byte-for-byte except the changed value; trailing `# comment` on the value survives (decor kept) [config-persistence: Comments and order preserved].
 - [x] CM4a.4 GREEN: parse with `toml_edit::DocumentMut`, replace value keeping decor.
 - [x] CM4a.5 RED: missing `[tabbar]` table is inserted as `[tabbar]` with existing content untouched; `None` input builds a document; only listed edits are written (untouched owned keys not materialised) [Missing keys are created].
@@ -115,6 +117,8 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 - [x] CM4a.11 RED: parity test (CM-10): the same broken inputs go to `Config::parse` and `apply_edit` and both reject them; property test: `Config::parse(apply_edit(..))` yields the draft positions with no problems over a matrix of inputs [Saved file parses back].
 - [x] CM4a.12 GREEN: fix any divergence (expected none; characterization if both already agree).
 - [x] CM4a.13 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] CM4a.14 Review fixes (PR #41): CRLF kept on replace and insert; `KeyIsTable` refusal, including `[[...]]` arrays of tables; comment-only file ordering (comments stay before an inserted table).
+- [x] CM4a.15 CM4a-1 (PR #42): line endings per file (style from the first break outside strings), string-aware scanner, regression tests.
 
 ## CM4b: Save effect, runtime write, feedback
 
@@ -131,6 +135,7 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 - [x] CM4b.10 RED+GREEN: `Panes::apply` handles `SaveConfig` and feeds exactly one `ConfigSaved` or `ConfigSaveFailed` through `drive` before the next input; `run()` resolves `config_path` once and shares it with `load_config` and `with_config_path`; existing `Panes` tests untouched [Failure feedback: exactly one result].
 - [x] CM4b.11 [manual] Kitty: change a position and press Enter, quit and restart, positions persist; a hand-commented `config.toml` keeps every comment and only the owned key changes; a deliberately broken file is not overwritten and the footer shows `config.toml has errors; fix it before saving`; a symlinked `config.toml` stays a symlink with the target updated; no stray temp file remains [config-persistence: Persistence in Kitty; config-menu: Menu in Kitty (restart shows saved positions)].
 - [x] CM4b.12 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] CM4b.13 CM4b-iii save hardening (PR #45): dangling symlinks followed up to 8 hops (then `save failed: too many symlink levels`); read-only file refusal (`config.toml is read-only`); stale temp retry; exact read-only-directory assertion; save-ordering characterization test.
 
 ## Deferred (out of scope)
 
