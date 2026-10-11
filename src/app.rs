@@ -442,10 +442,12 @@ impl App {
     /// then the launch cwd, then `$HOME`, taking the first that still exists.
     /// `None` when none does (the spawn then falls back to `/`).
     fn inherited_cwd(&self) -> Option<PathBuf> {
-        self.focused_state()
-            .effective_cwd()
+        let focused = self.focused_state().effective_cwd();
+        [focused, self.launch_cwd.as_deref(), self.home.as_deref()]
+            .into_iter()
+            .flatten()
+            .find(|dir| (self.dir_exists)(dir))
             .map(Path::to_path_buf)
-            .or_else(|| self.launch_cwd.clone())
     }
 
     fn spawn_spec(&self, cwd: Option<PathBuf>, size: PaneSize) -> SpawnSpec {

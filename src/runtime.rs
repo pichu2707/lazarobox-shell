@@ -92,6 +92,7 @@ pub async fn run() -> io::Result<()> {
         .with_config(&config)
         .with_notice(notice)
         .with_hostname(local_hostname().as_deref())
+        .with_dir_check(|dir| dir.is_dir())
         .with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
     let (id, spec) = app.initial_spawn();
 
