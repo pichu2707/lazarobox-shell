@@ -9,8 +9,8 @@ TERMINAL / PREFIX / COPY state machine plus quit confirmation, as a pure `update
 ### Requirement: TERMINAL mode
 In TERMINAL every key except the prefix MUST be encoded and sent to the focused pane's PTY. Initial mode is TERMINAL.
 
-Key events of kind Release MUST be ignored in every mode. Repeat MUST be handled like Press in TERMINAL, COPY and RESIZE, and MUST be ignored in decision states (PREFIX, group pending, and all confirmations) so a held key never selects an action or confirms.
-(Previously: Release ignored only generally; Repeat ignored only in PREFIX and CONFIRM_QUIT; bytes went to the single PTY)
+Key events of kind Release MUST be ignored in every mode. Repeat MUST be handled like Press in TERMINAL, COPY, RESIZE and in MENU for navigation and cycling keys only; it MUST be ignored for Enter and Esc in MENU and in decision states (PREFIX, group pending, and all confirmations) so a held key never selects an action or confirms.
+(Previously: Release ignored only generally; Repeat ignored only in PREFIX and CONFIRM_QUIT; bytes went to the single PTY; then Repeat handled in TERMINAL, COPY and RESIZE and ignored in decision states)
 
 #### Scenario: Passthrough
 - GIVEN TERMINAL
@@ -31,6 +31,11 @@ Key events of kind Release MUST be ignored in every mode. Repeat MUST be handled
 - GIVEN two panes with the right focused
 - WHEN `a` is pressed
 - THEN WritePty is addressed to the right pane only
+
+#### Scenario: Repeat in MENU [auto]
+- GIVEN MENU
+- WHEN Repeat events for `j` and for Esc arrive
+- THEN `j` moves the selection and Esc does nothing
 
 ### Requirement: Prefix key
 Ctrl+Space (reported as NUL 0x00) MUST enter PREFIX without writing to the PTY. The prefix key and the action table MUST be data, not hard-coded branches. Pressing Ctrl+Space again in PREFIX writes a literal NUL to the focused pane. Esc or an unmapped key in PREFIX returns to TERMINAL, swallowed.
@@ -79,8 +84,8 @@ Ctrl+Space (reported as NUL 0x00) MUST enter PREFIX without writing to the PTY. 
 - THEN mode is COPY and no WritePty is emitted
 
 ### Requirement: Paste and resize in any mode
-Paste events MUST be sent to the focused pane's PTY only in TERMINAL. A host Resize event MUST recompute pane rects in every mode and MUST emit ResizePty only for panes (in any tab) whose size actually changed.
-(Previously: Resize emitted a single ResizePty in every mode)
+Paste events MUST be sent to the focused pane's PTY only in TERMINAL (so never in MENU). A host Resize event MUST recompute pane rects in every mode and MUST emit ResizePty only for panes (in any tab) whose size actually changed. In MENU the recomputation uses the forced tab bar and the previewed positions, and the mode stays MENU.
+(Previously: Resize emitted a single ResizePty in every mode; then the same rule without MENU)
 
 #### Scenario: Paste in COPY
 - GIVEN COPY
@@ -91,6 +96,11 @@ Paste events MUST be sent to the focused pane's PTY only in TERMINAL. A host Res
 - GIVEN two panes and a host resize that changes only the width of the right pane
 - WHEN the Resize event is handled
 - THEN ResizePty is emitted only for panes whose rect size changed
+
+#### Scenario: Paste in MENU [auto]
+- GIVEN MENU
+- WHEN a paste event arrives
+- THEN no WritePty is emitted
 
 ### Requirement: Prefix tree with described key groups
 After the prefix, the key table MUST be a tree: leaf bindings and groups `w` (labelled `WINDOW`), `t` (`TAB`), `g` (`GO`), `b` (`BUFFER`). Every binding AND every group MUST have a non-empty description, every group a non-empty label, and a group MUST NOT contain duplicate keys. The table is the single source of truth for dispatch, for the key hint (see statusline) and for the future command viewer. Letter keys are matched by character case: the SHIFT modifier MUST be ignored for character keys (terminals report `B` with or without SHIFT), while Ctrl chords match exactly. Bindings:
@@ -107,7 +117,11 @@ After the prefix, the key table MUST be a tree: leaf bindings and groups `w` (la
 | `b 1`..`b 9` | go to tab N |
 | `?` | reserved, no effect |
 | `[` | enter COPY |
+| `m` | open the config menu (enter MENU) |
 | `q` | quit (confirm) |
+
+The root of the prefix tree also contains the leaf binding `m` with description `menu`, entering MENU; the root key hint therefore includes `m menu`. The pinned list of root hint entries changes from `w t g b [ q` to include `m`.
+(Previously: root entries were `w`, `t`, `g`, `b`, `[`, `q`)
 
 #### Scenario: Table integrity
 - GIVEN the prefix table
@@ -143,6 +157,11 @@ After the prefix, the key table MUST be a tree: leaf bindings and groups `w` (la
 - GIVEN PREFIX
 - WHEN `?` is pressed
 - THEN mode is TERMINAL, no effect is emitted and nothing is written to the PTY
+
+#### Scenario: `m` is in the table [auto]
+- GIVEN the prefix table
+- WHEN it is validated
+- THEN `m` exists at the root with a non-empty description, and the table integrity rules still hold
 
 ### Requirement: Group cancellation
 Inside a group, Esc, an unmapped key, or Ctrl+Space MUST cancel back to TERMINAL, and the key MUST be swallowed (no WritePty).
@@ -245,3 +264,31 @@ Any change of focused pane or active tab MUST exit COPY (the pane being left ret
 - GIVEN RESIZE on pane A of three
 - WHEN another pane's shell exits
 - THEN mode is still RESIZE
+
+### Requirement: MENU mode
+`m` in PREFIX MUST enter MENU. MENU is a sticky mode that swallows input: the keys defined by the config-menu spec act, every other key (including Ctrl+Space) is swallowed with no WritePty, and the mode stays MENU until Enter saves successfully or Esc cancels. MENU MUST be entered only from TERMINAL through the prefix; `m` inside a group, in COPY, RESIZE or a confirmation MUST NOT open it. Press and Repeat are handled for navigation and cycling keys (Repeat on Enter and Esc MUST be ignored so a held key cannot save or cancel repeatedly); Release is ignored. Paste events MUST NOT reach any PTY in MENU. A focus or active-tab change MUST NOT leave MENU.
+
+#### Scenario: Enter MENU [auto]
+- GIVEN PREFIX
+- WHEN `m` is pressed
+- THEN mode is MENU and no WritePty is emitted
+
+#### Scenario: Not from other modes [auto]
+- GIVEN COPY, RESIZE, or a group pending
+- WHEN `m` is pressed
+- THEN MENU is not opened
+
+#### Scenario: Repeat on Enter and Esc ignored [auto]
+- GIVEN MENU with a changed draft
+- WHEN a Repeat event for Enter or for Esc arrives
+- THEN no save is requested, the menu is not closed and the state is unchanged
+
+#### Scenario: Release ignored [auto]
+- GIVEN MENU
+- WHEN a Release event arrives
+- THEN nothing happens
+
+#### Scenario: Focus change keeps MENU [auto]
+- GIVEN MENU on pane A of two
+- WHEN pane A's shell exits and focus moves to pane B
+- THEN mode is still MENU

@@ -318,6 +318,7 @@ mod tests {
             (group('g'), "GO"),
             (group('b'), "BUFFER"),
             (InputMode::Resize, "RESIZE"),
+            (InputMode::Menu, "MENU"),
         ];
         for (mode, label) in expected {
             let text = text_of(&render_input_at(mode, WIDTH));
@@ -422,6 +423,11 @@ mod tests {
     #[test]
     fn snapshot_input_resize() {
         insta::assert_snapshot!(text_of(&render_input_at(InputMode::Resize, WIDTH)));
+    }
+
+    #[test]
+    fn snapshot_input_menu() {
+        insta::assert_snapshot!(text_of(&render_input_at(InputMode::Menu, WIDTH)));
     }
 
     #[test]

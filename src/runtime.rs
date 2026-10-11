@@ -9,10 +9,14 @@ use std::{
     env, fs,
     io::{self, Write, stdout},
     panic,
+    path::{Path, PathBuf},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
+mod config_write;
+
+use config_write::save_config;
 use futures::StreamExt;
 use ratatui::{
     DefaultTerminal,
@@ -87,7 +91,9 @@ pub async fn run() -> io::Result<()> {
     let (cols, rows) = terminal::size()?;
     let cwd = env::current_dir().unwrap_or_else(|_| "/".into());
     let shell = env::var("SHELL").ok();
-    let (config, notice) = load_config();
+    // Resolved once: the startup read and the menu's save use the same file.
+    let config_path = config_path(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"));
+    let (config, notice) = load_config(config_path.as_deref());
     let app = App::new(cols, rows)
         .with_config(&config)
         .with_notice(notice)
@@ -98,7 +104,7 @@ pub async fn run() -> io::Result<()> {
 
     let shutdown = Shutdown::new()?;
     let (tx, rx) = mpsc::channel(PTY_CHANNEL);
-    let mut panes = Panes::new(tx, Box::new(spawn_portable));
+    let mut panes = Panes::new(tx, Box::new(spawn_portable)).with_config_path(config_path);
     // The first pane is spawned before the UI starts: a failure is fatal.
     panes.spawn_pane(id, &spec)?;
 
@@ -131,8 +137,7 @@ fn local_hostname() -> Option<String> {
 }
 
 /// Reads the config once at startup; a missing file is silent defaults.
-fn load_config() -> (Config, Option<String>) {
-    let path = config_path(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"));
+fn load_config(path: Option<&Path>) -> (Config, Option<String>) {
     match path {
         Some(path) => Config::load(fs::read_to_string(path)),
         None => (Config::default(), None),
@@ -218,6 +223,8 @@ struct Panes {
     tx: mpsc::Sender<(PaneId, PtyEvent)>,
     spawn: SpawnFn,
     reapers: Vec<JoinHandle<()>>,
+    /// Where `SaveConfig` writes; `None` when no config path could be resolved.
+    config_path: Option<PathBuf>,
 }
 
 impl Panes {
@@ -227,7 +234,14 @@ impl Panes {
             tx,
             spawn,
             reapers: Vec::new(),
+            config_path: None,
         }
+    }
+
+    /// Sets the file `SaveConfig` writes to.
+    fn with_config_path(mut self, config_path: Option<PathBuf>) -> Self {
+        self.config_path = config_path;
+        self
     }
 
     /// Starts the child of pane `id`, tagging everything it emits with `id`.
@@ -261,6 +275,16 @@ impl Panes {
                     }
                 }
                 Effect::ClosePane(id) => self.close(id),
+                // Synchronous: the file is tiny, and `drive` hands the answer
+                // to the app before the next input is polled. The app relies
+                // on it: save results carry no session or draft id. An async
+                // save would need a generation/pending guard in `MenuState`.
+                Effect::SaveConfig(edits) => {
+                    feedback.push(match save_config(self.config_path.as_deref(), &edits) {
+                        Ok(()) => AppEvent::ConfigSaved,
+                        Err(message) => AppEvent::ConfigSaveFailed(message),
+                    });
+                }
                 Effect::Quit => outcome = Outcome::Quit,
             }
         }
@@ -720,6 +744,123 @@ mod tests {
         assert_eq!(outcome, Outcome::Continue);
         assert_eq!(feedback, vec![AppEvent::SpawnFailed(id(2), "boom".into())]);
         assert!(panes.handles.is_empty());
+    }
+
+    fn statusline_top() -> Effect {
+        Effect::SaveConfig(vec![crate::core::config::ConfigEdit {
+            table: "statusline",
+            key: "position",
+            value: "top",
+        }])
+    }
+
+    fn panes_saving_to(path: Option<PathBuf>) -> Panes {
+        let (tx, _rx) = mpsc::channel(PTY_CHANNEL);
+        Panes::new(tx, Box::new(|_, _| Err(io::Error::other("no spawn")))).with_config_path(path)
+    }
+
+    // Spec: Failure feedback, exactly one result.
+    #[test]
+    fn save_config_writes_and_answers_one_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lazarobox/config.toml");
+        let mut panes = panes_saving_to(Some(path.clone()));
+        let (outcome, feedback) = panes.apply(vec![statusline_top()]);
+        assert_eq!(outcome, Outcome::Continue);
+        assert_eq!(feedback, vec![AppEvent::ConfigSaved]);
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "[statusline]\nposition = \"top\"\n"
+        );
+    }
+
+    #[test]
+    fn save_config_without_a_path_answers_one_failure() {
+        let mut panes = panes_saving_to(None);
+        let (_, feedback) = panes.apply(vec![statusline_top()]);
+        assert_eq!(
+            feedback,
+            vec![AppEvent::ConfigSaveFailed(
+                "save failed: no config path (HOME is not set)".into()
+            )]
+        );
+    }
+
+    fn menu_key(c: char, modifiers: KeyModifiers) -> AppEvent {
+        AppEvent::Key(KeyEvent::new(KeyCode::Char(c), modifiers))
+    }
+
+    // Spec: the answer reaches the app before the next input.
+    #[test]
+    fn enter_in_the_menu_saves_and_the_result_closes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut panes = panes_saving_to(Some(path.clone()));
+        let mut app = App::new(80, 25);
+        for event in [
+            menu_key(' ', KeyModifiers::CONTROL),
+            menu_key('m', KeyModifiers::NONE),
+            menu_key('l', KeyModifiers::NONE),
+            AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        ] {
+            assert!(!step(&mut app, event, &mut panes));
+        }
+        assert!(app.menu().is_none());
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "[statusline]\nposition = \"top\"\n"
+        );
+    }
+
+    // Characterization (passes on arrival): pins the ordering the app relies
+    // on. The save result is processed before the next input, so a later key
+    // never meets a menu that is about to close.
+    #[test]
+    fn the_save_result_is_processed_before_the_next_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut panes = panes_saving_to(Some(dir.path().join("config.toml")));
+        let mut app = App::new(80, 25);
+        for event in [
+            menu_key(' ', KeyModifiers::CONTROL),
+            menu_key('m', KeyModifiers::NONE),
+            menu_key('l', KeyModifiers::NONE),
+        ] {
+            step(&mut app, event, &mut panes);
+        }
+        let enter = AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let next = menu_key('j', KeyModifiers::NONE);
+        let mut seen = Vec::new();
+        for event in [enter.clone(), next.clone()] {
+            drive(
+                |event| {
+                    seen.push(event.clone());
+                    app.update(event)
+                },
+                event,
+                &mut panes,
+            );
+        }
+        assert_eq!(seen, vec![enter, AppEvent::ConfigSaved, next]);
+        assert!(app.menu().is_none());
+        assert_eq!(app.input(), crate::app::InputMode::Terminal);
+    }
+
+    #[test]
+    fn a_failed_save_leaves_the_menu_open_with_the_error() {
+        let mut panes = panes_saving_to(None);
+        let mut app = App::new(80, 25);
+        for event in [
+            menu_key(' ', KeyModifiers::CONTROL),
+            menu_key('m', KeyModifiers::NONE),
+            menu_key('l', KeyModifiers::NONE),
+            AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        ] {
+            assert!(!step(&mut app, event, &mut panes));
+        }
+        assert_eq!(
+            app.menu().and_then(|menu| menu.error()),
+            Some("save failed: no config path (HOME is not set)")
+        );
     }
 
     #[test]

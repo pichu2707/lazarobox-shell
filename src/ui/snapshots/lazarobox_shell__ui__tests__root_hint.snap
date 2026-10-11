@@ -2,4 +2,4 @@
 source: src/ui/mod.rs
 expression: line.trim_end()
 ---
- ◐ PREFIX  w window · t tab · g go · b buffer · [ copy · q quit                               sh
+ ◐ PREFIX  w window · t tab · g go · b buffer · [ copy · m menu · q quit                      sh
