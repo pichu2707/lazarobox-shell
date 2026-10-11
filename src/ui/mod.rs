@@ -4,13 +4,16 @@ pub mod theme;
 
 use ratatui::Frame;
 
-use crate::{app::App, core::layout::Rect};
+use crate::{
+    app::{App, InputMode},
+    core::layout::Rect,
+};
 use components::{
     menu::MenuPopup,
     separators::SeparatorView,
     statusline::StatusLine,
     tab_bar::TabBar,
-    terminal_view::{TerminalView, cursor_position},
+    terminal_view::{TerminalView, cell_position, cursor_position},
 };
 use theme::LazaroboxTheme;
 
@@ -46,8 +49,15 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
         if id == focused {
             focused_rect = rect;
             // MENU hides the real cursor: it would blink under the popup.
+            // In COPY the real cursor is the COPY cursor, even if the child hid its own.
+            let position = match app.input() {
+                InputMode::Copy(_) => app
+                    .copy_cursor()
+                    .and_then(|(row, col)| cell_position(area, row, col)),
+                _ => cursor_position(pane, area),
+            };
             if app.menu().is_none()
-                && let Some(position) = cursor_position(pane, area)
+                && let Some(position) = position
             {
                 frame.set_cursor_position(position);
             }
@@ -251,6 +261,39 @@ mod tests {
         let (_, cursor) = draw(&app);
         // Nothing placed it, so it stays at the backend default.
         assert_eq!(cursor, Position::new(0, 0));
+    }
+
+    // copy-mode-scrollback: Block follows the COPY cursor.
+    #[test]
+    fn the_real_cursor_follows_the_copy_cursor_in_copy() {
+        let mut app = app();
+        assert_eq!(
+            draw(&app).1,
+            Position::new(8, 0),
+            "child cursor in TERMINAL"
+        );
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        keys(&mut app, "[jjhhhh");
+        assert_eq!(app.copy_cursor(), Some((2, 4)));
+        assert_eq!(draw(&app).1, Position::new(4, 2));
+    }
+
+    #[test]
+    fn the_copy_cursor_is_shown_even_when_the_child_hid_its_cursor() {
+        let mut app = app();
+        app.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(b"\x1b[?25l".to_vec()),
+        ));
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        keys(&mut app, "[");
+        assert_eq!(draw(&app).1, Position::new(0, ROWS - 2));
+        press(&mut app, 'q', KeyModifiers::NONE);
+        assert_eq!(
+            draw(&app).1,
+            Position::new(0, 0),
+            "hidden again in TERMINAL"
+        );
     }
 
     #[test]
