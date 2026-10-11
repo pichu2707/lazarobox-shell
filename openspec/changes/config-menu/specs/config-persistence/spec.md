@@ -68,6 +68,17 @@ The file MUST be written atomically: the new content is written to a temporary f
 - WHEN a save is attempted
 - THEN the original file content is unchanged
 
+#### Scenario: Read-only file refused [auto]
+- GIVEN an existing `config.toml` (after resolving symlinks) without owner write permission
+- WHEN a position is saved
+- THEN the save is refused, the file is unchanged, no temp file remains and the footer shows `config.toml is read-only`
+
+#### Scenario: Dangling symlink followed [auto]
+- GIVEN `config.toml` is a symlink (or a chain of at most 8) whose final target does not exist
+- WHEN a position is saved
+- THEN the target and its parent directories are created, and every link is still a link
+- AND a chain longer than 8 links is refused with `save failed: too many symlink levels`
+
 ### Requirement: Refuse on errors
 If the existing file cannot be parsed as TOML (or cannot be read, or an owned key path collides with a non-table value such as `statusline = 3`), the save MUST be refused: nothing is written, the menu stays open with the draft intact, and the footer shows `config.toml has errors; fix it before saving` for the parse failure. Per-key invalid values that still form valid TOML (for example `position = "middle"`) are NOT errors for this rule; the save replaces the owned key with the valid draft value.
 
