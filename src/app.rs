@@ -7,7 +7,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::core::{
     config::{BarPosition, BarPositions, Config, ConfigEdit},
-    copy::{CopyCommand, CopyMotion, CopyState, Geometry},
+    copy::{CopyCommand, CopyMotion, CopyState, Geometry, Point},
     keys::{encode_key, encode_paste},
     layout::{
         Axis, Direction, Node, PaneId, PaneIds, Rect, Removal, SplitError, Tiling, neighbour,
@@ -948,6 +948,7 @@ impl App {
                 }
             }
         }
+        self.sync_copy();
         effects
     }
 
@@ -1037,20 +1038,43 @@ impl App {
         self.term = (cols, rows);
         self.refresh_screen();
         let effects = self.relayout();
-        self.sync_copy_offset();
         self.dirty = true;
         effects
     }
 
-    /// The emulator moves its own offset when output arrives while scrolled
-    /// (it pins the viewport) and clamps it at the history cap. In COPY, the
-    /// pane is the source of truth, so the state follows it.
-    fn sync_copy_offset(&mut self) {
-        if let InputMode::Copy(state) = &mut self.input {
-            state.offset = self.panes[&self.tabs[self.active].focus]
-                .emu
-                .scrollback_offset();
+    /// Revalidates COPY against its pane after output or a relayout. The pane
+    /// is the source of truth for the offset (the emulator pins the viewport
+    /// and clamps it at the history cap). A new line generation (screen flip,
+    /// resize) makes line numbers incomparable, so the selection goes. The
+    /// cursor and the anchor are clamped into the retained lines; an evicted
+    /// anchor becomes `(first_line, 0)`, shrinking the selection.
+    fn sync_copy(&mut self) {
+        let InputMode::Copy(mut state) = self.input else {
+            return;
+        };
+        let geo = self.copy_geometry();
+        let pane = self.focused_pane();
+        state.offset = pane.scrollback_offset();
+        if state.generation != pane.line_generation() {
+            state.generation = pane.line_generation();
+            state.selection = None;
         }
+        let last_line = geo.first_line + geo.history + usize::from(geo.rows.max(1)) - 1;
+        let last_col = geo.cols.saturating_sub(1);
+        state.cursor.line = state.cursor.line.clamp(geo.first_line, last_line);
+        state.cursor.col = state.cursor.col.min(last_col);
+        if let Some(selection) = &mut state.selection {
+            let anchor = &mut selection.anchor;
+            if anchor.line < geo.first_line {
+                *anchor = Point {
+                    line: geo.first_line,
+                    col: 0,
+                };
+            }
+            anchor.line = anchor.line.min(last_line);
+            anchor.col = anchor.col.min(last_col);
+        }
+        self.input = InputMode::Copy(state);
     }
 
     fn on_cwd(&mut self, id: PaneId, cwd: PathBuf) -> Vec<Effect> {
@@ -1091,7 +1115,7 @@ impl App {
                     self.mark_cwd_dirty(id);
                 }
                 if id == self.tab().focus {
-                    self.sync_copy_offset();
+                    self.sync_copy();
                 }
                 if reply.is_empty() {
                     Vec::new()
@@ -1175,7 +1199,7 @@ mod app_tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     use crate::core::{
-        copy::{CopyState, Point},
+        copy::{CopyState, Point, SelectionKind},
         menu::Row,
         pane::{CursorKind, CursorShape, PaneSize},
         pty::PtyEvent,
@@ -1977,6 +2001,129 @@ mod app_tests {
         assert_eq!(copy_state(&a).cursor, Point { line: 1, col: 0 });
     }
 
+    fn selection_of(a: &App) -> Option<(Point, SelectionKind)> {
+        copy_state(a).selection.map(|s| (s.anchor, s.kind))
+    }
+
+    // copy-selection: Output keeps the selection on its content
+    // (characterization: stable line numbers need no adjustment).
+    #[test]
+    fn output_keeps_the_selection_on_its_content() {
+        let mut a = app();
+        with_history(&mut a, 40);
+        a.update(ctrl_space());
+        a.update(key('['));
+        a.update(key('v'));
+        let selected = selection_of(&a);
+        assert_eq!(
+            selected,
+            Some((Point { line: 40, col: 0 }, SelectionKind::Char))
+        );
+        with_history(&mut a, 5);
+        assert_eq!(selection_of(&a), selected);
+        assert_eq!(copy_state(&a).cursor, Point { line: 40, col: 0 });
+    }
+
+    // copy-selection: Eviction of the anchor.
+    #[test]
+    fn eviction_clamps_the_anchor_and_keeps_the_selection() {
+        let mut a = app();
+        with_history(&mut a, SCROLLBACK_LINES + 100);
+        a.update(ctrl_space());
+        a.update(key('['));
+        a.update(key('g'));
+        a.update(key('g'));
+        press_n(&mut a, 'l', 3);
+        a.update(key('v'));
+        let before = a.focused_pane().first_line();
+        assert_eq!(before, 77);
+        assert_eq!(
+            selection_of(&a).map(|s| s.0),
+            Some(Point { line: 77, col: 3 })
+        );
+        with_history(&mut a, 50);
+        let first = a.focused_pane().first_line();
+        assert_eq!(first, 127);
+        assert_eq!(
+            selection_of(&a),
+            Some((Point { line: 127, col: 0 }, SelectionKind::Char))
+        );
+        assert_eq!(copy_state(&a).cursor, Point { line: 127, col: 3 });
+        assert!(is_copy(&a));
+    }
+
+    // copy-selection: Screen switch drops it.
+    #[test]
+    fn a_screen_switch_drops_the_selection_and_keeps_copy() {
+        let mut a = app();
+        copy_after(&mut a, b"abc");
+        a.update(key('v'));
+        feed_focused(&mut a, b"\x1b[?1049h");
+        assert!(is_copy(&a));
+        assert_eq!(selection_of(&a), None);
+        assert_eq!(
+            copy_state(&a).generation,
+            a.focused_pane().line_generation()
+        );
+        // The new generation is adopted: a fresh selection survives output.
+        a.update(key('v'));
+        feed_focused(&mut a, b"x");
+        assert_eq!(
+            selection_of(&a),
+            Some((Point { line: 0, col: 3 }, SelectionKind::Char))
+        );
+    }
+
+    // copy-selection: Resize drops it.
+    #[test]
+    fn a_host_resize_drops_the_selection_and_clamps_the_cursor() {
+        let mut a = app();
+        copy_after(&mut a, &[b'x'; 70]);
+        a.update(key('v'));
+        assert_eq!(copy_state(&a).cursor, Point { line: 0, col: 70 });
+        a.update(AppEvent::Resize { cols: 40, rows: 25 });
+        assert!(is_copy(&a));
+        assert_eq!(selection_of(&a), None);
+        assert_eq!(copy_state(&a).cursor, Point { line: 0, col: 39 });
+    }
+
+    #[test]
+    fn a_resize_that_shortens_the_pane_clamps_the_cursor_line() {
+        let mut a = app();
+        copy_after(&mut a, "\r\n".repeat(23).as_bytes());
+        assert_eq!(copy_state(&a).cursor, Point { line: 23, col: 0 });
+        a.update(AppEvent::Resize { cols: 80, rows: 10 });
+        let pane = a.focused_pane();
+        let last = pane.first_line() + pane.scrollback_len() + 8;
+        assert_eq!(copy_state(&a).cursor, Point { line: last, col: 0 });
+        assert_eq!(copy_state(&a).offset, pane.scrollback_offset());
+    }
+
+    #[test]
+    fn a_sibling_exit_that_resizes_the_focused_pane_drops_the_selection() {
+        let mut a = split_right();
+        a.update(ctrl_space());
+        a.update(key('['));
+        a.update(key('v'));
+        assert!(selection_of(&a).is_some());
+        let effects = a.update(exited(PaneId::FIRST));
+        assert_eq!(effects, vec![Effect::ResizePty(id2(), sized(24, 80))]);
+        assert!(is_copy(&a));
+        assert_eq!(selection_of(&a), None);
+    }
+
+    // copy-selection: Focus change drops it.
+    #[test]
+    fn leaving_copy_by_a_focus_change_forgets_the_selection() {
+        let mut a = scrolled_split();
+        a.update(key('v'));
+        a.update(exited(id2()));
+        assert_eq!(a.input(), InputMode::Terminal);
+        a.update(ctrl_space());
+        a.update(key('['));
+        assert_eq!(selection_of(&a), None);
+    }
+
     // copy-mode-scrollback: Block follows the COPY cursor (app part).
     #[test]
     fn the_copy_cursor_is_none_outside_copy_and_when_scrolled_off_screen() {
@@ -2058,7 +2205,7 @@ mod app_tests {
     }
 
     // Spec: output during COPY keeps the same content visible. The anchoring
-    // comes from the emulator pinning the viewport plus `sync_copy_offset`.
+    // comes from the emulator pinning the viewport plus `sync_copy`.
     #[test]
     fn output_during_copy_keeps_the_same_content_visible() {
         let mut a = app();
