@@ -174,7 +174,7 @@ Split up front: S3a covers S3.1–S3.5 (+ S3.9 final checks) on `feat/panes-tabs
 - [x] S8c.3 RED: `screen()` for the four combinations with 1 and 2 tabs, bar drop on close, resize keeps positions, PTY sizes, tiny terminals, `with_notice` [statusline: Statusline position; tabs: Body math with configured positions].
 - [x] S8c.4 GREEN: `ScreenLayout::new(.., BarPositions)`, `App::with_config`, `App::with_notice`.
 - [x] S8c.5 RED+GREEN: UI draws the bars where `screen()` puts them (statusline top, both top, both bottom, split edges), cursor offset follows the body, startup notice visible; `runtime::load_config` wiring.
-- [ ] S8c.6 [manual] Kitty: each of the four combinations with 1 and 3 tabs, nvim layout intact; a bad value shows `config: ...`; `mouse = true` shows the reserved notice [configuration: Positions in Kitty].
+- [x] S8c.6 [manual] Kitty: each of the four combinations with 1 and 3 tabs, nvim layout intact; a bad value shows `config: ...`; `mouse = true` shows the reserved notice [configuration: Positions in Kitty].
 - [x] S8c.7 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## S9: OSC 7 cwd
