@@ -336,6 +336,7 @@ impl MenuState {
             KeyCode::Char('k') | KeyCode::Up => self.step_selection(false),
             KeyCode::Char('l' | ' ') | KeyCode::Right => self.cycle(true, config),
             KeyCode::Char('h') | KeyCode::Left => self.cycle(false, config),
+            KeyCode::Char('s') if !repeat => MenuCommand::Save,
             KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
             KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
             KeyCode::Enter if !repeat => MenuCommand::Save,
@@ -390,6 +391,7 @@ impl MenuState {
             KeyCode::Esc if !repeat => {
                 ai.drive(Picker::back);
             }
+            KeyCode::Char('s') if !repeat => return MenuCommand::Save,
             KeyCode::Char('r')
                 if !repeat && ai.drive(|p, _, _| p.refresh()) == Outcome::Refresh =>
             {
@@ -729,3 +731,6 @@ mod custom_flow_tests;
 
 #[cfg(test)]
 mod reanchor_tests;
+
+#[cfg(test)]
+mod save_tests;

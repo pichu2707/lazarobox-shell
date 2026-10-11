@@ -161,5 +161,6 @@ fn esc_goes_back_one_level_and_the_picker_reopens_on_level_one() {
     send(&mut m, key(KeyCode::Enter));
     assert_eq!(title(&m), "Engine for code");
     assert_eq!(cursor_label(&m), "(default · use general)");
-    assert_eq!(send(&mut m, ch('s')), MenuCommand::None, "swallowed");
+    assert_eq!(send(&mut m, ch('s')), MenuCommand::Save);
+    assert_eq!(title(&m), "Engine for code", "the picker stays open");
 }
