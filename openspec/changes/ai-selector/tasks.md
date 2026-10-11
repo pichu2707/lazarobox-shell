@@ -54,11 +54,11 @@ AS4 (~850, 90% deletions) is split in three because two PRs cannot stay under 40
 
 ## PR3 / AS3a: Catalog and row derivation (`src/core/ai/catalog.rs`, `picker.rs`)
 
-- [ ] 3.1 Create `catalog.rs` stubs (`cli_models`, `OLLAMA_CURATED` 10 entries, `curated`, `same_model`); register in `mod.rs`; make `parse::is_format` `pub(crate)`.
-- [ ] 3.2 RED: catalog integrity (8-12 unique non-empty, Ollama only), `:latest` dedupe, claude `default/opus/sonnet/fable`, others `default`.
-- [ ] 3.3 RED: `engine_rows` (clear label per target, available then assigned-undetected `(not detected)`, never lmstudio-not-running unassigned, `checking…`) and `model_rows` (server order ✓ → assigned `●` download required → curated; CLI catalog → assigned custom → `custom…`; `no models detected`; engine not available; `checking…`; no `custom…` on servers).
-- [ ] 3.4 GREEN: implement `PickRow`, `PickKey`, `Mark`, derivation functions; doc comment says catalog is informational and possibly stale.
-- [ ] 3.5 Gate.
+- [x] 3.1 Create `catalog.rs` stubs (`cli_models`, `OLLAMA_CURATED` 10 entries, `curated`, `same_model`); register in `mod.rs`; make `parse::is_format` `pub(crate)`.
+- [x] 3.2 RED: catalog integrity (8-12 unique non-empty, Ollama only), `:latest` dedupe, claude `default/opus/sonnet/fable`, others `default`.
+- [x] 3.3 RED: `engine_rows` (clear label per target, available then assigned-undetected `(not detected)`, never lmstudio-not-running unassigned, `checking…`) and `model_rows` (server order ✓ → assigned `●` download required → curated; CLI catalog → assigned custom → `custom…`; `no models detected`; engine not available; `checking…`; no `custom…` on servers).
+- [x] 3.4 GREEN: implement `PickRow`, `PickKey`, `Mark`, derivation functions; doc comment says catalog is informational and possibly stale.
+- [x] 3.5 Gate.
 
 ## PR4 / AS3b: Picker state machine (`src/core/ai/picker.rs`, `config.rs`)
 
