@@ -813,6 +813,27 @@ mod tests {
         assert_eq!(app.focused(), PaneId::for_test(2));
     }
 
+    // copy-selection: the highlight follows a scrolled viewport.
+    #[test]
+    fn the_highlight_lands_on_the_selected_rows_of_a_scrolled_viewport() {
+        let mut app = App::new(COLS, ROWS);
+        for i in 0..60 {
+            let out = format!("line{i}\r\n").into_bytes();
+            app.update(AppEvent::Pty(PaneId::FIRST, PtyEvent::Output(out)));
+        }
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        keys(&mut app, "[kkkkkkkkkkkkvj");
+        let (buf, _) = draw(&app);
+        let rows: Vec<(u16, String)> = (0..ROWS)
+            .filter(|&y| !reversed_cells(&buf, y).is_empty())
+            .map(|y| (y, row(&buf, y).trim_end().to_string()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![(0, "line48".to_string()), (1, "line49".to_string())]
+        );
+    }
+
     #[test]
     fn leaving_copy_removes_the_highlight() {
         let mut app = split_app();
