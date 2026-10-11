@@ -38,7 +38,7 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 
 ## CS1: Pane line model and extraction (pure)
 
-- [ ] CS1.1 Stubs (compile only; pane stubs landed in CS1-i, `copy.rs` stubs land in CS1-ii): in `src/core/copy.rs` add `LineSpan { first, last, first_col, last_col }` (`contains(line, col)` returns `false`), `LineText { text, wrapped }`, `join(&[LineText]) -> String` returning `String::new()`. In `src/core/pane.rs` add `first_line()` (returns `0`), `line_generation()` (returns `0`), `live_cursor() -> Option<(u16, u16)>` (returns `None`), `line_end(line) -> u16` (returns `0`), `read_lines(span) -> Vec<LineText>` (returns empty).
+- [x] CS1.1 Stubs (compile only; pane stubs in CS1-i, `copy.rs` and `read_lines` in CS1-ii): in `src/core/copy.rs` add `LineSpan { first, last, first_col, last_col }` (`contains(line, col)` returns `false`), `LineText { text, wrapped }`, `join(&[LineText]) -> String` returning `String::new()`. In `src/core/pane.rs` add `first_line()` (returns `0`), `line_generation()` (returns `0`), `live_cursor() -> Option<(u16, u16)>` (returns `None`), `line_end(line) -> u16` (returns `0`), `read_lines(span) -> Vec<LineText>` (returns empty).
 - [x] CS1.2 Characterization (expected to pass immediately): all existing scrollback tests in `core::pane` stay green before the probe lands; pin them as the safety net for CS1.4 [CS-2 risk].
 - [x] CS1.3 RED: `first_line` counts evictions with `Pane::new(.., cap 5)` + `feed_lines`: below the cap `first_line == 0`; after N overflow lines at offset 0 `first_line == N`; with offset > 0 the same count, and the user's offset is pinned exactly as vt100 does natively (assert exact offset value) [copy-selection: Eviction of the anchor (pane part), Output keeps the selection on its content (pane part)].
 - [x] CS1.4 GREEN: probe in `Pane::feed` (CS-2): on the main screen set offset to 1 before `process`, compute `scrolled = offset_after - 1`, `first_line += (h0 + scrolled) - h1`, restore offset `0` if it was `0` else `o0 + scrolled`.
@@ -48,15 +48,15 @@ Every PR must be green: `cargo test`, `cargo clippy --all-targets -- -D warnings
 - [x] CS1.8 GREEN: `live_cursor`.
 - [x] CS1.9 RED: `line_end(line)` on `echo hi` returns `6`; on a blank row returns `0`; on a row in history returns its last non-blank column; the offset is restored exactly afterwards [copy-mode-scrollback: Horizontal motion (pane part), End of a blank row (pane part)].
 - [x] CS1.10 GREEN: `line_end` by paging `set_scrollback` and restoring.
-- [ ] CS1.11 RED: `LineSpan::contains` table test: inside, both end cells inclusive, before first, after last, middle rows full-width, single-row span, reversed anchor ordering normalised by constructor/`span` helper [copy-selection: Motion extends backwards (span part)].
-- [ ] CS1.12 GREEN: `LineSpan::contains` and the ordering helper.
-- [ ] CS1.13 RED: `read_lines` over history plus screen returns exact `LineText` values (text and `wrapped` flag); cells in `[from, to]` inclusive; empty cell counts as `" "`; the viewport offset is identical before and after, including for a span entirely above the viewport [copy-selection: Selection spans scrollback (pane part), Character selection within a row (pane part)].
-- [ ] CS1.14 GREEN: `read_lines` pages at most once per pane height and restores the offset (CS-6).
-- [ ] CS1.15 RED: wide characters: row `a漢b` with a range starting on the continuation cell (col 2) yields `漢b`; a range ending on the head cell yields the character once; continuation cells never emit text [copy-selection: Wide character once (pane part)].
-- [ ] CS1.16 GREEN: continuation skip and head snapping.
-- [ ] CS1.17 RED: `copy::join`: `foo` + `bar` (not wrapped) -> `foo\nbar`; wrapped first row joins with no separator -> `abcdefghijklmn`; trailing blanks trimmed on logical-line ends and on the last row; a soft-wrapped non-last row keeps its trailing spaces (`hello` + 5 spaces + `world` -> `hello     world`); no trailing `\n` [copy-selection: Multi-row line selection (join part), Soft-wrapped rows, Soft-wrapped row keeps trailing spaces, Trailing blanks trimmed].
-- [ ] CS1.18 GREEN: `join` per CS-6.
-- [ ] CS1.19 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+- [x] CS1.11 RED: `LineSpan::contains` table test: inside, both end cells inclusive, before first, after last, middle rows full-width, single-row span, reversed anchor ordering normalised by constructor/`span` helper [copy-selection: Motion extends backwards (span part)].
+- [x] CS1.12 GREEN: `LineSpan::contains` and the ordering helper.
+- [x] CS1.13 RED: `read_lines` over history plus screen returns exact `LineText` values (text and `wrapped` flag); cells in `[from, to]` inclusive; empty cell counts as `" "`; the viewport offset is identical before and after, including for a span entirely above the viewport [copy-selection: Selection spans scrollback (pane part), Character selection within a row (pane part)].
+- [x] CS1.14 GREEN: `read_lines` pages at most once per pane height and restores the offset (CS-6).
+- [x] CS1.15 RED: wide characters: row `a漢b` with a range starting on the continuation cell (col 2) yields `漢b`; a range ending on the head cell yields the character once; continuation cells never emit text [copy-selection: Wide character once (pane part)].
+- [x] CS1.16 GREEN: continuation skip and head snapping.
+- [x] CS1.17 RED: `copy::join`: `foo` + `bar` (not wrapped) -> `foo\nbar`; wrapped first row joins with no separator -> `abcdefghijklmn`; trailing blanks trimmed on logical-line ends and on the last row; a soft-wrapped non-last row keeps its trailing spaces (`hello` + 5 spaces + `world` -> `hello     world`); no trailing `\n` [copy-selection: Multi-row line selection (join part), Soft-wrapped rows, Soft-wrapped row keeps trailing spaces, Trailing blanks trimmed].
+- [x] CS1.18 GREEN: `join` per CS-6.
+- [x] CS1.19 Final: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## CS2a: Pure `CopyState` (cursor, selection, motions, keys)
 
