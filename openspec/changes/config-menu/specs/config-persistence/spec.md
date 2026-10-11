@@ -86,6 +86,16 @@ If the existing file cannot be parsed as TOML (or cannot be read, or an owned ke
 - WHEN a position is saved
 - THEN the save is refused, the file is unchanged and the footer shows an error
 
+#### Scenario: Owned key holding a table refused [auto]
+- GIVEN a file with `[statusline.position]`, `[[statusline.position]]` or `position = { ... }` under `statusline`
+- WHEN a position is saved
+- THEN the save is refused and the file is unchanged, so the table's content is never overwritten
+
+#### Scenario: Line endings kept [auto]
+- GIVEN a file that uses `\r\n`
+- WHEN a position is saved
+- THEN every line of the result, including inserted ones, ends in `\r\n`
+
 ### Requirement: Failure feedback
 When the save fails for any reason (I/O error, no path, refused), the menu MUST stay open in MENU mode with the draft and the live preview unchanged, and the footer MUST show a one-line error (for write failures, `save failed: <short error>`). Enter MAY be pressed again to retry, and Esc MUST still revert and close. The runtime answers a save request with exactly one success or failure result.
 
