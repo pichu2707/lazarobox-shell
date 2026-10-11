@@ -254,9 +254,24 @@ mod tests {
     fn sanitize_drops_bidi_and_format_characters() {
         assert_eq!(sanitize("exe\u{202e}gnp.txt"), "exegnp.txt");
         for c in [
-            '\u{200b}', '\u{200f}', '\u{202a}', '\u{202e}', '\u{2066}', '\u{2069}', '\u{feff}',
-            '\u{061c}', '\u{2028}', '\u{2029}', '\u{00ad}', '\u{2060}', '\u{2064}', '\u{206a}',
-            '\u{206f}', '\u{e0000}', '\u{e0041}', '\u{e007f}',
+            '\u{200b}',
+            '\u{200f}',
+            '\u{202a}',
+            '\u{202e}',
+            '\u{2066}',
+            '\u{2069}',
+            '\u{feff}',
+            '\u{061c}',
+            '\u{2028}',
+            '\u{2029}',
+            '\u{00ad}',
+            '\u{2060}',
+            '\u{2064}',
+            '\u{206a}',
+            '\u{206f}',
+            '\u{e0000}',
+            '\u{e0041}',
+            '\u{e007f}',
         ] {
             assert_eq!(sanitize(&format!("a{c}b")), "ab", "U+{:04X}", c as u32);
         }
