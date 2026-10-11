@@ -81,10 +81,10 @@ AS4 (~850, 90% deletions) is split in three because two PRs cannot stay under 40
 
 ## PR7 / AS4c: Retire cycling, read-only task rows (`src/core/ai/menu.rs`, `src/core/menu.rs`)
 
-- [ ] 7.1 RED: descriptor integrity (six AI rows, ids, key paths, Set all has none), navigation visits Statusline, Tabbar, Set all, general, code, chat, review, summarize with wrap; Mouse skipped; repeat moves.
-- [ ] 7.2 RED: row values `(default)`/`(not set)`/`(mixed)`, marks `· download required` / `(not detected)`, none before first detection, Result-arrives-on-task-list, Engine-disappears.
-- [ ] 7.3 GREEN: `AiMenu` over `AiConfig`; task rows and selectability; delete `AiField`, `cycle`, choices.
-- [ ] 7.4 Gate.
+- [x] 7.1 RED: descriptor integrity (six AI rows, ids, key paths, Set all has none), navigation visits Statusline, Tabbar, Set all, general, code, chat, review, summarize with wrap; Mouse skipped; repeat moves.
+- [x] 7.2 RED: row values `(default)`/`(not set)`/`(mixed)`, marks `· download required` / `(not detected)`, none before first detection, Result-arrives-on-task-list, Engine-disappears.
+- [x] 7.3 GREEN: `AiMenu` over `AiConfig`; task rows and selectability; delete `AiField`, `cycle`, choices.
+- [x] 7.4 Gate.
 
 ## PR8 / AS5a: Picker wiring (`src/core/menu.rs`)
 
