@@ -87,7 +87,7 @@ If the existing file cannot be parsed as TOML (or cannot be read, or an owned ke
 - THEN the save is refused, the file is unchanged and the footer shows an error
 
 #### Scenario: Owned key holding a table refused [auto]
-- GIVEN a file with `[statusline.position]` or `position = { ... }` under `statusline`
+- GIVEN a file with `[statusline.position]`, `[[statusline.position]]` or `position = { ... }` under `statusline`
 - WHEN a position is saved
 - THEN the save is refused and the file is unchanged, so the table's content is never overwritten
 
