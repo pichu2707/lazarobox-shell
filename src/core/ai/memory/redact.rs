@@ -16,44 +16,66 @@ pub struct Redacted {
 const MIN_TOKEN: usize = 8;
 /// Token characters after `AIza`.
 const GOOGLE_TOKEN: usize = 35;
-/// Upper-case letters or digits after `AKIA`.
+/// Upper-case letters or digits after `AKIA` or `ASIA`.
 const AWS_TOKEN: usize = 16;
+/// Token characters after a prefix that is also a common name start.
+const LONG_TOKEN: usize = 30;
+/// The shortest value of a `Basic`, `Token` or non-canonical `Bearer`
+/// scheme, so that `basic usage` is not a credential.
+const SCHEME_MIN: usize = 8;
 
-/// Prefixes of API keys and tokens, each followed by at least `MIN_TOKEN`
-/// token characters. `sk-` also covers `sk-ant-`.
-const PREFIXES: [&[u8]; 10] = [
-    b"sk-",
-    b"ghp_",
-    b"gho_",
-    b"github_pat_",
-    b"glpat-",
-    b"xoxa-",
-    b"xoxb-",
-    b"xoxp-",
-    b"xoxr-",
-    b"xoxs-",
+/// Prefixes of API keys and tokens with the fewest token characters that
+/// must follow each. `sk-` also covers `sk-ant-`. The long minimums are for
+/// prefixes that also start ordinary names (`npm_config_registry`).
+const PREFIXES: [(&[u8], usize); 19] = [
+    (b"sk-", MIN_TOKEN),
+    (b"sk_live_", MIN_TOKEN),
+    (b"sk_test_", MIN_TOKEN),
+    (b"rk_live_", MIN_TOKEN),
+    (b"ghp_", MIN_TOKEN),
+    (b"gho_", MIN_TOKEN),
+    (b"ghs_", MIN_TOKEN),
+    (b"ghu_", MIN_TOKEN),
+    (b"ghr_", MIN_TOKEN),
+    (b"github_pat_", MIN_TOKEN),
+    (b"glpat-", MIN_TOKEN),
+    (b"npm_", LONG_TOKEN),
+    (b"hf_", LONG_TOKEN),
+    (b"xoxa-", MIN_TOKEN),
+    (b"xoxb-", MIN_TOKEN),
+    (b"xoxe-", MIN_TOKEN),
+    (b"xoxp-", MIN_TOKEN),
+    (b"xoxr-", MIN_TOKEN),
+    (b"xoxs-", MIN_TOKEN),
 ];
 
-/// Names whose assignment (`=` or `:`) hides a secret value.
-const KEYS: [&[u8]; 6] = [
+/// Words that, anywhere in a key name, mark `name = value` as a secret.
+const KEYS: [&[u8]; 8] = [
     b"password",
     b"passwd",
     b"secret",
     b"token",
     b"api_key",
+    b"api-key",
     b"apikey",
+    b"access_key",
 ];
 
+/// Authorization schemes whose value is a credential.
+const SCHEMES: [&[u8]; 3] = [b"bearer", b"basic", b"token"];
+
 /// Replaces every secret in `text` with `[REDACTED]`: key and token prefixes,
-/// JWTs, a `Bearer` value, PEM blocks, `<private>` regions and the value of a
-/// `password`, `secret`, `token` or `api_key` assignment. Idempotent, total
-/// and linear in the input.
+/// AWS and Google keys, JWTs, the value of a `Bearer`, `Basic` or `Token`
+/// authorization, the userinfo of a URL, PEM blocks, `<private>` regions and
+/// the value of an assignment to a `password`, `secret`, `token`, `api_key`,
+/// `access_key` or `*_key` name. Idempotent, total and linear in the input.
 pub fn redact(text: &str) -> Redacted {
     let bytes = text.as_bytes();
     let mut scan = Scan {
         text,
         bytes,
         jwt_dead_until: 0,
+        assign_dead_until: 0,
     };
     let mut out = String::with_capacity(text.len());
     let mut hits = 0;
@@ -61,6 +83,9 @@ pub fn redact(text: &str) -> Redacted {
     let mut i = 0;
     while i < bytes.len() {
         match scan.hit_at(i) {
+            // A value that is already the mask: skip it, count nothing, so a
+            // second pass leaves the first one's output alone.
+            Some((start, end)) if &text[start..end] == MASK => i = end,
             Some((start, end)) => {
                 out.push_str(&text[copied..start]);
                 out.push_str(MASK);
@@ -81,6 +106,8 @@ struct Scan<'a> {
     /// A JWT attempt that failed rules out every start inside its first run,
     /// which keeps `eyJ-eyJ-eyJ-...` linear.
     jwt_dead_until: usize,
+    /// The same for an assignment name.
+    assign_dead_until: usize,
 }
 
 fn is_token(c: u8) -> bool {
@@ -98,12 +125,14 @@ impl Scan<'_> {
         match self.bytes[i] {
             b'<' => self.private(i),
             b'-' => self.pem(i),
+            b':' => self.url_userinfo(i),
             c if c.is_ascii_alphabetic() => self
-                .bearer(i)
+                .scheme(i)
                 .or_else(|| self.prefixed(i))
                 .or_else(|| self.aws_or_google(i))
                 .or_else(|| self.jwt(i))
                 .or_else(|| self.assignment(i)),
+            c if is_token(c) => self.assignment(i),
             _ => None,
         }
     }
@@ -170,30 +199,58 @@ impl Scan<'_> {
         Some((i, end))
     }
 
-    fn bearer(&self, i: usize) -> Option<(usize, usize)> {
-        const WORD: &[u8] = b"Bearer";
-        if self.bytes[i..].starts_with(WORD) && self.word_start(i) {
-            let start = self.run(i + WORD.len(), is_blank);
-            if start > i + WORD.len() {
-                let end = self.run(start, |c| {
-                    c.is_ascii_alphanumeric() || b"._~+/=-".contains(&c)
-                });
-                if end > start {
-                    return Some((start, end));
-                }
-            }
+    /// `Bearer`, `Basic` or `Token` (any case) and its value. A canonical
+    /// `Bearer` takes any value; the other spellings need a value that looks
+    /// like a credential.
+    fn scheme(&self, i: usize) -> Option<(usize, usize)> {
+        let word = SCHEMES.iter().find(|w| self.starts_ci(i, w))?;
+        if !self.word_start(i) {
+            return None;
         }
-        None
+        let after = i + word.len();
+        let start = self.run(after, is_blank);
+        if start == after || !self.bytes.get(start)?.is_ascii_alphanumeric() {
+            return None;
+        }
+        let end = self.run(start, |c| {
+            c.is_ascii_alphanumeric() || b"._~+/=-".contains(&c)
+        });
+        let canonical = self.bytes[i..].starts_with(b"Bearer");
+        (canonical || self.looks_like_credential(start, end)).then_some((start, end))
+    }
+
+    /// A value of at least `SCHEME_MIN` bytes with a digit, a symbol or an
+    /// upper-case letter after the first character.
+    fn looks_like_credential(&self, start: usize, end: usize) -> bool {
+        end - start >= SCHEME_MIN
+            && self.bytes[start + 1..end]
+                .iter()
+                .any(|c| !c.is_ascii_lowercase())
+    }
+
+    /// The `user:password` of `scheme://user:password@host`.
+    fn url_userinfo(&self, i: usize) -> Option<(usize, usize)> {
+        if !self.bytes[i..].starts_with(b"://") || !self.bytes[..i].last()?.is_ascii_alphanumeric()
+        {
+            return None;
+        }
+        let start = i + 3;
+        let end = self.run(start, |c| {
+            !c.is_ascii_whitespace() && !b"/?#@\"'<>[]\\".contains(&c)
+        });
+        let info = &self.text[start..end];
+        (self.bytes.get(end) == Some(&b'@') && info.contains(':') && info != MASK)
+            .then_some((start, end))
     }
 
     fn prefixed(&self, i: usize) -> Option<(usize, usize)> {
         if !self.word_start(i) {
             return None;
         }
-        for prefix in PREFIXES {
+        for (prefix, min) in PREFIXES {
             if self.bytes[i..].starts_with(prefix) {
                 let from = i + prefix.len();
-                if self.at_least(from, MIN_TOKEN, is_token) {
+                if self.at_least(from, min, is_token) {
                     return Some((i, self.run(from, is_token)));
                 }
             }
@@ -206,7 +263,7 @@ impl Scan<'_> {
         if !self.word_start(i) {
             return None;
         }
-        if self.bytes[i..].starts_with(b"AKIA") {
+        if self.bytes[i..].starts_with(b"AKIA") || self.bytes[i..].starts_with(b"ASIA") {
             let upper = |c: u8| c.is_ascii_uppercase() || c.is_ascii_digit();
             if self.at_least(from, AWS_TOKEN, upper) {
                 return Some((i, self.run(from, is_token)));
@@ -245,10 +302,39 @@ impl Scan<'_> {
         (end > payload_end + 1).then_some(end)
     }
 
-    /// `key = value` or `key: value`: the span of the value.
-    fn assignment(&self, i: usize) -> Option<(usize, usize)> {
-        let key = KEYS.iter().find(|k| self.starts_ci(i, k))?;
-        let mut at = i + key.len();
+    /// Whether `name` (an identifier of token characters) names a secret: it
+    /// holds one of `KEYS`, or ends in a `key` segment after another one
+    /// (`private_key`, `x-api-key`).
+    fn secret_name(name: &[u8]) -> bool {
+        let lower = name.to_ascii_lowercase();
+        let holds = |word: &[u8]| lower.windows(word.len()).any(|w| w == word);
+        KEYS.iter().any(|k| holds(k))
+            || lower.len() > 4
+                && lower.ends_with(b"key")
+                && matches!(lower[lower.len() - 4], b'_' | b'-')
+    }
+
+    /// `name = value` or `name: value`: the span of the value. The name is the
+    /// whole identifier, so `SECRET_KEY` and `x-api-key` count.
+    fn assignment(&mut self, i: usize) -> Option<(usize, usize)> {
+        if i < self.assign_dead_until {
+            return None;
+        }
+        let name_end = self.run(i, is_token);
+        // A failure rules out every start inside the same identifier: they
+        // share the end and name less. It keeps `a-a-a-a-...` linear.
+        let value = Self::secret_name(&self.bytes[i..name_end])
+            .then(|| self.assignment_value(name_end))
+            .flatten();
+        if value.is_none() {
+            self.assign_dead_until = name_end;
+        }
+        value
+    }
+
+    /// The value after a secret name that ends at `name_end`.
+    fn assignment_value(&self, name_end: usize) -> Option<(usize, usize)> {
+        let mut at = name_end;
         if matches!(self.bytes.get(at), Some(b'"' | b'\'')) {
             at += 1;
         }
@@ -261,7 +347,7 @@ impl Scan<'_> {
             Some(&quote @ (b'"' | b'\'')) => (start + 1, self.quoted_end(start + 1, quote)),
             _ => (start, self.run(start, |c| !c.is_ascii_whitespace())),
         };
-        (end > start && &self.text[start..end] != MASK).then_some((start, end))
+        (end > start).then_some((start, end))
     }
 
     /// The end of a quoted value that starts at `from`: the closing `quote`
@@ -449,6 +535,158 @@ mod tests {
     }
 
     #[test]
+    fn key_names_with_a_prefix_or_suffix_are_assignments() {
+        let table = [
+            ("SECRET_KEY=abc123", "SECRET_KEY=[REDACTED]"),
+            (
+                "AWS_SECRET_ACCESS_KEY=wJalrXUt",
+                "AWS_SECRET_ACCESS_KEY=[REDACTED]",
+            ),
+            ("JWT_SECRET_KEY: s3cr3t", "JWT_SECRET_KEY: [REDACTED]"),
+            ("api-key: abc123", "api-key: [REDACTED]"),
+            ("x-api-key: abc123", "x-api-key: [REDACTED]"),
+            ("access_key = abc", "access_key = [REDACTED]"),
+            ("private_key=abc", "private_key=[REDACTED]"),
+            ("DB_PASSWORD=pw", "DB_PASSWORD=[REDACTED]"),
+            ("GITHUB_TOKEN=abc", "GITHUB_TOKEN=[REDACTED]"),
+            (
+                "\"client_secret\": \"abc def\"",
+                "\"client_secret\": \"[REDACTED]\"",
+            ),
+            ("_TOKEN=abc", "_TOKEN=[REDACTED]"),
+            ("1password=abc", "1password=[REDACTED]"),
+        ];
+        for (input, want) in table {
+            let out = redact(input);
+            assert_eq!(out.text, want, "{input:?}");
+            assert_eq!(redact(&out.text).text, want, "idempotent {input:?}");
+        }
+    }
+
+    #[test]
+    fn more_key_prefixes_are_masked() {
+        let tail = "0123456789abcdefghijABCDEFGHIJ012345";
+        for prefix in [
+            "sk_live_", "sk_test_", "rk_live_", "ghs_", "ghu_", "ghr_", "ghp_", "npm_", "hf_",
+            "xoxe-",
+        ] {
+            assert_eq!(
+                text(&format!("k {prefix}{tail}.")),
+                "k [REDACTED].",
+                "{prefix}"
+            );
+        }
+        assert_eq!(text("ASIAIOSFODNN7EXAMPLE"), "[REDACTED]");
+        assert_eq!(text("id ASIAIOSFODNN7EXAMPLE."), "id [REDACTED].");
+    }
+
+    #[test]
+    fn short_or_embedded_new_prefixes_are_left_alone() {
+        for input in [
+            "sk_live_abc",
+            "npm_config_registry",
+            "hf_short",
+            "ghs_x",
+            "taskghs_0123456789abcdef",
+            "ASIA",
+            "ASIAN",
+            "ASIA PACIFIC",
+        ] {
+            assert_eq!(text(input), input, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn authorization_schemes_are_case_insensitive_and_include_basic_and_token() {
+        let table = [
+            (
+                "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+                "Authorization: Basic [REDACTED]",
+            ),
+            (
+                "authorization: basic dXNlcjpwYXNzd29yZA==",
+                "authorization: basic [REDACTED]",
+            ),
+            (
+                "Authorization: Token abc123def456",
+                "Authorization: Token [REDACTED]",
+            ),
+            (
+                "authorization: bearer abc123def456",
+                "authorization: bearer [REDACTED]",
+            ),
+            (
+                "AUTHORIZATION: BEARER abc123def456",
+                "AUTHORIZATION: BEARER [REDACTED]",
+            ),
+            (
+                "Authorization: Bearer abc",
+                "Authorization: Bearer [REDACTED]",
+            ),
+        ];
+        for (input, want) in table {
+            let out = redact(input);
+            assert_eq!(out.text, want, "{input:?}");
+            assert_eq!(redact(&out.text).text, want, "idempotent {input:?}");
+        }
+    }
+
+    #[test]
+    fn ordinary_words_that_look_like_schemes_are_left_alone() {
+        for input in [
+            "a basic usage example",
+            "Basic authentication is weak",
+            "the token configuration is documented",
+            "Token Authentication",
+            "a bearer of bad news",
+            "token = abc",
+            "basic",
+        ] {
+            let out = redact(input);
+            assert!(!out.text.contains("Basic [REDACTED]"), "{input:?}");
+            assert_eq!(
+                out.text.replace("token = [REDACTED]", "token = abc"),
+                input,
+                "{input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn url_userinfo_is_masked_and_the_rest_of_the_url_kept() {
+        let table = [
+            (
+                "postgres://admin:hunter2@db.local:5432/app",
+                "postgres://[REDACTED]@db.local:5432/app",
+            ),
+            (
+                "see https://user:p%40ss@example.com/x?y=1 now",
+                "see https://[REDACTED]@example.com/x?y=1 now",
+            ),
+            (
+                "redis://:secret@cache:6379",
+                "redis://[REDACTED]@cache:6379",
+            ),
+        ];
+        for (input, want) in table {
+            let out = redact(input);
+            assert_eq!(out.text, want, "{input:?}");
+            assert_eq!(redact(&out.text).text, want, "idempotent {input:?}");
+        }
+        for input in [
+            "https://example.com/a:b@c",
+            "https://example.com:8080/x",
+            "ssh://git@github.com/o/r",
+            "mail me@example.com or http://host?u=a:b@c",
+            "://",
+            "ok://:x\"y:' z@h",
+            "ok://a:[REDACTED]@h",
+        ] {
+            assert_eq!(redact(input).hits, 0, "{input:?}");
+        }
+    }
+
+    #[test]
     fn a_key_name_without_a_value_is_left_alone() {
         for input in ["password=", "token:\nvalue", "set a password: ", "token ="] {
             assert_eq!(redact(input).hits, 0, "{input:?}");
@@ -518,6 +756,16 @@ mod tests {
         "ABCDEFGHIJKLMNOP",
         "Bearer ",
         "Authorization: ",
+        "basic ",
+        "Token ",
+        "://",
+        "user:",
+        "@",
+        "SECRET_KEY",
+        "x-api-key",
+        "sk_live_",
+        "npm_",
+        "ASIA",
         "password",
         "token",
         "API_KEY",
@@ -583,6 +831,16 @@ mod tests {
             "token=   ",
             "eyJ.eyJ.",
             "AKIA",
+            "ASIA",
+            "npm_",
+            "Basic ",
+            "token ",
+            "a-b_c-",
+            "://",
+            "://u:",
+            "password=\"",
+            "SECRET_KEY",
+            "x-api-key ",
             "a",
         ];
         for unit in units {
