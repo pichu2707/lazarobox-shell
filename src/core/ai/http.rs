@@ -146,6 +146,41 @@ pub fn parse_response(raw: &[u8]) -> Option<(u16, Vec<u8>)> {
     (body.len() <= MAX_BODY).then_some((status, body))
 }
 
+/// The body framing of a reply, applied to each read. Shared by the chat
+/// client and the engram request so both apply the same rules.
+pub enum Body {
+    Length(usize),
+    Chunked(Dechunker),
+    Close,
+}
+
+impl Body {
+    pub fn new(framing: Framing) -> Self {
+        match framing {
+            Framing::Length(n) => Body::Length(n),
+            Framing::Chunked => Body::Chunked(Dechunker::new()),
+            Framing::Close => Body::Close,
+        }
+    }
+
+    /// Appends the body bytes of `bytes` to `out`; `Done` when the body ended.
+    pub fn feed(&mut self, bytes: &[u8], out: &mut Vec<u8>) -> Result<Step, Malformed> {
+        match self {
+            Body::Length(left) => {
+                let n = (*left).min(bytes.len());
+                out.extend_from_slice(&bytes[..n]);
+                *left -= n;
+                Ok(if *left == 0 { Step::Done } else { Step::More })
+            }
+            Body::Chunked(dechunker) => dechunker.feed(bytes, out),
+            Body::Close => {
+                out.extend_from_slice(bytes);
+                Ok(Step::More)
+            }
+        }
+    }
+}
+
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
@@ -762,5 +797,42 @@ mod tests {
         assert!(fed <= MAX_TRAILER + line.len(), "refused after {fed} bytes");
         // Broken for good, even for the bytes that would have closed it.
         assert_eq!(d.feed(b"\r\n", &mut out), Err(Malformed));
+    }
+
+    #[test]
+    fn body_length_stops_at_its_count_and_ignores_the_rest() {
+        let mut body = Body::new(Framing::Length(3));
+        let mut out = Vec::new();
+        assert_eq!(body.feed(b"ab", &mut out), Ok(Step::More));
+        assert_eq!(body.feed(b"cdef", &mut out), Ok(Step::Done));
+        assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn body_length_zero_is_done_on_an_empty_feed() {
+        let mut body = Body::new(Framing::Length(0));
+        assert_eq!(body.feed(b"", &mut Vec::new()), Ok(Step::Done));
+    }
+
+    #[test]
+    fn body_chunked_decodes_across_feeds() {
+        let mut body = Body::new(Framing::Chunked);
+        let mut out = Vec::new();
+        assert_eq!(body.feed(b"3\r\nab", &mut out), Ok(Step::More));
+        assert_eq!(body.feed(b"c\r\n0\r\n\r\n", &mut out), Ok(Step::Done));
+        assert_eq!(out, b"abc");
+        assert_eq!(
+            Body::new(Framing::Chunked).feed(b"zz\r\n", &mut out),
+            Err(Malformed)
+        );
+    }
+
+    #[test]
+    fn body_close_never_ends_by_itself() {
+        let mut body = Body::new(Framing::Close);
+        let mut out = Vec::new();
+        assert_eq!(body.feed(b"ab", &mut out), Ok(Step::More));
+        assert_eq!(body.feed(b"cd", &mut out), Ok(Step::More));
+        assert_eq!(out, b"abcd");
     }
 }

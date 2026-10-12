@@ -83,13 +83,13 @@ Fallback split if over 400 without exception: 1a = 2.1-2.6, 1b = 2.7-2.10.
 
 ## PR3 / M2: Loopback `request` (`src/runtime/loopback.rs`, `src/core/ai/http.rs`)
 
-- [ ] 3.1 RED (characterization): existing loopback and detection tests stay green after the body-framing helper (`Body` Content-Length/chunked rules) moves from the private enum to a shared helper in `src/core/ai/http.rs`.
-- [ ] 3.2 GREEN: move the framing helper; `post_stream` and `CHAT_PATHS` untouched.
-- [ ] 3.3 RED: against the existing fake server: GET/POST/DELETE bytes exact (request line, `Host: 127.0.0.1`, `Accept`, `Connection: close`, `Content-Type`/`Content-Length` only with a body); any status 200-599 is returned with its body; 307 is an error and its Location is never requested.
-- [ ] 3.4 RED: Content-Length with Transfer-Encoding rejected, 256 KiB plus one byte body rejected in both framings; non-`127.0.0.1` host makes no connection; target with CR, LF, space, or outside `ENGRAM_ROUTES` is `Refused`; `Authorization: Bearer` only when `auth` is set and never `Cookie`.
-- [ ] 3.5 RED: timeouts on a paused clock: connect 200 ms and total limits (300 ms / 800 ms / 2 s) become `CallError::Timeout`; a silent server never hangs.
-- [ ] 3.6 GREEN: `loopback::request(port, Method, target, body, auth, limits) -> Result<Reply, CallError>`, `Method {Get, Post, Delete}`, `ENGRAM_ROUTES`.
-- [ ] 3.7 Gate.
+- [x] 3.1 RED (characterization): existing loopback and detection tests stay green after the body-framing helper (`Body` Content-Length/chunked rules) moves from the private enum to a shared helper in `src/core/ai/http.rs`.
+- [x] 3.2 GREEN: move the framing helper; `post_stream` and `CHAT_PATHS` untouched.
+- [x] 3.3 RED: against the existing fake server: GET/POST/DELETE bytes exact (request line, `Host: 127.0.0.1`, `Accept`, `Connection: close`, `Content-Type`/`Content-Length` only with a body); any status 200-599 is returned with its body; 307 is an error and its Location is never requested.
+- [x] 3.4 RED: Content-Length with Transfer-Encoding rejected, 256 KiB plus one byte body rejected in both framings; non-`127.0.0.1` host makes no connection; target with CR, LF, space, or outside `ENGRAM_ROUTES` is `Refused`; `Authorization: Bearer` only when `auth` is set and never `Cookie`.
+- [x] 3.5 RED: timeouts on a paused clock: connect 200 ms and total limits (300 ms / 800 ms / 2 s) become `CallError::Timeout`; a silent server never hangs.
+- [x] 3.6 GREEN: `loopback::request(port, Method, target, body, auth, limits) -> Result<Reply, CallError>`, `Method {Get, Post, Delete}`, `ENGRAM_ROUTES`.
+- [x] 3.7 Gate.
 
 ## PR4 / M3a: Call builders, parsers, port (`src/core/ai/memory/{route,reply,port}.rs`)
 
