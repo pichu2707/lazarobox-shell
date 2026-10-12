@@ -7,6 +7,7 @@ pub mod composer;
 pub mod engine;
 pub mod store;
 pub mod stream;
+pub mod transcript;
 pub mod wrap;
 
 use std::{
@@ -19,6 +20,7 @@ use engine::{
     Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, build_context,
     history_chars,
 };
+use transcript::{LineCache, Scroll};
 
 /// The longest answer kept, in bytes. Past it the answer is cut.
 pub const ANSWER_CAP: usize = 1 << 20;
@@ -180,6 +182,8 @@ pub struct ChatState {
     request_model: String,
     /// Moves with every change of the transcript.
     generation: u64,
+    scroll: Scroll,
+    cache: LineCache,
 }
 
 impl ChatState {
@@ -194,6 +198,8 @@ impl ChatState {
             started: None,
             request_model: String::new(),
             generation: 0,
+            scroll: Scroll::Follow,
+            cache: LineCache::default(),
         }
     }
 
@@ -226,6 +232,19 @@ impl ChatState {
 
     pub fn phase(&self) -> Phase {
         self.phase
+    }
+
+    /// The wrapped transcript at `width` columns.
+    pub fn lines(&self, width: usize) -> std::sync::Arc<Vec<transcript::Line>> {
+        self.cache.get(self, width)
+    }
+
+    pub fn scroll(&self) -> Scroll {
+        self.scroll
+    }
+
+    pub fn set_scroll(&mut self, scroll: Scroll) {
+        self.scroll = scroll;
     }
 
     /// Moves with every change of the transcript; the line cache keys on it.
@@ -358,6 +377,7 @@ impl ChatState {
         self.started = Some(now);
         self.request_model = model.clone().unwrap_or_default();
         self.generation += 1;
+        self.scroll = Scroll::Follow;
         SendOutcome::Sent {
             turn: self.turn,
             request: ChatRequest {
