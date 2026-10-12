@@ -16,6 +16,7 @@ use std::{
 
 pub mod ai_detect;
 mod config_write;
+pub mod loopback;
 
 use ai_detect::spawn_detection;
 use config_write::save_config;

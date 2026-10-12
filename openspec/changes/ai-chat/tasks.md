@@ -104,12 +104,12 @@ Files changed:
 
 ## PR4 / C4: Loopback HTTP client (`src/core/ai/http.rs`, `src/runtime/loopback.rs`)
 
-- [ ] 4.1 RED: `parse_head` keeps detection's strict framing (200 only, conflicting or signed Content-Length, CL with TE, malformed chunking); incremental `Dechunker` at every split; head cap 16 KiB.
-- [ ] 4.2 RED: `post_stream` against `fake_server`: POST HTTP/1.1 headers (no `Authorization`/`Cookie`), foreign host refused with no connection, redirect not followed, non-200 gives status plus a message of at most 200 chars, streaming is incremental.
-- [ ] 4.3 RED: timeouts with injected time: connect refused at once, first byte slower than idle is fine, idle 60 s stalled, 15-min total, `Slow` at 3 s (none at 2.9 s); cancel before first byte closes the socket.
-- [ ] 4.4 RED: detection stays GET-only and never runs during a chat; a long chat stream is not capped by the detection 1 MiB framing cap.
-- [ ] 4.5 GREEN: implement; detection call sites reuse `parse_head`/`Dechunker`.
-- [ ] 4.6 Gate.
+- [x] 4.1 RED: `parse_head` keeps detection's strict framing (200 only, conflicting or signed Content-Length, CL with TE, malformed chunking); incremental `Dechunker` at every split; head cap 16 KiB.
+- [x] 4.2 RED: `post_stream` against `fake_server`: POST HTTP/1.1 headers (no `Authorization`/`Cookie`), foreign host refused with no connection, redirect not followed, non-200 gives status plus a message of at most 200 chars, streaming is incremental.
+- [x] 4.3 RED: timeouts with injected time: connect refused at once, first byte slower than idle is fine, idle 60 s stalled, 15-min total, `Slow` at 3 s (none at 2.9 s); cancel before first byte closes the socket.
+- [x] 4.4 RED: detection stays GET-only and never runs during a chat; a long chat stream is not capped by the detection 1 MiB framing cap.
+- [x] 4.5 GREEN: implement; detection call sites reuse `parse_head`/`Dechunker`.
+- [x] 4.6 Gate.
 
 ## PR5 / C5: Runtime chat task (`src/runtime/{chat,proc}.rs`, `src/runtime.rs`, `src/app.rs`, `src/runtime/ai_detect.rs`)
 

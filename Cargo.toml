@@ -43,3 +43,4 @@ toml_edit = "0.22"
 [dev-dependencies]
 insta = "1"
 tempfile = "3"
+tokio = { version = "1.38", features = ["test-util"] }
