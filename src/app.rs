@@ -736,6 +736,15 @@ impl App {
         })
     }
 
+    /// COPY works on an emulator, so it must never outlive the focus on a
+    /// shell pane: `copy_pane` relies on it.
+    fn debug_assert_copy_on_shell(&self) {
+        debug_assert!(
+            !matches!(self.input, InputMode::Copy(_)) || self.focused_pty().is_some(),
+            "COPY is only active while a shell pane has the focus"
+        );
+    }
+
     /// Whether `id` names a pane with a PTY behind it.
     fn is_shell(&self, id: PaneId) -> bool {
         self.panes
@@ -788,6 +797,7 @@ impl App {
             self.input == InputMode::Menu,
             "the menu state and the MENU mode go together"
         );
+        self.debug_assert_copy_on_shell();
         effects
     }
 
@@ -1046,6 +1056,7 @@ impl App {
             self.input = InputMode::Terminal;
         }
         self.active = index;
+        self.debug_assert_copy_on_shell();
     }
 
     /// Appends a tab with one pane, activates it and spawns its shell in the
@@ -1174,6 +1185,7 @@ impl App {
             self.input = InputMode::Terminal;
         }
         self.tabs[t].focus = next;
+        self.debug_assert_copy_on_shell();
     }
 
     /// Drops pane `id` of whichever tab holds it and gives its space to its
