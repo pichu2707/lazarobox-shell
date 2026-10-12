@@ -454,6 +454,12 @@ pub async fn request(
 /// target must sit under `ENGRAM_ROUTES`, the token goes on `DELETE` only, and
 /// the reply body is capped at `REQUEST_BODY_CAP`. The token is never put in an
 /// error.
+///
+/// Two omissions are deliberate. `DELETE` without a token is allowed: a
+/// token-less engram server accepts it (M0 fixture
+/// `delete_200_server_without_token.http`), so the caller decides whether to
+/// send one. A `POST` with no body sends no `Content-Length` (Go `net/http`
+/// accepts that).
 pub(crate) async fn request_to(
     host: &str,
     port: u16,
@@ -463,7 +469,7 @@ pub(crate) async fn request_to(
     auth: Option<&str>,
     limits: Limits,
 ) -> Result<Reply, CallError> {
-    if host != "127.0.0.1" || !allowed_target(target) {
+    if host != "127.0.0.1" || !allowed_target(target) || !method_fits_route(method, target) {
         return Err(CallError::Refused);
     }
     match (method, body, auth) {
@@ -530,6 +536,42 @@ fn allowed_target(target: &str) -> bool {
     ENGRAM_ROUTES.iter().any(|route| {
         path.strip_prefix(route)
             .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    })
+}
+
+/// One segment of a route shape: a fixed word or any single non-empty id.
+enum Seg {
+    Word(&'static str),
+    Id,
+}
+
+use Seg::{Id, Word};
+
+/// The only method and path pairs a request may use. Every other pair is
+/// `Refused`, so a `DELETE` can never reach `/sessions` or `/context`, and a
+/// `POST` can never reach a read route. This table is the whole policy.
+const METHOD_ROUTES: [(Method, &[Seg]); 8] = [
+    (Method::Get, &[Word("health")]),
+    (Method::Get, &[Word("project"), Word("current")]),
+    (Method::Get, &[Word("context")]),
+    (Method::Get, &[Word("search")]),
+    (Method::Post, &[Word("sessions")]),
+    (Method::Post, &[Word("sessions"), Id, Word("end")]),
+    (Method::Post, &[Word("observations")]),
+    (Method::Delete, &[Word("observations"), Id]),
+];
+
+/// Whether `method` may be sent to the path of an (already allowed) target.
+fn method_fits_route(method: Method, target: &str) -> bool {
+    let path = target.split('?').next().unwrap_or("");
+    let segments: Vec<&str> = path.strip_prefix('/').unwrap_or("").split('/').collect();
+    METHOD_ROUTES.iter().any(|(m, shape)| {
+        *m == method
+            && shape.len() == segments.len()
+            && shape.iter().zip(&segments).all(|(seg, got)| match seg {
+                Word(word) => word == got,
+                Id => !got.is_empty(),
+            })
     })
 }
 

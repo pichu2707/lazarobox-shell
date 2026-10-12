@@ -399,22 +399,63 @@ async fn an_encoded_dot_dot_in_the_query_still_passes() {
     );
 }
 
+async fn send(port: u16, method: Method, target: &str) -> Result<Reply, CallError> {
+    let body = (method == Method::Post).then_some(&b"{}"[..]);
+    let auth = (method == Method::Delete).then_some("tok");
+    request(port, method, target, body, auth, Limits::WRITE).await
+}
+
 #[tokio::test]
-async fn every_engram_route_is_allowed_with_a_subpath_or_query() {
+async fn every_engram_route_is_allowed_with_its_own_method() {
     let (port, _) = serve(Some(ok_json("{}"))).await;
-    for target in [
-        "/health",
-        "/project/current?cwd=%2Ftmp",
-        "/sessions",
-        "/sessions/lazarobox-ab/end",
-        "/observations",
-        "/observations/7?expected_project=p",
-        "/context?project=p&scope=project",
-        "/search?q=x",
-        "/context?cwd=%2Ftmp%2F..%2Fx",
+    for (method, target) in [
+        (Method::Get, "/health"),
+        (Method::Get, "/project/current?cwd=%2Ftmp"),
+        (Method::Get, "/context?project=p&scope=project"),
+        (Method::Get, "/context?cwd=%2Ftmp%2F..%2Fx"),
+        (Method::Get, "/search?q=x"),
+        (Method::Post, "/sessions"),
+        (Method::Post, "/sessions/lazarobox-ab/end"),
+        (Method::Post, "/observations"),
+        (Method::Delete, "/observations/7?expected_project=p"),
     ] {
-        assert!(get(port, target).await.is_ok(), "{target}");
+        assert!(
+            send(port, method, target).await.is_ok(),
+            "{method:?} {target}"
+        );
     }
+}
+
+#[tokio::test]
+async fn a_method_on_a_route_it_does_not_belong_to_is_refused_before_connecting() {
+    let (port, seen) = serve(Some(ok_json("{}"))).await;
+    for (method, target) in [
+        (Method::Delete, "/sessions"),
+        (Method::Delete, "/sessions/x/end"),
+        (Method::Delete, "/observations"),
+        (Method::Delete, "/observations/"),
+        (Method::Delete, "/observations/7/extra"),
+        (Method::Delete, "/context"),
+        (Method::Delete, "/health"),
+        (Method::Delete, "/search"),
+        (Method::Post, "/health"),
+        (Method::Post, "/context"),
+        (Method::Post, "/search"),
+        (Method::Post, "/project/current"),
+        (Method::Post, "/observations/7"),
+        (Method::Post, "/sessions/x"),
+        (Method::Post, "/sessions//end"),
+        (Method::Post, "/sessions/x/end/more"),
+        (Method::Get, "/sessions"),
+        (Method::Get, "/sessions/x/end"),
+        (Method::Get, "/observations"),
+        (Method::Get, "/observations/7"),
+    ] {
+        let got = send(port, method, target).await;
+        assert_eq!(got, Err(CallError::Refused), "{method:?} {target}");
+    }
+    tokio::task::yield_now().await;
+    assert!(none_seen(&seen));
 }
 
 #[tokio::test]
