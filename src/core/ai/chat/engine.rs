@@ -1,4 +1,6 @@
-//! Whether the chat can use the engine assigned to it. Pure, no IO.
+//! The contract between the chat core and an engine adapter: what a turn
+//! sends and what a stream may say back, and whether an engine can be used.
+//! Pure data and functions, no IO.
 
 use crate::core::ai::{
     CATALOG, Detection, Kind, Status,
@@ -6,6 +8,20 @@ use crate::core::ai::{
     jail::JailSupport,
     status_text,
 };
+
+/// Who wrote a message.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Role {
+    User,
+    Assistant,
+}
+
+/// One message as it is sent to an engine.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ChatMessage {
+    pub role: Role,
+    pub content: String,
+}
 
 /// What the chat pane may do with the engine assigned to the `chat` task.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -118,5 +134,50 @@ pub fn has_adapter(id: &str) -> bool {
     id != "opencode"
 }
 
+/// The most messages one turn sends.
+pub const MAX_HISTORY_MESSAGES: usize = 40;
+/// Character cap of the history for a local server (small default context).
+pub const SERVER_HISTORY_CHARS: usize = 12_000;
+/// Character cap of the history for a CLI.
+pub const CLI_HISTORY_CHARS: usize = 100_000;
+
+/// The history cap in characters for an engine: CLIs get the large one.
+pub fn history_chars(engine: &str) -> usize {
+    match CATALOG.iter().find(|e| e.id == engine).map(|e| e.kind) {
+        Some(Kind::Cli) => CLI_HISTORY_CHARS,
+        _ => SERVER_HISTORY_CHARS,
+    }
+}
+
+/// The messages of one turn and whether older ones were left out.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Context {
+    pub messages: Vec<ChatMessage>,
+    pub omitted: bool,
+}
+
+/// The most recent messages that fit `MAX_HISTORY_MESSAGES` and `max_chars`,
+/// oldest dropped first. The newest message is always kept whole.
+pub fn build_context(history: &[ChatMessage], max_chars: usize) -> Context {
+    let mut used = 0;
+    let mut start = history.len();
+    for (i, message) in history.iter().enumerate().rev() {
+        let chars = message.content.chars().count();
+        let newest = i + 1 == history.len();
+        let fits = history.len() - i <= MAX_HISTORY_MESSAGES && used + chars <= max_chars;
+        if !newest && !fits {
+            break;
+        }
+        used += chars;
+        start = i;
+    }
+    Context {
+        messages: history[start..].to_vec(),
+        omitted: start > 0,
+    }
+}
+
 #[cfg(test)]
 mod availability_tests;
+#[cfg(test)]
+mod history_tests;
