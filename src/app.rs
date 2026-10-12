@@ -6416,6 +6416,46 @@ mod app_tests {
             assert_eq!(last(&a, chat_id()), ("Hello".into(), MsgStatus::Complete));
         }
 
+        fn thinking(id: PaneId, turn: u64, text: &str) -> AppEvent {
+            AppEvent::Chat(id, turn, StreamEvent::ThinkingDelta(text.into()))
+        }
+
+        #[test]
+        fn a_thinking_delta_redraws_the_chat_and_emits_nothing() {
+            let mut a = streaming();
+            a.take_dirty();
+            assert_eq!(a.update(thinking(chat_id(), 1, "Let me")), vec![]);
+            assert!(a.take_dirty(), "the reasoning block is redrawn");
+            // A stale turn changes and draws nothing.
+            assert_eq!(a.update(thinking(chat_id(), 9, "stale")), vec![]);
+            assert!(!a.take_dirty());
+        }
+
+        #[test]
+        fn reasoning_never_reaches_an_effect_or_the_next_request() {
+            let mut a = streaming();
+            let mut effects = Vec::new();
+            effects.extend(a.update(thinking(chat_id(), 1, "secret plan")));
+            effects.extend(a.update(delta(chat_id(), 1, "answer")));
+            effects.extend(a.update(finish(chat_id(), 1)));
+            let next = a.chat_send(chat_id(), "again");
+            effects.extend(next.clone());
+            assert!(matches!(next.as_slice(), [Effect::ChatSend { .. }]));
+            assert!(
+                !format!("{effects:?}").contains("secret plan"),
+                "no effect carries the reasoning: {effects:?}"
+            );
+            let Some(Effect::ChatSend { request, .. }) = next.first() else {
+                panic!("one ChatSend");
+            };
+            let sent: Vec<&str> = request
+                .messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect();
+            assert_eq!(sent, ["hi", "answer", "again"]);
+        }
+
         #[test]
         fn an_error_is_terminal_and_keeps_the_partial_answer() {
             let mut a = streaming();

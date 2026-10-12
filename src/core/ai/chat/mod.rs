@@ -9,7 +9,10 @@ pub mod store;
 pub mod stream;
 pub mod wrap;
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 use composer::Composer;
 use engine::{
@@ -78,6 +81,48 @@ pub struct Msg {
 pub enum Entry {
     Message(Msg),
     System(String),
+    /// The reasoning of one turn: shown, never stored, never sent back.
+    Reasoning(Reasoning),
+}
+
+/// The most reasoning text kept per turn, in bytes. Past it the rest is
+/// dropped without an error.
+pub const REASONING_CAP: usize = 256 * 1024;
+
+/// Where a reasoning block is in its life.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ReasoningState {
+    /// Still growing: shown dimmed, line by line.
+    Streaming,
+    /// Folded into one line (the default once the turn moved on).
+    Collapsed,
+    /// Unfolded by the user.
+    Expanded,
+}
+
+/// The reasoning of one turn.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Reasoning {
+    text: String,
+    state: ReasoningState,
+    started: Instant,
+    /// Tenths of a second from the first thinking delta to the collapse.
+    tenths: u32,
+}
+
+impl Reasoning {
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn state(&self) -> ReasoningState {
+        self.state
+    }
+
+    /// The time the reasoning took, like `2.3s`. Meaningful once collapsed.
+    pub fn seconds_label(&self) -> String {
+        format!("{}.{}s", self.tenths / 10, self.tenths % 10)
+    }
 }
 
 /// Where the turn in flight is.
@@ -92,6 +137,15 @@ pub enum Phase {
     /// lines (a refused send's BUSY) may follow it, so look it up among the
     /// messages, not the entries.
     Streaming,
+}
+
+/// Where a running stream is, for the statusline.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StreamPhase {
+    /// Sent, and no answer text yet (waiting or reasoning).
+    Thinking,
+    /// Answer text is arriving.
+    Answering,
 }
 
 /// What a send did.
@@ -120,6 +174,12 @@ pub struct ChatState {
     phase: Phase,
     turn: u64,
     composer: Composer,
+    /// When the stream in flight was sent.
+    started: Option<Instant>,
+    /// The model of the request in flight, as sent.
+    request_model: String,
+    /// Moves with every change of the transcript.
+    generation: u64,
 }
 
 impl ChatState {
@@ -131,6 +191,9 @@ impl ChatState {
             phase: Phase::Idle,
             turn: 0,
             composer: Composer::new(),
+            started: None,
+            request_model: String::new(),
+            generation: 0,
         }
     }
 
@@ -157,12 +220,17 @@ impl ChatState {
     pub fn messages(&self) -> impl Iterator<Item = &Msg> {
         self.entries.iter().filter_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) => None,
+            Entry::System(_) | Entry::Reasoning(_) => None,
         })
     }
 
     pub fn phase(&self) -> Phase {
         self.phase
+    }
+
+    /// Moves with every change of the transcript; the line cache keys on it.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// The id events of the turn in flight must carry.
@@ -173,15 +241,76 @@ impl ChatState {
     /// The waiting text, while no byte of the answer has arrived.
     pub fn waiting_text(&self) -> Option<&'static str> {
         match self.phase {
+            // Reasoning counts as the first byte: its block replaces the text.
+            Phase::Waiting { .. } if self.live_reasoning().is_some() => None,
             Phase::Waiting { slow: false } => Some(WAITING),
             Phase::Waiting { slow: true } => Some(LOADING),
             Phase::Idle | Phase::Streaming => None,
         }
     }
 
+    /// Where the stream is: `Thinking` from the send until the first
+    /// non-empty text delta, `Answering` after, `None` when idle.
+    pub fn stream_phase(&self) -> Option<StreamPhase> {
+        match self.phase {
+            Phase::Idle => None,
+            Phase::Waiting { .. } => Some(StreamPhase::Thinking),
+            Phase::Streaming => Some(StreamPhase::Answering),
+        }
+    }
+
+    /// When the send of the stream in flight happened.
+    pub fn stream_started(&self) -> Option<Instant> {
+        self.started
+    }
+
+    /// The model of the request as sent; empty when idle or when the engine
+    /// picked its own.
+    pub fn stream_model(&self) -> &str {
+        &self.request_model
+    }
+
+    /// Expands or collapses the most recent reasoning block. Returns whether
+    /// anything changed: a block that still streams, or no block, is left
+    /// alone.
+    pub fn toggle_reasoning(&mut self) -> bool {
+        let last = self.entries.iter_mut().rev().find_map(|e| match e {
+            Entry::Reasoning(r) => Some(r),
+            _ => None,
+        });
+        let Some(block) = last else {
+            return false;
+        };
+        block.state = match block.state {
+            ReasoningState::Streaming => return false,
+            ReasoningState::Collapsed => ReasoningState::Expanded,
+            ReasoningState::Expanded => ReasoningState::Collapsed,
+        };
+        self.generation += 1;
+        true
+    }
+
+    /// A chat reopened from storage: the stored messages and no reasoning.
+    pub fn resumed(origin_cwd: Option<PathBuf>, messages: Vec<Msg>) -> Self {
+        let mut state = Self::new(origin_cwd);
+        state.entries = messages.into_iter().map(Entry::Message).collect();
+        state
+    }
+
     /// Sends `text` to the engine `availability` names, with `system` as the
     /// pinned system prompt.
     pub fn send(&mut self, text: &str, availability: &Availability, system: &str) -> SendOutcome {
+        self.send_at(text, availability, system, Instant::now())
+    }
+
+    /// `send` with the clock injected: `now` is when the stream starts.
+    pub fn send_at(
+        &mut self,
+        text: &str,
+        availability: &Availability,
+        system: &str,
+        now: Instant,
+    ) -> SendOutcome {
         let Availability::Ready { engine, model } = availability else {
             return SendOutcome::Refused;
         };
@@ -226,6 +355,9 @@ impl ChatState {
         self.place_marker(oldest, context.omitted);
         self.turn += 1;
         self.phase = Phase::Waiting { slow: false };
+        self.started = Some(now);
+        self.request_model = model.clone().unwrap_or_default();
+        self.generation += 1;
         SendOutcome::Sent {
             turn: self.turn,
             request: ChatRequest {
@@ -266,8 +398,16 @@ impl ChatState {
     /// Applies one event of turn `turn`. Events of any other turn, and events
     /// while idle, are dropped.
     pub fn apply(&mut self, turn: u64, event: StreamEvent) -> Follow {
+        self.apply_at(turn, event, Instant::now())
+    }
+
+    /// `apply` with the clock injected.
+    pub fn apply_at(&mut self, turn: u64, event: StreamEvent, now: Instant) -> Follow {
         if turn != self.turn || self.phase == Phase::Idle {
             return Follow::Nothing;
+        }
+        if !matches!(event, StreamEvent::ThinkingDelta(_)) {
+            self.generation += 1;
         }
         match event {
             StreamEvent::Slow => {
@@ -276,33 +416,98 @@ impl ChatState {
                 }
                 Follow::Nothing
             }
-            StreamEvent::Delta(text) => self.push_delta(&text),
+            StreamEvent::Delta(text) => self.push_delta(&text, now),
+            StreamEvent::ThinkingDelta(text) => {
+                if self.push_thinking(&text, now) {
+                    self.generation += 1;
+                }
+                Follow::Nothing
+            }
             StreamEvent::Done(_) => {
                 let line = (self.phase != Phase::Streaming).then(|| NO_ANSWER.to_owned());
-                self.finish(MsgStatus::Complete, line);
+                self.finish(MsgStatus::Complete, line, now);
                 Follow::Nothing
             }
             StreamEvent::Error(ChatError::Interrupted) => {
-                self.finish(MsgStatus::Interrupted, Some(INTERRUPTED.to_owned()));
+                self.finish(MsgStatus::Interrupted, Some(INTERRUPTED.to_owned()), now);
                 Follow::Nothing
             }
             StreamEvent::Error(ChatError::Truncated) => {
-                self.finish(MsgStatus::Truncated, Some(TOO_LONG.to_owned()));
+                self.finish(MsgStatus::Truncated, Some(TOO_LONG.to_owned()), now);
                 Follow::Nothing
             }
             StreamEvent::Error(ChatError::Failed(message)) => {
-                self.finish(MsgStatus::Error, Some(message));
+                self.finish(MsgStatus::Error, Some(message), now);
                 Follow::Nothing
             }
         }
     }
 
+    /// The reasoning block of the turn in flight, if it has started one.
+    fn live_reasoning(&self) -> Option<&Reasoning> {
+        if self.phase == Phase::Idle {
+            return None;
+        }
+        self.entries.iter().rev().find_map(|e| match e {
+            Entry::Reasoning(r) if r.state == ReasoningState::Streaming => Some(r),
+            _ => None,
+        })
+    }
+
+    fn live_reasoning_mut(&mut self) -> Option<&mut Reasoning> {
+        if self.phase == Phase::Idle {
+            return None;
+        }
+        self.entries.iter_mut().rev().find_map(|e| match e {
+            Entry::Reasoning(r) if r.state == ReasoningState::Streaming => Some(r),
+            _ => None,
+        })
+    }
+
+    /// Adds reasoning text to the turn's block, starting it on the first
+    /// piece. Dropped once the answer has started, and past the cap. Returns
+    /// whether the transcript changed.
+    fn push_thinking(&mut self, text: &str, now: Instant) -> bool {
+        if text.is_empty() || self.phase == Phase::Streaming {
+            return false;
+        }
+        if self.live_reasoning().is_none() {
+            self.entries.push(Entry::Reasoning(Reasoning {
+                text: String::new(),
+                state: ReasoningState::Streaming,
+                started: now,
+                tenths: 0,
+            }));
+        }
+        let Some(block) = self.live_reasoning_mut() else {
+            return false;
+        };
+        let room = REASONING_CAP - block.text.len();
+        let mut cut = text.len().min(room);
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        block.text.push_str(&text[..cut]);
+        true
+    }
+
+    /// Folds the live reasoning block into its one line, with the seconds it
+    /// took.
+    fn collapse_reasoning(&mut self, now: Instant) {
+        if let Some(block) = self.live_reasoning_mut() {
+            let ms = now.saturating_duration_since(block.started).as_millis();
+            block.tenths = u32::try_from((ms + 50) / 100).unwrap_or(u32::MAX);
+            block.state = ReasoningState::Collapsed;
+        }
+    }
+
     /// Appends a delta to the answer, creating it on the first one.
-    fn push_delta(&mut self, text: &str) -> Follow {
+    fn push_delta(&mut self, text: &str, now: Instant) -> Follow {
         if text.is_empty() {
             return Follow::Nothing;
         }
         if self.phase != Phase::Streaming {
+            self.collapse_reasoning(now);
             self.entries.push(Entry::Message(Msg {
                 role: Role::Assistant,
                 text: String::new(),
@@ -323,7 +528,7 @@ impl ChatState {
             cut -= 1;
         }
         answer.text.push_str(&text[..cut]);
-        self.finish(MsgStatus::Truncated, Some(TOO_LONG.to_owned()));
+        self.finish(MsgStatus::Truncated, Some(TOO_LONG.to_owned()), now);
         // Anything the engine still sends belongs to a turn nobody awaits.
         self.turn += 1;
         Follow::CancelEngine
@@ -338,13 +543,14 @@ impl ChatState {
         }
         self.entries.iter_mut().rev().find_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) => None,
+            Entry::System(_) | Entry::Reasoning(_) => None,
         })
     }
 
     /// Ends the turn: the partial answer, if any, gets `status`, and an
     /// optional system line is added.
-    fn finish(&mut self, status: MsgStatus, line: Option<String>) {
+    fn finish(&mut self, status: MsgStatus, line: Option<String>, now: Instant) {
+        self.collapse_reasoning(now);
         if let Some(answer) = self.answer_mut() {
             answer.status = status;
         }
@@ -352,19 +558,29 @@ impl ChatState {
             self.entries.push(Entry::System(line));
         }
         self.phase = Phase::Idle;
+        self.started = None;
+        self.request_model.clear();
     }
 
     /// Stops the turn in flight, keeping the partial answer.
     pub fn cancel(&mut self) -> Follow {
+        self.cancel_at(Instant::now())
+    }
+
+    /// `cancel` with the clock injected.
+    pub fn cancel_at(&mut self, now: Instant) -> Follow {
         if self.phase == Phase::Idle {
             return Follow::Nothing;
         }
-        self.finish(MsgStatus::Cancelled, None);
+        self.finish(MsgStatus::Cancelled, None, now);
         self.turn += 1;
+        self.generation += 1;
         Follow::CancelEngine
     }
 }
 
+#[cfg(test)]
+mod reasoning_tests;
 #[cfg(test)]
 mod state_tests;
 #[cfg(test)]

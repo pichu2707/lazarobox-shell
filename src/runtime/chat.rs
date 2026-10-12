@@ -22,7 +22,7 @@ use super::loopback::post_stream;
 use crate::core::{
     ai::{
         chat::{
-            ANSWER_CAP,
+            ANSWER_CAP, REASONING_CAP,
             engine::{ChatError, ChatRequest, StreamEvent},
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
@@ -113,6 +113,13 @@ pub struct Pipe {
     sanitizer: StreamSanitizer,
     /// Sanitized bytes forwarded so far.
     sent: usize,
+    /// Reasoning has its own filter: an escape sequence left open in it must
+    /// not swallow answer text, and the other way round.
+    thinking: StreamSanitizer,
+    /// Sanitized reasoning bytes forwarded so far.
+    thought: usize,
+    /// Answer text went out: later reasoning is dropped here.
+    answering: bool,
     over: bool,
 }
 
@@ -122,6 +129,9 @@ impl Pipe {
             utf8: Utf8Stream::new(),
             sanitizer: StreamSanitizer::new(),
             sent: 0,
+            thinking: StreamSanitizer::new(),
+            thought: 0,
+            answering: false,
             over: false,
         }
     }
@@ -135,12 +145,32 @@ impl Pipe {
         match event {
             StreamEvent::Slow => vec![StreamEvent::Slow],
             StreamEvent::Delta(text) => self.bytes(text.as_bytes()),
+            StreamEvent::ThinkingDelta(text) => self.reasoning(&text),
             StreamEvent::Done(finish) => self.end(StreamEvent::Done(finish)),
             StreamEvent::Error(ChatError::Failed(text)) => {
                 self.end(StreamEvent::Error(ChatError::Failed(error_text(&text))))
             }
             StreamEvent::Error(error) => self.end(StreamEvent::Error(error)),
         }
+    }
+
+    /// Forwards reasoning text, sanitized with its own state and cut at
+    /// `REASONING_CAP` without an error. Once the answer began, reasoning is
+    /// dropped.
+    fn reasoning(&mut self, text: &str) -> Vec<StreamEvent> {
+        let clean = self.thinking.push(text);
+        if self.answering || clean.is_empty() {
+            return Vec::new();
+        }
+        let mut cut = clean.len().min(REASONING_CAP - self.thought);
+        while !clean.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        if cut == 0 {
+            return Vec::new();
+        }
+        self.thought += cut;
+        vec![StreamEvent::ThinkingDelta(clean[..cut].to_owned())]
     }
 
     /// A final event went out: the turn is over.
@@ -174,6 +204,7 @@ impl Pipe {
         let room = ANSWER_CAP - self.sent;
         if text.len() <= room {
             self.sent += text.len();
+            self.answering = true;
             return vec![StreamEvent::Delta(text)];
         }
         let mut cut = room;
@@ -195,6 +226,7 @@ impl Pipe {
         let tail = self.utf8.finish();
         let mut out = self.text(&tail);
         self.sanitizer.finish();
+        self.thinking.finish();
         if !self.over {
             self.over = true;
             out.push(last);
