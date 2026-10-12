@@ -99,3 +99,75 @@ fn an_unterminated_string_gives_up_after_the_cap_and_text_resumes() {
     assert_eq!(clean(&format!("\u{1b}]0;{at_cap}\u{07}tail")), "tail");
     assert_eq!(clean(&format!("\u{1b}]0;{at_cap}tail")), "tail");
 }
+
+/// Bytes through `Utf8Stream` then `StreamSanitizer`, cut at `cuts`.
+fn bytes_chunked(bytes: &[u8], cuts: &[usize]) -> String {
+    let (mut utf8, mut sanitizer) = (Utf8Stream::new(), StreamSanitizer::new());
+    let mut out = String::new();
+    let mut from = 0;
+    for &to in cuts.iter().chain([&bytes.len()]) {
+        out.push_str(&sanitizer.push(&utf8.push(&bytes[from..to])));
+        from = to;
+    }
+    out.push_str(&sanitizer.push(&utf8.finish()));
+    sanitizer.finish();
+    out
+}
+
+#[test]
+fn multibyte_characters_survive_every_internal_cut() {
+    for text in ["a\u{e9}b", "a\u{20ac}b", "a\u{1f600}b"] {
+        for at in 0..=text.len() {
+            let bytes = text.as_bytes();
+            assert_eq!(bytes_chunked(bytes, &[at]), text, "cut at {at}: {text:?}");
+        }
+        let all: Vec<usize> = (1..text.len()).collect();
+        assert_eq!(bytes_chunked(text.as_bytes(), &all), text, "per byte");
+    }
+}
+
+#[test]
+fn invalid_bytes_and_a_cut_tail_become_replacement_characters() {
+    assert_eq!(bytes_chunked(b"a\xffb", &[]), "a\u{fffd}b");
+    assert_eq!(bytes_chunked(b"a\xe2", &[]), "a\u{fffd}");
+    assert_eq!(bytes_chunked(b"a\xf0\x9f\x98", &[2, 3]), "a\u{fffd}");
+    assert_eq!(bytes_chunked(b"\xe2\x82x", &[1, 2]), "\u{fffd}x");
+    assert_eq!(
+        bytes_chunked(b"\x80\xc0\xaf", &[]),
+        "\u{fffd}\u{fffd}\u{fffd}"
+    );
+}
+
+#[test]
+fn finish_clears_the_pending_bytes() {
+    let mut utf8 = Utf8Stream::new();
+    assert_eq!(utf8.push(b"\xe2\x82"), "");
+    assert_eq!(utf8.finish(), "\u{fffd}");
+    assert_eq!(utf8.finish(), "");
+    assert_eq!(utf8.push(b"ok"), "ok");
+}
+
+#[test]
+fn random_bytes_cut_at_random_points_never_leak_a_control() {
+    let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+    let mut next = move |n: usize| {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 33) as usize % n
+    };
+    // Weighted towards escapes, terminators and multibyte lead bytes.
+    let alphabet: &[u8] =
+        b"\x1b\x1b[]\\\x07\x00\r\n\txP_^X;0m \xc2\x9b\x9c\xe2\x80\xae\xf0\x9f\xff";
+    for _ in 0..300 {
+        let bytes: Vec<u8> = (0..next(60))
+            .map(|_| alphabet[next(alphabet.len())])
+            .collect();
+        let whole = bytes_chunked(&bytes, &[]);
+        let mut cuts: Vec<usize> = (0..next(6)).map(|_| next(bytes.len() + 1)).collect();
+        cuts.sort_unstable();
+        assert_eq!(bytes_chunked(&bytes, &cuts), whole, "{bytes:?} {cuts:?}");
+        let bad = |c: char| (c.is_control() && c != '\n' && c != '\t') || is_format(c);
+        assert!(!whole.chars().any(bad), "{bytes:?} gave {whole:?}");
+    }
+}

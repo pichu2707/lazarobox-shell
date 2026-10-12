@@ -130,6 +130,60 @@ impl StreamSanitizer {
     }
 }
 
+/// Decodes a byte stream to text, carrying an incomplete character across
+/// chunks. Invalid bytes, and a cut tail at the end, become U+FFFD.
+#[derive(Default)]
+pub struct Utf8Stream {
+    /// An incomplete character cut by the previous chunk (3 bytes or less).
+    pending: Vec<u8>,
+}
+
+impl Utf8Stream {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, bytes: &[u8]) -> String {
+        self.pending.extend_from_slice(bytes);
+        let mut out = String::new();
+        let mut rest = self.pending.as_slice();
+        loop {
+            match std::str::from_utf8(rest) {
+                Ok(valid) => {
+                    out.push_str(valid);
+                    rest = &[];
+                    break;
+                }
+                Err(e) => {
+                    let (valid, tail) = rest.split_at(e.valid_up_to());
+                    out.push_str(std::str::from_utf8(valid).unwrap_or_default());
+                    match e.error_len() {
+                        Some(n) => {
+                            out.push('\u{fffd}');
+                            rest = &tail[n..];
+                        }
+                        None => {
+                            rest = tail;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        self.pending = rest.to_vec();
+        out
+    }
+
+    /// Ends the stream: a cut character becomes U+FFFD.
+    pub fn finish(&mut self) -> String {
+        if std::mem::take(&mut self.pending).is_empty() {
+            String::new()
+        } else {
+            "\u{fffd}".into()
+        }
+    }
+}
+
 /// Sanitizes a whole string.
 pub fn clean(text: &str) -> String {
     let mut sanitizer = StreamSanitizer::new();
