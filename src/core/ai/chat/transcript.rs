@@ -44,12 +44,20 @@ pub const SYSTEM_PREFIX: &str = "• ";
 
 /// The rows of the transcript of `chat` at `width` columns.
 pub fn build(chat: &ChatState, width: usize) -> Vec<Line> {
+    layout(chat, width).0
+}
+
+/// The rows of the transcript and, per entry, the index of its first row (an
+/// entry with no rows starts where the next one does).
+pub fn layout(chat: &ChatState, width: usize) -> (Vec<Line>, Vec<usize>) {
     let mut out: Vec<Line> = Vec::new();
+    let mut starts: Vec<usize> = Vec::new();
     let mut after_reasoning = false;
     for entry in chat.entries() {
         let mut rows = Vec::new();
         entry_rows(entry, width, &mut rows);
         if rows.is_empty() {
+            starts.push(out.len());
             continue;
         }
         // An answer sits right under the reasoning that came before it.
@@ -58,6 +66,7 @@ pub fn build(chat: &ChatState, width: usize) -> Vec<Line> {
         if !out.is_empty() && !glued {
             out.push(blank());
         }
+        starts.push(out.len());
         out.extend(rows);
         after_reasoning = matches!(entry, Entry::Reasoning(_));
     }
@@ -67,7 +76,7 @@ pub fn build(chat: &ChatState, width: usize) -> Vec<Line> {
         }
         push_wrapped(&mut out, LineKind::Waiting, "", "", text, width);
     }
-    out
+    (out, starts)
 }
 
 fn blank() -> Line {

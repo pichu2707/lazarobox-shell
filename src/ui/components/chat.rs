@@ -49,8 +49,7 @@ impl<'a> ChatView<'a> {
     fn plan(&self, area: Rect) -> (ChatLayout, ComposerPlan<'_>) {
         let plan = self.chat.composer().plan(usize::from(area.width));
         let wanted = if area.is_empty() { 0 } else { plan.height() };
-        let wanted = u16::try_from(wanted).unwrap_or(u16::MAX);
-        let rows = wanted.min(area.height.saturating_sub(1).max(1).min(area.height));
+        let rows = ChatState::clamp_composer_rows(wanted, area.height);
         let layout = ChatLayout {
             transcript: Rect::new(area.x, area.y, area.width, area.height - rows),
             composer: Rect::new(area.x, area.y + area.height - rows, area.width, rows),
