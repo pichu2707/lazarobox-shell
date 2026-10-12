@@ -15,6 +15,7 @@ use std::{
 };
 
 pub mod ai_detect;
+pub mod anim;
 pub mod chat;
 pub mod chat_store;
 mod config_write;
@@ -251,8 +252,11 @@ async fn run_loop(
     let mut cwd_poll = interval(CWD_POLL);
     cwd_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut applied_cursor = CursorShape::default();
+    // Armed only while a chat stream runs: an idle app never wakes for it.
+    let mut anim = anim::Animation::new();
 
     loop {
+        anim.sync(app.animating());
         tokio::select! {
             event = events.next() => match event {
                 Some(Ok(event)) => {
@@ -310,6 +314,11 @@ async fn run_loop(
             _ = cwd_poll.tick() => {
                 for event in panes.poll_cwds() {
                     step(&mut app, event, panes);
+                }
+            }
+            () = anim.tick() => {
+                if step(&mut app, AppEvent::AnimTick, panes) {
+                    return Ok(());
                 }
             }
             _ = tick.tick() => {
