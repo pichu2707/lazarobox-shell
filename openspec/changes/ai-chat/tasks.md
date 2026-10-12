@@ -113,11 +113,11 @@ Files changed:
 
 ## PR5 / C5: Runtime chat task (`src/runtime/{chat,proc}.rs`, `src/runtime.rs`, `src/app.rs`, `src/runtime/ai_detect.rs`)
 
-- [ ] 5.1 RED: `AppEvent::Chat(pane, turn, ev)` routing with a fake adapter: events in order, error terminal, cancel stops events, two chats stream independently, stream continues in a background tab, during COPY, across zoom and focus.
-- [ ] 5.2 RED: closing a chat pane or tab emits `ChatCancel` (never `ClosePane`) and persists nothing yet; stale events after close or tab close are dropped; quit closes sockets and kills CLI children; closing does not block.
-- [ ] 5.3 RED: runtime tests: cancel closes the socket within 1 s; a fake process group that ignores SIGTERM is killed and reaped within 1 s; answer cap stops at 1 MiB.
-- [ ] 5.4 GREEN: `Effect::ChatSend/ChatCancel` handling, one tokio task per pane, `GroupKill` moved to `runtime/proc.rs`, `ai_detect.rs` updated.
-- [ ] 5.5 Gate.
+- [x] 5.1 RED: `AppEvent::Chat(pane, turn, ev)` routing with a fake adapter: events in order, error terminal, cancel stops events, two chats stream independently, stream continues in a background tab, during COPY, across zoom and focus.
+- [x] 5.2 RED: closing a chat pane or tab emits `ChatCancel` (never `ClosePane`) and persists nothing yet; stale events after close or tab close are dropped; quit closes sockets and kills CLI children; closing does not block.
+- [x] 5.3 RED: runtime tests: cancel closes the socket within 1 s; a fake process group that ignores SIGTERM is killed and reaped within 1 s; answer cap stops at 1 MiB.
+- [x] 5.4 GREEN: `Effect::ChatSend/ChatCancel` handling, one tokio task per pane, `GroupKill` moved to `runtime/proc.rs`, `ai_detect.rs` updated.
+- [x] 5.5 Gate.
 
 ## PR6 / C6a: SQLite open (`Cargo.toml`, `src/runtime/chat_store.rs`)
 

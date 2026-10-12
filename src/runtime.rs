@@ -1632,4 +1632,56 @@ mod tests {
         assert_eq!(cancels, 0);
         assert!(recv(&mut rx).await.is_none(), "nothing follows the cap");
     }
+
+    // Task 5.2 across app and runtime: confirming `w q` on a streaming chat
+    // aborts its turn at once, and the engine stops sending.
+    #[tokio::test(start_paused = true)]
+    async fn closing_a_streaming_chat_stops_its_turn() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Flag(Arc<AtomicBool>);
+        impl Drop for Flag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let flag = dropped.clone();
+        let runner: chat::Runner = Arc::new(move |_request, tx| {
+            let flag = Flag(flag.clone());
+            Box::pin(async move {
+                let _flag = flag;
+                loop {
+                    if tx.send(StreamEvent::Delta("x".into())).await.is_err() {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            })
+        });
+        let (mut panes, mut rx) = panes_with_chats(runner);
+        let mut app = App::new(80, 25);
+        app.open_chat(None);
+        let chat = app.focused();
+        panes.apply(app.chat_send(chat, "hi"));
+        let (pane, turn, event) = recv(&mut rx).await.unwrap();
+        app.update(AppEvent::Chat(pane, turn, event));
+        let key = |c: char| AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        app.update(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char(' '),
+            KeyModifiers::CONTROL,
+        )));
+        app.update(key('w'));
+        app.update(key('q'));
+        let (outcome, _) = panes.apply(app.update(key('y')));
+        assert_eq!(outcome, Outcome::Continue);
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert!(dropped.load(Ordering::SeqCst), "the adapter was dropped");
+        let mut late = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            late.push(event);
+        }
+        for (pane, turn, event) in late {
+            assert_eq!(app.update(AppEvent::Chat(pane, turn, event)), vec![]);
+        }
+    }
 }
