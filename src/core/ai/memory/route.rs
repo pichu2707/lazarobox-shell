@@ -82,22 +82,39 @@ pub fn context(project: &str) -> Call {
     call(Method::Get, target, None)
 }
 
-pub fn register_session(id: &str, project: &str, directory: &str) -> Call {
-    let body = json!({"id": id, "project": project, "directory": directory});
-    call(Method::Post, "/sessions".into(), Some(body))
+/// The session id was not `lazarobox-` and 32 lowercase hex digits; no call
+/// is built for it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct BadSessionId;
+
+fn valid_session_id(id: &str) -> bool {
+    id.strip_prefix("lazarobox-").is_some_and(|hex| {
+        hex.len() == 32 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
 }
 
-pub fn end_session(id: &str, summary: &str) -> Call {
+pub fn register_session(id: &str, project: &str, directory: &str) -> Result<Call, BadSessionId> {
+    if !valid_session_id(id) {
+        return Err(BadSessionId);
+    }
+    let body = json!({"id": id, "project": project, "directory": directory});
+    Ok(call(Method::Post, "/sessions".into(), Some(body)))
+}
+
+pub fn end_session(id: &str, summary: &str) -> Result<Call, BadSessionId> {
+    if !valid_session_id(id) {
+        return Err(BadSessionId);
+    }
     let target = format!("/sessions/{}/end", percent_encode(id));
-    call(
+    Ok(call(
         Method::Post,
         target,
         Some(json!({"summary": safe_text(summary)})),
-    )
+    ))
 }
 
 pub fn save(session_id: &str, project: &str, note: &Note) -> Call {
-    let title = clean_title(&note.title);
+    let title = clean_title(&redact(&note.title).text);
     let body = json!({
         "session_id": session_id,
         "type": note.kind.as_str(),
@@ -130,6 +147,8 @@ mod tests {
     fn json_body(call: &Call) -> Value {
         serde_json::from_slice(call.body.as_ref().expect("body")).expect("json")
     }
+
+    const SID: &str = "lazarobox-0123456789abcdef0123456789abcdef";
 
     fn note(title: &str, content: &str) -> Note {
         Note {
@@ -180,24 +199,24 @@ mod tests {
 
     #[test]
     fn session_body_carries_id_project_and_directory() {
-        let call = register_session("lazarobox-ab", "widget", "/tmp/x y");
+        let call = register_session(SID, "widget", "/tmp/x y").expect("call");
         assert_eq!(
             (call.method, call.target.as_str()),
             (Method::Post, "/sessions")
         );
         assert_eq!(
             json_body(&call),
-            json!({"id": "lazarobox-ab", "project": "widget", "directory": "/tmp/x y"})
+            json!({"id": SID, "project": "widget", "directory": "/tmp/x y"})
         );
         assert!(!call.auth);
     }
 
     #[test]
     fn end_posts_the_redacted_capped_summary_to_the_session() {
-        let call = end_session("lazarobox-ab", "Notes: A; password=hunter2");
+        let call = end_session(SID, "Notes: A; password=hunter2").expect("call");
         assert_eq!(
             (call.method, call.target.as_str()),
-            (Method::Post, "/sessions/lazarobox-ab/end")
+            (Method::Post, format!("/sessions/{SID}/end").as_str())
         );
         let body = json_body(&call);
         let summary = body["summary"].as_str().expect("summary");
@@ -205,15 +224,42 @@ mod tests {
         assert!(!summary.contains("hunter2"));
         assert_eq!(body.as_object().expect("object").len(), 1);
 
-        let long = end_session("s", &"é".repeat(30_000));
+        let long = end_session(SID, &"é".repeat(30_000)).expect("call");
         let kept = json_body(&long)["summary"].as_str().expect("s").len();
         assert_eq!(kept, 50_000);
     }
 
     #[test]
-    fn a_session_id_cannot_add_a_path_segment_or_query() {
-        let call = end_session("a/../b?x=1 y", "s");
-        assert_eq!(call.target, "/sessions/a%2F..%2Fb%3Fx%3D1%20y/end");
+    fn a_session_id_of_another_shape_builds_no_call() {
+        let bad = [
+            "",
+            "lazarobox-ab",
+            "a/../b?x=1 y",
+            "lazarobox-0123456789ABCDEF0123456789abcdef",
+            "lazarobox-0123456789abcdef0123456789abcde",
+            "lazarobox-0123456789abcdef0123456789abcdef0",
+            "lazarobox-0123456789abcdef0123456789abcde\n",
+            "xlazarobox-0123456789abcdef0123456789abcdef",
+        ];
+        for id in bad {
+            assert_eq!(register_session(id, "p", "/x"), Err(BadSessionId), "{id:?}");
+            assert_eq!(end_session(id, "s"), Err(BadSessionId), "{id:?}");
+        }
+        assert!(register_session(SID, "p", "/x").is_ok());
+    }
+
+    #[test]
+    fn the_end_summary_never_reveals_a_secret_cut_by_the_cap() {
+        let secret = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+        for pad in [49_980, 49_990, 49_999, 50_000] {
+            let summary = format!("{} {secret} tail", "a".repeat(pad));
+            let call = end_session(SID, &summary).expect("call");
+            let body = json_body(&call);
+            let kept = body["summary"].as_str().expect("summary");
+            assert!(kept.len() <= CONTENT_CAP);
+            assert!(!kept.contains("sk-ant"), "pad {pad}");
+            assert!(!kept.contains("AbCdEf"), "pad {pad}");
+        }
     }
 
     #[test]
@@ -259,6 +305,23 @@ mod tests {
     }
 
     #[test]
+    fn save_never_sends_a_secret_from_the_title() {
+        let key = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+        for title in [
+            "Config password=hunter2 done".to_string(),
+            format!("Key {key} leaked"),
+        ] {
+            let call = save(SID, "p", &note(&title, "c"));
+            let raw = String::from_utf8(call.body.expect("body")).expect("utf8");
+            assert!(!raw.contains("hunter2"), "{title}");
+            assert!(
+                !raw.contains("sk-ant") && !raw.contains("AbCdEf"),
+                "{title}"
+            );
+        }
+    }
+
+    #[test]
     fn save_cuts_content_at_50000_bytes_on_a_char_boundary() {
         let three = save("s", "p", &note("t", &"日".repeat(17_000)));
         let content = json_body(&three)["content"]
@@ -291,8 +354,8 @@ mod tests {
             health(),
             project_current("/x"),
             context("p"),
-            register_session("s", "p", "/x"),
-            end_session("s", "t"),
+            register_session(SID, "p", "/x").expect("call"),
+            end_session(SID, "t").expect("call"),
             save("s", "p", &note("t", "c")),
         ];
         assert!(calls.iter().all(|c| !c.auth));

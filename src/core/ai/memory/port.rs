@@ -4,8 +4,9 @@
 use super::{context::ContextBlock, health::Health, kind::MemKind, reply::ProjectError};
 use crate::core::layout::PaneId;
 
-/// A note ready to be saved. `content` is NOT yet redacted: the call builder
-/// redacts and caps it, so no other path can send raw text.
+/// A note ready to be saved. `title` and `content` are NOT yet redacted: the
+/// call builder redacts them (and cleans the title and caps the content), so
+/// no other path can send raw text.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Note {
     pub kind: MemKind,

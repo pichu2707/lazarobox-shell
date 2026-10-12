@@ -22,6 +22,7 @@ fn every_builder_call_is_allowed_by_the_route_table() {
         port::Note,
         route::{self, Method as Verb},
     };
+    const SID: &str = "lazarobox-0123456789abcdef0123456789abcdef";
     let note = Note {
         kind: MemKind::Decision,
         title: "t".into(),
@@ -31,9 +32,9 @@ fn every_builder_call_is_allowed_by_the_route_table() {
         route::health(),
         route::project_current("/tmp/a b&c\r\nX: y"),
         route::context("my proj"),
-        route::register_session("lazarobox-ab", "p", "/x"),
-        route::end_session("lazarobox-ab", "s"),
-        route::save("lazarobox-ab", "p", &note),
+        route::register_session(SID, "p", "/x").unwrap(),
+        route::end_session(SID, "s").unwrap(),
+        route::save(SID, "p", &note),
         route::delete(7, "p"),
     ];
     for call in calls {
