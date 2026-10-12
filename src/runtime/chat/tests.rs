@@ -424,8 +424,7 @@ async fn the_adapter_flag_is_set_while_a_panic_unwinds_and_cleared_after() {
 #[tokio::test]
 async fn nested_adapter_polls_keep_the_flag_until_the_outermost_ends() {
     let outer = scoped(async {
-        let inner = scoped(async {}).await;
-        let _ = inner;
+        scoped(async {}).await;
         in_adapter_poll()
     });
     assert!(outer.await);
