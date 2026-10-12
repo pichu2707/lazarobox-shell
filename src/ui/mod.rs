@@ -5,7 +5,7 @@ pub mod theme;
 use ratatui::Frame;
 
 use crate::{
-    app::{App, InputMode},
+    app::{App, InputMode, PaneView},
     core::layout::Rect,
 };
 use components::{
@@ -41,7 +41,11 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
     let mut focused_rect = Rect::default();
     for &(id, rect) in &tiling.panes {
         let area = within(frame, rect);
-        let Some(pane) = app.pane(id) else { continue };
+        let Some(view) = app.pane_view(id) else {
+            continue;
+        };
+        // A chat widget lands with C7; until then a chat pane stays blank.
+        let PaneView::Pty(pane) = view else { continue };
         if area.is_empty() {
             continue;
         }
@@ -246,6 +250,20 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
+    }
+
+    // ai-chat C1: a chat pane has no widget yet; it is left blank and the
+    // shell next to it still draws.
+    #[test]
+    fn a_chat_pane_is_left_blank_and_places_no_cursor() {
+        let mut app = app();
+        app.open_chat(None);
+        let (_, chat) = app.tiling().panes[1];
+        let (buf, cursor) = draw(&app);
+        assert!(row(&buf, 0).starts_with("hi there"));
+        let chat_row: String = row(&buf, 0).chars().skip(usize::from(chat.x)).collect();
+        assert!(chat_row.trim().is_empty(), "{chat_row:?}");
+        assert_eq!(cursor, Position::new(0, 0));
     }
 
     #[test]

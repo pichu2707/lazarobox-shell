@@ -219,6 +219,12 @@ enum PaneContent {
     Chat(Box<ChatState>),
 }
 
+/// What the UI sees of a pane.
+pub enum PaneView<'a> {
+    Pty(&'a Pane),
+    Chat(&'a ChatState),
+}
+
 /// The kind of pane a split or a new tab creates.
 enum NewPane {
     Shell,
@@ -712,7 +718,7 @@ impl App {
 
     /// Test-only: opens a chat pane to the right of the focus.
     #[cfg(test)]
-    fn open_chat(&mut self, origin: Option<PathBuf>) -> Vec<Effect> {
+    pub(crate) fn open_chat(&mut self, origin: Option<PathBuf>) -> Vec<Effect> {
         self.split_with(Axis::X, NewPane::Chat(ChatState::new(origin)))
     }
 
@@ -720,6 +726,14 @@ impl App {
     #[cfg(test)]
     fn open_chat_tab(&mut self, origin: Option<PathBuf>) -> Vec<Effect> {
         self.new_tab_with(NewPane::Chat(ChatState::new(origin)))
+    }
+
+    /// What the UI draws for pane `id`, if it exists.
+    pub fn pane_view(&self, id: PaneId) -> Option<PaneView<'_>> {
+        self.panes.get(&id).map(|state| match &state.content {
+            PaneContent::Pty(pty) => PaneView::Pty(&pty.emu),
+            PaneContent::Chat(chat) => PaneView::Chat(chat),
+        })
     }
 
     /// Whether `id` names a pane with a PTY behind it.
@@ -6128,6 +6142,19 @@ mod app_tests {
             press(&mut a, "wq");
             assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
             assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+        }
+
+        // 1.4: the UI asks for a view, not for an emulator.
+        #[test]
+        fn pane_view_names_the_kind_of_each_pane() {
+            let mut a = launched(80, 25);
+            a.open_chat(Some("/srv".into()));
+            assert!(matches!(a.pane_view(PaneId::FIRST), Some(PaneView::Pty(_))));
+            let Some(PaneView::Chat(chat)) = a.pane_view(chat_id()) else {
+                panic!("a chat pane has a chat view");
+            };
+            assert_eq!(chat.origin_cwd(), Some(Path::new("/srv")));
+            assert!(a.pane_view(PaneId::for_test(9)).is_none());
         }
     }
 }
