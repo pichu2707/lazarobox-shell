@@ -6070,10 +6070,11 @@ mod app_tests {
         assert_eq!(App::new(80, 25).ai(), &AiConfig::default());
     }
 
-    /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
-    /// must leave untouched, then the chat-pane behaviour.
+    /// The live chat pane (ai-chat C8).
     mod chat_live;
 
+    /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
+    /// must leave untouched, then the chat-pane behaviour.
     mod seam {
         use super::*;
 
