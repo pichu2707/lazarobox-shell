@@ -33,6 +33,10 @@ const SCROLLBACK_LINES: usize = 10_000;
 /// exit key within this window is dropped.
 const HELD_EXIT_WINDOW: Duration = Duration::from_millis(500);
 
+/// Shown when `Prefix [` is pressed on a chat pane.
+const CHAT_COPY_REFUSED: &str =
+    "copy mode is not available in chat panes; Ctrl+Y copies the last answer";
+
 /// Byte sent to the child when the prefix is pressed twice (NUL, Ctrl+Space).
 const PREFIX_LITERAL: u8 = 0x00;
 
@@ -937,6 +941,11 @@ impl App {
         self.input = match step {
             Step::Enter(group) => InputMode::Group(group),
             Step::Run(PrefixAction::RequestQuit) => InputMode::Confirm(Confirm::Quit),
+            // A chat has no scrollback to select from: COPY is for shell panes.
+            Step::Run(PrefixAction::EnterCopy) if self.focused_pty().is_none() => {
+                self.notice = Some(CHAT_COPY_REFUSED.to_string());
+                InputMode::Terminal
+            }
             Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(self.enter_copy()),
             Step::Run(PrefixAction::EnterResize) => InputMode::Resize,
             Step::Run(PrefixAction::ClosePane) if self.tabs.len() > 1 || self.tab_panes() > 1 => {
@@ -967,7 +976,8 @@ impl App {
             ) => InputMode::Terminal,
         };
         match step {
-            Step::Run(PrefixAction::SendPrefixLiteral) => {
+            // The literal is a byte for a child; a chat has none, so it swallows it.
+            Step::Run(PrefixAction::SendPrefixLiteral) if self.focused_pty().is_some() => {
                 vec![Effect::WritePty(self.tab().focus, vec![PREFIX_LITERAL])]
             }
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
@@ -5967,6 +5977,87 @@ mod app_tests {
             a.update(key('y'));
             press(&mut a, "wv");
             assert_eq!(a.focused(), PaneId::for_test(4));
+        }
+
+        // 1.2: the prefix still works on a chat, but nothing reaches a PTY.
+        #[test]
+        fn copy_on_a_chat_is_refused_with_the_notice() {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            let effects = press(&mut a, "[");
+            assert_eq!(effects, vec![]);
+            assert_eq!(a.input(), InputMode::Terminal);
+            assert_eq!(
+                a.notice(),
+                Some("copy mode is not available in chat panes; Ctrl+Y copies the last answer")
+            );
+            assert_eq!(a.copy_position(), None);
+            assert!(a.take_dirty());
+        }
+
+        #[test]
+        fn the_notice_goes_away_with_the_next_key() {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            press(&mut a, "[");
+            a.update(key('x'));
+            assert_eq!(a.notice(), None);
+        }
+
+        #[test]
+        fn a_second_prefix_on_a_chat_is_swallowed() {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            a.update(ctrl_space());
+            assert_eq!(a.input(), InputMode::Prefix);
+            assert_eq!(a.update(ctrl_space()), vec![]);
+            assert_eq!(a.input(), InputMode::Terminal);
+        }
+
+        #[test]
+        fn a_second_prefix_on_a_shell_still_sends_the_literal() {
+            let mut a = launched(80, 25);
+            a.update(ctrl_space());
+            assert_eq!(
+                a.update(ctrl_space()),
+                vec![Effect::WritePty(PaneId::FIRST, vec![0])]
+            );
+        }
+
+        #[test]
+        fn chat_keys_and_pastes_never_write_a_pty() {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            let enter = AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            for event in [key('x'), enter, esc(), AppEvent::Paste("hi\nthere".into())] {
+                assert_eq!(a.update(event.clone()), vec![], "{event:?}");
+            }
+            assert_eq!(a.input(), InputMode::Terminal);
+        }
+
+        #[test]
+        fn repeat_rules_hold_on_a_chat() {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            let repeat = |code, modifiers| {
+                AppEvent::Key(KeyEvent::new_with_kind(
+                    code,
+                    modifiers,
+                    KeyEventKind::Repeat,
+                ))
+            };
+            assert_eq!(
+                a.update(repeat(KeyCode::Char('x'), KeyModifiers::NONE)),
+                vec![]
+            );
+            a.update(ctrl_space());
+            // A held key must not trigger a one-shot decision in PREFIX.
+            assert_eq!(
+                a.update(repeat(KeyCode::Char('['), KeyModifiers::NONE)),
+                vec![]
+            );
+            assert_eq!(a.input(), InputMode::Prefix);
+            assert_eq!(a.notice(), None);
         }
     }
 }
