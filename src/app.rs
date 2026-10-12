@@ -5331,6 +5331,77 @@ mod app_tests {
         assert_eq!(a.ai(), &ai_of("ollama", "qwen2:7b"));
     }
 
+    /// Opens the picker of `Set all tasks` on `none` and chooses it: the
+    /// general assignment goes from `ollama` to unset.
+    fn clear_all(a: &mut App) {
+        for _ in 0..2 {
+            a.update(key('j'));
+        }
+        a.update(code(KeyCode::Enter));
+        a.update(key('k'));
+        a.update(code(KeyCode::Enter));
+    }
+
+    // Spec: save before the first detection result.
+    #[test]
+    fn s_saves_the_ai_draft_before_the_first_detection() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        clear_all(&mut a);
+        let effects = a.update(key('s'));
+        let edit = |key, value: &'static str| ConfigEdit {
+            table: "ai",
+            key,
+            value: value.into(),
+        };
+        assert_eq!(
+            effects,
+            vec![Effect::SaveConfig(vec![
+                edit("engine", ""),
+                edit("model", "")
+            ])]
+        );
+        assert_eq!(a.input(), InputMode::Menu);
+    }
+
+    // Spec: Esc reverts the AI draft along with the settings.
+    #[test]
+    fn esc_discards_the_ai_draft_and_the_next_menu_starts_from_the_saved_value() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        clear_all(&mut a);
+        assert_eq!(a.menu().unwrap().ai_draft(), AiConfig::default());
+        a.update(esc());
+        assert!(a.menu().is_none());
+        assert_eq!(a.ai(), &ai_of("ollama", "qwen2:7b"));
+        open_menu(&mut a);
+        assert_eq!(a.menu().unwrap().ai_draft(), ai_of("ollama", "qwen2:7b"));
+    }
+
+    // Spec: a failed save keeps the picker where it was.
+    #[test]
+    fn a_failed_save_keeps_the_picker_level_and_shows_the_error() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        clear_all(&mut a);
+        for _ in 0..2 {
+            a.update(key('j'));
+        }
+        a.update(code(KeyCode::Enter));
+        a.update(key('j'));
+        a.update(key('j'));
+        a.update(code(KeyCode::Enter));
+        let before = a.menu().unwrap().clone();
+        a.update(key('s'));
+        a.update(AppEvent::ConfigSaveFailed("save failed: disk full".into()));
+        let menu = a.menu().unwrap();
+        assert_eq!(menu.error(), Some("save failed: disk full"));
+        assert_eq!(menu.rows(&a.config), before.rows(&a.config));
+        assert_eq!(a.input(), InputMode::Menu);
+    }
+
     // Characterization: the file's values reach the App through `with_ai`.
     #[test]
     fn with_ai_carries_the_files_values() {
