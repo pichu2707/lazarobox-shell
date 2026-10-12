@@ -3,7 +3,9 @@
 
 use crate::core::ai::sanitize::clean;
 
-/// The most bytes of context data kept.
+/// The most bytes of context data kept. The cap is on the data only: with
+/// the opening line, the fixed data line and the closing delimiter the whole
+/// block is at most about 2.3 KB.
 pub const DATA_CAP: usize = 2000;
 
 /// The longest project name shown in the opening line, in characters.
