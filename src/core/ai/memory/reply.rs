@@ -38,7 +38,7 @@ pub struct Saved {
 /// What a delete came to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DeleteOutcome {
-    /// 2xx, or 404 (already gone).
+    /// 2xx, or 404 `observation not found` (already gone).
     Deleted,
     /// 401 or 403.
     Refused,
@@ -64,66 +64,45 @@ fn fail(reason: String) -> Failure {
     Failure { reason }
 }
 
-/// A short reason for a failed call: a known `code` as fixed text, else the
-/// server `error` sanitized (control characters gone, spaces collapsed, cut to
-/// `REASON_CAP`), else the status. Nothing of the request is echoed.
+/// A short reason for a failed call: fixed text for a `code` in a small
+/// allowlist, else `engram error (HTTP <status>)`. The server `error` text and
+/// unknown codes are never echoed, and nothing of the request is.
 fn failure(status: u16, body: &[u8]) -> Failure {
-    let map = object(body);
-    let from_code = map
-        .as_ref()
-        .and_then(|m| m.get("code")?.as_str())
-        .filter(|c| {
-            !c.is_empty() && c.len() <= 60 && c.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
-        })
-        .map(|c| match c {
-            "session_project_mismatch" => "session project mismatch".to_string(),
-            "session_already_ended" => "session already ended".to_string(),
-            "unknown_project" => "unknown project".to_string(),
-            other => other.replace('_', " "),
-        });
-    let from_error = || {
-        let text = map.as_ref()?.get("error")?.as_str()?;
-        let flat: String = clean(text)
-            .chars()
-            .map(|c| if c.is_control() { ' ' } else { c })
-            .collect();
-        let flat: String = flat
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .take(REASON_CAP)
-            .collect();
-        (!flat.is_empty()).then_some(flat)
+    let known = match code(body).as_deref() {
+        Some("session_project_mismatch") => Some("session project mismatch"),
+        Some("session_already_ended") => Some("session already ended"),
+        Some("unknown_project") => Some("unknown project"),
+        _ => None,
     };
-    fail(
-        from_code
-            .or_else(from_error)
-            .unwrap_or_else(|| format!("HTTP {status}")),
-    )
+    fail(known.map_or_else(|| format!("engram error (HTTP {status})"), str::to_string))
 }
 
 /// Resolves the project of `GET /project/current`. The server never answers
 /// 404 or 409 there, so the status is ignored and `project_source` decides: a
 /// `git_*` source with a non-empty project resolves, any other source is
-/// `NotGit`, a reply of another shape is `Invalid`.
+/// `NotGit` (so is a JSON object without `project_source` or `project`, or with
+/// a `null` project), a reply that is not a JSON object is `Invalid`.
 pub fn parse_project(_status: u16, body: &[u8]) -> Result<String, ProjectError> {
     let map = object(body).ok_or(ProjectError::Invalid)?;
-    let source = map
-        .get("project_source")
-        .and_then(|v| v.as_str())
-        .ok_or(ProjectError::Invalid)?;
-    let project = map
-        .get("project")
-        .and_then(|v| v.as_str())
-        .ok_or(ProjectError::Invalid)?;
+    let field = |name: &str| match map.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(text)) => Ok(Some(text.as_str())),
+        Some(_) => Err(ProjectError::Invalid),
+    };
+    let (Some(source), Some(project)) = (field("project_source")?, field("project")?) else {
+        return Err(ProjectError::NotGit);
+    };
     if !source.starts_with("git_") {
         return Err(ProjectError::NotGit);
     }
     if project.trim().is_empty() {
         return Err(ProjectError::NotGit);
     }
-    if project.len() > PROJECT_CAP || clean(project) != project {
+    if project.len() > PROJECT_CAP
+        || project.chars().any(char::is_control)
+        || project.trim() != project
+        || clean(project) != project
+    {
         return Err(ProjectError::Invalid);
     }
     Ok(project.to_string())
@@ -192,11 +171,18 @@ pub fn parse_saved(status: u16, body: &[u8]) -> Result<Saved, Failure> {
     Ok(Saved { id, revision })
 }
 
-/// `DELETE /observations/{id}`: a 2xx or a 404 is deleted, 401 and 403 are a
-/// refusal, anything else a failure.
-pub fn parse_delete(status: u16, _body: &[u8]) -> DeleteOutcome {
+/// `DELETE /observations/{id}`: a 2xx, or a 404 whose `error` is exactly
+/// `observation not found`, is deleted; 401 and 403 are a refusal; anything
+/// else (any other 404 included) a failure.
+pub fn parse_delete(status: u16, body: &[u8]) -> DeleteOutcome {
+    let gone = || {
+        object(body).is_some_and(|m| {
+            m.get("error").and_then(|v| v.as_str()) == Some("observation not found")
+        })
+    };
     match status {
-        200..=299 | 404 => DeleteOutcome::Deleted,
+        200..=299 => DeleteOutcome::Deleted,
+        404 if gone() => DeleteOutcome::Deleted,
         401 | 403 => DeleteOutcome::Refused,
         _ => DeleteOutcome::Failed,
     }
@@ -262,10 +248,16 @@ mod tests {
         for body in [
             &b"<html>"[..],
             b"[]",
-            b"{}",
-            br#"{"project":"a"}"#,
+            b"7",
             br#"{"project":7,"project_source":"git_remote"}"#,
+            br#"{"project":"a","project_source":7}"#,
             br#"{"project":"a\u001b[31m","project_source":"git_remote"}"#,
+            br#"{"project":"a\nb","project_source":"git_remote"}"#,
+            br#"{"project":"a\tb","project_source":"git_remote"}"#,
+            br#"{"project":"a\u007fb","project_source":"git_remote"}"#,
+            br#"{"project":" app","project_source":"git_remote"}"#,
+            br#"{"project":"app ","project_source":"git_remote"}"#,
+            br#"{"project":"app\n","project_source":"git_remote"}"#,
         ] {
             assert_eq!(
                 parse_project(200, body),
@@ -275,6 +267,24 @@ mod tests {
             );
         }
         assert_eq!(parse_project(500, b""), Err(ProjectError::Invalid));
+    }
+
+    #[test]
+    fn a_reply_without_the_project_fields_is_not_git() {
+        for body in [
+            &b"{}"[..],
+            br#"{"project":"a"}"#,
+            br#"{"project_source":"git_remote"}"#,
+            br#"{"project":null,"project_source":"git_remote"}"#,
+            br#"{"project":null,"project_source":"dir_basename"}"#,
+        ] {
+            assert_eq!(
+                parse_project(200, body),
+                Err(ProjectError::NotGit),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
     }
 
     #[test]
@@ -397,9 +407,51 @@ mod tests {
     }
 
     #[test]
-    fn an_unregistered_session_failure_uses_the_server_error() {
+    fn an_unregistered_session_failure_does_not_echo_the_server_error() {
         let (status, body) = fx!("save_unregistered_session_404");
-        assert_eq!(reason_of(parse_saved(status, body)), "session not found");
+        assert_eq!(
+            reason_of(parse_saved(status, body)),
+            "engram error (HTTP 404)"
+        );
+    }
+
+    #[test]
+    fn only_allowlisted_codes_get_their_own_text() {
+        let reason = |status: u16, body: &str| reason_of(parse_saved(status, body.as_bytes()));
+        assert_eq!(
+            reason(409, r#"{"code":"session_already_ended"}"#),
+            "session already ended"
+        );
+        assert_eq!(
+            reason(404, r#"{"code":"unknown_project"}"#),
+            "unknown project"
+        );
+        assert_eq!(
+            reason(400, r#"{"code":"made_up_code","error":"leaks SECRET"}"#),
+            "engram error (HTTP 400)"
+        );
+        assert_eq!(
+            reason(500, r#"{"error":"password=hunter2 in /home/x"}"#),
+            "engram error (HTTP 500)"
+        );
+        assert_eq!(reason(502, "<html>"), "engram error (HTTP 502)");
+    }
+
+    #[test]
+    fn a_save_id_beyond_i64_is_a_failure() {
+        for body in [
+            &br#"{"id":9223372036854775808}"#[..],
+            br#"{"id":18446744073709551615}"#,
+            br#"{"id":1e30}"#,
+        ] {
+            assert!(
+                parse_saved(201, body).is_err(),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+        let max = parse_saved(201, br#"{"id":9223372036854775807}"#);
+        assert_eq!(max.expect("saved").id, i64::MAX);
     }
 
     #[test]
@@ -421,7 +473,7 @@ mod tests {
             assert!(!reason.is_empty() && reason.chars().count() <= REASON_CAP);
             assert!(!reason.chars().any(char::is_control));
         }
-        assert!(reason_of(parse_saved(502, b"")).contains("502"));
+        assert_eq!(reason_of(parse_saved(502, b"")), "engram error (HTTP 502)");
     }
 
     #[test]
@@ -434,6 +486,28 @@ mod tests {
             assert_eq!(parse_delete(status, body), DeleteOutcome::Deleted);
         }
         assert_eq!(parse_delete(204, b""), DeleteOutcome::Deleted);
+    }
+
+    #[test]
+    fn only_an_observation_not_found_404_counts_as_deleted() {
+        for body in [
+            &b""[..],
+            b"<html>",
+            b"{}",
+            br#"{"error":"project not found"}"#,
+            br#"{"error":"observation not found!"}"#,
+            br#"{"code":"unknown_project"}"#,
+            br#"{"error":7}"#,
+        ] {
+            assert_eq!(
+                parse_delete(404, body),
+                DeleteOutcome::Failed,
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+        let ok = parse_delete(404, br#"{"error":"observation not found"}"#);
+        assert_eq!(ok, DeleteOutcome::Deleted);
     }
 
     #[test]
