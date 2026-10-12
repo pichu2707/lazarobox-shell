@@ -725,6 +725,8 @@ dependencies = [
  "tokio",
  "toml",
  "toml_edit",
+ "unicode-segmentation",
+ "unicode-width",
  "vt100",
 ]
 

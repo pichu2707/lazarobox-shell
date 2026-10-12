@@ -297,6 +297,13 @@ impl PaneState {
         }
     }
 
+    fn chat_state(&self) -> Option<&ChatState> {
+        match &self.content {
+            PaneContent::Chat(chat) => Some(chat),
+            PaneContent::Pty(_) => None,
+        }
+    }
+
     fn chat_mut(&mut self) -> Option<&mut ChatState> {
         match &mut self.content {
             PaneContent::Chat(chat) => Some(chat),
@@ -778,6 +785,15 @@ impl App {
         }
     }
 
+    /// Test-only: types `text` into the composer of chat pane `id`.
+    #[cfg(test)]
+    pub(crate) fn chat_type(&mut self, id: PaneId, text: &str) {
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.composer_mut().paste(text);
+            self.dirty = true;
+        }
+    }
+
     /// Test-only: cancels the turn of chat pane `id`.
     #[cfg(test)]
     pub(crate) fn chat_cancel(&mut self, id: PaneId) -> Vec<Effect> {
@@ -883,6 +899,11 @@ impl App {
             InputMode::Copy(_) => CursorShape {
                 kind: CursorKind::Block,
                 blinking: false,
+            },
+            // A chat has no child to ask: its composer is an editor, so a bar.
+            _ if self.focused_state().chat_state().is_some() => CursorShape {
+                kind: CursorKind::Bar,
+                blinking: true,
             },
             _ => self
                 .focused_pty()
@@ -3320,6 +3341,22 @@ mod app_tests {
         a.update(key('h'));
         assert_eq!(a.focused(), PaneId::FIRST);
         assert_eq!(a.cursor_shape(), shape(CursorKind::Underline, false));
+    }
+
+    #[test]
+    fn a_focused_chat_shows_a_blinking_bar_and_the_shell_shape_comes_back() {
+        let mut a = app();
+        a.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(b"\x1b[2 q".to_vec()),
+        ));
+        assert_eq!(a.cursor_shape(), shape(CursorKind::Block, false));
+        a.open_chat(None);
+        assert_eq!(a.cursor_shape(), shape(CursorKind::Bar, true));
+        a.update(ctrl_space());
+        a.update(key('h'));
+        assert_eq!(a.focused(), PaneId::FIRST);
+        assert_eq!(a.cursor_shape(), shape(CursorKind::Block, false));
     }
 
     #[test]
@@ -6414,6 +6451,46 @@ mod app_tests {
             assert_eq!(a.update(finish(chat_id(), 1)), vec![]);
             assert_eq!(chat_of(&a, chat_id()).phase(), Phase::Idle);
             assert_eq!(last(&a, chat_id()), ("Hello".into(), MsgStatus::Complete));
+        }
+
+        fn thinking(id: PaneId, turn: u64, text: &str) -> AppEvent {
+            AppEvent::Chat(id, turn, StreamEvent::ThinkingDelta(text.into()))
+        }
+
+        #[test]
+        fn a_thinking_delta_redraws_the_chat_and_emits_nothing() {
+            let mut a = streaming();
+            a.take_dirty();
+            assert_eq!(a.update(thinking(chat_id(), 1, "Let me")), vec![]);
+            assert!(a.take_dirty(), "the reasoning block is redrawn");
+            // A stale turn changes and draws nothing.
+            assert_eq!(a.update(thinking(chat_id(), 9, "stale")), vec![]);
+            assert!(!a.take_dirty());
+        }
+
+        #[test]
+        fn reasoning_never_reaches_an_effect_or_the_next_request() {
+            let mut a = streaming();
+            let mut effects = Vec::new();
+            effects.extend(a.update(thinking(chat_id(), 1, "secret plan")));
+            effects.extend(a.update(delta(chat_id(), 1, "answer")));
+            effects.extend(a.update(finish(chat_id(), 1)));
+            let next = a.chat_send(chat_id(), "again");
+            effects.extend(next.clone());
+            assert!(matches!(next.as_slice(), [Effect::ChatSend { .. }]));
+            assert!(
+                !format!("{effects:?}").contains("secret plan"),
+                "no effect carries the reasoning: {effects:?}"
+            );
+            let Some(Effect::ChatSend { request, .. }) = next.first() else {
+                panic!("one ChatSend");
+            };
+            let sent: Vec<&str> = request
+                .messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect();
+            assert_eq!(sent, ["hi", "answer", "again"]);
         }
 
         #[test]

@@ -9,6 +9,7 @@ use crate::{
     core::layout::Rect,
 };
 use components::{
+    chat::ChatView,
     menu::MenuPopup,
     separators::SeparatorView,
     statusline::StatusLine,
@@ -48,11 +49,25 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
         let Some(view) = app.pane_view(id) else {
             continue;
         };
-        // A chat widget lands with C7; until then a chat pane stays blank.
-        let PaneView::Pty(pane) = view else { continue };
         if area.is_empty() {
             continue;
         }
+        let pane = match view {
+            PaneView::Pty(pane) => pane,
+            PaneView::Chat(chat) => {
+                let chat_view = ChatView::new(chat, theme);
+                // The composer owns the real cursor of a focused chat; MENU
+                // hides it like it hides a shell's.
+                let cursor = (id == focused && app.menu().is_none())
+                    .then(|| chat_view.cursor(area))
+                    .flatten();
+                frame.render_widget(chat_view, area);
+                if let Some(position) = cursor {
+                    frame.set_cursor_position(position);
+                }
+                continue;
+            }
+        };
         let highlight = if id == focused {
             app.copy_highlight()
         } else {
@@ -255,18 +270,75 @@ mod tests {
         );
     }
 
-    // ai-chat C1: a chat pane has no widget yet; it is left blank and the
-    // shell next to it still draws.
+    // ai-chat C7: a chat pane draws its transcript and composer next to a
+    // shell that still draws.
     #[test]
-    fn a_chat_pane_is_left_blank_and_places_no_cursor() {
+    fn a_chat_pane_draws_its_transcript_and_composer() {
         let mut app = app();
         app.open_chat(None);
+        let id = PaneId::for_test(2);
         let (_, chat) = app.tiling().panes[1];
-        let (buf, cursor) = draw(&app);
+        app.chat_send(id, "question");
+        app.update(AppEvent::Chat(
+            id,
+            1,
+            crate::core::ai::chat::engine::StreamEvent::Delta("answer".into()),
+        ));
+        app.chat_type(id, "draft");
+        let (buf, _) = draw(&app);
+        let at = |y: u16| -> String {
+            row(&buf, y)
+                .chars()
+                .skip(usize::from(chat.x))
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        };
         assert!(row(&buf, 0).starts_with("hi there"));
-        let chat_row: String = row(&buf, 0).chars().skip(usize::from(chat.x)).collect();
-        assert!(chat_row.trim().is_empty(), "{chat_row:?}");
-        assert_eq!(cursor, Position::new(0, 0));
+        assert_eq!(at(0), "› question");
+        assert_eq!(at(2), "answer");
+        assert_eq!(at(chat.height - 1), "draft");
+    }
+
+    // 8.0: the composer owns the real cursor of a focused chat.
+    #[test]
+    fn a_focused_chat_places_the_cursor_in_its_composer() {
+        let mut app = app();
+        app.open_chat(None);
+        let id = PaneId::for_test(2);
+        let (_, chat) = app.tiling().panes[1];
+        assert_eq!(app.focused(), id);
+        assert_eq!(
+            draw(&app).1,
+            Position::new(chat.x, chat.y + chat.height - 1),
+            "empty composer"
+        );
+        app.chat_type(id, "draft");
+        assert_eq!(
+            draw(&app).1,
+            Position::new(chat.x + 5, chat.y + chat.height - 1)
+        );
+    }
+
+    #[test]
+    fn an_unfocused_chat_leaves_the_cursor_to_the_focused_shell() {
+        let mut app = app();
+        app.open_chat(None);
+        app.chat_type(PaneId::for_test(2), "draft");
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        press(&mut app, 'h', KeyModifiers::NONE);
+        assert_eq!(app.focused(), PaneId::FIRST);
+        assert_eq!(draw(&app).1, Position::new(8, 0));
+    }
+
+    #[test]
+    fn menu_hides_the_cursor_of_a_chat() {
+        let mut app = app();
+        app.open_chat(None);
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        press(&mut app, 'm', KeyModifiers::NONE);
+        assert!(app.menu().is_some());
+        assert_eq!(draw(&app).1, Position::new(0, 0));
     }
 
     // The separator next to a focused chat gets the accent, like any pane.

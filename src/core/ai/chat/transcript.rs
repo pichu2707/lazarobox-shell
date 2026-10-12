@@ -1,0 +1,279 @@
+//! The transcript of a chat: entries turned into wrapped, classified lines,
+//! and the scroll position over them. Pure: the widget only paints.
+
+use std::{cell::RefCell, sync::Arc};
+
+use super::{
+    ChatState, Entry, ReasoningState,
+    engine::Role,
+    wrap::{expand_tabs, wrap_ranges, wrap_words},
+};
+
+/// What a transcript line is, which decides its style.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LineKind {
+    User,
+    Assistant,
+    /// Inside a fenced block, fences included.
+    Code,
+    System,
+    /// `waiting for the model…` / `loading model…`.
+    Waiting,
+    /// `(cancelled)` and the like, after a partial answer.
+    Mark,
+    /// Reasoning text behind the gutter.
+    Reasoning,
+    /// `▸ reasoning (N.Ns)` / `▾ reasoning (N.Ns)`.
+    ReasoningHead,
+    Blank,
+}
+
+/// One row of the transcript, as wide as the pane at most.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Line {
+    pub kind: LineKind,
+    pub text: String,
+}
+
+/// The gutter in front of every reasoning row.
+pub const GUTTER: &str = "┊ ";
+/// In front of the first row of a user message.
+pub const USER_PREFIX: &str = "› ";
+/// In front of a system line.
+pub const SYSTEM_PREFIX: &str = "• ";
+
+/// The rows of the transcript of `chat` at `width` columns.
+pub fn build(chat: &ChatState, width: usize) -> Vec<Line> {
+    let mut out: Vec<Line> = Vec::new();
+    let mut after_reasoning = false;
+    for entry in chat.entries() {
+        let mut rows = Vec::new();
+        entry_rows(entry, width, &mut rows);
+        if rows.is_empty() {
+            continue;
+        }
+        // An answer sits right under the reasoning that came before it.
+        let answers = matches!(entry, Entry::Message(m) if m.role == Role::Assistant);
+        let glued = after_reasoning && answers;
+        if !out.is_empty() && !glued {
+            out.push(blank());
+        }
+        out.extend(rows);
+        after_reasoning = matches!(entry, Entry::Reasoning(_));
+    }
+    if let Some(text) = chat.waiting_text() {
+        if !out.is_empty() {
+            out.push(blank());
+        }
+        push_wrapped(&mut out, LineKind::Waiting, "", "", text, width);
+    }
+    out
+}
+
+fn blank() -> Line {
+    Line {
+        kind: LineKind::Blank,
+        text: String::new(),
+    }
+}
+
+/// The rows of one entry.
+fn entry_rows(entry: &Entry, width: usize, out: &mut Vec<Line>) {
+    match entry {
+        Entry::System(text) => {
+            push_wrapped(out, LineKind::System, SYSTEM_PREFIX, "  ", text, width);
+        }
+        Entry::Message(msg) if msg.role == Role::User => {
+            push_wrapped(out, LineKind::User, USER_PREFIX, "  ", &msg.text, width);
+        }
+        Entry::Message(msg) => {
+            assistant_rows(&msg.text, width, out);
+            if msg.status.is_partial() {
+                let mark = format!("({})", msg.status.as_str());
+                push_wrapped(out, LineKind::Mark, "", "", &mark, width);
+            }
+        }
+        Entry::Reasoning(block) => {
+            let head = |glyph: char| format!("{glyph} reasoning ({})", block.seconds_label());
+            match block.state() {
+                ReasoningState::Streaming => {}
+                ReasoningState::Collapsed => {
+                    push_wrapped(out, LineKind::ReasoningHead, "", "", &head('▸'), width);
+                    return;
+                }
+                ReasoningState::Expanded => {
+                    push_wrapped(out, LineKind::ReasoningHead, "", "", &head('▾'), width);
+                }
+            }
+            if !block.text().is_empty() {
+                push_wrapped(
+                    out,
+                    LineKind::Reasoning,
+                    GUTTER,
+                    GUTTER,
+                    block.text(),
+                    width,
+                );
+            }
+        }
+    }
+}
+
+/// An answer: plain text with fenced blocks drawn as code. An unclosed fence
+/// makes the rest of the message code. The fence lines are code too, shown as
+/// they are.
+fn assistant_rows(text: &str, width: usize, out: &mut Vec<Line>) {
+    let mut in_code = false;
+    for line in text.split('\n') {
+        let fence = is_fence(line, in_code);
+        let kind = if fence || in_code {
+            LineKind::Code
+        } else {
+            LineKind::Assistant
+        };
+        if fence {
+            in_code = !in_code;
+        }
+        push_wrapped(out, kind, "", "", line, width);
+    }
+}
+
+/// Whether `line` is a fence. One that closes a block is any line starting
+/// with three backticks. One that opens a block must have no backtick after
+/// its opening run (CommonMark), so inline code like ```a``` is prose.
+fn is_fence(line: &str, in_code: bool) -> bool {
+    let Some(rest) = line.trim_start().strip_prefix("```") else {
+        return false;
+    };
+    in_code || !rest.trim_start_matches('`').contains('`')
+}
+
+/// Wraps every line of `text` to `width` columns less the prefix. `first`
+/// leads the first row, `rest` every other one.
+fn push_wrapped(
+    out: &mut Vec<Line>,
+    kind: LineKind,
+    first: &str,
+    rest: &str,
+    text: &str,
+    width: usize,
+) {
+    let room = width.saturating_sub(first.chars().count()).max(1);
+    let mut lead = first;
+    for logical in text.split('\n') {
+        // A tab cell is not drawn, so tabs are spaces before wrapping.
+        let logical = expand_tabs(logical);
+        let logical = logical.as_str();
+        // Code keeps every character where it is; prose breaks at spaces.
+        let rows = if kind == LineKind::Code {
+            let chars: Vec<char> = logical.chars().collect();
+            wrap_ranges(&chars, room)
+                .into_iter()
+                .map(|range| chars[range].iter().collect())
+                .collect()
+        } else {
+            wrap_words(logical, room)
+        };
+        for row in rows {
+            out.push(Line {
+                kind,
+                text: format!("{lead}{row}"),
+            });
+            lead = rest;
+        }
+    }
+}
+
+/// Where the view is: glued to the bottom, or pinned to a line.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Scroll {
+    #[default]
+    Follow,
+    /// The first visible line.
+    Pinned(usize),
+}
+
+impl Scroll {
+    /// The first visible line for `total` lines in `height` rows.
+    pub fn top(self, total: usize, height: usize) -> usize {
+        let last = total.saturating_sub(height);
+        match self {
+            Scroll::Follow => last,
+            Scroll::Pinned(top) => top.min(last),
+        }
+    }
+
+    /// One page up, with one row of overlap. Content that fits stays glued.
+    pub fn page_up(self, total: usize, height: usize) -> Scroll {
+        if total <= height {
+            return Scroll::Follow;
+        }
+        Scroll::Pinned(self.top(total, height).saturating_sub(page(height)))
+    }
+
+    /// One page down; reaching the end glues the view to the bottom again.
+    pub fn page_down(self, total: usize, height: usize) -> Scroll {
+        match self {
+            Scroll::Follow => Scroll::Follow,
+            Scroll::Pinned(_) => {
+                let top = self.top(total, height) + page(height);
+                if top >= total.saturating_sub(height) {
+                    Scroll::Follow
+                } else {
+                    Scroll::Pinned(top)
+                }
+            }
+        }
+    }
+}
+
+fn page(height: usize) -> usize {
+    height.saturating_sub(1).max(1)
+}
+
+/// The wrapped lines of one (width, generation), kept until either changes.
+#[derive(Default)]
+pub struct LineCache(RefCell<Option<CachedLines>>);
+
+/// Width, generation and the lines built for them.
+type CachedLines = (usize, u64, Arc<Vec<Line>>);
+
+impl LineCache {
+    pub fn get(&self, chat: &ChatState, width: usize) -> Arc<Vec<Line>> {
+        let generation = chat.generation();
+        let mut slot = self.0.borrow_mut();
+        if let Some((w, g, lines)) = &*slot
+            && *w == width
+            && *g == generation
+        {
+            return Arc::clone(lines);
+        }
+        let lines = Arc::new(build(chat, width));
+        *slot = Some((width, generation, Arc::clone(&lines)));
+        lines
+    }
+}
+
+// Derived data: `eq` is always true so the cache never affects state equality, and `clone` drops it.
+impl Clone for LineCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for LineCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for LineCache {}
+
+impl std::fmt::Debug for LineCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LineCache")
+    }
+}
+
+#[cfg(test)]
+mod tests;

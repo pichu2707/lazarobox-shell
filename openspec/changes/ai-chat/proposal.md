@@ -74,12 +74,13 @@ Analysts and programmers who work in lazarobox have to leave the multiplexer to 
 - The conversation list.
 - The profiles, with built-ins, overrides, the config key and the menu row.
 - The README notes on privacy and the lack of encryption.
+- The thinking indicator (user-approved scope change, 2026-10-12): an animated bar, spinner, phase, model and elapsed time in the statusline while a chat streams, and engine reasoning shown dimmed in the chat pane and folded to one line when the answer starts. Reasoning is never stored.
 
 ### Out of Scope
 - Tools, approvals and terminal context (P3).
 - An opencode adapter.
 - Cloud APIs and reqwest (P5).
-- Shared or summarized memory.
+- Shared or summarized memory. D15 is superseded by a planned follow-up change `engram-memory` (project memory by tags and categories); it is not designed here.
 - Encryption.
 - Custom profiles.
 - Tables and full markdown.

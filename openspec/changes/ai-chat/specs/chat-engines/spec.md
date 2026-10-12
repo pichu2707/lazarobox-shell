@@ -7,12 +7,22 @@ How a chat turn reaches a model and how the answer comes back: the `ChatEngine` 
 ## ADDED Requirements
 
 ### Requirement: ChatEngine contract
-Every adapter MUST implement one contract: it receives a model name, the system prompt and the ordered message history, and it produces events in order: zero or more text deltas, then exactly one terminal event (final or error). It MUST support cancel, after which it produces no more events. The contract MUST NOT expose tool calls. Adapters exist for `ollama`; for `lmstudio`, `llamacpp` and `vllm` (OpenAI-compatible); and for `claude`, `codex` and `gemini` (CLIs). `opencode` has no adapter. Each adapter is usable as soon as it exists; an engine without an adapter resolves to the unsupported state.
+Every adapter MUST implement one contract: it receives a model name, the system prompt and the ordered message history, and it produces events in order: zero or more content events, each either a text delta (part of the answer) or a thinking delta (part of the engine's reasoning, a distinct event type that is never a text delta), then exactly one terminal event (final or error). An engine or model that exposes no reasoning MUST simply never produce a thinking delta. It MUST support cancel, after which it produces no more events. The contract MUST NOT expose tool calls. Adapters exist for `ollama`; for `lmstudio`, `llamacpp` and `vllm` (OpenAI-compatible); and for `claude`, `codex` and `gemini` (CLIs). `opencode` has no adapter. Each adapter is usable as soon as it exists; an engine without an adapter resolves to the unsupported state.
 
 #### Scenario: Events in order [auto]
 - GIVEN a fake adapter that emits `a`, `b` and a final event
 - WHEN a turn runs
 - THEN the consumer sees delta `a`, delta `b`, then exactly one final event, and nothing after it
+
+#### Scenario: Thinking deltas are a distinct event [auto]
+- GIVEN a fake adapter that emits thinking delta `t1`, thinking delta `t2`, text delta `a` and a final event
+- WHEN a turn runs
+- THEN the consumer sees two thinking events, one text delta and one final, in that order, and `t1` and `t2` never appear as text deltas
+
+#### Scenario: An engine without reasoning emits no thinking event [auto]
+- GIVEN a fake adapter that emits only text deltas and a final event
+- WHEN a turn runs
+- THEN the consumer sees no thinking event and the events equal those of the contract without reasoning
 
 #### Scenario: Error is terminal [auto]
 - GIVEN a fake adapter that emits `a` then an error
@@ -153,8 +163,60 @@ Ollama replies are NDJSON (one JSON object per line); OpenAI-compatible replies 
 - WHEN parsed by a CLI decoder
 - THEN no error is produced by the line cap
 
+### Requirement: Reasoning events
+When an engine streams its reasoning separately from the answer, the adapter's decoder MUST emit it as thinking deltas, distinct from text deltas, in arrival order and interleaved with text deltas exactly as received. Mapping per adapter (design pins the exact field names from captured fixtures, never assumed):
+- Ollama: a streamed message carrying a separate `thinking` field yields a thinking delta for that field and a text delta for `content`; when one line carries both, the thinking delta comes first.
+- claude (stream-json): `thinking` content blocks yield thinking deltas. This applies only if the pinned flags make the CLI emit them (verified by manual check M2); otherwise the adapter emits none.
+- OpenAI-compatible servers, codex and gemini: a reasoning field or block is mapped only if that engine exposes one in its captured fixtures ("if available"); otherwise the adapter emits none and nothing changes for it.
+Empty reasoning fragments MUST yield no event. The request sent to the engine MUST NOT change because of reasoning: reasoning text is never sent back to any engine as history (see Context window), and the adapters' request bodies and argv stay as pinned elsewhere unless a manual check proves a request option is required. Reasoning text MUST be capped at 256 KiB per turn (design to confirm): thinking deltas beyond the cap are dropped without an error, and the answer cap is unaffected. A thinking delta is stream activity: it counts as the first byte and resets the idle timeout (see Timeouts).
+
+#### Scenario: Ollama thinking field [auto]
+- GIVEN NDJSON lines whose message holds `thinking` `Let me`, then `thinking` ` see`, then `content` `Hi`, then a final line with done true
+- WHEN parsed
+- THEN the events are thinking delta `Let me`, thinking delta ` see`, text delta `Hi`, final
+
+#### Scenario: Ollama line with both fields [auto]
+- GIVEN one NDJSON line whose message holds `thinking` `x` and `content` `y`
+- WHEN parsed
+- THEN the events are thinking delta `x` then text delta `y`
+
+#### Scenario: Ollama without a thinking field [auto]
+- GIVEN the NDJSON lines of a model with no reasoning (`content` only)
+- WHEN parsed
+- THEN no thinking event is produced and the events equal those of the existing Ollama NDJSON scenario
+
+#### Scenario: Empty reasoning fragment [auto]
+- GIVEN a line whose `thinking` is the empty string and whose `content` is `Hi`
+- WHEN parsed
+- THEN the only event is text delta `Hi`
+
+#### Scenario: claude thinking blocks [auto]
+- GIVEN claude stream-json fixtures captured by M2 that contain `thinking` content blocks and text blocks
+- WHEN parsed
+- THEN thinking blocks yield thinking deltas, text blocks yield text deltas, and the final event is unchanged; if the M2 fixtures hold no thinking blocks, this scenario is replaced by one asserting no thinking event is produced
+
+#### Scenario: Other adapters only if available [auto]
+- GIVEN the OpenAI-compatible, codex and gemini fixtures
+- WHEN parsed
+- THEN a thinking delta is produced only where a fixture of that engine contains a reasoning field, and no format is assumed for the others
+
+#### Scenario: Reasoning split points [auto]
+- GIVEN a valid Ollama NDJSON stream that contains `thinking` fields
+- WHEN it is cut at every byte position into two chunks
+- THEN the events always equal the unsplit result
+
+#### Scenario: Reasoning cap [auto]
+- GIVEN a turn whose thinking deltas total more than 256 KiB, followed by text and a final event
+- WHEN the turn runs
+- THEN the thinking deltas beyond the cap are dropped without an error and the answer and final event are delivered intact
+
+#### Scenario: Request unchanged by reasoning [auto]
+- GIVEN a conversation whose earlier answers carried reasoning
+- WHEN the next request is built for any adapter
+- THEN the body or argv and stdin contain no reasoning text
+
 ### Requirement: Timeouts
-A server turn MUST use separate timeouts: connect 2 s, first byte 120 s (a cold model load can be slow), and idle 60 s between chunks once streaming. A CLI turn MUST use first byte 120 s and idle 90 s. Every turn MUST also end after a total of 15 minutes. Each timeout MUST end the turn with a distinct error event (cannot connect, no answer, stalled, too long) and release its resources (socket closed or child killed). When no first byte has arrived after 3 seconds the runtime MUST emit a `Slow` event, which the pane shows as `loading model…`.
+A server turn MUST use separate timeouts: connect 2 s, first byte 120 s (a cold model load can be slow), and idle 60 s between chunks once streaming. A CLI turn MUST use first byte 120 s and idle 90 s. Every turn MUST also end after a total of 15 minutes. Each timeout MUST end the turn with a distinct error event (cannot connect, no answer, stalled, too long) and release its resources (socket closed or child killed). When no first byte has arrived after 3 seconds the runtime MUST emit a `Slow` event, which the pane shows as `loading model…`. A thinking delta counts as the first byte and as stream activity: it stops the `Slow` timer, satisfies the first-byte timeout and resets the idle timeout.
 
 #### Scenario: Connect refused [auto]
 - GIVEN nothing listens on the engine port
@@ -180,6 +242,11 @@ A server turn MUST use separate timeouts: connect 2 s, first byte 120 s (a cold 
 - GIVEN a server (and a fake CLI) that keeps sending a delta every 10 s (time injected)
 - WHEN 15 minutes pass
 - THEN the turn ends with a too-long error event and resources are released
+
+#### Scenario: Thinking counts as activity [auto]
+- GIVEN a turn whose only events for 100 seconds are thinking deltas arriving every 10 seconds, with injected time
+- WHEN the clock advances
+- THEN no first-byte, idle or `Slow` event is produced because of those 100 seconds
 
 #### Scenario: Slow event at 3 seconds [auto]
 - GIVEN a send with no first byte (time injected)
@@ -317,7 +384,12 @@ If a CLI cannot work without a general shell or a wider execute right, its slice
 - THEN it cannot do it, no connection is made by those programs, and the answer is text only
 
 ### Requirement: Context window
-Each turn MUST send the pinned system prompt followed by the most recent messages that fit a client-side cap, never splitting a message and always including the message just sent. The cap is the last 40 messages and a per-engine character cap: 12,000 characters for local servers (a default 4k-token context would otherwise silently drop the system prompt) and 100,000 characters for CLIs. Messages beyond the cap MUST be omitted oldest first, the system prompt MUST never be dropped, and the pane MUST show the truncation marker (see chat-pane). System lines are never included.
+Each turn MUST send the pinned system prompt followed by the most recent messages that fit a client-side cap, never splitting a message and always including the message just sent. The cap is the last 40 messages and a per-engine character cap: 12,000 characters for local servers (a default 4k-token context would otherwise silently drop the system prompt) and 100,000 characters for CLIs. Messages beyond the cap MUST be omitted oldest first, the system prompt MUST never be dropped, and the pane MUST show the truncation marker (see chat-pane). System lines are never included, and neither is reasoning: only the user and assistant message texts are history.
+
+#### Scenario: Reasoning is not history [auto]
+- GIVEN a conversation whose assistant answer was preceded by reasoning `thinking hard`
+- WHEN the context for the next send is built
+- THEN the history holds the answer text only and no message or character count includes the reasoning
 
 #### Scenario: Within the cap [auto]
 - GIVEN 6 short messages
@@ -345,7 +417,7 @@ Each turn MUST send the pinned system prompt followed by the most recent message
 - THEN the newest message is still sent whole, with the system prompt, and older messages are omitted
 
 ### Requirement: Output sanitizer
-All text coming from an engine (deltas, error messages, stderr summaries) MUST pass through a stateful, stream-aware sanitizer before it is stored, drawn or copied. The sanitizer MUST remove:
+All text coming from an engine (text deltas, thinking deltas, error messages, stderr summaries) MUST pass through a stateful, stream-aware sanitizer before it is stored, drawn or copied. The sanitizer MUST remove:
 - C0 control characters except newline and tab, DEL, and carriage return (CRLF becomes LF; a lone CR is dropped);
 - C1 controls U+0080 to U+009F;
 - complete escape sequences with their payload: CSI, OSC (ended by BEL or ST), DCS, APC, PM and SOS (ended by ST), and two-character ESC sequences;
@@ -402,8 +474,18 @@ State MUST carry across chunks: an escape sequence or a UTF-8 character split ac
 - WHEN sanitized
 - THEN the output never contains ESC, a C1 control, a bidi control or a C0 control other than newline and tab, and chunking never changes the output
 
+#### Scenario: Reasoning is sanitized [auto]
+- GIVEN thinking deltas `a\u{1b}[31mb`, `c\u{07}d` and `e\u{1b}]0;t\u{07}f`
+- WHEN each is sanitized by the same sanitizer rules as answer text
+- THEN the outputs are `ab`, `cd` and `ef`
+
+#### Scenario: Reasoning sequence split across chunks [auto]
+- GIVEN a thinking stream `x\u{1b}[3` followed by `1my`
+- WHEN sanitized chunk by chunk
+- THEN the output is `xy`, and an unterminated sequence left in the reasoning stream never alters the answer text that follows (reasoning and answer use separate sanitizer state)
+
 ### Requirement: No content in logs
-Prompts, messages, system prompts and engine answers MUST NOT be written to any log, trace, panic message or error text. Error events MUST describe the failure without echoing the user's message.
+Prompts, messages, system prompts, engine answers and engine reasoning MUST NOT be written to any log, trace, panic message or error text. Error events MUST describe the failure without echoing the user's message.
 
 #### Scenario: Error text does not echo the prompt [auto]
 - GIVEN a turn with the message `SECRET-TOKEN-123` whose engine fails
@@ -422,6 +504,11 @@ Each shipped adapter MUST stream a reply from the real engine.
 - GIVEN an Ollama model that is not loaded in memory
 - WHEN a message is sent
 - THEN the pane shows `waiting for the model…` then `loading model…` and no timeout error occurs while it loads
+
+#### Scenario: Live reasoning model [manual]
+- GIVEN an Ollama reasoning model (one that streams a `thinking` field) assigned to `chat`
+- WHEN a message is sent
+- THEN the reasoning streams dimmed in the pane, collapses when the answer starts, and the statusline shows the thinking indicator throughout; a non-reasoning model shows no reasoning line
 
 #### Scenario: CLI engines [manual]
 - GIVEN `claude`, `codex` and `gemini` installed and logged in
