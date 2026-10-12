@@ -3,7 +3,7 @@
 
 use super::{
     Detection,
-    config::{AiConfig, Task},
+    config::{AiConfig, Assignment, Task},
     picker::{Outcome, PickRow, Picker, Target, task_label},
 };
 
@@ -32,6 +32,15 @@ impl AiMenu {
 
     pub fn changed(&self) -> bool {
         self.draft != self.original
+    }
+
+    /// The tasks whose draft differs from the saved one, in `Task::ALL`
+    /// order, with their draft assignment.
+    pub fn changed_tasks(&self) -> impl Iterator<Item = (Task, &Assignment)> {
+        Task::ALL
+            .into_iter()
+            .filter(|t| self.draft.get(*t) != self.original.get(*t))
+            .map(|t| (t, self.draft.get(t)))
     }
 
     /// Replaces the detection. The draft is never touched.

@@ -471,14 +471,33 @@ impl MenuState {
 
     /// The keys that differ from the config captured at open.
     pub fn edits(&self, live: &Config) -> Vec<ConfigEdit> {
-        choices()
+        let settings = choices()
             .filter(|(_, c)| (c.get)(live) != (c.get)(&self.original))
             .map(|(_, c)| ConfigEdit {
                 table: c.table,
                 key: c.key,
                 value: Cow::Borrowed(c.values[(c.get)(live)]),
-            })
-            .collect()
+            });
+        let tasks = self
+            .ai
+            .iter()
+            .flat_map(AiMenu::changed_tasks)
+            .flat_map(|(task, a)| {
+                let value = |v: &Option<String>| Cow::Owned(v.clone().unwrap_or_default());
+                [
+                    ConfigEdit {
+                        table: task.table(),
+                        key: "engine",
+                        value: value(&a.engine),
+                    },
+                    ConfigEdit {
+                        table: task.table(),
+                        key: "model",
+                        value: value(&a.model),
+                    },
+                ]
+            });
+        settings.chain(tasks).collect()
     }
 
     /// A paste: goes to the custom field when it is focused, else ignored.
@@ -798,3 +817,6 @@ mod footer_tests;
 
 #[cfg(test)]
 mod guard_tests;
+
+#[cfg(test)]
+mod edits_tests;
