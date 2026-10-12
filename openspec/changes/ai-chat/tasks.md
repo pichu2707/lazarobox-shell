@@ -78,7 +78,7 @@ Files changed:
 
 ## PR1 / C1: Pane-kind seam (`src/app.rs`)
 
-- [ ] 1.1 RED: seam tests with a `#[cfg(test)]` chat-pane constructor: chat gets no `SpawnPane`, `ResizePty` or `ClosePane`; `Pty`/`Cwd` events for a chat id are dropped; cwd poll skips chats; existing tests and snapshots unchanged.
+- [x] 1.1 RED: seam tests with a `#[cfg(test)]` chat-pane constructor: chat gets no `SpawnPane`, `ResizePty` or `ClosePane`; `Pty`/`Cwd` events for a chat id are dropped; cwd poll skips chats; existing tests and snapshots unchanged.
 - [ ] 1.2 RED: `Prefix [` on a chat is refused with the exact notice (R6), vt100 untouched; second Ctrl+Space swallowed; chat keys and paste never emit `WritePty`; Repeat rules for a chat.
 - [ ] 1.3 RED: tab label and inherited cwd (split, new tab) come from the chat's `origin_cwd`; vanished origin cwd falls back; ids shared and never reused; last pane being a chat.
 - [ ] 1.4 GREEN: `PaneState { content: PaneContent::{Pty(PtyPane), Chat(Box<ChatState>)}, size }`, accessors, `NewPane::{Shell, Chat}`, `relayout`, `remove_pane`, `drop_tab`, `App::pane_view`; `Chat` variant carries `cfg_attr(not(test), expect(dead_code))`.
