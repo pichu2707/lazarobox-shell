@@ -5480,6 +5480,27 @@ mod app_tests {
         );
     }
 
+    // Characterization: the picker sanitises and caps a paste; the App only forwards it.
+    #[test]
+    fn a_paste_with_control_characters_and_a_long_value_is_sanitised_and_capped() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        to_custom_field(&mut a);
+        let pasted = format!("a\u{7}b\u{1b}[c d\u{200b}e{}", "z".repeat(200));
+        assert_eq!(a.update(AppEvent::Paste(pasted)), vec![]);
+        a.update(code(KeyCode::Enter));
+        let label = a
+            .menu()
+            .unwrap()
+            .ai_draft()
+            .label(crate::core::ai::config::Task::Code);
+        let model = label.strip_prefix("claude › ").expect(&label);
+        assert!(model.starts_with("ab[c"), "{model}");
+        assert!(model.chars().all(|c| !c.is_control() && !c.is_whitespace()));
+        assert_eq!(model.chars().count(), 128);
+    }
+
     #[test]
     fn a_paste_is_ignored_outside_the_custom_field() {
         let mut a = ai_app();
