@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 
 pub mod catalog;
+pub mod chat;
 pub mod config;
 pub mod http;
 pub mod menu;

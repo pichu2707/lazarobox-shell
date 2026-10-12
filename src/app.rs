@@ -7,7 +7,7 @@ use std::{
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::core::{
-    ai::{Detection, config::AiConfig},
+    ai::{Detection, chat::ChatState, config::AiConfig},
     config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{
         CopyCommand, CopyMotion, CopyState, Geometry, Highlight, Point, SelectionKind, TooLarge,
@@ -201,26 +201,72 @@ impl ScreenLayout {
     }
 }
 
-/// A pane's emulator, the size its PTY was last told, and its last known cwd.
-struct PaneState {
+/// What a pane shows: a shell behind a PTY.
+struct PtyPane {
     emu: Pane,
-    size: PaneSize,
     /// The `/proc` poll result; the OSC 7 cwd, when seen, lives in `emu`.
     proc_cwd: Option<PathBuf>,
+}
+
+/// What a pane holds: a shell behind a PTY, or an AI chat that owns its
+/// state and has no PTY.
+enum PaneContent {
+    Pty(Box<PtyPane>),
+    // Read by the cwd rules of a chat (task 1.3).
+    Chat(#[expect(dead_code)] Box<ChatState>),
+}
+
+/// The kind of pane a split or a new tab creates.
+enum NewPane {
+    Shell,
+    // Nothing opens a chat until the `c` binding lands (C8).
+    #[cfg_attr(not(test), expect(dead_code))]
+    Chat(ChatState),
+}
+
+/// A pane's content and the size it was last laid out at (for a PTY pane, the
+/// size its PTY was last told).
+struct PaneState {
+    content: PaneContent,
+    size: PaneSize,
 }
 
 impl PaneState {
     fn new(size: PaneSize, host: Option<&str>) -> Self {
         Self {
-            emu: Pane::new(size, SCROLLBACK_LINES).with_host(host),
+            content: PaneContent::Pty(Box::new(PtyPane {
+                emu: Pane::new(size, SCROLLBACK_LINES).with_host(host),
+                proc_cwd: None,
+            })),
             size,
-            proc_cwd: None,
+        }
+    }
+
+    fn chat(size: PaneSize, state: ChatState) -> Self {
+        Self {
+            content: PaneContent::Chat(Box::new(state)),
+            size,
+        }
+    }
+
+    fn pty(&self) -> Option<&PtyPane> {
+        match &self.content {
+            PaneContent::Pty(pty) => Some(pty),
+            PaneContent::Chat(_) => None,
+        }
+    }
+
+    fn pty_mut(&mut self) -> Option<&mut PtyPane> {
+        match &mut self.content {
+            PaneContent::Pty(pty) => Some(pty),
+            PaneContent::Chat(_) => None,
         }
     }
 
     /// OSC 7 wins once seen; the poll fills in for shells that never report.
     fn effective_cwd(&self) -> Option<&Path> {
-        self.emu.cwd().or(self.proc_cwd.as_deref())
+        self.pty()
+            .and_then(|pty| pty.emu.cwd().or(pty.proc_cwd.as_deref()))
     }
 }
 
@@ -362,7 +408,9 @@ impl App {
     pub fn with_env(mut self, shell: Option<&str>, home: Option<PathBuf>, cwd: PathBuf) -> Self {
         self.shell = shell.map(str::to_owned);
         self.home = home;
-        self.focused_state_mut().proc_cwd = Some(cwd.clone());
+        if let Some(pty) = self.focused_state_mut().pty_mut() {
+            pty.proc_cwd = Some(cwd.clone());
+        }
         self.launch_cwd = Some(cwd);
         self
     }
@@ -383,8 +431,8 @@ impl App {
     /// Names this machine so OSC 7 reports for it are accepted.
     pub fn with_hostname(mut self, host: Option<&str>) -> Self {
         self.hostname = host.map(str::to_owned);
-        for state in self.panes.values_mut() {
-            state.emu.set_host(host);
+        for pty in self.panes.values_mut().filter_map(PaneState::pty_mut) {
+            pty.emu.set_host(host);
         }
         self
     }
@@ -474,7 +522,7 @@ impl App {
         let InputMode::Copy(state) = &self.input else {
             return None;
         };
-        let total = self.panes[&self.tab().focus].emu.scrollback_len();
+        let total = self.focused_pty()?.emu.scrollback_len();
         (total > 0).then_some((state.offset, total))
     }
 
@@ -513,7 +561,7 @@ impl App {
 
     /// What the focused pane offers to copy mode.
     fn copy_geometry(&self) -> Geometry {
-        let pane = self.focused_pane();
+        let pane = self.copy_pane();
         let size = self.focused_size();
         Geometry {
             first_line: pane.first_line(),
@@ -525,7 +573,7 @@ impl App {
 
     /// Fresh COPY state with the cursor on the focused pane's live cursor.
     fn enter_copy(&self) -> CopyState {
-        let pane = self.focused_pane();
+        let pane = self.copy_pane();
         CopyState::enter(
             self.copy_geometry(),
             pane.live_cursor(),
@@ -578,11 +626,34 @@ impl App {
 
     /// The emulator of pane `id`, if it exists.
     pub fn pane(&self, id: PaneId) -> Option<&Pane> {
-        self.panes.get(&id).map(|state| &state.emu)
+        self.panes
+            .get(&id)
+            .and_then(PaneState::pty)
+            .map(|pty| &pty.emu)
     }
 
-    pub fn focused_pane(&self) -> &Pane {
-        &self.focused_state().emu
+    /// The focused pane's PTY side, `None` when it is not a shell pane.
+    fn focused_pty(&self) -> Option<&PtyPane> {
+        self.focused_state().pty()
+    }
+
+    /// The emulator COPY works on. COPY is only entered on a shell pane and
+    /// ends on every focus change, so the focus is always a PTY pane here.
+    fn copy_pane(&self) -> &Pane {
+        &self.focused_pty().expect("COPY runs on a shell pane").emu
+    }
+
+    fn copy_pane_mut(&mut self) -> &mut Pane {
+        &mut self
+            .focused_state_mut()
+            .pty_mut()
+            .expect("COPY runs on a shell pane")
+            .emu
+    }
+
+    #[cfg(test)]
+    fn focused_pane(&self) -> &Pane {
+        self.copy_pane()
     }
 
     pub fn focused_size(&self) -> PaneSize {
@@ -633,16 +704,36 @@ impl App {
         }
     }
 
+    /// Test-only: opens a chat pane to the right of the focus.
+    #[cfg(test)]
+    fn open_chat(&mut self, origin: Option<PathBuf>) -> Vec<Effect> {
+        self.split_with(Axis::X, NewPane::Chat(ChatState::new(origin)))
+    }
+
+    /// Test-only: opens a chat pane as a new tab.
+    #[cfg(test)]
+    fn open_chat_tab(&mut self, origin: Option<PathBuf>) -> Vec<Effect> {
+        self.new_tab_with(NewPane::Chat(ChatState::new(origin)))
+    }
+
+    /// Whether `id` names a pane with a PTY behind it.
+    fn is_shell(&self, id: PaneId) -> bool {
+        self.panes
+            .get(&id)
+            .is_some_and(|state| state.pty().is_some())
+    }
+
     pub fn update(&mut self, event: AppEvent) -> Vec<Effect> {
         let effects = match event {
             AppEvent::Key(key) => self.on_key(key),
             AppEvent::Paste(text) => self.on_paste(&text),
             AppEvent::Resize { cols, rows } => self.on_resize(cols, rows),
             // Events for panes that no longer exist are dropped.
-            AppEvent::Pty(id, event) if self.panes.contains_key(&id) => self.on_pty(id, event),
-            AppEvent::Cwd(id, cwd) if self.panes.contains_key(&id) => self.on_cwd(id, cwd),
+            // A chat pane has no PTY, so no PTY event is meant for it either.
+            AppEvent::Pty(id, event) if self.is_shell(id) => self.on_pty(id, event),
+            AppEvent::Cwd(id, cwd) if self.is_shell(id) => self.on_cwd(id, cwd),
             AppEvent::Pty(..) | AppEvent::Cwd(..) => Vec::new(),
-            AppEvent::SpawnFailed(id, error) if self.panes.contains_key(&id) => {
+            AppEvent::SpawnFailed(id, error) if self.is_shell(id) => {
                 let effects = self.remove_pane(id);
                 self.notice = Some(format!("spawn failed: {error}"));
                 effects
@@ -689,7 +780,10 @@ impl App {
                 kind: CursorKind::Block,
                 blinking: false,
             },
-            _ => self.focused_pane().cursor_shape(),
+            _ => self
+                .focused_pty()
+                .map(|pty| pty.emu.cursor_shape())
+                .unwrap_or_default(),
         }
     }
 
@@ -828,7 +922,10 @@ impl App {
             self.input = InputMode::Prefix;
             return Vec::new();
         }
-        encode_key(key, self.focused_pane().modes())
+        let Some(pty) = self.focused_pty() else {
+            return Vec::new();
+        };
+        encode_key(key, pty.emu.modes())
             .map(|bytes| vec![Effect::WritePty(self.tab().focus, bytes)])
             .unwrap_or_default()
     }
@@ -915,8 +1012,9 @@ impl App {
         if index >= self.tabs.len() || index == self.active {
             return;
         }
-        if let Some(left) = self.panes.get_mut(&self.tabs[self.active].focus) {
-            left.emu.set_scrollback(0);
+        let left = self.tabs[self.active].focus;
+        if let Some(pty) = self.panes.get_mut(&left).and_then(PaneState::pty_mut) {
+            pty.emu.set_scrollback(0);
         }
         if matches!(self.input, InputMode::Copy(_) | InputMode::Resize) {
             self.input = InputMode::Terminal;
@@ -927,6 +1025,11 @@ impl App {
     /// Appends a tab with one pane, activates it and spawns its shell in the
     /// focused pane's cwd. The tab bar may appear, which resizes every tab.
     fn new_tab(&mut self) -> Vec<Effect> {
+        self.new_tab_with(NewPane::Shell)
+    }
+
+    /// `new_tab` for any kind of pane; only a shell is spawned.
+    fn new_tab_with(&mut self, kind: NewPane) -> Vec<Effect> {
         let cwd = self.inherited_cwd();
         let id = self.ids.alloc();
         self.tabs.push(Tab {
@@ -937,10 +1040,13 @@ impl App {
         self.activate(self.tabs.len() - 1);
         self.refresh_screen();
         let size = body_size(self.screen.body);
-        self.panes
-            .insert(id, PaneState::new(size, self.hostname.as_deref()));
+        let state = self.new_state(kind, size);
+        let spawn = matches!(state.content, PaneContent::Pty(_));
+        self.panes.insert(id, state);
         let mut effects = self.relayout();
-        effects.push(Effect::SpawnPane(id, self.spawn_spec(cwd, size)));
+        if spawn {
+            effects.push(Effect::SpawnPane(id, self.spawn_spec(cwd, size)));
+        }
         effects
     }
 
@@ -978,6 +1084,11 @@ impl App {
     /// Splits the focused pane and focuses the new one. A split the layout
     /// refuses (too small) changes nothing.
     fn split(&mut self, axis: Axis) -> Vec<Effect> {
+        self.split_with(axis, NewPane::Shell)
+    }
+
+    /// `split` for any kind of pane; only a shell is spawned.
+    fn split_with(&mut self, axis: Axis, kind: NewPane) -> Vec<Effect> {
         self.tab_mut().zoom = false;
         let target = self.tab().focus;
         let new = self.ids.alloc();
@@ -988,12 +1099,22 @@ impl App {
         }
         let cwd = self.inherited_cwd();
         let size = self.layout_sizes()[&new];
-        self.panes
-            .insert(new, PaneState::new(size, self.hostname.as_deref()));
+        let state = self.new_state(kind, size);
+        let spawn = matches!(state.content, PaneContent::Pty(_));
+        self.panes.insert(new, state);
         self.set_focus(new);
         let mut effects = self.relayout();
-        effects.push(Effect::SpawnPane(new, self.spawn_spec(cwd, size)));
+        if spawn {
+            effects.push(Effect::SpawnPane(new, self.spawn_spec(cwd, size)));
+        }
         effects
+    }
+
+    fn new_state(&self, kind: NewPane, size: PaneSize) -> PaneState {
+        match kind {
+            NewPane::Shell => PaneState::new(size, self.hostname.as_deref()),
+            NewPane::Chat(chat) => PaneState::chat(size, chat),
+        }
     }
 
     /// Moves the focus to the neighbour in `dir`. A zoomed tab is unzoomed
@@ -1020,8 +1141,8 @@ impl App {
         if next == left {
             return;
         }
-        if let Some(left) = self.panes.get_mut(&left) {
-            left.emu.set_scrollback(0);
+        if let Some(pty) = self.panes.get_mut(&left).and_then(PaneState::pty_mut) {
+            pty.emu.set_scrollback(0);
         }
         if t == self.active && matches!(self.input, InputMode::Copy(_) | InputMode::Resize) {
             self.input = InputMode::Terminal;
@@ -1090,9 +1211,11 @@ impl App {
                     continue;
                 };
                 if state.size != size {
-                    state.emu.resize(size);
                     state.size = size;
-                    effects.push(Effect::ResizePty(id, size));
+                    if let Some(pty) = state.pty_mut() {
+                        pty.emu.resize(size);
+                        effects.push(Effect::ResizePty(id, size));
+                    }
                 }
             }
         }
@@ -1131,8 +1254,11 @@ impl App {
             Confirm::CloseTab => self.close_tab(),
             Confirm::ClosePane => {
                 let id = self.tab().focus;
+                let shell = self.is_shell(id);
                 let mut effects = self.remove_pane(id);
-                effects.push(Effect::ClosePane(id));
+                if shell {
+                    effects.push(Effect::ClosePane(id));
+                }
                 effects
             }
         }
@@ -1143,7 +1269,9 @@ impl App {
         if self.tabs.len() == 1 {
             return vec![Effect::Quit];
         }
-        let ids = self.tab().tree.leaves();
+        let ids: Vec<_> = (self.tab().tree.leaves().into_iter())
+            .filter(|&id| self.is_shell(id))
+            .collect();
         let mut effects = self.drop_tab(self.active);
         effects.extend(ids.into_iter().map(Effect::ClosePane));
         effects
@@ -1153,7 +1281,7 @@ impl App {
         match state.on_key(key, repeat) {
             CopyCommand::Move(motion) => {
                 let geo = self.copy_geometry();
-                let pane = &mut self.focused_state_mut().emu;
+                let pane = self.copy_pane_mut();
                 let line_end = match motion {
                     CopyMotion::LineEnd => pane.line_end(state.cursor.line),
                     _ => 0,
@@ -1163,7 +1291,7 @@ impl App {
                 self.input = InputMode::Copy(state);
             }
             CopyCommand::Exit => {
-                self.focused_state_mut().emu.set_scrollback(0);
+                self.copy_pane_mut().set_scrollback(0);
                 self.input = InputMode::Terminal;
                 self.hold_exit(key);
             }
@@ -1196,7 +1324,7 @@ impl App {
             self.input = InputMode::Copy(state);
             return Vec::new();
         };
-        let pane = &mut self.focused_state_mut().emu;
+        let pane = self.copy_pane_mut();
         let text = join(&pane.read_lines(span));
         if text.is_empty() {
             // An empty OSC 52 would clobber the clipboard.
@@ -1227,10 +1355,15 @@ impl App {
         // A paste is not part of a held key: the debounce is over.
         self.held_exit = None;
         match self.input {
-            InputMode::Terminal => vec![Effect::WritePty(
-                self.tab().focus,
-                encode_paste(text, self.focused_pane().modes()),
-            )],
+            InputMode::Terminal => self
+                .focused_pty()
+                .map(|pty| {
+                    vec![Effect::WritePty(
+                        self.tab().focus,
+                        encode_paste(text, pty.emu.modes()),
+                    )]
+                })
+                .unwrap_or_default(),
             InputMode::Menu => {
                 // Only the custom field takes a paste; nothing reaches a PTY.
                 if let Some(menu) = self.menu.as_mut() {
@@ -1265,12 +1398,12 @@ impl App {
             return;
         };
         let geo = self.copy_geometry();
-        if state.generation != self.focused_pane().line_generation() {
+        if state.generation != self.copy_pane().line_generation() {
             // Line numbers are incomparable now: start over like entering COPY.
             state = self.enter_copy();
-            self.focused_state_mut().emu.set_scrollback(0);
+            self.copy_pane_mut().set_scrollback(0);
         }
-        let pane = self.focused_pane();
+        let pane = self.copy_pane();
         state.offset = pane.scrollback_offset();
         let last_line = geo.first_line + geo.history + usize::from(geo.rows.max(1)) - 1;
         let last_col = geo.cols.saturating_sub(1);
@@ -1292,7 +1425,9 @@ impl App {
     fn on_cwd(&mut self, id: PaneId, cwd: PathBuf) -> Vec<Effect> {
         if let Some(state) = self.panes.get_mut(&id) {
             let before = state.effective_cwd().map(Path::to_path_buf);
-            state.proc_cwd = Some(cwd);
+            if let Some(pty) = state.pty_mut() {
+                pty.proc_cwd = Some(cwd);
+            }
             if state.effective_cwd() != before.as_deref() {
                 self.mark_cwd_dirty(id);
             }
@@ -1318,7 +1453,10 @@ impl App {
                     .get_mut(&id)
                     .map(|state| {
                         let before = state.effective_cwd().map(Path::to_path_buf);
-                        let reply = state.emu.feed(&bytes);
+                        let reply = state
+                            .pty_mut()
+                            .map(|pty| pty.emu.feed(&bytes))
+                            .unwrap_or_default();
                         cwd_changed = state.effective_cwd() != before.as_deref();
                         reply
                     })
@@ -5695,5 +5833,140 @@ mod app_tests {
             &ai_of("codex", "default")
         );
         assert_eq!(App::new(80, 25).ai(), &AiConfig::default());
+    }
+
+    /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
+    /// must leave untouched, then the chat-pane behaviour.
+    mod seam {
+        use super::*;
+
+        // Characterization: a hidden tab's label follows the cwd poll.
+        #[test]
+        fn a_hidden_tabs_label_follows_the_poll_cwd() {
+            let mut a = launched(80, 25);
+            press(&mut a, "tn");
+            a.update(cwd_event("/srv/www"));
+            assert_eq!(a.tab_labels(), vec!["1 www".to_string(), "2".to_string()]);
+        }
+
+        // Characterization: a pane that exits in a hidden tab leaves the rest alone.
+        #[test]
+        fn a_pane_exiting_in_a_hidden_tab_drops_only_that_pane() {
+            let mut a = launched(80, 25);
+            press(&mut a, "wv");
+            press(&mut a, "tn");
+            assert_eq!(
+                a.update(exited(id2())),
+                vec![Effect::ResizePty(PaneId::FIRST, sized(23, 80))]
+            );
+            assert!(a.pane(id2()).is_none());
+            assert!(a.pane(PaneId::FIRST).is_some());
+            assert_eq!(a.tab_count(), 2);
+        }
+
+        fn chat_id() -> PaneId {
+            id2()
+        }
+
+        // 1.1: a chat pane is laid out like any pane but has no PTY.
+        #[test]
+        fn a_chat_split_spawns_nothing_and_resizes_only_the_shell() {
+            let mut a = launched(80, 25);
+            let effects = a.open_chat(Some("/srv".into()));
+            assert_eq!(
+                effects,
+                vec![Effect::ResizePty(PaneId::FIRST, sized(24, 39))]
+            );
+            assert_eq!(a.focused(), chat_id());
+            assert_eq!(a.focused_size(), sized(24, 40));
+            assert!(a.pane(chat_id()).is_none(), "a chat has no emulator");
+        }
+
+        #[test]
+        fn a_chat_tab_spawns_nothing() {
+            let mut a = launched(80, 25);
+            let effects = a.open_chat_tab(None);
+            // Only the new tab bar shrinks the first shell; nothing is spawned.
+            assert_eq!(
+                effects,
+                vec![Effect::ResizePty(PaneId::FIRST, sized(23, 80))]
+            );
+            assert_eq!((a.tab_count(), a.focused()), (2, chat_id()));
+        }
+
+        #[test]
+        fn a_terminal_resize_keeps_the_chat_size_without_telling_a_pty() {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            let effects = a.update(AppEvent::Resize {
+                cols: 100,
+                rows: 30,
+            });
+            assert_eq!(
+                effects,
+                vec![Effect::ResizePty(PaneId::FIRST, sized(29, 48))]
+            );
+            assert_eq!(a.focused_size(), sized(29, 51));
+        }
+
+        #[test]
+        fn closing_a_chat_pane_emits_no_close_pane() {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            press(&mut a, "wq");
+            assert_eq!(a.input(), InputMode::Confirm(Confirm::ClosePane));
+            let effects = a.update(key('y'));
+            assert_eq!(
+                effects,
+                vec![Effect::ResizePty(PaneId::FIRST, sized(24, 80))]
+            );
+            assert_eq!(a.focused(), PaneId::FIRST);
+        }
+
+        #[test]
+        fn closing_a_tab_closes_only_its_shell_panes() {
+            let mut a = launched(80, 25);
+            a.open_chat_tab(None);
+            press(&mut a, "wv");
+            let shell = id3();
+            press(&mut a, "tc");
+            let effects = a.update(key('y'));
+            assert!(effects.contains(&Effect::ClosePane(shell)), "{effects:?}");
+            assert!(
+                !effects.contains(&Effect::ClosePane(chat_id())),
+                "{effects:?}"
+            );
+            assert_eq!(a.tab_count(), 1);
+        }
+
+        #[test]
+        fn pty_and_cwd_events_for_a_chat_id_are_dropped() {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            a.take_dirty();
+            for event in [
+                AppEvent::Pty(chat_id(), PtyEvent::Output(b"x".to_vec())),
+                AppEvent::Pty(chat_id(), PtyEvent::Exited),
+                AppEvent::Cwd(chat_id(), "/x".into()),
+                AppEvent::SpawnFailed(chat_id(), "boom".into()),
+            ] {
+                assert_eq!(a.update(event.clone()), vec![], "{event:?}");
+            }
+            assert!(!a.take_dirty());
+            assert_eq!(a.focused(), chat_id(), "the chat pane survives");
+            assert_eq!(a.notice(), None);
+        }
+
+        #[test]
+        fn the_ids_of_chats_and_shells_are_shared_and_never_reused() {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            press(&mut a, "wv");
+            assert_eq!(a.focused(), id3());
+            press(&mut a, "wq");
+            a.update(key('y'));
+            press(&mut a, "wv");
+            assert_eq!(a.focused(), PaneId::for_test(4));
+        }
     }
 }
