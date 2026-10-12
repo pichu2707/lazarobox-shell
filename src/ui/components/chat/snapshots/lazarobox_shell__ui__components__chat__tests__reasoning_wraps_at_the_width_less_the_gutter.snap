@@ -1,0 +1,8 @@
+---
+source: src/ui/components/chat/tests.rs
+expression: text(&buf)
+---
+› hi
+
+┊ abcdef
+┊ ghijkl

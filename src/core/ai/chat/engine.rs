@@ -56,6 +56,8 @@ pub enum StreamEvent {
     /// No byte arrived yet and the wait is getting long.
     Slow,
     Delta(String),
+    /// A piece of the engine's reasoning, kept apart from the answer.
+    ThinkingDelta(String),
     Done(Finish),
     Error(ChatError),
 }

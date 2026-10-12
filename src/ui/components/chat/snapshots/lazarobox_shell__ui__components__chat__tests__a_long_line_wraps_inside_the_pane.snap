@@ -1,0 +1,10 @@
+---
+source: src/ui/components/chat/tests.rs
+expression: text(&buf)
+---
+› q
+
+alpha beta gamma
+delta epsilon
+zeta eta theta
+iota

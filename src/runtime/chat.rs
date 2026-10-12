@@ -22,7 +22,8 @@ use super::loopback::post_stream;
 use crate::core::{
     ai::{
         chat::{
-            ANSWER_CAP,
+            ANSWER_CAP, REASONING_CAP,
+            adapters::{Invocation, Wire, adapter_for},
             engine::{ChatError, ChatRequest, StreamEvent},
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
@@ -60,13 +61,6 @@ pub type Tagged = (PaneId, u64, StreamEvent);
 /// the future.
 pub type Runner =
     Arc<dyn Fn(ChatRequest, mpsc::Sender<StreamEvent>) -> BoxFuture<'static, ()> + Send + Sync>;
-
-/// The wire format of a local server's reply.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Wire {
-    Ndjson,
-    Sse,
-}
 
 /// A decoder that has seen no byte yet. Every turn builds its own: a decoder
 /// keeps a partial line and an `ended` flag, and neither may leak into the
@@ -113,6 +107,13 @@ pub struct Pipe {
     sanitizer: StreamSanitizer,
     /// Sanitized bytes forwarded so far.
     sent: usize,
+    /// Reasoning has its own filter: an escape sequence left open in it must
+    /// not swallow answer text, and the other way round.
+    thinking: StreamSanitizer,
+    /// Sanitized reasoning bytes forwarded so far.
+    thought: usize,
+    /// Answer text went out: later reasoning is dropped here.
+    answering: bool,
     over: bool,
 }
 
@@ -122,6 +123,9 @@ impl Pipe {
             utf8: Utf8Stream::new(),
             sanitizer: StreamSanitizer::new(),
             sent: 0,
+            thinking: StreamSanitizer::new(),
+            thought: 0,
+            answering: false,
             over: false,
         }
     }
@@ -135,12 +139,32 @@ impl Pipe {
         match event {
             StreamEvent::Slow => vec![StreamEvent::Slow],
             StreamEvent::Delta(text) => self.bytes(text.as_bytes()),
+            StreamEvent::ThinkingDelta(text) => self.reasoning(&text),
             StreamEvent::Done(finish) => self.end(StreamEvent::Done(finish)),
             StreamEvent::Error(ChatError::Failed(text)) => {
                 self.end(StreamEvent::Error(ChatError::Failed(error_text(&text))))
             }
             StreamEvent::Error(error) => self.end(StreamEvent::Error(error)),
         }
+    }
+
+    /// Forwards reasoning text, sanitized with its own state and cut at
+    /// `REASONING_CAP` without an error. Once the answer began, reasoning is
+    /// dropped.
+    fn reasoning(&mut self, text: &str) -> Vec<StreamEvent> {
+        let clean = self.thinking.push(text);
+        if self.answering || clean.is_empty() {
+            return Vec::new();
+        }
+        let mut cut = clean.len().min(REASONING_CAP - self.thought);
+        while !clean.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        if cut == 0 {
+            return Vec::new();
+        }
+        self.thought += cut;
+        vec![StreamEvent::ThinkingDelta(clean[..cut].to_owned())]
     }
 
     /// A final event went out: the turn is over.
@@ -174,6 +198,7 @@ impl Pipe {
         let room = ANSWER_CAP - self.sent;
         if text.len() <= room {
             self.sent += text.len();
+            self.answering = true;
             return vec![StreamEvent::Delta(text)];
         }
         let mut cut = room;
@@ -195,6 +220,7 @@ impl Pipe {
         let tail = self.utf8.finish();
         let mut out = self.text(&tail);
         self.sanitizer.finish();
+        self.thinking.finish();
         if !self.over {
             self.over = true;
             out.push(last);
@@ -209,13 +235,32 @@ impl Default for Pipe {
     }
 }
 
-/// An adapter for engines that have none yet: every turn fails at once.
-pub fn unavailable_runner() -> Runner {
-    Arc::new(|_request, tx| {
+/// The runner of the real engines: picks the adapter of the request's engine
+/// and runs what it builds. An engine without an adapter fails the turn at
+/// once, without connecting anywhere.
+pub fn adapter_runner() -> Runner {
+    adapter_runner_at(None)
+}
+
+/// `adapter_runner` with the port of server engines overridden, so tests can
+/// talk to a fake server on an ephemeral port. The host stays `127.0.0.1`.
+pub(crate) fn adapter_runner_at(port: Option<u16>) -> Runner {
+    Arc::new(move |request, tx| {
         Box::pin(async move {
-            let _ = tx
-                .send(StreamEvent::Error(ChatError::Failed(NO_ADAPTER.into())))
-                .await;
+            let Some(adapter) = adapter_for(&request.engine) else {
+                let _ = tx
+                    .send(StreamEvent::Error(ChatError::Failed(NO_ADAPTER.into())))
+                    .await;
+                return;
+            };
+            match adapter.build(&request) {
+                Invocation::Http {
+                    wire,
+                    port: catalog_port,
+                    path,
+                    body,
+                } => http_turn(wire, port.unwrap_or(catalog_port), path, body, tx).await,
+            }
         })
     })
 }
@@ -376,5 +421,7 @@ impl Chats {
     }
 }
 
+#[cfg(test)]
+mod adapter_tests;
 #[cfg(test)]
 mod tests;
