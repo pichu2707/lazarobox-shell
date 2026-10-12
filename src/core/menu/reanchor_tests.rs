@@ -69,5 +69,9 @@ fn choosing_changes_only_the_ai_draft() {
     }
     assert_eq!(m.ai_draft().label(Task::Code), "ollama › llama3:8b");
     assert_eq!(live, Config::default());
-    assert_eq!(m.edits(&live), vec![]);
+    let tables: Vec<_> = m.edits(&live).iter().map(|e| e.table).collect();
+    assert_eq!(
+        tables, ["ai.tasks.code"; 2],
+        "only the AI draft produced edits"
+    );
 }

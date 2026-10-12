@@ -196,6 +196,8 @@ pub struct MenuState {
     original: Config,
     error: Option<String>,
     ai: Option<AiMenu>,
+    /// A detection run is in flight.
+    checking: bool,
 }
 
 impl MenuState {
@@ -205,6 +207,7 @@ impl MenuState {
             original: *original,
             error: None,
             ai: None,
+            checking: false,
         }
     }
 
@@ -214,8 +217,14 @@ impl MenuState {
         self
     }
 
+    /// Marks a detection run as in flight (the `refreshing…` cue).
+    pub fn set_checking(&mut self, on: bool) {
+        self.checking = on;
+    }
+
     /// Replaces the detection in place; selection and draft stay.
     pub fn set_engines(&mut self, engines: Option<Detection>) {
+        self.checking = false;
         if let Some(ai) = &mut self.ai {
             ai.set_engines(engines);
         }
@@ -362,6 +371,7 @@ impl MenuState {
             KeyCode::Char('s') if !repeat => MenuCommand::Save,
             KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
             KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
+            KeyCode::Enter if repeat && self.on_ai_row() => MenuCommand::None,
             KeyCode::Enter => self.cycle(true, config),
             KeyCode::Esc if !repeat => MenuCommand::Cancel,
             _ => MenuCommand::None,
@@ -462,14 +472,33 @@ impl MenuState {
 
     /// The keys that differ from the config captured at open.
     pub fn edits(&self, live: &Config) -> Vec<ConfigEdit> {
-        choices()
+        let settings = choices()
             .filter(|(_, c)| (c.get)(live) != (c.get)(&self.original))
             .map(|(_, c)| ConfigEdit {
                 table: c.table,
                 key: c.key,
                 value: Cow::Borrowed(c.values[(c.get)(live)]),
-            })
-            .collect()
+            });
+        let tasks = self
+            .ai
+            .iter()
+            .flat_map(AiMenu::changed_tasks)
+            .flat_map(|(task, a)| {
+                let value = |v: &Option<String>| Cow::Owned(v.clone().unwrap_or_default());
+                [
+                    ConfigEdit {
+                        table: task.table(),
+                        key: "engine",
+                        value: value(&a.engine),
+                    },
+                    ConfigEdit {
+                        table: task.table(),
+                        key: "model",
+                        value: value(&a.model),
+                    },
+                ]
+            });
+        settings.chain(tasks).collect()
     }
 
     /// A paste: goes to the custom field when it is focused, else ignored.
@@ -489,26 +518,30 @@ impl MenuState {
         if let Some(error) = self.error() {
             return Footer::Error(error);
         }
-        let hint = match self.ai.as_ref().and_then(AiMenu::picker) {
-            Some(picker) if picker.text().is_some() => HINT_CUSTOM,
-            Some(_) => {
-                if let Some(row) = self
-                    .ai
-                    .as_ref()
-                    .and_then(AiMenu::cursor_row)
-                    .filter(|row| !row.enabled)
-                {
-                    return Footer::Hint(Cow::Owned(format!(
-                        "{} · not selectable",
-                        disabled_reason(&row)
-                    )));
-                }
-                HINT_PICKER
+        let ai = self.ai.as_ref();
+        let picker = ai.and_then(AiMenu::picker);
+        if picker.is_some_and(|p| p.text().is_some()) {
+            return Footer::Hint(Cow::Borrowed(HINT_CUSTOM));
+        }
+        if let Some(row) = ai.and_then(AiMenu::cursor_row).filter(|r| !r.enabled) {
+            let reason = disabled_reason(&row);
+            return Footer::Hint(Cow::Owned(format!("{reason} · not selectable")));
+        }
+        let in_ai_view = picker.is_some() || self.on_ai_row();
+        let cue = ai.and_then(|ai| match (ai.has_result(), self.checking) {
+            (false, _) => Some("checking engines…"),
+            (true, true) => Some("refreshing…"),
+            (true, false) => None,
+        });
+        Footer::Hint(match cue {
+            Some(cue) if in_ai_view => {
+                let leave = if picker.is_some() { "back" } else { "cancel" };
+                Cow::Owned(format!("{cue} · s save · Esc {leave}"))
             }
-            None if self.on_ai_row() => HINT_TASK,
-            None => HINT_SETTINGS,
-        };
-        Footer::Hint(Cow::Borrowed(hint))
+            _ if picker.is_some() => Cow::Borrowed(HINT_PICKER),
+            _ if in_ai_view => Cow::Borrowed(HINT_TASK),
+            _ => Cow::Borrowed(HINT_SETTINGS),
+        })
     }
 
     pub fn set_error(&mut self, message: String) {
@@ -782,3 +815,9 @@ mod save_tests;
 
 #[cfg(test)]
 mod footer_tests;
+
+#[cfg(test)]
+mod guard_tests;
+
+#[cfg(test)]
+mod edits_tests;

@@ -81,6 +81,94 @@ fn an_error_replaces_the_hint_until_the_next_press() {
     assert_eq!(m.footer(), Footer::Error("boom"), "inside the picker");
 }
 
+fn on_code_in_the_picker(m: &mut MenuState, levels: usize) {
+    open(m, "code");
+    if levels == 2 {
+        press(m, 'j');
+        press(m, 'j');
+        send(m, key(KeyCode::Enter));
+    }
+}
+
+// Spec: Before the first result.
+#[test]
+fn before_the_first_result_the_ai_views_show_the_checking_cue() {
+    let mut m = assigned(&[(Task::Code, "codex", "default")], None);
+    assert_eq!(hint(&m), SETTINGS, "no cue on a Settings row");
+    while selected_label(&m) != "code" {
+        press(&mut m, 'j');
+    }
+    assert_eq!(hint(&m), "checking engines… · s save · Esc cancel");
+    send(&mut m, key(KeyCode::Enter));
+    assert_eq!(hint(&m), "checking engines… · s save · Esc back", "level 1");
+    assert_eq!(cursor_label(&m), "codex");
+    send(&mut m, key(KeyCode::Enter));
+    assert_eq!(hint(&m), "checking engines… · s save · Esc back", "level 2");
+}
+
+// Spec: Refreshing keeps last known engines.
+#[test]
+fn a_run_in_flight_shows_the_refreshing_cue_with_the_engines_kept() {
+    let mut m = menu(None, None, Some(machine()));
+    m.set_checking(true);
+    assert_eq!(hint(&m), SETTINGS, "no cue on a Settings row");
+    while selected_label(&m) != "code" {
+        press(&mut m, 'j');
+    }
+    assert_eq!(hint(&m), "refreshing… · s save · Esc cancel");
+    on_code_in_the_picker(&mut m, 1);
+    assert_eq!(hint(&m), "refreshing… · s save · Esc back", "level 1");
+    assert_eq!(cursor_label(&m), "(default · use general)");
+    press(&mut m, 'j');
+    assert_eq!(cursor_label(&m), "ollama", "the engines stay listed");
+    press(&mut m, 'j');
+    send(&mut m, key(KeyCode::Enter));
+    assert_eq!(hint(&m), "refreshing… · s save · Esc back", "level 2");
+}
+
+// Spec: Cue clears.
+#[test]
+fn a_result_or_a_finished_run_clears_the_cue() {
+    let mut m = menu(None, None, None);
+    while selected_label(&m) != "code" {
+        press(&mut m, 'j');
+    }
+    m.set_engines(Some(machine()));
+    assert_eq!(hint(&m), TASK);
+    m.set_checking(true);
+    assert_eq!(hint(&m), "refreshing… · s save · Esc cancel");
+    m.set_checking(false);
+    assert_eq!(hint(&m), TASK);
+    m.set_checking(true);
+    m.set_engines(Some(machine()));
+    assert_eq!(hint(&m), TASK, "a result ends the run");
+}
+
+// Spec: Footer precedence, error > disabled row > cue > hint.
+#[test]
+fn the_cue_yields_to_an_error_a_disabled_row_and_the_custom_field() {
+    let mut m = assigned(&[(Task::Code, "ollama", "old:7b")], None);
+    open(&mut m, "code");
+    assert_eq!(hint(&m), "checking engines… · s save · Esc back");
+    while cursor_label(&m) != "ollama" {
+        press(&mut m, 'j');
+    }
+    send(&mut m, key(KeyCode::Enter));
+    assert_eq!(hint(&m), not_selectable("checking…"), "disabled row");
+    m.set_error("boom".to_owned());
+    assert_eq!(m.footer(), Footer::Error("boom"));
+
+    let mut c = assigned(&[(Task::Code, "codex", "default")], None);
+    open(&mut c, "code");
+    send(&mut c, key(KeyCode::Enter));
+    while cursor_label(&c) != "custom…" {
+        press(&mut c, 'j');
+    }
+    send(&mut c, key(KeyCode::Enter));
+    c.set_checking(true);
+    assert_eq!(hint(&c), CUSTOM);
+}
+
 fn not_selectable(reason: &str) -> String {
     format!("{reason} · not selectable")
 }

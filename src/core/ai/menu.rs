@@ -3,7 +3,7 @@
 
 use super::{
     Detection,
-    config::{AiConfig, Task},
+    config::{AiConfig, Assignment, Task},
     picker::{Outcome, PickRow, Picker, Target, task_label},
 };
 
@@ -34,6 +34,15 @@ impl AiMenu {
         self.draft != self.original
     }
 
+    /// The tasks whose draft differs from the saved one, in `Task::ALL`
+    /// order, with their draft assignment.
+    pub fn changed_tasks(&self) -> impl Iterator<Item = (Task, &Assignment)> {
+        Task::ALL
+            .into_iter()
+            .filter(|t| self.draft.get(*t) != self.original.get(*t))
+            .map(|t| (t, self.draft.get(t)))
+    }
+
     /// Replaces the detection. The draft is never touched.
     /// An open picker keeps its level and its row.
     pub fn set_engines(&mut self, engines: Option<Detection>) {
@@ -61,6 +70,12 @@ impl AiMenu {
             .as_ref()
             .map(|p| p.rows(&self.draft, self.engines.as_ref()))
             .unwrap_or_default()
+    }
+
+    /// Whether a detection result has arrived. An empty one found nothing
+    /// at all, so it counts as none, as in the picker rows.
+    pub fn has_result(&self) -> bool {
+        self.engines.as_ref().is_some_and(|d| !d.engines.is_empty())
     }
 
     /// The row under the cursor of the open picker.
