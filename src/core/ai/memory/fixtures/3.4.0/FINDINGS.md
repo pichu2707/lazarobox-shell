@@ -85,6 +85,8 @@ Related behaviour:
 | Search | JSON array of observation objects; no hit is `[]` | `search_hit.http`, `search_empty.http` |
 | Project mismatch | 400 `{"code":"session_project_mismatch","error":"session project does not match requested project","project":"other-proj","session_project":"widget"}` | `observation_400_session_project_mismatch.http` |
 | `/project/current` git repo with remote | 200, `project_source:"git_remote"`, project from the remote name (`widget`) | `project_200.http` |
+| `POST /sessions` with `"directory":""` (review of M3b, throwaway engram 3.4.0 on :17439) | 201 `{"status":"created"}`; the session works: a save into it returns 201 | `session_created_empty_directory_201.http` |
+| `POST /sessions` with the `directory` key omitted | 201 `{"status":"created"}`, identical to the empty string; saves work. `GET /sessions/recent` and `/context` never show the directory, so it cannot be observed over HTTP | `session_created_no_directory_201.http` |
 
 ### Deviation from the plan: `/project/current` never returns 404 or 409
 
@@ -93,3 +95,7 @@ The task list expected `project_404.http` and `project_409.http`. Actual 3.4.0 b
 - Ambiguous (several git repos below `cwd`): 200 with `project:""`, `project_source:"ambiguous"`, `error_hint` and `available_projects` (`project_ambiguous_200.http`). No 409.
 
 Consequence for M1/M3a: do not classify by HTTP status. Unresolved means `project == ""` or `project_source == "ambiguous"`. Whether `dir_basename` (a weak guess such as `tmp`) counts as resolved is a design decision for the design owner.
+
+### `directory` of a session is optional on the wire
+
+Engram 3.4.0 accepts `POST /sessions` with an empty or missing `directory` (both 201) and nothing over HTTP reveals what it stores. So an empty directory is not an error, but it is also not useful: MEM-10 asks for `directory: cwd`, and the worker now gets the real `cwd` of the chat in `MemCmd::Save` instead of guessing it from the project cache.

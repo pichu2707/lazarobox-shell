@@ -25,7 +25,7 @@ use crate::{
             port::{MemCmd, MemReply, Note, Reason},
             reply::{
                 DeleteOutcome, ProjectError, parse_context, parse_delete, parse_end, parse_project,
-                parse_saved, parse_session,
+                parse_saved, parse_session, session_missing,
             },
             route::{self, Call, Method},
         },
@@ -157,11 +157,15 @@ impl<T: Transport> Worker<T> {
         }
     }
 
+    /// After a panic: probe again and look projects up again. The registered
+    /// sessions and the instance stay. A registration is recorded only after
+    /// the server accepted it, so a panic cannot leave a session registered
+    /// that is not; keeping them lets a pending `End` still go out (it is
+    /// idempotent, and a stale one only earns a 404 that is ignored). The kept
+    /// `instance` is what makes the next probe notice a restart and clear them.
     fn forget(&mut self) {
         self.probe = None;
-        self.instance = None;
         self.projects.clear();
-        self.registered.clear();
     }
 
     async fn handle(&mut self, cmd: MemCmd) {
@@ -184,9 +188,10 @@ impl<T: Transport> Worker<T> {
                 pane,
                 session,
                 project,
+                cwd,
                 note,
             } => {
-                let reply = match self.save(pane, session, &project, &note).await {
+                let reply = match self.save(pane, session, &project, &cwd, &note).await {
                     Ok(reply) => reply,
                     Err(reason) => unavailable(pane, reason),
                 };
@@ -313,8 +318,18 @@ impl<T: Transport> Worker<T> {
     async fn context(&mut self, project: &str) -> Result<Option<ContextBlock>, Reason> {
         self.ready().await?;
         let reply = self.send(&route::context(project)).await?;
-        // A context that cannot be read is no context: chat goes on.
-        Ok(parse_context(reply.status, &reply.body, project).unwrap_or(None))
+        match parse_context(reply.status, &reply.body, project) {
+            Ok(block) => Ok(block),
+            // A 200 whose body cannot be read is no context: chat goes on.
+            Err(_) if reply.status == 200 => Ok(None),
+            // Any other status (404 `unknown_project` was handled above as no
+            // memory yet) is a server that is not answering well: degrade.
+            Err(_) => {
+                let reason = Reason::NoAnswer;
+                self.settle(Health::Down, Some(reason.clone())).await;
+                Err(reason)
+            }
+        }
     }
 
     async fn save(
@@ -322,6 +337,7 @@ impl<T: Transport> Worker<T> {
         pane: PaneId,
         session: Option<String>,
         project: &str,
+        cwd: &str,
         note: &Note,
     ) -> Result<MemReply, Reason> {
         self.ready().await?;
@@ -332,21 +348,22 @@ impl<T: Transport> Worker<T> {
         let Some(session) = session.or_else(new_session_id) else {
             return Ok(failed("could not create a session id"));
         };
-        if !self.registered.contains(&session) {
-            let directory = self.directory_of(project);
-            let Ok(call) = route::register_session(&session, project, &directory) else {
-                return Ok(failed("invalid session id"));
-            };
-            let reply = self.send(&call).await?;
-            match parse_session(reply.status, &reply.body) {
-                Ok(()) => {
-                    self.registered.insert(session.clone());
-                }
-                Err(failure) => return Ok(failed(&failure.reason)),
-            }
+        if !self.registered.contains(&session)
+            && let Some(reason) = self.register(&session, project, cwd).await?
+        {
+            return Ok(failed(&reason));
         }
         let call = route::save(&session, project, note);
-        let reply = self.send(&call).await?;
+        let mut reply = self.send(&call).await?;
+        if session_missing(reply.status, &reply.body) {
+            // The server forgot the session (a restart): register it again and
+            // retry once. A second failure is a failure, not a loop.
+            self.registered.remove(&session);
+            if let Some(reason) = self.register(&session, project, cwd).await? {
+                return Ok(failed(&reason));
+            }
+            reply = self.send(&call).await?;
+        }
         match parse_saved(reply.status, &reply.body) {
             Ok(saved) => {
                 let (title, topic_key) = sent_labels(&call);
@@ -362,14 +379,25 @@ impl<T: Transport> Worker<T> {
         }
     }
 
-    /// A directory the project was resolved from, for the session record.
-    fn directory_of(&self, project: &str) -> String {
-        self.projects
-            .iter()
-            .filter(|(_, found)| found.as_deref() == Ok(project))
-            .map(|(cwd, _)| cwd.clone())
-            .min()
-            .unwrap_or_default()
+    /// Registers a session with the chat's `cwd` as its directory. `Some`
+    /// holds the short reason when the server refused it.
+    async fn register(
+        &mut self,
+        session: &str,
+        project: &str,
+        cwd: &str,
+    ) -> Result<Option<String>, Reason> {
+        let Ok(call) = route::register_session(session, project, cwd) else {
+            return Ok(Some("invalid session id".into()));
+        };
+        let reply = self.send(&call).await?;
+        Ok(match parse_session(reply.status, &reply.body) {
+            Ok(()) => {
+                self.registered.insert(session.to_string());
+                None
+            }
+            Err(failure) => Some(failure.reason),
+        })
     }
 
     /// Ends a registered session, once. Best effort: nobody waits for a reply.
@@ -496,11 +524,22 @@ pub fn session_id_from(bytes: [u8; 16]) -> String {
 
 /// A fresh session id from the operating system's randomness, `None` when the
 /// system gives none.
+///
+/// Linux only: it needs `getrandom(2)`, which libc exposes on Linux (and some
+/// other systems, but this project targets Linux). Elsewhere there is no id,
+/// so a save is a short `SaveFailed` rather than a weaker, guessable id.
+#[cfg(target_os = "linux")]
 pub fn new_session_id() -> Option<String> {
     let mut bytes = [0u8; 16];
     // SAFETY: `bytes` is valid for 16 writes; flags 0 blocks until seeded.
     let got = unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0) };
     (got == bytes.len() as isize).then(|| session_id_from(bytes))
+}
+
+/// No `getrandom` here: no session id (see the Linux version).
+#[cfg(not(target_os = "linux"))]
+pub fn new_session_id() -> Option<String> {
+    None
 }
 
 #[cfg(test)]

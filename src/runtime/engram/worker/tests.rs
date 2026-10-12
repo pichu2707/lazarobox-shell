@@ -21,6 +21,7 @@ use crate::core::{
 };
 
 const PORT: u16 = 9100;
+const CWD: &str = "/work/widget";
 const INSTANCE: &str = "999100b4a245378075d419132ab1c06e";
 
 macro_rules! fx {
@@ -57,11 +58,14 @@ enum Mode {
 struct Seen {
     key: String,
     total: Duration,
+    body: String,
 }
 
 struct State {
     mode: Mode,
     overrides: Vec<(String, Act)>,
+    /// Acts used by the next matching call only.
+    once: Vec<(String, Act)>,
     seen: Vec<Seen>,
 }
 
@@ -73,6 +77,7 @@ impl Fake {
         Self(Arc::new(Mutex::new(State {
             mode,
             overrides: Vec::new(),
+            once: Vec::new(),
             seen: Vec::new(),
         })))
     }
@@ -84,6 +89,24 @@ impl Fake {
     /// Calls whose `METHOD target` starts with `prefix` get `act`.
     fn on(&self, prefix: &str, act: Act) {
         self.0.lock().unwrap().overrides.push((prefix.into(), act));
+    }
+
+    /// The next call whose `METHOD target` starts with `prefix` gets `act`.
+    fn once(&self, prefix: &str, act: Act) {
+        self.0.lock().unwrap().once.push((prefix.into(), act));
+    }
+
+    /// The body of the `nth` (from 0) call that starts with `prefix`.
+    fn body_of(&self, prefix: &str, nth: usize) -> String {
+        let state = self.0.lock().unwrap();
+        state
+            .seen
+            .iter()
+            .filter(|s| s.key.starts_with(prefix))
+            .nth(nth)
+            .unwrap_or_else(|| panic!("no call {prefix} #{nth}"))
+            .body
+            .clone()
     }
 
     fn keys(&self) -> Vec<String> {
@@ -130,13 +153,18 @@ impl Transport for Fake {
             state.seen.push(Seen {
                 key: key.clone(),
                 total: limits.total,
+                body: String::from_utf8_lossy(call.body.as_deref().unwrap_or_default())
+                    .into_owned(),
             });
-            let over = state
-                .overrides
-                .iter()
-                .rev()
-                .find(|(prefix, _)| key.starts_with(prefix))
-                .map(|(_, act)| act.clone());
+            let first = state.once.iter().position(|(p, _)| key.starts_with(p));
+            let over = first.map(|i| state.once.remove(i).1).or_else(|| {
+                state
+                    .overrides
+                    .iter()
+                    .rev()
+                    .find(|(prefix, _)| key.starts_with(prefix))
+                    .map(|(_, act)| act.clone())
+            });
             over.unwrap_or_else(|| default_act(&state.mode, &key))
         };
         match act {
@@ -213,6 +241,7 @@ fn save(n: u32, session: Option<&str>) -> MemCmd {
         pane: pane(n),
         session: session.map(Into::into),
         project: "widget".into(),
+        cwd: CWD.into(),
         note: Note {
             kind: MemKind::Decision,
             title: "Use Axum".into(),
@@ -262,6 +291,7 @@ fn a_session_id_is_lazarobox_and_32_lowercase_hex() {
     assert_eq!(id, "lazarobox-000102030405060708090a0b0c0d0e0f");
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn fresh_session_ids_are_valid_and_unique() {
     let mut seen = std::collections::HashSet::new();
@@ -750,6 +780,206 @@ async fn a_panic_while_handling_still_gives_a_reply_and_the_worker_lives() {
         }
     );
     assert!(matches!(rig.answer().await, MemReply::Context { .. }));
+}
+
+// ---- review fixes ----
+
+fn directory_sent(rig: &Rig, nth: usize) -> serde_json::Value {
+    let body = rig.fake.body_of("POST /sessions", nth);
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    value["directory"].clone()
+}
+
+// W1: the session record carries the real cwd of the chat, never a guess.
+#[tokio::test(start_paused = true)]
+async fn a_session_registers_with_the_cwd_of_the_chat() {
+    let mut rig = up();
+    rig.link.send(save(1, None));
+    assert!(matches!(rig.answer().await, MemReply::Saved { .. }));
+    assert_eq!(directory_sent(&rig, 0), CWD);
+    assert_eq!(
+        rig.fake.count("GET /project/current"),
+        0,
+        "no project lookup"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_cwd_is_sent_even_after_the_project_cache_was_cleared() {
+    let mut rig = up();
+    rig.link.send(resolve(1, "/other"));
+    rig.answer().await;
+    rig.fake.mode(Mode::Down);
+    rig.link.send(resolve(1, "/b"));
+    rig.answer().await;
+    rig.fake.mode(Mode::Up("0123456789abcdef".into()));
+    tokio::time::sleep(REPROBE).await;
+    rig.link.send(save(1, None));
+    assert!(matches!(rig.answer().await, MemReply::Saved { .. }));
+    assert_eq!(directory_sent(&rig, 0), CWD);
+}
+
+// W2: a save that finds its session gone registers it again and retries once.
+#[tokio::test(start_paused = true)]
+async fn a_save_into_a_session_the_server_lost_registers_again_and_retries_once() {
+    let mut rig = up();
+    rig.link.send(save(1, None));
+    let session = saved_session(&rig.answer().await);
+    rig.fake.once(
+        "POST /observations",
+        reply(fx!("save_unregistered_session_404")),
+    );
+    rig.link.send(save(1, Some(&session)));
+    assert_eq!(saved_session(&rig.answer().await), session);
+    assert_eq!(rig.fake.count("POST /sessions"), 2, "registered again");
+    assert_eq!(rig.fake.count("POST /observations"), 3, "one retry");
+    assert_eq!(directory_sent(&rig, 1), CWD);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_second_session_not_found_is_a_save_failure_not_a_loop() {
+    let mut rig = up();
+    rig.link.send(save(1, None));
+    let session = saved_session(&rig.answer().await);
+    for _ in 0..2 {
+        rig.fake.once(
+            "POST /observations",
+            reply(fx!("save_unregistered_session_404")),
+        );
+    }
+    rig.link.send(save(1, Some(&session)));
+    match rig.answer().await {
+        MemReply::SaveFailed { pane: p, reason } => {
+            assert_eq!(p, pane(1));
+            assert!(!reason.contains("Axum"));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(rig.fake.count("POST /sessions"), 2);
+    assert_eq!(rig.fake.count("POST /observations"), 3, "one retry only");
+}
+
+#[tokio::test(start_paused = true)]
+async fn another_404_is_not_taken_for_a_lost_session() {
+    let mut rig = up();
+    rig.link.send(save(1, None));
+    let session = saved_session(&rig.answer().await);
+    rig.fake
+        .once("POST /observations", Act::Reply(404, b"{}".to_vec()));
+    rig.link.send(save(1, Some(&session)));
+    assert!(matches!(rig.answer().await, MemReply::SaveFailed { .. }));
+    assert_eq!(rig.fake.count("POST /sessions"), 1, "no new registration");
+    assert_eq!(rig.fake.count("POST /observations"), 2);
+}
+
+// W4: only a body that cannot be read is no memory.
+#[tokio::test(start_paused = true)]
+async fn a_context_server_error_is_unavailable_and_degrades_the_health() {
+    let mut rig = up();
+    rig.fake
+        .on("GET /context", Act::Reply(500, b"boom".to_vec()));
+    let context = |n| MemCmd::Context {
+        pane: pane(n),
+        project: "widget".into(),
+    };
+    rig.link.send(context(1));
+    assert!(matches!(rig.next().await, MemReply::Health { .. }));
+    assert_eq!(
+        rig.next().await,
+        MemReply::Health {
+            state: Health::Down,
+            offer: false
+        }
+    );
+    assert_eq!(
+        rig.next().await,
+        MemReply::Unavailable {
+            pane: Some(pane(1)),
+            reason: Reason::NoAnswer
+        }
+    );
+    rig.link.send(context(2));
+    assert!(matches!(rig.answer().await, MemReply::Unavailable { .. }));
+    assert_eq!(
+        rig.fake.count("GET /context"),
+        1,
+        "down is trusted for 10 s"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn any_non_200_context_other_than_unknown_project_is_unavailable() {
+    for (status, body) in [(404, &br#"{"error":"nope"}"#[..]), (401, b"{}"), (503, b"")] {
+        let mut rig = up();
+        rig.fake
+            .on("GET /context", Act::Reply(status, body.to_vec()));
+        rig.link.send(MemCmd::Context {
+            pane: pane(1),
+            project: "widget".into(),
+        });
+        assert_eq!(
+            rig.answer().await,
+            MemReply::Unavailable {
+                pane: Some(pane(1)),
+                reason: Reason::NoAnswer
+            },
+            "{status}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_200_context_that_cannot_be_read_is_no_memory_and_stays_healthy() {
+    let mut rig = up();
+    rig.fake
+        .on("GET /context", Act::Reply(200, b"<html>".to_vec()));
+    for n in 1..=2 {
+        rig.link.send(MemCmd::Context {
+            pane: pane(n),
+            project: "widget".into(),
+        });
+        assert_eq!(
+            rig.answer().await,
+            MemReply::Context {
+                pane: pane(n),
+                block: None
+            }
+        );
+    }
+    assert_eq!(rig.fake.count("GET /context"), 2, "still healthy");
+}
+
+// S2: a panic keeps the registered sessions, so their End still goes out.
+#[tokio::test(start_paused = true)]
+async fn an_end_still_goes_out_after_a_panic() {
+    let mut rig = up();
+    rig.link.send(save(1, None));
+    let session = saved_session(&rig.answer().await);
+    rig.fake.once("GET /project/current", Act::Panic);
+    rig.link.send(resolve(1, "/a"));
+    assert!(matches!(rig.answer().await, MemReply::Unavailable { .. }));
+    rig.link.send(MemCmd::End {
+        session: session.clone(),
+        project: "widget".into(),
+        summary: "x".into(),
+    });
+    rig.link.shutdown(Duration::from_secs(1)).await;
+    assert_eq!(rig.fake.count(&format!("POST /sessions/{session}/end")), 1);
+}
+
+// S2: but a new instance after a panic still clears the sessions.
+#[tokio::test(start_paused = true)]
+async fn a_new_instance_after_a_panic_still_clears_the_sessions() {
+    let mut rig = up();
+    rig.link.send(save(1, None));
+    let session = saved_session(&rig.answer().await);
+    rig.fake.once("GET /project/current", Act::Panic);
+    rig.link.send(resolve(1, "/a"));
+    rig.answer().await;
+    rig.fake.mode(Mode::Up("0123456789abcdef".into()));
+    rig.link.send(save(1, Some(&session)));
+    assert!(matches!(rig.answer().await, MemReply::Saved { .. }));
+    assert_eq!(rig.fake.count("POST /sessions"), 2, "registered anew");
 }
 
 // ---- 5.3 shutdown ----

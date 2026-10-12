@@ -217,6 +217,7 @@ mod tests {
             pane: pane(),
             session: None,
             project: "widget".into(),
+            cwd: "/tmp/a b&c".into(),
             note: note(),
         });
         link.send(MemCmd::Context {
@@ -296,6 +297,7 @@ mod tests {
             pane: pane(),
             session: None,
             project: "widget".into(),
+            cwd: "/tmp/a b&c".into(),
             note: note(),
         });
         link.send(MemCmd::Delete {
@@ -326,6 +328,7 @@ mod tests {
             pane: pane(),
             session: None,
             project: "widget".into(),
+            cwd: "/tmp/a b&c".into(),
             note: note(),
         });
         let got = replies(&mut rx, 2).await;

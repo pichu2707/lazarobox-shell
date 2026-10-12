@@ -22,11 +22,13 @@ pub enum MemCmd {
     Resolve { pane: PaneId, cwd: String },
     /// Fetch the context block of a project.
     Context { pane: PaneId, project: String },
-    /// Save a note. `session` is `None` until the conversation has one.
+    /// Save a note. `session` is `None` until the conversation has one. `cwd`
+    /// is the directory of the chat: the session registers with it.
     Save {
         pane: PaneId,
         session: Option<String>,
         project: String,
+        cwd: String,
         note: Note,
     },
     /// End a registered session with its summary.
@@ -201,6 +203,7 @@ mod tests {
                 pane,
                 session: None,
                 project: "p".into(),
+                cwd: "/x".into(),
                 note,
             },
             MemCmd::End {
