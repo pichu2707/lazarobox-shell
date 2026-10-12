@@ -580,10 +580,11 @@ async fn a_failed_write_with_no_reply_is_invalid() {
 
 #[tokio::test]
 async fn a_refused_connection_is_connect() {
-    let port = {
-        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        l.local_addr().unwrap().port()
-    };
+    // A bound socket that never listens holds the port until the end of the
+    // test, so a parallel test cannot take it: the connect is refused.
+    let held = tokio::net::TcpSocket::new_v4().unwrap();
+    held.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let port = held.local_addr().unwrap().port();
     assert_eq!(get(port, "/health").await, Err(CallError::Connect));
 }
 

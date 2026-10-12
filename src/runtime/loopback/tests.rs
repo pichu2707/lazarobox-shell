@@ -401,10 +401,11 @@ async fn a_reply_that_ends_early_is_interrupted_with_the_text_kept() {
 // waited for that limit fails.
 #[tokio::test]
 async fn connect_refused_ends_at_once() {
-    let port = {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        listener.local_addr().unwrap().port()
-    };
+    // A bound socket that never listens holds the port until the end of the
+    // test, so a parallel test cannot take it: the connect is refused.
+    let held = tokio::net::TcpSocket::new_v4().unwrap();
+    held.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let port = held.local_addr().unwrap().port();
     let start = std::time::Instant::now();
     let events = turn(port, "/api/chat", b"{}").await;
     assert_eq!(events, vec![failed(CANNOT_CONNECT)]);
