@@ -5,7 +5,8 @@ use crate::core::ai::sanitize::clean;
 /// What answers on the memory port.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Health {
-    /// engram 3.x: has an `instance_id` and a `capabilities` object.
+    /// engram 3.x: has a well-formed `instance_id` (`[0-9a-f-]{1,64}`) and a
+    /// `capabilities` object.
     Ready {
         instance_id: String,
         version: String,
@@ -21,8 +22,16 @@ pub enum Health {
 
 /// The longest version text kept, in characters.
 pub const VERSION_CAP: usize = 32;
-/// The longest instance id kept, in characters.
+/// The longest instance id accepted, in characters.
 pub const INSTANCE_CAP: usize = 64;
+
+/// Whether `id` is 1 to `INSTANCE_CAP` lowercase hex digits or dashes.
+fn valid_instance_id(id: &str) -> bool {
+    (1..=INSTANCE_CAP).contains(&id.len())
+        && id
+            .bytes()
+            .all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f' | b'-'))
+}
 
 /// Classifies a `/health` answer from its status and body.
 pub fn classify_health(status: u16, body: &[u8]) -> Health {
@@ -40,7 +49,13 @@ pub fn classify_health(status: u16, body: &[u8]) -> Health {
         clean(raw).trim().chars().take(cap).collect()
     };
     let version = text("version", VERSION_CAP);
-    let instance_id = text("instance_id", INSTANCE_CAP);
+    // Taken as is: only `[0-9a-f-]{1,64}` is an id; anything else is not.
+    let instance_id = reply
+        .get("instance_id")
+        .and_then(|v| v.as_str())
+        .filter(|id| valid_instance_id(id))
+        .unwrap_or_default()
+        .to_string();
     let has_capabilities = reply.get("capabilities").is_some_and(|v| v.is_object());
     if instance_id.is_empty() || !has_capabilities {
         Health::Old { version }
@@ -171,19 +186,49 @@ mod tests {
     }
 
     #[test]
-    fn version_and_instance_id_are_sanitized_and_capped() {
+    fn the_version_is_sanitized_and_capped() {
         let mut body = ready_body();
         body["version"] = serde_json::json!(format!("\u{1b}[31m{}", "9".repeat(100)));
-        body["instance_id"] = serde_json::json!("a".repeat(500));
-        let Health::Ready {
-            instance_id,
-            version,
-        } = classify_json(&body)
-        else {
+        let Health::Ready { version, .. } = classify_json(&body) else {
             panic!("ready");
         };
         assert_eq!(version, "9".repeat(VERSION_CAP));
-        assert_eq!(instance_id.chars().count(), INSTANCE_CAP);
+    }
+
+    #[test]
+    fn an_instance_id_must_be_lowercase_hex_and_dashes_up_to_64() {
+        for good in [
+            "a",
+            "0f",
+            "999100b4a245378075d419132ab1c06e",
+            &"a-0".repeat(21),
+        ] {
+            let mut body = ready_body();
+            body["instance_id"] = serde_json::json!(good);
+            assert!(
+                matches!(classify_json(&body), Health::Ready { instance_id, .. } if instance_id == good),
+                "{good:?}"
+            );
+        }
+        for bad in [
+            "a".repeat(65),
+            "A1".to_string(),
+            "abc def".to_string(),
+            " abc".to_string(),
+            "abc\n".to_string(),
+            "g1".to_string(),
+            "abc/../x".to_string(),
+            "\u{ff10}\u{ff11}".to_string(),
+            "abc\u{1b}[0m".to_string(),
+            "<b>".to_string(),
+        ] {
+            let mut body = ready_body();
+            body["instance_id"] = serde_json::json!(bad);
+            assert!(
+                matches!(classify_json(&body), Health::Old { .. }),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]
