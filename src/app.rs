@@ -33,6 +33,10 @@ const SCROLLBACK_LINES: usize = 10_000;
 /// exit key within this window is dropped.
 const HELD_EXIT_WINDOW: Duration = Duration::from_millis(500);
 
+/// Shown when `Prefix [` is pressed on a chat pane.
+const CHAT_COPY_REFUSED: &str =
+    "copy mode is not available in chat panes; Ctrl+Y copies the last answer";
+
 /// Byte sent to the child when the prefix is pressed twice (NUL, Ctrl+Space).
 const PREFIX_LITERAL: u8 = 0x00;
 
@@ -212,8 +216,13 @@ struct PtyPane {
 /// state and has no PTY.
 enum PaneContent {
     Pty(Box<PtyPane>),
-    // Read by the cwd rules of a chat (task 1.3).
-    Chat(#[expect(dead_code)] Box<ChatState>),
+    Chat(Box<ChatState>),
+}
+
+/// What the UI sees of a pane.
+pub enum PaneView<'a> {
+    Pty(&'a Pane),
+    Chat(&'a ChatState),
 }
 
 /// The kind of pane a split or a new tab creates.
@@ -263,10 +272,13 @@ impl PaneState {
         }
     }
 
-    /// OSC 7 wins once seen; the poll fills in for shells that never report.
+    /// A shell's: OSC 7 wins once seen, and the poll fills in for shells that
+    /// never report. A chat's is the cwd it was opened from.
     fn effective_cwd(&self) -> Option<&Path> {
-        self.pty()
-            .and_then(|pty| pty.emu.cwd().or(pty.proc_cwd.as_deref()))
+        match &self.content {
+            PaneContent::Pty(pty) => pty.emu.cwd().or(pty.proc_cwd.as_deref()),
+            PaneContent::Chat(chat) => chat.origin_cwd(),
+        }
     }
 }
 
@@ -706,7 +718,7 @@ impl App {
 
     /// Test-only: opens a chat pane to the right of the focus.
     #[cfg(test)]
-    fn open_chat(&mut self, origin: Option<PathBuf>) -> Vec<Effect> {
+    pub(crate) fn open_chat(&mut self, origin: Option<PathBuf>) -> Vec<Effect> {
         self.split_with(Axis::X, NewPane::Chat(ChatState::new(origin)))
     }
 
@@ -714,6 +726,23 @@ impl App {
     #[cfg(test)]
     fn open_chat_tab(&mut self, origin: Option<PathBuf>) -> Vec<Effect> {
         self.new_tab_with(NewPane::Chat(ChatState::new(origin)))
+    }
+
+    /// What the UI draws for pane `id`, if it exists.
+    pub fn pane_view(&self, id: PaneId) -> Option<PaneView<'_>> {
+        self.panes.get(&id).map(|state| match &state.content {
+            PaneContent::Pty(pty) => PaneView::Pty(&pty.emu),
+            PaneContent::Chat(chat) => PaneView::Chat(chat),
+        })
+    }
+
+    /// COPY works on an emulator, so it must never outlive the focus on a
+    /// shell pane: `copy_pane` relies on it.
+    fn debug_assert_copy_on_shell(&self) {
+        debug_assert!(
+            !matches!(self.input, InputMode::Copy(_)) || self.focused_pty().is_some(),
+            "COPY is only active while a shell pane has the focus"
+        );
     }
 
     /// Whether `id` names a pane with a PTY behind it.
@@ -768,6 +797,7 @@ impl App {
             self.input == InputMode::Menu,
             "the menu state and the MENU mode go together"
         );
+        self.debug_assert_copy_on_shell();
         effects
     }
 
@@ -937,6 +967,11 @@ impl App {
         self.input = match step {
             Step::Enter(group) => InputMode::Group(group),
             Step::Run(PrefixAction::RequestQuit) => InputMode::Confirm(Confirm::Quit),
+            // A chat has no scrollback to select from: COPY is for shell panes.
+            Step::Run(PrefixAction::EnterCopy) if self.focused_pty().is_none() => {
+                self.notice = Some(CHAT_COPY_REFUSED.to_string());
+                InputMode::Terminal
+            }
             Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(self.enter_copy()),
             Step::Run(PrefixAction::EnterResize) => InputMode::Resize,
             Step::Run(PrefixAction::ClosePane) if self.tabs.len() > 1 || self.tab_panes() > 1 => {
@@ -967,7 +1002,8 @@ impl App {
             ) => InputMode::Terminal,
         };
         match step {
-            Step::Run(PrefixAction::SendPrefixLiteral) => {
+            // The literal is a byte for a child; a chat has none, so it swallows it.
+            Step::Run(PrefixAction::SendPrefixLiteral) if self.focused_pty().is_some() => {
                 vec![Effect::WritePty(self.tab().focus, vec![PREFIX_LITERAL])]
             }
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
@@ -1020,6 +1056,7 @@ impl App {
             self.input = InputMode::Terminal;
         }
         self.active = index;
+        self.debug_assert_copy_on_shell();
     }
 
     /// Appends a tab with one pane, activates it and spawns its shell in the
@@ -1148,6 +1185,7 @@ impl App {
             self.input = InputMode::Terminal;
         }
         self.tabs[t].focus = next;
+        self.debug_assert_copy_on_shell();
     }
 
     /// Drops pane `id` of whichever tab holds it and gives its space to its
@@ -5967,6 +6005,245 @@ mod app_tests {
             a.update(key('y'));
             press(&mut a, "wv");
             assert_eq!(a.focused(), PaneId::for_test(4));
+        }
+
+        // 1.2: the prefix still works on a chat, but nothing reaches a PTY.
+        #[test]
+        fn copy_on_a_chat_is_refused_with_the_notice() {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            let effects = press(&mut a, "[");
+            assert_eq!(effects, vec![]);
+            assert_eq!(a.input(), InputMode::Terminal);
+            assert_eq!(
+                a.notice(),
+                Some("copy mode is not available in chat panes; Ctrl+Y copies the last answer")
+            );
+            assert_eq!(a.copy_position(), None);
+            assert!(a.take_dirty());
+        }
+
+        #[test]
+        fn the_notice_goes_away_with_the_next_key() {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            press(&mut a, "[");
+            a.update(key('x'));
+            assert_eq!(a.notice(), None);
+        }
+
+        #[test]
+        fn a_second_prefix_on_a_chat_is_swallowed() {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            a.update(ctrl_space());
+            assert_eq!(a.input(), InputMode::Prefix);
+            assert_eq!(a.update(ctrl_space()), vec![]);
+            assert_eq!(a.input(), InputMode::Terminal);
+        }
+
+        #[test]
+        fn a_second_prefix_on_a_shell_still_sends_the_literal() {
+            let mut a = launched(80, 25);
+            a.update(ctrl_space());
+            assert_eq!(
+                a.update(ctrl_space()),
+                vec![Effect::WritePty(PaneId::FIRST, vec![0])]
+            );
+        }
+
+        #[test]
+        fn chat_keys_and_pastes_never_write_a_pty() {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            let enter = AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            for event in [key('x'), enter, esc(), AppEvent::Paste("hi\nthere".into())] {
+                assert_eq!(a.update(event.clone()), vec![], "{event:?}");
+            }
+            assert_eq!(a.input(), InputMode::Terminal);
+        }
+
+        #[test]
+        fn repeat_rules_hold_on_a_chat() {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            let repeat = |code, modifiers| {
+                AppEvent::Key(KeyEvent::new_with_kind(
+                    code,
+                    modifiers,
+                    KeyEventKind::Repeat,
+                ))
+            };
+            assert_eq!(
+                a.update(repeat(KeyCode::Char('x'), KeyModifiers::NONE)),
+                vec![]
+            );
+            a.update(ctrl_space());
+            // A held key must not trigger a one-shot decision in PREFIX.
+            assert_eq!(
+                a.update(repeat(KeyCode::Char('['), KeyModifiers::NONE)),
+                vec![]
+            );
+            assert_eq!(a.input(), InputMode::Prefix);
+            assert_eq!(a.notice(), None);
+        }
+
+        // 1.3: a chat's effective cwd is the cwd it was opened from.
+        #[test]
+        fn the_tab_label_comes_from_the_chat_origin_cwd() {
+            let mut a = launched(80, 25);
+            a.open_chat_tab(Some("/srv/www".into()));
+            assert_eq!(
+                a.tab_labels(),
+                vec!["1 launch".to_string(), "2 www".to_string()]
+            );
+            assert_eq!(a.cwd_label(), "/srv/www");
+        }
+
+        #[test]
+        fn a_chat_without_an_origin_cwd_has_a_bare_label() {
+            let mut a = launched(80, 25);
+            a.open_chat_tab(None);
+            assert_eq!(
+                a.tab_labels(),
+                vec!["1 launch".to_string(), "2".to_string()]
+            );
+            assert_eq!(a.cwd_label(), "");
+        }
+
+        #[test]
+        fn a_shell_split_from_a_chat_inherits_its_origin_cwd() {
+            let mut a = launched(80, 25);
+            a.open_chat(Some("/srv".into()));
+            let effects = press(&mut a, "wv");
+            assert_eq!(
+                effects.last(),
+                Some(&Effect::SpawnPane(id3(), spec("/srv", sized(24, 20))))
+            );
+        }
+
+        #[test]
+        fn a_new_tab_from_a_chat_inherits_its_origin_cwd() {
+            let mut a = launched(80, 25);
+            a.open_chat(Some("/srv".into()));
+            let effects = press(&mut a, "tn");
+            assert_eq!(
+                effects.last(),
+                Some(&Effect::SpawnPane(id3(), spec("/srv", sized(23, 80))))
+            );
+        }
+
+        #[test]
+        fn a_vanished_origin_cwd_falls_back_to_the_launch_cwd() {
+            let mut a = launched(80, 25).with_dir_check(|dir| dir != Path::new("/gone"));
+            a.open_chat(Some("/gone".into()));
+            let effects = press(&mut a, "tn");
+            assert_eq!(
+                effects.last(),
+                Some(&Effect::SpawnPane(id3(), spec(LAUNCH, sized(23, 80))))
+            );
+        }
+
+        #[test]
+        fn a_chat_can_be_the_last_pane_of_the_last_tab() {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            let effects = a.update(exited(PaneId::FIRST));
+            assert!(!effects.contains(&Effect::Quit), "{effects:?}");
+            assert_eq!((a.tab_count(), a.focused()), (1, chat_id()));
+            press(&mut a, "wq");
+            assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
+            assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+        }
+
+        // 1.4: the UI asks for a view, not for an emulator.
+        #[test]
+        fn pane_view_names_the_kind_of_each_pane() {
+            let mut a = launched(80, 25);
+            a.open_chat(Some("/srv".into()));
+            assert!(matches!(a.pane_view(PaneId::FIRST), Some(PaneView::Pty(_))));
+            let Some(PaneView::Chat(chat)) = a.pane_view(chat_id()) else {
+                panic!("a chat pane has a chat view");
+            };
+            assert_eq!(chat.origin_cwd(), Some(Path::new("/srv")));
+            assert!(a.pane_view(PaneId::for_test(9)).is_none());
+        }
+
+        // A late poll result for a chat id must not give the chat a shell cwd.
+        #[test]
+        fn a_cwd_event_for_a_chat_leaves_its_cwd_alone() {
+            let mut a = launched(80, 25);
+            a.open_chat(Some("/srv".into()));
+            a.update(AppEvent::Cwd(chat_id(), "/elsewhere".into()));
+            assert_eq!(a.cwd_label(), "/srv");
+            let Some(PaneView::Chat(chat)) = a.pane_view(chat_id()) else {
+                panic!("a chat pane has a chat view");
+            };
+            assert_eq!(chat.origin_cwd(), Some(Path::new("/srv")));
+        }
+
+        // Fuzz: random input over both pane kinds never panics and never
+        // sends a PTY effect for a chat. Fixed seed, so it is reproducible.
+        #[test]
+        fn random_events_never_reach_a_pty_through_a_chat() {
+            let mut seed: u64 = 0x5eed_c0de;
+            let mut next = move |n: u64| {
+                seed = seed
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                (seed >> 33) % n
+            };
+            let mut a = launched(80, 25);
+            let mut chats: Vec<PaneId> = Vec::new();
+            for _ in 0..4000 {
+                let id = PaneId::for_test(1 + next(14) as u32);
+                let keys = "[wvhjklqytncns0123 xyz?\n";
+                let ch = keys.chars().nth(next(keys.len() as u64) as usize).unwrap();
+                let effects = match next(12) {
+                    0..=2 => {
+                        let seqs = ["wv", "wh", "wq", "wqy", "tn", "tc", "tcy", "[", "hl", " "];
+                        press(&mut a, seqs[next(seqs.len() as u64) as usize])
+                    }
+                    3..=4 => a.update(key(ch)),
+                    5 => a.update(esc()),
+                    6 => {
+                        let e = a.open_chat(Some("/srv".into()));
+                        if !a.is_shell(a.focused()) {
+                            chats.push(a.focused());
+                        }
+                        e
+                    }
+                    7 => {
+                        let e = a.open_chat_tab(None);
+                        if !a.is_shell(a.focused()) {
+                            chats.push(a.focused());
+                        }
+                        e
+                    }
+                    8 => a.update(exited(id)),
+                    9 => a.update(AppEvent::Resize {
+                        cols: 20 + next(100) as u16,
+                        rows: 5 + next(40) as u16,
+                    }),
+                    10 => match next(4) {
+                        0 => a.update(AppEvent::Cwd(id, "/x".into())),
+                        1 => a.update(AppEvent::Paste("p".into())),
+                        2 => a.update(AppEvent::Pty(id, PtyEvent::Output(b"o\r\n".to_vec()))),
+                        _ => a.update(AppEvent::SpawnFailed(id, "boom".into())),
+                    },
+                    _ => a.update(key('y')),
+                };
+                for effect in effects {
+                    let target = match effect {
+                        Effect::WritePty(id, _)
+                        | Effect::ResizePty(id, _)
+                        | Effect::ClosePane(id)
+                        | Effect::SpawnPane(id, _) => id,
+                        _ => continue,
+                    };
+                    assert!(!chats.contains(&target), "{effect:?} targets a chat");
+                }
+            }
         }
     }
 }

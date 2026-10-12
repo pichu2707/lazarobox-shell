@@ -79,10 +79,10 @@ Files changed:
 ## PR1 / C1: Pane-kind seam (`src/app.rs`)
 
 - [x] 1.1 RED: seam tests with a `#[cfg(test)]` chat-pane constructor: chat gets no `SpawnPane`, `ResizePty` or `ClosePane`; `Pty`/`Cwd` events for a chat id are dropped; cwd poll skips chats; existing tests and snapshots unchanged.
-- [ ] 1.2 RED: `Prefix [` on a chat is refused with the exact notice (R6), vt100 untouched; second Ctrl+Space swallowed; chat keys and paste never emit `WritePty`; Repeat rules for a chat.
-- [ ] 1.3 RED: tab label and inherited cwd (split, new tab) come from the chat's `origin_cwd`; vanished origin cwd falls back; ids shared and never reused; last pane being a chat.
-- [ ] 1.4 GREEN: `PaneState { content: PaneContent::{Pty(PtyPane), Chat(Box<ChatState>)}, size }`, accessors, `NewPane::{Shell, Chat}`, `relayout`, `remove_pane`, `drop_tab`, `App::pane_view`; `Chat` variant carries `cfg_attr(not(test), expect(dead_code))`.
-- [ ] 1.5 Gate.
+- [x] 1.2 RED: `Prefix [` on a chat is refused with the exact notice (R6), vt100 untouched; second Ctrl+Space swallowed; chat keys and paste never emit `WritePty`; Repeat rules for a chat.
+- [x] 1.3 RED: tab label and inherited cwd (split, new tab) come from the chat's `origin_cwd`; vanished origin cwd falls back; ids shared and never reused; last pane being a chat.
+- [x] 1.4 GREEN: `PaneState { content: PaneContent::{Pty(PtyPane), Chat(Box<ChatState>)}, size }`, accessors, `NewPane::{Shell, Chat}`, `relayout`, `remove_pane`, `drop_tab`, `App::pane_view`; `Chat` variant carries `cfg_attr(not(test), expect(dead_code))`.
+- [x] 1.5 Gate.
 
 ## PR2 / C2: Chat core (`src/core/ai/chat/{mod,engine}.rs`, `src/core/ai/jail.rs` stub)
 
@@ -138,6 +138,7 @@ Files changed:
 
 ## PR8 / C7: Composer, transcript, widget (`src/core/ai/chat/{composer,transcript}.rs`, `src/ui/components/chat.rs`, `src/ui/mod.rs`, `Cargo.toml`)
 
+- [ ] 8.0 Carry-over from PR1 review (W2): the composer must own the cursor of a focused chat (position and shape); until C7 a focused chat leaves the cursor at the default.
 - [ ] 8.1 RED: composer: type, Backspace, Delete, Left/Right, Home/End, Ctrl+U, newline, paste with CRLF and control stripping, 8,000-char cap, 5-row height cap.
 - [ ] 8.2 RED: transcript wrap with `unicode-width` cached by (width, generation); fenced code styled, unclosed fence is code, no other markdown; follow at bottom, pinned when scrolled, send returns to bottom, clamp.
 - [ ] 8.3 RED: insta snapshots: transcript above composer, composer growth capped, code block, literal markdown, long line wrap; no panic from 1x1 to 10x2 with and without a stream.
