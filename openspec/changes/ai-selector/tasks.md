@@ -111,11 +111,11 @@ AS4 (~850, 90% deletions) is split in three because two PRs cannot stay under 40
 
 ## PR11 / AS6b: App wiring (`src/app.rs`, README)
 
-- [ ] 11.1 RED: paste reaches custom buffer and never the PTY, ignored elsewhere; `sync_checking` after open and Refresh, cleared on result; pane exit keeps picker at level 2; spawn failure, resize, last pane regressions; minimal fallback keeps Esc/`s`.
-- [ ] 11.2 RED: W2 (Enter never saves/closes), S1 (undetected saved `codex` survives open, refresh, `s`, reload).
-- [ ] 11.3 GREEN: `App::on_paste` Menu branch, `sync_checking`.
-- [ ] 11.4 README: Ollama catalog informational and possibly stale, nothing is downloaded, `s` saves.
-- [ ] 11.5 Gate.
+- [x] 11.1 RED: paste reaches custom buffer and never the PTY, ignored elsewhere; `sync_checking` after open and Refresh, cleared on result; pane exit keeps picker at level 2; spawn failure, resize, last pane regressions; minimal fallback keeps Esc/`s`.
+- [x] 11.2 RED: W2 (Enter never saves/closes), S1 (undetected saved `codex` survives open, refresh, `s`, reload).
+- [x] 11.3 GREEN: `App::on_paste` Menu branch, `sync_checking`.
+- [x] 11.4 README: Ollama catalog informational and possibly stale, nothing is downloaded, `s` saves.
+- [x] 11.5 Gate.
 
 ## PR12 (no code): Verify-prep, real machine [manual]
 
