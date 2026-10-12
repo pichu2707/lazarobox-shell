@@ -60,7 +60,11 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 
 ## 🤖 Menú de IA
 
-Con `Ctrl+Espacio` y `m` se abre el menú. Su sección **AI** muestra tres filas: **Engine** y **Model** (se cambian con `h`/`l`) y **Status**, que solo informa. `r` sobre Engine o Model vuelve a detectar los motores. `Enter` guarda la elección en la tabla `[ai]` de `config.toml` (`engine` y `model`) y `Esc` la descarta.
+Con `Ctrl+Espacio` y `m` se abre el menú. Su sección **AI** muestra el motor general (**Set all tasks**) y una fila por tarea. `Enter` sobre una fila de tarea abre su selector de dos niveles (motor y modelo); `Esc` vuelve un nivel. La fila `custom…` permite escribir o pegar el nombre de un modelo. `r` sobre una fila de tarea o dentro del selector vuelve a detectar los motores.
+
+`s` guarda la elección en la tabla `[ai]` de `config.toml` (y la de cada tarea en `[ai.tasks.*]`); `Esc` en el nivel superior la descarta. `Enter` nunca guarda ni cierra el menú.
+
+El catálogo de modelos de Ollama es solo informativo y puede estar desactualizado. Los modelos del catálogo que no están instalados aparecen como `download required` y no se pueden elegir: **no se descarga nada**. Para usar uno, instálalo tú (`ollama pull <modelo>`) y pulsa `r`.
 
 Se detectan estos motores: `ollama`, `lmstudio`, `llamacpp` y `vllm` (servidores locales) y los CLIs `claude`, `codex`, `gemini` y `opencode`. Los servidores se consultan en sus puertos habituales y los CLIs se buscan en el `PATH`.
 
