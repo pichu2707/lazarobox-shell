@@ -372,6 +372,17 @@ async fn an_adapter_that_panics_interrupts_the_turn() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_runner_that_panics_before_returning_its_future_interrupts_the_turn() {
+    let runner: Runner = Arc::new(|_request, _tx| panic!("runner bug before the future"));
+    let (mut chats, mut rx) = chats(runner);
+    chats.send(pane(1), 1, request(""));
+    assert_eq!(
+        turn_events(&mut rx).await,
+        vec![(pane(1), 1, StreamEvent::Error(ChatError::Interrupted))]
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_failure_reaches_the_app_as_one_clean_line() {
     let (mut chats, mut rx) = chats(scripted(vec![failed("bad\u{1b}[31m\nnews")]));
     chats.send(pane(1), 1, request(""));

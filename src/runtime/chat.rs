@@ -216,7 +216,11 @@ async fn run_turn(
     let (tx, mut rx) = mpsc::channel(TURN_CHANNEL);
     // A panicking adapter must still end the turn: its sender is dropped and
     // the pane hears `Interrupted` instead of waiting forever.
-    let run = AssertUnwindSafe(runner(request, tx)).catch_unwind().fuse();
+    // The call itself sits inside the guarded future: a runner that panics
+    // before it returns its future is caught the same way.
+    let run = AssertUnwindSafe(async move { runner(request, tx).await })
+        .catch_unwind()
+        .fuse();
     tokio::pin!(run);
     let mut running = true;
     let mut pipe = Pipe::new();
