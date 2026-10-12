@@ -393,14 +393,33 @@ impl Drop for SeesFlagOnDrop {
 
 #[tokio::test]
 async fn the_adapter_flag_is_set_only_during_its_polls() {
+    use std::{
+        future::Future,
+        pin::pin,
+        task::{Context, Poll, Waker},
+    };
+
     assert!(!in_adapter_poll());
-    let inside = scoped(async {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let mut inside = pin!(scoped(async move {
+        log.lock().unwrap().push(in_adapter_poll());
         tokio::task::yield_now().await;
-        in_adapter_poll()
-    });
-    // First poll runs inside the wrapper; the flag is gone between polls.
-    assert!(inside.await, "set while the adapter future is polled");
+        log.lock().unwrap().push(in_adapter_poll());
+    }));
+    let mut cx = Context::from_waker(Waker::noop());
+
+    // First poll: the future runs, then returns Pending at the yield.
+    assert!(inside.as_mut().poll(&mut cx).is_pending());
+    assert!(!in_adapter_poll(), "off between polls");
+    // Second poll: it finishes.
+    assert_eq!(inside.as_mut().poll(&mut cx), Poll::Ready(()));
     assert!(!in_adapter_poll(), "cleared once the poll returns");
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![true, true],
+        "set inside every poll"
+    );
 }
 
 #[tokio::test]
