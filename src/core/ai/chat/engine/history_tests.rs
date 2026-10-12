@@ -131,3 +131,34 @@ fn clis_get_the_large_cap_and_servers_the_small_one() {
         assert_eq!(history_chars(server), SERVER_HISTORY_CHARS);
     }
 }
+
+#[test]
+fn a_window_that_would_start_on_an_assistant_starts_on_a_user() {
+    // 41 messages: the 40-message window starts at index 1, an Assistant.
+    let history = msgs(41, 10);
+    let context = build_context(&history, SERVER_HISTORY_CHARS);
+    assert_eq!(context.messages, history[2..]);
+    assert_eq!(context.messages[0].role, Role::User);
+    assert!(context.omitted);
+}
+
+#[test]
+fn the_character_cap_never_leaves_an_assistant_first() {
+    // Each message is 4000 chars: the cap keeps 3, starting on an Assistant.
+    let history = msgs(10, 4_000);
+    let context = build_context(&history, SERVER_HISTORY_CHARS);
+    assert_eq!(context.messages, history[8..]);
+    assert_eq!(context.messages[0].role, Role::User);
+    assert!(context.omitted);
+}
+
+#[test]
+fn the_newest_message_survives_even_when_it_is_an_assistant() {
+    let history = vec![ChatMessage {
+        role: Role::Assistant,
+        content: "only".to_string(),
+    }];
+    let context = build_context(&history, SERVER_HISTORY_CHARS);
+    assert_eq!(context.messages, history);
+    assert!(!context.omitted);
+}
