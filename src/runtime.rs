@@ -126,13 +126,14 @@ pub async fn run() -> io::Result<()> {
     let (ai_tx, ai_rx) = mpsc::channel(1);
     let (chat_tx, chat_rx) = mpsc::channel(chat::APP_CHANNEL);
     let (memory_tx, memory_rx) = mpsc::channel(MEMORY_CHANNEL);
-    // Read once, here: the transport never reads the environment itself.
-    let token = env::var("ENGRAM_HTTP_TOKEN").ok();
     // Off unless the config activates it: then the sender is dropped, no
-    // worker ever starts and nothing touches the network.
-    let memory = Memory::for_config(&app.ai().memory, move |port| {
-        engram::spawn(Loopback::new(port, token), port, memory_tx)
-    });
+    // worker ever starts, nothing touches the network and the token is never
+    // read from the environment.
+    let memory = memory_for(
+        &app.ai().memory,
+        || env::var("ENGRAM_HTTP_TOKEN").ok(),
+        memory_tx,
+    );
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
         .with_memory(memory)
         .with_config_path(config_path)
@@ -159,13 +160,27 @@ pub async fn run() -> io::Result<()> {
     // `rx` went away with the loop, so readers stuck on a full channel stopped.
     restore();
     // Engines first (sockets closed, CLI process groups killed), then the PTY
-    // children, both inside the one bound.
-    // Pending session ends go out first, inside their own short bound.
-    panes.shutdown_memory(MEMORY_QUIT_BOUND).await;
+    // children, both inside the one bound. The pending session ends go out
+    // meanwhile, inside their own short bound, so quitting is not longer.
     let started = Instant::now();
-    panes.shutdown_chats(QUIT_KILL_BOUND).await;
+    panes
+        .shutdown_engines(MEMORY_QUIT_BOUND, QUIT_KILL_BOUND)
+        .await;
     panes.shutdown(QUIT_KILL_BOUND.saturating_sub(started.elapsed()));
     result
+}
+
+/// The memory for `config`. `read_token` is called only when the worker
+/// starts, so a run without active memory never reads `ENGRAM_HTTP_TOKEN`; the
+/// transport itself never touches the environment.
+fn memory_for(
+    config: &crate::core::ai::config::MemoryConfig,
+    read_token: impl FnOnce() -> Option<String> + 'static,
+    replies: mpsc::Sender<crate::core::ai::memory::port::MemReply>,
+) -> Memory {
+    Memory::for_config(config, move |port| {
+        engram::spawn(Loopback::new(port, read_token()), port, replies)
+    })
 }
 
 /// This machine's hostname, for OSC 7 host checks. `None` when the lookup fails.
@@ -383,9 +398,16 @@ impl Panes {
         self
     }
 
-    /// Flushes pending memory work and stops the worker, within `bound`.
-    async fn shutdown_memory(&mut self, bound: Duration) {
-        self.memory.shutdown(bound).await;
+    /// Flushes the memory and stops the chat turns at the same time: the flush
+    /// waits on the network, the chat shutdown on local processes, and neither
+    /// needs the other. Each keeps its own bound.
+    async fn shutdown_engines(&mut self, memory_bound: Duration, chats_bound: Duration) {
+        let chats = async {
+            if let Some(chats) = self.chats.as_mut() {
+                chats.shutdown(chats_bound).await;
+            }
+        };
+        tokio::join!(self.memory.shutdown(memory_bound), chats);
     }
 
     /// Sets the task that runs chat turns.
@@ -404,13 +426,6 @@ impl Panes {
     fn with_config_path(mut self, config_path: Option<PathBuf>) -> Self {
         self.config_path = config_path;
         self
-    }
-
-    /// Stops every chat turn and waits, up to `bound`, for the engines to go.
-    async fn shutdown_chats(&mut self, bound: Duration) {
-        if let Some(chats) = self.chats.as_mut() {
-            chats.shutdown(bound).await;
-        }
     }
 
     /// Starts the child of pane `id`, tagging everything it emits with `id`.
@@ -1292,7 +1307,9 @@ mod tests {
             assert_eq!(*starts.borrow(), 0);
             assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
             assert!(rx.try_recv().is_err());
-            panes.shutdown_memory(Duration::from_secs(1)).await;
+            panes
+                .shutdown_engines(Duration::from_secs(1), Duration::from_secs(3))
+                .await;
         }
     }
 
@@ -1315,7 +1332,9 @@ mod tests {
         let first = rx.recv().await.expect("the worker answers");
         assert!(matches!(first, MemReply::Health { .. }), "{first:?}");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-        panes.shutdown_memory(Duration::from_secs(1)).await;
+        panes
+            .shutdown_engines(Duration::from_secs(1), Duration::from_secs(3))
+            .await;
     }
 
     #[test]
@@ -1770,10 +1789,144 @@ mod tests {
         let (mut panes, mut rx) = panes_with_chats(runner);
         panes.apply(vec![chat_send(id(1), 1), chat_send(id(2), 1)]);
         recv(&mut rx).await.unwrap();
-        panes.shutdown_chats(Duration::from_secs(3)).await;
+        panes
+            .shutdown_engines(Duration::from_secs(1), Duration::from_secs(3))
+            .await;
         while rx.try_recv().is_ok() {}
         tokio::time::sleep(Duration::from_secs(5)).await;
         assert!(rx.try_recv().is_err(), "no turn survives the shutdown");
+    }
+
+    // W5: the memory flush runs while the chats shut down, so quitting waits
+    // for the slower of the two, not for both.
+    #[tokio::test(start_paused = true)]
+    async fn quit_flushes_the_memory_while_the_chats_shut_down() {
+        use crate::core::ai::{config::MemoryConfig, memory::route::Call};
+        use loopback::{CallError, Limits, Reply};
+        use std::sync::Mutex;
+        use tokio::time::Instant as Clock;
+
+        /// A server that answers slowly: the probe takes 290 ms, the project
+        /// lookup 790 ms, so the worker is still busy when the bound ends.
+        struct Slow;
+        impl engram::Transport for Slow {
+            async fn call(&self, call: &Call, _: Limits) -> Result<Reply, CallError> {
+                if call.target.starts_with("/health") {
+                    tokio::time::sleep(Duration::from_millis(290)).await;
+                    let (status, body) = crate::core::ai::memory::testing::split(include_bytes!(
+                        "core/ai/memory/fixtures/3.4.0/health_3_4_0.http"
+                    ));
+                    return Ok(Reply {
+                        status,
+                        body: body.to_vec(),
+                    });
+                }
+                tokio::time::sleep(Duration::from_millis(790)).await;
+                Err(CallError::Connect)
+            }
+        }
+        /// Notes when its turn is dropped, i.e. when the chat shuts down.
+        struct Dropped(Arc<Mutex<Option<Clock>>>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                *self.0.lock().unwrap() = Some(Clock::now());
+            }
+        }
+
+        let dropped_at = Arc::new(Mutex::new(None));
+        let seen = Arc::clone(&dropped_at);
+        let runner: chat::Runner = Arc::new(move |_request, tx| {
+            let guard = Dropped(Arc::clone(&seen));
+            Box::pin(async move {
+                // Holding `tx` keeps the turn open until it is aborted.
+                let (_guard, _tx) = (guard, tx);
+                std::future::pending::<()>().await;
+            })
+        });
+        let config = MemoryConfig {
+            enabled: true,
+            acknowledged: true,
+            port: 9123,
+        };
+        let (tx, _rx) = mpsc::channel(8);
+        let memory = Memory::for_config(&config, move |port| engram::spawn(Slow, port, tx));
+        let (mut panes, _chat_rx) = panes_with_chats(runner);
+        panes = panes.with_memory(memory);
+        panes.apply(vec![chat_send(id(1), 1), memory_effect()]);
+        tokio::task::yield_now().await;
+
+        let start = Clock::now();
+        panes
+            .shutdown_engines(MEMORY_QUIT_BOUND, QUIT_KILL_BOUND)
+            .await;
+        assert_eq!(
+            Clock::now() - start,
+            MEMORY_QUIT_BOUND,
+            "as long as the slower of the two, not the sum"
+        );
+        let dropped = dropped_at.lock().unwrap().expect("the turn was stopped");
+        assert_eq!(dropped, start, "the chat stopped at once, not after memory");
+    }
+
+    // S1: the token is read only when memory is active, and only when the
+    // worker starts.
+    #[tokio::test]
+    async fn the_token_is_read_only_when_an_active_memory_starts() {
+        use crate::core::ai::config::MemoryConfig;
+        let inactive = [
+            MemoryConfig::default(),
+            MemoryConfig {
+                enabled: true,
+                ..MemoryConfig::default()
+            },
+        ];
+        for config in inactive {
+            let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counted = Arc::clone(&reads);
+            let (tx, _rx) = mpsc::channel(8);
+            let mut memory = memory_for(
+                &config,
+                move || {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    None
+                },
+                tx,
+            );
+            memory.send(crate::core::ai::memory::port::MemCmd::Resolve {
+                pane: PaneId::FIRST,
+                cwd: "/x".into(),
+            });
+            memory.shutdown(Duration::from_secs(1)).await;
+            assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
+
+        // Active: nothing is read before the first command, one read at start.
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = socket.local_addr().unwrap().port();
+        let config = MemoryConfig {
+            enabled: true,
+            acknowledged: true,
+            port,
+        };
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&reads);
+        let (tx, _rx) = mpsc::channel(8);
+        let mut memory = memory_for(
+            &config,
+            move || {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                None
+            },
+            tx,
+        );
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+        memory.send(crate::core::ai::memory::port::MemCmd::Resolve {
+            pane: PaneId::FIRST,
+            cwd: "/x".into(),
+        });
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        memory.shutdown(Duration::from_secs(1)).await;
     }
 
     // The runtime stops an endless answer at 1 MiB; the app has nothing left
