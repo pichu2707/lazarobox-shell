@@ -1,0 +1,612 @@
+//! The store thread against real SQLite files in temp dirs.
+
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
+
+use rusqlite::Connection;
+use tempfile::TempDir;
+use tokio::sync::mpsc;
+
+use super::*;
+use crate::{
+    core::{
+        ai::chat::{
+            MsgStatus,
+            engine::Role,
+            store::{ERROR_MAX, StoredMessage},
+        },
+        layout::PaneId,
+    },
+    runtime::chat_store::open_as,
+};
+
+fn me() -> u32 {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
+}
+
+fn db_path(dir: &TempDir) -> PathBuf {
+    dir.path().join("lazarobox").join("chat.db")
+}
+
+fn pane() -> PaneId {
+    PaneId::FIRST
+}
+
+fn msg(role: Role, text: &str, status: MsgStatus) -> StoredMessage {
+    StoredMessage {
+        role,
+        text: text.into(),
+        status,
+        engine: "ollama".into(),
+        model: Some("llama3".into()),
+    }
+}
+
+fn user(text: &str) -> StoredMessage {
+    msg(Role::User, text, MsgStatus::Complete)
+}
+
+fn reply_msg(text: &str, status: MsgStatus) -> StoredMessage {
+    msg(Role::Assistant, text, status)
+}
+
+fn create(first: StoredMessage, open: Vec<i64>) -> StoreCmd {
+    StoreCmd::Create {
+        pane: pane(),
+        profile: "programmer".into(),
+        tag: Some("proj".into()),
+        first,
+        open,
+    }
+}
+
+fn append(conversation: i64, message: StoredMessage) -> StoreCmd {
+    StoreCmd::Append {
+        pane: pane(),
+        conversation,
+        message,
+    }
+}
+
+fn worker_at(db: &Path) -> Worker {
+    let db = db.to_path_buf();
+    Worker::new(move || open_as(&db, me()))
+}
+
+/// A worker on a fresh store, plus a second connection to look inside it.
+fn fixture() -> (TempDir, Worker, Connection) {
+    let dir = TempDir::new().unwrap();
+    let db = db_path(&dir);
+    let mut worker = worker_at(&db);
+    // Open the store with a first, throwaway-free call: the schema must exist
+    // before the inspector connects.
+    let probe = worker.handle(create(user("probe"), vec![]));
+    let Some(StoreReply::Created { conversation, .. }) = probe else {
+        panic!("probe not created: {probe:?}");
+    };
+    let conn = Connection::open(&db).unwrap();
+    conn.execute("DELETE FROM conversations WHERE id = ?1", [conversation])
+        .unwrap();
+    (dir, worker, conn)
+}
+
+fn count(conn: &Connection, table: &str) -> i64 {
+    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+        .unwrap()
+}
+
+fn created_id(reply: Option<StoreReply>) -> i64 {
+    match reply {
+        Some(StoreReply::Created { conversation, .. }) => conversation,
+        other => panic!("expected Created, got {other:?}"),
+    }
+}
+
+/// `(seq, role, content, status)` of a conversation, in order.
+fn rows(conn: &Connection, id: i64) -> Vec<(i64, String, String, String)> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT seq, role, content, status FROM messages
+             WHERE conversation_id = ?1 ORDER BY seq",
+        )
+        .unwrap();
+    stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+fn seed(conn: &Connection, n: usize) {
+    for i in 0..n {
+        let stamp = 1_000 + i as i64;
+        conn.execute(
+            "INSERT INTO conversations(id, created_at, updated_at, profile, title)
+             VALUES (?1, ?2, ?2, 'analyst', ?3)",
+            (1_000 + i as i64, stamp, format!("t{i}")),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages(conversation_id, seq, role, content, engine, model, status, created_at)
+             VALUES (?1, 1, 'user', 'hi', 'ollama', NULL, 'complete', ?2)",
+            (1_000 + i as i64, stamp),
+        )
+        .unwrap();
+    }
+}
+
+fn exists(conn: &Connection, id: i64) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM conversations WHERE id = ?1",
+        [id],
+        |r| r.get::<_, i64>(0),
+    )
+    .unwrap()
+        == 1
+}
+
+// ---- saving (7.1) ----------------------------------------------------------
+
+#[test]
+fn the_first_send_creates_a_conversation_with_profile_tag_and_message() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("hello"), vec![])));
+    assert_eq!(
+        rows(&conn, id),
+        vec![(1, "user".into(), "hello".into(), "complete".into())]
+    );
+    let (profile, tag, project): (String, String, i64) = conn
+        .query_row(
+            "SELECT c.profile, t.tag, t.is_project FROM conversations c
+             JOIN tags t ON t.conversation_id = c.id WHERE c.id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (profile.as_str(), tag.as_str(), project),
+        ("programmer", "proj", 1)
+    );
+}
+
+#[test]
+fn the_title_is_the_first_line_of_the_first_message_cut_short() {
+    let (_dir, mut worker, conn) = fixture();
+    let long = format!("first line {}\nsecond", "x".repeat(200));
+    let id = created_id(worker.handle(create(user(&long), vec![])));
+    let title: String = conn
+        .query_row("SELECT title FROM conversations WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert!(title.starts_with("first line x"));
+    assert!(!title.contains('\n'));
+    assert!(title.chars().count() <= 80);
+}
+
+#[test]
+fn a_conversation_without_a_tag_stores_no_tag_row() {
+    let (_dir, mut worker, conn) = fixture();
+    let cmd = StoreCmd::Create {
+        pane: pane(),
+        profile: "analyst".into(),
+        tag: None,
+        first: user("hi"),
+        open: vec![],
+    };
+    created_id(worker.handle(cmd));
+    assert_eq!(count(&conn, "tags"), 0);
+}
+
+#[test]
+fn appends_land_in_order_with_their_status_engine_and_model() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q1"), vec![])));
+    for (text, status) in [
+        ("a1", MsgStatus::Complete),
+        ("Hel", MsgStatus::Cancelled),
+        ("cut", MsgStatus::Interrupted),
+        ("big", MsgStatus::Truncated),
+    ] {
+        assert_eq!(worker.handle(append(id, reply_msg(text, status))), None);
+    }
+    let got: Vec<_> = rows(&conn, id)
+        .into_iter()
+        .map(|(seq, _, text, status)| (seq, text, status))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (1, "q1".into(), "complete".into()),
+            (2, "a1".into(), "complete".into()),
+            (3, "Hel".into(), "cancelled".into()),
+            (4, "cut".into(), "interrupted".into()),
+            (5, "big".into(), "truncated".into()),
+        ]
+    );
+    let (engine, model): (String, Option<String>) = conn
+        .query_row(
+            "SELECT engine, model FROM messages WHERE conversation_id = ?1 AND seq = 2",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (engine.as_str(), model.as_deref()),
+        ("ollama", Some("llama3"))
+    );
+}
+
+#[test]
+fn an_append_keeps_the_conversation_alive() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 1);
+    worker.handle(append(1_000, reply_msg("late", MsgStatus::Complete)));
+    let updated: i64 = conn
+        .query_row(
+            "SELECT updated_at FROM conversations WHERE id = 1000",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(updated > 1_000_000, "updated_at is the clock, not the seed");
+}
+
+#[test]
+fn errors_are_not_stored() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    assert_eq!(
+        worker.handle(append(id, reply_msg("boom", MsgStatus::Error))),
+        None
+    );
+    assert_eq!(rows(&conn, id).len(), 1);
+}
+
+#[test]
+fn stored_text_is_sanitized() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("x\u{1b}[31my"), vec![])));
+    worker.handle(append(id, reply_msg("a\u{1b}[31mb", MsgStatus::Complete)));
+    let got: Vec<_> = rows(&conn, id).into_iter().map(|r| r.2).collect();
+    assert_eq!(got, vec!["xy".to_string(), "ab".to_string()]);
+}
+
+#[test]
+fn commands_over_the_thread_run_in_the_order_sent() {
+    let dir = TempDir::new().unwrap();
+    let db = db_path(&dir);
+    let (tx, mut rx) = mpsc::channel(8);
+    let handle = {
+        let db = db.clone();
+        spawn(move || open_as(&db, me()), tx)
+    };
+    handle.send(create(user("q"), vec![]));
+    let Some(StoreReply::Created { conversation, .. }) = rx.blocking_recv() else {
+        panic!("no Created reply");
+    };
+    for i in 0..5 {
+        handle.send(append(conversation, user(&format!("m{i}"))));
+    }
+    handle.shutdown(Duration::from_secs(2));
+    let conn = Connection::open(&db).unwrap();
+    let texts: Vec<_> = rows(&conn, conversation).into_iter().map(|r| r.2).collect();
+    assert_eq!(texts, ["q", "m0", "m1", "m2", "m3", "m4"]);
+    assert!(rx.try_recv().is_err(), "appends that succeed send no reply");
+}
+
+#[test]
+fn a_session_that_never_chats_never_touches_the_data_directory() {
+    let dir = TempDir::new().unwrap();
+    let db = db_path(&dir);
+    let (tx, _rx) = mpsc::channel(1);
+    let handle = {
+        let db = db.clone();
+        spawn(move || open_as(&db, me()), tx)
+    };
+    handle.shutdown(Duration::from_secs(2));
+    assert!(!db.exists() && !db.parent().unwrap().exists());
+}
+
+// ---- retention (7.2) -------------------------------------------------------
+
+#[test]
+fn the_201st_conversation_evicts_the_one_with_the_oldest_activity() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 200);
+    let reply = worker.handle(create(user("new"), vec![]));
+    let id = created_id(reply.clone());
+    assert!(matches!(
+        reply,
+        Some(StoreReply::Created { evicted: true, .. })
+    ));
+    assert_eq!(count(&conn, "conversations"), 200);
+    assert!(!exists(&conn, 1_000), "the oldest is gone");
+    assert!(exists(&conn, 1_001));
+    assert!(exists(&conn, id));
+    assert_eq!(count(&conn, "messages"), 200, "its messages went with it");
+}
+
+#[test]
+fn recent_activity_keeps_the_oldest_by_creation_alive() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 200);
+    conn.execute(
+        "UPDATE conversations SET updated_at = 9999999 WHERE id = 1000",
+        [],
+    )
+    .unwrap();
+    created_id(worker.handle(create(user("new"), vec![])));
+    assert!(exists(&conn, 1_000));
+    assert!(!exists(&conn, 1_001), "the next oldest by activity went");
+}
+
+#[test]
+fn tags_do_not_protect_a_conversation() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 200);
+    conn.execute(
+        "INSERT INTO tags(conversation_id, tag, is_project) VALUES (1000, 'keep', 0)",
+        [],
+    )
+    .unwrap();
+    created_id(worker.handle(create(user("new"), vec![])));
+    assert!(!exists(&conn, 1_000));
+    let tags: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tags WHERE tag = 'keep'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(tags, 0);
+}
+
+#[test]
+fn an_open_conversation_is_skipped() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 200);
+    created_id(worker.handle(create(user("new"), vec![1_000])));
+    assert!(exists(&conn, 1_000), "open in a pane, so it stays");
+    assert!(!exists(&conn, 1_001), "the next oldest went");
+}
+
+#[test]
+fn a_store_over_the_limit_is_trimmed_to_it() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 205);
+    created_id(worker.handle(create(user("new"), vec![])));
+    assert_eq!(count(&conn, "conversations"), 200);
+    assert!(!exists(&conn, 1_005));
+    assert!(exists(&conn, 1_006));
+}
+
+#[test]
+fn below_the_limit_nothing_is_evicted_and_nothing_is_announced() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 199);
+    let reply = worker.handle(create(user("new"), vec![]));
+    assert!(matches!(
+        reply,
+        Some(StoreReply::Created { evicted: false, .. })
+    ));
+    assert_eq!(count(&conn, "conversations"), 200);
+    assert!(exists(&conn, 1_000));
+}
+
+#[test]
+fn an_evicted_conversation_leaves_no_trace_in_the_file() {
+    let (dir, mut worker, conn) = fixture();
+    seed(&conn, 200);
+    conn.execute(
+        "UPDATE messages SET content = 'ZZ-MARKER-ZZ' WHERE conversation_id = 1000",
+        [],
+    )
+    .unwrap();
+    created_id(worker.handle(create(user("new"), vec![])));
+    let has = |p: &Path| {
+        fs::read(p)
+            .unwrap_or_default()
+            .windows(12)
+            .any(|w| w == b"ZZ-MARKER-ZZ")
+    };
+    let db = db_path(&dir);
+    assert!(!has(&db));
+    let mut journal = db.as_os_str().to_owned();
+    journal.push("-journal");
+    assert!(!has(Path::new(&journal)));
+}
+
+// ---- degrade (7.3) ---------------------------------------------------------
+
+fn run_once(path: Option<PathBuf>, cmd: StoreCmd) -> StoreReply {
+    let (tx, mut rx) = mpsc::channel(4);
+    let handle = spawn_at(path, tx);
+    handle.send(cmd);
+    let reply = rx.blocking_recv().expect("a reply");
+    handle.shutdown(Duration::from_secs(2));
+    reply
+}
+
+fn assert_unavailable(reply: StoreReply) {
+    let StoreReply::Unavailable { pane: from, reason } = reply else {
+        panic!("expected Unavailable, got {reply:?}");
+    };
+    assert_eq!(from, pane());
+    assert!(
+        !reason.is_empty() && reason.chars().count() <= ERROR_MAX,
+        "{reason}"
+    );
+    assert!(!reason.contains('\u{1b}'));
+}
+
+#[test]
+fn a_corrupt_file_is_unavailable_and_its_bytes_are_untouched() {
+    let dir = TempDir::new().unwrap();
+    let db = db_path(&dir);
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let junk: Vec<u8> = (0..4096u32)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .collect();
+    fs::write(&db, &junk).unwrap();
+
+    assert_unavailable(run_once(Some(db.clone()), create(user("hi"), vec![])));
+    assert!(
+        fs::read(&db).unwrap() == junk,
+        "the corrupt file was changed"
+    );
+}
+
+#[test]
+fn a_data_directory_that_cannot_be_created_is_unavailable() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("lazarobox"), b"a file in the way").unwrap();
+    assert_unavailable(run_once(Some(db_path(&dir)), create(user("hi"), vec![])));
+}
+
+#[test]
+fn no_path_is_unavailable() {
+    assert_unavailable(run_once(None, create(user("hi"), vec![])));
+}
+
+#[test]
+fn an_unavailable_store_stays_unavailable_for_every_create() {
+    let (tx, mut rx) = mpsc::channel(4);
+    let handle = spawn_at(None, tx);
+    handle.send(create(user("1"), vec![]));
+    handle.send(create(user("2"), vec![]));
+    assert_unavailable(rx.blocking_recv().unwrap());
+    assert_unavailable(rx.blocking_recv().unwrap());
+    handle.shutdown(Duration::from_secs(2));
+}
+
+fn break_writes(conn: &Connection) {
+    conn.execute_batch(
+        "CREATE TRIGGER no_writes BEFORE INSERT ON messages
+         BEGIN SELECT RAISE(ABORT, 'disk on fire'); END;",
+    )
+    .unwrap();
+}
+
+fn mend_writes(conn: &Connection) {
+    conn.execute_batch("DROP TRIGGER no_writes").unwrap();
+}
+
+fn failed(reply: Option<StoreReply>) -> bool {
+    match reply {
+        Some(StoreReply::Failed { notify, .. }) => notify,
+        other => panic!("expected Failed, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_failing_write_is_notified_once_per_run() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    break_writes(&conn);
+    assert!(
+        failed(worker.handle(append(id, user("two")))),
+        "first failure"
+    );
+    assert!(
+        !failed(worker.handle(append(id, user("three")))),
+        "same run"
+    );
+
+    mend_writes(&conn);
+    assert_eq!(worker.handle(append(id, user("four"))), None);
+    break_writes(&conn);
+    assert!(failed(worker.handle(append(id, user("five")))), "a new run");
+}
+
+#[test]
+fn a_failed_create_leaves_no_half_conversation() {
+    let (_dir, mut worker, conn) = fixture();
+    break_writes(&conn);
+    assert!(failed(worker.handle(create(user("q"), vec![]))));
+    assert_eq!(count(&conn, "conversations"), 0);
+    assert_eq!(count(&conn, "tags"), 0);
+}
+
+#[test]
+fn an_append_to_a_missing_conversation_fails() {
+    let (_dir, mut worker, _conn) = fixture();
+    assert!(failed(worker.handle(append(424_242, user("x")))));
+}
+
+#[test]
+fn a_blocked_store_does_not_block_the_sender() {
+    let dir = TempDir::new().unwrap();
+    let db = db_path(&dir);
+    let (tx, mut rx) = mpsc::channel(4);
+    let handle = {
+        let db = db.clone();
+        spawn(move || open_as(&db, me()), tx)
+    };
+    handle.send(create(user("q"), vec![]));
+    let Some(StoreReply::Created { conversation, .. }) = rx.blocking_recv() else {
+        panic!("no Created reply");
+    };
+    // Another process holds the write lock; the append waits on it.
+    let holder = Connection::open(&db).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let started = Instant::now();
+    for i in 0..50 {
+        handle.send(append(conversation, user(&format!("m{i}"))));
+    }
+    assert!(
+        started.elapsed() < Duration::from_millis(200),
+        "send waited for the database"
+    );
+    holder.execute_batch("ROLLBACK").unwrap();
+    handle.shutdown(Duration::from_secs(5));
+}
+
+#[test]
+fn quit_flushes_what_was_queued_before_it() {
+    let dir = TempDir::new().unwrap();
+    let db = db_path(&dir);
+    let (tx, mut rx) = mpsc::channel(4);
+    let handle = {
+        let db = db.clone();
+        spawn(move || open_as(&db, me()), tx)
+    };
+    handle.send(create(user("q"), vec![]));
+    let Some(StoreReply::Created { conversation, .. }) = rx.blocking_recv() else {
+        panic!("no Created reply");
+    };
+    handle.send(append(conversation, reply_msg("Hel", MsgStatus::Cancelled)));
+    handle.send(append(conversation, user("last")));
+    handle.shutdown(Duration::from_secs(2));
+
+    let conn = Connection::open(&db).unwrap();
+    let got: Vec<_> = rows(&conn, conversation)
+        .into_iter()
+        .map(|r| (r.2, r.3))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("q".into(), "complete".into()),
+            ("Hel".into(), "cancelled".into()),
+            ("last".into(), "complete".into()),
+        ]
+    );
+}
+
+#[test]
+fn shutdown_gives_up_at_its_bound() {
+    let (tx, _rx) = mpsc::channel(1);
+    let handle = spawn(
+        || {
+            std::thread::sleep(Duration::from_secs(3));
+            Err(StoreError::NoPath)
+        },
+        tx,
+    );
+    handle.send(create(user("q"), vec![]));
+    let started = Instant::now();
+    handle.shutdown(Duration::from_millis(150));
+    assert!(started.elapsed() < Duration::from_secs(1));
+}

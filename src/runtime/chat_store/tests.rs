@@ -247,8 +247,9 @@ fn a_database_left_in_wal_mode_is_switched_back_to_delete() {
 
 #[test]
 fn the_store_never_checkpoints() {
-    let source = include_str!("../chat_store.rs");
-    assert!(!source.contains("wal_checkpoint"));
+    for source in [include_str!("../chat_store.rs"), include_str!("worker.rs")] {
+        assert!(!source.contains("wal_checkpoint"));
+    }
 }
 
 #[test]
