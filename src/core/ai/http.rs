@@ -12,6 +12,8 @@ pub const MAX_HEAD: usize = 16 * 1024;
 
 /// Longest chunk-size line or trailer line kept, in bytes.
 const MAX_LINE: usize = 16 * 1024;
+/// Most bytes the whole trailer section may take, blank line included.
+const MAX_TRAILER: usize = 16 * 1024;
 
 /// How the body of a reply is delimited.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -187,6 +189,8 @@ pub struct Dechunker {
     line: Vec<u8>,
     /// The last byte was a CR on a size or trailer line.
     cr: bool,
+    /// Bytes read so far in the trailer section.
+    trailer: usize,
 }
 
 impl Default for Dechunker {
@@ -201,6 +205,7 @@ impl Dechunker {
             phase: Phase::Size,
             line: Vec::new(),
             cr: false,
+            trailer: 0,
         }
     }
 
@@ -232,6 +237,13 @@ impl Dechunker {
                 Phase::Size | Phase::Trailer => {
                     let b = bytes[i];
                     i += 1;
+                    if self.phase == Phase::Trailer {
+                        self.trailer += 1;
+                        if self.trailer > MAX_TRAILER {
+                            self.phase = Phase::Broken;
+                            return Err(Malformed);
+                        }
+                    }
                     if self.cr && b == b'\n' {
                         self.cr = false;
                         let line = std::mem::take(&mut self.line);
@@ -688,5 +700,67 @@ mod tests {
         }
         assert!(total > MAX_BODY);
         assert_eq!(d.feed(b"0\r\n\r\n", &mut out), Ok(Step::Done));
+    }
+
+    /// A trailer section of exactly `total` bytes, the closing blank line
+    /// included, made of short header lines.
+    fn trailer_section(total: usize) -> Vec<u8> {
+        let mut left = total - 2;
+        let mut out = Vec::new();
+        while left > 0 {
+            let len = if left > 70 { 64 } else { left };
+            out.extend(b"x: ");
+            out.extend(std::iter::repeat_n(b'y', len - 5));
+            out.extend(b"\r\n");
+            left -= len;
+        }
+        out.extend(b"\r\n");
+        assert_eq!(out.len(), total);
+        out
+    }
+
+    /// Cuts worth trying on a long wire: the start, the end and a sample.
+    fn sample_cuts(len: usize) -> Vec<usize> {
+        let mut cuts: Vec<usize> = (0..=40).chain(len.saturating_sub(80)..=len).collect();
+        cuts.extend((0..len).step_by(997));
+        cuts
+    }
+
+    #[test]
+    fn dechunker_accepts_a_trailer_section_at_the_cap() {
+        let mut wire = b"2\r\nok\r\n0\r\n".to_vec();
+        wire.extend(trailer_section(MAX_TRAILER));
+        for cut in sample_cuts(wire.len()) {
+            let (out, last) = run(&[&wire[..cut], &wire[cut..]]);
+            assert_eq!(out, b"ok", "cut at {cut}");
+            assert_eq!(last, Ok(Step::Done), "cut at {cut}");
+        }
+    }
+
+    #[test]
+    fn dechunker_refuses_a_trailer_section_over_the_cap_at_every_sampled_split() {
+        let mut wire = b"2\r\nok\r\n0\r\n".to_vec();
+        wire.extend(trailer_section(MAX_TRAILER + 1));
+        for cut in sample_cuts(wire.len()) {
+            let (_, last) = run(&[&wire[..cut], &wire[cut..]]);
+            assert_eq!(last, Err(Malformed), "cut at {cut}");
+        }
+    }
+
+    #[test]
+    fn dechunker_refuses_an_endless_trailer_made_of_short_lines() {
+        let (mut d, mut out) = (Dechunker::new(), Vec::new());
+        assert_eq!(d.feed(b"0\r\n", &mut out), Ok(Step::More));
+        let line = b"x: y\r\n";
+        let mut fed = 0;
+        let mut result = Ok(Step::More);
+        while result.is_ok() && fed <= 4 * MAX_TRAILER {
+            result = d.feed(line, &mut out);
+            fed += line.len();
+        }
+        assert_eq!(result, Err(Malformed));
+        assert!(fed <= MAX_TRAILER + line.len(), "refused after {fed} bytes");
+        // Broken for good, even for the bytes that would have closed it.
+        assert_eq!(d.feed(b"\r\n", &mut out), Err(Malformed));
     }
 }
