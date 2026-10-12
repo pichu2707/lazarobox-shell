@@ -37,8 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Config menu on `Ctrl+Space m` with a Settings section: statusline and tab bar
   position (top or bottom), previewed live.
-- `Enter` saves to `config.toml` keeping the user's comments, line endings and
-  key order; `Esc` reverts. Writes are atomic and refused when the file has
+- `s` saves to `config.toml` keeping the user's comments, line endings and
+  key order; `Esc` reverts. `Enter` cycles a Settings value or opens the
+  picker, it never saves. Writes are atomic and refused when the file has
   errors.
 
 #### Copy selection
@@ -72,11 +73,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Per-task AI model selector
 
 - Per-task AI model selection in the config menu: a general "Set all tasks"
-  engine plus one row for each of the six AI tasks.
-- Two-level picker (engine, then model) with a `custom...` row to type or paste
-  a model name; custom names reject format characters.
-- Curated Ollama and CLI model catalogs. Models that are not installed are
-  marked `download required` and cannot be chosen; nothing is downloaded.
+  engine plus one row for each of the five AI tasks (general, code, chat,
+  review, summarize).
+- Two-level picker (engine, then model). The CLI engines end with a `custom...`
+  row to type or paste a model name; custom names reject format characters.
+- Curated Ollama and CLI model catalogs. For server engines, models that are
+  not installed are marked `download required` and cannot be chosen; nothing is
+  downloaded.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
