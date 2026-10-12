@@ -6168,5 +6168,82 @@ mod app_tests {
             assert_eq!(chat.origin_cwd(), Some(Path::new("/srv")));
             assert!(a.pane_view(PaneId::for_test(9)).is_none());
         }
+
+        // A late poll result for a chat id must not give the chat a shell cwd.
+        #[test]
+        fn a_cwd_event_for_a_chat_leaves_its_cwd_alone() {
+            let mut a = launched(80, 25);
+            a.open_chat(Some("/srv".into()));
+            a.update(AppEvent::Cwd(chat_id(), "/elsewhere".into()));
+            assert_eq!(a.cwd_label(), "/srv");
+            let Some(PaneView::Chat(chat)) = a.pane_view(chat_id()) else {
+                panic!("a chat pane has a chat view");
+            };
+            assert_eq!(chat.origin_cwd(), Some(Path::new("/srv")));
+        }
+
+        // Fuzz: random input over both pane kinds never panics and never
+        // sends a PTY effect for a chat. Fixed seed, so it is reproducible.
+        #[test]
+        fn random_events_never_reach_a_pty_through_a_chat() {
+            let mut seed: u64 = 0x5eed_c0de;
+            let mut next = move |n: u64| {
+                seed = seed
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                (seed >> 33) % n
+            };
+            let mut a = launched(80, 25);
+            let mut chats: Vec<PaneId> = Vec::new();
+            for _ in 0..4000 {
+                let id = PaneId::for_test(1 + next(14) as u32);
+                let keys = "[wvhjklqytncns0123 xyz?\n";
+                let ch = keys.chars().nth(next(keys.len() as u64) as usize).unwrap();
+                let effects = match next(12) {
+                    0..=2 => {
+                        let seqs = ["wv", "wh", "wq", "wqy", "tn", "tc", "tcy", "[", "hl", " "];
+                        press(&mut a, seqs[next(seqs.len() as u64) as usize])
+                    }
+                    3..=4 => a.update(key(ch)),
+                    5 => a.update(esc()),
+                    6 => {
+                        let e = a.open_chat(Some("/srv".into()));
+                        if !a.is_shell(a.focused()) {
+                            chats.push(a.focused());
+                        }
+                        e
+                    }
+                    7 => {
+                        let e = a.open_chat_tab(None);
+                        if !a.is_shell(a.focused()) {
+                            chats.push(a.focused());
+                        }
+                        e
+                    }
+                    8 => a.update(exited(id)),
+                    9 => a.update(AppEvent::Resize {
+                        cols: 20 + next(100) as u16,
+                        rows: 5 + next(40) as u16,
+                    }),
+                    10 => match next(4) {
+                        0 => a.update(AppEvent::Cwd(id, "/x".into())),
+                        1 => a.update(AppEvent::Paste("p".into())),
+                        2 => a.update(AppEvent::Pty(id, PtyEvent::Output(b"o\r\n".to_vec()))),
+                        _ => a.update(AppEvent::SpawnFailed(id, "boom".into())),
+                    },
+                    _ => a.update(key('y')),
+                };
+                for effect in effects {
+                    let target = match effect {
+                        Effect::WritePty(id, _)
+                        | Effect::ResizePty(id, _)
+                        | Effect::ClosePane(id)
+                        | Effect::SpawnPane(id, _) => id,
+                        _ => continue,
+                    };
+                    assert!(!chats.contains(&target), "{effect:?} targets a chat");
+                }
+            }
+        }
     }
 }
