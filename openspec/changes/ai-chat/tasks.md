@@ -121,12 +121,12 @@ Files changed:
 
 ## PR6 / C6a: SQLite open (`Cargo.toml`, `src/runtime/chat_store.rs`)
 
-- [ ] 6.1 Pin `rusqlite` with `bundled`; record the clean-build cost in the commit body.
-- [ ] 6.2 RED: path resolution (XDG absolute, empty or relative falls back to `$HOME/.local/share`, neither means no store); directory 0700; db pre-created 0600 with O_NOFOLLOW under umask 0022; any side file that exists (`-journal`, `-wal`, `-shm`) is 0600; wide mode corrected; symlink or foreign owner is unavailable.
-- [ ] 6.3 RED: pragmas `secure_delete` on, `foreign_keys`, `trusted_schema` off, `busy_timeout=2000`, `journal_mode` reads `delete`; no `wal_checkpoint` anywhere; marker gone from the db and any side file after delete.
-- [ ] 6.4 RED: schema v1 (`conversations`, `messages` with status enum and `UNIQUE(conv,seq)`, `tags`, indexes), `user_version` migration, newer version means unavailable.
-- [ ] 6.5 GREEN: implement `open`, mode checks, migrations.
-- [ ] 6.6 Gate.
+- [x] 6.1 Pin `rusqlite` with `bundled`; record the clean-build cost in the commit body.
+- [x] 6.2 RED: path resolution (XDG absolute, empty or relative falls back to `$HOME/.local/share`, neither means no store); directory 0700; db pre-created 0600 with O_NOFOLLOW under umask 0022; any side file that exists (`-journal`, `-wal`, `-shm`) is 0600; wide mode corrected; symlink or foreign owner is unavailable.
+- [x] 6.3 RED: pragmas `secure_delete` on, `foreign_keys`, `trusted_schema` off, `busy_timeout=2000`, `journal_mode` reads `delete`; no `wal_checkpoint` anywhere; marker gone from the db and any side file after delete.
+- [x] 6.4 RED: schema v1 (`conversations`, `messages` with status enum and `UNIQUE(conv,seq)`, `tags`, indexes), `user_version` migration, newer version means unavailable.
+- [x] 6.5 GREEN: implement `open`, mode checks, migrations.
+- [x] 6.6 Gate.
 
 ## PR7 / C6b: Store thread (`src/runtime/chat_store.rs`, `src/runtime.rs`, `src/app.rs`)
 
