@@ -10,16 +10,13 @@ use std::{
     time::Duration,
 };
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 
 /// The schema version this build writes and understands.
 const SCHEMA_VERSION: i64 = 1;
 
 /// How long a write waits for another instance before it gives up.
 const BUSY_TIMEOUT: Duration = Duration::from_millis(2000);
-
-/// Longest SQLite or OS message kept in an error.
-const MAX_DETAIL: usize = 60;
 
 /// The files SQLite may keep next to the database.
 const SIDE_SUFFIXES: [&str; 3] = ["-journal", "-wal", "-shm"];
@@ -64,8 +61,8 @@ pub enum StoreError {
     Unsafe(&'static str),
     /// The schema was written by a newer build.
     Newer(i64),
-    Io(String),
-    Sqlite(String),
+    Io(&'static str),
+    Sqlite(&'static str),
 }
 
 impl fmt::Display for StoreError {
@@ -79,32 +76,36 @@ impl fmt::Display for StoreError {
     }
 }
 
+// Errors carry fixed texts chosen from the error kind or code, never the OS or
+// SQLite message: those embed the full path of the database.
 impl From<io::Error> for StoreError {
     fn from(err: io::Error) -> Self {
-        Self::Io(short(&err.kind().to_string()))
+        Self::Io(match err.kind() {
+            io::ErrorKind::NotFound => "not found",
+            io::ErrorKind::PermissionDenied => "permission denied",
+            _ => "i/o error",
+        })
     }
 }
 
 impl From<rusqlite::Error> for StoreError {
     fn from(err: rusqlite::Error) -> Self {
-        let text = match &err {
-            rusqlite::Error::SqliteFailure(code, msg) => {
-                msg.clone().unwrap_or_else(|| code.to_string())
-            }
-            other => other.to_string(),
-        };
-        Self::Sqlite(short(&text))
+        use rusqlite::ErrorCode as C;
+        Self::Sqlite(match &err {
+            rusqlite::Error::SqliteFailure(code, _) => match code.code {
+                C::CannotOpen => "cannot open database",
+                C::DatabaseBusy | C::DatabaseLocked => "database is locked",
+                C::NotADatabase => "not a database",
+                C::DatabaseCorrupt => "database is corrupt",
+                C::SystemIoFailure => "disk I/O error",
+                C::DiskFull => "disk full",
+                C::ReadOnly => "database is read-only",
+                C::PermissionDenied => "permission denied",
+                _ => "database error",
+            },
+            _ => "database error",
+        })
     }
-}
-
-/// One line, no control characters, at most [`MAX_DETAIL`] characters.
-fn short(text: &str) -> String {
-    text.chars()
-        .map(|c| if c.is_control() || c == '/' { ' ' } else { c })
-        .take(MAX_DETAIL)
-        .collect::<String>()
-        .trim()
-        .to_owned()
 }
 
 /// The database path for the given environment values: an absolute
@@ -130,9 +131,18 @@ pub fn open(path: &Path) -> Result<Connection, StoreError> {
 /// The umask is never touched (PTY children inherit it): the directory and the
 /// file are created with explicit modes instead.
 pub(crate) fn open_as(path: &Path, uid: u32) -> Result<Connection, StoreError> {
-    if let Some(dir) = path.parent() {
-        prepare_dir(dir, uid)?;
-    }
+    let dir = match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        Some(_) => Path::new("."),
+        None => return Err(StoreError::NoPath),
+    };
+    let name = path.file_name().ok_or(StoreError::NoPath)?;
+    prepare_dir(dir, uid)?;
+    // SQLite applies NOFOLLOW to every path component, so a symlinked ancestor
+    // (/home, ~/.local, XDG_DATA_HOME) would fail. The directory itself was just
+    // checked to be a real one; resolving it keeps the flag guarding the leaf.
+    let path = fs::canonicalize(dir)?.join(name);
+    let path = path.as_path();
     check_file(path, uid)?;
     harden_side_files(path, uid)?;
     precreate(path, uid)?;
@@ -144,6 +154,8 @@ pub(crate) fn open_as(path: &Path, uid: u32) -> Result<Connection, StoreError> {
             | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
+    // A newer schema is refused before any pragma that could write to the file.
+    refuse_newer(&conn)?;
     conn.pragma_update(None, "trusted_schema", false)?;
     conn.pragma_update(None, "foreign_keys", true)?;
     conn.pragma_update(None, "secure_delete", true)?;
@@ -152,7 +164,7 @@ pub(crate) fn open_as(path: &Path, uid: u32) -> Result<Connection, StoreError> {
     let mode: String =
         conn.pragma_update_and_check(None, "journal_mode", "delete", |r| r.get(0))?;
     if !mode.eq_ignore_ascii_case("delete") {
-        return Err(StoreError::Sqlite(short("journal mode not available")));
+        return Err(StoreError::Sqlite("journal mode not available"));
     }
     migrate(&mut conn)?;
     harden_side_files(path, uid)?;
@@ -246,18 +258,38 @@ pub(crate) fn harden_side_files(db: &Path, uid: u32) -> Result<(), StoreError> {
     Ok(())
 }
 
+fn user_version(conn: &Connection) -> Result<i64, StoreError> {
+    Ok(conn.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+}
+
+fn refuse_newer(conn: &Connection) -> Result<(), StoreError> {
+    match user_version(conn)? {
+        v if v > SCHEMA_VERSION => Err(StoreError::Newer(v)),
+        _ => Ok(()),
+    }
+}
+
 /// Creates schema v1 on a new database; a newer schema is refused.
 fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
-    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    migrate_with(conn, || {})
+}
+
+/// [`migrate`] with a hook just before the write lock is taken, where another
+/// instance could get in first.
+fn migrate_with(conn: &mut Connection, before_lock: impl FnOnce()) -> Result<(), StoreError> {
+    before_lock();
+    // The version is read under the write lock, so two instances on a fresh
+    // store cannot both decide to create the schema.
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let version = user_version(&tx)?;
     if version > SCHEMA_VERSION {
         return Err(StoreError::Newer(version));
     }
     if version < 1 {
-        let tx = conn.transaction()?;
         tx.execute_batch(SCHEMA_V1)?;
         tx.pragma_update(None, "user_version", 1)?;
-        tx.commit()?;
     }
+    tx.commit()?;
     Ok(())
 }
 

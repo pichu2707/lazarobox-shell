@@ -446,11 +446,81 @@ fn errors_read_as_short_lines_without_paths() {
         StoreError::NoPath,
         StoreError::Unsafe("symlink"),
         StoreError::Newer(7),
-        StoreError::Io("denied".into()),
-        StoreError::Sqlite("not a database".into()),
+        StoreError::Io("denied"),
+        StoreError::Sqlite("not a database"),
     ] {
         let text = err.to_string();
         assert!(!text.is_empty() && text.len() <= 80, "{text}");
         assert!(!text.contains('/'), "{text}");
     }
+}
+
+// ---- review fixes ----------------------------------------------------------
+
+#[test]
+fn a_symlinked_ancestor_of_the_data_directory_is_fine() {
+    let dir = TempDir::new().unwrap();
+    let real = dir.path().join("real");
+    fs::create_dir(&real).unwrap();
+    symlink(&real, dir.path().join("alias")).unwrap();
+    let db = dir.path().join("alias").join("lazarobox").join("chat.db");
+
+    let conn = open_as(&db, me()).unwrap();
+    assert_eq!(pragma_text(&conn, "user_version"), "1");
+    assert!(real.join("lazarobox").join("chat.db").is_file());
+}
+
+#[test]
+fn two_instances_migrating_a_fresh_store_both_succeed() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("chat.db");
+    let mut b = Connection::open(&db).unwrap();
+    b.busy_timeout(BUSY_TIMEOUT).unwrap();
+
+    // The other instance gets in right after this one decided what to do.
+    migrate_with(&mut b, || {
+        let mut a = Connection::open(&db).unwrap();
+        migrate(&mut a).unwrap();
+    })
+    .unwrap();
+    assert_eq!(pragma_text(&b, "user_version"), "1");
+}
+
+#[test]
+fn a_newer_wal_database_is_not_rewritten_before_the_refusal() {
+    let dir = TempDir::new().unwrap();
+    let db = store_path(&dir);
+    fs::create_dir(db.parent().unwrap()).unwrap();
+    {
+        let conn = Connection::open(&db).unwrap();
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode = wal", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+        conn.execute_batch("PRAGMA user_version = 2").unwrap();
+    }
+    let before = fs::read(&db).unwrap();
+    let wal_before = side(&db, "-wal").exists();
+
+    assert_eq!(open_as(&db, me()).err(), Some(StoreError::Newer(2)));
+    assert!(fs::read(&db).unwrap() == before, "the main file changed");
+    assert_eq!(side(&db, "-wal").exists(), wal_before);
+}
+
+#[test]
+fn a_failed_open_names_no_path() {
+    let dir = TempDir::new().unwrap();
+    let missing = dir.path().join("secret-dir-name").join("x.db");
+    let err = Connection::open_with_flags(&missing, OpenFlags::SQLITE_OPEN_READ_WRITE).unwrap_err();
+    let text = StoreError::from(err).to_string();
+    let tmp_name = dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(!text.contains("secret-dir-name"), "{text}");
+    assert!(!text.contains(&tmp_name), "{text}");
+    assert!(!text.contains("tmp"), "{text}");
+    assert_eq!(text, "cannot open database");
 }
