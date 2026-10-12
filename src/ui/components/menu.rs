@@ -10,9 +10,9 @@ use ratatui::{
 use super::tab_bar::{cells, clip};
 use crate::{
     core::{
-        ai::picker::{Mark, VIEW},
+        ai::picker::Mark,
         config::Config,
-        menu::{Footer, MenuState, Row},
+        menu::{AI_BODY, CHROME, Footer, MenuState, Row, fits_size},
     },
     ui::theme::LazaroboxTheme,
 };
@@ -21,13 +21,6 @@ use crate::{
 pub const WANT_WIDTH: u16 = 51;
 /// With the AI section the `r refresh` hint needs eleven more columns.
 pub const WANT_WIDTH_AI: u16 = 62;
-/// Rows around the body: two borders, the blank row and the footer.
-const CHROME: u16 = 4;
-/// With the AI section the body is fixed: the popup never jumps between the
-/// task list and the picker (a title and `VIEW` rows).
-const AI_BODY: usize = 1 + VIEW;
-/// Smallest width that still shows the full popup.
-pub const MIN_WIDTH: u16 = 24;
 
 /// `want_w` x `want_h` centred in `area`, clamped to the area.
 pub fn popup_area(area: Rect, want_w: u16, want_h: u16) -> Rect {
@@ -44,7 +37,7 @@ pub fn popup_area(area: Rect, want_w: u16, want_h: u16) -> Rect {
 /// Whether `area` is big enough for the full popup of `rows` body rows (the
 /// blank row is the first thing dropped, so the height may lose one).
 pub fn fits(area: Rect, rows: usize) -> bool {
-    area.width >= MIN_WIDTH && usize::from(area.height) >= rows + usize::from(CHROME) - 1
+    fits_size(area.width, area.height, rows)
 }
 
 /// Draws `MenuState::rows` in a bordered box, or a one-line fallback.
@@ -65,10 +58,18 @@ impl<'a> MenuPopup<'a> {
 }
 
 const FALLBACK: &str = "MENU · s save · Esc cancel";
+/// The one line shown instead of the privacy warning on a tiny terminal. It
+/// offers no choice: the menu declines every key then (informed consent).
+const FALLBACK_WARNING: &str = "Enlarge the terminal to read the privacy note";
 
 impl MenuPopup<'_> {
     /// Below the size threshold: one line on the middle row.
     fn render_fallback(&self, area: Rect, buf: &mut Buffer) {
+        let fallback = if self.menu.in_warning() {
+            FALLBACK_WARNING
+        } else {
+            FALLBACK
+        };
         let line = Rect::new(area.x, area.y + area.height / 2, area.width, 1);
         Clear.render(line, buf);
         let style = Style::default()
@@ -77,7 +78,7 @@ impl MenuPopup<'_> {
         buf.set_stringn(
             line.x,
             line.y,
-            clip(FALLBACK, usize::from(line.width)),
+            clip(fallback, usize::from(line.width)),
             usize::from(line.width),
             style,
         );
@@ -130,6 +131,7 @@ impl MenuPopup<'_> {
                 )
             }
             Row::Field(text) => (format!(" {text}"), plain),
+            Row::Text(text) => (format!(" {text}"), plain),
         }
     }
 
@@ -619,14 +621,14 @@ mod tests {
     }
 
     #[test]
-    fn the_ai_popup_is_62_by_15_in_both_views() {
-        for menu in [mixed(), picker_of("code", 0)] {
+    fn the_ai_popup_is_62_by_16_in_every_view() {
+        for menu in [mixed(), picker_of("code", 0), warned()] {
             let l = lines(&draw(80, 20, &menu));
             let border: Vec<usize> = (0..l.len())
                 .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
                 .collect();
             assert_eq!(border.len(), 2);
-            assert_eq!(border[1] - border[0] + 1, 15);
+            assert_eq!(border[1] - border[0] + 1, 16);
             assert_eq!(l[border[0]].trim().chars().count(), 62);
         }
     }
@@ -636,17 +638,17 @@ mod tests {
         let task = mixed();
         let picker = picker_of("code", 0);
         for menu in [&task, &picker] {
-            let full = text(&draw(24, 14, menu));
+            let full = text(&draw(24, 15, menu));
             assert!(!full.contains("MENU"), "{full}");
             assert!(full.contains("Menu"), "{full}");
-            for (w, h) in [(23, 14), (24, 13)] {
+            for (w, h) in [(23, 15), (24, 14)] {
                 let fall = text(&draw(w, h, menu));
                 assert!(fall.contains("MENU"), "{w}x{h}");
                 assert!(!fall.contains("Menu"), "{w}x{h}");
             }
         }
-        insta::assert_snapshot!(text(&draw(24, 14, &task)));
-        insta::assert_snapshot!("picker_24x14", text(&draw(24, 14, &picker)));
+        insta::assert_snapshot!(text(&draw(24, 15, &task)));
+        insta::assert_snapshot!("picker_24x15", text(&draw(24, 15, &picker)));
     }
 
     #[test]
@@ -758,6 +760,91 @@ mod tests {
         let shown = text(&draw(62, 15, &menu));
         assert!(shown.contains("model1:7b ✓"), "{shown}");
         insta::assert_snapshot!(shown);
+    }
+
+    // Spec (config-menu, engram-memory): the Memory row and its warning.
+    fn warned() -> MenuState {
+        let mut menu = fresh().with_ai(AiConfig::default(), Some(machine()));
+        goto(&mut menu, "Memory");
+        press(&mut menu, &[KeyCode::Char('l')]);
+        assert!(menu.in_warning());
+        menu
+    }
+
+    #[test]
+    fn snapshot_memory_row_selected_shows_the_settings_hint() {
+        let mut menu = mixed();
+        goto(&mut menu, "Memory");
+        let shown = text(&draw(62, 16, &menu));
+        assert!(shown.contains("Memory"), "{shown}");
+        assert!(
+            shown.contains("j/k move · h/l change · s save · Esc cancel"),
+            "{shown}"
+        );
+        assert!(!shown.contains("r refresh"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    #[test]
+    fn snapshot_privacy_warning_on_a_normal_terminal() {
+        let shown = text(&draw(62, 16, &warned()));
+        for fact in [
+            "private store (0600)",
+            "every local process",
+            "every agent that uses engram",
+            "engram sync",
+            "cannot restrict",
+            "Turn memory on? (y/n)",
+        ] {
+            assert!(shown.contains(fact), "{fact}: {shown}");
+        }
+        assert!(!shown.contains('…'), "no clipping: {shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    #[test]
+    fn the_warning_on_a_tiny_terminal_asks_to_enlarge_and_offers_no_choice() {
+        let buf = draw(50, 5, &warned());
+        let l = lines(&buf);
+        assert_eq!(
+            l[2].trim_end(),
+            "Enlarge the terminal to read the privacy note"
+        );
+        assert!(!text(&buf).contains("(y/n)"), "no prompt without the facts");
+        insta::assert_snapshot!(text(&buf));
+        // Narrower: clipped, still one line.
+        let narrow = lines(&draw(30, 5, &warned()));
+        assert!(narrow[2].starts_with("Enlarge the terminal"), "{narrow:?}");
+    }
+
+    // Review: AI_BODY is derived, not trusted. Every AI view fits it, so
+    // adding a row cannot silently resize the popup.
+    #[test]
+    fn every_ai_view_fits_the_fixed_body() {
+        let mut views = vec![mixed(), warned()];
+        for task in ["general", "code", "chat", "review", "summarize"] {
+            views.push(picker_of(task, 0));
+            let mut models = picker_of(task, 0);
+            press(&mut models, &[KeyCode::Enter]);
+            views.push(models);
+        }
+        views.push(picker_of("Set all tasks", 0));
+        for menu in &views {
+            let len = menu.rows(&Config::default()).len();
+            assert!(len <= AI_BODY, "{len} rows > {AI_BODY}");
+        }
+        let tallest = views.iter().map(|m| m.rows(&Config::default()).len()).max();
+        assert_eq!(tallest, Some(AI_BODY), "AI_BODY is as small as it can be");
+    }
+
+    #[test]
+    fn the_warning_never_panics_at_any_size() {
+        let menu = warned();
+        for w in 0..=70 {
+            for h in 0..=20 {
+                draw(w, h, &menu);
+            }
+        }
     }
 
     // Review W3: the current dot on a plain row, bold titles, full-width bar.

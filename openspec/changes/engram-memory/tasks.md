@@ -114,16 +114,16 @@ Fallback split if over 400: 5a worker with `Transport` fake, 5b app/runtime wiri
 
 ## PR6 / M4: Config, persistence, menu row, privacy warning (`src/core/ai/{config,menu}.rs`, `src/core/menu.rs`, persistence module)
 
-- [ ] 6.1 RED: config parsing: absent table gives enabled false, acknowledged false, port 7437; `ENGRAM_PORT` valid sets the default port; `enabled=true` without `acknowledged=true` is inactive with the notice `memory: turn it on from the menu to review the privacy note`; invalid types and `port = 0`/`70000`/`"7437"` fall back with a notice.
-- [ ] 6.2 GREEN: `[ai.memory]` parsing in `config.rs`.
-- [ ] 6.3 RED: persistence owns `ai.memory.enabled/port/acknowledged`: appends `[ai.memory]` preserving original bytes and comments, changes only `enabled`, off keeps `acknowledged`, no `port` key added, a scalar `memory` or table-valued owned key is handled as the specs say.
-- [ ] 6.4 GREEN: owned keys in the persistence writer.
-- [ ] 6.5 RED: menu descriptor has `Memory` (`ai.memory.enabled`: off, on) after `Profile`; navigation order and wrap visit `Profile` then `Memory`; `h/l/Left/Right/Space/Enter` toggle, Repeat ignored on Enter; footer `j/k move · h/l change · s save · Esc cancel`; `r` does nothing; toggling makes no request.
-- [ ] 6.6 RED: privacy warning follows the draft flow (ruling 3): turning on with `acknowledged=false` opens the warning `Turn memory on? (y/n)`; unmodified lowercase `y` sets drafts (`enabled` on, `acknowledged` true) and writes nothing; `n`, Esc, Enter, `Y` decline and keep `off`; Repeat ignored; `s` then persists both keys; Esc at the top level restores the drafts including the acknowledgement; second enable after acknowledgement shows no warning.
-- [ ] 6.7 GREEN: menu rows, warning view state, draft capture/restore in `menu.rs` and `core/menu.rs`.
-- [ ] 6.8 RED then GREEN: insta snapshots: Settings/AI rows with `Memory`, warning view on a normal terminal, one-line fallback on a tiny terminal (no panic); popup size follows the new row.
+- [x] 6.1 RED: config parsing: absent table gives enabled false, acknowledged false, port 7437; `ENGRAM_PORT` valid sets the default port; `enabled=true` without `acknowledged=true` is inactive with the notice `memory: turn it on from the menu to review the privacy note`; invalid types and `port = 0`/`70000`/`"7437"` fall back with a notice.
+- [x] 6.2 GREEN: `[ai.memory]` parsing in `config.rs`.
+- [x] 6.3 RED: persistence owns `ai.memory.enabled/port/acknowledged`: appends `[ai.memory]` preserving original bytes and comments, changes only `enabled`, off keeps `acknowledged`, no `port` key added, a scalar `memory` or table-valued owned key is handled as the specs say.
+- [x] 6.4 GREEN: owned keys in the persistence writer.
+- [x] 6.5 RED: menu descriptor has `Memory` (`ai.memory.enabled`: off, on) after `Profile`; navigation order and wrap visit `Profile` then `Memory`; `h/l/Left/Right/Space/Enter` toggle, Repeat ignored on Enter; footer `j/k move · h/l change · s save · Esc cancel`; `r` does nothing; toggling makes no request.
+- [x] 6.6 RED: privacy warning follows the draft flow (ruling 3): turning on with `acknowledged=false` opens the warning `Turn memory on? (y/n)`; unmodified lowercase `y` sets drafts (`enabled` on, `acknowledged` true) and writes nothing; `n`, Esc, Enter, `Y` decline and keep `off`; Repeat ignored; `s` then persists both keys; Esc at the top level restores the drafts including the acknowledgement; second enable after acknowledgement shows no warning.
+- [x] 6.7 GREEN: menu rows, warning view state, draft capture/restore in `menu.rs` and `core/menu.rs`. Note: ai-chat PR11 (`Profile`) is not in this tracker yet, so `Memory` is the last AI row (after `summarize`); `Profile` must be inserted in `AI_SECTION` just before `Memory`. `AI_BODY` (popup body rows) is 12 and goes to 13 with `Profile`.
+- [x] 6.8 RED then GREEN: insta snapshots: Settings/AI rows with `Memory`, warning view on a normal terminal, one-line fallback on a tiny terminal (no panic); popup size follows the new row.
 - [ ] 6.9 [manual, Kitty] The warning is readable without clipping; `y`, then `s`, then restart shows memory on without a second warning.
-- [ ] 6.10 Gate.
+- [x] 6.10 Gate.
 
 ## PR7 / M5: `engram serve` offer (`src/runtime/engram/serve.rs`, `src/core/ai/memory/port.rs`)
 

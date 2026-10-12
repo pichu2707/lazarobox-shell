@@ -50,7 +50,7 @@ Sections and items MUST come from a static descriptor table; adding a section or
 ## ADDED Requirements
 
 ### Requirement: Memory row
-The `Memory` row is a static item in the AI section showing `off` or `on`. On it, `h`, `l`, Left, Right, Space and Enter MUST toggle the draft, with Repeat handled like Press except on Enter. The footer is the Settings-row hint `j/k move · h/l change · s save · Esc cancel`; detection cues and `r` do not apply. Turning the draft to `on` when `acknowledged` is not true MUST first show the privacy warning view and change the draft only if the user accepts. Changing the draft MUST have no live effect: no request to engram, no worker, no change to any open conversation until the menu is saved (and, for a conversation already open, until its next view opens). Esc at the top level restores the draft to the value captured at open, including the acknowledgement; `s` saves through config-persistence only what changed.
+The `Memory` row is a static item in the AI section showing `on` only when memory is active on the draft (`enabled` AND `acknowledged` both true), else `off`; a hand-edited `enabled = true` without `acknowledged = true` therefore shows `off`. On it, `h`, `l`, Left, Right, Space and Enter MUST toggle the draft, with Repeat handled like Press except on Enter. The footer is the Settings-row hint `j/k move · h/l change · s save · Esc cancel`; detection cues and `r` do not apply. Turning the draft to `on` when memory is not active and `acknowledged` is not true (including the hand-edited case above) MUST first show the privacy warning view and change the draft only if the user accepts. Changing the draft MUST have no live effect: no request to engram, no worker, no change to any open conversation until the menu is saved (and, for a conversation already open, until its next view opens). Esc at the top level restores the draft to the value captured at open, including the acknowledgement; `s` saves through config-persistence only what changed.
 
 #### Scenario: Toggle when acknowledged [auto]
 - GIVEN `Memory` selected, `acknowledged` true and the draft `off`
@@ -83,7 +83,7 @@ The `Memory` row is a static item in the AI section showing `off` or `on`. On it
 - THEN the draft is unchanged
 
 ### Requirement: Memory privacy warning view
-The warning view is shown over the menu popup (same size) with the text of the chat-memory opt-in requirement (notes leave the private 0600 conversation store; every local process and agent that uses engram can read them, and engram sync if it is on; lazarobox cannot restrict that) and the prompt `Turn memory on? (y/n)`. Only an unmodified lowercase `y` accepts: the draft becomes `on` and the acknowledgement draft true. Any other key (including Esc, Enter and `Y`) declines: the draft stays `off` and the view closes; Esc closes only the view, not the menu. Repeat events MUST be ignored. Rendering MUST NOT panic at any terminal size.
+The warning view is shown over the menu popup (same size) with the text of the chat-memory opt-in requirement (notes leave the private 0600 conversation store; every local process and agent that uses engram can read them, and engram sync if it is on; lazarobox cannot restrict that; notes stay in engram until the user deletes them; secret redaction is best effort; once saved, this note is not shown again) and the prompt `Turn memory on? (y/n)`. The footer is `y accept (then s to save) · any other key declines`, because `y` only sets the drafts and `s` must save them. Only an unmodified lowercase `y` accepts: the draft becomes `on` and the acknowledgement draft true. Any other key (including Esc, Enter and `Y`) declines: the draft stays `off` and the view closes; Esc closes only the view, not the menu. When the popup does not fit and the one-line fallback is shown, the facts are not visible, so `y` MUST NOT accept: any key closes the warning and keeps memory off (informed consent). Repeat events MUST be ignored. Rendering MUST NOT panic at any terminal size.
 
 #### Scenario: Accept [auto]
 - GIVEN the warning shown
@@ -103,7 +103,12 @@ The warning view is shown over the menu popup (same size) with the text of the c
 #### Scenario: Warning text and size [auto, TestBackend + insta]
 - GIVEN the warning shown on a normal terminal
 - WHEN rendered
-- THEN the three facts and the prompt are visible, and on a tiny terminal the one-line fallback is shown without panic
+- THEN the three facts and the prompt are visible; on a terminal too small for the popup the one-line fallback `Enlarge the terminal to read the privacy note` is shown instead, without panic
+
+#### Scenario: No consent without the facts [auto]
+- GIVEN the warning open and a terminal too small for the popup (only the one-line fallback is shown)
+- WHEN `y` is pressed
+- THEN nothing is accepted: like any other key it closes the warning, the draft stays `off` and nothing is acknowledged
 
 #### Scenario: Real terminal [manual, Kitty]
 - GIVEN the menu in Kitty

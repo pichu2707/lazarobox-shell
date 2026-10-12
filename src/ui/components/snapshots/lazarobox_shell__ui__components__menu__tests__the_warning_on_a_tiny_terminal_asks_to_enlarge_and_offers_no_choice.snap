@@ -1,0 +1,7 @@
+---
+source: src/ui/components/menu.rs
+expression: text(&buf)
+---
+                                                  
+                                                  
+Enlarge the terminal to read the privacy note

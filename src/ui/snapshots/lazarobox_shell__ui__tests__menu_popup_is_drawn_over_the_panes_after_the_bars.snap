@@ -3,8 +3,7 @@ source: src/ui/mod.rs
 expression: "(0..19).map(|y|\nrow(&buf, y).trim_end().to_string()).collect::<Vec<_>>().join(\"\\n\")"
 ---
  1
-hi there
- ┌ Menu ──────────────────────────────────────────────────────┐
+h┌ Menu ──────────────────────────────────────────────────────┐
  │ Settings                                                   │
  │ Statusline position                                 bottom │
  │ Tab bar position                                       top │
@@ -16,6 +15,7 @@ hi there
  │ chat                                             (default) │
  │ review                                           (default) │
  │ summarize                                        (default) │
+ │ Memory                                                 off │
  │                                                            │
  │ j/k move · h/l change · s save · Esc cancel                │
  └────────────────────────────────────────────────────────────┘

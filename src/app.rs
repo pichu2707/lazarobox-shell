@@ -985,6 +985,7 @@ impl App {
             debug_assert!(false, "MENU mode without menu state");
             return Vec::new();
         };
+        menu.set_term(self.term.0, self.term.1);
         match menu.on_key(key, repeat, &mut self.config) {
             MenuCommand::Changed => self.apply_config(),
             MenuCommand::Cancel => self.close_menu(Outcome::Reverted),
@@ -5671,6 +5672,75 @@ mod app_tests {
         assert_eq!(a.menu().unwrap().ai_draft(), ai_of("ollama", "qwen2:7b"));
     }
 
+    // Spec (config-menu, engram-memory): the privacy warning follows the
+    // draft flow. `k` from the first row wraps to `Memory`.
+    fn memory_warning_open() -> App {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        a.update(key('k'));
+        assert!(a.update(key('l')).is_empty(), "turning on asks, no effect");
+        assert!(a.menu().unwrap().in_warning());
+        a
+    }
+
+    fn memory_edits() -> Vec<ConfigEdit> {
+        vec![
+            ConfigEdit::memory_flag("enabled", true),
+            ConfigEdit::memory_flag("acknowledged", true),
+        ]
+    }
+
+    #[test]
+    fn accepting_the_warning_writes_nothing_until_s_and_saves_both_keys() {
+        let mut a = memory_warning_open();
+        assert!(a.update(key('y')).is_empty(), "y persists nothing");
+        assert!(!a.ai().memory.enabled, "the live value is untouched");
+        assert_eq!(a.update(key('s')), vec![Effect::SaveConfig(memory_edits())]);
+        a.update(AppEvent::ConfigSaved);
+        assert!(a.menu().is_none());
+        assert!(a.ai().memory.active());
+    }
+
+    // Review W2: after a resize into the one-line fallback the facts are
+    // hidden, so `y` must not accept.
+    #[test]
+    fn y_in_the_warning_does_not_accept_after_a_resize_to_a_tiny_terminal() {
+        let mut a = memory_warning_open();
+        a.update(AppEvent::Resize { cols: 30, rows: 5 });
+        assert!(a.update(key('y')).is_empty());
+        let menu = a.menu().unwrap();
+        assert!(!menu.in_warning());
+        assert_eq!(menu.ai_draft().memory, Default::default());
+        assert!(menu.edits(a.config()).is_empty());
+    }
+
+    #[test]
+    fn esc_after_accepting_reverts_the_enabled_and_acknowledged_drafts() {
+        let mut a = memory_warning_open();
+        a.update(key('y'));
+        a.update(esc());
+        assert!(a.menu().is_none());
+        assert_eq!(a.ai().memory, Default::default());
+        open_menu(&mut a);
+        assert_eq!(a.menu().unwrap().ai_draft().memory, Default::default());
+        a.update(key('k'));
+        a.update(key('l'));
+        assert!(
+            a.menu().unwrap().in_warning(),
+            "asked again, not acknowledged"
+        );
+    }
+
+    #[test]
+    fn esc_in_the_warning_closes_only_the_view() {
+        let mut a = memory_warning_open();
+        assert!(a.update(esc()).is_empty());
+        let menu = a.menu().expect("the menu stays open");
+        assert!(!menu.in_warning());
+        assert!(!menu.ai_draft().memory.enabled);
+    }
+
     // Spec: a failed save keeps the picker where it was.
     #[test]
     fn a_failed_save_keeps_the_picker_level_and_shows_the_error() {
@@ -5948,7 +6018,7 @@ mod app_tests {
         assert_eq!(a.ai(), &saved, "saved");
         // Reload: the file still says codex.
         let text = "[ai]\nengine = \"codex\"\nmodel = \"default\"\n";
-        let (_, ai, _) = Config::load_with_ai(Ok(text.to_owned()));
+        let (_, ai, _) = Config::load_with_ai(Ok(text.to_owned()), None);
         assert_eq!(App::new(80, 25).with_ai(ai).ai(), &saved, "reload");
     }
 
@@ -5956,7 +6026,7 @@ mod app_tests {
     #[test]
     fn with_ai_carries_the_files_values() {
         let text = "[ai]\nengine = \"codex\"\nmodel = \"default\"\n";
-        let (_, ai, notice) = Config::load_with_ai(Ok(text.to_owned()));
+        let (_, ai, notice) = Config::load_with_ai(Ok(text.to_owned()), None);
         assert_eq!(notice, None);
         assert_eq!(
             App::new(80, 25).with_ai(ai).ai(),
