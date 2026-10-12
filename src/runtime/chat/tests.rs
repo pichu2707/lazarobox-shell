@@ -131,6 +131,23 @@ fn an_unterminated_sequence_in_the_answer_never_alters_the_reasoning() {
 }
 
 #[test]
+fn reasoning_after_the_first_answer_text_is_dropped_without_an_error() {
+    let mut pipe = Pipe::new();
+    let mut out = pipe.event(thinking("first"));
+    out.extend(pipe.event(delta("ok")));
+    // Late reasoning, even interleaved between answer pieces, goes nowhere.
+    assert_eq!(pipe.event(thinking("late")), Vec::new());
+    out.extend(pipe.event(delta("!")));
+    assert_eq!(pipe.event(thinking("later")), Vec::new());
+    out.extend(pipe.event(done()));
+    assert_eq!(reasoning_of(&out), "first");
+    assert_eq!(text_of(&out), "ok!");
+    assert_eq!(out.last(), Some(&done()));
+    assert!(!out.iter().any(|e| matches!(e, StreamEvent::Error(_))));
+    assert!(pipe.is_over());
+}
+
+#[test]
 fn reasoning_stops_at_256_kib_without_an_error_and_the_answer_is_intact() {
     let mut pipe = Pipe::new();
     let chunk = "r".repeat(4096);

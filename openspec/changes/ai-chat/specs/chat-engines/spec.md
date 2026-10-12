@@ -164,7 +164,7 @@ Ollama replies are NDJSON (one JSON object per line); OpenAI-compatible replies 
 - THEN no error is produced by the line cap
 
 ### Requirement: Reasoning events
-When an engine streams its reasoning separately from the answer, the adapter's decoder MUST emit it as thinking deltas, distinct from text deltas, in arrival order and interleaved with text deltas exactly as received. Mapping per adapter (design pins the exact field names from captured fixtures, never assumed):
+When an engine streams its reasoning separately from the answer, the adapter's decoder MUST emit it as thinking deltas, distinct from text deltas, in arrival order. The app keeps reasoning only until the first answer text of the turn: a thinking delta that arrives after the first non-empty text delta MUST be dropped without an error (by the stream pipe and again by the chat state), so reasoning never appears after the answer began. Mapping per adapter (design pins the exact field names from captured fixtures, never assumed):
 - Ollama: a streamed message carrying a separate `thinking` field yields a thinking delta for that field and a text delta for `content`; when one line carries both, the thinking delta comes first.
 - claude (stream-json): `thinking` content blocks yield thinking deltas. This applies only if the pinned flags make the CLI emit them (verified by manual check M2); otherwise the adapter emits none.
 - OpenAI-compatible servers, codex and gemini: a reasoning field or block is mapped only if that engine exposes one in its captured fixtures ("if available"); otherwise the adapter emits none and nothing changes for it.
@@ -174,6 +174,11 @@ Empty reasoning fragments MUST yield no event. The request sent to the engine MU
 - GIVEN NDJSON lines whose message holds `thinking` `Let me`, then `thinking` ` see`, then `content` `Hi`, then a final line with done true
 - WHEN parsed
 - THEN the events are thinking delta `Let me`, thinking delta ` see`, text delta `Hi`, final
+
+#### Scenario: Late reasoning after the answer began is dropped [auto]
+- GIVEN a stream that delivered the thinking delta `first`, then the text delta `ok`, then the thinking delta `late`, then a final event
+- WHEN the events pass through the stream pipe and the chat state
+- THEN the app shows the reasoning `first` and the answer `ok` only, `late` is dropped, no error is produced and the turn ends normally
 
 #### Scenario: Ollama line with both fields [auto]
 - GIVEN one NDJSON line whose message holds `thinking` `x` and `content` `y`
