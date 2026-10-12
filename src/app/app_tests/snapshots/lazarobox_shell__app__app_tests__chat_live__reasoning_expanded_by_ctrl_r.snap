@@ -1,0 +1,9 @@
+---
+source: src/app/app_tests/chat_live.rs
+expression: shot(&a)
+---
+› q
+
+▾ reasoning (0.0s)
+┊ Let me check
+Hi

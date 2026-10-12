@@ -7,7 +7,7 @@
 
 use super::catalog::{cli_models, curated, same_model};
 use super::config::{AiConfig, Assignment, Task};
-use super::parse::is_format;
+use super::sanitize::is_format;
 use super::{CATALOG, Detection, Kind, Status, status_text};
 
 /// What a picker is assigning to.

@@ -2,6 +2,13 @@
 
 use serde_json::Value;
 
+use super::sanitize::clean;
+
+/// `clean` for one-line text: newlines and tabs go too.
+fn sanitize(text: &str) -> String {
+    clean(text).chars().filter(|c| !c.is_control()).collect()
+}
+
 /// Models of a valid Ollama `/api/tags` body, or `None` for a foreign one.
 pub fn ollama_tags(body: &[u8]) -> Option<Vec<String>> {
     Some(model_names(&array_field(body, "models")?, "name"))
@@ -54,53 +61,6 @@ const MAX_NAME: usize = 128;
 
 /// Most models kept from one engine.
 const MAX_MODELS: usize = 256;
-
-/// Bidirectional and zero-width format characters: invisible, and able to
-/// reorder or hide the text around them. Includes the line and paragraph
-/// separators, the soft hyphen, the word joiner and invisible operators, the
-/// deprecated U+206A..U+206F controls and the tag block.
-pub(crate) fn is_format(c: char) -> bool {
-    matches!(
-        c,
-        '\u{00ad}'
-            | '\u{061c}'
-            | '\u{200b}'..='\u{200f}'
-            | '\u{2028}'..='\u{202e}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{206f}'
-            | '\u{feff}'
-            | '\u{e0000}'..='\u{e007f}'
-    )
-}
-
-/// Drops ANSI CSI sequences (`ESC [ params final`), OSC sequences
-/// (`ESC ] ... BEL` or `ESC ] ... ESC \`, to the end if unterminated), bidi
-/// and format characters, and any remaining control character, so engine
-/// output cannot inject terminal escapes or spoof the UI.
-fn sanitize(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next();
-            while chars
-                .next_if(|n| ('\u{20}'..='\u{3f}').contains(n))
-                .is_some()
-            {}
-            chars.next_if(|n| ('\u{40}'..='\u{7e}').contains(n));
-        } else if c == '\u{1b}' && chars.peek() == Some(&']') {
-            chars.next();
-            while let Some(n) = chars.next() {
-                if n == '\u{7}' || (n == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
-                    break;
-                }
-            }
-        } else if !c.is_control() && !is_format(c) {
-            out.push(c);
-        }
-    }
-    out
-}
 
 /// First non-empty stdout line, sanitized, trimmed and capped at 40
 /// characters.

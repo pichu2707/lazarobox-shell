@@ -5,12 +5,42 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+0.8.0 is the first version published to crates.io. 0.7.0 is an unpublished
+baseline.
+
 ## [Unreleased]
+
+## [0.8.0] - 2026-10-12
+
+First release published to crates.io.
 
 ### Added
 
-- AI chat (planned): talk to the AI engine and model chosen in the config menu
-  from inside the workspace.
+- **Experimental** AI chat pane: `Ctrl+Space c` opens a chat with a local
+  model inside the workspace. It works only with Ollama for now.
+- Streamed answers: the reply appears as the model writes it, with wrapped
+  prose and fenced code blocks.
+- Reasoning block for models that "think" (for example `qwen3`): the thinking
+  is kept apart from the answer and `Ctrl+R` shows or hides it. A statusline
+  indicator shows while a model is thinking, even if another pane is focused.
+- Composer keys: `Enter` sends, `Alt+Enter` or `Ctrl+J` adds a newline,
+  `Esc` or `Ctrl+C` cancels the running answer, `Ctrl+U` clears the input,
+  `PageUp`/`PageDown` scroll the transcript, `Ctrl+Y` copies the last answer
+  and `Ctrl+B` its last code block (through OSC 52).
+- The chat uses the engine and model of the `chat` task (`[ai.tasks.chat]` in
+  `config.toml` or the AI menu, `Ctrl+Space m`); without its own setting it
+  falls back to the general engine. The pane explains what is missing when
+  the engine is not set, not running or not supported.
+- Closing a chat pane or tab (for example `Ctrl+Space w q`) cancels its running
+  answer.
+
+### Known limitations
+
+- Conversations are not saved yet; chat history arrives in a later release.
+- Only Ollama is supported. Other engines are detected but have no chat
+  adapter yet.
+- One fixed system prompt; profiles come later.
+- The chat talks to `127.0.0.1` only and sends no credentials.
 
 ## [0.7.0] - 2026-10-12
 
@@ -83,5 +113,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/pichu2707/lazarobox-shell/releases/tag/v0.7.0

@@ -1,3 +1,4 @@
+pub mod chat;
 pub mod menu;
 pub mod separators;
 pub mod statusline;

@@ -5,11 +5,14 @@
 use std::path::PathBuf;
 
 pub mod catalog;
+pub mod chat;
 pub mod config;
 pub mod http;
+pub mod jail;
 pub mod menu;
 pub mod parse;
 pub mod picker;
+pub mod sanitize;
 
 /// How an engine is detected.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -5,13 +5,14 @@ pub mod theme;
 use ratatui::Frame;
 
 use crate::{
-    app::{App, InputMode},
-    core::layout::Rect,
+    app::{App, InputMode, PaneView},
+    core::{ai::chat::streams::pick_stream, layout::Rect},
 };
 use components::{
+    chat::ChatView,
     menu::MenuPopup,
     separators::SeparatorView,
-    statusline::StatusLine,
+    statusline::{StatusLine, thinking::ThinkingView},
     tab_bar::TabBar,
     terminal_view::{TerminalView, cell_position, cursor_position},
 };
@@ -41,10 +42,33 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
     let mut focused_rect = Rect::default();
     for &(id, rect) in &tiling.panes {
         let area = within(frame, rect);
-        let Some(pane) = app.pane(id) else { continue };
+        // The separators accent the focused pane, whatever its kind.
+        if id == focused {
+            focused_rect = rect;
+        }
+        let Some(view) = app.pane_view(id) else {
+            continue;
+        };
         if area.is_empty() {
             continue;
         }
+        let pane = match view {
+            PaneView::Pty(pane) => pane,
+            PaneView::Chat(chat) => {
+                let guidance = app.chat_guidance(id);
+                let chat_view = ChatView::new(chat, theme).guidance(guidance.as_deref());
+                // The composer owns the real cursor of a focused chat; MENU
+                // hides it like it hides a shell's.
+                let cursor = (id == focused && app.menu().is_none())
+                    .then(|| chat_view.cursor(area))
+                    .flatten();
+                frame.render_widget(chat_view, area);
+                if let Some(position) = cursor {
+                    frame.set_cursor_position(position);
+                }
+                continue;
+            }
+        };
         let highlight = if id == focused {
             app.copy_highlight()
         } else {
@@ -52,7 +76,6 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
         };
         frame.render_widget(TerminalView::new(pane, theme).highlight(highlight), area);
         if id == focused {
-            focused_rect = rect;
             // MENU hides the real cursor: it would blink under the popup.
             // In COPY the real cursor is the COPY cursor, even if the child hid its own.
             let position = match app.input() {
@@ -79,8 +102,14 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
         within(frame, screen.body),
     );
 
+    let streams = app.streams();
+    let thinking = pick_stream(&streams, focused)
+        .map(|(stream, others)| ThinkingView::new(stream, others, app.anim_frame(), app.now()));
+    let right = app.status_right();
     let line = |path| {
-        StatusLine::input(theme, app.input(), path, app.shell_name())
+        StatusLine::input(theme, app.input(), path, &right)
+            .chat(app.focused_is_chat())
+            .thinking(thinking.clone())
             .zoomed(app.zoomed())
             .copy_position(app.copy_position())
             .marker(app.copy_selection_kind())
@@ -100,6 +129,8 @@ fn within(frame: &Frame, rect: Rect) -> ratatui::layout::Rect {
     ratatui::layout::Rect::from(rect).intersection(frame.area())
 }
 
+#[cfg(test)]
+mod chat_status_tests;
 #[cfg(test)]
 mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -248,6 +279,90 @@ mod tests {
         );
     }
 
+    // ai-chat C7: a chat pane draws its transcript and composer next to a
+    // shell that still draws.
+    #[test]
+    fn a_chat_pane_draws_its_transcript_and_composer() {
+        let mut app = app();
+        app.open_chat(None);
+        let id = PaneId::for_test(2);
+        let (_, chat) = app.tiling().panes[1];
+        app.chat_send(id, "question");
+        app.update(AppEvent::Chat(
+            id,
+            1,
+            crate::core::ai::chat::engine::StreamEvent::Delta("answer".into()),
+        ));
+        app.chat_type(id, "draft");
+        let (buf, _) = draw(&app);
+        let at = |y: u16| -> String {
+            row(&buf, y)
+                .chars()
+                .skip(usize::from(chat.x))
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        };
+        assert!(row(&buf, 0).starts_with("hi there"));
+        assert_eq!(at(0), "› question");
+        assert_eq!(at(2), "answer");
+        assert_eq!(at(chat.height - 1), "draft");
+    }
+
+    // 8.0: the composer owns the real cursor of a focused chat.
+    #[test]
+    fn a_focused_chat_places_the_cursor_in_its_composer() {
+        let mut app = app();
+        app.open_chat(None);
+        let id = PaneId::for_test(2);
+        let (_, chat) = app.tiling().panes[1];
+        assert_eq!(app.focused(), id);
+        assert_eq!(
+            draw(&app).1,
+            Position::new(chat.x, chat.y + chat.height - 1),
+            "empty composer"
+        );
+        app.chat_type(id, "draft");
+        assert_eq!(
+            draw(&app).1,
+            Position::new(chat.x + 5, chat.y + chat.height - 1)
+        );
+    }
+
+    #[test]
+    fn an_unfocused_chat_leaves_the_cursor_to_the_focused_shell() {
+        let mut app = app();
+        app.open_chat(None);
+        app.chat_type(PaneId::for_test(2), "draft");
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        press(&mut app, 'h', KeyModifiers::NONE);
+        assert_eq!(app.focused(), PaneId::FIRST);
+        assert_eq!(draw(&app).1, Position::new(8, 0));
+    }
+
+    #[test]
+    fn menu_hides_the_cursor_of_a_chat() {
+        let mut app = app();
+        app.open_chat(None);
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        press(&mut app, 'm', KeyModifiers::NONE);
+        assert!(app.menu().is_some());
+        assert_eq!(draw(&app).1, Position::new(0, 0));
+    }
+
+    // The separator next to a focused chat gets the accent, like any pane.
+    #[test]
+    fn the_separator_next_to_a_focused_chat_gets_the_accent() {
+        let mut app = app();
+        app.open_chat(None);
+        let (_, chat) = app.tiling().panes[1];
+        let (buf, _) = draw(&app);
+        let theme = theme::LazaroboxTheme::default();
+        let cell = &buf[(chat.x - 1, 0)];
+        assert_eq!(cell.fg, theme.input_accent(app.input()));
+        assert_ne!(cell.fg, theme.text_muted);
+    }
+
     #[test]
     fn only_the_focused_pane_places_the_cursor_at_its_rect() {
         let app = split_app();
@@ -363,7 +478,7 @@ mod tests {
         let line = status(&app);
         assert!(line.contains("PREFIX"), "{line:?}");
         assert!(
-            line.contains("w window · t tab · g go · b buffer · [ copy · m menu · q quit"),
+            line.contains("w window · t tab · g go · b buffer · [ copy · m menu · c chat · q quit"),
             "{line:?}"
         );
         insta::assert_snapshot!("root_hint", line.trim_end());

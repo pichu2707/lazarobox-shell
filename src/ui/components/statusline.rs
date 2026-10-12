@@ -10,6 +10,9 @@ use crate::app::{AppMode, InputMode};
 use crate::core::copy::SelectionKind;
 use crate::ui::theme::LazaroboxTheme;
 
+pub mod thinking;
+use thinking::ThinkingView;
+
 /// Nerd Font powerline glyph "upper left triangle" (U+E0BC).
 /// Placed right after a left-hand block: `fg` = that block's bg, `bg` = the
 /// next segment's bg. The filled upper-left half continues the block and the
@@ -32,6 +35,7 @@ pub struct StatusLine<'a> {
     zoomed: bool,
     copy_position: Option<(usize, usize)>,
     marker: Option<SelectionKind>,
+    thinking: Option<ThinkingView>,
 }
 
 impl<'a> StatusLine<'a> {
@@ -45,6 +49,7 @@ impl<'a> StatusLine<'a> {
             zoomed: false,
             copy_position: None,
             marker: None,
+            thinking: None,
         }
     }
 
@@ -64,6 +69,7 @@ impl<'a> StatusLine<'a> {
             zoomed: false,
             copy_position: None,
             marker: None,
+            thinking: None,
         }
     }
 
@@ -86,6 +92,21 @@ impl<'a> StatusLine<'a> {
         self
     }
 
+    /// Over a focused chat pane the TERMINAL label reads `CHAT` (same color);
+    /// every other mode keeps its label.
+    pub fn chat(mut self, chat: bool) -> Self {
+        if chat && self.label == "TERMINAL" {
+            self.label = "CHAT";
+        }
+        self
+    }
+
+    /// The thinking indicator of the stream being shown, if any.
+    pub fn thinking(mut self, view: Option<ThinkingView>) -> Self {
+        self.thinking = view;
+        self
+    }
+
     /// Columns left for the path text in a statusline `width` columns wide:
     /// what the mode block, the right segment (when it fits) and the path
     /// padding and slant leave over.
@@ -99,7 +120,20 @@ impl<'a> StatusLine<'a> {
         } else {
             0
         };
-        u16::try_from(usize::from(width).saturating_sub(left + right)).unwrap_or(u16::MAX)
+        let indicator = Line::from(self.indicator(width, right)).width();
+        u16::try_from(usize::from(width).saturating_sub(left + right + indicator))
+            .unwrap_or(u16::MAX)
+    }
+
+    /// The thinking indicator fitted to `width`, given the columns the right
+    /// segment takes. It gets at most half of what the mode block and the
+    /// right segment leave, so the path keeps the other half.
+    fn indicator(&self, width: u16, right: usize) -> Vec<Span<'static>> {
+        let Some(view) = &self.thinking else {
+            return Vec::new();
+        };
+        let free = usize::from(width).saturating_sub(self.mode_block_width() + right);
+        view.spans(self.theme, free / 2)
     }
 
     fn mode_block_text(&self) -> String {
@@ -164,14 +198,23 @@ impl Widget for StatusLine<'_> {
         } else {
             0
         };
-        let [left_area, right_area] =
-            Layout::horizontal([Constraint::Min(0), Constraint::Length(right_width)]).areas(area);
+        let indicator = Line::from(self.indicator(area.width, usize::from(right_width)));
+        let indicator_width = u16::try_from(indicator.width()).unwrap_or(u16::MAX);
+        let [left_area, indicator_area, right_area] = Layout::horizontal([
+            Constraint::Min(0),
+            Constraint::Length(indicator_width),
+            Constraint::Length(right_width),
+        ])
+        .areas(area);
 
         Paragraph::new(self.left_line()).render(left_area, buf);
+        Paragraph::new(indicator).render(indicator_area, buf);
         Paragraph::new(right).render(right_area, buf);
     }
 }
 
+#[cfg(test)]
+mod chat_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
