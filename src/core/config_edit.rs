@@ -59,7 +59,11 @@ pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String
             head
         });
         let table = walk_to_table(&mut doc, edit, &mut head)?;
-        let mut value = Value::from(edit.value.as_ref());
+        let mut value = if edit.is_flag() {
+            Value::from(edit.value == "true")
+        } else {
+            Value::from(edit.value.as_ref())
+        };
         match table.get_mut(edit.key) {
             // Replace in the slot so the key's own decor (leading comment,
             // spacing) stays, and keep the old value's decor so a trailing
@@ -797,5 +801,129 @@ other = 1
             assert_eq!(ai, want, "{out:?}");
             assert_eq!(notice, None, "{out:?}");
         }
+    }
+
+    // Spec (config-persistence): memory keys are owned booleans.
+    fn flag(key: &'static str, on: bool) -> ConfigEdit {
+        ConfigEdit {
+            table: "ai.memory",
+            key,
+            value: std::borrow::Cow::Borrowed(if on { "true" } else { "false" }),
+        }
+    }
+
+    fn memory_of(text: &str) -> (crate::core::ai::config::MemoryConfig, Option<String>) {
+        let (_, ai, notice) = Config::load_with_ai(Ok(text.to_owned()));
+        (ai.memory, notice)
+    }
+
+    #[test]
+    fn a_missing_memory_table_is_appended_with_booleans_only() {
+        let existing = "# mine\n[statusline]\nposition = \"bottom\"\n";
+        let edits = [flag("enabled", true), flag("acknowledged", true)];
+        let out = apply_edit(Some(existing), &edits).unwrap();
+        assert_eq!(
+            out,
+            format!("{existing}\n[ai.memory]\nenabled = true\nacknowledged = true\n")
+        );
+        let (memory, notice) = memory_of(&out);
+        assert!(memory.active(), "{out:?}");
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn only_the_enabled_value_changes_in_place() {
+        let existing =
+            "[ai.memory]\nenabled = false  # off\n# where\nport = 8123\nacknowledged = true\n";
+        let out = apply_edit(Some(existing), &[flag("enabled", true)]).unwrap();
+        assert_eq!(out, existing.replace("false  # off", "true  # off"));
+    }
+
+    #[test]
+    fn turning_memory_off_keeps_the_acknowledgement() {
+        let existing = "[ai.memory]\nenabled = true\nacknowledged = true\n";
+        let out = apply_edit(Some(existing), &[flag("enabled", false)]).unwrap();
+        assert_eq!(out, "[ai.memory]\nenabled = false\nacknowledged = true\n");
+        let (memory, _) = memory_of(&out);
+        assert!(memory.acknowledged && !memory.enabled);
+    }
+
+    #[test]
+    fn the_port_is_preserved_byte_for_byte_and_never_added() {
+        let with_port = "[ai.memory]\nport   =   8123 # mine\nendpoint = \"x\"\n";
+        let out = apply_edit(Some(with_port), &[flag("enabled", true)]).unwrap();
+        assert_eq!(
+            out,
+            "[ai.memory]\nport   =   8123 # mine\nendpoint = \"x\"\nenabled = true\n"
+        );
+        let out = apply_edit(Some("x = 1\n"), &[flag("enabled", true)]).unwrap();
+        assert!(!out.contains("port"), "{out:?}");
+    }
+
+    #[test]
+    fn no_memory_edits_leave_the_file_untouched() {
+        let existing = "[statusline]\nposition = \"top\"\n";
+        assert_eq!(apply_edit(Some(existing), &[]).unwrap(), existing);
+        let with = "[ai.memory]\nenabled = true\n";
+        assert_eq!(apply_edit(Some(with), &[]).unwrap(), with);
+    }
+
+    #[test]
+    fn a_scalar_memory_or_a_table_valued_flag_is_refused() {
+        let one = [flag("enabled", true)];
+        assert_eq!(
+            apply_edit(Some("[ai]\nmemory = 3\n"), &one),
+            Err(EditError::NotATable("ai.memory"))
+        );
+        assert_eq!(
+            apply_edit(Some("[ai.memory.enabled]\nx = 1\n"), &one),
+            Err(EditError::KeyIsTable {
+                table: "ai.memory",
+                key: "enabled"
+            })
+        );
+        assert_eq!(
+            apply_edit(
+                Some("[ai.memory.acknowledged]\nx = 1\n"),
+                &[flag("acknowledged", true)]
+            ),
+            Err(EditError::KeyIsTable {
+                table: "ai.memory",
+                key: "acknowledged"
+            })
+        );
+    }
+
+    #[test]
+    fn a_wrong_type_flag_is_replaced_and_an_ignored_collision_is_kept() {
+        let out = apply_edit(Some("[ai.memory]\nenabled = 3\n"), &[flag("enabled", true)]).unwrap();
+        assert_eq!(out, "[ai.memory]\nenabled = true\n");
+        let existing = "[ai.memory.enabled]\nx = 1\n[statusline]\nposition = \"bottom\"\n";
+        let out = apply_edit(Some(existing), &[edit("statusline", "top")]).unwrap();
+        assert_eq!(out, existing.replace("bottom", "top"));
+    }
+
+    #[test]
+    fn a_memory_flag_keeps_crlf() {
+        let existing = "[ai.memory]\r\nenabled = false\r\n";
+        let out = apply_edit(Some(existing), &[flag("acknowledged", true)]).unwrap();
+        assert_eq!(
+            out,
+            "[ai.memory]\r\nenabled = false\r\nacknowledged = true\r\n"
+        );
+    }
+
+    // Only the memory flags are booleans: other string edits stay strings.
+    #[test]
+    fn other_keys_named_enabled_stay_strings() {
+        let other = ConfigEdit {
+            table: "custom",
+            key: "enabled",
+            value: std::borrow::Cow::Borrowed("true"),
+        };
+        assert_eq!(
+            apply_edit(None, &[other]).unwrap(),
+            "[custom]\nenabled = \"true\"\n"
+        );
     }
 }

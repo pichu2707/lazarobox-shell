@@ -53,6 +53,28 @@ pub struct ConfigEdit {
     pub value: Cow<'static, str>,
 }
 
+impl ConfigEdit {
+    /// An edit of an owned memory flag (`ai.memory.enabled` or
+    /// `.acknowledged`).
+    pub fn memory_flag(key: &'static str, on: bool) -> Self {
+        Self {
+            table: MEMORY_TABLE,
+            key,
+            value: Cow::Borrowed(if on { "true" } else { "false" }),
+        }
+    }
+
+    /// Whether the key is a TOML boolean (written as `true` / `false`, not
+    /// as a string). Only the memory flags are; `ai.memory.port` is owned but
+    /// never edited.
+    pub fn is_flag(&self) -> bool {
+        self.table == MEMORY_TABLE && matches!(self.key, "enabled" | "acknowledged")
+    }
+}
+
+/// The dotted table of the memory keys.
+pub const MEMORY_TABLE: &str = "ai.memory";
+
 /// Why a config file was rejected; the text is one short line.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ConfigError(String);
