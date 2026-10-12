@@ -587,11 +587,14 @@ fn header_value(token: &str) -> bool {
     !token.is_empty() && token.bytes().all(|b| b.is_ascii_graphic())
 }
 
-async fn exchange(mut stream: TcpStream, request: &[u8]) -> Result<Reply, CallError> {
-    stream
-        .write_all(request)
-        .await
-        .map_err(|_| CallError::Invalid)?;
+async fn exchange<S>(mut stream: S, request: &[u8]) -> Result<Reply, CallError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    // A failed write (reset, broken pipe) can mean the server answered at once
+    // and closed, for instance 401 or 413 before reading the body: keep
+    // reading, and only report `Invalid` when no complete reply follows.
+    let _ = stream.write_all(request).await;
     let mut buf = vec![0u8; READ_SIZE];
     let mut raw = Vec::new();
     let (status, framing, head_len) = loop {

@@ -512,6 +512,31 @@ async fn a_request_body_over_the_cap_is_too_large_and_sends_nothing() {
     assert!(none_seen(&seen));
 }
 
+#[tokio::test]
+async fn an_early_reply_survives_a_server_that_closes_before_the_body_is_sent() {
+    for (status, text) in [(413u16, "Payload Too Large"), (401, "Unauthorized")] {
+        let (client, mut server) = tokio::io::duplex(64);
+        tokio::spawn(async move {
+            let reply = format!("HTTP/1.1 {status} {text}\r\nContent-Length: 2\r\n\r\nno");
+            let _ = server.write_all(reply.as_bytes()).await;
+            // Dropped here: the request body is never read.
+        });
+        let got = exchange(client, &vec![b'a'; 4096]).await;
+        let reply = got.unwrap_or_else(|e| panic!("{status}: {e:?}"));
+        assert_eq!((reply.status, reply.body), (status, b"no".to_vec()));
+    }
+}
+
+#[tokio::test]
+async fn a_failed_write_with_no_reply_is_invalid() {
+    let (client, server) = tokio::io::duplex(64);
+    drop(server);
+    assert_eq!(
+        exchange(client, &vec![b'a'; 4096]).await,
+        Err(CallError::Invalid)
+    );
+}
+
 // Connection and time ---------------------------------------------------------
 
 #[tokio::test]
