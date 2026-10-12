@@ -133,3 +133,36 @@ fn the_set_all_picker_is_titled_set_all_tasks() {
     open(&mut m, "Set all tasks");
     assert_eq!(title(&m), "Engine for Set all tasks");
 }
+
+fn both_levels() -> [MenuState; 2] {
+    let mut one = menu(None, None, Some(machine()));
+    open(&mut one, "code");
+    [one, level_two()]
+}
+
+// Spec: Save on s is a plain press; a held `s` saves nothing.
+#[test]
+fn a_held_s_in_the_picker_does_not_save() {
+    for mut m in both_levels() {
+        let before = m.clone();
+        assert_eq!(repeat(&mut m, KeyCode::Char('s')), MenuCommand::None);
+        assert_eq!(m, before);
+    }
+}
+
+// Spec: Ctrl+S, `S` and a release do not save from the picker.
+#[test]
+fn ctrl_s_upper_s_and_release_do_not_save_in_the_picker() {
+    for mut m in both_levels() {
+        let before = m.clone();
+        let ctrl = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        let upper = KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT);
+        let mut release = key(KeyCode::Char('s'));
+        release.kind = KeyEventKind::Release;
+        for event in [ctrl, upper, release] {
+            let command = m.on_key(&event, false, &mut Config::default());
+            assert_eq!(command, MenuCommand::None, "{event:?}");
+            assert_eq!(m, before, "{event:?}");
+        }
+    }
+}
