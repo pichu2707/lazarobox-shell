@@ -41,6 +41,10 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
     let mut focused_rect = Rect::default();
     for &(id, rect) in &tiling.panes {
         let area = within(frame, rect);
+        // The separators accent the focused pane, whatever its kind.
+        if id == focused {
+            focused_rect = rect;
+        }
         let Some(view) = app.pane_view(id) else {
             continue;
         };
@@ -56,7 +60,6 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
         };
         frame.render_widget(TerminalView::new(pane, theme).highlight(highlight), area);
         if id == focused {
-            focused_rect = rect;
             // MENU hides the real cursor: it would blink under the popup.
             // In COPY the real cursor is the COPY cursor, even if the child hid its own.
             let position = match app.input() {
@@ -264,6 +267,19 @@ mod tests {
         let chat_row: String = row(&buf, 0).chars().skip(usize::from(chat.x)).collect();
         assert!(chat_row.trim().is_empty(), "{chat_row:?}");
         assert_eq!(cursor, Position::new(0, 0));
+    }
+
+    // The separator next to a focused chat gets the accent, like any pane.
+    #[test]
+    fn the_separator_next_to_a_focused_chat_gets_the_accent() {
+        let mut app = app();
+        app.open_chat(None);
+        let (_, chat) = app.tiling().panes[1];
+        let (buf, _) = draw(&app);
+        let theme = theme::LazaroboxTheme::default();
+        let cell = &buf[(chat.x - 1, 0)];
+        assert_eq!(cell.fg, theme.input_accent(app.input()));
+        assert_ne!(cell.fg, theme.text_muted);
     }
 
     #[test]
