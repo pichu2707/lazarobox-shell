@@ -108,11 +108,16 @@ impl Scan<'_> {
         }
     }
 
+    /// Whether the character before `i` is not an ASCII letter or digit.
+    /// Any non-ASCII character counts as a boundary (CJK letters are
+    /// alphanumeric to Unicode, yet a key can follow them), which fails
+    /// closed. `i` is always the position of an ASCII byte, so it is a
+    /// character boundary.
     fn word_start(&self, i: usize) -> bool {
-        i == 0 || {
-            let prev = self.bytes[i - 1];
-            !prev.is_ascii_alphanumeric() && prev < 0x80
-        }
+        self.text[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_ascii_alphanumeric())
     }
 
     fn starts_ci(&self, at: usize, pat: &[u8]) -> bool {
@@ -298,6 +303,51 @@ mod tests {
             "AKIA123",
             "risk-assessment-2024",
         ] {
+            assert_eq!(text(input), input, "{input:?}");
+        }
+    }
+
+    /// Characters that are not ASCII: a secret right after any of them is
+    /// still at a word start.
+    const NON_ASCII_LEADS: [&str; 6] = [
+        "\u{201c}",
+        "\u{ff1a}",
+        "\u{2192}",
+        "\u{2014}",
+        "\u{1f511}",
+        "\u{4e2d}",
+    ];
+
+    #[test]
+    fn a_secret_after_a_non_ascii_character_is_still_masked() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.c2lnbmF0dXJl";
+        let secrets = [
+            "sk-ant-api03-AbCdEf_123456",
+            "ghp_0123456789abcdefghij",
+            "AKIAIOSFODNN7EXAMPLE",
+            "AIzaSyA-0123456789abcdefghijklmnopqrstu",
+            jwt,
+        ];
+        for lead in NON_ASCII_LEADS {
+            for secret in secrets {
+                let want = format!("{lead}[REDACTED]");
+                assert_eq!(
+                    text(&format!("{lead}{secret}")),
+                    want,
+                    "{lead:?} {secret:?}"
+                );
+            }
+            assert_eq!(
+                text(&format!("{lead}Bearer abc.def")),
+                format!("{lead}Bearer [REDACTED]"),
+                "{lead:?} bearer"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ascii_letter_before_a_prefix_still_blocks_it() {
+        for input in ["xsk-abcDEF1234567890", "9ghp_0123456789abcdefghij"] {
             assert_eq!(text(input), input, "{input:?}");
         }
     }
