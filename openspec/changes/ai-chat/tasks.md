@@ -96,11 +96,11 @@ Files changed:
 
 ## PR3 / C3: Sanitizer and splitters (`src/core/ai/sanitize.rs`, `src/core/ai/chat/stream.rs`)
 
-- [ ] 3.1 RED: `StreamSanitizer` tables: control characters, CSI/OSC/DCS/APC/PM/SOS, bidi and format characters, unterminated at finish, 4,096-char cap, every split point.
-- [ ] 3.2 RED: `Utf8Stream`: 3- and 4-byte splits, invalid bytes to U+FFFD, cut tail at finish; fuzz invariant (random bytes, random cuts, never ESC or C0/C1).
-- [ ] 3.3 RED: `NdjsonSplitter` and `SseParser`: Ollama NDJSON, OpenAI SSE with `[DONE]`, comments, CRLF, every split point, malformed line, server `error` object sanitized and capped, 1 MiB line cap (2 MiB for CLI decoders).
-- [ ] 3.4 GREEN: implement; move `is_format` into `sanitize.rs`; `parse.rs` uses `clean()` with identical output (existing parse tests unchanged).
-- [ ] 3.5 Gate.
+- [x] 3.1 RED: `StreamSanitizer` tables: control characters, CSI/OSC/DCS/APC/PM/SOS, bidi and format characters, unterminated at finish, 4,096-char cap, every split point.
+- [x] 3.2 RED: `Utf8Stream`: 3- and 4-byte splits, invalid bytes to U+FFFD, cut tail at finish; fuzz invariant (random bytes, random cuts, never ESC or C0/C1).
+- [x] 3.3 RED: `NdjsonSplitter` and `SseParser`: Ollama NDJSON, OpenAI SSE with `[DONE]`, comments, CRLF, every split point, malformed line, server `error` object sanitized and capped, 1 MiB line cap (2 MiB for CLI decoders).
+- [x] 3.4 GREEN: implement; move `is_format` into `sanitize.rs`; `parse.rs` uses `clean()` with identical output (existing parse tests unchanged).
+- [x] 3.5 Gate.
 
 ## PR4 / C4: Loopback HTTP client (`src/core/ai/http.rs`, `src/runtime/loopback.rs`)
 
