@@ -91,6 +91,43 @@ Límites de esta fase:
 
 ---
 
+## 💬 Chat de IA (experimental)
+
+Con `Ctrl+Espacio` y `c` se abre un panel de chat con un modelo local, sin salir del workspace. Es una función **experimental** y solo funciona con **Ollama**: debe estar instalado y en ejecución (`ollama serve`), y el modelo elegido debe estar descargado (`ollama pull <modelo>`).
+
+Teclas dentro del chat:
+
+| Tecla                  | Acción                                              |
+| :--------------------- | :-------------------------------------------------- |
+| `Enter`                | Envía el mensaje                                    |
+| `Alt+Enter` / `Ctrl+J` | Salto de línea en el mensaje                        |
+| `Esc` / `Ctrl+C`       | Cancela la respuesta en curso                       |
+| `Ctrl+R`               | Muestra u oculta el razonamiento del modelo         |
+| `Ctrl+Y` / `Ctrl+B`    | Copia la última respuesta / su último bloque de código (OSC 52) |
+| `PageUp` / `PageDown`  | Desplaza la conversación                            |
+
+Para cerrar el panel: `Ctrl+Espacio`, `w`, `q`. La respuesta se muestra mientras se genera; si el modelo "piensa" (por ejemplo `qwen3`), la barra de estado muestra un indicador `thinking` y el razonamiento queda en un bloque aparte.
+
+**Motor y modelo:** el chat usa la tarea `chat`. Se elige en el menú de IA (`Ctrl+Espacio` y `m`) o a mano en `config.toml`:
+
+```toml
+[ai.tasks.chat]
+engine = "ollama"
+model = "llama3.2"   # o cualquier modelo que tengas descargado
+```
+
+Si la tarea `chat` no tiene motor propio, usa el motor general (`[ai]`). El panel indica qué falta cuando no hay motor, no está en marcha o no está soportado.
+
+**Privacidad:** todo es local. El chat solo habla con `127.0.0.1` y no envía credenciales. Las conversaciones **no se guardan** todavía; al arrancar se crea un fichero vacío y privado `chat.db` en `$XDG_DATA_HOME/lazarobox/` (por defecto `~/.local/share/lazarobox/`) para el historial futuro, pero no se escribe nada en él.
+
+Límites de esta versión:
+
+- Solo Ollama: los demás motores se detectan, pero aún no tienen adaptador de chat.
+- Un único _system prompt_ fijo (los perfiles llegarán más adelante).
+- Sin historial: la conversación se pierde al cerrar el panel.
+
+---
+
 ## 📁 Arquitectura del Workspace en Rust
 
 ```text
