@@ -1,0 +1,6 @@
+HTTP/1.1 200 OK
+Content-Type: application/json
+Date: Mon, 12 Oct 2026 20:02:51 GMT
+Content-Length: 444
+
+{"id":1,"sync_id":"obs-ea84bf699414f8d9","session_id":"lazarobox-conv-1","type":"decision","title":"Use Axum","content":"We chose Axum for the HTTP layer, revised.\n**Tags**: web, rust","project":"widget","scope":"project","topic_key":"chat/decision/use-axum","revision_count":2,"duplicate_count":1,"last_seen_at":"2026-10-12 20:02:51","review_after":"2027-04-12 20:02:51","created_at":"2026-10-12 20:02:51","updated_at":"2026-10-12 20:02:51"}

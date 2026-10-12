@@ -1,0 +1,6 @@
+HTTP/1.1 409 Conflict
+Content-Type: application/json
+Date: Mon, 12 Oct 2026 20:03:06 GMT
+Content-Length: 101
+
+{"code":"session_already_ended","error":"session has already ended","session_id":"lazarobox-conv-2"}

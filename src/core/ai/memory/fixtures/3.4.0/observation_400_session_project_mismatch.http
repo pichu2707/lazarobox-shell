@@ -1,0 +1,6 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Date: Mon, 12 Oct 2026 20:02:51 GMT
+Content-Length: 145
+
+{"code":"session_project_mismatch","error":"session project does not match requested project","project":"other-proj","session_project":"widget"}
