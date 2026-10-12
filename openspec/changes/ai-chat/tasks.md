@@ -138,6 +138,7 @@ Files changed:
 
 ## PR8 / C7: Composer, transcript, widget (`src/core/ai/chat/{composer,transcript}.rs`, `src/ui/components/chat.rs`, `src/ui/mod.rs`, `Cargo.toml`)
 
+- [ ] 8.0 Carry-over from PR1 review (W2): the composer must own the cursor of a focused chat (position and shape); until C7 a focused chat leaves the cursor at the default.
 - [ ] 8.1 RED: composer: type, Backspace, Delete, Left/Right, Home/End, Ctrl+U, newline, paste with CRLF and control stripping, 8,000-char cap, 5-row height cap.
 - [ ] 8.2 RED: transcript wrap with `unicode-width` cached by (width, generation); fenced code styled, unclosed fence is code, no other markdown; follow at bottom, pinned when scrolled, send returns to bottom, clamp.
 - [ ] 8.3 RED: insta snapshots: transcript above composer, composer growth capped, code block, literal markdown, long line wrap; no panic from 1x1 to 10x2 with and without a stream.
