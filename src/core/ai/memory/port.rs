@@ -46,6 +46,19 @@ pub enum MemCmd {
     Quit,
 }
 
+impl MemCmd {
+    /// The pane a command answers to; global commands have none.
+    pub fn pane(&self) -> Option<PaneId> {
+        match self {
+            MemCmd::Resolve { pane, .. }
+            | MemCmd::Context { pane, .. }
+            | MemCmd::Save { pane, .. }
+            | MemCmd::Delete { pane, .. } => Some(*pane),
+            MemCmd::End { .. } | MemCmd::StartServer | MemCmd::Quit => None,
+        }
+    }
+}
+
 /// Why memory cannot be used right now.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Reason {
@@ -148,6 +161,21 @@ pub enum MemReply {
     },
 }
 
+impl MemReply {
+    /// The pane a reply is for; global replies have none.
+    pub fn pane(&self) -> Option<PaneId> {
+        match self {
+            MemReply::Project { pane, .. }
+            | MemReply::Context { pane, .. }
+            | MemReply::Saved { pane, .. }
+            | MemReply::SaveFailed { pane, .. }
+            | MemReply::Deleted { pane, .. } => Some(*pane),
+            MemReply::Unavailable { pane, .. } => *pane,
+            MemReply::Health { .. } | MemReply::Server(_) => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,5 +276,35 @@ mod tests {
     fn a_non_git_project_has_its_own_line_without_the_prefix() {
         assert_eq!(Reason::NotGit.text(), "memory needs a git project");
         assert_eq!(Reason::NotGit.line(), "memory needs a git project");
+    }
+
+    #[test]
+    fn commands_and_replies_name_the_pane_they_belong_to() {
+        let pane = PaneId::FIRST;
+        let resolve = MemCmd::Resolve {
+            pane,
+            cwd: "/x".into(),
+        };
+        assert_eq!(resolve.pane(), Some(pane));
+        assert_eq!(MemCmd::Quit.pane(), None);
+        assert_eq!(MemCmd::StartServer.pane(), None);
+        let end = MemCmd::End {
+            session: "s".into(),
+            project: "p".into(),
+            summary: "x".into(),
+        };
+        assert_eq!(end.pane(), None);
+        let busy = |pane| MemReply::Unavailable {
+            pane,
+            reason: Reason::Busy,
+        };
+        assert_eq!(busy(Some(pane)).pane(), Some(pane));
+        assert_eq!(busy(None).pane(), None);
+        let health = MemReply::Health {
+            state: Health::Down,
+            offer: false,
+        };
+        assert_eq!(health.pane(), None);
+        assert_eq!(MemReply::Context { pane, block: None }.pane(), Some(pane));
     }
 }

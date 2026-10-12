@@ -18,6 +18,7 @@ pub mod ai_detect;
 pub mod chat;
 pub mod chat_store;
 mod config_write;
+pub mod engram;
 pub mod loopback;
 pub mod proc;
 
