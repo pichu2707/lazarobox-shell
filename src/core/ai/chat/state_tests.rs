@@ -324,3 +324,25 @@ fn a_refused_send_leaves_the_turn_message_last_among_the_messages() {
     assert_eq!(last_message, Some("one"));
     assert_eq!(state.messages().count(), 1);
 }
+
+#[test]
+fn each_chat_owns_its_composer() {
+    let mut a = chat();
+    let b = chat();
+    assert!(a.composer().is_empty());
+    a.composer_mut().paste("draft");
+    assert_eq!(a.composer().text(), "draft");
+    assert!(b.composer().is_empty(), "another chat is unaffected");
+}
+
+#[test]
+fn the_composer_survives_a_send_of_other_text() {
+    let mut state = chat();
+    state.composer_mut().paste("next");
+    sent(&mut state, "hello");
+    assert_eq!(
+        state.composer().text(),
+        "next",
+        "send takes text, not the box"
+    );
+}

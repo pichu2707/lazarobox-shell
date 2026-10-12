@@ -43,6 +43,9 @@ toml_edit = "0.22"
 # Chat history store (SQLite compiled in; needs a C compiler)
 rusqlite = { version = "0.38", features = ["bundled"] }
 
+# Display width of chat text (wrapping, cursor column)
+unicode-width = "0.2"
+
 [dev-dependencies]
 insta = "1"
 tempfile = "3"

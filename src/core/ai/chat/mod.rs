@@ -3,12 +3,15 @@
 //! A `ChatState` is the conversation of one chat pane: its transcript, the
 //! turn in flight and the cwd the pane was opened from.
 
+pub mod composer;
 pub mod engine;
 pub mod store;
 pub mod stream;
+pub mod wrap;
 
 use std::path::{Path, PathBuf};
 
+use composer::Composer;
 use engine::{
     Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, build_context,
     history_chars,
@@ -116,6 +119,7 @@ pub struct ChatState {
     entries: Vec<Entry>,
     phase: Phase,
     turn: u64,
+    composer: Composer,
 }
 
 impl ChatState {
@@ -126,7 +130,17 @@ impl ChatState {
             entries: Vec::new(),
             phase: Phase::Idle,
             turn: 0,
+            composer: Composer::new(),
         }
+    }
+
+    /// The message box.
+    pub fn composer(&self) -> &Composer {
+        &self.composer
+    }
+
+    pub fn composer_mut(&mut self) -> &mut Composer {
+        &mut self.composer
     }
 
     /// The cwd of the pane the chat was opened from.
