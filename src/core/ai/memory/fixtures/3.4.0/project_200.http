@@ -1,0 +1,6 @@
+HTTP/1.1 200 OK
+Content-Type: application/json
+Date: Mon, 12 Oct 2026 20:02:37 GMT
+Content-Length: 146
+
+{"available_projects":null,"cwd":"/tmp/spike/ws/gitproj","project":"widget","project_path":"/tmp/spike/ws/gitproj","project_source":"git_remote"}

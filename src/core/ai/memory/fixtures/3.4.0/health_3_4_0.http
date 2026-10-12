@@ -1,0 +1,6 @@
+HTTP/1.1 200 OK
+Content-Type: application/json
+Date: Mon, 12 Oct 2026 20:02:33 GMT
+Content-Length: 217
+
+{"capabilities":{"isolated_session_registration":true,"root_session_resume":true,"runtime_session_resolution":true},"instance_id":"999100b4a245378075d419132ab1c06e","service":"engram","status":"ok","version":"3.4.0"}

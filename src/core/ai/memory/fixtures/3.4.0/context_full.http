@@ -1,0 +1,6 @@
+HTTP/1.1 200 OK
+Content-Type: application/json
+Date: Mon, 12 Oct 2026 20:03:19 GMT
+Content-Length: 717
+
+{"context":"## Memory from Previous Sessions\n\n### Recent Sessions\n- **widget** (2026-10-12 22:02:51) [4 observations]\n- **widget** (2026-10-12 22:03:06): Goal: pick framework. Decided Axum. Resumed and added a note. [2 observations]\n\n### Recent Observations\n- [pattern] **Error enum per module**: Each module owns a thiserror enum.\n- [bugfix] **Fix parser panic**: Parser panicked on empty input.\n**Tags**: parser\n- [config] **Check conv1 project**: does conv-1 still belong to widget\n- [discovery] **After reregister**: saved after re-registering\n- [discovery] **After end**: saved after the session ended\n- [decision] **Use Axum**: We chose Axum for the HTTP layer, revised.\n**Tags**: web, rust\n\n"}

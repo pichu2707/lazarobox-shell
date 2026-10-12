@@ -1,0 +1,6 @@
+HTTP/1.1 200 OK
+Content-Type: application/json
+Date: Mon, 12 Oct 2026 20:03:12 GMT
+Content-Length: 333
+
+[{"id":"lazarobox-conv-2","project":"widget","started_at":"2026-10-12 20:03:06.574811784","ended_at":"2026-10-12 20:03:06","summary":"Goal: pick framework. Decided Axum. Resumed and added a note.","observation_count":2},{"id":"lazarobox-conv-1","project":"widget","started_at":"2026-10-12 20:02:51.177670783","observation_count":1}]
