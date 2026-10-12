@@ -216,8 +216,7 @@ struct PtyPane {
 /// state and has no PTY.
 enum PaneContent {
     Pty(Box<PtyPane>),
-    // Read by the cwd rules of a chat (task 1.3).
-    Chat(#[expect(dead_code)] Box<ChatState>),
+    Chat(Box<ChatState>),
 }
 
 /// The kind of pane a split or a new tab creates.
@@ -267,10 +266,13 @@ impl PaneState {
         }
     }
 
-    /// OSC 7 wins once seen; the poll fills in for shells that never report.
+    /// A shell's: OSC 7 wins once seen, and the poll fills in for shells that
+    /// never report. A chat's is the cwd it was opened from.
     fn effective_cwd(&self) -> Option<&Path> {
-        self.pty()
-            .and_then(|pty| pty.emu.cwd().or(pty.proc_cwd.as_deref()))
+        match &self.content {
+            PaneContent::Pty(pty) => pty.emu.cwd().or(pty.proc_cwd.as_deref()),
+            PaneContent::Chat(chat) => chat.origin_cwd(),
+        }
     }
 }
 
@@ -6058,6 +6060,74 @@ mod app_tests {
             );
             assert_eq!(a.input(), InputMode::Prefix);
             assert_eq!(a.notice(), None);
+        }
+
+        // 1.3: a chat's effective cwd is the cwd it was opened from.
+        #[test]
+        fn the_tab_label_comes_from_the_chat_origin_cwd() {
+            let mut a = launched(80, 25);
+            a.open_chat_tab(Some("/srv/www".into()));
+            assert_eq!(
+                a.tab_labels(),
+                vec!["1 launch".to_string(), "2 www".to_string()]
+            );
+            assert_eq!(a.cwd_label(), "/srv/www");
+        }
+
+        #[test]
+        fn a_chat_without_an_origin_cwd_has_a_bare_label() {
+            let mut a = launched(80, 25);
+            a.open_chat_tab(None);
+            assert_eq!(
+                a.tab_labels(),
+                vec!["1 launch".to_string(), "2".to_string()]
+            );
+            assert_eq!(a.cwd_label(), "");
+        }
+
+        #[test]
+        fn a_shell_split_from_a_chat_inherits_its_origin_cwd() {
+            let mut a = launched(80, 25);
+            a.open_chat(Some("/srv".into()));
+            let effects = press(&mut a, "wv");
+            assert_eq!(
+                effects.last(),
+                Some(&Effect::SpawnPane(id3(), spec("/srv", sized(24, 20))))
+            );
+        }
+
+        #[test]
+        fn a_new_tab_from_a_chat_inherits_its_origin_cwd() {
+            let mut a = launched(80, 25);
+            a.open_chat(Some("/srv".into()));
+            let effects = press(&mut a, "tn");
+            assert_eq!(
+                effects.last(),
+                Some(&Effect::SpawnPane(id3(), spec("/srv", sized(23, 80))))
+            );
+        }
+
+        #[test]
+        fn a_vanished_origin_cwd_falls_back_to_the_launch_cwd() {
+            let mut a = launched(80, 25).with_dir_check(|dir| dir != Path::new("/gone"));
+            a.open_chat(Some("/gone".into()));
+            let effects = press(&mut a, "tn");
+            assert_eq!(
+                effects.last(),
+                Some(&Effect::SpawnPane(id3(), spec(LAUNCH, sized(23, 80))))
+            );
+        }
+
+        #[test]
+        fn a_chat_can_be_the_last_pane_of_the_last_tab() {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            let effects = a.update(exited(PaneId::FIRST));
+            assert!(!effects.contains(&Effect::Quit), "{effects:?}");
+            assert_eq!((a.tab_count(), a.focused()), (1, chat_id()));
+            press(&mut a, "wq");
+            assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
+            assert_eq!(a.update(key('y')), vec![Effect::Quit]);
         }
     }
 }
