@@ -12,6 +12,9 @@ use std::{
 
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 
+pub mod worker;
+pub use worker::{StoreHandle, spawn, spawn_at};
+
 /// The schema version this build writes and understands.
 const SCHEMA_VERSION: i64 = 1;
 

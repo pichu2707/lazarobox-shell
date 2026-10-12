@@ -12,8 +12,10 @@ use crate::core::{
         chat::{
             ChatState, Follow, Phase,
             engine::{ChatRequest, StreamEvent},
+            store::{StoreCmd, StoreReply},
         },
-        config::AiConfig,
+        config::{AiConfig, Task},
+        jail::JailSupport,
         memory::port::{MemCmd, MemReply},
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
@@ -31,6 +33,8 @@ use crate::core::{
     prefix::{self, Binding, Group, PREFIX_KEY, PREFIX_TREE, PrefixAction, Step},
     pty::{PtyEvent, SpawnSpec},
 };
+
+mod chat;
 
 /// Rows of history kept by the emulator.
 const SCROLLBACK_LINES: usize = 10_000;
@@ -122,6 +126,11 @@ pub enum AppEvent {
     Chat(PaneId, u64, StreamEvent),
     /// What the memory worker answered. It may arrive after its pane is gone.
     Memory(MemReply),
+    /// The store thread answered a command of a pane.
+    Store(StoreReply),
+    /// One step of the thinking-indicator animation. The runtime sends it
+    /// only while a chat stream runs.
+    AnimTick,
 }
 
 /// How the menu closed.
@@ -162,6 +171,8 @@ pub enum Effect {
     /// Ask the memory worker for something. Returns at once: the answer comes
     /// back as one `AppEvent::Memory`, or never when memory is not active.
     Memory(MemCmd),
+    /// A command for the store thread. It never waits for the database.
+    Store(StoreCmd),
     Quit,
 }
 
@@ -254,8 +265,6 @@ pub enum PaneView<'a> {
 /// The kind of pane a split or a new tab creates.
 enum NewPane {
     Shell,
-    // Nothing opens a chat until the `c` binding lands (C8).
-    #[cfg_attr(not(test), expect(dead_code))]
     Chat(ChatState),
 }
 
@@ -295,6 +304,13 @@ impl PaneState {
         match &mut self.content {
             PaneContent::Pty(pty) => Some(pty),
             PaneContent::Chat(_) => None,
+        }
+    }
+
+    fn chat_state(&self) -> Option<&ChatState> {
+        match &self.content {
+            PaneContent::Chat(chat) => Some(chat),
+            PaneContent::Pty(_) => None,
         }
     }
 
@@ -368,6 +384,10 @@ pub struct App {
     /// TERMINAL until its Release or any other Press, and so are its Presses
     /// arriving within `HELD_EXIT_WINDOW` of the previous such event.
     held_exit: Option<HeldExit>,
+    /// The same debounce for the one-shot keys of a chat (cancel, yank,
+    /// reasoning toggle): a terminal without key event types delivers a held
+    /// key as Presses.
+    held_chat_key: Option<HeldExit>,
     /// Monotonic clock, injected so `update` stays deterministic.
     clock: fn() -> Instant,
     /// The last finished detection; `None` until the first run ends.
@@ -376,6 +396,13 @@ pub struct App {
     detecting: bool,
     /// The saved AI choice; the menu edits a draft of it.
     ai: AiConfig,
+    /// Whether this system can jail a CLI. Nothing probes it yet.
+    jail: JailSupport,
+    /// Chat panes whose send waits for the first detection result, with the
+    /// text parked at Enter.
+    waiting_sends: Vec<(PaneId, String)>,
+    /// The frame of the thinking-indicator animation.
+    anim_frame: usize,
 }
 
 /// The key that left COPY and when it was last seen.
@@ -415,10 +442,14 @@ impl App {
             dir_exists: |_| true,
             shell: None,
             held_exit: None,
+            held_chat_key: None,
             clock: Instant::now,
             engines: None,
             detecting: false,
             ai: AiConfig::default(),
+            jail: JailSupport::Unavailable("no CLI jail yet"),
+            waiting_sends: Vec::new(),
+            anim_frame: 0,
         }
     }
 
@@ -518,6 +549,20 @@ impl App {
 
     pub fn shell_name(&self) -> &str {
         shell_basename(self.shell.as_deref())
+    }
+
+    /// What the right-hand statusline segment shows: the chat engine over a
+    /// focused chat pane, the shell name otherwise.
+    pub fn status_right(&self) -> String {
+        if !self.focused_is_chat() {
+            return self.shell_name().to_owned();
+        }
+        let (assignment, _) = self.ai.resolve(Task::Chat);
+        match (assignment.engine, assignment.model) {
+            (None, _) => "no engine".to_owned(),
+            (Some(engine), Some(model)) if !model.is_empty() => format!("{engine} › {model}"),
+            (Some(engine), _) => engine,
+        }
     }
 
     /// The pane to start before the first event, and how to start it.
@@ -779,6 +824,15 @@ impl App {
         }
     }
 
+    /// Test-only: types `text` into the composer of chat pane `id`.
+    #[cfg(test)]
+    pub(crate) fn chat_type(&mut self, id: PaneId, text: &str) {
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.composer_mut().paste(text);
+            self.dirty = true;
+        }
+    }
+
     /// Test-only: cancels the turn of chat pane `id`.
     #[cfg(test)]
     pub(crate) fn chat_cancel(&mut self, id: PaneId) -> Vec<Effect> {
@@ -861,10 +915,13 @@ impl App {
                 self.engines = Some(detection);
                 self.detecting = false;
                 self.dirty = true;
-                Vec::new()
+                self.run_waiting_sends()
             }
             AppEvent::Chat(id, turn, event) => self.on_chat(id, turn, event),
             AppEvent::Memory(reply) => self.on_memory(&reply),
+            // The chat pane consumes the replies once it saves its messages.
+            AppEvent::Store(_) => Vec::new(),
+            AppEvent::AnimTick => self.on_anim_tick(),
         };
         debug_assert_eq!(
             self.menu.is_some(),
@@ -884,6 +941,11 @@ impl App {
                 kind: CursorKind::Block,
                 blinking: false,
             },
+            // A chat has no child to ask: its composer is an editor, so a bar.
+            _ if self.focused_state().chat_state().is_some() => CursorShape {
+                kind: CursorKind::Bar,
+                blinking: true,
+            },
             _ => self
                 .focused_pty()
                 .map(|pty| pty.emu.cursor_shape())
@@ -901,6 +963,9 @@ impl App {
             KeyEventKind::Release => {
                 if self.held_exit.is_some_and(|h| h.code == key.code) {
                     self.held_exit = None;
+                }
+                if self.held_chat_key.is_some_and(|h| h.code == key.code) {
+                    self.held_chat_key = None;
                 }
                 return Vec::new();
             }
@@ -936,7 +1001,7 @@ impl App {
         }
         self.dirty = true;
         match self.input {
-            InputMode::Terminal => self.on_terminal_key(key),
+            InputMode::Terminal => self.on_terminal_key(key, repeat),
             InputMode::Prefix => self.on_pending_key(PREFIX_TREE, &key),
             InputMode::Group(group) => self.on_pending_key(group.bindings, &key),
             InputMode::Copy(state) => self.on_copy_key(state, &key, repeat),
@@ -1022,10 +1087,13 @@ impl App {
         }
     }
 
-    fn on_terminal_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+    fn on_terminal_key(&mut self, key: KeyEvent, repeat: bool) -> Vec<Effect> {
         if PREFIX_KEY.matches(&key) {
             self.input = InputMode::Prefix;
             return Vec::new();
+        }
+        if self.focused_is_chat() {
+            return self.on_chat_key(key, repeat);
         }
         let Some(pty) = self.focused_pty() else {
             return Vec::new();
@@ -1066,7 +1134,8 @@ impl App {
                 | PrefixAction::SplitBelow
                 | PrefixAction::ToggleZoom
                 | PrefixAction::Focus(_)
-                | PrefixAction::OpenMenu,
+                | PrefixAction::OpenMenu
+                | PrefixAction::OpenChat,
             ) => InputMode::Terminal,
             Step::Run(
                 PrefixAction::ShowCommands
@@ -1082,6 +1151,7 @@ impl App {
                 vec![Effect::WritePty(self.tab().focus, vec![PREFIX_LITERAL])]
             }
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
+            Step::Run(PrefixAction::OpenChat) => self.open_chat_pane(),
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
             Step::Run(PrefixAction::SplitBelow) => self.split(Axis::Y),
             Step::Run(PrefixAction::Focus(dir)) => self.move_focus(dir),
@@ -1340,6 +1410,7 @@ impl App {
     /// changed. Panes new to the layout keep the size they were created with.
     fn relayout(&mut self) -> Vec<Effect> {
         let mut effects = Vec::new();
+        let mut rewrapped = Vec::new();
         for tab in &self.tabs {
             for (id, rect) in tab.tiling(self.screen.body).panes {
                 let size = body_size(rect);
@@ -1347,12 +1418,25 @@ impl App {
                     continue;
                 };
                 if state.size != size {
+                    let old = state.size;
                     state.size = size;
                     if let Some(pty) = state.pty_mut() {
                         pty.emu.resize(size);
                         effects.push(Effect::ResizePty(id, size));
                     }
+                    if state.chat_state().is_some() {
+                        rewrapped.push((id, old.cols));
+                    }
                 }
+            }
+        }
+        for (id, old_cols) in rewrapped {
+            // A scrolled view stays on the same content, at the height that
+            // is really drawn (composer and guidance taken off).
+            let rows = self.chat_viewport(id);
+            let cols = self.panes.get(&id).map_or(0, |state| state.size.cols);
+            if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                chat.rewrap(usize::from(old_cols), usize::from(cols), rows);
             }
         }
         self.sync_copy();
@@ -1499,6 +1583,10 @@ impl App {
     fn on_paste(&mut self, text: &str) -> Vec<Effect> {
         // A paste is not part of a held key: the debounce is over.
         self.held_exit = None;
+        if self.input == InputMode::Terminal && self.focused_is_chat() {
+            self.chat_paste(text);
+            return Vec::new();
+        }
         match self.input {
             InputMode::Terminal => self
                 .focused_pty()
@@ -3373,6 +3461,22 @@ mod app_tests {
     }
 
     #[test]
+    fn a_focused_chat_shows_a_blinking_bar_and_the_shell_shape_comes_back() {
+        let mut a = app();
+        a.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(b"\x1b[2 q".to_vec()),
+        ));
+        assert_eq!(a.cursor_shape(), shape(CursorKind::Block, false));
+        a.open_chat(None);
+        assert_eq!(a.cursor_shape(), shape(CursorKind::Bar, true));
+        a.update(ctrl_space());
+        a.update(key('h'));
+        assert_eq!(a.focused(), PaneId::FIRST);
+        assert_eq!(a.cursor_shape(), shape(CursorKind::Block, false));
+    }
+
+    #[test]
     fn cursor_shape_is_a_steady_block_in_copy_and_restores_on_exit() {
         let mut a = app();
         a.update(AppEvent::Pty(
@@ -4027,7 +4131,8 @@ mod app_tests {
         assert_eq!(a.focused(), id3());
     }
 
-    const ROOT_HINT: &str = "w window · t tab · g go · b buffer · [ copy · m menu · q quit";
+    const ROOT_HINT: &str =
+        "w window · t tab · g go · b buffer · [ copy · m menu · c chat · q quit";
     const WINDOW_HINT: &str = "v split right · h split below · q close · r resize · z zoom";
 
     // Spec: Root hint in PREFIX; Group hint; Hint gone after the group resolves.
@@ -6091,6 +6196,9 @@ mod app_tests {
         assert_eq!(App::new(80, 25).ai(), &AiConfig::default());
     }
 
+    /// The live chat pane (ai-chat C8).
+    mod chat_live;
+
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.
     mod seam {
@@ -6533,6 +6641,46 @@ mod app_tests {
             assert_eq!(a.update(finish(chat_id(), 1)), vec![]);
             assert_eq!(chat_of(&a, chat_id()).phase(), Phase::Idle);
             assert_eq!(last(&a, chat_id()), ("Hello".into(), MsgStatus::Complete));
+        }
+
+        fn thinking(id: PaneId, turn: u64, text: &str) -> AppEvent {
+            AppEvent::Chat(id, turn, StreamEvent::ThinkingDelta(text.into()))
+        }
+
+        #[test]
+        fn a_thinking_delta_redraws_the_chat_and_emits_nothing() {
+            let mut a = streaming();
+            a.take_dirty();
+            assert_eq!(a.update(thinking(chat_id(), 1, "Let me")), vec![]);
+            assert!(a.take_dirty(), "the reasoning block is redrawn");
+            // A stale turn changes and draws nothing.
+            assert_eq!(a.update(thinking(chat_id(), 9, "stale")), vec![]);
+            assert!(!a.take_dirty());
+        }
+
+        #[test]
+        fn reasoning_never_reaches_an_effect_or_the_next_request() {
+            let mut a = streaming();
+            let mut effects = Vec::new();
+            effects.extend(a.update(thinking(chat_id(), 1, "secret plan")));
+            effects.extend(a.update(delta(chat_id(), 1, "answer")));
+            effects.extend(a.update(finish(chat_id(), 1)));
+            let next = a.chat_send(chat_id(), "again");
+            effects.extend(next.clone());
+            assert!(matches!(next.as_slice(), [Effect::ChatSend { .. }]));
+            assert!(
+                !format!("{effects:?}").contains("secret plan"),
+                "no effect carries the reasoning: {effects:?}"
+            );
+            let Some(Effect::ChatSend { request, .. }) = next.first() else {
+                panic!("one ChatSend");
+            };
+            let sent: Vec<&str> = request
+                .messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect();
+            assert_eq!(sent, ["hi", "answer", "again"]);
         }
 
         #[test]

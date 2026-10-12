@@ -157,6 +157,11 @@ fn delta(text: Option<&str>) -> Option<StreamEvent> {
         .map(|t| StreamEvent::Delta(t.into()))
 }
 
+fn thinking(text: Option<&str>) -> Option<StreamEvent> {
+    text.filter(|t| !t.is_empty())
+        .map(|t| StreamEvent::ThinkingDelta(t.into()))
+}
+
 /// Events of one Ollama line.
 fn ndjson_line(line: &[u8]) -> Vec<StreamEvent> {
     if line.iter().all(u8::is_ascii_whitespace) {
@@ -168,8 +173,12 @@ fn ndjson_line(line: &[u8]) -> Vec<StreamEvent> {
     if let Some(error) = server_error(&value) {
         return vec![error];
     }
-    let mut events: Vec<StreamEvent> = delta(value["message"]["content"].as_str())
+    // Reasoning first: Ollama sends `thinking` next to an empty `content`, and
+    // a line holding both reads in that order.
+    let message = &value["message"];
+    let mut events: Vec<StreamEvent> = thinking(message["thinking"].as_str())
         .into_iter()
+        .chain(delta(message["content"].as_str()))
         .collect();
     if value["done"].as_bool() == Some(true) {
         events.push(StreamEvent::Done(finish_reason(

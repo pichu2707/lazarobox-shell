@@ -4,7 +4,7 @@
 
 The chat pane is a second kind of pane. It lives in the tile tree next to shell panes, owns its own conversation state (composer, transcript, stream), and talks to the engine assigned to the `chat` task (see chat-engines). It shows plain text and fenced code blocks only and does not see terminal output. Persistence is in chat-history, prompts in prompt-profiles, key routing in modal-input. Tags: [auto] = `cargo test` (pure state machine, fake engine, `TestBackend`); [manual] = real machine.
 
-Terms: "idle" = no stream running; "streaming" = a request was sent and the answer is not finished; "system line" = a transcript line produced by lazarobox (error, notice, marker). System lines are never stored in the database and never sent to the model. "Origin cwd" = the effective cwd of the pane the chat was opened from.
+Terms: "idle" = no stream running; "streaming" = a request was sent and the answer is not finished; "system line" = a transcript line produced by lazarobox (error, notice, marker). System lines are never stored in the database and never sent to the model. "Origin cwd" = the effective cwd of the pane the chat was opened from. "Reasoning" = engine thinking text delivered as thinking deltas, separate from the answer (see chat-engines); it is shown but never stored and never sent back to an engine (see chat-history).
 
 ## ADDED Requirements
 
@@ -124,6 +124,129 @@ A send MUST append the user message, show a waiting state and start one request.
 - GIVEN two chat panes each streaming
 - WHEN a delta arrives for the first
 - THEN only the first transcript changes
+
+### Requirement: Stream phase
+A chat pane with a running stream MUST expose a phase, a start instant and the model of the request as sent. The phase is `thinking` from the send until the first non-empty text delta arrives (this covers waiting for the first byte and a stream that has only delivered reasoning), and `answering` from the first non-empty text delta until the terminal event. An idle pane has no phase. The statusline reads these values (see statusline). The pane's own waiting texts are unchanged: `waiting for the model…` and, after 3 seconds without a first byte, `loading model…`; a thinking delta counts as the first byte, after which the waiting text is replaced by the reasoning block.
+
+#### Scenario: Phase while waiting [auto]
+- GIVEN a send was issued and no byte arrived
+- WHEN the phase is read, and again after 3 seconds
+- THEN it is `thinking` both times, and the pane shows `waiting for the model…` and then `loading model…`
+
+#### Scenario: Phase with reasoning only [auto]
+- GIVEN a stream that delivered only thinking deltas
+- WHEN the phase is read
+- THEN it is `thinking`
+
+#### Scenario: Phase flips on the first answer text [auto]
+- GIVEN a stream in phase `thinking` that delivered reasoning
+- WHEN the first non-empty text delta arrives
+- THEN the phase is `answering` and stays so until the terminal event
+
+#### Scenario: No phase when idle [auto]
+- GIVEN a stream that ends by final, by error, by cut stream or by cancel
+- WHEN the terminal event is handled
+- THEN the pane has no phase, no start instant and no streaming flag
+
+#### Scenario: Thinking delta replaces the waiting text [auto]
+- GIVEN a stream showing `loading model…`
+- WHEN the first thinking delta arrives
+- THEN the waiting text is gone and the reasoning block is drawn
+
+#### Scenario: Request model is kept [auto]
+- GIVEN a send with model `llama3:8b` and the `chat` assignment changed in the menu while it streams
+- WHEN the pane is read
+- THEN it still reports `llama3:8b` for that stream
+
+### Requirement: Reasoning block
+When an engine sends thinking deltas, the pane MUST draw the reasoning of the turn in the transcript, before that turn's answer, as plain text in the `text_muted` style, every line prefixed by the gutter `┊ `, growing incrementally while it streams. Reasoning text is sanitized with the same sanitizer rules as answer text (its own sanitizer state), wrapped at the pane width less the gutter, and shown literally: no markdown and no fences are interpreted. Reasoning is not a message: it does not count toward the 400 messages per conversation and is not part of yank. When the first non-empty text delta of the turn arrives, or the final event arrives with no answer text, the block MUST collapse once into the single line `▸ reasoning (N.Ns)`, where N.N is the seconds from the first thinking delta to the collapse, with one decimal. The toggle key (Ctrl+R, see modal-input) MUST expand the most recent reasoning block of the conversation, showing the line `▾ reasoning (N.Ns)` followed by the gutter-prefixed dimmed text, and collapse it again on the next press; it does nothing while that reasoning is still streaming or when there is no reasoning. A block is collapsed by default. A thinking delta that arrives after the block collapsed MUST be dropped. A turn with no thinking delta MUST draw no reasoning line, and the pane renders exactly as before for engines without reasoning.
+
+If the stream is cut, cancelled or fails while reasoning is streaming, the partial reasoning MUST be kept and collapsed to the same single line, and the existing outcome is unchanged: cancel shows no new system line, an error shows its error system line, a cut stream shows `stream interrupted`; no empty assistant message remains when no answer text arrived.
+
+#### Scenario: Reasoning streams dimmed with a gutter [auto, TestBackend + insta]
+- GIVEN a stream that delivered thinking deltas `Let me` and ` check`
+- WHEN rendered
+- THEN the transcript shows `┊ Let me check` in `text_muted` above the (empty) answer, and a further thinking delta extends that text
+
+#### Scenario: Collapse on the first answer text [auto, TestBackend + insta]
+- GIVEN reasoning that streamed for 2.3 seconds (injected clock)
+- WHEN the first text delta `Hi` arrives
+- THEN the reasoning lines are replaced by the single line `▸ reasoning (2.3s)` followed by the answer `Hi`
+
+#### Scenario: Collapse on final with no answer text [auto]
+- GIVEN reasoning that streamed for 1.0 seconds and no text delta
+- WHEN the final event arrives
+- THEN the block shows `▸ reasoning (1.0s)`, no empty assistant message exists and the pane is idle
+
+#### Scenario: Toggle expands and collapses [auto, TestBackend + insta]
+- GIVEN a collapsed block `▸ reasoning (2.3s)` over the reasoning `Let me check`
+- WHEN the toggle key is pressed, and then pressed again
+- THEN the transcript first shows `▾ reasoning (2.3s)` followed by `┊ Let me check` dimmed, and then the single collapsed line again
+
+#### Scenario: Toggle while streaming reasoning does nothing [auto]
+- GIVEN a stream whose reasoning is still streaming
+- WHEN the toggle key is pressed
+- THEN the transcript is unchanged and the block collapses only when the answer text arrives
+
+#### Scenario: Toggle with no reasoning [auto]
+- GIVEN a conversation with no reasoning block
+- WHEN the toggle key is pressed
+- THEN nothing changes and no effect is emitted
+
+#### Scenario: Late thinking delta dropped [auto]
+- GIVEN a block that collapsed because answer text arrived
+- WHEN another thinking delta arrives in the same turn
+- THEN the block text, the answer and the collapsed line are unchanged
+
+#### Scenario: Reasoning is literal text [auto]
+- GIVEN thinking text containing a line starting with three backticks, `# heading` and `*bold*`
+- WHEN rendered streaming and expanded
+- THEN all of it is shown literally behind the gutter with no code styling and no panic
+
+#### Scenario: Reasoning is sanitized [auto]
+- GIVEN a thinking delta `a\u{1b}[31mb` and another `c\u{1b}]0;t\u{07}d`
+- WHEN the block is rendered expanded
+- THEN it reads `┊ abcd` with no control or escape characters
+
+#### Scenario: Engine without reasoning [auto, TestBackend + insta]
+- GIVEN a stream with only text deltas
+- WHEN rendered at every step
+- THEN no reasoning line appears and the snapshots equal those of the pane without this requirement
+
+#### Scenario: Cancel while thinking [auto]
+- GIVEN a stream that delivered only reasoning `Let me`
+- WHEN cancel is requested
+- THEN a ChatCancel effect is emitted, the reasoning is kept as the collapsed line `▸ reasoning (N.Ns)`, no empty assistant message remains, no new system line is added and the pane is idle
+
+#### Scenario: Error while thinking [auto]
+- GIVEN a stream that delivered only reasoning `Let me`
+- WHEN an error event `connection reset` arrives
+- THEN the reasoning is kept collapsed, the usual error system line is shown, no empty assistant message remains and the pane is idle
+
+#### Scenario: Cut stream while thinking [auto]
+- GIVEN a stream that delivered only reasoning and then the connection closes without a final event
+- WHEN the end of the stream is detected
+- THEN the reasoning is kept collapsed, the system line `stream interrupted` is shown and the pane is idle
+
+#### Scenario: Reasoning is not yanked [auto]
+- GIVEN a conversation whose last turn had reasoning and the answer `hello`
+- WHEN Ctrl+Y and Ctrl+B are pressed
+- THEN the clipboard text is `hello` (or the code block) and never contains reasoning
+
+#### Scenario: Reasoning follows the scroll rules [auto]
+- GIVEN a transcript at the bottom, and another scrolled up
+- WHEN thinking deltas that add lines arrive
+- THEN the first follows the bottom and the second stays pinned, as for answer text
+
+#### Scenario: Two chats reason independently [auto]
+- GIVEN two chat panes each streaming reasoning
+- WHEN a thinking delta arrives for the first
+- THEN only the first transcript changes
+
+#### Scenario: Tiny pane with reasoning [auto]
+- GIVEN a pane from 1x1 to 10x2, streaming reasoning, collapsed and expanded
+- WHEN rendered
+- THEN nothing panics
 
 ### Requirement: Cancel
 Cancel MUST stop the stream of the focused chat pane, keep the partial answer in the transcript, mark it as cancelled, persist it as a partial message, return the pane to idle and emit a ChatCancel effect so the engine stops (server: socket closed; CLI: child killed, see chat-engines). Events of a cancelled stream that arrive afterwards MUST be dropped. Cancel on an idle pane MUST do nothing. Ctrl+C on an idle chat pane MUST NOT quit the app and MUST NOT write to any PTY.
@@ -278,7 +401,7 @@ A chat pane's state (composer text and cursor, transcript, scroll position, runn
 - THEN the answer is complete and was not duplicated or lost
 
 ### Requirement: Yank
-Ctrl+Y on a focused chat pane MUST copy the text of the last finished (or cancelled) assistant message to the clipboard through the existing SetClipboard path, subject to the same size cap as copy-selection, and MUST show the notice `Copied N characters` (singular for 1) through the existing notice slot. With no assistant message, or an empty one, it MUST show `Nothing to copy`. Over the cap it MUST show `Selection too large to copy`. Ctrl+B does the same for the last fenced code block of the last assistant message (the code lines without the fence lines); with no code block it MUST show `Nothing to copy`. Yank MUST NOT change the transcript.
+Ctrl+Y on a focused chat pane MUST copy the text of the last finished (or cancelled) assistant message to the clipboard through the existing SetClipboard path, subject to the same size cap as copy-selection, and MUST show the notice `Copied N characters` (singular for 1) through the existing notice slot. With no assistant message, or an empty one, it MUST show `Nothing to copy`. Over the cap it MUST show `Selection too large to copy`. Ctrl+B does the same for the last fenced code block of the last assistant message (the code lines without the fence lines); with no code block it MUST show `Nothing to copy`. Yank MUST NOT change the transcript. Reasoning is never part of what is yanked (see Reasoning block).
 
 #### Scenario: Yank last answer [auto]
 - GIVEN an assistant message `hello`

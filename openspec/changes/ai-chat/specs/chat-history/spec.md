@@ -97,6 +97,39 @@ Conversations MUST always be saved; there is no off switch. A conversation MUST 
 - WHEN it is stored and read back
 - THEN it reads `ab`
 
+### Requirement: Reasoning is not stored
+Engine reasoning (thinking deltas, see chat-engines and chat-pane) MUST NOT be written to the database, in any table, column or side file, and MUST NOT be sent to the store thread: the store commands carry only user messages and the answer text of assistant messages. A turn that produced reasoning and no answer text MUST store no assistant message. A resumed conversation MUST show no reasoning blocks and no placeholder for them. Storing optimized memory (tags and categories) is out of scope here and belongs to the planned follow-up change `engram-memory`.
+
+#### Scenario: Reasoning never reaches the store [auto]
+- GIVEN a turn with thinking deltas `secret plan` followed by the answer `Hi` and a final event
+- WHEN the store commands emitted for the turn are inspected
+- THEN they hold the user message and the assistant message `Hi` with status `complete`, and no command contains `secret plan`
+
+#### Scenario: Reasoning is absent from the file [auto]
+- GIVEN the same turn saved to a real temporary database
+- WHEN the bytes of the database file and of any side file are searched for `secret plan`
+- THEN it is not found
+
+#### Scenario: Reasoning only, then cancel, error or cut [auto]
+- GIVEN a turn that delivered only reasoning and then ended by cancel, by an error and by a cut stream in separate runs
+- WHEN the store is read
+- THEN each time it holds the user message and no assistant message
+
+#### Scenario: Partial answer keeps no reasoning [auto]
+- GIVEN a turn with reasoning and the partial answer `Hel`, then cancel
+- WHEN the store is read
+- THEN the assistant message is `Hel` with status `cancelled` and no reasoning
+
+#### Scenario: Resumed conversation shows no reasoning [auto]
+- GIVEN a stored conversation whose original turns had reasoning
+- WHEN it is resumed
+- THEN the transcript has the stored messages and no reasoning line, and the Ctrl+R toggle does nothing
+
+#### Scenario: Reasoning is not engine history after resume [auto]
+- GIVEN a resumed conversation
+- WHEN the next message is sent
+- THEN the request history holds only stored message texts
+
 ### Requirement: Retention
 The store MUST keep at most 200 conversations. When a new conversation would make it 201, the conversation with the oldest last activity MUST be evicted, with its messages, in the same transaction. Retention is checked when a conversation is created. Tags do not protect a conversation, and the conversation being written is never the one evicted. A conversation that is open in any pane is also never evicted (the next oldest is chosen). The user MUST be told: the new conversation's transcript shows the system line `oldest conversation removed (limit 200)`. If the store holds more than 200 at that moment, enough of the oldest are evicted to return to 200.
 

@@ -94,9 +94,9 @@ A key whose Press left COPY (`q`, `i`, Esc, or `y` after a successful yank) MUST
 - THEN no WritePty is emitted for any pane
 
 #### Scenario: Repeat on a chat pane [auto]
-- GIVEN a focused chat pane with composer text and an idle stream
-- WHEN Repeat events for `a`, Backspace, Enter, Ctrl+Y and Ctrl+B arrive
-- THEN `a` and Backspace edit the composer like Press, and Enter, Ctrl+Y and Ctrl+B do nothing
+- GIVEN a focused chat pane with composer text, an idle stream and a collapsed reasoning block
+- WHEN Repeat events for `a`, Backspace, Enter, Ctrl+Y, Ctrl+B and Ctrl+R arrive
+- THEN `a` and Backspace edit the composer like Press, and Enter, Ctrl+Y, Ctrl+B and Ctrl+R do nothing
 
 ### Requirement: Prefix tree with described key groups
 After the prefix, the key table MUST be a tree: leaf bindings and groups `w` (labelled `WINDOW`), `t` (`TAB`), `g` (`GO`), `b` (`BUFFER`). Every binding AND every group MUST have a non-empty description, every group a non-empty label, and a group MUST NOT contain duplicate keys. The table is the single source of truth for dispatch, for the key hint (see statusline) and for the future command viewer. Letter keys are matched by character case: the SHIFT modifier MUST be ignored for character keys (terminals report `B` with or without SHIFT), while Ctrl chords match exactly. Bindings:
@@ -233,10 +233,11 @@ In TERMINAL, with a chat pane focused and the conversation view shown, keys MUST
 | Ctrl+Y | yank the last assistant answer (see chat-pane) |
 | Ctrl+B | yank the last code block of the last assistant answer (see chat-pane) |
 | PageUp, PageDown | scroll the transcript |
+| Ctrl+R | expand or collapse the most recent reasoning block (see chat-pane) |
 | Ctrl+T | open the tag editor (see chat-history) |
 | Ctrl+Space | enter PREFIX as in any pane |
 
-Ctrl+C on a chat pane MUST NEVER emit Quit or a WritePty, whether a stream is running or not. Pressing Ctrl+Space twice MUST swallow the second press (no NUL is inserted in the composer). While the conversation list, the tag editor or the delete confirmation is shown, keys act as defined in chat-history, with the same swallow rule. The key bindings are defaults for design to confirm.
+Ctrl+C on a chat pane MUST NEVER emit Quit or a WritePty, whether a stream is running or not. Pressing Ctrl+Space twice MUST swallow the second press (no NUL is inserted in the composer). While the conversation list, the tag editor or the delete confirmation is shown, keys act as defined in chat-history, with the same swallow rule. The key bindings are defaults for design to confirm; Ctrl+R (R for reasoning) is a proposed default chosen in the style of Ctrl+Y, Ctrl+B and Ctrl+T, and is an open question until confirmed on a real terminal (manual check M8).
 
 #### Scenario: Typing edits the composer [auto]
 - GIVEN a focused idle chat pane
@@ -252,6 +253,16 @@ Ctrl+C on a chat pane MUST NEVER emit Quit or a WritePty, whether a stream is ru
 - GIVEN a chat pane whose last answer holds a fenced block
 - WHEN Ctrl+B is pressed
 - THEN a SetClipboard effect carries the block and no WritePty is emitted
+
+#### Scenario: Ctrl+R toggles reasoning [auto]
+- GIVEN a chat pane whose last turn has a collapsed reasoning block
+- WHEN Ctrl+R is pressed twice
+- THEN the block expands and then collapses, no WritePty is emitted and the composer text is unchanged
+
+#### Scenario: Ctrl+R in the list view [auto]
+- GIVEN the conversation list shown in a chat pane
+- WHEN Ctrl+R is pressed
+- THEN nothing changes and nothing is typed into a composer
 
 #### Scenario: Esc and Ctrl+C cancel a stream [auto]
 - GIVEN a streaming chat pane

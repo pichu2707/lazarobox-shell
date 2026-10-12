@@ -1,0 +1,102 @@
+use serde_json::{Value, json};
+
+use super::*;
+use crate::core::ai::chat::engine::{ChatMessage, ChatRequest, Role};
+
+fn message(role: Role, content: &str) -> ChatMessage {
+    ChatMessage {
+        role,
+        content: content.into(),
+    }
+}
+
+fn request(system: &str) -> ChatRequest {
+    ChatRequest {
+        engine: "ollama".into(),
+        model: Some("llama3:8b".into()),
+        system: system.into(),
+        messages: vec![
+            message(Role::User, "hi"),
+            message(Role::Assistant, "hello"),
+            message(Role::User, "and now?"),
+        ],
+    }
+}
+
+fn http(invocation: Invocation) -> (Wire, u16, &'static str, Value) {
+    let Invocation::Http {
+        wire,
+        port,
+        path,
+        body,
+    } = invocation;
+    (wire, port, path, serde_json::from_slice(&body).unwrap())
+}
+
+#[test]
+fn only_ollama_has_an_adapter_so_far() {
+    assert_eq!(adapter_for("ollama"), Some(Adapter::Ollama));
+    for id in ["opencode", "lmstudio", "llamacpp", "vllm", "claude", "nope"] {
+        assert_eq!(adapter_for(id), None, "{id}");
+    }
+}
+
+#[test]
+fn ollama_posts_ndjson_chat_to_its_catalog_port() {
+    let (wire, port, path, _) = http(Adapter::Ollama.build(&request("be brief")));
+    assert_eq!((wire, port, path), (Wire::Ndjson, 11434, "/api/chat"));
+}
+
+#[test]
+fn the_body_holds_the_model_the_system_prompt_the_history_and_the_stream_flag() {
+    let (_, _, _, body) = http(Adapter::Ollama.build(&request("be brief")));
+    assert_eq!(
+        body,
+        json!({
+            "model": "llama3:8b",
+            "stream": true,
+            "messages": [
+                {"role": "system", "content": "be brief"},
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+                {"role": "user", "content": "and now?"},
+            ],
+        })
+    );
+    let keys = body.as_object().unwrap().len();
+    assert_eq!(keys, 3, "nothing else: no think, options or keep_alive");
+}
+
+#[test]
+fn an_empty_system_prompt_adds_no_system_message() {
+    let (_, _, _, body) = http(Adapter::Ollama.build(&request("")));
+    assert_eq!(body["messages"].as_array().unwrap().len(), 3);
+    assert_eq!(body["messages"][0]["role"], "user");
+}
+
+#[test]
+fn text_is_data_not_structure() {
+    let hostile = "\"}],\"stream\":false,{\"x\":\"\u{1b}[31m";
+    let mut req = request("s\"ys\n");
+    req.messages = vec![message(Role::User, hostile)];
+    let (_, _, _, body) = http(Adapter::Ollama.build(&req));
+    assert_eq!(body["stream"], true);
+    assert_eq!(body["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(body["messages"][1]["content"], hostile);
+}
+
+#[test]
+fn a_missing_model_is_sent_empty_so_the_server_answers_with_its_own_error() {
+    let mut req = request("s");
+    req.model = None;
+    let (_, _, _, body) = http(Adapter::Ollama.build(&req));
+    assert_eq!(body["model"], "");
+}
+
+#[test]
+fn the_default_system_prompt_is_short_neutral_text() {
+    let prompt = system_prompt();
+    assert!(!prompt.is_empty());
+    assert!(prompt.chars().count() <= 400);
+    assert!(!prompt.contains('\n'));
+}

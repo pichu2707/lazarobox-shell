@@ -57,6 +57,8 @@ pub enum PrefixAction {
     EnterResize,
     /// Opens the config menu. Not in the table until the `m` binding lands.
     OpenMenu,
+    /// Opens a chat pane as a right split of the focused pane.
+    OpenChat,
     ToggleZoom,
     NewTab,
     CloseTab,
@@ -179,6 +181,7 @@ pub const PREFIX_TREE: &[Binding] = &[
     group('b', "buffer", &BUFFER),
     act('[', "copy", PrefixAction::EnterCopy),
     act('m', "menu", PrefixAction::OpenMenu),
+    act('c', "chat", PrefixAction::OpenChat),
     act('q', "quit", PrefixAction::RequestQuit),
     unhinted(act('h', "focus left", PrefixAction::Focus(Direction::Left))),
     unhinted(act('j', "focus down", PrefixAction::Focus(Direction::Down))),
@@ -360,6 +363,37 @@ mod tests {
         assert!(binding.hinted);
     }
 
+    // Spec: modal-input `c` is in the table, after `m` and before `q`.
+    #[test]
+    fn c_is_a_hinted_root_leaf_between_m_and_q_that_opens_a_chat() {
+        let binding = PREFIX_TREE
+            .iter()
+            .find(|b| b.chord.matches(&plain('c')))
+            .expect("c is bound at the root");
+        assert_eq!(binding.target, Target::Action(PrefixAction::OpenChat));
+        assert_eq!(binding.description, "chat");
+        assert!(binding.hinted);
+        let order: Vec<char> = PREFIX_TREE
+            .iter()
+            .filter_map(|b| match b.chord.code {
+                KeyCode::Char(c) if b.hinted => Some(c),
+                _ => None,
+            })
+            .collect();
+        let at = |c| order.iter().position(|x| *x == c).expect("listed");
+        assert!(at('m') < at('c') && at('c') < at('q'), "{order:?}");
+    }
+
+    #[test]
+    fn c_inside_another_group_does_not_open_a_chat() {
+        for table in &tables()[1..] {
+            assert_ne!(
+                lookup(table, &plain('c')),
+                Step::Run(PrefixAction::OpenChat)
+            );
+        }
+    }
+
     #[test]
     fn m_inside_a_group_does_not_open_the_menu() {
         for table in &tables()[1..] {
@@ -386,8 +420,8 @@ mod tests {
         for (i, a) in all.iter().enumerate() {
             assert!(!all[i + 1..].contains(a), "duplicate action {a:?}");
         }
-        // literal + quit + copy + menu + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
-        assert_eq!(all.len(), 27);
+        // literal + quit + copy + menu + chat + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
+        assert_eq!(all.len(), 28);
     }
 
     #[test]
@@ -413,7 +447,7 @@ mod tests {
             .iter()
             .map(|b| b.chord.label())
             .collect();
-        assert_eq!(labels, ["w", "t", "g", "b", "[", "m", "q"]);
+        assert_eq!(labels, ["w", "t", "g", "b", "[", "m", "c", "q"]);
     }
 
     #[test]
@@ -584,7 +618,8 @@ mod tests {
         Line::from(text).width() as u16
     }
 
-    const FULL_ROOT: &str = "w window · t tab · g go · b buffer · [ copy · m menu · q quit";
+    const FULL_ROOT: &str =
+        "w window · t tab · g go · b buffer · [ copy · m menu · c chat · q quit";
 
     #[test]
     fn group_hints_list_every_binding_in_table_order() {
@@ -633,18 +668,22 @@ mod tests {
 
     #[test]
     fn hint_fits_exactly_at_its_own_width() {
-        assert_eq!(width(FULL_ROOT), 61);
-        assert_eq!(hint(PREFIX_TREE, 61), FULL_ROOT);
+        assert_eq!(width(FULL_ROOT), 70);
+        assert_eq!(hint(PREFIX_TREE, 70), FULL_ROOT);
     }
 
     #[test]
     fn hint_is_clipped_by_whole_entries_with_an_ellipsis() {
         assert_eq!(
-            hint(PREFIX_TREE, 60),
+            hint(PREFIX_TREE, 68),
+            "w window · t tab · g go · b buffer · [ copy · m menu · c chat · …"
+        );
+        // the clipped text is 65 columns, so 65 still fits and 64 drops one more
+        assert_eq!(hint(PREFIX_TREE, 65), hint(PREFIX_TREE, 68));
+        assert_eq!(
+            hint(PREFIX_TREE, 64),
             "w window · t tab · g go · b buffer · [ copy · m menu · …"
         );
-        // the clipped text is 56 columns, so 56 still fits and 55 drops one more
-        assert_eq!(hint(PREFIX_TREE, 56), hint(PREFIX_TREE, 60));
         assert_eq!(
             hint(PREFIX_TREE, 55),
             "w window · t tab · g go · b buffer · [ copy · …"
@@ -662,7 +701,7 @@ mod tests {
     #[test]
     fn hint_never_exceeds_the_width_nor_shows_a_partial_entry() {
         let entries: Vec<&str> = FULL_ROOT.split(" · ").collect();
-        for max in 0..=60u16 {
+        for max in 0..=70u16 {
             let text = hint(PREFIX_TREE, max);
             assert!(width(&text) <= max, "{text:?} is wider than {max}");
             if text == FULL_ROOT || text.is_empty() {

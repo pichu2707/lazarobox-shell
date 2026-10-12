@@ -21,7 +21,7 @@ use tokio::{
 use super::*;
 use crate::{
     core::ai::chat::{
-        ANSWER_CAP, ChatState, Follow, MsgStatus,
+        ANSWER_CAP, ChatState, Follow, MsgStatus, REASONING_CAP,
         engine::{Availability, ChatError, Finish},
     },
     runtime::proc::GroupKill,
@@ -64,6 +64,129 @@ fn text_of(events: &[StreamEvent]) -> String {
 }
 
 // The pipe -------------------------------------------------------------------
+
+fn thinking(text: &str) -> StreamEvent {
+    StreamEvent::ThinkingDelta(text.into())
+}
+
+/// The reasoning text in `events`, joined.
+fn reasoning_of(events: &[StreamEvent]) -> String {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ThinkingDelta(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn thinking_deltas_pass_as_thinking_deltas_and_are_sanitized() {
+    let mut pipe = Pipe::new();
+    let mut out = Vec::new();
+    for piece in ["a\u{1b}[31mb", "c\u{07}d", "e\u{1b}]0;t\u{07}f"] {
+        out.extend(pipe.event(thinking(piece)));
+    }
+    assert_eq!(reasoning_of(&out), "abcdef");
+    assert!(
+        out.iter()
+            .all(|e| matches!(e, StreamEvent::ThinkingDelta(_))),
+        "reasoning never turns into answer text: {out:?}"
+    );
+    assert!(text_of(&out).is_empty());
+}
+
+#[test]
+fn a_sequence_split_across_thinking_deltas_is_removed() {
+    let mut pipe = Pipe::new();
+    let mut out = pipe.event(thinking("x\u{1b}[3"));
+    out.extend(pipe.event(thinking("1my")));
+    assert_eq!(reasoning_of(&out), "xy");
+}
+
+#[test]
+fn an_unterminated_sequence_in_reasoning_never_alters_the_answer() {
+    let mut pipe = Pipe::new();
+    let mut out = pipe.event(thinking("ab\u{1b}]0;never ended"));
+    out.extend(pipe.event(delta("the answer")));
+    out.extend(pipe.event(done()));
+    assert_eq!(reasoning_of(&out), "ab");
+    assert_eq!(text_of(&out), "the answer");
+    assert_eq!(out.last(), Some(&done()));
+}
+
+#[test]
+fn an_unterminated_sequence_in_the_answer_never_alters_the_reasoning() {
+    let mut pipe = Pipe::new();
+    let mut out = pipe.event(delta("ok\u{1b}]0;never ended"));
+    out.extend(pipe.event(thinking("still visible")));
+    // The reasoning came after the answer began: it is dropped, not mangled.
+    assert_eq!(text_of(&out), "ok");
+    assert_eq!(reasoning_of(&out), "");
+    let mut fresh = Pipe::new();
+    let mut out = fresh.event(thinking("first"));
+    out.extend(fresh.event(delta("ok\u{1b}]0;x")));
+    out.extend(fresh.event(thinking("never")));
+    assert_eq!(reasoning_of(&out), "first");
+}
+
+#[test]
+fn reasoning_after_the_first_answer_text_is_dropped_without_an_error() {
+    let mut pipe = Pipe::new();
+    let mut out = pipe.event(thinking("first"));
+    out.extend(pipe.event(delta("ok")));
+    // Late reasoning, even interleaved between answer pieces, goes nowhere.
+    assert_eq!(pipe.event(thinking("late")), Vec::new());
+    out.extend(pipe.event(delta("!")));
+    assert_eq!(pipe.event(thinking("later")), Vec::new());
+    out.extend(pipe.event(done()));
+    assert_eq!(reasoning_of(&out), "first");
+    assert_eq!(text_of(&out), "ok!");
+    assert_eq!(out.last(), Some(&done()));
+    assert!(!out.iter().any(|e| matches!(e, StreamEvent::Error(_))));
+    assert!(pipe.is_over());
+}
+
+#[test]
+fn reasoning_stops_at_256_kib_without_an_error_and_the_answer_is_intact() {
+    let mut pipe = Pipe::new();
+    let chunk = "r".repeat(4096);
+    let mut out = Vec::new();
+    for _ in 0..(REASONING_CAP / 4096 + 8) {
+        out.extend(pipe.event(thinking(&chunk)));
+    }
+    out.extend(pipe.event(delta("Hi")));
+    out.extend(pipe.event(done()));
+    assert_eq!(reasoning_of(&out).len(), REASONING_CAP);
+    assert!(
+        !out.iter().any(|e| matches!(e, StreamEvent::Error(_))),
+        "no error for the dropped reasoning"
+    );
+    assert_eq!(text_of(&out), "Hi");
+    assert_eq!(out.last(), Some(&done()));
+}
+
+#[test]
+fn the_reasoning_cap_cuts_on_a_character_boundary() {
+    let mut pipe = Pipe::new();
+    let mut out = pipe.event(thinking(&"a".repeat(REASONING_CAP - 1)));
+    out.extend(pipe.event(thinking("日本")));
+    assert_eq!(reasoning_of(&out).len(), REASONING_CAP - 1);
+}
+
+#[test]
+fn reasoning_that_sanitizes_to_nothing_sends_nothing() {
+    let mut pipe = Pipe::new();
+    assert_eq!(pipe.event(thinking("\u{1b}[31m")), Vec::new());
+    assert_eq!(pipe.event(thinking("")), Vec::new());
+}
+
+#[test]
+fn nothing_passes_after_the_final_event_not_even_reasoning() {
+    let mut pipe = Pipe::new();
+    pipe.event(done());
+    assert_eq!(pipe.event(thinking("late")), Vec::new());
+}
 
 #[test]
 fn plain_deltas_and_the_final_event_pass_in_order() {

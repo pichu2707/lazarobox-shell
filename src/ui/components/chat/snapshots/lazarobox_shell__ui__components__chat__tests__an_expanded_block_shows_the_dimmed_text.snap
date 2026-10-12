@@ -1,0 +1,9 @@
+---
+source: src/ui/components/chat/tests.rs
+expression: text(&buf)
+---
+› hi
+
+▾ reasoning (2.3s)
+┊ Let me check
+Hi

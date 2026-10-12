@@ -15,6 +15,7 @@ use std::{
 };
 
 pub mod ai_detect;
+pub mod anim;
 pub mod chat;
 pub mod chat_store;
 mod config_write;
@@ -24,6 +25,7 @@ pub mod proc;
 
 use ai_detect::spawn_detection;
 use chat::Chats;
+use chat_store::StoreHandle;
 use config_write::save_config;
 use engram::{Loopback, Memory};
 use futures::StreamExt;
@@ -44,7 +46,7 @@ use tokio::{
 use crate::{
     app::{App, AppEvent, Effect},
     core::{
-        ai::{Detection, config::AiConfig, memory::port::MemReply},
+        ai::{Detection, chat::store::StoreReply, config::AiConfig, memory::port::MemReply},
         config::{Config, config_path},
         layout::PaneId,
         pane::{CursorKind, CursorShape},
@@ -68,6 +70,10 @@ const QUIT_KILL_BOUND: Duration = Duration::from_secs(3);
 const MEMORY_QUIT_BOUND: Duration = Duration::from_secs(1);
 /// Capacity of the channel from the memory worker to the event loop.
 const MEMORY_CHANNEL: usize = 64;
+/// Longest a quit waits for the store thread to write what is queued.
+const STORE_JOIN_BOUND: Duration = Duration::from_secs(2);
+/// Capacity of the channel from the store thread to the event loop.
+const STORE_CHANNEL: usize = 64;
 /// How often `Panes::shutdown` checks whether the kills are done.
 const SHUTDOWN_POLL: Duration = Duration::from_millis(5);
 /// Most events one `drive` call processes (the first one plus its feedback).
@@ -134,16 +140,23 @@ pub async fn run() -> io::Result<()> {
         || env::var("ENGRAM_HTTP_TOKEN").ok(),
         memory_tx,
     );
+    let (store_tx, store_rx) = mpsc::channel(STORE_CHANNEL);
+    let store_path = chat_store::resolve_path(
+        env::var_os("XDG_DATA_HOME").as_deref(),
+        env::var_os("HOME").as_deref(),
+    );
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
         .with_memory(memory)
         .with_config_path(config_path)
         .with_detector(Box::new(move || spawn_detection(ai_tx.clone())))
-        .with_chats(Chats::new(chat::unavailable_runner(), chat_tx));
+        .with_chats(Chats::new(chat::adapter_runner(), chat_tx))
+        .with_store(chat_store::spawn_at(store_path, store_tx));
     let inbox = Inbox {
         pty: rx,
         ai: ai_rx,
         chat: chat_rx,
         memory: memory_rx,
+        store: store_rx,
     };
     // The first pane is spawned before the UI starts: a failure is fatal.
     panes.spawn_pane(id, &spec)?;
@@ -159,9 +172,15 @@ pub async fn run() -> io::Result<()> {
     // The user gets the prompt back first; the children are killed after.
     // `rx` went away with the loop, so readers stuck on a full channel stopped.
     restore();
-    // Engines first (sockets closed, CLI process groups killed), then the PTY
-    // children, both inside the one bound. The pending session ends go out
-    // meanwhile, inside their own short bound, so quitting is not longer.
+    // Quit order, and why:
+    // 1. The loop already returned, so the final Cancel and Append effects of
+    //    every open turn were applied (they must be emitted before the store
+    //    is shut down, or the last messages are lost).
+    // 2. The store thread drains what is queued, inside STORE_JOIN_BOUND.
+    // 3. Memory flush and chat shutdown run together (network vs local
+    //    processes), each inside its own bound.
+    // 4. The PTY children are killed with whatever is left of the one bound.
+    panes.shutdown_store(STORE_JOIN_BOUND);
     let started = Instant::now();
     panes
         .shutdown_engines(MEMORY_QUIT_BOUND, QUIT_KILL_BOUND)
@@ -230,6 +249,7 @@ struct Inbox {
     ai: mpsc::Receiver<Detection>,
     chat: mpsc::Receiver<chat::Tagged>,
     memory: mpsc::Receiver<MemReply>,
+    store: mpsc::Receiver<StoreReply>,
 }
 
 async fn event_loop(
@@ -269,6 +289,7 @@ async fn run_loop(
         ai: mut ai_rx,
         chat: mut chat_rx,
         memory: mut memory_rx,
+        store: mut store_rx,
     } = inbox;
     let theme = LazaroboxTheme::default();
     let mut events = EventStream::new();
@@ -277,8 +298,11 @@ async fn run_loop(
     let mut cwd_poll = interval(CWD_POLL);
     cwd_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut applied_cursor = CursorShape::default();
+    // Armed only while a chat stream runs: an idle app never wakes for it.
+    let mut anim = anim::Animation::new();
 
     loop {
+        anim.sync(app.animating());
         tokio::select! {
             event = events.next() => match event {
                 Some(Ok(event)) => {
@@ -329,11 +353,25 @@ async fn run_loop(
                     return Ok(());
                 }
             }
+            // The store thread's sender lives in `panes.store`, so this arm
+            // never reads a closed channel before shutdown. At quit the loop
+            // has returned; dropping `store_rx` then makes the thread's
+            // `blocking_send` fail fast instead of blocking on a full channel.
+            Some(reply) = store_rx.recv() => {
+                if step(&mut app, AppEvent::Store(reply), panes) {
+                    return Ok(());
+                }
+            }
             // Same exit path as Quit: the caller restores and kills the children.
             () = shutdown.requested() => return Ok(()),
             _ = cwd_poll.tick() => {
                 for event in panes.poll_cwds() {
                     step(&mut app, event, panes);
+                }
+            }
+            () = anim.tick() => {
+                if step(&mut app, AppEvent::AnimTick, panes) {
+                    return Ok(());
                 }
             }
             _ = tick.tick() => {
@@ -375,6 +413,8 @@ struct Panes {
     chats: Option<Chats>,
     /// The engram memory worker; off unless the config activates it.
     memory: Memory,
+    /// The chat history thread. `None` ignores the store effects (unit tests).
+    store: Option<StoreHandle>,
 }
 
 impl Panes {
@@ -389,6 +429,7 @@ impl Panes {
             detect: Box::new(|| {}),
             chats: None,
             memory: Memory::off(),
+            store: None,
         }
     }
 
@@ -414,6 +455,21 @@ impl Panes {
     fn with_chats(mut self, chats: Chats) -> Self {
         self.chats = Some(chats);
         self
+    }
+
+    /// Sets the thread that saves chat history.
+    fn with_store(mut self, store: StoreHandle) -> Self {
+        self.store = Some(store);
+        self
+    }
+
+    /// Lets the store thread write what is queued, up to `bound`.
+    // Blocking the runtime thread for up to 2 s is acceptable here: it only
+    // happens on the quit path, where nothing else is left to serve.
+    fn shutdown_store(&mut self, bound: Duration) {
+        if let Some(store) = self.store.take() {
+            store.shutdown(bound);
+        }
     }
 
     /// Sets what `Effect::DetectEngines` runs.
@@ -490,6 +546,13 @@ impl Panes {
                 }
                 // Returns at once: the worker owns the queue and the timeouts.
                 Effect::Memory(cmd) => self.memory.send(cmd),
+                // Returns at once: the thread owns the database, and a slow
+                // write only delays its own queue.
+                Effect::Store(cmd) => {
+                    if let Some(store) = self.store.as_ref() {
+                        store.send(cmd);
+                    }
+                }
                 Effect::Quit => outcome = Outcome::Quit,
             }
         }
@@ -634,7 +697,9 @@ fn restore() {
 /// inside a chat adapter poll is caught by its turn task and becomes an
 /// `Interrupted` turn: the app keeps running, so the terminal must stay intact.
 fn should_restore() -> bool {
-    !chat::in_adapter_poll()
+    // The store thread catches its own panics and reports them as replies.
+    let on_store_thread = thread::current().name() == Some(chat_store::worker::THREAD_NAME);
+    !chat::in_adapter_poll() && !on_store_thread
 }
 
 /// Restores the cursor and bracketed paste before the previous hook (which
@@ -1610,6 +1675,182 @@ mod tests {
         }
     }
 
+    // --- Store effects ---
+
+    use crate::core::ai::chat::{
+        MsgStatus,
+        engine::Role,
+        store::{StoreCmd, StoreReply, StoredMessage},
+    };
+
+    fn stored(role: Role, text: &str, status: MsgStatus) -> StoredMessage {
+        StoredMessage {
+            role,
+            text: text.into(),
+            status,
+            engine: "ollama".into(),
+            model: None,
+        }
+    }
+
+    fn store_create(text: &str) -> StoreCmd {
+        StoreCmd::Create {
+            pane: id(1),
+            profile: "programmer".into(),
+            tag: None,
+            first: stored(Role::User, text, MsgStatus::Complete),
+            open: Vec::new(),
+        }
+    }
+
+    fn store_db(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path().join("lazarobox").join("chat.db")
+    }
+
+    /// The next store reply, or `None` if none comes within 5 s.
+    async fn recv_store(rx: &mut mpsc::Receiver<StoreReply>) -> Option<StoreReply> {
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .ok()
+            .flatten()
+    }
+
+    fn panes_with_store(db: PathBuf) -> (Panes, mpsc::Receiver<StoreReply>) {
+        let (panes, _rx, _rec) = fake_panes(None);
+        let (tx, rx) = mpsc::channel(STORE_CHANNEL);
+        (panes.with_store(chat_store::spawn_at(Some(db), tx)), rx)
+    }
+
+    #[tokio::test]
+    async fn a_store_effect_reaches_the_store_thread_and_its_reply_comes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut panes, mut rx) = panes_with_store(store_db(&dir));
+        panes.apply(vec![Effect::Store(store_create("hi"))]);
+        let reply = recv_store(&mut rx).await;
+        assert!(
+            matches!(reply, Some(StoreReply::Created { .. })),
+            "{reply:?}"
+        );
+        panes.shutdown_store(STORE_JOIN_BOUND);
+    }
+
+    #[test]
+    fn a_store_effect_without_a_store_thread_is_ignored() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let (outcome, feedback) = panes.apply(vec![Effect::Store(store_create("hi"))]);
+        assert_eq!((outcome, feedback), (Outcome::Continue, Vec::new()));
+        panes.shutdown_store(STORE_JOIN_BOUND);
+    }
+
+    #[tokio::test]
+    async fn a_slow_store_does_not_delay_keys_or_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = store_db(&dir);
+        let (mut panes, mut rx) = panes_with_store(db.clone());
+        panes.apply(vec![Effect::Store(store_create("hi"))]);
+        let Some(StoreReply::Created { conversation, .. }) = recv_store(&mut rx).await else {
+            panic!("no Created reply");
+        };
+
+        // Another process holds the write lock for 1 s, under the 2 s busy
+        // timeout: every write waits, then lands.
+        let holder = rusqlite::Connection::open(&db).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_secs(1));
+            holder.execute_batch("ROLLBACK").unwrap();
+        });
+
+        let mut app = App::new(80, 24);
+        let started = Instant::now();
+        let appends = (0..20)
+            .map(|i| {
+                Effect::Store(StoreCmd::Append {
+                    pane: id(1),
+                    conversation,
+                    message: stored(Role::User, &format!("m{i}"), MsgStatus::Complete),
+                })
+            })
+            .collect();
+        panes.apply(appends);
+        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        let effects = app.update(AppEvent::Key(key));
+        panes.apply(effects);
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| ui::render(frame, &app, &LazaroboxTheme::default()))
+            .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "keys and frames waited for the store: {:?}",
+            started.elapsed()
+        );
+        release.join().unwrap();
+        panes.shutdown_store(Duration::from_secs(10));
+        let check = rusqlite::Connection::open(&db).unwrap();
+        let stored: i64 = check
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                [conversation],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // The first message plus the 20 appends: the wait cost nothing.
+        assert_eq!(stored, 21, "the appends held back by the lock were lost");
+    }
+
+    #[tokio::test]
+    async fn quit_flushes_a_cancelled_append_within_the_join_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = store_db(&dir);
+        let (mut panes, mut rx) = panes_with_store(db.clone());
+        panes.apply(vec![Effect::Store(store_create("q"))]);
+        let Some(StoreReply::Created { conversation, .. }) = recv_store(&mut rx).await else {
+            panic!("no Created reply");
+        };
+        let append = |text: &str, status| {
+            Effect::Store(StoreCmd::Append {
+                pane: id(1),
+                conversation,
+                message: stored(Role::Assistant, text, status),
+            })
+        };
+        let started = Instant::now();
+        panes.apply(vec![
+            append("Hel", MsgStatus::Cancelled),
+            append("done", MsgStatus::Complete),
+        ]);
+        panes.shutdown_store(STORE_JOIN_BOUND);
+        assert!(started.elapsed() < STORE_JOIN_BOUND);
+
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let saved: Vec<(String, String)> = conn
+            .prepare("SELECT content, status FROM messages WHERE seq > 1 ORDER BY seq")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            saved,
+            vec![
+                ("Hel".to_string(), "cancelled".to_string()),
+                ("done".to_string(), "complete".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_store_reply_is_accepted_by_the_app() {
+        let mut app = App::new(80, 24);
+        let reply = StoreReply::Failed {
+            pane: id(1),
+            notify: true,
+        };
+        assert_eq!(app.update(AppEvent::Store(reply)), Vec::new());
+    }
+
     // --- Chat effects ---
 
     use crate::core::ai::chat::engine::{ChatRequest, StreamEvent};
@@ -1772,6 +2013,17 @@ mod tests {
             "inside an adapter poll the panic is caught: leave the TUI alone"
         );
         assert!(should_restore(), "and it is back to normal afterwards");
+    }
+
+    #[test]
+    fn a_panic_on_the_store_thread_leaves_the_terminal_alone() {
+        let inside = thread::Builder::new()
+            .name(chat_store::worker::THREAD_NAME.into())
+            .spawn(should_restore)
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(!inside, "the store thread recovers from its own panics");
     }
 
     #[tokio::test(start_paused = true)]
