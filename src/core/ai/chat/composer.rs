@@ -209,8 +209,15 @@ impl Composer {
                 }
                 rows.push(r);
                 if at_line_end && cursor.1 >= width.max(1) {
-                    rows.push(r_empty(line_end));
-                    cursor = (rows.len() - 1, 0);
+                    if line_end < self.chars.len() {
+                        // A newline follows: the next line is already the
+                        // next row, so no blank one; the cursor waits on
+                        // the last column.
+                        cursor.1 = width.max(1) - 1;
+                    } else {
+                        rows.push(r_empty(line_end));
+                        cursor = (rows.len() - 1, 0);
+                    }
                 }
             }
             if line_end >= self.chars.len() {
@@ -472,6 +479,25 @@ mod tests {
         let v = c.view(3, 5);
         assert_eq!(v.rows, ["abc", "def", ""]);
         assert_eq!((v.cursor_row, v.cursor_col), (2, 0));
+    }
+
+    #[test]
+    fn a_full_row_followed_by_a_newline_gets_no_blank_row() {
+        // Cursor at the end of "abc", which fills the row; "x" comes next.
+        let mut c = typed("abc\nx");
+        c.left();
+        c.left();
+        assert_eq!(c.cursor(), 3);
+        let v = c.view(3, 5);
+        assert_eq!(v.rows, ["abc", "x"]);
+        // No room past the last column: the cursor stays on it.
+        assert_eq!((v.cursor_row, v.cursor_col), (0, 2));
+        assert_eq!(c.height(3), 2);
+        // After the newline the cursor is on the next line, as usual.
+        let c = typed("abc\n");
+        let v = c.view(3, 5);
+        assert_eq!(v.rows, ["abc", ""]);
+        assert_eq!((v.cursor_row, v.cursor_col), (1, 0));
     }
 
     #[test]
