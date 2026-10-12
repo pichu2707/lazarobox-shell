@@ -63,6 +63,12 @@ impl AiMenu {
             .unwrap_or_default()
     }
 
+    /// The row under the cursor of the open picker.
+    pub fn cursor_row(&self) -> Option<PickRow> {
+        let picker = self.picker.as_ref()?;
+        self.pick_rows().into_iter().nth(picker.cursor())
+    }
+
     /// Changes the open picker without choosing anything.
     pub fn edit(&mut self, change: impl FnOnce(&mut Picker)) {
         self.edit_with(|picker, _, _| change(picker));

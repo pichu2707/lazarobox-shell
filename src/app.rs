@@ -4778,8 +4778,8 @@ mod app_tests {
 
     // `repeat` comes from `key.kind` in `App::on_key` only.
     #[test]
-    fn a_held_enter_or_esc_does_nothing_but_a_held_j_moves() {
-        for held in [KeyCode::Enter, KeyCode::Esc] {
+    fn a_held_s_or_esc_does_nothing_but_a_held_j_moves() {
+        for held in [KeyCode::Char('s'), KeyCode::Esc] {
             let mut a = menu_app();
             a.update(key('l'));
             assert_eq!(a.update(kind(held, KeyEventKind::Repeat)), vec![]);
@@ -4796,11 +4796,11 @@ mod app_tests {
         );
     }
 
-    // Spec: Enter with an unchanged draft closes without saving.
+    // Spec: s with an unchanged draft closes without saving.
     #[test]
-    fn enter_with_an_unchanged_draft_closes_the_menu() {
+    fn s_with_an_unchanged_draft_closes_the_menu() {
         let mut a = menu_app();
-        let effects = a.update(code(KeyCode::Enter));
+        let effects = a.update(key('s'));
         assert_eq!(
             effects,
             vec![Effect::ResizePty(PaneId::FIRST, sized(24, 80))]
@@ -4817,12 +4817,12 @@ mod app_tests {
         }
     }
 
-    // Spec: config-persistence Save on Enter.
+    // Spec: config-persistence Save on s.
     #[test]
-    fn enter_with_a_changed_draft_requests_a_save_and_keeps_the_menu_open() {
+    fn s_with_a_changed_draft_requests_a_save_and_keeps_the_menu_open() {
         let mut a = menu_app();
         a.update(key('l'));
-        let effects = a.update(code(KeyCode::Enter));
+        let effects = a.update(key('s'));
         assert_eq!(
             effects,
             vec![Effect::SaveConfig(vec![statusline_top_edit()])]
@@ -4834,11 +4834,11 @@ mod app_tests {
     }
 
     #[test]
-    fn a_double_enter_requests_two_identical_saves() {
+    fn a_double_s_requests_two_identical_saves() {
         let mut a = menu_app();
         a.update(key('l'));
-        let first = a.update(code(KeyCode::Enter));
-        let second = a.update(code(KeyCode::Enter));
+        let first = a.update(key('s'));
+        let second = a.update(key('s'));
         assert_eq!(first, vec![Effect::SaveConfig(vec![statusline_top_edit()])]);
         assert_eq!(second, first);
     }
@@ -4848,7 +4848,7 @@ mod app_tests {
     fn config_saved_closes_the_menu_and_keeps_the_draft() {
         let mut a = menu_app();
         a.update(key('l'));
-        a.update(code(KeyCode::Enter));
+        a.update(key('s'));
         let effects = a.update(AppEvent::ConfigSaved);
         assert_eq!(
             effects,
@@ -4865,7 +4865,7 @@ mod app_tests {
     fn config_save_failed_keeps_the_menu_the_draft_and_shows_the_error() {
         let mut a = menu_app();
         a.update(key('l'));
-        a.update(code(KeyCode::Enter));
+        a.update(key('s'));
         a.take_dirty();
         let effects = a.update(AppEvent::ConfigSaveFailed("save failed: disk full".into()));
         assert_eq!(effects, Vec::new());
@@ -4884,9 +4884,9 @@ mod app_tests {
     fn the_next_key_clears_the_error_and_a_retry_can_succeed() {
         let mut a = menu_app();
         a.update(key('l'));
-        a.update(code(KeyCode::Enter));
+        a.update(key('s'));
         a.update(AppEvent::ConfigSaveFailed("save failed: x".into()));
-        let retry = a.update(code(KeyCode::Enter));
+        let retry = a.update(key('s'));
         assert_eq!(a.menu().and_then(MenuState::error), None, "cleared");
         assert_eq!(retry, vec![Effect::SaveConfig(vec![statusline_top_edit()])]);
         a.update(AppEvent::ConfigSaved);
@@ -4898,7 +4898,7 @@ mod app_tests {
     fn esc_after_a_failed_save_reverts_to_the_original() {
         let mut a = menu_app();
         a.update(key('l'));
-        a.update(code(KeyCode::Enter));
+        a.update(key('s'));
         a.update(AppEvent::ConfigSaveFailed("save failed: x".into()));
         a.update(esc());
         assert_eq!(a.input(), InputMode::Terminal);
@@ -4947,8 +4947,8 @@ mod app_tests {
     }
 
     #[test]
-    fn esc_and_enter_hide_the_forced_bar_and_resize_back() {
-        for close in [esc(), code(KeyCode::Enter)] {
+    fn esc_and_s_hide_the_forced_bar_and_resize_back() {
+        for close in [esc(), key('s')] {
             let mut a = menu_app();
             let effects = a.update(close);
             assert_eq!(a.screen().tab_bar, None);
@@ -5325,7 +5325,7 @@ mod app_tests {
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
         assert_eq!(
-            a.update(code(KeyCode::Enter)),
+            a.update(key('s')),
             vec![Effect::ResizePty(PaneId::FIRST, sized(24, 80))]
         );
         assert_eq!(a.ai(), &ai_of("ollama", "qwen2:7b"));

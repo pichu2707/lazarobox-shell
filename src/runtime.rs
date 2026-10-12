@@ -990,7 +990,7 @@ mod tests {
 
     // Spec: the answer reaches the app before the next input.
     #[test]
-    fn enter_in_the_menu_saves_and_the_result_closes_it() {
+    fn s_in_the_menu_saves_and_the_result_closes_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let mut panes = panes_saving_to(Some(path.clone()));
@@ -999,7 +999,7 @@ mod tests {
             menu_key(' ', KeyModifiers::CONTROL),
             menu_key('m', KeyModifiers::NONE),
             menu_key('l', KeyModifiers::NONE),
-            AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            menu_key('s', KeyModifiers::NONE),
         ] {
             assert!(!step(&mut app, event, &mut panes));
         }
@@ -1025,10 +1025,10 @@ mod tests {
         ] {
             step(&mut app, event, &mut panes);
         }
-        let enter = AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let save = menu_key('s', KeyModifiers::NONE);
         let next = menu_key('j', KeyModifiers::NONE);
         let mut seen = Vec::new();
-        for event in [enter.clone(), next.clone()] {
+        for event in [save.clone(), next.clone()] {
             drive(
                 |event| {
                     seen.push(event.clone());
@@ -1038,7 +1038,7 @@ mod tests {
                 &mut panes,
             );
         }
-        assert_eq!(seen, vec![enter, AppEvent::ConfigSaved, next]);
+        assert_eq!(seen, vec![save, AppEvent::ConfigSaved, next]);
         assert!(app.menu().is_none());
         assert_eq!(app.input(), crate::app::InputMode::Terminal);
     }
@@ -1051,7 +1051,7 @@ mod tests {
             menu_key(' ', KeyModifiers::CONTROL),
             menu_key('m', KeyModifiers::NONE),
             menu_key('l', KeyModifiers::NONE),
-            AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            menu_key('s', KeyModifiers::NONE),
         ] {
             assert!(!step(&mut app, event, &mut panes));
         }

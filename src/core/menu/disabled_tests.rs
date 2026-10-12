@@ -10,11 +10,11 @@ fn enter(menu: &mut MenuState) {
     assert_eq!(send(menu, key(KeyCode::Enter)), MenuCommand::None);
 }
 
-fn only(found: &[EngineState]) -> Option<Detection> {
+pub(super) fn only(found: &[EngineState]) -> Option<Detection> {
     Some(detection(found))
 }
 
-fn engine_at_level_two(menu: &mut MenuState, name: &str) {
+pub(super) fn engine_at_level_two(menu: &mut MenuState, name: &str) {
     open(menu, "code");
     while cursor_label(menu) != name {
         press(menu, 'j');

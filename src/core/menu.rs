@@ -11,7 +11,7 @@ use super::{
         Detection,
         config::{AiConfig, Task},
         menu::AiMenu,
-        picker::{Level, Mark, Outcome, Picker, Target},
+        picker::{Level, Mark, Outcome, PickKey, PickRow, Picker, Target},
     },
     config::{BarPosition, Config, ConfigEdit},
 };
@@ -142,6 +142,29 @@ pub enum MenuCommand {
     Cancel,
     /// Run the engine detection again.
     Refresh,
+}
+
+const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
+const HINT_TASK: &str = "j/k move · Enter pick · r refresh · s save · Esc cancel";
+const HINT_PICKER: &str = "j/k move · Enter choose · r refresh · Esc back · s save";
+const HINT_CUSTOM: &str = "type a model · Enter ok · Ctrl+U clear · Esc back";
+
+/// Why a picker row cannot be chosen: its mark, or the text of an
+/// explanation row. A saved model of an engine that is gone has no mark.
+fn disabled_reason(row: &PickRow) -> &str {
+    match row.mark {
+        Mark::DownloadRequired => "download required",
+        Mark::Checking => "checking…",
+        _ if row.key == PickKey::Info => &row.label,
+        _ => "engine not detected",
+    }
+}
+
+/// The footer of the popup: the widget only styles it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Footer<'a> {
+    Error(&'a str),
+    Hint(Cow<'static, str>),
 }
 
 /// One line of the popup body.
@@ -336,9 +359,10 @@ impl MenuState {
             KeyCode::Char('k') | KeyCode::Up => self.step_selection(false),
             KeyCode::Char('l' | ' ') | KeyCode::Right => self.cycle(true, config),
             KeyCode::Char('h') | KeyCode::Left => self.cycle(false, config),
+            KeyCode::Char('s') if !repeat => MenuCommand::Save,
             KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
             KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
-            KeyCode::Enter if !repeat => MenuCommand::Save,
+            KeyCode::Enter => self.cycle(true, config),
             KeyCode::Esc if !repeat => MenuCommand::Cancel,
             _ => MenuCommand::None,
         }
@@ -390,6 +414,7 @@ impl MenuState {
             KeyCode::Esc if !repeat => {
                 ai.drive(Picker::back);
             }
+            KeyCode::Char('s') if !repeat => return MenuCommand::Save,
             KeyCode::Char('r')
                 if !repeat && ai.drive(|p, _, _| p.refresh()) == Outcome::Refresh =>
             {
@@ -457,6 +482,33 @@ impl MenuState {
     /// The config captured when the menu opened.
     pub fn original(&self) -> Config {
         self.original
+    }
+
+    /// The footer line: a pending error, else the hint of the current view.
+    pub fn footer(&self) -> Footer<'_> {
+        if let Some(error) = self.error() {
+            return Footer::Error(error);
+        }
+        let hint = match self.ai.as_ref().and_then(AiMenu::picker) {
+            Some(picker) if picker.text().is_some() => HINT_CUSTOM,
+            Some(_) => {
+                if let Some(row) = self
+                    .ai
+                    .as_ref()
+                    .and_then(AiMenu::cursor_row)
+                    .filter(|row| !row.enabled)
+                {
+                    return Footer::Hint(Cow::Owned(format!(
+                        "{} · not selectable",
+                        disabled_reason(&row)
+                    )));
+                }
+                HINT_PICKER
+            }
+            None if self.on_ai_row() => HINT_TASK,
+            None => HINT_SETTINGS,
+        };
+        Footer::Hint(Cow::Borrowed(hint))
     }
 
     pub fn set_error(&mut self, message: String) {
@@ -595,21 +647,15 @@ mod tests {
     }
 
     #[test]
-    fn enter_saves_and_esc_cancels_on_press_only() {
+    fn s_saves_and_esc_cancels_on_press_only() {
         let mut menu = MenuState::open(&Config::default());
         let mut config = Config::default();
-        assert_eq!(
-            menu.on_key(&key(KeyCode::Enter), false, &mut config),
-            MenuCommand::Save
-        );
+        assert_eq!(menu.on_key(&ch('s'), false, &mut config), MenuCommand::Save);
         assert_eq!(
             menu.on_key(&key(KeyCode::Esc), false, &mut config),
             MenuCommand::Cancel
         );
-        assert_eq!(
-            menu.on_key(&key(KeyCode::Enter), true, &mut config),
-            MenuCommand::None
-        );
+        assert_eq!(menu.on_key(&ch('s'), true, &mut config), MenuCommand::None);
         assert_eq!(
             menu.on_key(&key(KeyCode::Esc), true, &mut config),
             MenuCommand::None
@@ -695,8 +741,9 @@ mod tests {
         let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
         assert_eq!(
             menu.on_key(&shift_enter, false, &mut config),
-            MenuCommand::Save
+            MenuCommand::Changed
         );
+        assert_eq!(config.bars.statusline, BarPosition::Bottom, "cycled back");
         let upper_j = KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT);
         assert_eq!(menu.on_key(&upper_j, false, &mut config), MenuCommand::None);
         assert_eq!(selected(&menu), Some(0), "J is not j");
@@ -729,3 +776,9 @@ mod custom_flow_tests;
 
 #[cfg(test)]
 mod reanchor_tests;
+
+#[cfg(test)]
+mod save_tests;
+
+#[cfg(test)]
+mod footer_tests;
