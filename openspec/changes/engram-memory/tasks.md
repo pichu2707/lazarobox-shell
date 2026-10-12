@@ -69,17 +69,17 @@ No production code. The only outputs are fixtures, a findings file and design op
 
 Fallback split if over 400 without exception: 1a = 2.1-2.6, 1b = 2.7-2.10.
 
-- [ ] 2.1 RED: `MemKind` has exactly the seven values in order (`decision`, `architecture`, `bugfix`, `discovery`, `pattern`, `config`, `preference`); `parse("learning")` is rejected; `as_str` round-trips (chat-memory "Closed enum").
-- [ ] 2.2 GREEN: `kind.rs` with `MemKind::ALL`, `as_str`, `parse`.
-- [ ] 2.3 RED: slug table from the spec (`Use Axum!`, `  A/B  test--x `, `Ünï Cødé 42`, `日本語 メモ`, `../../etc`), 200-letter title cut to 60 with no trailing `-`, `!!! ---` gives `untitled`; `topic_key(Bugfix, "Fix  the Parser") == "chat/bugfix/fix-the-parser"`; a title cannot add a path segment; same slug gives the same key.
-- [ ] 2.4 GREEN: `slug.rs` (`slug`, `topic_key`, `clean_title` 1-120 chars, control/format chars removed).
-- [ ] 2.5 RED: redaction tables: each prefix pattern, `Authorization: Bearer abc.def`, PEM block (terminated and unterminated), `password=hunter2 ok`, `API_KEY: zz9`, `<private>` terminated and unterminated, hit count, plain text unchanged, idempotent on a seeded random corpus, no panic on arbitrary bytes-as-str, linear time on a 1 MiB input.
-- [ ] 2.6 GREEN: `redact.rs` hand-written scanner returning `Redacted { text, hits }`; no regex crate.
-- [ ] 2.7 RED: `context_block`: 50,000-byte input with escapes is cut under 2,000 bytes at a line end and a char boundary; `</PROJECT-MEMORY>` becomes `</project_memory>` with one closing delimiter; opening line `<project-memory source="engram" project="P">` plus the fixed data-not-instructions line; empty gives `None`; `notes` counts only lines starting with `- [` under `### Recent Observations` of `context_compact.http` (session lines `- **` are not counted; `context_sessions_only.http` gives 0 notes and a non-empty block); the server `\n[truncated]\n` tail of `context_tiny_budget.http`, which can cut mid-line, is handled by the same cut.
-- [ ] 2.8 GREEN: `context.rs` (`ContextBlock { text, notes, bytes }`), reusing the CHAT-4 sanitizer.
-- [ ] 2.9 RED: `classify_health` against the M0 fixtures: 3.4.0 gives `Ready{instance_id,version}`, 1.20 (`health_1_20.http`) gives `Old`, `health_html.http`, `health_other_service.http` and non-200 give `Foreign`, missing `capabilities` gives `Old`.
-- [ ] 2.10 GREEN: `health.rs`; module wiring in `mod.rs` and `src/core/ai/mod.rs`.
-- [ ] 2.11 Refactor; Gate.
+- [x] 2.1 RED: `MemKind` has exactly the seven values in order (`decision`, `architecture`, `bugfix`, `discovery`, `pattern`, `config`, `preference`); `parse("learning")` is rejected; `as_str` round-trips (chat-memory "Closed enum").
+- [x] 2.2 GREEN: `kind.rs` with `MemKind::ALL`, `as_str`, `parse`.
+- [x] 2.3 RED: slug table from the spec (`Use Axum!`, `  A/B  test--x `, `Ünï Cødé 42`, `日本語 メモ`, `../../etc`), 200-letter title cut to 60 with no trailing `-`, `!!! ---` gives `untitled`; `topic_key(Bugfix, "Fix  the Parser") == "chat/bugfix/fix-the-parser"`; a title cannot add a path segment; same slug gives the same key.
+- [x] 2.4 GREEN: `slug.rs` (`slug`, `topic_key`, `clean_title` 1-120 chars, control/format chars removed).
+- [x] 2.5 RED: redaction tables: each prefix pattern, `Authorization: Bearer abc.def`, PEM block (terminated and unterminated), `password=hunter2 ok`, `API_KEY: zz9`, `<private>` terminated and unterminated, hit count, plain text unchanged, idempotent on a seeded random corpus, no panic on arbitrary bytes-as-str, linear time on a 1 MiB input.
+- [x] 2.6 GREEN: `redact.rs` hand-written scanner returning `Redacted { text, hits }`; no regex crate.
+- [x] 2.7 RED: `context_block`: 50,000-byte input with escapes is cut under 2,000 bytes at a line end and a char boundary; `</PROJECT-MEMORY>` becomes `</project_memory>` with one closing delimiter; opening line `<project-memory source="engram" project="P">` plus the fixed data-not-instructions line; empty gives `None`; `notes` counts only lines starting with `- [` under `### Recent Observations` of `context_compact.http` (session lines `- **` are not counted; `context_sessions_only.http` gives 0 notes and a non-empty block); the server `\n[truncated]\n` tail of `context_tiny_budget.http`, which can cut mid-line, is handled by the same cut.
+- [x] 2.8 GREEN: `context.rs` (`ContextBlock { text, notes, bytes }`), reusing the CHAT-4 sanitizer.
+- [x] 2.9 RED: `classify_health` against the M0 fixtures: 3.4.0 gives `Ready{instance_id,version}`, 1.20 (`health_1_20.http`) gives `Old`, `health_html.http`, `health_other_service.http` and non-200 give `Foreign`, missing `capabilities` gives `Old`.
+- [x] 2.10 GREEN: `health.rs`; module wiring in `mod.rs` and `src/core/ai/mod.rs`.
+- [x] 2.11 Refactor; Gate.
 
 ## PR3 / M2: Loopback `request` (`src/runtime/loopback.rs`, `src/core/ai/http.rs`)
 
