@@ -1387,6 +1387,7 @@ impl App {
     /// changed. Panes new to the layout keep the size they were created with.
     fn relayout(&mut self) -> Vec<Effect> {
         let mut effects = Vec::new();
+        let mut rewrapped = Vec::new();
         for tab in &self.tabs {
             for (id, rect) in tab.tiling(self.screen.body).panes {
                 let size = body_size(rect);
@@ -1400,12 +1401,19 @@ impl App {
                         pty.emu.resize(size);
                         effects.push(Effect::ResizePty(id, size));
                     }
-                    if let Some(chat) = state.chat_mut() {
-                        // A scrolled view stays on the same content.
-                        let rows = usize::from(chat.transcript_rows(size.cols, size.rows));
-                        chat.rewrap(usize::from(old.cols), usize::from(size.cols), rows);
+                    if state.chat_state().is_some() {
+                        rewrapped.push((id, old.cols));
                     }
                 }
+            }
+        }
+        for (id, old_cols) in rewrapped {
+            // A scrolled view stays on the same content, at the height that
+            // is really drawn (composer and guidance taken off).
+            let rows = self.chat_viewport(id);
+            let cols = self.panes.get(&id).map_or(0, |state| state.size.cols);
+            if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                chat.rewrap(usize::from(old_cols), usize::from(cols), rows);
             }
         }
         self.sync_copy();

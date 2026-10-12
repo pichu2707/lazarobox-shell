@@ -526,6 +526,86 @@ fn page_keys_scroll_the_transcript_and_clamp_at_both_ends() {
     assert_eq!(chat_of(&a).scroll(), Scroll::Follow);
 }
 
+/// An answered chat whose engine then went away, so guidance shows over the
+/// history. Returns the app and the rows the transcript is really drawn in.
+fn guided_history() -> (App, usize, usize) {
+    let mut a = answered(&"line\n".repeat(100));
+    a.update(AppEvent::EnginesDetected(detection_with(
+        Status::NotRunning,
+        &[],
+    )));
+    let guidance = guidance_of(&a).expect("the engine is not running");
+    let rect = a
+        .tiling()
+        .panes
+        .iter()
+        .find(|(id, _)| *id == chat_id())
+        .map(|(_, rect)| *rect)
+        .unwrap();
+    let width = usize::from(rect.width);
+    let guidance_rows = crate::core::ai::chat::wrap::wrap_words(&guidance, width).len();
+    assert!(guidance_rows >= 2, "the test needs wrapped guidance");
+    let composer_rows = 1;
+    let drawn = usize::from(rect.height) - composer_rows - guidance_rows;
+    (a, width, drawn)
+}
+
+#[test]
+fn page_up_moves_by_the_rows_drawn_when_guidance_takes_some() {
+    let (mut a, width, drawn) = guided_history();
+    let total = chat_of(&a).lines(width).len();
+    a.update(plain(KeyCode::PageUp));
+    // Follow shows the last `drawn` rows; one page up leaves one row of overlap.
+    assert_eq!(
+        chat_of(&a).scroll(),
+        Scroll::Pinned(total - drawn - (drawn - 1))
+    );
+}
+
+#[test]
+fn page_down_after_page_up_comes_back_by_the_rows_drawn() {
+    let (mut a, width, drawn) = guided_history();
+    let total = chat_of(&a).lines(width).len();
+    a.update(plain(KeyCode::PageUp));
+    a.update(plain(KeyCode::PageUp));
+    a.update(plain(KeyCode::PageDown));
+    assert_eq!(
+        chat_of(&a).scroll(),
+        Scroll::Pinned(total - drawn - (drawn - 1))
+    );
+}
+
+#[test]
+fn a_pinned_view_keeps_its_top_line_when_a_resize_changes_the_composer_rows() {
+    let mut a = answered(&(0..80).map(|i| format!("row {i}\n")).collect::<String>());
+    a.update(AppEvent::Resize { cols: 50, rows: 25 });
+    // A long draft: several rows in the narrow pane, fewer in the wide one.
+    type_text(&mut a, &"word ".repeat(30));
+    for _ in 0..3 {
+        a.update(plain(KeyCode::PageUp));
+    }
+    let top_text = |a: &App| {
+        let chat = chat_of(a);
+        let width = a
+            .tiling()
+            .panes
+            .iter()
+            .find(|(id, _)| *id == chat_id())
+            .map(|(_, rect)| usize::from(rect.width))
+            .unwrap();
+        let lines = chat.lines(width);
+        let rows = a.chat_viewport(chat_id());
+        lines[chat.scroll().top(lines.len(), rows)].text.clone()
+    };
+    let before = top_text(&a);
+    assert!(matches!(chat_of(&a).scroll(), Scroll::Pinned(_)));
+    for cols in [120, 50, 90, 50] {
+        a.update(AppEvent::Resize { cols, rows: 25 });
+        assert!(matches!(chat_of(&a).scroll(), Scroll::Pinned(_)), "{cols}");
+        assert_eq!(top_text(&a), before, "at {cols} columns");
+    }
+}
+
 #[test]
 fn a_short_transcript_does_not_scroll() {
     let mut a = answered("short");

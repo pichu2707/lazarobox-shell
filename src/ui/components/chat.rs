@@ -14,6 +14,7 @@ use crate::{
     core::ai::chat::{
         ChatState,
         composer::ComposerPlan,
+        guidance::guidance_rows,
         transcript::{Line, LineKind},
         wrap::wrap_words,
     },
@@ -133,9 +134,7 @@ impl Widget for ChatView<'_> {
         {
             // The guidance takes the rows just above the composer.
             let rows = wrap_words(text, usize::from(transcript.width));
-            let taken = u16::try_from(rows.len())
-                .unwrap_or(u16::MAX)
-                .min(transcript.height);
+            let taken = guidance_rows(text, transcript.width, transcript.height);
             transcript.height -= taken;
             let style = Style::default()
                 .fg(self.theme.warning_orange)

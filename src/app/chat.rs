@@ -250,11 +250,29 @@ impl App {
         }
     }
 
+    /// The transcript rows really drawn in chat `id`: the pane less its
+    /// composer and its guidance. Paging and anchoring use this height.
+    pub(super) fn chat_viewport(&self, id: PaneId) -> usize {
+        let guidance = self.chat_guidance(id);
+        self.panes
+            .get(&id)
+            .and_then(|state| {
+                let size = state.size;
+                let chat = state.chat_state()?;
+                Some(usize::from(chat.viewport_rows(
+                    size.cols,
+                    size.rows,
+                    guidance.as_deref(),
+                )))
+            })
+            .unwrap_or(0)
+    }
+
     /// PageUp and PageDown: one page of the transcript.
     fn chat_page(&mut self, up: bool) -> Vec<Effect> {
         let size = self.focused_state().size;
+        let rows = self.chat_viewport(self.tab().focus);
         if let Some(chat) = self.focused_state_mut().chat_mut() {
-            let rows = usize::from(chat.transcript_rows(size.cols, size.rows));
             let total = chat.lines(usize::from(size.cols)).len();
             let next = if up {
                 chat.scroll().page_up(total, rows)
@@ -270,8 +288,8 @@ impl App {
     /// scrolled view on the same content.
     fn chat_toggle_reasoning(&mut self) -> Vec<Effect> {
         let size = self.focused_state().size;
+        let rows = self.chat_viewport(self.tab().focus);
         if let Some(chat) = self.focused_state_mut().chat_mut() {
-            let rows = usize::from(chat.transcript_rows(size.cols, size.rows));
             chat.toggle_reasoning_at(usize::from(size.cols), rows);
         }
         Vec::new()

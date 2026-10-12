@@ -1,6 +1,17 @@
 //! The text a chat pane shows when its engine cannot be used yet.
 
-use super::engine::Availability;
+use super::{engine::Availability, wrap::wrap_words};
+
+/// The rows `text` takes above the composer in a transcript area `width`
+/// wide and `height` high: its wrapped lines, never more than the area has.
+/// The one count both the drawing and the paging use.
+pub fn guidance_rows(text: &str, width: u16, height: u16) -> u16 {
+    if width == 0 || height == 0 {
+        return 0;
+    }
+    let rows = wrap_words(text, usize::from(width)).len();
+    u16::try_from(rows).unwrap_or(u16::MAX).min(height)
+}
 
 /// The guidance for `availability`, or `None` when the engine is ready.
 pub fn guidance(availability: &Availability) -> Option<String> {
@@ -29,6 +40,14 @@ pub fn guidance(availability: &Availability) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guidance_rows_are_the_wrapped_lines_capped_by_the_area() {
+        assert_eq!(guidance_rows("alpha beta gamma", 12, 9), 2);
+        assert_eq!(guidance_rows("alpha beta gamma", 12, 1), 1);
+        assert_eq!(guidance_rows("alpha", 0, 9), 0);
+        assert_eq!(guidance_rows("alpha", 12, 0), 0);
+    }
 
     fn s(x: &str) -> String {
         x.to_owned()

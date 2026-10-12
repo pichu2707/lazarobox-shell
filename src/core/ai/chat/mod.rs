@@ -239,6 +239,14 @@ impl ChatState {
         height - self.composer_rows(width, height)
     }
 
+    /// The rows of the transcript that are really drawn in a pane `width` x
+    /// `height`: what the composer leaves, less the rows `guidance` takes.
+    pub fn viewport_rows(&self, width: u16, height: u16, guidance: Option<&str>) -> u16 {
+        let transcript = self.transcript_rows(width, height);
+        let taken = guidance.map_or(0, |text| guidance::guidance_rows(text, width, transcript));
+        transcript - taken
+    }
+
     /// The cwd of the pane the chat was opened from.
     pub fn origin_cwd(&self) -> Option<&Path> {
         self.origin_cwd.as_deref()
