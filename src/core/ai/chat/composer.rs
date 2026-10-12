@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use super::wrap::{clusters, wrap_ranges};
+use super::wrap::{clusters, tab_pad, wrap_ranges};
 use crate::core::ai::sanitize::is_format;
 
 /// The most characters the composer holds.
@@ -47,20 +47,35 @@ impl Composer {
         self.chars.is_empty()
     }
 
-    /// Types one character. Control and format characters are dropped, and
-    /// so is anything past the cap.
+    /// Types one character; a tab becomes spaces. Other control and format
+    /// characters are dropped (except the ZWJ), and so is anything past the
+    /// cap.
     pub fn insert(&mut self, c: char) {
-        if is_text(c) {
+        if c == '\t' {
+            // Spaces up to the next tab stop: a tab cell is not drawn.
+            let col = self.column();
+            for _ in 0..tab_pad(col) {
+                self.put(' ');
+            }
+        } else if is_text(c) {
             self.put(c);
         }
+    }
+
+    /// Display column of the cursor within its line.
+    fn column(&self) -> usize {
+        clusters(&self.chars[self.line_start()..self.cursor])
+            .iter()
+            .map(|k| k.width)
+            .sum()
     }
 
     pub fn newline(&mut self) {
         self.put('\n');
     }
 
-    /// Inserts pasted text: CRLF becomes a newline, every other control or
-    /// format character is dropped, and what does not fit under the cap is
+    /// Inserts pasted text: CRLF becomes a newline, tabs become spaces, every other
+    /// control or format character is dropped, and what does not fit under the cap is
     /// cut off.
     pub fn paste(&mut self, text: &str) {
         for c in text.chars() {
@@ -350,12 +365,17 @@ mod tests {
     #[test]
     fn typed_control_and_format_characters_are_dropped() {
         let mut c = Composer::new();
-        for ch in [
-            'a', '\u{1b}', '\t', '\r', '\u{7f}', '\u{200b}', '\u{9b}', 'b',
-        ] {
+        for ch in ['a', '\u{1b}', '\r', '\u{7f}', '\u{200b}', '\u{9b}', 'b'] {
             c.insert(ch);
         }
         assert_eq!(c.text(), "ab");
+    }
+
+    #[test]
+    fn a_paste_with_crlf_and_tabs_expands_per_line() {
+        let mut c = Composer::new();
+        c.paste("a\tb\r\n\tc");
+        assert_eq!(c.text(), "a   b\n    c");
     }
 
     #[test]
@@ -373,6 +393,36 @@ mod tests {
         c.paste("b\rc\u{200b}\n");
         assert_eq!(c.text(), "abc\nd");
         assert_eq!(c.cursor(), 4);
+    }
+
+    #[test]
+    fn a_tab_becomes_spaces_up_to_the_next_stop() {
+        let mut c = Composer::new();
+        c.insert('\t');
+        assert_eq!(c.text(), "    ");
+        let mut c = typed("ab");
+        c.insert('\t');
+        assert_eq!(c.text(), "ab  ");
+        let mut c = typed("abcd");
+        c.insert('\t');
+        assert_eq!(c.text(), "abcd    ");
+        // The column restarts after a newline.
+        let mut c = typed("abc\n");
+        c.insert('\t');
+        assert_eq!(c.text(), "abc\n    ");
+    }
+
+    #[test]
+    fn a_paste_expands_tabs_and_keeps_joiners_and_selectors() {
+        let mut c = Composer::new();
+        c.paste("\tfn f() {\n\t\tx\n}");
+        assert_eq!(c.text(), "    fn f() {\n        x\n}");
+        let mut c = Composer::new();
+        c.paste("\u{2764}\u{fe0f} \u{fe0e}\u{1f468}\u{200d}\u{1f469}\u{200b}");
+        assert_eq!(
+            c.text(),
+            "\u{2764}\u{fe0f} \u{fe0e}\u{1f468}\u{200d}\u{1f469}"
+        );
     }
 
     #[test]

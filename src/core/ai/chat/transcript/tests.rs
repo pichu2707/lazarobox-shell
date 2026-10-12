@@ -115,6 +115,28 @@ fn a_fenced_block_is_code_and_the_text_around_it_is_plain() {
 }
 
 #[test]
+fn tabs_become_spaces_so_indentation_survives() {
+    let mut state = chat();
+    answered(
+        &mut state,
+        "q",
+        "```\nfn f() {\n\tlet x = 1;\n\t\tx\n}\n```\nplain\ttab",
+    );
+    assert_eq!(
+        rows(&build(&state, 30))[2..],
+        [
+            "C|```",
+            "C|fn f() {",
+            "C|    let x = 1;",
+            "C|        x",
+            "C|}",
+            "C|```",
+            "A|plain   tab",
+        ]
+    );
+}
+
+#[test]
 fn an_unclosed_fence_makes_the_rest_of_the_message_code() {
     let mut state = chat();
     answered(&mut state, "q", "ok\n```\nlet x = 1;\nmore");

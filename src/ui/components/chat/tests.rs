@@ -163,6 +163,16 @@ fn a_fenced_block_uses_the_code_style() {
 }
 
 #[test]
+fn tab_indented_code_keeps_its_indentation_on_screen() {
+    let chat = exchange(
+        "q",
+        "```go\nfunc main() {\n\tif ok {\n\t\trun()\n\t}\n}\n```",
+    );
+    let buf = draw(&chat, 30, 12);
+    insta::assert_snapshot!(text(&buf));
+}
+
+#[test]
 fn markdown_is_drawn_literally_and_unstyled() {
     let chat = exchange("q", "**bold** # title | a | b |");
     let buf = draw(&chat, 40, 8);

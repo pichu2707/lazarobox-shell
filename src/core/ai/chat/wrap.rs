@@ -43,6 +43,46 @@ pub fn text_width(s: &str) -> usize {
     s.graphemes(true).map(UnicodeWidthStr::width).sum()
 }
 
+/// Columns between tab stops. Terminals draw nothing for a tab cell, so tabs
+/// are turned into spaces before anything is measured or drawn. 4 keeps tab
+/// indented code (Go, Makefiles) readable in a narrow pane, where 8 would eat
+/// the width after two levels.
+pub const TAB_WIDTH: usize = 4;
+
+/// The spaces a tab at display column `col` stands for: up to the next stop,
+/// and at least one.
+pub fn tab_pad(col: usize) -> usize {
+    TAB_WIDTH - col % TAB_WIDTH
+}
+
+/// `s` with every tab replaced by spaces up to the next tab stop. Columns
+/// count display width and restart after a newline.
+pub fn expand_tabs(s: &str) -> String {
+    if !s.contains('\t') {
+        return s.to_owned();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut col = 0;
+    for g in s.graphemes(true) {
+        match g {
+            "\t" => {
+                let pad = tab_pad(col);
+                out.extend(std::iter::repeat_n(' ', pad));
+                col += pad;
+            }
+            "\n" | "\r\n" => {
+                out.push_str(g);
+                col = 0;
+            }
+            _ => {
+                out.push_str(g);
+                col += UnicodeWidthStr::width(g);
+            }
+        }
+    }
+    out
+}
+
 /// Splits `chars` into rows of at most `width` display columns, as ranges of
 /// char indices. An empty line is one empty row. Every row holds at least one
 /// cluster, so a cluster wider than the width still makes progress, and no
@@ -192,6 +232,17 @@ mod tests {
         );
         assert_eq!(text_width("日a"), 3);
         assert_eq!(text_width("e\u{301}"), 1);
+    }
+
+    #[test]
+    fn tabs_expand_to_the_next_stop() {
+        assert_eq!(expand_tabs("\tx"), "    x");
+        assert_eq!(expand_tabs("ab\tc"), "ab  c");
+        assert_eq!(expand_tabs("abcd\te"), "abcd    e");
+        assert_eq!(expand_tabs("a\t\tb"), "a       b");
+        // Stops count display columns, not chars.
+        assert_eq!(expand_tabs("日\tx"), "日  x");
+        assert_eq!(expand_tabs("no tabs"), "no tabs");
     }
 
     #[test]

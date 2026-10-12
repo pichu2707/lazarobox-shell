@@ -6,7 +6,7 @@ use std::{cell::RefCell, sync::Arc};
 use super::{
     ChatState, Entry, ReasoningState,
     engine::Role,
-    wrap::{wrap_ranges, wrap_words},
+    wrap::{expand_tabs, wrap_ranges, wrap_words},
 };
 
 /// What a transcript line is, which decides its style.
@@ -151,6 +151,9 @@ fn push_wrapped(
     let room = width.saturating_sub(first.chars().count()).max(1);
     let mut lead = first;
     for logical in text.split('\n') {
+        // A tab cell is not drawn, so tabs are spaces before wrapping.
+        let logical = expand_tabs(logical);
+        let logical = logical.as_str();
         // Code keeps every character where it is; prose breaks at spaces.
         let rows = if kind == LineKind::Code {
             let chars: Vec<char> = logical.chars().collect();
