@@ -41,6 +41,20 @@ Inspirado en la paleta de colores de lazarobox (tonos oscuros suavizados con ace
 
 ## 📦 Instalación
 
+Desde crates.io (requiere Rust 1.88 o superior):
+
+```bash
+cargo install lazarobox-shell    # instala el binario `lazarobox-shell` en ~/.cargo/bin
+```
+
+Compatibilidad de plataformas:
+
+- **Linux:** soportado. Es la única plataforma probada.
+- **macOS:** el código compila (`cargo check --target aarch64-apple-darwin` pasa), pero no se ha probado en ejecución y no está soportado oficialmente. El directorio de trabajo de los paneles se obtiene en Linux mediante `/proc`; en macOS solo se actualiza si el shell emite OSC 7.
+- **Windows:** no soportado.
+
+Desde el código fuente:
+
 ```bash
 cargo install --path .           # instala lazarobox-shell en ~/.cargo/bin
 scripts/install-desktop.sh       # añade el lanzador "Lazarobox" (rofi, menú de aplicaciones)

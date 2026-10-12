@@ -2,6 +2,8 @@
 //! binary because it swaps file descriptor 0 for the whole process, which
 //! would race with any other test running in the same process.
 
+#![cfg(target_os = "linux")]
+
 use std::{fs, os::unix::fs::PermissionsExt};
 
 use lazarobox_shell::runtime::ai_detect::version;
