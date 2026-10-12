@@ -634,9 +634,15 @@ fn reasoning_states(a: &App) -> Vec<ReasoningState> {
         .collect()
 }
 
+/// Ctrl+R pressed a second after the last one: a new press, not a hold.
+fn toggle_later(a: &mut App) {
+    let later = NOW_MS.with(|n| n.get()) + 1000;
+    at(a, later, ctrl('r'));
+}
+
 /// A finished turn that reasoned: a collapsed block above the answer.
 fn reasoned() -> App {
-    let mut a = ready_app();
+    let mut a = ready_app().with_clock(mock_now);
     let turn = match ask(&mut a, "q").as_slice() {
         [Effect::ChatSend { turn, .. }] => *turn,
         other => panic!("{other:?}"),
@@ -656,7 +662,7 @@ fn ctrl_r_expands_and_collapses_the_reasoning_without_touching_the_composer() {
     assert_eq!(a.update(ctrl('r')), vec![]);
     assert_eq!(reasoning_states(&a), [ReasoningState::Expanded]);
     assert!(a.take_dirty());
-    assert_eq!(a.update(ctrl('r')), vec![]);
+    toggle_later(&mut a);
     assert_eq!(reasoning_states(&a), [ReasoningState::Collapsed]);
     assert_eq!(composer(&a), "draft");
 }
@@ -708,7 +714,7 @@ fn the_reasoning_block_through_the_key_looks_right() {
     insta::assert_snapshot!("reasoning_collapsed_by_default", shot(&a));
     a.update(ctrl('r'));
     insta::assert_snapshot!("reasoning_expanded_by_ctrl_r", shot(&a));
-    a.update(ctrl('r'));
+    toggle_later(&mut a);
     insta::assert_snapshot!("reasoning_collapsed_again", shot(&a));
 }
 
@@ -746,7 +752,7 @@ fn ctrl_r_keeps_a_pinned_view_on_the_same_line() {
     let before = top_row(&a);
     a.update(ctrl('r'));
     assert_eq!(top_row(&a), before);
-    a.update(ctrl('r'));
+    toggle_later(&mut a);
     assert_eq!(top_row(&a), before);
 }
 
@@ -1135,4 +1141,74 @@ fn streams_carry_the_phase_the_model_and_the_start() {
     assert_eq!(first[0].phase, StreamPhase::Thinking);
     a.update(delta(turn, "x"));
     assert_eq!(a.streams()[0].phase, StreamPhase::Answering);
+}
+
+// Held one-shot keys without the Kitty protocol --------------------------------
+
+fn release(c: char, mods: KeyModifiers) -> AppEvent {
+    AppEvent::Key(KeyEvent::new_with_kind(
+        KeyCode::Char(c),
+        mods,
+        KeyEventKind::Release,
+    ))
+}
+
+#[test]
+fn a_held_yank_sent_as_presses_copies_once() {
+    let mut a = answered("hello").with_clock(mock_now);
+    assert_eq!(at(&mut a, 0, ctrl('y')).len(), 1);
+    for ms in [100, 200, 300, 600, 900] {
+        assert_eq!(at(&mut a, ms, ctrl('y')), vec![], "Ctrl+Y at {ms}");
+    }
+    assert_eq!(
+        at(&mut a, 1500, ctrl('y')).len(),
+        1,
+        "a new press, after the pause"
+    );
+}
+
+#[test]
+fn a_held_reasoning_toggle_sent_as_presses_toggles_once() {
+    let mut a = ready_app().with_clock(mock_now);
+    let turn = match ask(&mut a, "q").as_slice() {
+        [Effect::ChatSend { turn, .. }] => *turn,
+        other => panic!("{other:?}"),
+    };
+    a.update(thinking(turn, "pondering"));
+    a.update(delta(turn, "hello"));
+    a.update(finish(turn));
+    let state = |a: &App| chat_of(a).entries().to_vec();
+    let before = state(&a);
+    at(&mut a, 10, ctrl('r'));
+    let toggled = state(&a);
+    assert_ne!(toggled, before);
+    for ms in [110, 210, 310] {
+        at(&mut a, ms, ctrl('r'));
+        assert_eq!(state(&a), toggled, "Ctrl+R at {ms}");
+    }
+}
+
+#[test]
+fn a_release_or_another_key_ends_the_hold() {
+    let mut a = answered("hello").with_clock(mock_now);
+    assert_eq!(at(&mut a, 0, ctrl('y')).len(), 1);
+    at(&mut a, 50, release('y', KeyModifiers::CONTROL));
+    assert_eq!(at(&mut a, 100, ctrl('y')).len(), 1, "after the release");
+    at(&mut a, 150, key('x'));
+    assert_eq!(at(&mut a, 200, ctrl('y')).len(), 1, "after another key");
+}
+
+#[test]
+fn a_held_cancel_sent_as_presses_cancels_once() {
+    let mut a = ready_app().with_clock(mock_now);
+    assert_eq!(ask(&mut a, "one").len(), 1);
+    let cancel = at(&mut a, 0, plain(KeyCode::Esc));
+    assert_eq!(cancel, vec![Effect::ChatCancel(chat_id())]);
+    for ms in [100, 200, 300] {
+        assert_eq!(at(&mut a, ms, plain(KeyCode::Esc)), vec![], "Esc at {ms}");
+    }
+    // A later press, on a new stream, cancels again.
+    assert_eq!(ask(&mut a, "two").len(), 1);
+    let again = at(&mut a, 2000, plain(KeyCode::Esc));
+    assert_eq!(again, vec![Effect::ChatCancel(chat_id())]);
 }

@@ -82,6 +82,18 @@ impl App {
         let id = self.tab().focus;
         let mods = key.modifiers;
         let plain = mods - KeyModifiers::SHIFT == KeyModifiers::NONE;
+        let debounced = matches!(
+            (key.code, mods),
+            (KeyCode::Esc, KeyModifiers::NONE)
+                | (KeyCode::Char('c' | 'y' | 'b' | 'r'), KeyModifiers::CONTROL)
+        );
+        // A held key arrives as Repeat (Kitty) or as Presses close together.
+        let repeat = if debounced {
+            self.held_chat_key_dropped(&key, repeat)
+        } else {
+            self.held_chat_key = None;
+            repeat
+        };
         let one_shot = |effects: fn(&mut App, PaneId) -> Vec<Effect>, app: &mut App| {
             if repeat { Vec::new() } else { effects(app, id) }
         };
@@ -114,6 +126,24 @@ impl App {
             (KeyCode::End, _) if plain => self.edit_composer(|c| c.end()),
             _ => Vec::new(),
         }
+    }
+
+    /// Whether `key`, a debounced one-shot chat key, is part of a hold: a
+    /// Repeat, or the same key again within `HELD_EXIT_WINDOW` of the last
+    /// such event (every event of the hold renews the window).
+    fn held_chat_key_dropped(&mut self, key: &KeyEvent, repeat: bool) -> bool {
+        let now = (self.clock)();
+        let held = self.held_chat_key.is_some_and(|h| {
+            h.code == key.code
+                && h.modifiers == key.modifiers
+                && now.saturating_duration_since(h.last) <= HELD_EXIT_WINDOW
+        });
+        self.held_chat_key = Some(HeldExit {
+            code: key.code,
+            modifiers: key.modifiers,
+            last: now,
+        });
+        repeat || held
     }
 
     /// A paste into the focused chat's composer.

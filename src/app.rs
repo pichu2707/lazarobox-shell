@@ -378,6 +378,10 @@ pub struct App {
     /// TERMINAL until its Release or any other Press, and so are its Presses
     /// arriving within `HELD_EXIT_WINDOW` of the previous such event.
     held_exit: Option<HeldExit>,
+    /// The same debounce for the one-shot keys of a chat (cancel, yank,
+    /// reasoning toggle): a terminal without key event types delivers a held
+    /// key as Presses.
+    held_chat_key: Option<HeldExit>,
     /// Monotonic clock, injected so `update` stays deterministic.
     clock: fn() -> Instant,
     /// The last finished detection; `None` until the first run ends.
@@ -432,6 +436,7 @@ impl App {
             dir_exists: |_| true,
             shell: None,
             held_exit: None,
+            held_chat_key: None,
             clock: Instant::now,
             engines: None,
             detecting: false,
@@ -951,6 +956,9 @@ impl App {
             KeyEventKind::Release => {
                 if self.held_exit.is_some_and(|h| h.code == key.code) {
                     self.held_exit = None;
+                }
+                if self.held_chat_key.is_some_and(|h| h.code == key.code) {
+                    self.held_chat_key = None;
                 }
                 return Vec::new();
             }
