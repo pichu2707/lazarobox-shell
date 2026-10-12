@@ -564,11 +564,23 @@ fn restore() {
     ratatui::restore();
 }
 
+/// Whether a panic on this thread should tear the terminal down. A panic
+/// inside a chat adapter poll is caught by its turn task and becomes an
+/// `Interrupted` turn: the app keeps running, so the terminal must stay intact.
+fn should_restore() -> bool {
+    !chat::in_adapter_poll()
+}
+
 /// Restores the cursor and bracketed paste before the previous hook (which
 /// `ratatui::init` set up to leave raw mode and the alternate screen) runs.
+/// Panics inside a chat adapter are caught elsewhere and skip all of it,
+/// including the previous hook's output, which would scribble over the TUI.
 fn install_panic_hook() {
     let previous = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
+        if !should_restore() {
+            return;
+        }
         let _ = restore_to(&mut stdout());
         previous(info);
     }));
@@ -1550,8 +1562,14 @@ mod tests {
     async fn chat_effects_never_touch_ptys_or_detection() {
         let calls = Rc::new(RefCell::new(0));
         let seen = Rc::clone(&calls);
-        let (panes, mut rx) = panes_with_chats(scripted(vec![StreamEvent::Done(Finish::Stop)]));
-        let mut panes = panes.with_detector(Box::new(move || *seen.borrow_mut() += 1));
+        let (panes, _pty_rx, rec) = fake_panes(None);
+        let (tx, mut rx) = mpsc::channel(chat::APP_CHANNEL);
+        let runner = scripted(vec![StreamEvent::Done(Finish::Stop)]);
+        let mut panes = panes
+            .with_chats(Chats::new(runner, tx))
+            .with_detector(Box::new(move || *seen.borrow_mut() += 1));
+        // Two live PTYs, one on the very id the chat uses.
+        spawn_two(&mut panes);
         panes.apply(vec![
             chat_send(id(1), 1),
             Effect::ChatCancel(id(1)),
@@ -1559,6 +1577,16 @@ mod tests {
         ]);
         tokio::time::sleep(Duration::from_secs(1)).await;
         while rx.try_recv().is_ok() {}
+        {
+            let rec = rec.borrow();
+            assert_eq!(rec.specs.len(), 2, "a chat spawns no PTY");
+            for log in &rec.logs {
+                let log = log.lock().unwrap();
+                assert!(log.writes.is_empty(), "a chat writes to no PTY");
+                assert!(log.resizes.is_empty(), "a chat resizes no PTY");
+                assert_eq!(log.kills, 0, "a chat kills no PTY");
+            }
+        }
         assert_eq!(*calls.borrow(), 0, "a chat never starts a detection run");
         panes.apply(vec![Effect::DetectEngines]);
         assert_eq!(
@@ -1566,6 +1594,20 @@ mod tests {
             1,
             "and a detection run is not held back by it"
         );
+    }
+
+    #[tokio::test]
+    async fn a_panic_hook_restores_the_terminal_except_inside_a_chat_adapter() {
+        assert!(
+            should_restore(),
+            "outside an adapter the terminal is restored"
+        );
+        let inside = chat::scoped(async { should_restore() }).await;
+        assert!(
+            !inside,
+            "inside an adapter poll the panic is caught: leave the TUI alone"
+        );
+        assert!(should_restore(), "and it is back to normal afterwards");
     }
 
     #[tokio::test(start_paused = true)]
@@ -1631,5 +1673,57 @@ mod tests {
         );
         assert_eq!(cancels, 0);
         assert!(recv(&mut rx).await.is_none(), "nothing follows the cap");
+    }
+
+    // Task 5.2 across app and runtime: confirming `w q` on a streaming chat
+    // aborts its turn at once, and the engine stops sending.
+    #[tokio::test(start_paused = true)]
+    async fn closing_a_streaming_chat_stops_its_turn() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Flag(Arc<AtomicBool>);
+        impl Drop for Flag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let flag = dropped.clone();
+        let runner: chat::Runner = Arc::new(move |_request, tx| {
+            let flag = Flag(flag.clone());
+            Box::pin(async move {
+                let _flag = flag;
+                loop {
+                    if tx.send(StreamEvent::Delta("x".into())).await.is_err() {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            })
+        });
+        let (mut panes, mut rx) = panes_with_chats(runner);
+        let mut app = App::new(80, 25);
+        app.open_chat(None);
+        let chat = app.focused();
+        panes.apply(app.chat_send(chat, "hi"));
+        let (pane, turn, event) = recv(&mut rx).await.unwrap();
+        app.update(AppEvent::Chat(pane, turn, event));
+        let key = |c: char| AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        app.update(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char(' '),
+            KeyModifiers::CONTROL,
+        )));
+        app.update(key('w'));
+        app.update(key('q'));
+        let (outcome, _) = panes.apply(app.update(key('y')));
+        assert_eq!(outcome, Outcome::Continue);
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert!(dropped.load(Ordering::SeqCst), "the adapter was dropped");
+        let mut late = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            late.push(event);
+        }
+        for (pane, turn, event) in late {
+            assert_eq!(app.update(AppEvent::Chat(pane, turn, event)), vec![]);
+        }
     }
 }

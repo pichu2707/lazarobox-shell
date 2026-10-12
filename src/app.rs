@@ -1375,11 +1375,9 @@ impl App {
             Confirm::CloseTab => self.close_tab(),
             Confirm::ClosePane => {
                 let id = self.tab().focus;
-                let shell = self.is_shell(id);
+                let stop = self.stop_effect(id);
                 let mut effects = self.remove_pane(id);
-                if shell {
-                    effects.push(Effect::ClosePane(id));
-                }
+                effects.push(stop);
                 effects
             }
         }
@@ -1390,12 +1388,23 @@ impl App {
         if self.tabs.len() == 1 {
             return vec![Effect::Quit];
         }
-        let ids: Vec<_> = (self.tab().tree.leaves().into_iter())
-            .filter(|&id| self.is_shell(id))
+        let stops: Vec<_> = (self.tab().tree.leaves().into_iter())
+            .map(|id| self.stop_effect(id))
             .collect();
         let mut effects = self.drop_tab(self.active);
-        effects.extend(ids.into_iter().map(Effect::ClosePane));
+        effects.extend(stops);
         effects
+    }
+
+    /// What ends the work behind pane `id` when it closes: a shell's child is
+    /// terminated, a chat's turn is cancelled. A chat has no child, so it
+    /// never gets `ClosePane`.
+    fn stop_effect(&self, id: PaneId) -> Effect {
+        if self.is_shell(id) {
+            Effect::ClosePane(id)
+        } else {
+            Effect::ChatCancel(id)
+        }
     }
 
     fn on_copy_key(&mut self, mut state: CopyState, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
@@ -6031,7 +6040,7 @@ mod app_tests {
         }
 
         #[test]
-        fn closing_a_chat_pane_emits_no_close_pane() {
+        fn closing_a_chat_pane_emits_chat_cancel_and_never_close_pane() {
             let mut a = launched(80, 25);
             a.open_chat(None);
             press(&mut a, "wq");
@@ -6039,13 +6048,16 @@ mod app_tests {
             let effects = a.update(key('y'));
             assert_eq!(
                 effects,
-                vec![Effect::ResizePty(PaneId::FIRST, sized(24, 80))]
+                vec![
+                    Effect::ResizePty(PaneId::FIRST, sized(24, 80)),
+                    Effect::ChatCancel(chat_id()),
+                ]
             );
             assert_eq!(a.focused(), PaneId::FIRST);
         }
 
         #[test]
-        fn closing_a_tab_closes_only_its_shell_panes() {
+        fn closing_a_tab_cancels_its_chats_and_closes_only_its_shells() {
             let mut a = launched(80, 25);
             a.open_chat_tab(None);
             press(&mut a, "wv");
@@ -6053,6 +6065,10 @@ mod app_tests {
             press(&mut a, "tc");
             let effects = a.update(key('y'));
             assert!(effects.contains(&Effect::ClosePane(shell)), "{effects:?}");
+            assert!(
+                effects.contains(&Effect::ChatCancel(chat_id())),
+                "{effects:?}"
+            );
             assert!(
                 !effects.contains(&Effect::ClosePane(chat_id())),
                 "{effects:?}"
@@ -6544,6 +6560,86 @@ mod app_tests {
             assert_eq!(
                 last(&a, chat_id()),
                 ("a".repeat(ANSWER_CAP), MsgStatus::Truncated)
+            );
+        }
+
+        // Task 5.2: closing.
+        #[test]
+        fn closing_a_streaming_chat_cancels_it_and_drops_its_late_events() {
+            let mut a = streaming();
+            a.update(delta(chat_id(), 1, "Hel"));
+            press(&mut a, "wq");
+            let effects = a.update(key('y'));
+            assert!(
+                effects.contains(&Effect::ChatCancel(chat_id())),
+                "{effects:?}"
+            );
+            assert!(
+                !effects.iter().any(|e| matches!(e, Effect::ClosePane(_))),
+                "{effects:?}"
+            );
+            assert!(a.pane_view(chat_id()).is_none(), "the pane is gone");
+            a.take_dirty();
+            for event in [
+                delta(chat_id(), 1, "lo"),
+                finish(chat_id(), 1),
+                AppEvent::Chat(chat_id(), 1, StreamEvent::Error(ChatError::Interrupted)),
+            ] {
+                assert_eq!(a.update(event), vec![]);
+            }
+            assert!(!a.take_dirty());
+            assert_eq!(a.focused(), PaneId::FIRST);
+        }
+
+        #[test]
+        fn closing_a_tab_cancels_every_streaming_chat_in_it() {
+            let mut a = launched(80, 25);
+            a.open_chat_tab(None);
+            let one = a.focused();
+            // A split from a chat is a shell; the second chat opens next to it.
+            press(&mut a, "wv");
+            let shell = a.focused();
+            a.open_chat(None);
+            let two = a.focused();
+            for id in [one, two] {
+                assert_eq!(a.chat_send(id, "hi").len(), 1);
+            }
+            press(&mut a, "tc");
+            let effects = a.update(key('y'));
+            let chats: Vec<_> = effects
+                .iter()
+                .filter_map(|e| match e {
+                    Effect::ChatCancel(id) => Some(*id),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(chats.len(), 2, "{effects:?}");
+            assert!(chats.contains(&one) && chats.contains(&two), "{effects:?}");
+            let closed: Vec<_> = effects
+                .iter()
+                .filter_map(|e| match e {
+                    Effect::ClosePane(id) => Some(*id),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(closed, vec![shell], "{effects:?}");
+            assert_eq!(a.tab_count(), 1);
+            a.take_dirty();
+            for id in [one, two] {
+                assert_eq!(a.update(delta(id, 1, "late")), vec![], "{id:?}");
+            }
+            assert!(!a.take_dirty());
+        }
+
+        #[test]
+        fn quitting_asks_the_runtime_to_stop_and_emits_no_per_chat_effect() {
+            let mut a = streaming();
+            press(&mut a, "q");
+            assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+            // The runtime stops every turn on Quit; the state stays readable.
+            assert_eq!(
+                chat_of(&a, chat_id()).phase(),
+                Phase::Waiting { slow: false }
             );
         }
 
