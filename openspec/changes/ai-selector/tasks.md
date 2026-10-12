@@ -105,9 +105,9 @@ AS4 (~850, 90% deletions) is split in three because two PRs cannot stay under 40
 
 ## PR10 / AS6a: Render (`src/ui/components/menu.rs`)
 
-- [ ] 10.1 RED: insta snapshots: Settings rows, task list (mixed/default/not set), level 1, Ollama scrolled to a disabled last row (`18/18`), CLI with `custom…`, custom entry, checking/refreshing cues, disabled-row footer; 24x14 full popup vs 23x14 and 24x13 fallback; no panic 0..70 x 0..20.
-- [ ] 10.2 GREEN: fixed 62x15 body, `VIEW=10`, marks, `●`, muted-reversed disabled rows, `footer()` rendering, fallback threshold.
-- [ ] 10.3 Gate; review each new `.snap` by eye.
+- [x] 10.1 RED: insta snapshots: Settings rows, task list (mixed/default/not set), level 1, Ollama scrolled to a disabled last row (`18/18`), CLI with `custom…`, custom entry, checking/refreshing cues, disabled-row footer; 24x14 full popup vs 23x14 and 24x13 fallback; no panic 0..70 x 0..20.
+- [x] 10.2 GREEN: fixed 62x15 body, `VIEW=10`, marks, `●`, muted-reversed disabled rows, `footer()` rendering, fallback threshold.
+- [x] 10.3 Gate; review each new `.snap` by eye.
 
 ## PR11 / AS6b: App wiring (`src/app.rs`, README)
 

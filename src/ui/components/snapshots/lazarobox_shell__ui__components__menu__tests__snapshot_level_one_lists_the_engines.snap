@@ -1,0 +1,19 @@
+---
+source: src/ui/components/menu.rs
+expression: "text(&draw(62, 15, &picker_of(\"code\", 0)))"
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Engine for code                                            │
+│ (default · use general)                                    │
+│ ollama available · 8 models                                │
+│ claude available · 2.1.0 ●                                 │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ j/k move · Enter choose · r refresh · Esc back · s save    │
+└────────────────────────────────────────────────────────────┘

@@ -1,0 +1,18 @@
+---
+source: src/ui/components/menu.rs
+expression: "text(&draw(24, 14, &task))"
+---
+┌ Menu ────────────────┐
+│ Settings             │
+│ Statusline position  │
+│ Tab bar position  t… │
+│ Mouse: off (coming s…│
+│ AI                   │
+│ Set all tasks  (mix… │
+│ general  ollama › m… │
+│ code   claude › opus │
+│ chat       (default) │
+│ review     (default) │
+│ summarize  (default) │
+│ j/k move · h/l chang…│
+└──────────────────────┘
