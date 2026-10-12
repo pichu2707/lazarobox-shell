@@ -354,6 +354,8 @@ impl Panes {
                 Effect::SetClipboard(bytes) => self.host_out.extend_from_slice(&bytes),
                 // Returns at once: the probes run on their own tasks.
                 Effect::DetectEngines => (self.detect)(),
+                // The chat task lands in C5; a chat has no child to start or stop.
+                Effect::ChatSend { .. } | Effect::ChatCancel(_) => {}
                 Effect::Quit => outcome = Outcome::Quit,
             }
         }
@@ -1072,6 +1074,30 @@ mod tests {
             (outcome, feedback, *calls.borrow()),
             (Outcome::Continue, Vec::new(), 1)
         );
+    }
+
+    // The chat task lands in C5; until then the runtime must not touch a pane.
+    #[test]
+    fn chat_effects_are_ignored_until_the_chat_task_exists() {
+        use crate::core::ai::chat::engine::ChatRequest;
+        let (mut panes, _rx, rec) = fake_panes(None);
+        let request = ChatRequest {
+            engine: "ollama".into(),
+            model: Some("llama3:8b".into()),
+            system: String::new(),
+            messages: Vec::new(),
+        };
+        let effects = vec![
+            Effect::ChatSend {
+                pane: PaneId::FIRST,
+                turn: 1,
+                request,
+            },
+            Effect::ChatCancel(PaneId::FIRST),
+        ];
+        let (outcome, feedback) = panes.apply(effects);
+        assert_eq!((outcome, feedback), (Outcome::Continue, Vec::new()));
+        assert!(rec.borrow().specs.is_empty(), "nothing was spawned");
     }
 
     #[test]
