@@ -125,7 +125,7 @@ fn entry_rows(entry: &Entry, width: usize, out: &mut Vec<Line>) {
 fn assistant_rows(text: &str, width: usize, out: &mut Vec<Line>) {
     let mut in_code = false;
     for line in text.split('\n') {
-        let fence = line.trim_start().starts_with("```");
+        let fence = is_fence(line, in_code);
         let kind = if fence || in_code {
             LineKind::Code
         } else {
@@ -136,6 +136,16 @@ fn assistant_rows(text: &str, width: usize, out: &mut Vec<Line>) {
         }
         push_wrapped(out, kind, "", "", line, width);
     }
+}
+
+/// Whether `line` is a fence. One that closes a block is any line starting
+/// with three backticks. One that opens a block must have no backtick after
+/// its opening run (CommonMark), so inline code like ```a``` is prose.
+fn is_fence(line: &str, in_code: bool) -> bool {
+    let Some(rest) = line.trim_start().strip_prefix("```") else {
+        return false;
+    };
+    in_code || !rest.trim_start_matches('`').contains('`')
 }
 
 /// Wraps every line of `text` to `width` columns less the prefix. `first`

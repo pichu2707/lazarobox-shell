@@ -137,6 +137,24 @@ fn tabs_become_spaces_so_indentation_survives() {
 }
 
 #[test]
+fn a_fence_line_with_a_backtick_after_the_opening_ticks_is_not_a_fence() {
+    let mut state = chat();
+    answered(&mut state, "q", "use ```a``` inline\n```a```\nstill prose");
+    let got = rows(&build(&state, 40));
+    assert_eq!(
+        got[2..],
+        ["A|use ```a``` inline", "A|```a```", "A|still prose"]
+    );
+    // An info string without backticks still opens a block.
+    let mut state = chat();
+    answered(&mut state, "q", "```rust title=\"x\"\ncode");
+    assert_eq!(
+        rows(&build(&state, 40))[2..],
+        ["C|```rust title=\"x\"", "C|code"]
+    );
+}
+
+#[test]
 fn an_unclosed_fence_makes_the_rest_of_the_message_code() {
     let mut state = chat();
     answered(&mut state, "q", "ok\n```\nlet x = 1;\nmore");
