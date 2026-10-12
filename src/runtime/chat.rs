@@ -1,7 +1,16 @@
 //! The chat task: one tokio task per pane turn, between an engine adapter and
 //! the app. Adapters are a seam (`Runner`); real ones arrive with the engines.
 
-use std::{collections::HashMap, panic::AssertUnwindSafe, sync::Arc, time::Duration};
+use std::{
+    cell::Cell,
+    collections::HashMap,
+    future::Future,
+    panic::AssertUnwindSafe,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use futures::{
     FutureExt,
@@ -42,6 +51,13 @@ pub type Tagged = (PaneId, u64, StreamEvent);
 
 /// What an adapter runs: it sends its events to `tx` and ends. Dropping the
 /// future cancels the turn: it closes the socket or kills the process group.
+///
+/// The future MUST stay alive until the adapter's stream ends. Once it
+/// completes the turn's receiver is closed: buffered events are delivered in
+/// order, anything sent afterwards (say, from a detached task holding a `tx`
+/// clone) is discarded, and the turn ends as `Interrupted` unless a final
+/// event already arrived. Adapters must not spawn detached tasks that outlive
+/// the future.
 pub type Runner =
     Arc<dyn Fn(ChatRequest, mpsc::Sender<StreamEvent>) -> BoxFuture<'static, ()> + Send + Sync>;
 
@@ -204,6 +220,61 @@ pub fn unavailable_runner() -> Runner {
     })
 }
 
+thread_local! {
+    /// How many adapter polls are running on this thread right now.
+    static IN_ADAPTER: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Whether the current thread is inside a poll of a chat adapter future. The
+/// panic hook reads it: a panic there is caught by `run_turn` and becomes
+/// `Interrupted`, so it must not tear the terminal down.
+pub fn in_adapter_poll() -> bool {
+    IN_ADAPTER.with(|depth| depth.get() > 0)
+}
+
+/// Counts one adapter poll in; the drop counts it out, also on unwind.
+struct PollGuard;
+
+impl PollGuard {
+    fn enter() -> Self {
+        IN_ADAPTER.with(|depth| depth.set(depth.get() + 1));
+        Self
+    }
+}
+
+impl Drop for PollGuard {
+    fn drop(&mut self) {
+        IN_ADAPTER.with(|depth| depth.set(depth.get() - 1));
+    }
+}
+
+/// Wraps an adapter future so `in_adapter_poll` is true during each of its
+/// polls. Set per poll, not per task: a task can move between threads between
+/// polls, and the panic hook runs on the thread that panics.
+///
+/// Known gaps, accepted for now:
+/// - A double panic (the adapter panics, then a `Drop` panics during unwind)
+///   aborts the process with the terminal left raw: the hook skipped the
+///   restore for both.
+/// - A panic in an adapter's `Drop` during `Chats::cancel` or `shutdown`
+///   happens with the future dropped outside a poll, so it runs the full hook.
+/// - Panics in tasks the adapter spawns run the full hook too.
+/// - A caught adapter panic is silent; logging its message is planned for C11.
+pub fn scoped<F: Future>(inner: F) -> Scoped<F> {
+    Scoped(Box::pin(inner))
+}
+
+pub struct Scoped<F>(Pin<Box<F>>);
+
+impl<F: Future> Future for Scoped<F> {
+    type Output = F::Output;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+        let _guard = PollGuard::enter();
+        self.0.as_mut().poll(cx)
+    }
+}
+
 /// One turn: runs the adapter, filters its events and forwards them tagged.
 /// The adapter future lives in this task, so dropping the task drops it.
 async fn run_turn(
@@ -216,7 +287,11 @@ async fn run_turn(
     let (tx, mut rx) = mpsc::channel(TURN_CHANNEL);
     // A panicking adapter must still end the turn: its sender is dropped and
     // the pane hears `Interrupted` instead of waiting forever.
-    let run = AssertUnwindSafe(runner(request, tx)).catch_unwind().fuse();
+    // The call itself sits inside the guarded future: a runner that panics
+    // before it returns its future is caught the same way.
+    let run = AssertUnwindSafe(scoped(async move { runner(request, tx).await }))
+        .catch_unwind()
+        .fuse();
     tokio::pin!(run);
     let mut running = true;
     let mut pipe = Pipe::new();
@@ -224,6 +299,11 @@ async fn run_turn(
         let event = tokio::select! {
             _ = &mut run, if running => {
                 running = false;
+                // The adapter is done (or panicked). Closing the receiver
+                // keeps what is already buffered and then yields `None`, so a
+                // sender clone that outlives the adapter cannot hold the turn
+                // open.
+                rx.close();
                 continue;
             }
             event = rx.recv() => event,

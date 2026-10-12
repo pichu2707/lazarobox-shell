@@ -372,6 +372,118 @@ async fn an_adapter_that_panics_interrupts_the_turn() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_runner_that_panics_before_returning_its_future_interrupts_the_turn() {
+    let runner: Runner = Arc::new(|_request, _tx| panic!("runner bug before the future"));
+    let (mut chats, mut rx) = chats(runner);
+    chats.send(pane(1), 1, request(""));
+    assert_eq!(
+        turn_events(&mut rx).await,
+        vec![(pane(1), 1, StreamEvent::Error(ChatError::Interrupted))]
+    );
+}
+
+/// Records `in_adapter_poll()` when dropped, even while a panic unwinds.
+struct SeesFlagOnDrop(Arc<AtomicBool>);
+
+impl Drop for SeesFlagOnDrop {
+    fn drop(&mut self) {
+        self.0.store(in_adapter_poll(), Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn the_adapter_flag_is_set_only_during_its_polls() {
+    use std::{
+        future::Future,
+        pin::pin,
+        task::{Context, Poll, Waker},
+    };
+
+    assert!(!in_adapter_poll());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let mut inside = pin!(scoped(async move {
+        log.lock().unwrap().push(in_adapter_poll());
+        tokio::task::yield_now().await;
+        log.lock().unwrap().push(in_adapter_poll());
+    }));
+    let mut cx = Context::from_waker(Waker::noop());
+
+    // First poll: the future runs, then returns Pending at the yield.
+    assert!(inside.as_mut().poll(&mut cx).is_pending());
+    assert!(!in_adapter_poll(), "off between polls");
+    // Second poll: it finishes.
+    assert_eq!(inside.as_mut().poll(&mut cx), Poll::Ready(()));
+    assert!(!in_adapter_poll(), "cleared once the poll returns");
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![true, true],
+        "set inside every poll"
+    );
+}
+
+#[tokio::test]
+async fn the_adapter_flag_is_set_while_a_panic_unwinds_and_cleared_after() {
+    let at_unwind = Arc::new(AtomicBool::new(false));
+    let seen = at_unwind.clone();
+    let result = AssertUnwindSafe(scoped(async move {
+        let _guard = SeesFlagOnDrop(seen);
+        panic!("adapter bug");
+    }))
+    .catch_unwind()
+    .await;
+    assert!(result.is_err());
+    assert!(
+        at_unwind.load(Ordering::SeqCst),
+        "the panic hook would still see the flag"
+    );
+    assert!(!in_adapter_poll(), "a panic must not leave the flag set");
+}
+
+#[tokio::test]
+async fn nested_adapter_polls_keep_the_flag_until_the_outermost_ends() {
+    let outer = scoped(async {
+        scoped(async {}).await;
+        in_adapter_poll()
+    });
+    assert!(outer.await);
+    assert!(!in_adapter_poll());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_lingering_sender_does_not_keep_a_finished_adapter_turn_open() {
+    let lingering = Arc::new(Mutex::new(None));
+    let slot = lingering.clone();
+    let runner: Runner = Arc::new(move |_request, tx| {
+        let slot = slot.clone();
+        Box::pin(async move {
+            let _ = tx.send(delta("one")).await;
+            let _ = tx.send(delta("two")).await;
+            // A detached task keeps a sender alive, and never sends again.
+            let held = tx.clone();
+            *slot.lock().unwrap() = Some(tokio::spawn(async move {
+                let _held = held;
+                std::future::pending::<()>().await;
+            }));
+        })
+    });
+    let (mut chats, mut rx) = chats(runner);
+    chats.send(pane(1), 1, request(""));
+    // Events sent before the adapter finished still arrive, in order.
+    assert_eq!(
+        turn_events(&mut rx).await,
+        vec![
+            (pane(1), 1, delta("one")),
+            (pane(1), 1, delta("two")),
+            (pane(1), 1, StreamEvent::Error(ChatError::Interrupted)),
+        ]
+    );
+    if let Some(task) = lingering.lock().unwrap().take() {
+        task.abort();
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_failure_reaches_the_app_as_one_clean_line() {
     let (mut chats, mut rx) = chats(scripted(vec![failed("bad\u{1b}[31m\nnews")]));
     chats.send(pane(1), 1, request(""));
