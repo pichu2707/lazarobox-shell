@@ -15,6 +15,7 @@ use crate::core::{
             store::{StoreCmd, StoreReply},
         },
         config::AiConfig,
+        jail::JailSupport,
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{
@@ -31,6 +32,8 @@ use crate::core::{
     prefix::{self, Binding, Group, PREFIX_KEY, PREFIX_TREE, PrefixAction, Step},
     pty::{PtyEvent, SpawnSpec},
 };
+
+mod chat;
 
 /// Rows of history kept by the emulator.
 const SCROLLBACK_LINES: usize = 10_000;
@@ -253,8 +256,6 @@ pub enum PaneView<'a> {
 /// The kind of pane a split or a new tab creates.
 enum NewPane {
     Shell,
-    // Nothing opens a chat until the `c` binding lands (C8).
-    #[cfg_attr(not(test), expect(dead_code))]
     Chat(ChatState),
 }
 
@@ -382,6 +383,10 @@ pub struct App {
     detecting: bool,
     /// The saved AI choice; the menu edits a draft of it.
     ai: AiConfig,
+    /// Whether this system can jail a CLI. Nothing probes it yet.
+    jail: JailSupport,
+    /// Chat panes whose send waits for the first detection result.
+    waiting_sends: Vec<PaneId>,
 }
 
 /// The key that left COPY and when it was last seen.
@@ -425,6 +430,8 @@ impl App {
             engines: None,
             detecting: false,
             ai: AiConfig::default(),
+            jail: JailSupport::Unavailable("no CLI jail yet"),
+            waiting_sends: Vec::new(),
         }
     }
 
@@ -876,7 +883,7 @@ impl App {
                 self.engines = Some(detection);
                 self.detecting = false;
                 self.dirty = true;
-                Vec::new()
+                self.run_waiting_sends()
             }
             AppEvent::Chat(id, turn, event) => self.on_chat(id, turn, event),
             // The chat pane consumes the replies once it saves its messages.
@@ -957,7 +964,7 @@ impl App {
         }
         self.dirty = true;
         match self.input {
-            InputMode::Terminal => self.on_terminal_key(key),
+            InputMode::Terminal => self.on_terminal_key(key, repeat),
             InputMode::Prefix => self.on_pending_key(PREFIX_TREE, &key),
             InputMode::Group(group) => self.on_pending_key(group.bindings, &key),
             InputMode::Copy(state) => self.on_copy_key(state, &key, repeat),
@@ -1042,10 +1049,13 @@ impl App {
         }
     }
 
-    fn on_terminal_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+    fn on_terminal_key(&mut self, key: KeyEvent, repeat: bool) -> Vec<Effect> {
         if PREFIX_KEY.matches(&key) {
             self.input = InputMode::Prefix;
             return Vec::new();
+        }
+        if self.focus_is_chat() {
+            return self.on_chat_key(key, repeat);
         }
         let Some(pty) = self.focused_pty() else {
             return Vec::new();
@@ -1086,7 +1096,8 @@ impl App {
                 | PrefixAction::SplitBelow
                 | PrefixAction::ToggleZoom
                 | PrefixAction::Focus(_)
-                | PrefixAction::OpenMenu,
+                | PrefixAction::OpenMenu
+                | PrefixAction::OpenChat,
             ) => InputMode::Terminal,
             Step::Run(
                 PrefixAction::ShowCommands
@@ -1102,6 +1113,7 @@ impl App {
                 vec![Effect::WritePty(self.tab().focus, vec![PREFIX_LITERAL])]
             }
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
+            Step::Run(PrefixAction::OpenChat) => self.open_chat_pane(),
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
             Step::Run(PrefixAction::SplitBelow) => self.split(Axis::Y),
             Step::Run(PrefixAction::Focus(dir)) => self.move_focus(dir),
@@ -1360,10 +1372,16 @@ impl App {
                     continue;
                 };
                 if state.size != size {
+                    let old = state.size;
                     state.size = size;
                     if let Some(pty) = state.pty_mut() {
                         pty.emu.resize(size);
                         effects.push(Effect::ResizePty(id, size));
+                    }
+                    if let Some(chat) = state.chat_mut() {
+                        // A scrolled view stays on the same content.
+                        let rows = usize::from(chat.transcript_rows(size.cols, size.rows));
+                        chat.rewrap(usize::from(old.cols), usize::from(size.cols), rows);
                     }
                 }
             }
@@ -1512,6 +1530,10 @@ impl App {
     fn on_paste(&mut self, text: &str) -> Vec<Effect> {
         // A paste is not part of a held key: the debounce is over.
         self.held_exit = None;
+        if self.input == InputMode::Terminal && self.focus_is_chat() {
+            self.chat_paste(text);
+            return Vec::new();
+        }
         match self.input {
             InputMode::Terminal => self
                 .focused_pty()
@@ -4014,7 +4036,8 @@ mod app_tests {
         assert_eq!(a.focused(), id3());
     }
 
-    const ROOT_HINT: &str = "w window · t tab · g go · b buffer · [ copy · m menu · q quit";
+    const ROOT_HINT: &str =
+        "w window · t tab · g go · b buffer · [ copy · m menu · c chat · q quit";
     const WINDOW_HINT: &str = "v split right · h split below · q close · r resize · z zoom";
 
     // Spec: Root hint in PREFIX; Group hint; Hint gone after the group resolves.
@@ -6011,6 +6034,8 @@ mod app_tests {
 
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.
+    mod chat_live;
+
     mod seam {
         use super::*;
 

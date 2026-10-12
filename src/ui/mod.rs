@@ -469,7 +469,7 @@ mod tests {
         let line = status(&app);
         assert!(line.contains("PREFIX"), "{line:?}");
         assert!(
-            line.contains("w window · t tab · g go · b buffer · [ copy · m menu · q quit"),
+            line.contains("w window · t tab · g go · b buffer · [ copy · m menu · c chat · q quit"),
             "{line:?}"
         );
         insta::assert_snapshot!("root_hint", line.trim_end());
