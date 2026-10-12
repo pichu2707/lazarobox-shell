@@ -1,10 +1,10 @@
 [package]
 name = "lazarobox-shell"
-version = "0.1.0"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Javi Lázaro <hola@javilazaro.es>"]
-description = "AI-aware terminal workspace: a TUI multiplexer with panes, tabs, copy mode and local AI engine selection."
+description = "AI-aware terminal workspace: a TUI multiplexer with panes, tabs, copy mode, local AI engine selection and an experimental Ollama chat pane."
 license = "MIT"
 repository = "https://github.com/pichu2707/lazarobox-shell"
 homepage = "https://github.com/pichu2707/lazarobox-shell"
