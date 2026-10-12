@@ -65,7 +65,7 @@ All engram I/O MUST run on a dedicated worker, never on the render thread. The c
 - THEN the fake records no connection
 
 ### Requirement: Health and version detection
-Before the first memory action of a run the worker MUST probe `GET /health`. The result MUST be exactly one of: ready (HTTP 200, JSON with `service` equal to `engram`, and an `instance_id` and a `capabilities` object); old server (an engram reply without `instance_id` or `capabilities`, such as the 1.x `version` `0.1.0`); not engram (a reply that is not JSON, has another `service`, or has a non-200 status); down (connect failure or timeout). The result is cached for the run. Any transport failure MUST set the state to down; while down, commands are answered unavailable at once, and a new probe runs only on a memory action and only if at least 10 s passed since the last probe (never in a loop or a timer). A changed `instance_id` MUST clear the project cache and the set of registered sessions. The unavailable reasons are `engram is not running`, `old engram server on :<port>, restart it with 3.x` and `port <port> is not engram`.
+Before the first memory action of a run the worker MUST probe `GET /health`. The result MUST be exactly one of: ready (HTTP 200, JSON with `service` equal to `engram`, and an `instance_id` that matches `[0-9a-f-]{1,64}` and a `capabilities` object); old server (an engram reply without `instance_id` or `capabilities`, or whose `instance_id` does not match that pattern, such as the 1.x `version` `0.1.0`); not engram (a reply that is not JSON, has another `service`, or has a non-200 status); down (connect failure or timeout). The result is cached for the run. Any transport failure MUST set the state to down; while down, commands are answered unavailable at once, and a new probe runs only on a memory action and only if at least 10 s passed since the last probe (never in a loop or a timer). A changed `instance_id` MUST clear the project cache and the set of registered sessions. The unavailable reasons are `engram is not running`, `old engram server on :<port>, restart it with 3.x` and `port <port> is not engram`.
 
 #### Scenario: Ready 3.x [auto]
 - GIVEN a recorded 3.4.0 health reply with `instance_id` and `capabilities`
@@ -88,17 +88,22 @@ Before the first memory action of a run the worker MUST probe `GET /health`. The
 - THEN the project is resolved again and the session is registered again
 
 ### Requirement: Project resolution
-The engram project MUST come from `GET /project/current?cwd=<origin cwd of the chat pane>`, and every later request of that chat (session, save, context, delete) MUST pass that project explicitly. The ai-chat project tag is not used for engram. A 404 (`unknown_project`) MUST make memory unavailable for that chat with the reason `no engram project for this directory`; a 409 (`ambiguous_project`) with the reason `ambiguous engram project`. An unknown or non-existent origin cwd MUST give the same unavailable result as 404 without a request. lazarobox MUST NEVER guess, derive or default a project name, and there is no project override in this change.
+The engram project MUST come from `GET /project/current?cwd=<origin cwd of the chat pane>`, and every later request of that chat (session, save, context, delete) MUST pass that project explicitly. The ai-chat project tag is not used for engram. engram answers 200 for every cwd, so the reply MUST be classified by its `project_source` field and never by HTTP status. Memory is available ONLY for git projects: a `git_*` source (such as `git_remote`) with a non-empty `project` resolves the project. A source of `dir_basename` or `ambiguous`, an empty `project`, an unknown source or a reply without those fields MUST make memory unavailable for that chat with the system line `memory needs a git project`. An unknown origin cwd MUST give the same unavailable result without a request. A 404 `unknown_project` from `GET /context` is not an error: it means no memory yet. lazarobox MUST NEVER guess, derive or default a project name, and there is no project override in this change.
 
 #### Scenario: Project from engram [auto]
 - GIVEN a fake answering `{"project":"lazarobox-shell"}` for cwd `/work/lazarobox`
 - WHEN the chat resolves its project
 - THEN later requests carry `project=lazarobox-shell`, and the ai-chat tag of the conversation is unchanged
 
-#### Scenario: Unknown and ambiguous [auto]
-- GIVEN fakes answering 404 `unknown_project` and 409 `ambiguous_project`
+#### Scenario: Only git projects [auto]
+- GIVEN fakes answering 200 with `project_source` `dir_basename` (project `tmp`), 200 `ambiguous` with `project:""`, and 200 `git_remote`
 - WHEN each is resolved
-- THEN memory is unavailable for that chat with the matching reason, and no save, session or context request is ever sent
+- THEN the first two make memory unavailable for that chat with the line `memory needs a git project` and no save, session or context request is ever sent, and the third resolves
+
+#### Scenario: Context of an unknown project [auto]
+- GIVEN a fake answering 404 `unknown_project` to `GET /context`
+- WHEN the context is fetched
+- THEN there is no block and no unavailable line (no memory yet)
 
 #### Scenario: No cwd [auto]
 - GIVEN a chat whose origin cwd is unknown

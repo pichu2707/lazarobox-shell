@@ -69,17 +69,17 @@ No production code. The only outputs are fixtures, a findings file and design op
 
 Fallback split if over 400 without exception: 1a = 2.1-2.6, 1b = 2.7-2.10.
 
-- [ ] 2.1 RED: `MemKind` has exactly the seven values in order (`decision`, `architecture`, `bugfix`, `discovery`, `pattern`, `config`, `preference`); `parse("learning")` is rejected; `as_str` round-trips (chat-memory "Closed enum").
-- [ ] 2.2 GREEN: `kind.rs` with `MemKind::ALL`, `as_str`, `parse`.
-- [ ] 2.3 RED: slug table from the spec (`Use Axum!`, `  A/B  test--x `, `Ünï Cødé 42`, `日本語 メモ`, `../../etc`), 200-letter title cut to 60 with no trailing `-`, `!!! ---` gives `untitled`; `topic_key(Bugfix, "Fix  the Parser") == "chat/bugfix/fix-the-parser"`; a title cannot add a path segment; same slug gives the same key.
-- [ ] 2.4 GREEN: `slug.rs` (`slug`, `topic_key`, `clean_title` 1-120 chars, control/format chars removed).
-- [ ] 2.5 RED: redaction tables: each prefix pattern, `Authorization: Bearer abc.def`, PEM block (terminated and unterminated), `password=hunter2 ok`, `API_KEY: zz9`, `<private>` terminated and unterminated, hit count, plain text unchanged, idempotent on a seeded random corpus, no panic on arbitrary bytes-as-str, linear time on a 1 MiB input.
-- [ ] 2.6 GREEN: `redact.rs` hand-written scanner returning `Redacted { text, hits }`; no regex crate.
-- [ ] 2.7 RED: `context_block`: 50,000-byte input with escapes is cut under 2,000 bytes at a line end and a char boundary; `</PROJECT-MEMORY>` becomes `</project_memory>` with one closing delimiter; opening line `<project-memory source="engram" project="P">` plus the fixed data-not-instructions line; empty gives `None`; `notes` count uses the E-4 marker from `context_compact.http`.
-- [ ] 2.8 GREEN: `context.rs` (`ContextBlock { text, notes, bytes }`), reusing the CHAT-4 sanitizer.
-- [ ] 2.9 RED: `classify_health` against the M0 fixtures: 3.4.0 gives `Ready{instance_id,version}`, 1.20 gives `Old`, HTML and other service and non-200 give `Foreign`, missing `capabilities` gives `Old`.
-- [ ] 2.10 GREEN: `health.rs`; module wiring in `mod.rs` and `src/core/ai/mod.rs`.
-- [ ] 2.11 Refactor; Gate.
+- [x] 2.1 RED: `MemKind` has exactly the seven values in order (`decision`, `architecture`, `bugfix`, `discovery`, `pattern`, `config`, `preference`); `parse("learning")` is rejected; `as_str` round-trips (chat-memory "Closed enum").
+- [x] 2.2 GREEN: `kind.rs` with `MemKind::ALL`, `as_str`, `parse`.
+- [x] 2.3 RED: slug table from the spec (`Use Axum!`, `  A/B  test--x `, `Ünï Cødé 42`, `日本語 メモ`, `../../etc`), 200-letter title cut to 60 with no trailing `-`, `!!! ---` gives `untitled`; `topic_key(Bugfix, "Fix  the Parser") == "chat/bugfix/fix-the-parser"`; a title cannot add a path segment; same slug gives the same key.
+- [x] 2.4 GREEN: `slug.rs` (`slug`, `topic_key`, `clean_title` 1-120 chars, control/format chars removed).
+- [x] 2.5 RED: redaction tables: each prefix pattern, `Authorization: Bearer abc.def` (and `Basic`, `Token`, any case), URL userinfo, `SECRET_KEY=` style names, quoted values with spaces, secrets after non-ASCII characters, PEM block (terminated and unterminated), `password=hunter2 ok`, `API_KEY: zz9`, `<private>` terminated and unterminated, hit count, plain text unchanged, idempotent on a seeded random corpus, no panic on arbitrary bytes-as-str, linear time on a 1 MiB input.
+- [x] 2.6 GREEN: `redact.rs` hand-written scanner returning `Redacted { text, hits }`; no regex crate.
+- [x] 2.7 RED: `context_block`: 50,000-byte input with escapes is cut under 2,000 bytes at a line end and a char boundary; every `<` in the data becomes `‹` (so `</PROJECT-MEMORY>` and look-alikes such as `</project\u{34f}-memory>` leave exactly one closing delimiter and no other `<`), and the fillers U+034F, U+115F, U+1160, U+3164, U+FFA0, U+180E are stripped; opening line `<project-memory source="engram" project="P">` plus the fixed data-not-instructions line; empty gives `None`; `notes` counts only lines starting with `- [` under `### Recent Observations` of `context_compact.http` (session lines `- **` are not counted; `context_sessions_only.http` gives 0 notes and a non-empty block); the server `\n[truncated]\n` tail of `context_tiny_budget.http`, which can cut mid-line, is handled by the same cut.
+- [x] 2.8 GREEN: `context.rs` (`ContextBlock { text, notes, bytes }`), reusing the CHAT-4 sanitizer.
+- [x] 2.9 RED: `classify_health` against the M0 fixtures: 3.4.0 gives `Ready{instance_id,version}`, 1.20 (`health_1_20.http`) gives `Old`, `health_html.http`, `health_other_service.http` and non-200 give `Foreign`, missing `capabilities` gives `Old`.
+- [x] 2.10 GREEN: `health.rs`; module wiring in `mod.rs` and `src/core/ai/mod.rs`.
+- [x] 2.11 Refactor; Gate.
 
 ## PR3 / M2: Loopback `request` (`src/runtime/loopback.rs`, `src/core/ai/http.rs`)
 
@@ -95,7 +95,7 @@ Fallback split if over 400 without exception: 1a = 2.1-2.6, 1b = 2.7-2.10.
 
 - [ ] 4.1 RED: builders produce exact targets and bodies: percent-encoded `cwd` (`/tmp/a b&c\r\nX: y` gives one query value, no injected header), `project`; context query string; session body with directory; save body fields only (`session_id`, `type`, `title`, `content`, `project`, `scope=project`, `topic_key`); `expected_project` on delete; content cut at 50,000 bytes on a char boundary (16,000 three-byte chars).
 - [ ] 4.2 GREEN: `route.rs` with `Call { method, target, body, auth }` and the builders.
-- [ ] 4.3 RED: parsers over every M0 fixture: project 200/404/409, session created, saved 201 (id, revision), upsert same id, 400 `session_project_mismatch` short sanitized text (at most 120 chars, no escape, no echo of content), context `{context}`, delete 2xx/404 as deleted, 401/403 as `engram refused the delete (check ENGRAM_HTTP_TOKEN)`.
+- [ ] 4.3 RED: parsers over every M0 fixture: project classified by `project_source` (`git_remote` resolves; `dir_basename`, `ambiguous`, empty project or unknown source give `NotGit`; never by HTTP status), context 404 `unknown_project` as no memory yet, session created, saved 201 (id, revision), upsert same id, 400 `session_project_mismatch` short sanitized text (at most 120 chars, no escape, no echo of content), context `{context}`, delete 2xx/404 as deleted, 401/403 as `engram refused the delete (check ENGRAM_HTTP_TOKEN)`.
 - [ ] 4.4 GREEN: `reply.rs`.
 - [ ] 4.5 RED then GREEN: `MemCmd {Resolve, Context, Save, End, Delete, StartServer, Quit}` and `MemReply {Health, Project, Context, Saved, Deleted, Server, Unavailable}` compile as plain values; reasons enum renders the exact `memory unavailable:` texts of chat-memory "Degradation".
 - [ ] 4.6 Gate.
@@ -172,7 +172,7 @@ Starts after ai-chat PR9 and PR13 are in the ai-chat tracker.
 - [ ] 10.2 GREEN: `ChatRequest` field, `build_context(history, cap - memory_chars)`, adapter changes in `src/runtime/chat.rs`.
 - [ ] 10.3 RED: on open and on resume with memory ready the App emits `Resolve` then `Context`; exactly one context request per view, no search; a send never waits (turns before the reply carry no block, later turns do); failed or empty fetch adds no block; the block is never stored nor sent as history.
 - [ ] 10.4 RED: `Entry::Memory`: folded `▸ memory (N notes)` / `▸ memory (1 note)` first in the transcript; Ctrl+O expands to `▾ memory (N notes)` plus the injected text behind `┊ ` in `text_muted`; second press folds; Ctrl+O with no memory line does nothing and emits no effect; not counted toward 400 messages, not yanked, not stored; resumed twice shows 2 then 4 notes.
-- [ ] 10.5 RED: degradation lines `memory unavailable: <reason>` once per view for each reason (down, old, foreign, 404, 409, timeout, missing binary); chat streams normally; no memory line and no traffic with memory off.
+- [ ] 10.5 RED: degradation lines `memory unavailable: <reason>` once per view for each reason (down, old, foreign, timeout, missing binary) and the line `memory needs a git project` for a non-git project; chat streams normally; no memory line and no traffic with memory off.
 - [ ] 10.6 RED: offer hook: a Down state on the first conversation view of the run shows the M5 prompt once; `y` emits `StartServer`; other keys decline; memory keys while Down re-show it only if not yet used.
 - [ ] 10.7 GREEN: transcript entry, Ctrl+O routing, context flow, offer view, statusline memory segment/hint (spec `statusline`), insta snapshots (folded, expanded, singular, none, tiny pane).
 - [ ] 10.8 [manual, Kitty] Ctrl+O toggles the memory line in Kitty without clashing with Ctrl+R.

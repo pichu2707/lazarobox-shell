@@ -43,6 +43,9 @@ toml_edit = "0.22"
 # Chat history store (SQLite compiled in; needs a C compiler)
 rusqlite = { version = "0.38", features = ["bundled"] }
 
+# NFC normalisation of note titles before they become topic keys
+unicode-normalization = "0.1.25"
+
 [dev-dependencies]
 insta = "1"
 tempfile = "3"
