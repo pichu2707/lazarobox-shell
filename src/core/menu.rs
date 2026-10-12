@@ -167,16 +167,17 @@ pub enum MenuCommand {
 const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
 const HINT_TASK: &str = "j/k move · Enter pick · r refresh · s save · Esc cancel";
 const HINT_PICKER: &str = "j/k move · Enter choose · r refresh · Esc back · s save";
-const HINT_WARNING: &str = "y turn on · any other key keeps memory off";
+const HINT_WARNING: &str = "y accept (then s to save) · any other key declines";
 /// The privacy warning: the three facts, each line short enough for the AI
 /// popup width.
-const WARNING_TEXT: [&str; 6] = [
+const WARNING_TEXT: [&str; 7] = [
     "Saved notes leave lazarobox's private store (0600).",
     "They become readable by every local process and",
     "every agent that uses engram, and by engram sync",
     "if it is on. lazarobox cannot restrict that.",
-    "Declining keeps memory off; accepting is remembered",
-    "and this note is not shown again.",
+    "Notes stay in engram until you delete them, and",
+    "secret redaction is best effort.",
+    "Once saved, this note is not shown again.",
 ];
 const WARNING_PROMPT: &str = "Turn memory on? (y/n)";
 const HINT_CUSTOM: &str = "type a model · Enter ok · Ctrl+U clear · Esc back";

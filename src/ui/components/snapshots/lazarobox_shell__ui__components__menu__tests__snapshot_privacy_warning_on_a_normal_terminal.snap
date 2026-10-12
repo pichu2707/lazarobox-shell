@@ -8,13 +8,13 @@ expression: shown
 │ They become readable by every local process and            │
 │ every agent that uses engram, and by engram sync           │
 │ if it is on. lazarobox cannot restrict that.               │
-│ Declining keeps memory off; accepting is remembered        │
-│ and this note is not shown again.                          │
+│ Notes stay in engram until you delete them, and            │
+│ secret redaction is best effort.                           │
+│ Once saved, this note is not shown again.                  │
 │                                                            │
 │ Turn memory on? (y/n)                                      │
 │                                                            │
 │                                                            │
 │                                                            │
-│                                                            │
-│ y turn on · any other key keeps memory off                 │
+│ y accept (then s to save) · any other key declines         │
 └────────────────────────────────────────────────────────────┘

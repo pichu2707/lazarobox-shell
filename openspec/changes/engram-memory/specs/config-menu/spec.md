@@ -83,7 +83,7 @@ The `Memory` row is a static item in the AI section showing `on` only when memor
 - THEN the draft is unchanged
 
 ### Requirement: Memory privacy warning view
-The warning view is shown over the menu popup (same size) with the text of the chat-memory opt-in requirement (notes leave the private 0600 conversation store; every local process and agent that uses engram can read them, and engram sync if it is on; lazarobox cannot restrict that) and the prompt `Turn memory on? (y/n)`. Only an unmodified lowercase `y` accepts: the draft becomes `on` and the acknowledgement draft true. Any other key (including Esc, Enter and `Y`) declines: the draft stays `off` and the view closes; Esc closes only the view, not the menu. Repeat events MUST be ignored. Rendering MUST NOT panic at any terminal size.
+The warning view is shown over the menu popup (same size) with the text of the chat-memory opt-in requirement (notes leave the private 0600 conversation store; every local process and agent that uses engram can read them, and engram sync if it is on; lazarobox cannot restrict that; notes stay in engram until the user deletes them; secret redaction is best effort; once saved, this note is not shown again) and the prompt `Turn memory on? (y/n)`. The footer is `y accept (then s to save) · any other key declines`, because `y` only sets the drafts and `s` must save them. Only an unmodified lowercase `y` accepts: the draft becomes `on` and the acknowledgement draft true. Any other key (including Esc, Enter and `Y`) declines: the draft stays `off` and the view closes; Esc closes only the view, not the menu. Repeat events MUST be ignored. Rendering MUST NOT panic at any terminal size.
 
 #### Scenario: Accept [auto]
 - GIVEN the warning shown

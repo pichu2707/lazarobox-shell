@@ -323,7 +323,21 @@ fn the_warning_footer_names_its_keys() {
     let Footer::Hint(hint) = menu.footer() else {
         panic!("a hint expected");
     };
-    assert!(hint.starts_with("y "), "{hint}");
+    assert_eq!(hint, "y accept (then s to save) · any other key declines");
+}
+
+// Review W4: y only drafts; the text must not imply it activates by itself.
+#[test]
+fn the_warning_says_when_it_stops_showing_and_what_it_cannot_promise() {
+    let text = view_text(&warned());
+    for needle in [
+        "Once saved, this note is not shown again",
+        "stay in engram until you delete them",
+        "secret redaction is best effort",
+    ] {
+        assert!(text.contains(needle), "{needle:?} missing in:\n{text}");
+    }
+    assert!(!text.contains("accepting is remembered"), "{text}");
 }
 
 #[test]
