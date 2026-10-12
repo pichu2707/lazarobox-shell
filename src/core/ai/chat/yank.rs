@@ -4,7 +4,7 @@
 use super::{ChatState, Phase, engine::Role};
 
 /// The text of the last assistant message that is not still being written.
-/// `None` when there is none or it is empty.
+/// `None` when there is none; an empty one is passed over for the one before.
 pub fn last_answer(chat: &ChatState) -> Option<String> {
     let answers: Vec<_> = chat
         .messages()
@@ -13,8 +13,12 @@ pub fn last_answer(chat: &ChatState) -> Option<String> {
     // While a stream writes the newest answer, the one before it is the
     // last finished one.
     let skip = usize::from(chat.phase() == Phase::Streaming);
-    let finished = answers.iter().rev().nth(skip)?;
-    (!finished.text.is_empty()).then(|| finished.text.clone())
+    let finished = answers
+        .iter()
+        .rev()
+        .skip(skip)
+        .find(|m| !m.text.is_empty())?;
+    Some(finished.text.clone())
 }
 
 /// The code lines (without the fence lines) of the last fenced block of the
@@ -41,7 +45,7 @@ pub fn last_code_block(chat: &ChatState) -> Option<String> {
 mod tests {
     use super::*;
     use crate::core::ai::chat::{
-        Entry, MsgStatus,
+        Entry, Msg, MsgStatus,
         engine::{Finish, StreamEvent},
         state_tests::{chat, sent},
     };
@@ -85,6 +89,27 @@ mod tests {
         state.apply(turn, StreamEvent::Delta("Hel".into()));
         state.cancel();
         assert_eq!(last_answer(&state).as_deref(), Some("Hel"));
+    }
+
+    #[test]
+    fn an_empty_finished_answer_falls_back_to_the_one_before() {
+        let mut state = answered("```\nold code\n```");
+        // A stored or truncated answer can be empty.
+        state.entries.push(Entry::Message(Msg {
+            role: Role::Assistant,
+            text: String::new(),
+            status: MsgStatus::Truncated,
+        }));
+        assert_eq!(
+            state
+                .messages()
+                .filter(|m| m.role == Role::Assistant)
+                .count(),
+            2,
+            "the empty answer is a message"
+        );
+        assert_eq!(last_answer(&state).as_deref(), Some("```\nold code\n```"));
+        assert_eq!(last_code_block(&state).as_deref(), Some("old code"));
     }
 
     #[test]
