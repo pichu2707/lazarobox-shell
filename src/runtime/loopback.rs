@@ -9,7 +9,7 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc,
-    time::{Instant, sleep_until, timeout},
+    time::{Instant, sleep_until, timeout, timeout_at},
 };
 
 use crate::core::ai::{
@@ -68,8 +68,9 @@ impl Timeouts {
 }
 
 /// POSTs `body` to `path` on `host:port` and sends the decoded reply to `tx`.
-/// Every turn ends with exactly one `Done` or `Error` event, unless `tx` is
-/// closed or the future is dropped: both end the turn and close the socket.
+/// Every turn ends with exactly one `Done` or `Error` event, unless the turn is
+/// cancelled: dropping or aborting the future, or dropping the receiver, ends it
+/// at once and closes the socket without further events.
 pub async fn post_stream(
     host: &str,
     port: u16,
@@ -170,9 +171,12 @@ impl Wait<'_> {
         tx: &mpsc::Sender<StreamEvent>,
     ) -> Result<usize, Stop> {
         let read = if self.started {
-            match timeout(self.timeouts.idle, stream.read(buf)).await {
-                Ok(read) => read,
-                Err(_) => return Err(Stop::Failed(STALLED)),
+            tokio::select! {
+                read = timeout(self.timeouts.idle, stream.read(buf)) => match read {
+                    Ok(read) => read,
+                    Err(_) => return Err(Stop::Failed(STALLED)),
+                },
+                _ = tx.closed() => return Err(Stop::Cancelled),
             }
         } else {
             let slow_at = self.start + self.timeouts.slow;
@@ -182,13 +186,24 @@ impl Wait<'_> {
                     read = stream.read(buf) => break read,
                     _ = sleep_until(slow_at), if !self.slow_sent => {
                         self.slow_sent = true;
-                        tx.send(StreamEvent::Slow).await.map_err(|_| Stop::Cancelled)?;
+                        // Best effort: a full channel must not hold back the
+                        // read or the timers, so the hint is dropped instead.
+                        match tx.try_send(StreamEvent::Slow) {
+                            Err(mpsc::error::TrySendError::Closed(_)) => return Err(Stop::Cancelled),
+                            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
+                        }
                     }
                     _ = sleep_until(give_up) => return Err(Stop::Failed(NO_ANSWER)),
+                    _ = tx.closed() => return Err(Stop::Cancelled),
                 }
             }
         };
-        let n = read.map_err(|_| Stop::Failed(INVALID_REPLY))?;
+        let n = match read {
+            Ok(n) => n,
+            // A reset after the reply began is an early end, like a close.
+            Err(_) if self.started => 0,
+            Err(_) => return Err(Stop::Failed(INVALID_REPLY)),
+        };
         self.started |= n > 0;
         Ok(n)
     }
@@ -244,11 +259,18 @@ where
         started: false,
         slow_sent: false,
     };
-    stream
-        .write_all(request)
-        .await
-        .map_err(|_| Stop::Failed(CANNOT_CONNECT))?;
     let mut buf = vec![0u8; READ_SIZE];
+    // The request goes out under the first-byte limit too: a server that never
+    // reads it is as silent as one that never answers.
+    let written = tokio::select! {
+        written = timeout_at(wait.start + timeouts.first_byte, stream.write_all(request)) => written,
+        _ = tx.closed() => return Err(Stop::Cancelled),
+    };
+    match written {
+        Err(_) => return Err(Stop::Failed(NO_ANSWER)),
+        Ok(Err(_)) => return Err(after_failed_write(&mut wait, stream, &mut buf, tx).await),
+        Ok(Ok(())) => {}
+    }
 
     // The head, until its blank line.
     let mut raw = Vec::new();
@@ -300,6 +322,37 @@ where
     let events = decoder.finish();
     send_all(tx, events).await?;
     Ok(())
+}
+
+/// A write that failed (EPIPE, reset) often means the server answered early and
+/// hung up, say with a 413 before reading a large body. Reads the head once more:
+/// a non-200 status is reported as any other; anything else is a failed connect.
+async fn after_failed_write<S: AsyncRead + Unpin>(
+    wait: &mut Wait<'_>,
+    stream: &mut S,
+    buf: &mut [u8],
+    tx: &mpsc::Sender<StreamEvent>,
+) -> Stop {
+    let mut raw = Vec::new();
+    loop {
+        match parse_head(&raw) {
+            Head::Incomplete => {}
+            Head::Complete {
+                status,
+                framing,
+                head_len,
+            } if status != 200 => {
+                let pending = raw.split_off(head_len);
+                return non_200(status, Body::new(framing), pending, wait, stream, buf, tx).await;
+            }
+            _ => return Stop::Failed(CANNOT_CONNECT),
+        }
+        match wait.read(stream, buf, tx).await {
+            Ok(n) if n > 0 => raw.extend_from_slice(&buf[..n]),
+            Err(Stop::Cancelled) => return Stop::Cancelled,
+            _ => return Stop::Failed(CANNOT_CONNECT),
+        }
+    }
 }
 
 /// Sends `events` up to the first one that ends the turn; true when one did.

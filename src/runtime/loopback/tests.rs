@@ -192,6 +192,8 @@ async fn a_foreign_host_is_refused_without_connecting() {
         let events = turn_to(host, fake.port, "/api/chat", b"{}").await;
         assert_eq!(events, vec![failed(REFUSED)], "host {host:?}");
     }
+    // Real socket, real clock: give a stray connect time to reach the listener.
+    tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(fake.connections(), 0);
 }
 
@@ -437,6 +439,8 @@ async fn a_closed_receiver_ends_the_turn_and_the_socket() {
     });
     fake.send(HEAD);
     fake.send(&chunk(HELLO));
+    // The receiver goes away mid-stream, not before the request is out.
+    fake.request_read.notified().await;
     drop(rx);
     fake.send(&chunk(HELLO));
     tokio::time::timeout(Duration::from_secs(10), task)
@@ -458,8 +462,12 @@ struct Turn {
 }
 
 fn start_turn() -> Turn {
-    let (client, server) = duplex(64 * 1024);
     let (tx, events) = mpsc::channel(256);
+    start_turn_on(tx, events)
+}
+
+fn start_turn_on(tx: mpsc::Sender<StreamEvent>, events: mpsc::Receiver<StreamEvent>) -> Turn {
+    let (client, server) = duplex(64 * 1024);
     let task = tokio::spawn(async move {
         let mut decoder = NdjsonSplitter::server();
         drive(client, b"POST", &Timeouts::SERVER, &mut decoder, &tx).await;
@@ -594,4 +602,153 @@ async fn no_slow_event_once_a_byte_arrived() {
     tokio::task::yield_now().await;
     assert_eq!(t.events.try_recv(), Err(mpsc::error::TryRecvError::Empty));
     t.task.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_full_channel_does_not_hold_back_the_first_byte_limit() {
+    // Capacity 1 and already full: Slow is best-effort and must be dropped
+    // instead of blocking the timers.
+    let (tx, events) = mpsc::channel(1);
+    tx.try_send(delta("queued")).unwrap();
+    let mut t = start_turn_on(tx, events);
+    tokio::task::yield_now().await;
+    advance(Duration::from_secs(121)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(t.events.recv().await, Some(delta("queued")));
+    assert_eq!(t.events.recv().await, Some(failed(NO_ANSWER)));
+    assert_eq!(t.events.recv().await, None);
+    t.task.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_receiver_dropped_before_the_first_byte_closes_the_socket_at_once() {
+    let t = start_turn();
+    let mut server = t.server;
+    tokio::task::yield_now().await;
+    drop(t.events);
+    let mut rest = Vec::new();
+    server.read_to_end(&mut rest).await.unwrap();
+    assert_eq!(rest, b"POST");
+    // No Slow timer had to fire for the turn to notice.
+    assert!(
+        t.start.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        t.start.elapsed()
+    );
+    t.task.await.unwrap();
+}
+
+// Writing the request --------------------------------------------------------
+
+/// A request too big for the duplex buffer, so the write is still going when
+/// the server acts.
+fn big_request() -> Vec<u8> {
+    vec![b'a'; 1024 * 1024]
+}
+
+async fn drive_big(client: DuplexStream, timeouts: Timeouts) -> (Vec<StreamEvent>, Instant) {
+    let (tx, rx) = mpsc::channel(16);
+    let start = Instant::now();
+    let run = async move {
+        let mut decoder = NdjsonSplitter::server();
+        drive(client, &big_request(), &timeouts, &mut decoder, &tx).await;
+    };
+    (tokio::join!(run, collect(rx)).1, start)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_413_sent_while_the_body_is_still_going_out_is_reported() {
+    let (client, mut server) = duplex(64 * 1024);
+    // The server answers and hangs up without reading the body.
+    server
+        .write_all(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 9\r\n\r\ntoo large")
+        .await
+        .unwrap();
+    drop(server);
+    let (events, _) = drive_big(client, Timeouts::SERVER).await;
+    assert_eq!(events, vec![failed("HTTP 413: too large")]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_write_with_no_reply_is_cannot_connect() {
+    let (client, server) = duplex(64 * 1024);
+    drop(server);
+    let (events, _) = drive_big(client, Timeouts::SERVER).await;
+    assert_eq!(events, vec![failed(CANNOT_CONNECT)]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_server_that_never_reads_the_request_is_no_answer_at_the_first_byte_limit() {
+    let (client, _server) = duplex(64 * 1024);
+    let (events, start) = drive_big(client, Timeouts::SERVER).await;
+    assert_eq!(events, vec![failed(NO_ANSWER)]);
+    assert_eq!(start.elapsed(), Duration::from_secs(120));
+}
+
+// A read error ---------------------------------------------------------------
+
+/// Serves scripted reads, then stays silent; swallows writes.
+struct Scripted {
+    reads: std::collections::VecDeque<std::io::Result<Vec<u8>>>,
+}
+
+impl tokio::io::AsyncRead for Scripted {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.reads.pop_front() {
+            Some(Ok(bytes)) => {
+                buf.put_slice(&bytes);
+                std::task::Poll::Ready(Ok(()))
+            }
+            Some(Err(e)) => std::task::Poll::Ready(Err(e)),
+            None => std::task::Poll::Pending,
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for Scripted {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::task::Poll::Ready(Ok(buf.len()))
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+async fn drive_scripted(reads: Vec<std::io::Result<Vec<u8>>>) -> Vec<StreamEvent> {
+    let (tx, rx) = mpsc::channel(16);
+    let stream = Scripted {
+        reads: reads.into(),
+    };
+    let run = async move {
+        let mut decoder = NdjsonSplitter::server();
+        drive(stream, b"POST", &Timeouts::SERVER, &mut decoder, &tx).await;
+    };
+    tokio::join!(run, collect(rx)).1
+}
+
+#[tokio::test]
+async fn a_reset_after_partial_text_is_an_interruption_with_the_text_kept() {
+    let reset = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+    let events = drive_scripted(vec![Ok(HEAD.to_vec()), Ok(chunk(HELLO)), Err(reset)]).await;
+    assert_eq!(
+        events,
+        vec![delta("Hel"), StreamEvent::Error(ChatError::Interrupted)]
+    );
 }
