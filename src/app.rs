@@ -201,26 +201,51 @@ impl ScreenLayout {
     }
 }
 
-/// A pane's emulator, the size its PTY was last told, and its last known cwd.
-struct PaneState {
+/// What a pane shows: a shell behind a PTY.
+struct PtyPane {
     emu: Pane,
-    size: PaneSize,
     /// The `/proc` poll result; the OSC 7 cwd, when seen, lives in `emu`.
     proc_cwd: Option<PathBuf>,
+}
+
+enum PaneContent {
+    Pty(PtyPane),
+}
+
+/// A pane's content and the size it was last laid out at (for a PTY pane, the
+/// size its PTY was last told).
+struct PaneState {
+    content: PaneContent,
+    size: PaneSize,
 }
 
 impl PaneState {
     fn new(size: PaneSize, host: Option<&str>) -> Self {
         Self {
-            emu: Pane::new(size, SCROLLBACK_LINES).with_host(host),
+            content: PaneContent::Pty(PtyPane {
+                emu: Pane::new(size, SCROLLBACK_LINES).with_host(host),
+                proc_cwd: None,
+            }),
             size,
-            proc_cwd: None,
+        }
+    }
+
+    fn pty(&self) -> Option<&PtyPane> {
+        match &self.content {
+            PaneContent::Pty(pty) => Some(pty),
+        }
+    }
+
+    fn pty_mut(&mut self) -> Option<&mut PtyPane> {
+        match &mut self.content {
+            PaneContent::Pty(pty) => Some(pty),
         }
     }
 
     /// OSC 7 wins once seen; the poll fills in for shells that never report.
     fn effective_cwd(&self) -> Option<&Path> {
-        self.emu.cwd().or(self.proc_cwd.as_deref())
+        self.pty()
+            .and_then(|pty| pty.emu.cwd().or(pty.proc_cwd.as_deref()))
     }
 }
 
@@ -362,7 +387,9 @@ impl App {
     pub fn with_env(mut self, shell: Option<&str>, home: Option<PathBuf>, cwd: PathBuf) -> Self {
         self.shell = shell.map(str::to_owned);
         self.home = home;
-        self.focused_state_mut().proc_cwd = Some(cwd.clone());
+        if let Some(pty) = self.focused_state_mut().pty_mut() {
+            pty.proc_cwd = Some(cwd.clone());
+        }
         self.launch_cwd = Some(cwd);
         self
     }
@@ -383,8 +410,8 @@ impl App {
     /// Names this machine so OSC 7 reports for it are accepted.
     pub fn with_hostname(mut self, host: Option<&str>) -> Self {
         self.hostname = host.map(str::to_owned);
-        for state in self.panes.values_mut() {
-            state.emu.set_host(host);
+        for pty in self.panes.values_mut().filter_map(PaneState::pty_mut) {
+            pty.emu.set_host(host);
         }
         self
     }
@@ -474,7 +501,7 @@ impl App {
         let InputMode::Copy(state) = &self.input else {
             return None;
         };
-        let total = self.panes[&self.tab().focus].emu.scrollback_len();
+        let total = self.focused_pty()?.emu.scrollback_len();
         (total > 0).then_some((state.offset, total))
     }
 
@@ -513,7 +540,7 @@ impl App {
 
     /// What the focused pane offers to copy mode.
     fn copy_geometry(&self) -> Geometry {
-        let pane = self.focused_pane();
+        let pane = self.copy_pane();
         let size = self.focused_size();
         Geometry {
             first_line: pane.first_line(),
@@ -525,7 +552,7 @@ impl App {
 
     /// Fresh COPY state with the cursor on the focused pane's live cursor.
     fn enter_copy(&self) -> CopyState {
-        let pane = self.focused_pane();
+        let pane = self.copy_pane();
         CopyState::enter(
             self.copy_geometry(),
             pane.live_cursor(),
@@ -578,11 +605,34 @@ impl App {
 
     /// The emulator of pane `id`, if it exists.
     pub fn pane(&self, id: PaneId) -> Option<&Pane> {
-        self.panes.get(&id).map(|state| &state.emu)
+        self.panes
+            .get(&id)
+            .and_then(PaneState::pty)
+            .map(|pty| &pty.emu)
     }
 
-    pub fn focused_pane(&self) -> &Pane {
-        &self.focused_state().emu
+    /// The focused pane's PTY side, `None` when it is not a shell pane.
+    fn focused_pty(&self) -> Option<&PtyPane> {
+        self.focused_state().pty()
+    }
+
+    /// The emulator COPY works on. COPY is only entered on a shell pane and
+    /// ends on every focus change, so the focus is always a PTY pane here.
+    fn copy_pane(&self) -> &Pane {
+        &self.focused_pty().expect("COPY runs on a shell pane").emu
+    }
+
+    fn copy_pane_mut(&mut self) -> &mut Pane {
+        &mut self
+            .focused_state_mut()
+            .pty_mut()
+            .expect("COPY runs on a shell pane")
+            .emu
+    }
+
+    #[cfg(test)]
+    fn focused_pane(&self) -> &Pane {
+        self.copy_pane()
     }
 
     pub fn focused_size(&self) -> PaneSize {
@@ -689,7 +739,10 @@ impl App {
                 kind: CursorKind::Block,
                 blinking: false,
             },
-            _ => self.focused_pane().cursor_shape(),
+            _ => self
+                .focused_pty()
+                .map(|pty| pty.emu.cursor_shape())
+                .unwrap_or_default(),
         }
     }
 
@@ -828,7 +881,10 @@ impl App {
             self.input = InputMode::Prefix;
             return Vec::new();
         }
-        encode_key(key, self.focused_pane().modes())
+        let Some(pty) = self.focused_pty() else {
+            return Vec::new();
+        };
+        encode_key(key, pty.emu.modes())
             .map(|bytes| vec![Effect::WritePty(self.tab().focus, bytes)])
             .unwrap_or_default()
     }
@@ -915,8 +971,9 @@ impl App {
         if index >= self.tabs.len() || index == self.active {
             return;
         }
-        if let Some(left) = self.panes.get_mut(&self.tabs[self.active].focus) {
-            left.emu.set_scrollback(0);
+        let left = self.tabs[self.active].focus;
+        if let Some(pty) = self.panes.get_mut(&left).and_then(PaneState::pty_mut) {
+            pty.emu.set_scrollback(0);
         }
         if matches!(self.input, InputMode::Copy(_) | InputMode::Resize) {
             self.input = InputMode::Terminal;
@@ -1020,8 +1077,8 @@ impl App {
         if next == left {
             return;
         }
-        if let Some(left) = self.panes.get_mut(&left) {
-            left.emu.set_scrollback(0);
+        if let Some(pty) = self.panes.get_mut(&left).and_then(PaneState::pty_mut) {
+            pty.emu.set_scrollback(0);
         }
         if t == self.active && matches!(self.input, InputMode::Copy(_) | InputMode::Resize) {
             self.input = InputMode::Terminal;
@@ -1090,9 +1147,11 @@ impl App {
                     continue;
                 };
                 if state.size != size {
-                    state.emu.resize(size);
                     state.size = size;
-                    effects.push(Effect::ResizePty(id, size));
+                    if let Some(pty) = state.pty_mut() {
+                        pty.emu.resize(size);
+                        effects.push(Effect::ResizePty(id, size));
+                    }
                 }
             }
         }
@@ -1153,7 +1212,7 @@ impl App {
         match state.on_key(key, repeat) {
             CopyCommand::Move(motion) => {
                 let geo = self.copy_geometry();
-                let pane = &mut self.focused_state_mut().emu;
+                let pane = self.copy_pane_mut();
                 let line_end = match motion {
                     CopyMotion::LineEnd => pane.line_end(state.cursor.line),
                     _ => 0,
@@ -1163,7 +1222,7 @@ impl App {
                 self.input = InputMode::Copy(state);
             }
             CopyCommand::Exit => {
-                self.focused_state_mut().emu.set_scrollback(0);
+                self.copy_pane_mut().set_scrollback(0);
                 self.input = InputMode::Terminal;
                 self.hold_exit(key);
             }
@@ -1196,7 +1255,7 @@ impl App {
             self.input = InputMode::Copy(state);
             return Vec::new();
         };
-        let pane = &mut self.focused_state_mut().emu;
+        let pane = self.copy_pane_mut();
         let text = join(&pane.read_lines(span));
         if text.is_empty() {
             // An empty OSC 52 would clobber the clipboard.
@@ -1227,10 +1286,15 @@ impl App {
         // A paste is not part of a held key: the debounce is over.
         self.held_exit = None;
         match self.input {
-            InputMode::Terminal => vec![Effect::WritePty(
-                self.tab().focus,
-                encode_paste(text, self.focused_pane().modes()),
-            )],
+            InputMode::Terminal => self
+                .focused_pty()
+                .map(|pty| {
+                    vec![Effect::WritePty(
+                        self.tab().focus,
+                        encode_paste(text, pty.emu.modes()),
+                    )]
+                })
+                .unwrap_or_default(),
             InputMode::Menu => {
                 // Only the custom field takes a paste; nothing reaches a PTY.
                 if let Some(menu) = self.menu.as_mut() {
@@ -1265,12 +1329,12 @@ impl App {
             return;
         };
         let geo = self.copy_geometry();
-        if state.generation != self.focused_pane().line_generation() {
+        if state.generation != self.copy_pane().line_generation() {
             // Line numbers are incomparable now: start over like entering COPY.
             state = self.enter_copy();
-            self.focused_state_mut().emu.set_scrollback(0);
+            self.copy_pane_mut().set_scrollback(0);
         }
-        let pane = self.focused_pane();
+        let pane = self.copy_pane();
         state.offset = pane.scrollback_offset();
         let last_line = geo.first_line + geo.history + usize::from(geo.rows.max(1)) - 1;
         let last_col = geo.cols.saturating_sub(1);
@@ -1292,7 +1356,9 @@ impl App {
     fn on_cwd(&mut self, id: PaneId, cwd: PathBuf) -> Vec<Effect> {
         if let Some(state) = self.panes.get_mut(&id) {
             let before = state.effective_cwd().map(Path::to_path_buf);
-            state.proc_cwd = Some(cwd);
+            if let Some(pty) = state.pty_mut() {
+                pty.proc_cwd = Some(cwd);
+            }
             if state.effective_cwd() != before.as_deref() {
                 self.mark_cwd_dirty(id);
             }
@@ -1318,7 +1384,10 @@ impl App {
                     .get_mut(&id)
                     .map(|state| {
                         let before = state.effective_cwd().map(Path::to_path_buf);
-                        let reply = state.emu.feed(&bytes);
+                        let reply = state
+                            .pty_mut()
+                            .map(|pty| pty.emu.feed(&bytes))
+                            .unwrap_or_default();
                         cwd_changed = state.effective_cwd() != before.as_deref();
                         reply
                     })
