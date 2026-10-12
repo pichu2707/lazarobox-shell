@@ -228,6 +228,11 @@ async fn run_turn(
         let event = tokio::select! {
             _ = &mut run, if running => {
                 running = false;
+                // The adapter is done (or panicked). Closing the receiver
+                // keeps what is already buffered and then yields `None`, so a
+                // sender clone that outlives the adapter cannot hold the turn
+                // open.
+                rx.close();
                 continue;
             }
             event = rx.recv() => event,

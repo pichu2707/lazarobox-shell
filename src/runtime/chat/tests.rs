@@ -383,6 +383,39 @@ async fn a_runner_that_panics_before_returning_its_future_interrupts_the_turn() 
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_lingering_sender_does_not_keep_a_finished_adapter_turn_open() {
+    let lingering = Arc::new(Mutex::new(None));
+    let slot = lingering.clone();
+    let runner: Runner = Arc::new(move |_request, tx| {
+        let slot = slot.clone();
+        Box::pin(async move {
+            let _ = tx.send(delta("one")).await;
+            let _ = tx.send(delta("two")).await;
+            // A detached task keeps a sender alive, and never sends again.
+            let held = tx.clone();
+            *slot.lock().unwrap() = Some(tokio::spawn(async move {
+                let _held = held;
+                std::future::pending::<()>().await;
+            }));
+        })
+    });
+    let (mut chats, mut rx) = chats(runner);
+    chats.send(pane(1), 1, request(""));
+    // Events sent before the adapter finished still arrive, in order.
+    assert_eq!(
+        turn_events(&mut rx).await,
+        vec![
+            (pane(1), 1, delta("one")),
+            (pane(1), 1, delta("two")),
+            (pane(1), 1, StreamEvent::Error(ChatError::Interrupted)),
+        ]
+    );
+    if let Some(task) = lingering.lock().unwrap().take() {
+        task.abort();
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_failure_reaches_the_app_as_one_clean_line() {
     let (mut chats, mut rx) = chats(scripted(vec![failed("bad\u{1b}[31m\nnews")]));
     chats.send(pane(1), 1, request(""));
