@@ -21,6 +21,7 @@ use tokio::{
 
 use futures::future::join_all;
 
+use super::proc::GroupKill;
 use crate::core::ai::{
     CATALOG, Detection, Engine, Kind, Probe,
     http::{MAX_BODY, parse_response},
@@ -89,7 +90,7 @@ pub async fn version(path: &Path) -> Option<Vec<u8>> {
     let pid = child.id()? as libc::pid_t;
     // Declared after `child`, so it drops first: a dropped future still kills
     // the group while the child has not been reaped yet.
-    let mut group = GroupKill(Some(pid));
+    let mut group = GroupKill::new(pid);
     let output = timeout(VERSION_TIMEOUT, collect_version(&mut child, pid)).await;
     // INVARIANT: the group is signalled while the child is still unreaped.
     // A reaped pid can be recycled, and its pgid with it, so `collect_version`
@@ -97,27 +98,8 @@ pub async fn version(path: &Path) -> Option<Vec<u8>> {
     group.kill();
     // Reap the child so it does not linger as a zombie.
     let _ = timeout(Duration::from_millis(500), child.wait()).await;
-    group.0 = None;
+    group.disarm();
     output.ok()?
-}
-
-/// Kills the process group on `kill()` or, if still armed, on drop.
-struct GroupKill(Option<libc::pid_t>);
-
-impl GroupKill {
-    fn kill(&self) {
-        if let Some(pgid) = self.0 {
-            // SAFETY: killpg only sends a signal; the group was just spawned
-            // by this probe and its leader has not been reaped.
-            unsafe { libc::killpg(pgid, libc::SIGKILL) };
-        }
-    }
-}
-
-impl Drop for GroupKill {
-    fn drop(&mut self) {
-        self.kill();
-    }
 }
 
 /// Waits for `pid` to exit WITHOUT reaping it, so the pid stays reserved.
