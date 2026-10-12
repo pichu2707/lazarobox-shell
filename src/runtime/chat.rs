@@ -1,0 +1,300 @@
+//! The chat task: one tokio task per pane turn, between an engine adapter and
+//! the app. Adapters are a seam (`Runner`); real ones arrive with the engines.
+
+use std::{collections::HashMap, panic::AssertUnwindSafe, sync::Arc, time::Duration};
+
+use futures::{
+    FutureExt,
+    future::{BoxFuture, join_all},
+};
+use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
+
+use super::loopback::post_stream;
+use crate::core::{
+    ai::{
+        chat::{
+            ANSWER_CAP,
+            engine::{ChatError, ChatRequest, StreamEvent},
+            stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
+        },
+        sanitize::{StreamSanitizer, Utf8Stream, clean},
+    },
+    layout::PaneId,
+};
+
+/// Capacity of the channel between an adapter and its turn task. A full
+/// channel only slows the adapter down (and, through the socket, the engine),
+/// so no delta is ever dropped. The one best-effort event, `Slow`, is sent
+/// with `try_send` before the first byte, when nothing else is queued: it
+/// always finds room as long as this is more than 1.
+pub const TURN_CHANNEL: usize = 32;
+/// Capacity of the channel from every turn task to the event loop: the same
+/// as the PTY channel. The loop drains it in bursts, and a full channel holds
+/// the turn tasks back instead of losing events.
+pub const APP_CHANNEL: usize = 256;
+/// Shown when an engine fails with a message that is empty once cleaned.
+pub const EMPTY_ERROR: &str = "the engine reported an error";
+/// What the placeholder adapter says until the real ones land.
+pub const NO_ADAPTER: &str = "no engine adapter is available yet";
+
+/// An event of a turn, tagged with its pane and turn id.
+pub type Tagged = (PaneId, u64, StreamEvent);
+
+/// What an adapter runs: it sends its events to `tx` and ends. Dropping the
+/// future cancels the turn: it closes the socket or kills the process group.
+pub type Runner =
+    Arc<dyn Fn(ChatRequest, mpsc::Sender<StreamEvent>) -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// The wire format of a local server's reply.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Wire {
+    Ndjson,
+    Sse,
+}
+
+/// A decoder that has seen no byte yet. Every turn builds its own: a decoder
+/// keeps a partial line and an `ended` flag, and neither may leak into the
+/// next turn of the pane.
+pub fn fresh_decoder(wire: Wire) -> Box<dyn StreamDecoder + Send> {
+    match wire {
+        Wire::Ndjson => Box::new(NdjsonSplitter::server()),
+        Wire::Sse => Box::new(SseParser::server()),
+    }
+}
+
+/// One HTTP turn against a local server, with a decoder built for this turn.
+pub async fn http_turn(
+    wire: Wire,
+    port: u16,
+    path: &'static str,
+    body: Vec<u8>,
+    tx: mpsc::Sender<StreamEvent>,
+) {
+    let mut decoder = fresh_decoder(wire);
+    post_stream("127.0.0.1", port, path, &body, &mut *decoder, &tx).await;
+}
+
+/// What a failure text becomes before the app sees it: sanitized, on one
+/// line, trimmed and at most `ERROR_CAP` characters. Transport, stderr and
+/// HTTP errors all pass through here, whatever built them.
+fn error_text(raw: &str) -> String {
+    let flat = clean(raw).split_whitespace().collect::<Vec<_>>().join(" ");
+    let capped: String = flat.chars().take(ERROR_CAP).collect();
+    let text = capped.trim_end();
+    if text.is_empty() {
+        EMPTY_ERROR.to_owned()
+    } else {
+        text.to_owned()
+    }
+}
+
+/// Everything between an adapter and `ChatState` for one turn: text is decoded
+/// and sanitized by stateful filters (an escape sequence can be split across
+/// deltas), the answer is capped, and failure texts are made safe. One pipe
+/// per turn.
+pub struct Pipe {
+    utf8: Utf8Stream,
+    sanitizer: StreamSanitizer,
+    /// Sanitized bytes forwarded so far.
+    sent: usize,
+    over: bool,
+}
+
+impl Pipe {
+    pub fn new() -> Self {
+        Self {
+            utf8: Utf8Stream::new(),
+            sanitizer: StreamSanitizer::new(),
+            sent: 0,
+            over: false,
+        }
+    }
+
+    /// What reaches the app for one event of the adapter. Once a final event
+    /// went out, nothing does.
+    pub fn event(&mut self, event: StreamEvent) -> Vec<StreamEvent> {
+        if self.over {
+            return Vec::new();
+        }
+        match event {
+            StreamEvent::Slow => vec![StreamEvent::Slow],
+            StreamEvent::Delta(text) => self.bytes(text.as_bytes()),
+            StreamEvent::Done(finish) => self.end(StreamEvent::Done(finish)),
+            StreamEvent::Error(ChatError::Failed(text)) => {
+                self.end(StreamEvent::Error(ChatError::Failed(error_text(&text))))
+            }
+            StreamEvent::Error(error) => self.end(StreamEvent::Error(error)),
+        }
+    }
+
+    /// A final event went out: the turn is over.
+    pub fn is_over(&self) -> bool {
+        self.over
+    }
+
+    /// Raw output of an engine: a character may be cut between two calls.
+    pub fn bytes(&mut self, bytes: &[u8]) -> Vec<StreamEvent> {
+        if self.over {
+            return Vec::new();
+        }
+        let text = self.utf8.push(bytes);
+        self.text(&text)
+    }
+
+    /// The adapter ended without a final event.
+    pub fn end_without_final(&mut self) -> Vec<StreamEvent> {
+        if self.over {
+            return Vec::new();
+        }
+        self.end(StreamEvent::Error(ChatError::Interrupted))
+    }
+
+    /// Forwards decoded text, cutting the answer at `ANSWER_CAP`.
+    fn text(&mut self, decoded: &str) -> Vec<StreamEvent> {
+        let text = self.sanitizer.push(decoded);
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let room = ANSWER_CAP - self.sent;
+        if text.len() <= room {
+            self.sent += text.len();
+            return vec![StreamEvent::Delta(text)];
+        }
+        let mut cut = room;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        self.sent += cut;
+        self.over = true;
+        let mut out = Vec::new();
+        if cut > 0 {
+            out.push(StreamEvent::Delta(text[..cut].to_owned()));
+        }
+        out.push(StreamEvent::Error(ChatError::Truncated));
+        out
+    }
+
+    /// Flushes what the filters still hold, then ends with `last`.
+    fn end(&mut self, last: StreamEvent) -> Vec<StreamEvent> {
+        let tail = self.utf8.finish();
+        let mut out = self.text(&tail);
+        self.sanitizer.finish();
+        if !self.over {
+            self.over = true;
+            out.push(last);
+        }
+        out
+    }
+}
+
+impl Default for Pipe {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// An adapter for engines that have none yet: every turn fails at once.
+pub fn unavailable_runner() -> Runner {
+    Arc::new(|_request, tx| {
+        Box::pin(async move {
+            let _ = tx
+                .send(StreamEvent::Error(ChatError::Failed(NO_ADAPTER.into())))
+                .await;
+        })
+    })
+}
+
+/// One turn: runs the adapter, filters its events and forwards them tagged.
+/// The adapter future lives in this task, so dropping the task drops it.
+async fn run_turn(
+    runner: Runner,
+    app: mpsc::Sender<Tagged>,
+    pane: PaneId,
+    turn: u64,
+    request: ChatRequest,
+) {
+    let (tx, mut rx) = mpsc::channel(TURN_CHANNEL);
+    // A panicking adapter must still end the turn: its sender is dropped and
+    // the pane hears `Interrupted` instead of waiting forever.
+    let run = AssertUnwindSafe(runner(request, tx)).catch_unwind().fuse();
+    tokio::pin!(run);
+    let mut running = true;
+    let mut pipe = Pipe::new();
+    loop {
+        let event = tokio::select! {
+            _ = &mut run, if running => {
+                running = false;
+                continue;
+            }
+            event = rx.recv() => event,
+        };
+        let out = match event {
+            Some(event) => pipe.event(event),
+            None => pipe.end_without_final(),
+        };
+        let ended = pipe.is_over();
+        for event in out {
+            if app.send((pane, turn, event)).await.is_err() {
+                return;
+            }
+        }
+        if ended {
+            return;
+        }
+    }
+}
+
+/// The running turns, by pane. Each turn is one task that owns its adapter
+/// future: aborting the task drops the future, which closes the socket or
+/// kills the process group, so a cancel needs no cooperation from the adapter.
+pub struct Chats {
+    runner: Runner,
+    tx: mpsc::Sender<Tagged>,
+    turns: HashMap<PaneId, JoinHandle<()>>,
+}
+
+impl Chats {
+    pub fn new(runner: Runner, tx: mpsc::Sender<Tagged>) -> Self {
+        Self {
+            runner,
+            tx,
+            turns: HashMap::new(),
+        }
+    }
+
+    /// Starts turn `turn` of `pane`, replacing any turn it still had.
+    pub fn send(&mut self, pane: PaneId, turn: u64, request: ChatRequest) {
+        self.turns.retain(|_, task| !task.is_finished());
+        if let Some(old) = self.turns.remove(&pane) {
+            old.abort();
+        }
+        let task = tokio::spawn(run_turn(
+            self.runner.clone(),
+            self.tx.clone(),
+            pane,
+            turn,
+            request,
+        ));
+        self.turns.insert(pane, task);
+    }
+
+    /// Stops the turn of `pane`, if any. Returns at once.
+    pub fn cancel(&mut self, pane: PaneId) {
+        if let Some(task) = self.turns.remove(&pane) {
+            task.abort();
+        }
+    }
+
+    /// Stops every turn and waits, up to `bound`, until each adapter has been
+    /// dropped (its sockets closed, its process groups killed).
+    pub async fn shutdown(&mut self, bound: Duration) {
+        let tasks: Vec<_> = self.turns.drain().map(|(_, task)| task).collect();
+        for task in &tasks {
+            task.abort();
+        }
+        let _ = timeout(bound, join_all(tasks)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests;

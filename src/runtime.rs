@@ -15,6 +15,7 @@ use std::{
 };
 
 pub mod ai_detect;
+pub mod chat;
 mod config_write;
 pub mod loopback;
 pub mod proc;
