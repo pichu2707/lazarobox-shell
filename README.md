@@ -118,7 +118,7 @@ model = "llama3.2"   # o cualquier modelo que tengas descargado
 
 Si la tarea `chat` no tiene motor propio, usa el motor general (`[ai]`). El panel indica qué falta cuando no hay motor, no está en marcha o no está soportado.
 
-**Privacidad:** todo es local. El chat solo habla con `127.0.0.1` y no envía credenciales. Las conversaciones **no se guardan** todavía; al arrancar se crea un fichero vacío y privado `chat.db` en `$XDG_DATA_HOME/lazarobox/` (por defecto `~/.local/share/lazarobox/`) para el historial futuro, pero no se escribe nada en él.
+**Privacidad:** todo es local. El chat solo habla con `127.0.0.1` y no envía credenciales. Las conversaciones **no se guardan** todavía; el historial llegará en una versión futura.
 
 Límites de esta versión:
 
