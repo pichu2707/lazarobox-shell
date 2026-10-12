@@ -8,5 +8,5 @@ expression: "text(&draw(51, 8, &fresh()))"
 │ Tab bar position                            top │
 │ Mouse: off (coming soon)                        │
 │                                                 │
-│ j/k move · h/l change · Enter save · Esc cancel │
+│ j/k move · h/l change · s save · Esc cancel     │
 └─────────────────────────────────────────────────┘
