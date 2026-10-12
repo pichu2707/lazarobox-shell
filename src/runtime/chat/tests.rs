@@ -382,6 +382,56 @@ async fn a_runner_that_panics_before_returning_its_future_interrupts_the_turn() 
     );
 }
 
+/// Records `in_adapter_poll()` when dropped, even while a panic unwinds.
+struct SeesFlagOnDrop(Arc<AtomicBool>);
+
+impl Drop for SeesFlagOnDrop {
+    fn drop(&mut self) {
+        self.0.store(in_adapter_poll(), Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn the_adapter_flag_is_set_only_during_its_polls() {
+    assert!(!in_adapter_poll());
+    let inside = scoped(async {
+        tokio::task::yield_now().await;
+        in_adapter_poll()
+    });
+    // First poll runs inside the wrapper; the flag is gone between polls.
+    assert!(inside.await, "set while the adapter future is polled");
+    assert!(!in_adapter_poll(), "cleared once the poll returns");
+}
+
+#[tokio::test]
+async fn the_adapter_flag_is_set_while_a_panic_unwinds_and_cleared_after() {
+    let at_unwind = Arc::new(AtomicBool::new(false));
+    let seen = at_unwind.clone();
+    let result = AssertUnwindSafe(scoped(async move {
+        let _guard = SeesFlagOnDrop(seen);
+        panic!("adapter bug");
+    }))
+    .catch_unwind()
+    .await;
+    assert!(result.is_err());
+    assert!(
+        at_unwind.load(Ordering::SeqCst),
+        "the panic hook would still see the flag"
+    );
+    assert!(!in_adapter_poll(), "a panic must not leave the flag set");
+}
+
+#[tokio::test]
+async fn nested_adapter_polls_keep_the_flag_until_the_outermost_ends() {
+    let outer = scoped(async {
+        let inner = scoped(async {}).await;
+        let _ = inner;
+        in_adapter_poll()
+    });
+    assert!(outer.await);
+    assert!(!in_adapter_poll());
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_lingering_sender_does_not_keep_a_finished_adapter_turn_open() {
     let lingering = Arc::new(Mutex::new(None));

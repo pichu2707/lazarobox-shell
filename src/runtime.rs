@@ -564,11 +564,23 @@ fn restore() {
     ratatui::restore();
 }
 
+/// Whether a panic on this thread should tear the terminal down. A panic
+/// inside a chat adapter poll is caught by its turn task and becomes an
+/// `Interrupted` turn: the app keeps running, so the terminal must stay intact.
+fn should_restore() -> bool {
+    !chat::in_adapter_poll()
+}
+
 /// Restores the cursor and bracketed paste before the previous hook (which
 /// `ratatui::init` set up to leave raw mode and the alternate screen) runs.
+/// Panics inside a chat adapter are caught elsewhere and skip all of it,
+/// including the previous hook's output, which would scribble over the TUI.
 fn install_panic_hook() {
     let previous = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
+        if !should_restore() {
+            return;
+        }
         let _ = restore_to(&mut stdout());
         previous(info);
     }));
@@ -1566,6 +1578,20 @@ mod tests {
             1,
             "and a detection run is not held back by it"
         );
+    }
+
+    #[tokio::test]
+    async fn a_panic_hook_restores_the_terminal_except_inside_a_chat_adapter() {
+        assert!(
+            should_restore(),
+            "outside an adapter the terminal is restored"
+        );
+        let inside = chat::scoped(async { should_restore() }).await;
+        assert!(
+            !inside,
+            "inside an adapter poll the panic is caught: leave the TUI alone"
+        );
+        assert!(should_restore(), "and it is back to normal afterwards");
     }
 
     #[tokio::test(start_paused = true)]

@@ -1,7 +1,16 @@
 //! The chat task: one tokio task per pane turn, between an engine adapter and
 //! the app. Adapters are a seam (`Runner`); real ones arrive with the engines.
 
-use std::{collections::HashMap, panic::AssertUnwindSafe, sync::Arc, time::Duration};
+use std::{
+    cell::Cell,
+    collections::HashMap,
+    future::Future,
+    panic::AssertUnwindSafe,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use futures::{
     FutureExt,
@@ -204,6 +213,52 @@ pub fn unavailable_runner() -> Runner {
     })
 }
 
+thread_local! {
+    /// How many adapter polls are running on this thread right now.
+    static IN_ADAPTER: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Whether the current thread is inside a poll of a chat adapter future. The
+/// panic hook reads it: a panic there is caught by `run_turn` and becomes
+/// `Interrupted`, so it must not tear the terminal down.
+pub fn in_adapter_poll() -> bool {
+    IN_ADAPTER.with(|depth| depth.get() > 0)
+}
+
+/// Counts one adapter poll in; the drop counts it out, also on unwind.
+struct PollGuard;
+
+impl PollGuard {
+    fn enter() -> Self {
+        IN_ADAPTER.with(|depth| depth.set(depth.get() + 1));
+        Self
+    }
+}
+
+impl Drop for PollGuard {
+    fn drop(&mut self) {
+        IN_ADAPTER.with(|depth| depth.set(depth.get() - 1));
+    }
+}
+
+/// Wraps an adapter future so `in_adapter_poll` is true during each of its
+/// polls. Set per poll, not per task: a task can move between threads between
+/// polls, and the panic hook runs on the thread that panics.
+pub fn scoped<F: Future>(inner: F) -> Scoped<F> {
+    Scoped(Box::pin(inner))
+}
+
+pub struct Scoped<F>(Pin<Box<F>>);
+
+impl<F: Future> Future for Scoped<F> {
+    type Output = F::Output;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+        let _guard = PollGuard::enter();
+        self.0.as_mut().poll(cx)
+    }
+}
+
 /// One turn: runs the adapter, filters its events and forwards them tagged.
 /// The adapter future lives in this task, so dropping the task drops it.
 async fn run_turn(
@@ -218,7 +273,7 @@ async fn run_turn(
     // the pane hears `Interrupted` instead of waiting forever.
     // The call itself sits inside the guarded future: a runner that panics
     // before it returns its future is caught the same way.
-    let run = AssertUnwindSafe(async move { runner(request, tx).await })
+    let run = AssertUnwindSafe(scoped(async move { runner(request, tx).await }))
         .catch_unwind()
         .fuse();
     tokio::pin!(run);
