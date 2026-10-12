@@ -257,8 +257,26 @@ impl Scan<'_> {
             return None;
         }
         let start = self.run(at + 1, is_blank);
-        let end = self.run(start, |c| !c.is_ascii_whitespace());
+        let (start, end) = match self.bytes.get(start) {
+            Some(&quote @ (b'"' | b'\'')) => (start + 1, self.quoted_end(start + 1, quote)),
+            _ => (start, self.run(start, |c| !c.is_ascii_whitespace())),
+        };
         (end > start && &self.text[start..end] != MASK).then_some((start, end))
+    }
+
+    /// The end of a quoted value that starts at `from`: the closing `quote`
+    /// (a backslash escapes the next byte) or the end of the line.
+    fn quoted_end(&self, from: usize, quote: u8) -> usize {
+        let mut k = from;
+        while let Some(&c) = self.bytes.get(k) {
+            match c {
+                b'\n' | b'\r' => break,
+                b'\\' if !matches!(self.bytes.get(k + 1), None | Some(b'\n' | b'\r')) => k += 2,
+                c if c == quote => break,
+                _ => k += 1,
+            }
+        }
+        k.min(self.bytes.len())
     }
 }
 
@@ -399,6 +417,35 @@ mod tests {
         for (input, want) in table {
             assert_eq!(text(input), want, "{input:?}");
         }
+    }
+
+    #[test]
+    fn a_quoted_value_is_masked_up_to_its_closing_quote() {
+        let table = [
+            (
+                "password = \"my secret phrase here\" ok",
+                "password = \"[REDACTED]\" ok",
+            ),
+            ("{\"password\": \"x y\"}", "{\"password\": \"[REDACTED]\"}"),
+            ("token: 'two words' after", "token: '[REDACTED]' after"),
+            (
+                "secret=\"say \\\"hi\\\" now\" end",
+                "secret=\"[REDACTED]\" end",
+            ),
+            // Unterminated: to the end of the line, not further.
+            (
+                "password=\"never closed\nnext",
+                "password=\"[REDACTED]\nnext",
+            ),
+            // The quote of another line is not a closing quote.
+            ("password=\"a b\nc\" d", "password=\"[REDACTED]\nc\" d"),
+        ];
+        for (input, want) in table {
+            let out = redact(input);
+            assert_eq!(out.text, want, "{input:?}");
+            assert_eq!(redact(&out.text).text, want, "idempotent {input:?}");
+        }
+        assert_eq!(redact("password=\"\"").hits, 0, "empty quotes hide nothing");
     }
 
     #[test]
