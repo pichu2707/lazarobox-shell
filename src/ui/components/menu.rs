@@ -454,4 +454,41 @@ mod tests {
         assert!(shown.contains("s save"), "{shown}");
         assert!(!shown.contains("Enter save"), "{shown}");
     }
+
+    // The widget only styles the footer: Error is red, Hint is muted.
+    fn footer_fg(buf: &Buffer, needle: &str) -> ratatui::style::Color {
+        let y = lines(buf)
+            .iter()
+            .position(|l| l.contains(needle))
+            .expect("footer is drawn") as u16;
+        let x = (0..buf.area.width)
+            .find(|x| buf[(*x, y)].symbol() == needle.chars().next().unwrap().to_string())
+            .expect("first cell");
+        buf[(x, y)].fg
+    }
+
+    #[test]
+    fn the_error_footer_is_red_and_the_hint_is_muted() {
+        let theme = LazaroboxTheme::default();
+        assert_ne!(theme.error_red, theme.text_muted);
+        let mut menu = with_ai("llama3:8b");
+        let hint = draw(62, 15, &menu);
+        assert_eq!(footer_fg(&hint, "j/k move"), theme.text_muted);
+        menu.set_error("save failed: disk full".into());
+        let error = draw(62, 15, &menu);
+        assert_eq!(footer_fg(&error, "save failed"), theme.error_red);
+    }
+
+    // `fit` keeps the 20-cell mark whole once the head has a cell to spare.
+    #[test]
+    fn fit_keeps_the_mark_from_room_21_and_clips_the_whole_value_below() {
+        let value = "abcdefghij · download required";
+        assert_eq!(cells(value), 30);
+        assert_eq!(fit(value, 30), value);
+        assert_eq!(fit(value, 22), "a… · download required");
+        assert_eq!(fit(value, 21), "… · download required");
+        assert_eq!(fit(value, 20), "abcdefghij · downlo…");
+        assert_eq!(cells(&fit(value, 20)), 20);
+        assert_eq!(fit("plain value that is long", 8), "plain v…");
+    }
 }
