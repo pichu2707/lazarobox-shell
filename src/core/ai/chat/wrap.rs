@@ -152,12 +152,19 @@ pub fn wrap_words(line: &str, width: usize) -> Vec<String> {
                 .rposition(|c| c.space)
                 .map_or(fit, |i| first_word.min(fit) + i)
         };
-        rows.push(text(start, cut).trim_end().to_owned());
+        // An indent wider than the row leaves nothing to show: no empty row.
+        let row = text(start, cut).trim_end().to_owned();
+        if !row.is_empty() {
+            rows.push(row);
+        }
         start = cut;
         while cl.get(start).is_some_and(|c| c.space) {
             start += 1;
         }
         if start >= cl.len() {
+            if rows.is_empty() {
+                rows.push(String::new());
+            }
             return rows;
         }
     }
@@ -266,6 +273,13 @@ mod tests {
         assert_eq!(wrap_words("aaa    bbb", 4), ["aaa", "bbb"]);
         assert_eq!(wrap_words("  indented text", 8), ["  indent", "ed text"]);
         assert_eq!(wrap_words("    x", 10), ["    x"]);
+    }
+
+    #[test]
+    fn an_indent_wider_than_the_width_does_not_leave_an_empty_row() {
+        assert_eq!(wrap_words("    x", 2), ["x"]);
+        assert_eq!(wrap_words("      abc def", 3), ["abc", "def"]);
+        assert_eq!(wrap_words("     ", 2), [""], "a blank line stays one row");
     }
 
     #[test]
