@@ -388,8 +388,9 @@ pub struct App {
     ai: AiConfig,
     /// Whether this system can jail a CLI. Nothing probes it yet.
     jail: JailSupport,
-    /// Chat panes whose send waits for the first detection result.
-    waiting_sends: Vec<PaneId>,
+    /// Chat panes whose send waits for the first detection result, with the
+    /// text parked at Enter.
+    waiting_sends: Vec<(PaneId, String)>,
     /// The frame of the thinking-indicator animation.
     anim_frame: usize,
 }

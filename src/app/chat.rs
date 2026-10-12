@@ -118,18 +118,31 @@ impl App {
 
     /// A paste into the focused chat's composer.
     pub(super) fn chat_paste(&mut self, text: &str) {
+        let id = self.tab().focus;
         if let Some(chat) = self.focused_state_mut().chat_mut() {
             chat.composer_mut().paste(text);
             self.dirty = true;
+            self.drop_parked_send(id);
         }
+    }
+
+    /// A parked send is the text as it was at Enter: editing the composer
+    /// afterwards, or cancelling, drops it. The text stays in the composer.
+    fn drop_parked_send(&mut self, id: PaneId) {
+        self.waiting_sends.retain(|(pane, _)| *pane != id);
     }
 
     fn edit_composer(
         &mut self,
         edit: impl FnOnce(&mut crate::core::ai::chat::composer::Composer),
     ) -> Vec<Effect> {
+        let id = self.tab().focus;
         if let Some(chat) = self.focused_state_mut().chat_mut() {
+            let before = chat.composer().text();
             edit(chat.composer_mut());
+            if chat.composer().text() != before {
+                self.drop_parked_send(id);
+            }
         }
         Vec::new()
     }
@@ -156,14 +169,23 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        let text = chat.composer().text();
         if availability == Availability::Checking {
-            if !chat.composer().text().trim().is_empty() && !self.waiting_sends.contains(&id) {
-                self.waiting_sends.push(id);
+            if !text.trim().is_empty() {
+                self.drop_parked_send(id);
+                self.waiting_sends.push((id, text));
             }
             return Vec::new();
         }
-        let text = chat.composer().text();
-        match chat.send(&text, &availability, "") {
+        self.send_text(id, &text, &availability)
+    }
+
+    /// Sends `text` from pane `id` and clears its composer when it went.
+    fn send_text(&mut self, id: PaneId, text: &str, availability: &Availability) -> Vec<Effect> {
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        match chat.send(text, availability, "") {
             SendOutcome::Sent { turn, request } => {
                 chat.composer_mut().clear();
                 vec![Effect::ChatSend {
@@ -179,14 +201,17 @@ impl App {
     /// The first detection arrived: the sends that waited for it go now.
     pub(super) fn run_waiting_sends(&mut self) -> Vec<Effect> {
         let waiting = std::mem::take(&mut self.waiting_sends);
+        let availability = self.chat_availability();
         waiting
             .into_iter()
-            .flat_map(|id| self.chat_submit(id))
+            .flat_map(|(id, text)| self.send_text(id, &text, &availability))
             .collect()
     }
 
-    /// Esc and Ctrl+C: stop the stream, or do nothing when idle.
+    /// Esc and Ctrl+C: stop the stream and drop a parked send, or do nothing
+    /// when idle.
     fn chat_cancel_key(&mut self, id: PaneId) -> Vec<Effect> {
+        self.drop_parked_send(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };

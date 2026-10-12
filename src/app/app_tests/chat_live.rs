@@ -817,6 +817,72 @@ fn a_send_waits_for_the_first_detection_and_then_goes() {
     assert_eq!(composer(&a), "");
 }
 
+/// The first detection result: a ready ollama with the model listed.
+fn ready_detection() -> AppEvent {
+    AppEvent::EnginesDetected(detection(&["llama3:8b"]))
+}
+
+#[test]
+fn esc_cancels_a_parked_send() {
+    let mut a = undetected_chat(ollama());
+    ask(&mut a, "hello");
+    a.update(plain(KeyCode::Esc));
+    assert_eq!(a.update(ready_detection()), vec![]);
+    assert_eq!(composer(&a), "hello", "the text stays for the user");
+}
+
+#[test]
+fn ctrl_c_cancels_a_parked_send() {
+    let mut a = undetected_chat(ollama());
+    ask(&mut a, "hello");
+    a.update(ctrl('c'));
+    assert_eq!(a.update(ready_detection()), vec![]);
+}
+
+#[test]
+fn text_typed_after_the_enter_drops_the_parked_send() {
+    let mut a = undetected_chat(ollama());
+    ask(&mut a, "hello");
+    type_text(&mut a, " world");
+    assert_eq!(a.update(ready_detection()), vec![]);
+    assert_eq!(
+        composer(&a),
+        "hello world",
+        "the edit is kept, nothing sent"
+    );
+}
+
+#[test]
+fn a_paste_after_the_enter_drops_the_parked_send() {
+    let mut a = undetected_chat(ollama());
+    ask(&mut a, "hello");
+    a.update(AppEvent::Paste(" world".into()));
+    assert_eq!(a.update(ready_detection()), vec![]);
+}
+
+#[test]
+fn ctrl_u_drops_the_parked_send_even_if_the_same_text_is_typed_again() {
+    let mut a = undetected_chat(ollama());
+    ask(&mut a, "hello");
+    a.update(ctrl('u'));
+    type_text(&mut a, "hello");
+    assert_eq!(a.update(ready_detection()), vec![]);
+    assert_eq!(composer(&a), "hello");
+}
+
+#[test]
+fn a_parked_send_sends_the_text_it_was_parked_with() {
+    let mut a = undetected_chat(ollama());
+    ask(&mut a, "hello");
+    let effects = a.update(ready_detection());
+    match effects.as_slice() {
+        [Effect::ChatSend { request, .. }] => {
+            assert!(format!("{request:?}").contains("hello"), "{request:?}");
+        }
+        other => panic!("expected one ChatSend, got {other:?}"),
+    }
+}
+
 #[test]
 fn a_waiting_send_that_finds_the_engine_unusable_sends_nothing() {
     let mut a = undetected_chat(ollama());
