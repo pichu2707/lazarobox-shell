@@ -2,6 +2,8 @@
 //! commands of every pane in the order they were sent.
 
 use std::{
+    io,
+    panic::{AssertUnwindSafe, catch_unwind},
     path::PathBuf,
     sync::mpsc as std_mpsc,
     thread::{self, JoinHandle},
@@ -25,6 +27,9 @@ use crate::core::{
 };
 
 type Opener = Box<dyn FnOnce() -> Result<Connection, StoreError> + Send>;
+
+/// Name of the store thread; the panic hook keys off it.
+pub const THREAD_NAME: &str = "chat-store";
 
 /// The longest conversation title, in characters.
 const TITLE_MAX: usize = 80;
@@ -115,11 +120,55 @@ impl Worker {
         }
     }
 
+    /// `handle` that survives a panic. A panic leaves the connection in an
+    /// unknown state, so the store is marked unusable: the command that
+    /// panicked gets a reply (`Unavailable` for a `Create`, `Failed` for an
+    /// `Append`) and every later `Create` answers `Unavailable`. The thread
+    /// keeps running so it still drains its queue and honours `Quit`.
+    pub(crate) fn guarded(&mut self, cmd: StoreCmd) -> Option<StoreReply> {
+        self.guarded_with(cmd, Self::handle)
+    }
+
+    fn guarded_with(
+        &mut self,
+        cmd: StoreCmd,
+        run: impl FnOnce(&mut Self, StoreCmd) -> Option<StoreReply>,
+    ) -> Option<StoreReply> {
+        let (pane, is_create) = match &cmd {
+            StoreCmd::Create { pane, .. } => (*pane, true),
+            StoreCmd::Append { pane, .. } => (*pane, false),
+            StoreCmd::Quit => return None,
+        };
+        match catch_unwind(AssertUnwindSafe(|| run(self, cmd))) {
+            Ok(reply) => reply,
+            Err(payload) => {
+                let reason = bounded_error(&panic_text(payload.as_ref()));
+                self.conn = Some(Err(reason.clone()));
+                self.opener = None;
+                Some(if is_create {
+                    StoreReply::Unavailable { pane, reason }
+                } else {
+                    self.failure(pane)
+                })
+            }
+        }
+    }
+
     fn failure(&mut self, pane: PaneId) -> StoreReply {
         let notify = !self.failing;
         self.failing = true;
         StoreReply::Failed { pane, notify }
     }
+}
+
+/// The message of a panic payload, or a generic line.
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    let text = payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_default();
+    format!("store thread panicked: {text}")
 }
 
 fn now() -> i64 {
@@ -128,9 +177,13 @@ fn now() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
-/// The first line of the first message, cut to `TITLE_MAX` characters.
+/// The first non-empty line of the first message, cut to `TITLE_MAX` characters.
 fn title_of(text: &str) -> String {
-    let line = text.lines().next().unwrap_or("").trim();
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("(untitled)");
     line.chars().take(TITLE_MAX).collect()
 }
 
@@ -237,14 +290,27 @@ fn insert_message(
 /// The owner's end of the store thread.
 pub struct StoreHandle {
     tx: std_mpsc::Sender<StoreCmd>,
+    /// To answer a `Create` the thread can no longer read.
+    replies: mpsc::Sender<StoreReply>,
     done: std_mpsc::Receiver<()>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl StoreHandle {
     /// Queues `cmd`; never waits for the database.
+    ///
+    /// With no thread behind the queue (it never started) a `Create` is
+    /// answered `Unavailable` so the pane detaches instead of waiting.
     pub fn send(&self, cmd: StoreCmd) {
-        let _ = self.tx.send(cmd);
+        let Err(std_mpsc::SendError(cmd)) = self.tx.send(cmd) else {
+            return;
+        };
+        if let StoreCmd::Create { pane, .. } = cmd {
+            let reason = bounded_error("store thread not running");
+            let _ = self
+                .replies
+                .try_send(StoreReply::Unavailable { pane, reason });
+        }
     }
 
     /// Queues `Quit` and waits up to `bound` for everything before it to be
@@ -266,26 +332,45 @@ pub fn spawn(
     open: impl FnOnce() -> Result<Connection, StoreError> + Send + 'static,
     replies: mpsc::Sender<StoreReply>,
 ) -> StoreHandle {
+    spawn_with(
+        |body| thread::Builder::new().name(THREAD_NAME.into()).spawn(body),
+        open,
+        replies,
+    )
+}
+
+/// `spawn` with the thread start injected, so a failing start can be tested.
+fn spawn_with(
+    start: impl FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
+    open: impl FnOnce() -> Result<Connection, StoreError> + Send + 'static,
+    replies: mpsc::Sender<StoreReply>,
+) -> StoreHandle {
     let (tx, rx) = std_mpsc::channel::<StoreCmd>();
     let (done_tx, done) = std_mpsc::channel();
-    let thread = thread::Builder::new()
-        .name("chat-store".into())
-        .spawn(move || {
-            let mut worker = Worker::new(open);
-            while let Ok(cmd) = rx.recv() {
-                if cmd == StoreCmd::Quit {
-                    break;
-                }
-                if let Some(reply) = worker.handle(cmd) {
-                    // A closed channel means the loop is gone; the writes
-                    // still matter, so keep going.
-                    let _ = replies.blocking_send(reply);
-                }
+    let thread_replies = replies.clone();
+    let body = move || {
+        let mut worker = Worker::new(open);
+        while let Ok(cmd) = rx.recv() {
+            if cmd == StoreCmd::Quit {
+                break;
             }
-            let _ = done_tx.send(());
-        })
-        .ok();
-    StoreHandle { tx, done, thread }
+            if let Some(reply) = worker.guarded(cmd) {
+                // A closed channel means the loop is gone; the writes
+                // still matter, so keep going.
+                let _ = thread_replies.blocking_send(reply);
+            }
+        }
+        let _ = done_tx.send(());
+    };
+    // On failure the body (and its receiver) is dropped, so `send` sees a
+    // closed queue and answers for the thread.
+    let thread = start(Box::new(body)).ok();
+    StoreHandle {
+        tx,
+        replies,
+        done,
+        thread,
+    }
 }
 
 /// Starts the store thread on the database at `path`, or on none.

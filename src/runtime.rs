@@ -296,8 +296,10 @@ async fn run_loop(
                     }
                 }
             }
-            // `panes` keeps the store thread's sender, so this never reads a
-            // closed channel either.
+            // The store thread's sender lives in `panes.store`, so this arm
+            // never reads a closed channel before shutdown. At quit the loop
+            // has returned; dropping `store_rx` then makes the thread's
+            // `blocking_send` fail fast instead of blocking on a full channel.
             Some(reply) = store_rx.recv() => {
                 if step(&mut app, AppEvent::Store(reply), panes) {
                     return Ok(());
@@ -379,6 +381,8 @@ impl Panes {
     }
 
     /// Lets the store thread write what is queued, up to `bound`.
+    // Blocking the runtime thread for up to 2 s is acceptable here: it only
+    // happens on the quit path, where nothing else is left to serve.
     fn shutdown_store(&mut self, bound: Duration) {
         if let Some(store) = self.store.take() {
             store.shutdown(bound);
@@ -615,7 +619,9 @@ fn restore() {
 /// inside a chat adapter poll is caught by its turn task and becomes an
 /// `Interrupted` turn: the app keeps running, so the terminal must stay intact.
 fn should_restore() -> bool {
-    !chat::in_adapter_poll()
+    // The store thread catches its own panics and reports them as replies.
+    let on_store_thread = thread::current().name() == Some(chat_store::worker::THREAD_NAME);
+    !chat::in_adapter_poll() && !on_store_thread
 }
 
 /// Restores the cursor and bracketed paste before the previous hook (which
@@ -1570,11 +1576,12 @@ mod tests {
             panic!("no Created reply");
         };
 
-        // Another process holds the write lock for 2 s: every write waits.
+        // Another process holds the write lock for 1 s, under the 2 s busy
+        // timeout: every write waits, then lands.
         let holder = rusqlite::Connection::open(&db).unwrap();
         holder.execute_batch("BEGIN IMMEDIATE").unwrap();
         let release = thread::spawn(move || {
-            thread::sleep(Duration::from_secs(2));
+            thread::sleep(Duration::from_secs(1));
             holder.execute_batch("ROLLBACK").unwrap();
         });
 
@@ -1605,6 +1612,16 @@ mod tests {
         );
         release.join().unwrap();
         panes.shutdown_store(Duration::from_secs(10));
+        let check = rusqlite::Connection::open(&db).unwrap();
+        let stored: i64 = check
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                [conversation],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // The first message plus the 20 appends: the wait cost nothing.
+        assert_eq!(stored, 21, "the appends held back by the lock were lost");
     }
 
     #[tokio::test]
@@ -1820,6 +1837,17 @@ mod tests {
             "inside an adapter poll the panic is caught: leave the TUI alone"
         );
         assert!(should_restore(), "and it is back to normal afterwards");
+    }
+
+    #[test]
+    fn a_panic_on_the_store_thread_leaves_the_terminal_alone() {
+        let inside = thread::Builder::new()
+            .name(chat_store::worker::THREAD_NAME.into())
+            .spawn(should_restore)
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(!inside, "the store thread recovers from its own panics");
     }
 
     #[tokio::test(start_paused = true)]

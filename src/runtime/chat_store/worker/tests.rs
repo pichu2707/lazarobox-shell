@@ -555,8 +555,11 @@ fn a_blocked_store_does_not_block_the_sender() {
     for i in 0..50 {
         handle.send(append(conversation, user(&format!("m{i}"))));
     }
+    // 50 sends take microseconds; the lock is held until released below, so
+    // any wait on the database would run into the 2 s busy timeout. 1 s keeps
+    // the assertion meaningful while leaving slow CI machines ample headroom.
     assert!(
-        started.elapsed() < Duration::from_millis(200),
+        started.elapsed() < Duration::from_secs(1),
         "send waited for the database"
     );
     holder.execute_batch("ROLLBACK").unwrap();
@@ -609,4 +612,109 @@ fn shutdown_gives_up_at_its_bound() {
     let started = Instant::now();
     handle.shutdown(Duration::from_millis(150));
     assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+fn long(c: &str, n: usize) -> String {
+    c.repeat(n)
+}
+
+#[test]
+fn a_multibyte_title_is_cut_at_80_characters() {
+    for glyph in ["é", "😀"] {
+        let (_dir, mut worker, conn) = fixture();
+        let id = created_id(worker.handle(create(user(&long(glyph, 200)), vec![])));
+        let title: String = conn
+            .query_row("SELECT title FROM conversations WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(title.chars().count(), 80, "glyph {glyph}");
+        assert_eq!(title, long(glyph, 80));
+    }
+}
+
+#[test]
+fn a_multibyte_error_reason_is_cut_at_exactly_the_bound() {
+    for glyph in ["é", "😀"] {
+        let reason = bounded_error(&long(glyph, 400));
+        assert_eq!(reason.chars().count(), ERROR_MAX, "glyph {glyph}");
+        assert_eq!(ERROR_MAX, 120);
+    }
+}
+
+#[test]
+fn the_title_is_the_first_non_empty_line() {
+    assert_eq!(title_of("\n\n  \n  hello world \nsecond"), "hello world");
+    assert_eq!(title_of("first\nsecond"), "first");
+}
+
+#[test]
+fn a_message_without_text_is_untitled() {
+    assert_eq!(title_of(""), "(untitled)");
+    assert_eq!(title_of(" \n\t\n"), "(untitled)");
+}
+
+#[test]
+fn a_panicking_opener_still_gets_a_reply_and_shutdown_returns() {
+    let (tx, mut rx) = mpsc::channel(4);
+    let handle = spawn(|| panic!("opener blew up"), tx);
+    handle.send(create(user("q"), vec![]));
+    let Some(StoreReply::Unavailable { reason, .. }) = rx.blocking_recv() else {
+        panic!("no Unavailable reply");
+    };
+    assert!(reason.chars().count() <= ERROR_MAX);
+    // The store is unusable from now on, but the thread keeps answering.
+    handle.send(create(user("again"), vec![]));
+    assert!(matches!(
+        rx.blocking_recv(),
+        Some(StoreReply::Unavailable { .. })
+    ));
+    let started = Instant::now();
+    handle.shutdown(Duration::from_secs(2));
+    assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn a_panicking_append_replies_failed_and_marks_the_store_unusable() {
+    let (_dir, mut worker, _conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    let reply = worker.guarded_with(append(id, user("boom")), |_, _| panic!("handler bug"));
+    assert!(matches!(
+        reply,
+        Some(StoreReply::Failed { notify: true, .. })
+    ));
+    let after = worker.guarded(create(user("next"), vec![]));
+    assert!(matches!(after, Some(StoreReply::Unavailable { .. })));
+    assert!(worker.guarded(append(id, user("late"))).is_none());
+}
+
+#[test]
+fn a_panicking_create_replies_unavailable_with_a_bounded_reason() {
+    let (_dir, mut worker, _conn) = fixture();
+    let payload = long("x\n", 500);
+    let reply = worker.guarded_with(create(user("q"), vec![]), |_, _| panic!("{payload}"));
+    let Some(StoreReply::Unavailable { reason, .. }) = reply else {
+        panic!("expected Unavailable, got {reply:?}");
+    };
+    assert!(reason.chars().count() <= ERROR_MAX);
+    assert!(!reason.contains('\n'));
+}
+
+#[test]
+fn a_handle_without_a_thread_answers_unavailable_to_a_create() {
+    let (tx, mut rx) = mpsc::channel(4);
+    let handle = spawn_with(
+        |_| Err(std::io::Error::other("no threads left")),
+        || Err(StoreError::NoPath),
+        tx,
+    );
+    handle.send(append(1, user("silent")));
+    handle.send(create(user("q"), vec![]));
+    let Some(StoreReply::Unavailable { pane: p, reason }) = rx.blocking_recv() else {
+        panic!("no Unavailable reply");
+    };
+    assert_eq!(p, pane());
+    assert!(reason.chars().count() <= ERROR_MAX);
+    assert!(rx.try_recv().is_err(), "the append must stay silent");
+    handle.shutdown(Duration::from_millis(200));
 }
