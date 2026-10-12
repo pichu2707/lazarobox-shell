@@ -25,7 +25,7 @@ This change supersedes ai-chat **D15** ("Shared project memory is out of scope")
 - **E5 Project identity.**
   - The engram project comes from `GET /project/current?cwd=<pane cwd>`, and every request passes `project` explicitly.
   - The ai-chat project tag (D13) stays as the list and display tag, so memory never splits from it.
-  - An unknown (404) or ambiguous (409) project makes memory unavailable for that chat, with a notice. lazarobox never guesses a project.
+  - Memory works only for git projects: a `dir_basename` or `ambiguous` project (engram answers 200 with `project_source`, never 404/409) makes memory unavailable for that chat, with the line `memory needs a git project`. lazarobox never guesses a project.
 - **E6 One engram session per conversation.**
   - The session id is `lazarobox-<32 lowercase hex>` (random, not the conversation row id). It is created and registered on the first write, because engram needs a session for every save, and it is stored in chat.db (E14) so a resumed conversation reuses it.
   - The session ends with a summary when the conversation closes. That summary is the approved summary (E9) when there is one, or otherwise `Notes: <titles>`.
@@ -164,7 +164,7 @@ Feature-branch chain on `feat/engram-memory`, auto-chain, strict TDD, about 400 
 | An old 1.20 server, or one that is not engram, is on the port | High (today) | The `/health` capability check, a clear notice, and no spawn |
 | A spawned server is orphaned or races another server | Med | Re-probe before spawning, adopt on bind failure, detached and never killed, and the PID is shown |
 | The engram HTTP API drifts (it has no version number) | Med | Gate on `capabilities`, use recorded fixtures, and degrade instead of failing |
-| A project mismatch splits memory | Low | `/project/current` is the single source, and 404/409 make memory unavailable |
+| A project mismatch splits memory | Low | `/project/current` is the single source, and a non-git `project_source` makes memory unavailable |
 | The chat.db v2 migration makes an older build report history unavailable | Med | Additive migration, file untouched by the old build, documented in the README and the rollback plan |
 | The ai-chat state shapes change underneath this change (indicator work happening at the same time) | Med | UI hooks (M6 to M8) land only after PR9 and PR13 have merged |
 
