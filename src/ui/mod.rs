@@ -743,7 +743,7 @@ mod tests {
     fn a_tiny_terminal_shows_the_fallback_and_esc_still_reverts() {
         let mut app = menu_app(20, 5);
         let (buf, _) = draw_at(&app, 20, 5);
-        assert_eq!(row(&buf, 2), "MENU · Esc cancel ·…");
+        assert_eq!(row(&buf, 2), "MENU · s save · Esc…");
         app.update(AppEvent::Key(KeyEvent::new(
             KeyCode::Esc,
             KeyModifiers::NONE,

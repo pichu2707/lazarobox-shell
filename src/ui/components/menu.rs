@@ -11,7 +11,7 @@ use super::tab_bar::{cells, clip};
 use crate::{
     core::{
         config::Config,
-        menu::{MenuState, Row},
+        menu::{Footer, MenuState, Row},
     },
     ui::theme::LazaroboxTheme,
 };
@@ -60,9 +60,7 @@ impl<'a> MenuPopup<'a> {
     }
 }
 
-const HINT: &str = "j/k move · h/l change · Enter save · Esc cancel";
-const HINT_AI: &str = "j/k move · h/l change · r refresh · Enter save · Esc cancel";
-const FALLBACK: &str = "MENU · Esc cancel · Enter save";
+const FALLBACK: &str = "MENU · s save · Esc cancel";
 
 impl MenuPopup<'_> {
     /// Below the size threshold: one line on the middle row.
@@ -92,7 +90,11 @@ impl MenuPopup<'_> {
                 enabled,
             } => {
                 let value = value.as_deref().unwrap_or("");
-                let used = cells(label) + cells(value) + 2;
+                // The label stays whole; a long value gives way, but never
+                // its trailing ` · download required` mark.
+                let room = usize::from(width).saturating_sub(cells(label) + 4);
+                let value = fit(value, room);
+                let used = cells(label) + cells(&value) + 2;
                 let gap = usize::from(width).saturating_sub(used).max(1);
                 let text = format!(" {label}{}{value} ", " ".repeat(gap));
                 let style = if !enabled {
@@ -126,6 +128,23 @@ impl MenuPopup<'_> {
             }
             Row::Field(text) => (format!(" {text}"), plain),
         }
+    }
+}
+
+/// Suffix of a task-row value that must survive clipping.
+const REQUIRED_MARK: &str = " · download required";
+
+/// `value` within `room` cells: a long model name is clipped, its
+/// ` · download required` mark is kept whole.
+fn fit(value: &str, room: usize) -> String {
+    if cells(value) <= room {
+        return value.to_owned();
+    }
+    match value.strip_suffix(REQUIRED_MARK) {
+        Some(head) if room > cells(REQUIRED_MARK) => {
+            format!("{}{REQUIRED_MARK}", clip(head, room - cells(REQUIRED_MARK)))
+        }
+        _ => clip(value, room),
     }
 }
 
@@ -172,12 +191,14 @@ impl Widget for MenuPopup<'_> {
         }
         let footer_y = inner.y + rows.len() as u16 + u16::from(blank);
         if footer_y < inner.bottom() {
-            let (text, style) = match self.menu.error() {
-                Some(error) => (error, Style::default().fg(self.theme.error_red)),
-                None if self.menu.on_ai_row() => {
-                    (HINT_AI, Style::default().fg(self.theme.text_muted))
+            let (text, style) = match self.menu.footer() {
+                Footer::Error(error) => {
+                    (error.to_owned(), Style::default().fg(self.theme.error_red))
                 }
-                None => (HINT, Style::default().fg(self.theme.text_muted)),
+                Footer::Hint(hint) => (
+                    hint.into_owned(),
+                    Style::default().fg(self.theme.text_muted),
+                ),
             };
             let text = clip(&format!(" {text}"), width);
             buf.set_stringn(inner.x, footer_y, text, width, style);
@@ -304,7 +325,7 @@ mod tests {
     fn below_the_threshold_only_the_fallback_line_is_drawn() {
         let buf = draw(30, 5, &fresh());
         let lines: Vec<String> = text(&buf).lines().map(str::to_string).collect();
-        assert_eq!(lines[2].trim_end(), "MENU · Esc cancel · Enter save");
+        assert_eq!(lines[2].trim_end(), "MENU · s save · Esc cancel");
         for (y, line) in lines.iter().enumerate() {
             if y != 2 {
                 assert_eq!(line.trim(), "", "row {y}");
@@ -316,7 +337,7 @@ mod tests {
     fn fallback_is_clipped_with_an_ellipsis() {
         let buf = draw(23, 6, &fresh());
         let lines: Vec<String> = text(&buf).lines().map(str::to_string).collect();
-        assert_eq!(lines[3], "MENU · Esc cancel · En…");
+        assert_eq!(lines[3], "MENU · s save · Esc ca…");
     }
 
     #[test]
@@ -414,6 +435,60 @@ mod tests {
     #[test]
     fn below_the_ai_height_the_fallback_is_drawn() {
         let buf = draw(62, 10, &with_ai("llama3:8b"));
-        assert_eq!(lines(&buf)[5].trim_end(), "MENU · Esc cancel · Enter save");
+        assert_eq!(lines(&buf)[5].trim_end(), "MENU · s save · Esc cancel");
+    }
+
+    // Review W2: a long model name is clipped, the mark stays whole.
+    #[test]
+    fn a_long_model_name_is_clipped_and_keeps_the_download_mark() {
+        let long = "qwen2.5-coder:32b-instruct-q4_K_M";
+        let shown = text(&draw(62, 15, &with_ai(long)));
+        assert!(shown.contains("· download required"), "{shown}");
+        assert!(shown.contains("…"), "{shown}");
+    }
+
+    // The widget draws MenuState::footer(): `s` saves, Esc cancels.
+    #[test]
+    fn the_footer_is_the_menu_footer_not_the_old_hint() {
+        let shown = text(&draw(62, 15, &with_ai("llama3:8b")));
+        assert!(shown.contains("s save"), "{shown}");
+        assert!(!shown.contains("Enter save"), "{shown}");
+    }
+
+    // The widget only styles the footer: Error is red, Hint is muted.
+    fn footer_fg(buf: &Buffer, needle: &str) -> ratatui::style::Color {
+        let y = lines(buf)
+            .iter()
+            .position(|l| l.contains(needle))
+            .expect("footer is drawn") as u16;
+        let x = (0..buf.area.width)
+            .find(|x| buf[(*x, y)].symbol() == needle.chars().next().unwrap().to_string())
+            .expect("first cell");
+        buf[(x, y)].fg
+    }
+
+    #[test]
+    fn the_error_footer_is_red_and_the_hint_is_muted() {
+        let theme = LazaroboxTheme::default();
+        assert_ne!(theme.error_red, theme.text_muted);
+        let mut menu = with_ai("llama3:8b");
+        let hint = draw(62, 15, &menu);
+        assert_eq!(footer_fg(&hint, "j/k move"), theme.text_muted);
+        menu.set_error("save failed: disk full".into());
+        let error = draw(62, 15, &menu);
+        assert_eq!(footer_fg(&error, "save failed"), theme.error_red);
+    }
+
+    // `fit` keeps the 20-cell mark whole once the head has a cell to spare.
+    #[test]
+    fn fit_keeps_the_mark_from_room_21_and_clips_the_whole_value_below() {
+        let value = "abcdefghij · download required";
+        assert_eq!(cells(value), 30);
+        assert_eq!(fit(value, 30), value);
+        assert_eq!(fit(value, 22), "a… · download required");
+        assert_eq!(fit(value, 21), "… · download required");
+        assert_eq!(fit(value, 20), "abcdefghij · downlo…");
+        assert_eq!(cells(&fit(value, 20)), 20);
+        assert_eq!(fit("plain value that is long", 8), "plain v…");
     }
 }
