@@ -25,7 +25,13 @@ pub(crate) fn is_format(c: char) -> bool {
 pub(crate) const STRING_CAP: usize = 4096;
 
 /// Longest run of CSI parameters and intermediates that is swallowed, in
-/// characters, before the sequence is abandoned.
+/// characters, before the sequence is abandoned. The same cap applies to the
+/// intermediates and repeated ESCs of a two-character escape sequence.
+///
+/// Once the cap is reached the sequence is abandoned and the remaining
+/// characters are processed as ordinary text, so the rest of the parameter
+/// bytes and the final byte of a very long CSI show up as plain text. That is
+/// harmless: the escape itself is gone and every control is still dropped.
 pub(crate) const CSI_CAP: usize = 256;
 
 /// Where the sanitizer is inside an escape sequence.
@@ -33,8 +39,9 @@ pub(crate) const CSI_CAP: usize = 256;
 enum State {
     #[default]
     Ground,
-    /// After ESC: the next character picks the sequence.
-    Esc,
+    /// After ESC: the next character picks the sequence; `seen` counts the
+    /// intermediates and repeated ESCs swallowed.
+    Esc { seen: usize },
     /// Inside CSI parameters, up to the final byte; `seen` counts the
     /// parameter and intermediate characters swallowed.
     Csi { seen: usize },
@@ -77,17 +84,17 @@ impl StreamSanitizer {
     fn step(&mut self, c: char, out: &mut String) {
         match self.state {
             State::Ground => match c {
-                '\u{1b}' => self.state = State::Esc,
+                '\u{1b}' => self.state = State::Esc { seen: 0 },
                 '\n' | '\t' => self.emit(c, out),
                 _ if c.is_control() || is_format(c) => {}
                 _ => self.emit(c, out),
             },
-            State::Esc => match c {
+            State::Esc { seen } => match c {
                 '[' => self.state = State::Csi { seen: 0 },
                 ']' => self.open_string(true),
                 'P' | '_' | '^' | 'X' => self.open_string(false),
-                '\u{1b}' => {}
-                '\u{20}'..='\u{2f}' => {}
+                '\u{1b}' | '\u{20}'..='\u{2f}' if seen + 1 >= CSI_CAP => self.state = State::Ground,
+                '\u{1b}' | '\u{20}'..='\u{2f}' => self.state = State::Esc { seen: seen + 1 },
                 '\u{30}'..='\u{7e}' => self.state = State::Ground,
                 _ => {
                     self.state = State::Ground;
@@ -106,13 +113,13 @@ impl StreamSanitizer {
             State::Str { osc } => match c {
                 '\u{9c}' => self.state = State::Ground,
                 '\u{7}' if osc => self.state = State::Ground,
-                '\u{1b}' => self.swallow(State::Esc, State::StrEsc { osc }),
+                '\u{1b}' => self.swallow(State::Esc { seen: 0 }, State::StrEsc { osc }),
                 _ => self.swallow(State::Ground, State::Str { osc }),
             },
             State::StrEsc { .. } => match c {
                 '\\' => self.state = State::Ground,
                 _ => {
-                    self.state = State::Esc;
+                    self.state = State::Esc { seen: 0 };
                     self.step(c, out);
                 }
             },
