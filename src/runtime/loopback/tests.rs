@@ -585,8 +585,12 @@ async fn slow_is_sent_once_at_3_s_and_not_at_2_9_s() {
 #[tokio::test(start_paused = true)]
 async fn no_slow_event_once_a_byte_arrived() {
     let mut t = start_turn();
+    // Let the task run up to its first read before the byte is written.
+    tokio::task::yield_now().await;
     t.server.write_all(b"HTTP/1.1 200 OK\r\n").await.unwrap();
-    advance(Duration::from_secs(10)).await;
+    // And let it read that byte, so the idle limit applies from here on.
+    tokio::task::yield_now().await;
+    advance(Duration::from_millis(3500)).await;
     tokio::task::yield_now().await;
     assert_eq!(t.events.try_recv(), Err(mpsc::error::TryRecvError::Empty));
     t.task.abort();
