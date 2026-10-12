@@ -100,6 +100,38 @@ fn an_unterminated_string_gives_up_after_the_cap_and_text_resumes() {
     assert_eq!(clean(&format!("\u{1b}]0;{at_cap}tail")), "tail");
 }
 
+#[test]
+fn chained_string_restarts_never_swallow_more_than_the_cap() {
+    // Each `ESC ] x` unit swallows two characters (`x` and the ESC), so 2048
+    // units reach the cap. The next unit's introducer is refused, its `x`
+    // is plain text, and that text resets the count for the units after it.
+    let text = "\u{1b}]x".repeat(2100);
+    assert_eq!(clean(&text), "x");
+    // Without any text in between, the budget stays spent across restarts.
+    let text = format!("{}end", "\u{1b}]\u{1b}]".repeat(5000));
+    assert_eq!(clean(&text), "end");
+}
+
+#[test]
+fn a_restart_after_a_string_escape_keeps_counting() {
+    let mut sanitizer = StreamSanitizer::new();
+    let mut out = String::new();
+    for _ in 0..STRING_CAP {
+        out.push_str(&sanitizer.push("\u{1b}]\u{1b}"));
+    }
+    // The cap was hit on an ESC, which can still start the next sequence.
+    out.push_str(&sanitizer.push("\nshown"));
+    assert_eq!(out, "\nshown");
+}
+
+#[test]
+fn a_csi_without_a_final_byte_gives_up_after_the_cap() {
+    let out = clean(&format!("\u{1b}[{}", "1".repeat(300)));
+    assert_eq!(out, "1".repeat(300 - CSI_CAP));
+    // A sequence that ends within the cap is dropped whole.
+    assert_eq!(clean(&format!("\u{1b}[{}mok", "1;".repeat(100))), "ok");
+}
+
 /// Bytes through `Utf8Stream` then `StreamSanitizer`, cut at `cuts`.
 fn bytes_chunked(bytes: &[u8], cuts: &[usize]) -> String {
     let (mut utf8, mut sanitizer) = (Utf8Stream::new(), StreamSanitizer::new());
