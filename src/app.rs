@@ -5696,4 +5696,34 @@ mod app_tests {
         );
         assert_eq!(App::new(80, 25).ai(), &AiConfig::default());
     }
+
+    /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
+    /// must leave untouched, then the chat-pane behaviour.
+    mod seam {
+        use super::*;
+
+        // Characterization: a hidden tab's label follows the cwd poll.
+        #[test]
+        fn a_hidden_tabs_label_follows_the_poll_cwd() {
+            let mut a = launched(80, 25);
+            press(&mut a, "tn");
+            a.update(cwd_event("/srv/www"));
+            assert_eq!(a.tab_labels(), vec!["1 www".to_string(), "2".to_string()]);
+        }
+
+        // Characterization: a pane that exits in a hidden tab leaves the rest alone.
+        #[test]
+        fn a_pane_exiting_in_a_hidden_tab_drops_only_that_pane() {
+            let mut a = launched(80, 25);
+            press(&mut a, "wv");
+            press(&mut a, "tn");
+            assert_eq!(
+                a.update(exited(id2())),
+                vec![Effect::ResizePty(PaneId::FIRST, sized(23, 80))]
+            );
+            assert!(a.pane(id2()).is_none());
+            assert!(a.pane(PaneId::FIRST).is_some());
+            assert_eq!(a.tab_count(), 2);
+        }
+    }
 }
