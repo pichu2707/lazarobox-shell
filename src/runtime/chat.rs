@@ -51,6 +51,13 @@ pub type Tagged = (PaneId, u64, StreamEvent);
 
 /// What an adapter runs: it sends its events to `tx` and ends. Dropping the
 /// future cancels the turn: it closes the socket or kills the process group.
+///
+/// The future MUST stay alive until the adapter's stream ends. Once it
+/// completes the turn's receiver is closed: buffered events are delivered in
+/// order, anything sent afterwards (say, from a detached task holding a `tx`
+/// clone) is discarded, and the turn ends as `Interrupted` unless a final
+/// event already arrived. Adapters must not spawn detached tasks that outlive
+/// the future.
 pub type Runner =
     Arc<dyn Fn(ChatRequest, mpsc::Sender<StreamEvent>) -> BoxFuture<'static, ()> + Send + Sync>;
 
@@ -244,6 +251,15 @@ impl Drop for PollGuard {
 /// Wraps an adapter future so `in_adapter_poll` is true during each of its
 /// polls. Set per poll, not per task: a task can move between threads between
 /// polls, and the panic hook runs on the thread that panics.
+///
+/// Known gaps, accepted for now:
+/// - A double panic (the adapter panics, then a `Drop` panics during unwind)
+///   aborts the process with the terminal left raw: the hook skipped the
+///   restore for both.
+/// - A panic in an adapter's `Drop` during `Chats::cancel` or `shutdown`
+///   happens with the future dropped outside a poll, so it runs the full hook.
+/// - Panics in tasks the adapter spawns run the full hook too.
+/// - A caught adapter panic is silent; logging its message is planned for C11.
 pub fn scoped<F: Future>(inner: F) -> Scoped<F> {
     Scoped(Box::pin(inner))
 }
