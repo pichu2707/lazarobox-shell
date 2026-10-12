@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Javi Lázaro <hola@javilazaro.es>"]
+description = "AI-aware terminal workspace: a TUI multiplexer with panes, tabs, copy mode and local AI engine selection."
+license = "MIT"
+repository = "https://github.com/pichu2707/lazarobox-shell"
+homepage = "https://github.com/pichu2707/lazarobox-shell"
+readme = "README.md"
+keywords = ["terminal", "multiplexer", "tui", "ai", "shell"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 # Async Runtime & Red
