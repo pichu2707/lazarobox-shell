@@ -1,0 +1,16 @@
+---
+source: src/ui/components/chat/tests.rs
+expression: text(&buf)
+---
+› hi there
+
+hello, friend
+
+
+
+
+
+
+
+
+draft

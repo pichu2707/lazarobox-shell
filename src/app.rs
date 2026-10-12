@@ -297,6 +297,13 @@ impl PaneState {
         }
     }
 
+    fn chat_state(&self) -> Option<&ChatState> {
+        match &self.content {
+            PaneContent::Chat(chat) => Some(chat),
+            PaneContent::Pty(_) => None,
+        }
+    }
+
     fn chat_mut(&mut self) -> Option<&mut ChatState> {
         match &mut self.content {
             PaneContent::Chat(chat) => Some(chat),
@@ -778,6 +785,15 @@ impl App {
         }
     }
 
+    /// Test-only: types `text` into the composer of chat pane `id`.
+    #[cfg(test)]
+    pub(crate) fn chat_type(&mut self, id: PaneId, text: &str) {
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.composer_mut().paste(text);
+            self.dirty = true;
+        }
+    }
+
     /// Test-only: cancels the turn of chat pane `id`.
     #[cfg(test)]
     pub(crate) fn chat_cancel(&mut self, id: PaneId) -> Vec<Effect> {
@@ -883,6 +899,11 @@ impl App {
             InputMode::Copy(_) => CursorShape {
                 kind: CursorKind::Block,
                 blinking: false,
+            },
+            // A chat has no child to ask: its composer is an editor, so a bar.
+            _ if self.focused_state().chat_state().is_some() => CursorShape {
+                kind: CursorKind::Bar,
+                blinking: true,
             },
             _ => self
                 .focused_pty()
@@ -3320,6 +3341,22 @@ mod app_tests {
         a.update(key('h'));
         assert_eq!(a.focused(), PaneId::FIRST);
         assert_eq!(a.cursor_shape(), shape(CursorKind::Underline, false));
+    }
+
+    #[test]
+    fn a_focused_chat_shows_a_blinking_bar_and_the_shell_shape_comes_back() {
+        let mut a = app();
+        a.update(AppEvent::Pty(
+            PaneId::FIRST,
+            PtyEvent::Output(b"\x1b[2 q".to_vec()),
+        ));
+        assert_eq!(a.cursor_shape(), shape(CursorKind::Block, false));
+        a.open_chat(None);
+        assert_eq!(a.cursor_shape(), shape(CursorKind::Bar, true));
+        a.update(ctrl_space());
+        a.update(key('h'));
+        assert_eq!(a.focused(), PaneId::FIRST);
+        assert_eq!(a.cursor_shape(), shape(CursorKind::Block, false));
     }
 
     #[test]
