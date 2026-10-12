@@ -32,7 +32,7 @@ Memory MUST be off by default (`enabled = false`). With memory not enabled lazar
 - THEN no warning is shown
 
 ### Requirement: Categories, topic key and slug
-A note's kind MUST be one of the seven values above and nothing else; engram does not validate types, so lazarobox enforces the list. The topic key MUST be `chat/<kind>/<slug(title)>`, and the `chat/` prefix marks notes that came from lazarobox. The title is the text the user typed, with control and format characters removed, trimmed, 1 to 120 characters (the rest is cut; an empty title is refused). `slug(title)` MUST be built so: lowercase every character (Unicode lowercase, no accent folding); keep Unicode letters and digits; replace every run of any other character (whitespace, punctuation, `/`, `\`, control, format) with a single `-`; remove leading and trailing `-`; cut to at most 60 characters on a character boundary and remove a trailing `-` again; an empty result becomes `untitled`. The function is pure and deterministic.
+A note's kind MUST be one of the seven values above and nothing else; engram does not validate types, so lazarobox enforces the list. The topic key MUST be `chat/<kind>/<slug(title)>`, and the `chat/` prefix marks notes that came from lazarobox. The title is the text the user typed, with control and format characters removed, trimmed, 1 to 120 characters (the rest is cut; an empty title is refused). `slug(title)` MUST be built so: lowercase every character (Unicode lowercase, no accent folding), then normalise to NFC so a composed `é` and `e` plus U+0301 give the same slug; keep Unicode letters and digits; replace every run of any other character (whitespace, punctuation, `/`, `\`, control, format) with a single `-`; remove leading and trailing `-`; cut to at most 60 characters on a character boundary and remove a trailing `-` again; an empty result becomes `untitled`. The function is pure and deterministic.
 
 #### Scenario: Slug rules [auto]
 - GIVEN the titles `Use Axum!`, `  A/B  test--x `, `Ünï Cødé 42`, `日本語 メモ` and `../../etc`
@@ -53,6 +53,11 @@ A note's kind MUST be one of the seven values above and nothing else; engram doe
 - GIVEN the titles `Use Axum` and `use axum!` in the same category
 - WHEN slugged
 - THEN both give the same topic key
+
+#### Scenario: Composed and decomposed titles [auto]
+- GIVEN the titles `Caf\u{e9}` (NFC) and `Cafe\u{301}` (NFD) in the same category
+- WHEN slugged
+- THEN both give the same slug and the same topic key
 
 #### Scenario: Closed enum [auto]
 - GIVEN the category list

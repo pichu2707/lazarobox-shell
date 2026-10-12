@@ -2,6 +2,7 @@
 
 use super::kind::MemKind;
 use crate::core::ai::sanitize::is_format;
+use unicode_normalization::UnicodeNormalization;
 
 /// The longest title kept, in characters.
 pub const TITLE_CAP: usize = 120;
@@ -19,11 +20,13 @@ pub fn clean_title(title: &str) -> String {
 }
 
 /// Lowercase letters and digits joined by single dashes, at most `SLUG_CAP`
-/// characters, `untitled` when nothing is left. Pure and deterministic.
+/// characters, `untitled` when nothing is left. The title is NFC-normalised
+/// first, so composed and decomposed spellings give the same slug. Pure and
+/// deterministic.
 pub fn slug(title: &str) -> String {
     let mut out = String::new();
     let mut gap = false;
-    for c in title.chars().flat_map(char::to_lowercase) {
+    for c in title.chars().flat_map(char::to_lowercase).nfc() {
         if c.is_alphanumeric() {
             if gap && !out.is_empty() {
                 out.push('-');
@@ -64,6 +67,19 @@ mod tests {
         for (title, want) in table {
             assert_eq!(slug(title), want, "{title:?}");
         }
+    }
+
+    #[test]
+    fn composed_and_decomposed_titles_give_the_same_slug_and_key() {
+        let nfc = "Caf\u{e9} \u{d1}and\u{fa}";
+        let nfd = "Cafe\u{301} N\u{303}andu\u{301}";
+        assert_ne!(nfc, nfd);
+        assert_eq!(slug(nfc), slug(nfd));
+        assert_eq!(slug(nfc), "caf\u{e9}-\u{f1}and\u{fa}");
+        assert_eq!(
+            topic_key(MemKind::Decision, nfc),
+            topic_key(MemKind::Decision, nfd)
+        );
     }
 
     #[test]
