@@ -913,6 +913,58 @@ other = 1
         );
     }
 
+    // Review: lossless save for every way TOML can spell `ai.memory`. Each
+    // keeps its comments, its port and its unknown keys; both booleans land
+    // as real booleans and the file reads back as active.
+    #[test]
+    fn memory_flags_are_saved_losslessly_in_every_toml_spelling() {
+        let cases: [(&str, &[&str]); 6] = [
+            (
+                "ai.memory = {port=8123, x=1} # c\n",
+                &["# c", "port=8123", "x=1"],
+            ),
+            (
+                "# top\n[ai]\nmemory = {port=8123, x=1} # c\n",
+                &["# top", "# c", "port=8123", "x=1"],
+            ),
+            (
+                "[ai]\n# mine\nmemory.port = 8123 # p\nmemory.x = 1\n",
+                &["# mine", "# p", "port = 8123", "memory.x = 1"],
+            ),
+            (
+                "# root\nai.memory.port = 8123 # p\nai.memory.x = 1\n",
+                &["# root", "# p", "port = 8123", "x = 1"],
+            ),
+            (
+                "ai = { memory = {port=8123, x=1} } # c\n",
+                &["# c", "port=8123", "x=1"],
+            ),
+            (
+                "[ai.memory]\nport = 8123 # p\nx = 1\n# tail\n[other]\nkeep = true\n",
+                &[
+                    "# p",
+                    "port = 8123",
+                    "x = 1",
+                    "# tail",
+                    "[other]",
+                    "keep = true",
+                ],
+            ),
+        ];
+        let edits = [flag("enabled", true), flag("acknowledged", true)];
+        for (existing, kept) in cases {
+            let out = apply_edit(Some(existing), &edits).unwrap();
+            for needle in kept {
+                assert!(out.contains(needle), "{needle:?} lost in {out:?}");
+            }
+            let (_, ai, notice) = Config::load_with_ai(Ok(out.clone()), None);
+            assert!(ai.memory.active(), "{out:?}");
+            assert_eq!(ai.memory.port, 8123, "{out:?}");
+            assert_eq!(notice, None, "{out:?}");
+            assert!(!out.contains("\"true\""), "booleans, not strings: {out:?}");
+        }
+    }
+
     // Only the memory flags are booleans: other string edits stay strings.
     #[test]
     fn other_keys_named_enabled_stay_strings() {
