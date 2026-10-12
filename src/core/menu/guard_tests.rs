@@ -1,7 +1,7 @@
 //! Tests of the key guards of the picker: repeats and modifiers.
 //! Characterization: the guards already held, these pin them.
 
-use super::ai_tests::{machine, menu, press};
+use super::ai_tests::{machine, menu, press, selected_label};
 use super::picker_tests::{cursor_label, key, open, send, title};
 use super::*;
 
@@ -165,4 +165,16 @@ fn ctrl_s_upper_s_and_release_do_not_save_in_the_picker() {
             assert_eq!(m, before, "{event:?}");
         }
     }
+}
+
+// Spec: a held Enter on a task row neither opens the picker nor cycles.
+#[test]
+fn a_held_enter_on_a_task_row_does_nothing() {
+    let mut m = menu(None, None, Some(machine()));
+    while selected_label(&m) != "code" {
+        press(&mut m, 'j');
+    }
+    let before = m.clone();
+    assert_eq!(repeat(&mut m, KeyCode::Enter), MenuCommand::None);
+    assert_eq!(m, before);
 }

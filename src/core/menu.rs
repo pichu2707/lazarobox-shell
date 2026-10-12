@@ -371,6 +371,7 @@ impl MenuState {
             KeyCode::Char('s') if !repeat => MenuCommand::Save,
             KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
             KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
+            KeyCode::Enter if repeat && self.on_ai_row() => MenuCommand::None,
             KeyCode::Enter => self.cycle(true, config),
             KeyCode::Esc if !repeat => MenuCommand::Cancel,
             _ => MenuCommand::None,
