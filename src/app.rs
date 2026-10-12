@@ -5485,20 +5485,21 @@ mod app_tests {
         let mut a = ai_app();
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
-        let mut views = vec![a.menu().cloned()];
-        assert_eq!(a.update(AppEvent::Paste("x".into())), vec![]);
-        to_task_row(&mut a);
-        views.push(a.menu().cloned());
-        assert_eq!(a.update(AppEvent::Paste("x".into())), vec![]);
-        a.update(code(KeyCode::Enter));
-        views.push(a.menu().cloned());
-        assert_eq!(a.update(AppEvent::Paste("x".into())), vec![]);
-        a.update(key('j'));
-        a.update(key('j'));
-        a.update(code(KeyCode::Enter));
-        views.push(a.menu().cloned());
-        assert_eq!(a.update(AppEvent::Paste("x".into())), vec![]);
-        assert_eq!(a.menu().cloned(), *views.last().unwrap());
+        let steps: [&[AppEvent]; 4] = [
+            &[],
+            &[key('j'), key('j'), key('j'), key('j')],
+            &[code(KeyCode::Enter)],
+            &[key('j'), key('j'), code(KeyCode::Enter)],
+        ];
+        // Settings row, task row, picker level 1, picker level 2.
+        for events in steps {
+            for event in events {
+                a.update(event.clone());
+            }
+            let before = a.menu().cloned();
+            assert_eq!(a.update(AppEvent::Paste("x".into())), vec![]);
+            assert_eq!(a.menu().cloned(), before);
+        }
     }
 
     // Spec: config-menu Checking cue. The cue follows the run in flight.
