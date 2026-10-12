@@ -37,12 +37,16 @@ fn every_builder_call_is_allowed_by_the_route_table() {
         route::save(SID, "p", &note),
         route::delete(7, "p"),
     ];
-    for call in calls {
-        let method = match call.method {
+    for verb in [Verb::Get, Verb::Post, Verb::Delete] {
+        let expected = match verb {
             Verb::Get => Method::Get,
             Verb::Post => Method::Post,
             Verb::Delete => Method::Delete,
         };
+        assert_eq!(Method::from(verb), expected);
+    }
+    for call in calls {
+        let method = Method::from(call.method);
         assert!(allowed_target(&call.target), "{}", call.target);
         assert!(method_fits_route(method, &call.target), "{}", call.target);
     }
