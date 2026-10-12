@@ -23,6 +23,15 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+/// Everything one turn sends to an engine.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ChatRequest {
+    pub engine: String,
+    pub model: Option<String>,
+    pub system: String,
+    pub messages: Vec<ChatMessage>,
+}
+
 /// What the chat pane may do with the engine assigned to the `chat` task.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Availability {
