@@ -76,9 +76,15 @@ impl Lines {
     }
 
     /// The last line, when the stream ended without a newline.
-    fn rest(&mut self) -> Vec<u8> {
+    fn rest(&mut self) -> Result<Vec<u8>, TooLong> {
         self.scanned = 0;
-        trim_cr(&std::mem::take(&mut self.buf)).to_vec()
+        let buf = std::mem::take(&mut self.buf);
+        let line = trim_cr(&buf);
+        if line.len() > self.cap {
+            Err(TooLong)
+        } else {
+            Ok(line.to_vec())
+        }
     }
 }
 
@@ -124,12 +130,19 @@ fn finish_reason(reason: Option<&str>) -> Finish {
 }
 
 /// The error an engine reported in `value`, if any: `{"error":"..."}` or
-/// `{"error":{"message":"..."}}`, sanitized and capped.
+/// `{"error":{"message":"..."}}`, flattened to one line and capped. Only a
+/// non-empty string or an object counts; `null`, `false`, `""` and numbers
+/// are values some servers send on healthy chunks.
 fn server_error(value: &Value) -> Option<StreamEvent> {
-    let error = value.get("error").filter(|e| !e.is_null())?;
-    let text = error.as_str().or_else(|| error.get("message")?.as_str());
-    let clean = clean(text.unwrap_or_default());
-    let capped: String = clean.trim().chars().take(ERROR_CAP).collect();
+    let error = value.get("error")?;
+    let text = match error {
+        Value::String(s) if !s.is_empty() => s.as_str(),
+        Value::Object(_) => error.get("message").and_then(Value::as_str).unwrap_or(""),
+        _ => return None,
+    };
+    // `clean` keeps `\n` and `\t`; both would let the text fake extra lines.
+    let flat = clean(text).split_whitespace().collect::<Vec<_>>().join(" ");
+    let capped: String = flat.chars().take(ERROR_CAP).collect();
     let capped = capped.trim_end();
     let message = if capped.is_empty() {
         "engine error"
@@ -149,7 +162,7 @@ fn ndjson_line(line: &[u8]) -> Vec<StreamEvent> {
     if line.iter().all(u8::is_ascii_whitespace) {
         return vec![];
     }
-    let Ok(value) = serde_json::from_slice::<Value>(line) else {
+    let Ok(value) = serde_json::from_str::<Value>(&String::from_utf8_lossy(line)) else {
         return vec![malformed()];
     };
     if let Some(error) = server_error(&value) {
@@ -171,7 +184,7 @@ fn sse_event(data: &[u8]) -> Vec<StreamEvent> {
     if data.trim_ascii() == b"[DONE]" {
         return vec![StreamEvent::Done(Finish::Stop)];
     }
-    let Ok(value) = serde_json::from_slice::<Value>(data) else {
+    let Ok(value) = serde_json::from_str::<Value>(&String::from_utf8_lossy(data)) else {
         return vec![malformed()];
     };
     if let Some(error) = server_error(&value) {
@@ -225,7 +238,10 @@ impl StreamDecoder for NdjsonSplitter {
     fn finish(&mut self) -> Vec<StreamEvent> {
         let mut out = Vec::new();
         if !self.ended {
-            let events = ndjson_line(&self.lines.rest());
+            let events = self
+                .lines
+                .rest()
+                .map_or_else(|TooLong| vec![too_long()], |l| ndjson_line(&l));
             emit(&mut self.ended, &mut out, events);
         }
         finish_with(&mut self.ended, out)
@@ -308,8 +324,10 @@ impl StreamDecoder for SseParser {
     fn finish(&mut self) -> Vec<StreamEvent> {
         let mut out = Vec::new();
         if !self.ended {
-            let rest = self.lines.rest();
-            let mut events = self.line(&rest);
+            let mut events = match self.lines.rest() {
+                Ok(rest) => self.line(&rest),
+                Err(TooLong) => vec![too_long()],
+            };
             if events.is_empty() {
                 events = self.dispatch();
             }
