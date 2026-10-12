@@ -23,6 +23,7 @@ use crate::core::{
     ai::{
         chat::{
             ANSWER_CAP, REASONING_CAP,
+            adapters::{Invocation, Wire, adapter_for},
             engine::{ChatError, ChatRequest, StreamEvent},
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
@@ -60,13 +61,6 @@ pub type Tagged = (PaneId, u64, StreamEvent);
 /// the future.
 pub type Runner =
     Arc<dyn Fn(ChatRequest, mpsc::Sender<StreamEvent>) -> BoxFuture<'static, ()> + Send + Sync>;
-
-/// The wire format of a local server's reply.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Wire {
-    Ndjson,
-    Sse,
-}
 
 /// A decoder that has seen no byte yet. Every turn builds its own: a decoder
 /// keeps a partial line and an `ended` flag, and neither may leak into the
@@ -241,13 +235,32 @@ impl Default for Pipe {
     }
 }
 
-/// An adapter for engines that have none yet: every turn fails at once.
-pub fn unavailable_runner() -> Runner {
-    Arc::new(|_request, tx| {
+/// The runner of the real engines: picks the adapter of the request's engine
+/// and runs what it builds. An engine without an adapter fails the turn at
+/// once, without connecting anywhere.
+pub fn adapter_runner() -> Runner {
+    adapter_runner_at(None)
+}
+
+/// `adapter_runner` with the port of server engines overridden, so tests can
+/// talk to a fake server on an ephemeral port. The host stays `127.0.0.1`.
+pub(crate) fn adapter_runner_at(port: Option<u16>) -> Runner {
+    Arc::new(move |request, tx| {
         Box::pin(async move {
-            let _ = tx
-                .send(StreamEvent::Error(ChatError::Failed(NO_ADAPTER.into())))
-                .await;
+            let Some(adapter) = adapter_for(&request.engine) else {
+                let _ = tx
+                    .send(StreamEvent::Error(ChatError::Failed(NO_ADAPTER.into())))
+                    .await;
+                return;
+            };
+            match adapter.build(&request) {
+                Invocation::Http {
+                    wire,
+                    port: catalog_port,
+                    path,
+                    body,
+                } => http_turn(wire, port.unwrap_or(catalog_port), path, body, tx).await,
+            }
         })
     })
 }
@@ -408,5 +421,7 @@ impl Chats {
     }
 }
 
+#[cfg(test)]
+mod adapter_tests;
 #[cfg(test)]
 mod tests;

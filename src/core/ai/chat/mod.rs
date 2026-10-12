@@ -3,6 +3,7 @@
 //! A `ChatState` is the conversation of one chat pane: its transcript, the
 //! turn in flight and the cwd the pane was opened from.
 
+pub mod adapters;
 pub mod composer;
 pub mod engine;
 pub mod guidance;

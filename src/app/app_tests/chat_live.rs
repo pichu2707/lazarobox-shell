@@ -272,6 +272,20 @@ fn a_send_carries_the_assigned_engine_and_model() {
 }
 
 #[test]
+fn a_send_pins_the_default_system_prompt() {
+    let mut a = ready_app();
+    let effects = ask(&mut a, "hello");
+    let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+        panic!("one ChatSend: {effects:?}");
+    };
+    assert_eq!(
+        request.system,
+        crate::core::ai::chat::adapters::system_prompt()
+    );
+    assert!(!request.system.is_empty());
+}
+
+#[test]
 fn a_blank_send_does_nothing() {
     let mut a = ready_app();
     type_text(&mut a, "   ");
@@ -967,6 +981,21 @@ fn a_parked_send_sends_the_text_it_was_parked_with() {
         }
         other => panic!("expected one ChatSend, got {other:?}"),
     }
+}
+
+#[test]
+fn a_parked_send_carries_the_system_prompt() {
+    let mut a = undetected_chat(ollama());
+    ask(&mut a, "hello");
+    let effects = a.update(ready_detection());
+    let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+        panic!("one ChatSend: {effects:?}");
+    };
+    assert_eq!(
+        request.system,
+        crate::core::ai::chat::adapters::system_prompt()
+    );
+    assert!(!request.system.is_empty());
 }
 
 #[test]
