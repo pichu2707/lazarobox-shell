@@ -222,6 +222,34 @@ fn a_line_over_the_cap_is_an_error_and_one_at_the_cap_is_not() {
 }
 
 #[test]
+fn an_oversize_line_split_across_chunks_yields_one_error_and_nothing_after() {
+    // The decoder is terminal after its first error, so the tail of the long
+    // line and the valid lines that follow must not produce more events.
+    let mut ndjson_in = line_of(SERVER_LINE_CAP + 10);
+    ndjson_in.extend_from_slice(b"\n");
+    ndjson_in.extend_from_slice(OLLAMA.as_bytes());
+    let mut sse_in = b"data: ".to_vec();
+    sse_in.resize(SERVER_LINE_CAP + 10, b'a');
+    sse_in.extend_from_slice(b"\n\n");
+    sse_in.extend_from_slice(OPENAI.as_bytes());
+    for (name, bytes, mut decoder) in [
+        (
+            "ndjson",
+            ndjson_in,
+            Box::new(NdjsonSplitter::server()) as Box<dyn StreamDecoder>,
+        ),
+        ("sse", sse_in, Box::new(SseParser::server())),
+    ] {
+        let mut events = Vec::new();
+        for chunk in bytes.chunks(4096) {
+            events.extend(decoder.feed(chunk));
+        }
+        events.extend(decoder.finish());
+        assert_eq!(events, [failed(TOO_LONG)], "{name}");
+    }
+}
+
+#[test]
 fn an_sse_event_over_the_cap_is_an_error() {
     let mut big = b"data: ".to_vec();
     big.extend(std::iter::repeat_n(b'a', SERVER_LINE_CAP + 1));
