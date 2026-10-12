@@ -13,7 +13,7 @@ use super::{
         menu::AiMenu,
         picker::{Level, Mark, Outcome, PickKey, PickRow, Picker, Target},
     },
-    config::{BarPosition, Config, ConfigEdit},
+    config::{BarPosition, Config, ConfigEdit, MEMORY_TABLE},
 };
 
 /// A setting that cycles through an ordered list of values. The value string
@@ -32,6 +32,16 @@ pub enum ItemKind {
     Disabled,
     /// An AI assignment row; `None` is `Set all tasks`.
     Assign(Option<Task>),
+    /// The memory opt-in row: a static `off`/`on` item over the AI draft.
+    /// Turning it on without the acknowledgement opens the privacy warning.
+    Memory(MemoryRow),
+}
+
+/// The descriptor of the `Memory` row; the value is the `enabled` key.
+pub struct MemoryRow {
+    pub table: &'static str,
+    pub key: &'static str,
+    pub values: &'static [&'static str],
 }
 
 pub struct Item {
@@ -90,7 +100,9 @@ pub static SECTIONS: &[Section] = &[Section {
 }];
 
 /// The AI section, attached only by [`MenuState::with_ai`]. The labels of
-/// the task rows are the task ids; their key path is `Task::table`.
+/// the task rows are the task ids; their key path is `Task::table`. The
+/// static rows follow the tasks: `Memory` now, and `Profile` (ai-chat) is to
+/// be slotted in BEFORE `Memory`, so the order is `Profile` then `Memory`.
 pub static AI_SECTION: Section = Section {
     title: "AI",
     items: &[
@@ -118,6 +130,14 @@ pub static AI_SECTION: Section = Section {
             label: "summarize",
             kind: ItemKind::Assign(Some(Task::Summarize)),
         },
+        Item {
+            label: "Memory",
+            kind: ItemKind::Memory(MemoryRow {
+                table: MEMORY_TABLE,
+                key: "enabled",
+                values: &["off", "on"],
+            }),
+        },
     ],
 };
 
@@ -128,7 +148,7 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
         .flat_map(|section| section.items.iter())
         .filter_map(|item| match &item.kind {
             ItemKind::Choice(choice) => Some((item, choice)),
-            ItemKind::Disabled | ItemKind::Assign(_) => None,
+            ItemKind::Disabled | ItemKind::Assign(_) | ItemKind::Memory(_) => None,
         })
 }
 
@@ -147,6 +167,18 @@ pub enum MenuCommand {
 const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
 const HINT_TASK: &str = "j/k move · Enter pick · r refresh · s save · Esc cancel";
 const HINT_PICKER: &str = "j/k move · Enter choose · r refresh · Esc back · s save";
+const HINT_WARNING: &str = "y turn on · any other key keeps memory off";
+/// The privacy warning: the three facts, each line short enough for the AI
+/// popup width.
+const WARNING_TEXT: [&str; 6] = [
+    "Saved notes leave lazarobox's private store (0600).",
+    "They become readable by every local process and",
+    "every agent that uses engram, and by engram sync",
+    "if it is on. lazarobox cannot restrict that.",
+    "Declining keeps memory off; accepting is remembered",
+    "and this note is not shown again.",
+];
+const WARNING_PROMPT: &str = "Turn memory on? (y/n)";
 const HINT_CUSTOM: &str = "type a model · Enter ok · Ctrl+U clear · Esc back";
 
 /// Why a picker row cannot be chosen: its mark, or the text of an
@@ -188,6 +220,8 @@ pub enum Row {
     },
     /// The custom model field and its buffer.
     Field(String),
+    /// A plain line of text (the privacy warning).
+    Text(Cow<'static, str>),
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -251,7 +285,52 @@ impl MenuState {
                 .is_some_and(|index| index >= choices().count())
     }
 
-    /// Selectable rows: the settings, then the six AI rows.
+    /// Whether the selection is on the `Memory` row.
+    pub fn on_memory_row(&self) -> bool {
+        let Some(first) = self.selected.and_then(|i| i.checked_sub(choices().count())) else {
+            return false;
+        };
+        self.ai.is_some()
+            && AI_SECTION
+                .items
+                .get(first)
+                .is_some_and(|item| matches!(item.kind, ItemKind::Memory(_)))
+    }
+
+    /// Whether the privacy warning is shown over the menu.
+    pub fn in_warning(&self) -> bool {
+        self.ai.as_ref().is_some_and(AiMenu::warning)
+    }
+
+    /// Whether the selection is on a task row (an assignment, not `Memory`).
+    fn on_task_row(&self) -> bool {
+        self.on_ai_row() && !self.on_memory_row()
+    }
+
+    /// The privacy warning that replaces the rows while it is open.
+    fn warning_rows() -> Vec<Row> {
+        let mut rows = vec![Row::Title(Cow::Borrowed("Memory: save notes to engram"))];
+        rows.extend(WARNING_TEXT.iter().map(|l| Row::Text(Cow::Borrowed(*l))));
+        rows.push(Row::Text(Cow::Borrowed("")));
+        rows.push(Row::Title(Cow::Borrowed(WARNING_PROMPT)));
+        rows
+    }
+
+    /// Keys while the warning is open: only an unmodified lowercase `y`
+    /// accepts, everything else declines, and Esc never leaves the menu.
+    /// Repeat events are ignored.
+    fn on_warning_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
+        if repeat {
+            return MenuCommand::None;
+        }
+        let accept = key.code == KeyCode::Char('y') && key.modifiers.is_empty();
+        if let Some(ai) = &mut self.ai {
+            ai.answer_warning(accept);
+        }
+        MenuCommand::None
+    }
+
+    /// Selectable rows: the settings, then the AI rows.
     fn selectable(&self) -> usize {
         choices().count()
             + if self.ai.is_some() {
@@ -306,6 +385,9 @@ impl MenuState {
     }
 
     pub fn rows(&self, config: &Config) -> Vec<Row> {
+        if self.in_warning() {
+            return Self::warning_rows();
+        }
         if let Some(rows) = self.picker_rows() {
             return rows;
         }
@@ -320,6 +402,17 @@ impl MenuState {
                         let row = Row::Item {
                             label: item.label,
                             value: self.ai.as_ref().map(|ai| Cow::Owned(ai.value(*task))),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Memory(memory) => {
+                        let on = self.ai.as_ref().is_some_and(|ai| ai.draft().memory.enabled);
+                        let row = Row::Item {
+                            label: item.label,
+                            value: Some(Cow::Borrowed(memory.values[usize::from(on)])),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
@@ -357,6 +450,9 @@ impl MenuState {
         if !repeat {
             self.error = None;
         }
+        if self.in_warning() {
+            return self.on_warning_key(key, repeat);
+        }
         if self.ai.as_ref().is_some_and(|ai| ai.picker().is_some()) {
             return self.on_picker_key(key, repeat);
         }
@@ -369,8 +465,8 @@ impl MenuState {
             KeyCode::Char('l' | ' ') | KeyCode::Right => self.cycle(true, config),
             KeyCode::Char('h') | KeyCode::Left => self.cycle(false, config),
             KeyCode::Char('s') if !repeat => MenuCommand::Save,
-            KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
-            KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
+            KeyCode::Char('r') if !repeat && self.on_task_row() => MenuCommand::Refresh,
+            KeyCode::Enter if !repeat && self.on_task_row() => self.open_picker(),
             KeyCode::Enter if repeat && self.on_ai_row() => MenuCommand::None,
             KeyCode::Enter => self.cycle(true, config),
             KeyCode::Esc if !repeat => MenuCommand::Cancel,
@@ -455,6 +551,12 @@ impl MenuState {
         let Some(index) = self.selected else {
             return MenuCommand::None;
         };
+        if self.on_memory_row() {
+            if let Some(ai) = &mut self.ai {
+                ai.toggle_memory();
+            }
+            return MenuCommand::None;
+        }
         let Some((_, choice)) = choices().nth(index) else {
             return MenuCommand::None;
         };
@@ -498,7 +600,12 @@ impl MenuState {
                     },
                 ]
             });
-        settings.chain(tasks).collect()
+        let memory = self.ai.iter().flat_map(|ai| {
+            ai.changed_memory()
+                .into_iter()
+                .map(|(key, on)| ConfigEdit::memory_flag(key, on))
+        });
+        settings.chain(tasks).chain(memory).collect()
     }
 
     /// A paste: goes to the custom field when it is focused, else ignored.
@@ -518,6 +625,9 @@ impl MenuState {
         if let Some(error) = self.error() {
             return Footer::Error(error);
         }
+        if self.in_warning() {
+            return Footer::Hint(Cow::Borrowed(HINT_WARNING));
+        }
         let ai = self.ai.as_ref();
         let picker = ai.and_then(AiMenu::picker);
         if picker.is_some_and(|p| p.text().is_some()) {
@@ -527,7 +637,7 @@ impl MenuState {
             let reason = disabled_reason(&row);
             return Footer::Hint(Cow::Owned(format!("{reason} · not selectable")));
         }
-        let in_ai_view = picker.is_some() || self.on_ai_row();
+        let in_ai_view = picker.is_some() || self.on_task_row();
         let cue = ai.and_then(|ai| match (ai.has_result(), self.checking) {
             (false, _) => Some("checking engines…"),
             (true, true) => Some("refreshing…"),
@@ -821,3 +931,6 @@ mod guard_tests;
 
 #[cfg(test)]
 mod edits_tests;
+
+#[cfg(test)]
+mod memory_tests;

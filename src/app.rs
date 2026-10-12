@@ -5671,6 +5671,62 @@ mod app_tests {
         assert_eq!(a.menu().unwrap().ai_draft(), ai_of("ollama", "qwen2:7b"));
     }
 
+    // Spec (config-menu, engram-memory): the privacy warning follows the
+    // draft flow. `k` from the first row wraps to `Memory`.
+    fn memory_warning_open() -> App {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        a.update(key('k'));
+        assert!(a.update(key('l')).is_empty(), "turning on asks, no effect");
+        assert!(a.menu().unwrap().in_warning());
+        a
+    }
+
+    fn memory_edits() -> Vec<ConfigEdit> {
+        vec![
+            ConfigEdit::memory_flag("enabled", true),
+            ConfigEdit::memory_flag("acknowledged", true),
+        ]
+    }
+
+    #[test]
+    fn accepting_the_warning_writes_nothing_until_s_and_saves_both_keys() {
+        let mut a = memory_warning_open();
+        assert!(a.update(key('y')).is_empty(), "y persists nothing");
+        assert!(!a.ai().memory.enabled, "the live value is untouched");
+        assert_eq!(a.update(key('s')), vec![Effect::SaveConfig(memory_edits())]);
+        a.update(AppEvent::ConfigSaved);
+        assert!(a.menu().is_none());
+        assert!(a.ai().memory.active());
+    }
+
+    #[test]
+    fn esc_after_accepting_reverts_the_enabled_and_acknowledged_drafts() {
+        let mut a = memory_warning_open();
+        a.update(key('y'));
+        a.update(esc());
+        assert!(a.menu().is_none());
+        assert_eq!(a.ai().memory, Default::default());
+        open_menu(&mut a);
+        assert_eq!(a.menu().unwrap().ai_draft().memory, Default::default());
+        a.update(key('k'));
+        a.update(key('l'));
+        assert!(
+            a.menu().unwrap().in_warning(),
+            "asked again, not acknowledged"
+        );
+    }
+
+    #[test]
+    fn esc_in_the_warning_closes_only_the_view() {
+        let mut a = memory_warning_open();
+        assert!(a.update(esc()).is_empty());
+        let menu = a.menu().expect("the menu stays open");
+        assert!(!menu.in_warning());
+        assert!(!menu.ai_draft().memory.enabled);
+    }
+
     // Spec: a failed save keeps the picker where it was.
     #[test]
     fn a_failed_save_keeps_the_picker_level_and_shows_the_error() {

@@ -1,0 +1,7 @@
+---
+source: src/ui/components/menu.rs
+expression: text(&buf)
+---
+                              
+                              
+Turn memory on? (y/n)

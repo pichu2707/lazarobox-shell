@@ -1,12 +1,13 @@
 ---
 source: src/ui/components/menu.rs
-expression: "text(&draw(24, 14, &picker))"
+expression: "text(&draw(24, 15, &picker))"
 ---
 ┌ Menu ────────────────┐
 │ Engine for code      │
 │ (default · use gener…│
 │  available · 8 models│
 │ … available · 2.1.0 ●│
+│                      │
 │                      │
 │                      │
 │                      │

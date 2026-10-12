@@ -14,6 +14,6 @@ expression: "text(&draw(62, 15, &menu))"
 │ chat                                             (default) │
 │ review                                           (default) │
 │ summarize                                        (default) │
-│                                                            │
+│ Memory                                                 off │
 │ refreshing… · s save · Esc cancel                          │
 └────────────────────────────────────────────────────────────┘
