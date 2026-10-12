@@ -40,6 +40,9 @@ serde_json = "1.0"
 toml = "0.8"
 toml_edit = "0.22"
 
+# Chat history store (SQLite compiled in; needs a C compiler)
+rusqlite = { version = "0.38", features = ["bundled"] }
+
 [dev-dependencies]
 insta = "1"
 tempfile = "3"
