@@ -8,6 +8,7 @@ pub mod engine;
 pub mod guidance;
 pub mod store;
 pub mod stream;
+pub mod streams;
 pub mod transcript;
 pub mod wrap;
 pub mod yank;

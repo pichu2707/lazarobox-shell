@@ -858,3 +858,135 @@ fn a_shell_pane_has_no_guidance() {
     let a = launched(80, 25);
     assert_eq!(a.chat_guidance(PaneId::FIRST), None);
 }
+
+// 9.4: the engine segment -----------------------------------------------------
+
+fn general(engine: &str, model: &str) -> AiConfig {
+    let mut ai = AiConfig::default();
+    ai.set(
+        Task::General,
+        Assignment {
+            engine: Some(engine.into()),
+            model: Some(model.into()),
+        },
+    );
+    ai
+}
+
+#[test]
+fn the_right_segment_shows_the_chat_engine_and_model() {
+    let a = ready_app();
+    assert_eq!(a.status_right(), "ollama › llama3:8b");
+}
+
+#[test]
+fn a_chat_with_nothing_assigned_says_no_engine() {
+    let mut a = launched(80, 25);
+    press(&mut a, "c");
+    assert_eq!(a.status_right(), "no engine");
+}
+
+#[test]
+fn chat_falls_back_to_the_general_assignment() {
+    let mut a = launched(80, 25).with_ai(general("claude", "sonnet"));
+    press(&mut a, "c");
+    assert_eq!(a.status_right(), "claude › sonnet");
+}
+
+#[test]
+fn an_engine_without_a_model_shows_only_the_engine() {
+    let mut a = launched(80, 25).with_ai(assigned("claude"));
+    press(&mut a, "c");
+    assert_eq!(a.status_right(), "claude");
+}
+
+#[test]
+fn focus_switches_between_the_engine_and_the_shell_name() {
+    let mut a = ready_app();
+    assert_eq!(a.status_right(), "ollama › llama3:8b");
+    press(&mut a, "h");
+    assert_eq!(a.status_right(), "zsh");
+    press(&mut a, "l");
+    assert_eq!(a.status_right(), "ollama › llama3:8b");
+}
+
+// 9.7: the animation clock input -------------------------------------------------
+
+#[test]
+fn idle_chats_do_not_animate() {
+    let a = ready_app();
+    assert!(!a.animating());
+    assert!(a.streams().is_empty());
+}
+
+#[test]
+fn a_running_stream_animates_until_it_ends_whatever_way() {
+    let (mut a, turn) = streaming();
+    assert!(a.animating());
+    assert_eq!(a.streams().len(), 1);
+    a.update(delta(turn, "x"));
+    assert!(a.animating(), "answering still animates");
+    a.update(finish(turn));
+    assert!(!a.animating());
+
+    let (mut a, turn) = streaming();
+    a.update(AppEvent::Chat(
+        chat_id(),
+        turn,
+        StreamEvent::Error(crate::core::ai::chat::engine::ChatError::Interrupted),
+    ));
+    assert!(!a.animating(), "a cut stream");
+
+    let (mut a, _) = streaming();
+    a.update(plain(KeyCode::Esc));
+    assert!(!a.animating(), "a cancel");
+
+    let (mut a, _) = streaming();
+    press(&mut a, "wq");
+    a.update(key('y'));
+    assert!(!a.animating(), "a closed pane");
+}
+
+#[test]
+fn a_stream_in_a_background_tab_still_animates_and_closing_its_tab_stops_it() {
+    let (mut a, _) = streaming();
+    press(&mut a, "tn");
+    assert_eq!(a.active_tab(), 1);
+    assert!(a.animating());
+    press(&mut a, "gB");
+    press(&mut a, "tc");
+    a.update(key('y'));
+    assert!(!a.animating());
+}
+
+#[test]
+fn one_tick_advances_the_frame_by_one_and_asks_for_one_redraw() {
+    let (mut a, _) = streaming();
+    a.take_dirty();
+    let before = a.anim_frame();
+    assert_eq!(a.update(AppEvent::AnimTick), vec![]);
+    assert_eq!(a.anim_frame(), before + 1);
+    assert!(a.take_dirty());
+    assert!(!a.take_dirty(), "exactly one redraw request");
+}
+
+#[test]
+fn a_late_tick_with_no_stream_changes_nothing() {
+    let mut a = ready_app();
+    let before = a.anim_frame();
+    assert_eq!(a.update(AppEvent::AnimTick), vec![]);
+    assert_eq!(a.anim_frame(), before);
+    assert!(!a.take_dirty());
+}
+
+#[test]
+fn streams_carry_the_phase_the_model_and_the_start() {
+    use crate::core::ai::chat::StreamPhase;
+    let (mut a, turn) = streaming();
+    let first = a.streams();
+    assert_eq!(first[0].pane, chat_id());
+    assert_eq!(first[0].model, "llama3:8b");
+    assert_eq!(first[0].phase, StreamPhase::Thinking);
+    a.update(delta(turn, "x"));
+    assert_eq!(a.streams()[0].phase, StreamPhase::Answering);
+}

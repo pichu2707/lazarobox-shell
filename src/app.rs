@@ -14,7 +14,7 @@ use crate::core::{
             engine::{ChatRequest, StreamEvent},
             store::{StoreCmd, StoreReply},
         },
-        config::AiConfig,
+        config::{AiConfig, Task},
         jail::JailSupport,
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
@@ -125,6 +125,9 @@ pub enum AppEvent {
     Chat(PaneId, u64, StreamEvent),
     /// The store thread answered a command of a pane.
     Store(StoreReply),
+    /// One step of the thinking-indicator animation. The runtime sends it
+    /// only while a chat stream runs.
+    AnimTick,
 }
 
 /// How the menu closed.
@@ -387,6 +390,8 @@ pub struct App {
     jail: JailSupport,
     /// Chat panes whose send waits for the first detection result.
     waiting_sends: Vec<PaneId>,
+    /// The frame of the thinking-indicator animation.
+    anim_frame: usize,
 }
 
 /// The key that left COPY and when it was last seen.
@@ -432,6 +437,7 @@ impl App {
             ai: AiConfig::default(),
             jail: JailSupport::Unavailable("no CLI jail yet"),
             waiting_sends: Vec::new(),
+            anim_frame: 0,
         }
     }
 
@@ -531,6 +537,20 @@ impl App {
 
     pub fn shell_name(&self) -> &str {
         shell_basename(self.shell.as_deref())
+    }
+
+    /// What the right-hand statusline segment shows: the chat engine over a
+    /// focused chat pane, the shell name otherwise.
+    pub fn status_right(&self) -> String {
+        if !self.focused_is_chat() {
+            return self.shell_name().to_owned();
+        }
+        let (assignment, _) = self.ai.resolve(Task::Chat);
+        match (assignment.engine, assignment.model) {
+            (None, _) => "no engine".to_owned(),
+            (Some(engine), Some(model)) if !model.is_empty() => format!("{engine} › {model}"),
+            (Some(engine), _) => engine,
+        }
     }
 
     /// The pane to start before the first event, and how to start it.
@@ -888,6 +908,7 @@ impl App {
             AppEvent::Chat(id, turn, event) => self.on_chat(id, turn, event),
             // The chat pane consumes the replies once it saves its messages.
             AppEvent::Store(_) => Vec::new(),
+            AppEvent::AnimTick => self.on_anim_tick(),
         };
         debug_assert_eq!(
             self.menu.is_some(),
@@ -1054,7 +1075,7 @@ impl App {
             self.input = InputMode::Prefix;
             return Vec::new();
         }
-        if self.focus_is_chat() {
+        if self.focused_is_chat() {
             return self.on_chat_key(key, repeat);
         }
         let Some(pty) = self.focused_pty() else {
@@ -1530,7 +1551,7 @@ impl App {
     fn on_paste(&mut self, text: &str) -> Vec<Effect> {
         // A paste is not part of a held key: the debounce is over.
         self.held_exit = None;
-        if self.input == InputMode::Terminal && self.focus_is_chat() {
+        if self.input == InputMode::Terminal && self.focused_is_chat() {
             self.chat_paste(text);
             return Vec::new();
         }

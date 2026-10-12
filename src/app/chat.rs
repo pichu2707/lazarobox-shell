@@ -6,6 +6,7 @@ use crate::core::ai::chat::{
     SendOutcome,
     engine::{Availability, availability},
     guidance::guidance,
+    streams::StreamInfo,
     yank,
 };
 
@@ -24,8 +25,54 @@ impl App {
     }
 
     /// Whether the focused pane is a chat.
-    pub(super) fn focus_is_chat(&self) -> bool {
+    pub fn focused_is_chat(&self) -> bool {
         self.focused_state().chat_state().is_some()
+    }
+
+    /// Whether any chat pane, in any tab, has a stream running. The runtime
+    /// keeps the animation tick armed exactly while this holds.
+    pub fn animating(&self) -> bool {
+        self.panes
+            .values()
+            .filter_map(PaneState::chat_state)
+            .any(|chat| chat.stream_phase().is_some())
+    }
+
+    /// The running streams of every chat pane in every tab.
+    pub fn streams(&self) -> Vec<StreamInfo> {
+        self.panes
+            .iter()
+            .filter_map(|(&pane, state)| {
+                let chat = state.chat_state()?;
+                Some(StreamInfo {
+                    pane,
+                    started: chat.stream_started()?,
+                    phase: chat.stream_phase()?,
+                    model: chat.stream_model().to_owned(),
+                })
+            })
+            .collect()
+    }
+
+    /// The animation frame the indicator is drawn at.
+    pub fn anim_frame(&self) -> usize {
+        self.anim_frame
+    }
+
+    /// The injected clock, for the indicator's elapsed time.
+    pub fn now(&self) -> Instant {
+        (self.clock)()
+    }
+
+    /// An animation step: the frame advances and the screen is redrawn, but
+    /// only while a stream runs (a late tick after the last one ended is
+    /// dropped).
+    pub(super) fn on_anim_tick(&mut self) -> Vec<Effect> {
+        if self.animating() {
+            self.anim_frame = self.anim_frame.wrapping_add(1);
+            self.dirty = true;
+        }
+        Vec::new()
     }
 
     /// A key in TERMINAL with a chat pane focused. Nothing here reaches a
