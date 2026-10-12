@@ -183,9 +183,9 @@ impl Composer {
         text
     }
 
-    /// Every wrapped row of the text, as character ranges, and the cursor
-    /// among them. A cursor past a full row sits on a fresh empty row.
-    fn layout(&self, width: usize) -> (Vec<Range<usize>>, usize, usize) {
+    /// The wrapped rows of the text at `width` and the cursor among them,
+    /// computed once. A cursor past a full row sits on a fresh empty row.
+    pub fn plan(&self, width: usize) -> ComposerPlan<'_> {
         let mut rows: Vec<Range<usize>> = Vec::new();
         let mut cursor = (0, 0);
         let mut line_start = 0;
@@ -225,18 +225,50 @@ impl Composer {
             }
             line_start = line_end + 1;
         }
-        (rows, cursor.0, cursor.1)
+        ComposerPlan {
+            chars: &self.chars,
+            rows,
+            cursor_row: cursor.0,
+            cursor_col: cursor.1,
+        }
     }
 
     /// The rows for a pane `width` columns wide, cut to `max_rows` around
     /// the cursor.
     pub fn view(&self, width: usize, max_rows: usize) -> ComposerView {
-        let (rows, cursor_row, cursor_col) = self.layout(width);
+        self.plan(width).view(max_rows)
+    }
+
+    /// How many rows the text needs at `width`, up to `MAX_ROWS`.
+    pub fn height(&self, width: usize) -> usize {
+        self.plan(width).height()
+    }
+}
+
+/// The composer text wrapped for one width. Build it once per frame and ask
+/// it for the height, the view and the cursor.
+#[derive(Debug)]
+pub struct ComposerPlan<'a> {
+    chars: &'a [char],
+    rows: Vec<Range<usize>>,
+    cursor_row: usize,
+    cursor_col: usize,
+}
+
+impl ComposerPlan<'_> {
+    /// How many rows the text needs, up to `MAX_ROWS`.
+    pub fn height(&self) -> usize {
+        self.rows.len().min(MAX_ROWS)
+    }
+
+    /// At most `max_rows` rows around the cursor.
+    pub fn view(&self, max_rows: usize) -> ComposerView {
         let max_rows = max_rows.max(1);
-        let first = (cursor_row + 1)
+        let first = (self.cursor_row + 1)
             .saturating_sub(max_rows)
-            .min(rows.len().saturating_sub(max_rows));
-        let shown = rows
+            .min(self.rows.len().saturating_sub(max_rows));
+        let shown = self
+            .rows
             .iter()
             .skip(first)
             .take(max_rows)
@@ -244,14 +276,9 @@ impl Composer {
             .collect();
         ComposerView {
             rows: shown,
-            cursor_row: cursor_row - first,
-            cursor_col,
+            cursor_row: self.cursor_row - first,
+            cursor_col: self.cursor_col,
         }
-    }
-
-    /// How many rows the text needs at `width`, up to `MAX_ROWS`.
-    pub fn height(&self, width: usize) -> usize {
-        self.layout(width).0.len().min(MAX_ROWS)
     }
 }
 
@@ -498,6 +525,21 @@ mod tests {
         let v = c.view(3, 5);
         assert_eq!(v.rows, ["abc", ""]);
         assert_eq!((v.cursor_row, v.cursor_col), (1, 0));
+    }
+
+    #[test]
+    fn one_plan_answers_height_and_view_alike() {
+        let mut c = typed("abcdefg\nhi\n日本語");
+        for _ in 0..3 {
+            c.left();
+        }
+        for width in [1, 3, 4, 10] {
+            let plan = c.plan(width);
+            assert_eq!(plan.height(), c.height(width), "{width}");
+            for max in [1, 2, MAX_ROWS] {
+                assert_eq!(plan.view(max), c.view(width, max), "{width}/{max}");
+            }
+        }
     }
 
     #[test]

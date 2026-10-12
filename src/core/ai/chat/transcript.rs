@@ -254,6 +254,7 @@ impl LineCache {
     }
 }
 
+// Derived data: `eq` is always true so the cache never affects state equality, and `clone` drops it.
 impl Clone for LineCache {
     fn clone(&self) -> Self {
         Self::default()

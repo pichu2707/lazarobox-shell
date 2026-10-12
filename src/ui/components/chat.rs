@@ -13,6 +13,7 @@ use ratatui::{
 use crate::{
     core::ai::chat::{
         ChatState,
+        composer::ComposerPlan,
         transcript::{Line, LineKind},
     },
     ui::theme::LazaroboxTheme,
@@ -39,29 +40,32 @@ impl<'a> ChatView<'a> {
     /// The composer takes the rows its text needs, up to 5, and never the
     /// last row left to the transcript (unless the pane has one row only).
     pub fn layout(&self, area: Rect) -> ChatLayout {
-        let wanted = if area.is_empty() {
-            0
-        } else {
-            self.chat.composer().height(usize::from(area.width))
-        };
+        self.plan(area).0
+    }
+
+    /// The layout and the wrapped composer it came from, so that a frame
+    /// wraps the composer text once for the height, the rows and the cursor.
+    /// The composer is as wide as the area, so one plan serves all three.
+    fn plan(&self, area: Rect) -> (ChatLayout, ComposerPlan<'_>) {
+        let plan = self.chat.composer().plan(usize::from(area.width));
+        let wanted = if area.is_empty() { 0 } else { plan.height() };
         let wanted = u16::try_from(wanted).unwrap_or(u16::MAX);
         let rows = wanted.min(area.height.saturating_sub(1).max(1).min(area.height));
-        ChatLayout {
+        let layout = ChatLayout {
             transcript: Rect::new(area.x, area.y, area.width, area.height - rows),
             composer: Rect::new(area.x, area.y + area.height - rows, area.width, rows),
-        }
+        };
+        (layout, plan)
     }
 
     /// Where the real cursor goes, or `None` when the composer cannot show it.
     pub fn cursor(&self, area: Rect) -> Option<Position> {
-        let composer = self.layout(area).composer;
+        let (layout, plan) = self.plan(area);
+        let composer = layout.composer;
         if composer.is_empty() {
             return None;
         }
-        let view = self
-            .chat
-            .composer()
-            .view(usize::from(composer.width), usize::from(composer.height));
+        let view = plan.view(usize::from(composer.height));
         let col = u16::try_from(view.cursor_col).ok()?;
         let row = u16::try_from(view.cursor_row).ok()?;
         (col < composer.width && row < composer.height)
@@ -100,7 +104,7 @@ impl Widget for ChatView<'_> {
         if area.is_empty() {
             return;
         }
-        let layout = self.layout(area);
+        let (layout, plan) = self.plan(area);
         fill(
             buf,
             layout.transcript,
@@ -125,10 +129,7 @@ impl Widget for ChatView<'_> {
 
         let composer = layout.composer;
         if !composer.is_empty() {
-            let view = self
-                .chat
-                .composer()
-                .view(usize::from(composer.width), usize::from(composer.height));
+            let view = plan.view(usize::from(composer.height));
             let style = Style::default().bg(self.theme.bg_panel);
             for (row, text) in view.rows.iter().enumerate() {
                 let y = composer.y + u16::try_from(row).unwrap_or(0);
