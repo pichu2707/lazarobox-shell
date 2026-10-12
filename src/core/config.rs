@@ -152,6 +152,11 @@ impl Config {
                 ai,
                 Some("config: mouse is not supported yet".to_owned()),
             ),
+            Ok(Parsed { config, ai, .. }) if ai.memory.enabled && !ai.memory.acknowledged => (
+                config,
+                ai,
+                Some(ai::config::UNACKNOWLEDGED_NOTICE.to_owned()),
+            ),
             Ok(Parsed { config, ai, .. }) => (config, ai, None),
             Err(error) => (
                 Self::default(),
@@ -501,5 +506,52 @@ mod tests {
         assert_eq!(p(None, Some("")), None);
         assert_eq!(p(None, Some("rel")), None);
         assert_eq!(p(Some("/x"), Some("")), xdg);
+    }
+
+    // Spec (chat-memory): enabled without the acknowledgement.
+    #[test]
+    fn enabled_memory_without_the_acknowledgement_gives_the_privacy_notice() {
+        let (_, loaded, notice) = Config::load_with_ai(Ok("[ai.memory]\nenabled = true\n".into()));
+        assert!(loaded.memory.enabled && !loaded.memory.active());
+        assert_eq!(
+            notice.as_deref(),
+            Some("memory: turn it on from the menu to review the privacy note")
+        );
+    }
+
+    #[test]
+    fn an_acknowledged_or_disabled_memory_gives_no_notice() {
+        for text in [
+            "[ai.memory]\nenabled = true\nacknowledged = true\n",
+            "[ai.memory]\nacknowledged = true\n",
+            "[ai.memory]\nenabled = false\n",
+            "",
+        ] {
+            assert_eq!(Config::load_with_ai(Ok(text.into())).2, None, "{text:?}");
+        }
+    }
+
+    // Spec: Counted with other problems.
+    #[test]
+    fn a_memory_problem_is_counted_like_any_other() {
+        let text = "[ai.memory]\nport = 0\n[statusline]\nposition = \"middle\"\n";
+        let (config, loaded, notice) = Config::load_with_ai(Ok(text.into()));
+        assert_eq!(config, Config::default());
+        assert_eq!(loaded.memory.port, 7437);
+        assert!(
+            notice.unwrap().starts_with("config (2 problems): "),
+            "counted"
+        );
+    }
+
+    // Spec: Non-table ai.memory.
+    #[test]
+    fn a_non_table_memory_gives_one_config_notice() {
+        let (_, loaded, notice) = Config::load_with_ai(Ok("[ai]\nmemory = 3\n".into()));
+        assert_eq!(loaded.memory, Default::default());
+        assert_eq!(
+            notice.as_deref(),
+            Some("config: ai.memory: expected a table")
+        );
     }
 }
