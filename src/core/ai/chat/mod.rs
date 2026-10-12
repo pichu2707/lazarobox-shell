@@ -4,6 +4,7 @@
 //! turn in flight and the cwd the pane was opened from.
 
 pub mod engine;
+pub mod store;
 pub mod stream;
 
 use std::path::{Path, PathBuf};

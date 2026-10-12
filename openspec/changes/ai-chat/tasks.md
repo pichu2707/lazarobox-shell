@@ -130,11 +130,11 @@ Files changed:
 
 ## PR7 / C6b: Store thread (`src/runtime/chat_store.rs`, `src/runtime.rs`, `src/app.rs`)
 
-- [ ] 7.1 RED: `StoreCmd`/`AppEvent::Store` FIFO over one thread: create on first send, append user, append assistant with status (complete, cancelled, interrupted, truncated), errors not stored, stored text sanitized.
-- [ ] 7.2 RED: retention at 200 in the create transaction: oldest by last activity evicted, activity keeps alive, tagged still evicted, over-limit trimmed, open conversations skipped, system line `oldest conversation removed (limit 200)` only on eviction.
-- [ ] 7.3 RED: degrade: corrupt file bytes unchanged, cannot open, no path, mid-session write failure shows `could not save conversation` once, error text sanitized and at most 120 chars; slow store (2 s fake) does not delay keys or frames; quit flushes Cancel and Append within the 2 s join.
-- [ ] 7.4 GREEN: implement thread, commands, pane-side queue for appends that precede `Created`.
-- [ ] 7.5 Gate.
+- [x] 7.1 RED: `StoreCmd`/`AppEvent::Store` FIFO over one thread: create on first send, append user, append assistant with status (complete, cancelled, interrupted, truncated), errors not stored, stored text sanitized.
+- [x] 7.2 RED: retention at 200 in the create transaction: oldest by last activity evicted, activity keeps alive, tagged still evicted, over-limit trimmed, open conversations skipped, system line `oldest conversation removed (limit 200)` only on eviction.
+- [x] 7.3 RED: degrade: corrupt file bytes unchanged, cannot open, no path, mid-session write failure shows `could not save conversation` once, error text sanitized and at most 120 chars; slow store (2 s fake) does not delay keys or frames; quit flushes Cancel and Append within the 2 s join.
+- [x] 7.4 GREEN: implement thread, commands, pane-side queue for appends that precede `Created`.
+- [x] 7.5 Gate.
 
 ## PR8 / C7: Composer, transcript, widget (`src/core/ai/chat/{composer,transcript}.rs`, `src/ui/components/chat.rs`, `src/ui/mod.rs`, `Cargo.toml`)
 
