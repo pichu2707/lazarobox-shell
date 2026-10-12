@@ -5776,6 +5776,71 @@ mod app_tests {
         assert_eq!(a.menu().unwrap().ai_draft(), ai_of("ollama", "qwen2:7b"));
     }
 
+    /// Moves the menu selection to the `Profile` row (the last one).
+    fn to_profile_row(a: &mut App) {
+        a.update(key('k'));
+    }
+
+    // Spec (config-menu): Profile row. Cycling is silent, `s` saves only the
+    // profile key, and the saved value becomes the app's profile.
+    #[test]
+    fn the_profile_row_saves_only_the_profile_and_updates_the_app() {
+        use crate::core::ai::config::Profile;
+        let mut a = ai_app();
+        open_menu(&mut a);
+        to_profile_row(&mut a);
+        assert_eq!(a.update(key('l')), Vec::<Effect>::new(), "no ResizePty");
+        assert_eq!(a.update(code(KeyCode::Enter)), Vec::<Effect>::new());
+        assert_eq!(a.update(key('h')), Vec::<Effect>::new());
+        assert_eq!(a.menu().unwrap().ai_draft().profile(), Profile::Analyst);
+        assert_eq!(a.ai().profile(), Profile::Programmer, "not saved yet");
+        let edit = ConfigEdit {
+            table: "ai",
+            key: "profile",
+            value: "analyst".into(),
+        };
+        assert_eq!(a.update(key('s')), vec![Effect::SaveConfig(vec![edit])]);
+        a.update(AppEvent::ConfigSaved);
+        assert!(a.menu().is_none());
+        assert_eq!(a.ai().profile(), Profile::Analyst);
+        let general = crate::core::ai::config::Task::General;
+        assert_eq!(
+            a.ai().get(general),
+            ai_of("ollama", "qwen2:7b").get(general)
+        );
+    }
+
+    // Spec (config-menu): Esc restores the profile captured at open.
+    #[test]
+    fn esc_reverts_the_profile_draft() {
+        use crate::core::ai::config::Profile;
+        let mut a = ai_app();
+        open_menu(&mut a);
+        to_profile_row(&mut a);
+        a.update(key('l'));
+        assert_eq!(a.menu().unwrap().ai_draft().profile(), Profile::Analyst);
+        a.update(esc());
+        assert!(a.menu().is_none());
+        assert_eq!(a.ai().profile(), Profile::Programmer);
+        open_menu(&mut a);
+        assert_eq!(a.menu().unwrap().ai_draft().profile(), Profile::Programmer);
+    }
+
+    // Spec (config-menu): an unchanged profile does not touch the file.
+    #[test]
+    fn an_untouched_profile_saves_nothing() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        to_profile_row(&mut a);
+        a.update(key('l'));
+        a.update(key('l'));
+        let effects = a.update(key('s'));
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::SaveConfig(_))),
+            "{effects:?}"
+        );
+    }
+
     // Spec: a failed save keeps the picker where it was.
     #[test]
     fn a_failed_save_keeps_the_picker_level_and_shows_the_error() {
