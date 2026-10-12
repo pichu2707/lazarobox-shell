@@ -11,6 +11,17 @@ homepage = "https://github.com/pichu2707/lazarobox-shell"
 readme = "README.md"
 keywords = ["terminal", "multiplexer", "tui", "ai", "shell"]
 categories = ["command-line-utilities"]
+exclude = [
+    "/openspec/",
+    "/docs/",
+    "/packaging/",
+    "/scripts/",
+    "/.claude/",
+    "/.atl/",
+    "/.github/",
+    "/cliff.toml",
+    "/RELEASING.md",
+]
 
 [dependencies]
 # Async Runtime & Red
