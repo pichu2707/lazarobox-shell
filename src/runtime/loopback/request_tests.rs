@@ -13,6 +13,45 @@ use super::*;
 
 type Requests = Arc<Mutex<Vec<Vec<u8>>>>;
 
+/// Every call the pure builders can produce is one `request` accepts, so the
+/// method table and the builders cannot drift apart.
+#[test]
+fn every_builder_call_is_allowed_by_the_route_table() {
+    use crate::core::ai::memory::{
+        kind::MemKind,
+        port::Note,
+        route::{self, Method as Verb},
+    };
+    const SID: &str = "lazarobox-0123456789abcdef0123456789abcdef";
+    let note = Note {
+        kind: MemKind::Decision,
+        title: "t".into(),
+        content: "c".into(),
+    };
+    let calls = [
+        route::health(),
+        route::project_current("/tmp/a b&c\r\nX: y"),
+        route::context("my proj"),
+        route::register_session(SID, "p", "/x").unwrap(),
+        route::end_session(SID, "s").unwrap(),
+        route::save(SID, "p", &note),
+        route::delete(7, "p"),
+    ];
+    for verb in [Verb::Get, Verb::Post, Verb::Delete] {
+        let expected = match verb {
+            Verb::Get => Method::Get,
+            Verb::Post => Method::Post,
+            Verb::Delete => Method::Delete,
+        };
+        assert_eq!(Method::from(verb), expected);
+    }
+    for call in calls {
+        let method = Method::from(call.method);
+        assert!(allowed_target(&call.target), "{}", call.target);
+        assert!(method_fits_route(method, &call.target), "{}", call.target);
+    }
+}
+
 /// Accepts connections, records each request and answers with `reply`, then
 /// closes. `None` reply: accept and stay silent.
 async fn serve(reply: Option<Vec<u8>>) -> (u16, Requests) {
@@ -541,10 +580,11 @@ async fn a_failed_write_with_no_reply_is_invalid() {
 
 #[tokio::test]
 async fn a_refused_connection_is_connect() {
-    let port = {
-        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        l.local_addr().unwrap().port()
-    };
+    // A bound socket that never listens holds the port until the end of the
+    // test, so a parallel test cannot take it: the connect is refused.
+    let held = tokio::net::TcpSocket::new_v4().unwrap();
+    held.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let port = held.local_addr().unwrap().port();
     assert_eq!(get(port, "/health").await, Err(CallError::Connect));
 }
 

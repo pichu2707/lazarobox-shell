@@ -93,12 +93,12 @@ Fallback split if over 400 without exception: 1a = 2.1-2.6, 1b = 2.7-2.10.
 
 ## PR4 / M3a: Call builders, parsers, port (`src/core/ai/memory/{route,reply,port}.rs`)
 
-- [ ] 4.1 RED: builders produce exact targets and bodies: percent-encoded `cwd` (`/tmp/a b&c\r\nX: y` gives one query value, no injected header), `project`; context query string; session body with directory; save body fields only (`session_id`, `type`, `title`, `content`, `project`, `scope=project`, `topic_key`); `expected_project` on delete; content cut at 50,000 bytes on a char boundary (16,000 three-byte chars).
-- [ ] 4.2 GREEN: `route.rs` with `Call { method, target, body, auth }` and the builders.
-- [ ] 4.3 RED: parsers over every M0 fixture: project classified by `project_source` (`git_remote` resolves; `dir_basename`, `ambiguous`, empty project or unknown source give `NotGit`; never by HTTP status), context 404 `unknown_project` as no memory yet, session created, saved 201 (id, revision), upsert same id, 400 `session_project_mismatch` short sanitized text (at most 120 chars, no escape, no echo of content), context `{context}`, delete 2xx/404 as deleted, 401/403 as `engram refused the delete (check ENGRAM_HTTP_TOKEN)`.
-- [ ] 4.4 GREEN: `reply.rs`.
-- [ ] 4.5 RED then GREEN: `MemCmd {Resolve, Context, Save, End, Delete, StartServer, Quit}` and `MemReply {Health, Project, Context, Saved, Deleted, Server, Unavailable}` compile as plain values; reasons enum renders the exact `memory unavailable:` texts of chat-memory "Degradation".
-- [ ] 4.6 Gate.
+- [x] 4.1 RED: builders produce exact targets and bodies: percent-encoded `cwd` (`/tmp/a b&c\r\nX: y` gives one query value, no injected header), `project`; context query string; session body with directory; save body fields only (`session_id`, `type`, `title`, `content`, `project`, `scope=project`, `topic_key`); `expected_project` on delete; content cut at 50,000 bytes on a char boundary (16,000 three-byte chars).
+- [x] 4.2 GREEN: `route.rs` with `Call { method, target, body, auth }` and the builders.
+- [x] 4.3 RED: parsers over every M0 fixture: project classified by `project_source` (`git_remote` resolves; `dir_basename`, `ambiguous`, empty project or unknown source give `NotGit`; never by HTTP status), context 404 `unknown_project` as no memory yet, session created, saved 201 (id, revision), upsert same id, 400 `session_project_mismatch` short sanitized text (at most 120 chars, no escape, no echo of content), context `{context}`, delete 2xx/404 as deleted, 401/403 as `engram refused the delete (check ENGRAM_HTTP_TOKEN)`.
+- [x] 4.4 GREEN: `reply.rs`.
+- [x] 4.5 RED then GREEN: `MemCmd {Resolve, Context, Save, End, Delete, StartServer, Quit}` and `MemReply {Health, Project, Context, Saved, Deleted, Server, Unavailable}` compile as plain values; reasons enum renders the exact `memory unavailable:` texts of chat-memory "Degradation".
+- [x] 4.6 Gate.
 
 ## PR5 / M3b: Worker and app wiring (`src/runtime/engram/{mod,worker}.rs`, `fake_engram.rs`, `src/app.rs`, `src/runtime.rs`)
 

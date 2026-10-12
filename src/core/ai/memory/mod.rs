@@ -5,7 +5,10 @@
 pub mod context;
 pub mod health;
 pub mod kind;
+pub mod port;
 pub mod redact;
+pub mod reply;
+pub mod route;
 pub mod slug;
 
 /// Helpers for tests that read the recorded engram responses.

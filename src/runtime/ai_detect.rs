@@ -374,10 +374,11 @@ mod tests {
 
     #[tokio::test]
     async fn http_get_fails_fast_on_a_closed_port() {
-        let port = {
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            listener.local_addr().unwrap().port()
-        };
+        // A bound socket that never listens holds the port until the end of
+        // the test, so a parallel test cannot take it: the connect is refused.
+        let held = tokio::net::TcpSocket::new_v4().unwrap();
+        held.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = held.local_addr().unwrap().port();
         let answer =
             tokio::time::timeout(Duration::from_millis(400), http_get(port, "/api/tags")).await;
         assert_eq!(answer, Ok(None));

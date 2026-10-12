@@ -195,7 +195,7 @@ At chat open (new or resumed) the worker MUST send `GET /context?project=<P>&sco
 - THEN the reply is accepted and the injected text is capped by the formatter
 
 ### Requirement: Deleting notes
-A note MUST be deleted only through `DELETE /observations/{id}?expected_project=<P>` with the bearer credential of Loopback JSON exchange, and only after the user confirmed it (see chat-history). A 2xx or a 404 counts as deleted. A 401 or 403 becomes `engram refused the delete (check ENGRAM_HTTP_TOKEN)`. Notes are deleted one by one, a failure does not stop the others, and the reply reports how many were deleted.
+A note MUST be deleted only through `DELETE /observations/{id}?expected_project=<P>` with the bearer credential of Loopback JSON exchange, and only after the user confirmed it (see chat-history). A 2xx, or a 404 whose body `error` is `observation not found`, counts as deleted; any other 404 is a failure. A 401 or 403 becomes `engram refused the delete (check ENGRAM_HTTP_TOKEN)`. Notes are deleted one by one, a failure does not stop the others, and the reply reports how many were deleted.
 
 #### Scenario: Delete request [auto]
 - GIVEN `ENGRAM_HTTP_TOKEN=tok` and a note link with id 7 in project `p`
@@ -203,7 +203,7 @@ A note MUST be deleted only through `DELETE /observations/{id}?expected_project=
 - THEN the recorded request is `DELETE /observations/7?expected_project=p` with `Authorization: Bearer tok`
 
 #### Scenario: Already gone and refused [auto]
-- GIVEN three notes where the fake answers 204, 404 and 403
+- GIVEN three notes where the fake answers 204, 404 `observation not found` and 403
 - WHEN they are deleted
 - THEN the reply reports 2 deleted of 3 and the refusal text
 

@@ -394,6 +394,18 @@ pub enum Method {
     Delete,
 }
 
+/// The one place a core call method becomes a loopback method.
+impl From<crate::core::ai::memory::route::Method> for Method {
+    fn from(method: crate::core::ai::memory::route::Method) -> Self {
+        use crate::core::ai::memory::route::Method as Core;
+        match method {
+            Core::Get => Self::Get,
+            Core::Post => Self::Post,
+            Core::Delete => Self::Delete,
+        }
+    }
+}
+
 /// A complete reply: any status the caller must interpret.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Reply {
