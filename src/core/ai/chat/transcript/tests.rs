@@ -10,6 +10,24 @@ use crate::core::ai::chat::{
     state_tests::{chat, ready},
 };
 
+#[test]
+fn a_wide_prefix_leaves_room_by_display_width_not_by_char_count() {
+    use crate::core::ai::chat::wrap::text_width;
+    let mut out = Vec::new();
+    push_wrapped(
+        &mut out,
+        LineKind::Assistant,
+        "日本 ",
+        "   ",
+        "abcdefghi jklmnopq",
+        12,
+    );
+    assert!(!out.is_empty());
+    for line in &out {
+        assert!(text_width(&line.text) <= 12, "{:?}", line.text);
+    }
+}
+
 fn at(base: Instant, ms: u64) -> Instant {
     base + Duration::from_millis(ms)
 }

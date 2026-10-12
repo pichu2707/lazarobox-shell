@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use ratatui::{style::Style, text::Span};
 
 use crate::{
-    core::ai::chat::{StreamPhase, streams::StreamInfo},
+    core::ai::chat::{StreamPhase, streams::StreamInfo, wrap::text_width},
     ui::theme::LazaroboxTheme,
 };
 
@@ -105,7 +105,7 @@ impl ThinkingView {
             let cells: usize = parts
                 .iter()
                 .flat_map(|(_, spans)| spans)
-                .map(|s| s.content.chars().count())
+                .map(|s| text_width(&s.content))
                 .sum();
             // A space around the whole and between parts.
             cells + parts.len() + 1
@@ -169,6 +169,16 @@ mod tests {
 
     fn full(v: &ThinkingView) -> Vec<Span<'static>> {
         v.spans(&theme(), 200)
+    }
+
+    #[test]
+    fn a_wide_model_name_is_measured_in_display_columns() {
+        use crate::core::ai::chat::wrap::text_width;
+        let v = view(0, StreamPhase::Thinking, "日本語モデル", 4, 0);
+        for max in 0..60 {
+            let shown = text(&v.spans(&theme(), max));
+            assert!(text_width(&shown) <= max, "{shown:?} in {max}");
+        }
     }
 
     #[test]
