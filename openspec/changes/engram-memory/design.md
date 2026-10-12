@@ -130,7 +130,7 @@ ai-chat chain order now: PR7 (#140) → PR8 (#141) → PR9 (live pane) → PR13 
 ## Open Questions
 
 - [ ] Key choices: Ctrl+N (note), Ctrl+O (memory fold), Ctrl+E (summary). Confirm they reach the app in Kitty.
-- [ ] E-2: engram's DELETE token header (`Authorization: Bearer` assumed) — record a fixture.
-- [ ] E-3: does `POST /sessions` with an existing id succeed, and can a resumed conversation save into an ended session? If not, a resume visit gets a fresh session id that replaces the `memory_sessions` row (one session per visit instead of per conversation, an E6 deviation the user must accept).
-- [ ] E-4: the item marker of compact `/context` used for `N notes`.
+- [x] E-2 (M0, `fixtures/3.4.0/FINDINGS.md`): confirmed `Authorization: Bearer <token>`. Missing token gives 401 `authorization required`, wrong token 401 `invalid token`; no 403 exists. `expected_project` is mandatory (400 if absent, 409 on mismatch). A server without `ENGRAM_HTTP_TOKEN` accepts DELETE with no header.
+- [x] E-3 (M0): the per-conversation session model holds, the fresh-id fallback is NOT needed. `POST /sessions` with an existing live id is idempotent (201). For an ENDED id it returns 409 `{"code":"session_already_ended"}`, which the worker must treat as success. `POST /observations` into an ended session works (201) with or without re-registering, and `/end` can be called again (latest summary wins).
+- [x] E-4 (M0): the note marker is a line starting with `- [` (`- [<kind>] **<title>**`) under `### Recent Observations`; session lines start with `- **` and are not counted. An unknown project returns 404 `unknown_project` (treat as no memory). Also found: `/project/current` never returns 404/409; unresolved is `project == ""` / `project_source == "ambiguous"`, and `dir_basename` is a weak fallback (decision for M1/M3a).
 - [ ] Accept that a rollback to a pre-v2 build shows "history unavailable" until re-upgraded.
