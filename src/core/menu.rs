@@ -9,8 +9,9 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::{
     ai::{
         Detection,
-        config::AiConfig,
-        menu::{AiField, AiMenu},
+        config::{AiConfig, Task},
+        menu::AiMenu,
+        picker::{Level, Mark, Outcome, PickKey, PickRow, Picker, Target},
     },
     config::{BarPosition, Config, ConfigEdit},
 };
@@ -29,10 +30,8 @@ pub enum ItemKind {
     Choice(Choice),
     /// Drawn but never selectable.
     Disabled,
-    /// An AI row whose choices come from the last detection.
-    Dynamic(AiField),
-    /// A display-only row computed from the AI draft.
-    Derived(fn(&AiMenu) -> String),
+    /// An AI assignment row; `None` is `Set all tasks`.
+    Assign(Option<Task>),
 }
 
 pub struct Item {
@@ -90,21 +89,34 @@ pub static SECTIONS: &[Section] = &[Section {
     ],
 }];
 
-/// The AI section, attached only by [`MenuState::with_ai`].
+/// The AI section, attached only by [`MenuState::with_ai`]. The labels of
+/// the task rows are the task ids; their key path is `Task::table`.
 pub static AI_SECTION: Section = Section {
     title: "AI",
     items: &[
         Item {
-            label: "Engine",
-            kind: ItemKind::Dynamic(AiField::Engine),
+            label: "Set all tasks",
+            kind: ItemKind::Assign(None),
         },
         Item {
-            label: "Model",
-            kind: ItemKind::Dynamic(AiField::Model),
+            label: "general",
+            kind: ItemKind::Assign(Some(Task::General)),
         },
         Item {
-            label: "Status",
-            kind: ItemKind::Derived(AiMenu::status),
+            label: "code",
+            kind: ItemKind::Assign(Some(Task::Code)),
+        },
+        Item {
+            label: "chat",
+            kind: ItemKind::Assign(Some(Task::Chat)),
+        },
+        Item {
+            label: "review",
+            kind: ItemKind::Assign(Some(Task::Review)),
+        },
+        Item {
+            label: "summarize",
+            kind: ItemKind::Assign(Some(Task::Summarize)),
         },
     ],
 };
@@ -116,7 +128,7 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
         .flat_map(|section| section.items.iter())
         .filter_map(|item| match &item.kind {
             ItemKind::Choice(choice) => Some((item, choice)),
-            ItemKind::Disabled | ItemKind::Dynamic(_) | ItemKind::Derived(_) => None,
+            ItemKind::Disabled | ItemKind::Assign(_) => None,
         })
 }
 
@@ -132,16 +144,50 @@ pub enum MenuCommand {
     Refresh,
 }
 
+const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
+const HINT_TASK: &str = "j/k move · Enter pick · r refresh · s save · Esc cancel";
+const HINT_PICKER: &str = "j/k move · Enter choose · r refresh · Esc back · s save";
+const HINT_CUSTOM: &str = "type a model · Enter ok · Ctrl+U clear · Esc back";
+
+/// Why a picker row cannot be chosen: its mark, or the text of an
+/// explanation row. A saved model of an engine that is gone has no mark.
+fn disabled_reason(row: &PickRow) -> &str {
+    match row.mark {
+        Mark::DownloadRequired => "download required",
+        Mark::Checking => "checking…",
+        _ if row.key == PickKey::Info => &row.label,
+        _ => "engine not detected",
+    }
+}
+
+/// The footer of the popup: the widget only styles it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Footer<'a> {
+    Error(&'a str),
+    Hint(Cow<'static, str>),
+}
+
 /// One line of the popup body.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Row {
-    Title(&'static str),
+    Title(Cow<'static, str>),
     Item {
         label: &'static str,
         value: Option<Cow<'static, str>>,
         selected: bool,
         enabled: bool,
     },
+    /// A picker row: the cursor row is `selected`, the current assignment of
+    /// the target is `current`, a row that cannot be chosen is not `enabled`.
+    Pick {
+        label: String,
+        mark: Mark,
+        selected: bool,
+        enabled: bool,
+        current: bool,
+    },
+    /// The custom model field and its buffer.
+    Field(String),
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -150,6 +196,8 @@ pub struct MenuState {
     original: Config,
     error: Option<String>,
     ai: Option<AiMenu>,
+    /// A detection run is in flight.
+    checking: bool,
 }
 
 impl MenuState {
@@ -159,6 +207,7 @@ impl MenuState {
             original: *original,
             error: None,
             ai: None,
+            checking: false,
         }
     }
 
@@ -168,8 +217,14 @@ impl MenuState {
         self
     }
 
+    /// Marks a detection run as in flight (the `refreshing…` cue).
+    pub fn set_checking(&mut self, on: bool) {
+        self.checking = on;
+    }
+
     /// Replaces the detection in place; selection and draft stay.
     pub fn set_engines(&mut self, engines: Option<Detection>) {
+        self.checking = false;
         if let Some(ai) = &mut self.ai {
             ai.set_engines(engines);
         }
@@ -188,7 +243,7 @@ impl MenuState {
         self.ai.is_some()
     }
 
-    /// Whether the selection is on the Engine or Model row.
+    /// Whether the selection is on an AI task row.
     pub fn on_ai_row(&self) -> bool {
         self.ai.is_some()
             && self
@@ -196,35 +251,81 @@ impl MenuState {
                 .is_some_and(|index| index >= choices().count())
     }
 
-    /// Selectable rows: the settings, then Engine and Model.
+    /// Selectable rows: the settings, then the six AI rows.
     fn selectable(&self) -> usize {
-        choices().count() + if self.ai.is_some() { 2 } else { 0 }
+        choices().count()
+            + if self.ai.is_some() {
+                AI_SECTION.items.len()
+            } else {
+                0
+            }
+    }
+
+    /// The picker view: a title and the window of rows around the cursor.
+    fn picker_rows(&self) -> Option<Vec<Row>> {
+        let ai = self.ai.as_ref()?;
+        let picker = ai.picker()?;
+        let all = ai.pick_rows();
+        let row = match picker.target {
+            Target::All => "Set all tasks",
+            Target::Task(task) => task.id(),
+        };
+        let mut title = match &picker.level {
+            Level::Engines => format!("Engine for {row}"),
+            Level::Models { engine } | Level::Custom { engine, .. } => {
+                format!("Model for {row} ({engine})")
+            }
+        };
+        if let Some(counter) = picker.counter(all.len()) {
+            title = format!("{title} {counter}");
+        }
+        let mut rows = vec![Row::Title(Cow::Owned(title))];
+        if let Some(text) = picker.text() {
+            rows.push(Row::Field(text.to_owned()));
+            return Some(rows);
+        }
+        for index in picker.visible(all.len()) {
+            let pick = &all[index];
+            rows.push(Row::Pick {
+                label: pick.label.clone(),
+                mark: pick.mark.clone(),
+                selected: index == picker.cursor(),
+                enabled: pick.enabled,
+                current: pick.current,
+            });
+        }
+        Some(rows)
+    }
+
+    /// The target of the selected AI row.
+    fn selected_target(&self) -> Option<Target> {
+        match self.selected?.checked_sub(choices().count())? {
+            0 => Some(Target::All),
+            n => Task::ALL.get(n - 1).map(|task| Target::Task(*task)),
+        }
     }
 
     pub fn rows(&self, config: &Config) -> Vec<Row> {
+        if let Some(rows) = self.picker_rows() {
+            return rows;
+        }
         let mut rows = Vec::new();
         let mut index = 0;
         let ai_section = self.ai.as_ref().map(|_| &AI_SECTION);
         for section in SECTIONS.iter().chain(ai_section) {
-            rows.push(Row::Title(section.title));
+            rows.push(Row::Title(Cow::Borrowed(section.title)));
             for item in section.items {
                 rows.push(match &item.kind {
-                    ItemKind::Dynamic(field) => {
+                    ItemKind::Assign(task) => {
                         let row = Row::Item {
                             label: item.label,
-                            value: self.ai.as_ref().map(|ai| Cow::Owned(ai.value(*field))),
+                            value: self.ai.as_ref().map(|ai| Cow::Owned(ai.value(*task))),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
                         index += 1;
                         row
                     }
-                    ItemKind::Derived(text) => Row::Item {
-                        label: item.label,
-                        value: self.ai.as_ref().map(|ai| Cow::Owned(text(ai))),
-                        selected: false,
-                        enabled: false,
-                    },
                     ItemKind::Choice(choice) => {
                         let row = Row::Item {
                             label: item.label,
@@ -256,6 +357,9 @@ impl MenuState {
         if !repeat {
             self.error = None;
         }
+        if self.ai.as_ref().is_some_and(|ai| ai.picker().is_some()) {
+            return self.on_picker_key(key, repeat);
+        }
         if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
             return MenuCommand::None;
         }
@@ -264,11 +368,71 @@ impl MenuState {
             KeyCode::Char('k') | KeyCode::Up => self.step_selection(false),
             KeyCode::Char('l' | ' ') | KeyCode::Right => self.cycle(true, config),
             KeyCode::Char('h') | KeyCode::Left => self.cycle(false, config),
+            KeyCode::Char('s') if !repeat => MenuCommand::Save,
             KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
-            KeyCode::Enter if !repeat => MenuCommand::Save,
+            KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
+            KeyCode::Enter if repeat && self.on_ai_row() => MenuCommand::None,
+            KeyCode::Enter => self.cycle(true, config),
             KeyCode::Esc if !repeat => MenuCommand::Cancel,
             _ => MenuCommand::None,
         }
+    }
+
+    fn open_picker(&mut self) -> MenuCommand {
+        if let (Some(target), Some(ai)) = (self.selected_target(), &mut self.ai) {
+            ai.open_picker(target);
+        }
+        MenuCommand::None
+    }
+
+    /// Keys while the picker is open: nothing reaches the task list, and Esc
+    /// never cancels the menu.
+    fn on_picker_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
+        let Some(ai) = &mut self.ai else {
+            return MenuCommand::None;
+        };
+        let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        // The custom field is checked before the modifier guard: Ctrl+U
+        // clears it, and every letter, shortcuts included, is typed.
+        if ai.picker().is_some_and(|p| p.text().is_some()) {
+            match key.code {
+                KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                    ai.edit(Picker::clear_text);
+                }
+                _ if !plain => {}
+                KeyCode::Char(c) => ai.edit(|p| p.type_char(c)),
+                KeyCode::Backspace => ai.edit(Picker::backspace),
+                KeyCode::Enter if !repeat => {
+                    ai.drive(Picker::enter);
+                }
+                KeyCode::Esc if !repeat => {
+                    ai.drive(Picker::back);
+                }
+                _ => {}
+            }
+            return MenuCommand::None;
+        }
+        if !plain {
+            return MenuCommand::None;
+        }
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => ai.edit_with(|p, d, e| p.step(true, d, e)),
+            KeyCode::Char('k') | KeyCode::Up => ai.edit_with(|p, d, e| p.step(false, d, e)),
+            KeyCode::Enter if !repeat => {
+                ai.drive(Picker::enter);
+            }
+            KeyCode::Esc if !repeat => {
+                ai.drive(Picker::back);
+            }
+            KeyCode::Char('s') if !repeat => return MenuCommand::Save,
+            KeyCode::Char('r')
+                if !repeat && ai.drive(|p, _, _| p.refresh()) == Outcome::Refresh =>
+            {
+                return MenuCommand::Refresh;
+            }
+            _ => {}
+        }
+        MenuCommand::None
     }
 
     fn step_selection(&mut self, forward: bool) -> MenuCommand {
@@ -292,13 +456,6 @@ impl MenuState {
             return MenuCommand::None;
         };
         let Some((_, choice)) = choices().nth(index) else {
-            let field = match index - choices().count() {
-                0 => AiField::Engine,
-                _ => AiField::Model,
-            };
-            if let Some(ai) = &mut self.ai {
-                ai.cycle(field, forward);
-            }
             return MenuCommand::None;
         };
         let len = choice.values.len();
@@ -313,33 +470,78 @@ impl MenuState {
         MenuCommand::Changed
     }
 
-    /// The keys that differ from the config captured at open, then both AI
-    /// keys when either changed (`none` is written as an empty string).
+    /// The keys that differ from the config captured at open.
     pub fn edits(&self, live: &Config) -> Vec<ConfigEdit> {
-        let mut edits: Vec<ConfigEdit> = choices()
+        let settings = choices()
             .filter(|(_, c)| (c.get)(live) != (c.get)(&self.original))
             .map(|(_, c)| ConfigEdit {
                 table: c.table,
                 key: c.key,
                 value: Cow::Borrowed(c.values[(c.get)(live)]),
-            })
-            .collect();
-        if let Some(ai) = self.ai.as_ref().filter(|ai| ai.changed()) {
-            for field in [AiField::Engine, AiField::Model] {
-                let (table, key) = field.key_path();
-                edits.push(ConfigEdit {
-                    table,
-                    key,
-                    value: Cow::Owned(ai.saved_value(field)),
-                });
-            }
+            });
+        let tasks = self
+            .ai
+            .iter()
+            .flat_map(AiMenu::changed_tasks)
+            .flat_map(|(task, a)| {
+                let value = |v: &Option<String>| Cow::Owned(v.clone().unwrap_or_default());
+                [
+                    ConfigEdit {
+                        table: task.table(),
+                        key: "engine",
+                        value: value(&a.engine),
+                    },
+                    ConfigEdit {
+                        table: task.table(),
+                        key: "model",
+                        value: value(&a.model),
+                    },
+                ]
+            });
+        settings.chain(tasks).collect()
+    }
+
+    /// A paste: goes to the custom field when it is focused, else ignored.
+    pub fn on_paste(&mut self, text: &str) {
+        if let Some(ai) = &mut self.ai {
+            ai.edit(|p| p.paste(text));
         }
-        edits
     }
 
     /// The config captured when the menu opened.
     pub fn original(&self) -> Config {
         self.original
+    }
+
+    /// The footer line: a pending error, else the hint of the current view.
+    pub fn footer(&self) -> Footer<'_> {
+        if let Some(error) = self.error() {
+            return Footer::Error(error);
+        }
+        let ai = self.ai.as_ref();
+        let picker = ai.and_then(AiMenu::picker);
+        if picker.is_some_and(|p| p.text().is_some()) {
+            return Footer::Hint(Cow::Borrowed(HINT_CUSTOM));
+        }
+        if let Some(row) = ai.and_then(AiMenu::cursor_row).filter(|r| !r.enabled) {
+            let reason = disabled_reason(&row);
+            return Footer::Hint(Cow::Owned(format!("{reason} · not selectable")));
+        }
+        let in_ai_view = picker.is_some() || self.on_ai_row();
+        let cue = ai.and_then(|ai| match (ai.has_result(), self.checking) {
+            (false, _) => Some("checking engines…"),
+            (true, true) => Some("refreshing…"),
+            (true, false) => None,
+        });
+        Footer::Hint(match cue {
+            Some(cue) if in_ai_view => {
+                let leave = if picker.is_some() { "back" } else { "cancel" };
+                Cow::Owned(format!("{cue} · s save · Esc {leave}"))
+            }
+            _ if picker.is_some() => Cow::Borrowed(HINT_PICKER),
+            _ if in_ai_view => Cow::Borrowed(HINT_TASK),
+            _ => Cow::Borrowed(HINT_SETTINGS),
+        })
     }
 
     pub fn set_error(&mut self, message: String) {
@@ -395,7 +597,7 @@ mod tests {
         assert_eq!(
             menu.rows(&Config::default()),
             vec![
-                Row::Title("Settings"),
+                Row::Title("Settings".into()),
                 row("Statusline position", Some("bottom"), true),
                 row("Tab bar position", Some("top"), false),
                 row("Mouse: off (coming soon)", None, false),
@@ -478,21 +680,15 @@ mod tests {
     }
 
     #[test]
-    fn enter_saves_and_esc_cancels_on_press_only() {
+    fn s_saves_and_esc_cancels_on_press_only() {
         let mut menu = MenuState::open(&Config::default());
         let mut config = Config::default();
-        assert_eq!(
-            menu.on_key(&key(KeyCode::Enter), false, &mut config),
-            MenuCommand::Save
-        );
+        assert_eq!(menu.on_key(&ch('s'), false, &mut config), MenuCommand::Save);
         assert_eq!(
             menu.on_key(&key(KeyCode::Esc), false, &mut config),
             MenuCommand::Cancel
         );
-        assert_eq!(
-            menu.on_key(&key(KeyCode::Enter), true, &mut config),
-            MenuCommand::None
-        );
+        assert_eq!(menu.on_key(&ch('s'), true, &mut config), MenuCommand::None);
         assert_eq!(
             menu.on_key(&key(KeyCode::Esc), true, &mut config),
             MenuCommand::None
@@ -578,8 +774,9 @@ mod tests {
         let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
         assert_eq!(
             menu.on_key(&shift_enter, false, &mut config),
-            MenuCommand::Save
+            MenuCommand::Changed
         );
+        assert_eq!(config.bars.statusline, BarPosition::Bottom, "cycled back");
         let upper_j = KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT);
         assert_eq!(menu.on_key(&upper_j, false, &mut config), MenuCommand::None);
         assert_eq!(selected(&menu), Some(0), "J is not j");
@@ -600,3 +797,27 @@ mod tests {
 
 #[cfg(test)]
 mod ai_tests;
+
+#[cfg(test)]
+mod picker_tests;
+
+#[cfg(test)]
+mod disabled_tests;
+
+#[cfg(test)]
+mod custom_flow_tests;
+
+#[cfg(test)]
+mod reanchor_tests;
+
+#[cfg(test)]
+mod save_tests;
+
+#[cfg(test)]
+mod footer_tests;
+
+#[cfg(test)]
+mod guard_tests;
+
+#[cfg(test)]
+mod edits_tests;

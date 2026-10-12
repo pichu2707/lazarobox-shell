@@ -756,7 +756,16 @@ impl App {
         self.input = InputMode::Menu;
         let mut effects = self.apply_config();
         effects.extend(self.request_detection());
+        self.sync_checking();
         effects
+    }
+
+    /// Mirrors the run in flight into the menu's `refreshing…` cue. A result
+    /// clears it through `set_engines`.
+    fn sync_checking(&mut self) {
+        if let Some(menu) = self.menu.as_mut() {
+            menu.set_checking(self.detecting);
+        }
     }
 
     /// The only way out of MENU. `Reverted` restores the config captured at
@@ -789,7 +798,11 @@ impl App {
             MenuCommand::Changed => self.apply_config(),
             MenuCommand::Cancel => self.close_menu(Outcome::Reverted),
             MenuCommand::Save => self.request_save(),
-            MenuCommand::Refresh => self.request_detection(),
+            MenuCommand::Refresh => {
+                let effects = self.request_detection();
+                self.sync_checking();
+                effects
+            }
             MenuCommand::None => Vec::new(),
         }
     }
@@ -1218,6 +1231,14 @@ impl App {
                 self.tab().focus,
                 encode_paste(text, self.focused_pane().modes()),
             )],
+            InputMode::Menu => {
+                // Only the custom field takes a paste; nothing reaches a PTY.
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.on_paste(text);
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
             _ => Vec::new(),
         }
     }
@@ -4778,8 +4799,8 @@ mod app_tests {
 
     // `repeat` comes from `key.kind` in `App::on_key` only.
     #[test]
-    fn a_held_enter_or_esc_does_nothing_but_a_held_j_moves() {
-        for held in [KeyCode::Enter, KeyCode::Esc] {
+    fn a_held_s_or_esc_does_nothing_but_a_held_j_moves() {
+        for held in [KeyCode::Char('s'), KeyCode::Esc] {
             let mut a = menu_app();
             a.update(key('l'));
             assert_eq!(a.update(kind(held, KeyEventKind::Repeat)), vec![]);
@@ -4796,11 +4817,11 @@ mod app_tests {
         );
     }
 
-    // Spec: Enter with an unchanged draft closes without saving.
+    // Spec: s with an unchanged draft closes without saving.
     #[test]
-    fn enter_with_an_unchanged_draft_closes_the_menu() {
+    fn s_with_an_unchanged_draft_closes_the_menu() {
         let mut a = menu_app();
-        let effects = a.update(code(KeyCode::Enter));
+        let effects = a.update(key('s'));
         assert_eq!(
             effects,
             vec![Effect::ResizePty(PaneId::FIRST, sized(24, 80))]
@@ -4817,12 +4838,12 @@ mod app_tests {
         }
     }
 
-    // Spec: config-persistence Save on Enter.
+    // Spec: config-persistence Save on s.
     #[test]
-    fn enter_with_a_changed_draft_requests_a_save_and_keeps_the_menu_open() {
+    fn s_with_a_changed_draft_requests_a_save_and_keeps_the_menu_open() {
         let mut a = menu_app();
         a.update(key('l'));
-        let effects = a.update(code(KeyCode::Enter));
+        let effects = a.update(key('s'));
         assert_eq!(
             effects,
             vec![Effect::SaveConfig(vec![statusline_top_edit()])]
@@ -4834,11 +4855,11 @@ mod app_tests {
     }
 
     #[test]
-    fn a_double_enter_requests_two_identical_saves() {
+    fn a_double_s_requests_two_identical_saves() {
         let mut a = menu_app();
         a.update(key('l'));
-        let first = a.update(code(KeyCode::Enter));
-        let second = a.update(code(KeyCode::Enter));
+        let first = a.update(key('s'));
+        let second = a.update(key('s'));
         assert_eq!(first, vec![Effect::SaveConfig(vec![statusline_top_edit()])]);
         assert_eq!(second, first);
     }
@@ -4848,7 +4869,7 @@ mod app_tests {
     fn config_saved_closes_the_menu_and_keeps_the_draft() {
         let mut a = menu_app();
         a.update(key('l'));
-        a.update(code(KeyCode::Enter));
+        a.update(key('s'));
         let effects = a.update(AppEvent::ConfigSaved);
         assert_eq!(
             effects,
@@ -4865,7 +4886,7 @@ mod app_tests {
     fn config_save_failed_keeps_the_menu_the_draft_and_shows_the_error() {
         let mut a = menu_app();
         a.update(key('l'));
-        a.update(code(KeyCode::Enter));
+        a.update(key('s'));
         a.take_dirty();
         let effects = a.update(AppEvent::ConfigSaveFailed("save failed: disk full".into()));
         assert_eq!(effects, Vec::new());
@@ -4884,9 +4905,9 @@ mod app_tests {
     fn the_next_key_clears_the_error_and_a_retry_can_succeed() {
         let mut a = menu_app();
         a.update(key('l'));
-        a.update(code(KeyCode::Enter));
+        a.update(key('s'));
         a.update(AppEvent::ConfigSaveFailed("save failed: x".into()));
-        let retry = a.update(code(KeyCode::Enter));
+        let retry = a.update(key('s'));
         assert_eq!(a.menu().and_then(MenuState::error), None, "cleared");
         assert_eq!(retry, vec![Effect::SaveConfig(vec![statusline_top_edit()])]);
         a.update(AppEvent::ConfigSaved);
@@ -4898,7 +4919,7 @@ mod app_tests {
     fn esc_after_a_failed_save_reverts_to_the_original() {
         let mut a = menu_app();
         a.update(key('l'));
-        a.update(code(KeyCode::Enter));
+        a.update(key('s'));
         a.update(AppEvent::ConfigSaveFailed("save failed: x".into()));
         a.update(esc());
         assert_eq!(a.input(), InputMode::Terminal);
@@ -4947,8 +4968,8 @@ mod app_tests {
     }
 
     #[test]
-    fn esc_and_enter_hide_the_forced_bar_and_resize_back() {
-        for close in [esc(), code(KeyCode::Enter)] {
+    fn esc_and_s_hide_the_forced_bar_and_resize_back() {
+        for close in [esc(), key('s')] {
             let mut a = menu_app();
             let effects = a.update(close);
             assert_eq!(a.screen().tab_bar, None);
@@ -5229,23 +5250,7 @@ mod app_tests {
     }
 
     fn ai_of(engine: &str, model: &str) -> AiConfig {
-        AiConfig {
-            engine: Some(engine.to_owned()),
-            model: Some(model.to_owned()),
-        }
-    }
-
-    /// The Engine, Model and Status values of the open menu.
-    fn ai_values(a: &App) -> Vec<String> {
-        let rows = a.menu().unwrap().rows(&a.config);
-        assert_eq!(rows[4], Row::Title("AI"));
-        rows[5..8]
-            .iter()
-            .map(|row| match row {
-                Row::Item { value, .. } => value.as_deref().unwrap().to_owned(),
-                Row::Title(_) => unreachable!(),
-            })
-            .collect()
+        AiConfig::general(Some(engine), Some(model))
     }
 
     /// Two tabs, so opening the menu never resizes; `ollama`/`qwen2:7b` saved.
@@ -5264,139 +5269,77 @@ mod app_tests {
         assert_eq!(open_menu(&mut a), Vec::<Effect>::new());
     }
 
-    // Spec: Refresh on AI row; Refresh elsewhere or repeated.
+    // Spec: config-menu Refresh key. Only a Press of lowercase `r` on a task
+    // row runs a detection, and only when none is in flight.
     #[test]
-    fn r_on_an_ai_row_requests_exactly_one_detection() {
+    fn r_on_a_task_row_runs_one_detection_and_nothing_else_does() {
         let mut a = ai_app();
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
-        a.update(key('j'));
-        assert_eq!(a.update(key('r')), Vec::<Effect>::new(), "Statusline row");
-        a.update(key('j'));
+        for _ in 0..4 {
+            a.update(key('j'));
+        }
         let before = a.menu().cloned();
-        assert_eq!(a.update(key('r')), vec![Effect::DetectEngines]);
-        assert_eq!(a.menu().cloned(), before, "selection and draft unchanged");
+        let upper = AppEvent::Key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT));
+        assert_eq!(a.update(upper), Vec::<Effect>::new(), "uppercase");
+        assert_eq!(a.update(key('R')), Vec::<Effect>::new(), "uppercase, bare");
+        let held = kind(KeyCode::Char('r'), KeyEventKind::Repeat);
+        assert_eq!(a.update(held), Vec::<Effect>::new(), "repeat");
+        assert_eq!(a.update(key('r')), vec![Effect::DetectEngines], "press");
         assert_eq!(a.update(key('r')), Vec::<Effect>::new(), "in flight");
-        a.update(AppEvent::EnginesDetected(machine()));
-        assert_eq!(
-            a.update(kind(KeyCode::Char('r'), KeyEventKind::Repeat)),
-            Vec::<Effect>::new()
-        );
-        assert_eq!(a.update(key('R')), Vec::<Effect>::new());
+        // Only the refreshing cue differs from before the press.
+        let mut expected = before.unwrap();
+        expected.set_checking(true);
+        assert_eq!(a.menu().cloned(), Some(expected));
     }
 
-    // Spec: Result arrives while open; Engine disappears while open.
+    // Spec: config-menu Task picker; AI actions never touch the layout or the
+    // PTYs, so no key of the picker may produce an effect (no ResizePty).
     #[test]
-    fn a_result_updates_the_open_menu_in_place_and_keeps_the_draft() {
-        let mut a = ai_app();
-        open_menu(&mut a);
-        assert_eq!(
-            ai_values(&a),
-            vec!["ollama (checking)", "qwen2:7b · not found", "detecting…"]
-        );
-        a.update(key('j'));
-        a.update(key('j'));
-        a.update(key('j'));
-        assert_eq!(
-            a.update(AppEvent::EnginesDetected(machine())),
-            Vec::<Effect>::new()
-        );
-        assert_eq!(
-            ai_values(&a),
-            vec!["ollama", "qwen2:7b", "available · 2 models"]
-        );
-        let mut gone = machine();
-        gone.engines[0].status = crate::core::ai::Status::NotRunning;
-        gone.engines[0].models.clear();
-        a.update(AppEvent::EnginesDetected(gone));
-        assert_eq!(
-            ai_values(&a),
-            vec![
-                "ollama (not detected)",
-                "qwen2:7b · not found",
-                "not running"
-            ]
-        );
-        assert_eq!(a.ai(), &ai_of("ollama", "qwen2:7b"), "saved choice kept");
-    }
-
-    #[test]
-    fn a_result_while_closed_is_what_the_next_open_shows() {
-        let mut a = ai_app();
-        a.update(AppEvent::EnginesDetected(machine()));
-        open_menu(&mut a);
-        assert_eq!(
-            ai_values(&a),
-            vec!["ollama", "qwen2:7b", "available · 2 models"]
-        );
-    }
-
-    // Spec: Save closes with AI values; Esc reverts AI.
-    #[test]
-    fn config_saved_copies_the_ai_draft_and_esc_reverts_it() {
+    fn picker_keys_produce_no_effects() {
         let mut a = ai_app();
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
-        a.update(key('j'));
-        a.update(key('j'));
-        a.update(key('l'));
-        a.update(esc());
-        assert_eq!(a.ai(), &ai_of("ollama", "qwen2:7b"));
-        open_menu(&mut a);
-        assert_eq!(ai_values(&a)[0], "ollama", "the last result is kept");
-        a.update(AppEvent::EnginesDetected(machine()));
-        a.update(key('j'));
-        a.update(key('j'));
-        a.update(key('l'));
-        assert_eq!(ai_values(&a), vec!["claude", "default", "available"]);
-        let saved = a.update(code(KeyCode::Enter));
-        assert_eq!(saved.len(), 1);
-        assert!(matches!(saved[0], Effect::SaveConfig(_)));
-        assert_eq!(a.ai(), &ai_of("ollama", "qwen2:7b"), "not before the write");
-        assert_eq!(a.update(AppEvent::ConfigSaved), Vec::<Effect>::new());
-        assert_eq!(a.ai(), &ai_of("claude", "default"));
-    }
-
-    // Manual check VP.2: Engine to claude (a CLI engine), refresh, Enter must
-    // ask the runtime to write both AI keys, never close silently.
-    #[test]
-    fn enter_after_choosing_a_cli_engine_and_refreshing_asks_to_save_it() {
-        let mut a = ai_app();
-        open_menu(&mut a);
-        a.update(AppEvent::EnginesDetected(machine()));
-        a.update(key('j'));
-        a.update(key('j'));
-        a.update(key('l'));
-        a.update(key('r'));
-        a.update(AppEvent::EnginesDetected(machine()));
-        assert_eq!(ai_values(&a), vec!["claude", "default", "available"]);
-        let edit = |key, value: &'static str| crate::core::config::ConfigEdit {
-            table: "ai",
-            key,
-            value: value.into(),
+        for _ in 0..4 {
+            a.update(key('j'));
+        }
+        let enter = || code(KeyCode::Enter);
+        let quiet = |a: &mut App, event: AppEvent| {
+            assert_eq!(a.update(event.clone()), Vec::<Effect>::new(), "{event:?}");
         };
+        // Open, move, choose an engine, move, back out, and choose again.
+        quiet(&mut a, enter());
+        for event in [key('j'), key('j'), enter(), key('j'), key('k'), esc()] {
+            quiet(&mut a, event);
+        }
+        // Into the custom field of claude and type, delete, leave.
+        quiet(&mut a, enter());
+        for _ in 0..4 {
+            quiet(&mut a, key('j'));
+        }
+        for event in [enter(), key('m'), key('s'), code(KeyCode::Backspace)] {
+            quiet(&mut a, event);
+        }
+        for event in [esc(), esc(), esc()] {
+            quiet(&mut a, event);
+        }
+        assert_eq!(a.input(), InputMode::Menu);
+        assert!(a.menu().is_some());
+        // Assign a model: the picker closes and the draft changes.
+        for event in [enter(), key('j'), key('j'), enter(), key('j'), enter()] {
+            quiet(&mut a, event);
+        }
+        assert_eq!(a.input(), InputMode::Menu);
+        let draft = a.menu().unwrap().ai_draft();
         assert_eq!(
-            a.update(code(KeyCode::Enter)),
-            vec![Effect::SaveConfig(vec![
-                edit("engine", "claude"),
-                edit("model", "default")
-            ])]
+            draft.label(crate::core::ai::config::Task::Code),
+            "claude › opus"
         );
-    }
-
-    // Characterization: before the first detection answers there is nothing
-    // to choose, so cycling does nothing and Enter closes with no save.
-    #[test]
-    fn enter_before_any_detection_has_nothing_to_save() {
-        let mut a = launched(80, 25).with_ai(AiConfig::default());
-        press(&mut a, "tn");
-        open_menu(&mut a);
-        a.update(key('j'));
-        a.update(key('j'));
-        a.update(key('l'));
-        assert_eq!(ai_values(&a), vec!["none", "none", "-"]);
-        assert_eq!(a.update(code(KeyCode::Enter)), Vec::<Effect>::new());
-        assert!(a.menu().is_none());
+        assert_eq!(
+            a.ai(),
+            &ai_of("ollama", "qwen2:7b"),
+            "saved value untouched"
+        );
     }
 
     // Spec: Unchanged AI draft.
@@ -5406,22 +5349,339 @@ mod app_tests {
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
         assert_eq!(
-            a.update(code(KeyCode::Enter)),
+            a.update(key('s')),
             vec![Effect::ResizePty(PaneId::FIRST, sized(24, 80))]
         );
         assert_eq!(a.ai(), &ai_of("ollama", "qwen2:7b"));
     }
 
+    /// Opens the picker of `Set all tasks` on `none` and chooses it: the
+    /// general assignment goes from `ollama` to unset.
+    fn clear_all(a: &mut App) {
+        for _ in 0..2 {
+            a.update(key('j'));
+        }
+        a.update(code(KeyCode::Enter));
+        a.update(key('k'));
+        a.update(code(KeyCode::Enter));
+    }
+
+    // Spec: save before the first detection result.
     #[test]
-    fn ai_edits_never_resize_a_pane() {
-        let mut a = launched(80, 25).with_ai(ai_of("ollama", "qwen2:7b"));
+    fn s_saves_the_ai_draft_before_the_first_detection() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        clear_all(&mut a);
+        let effects = a.update(key('s'));
+        let edit = |key, value: &'static str| ConfigEdit {
+            table: "ai",
+            key,
+            value: value.into(),
+        };
+        assert_eq!(
+            effects,
+            vec![Effect::SaveConfig(vec![
+                edit("engine", ""),
+                edit("model", "")
+            ])]
+        );
+        assert_eq!(a.input(), InputMode::Menu);
+    }
+
+    // Spec: Esc reverts the AI draft along with the settings.
+    #[test]
+    fn esc_discards_the_ai_draft_and_the_next_menu_starts_from_the_saved_value() {
+        let mut a = ai_app();
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
+        clear_all(&mut a);
+        assert_eq!(a.menu().unwrap().ai_draft(), AiConfig::default());
+        a.update(esc());
+        assert!(a.menu().is_none());
+        assert_eq!(a.ai(), &ai_of("ollama", "qwen2:7b"));
+        open_menu(&mut a);
+        assert_eq!(a.menu().unwrap().ai_draft(), ai_of("ollama", "qwen2:7b"));
+    }
+
+    // Spec: a failed save keeps the picker where it was.
+    #[test]
+    fn a_failed_save_keeps_the_picker_level_and_shows_the_error() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        clear_all(&mut a);
+        for _ in 0..2 {
+            a.update(key('j'));
+        }
+        a.update(code(KeyCode::Enter));
         a.update(key('j'));
         a.update(key('j'));
-        assert_eq!(a.update(key('l')), Vec::<Effect>::new());
-        assert_eq!(a.update(key('j')), Vec::<Effect>::new());
-        assert_eq!(a.update(key('l')), Vec::<Effect>::new());
+        a.update(code(KeyCode::Enter));
+        let before = a.menu().unwrap().clone();
+        a.update(key('s'));
+        a.update(AppEvent::ConfigSaveFailed("save failed: disk full".into()));
+        let menu = a.menu().unwrap();
+        assert_eq!(menu.error(), Some("save failed: disk full"));
+        assert_eq!(menu.rows(&a.config), before.rows(&a.config));
+        assert_eq!(a.input(), InputMode::Menu);
+    }
+
+    fn footer_of(a: &App) -> String {
+        use crate::core::menu::Footer;
+        match a.menu().unwrap().footer() {
+            Footer::Hint(text) => text.to_string(),
+            Footer::Error(text) => format!("error: {text}"),
+        }
+    }
+
+    /// Selection on the first AI task row.
+    fn to_task_row(a: &mut App) {
+        for _ in 0..4 {
+            a.update(key('j'));
+        }
+    }
+
+    /// The picker of the first task, on the engine two rows down, at level 2.
+    fn to_level_two(a: &mut App) {
+        to_task_row(a);
+        for event in [
+            code(KeyCode::Enter),
+            key('j'),
+            key('j'),
+            code(KeyCode::Enter),
+        ] {
+            a.update(event);
+        }
+    }
+
+    /// The custom field of that engine's last model row.
+    fn to_custom_field(a: &mut App) {
+        to_level_two(a);
+        for _ in 0..4 {
+            a.update(key('j'));
+        }
+        a.update(code(KeyCode::Enter));
+    }
+
+    // Spec: config-menu Paste. A paste lands in the custom field, never in a PTY.
+    #[test]
+    fn a_paste_reaches_the_custom_field_and_never_the_pty() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        to_custom_field(&mut a);
+        assert!(footer_of(&a).starts_with("type a model"));
+        assert_eq!(a.update(AppEvent::Paste("opus\nignored".into())), vec![]);
+        a.update(code(KeyCode::Enter));
+        let draft = a.menu().unwrap().ai_draft();
+        assert_eq!(
+            draft.label(crate::core::ai::config::Task::Code),
+            "claude › opus"
+        );
+    }
+
+    // Characterization: the picker sanitises and caps a paste; the App only forwards it.
+    #[test]
+    fn a_paste_with_control_characters_and_a_long_value_is_sanitised_and_capped() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        to_custom_field(&mut a);
+        let pasted = format!("a\u{7}b\u{1b}[c d\u{200b}e{}", "z".repeat(200));
+        assert_eq!(a.update(AppEvent::Paste(pasted)), vec![]);
+        a.update(code(KeyCode::Enter));
+        let label = a
+            .menu()
+            .unwrap()
+            .ai_draft()
+            .label(crate::core::ai::config::Task::Code);
+        let model = label.strip_prefix("claude › ").expect(&label);
+        assert!(model.starts_with("ab[c"), "{model}");
+        assert!(model.chars().all(|c| !c.is_control() && !c.is_whitespace()));
+        assert_eq!(model.chars().count(), 128);
+    }
+
+    #[test]
+    fn a_paste_is_ignored_outside_the_custom_field() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        let steps: [&[AppEvent]; 4] = [
+            &[],
+            &[key('j'), key('j'), key('j'), key('j')],
+            &[code(KeyCode::Enter)],
+            &[key('j'), key('j'), code(KeyCode::Enter)],
+        ];
+        // Settings row, task row, picker level 1, picker level 2.
+        for events in steps {
+            for event in events {
+                a.update(event.clone());
+            }
+            let before = a.menu().cloned();
+            assert_eq!(a.update(AppEvent::Paste("x".into())), vec![]);
+            assert_eq!(a.menu().cloned(), before);
+        }
+    }
+
+    // Spec: config-menu Checking cue. The cue follows the run in flight.
+    #[test]
+    fn opening_the_menu_shows_checking_until_the_first_result() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        to_task_row(&mut a);
+        assert!(footer_of(&a).starts_with("checking engines…"));
+        a.update(AppEvent::EnginesDetected(machine()));
+        assert!(footer_of(&a).starts_with("j/k move"));
+    }
+
+    #[test]
+    fn opening_the_menu_with_a_result_in_hand_shows_refreshing_until_the_new_one() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        a.update(esc());
+        open_menu(&mut a);
+        to_task_row(&mut a);
+        assert!(
+            footer_of(&a).starts_with("refreshing…"),
+            "{}",
+            footer_of(&a)
+        );
+        a.update(AppEvent::EnginesDetected(machine()));
+        assert!(footer_of(&a).starts_with("j/k move"));
+    }
+
+    #[test]
+    fn a_run_already_in_flight_at_open_shows_refreshing() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        a.update(esc());
+        a.request_detection();
+        assert_eq!(open_menu(&mut a), vec![]);
+        to_task_row(&mut a);
+        assert!(
+            footer_of(&a).starts_with("refreshing…"),
+            "{}",
+            footer_of(&a)
+        );
+    }
+
+    #[test]
+    fn refresh_shows_refreshing_until_the_result_arrives() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        to_task_row(&mut a);
+        assert!(footer_of(&a).starts_with("j/k move"));
+        assert_eq!(a.update(key('r')), vec![Effect::DetectEngines]);
+        assert!(
+            footer_of(&a).starts_with("refreshing…"),
+            "{}",
+            footer_of(&a)
+        );
+        assert_eq!(a.update(key('r')), vec![]);
+        assert!(footer_of(&a).starts_with("refreshing…"));
+        a.update(AppEvent::EnginesDetected(machine()));
+        assert!(footer_of(&a).starts_with("j/k move"));
+    }
+
+    #[test]
+    fn a_failed_run_also_clears_the_cue() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        to_task_row(&mut a);
+        a.update(key('r'));
+        a.update(AppEvent::EnginesDetected(Detection::default()));
+        assert!(!footer_of(&a).starts_with("refreshing…"));
+    }
+
+    // Spec: config-menu Events while open. A pane exiting never moves the picker.
+    #[test]
+    fn a_pane_exiting_keeps_the_picker_at_level_two() {
+        let mut a = launched(80, 25);
+        press(&mut a, "wv");
+        press(&mut a, "tn");
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        to_level_two(&mut a);
+        let before = a.menu().cloned();
+        a.update(AppEvent::Pty(PaneId::FIRST, PtyEvent::Exited));
+        a.update(AppEvent::SpawnFailed(pid(9), "boom".into()));
+        a.update(AppEvent::Resize {
+            cols: 100,
+            rows: 30,
+        });
+        assert_still_open(&a);
+        assert_eq!(a.menu().cloned(), before);
+        // One Esc goes back to level 1, not out of the picker.
+        a.update(esc());
+        assert!(footer_of(&a).contains("Enter choose"), "{}", footer_of(&a));
+    }
+
+    // Spec: minimal fallback. The popup may not fit, the keys still work.
+    #[test]
+    fn s_and_esc_work_on_a_terminal_too_small_for_the_popup() {
+        let mut a = launched(20, 8);
+        open_menu(&mut a);
+        a.update(key('l'));
+        assert!(!a.update(key('s')).is_empty());
+        let mut b = launched(20, 8);
+        open_menu(&mut b);
+        b.update(key('l'));
+        b.update(esc());
+        assert_eq!(b.input(), InputMode::Terminal);
+        assert_eq!(b.config, Config::default());
+    }
+
+    // Review W2: Enter on Settings never saves and never closes.
+    #[test]
+    fn enter_never_saves_or_closes_the_menu() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        for _ in 0..6 {
+            let effects = a.update(code(KeyCode::Enter));
+            assert!(
+                !effects.iter().any(|e| matches!(e, Effect::SaveConfig(_))),
+                "{effects:?}"
+            );
+            assert_still_open(&a);
+            a.update(key('j'));
+        }
+    }
+
+    // Review S1: a saved engine that is not detected is never rewritten.
+    #[test]
+    fn an_undetected_saved_engine_survives_open_refresh_save_and_reload() {
+        let saved = ai_of("codex", "default");
+        let mut a = launched(80, 25).with_ai(saved.clone());
+        press(&mut a, "tn");
+        open_menu(&mut a);
+        assert_eq!(a.menu().unwrap().ai_draft(), saved, "open");
+        a.update(AppEvent::EnginesDetected(machine()));
+        assert_eq!(a.menu().unwrap().ai_draft(), saved, "detected");
+        to_task_row(&mut a);
+        a.update(key('r'));
+        a.update(AppEvent::EnginesDetected(machine()));
+        assert_eq!(a.menu().unwrap().ai_draft(), saved, "refreshed");
+        // Change an unrelated setting: the save carries no [ai] key.
+        for _ in 0..4 {
+            a.update(key('k'));
+        }
+        a.update(key('l'));
+        let effects = a.update(key('s'));
+        let Some(Effect::SaveConfig(edits)) = effects.first() else {
+            panic!("{effects:?}");
+        };
+        assert!(edits.iter().all(|e| e.table != "ai"), "{edits:?}");
+        a.update(AppEvent::ConfigSaved);
+        assert_eq!(a.ai(), &saved, "saved");
+        // Reload: the file still says codex.
+        let text = "[ai]\nengine = \"codex\"\nmodel = \"default\"\n";
+        let (_, ai, _) = Config::load_with_ai(Ok(text.to_owned()));
+        assert_eq!(App::new(80, 25).with_ai(ai).ai(), &saved, "reload");
     }
 
     // Characterization: the file's values reach the App through `with_ai`.

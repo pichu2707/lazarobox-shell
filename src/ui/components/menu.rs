@@ -10,8 +10,9 @@ use ratatui::{
 use super::tab_bar::{cells, clip};
 use crate::{
     core::{
+        ai::picker::{Mark, VIEW},
         config::Config,
-        menu::{MenuState, Row},
+        menu::{Footer, MenuState, Row},
     },
     ui::theme::LazaroboxTheme,
 };
@@ -22,6 +23,9 @@ pub const WANT_WIDTH: u16 = 51;
 pub const WANT_WIDTH_AI: u16 = 62;
 /// Rows around the body: two borders, the blank row and the footer.
 const CHROME: u16 = 4;
+/// With the AI section the body is fixed: the popup never jumps between the
+/// task list and the picker (a title and `VIEW` rows).
+const AI_BODY: usize = 1 + VIEW;
 /// Smallest width that still shows the full popup.
 pub const MIN_WIDTH: u16 = 24;
 
@@ -60,9 +64,7 @@ impl<'a> MenuPopup<'a> {
     }
 }
 
-const HINT: &str = "j/k move · h/l change · Enter save · Esc cancel";
-const HINT_AI: &str = "j/k move · h/l change · r refresh · Enter save · Esc cancel";
-const FALLBACK: &str = "MENU · Esc cancel · Enter save";
+const FALLBACK: &str = "MENU · s save · Esc cancel";
 
 impl MenuPopup<'_> {
     /// Below the size threshold: one line on the middle row.
@@ -83,6 +85,7 @@ impl MenuPopup<'_> {
 
     fn line(&self, row: &Row, width: u16) -> (String, Style) {
         let plain = Style::default();
+        let width = usize::from(width);
         match row {
             Row::Title(title) => (format!(" {title}"), plain.add_modifier(Modifier::BOLD)),
             &Row::Item {
@@ -92,21 +95,85 @@ impl MenuPopup<'_> {
                 enabled,
             } => {
                 let value = value.as_deref().unwrap_or("");
-                let used = cells(label) + cells(value) + 2;
-                let gap = usize::from(width).saturating_sub(used).max(1);
+                // The label and the single spaces around the row stay whole;
+                // the value gives way, but never its trailing mark.
+                let room = width.saturating_sub(cells(label) + 4);
+                let value = fit(value, room);
+                let gap = width
+                    .saturating_sub(cells(label) + cells(&value) + 2)
+                    .max(1);
                 let text = format!(" {label}{}{value} ", " ".repeat(gap));
-                let style = if !enabled {
-                    plain.fg(self.theme.text_muted)
-                } else if selected {
-                    plain
-                        .fg(self.theme.info_blue)
-                        .add_modifier(Modifier::REVERSED)
-                } else {
-                    plain
-                };
-                (text, style)
+                (text, self.row_style(selected, enabled))
             }
+            Row::Pick {
+                label,
+                mark,
+                selected,
+                enabled,
+                current,
+            } => {
+                let tail = match (mark_text(mark), current) {
+                    ("", false) => String::new(),
+                    ("", true) => " ●".to_owned(),
+                    (mark, false) => format!(" {mark}"),
+                    (mark, true) => format!(" {mark} ●"),
+                };
+                let room = width.saturating_sub(cells(&tail) + 1);
+                let label = if cells(label) > room {
+                    clip(label, room)
+                } else {
+                    label.clone()
+                };
+                (
+                    format!(" {label}{tail}"),
+                    self.row_style(*selected, *enabled),
+                )
+            }
+            Row::Field(text) => (format!(" {text}"), plain),
         }
+    }
+
+    /// Selected rows are reversed; a disabled row is muted, and stays muted
+    /// when the cursor lands on it.
+    fn row_style(&self, selected: bool, enabled: bool) -> Style {
+        let base = if enabled {
+            Style::default().fg(self.theme.info_blue)
+        } else {
+            Style::default().fg(self.theme.text_muted)
+        };
+        match (selected, enabled) {
+            (true, _) => base.add_modifier(Modifier::REVERSED),
+            (false, true) => Style::default(),
+            (false, false) => base,
+        }
+    }
+}
+
+/// The text a picker mark adds after the label.
+fn mark_text(mark: &Mark) -> &str {
+    match mark {
+        Mark::Plain => "",
+        Mark::Downloaded => "✓",
+        Mark::DownloadRequired => "download required",
+        Mark::Checking => "checking…",
+        Mark::Status(text) => text,
+    }
+}
+
+/// Suffix of a task-row value that must survive clipping.
+const REQUIRED_MARK: &str = " · download required";
+
+/// `value` within `room` cells: a long model name is clipped, its
+/// ` · download required` mark is kept whole.
+fn fit(value: &str, room: usize) -> String {
+    if cells(value) <= room {
+        return value.to_owned();
+    }
+    match value.strip_suffix(REQUIRED_MARK) {
+        Some(head) if room > cells(REQUIRED_MARK) => {
+            format!("{}{REQUIRED_MARK}", clip(head, room - cells(REQUIRED_MARK)))
+        }
+        _ => clip(value, room),
     }
 }
 
@@ -117,7 +184,12 @@ impl Widget for MenuPopup<'_> {
             return;
         }
         let rows = self.menu.rows(self.config);
-        if !fits(area, rows.len()) {
+        let body = if self.menu.has_ai() {
+            AI_BODY.max(rows.len())
+        } else {
+            rows.len()
+        };
+        if !fits(area, body) {
             self.render_fallback(area, buf);
             return;
         }
@@ -126,7 +198,7 @@ impl Widget for MenuPopup<'_> {
         } else {
             WANT_WIDTH
         };
-        let want_height = rows.len() as u16 + CHROME;
+        let want_height = body as u16 + CHROME;
         let popup = popup_area(area, want_width, want_height);
         Clear.render(popup, buf);
         let accent = Style::default().fg(self.theme.info_blue);
@@ -140,7 +212,7 @@ impl Widget for MenuPopup<'_> {
         block.render(popup, buf);
 
         // Body rows, then (height permitting) a blank row, then the footer.
-        let blank = usize::from(inner.height) > rows.len() + 1;
+        let blank = usize::from(inner.height) > body + 1;
         let width = usize::from(inner.width);
         for (offset, row) in rows.iter().enumerate() {
             let (text, style) = self.line(row, inner.width);
@@ -151,14 +223,16 @@ impl Widget for MenuPopup<'_> {
             buf.set_style(Rect::new(inner.x, y, inner.width, 1), style);
             buf.set_stringn(inner.x, y, clip(&text, width), width, style);
         }
-        let footer_y = inner.y + rows.len() as u16 + u16::from(blank);
+        let footer_y = inner.y + body as u16 + u16::from(blank);
         if footer_y < inner.bottom() {
-            let (text, style) = match self.menu.error() {
-                Some(error) => (error, Style::default().fg(self.theme.error_red)),
-                None if self.menu.on_ai_row() => {
-                    (HINT_AI, Style::default().fg(self.theme.text_muted))
+            let (text, style) = match self.menu.footer() {
+                Footer::Error(error) => {
+                    (error.to_owned(), Style::default().fg(self.theme.error_red))
                 }
-                None => (HINT, Style::default().fg(self.theme.text_muted)),
+                Footer::Hint(hint) => (
+                    hint.into_owned(),
+                    Style::default().fg(self.theme.text_muted),
+                ),
             };
             let text = clip(&format!(" {text}"), width);
             buf.set_stringn(inner.x, footer_y, text, width, style);
@@ -285,7 +359,7 @@ mod tests {
     fn below_the_threshold_only_the_fallback_line_is_drawn() {
         let buf = draw(30, 5, &fresh());
         let lines: Vec<String> = text(&buf).lines().map(str::to_string).collect();
-        assert_eq!(lines[2].trim_end(), "MENU · Esc cancel · Enter save");
+        assert_eq!(lines[2].trim_end(), "MENU · s save · Esc cancel");
         for (y, line) in lines.iter().enumerate() {
             if y != 2 {
                 assert_eq!(line.trim(), "", "row {y}");
@@ -297,7 +371,7 @@ mod tests {
     fn fallback_is_clipped_with_an_ellipsis() {
         let buf = draw(23, 6, &fresh());
         let lines: Vec<String> = text(&buf).lines().map(str::to_string).collect();
-        assert_eq!(lines[3], "MENU · Esc cancel · En…");
+        assert_eq!(lines[3], "MENU · s save · Esc ca…");
     }
 
     #[test]
@@ -336,7 +410,6 @@ mod tests {
 
     // Spec: AI section.
     use crate::core::ai::{CATALOG, Detection, EngineState, Status, config::AiConfig};
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn machine() -> Detection {
         Detection {
@@ -361,16 +434,8 @@ mod tests {
     }
 
     fn with_ai(model: &str) -> MenuState {
-        let saved = AiConfig {
-            engine: Some("ollama".to_owned()),
-            model: Some(model.to_owned()),
-        };
+        let saved = AiConfig::general(Some("ollama"), Some(model));
         fresh().with_ai(saved, Some(machine()))
-    }
-
-    fn press(menu: &mut MenuState, c: char) {
-        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
-        menu.on_key(&key, false, &mut Config::default());
     }
 
     fn lines(buf: &Buffer) -> Vec<String> {
@@ -384,41 +449,6 @@ mod tests {
         assert!(!fits(r(23, 11), 8));
         assert!(fits(r(24, 7), 4));
         assert!(!fits(r(24, 6), 4));
-    }
-
-    #[test]
-    fn snapshot_ai_popup_at_the_wanted_size() {
-        insta::assert_snapshot!(text(&draw(62, 12, &with_ai("llama3:8b"))));
-    }
-
-    #[test]
-    fn ai_status_cells_have_the_style_of_the_mouse_row() {
-        let buf = draw(62, 12, &with_ai("llama3:8b"));
-        let mouse = buf[(2, 4)].style();
-        for x in [2, 30, 58] {
-            assert_eq!(buf[(x, 8)].style(), mouse, "x {x}");
-        }
-        assert_ne!(buf[(2, 7)].style(), mouse);
-    }
-
-    #[test]
-    fn the_refresh_hint_shows_only_on_the_ai_rows() {
-        let mut menu = with_ai("llama3:8b");
-        let settings = " j/k move · h/l change · Enter save · Esc cancel";
-        assert_eq!(lines(&draw(62, 12, &menu))[10], format!("│{settings:<60}│"));
-        press(&mut menu, 'j');
-        press(&mut menu, 'j');
-        let ai = " j/k move · h/l change · r refresh · Enter save · Esc cancel";
-        assert_eq!(lines(&draw(62, 12, &menu))[10], format!("│{ai:<60}│"));
-        let clipped: String = ai.chars().take(48).collect();
-        assert_eq!(lines(&draw(51, 12, &menu))[10], format!("│{clipped}…│"));
-    }
-
-    #[test]
-    fn a_long_model_name_is_clipped_with_an_ellipsis() {
-        let model = "a".repeat(60);
-        let buf = draw(62, 12, &with_ai(&model));
-        assert_eq!(lines(&buf)[7], format!("│ Model {}…│", "a".repeat(52)));
     }
 
     #[test]
@@ -439,6 +469,361 @@ mod tests {
     #[test]
     fn below_the_ai_height_the_fallback_is_drawn() {
         let buf = draw(62, 10, &with_ai("llama3:8b"));
-        assert_eq!(lines(&buf)[5].trim_end(), "MENU · Esc cancel · Enter save");
+        assert_eq!(lines(&buf)[5].trim_end(), "MENU · s save · Esc cancel");
+    }
+
+    // Spec: Picker viewport; Tiny terminals; Footer; Detection cues.
+    use crate::core::ai::config::{Assignment, Task};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn rich() -> Detection {
+        let ollama: Vec<String> = (1..=8).map(|n| format!("model{n}:7b")).collect();
+        Detection {
+            engines: CATALOG
+                .iter()
+                .map(|e| EngineState {
+                    id: e.id,
+                    status: match e.id {
+                        "ollama" | "claude" => Status::Available,
+                        "lmstudio" => Status::NotRunning,
+                        _ => Status::NotInstalled,
+                    },
+                    models: if e.id == "ollama" {
+                        ollama.clone()
+                    } else {
+                        Vec::new()
+                    },
+                    version: (e.id == "claude").then(|| "2.1.0".to_owned()),
+                })
+                .collect(),
+        }
+    }
+
+    fn mixed() -> MenuState {
+        let mut saved = AiConfig::general(Some("ollama"), Some("model1:7b"));
+        saved.set(
+            Task::Code,
+            Assignment {
+                engine: Some("claude".to_owned()),
+                model: Some("opus".to_owned()),
+            },
+        );
+        fresh().with_ai(saved, Some(rich()))
+    }
+
+    fn press(menu: &mut MenuState, codes: &[KeyCode]) {
+        let mut config = Config::default();
+        for code in codes {
+            menu.on_key(
+                &KeyEvent::new(*code, KeyModifiers::NONE),
+                false,
+                &mut config,
+            );
+        }
+    }
+
+    fn goto(menu: &mut MenuState, label: &str) {
+        for _ in 0..20 {
+            let hit = menu.rows(&Config::default()).iter().any(
+                |row| matches!(row, Row::Item { label: l, selected: true, .. } if *l == label),
+            );
+            if hit {
+                return;
+            }
+            press(menu, &[KeyCode::Char('j')]);
+        }
+        panic!("no row {label}");
+    }
+
+    fn picker_of(task: &str, downs: usize) -> MenuState {
+        let mut menu = mixed();
+        goto(&mut menu, task);
+        press(&mut menu, &[KeyCode::Enter]);
+        press(&mut menu, &vec![KeyCode::Char('j'); downs]);
+        menu
+    }
+
+    #[test]
+    fn snapshot_ai_task_list_with_the_cursor_on_settings() {
+        insta::assert_snapshot!(text(&draw(62, 15, &mixed())));
+    }
+
+    #[test]
+    fn snapshot_level_one_lists_the_engines() {
+        insta::assert_snapshot!(text(&draw(62, 15, &picker_of("code", 0))));
+    }
+
+    #[test]
+    fn snapshot_ollama_scrolled_to_a_disabled_last_row() {
+        let mut menu = picker_of("general", 0);
+        press(&mut menu, &[KeyCode::Enter]);
+        let top = draw(62, 15, &menu);
+        press(&mut menu, &[KeyCode::Char('k')]);
+        let buf = draw(62, 15, &menu);
+        let shown = text(&buf);
+        assert!(shown.contains("18/18"), "{shown}");
+        assert!(
+            shown.contains("download required · not selectable"),
+            "{shown}"
+        );
+        let rows = |b: &Buffer| lines(b).iter().filter(|l| l.contains('│')).count();
+        assert_eq!(rows(&buf), rows(&top));
+        insta::assert_snapshot!(shown);
+    }
+
+    #[test]
+    fn the_cursor_on_a_disabled_row_is_muted_and_reversed() {
+        let mut menu = picker_of("general", 0);
+        press(&mut menu, &[KeyCode::Enter, KeyCode::Char('k')]);
+        let buf = draw(62, 15, &menu);
+        let theme = LazaroboxTheme::default();
+        let y = (0..15)
+            .find(|y| buf[(4, *y)].modifier.contains(Modifier::REVERSED))
+            .expect("the cursor row is reversed");
+        assert!(lines(&buf)[usize::from(y)].contains("download required"));
+        assert_eq!(buf[(4, y)].fg, theme.text_muted);
+    }
+
+    #[test]
+    fn snapshot_cli_models_end_with_custom() {
+        let mut menu = picker_of("general", 1);
+        press(&mut menu, &[KeyCode::Enter, KeyCode::Char('k')]);
+        insta::assert_snapshot!(text(&draw(62, 15, &menu)));
+    }
+
+    #[test]
+    fn snapshot_custom_entry() {
+        let mut menu = picker_of("general", 1);
+        press(
+            &mut menu,
+            &[KeyCode::Enter, KeyCode::Char('k'), KeyCode::Enter],
+        );
+        press(&mut menu, &[KeyCode::Char('m'), KeyCode::Char('y')]);
+        insta::assert_snapshot!(text(&draw(62, 15, &menu)));
+    }
+
+    #[test]
+    fn snapshot_checking_cue_before_the_first_detection() {
+        let saved = AiConfig::general(Some("ollama"), Some("llama3:8b"));
+        let mut menu = fresh().with_ai(saved, None);
+        goto(&mut menu, "code");
+        insta::assert_snapshot!(text(&draw(62, 15, &menu)));
+    }
+
+    #[test]
+    fn snapshot_refreshing_cue() {
+        let mut menu = mixed();
+        goto(&mut menu, "code");
+        menu.set_checking(true);
+        insta::assert_snapshot!(text(&draw(62, 15, &menu)));
+    }
+
+    #[test]
+    fn the_ai_popup_is_62_by_15_in_both_views() {
+        for menu in [mixed(), picker_of("code", 0)] {
+            let l = lines(&draw(80, 20, &menu));
+            let border: Vec<usize> = (0..l.len())
+                .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
+                .collect();
+            assert_eq!(border.len(), 2);
+            assert_eq!(border[1] - border[0] + 1, 15);
+            assert_eq!(l[border[0]].trim().chars().count(), 62);
+        }
+    }
+
+    #[test]
+    fn snapshot_smallest_full_popup_and_its_fallbacks() {
+        let task = mixed();
+        let picker = picker_of("code", 0);
+        for menu in [&task, &picker] {
+            let full = text(&draw(24, 14, menu));
+            assert!(!full.contains("MENU"), "{full}");
+            assert!(full.contains("Menu"), "{full}");
+            for (w, h) in [(23, 14), (24, 13)] {
+                let fall = text(&draw(w, h, menu));
+                assert!(fall.contains("MENU"), "{w}x{h}");
+                assert!(!fall.contains("Menu"), "{w}x{h}");
+            }
+        }
+        insta::assert_snapshot!(text(&draw(24, 14, &task)));
+        insta::assert_snapshot!("picker_24x14", text(&draw(24, 14, &picker)));
+    }
+
+    #[test]
+    fn every_view_draws_at_every_size_without_panic() {
+        let mut views = vec![mixed(), picker_of("code", 0), picker_of("general", 1)];
+        let mut models = picker_of("general", 0);
+        press(&mut models, &[KeyCode::Enter, KeyCode::Char('k')]);
+        views.push(models);
+        let mut top = picker_of("general", 0);
+        press(&mut top, &[KeyCode::Enter]);
+        views.push(top);
+        let mut cli = picker_of("general", 1);
+        press(&mut cli, &[KeyCode::Enter]);
+        views.push(cli);
+        let mut custom = picker_of("general", 1);
+        press(
+            &mut custom,
+            &[KeyCode::Enter, KeyCode::Char('k'), KeyCode::Enter],
+        );
+        views.push(custom);
+        let mut error = mixed();
+        error.set_error("config.toml: ai is not a table; fix it before saving".into());
+        views.push(error);
+        let mut checking = picker_of("code", 0);
+        checking.set_checking(true);
+        views.push(checking);
+        let mut unchecked = fresh().with_ai(AiConfig::general(Some("ollama"), None), None);
+        goto(&mut unchecked, "code");
+        views.push(unchecked);
+        for view in &views {
+            for w in 0..=70 {
+                for h in 0..=20 {
+                    draw(w, h, view);
+                }
+            }
+        }
+    }
+
+    // Review W2: a long model name is clipped, the mark stays whole.
+    #[test]
+    fn a_long_model_name_is_clipped_and_keeps_the_download_mark() {
+        let long = "qwen2.5-coder:32b-instruct-q4_K_M";
+        let shown = text(&draw(62, 15, &with_ai(long)));
+        assert!(shown.contains("· download required"), "{shown}");
+        assert!(shown.contains("…"), "{shown}");
+    }
+
+    // The widget draws MenuState::footer(): `s` saves, Esc cancels.
+    #[test]
+    fn the_footer_is_the_menu_footer_not_the_old_hint() {
+        let shown = text(&draw(62, 15, &mixed()));
+        assert!(shown.contains("s save"), "{shown}");
+        assert!(!shown.contains("Enter save"), "{shown}");
+    }
+
+    // The widget only styles the footer: Error is red, Hint is muted.
+    fn footer_fg(buf: &Buffer, needle: &str) -> ratatui::style::Color {
+        let y = lines(buf)
+            .iter()
+            .position(|l| l.contains(needle))
+            .expect("footer is drawn") as u16;
+        let x = (0..buf.area.width)
+            .find(|x| buf[(*x, y)].symbol() == needle.chars().next().unwrap().to_string())
+            .expect("first cell");
+        buf[(x, y)].fg
+    }
+
+    #[test]
+    fn the_error_footer_is_red_and_the_hint_is_muted() {
+        let theme = LazaroboxTheme::default();
+        assert_ne!(theme.error_red, theme.text_muted);
+        let mut menu = with_ai("llama3:8b");
+        let hint = draw(62, 15, &menu);
+        assert_eq!(footer_fg(&hint, "j/k move"), theme.text_muted);
+        menu.set_error("save failed: disk full".into());
+        let error = draw(62, 15, &menu);
+        assert_eq!(footer_fg(&error, "save failed"), theme.error_red);
+    }
+
+    // `fit` keeps the 20-cell mark whole once the head has a cell to spare.
+    #[test]
+    fn fit_keeps_the_mark_from_room_21_and_clips_the_whole_value_below() {
+        let value = "abcdefghij · download required";
+        assert_eq!(cells(value), 30);
+        assert_eq!(fit(value, 30), value);
+        assert_eq!(fit(value, 22), "a… · download required");
+        assert_eq!(fit(value, 21), "… · download required");
+        assert_eq!(fit(value, 20), "abcdefghij · downlo…");
+        assert_eq!(cells(&fit(value, 20)), 20);
+        assert_eq!(fit("plain value that is long", 8), "plain v…");
+    }
+
+    // Review W1: the cursor on a task row shows the task hint, no h/l.
+    #[test]
+    fn snapshot_task_row_hint_after_a_finished_detection() {
+        let mut menu = mixed();
+        goto(&mut menu, "code");
+        let shown = text(&draw(62, 15, &menu));
+        assert!(shown.contains("Enter pick · r refresh · s save"), "{shown}");
+        assert!(!shown.contains("h/l"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    // Review W2: Ollama level 2 at the top, the downloaded rows visible.
+    #[test]
+    fn snapshot_ollama_models_at_the_top_show_the_downloaded_rows() {
+        let mut menu = picker_of("general", 0);
+        press(&mut menu, &[KeyCode::Enter]);
+        let shown = text(&draw(62, 15, &menu));
+        assert!(shown.contains("model1:7b ✓"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    // Review W3: the current dot on a plain row, bold titles, full-width bar.
+    #[test]
+    fn a_current_plain_row_carries_the_dot() {
+        let mut menu = picker_of("code", 0);
+        press(&mut menu, &[KeyCode::Enter]);
+        let shown = lines(&draw(62, 15, &menu));
+        assert!(shown.iter().any(|l| l.contains("│ opus ●")), "{shown:?}");
+        assert!(!shown.iter().any(|l| l.contains("sonnet ●")), "{shown:?}");
+    }
+
+    #[test]
+    fn titles_are_bold_and_the_selected_bar_spans_the_inner_width() {
+        let task = draw(62, 15, &mixed());
+        assert!(task[(2, 1)].modifier.contains(Modifier::BOLD));
+        assert!(task[(2, 5)].modifier.contains(Modifier::BOLD));
+        assert!(!task[(2, 2)].modifier.contains(Modifier::BOLD));
+        let picker = draw(62, 15, &picker_of("code", 0));
+        assert!(picker[(2, 1)].modifier.contains(Modifier::BOLD));
+        for buf in [&task, &picker] {
+            let bar: Vec<u16> = (0..15)
+                .filter(|y| buf[(2, *y)].modifier.contains(Modifier::REVERSED))
+                .collect();
+            assert_eq!(bar.len(), 1);
+            for x in 1..=60 {
+                assert!(
+                    buf[(x, bar[0])].modifier.contains(Modifier::REVERSED),
+                    "x={x}"
+                );
+            }
+            assert!(!buf[(0, bar[0])].modifier.contains(Modifier::REVERSED));
+            assert!(!buf[(61, bar[0])].modifier.contains(Modifier::REVERSED));
+        }
+    }
+
+    // The label gives way only when it does not fit next to its mark.
+    #[test]
+    fn a_picker_label_is_clipped_only_past_its_room() {
+        let fitting = "m".repeat(57);
+        let long = "m".repeat(58);
+        let detection = |name: &str| Detection {
+            engines: CATALOG
+                .iter()
+                .map(|e| EngineState {
+                    id: e.id,
+                    status: Status::Available,
+                    models: if e.id == "ollama" {
+                        vec![name.to_owned()]
+                    } else {
+                        Vec::new()
+                    },
+                    version: None,
+                })
+                .collect(),
+        };
+        let row = |name: &str| {
+            let saved = AiConfig::general(Some("ollama"), None);
+            let mut menu = fresh().with_ai(saved, Some(detection(name)));
+            goto(&mut menu, "general");
+            press(&mut menu, &[KeyCode::Enter, KeyCode::Enter]);
+            lines(&draw(62, 15, &menu))[2].clone()
+        };
+        assert_eq!(row(&fitting), format!("│ {fitting} ✓│"));
+        let clipped = row(&long);
+        assert!(clipped.contains("…"), "{clipped}");
+        assert!(clipped.ends_with("✓│"), "{clipped}");
     }
 }

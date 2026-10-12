@@ -1,7 +1,6 @@
 ---
 source: src/ui/components/menu.rs
-assertion_line: 394
-expression: "text(&draw(62, 12, &with_ai(\"llama3:8b\")))"
+expression: "text(&draw(62, 15, &menu))"
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
 │ Settings                                                   │
@@ -9,9 +8,12 @@ expression: "text(&draw(62, 12, &with_ai(\"llama3:8b\")))"
 │ Tab bar position                                       top │
 │ Mouse: off (coming soon)                                   │
 │ AI                                                         │
-│ Engine                                              ollama │
-│ Model                                            llama3:8b │
-│ Status                                available · 2 models │
+│ Set all tasks                           ollama › llama3:8b │
+│ general                                 ollama › llama3:8b │
+│ code                                             (default) │
+│ chat                                             (default) │
+│ review                                           (default) │
+│ summarize                                        (default) │
 │                                                            │
-│ j/k move · h/l change · Enter save · Esc cancel            │
+│ checking engines… · s save · Esc cancel                    │
 └────────────────────────────────────────────────────────────┘

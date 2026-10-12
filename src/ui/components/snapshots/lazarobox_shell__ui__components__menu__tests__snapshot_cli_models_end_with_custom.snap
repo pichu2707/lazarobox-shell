@@ -1,0 +1,19 @@
+---
+source: src/ui/components/menu.rs
+expression: "text(&draw(62, 15, &menu))"
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Model for general (claude)                                 │
+│ default                                                    │
+│ opus                                                       │
+│ sonnet                                                     │
+│ fable                                                      │
+│ custom…                                                    │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ j/k move · Enter choose · r refresh · Esc back · s save    │
+└────────────────────────────────────────────────────────────┘

@@ -394,10 +394,7 @@ mod tests {
     }
 
     fn ai(engine: Option<&str>, model: Option<&str>) -> AiConfig {
-        AiConfig {
-            engine: engine.map(str::to_owned),
-            model: model.map(str::to_owned),
-        }
+        AiConfig::general(engine, model)
     }
 
     // Spec: Defaults (AI unset).
@@ -452,6 +449,29 @@ mod tests {
         assert_eq!(
             notice.as_deref(),
             Some("config: mouse: expected true or false")
+        );
+    }
+
+    #[test]
+    fn task_problems_count_after_the_general_ones() {
+        let text = "[ai.tasks.code]\nengine = 5\n[ai.tasks.chat]\nmodel = 6\n";
+        let (_, loaded, notice) = Config::load_with_ai(Ok(text.into()));
+        assert_eq!(loaded, ai(None, None));
+        assert_eq!(
+            notice.as_deref(),
+            Some("config (2 problems): ai.tasks.code.engine: expected a string")
+        );
+    }
+
+    // Spec: Non-table ai.tasks.
+    #[test]
+    fn a_non_table_tasks_key_gives_one_notice_and_keeps_general() {
+        let (_, loaded, notice) =
+            Config::load_with_ai(Ok("[ai]\nengine = \"claude\"\ntasks = 3".into()));
+        assert_eq!(loaded, ai(Some("claude"), None));
+        assert_eq!(
+            notice.as_deref(),
+            Some("config: ai.tasks: expected a table")
         );
     }
 

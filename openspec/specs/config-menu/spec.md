@@ -2,12 +2,14 @@
 
 ## Purpose
 
-A general in-app menu opened with `Ctrl+Space m`. It has two sections, "Settings" (rows that map to `config.toml` keys, with static values) and "AI" (the default engine and model, with choices built from detection, plus a read-only status row for the selected engine, see ai-engine-detection). Changes preview live; Enter saves (see config-persistence), Esc reverts. Tags: [auto] = `cargo test`; [manual] = real Kitty.
+A general in-app menu opened with `Ctrl+Space m`. It has two sections, "Settings" (rows that map to `config.toml` keys, with static values) and "AI" (a fixed list of tasks, each with an `engine › model` assignment chosen from a picker that shows what is detected and downloaded, see ai-task-models and ai-engine-detection). Changes preview live; `s` saves (see config-persistence), Esc goes back or reverts. Tags: [auto] = `cargo test`; [manual] = real Kitty.
+
+Terms: "task list" is the main menu view (Settings rows and AI rows). "Picker" is the view that replaces it inside the same popup: level 1 lists engines, level 2 lists the models of the chosen engine, and the "custom field" is a text entry reached from a CLI engine's `custom…` row. A "disabled row" is drawn muted, the cursor CAN land on it (so long lists scroll it into view), and Enter on it does nothing. The "Settings Mouse row" is the only row the cursor skips.
 
 ## Requirements
 
 ### Requirement: Open and close
-The menu MUST open only from TERMINAL through the prefix: `Ctrl+Space` then `m`. Opening MUST NOT write to any PTY. The menu MUST close on Enter (after a successful save) and on Esc (after reverting). While open the mode is MENU (see modal-input). Opening captures the current values of the menu-owned settings as the "original" values and as the initial draft.
+The menu MUST open only from TERMINAL through the prefix: `Ctrl+Space` then `m`, always on the task list with the picker closed. Opening MUST NOT write to any PTY. The menu MUST close on `s` (after a successful save, or at once when nothing changed) and on Esc at the top level of the task list (after reverting). Esc while a picker is open MUST go back exactly one level (custom field to level 2, level 2 to level 1, level 1 to the task list) and MUST NOT close the menu or revert the draft. This Esc rule takes precedence wherever Esc is described. While open the mode is MENU (see modal-input). Opening captures the current values of the menu-owned settings as the "original" values and as the initial draft.
 
 #### Scenario: Open [auto]
 - GIVEN TERMINAL
@@ -24,21 +26,31 @@ The menu MUST open only from TERMINAL through the prefix: `Ctrl+Space` then `m`.
 - WHEN it is opened again
 - THEN the selection is on the first row and the draft equals the current (reverted) values
 
+#### Scenario: Esc in the picker goes back one level [auto]
+- GIVEN the picker is open at level 2 for `code` after changing the Statusline position in the draft
+- WHEN Esc is pressed, then Esc again, then Esc a third time
+- THEN level 1 shows, then the task list shows with `code` selected and the draft unchanged, then the menu closes and the Statusline position is reverted
+
+#### Scenario: Reopen after picker is on the task list [auto]
+- GIVEN the menu closed with Esc while no picker was open, after a picker was used earlier
+- WHEN the menu is reopened
+- THEN the task list shows, the picker is closed and the draft equals the current values
+
 ### Requirement: Sections and items are data
-Sections and items MUST come from a static descriptor table; adding a section or a setting MUST NOT require changing the popup drawing or navigation code. Each setting item MUST declare its label and its `config.toml` key path, and either an ordered list of allowed values (static item) or a dynamic choice source (dynamic item, whose choices are built at runtime, see AI section). The sections are "Settings" and "AI", shown in that order. Settings has the rows, in order: `Statusline position` (`statusline.position`: top, bottom), `Tab bar position` (`tabbar.position`: top, bottom) and a disabled row `Mouse: off (coming soon)`. AI has the dynamic rows `Engine` (`ai.engine`) and `Model` (`ai.model`) and the display-only row `Status` (no key path, shows the draft engine's status).
+Sections and items MUST come from a static descriptor table; adding a section or a setting MUST NOT require changing the popup drawing or navigation code. Each setting item MUST declare its label and its `config.toml` key path, and either an ordered list of allowed values (static item) or a task kind (assignment item, whose value is an `engine › model` chosen in the picker). The sections are "Settings" and "AI", shown in that order. Settings has the rows, in order: `Statusline position` (`statusline.position`: top, bottom), `Tab bar position` (`tabbar.position`: top, bottom) and a disabled row `Mouse: off (coming soon)`. AI has the assignment rows, in order: `Set all tasks` (aggregate over the five tasks, no single key path), `general` (`ai`), `code` (`ai.tasks.code`), `chat` (`ai.tasks.chat`), `review` (`ai.tasks.review`) and `summarize` (`ai.tasks.summarize`).
 
 #### Scenario: Descriptor integrity [auto]
 - GIVEN the descriptor table
 - WHEN it is validated
-- THEN every section has a non-empty title, every item a non-empty label, every setting item a non-empty key path, every static item at least two allowed values, every dynamic item a choice source, every display-only item a value source and no key path, and there are no duplicate key paths
+- THEN every section has a non-empty title, every item a non-empty label, every static item a non-empty key path and at least two allowed values, the five task rows have the task ids of ai-task-models and a key path, `Set all tasks` has no single key path, and there are no duplicate key paths
 
 #### Scenario: Settings rows [auto, TestBackend + insta]
 - GIVEN the menu just opened
 - WHEN rendered on a normal terminal
-- THEN the "Settings" title and the three rows are visible, each setting showing its current value, and the Mouse row is drawn muted; the `AI` section with `Engine`, `Model` and `Status` follows them
+- THEN the "Settings" title and the three rows are visible, each setting showing its current value, and the Mouse row is drawn muted; the `AI` section with `Set all tasks`, `general`, `code`, `chat`, `review` and `summarize` follows them, and no `Engine`, `Model` or `Status` row exists
 
 ### Requirement: Navigation
-`j`, `k`, Down and Up MUST move the selection between the selectable rows of all sections, in display order (`Statusline position`, `Tab bar position`, `Engine`, `Model`). Movement MUST wrap around at the ends (from the last selectable row to the first and back), because the list is short and wrapping never leaves the user on a dead end. The disabled `Mouse` row and the display-only AI `Status` row MUST be skipped: they are drawn but never selected, so no key can interact with them. Repeat events MUST be handled like Press.
+`j`, `k`, Down and Up MUST move the selection between the selectable rows of all sections, in display order (`Statusline position`, `Tab bar position`, `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`). Movement MUST wrap around at the ends (from the last selectable row to the first and back), because the list is short and wrapping never leaves the user on a dead end. The disabled `Mouse` row MUST be skipped: it is drawn but never selected, so no key can interact with it (picker disabled rows are different, see Task picker). Repeat events MUST be handled like Press.
 
 #### Scenario: Move down and up [auto]
 - GIVEN MENU with the first row selected
@@ -46,19 +58,19 @@ Sections and items MUST come from a static descriptor table; adding a section or
 - THEN the second setting row is selected, then the first again
 
 #### Scenario: Wrap [auto]
-- GIVEN the last selectable row selected
+- GIVEN the last selectable row (`summarize`) selected
 - WHEN `j` (or Down) is pressed
 - THEN the first selectable row is selected; and from the first row `k` (or Up) selects the last selectable row
 
 #### Scenario: Disabled row is skipped [auto]
 - GIVEN the Tab bar position row selected
 - WHEN `j` is pressed
-- THEN the selection goes to Engine, never to the Mouse row; and from Engine `k` goes back to Tab bar position
+- THEN the selection goes to `Set all tasks`, never to the Mouse row; and from `Set all tasks` `k` goes back to Tab bar position
 
-#### Scenario: Status row is skipped and navigation wraps [auto]
-- GIVEN the Engine row selected
-- WHEN `j` is pressed twice, then `k` twice
-- THEN the Model row is selected, then Statusline position (never the Status row); and `k` from Statusline position selects Model, then Engine
+#### Scenario: Task rows in order [auto]
+- GIVEN `Set all tasks` selected
+- WHEN `j` is pressed five times
+- THEN the selection visits `general`, `code`, `chat`, `review`, `summarize` in that order, then a sixth `j` wraps to `Statusline position`
 
 #### Scenario: Repeat moves [auto]
 - GIVEN MENU
@@ -66,7 +78,7 @@ Sections and items MUST come from a static descriptor table; adding a section or
 - THEN the selection moves like a Press
 
 ### Requirement: Value cycling
-On a setting row, `h`, `l`, Left, Right and Space MUST change the draft value by cycling through the allowed values with wrap (with two values, any of these keys toggles). `l`/Right/Space advance to the next value and `h`/Left to the previous. Repeat events MUST be handled like Press. These keys MUST have no effect when there is no selectable row.
+On a Settings row, `h`, `l`, Left, Right, Space and Enter MUST change the draft value by cycling through the allowed values with wrap (with two values, any of these keys toggles). `l`/Right/Space/Enter advance to the next value and `h`/Left to the previous. Repeat events MUST be handled like Press. On an AI task row (including `Set all tasks`) `h`, `l`, Left, Right and Space MUST have no effect, and Enter opens the picker. These keys MUST have no effect when there is no selectable row.
 
 #### Scenario: Cycle forward [auto]
 - GIVEN Statusline position is `bottom` and selected
@@ -82,6 +94,16 @@ On a setting row, `h`, `l`, Left, Right and Space MUST change the draft value by
 - GIVEN a setting row selected
 - WHEN Left or Right is pressed
 - THEN the value cycles like `h` or `l`
+
+#### Scenario: Enter cycles a Settings row [auto]
+- GIVEN Statusline position is `bottom` and selected
+- WHEN Enter is pressed
+- THEN the draft value is `top`, the menu stays open, no save is requested, and Enter again gives `bottom`
+
+#### Scenario: Cycling keys do nothing on task rows [auto]
+- GIVEN the `code` row selected and unassigned
+- WHEN `h`, `l`, Left, Right and Space are pressed
+- THEN the draft is unchanged and no picker opens
 
 ### Requirement: Live preview and revert
 Every change of a draft value MUST be applied immediately to the running layout through the normal relayout. `ResizePty` MUST be emitted only for panes whose size actually changed, and no preview step may write to any PTY. The tab bar MUST be shown while the menu is open (see tabs). Esc MUST restore the original values captured at open, relayout again (with `ResizePty` only for panes whose size changed back), and close the menu; the file MUST NOT be read or written. External edits to `config.toml` made while the menu is open MUST NOT be reloaded: Esc restores the values the app had at open.
@@ -112,7 +134,7 @@ Every change of a draft value MUST be applied immediately to the running layout 
 - THEN the positions are those the app had when the menu opened
 
 ### Requirement: Input is swallowed
-In MENU every key not listed above MUST be swallowed with no effect. The PTY MUST NOT receive any key or paste while the menu is open. Release events MUST be ignored. Ctrl+Space MUST be swallowed (not cancel, not literal NUL). Shift is ignored for listed keys (Shift+Space cycles, Shift+Enter saves); uppercase letters such as `J` are unlisted and swallowed. `r` is listed only for the refresh behavior of the AI rows (see Refresh key).
+In MENU every key not listed above MUST be swallowed with no effect. The listed keys are `j`, `k`, Up, Down, `h`, `l`, Left, Right, Space, Enter, `s`, `r` and Esc, each with the behavior described in this spec, and inside the custom field typed characters, Backspace and Ctrl+U. The PTY MUST NOT receive any key or paste while the menu is open. Release events MUST be ignored. Ctrl+Space MUST be swallowed (not cancel, not literal NUL), also inside the custom field. Shift is ignored for listed keys (Shift+Space cycles, Shift+Enter cycles or selects like Enter); uppercase letters such as `J`, `S` and `R` are unlisted and swallowed outside the custom field. `r` is listed only for the refresh behavior (see Refresh key) and `s` only for saving (see config-persistence).
 
 #### Scenario: Unknown key [auto]
 - GIVEN MENU
@@ -120,22 +142,45 @@ In MENU every key not listed above MUST be swallowed with no effect. The PTY MUS
 - THEN no WritePty is emitted and mode stays MENU
 
 #### Scenario: Paste ignored [auto]
-- GIVEN MENU
+- GIVEN MENU with the custom field not focused
 - WHEN a paste event arrives
 - THEN no WritePty is emitted and the menu is unchanged
 
+#### Scenario: Uppercase S is swallowed [auto]
+- GIVEN the task list with a changed draft
+- WHEN `S` is pressed
+- THEN no save is requested and the menu is unchanged
+
 ### Requirement: Footer
-The menu footer MUST show the hint `j/k move · h/l change · Enter save · Esc cancel` while there is no error and the selection is on a Settings row, and the hint `j/k move · h/l change · r refresh · Enter save · Esc cancel` while the selection is on an AI row. When an error exists it MUST replace the hint with the error message. A pending error MUST be cleared by the next key press (Press, not Repeat or Release), which then acts normally; an unlisted key clears it and has no other effect.
+The menu footer MUST show, while there is no error, the hint of the current view, exactly:
+- Settings row: `j/k move · h/l change · s save · Esc cancel`
+- AI task row (including `Set all tasks`): `j/k move · Enter pick · r refresh · s save · Esc cancel`
+- Picker level 1: `j/k move · Enter choose · r refresh · Esc back · s save`
+- Picker level 2: `j/k move · Enter choose · r refresh · Esc back · s save`
+- Picker, cursor on a disabled row: `<reason> · not selectable`, where `<reason>` is the row's mark text: `download required`, `no models detected`, `engine not detected` or `checking…`
+- Custom field: `type a model · Enter ok · Ctrl+U clear · Esc back`
+
+When a detection cue is active (see Detection cues) the hint of an AI view (task row, picker level 1 or 2) is replaced by `<cue> · s save · Esc cancel` on the task list and `<cue> · s save · Esc back` in the picker, so the footer fits the 62-column popup. Precedence, highest first: error, disabled-row text, cue, hint. A pending error MUST be cleared by the next key press (Press, not Repeat or Release), which then acts normally; an unlisted key clears it and has no other effect.
 
 #### Scenario: Footer hint [auto, TestBackend + insta]
-- GIVEN MENU just opened
+- GIVEN MENU just opened and detection finished
 - WHEN rendered
-- THEN the footer reads `j/k move · h/l change · Enter save · Esc cancel`
+- THEN the footer reads `j/k move · h/l change · s save · Esc cancel`
 
 #### Scenario: Footer hint on AI row [auto, TestBackend + insta]
-- GIVEN the Engine row selected
+- GIVEN the `code` row selected and detection finished
 - WHEN rendered
-- THEN the footer reads `j/k move · h/l change · r refresh · Enter save · Esc cancel`
+- THEN the footer reads `j/k move · Enter pick · r refresh · s save · Esc cancel`
+
+#### Scenario: Footer hints in the picker [auto, TestBackend + insta]
+- GIVEN the picker at level 1, then at level 2, then in the custom field, detection finished
+- WHEN each is rendered
+- THEN the footers read `j/k move · Enter choose · r refresh · Esc back · s save` (twice) and `type a model · Enter ok · Ctrl+U clear · Esc back`
+
+#### Scenario: Footer on a disabled row [auto, TestBackend + insta]
+- GIVEN level 2 for ollama with the cursor on a curated not-downloaded model, detection finished
+- WHEN rendered
+- THEN the footer reads `download required · not selectable`
 
 #### Scenario: Error replaces hint [auto]
 - GIVEN a save failure message
@@ -143,10 +188,10 @@ The menu footer MUST show the hint `j/k move · h/l change · Enter save · Esc 
 - THEN the footer shows the message instead of the hint, and the next key press restores the hint
 
 ### Requirement: Tiny terminals
-The menu MUST never panic at any terminal size down to 0x0. Below a minimum size (decided in design) the menu MUST draw only a minimal message instead of the full popup; the key handling MUST be unchanged, so Esc still reverts and closes, and Enter still saves. Content that does not fit MUST be clipped.
+The menu MUST never panic at any terminal size down to 0x0, in the task list and in every picker view. The popup is 62x15 and the full popup (task list and picker alike) needs at least 24 columns by 14 rows. Below that the menu MUST draw only a one-line fallback message instead of the full popup; the key handling MUST be unchanged, so Esc still reverts and closes (or goes back one level when a picker is open), and `s` still saves. Content that does not fit MUST be clipped.
 
 #### Scenario: No panic at any size [auto]
-- GIVEN the menu open
+- GIVEN the menu open on the task list, then in each picker view
 - WHEN rendered at sizes from 0x0 up through small widths and heights
 - THEN nothing panics
 
@@ -155,8 +200,23 @@ The menu MUST never panic at any terminal size down to 0x0. Below a minimum size
 - WHEN rendered, then Esc is pressed
 - THEN a minimal message is shown instead of the popup and Esc reverts and closes
 
+#### Scenario: Minimal message and s saves [auto]
+- GIVEN a terminal smaller than the menu minimum, the menu open and a changed draft
+- WHEN `s` is pressed
+- THEN a save is requested
+
+#### Scenario: Picker too small keeps keys [auto]
+- GIVEN a terminal of 23x14 (and one of 24x13) and the picker open at level 1
+- WHEN rendered, then Esc is pressed
+- THEN the one-line fallback is shown, then the task list view is the current view
+
+#### Scenario: Smallest full popup [auto, TestBackend + insta]
+- GIVEN a terminal of exactly 24x14
+- WHEN the task list and the picker are rendered
+- THEN the full popup is drawn (not the fallback), clipped, without panic
+
 ### Requirement: Events while open
-While the menu is open, PTY output MUST keep being parsed and drawn, cwd polls and OSC 7 MUST keep updating, and tabs and panes in the background MUST keep running. The menu MUST stay open when a pane exits, a spawn fails, or the host terminal resizes; geometry MUST be recomputed with the forced tab bar and the previewed positions. If the exit of a pane would quit the app (last pane of the last tab), Quit MUST still be emitted. A focus or active-tab change caused by a pane exit MUST NOT close the menu. A spawn failure notice MUST NOT replace the menu footer.
+While the menu is open, PTY output MUST keep being parsed and drawn, cwd polls and OSC 7 MUST keep updating, and tabs and panes in the background MUST keep running. The menu MUST stay open (and the picker, if open, MUST stay in the same view) when a pane exits, a spawn fails, or the host terminal resizes; geometry MUST be recomputed with the forced tab bar and the previewed positions. If the exit of a pane would quit the app (last pane of the last tab), Quit MUST still be emitted. A focus or active-tab change caused by a pane exit MUST NOT close the menu. A spawn failure notice MUST NOT replace the menu footer.
 
 #### Scenario: Output keeps flowing [auto]
 - GIVEN the menu open
@@ -167,6 +227,11 @@ While the menu is open, PTY output MUST keep being parsed and drawn, cwd polls a
 - GIVEN the menu open and two panes
 - WHEN the other pane's shell exits
 - THEN mode is still MENU, the layout is recomputed, and the draft is unchanged
+
+#### Scenario: Pane exit keeps the picker [auto]
+- GIVEN the picker open at level 2 and two panes
+- WHEN the other pane's shell exits
+- THEN mode is still MENU, the picker is still at level 2 with the same entry selected
 
 #### Scenario: Spawn failure keeps the menu [auto]
 - GIVEN the menu open
@@ -185,116 +250,239 @@ While the menu is open, PTY output MUST keep being parsed and drawn, cwd polls a
 
 #### Scenario: Menu in Kitty [manual, Kitty]
 - GIVEN the app in Kitty with nvim open and one tab
-- WHEN `Ctrl+Space m` is pressed, the positions are changed with `l`, then Esc, then the menu is reopened and Enter is pressed on a changed value
-- THEN the bars move live, Esc restores them, Enter closes the menu, nvim receives no keys, and a restart shows the saved positions
-
-### Requirement: AI section layout
-Below the Settings rows the popup MUST show the section title `AI`, then exactly three rows, in this order: `Engine` (`ai.engine`, selectable), `Model` (`ai.model`, selectable) and `Status` (display only). The `Status` row shows the status text of the draft engine (see ai-engine-detection): for a catalog engine its status text (`detecting…`, `available · 2 models`, `available · 0.5.0`, `available`, `not running`, `not installed`, `unknown`); for a saved id that is not in the catalog, `not detected`; with no engine, `-`. The `Status` row is drawn muted, like the disabled `Mouse` row, and is never selected. The AI section always has these three rows, so a detection result never changes the number of rows or moves the selection. The popup is 62 columns wide when it includes the AI section and 51 columns wide without it, so the Settings-only popup is unchanged.
-
-#### Scenario: AI rows rendered [auto, TestBackend + insta]
-- GIVEN ollama is available with 2 models and the draft is `ollama` / `llama3:8b`
-- WHEN the menu is rendered on a normal terminal
-- THEN `AI` and exactly three rows are visible: `Engine` showing `ollama`, `Model` showing `llama3:8b` and `Status` showing `available · 2 models`; the `Status` row is muted and no per-engine status list is drawn
-
-#### Scenario: Status follows the draft engine [auto]
-- GIVEN lmstudio is `not running` and is the saved engine, and claude is `available · 2.1.0`
-- WHEN the menu is rendered, then the Engine is cycled to `none` and then to `claude`
-- THEN the Status row reads `not running`, then `-`, then `available · 2.1.0`
-
-### Requirement: Engine and Model choices
-The `Engine` choices MUST be, in this order: `none` (no engine); then the ids of the engines whose status is `available`, in catalog order; then, if not already offered, the engine id saved at open and the current draft engine id (an id that is not available, or not in the catalog). Catalog engines that are not available MUST NOT be offered as choices otherwise. The `Engine` row shows `none` or the id; an id that is not available is shown with the suffix `(checking)` while its status is `detecting…` (no result yet) and `(not detected)` otherwise.
-
-The `Model` choices MUST be: for an available server, its models in response order; for an available CLI, the single choice `default`; otherwise none. A non-empty draft model that is not among the choices (for example a saved model no longer listed, or a model of an engine that is not available) MUST stay as the draft, be shown as `<name> · not found`, and be offered as the last choice, so it is never erased silently. A row with no choices and an empty draft shows `none` and the keys have no effect on it.
-
-The same keys as value cycling (`h`, `l`, Left, Right, Space) apply, with wrap, over the current choices. Changing the engine MUST reset the draft model to the first model choice of the new engine, or to empty when there is none. The draft MUST NOT change because of detection alone. An empty engine or model is saved as `""` (see config-persistence).
-
-#### Scenario: Cycle engines [auto]
-- GIVEN ollama, claude and codex are available, lmstudio is not running, the draft engine is `ollama`, and Engine is selected
-- WHEN `l` is pressed three times, then once more
-- THEN the draft engine is `claude`, then `codex`, then `none`, then `ollama` (`lmstudio` is never offered)
-
-#### Scenario: Engine change resets model [auto]
-- GIVEN engine `ollama` with model `qwen2.5:7b` (second of two), and claude is available
-- WHEN the engine is cycled to `claude`
-- THEN the model is `default`; cycling back to `ollama` gives the first model `llama3:8b`
-
-#### Scenario: Engine none clears model [auto]
-- GIVEN engine `ollama` with model `llama3:8b`
-- WHEN the engine is cycled to `none`
-- THEN the draft engine and model are empty and the Model row shows `none`
-
-#### Scenario: Server without models [auto]
-- GIVEN ollama is available with `{"models":[]}`
-- WHEN ollama is the draft engine
-- THEN the Model row shows `none`, the draft model is empty, and `l` on it changes nothing
-
-#### Scenario: Saved model no longer listed [auto]
-- GIVEN the saved engine is `ollama` (models `llama3:8b`, `qwen2.5:7b`) and the saved model is `old:7b`
-- WHEN the menu is rendered, then `l` is pressed on Model
-- THEN the Model row shows `old:7b · not found` with the draft still `old:7b`, and then shows `llama3:8b`
-- AND `old:7b` stays the last Model choice while the menu is open (like the saved engine), so `h` on `llama3:8b` shows `old:7b · not found` again; it is offered only while the saved engine is the draft engine
-- AND repeated model names from a server are offered once, in first-seen order
-
-#### Scenario: Saved engine not available [auto]
-- GIVEN the saved engine is `codex`, its status is `not installed`, and only ollama is available
-- WHEN the menu is rendered
-- THEN the Engine row shows `codex (not detected)`, the choices are `none`, `ollama`, `codex`, and `l` selects `none`
-
-#### Scenario: Pending detection [auto]
-- GIVEN the saved engine is `claude` and no detection result has arrived yet
-- WHEN the menu is rendered
-- THEN the Engine row shows `claude (checking)`, the Status row shows `detecting…`, and the draft is still `claude`
-
-#### Scenario: No engines at all [auto]
-- GIVEN no engine is available and no engine is saved
-- WHEN the menu is rendered
-- THEN Engine and Model show `none`, and `l` on Engine changes nothing
+- WHEN `Ctrl+Space m` is pressed, the positions are changed with `l`, then Esc, then the menu is reopened and the position is changed and `s` is pressed
+- THEN the bars move live, Esc restores them, `s` closes the menu, nvim receives no keys, and a restart shows the saved positions
 
 ### Requirement: Detection results update the open menu
-Detection results MUST update the open menu in place: the `Status` row and the choices are refreshed, the selected row MUST NOT change, and the draft values MUST NOT change. Results arriving while the menu is closed MUST be applied to the state used the next time it opens. Opening the menu MUST NOT write to any PTY, and a detection result MUST NOT either.
+Detection results MUST update the open menu in place: the task-row marks (`(not detected)`, `· download required`), the aggregate and the picker lists are rebuilt from the new statuses, the selected row MUST NOT change, and the draft values MUST NOT change. A picker that is open MUST stay open at the same level; its cursor stays on the same entry (identified by engine id or model name, not by position), even when that entry became disabled, and when the entry no longer exists the cursor is clamped to the list. Results arriving while the menu is closed MUST be applied to the state used the next time it opens. Opening the menu MUST NOT write to any PTY, and a detection result MUST NOT either.
 
-#### Scenario: Result arrives while open [auto]
-- GIVEN the menu open with the Model row selected, the draft engine `ollama`, and ollama still `detecting…`
-- WHEN ollama's result `available · 2 models` arrives
-- THEN the Status row changes from `detecting…` to `available · 2 models`, the Model row stays selected, the draft is unchanged, and no WritePty is emitted
+#### Scenario: Result arrives on the task list [auto]
+- GIVEN the menu open with the `code` row selected, code assigned `ollama` / `llama3:8b`, and no result yet
+- WHEN a result with ollama `available · 2 models` listing only `qwen2.5:7b` arrives
+- THEN the code row reads `ollama › llama3:8b · download required`, `code` stays selected, the draft is unchanged, and no WritePty is emitted
+
+#### Scenario: Result arrives in the picker [auto]
+- GIVEN the picker open at level 2 for ollama with the cursor on `qwen2.5:7b`, which a refresh then reports as no longer listed
+- WHEN the result arrives
+- THEN the picker is still at level 2, `qwen2.5:7b` is muted with `download required` (moved below the detected models), the cursor is still on `qwen2.5:7b`, and the footer reads `download required · not selectable`
+
+#### Scenario: Cursor entry removed [auto]
+- GIVEN the picker open at level 1 with the cursor on `claude`, which a refresh then reports as `not installed` and unassigned
+- WHEN the result arrives
+- THEN the picker is still at level 1 and the cursor is clamped to a valid row
 
 #### Scenario: Engine disappears while open [auto]
-- GIVEN the draft engine is `ollama` and a refresh returns ollama `not running`
+- GIVEN code is assigned `ollama` / `llama3:8b` and a refresh returns ollama `not running`
 - WHEN the result arrives
-- THEN the draft stays `ollama`, the Engine row shows `ollama (not detected)`, and the Status row shows `not running`
+- THEN the assignment stays, and the code row reads `ollama (not detected) › llama3:8b`
 
 ### Requirement: Refresh key
-Only when the selection is on the `Engine` or `Model` row, `r` (Press only, not Repeat) MUST request a new detection run (see ai-engine-detection) and have no other effect. On any other row `r` MUST be swallowed with no effect. Uppercase `R` is unlisted and swallowed.
+`r` (Press only, not Repeat) MUST request a new detection run (see ai-engine-detection) and have no other effect when the selection is on an AI task row (including `Set all tasks`) or the picker is at level 1 or level 2 (the user may run `ollama pull` while looking at models). On a Settings row and in the custom field (where it is a typed letter) `r` has no refresh effect. Uppercase `R` is unlisted and swallowed.
 
-#### Scenario: Refresh on AI row [auto]
-- GIVEN the Engine row selected
+#### Scenario: Refresh on a task row [auto]
+- GIVEN the `code` row selected
 - WHEN `r` is pressed
 - THEN exactly one detection run is requested, the selection and draft are unchanged, and no WritePty is emitted
 
+#### Scenario: Refresh at picker level 1 [auto]
+- GIVEN the picker at level 1
+- WHEN `r` is pressed
+- THEN exactly one detection run is requested and the picker stays at level 1
+
+#### Scenario: Refresh at picker level 2 [auto]
+- GIVEN the picker at level 2 for ollama
+- WHEN `r` is pressed
+- THEN exactly one detection run is requested and the picker stays at level 2 with the cursor on the same entry
+
 #### Scenario: Refresh elsewhere or repeated [auto]
-- GIVEN the Statusline position row selected, or the Engine row with a Repeat event for `r`
+- GIVEN the Statusline position row selected, or the custom field focused, or the `code` row with a Repeat event for `r`
 - WHEN `r` arrives
-- THEN no detection run is requested
+- THEN no detection run is requested (in the custom field `r` is typed into the buffer)
 
 ### Requirement: AI draft, revert and save
-The AI draft (engine and model) is captured at open with the other menu-owned values. Esc MUST restore the AI draft to the open values and read or write no file. Enter MUST save through config-persistence only the keys whose draft differs; when the whole draft equals the open values, the menu closes without touching the file. AI choices have no live effect on layout and emit no `ResizePty`.
+The AI draft (the five task assignments) is captured at open with the other menu-owned values. Esc at the top level MUST restore the AI draft to the open values and read or write no file. `s` MUST save through config-persistence only the keys whose draft differs; when the whole draft equals the open values, the menu closes without touching the file. AI choices have no live effect on layout and emit no `ResizePty`. Choosing in the picker changes only the draft.
 
 #### Scenario: Esc reverts AI [auto]
-- GIVEN the menu opened with engine `ollama`, and the draft changed to `claude`
-- WHEN Esc is pressed and the menu is reopened
-- THEN the draft engine is `ollama`
+- GIVEN the menu opened with general `ollama` / `llama3:8b`, and the draft changed to `claude` / `opus`
+- WHEN Esc is pressed on the task list and the menu is reopened
+- THEN the draft general is `ollama` / `llama3:8b`
 
 #### Scenario: Save closes with AI values [auto]
-- GIVEN the draft engine changed to `claude` with model `default`
-- WHEN Enter is pressed and the save succeeds
-- THEN the menu closes and the current values are `claude` / `default`
+- GIVEN code was assigned `claude` / `opus` through the picker
+- WHEN `s` is pressed and the save succeeds
+- THEN the menu closes and the current code assignment is `claude` / `opus`
 
 #### Scenario: Unchanged AI draft [auto]
 - GIVEN no change was made
-- WHEN Enter is pressed
+- WHEN `s` is pressed
 - THEN the menu closes and the file is not read or written
+
+#### Scenario: Choosing changes only the draft [auto]
+- GIVEN the picker used to assign code `claude` / `opus`
+- WHEN the selection is made
+- THEN the file is not read or written and no ResizePty or WritePty is emitted
 
 #### Scenario: AI menu in Kitty [manual, Kitty]
 - GIVEN the app in Kitty on a machine with Ollama running and `claude` installed
-- WHEN the menu is opened, Engine is changed to `claude`, `r` is pressed, Enter is pressed, and the app is restarted
-- THEN statuses match the machine, the UI never freezes, the file gains an `[ai]` table with `engine = "claude"` and `model = "default"`, and the menu shows `claude` after restart
+- WHEN the menu is opened, `code` is assigned `claude` / `opus` through the picker, `r` is pressed, `s` is pressed, and the app is restarted
+- THEN the file gains `[ai.tasks.code]` with `engine = "claude"` and `model = "opus"`, the UI never freezes, and the `code` row reads `claude › opus` after restart
+
+#### Scenario: Real Ollama models [manual, Kitty]
+- GIVEN Ollama running with 8 models downloaded and other curated models not downloaded
+- WHEN the picker is opened at level 2 for ollama and `j` is pressed through the whole list
+- THEN the 8 downloaded models show `✓` and can be chosen, the curated ones show `download required`, are muted, the cursor reaches them (the list scrolls), the footer reads `download required · not selectable`, and Enter on them does nothing and never starts a download
+
+### Requirement: AI task list
+The AI section MUST show, below the Settings rows, the section title `AI` and exactly six rows, in this order: `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`. Each row shows its label and its value (see ai-task-models): `<engine> › <model>`, `(default)` for an unassigned non-general task, `(not set)` for an unset `general` or an unset aggregate, `(mixed)` for the aggregate when the tasks differ, and the marks `· download required` and `(not detected)` as defined there. The number of AI rows MUST never change because of a detection result. The popup is 62x15 when it includes the AI section (the body has a fixed height, so the popup does not change size between the task list and the picker) and 51 columns wide without it.
+
+#### Scenario: Task rows rendered [auto, TestBackend + insta]
+- GIVEN general is `claude` / `sonnet`, code is `ollama` / `llama3:8b` (ollama available with that model), the other tasks unassigned
+- WHEN the menu is rendered on a normal terminal
+- THEN `AI` and six rows are visible: `Set all tasks` `(mixed)`, `general` `claude › sonnet`, `code` `ollama › llama3:8b`, `chat` `(default)`, `review` `(default)`, `summarize` `(default)`
+
+#### Scenario: Nothing assigned [auto, TestBackend + insta]
+- GIVEN no task is assigned
+- WHEN the menu is rendered
+- THEN `Set all tasks` reads `(not set)`, `general` reads `(not set)`, and the other four read `(default)`
+
+#### Scenario: Marks on rows [auto]
+- GIVEN code is `ollama` / `old:7b` not downloaded, and review is `codex` / `default` with codex `not installed`
+- WHEN the menu is rendered
+- THEN the rows read `ollama › old:7b · download required` and `codex (not detected) › default`
+
+### Requirement: Task picker
+Enter on an AI task row MUST replace the task list with the picker, inside the same popup, at level 1 with the cursor on the task's current engine when listed and otherwise on the first entry. Level 1 lists the engine entries of ai-task-models: the first entry is `(default · use general)` for non-general tasks and `none` for `general` and `Set all tasks`; each engine row shows its id and its status text; assigned engines that are not detected are listed as `(not detected)` and remain selectable. Enter on an engine row opens level 2 for that engine, with the cursor on the current model when it is selectable and otherwise on the first selectable row (on the first row when none is selectable). Level 2 lists the models of ai-task-models: detected models marked `✓` (selectable), then the assigned model that is no longer listed (`download required`, disabled, marked `●` as current), then the curated not-downloaded models (`download required`, disabled); for CLI engines the catalog, the assigned custom models, then `custom…`. Enter on a selectable model assigns the engine and model to the task (to all five for `Set all tasks`), closes the picker and returns to the task list with that task row selected. Enter on the first entry of level 1 clears the task (all five for `Set all tasks`, general only for `general`) and returns to the task list. `j`, `k`, Down and Up move the cursor over ALL rows, with wrap, disabled rows included, so long lists scroll them into view; on a disabled row Enter does nothing and the footer explains why (see Footer). `h`, `l`, Left, Right and Space have no effect in the picker. The picker title names the view: `Engine for <row label>` at level 1 and `Model for <row label> (<engine>)` at level 2, followed by ` n/total` only when the list is longer than the viewport.
+
+#### Scenario: Open level 1 [auto, TestBackend + insta]
+- GIVEN ollama (2 models) and claude are available, lmstudio is `not running`, and `code` is selected
+- WHEN Enter is pressed
+- THEN the title reads `Engine for code` and the rows are `(default · use general)`, `ollama` with `available · 2 models`, and `claude` with `available · 2.1.0`, with the cursor on the first
+
+#### Scenario: Assign a CLI model [auto]
+- GIVEN the picker at level 1 for `code`, claude available
+- WHEN the cursor is moved to `claude`, Enter is pressed, the cursor is moved to `opus` and Enter is pressed
+- THEN code is `claude` / `opus` in the draft, the task list shows with `code` selected, and the row reads `claude › opus`
+
+#### Scenario: Server model marks [auto, TestBackend + insta]
+- GIVEN ollama available with `llama3:8b` and the curated list containing `mistral:7b`, and level 2 open for `code`
+- WHEN rendered
+- THEN `llama3:8b` shows `✓` and `mistral:7b` is muted and shows `download required`
+
+#### Scenario: Disabled rows are reachable but inert [auto]
+- GIVEN level 2 for ollama with `llama3:8b ✓` first and `mistral:7b download required` after it
+- WHEN `j` is pressed, then Enter
+- THEN the cursor is on `mistral:7b`, the footer reads `download required · not selectable`, and Enter changes nothing (picker still at level 2, draft unchanged)
+
+#### Scenario: Enter with no selectable row [auto]
+- GIVEN level 2 for lmstudio showing only the disabled row `no models detected`
+- WHEN Enter, `j` and `l` are pressed
+- THEN nothing changes and the draft is unchanged, the footer reads `no models detected · not selectable`; Esc returns to level 1
+
+#### Scenario: Unassign entry [auto]
+- GIVEN code is `claude` / `opus` and the picker at level 1 for code
+- WHEN Enter is pressed on `(default · use general)`
+- THEN code is unassigned, the task list shows and the row reads `(default)`
+
+#### Scenario: General and Set all use none [auto]
+- GIVEN the picker at level 1 for `general`, then for `Set all tasks`
+- WHEN each is opened
+- THEN the first entry reads `none` and Enter on it clears general, or clears all five tasks, respectively
+
+#### Scenario: Set all assigns five [auto]
+- GIVEN the picker for `Set all tasks`
+- WHEN `claude` then `sonnet` is chosen
+- THEN all five rows read `claude › sonnet` and `Set all tasks` reads `claude › sonnet`
+
+#### Scenario: Saved model no longer downloaded stays [auto]
+- GIVEN code is `ollama` / `old:7b` and ollama no longer lists `old:7b`
+- WHEN level 2 is opened for code and Esc is pressed
+- THEN `old:7b` is listed muted with `download required` and `●` (current), after the detected models, Enter on it does nothing, and the code assignment is unchanged
+
+#### Scenario: Undetected assigned engine listed [auto]
+- GIVEN code is assigned `codex` and codex is `not installed`
+- WHEN level 1 is opened for code
+- THEN `codex` is listed with `(not detected)`, it is selectable (Enter reopens it), and the draft is unchanged until another choice is made
+
+### Requirement: Custom model entry
+The `custom…` row exists only at level 2 of the CLI engines (`claude`, `codex`, `gemini`, `opencode`). Enter on it MUST focus the custom field, a text entry with an empty buffer. While it is focused: printable characters, including `s`, `r`, `j`, `k`, `h` and `l`, are typed into the buffer, but Space is NOT (model names have no spaces; whitespace, control and format characters are dropped); Backspace deletes the last character; `s` MUST NOT save; Enter with a valid name (see ai-task-models) assigns the engine and that model to the task, closes the picker and returns to the task list; Enter with an empty or blank buffer has no effect; Ctrl+U clears the buffer; Esc discards the buffer and returns to level 2 with the cursor on `custom…`, without changing the draft. A paste event while the custom field is focused MUST insert its first line into the buffer (text after the first line break is dropped), with whitespace, control and format characters removed and the buffer capped at 128 characters, and MUST NOT reach any PTY. Outside the custom field a paste is ignored (see Input is swallowed).
+
+#### Scenario: Type and accept [auto]
+- GIVEN the custom field focused for `claude` on `code`
+- WHEN `m`, `s`, `-`, `1` are typed and Enter is pressed
+- THEN no save is requested, the draft code is `claude` / `ms-1`, and the task list shows `claude › ms-1`
+
+#### Scenario: `s` is a letter in the field [auto]
+- GIVEN the custom field focused and a changed draft
+- WHEN `s` is pressed
+- THEN `s` is appended to the buffer and no save is requested
+
+#### Scenario: Paste goes to the field [auto]
+- GIVEN the custom field focused with buffer `ab`
+- WHEN a paste of `cd\nef` arrives
+- THEN the buffer is `abcd` and no WritePty is emitted
+
+#### Scenario: Paste elsewhere ignored [auto]
+- GIVEN the picker at level 2 (field not focused)
+- WHEN a paste event arrives
+- THEN the picker and draft are unchanged and no WritePty is emitted
+
+#### Scenario: Ctrl+U clears [auto]
+- GIVEN the custom field focused with buffer `abc`
+- WHEN Ctrl+U is pressed
+- THEN the buffer is empty and the field stays focused
+
+#### Scenario: Blank entry refused [auto]
+- GIVEN the custom field focused with buffer `   `
+- WHEN Enter is pressed
+- THEN nothing is assigned and the field stays focused
+
+#### Scenario: Esc leaves the field [auto]
+- GIVEN the custom field focused with buffer `abc`
+- WHEN Esc is pressed
+- THEN level 2 shows, the draft is unchanged, and reopening `custom…` shows an empty buffer
+
+#### Scenario: Servers have no custom entry [auto]
+- GIVEN level 2 for any of ollama, lmstudio, llamacpp or vllm
+- WHEN the rows are listed
+- THEN there is no `custom…` row
+
+### Requirement: Picker viewport
+The picker body MUST be a title plus a viewport of exactly 10 rows, inside the fixed 62x15 popup. When the rows do not fit, the list MUST scroll so that the cursor row is always visible (cursor above the window sets the window start to the cursor; cursor below it sets the window so the cursor is the last row), and the popup height MUST NOT change while scrolling. Disabled rows scroll with the rest, and `j`/`k` wrap with the window following.
+
+#### Scenario: Long list scrolls [auto, TestBackend + insta]
+- GIVEN level 2 for ollama with 18 rows (8 detected, 10 not downloaded) and the cursor moved to the last row, a disabled one
+- WHEN rendered
+- THEN the cursor row is visible and muted, the title shows `18/18`, the popup height equals its height with the cursor on the first row, and nothing is drawn outside the popup
+
+#### Scenario: Wrap moves the window [auto]
+- GIVEN level 2 with more rows than the viewport and the cursor on the first row
+- WHEN `k` is pressed, then `j`
+- THEN the cursor is on the last row with that row visible, then back on the first row with the window at the start
+
+### Requirement: Detection cues
+While no detection result has ever arrived, the footer of the AI views MUST show the cue `checking engines…`. While a later detection run is in flight, it MUST show `refreshing…` and the last known engines, statuses and marks MUST stay visible. The cue replaces the hint as defined in Footer (`<cue> · s save · Esc cancel` on the task list, `<cue> · s save · Esc back` in the picker). With no run in flight, no cue shows. Before the first result, server model rows are disabled and marked `checking…`. The menu MUST NOT close silently at any point of detection: pressing `s` before the first result saves the draft as in config-persistence.
+
+#### Scenario: Before the first result [auto, TestBackend + insta]
+- GIVEN the menu opened and no detection result has arrived, the `code` row selected
+- WHEN rendered
+- THEN the footer reads `checking engines… · s save · Esc cancel`
+
+#### Scenario: Refreshing keeps last known engines [auto]
+- GIVEN a first result with ollama `available · 2 models` and the picker at level 1, then `r` is pressed
+- WHEN rendered while the run is in flight
+- THEN the footer reads `refreshing… · s save · Esc back` and ollama is still listed with `available · 2 models`
+
+#### Scenario: Refreshing at level 2 [auto, TestBackend + insta]
+- GIVEN the picker at level 2 for ollama and `r` pressed
+- WHEN rendered while the run is in flight
+- THEN the footer reads `refreshing… · s save · Esc back` and the models stay listed
+
+#### Scenario: Cue clears [auto]
+- GIVEN the `refreshing…` cue showing
+- WHEN the run's result arrives
+- THEN the footer shows only the hint
+
+#### Scenario: Undetected saved engine survives [auto]
+- GIVEN the saved file has code `codex`, codex is `not installed`
+- WHEN the menu is opened, the draft is changed elsewhere, `s` is pressed, and the app is restarted
+- THEN the file still has `engine = "codex"` for code and the row still reads `codex (not detected) › default`

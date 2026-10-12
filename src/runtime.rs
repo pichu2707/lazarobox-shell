@@ -537,15 +537,12 @@ mod tests {
         let app = app_from_config(80, 25, Some(&path));
         assert_eq!(
             app.ai(),
-            &AiConfig {
-                engine: Some("ollama".into()),
-                model: Some("llama3:8b".into()),
-            }
+            &AiConfig::general(Some("ollama"), Some("llama3:8b"))
         );
     }
 
     #[test]
-    fn the_first_menu_open_shows_the_saved_engine_as_checking() {
+    fn the_first_menu_open_shows_the_saved_assignment_unmarked() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         fs::write(&path, SAVED_AI).unwrap();
@@ -558,11 +555,14 @@ mod tests {
             step(&mut app, event, &mut panes);
         }
         let rows = app.menu().unwrap().rows(&Config::default());
-        let engine = match &rows[5] {
-            crate::core::menu::Row::Item { value, .. } => value.as_deref().unwrap().to_owned(),
+        let general = match &rows[6] {
+            crate::core::menu::Row::Item { label, value, .. } => {
+                assert_eq!(*label, "general");
+                value.as_deref().unwrap().to_owned()
+            }
             other => panic!("not an item: {other:?}"),
         };
-        assert_eq!(engine, "ollama (checking)");
+        assert_eq!(general, "ollama › llama3:8b", "nothing is marked yet");
     }
 
     // Signals are process-wide, so both are raised from one test.
@@ -990,7 +990,7 @@ mod tests {
 
     // Spec: the answer reaches the app before the next input.
     #[test]
-    fn enter_in_the_menu_saves_and_the_result_closes_it() {
+    fn s_in_the_menu_saves_and_the_result_closes_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let mut panes = panes_saving_to(Some(path.clone()));
@@ -999,7 +999,7 @@ mod tests {
             menu_key(' ', KeyModifiers::CONTROL),
             menu_key('m', KeyModifiers::NONE),
             menu_key('l', KeyModifiers::NONE),
-            AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            menu_key('s', KeyModifiers::NONE),
         ] {
             assert!(!step(&mut app, event, &mut panes));
         }
@@ -1025,10 +1025,10 @@ mod tests {
         ] {
             step(&mut app, event, &mut panes);
         }
-        let enter = AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let save = menu_key('s', KeyModifiers::NONE);
         let next = menu_key('j', KeyModifiers::NONE);
         let mut seen = Vec::new();
-        for event in [enter.clone(), next.clone()] {
+        for event in [save.clone(), next.clone()] {
             drive(
                 |event| {
                     seen.push(event.clone());
@@ -1038,68 +1038,9 @@ mod tests {
                 &mut panes,
             );
         }
-        assert_eq!(seen, vec![enter, AppEvent::ConfigSaved, next]);
+        assert_eq!(seen, vec![save, AppEvent::ConfigSaved, next]);
         assert!(app.menu().is_none());
         assert_eq!(app.input(), crate::app::InputMode::Terminal);
-    }
-
-    fn claude_detected() -> crate::core::ai::Detection {
-        use crate::core::ai::{CATALOG, Detection, EngineState, Status};
-        Detection {
-            engines: CATALOG
-                .iter()
-                .map(|e| EngineState {
-                    id: e.id,
-                    status: if e.id == "claude" || e.id == "ollama" {
-                        Status::Available
-                    } else {
-                        Status::NotInstalled
-                    },
-                    models: if e.id == "claude" {
-                        vec!["default".to_owned()]
-                    } else if e.id == "ollama" {
-                        vec!["llama3.2:3b-ctx".to_owned()]
-                    } else {
-                        Vec::new()
-                    },
-                    version: None,
-                })
-                .collect(),
-        }
-    }
-
-    // Manual check VP.2: change Engine to claude, refresh, Enter, and the
-    // choice must reach a config.toml that did not exist (nor its directory).
-    #[test]
-    fn saving_an_ai_engine_with_no_config_file_writes_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".config/lazarobox/config.toml");
-        let mut panes = panes_saving_to(Some(path.clone()));
-        let mut app = App::new(80, 25).with_ai(AiConfig::default());
-        for event in [
-            menu_key(' ', KeyModifiers::CONTROL),
-            menu_key('m', KeyModifiers::NONE),
-            AppEvent::EnginesDetected(claude_detected()),
-        ] {
-            assert!(!step(&mut app, event, &mut panes));
-        }
-        while !app.menu().is_some_and(|menu| menu.on_ai_row()) {
-            step(&mut app, menu_key('j', KeyModifiers::NONE), &mut panes);
-        }
-        for event in [
-            menu_key('l', KeyModifiers::NONE),
-            menu_key('l', KeyModifiers::NONE),
-            menu_key('r', KeyModifiers::NONE),
-            AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        ] {
-            assert!(!step(&mut app, event, &mut panes));
-        }
-        assert_eq!(
-            fs::read_to_string(path).unwrap(),
-            "[ai]\nengine = \"claude\"\nmodel = \"default\"\n"
-        );
-        assert!(app.menu().is_none());
-        assert_eq!(app.ai().engine.as_deref(), Some("claude"));
     }
 
     #[test]
@@ -1110,7 +1051,7 @@ mod tests {
             menu_key(' ', KeyModifiers::CONTROL),
             menu_key('m', KeyModifiers::NONE),
             menu_key('l', KeyModifiers::NONE),
-            AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            menu_key('s', KeyModifiers::NONE),
         ] {
             assert!(!step(&mut app, event, &mut panes));
         }

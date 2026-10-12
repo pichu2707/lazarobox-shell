@@ -1,7 +1,6 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 717
-expression: "(0..16).map(|y|\nrow(&buf, y).trim_end().to_string()).collect::<Vec<_>>().join(\"\\n\")"
+expression: "(0..19).map(|y|\nrow(&buf, y).trim_end().to_string()).collect::<Vec<_>>().join(\"\\n\")"
 ---
  1
 hi there
@@ -11,11 +10,14 @@ hi there
  │ Tab bar position                                       top │
  │ Mouse: off (coming soon)                                   │
  │ AI                                                         │
- │ Engine                                                none │
- │ Model                                                 none │
- │ Status                                                   - │
+ │ Set all tasks                                    (not set) │
+ │ general                                          (not set) │
+ │ code                                             (default) │
+ │ chat                                             (default) │
+ │ review                                           (default) │
+ │ summarize                                        (default) │
  │                                                            │
- │ j/k move · h/l change · Enter save · Esc cancel            │
+ │ j/k move · h/l change · s save · Esc cancel                │
  └────────────────────────────────────────────────────────────┘
 
  ◐ MENU                                                   sh

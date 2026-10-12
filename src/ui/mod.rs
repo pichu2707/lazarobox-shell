@@ -708,14 +708,14 @@ mod tests {
     // Spec: tabs: Bar forced with one tab (render); the popup is drawn last.
     #[test]
     fn menu_popup_is_drawn_over_the_panes_after_the_bars() {
-        // 16 rows: the popup with its AI section is 12 rows high.
-        let app = menu_app(64, 16);
-        let (buf, _) = draw_at(&app, 64, 16);
+        // 19 rows: the popup with its AI section is 15 rows high.
+        let app = menu_app(64, 19);
+        let (buf, _) = draw_at(&app, 64, 19);
         assert!(row(&buf, 0).contains(" 1 "), "{:?}", row(&buf, 0));
         assert!(row(&buf, 2).contains(" Menu "), "{:?}", row(&buf, 2));
-        assert!(row(&buf, 15).contains("MENU"), "{:?}", row(&buf, 15));
+        assert!(row(&buf, 18).contains("MENU"), "{:?}", row(&buf, 18));
         insta::assert_snapshot!(
-            (0..16)
+            (0..19)
                 .map(|y| row(&buf, y).trim_end().to_string())
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -743,7 +743,7 @@ mod tests {
     fn a_tiny_terminal_shows_the_fallback_and_esc_still_reverts() {
         let mut app = menu_app(20, 5);
         let (buf, _) = draw_at(&app, 20, 5);
-        assert_eq!(row(&buf, 2), "MENU · Esc cancel ·…");
+        assert_eq!(row(&buf, 2), "MENU · s save · Esc…");
         app.update(AppEvent::Key(KeyEvent::new(
             KeyCode::Esc,
             KeyModifiers::NONE,
