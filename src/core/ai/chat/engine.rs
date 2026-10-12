@@ -166,7 +166,9 @@ pub struct Context {
 }
 
 /// The most recent messages that fit `MAX_HISTORY_MESSAGES` and `max_chars`,
-/// oldest dropped first. The newest message is always kept whole.
+/// oldest dropped first. The newest message is always kept whole. The window
+/// starts on a user message, because chat APIs reject a leading assistant one;
+/// any assistant messages that would lead it count as omitted.
 pub fn build_context(history: &[ChatMessage], max_chars: usize) -> Context {
     let mut used = 0;
     let mut start = history.len();
@@ -179,6 +181,9 @@ pub fn build_context(history: &[ChatMessage], max_chars: usize) -> Context {
         }
         used += chars;
         start = i;
+    }
+    while start + 1 < history.len() && history[start].role == Role::Assistant {
+        start += 1;
     }
     Context {
         messages: history[start..].to_vec(),
