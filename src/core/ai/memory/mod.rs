@@ -7,6 +7,7 @@ pub mod health;
 pub mod kind;
 pub mod port;
 pub mod redact;
+pub mod reply;
 pub mod route;
 pub mod slug;
 
