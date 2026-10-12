@@ -46,6 +46,38 @@ impl Task {
     }
 }
 
+/// The persona given to the model. It changes only the prompts.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Profile {
+    Analyst,
+    #[default]
+    Programmer,
+}
+
+impl Profile {
+    pub const ALL: [Self; 2] = [Self::Analyst, Self::Programmer];
+
+    /// The lowercase id: the value of `[ai] profile`.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Analyst => "analyst",
+            Self::Programmer => "programmer",
+        }
+    }
+
+    /// The profile of an id; case-sensitive, no trimming.
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.id() == id)
+    }
+
+    /// The next profile, wrapping.
+    pub fn cycled(self, forward: bool) -> Self {
+        let len = Self::ALL.len();
+        let step = if forward { 1 } else { len - 1 };
+        Self::ALL[(self as usize + step) % len]
+    }
+}
+
 /// An engine id plus a model name; either may be unset.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Assignment {
@@ -58,6 +90,7 @@ pub struct Assignment {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct AiConfig {
     slots: [Assignment; 5],
+    profile: Profile,
 }
 
 impl AiConfig {
@@ -67,6 +100,14 @@ impl AiConfig {
 
     pub fn set(&mut self, task: Task, assignment: Assignment) {
         self.slots[task as usize] = assignment;
+    }
+
+    pub fn profile(&self) -> Profile {
+        self.profile
+    }
+
+    pub fn set_profile(&mut self, profile: Profile) {
+        self.profile = profile;
     }
 
     /// The effective assignment of a task and whether it was inherited from
@@ -143,9 +184,26 @@ fn read_assignment(section: &Table, path: &str, problems: &mut Vec<String>) -> A
     Assignment { engine, model }
 }
 
-/// Reads `[ai]` (the general task) and `[ai.tasks.<id>]` (the others). Each
-/// key falls back to unset on its own; `general` and unknown names under
-/// `ai.tasks` are ignored.
+/// Reads `profile`: a missing key and an empty string are the default; any
+/// other value that is not a profile id falls back to it with a problem.
+fn read_profile(section: &Table, problems: &mut Vec<String>) -> Profile {
+    match section.get("profile") {
+        None => Profile::default(),
+        Some(Value::String(id)) if id.is_empty() => Profile::default(),
+        Some(Value::String(id)) => Profile::from_id(id).unwrap_or_else(|| {
+            problems.push("ai.profile: expected \"analyst\" or \"programmer\"".to_owned());
+            Profile::default()
+        }),
+        Some(_) => {
+            problems.push("ai.profile: expected a string".to_owned());
+            Profile::default()
+        }
+    }
+}
+
+/// Reads `[ai]` (the general task and the profile) and `[ai.tasks.<id>]`
+/// (the others). Each key falls back to unset on its own; `general` and
+/// unknown names under `ai.tasks` are ignored.
 pub fn read(table: &Table, problems: &mut Vec<String>) -> AiConfig {
     let mut config = AiConfig::default();
     let section = match table.get("ai") {
@@ -157,6 +215,7 @@ pub fn read(table: &Table, problems: &mut Vec<String>) -> AiConfig {
         }
     };
     config.set(Task::General, read_assignment(section, "ai", problems));
+    config.profile = read_profile(section, problems);
     let tasks = match section.get("tasks") {
         None => return config,
         Some(Value::Table(tasks)) => tasks,
@@ -504,6 +563,93 @@ mod tests {
                 ]
             )
         );
+    }
+
+    // Spec (prompt-profiles): Profile set integrity.
+    #[test]
+    fn the_profile_set_is_fixed_ordered_and_unique() {
+        let ids: Vec<&str> = Profile::ALL.iter().map(|p| p.id()).collect();
+        assert_eq!(ids, ["analyst", "programmer"]);
+        for (i, profile) in Profile::ALL.iter().enumerate() {
+            assert_eq!(*profile as usize, i, "{}", profile.id());
+        }
+    }
+
+    // Spec (prompt-profiles): Default.
+    #[test]
+    fn the_profile_defaults_to_programmer() {
+        assert_eq!(Profile::default(), Profile::Programmer);
+        assert_eq!(AiConfig::default().profile(), Profile::Programmer);
+        for text in ["", "[ai]\n", "[ai]\nprofile = \"\"\n", "ai = 3\n"] {
+            assert_eq!(read_text(text).0.profile(), Profile::Programmer, "{text:?}");
+        }
+    }
+
+    // Spec (configuration): Profile parsed.
+    #[test]
+    fn both_profile_ids_are_read_without_a_problem() {
+        for profile in Profile::ALL {
+            let text = format!("[ai]\nprofile = \"{}\"\n", profile.id());
+            let (config, problems) = read_text(&text);
+            assert_eq!(config.profile(), profile);
+            assert_eq!(problems, Vec::<String>::new());
+        }
+    }
+
+    // Spec (configuration): Unknown profile value, case and spaces.
+    #[test]
+    fn an_unknown_profile_falls_back_alone_with_the_exact_problem() {
+        for value in ["wizard", "Analyst", " analyst", "analyst ", "PROGRAMMER"] {
+            let text = format!("[ai]\nprofile = \"{value}\"\nengine = \"ollama\"\n");
+            let (config, problems) = read_text(&text);
+            assert_eq!(config.profile(), Profile::Programmer, "{value:?}");
+            assert_eq!(config.get(Task::General).engine.as_deref(), Some("ollama"));
+            assert_eq!(
+                problems,
+                vec!["ai.profile: expected \"analyst\" or \"programmer\"".to_owned()],
+                "{value:?}"
+            );
+        }
+    }
+
+    // Spec (configuration): Non-string profile.
+    #[test]
+    fn a_non_string_profile_falls_back_with_the_exact_problem() {
+        for value in ["3", "true", "[\"analyst\"]", "{ a = 1 }"] {
+            let (config, problems) = read_text(&format!("[ai]\nprofile = {value}\n"));
+            assert_eq!(config.profile(), Profile::Programmer, "{value}");
+            assert_eq!(
+                problems,
+                vec!["ai.profile: expected a string".to_owned()],
+                "{value}"
+            );
+        }
+    }
+
+    // Spec (configuration): problems are counted with the others, general
+    // keys first, then the profile, then the tasks.
+    #[test]
+    fn the_profile_problem_comes_after_the_general_keys_and_before_the_tasks() {
+        let text = "[ai.tasks.code]\nengine = 5\n[ai]\nprofile = 1\nmodel = 2\n";
+        assert_eq!(
+            read_text(text).1,
+            vec![
+                "ai.model: expected a string".to_owned(),
+                "ai.profile: expected a string".to_owned(),
+                "ai.tasks.code.engine: expected a string".to_owned(),
+            ]
+        );
+    }
+
+    // The profile is not an assignment: it never touches the tasks.
+    #[test]
+    fn the_profile_is_independent_of_the_assignments() {
+        let (config, _) = read_text("[ai]\nprofile = \"analyst\"\n");
+        assert_eq!(config.get(Task::General), &Assignment::default());
+        let mut want = AiConfig::default();
+        want.set_profile(Profile::Analyst);
+        assert_eq!(config, want);
+        assert_ne!(config, AiConfig::default());
     }
 
     #[test]
