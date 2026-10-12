@@ -1562,8 +1562,14 @@ mod tests {
     async fn chat_effects_never_touch_ptys_or_detection() {
         let calls = Rc::new(RefCell::new(0));
         let seen = Rc::clone(&calls);
-        let (panes, mut rx) = panes_with_chats(scripted(vec![StreamEvent::Done(Finish::Stop)]));
-        let mut panes = panes.with_detector(Box::new(move || *seen.borrow_mut() += 1));
+        let (panes, _pty_rx, rec) = fake_panes(None);
+        let (tx, mut rx) = mpsc::channel(chat::APP_CHANNEL);
+        let runner = scripted(vec![StreamEvent::Done(Finish::Stop)]);
+        let mut panes = panes
+            .with_chats(Chats::new(runner, tx))
+            .with_detector(Box::new(move || *seen.borrow_mut() += 1));
+        // Two live PTYs, one on the very id the chat uses.
+        spawn_two(&mut panes);
         panes.apply(vec![
             chat_send(id(1), 1),
             Effect::ChatCancel(id(1)),
@@ -1571,6 +1577,16 @@ mod tests {
         ]);
         tokio::time::sleep(Duration::from_secs(1)).await;
         while rx.try_recv().is_ok() {}
+        {
+            let rec = rec.borrow();
+            assert_eq!(rec.specs.len(), 2, "a chat spawns no PTY");
+            for log in &rec.logs {
+                let log = log.lock().unwrap();
+                assert!(log.writes.is_empty(), "a chat writes to no PTY");
+                assert!(log.resizes.is_empty(), "a chat resizes no PTY");
+                assert_eq!(log.kills, 0, "a chat kills no PTY");
+            }
+        }
         assert_eq!(*calls.borrow(), 0, "a chat never starts a detection run");
         panes.apply(vec![Effect::DetectEngines]);
         assert_eq!(
