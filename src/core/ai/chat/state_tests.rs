@@ -161,7 +161,10 @@ fn the_system_prompt_travels_apart_and_stays_pinned() {
     }
     let (_, request) = sent(&mut state, "last");
     assert_eq!(request.system, SYSTEM);
-    assert_eq!(request.messages.len(), 40);
+    // 61 messages: the 40-message window would start on an assistant message,
+    // which is dropped, so 39 are sent and the first is a user message.
+    assert_eq!(request.messages.len(), 39);
+    assert_eq!(request.messages[0].role, Role::User);
     assert_eq!(
         request.messages.last().map(|m| m.content.as_str()),
         Some("last")
@@ -176,7 +179,8 @@ fn the_marker_is_shown_once_before_the_oldest_sent_message() {
     }
     assert!(systems(&state).is_empty(), "40 messages fit, no marker");
     let (_, request) = sent(&mut state, "q20");
-    assert_eq!(request.messages.len(), 40);
+    // The window of 40 would start on a0; it starts on q1 instead.
+    assert_eq!(request.messages.len(), 39);
     answered(&mut state, "a20");
     let markers = |s: &ChatState| {
         s.entries()
@@ -188,9 +192,10 @@ fn the_marker_is_shown_once_before_the_oldest_sent_message() {
     };
     let at = markers(&state);
     assert_eq!(at.len(), 1);
-    // 41 messages so far: the oldest one (q0) is not sent.
+    // 41 messages so far: q0 is trimmed and a0 would lead the window, so
+    // neither is sent and the marker sits before q1.
     match &state.entries()[at[0] + 1] {
-        Entry::Message(m) => assert_eq!(m.text, "a0"),
+        Entry::Message(m) => assert_eq!(m.text, "q1"),
         other => panic!("marker not followed by a message: {other:?}"),
     }
     // The next send moves the marker; it is never duplicated.
@@ -199,7 +204,7 @@ fn the_marker_is_shown_once_before_the_oldest_sent_message() {
     let at = markers(&state);
     assert_eq!(at.len(), 1);
     match &state.entries()[at[0] + 1] {
-        Entry::Message(m) => assert_eq!(m.text, "a1"),
+        Entry::Message(m) => assert_eq!(m.text, "q2"),
         other => panic!("marker not followed by a message: {other:?}"),
     }
 }
@@ -258,15 +263,16 @@ fn the_marker_stays_right_when_an_orphan_is_left_out() {
         answered(&mut state, &format!("a{i}"));
     }
     let (_, request) = sent(&mut state, "last");
-    assert_eq!(request.messages.len(), 40);
+    assert_eq!(request.messages.len(), 39);
     let at = state
         .entries()
         .iter()
         .position(|e| *e == Entry::System(TRUNCATION_MARKER.into()))
         .expect("marker");
-    // 20 exchanges plus "last" make 41 sendable messages: q0 is left out.
+    // 20 exchanges plus "last" make 41 sendable messages: q0 is left out, and
+    // so is a0, which would lead the window.
     match &state.entries()[at + 1] {
-        Entry::Message(m) => assert_eq!(m.text, "a0"),
+        Entry::Message(m) => assert_eq!(m.text, "q1"),
         other => panic!("marker not followed by a message: {other:?}"),
     }
 }
@@ -304,4 +310,17 @@ fn an_odd_message_count_is_full_when_the_exchange_does_not_fit() {
     assert_eq!(state.send("more", &ready(), SYSTEM), SendOutcome::Refused);
     assert_eq!(state.messages().count(), MAX_MESSAGES - 1);
     assert_eq!(systems(&state).last(), Some(&FULL));
+}
+#[test]
+fn a_refused_send_leaves_the_turn_message_last_among_the_messages() {
+    // The in-flight message is the last `Entry::Message`, not the last entry:
+    // a refused send appends a system line after it.
+    let mut state = chat();
+    sent(&mut state, "one");
+    assert_eq!(state.send("two", &ready(), SYSTEM), SendOutcome::Refused);
+    assert_eq!(state.entries().last(), Some(&Entry::System(BUSY.into())));
+    assert_eq!(state.phase(), Phase::Waiting { slow: false });
+    let last_message = state.messages().last().map(|m| m.text.as_str());
+    assert_eq!(last_message, Some("one"));
+    assert_eq!(state.messages().count(), 1);
 }
