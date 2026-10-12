@@ -17,7 +17,7 @@ use crate::core::ai::{
         engine::{ChatError, StreamEvent},
         stream::StreamDecoder,
     },
-    http::{Dechunker, Framing, Head, Malformed, Step, parse_head},
+    http::{Body, Head, Step, parse_head},
     sanitize::clean,
 };
 
@@ -206,40 +206,6 @@ impl Wait<'_> {
         };
         self.started |= n > 0;
         Ok(n)
-    }
-}
-
-/// The body framing of a reply, applied to each read.
-enum Body {
-    Length(usize),
-    Chunked(Dechunker),
-    Close,
-}
-
-impl Body {
-    fn new(framing: Framing) -> Self {
-        match framing {
-            Framing::Length(n) => Body::Length(n),
-            Framing::Chunked => Body::Chunked(Dechunker::new()),
-            Framing::Close => Body::Close,
-        }
-    }
-
-    /// Appends the body bytes of `bytes` to `out`; `Done` when the body ended.
-    fn feed(&mut self, bytes: &[u8], out: &mut Vec<u8>) -> Result<Step, Malformed> {
-        match self {
-            Body::Length(left) => {
-                let n = (*left).min(bytes.len());
-                out.extend_from_slice(&bytes[..n]);
-                *left -= n;
-                Ok(if *left == 0 { Step::Done } else { Step::More })
-            }
-            Body::Chunked(dechunker) => dechunker.feed(bytes, out),
-            Body::Close => {
-                out.extend_from_slice(bytes);
-                Ok(Step::More)
-            }
-        }
     }
 }
 
