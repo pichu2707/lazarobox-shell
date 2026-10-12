@@ -172,7 +172,6 @@ pub async fn run() -> io::Result<()> {
     // The user gets the prompt back first; the children are killed after.
     // `rx` went away with the loop, so readers stuck on a full channel stopped.
     restore();
-    // Engines first (sockets closed, CLI process groups killed), then the PTY
     // Quit order, and why:
     // 1. The loop already returned, so the final Cancel and Append effects of
     //    every open turn were applied (they must be emitted before the store
