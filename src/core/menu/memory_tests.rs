@@ -424,3 +424,49 @@ fn a_warning_never_opens_without_the_ai_section() {
     }
     assert!(!menu.in_warning());
 }
+
+// Review W3: a hand-edited `enabled = true` without the acknowledgement is
+// inactive at runtime, so the row says `off` and the first toggle warns.
+const HAND_EDITED: MemoryConfig = MemoryConfig {
+    enabled: true,
+    acknowledged: false,
+    port: 7437,
+};
+
+#[test]
+fn enabled_without_the_acknowledgement_shows_off() {
+    assert!(!HAND_EDITED.active());
+    assert_eq!(shown_value(&menu_with(HAND_EDITED)), "off");
+}
+
+#[test]
+fn the_first_toggle_of_a_hand_edited_memory_opens_the_warning() {
+    let mut menu = menu_with(HAND_EDITED);
+    goto_memory(&mut menu);
+    press(&mut menu, KeyCode::Char('l'));
+    assert!(menu.in_warning());
+    assert!(menu.edits(&Config::default()).is_empty());
+}
+
+#[test]
+fn accepting_for_a_hand_edited_memory_edits_only_the_acknowledgement() {
+    let mut menu = menu_with(HAND_EDITED);
+    goto_memory(&mut menu);
+    press(&mut menu, KeyCode::Char('l'));
+    press(&mut menu, KeyCode::Char('y'));
+    assert_eq!(shown_value(&menu), "on");
+    assert_eq!(
+        menu.edits(&Config::default()),
+        vec![flag("acknowledged", true)]
+    );
+}
+
+#[test]
+fn declining_for_a_hand_edited_memory_keeps_it_off_and_edits_nothing() {
+    let mut menu = menu_with(HAND_EDITED);
+    goto_memory(&mut menu);
+    press(&mut menu, KeyCode::Char('l'));
+    press(&mut menu, KeyCode::Char('n'));
+    assert_eq!(shown_value(&menu), "off");
+    assert!(menu.edits(&Config::default()).is_empty());
+}

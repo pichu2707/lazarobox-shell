@@ -66,6 +66,9 @@ pub const UNACKNOWLEDGED_NOTICE: &str =
 /// `port` is owned too but only ever hand-edited, so a save never touches it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MemoryConfig {
+    /// The raw key. A hand-edited file can hold `enabled = true` without the
+    /// acknowledgement, so consumers MUST ask [`MemoryConfig::active`], never
+    /// read this flag to decide whether memory works or what to show.
     pub enabled: bool,
     pub acknowledged: bool,
     pub port: u16,

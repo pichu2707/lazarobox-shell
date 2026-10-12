@@ -51,7 +51,7 @@ impl AiMenu {
     /// user accepts. Nothing is written or requested here.
     pub fn toggle_memory(&mut self) {
         let memory = &mut self.draft.memory;
-        if memory.enabled {
+        if memory.active() {
             memory.enabled = false;
         } else if memory.acknowledged {
             memory.enabled = true;

@@ -409,7 +409,10 @@ impl MenuState {
                         row
                     }
                     ItemKind::Memory(memory) => {
-                        let on = self.ai.as_ref().is_some_and(|ai| ai.draft().memory.enabled);
+                        let on = self
+                            .ai
+                            .as_ref()
+                            .is_some_and(|ai| ai.draft().memory.active());
                         let row = Row::Item {
                             label: item.label,
                             value: Some(Cow::Borrowed(memory.values[usize::from(on)])),
