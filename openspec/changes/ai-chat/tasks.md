@@ -181,11 +181,11 @@ Files changed:
 
 ## PR11 / C10a: Profile config and menu (`src/core/ai/{config,menu}.rs`, `src/core/{menu,config_edit}.rs`)
 
-- [ ] 11.1 RED: `Profile { Analyst, Programmer }`, default `programmer` (absent, empty, unknown), exact notices for non-string and unknown values, counted with other problems, `ai = 3`.
-- [ ] 11.2 RED: `Profile` row after the six task rows: descriptor integrity, navigation wrap (`Profile` last), cycle with `h/l`/Space/Enter, Repeat of Enter ignored, footer, `r` does nothing, no side effects, Esc reverts, `s` saves.
-- [ ] 11.3 RED: persistence: profile created, updated in place, written explicitly even when default, untouched when unchanged, no engine keys written, `[ai.profile]` table refused with exact footer, scalar replaced, collision ignored when unchanged, `ai` scalar.
-- [ ] 11.4 GREEN: implement parse, menu row, `edits()`, `config_edit` owned key `ai.profile`; Profile row render snapshots.
-- [ ] 11.5 Gate.
+- [x] 11.1 RED: `Profile { Analyst, Programmer }`, default `programmer` (absent, empty, unknown), exact notices for non-string and unknown values, counted with other problems, `ai = 3`.
+- [x] 11.2 RED: `Profile` row after the six task rows: descriptor integrity, navigation wrap (`Profile` last), cycle with `h/l`/Space/Enter, Repeat of Enter ignored, footer, `r` does nothing, no side effects, Esc reverts, `s` saves.
+- [x] 11.3 RED: persistence: profile created, updated in place, written explicitly even when default, untouched when unchanged, no engine keys written, `[ai.profile]` table refused with exact footer, scalar replaced, collision ignored when unchanged, `ai` scalar.
+- [x] 11.4 GREEN: implement parse, menu row, `edits()`, `config_edit` owned key `ai.profile`; Profile row render snapshots.
+- [x] 11.5 Gate.
 
 ## PR12 / C10b: Prompts (`src/core/ai/chat/prompts/**`, `src/core/ai/chat/prompts.rs`, `src/runtime/chat.rs`)
 

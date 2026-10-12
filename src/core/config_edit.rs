@@ -798,4 +798,97 @@ other = 1
             assert_eq!(notice, None, "{out:?}");
         }
     }
+
+    // Spec (config-persistence): the profile is an owned key. The generic
+    // table and key code covers it; these pin the scenarios.
+    fn profile_edit(value: &'static str) -> [ConfigEdit; 1] {
+        [ConfigEdit {
+            table: "ai",
+            key: "profile",
+            value: std::borrow::Cow::Borrowed(value),
+        }]
+    }
+
+    #[test]
+    fn a_profile_is_created_at_the_end_of_a_new_ai_table() {
+        let existing = "# mine\n[statusline]\nposition = \"bottom\"\n";
+        let out = apply_edit(Some(existing), &profile_edit("analyst")).unwrap();
+        assert_eq!(out, format!("{existing}\n[ai]\nprofile = \"analyst\"\n"));
+    }
+
+    #[test]
+    fn a_profile_is_updated_in_place() {
+        let existing = "[ai]\nengine = \"ollama\"\n# who\nprofile = \"analyst\"  # p\n";
+        let out = apply_edit(Some(existing), &profile_edit("programmer")).unwrap();
+        assert_eq!(
+            out,
+            "[ai]\nengine = \"ollama\"\n# who\nprofile = \"programmer\"  # p\n"
+        );
+    }
+
+    #[test]
+    fn the_default_profile_is_written_explicitly_and_never_removed() {
+        let existing = "[ai]\nprofile = \"analyst\"\n";
+        let out = apply_edit(Some(existing), &profile_edit("programmer")).unwrap();
+        assert_eq!(out, "[ai]\nprofile = \"programmer\"\n");
+        let out = apply_edit(None, &profile_edit("programmer")).unwrap();
+        assert_eq!(out, "[ai]\nprofile = \"programmer\"\n");
+    }
+
+    #[test]
+    fn a_profile_only_save_writes_no_engine_keys() {
+        for text in [None, Some("[ai]\nengine = \"x\"\n"), Some("# c\n")] {
+            let out = apply_edit(text, &profile_edit("analyst")).unwrap();
+            let (_, ai, notice) = Config::load_with_ai(Ok(out.clone()));
+            assert_eq!(notice, None, "{out:?}");
+            assert_eq!(ai.profile(), crate::core::ai::config::Profile::Analyst);
+            let had_engine = text.is_some_and(|t| t.contains("engine"));
+            assert_eq!(out.matches("engine").count(), usize::from(had_engine));
+            assert!(!out.contains("model"), "{out:?}");
+        }
+    }
+
+    #[test]
+    fn a_position_only_save_leaves_the_profile_line_alone() {
+        let saved = "[ai]\nprofile = \"programmer\"\n";
+        let out = apply_edit(Some(saved), &[edit("statusline", "top")]).unwrap();
+        assert_eq!(out, format!("{saved}\n[statusline]\nposition = \"top\"\n"));
+        let out = apply_edit(Some("# c\n"), &[edit("statusline", "top")]).unwrap();
+        assert!(!out.contains("profile"), "{out:?}");
+    }
+
+    // Spec (config-persistence): Profile key collisions.
+    #[test]
+    fn a_profile_table_is_refused_and_a_scalar_is_replaced() {
+        let refused = Err(EditError::KeyIsTable {
+            table: "ai",
+            key: "profile",
+        });
+        for text in [
+            "[ai.profile]\nx = 1\n",
+            "[ai]\nprofile = { x = 1 }\n",
+            "[[ai.profile]]\nx = 1\n",
+        ] {
+            assert_eq!(
+                apply_edit(Some(text), &profile_edit("analyst")),
+                refused,
+                "{text:?}"
+            );
+        }
+        let out = apply_edit(Some("[ai]\nprofile = 3\n"), &profile_edit("analyst")).unwrap();
+        assert_eq!(out, "[ai]\nprofile = \"analyst\"\n");
+        assert_eq!(
+            apply_edit(Some("ai = 3\n"), &profile_edit("analyst")),
+            Err(EditError::NotATable("ai"))
+        );
+    }
+
+    #[test]
+    fn a_profile_collision_is_ignored_when_the_profile_is_not_edited() {
+        let existing = "[ai.profile]\nx = 1\n[statusline]\nposition = \"bottom\"\n";
+        let out = apply_edit(Some(existing), &[edit("statusline", "top")]).unwrap();
+        assert_eq!(out, existing.replace("\"bottom\"", "\"top\""));
+        let out = apply_edit(Some("ai = 3\n"), &[edit("statusline", "top")]).unwrap();
+        assert!(out.starts_with("ai = 3\n"), "{out:?}");
+    }
 }

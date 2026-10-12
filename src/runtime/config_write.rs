@@ -274,6 +274,54 @@ mod tests {
         }
     }
 
+    // Spec (config-persistence): Profile key collisions.
+    #[test]
+    fn profile_collisions_map_to_their_message_and_stay_byte_identical() {
+        let profile = ConfigEdit {
+            table: "ai",
+            key: "profile",
+            value: std::borrow::Cow::Borrowed("analyst"),
+        };
+        let cases = [
+            (
+                "[ai.profile]\nx = 1\n",
+                "config.toml: ai.profile is a table; fix it before saving",
+            ),
+            (
+                "ai = 3\n",
+                "config.toml: ai is not a table; fix it before saving",
+            ),
+        ];
+        for (text, message) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let path = config_in(&dir);
+            fs::write(&path, text).unwrap();
+            assert_eq!(
+                save_config(Some(&path), std::slice::from_ref(&profile)),
+                Err(message.to_owned()),
+                "for {text:?}"
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        }
+    }
+
+    #[test]
+    fn a_scalar_profile_is_replaced_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_in(&dir);
+        fs::write(&path, "[ai]\nprofile = 3\n").unwrap();
+        let profile = ConfigEdit {
+            table: "ai",
+            key: "profile",
+            value: std::borrow::Cow::Borrowed("analyst"),
+        };
+        save_config(Some(&path), &[profile]).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[ai]\nprofile = \"analyst\"\n"
+        );
+    }
+
     // Spec (config-persistence): nested collisions name the full path.
     #[test]
     fn nested_ai_collisions_map_to_their_message_and_stay_byte_identical() {
