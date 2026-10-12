@@ -1,0 +1,148 @@
+//! Child-process helpers shared by the runtime's probes and, later, the chat
+//! CLI engines.
+
+/// Kills a process group on `kill()` or, while still armed, on drop.
+///
+/// Put it after the `Child` it guards so it drops first: a dropped future then
+/// still kills the group while the leader has not been reaped yet.
+///
+/// # Reaping: `disarm()` is MANDATORY
+///
+/// A reaped pid can be recycled, and its pgid with it. The moment the leader
+/// is reaped the guard MUST be disarmed, otherwise a later `kill()` or the
+/// drop would `killpg` a group that now belongs to an unrelated process. Do
+/// not reap with a bare `child.wait()`: use [`GroupKill::reap`], which awaits
+/// the leader and disarms in one step. (A caller that reaps by other means
+/// must call [`GroupKill::disarm`] right after, with nothing in between.)
+/// `kill()` itself stays correct only BEFORE the reap.
+///
+/// # Construction is fallible
+///
+/// `killpg(0)` signals our own group (the UI included), `killpg(1)` and
+/// negative values reach other groups. [`GroupKill::new`] therefore returns
+/// `None` for `pgid <= 1` and for our own process group, so a guard that
+/// exists can only ever target a group other than ours.
+pub struct GroupKill(Option<libc::pid_t>);
+
+impl GroupKill {
+    /// Arms the guard for the group whose leader is `pgid`. `None` when the
+    /// target is unsafe: `pgid <= 1` or our own process group. The caller
+    /// then owns the cleanup of the child (for example by dropping it with
+    /// `kill_on_drop`) and must not assume a group kill is in place.
+    pub fn new(pgid: libc::pid_t) -> Option<Self> {
+        // SAFETY: getpgrp has no preconditions and cannot fail.
+        let own = unsafe { libc::getpgrp() };
+        Self::checked(pgid, own)
+    }
+
+    /// `new` with our own group given, so the refusal rules are testable.
+    fn checked(pgid: libc::pid_t, own: libc::pid_t) -> Option<Self> {
+        // Not `bool::then_some`: it builds the guard eagerly and would drop
+        // (and so killpg) a refused one, e.g. `killpg(0)` on our own group.
+        if pgid > 1 && pgid != own {
+            Some(Self(Some(pgid)))
+        } else {
+            None
+        }
+    }
+
+    /// Sends SIGKILL to the whole group. Only valid while the leader has not
+    /// been reaped.
+    pub fn kill(&self) {
+        if let Some(pgid) = self.0 {
+            // SAFETY: killpg only sends a signal; `pgid` passed the checks in
+            // `new` and the leader has not been reaped (the guard is armed).
+            unsafe { libc::killpg(pgid, libc::SIGKILL) };
+        }
+    }
+
+    /// Disarms the guard: neither `kill` nor drop signals the group any more.
+    /// MANDATORY right after the leader is reaped.
+    pub fn disarm(&mut self) {
+        self.0 = None;
+    }
+
+    /// Whether `kill` and drop would still signal the group.
+    #[cfg(test)]
+    fn is_armed(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// Awaits the leader's exit and disarms the guard in the same step, so
+    /// the pid cannot be recycled while the guard is still armed.
+    ///
+    /// Cancel-safe: if the future is dropped before the wait completes, the
+    /// leader is not reaped and the guard stays armed (and kills on drop).
+    pub async fn reap(
+        &mut self,
+        child: &mut tokio::process::Child,
+    ) -> std::io::Result<std::process::ExitStatus> {
+        let status = child.wait().await;
+        // `Child::wait` has reaped (or failed past reaping): either way the
+        // pid must not be signalled any more.
+        self.disarm();
+        status
+    }
+}
+
+impl Drop for GroupKill {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn own_group() -> libc::pid_t {
+        // SAFETY: getpgrp has no preconditions and cannot fail.
+        unsafe { libc::getpgrp() }
+    }
+
+    #[test]
+    fn refuses_pid_zero_which_would_signal_our_own_group() {
+        assert!(GroupKill::new(0).is_none());
+    }
+
+    #[test]
+    fn refuses_pid_one() {
+        assert!(GroupKill::new(1).is_none());
+    }
+
+    #[test]
+    fn refuses_negative_values() {
+        assert!(GroupKill::new(-1).is_none());
+        assert!(GroupKill::new(-12345).is_none());
+        assert!(GroupKill::new(libc::pid_t::MIN).is_none());
+    }
+
+    #[test]
+    fn refuses_our_own_process_group() {
+        assert!(GroupKill::new(own_group()).is_none());
+    }
+
+    #[test]
+    fn accepts_a_foreign_group_id() {
+        // Pure check, no signal: a pid that is neither special nor our group.
+        let other = own_group().wrapping_add(1).max(2);
+        assert!(GroupKill::checked(other, own_group()).is_some_and(|mut g| {
+            // Disarm so dropping it does not signal a group we do not own.
+            g.disarm();
+            true
+        }));
+    }
+
+    #[tokio::test]
+    async fn reap_waits_for_the_leader_and_disarms() {
+        let mut child = tokio::process::Command::new("true")
+            .process_group(0)
+            .spawn()
+            .expect("true starts");
+        let pid = child.id().expect("a pid") as libc::pid_t;
+        let mut group = GroupKill::new(pid).expect("a fresh group is a valid target");
+        let status = group.reap(&mut child).await.expect("wait succeeds");
+        assert!(status.success());
+        assert!(!group.is_armed(), "reaping disarms the guard");
+    }
+}

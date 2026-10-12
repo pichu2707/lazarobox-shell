@@ -9,7 +9,10 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crate::core::{
     ai::{
         Detection,
-        chat::{ChatState, engine::ChatRequest},
+        chat::{
+            ChatState, Follow, Phase,
+            engine::{ChatRequest, StreamEvent},
+        },
         config::AiConfig,
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
@@ -113,6 +116,9 @@ pub enum AppEvent {
     ConfigSaveFailed(String),
     /// One engine detection run finished. An empty `Detection` means it failed.
     EnginesDetected(Detection),
+    /// An event of a chat turn: the pane, the turn id it was started with, and
+    /// what the engine task reported.
+    Chat(PaneId, u64, StreamEvent),
 }
 
 /// How the menu closed.
@@ -283,6 +289,13 @@ impl PaneState {
         match &mut self.content {
             PaneContent::Pty(pty) => Some(pty),
             PaneContent::Chat(_) => None,
+        }
+    }
+
+    fn chat_mut(&mut self) -> Option<&mut ChatState> {
+        match &mut self.content {
+            PaneContent::Chat(chat) => Some(chat),
+            PaneContent::Pty(_) => None,
         }
     }
 
@@ -736,6 +749,45 @@ impl App {
         self.split_with(Axis::X, NewPane::Chat(ChatState::new(origin)))
     }
 
+    /// Test-only: sends `text` from chat pane `id` to a ready ollama engine.
+    #[cfg(test)]
+    pub(crate) fn chat_send(&mut self, id: PaneId, text: &str) -> Vec<Effect> {
+        use crate::core::ai::chat::{SendOutcome, engine::Availability};
+        let ready = Availability::Ready {
+            engine: "ollama".into(),
+            model: Some("llama3:8b".into()),
+        };
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        match chat.send(text, &ready, "") {
+            SendOutcome::Sent { turn, request } => {
+                self.dirty = true;
+                vec![Effect::ChatSend {
+                    pane: id,
+                    turn,
+                    request,
+                }]
+            }
+            SendOutcome::Refused => Vec::new(),
+        }
+    }
+
+    /// Test-only: cancels the turn of chat pane `id`.
+    #[cfg(test)]
+    pub(crate) fn chat_cancel(&mut self, id: PaneId) -> Vec<Effect> {
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        match chat.cancel() {
+            Follow::CancelEngine => {
+                self.dirty = true;
+                vec![Effect::ChatCancel(id)]
+            }
+            Follow::Nothing => Vec::new(),
+        }
+    }
+
     /// Test-only: opens a chat pane as a new tab.
     #[cfg(test)]
     fn open_chat_tab(&mut self, origin: Option<PathBuf>) -> Vec<Effect> {
@@ -805,6 +857,7 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            AppEvent::Chat(id, turn, event) => self.on_chat(id, turn, event),
         };
         debug_assert_eq!(
             self.menu.is_some(),
@@ -1200,6 +1253,22 @@ impl App {
         }
         self.tabs[t].focus = next;
         self.debug_assert_copy_on_shell();
+    }
+
+    /// Applies one event of a chat turn. Events for a pane that is gone, is a
+    /// shell, or belongs to another turn change nothing and draw nothing.
+    fn on_chat(&mut self, id: PaneId, turn: u64, event: StreamEvent) -> Vec<Effect> {
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        let live = turn == chat.turn() && chat.phase() != Phase::Idle;
+        let follow = chat.apply(turn, event);
+        self.dirty |= live;
+        match follow {
+            // The state ended the turn itself (answer cap): stop the engine.
+            Follow::CancelEngine => vec![Effect::ChatCancel(id)],
+            Follow::Nothing => Vec::new(),
+        }
     }
 
     /// Drops pane `id` of whichever tab holds it and gives its space to its
@@ -6258,6 +6327,241 @@ mod app_tests {
                     assert!(!chats.contains(&target), "{effect:?} targets a chat");
                 }
             }
+        }
+    }
+
+    /// Chat streams (ai-chat C5): `AppEvent::Chat` routing.
+    mod chat_stream {
+        use super::*;
+        use crate::core::ai::chat::{
+            ANSWER_CAP, Entry, MsgStatus, Phase,
+            engine::{ChatError, Finish},
+        };
+
+        fn chat_id() -> PaneId {
+            id2()
+        }
+
+        fn delta(id: PaneId, turn: u64, text: &str) -> AppEvent {
+            AppEvent::Chat(id, turn, StreamEvent::Delta(text.into()))
+        }
+
+        fn finish(id: PaneId, turn: u64) -> AppEvent {
+            AppEvent::Chat(id, turn, StreamEvent::Done(Finish::Stop))
+        }
+
+        fn chat_of(a: &App, id: PaneId) -> &ChatState {
+            match a.pane_view(id) {
+                Some(PaneView::Chat(chat)) => chat,
+                _ => panic!("pane {id:?} is not a chat"),
+            }
+        }
+
+        /// The text and status of the last message of chat `id`.
+        fn last(a: &App, id: PaneId) -> (String, MsgStatus) {
+            let msg = chat_of(a, id).messages().last().expect("a message");
+            (msg.text.clone(), msg.status)
+        }
+
+        fn turn_of(effects: &[Effect]) -> u64 {
+            match effects {
+                [Effect::ChatSend { turn, .. }] => *turn,
+                other => panic!("expected one ChatSend, got {other:?}"),
+            }
+        }
+
+        /// An app with a chat in pane 2 that has sent "hi" as turn 1.
+        fn streaming() -> App {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            assert_eq!(turn_of(&a.chat_send(chat_id(), "hi")), 1);
+            a
+        }
+
+        #[test]
+        fn events_are_applied_in_order_and_the_final_one_ends_the_turn() {
+            let mut a = streaming();
+            a.take_dirty();
+            for event in [delta(chat_id(), 1, "Hel"), delta(chat_id(), 1, "lo")] {
+                assert_eq!(a.update(event), vec![]);
+            }
+            assert_eq!(last(&a, chat_id()), ("Hello".into(), MsgStatus::Complete));
+            assert_eq!(chat_of(&a, chat_id()).phase(), Phase::Streaming);
+            assert!(a.take_dirty(), "the chat is redrawn");
+            assert_eq!(a.update(finish(chat_id(), 1)), vec![]);
+            assert_eq!(chat_of(&a, chat_id()).phase(), Phase::Idle);
+            assert_eq!(last(&a, chat_id()), ("Hello".into(), MsgStatus::Complete));
+        }
+
+        #[test]
+        fn an_error_is_terminal_and_keeps_the_partial_answer() {
+            let mut a = streaming();
+            a.update(delta(chat_id(), 1, "Hel"));
+            let error = AppEvent::Chat(
+                chat_id(),
+                1,
+                StreamEvent::Error(ChatError::Failed("boom".into())),
+            );
+            assert_eq!(a.update(error), vec![]);
+            assert_eq!(chat_of(&a, chat_id()).phase(), Phase::Idle);
+            assert_eq!(last(&a, chat_id()), ("Hel".into(), MsgStatus::Error));
+            assert_eq!(
+                chat_of(&a, chat_id()).entries().last(),
+                Some(&Entry::System("boom".into()))
+            );
+            // Nothing after the end of the turn changes the chat.
+            a.update(delta(chat_id(), 1, "late"));
+            assert_eq!(last(&a, chat_id()), ("Hel".into(), MsgStatus::Error));
+        }
+
+        #[test]
+        fn cancel_keeps_the_partial_answer_and_drops_the_events_that_follow() {
+            let mut a = streaming();
+            a.update(delta(chat_id(), 1, "Hel"));
+            assert_eq!(
+                a.chat_cancel(chat_id()),
+                vec![Effect::ChatCancel(chat_id())]
+            );
+            a.take_dirty();
+            for event in [delta(chat_id(), 1, "lo"), finish(chat_id(), 1)] {
+                assert_eq!(a.update(event), vec![]);
+            }
+            assert_eq!(last(&a, chat_id()), ("Hel".into(), MsgStatus::Cancelled));
+            assert!(!a.take_dirty(), "a dropped event redraws nothing");
+        }
+
+        #[test]
+        fn two_chats_stream_independently() {
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            a.open_chat(None);
+            let (one, two) = (id2(), id3());
+            assert_eq!(turn_of(&a.chat_send(one, "q1")), 1);
+            assert_eq!(turn_of(&a.chat_send(two, "q2")), 1);
+            a.update(delta(one, 1, "A"));
+            a.update(delta(two, 1, "x"));
+            a.update(delta(one, 1, "B"));
+            a.update(finish(two, 1));
+            assert_eq!(last(&a, one), ("AB".into(), MsgStatus::Complete));
+            assert_eq!(chat_of(&a, one).phase(), Phase::Streaming);
+            assert_eq!(last(&a, two), ("x".into(), MsgStatus::Complete));
+            assert_eq!(chat_of(&a, two).phase(), Phase::Idle);
+            a.update(finish(one, 1));
+            assert_eq!(chat_of(&a, one).phase(), Phase::Idle);
+        }
+
+        #[test]
+        fn a_stream_continues_in_a_background_tab() {
+            let mut a = launched(80, 25);
+            a.open_chat_tab(None);
+            let chat = a.focused();
+            a.chat_send(chat, "hi");
+            press(&mut a, "b1");
+            assert_eq!(a.focused(), PaneId::FIRST);
+            a.update(delta(chat, 1, "Hel"));
+            a.update(delta(chat, 1, "lo"));
+            a.update(finish(chat, 1));
+            press(&mut a, "b2");
+            assert_eq!(a.focused(), chat);
+            assert_eq!(last(&a, chat), ("Hello".into(), MsgStatus::Complete));
+            assert_eq!(chat_of(&a, chat).phase(), Phase::Idle);
+        }
+
+        #[test]
+        fn a_stream_continues_during_copy_and_leaves_the_mode_alone() {
+            let mut a = streaming();
+            press(&mut a, "h");
+            assert_eq!(a.focused(), PaneId::FIRST);
+            press(&mut a, "[");
+            assert!(matches!(a.input(), InputMode::Copy(_)));
+            let mode = a.input();
+            a.update(delta(chat_id(), 1, "Hel"));
+            a.update(finish(chat_id(), 1));
+            assert_eq!(a.input(), mode);
+            assert_eq!(a.focused(), PaneId::FIRST);
+            assert_eq!(last(&a, chat_id()), ("Hel".into(), MsgStatus::Complete));
+        }
+
+        #[test]
+        fn a_stream_continues_across_zoom_and_focus_changes() {
+            let mut a = streaming();
+            press(&mut a, "h");
+            press(&mut a, "wz");
+            a.update(delta(chat_id(), 1, "Hel"));
+            press(&mut a, "wz");
+            press(&mut a, "l");
+            a.update(delta(chat_id(), 1, "lo"));
+            press(&mut a, "h");
+            a.update(finish(chat_id(), 1));
+            assert_eq!(last(&a, chat_id()), ("Hello".into(), MsgStatus::Complete));
+            assert_eq!(chat_of(&a, chat_id()).phase(), Phase::Idle);
+        }
+
+        #[test]
+        fn events_for_a_shell_or_an_unknown_pane_are_dropped() {
+            let mut a = streaming();
+            a.take_dirty();
+            for id in [PaneId::FIRST, PaneId::for_test(99)] {
+                assert_eq!(a.update(delta(id, 1, "x")), vec![]);
+            }
+            assert!(!a.take_dirty());
+            assert_eq!(a.notice(), None);
+        }
+
+        #[test]
+        fn an_event_of_another_turn_is_dropped() {
+            let mut a = streaming();
+            a.take_dirty();
+            assert_eq!(a.update(delta(chat_id(), 7, "x")), vec![]);
+            assert_eq!(
+                chat_of(&a, chat_id()).phase(),
+                Phase::Waiting { slow: false }
+            );
+            assert!(!a.take_dirty());
+        }
+
+        // The runtime stops at 1 MiB first; if the state still hits the cap it
+        // asks for exactly one cancel.
+        #[test]
+        fn a_state_that_hits_the_cap_asks_for_exactly_one_cancel() {
+            let mut a = streaming();
+            let big = "a".repeat(ANSWER_CAP + 1);
+            assert_eq!(
+                a.update(delta(chat_id(), 1, &big)),
+                vec![Effect::ChatCancel(chat_id())]
+            );
+            assert_eq!(a.update(delta(chat_id(), 1, "more")), vec![]);
+            assert_eq!(last(&a, chat_id()).1, MsgStatus::Truncated);
+        }
+
+        // The cap reported by the runtime (Error(Truncated)) needs no cancel.
+        #[test]
+        fn a_truncated_error_from_the_runtime_asks_for_no_cancel() {
+            let mut a = streaming();
+            a.update(delta(chat_id(), 1, &"a".repeat(ANSWER_CAP)));
+            let truncated = AppEvent::Chat(chat_id(), 1, StreamEvent::Error(ChatError::Truncated));
+            assert_eq!(a.update(truncated), vec![]);
+            assert_eq!(
+                last(&a, chat_id()),
+                ("a".repeat(ANSWER_CAP), MsgStatus::Truncated)
+            );
+        }
+
+        // Task 4.4 enforcement: a chat never schedules or blocks a detection.
+        #[test]
+        fn chat_traffic_neither_starts_nor_clears_a_detection() {
+            let mut a = streaming();
+            assert_eq!(a.request_detection(), vec![Effect::DetectEngines]);
+            a.update(delta(chat_id(), 1, "x"));
+            a.update(finish(chat_id(), 1));
+            assert_eq!(a.request_detection(), vec![], "still in flight");
+            a.update(AppEvent::EnginesDetected(Detection::default()));
+            assert_eq!(a.request_detection(), vec![Effect::DetectEngines]);
+            let send = a.chat_send(chat_id(), "again");
+            assert!(
+                matches!(send.as_slice(), [Effect::ChatSend { .. }]),
+                "{send:?}"
+            );
         }
     }
 }
