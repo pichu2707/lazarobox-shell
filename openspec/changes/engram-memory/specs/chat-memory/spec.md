@@ -351,7 +351,7 @@ Notes and conversations have separate lifetimes: a note is distilled knowledge t
 - THEN no prompt is shown, no `DELETE` is sent, and the links of the evicted conversation are removed
 
 ### Requirement: Degradation and hints
-When memory is enabled but not usable, the chat MUST work normally and memory errors MUST NEVER block, delay or fail a reply. For each conversation view the transcript MUST show once the system line `memory unavailable: <reason>` with the reason one of `engram is not running`, `old engram server on :<port>, restart it with 3.x`, `port <port> is not engram`, `engram did not answer`, `engram not found on PATH` or `engram on PATH is 1.x; upgrade it`. A project that is not a git project (`dir_basename` or `ambiguous`) MUST show instead, once, the system line `memory needs a git project` (without the `memory unavailable:` prefix). Memory keys (save note, summary) in a state other than ready MUST show the notice `Memory is not ready: <reason>`, request a new health probe (which the worker runs only if at least 10 s passed since the last one), and MUST open nothing. With memory off they show `Memory is off; enable it in the menu (Ctrl+Space m)`. The statusline shows the state (see statusline).
+When memory is enabled but not usable, the chat MUST work normally and memory errors MUST NEVER block, delay or fail a reply. For each conversation view the transcript MUST show once the system line `memory unavailable: <reason>` with the reason one of `engram is not running`, `old engram server on :<port>, restart it with 3.x`, `port <port> is not engram`, `engram did not answer`, `engram not found on PATH` or `engram on PATH is 1.x; upgrade it`. A project that is not a git project (`dir_basename` or `ambiguous`) MUST show instead, once, the system line `memory needs a git project` (without the `memory unavailable:` prefix). Memory keys (save note, summary) in a state other than ready MUST show the notice `Memory is not ready: <reason>`, request a new health probe (which the worker runs only if at least 10 s passed since the last one), and MUST open nothing. With memory off they show `Memory is off; enable it in the menu (Ctrl+Space m)`. The statusline shows the state (see statusline). A view that waits for a memory reply (project or context) MUST give up after 5 seconds without one and treat it as `engram did not answer`: the worker can drop a `Busy` reply when its reply channel is full, so no view may wait without a bound.
 
 #### Scenario: Engram down, chat works [auto]
 - GIVEN nothing on the memory port and memory enabled
@@ -362,6 +362,11 @@ When memory is enabled but not usable, the chat MUST work normally and memory er
 - GIVEN health and project results for down, old, foreign, a non-git project (`dir_basename`, `ambiguous`), timeout and missing binary
 - WHEN each conversation view opens
 - THEN the line carries the matching reason
+
+#### Scenario: A lost reply gives up after a bounded wait [auto]
+- GIVEN a conversation view waiting for the project or the context of memory, and the worker never answers (its queue was full and the `Busy` reply could not be delivered, or the worker is gone)
+- WHEN 5 seconds pass since the request
+- THEN the view stops waiting, shows once the line `memory unavailable: engram did not answer`, and the chat streams normally
 
 #### Scenario: Memory key when unavailable [auto]
 - GIVEN an unavailable memory

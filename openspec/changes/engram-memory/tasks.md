@@ -104,13 +104,14 @@ Fallback split if over 400 without exception: 1a = 2.1-2.6, 1b = 2.7-2.10.
 
 Fallback split if over 400: 5a worker with `Transport` fake, 5b app/runtime wiring and `fake_engram`.
 
-- [ ] 5.1 RED: worker with a scripted `Transport` fake on `start_paused`: FIFO; register-once then save; a second save does not register again; `instance_id` change clears the project cache and re-registers; transport failure sets Down, commands answered `Unavailable` at once, a new probe only after 10 s (injected clock); queue of 64 answers `busy`; stale pane reply dropped.
-- [ ] 5.2 RED: session id format `lazarobox-[0-9a-f]{32}` from 16 `getrandom` bytes (libc, no new crate), unique across calls.
-- [ ] 5.3 RED: `Quit` flushes pending `End` within a 1 s bound against a server that never answers; a silent server does not stall key handling or a running chat stream (2 s write limit).
-- [ ] 5.4 GREEN: `engram/{mod,worker}.rs` (one tokio task, bounded mpsc 64, health cache, project cache per cwd, registered-session set); token read from env in the runtime only, `token_present` flag exposed.
-- [ ] 5.5 RED: `fake_engram` TcpListener replays fixtures by route and asserts requests: project always present, session before save, `Authorization` only on DELETE, `ENGRAM_HTTP_TOKEN` never in an error text, no content in errors or logs (`SECRET-NOTE-456`).
-- [ ] 5.6 GREEN: `Effect::Memory(MemCmd)`, `AppEvent::Memory(MemReply)` routed through `app.rs` and `runtime.rs`; worker started lazily and only when memory is enabled (default off: no worker, no connection; test with a recording fake).
-- [ ] 5.7 Gate.
+- [x] 5.1 RED: worker with a scripted `Transport` fake on `start_paused`: FIFO; register-once then save; a second save does not register again; `instance_id` change clears the project cache and re-registers; transport failure sets Down, commands answered `Unavailable` at once, a new probe only after 10 s (injected clock); queue of 64 answers `busy`; stale pane reply dropped.
+- [x] 5.2 RED: session id format `lazarobox-[0-9a-f]{32}` from 16 `getrandom` bytes (libc, no new crate), unique across calls.
+- [x] 5.3 RED: `Quit` flushes pending `End` within a 1 s bound against a server that never answers; a silent server does not stall key handling or a running chat stream (2 s write limit).
+- [x] 5.4 GREEN: `engram/{mod,worker}.rs` (one tokio task, bounded mpsc 64, health cache, project cache per cwd, registered-session set); token read from env in the runtime only, `token_present` flag exposed.
+- [x] 5.5 RED: `fake_engram` TcpListener replays fixtures by route and asserts requests: project always present, session before save, `Authorization` only on DELETE, `ENGRAM_HTTP_TOKEN` never in an error text, no content in errors or logs (`SECRET-NOTE-456`).
+- [x] 5.6 GREEN: `Effect::Memory(MemCmd)`, `AppEvent::Memory(MemReply)` routed through `app.rs` and `runtime.rs`; worker started lazily and only when memory is enabled (default off: no worker, no connection; test with a recording fake).
+- [x] 5.7 Gate.
+- [x] 5.8 Review fixes (M3b): `MemCmd::Save` carries the chat `cwd` for the session `directory` (engram 3.4.0 accepts an empty or missing one, see FINDINGS); a save that gets 404 `session not found` registers again and retries once; a non-200 `/context` (other than 404 `unknown_project`) is `Unavailable` and degrades health; `registered` survives a panic; the memory flush runs alongside the chat shutdown; `ENGRAM_HTTP_TOKEN` is read only when the worker starts; the session id is Linux-gated; a lost `Busy` reply is covered by the 5 s wait in 10.9.
 
 ## PR6 / M4: Config, persistence, menu row, privacy warning (`src/core/ai/{config,menu}.rs`, `src/core/menu.rs`, persistence module)
 
@@ -176,7 +177,8 @@ Starts after ai-chat PR9 and PR13 are in the ai-chat tracker.
 - [ ] 10.6 RED: offer hook: a Down state on the first conversation view of the run shows the M5 prompt once; `y` emits `StartServer`; other keys decline; memory keys while Down re-show it only if not yet used.
 - [ ] 10.7 GREEN: transcript entry, Ctrl+O routing, context flow, offer view, statusline memory segment/hint (spec `statusline`), insta snapshots (folded, expanded, singular, none, tiny pane).
 - [ ] 10.8 [manual, Kitty] Ctrl+O toggles the memory line in Kitty without clashing with Ctrl+R.
-- [ ] 10.9 Gate.
+- [ ] 10.9 RED/GREEN: a pane waiting for its `Resolve`/`Context` reply gives up after 5 s on tokio's paused clock (the worker's `Busy` reply can be dropped when the reply channel is full, review W3 of M3b): the view stops waiting, shows `memory unavailable: engram did not answer` once, the chat streams, and a late reply is ignored; no wait without a bound.
+- [ ] 10.10 Gate.
 
 ## PR11 / M8: Summary draft and approval (`src/core/ai/chat/{mod,engine}.rs`, `prompts/summary.md`, `src/ui/components/chat.rs`)
 

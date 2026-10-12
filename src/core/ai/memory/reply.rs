@@ -143,6 +143,14 @@ pub fn parse_session(status: u16, body: &[u8]) -> Result<(), Failure> {
     }
 }
 
+/// Whether a failed `POST /observations` says the session is not registered
+/// (404 `session not found`): the server forgot it, e.g. after a restart.
+pub fn session_missing(status: u16, body: &[u8]) -> bool {
+    status == 404
+        && object(body)
+            .is_some_and(|m| m.get("error").and_then(|v| v.as_str()) == Some("session not found"))
+}
+
 /// `POST /sessions/{id}/end`.
 pub fn parse_end(status: u16, body: &[u8]) -> Result<(), Failure> {
     if (200..300).contains(&status) {
@@ -205,6 +213,22 @@ mod tests {
 
     fn reason_of(result: Result<impl std::fmt::Debug, Failure>) -> String {
         result.expect_err("a failure").reason
+    }
+
+    #[test]
+    fn only_a_404_session_not_found_means_the_session_is_missing() {
+        let (status, body) = split(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/core/ai/memory/fixtures/3.4.0/save_unregistered_session_404.http"
+        )));
+        assert!(session_missing(status, body));
+        assert!(!session_missing(404, b"{}"));
+        assert!(!session_missing(404, b"not json"));
+        assert!(!session_missing(400, body));
+        assert!(!session_missing(
+            404,
+            br#"{"error":"observation not found"}"#
+        ));
     }
 
     #[test]
