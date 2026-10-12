@@ -16,8 +16,7 @@ and is generated from Conventional Commits with
    Paste the output below `## [Unreleased]`'s place in `CHANGELOG.md` (replace
    the hand-written Unreleased notes), review it by hand to keep it
    user-facing, and update the compare links at the bottom of the file.
-   This assumes the retroactive tags (`v0.1.0` ... `v0.7.0`) exist; otherwise
-   git-cliff will list the whole history.
+   `v0.7.0` is the baseline tag; git-cliff lists only changes after it.
 4. Commit: `git commit -am "chore(release): vX.Y.Z"`.
 5. Tag: `git tag vX.Y.Z`.
 6. Check the package: `cargo publish --dry-run`.
