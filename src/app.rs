@@ -6004,7 +6004,7 @@ mod app_tests {
         assert_eq!(a.ai(), &saved, "saved");
         // Reload: the file still says codex.
         let text = "[ai]\nengine = \"codex\"\nmodel = \"default\"\n";
-        let (_, ai, _) = Config::load_with_ai(Ok(text.to_owned()));
+        let (_, ai, _) = Config::load_with_ai(Ok(text.to_owned()), None);
         assert_eq!(App::new(80, 25).with_ai(ai).ai(), &saved, "reload");
     }
 
@@ -6012,7 +6012,7 @@ mod app_tests {
     #[test]
     fn with_ai_carries_the_files_values() {
         let text = "[ai]\nengine = \"codex\"\nmodel = \"default\"\n";
-        let (_, ai, notice) = Config::load_with_ai(Ok(text.to_owned()));
+        let (_, ai, notice) = Config::load_with_ai(Ok(text.to_owned()), None);
         assert_eq!(notice, None);
         assert_eq!(
             App::new(80, 25).with_ai(ai).ai(),

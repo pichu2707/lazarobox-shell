@@ -214,17 +214,9 @@ fn read_tasks(table: &Table, problems: &mut Vec<String>) -> AiConfig {
     config
 }
 
-/// Reads the whole `[ai]` tree, the memory table included; the default
-/// memory port comes from the `ENGRAM_PORT` environment variable.
-pub fn read(table: &Table, problems: &mut Vec<String>) -> AiConfig {
-    read_with_port_env(
-        table,
-        problems,
-        std::env::var("ENGRAM_PORT").ok().as_deref(),
-    )
-}
-
-/// Like [`read`], with the value of `ENGRAM_PORT` given.
+/// Reads the whole `[ai]` tree, the memory table included. `port_env` is the
+/// value of `ENGRAM_PORT`, read once by the caller: a valid one is the
+/// default memory port.
 pub fn read_with_port_env(
     table: &Table,
     problems: &mut Vec<String>,
@@ -237,7 +229,7 @@ pub fn read_with_port_env(
 
 /// A valid port in the text of `ENGRAM_PORT`: an integer from 1 to 65535.
 fn env_port(text: Option<&str>) -> Option<u16> {
-    text?.parse::<u16>().ok().filter(|port| *port != 0)
+    text?.trim().parse::<u16>().ok().filter(|port| *port != 0)
 }
 
 /// Reads `[ai.memory]`. Each key falls back to its default on its own; the

@@ -107,7 +107,9 @@ pub async fn run() -> io::Result<()> {
     let shell = env::var("SHELL").ok();
     // Resolved once: the startup read and the menu's save use the same file.
     let config_path = config_path(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"));
-    let mut app = app_from_config(cols, rows, config_path.as_deref())
+    // Read once, here: the config parser itself never touches the environment.
+    let engram_port = env::var("ENGRAM_PORT").ok();
+    let mut app = app_from_config(cols, rows, config_path.as_deref(), engram_port.as_deref())
         .with_hostname(local_hostname().as_deref())
         .with_dir_check(|dir| dir.is_dir())
         .with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
@@ -163,8 +165,13 @@ fn local_hostname() -> Option<String> {
 }
 
 /// The app as the saved config configures it: layout, AI choice and notice.
-fn app_from_config(cols: u16, rows: u16, config_path: Option<&Path>) -> App {
-    let (config, ai, notice) = load_config(config_path);
+fn app_from_config(
+    cols: u16,
+    rows: u16,
+    config_path: Option<&Path>,
+    port_env: Option<&str>,
+) -> App {
+    let (config, ai, notice) = load_config(config_path, port_env);
     App::new(cols, rows)
         .with_config(&config)
         .with_ai(ai)
@@ -172,9 +179,9 @@ fn app_from_config(cols: u16, rows: u16, config_path: Option<&Path>) -> App {
 }
 
 /// Reads the config once at startup; a missing file is silent defaults.
-fn load_config(path: Option<&Path>) -> (Config, AiConfig, Option<String>) {
+fn load_config(path: Option<&Path>, port_env: Option<&str>) -> (Config, AiConfig, Option<String>) {
     match path {
-        Some(path) => Config::load_with_ai(fs::read_to_string(path)),
+        Some(path) => Config::load_with_ai(fs::read_to_string(path), port_env),
         None => (Config::default(), AiConfig::default(), None),
     }
 }
@@ -618,7 +625,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         fs::write(&path, SAVED_AI).unwrap();
-        let app = app_from_config(80, 25, Some(&path));
+        let app = app_from_config(80, 25, Some(&path), None);
         assert_eq!(
             app.ai(),
             &AiConfig::general(Some("ollama"), Some("llama3:8b"))
@@ -630,7 +637,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         fs::write(&path, SAVED_AI).unwrap();
-        let mut app = app_from_config(80, 25, Some(&path));
+        let mut app = app_from_config(80, 25, Some(&path), None);
         let mut panes = panes_saving_to(None);
         for event in [
             menu_key(' ', KeyModifiers::CONTROL),

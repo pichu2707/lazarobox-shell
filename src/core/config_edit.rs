@@ -543,7 +543,7 @@ other = 1
     }
 
     fn parsed_ai(text: &str) -> (crate::core::ai::config::AiConfig, Option<String>) {
-        let (_, ai, notice) = Config::load_with_ai(Ok(text.to_owned()));
+        let (_, ai, notice) = Config::load_with_ai(Ok(text.to_owned()), None);
         (ai, notice)
     }
 
@@ -797,7 +797,7 @@ other = 1
         }
         for text in [None, Some("# c\n[statusline]\nposition = \"top\"\n")] {
             let out = apply_edit(text, &edits).unwrap();
-            let (_, ai, notice) = Config::load_with_ai(Ok(out.clone()));
+            let (_, ai, notice) = Config::load_with_ai(Ok(out.clone()), None);
             assert_eq!(ai, want, "{out:?}");
             assert_eq!(notice, None, "{out:?}");
         }
@@ -813,7 +813,7 @@ other = 1
     }
 
     fn memory_of(text: &str) -> (crate::core::ai::config::MemoryConfig, Option<String>) {
-        let (_, ai, notice) = Config::load_with_ai(Ok(text.to_owned()));
+        let (_, ai, notice) = Config::load_with_ai(Ok(text.to_owned()), None);
         (ai.memory, notice)
     }
 
