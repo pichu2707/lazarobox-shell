@@ -5,10 +5,13 @@
 
 pub mod composer;
 pub mod engine;
+pub mod guidance;
 pub mod store;
 pub mod stream;
+pub mod streams;
 pub mod transcript;
 pub mod wrap;
+pub mod yank;
 
 use std::{
     path::{Path, PathBuf},
@@ -212,6 +215,38 @@ impl ChatState {
         &mut self.composer
     }
 
+    /// The rows the composer takes in a pane `width` x `height`: what its text
+    /// needs, up to 5, and never the last row left to the transcript (unless
+    /// the pane has one row only).
+    pub fn composer_rows(&self, width: u16, height: u16) -> u16 {
+        if width == 0 || height == 0 {
+            return 0;
+        }
+        Self::clamp_composer_rows(self.composer.height(usize::from(width)), height)
+    }
+
+    /// `wanted` composer rows clamped to a pane `height`: the last row stays
+    /// with the transcript unless the pane has one row only. Takes the row
+    /// count so that a caller holding a `ComposerPlan` need not wrap the text
+    /// again.
+    pub fn clamp_composer_rows(wanted: usize, height: u16) -> u16 {
+        let wanted = u16::try_from(wanted).unwrap_or(u16::MAX);
+        wanted.min(height.saturating_sub(1).max(1)).min(height)
+    }
+
+    /// The rows left to the transcript in a pane `width` x `height`.
+    pub fn transcript_rows(&self, width: u16, height: u16) -> u16 {
+        height - self.composer_rows(width, height)
+    }
+
+    /// The rows of the transcript that are really drawn in a pane `width` x
+    /// `height`: what the composer leaves, less the rows `guidance` takes.
+    pub fn viewport_rows(&self, width: u16, height: u16, guidance: Option<&str>) -> u16 {
+        let transcript = self.transcript_rows(width, height);
+        let taken = guidance.map_or(0, |text| guidance::guidance_rows(text, width, transcript));
+        transcript - taken
+    }
+
     /// The cwd of the pane the chat was opened from.
     pub fn origin_cwd(&self) -> Option<&Path> {
         self.origin_cwd.as_deref()
@@ -307,6 +342,56 @@ impl ChatState {
         };
         self.generation += 1;
         true
+    }
+
+    /// `toggle_reasoning` that keeps the same content in view: a pinned view
+    /// is anchored on (entry, row inside it), so rows added or removed above
+    /// the viewport do not shift it. `width` and `height` are the transcript's.
+    pub fn toggle_reasoning_at(&mut self, width: usize, height: usize) -> bool {
+        let anchor = self.anchor(width, height);
+        let changed = self.toggle_reasoning();
+        if changed {
+            self.restore(anchor, width, height);
+        }
+        changed
+    }
+
+    /// Keeps the content in view when the transcript was `old_width` wide and
+    /// is now `new_width` wide (and `height` rows high).
+    pub fn rewrap(&mut self, old_width: usize, new_width: usize, height: usize) {
+        let anchor = self.anchor(old_width, height);
+        self.restore(anchor, new_width, height);
+    }
+
+    /// The (entry, row inside it) the top of a pinned view sits on.
+    fn anchor(&self, width: usize, height: usize) -> Option<(usize, usize)> {
+        let Scroll::Pinned(_) = self.scroll else {
+            return None;
+        };
+        let (lines, starts) = transcript::layout(self, width);
+        let top = self.scroll.top(lines.len(), height);
+        let entry = starts.iter().rposition(|&s| s <= top)?;
+        Some((entry, top - starts[entry]))
+    }
+
+    /// Pins the view on `anchor` again, at the current wrapping.
+    fn restore(&mut self, anchor: Option<(usize, usize)>, width: usize, height: usize) {
+        let Some((entry, offset)) = anchor else {
+            return;
+        };
+        let (lines, starts) = transcript::layout(self, width);
+        let Some(&start) = starts.get(entry) else {
+            return;
+        };
+        let end = starts.get(entry + 1).copied().unwrap_or(lines.len());
+        // The entry may have lost rows (a collapsed block): stay inside it.
+        let top = (start + offset).min(end.saturating_sub(1).max(start));
+        let last = lines.len().saturating_sub(height);
+        self.scroll = if top >= last {
+            Scroll::Follow
+        } else {
+            Scroll::Pinned(top)
+        };
     }
 
     /// A chat reopened from storage: the stored messages and no reasoning.
@@ -599,6 +684,8 @@ impl ChatState {
     }
 }
 
+#[cfg(test)]
+mod anchor_tests;
 #[cfg(test)]
 mod reasoning_tests;
 #[cfg(test)]

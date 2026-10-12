@@ -1,0 +1,6 @@
+---
+source: src/ui/components/statusline/thinking.rs
+expression: "format!(\"{}\\n{}\", text(&full(&started)), text(&full(&answering)))"
+---
+ ▰▰▰━━━━━ ⠋ thinking llama3:8b 4s 
+ ━━━━━▰▰▰ ⠴ answering llama3:8b 1m05s +2

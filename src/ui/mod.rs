@@ -6,13 +6,13 @@ use ratatui::Frame;
 
 use crate::{
     app::{App, InputMode, PaneView},
-    core::layout::Rect,
+    core::{ai::chat::streams::pick_stream, layout::Rect},
 };
 use components::{
     chat::ChatView,
     menu::MenuPopup,
     separators::SeparatorView,
-    statusline::StatusLine,
+    statusline::{StatusLine, thinking::ThinkingView},
     tab_bar::TabBar,
     terminal_view::{TerminalView, cell_position, cursor_position},
 };
@@ -55,7 +55,8 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
         let pane = match view {
             PaneView::Pty(pane) => pane,
             PaneView::Chat(chat) => {
-                let chat_view = ChatView::new(chat, theme);
+                let guidance = app.chat_guidance(id);
+                let chat_view = ChatView::new(chat, theme).guidance(guidance.as_deref());
                 // The composer owns the real cursor of a focused chat; MENU
                 // hides it like it hides a shell's.
                 let cursor = (id == focused && app.menu().is_none())
@@ -101,8 +102,14 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
         within(frame, screen.body),
     );
 
+    let streams = app.streams();
+    let thinking = pick_stream(&streams, focused)
+        .map(|(stream, others)| ThinkingView::new(stream, others, app.anim_frame(), app.now()));
+    let right = app.status_right();
     let line = |path| {
-        StatusLine::input(theme, app.input(), path, app.shell_name())
+        StatusLine::input(theme, app.input(), path, &right)
+            .chat(app.focused_is_chat())
+            .thinking(thinking.clone())
             .zoomed(app.zoomed())
             .copy_position(app.copy_position())
             .marker(app.copy_selection_kind())
@@ -122,6 +129,8 @@ fn within(frame: &Frame, rect: Rect) -> ratatui::layout::Rect {
     ratatui::layout::Rect::from(rect).intersection(frame.area())
 }
 
+#[cfg(test)]
+mod chat_status_tests;
 #[cfg(test)]
 mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -469,7 +478,7 @@ mod tests {
         let line = status(&app);
         assert!(line.contains("PREFIX"), "{line:?}");
         assert!(
-            line.contains("w window · t tab · g go · b buffer · [ copy · m menu · q quit"),
+            line.contains("w window · t tab · g go · b buffer · [ copy · m menu · c chat · q quit"),
             "{line:?}"
         );
         insta::assert_snapshot!("root_hint", line.trim_end());
