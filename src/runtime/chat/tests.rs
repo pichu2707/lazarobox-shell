@@ -651,7 +651,7 @@ fn process_runner(pids: Arc<Mutex<Vec<(i32, i32)>>>) -> Runner {
                 .expect("sh starts");
             let leader = child.id().expect("a pid") as libc::pid_t;
             // Declared after `child`, so it drops first.
-            let _group = GroupKill::new(leader);
+            let mut group = GroupKill::new(leader).expect("a fresh group is a valid target");
             let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
             let grandchild: i32 = lines
                 .next_line()
@@ -663,7 +663,8 @@ fn process_runner(pids: Arc<Mutex<Vec<(i32, i32)>>>) -> Runner {
                 .unwrap();
             pids.lock().unwrap().push((leader, grandchild));
             let _ = tx.send(delta("started")).await;
-            let _ = child.wait().await;
+            // Reap and disarm in one step: the safe pattern real adapters copy.
+            let _ = group.reap(&mut child).await;
         })
     })
 }
