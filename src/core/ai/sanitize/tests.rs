@@ -122,6 +122,46 @@ fn a_restart_after_a_string_escape_keeps_counting() {
     // The cap was hit on an ESC, which can still start the next sequence.
     out.push_str(&sanitizer.push("\nshown"));
     assert_eq!(out, "\nshown");
+
+    // With the budget spent, `]` after that ESC is refused: `x` is text.
+    let mut sanitizer = StreamSanitizer::new();
+    for _ in 0..STRING_CAP {
+        sanitizer.push("\u{1b}]\u{1b}");
+    }
+    assert_eq!(sanitizer.push("]x"), "x");
+}
+
+#[test]
+fn one_iteration_short_of_the_cap_a_restart_is_still_swallowed() {
+    let mut sanitizer = StreamSanitizer::new();
+    for _ in 0..STRING_CAP - 1 {
+        sanitizer.push("\u{1b}]\u{1b}");
+    }
+    // `]` re-opens the string and `x` is its last allowed character.
+    assert_eq!(sanitizer.push("]x"), "");
+}
+
+#[test]
+fn esc_intermediates_give_up_after_the_cap() {
+    let intermediates: String = (0x20u8..=0x2f).map(char::from).collect();
+    let run: String = intermediates.chars().cycle().take(CSI_CAP + 40).collect();
+    let out = clean(&format!("\u{1b}{run}\ntail"));
+    // CSI_CAP intermediates are swallowed; the rest is plain text.
+    let shown: String = run.chars().skip(CSI_CAP).collect();
+    assert_eq!(out, format!("{shown}\ntail"));
+    // A run within the cap is dropped whole, and its final byte ends it.
+    assert_eq!(clean(&format!("\u{1b}{}0tail", " ".repeat(100))), "tail");
+}
+
+#[test]
+fn repeated_escapes_give_up_after_the_cap() {
+    // The first ESC opens the sequence and CSI_CAP more are swallowed, so the
+    // text after CSI_CAP + 1 ESCs is shown, however many ESCs came before.
+    let text = format!("{}[x", "\u{1b}".repeat(CSI_CAP + 1));
+    assert_eq!(clean(&text), "[x");
+    // Within the cap, the printable run stays hidden.
+    let text = format!("{}[x", "\u{1b}".repeat(CSI_CAP));
+    assert_eq!(clean(&text), "");
 }
 
 #[test]
