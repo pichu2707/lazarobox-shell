@@ -97,11 +97,11 @@ AS4 (~850, 90% deletions) is split in three because two PRs cannot stay under 40
 
 ## PR9 / AS5b: Footer, edits, save (`src/core/menu.rs`)
 
-- [ ] 9.1 RED: `footer()` exact strings per view (Settings, task row, levels 1/2, disabled reason, custom), cues replace hints, precedence error > disabled > cue > hint, error cleared by next press.
-- [ ] 9.2 RED: Enter cycles Settings and never saves, cycling keys inert on task rows, uppercase `S`/`R` swallowed, unknown keys, `r` only on task rows (Repeat ignored).
-- [ ] 9.3 RED: `s` from every view except custom, unchanged draft closes with no file access, save before first detection, Esc reverts AI, `edits()` order (Settings, then changed tasks in `Task::ALL`, both keys), failure keeps picker level.
-- [ ] 9.4 GREEN: `Footer`, `set_checking`, `edits()`, key model.
-- [ ] 9.5 Gate.
+- [x] 9.1 RED: `footer()` exact strings per view (Settings, task row, levels 1/2, disabled reason, custom), cues replace hints, precedence error > disabled > cue > hint, error cleared by next press.
+- [x] 9.2 RED: Enter cycles Settings and never saves, cycling keys inert on task rows, uppercase `S`/`R` swallowed, unknown keys, `r` only on task rows (Repeat ignored).
+- [x] 9.3 RED: `s` from every view except custom, unchanged draft closes with no file access, save before first detection, Esc reverts AI, `edits()` order (Settings, then changed tasks in `Task::ALL`, both keys), failure keeps picker level.
+- [x] 9.4 GREEN: `Footer`, `set_checking`, `edits()`, key model.
+- [x] 9.5 Gate.
 
 ## PR10 / AS6a: Render (`src/ui/components/menu.rs`)
 
