@@ -32,6 +32,34 @@ pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
 }
 
+/// Why a stream finished normally.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Finish {
+    Stop,
+    Length,
+}
+
+/// Why a stream failed.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ChatError {
+    /// The stream ended without a final event.
+    Interrupted,
+    /// The answer grew past the cap.
+    Truncated,
+    /// The engine or the transport reported a problem.
+    Failed(String),
+}
+
+/// What an adapter task reports about one turn.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum StreamEvent {
+    /// No byte arrived yet and the wait is getting long.
+    Slow,
+    Delta(String),
+    Done(Finish),
+    Error(ChatError),
+}
+
 /// What the chat pane may do with the engine assigned to the `chat` task.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Availability {

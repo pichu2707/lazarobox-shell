@@ -86,13 +86,13 @@ Files changed:
 
 ## PR2 / C2: Chat core (`src/core/ai/chat/{mod,engine}.rs`, `src/core/ai/jail.rs` stub)
 
-- [ ] 2.1 RED: `ChatState` lifecycle: send appends user message and emits `ChatSend`; blank, whitespace and send-while-streaming refused with composer kept; waiting text `waiting for the model…` then `loading model…` on `Slow`.
-- [ ] 2.2 RED: stream events: deltas in order, final, error keeps partial, error before text leaves no empty message, cut stream `stream interrupted`, late events dropped by turn, cancel keeps partial as `cancelled`, cancel idle is a no-op, 1 MiB answer cap stores `truncated`.
-- [ ] 2.3 RED: `Msg` status enum (`complete|cancelled|interrupted|truncated|error`, partial means not `complete`); system lines never in history; 400 messages per conversation.
-- [ ] 2.4 RED: history cap (R2): 40 messages, 12,000 chars servers and 100,000 chars CLIs, newest always whole, system prompt pinned, omitted flag and the marker line once.
-- [ ] 2.5 RED: `availability(&AiConfig, Option<&Detection>, JailSupport)`: ready, unassigned, `checking engines…`, undetected, unsupported (opencode), NoJail, GatedOff, NoModel, ModelMissing, `:latest` equivalence, fallback to general, never switches.
-- [ ] 2.6 GREEN: implement `ChatState`, `StreamEvent`, `ChatError`, `ChatRequest`, `Effect::ChatSend/ChatCancel` variants, `JailSupport` type.
-- [ ] 2.7 Gate.
+- [x] 2.1 RED: `ChatState` lifecycle: send appends user message and emits `ChatSend`; blank, whitespace and send-while-streaming refused with composer kept; waiting text `waiting for the model…` then `loading model…` on `Slow`.
+- [x] 2.2 RED: stream events: deltas in order, final, error keeps partial, error before text leaves no empty message, cut stream `stream interrupted`, late events dropped by turn, cancel keeps partial as `cancelled`, cancel idle is a no-op, 1 MiB answer cap stores `truncated`.
+- [x] 2.3 RED: `Msg` status enum (`complete|cancelled|interrupted|truncated|error`, partial means not `complete`); system lines never in history; 400 messages per conversation.
+- [x] 2.4 RED: history cap (R2): 40 messages, 12,000 chars servers and 100,000 chars CLIs, newest always whole, system prompt pinned, omitted flag and the marker line once.
+- [x] 2.5 RED: `availability(&AiConfig, Option<&Detection>, JailSupport)`: ready, unassigned, `checking engines…`, undetected, unsupported (opencode), NoJail, GatedOff, NoModel, ModelMissing, `:latest` equivalence, fallback to general, never switches.
+- [x] 2.6 GREEN: implement `ChatState`, `StreamEvent`, `ChatError`, `ChatRequest`, `Effect::ChatSend/ChatCancel` variants, `JailSupport` type.
+- [x] 2.7 Gate.
 
 ## PR3 / C3: Sanitizer and splitters (`src/core/ai/sanitize.rs`, `src/core/ai/chat/stream.rs`)
 

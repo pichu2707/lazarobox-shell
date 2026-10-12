@@ -7,7 +7,11 @@ use std::{
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::core::{
-    ai::{Detection, chat::ChatState, config::AiConfig},
+    ai::{
+        Detection,
+        chat::{ChatState, engine::ChatRequest},
+        config::AiConfig,
+    },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{
         CopyCommand, CopyMotion, CopyState, Geometry, Highlight, Point, SelectionKind, TooLarge,
@@ -136,6 +140,16 @@ pub enum Effect {
     SetClipboard(Vec<u8>),
     /// Probe the AI engines; the runtime answers with one `EnginesDetected`.
     DetectEngines,
+    /// Start one chat turn for a pane. Events of the turn come back tagged
+    /// with `turn`.
+    ChatSend {
+        pane: PaneId,
+        turn: u64,
+        request: ChatRequest,
+    },
+    /// Stop a pane's turn without blocking the loop: the socket is closed or
+    /// the CLI's process group is killed.
+    ChatCancel(PaneId),
     Quit,
 }
 
