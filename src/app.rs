@@ -12,6 +12,7 @@ use crate::core::{
         chat::{
             ChatState, Follow, Phase,
             engine::{ChatRequest, StreamEvent},
+            store::{StoreCmd, StoreReply},
         },
         config::AiConfig,
     },
@@ -119,6 +120,8 @@ pub enum AppEvent {
     /// An event of a chat turn: the pane, the turn id it was started with, and
     /// what the engine task reported.
     Chat(PaneId, u64, StreamEvent),
+    /// The store thread answered a command of a pane.
+    Store(StoreReply),
 }
 
 /// How the menu closed.
@@ -156,6 +159,8 @@ pub enum Effect {
     /// Stop a pane's turn without blocking the loop: the socket is closed or
     /// the CLI's process group is killed.
     ChatCancel(PaneId),
+    /// A command for the store thread. It never waits for the database.
+    Store(StoreCmd),
     Quit,
 }
 
@@ -858,6 +863,8 @@ impl App {
                 Vec::new()
             }
             AppEvent::Chat(id, turn, event) => self.on_chat(id, turn, event),
+            // The chat pane consumes the replies once it saves its messages.
+            AppEvent::Store(_) => Vec::new(),
         };
         debug_assert_eq!(
             self.menu.is_some(),
