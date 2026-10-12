@@ -3,7 +3,11 @@
 
 use std::{cell::RefCell, sync::Arc};
 
-use super::{ChatState, Entry, ReasoningState, engine::Role, wrap::wrap_ranges};
+use super::{
+    ChatState, Entry, ReasoningState,
+    engine::Role,
+    wrap::{wrap_ranges, wrap_words},
+};
 
 /// What a transcript line is, which decides its style.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -147,9 +151,17 @@ fn push_wrapped(
     let room = width.saturating_sub(first.chars().count()).max(1);
     let mut lead = first;
     for logical in text.split('\n') {
-        let chars: Vec<char> = logical.chars().collect();
-        for range in wrap_ranges(&chars, room) {
-            let row: String = chars[range].iter().collect();
+        // Code keeps every character where it is; prose breaks at spaces.
+        let rows = if kind == LineKind::Code {
+            let chars: Vec<char> = logical.chars().collect();
+            wrap_ranges(&chars, room)
+                .into_iter()
+                .map(|range| chars[range].iter().collect())
+                .collect()
+        } else {
+            wrap_words(logical, room)
+        };
+        for row in rows {
             out.push(Line {
                 kind,
                 text: format!("{lead}{row}"),

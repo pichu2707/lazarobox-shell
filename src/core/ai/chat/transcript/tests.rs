@@ -72,6 +72,27 @@ fn long_lines_wrap_inside_the_width_and_user_rows_keep_the_indent() {
 }
 
 #[test]
+fn prose_breaks_at_spaces_and_code_breaks_hard() {
+    let mut state = chat();
+    answered(
+        &mut state,
+        "q",
+        "alpha beta gamma delta\n```\nlet longname = 1;\n```",
+    );
+    assert_eq!(
+        rows(&build(&state, 12))[2..],
+        [
+            "A|alpha beta",
+            "A|gamma delta",
+            "C|```",
+            "C|let longname",
+            "C| = 1;",
+            "C|```"
+        ]
+    );
+}
+
+#[test]
 fn a_fenced_block_is_code_and_the_text_around_it_is_plain() {
     let mut state = chat();
     answered(
