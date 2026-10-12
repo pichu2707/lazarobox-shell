@@ -104,13 +104,13 @@ Fallback split if over 400 without exception: 1a = 2.1-2.6, 1b = 2.7-2.10.
 
 Fallback split if over 400: 5a worker with `Transport` fake, 5b app/runtime wiring and `fake_engram`.
 
-- [ ] 5.1 RED: worker with a scripted `Transport` fake on `start_paused`: FIFO; register-once then save; a second save does not register again; `instance_id` change clears the project cache and re-registers; transport failure sets Down, commands answered `Unavailable` at once, a new probe only after 10 s (injected clock); queue of 64 answers `busy`; stale pane reply dropped.
-- [ ] 5.2 RED: session id format `lazarobox-[0-9a-f]{32}` from 16 `getrandom` bytes (libc, no new crate), unique across calls.
-- [ ] 5.3 RED: `Quit` flushes pending `End` within a 1 s bound against a server that never answers; a silent server does not stall key handling or a running chat stream (2 s write limit).
-- [ ] 5.4 GREEN: `engram/{mod,worker}.rs` (one tokio task, bounded mpsc 64, health cache, project cache per cwd, registered-session set); token read from env in the runtime only, `token_present` flag exposed.
-- [ ] 5.5 RED: `fake_engram` TcpListener replays fixtures by route and asserts requests: project always present, session before save, `Authorization` only on DELETE, `ENGRAM_HTTP_TOKEN` never in an error text, no content in errors or logs (`SECRET-NOTE-456`).
-- [ ] 5.6 GREEN: `Effect::Memory(MemCmd)`, `AppEvent::Memory(MemReply)` routed through `app.rs` and `runtime.rs`; worker started lazily and only when memory is enabled (default off: no worker, no connection; test with a recording fake).
-- [ ] 5.7 Gate.
+- [x] 5.1 RED: worker with a scripted `Transport` fake on `start_paused`: FIFO; register-once then save; a second save does not register again; `instance_id` change clears the project cache and re-registers; transport failure sets Down, commands answered `Unavailable` at once, a new probe only after 10 s (injected clock); queue of 64 answers `busy`; stale pane reply dropped.
+- [x] 5.2 RED: session id format `lazarobox-[0-9a-f]{32}` from 16 `getrandom` bytes (libc, no new crate), unique across calls.
+- [x] 5.3 RED: `Quit` flushes pending `End` within a 1 s bound against a server that never answers; a silent server does not stall key handling or a running chat stream (2 s write limit).
+- [x] 5.4 GREEN: `engram/{mod,worker}.rs` (one tokio task, bounded mpsc 64, health cache, project cache per cwd, registered-session set); token read from env in the runtime only, `token_present` flag exposed.
+- [x] 5.5 RED: `fake_engram` TcpListener replays fixtures by route and asserts requests: project always present, session before save, `Authorization` only on DELETE, `ENGRAM_HTTP_TOKEN` never in an error text, no content in errors or logs (`SECRET-NOTE-456`).
+- [x] 5.6 GREEN: `Effect::Memory(MemCmd)`, `AppEvent::Memory(MemReply)` routed through `app.rs` and `runtime.rs`; worker started lazily and only when memory is enabled (default off: no worker, no connection; test with a recording fake).
+- [x] 5.7 Gate.
 
 ## PR6 / M4: Config, persistence, menu row, privacy warning (`src/core/ai/{config,menu}.rs`, `src/core/menu.rs`, persistence module)
 
