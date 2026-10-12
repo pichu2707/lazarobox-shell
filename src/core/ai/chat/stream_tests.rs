@@ -267,3 +267,58 @@ fn a_partial_answer_still_counts_as_an_answer() {
         .collect();
     assert_eq!(sent_texts, ["first", "par", "second"]);
 }
+
+/// Streams "one ", has a second send refused (BUSY lands after the answer)
+/// and returns the turn.
+fn streaming_with_a_refused_send(state: &mut ChatState) -> u64 {
+    let (turn, _) = sent(state, "q");
+    state.apply(turn, delta("one "));
+    assert_eq!(state.send("again", &ready(), SYSTEM), SendOutcome::Refused);
+    assert_eq!(systems(state), [BUSY]);
+    turn
+}
+
+fn answer(state: &ChatState) -> (String, MsgStatus) {
+    let (role, text, status) = texts(state).pop().expect("messages");
+    assert_eq!(role, Role::Assistant);
+    (text, status)
+}
+
+#[test]
+fn deltas_after_a_refused_send_still_reach_the_answer() {
+    let mut state = chat();
+    let turn = streaming_with_a_refused_send(&mut state);
+    state.apply(turn, delta("two"));
+    state.apply(turn, StreamEvent::Done(Finish::Stop));
+    assert_eq!(answer(&state), ("one two".into(), MsgStatus::Complete));
+    assert_eq!(systems(&state), [BUSY], "the BUSY line stays visible");
+}
+
+#[test]
+fn cancel_after_a_refused_send_marks_the_answer_cancelled() {
+    let mut state = chat();
+    streaming_with_a_refused_send(&mut state);
+    assert_eq!(state.cancel(), Follow::CancelEngine);
+    assert_eq!(answer(&state), ("one ".into(), MsgStatus::Cancelled));
+}
+
+#[test]
+fn an_error_after_a_refused_send_keeps_the_partial_text_as_error() {
+    let mut state = chat();
+    let turn = streaming_with_a_refused_send(&mut state);
+    state.apply(turn, StreamEvent::Error(ChatError::Failed("boom".into())));
+    assert_eq!(answer(&state), ("one ".into(), MsgStatus::Error));
+    assert!(systems(&state).contains(&"boom"));
+}
+
+#[test]
+fn the_cap_after_a_refused_send_marks_the_answer_truncated() {
+    let mut state = chat();
+    let turn = streaming_with_a_refused_send(&mut state);
+    let follow = state.apply(turn, delta(&"a".repeat(ANSWER_CAP)));
+    assert_eq!(follow, Follow::CancelEngine);
+    let (text, status) = answer(&state);
+    assert_eq!(status, MsgStatus::Truncated);
+    assert_eq!(text.len(), ANSWER_CAP);
+    assert!(text.starts_with("one "));
+}

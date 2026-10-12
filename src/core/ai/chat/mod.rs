@@ -313,12 +313,17 @@ impl ChatState {
         Follow::CancelEngine
     }
 
-    /// The assistant message being written.
+    /// The assistant message being written: the last message entry. System
+    /// lines can follow it (a refused send adds BUSY), and no user message is
+    /// appended while a turn is in flight.
     fn answer_mut(&mut self) -> Option<&mut Msg> {
-        match self.entries.last_mut() {
-            Some(Entry::Message(m)) if self.phase == Phase::Streaming => Some(m),
-            _ => None,
+        if self.phase != Phase::Streaming {
+            return None;
         }
+        self.entries.iter_mut().rev().find_map(|e| match e {
+            Entry::Message(m) => Some(m),
+            Entry::System(_) => None,
+        })
     }
 
     /// Ends the turn: the partial answer, if any, gets `status`, and an
