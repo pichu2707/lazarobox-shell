@@ -14,6 +14,7 @@ use crate::core::{
             engine::{ChatRequest, StreamEvent},
         },
         config::AiConfig,
+        memory::port::{MemCmd, MemReply},
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{
@@ -119,6 +120,8 @@ pub enum AppEvent {
     /// An event of a chat turn: the pane, the turn id it was started with, and
     /// what the engine task reported.
     Chat(PaneId, u64, StreamEvent),
+    /// What the memory worker answered. It may arrive after its pane is gone.
+    Memory(MemReply),
 }
 
 /// How the menu closed.
@@ -156,6 +159,9 @@ pub enum Effect {
     /// Stop a pane's turn without blocking the loop: the socket is closed or
     /// the CLI's process group is killed.
     ChatCancel(PaneId),
+    /// Ask the memory worker for something. Returns at once: the answer comes
+    /// back as one `AppEvent::Memory`, or never when memory is not active.
+    Memory(MemCmd),
     Quit,
 }
 
@@ -858,6 +864,7 @@ impl App {
                 Vec::new()
             }
             AppEvent::Chat(id, turn, event) => self.on_chat(id, turn, event),
+            AppEvent::Memory(reply) => self.on_memory(&reply),
         };
         debug_assert_eq!(
             self.menu.is_some(),
@@ -1258,6 +1265,13 @@ impl App {
 
     /// Applies one event of a chat turn. Events for a pane that is gone, is a
     /// shell, or belongs to another turn change nothing and draw nothing.
+    /// Memory replies change nothing yet: the chat consumes them with the
+    /// memory features, and drops a reply for a pane that is gone (stale) by
+    /// the same lookup `on_chat` uses for a late delta.
+    fn on_memory(&mut self, _reply: &MemReply) -> Vec<Effect> {
+        Vec::new()
+    }
+
     fn on_chat(&mut self, id: PaneId, turn: u64, event: StreamEvent) -> Vec<Effect> {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
@@ -1797,6 +1811,48 @@ mod app_tests {
         let (_, spec) = app().initial_spawn();
         assert_eq!(spec.program, PathBuf::from("/bin/sh"));
         assert_eq!(spec.cwd, PathBuf::from("/"));
+    }
+
+    // Memory replies come from a worker the app never waits on, so a reply
+    // can be stale: the pane it was for may be gone by then.
+    #[test]
+    fn a_memory_reply_for_a_pane_that_is_gone_is_dropped() {
+        use crate::core::ai::memory::{
+            port::{MemReply, Reason},
+            reply::ProjectError,
+        };
+        let mut a = app();
+        a.take_dirty();
+        let gone = PaneId::for_test(99);
+        let replies = [
+            MemReply::Project {
+                pane: gone,
+                result: Err(ProjectError::NotGit),
+            },
+            MemReply::Context {
+                pane: gone,
+                block: None,
+            },
+            MemReply::Unavailable {
+                pane: Some(gone),
+                reason: Reason::Busy,
+            },
+        ];
+        for reply in replies {
+            assert_eq!(a.update(AppEvent::Memory(reply)), vec![]);
+            assert!(!a.take_dirty(), "a stale reply changes nothing");
+        }
+    }
+
+    #[test]
+    fn a_global_memory_reply_asks_for_nothing() {
+        use crate::core::ai::memory::{health::Health, port::MemReply};
+        let mut a = app();
+        let reply = MemReply::Health {
+            state: Health::Down,
+            offer: true,
+        };
+        assert_eq!(a.update(AppEvent::Memory(reply)), vec![]);
     }
 
     #[test]
