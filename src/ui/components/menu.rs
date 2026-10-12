@@ -12,7 +12,7 @@ use crate::{
     core::{
         ai::picker::Mark,
         config::Config,
-        menu::{Footer, MenuState, Row},
+        menu::{AI_BODY, CHROME, Footer, MenuState, Row, fits_size},
     },
     ui::theme::LazaroboxTheme,
 };
@@ -21,15 +21,6 @@ use crate::{
 pub const WANT_WIDTH: u16 = 51;
 /// With the AI section the `r refresh` hint needs eleven more columns.
 pub const WANT_WIDTH_AI: u16 = 62;
-/// Rows around the body: two borders, the blank row and the footer.
-const CHROME: u16 = 4;
-/// With the AI section the body is fixed: the popup never jumps between the
-/// task list, the picker (a title and `VIEW` rows) and the privacy warning.
-/// The task list is the tallest: two titles, three settings, the six task
-/// rows and `Memory` (`Profile` adds one more row when ai-chat lands it).
-const AI_BODY: usize = 12;
-/// Smallest width that still shows the full popup.
-pub const MIN_WIDTH: u16 = 24;
 
 /// `want_w` x `want_h` centred in `area`, clamped to the area.
 pub fn popup_area(area: Rect, want_w: u16, want_h: u16) -> Rect {
@@ -46,7 +37,7 @@ pub fn popup_area(area: Rect, want_w: u16, want_h: u16) -> Rect {
 /// Whether `area` is big enough for the full popup of `rows` body rows (the
 /// blank row is the first thing dropped, so the height may lose one).
 pub fn fits(area: Rect, rows: usize) -> bool {
-    area.width >= MIN_WIDTH && usize::from(area.height) >= rows + usize::from(CHROME) - 1
+    fits_size(area.width, area.height, rows)
 }
 
 /// Draws `MenuState::rows` in a bordered box, or a one-line fallback.
@@ -67,8 +58,9 @@ impl<'a> MenuPopup<'a> {
 }
 
 const FALLBACK: &str = "MENU · s save · Esc cancel";
-/// The one line shown instead of the privacy warning on a tiny terminal.
-const FALLBACK_WARNING: &str = "Turn memory on? (y/n)";
+/// The one line shown instead of the privacy warning on a tiny terminal. It
+/// offers no choice: the menu declines every key then (informed consent).
+const FALLBACK_WARNING: &str = "Enlarge the terminal to read the privacy note";
 
 impl MenuPopup<'_> {
     /// Below the size threshold: one line on the middle row.
@@ -811,11 +803,38 @@ mod tests {
     }
 
     #[test]
-    fn the_warning_on_a_tiny_terminal_is_a_one_line_prompt() {
-        let buf = draw(30, 5, &warned());
+    fn the_warning_on_a_tiny_terminal_asks_to_enlarge_and_offers_no_choice() {
+        let buf = draw(50, 5, &warned());
         let l = lines(&buf);
-        assert_eq!(l[2].trim_end(), "Turn memory on? (y/n)");
+        assert_eq!(
+            l[2].trim_end(),
+            "Enlarge the terminal to read the privacy note"
+        );
+        assert!(!text(&buf).contains("(y/n)"), "no prompt without the facts");
         insta::assert_snapshot!(text(&buf));
+        // Narrower: clipped, still one line.
+        let narrow = lines(&draw(30, 5, &warned()));
+        assert!(narrow[2].starts_with("Enlarge the terminal"), "{narrow:?}");
+    }
+
+    // Review: AI_BODY is derived, not trusted. Every AI view fits it, so
+    // adding a row cannot silently resize the popup.
+    #[test]
+    fn every_ai_view_fits_the_fixed_body() {
+        let mut views = vec![mixed(), warned()];
+        for task in ["general", "code", "chat", "review", "summarize"] {
+            views.push(picker_of(task, 0));
+            let mut models = picker_of(task, 0);
+            press(&mut models, &[KeyCode::Enter]);
+            views.push(models);
+        }
+        views.push(picker_of("Set all tasks", 0));
+        for menu in &views {
+            let len = menu.rows(&Config::default()).len();
+            assert!(len <= AI_BODY, "{len} rows > {AI_BODY}");
+        }
+        let tallest = views.iter().map(|m| m.rows(&Config::default()).len()).max();
+        assert_eq!(tallest, Some(AI_BODY), "AI_BODY is as small as it can be");
     }
 
     #[test]

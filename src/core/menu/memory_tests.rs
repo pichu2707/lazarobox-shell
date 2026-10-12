@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::core::ai::config::MemoryConfig;
+use crate::core::menu::{AI_BODY, CHROME, MIN_WIDTH};
 
 const ACKED: MemoryConfig = MemoryConfig {
     enabled: false,
@@ -483,4 +484,34 @@ fn declining_for_a_hand_edited_memory_keeps_it_off_and_edits_nothing() {
     press(&mut menu, KeyCode::Char('n'));
     assert_eq!(shown_value(&menu), "off");
     assert!(menu.edits(&Config::default()).is_empty());
+}
+
+// Review W2: consent needs the facts on screen. When the popup does not fit,
+// the one-line fallback hides them, so no key accepts.
+#[test]
+fn y_does_not_accept_when_the_popup_does_not_fit() {
+    for (cols, rows) in [(30, 5), (23, 40), (80, 14), (0, 0)] {
+        let mut menu = warned();
+        menu.set_term(cols, rows);
+        assert!(!menu.fits_warning(), "{cols}x{rows}");
+        assert_eq!(press(&mut menu, KeyCode::Char('y')), MenuCommand::None);
+        assert!(!menu.in_warning(), "{cols}x{rows}: any key closes it");
+        assert_eq!(shown_value(&menu), "off", "{cols}x{rows}");
+        assert_eq!(menu.ai_draft().memory, MemoryConfig::default());
+        assert!(menu.edits(&Config::default()).is_empty());
+    }
+}
+
+#[test]
+fn y_accepts_at_the_smallest_size_that_fits() {
+    let mut menu = warned();
+    menu.set_term(MIN_WIDTH, AI_BODY as u16 + CHROME - 1);
+    assert!(menu.fits_warning());
+    press(&mut menu, KeyCode::Char('y'));
+    assert_eq!(shown_value(&menu), "on");
+}
+
+#[test]
+fn an_unknown_terminal_size_counts_as_fitting() {
+    assert!(warned().fits_warning());
 }

@@ -152,6 +152,24 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
         })
 }
 
+/// Rows around the popup body: two borders, the blank row and the footer.
+pub const CHROME: u16 = 4;
+/// With the AI section the body is fixed: the popup never jumps between the
+/// task list, the picker (a title and `VIEW` rows) and the privacy warning.
+/// The task list is the tallest: two titles, three settings, the six task
+/// rows and `Memory` (`Profile` adds one more row when ai-chat lands it); a
+/// test keeps this equal to the tallest AI view.
+pub const AI_BODY: usize = 12;
+/// Smallest width that still shows the full popup.
+pub const MIN_WIDTH: u16 = 24;
+
+/// Whether a `width` x `height` screen is big enough for the full popup of
+/// `rows` body rows (the blank row is the first thing dropped, so the height
+/// may lose one). Below it the popup is a one-line fallback.
+pub fn fits_size(width: u16, height: u16, rows: usize) -> bool {
+    width >= MIN_WIDTH && usize::from(height) >= rows + usize::from(CHROME) - 1
+}
+
 /// What a key did, for the app to act on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MenuCommand {
@@ -233,6 +251,8 @@ pub struct MenuState {
     ai: Option<AiMenu>,
     /// A detection run is in flight.
     checking: bool,
+    /// The terminal size at the last key, `None` before the app gave one.
+    term: Option<(u16, u16)>,
 }
 
 impl MenuState {
@@ -243,7 +263,22 @@ impl MenuState {
             error: None,
             ai: None,
             checking: false,
+            term: None,
         }
+    }
+
+    /// The terminal size, given by the app before each key so the menu knows
+    /// whether the popup (or only its one-line fallback) is on screen.
+    pub fn set_term(&mut self, cols: u16, rows: u16) {
+        self.term = Some((cols, rows));
+    }
+
+    /// Whether the privacy warning is readable in full: the popup fits the
+    /// terminal. An unknown size counts as fitting.
+    pub fn fits_warning(&self) -> bool {
+        let body = AI_BODY.max(Self::warning_rows().len());
+        self.term
+            .is_none_or(|(cols, rows)| fits_size(cols, rows, body))
     }
 
     /// Adds the AI section, editing a draft of `ai` against `engines`.
@@ -319,12 +354,15 @@ impl MenuState {
 
     /// Keys while the warning is open: only an unmodified lowercase `y`
     /// accepts, everything else declines, and Esc never leaves the menu.
-    /// Repeat events are ignored.
+    /// When the popup does not fit the facts are hidden behind the one-line
+    /// fallback, so nothing accepts then (informed consent). Repeat events
+    /// are ignored.
     fn on_warning_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
         if repeat {
             return MenuCommand::None;
         }
-        let accept = key.code == KeyCode::Char('y') && key.modifiers.is_empty();
+        let accept =
+            self.fits_warning() && key.code == KeyCode::Char('y') && key.modifiers.is_empty();
         if let Some(ai) = &mut self.ai {
             ai.answer_warning(accept);
         }

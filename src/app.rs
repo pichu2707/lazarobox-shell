@@ -985,6 +985,7 @@ impl App {
             debug_assert!(false, "MENU mode without menu state");
             return Vec::new();
         };
+        menu.set_term(self.term.0, self.term.1);
         match menu.on_key(key, repeat, &mut self.config) {
             MenuCommand::Changed => self.apply_config(),
             MenuCommand::Cancel => self.close_menu(Outcome::Reverted),
@@ -5699,6 +5700,19 @@ mod app_tests {
         a.update(AppEvent::ConfigSaved);
         assert!(a.menu().is_none());
         assert!(a.ai().memory.active());
+    }
+
+    // Review W2: after a resize into the one-line fallback the facts are
+    // hidden, so `y` must not accept.
+    #[test]
+    fn y_in_the_warning_does_not_accept_after_a_resize_to_a_tiny_terminal() {
+        let mut a = memory_warning_open();
+        a.update(AppEvent::Resize { cols: 30, rows: 5 });
+        assert!(a.update(key('y')).is_empty());
+        let menu = a.menu().unwrap();
+        assert!(!menu.in_warning());
+        assert_eq!(menu.ai_draft().memory, Default::default());
+        assert!(menu.edits(a.config()).is_empty());
     }
 
     #[test]
