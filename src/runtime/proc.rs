@@ -16,6 +16,10 @@
 /// must call [`GroupKill::disarm`] right after, with nothing in between.)
 /// `kill()` itself stays correct only BEFORE the reap.
 ///
+/// On a normal leader exit, `reap()` disarms WITHOUT killing the group, so
+/// background grandchildren survive. Adapters must use
+/// [`GroupKill::kill_and_reap`] (or call `kill()` before `reap()`) there.
+///
 /// # Construction is fallible
 ///
 /// `killpg(0)` signals our own group (the UI included), `killpg(1)` and
@@ -73,6 +77,10 @@ impl GroupKill {
     ///
     /// Cancel-safe: if the future is dropped before the wait completes, the
     /// leader is not reaped and the guard stays armed (and kills on drop).
+    ///
+    /// This does NOT kill the group: background grandchildren survive a
+    /// leader that exits on its own. Adapters whose engine exits normally
+    /// should use [`GroupKill::kill_and_reap`] instead.
     pub async fn reap(
         &mut self,
         child: &mut tokio::process::Child,
@@ -82,6 +90,20 @@ impl GroupKill {
         // pid must not be signalled any more.
         self.disarm();
         status
+    }
+}
+
+impl GroupKill {
+    /// Kills the whole group, then reaps the leader and disarms. The leader
+    /// has not been reaped yet, so its pgid is still ours to signal: this is
+    /// the call for a normal leader exit, where `reap()` alone would leave
+    /// background grandchildren running.
+    pub async fn kill_and_reap(
+        &mut self,
+        child: &mut tokio::process::Child,
+    ) -> std::io::Result<std::process::ExitStatus> {
+        self.kill();
+        self.reap(child).await
     }
 }
 
@@ -144,5 +166,69 @@ mod tests {
         let status = group.reap(&mut child).await.expect("wait succeeds");
         assert!(status.success());
         assert!(!group.is_armed(), "reaping disarms the guard");
+    }
+
+    /// Kills the recorded pid when dropped, so a failed assertion cannot leak
+    /// a `sleep 300`.
+    struct KillOnDrop(libc::pid_t);
+
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            // SAFETY: a plain signal to a pid this test spawned.
+            unsafe { libc::kill(self.0, libc::SIGKILL) };
+        }
+    }
+
+    /// No such process, or only a zombie nobody has collected yet.
+    fn is_gone(pid: libc::pid_t) -> bool {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Err(_) => true,
+            Ok(stat) => stat
+                .rsplit(')')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .starts_with('Z'),
+        }
+    }
+
+    #[tokio::test]
+    async fn kill_and_reap_takes_down_grandchildren_of_a_leader_that_exited() {
+        use tokio::io::AsyncReadExt;
+
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "sleep 300 >/dev/null 2>&1 & echo $!; exit 0"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .process_group(0)
+            .spawn()
+            .expect("sh starts");
+        let pid = child.id().expect("a pid") as libc::pid_t;
+        let mut group = GroupKill::new(pid).expect("a fresh group is a valid target");
+        let mut out = String::new();
+        // EOF: the leader exited (the grandchild's stdout is redirected).
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            child.stdout.take().unwrap().read_to_string(&mut out),
+        )
+        .await
+        .expect("the leader exits within 5 s")
+        .expect("stdout reads");
+        let grandchild: libc::pid_t = out.trim().parse().expect("the grandchild pid");
+        let _cleanup = KillOnDrop(grandchild);
+
+        let status = group
+            .kill_and_reap(&mut child)
+            .await
+            .expect("wait succeeds");
+        assert!(status.success());
+        assert!(!group.is_armed(), "reaping disarms the guard");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !is_gone(grandchild) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(is_gone(grandchild), "the group's grandchild is killed");
     }
 }
