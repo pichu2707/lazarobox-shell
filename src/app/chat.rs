@@ -4,6 +4,7 @@
 use super::*;
 use crate::core::ai::chat::{
     SendOutcome,
+    adapters::system_prompt,
     engine::{Availability, availability},
     guidance::guidance,
     streams::StreamInfo,
@@ -215,7 +216,7 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
-        match chat.send(text, availability, "") {
+        match chat.send(text, availability, system_prompt()) {
             SendOutcome::Sent { turn, request } => {
                 chat.composer_mut().clear();
                 vec![Effect::ChatSend {

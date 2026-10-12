@@ -327,3 +327,95 @@ fn a_last_line_over_the_cap_without_a_newline_is_too_long() {
     at_cap.push(b'\r');
     assert_eq!(ndjson(&[&at_cap]).len(), 2);
 }
+
+// Reasoning (Ollama `thinking` field) ----------------------------------------
+
+fn thinking(text: &str) -> StreamEvent {
+    StreamEvent::ThinkingDelta(text.into())
+}
+
+/// Lines recorded from a real Ollama 0.30.10 and qwen3:14b: reasoning arrives
+/// as `message.thinking` next to an empty `content`, the answer follows with no
+/// `thinking` key at all.
+const QWEN3: &str = include_str!("../../../../../tests/fixtures/ollama/qwen3-thinking.ndjson");
+/// A non-reasoning model (llama3.2:3b) recorded the same way.
+const LLAMA: &str = include_str!("../../../../../tests/fixtures/ollama/llama3.2-plain.ndjson");
+
+#[test]
+fn a_recorded_reasoning_model_gives_thinking_then_text_then_final() {
+    let events = ndjson(&[QWEN3.as_bytes()]);
+    let kinds: Vec<&str> = events
+        .iter()
+        .map(|e| match e {
+            StreamEvent::ThinkingDelta(_) => "thinking",
+            StreamEvent::Delta(_) => "delta",
+            StreamEvent::Done(_) => "done",
+            _ => "other",
+        })
+        .collect();
+    let mut want = vec!["thinking"; 6];
+    want.extend(["thinking", "thinking", "thinking", "delta", "delta", "done"]);
+    assert_eq!(kinds, want);
+    assert_eq!(events[0], thinking("Okay"));
+    assert_eq!(events[8], thinking(".\n"));
+    assert_eq!(events[9], delta("4"));
+    assert_eq!(events[11], StreamEvent::Done(Finish::Stop));
+    same_at_every_split(QWEN3, &events, ndjson);
+}
+
+#[test]
+fn a_recorded_plain_model_gives_the_events_it_always_did() {
+    assert_eq!(
+        ndjson(&[LLAMA.as_bytes()]),
+        [delta("Hi"), delta("!"), StreamEvent::Done(Finish::Stop)]
+    );
+}
+
+#[test]
+fn thinking_then_content_in_arrival_order() {
+    let text = concat!(
+        "{\"message\":{\"thinking\":\"Let me\"},\"done\":false}\n",
+        "{\"message\":{\"thinking\":\" see\"},\"done\":false}\n",
+        "{\"message\":{\"content\":\"Hi\"},\"done\":false}\n",
+        "{\"done\":true,\"done_reason\":\"stop\"}\n",
+    );
+    let want = [
+        thinking("Let me"),
+        thinking(" see"),
+        delta("Hi"),
+        StreamEvent::Done(Finish::Stop),
+    ];
+    assert_eq!(ndjson(&[text.as_bytes()]), want);
+    same_at_every_split(text, &want, ndjson);
+}
+
+#[test]
+fn a_line_with_both_fields_gives_the_thinking_delta_first() {
+    let text = "{\"message\":{\"thinking\":\"x\",\"content\":\"y\"},\"done\":false}\n";
+    assert_eq!(
+        ndjson(&[text.as_bytes()]),
+        [
+            thinking("x"),
+            delta("y"),
+            StreamEvent::Error(ChatError::Interrupted)
+        ]
+    );
+}
+
+#[test]
+fn an_empty_thinking_field_gives_no_event() {
+    let text = "{\"message\":{\"thinking\":\"\",\"content\":\"Hi\"},\"done\":false}\n";
+    assert_eq!(
+        ndjson(&[text.as_bytes()]),
+        [delta("Hi"), StreamEvent::Error(ChatError::Interrupted)]
+    );
+}
+
+#[test]
+fn a_thinking_field_that_is_not_a_string_is_ignored() {
+    let text = "{\"message\":{\"thinking\":7,\"content\":\"Hi\"},\"done\":false}\n";
+    assert_eq!(
+        ndjson(&[text.as_bytes()]),
+        [delta("Hi"), StreamEvent::Error(ChatError::Interrupted)]
+    );
+}

@@ -194,15 +194,18 @@ Files changed:
 - [ ] 12.3 RED: bounded override read (at most 16,385 bytes, regular files only, no FIFO block, `/dev/zero` symlink): notices `not valid UTF-8`, `larger than 16 KiB`, `cannot be read`, `not a regular file`; at-cap file used; whitespace-only is missing; sanitized path.
 - [ ] 12.4 GREEN: write the 10 English `.md` files via `include_str!`, `resolve_prompt`, runtime reader.
 - [ ] 12.5 Gate. Prompt text counts toward the 400 lines; re-measure.
+- [ ] 12.6 (reorder, from PR13) Remove the temporary `DEFAULT_SYSTEM_PROMPT` constant and `adapters::system_prompt()` from `src/core/ai/chat/adapters.rs` (with its test) and make `app/chat.rs` pass the resolved prompt from `resolve_prompt` instead.
 
 ## PR13 / C11: Ollama (`src/core/ai/chat/adapters.rs`, `src/runtime/chat.rs`)
 
-- [ ] 13.1 RED: `Adapter::Ollama` builds the exact JSON body (model, system prompt, history, stream flag, nothing else) for `/api/chat`; NDJSON decoder events; traffic audit on the recording fake server (POST on `127.0.0.1`, no credential headers).
-- [ ] 13.2 RED: end-to-end turns with a fake server: ready server, `latest` equivalence, saved change applies to the next message, error object, malformed line, oversized line, non-200 short error, answer cap, ambiguous framing, redirect, chat never pulls a model.
-- [ ] 13.3 RED (reasoning): the Ollama NDJSON decoder maps a streamed message's `thinking` field to `ThinkingDelta` and `content` to `Delta`; a line with both gives the thinking delta first; empty `thinking` gives no event; a model with no `thinking` field gives the same events as before; every split point; a 256 KiB-plus reasoning stream is capped without an error; the request body is unchanged by reasoning (no `think` field unless M7 proves it is required) and holds no earlier reasoning; a thinking delta counts as first byte and activity for the timeouts.
-- [ ] 13.4 GREEN: `adapter_for`, `Invocation::Http` execution through `post_stream`, system prompt from `resolve_prompt`, the `thinking` mapping in the Ollama decoder.
+Reorder note (user-approved 2026-10-12): PR13 was applied ahead of PR10, PR11 and PR12 so a working local chat can be tried early. Consequences: (1) `resolve_prompt` (PR12) and `Profile` (PR11) do not exist yet, so the system prompt is ONE temporary constant, `DEFAULT_SYSTEM_PROMPT`, behind `adapters::system_prompt()`, which the app calls in `app/chat.rs`; PR12 swaps that call for `resolve_prompt` (task 12.6). (2) `Effect::Store` stays unwired (PR10). (3) The `think` request option is NOT needed: real Ollama 0.30.10 streams `message.thinking` for qwen3:14b with the pinned body (fixtures in `tests/fixtures/ollama/`), so the spec scenario is unchanged. (4) Tasks 13.3 "thinking counts as activity" is a characterization test (the transport counts bytes; it passed without new code).
+
+- [x] 13.1 RED: `Adapter::Ollama` builds the exact JSON body (model, system prompt, history, stream flag, nothing else) for `/api/chat`; NDJSON decoder events; traffic audit on the recording fake server (POST on `127.0.0.1`, no credential headers).
+- [x] 13.2 RED: end-to-end turns with a fake server: ready server, `latest` equivalence, saved change applies to the next message, error object, malformed line, oversized line, non-200 short error, answer cap, ambiguous framing, redirect, chat never pulls a model.
+- [x] 13.3 RED (reasoning): the Ollama NDJSON decoder maps a streamed message's `thinking` field to `ThinkingDelta` and `content` to `Delta`; a line with both gives the thinking delta first; empty `thinking` gives no event; a model with no `thinking` field gives the same events as before; every split point; a 256 KiB-plus reasoning stream is capped without an error; the request body is unchanged by reasoning (no `think` field unless M7 proves it is required) and holds no earlier reasoning; a thinking delta counts as first byte and activity for the timeouts.
+- [x] 13.4 GREEN: `adapter_for`, `Invocation::Http` execution through `post_stream`, system prompt from the temporary `adapters::system_prompt()` (`resolve_prompt` arrives in PR12, task 12.6), the `thinking` mapping in the Ollama decoder.
 - [ ] 13.5 [manual] M7: live Ollama gives a 404 for an unknown model and shows a cold load as `waiting for the model…` then `loading model…` with no timeout; reply streams and cancel stops it. With a reasoning model (one that streams `thinking`) the reasoning shows dimmed with the `┊` gutter, collapses to `▸ reasoning (N.Ns)` when the answer starts, Ctrl+R expands it, and the statusline bar shows `thinking` then `answering`; record whether a `think` option is needed.
-- [ ] 13.6 Gate.
+- [x] 13.6 Gate.
 
 ## PR14 / C12: OpenAI-compatible (`adapters.rs`, `runtime/chat.rs`)
 

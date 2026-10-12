@@ -153,6 +153,25 @@ fn a_thinking_delta_after_the_collapse_is_dropped() {
 }
 
 #[test]
+fn push_thinking_drops_late_reasoning_without_an_error_or_a_second_block() {
+    let base = Instant::now();
+    let mut state = chat();
+    let (turn, _) = sent_at(&mut state, "hi", base);
+    state.apply_at(turn, thinking("first"), at(base, 0));
+    state.apply_at(turn, text("ok"), at(base, 10));
+    // Late pieces between answer pieces, in the same turn.
+    assert!(!state.push_thinking("late", at(base, 20)));
+    state.apply_at(turn, text("!"), at(base, 30));
+    assert!(!state.push_thinking("later", at(base, 40)));
+    state.apply_at(turn, done(), at(base, 50));
+    assert_eq!(blocks(&state).len(), 1);
+    assert_eq!(blocks(&state)[0].text(), "first");
+    let said: Vec<String> = texts(&state).into_iter().map(|t| t.1).collect();
+    assert_eq!(said, ["hi", "ok!"]);
+    assert!(systems(&state).is_empty(), "no error line");
+}
+
+#[test]
 fn a_thinking_delta_of_an_old_turn_is_dropped() {
     let base = Instant::now();
     let mut state = chat();

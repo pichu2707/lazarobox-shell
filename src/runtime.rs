@@ -131,7 +131,7 @@ pub async fn run() -> io::Result<()> {
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
         .with_config_path(config_path)
         .with_detector(Box::new(move || spawn_detection(ai_tx.clone())))
-        .with_chats(Chats::new(chat::unavailable_runner(), chat_tx))
+        .with_chats(Chats::new(chat::adapter_runner(), chat_tx))
         .with_store(chat_store::spawn_at(store_path, store_tx));
     let inbox = Inbox {
         pty: rx,

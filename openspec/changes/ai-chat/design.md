@@ -225,7 +225,7 @@ No migration for existing users: `[ai] profile` is optional and older builds ign
 - [x] codex/gemini: in, jailed (user).
 - [ ] M11 decides whether claude stays jailed on Linux or runs as Layered-bare.
 - [ ] (rev 4) Toggle key: Ctrl+R is proposed (mnemonic, same style as Ctrl+Y, Ctrl+B, Ctrl+T); confirm it reaches the app in Kitty (M8) or pick another.
-- [ ] (rev 4) Does Ollama need a `think` request option for reasoning models to stream `thinking`? The body is currently pinned without it; M7 decides.
+- [x] (rev 4) Does Ollama need a `think` request option for reasoning models to stream `thinking`? ANSWERED in PR13 (2026-10-12, real Ollama 0.30.10): NO. `qwen3:14b` streams `message.thinking` (with an empty `content`) on lines with no `think` field in the request, then the answer lines carry `content` only; `llama3.2:3b` has no `thinking` key. The body stays pinned. Fixtures: `tests/fixtures/ollama/`. M7 still confirms in the pane.
 - [ ] (rev 4) Does claude stream-json emit `thinking` blocks with the pinned flags (M2)? If not, the claude parsing task becomes a documented no-op.
 - [ ] (rev 4) Confirm the 256 KiB reasoning cap, the 100 ms tick, the scanner width and sweep style, and the exact placement of the bar in the statusline.
 - [ ] (rev 4) Only the most recent reasoning block is toggleable; older blocks stay collapsed. Confirm.

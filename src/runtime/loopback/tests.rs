@@ -553,6 +553,45 @@ async fn a_stream_alive_every_59_s_is_not_stalled() {
     assert_eq!(t.events.recv().await, Some(StreamEvent::Done(Finish::Stop)));
 }
 
+// Characterization: the transport counts bytes, so reasoning needs no special
+// case. These pin that a thinking-only stretch is activity for every limit.
+#[tokio::test(start_paused = true)]
+async fn thinking_counts_as_the_first_byte_and_as_activity() {
+    const THOUGHT: &str = "{\"message\":{\"content\":\"\",\"thinking\":\"hm\"},\"done\":false}\n";
+    let mut t = start_turn();
+    let mut server = t.server;
+    tokio::spawn(async move {
+        // Slower than the 60 s idle limit and 3 s `Slow`, faster than the
+        // 120 s first-byte limit: only the first thought may arrive this late.
+        tokio::time::sleep(Duration::from_secs(100)).await;
+        server.write_all(HEAD).await.unwrap();
+        for _ in 0..4 {
+            server.write_all(&chunk(THOUGHT)).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(59)).await;
+        }
+        server.write_all(&chunk(DONE)).await.unwrap();
+        server.write_all(END).await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    let mut events = Vec::new();
+    while let Some(e) = t.events.recv().await {
+        events.push(e);
+    }
+    let thought = StreamEvent::ThinkingDelta("hm".into());
+    assert_eq!(
+        events,
+        vec![
+            StreamEvent::Slow,
+            thought.clone(),
+            thought.clone(),
+            thought.clone(),
+            thought,
+            delta("lo"),
+            StreamEvent::Done(Finish::Stop)
+        ]
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_turn_that_keeps_streaming_ends_at_15_minutes() {
     let mut t = start_turn();
