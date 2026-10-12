@@ -361,6 +361,45 @@ async fn targets_outside_the_allowlist_or_with_bad_bytes_are_refused() {
 }
 
 #[tokio::test]
+async fn dot_segments_encoded_separators_and_fragments_in_the_path_are_refused() {
+    let (port, seen) = serve(Some(ok_json("{}"))).await;
+    for target in [
+        "/observations/%2e%2e/export",
+        "/observations/%2E%2E/export",
+        "/observations/.%2e/export",
+        "/observations/%2e./export",
+        "/observations/./7",
+        "/observations/%2e/7",
+        "/observations/..",
+        "/observations/%2e%2e",
+        "/observations%2f7",
+        "/observations/..%2fexport",
+        "/observations/%2F7",
+        "/observations%5c7",
+        "/observations/%5C7",
+        "/observations\\7",
+        "/health#x",
+        "/context?project=p#x",
+    ] {
+        assert!(!allowed_target(target), "{target:?}");
+        let got = request(port, Method::Get, target, None, None, Limits::READ).await;
+        assert_eq!(got, Err(CallError::Refused), "{target:?}");
+    }
+    tokio::task::yield_now().await;
+    assert!(none_seen(&seen));
+}
+
+#[tokio::test]
+async fn an_encoded_dot_dot_in_the_query_still_passes() {
+    let (port, _) = serve(Some(ok_json("{}"))).await;
+    assert!(
+        get(port, "/context?cwd=%2Ftmp%2F..%2Fx&a=%2e%2e")
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test]
 async fn every_engram_route_is_allowed_with_a_subpath_or_query() {
     let (port, _) = serve(Some(ok_json("{}"))).await;
     for target in [

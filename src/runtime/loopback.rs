@@ -509,20 +509,34 @@ pub(crate) async fn request_to(
 }
 
 /// A target is allowed when it is printable ASCII (no space, CR, LF, tab or
-/// other control byte) and its path is an engram route or below one. A `..`
-/// segment in the path is refused; the query is not looked at beyond bytes.
+/// other control byte), has no `#`, and its path is an engram route or below
+/// one. In the path (before `?`) a `.` or `..` segment is refused even when
+/// percent-encoded (`%2e`), and so are an encoded slash (`%2f`), an encoded
+/// backslash (`%5c`) and a raw backslash: a server may decode them into a
+/// different route. The query is only checked for bytes, so an encoded cwd such
+/// as `%2Ftmp%2F..%2Fx` still passes.
 fn allowed_target(target: &str) -> bool {
-    if !target.bytes().all(|b| b.is_ascii_graphic()) {
+    if !target.bytes().all(|b| b.is_ascii_graphic()) || target.contains('#') {
         return false;
     }
     let path = target.split('?').next().unwrap_or("");
-    if path.split('/').any(|segment| segment == "..") {
+    if path.contains('\\') || path.split('/').any(dot_segment) {
+        return false;
+    }
+    let lower = path.to_ascii_lowercase();
+    if lower.contains("%2f") || lower.contains("%5c") {
         return false;
     }
     ENGRAM_ROUTES.iter().any(|route| {
         path.strip_prefix(route)
             .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
     })
+}
+
+/// Whether a path segment is `.` or `..` once `%2e` is decoded.
+fn dot_segment(segment: &str) -> bool {
+    let decoded = segment.to_ascii_lowercase().replace("%2e", ".");
+    decoded == "." || decoded == ".."
 }
 
 /// A bearer value that cannot break the header: non-empty printable ASCII, no
