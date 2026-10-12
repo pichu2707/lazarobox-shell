@@ -795,3 +795,6 @@ mod save_tests;
 
 #[cfg(test)]
 mod footer_tests;
+
+#[cfg(test)]
+mod guard_tests;
