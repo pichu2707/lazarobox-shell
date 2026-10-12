@@ -91,9 +91,7 @@ impl GroupKill {
         self.disarm();
         status
     }
-}
 
-impl GroupKill {
     /// Kills the whole group, then reaps the leader and disarms. The leader
     /// has not been reaped yet, so its pgid is still ours to signal: this is
     /// the call for a normal leader exit, where `reap()` alone would leave
@@ -168,10 +166,12 @@ mod tests {
         assert!(!group.is_armed(), "reaping disarms the guard");
     }
 
+    #[cfg(target_os = "linux")]
     /// Kills the recorded pid when dropped, so a failed assertion cannot leak
     /// a `sleep 300`.
     struct KillOnDrop(libc::pid_t);
 
+    #[cfg(target_os = "linux")]
     impl Drop for KillOnDrop {
         fn drop(&mut self) {
             // SAFETY: a plain signal to a pid this test spawned.
@@ -179,6 +179,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     /// No such process, or only a zombie nobody has collected yet.
     fn is_gone(pid: libc::pid_t) -> bool {
         match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
@@ -192,6 +193,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn kill_and_reap_takes_down_grandchildren_of_a_leader_that_exited() {
         use tokio::io::AsyncReadExt;
