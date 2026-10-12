@@ -14,13 +14,14 @@ use serde_json::Value;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
+    sync::Notify,
     time::timeout,
 };
 
 use super::*;
 use crate::core::ai::chat::{
-    ANSWER_CAP, REASONING_CAP,
-    engine::{ChatMessage, Finish, Role},
+    ANSWER_CAP, ChatState, Entry, REASONING_CAP, SendOutcome,
+    engine::{Availability, ChatMessage, Finish, Role},
 };
 
 const QWEN3: &str = include_str!("../../../tests/fixtures/ollama/qwen3-thinking.ndjson");
@@ -226,16 +227,46 @@ async fn reasoning_past_the_cap_is_cut_without_an_error() {
 
 #[tokio::test]
 async fn the_request_does_not_carry_earlier_reasoning() {
-    let server = Recorder::start(reply(QWEN3)).await;
-    let events = run(server.port, request("qwen3:14b")).await;
+    let availability = Availability::Ready {
+        engine: "ollama".into(),
+        model: Some("qwen3:14b".into()),
+    };
+    // Turn one runs through the live runner and is folded into a real chat.
+    let first = Recorder::start(reply(QWEN3)).await;
+    let mut chat = ChatState::new(None);
+    let SendOutcome::Sent { turn, request: one } = chat.send("what is 2+2?", &availability, "sys")
+    else {
+        panic!("first send refused");
+    };
+    let events = run(first.port, one).await;
     let thought = text(&events, reasoning);
-    assert!(!thought.is_empty());
-    // A second turn is built from messages only: the app never stores
-    // reasoning, so nothing of it can be in the next body.
+    assert!(thought.len() > 20, "the fixture reasons: {thought:?}");
+    let events_answer = events.clone();
+    for event in events {
+        chat.apply(turn, event);
+    }
+    assert!(
+        chat.entries()
+            .iter()
+            .any(|e| matches!(e, Entry::Reasoning(r) if r.text() == thought)),
+        "the chat holds the reasoning entry"
+    );
+    let answer_text = text(&events_answer, answer);
+    assert_eq!(answer_text, "4.");
+    assert!(chat.messages().any(|m| m.text == answer_text));
+    // Turn two is built from that chat: the POST body has the answer, never
+    // the reasoning.
+    let SendOutcome::Sent { request: two, .. } = chat.send("and now?", &availability, "sys") else {
+        panic!("second send refused");
+    };
+    assert_eq!(two.messages.len(), 3);
     let second = Recorder::start(reply(QWEN3)).await;
-    let _ = run(second.port, request("qwen3:14b")).await;
+    let _ = run(second.port, two).await;
     let (_, json) = second.request(0);
-    assert!(!json.to_string().contains("Okay"));
+    let body = json.to_string();
+    assert!(body.contains(&answer_text), "{body}");
+    assert!(!body.contains(&thought), "reasoning leaked into {body}");
+    assert!(!body.contains("Okay"), "reasoning leaked into {body}");
 }
 
 #[tokio::test]
@@ -350,4 +381,69 @@ async fn an_engine_without_an_adapter_fails_the_turn_and_connects_nowhere() {
     req.engine = "lmstudio".into();
     assert_eq!(run(server.port, req).await, [failed(NO_ADAPTER)]);
     assert_eq!(server.connections.load(Ordering::SeqCst), 0);
+}
+
+/// Sends the head and one thinking line, then stalls until the client closes
+/// the connection. `closed` fires when it does.
+async fn start_stalling_server() -> (u16, Arc<Notify>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let closed = Arc::new(Notify::new());
+    let signal = closed.clone();
+    tokio::spawn(async move {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = [0u8; 4096];
+        let mut raw = Vec::new();
+        // The request head is enough: the body is never needed here.
+        while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
+            match stream.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => raw.extend_from_slice(&buf[..n]),
+            }
+        }
+        let line = "{\"message\":{\"thinking\":\"Let me\"},\"done\":false}\n";
+        let _ = stream.write_all(OK_HEAD.as_bytes()).await;
+        let _ = stream.write_all(line.as_bytes()).await;
+        // Stall: nothing more is sent. A read that ends is the client leaving.
+        loop {
+            match stream.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+        signal.notify_one();
+    });
+    (port, closed)
+}
+
+#[tokio::test]
+async fn cancelling_while_the_model_thinks_closes_the_connection_and_ends_the_events() {
+    let (port, closed) = start_stalling_server().await;
+    let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
+    let mut chats = Chats::new(adapter_runner_at(Some(port)), tx);
+    chats.send(pane(1), 1, request("qwen3:14b"));
+    let (_, turn, first) = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("the thinking delta arrives")
+        .expect("the channel is open");
+    assert_eq!(
+        (turn, first),
+        (1, StreamEvent::ThinkingDelta("Let me".into()))
+    );
+
+    chats.cancel(pane(1));
+
+    // The adapter was dropped: the socket is closed on the server side.
+    timeout(Duration::from_secs(5), closed.notified())
+        .await
+        .expect("the connection closes after the cancel");
+    // No further event, not even a final one: the app ends the turn itself.
+    assert!(
+        timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .is_err(),
+        "no event after the cancel"
+    );
 }
