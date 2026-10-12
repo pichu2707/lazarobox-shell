@@ -119,11 +119,11 @@ AS4 (~850, 90% deletions) is split in three because two PRs cannot stay under 40
 
 ## PR12 (no code): Verify-prep, real machine [manual]
 
-- [ ] 12.1 Ollama with 8 models: `✓` rows selectable, curated `download required` rows reachable, footer `download required · not selectable`, Enter does nothing, no download.
-- [ ] 12.2 claude catalog (`default/opus/sonnet/fable`) and `custom…` for a CLI; `s` typed in the field.
-- [ ] 12.3 Per-task assignment saved under `[ai.tasks.*]` and kept after restart; `s` saves, Esc goes back one level, Esc at top discards.
-- [ ] 12.4 `checking engines…` and `refreshing…` cues; `r` after `ollama pull` at level 2 refreshes.
-- [ ] 12.5 Terminal below 24x14 shows fallback, Esc and `s` still work; positions in Kitty (four combinations).
+- [x] 12.1 Ollama with 8 models: `✓` rows selectable, curated `download required` rows reachable, footer `download required · not selectable`, Enter does nothing, no download.
+- [x] 12.2 claude catalog (`default/opus/sonnet/fable`) and `custom…` for a CLI; `s` typed in the field.
+- [x] 12.3 Per-task assignment saved under `[ai.tasks.*]` and kept after restart; `s` saves, Esc goes back one level, Esc at top discards.
+- [x] 12.4 `checking engines…` and `refreshing…` cues; `r` after `ollama pull` at level 2 refreshes.
+- [x] 12.5 Terminal below 24x14 shows fallback, Esc and `s` still work; positions in Kitty (four combinations).
 
 ## Coverage: spec scenario → PR
 
