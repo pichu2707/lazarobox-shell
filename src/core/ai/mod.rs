@@ -8,6 +8,7 @@ pub mod catalog;
 pub mod chat;
 pub mod config;
 pub mod http;
+pub mod jail;
 pub mod menu;
 pub mod parse;
 pub mod picker;

@@ -3,6 +3,8 @@
 //! C1 holds only what a chat pane carries before the conversation exists: the
 //! cwd it was opened from.
 
+pub mod engine;
+
 use std::path::{Path, PathBuf};
 
 /// The state of one chat pane.
