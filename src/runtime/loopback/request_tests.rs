@@ -13,6 +13,40 @@ use super::*;
 
 type Requests = Arc<Mutex<Vec<Vec<u8>>>>;
 
+/// Every call the pure builders can produce is one `request` accepts, so the
+/// method table and the builders cannot drift apart.
+#[test]
+fn every_builder_call_is_allowed_by_the_route_table() {
+    use crate::core::ai::memory::{
+        kind::MemKind,
+        port::Note,
+        route::{self, Method as Verb},
+    };
+    let note = Note {
+        kind: MemKind::Decision,
+        title: "t".into(),
+        content: "c".into(),
+    };
+    let calls = [
+        route::health(),
+        route::project_current("/tmp/a b&c\r\nX: y"),
+        route::context("my proj"),
+        route::register_session("lazarobox-ab", "p", "/x"),
+        route::end_session("lazarobox-ab", "s"),
+        route::save("lazarobox-ab", "p", &note),
+        route::delete(7, "p"),
+    ];
+    for call in calls {
+        let method = match call.method {
+            Verb::Get => Method::Get,
+            Verb::Post => Method::Post,
+            Verb::Delete => Method::Delete,
+        };
+        assert!(allowed_target(&call.target), "{}", call.target);
+        assert!(method_fits_route(method, &call.target), "{}", call.target);
+    }
+}
+
 /// Accepts connections, records each request and answers with `reply`, then
 /// closes. `None` reply: accept and stay silent.
 async fn serve(reply: Option<Vec<u8>>) -> (u16, Requests) {
