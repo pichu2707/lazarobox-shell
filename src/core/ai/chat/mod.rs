@@ -71,7 +71,9 @@ pub enum Phase {
     Waiting {
         slow: bool,
     },
-    /// The last entry is the assistant message being written.
+    /// The last message entry is the assistant message being written. System
+    /// lines (a refused send's BUSY) may follow it, so look it up among the
+    /// messages, not the entries.
     Streaming,
 }
 
