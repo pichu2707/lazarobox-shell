@@ -45,6 +45,8 @@ rusqlite = { version = "0.38", features = ["bundled"] }
 
 # Display width of chat text (wrapping, cursor column)
 unicode-width = "0.2"
+# Grapheme clusters: ratatui draws and measures per cluster, so must we
+unicode-segmentation = "1.13"
 
 [dev-dependencies]
 insta = "1"

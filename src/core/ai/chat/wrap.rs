@@ -1,18 +1,59 @@
 //! Hard wrapping by display width, shared by the composer and the transcript.
+//!
+//! Widths are measured per grapheme cluster, as ratatui draws them: a VS16
+//! heart or a skin-toned thumb is one 2-column cell, not the sum of its
+//! chars.
 
 use std::ops::Range;
 
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
+
+/// One grapheme cluster of a char slice.
+#[derive(Clone, Debug)]
+pub struct Cluster {
+    /// Char indices of the cluster in the slice.
+    pub chars: Range<usize>,
+    /// Display columns.
+    pub width: usize,
+    /// A lone space.
+    pub space: bool,
+}
+
+/// The grapheme clusters of `chars`, in order.
+pub fn clusters(chars: &[char]) -> Vec<Cluster> {
+    let text: String = chars.iter().collect();
+    let mut at = 0;
+    text.graphemes(true)
+        .map(|g| {
+            let n = g.chars().count();
+            let cluster = Cluster {
+                chars: at..at + n,
+                width: UnicodeWidthStr::width(g),
+                space: g == " ",
+            };
+            at += n;
+            cluster
+        })
+        .collect()
+}
+
+/// Display columns of `s`, summed per grapheme cluster like ratatui draws it.
+pub fn text_width(s: &str) -> usize {
+    s.graphemes(true).map(UnicodeWidthStr::width).sum()
+}
 
 /// Splits `chars` into rows of at most `width` display columns, as ranges of
-/// indices. An empty line is one empty row. Every row holds at least one
-/// character, so a character wider than the width still makes progress.
+/// char indices. An empty line is one empty row. Every row holds at least one
+/// cluster, so a cluster wider than the width still makes progress, and no
+/// row ends inside a cluster.
 pub fn wrap_ranges(chars: &[char], width: usize) -> Vec<Range<usize>> {
+    let cl = clusters(chars);
     let mut rows = Vec::new();
     let mut start = 0;
-    while start < chars.len() {
-        let end = row_end(chars, start, width);
-        rows.push(start..end);
+    while start < cl.len() {
+        let end = row_end(&cl, start, width);
+        rows.push(cl[start].chars.start..cl[end - 1].chars.end);
         start = end;
     }
     if rows.is_empty() {
@@ -21,14 +62,14 @@ pub fn wrap_ranges(chars: &[char], width: usize) -> Vec<Range<usize>> {
     rows
 }
 
-/// Where the row that starts at `start` ends: as many characters as fit in
-/// `width` columns, and at least one.
-fn row_end(chars: &[char], start: usize, width: usize) -> usize {
+/// Where the row that starts at cluster `start` ends: as many clusters as
+/// fit in `width` columns, and at least one.
+fn row_end(cl: &[Cluster], start: usize, width: usize) -> usize {
     let width = width.max(1);
     let mut used = 0;
     let mut end = start;
-    while end < chars.len() {
-        let w = char_width(chars[end]);
+    while end < cl.len() {
+        let w = cl[end].width;
         if end > start && used + w > width {
             break;
         }
@@ -38,42 +79,45 @@ fn row_end(chars: &[char], start: usize, width: usize) -> usize {
     end
 }
 
-/// Display columns of `c`: 0 for combining marks, 2 for wide characters.
-pub fn char_width(c: char) -> usize {
-    UnicodeWidthChar::width(c).unwrap_or(0)
-}
-
 /// Wraps `line` into rows of at most `width` columns, breaking at spaces
 /// where it can. A word longer than a row is broken hard. The spaces at a
 /// break are dropped; leading spaces of the line are kept.
 pub fn wrap_words(line: &str, width: usize) -> Vec<String> {
     let chars: Vec<char> = line.chars().collect();
+    let cl = clusters(&chars);
+    let text = |a: usize, b: usize| -> String {
+        if a >= b {
+            return String::new();
+        }
+        chars[cl[a].chars.start..cl[b - 1].chars.end]
+            .iter()
+            .collect()
+    };
     let mut rows = Vec::new();
     let mut start = 0;
     loop {
         // The most the row could hold; it is cut back to a space if it ends
         // inside a word.
-        let fit = row_end(&chars, start, width);
-        if fit == chars.len() {
-            rows.push(chars[start..].iter().collect());
+        let fit = row_end(&cl, start, width);
+        if fit == cl.len() {
+            rows.push(text(start, cl.len()));
             return rows;
         }
-        let first_word = start + chars[start..].iter().take_while(|&&c| c == ' ').count();
-        let cut = if chars[fit] == ' ' {
+        let first_word = start + cl[start..].iter().take_while(|c| c.space).count();
+        let cut = if cl[fit].space {
             fit
         } else {
-            chars[first_word.min(fit)..fit]
+            cl[first_word.min(fit)..fit]
                 .iter()
-                .rposition(|&c| c == ' ')
+                .rposition(|c| c.space)
                 .map_or(fit, |i| first_word.min(fit) + i)
         };
-        let row: String = chars[start..cut].iter().collect();
-        rows.push(row.trim_end().to_owned());
+        rows.push(text(start, cut).trim_end().to_owned());
         start = cut;
-        while chars.get(start) == Some(&' ') {
+        while cl.get(start).is_some_and(|c| c.space) {
             start += 1;
         }
-        if start >= chars.len() {
+        if start >= cl.len() {
             return rows;
         }
     }
@@ -123,6 +167,31 @@ mod tests {
     #[test]
     fn zero_width_marks_stay_with_their_base() {
         assert_eq!(rows("e\u{301}x", 1), ["e\u{301}", "x"]);
+    }
+
+    #[test]
+    fn a_cluster_is_measured_as_a_whole_not_per_char() {
+        // VS16 makes the heart an emoji: 2 columns, not 1.
+        assert_eq!(rows("\u{2764}\u{fe0f}x", 2), ["\u{2764}\u{fe0f}", "x"]);
+        // A skin tone modifier joins the thumb: 2 columns, not 4.
+        assert_eq!(rows("\u{1f44d}\u{1f3fd}\u{1f44d}\u{1f3fd}", 2).len(), 2);
+        assert_eq!(rows("\u{1f44d}\u{1f3fd}ab", 4), ["\u{1f44d}\u{1f3fd}ab"]);
+        // A ZWJ family is one 2-column cluster.
+        let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}";
+        assert_eq!(rows(&format!("{family}ab"), 4), [format!("{family}ab")]);
+        assert_eq!(rows(&format!("{family}{family}"), 2).len(), 2);
+    }
+
+    #[test]
+    fn text_width_sums_cluster_widths() {
+        assert_eq!(text_width("\u{2764}\u{fe0f}"), 2);
+        assert_eq!(text_width("\u{1f44d}\u{1f3fd}"), 2);
+        assert_eq!(
+            text_width("\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}"),
+            2
+        );
+        assert_eq!(text_width("日a"), 3);
+        assert_eq!(text_width("e\u{301}"), 1);
     }
 
     #[test]

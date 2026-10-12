@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use super::wrap::{char_width, wrap_ranges};
+use super::wrap::{clusters, wrap_ranges};
 use crate::core::ai::sanitize::is_format;
 
 /// The most characters the composer holds.
@@ -76,28 +76,60 @@ impl Composer {
         if self.chars.len() < COMPOSER_CAP {
             self.chars.insert(self.cursor, c);
             self.cursor += 1;
+            // A joiner typed in the middle can fuse the neighbours into one
+            // cluster; the cursor moves to its end.
+            if let Some(cluster) = clusters(&self.chars)
+                .into_iter()
+                .find(|k| k.chars.start < self.cursor && self.cursor < k.chars.end)
+            {
+                self.cursor = cluster.chars.end;
+            }
         }
     }
 
+    /// Char range of the grapheme cluster that ends at the cursor.
+    fn cluster_before(&self) -> Option<Range<usize>> {
+        clusters(&self.chars)
+            .into_iter()
+            .map(|k| k.chars)
+            .find(|r| r.end >= self.cursor && r.start < self.cursor)
+    }
+
+    /// Char range of the grapheme cluster that starts at the cursor.
+    fn cluster_after(&self) -> Option<Range<usize>> {
+        clusters(&self.chars)
+            .into_iter()
+            .map(|k| k.chars)
+            .find(|r| r.start == self.cursor)
+    }
+
+    /// Removes the whole cluster before the cursor.
     pub fn backspace(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
-            self.chars.remove(self.cursor);
+        if let Some(r) = self.cluster_before() {
+            self.chars.drain(r.clone());
+            self.cursor = r.start;
         }
     }
 
+    /// Removes the whole cluster at the cursor.
     pub fn delete(&mut self) {
-        if self.cursor < self.chars.len() {
-            self.chars.remove(self.cursor);
+        if let Some(r) = self.cluster_after() {
+            self.chars.drain(r);
         }
     }
 
+    /// One cluster left, never into the middle of one.
     pub fn left(&mut self) {
-        self.cursor = self.cursor.saturating_sub(1);
+        if let Some(r) = self.cluster_before() {
+            self.cursor = r.start;
+        }
     }
 
+    /// One cluster right, never into the middle of one.
     pub fn right(&mut self) {
-        self.cursor = (self.cursor + 1).min(self.chars.len());
+        if let Some(r) = self.cluster_after() {
+            self.cursor = r.end;
+        }
     }
 
     /// Start of the line the cursor is on.
@@ -154,9 +186,9 @@ impl Composer {
                 let here = self.cursor >= r.start && self.cursor < r.end;
                 let at_line_end = n == last && self.cursor == r.end && self.cursor == line_end;
                 if here || at_line_end {
-                    let col = self.chars[r.start..self.cursor]
+                    let col = clusters(&self.chars[r.start..self.cursor])
                         .iter()
-                        .map(|&c| char_width(c))
+                        .map(|k| k.width)
                         .sum();
                     cursor = (rows.len(), col);
                 }
@@ -205,9 +237,11 @@ fn r_empty(at: usize) -> Range<usize> {
     at..at
 }
 
-/// A character the composer accepts: not a control or format character.
+/// A character the composer accepts: not a control or format character,
+/// except the ZWJ, which glues emoji sequences together. The variation
+/// selectors (U+FE0E, U+FE0F) are not format characters and pass already.
 fn is_text(c: char) -> bool {
-    !c.is_control() && !is_format(c)
+    c == '\u{200d}' || (!c.is_control() && !is_format(c))
 }
 
 #[cfg(test)]
@@ -333,10 +367,10 @@ mod tests {
     }
 
     #[test]
-    fn a_paste_drops_lone_cr_tab_and_format_characters_and_inserts_at_the_cursor() {
+    fn a_paste_drops_lone_cr_and_format_characters_and_inserts_at_the_cursor() {
         let mut c = typed("ad");
         c.left();
-        c.paste("b\rc\t\u{200d}\n");
+        c.paste("b\rc\u{200b}\n");
         assert_eq!(c.text(), "abc\nd");
         assert_eq!(c.cursor(), 4);
     }
@@ -406,6 +440,47 @@ mod tests {
         let c = typed("日a");
         let v = c.view(10, 5);
         assert_eq!((v.cursor_row, v.cursor_col), (0, 3));
+    }
+
+    #[test]
+    fn the_cursor_column_counts_clusters_not_chars() {
+        for (text, cols) in [
+            ("\u{2764}\u{fe0f}", 2),
+            ("\u{1f44d}\u{1f3fd}", 2),
+            (
+                "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}",
+                2,
+            ),
+        ] {
+            let c = typed(text);
+            let v = c.view(10, 5);
+            assert_eq!((v.cursor_row, v.cursor_col), (0, cols), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn the_cursor_steps_and_deletes_by_cluster() {
+        let mut c = typed("a\u{1f44d}\u{1f3fd}b");
+        c.left();
+        c.left();
+        assert_eq!(c.cursor(), 1, "left jumps over the whole thumb");
+        c.right();
+        assert_eq!(c.cursor(), 3, "right too");
+        c.backspace();
+        assert_eq!(c.text(), "ab", "backspace removes the whole cluster");
+        let mut d = typed("\u{2764}\u{fe0f}z");
+        d.home();
+        d.delete();
+        assert_eq!(d.text(), "z", "delete removes the whole cluster");
+    }
+
+    #[test]
+    fn a_typed_joiner_never_leaves_the_cursor_inside_a_cluster() {
+        let mut c = typed("\u{1f468}\u{1f469}");
+        c.left();
+        c.insert('\u{200d}');
+        // Man + ZWJ + woman is one cluster now; the cursor sits after it.
+        assert_eq!(c.cursor(), 3);
     }
 
     #[test]

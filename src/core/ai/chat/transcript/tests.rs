@@ -345,11 +345,7 @@ fn rows_fit_the_width_at_reasonable_sizes() {
     );
     for width in 8..30 {
         for line in build(&state, width) {
-            let cols: usize = line
-                .text
-                .chars()
-                .map(crate::core::ai::chat::wrap::char_width)
-                .sum();
+            let cols = crate::core::ai::chat::wrap::text_width(&line.text);
             assert!(cols <= width, "{width}: {line:?}");
         }
     }
