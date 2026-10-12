@@ -544,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_ai_task_list_mixed_default_and_not_set() {
+    fn snapshot_ai_task_list_with_the_cursor_on_settings() {
         insta::assert_snapshot!(text(&draw(62, 15, &mixed())));
     }
 
@@ -655,12 +655,27 @@ mod tests {
         let mut models = picker_of("general", 0);
         press(&mut models, &[KeyCode::Enter, KeyCode::Char('k')]);
         views.push(models);
+        let mut top = picker_of("general", 0);
+        press(&mut top, &[KeyCode::Enter]);
+        views.push(top);
+        let mut cli = picker_of("general", 1);
+        press(&mut cli, &[KeyCode::Enter]);
+        views.push(cli);
         let mut custom = picker_of("general", 1);
         press(
             &mut custom,
             &[KeyCode::Enter, KeyCode::Char('k'), KeyCode::Enter],
         );
         views.push(custom);
+        let mut error = mixed();
+        error.set_error("config.toml: ai is not a table; fix it before saving".into());
+        views.push(error);
+        let mut checking = picker_of("code", 0);
+        checking.set_checking(true);
+        views.push(checking);
+        let mut unchecked = fresh().with_ai(AiConfig::general(Some("ollama"), None), None);
+        goto(&mut unchecked, "code");
+        views.push(unchecked);
         for view in &views {
             for w in 0..=70 {
                 for h in 0..=20 {
@@ -722,5 +737,93 @@ mod tests {
         assert_eq!(fit(value, 20), "abcdefghij · downlo…");
         assert_eq!(cells(&fit(value, 20)), 20);
         assert_eq!(fit("plain value that is long", 8), "plain v…");
+    }
+
+    // Review W1: the cursor on a task row shows the task hint, no h/l.
+    #[test]
+    fn snapshot_task_row_hint_after_a_finished_detection() {
+        let mut menu = mixed();
+        goto(&mut menu, "code");
+        let shown = text(&draw(62, 15, &menu));
+        assert!(shown.contains("Enter pick · r refresh · s save"), "{shown}");
+        assert!(!shown.contains("h/l"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    // Review W2: Ollama level 2 at the top, the downloaded rows visible.
+    #[test]
+    fn snapshot_ollama_models_at_the_top_show_the_downloaded_rows() {
+        let mut menu = picker_of("general", 0);
+        press(&mut menu, &[KeyCode::Enter]);
+        let shown = text(&draw(62, 15, &menu));
+        assert!(shown.contains("model1:7b ✓"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    // Review W3: the current dot on a plain row, bold titles, full-width bar.
+    #[test]
+    fn a_current_plain_row_carries_the_dot() {
+        let mut menu = picker_of("code", 0);
+        press(&mut menu, &[KeyCode::Enter]);
+        let shown = lines(&draw(62, 15, &menu));
+        assert!(shown.iter().any(|l| l.contains("│ opus ●")), "{shown:?}");
+        assert!(!shown.iter().any(|l| l.contains("sonnet ●")), "{shown:?}");
+    }
+
+    #[test]
+    fn titles_are_bold_and_the_selected_bar_spans_the_inner_width() {
+        let task = draw(62, 15, &mixed());
+        assert!(task[(2, 1)].modifier.contains(Modifier::BOLD));
+        assert!(task[(2, 5)].modifier.contains(Modifier::BOLD));
+        assert!(!task[(2, 2)].modifier.contains(Modifier::BOLD));
+        let picker = draw(62, 15, &picker_of("code", 0));
+        assert!(picker[(2, 1)].modifier.contains(Modifier::BOLD));
+        for buf in [&task, &picker] {
+            let bar: Vec<u16> = (0..15)
+                .filter(|y| buf[(2, *y)].modifier.contains(Modifier::REVERSED))
+                .collect();
+            assert_eq!(bar.len(), 1);
+            for x in 1..=60 {
+                assert!(
+                    buf[(x, bar[0])].modifier.contains(Modifier::REVERSED),
+                    "x={x}"
+                );
+            }
+            assert!(!buf[(0, bar[0])].modifier.contains(Modifier::REVERSED));
+            assert!(!buf[(61, bar[0])].modifier.contains(Modifier::REVERSED));
+        }
+    }
+
+    // The label gives way only when it does not fit next to its mark.
+    #[test]
+    fn a_picker_label_is_clipped_only_past_its_room() {
+        let fitting = "m".repeat(57);
+        let long = "m".repeat(58);
+        let detection = |name: &str| Detection {
+            engines: CATALOG
+                .iter()
+                .map(|e| EngineState {
+                    id: e.id,
+                    status: Status::Available,
+                    models: if e.id == "ollama" {
+                        vec![name.to_owned()]
+                    } else {
+                        Vec::new()
+                    },
+                    version: None,
+                })
+                .collect(),
+        };
+        let row = |name: &str| {
+            let saved = AiConfig::general(Some("ollama"), None);
+            let mut menu = fresh().with_ai(saved, Some(detection(name)));
+            goto(&mut menu, "general");
+            press(&mut menu, &[KeyCode::Enter, KeyCode::Enter]);
+            lines(&draw(62, 15, &menu))[2].clone()
+        };
+        assert_eq!(row(&fitting), format!("│ {fitting} ✓│"));
+        let clipped = row(&long);
+        assert!(clipped.contains("…"), "{clipped}");
+        assert!(clipped.ends_with("✓│"), "{clipped}");
     }
 }
