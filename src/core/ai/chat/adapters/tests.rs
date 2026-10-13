@@ -143,3 +143,46 @@ fn only_ollama_carries_the_memory_block_so_far() {
         assert!(!carries_memory(id), "{id}");
     }
 }
+
+#[test]
+fn the_system_message_is_the_profile_prompt_then_the_workspace_then_the_memory() {
+    use crate::core::ai::{
+        chat::{
+            prompts::{Override, resolve_prompt},
+            workspace::{Cwd, Head, Workspace, block, with_block},
+        },
+        config::{Profile, Task},
+    };
+    let prompt = resolve_prompt(
+        Profile::Programmer,
+        Task::Chat,
+        Override::Missing,
+        Override::Missing,
+    );
+    let workspace = block(&Workspace {
+        project: Some("lazarobox-shell".into()),
+        head: Some(Head::Branch("main".into())),
+        cwd: Some(Cwd::InRepo("src".into())),
+        os: "linux".into(),
+        shell: Some("zsh".into()),
+        date: "2026-10-13".into(),
+    });
+    let system = with_block(&prompt.text, Some(&workspace));
+    let mut req = request(&system);
+    req.memory = Some(BLOCK.into());
+    let (_, _, _, body) = http(Adapter::Ollama.build(&req));
+    let content = body["messages"][0]["content"].as_str().expect("system");
+    assert_eq!(
+        content,
+        format!("{}\n\n{workspace}\n\n{BLOCK}", prompt.text)
+    );
+    let at = |needle: &str| content.find(needle).unwrap_or_else(|| panic!("{needle}"));
+    assert_eq!(at(&prompt.text), 0, "the profile prompt first");
+    assert!(
+        at(&prompt.text) < at(&workspace),
+        "then the workspace block"
+    );
+    assert!(at(&workspace) < at(BLOCK), "then the memory block");
+    assert!(content.ends_with(BLOCK), "the memory block last");
+    assert_eq!(body["messages"].as_array().unwrap().len(), 4);
+}
