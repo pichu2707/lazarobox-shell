@@ -168,7 +168,7 @@ impl App {
 
     /// A parked send is the text as it was at Enter: editing the composer
     /// afterwards, or cancelling, drops it. The text stays in the composer.
-    fn drop_parked_send(&mut self, id: PaneId) {
+    pub(super) fn drop_parked_send(&mut self, id: PaneId) {
         self.waiting_sends.retain(|(pane, _)| *pane != id);
     }
 
@@ -246,8 +246,10 @@ impl App {
     /// waited for them go now, those still missing one of them keep waiting.
     pub(super) fn run_waiting_sends(&mut self) -> Vec<Effect> {
         let availability = self.chat_availability();
+        // A send whose pane is gone is dropped here, not kept.
         let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.waiting_sends)
             .into_iter()
+            .filter(|(id, _)| self.panes.contains_key(id))
             .partition(|(id, _)| {
                 availability != Availability::Checking
                     && self

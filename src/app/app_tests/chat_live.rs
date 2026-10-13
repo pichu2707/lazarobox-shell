@@ -1315,6 +1315,40 @@ fn editing_the_composer_drops_a_send_waiting_for_the_prompt() {
     assert_eq!(composer(&a), "hello!");
 }
 
+// A parked send dies with its pane: nothing is kept for a pane that is gone.
+#[test]
+fn closing_the_pane_drops_its_parked_send() {
+    let mut a = launched(80, 25).with_ai(ollama());
+    a.update(AppEvent::EnginesDetected(detection(&["llama3:8b"])));
+    press(&mut a, "c");
+    ask(&mut a, "hello");
+    assert_eq!(a.waiting_sends.len(), 1);
+    press(&mut a, "wq");
+    a.update(key('y'));
+    assert!(a.pane_view(chat_id()).is_none(), "the chat pane is closed");
+    assert!(a.waiting_sends.is_empty(), "{:?}", a.waiting_sends);
+    assert_eq!(a.update(prompt_ready(SYSTEM, &[])), vec![]);
+}
+
+#[test]
+fn closing_a_pane_drops_only_its_own_parked_send() {
+    let mut a = launched(80, 25).with_ai(ollama());
+    a.update(AppEvent::EnginesDetected(detection(&["llama3:8b"])));
+    press(&mut a, "c");
+    ask(&mut a, "hello");
+    a.waiting_sends.push((PaneId::FIRST, "other".into()));
+    a.update(AppEvent::Pty(PaneId::FIRST, PtyEvent::Exited));
+    assert_eq!(a.waiting_sends, [(chat_id(), "hello".to_owned())]);
+}
+
+#[test]
+fn a_waiting_send_of_a_missing_pane_is_dropped_when_the_waits_end() {
+    let mut a = launched(80, 25).with_ai(ollama());
+    a.waiting_sends.push((chat_id(), "ghost".into()));
+    assert_eq!(a.update(ready_detection()), vec![]);
+    assert!(a.waiting_sends.is_empty(), "{:?}", a.waiting_sends);
+}
+
 // Both waits end together: the engine check and the prompt.
 #[test]
 fn a_send_waits_for_both_the_detection_and_the_prompt() {

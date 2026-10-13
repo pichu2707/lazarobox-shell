@@ -1246,6 +1246,7 @@ impl App {
     fn drop_tab(&mut self, index: usize) -> Vec<Effect> {
         for id in self.tabs.remove(index).tree.leaves() {
             self.panes.remove(&id);
+            self.drop_parked_send(id);
         }
         if index == self.active {
             self.active = index.min(self.tabs.len() - 1);
@@ -1380,6 +1381,7 @@ impl App {
             Removal::WasLast => self.drop_tab(t),
             Removal::Removed => {
                 self.panes.remove(&id);
+                self.drop_parked_send(id);
                 self.tabs[t].zoom = false;
                 if id == self.tabs[t].focus {
                     let tiling = tile(&self.tabs[t].tree, body);
