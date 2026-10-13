@@ -19,15 +19,33 @@ pub struct ComposerView {
     pub cursor_col: usize,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Composer {
     chars: Vec<char>,
     cursor: usize,
+    /// The most characters it holds.
+    cap: usize,
+}
+
+impl Default for Composer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Composer {
     pub fn new() -> Self {
-        Self::default()
+        Self::with_cap(COMPOSER_CAP)
+    }
+
+    /// A composer that holds at most `cap` characters: typing and pasting
+    /// stop at it.
+    pub fn with_cap(cap: usize) -> Self {
+        Self {
+            chars: Vec::new(),
+            cursor: 0,
+            cap,
+        }
     }
 
     pub fn text(&self) -> String {
@@ -88,7 +106,7 @@ impl Composer {
     }
 
     fn put(&mut self, c: char) {
-        if self.chars.len() < COMPOSER_CAP {
+        if self.chars.len() < self.cap {
             self.chars.insert(self.cursor, c);
             self.cursor += 1;
             // A joiner typed in the middle can fuse the neighbours into one
@@ -155,6 +173,50 @@ impl Composer {
     /// End of the line the cursor is on, before its newline.
     pub fn end(&mut self) {
         self.cursor = self.line_end();
+    }
+
+    /// One line up, at the same column or the end of a shorter line. Stays
+    /// where it is on the first line.
+    pub fn up(&mut self) {
+        let start = self.line_start();
+        if start == 0 {
+            return;
+        }
+        let col = self.cursor - start;
+        let prev_end = start - 1;
+        let prev_start = self.chars[..prev_end]
+            .iter()
+            .rposition(|&c| c == '\n')
+            .map_or(0, |i| i + 1);
+        self.cursor = prev_start + col.min(prev_end - prev_start);
+        self.snap_to_cluster_end();
+    }
+
+    /// One line down, at the same column or the end of a shorter line. Stays
+    /// where it is on the last line.
+    pub fn down(&mut self) {
+        let end = self.line_end();
+        if end >= self.chars.len() {
+            return;
+        }
+        let col = self.cursor - self.line_start();
+        let next_start = end + 1;
+        let next_end = self.chars[next_start..]
+            .iter()
+            .position(|&c| c == '\n')
+            .map_or(self.chars.len(), |i| next_start + i);
+        self.cursor = next_start + col.min(next_end - next_start);
+        self.snap_to_cluster_end();
+    }
+
+    /// Moves a cursor that fell inside a cluster to the end of it.
+    fn snap_to_cluster_end(&mut self) {
+        if let Some(cluster) = clusters(&self.chars)
+            .into_iter()
+            .find(|k| k.chars.start < self.cursor && self.cursor < k.chars.end)
+        {
+            self.cursor = cluster.chars.end;
+        }
     }
 
     fn line_start(&self) -> usize {
@@ -456,6 +518,75 @@ mod tests {
         assert_eq!(
             c.text(),
             "\u{2764}\u{fe0f} \u{fe0e}\u{1f468}\u{200d}\u{1f469}"
+        );
+    }
+
+    #[test]
+    fn a_custom_cap_rejects_input_past_it() {
+        let mut c = Composer::with_cap(16_000);
+        for _ in 0..16_000 {
+            c.insert('a');
+        }
+        assert_eq!(c.len(), 16_000, "the default cap of 8000 does not apply");
+        c.insert('b');
+        c.newline();
+        assert_eq!(c.len(), 16_000);
+        let mut small = Composer::with_cap(3);
+        for ch in "abcd".chars() {
+            small.insert(ch);
+        }
+        assert_eq!(small.text(), "abc");
+    }
+
+    #[test]
+    fn a_paste_clips_at_a_custom_cap() {
+        let mut c = Composer::with_cap(16_000);
+        c.paste(&"z".repeat(20_000));
+        assert_eq!(c.len(), 16_000);
+        let mut small = Composer::with_cap(4);
+        small.paste("日本語メモ");
+        assert_eq!(small.text(), "日本語メ");
+    }
+
+    #[test]
+    fn up_and_down_move_between_lines_keeping_the_column() {
+        let mut c = typed("abcd\nef\nghijk");
+        assert_eq!(c.cursor(), 13);
+        c.up();
+        assert_eq!(c.cursor(), 7, "col 5 clamps to the end of `ef`");
+        c.up();
+        assert_eq!(c.cursor(), 2);
+        c.up();
+        assert_eq!(c.cursor(), 2, "the first line has nothing above");
+        c.down();
+        c.down();
+        assert_eq!(c.cursor(), 10);
+        c.down();
+        assert_eq!(c.cursor(), 10, "the last line has nothing below");
+    }
+
+    #[test]
+    fn up_and_down_never_stop_inside_a_cluster() {
+        let mut c = typed("bcdefg\na\u{1f468}\u{200d}\u{1f469}z");
+        c.up();
+        c.down();
+        let chars: Vec<char> = c.text().chars().collect();
+        let at = c.cursor();
+        assert!(
+            at == 0 || at == chars.len() || chars[at - 1] != '\u{200d}',
+            "cursor {at} sits inside the joined emoji"
+        );
+        let mut c = typed("a\u{1f468}\u{200d}\u{1f469}z\nbcdefg");
+        c.home();
+        c.down();
+        c.right();
+        c.right();
+        c.up();
+        let chars: Vec<char> = c.text().chars().collect();
+        let at = c.cursor();
+        assert!(
+            at == 0 || chars[at - 1] != '\u{200d}',
+            "cursor {at} sits inside the joined emoji"
         );
     }
 

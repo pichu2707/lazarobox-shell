@@ -19,7 +19,9 @@ use crate::core::{
         chat::{
             MsgStatus,
             engine::Role,
-            store::{RETENTION_LIMIT, StoreCmd, StoreReply, StoredMessage, bounded_error},
+            store::{
+                LinkKind, RETENTION_LIMIT, StoreCmd, StoreReply, StoredMessage, bounded_error,
+            },
         },
         sanitize::clean,
     },
@@ -33,6 +35,10 @@ pub const THREAD_NAME: &str = "chat-store";
 
 /// The longest conversation title, in characters.
 const TITLE_MAX: usize = 80;
+
+/// The longest note title kept in a link row, in characters (the engram client
+/// accepts 120).
+const NOTE_TITLE_MAX: usize = 120;
 
 /// Runs commands against the database. The connection is opened on the first
 /// command, so a session that never chats never touches the data directory.
@@ -88,12 +94,13 @@ impl Worker {
                 };
                 let made = create(conn, &profile, tag.as_deref(), &first, &open);
                 Some(match made {
-                    Ok((conversation, evicted)) => {
+                    Ok((conversation, gone)) => {
                         self.failing = false;
                         StoreReply::Created {
                             pane,
                             conversation,
-                            evicted,
+                            evicted: gone.conversations > 0,
+                            evicted_notes: gone.notes,
                         }
                     }
                     Err(_) => self.failure(pane),
@@ -117,14 +124,64 @@ impl Worker {
                     Err(_) => Some(self.failure(pane)),
                 }
             }
+            StoreCmd::LinkSession {
+                pane,
+                conversation,
+                session_id,
+                project,
+            } => {
+                let reply = self
+                    .conn()
+                    .ok()
+                    .and_then(|conn| link_session(conn, conversation, &session_id, &project).ok());
+                Some(match reply {
+                    Some((session_id, project)) => StoreReply::SessionLinked {
+                        pane,
+                        conversation,
+                        session_id,
+                        project,
+                    },
+                    None => StoreReply::LinkFailed {
+                        pane,
+                        kind: LinkKind::Session,
+                    },
+                })
+            }
+            StoreCmd::LinkNote {
+                pane,
+                conversation,
+                project,
+                topic_key,
+                observation_id,
+                title,
+            } => {
+                let linked = self.conn().ok().is_some_and(|conn| {
+                    link_note(
+                        conn,
+                        conversation,
+                        (&project, &topic_key),
+                        observation_id,
+                        &title,
+                    )
+                    .is_ok()
+                });
+                (!linked).then_some(StoreReply::LinkFailed {
+                    pane,
+                    kind: LinkKind::Note,
+                })
+            }
         }
     }
 
-    /// `handle` that survives a panic. A panic leaves the connection in an
-    /// unknown state, so the store is marked unusable: the command that
-    /// panicked gets a reply (`Unavailable` for a `Create`, `Failed` for an
-    /// `Append`) and every later `Create` answers `Unavailable`. The thread
-    /// keeps running so it still drains its queue and honours `Quit`.
+    /// `handle` that survives a panic. A panic in a `Create` or `Append`
+    /// leaves the connection in an unknown state, so the store is marked
+    /// unusable: the command that panicked gets a reply (`Unavailable` for a
+    /// `Create`, `Failed` for an `Append`) and every later `Create` answers
+    /// `Unavailable`. A panic in a link command answers `LinkFailed` and keeps
+    /// an open connection, so one bad link does not take the history down, but
+    /// only when the connection is back in autocommit (no transaction left
+    /// open); otherwise the store is marked unusable like the others. The
+    /// thread keeps running so it still drains its queue and honours `Quit`.
     pub(crate) fn guarded(&mut self, cmd: StoreCmd) -> Option<StoreReply> {
         self.guarded_with(cmd, Self::handle)
     }
@@ -134,21 +191,31 @@ impl Worker {
         cmd: StoreCmd,
         run: impl FnOnce(&mut Self, StoreCmd) -> Option<StoreReply>,
     ) -> Option<StoreReply> {
-        let (pane, is_create) = match &cmd {
-            StoreCmd::Create { pane, .. } => (*pane, true),
-            StoreCmd::Append { pane, .. } => (*pane, false),
+        let (pane, on_panic) = match &cmd {
+            StoreCmd::Create { pane, .. } => (*pane, Panicked::Create),
+            StoreCmd::Append { pane, .. } => (*pane, Panicked::Append),
+            StoreCmd::LinkSession { pane, .. } => (*pane, Panicked::Link(LinkKind::Session)),
+            StoreCmd::LinkNote { pane, .. } => (*pane, Panicked::Link(LinkKind::Note)),
             StoreCmd::Quit => return None,
         };
         match catch_unwind(AssertUnwindSafe(|| run(self, cmd))) {
             Ok(reply) => reply,
             Err(payload) => {
                 let reason = bounded_error(&panic_text(payload.as_ref()));
-                self.conn = Some(Err(reason.clone()));
+                // A link runs in one transaction that rolled back on unwind, so
+                // an open connection in autocommit is still sound and the
+                // history stays available; any other panic, or a link that
+                // left a transaction open, leaves it in an unknown state.
+                let keep = matches!(on_panic, Panicked::Link(_))
+                    && matches!(&self.conn, Some(Ok(conn)) if conn.is_autocommit());
+                if !keep {
+                    self.conn = Some(Err(reason.clone()));
+                }
                 self.opener = None;
-                Some(if is_create {
-                    StoreReply::Unavailable { pane, reason }
-                } else {
-                    self.failure(pane)
+                Some(match on_panic {
+                    Panicked::Create => StoreReply::Unavailable { pane, reason },
+                    Panicked::Append => self.failure(pane),
+                    Panicked::Link(kind) => StoreReply::LinkFailed { pane, kind },
                 })
             }
         }
@@ -159,6 +226,13 @@ impl Worker {
         self.failing = true;
         StoreReply::Failed { pane, notify }
     }
+}
+
+/// What a command that panicked is answered with.
+enum Panicked {
+    Create,
+    Append,
+    Link(LinkKind),
 }
 
 /// The message of a panic payload, or a generic line.
@@ -187,23 +261,34 @@ fn title_of(text: &str) -> String {
     line.chars().take(TITLE_MAX).collect()
 }
 
+/// What retention removed to make room.
+struct Evicted {
+    conversations: usize,
+    /// Note rows that went with them (the notes themselves stay in engram).
+    notes: u32,
+}
+
 /// Creates the conversation and its first message in one transaction, first
-/// making room under the retention limit. Returns the id and whether
-/// anything was evicted.
+/// making room under the retention limit. Returns the id and what was
+/// evicted; the notes are counted in the same transaction, before the cascade
+/// removes their rows.
 fn create(
     conn: &mut Connection,
     profile: &str,
     tag: Option<&str>,
     first: &StoredMessage,
     open: &[i64],
-) -> Result<(i64, bool), rusqlite::Error> {
+) -> Result<(i64, Evicted), rusqlite::Error> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let stored: i64 = tx.query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0))?;
     let excess = usize::try_from(stored)
         .unwrap_or(usize::MAX)
         .saturating_add(1)
         .saturating_sub(RETENTION_LIMIT);
-    let mut evicted = false;
+    let mut evicted = Evicted {
+        conversations: 0,
+        notes: 0,
+    };
     if excess > 0 {
         // The oldest last activity goes first; tags do not protect, open
         // conversations are skipped. Ids tie-break so the order is stable.
@@ -211,14 +296,22 @@ fn create(
             .map(|i| format!("?{}", i + 2))
             .collect::<Vec<_>>()
             .join(",");
-        let sql = format!(
-            "DELETE FROM conversations WHERE id IN (
-                 SELECT id FROM conversations WHERE id NOT IN ({marks})
-                 ORDER BY updated_at, id LIMIT ?1)"
+        let pick = format!(
+            "SELECT id FROM conversations WHERE id NOT IN ({marks})
+             ORDER BY updated_at, id LIMIT ?1"
         );
         let limit = i64::try_from(excess).unwrap_or(i64::MAX);
-        let params = std::iter::once(limit).chain(open.iter().copied());
-        evicted = tx.execute(&sql, rusqlite::params_from_iter(params))? > 0;
+        let params = || std::iter::once(limit).chain(open.iter().copied());
+        let notes: i64 = tx.query_row(
+            &format!("SELECT COUNT(*) FROM memory_notes WHERE conversation_id IN ({pick})"),
+            rusqlite::params_from_iter(params()),
+            |r| r.get(0),
+        )?;
+        evicted.notes = u32::try_from(notes).unwrap_or(u32::MAX);
+        evicted.conversations = tx.execute(
+            &format!("DELETE FROM conversations WHERE id IN ({pick})"),
+            rusqlite::params_from_iter(params()),
+        )?;
     }
     let text = clean(&first.text);
     let stamp = now();
@@ -256,6 +349,73 @@ fn append(
     }
     insert_message(&tx, conversation, message, &clean(&message.text), stamp)?;
     tx.commit()
+}
+
+/// Whether `id` has the form of a session id this build makes:
+/// `lazarobox-` and 32 lowercase hex digits.
+fn is_session_id(id: &str) -> bool {
+    id.strip_prefix("lazarobox-").is_some_and(|hex| {
+        hex.len() == 32 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
+/// The `(session id, project)` of `conversation`: the stored pair, else the
+/// proposed one, which is stored first.
+fn link_session(
+    conn: &mut Connection,
+    conversation: i64,
+    session_id: &str,
+    project: &str,
+) -> Result<(String, String), rusqlite::Error> {
+    if !is_session_id(session_id) {
+        return Err(rusqlite::Error::InvalidParameterName("session id".into()));
+    }
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute(
+        "INSERT OR IGNORE INTO memory_sessions(conversation_id, session_id, project)
+         VALUES (?1, ?2, ?3)",
+        (conversation, session_id, clean(project)),
+    )?;
+    let stored = tx.query_row(
+        "SELECT session_id, project FROM memory_sessions WHERE conversation_id = ?1",
+        [conversation],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    tx.commit()?;
+    Ok(stored)
+}
+
+/// Upserts the note row: the last conversation to write a note owns it.
+fn link_note(
+    conn: &mut Connection,
+    conversation: i64,
+    (project, topic_key): (&str, &str),
+    observation_id: i64,
+    title: &str,
+) -> Result<(), rusqlite::Error> {
+    let title: String = clean(title)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(NOTE_TITLE_MAX)
+        .collect();
+    conn.execute(
+        "INSERT INTO memory_notes(project, topic_key, observation_id, conversation_id, title)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(project, topic_key) DO UPDATE SET
+             observation_id = excluded.observation_id,
+             conversation_id = excluded.conversation_id,
+             title = excluded.title",
+        (
+            clean(project),
+            clean(topic_key),
+            observation_id,
+            conversation,
+            title,
+        ),
+    )?;
+    Ok(())
 }
 
 fn insert_message(

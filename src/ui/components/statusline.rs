@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{AppMode, InputMode};
+use crate::core::ai::chat::memory::MemBadge;
 use crate::core::copy::SelectionKind;
 use crate::ui::theme::LazaroboxTheme;
 
@@ -36,6 +37,7 @@ pub struct StatusLine<'a> {
     copy_position: Option<(usize, usize)>,
     marker: Option<SelectionKind>,
     thinking: Option<ThinkingView>,
+    memory: Option<MemBadge>,
 }
 
 impl<'a> StatusLine<'a> {
@@ -50,6 +52,7 @@ impl<'a> StatusLine<'a> {
             copy_position: None,
             marker: None,
             thinking: None,
+            memory: None,
         }
     }
 
@@ -70,6 +73,7 @@ impl<'a> StatusLine<'a> {
             copy_position: None,
             marker: None,
             thinking: None,
+            memory: None,
         }
     }
 
@@ -101,6 +105,14 @@ impl<'a> StatusLine<'a> {
         self
     }
 
+    /// The memory state shown after the engine (` · mem: ready`), when memory is
+    /// active over a focused chat. It is the first thing dropped when the line
+    /// is narrow.
+    pub fn memory(mut self, memory: Option<MemBadge>) -> Self {
+        self.memory = memory;
+        self
+    }
+
     /// The thinking indicator of the stream being shown, if any.
     pub fn thinking(mut self, view: Option<ThinkingView>) -> Self {
         self.thinking = view;
@@ -114,15 +126,29 @@ impl<'a> StatusLine<'a> {
         // Padding on both sides of the path plus the slant that closes it.
         const PATH_DECORATION: usize = 3;
         let left = self.mode_block_width() + PATH_DECORATION;
-        let right = self.right_line().width();
-        let right = if right + self.mode_block_width() <= usize::from(width) {
-            right
-        } else {
-            0
-        };
+        let (_, right) = self.fit_right(width);
         let indicator = Line::from(self.indicator(width, right)).width();
         u16::try_from(usize::from(width).saturating_sub(left + right + indicator))
             .unwrap_or(u16::MAX)
+    }
+
+    /// The right segment for a statusline `width` columns wide and the columns
+    /// it takes (0 when it does not fit next to the mode block, which has
+    /// priority). The memory state is part of it only if it fits and showing
+    /// it costs the thinking indicator nothing: it goes first.
+    fn fit_right(&self, width: u16) -> (Line<'a>, usize) {
+        let fits = |line: &Line| line.width() + self.mode_block_width() <= usize::from(width);
+        let plain = self.right_line(false);
+        let plain_width = if fits(&plain) { plain.width() } else { 0 };
+        if self.memory.is_some() {
+            let with = self.right_line(true);
+            let indicator = |right: usize| Line::from(self.indicator(width, right)).width();
+            if fits(&with) && indicator(with.width()) == indicator(plain_width) {
+                let columns = with.width();
+                return (with, columns);
+            }
+        }
+        (plain, plain_width)
     }
 
     /// The thinking indicator fitted to `width`, given the columns the right
@@ -172,15 +198,35 @@ impl<'a> StatusLine<'a> {
         ])
     }
 
-    fn right_line(&self) -> Line<'a> {
+    /// The right segment: the engine (or shell) text, and the memory state
+    /// after it when `with_memory`.
+    fn right_line(&self, with_memory: bool) -> Line<'a> {
         let t = self.theme;
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled(SLANT_LEFT, Style::new().fg(t.bg_panel).bg(t.bg_base)),
             Span::styled(
-                format!(" {} ", self.right),
+                format!(" {}", self.right),
                 Style::new().fg(t.primary_cyan).bg(t.bg_panel),
             ),
-        ])
+        ];
+        match self.memory.filter(|_| with_memory) {
+            Some(badge) => {
+                let (text, color) = match badge {
+                    MemBadge::Ready => ("ready", t.text_muted),
+                    MemBadge::Checking => ("checking", t.text_muted),
+                    MemBadge::Unavailable => ("unavailable", t.warning_orange),
+                };
+                spans.push(Span::styled(
+                    format!(" \u{b7} mem: {text} "),
+                    Style::new().fg(color).bg(t.bg_panel),
+                ));
+            }
+            None => spans.push(Span::styled(
+                " ",
+                Style::new().fg(t.primary_cyan).bg(t.bg_panel),
+            )),
+        }
+        Line::from(spans)
     }
 }
 
@@ -190,14 +236,10 @@ impl Widget for StatusLine<'_> {
             .style(Style::new().bg(self.theme.bg_base))
             .render(area, buf);
 
-        let right = self.right_line();
         // The mode block has priority: the right segment is dropped when it
         // would not fit next to it.
-        let right_width = if right.width() + self.mode_block_width() <= usize::from(area.width) {
-            u16::try_from(right.width()).unwrap_or(u16::MAX)
-        } else {
-            0
-        };
+        let (right, columns) = self.fit_right(area.width);
+        let right_width = u16::try_from(columns).unwrap_or(u16::MAX);
         let indicator = Line::from(self.indicator(area.width, usize::from(right_width)));
         let indicator_width = u16::try_from(indicator.width()).unwrap_or(u16::MAX);
         let [left_area, indicator_area, right_area] = Layout::horizontal([

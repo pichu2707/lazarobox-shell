@@ -62,7 +62,7 @@ fn the_profile_row_follows_the_task_rows() {
         .filter(|i| matches!(i.kind, ItemKind::Profile))
         .count();
     assert_eq!(kinds, 1);
-    assert_eq!(AI_SECTION.items.len(), 8);
+    assert_eq!(AI_SECTION.items.len(), 10);
 }
 
 // Spec (config-menu): Task rows in order, Wrap.

@@ -12,11 +12,16 @@ use crate::core::{
         chat::{
             ChatState, Follow, Phase,
             engine::{ChatRequest, StreamEvent},
+            notify::{Ended, should_bell},
             prompts::Resolved,
             store::{StoreCmd, StoreReply},
         },
         config::{AiConfig, Profile, Task},
         jail::JailSupport,
+        memory::{
+            offer::ServerOffer,
+            port::{MemCmd, MemReply, Reason},
+        },
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{
@@ -35,6 +40,10 @@ use crate::core::{
 };
 
 mod chat;
+mod context;
+mod notes;
+mod offer;
+mod summary;
 
 /// Rows of history kept by the emulator.
 const SCROLLBACK_LINES: usize = 10_000;
@@ -48,6 +57,13 @@ const HELD_EXIT_WINDOW: Duration = Duration::from_millis(500);
 /// Shown when `Prefix [` is pressed on a chat pane.
 const CHAT_COPY_REFUSED: &str =
     "copy mode is not available in chat panes; Ctrl+Y copies the last answer";
+
+/// Shown when `Prefix n` (save a note) is pressed on a pane that is not a chat.
+const NOTE_CHAT_ONLY: &str = "Save as note is for chat panes; open one with Ctrl+Space c";
+/// Notice of the summary key on a pane that is not a chat.
+const SUMMARY_CHAT_ONLY: &str = "The summary is for chat panes; open one with Ctrl+Space c";
+/// Notice of the memory-line key on a pane that is not a chat.
+const MEMORY_CHAT_ONLY: &str = "The memory line is for chat panes; open one with Ctrl+Space c";
 
 /// Byte sent to the child when the prefix is pressed twice (NUL, Ctrl+Space).
 const PREFIX_LITERAL: u8 = 0x00;
@@ -124,6 +140,8 @@ pub enum AppEvent {
     /// An event of a chat turn: the pane, the turn id it was started with, and
     /// what the engine task reported.
     Chat(PaneId, u64, StreamEvent),
+    /// What the memory worker answered. It may arrive after its pane is gone.
+    Memory(MemReply),
     /// The store thread answered a command of a pane.
     Store(StoreReply),
     /// The runtime prepared the system prompt of a chat pane (see
@@ -133,6 +151,14 @@ pub enum AppEvent {
     /// One step of the thinking-indicator animation. The runtime sends it
     /// only while a chat stream runs.
     AnimTick,
+    /// Time passed while a chat waits for memory: the waits older than
+    /// `MEMORY_WAIT` are given up. The runtime sends it only while
+    /// `memory_waiting` holds.
+    MemoryTick,
+    /// The terminal window gained (`true`) or lost (`false`) the focus, as
+    /// the terminal reports it. A terminal that does not report it never
+    /// sends this, and the window counts as focused.
+    WindowFocus(bool),
 }
 
 /// How the menu closed.
@@ -170,6 +196,9 @@ pub enum Effect {
     /// Stop a pane's turn without blocking the loop: the socket is closed or
     /// the CLI's process group is killed.
     ChatCancel(PaneId),
+    /// Ask the memory worker for something. Returns at once: the answer comes
+    /// back as one `AppEvent::Memory`, or never when memory is not active.
+    Memory(MemCmd),
     /// A command for the store thread. It never waits for the database.
     Store(StoreCmd),
     /// Resolve the system prompt of a conversation just started in `pane`:
@@ -182,6 +211,9 @@ pub enum Effect {
         origin: Option<PathBuf>,
         context: bool,
     },
+    /// Ring the terminal bell (BEL) once the frame is drawn: a chat answer
+    /// finished while the user was not looking at it (chat-notify).
+    Bell,
     Quit,
 }
 
@@ -399,12 +431,18 @@ pub struct App {
     held_chat_key: Option<HeldExit>,
     /// Monotonic clock, injected so `update` stays deterministic.
     clock: fn() -> Instant,
+    /// A fresh engram session id, injected so the core does no IO: the
+    /// runtime passes the random one. `None` (the default) gives no id.
+    session_id: fn() -> Option<String>,
     /// The last finished detection; `None` until the first run ends.
     engines: Option<Detection>,
     /// A detection is in flight: further requests are dropped.
     detecting: bool,
     /// The saved AI choice; the menu edits a draft of it.
     ai: AiConfig,
+    /// Whether the terminal window has the focus (chat-notify). Starts
+    /// `true`: without focus reporting only the pane rule applies.
+    window_focused: bool,
     /// Whether this system can jail a CLI. Nothing probes it yet.
     jail: JailSupport,
     /// Chat panes whose send waits for the first detection result, with the
@@ -412,6 +450,16 @@ pub struct App {
     waiting_sends: Vec<(PaneId, String)>,
     /// The frame of the thinking-indicator animation.
     anim_frame: usize,
+    /// The one offer to start `engram serve` of this run, as the worker made
+    /// it.
+    server_offer: ServerOffer,
+    /// Whether the offer is on screen (see `offer.rs`).
+    offer_shown: bool,
+    /// The chat the offer was shown in: the outcome of the start is told there.
+    offer_pane: Option<PaneId>,
+    /// Why no server can be offered (no usable `engram` on the PATH), as the
+    /// worker said once: it names the cause of every `engram is not running`.
+    no_server: Option<Reason>,
 }
 
 /// The key that left COPY and when it was last seen.
@@ -453,12 +501,18 @@ impl App {
             held_exit: None,
             held_chat_key: None,
             clock: Instant::now,
+            session_id: || None,
             engines: None,
             detecting: false,
             ai: AiConfig::default(),
+            window_focused: true,
             jail: JailSupport::Unavailable("no CLI jail yet"),
             waiting_sends: Vec::new(),
             anim_frame: 0,
+            server_offer: ServerOffer::new(),
+            offer_shown: false,
+            offer_pane: None,
+            no_server: None,
         }
     }
 
@@ -510,6 +564,13 @@ impl App {
     /// Injects the monotonic clock used to debounce a held COPY exit key.
     pub fn with_clock(mut self, clock: fn() -> Instant) -> Self {
         self.clock = clock;
+        self
+    }
+
+    /// Injects the source of engram session ids, used when a summary is
+    /// approved in a chat that wrote no note.
+    pub fn with_session_ids(mut self, session_id: fn() -> Option<String>) -> Self {
+        self.session_id = session_id;
         self
     }
 
@@ -927,10 +988,15 @@ impl App {
                 self.run_waiting_sends()
             }
             AppEvent::Chat(id, turn, event) => self.on_chat(id, turn, event),
-            // The chat pane consumes the replies once it saves its messages.
-            AppEvent::Store(_) => Vec::new(),
+            AppEvent::Memory(reply) => self.on_memory_reply(&reply),
+            AppEvent::Store(reply) => self.on_store_reply(&reply),
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
+            AppEvent::MemoryTick => self.on_memory_tick(),
+            AppEvent::WindowFocus(focused) => {
+                self.window_focused = focused;
+                Vec::new()
+            }
         };
         debug_assert_eq!(
             self.menu.is_some(),
@@ -1048,6 +1114,11 @@ impl App {
                 Outcome::Reverted => self.config = menu.original(),
                 Outcome::Saved => self.ai = menu.ai_draft(),
             }
+            if !self.ai.memory.active() {
+                self.memory_turned_off();
+            } else {
+                self.sync_memory_lines();
+            }
         }
         self.input = InputMode::Terminal;
         // The forced tab bar goes away with the menu, whatever the outcome.
@@ -1066,6 +1137,7 @@ impl App {
             debug_assert!(false, "MENU mode without menu state");
             return Vec::new();
         };
+        menu.set_term(self.term.0, self.term.1);
         match menu.on_key(key, repeat, &mut self.config) {
             MenuCommand::Changed => self.apply_config(),
             MenuCommand::Cancel => self.close_menu(Outcome::Reverted),
@@ -1143,7 +1215,10 @@ impl App {
                 | PrefixAction::ToggleZoom
                 | PrefixAction::Focus(_)
                 | PrefixAction::OpenMenu
-                | PrefixAction::OpenChat,
+                | PrefixAction::OpenChat
+                | PrefixAction::SaveNote
+                | PrefixAction::ToggleMemory
+                | PrefixAction::Summarize,
             ) => InputMode::Terminal,
             Step::Run(
                 PrefixAction::ShowCommands
@@ -1160,6 +1235,29 @@ impl App {
             }
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
             Step::Run(PrefixAction::OpenChat) => self.open_chat_pane(),
+            Step::Run(PrefixAction::SaveNote) if self.focused_is_chat() => {
+                let id = self.tab().focus;
+                self.chat_note_key(id)
+            }
+            Step::Run(PrefixAction::SaveNote) => {
+                self.notice = Some(NOTE_CHAT_ONLY.to_string());
+                Vec::new()
+            }
+            Step::Run(PrefixAction::Summarize) if self.focused_is_chat() => {
+                let id = self.tab().focus;
+                self.chat_summary_key(id)
+            }
+            Step::Run(PrefixAction::Summarize) => {
+                self.notice = Some(SUMMARY_CHAT_ONLY.to_string());
+                Vec::new()
+            }
+            Step::Run(PrefixAction::ToggleMemory) if self.focused_is_chat() => {
+                self.chat_toggle_memory()
+            }
+            Step::Run(PrefixAction::ToggleMemory) => {
+                self.notice = Some(MEMORY_CHAT_ONLY.to_string());
+                Vec::new()
+            }
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
             Step::Run(PrefixAction::SplitBelow) => self.split(Axis::Y),
             Step::Run(PrefixAction::Focus(dir)) => self.move_focus(dir),
@@ -1244,7 +1342,9 @@ impl App {
     /// active (the last one if it was last); closing a tab before the active
     /// one keeps the active tab. The bar may disappear, which resizes every tab.
     fn drop_tab(&mut self, index: usize) -> Vec<Effect> {
-        for id in self.tabs.remove(index).tree.leaves() {
+        let leaves = self.tabs.remove(index).tree.leaves();
+        let mut effects = self.end_effects(&leaves);
+        for id in leaves {
             self.panes.remove(&id);
             self.drop_parked_send(id);
         }
@@ -1257,7 +1357,8 @@ impl App {
             self.active -= 1;
         }
         self.refresh_screen();
-        self.relayout()
+        effects.extend(self.relayout());
+        effects
     }
 
     /// Recomputes the screen rects: the tab bar exists while there is more
@@ -1349,13 +1450,27 @@ impl App {
             return Vec::new();
         };
         let live = turn == chat.turn() && chat.phase() != Phase::Idle;
+        // Only a final `Done` is a clean end; an error or the answer cap
+        // (a delta that ends the turn) count as `Error`.
+        let how = match event {
+            StreamEvent::Done(_) => Ended::Done,
+            _ => Ended::Error,
+        };
         let follow = chat.apply(turn, event);
+        let finished = live && chat.phase() == Phase::Idle;
         self.dirty |= live;
-        match follow {
+        let mut effects = match follow {
             // The state ended the turn itself (answer cap): stop the engine.
             Follow::CancelEngine => vec![Effect::ChatCancel(id)],
             Follow::Nothing => Vec::new(),
+        };
+        // A turn ends once: later events of it are dropped above, so a pane
+        // rings at most once per answer.
+        let focus = self.tab().focus;
+        if finished && should_bell(focus, self.window_focused, id, how, self.ai.notify()) {
+            effects.push(Effect::Bell);
         }
+        effects
     }
 
     /// Drops pane `id` of whichever tab holds it and gives its space to its
@@ -1377,9 +1492,10 @@ impl App {
         };
         let effects = match self.tabs[t].tree.remove(id) {
             Removal::NotFound => return Vec::new(),
-            Removal::WasLast if self.tabs.len() == 1 => return vec![Effect::Quit],
+            Removal::WasLast if self.tabs.len() == 1 => return self.quit_effects(),
             Removal::WasLast => self.drop_tab(t),
             Removal::Removed => {
+                let mut ends = self.end_effects(&[id]);
                 self.panes.remove(&id);
                 self.drop_parked_send(id);
                 self.tabs[t].zoom = false;
@@ -1389,7 +1505,8 @@ impl App {
                         pane_at(&tiling, old.x, old.y).unwrap_or(self.tabs[t].tree.leaves()[0]);
                     self.set_focus_in(t, next);
                 }
-                self.relayout()
+                ends.extend(self.relayout());
+                ends
             }
         };
         self.dirty = true;
@@ -1473,7 +1590,7 @@ impl App {
             return Vec::new();
         }
         match confirm {
-            Confirm::Quit => vec![Effect::Quit],
+            Confirm::Quit => self.quit_effects(),
             Confirm::CloseTab => self.close_tab(),
             Confirm::ClosePane => {
                 let id = self.tab().focus;
@@ -1488,7 +1605,7 @@ impl App {
     /// Closes the active tab with all its panes; the only tab quits instead.
     fn close_tab(&mut self) -> Vec<Effect> {
         if self.tabs.len() == 1 {
-            return vec![Effect::Quit];
+            return self.quit_effects();
         }
         let stops: Vec<_> = (self.tab().tree.leaves().into_iter())
             .map(|id| self.stop_effect(id))
@@ -1902,6 +2019,48 @@ mod app_tests {
         let (_, spec) = app().initial_spawn();
         assert_eq!(spec.program, PathBuf::from("/bin/sh"));
         assert_eq!(spec.cwd, PathBuf::from("/"));
+    }
+
+    // Memory replies come from a worker the app never waits on, so a reply
+    // can be stale: the pane it was for may be gone by then.
+    #[test]
+    fn a_memory_reply_for_a_pane_that_is_gone_is_dropped() {
+        use crate::core::ai::memory::{
+            port::{MemReply, Reason},
+            reply::ProjectError,
+        };
+        let mut a = app();
+        a.take_dirty();
+        let gone = PaneId::for_test(99);
+        let replies = [
+            MemReply::Project {
+                pane: gone,
+                result: Err(ProjectError::NotGit),
+            },
+            MemReply::Context {
+                pane: gone,
+                block: None,
+            },
+            MemReply::Unavailable {
+                pane: Some(gone),
+                reason: Reason::Busy,
+            },
+        ];
+        for reply in replies {
+            assert_eq!(a.update(AppEvent::Memory(reply)), vec![]);
+            assert!(!a.take_dirty(), "a stale reply changes nothing");
+        }
+    }
+
+    #[test]
+    fn a_global_memory_reply_asks_for_nothing() {
+        use crate::core::ai::memory::{health::Health, port::MemReply};
+        let mut a = app();
+        let reply = MemReply::Health {
+            state: Health::Down,
+            offer: true,
+        };
+        assert_eq!(a.update(AppEvent::Memory(reply)), vec![]);
     }
 
     #[test]
@@ -4093,7 +4252,7 @@ mod app_tests {
     }
 
     const ROOT_HINT: &str =
-        "w window · t tab · g go · b buffer · [ copy · m menu · c chat · q quit";
+        "w window · t tab · g go · b buffer · [ copy · m menu · c chat · n note · q quit";
     const WINDOW_HINT: &str = "v split right · h split below · q close · r resize · z zoom";
 
     // Spec: Root hint in PREFIX; Group hint; Hint gone after the group resolves.
@@ -5794,13 +5953,93 @@ mod app_tests {
         assert_eq!(a.menu().unwrap().ai_draft(), ai_of("ollama", "qwen2:7b"));
     }
 
-    /// Moves the menu selection to the `Context` row (the last one).
+    // Spec (config-menu, engram-memory): the privacy warning follows the
+    // draft flow. `k` twice from the first row wraps to `Memory`.
+    fn memory_warning_open() -> App {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(AppEvent::EnginesDetected(machine()));
+        to_memory_row(&mut a);
+        assert!(a.update(key('l')).is_empty(), "turning on asks, no effect");
+        assert!(a.menu().unwrap().in_warning());
+        a
+    }
+
+    fn memory_edits() -> Vec<ConfigEdit> {
+        vec![
+            ConfigEdit::memory_flag("enabled", true),
+            ConfigEdit::memory_flag("acknowledged", true),
+        ]
+    }
+
+    #[test]
+    fn accepting_the_warning_writes_nothing_until_s_and_saves_both_keys() {
+        let mut a = memory_warning_open();
+        assert!(a.update(key('y')).is_empty(), "y persists nothing");
+        assert!(!a.ai().memory.enabled, "the live value is untouched");
+        assert_eq!(a.update(key('s')), vec![Effect::SaveConfig(memory_edits())]);
+        a.update(AppEvent::ConfigSaved);
+        assert!(a.menu().is_none());
+        assert!(a.ai().memory.active());
+    }
+
+    // Review W2: after a resize into the one-line fallback the facts are
+    // hidden, so `y` must not accept.
+    #[test]
+    fn y_in_the_warning_does_not_accept_after_a_resize_to_a_tiny_terminal() {
+        let mut a = memory_warning_open();
+        a.update(AppEvent::Resize { cols: 30, rows: 5 });
+        assert!(a.update(key('y')).is_empty());
+        let menu = a.menu().unwrap();
+        assert!(!menu.in_warning());
+        assert_eq!(menu.ai_draft().memory, Default::default());
+        assert!(menu.edits(a.config()).is_empty());
+    }
+
+    #[test]
+    fn esc_after_accepting_reverts_the_enabled_and_acknowledged_drafts() {
+        let mut a = memory_warning_open();
+        a.update(key('y'));
+        a.update(esc());
+        assert!(a.menu().is_none());
+        assert_eq!(a.ai().memory, Default::default());
+        open_menu(&mut a);
+        assert_eq!(a.menu().unwrap().ai_draft().memory, Default::default());
+        to_memory_row(&mut a);
+        a.update(key('l'));
+        assert!(
+            a.menu().unwrap().in_warning(),
+            "asked again, not acknowledged"
+        );
+    }
+
+    #[test]
+    fn esc_in_the_warning_closes_only_the_view() {
+        let mut a = memory_warning_open();
+        assert!(a.update(esc()).is_empty());
+        let menu = a.menu().expect("the menu stays open");
+        assert!(!menu.in_warning());
+        assert!(!menu.ai_draft().memory.enabled);
+    }
+
+    /// Moves the menu selection to the `Context` row (before `Memory` and
+    /// `Notify`, the last one).
     fn to_context_row(a: &mut App) {
-        a.update(key('k'));
+        for _ in 0..3 {
+            a.update(key('k'));
+        }
     }
 
     /// Moves the menu selection to the `Profile` row (before `Context`).
     fn to_profile_row(a: &mut App) {
+        for _ in 0..4 {
+            a.update(key('k'));
+        }
+    }
+
+    /// Moves the menu selection to the `Memory` row (before `Notify`, the
+    /// last one).
+    fn to_memory_row(a: &mut App) {
         a.update(key('k'));
         a.update(key('k'));
     }
@@ -5870,6 +6109,33 @@ mod app_tests {
         a.update(AppEvent::ConfigSaved);
         assert!(a.menu().is_none());
         assert!(!a.ai().context());
+    }
+
+    // Spec (chat-notify, Notify row): `s` saves only the notify key and the
+    // saved value becomes the app's flag; Esc restores the open value.
+    #[test]
+    fn the_notify_row_saves_only_the_flag_and_updates_the_app() {
+        let mut a = ai_app();
+        assert!(!a.ai().notify());
+        open_menu(&mut a);
+        a.update(key('k'));
+        assert_eq!(a.update(key('l')), Vec::<Effect>::new(), "no ResizePty");
+        assert!(a.menu().unwrap().ai_draft().notify());
+        assert!(!a.ai().notify(), "not saved yet");
+        let edit = ConfigEdit {
+            table: "ai",
+            key: "notify",
+            value: "true".into(),
+        };
+        assert_eq!(a.update(key('s')), vec![Effect::SaveConfig(vec![edit])]);
+        a.update(AppEvent::ConfigSaved);
+        assert!(a.menu().is_none());
+        assert!(a.ai().notify());
+        open_menu(&mut a);
+        a.update(key('k'));
+        a.update(key('l'));
+        a.update(esc());
+        assert!(a.ai().notify(), "Esc keeps the saved value");
     }
 
     // Spec (Context toggle): Esc restores the flag captured at open.
@@ -6178,7 +6444,7 @@ mod app_tests {
         assert_eq!(a.ai(), &saved, "saved");
         // Reload: the file still says codex.
         let text = "[ai]\nengine = \"codex\"\nmodel = \"default\"\n";
-        let (_, ai, _) = Config::load_with_ai(Ok(text.to_owned()));
+        let (_, ai, _) = Config::load_with_ai(Ok(text.to_owned()), None);
         assert_eq!(App::new(80, 25).with_ai(ai).ai(), &saved, "reload");
     }
 
@@ -6186,7 +6452,7 @@ mod app_tests {
     #[test]
     fn with_ai_carries_the_files_values() {
         let text = "[ai]\nengine = \"codex\"\nmodel = \"default\"\n";
-        let (_, ai, notice) = Config::load_with_ai(Ok(text.to_owned()));
+        let (_, ai, notice) = Config::load_with_ai(Ok(text.to_owned()), None);
         assert_eq!(notice, None);
         assert_eq!(
             App::new(80, 25).with_ai(ai).ai(),
@@ -6197,6 +6463,18 @@ mod app_tests {
 
     /// The live chat pane (ai-chat C8).
     mod chat_live;
+
+    /// Memory in a chat view (engram-memory M6).
+    mod chat_memory;
+
+    /// Save as note (engram-memory M7b).
+    mod chat_notes;
+
+    /// Summary draft and approval (engram-memory M8).
+    mod chat_summary;
+
+    /// The bell for an answer nobody watches (chat-notify).
+    mod chat_notify;
 
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.

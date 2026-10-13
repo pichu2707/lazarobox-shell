@@ -51,7 +51,24 @@ fn catalog_port(id: &str) -> u16 {
         .expect("a server adapter has a server catalog entry")
 }
 
+/// Whether the adapter of engine `id` carries the memory block. An engine
+/// without an adapter cannot be chatted with, so it carries nothing.
+pub fn carries_memory(id: &str) -> bool {
+    adapter_for(id).is_some_and(Adapter::carries_memory)
+}
+
 impl Adapter {
+    /// Whether `build` puts `ChatRequest::memory` in the request. The chat
+    /// injects the block, counts it against the history cap and announces it
+    /// (`▸ memory`) only for an adapter that says yes, so the UI never claims
+    /// the model got notes it did not. A CLI adapter that writes the block on
+    /// stdin flips its own answer when it arrives.
+    pub fn carries_memory(self) -> bool {
+        match self {
+            Adapter::Ollama => true,
+        }
+    }
+
     /// The invocation for `request`. The body holds the model, the system
     /// prompt, the history and the stream flag, and nothing else: no `think`
     /// option (a reasoning model streams its `thinking` without it, see the
@@ -68,9 +85,20 @@ impl Adapter {
     }
 }
 
+/// The system text a server gets: the pinned prompt, then the memory block
+/// (the prompt, the workspace block and the memory block, in that order).
+/// Empty when there is neither.
+pub fn system_text(request: &ChatRequest) -> String {
+    match (request.system.is_empty(), request.memory.as_deref()) {
+        (_, None) => request.system.clone(),
+        (true, Some(memory)) => memory.to_owned(),
+        (false, Some(memory)) => format!("{}\n\n{memory}", request.system),
+    }
+}
+
 fn ollama_body(request: &ChatRequest) -> Vec<u8> {
-    let system =
-        (!request.system.is_empty()).then(|| json!({"role": "system", "content": request.system}));
+    let system = system_text(request);
+    let system = (!system.is_empty()).then(|| json!({"role": "system", "content": system}));
     let messages: Vec<Value> = system
         .into_iter()
         .chain(request.messages.iter().map(|m| {

@@ -244,3 +244,78 @@ fn the_frame_moves_the_lit_segment() {
     assert_ne!(first, second);
     assert!(second.contains("━▰▰▰━━━━"), "{second}");
 }
+
+// 10.7: the memory segment through `ui::render` -----------------------------------
+
+fn memory_ai() -> AiConfig {
+    let mut ai = ollama();
+    ai.memory = crate::core::ai::config::MemoryConfig {
+        enabled: true,
+        acknowledged: true,
+        ..Default::default()
+    };
+    ai
+}
+
+fn memory_app() -> App {
+    let mut app = App::new(COLS, ROWS)
+        .with_env(Some("/bin/zsh"), None, "/srv/app".into())
+        .with_ai(memory_ai());
+    app.update(AppEvent::EnginesDetected(ready_detection()));
+    prefixed(&mut app, "c");
+    app
+}
+
+#[test]
+fn the_memory_segment_follows_the_state_of_the_chat() {
+    use crate::core::ai::memory::{
+        port::{MemReply, Reason},
+        reply::ProjectError,
+    };
+    let mut app = memory_app();
+    assert!(
+        status(&app).contains("ollama › llama3:8b · mem: checking"),
+        "{}",
+        status(&app)
+    );
+    app.update(AppEvent::Memory(MemReply::Project {
+        pane: chat_id(),
+        result: Ok("lazarobox-shell".into()),
+    }));
+    assert!(status(&app).contains("· mem: ready"), "{}", status(&app));
+
+    let mut app = memory_app();
+    app.update(AppEvent::Memory(MemReply::Unavailable {
+        pane: Some(chat_id()),
+        reason: Reason::NotRunning,
+    }));
+    assert!(
+        status(&app).contains("· mem: unavailable"),
+        "{}",
+        status(&app)
+    );
+
+    let mut app = memory_app();
+    app.update(AppEvent::Memory(MemReply::Project {
+        pane: chat_id(),
+        result: Err(ProjectError::NotGit),
+    }));
+    assert!(
+        status(&app).contains("· mem: unavailable"),
+        "{}",
+        status(&app)
+    );
+}
+
+#[test]
+fn memory_off_and_a_shell_pane_show_no_memory_text() {
+    let line = status(&chat_app());
+    assert!(!line.contains("mem:"), "memory off: {line}");
+    let mut app = memory_app();
+    prefixed(&mut app, "h");
+    let line = status(&app);
+    assert!(
+        line.contains("zsh") && !line.contains("mem:"),
+        "shell: {line}"
+    );
+}

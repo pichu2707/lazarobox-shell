@@ -1,0 +1,6 @@
+HTTP/1.1 200 OK
+Content-Type: application/json
+Date: Mon, 12 Oct 2026 20:02:33 GMT
+Content-Length: 111
+
+{"available_projects":null,"cwd":"/tmp","project":"tmp","project_path":"/tmp","project_source":"dir_basename"}

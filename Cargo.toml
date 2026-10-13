@@ -1,6 +1,6 @@
 [package]
 name = "lazarobox-shell"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Javi Lázaro <hola@javilazaro.es>"]
@@ -43,6 +43,8 @@ toml_edit = "0.22"
 # Chat history store (SQLite compiled in; needs a C compiler)
 rusqlite = { version = "0.38", features = ["bundled"] }
 
+# NFC normalisation of note titles before they become topic keys
+unicode-normalization = "0.1.25"
 # Display width of chat text (wrapping, cursor column)
 unicode-width = "0.2"
 # Grapheme clusters: ratatui draws and measures per cluster, so must we

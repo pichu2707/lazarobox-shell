@@ -49,7 +49,7 @@ fn context_edit(value: &'static str) -> ConfigEdit {
 
 // Spec (Context toggle): the row comes right after Profile and is found by kind.
 #[test]
-fn the_context_row_is_the_last_ai_descriptor_after_profile() {
+fn the_context_row_follows_profile_and_precedes_memory() {
     let labels: Vec<&str> = AI_SECTION.items.iter().map(|i| i.label).collect();
     assert_eq!(
         labels,
@@ -61,22 +61,32 @@ fn the_context_row_is_the_last_ai_descriptor_after_profile() {
             "review",
             "summarize",
             "Profile",
-            "Context"
+            "Context",
+            "Memory",
+            "Notify"
         ]
     );
-    let last = AI_SECTION.items.last().unwrap();
-    assert!(matches!(last.kind, ItemKind::Context));
+    let context = &AI_SECTION.items[AI_SECTION.items.len() - 3];
+    assert!(matches!(context.kind, ItemKind::Context));
 }
 
 #[test]
-fn context_is_the_last_selectable_row_and_navigation_wraps_through_it() {
+fn context_sits_between_profile_and_memory_and_navigation_wraps_through_them() {
     let mut m = open_with(true);
     for _ in 0..9 {
         press(&mut m, 'j');
     }
     assert_eq!(selected_label(&m), "Context");
     press(&mut m, 'j');
+    assert_eq!(selected_label(&m), "Memory");
+    press(&mut m, 'j');
+    assert_eq!(selected_label(&m), "Notify");
+    press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Statusline position");
+    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "Notify");
+    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "Memory");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Context");
     press(&mut m, 'k');

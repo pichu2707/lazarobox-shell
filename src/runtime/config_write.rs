@@ -361,6 +361,32 @@ mod tests {
         }
     }
 
+    // Spec (config-persistence): memory collisions refuse the save.
+    #[test]
+    fn memory_collisions_map_to_their_message_and_stay_byte_identical() {
+        let cases = [
+            (
+                "[ai]\nmemory = 3\n",
+                "config.toml: ai.memory is not a table; fix it before saving",
+            ),
+            (
+                "[ai.memory.enabled]\nx = 1\n",
+                "config.toml: ai.memory.enabled is a table; fix it before saving",
+            ),
+        ];
+        for (text, message) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let path = config_in(&dir);
+            fs::write(&path, text).unwrap();
+            assert_eq!(
+                save_config(Some(&path), &[ConfigEdit::memory_flag("enabled", true)]),
+                Err(message.to_owned()),
+                "for {text:?}"
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        }
+    }
+
     #[test]
     fn other_read_errors_say_save_failed() {
         let dir = tempfile::tempdir().unwrap();
@@ -607,5 +633,36 @@ mod tests {
             fs::read_to_string(&path).unwrap(),
             "[ai]\ncontext = false\n"
         );
+    }
+
+    // Spec (chat-notify, config-persistence): Collision.
+    #[test]
+    fn a_notify_table_maps_to_its_message_and_stays_byte_identical() {
+        let notify = ConfigEdit {
+            table: "ai",
+            key: "notify",
+            value: std::borrow::Cow::Borrowed("true"),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_in(&dir);
+        fs::write(&path, "[ai.notify]\nx = 1\n").unwrap();
+        assert_eq!(
+            save_config(Some(&path), std::slice::from_ref(&notify)),
+            Err("config.toml: ai.notify is a table; fix it before saving".to_owned())
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "[ai.notify]\nx = 1\n");
+    }
+
+    #[test]
+    fn a_notify_save_writes_a_boolean_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_in(&dir);
+        let notify = ConfigEdit {
+            table: "ai",
+            key: "notify",
+            value: std::borrow::Cow::Borrowed("true"),
+        };
+        save_config(Some(&path), &[notify]).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "[ai]\nnotify = true\n");
     }
 }

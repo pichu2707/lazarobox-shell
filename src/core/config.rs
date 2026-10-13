@@ -53,6 +53,29 @@ pub struct ConfigEdit {
     pub value: Cow<'static, str>,
 }
 
+impl ConfigEdit {
+    /// An edit of an owned memory flag (`ai.memory.enabled` or
+    /// `.acknowledged`).
+    pub fn memory_flag(key: &'static str, on: bool) -> Self {
+        Self {
+            table: MEMORY_TABLE,
+            key,
+            value: Cow::Borrowed(if on { "true" } else { "false" }),
+        }
+    }
+
+    /// Whether the key is a TOML boolean (written as `true` / `false`, not
+    /// as a string): the memory flags, `ai.context` and `ai.notify`. Every other owned key
+    /// holds a string; `ai.memory.port` is owned but never edited.
+    pub fn is_flag(&self) -> bool {
+        (self.table == MEMORY_TABLE && matches!(self.key, "enabled" | "acknowledged"))
+            || (self.table == "ai" && matches!(self.key, "context" | "notify"))
+    }
+}
+
+/// The dotted table of the memory keys.
+pub const MEMORY_TABLE: &str = "ai.memory";
+
 /// Why a config file was rejected; the text is one short line.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ConfigError(String);
@@ -75,7 +98,16 @@ pub struct Parsed {
 impl Config {
     /// Parses `config.toml`. Missing keys take their defaults and unknown
     /// keys are ignored, so older builds can read newer files.
+    ///
+    /// The result does not depend on the environment: the memory port default
+    /// is 7437. See [`Config::parse_with_port_env`].
     pub fn parse(text: &str) -> Result<Parsed, ConfigError> {
+        Self::parse_with_port_env(text, None)
+    }
+
+    /// Like [`Config::parse`], with the value of `ENGRAM_PORT` given: a valid
+    /// one is the default memory port. Callers read the environment once.
+    pub fn parse_with_port_env(text: &str, port_env: Option<&str>) -> Result<Parsed, ConfigError> {
         let table: Table = text.parse().map_err(|error: toml::de::Error| {
             let message = error.message().lines().next().unwrap_or_default().trim();
             ConfigError(
@@ -102,7 +134,7 @@ impl Config {
                 defaults.mouse
             }
         };
-        let ai = ai::config::read(&table, &mut problems);
+        let ai = ai::config::read_with_port_env(&table, &mut problems, port_env);
         Ok(Parsed {
             config: Self {
                 bars: BarPositions { statusline, tabbar },
@@ -116,12 +148,16 @@ impl Config {
     /// The config for the result of reading the file, plus the startup
     /// notice when something needs the user's attention.
     pub fn load(read: io::Result<String>) -> (Self, Option<String>) {
-        let (config, _, notice) = Self::load_with_ai(read);
+        let (config, _, notice) = Self::load_with_ai(read, None);
         (config, notice)
     }
 
-    /// Like [`Config::load`], and the saved AI choice too.
-    pub fn load_with_ai(read: io::Result<String>) -> (Self, AiConfig, Option<String>) {
+    /// Like [`Config::load`], and the saved AI choice too. `port_env` is the
+    /// value of `ENGRAM_PORT`, read once by the caller at startup.
+    pub fn load_with_ai(
+        read: io::Result<String>,
+        port_env: Option<&str>,
+    ) -> (Self, AiConfig, Option<String>) {
         let text = match read {
             Ok(text) => text,
             Err(error) if error.kind() == ErrorKind::NotFound => {
@@ -135,7 +171,7 @@ impl Config {
                 );
             }
         };
-        match Self::parse(&text) {
+        match Self::parse_with_port_env(&text, port_env) {
             Ok(Parsed {
                 config,
                 ai,
@@ -147,6 +183,13 @@ impl Config {
                 };
                 (config, ai, Some(format!("{head}: {}", problems[0])))
             }
+            // The privacy notice outranks the mouse one: it asks for an
+            // action, while the mouse one is informational.
+            Ok(Parsed { config, ai, .. }) if ai.memory.enabled && !ai.memory.acknowledged => (
+                config,
+                ai,
+                Some(ai::config::UNACKNOWLEDGED_NOTICE.to_owned()),
+            ),
             Ok(Parsed { config, ai, .. }) if config.mouse => (
                 config,
                 ai,
@@ -401,7 +444,7 @@ mod tests {
     #[test]
     fn an_empty_file_has_unset_ai() {
         assert_eq!(Config::parse("").unwrap().ai, AiConfig::default());
-        let (config, loaded, notice) = Config::load_with_ai(Ok(String::new()));
+        let (config, loaded, notice) = Config::load_with_ai(Ok(String::new()), None);
         assert_eq!(
             (config, loaded, notice),
             (Config::default(), ai(None, None), None)
@@ -413,7 +456,7 @@ mod tests {
     fn load_with_ai_returns_the_saved_choice_without_a_notice() {
         let text =
             "[ai]\nengine = \"ollama\"\nmodel = \"llama3:8b\"\n[tabbar]\nposition = \"bottom\"";
-        let (config, loaded, notice) = Config::load_with_ai(Ok(text.into()));
+        let (config, loaded, notice) = Config::load_with_ai(Ok(text.into()), None);
         assert_eq!(config.bars.tabbar, Bottom);
         assert_eq!(loaded, ai(Some("ollama"), Some("llama3:8b")));
         assert_eq!(notice, None);
@@ -423,7 +466,7 @@ mod tests {
     #[test]
     fn a_bad_ai_key_keeps_the_rest_and_the_notice_names_it() {
         let text = "[ai]\nengine = 3\n[tabbar]\nposition = \"bottom\"";
-        let (config, loaded, notice) = Config::load_with_ai(Ok(text.into()));
+        let (config, loaded, notice) = Config::load_with_ai(Ok(text.into()), None);
         assert_eq!(config.bars.tabbar, Bottom);
         assert_eq!(loaded, ai(None, None));
         assert_eq!(
@@ -435,7 +478,7 @@ mod tests {
     // Spec: Non-table ai.
     #[test]
     fn a_non_table_ai_gives_one_notice() {
-        let (_, loaded, notice) = Config::load_with_ai(Ok("ai = 3".into()));
+        let (_, loaded, notice) = Config::load_with_ai(Ok("ai = 3".into()), None);
         assert_eq!(loaded, ai(None, None));
         assert_eq!(notice.as_deref(), Some("config: ai: expected a table"));
     }
@@ -443,7 +486,7 @@ mod tests {
     #[test]
     fn a_valid_ai_table_survives_another_invalid_key() {
         let text = "mouse = 3\n[ai]\nengine = \"ollama\"\nmodel = \"llama3:8b\"";
-        let (config, loaded, notice) = Config::load_with_ai(Ok(text.into()));
+        let (config, loaded, notice) = Config::load_with_ai(Ok(text.into()), None);
         assert_eq!(config.mouse, Config::default().mouse);
         assert_eq!(loaded, ai(Some("ollama"), Some("llama3:8b")));
         assert_eq!(
@@ -455,7 +498,7 @@ mod tests {
     #[test]
     fn task_problems_count_after_the_general_ones() {
         let text = "[ai.tasks.code]\nengine = 5\n[ai.tasks.chat]\nmodel = 6\n";
-        let (_, loaded, notice) = Config::load_with_ai(Ok(text.into()));
+        let (_, loaded, notice) = Config::load_with_ai(Ok(text.into()), None);
         assert_eq!(loaded, ai(None, None));
         assert_eq!(
             notice.as_deref(),
@@ -467,7 +510,7 @@ mod tests {
     #[test]
     fn a_non_table_tasks_key_gives_one_notice_and_keeps_general() {
         let (_, loaded, notice) =
-            Config::load_with_ai(Ok("[ai]\nengine = \"claude\"\ntasks = 3".into()));
+            Config::load_with_ai(Ok("[ai]\nengine = \"claude\"\ntasks = 3".into()), None);
         assert_eq!(loaded, ai(Some("claude"), None));
         assert_eq!(
             notice.as_deref(),
@@ -478,7 +521,7 @@ mod tests {
     #[test]
     fn ai_problems_count_with_the_others() {
         let text = "mouse = 3\n[ai]\nengine = 1\nmodel = 2";
-        let (_, _, notice) = Config::load_with_ai(Ok(text.into()));
+        let (_, _, notice) = Config::load_with_ai(Ok(text.into()), None);
         assert_eq!(
             notice.as_deref(),
             Some("config (3 problems): mouse: expected true or false")
@@ -492,7 +535,7 @@ mod tests {
         use crate::core::ai::config::Profile;
         let text =
             "[ai]\nprofile = \"wizard\"\nengine = \"ollama\"\n[tabbar]\nposition = \"bottom\"";
-        let (config, loaded, notice) = Config::load_with_ai(Ok(text.into()));
+        let (config, loaded, notice) = Config::load_with_ai(Ok(text.into()), None);
         assert_eq!(config.bars.tabbar, Bottom);
         assert_eq!(loaded.profile(), Profile::Programmer);
         assert_eq!(
@@ -506,7 +549,7 @@ mod tests {
             notice.as_deref(),
             Some("config: ai.profile: expected \"analyst\" or \"programmer\"")
         );
-        let (_, _, notice) = Config::load_with_ai(Ok("[ai]\nprofile = 3".into()));
+        let (_, _, notice) = Config::load_with_ai(Ok("[ai]\nprofile = 3".into()), None);
         assert_eq!(
             notice.as_deref(),
             Some("config: ai.profile: expected a string")
@@ -523,7 +566,7 @@ mod tests {
             ("", Profile::Programmer),
         ] {
             let (_, loaded, notice) =
-                Config::load_with_ai(Ok(format!("[ai]\nprofile = \"{value}\"")));
+                Config::load_with_ai(Ok(format!("[ai]\nprofile = \"{value}\"")), None);
             assert_eq!((loaded.profile(), notice), (want, None), "{value:?}");
         }
     }
@@ -532,12 +575,12 @@ mod tests {
     #[test]
     fn a_profile_problem_counts_with_the_others() {
         let text = "[statusline]\nposition = \"middle\"\n[ai]\nprofile = 3";
-        let (_, _, notice) = Config::load_with_ai(Ok(text.into()));
+        let (_, _, notice) = Config::load_with_ai(Ok(text.into()), None);
         assert_eq!(
             notice.as_deref(),
             Some("config (2 problems): statusline.position: expected \"top\" or \"bottom\"")
         );
-        let (_, loaded, notice) = Config::load_with_ai(Ok("ai = 3\n".into()));
+        let (_, loaded, notice) = Config::load_with_ai(Ok("ai = 3\n".into()), None);
         assert_eq!(
             loaded.profile(),
             crate::core::ai::config::Profile::Programmer
@@ -561,5 +604,76 @@ mod tests {
         assert_eq!(p(None, Some("")), None);
         assert_eq!(p(None, Some("rel")), None);
         assert_eq!(p(Some("/x"), Some("")), xdg);
+    }
+
+    // Spec (chat-memory): enabled without the acknowledgement.
+    #[test]
+    fn enabled_memory_without_the_acknowledgement_gives_the_privacy_notice() {
+        let (_, loaded, notice) =
+            Config::load_with_ai(Ok("[ai.memory]\nenabled = true\n".into()), None);
+        assert!(loaded.memory.enabled && !loaded.memory.active());
+        assert_eq!(
+            notice.as_deref(),
+            Some("memory: turn it on from the menu to review the privacy note")
+        );
+    }
+
+    #[test]
+    fn an_acknowledged_or_disabled_memory_gives_no_notice() {
+        for text in [
+            "[ai.memory]\nenabled = true\nacknowledged = true\n",
+            "[ai.memory]\nacknowledged = true\n",
+            "[ai.memory]\nenabled = false\n",
+            "",
+        ] {
+            assert_eq!(
+                Config::load_with_ai(Ok(text.into()), None).2,
+                None,
+                "{text:?}"
+            );
+        }
+    }
+
+    // The privacy note outranks the mouse notice.
+    #[test]
+    fn the_privacy_notice_wins_over_the_mouse_notice() {
+        let text = "mouse = true\n[ai.memory]\nenabled = true\n";
+        let (config, _, notice) = Config::load_with_ai(Ok(text.into()), None);
+        assert!(config.mouse);
+        assert_eq!(notice.as_deref(), Some(ai::config::UNACKNOWLEDGED_NOTICE));
+    }
+
+    // The environment is a parameter, never read here.
+    #[test]
+    fn load_with_ai_takes_the_port_default_from_its_argument() {
+        let port = |env| Config::load_with_ai(Ok(String::new()), env).1.memory.port;
+        assert_eq!(port(None), 7437);
+        assert_eq!(port(Some("8123")), 8123);
+        assert_eq!(port(Some(" 8123\n")), 8123);
+        assert_eq!(port(Some("abc")), 7437);
+    }
+
+    // Spec: Counted with other problems.
+    #[test]
+    fn a_memory_problem_is_counted_like_any_other() {
+        let text = "[ai.memory]\nport = 0\n[statusline]\nposition = \"middle\"\n";
+        let (config, loaded, notice) = Config::load_with_ai(Ok(text.into()), None);
+        assert_eq!(config, Config::default());
+        assert_eq!(loaded.memory.port, 7437);
+        assert!(
+            notice.unwrap().starts_with("config (2 problems): "),
+            "counted"
+        );
+    }
+
+    // Spec: Non-table ai.memory.
+    #[test]
+    fn a_non_table_memory_gives_one_config_notice() {
+        let (_, loaded, notice) = Config::load_with_ai(Ok("[ai]\nmemory = 3\n".into()), None);
+        assert_eq!(loaded.memory, Default::default());
+        assert_eq!(
+            notice.as_deref(),
+            Some("config: ai.memory: expected a table")
+        );
     }
 }

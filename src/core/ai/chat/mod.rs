@@ -7,10 +7,14 @@ pub mod adapters;
 pub mod composer;
 pub mod engine;
 pub mod guidance;
+pub mod memory;
+pub mod note;
+pub mod notify;
 pub mod prompts;
 pub mod store;
 pub mod stream;
 pub mod streams;
+pub mod summary;
 pub mod transcript;
 pub mod workspace;
 pub mod wrap;
@@ -92,6 +96,9 @@ pub enum Entry {
     System(String),
     /// The reasoning of one turn: shown, never stored, never sent back.
     Reasoning(Reasoning),
+    /// The memory the conversation was given, first in the transcript: shown,
+    /// never stored, never sent as history.
+    Memory(memory::MemoryLine),
 }
 
 /// The most reasoning text kept per turn, in bytes. Past it the rest is
@@ -175,6 +182,21 @@ pub enum Follow {
     CancelEngine,
 }
 
+/// The indices of the messages a request may carry: a user message nobody
+/// answered (cancelled while waiting, or an error before any text) stays in
+/// the transcript but is not sent, so the engine never gets two user messages
+/// in a row.
+pub(crate) fn sendable_indices(all: &[&Msg]) -> Vec<usize> {
+    (0..all.len())
+        .filter(|&i| {
+            all[i].role != Role::User
+                || all
+                    .get(i + 1)
+                    .is_none_or(|next| next.role == Role::Assistant)
+        })
+        .collect()
+}
+
 /// The state of one chat pane.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ChatState {
@@ -194,6 +216,17 @@ pub struct ChatState {
     /// The system prompt of the conversation, resolved once when it started.
     /// `None` until the runtime has prepared it.
     prompt: Option<String>,
+    /// What the chat knows about engram: project, session, saved notes.
+    memory: memory::ChatMemory,
+    /// The note editor, while it is open over the conversation.
+    editor: Option<note::NoteEditor>,
+    /// The text a summary request has collected so far; `Some` exactly while
+    /// that request holds the stream slot.
+    summarizing: Option<String>,
+    /// The summary draft, while it is open over the conversation.
+    draft: Option<summary::SummaryDraft>,
+    /// The summary the user approved: sent once, with the session end.
+    approved_summary: Option<String>,
 }
 
 impl ChatState {
@@ -211,6 +244,11 @@ impl ChatState {
             scroll: Scroll::Follow,
             cache: LineCache::default(),
             prompt: None,
+            memory: memory::ChatMemory::new(),
+            editor: None,
+            summarizing: None,
+            draft: None,
+            approved_summary: None,
         }
     }
 
@@ -288,7 +326,7 @@ impl ChatState {
     pub fn messages(&self) -> impl Iterator<Item = &Msg> {
         self.entries.iter().filter_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) => None,
+            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) => None,
         })
     }
 
@@ -466,14 +504,7 @@ impl ChatState {
         // error before any text) stays in the transcript but is not sent:
         // the engine never gets two user messages in a row.
         let all: Vec<&Msg> = self.messages().collect();
-        let sendable: Vec<usize> = (0..all.len())
-            .filter(|&i| {
-                all[i].role != Role::User
-                    || all
-                        .get(i + 1)
-                        .is_none_or(|next| next.role == Role::Assistant)
-            })
-            .collect();
+        let sendable = sendable_indices(&all);
         let history: Vec<ChatMessage> = sendable
             .iter()
             .map(|&i| ChatMessage {
@@ -481,7 +512,15 @@ impl ChatState {
                 content: all[i].text.clone(),
             })
             .collect();
-        let context = build_context(&history, history_chars(engine));
+        // The memory block shares the history budget: its characters come off
+        // the cap, and the newest message is kept whole whatever is left.
+        // Only an adapter that carries it gets the block, and only then does it
+        // take budget.
+        let memory = adapters::carries_memory(engine)
+            .then(|| self.memory.injected().map(|block| block.text.clone()))
+            .flatten();
+        let memory_chars = memory.as_ref().map_or(0, |text| text.chars().count());
+        let context = build_context(&history, history_chars(engine).saturating_sub(memory_chars));
         let oldest = sendable[history.len() - context.messages.len()];
         self.place_marker(oldest, context.omitted);
         self.turn += 1;
@@ -496,6 +535,7 @@ impl ChatState {
                 engine: engine.clone(),
                 model: model.clone(),
                 system: system.to_owned(),
+                memory,
                 messages: context.messages,
             },
         }
@@ -537,6 +577,9 @@ impl ChatState {
     pub fn apply_at(&mut self, turn: u64, event: StreamEvent, now: Instant) -> Follow {
         if turn != self.turn || self.phase == Phase::Idle {
             return Follow::Nothing;
+        }
+        if self.summarizing.is_some() {
+            return self.apply_summary(event);
         }
         if !matches!(event, StreamEvent::ThinkingDelta(_)) {
             self.generation += 1;
@@ -675,7 +718,7 @@ impl ChatState {
         }
         self.entries.iter_mut().rev().find_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) => None,
+            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) => None,
         })
     }
 
@@ -704,6 +747,9 @@ impl ChatState {
         if self.phase == Phase::Idle {
             return Follow::Nothing;
         }
+        if self.summarizing.is_some() {
+            return self.cancel_summary();
+        }
         self.finish(MsgStatus::Cancelled, None, now);
         self.turn += 1;
         self.generation += 1;
@@ -714,8 +760,20 @@ impl ChatState {
 #[cfg(test)]
 mod anchor_tests;
 #[cfg(test)]
+mod context_tests;
+#[cfg(test)]
+mod memory_line_tests;
+#[cfg(test)]
+mod memory_tests;
+#[cfg(test)]
+mod note_tests;
+#[cfg(test)]
 mod reasoning_tests;
 #[cfg(test)]
 mod state_tests;
 #[cfg(test)]
 mod stream_tests;
+#[cfg(test)]
+mod summary_tests;
+#[cfg(test)]
+mod wait_tests;

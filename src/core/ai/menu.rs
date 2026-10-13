@@ -14,6 +14,8 @@ pub struct AiMenu {
     draft: AiConfig,
     engines: Option<Detection>,
     picker: Option<Picker>,
+    /// The privacy warning is shown over the menu.
+    warning: bool,
 }
 
 impl AiMenu {
@@ -23,6 +25,7 @@ impl AiMenu {
             original,
             engines,
             picker: None,
+            warning: false,
         }
     }
 
@@ -41,6 +44,49 @@ impl AiMenu {
             .into_iter()
             .filter(|t| self.draft.get(*t) != self.original.get(*t))
             .map(|t| (t, self.draft.get(t)))
+    }
+
+    /// Flips the memory draft. Turning it on without the acknowledgement
+    /// opens the privacy warning instead: the draft changes only when the
+    /// user accepts. Nothing is written or requested here.
+    pub fn toggle_memory(&mut self) {
+        let memory = &mut self.draft.memory;
+        if memory.active() {
+            memory.enabled = false;
+        } else if memory.acknowledged {
+            memory.enabled = true;
+        } else {
+            self.warning = true;
+        }
+    }
+
+    /// Whether the privacy warning is open.
+    pub fn warning(&self) -> bool {
+        self.warning
+    }
+
+    /// Closes the warning. Accepting sets both drafts (memory on, note
+    /// acknowledged); declining leaves them as they were.
+    pub fn answer_warning(&mut self, accept: bool) {
+        self.warning = false;
+        if accept {
+            self.draft.memory.enabled = true;
+            self.draft.memory.acknowledged = true;
+        }
+    }
+
+    /// The memory keys whose draft differs from the saved one, as
+    /// `(key, value)` in file order. The port is owned but never edited.
+    pub fn changed_memory(&self) -> Vec<(&'static str, bool)> {
+        let (old, new) = (self.original.memory, self.draft.memory);
+        [
+            ("enabled", old.enabled, new.enabled),
+            ("acknowledged", old.acknowledged, new.acknowledged),
+        ]
+        .into_iter()
+        .filter(|(_, old, new)| old != new)
+        .map(|(key, _, new)| (key, new))
+        .collect()
     }
 
     /// Moves the draft profile to the next (or previous) one, wrapping.
@@ -63,6 +109,17 @@ impl AiMenu {
     /// The context flag in the draft, when it differs from the open one.
     pub fn changed_context(&self) -> Option<bool> {
         (self.draft.context() != self.original.context()).then(|| self.draft.context())
+    }
+
+    /// Flips the notify flag of the draft.
+    pub fn toggle_notify(&mut self) {
+        let next = !self.draft.notify();
+        self.draft.set_notify(next);
+    }
+
+    /// The notify flag in the draft, when it differs from the open one.
+    pub fn changed_notify(&self) -> Option<bool> {
+        (self.draft.notify() != self.original.notify()).then(|| self.draft.notify())
     }
 
     /// Replaces the detection. The draft is never touched.

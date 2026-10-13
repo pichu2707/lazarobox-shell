@@ -102,6 +102,12 @@ fn entry_rows(entry: &Entry, width: usize, out: &mut Vec<Line>) {
                 push_wrapped(out, LineKind::Mark, "", "", &mark, width);
             }
         }
+        Entry::Memory(line) => {
+            push_wrapped(out, LineKind::ReasoningHead, "", "", &line.head(), width);
+            if line.expanded() {
+                push_wrapped(out, LineKind::Reasoning, GUTTER, GUTTER, line.text(), width);
+            }
+        }
         Entry::Reasoning(block) => {
             let head = |glyph: char| format!("{glyph} reasoning ({})", block.seconds_label());
             match block.state() {

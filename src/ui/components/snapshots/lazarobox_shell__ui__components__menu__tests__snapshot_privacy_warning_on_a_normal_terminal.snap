@@ -1,0 +1,23 @@
+---
+source: src/ui/components/menu.rs
+expression: shown
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Memory: save notes to engram                               │
+│ Saved notes leave lazarobox's private store (0600).        │
+│ They become readable by every local process and            │
+│ every agent that uses engram, and by engram sync           │
+│ if it is on. lazarobox cannot restrict that.               │
+│ Notes stay in engram until you delete them, and            │
+│ secret redaction is best effort.                           │
+│ Once saved, this note is not shown again.                  │
+│                                                            │
+│ Turn memory on? (y/n)                                      │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ y accept (then s to save) · any other key declines         │
+└────────────────────────────────────────────────────────────┘

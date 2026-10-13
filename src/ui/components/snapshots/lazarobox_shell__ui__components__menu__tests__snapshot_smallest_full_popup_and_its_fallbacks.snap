@@ -16,5 +16,7 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &task))"
 │ summarize  (default) │
 │ Profile   programmer │
 │ Context           on │
+│ Memory           off │
+│ Notify           off │
 │ j/k move · h/l chang…│
 └──────────────────────┘

@@ -98,17 +98,13 @@ pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String
     Ok(out)
 }
 
-/// The owned keys that hold a TOML boolean: their edit value is the text
-/// `true` or `false`. Every other owned key holds a string.
-const BOOLEAN_KEYS: [(&str, &str); 1] = [("ai", "context")];
-
-/// The TOML value of an edit.
+/// The TOML value of an edit: a boolean key (see [`ConfigEdit::is_flag`])
+/// is written as a TOML boolean, every other owned key as a string.
 fn edit_value(edit: &ConfigEdit) -> Value {
-    let boolean = BOOLEAN_KEYS.contains(&(edit.table, edit.key));
-    match edit.value.as_ref() {
-        "true" if boolean => Value::from(true),
-        "false" if boolean => Value::from(false),
-        text => Value::from(text),
+    if edit.is_flag() {
+        Value::from(edit.value == "true")
+    } else {
+        Value::from(edit.value.as_ref())
     }
 }
 
@@ -553,7 +549,7 @@ other = 1
     }
 
     fn parsed_ai(text: &str) -> (crate::core::ai::config::AiConfig, Option<String>) {
-        let (_, ai, notice) = Config::load_with_ai(Ok(text.to_owned()));
+        let (_, ai, notice) = Config::load_with_ai(Ok(text.to_owned()), None);
         (ai, notice)
     }
 
@@ -807,10 +803,186 @@ other = 1
         }
         for text in [None, Some("# c\n[statusline]\nposition = \"top\"\n")] {
             let out = apply_edit(text, &edits).unwrap();
-            let (_, ai, notice) = Config::load_with_ai(Ok(out.clone()));
+            let (_, ai, notice) = Config::load_with_ai(Ok(out.clone()), None);
             assert_eq!(ai, want, "{out:?}");
             assert_eq!(notice, None, "{out:?}");
         }
+    }
+
+    // Spec (config-persistence): memory keys are owned booleans.
+    fn flag(key: &'static str, on: bool) -> ConfigEdit {
+        ConfigEdit {
+            table: "ai.memory",
+            key,
+            value: std::borrow::Cow::Borrowed(if on { "true" } else { "false" }),
+        }
+    }
+
+    fn memory_of(text: &str) -> (crate::core::ai::config::MemoryConfig, Option<String>) {
+        let (_, ai, notice) = Config::load_with_ai(Ok(text.to_owned()), None);
+        (ai.memory, notice)
+    }
+
+    #[test]
+    fn a_missing_memory_table_is_appended_with_booleans_only() {
+        let existing = "# mine\n[statusline]\nposition = \"bottom\"\n";
+        let edits = [flag("enabled", true), flag("acknowledged", true)];
+        let out = apply_edit(Some(existing), &edits).unwrap();
+        assert_eq!(
+            out,
+            format!("{existing}\n[ai.memory]\nenabled = true\nacknowledged = true\n")
+        );
+        let (memory, notice) = memory_of(&out);
+        assert!(memory.active(), "{out:?}");
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn only_the_enabled_value_changes_in_place() {
+        let existing =
+            "[ai.memory]\nenabled = false  # off\n# where\nport = 8123\nacknowledged = true\n";
+        let out = apply_edit(Some(existing), &[flag("enabled", true)]).unwrap();
+        assert_eq!(out, existing.replace("false  # off", "true  # off"));
+    }
+
+    #[test]
+    fn turning_memory_off_keeps_the_acknowledgement() {
+        let existing = "[ai.memory]\nenabled = true\nacknowledged = true\n";
+        let out = apply_edit(Some(existing), &[flag("enabled", false)]).unwrap();
+        assert_eq!(out, "[ai.memory]\nenabled = false\nacknowledged = true\n");
+        let (memory, _) = memory_of(&out);
+        assert!(memory.acknowledged && !memory.enabled);
+    }
+
+    #[test]
+    fn the_port_is_preserved_byte_for_byte_and_never_added() {
+        let with_port = "[ai.memory]\nport   =   8123 # mine\nendpoint = \"x\"\n";
+        let out = apply_edit(Some(with_port), &[flag("enabled", true)]).unwrap();
+        assert_eq!(
+            out,
+            "[ai.memory]\nport   =   8123 # mine\nendpoint = \"x\"\nenabled = true\n"
+        );
+        let out = apply_edit(Some("x = 1\n"), &[flag("enabled", true)]).unwrap();
+        assert!(!out.contains("port"), "{out:?}");
+    }
+
+    #[test]
+    fn no_memory_edits_leave_the_file_untouched() {
+        let existing = "[statusline]\nposition = \"top\"\n";
+        assert_eq!(apply_edit(Some(existing), &[]).unwrap(), existing);
+        let with = "[ai.memory]\nenabled = true\n";
+        assert_eq!(apply_edit(Some(with), &[]).unwrap(), with);
+    }
+
+    #[test]
+    fn a_scalar_memory_or_a_table_valued_flag_is_refused() {
+        let one = [flag("enabled", true)];
+        assert_eq!(
+            apply_edit(Some("[ai]\nmemory = 3\n"), &one),
+            Err(EditError::NotATable("ai.memory"))
+        );
+        assert_eq!(
+            apply_edit(Some("[ai.memory.enabled]\nx = 1\n"), &one),
+            Err(EditError::KeyIsTable {
+                table: "ai.memory",
+                key: "enabled"
+            })
+        );
+        assert_eq!(
+            apply_edit(
+                Some("[ai.memory.acknowledged]\nx = 1\n"),
+                &[flag("acknowledged", true)]
+            ),
+            Err(EditError::KeyIsTable {
+                table: "ai.memory",
+                key: "acknowledged"
+            })
+        );
+    }
+
+    #[test]
+    fn a_wrong_type_flag_is_replaced_and_an_ignored_collision_is_kept() {
+        let out = apply_edit(Some("[ai.memory]\nenabled = 3\n"), &[flag("enabled", true)]).unwrap();
+        assert_eq!(out, "[ai.memory]\nenabled = true\n");
+        let existing = "[ai.memory.enabled]\nx = 1\n[statusline]\nposition = \"bottom\"\n";
+        let out = apply_edit(Some(existing), &[edit("statusline", "top")]).unwrap();
+        assert_eq!(out, existing.replace("bottom", "top"));
+    }
+
+    #[test]
+    fn a_memory_flag_keeps_crlf() {
+        let existing = "[ai.memory]\r\nenabled = false\r\n";
+        let out = apply_edit(Some(existing), &[flag("acknowledged", true)]).unwrap();
+        assert_eq!(
+            out,
+            "[ai.memory]\r\nenabled = false\r\nacknowledged = true\r\n"
+        );
+    }
+
+    // Review: lossless save for every way TOML can spell `ai.memory`. Each
+    // keeps its comments, its port and its unknown keys; both booleans land
+    // as real booleans and the file reads back as active.
+    #[test]
+    fn memory_flags_are_saved_losslessly_in_every_toml_spelling() {
+        let cases: [(&str, &[&str]); 6] = [
+            (
+                "ai.memory = {port=8123, x=1} # c\n",
+                &["# c", "port=8123", "x=1"],
+            ),
+            (
+                "# top\n[ai]\nmemory = {port=8123, x=1} # c\n",
+                &["# top", "# c", "port=8123", "x=1"],
+            ),
+            (
+                "[ai]\n# mine\nmemory.port = 8123 # p\nmemory.x = 1\n",
+                &["# mine", "# p", "port = 8123", "memory.x = 1"],
+            ),
+            (
+                "# root\nai.memory.port = 8123 # p\nai.memory.x = 1\n",
+                &["# root", "# p", "port = 8123", "x = 1"],
+            ),
+            (
+                "ai = { memory = {port=8123, x=1} } # c\n",
+                &["# c", "port=8123", "x=1"],
+            ),
+            (
+                "[ai.memory]\nport = 8123 # p\nx = 1\n# tail\n[other]\nkeep = true\n",
+                &[
+                    "# p",
+                    "port = 8123",
+                    "x = 1",
+                    "# tail",
+                    "[other]",
+                    "keep = true",
+                ],
+            ),
+        ];
+        let edits = [flag("enabled", true), flag("acknowledged", true)];
+        for (existing, kept) in cases {
+            let out = apply_edit(Some(existing), &edits).unwrap();
+            for needle in kept {
+                assert!(out.contains(needle), "{needle:?} lost in {out:?}");
+            }
+            let (_, ai, notice) = Config::load_with_ai(Ok(out.clone()), None);
+            assert!(ai.memory.active(), "{out:?}");
+            assert_eq!(ai.memory.port, 8123, "{out:?}");
+            assert_eq!(notice, None, "{out:?}");
+            assert!(!out.contains("\"true\""), "booleans, not strings: {out:?}");
+        }
+    }
+
+    // Only the memory flags are booleans: other string edits stay strings.
+    #[test]
+    fn other_keys_named_enabled_stay_strings() {
+        let other = ConfigEdit {
+            table: "custom",
+            key: "enabled",
+            value: std::borrow::Cow::Borrowed("true"),
+        };
+        assert_eq!(
+            apply_edit(None, &[other]).unwrap(),
+            "[custom]\nenabled = \"true\"\n"
+        );
     }
 
     // Spec (config-persistence): the profile is an owned key. The generic
@@ -853,7 +1025,7 @@ other = 1
     fn a_profile_only_save_writes_no_engine_keys() {
         for text in [None, Some("[ai]\nengine = \"x\"\n"), Some("# c\n")] {
             let out = apply_edit(text, &profile_edit("analyst")).unwrap();
-            let (_, ai, notice) = Config::load_with_ai(Ok(out.clone()));
+            let (_, ai, notice) = Config::load_with_ai(Ok(out.clone()), None);
             assert_eq!(notice, None, "{out:?}");
             assert_eq!(ai.profile(), crate::core::ai::config::Profile::Analyst);
             let had_engine = text.is_some_and(|t| t.contains("engine"));
@@ -920,12 +1092,12 @@ other = 1
     fn the_context_is_written_as_a_boolean() {
         let out = apply_edit(None, &context_edit("false")).unwrap();
         assert_eq!(out, "[ai]\ncontext = false\n");
-        let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out));
+        let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out), None);
         assert!(!ai.context());
         assert_eq!(notice, None);
         let out = apply_edit(Some("[ai]\nprofile = \"analyst\"\n"), &context_edit("true")).unwrap();
         assert_eq!(out, "[ai]\nprofile = \"analyst\"\ncontext = true\n");
-        let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out));
+        let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out), None);
         assert!(ai.context());
         assert_eq!(notice, None);
     }
@@ -957,6 +1129,57 @@ other = 1
         }
         let position = [edit("statusline", "top")];
         let existing = "[ai.context]\nx = 1\n";
+        let out = apply_edit(Some(existing), &position).unwrap();
+        assert!(out.starts_with(existing), "{out:?}");
+    }
+
+    // Spec (chat-notify, config-persistence): `ai.notify` is an owned boolean.
+    fn notify_edit(value: &'static str) -> [ConfigEdit; 1] {
+        [ConfigEdit {
+            table: "ai",
+            key: "notify",
+            value: std::borrow::Cow::Borrowed(value),
+        }]
+    }
+
+    #[test]
+    fn the_notify_flag_is_written_as_a_boolean() {
+        let out = apply_edit(None, &notify_edit("true")).unwrap();
+        assert_eq!(out, "[ai]\nnotify = true\n");
+        let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out), None);
+        assert!(ai.notify());
+        assert_eq!(notice, None);
+        let out = apply_edit(Some("[ai]\ncontext = false\n"), &notify_edit("false")).unwrap();
+        assert_eq!(out, "[ai]\ncontext = false\nnotify = false\n");
+    }
+
+    #[test]
+    fn the_notify_flag_is_updated_in_place_and_a_scalar_is_replaced() {
+        let existing = "[ai]\n# c\nnotify = false  # off\nmodel = \"m\"\n";
+        let out = apply_edit(Some(existing), &notify_edit("true")).unwrap();
+        assert_eq!(out, "[ai]\n# c\nnotify = true  # off\nmodel = \"m\"\n");
+        let out = apply_edit(Some("[ai]\nnotify = \"x\"\n"), &notify_edit("true")).unwrap();
+        assert_eq!(out, "[ai]\nnotify = true\n");
+    }
+
+    #[test]
+    fn a_notify_table_is_refused_and_an_unchanged_one_is_ignored() {
+        for text in [
+            "[ai.notify]\nx = 1\n",
+            "[ai]\nnotify = { x = 1 }\n",
+            "[[ai.notify]]\nx = 1\n",
+        ] {
+            assert_eq!(
+                apply_edit(Some(text), &notify_edit("true")),
+                Err(EditError::KeyIsTable {
+                    table: "ai",
+                    key: "notify"
+                }),
+                "{text:?}"
+            );
+        }
+        let position = [edit("statusline", "top")];
+        let existing = "[ai.notify]\nx = 1\n";
         let out = apply_edit(Some(existing), &position).unwrap();
         assert!(out.starts_with(existing), "{out:?}");
     }

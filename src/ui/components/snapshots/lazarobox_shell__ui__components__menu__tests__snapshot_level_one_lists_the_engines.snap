@@ -17,5 +17,7 @@ expression: "text(&draw(62, POPUP_H, &picker_of(\"code\", 0)))"
 │                                                            │
 │                                                            │
 │                                                            │
+│                                                            │
+│                                                            │
 │ j/k move · Enter choose · r refresh · Esc back · s save    │
 └────────────────────────────────────────────────────────────┘

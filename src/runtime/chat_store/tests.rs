@@ -316,11 +316,20 @@ fn message(conn: &Connection, conv: i64, seq: i64, status: &str) -> rusqlite::Re
 }
 
 #[test]
-fn a_fresh_store_gets_schema_v1() {
+fn a_fresh_store_gets_schema_v2() {
     let dir = TempDir::new().unwrap();
     let conn = open_as(&store_path(&dir), me()).unwrap();
-    assert_eq!(pragma_text(&conn, "user_version"), "1");
-    assert_eq!(names(&conn, "table"), ["conversations", "messages", "tags"]);
+    assert_eq!(pragma_text(&conn, "user_version"), "2");
+    assert_eq!(
+        names(&conn, "table"),
+        [
+            "conversations",
+            "memory_notes",
+            "memory_sessions",
+            "messages",
+            "tags"
+        ]
+    );
     let indexes = names(&conn, "index");
     assert!(indexes.iter().any(|n| n == "tags_by_tag"), "{indexes:?}");
     assert!(
@@ -392,7 +401,7 @@ fn reopening_keeps_the_data_and_the_version() {
     drop(conn);
 
     let conn = open_as(&db, me()).unwrap();
-    assert_eq!(pragma_text(&conn, "user_version"), "1");
+    assert_eq!(pragma_text(&conn, "user_version"), "2");
     let n: i64 = conn
         .query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0))
         .unwrap();
@@ -406,8 +415,8 @@ fn an_empty_database_at_version_zero_is_migrated() {
     fs::create_dir(db.parent().unwrap()).unwrap();
     drop(Connection::open(&db).unwrap());
     let conn = open_as(&db, me()).unwrap();
-    assert_eq!(pragma_text(&conn, "user_version"), "1");
-    assert_eq!(names(&conn, "table").len(), 3);
+    assert_eq!(pragma_text(&conn, "user_version"), "2");
+    assert_eq!(names(&conn, "table").len(), 5);
 }
 
 #[test]
@@ -417,11 +426,11 @@ fn a_newer_schema_makes_the_store_unavailable_and_is_left_alone() {
     drop(open_as(&db, me()).unwrap());
     Connection::open(&db)
         .unwrap()
-        .execute_batch("PRAGMA user_version = 2")
+        .execute_batch("PRAGMA user_version = 3")
         .unwrap();
     let before = fs::read(&db).unwrap();
 
-    assert_eq!(open_as(&db, me()).err(), Some(StoreError::Newer(2)));
+    assert_eq!(open_as(&db, me()).err(), Some(StoreError::Newer(3)));
     assert_eq!(fs::read(&db).unwrap(), before);
 }
 
@@ -467,7 +476,7 @@ fn a_symlinked_ancestor_of_the_data_directory_is_fine() {
     let db = dir.path().join("alias").join("lazarobox").join("chat.db");
 
     let conn = open_as(&db, me()).unwrap();
-    assert_eq!(pragma_text(&conn, "user_version"), "1");
+    assert_eq!(pragma_text(&conn, "user_version"), "2");
     assert!(real.join("lazarobox").join("chat.db").is_file());
 }
 
@@ -484,7 +493,7 @@ fn two_instances_migrating_a_fresh_store_both_succeed() {
         migrate(&mut a).unwrap();
     })
     .unwrap();
-    assert_eq!(pragma_text(&b, "user_version"), "1");
+    assert_eq!(pragma_text(&b, "user_version"), "2");
 }
 
 #[test]
@@ -498,12 +507,12 @@ fn a_newer_wal_database_is_not_rewritten_before_the_refusal() {
             .query_row("PRAGMA journal_mode = wal", [], |r| r.get(0))
             .unwrap();
         assert_eq!(mode, "wal");
-        conn.execute_batch("PRAGMA user_version = 2").unwrap();
+        conn.execute_batch("PRAGMA user_version = 3").unwrap();
     }
     let before = fs::read(&db).unwrap();
     let wal_before = side(&db, "-wal").exists();
 
-    assert_eq!(open_as(&db, me()).err(), Some(StoreError::Newer(2)));
+    assert_eq!(open_as(&db, me()).err(), Some(StoreError::Newer(3)));
     assert!(fs::read(&db).unwrap() == before, "the main file changed");
     assert_eq!(side(&db, "-wal").exists(), wal_before);
 }
@@ -524,4 +533,178 @@ fn a_failed_open_names_no_path() {
     assert!(!text.contains(&tmp_name), "{text}");
     assert!(!text.contains("tmp"), "{text}");
     assert_eq!(text, "cannot open database");
+}
+
+// ---- schema v2 (8.1) -------------------------------------------------------
+
+fn count(conn: &Connection, table: &str) -> i64 {
+    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+        .unwrap()
+}
+
+/// A database exactly as a v1-only build leaves it, with some rows.
+fn v1_store(db: &Path) {
+    let conn = open_with(db, me(), 1).unwrap();
+    assert_eq!(pragma_text(&conn, "user_version"), "1");
+    assert_eq!(names(&conn, "table"), ["conversations", "messages", "tags"]);
+    conversation(&conn, 1);
+    conversation(&conn, 2);
+    message(&conn, 1, 1, "complete").unwrap();
+    message(&conn, 1, 2, "complete").unwrap();
+    conn.execute(
+        "INSERT INTO tags(conversation_id, tag, is_project) VALUES (2, 'keep', 0)",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_v1_database_opens_as_v2_with_every_row_intact() {
+    let dir = TempDir::new().unwrap();
+    let db = store_path(&dir);
+    v1_store(&db);
+
+    let conn = open_as(&db, me()).unwrap();
+    assert_eq!(pragma_text(&conn, "user_version"), "2");
+    assert_eq!(count(&conn, "conversations"), 2);
+    assert_eq!(count(&conn, "messages"), 2);
+    assert_eq!(count(&conn, "tags"), 1);
+    assert_eq!(count(&conn, "memory_sessions"), 0);
+    assert_eq!(count(&conn, "memory_notes"), 0);
+}
+
+#[test]
+fn the_v2_migration_is_one_transaction() {
+    let dir = TempDir::new().unwrap();
+    let db = store_path(&dir);
+    v1_store(&db);
+    // A pre-existing table of the same name makes the second statement of the
+    // v2 batch fail: nothing of the batch may survive.
+    Connection::open(&db)
+        .unwrap()
+        .execute_batch("CREATE TABLE memory_notes(x)")
+        .unwrap();
+
+    assert!(open_as(&db, me()).is_err());
+    let conn = Connection::open(&db).unwrap();
+    assert_eq!(pragma_text(&conn, "user_version"), "1");
+    assert!(!names(&conn, "table").contains(&"memory_sessions".to_owned()));
+}
+
+#[test]
+fn a_v1_only_opener_refuses_a_v2_file_and_leaves_its_bytes() {
+    let dir = TempDir::new().unwrap();
+    let db = store_path(&dir);
+    drop(open_as(&db, me()).unwrap());
+    let before = fs::read(&db).unwrap();
+
+    assert_eq!(open_with(&db, me(), 1).err(), Some(StoreError::Newer(2)));
+    assert!(fs::read(&db).unwrap() == before, "the v2 file changed");
+    for suffix in ["-journal", "-wal", "-shm"] {
+        assert!(!side(&db, suffix).exists());
+    }
+}
+
+#[test]
+fn the_link_tables_have_the_designed_shape() {
+    let dir = TempDir::new().unwrap();
+    let conn = open_as(&store_path(&dir), me()).unwrap();
+    let cols = |table: &str| -> Vec<(String, i64)> {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT name, pk FROM pragma_table_info('{table}')"
+            ))
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(
+        cols("memory_sessions"),
+        [
+            ("conversation_id".to_owned(), 1),
+            ("session_id".to_owned(), 0),
+            ("project".to_owned(), 0)
+        ]
+    );
+    assert_eq!(
+        cols("memory_notes"),
+        [
+            ("project".to_owned(), 1),
+            ("topic_key".to_owned(), 2),
+            ("observation_id".to_owned(), 0),
+            ("conversation_id".to_owned(), 0),
+            ("title".to_owned(), 0)
+        ]
+    );
+    let without_rowid: i64 = conn
+        .query_row(
+            "SELECT wr FROM pragma_table_list('memory_notes')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(without_rowid, 1);
+
+    // The session id is unique, and both tables follow their conversation.
+    conversation(&conn, 1);
+    conversation(&conn, 2);
+    let session = |conv: i64, id: &str| {
+        conn.execute(
+            "INSERT INTO memory_sessions(conversation_id, session_id, project) VALUES (?1, ?2, 'p')",
+            rusqlite::params![conv, id],
+        )
+    };
+    session(1, "lazarobox-aa").unwrap();
+    assert!(
+        session(2, "lazarobox-aa").is_err(),
+        "session ids are unique"
+    );
+    conn.execute(
+        "INSERT INTO memory_notes VALUES ('p', 'chat/decision/x', 7, 1, 't')",
+        [],
+    )
+    .unwrap();
+    conn.execute("DELETE FROM conversations WHERE id = 1", [])
+        .unwrap();
+    assert_eq!(count(&conn, "memory_sessions"), 0);
+    assert_eq!(count(&conn, "memory_notes"), 0);
+}
+
+#[test]
+fn the_link_tables_are_covered_by_secure_delete_and_the_file_modes() {
+    let dir = TempDir::new().unwrap();
+    let db = store_path(&dir);
+    let conn = open_as(&db, me()).unwrap();
+    assert_eq!(pragma_text(&conn, "secure_delete"), "1");
+    conversation(&conn, 1);
+    conn.execute(
+        "INSERT INTO memory_sessions VALUES (1, 'lazarobox-ZZ-MARKER-ZZ', 'p')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO memory_notes VALUES ('p', 'chat/decision/ZZ-MARKER-ZZ', 7, 1, 'ZZ-MARKER-ZZ')",
+        [],
+    )
+    .unwrap();
+    let has = |p: &Path| {
+        fs::read(p)
+            .unwrap_or_default()
+            .windows(12)
+            .any(|w| w == b"ZZ-MARKER-ZZ")
+    };
+    assert!(
+        has(&db),
+        "the marker should be in the file before the delete"
+    );
+    assert_eq!(mode(&db), 0o600);
+
+    conn.execute("DELETE FROM conversations WHERE id = 1", [])
+        .unwrap();
+    for suffix in ["", "-journal", "-wal", "-shm"] {
+        assert!(!has(&side(&db, suffix)), "{suffix} still holds the marker");
+    }
+    assert_eq!(mode(&db), 0o600);
 }

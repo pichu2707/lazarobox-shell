@@ -1,0 +1,9 @@
+---
+source: src/ui/components/chat/memory_tests.rs
+expression: "text(&draw(&chat, 40, 6))"
+---
+▸ memory (1 note)
+
+› hi
+
+hello

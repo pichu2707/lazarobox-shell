@@ -1,0 +1,6 @@
+HTTP/1.1 200 OK
+Content-Type: application/json
+Date: Mon, 12 Oct 2026 20:02:37 GMT
+Content-Length: 204
+
+{"available_projects":["gitproj","repob"],"cwd":"/tmp/spike/ws","error_hint":"ambiguous project: multiple git repos found in cwd","project":"","project_path":"/tmp/spike/ws","project_source":"ambiguous"}

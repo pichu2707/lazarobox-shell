@@ -16,7 +16,7 @@ use crate::{
         ai::chat::{
             MsgStatus,
             engine::Role,
-            store::{ERROR_MAX, StoredMessage},
+            store::{ERROR_MAX, LinkKind, StoredMessage},
         },
         layout::PaneId,
     },
@@ -717,4 +717,476 @@ fn a_handle_without_a_thread_answers_unavailable_to_a_create() {
     assert!(reason.chars().count() <= ERROR_MAX);
     assert!(rx.try_recv().is_err(), "the append must stay silent");
     handle.shutdown(Duration::from_millis(200));
+}
+
+// ---- memory links (8.3) ----------------------------------------------------
+
+const SESSION_A: &str = "lazarobox-00112233445566778899aabbccddeeff";
+const SESSION_B: &str = "lazarobox-ffeeddccbbaa99887766554433221100";
+
+fn link_session(conversation: i64, session_id: &str) -> StoreCmd {
+    StoreCmd::LinkSession {
+        pane: pane(),
+        conversation,
+        session_id: session_id.into(),
+        project: "proj".into(),
+    }
+}
+
+fn link_note(conversation: i64, topic_key: &str, observation_id: i64, title: &str) -> StoreCmd {
+    StoreCmd::LinkNote {
+        pane: pane(),
+        conversation,
+        project: "proj".into(),
+        topic_key: topic_key.into(),
+        observation_id,
+        title: title.into(),
+    }
+}
+
+fn session_of(reply: Option<StoreReply>) -> String {
+    match reply {
+        Some(StoreReply::SessionLinked {
+            pane: from,
+            session_id,
+            ..
+        }) => {
+            assert_eq!(from, pane());
+            session_id
+        }
+        other => panic!("expected SessionLinked, got {other:?}"),
+    }
+}
+
+/// `(observation_id, conversation_id, title)` of a note row.
+fn note(conn: &Connection, topic_key: &str) -> Vec<(i64, i64, String)> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT observation_id, conversation_id, title FROM memory_notes
+             WHERE project = 'proj' AND topic_key = ?1",
+        )
+        .unwrap();
+    stmt.query_map([topic_key], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn a_session_link_stores_the_id_and_the_project() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    assert_eq!(
+        session_of(worker.handle(link_session(id, SESSION_A))),
+        SESSION_A
+    );
+    let row: (String, String) = conn
+        .query_row(
+            "SELECT session_id, project FROM memory_sessions WHERE conversation_id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(row, (SESSION_A.to_owned(), "proj".to_owned()));
+}
+
+#[test]
+fn the_same_session_id_is_returned_on_resume() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    session_of(worker.handle(link_session(id, SESSION_A)));
+    // A resumed conversation proposes a fresh id and gets the stored one.
+    assert_eq!(
+        session_of(worker.handle(link_session(id, SESSION_B))),
+        SESSION_A
+    );
+    assert_eq!(count(&conn, "memory_sessions"), 1);
+}
+
+#[test]
+fn a_resume_returns_the_stored_project_even_when_another_was_proposed() {
+    let (_dir, mut worker, _conn) = fixture();
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    session_of(worker.handle(link_session(id, SESSION_A)));
+    // The caller may resume from another directory: engram rejects a project
+    // that differs from the registered one, so the stored pair wins.
+    let reply = worker.handle(StoreCmd::LinkSession {
+        pane: pane(),
+        conversation: id,
+        session_id: SESSION_B.into(),
+        project: "other".into(),
+    });
+    let Some(StoreReply::SessionLinked {
+        session_id,
+        project,
+        ..
+    }) = reply
+    else {
+        panic!("expected SessionLinked, got {reply:?}");
+    };
+    assert_eq!((session_id.as_str(), project.as_str()), (SESSION_A, "proj"));
+}
+
+#[test]
+fn a_session_id_that_is_not_ours_is_not_stored() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    for bad in [
+        "",
+        "lazarobox-ABCDEF",
+        "other-00112233445566778899aabbccddeeff",
+        "lazarobox-00112233445566778899aabbccddeeffaa",
+        "lazarobox-0011223344556677 899aabbccddeeff",
+    ] {
+        assert_eq!(
+            worker.handle(link_session(id, bad)),
+            Some(StoreReply::LinkFailed {
+                pane: pane(),
+                kind: LinkKind::Session
+            }),
+            "{bad:?}"
+        );
+    }
+    assert_eq!(count(&conn, "memory_sessions"), 0);
+}
+
+#[test]
+fn two_conversations_cannot_share_a_session_id() {
+    let (_dir, mut worker, conn) = fixture();
+    let a = created_id(worker.handle(create(user("a"), vec![])));
+    let b = created_id(worker.handle(create(user("b"), vec![])));
+    session_of(worker.handle(link_session(a, SESSION_A)));
+    assert_eq!(
+        worker.handle(link_session(b, SESSION_A)),
+        Some(StoreReply::LinkFailed {
+            pane: pane(),
+            kind: LinkKind::Session
+        })
+    );
+    assert_eq!(count(&conn, "memory_sessions"), 1);
+}
+
+#[test]
+fn a_successful_note_link_sends_no_reply() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    assert!(
+        worker
+            .handle(link_note(id, "chat/decision/use-axum", 7, "Use Axum"))
+            .is_none()
+    );
+    assert_eq!(
+        note(&conn, "chat/decision/use-axum"),
+        [(7, id, "Use Axum".to_owned())]
+    );
+}
+
+#[test]
+fn a_repeated_note_save_leaves_one_row() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    worker.handle(link_note(id, "chat/decision/use-axum", 7, "Use Axum"));
+    worker.handle(link_note(id, "chat/decision/use-axum", 7, "Use Axum v2"));
+    assert_eq!(count(&conn, "memory_notes"), 1);
+    assert_eq!(
+        note(&conn, "chat/decision/use-axum"),
+        [(7, id, "Use Axum v2".to_owned())]
+    );
+}
+
+#[test]
+fn a_second_conversation_saving_the_same_note_repoints_the_row() {
+    let (_dir, mut worker, conn) = fixture();
+    let a = created_id(worker.handle(create(user("a"), vec![])));
+    let b = created_id(worker.handle(create(user("b"), vec![])));
+    worker.handle(link_note(a, "chat/decision/use-axum", 7, "Use Axum"));
+    worker.handle(link_note(b, "chat/decision/use-axum", 7, "Use Axum"));
+    assert_eq!(count(&conn, "memory_notes"), 1);
+    assert_eq!(
+        note(&conn, "chat/decision/use-axum"),
+        [(7, b, "Use Axum".to_owned())]
+    );
+}
+
+#[test]
+fn another_project_with_the_same_topic_key_is_another_row() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    worker.handle(link_note(id, "chat/decision/x", 7, "X"));
+    let other = StoreCmd::LinkNote {
+        pane: pane(),
+        conversation: id,
+        project: "other".into(),
+        topic_key: "chat/decision/x".into(),
+        observation_id: 8,
+        title: "X".into(),
+    };
+    worker.handle(other);
+    assert_eq!(count(&conn, "memory_notes"), 2);
+}
+
+#[test]
+fn a_note_title_is_clean_and_cut_to_120_characters() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    let title = format!("a\u{1b}[31mb {}", "x".repeat(300));
+    worker.handle(link_note(id, "chat/decision/t", 7, &title));
+    let stored = &note(&conn, "chat/decision/t")[0].2;
+    assert!(!stored.contains('\u{1b}'), "{stored:?}");
+    assert!(stored.chars().count() <= 120, "{}", stored.chars().count());
+    assert!(stored.starts_with("a"));
+}
+
+#[test]
+fn no_note_content_reaches_the_database_or_its_side_files() {
+    let (dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    // The commands carry ids and a title only; the body of the note never
+    // enters the store, whatever the title is cut from.
+    session_of(worker.handle(link_session(id, SESSION_A)));
+    worker.handle(link_note(id, "chat/decision/use-axum", 7, "Use Axum"));
+    drop(conn);
+    let db = db_path(&dir);
+    for suffix in ["", "-journal", "-wal", "-shm"] {
+        let mut name = db.as_os_str().to_owned();
+        name.push(suffix);
+        let bytes = fs::read(PathBuf::from(name)).unwrap_or_default();
+        assert!(
+            !bytes.windows(11).any(|w| w == b"SECRET-BODY"),
+            "{suffix:?} holds the body"
+        );
+    }
+    let linked: i64 = Connection::open(&db)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM memory_notes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(linked, 1);
+}
+
+#[test]
+fn a_failed_note_link_reports_and_undoes_nothing() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    worker.handle(link_note(id, "chat/decision/kept", 7, "Kept"));
+    // No such conversation: the foreign key refuses the row.
+    let reply = worker.handle(link_note(9_999, "chat/decision/ghost", 8, "Ghost"));
+    assert_eq!(
+        reply,
+        Some(StoreReply::LinkFailed {
+            pane: pane(),
+            kind: LinkKind::Note
+        })
+    );
+    assert_eq!(count(&conn, "memory_notes"), 1);
+    assert_eq!(count(&conn, "conversations"), 1);
+    assert_eq!(rows(&conn, id).len(), 1, "the messages are intact");
+    // A write failure of a link is not the history failing: the next append
+    // still notifies on its own first failure.
+    assert!(worker.handle(append(id, user("more"))).is_none());
+}
+
+#[test]
+fn links_on_an_unusable_store_report_a_link_failure() {
+    let dir = TempDir::new().unwrap();
+    let db = db_path(&dir);
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    fs::write(&db, vec![7u8; 4096]).unwrap();
+    let mut worker = worker_at(&db);
+    assert_eq!(
+        worker.handle(link_session(1, SESSION_A)),
+        Some(StoreReply::LinkFailed {
+            pane: pane(),
+            kind: LinkKind::Session
+        })
+    );
+    assert_eq!(
+        worker.handle(link_note(1, "chat/decision/x", 7, "X")),
+        Some(StoreReply::LinkFailed {
+            pane: pane(),
+            kind: LinkKind::Note
+        })
+    );
+}
+
+#[test]
+fn a_panicking_link_replies_with_a_link_failure() {
+    let (_dir, mut worker, _conn) = fixture();
+    let reply = worker.guarded_with(link_note(1, "chat/decision/x", 7, "X"), |_, _| {
+        panic!("handler bug")
+    });
+    assert_eq!(
+        reply,
+        Some(StoreReply::LinkFailed {
+            pane: pane(),
+            kind: LinkKind::Note
+        })
+    );
+    let reply = worker.guarded_with(link_session(1, SESSION_A), |_, _| panic!("handler bug"));
+    assert_eq!(
+        reply,
+        Some(StoreReply::LinkFailed {
+            pane: pane(),
+            kind: LinkKind::Session
+        })
+    );
+}
+
+#[test]
+fn a_panicking_link_keeps_the_store_usable() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    for cmd in [
+        link_session(id, SESSION_A),
+        link_note(id, "chat/decision/x", 7, "X"),
+    ] {
+        // The panic hits inside an open transaction, as a bug in a link would.
+        let reply = worker.guarded_with(cmd, |w, _| {
+            let conn = w.conn().unwrap();
+            let tx = conn.transaction().unwrap();
+            tx.execute(
+                "INSERT INTO memory_sessions VALUES (?1, ?2, 'proj')",
+                (id, SESSION_A),
+            )
+            .unwrap();
+            panic!("handler bug")
+        });
+        assert!(matches!(reply, Some(StoreReply::LinkFailed { .. })));
+    }
+    // Read from a separate connection: the write was rolled back.
+    assert_eq!(count(&conn, "memory_sessions"), 0);
+    // History stays available: the next Create and Append succeed.
+    let again = created_id(worker.guarded(create(user("still here"), vec![])));
+    assert!(worker.guarded(append(again, user("more"))).is_none());
+    assert_eq!(rows(&conn, again).len(), 2);
+}
+
+#[test]
+fn a_link_panic_that_leaves_a_transaction_open_marks_the_store_unusable() {
+    let (_dir, mut worker, _conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    let reply = worker.guarded_with(link_note(id, "chat/decision/x", 7, "X"), |w, _| {
+        w.conn().unwrap().execute_batch("BEGIN").unwrap();
+        panic!("handler bug")
+    });
+    assert!(matches!(reply, Some(StoreReply::LinkFailed { .. })));
+    let after = worker.guarded(create(user("next"), vec![]));
+    assert!(matches!(after, Some(StoreReply::Unavailable { .. })));
+}
+
+#[test]
+fn links_travel_through_the_store_thread_in_order() {
+    let dir = TempDir::new().unwrap();
+    let db = db_path(&dir);
+    let (tx, mut rx) = mpsc::channel(8);
+    let handle = {
+        let db = db.clone();
+        spawn(move || open_as(&db, me()), tx)
+    };
+    handle.send(create(user("q"), vec![]));
+    let Some(StoreReply::Created { conversation, .. }) = rx.blocking_recv() else {
+        panic!("no Created");
+    };
+    handle.send(link_session(conversation, SESSION_A));
+    handle.send(link_note(conversation, "chat/decision/x", 7, "X"));
+    assert_eq!(session_of(rx.blocking_recv()), SESSION_A);
+    handle.shutdown(Duration::from_secs(2));
+    let conn = Connection::open(&db).unwrap();
+    assert_eq!(count(&conn, "memory_notes"), 1);
+}
+
+// ---- eviction counts notes (8.5) -------------------------------------------
+
+fn seed_notes(conn: &Connection, conversation: i64, n: usize) {
+    for i in 0..n {
+        conn.execute(
+            "INSERT INTO memory_notes VALUES ('proj', ?1, ?2, ?3, 't')",
+            (
+                format!("chat/decision/c{conversation}-n{i}"),
+                i as i64,
+                conversation,
+            ),
+        )
+        .unwrap();
+    }
+}
+
+fn notes_of(reply: Option<StoreReply>) -> u32 {
+    match reply {
+        Some(StoreReply::Created { evicted_notes, .. }) => evicted_notes,
+        other => panic!("expected Created, got {other:?}"),
+    }
+}
+
+#[test]
+fn eviction_counts_the_notes_of_the_evicted_conversation_and_removes_them() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 200);
+    seed_notes(&conn, 1_000, 3);
+    seed_notes(&conn, 1_001, 2); // survives, so it is not counted
+    conn.execute(
+        "INSERT INTO memory_sessions VALUES (1000, ?1, 'proj')",
+        [SESSION_A],
+    )
+    .unwrap();
+
+    let reply = worker.handle(create(user("new"), vec![]));
+    assert!(matches!(
+        reply,
+        Some(StoreReply::Created { evicted: true, .. })
+    ));
+    assert_eq!(notes_of(reply), 3);
+    assert!(!exists(&conn, 1_000));
+    assert_eq!(count(&conn, "memory_notes"), 2, "only the survivor's rows");
+    assert_eq!(count(&conn, "memory_sessions"), 0);
+}
+
+#[test]
+fn one_note_counts_as_one() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 200);
+    seed_notes(&conn, 1_000, 1);
+    assert_eq!(notes_of(worker.handle(create(user("new"), vec![]))), 1);
+}
+
+#[test]
+fn an_evicted_conversation_without_notes_counts_zero() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 200);
+    seed_notes(&conn, 1_005, 4);
+    let reply = worker.handle(create(user("new"), vec![]));
+    assert!(matches!(
+        reply,
+        Some(StoreReply::Created { evicted: true, .. })
+    ));
+    assert_eq!(notes_of(reply), 0);
+}
+
+#[test]
+fn below_the_limit_the_count_is_zero_and_no_note_goes() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 199);
+    seed_notes(&conn, 1_000, 2);
+    assert_eq!(notes_of(worker.handle(create(user("new"), vec![]))), 0);
+    assert_eq!(count(&conn, "memory_notes"), 2);
+}
+
+#[test]
+fn a_trim_over_the_limit_sums_the_notes_of_every_evicted_conversation() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 205);
+    seed_notes(&conn, 1_000, 2);
+    seed_notes(&conn, 1_003, 1);
+    seed_notes(&conn, 1_006, 5); // the first to survive
+    assert_eq!(notes_of(worker.handle(create(user("new"), vec![]))), 3);
+    assert_eq!(count(&conn, "memory_notes"), 5);
+}
+
+#[test]
+fn the_notes_of_an_open_conversation_are_not_counted() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 200);
+    seed_notes(&conn, 1_000, 3); // open, so skipped
+    seed_notes(&conn, 1_001, 2); // evicted instead
+    assert_eq!(notes_of(worker.handle(create(user("new"), vec![1_000]))), 2);
+    assert_eq!(count(&conn, "memory_notes"), 3);
 }

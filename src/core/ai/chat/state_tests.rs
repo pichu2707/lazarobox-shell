@@ -49,7 +49,7 @@ pub(super) fn systems(state: &ChatState) -> Vec<&str> {
         .iter()
         .filter_map(|e| match e {
             Entry::System(s) => Some(s.as_str()),
-            Entry::Message(_) | Entry::Reasoning(_) => None,
+            Entry::Message(_) | Entry::Reasoning(_) | Entry::Memory(_) => None,
         })
         .collect()
 }

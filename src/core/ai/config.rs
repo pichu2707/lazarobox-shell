@@ -85,13 +85,54 @@ pub struct Assignment {
     pub model: Option<String>,
 }
 
+/// The default engram port, used when neither the file nor `ENGRAM_PORT`
+/// gives a valid one.
+pub const DEFAULT_ENGRAM_PORT: u16 = 7437;
+
+/// The startup notice for a file that enables memory without the
+/// acknowledgement of the privacy note.
+pub const UNACKNOWLEDGED_NOTICE: &str =
+    "memory: turn it on from the menu to review the privacy note";
+
+/// The `[ai.memory]` table. The menu edits `enabled` and `acknowledged`; the
+/// `port` is owned too but only ever hand-edited, so a save never touches it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MemoryConfig {
+    /// The raw key. A hand-edited file can hold `enabled = true` without the
+    /// acknowledgement, so consumers MUST ask [`MemoryConfig::active`], never
+    /// read this flag to decide whether memory works or what to show.
+    pub enabled: bool,
+    pub acknowledged: bool,
+    pub port: u16,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            acknowledged: false,
+            port: DEFAULT_ENGRAM_PORT,
+        }
+    }
+}
+
+impl MemoryConfig {
+    /// Memory works only when it is on AND the privacy note was accepted.
+    pub fn active(&self) -> bool {
+        self.enabled && self.acknowledged
+    }
+}
+
 /// The saved AI choice of every task. `None` means unset (a missing key or
-/// `""`).
+/// `""`). The profile, the context flag and the memory table ride along:
+/// they live under `[ai]` too.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct AiConfig {
     slots: [Assignment; 5],
     profile: Profile,
     context: bool,
+    notify: bool,
+    pub memory: MemoryConfig,
 }
 
 impl Default for AiConfig {
@@ -100,6 +141,8 @@ impl Default for AiConfig {
             slots: Default::default(),
             profile: Profile::default(),
             context: true,
+            notify: false,
+            memory: MemoryConfig::default(),
         }
     }
 }
@@ -128,6 +171,16 @@ impl AiConfig {
 
     pub fn set_context(&mut self, context: bool) {
         self.context = context;
+    }
+
+    /// Whether a chat answer that finishes while the user is not looking
+    /// rings the terminal bell.
+    pub fn notify(&self) -> bool {
+        self.notify
+    }
+
+    pub fn set_notify(&mut self, notify: bool) {
+        self.notify = notify;
     }
 
     /// The effective assignment of a task and whether it was inherited from
@@ -234,10 +287,23 @@ fn read_context(section: &Table, problems: &mut Vec<String>) -> bool {
     }
 }
 
-/// Reads `[ai]` (the general task, the profile and the context flag) and `[ai.tasks.<id>]`
+/// Reads `notify`: a missing key is `false`; a value that is not a boolean
+/// falls back to `false` with a problem.
+fn read_notify(section: &Table, problems: &mut Vec<String>) -> bool {
+    match section.get("notify") {
+        None => false,
+        Some(Value::Boolean(on)) => *on,
+        Some(_) => {
+            problems.push("ai.notify: expected a boolean".to_owned());
+            false
+        }
+    }
+}
+
+/// Reads `[ai]` (the general task, the profile and the context and notify flags) and `[ai.tasks.<id>]`
 /// (the others). Each key falls back to unset on its own; `general` and
 /// unknown names under `ai.tasks` are ignored.
-pub fn read(table: &Table, problems: &mut Vec<String>) -> AiConfig {
+fn read_tasks(table: &Table, problems: &mut Vec<String>) -> AiConfig {
     let mut config = AiConfig::default();
     let section = match table.get("ai") {
         None => return config,
@@ -250,6 +316,7 @@ pub fn read(table: &Table, problems: &mut Vec<String>) -> AiConfig {
     config.set(Task::General, read_assignment(section, "ai", problems));
     config.profile = read_profile(section, problems);
     config.context = read_context(section, problems);
+    config.notify = read_notify(section, problems);
     let tasks = match section.get("tasks") {
         None => return config,
         Some(Value::Table(tasks)) => tasks,
@@ -271,6 +338,60 @@ pub fn read(table: &Table, problems: &mut Vec<String>) -> AiConfig {
     config
 }
 
+/// Reads the whole `[ai]` tree, the memory table included. `port_env` is the
+/// value of `ENGRAM_PORT`, read once by the caller: a valid one is the
+/// default memory port.
+pub fn read_with_port_env(
+    table: &Table,
+    problems: &mut Vec<String>,
+    port_env: Option<&str>,
+) -> AiConfig {
+    let mut config = read_tasks(table, problems);
+    config.memory = read_memory(table, problems, port_env);
+    config
+}
+
+/// A valid port in the text of `ENGRAM_PORT`: an integer from 1 to 65535.
+fn env_port(text: Option<&str>) -> Option<u16> {
+    text?.trim().parse::<u16>().ok().filter(|port| *port != 0)
+}
+
+/// Reads `[ai.memory]`. Each key falls back to its default on its own; the
+/// port default is a valid `ENGRAM_PORT`, else 7437. Unknown keys are
+/// ignored.
+fn read_memory(table: &Table, problems: &mut Vec<String>, port_env: Option<&str>) -> MemoryConfig {
+    let mut memory = MemoryConfig {
+        port: env_port(port_env).unwrap_or(DEFAULT_ENGRAM_PORT),
+        ..MemoryConfig::default()
+    };
+    let section = match table.get("ai").and_then(Value::as_table) {
+        None => return memory,
+        Some(ai) => match ai.get("memory") {
+            None => return memory,
+            Some(Value::Table(section)) => section,
+            Some(_) => {
+                problems.push("ai.memory: expected a table".to_owned());
+                return memory;
+            }
+        },
+    };
+    let mut flag = |name: &str, slot: &mut bool| match section.get(name) {
+        None => {}
+        Some(Value::Boolean(on)) => *slot = *on,
+        Some(_) => problems.push(format!("ai.memory.{name}: expected a boolean")),
+    };
+    flag("enabled", &mut memory.enabled);
+    flag("acknowledged", &mut memory.acknowledged);
+    match section.get("port") {
+        None => {}
+        Some(Value::Integer(n)) if (1..=65535).contains(n) => memory.port = *n as u16,
+        Some(_) => {
+            problems.push("ai.memory.port: expected an integer from 1 to 65535".to_owned());
+        }
+    }
+    memory
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,8 +399,23 @@ mod tests {
     fn read_text(text: &str) -> (AiConfig, Vec<String>) {
         let table: Table = text.parse().unwrap();
         let mut problems = Vec::new();
-        let ai = read(&table, &mut problems);
+        let ai = read_with_port_env(&table, &mut problems, None);
         (ai, problems)
+    }
+
+    fn memory_of(text: &str, env: Option<&str>) -> (MemoryConfig, Vec<String>) {
+        let table: Table = text.parse().unwrap();
+        let mut problems = Vec::new();
+        let ai = read_with_port_env(&table, &mut problems, env);
+        (ai.memory, problems)
+    }
+
+    fn mem(enabled: bool, acknowledged: bool, port: u16) -> MemoryConfig {
+        MemoryConfig {
+            enabled,
+            acknowledged,
+            port,
+        }
     }
 
     fn ai(engine: Option<&str>, model: Option<&str>) -> AiConfig {
@@ -694,6 +830,120 @@ mod tests {
         );
     }
 
+    // Spec (configuration): Memory keys, Defaults.
+    #[test]
+    fn an_absent_memory_table_gives_the_defaults() {
+        assert_eq!(memory_of("", None), (mem(false, false, 7437), vec![]));
+        assert_eq!(memory_of("[ai]\n", None), (mem(false, false, 7437), vec![]));
+        assert!(!MemoryConfig::default().active());
+    }
+
+    // Spec: Values parsed.
+    #[test]
+    fn memory_values_are_read() {
+        let text = "[ai.memory]\nenabled = true\nacknowledged = true\nport = 8123\n";
+        let (memory, problems) = memory_of(text, None);
+        assert_eq!(memory, mem(true, true, 8123));
+        assert!(memory.active());
+        assert!(problems.is_empty());
+    }
+
+    // Spec: Enabled without acknowledgement is inactive.
+    #[test]
+    fn enabled_without_the_acknowledgement_is_not_active() {
+        let (memory, problems) = memory_of("[ai.memory]\nenabled = true\n", None);
+        assert_eq!(memory, mem(true, false, 7437));
+        assert!(!memory.active());
+        assert!(problems.is_empty());
+    }
+
+    // Spec: Port default from the environment.
+    #[test]
+    fn the_port_defaults_to_a_valid_engram_port_variable() {
+        assert_eq!(memory_of("", Some("8123")).0.port, 8123);
+        for bad in ["abc", "0", "70000", "", "-1", "80 80"] {
+            assert_eq!(memory_of("", Some(bad)).0.port, 7437, "{bad:?}");
+        }
+        let with_key = "[ai.memory]\nport = 9000\n";
+        assert_eq!(memory_of(with_key, Some("8123")).0.port, 9000);
+    }
+
+    // Spec: Wrong types and range.
+    #[test]
+    fn a_wrong_memory_value_falls_back_alone_with_its_problem() {
+        let cases = [
+            (
+                "[ai.memory]\nenabled = \"yes\"\nacknowledged = true\n",
+                mem(false, true, 7437),
+                "ai.memory.enabled: expected a boolean",
+            ),
+            (
+                "[ai.memory]\nacknowledged = 1\nenabled = true\n",
+                mem(true, false, 7437),
+                "ai.memory.acknowledged: expected a boolean",
+            ),
+            (
+                "[ai.memory]\nport = 0\n",
+                mem(false, false, 7437),
+                "ai.memory.port: expected an integer from 1 to 65535",
+            ),
+            (
+                "[ai.memory]\nport = 70000\n",
+                mem(false, false, 7437),
+                "ai.memory.port: expected an integer from 1 to 65535",
+            ),
+            (
+                "[ai.memory]\nport = \"7437\"\n",
+                mem(false, false, 7437),
+                "ai.memory.port: expected an integer from 1 to 65535",
+            ),
+        ];
+        for (text, memory, problem) in cases {
+            assert_eq!(memory_of(text, None), (memory, vec![problem.to_owned()]));
+        }
+    }
+
+    #[test]
+    fn a_bad_port_falls_back_to_the_environment_default() {
+        let (memory, problems) = memory_of("[ai.memory]\nport = 0\n", Some("8123"));
+        assert_eq!(memory.port, 8123);
+        assert_eq!(problems.len(), 1);
+    }
+
+    // Spec: Non-table ai.memory.
+    #[test]
+    fn a_non_table_memory_is_one_problem_with_the_defaults() {
+        assert_eq!(
+            memory_of("[ai]\nmemory = 3\n", None),
+            (
+                mem(false, false, 7437),
+                vec!["ai.memory: expected a table".to_owned()]
+            )
+        );
+    }
+
+    // Spec: Unknown keys ignored.
+    #[test]
+    fn unknown_memory_keys_are_ignored() {
+        let text = "[ai.memory]\nendpoint = \"http://x\"\nenabled = true\n";
+        assert_eq!(memory_of(text, None), (mem(true, false, 7437), vec![]));
+    }
+
+    // Tasks and memory are independent.
+    #[test]
+    fn memory_problems_follow_the_task_problems() {
+        let table: Table = "[ai]\nmodel = 1\n[ai.memory]\nport = 0\n".parse().unwrap();
+        let mut problems = Vec::new();
+        read_with_port_env(&table, &mut problems, None);
+        assert_eq!(
+            problems,
+            [
+                "ai.model: expected a string",
+                "ai.memory.port: expected an integer from 1 to 65535"
+            ]
+        );
+    }
+
     // Spec (prompt-profiles): Context toggle, default and parse.
     #[test]
     fn the_context_defaults_to_true() {
@@ -744,6 +994,55 @@ mod tests {
             vec![
                 "ai.profile: expected a string".to_owned(),
                 "ai.context: expected a boolean".to_owned(),
+                "ai.tasks.code.engine: expected a string".to_owned(),
+            ]
+        );
+    }
+
+    // Spec (chat-notify, configuration): the notify flag, default and parse.
+    #[test]
+    fn the_notify_flag_defaults_to_false() {
+        assert!(!AiConfig::default().notify());
+        for text in ["", "[ai]\n", "ai = 3\n"] {
+            assert!(!read_text(text).0.notify(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_boolean_notify_is_read_without_a_problem() {
+        for (value, want) in [("true", true), ("false", false)] {
+            let (config, problems) = read_text(&format!("[ai]\nnotify = {value}\n"));
+            assert_eq!(config.notify(), want, "{value}");
+            assert_eq!(problems, Vec::<String>::new());
+        }
+    }
+
+    #[test]
+    fn a_non_boolean_notify_falls_back_to_false_with_the_exact_problem() {
+        for value in ["\"yes\"", "1", "[true]", "{ a = 1 }"] {
+            let (config, problems) = read_text(&format!("[ai]\nnotify = {value}\n"));
+            assert!(!config.notify(), "{value}");
+            assert_eq!(
+                problems,
+                vec!["ai.notify: expected a boolean".to_owned()],
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_notify_flag_is_independent_and_its_problem_follows_the_context_one() {
+        let (config, _) = read_text("[ai]\nnotify = true\ncontext = false\n");
+        let mut want = AiConfig::default();
+        want.set_context(false);
+        want.set_notify(true);
+        assert_eq!(config, want);
+        let text = "[ai.tasks.code]\nengine = 5\n[ai]\nnotify = 1\ncontext = 1\n";
+        assert_eq!(
+            read_text(text).1,
+            vec![
+                "ai.context: expected a boolean".to_owned(),
+                "ai.notify: expected a boolean".to_owned(),
                 "ai.tasks.code.engine: expected a string".to_owned(),
             ]
         );

@@ -1,0 +1,10 @@
+---
+source: src/ui/components/chat/note_tests.rs
+expression: "text(&draw(&chat, 14, 6))"
+---
+  Category: <
+▸ Title:    T
+  Content:
+  note
+
+Ctrl+S save ·

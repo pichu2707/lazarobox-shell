@@ -112,6 +112,8 @@ Teclas dentro del chat:
 
 **Perfiles y prompts:** `profile = "analyst"` o `"programmer"` (por defecto) en `[ai]`, o la fila Profile del menú de IA, elige el _system prompt_ integrado. Puedes sustituirlo con `~/.config/lazarobox/prompts/<perfil>/<tarea>.md` (después `general.md`; máx. 16 KiB). El prompt incluye un bloque de contexto del workspace (proyecto, rama, directorio relativo, SO, shell y fecha; nunca rutas absolutas ni contenido); se desactiva con `context = false` o la fila Context del menú.
 
+**Aviso al terminar:** con `notify = true` en `[ai]` (o la fila Notify del menú de IA; desactivado por defecto), el chat emite la campana del terminal cuando una respuesta termina y no la estás mirando (otro panel, pestaña o ventana).
+
 Para cerrar el panel: `Ctrl+Espacio`, `w`, `q`. La respuesta se muestra mientras se genera; si el modelo "piensa" (por ejemplo `qwen3`), la barra de estado muestra un indicador `thinking` y el razonamiento queda en un bloque aparte.
 
 **Motor y modelo:** el chat usa la tarea `chat`. Se elige en el menú de IA (`Ctrl+Espacio` y `m`) o a mano en `config.toml`:
@@ -124,12 +126,53 @@ model = "llama3.2"   # o cualquier modelo que tengas descargado
 
 Si la tarea `chat` no tiene motor propio, usa el motor general (`[ai]`). El panel indica qué falta cuando no hay motor, no está en marcha o no está soportado.
 
-**Privacidad:** todo es local. El chat solo habla con `127.0.0.1` y no envía credenciales. Las conversaciones **no se guardan** todavía; el historial llegará en una versión futura.
+**Privacidad:** todo es local. El chat solo habla con `127.0.0.1` y no envía credenciales (la memoria opcional de engram tiene su propia sección más abajo). Las conversaciones **no se guardan** todavía; el historial llegará en una versión futura.
 
 Límites de esta versión:
 
 - Solo Ollama: los demás motores se detectan, pero aún no tienen adaptador de chat.
-- Sin historial: la conversación se pierde al cerrar el panel.
+- Sin historial: la conversación se pierde al cerrar el panel (salvo las notas y el resumen que guardes en engram si activas la memoria).
+
+### Memoria del proyecto (engram)
+
+El chat puede actuar como cliente de [engram](https://github.com/Gentleman-Programming/engram) y compartir la memoria del proyecto con Claude Code, opencode y otros agentes: al abrir el chat lee el contexto del proyecto, puedes guardar **notas** durante la conversación y generar un **resumen** de la sesión. Es opcional y está **desactivada** por defecto.
+
+Se activa desde el menú de IA (`Ctrl+Espacio` y `m`), que antes muestra una advertencia de privacidad que debes aceptar una sola vez, o a mano en `config.toml`:
+
+```toml
+[ai.memory]
+enabled = true        # por defecto false
+acknowledged = true   # advertencia de privacidad aceptada
+port = 7437           # por defecto ENGRAM_PORT si es válido, si no 7437
+```
+
+**Privacidad (léelo antes de activarla):**
+
+- Las notas salen del `chat.db` privado (permisos `0600`) y pasan a ser legibles por **cualquier proceso local y cualquier agente que use engram**, y por `engram sync` si lo tienes activado.
+- Las rutas HTTP de engram en `127.0.0.1` están abiertas: lazarobox no puede restringir quién las lee.
+- Antes de enviar una nota se ocultan los secretos reconocibles. El razonamiento del modelo no se guarda nunca.
+
+**Requisitos:**
+
+- Solo proyectos **git**; en otro directorio la memoria indica `memory needs a git project`.
+- Un servidor `engram` 3.x en marcha. Si no responde, lazarobox ofrece lanzarlo: muestra la ruta **absoluta** del binario, `y` lo inicia y `n` o `Esc` lo deja para otra vez. La oferta solo aparece antes del primer mensaje de un chat inactivo. El servidor lanzado **sigue en marcha cuando cierras lazarobox** (lazarobox nunca lo detiene) y su salida va a `$XDG_STATE_HOME/lazarobox/engram-serve.log` (o `~/.local/state/lazarobox/engram-serve.log`), un archivo privado `0600`.
+- `ENGRAM_PORT` fija el puerto por defecto. `ENGRAM_HTTP_TOKEN` es el token del servidor engram: lazarobox solo lo usará para **borrar** notas, y el borrado llega con el historial del chat (ver los límites).
+
+**Teclas** (dentro del chat):
+
+| Tecla                | Acción                                                     |
+| :------------------- | :--------------------------------------------------------- |
+| `Ctrl+Espacio` `n`   | Nueva nota (`Ctrl+S` guarda, `Esc` cierra)                 |
+| `Ctrl+Espacio` `o`   | Muestra u oculta el bloque de memoria                      |
+| `Ctrl+Espacio` `s`   | Resumen de la sesión (`Ctrl+S` aprueba, `Esc` lo descarta) |
+
+La barra de estado muestra `mem: ready`, `mem: checking` o `mem: unavailable`.
+
+**Encontrar las notas en engram:** el _topic key_ de cada nota empieza por `chat/` (`chat/<tipo>/<título>`), por ejemplo `chat/decision/use-axum`.
+
+**Volver a una versión anterior:** la memoria sube el esquema de `chat.db` a la versión 2. Un lazarobox más antiguo se niega a abrir un `chat.db` más nuevo que él y lo deja intacto; al volver a actualizar, vuelve a estar disponible.
+
+Límites: borrar notas desde lazarobox y retomar conversaciones llegarán con el historial del chat. Por ahora solo el adaptador de Ollama usa memoria.
 
 ---
 

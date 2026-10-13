@@ -29,6 +29,11 @@ pub struct ChatRequest {
     pub engine: String,
     pub model: Option<String>,
     pub system: String,
+    /// The project-memory block (data, already sanitized and delimited), when
+    /// one arrived for the conversation. Apart from `system` and from the
+    /// history: the adapter puts it after the system prompt (servers) or
+    /// first on stdin (CLIs, never argv).
+    pub memory: Option<String>,
     pub messages: Vec<ChatMessage>,
 }
 

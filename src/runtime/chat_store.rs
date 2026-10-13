@@ -16,7 +16,7 @@ pub mod worker;
 pub use worker::{StoreHandle, spawn, spawn_at};
 
 /// The schema version this build writes and understands.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// How long a write waits for another instance before it gives up.
 const BUSY_TIMEOUT: Duration = Duration::from_millis(2000);
@@ -52,6 +52,26 @@ CREATE TABLE tags (
 ) WITHOUT ROWID;
 CREATE INDEX tags_by_tag ON tags(tag);
 CREATE INDEX conversations_by_activity ON conversations(updated_at);
+";
+
+/// Schema v2 only adds: the link between a conversation and the engram
+/// session and notes it wrote. No note content is kept here, only ids and the
+/// title, and both tables go with their conversation.
+const SCHEMA_V2: &str = "
+CREATE TABLE memory_sessions (
+    conversation_id INTEGER PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+    session_id      TEXT NOT NULL UNIQUE,
+    project         TEXT NOT NULL
+);
+CREATE TABLE memory_notes (
+    project         TEXT NOT NULL,
+    topic_key       TEXT NOT NULL,
+    observation_id  INTEGER NOT NULL,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    title           TEXT NOT NULL,
+    PRIMARY KEY (project, topic_key)
+) WITHOUT ROWID;
+CREATE INDEX memory_notes_by_conversation ON memory_notes(conversation_id);
 ";
 
 /// Why the store cannot be used. The text is short and free of paths and
@@ -134,6 +154,12 @@ pub fn open(path: &Path) -> Result<Connection, StoreError> {
 /// The umask is never touched (PTY children inherit it): the directory and the
 /// file are created with explicit modes instead.
 pub(crate) fn open_as(path: &Path, uid: u32) -> Result<Connection, StoreError> {
+    open_with(path, uid, SCHEMA_VERSION)
+}
+
+/// [`open_as`] for a build that understands schemas up to `supported`: a newer
+/// file is refused untouched. Lets the tests play an older build.
+pub(crate) fn open_with(path: &Path, uid: u32, supported: i64) -> Result<Connection, StoreError> {
     let dir = match path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
         Some(_) => Path::new("."),
@@ -158,7 +184,7 @@ pub(crate) fn open_as(path: &Path, uid: u32) -> Result<Connection, StoreError> {
     )?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
     // A newer schema is refused before any pragma that could write to the file.
-    refuse_newer(&conn)?;
+    refuse_newer(&conn, supported)?;
     conn.pragma_update(None, "trusted_schema", false)?;
     conn.pragma_update(None, "foreign_keys", true)?;
     conn.pragma_update(None, "secure_delete", true)?;
@@ -169,20 +195,38 @@ pub(crate) fn open_as(path: &Path, uid: u32) -> Result<Connection, StoreError> {
     if !mode.eq_ignore_ascii_case("delete") {
         return Err(StoreError::Sqlite("journal mode not available"));
     }
-    migrate(&mut conn)?;
+    migrate_to(&mut conn, supported, || {})?;
     harden_side_files(path, uid)?;
     Ok(conn)
 }
 
-/// Creates the data directory 0700, or checks and corrects an existing one.
-fn prepare_dir(dir: &Path, uid: u32) -> Result<(), StoreError> {
+/// Why a private directory cannot be used.
+#[derive(Debug)]
+pub(crate) enum DirProblem {
+    /// A symlink or a file of the wrong kind.
+    NotADirectory,
+    /// Owned by someone other than the expected user.
+    ForeignOwner,
+    Io(io::Error),
+}
+
+impl From<io::Error> for DirProblem {
+    fn from(err: io::Error) -> Self {
+        Self::Io(err)
+    }
+}
+
+/// Creates a directory 0700, or checks and corrects an existing one: a
+/// symlink, a non-directory or a foreign owner is refused, a looser mode is
+/// tightened. Shared by every file lazarobox keeps privately.
+pub(crate) fn secure_dir(dir: &Path, uid: u32) -> Result<(), DirProblem> {
     match fs::symlink_metadata(dir) {
         Ok(meta) => {
             if !meta.is_dir() {
-                return Err(StoreError::Unsafe("data directory is not a directory"));
+                return Err(DirProblem::NotADirectory);
             }
             if meta.uid() != uid {
-                return Err(StoreError::Unsafe("data directory has a foreign owner"));
+                return Err(DirProblem::ForeignOwner);
             }
             if meta.mode() & 0o7777 != 0o700 {
                 fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
@@ -197,6 +241,15 @@ fn prepare_dir(dir: &Path, uid: u32) -> Result<(), StoreError> {
         Err(err) => return Err(err.into()),
     }
     Ok(())
+}
+
+/// Creates the data directory 0700, or checks and corrects an existing one.
+fn prepare_dir(dir: &Path, uid: u32) -> Result<(), StoreError> {
+    secure_dir(dir, uid).map_err(|problem| match problem {
+        DirProblem::NotADirectory => StoreError::Unsafe("data directory is not a directory"),
+        DirProblem::ForeignOwner => StoreError::Unsafe("data directory has a foreign owner"),
+        DirProblem::Io(err) => err.into(),
+    })
 }
 
 /// Refuses a symlink, a non-regular file or a foreign owner, and corrects a
@@ -265,32 +318,50 @@ fn user_version(conn: &Connection) -> Result<i64, StoreError> {
     Ok(conn.query_row("PRAGMA user_version", [], |r| r.get(0))?)
 }
 
-fn refuse_newer(conn: &Connection) -> Result<(), StoreError> {
+fn refuse_newer(conn: &Connection, supported: i64) -> Result<(), StoreError> {
     match user_version(conn)? {
-        v if v > SCHEMA_VERSION => Err(StoreError::Newer(v)),
+        v if v > supported => Err(StoreError::Newer(v)),
         _ => Ok(()),
     }
 }
 
-/// Creates schema v1 on a new database; a newer schema is refused.
+/// Brings the database to the current schema; a newer one is refused.
+#[cfg(test)]
 fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
     migrate_with(conn, || {})
 }
 
 /// [`migrate`] with a hook just before the write lock is taken, where another
 /// instance could get in first.
+#[cfg(test)]
 fn migrate_with(conn: &mut Connection, before_lock: impl FnOnce()) -> Result<(), StoreError> {
+    migrate_to(conn, SCHEMA_VERSION, before_lock)
+}
+
+/// Creates or upgrades the schema up to `target`, every step in one
+/// transaction: a fresh database gets v1 and v2 together, a v1 one only the
+/// additions. A schema newer than `target` is refused.
+fn migrate_to(
+    conn: &mut Connection,
+    target: i64,
+    before_lock: impl FnOnce(),
+) -> Result<(), StoreError> {
     before_lock();
     // The version is read under the write lock, so two instances on a fresh
     // store cannot both decide to create the schema.
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version = user_version(&tx)?;
-    if version > SCHEMA_VERSION {
+    if version > target {
         return Err(StoreError::Newer(version));
     }
     if version < 1 {
         tx.execute_batch(SCHEMA_V1)?;
-        tx.pragma_update(None, "user_version", 1)?;
+    }
+    if version < 2 && target >= 2 {
+        tx.execute_batch(SCHEMA_V2)?;
+    }
+    if version < target {
+        tx.pragma_update(None, "user_version", target)?;
     }
     tx.commit()?;
     Ok(())

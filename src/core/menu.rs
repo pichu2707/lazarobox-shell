@@ -13,7 +13,7 @@ use super::{
         menu::AiMenu,
         picker::{Level, Mark, Outcome, PickKey, PickRow, Picker, Target},
     },
-    config::{BarPosition, Config, ConfigEdit},
+    config::{BarPosition, Config, ConfigEdit, MEMORY_TABLE},
 };
 
 /// A setting that cycles through an ordered list of values. The value string
@@ -38,6 +38,19 @@ pub enum ItemKind {
     /// The workspace context flag (`ai.context`): an on/off row that lives in
     /// the AI draft, like [`ItemKind::Profile`].
     Context,
+    /// The memory opt-in row: a static `off`/`on` item over the AI draft.
+    /// Turning it on without the acknowledgement opens the privacy warning.
+    Memory(MemoryRow),
+    /// The chat bell flag (`ai.notify`): an on/off row that lives in the AI
+    /// draft, like [`ItemKind::Context`].
+    Notify,
+}
+
+/// The descriptor of the `Memory` row; the value is the `enabled` key.
+pub struct MemoryRow {
+    pub table: &'static str,
+    pub key: &'static str,
+    pub values: &'static [&'static str],
 }
 
 pub struct Item {
@@ -96,7 +109,9 @@ pub static SECTIONS: &[Section] = &[Section {
 }];
 
 /// The AI section, attached only by [`MenuState::with_ai`]. The labels of
-/// the task rows are the task ids; their key path is `Task::table`.
+/// the task rows are the task ids; their key path is `Task::table`. The
+/// static rows follow the tasks: `Profile`, `Context`, `Memory` and `Notify`,
+/// in that order.
 pub static AI_SECTION: Section = Section {
     title: "AI",
     items: &[
@@ -132,6 +147,18 @@ pub static AI_SECTION: Section = Section {
             label: "Context",
             kind: ItemKind::Context,
         },
+        Item {
+            label: "Memory",
+            kind: ItemKind::Memory(MemoryRow {
+                table: MEMORY_TABLE,
+                key: "enabled",
+                values: &["off", "on"],
+            }),
+        },
+        Item {
+            label: "Notify",
+            kind: ItemKind::Notify,
+        },
     ],
 };
 
@@ -142,10 +169,48 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
         .flat_map(|section| section.items.iter())
         .filter_map(|item| match &item.kind {
             ItemKind::Choice(choice) => Some((item, choice)),
-            ItemKind::Disabled | ItemKind::Assign(_) | ItemKind::Profile | ItemKind::Context => {
-                None
-            }
+            ItemKind::Disabled
+            | ItemKind::Assign(_)
+            | ItemKind::Profile
+            | ItemKind::Context
+            | ItemKind::Memory(_)
+            | ItemKind::Notify => None,
         })
+}
+
+/// Rows around the popup body: two borders, the blank row and the footer.
+pub const CHROME: u16 = 4;
+/// With the AI section the body is fixed: the popup never jumps between the
+/// task list, the picker (a title and `VIEW` rows) and the privacy warning.
+/// The task list is the tallest view: a title row per section, then every
+/// settings row and every AI row. Derived from the descriptor tables, so
+/// adding a row grows the popup instead of overflowing it; a test keeps this
+/// equal to the tallest AI view.
+pub const AI_BODY: usize = ai_body();
+
+/// Rows of the task list: the section titles (those of `SECTIONS` and `AI`)
+/// plus every item.
+const fn ai_body() -> usize {
+    let mut rows = SECTIONS.len() + 1 + AI_SECTION.items.len();
+    let mut i = 0;
+    while i < SECTIONS.len() {
+        rows += SECTIONS[i].items.len();
+        i += 1;
+    }
+    rows
+}
+const _: () = assert!(
+    crate::core::ai::picker::VIEW < AI_BODY,
+    "a picker must fit the fixed body"
+);
+/// Smallest width that still shows the full popup.
+pub const MIN_WIDTH: u16 = 24;
+
+/// Whether a `width` x `height` screen is big enough for the full popup of
+/// `rows` body rows (the blank row is the first thing dropped, so the height
+/// may lose one). Below it the popup is a one-line fallback.
+pub fn fits_size(width: u16, height: u16, rows: usize) -> bool {
+    width >= MIN_WIDTH && usize::from(height) >= rows + usize::from(CHROME) - 1
 }
 
 /// What a key did, for the app to act on.
@@ -163,6 +228,19 @@ pub enum MenuCommand {
 const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
 const HINT_TASK: &str = "j/k move · Enter pick · r refresh · s save · Esc cancel";
 const HINT_PICKER: &str = "j/k move · Enter choose · r refresh · Esc back · s save";
+const HINT_WARNING: &str = "y accept (then s to save) · any other key declines";
+/// The privacy warning: the three facts, each line short enough for the AI
+/// popup width.
+const WARNING_TEXT: [&str; 7] = [
+    "Saved notes leave lazarobox's private store (0600).",
+    "They become readable by every local process and",
+    "every agent that uses engram, and by engram sync",
+    "if it is on. lazarobox cannot restrict that.",
+    "Notes stay in engram until you delete them, and",
+    "secret redaction is best effort.",
+    "Once saved, this note is not shown again.",
+];
+const WARNING_PROMPT: &str = "Turn memory on? (y/n)";
 const HINT_CUSTOM: &str = "type a model · Enter ok · Ctrl+U clear · Esc back";
 
 /// Why a picker row cannot be chosen: its mark, or the text of an
@@ -204,6 +282,8 @@ pub enum Row {
     },
     /// The custom model field and its buffer.
     Field(String),
+    /// A plain line of text (the privacy warning).
+    Text(Cow<'static, str>),
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -214,6 +294,8 @@ pub struct MenuState {
     ai: Option<AiMenu>,
     /// A detection run is in flight.
     checking: bool,
+    /// The terminal size at the last key, `None` before the app gave one.
+    term: Option<(u16, u16)>,
 }
 
 impl MenuState {
@@ -224,7 +306,22 @@ impl MenuState {
             error: None,
             ai: None,
             checking: false,
+            term: None,
         }
+    }
+
+    /// The terminal size, given by the app before each key so the menu knows
+    /// whether the popup (or only its one-line fallback) is on screen.
+    pub fn set_term(&mut self, cols: u16, rows: u16) {
+        self.term = Some((cols, rows));
+    }
+
+    /// Whether the privacy warning is readable in full: the popup fits the
+    /// terminal. An unknown size counts as fitting.
+    pub fn fits_warning(&self) -> bool {
+        let body = AI_BODY.max(Self::warning_rows().len());
+        self.term
+            .is_none_or(|(cols, rows)| fits_size(cols, rows, body))
     }
 
     /// Adds the AI section, editing a draft of `ai` against `engines`.
@@ -277,12 +374,43 @@ impl MenuState {
     }
 
     /// Whether the selection is on a row of the AI draft that is not a
-    /// task: `Profile` or `Context`.
+    /// task: `Profile`, `Context`, `Memory` or `Notify`.
     fn on_draft_row(&self) -> bool {
         matches!(
             self.selected_kind(),
-            Some(ItemKind::Profile | ItemKind::Context)
+            Some(ItemKind::Profile | ItemKind::Context | ItemKind::Memory(_) | ItemKind::Notify)
         )
+    }
+
+    /// Whether the privacy warning is shown over the menu.
+    pub fn in_warning(&self) -> bool {
+        self.ai.as_ref().is_some_and(AiMenu::warning)
+    }
+
+    /// The privacy warning that replaces the rows while it is open.
+    fn warning_rows() -> Vec<Row> {
+        let mut rows = vec![Row::Title(Cow::Borrowed("Memory: save notes to engram"))];
+        rows.extend(WARNING_TEXT.iter().map(|l| Row::Text(Cow::Borrowed(*l))));
+        rows.push(Row::Text(Cow::Borrowed("")));
+        rows.push(Row::Title(Cow::Borrowed(WARNING_PROMPT)));
+        rows
+    }
+
+    /// Keys while the warning is open: only an unmodified lowercase `y`
+    /// accepts, everything else declines, and Esc never leaves the menu.
+    /// When the popup does not fit the facts are hidden behind the one-line
+    /// fallback, so nothing accepts then (informed consent). Repeat events
+    /// are ignored.
+    fn on_warning_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
+        if repeat {
+            return MenuCommand::None;
+        }
+        let accept =
+            self.fits_warning() && key.code == KeyCode::Char('y') && key.modifiers.is_empty();
+        if let Some(ai) = &mut self.ai {
+            ai.answer_warning(accept);
+        }
+        MenuCommand::None
     }
 
     /// Selectable rows: the settings, then every AI row.
@@ -336,13 +464,19 @@ impl MenuState {
         match self.selected_kind()? {
             ItemKind::Assign(None) => Some(Target::All),
             ItemKind::Assign(Some(task)) => Some(Target::Task(*task)),
-            ItemKind::Choice(_) | ItemKind::Disabled | ItemKind::Profile | ItemKind::Context => {
-                None
-            }
+            ItemKind::Choice(_)
+            | ItemKind::Disabled
+            | ItemKind::Profile
+            | ItemKind::Context
+            | ItemKind::Memory(_)
+            | ItemKind::Notify => None,
         }
     }
 
     pub fn rows(&self, config: &Config) -> Vec<Row> {
+        if self.in_warning() {
+            return Self::warning_rows();
+        }
         if let Some(rows) = self.picker_rows() {
             return rows;
         }
@@ -388,6 +522,32 @@ impl MenuState {
                         index += 1;
                         row
                     }
+                    ItemKind::Memory(memory) => {
+                        let on = self
+                            .ai
+                            .as_ref()
+                            .is_some_and(|ai| ai.draft().memory.active());
+                        let row = Row::Item {
+                            label: item.label,
+                            value: Some(Cow::Borrowed(memory.values[usize::from(on)])),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Notify => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self.ai.as_ref().map(|ai| {
+                                Cow::Borrowed(if ai.draft().notify() { "on" } else { "off" })
+                            }),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
                     ItemKind::Choice(choice) => {
                         let row = Row::Item {
                             label: item.label,
@@ -418,6 +578,9 @@ impl MenuState {
         }
         if !repeat {
             self.error = None;
+        }
+        if self.in_warning() {
+            return self.on_warning_key(key, repeat);
         }
         if self.ai.as_ref().is_some_and(|ai| ai.picker().is_some()) {
             return self.on_picker_key(key, repeat);
@@ -520,14 +683,15 @@ impl MenuState {
             return MenuCommand::None;
         };
         if self.on_draft_row() {
-            // The profile and the context flag only change prompts: no
+            // The draft rows only change prompts or the memory opt-in: no
             // relayout, no other effect.
-            let on_profile = matches!(self.selected_kind(), Some(ItemKind::Profile));
+            let kind = self.selected_kind();
             if let Some(ai) = &mut self.ai {
-                if on_profile {
-                    ai.cycle_profile(forward);
-                } else {
-                    ai.toggle_context();
+                match kind {
+                    Some(ItemKind::Profile) => ai.cycle_profile(forward),
+                    Some(ItemKind::Memory(_)) => ai.toggle_memory(),
+                    Some(ItemKind::Notify) => ai.toggle_notify(),
+                    _ => ai.toggle_context(),
                 }
             }
             return MenuCommand::None;
@@ -593,10 +757,26 @@ impl MenuState {
                 key: "context",
                 value: Cow::Borrowed(if on { "true" } else { "false" }),
             });
+        let memory = self.ai.iter().flat_map(|ai| {
+            ai.changed_memory()
+                .into_iter()
+                .map(|(key, on)| ConfigEdit::memory_flag(key, on))
+        });
+        let notify = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::changed_notify)
+            .map(|on| ConfigEdit {
+                table: "ai",
+                key: "notify",
+                value: Cow::Borrowed(if on { "true" } else { "false" }),
+            });
         settings
             .chain(tasks)
             .chain(profile)
             .chain(context)
+            .chain(memory)
+            .chain(notify)
             .collect()
     }
 
@@ -616,6 +796,9 @@ impl MenuState {
     pub fn footer(&self) -> Footer<'_> {
         if let Some(error) = self.error() {
             return Footer::Error(error);
+        }
+        if self.in_warning() {
+            return Footer::Hint(Cow::Borrowed(HINT_WARNING));
         }
         let ai = self.ai.as_ref();
         let picker = ai.and_then(AiMenu::picker);
@@ -920,6 +1103,12 @@ mod guard_tests;
 
 #[cfg(test)]
 mod edits_tests;
+
+#[cfg(test)]
+mod memory_tests;
+
+#[cfg(test)]
+mod notify_tests;
 
 #[cfg(test)]
 mod profile_tests;

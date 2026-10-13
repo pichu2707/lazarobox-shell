@@ -11,8 +11,9 @@ pub fn last_answer(chat: &ChatState) -> Option<String> {
         .filter(|m| m.role == Role::Assistant)
         .collect();
     // While a stream writes the newest answer, the one before it is the
-    // last finished one.
-    let skip = usize::from(chat.phase() == Phase::Streaming);
+    // last finished one. A summary run streams into the draft, not into a
+    // message: nothing is being written, so nothing is skipped.
+    let skip = usize::from(chat.phase() == Phase::Streaming && !chat.summarizing());
     let finished = answers
         .iter()
         .rev()

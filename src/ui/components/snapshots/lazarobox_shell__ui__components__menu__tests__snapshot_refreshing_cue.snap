@@ -16,6 +16,8 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 │ summarize                                        (default) │
 │ Profile                                         programmer │
 │ Context                                                 on │
+│ Memory                                                 off │
+│ Notify                                                 off │
 │                                                            │
 │ refreshing… · s save · Esc cancel                          │
 └────────────────────────────────────────────────────────────┘

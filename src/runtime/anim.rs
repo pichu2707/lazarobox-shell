@@ -1,6 +1,7 @@
-//! The animation tick of the thinking indicator: one interval, armed while a
-//! chat stream runs and gone the rest of the time, so an idle app wakes for
-//! nothing.
+//! A tick armed only while something needs it: the thinking indicator's
+//! animation while a chat stream runs, the memory wait while a chat awaits a
+//! reply. One interval each, gone the rest of the time, so an idle app wakes
+//! for nothing.
 
 use std::time::Duration;
 
@@ -9,15 +10,33 @@ use tokio::time::{Instant, Interval, MissedTickBehavior, interval_at};
 /// Time between animation frames.
 pub const PERIOD: Duration = Duration::from_millis(100);
 
-/// The single animation interval of the event loop.
-#[derive(Default)]
+/// Time between the ticks that give up a lost memory reply. The wait itself
+/// is `MEMORY_WAIT`; a tick only has to notice it ran out.
+pub const MEMORY_PERIOD: Duration = Duration::from_millis(500);
+
+/// One armed-on-demand interval of the event loop.
 pub struct Animation {
     interval: Option<Interval>,
+    period: Duration,
+}
+
+impl Default for Animation {
+    fn default() -> Self {
+        Self::every(PERIOD)
+    }
 }
 
 impl Animation {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A tick every `period`.
+    pub fn every(period: Duration) -> Self {
+        Self {
+            interval: None,
+            period,
+        }
     }
 
     /// Arms the interval when a stream runs and none is armed; drops it when
@@ -26,7 +45,7 @@ impl Animation {
         if !running {
             self.interval = None;
         } else if self.interval.is_none() {
-            let mut interval = interval_at(Instant::now() + PERIOD, PERIOD);
+            let mut interval = interval_at(Instant::now() + self.period, self.period);
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
             self.interval = Some(interval);
         }
@@ -206,5 +225,107 @@ mod tests {
         }
         anim.sync(app.animating());
         assert!(!anim.is_armed(), "pane close");
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use tokio::time::advance;
+
+    use super::*;
+    use crate::{
+        app::{App, AppEvent},
+        core::layout::PaneId,
+    };
+
+    /// The virtual clock of tokio as the app's monotonic clock.
+    fn virtual_now() -> std::time::Instant {
+        Instant::now().into_std()
+    }
+
+    /// Runs the loop's memory timer for `ms` virtual milliseconds in steps of
+    /// 100 ms, feeding every tick to `app` and re-syncing the timer after each
+    /// step, as `run_loop` does.
+    async fn run(app: &mut App, watch: &mut Animation, ms: u64) {
+        for _ in 0..ms / 100 {
+            advance(Duration::from_millis(100)).await;
+            watch.sync(app.memory_waiting());
+            while futures::FutureExt::now_or_never(watch.tick()).is_some() {
+                app.update(AppEvent::MemoryTick);
+                watch.sync(app.memory_waiting());
+            }
+        }
+    }
+
+    fn lines(app: &App) -> Vec<String> {
+        use crate::app::PaneView;
+        let Some(PaneView::Chat(chat)) = app.pane_view(app.focused()) else {
+            panic!("not a chat");
+        };
+        chat.entries()
+            .iter()
+            .filter_map(|e| match e {
+                crate::core::ai::chat::Entry::System(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// An app whose chat asked for its project and is never answered.
+    fn waiting_app() -> App {
+        use crate::core::ai::config::{Assignment, MemoryConfig, Task};
+        let mut ai = crate::core::ai::config::AiConfig::default();
+        ai.set(
+            Task::Chat,
+            Assignment {
+                engine: Some("ollama".into()),
+                model: Some("llama3:8b".into()),
+            },
+        );
+        ai.memory = MemoryConfig {
+            enabled: true,
+            acknowledged: true,
+            ..MemoryConfig::default()
+        };
+        let mut app = App::new(80, 25).with_ai(ai).with_clock(virtual_now);
+        app.update(AppEvent::Cwd(PaneId::FIRST, "/srv/app".into()));
+        let key = |c| {
+            AppEvent::Key(ratatui::crossterm::event::KeyEvent::new(
+                ratatui::crossterm::event::KeyCode::Char(c),
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            ))
+        };
+        app.update(AppEvent::Key(ratatui::crossterm::event::KeyEvent::new(
+            ratatui::crossterm::event::KeyCode::Char(' '),
+            ratatui::crossterm::event::KeyModifiers::CONTROL,
+        )));
+        app.update(key('c'));
+        app
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn nothing_is_armed_while_no_chat_waits_for_memory() {
+        let app = App::new(80, 25);
+        let mut watch = Animation::every(MEMORY_PERIOD);
+        watch.sync(app.memory_waiting());
+        assert!(!watch.is_armed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_lost_reply_is_given_up_after_five_virtual_seconds_and_the_timer_goes() {
+        let mut app = waiting_app();
+        let mut watch = Animation::every(MEMORY_PERIOD);
+        watch.sync(app.memory_waiting());
+        assert!(watch.is_armed(), "a chat waits for its project");
+        run(&mut app, &mut watch, 4_800).await;
+        assert!(lines(&app).is_empty(), "not before the bound");
+        assert!(watch.is_armed());
+        run(&mut app, &mut watch, 1_200).await;
+        assert_eq!(
+            lines(&app),
+            ["memory unavailable: engram did not answer"],
+            "given up, once"
+        );
+        assert!(!watch.is_armed(), "nothing waits: the timer is gone");
     }
 }

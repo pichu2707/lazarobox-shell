@@ -109,6 +109,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
     let line = |path| {
         StatusLine::input(theme, app.input(), path, &right)
             .chat(app.focused_is_chat())
+            .memory(app.status_memory())
             .thinking(thinking.clone())
             .zoomed(app.zoomed())
             .copy_position(app.copy_position())
@@ -478,7 +479,9 @@ mod tests {
         let line = status(&app);
         assert!(line.contains("PREFIX"), "{line:?}");
         assert!(
-            line.contains("w window · t tab · g go · b buffer · [ copy · m menu · c chat · q quit"),
+            line.contains(
+                "w window · t tab · g go · b buffer · [ copy · m menu · c chat · n note · q quit"
+            ),
             "{line:?}"
         );
         insta::assert_snapshot!("root_hint", line.trim_end());
@@ -823,14 +826,14 @@ mod tests {
     // Spec: tabs: Bar forced with one tab (render); the popup is drawn last.
     #[test]
     fn menu_popup_is_drawn_over_the_panes_after_the_bars() {
-        // 20 rows: the popup with its AI section is 17 rows high.
-        let app = menu_app(64, 20);
-        let (buf, _) = draw_at(&app, 64, 20);
+        // 21 rows: the popup with its AI section is 18 rows high.
+        let app = menu_app(64, 21);
+        let (buf, _) = draw_at(&app, 64, 21);
         assert!(row(&buf, 0).contains(" 1 "), "{:?}", row(&buf, 0));
         assert!(row(&buf, 1).contains(" Menu "), "{:?}", row(&buf, 1));
-        assert!(row(&buf, 19).contains("MENU"), "{:?}", row(&buf, 19));
+        assert!(row(&buf, 20).contains("MENU"), "{:?}", row(&buf, 20));
         insta::assert_snapshot!(
-            (0..20)
+            (0..21)
                 .map(|y| row(&buf, y).trim_end().to_string())
                 .collect::<Vec<_>>()
                 .join("\n")

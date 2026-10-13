@@ -6,6 +6,7 @@ use crate::core::ai::chat::{
     SendOutcome,
     engine::{Availability, availability},
     guidance::guidance,
+    memory::MemBadge,
     prompts::Resolved,
     streams::StreamInfo,
     yank,
@@ -21,6 +22,8 @@ impl App {
         let mut effects = self.split_with(Axis::X, NewPane::Chat(Box::new(ChatState::new(origin))));
         if self.panes.len() > before {
             effects.extend(self.request_detection());
+            effects.extend(self.begin_memory(self.tab().focus));
+            self.show_server_offer();
             effects.push(Effect::PreparePrompt {
                 pane: self.tab().focus,
                 profile: self.ai.profile(),
@@ -64,6 +67,15 @@ impl App {
             .collect()
     }
 
+    /// The memory badge for the statusline: only over a focused chat with
+    /// memory active.
+    pub fn status_memory(&self) -> Option<MemBadge> {
+        if !self.ai.memory.active() {
+            return None;
+        }
+        self.focused_state().chat_state().map(ChatState::mem_badge)
+    }
+
     /// The animation frame the indicator is drawn at.
     pub fn anim_frame(&self) -> usize {
         self.anim_frame
@@ -90,12 +102,21 @@ impl App {
     /// editing and scrolling but never sends, cancels, yanks or toggles.
     pub(super) fn on_chat_key(&mut self, key: KeyEvent, repeat: bool) -> Vec<Effect> {
         let id = self.tab().focus;
+        // The `engram serve` question, when it is on screen, takes the key.
+        if !self.memory_view_open(id)
+            && let Some(effects) = self.answer_server_offer(key)
+        {
+            return effects;
+        }
         let mods = key.modifiers;
         let plain = mods - KeyModifiers::SHIFT == KeyModifiers::NONE;
         let debounced = matches!(
             (key.code, mods),
             (KeyCode::Esc, KeyModifiers::NONE)
-                | (KeyCode::Char('c' | 'y' | 'b' | 'r'), KeyModifiers::CONTROL)
+                | (
+                    KeyCode::Char('c' | 'y' | 'b' | 'r' | 's'),
+                    KeyModifiers::CONTROL
+                )
         );
         // A held key arrives as Repeat (Kitty) or as Presses close together.
         let repeat = if debounced {
@@ -104,6 +125,14 @@ impl App {
             self.held_chat_key = None;
             repeat
         };
+        if self.note_editor_open(id) {
+            let effects = self.on_note_key(id, &key, repeat);
+            return self.with_waiting_sends(effects);
+        }
+        if self.summary_draft_open(id) {
+            let effects = self.on_summary_key(id, &key, repeat);
+            return self.with_waiting_sends(effects);
+        }
         let one_shot = |effects: fn(&mut App, PaneId) -> Vec<Effect>, app: &mut App| {
             if repeat { Vec::new() } else { effects(app, id) }
         };
@@ -159,6 +188,14 @@ impl App {
     /// A paste into the focused chat's composer.
     pub(super) fn chat_paste(&mut self, text: &str) {
         let id = self.tab().focus;
+        if self.note_editor_open(id) {
+            self.note_paste(id, text);
+            return;
+        }
+        if self.summary_draft_open(id) {
+            self.summary_paste(id, text);
+            return;
+        }
         if let Some(chat) = self.focused_state_mut().chat_mut() {
             chat.composer_mut().paste(text);
             self.dirty = true;
@@ -188,7 +225,7 @@ impl App {
     }
 
     /// The engine the `chat` task resolves to right now.
-    fn chat_availability(&self) -> Availability {
+    pub(super) fn chat_availability(&self) -> Availability {
         availability(&self.ai, self.engines.as_ref(), self.jail)
     }
 
@@ -196,6 +233,9 @@ impl App {
     /// cannot be used. `None` while it is ready or the pane is busy.
     pub fn chat_guidance(&self, id: PaneId) -> Option<String> {
         let chat = self.panes.get(&id)?.chat_state()?;
+        if let Some(prompt) = self.server_offer_prompt(id) {
+            return Some(prompt);
+        }
         if chat.phase() != Phase::Idle {
             return None;
         }
@@ -223,6 +263,10 @@ impl App {
     /// Sends `text` from pane `id` and clears its composer when it went.
     /// Nothing goes before the conversation's prompt is prepared.
     fn send_text(&mut self, id: PaneId, text: &str, availability: &Availability) -> Vec<Effect> {
+        // Memory off means no engram text leaves, whatever the chat holds.
+        if !self.ai.memory.active() {
+            self.forget_memory(id);
+        }
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
@@ -232,6 +276,7 @@ impl App {
         match chat.send(text, availability, &system) {
             SendOutcome::Sent { turn, request } => {
                 chat.composer_mut().clear();
+                self.hide_server_offer(id);
                 vec![Effect::ChatSend {
                     pane: id,
                     turn,
@@ -252,6 +297,9 @@ impl App {
             .filter(|(id, _)| self.panes.contains_key(id))
             .partition(|(id, _)| {
                 availability != Availability::Checking
+                    // A note editor or summary draft owns the conversation
+                    // until it closes: the send goes then.
+                    && !self.memory_view_open(*id)
                     && self
                         .panes
                         .get(id)
@@ -263,6 +311,13 @@ impl App {
             .into_iter()
             .flat_map(|(id, text)| self.send_text(id, &text, &availability))
             .collect()
+    }
+
+    /// `effects` followed by the parked sends that were only waiting for a
+    /// memory view to close.
+    pub(super) fn with_waiting_sends(&mut self, mut effects: Vec<Effect>) -> Vec<Effect> {
+        effects.extend(self.run_waiting_sends());
+        effects
     }
 
     /// The runtime prepared the system prompt of chat `id`. A pane that is
@@ -348,6 +403,18 @@ impl App {
                 chat.scroll().page_down(total, rows)
             };
             chat.set_scroll(next);
+        }
+        Vec::new()
+    }
+
+    /// `Prefix o`: unfolds or folds the memory line, keeping a scrolled view on
+    /// the same content. With no memory line nothing happens and nothing is
+    /// emitted.
+    pub(super) fn chat_toggle_memory(&mut self) -> Vec<Effect> {
+        let size = self.focused_state().size;
+        let rows = self.chat_viewport(self.tab().focus);
+        if let Some(chat) = self.focused_state_mut().chat_mut() {
+            chat.toggle_memory_at(usize::from(size.cols), rows);
         }
         Vec::new()
     }

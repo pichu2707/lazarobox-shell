@@ -1,0 +1,5 @@
+---
+source: src/ui/components/statusline/chat_tests.rs
+expression: "text(&draw(with_memory(InputMode::Terminal, Some(view(0)),\nSome(MemBadge::Ready)), 120))"
+---
+ ◐ CHAT  /srv/app                                  ▰▰▰━━━━━ ⠋ thinking llama3:8b 4s  ollama › llama3:8b · mem: ready
