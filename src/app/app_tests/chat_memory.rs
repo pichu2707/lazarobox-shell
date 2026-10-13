@@ -833,6 +833,66 @@ fn the_offer_is_not_a_stream_cancel_but_a_stream_still_runs_under_it() {
 }
 
 #[test]
+fn esc_during_a_stream_cancels_it_and_leaves_the_offer_pending() {
+    let mut a = offered();
+    send(&mut a, "hi");
+    assert_eq!(
+        a.chat_guidance(chat_id()),
+        None,
+        "not drawn during a stream"
+    );
+    assert_eq!(
+        a.update(plain_key(KeyCode::Esc)),
+        vec![Effect::ChatCancel(chat_id())]
+    );
+    assert!(a.server_offer.pending().is_some(), "not used up");
+}
+
+#[test]
+fn a_memory_key_during_a_stream_does_not_show_the_offer() {
+    let mut a = offered();
+    send(&mut a, "hi");
+    press(&mut a, "n");
+    assert_eq!(a.chat_guidance(chat_id()), None);
+    assert_eq!(
+        a.update(plain_key(KeyCode::Esc)),
+        vec![Effect::ChatCancel(chat_id())]
+    );
+}
+
+#[test]
+fn after_a_message_is_sent_the_offer_is_hidden_and_y_is_typed_as_text() {
+    let mut a = offered();
+    send(&mut a, "hi");
+    finish_turn(&mut a);
+    assert_eq!(a.chat_guidance(chat_id()), None, "hidden after a send");
+    assert_eq!(a.update(unmodified('y')), vec![], "no server start");
+    assert_eq!(chat_of(&a).composer().text(), "y");
+    assert!(a.server_offer.pending().is_some(), "not used up");
+}
+
+#[test]
+fn a_hidden_offer_is_shown_again_by_a_memory_key() {
+    let mut a = offered();
+    send(&mut a, "hi");
+    finish_turn(&mut a);
+    press(&mut a, "n");
+    assert_eq!(a.chat_guidance(chat_id()).as_deref(), Some(OFFER_PROMPT));
+}
+
+#[test]
+fn opening_a_chat_after_a_send_shows_the_offer_again_and_y_starts() {
+    let mut a = offered();
+    send(&mut a, "hi");
+    finish_turn(&mut a);
+    press(&mut a, "c");
+    let fresh = a.tab().focus;
+    assert_ne!(fresh, chat_id());
+    assert_eq!(a.chat_guidance(fresh).as_deref(), Some(OFFER_PROMPT));
+    assert_eq!(a.update(unmodified('y')), start_server());
+}
+
+#[test]
 fn a_started_server_is_a_system_line_and_the_down_views_look_again() {
     let mut a = offered();
     a.update(unmodified('y'));

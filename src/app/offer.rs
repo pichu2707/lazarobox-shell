@@ -1,12 +1,16 @@
 //! The `engram serve` offer (engram-memory M5 worker side, M6 app side). The
 //! worker makes the offer once per run; the app holds it until a chat view is
-//! in front of the user and shows it there. With an empty composer an
-//! unmodified `y` starts the server and `n` or Esc declines; every other key
-//! is for the composer and leaves the question up.
+//! in front of the user and shows it there. The question takes keys only in
+//! an idle chat, before its first message since it was shown, and with an
+//! empty composer: then an unmodified `y` starts the server and `n` or Esc
+//! declines; every other key is for the composer and leaves the question up.
+//! While a stream runs the question is not shown and Esc cancels the stream;
+//! sending a message hides it for this view without using it up, and the next
+//! chat open or `Prefix n` shows it again.
 
 use super::*;
 use crate::core::ai::{
-    chat::memory::Readiness,
+    chat::{Phase, memory::Readiness},
     memory::{
         offer::{Answer, Offer},
         port::{Reason, ServerOutcome},
@@ -34,6 +38,7 @@ impl App {
         if !self.ai.memory.active()
             || self.server_offer.pending().is_none()
             || !self.focused_is_chat()
+            || !self.chat_idle(self.tab().focus)
         {
             return;
         }
@@ -42,9 +47,31 @@ impl App {
         self.dirty = true;
     }
 
-    /// The question to show in chat `id`, while the offer is on screen there.
+    /// Whether chat `id` has no stream or wait in flight.
+    fn chat_idle(&self, id: PaneId) -> bool {
+        self.panes
+            .get(&id)
+            .and_then(PaneState::chat_state)
+            .is_some_and(|chat| chat.phase() == Phase::Idle)
+    }
+
+    /// A message left chat `id`: its question goes off screen, unanswered and
+    /// not used up (the next chat open or memory key shows it again).
+    pub(super) fn hide_server_offer(&mut self, id: PaneId) {
+        if self.offer_shown && self.offer_pane == Some(id) {
+            self.offer_shown = false;
+            self.dirty = true;
+        }
+    }
+
+    /// The question to show in chat `id`, while the offer is on screen there
+    /// and the chat is idle.
     pub(super) fn server_offer_prompt(&self, id: PaneId) -> Option<String> {
-        if !self.ai.memory.active() || !self.offer_shown || self.offer_pane != Some(id) {
+        if !self.ai.memory.active()
+            || !self.offer_shown
+            || self.offer_pane != Some(id)
+            || !self.chat_idle(id)
+        {
             return None;
         }
         self.server_offer.pending().map(Offer::prompt)

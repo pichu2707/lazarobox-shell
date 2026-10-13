@@ -111,6 +111,12 @@ A paste is inserted into the focused text field with control and format characte
 - WHEN `Y`, `n`, Enter and then (in another run) `y` are pressed
 - THEN the first three decline and only `y` confirms
 
+#### Scenario: Server offer yields to the stream and to the first message [auto]
+- GIVEN the `engram serve` offer pending
+- WHEN a stream runs and Esc is pressed
+- THEN the stream is cancelled and the offer is not answered
+- AND WHEN a message was sent since the offer was shown THEN `y` and `n` at an empty composer are typed as text
+
 #### Scenario: Prefix still works [auto]
 - GIVEN the note editor open
 - WHEN Ctrl+Space then `w` then `v` are pressed

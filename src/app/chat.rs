@@ -267,6 +267,7 @@ impl App {
         match chat.send(text, availability, &system) {
             SendOutcome::Sent { turn, request } => {
                 chat.composer_mut().clear();
+                self.hide_server_offer(id);
                 vec![Effect::ChatSend {
                     pane: id,
                     turn,
