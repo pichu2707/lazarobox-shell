@@ -53,6 +53,8 @@ const CHAT_COPY_REFUSED: &str =
 
 /// Shown when `Prefix n` (save a note) is pressed on a pane that is not a chat.
 const NOTE_CHAT_ONLY: &str = "Save as note is for chat panes; open one with Ctrl+Space c";
+/// Notice of the memory-line key on a pane that is not a chat.
+const MEMORY_CHAT_ONLY: &str = "The memory line is for chat panes; open one with Ctrl+Space c";
 
 /// Byte sent to the child when the prefix is pressed twice (NUL, Ctrl+Space).
 const PREFIX_LITERAL: u8 = 0x00;
@@ -1155,7 +1157,8 @@ impl App {
                 | PrefixAction::Focus(_)
                 | PrefixAction::OpenMenu
                 | PrefixAction::OpenChat
-                | PrefixAction::SaveNote,
+                | PrefixAction::SaveNote
+                | PrefixAction::ToggleMemory,
             ) => InputMode::Terminal,
             Step::Run(
                 PrefixAction::ShowCommands
@@ -1178,6 +1181,13 @@ impl App {
             }
             Step::Run(PrefixAction::SaveNote) => {
                 self.notice = Some(NOTE_CHAT_ONLY.to_string());
+                Vec::new()
+            }
+            Step::Run(PrefixAction::ToggleMemory) if self.focused_is_chat() => {
+                self.chat_toggle_memory()
+            }
+            Step::Run(PrefixAction::ToggleMemory) => {
+                self.notice = Some(MEMORY_CHAT_ONLY.to_string());
                 Vec::new()
             }
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
@@ -6336,6 +6346,9 @@ mod app_tests {
 
     /// The live chat pane (ai-chat C8).
     mod chat_live;
+
+    /// Memory in a chat view (engram-memory M6).
+    mod chat_memory;
 
     /// Save as note (engram-memory M7b).
     mod chat_notes;

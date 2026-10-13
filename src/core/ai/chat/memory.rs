@@ -17,6 +17,38 @@ pub const END_SUMMARY_CAP: usize = 1000;
 /// Text of `Memory is not ready` when the project reply was not understood.
 const UNEXPECTED_REPLY: &str = "engram sent an unexpected reply";
 
+/// The memory line at the top of the transcript: how many notes the model was
+/// given, and the text it was given (shown when the line is unfolded).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct MemoryLine {
+    text: String,
+    notes: usize,
+    expanded: bool,
+}
+
+impl MemoryLine {
+    /// The injected block, as sent.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// The notes the block holds.
+    pub fn notes(&self) -> usize {
+        self.notes
+    }
+
+    pub fn expanded(&self) -> bool {
+        self.expanded
+    }
+
+    /// The folded or unfolded head: `▸ memory (3 notes)` / `▾ memory (1 note)`.
+    pub fn head(&self) -> String {
+        let glyph = if self.expanded { '▾' } else { '▸' };
+        let noun = if self.notes == 1 { "note" } else { "notes" };
+        format!("{glyph} memory ({} {noun})", self.notes)
+    }
+}
+
 /// Whether the chat's engram project is known.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Readiness {
@@ -165,7 +197,62 @@ impl ChatState {
     /// carry in their request. A turn already in flight keeps what it was
     /// sent with, and the block is never part of the history.
     pub fn inject_memory(&mut self, block: ContextBlock) {
+        self.entries.retain(|e| !matches!(e, Entry::Memory(_)));
+        // A block with no note (sessions only) is still sent, but there is
+        // nothing to announce.
+        if block.notes > 0 {
+            self.entries.insert(
+                0,
+                Entry::Memory(MemoryLine {
+                    text: block.text.clone(),
+                    notes: block.notes,
+                    expanded: false,
+                }),
+            );
+        }
         self.memory.injected = Some(block);
+        self.generation += 1;
+    }
+
+    /// `inject_memory` that keeps a scrolled view on the same content: the
+    /// line appears above everything, and `width` and `height` are the
+    /// transcript's.
+    pub fn inject_memory_at(&mut self, block: ContextBlock, width: usize, height: usize) {
+        let had = self.has_memory_line();
+        let anchor = self.anchor(width, height);
+        self.inject_memory(block);
+        let has = self.has_memory_line();
+        let anchor =
+            anchor.map(|(entry, row)| ((entry + usize::from(has)) - usize::from(had), row));
+        self.restore(anchor, width, height);
+    }
+
+    fn has_memory_line(&self) -> bool {
+        self.entries.iter().any(|e| matches!(e, Entry::Memory(_)))
+    }
+
+    /// Unfolds or folds the memory line. False when there is none.
+    pub fn toggle_memory(&mut self) -> bool {
+        let line = self.entries.iter_mut().find_map(|e| match e {
+            Entry::Memory(line) => Some(line),
+            _ => None,
+        });
+        let Some(line) = line else {
+            return false;
+        };
+        line.expanded = !line.expanded;
+        self.generation += 1;
+        true
+    }
+
+    /// `toggle_memory` that keeps a scrolled view on the same content.
+    pub fn toggle_memory_at(&mut self, width: usize, height: usize) -> bool {
+        let anchor = self.anchor(width, height);
+        let changed = self.toggle_memory();
+        if changed {
+            self.restore(anchor, width, height);
+        }
+        changed
     }
 
     /// The note editor, while it is open.

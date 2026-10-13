@@ -362,6 +362,18 @@ impl App {
         Vec::new()
     }
 
+    /// `Prefix o`: unfolds or folds the memory line, keeping a scrolled view on
+    /// the same content. With no memory line nothing happens and nothing is
+    /// emitted.
+    pub(super) fn chat_toggle_memory(&mut self) -> Vec<Effect> {
+        let size = self.focused_state().size;
+        let rows = self.chat_viewport(self.tab().focus);
+        if let Some(chat) = self.focused_state_mut().chat_mut() {
+            chat.toggle_memory_at(usize::from(size.cols), rows);
+        }
+        Vec::new()
+    }
+
     /// Ctrl+R: expands or collapses the latest reasoning block, keeping a
     /// scrolled view on the same content.
     fn chat_toggle_reasoning(&mut self) -> Vec<Effect> {

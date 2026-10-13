@@ -1,0 +1,12 @@
+---
+source: src/ui/components/chat/memory_tests.rs
+expression: text(&buf)
+---
+▾ memory (3 notes)
+┊ <project-memory source="engram" project="p">
+┊ - decision: use Axum
+┊ </project-memory>
+
+› hi
+
+hello

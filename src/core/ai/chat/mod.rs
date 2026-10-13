@@ -94,6 +94,9 @@ pub enum Entry {
     System(String),
     /// The reasoning of one turn: shown, never stored, never sent back.
     Reasoning(Reasoning),
+    /// The memory the conversation was given, first in the transcript: shown,
+    /// never stored, never sent as history.
+    Memory(memory::MemoryLine),
 }
 
 /// The most reasoning text kept per turn, in bytes. Past it the rest is
@@ -296,7 +299,7 @@ impl ChatState {
     pub fn messages(&self) -> impl Iterator<Item = &Msg> {
         self.entries.iter().filter_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) => None,
+            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) => None,
         })
     }
 
@@ -688,7 +691,7 @@ impl ChatState {
         }
         self.entries.iter_mut().rev().find_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) => None,
+            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) => None,
         })
     }
 
@@ -728,6 +731,8 @@ impl ChatState {
 mod anchor_tests;
 #[cfg(test)]
 mod context_tests;
+#[cfg(test)]
+mod memory_line_tests;
 #[cfg(test)]
 mod memory_tests;
 #[cfg(test)]

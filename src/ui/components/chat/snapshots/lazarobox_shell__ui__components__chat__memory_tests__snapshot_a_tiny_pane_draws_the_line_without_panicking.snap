@@ -1,0 +1,7 @@
+---
+source: src/ui/components/chat/memory_tests.rs
+expression: "text(&draw(&chat, 14, 4))"
+---
+▾ memory (3
+notes)
+┊ <project-mem
