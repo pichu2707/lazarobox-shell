@@ -571,6 +571,75 @@ fn a_note_saved_after_the_editor_was_discarded_is_still_recorded() {
     assert!(chat_of(&a).session().is_some());
 }
 
+fn save_failed(reason: &str) -> AppEvent {
+    AppEvent::Memory(MemReply::SaveFailed {
+        pane: chat_id(),
+        reason: reason.into(),
+    })
+}
+
+#[test]
+fn a_failure_that_comes_after_esc_is_said_in_the_transcript() {
+    let mut a = ready("use Axum");
+    type_text(&mut a, "T");
+    a.update(ctrl('s'));
+    a.update(plain(KeyCode::Esc));
+    assert_eq!(a.update(save_failed("engram refused the note")), vec![]);
+    assert_eq!(systems(&a), ["note not saved: engram refused the note"]);
+    assert!(chat_of(&a).note_editor().is_none());
+}
+
+#[test]
+fn a_late_unavailable_after_esc_is_said_too() {
+    let mut a = ready("use Axum");
+    type_text(&mut a, "T");
+    a.update(ctrl('s'));
+    a.update(plain(KeyCode::Esc));
+    a.update(AppEvent::Memory(MemReply::Unavailable {
+        pane: Some(chat_id()),
+        reason: Reason::NoAnswer,
+    }));
+    assert_eq!(systems(&a), ["note not saved: engram did not answer"]);
+}
+
+#[test]
+fn an_old_reply_never_closes_or_fails_a_newer_editor() {
+    let mut a = ready("use Axum");
+    type_text(&mut a, "One");
+    a.update(ctrl('s'));
+    a.update(plain(KeyCode::Esc));
+    pause(&mut a);
+    a.update(ctrl('n'));
+    type_text(&mut a, "Two");
+    a.update(ctrl('s'));
+    // The answer to the first save: the second editor goes on waiting.
+    a.update(save_failed("engram refused the note"));
+    let editor = chat_of(&a).note_editor().expect("the newer editor stays");
+    assert!(editor.is_saving(), "still waiting for its own answer");
+    assert_eq!(editor.notice(), None);
+    assert_eq!(systems(&a), ["note not saved: engram refused the note"]);
+    // The answer to the second one closes it.
+    a.update(saved_reply(SESSION, 2, "chat/decision/two", "Two"));
+    assert!(chat_of(&a).note_editor().is_none());
+}
+
+#[test]
+fn the_saved_reply_of_an_old_save_leaves_a_newer_saving_editor_open() {
+    let mut a = ready("use Axum");
+    type_text(&mut a, "One");
+    a.update(ctrl('s'));
+    a.update(plain(KeyCode::Esc));
+    pause(&mut a);
+    a.update(ctrl('n'));
+    type_text(&mut a, "Two");
+    a.update(ctrl('s'));
+    a.update(saved_reply(SESSION, 1, "chat/decision/one", "One"));
+    let editor = chat_of(&a).note_editor().expect("the newer editor stays");
+    assert!(editor.is_saving());
+    a.update(saved_reply(SESSION, 2, "chat/decision/two", "Two"));
+    assert!(chat_of(&a).note_editor().is_none());
+}
+
 #[test]
 fn a_saved_reply_for_a_pane_that_is_gone_is_dropped() {
     let mut a = ready("x");

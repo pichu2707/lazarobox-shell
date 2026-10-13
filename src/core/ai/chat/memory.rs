@@ -59,6 +59,8 @@ pub struct PendingSave {
     /// The project the save was sent under: the note is recorded and linked
     /// under exactly this one.
     pub project: String,
+    /// Which editor sent it (see `ChatMemory::editors`).
+    editor: u64,
 }
 
 /// The memory slot of a chat.
@@ -74,6 +76,8 @@ pub struct ChatMemory {
     link_warned: bool,
     ended: bool,
     pending_saves: VecDeque<PendingSave>,
+    /// How many note editors this chat opened: the number of the open one.
+    editors: u64,
 }
 
 impl ChatMemory {
@@ -87,6 +91,7 @@ impl ChatMemory {
             link_warned: false,
             ended: false,
             pending_saves: VecDeque::new(),
+            editors: 0,
         }
     }
 }
@@ -158,6 +163,7 @@ impl ChatState {
         }
         let answer = yank::last_answer(self).ok_or_else(|| NOTHING_TO_SAVE.to_owned())?;
         self.editor = Some(NoteEditor::seeded(&answer));
+        self.memory.editors += 1;
         Ok(())
     }
 
@@ -214,12 +220,47 @@ impl ChatState {
     pub fn save_sent(&mut self, project: &str) {
         self.memory.pending_saves.push_back(PendingSave {
             project: project.to_owned(),
+            editor: self.memory.editors,
         });
     }
 
     /// The oldest save still awaiting its answer, now answered.
     pub fn save_answered(&mut self) -> Option<PendingSave> {
         self.memory.pending_saves.pop_front()
+    }
+
+    /// Whether a save is still awaiting its answer.
+    pub fn saves_pending(&self) -> bool {
+        !self.memory.pending_saves.is_empty()
+    }
+
+    /// The editor that sent `save`, while it is open and waiting. Without a
+    /// record of the save, the open editor if it is waiting.
+    fn editor_waiting_for(&mut self, save: Option<&PendingSave>) -> Option<&mut NoteEditor> {
+        let current = self.memory.editors;
+        self.editor
+            .as_mut()
+            .filter(|e| e.is_saving() && save.is_none_or(|s| s.editor == current))
+    }
+
+    /// The save failed: the editor that sent it shows `reason` and keeps its
+    /// text. Returns false when that editor is gone (or is another one).
+    pub fn fail_save(&mut self, save: Option<&PendingSave>, reason: &str) -> bool {
+        match self.editor_waiting_for(save) {
+            Some(editor) => {
+                editor.save_failed(reason);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The save went through: the editor that sent it closes; one the user
+    /// opened since stays.
+    pub fn close_saved_editor(&mut self, save: Option<&PendingSave>) {
+        if self.editor_waiting_for(save).is_some() {
+            self.editor = None;
+        }
     }
 
     /// The database id of the conversation, if the store created it.

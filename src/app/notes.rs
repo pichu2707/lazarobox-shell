@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::core::ai::chat::{
-    memory::Readiness,
+    memory::{PendingSave, Readiness},
     note::{self, MEMORY_CHECKING, MEMORY_OFF, NOT_LINKED, NOTHING_TO_SAVE, NoteOutcome},
     store::eviction_lines_of,
     yank,
@@ -130,7 +130,6 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
-        let saving = chat.note_editor().is_some_and(|e| e.is_saving());
         self.dirty = true;
         match reply {
             MemReply::Project { result, .. } => {
@@ -149,11 +148,9 @@ impl App {
                     }
                 }
             }
-            MemReply::Unavailable { reason, .. } if saving => {
-                chat.save_answered();
-                if let Some(editor) = chat.note_editor_mut() {
-                    editor.save_failed(&reason.text());
-                }
+            MemReply::Unavailable { reason, .. } if chat.saves_pending() => {
+                let save = chat.save_answered();
+                save_not_done(chat, save.as_ref(), &reason.text());
             }
             MemReply::Unavailable { reason, .. } => {
                 let text = reason.text();
@@ -162,10 +159,8 @@ impl App {
                 }
             }
             MemReply::SaveFailed { reason, .. } => {
-                chat.save_answered();
-                if let Some(editor) = chat.note_editor_mut() {
-                    editor.save_failed(reason);
-                }
+                let save = chat.save_answered();
+                save_not_done(chat, save.as_ref(), reason);
             }
             MemReply::Saved {
                 session,
@@ -175,7 +170,8 @@ impl App {
                 ..
             } => {
                 // The project the save was sent under, as `Save` chose it.
-                let project = chat.save_answered().map(|p| p.project).or_else(|| {
+                let save = chat.save_answered();
+                let project = save.as_ref().map(|p| p.project.clone()).or_else(|| {
                     chat.session()
                         .map(|s| s.project.clone())
                         .or_else(|| chat.project().map(str::to_owned))
@@ -187,9 +183,7 @@ impl App {
                 chat.record_note(&project, topic_key, *observation_id, title);
                 // The editor that sent this save closes; one the user opened
                 // since stays.
-                if saving {
-                    chat.close_note_editor();
-                }
+                chat.close_saved_editor(save.as_ref());
                 let kind = topic_key.split('/').nth(1).unwrap_or("note");
                 chat.push_system(format!("saved note {kind}: {title}"));
                 return self.link_effects(id);
@@ -307,5 +301,14 @@ impl App {
         let mut effects = self.end_effects(&ids);
         effects.push(Effect::Quit);
         effects
+    }
+}
+
+/// A save that did not go through: its editor shows why and keeps the text;
+/// when that editor is gone (Esc, or another one is open) the transcript says
+/// so instead.
+fn save_not_done(chat: &mut ChatState, save: Option<&PendingSave>, reason: &str) {
+    if !chat.fail_save(save, reason) {
+        chat.push_system(format!("note not saved: {reason}"));
     }
 }
