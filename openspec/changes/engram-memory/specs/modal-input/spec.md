@@ -74,7 +74,7 @@ While the note editor or the summary editor is open in a chat pane, keys act as 
 | Esc | discard the view |
 | Ctrl+Space | enter PREFIX as in any pane |
 
-A paste is inserted into the focused text field with control and format characters dropped and CRLF turned into newline, never saved, and clipped at the field cap. Repeat is handled like Press for editing keys and ignored for Ctrl+S and Esc. In the start-server confirmation only an unmodified lowercase `y` confirms and any other key declines. While MENU is open no key or paste reaches a memory view.
+A paste is inserted into the focused text field with control and format characters dropped and CRLF turned into newline, never saved, and clipped at the field cap. Repeat is handled like Press for editing keys and ignored for Ctrl+S and Esc. In the start-server confirmation, with an empty composer, only an unmodified lowercase `y` press confirms and `n` or Esc declines; every other key (and any key while the composer holds text) is typed or handled as in any chat and leaves the confirmation up, and a repeat or a modifier key on its own answers nothing. While MENU is open no key or paste reaches a memory view.
 
 #### Scenario: Typing and field cap [auto]
 - GIVEN the title field holding 120 characters

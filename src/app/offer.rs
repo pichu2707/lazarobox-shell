@@ -1,13 +1,14 @@
 //! The `engram serve` offer (engram-memory M5 worker side, M6 app side). The
 //! worker makes the offer once per run; the app holds it until a chat view is
-//! in front of the user, shows it there, and the next key answers it: an
-//! unmodified `y` starts the server, anything else declines.
+//! in front of the user and shows it there. With an empty composer an
+//! unmodified `y` starts the server and `n` or Esc declines; every other key
+//! is for the composer and leaves the question up.
 
 use super::*;
 use crate::core::ai::{
     chat::memory::Readiness,
     memory::{
-        offer::Offer,
+        offer::{Answer, Offer},
         port::{Reason, ServerOutcome},
     },
 };
@@ -49,16 +50,29 @@ impl App {
         self.server_offer.pending().map(Offer::prompt)
     }
 
-    /// A key with the offer on screen: it answers and goes no further. `y`
-    /// starts the server; every other key declines. Returns `None` when no
-    /// offer is on screen for the focused chat (the key is for the chat).
+    /// A key with the offer on screen. Only a press on an empty composer
+    /// answers, and the key goes no further: `y` starts the server, `n` and
+    /// Esc decline. Every other key, a repeat or a modifier alone included,
+    /// returns `None` and is for the chat; the offer stays. Also `None` when
+    /// no offer is on screen for the focused chat.
     pub(super) fn answer_server_offer(&mut self, key: KeyEvent) -> Option<Vec<Effect>> {
         let id = self.tab().focus;
         self.server_offer_prompt(id)?;
+        let empty = self
+            .panes
+            .get(&id)
+            .and_then(PaneState::chat_state)
+            .is_none_or(|chat| chat.composer().text().is_empty());
+        let answer = self.server_offer.answer(key, empty);
+        if answer == Answer::Pass {
+            return None;
+        }
         self.offer_shown = false;
         self.dirty = true;
-        let start = self.server_offer.answer(key);
-        Some(start.map(Effect::Memory).into_iter().collect())
+        Some(match answer {
+            Answer::Start => vec![Effect::Memory(MemCmd::StartServer)],
+            _ => Vec::new(),
+        })
     }
 
     /// How `engram serve` ended. A started server is a system line in the chat

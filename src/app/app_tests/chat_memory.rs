@@ -20,6 +20,7 @@ use crate::core::ai::{
         reply::ProjectError,
     },
 };
+use ratatui::crossterm::event::ModifierKeyCode;
 
 fn chat_id() -> PaneId {
     id2()
@@ -670,27 +671,93 @@ fn an_unmodified_y_starts_the_server_and_is_not_typed() {
 }
 
 #[test]
-fn any_other_key_declines_and_is_not_typed() {
-    let others = [
-        unmodified('n'),
-        unmodified('x'),
-        AppEvent::Key(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT)),
-        AppEvent::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)),
-        AppEvent::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT)),
-        plain_key(KeyCode::Esc),
-        plain_key(KeyCode::Enter),
-        plain_key(KeyCode::Left),
-        AppEvent::Key(KeyEvent::new_with_kind(
-            KeyCode::Char('y'),
-            KeyModifiers::NONE,
-            KeyEventKind::Repeat,
-        )),
-    ];
-    for key in others {
+fn n_and_esc_decline_and_are_not_typed() {
+    for key in [unmodified('n'), plain_key(KeyCode::Esc)] {
         let mut a = offered();
         assert_eq!(a.update(key.clone()), vec![], "{key:?}");
         assert_eq!(a.chat_guidance(chat_id()), None, "{key:?}");
         assert_eq!(chat_of(&a).composer().text(), "", "{key:?}");
+        // Declined for the run: a y now is just a letter.
+        a.update(unmodified('y'));
+        assert_eq!(chat_of(&a).composer().text(), "y", "{key:?}");
+    }
+}
+
+#[test]
+fn a_repeat_is_ignored_and_leaves_the_offer_pending() {
+    for code in [KeyCode::Char('y'), KeyCode::Char('n'), KeyCode::Esc] {
+        let mut a = offered();
+        let repeat = AppEvent::Key(KeyEvent::new_with_kind(
+            code,
+            KeyModifiers::NONE,
+            KeyEventKind::Repeat,
+        ));
+        let effects = a.update(repeat);
+        assert!(memory_cmds(&effects).is_empty(), "{code:?}");
+        assert_eq!(
+            a.chat_guidance(chat_id()).as_deref(),
+            Some(OFFER_PROMPT),
+            "{code:?}"
+        );
+    }
+}
+
+#[test]
+fn a_modifier_key_alone_is_ignored_and_leaves_the_offer_pending() {
+    for modifier in [
+        ModifierKeyCode::LeftShift,
+        ModifierKeyCode::RightControl,
+        ModifierKeyCode::LeftAlt,
+    ] {
+        let mut a = offered();
+        let key = AppEvent::Key(KeyEvent::new(
+            KeyCode::Modifier(modifier),
+            KeyModifiers::SHIFT,
+        ));
+        assert_eq!(a.update(key), vec![], "{modifier:?}");
+        assert_eq!(
+            a.chat_guidance(chat_id()).as_deref(),
+            Some(OFFER_PROMPT),
+            "{modifier:?}"
+        );
+    }
+}
+
+#[test]
+fn typing_goes_to_the_composer_and_the_offer_stays() {
+    let mut a = offered();
+    type_text(&mut a, "hello");
+    assert_eq!(chat_of(&a).composer().text(), "hello");
+    assert_eq!(a.chat_guidance(chat_id()).as_deref(), Some(OFFER_PROMPT));
+}
+
+#[test]
+fn y_and_n_with_text_in_the_composer_are_typed_and_the_offer_stays() {
+    let mut a = offered();
+    type_text(&mut a, "hello ");
+    assert_eq!(a.update(unmodified('y')), vec![], "no server start");
+    a.update(unmodified('n'));
+    assert_eq!(chat_of(&a).composer().text(), "hello yn");
+    assert_eq!(a.chat_guidance(chat_id()).as_deref(), Some(OFFER_PROMPT));
+}
+
+#[test]
+fn a_key_that_is_not_y_n_or_esc_passes_through_on_an_empty_composer() {
+    for key in [
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT)),
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)),
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT)),
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT)),
+        plain_key(KeyCode::Left),
+        unmodified('x'),
+    ] {
+        let mut a = offered();
+        assert!(memory_cmds(&a.update(key.clone())).is_empty(), "{key:?}");
+        assert_eq!(
+            a.chat_guidance(chat_id()).as_deref(),
+            Some(OFFER_PROMPT),
+            "{key:?}: still asking"
+        );
     }
 }
 
