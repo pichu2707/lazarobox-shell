@@ -440,6 +440,27 @@ fn ctrl_s_sends_one_save_without_a_session_the_first_time() {
 }
 
 #[test]
+fn memory_turned_off_after_the_editor_opened_sends_no_save() {
+    let mut a = ready("use Axum");
+    type_text(&mut a, "Use Axum");
+    // The menu applied a draft with memory off while the editor was open.
+    let mut a = a.with_ai(ai(false));
+    assert_eq!(a.update(ctrl('s')), vec![], "no Save effect");
+    assert_eq!(a.notice(), Some(MEMORY_OFF));
+    let editor = chat_of(&a).note_editor().expect("the editor stays open");
+    assert_eq!(editor.title(), "Use Axum");
+    assert_eq!(editor.notice(), Some(MEMORY_OFF));
+    assert!(!editor.is_saving(), "free to save once memory is back");
+    // Back on, the same editor saves.
+    let mut a = a.with_ai(ai(true));
+    pause(&mut a);
+    assert!(matches!(
+        a.update(ctrl('s')).as_slice(),
+        [Effect::Memory(MemCmd::Save { .. })]
+    ));
+}
+
+#[test]
 fn enter_in_the_title_saves_too() {
     let mut a = ready("body");
     type_text(&mut a, "T");

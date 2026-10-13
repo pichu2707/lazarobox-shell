@@ -82,10 +82,20 @@ impl App {
             return Vec::new();
         };
         self.dirty = true;
+        let memory_on = self.ai.memory.active();
         match editor.on_key(key, repeat) {
             NoteOutcome::Handled => Vec::new(),
             NoteOutcome::Discard => {
                 chat.close_note_editor();
+                Vec::new()
+            }
+            NoteOutcome::Save(_) if !memory_on => {
+                // Memory was turned off in the menu while the editor was
+                // open: nothing is sent, and the text stays.
+                if let Some(editor) = chat.note_editor_mut() {
+                    editor.save_failed(MEMORY_OFF);
+                }
+                self.notice = Some(MEMORY_OFF.to_owned());
                 Vec::new()
             }
             NoteOutcome::Save(note) => {
