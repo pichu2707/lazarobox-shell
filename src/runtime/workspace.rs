@@ -9,7 +9,7 @@ use std::{
 
 use super::bounded_read::read_regular;
 use crate::core::ai::chat::workspace::{
-    Head, Workspace, cwd_in_repo, cwd_outside, format_date, parse_head,
+    Cwd, Head, Workspace, cwd_in_repo, cwd_outside, format_date, parse_head,
 };
 
 /// How many directory levels the repository walk climbs.
@@ -18,8 +18,15 @@ pub const WALK_LIMIT: usize = 64;
 pub const GIT_FILE_CAP: u64 = 1024;
 
 /// The facts for a chat opened in `origin`. An unknown or vanished origin
-/// gives the os, shell and date only. `shell` is the value of `$SHELL`.
-pub fn probe(origin: Option<&Path>, shell: Option<&str>, date: String) -> Workspace {
+/// gives the os, shell and date only. `home` is `$HOME`: a project or a cwd
+/// that is that directory is shown as `~`, because its name is the username.
+/// `shell` is the value of `$SHELL`.
+pub fn probe(
+    origin: Option<&Path>,
+    home: Option<&Path>,
+    shell: Option<&str>,
+    date: String,
+) -> Workspace {
     let shell = shell
         .map(Path::new)
         .and_then(Path::file_name)
@@ -37,10 +44,15 @@ pub fn probe(origin: Option<&Path>, shell: Option<&str>, date: String) -> Worksp
     };
     match find_repo(cwd) {
         Some(repo) => {
-            facts.project = Some(repo.project);
+            facts.project = Some(if is_home(&repo.project_dir, home) {
+                "~".to_owned()
+            } else {
+                name_of(&repo.project_dir)
+            });
             facts.head = repo.head_file.as_deref().and_then(read_head);
             facts.cwd = Some(cwd_in_repo(&repo.root, cwd));
         }
+        None if is_home(cwd, home) => facts.cwd = Some(Cwd::Home),
         None => facts.cwd = Some(cwd_outside(cwd)),
     }
     facts
@@ -50,8 +62,9 @@ pub fn probe(origin: Option<&Path>, shell: Option<&str>, date: String) -> Worksp
 struct Repo {
     /// The directory that holds `.git`.
     root: PathBuf,
-    /// The repository name: the main repository's for a linked worktree.
-    project: String,
+    /// The directory whose name is the project: the main repository's for a
+    /// linked worktree.
+    project_dir: PathBuf,
     head_file: Option<PathBuf>,
 }
 
@@ -66,11 +79,10 @@ fn find_repo(cwd: &Path) -> Option<Repo> {
 fn inspect(dir: &Path) -> Option<Repo> {
     let dot_git = dir.join(".git");
     let meta = fs::symlink_metadata(&dot_git).ok()?;
-    let own_name = || name_of(dir);
     if meta.is_dir() {
         return Some(Repo {
             root: dir.to_owned(),
-            project: own_name(),
+            project_dir: dir.to_owned(),
             head_file: Some(dot_git.join("HEAD")),
         });
     }
@@ -81,13 +93,13 @@ fn inspect(dir: &Path) -> Option<Repo> {
         .ok()
         .and_then(|bytes| gitdir_of(&String::from_utf8_lossy(&bytes)))
         .map(|path| dir.join(path));
-    let project = gitdir
+    let project_dir = gitdir
         .as_deref()
         .and_then(main_repo_of)
-        .map_or_else(own_name, |main| name_of(&main));
+        .unwrap_or_else(|| dir.to_owned());
     Some(Repo {
         root: dir.to_owned(),
-        project,
+        project_dir,
         head_file: gitdir.map(|gitdir| gitdir.join("HEAD")),
     })
 }
@@ -106,6 +118,15 @@ fn main_repo_of(gitdir: &Path) -> Option<PathBuf> {
     let text = gitdir.to_string_lossy();
     let at = text.find("/.git/worktrees/")?;
     Some(PathBuf::from(&text[..at]))
+}
+
+/// Whether `dir` is the home directory, by canonical path when both resolve.
+fn is_home(dir: &Path, home: Option<&Path>) -> bool {
+    let Some(home) = home else { return false };
+    match (dir.canonicalize(), home.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => dir == home,
+    }
 }
 
 /// The final path component, `/` for the root.

@@ -6,7 +6,7 @@ use crate::core::ai::chat::workspace::{Cwd, Head, block};
 const DATE: &str = "2026-10-13";
 
 fn probe_in(origin: &Path) -> Workspace {
-    probe(Some(origin), Some("/usr/bin/zsh"), DATE.to_owned())
+    probe(Some(origin), None, Some("/usr/bin/zsh"), DATE.to_owned())
 }
 
 /// A repository named `name` under `root`, with the given `HEAD` text.
@@ -150,14 +150,76 @@ fn a_symlinked_dot_git_lets_an_outer_repository_win() {
     assert_eq!(got.cwd, Some(Cwd::InRepo("inner".into())));
 }
 
+fn probe_with_home(origin: &Path, home: &Path) -> Workspace {
+    probe(Some(origin), Some(home), Some("zsh"), DATE.to_owned())
+}
+
+// Spec: The home directory is shown as `~`.
+#[test]
+fn a_repository_at_home_is_named_tilde() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = repo(tmp.path(), "javi", "ref: refs/heads/main\n");
+    let sub = home.join("dotfiles/nvim");
+    fs::create_dir_all(&sub).unwrap();
+    let got = probe_with_home(&sub, &home);
+    assert_eq!(got.project.as_deref(), Some("~"));
+    assert_eq!(got.cwd, Some(Cwd::InRepo("dotfiles/nvim".into())));
+    let text = block(&got);
+    assert!(!text.contains("javi"), "{text}");
+}
+
+#[test]
+fn a_cwd_outside_a_repository_that_is_home_is_a_tilde() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("javi");
+    fs::create_dir(&home).unwrap();
+    let got = probe_with_home(&home, &home);
+    assert_eq!(got.cwd, Some(Cwd::Home));
+    assert!(!block(&got).contains("javi"));
+}
+
+#[test]
+fn home_is_matched_through_a_symlink() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("javi");
+    fs::create_dir(&home).unwrap();
+    let alias = tmp.path().join("alias");
+    std::os::unix::fs::symlink(&home, &alias).unwrap();
+    assert_eq!(probe_with_home(&home, &alias).cwd, Some(Cwd::Home));
+}
+
+#[test]
+fn a_subdirectory_of_home_outside_a_repository_keeps_its_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("javi");
+    let notes = home.join("notes");
+    fs::create_dir_all(&notes).unwrap();
+    let got = probe_with_home(&notes, &home);
+    assert_eq!(got.cwd, Some(Cwd::Outside("notes".into())));
+}
+
+#[test]
+fn a_worktree_of_a_repository_at_home_is_named_tilde() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = repo(tmp.path(), "javi", "ref: refs/heads/main\n");
+    let gitdir = main.join(".git/worktrees/wt");
+    fs::create_dir_all(&gitdir).unwrap();
+    fs::write(gitdir.join("HEAD"), "ref: refs/heads/x\n").unwrap();
+    let wt = tmp.path().join("wt");
+    fs::create_dir(&wt).unwrap();
+    fs::write(wt.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+    assert_eq!(probe_with_home(&wt, &main).project.as_deref(), Some("~"));
+}
+
 // Spec: Unknown origin cwd, and one that vanished.
 #[test]
 fn an_unknown_or_vanished_origin_gives_os_shell_and_date_only() {
-    let none = probe(None, Some("zsh"), DATE.to_owned());
+    let none = probe(None, None, Some("zsh"), DATE.to_owned());
     assert_eq!((none.project, none.head, none.cwd), (None, None, None));
     assert_eq!(none.shell.as_deref(), Some("zsh"));
     let gone = probe(
         Some(Path::new("/no/such/dir/at/all")),
+        None,
         None,
         DATE.to_owned(),
     );
@@ -167,7 +229,7 @@ fn an_unknown_or_vanished_origin_gives_os_shell_and_date_only() {
 
 #[test]
 fn the_shell_is_the_basename_of_shell() {
-    let w = |s| probe(None, s, DATE.to_owned()).shell;
+    let w = |s| probe(None, None, s, DATE.to_owned()).shell;
     assert_eq!(w(Some("/bin/fish")).as_deref(), Some("fish"));
     assert_eq!(w(Some("bash")).as_deref(), Some("bash"));
     assert_eq!(w(Some("")), None);

@@ -377,10 +377,12 @@ fn spawn_prepare(
 ) {
     thread::spawn(move || {
         let shell = env::var("SHELL").ok();
+        let home = env::var_os("HOME").map(PathBuf::from);
         let resolved = prompts::prepare_prompt(
             config_dir.as_deref(),
             profile,
             origin.as_deref(),
+            home.as_deref(),
             context,
             shell.as_deref(),
             workspace::local_date(),

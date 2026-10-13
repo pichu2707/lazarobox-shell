@@ -55,19 +55,20 @@ pub fn load_prompt(config_dir: Option<&Path>, profile: Profile, task: Task) -> R
 
 /// The system prompt of a conversation: the resolved prompt of the chat task
 /// and, when `context` is set, the workspace block after a blank line.
-/// `shell` is the value of `$SHELL` and `date` the local date, both read by
-/// the caller so this stays testable.
+/// `home` is `$HOME`, `shell` the value of `$SHELL` and `date` the local
+/// date, all read by the caller so this stays testable.
 pub fn prepare_prompt(
     config_dir: Option<&Path>,
     profile: Profile,
     origin: Option<&Path>,
+    home: Option<&Path>,
     context: bool,
     shell: Option<&str>,
     date: String,
 ) -> Resolved {
     let mut resolved = load_prompt(config_dir, profile, Task::Chat);
     if context {
-        let block = block(&probe(origin, shell, date));
+        let block = block(&probe(origin, home, shell, date));
         resolved.text = with_block(&resolved.text, Some(&block));
     }
     resolved

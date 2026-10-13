@@ -69,6 +69,19 @@ fn outside_a_repository_only_the_directory_name_shows() {
     assert_eq!(cwd_outside(Path::new("/")), Cwd::Outside("/".into()));
 }
 
+// Spec: The home directory is shown as `~`, never by its name.
+#[test]
+fn the_home_directory_is_a_tilde() {
+    let mut w = base();
+    w.project = Some("~".into());
+    w.head = None;
+    w.cwd = Some(Cwd::Home);
+    let text = block(&w);
+    assert!(text.contains("- project: ~"), "{text}");
+    assert!(text.contains("- cwd: ~\n"), "{text}");
+    assert!(!text.contains("directory name only"), "{text}");
+}
+
 // Spec: Unknown origin cwd.
 #[test]
 fn an_unknown_cwd_leaves_only_os_shell_and_date() {

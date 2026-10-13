@@ -31,6 +31,8 @@ pub enum Cwd {
     InRepo(String),
     /// Outside a repository: the directory name only.
     Outside(String),
+    /// The user's home directory, whose name is a username: shown as `~`.
+    Home,
 }
 
 /// The facts of one conversation start. A missing fact is a missing line.
@@ -130,6 +132,7 @@ pub fn block(workspace: &Workspace) -> String {
                 clean_value(path).map(|p| format!("{p} (relative to the repository root)"))
             }
             Cwd::Outside(name) => clean_value(name).map(|n| format!("{n} (directory name only)")),
+            Cwd::Home => Some("~".to_owned()),
         }),
     );
     let os = clean_value(&workspace.os);
