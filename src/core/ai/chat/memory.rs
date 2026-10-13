@@ -5,6 +5,8 @@
 //! recorded here so that every decision (what to link, what to end) is a
 //! plain function of this state.
 
+use std::collections::VecDeque;
+
 use super::{
     ChatState, Entry,
     note::{NOTHING_TO_SAVE, NoteEditor},
@@ -49,6 +51,16 @@ pub struct SavedNote {
     linked: bool,
 }
 
+/// A save sent to the worker whose answer has not come. The worker answers
+/// saves in the order it got them, so the oldest pending one is the one a
+/// reply is for.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PendingSave {
+    /// The project the save was sent under: the note is recorded and linked
+    /// under exactly this one.
+    pub project: String,
+}
+
 /// The memory slot of a chat.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ChatMemory {
@@ -61,6 +73,7 @@ pub struct ChatMemory {
     conversation: Option<i64>,
     link_warned: bool,
     ended: bool,
+    pending_saves: VecDeque<PendingSave>,
 }
 
 impl ChatMemory {
@@ -73,6 +86,7 @@ impl ChatMemory {
             conversation: None,
             link_warned: false,
             ended: false,
+            pending_saves: VecDeque::new(),
         }
     }
 }
@@ -194,6 +208,18 @@ impl ChatState {
         let session = self.memory.session.clone()?;
         self.memory.session_linked = true;
         Some(session)
+    }
+
+    /// A save was sent under `project`; its answer is awaited.
+    pub fn save_sent(&mut self, project: &str) {
+        self.memory.pending_saves.push_back(PendingSave {
+            project: project.to_owned(),
+        });
+    }
+
+    /// The oldest save still awaiting its answer, now answered.
+    pub fn save_answered(&mut self) -> Option<PendingSave> {
+        self.memory.pending_saves.pop_front()
     }
 
     /// The database id of the conversation, if the store created it.

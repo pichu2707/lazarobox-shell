@@ -93,6 +93,7 @@ impl App {
                     }
                     return Vec::new();
                 };
+                chat.save_sent(&project);
                 vec![Effect::Memory(MemCmd::Save {
                     pane: id,
                     session: chat.session().map(|s| s.id.clone()),
@@ -149,6 +150,7 @@ impl App {
                 }
             }
             MemReply::Unavailable { reason, .. } if saving => {
+                chat.save_answered();
                 if let Some(editor) = chat.note_editor_mut() {
                     editor.save_failed(&reason.text());
                 }
@@ -160,6 +162,7 @@ impl App {
                 }
             }
             MemReply::SaveFailed { reason, .. } => {
+                chat.save_answered();
                 if let Some(editor) = chat.note_editor_mut() {
                     editor.save_failed(reason);
                 }
@@ -171,10 +174,12 @@ impl App {
                 title,
                 ..
             } => {
-                let project = chat
-                    .project()
-                    .map(str::to_owned)
-                    .or_else(|| chat.session().map(|s| s.project.clone()));
+                // The project the save was sent under, as `Save` chose it.
+                let project = chat.save_answered().map(|p| p.project).or_else(|| {
+                    chat.session()
+                        .map(|s| s.project.clone())
+                        .or_else(|| chat.project().map(str::to_owned))
+                });
                 let Some(project) = project else {
                     return Vec::new();
                 };

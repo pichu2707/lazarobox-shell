@@ -741,6 +741,13 @@ fn the_stored_pair_of_a_resumed_conversation_wins() {
         project, "other-project",
         "the project the session was made with"
     );
+    // What the save was sent under is what gets recorded and linked, even
+    // though the chat's own project differs.
+    let saved = a.update(saved_reply(stored, 42, "chat/decision/two", "Two"));
+    let [Effect::Store(StoreCmd::LinkNote { project, .. })] = saved.as_slice() else {
+        panic!("one note link, got {saved:?}");
+    };
+    assert_eq!(project, "other-project");
 }
 
 #[test]
