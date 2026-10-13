@@ -137,6 +137,7 @@ The chat-view hook that shows the prompt lands in M6 (and the memory keys in M7b
 - [x] 7.5 GREEN: `MemCmd::StartServer`, `serve.rs` (`pre_exec` calls only `setsid()`, 100 ms poll for 3 s, reaper task, `kill_on_drop(false)`).
 - [ ] 7.6 [manual] Real start: in a shell with `ENGRAM_DATA_DIR=<temp dir>` and the config `port` set to a spare port (never 7437), confirm the offer; quit lazarobox; `engram serve` still answers `/health`; kill it and remove the dir afterwards.
 - [x] 7.7 Gate.
+- [x] 7.8 Review fixes (judgment day): spawn only the offered path and only while it is still the same file; no offer means no spawn; log directory and file hardened like the chat store (no symlink, no FIFO block, owner, 0700/0600); OS-error hint on a failed spawn; non-UTF-8 or unprintable binary paths never offered; confirm on key press only; launcher injected in runtime tests; umask restored by a drop guard. 7.6 (real start) stays open.
 
 ## PR8 / M7a: chat.db v2 and eviction count (`src/runtime/chat_store.rs`, `chat_store/worker.rs`, `src/core/ai/chat/store.rs`)
 
