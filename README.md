@@ -112,6 +112,8 @@ Teclas dentro del chat:
 
 **Perfiles y prompts:** `profile = "analyst"` o `"programmer"` (por defecto) en `[ai]`, o la fila Profile del menú de IA, elige el _system prompt_ integrado. Puedes sustituirlo con `~/.config/lazarobox/prompts/<perfil>/<tarea>.md` (después `general.md`; máx. 16 KiB). El prompt incluye un bloque de contexto del workspace (proyecto, rama, directorio relativo, SO, shell y fecha; nunca rutas absolutas ni contenido); se desactiva con `context = false` o la fila Context del menú.
 
+**Aviso al terminar:** con `notify = true` en `[ai]` (o la fila Notify del menú de IA; desactivado por defecto), el chat emite la campana del terminal cuando una respuesta termina y no la estás mirando (otro panel, pestaña o ventana).
+
 Para cerrar el panel: `Ctrl+Espacio`, `w`, `q`. La respuesta se muestra mientras se genera; si el modelo "piensa" (por ejemplo `qwen3`), la barra de estado muestra un indicador `thinking` y el razonamiento queda en un bloque aparte.
 
 **Motor y modelo:** el chat usa la tarea `chat`. Se elige en el menú de IA (`Ctrl+Espacio` y `m`) o a mano en `config.toml`:
@@ -129,7 +131,7 @@ Si la tarea `chat` no tiene motor propio, usa el motor general (`[ai]`). El pane
 Límites de esta versión:
 
 - Solo Ollama: los demás motores se detectan, pero aún no tienen adaptador de chat.
-- Sin historial: la conversación se pierde al cerrar el panel.
+- Sin historial: la conversación se pierde al cerrar el panel (salvo las notas y el resumen que guardes en engram si activas la memoria).
 
 ### Memoria del proyecto (engram)
 

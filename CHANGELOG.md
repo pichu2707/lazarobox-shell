@@ -10,6 +10,56 @@ baseline.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-14
+
+### Added
+
+- Optional project memory with [engram](https://github.com/Gentleman-Programming/engram),
+  shared with other agents that use it. It is off by default: turn it on in
+  the AI menu (`Ctrl+Space m`) or with `[ai.memory]` in `config.toml`
+  (`enabled`, `acknowledged`, `port`). A one-time privacy warning must be
+  accepted first. It works in git projects only and needs an engram 3.x server.
+- Memory block at the top of a chat: shown as `▸ memory (N notes)`, and
+  `Ctrl+Space o` shows or hides it.
+- Save a note from the chat with `Ctrl+Space n` (`Ctrl+S` saves, `Esc`
+  closes). Recognizable secrets are redacted first, and the model's reasoning
+  is never stored.
+- Conversation summary with `Ctrl+Space s`: review the draft (`Ctrl+S`
+  approves, `Esc` discards); an approved summary is sent to engram when the
+  chat closes.
+- When engram is not running, the chat offers to start `engram serve`, showing
+  the absolute path of the binary. The server keeps running after you quit
+  lazarobox.
+- Statusline indicator `mem: ready`, `mem: checking` or `mem: unavailable`.
+  Every wait on memory is bounded to 5 seconds, so a slow or missing server
+  never blocks the chat.
+- Chat notification: lazarobox rings the terminal bell when a chat answer
+  finishes while you are not looking at it (another pane, tab or window is
+  focused). Turn it on with `notify = true` in `[ai]` or with the new Notify
+  row in the AI menu. It is off by default.
+
+### Changed
+
+- `chat.db` moves to schema version 2 to hold the memory data. An older
+  lazarobox refuses a newer `chat.db` and leaves it untouched.
+- The chat database is now opened lazily: a session that never uses the chat
+  no longer creates `chat.db` or its directory.
+
+### Known limitations
+
+- Conversations are not saved yet; chat history arrives in a later release.
+  Deleting notes from lazarobox and resuming conversations come with it.
+- Only Ollama has a chat adapter, and only it receives memory. Other engines
+  are detected but cannot chat.
+- Memory requires engram 3.x.
+- The chat talks to `127.0.0.1` only and sends no credentials.
+
+### Notes
+
+- Still pending manual verification in Kitty: the `engram serve` offer, the
+  note keys, the memory line toggle, the summary keys and the notification
+  bell.
+
 ## [0.9.0] - 2026-10-13
 
 ### Added
@@ -151,7 +201,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/pichu2707/lazarobox-shell/releases/tag/v0.7.0
