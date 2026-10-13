@@ -378,6 +378,11 @@ impl ChatState {
         self.draft = None;
     }
 
+    /// Forgets the kept summary: it will not go out with the session end.
+    pub fn drop_approved_summary(&mut self) {
+        self.approved_summary = None;
+    }
+
     /// The user dropped the draft: nothing new is kept; an earlier approval
     /// stays.
     pub fn discard_summary(&mut self) {

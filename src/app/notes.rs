@@ -381,13 +381,16 @@ impl App {
     /// The `End` commands of the chats among `ids` that wrote a note, each
     /// once. The caller emits them before the pane or the app goes away.
     pub(super) fn end_effects(&mut self, ids: &[PaneId]) -> Vec<Effect> {
+        let memory_on = self.ai.memory.active();
         ids.iter()
             .filter_map(|id| {
-                let (session, project, summary) = self
-                    .panes
-                    .get_mut(id)
-                    .and_then(PaneState::chat_mut)?
-                    .take_end()?;
+                let chat = self.panes.get_mut(id).and_then(PaneState::chat_mut)?;
+                // Memory was found off at close: what the user approved for
+                // engram does not go (turning it off clears it already).
+                if !memory_on {
+                    chat.drop_approved_summary();
+                }
+                let (session, project, summary) = chat.take_end()?;
                 Some(Effect::Memory(MemCmd::End {
                     session,
                     project,

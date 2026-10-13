@@ -513,6 +513,26 @@ fn turning_memory_off_drops_the_kept_summary() {
 }
 
 #[test]
+fn memory_found_off_at_close_sends_the_titles_not_the_summary() {
+    let mut a = wrote_one();
+    approve_summary(&mut a, "private");
+    // Off without the usual turn-off path: the end still must not carry it.
+    let mut a = a.with_ai(ai(false));
+    press(&mut a, "q");
+    let effects = a.update(key('y'));
+    assert!(!format!("{effects:?}").contains("private"), "{effects:?}");
+    assert_eq!(ends_in(&effects), 1, "{effects:?}");
+}
+
+/// How many `End` commands `effects` holds.
+fn ends_in(effects: &[Effect]) -> usize {
+    effects
+        .iter()
+        .filter(|e| matches!(e, Effect::Memory(MemCmd::End { .. })))
+        .count()
+}
+
+#[test]
 fn the_reasoning_of_the_conversation_never_reaches_the_summary_request() {
     let mut a = ready_chat();
     type_text(&mut a, "again");
