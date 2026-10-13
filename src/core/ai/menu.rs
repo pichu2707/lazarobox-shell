@@ -111,6 +111,17 @@ impl AiMenu {
         (self.draft.context() != self.original.context()).then(|| self.draft.context())
     }
 
+    /// Flips the notify flag of the draft.
+    pub fn toggle_notify(&mut self) {
+        let next = !self.draft.notify();
+        self.draft.set_notify(next);
+    }
+
+    /// The notify flag in the draft, when it differs from the open one.
+    pub fn changed_notify(&self) -> Option<bool> {
+        (self.draft.notify() != self.original.notify()).then(|| self.draft.notify())
+    }
+
     /// Replaces the detection. The draft is never touched.
     /// An open picker keeps its level and its row.
     pub fn set_engines(&mut self, engines: Option<Detection>) {

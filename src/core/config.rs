@@ -65,11 +65,11 @@ impl ConfigEdit {
     }
 
     /// Whether the key is a TOML boolean (written as `true` / `false`, not
-    /// as a string): the memory flags and `ai.context`. Every other owned key
+    /// as a string): the memory flags, `ai.context` and `ai.notify`. Every other owned key
     /// holds a string; `ai.memory.port` is owned but never edited.
     pub fn is_flag(&self) -> bool {
         (self.table == MEMORY_TABLE && matches!(self.key, "enabled" | "acknowledged"))
-            || (self.table == "ai" && self.key == "context")
+            || (self.table == "ai" && matches!(self.key, "context" | "notify"))
     }
 }
 

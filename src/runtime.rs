@@ -36,7 +36,10 @@ use ratatui::{
     DefaultTerminal,
     crossterm::{
         cursor::SetCursorStyle,
-        event::{DisableBracketedPaste, EnableBracketedPaste, Event, EventStream},
+        event::{
+            DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
+            Event, EventStream,
+        },
         execute, terminal,
     },
 };
@@ -63,6 +66,8 @@ use crate::{
     ui::{self, theme::LazaroboxTheme},
 };
 
+/// The terminal bell character.
+const BEL: u8 = 0x07;
 /// Time between redraw checks.
 const TICK: Duration = Duration::from_millis(16);
 /// Capacity of the reader-to-loop channel; a full channel stalls the reader.
@@ -192,7 +197,7 @@ pub async fn run() -> io::Result<()> {
 
     let mut terminal = ratatui::init();
     install_panic_hook();
-    let result = match execute!(stdout(), EnableBracketedPaste) {
+    let result = match enter_modes(&mut stdout()) {
         Ok(()) => event_loop(&mut terminal, &mut panes, inbox, shutdown, app).await,
         Err(error) => Err(error),
     };
@@ -430,6 +435,7 @@ async fn run_loop(
                     terminal.draw(|frame| ui::render(frame, &app, &theme))?;
                 }
                 apply_cursor_style(out, app.cursor_shape(), &mut applied_cursor)?;
+                panes.stage_bell();
                 flush_host(out, &mut panes.host_out)?;
             }
         }
@@ -518,6 +524,9 @@ struct Panes {
     /// Bytes for the host terminal (OSC 52), written by `flush_host` after
     /// the draw so nothing lands in the middle of a frame.
     host_out: Vec<u8>,
+    /// A `Bell` effect arrived since the last flush (chat-notify). Several in
+    /// the same tick make one BEL; see [`Panes::stage_bell`].
+    bell: bool,
     /// Starts one AI engine detection; the answer arrives on the AI channel.
     /// A no-op unless `with_detector` installs the production one.
     detect: Box<dyn FnMut()>,
@@ -543,11 +552,23 @@ impl Panes {
             reapers: Vec::new(),
             config_path: None,
             host_out: Vec::new(),
+            bell: false,
             detect: Box::new(|| {}),
             prepare: Box::new(|_, _, _, _| {}),
             chats: None,
             memory: Memory::off(),
             store: None,
+        }
+    }
+
+    /// Moves a pending bell into the host bytes, after whatever is already
+    /// there (an OSC 52 yank). The loop calls it after the draw and right
+    /// before `flush_host`, so the BEL leaves in the same write as the other
+    /// host bytes, through the writer that draws the frame. One BEL covers all
+    /// the bells asked for since the last flush.
+    fn stage_bell(&mut self) {
+        if std::mem::take(&mut self.bell) {
+            self.host_out.push(BEL);
         }
     }
 
@@ -684,6 +705,9 @@ impl Panes {
                     origin,
                     context,
                 } => (self.prepare)(pane, profile, origin, context),
+                // Only flagged here: the BEL joins the host bytes after the
+                // draw (see `stage_bell`), never in the middle of a frame.
+                Effect::Bell => self.bell = true,
                 Effect::Quit => outcome = Outcome::Quit,
             }
         }
@@ -772,6 +796,10 @@ fn to_app_event(event: Event) -> Option<AppEvent> {
         Event::Key(key) => Some(AppEvent::Key(key)),
         Event::Paste(text) => Some(AppEvent::Paste(text)),
         Event::Resize(cols, rows) => Some(AppEvent::Resize { cols, rows }),
+        // A terminal without focus reporting never sends these, and the app
+        // then keeps the window as focused.
+        Event::FocusGained => Some(AppEvent::WindowFocus(true)),
+        Event::FocusLost => Some(AppEvent::WindowFocus(false)),
         _ => None,
     }
 }
@@ -815,7 +843,18 @@ fn flush_host<W: Write>(out: &mut W, pending: &mut Vec<u8>) -> io::Result<()> {
 /// Undoes what the runtime changed in the host terminal, minus raw mode and
 /// the alternate screen, which `ratatui::restore` handles.
 fn restore_to<W: Write>(out: &mut W) -> io::Result<()> {
-    execute!(out, SetCursorStyle::DefaultUserShape, DisableBracketedPaste)
+    execute!(
+        out,
+        SetCursorStyle::DefaultUserShape,
+        DisableBracketedPaste,
+        DisableFocusChange
+    )
+}
+
+/// Enters the terminal modes the runtime needs on top of raw mode: bracketed
+/// paste and focus reporting. [`restore_to`] undoes them.
+fn enter_modes<W: Write>(out: &mut W) -> io::Result<()> {
+    execute!(out, EnableBracketedPaste, EnableFocusChange)
 }
 
 fn restore() {
@@ -835,7 +874,7 @@ fn should_restore() -> bool {
     !chat::in_adapter_poll() && !on_store_thread && !on_prepare_thread
 }
 
-/// Restores the cursor and bracketed paste before the previous hook (which
+/// Restores the cursor, bracketed paste and focus reporting before the previous hook (which
 /// `ratatui::init` set up to leave raw mode and the alternate screen) runs.
 /// Panics inside a chat adapter are caught elsewhere and skip all of it,
 /// including the previous hook's output, which would scribble over the TUI.
@@ -1063,6 +1102,25 @@ mod tests {
         assert!(text.contains("\x1b[?2004l"), "{text:?}");
     }
 
+    // Spec (chat-notify): Restore disables focus reporting.
+    #[test]
+    fn restore_disables_focus_reporting() {
+        let mut out = Vec::new();
+        restore_to(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[?1004l"), "{text:?}");
+    }
+
+    // The modes are entered with one write and undone by `restore_to`.
+    #[test]
+    fn startup_enables_focus_reporting_next_to_bracketed_paste() {
+        let mut out = Vec::new();
+        enter_modes(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[?2004h"), "{text:?}");
+        assert!(text.contains("\x1b[?1004h"), "{text:?}");
+    }
+
     fn key_event(kind: KeyEventKind) -> KeyEvent {
         KeyEvent {
             code: KeyCode::Char('a'),
@@ -1089,9 +1147,21 @@ mod tests {
         );
     }
 
+    // Spec (chat-notify): Focus events map.
+    #[test]
+    fn focus_events_map_to_the_window_focus() {
+        assert_eq!(
+            to_app_event(Event::FocusGained),
+            Some(AppEvent::WindowFocus(true))
+        );
+        assert_eq!(
+            to_app_event(Event::FocusLost),
+            Some(AppEvent::WindowFocus(false))
+        );
+    }
+
     #[test]
     fn other_crossterm_events_are_dropped() {
-        assert_eq!(to_app_event(Event::FocusGained), None);
         let mouse = MouseEvent {
             kind: MouseEventKind::Moved,
             column: 0,
@@ -1240,6 +1310,72 @@ mod tests {
             let log = log.lock().unwrap();
             assert!(log.writes.is_empty() && log.resizes.is_empty());
         }
+    }
+
+    // chat-notify: Bell is staged for the flush, never written at once.
+    #[test]
+    fn a_bell_effect_is_flagged_and_writes_nothing_by_itself() {
+        let (mut panes, _rx, rec) = fake_panes(None);
+        spawn_two(&mut panes);
+        let (outcome, feedback) = panes.apply(vec![Effect::Bell]);
+        assert_eq!(outcome, Outcome::Continue);
+        assert!(feedback.is_empty());
+        assert!(panes.host_out.is_empty(), "nothing before the flush");
+        for log in &rec.borrow().logs {
+            let log = log.lock().unwrap();
+            assert!(
+                log.writes.is_empty() && log.resizes.is_empty(),
+                "no PTY write"
+            );
+        }
+        panes.stage_bell();
+        assert_eq!(panes.host_out, vec![0x07]);
+    }
+
+    // chat-notify: Coalescing.
+    #[test]
+    fn several_bells_of_one_tick_are_one_bel() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        panes.apply(vec![Effect::Bell, Effect::Bell]);
+        panes.apply(vec![Effect::Bell]);
+        panes.stage_bell();
+        assert_eq!(panes.host_out, b"\x07".to_vec());
+        panes.stage_bell();
+        assert_eq!(panes.host_out, b"\x07".to_vec(), "the flag was consumed");
+    }
+
+    #[test]
+    fn staging_without_a_bell_adds_nothing() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        panes.stage_bell();
+        assert!(panes.host_out.is_empty());
+    }
+
+    // chat-notify: Ordered after other host bytes, one write.
+    #[test]
+    fn the_bel_follows_the_osc_52_bytes_in_a_single_write() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        panes.apply(vec![
+            Effect::Bell,
+            Effect::SetClipboard(b"\x1b]52;c;aGk=\x07".to_vec()),
+        ]);
+        panes.stage_bell();
+        let mut out = SpyOut::default();
+        flush_host(&mut out, &mut panes.host_out).unwrap();
+        assert_eq!(out.bytes, b"\x1b]52;c;aGk=\x07\x07".to_vec());
+        assert_eq!((out.writes, out.flushes), (1, 1));
+        assert!(panes.host_out.is_empty());
+    }
+
+    // A bell asked for next to nothing else is the only byte written.
+    #[test]
+    fn a_lone_bell_flushes_exactly_one_bel() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        panes.apply(vec![Effect::Bell]);
+        panes.stage_bell();
+        let mut out = SpyOut::default();
+        flush_host(&mut out, &mut panes.host_out).unwrap();
+        assert_eq!(out.bytes, vec![0x07]);
     }
 
     #[test]

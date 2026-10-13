@@ -9,6 +9,7 @@ pub mod engine;
 pub mod guidance;
 pub mod memory;
 pub mod note;
+pub mod notify;
 pub mod prompts;
 pub mod store;
 pub mod stream;

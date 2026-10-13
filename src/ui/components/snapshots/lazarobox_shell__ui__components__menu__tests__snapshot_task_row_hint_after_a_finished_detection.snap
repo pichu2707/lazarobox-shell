@@ -17,6 +17,7 @@ expression: shown
 │ Profile                                         programmer │
 │ Context                                                 on │
 │ Memory                                                 off │
+│ Notify                                                 off │
 │                                                            │
 │ j/k move · Enter pick · r refresh · s save · Esc cancel    │
 └────────────────────────────────────────────────────────────┘

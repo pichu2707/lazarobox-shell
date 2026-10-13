@@ -131,6 +131,7 @@ pub struct AiConfig {
     slots: [Assignment; 5],
     profile: Profile,
     context: bool,
+    notify: bool,
     pub memory: MemoryConfig,
 }
 
@@ -140,6 +141,7 @@ impl Default for AiConfig {
             slots: Default::default(),
             profile: Profile::default(),
             context: true,
+            notify: false,
             memory: MemoryConfig::default(),
         }
     }
@@ -169,6 +171,16 @@ impl AiConfig {
 
     pub fn set_context(&mut self, context: bool) {
         self.context = context;
+    }
+
+    /// Whether a chat answer that finishes while the user is not looking
+    /// rings the terminal bell.
+    pub fn notify(&self) -> bool {
+        self.notify
+    }
+
+    pub fn set_notify(&mut self, notify: bool) {
+        self.notify = notify;
     }
 
     /// The effective assignment of a task and whether it was inherited from
@@ -275,7 +287,20 @@ fn read_context(section: &Table, problems: &mut Vec<String>) -> bool {
     }
 }
 
-/// Reads `[ai]` (the general task, the profile and the context flag) and `[ai.tasks.<id>]`
+/// Reads `notify`: a missing key is `false`; a value that is not a boolean
+/// falls back to `false` with a problem.
+fn read_notify(section: &Table, problems: &mut Vec<String>) -> bool {
+    match section.get("notify") {
+        None => false,
+        Some(Value::Boolean(on)) => *on,
+        Some(_) => {
+            problems.push("ai.notify: expected a boolean".to_owned());
+            false
+        }
+    }
+}
+
+/// Reads `[ai]` (the general task, the profile and the context and notify flags) and `[ai.tasks.<id>]`
 /// (the others). Each key falls back to unset on its own; `general` and
 /// unknown names under `ai.tasks` are ignored.
 fn read_tasks(table: &Table, problems: &mut Vec<String>) -> AiConfig {
@@ -291,6 +316,7 @@ fn read_tasks(table: &Table, problems: &mut Vec<String>) -> AiConfig {
     config.set(Task::General, read_assignment(section, "ai", problems));
     config.profile = read_profile(section, problems);
     config.context = read_context(section, problems);
+    config.notify = read_notify(section, problems);
     let tasks = match section.get("tasks") {
         None => return config,
         Some(Value::Table(tasks)) => tasks,
@@ -968,6 +994,55 @@ mod tests {
             vec![
                 "ai.profile: expected a string".to_owned(),
                 "ai.context: expected a boolean".to_owned(),
+                "ai.tasks.code.engine: expected a string".to_owned(),
+            ]
+        );
+    }
+
+    // Spec (chat-notify, configuration): the notify flag, default and parse.
+    #[test]
+    fn the_notify_flag_defaults_to_false() {
+        assert!(!AiConfig::default().notify());
+        for text in ["", "[ai]\n", "ai = 3\n"] {
+            assert!(!read_text(text).0.notify(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_boolean_notify_is_read_without_a_problem() {
+        for (value, want) in [("true", true), ("false", false)] {
+            let (config, problems) = read_text(&format!("[ai]\nnotify = {value}\n"));
+            assert_eq!(config.notify(), want, "{value}");
+            assert_eq!(problems, Vec::<String>::new());
+        }
+    }
+
+    #[test]
+    fn a_non_boolean_notify_falls_back_to_false_with_the_exact_problem() {
+        for value in ["\"yes\"", "1", "[true]", "{ a = 1 }"] {
+            let (config, problems) = read_text(&format!("[ai]\nnotify = {value}\n"));
+            assert!(!config.notify(), "{value}");
+            assert_eq!(
+                problems,
+                vec!["ai.notify: expected a boolean".to_owned()],
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_notify_flag_is_independent_and_its_problem_follows_the_context_one() {
+        let (config, _) = read_text("[ai]\nnotify = true\ncontext = false\n");
+        let mut want = AiConfig::default();
+        want.set_context(false);
+        want.set_notify(true);
+        assert_eq!(config, want);
+        let text = "[ai.tasks.code]\nengine = 5\n[ai]\nnotify = 1\ncontext = 1\n";
+        assert_eq!(
+            read_text(text).1,
+            vec![
+                "ai.context: expected a boolean".to_owned(),
+                "ai.notify: expected a boolean".to_owned(),
                 "ai.tasks.code.engine: expected a string".to_owned(),
             ]
         );
