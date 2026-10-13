@@ -1132,4 +1132,55 @@ other = 1
         let out = apply_edit(Some(existing), &position).unwrap();
         assert!(out.starts_with(existing), "{out:?}");
     }
+
+    // Spec (chat-notify, config-persistence): `ai.notify` is an owned boolean.
+    fn notify_edit(value: &'static str) -> [ConfigEdit; 1] {
+        [ConfigEdit {
+            table: "ai",
+            key: "notify",
+            value: std::borrow::Cow::Borrowed(value),
+        }]
+    }
+
+    #[test]
+    fn the_notify_flag_is_written_as_a_boolean() {
+        let out = apply_edit(None, &notify_edit("true")).unwrap();
+        assert_eq!(out, "[ai]\nnotify = true\n");
+        let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out), None);
+        assert!(ai.notify());
+        assert_eq!(notice, None);
+        let out = apply_edit(Some("[ai]\ncontext = false\n"), &notify_edit("false")).unwrap();
+        assert_eq!(out, "[ai]\ncontext = false\nnotify = false\n");
+    }
+
+    #[test]
+    fn the_notify_flag_is_updated_in_place_and_a_scalar_is_replaced() {
+        let existing = "[ai]\n# c\nnotify = false  # off\nmodel = \"m\"\n";
+        let out = apply_edit(Some(existing), &notify_edit("true")).unwrap();
+        assert_eq!(out, "[ai]\n# c\nnotify = true  # off\nmodel = \"m\"\n");
+        let out = apply_edit(Some("[ai]\nnotify = \"x\"\n"), &notify_edit("true")).unwrap();
+        assert_eq!(out, "[ai]\nnotify = true\n");
+    }
+
+    #[test]
+    fn a_notify_table_is_refused_and_an_unchanged_one_is_ignored() {
+        for text in [
+            "[ai.notify]\nx = 1\n",
+            "[ai]\nnotify = { x = 1 }\n",
+            "[[ai.notify]]\nx = 1\n",
+        ] {
+            assert_eq!(
+                apply_edit(Some(text), &notify_edit("true")),
+                Err(EditError::KeyIsTable {
+                    table: "ai",
+                    key: "notify"
+                }),
+                "{text:?}"
+            );
+        }
+        let position = [edit("statusline", "top")];
+        let existing = "[ai.notify]\nx = 1\n";
+        let out = apply_edit(Some(existing), &position).unwrap();
+        assert!(out.starts_with(existing), "{out:?}");
+    }
 }

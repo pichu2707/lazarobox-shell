@@ -634,4 +634,35 @@ mod tests {
             "[ai]\ncontext = false\n"
         );
     }
+
+    // Spec (chat-notify, config-persistence): Collision.
+    #[test]
+    fn a_notify_table_maps_to_its_message_and_stays_byte_identical() {
+        let notify = ConfigEdit {
+            table: "ai",
+            key: "notify",
+            value: std::borrow::Cow::Borrowed("true"),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_in(&dir);
+        fs::write(&path, "[ai.notify]\nx = 1\n").unwrap();
+        assert_eq!(
+            save_config(Some(&path), std::slice::from_ref(&notify)),
+            Err("config.toml: ai.notify is a table; fix it before saving".to_owned())
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "[ai.notify]\nx = 1\n");
+    }
+
+    #[test]
+    fn a_notify_save_writes_a_boolean_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_in(&dir);
+        let notify = ConfigEdit {
+            table: "ai",
+            key: "notify",
+            value: std::borrow::Cow::Borrowed("true"),
+        };
+        save_config(Some(&path), &[notify]).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "[ai]\nnotify = true\n");
+    }
 }
