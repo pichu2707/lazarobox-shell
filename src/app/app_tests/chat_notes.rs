@@ -13,7 +13,7 @@ use crate::core::ai::{
     config::{Assignment, MemoryConfig, Task},
     memory::{
         kind::MemKind,
-        port::{MemCmd, MemReply, Note, Reason},
+        port::{MemCmd, MemReply, Note, Reason, SaveId},
         reply::ProjectError,
     },
 };
@@ -151,9 +151,24 @@ fn project_reply(result: Result<String, ProjectError>) -> AppEvent {
     })
 }
 
-fn saved_reply(session: &str, id: i64, topic_key: &str, title: &str) -> AppEvent {
+/// The oldest save the chat still awaits: its token and the project it was
+/// sent under, as the worker would echo them.
+fn oldest_save(a: &App) -> (SaveId, String) {
+    let save = chat_of(a)
+        .pending_save_ids()
+        .first()
+        .and_then(|id| chat_of(a).pending_save(*id))
+        .expect("a pending save");
+    (save.id, save.project)
+}
+
+/// The worker's `Saved` for the oldest pending save.
+fn saved_reply(a: &App, session: &str, id: i64, topic_key: &str, title: &str) -> AppEvent {
+    let (token, project) = oldest_save(a);
     AppEvent::Memory(MemReply::Saved {
         pane: chat_id(),
+        id: token,
+        project,
         session: session.into(),
         observation_id: id,
         topic_key: topic_key.into(),
@@ -420,9 +435,10 @@ fn the_stream_keeps_updating_under_the_editor() {
 
 // 9.5: the save flow ----------------------------------------------------------
 
-fn save_cmd(session: Option<&str>, title: &str, content: &str) -> Effect {
+fn save_cmd(n: u64, session: Option<&str>, title: &str, content: &str) -> Effect {
     Effect::Memory(MemCmd::Save {
         pane: chat_id(),
+        id: SaveId(n),
         session: session.map(str::to_owned),
         project: PROJECT.into(),
         cwd: CWD.into(),
@@ -440,7 +456,7 @@ fn ctrl_s_sends_one_save_without_a_session_the_first_time() {
     type_text(&mut a, "Use Axum");
     assert_eq!(
         a.update(ctrl('s')),
-        vec![save_cmd(None, "Use Axum", "use Axum")]
+        vec![save_cmd(1, None, "Use Axum", "use Axum")]
     );
     assert!(chat_of(&a).note_editor().unwrap().is_saving());
     pause(&mut a);
@@ -474,7 +490,7 @@ fn enter_in_the_title_saves_too() {
     type_text(&mut a, "T");
     assert_eq!(
         a.update(plain(KeyCode::Enter)),
-        vec![save_cmd(None, "T", "body")]
+        vec![save_cmd(1, None, "T", "body")]
     );
 }
 
@@ -522,6 +538,7 @@ fn a_saved_note_closes_the_editor_and_adds_the_system_line() {
     a.update(ctrl('s'));
     let before = chat_of(&a).messages().count();
     let effects = a.update(saved_reply(
+        &a,
         SESSION,
         41,
         "chat/decision/use-axum",
@@ -544,12 +561,12 @@ fn the_second_note_goes_into_the_same_session() {
     let mut a = ready("use Axum");
     type_text(&mut a, "One");
     a.update(ctrl('s'));
-    a.update(saved_reply(SESSION, 1, "chat/decision/one", "One"));
+    a.update(saved_reply(&a, SESSION, 1, "chat/decision/one", "One"));
     press(&mut a, "n");
     type_text(&mut a, "Two");
     assert_eq!(
         a.update(ctrl('s')),
-        vec![save_cmd(Some(SESSION), "Two", "use Axum")]
+        vec![save_cmd(2, Some(SESSION), "Two", "use Axum")]
     );
 }
 
@@ -559,6 +576,7 @@ fn the_same_note_again_upserts_with_the_same_line() {
     type_text(&mut a, "Use Axum");
     a.update(ctrl('s'));
     a.update(saved_reply(
+        &a,
         SESSION,
         1,
         "chat/decision/use-axum",
@@ -568,6 +586,7 @@ fn the_same_note_again_upserts_with_the_same_line() {
     type_text(&mut a, "Use Axum");
     a.update(ctrl('s'));
     a.update(saved_reply(
+        &a,
         SESSION,
         1,
         "chat/decision/use-axum",
@@ -589,6 +608,7 @@ fn a_failed_save_keeps_the_editor_with_its_text() {
     a.update(ctrl('s'));
     let failed = AppEvent::Memory(MemReply::SaveFailed {
         pane: chat_id(),
+        id: oldest_save(&a).0,
         reason: "engram refused the note".into(),
     });
     assert_eq!(a.update(failed), vec![]);
@@ -604,8 +624,9 @@ fn an_unavailable_memory_during_a_save_is_a_failed_save() {
     let mut a = ready("use Axum");
     type_text(&mut a, "T");
     a.update(ctrl('s'));
-    a.update(AppEvent::Memory(MemReply::Unavailable {
-        pane: Some(chat_id()),
+    a.update(AppEvent::Memory(MemReply::SaveUnavailable {
+        pane: chat_id(),
+        id: oldest_save(&a).0,
         reason: Reason::NoAnswer,
     }));
     let editor = chat_of(&a).note_editor().expect("still open");
@@ -626,16 +647,17 @@ fn a_note_saved_after_the_editor_was_discarded_is_still_recorded() {
     a.update(plain(KeyCode::Esc));
     press(&mut a, "n");
     type_text(&mut a, "Other");
-    a.update(saved_reply(SESSION, 1, "chat/decision/t", "T"));
+    a.update(saved_reply(&a, SESSION, 1, "chat/decision/t", "T"));
     assert_eq!(systems(&a), ["saved note decision: T"]);
     let editor = chat_of(&a).note_editor().expect("the new editor stays");
     assert_eq!(editor.title(), "Other");
     assert!(chat_of(&a).session().is_some());
 }
 
-fn save_failed(reason: &str) -> AppEvent {
+fn save_failed(a: &App, reason: &str) -> AppEvent {
     AppEvent::Memory(MemReply::SaveFailed {
         pane: chat_id(),
+        id: oldest_save(a).0,
         reason: reason.into(),
     })
 }
@@ -646,7 +668,7 @@ fn a_failure_that_comes_after_esc_is_said_in_the_transcript() {
     type_text(&mut a, "T");
     a.update(ctrl('s'));
     a.update(plain(KeyCode::Esc));
-    assert_eq!(a.update(save_failed("engram refused the note")), vec![]);
+    assert_eq!(a.update(save_failed(&a, "engram refused the note")), vec![]);
     assert_eq!(systems(&a), ["note not saved: engram refused the note"]);
     assert!(chat_of(&a).note_editor().is_none());
 }
@@ -657,8 +679,9 @@ fn a_late_unavailable_after_esc_is_said_too() {
     type_text(&mut a, "T");
     a.update(ctrl('s'));
     a.update(plain(KeyCode::Esc));
-    a.update(AppEvent::Memory(MemReply::Unavailable {
-        pane: Some(chat_id()),
+    a.update(AppEvent::Memory(MemReply::SaveUnavailable {
+        pane: chat_id(),
+        id: oldest_save(&a).0,
         reason: Reason::NoAnswer,
     }));
     assert_eq!(systems(&a), ["note not saved: engram did not answer"]);
@@ -675,13 +698,13 @@ fn an_old_reply_never_closes_or_fails_a_newer_editor() {
     type_text(&mut a, "Two");
     a.update(ctrl('s'));
     // The answer to the first save: the second editor goes on waiting.
-    a.update(save_failed("engram refused the note"));
+    a.update(save_failed(&a, "engram refused the note"));
     let editor = chat_of(&a).note_editor().expect("the newer editor stays");
     assert!(editor.is_saving(), "still waiting for its own answer");
     assert_eq!(editor.notice(), None);
     assert_eq!(systems(&a), ["note not saved: engram refused the note"]);
     // The answer to the second one closes it.
-    a.update(saved_reply(SESSION, 2, "chat/decision/two", "Two"));
+    a.update(saved_reply(&a, SESSION, 2, "chat/decision/two", "Two"));
     assert!(chat_of(&a).note_editor().is_none());
 }
 
@@ -695,10 +718,10 @@ fn the_saved_reply_of_an_old_save_leaves_a_newer_saving_editor_open() {
     press(&mut a, "n");
     type_text(&mut a, "Two");
     a.update(ctrl('s'));
-    a.update(saved_reply(SESSION, 1, "chat/decision/one", "One"));
+    a.update(saved_reply(&a, SESSION, 1, "chat/decision/one", "One"));
     let editor = chat_of(&a).note_editor().expect("the newer editor stays");
     assert!(editor.is_saving());
-    a.update(saved_reply(SESSION, 2, "chat/decision/two", "Two"));
+    a.update(saved_reply(&a, SESSION, 2, "chat/decision/two", "Two"));
     assert!(chat_of(&a).note_editor().is_none());
 }
 
@@ -707,6 +730,8 @@ fn a_saved_reply_for_a_pane_that_is_gone_is_dropped() {
     let mut a = ready("x");
     let stale = AppEvent::Memory(MemReply::Saved {
         pane: PaneId::for_test(9),
+        id: SaveId(1),
+        project: PROJECT.into(),
         session: SESSION.into(),
         observation_id: 1,
         topic_key: "chat/decision/x".into(),
@@ -804,7 +829,7 @@ fn write_note(a: &mut App, title: &str, id: i64) -> Vec<Effect> {
     type_text(a, title);
     a.update(ctrl('s'));
     let key = format!("chat/decision/{}", title.to_lowercase());
-    a.update(saved_reply(SESSION, id, &key, title))
+    a.update(saved_reply(a, SESSION, id, &key, title))
 }
 
 #[test]
@@ -813,7 +838,7 @@ fn a_saved_note_links_the_session_and_itself_once_the_conversation_exists() {
     a.update(created(7, false, 0));
     type_text(&mut a, "One");
     a.update(ctrl('s'));
-    let effects = a.update(saved_reply(SESSION, 41, "chat/decision/one", "One"));
+    let effects = a.update(saved_reply(&a, SESSION, 41, "chat/decision/one", "One"));
     assert_eq!(
         effects,
         vec![
@@ -831,7 +856,7 @@ fn links_wait_for_the_conversation_and_follow_it() {
     let mut a = ready("body");
     type_text(&mut a, "One");
     a.update(ctrl('s'));
-    let effects = a.update(saved_reply(SESSION, 41, "chat/decision/one", "One"));
+    let effects = a.update(saved_reply(&a, SESSION, 41, "chat/decision/one", "One"));
     assert_eq!(effects, vec![], "no conversation to link to yet");
     assert_eq!(
         a.update(created(7, false, 0)),
@@ -848,7 +873,7 @@ fn the_stored_pair_of_a_resumed_conversation_wins() {
     a.update(created(7, false, 0));
     type_text(&mut a, "One");
     a.update(ctrl('s'));
-    a.update(saved_reply(SESSION, 41, "chat/decision/one", "One"));
+    a.update(saved_reply(&a, SESSION, 41, "chat/decision/one", "One"));
     let stored = "lazarobox-ffffffffffffffffffffffffffffffff";
     a.update(AppEvent::Store(StoreReply::SessionLinked {
         pane: chat_id(),
@@ -874,7 +899,7 @@ fn the_stored_pair_of_a_resumed_conversation_wins() {
     );
     // What the save was sent under is what gets recorded and linked, even
     // though the chat's own project differs.
-    let saved = a.update(saved_reply(stored, 42, "chat/decision/two", "Two"));
+    let saved = a.update(saved_reply(&a, stored, 42, "chat/decision/two", "Two"));
     let [Effect::Store(StoreCmd::LinkNote { project, .. })] = saved.as_slice() else {
         panic!("one note link, got {saved:?}");
     };
@@ -887,7 +912,7 @@ fn a_link_failure_is_said_once_and_the_note_stays_saved() {
     a.update(created(7, false, 0));
     type_text(&mut a, "One");
     a.update(ctrl('s'));
-    a.update(saved_reply(SESSION, 41, "chat/decision/one", "One"));
+    a.update(saved_reply(&a, SESSION, 41, "chat/decision/one", "One"));
     for kind in [LinkKind::Note, LinkKind::Session, LinkKind::Note] {
         let failed = AppEvent::Store(StoreReply::LinkFailed {
             pane: chat_id(),
@@ -1010,7 +1035,7 @@ fn wrote_two() -> App {
     let mut a = ready("body");
     type_text(&mut a, "A");
     a.update(ctrl('s'));
-    a.update(saved_reply(SESSION, 1, "chat/decision/a", "A"));
+    a.update(saved_reply(&a, SESSION, 1, "chat/decision/a", "A"));
     write_note(&mut a, "B", 2);
     a
 }
@@ -1079,4 +1104,143 @@ fn the_reasoning_never_reaches_the_end_summary() {
     press(&mut a, "q");
     let effects = a.update(key('y'));
     assert!(!format!("{effects:?}").contains("secret plan"));
+}
+
+// Replies are matched to their save by token, not by queue order -------------
+
+/// Two saves in flight: the first under `PROJECT`, the second under
+/// `OTHER_PROJECT` (the pair of a resumed conversation arrived in between).
+/// Returns the tokens of both.
+const OTHER_PROJECT: &str = "other-project";
+
+fn two_saves_in_flight() -> (App, SaveId, SaveId) {
+    let mut a = ready("body");
+    a.update(created(7, false, 0));
+    type_text(&mut a, "One");
+    a.update(ctrl('s'));
+    a.update(plain(KeyCode::Esc));
+    a.update(AppEvent::Store(StoreReply::SessionLinked {
+        pane: chat_id(),
+        conversation: 7,
+        session_id: "lazarobox-ffffffffffffffffffffffffffffffff".into(),
+        project: OTHER_PROJECT.into(),
+    }));
+    pause(&mut a);
+    press(&mut a, "n");
+    type_text(&mut a, "Two");
+    a.update(ctrl('s'));
+    let ids = chat_of(&a).pending_save_ids();
+    assert_eq!(ids.len(), 2, "both saves await their answer");
+    (a, ids[0], ids[1])
+}
+
+fn saved_as(id: SaveId, project: &str, obs: i64, key: &str, title: &str) -> AppEvent {
+    AppEvent::Memory(MemReply::Saved {
+        pane: chat_id(),
+        id,
+        project: project.into(),
+        session: SESSION.into(),
+        observation_id: obs,
+        topic_key: key.into(),
+        title: title.into(),
+    })
+}
+
+fn note_link_project(effects: &[Effect]) -> String {
+    let [.., Effect::Store(StoreCmd::LinkNote { project, .. })] = effects else {
+        panic!("a note link, got {effects:?}");
+    };
+    project.clone()
+}
+
+#[test]
+fn a_busy_for_the_newest_save_does_not_swallow_the_oldest_one() {
+    let (mut a, first, second) = two_saves_in_flight();
+    // The link refused the second save at once: it was never queued.
+    a.update(AppEvent::Memory(MemReply::SaveUnavailable {
+        pane: chat_id(),
+        id: second,
+        reason: Reason::Busy,
+    }));
+    let editor = chat_of(&a).note_editor().expect("the second editor stays");
+    assert_eq!(editor.notice(), Some("engram is busy"), "its own failure");
+    assert_eq!(chat_of(&a).pending_save_ids(), vec![first]);
+    // The first save was really queued: its answer belongs to the first project.
+    let saved = a.update(saved_as(first, PROJECT, 1, "chat/decision/one", "One"));
+    assert_eq!(note_link_project(&saved), PROJECT);
+    assert!(chat_of(&a).pending_save_ids().is_empty());
+}
+
+#[test]
+fn replies_in_the_reverse_order_still_find_their_own_save() {
+    let (mut a, first, second) = two_saves_in_flight();
+    let saved = a.update(saved_as(
+        second,
+        OTHER_PROJECT,
+        2,
+        "chat/decision/two",
+        "Two",
+    ));
+    assert_eq!(note_link_project(&saved), OTHER_PROJECT);
+    assert!(
+        chat_of(&a).note_editor().is_none(),
+        "the editor of the second save closes"
+    );
+    assert_eq!(chat_of(&a).pending_save_ids(), vec![first]);
+    let saved = a.update(saved_as(first, PROJECT, 1, "chat/decision/one", "One"));
+    assert_eq!(note_link_project(&saved), PROJECT);
+}
+
+#[test]
+fn a_saved_reply_with_an_unknown_token_is_recorded_under_its_own_project() {
+    let (mut a, first, _second) = two_saves_in_flight();
+    let saved = a.update(saved_as(SaveId(99), "echoed", 5, "chat/decision/x", "X"));
+    assert_eq!(note_link_project(&saved), "echoed", "the note is not lost");
+    assert_eq!(chat_of(&a).pending_save_ids().len(), 2, "no save consumed");
+    assert!(
+        chat_of(&a).note_editor().unwrap().is_saving(),
+        "no editor is touched by an answer nobody awaits"
+    );
+    assert!(chat_of(&a).pending_save_ids().contains(&first));
+}
+
+#[test]
+fn a_failure_with_an_unknown_token_is_said_and_touches_nothing() {
+    let (mut a, _first, _second) = two_saves_in_flight();
+    a.update(AppEvent::Memory(MemReply::SaveFailed {
+        pane: chat_id(),
+        id: SaveId(99),
+        reason: "engram refused the note".into(),
+    }));
+    a.update(AppEvent::Memory(MemReply::SaveUnavailable {
+        pane: chat_id(),
+        id: SaveId(98),
+        reason: Reason::NoAnswer,
+    }));
+    assert_eq!(
+        systems(&a),
+        [
+            "note not saved: engram refused the note",
+            "note not saved: engram did not answer"
+        ]
+    );
+    assert!(chat_of(&a).note_editor().unwrap().is_saving());
+    assert_eq!(chat_of(&a).pending_save_ids().len(), 2);
+}
+
+#[test]
+fn a_restart_needed_answer_fails_the_save_it_belongs_to() {
+    let mut a = ready("body");
+    type_text(&mut a, "One");
+    let effects = a.update(ctrl('s'));
+    let [Effect::Memory(cmd)] = effects.as_slice() else {
+        panic!("one save, got {effects:?}");
+    };
+    // What a memory without a worker answers for that very command.
+    let reply = cmd.unavailable(Reason::RestartNeeded);
+    a.update(AppEvent::Memory(reply));
+    let editor = chat_of(&a).note_editor().expect("still open");
+    assert_eq!(editor.notice(), Some("memory applies after a restart"));
+    assert!(!editor.is_saving());
+    assert!(chat_of(&a).pending_save_ids().is_empty());
 }

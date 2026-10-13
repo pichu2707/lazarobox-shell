@@ -16,6 +16,12 @@ pub struct Note {
     pub content: String,
 }
 
+/// The token of one save. The chat mints it, the worker echoes it on the reply
+/// that answers that save (`Saved`, `SaveFailed`, `SaveUnavailable`), so a reply
+/// is matched to its save by token and never by the order of the queue.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct SaveId(pub u64);
+
 /// What the worker is asked to do. Plain values: the app emits them, the
 /// runtime executes them.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -28,6 +34,7 @@ pub enum MemCmd {
     /// is the directory of the chat: the session registers with it.
     Save {
         pane: PaneId,
+        id: SaveId,
         session: Option<String>,
         project: String,
         cwd: String,
@@ -59,6 +66,22 @@ impl MemCmd {
             | MemCmd::Save { pane, .. }
             | MemCmd::Delete { pane, .. } => Some(*pane),
             MemCmd::End { .. } | MemCmd::StartServer | MemCmd::Quit => None,
+        }
+    }
+
+    /// The reply that says this command cannot be done: a save answers with
+    /// its token, any other command with a plain `Unavailable`.
+    pub fn unavailable(&self, reason: Reason) -> MemReply {
+        match self {
+            MemCmd::Save { pane, id, .. } => MemReply::SaveUnavailable {
+                pane: *pane,
+                id: *id,
+                reason,
+            },
+            other => MemReply::Unavailable {
+                pane: other.pane(),
+                reason,
+            },
         }
     }
 }
@@ -165,16 +188,32 @@ pub enum MemReply {
         pane: PaneId,
         block: Option<ContextBlock>,
     },
-    /// A note was saved (or updated: same id).
+    /// A note was saved (or updated: same id). `id` is the token of the save
+    /// and `project` the one it was saved under, so the note is recorded under
+    /// the right project even if the token is no longer known.
     Saved {
         pane: PaneId,
+        id: SaveId,
+        project: String,
         session: String,
         observation_id: i64,
         topic_key: String,
         title: String,
     },
     /// A save failed; `reason` is short and sanitized.
-    SaveFailed { pane: PaneId, reason: String },
+    SaveFailed {
+        pane: PaneId,
+        id: SaveId,
+        reason: String,
+    },
+    /// Memory cannot take the save with this token (queue full, worker gone,
+    /// memory off, no answer). Answered for the save that failed, never for
+    /// another one.
+    SaveUnavailable {
+        pane: PaneId,
+        id: SaveId,
+        reason: Reason,
+    },
     /// Notes were deleted one by one.
     Deleted {
         pane: PaneId,
@@ -202,6 +241,7 @@ impl MemReply {
             | MemReply::Context { pane, .. }
             | MemReply::Saved { pane, .. }
             | MemReply::SaveFailed { pane, .. }
+            | MemReply::SaveUnavailable { pane, .. }
             | MemReply::Deleted { pane, .. } => Some(*pane),
             MemReply::Unavailable { pane, .. } => *pane,
             MemReply::Health { .. } | MemReply::Server(_) | MemReply::ServerOffer(_) => None,
@@ -232,6 +272,7 @@ mod tests {
             },
             MemCmd::Save {
                 pane,
+                id: SaveId(1),
                 session: None,
                 project: "p".into(),
                 cwd: "/x".into(),
@@ -262,6 +303,8 @@ mod tests {
             MemReply::Context { pane, block: None },
             MemReply::Saved {
                 pane,
+                id: SaveId(1),
+                project: "p".into(),
                 session: "s".into(),
                 observation_id: 1,
                 topic_key: "chat/bugfix/t".into(),
@@ -269,7 +312,13 @@ mod tests {
             },
             MemReply::SaveFailed {
                 pane,
+                id: SaveId(1),
                 reason: "r".into(),
+            },
+            MemReply::SaveUnavailable {
+                pane,
+                id: SaveId(1),
+                reason: Reason::Busy,
             },
             MemReply::Deleted {
                 pane,
@@ -338,6 +387,29 @@ mod tests {
         };
         assert_eq!(busy(Some(pane)).pane(), Some(pane));
         assert_eq!(busy(None).pane(), None);
+        let save = MemCmd::Save {
+            pane,
+            id: SaveId(4),
+            session: None,
+            project: "p".into(),
+            cwd: "/x".into(),
+            note: Note {
+                kind: MemKind::Bugfix,
+                title: "t".into(),
+                content: "c".into(),
+            },
+        };
+        let refused = save.unavailable(Reason::Busy);
+        assert_eq!(
+            refused,
+            MemReply::SaveUnavailable {
+                pane,
+                id: SaveId(4),
+                reason: Reason::Busy,
+            }
+        );
+        assert_eq!(refused.pane(), Some(pane));
+        assert_eq!(resolve.unavailable(Reason::Busy), busy(Some(pane)));
         let health = MemReply::Health {
             state: Health::Down,
             offer: false,

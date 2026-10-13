@@ -5,14 +5,12 @@
 //! recorded here so that every decision (what to link, what to end) is a
 //! plain function of this state.
 
-use std::collections::VecDeque;
-
 use super::{
     ChatState, Entry,
     note::{NOTHING_TO_SAVE, NoteEditor},
     yank,
 };
-use crate::core::ai::memory::reply::ProjectError;
+use crate::core::ai::memory::{port::SaveId, reply::ProjectError};
 
 /// The longest end-of-session summary, in characters.
 pub const END_SUMMARY_CAP: usize = 1000;
@@ -51,11 +49,14 @@ pub struct SavedNote {
     linked: bool,
 }
 
-/// A save sent to the worker whose answer has not come. The worker answers
-/// saves in the order it got them, so the oldest pending one is the one a
-/// reply is for.
+/// A save sent to the worker whose answer has not come. A reply names its
+/// save by `id`: matching by queue order would hand the answer of one save to
+/// another when a later save is refused at once (queue full) while an earlier
+/// one is still queued.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PendingSave {
+    /// The token the save carries and its reply echoes.
+    pub id: SaveId,
     /// The project the save was sent under: the note is recorded and linked
     /// under exactly this one.
     pub project: String,
@@ -75,7 +76,9 @@ pub struct ChatMemory {
     conversation: Option<i64>,
     link_warned: bool,
     ended: bool,
-    pending_saves: VecDeque<PendingSave>,
+    pending_saves: Vec<PendingSave>,
+    /// The last save token handed out.
+    saves_sent: u64,
     /// How many note editors this chat opened: the number of the open one.
     editors: u64,
 }
@@ -90,7 +93,8 @@ impl ChatMemory {
             conversation: None,
             link_warned: false,
             ended: false,
-            pending_saves: VecDeque::new(),
+            pending_saves: Vec::new(),
+            saves_sent: 0,
             editors: 0,
         }
     }
@@ -221,31 +225,47 @@ impl ChatState {
         Some(session)
     }
 
-    /// A save was sent under `project`; its answer is awaited.
-    pub fn save_sent(&mut self, project: &str) {
-        self.memory.pending_saves.push_back(PendingSave {
+    /// A save is about to be sent under `project`: its token, to put on the
+    /// command. Its answer is awaited.
+    pub fn save_sent(&mut self, project: &str) -> SaveId {
+        self.memory.saves_sent += 1;
+        let id = SaveId(self.memory.saves_sent);
+        self.memory.pending_saves.push(PendingSave {
+            id,
             project: project.to_owned(),
             editor: self.memory.editors,
         });
+        id
     }
 
-    /// The oldest save still awaiting its answer, now answered.
-    pub fn save_answered(&mut self) -> Option<PendingSave> {
-        self.memory.pending_saves.pop_front()
+    /// The save with token `id`, now answered. `None` for a token this chat
+    /// does not await (already answered, or never sent).
+    pub fn save_answered(&mut self, id: SaveId) -> Option<PendingSave> {
+        let at = self.memory.pending_saves.iter().position(|s| s.id == id)?;
+        Some(self.memory.pending_saves.remove(at))
     }
 
-    /// Whether a save is still awaiting its answer.
-    pub fn saves_pending(&self) -> bool {
-        !self.memory.pending_saves.is_empty()
+    /// The save with token `id`, while it awaits its answer.
+    pub fn pending_save(&self, id: SaveId) -> Option<PendingSave> {
+        self.memory
+            .pending_saves
+            .iter()
+            .find(|s| s.id == id)
+            .cloned()
+    }
+
+    /// The tokens of the saves still awaiting their answer, oldest first.
+    pub fn pending_save_ids(&self) -> Vec<SaveId> {
+        self.memory.pending_saves.iter().map(|s| s.id).collect()
     }
 
     /// The editor that sent `save`, while it is open and waiting. Without a
-    /// record of the save, the open editor if it is waiting.
+    /// record of the save, none: an answer nobody awaits touches no editor.
     fn editor_waiting_for(&mut self, save: Option<&PendingSave>) -> Option<&mut NoteEditor> {
         let current = self.memory.editors;
         self.editor
             .as_mut()
-            .filter(|e| e.is_saving() && save.is_none_or(|s| s.editor == current))
+            .filter(|e| e.is_saving() && save.is_some_and(|s| s.editor == current))
     }
 
     /// The save failed: the editor that sent it shows `reason` and keeps its

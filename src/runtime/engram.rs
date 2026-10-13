@@ -81,12 +81,8 @@ impl Memory {
         }
         if let Some(link) = &self.link {
             link.send(cmd);
-        } else if let (Some(replies), Some(pane)) = (&self.declined, cmd.pane()) {
-            let reason = Reason::RestartNeeded;
-            let _ = replies.try_send(MemReply::Unavailable {
-                pane: Some(pane),
-                reason,
-            });
+        } else if let (Some(replies), Some(_)) = (&self.declined, cmd.pane()) {
+            let _ = replies.try_send(cmd.unavailable(Reason::RestartNeeded));
         }
     }
 
@@ -116,7 +112,10 @@ mod tests {
     use super::*;
     use crate::{
         core::{
-            ai::memory::{port::MemReply, route::Call},
+            ai::memory::{
+                port::{MemReply, SaveId},
+                route::Call,
+            },
             layout::PaneId,
         },
         runtime::loopback::{CallError, Limits, Reply},
@@ -234,6 +233,28 @@ mod tests {
             rx.try_recv().expect("an answer at once"),
             MemReply::Unavailable {
                 pane: Some(PaneId::FIRST),
+                reason: Reason::RestartNeeded,
+            }
+        );
+        // A save is refused by its own token.
+        let save = MemCmd::Save {
+            pane: PaneId::FIRST,
+            id: SaveId(7),
+            session: None,
+            project: "p".into(),
+            cwd: "/x".into(),
+            note: crate::core::ai::memory::port::Note {
+                kind: crate::core::ai::memory::kind::MemKind::Decision,
+                title: "t".into(),
+                content: "c".into(),
+            },
+        };
+        rig.memory.send(save);
+        assert_eq!(
+            rx.try_recv().expect("an answer at once"),
+            MemReply::SaveUnavailable {
+                pane: PaneId::FIRST,
+                id: SaveId(7),
                 reason: Reason::RestartNeeded,
             }
         );

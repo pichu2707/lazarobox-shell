@@ -27,7 +27,7 @@ use crate::{
                 context::ContextBlock,
                 health::{Health, classify_health},
                 offer::{self, Binary, Decision, Facts, Offer},
-                port::{MemCmd, MemReply, Note, Reason, ServerOutcome},
+                port::{MemCmd, MemReply, Note, Reason, SaveId, ServerOutcome},
                 reply::{
                     DeleteOutcome, ProjectError, parse_context, parse_delete, parse_end,
                     parse_project, parse_saved, parse_session, session_missing,
@@ -170,15 +170,14 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
             if cmd == MemCmd::Quit {
                 break;
             }
-            let pane = cmd.pane();
+            let refused = cmd.unavailable(Reason::NoAnswer);
             let handled = AssertUnwindSafe(chat::scoped(self.handle(cmd)))
                 .catch_unwind()
                 .await;
             if handled.is_err() {
                 // The state may be half updated: forget it and probe again.
                 self.forget();
-                let reason = Reason::NoAnswer;
-                self.say(MemReply::Unavailable { pane, reason }).await;
+                self.say(refused).await;
             }
         }
     }
@@ -212,14 +211,15 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
             }
             MemCmd::Save {
                 pane,
+                id,
                 session,
                 project,
                 cwd,
                 note,
             } => {
-                let reply = match self.save(pane, session, &project, &cwd, &note).await {
+                let reply = match self.save(pane, id, session, &project, &cwd, &note).await {
                     Ok(reply) => reply,
-                    Err(reason) => unavailable(pane, reason),
+                    Err(reason) => MemReply::SaveUnavailable { pane, id, reason },
                 };
                 self.say(reply).await;
             }
@@ -477,6 +477,7 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
     async fn save(
         &mut self,
         pane: PaneId,
+        id: SaveId,
         session: Option<String>,
         project: &str,
         cwd: &str,
@@ -485,6 +486,7 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
         self.ready().await?;
         let failed = |reason: &str| MemReply::SaveFailed {
             pane,
+            id,
             reason: reason.to_string(),
         };
         let Some(session) = session.or_else(new_session_id) else {
@@ -511,6 +513,8 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
                 let (title, topic_key) = sent_labels(&call);
                 Ok(MemReply::Saved {
                     pane,
+                    id,
+                    project: project.to_owned(),
                     session,
                     observation_id: saved.id,
                     topic_key,
@@ -628,10 +632,7 @@ impl MemoryLink {
             Err(TrySendError::Full(cmd)) => (cmd, Reason::Busy),
             Err(TrySendError::Closed(cmd)) => (cmd, Reason::NoAnswer),
         };
-        let pane = cmd.pane();
-        let _ = self
-            .replies
-            .try_send(MemReply::Unavailable { pane, reason });
+        let _ = self.replies.try_send(cmd.unavailable(reason));
     }
 
     /// Asks the worker to stop after the commands already queued (so pending

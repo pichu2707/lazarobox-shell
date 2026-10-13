@@ -112,9 +112,10 @@ impl App {
                     }
                     return Vec::new();
                 };
-                chat.save_sent(&project);
+                let token = chat.save_sent(&project);
                 vec![Effect::Memory(MemCmd::Save {
                     pane: id,
+                    id: token,
                     session: chat.session().map(|s| s.id.clone()),
                     project,
                     cwd: chat
@@ -167,8 +168,10 @@ impl App {
                     }
                 }
             }
-            MemReply::Unavailable { reason, .. } if chat.saves_pending() => {
-                let save = chat.save_answered();
+            MemReply::SaveUnavailable {
+                id: token, reason, ..
+            } => {
+                let save = chat.save_answered(*token);
                 save_not_done(chat, save.as_ref(), &reason.text());
             }
             MemReply::Unavailable { reason, .. } => {
@@ -177,29 +180,29 @@ impl App {
                     self.notice = Some(note::not_ready(&text));
                 }
             }
-            MemReply::SaveFailed { reason, .. } => {
-                let save = chat.save_answered();
+            MemReply::SaveFailed {
+                id: token, reason, ..
+            } => {
+                let save = chat.save_answered(*token);
                 save_not_done(chat, save.as_ref(), reason);
             }
             MemReply::Saved {
+                id: token,
+                project,
                 session,
                 observation_id,
                 topic_key,
                 title,
                 ..
             } => {
-                // The project the save was sent under, as `Save` chose it.
-                let save = chat.save_answered();
-                let project = save.as_ref().map(|p| p.project.clone()).or_else(|| {
-                    chat.session()
-                        .map(|s| s.project.clone())
-                        .or_else(|| chat.project().map(str::to_owned))
-                });
-                let Some(project) = project else {
-                    return Vec::new();
-                };
-                chat.adopt_session(session, &project);
-                chat.record_note(&project, topic_key, *observation_id, title);
+                // The editor bookkeeping comes from the pending save with this
+                // token (none: no editor is touched). The note is recorded
+                // under the project the worker saved it under, which it echoes,
+                // so a reply whose token is unknown still lands in the right
+                // project instead of being lost.
+                let save = chat.save_answered(*token);
+                chat.adopt_session(session, project);
+                chat.record_note(project, topic_key, *observation_id, title);
                 // The editor that sent this save closes; one the user opened
                 // since stays.
                 chat.close_saved_editor(save.as_ref());
