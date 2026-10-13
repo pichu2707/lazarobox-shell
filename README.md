@@ -110,6 +110,8 @@ Teclas dentro del chat:
 | `Ctrl+Y` / `Ctrl+B`    | Copia la última respuesta / su último bloque de código (OSC 52) |
 | `PageUp` / `PageDown`  | Desplaza la conversación                            |
 
+**Perfiles y prompts:** `profile = "analyst"` o `"programmer"` (por defecto) en `[ai]`, o la fila Profile del menú de IA, elige el _system prompt_ integrado. Puedes sustituirlo con `~/.config/lazarobox/prompts/<perfil>/<tarea>.md` (después `general.md`; máx. 16 KiB). El prompt incluye un bloque de contexto del workspace (proyecto, rama, directorio relativo, SO, shell y fecha; nunca rutas absolutas ni contenido); se desactiva con `context = false` o la fila Context del menú.
+
 Para cerrar el panel: `Ctrl+Espacio`, `w`, `q`. La respuesta se muestra mientras se genera; si el modelo "piensa" (por ejemplo `qwen3`), la barra de estado muestra un indicador `thinking` y el razonamiento queda en un bloque aparte.
 
 **Motor y modelo:** el chat usa la tarea `chat`. Se elige en el menú de IA (`Ctrl+Espacio` y `m`) o a mano en `config.toml`:
@@ -127,7 +129,6 @@ Si la tarea `chat` no tiene motor propio, usa el motor general (`[ai]`). El pane
 Límites de esta versión:
 
 - Solo Ollama: los demás motores se detectan, pero aún no tienen adaptador de chat.
-- Un único _system prompt_ fijo (los perfiles llegarán más adelante).
 - Sin historial: la conversación se pierde al cerrar el panel.
 
 ### Memoria del proyecto (engram)

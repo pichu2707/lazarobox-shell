@@ -10,6 +10,44 @@ baseline.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-13
+
+### Added
+
+- AI profiles for the chat: `analyst` and `programmer`, set with `profile` in
+  the `[ai]` section of `config.toml` (default `programmer`) or with the new
+  Profile row in the AI menu (`Ctrl+Space m`). An invalid value is reported and
+  the default is kept.
+- Built-in system prompts: ten in total, one for each profile and task
+  (`general`, `code`, `chat`, `review` and `summarize`). The chat uses the
+  `chat` prompt of the chosen profile.
+- Prompt overrides: put your own prompt in
+  `~/.config/lazarobox/prompts/<profile>/<task>.md`. The task file wins, then
+  `general.md`, then the built-in prompt. Files must be regular UTF-8 text of
+  at most 16 KiB; one that cannot be used is skipped with a notice.
+- Workspace context in the system prompt: a short block with the project, git
+  branch, current directory relative to the repository root, OS, shell and
+  date. It never includes absolute paths, environment variables, file contents
+  or terminal output; your home directory is shown as `~`, and git is never
+  run. Turn it off with `context = false` in `[ai]` or with the new Context
+  row in the AI menu. It is on by default.
+- If the context cannot be prepared within 2 seconds, the chat falls back to
+  the built-in prompt and shows the notice `workspace context unavailable`.
+
+### Fixed
+
+- Closing a chat pane while its first message was waiting for the prompt no
+  longer sends that message.
+
+### Known limitations
+
+- Conversations are not saved yet; chat history arrives in a later release.
+  Starting the app still creates an empty, private database file at
+  `$XDG_DATA_HOME/lazarobox/chat.db` (default `~/.local/share/lazarobox/`),
+  for that future history; nothing is written to it yet.
+- Only Ollama has a chat adapter. Other engines are detected but cannot chat.
+- The chat talks to `127.0.0.1` only and sends no credentials.
+
 ## [0.8.0] - 2026-10-12
 
 First release published to crates.io.
@@ -113,6 +151,7 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/pichu2707/lazarobox-shell/releases/tag/v0.7.0
