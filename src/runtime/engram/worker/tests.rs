@@ -1055,3 +1055,513 @@ async fn a_silent_server_never_blocks_the_caller() {
     // `send` is synchronous: no await point, so no time can pass.
     assert_eq!(Instant::now() - start, Duration::ZERO);
 }
+
+// ---- 7.4 the engram serve offer and start ----
+
+use std::{io, path::Path};
+
+use tokio::sync::oneshot;
+
+use crate::{
+    core::ai::memory::{
+        offer::{Binary, Offer},
+        port::ServerOutcome,
+    },
+    runtime::engram::serve::{Launcher, Running},
+};
+
+const BIN: &str = "/opt/engram/bin/engram";
+
+/// When the fake child "exits".
+#[derive(Clone, Copy)]
+enum Exit {
+    Never,
+    Now,
+}
+
+struct Launched {
+    binary: Binary,
+    finds: usize,
+    spawns: Vec<(String, u16)>,
+    fail_spawn: bool,
+    exit: Exit,
+    log: Option<String>,
+    on_spawn: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Keeps the exit senders alive, as the real reaper task does.
+    held: Vec<oneshot::Sender<()>>,
+}
+
+#[derive(Clone)]
+struct Launch(Arc<Mutex<Launched>>);
+
+impl Launch {
+    fn new(binary: Binary) -> Self {
+        Self(Arc::new(Mutex::new(Launched {
+            binary,
+            finds: 0,
+            spawns: Vec::new(),
+            fail_spawn: false,
+            exit: Exit::Never,
+            log: None,
+            on_spawn: None,
+            held: Vec::new(),
+        })))
+    }
+
+    fn with(self, change: impl FnOnce(&mut Launched)) -> Self {
+        change(&mut self.0.lock().unwrap());
+        self
+    }
+
+    fn finds(&self) -> usize {
+        self.0.lock().unwrap().finds
+    }
+
+    fn spawns(&self) -> Vec<(String, u16)> {
+        self.0.lock().unwrap().spawns.clone()
+    }
+}
+
+impl Launcher for Launch {
+    async fn find(&self) -> Binary {
+        let mut state = self.0.lock().unwrap();
+        state.finds += 1;
+        state.binary.clone()
+    }
+
+    async fn spawn(&self, binary: &Path, port: u16) -> io::Result<Running> {
+        let (hook, running) = {
+            let mut state = self.0.lock().unwrap();
+            state
+                .spawns
+                .push((binary.to_string_lossy().into_owned(), port));
+            if state.fail_spawn {
+                return Err(io::Error::other("no such file"));
+            }
+            let (tx, exit) = oneshot::channel();
+            match state.exit {
+                Exit::Now => {
+                    let _ = tx.send(());
+                }
+                Exit::Never => state.held.push(tx),
+            }
+            (
+                state.on_spawn.clone(),
+                Running {
+                    pid: 4242,
+                    exit,
+                    log_from: 0,
+                },
+            )
+        };
+        if let Some(hook) = hook {
+            hook();
+        }
+        Ok(running)
+    }
+
+    async fn log_line(&self, _from: u64) -> Option<String> {
+        self.0.lock().unwrap().log.clone()
+    }
+}
+
+fn found(version: &str) -> Binary {
+    Binary::Found {
+        path: BIN.into(),
+        version: Some(version.into()),
+    }
+}
+
+fn serve_rig(mode: Mode, launch: &Launch) -> Rig {
+    let fake = Fake::new(mode);
+    let (tx, rx) = mpsc::channel(256);
+    let link = spawn_with(fake.clone(), launch.clone(), PORT, tx);
+    Rig { link, rx, fake }
+}
+
+fn the_offer() -> Offer {
+    Offer {
+        path: BIN.into(),
+        port: PORT,
+    }
+}
+
+fn unavailable_global(reason: Reason) -> MemReply {
+    MemReply::Unavailable { pane: None, reason }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_down_server_with_a_3x_binary_gets_one_offer_with_the_absolute_path() {
+    let launch = Launch::new(found("engram 3.4.0"));
+    let mut rig = serve_rig(Mode::Down, &launch);
+    rig.link.send(resolve(1, "/a"));
+    assert!(matches!(
+        rig.next().await,
+        MemReply::Health {
+            state: Health::Down,
+            offer: true
+        }
+    ));
+    assert_eq!(rig.next().await, MemReply::ServerOffer(the_offer()));
+    assert_eq!(
+        rig.next().await,
+        MemReply::Unavailable {
+            pane: Some(pane(1)),
+            reason: Reason::NotRunning
+        }
+    );
+    assert!(rig.fake.keys().iter().all(|k| k.starts_with("GET /health")));
+    // Down again 10 s later (a Ready cycle in between): no second offer.
+    rig.fake.mode(Mode::Up(INSTANCE.into()));
+    tokio::time::sleep(REPROBE).await;
+    rig.link.send(resolve(2, "/a"));
+    rig.answer().await;
+    rig.fake.mode(Mode::Down);
+    rig.fake.on("GET /project", Act::Fail(CallError::Connect));
+    rig.link.send(resolve(3, "/b"));
+    loop {
+        let reply = rig.next().await;
+        assert!(!matches!(reply, MemReply::ServerOffer(_)), "second offer");
+        if matches!(reply, MemReply::Unavailable { .. }) {
+            break;
+        }
+    }
+    assert_eq!(launch.finds(), 1, "the binary is looked up once per run");
+    assert!(launch.spawns().is_empty(), "an offer spawns nothing");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_missing_or_1x_binary_is_told_once_and_never_offered() {
+    for (binary, reason) in [
+        (Binary::Missing, Reason::NoBinary),
+        (found("engram 1.20.0"), Reason::OldBinary),
+    ] {
+        let launch = Launch::new(binary);
+        let mut rig = serve_rig(Mode::Down, &launch);
+        rig.link.send(resolve(1, "/a"));
+        assert!(matches!(rig.next().await, MemReply::Health { .. }));
+        assert_eq!(rig.next().await, unavailable_global(reason.clone()));
+        assert_eq!(
+            rig.next().await,
+            MemReply::Unavailable {
+                pane: Some(pane(1)),
+                reason: Reason::NotRunning
+            }
+        );
+        assert!(rig.quiet());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn old_foreign_and_silent_servers_get_no_offer_and_no_binary_lookup() {
+    let launch = Launch::new(found("engram 3.4.0"));
+    for mode in [Mode::Old, Mode::Foreign] {
+        let mut rig = serve_rig(mode, &launch);
+        rig.link.send(resolve(1, "/a"));
+        while let Some(reply) = tokio::time::timeout(Duration::from_secs(1), rig.rx.recv())
+            .await
+            .ok()
+            .flatten()
+        {
+            assert!(!matches!(reply, MemReply::ServerOffer(_)), "{reply:?}");
+        }
+    }
+    // A probe that times out is a busy server, not a missing one.
+    let mut rig = serve_rig(Mode::Down, &launch);
+    rig.fake.on("GET /health", Act::Hang);
+    rig.link.send(resolve(1, "/a"));
+    while let Some(reply) = tokio::time::timeout(Duration::from_secs(1), rig.rx.recv())
+        .await
+        .ok()
+        .flatten()
+    {
+        assert!(!matches!(reply, MemReply::ServerOffer(_)), "{reply:?}");
+    }
+    assert_eq!(launch.finds(), 0);
+}
+
+fn down_up_after(fake: &Fake, after: Duration) -> Arc<dyn Fn() + Send + Sync> {
+    let fake = fake.clone();
+    Arc::new(move || {
+        let fake = fake.clone();
+        if after.is_zero() {
+            fake.mode(Mode::Up(INSTANCE.into()));
+            return;
+        }
+        tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            fake.mode(Mode::Up(INSTANCE.into()));
+        });
+    })
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_ready_server_at_the_re_probe_is_adopted_with_zero_spawns() {
+    let launch = Launch::new(found("engram 3.4.0"));
+    let mut rig = serve_rig(Mode::Up(INSTANCE.into()), &launch);
+    rig.link.send(MemCmd::StartServer);
+    assert_eq!(rig.answer().await, MemReply::Server(ServerOutcome::Adopted));
+    assert!(launch.spawns().is_empty());
+    assert_eq!(launch.finds(), 0, "no need to look for a binary");
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_confirmed_binary_is_spawned_once_with_the_port_and_reported_with_its_pid() {
+    let launch = Launch::new(found("engram 3.4.0"));
+    let mut rig = serve_rig(Mode::Down, &launch);
+    launch
+        .0
+        .lock()
+        .unwrap()
+        .on_spawn
+        .replace(down_up_after(&rig.fake, Duration::from_millis(250)));
+    rig.link.send(resolve(1, "/a"));
+    assert_eq!(rig.answer().await, MemReply::ServerOffer(the_offer()));
+    rig.next().await; // the Unavailable of the resolve that found it down
+    let start = Instant::now();
+    rig.link.send(MemCmd::StartServer);
+    assert_eq!(
+        rig.answer().await,
+        MemReply::Server(ServerOutcome::Started { pid: 4242 })
+    );
+    let took = Instant::now() - start;
+    assert!(
+        took >= Duration::from_millis(250) && took <= Duration::from_millis(500),
+        "polled every 100 ms until it answered: {took:?}"
+    );
+    assert_eq!(launch.spawns(), [(BIN.to_string(), PORT)]);
+    // The worker now knows the server is ready: no second probe is needed.
+    rig.link.send(resolve(2, "/a"));
+    assert!(matches!(rig.answer().await, MemReply::Project { .. }));
+    // Quit leaves the server alone and spawns nothing more.
+    rig.link.shutdown(Duration::from_secs(1)).await;
+    assert_eq!(launch.spawns().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn losing_the_port_race_adopts_the_winner_without_a_second_spawn() {
+    let launch = Launch::new(found("engram 3.4.0")).with(|l| l.exit = Exit::Now);
+    let mut rig = serve_rig(Mode::Down, &launch);
+    launch
+        .0
+        .lock()
+        .unwrap()
+        .on_spawn
+        .replace(down_up_after(&rig.fake, Duration::ZERO));
+    rig.link.send(MemCmd::StartServer);
+    assert_eq!(rig.answer().await, MemReply::Server(ServerOutcome::Adopted));
+    assert_eq!(launch.spawns().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_child_that_exits_with_nothing_answering_fails_with_its_last_log_line() {
+    let launch = Launch::new(found("engram 3.4.0")).with(|l| {
+        l.exit = Exit::Now;
+        l.log = Some("fatal: cannot open database".into());
+    });
+    let mut rig = serve_rig(Mode::Down, &launch);
+    rig.link.send(MemCmd::StartServer);
+    let reply = rig.answer().await;
+    assert_eq!(
+        reply,
+        MemReply::Server(ServerOutcome::Failed(Reason::StartFailed(Some(
+            "fatal: cannot open database".into()
+        ))))
+    );
+    // No further spawn in this run, however often it is asked.
+    rig.link.send(MemCmd::StartServer);
+    assert!(matches!(
+        rig.answer().await,
+        MemReply::Server(ServerOutcome::Failed(_))
+    ));
+    assert_eq!(launch.spawns().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_child_that_stays_up_but_never_answers_gives_up_after_3_seconds() {
+    let launch = Launch::new(found("engram 3.4.0")).with(|l| l.log = None);
+    let mut rig = serve_rig(Mode::Down, &launch);
+    let start = Instant::now();
+    rig.link.send(MemCmd::StartServer);
+    assert_eq!(
+        rig.answer().await,
+        MemReply::Server(ServerOutcome::Failed(Reason::StartFailed(None)))
+    );
+    let took = Instant::now() - start;
+    assert!(
+        took >= Duration::from_secs(3) && took < Duration::from_millis(3300),
+        "{took:?}"
+    );
+    let probes = rig.fake.count("GET /health");
+    assert!(
+        (28..=33).contains(&probes),
+        "one probe per 100 ms: {probes}"
+    );
+    assert_eq!(launch.spawns().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_spawn_that_fails_is_a_failure_and_not_retried() {
+    let launch = Launch::new(found("engram 3.4.0")).with(|l| l.fail_spawn = true);
+    let mut rig = serve_rig(Mode::Down, &launch);
+    rig.link.send(MemCmd::StartServer);
+    assert_eq!(
+        rig.answer().await,
+        MemReply::Server(ServerOutcome::Failed(Reason::StartFailed(None)))
+    );
+    rig.link.send(MemCmd::StartServer);
+    rig.answer().await;
+    assert_eq!(launch.spawns().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_old_or_foreign_server_at_the_re_probe_is_a_failure_without_a_spawn() {
+    for (mode, reason) in [
+        (Mode::Old, Reason::OldServer { port: PORT }),
+        (Mode::Foreign, Reason::Foreign { port: PORT }),
+    ] {
+        let launch = Launch::new(found("engram 3.4.0"));
+        let mut rig = serve_rig(mode, &launch);
+        rig.link.send(MemCmd::StartServer);
+        assert_eq!(
+            rig.answer().await,
+            MemReply::Server(ServerOutcome::Failed(reason))
+        );
+        assert!(launch.spawns().is_empty());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_start_without_an_offer_looks_for_the_binary_itself_and_refuses_1x_or_none() {
+    for (binary, reason) in [
+        (Binary::Missing, Reason::NoBinary),
+        (found("engram 1.20.0"), Reason::OldBinary),
+        (Binary::NotChecked, Reason::NoBinary),
+    ] {
+        let launch = Launch::new(binary);
+        let mut rig = serve_rig(Mode::Down, &launch);
+        rig.link.send(MemCmd::StartServer);
+        assert_eq!(
+            rig.answer().await,
+            MemReply::Server(ServerOutcome::Failed(reason))
+        );
+        assert!(launch.spawns().is_empty());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_binary_the_user_confirmed_is_the_one_that_runs() {
+    let launch = Launch::new(found("engram 3.4.0"));
+    let mut rig = serve_rig(Mode::Down, &launch);
+    rig.link.send(resolve(1, "/a"));
+    assert_eq!(rig.answer().await, MemReply::ServerOffer(the_offer()));
+    // The PATH changes after the question: the answer still means BIN.
+    launch.0.lock().unwrap().binary = Binary::Found {
+        path: "/tmp/evil/engram".into(),
+        version: Some("engram 3.9.9".into()),
+    };
+    rig.link.send(MemCmd::StartServer);
+    while !matches!(rig.answer().await, MemReply::Server(_)) {}
+    assert_eq!(launch.spawns(), [(BIN.to_string(), PORT)]);
+}
+
+// ---- 7.4 end to end: the worker with real fake `engram` scripts ----
+
+mod with_processes {
+    use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
+
+    use super::*;
+    use crate::runtime::engram::serve::Server;
+
+    struct Setup {
+        _dir: tempfile::TempDir,
+        server: Server,
+        script: PathBuf,
+    }
+
+    fn setup(body: &str) -> Setup {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let script = bin.join("engram");
+        let text = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'engram 3.4.0'; exit 0; fi\n{body}\n"
+        );
+        fs::write(&script, text).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let server = Server::new(bin.into(), dir.path().join("state"));
+        Setup {
+            _dir: dir,
+            server,
+            script,
+        }
+    }
+
+    fn kill(pid: u32) {
+        // SAFETY: a plain signal to the fake server this test spawned.
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    }
+
+    #[tokio::test]
+    async fn a_script_that_exits_1_shows_could_not_start_engram_with_its_log_line() {
+        let setup =
+            setup("echo \"\x1b[31mlisten tcp :9100: bind: address already in use\" >&2; exit 1");
+        let fake = Fake::new(Mode::Down);
+        let (tx, mut rx) = mpsc::channel(16);
+        let link = spawn_with(fake.clone(), setup.server, PORT, tx);
+        link.send(resolve(1, "/a"));
+        let offer = loop {
+            match rx.recv().await.unwrap() {
+                MemReply::ServerOffer(offer) => break offer,
+                _ => continue,
+            }
+        };
+        assert_eq!(offer.path, setup.script.to_string_lossy());
+        link.send(MemCmd::StartServer);
+        let outcome = loop {
+            if let MemReply::Server(outcome) = rx.recv().await.unwrap() {
+                break outcome;
+            }
+        };
+        let ServerOutcome::Failed(reason) = outcome else {
+            panic!("{outcome:?}");
+        };
+        // The escape sequence the script printed is gone from the line.
+        assert_eq!(
+            reason.line(),
+            "memory unavailable: could not start engram: \
+             listen tcp :9100: bind: address already in use"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_script_that_stays_up_is_started_and_survives_the_worker() {
+        let setup = setup("exec sleep 30");
+        let fake = Fake::new(Mode::Down);
+        let (tx, mut rx) = mpsc::channel(16);
+        let link = spawn_with(fake.clone(), setup.server, PORT, tx);
+        link.send(resolve(1, "/a"));
+        link.send(MemCmd::StartServer);
+        // The "server" starts answering a moment after the spawn.
+        let flip = fake.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            flip.mode(Mode::Up(INSTANCE.into()));
+        });
+        let pid = loop {
+            if let MemReply::Server(outcome) = rx.recv().await.unwrap() {
+                let ServerOutcome::Started { pid } = outcome else {
+                    panic!("{outcome:?}");
+                };
+                break pid;
+            }
+        };
+        link.shutdown(Duration::from_secs(1)).await;
+        drop(rx);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // SAFETY: signal 0 only checks that the pid exists.
+        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
+        kill(pid);
+        assert!(alive, "quitting the worker must not end the server");
+    }
+}

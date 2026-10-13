@@ -81,7 +81,7 @@ pub enum MemCmd { Resolve { pane, cwd }, Context { pane, project }, Save { pane,
                   End { session, project, summary }, Delete { pane, notes: Vec<(String, i64)> }, StartServer, Quit }
 pub enum MemReply { Health { state: Health, offer: bool }, Project { pane, result: Result<String, ProjectError> },
                     Context { pane, block: Option<ContextBlock> }, Saved { pane, session, observation_id: i64, topic_key, title },
-                    Deleted { pane, ok: usize, failed: usize }, Server(ServerOutcome), Unavailable { pane: Option<PaneId>, reason } }
+                    Deleted { pane, ok: usize, failed: usize }, Server(ServerOutcome), ServerOffer(Offer), Unavailable { pane: Option<PaneId>, reason } }
 Effect::Memory(MemCmd);  AppEvent::Memory(MemReply);  StoreReply::Created { pane, conversation, evicted, evicted_notes: u32 }
 ```
 

@@ -84,20 +84,31 @@ pub fn decide(facts: &Facts) -> Decision {
         // Only a refused connection means nothing runs there; a timeout is a
         // server that is busy, and starting a second one would race it.
         Some(Health::Down) if facts.reason == Some(&Reason::NotRunning) && !facts.used => {
-            match facts.binary {
-                Binary::NotChecked => Decision::Nothing,
-                Binary::Missing => Decision::Notice(Reason::NoBinary),
-                Binary::Found { path, version } => match version.as_deref().and_then(major) {
-                    Some(m) if m >= MIN_MAJOR => Decision::Offer(Offer {
-                        path: path.clone(),
-                        port,
-                    }),
-                    Some(_) => Decision::Notice(Reason::OldBinary),
-                    None => Decision::Notice(Reason::NoBinary),
-                },
+            if *facts.binary == Binary::NotChecked {
+                return Decision::Nothing;
+            }
+            match usable(facts.binary) {
+                Ok(path) => Decision::Offer(Offer {
+                    path: path.to_string(),
+                    port,
+                }),
+                Err(reason) => Decision::Notice(reason),
             }
         }
         _ => Decision::Nothing,
+    }
+}
+
+/// The path of a binary that may be started: found, and a 3.x or later. Else
+/// why not: none (or one whose version cannot be read) or a 1.x.
+pub fn usable(binary: &Binary) -> Result<&str, Reason> {
+    match binary {
+        Binary::Found { path, version } => match version.as_deref().and_then(major) {
+            Some(m) if m >= MIN_MAJOR => Ok(path),
+            Some(_) => Err(Reason::OldBinary),
+            None => Err(Reason::NoBinary),
+        },
+        Binary::NotChecked | Binary::Missing => Err(Reason::NoBinary),
     }
 }
 
@@ -295,6 +306,15 @@ mod tests {
                 "{binary:?}"
             );
         }
+    }
+
+    #[test]
+    fn only_a_found_3x_binary_is_usable() {
+        assert_eq!(usable(&found("engram 3.4.0")), Ok(BIN));
+        assert_eq!(usable(&found("engram 1.2.0")), Err(Reason::OldBinary));
+        assert_eq!(usable(&found("???")), Err(Reason::NoBinary));
+        assert_eq!(usable(&Binary::Missing), Err(Reason::NoBinary));
+        assert_eq!(usable(&Binary::NotChecked), Err(Reason::NoBinary));
     }
 
     #[test]

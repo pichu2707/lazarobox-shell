@@ -198,7 +198,12 @@ fn memory_for(
     replies: mpsc::Sender<crate::core::ai::memory::port::MemReply>,
 ) -> Memory {
     Memory::for_config(config, move |port| {
-        engram::spawn(Loopback::new(port, read_token()), port, replies)
+        engram::spawn_with(
+            Loopback::new(port, read_token()),
+            engram::serve::Server::from_env(),
+            port,
+            replies,
+        )
     })
 }
 

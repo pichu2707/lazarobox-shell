@@ -49,6 +49,49 @@ pub fn state_dir(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBu
     Some(base.join("lazarobox"))
 }
 
+/// What the worker needs to start a server. A trait so the worker's logic is
+/// tested without processes; `Server` is the real one.
+pub trait Launcher: Send + Sync + 'static {
+    /// The first `engram` on the PATH and its version output.
+    fn find(&self) -> impl Future<Output = Binary> + Send;
+    /// Spawns `<binary> serve <port>` detached.
+    fn spawn(&self, binary: &Path, port: u16) -> impl Future<Output = io::Result<Running>> + Send;
+    /// The last log line written since `from`.
+    fn log_line(&self, from: u64) -> impl Future<Output = Option<String>> + Send;
+}
+
+/// A launcher that does not look and cannot start: a worker without the
+/// `engram serve` offer.
+pub struct NoServer;
+
+impl Launcher for NoServer {
+    async fn find(&self) -> Binary {
+        Binary::NotChecked
+    }
+
+    async fn spawn(&self, _binary: &Path, _port: u16) -> io::Result<Running> {
+        Err(io::Error::other("starting a server is not available"))
+    }
+
+    async fn log_line(&self, _from: u64) -> Option<String> {
+        None
+    }
+}
+
+impl Launcher for Server {
+    async fn find(&self) -> Binary {
+        Server::find(self).await
+    }
+
+    async fn spawn(&self, binary: &Path, port: u16) -> io::Result<Running> {
+        Server::spawn(self, binary, port).await
+    }
+
+    async fn log_line(&self, from: u64) -> Option<String> {
+        Server::log_line(self, from).await
+    }
+}
+
 /// Finds, starts and reads the log of the user's `engram serve`.
 pub struct Server {
     path: OsString,

@@ -7,32 +7,39 @@
 use std::{
     collections::{HashMap, HashSet},
     panic::AssertUnwindSafe,
+    path::Path,
     time::Duration,
 };
 
 use futures::FutureExt;
 use tokio::{
+    select,
     sync::mpsc::{self, error::TrySendError},
     task::JoinHandle,
-    time::{Instant, timeout},
+    time::{Instant, sleep, timeout},
 };
 
 use crate::{
     core::{
-        ai::memory::{
-            context::ContextBlock,
-            health::{Health, classify_health},
-            port::{MemCmd, MemReply, Note, Reason},
-            reply::{
-                DeleteOutcome, ProjectError, parse_context, parse_delete, parse_end, parse_project,
-                parse_saved, parse_session, session_missing,
+        ai::{
+            config::MemoryConfig,
+            memory::{
+                context::ContextBlock,
+                health::{Health, classify_health},
+                offer::{self, Binary, Decision, Facts, Offer},
+                port::{MemCmd, MemReply, Note, Reason, ServerOutcome},
+                reply::{
+                    DeleteOutcome, ProjectError, parse_context, parse_delete, parse_end,
+                    parse_project, parse_saved, parse_session, session_missing,
+                },
+                route::{self, Call, Method},
             },
-            route::{self, Call, Method},
         },
         layout::PaneId,
     },
     runtime::{
         chat,
+        engram::serve::{Launcher, NoServer, Running},
         loopback::{self, CallError, Limits, Reply},
     },
 };
@@ -41,6 +48,13 @@ use crate::{
 pub const QUEUE: usize = 64;
 /// How long a failed probe is trusted before the next one.
 pub const REPROBE: Duration = Duration::from_secs(10);
+
+/// How often a started server is probed, and for how long.
+const START_POLL: Duration = Duration::from_millis(100);
+const START_WAIT: Duration = Duration::from_secs(3);
+/// The longest the worker waits for the launcher to look for the binary or
+/// to spawn it, whatever the launcher does.
+const LAUNCH_BOUND: Duration = Duration::from_secs(3);
 
 /// How a call reaches the server.
 pub trait Transport: Send + Sync + 'static {
@@ -105,8 +119,9 @@ struct Probe {
     at: Instant,
 }
 
-struct Worker<T> {
+struct Worker<T, L> {
     transport: T,
+    launcher: L,
     port: u16,
     replies: mpsc::Sender<MemReply>,
     probe: Option<Probe>,
@@ -118,12 +133,20 @@ struct Worker<T> {
     projects: HashMap<String, Result<String, ProjectError>>,
     /// The sessions registered on the current instance.
     registered: HashSet<String>,
+    /// The `engram serve` offer was weighed (offered, told why not, or not
+    /// possible): it happens once per run.
+    weighed: bool,
+    /// The offer the user was asked, which is the binary a start runs.
+    offered: Option<Offer>,
+    /// A server was spawned: never a second one in this run.
+    spawned: bool,
 }
 
-impl<T: Transport> Worker<T> {
-    fn new(transport: T, port: u16, replies: mpsc::Sender<MemReply>) -> Self {
+impl<T: Transport, L: Launcher> Worker<T, L> {
+    fn new(transport: T, launcher: L, port: u16, replies: mpsc::Sender<MemReply>) -> Self {
         Self {
             transport,
+            launcher,
             port,
             replies,
             probe: None,
@@ -131,6 +154,9 @@ impl<T: Transport> Worker<T> {
             instance: None,
             projects: HashMap::new(),
             registered: HashSet::new(),
+            weighed: false,
+            offered: None,
+            spawned: false,
         }
     }
 
@@ -207,8 +233,11 @@ impl<T: Transport> Worker<T> {
                 };
                 self.say(reply).await;
             }
-            // The server start lands with the `engram serve` offer (M5).
-            MemCmd::StartServer | MemCmd::Quit => {}
+            MemCmd::StartServer => {
+                let outcome = self.start_server().await;
+                self.say(MemReply::Server(outcome)).await;
+            }
+            MemCmd::Quit => {}
         }
     }
 
@@ -275,6 +304,110 @@ impl<T: Transport> Worker<T> {
                 offer,
             })
             .await;
+        }
+        if offer && !self.weighed {
+            self.weigh_offer().await;
+        }
+    }
+
+    // ---- engram serve ----
+
+    /// Once per run, when nothing runs on the port: looks for `engram` and
+    /// either offers to start it or says why that is not possible.
+    async fn weigh_offer(&mut self) {
+        self.weighed = true;
+        let binary = self.find_binary().await;
+        // The worker only exists for an active memory.
+        let config = MemoryConfig {
+            enabled: true,
+            acknowledged: true,
+            port: self.port,
+        };
+        let reason = self.probe.as_ref().and_then(|p| p.reason.clone());
+        let facts = Facts {
+            config: &config,
+            health: self.announced.as_ref(),
+            reason: reason.as_ref(),
+            project: None,
+            used: false,
+            binary: &binary,
+        };
+        match offer::decide(&facts) {
+            Decision::Offer(offer) => {
+                self.offered = Some(offer.clone());
+                self.say(MemReply::ServerOffer(offer)).await;
+            }
+            Decision::Notice(reason) => {
+                self.say(MemReply::Unavailable { pane: None, reason }).await
+            }
+            Decision::Nothing => {}
+        }
+    }
+
+    async fn find_binary(&self) -> Binary {
+        timeout(LAUNCH_BOUND, self.launcher.find())
+            .await
+            .unwrap_or(Binary::Missing)
+    }
+
+    /// The confirmed start. It probes first (a server may have appeared),
+    /// then spawns the offered binary at most once per run, and polls until
+    /// the server answers, the child is gone or three seconds passed. It never
+    /// signals the server it started.
+    async fn start_server(&mut self) -> ServerOutcome {
+        // The user decided: there is nothing left to offer in this run.
+        self.weighed = true;
+        match self.probe_now().await {
+            Ok(()) => return ServerOutcome::Adopted,
+            Err(Reason::NotRunning) => {}
+            Err(other) => return ServerOutcome::Failed(other),
+        }
+        if self.spawned {
+            return ServerOutcome::Failed(Reason::NotRunning);
+        }
+        let path = match self.offered.clone() {
+            Some(offer) => offer.path,
+            None => match offer::usable(&self.find_binary().await) {
+                Ok(path) => path.to_string(),
+                Err(reason) => return ServerOutcome::Failed(reason),
+            },
+        };
+        self.spawned = true;
+        let spawn = self.launcher.spawn(Path::new(&path), self.port);
+        let Ok(Ok(running)) = timeout(LAUNCH_BOUND, spawn).await else {
+            return ServerOutcome::Failed(Reason::StartFailed(None));
+        };
+        self.await_server(running).await
+    }
+
+    async fn await_server(&mut self, running: Running) -> ServerOutcome {
+        let Running {
+            pid,
+            mut exit,
+            log_from,
+        } = running;
+        let deadline = Instant::now() + START_WAIT;
+        let mut exited = false;
+        loop {
+            select! {
+                () = sleep(START_POLL) => {}
+                _ = &mut exit, if !exited => exited = true,
+            }
+            match self.probe_now().await {
+                // The child exited and a server answers: another process won
+                // the port race, and that server is the one we adopt.
+                Ok(()) if exited => return ServerOutcome::Adopted,
+                Ok(()) => return ServerOutcome::Started { pid },
+                Err(Reason::NotRunning | Reason::NoAnswer) => {}
+                Err(other) => return ServerOutcome::Failed(other),
+            }
+            if exited || Instant::now() >= deadline {
+                let line = timeout(LAUNCH_BOUND, self.launcher.log_line(log_from))
+                    .await
+                    .ok()
+                    .flatten();
+                return ServerOutcome::Failed(Reason::StartFailed(line));
+            }
         }
     }
 
@@ -505,10 +638,20 @@ impl MemoryLink {
     }
 }
 
-/// Starts the worker task.
+/// Starts the worker task, without the `engram serve` offer.
 pub fn spawn<T: Transport>(transport: T, port: u16, replies: mpsc::Sender<MemReply>) -> MemoryLink {
+    spawn_with(transport, NoServer, port, replies)
+}
+
+/// Starts the worker task with a launcher for the `engram serve` offer.
+pub fn spawn_with<T: Transport, L: Launcher>(
+    transport: T,
+    launcher: L,
+    port: u16,
+    replies: mpsc::Sender<MemReply>,
+) -> MemoryLink {
     let (tx, queue) = mpsc::channel(QUEUE);
-    let worker = Worker::new(transport, port, replies.clone());
+    let worker = Worker::new(transport, launcher, port, replies.clone());
     MemoryLink {
         tx,
         replies,
