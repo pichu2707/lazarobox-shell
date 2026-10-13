@@ -151,6 +151,17 @@ impl App {
         match reply {
             MemReply::ServerOffer(offer) => return self.on_server_offer(offer),
             MemReply::Server(outcome) => return self.on_server_outcome(outcome),
+            // The worker says once why it cannot offer a server; the pane's
+            // own answer follows and takes it as its reason.
+            MemReply::Unavailable {
+                pane: None,
+                reason: reason @ (Reason::NoBinary | Reason::OldBinary),
+            } => {
+                if self.ai.memory.active() {
+                    self.no_server = Some(reason.clone());
+                }
+                return Vec::new();
+            }
             _ => {}
         }
         let Some(id) = reply.pane() else {
@@ -177,7 +188,13 @@ impl App {
                 let save = chat.save_answered(*token);
                 save_not_done(chat, save.as_ref(), &reason.text());
             }
-            MemReply::Unavailable { reason, .. } => self.on_unavailable(id, reason),
+            MemReply::Unavailable { reason, .. } => {
+                let reason = match (&self.no_server, reason) {
+                    (Some(cause), Reason::NotRunning) => cause.clone(),
+                    _ => reason.clone(),
+                };
+                self.on_unavailable(id, &reason);
+            }
             MemReply::SaveFailed {
                 id: token, reason, ..
             } => {

@@ -19,7 +19,7 @@ use crate::core::{
         jail::JailSupport,
         memory::{
             offer::ServerOffer,
-            port::{MemCmd, MemReply},
+            port::{MemCmd, MemReply, Reason},
         },
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
@@ -440,6 +440,9 @@ pub struct App {
     offer_shown: bool,
     /// The chat the offer was shown in: the outcome of the start is told there.
     offer_pane: Option<PaneId>,
+    /// Why no server can be offered (no usable `engram` on the PATH), as the
+    /// worker said once: it names the cause of every `engram is not running`.
+    no_server: Option<Reason>,
 }
 
 /// The key that left COPY and when it was last seen.
@@ -490,6 +493,7 @@ impl App {
             server_offer: ServerOffer::new(),
             offer_shown: false,
             offer_pane: None,
+            no_server: None,
         }
     }
 

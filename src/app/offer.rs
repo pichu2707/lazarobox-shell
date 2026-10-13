@@ -78,7 +78,12 @@ impl App {
             self.dirty = true;
         }
         match outcome {
-            ServerOutcome::Started { .. } | ServerOutcome::Adopted => self.look_again(),
+            ServerOutcome::Started { .. } | ServerOutcome::Adopted => {
+                // A server answers now: whatever kept one from being offered
+                // is history.
+                self.no_server = None;
+                self.look_again()
+            }
             ServerOutcome::Failed(_) => Vec::new(),
         }
     }

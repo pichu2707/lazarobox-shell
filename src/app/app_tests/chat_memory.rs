@@ -832,3 +832,70 @@ fn a_server_outcome_with_no_chat_open_is_a_notice() {
         Some("started engram serve (pid 7); it keeps running after lazarobox quits")
     );
 }
+
+// 10.5: a missing or old binary is the reason, not 'not running' ------------------
+
+fn global_notice(reason: Reason) -> AppEvent {
+    AppEvent::Memory(MemReply::Unavailable { pane: None, reason })
+}
+
+#[test]
+fn a_missing_or_old_binary_names_itself_as_the_reason() {
+    for (reason, text) in [
+        (Reason::NoBinary, "engram not found on PATH"),
+        (Reason::OldBinary, "engram on PATH is 1.x; upgrade it"),
+    ] {
+        // The worker tells the notice first, then answers the pane's command.
+        let (mut a, _) = opened(true);
+        assert_eq!(a.update(global_notice(reason)), vec![]);
+        unavailable(&mut a, Reason::NotRunning);
+        assert_eq!(systems(&a), [format!("memory unavailable: {text}")]);
+        assert_eq!(
+            chat_of(&a).readiness(),
+            &Readiness::Unavailable(text.into()),
+            "the memory keys say the same"
+        );
+    }
+}
+
+#[test]
+fn a_view_opened_after_the_notice_gets_the_same_reason() {
+    let mut a = launched(80, 25).with_ai(ai(true));
+    a.update(global_notice(Reason::NoBinary));
+    a.update(cwd_event(CWD));
+    press(&mut a, "c");
+    unavailable(&mut a, Reason::NotRunning);
+    assert_eq!(
+        systems(&a),
+        ["memory unavailable: engram not found on PATH"]
+    );
+}
+
+#[test]
+fn only_the_not_running_reason_is_replaced() {
+    let (mut a, _) = opened(true);
+    a.update(global_notice(Reason::NoBinary));
+    unavailable(&mut a, Reason::OldServer { port: 7437 });
+    assert_eq!(
+        systems(&a),
+        ["memory unavailable: old engram server on :7437, restart it with 3.x"]
+    );
+}
+
+#[test]
+fn a_started_server_forgets_the_binary_notice() {
+    let mut a = launched(80, 25).with_ai(ai(true));
+    a.update(global_notice(Reason::NoBinary));
+    a.update(AppEvent::Memory(MemReply::Server(ServerOutcome::Adopted)));
+    a.update(cwd_event(CWD));
+    press(&mut a, "c");
+    unavailable(&mut a, Reason::NotRunning);
+    assert_eq!(systems(&a), ["memory unavailable: engram is not running"]);
+}
+
+#[test]
+fn a_global_notice_with_memory_off_changes_nothing() {
+    let (mut a, _) = opened(false);
+    assert_eq!(a.update(global_notice(Reason::NoBinary)), vec![]);
+    assert!(systems(&a).is_empty());
+}
