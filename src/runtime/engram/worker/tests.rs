@@ -1067,7 +1067,7 @@ use crate::{
         offer::{Binary, Offer},
         port::ServerOutcome,
     },
-    runtime::engram::serve::{Launcher, Running},
+    runtime::engram::serve::{BinaryChanged, Launcher, Running},
 };
 
 const BIN: &str = "/opt/engram/bin/engram";
@@ -1084,6 +1084,8 @@ struct Launched {
     finds: usize,
     spawns: Vec<(String, u16)>,
     fail_spawn: bool,
+    /// The launcher refuses: the binary is no longer the file offered.
+    changed: bool,
     exit: Exit,
     log: Option<String>,
     on_spawn: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -1101,6 +1103,7 @@ impl Launch {
             finds: 0,
             spawns: Vec::new(),
             fail_spawn: false,
+            changed: false,
             exit: Exit::Never,
             log: None,
             on_spawn: None,
@@ -1135,6 +1138,9 @@ impl Launcher for Launch {
             state
                 .spawns
                 .push((binary.to_string_lossy().into_owned(), port));
+            if state.changed {
+                return Err(io::Error::other(BinaryChanged));
+            }
             if state.fail_spawn {
                 return Err(io::Error::other("no such file"));
             }
@@ -1184,6 +1190,13 @@ fn the_offer() -> Offer {
         path: BIN.into(),
         port: PORT,
     }
+}
+
+/// Gets the offer the way the app does: a resolve finds nothing running.
+async fn take_the_offer(rig: &mut Rig) {
+    rig.link.send(resolve(1, "/a"));
+    assert_eq!(rig.answer().await, MemReply::ServerOffer(the_offer()));
+    rig.next().await; // the Unavailable of the resolve that found it down
 }
 
 fn unavailable_global(reason: Reason) -> MemReply {
@@ -1348,6 +1361,7 @@ async fn losing_the_port_race_adopts_the_winner_without_a_second_spawn() {
         .unwrap()
         .on_spawn
         .replace(down_up_after(&rig.fake, Duration::ZERO));
+    take_the_offer(&mut rig).await;
     rig.link.send(MemCmd::StartServer);
     assert_eq!(rig.answer().await, MemReply::Server(ServerOutcome::Adopted));
     assert_eq!(launch.spawns().len(), 1);
@@ -1360,6 +1374,7 @@ async fn a_child_that_exits_with_nothing_answering_fails_with_its_last_log_line(
         l.log = Some("fatal: cannot open database".into());
     });
     let mut rig = serve_rig(Mode::Down, &launch);
+    take_the_offer(&mut rig).await;
     rig.link.send(MemCmd::StartServer);
     let reply = rig.answer().await;
     assert_eq!(
@@ -1382,6 +1397,7 @@ async fn a_child_that_stays_up_but_never_answers_gives_up_after_3_seconds() {
     let launch = Launch::new(found("engram 3.4.0")).with(|l| l.log = None);
     let mut rig = serve_rig(Mode::Down, &launch);
     let start = Instant::now();
+    take_the_offer(&mut rig).await;
     rig.link.send(MemCmd::StartServer);
     assert_eq!(
         rig.answer().await,
@@ -1404,6 +1420,7 @@ async fn a_child_that_stays_up_but_never_answers_gives_up_after_3_seconds() {
 async fn a_spawn_that_fails_is_a_failure_and_not_retried() {
     let launch = Launch::new(found("engram 3.4.0")).with(|l| l.fail_spawn = true);
     let mut rig = serve_rig(Mode::Down, &launch);
+    take_the_offer(&mut rig).await;
     rig.link.send(MemCmd::StartServer);
     assert_eq!(
         rig.answer().await,
@@ -1432,21 +1449,44 @@ async fn an_old_or_foreign_server_at_the_re_probe_is_a_failure_without_a_spawn()
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_start_without_an_offer_looks_for_the_binary_itself_and_refuses_1x_or_none() {
-    for (binary, reason) in [
-        (Binary::Missing, Reason::NoBinary),
-        (found("engram 1.20.0"), Reason::OldBinary),
-        (Binary::NotChecked, Reason::NoBinary),
+async fn a_start_without_an_offer_spawns_nothing_and_looks_for_nothing() {
+    // Only the absolute path the user was shown may run: with no offer there
+    // is nothing to run, whatever the PATH holds now.
+    for binary in [
+        found("engram 3.4.0"),
+        Binary::Missing,
+        found("engram 1.20.0"),
+        Binary::NotChecked,
     ] {
         let launch = Launch::new(binary);
         let mut rig = serve_rig(Mode::Down, &launch);
         rig.link.send(MemCmd::StartServer);
         assert_eq!(
             rig.answer().await,
-            MemReply::Server(ServerOutcome::Failed(reason))
+            MemReply::Server(ServerOutcome::Failed(Reason::StartFailed(Some(
+                "nothing was offered".into()
+            ))))
         );
         assert!(launch.spawns().is_empty());
+        assert_eq!(launch.finds(), 0, "the PATH is not consulted again");
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_binary_that_changed_since_the_offer_is_not_started() {
+    let launch = Launch::new(found("engram 3.4.0"));
+    let mut rig = serve_rig(Mode::Down, &launch);
+    rig.link.send(resolve(1, "/a"));
+    assert_eq!(rig.answer().await, MemReply::ServerOffer(the_offer()));
+    rig.next().await; // the Unavailable of the resolve that found it down
+    launch.0.lock().unwrap().changed = true;
+    rig.link.send(MemCmd::StartServer);
+    // The refusal is the launcher's; the worker reports it as `Changed`.
+    assert_eq!(
+        rig.answer().await,
+        MemReply::Server(ServerOutcome::Failed(Reason::Changed))
+    );
+    assert_eq!(launch.spawns(), [(BIN.to_string(), PORT)]);
 }
 
 #[tokio::test(start_paused = true)]

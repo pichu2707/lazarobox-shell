@@ -3,11 +3,13 @@
 
 use std::{
     ffi::OsString,
+    fmt,
     fs::{self, DirBuilder, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Mutex,
     time::Duration,
 };
 
@@ -47,6 +49,51 @@ pub fn state_dir(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBu
         .and_then(absolute)
         .or_else(|| home.and_then(absolute).map(|h| h.join(".local/state")))?;
     Some(base.join("lazarobox"))
+}
+
+/// The error of a spawn refused because the binary is not the file that was
+/// looked up and shown to the user (carried inside an `io::Error`).
+#[derive(Debug)]
+pub struct BinaryChanged;
+
+impl fmt::Display for BinaryChanged {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the binary changed since it was offered")
+    }
+}
+
+impl std::error::Error for BinaryChanged {}
+
+impl BinaryChanged {
+    /// Whether `error` is a refusal because the binary changed.
+    pub fn is(error: &io::Error) -> bool {
+        error
+            .get_ref()
+            .is_some_and(|inner| inner.is::<BinaryChanged>())
+    }
+}
+
+/// Which file a path was: device, inode, size and modification time. A file
+/// replaced or rewritten after the lookup differs in at least one of them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Identity {
+    dev: u64,
+    ino: u64,
+    size: u64,
+    mtime: (i64, i64),
+}
+
+impl Identity {
+    /// Of the file the path leads to (symlinks followed), `None` if unreadable.
+    fn of(path: &Path) -> Option<Self> {
+        let meta = fs::metadata(path).ok()?;
+        Some(Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            size: meta.size(),
+            mtime: (meta.mtime(), meta.mtime_nsec()),
+        })
+    }
 }
 
 /// What the worker needs to start a server. A trait so the worker's logic is
@@ -96,6 +143,9 @@ impl Launcher for Server {
 pub struct Server {
     path: OsString,
     state: Option<PathBuf>,
+    /// The binary the last lookup found and which file it was: the only one
+    /// `spawn` accepts, and only while it is still that file.
+    seen: Mutex<Option<(PathBuf, Identity)>>,
 }
 
 impl Server {
@@ -104,6 +154,7 @@ impl Server {
         Self {
             path: std::env::var_os("PATH").unwrap_or_default(),
             state: state_dir(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME")),
+            seen: Mutex::new(None),
         }
     }
 
@@ -111,6 +162,7 @@ impl Server {
         Self {
             path,
             state: Some(state),
+            seen: Mutex::new(None),
         }
     }
 
@@ -123,6 +175,10 @@ impl Server {
         let Some(shown) = path.to_str().map(str::to_string) else {
             return Binary::Missing;
         };
+        let Some(identity) = Identity::of(&path) else {
+            return Binary::Missing;
+        };
+        *self.seen.lock().unwrap_or_else(|e| e.into_inner()) = Some((path.clone(), identity));
         let version = ai_detect::version(&path)
             .await
             .and_then(|out| parse_version(&out));
@@ -133,8 +189,21 @@ impl Server {
     }
 
     /// Spawns `<binary> serve <port>` detached, its output appended to the
-    /// log. The caller probes health; this only starts the process.
+    /// log. The caller probes health; this only starts the process. Only the
+    /// binary the last lookup found is spawned, and only if it is still the
+    /// same file; anything else is refused with `BinaryChanged`.
     pub async fn spawn(&self, binary: &Path, port: u16) -> io::Result<Running> {
+        let unchanged = self
+            .seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|(path, identity)| {
+                path == binary && Identity::of(binary) == Some(*identity)
+            });
+        if !unchanged {
+            return Err(io::Error::other(BinaryChanged));
+        }
         let state = self
             .state
             .as_deref()
@@ -329,6 +398,21 @@ mod tests {
         }
     }
 
+    /// What the worker does: look the binary up, then start what it found.
+    async fn start(server: &Server, script: &Path, port: u16) -> io::Result<Running> {
+        server.find().await;
+        server.spawn(script, port).await
+    }
+
+    impl Rig {
+        /// A directory outside the PATH, for a binary the lookup never saw.
+        fn outside_path(&self) -> PathBuf {
+            let dir = self._dir.path().join("elsewhere");
+            fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+    }
+
     fn lines_of(record: &str, key: &str) -> Vec<String> {
         record
             .lines()
@@ -407,7 +491,7 @@ mod tests {
     async fn spawn_runs_serve_port_with_the_documented_environment() {
         let rig = rig();
         let script = fake(&rig.bin_dir, "engram 3.4.0", &rig.record, "exec sleep 30");
-        let running = rig.server().spawn(&script, 8123).await.unwrap();
+        let running = start(&rig.server(), &script, 8123).await.unwrap();
         let _reap = Reap::new(running.pid);
         let record = rig.recorded().await;
         assert_eq!(lines_of(&record, "argc"), ["2"]);
@@ -449,7 +533,7 @@ mod tests {
     async fn the_child_is_its_own_session_leader() {
         let rig = rig();
         let script = fake(&rig.bin_dir, "engram 3.4.0", &rig.record, "exec sleep 30");
-        let running = rig.server().spawn(&script, 8123).await.unwrap();
+        let running = start(&rig.server(), &script, 8123).await.unwrap();
         let _reap = Reap::new(running.pid);
         rig.recorded().await;
         let stat = fs::read_to_string(format!("/proc/{}/stat", running.pid)).unwrap();
@@ -472,7 +556,7 @@ mod tests {
         );
         // SAFETY: umask only changes this process's file mode mask.
         let old = unsafe { libc::umask(0) };
-        let spawned = rig.server().spawn(&script, 8123).await;
+        let spawned = start(&rig.server(), &script, 8123).await;
         // SAFETY: restores the mask read above.
         unsafe { libc::umask(old) };
         let running = spawned.unwrap();
@@ -500,7 +584,7 @@ mod tests {
         fs::write(&log, "old\n").unwrap();
         fs::set_permissions(&log, fs::Permissions::from_mode(0o666)).unwrap();
         let script = fake(&rig.bin_dir, "engram 3.4.0", &rig.record, "exec sleep 30");
-        let running = rig.server().spawn(&script, 8123).await.unwrap();
+        let running = start(&rig.server(), &script, 8123).await.unwrap();
         let _reap = Reap::new(running.pid);
         assert_eq!(fs::metadata(&log).unwrap().mode() & 0o777, 0o600);
         assert!(fs::read_to_string(&log).unwrap().starts_with("old\n"));
@@ -514,7 +598,7 @@ mod tests {
         fs::write(&target, "precious").unwrap();
         symlink(&target, rig.state.join("engram-serve.log")).unwrap();
         let script = fake(&rig.bin_dir, "engram 3.4.0", &rig.record, "exec sleep 30");
-        let result = rig.server().spawn(&script, 8123).await;
+        let result = start(&rig.server(), &script, 8123).await;
         assert!(result.is_err());
         assert_eq!(fs::read_to_string(&target).unwrap(), "precious");
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -529,7 +613,7 @@ mod tests {
             let log = rig.state.join("engram-serve.log");
             fs::write(&log, vec![b'x'; len as usize]).unwrap();
             let script = fake(&rig.bin_dir, "engram 3.4.0", &rig.record, "exec sleep 30");
-            let running = rig.server().spawn(&script, 8123).await.unwrap();
+            let running = start(&rig.server(), &script, 8123).await.unwrap();
             let _reap = Reap::new(running.pid);
             let size = fs::metadata(&log).unwrap().len();
             if kept {
@@ -547,7 +631,7 @@ mod tests {
         let rig = rig();
         let script = fake(&rig.bin_dir, "engram 3.4.0", &rig.record, "exec sleep 30");
         let server = rig.server();
-        let running = server.spawn(&script, 8123).await.unwrap();
+        let running = start(&server, &script, 8123).await.unwrap();
         let pid = running.pid;
         let _reap = Reap::new(pid);
         rig.recorded().await;
@@ -566,7 +650,7 @@ mod tests {
             &rig.record,
             "echo 'bind: address already in use' >&2; exit 1",
         );
-        let running = rig.server().spawn(&script, 8123).await.unwrap();
+        let running = start(&rig.server(), &script, 8123).await.unwrap();
         let (pid, from) = (running.pid, running.log_from);
         tokio::time::timeout(Duration::from_secs(5), running.exit)
             .await
@@ -606,10 +690,69 @@ mod tests {
         let odd = rig.bin_dir.join("a b;$(touch pwned)");
         fs::create_dir(&odd).unwrap();
         let script = fake(&odd, "engram 3.4.0", &rig.record, "exec sleep 30");
-        let running = rig.server().spawn(&script, 8123).await.unwrap();
+        let server = Server::new(odd.clone().into_os_string(), rig.state.clone());
+        let running = start(&server, &script, 8123).await.unwrap();
         let _reap = Reap::new(running.pid);
         let record = rig.recorded().await;
         assert_eq!(lines_of(&record, "arg"), ["serve", "8123"]);
         assert!(!Path::new("pwned").exists());
+    }
+
+    fn is_changed(error: &io::Error) -> bool {
+        BinaryChanged::is(error)
+    }
+
+    #[tokio::test]
+    async fn a_binary_replaced_after_the_lookup_is_not_spawned() {
+        let rig = rig();
+        let script = fake(&rig.bin_dir, "engram 3.4.0", &rig.record, "exec sleep 30");
+        let server = rig.server();
+        server.find().await;
+        // The same path now holds another file (an upgrade, or an attack).
+        let other = fake(
+            &rig.outside_path(),
+            "engram 3.4.0",
+            &rig.record,
+            "exec sleep 31",
+        );
+        fs::rename(&other, &script).unwrap();
+        let error = server.spawn(&script, 8123).await.unwrap_err();
+        assert!(is_changed(&error), "{error:?}");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(!rig.record.exists(), "the replacement must not have run");
+        assert!(!rig.state.exists(), "nothing was prepared either");
+    }
+
+    #[tokio::test]
+    async fn a_binary_rewritten_in_place_is_not_spawned() {
+        let rig = rig();
+        let script = fake(&rig.bin_dir, "engram 3.4.0", &rig.record, "exec sleep 30");
+        let server = rig.server();
+        server.find().await;
+        let mut body = fs::read_to_string(&script).unwrap();
+        body.push_str("# changed\n");
+        fs::write(&script, body).unwrap();
+        let error = server.spawn(&script, 8123).await.unwrap_err();
+        assert!(is_changed(&error), "{error:?}");
+        assert!(!rig.record.exists());
+    }
+
+    #[tokio::test]
+    async fn only_a_binary_that_was_looked_up_can_be_spawned() {
+        let rig = rig();
+        let script = fake(&rig.bin_dir, "engram 3.4.0", &rig.record, "exec sleep 30");
+        let error = rig.server().spawn(&script, 8123).await.unwrap_err();
+        assert!(is_changed(&error), "{error:?}");
+        let server = rig.server();
+        server.find().await;
+        let elsewhere = fake(
+            &rig.outside_path(),
+            "engram 3.4.0",
+            &rig.record,
+            "exec sleep 30",
+        );
+        let error = server.spawn(&elsewhere, 8123).await.unwrap_err();
+        assert!(is_changed(&error), "{error:?}");
+        assert!(!rig.record.exists());
     }
 }

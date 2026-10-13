@@ -39,7 +39,7 @@ use crate::{
     },
     runtime::{
         chat,
-        engram::serve::{Launcher, NoServer, Running},
+        engram::serve::{BinaryChanged, Launcher, NoServer, Running},
         loopback::{self, CallError, Limits, Reply},
     },
 };
@@ -351,7 +351,7 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
     }
 
     /// The confirmed start. It probes first (a server may have appeared),
-    /// then spawns the offered binary at most once per run, and polls until
+    /// then spawns the offered binary (never another path) at most once per run, and polls until
     /// the server answers, the child is gone or three seconds passed. It never
     /// signals the server it started.
     async fn start_server(&mut self) -> ServerOutcome {
@@ -365,17 +365,21 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
         if self.spawned {
             return ServerOutcome::Failed(Reason::NotRunning);
         }
-        let path = match self.offered.clone() {
-            Some(offer) => offer.path,
-            None => match offer::usable(&self.find_binary().await) {
-                Ok(path) => path.to_string(),
-                Err(reason) => return ServerOutcome::Failed(reason),
-            },
+        // Only the absolute path the user was shown may run: without an offer
+        // the PATH is not consulted again and nothing is spawned.
+        let Some(offer) = self.offered.clone() else {
+            return ServerOutcome::Failed(Reason::StartFailed(Some("nothing was offered".into())));
         };
         self.spawned = true;
-        let spawn = self.launcher.spawn(Path::new(&path), self.port);
-        let Ok(Ok(running)) = timeout(LAUNCH_BOUND, spawn).await else {
-            return ServerOutcome::Failed(Reason::StartFailed(None));
+        let spawn = self.launcher.spawn(Path::new(&offer.path), self.port);
+        let running = match timeout(LAUNCH_BOUND, spawn).await {
+            Ok(Ok(running)) => running,
+            // The launcher found the file at that path is no longer the one
+            // that was looked up and offered.
+            Ok(Err(error)) if BinaryChanged::is(&error) => {
+                return ServerOutcome::Failed(Reason::Changed);
+            }
+            _ => return ServerOutcome::Failed(Reason::StartFailed(None)),
         };
         self.await_server(running).await
     }

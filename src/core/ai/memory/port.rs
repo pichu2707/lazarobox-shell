@@ -85,6 +85,9 @@ pub enum Reason {
     /// `engram serve` was started and nothing answered; holds the last line
     /// of its log, already sanitized and capped.
     StartFailed(Option<String>),
+    /// The `engram` on the PATH is not the file the user was shown when the
+    /// start was confirmed, so nothing was started.
+    Changed,
 }
 
 impl Reason {
@@ -104,6 +107,7 @@ impl Reason {
             Reason::NotGit => "memory needs a git project".into(),
             Reason::StartFailed(None) => "could not start engram".into(),
             Reason::StartFailed(Some(line)) => format!("could not start engram: {line}"),
+            Reason::Changed => "engram on PATH changed; not started".into(),
         }
     }
 
@@ -353,6 +357,18 @@ mod tests {
         assert_eq!(
             Reason::StartFailed(None).line(),
             "memory unavailable: could not start engram"
+        );
+    }
+
+    #[test]
+    fn a_binary_that_changed_after_the_offer_says_so() {
+        assert_eq!(
+            Reason::Changed.text(),
+            "engram on PATH changed; not started"
+        );
+        assert_eq!(
+            Reason::Changed.line(),
+            "memory unavailable: engram on PATH changed; not started"
         );
     }
 
