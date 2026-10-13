@@ -1,6 +1,6 @@
 ---
 source: src/ui/components/menu.rs
-expression: "text(&draw(62, 15, &menu))"
+expression: "text(&draw(62, 16, &menu))"
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
 │ Settings                                                   │
@@ -14,6 +14,7 @@ expression: "text(&draw(62, 15, &menu))"
 │ chat                                             (default) │
 │ review                                           (default) │
 │ summarize                                        (default) │
+│ Profile                                         programmer │
 │                                                            │
 │ refreshing… · s save · Esc cancel                          │
 └────────────────────────────────────────────────────────────┘

@@ -32,6 +32,9 @@ pub enum ItemKind {
     Disabled,
     /// An AI assignment row; `None` is `Set all tasks`.
     Assign(Option<Task>),
+    /// The AI profile: a static choice (`ai.profile`) that lives in the AI
+    /// draft, not in the live [`Config`].
+    Profile,
 }
 
 pub struct Item {
@@ -118,6 +121,10 @@ pub static AI_SECTION: Section = Section {
             label: "summarize",
             kind: ItemKind::Assign(Some(Task::Summarize)),
         },
+        Item {
+            label: "Profile",
+            kind: ItemKind::Profile,
+        },
     ],
 };
 
@@ -128,7 +135,7 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
         .flat_map(|section| section.items.iter())
         .filter_map(|item| match &item.kind {
             ItemKind::Choice(choice) => Some((item, choice)),
-            ItemKind::Disabled | ItemKind::Assign(_) => None,
+            ItemKind::Disabled | ItemKind::Assign(_) | ItemKind::Profile => None,
         })
 }
 
@@ -243,15 +250,29 @@ impl MenuState {
         self.ai.is_some()
     }
 
-    /// Whether the selection is on an AI task row.
-    pub fn on_ai_row(&self) -> bool {
-        self.ai.is_some()
-            && self
-                .selected
-                .is_some_and(|index| index >= choices().count())
+    /// The descriptor kind under the selection. Rows are found by kind, never
+    /// by a position in the AI section, so a row can be added there without
+    /// touching the key handling.
+    fn selected_kind(&self) -> Option<&'static ItemKind> {
+        let index = self.selected?;
+        match index.checked_sub(choices().count()) {
+            None => choices().nth(index).map(|(item, _)| &item.kind),
+            Some(n) if self.ai.is_some() => AI_SECTION.items.get(n).map(|item| &item.kind),
+            Some(_) => None,
+        }
     }
 
-    /// Selectable rows: the settings, then the six AI rows.
+    /// Whether the selection is on an AI task row (the ones with a picker).
+    pub fn on_ai_row(&self) -> bool {
+        matches!(self.selected_kind(), Some(ItemKind::Assign(_)))
+    }
+
+    /// Whether the selection is on the `Profile` row.
+    fn on_profile_row(&self) -> bool {
+        matches!(self.selected_kind(), Some(ItemKind::Profile))
+    }
+
+    /// Selectable rows: the settings, then every AI row.
     fn selectable(&self) -> usize {
         choices().count()
             + if self.ai.is_some() {
@@ -299,9 +320,10 @@ impl MenuState {
 
     /// The target of the selected AI row.
     fn selected_target(&self) -> Option<Target> {
-        match self.selected?.checked_sub(choices().count())? {
-            0 => Some(Target::All),
-            n => Task::ALL.get(n - 1).map(|task| Target::Task(*task)),
+        match self.selected_kind()? {
+            ItemKind::Assign(None) => Some(Target::All),
+            ItemKind::Assign(Some(task)) => Some(Target::Task(*task)),
+            ItemKind::Choice(_) | ItemKind::Disabled | ItemKind::Profile => None,
         }
     }
 
@@ -320,6 +342,19 @@ impl MenuState {
                         let row = Row::Item {
                             label: item.label,
                             value: self.ai.as_ref().map(|ai| Cow::Owned(ai.value(*task))),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Profile => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self
+                                .ai
+                                .as_ref()
+                                .map(|ai| Cow::Borrowed(ai.draft().profile().id())),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
@@ -371,7 +406,9 @@ impl MenuState {
             KeyCode::Char('s') if !repeat => MenuCommand::Save,
             KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
             KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
-            KeyCode::Enter if repeat && self.on_ai_row() => MenuCommand::None,
+            KeyCode::Enter if repeat && (self.on_ai_row() || self.on_profile_row()) => {
+                MenuCommand::None
+            }
             KeyCode::Enter => self.cycle(true, config),
             KeyCode::Esc if !repeat => MenuCommand::Cancel,
             _ => MenuCommand::None,
@@ -455,6 +492,13 @@ impl MenuState {
         let Some(index) = self.selected else {
             return MenuCommand::None;
         };
+        if self.on_profile_row() {
+            // The profile only changes prompts: no relayout, no other effect.
+            if let Some(ai) = &mut self.ai {
+                ai.cycle_profile(forward);
+            }
+            return MenuCommand::None;
+        }
         let Some((_, choice)) = choices().nth(index) else {
             return MenuCommand::None;
         };
@@ -498,7 +542,16 @@ impl MenuState {
                     },
                 ]
             });
-        settings.chain(tasks).collect()
+        let profile = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::changed_profile)
+            .map(|profile| ConfigEdit {
+                table: "ai",
+                key: "profile",
+                value: Cow::Borrowed(profile.id()),
+            });
+        settings.chain(tasks).chain(profile).collect()
     }
 
     /// A paste: goes to the custom field when it is focused, else ignored.
@@ -821,3 +874,6 @@ mod guard_tests;
 
 #[cfg(test)]
 mod edits_tests;
+
+#[cfg(test)]
+mod profile_tests;
