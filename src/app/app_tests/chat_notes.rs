@@ -77,8 +77,15 @@ fn type_text(a: &mut App, text: &str) {
 
 /// A chat opened from `/srv/app` whose first exchange answered `answer`.
 fn with_answer(memory: bool, answer: &str) -> App {
+    answered(memory, answer, true)
+}
+
+/// `with_answer`, with or without a known origin directory.
+fn answered(memory: bool, answer: &str, known_cwd: bool) -> App {
     let mut a = launched(80, 25).with_ai(ai(memory));
-    a.update(cwd_event(CWD));
+    if known_cwd {
+        a.update(cwd_event(CWD));
+    }
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
             id: "ollama",
@@ -87,7 +94,11 @@ fn with_answer(memory: bool, answer: &str) -> App {
             version: None,
         }],
     }));
-    press(&mut a, "c");
+    if known_cwd {
+        press(&mut a, "c");
+    } else {
+        a.open_chat_tab(None);
+    }
     a.update(AppEvent::PromptReady(
         chat_id(),
         crate::core::ai::chat::prompts::Resolved {
@@ -253,6 +264,28 @@ fn a_directory_that_is_not_git_is_not_ready() {
         Some("Memory is not ready: memory needs a git project")
     );
     assert!(chat_of(&a).note_editor().is_none());
+}
+
+#[test]
+fn without_a_known_directory_memory_is_not_ready_and_nothing_is_asked() {
+    let mut a = answered(true, "x", false);
+    assert_eq!(a.update(ctrl('n')), vec![], "no directory to resolve");
+    assert_eq!(
+        a.notice(),
+        Some("Memory is not ready: memory needs a git project")
+    );
+    assert_eq!(
+        chat_of(&a).readiness(),
+        &Readiness::Unavailable("memory needs a git project".into()),
+        "not stuck in Resolving"
+    );
+    // A later try says the same, not "Checking memory…" forever.
+    pause(&mut a);
+    assert_eq!(a.update(ctrl('n')), vec![]);
+    assert_eq!(
+        a.notice(),
+        Some("Memory is not ready: memory needs a git project")
+    );
 }
 
 #[test]

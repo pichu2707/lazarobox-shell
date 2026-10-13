@@ -8,6 +8,7 @@ use crate::core::ai::chat::{
     store::eviction_lines_of,
     yank,
 };
+use crate::core::ai::memory::port::Reason;
 
 impl App {
     /// Whether chat `id` has its note editor open.
@@ -34,6 +35,14 @@ impl App {
             return Vec::new();
         }
         let cwd = chat.origin_cwd().map(|p| p.to_string_lossy().into_owned());
+        // Without a directory there is no project to look for, and nothing to
+        // wait for: say so now instead of staying in `Resolving` for ever.
+        if cwd.is_none() && !matches!(chat.readiness(), Readiness::Ready(_)) {
+            let reason = Reason::NotGit.text();
+            chat.set_unavailable(&reason);
+            self.notice = Some(note::not_ready(&reason));
+            return Vec::new();
+        }
         let probe = |chat: &mut ChatState, want_note: bool| {
             chat.start_resolving(want_note);
             cwd.clone()

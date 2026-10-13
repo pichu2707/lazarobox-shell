@@ -114,6 +114,11 @@ impl ChatState {
         self.memory.readiness = Readiness::Resolving { want_note };
     }
 
+    /// Memory cannot be used for this chat, whatever it was waiting for.
+    pub fn set_unavailable(&mut self, reason: &str) {
+        self.memory.readiness = Readiness::Unavailable(reason.to_owned());
+    }
+
     /// The project reply. Returns whether the note editor was wanted.
     pub fn project_resolved(&mut self, result: Result<String, ProjectError>) -> bool {
         let want = self.take_want_note();
