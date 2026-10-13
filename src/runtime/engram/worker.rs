@@ -351,9 +351,9 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
     }
 
     /// The confirmed start. It probes first (a server may have appeared),
-    /// then spawns the offered binary (never another path) at most once per run, and polls until
-    /// the server answers, the child is gone or three seconds passed. It never
-    /// signals the server it started.
+    /// then spawns the offered binary (never another path) at most once per
+    /// run, and polls until the server answers, the child is gone or three
+    /// seconds passed. It never signals the server it started.
     async fn start_server(&mut self) -> ServerOutcome {
         // The user decided: there is nothing left to offer in this run.
         self.weighed = true;

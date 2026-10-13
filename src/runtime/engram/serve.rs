@@ -194,7 +194,9 @@ impl Server {
     /// Spawns `<binary> serve <port>` detached, its output appended to the
     /// log. The caller probes health; this only starts the process. Only the
     /// binary the last lookup found is spawned, and only if it is still the
-    /// same file; anything else is refused with `BinaryChanged`.
+    /// same file; anything else is refused with `BinaryChanged`. The window
+    /// left between that identity check and the exec is accepted: only the
+    /// binary's owner could exploit it, and they could run it anyway.
     pub async fn spawn(&self, binary: &Path, port: u16) -> io::Result<Running> {
         let unchanged = self
             .seen
@@ -295,6 +297,7 @@ fn open_log_as(dir: &Path, uid: u32) -> io::Result<(File, u64)> {
     if !meta.is_file() {
         return Err(io::Error::other("the log is not a regular file"));
     }
+    clear_nonblocking(&log)?;
     if meta.uid() != uid {
         return Err(io::Error::other("the log has a foreign owner"));
     }
@@ -306,6 +309,24 @@ fn open_log_as(dir: &Path, uid: u32) -> io::Result<(File, u64)> {
     }
     let from = log.metadata()?.len();
     Ok((log, from))
+}
+
+/// Clears `O_NONBLOCK` on the open file description, which the child shares
+/// through its dup'd stdout and stderr: it must never inherit a non-blocking one.
+fn clear_nonblocking(file: &File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let fd = file.as_raw_fd();
+    // SAFETY: F_GETFL/F_SETFL only touch the flags of an fd `file` owns.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 /// The spawn command: argv exactly `serve <port>`, no shell, no stdin, both
@@ -626,6 +647,17 @@ mod tests {
         let mode = |p: &Path| fs::metadata(p).unwrap().mode() & 0o777;
         assert_eq!(mode(&rig.state), 0o700);
         assert_eq!(mode(&rig.state.join("engram-serve.log")), 0o600);
+    }
+
+    #[test]
+    fn the_opened_log_is_not_left_non_blocking() {
+        use std::os::fd::AsRawFd;
+        let rig = rig();
+        let (log, _) = open_log(&rig.state).unwrap();
+        // SAFETY: F_GETFL only reads the flags of an fd this test owns.
+        let flags = unsafe { libc::fcntl(log.as_raw_fd(), libc::F_GETFL) };
+        assert!(flags >= 0);
+        assert_eq!(flags & libc::O_NONBLOCK, 0, "the child would inherit it");
     }
 
     #[tokio::test]
