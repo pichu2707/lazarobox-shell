@@ -195,6 +195,12 @@ Files changed:
 - [ ] 12.4 GREEN: write the 10 English `.md` files via `include_str!`, `resolve_prompt`, runtime reader.
 - [ ] 12.5 Gate. Prompt text counts toward the 400 lines; re-measure.
 - [ ] 12.6 (reorder, from PR13) Remove the temporary `DEFAULT_SYSTEM_PROMPT` constant and `adapters::system_prompt()` from `src/core/ai/chat/adapters.rs` (with its test) and make `app/chat.rs` pass the resolved prompt from `resolve_prompt` instead.
+- [ ] 12.7 RED/GREEN (docs): amend chat-engines (request body and CLI context may carry the workspace block, never absolute paths, environment, file contents or terminal output), prompt-profiles (Workspace context block, Context toggle), design CHAT-14. Task 12.1 still holds: the chat prompt says the model has no access to files, shell or terminal, and adds that the workspace facts it is given are all it knows.
+- [ ] 12.8 RED: pure `workspace` builder: repo root, nested dir, worktree, detached head, no repository (basename only, no absolute path), unknown cwd, hostile branch (control, newline, bidi), 64-character cap, empty-after-cleaning omitted, exact block text; `HEAD` parser; date formatter.
+- [ ] 12.9 RED: runtime probe on temporary directories (repo walk with the 64-level bound, `.git` file with `gitdir:`, 1 KiB `HEAD` bound, unreadable `HEAD` omits the line) and the local date.
+- [ ] 12.10 RED: `[ai] context` parse (default true, non-boolean notice), persistence (created, updated, explicit, untouched, collision) and the `Context` menu row (cycle, save, revert, snapshot); derive `AI_BODY` from the row count (PR11 review suggestion), keeping the fit test.
+- [ ] 12.11 RED/GREEN: wiring: `Effect::PreparePrompt` and `AppEvent::PromptReady`, a send waits for the prompt, the request system prompt is resolved prompt plus block (or the resolved prompt alone when `context` is off), notices become system lines, block absent from history and the store.
+- [ ] 12.12 Gate and re-measure (size:exception approved by the user).
 
 ## PR13 / C11: Ollama (`src/core/ai/chat/adapters.rs`, `src/runtime/chat.rs`)
 
