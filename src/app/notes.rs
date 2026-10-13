@@ -8,7 +8,7 @@ use crate::core::ai::chat::{
     store::eviction_lines_of,
     yank,
 };
-use crate::core::ai::memory::port::Reason;
+use crate::core::ai::memory::{port::Reason, reply::ProjectError};
 
 impl App {
     /// Whether chat `id` has its note editor open.
@@ -147,42 +147,34 @@ impl App {
         let Some(id) = reply.pane() else {
             return Vec::new();
         };
-        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+        if self
+            .panes
+            .get(&id)
+            .and_then(PaneState::chat_state)
+            .is_none()
+        {
             return Vec::new();
-        };
+        }
         self.dirty = true;
         match reply {
-            MemReply::Project { result, .. } => {
-                let wanted = chat.project_resolved(result.clone());
-                if wanted {
-                    match chat.readiness().clone() {
-                        Readiness::Ready(_) => {
-                            if let Err(notice) = chat.open_note_editor() {
-                                self.notice = Some(notice);
-                            }
-                        }
-                        Readiness::Unavailable(reason) => {
-                            self.notice = Some(note::not_ready(&reason));
-                        }
-                        Readiness::Unknown | Readiness::Resolving { .. } => {}
-                    }
-                }
-            }
+            MemReply::Project { result, .. } => return self.on_project_reply(id, result),
+            MemReply::Context { block, .. } => self.on_context(id, block),
             MemReply::SaveUnavailable {
                 id: token, reason, ..
             } => {
+                let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+                    return Vec::new();
+                };
                 let save = chat.save_answered(*token);
                 save_not_done(chat, save.as_ref(), &reason.text());
             }
-            MemReply::Unavailable { reason, .. } => {
-                let text = reason.text();
-                if chat.memory_unavailable(&text) {
-                    self.notice = Some(note::not_ready(&text));
-                }
-            }
+            MemReply::Unavailable { reason, .. } => self.on_unavailable(id, reason),
             MemReply::SaveFailed {
                 id: token, reason, ..
             } => {
+                let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+                    return Vec::new();
+                };
                 let save = chat.save_answered(*token);
                 save_not_done(chat, save.as_ref(), reason);
             }
@@ -195,6 +187,9 @@ impl App {
                 title,
                 ..
             } => {
+                let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+                    return Vec::new();
+                };
                 // The editor bookkeeping comes from the pending save with this
                 // token (none: no editor is touched). The note is recorded
                 // under the project the worker saved it under, which it echoes,
@@ -211,12 +206,57 @@ impl App {
                 return self.link_effects(id);
             }
             MemReply::Health { .. }
-            | MemReply::Context { .. }
             | MemReply::Deleted { .. }
             | MemReply::Server(_)
             | MemReply::ServerOffer(_) => {}
         }
         Vec::new()
+    }
+
+    /// The project reply: the note editor when it was wanted and the project
+    /// is usable, the notice when it is not, and the context request of the
+    /// view (one per view).
+    fn on_project_reply(
+        &mut self,
+        id: PaneId,
+        result: &Result<String, ProjectError>,
+    ) -> Vec<Effect> {
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        let wanted = chat.project_resolved(result.clone());
+        if wanted {
+            match chat.readiness().clone() {
+                Readiness::Ready(_) => {
+                    if let Err(notice) = chat.open_note_editor() {
+                        self.notice = Some(notice);
+                    }
+                }
+                Readiness::Unavailable(reason) => {
+                    self.notice = Some(note::not_ready(&reason));
+                }
+                Readiness::Unknown | Readiness::Resolving { .. } => {}
+            }
+        }
+        self.on_project(id, result)
+    }
+
+    /// Memory cannot be used: a pane waiting for its project or its context
+    /// stops waiting and says why, once per view. In any other state the
+    /// reply changes nothing.
+    fn on_unavailable(&mut self, id: PaneId, reason: &Reason) {
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return;
+        };
+        let text = reason.text();
+        let resolving = matches!(chat.readiness(), Readiness::Resolving { .. });
+        if chat.memory_unavailable(&text) {
+            self.notice = Some(note::not_ready(&text));
+        }
+        let fetching = chat.finish_context();
+        if resolving || fetching {
+            chat.degrade_once(reason.line());
+        }
     }
 
     /// The link rows still to write for chat `id`: its session and its notes,

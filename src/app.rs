@@ -36,6 +36,7 @@ use crate::core::{
 };
 
 mod chat;
+mod context;
 mod notes;
 
 /// Rows of history kept by the emulator.

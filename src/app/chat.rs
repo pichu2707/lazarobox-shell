@@ -21,6 +21,7 @@ impl App {
         let mut effects = self.split_with(Axis::X, NewPane::Chat(Box::new(ChatState::new(origin))));
         if self.panes.len() > before {
             effects.extend(self.request_detection());
+            effects.extend(self.begin_memory(self.tab().focus));
             effects.push(Effect::PreparePrompt {
                 pane: self.tab().focus,
                 profile: self.ai.profile(),

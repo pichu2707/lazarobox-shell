@@ -10,7 +10,11 @@ use super::{
     note::{NOTHING_TO_SAVE, NoteEditor},
     yank,
 };
-use crate::core::ai::memory::{context::ContextBlock, port::SaveId, reply::ProjectError};
+use crate::core::ai::memory::{
+    context::ContextBlock,
+    port::{Reason, SaveId},
+    reply::ProjectError,
+};
 
 /// The longest end-of-session summary, in characters.
 pub const END_SUMMARY_CAP: usize = 1000;
@@ -47,6 +51,26 @@ impl MemoryLine {
         let noun = if self.notes == 1 { "note" } else { "notes" };
         format!("{glyph} memory ({} {noun})", self.notes)
     }
+}
+
+/// The system line for a project that cannot be used. A directory that is not
+/// a git project has its own wording; the rest say why memory is unavailable.
+pub fn project_error_line(error: &ProjectError) -> String {
+    match error {
+        ProjectError::NotGit => Reason::NotGit.line(),
+        ProjectError::Invalid => format!("memory unavailable: {UNEXPECTED_REPLY}"),
+    }
+}
+
+/// Where the one context request of a view is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Fetch {
+    /// Not asked yet.
+    Idle,
+    /// Asked, no answer yet.
+    Pending,
+    /// Answered, or given up on.
+    Done,
 }
 
 /// Whether the chat's engram project is known.
@@ -115,6 +139,9 @@ pub struct ChatMemory {
     editors: u64,
     /// The block the next turns carry, once the context reply arrived.
     injected: Option<ContextBlock>,
+    context: Fetch,
+    /// The `memory unavailable` line was shown for this view.
+    degraded: bool,
 }
 
 impl ChatMemory {
@@ -131,6 +158,8 @@ impl ChatMemory {
             saves_sent: 0,
             editors: 0,
             injected: None,
+            context: Fetch::Idle,
+            degraded: false,
         }
     }
 
@@ -167,9 +196,7 @@ impl ChatState {
         let want = self.take_want_note();
         self.memory.readiness = match result {
             Ok(project) => Readiness::Ready(project),
-            Err(ProjectError::NotGit) => {
-                Readiness::Unavailable(crate::core::ai::memory::port::Reason::NotGit.text())
-            }
+            Err(ProjectError::NotGit) => Readiness::Unavailable(Reason::NotGit.text()),
             Err(ProjectError::Invalid) => Readiness::Unavailable(UNEXPECTED_REPLY.to_owned()),
         };
         want
@@ -253,6 +280,41 @@ impl ChatState {
             self.restore(anchor, width, height);
         }
         changed
+    }
+
+    /// The view is about to ask for its context. True the first time only: a
+    /// view makes one context request.
+    pub fn start_context(&mut self) -> bool {
+        if self.memory.context != Fetch::Idle {
+            return false;
+        }
+        self.memory.context = Fetch::Pending;
+        true
+    }
+
+    /// The context request was answered, or given up on. False when none was
+    /// pending: a reply nobody awaits is to be ignored.
+    pub fn finish_context(&mut self) -> bool {
+        if self.memory.context != Fetch::Pending {
+            return false;
+        }
+        self.memory.context = Fetch::Done;
+        true
+    }
+
+    /// Whether the context request has no answer yet.
+    pub fn context_pending(&self) -> bool {
+        self.memory.context == Fetch::Pending
+    }
+
+    /// Shows the `memory unavailable` system line, once per view. Returns
+    /// whether it was added.
+    pub fn degrade_once(&mut self, line: String) -> bool {
+        if std::mem::replace(&mut self.memory.degraded, true) {
+            return false;
+        }
+        self.push_system(line);
+        true
     }
 
     /// The note editor, while it is open.
