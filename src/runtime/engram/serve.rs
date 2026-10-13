@@ -581,6 +581,10 @@ mod tests {
     /// since it may have been created inside this window.
     struct Umask(libc::mode_t);
 
+    /// Held for the whole body of every test that changes the umask, so two of
+    /// them never overlap (a poisoned lock is fine: one test panics on purpose).
+    static UMASK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     impl Umask {
         fn set(mask: libc::mode_t) -> Self {
             // SAFETY: umask only changes this process's file mode mask.
@@ -597,6 +601,7 @@ mod tests {
 
     #[test]
     fn the_umask_guard_restores_the_mask_even_when_the_section_panics() {
+        let _lock = UMASK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let before = Umask::set(0o022);
         let outcome = std::panic::catch_unwind(|| {
             let _guard = Umask::set(0);
@@ -611,6 +616,7 @@ mod tests {
 
     #[test]
     fn the_log_is_private_under_a_permissive_umask() {
+        let _lock = UMASK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let rig = rig();
         let opened = {
             let _umask = Umask::set(0);
