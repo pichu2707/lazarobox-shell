@@ -138,6 +138,7 @@ pub async fn run() -> io::Result<()> {
     let memory = memory_for(
         &app.ai().memory,
         || env::var("ENGRAM_HTTP_TOKEN").ok(),
+        engram::serve::Server::from_env,
         memory_tx,
     );
     let (store_tx, store_rx) = mpsc::channel(STORE_CHANNEL);
@@ -191,14 +192,17 @@ pub async fn run() -> io::Result<()> {
 
 /// The memory for `config`. `read_token` is called only when the worker
 /// starts, so a run without active memory never reads `ENGRAM_HTTP_TOKEN`; the
-/// transport itself never touches the environment.
-fn memory_for(
+/// transport itself never touches the environment. `launcher` is built under
+/// the same condition; production passes the real one (the PATH and the state
+/// directory), tests a fake so no real `engram` is ever looked up.
+fn memory_for<L: engram::serve::Launcher>(
     config: &crate::core::ai::config::MemoryConfig,
     read_token: impl FnOnce() -> Option<String> + 'static,
+    launcher: impl FnOnce() -> L + 'static,
     replies: mpsc::Sender<crate::core::ai::memory::port::MemReply>,
 ) -> Memory {
     Memory::for_config(config, move |port| {
-        engram::spawn(Loopback::new(port, read_token()), port, replies)
+        engram::spawn_with(Loopback::new(port, read_token()), launcher(), port, replies)
     })
 }
 
@@ -2142,6 +2146,7 @@ mod tests {
                     counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     None
                 },
+                || engram::serve::NoServer,
                 tx,
             );
             memory.send(crate::core::ai::memory::port::MemCmd::Resolve {
@@ -2163,12 +2168,17 @@ mod tests {
         };
         let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = Arc::clone(&reads);
-        let (tx, _rx) = mpsc::channel(8);
+        let (tx, mut rx) = mpsc::channel(8);
+        let looks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut memory = memory_for(
             &config,
             move || {
                 counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 None
+            },
+            {
+                let looks = Arc::clone(&looks);
+                move || LooksOnly(looks)
             },
             tx,
         );
@@ -2178,7 +2188,45 @@ mod tests {
             cwd: "/x".into(),
         });
         assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Nothing listens on the port, so the worker looks for a binary: it
+        // asks the injected launcher, never the real PATH.
+        let told = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(crate::core::ai::memory::port::MemReply::Unavailable {
+                    pane: None,
+                    ..
+                }) = rx.recv().await
+                {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(told.is_ok(), "the worker never weighed the offer");
+        assert_eq!(looks.load(std::sync::atomic::Ordering::SeqCst), 1);
         memory.shutdown(Duration::from_secs(1)).await;
+    }
+
+    /// A launcher that finds no binary and counts how often it was asked.
+    struct LooksOnly(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl engram::serve::Launcher for LooksOnly {
+        async fn find(&self) -> crate::core::ai::memory::offer::Binary {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            crate::core::ai::memory::offer::Binary::Missing
+        }
+
+        async fn spawn(
+            &self,
+            _binary: &Path,
+            _port: u16,
+        ) -> std::io::Result<engram::serve::Running> {
+            Err(std::io::Error::other("not available"))
+        }
+
+        async fn log_line(&self, _from: u64) -> Option<String> {
+            None
+        }
     }
 
     // The runtime stops an endless answer at 1 MiB; the app has nothing left

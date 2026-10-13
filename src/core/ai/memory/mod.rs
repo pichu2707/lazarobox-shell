@@ -5,6 +5,7 @@
 pub mod context;
 pub mod health;
 pub mod kind;
+pub mod offer;
 pub mod port;
 pub mod redact;
 pub mod reply;

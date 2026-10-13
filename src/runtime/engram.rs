@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use crate::core::ai::{config::MemoryConfig, memory::port::MemCmd};
 
+pub mod serve;
 pub mod worker;
 
-pub use worker::{Loopback, MemoryLink, Transport, spawn};
+pub use worker::{Loopback, MemoryLink, Transport, spawn, spawn_with};
 
 #[cfg(test)]
 mod fake_engram;

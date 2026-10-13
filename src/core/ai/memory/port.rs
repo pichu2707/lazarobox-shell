@@ -1,7 +1,9 @@
 //! The memory port: the commands the app sends to the engram worker and the
 //! replies that come back. Plain values, no IO.
 
-use super::{context::ContextBlock, health::Health, kind::MemKind, reply::ProjectError};
+use super::{
+    context::ContextBlock, health::Health, kind::MemKind, offer::Offer, reply::ProjectError,
+};
 use crate::core::layout::PaneId;
 
 /// A note ready to be saved. `title` and `content` are NOT yet redacted: the
@@ -80,6 +82,12 @@ pub enum Reason {
     Busy,
     /// The directory is not a git project.
     NotGit,
+    /// `engram serve` was started and nothing answered; holds the last line
+    /// of its log, already sanitized and capped.
+    StartFailed(Option<String>),
+    /// The `engram` on the PATH is not the file the user was shown when the
+    /// start was confirmed, so nothing was started.
+    Changed,
 }
 
 impl Reason {
@@ -97,6 +105,9 @@ impl Reason {
             Reason::OldBinary => "engram on PATH is 1.x; upgrade it".into(),
             Reason::Busy => "engram is busy".into(),
             Reason::NotGit => "memory needs a git project".into(),
+            Reason::StartFailed(None) => "could not start engram".into(),
+            Reason::StartFailed(Some(line)) => format!("could not start engram: {line}"),
+            Reason::Changed => "engram on PATH changed; not started".into(),
         }
     }
 
@@ -121,11 +132,24 @@ pub enum ServerOutcome {
     Failed(Reason),
 }
 
+impl ServerOutcome {
+    /// The line shown when a server was started. Adopting a server that was
+    /// already there says nothing, and a failure has its own reason line.
+    pub fn notice(&self) -> Option<String> {
+        match self {
+            ServerOutcome::Started { pid } => Some(format!(
+                "started engram serve (pid {pid}); it keeps running after lazarobox quits"
+            )),
+            ServerOutcome::Adopted | ServerOutcome::Failed(_) => None,
+        }
+    }
+}
+
 /// What the worker answers.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum MemReply {
-    /// The health state changed; `offer` is true when `engram serve` may be
-    /// offered.
+    /// The health state changed; `offer` is true when nothing runs on the port
+    /// (the real offer, with the binary's path, follows as `ServerOffer`).
     Health { state: Health, offer: bool },
     /// The project of a pane, or why there is none.
     Project {
@@ -156,6 +180,9 @@ pub enum MemReply {
     },
     /// The result of `StartServer`.
     Server(ServerOutcome),
+    /// Nothing runs on the port and a 3.x `engram` can start one: the app
+    /// asks the user (see `offer::ServerOffer`). At most once per run.
+    ServerOffer(Offer),
     /// Memory cannot be used; `pane` is `None` for a global state.
     Unavailable {
         pane: Option<PaneId>,
@@ -173,7 +200,7 @@ impl MemReply {
             | MemReply::SaveFailed { pane, .. }
             | MemReply::Deleted { pane, .. } => Some(*pane),
             MemReply::Unavailable { pane, .. } => *pane,
-            MemReply::Health { .. } | MemReply::Server(_) => None,
+            MemReply::Health { .. } | MemReply::Server(_) | MemReply::ServerOffer(_) => None,
         }
     }
 }
@@ -247,6 +274,10 @@ mod tests {
                 refused: false,
             },
             MemReply::Server(ServerOutcome::Adopted),
+            MemReply::ServerOffer(Offer {
+                path: "/usr/bin/engram".into(),
+                port: 7437,
+            }),
             MemReply::Unavailable {
                 pane: None,
                 reason: Reason::Busy,
@@ -309,5 +340,45 @@ mod tests {
         };
         assert_eq!(health.pane(), None);
         assert_eq!(MemReply::Context { pane, block: None }.pane(), Some(pane));
+        let offer = Offer {
+            path: "/usr/bin/engram".into(),
+            port: 7437,
+        };
+        assert_eq!(MemReply::ServerOffer(offer).pane(), None);
+    }
+
+    #[test]
+    fn a_failed_start_says_why_without_echoing_more_than_the_log_line() {
+        assert_eq!(Reason::StartFailed(None).text(), "could not start engram");
+        assert_eq!(
+            Reason::StartFailed(Some("bind: address in use".into())).text(),
+            "could not start engram: bind: address in use"
+        );
+        assert_eq!(
+            Reason::StartFailed(None).line(),
+            "memory unavailable: could not start engram"
+        );
+    }
+
+    #[test]
+    fn a_binary_that_changed_after_the_offer_says_so() {
+        assert_eq!(
+            Reason::Changed.text(),
+            "engram on PATH changed; not started"
+        );
+        assert_eq!(
+            Reason::Changed.line(),
+            "memory unavailable: engram on PATH changed; not started"
+        );
+    }
+
+    #[test]
+    fn only_a_started_server_has_a_notice_and_it_names_the_pid() {
+        assert_eq!(
+            ServerOutcome::Started { pid: 4242 }.notice().as_deref(),
+            Some("started engram serve (pid 4242); it keeps running after lazarobox quits")
+        );
+        assert_eq!(ServerOutcome::Adopted.notice(), None);
+        assert_eq!(ServerOutcome::Failed(Reason::NoBinary).notice(), None);
     }
 }
