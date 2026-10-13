@@ -165,6 +165,7 @@ Blocked by task 1.8 if the E-3 fallback is needed (user acceptance first).
 - [x] 9.7 GREEN: `NoteEditor` view, `Entry` system lines, `Effect::Memory(Save/End)`, `StoreCmd::{LinkSession,LinkNote}` wiring, ui draw in `chat.rs`.
 - [x] 9.8 RED then GREEN: insta snapshots for the editor (normal, redacted hint, tiny pane no panic).
 - [ ] 9.9 [manual, Kitty] Ctrl+N, Ctrl+S and Esc reach the app in Kitty (including inside the editor); if Ctrl+N or Ctrl+S is swallowed, stop and propose an alternative key to the user.
+- [x] 9.11 Review fixes (M7b): a `Saved` reply is recorded and linked under the project its save was sent with (pending saves carry it, FIFO); a chat with no origin directory is `Unavailable("memory needs a git project")` and sends no `Resolve` (it used to stay in `Resolving`); `Ctrl+S` checks that memory is still active, else `Memory is off...` in the editor and nothing sent; an inactive runtime memory answers a pane's command with `Unavailable(RestartNeeded)` = `memory applies after a restart` (memory turned on during a run has no worker); each save reply goes to the editor that sent it (a late failure after Esc is the system line `note not saved: <reason>`, an old reply never closes or fails a newer editor); the keys line while saving is `saving… · Esc close`.
 - [x] 9.10 Gate (for what is done: 9.1-9.5, 9.7, 9.8; 9.6 and 9.9 stay open).
 
 ## PR10 / M6: Context at open/resume (`src/core/ai/chat/{mod,engine,transcript}.rs`, `src/runtime/chat.rs` + adapters, `src/ui/components/{chat,statusline}.rs`)
@@ -179,7 +180,7 @@ Starts after ai-chat PR9 and PR13 are in the ai-chat tracker.
 - [ ] 10.6 RED: offer hook: a Down state on the first conversation view of the run shows the M5 prompt once; `y` emits `StartServer`; other keys decline; memory keys while Down re-show it only if not yet used.
 - [ ] 10.7 GREEN: transcript entry, Ctrl+O routing, context flow, offer view, statusline memory segment/hint (spec `statusline`), insta snapshots (folded, expanded, singular, none, tiny pane).
 - [ ] 10.8 [manual, Kitty] Ctrl+O toggles the memory line in Kitty without clashing with Ctrl+R.
-- [ ] 10.9 RED/GREEN: a pane waiting for its `Resolve`/`Context` reply gives up after 5 s on tokio's paused clock (the worker's `Busy` reply can be dropped when the reply channel is full, review W3 of M3b): the view stops waiting, shows `memory unavailable: engram did not answer` once, the chat streams, and a late reply is ignored; no wait without a bound.
+- [ ] 10.9 RED/GREEN: a pane waiting for its `Resolve`/`Context` reply gives up after 5 s on tokio's paused clock (the worker's `Busy` reply can be dropped when the reply channel is full, review W3 of M3b): the view stops waiting (this covers a Ctrl+N waiting for its `Resolve` and a note editor waiting for its `Save`/`Saved` reply, i.e. every lost-reply or `Busy` hang, so no view waits without the 5 s bound), shows `memory unavailable: engram did not answer` once, the chat streams, and a late reply is ignored; no wait without a bound.
 - [ ] 10.10 Gate.
 
 ## PR11 / M8: Summary draft and approval (`src/core/ai/chat/{mod,engine}.rs`, `prompts/summary.md`, `src/ui/components/chat.rs`)
