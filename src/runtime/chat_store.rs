@@ -174,15 +174,33 @@ pub(crate) fn open_as(path: &Path, uid: u32) -> Result<Connection, StoreError> {
     Ok(conn)
 }
 
-/// Creates the data directory 0700, or checks and corrects an existing one.
-fn prepare_dir(dir: &Path, uid: u32) -> Result<(), StoreError> {
+/// Why a private directory cannot be used.
+#[derive(Debug)]
+pub(crate) enum DirProblem {
+    /// A symlink or a file of the wrong kind.
+    NotADirectory,
+    /// Owned by someone other than the expected user.
+    ForeignOwner,
+    Io(io::Error),
+}
+
+impl From<io::Error> for DirProblem {
+    fn from(err: io::Error) -> Self {
+        Self::Io(err)
+    }
+}
+
+/// Creates a directory 0700, or checks and corrects an existing one: a
+/// symlink, a non-directory or a foreign owner is refused, a looser mode is
+/// tightened. Shared by every file lazarobox keeps privately.
+pub(crate) fn secure_dir(dir: &Path, uid: u32) -> Result<(), DirProblem> {
     match fs::symlink_metadata(dir) {
         Ok(meta) => {
             if !meta.is_dir() {
-                return Err(StoreError::Unsafe("data directory is not a directory"));
+                return Err(DirProblem::NotADirectory);
             }
             if meta.uid() != uid {
-                return Err(StoreError::Unsafe("data directory has a foreign owner"));
+                return Err(DirProblem::ForeignOwner);
             }
             if meta.mode() & 0o7777 != 0o700 {
                 fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
@@ -197,6 +215,15 @@ fn prepare_dir(dir: &Path, uid: u32) -> Result<(), StoreError> {
         Err(err) => return Err(err.into()),
     }
     Ok(())
+}
+
+/// Creates the data directory 0700, or checks and corrects an existing one.
+fn prepare_dir(dir: &Path, uid: u32) -> Result<(), StoreError> {
+    secure_dir(dir, uid).map_err(|problem| match problem {
+        DirProblem::NotADirectory => StoreError::Unsafe("data directory is not a directory"),
+        DirProblem::ForeignOwner => StoreError::Unsafe("data directory has a foreign owner"),
+        DirProblem::Io(err) => err.into(),
+    })
 }
 
 /// Refuses a symlink, a non-regular file or a foreign owner, and corrects a

@@ -4,9 +4,9 @@
 use std::{
     ffi::OsString,
     fmt,
-    fs::{self, DirBuilder, File, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom},
-    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
     sync::Mutex,
@@ -20,7 +20,10 @@ use crate::{
         memory::offer::{Binary, last_log_line},
         parse::parse_version,
     },
-    runtime::ai_detect,
+    runtime::{
+        ai_detect,
+        chat_store::{DirProblem, secure_dir},
+    },
 };
 
 /// The log file name under the state directory.
@@ -243,8 +246,17 @@ impl Server {
     pub async fn log_line(&self, from: u64) -> Option<String> {
         let file = self.state.as_ref()?.join(LOG_NAME);
         tokio::task::spawn_blocking(move || {
-            let mut file = File::open(file).ok()?;
-            let len = file.metadata().ok()?.len();
+            // Never through a symlink, never blocking on a FIFO.
+            let mut file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(file)
+                .ok()?;
+            let meta = file.metadata().ok()?;
+            if !meta.is_file() {
+                return None;
+            }
+            let len = meta.len();
             file.seek(SeekFrom::Start(from.max(len.saturating_sub(TAIL))))
                 .ok()?;
             let mut tail = Vec::new();
@@ -256,20 +268,35 @@ impl Server {
     }
 }
 
-/// Opens the log for appending: directory 0700, file 0600, never through a
-/// symlink, emptied when over `MAX_LOG`. Returns it and where this start's
+/// Opens the log for appending: directory 0700 and owned by this user (like
+/// the chat store's), file 0600, never through a symlink, never blocking on a
+/// FIFO, emptied when over `MAX_LOG`. Returns it and where this start's
 /// output begins.
 fn open_log(dir: &Path) -> io::Result<(File, u64)> {
-    DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    open_log_as(dir, unsafe { libc::geteuid() })
+}
+
+fn open_log_as(dir: &Path, uid: u32) -> io::Result<(File, u64)> {
+    secure_dir(dir, uid).map_err(|problem| match problem {
+        DirProblem::NotADirectory => io::Error::other("the log directory is not a directory"),
+        DirProblem::ForeignOwner => io::Error::other("the log directory has a foreign owner"),
+        DirProblem::Io(err) => err,
+    })?;
+    // O_NONBLOCK so that opening a FIFO planted at the path returns at once
+    // (it is refused below); it has no effect on a regular file.
     let log = OpenOptions::new()
         .append(true)
         .create(true)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(dir.join(LOG_NAME))?;
     let meta = log.metadata()?;
     if !meta.is_file() {
         return Err(io::Error::other("the log is not a regular file"));
+    }
+    if meta.uid() != uid {
+        return Err(io::Error::other("the log has a foreign owner"));
     }
     if meta.permissions().mode() & 0o777 != 0o600 {
         log.set_permissions(fs::Permissions::from_mode(0o600))?;
@@ -738,6 +765,117 @@ mod tests {
         let record = rig.recorded().await;
         assert_eq!(lines_of(&record, "arg"), ["serve", "8123"]);
         assert!(!Path::new("pwned").exists());
+    }
+
+    /// Runs `f` on its own thread and fails the test instead of hanging when
+    /// it does not return (a blocking `open` on a FIFO would never return).
+    fn within<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(Duration::from_secs(3))
+            .expect("the call blocked instead of returning")
+    }
+
+    fn mkfifo(path: &Path) {
+        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: `c` is a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    }
+
+    fn euid() -> u32 {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        unsafe { libc::geteuid() }
+    }
+
+    #[test]
+    fn a_fifo_at_the_log_path_is_refused_without_blocking() {
+        // No reader: a blocking open of a FIFO for writing would wait forever.
+        let rig = rig();
+        fs::create_dir_all(&rig.state).unwrap();
+        let log = rig.state.join("engram-serve.log");
+        mkfifo(&log);
+        let state = rig.state.clone();
+        assert!(within(move || open_log(&state)).is_err());
+        // With a reader the open itself would succeed: the kind check refuses.
+        let _reader = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&log)
+            .unwrap();
+        let state = rig.state.clone();
+        assert!(within(move || open_log(&state)).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_fifo_log_means_nothing_is_spawned() {
+        let rig = rig();
+        let script = fake(&rig.bin_dir, "engram 3.4.0", &rig.record, "exec sleep 30");
+        let server = rig.server();
+        server.find().await;
+        fs::create_dir_all(&rig.state).unwrap();
+        mkfifo(&rig.state.join("engram-serve.log"));
+        let result = within(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async { server.spawn(&script, 8123).await.map(|r| r.pid) })
+        });
+        assert!(result.is_err());
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(!rig.record.exists(), "the binary must not have run");
+    }
+
+    #[test]
+    fn a_symlinked_log_directory_is_refused() {
+        let rig = rig();
+        let real = rig._dir.path().join("real");
+        fs::create_dir(&real).unwrap();
+        symlink(&real, &rig.state).unwrap();
+        assert!(open_log(&rig.state).is_err());
+        assert!(!real.join("engram-serve.log").exists());
+    }
+
+    #[test]
+    fn a_log_directory_of_another_owner_is_refused() {
+        let rig = rig();
+        fs::create_dir_all(&rig.state).unwrap();
+        assert!(open_log_as(&rig.state, euid() + 1).is_err());
+        assert!(!rig.state.join("engram-serve.log").exists());
+        assert!(open_log_as(&rig.state, euid()).is_ok());
+    }
+
+    #[test]
+    fn a_loose_log_directory_is_tightened_to_0700() {
+        let rig = rig();
+        fs::create_dir_all(&rig.state).unwrap();
+        fs::set_permissions(&rig.state, fs::Permissions::from_mode(0o755)).unwrap();
+        open_log(&rig.state).unwrap();
+        assert_eq!(fs::metadata(&rig.state).unwrap().mode() & 0o7777, 0o700);
+    }
+
+    #[tokio::test]
+    async fn the_log_line_does_not_follow_a_symlink_or_open_a_fifo() {
+        let rig = rig();
+        fs::create_dir_all(&rig.state).unwrap();
+        let target = rig.state.join("victim");
+        fs::write(&target, "secret failure\n").unwrap();
+        let log = rig.state.join("engram-serve.log");
+        symlink(&target, &log).unwrap();
+        assert_eq!(rig.server().log_line(0).await, None);
+        fs::remove_file(&log).unwrap();
+        mkfifo(&log);
+        let server = rig.server();
+        let line = within(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(server.log_line(0))
+        });
+        assert_eq!(line, None);
     }
 
     fn is_changed(error: &io::Error) -> bool {
