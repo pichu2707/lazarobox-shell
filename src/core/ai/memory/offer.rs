@@ -124,9 +124,10 @@ pub fn major(version: &str) -> Option<u32> {
     })
 }
 
-/// Whether a key confirms the offer: an unmodified, lowercase `y` press.
+/// Whether a key confirms the offer: an unmodified, lowercase `y` press (a
+/// held key's repeats and a release never confirm).
 pub fn confirms(key: KeyEvent) -> bool {
-    key.kind != KeyEventKind::Release
+    key.kind == KeyEventKind::Press
         && key.modifiers == KeyModifiers::NONE
         && key.code == KeyCode::Char('y')
 }
@@ -431,6 +432,10 @@ mod tests {
         let mut release = key(KeyCode::Char('y'), KeyModifiers::NONE);
         release.kind = KeyEventKind::Release;
         assert!(!confirms(release));
+        // A held key repeats: only the first press may start a process.
+        let mut repeat = key(KeyCode::Char('y'), KeyModifiers::NONE);
+        repeat.kind = KeyEventKind::Repeat;
+        assert!(!confirms(repeat));
     }
 
     fn offer() -> Offer {
