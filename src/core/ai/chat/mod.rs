@@ -13,6 +13,7 @@ pub mod prompts;
 pub mod store;
 pub mod stream;
 pub mod streams;
+pub mod summary;
 pub mod transcript;
 pub mod workspace;
 pub mod wrap;
@@ -180,6 +181,21 @@ pub enum Follow {
     CancelEngine,
 }
 
+/// The indices of the messages a request may carry: a user message nobody
+/// answered (cancelled while waiting, or an error before any text) stays in
+/// the transcript but is not sent, so the engine never gets two user messages
+/// in a row.
+pub(crate) fn sendable_indices(all: &[&Msg]) -> Vec<usize> {
+    (0..all.len())
+        .filter(|&i| {
+            all[i].role != Role::User
+                || all
+                    .get(i + 1)
+                    .is_none_or(|next| next.role == Role::Assistant)
+        })
+        .collect()
+}
+
 /// The state of one chat pane.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ChatState {
@@ -203,6 +219,13 @@ pub struct ChatState {
     memory: memory::ChatMemory,
     /// The note editor, while it is open over the conversation.
     editor: Option<note::NoteEditor>,
+    /// The text a summary request has collected so far; `Some` exactly while
+    /// that request holds the stream slot.
+    summarizing: Option<String>,
+    /// The summary draft, while it is open over the conversation.
+    draft: Option<summary::SummaryDraft>,
+    /// The summary the user approved: sent once, with the session end.
+    approved_summary: Option<String>,
 }
 
 impl ChatState {
@@ -222,6 +245,9 @@ impl ChatState {
             prompt: None,
             memory: memory::ChatMemory::new(),
             editor: None,
+            summarizing: None,
+            draft: None,
+            approved_summary: None,
         }
     }
 
@@ -477,14 +503,7 @@ impl ChatState {
         // error before any text) stays in the transcript but is not sent:
         // the engine never gets two user messages in a row.
         let all: Vec<&Msg> = self.messages().collect();
-        let sendable: Vec<usize> = (0..all.len())
-            .filter(|&i| {
-                all[i].role != Role::User
-                    || all
-                        .get(i + 1)
-                        .is_none_or(|next| next.role == Role::Assistant)
-            })
-            .collect();
+        let sendable = sendable_indices(&all);
         let history: Vec<ChatMessage> = sendable
             .iter()
             .map(|&i| ChatMessage {
@@ -557,6 +576,9 @@ impl ChatState {
     pub fn apply_at(&mut self, turn: u64, event: StreamEvent, now: Instant) -> Follow {
         if turn != self.turn || self.phase == Phase::Idle {
             return Follow::Nothing;
+        }
+        if self.summarizing.is_some() {
+            return self.apply_summary(event);
         }
         if !matches!(event, StreamEvent::ThinkingDelta(_)) {
             self.generation += 1;
@@ -724,6 +746,9 @@ impl ChatState {
         if self.phase == Phase::Idle {
             return Follow::Nothing;
         }
+        if self.summarizing.is_some() {
+            return self.cancel_summary();
+        }
         self.finish(MsgStatus::Cancelled, None, now);
         self.turn += 1;
         self.generation += 1;
@@ -747,5 +772,7 @@ mod reasoning_tests;
 mod state_tests;
 #[cfg(test)]
 mod stream_tests;
+#[cfg(test)]
+mod summary_tests;
 #[cfg(test)]
 mod wait_tests;

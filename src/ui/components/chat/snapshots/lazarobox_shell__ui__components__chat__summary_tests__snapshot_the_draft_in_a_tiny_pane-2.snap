@@ -1,0 +1,5 @@
+---
+source: src/ui/components/chat/summary_tests.rs
+expression: "text(&draw(&chat, 3, 2))"
+---
+Sum

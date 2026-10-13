@@ -307,7 +307,7 @@ When a conversation view opens (new or resumed) with memory ready, the context f
 - THEN the folded memory line appears and the model answers using them
 
 ### Requirement: Summary with approval
-In a conversation view with memory enabled and ready and at least one assistant answer, the summary key (see modal-input) MUST ask the engine of the `chat` task (same resolution as a send, same guidance on failure shown as the notice `Cannot summarize: <short reason>`) for a summary with one fixed prompt: decisions and facts only, no reasoning, at most about 1500 characters. The history given is the capped text of messages only (never reasoning, never the memory block). The request occupies the pane's single stream slot, so it is refused while a stream is running and a send is refused while it runs; it can be cancelled like a stream, shows no assistant message, and its own reasoning is dropped. The proposed summary is sanitized, cut to 4000 characters and shown in the summary editor (the content field of the note editor alone), already redacted. It is NEVER saved without the user's approval: save approves it (after the second redaction pass of Save as note) and discard drops it. An approved summary is saved only as the engram session end summary and never as an extra observation (it surfaces later through the session summaries of the context request); it is kept for the conversation and sent when the session ends (see engram-client). Approving again replaces the previous one. A plain close of the conversation never calls the engine.
+In a conversation view with memory enabled and ready and at least one assistant answer, the summary key (see modal-input) MUST ask the engine of the `chat` task (same resolution as a send, same guidance on failure shown as the notice `Cannot summarize: <short reason>`) for a summary with one fixed prompt: decisions and facts only, no reasoning, at most about 1500 characters. The history given is the capped text of messages only (never reasoning, never the memory block). The request occupies the pane's single stream slot, so it is refused while a stream is running and a send is refused while it runs; it can be cancelled like a stream, shows no assistant message, and its own reasoning is dropped. The proposed summary is sanitized, cut to 4000 characters and shown in the summary editor (the content field of the note editor alone), already redacted. It is NEVER saved without the user's approval: save approves it (after the second redaction pass of Save as note) and discard drops it. An approved summary is saved only as the engram session end summary and never as an extra observation (it surfaces later through the session summaries of the context request); it is kept for the conversation and sent when the session ends (see engram-client). The session end carries the latest approved summary, else the note titles, else nothing. A conversation with no saved note whose summary was approved still reaches engram: its session is created and registered when the conversation closes (never at approval), with the id, project and link rules of a note's session, and only while memory is on at that moment. Approving again replaces the previous one. A plain close of the conversation never calls the engine.
 
 #### Scenario: Request and editor [auto]
 - GIVEN an idle conversation with answers and a fake engine answering `We chose Axum.`
@@ -323,6 +323,11 @@ In a conversation view with memory enabled and ready and at least one assistant 
 - GIVEN an approved summary `We chose Axum.` and a registered session
 - WHEN the pane closes
 - THEN the session end request carries `We chose Axum.`
+
+#### Scenario: Summary without notes registers a session at close [auto]
+- GIVEN a conversation that saved no note and an approved summary `We chose Axum.`, with memory on
+- WHEN the pane closes
+- THEN no engram request was made at approval, and at close exactly one session is registered and ended with `We chose Axum.`; with memory off at close, nothing is sent
 
 #### Scenario: Approving again replaces, sent once [auto]
 - GIVEN a summary approved as `first`, then another summary approved as `second`

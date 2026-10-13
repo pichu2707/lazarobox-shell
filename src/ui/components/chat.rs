@@ -75,6 +75,9 @@ impl<'a> ChatView<'a> {
         if let Some(editor) = self.chat.note_editor() {
             return self.note_cursor(editor, area);
         }
+        if let Some(draft) = self.chat.summary_draft() {
+            return self.summary_cursor(draft, area);
+        }
         let (layout, plan) = self.plan(area);
         let composer = layout.composer;
         if composer.is_empty() {
@@ -121,6 +124,10 @@ impl Widget for ChatView<'_> {
         }
         if let Some(editor) = self.chat.note_editor() {
             self.render_note(editor, area, buf);
+            return;
+        }
+        if let Some(draft) = self.chat.summary_draft() {
+            self.render_summary(draft, area, buf);
             return;
         }
         let (layout, plan) = self.plan(area);
@@ -189,5 +196,8 @@ mod memory_tests;
 mod note;
 #[cfg(test)]
 mod note_tests;
+mod summary;
+#[cfg(test)]
+mod summary_tests;
 #[cfg(test)]
 mod tests;

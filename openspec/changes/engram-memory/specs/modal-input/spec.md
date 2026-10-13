@@ -1,18 +1,18 @@
 # Delta for Modal Input
 
-All scenarios [auto] unless tagged. The Chat pane input table and its swallow rule are unchanged except for the keys added below, which are exempt from the swallow rule. The key bindings are defaults for design to confirm, chosen in the style of Ctrl+Y, Ctrl+B, Ctrl+T and Ctrl+R (the prefix key `o` toggles the memory block, Ctrl+E summary draft; the save-note action is the prefix key `n`, because Ctrl+N is taken outside the terminal in the user's setup, e.g. a new Kitty window), and are an open question until confirmed in Kitty (manual check, with M8).
+All scenarios [auto] unless tagged. The Chat pane input table and its swallow rule are unchanged except for the keys added below, which are exempt from the swallow rule. The key bindings are defaults for design to confirm, chosen in the style of Ctrl+Y, Ctrl+B, Ctrl+T and Ctrl+R (the prefix key `o` toggles the memory block, the prefix key `s` asks for the summary draft; the save-note action is the prefix key `n`, because direct Ctrl+letter keys such as Ctrl+N are captured outside the terminal in the user's setup, e.g. a new Kitty window, so no new direct Ctrl+letter chat key is added), and are an open question until confirmed in Kitty (manual check, with M8).
 
 ## ADDED Requirements
 
 ### Requirement: Memory keys
-In TERMINAL, with a chat pane focused and the conversation view shown, one key MUST be added to the Chat pane input table, and the memory block is folded with a prefix key:
+In TERMINAL, with a chat pane focused and the conversation view shown, no key is added to the Chat pane input table, and the memory block and the summary are driven by prefix keys:
 
 | Key | Effect |
 |---|---|
-| Ctrl+E | request the end-of-conversation summary (see chat-memory) |
+| Ctrl+Space then `s` | request the end-of-conversation summary (see chat-memory). A root leaf of the prefix table, left out of the hint (the root hint is already 79 columns and a longer one would clip `q quit` at 80); on a pane that is not a chat it shows `The summary is for chat panes; open one with Ctrl+Space c` |
 | Ctrl+Space then `o` | expand or collapse the memory block (see chat-memory); it never touches the reasoning block, which stays on Ctrl+R. A root leaf of the prefix table, left out of the hint; on a pane that is not a chat it shows `The memory line is for chat panes; open one with Ctrl+Space c` |
 
-Repeat events of Ctrl+E MUST be ignored, as for Ctrl+Y and Ctrl+B. Ctrl+N and Ctrl+O are NOT bound: in a chat pane they are swallowed as any other unbound key. With memory off or not ready, Ctrl+E only shows its notices and `Prefix o` does nothing when no memory line exists. These keys MUST NEVER reach a PTY and MUST NOT type anything into the composer. In the conversation list, the tag editor and the delete confirmation they do nothing.
+Ctrl+N, Ctrl+O and Ctrl+E are NOT bound: in a chat pane they are swallowed as any other unbound key. With memory off or not ready, `Prefix s` only shows its notices and `Prefix o` does nothing when no memory line exists. These keys MUST NEVER reach a PTY and MUST NOT type anything into the composer. In the conversation list, the tag editor and the delete confirmation they do nothing.
 
 #### Scenario: Prefix n opens the editor [auto]
 - GIVEN a conversation with an answer and a ready memory
@@ -24,9 +24,9 @@ Repeat events of Ctrl+E MUST be ignored, as for Ctrl+Y and Ctrl+B. Ctrl+N and Ct
 - WHEN Ctrl+N is pressed, and as a Repeat event
 - THEN nothing happens, no notice shows and no effect is emitted
 
-#### Scenario: Ctrl+E requests a summary [auto]
+#### Scenario: Prefix s requests a summary [auto]
 - GIVEN an idle conversation with an answer and a ready memory
-- WHEN Ctrl+E is pressed
+- WHEN Ctrl+Space then `s` are pressed
 - THEN one summary request effect is emitted and no WritePty is emitted
 
 #### Scenario: Prefix o and Ctrl+R are independent [auto]
@@ -34,19 +34,19 @@ Repeat events of Ctrl+E MUST be ignored, as for Ctrl+Y and Ctrl+B. Ctrl+N and Ct
 - WHEN Ctrl+Space then `o` are pressed, then Ctrl+R
 - THEN the memory line expands first and the reasoning block expands second, each only on its own key
 
-#### Scenario: Repeat ignored [auto]
+#### Scenario: Unbound Ctrl keys ignored [auto]
 - GIVEN a focused chat pane
-- WHEN Repeat events for Ctrl+E arrive, and Ctrl+O is pressed
+- WHEN Ctrl+E and Ctrl+O are pressed, and as Repeat events
 - THEN nothing happens and no effect is emitted
 
 #### Scenario: Memory off [auto]
 - GIVEN memory off
-- WHEN Ctrl+Space then `n`, and Ctrl+E, are pressed
+- WHEN Ctrl+Space then `n`, and Ctrl+Space then `s`, are pressed
 - THEN only the notice `Memory is off; enable it in the menu (Ctrl+Space m)` appears and no effect is emitted
 
 #### Scenario: Other views ignore them [auto]
 - GIVEN the conversation list shown
-- WHEN Ctrl+E is pressed and Ctrl+Space then `o`
+- WHEN Ctrl+Space then `s` and Ctrl+Space then `o` are pressed
 - THEN nothing changes and nothing is typed
 
 ### Requirement: Save-note prefix key
@@ -124,5 +124,5 @@ A paste is inserted into the focused text field with control and format characte
 
 #### Scenario: Real keys in Kitty [manual, Kitty]
 - GIVEN a chat with an answer and memory ready, in Kitty
-- WHEN the user presses Ctrl+Space then `n`, edits the fields, saves with Ctrl+S, and presses Ctrl+Space then `o` and Ctrl+E
+- WHEN the user presses Ctrl+Space then `n`, edits the fields, saves with Ctrl+S, and presses Ctrl+Space then `o`, then Ctrl+Space then `s` and Ctrl+S in the summary view
 - THEN each key is received as listed and none is intercepted by the terminal

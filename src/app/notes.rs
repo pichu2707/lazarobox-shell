@@ -6,6 +6,7 @@ use crate::core::ai::chat::{
     memory::{PendingSave, Readiness},
     note::{self, MEMORY_CHECKING, MEMORY_OFF, NOT_LINKED, NOTHING_TO_SAVE, NoteOutcome},
     store::eviction_lines_of,
+    summary::SUMMARY_BUSY,
     yank,
 };
 use crate::core::ai::memory::{port::Reason, reply::ProjectError};
@@ -33,6 +34,14 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        // One memory view at a time: a summary running or open holds the pane.
+        if chat.summary_draft().is_some() {
+            return Vec::new();
+        }
+        if chat.summarizing() {
+            self.notice = Some(SUMMARY_BUSY.to_owned());
+            return Vec::new();
+        }
         if yank::last_answer(chat).is_none() {
             self.notice = Some(NOTHING_TO_SAVE.to_owned());
             return Vec::new();
@@ -229,7 +238,8 @@ impl App {
                 chat.close_saved_editor(save.as_ref());
                 let kind = topic_key.split('/').nth(1).unwrap_or("note");
                 chat.push_system(format!("saved note {kind}: {title}"));
-                return self.link_effects(id);
+                let links = self.link_effects(id);
+                return self.with_waiting_sends(links);
             }
             MemReply::Health { .. }
             | MemReply::Deleted { .. }
@@ -368,23 +378,43 @@ impl App {
         }
     }
 
-    /// The `End` commands of the chats among `ids` that wrote a note, each
-    /// once. The caller emits them before the pane or the app goes away.
+    /// The `End` commands of the chats among `ids` that wrote a note or kept
+    /// an approved summary, each once. The caller emits them before the pane
+    /// or the app goes away. A summary alone takes a new session here, which
+    /// the worker registers with the end (and is linked to the conversation).
     pub(super) fn end_effects(&mut self, ids: &[PaneId]) -> Vec<Effect> {
-        ids.iter()
-            .filter_map(|id| {
-                let (session, project, summary) = self
-                    .panes
-                    .get_mut(id)
-                    .and_then(PaneState::chat_mut)?
-                    .take_end()?;
-                Some(Effect::Memory(MemCmd::End {
-                    session,
-                    project,
-                    summary,
-                }))
-            })
-            .collect()
+        let memory_on = self.ai.memory.active();
+        let new_id = self.session_id;
+        let mut effects = Vec::new();
+        for id in ids {
+            let Some(chat) = self.panes.get_mut(id).and_then(PaneState::chat_mut) else {
+                continue;
+            };
+            // Memory was found off at close: what the user approved for
+            // engram does not go (turning it off clears it already).
+            if !memory_on {
+                chat.drop_approved_summary();
+            }
+            let with_summary = chat.approved_summary().is_some();
+            let fresh = chat.adopt_summary_session(new_id);
+            let cwd = chat
+                .origin_cwd()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let Some((session, project, summary)) = chat.take_end() else {
+                continue;
+            };
+            if fresh {
+                effects.extend(self.link_effects(*id));
+            }
+            effects.push(Effect::Memory(MemCmd::End {
+                session,
+                project,
+                summary,
+                cwd: with_summary.then_some(cwd),
+            }));
+        }
+        effects
     }
 
     /// Every open chat's `End`, then the quit.

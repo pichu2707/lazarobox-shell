@@ -224,8 +224,11 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
                 self.say(reply).await;
             }
             MemCmd::End {
-                session, summary, ..
-            } => self.end(&session, &summary).await,
+                session,
+                project,
+                summary,
+                cwd,
+            } => self.end(&session, &project, cwd.as_deref(), &summary).await,
             MemCmd::Delete { pane, notes } => {
                 let reply = match self.ready().await {
                     Ok(()) => self.delete(pane, &notes).await,
@@ -547,8 +550,20 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
     }
 
     /// Ends a registered session, once. Best effort: nobody waits for a reply.
-    async fn end(&mut self, session: &str, summary: &str) {
-        if !self.registered.contains(session) || self.ready().await.is_err() {
+    /// With a `cwd` (the end carries an approved summary) a session that is
+    /// not registered yet is registered first; without it, it is not ended.
+    async fn end(&mut self, session: &str, project: &str, cwd: Option<&str>, summary: &str) {
+        if !self.registered.contains(session) && cwd.is_none() {
+            return;
+        }
+        if self.ready().await.is_err() {
+            return;
+        }
+        // The probe may have found a new instance, which forgot the session.
+        if !self.registered.contains(session)
+            && let Some(cwd) = cwd
+            && !matches!(self.register(session, project, cwd).await, Ok(None))
+        {
             return;
         }
         let Ok(call) = route::end_session(session, summary) else {

@@ -264,6 +264,7 @@ mod tests {
             session: "s".into(),
             project: "p".into(),
             summary: "x".into(),
+            cwd: None,
         });
         assert!(rx.try_recv().is_err());
         assert_eq!(rig.started.get(), 0, "still no worker");

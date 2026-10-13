@@ -42,6 +42,7 @@ mod chat;
 mod context;
 mod notes;
 mod offer;
+mod summary;
 
 /// Rows of history kept by the emulator.
 const SCROLLBACK_LINES: usize = 10_000;
@@ -58,6 +59,8 @@ const CHAT_COPY_REFUSED: &str =
 
 /// Shown when `Prefix n` (save a note) is pressed on a pane that is not a chat.
 const NOTE_CHAT_ONLY: &str = "Save as note is for chat panes; open one with Ctrl+Space c";
+/// Notice of the summary key on a pane that is not a chat.
+const SUMMARY_CHAT_ONLY: &str = "The summary is for chat panes; open one with Ctrl+Space c";
 /// Notice of the memory-line key on a pane that is not a chat.
 const MEMORY_CHAT_ONLY: &str = "The memory line is for chat panes; open one with Ctrl+Space c";
 
@@ -420,6 +423,9 @@ pub struct App {
     held_chat_key: Option<HeldExit>,
     /// Monotonic clock, injected so `update` stays deterministic.
     clock: fn() -> Instant,
+    /// A fresh engram session id, injected so the core does no IO: the
+    /// runtime passes the random one. `None` (the default) gives no id.
+    session_id: fn() -> Option<String>,
     /// The last finished detection; `None` until the first run ends.
     engines: Option<Detection>,
     /// A detection is in flight: further requests are dropped.
@@ -484,6 +490,7 @@ impl App {
             held_exit: None,
             held_chat_key: None,
             clock: Instant::now,
+            session_id: || None,
             engines: None,
             detecting: false,
             ai: AiConfig::default(),
@@ -545,6 +552,13 @@ impl App {
     /// Injects the monotonic clock used to debounce a held COPY exit key.
     pub fn with_clock(mut self, clock: fn() -> Instant) -> Self {
         self.clock = clock;
+        self
+    }
+
+    /// Injects the source of engram session ids, used when a summary is
+    /// approved in a chat that wrote no note.
+    pub fn with_session_ids(mut self, session_id: fn() -> Option<String>) -> Self {
+        self.session_id = session_id;
         self
     }
 
@@ -1187,7 +1201,8 @@ impl App {
                 | PrefixAction::OpenMenu
                 | PrefixAction::OpenChat
                 | PrefixAction::SaveNote
-                | PrefixAction::ToggleMemory,
+                | PrefixAction::ToggleMemory
+                | PrefixAction::Summarize,
             ) => InputMode::Terminal,
             Step::Run(
                 PrefixAction::ShowCommands
@@ -1210,6 +1225,14 @@ impl App {
             }
             Step::Run(PrefixAction::SaveNote) => {
                 self.notice = Some(NOTE_CHAT_ONLY.to_string());
+                Vec::new()
+            }
+            Step::Run(PrefixAction::Summarize) if self.focused_is_chat() => {
+                let id = self.tab().focus;
+                self.chat_summary_key(id)
+            }
+            Step::Run(PrefixAction::Summarize) => {
+                self.notice = Some(SUMMARY_CHAT_ONLY.to_string());
                 Vec::new()
             }
             Step::Run(PrefixAction::ToggleMemory) if self.focused_is_chat() => {
@@ -6381,6 +6404,9 @@ mod app_tests {
 
     /// Save as note (engram-memory M7b).
     mod chat_notes;
+
+    /// Summary draft and approval (engram-memory M8).
+    mod chat_summary;
 
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.

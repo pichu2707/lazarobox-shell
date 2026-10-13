@@ -44,7 +44,7 @@ ai-chat chain today: PR7 (#140) → PR8 (#141) → PR9 (live pane, in review fix
 | M7a | chat.db v2, link store commands, eviction note count | PR8 | ~250 | M3b, M4, ai-chat PR9 | fixed |
 | M7b | Note editor (Prefix n), session register/end | PR9 | ~300 | M7a | fixed |
 | M6 | Context at open/resume, `Entry::Memory` (Prefix o), `ChatRequest.memory`, budget, statusline, offer hook | PR10 | ~350 | M5, M7b, ai-chat PR9 + PR13 | fixed |
-| M8 | Summary draft and approval (Ctrl+E) | PR11 | ~400-450 | M6, M7b, ai-chat PR13 | fixed |
+| M8 | Summary draft and approval (Prefix s) | PR11 | ~400-450 | M6, M7b, ai-chat PR13 | fixed |
 | M9 | Delete offer with token, store delete rows, README | PR12 | ~300 | M7a, ai-chat C9 (PR10) | fixed |
 | V | Final manual verify, live engram end to end | PR13 | 0 | PR12 | no code |
 
@@ -189,12 +189,13 @@ Starts after ai-chat PR9 and PR13 are in the ai-chat tracker.
 
 Fallback split if over 400 without exception: 11a request and draft view, 11b approval kept and sent at session end.
 
-- [ ] 11.1 RED: Ctrl+E with memory ready and at least one answer issues one `ChatSend` for the `chat` task whose system is `prompts/summary.md` and whose history is message texts only (no reasoning, no memory block); refused while a stream runs; `Cannot summarize: <reason>` when the engine is not ready; cancel emits `ChatCancel` and leaves the pane idle; `ThinkingDelta`s are dropped.
-- [ ] 11.2 RED: deltas fill a `SummaryDraft` view, not the transcript; result sanitized, cut to 4,000 chars, redacted (`password=hunter2` becomes `password=[REDACTED]`); title shown `Summary (not saved until you approve)`.
-- [ ] 11.3 RED: approval (ruling 2): Ctrl+S runs the second redaction pass, and on success the summary is KEPT in chat state and nothing is sent; approving again replaces it; Esc discards and keeps nothing; the session End sent once at close carries the latest approved summary (else the note titles, else nothing without notes); no engram request occurs at approval time.
-- [ ] 11.4 GREEN: `prompts/summary.md`, `SummaryDraft` view, kept-summary slot, End composition at close, draw code, insta snapshots.
-- [ ] 11.5 [manual, Kitty] Ctrl+E and Ctrl+S in the summary view reach the app.
-- [ ] 11.6 Gate.
+- [x] 11.1 RED: `Prefix s` (Ctrl+Space then `s`, an unhinted root leaf; Ctrl+E dropped because direct Ctrl+letter keys are captured outside lazarobox) with memory ready and at least one answer issues one `ChatSend` for the `chat` task whose system is `prompts/summary.md` and whose history is message texts only (no reasoning, no memory block); refused while a stream runs; `Cannot summarize: <reason>` when the engine is not ready; cancel emits `ChatCancel` and leaves the pane idle; `ThinkingDelta`s are dropped.
+- [x] 11.2 RED: deltas fill a `SummaryDraft` view, not the transcript; result sanitized, cut to 4,000 chars, redacted (`password=hunter2` becomes `password=[REDACTED]`); title shown `Summary (not saved until you approve)`.
+- [x] 11.3 RED: approval (ruling 2): Ctrl+S runs the second redaction pass, and on success the summary is KEPT in chat state and nothing is sent; approving again replaces it; Esc discards and keeps nothing; the session End sent once at close carries the latest approved summary (else the note titles, else nothing); a summary approved in a chat with no saved note registers its session at close as part of the End (decision 2026-10-13), only while memory is on then; no engram request occurs at approval time.
+- [x] 11.4 GREEN: `prompts/summary.md`, `SummaryDraft` view, kept-summary slot, End composition at close, draw code, insta snapshots.
+- [ ] 11.5 [manual, Kitty] Ctrl+Space then `s` and Ctrl+S in the summary view reach the app.
+- [x] 11.6 Gate.
+- [x] 11.7 Review notes (apply): the key is `Prefix s` (unhinted; the root hint stays 79 columns). The request is built by `ChatState::begin_summary` (system `prompts/summary.md`, message texts only through the shared `sendable_indices`, a trailing unanswered question dropped, capped like a turn minus the instruction; no memory block, no reasoning, and NO workspace block: the spec does not give it to a summary). The run holds the pane's single stream slot (`summarizing`, `Phase`, turn), so a send and a second summary are refused and Esc cancels it; its text is collected, not drawn, and the draft opens when the run ends (the transcript shows the usual waiting text meanwhile). Failures say `summary failed: <reason>` as a system line. Memory not ready for the key shows the note's notice (`Memory is not ready: <reason>` or `Checking memory…`) and asks for the project again; unlike the note it does not open by itself when the answer arrives, press the key once more. One memory view at a time: the key does nothing while the note editor or a draft is open, and `Prefix n` is refused (or silent) while a summary runs or its draft is open. Turning memory off drops the kept summary (`clear_memory_at`), and a draft open at that moment cannot be approved (`Memory is off`). Esc on a draft keeps any EARLIER approved summary. DECIDED 2026-10-13 (user): a summary approved in a chat that never saved a note still reaches engram. At close `end_effects` allocates the id (injected `App::with_session_ids`, the runtime passes `new_session_id`), adopts it with the chat's project (a stored pair wins), emits `LinkSession` when the conversation exists, and sends `MemCmd::End` with `cwd: Some(..)` so the worker registers the session first (a plain note End keeps `cwd: None`). Memory off at close drops the summary (`end_effects` clears it, nothing is sent for a summary-only chat). Review fixes (same day): the key checks busy before nothing-to-summarize, a yank during a summary run copies the newest answer, a cut stream marks the draft `stream cut; the summary may be incomplete`, and parked sends wait while a note editor or a draft is open.
 
 ## PR12 / M9: Delete offer and docs (`src/runtime/chat_store*`, `src/core/ai/chat/{store,mod}.rs`, `README.md`)
 
@@ -205,7 +206,7 @@ Starts after ai-chat PR10 (list/delete, `Effect::Store` wiring) is in the tracke
 - [ ] 12.3 RED: `d` prompt: plain `Delete conversation? (y/n)` without notes; with notes, memory on and a token present `Delete conversation? y · n · a also delete its N notes` (`its 1 note`); `n`, Esc, `x`, `Y`, `A` cancel with no request; `y` deletes the conversation only; without a token or with memory off, the plain prompt then the line `its N notes stay in engram (set ENGRAM_HTTP_TOKEN to delete them)` or `(memory is off)`.
 - [ ] 12.4 RED: `a`: `MemCmd::Delete` sends `DELETE /observations/{id}?expected_project=P` with the bearer token per notes; results `deleted N notes from engram`, `deleted K of N notes from engram` (204/404/403 mix gives 2 of 3 plus the refusal text), `could not delete notes: <reason>` when unreachable; the conversation stays deleted; eviction never sends a `DELETE`.
 - [ ] 12.5 GREEN: App prompt state, `token_present`, `MemCmd::Delete`/`MemReply::Deleted` wiring.
-- [ ] 12.6 README: memory privacy (open HTTP routes, shared db, sync), `ENGRAM_HTTP_TOKEN`, spawned server and its log, `chat/` topic-key prefix to find notes, chat.db v2 rollback note, keys Ctrl+Space n/Ctrl+O/Ctrl+E.
+- [ ] 12.6 README: memory privacy (open HTTP routes, shared db, sync), `ENGRAM_HTTP_TOKEN`, spawned server and its log, `chat/` topic-key prefix to find notes, chat.db v2 rollback note, keys Ctrl+Space n/o/s.
 - [ ] 12.7 Gate.
 
 ## PR13 / V: Final manual verify (no code)
@@ -213,5 +214,5 @@ Starts after ai-chat PR10 (list/delete, `Effect::Store` wiring) is in the tracke
 - [ ] 13.1 [manual] Live engram 3.4.0 end to end on a throwaway instance (temp `ENGRAM_DATA_DIR`, spare port set in config, never the user's db or `:7437`): enable memory and accept the warning, open a chat, save a note with a typed secret (redacted twice), save the same title again (revision 2), resume the conversation (memory line shows N), approve a summary, close, and find the session end and `chat/` note with `engram search`.
 - [ ] 13.2 [manual] Offer path: stop the throwaway server, open a chat, confirm the prompt shows the absolute binary path, accept, quit lazarobox, and confirm the server still runs.
 - [ ] 13.3 [manual] Delete path: with `ENGRAM_HTTP_TOKEN` set on the throwaway server, `d` then `a` removes the notes; without the token the stay-in-engram line shows.
-- [ ] 13.4 [manual, Kitty] Ctrl+Space n, Ctrl+Space o, Ctrl+E and Ctrl+S (editor) all reach the app; an old 1.20 server on a spare port gives the restart notice and no offer.
+- [ ] 13.4 [manual, Kitty] Ctrl+Space n, Ctrl+Space o, Ctrl+Space s and Ctrl+S (editors) all reach the app; an old 1.20 server on a spare port gives the restart notice and no offer.
 - [ ] 13.5 Final Gate on the tracker `feat/engram-memory`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`; kill any throwaway process.

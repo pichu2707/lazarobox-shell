@@ -318,6 +318,8 @@ impl ChatState {
     /// nobody waiting). `width` and `height` are the transcript's, to keep a
     /// scrolled view on the same content.
     pub fn clear_memory_at(&mut self, width: usize, height: usize) {
+        // Memory off: what the user approved for engram goes too.
+        self.approved_summary = None;
         if self.memory.injected.is_none()
             && !self.has_memory_line()
             && self.memory.context != Fetch::Pending
@@ -456,7 +458,8 @@ impl ChatState {
     /// the reasoning). An editor already open stays as it is. `Err` holds the
     /// notice when there is no answer.
     pub fn open_note_editor(&mut self) -> Result<(), String> {
-        if self.editor.is_some() {
+        // One memory view at a time.
+        if self.editor.is_some() || self.draft.is_some() || self.summarizing.is_some() {
             return Ok(());
         }
         let answer = yank::last_answer(self).ok_or_else(|| NOTHING_TO_SAVE.to_owned())?;
@@ -691,10 +694,14 @@ impl ChatState {
         let session = self.memory.session.clone()?;
         self.memory.ended = true;
         let titles: Vec<&str> = self.memory.notes.iter().map(|n| n.title.as_str()).collect();
-        let summary: String = format!("Notes: {}", titles.join("; "))
-            .chars()
-            .take(END_SUMMARY_CAP)
-            .collect();
+        // The approved summary wins over the note titles.
+        let summary: String = match &self.approved_summary {
+            Some(approved) => approved.clone(),
+            None => format!("Notes: {}", titles.join("; "))
+                .chars()
+                .take(END_SUMMARY_CAP)
+                .collect(),
+        };
         Some((session.id, session.project, summary))
     }
 }
