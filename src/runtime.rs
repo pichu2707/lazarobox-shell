@@ -36,7 +36,10 @@ use ratatui::{
     DefaultTerminal,
     crossterm::{
         cursor::SetCursorStyle,
-        event::{DisableBracketedPaste, EnableBracketedPaste, Event, EventStream},
+        event::{
+            DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
+            Event, EventStream,
+        },
         execute, terminal,
     },
 };
@@ -194,7 +197,7 @@ pub async fn run() -> io::Result<()> {
 
     let mut terminal = ratatui::init();
     install_panic_hook();
-    let result = match execute!(stdout(), EnableBracketedPaste) {
+    let result = match enter_modes(&mut stdout()) {
         Ok(()) => event_loop(&mut terminal, &mut panes, inbox, shutdown, app).await,
         Err(error) => Err(error),
     };
@@ -793,6 +796,10 @@ fn to_app_event(event: Event) -> Option<AppEvent> {
         Event::Key(key) => Some(AppEvent::Key(key)),
         Event::Paste(text) => Some(AppEvent::Paste(text)),
         Event::Resize(cols, rows) => Some(AppEvent::Resize { cols, rows }),
+        // A terminal without focus reporting never sends these, and the app
+        // then keeps the window as focused.
+        Event::FocusGained => Some(AppEvent::WindowFocus(true)),
+        Event::FocusLost => Some(AppEvent::WindowFocus(false)),
         _ => None,
     }
 }
@@ -836,7 +843,18 @@ fn flush_host<W: Write>(out: &mut W, pending: &mut Vec<u8>) -> io::Result<()> {
 /// Undoes what the runtime changed in the host terminal, minus raw mode and
 /// the alternate screen, which `ratatui::restore` handles.
 fn restore_to<W: Write>(out: &mut W) -> io::Result<()> {
-    execute!(out, SetCursorStyle::DefaultUserShape, DisableBracketedPaste)
+    execute!(
+        out,
+        SetCursorStyle::DefaultUserShape,
+        DisableBracketedPaste,
+        DisableFocusChange
+    )
+}
+
+/// Enters the terminal modes the runtime needs on top of raw mode: bracketed
+/// paste and focus reporting. [`restore_to`] undoes them.
+fn enter_modes<W: Write>(out: &mut W) -> io::Result<()> {
+    execute!(out, EnableBracketedPaste, EnableFocusChange)
 }
 
 fn restore() {
@@ -856,7 +874,7 @@ fn should_restore() -> bool {
     !chat::in_adapter_poll() && !on_store_thread && !on_prepare_thread
 }
 
-/// Restores the cursor and bracketed paste before the previous hook (which
+/// Restores the cursor, bracketed paste and focus reporting before the previous hook (which
 /// `ratatui::init` set up to leave raw mode and the alternate screen) runs.
 /// Panics inside a chat adapter are caught elsewhere and skip all of it,
 /// including the previous hook's output, which would scribble over the TUI.
@@ -1084,6 +1102,25 @@ mod tests {
         assert!(text.contains("\x1b[?2004l"), "{text:?}");
     }
 
+    // Spec (chat-notify): Restore disables focus reporting.
+    #[test]
+    fn restore_disables_focus_reporting() {
+        let mut out = Vec::new();
+        restore_to(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[?1004l"), "{text:?}");
+    }
+
+    // The modes are entered with one write and undone by `restore_to`.
+    #[test]
+    fn startup_enables_focus_reporting_next_to_bracketed_paste() {
+        let mut out = Vec::new();
+        enter_modes(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[?2004h"), "{text:?}");
+        assert!(text.contains("\x1b[?1004h"), "{text:?}");
+    }
+
     fn key_event(kind: KeyEventKind) -> KeyEvent {
         KeyEvent {
             code: KeyCode::Char('a'),
@@ -1110,9 +1147,21 @@ mod tests {
         );
     }
 
+    // Spec (chat-notify): Focus events map.
+    #[test]
+    fn focus_events_map_to_the_window_focus() {
+        assert_eq!(
+            to_app_event(Event::FocusGained),
+            Some(AppEvent::WindowFocus(true))
+        );
+        assert_eq!(
+            to_app_event(Event::FocusLost),
+            Some(AppEvent::WindowFocus(false))
+        );
+    }
+
     #[test]
     fn other_crossterm_events_are_dropped() {
-        assert_eq!(to_app_event(Event::FocusGained), None);
         let mouse = MouseEvent {
             kind: MouseEventKind::Moved,
             column: 0,
