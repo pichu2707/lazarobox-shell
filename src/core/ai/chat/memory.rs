@@ -313,6 +313,30 @@ impl ChatState {
         self.restore(anchor, width, height);
     }
 
+    /// Memory was turned off: the chat forgets its block and drops the line,
+    /// and a context request still out is given up on (its late reply finds
+    /// nobody waiting). `width` and `height` are the transcript's, to keep a
+    /// scrolled view on the same content.
+    pub fn clear_memory_at(&mut self, width: usize, height: usize) {
+        if self.memory.injected.is_none()
+            && !self.has_memory_line()
+            && self.memory.context != Fetch::Pending
+        {
+            return;
+        }
+        let had = self.has_memory_line();
+        let anchor = self.anchor(width, height);
+        self.entries.retain(|e| !matches!(e, Entry::Memory(_)));
+        self.memory.injected = None;
+        if self.memory.context == Fetch::Pending {
+            self.memory.context = Fetch::Done;
+            self.memory.context_since = None;
+        }
+        self.generation += 1;
+        let anchor = anchor.map(|(entry, row)| (entry.saturating_sub(usize::from(had)), row));
+        self.restore(anchor, width, height);
+    }
+
     fn has_memory_line(&self) -> bool {
         self.entries.iter().any(|e| matches!(e, Entry::Memory(_)))
     }

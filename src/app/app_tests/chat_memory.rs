@@ -899,3 +899,76 @@ fn a_global_notice_with_memory_off_changes_nothing() {
     assert_eq!(a.update(global_notice(Reason::NoBinary)), vec![]);
     assert!(systems(&a).is_empty());
 }
+
+// W1: memory turned off in the menu stops the block ------------------------------
+
+/// The menu saved a draft with memory off while the chats stay open.
+fn menu_turns_memory_off(a: &mut App) {
+    a.menu = Some(MenuState::open(&a.config).with_ai(ai(false), a.engines.clone()));
+    a.input = InputMode::Menu;
+    a.update(AppEvent::ConfigSaved);
+    assert!(!a.ai.memory.active());
+}
+
+/// A chat that was given a block of `notes` notes.
+fn with_block(notes: usize) -> App {
+    let (mut a, _) = opened(true);
+    project(&mut a);
+    context(&mut a, Some(block(notes)));
+    a
+}
+
+#[test]
+fn the_block_is_sent_before_memory_is_turned_off_and_not_after() {
+    let mut a = with_block(3);
+    assert_eq!(send(&mut a, "one").memory, Some(block(3).text));
+    finish_turn(&mut a);
+    menu_turns_memory_off(&mut a);
+    assert_eq!(send(&mut a, "two").memory, None);
+    finish_turn(&mut a);
+    assert_eq!(send(&mut a, "three").memory, None);
+}
+
+#[test]
+fn turning_memory_off_removes_the_line_from_every_open_chat() {
+    let mut a = with_block(3);
+    assert!(head(&a).is_some());
+    menu_turns_memory_off(&mut a);
+    assert_eq!(head(&a), None);
+    assert!(a.take_dirty());
+}
+
+#[test]
+fn a_send_with_memory_off_never_carries_a_block_even_if_the_menu_hook_missed_it() {
+    let mut a = with_block(3);
+    // Memory off without going through the menu save (e.g. a test builder).
+    a.ai = ai(false);
+    assert_eq!(send(&mut a, "hi").memory, None);
+    assert_eq!(head(&a), None);
+}
+
+#[test]
+fn a_context_reply_after_memory_was_turned_off_is_ignored() {
+    let (mut a, _) = opened(true);
+    project(&mut a);
+    menu_turns_memory_off(&mut a);
+    context(&mut a, Some(block(3)));
+    assert_eq!(head(&a), None);
+    assert_eq!(send(&mut a, "hi").memory, None);
+}
+
+#[test]
+fn a_project_reply_after_memory_was_turned_off_asks_for_no_context() {
+    let (mut a, _) = opened(true);
+    menu_turns_memory_off(&mut a);
+    assert_eq!(memory_cmds(&project(&mut a)), []);
+}
+
+#[test]
+fn turning_memory_off_hides_the_serve_offer() {
+    let mut a = offered();
+    assert!(a.chat_guidance(chat_id()).is_some());
+    menu_turns_memory_off(&mut a);
+    assert_ne!(a.chat_guidance(chat_id()).as_deref(), Some(OFFER_PROMPT));
+    assert_eq!(a.update(unmodified('y')), vec![], "no server is started");
+}

@@ -254,6 +254,10 @@ impl App {
     /// Sends `text` from pane `id` and clears its composer when it went.
     /// Nothing goes before the conversation's prompt is prepared.
     fn send_text(&mut self, id: PaneId, text: &str, availability: &Availability) -> Vec<Effect> {
+        // Memory off means no engram text leaves, whatever the chat holds.
+        if !self.ai.memory.active() {
+            self.forget_memory(id);
+        }
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };

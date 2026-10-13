@@ -44,6 +44,9 @@ impl App {
         id: PaneId,
         result: &Result<String, ProjectError>,
     ) -> Vec<Effect> {
+        if !self.ai.memory.active() {
+            return Vec::new();
+        }
         let now = (self.clock)();
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
@@ -70,6 +73,9 @@ impl App {
     /// line above the transcript. A reply nobody asked for (no fetch is
     /// pending: it already came, or never went out) is ignored.
     pub(super) fn on_context(&mut self, id: PaneId, block: &Option<ContextBlock>) {
+        if !self.ai.memory.active() {
+            return;
+        }
         let width = self
             .panes
             .get(&id)
@@ -88,6 +94,32 @@ impl App {
 }
 
 impl App {
+    /// Memory is off: the chat `id` keeps no block and no line, and a context
+    /// request still out is given up on. Idempotent and cheap when the chat
+    /// holds nothing.
+    pub(super) fn forget_memory(&mut self, id: PaneId) {
+        let width = self
+            .panes
+            .get(&id)
+            .map_or(0, |pane| usize::from(pane.size.cols));
+        let rows = self.chat_viewport(id);
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.clear_memory_at(width, rows);
+        }
+    }
+
+    /// The saved choice turned memory off: every open chat forgets its block
+    /// and line, and the `engram serve` question goes off screen.
+    pub(super) fn memory_turned_off(&mut self) {
+        let ids: Vec<PaneId> = self.panes.keys().copied().collect();
+        for id in ids {
+            self.forget_memory(id);
+        }
+        self.offer_shown = false;
+        self.offer_pane = None;
+        self.dirty = true;
+    }
+
     /// Whether any chat awaits a memory reply. The runtime keeps the timer of
     /// `MemoryTick` armed exactly while this holds.
     pub fn memory_waiting(&self) -> bool {
@@ -112,7 +144,9 @@ impl App {
             };
             let expired = chat.expire_waits(now);
             let text = Reason::NoAnswer.text();
-            if expired.resolve.is_some() || expired.context {
+            // With memory off the waits still end (the timer stops) but say
+            // nothing about engram.
+            if self.ai.memory.active() && (expired.resolve.is_some() || expired.context) {
                 chat.degrade_once(Reason::NoAnswer.line());
                 self.dirty = true;
             }

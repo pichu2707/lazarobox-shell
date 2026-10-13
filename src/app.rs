@@ -1084,6 +1084,9 @@ impl App {
                 Outcome::Reverted => self.config = menu.original(),
                 Outcome::Saved => self.ai = menu.ai_draft(),
             }
+            if !self.ai.memory.active() {
+                self.memory_turned_off();
+            }
         }
         self.input = InputMode::Terminal;
         // The forced tab bar goes away with the menu, whatever the outcome.

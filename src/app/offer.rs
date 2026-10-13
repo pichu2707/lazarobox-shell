@@ -30,7 +30,10 @@ impl App {
     /// Puts the held offer in front of the user, in the focused chat. Nothing
     /// when none is held or it is already shown.
     pub(super) fn show_server_offer(&mut self) {
-        if self.server_offer.pending().is_none() || !self.focused_is_chat() {
+        if !self.ai.memory.active()
+            || self.server_offer.pending().is_none()
+            || !self.focused_is_chat()
+        {
             return;
         }
         self.offer_shown = true;
@@ -40,7 +43,7 @@ impl App {
 
     /// The question to show in chat `id`, while the offer is on screen there.
     pub(super) fn server_offer_prompt(&self, id: PaneId) -> Option<String> {
-        if !self.offer_shown || self.offer_pane != Some(id) {
+        if !self.ai.memory.active() || !self.offer_shown || self.offer_pane != Some(id) {
             return None;
         }
         self.server_offer.pending().map(Offer::prompt)
