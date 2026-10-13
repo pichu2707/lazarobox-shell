@@ -6,6 +6,7 @@ use crate::core::ai::chat::{
     SendOutcome,
     engine::{Availability, availability},
     guidance::guidance,
+    memory::MemBadge,
     prompts::Resolved,
     streams::StreamInfo,
     yank,
@@ -64,6 +65,15 @@ impl App {
                 })
             })
             .collect()
+    }
+
+    /// The memory badge for the statusline: only over a focused chat with
+    /// memory active.
+    pub fn status_memory(&self) -> Option<MemBadge> {
+        if !self.ai.memory.active() {
+            return None;
+        }
+        self.focused_state().chat_state().map(ChatState::mem_badge)
     }
 
     /// The animation frame the indicator is drawn at.

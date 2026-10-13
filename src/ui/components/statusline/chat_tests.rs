@@ -7,7 +7,7 @@ use ratatui::{Terminal, backend::TestBackend};
 
 use super::thinking::ThinkingView;
 use super::*;
-use crate::core::ai::chat::StreamPhase;
+use crate::core::ai::chat::{StreamPhase, memory::MemBadge};
 
 const PATH: &str = "/srv/app";
 const ENGINE: &str = "ollama › llama3:8b";
@@ -163,5 +163,141 @@ fn snapshot_chat_with_the_indicator() {
     insta::assert_snapshot!(text(&draw(
         line(InputMode::Terminal, true, Some(view(0))),
         120
+    )));
+}
+
+// 10.7: the memory segment ---------------------------------------------------------
+
+fn with_memory(
+    mode: InputMode,
+    thinking: Option<ThinkingView>,
+    badge: Option<MemBadge>,
+) -> StatusLine<'static> {
+    line(mode, true, thinking).memory(badge)
+}
+
+/// The columns where `needle` starts in the drawn row, if it is there.
+fn column_of(buf: &Buffer, needle: &str) -> Option<u16> {
+    let shown = text(buf);
+    let byte = shown.find(needle)?;
+    u16::try_from(shown[..byte].chars().count()).ok()
+}
+
+#[test]
+fn a_ready_memory_follows_the_engine_in_muted_text() {
+    let t = LazaroboxTheme::default();
+    let buf = draw(
+        with_memory(InputMode::Terminal, None, Some(MemBadge::Ready)),
+        100,
+    );
+    let shown = text(&buf);
+    assert!(shown.contains("ollama › llama3:8b · mem: ready"), "{shown}");
+    let at = column_of(&buf, "mem: ready").expect("shown");
+    assert_eq!(buf[(at, 0)].fg, t.text_muted);
+    let engine = column_of(&buf, "ollama").expect("shown");
+    assert_eq!(
+        buf[(engine, 0)].fg,
+        t.primary_cyan,
+        "the engine keeps its color"
+    );
+}
+
+#[test]
+fn checking_is_muted_and_unavailable_is_warning_orange() {
+    let t = LazaroboxTheme::default();
+    let checking = draw(
+        with_memory(InputMode::Terminal, None, Some(MemBadge::Checking)),
+        100,
+    );
+    assert!(text(&checking).contains("· mem: checking"));
+    let at = column_of(&checking, "mem: checking").unwrap();
+    assert_eq!(checking[(at, 0)].fg, t.text_muted);
+    let unavailable = draw(
+        with_memory(InputMode::Terminal, None, Some(MemBadge::Unavailable)),
+        100,
+    );
+    assert!(text(&unavailable).contains("· mem: unavailable"));
+    let at = column_of(&unavailable, "mem: unavailable").unwrap();
+    assert_eq!(unavailable[(at, 0)].fg, t.warning_orange);
+}
+
+#[test]
+fn memory_off_draws_exactly_what_it_drew_before() {
+    for thinking in [None, Some(view(1))] {
+        let off = draw(
+            with_memory(InputMode::Terminal, thinking.clone(), None),
+            100,
+        );
+        let before = draw(line(InputMode::Terminal, true, thinking), 100);
+        assert_eq!(off, before);
+        assert!(!text(&off).contains("mem"));
+    }
+}
+
+#[test]
+fn the_memory_segment_is_dropped_whole_before_anything_else_shrinks() {
+    let mut dropped_somewhere = false;
+    for width in 0..=100 {
+        let with = text(&draw(
+            with_memory(InputMode::Terminal, Some(view(1)), Some(MemBadge::Ready)),
+            width,
+        ));
+        let without = text(&draw(
+            with_memory(InputMode::Terminal, Some(view(1)), None),
+            width,
+        ));
+        if with.contains("mem") {
+            assert!(
+                with.contains(" · mem: ready"),
+                "{width}: never in part: {with:?}"
+            );
+            // Showing it costs the indicator and the engine text nothing.
+            for part in ["▰▰▰", "thinking", "4s", "+1", ENGINE] {
+                assert_eq!(
+                    with.contains(part),
+                    without.contains(part),
+                    "{width}: {part}: {with:?} vs {without:?}"
+                );
+            }
+        } else if without.contains(ENGINE) {
+            dropped_somewhere = true;
+        }
+        if width >= 12 {
+            assert!(with.starts_with(" ◐ CHAT "), "{width}: {with:?}");
+        }
+    }
+    assert!(
+        dropped_somewhere,
+        "a width exists where only the segment goes"
+    );
+}
+
+#[test]
+fn the_memory_segment_takes_columns_from_the_path_budget_only_when_it_shows() {
+    let plain = line(InputMode::Terminal, true, None).path_budget(120);
+    let with = with_memory(InputMode::Terminal, None, Some(MemBadge::Ready)).path_budget(120);
+    assert_eq!(
+        plain - with,
+        u16::try_from(" · mem: ready".chars().count()).unwrap()
+    );
+    // Too narrow for it: the budget is what it was.
+    let plain = line(InputMode::Terminal, true, None).path_budget(34);
+    let with = with_memory(InputMode::Terminal, None, Some(MemBadge::Ready)).path_budget(34);
+    assert_eq!(plain, with);
+}
+
+#[test]
+fn snapshot_chat_with_memory_ready_and_the_indicator() {
+    insta::assert_snapshot!(text(&draw(
+        with_memory(InputMode::Terminal, Some(view(0)), Some(MemBadge::Ready)),
+        120
+    )));
+}
+
+#[test]
+fn snapshot_chat_with_memory_unavailable() {
+    insta::assert_snapshot!(text(&draw(
+        with_memory(InputMode::Terminal, None, Some(MemBadge::Unavailable)),
+        100
     )));
 }

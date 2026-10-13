@@ -109,6 +109,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
     let line = |path| {
         StatusLine::input(theme, app.input(), path, &right)
             .chat(app.focused_is_chat())
+            .memory(app.status_memory())
             .thinking(thinking.clone())
             .zoomed(app.zoomed())
             .copy_position(app.copy_position())

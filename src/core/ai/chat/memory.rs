@@ -69,6 +69,17 @@ pub fn project_error_line(error: &ProjectError) -> String {
     }
 }
 
+/// What the statusline says about memory over a focused chat.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MemBadge {
+    /// The project is known.
+    Ready,
+    /// The project is being asked for, or not asked yet.
+    Checking,
+    /// Memory cannot be used for this chat.
+    Unavailable,
+}
+
 /// Where the one context request of a view is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Fetch {
@@ -197,6 +208,15 @@ impl ChatMemory {
 impl ChatState {
     pub fn readiness(&self) -> &Readiness {
         &self.memory.readiness
+    }
+
+    /// The statusline badge for this chat's memory.
+    pub fn mem_badge(&self) -> MemBadge {
+        match self.memory.readiness {
+            Readiness::Ready(_) => MemBadge::Ready,
+            Readiness::Unknown | Readiness::Resolving { .. } => MemBadge::Checking,
+            Readiness::Unavailable(_) => MemBadge::Unavailable,
+        }
     }
 
     /// The engram project, once it is known.
