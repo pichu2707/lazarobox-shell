@@ -36,6 +36,7 @@ use crate::core::{
 };
 
 mod chat;
+mod notes;
 
 /// Rows of history kept by the emulator.
 const SCROLLBACK_LINES: usize = 10_000;
@@ -933,7 +934,7 @@ impl App {
                 self.run_waiting_sends()
             }
             AppEvent::Chat(id, turn, event) => self.on_chat(id, turn, event),
-            AppEvent::Memory(reply) => self.on_memory(&reply),
+            AppEvent::Memory(reply) => self.on_memory_reply(&reply),
             // The chat pane consumes the replies once it saves its messages.
             AppEvent::Store(_) => Vec::new(),
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
@@ -1352,13 +1353,6 @@ impl App {
 
     /// Applies one event of a chat turn. Events for a pane that is gone, is a
     /// shell, or belongs to another turn change nothing and draw nothing.
-    /// Memory replies change nothing yet: the chat consumes them with the
-    /// memory features, and drops a reply for a pane that is gone (stale) by
-    /// the same lookup `on_chat` uses for a late delta.
-    fn on_memory(&mut self, _reply: &MemReply) -> Vec<Effect> {
-        Vec::new()
-    }
-
     fn on_chat(&mut self, id: PaneId, turn: u64, event: StreamEvent) -> Vec<Effect> {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
@@ -6326,6 +6320,9 @@ mod app_tests {
 
     /// The live chat pane (ai-chat C8).
     mod chat_live;
+
+    /// Save as note (engram-memory M7b).
+    mod chat_notes;
 
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.

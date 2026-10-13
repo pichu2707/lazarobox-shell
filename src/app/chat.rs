@@ -95,7 +95,10 @@ impl App {
         let debounced = matches!(
             (key.code, mods),
             (KeyCode::Esc, KeyModifiers::NONE)
-                | (KeyCode::Char('c' | 'y' | 'b' | 'r'), KeyModifiers::CONTROL)
+                | (
+                    KeyCode::Char('c' | 'y' | 'b' | 'r' | 'n' | 's'),
+                    KeyModifiers::CONTROL
+                )
         );
         // A held key arrives as Repeat (Kitty) or as Presses close together.
         let repeat = if debounced {
@@ -104,6 +107,9 @@ impl App {
             self.held_chat_key = None;
             repeat
         };
+        if self.note_editor_open(id) {
+            return self.on_note_key(id, &key, repeat);
+        }
         let one_shot = |effects: fn(&mut App, PaneId) -> Vec<Effect>, app: &mut App| {
             if repeat { Vec::new() } else { effects(app, id) }
         };
@@ -121,6 +127,7 @@ impl App {
             (KeyCode::Char('r'), KeyModifiers::CONTROL) => {
                 one_shot(|app, _| app.chat_toggle_reasoning(), self)
             }
+            (KeyCode::Char('n'), KeyModifiers::CONTROL) => one_shot(App::chat_note_key, self),
             (KeyCode::PageUp, KeyModifiers::NONE) => self.chat_page(true),
             (KeyCode::PageDown, KeyModifiers::NONE) => self.chat_page(false),
             (KeyCode::Enter, KeyModifiers::ALT) | (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
@@ -159,6 +166,10 @@ impl App {
     /// A paste into the focused chat's composer.
     pub(super) fn chat_paste(&mut self, text: &str) {
         let id = self.tab().focus;
+        if self.note_editor_open(id) {
+            self.note_paste(id, text);
+            return;
+        }
         if let Some(chat) = self.focused_state_mut().chat_mut() {
             chat.composer_mut().paste(text);
             self.dirty = true;
