@@ -538,3 +538,57 @@ fn the_reasoning_of_the_conversation_never_reaches_the_summary_request() {
         "four messages and the instruction"
     );
 }
+
+// parked sends and the memory views -------------------------------------------
+
+fn detected() -> AppEvent {
+    AppEvent::EnginesDetected(Detection {
+        engines: vec![EngineState {
+            id: "ollama",
+            status: Status::Available,
+            models: vec!["llama3:8b".to_owned()],
+            version: None,
+        }],
+    })
+}
+
+/// An answered chat whose next send is parked (a detection is running again)
+/// with the note editor open over it.
+fn parked_under_the_editor() -> App {
+    let mut a = ready_chat();
+    // The detection runs again: sends wait for its result.
+    a.engines = None;
+    type_text(&mut a, "hi");
+    assert_eq!(a.update(plain(KeyCode::Enter)), vec![], "parked");
+    press(&mut a, "n");
+    assert!(chat_of(&a).note_editor().is_some());
+    a
+}
+
+fn sends(effects: &[Effect]) -> usize {
+    effects
+        .iter()
+        .filter(|e| matches!(e, Effect::ChatSend { .. }))
+        .count()
+}
+
+#[test]
+fn a_parked_send_waits_while_the_note_editor_is_open_and_goes_when_it_closes() {
+    let mut a = parked_under_the_editor();
+    let effects = a.update(detected());
+    assert_eq!(sends(&effects), 0, "{effects:?}");
+    assert_eq!(chat_of(&a).phase(), Phase::Idle);
+    let effects = a.update(plain(KeyCode::Esc));
+    assert_eq!(sends(&effects), 1, "{effects:?}");
+}
+
+#[test]
+fn a_parked_send_goes_when_the_note_is_saved() {
+    let mut a = parked_under_the_editor();
+    type_text(&mut a, "A");
+    a.update(ctrl('s'));
+    let effects = a.update(detected());
+    assert_eq!(sends(&effects), 0, "{effects:?}");
+    let effects = a.update(saved_reply(&a, SESSION, 1, "chat/decision/a", "A"));
+    assert_eq!(sends(&effects), 1, "{effects:?}");
+}

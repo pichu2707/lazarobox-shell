@@ -238,7 +238,8 @@ impl App {
                 chat.close_saved_editor(save.as_ref());
                 let kind = topic_key.split('/').nth(1).unwrap_or("note");
                 chat.push_system(format!("saved note {kind}: {title}"));
-                return self.link_effects(id);
+                let links = self.link_effects(id);
+                return self.with_waiting_sends(links);
             }
             MemReply::Health { .. }
             | MemReply::Deleted { .. }

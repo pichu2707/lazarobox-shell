@@ -126,10 +126,12 @@ impl App {
             repeat
         };
         if self.note_editor_open(id) {
-            return self.on_note_key(id, &key, repeat);
+            let effects = self.on_note_key(id, &key, repeat);
+            return self.with_waiting_sends(effects);
         }
         if self.summary_draft_open(id) {
-            return self.on_summary_key(id, &key, repeat);
+            let effects = self.on_summary_key(id, &key, repeat);
+            return self.with_waiting_sends(effects);
         }
         let one_shot = |effects: fn(&mut App, PaneId) -> Vec<Effect>, app: &mut App| {
             if repeat { Vec::new() } else { effects(app, id) }
@@ -295,6 +297,9 @@ impl App {
             .filter(|(id, _)| self.panes.contains_key(id))
             .partition(|(id, _)| {
                 availability != Availability::Checking
+                    // A note editor or summary draft owns the conversation
+                    // until it closes: the send goes then.
+                    && !self.memory_view_open(*id)
                     && self
                         .panes
                         .get(id)
@@ -306,6 +311,13 @@ impl App {
             .into_iter()
             .flat_map(|(id, text)| self.send_text(id, &text, &availability))
             .collect()
+    }
+
+    /// `effects` followed by the parked sends that were only waiting for a
+    /// memory view to close.
+    pub(super) fn with_waiting_sends(&mut self, mut effects: Vec<Effect>) -> Vec<Effect> {
+        effects.extend(self.run_waiting_sends());
+        effects
     }
 
     /// The runtime prepared the system prompt of chat `id`. A pane that is
