@@ -21,6 +21,7 @@ pub mod chat_store;
 mod config_write;
 pub mod loopback;
 pub mod proc;
+pub mod prompts;
 
 use ai_detect::spawn_detection;
 use chat::Chats;
