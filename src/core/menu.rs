@@ -107,8 +107,8 @@ pub static SECTIONS: &[Section] = &[Section {
 
 /// The AI section, attached only by [`MenuState::with_ai`]. The labels of
 /// the task rows are the task ids; their key path is `Task::table`. The
-/// static rows follow the tasks: `Memory` now, and `Profile` (ai-chat) is to
-/// be slotted in BEFORE `Memory`, so the order is `Profile` then `Memory`.
+/// static rows follow the tasks: `Profile`, `Context` and `Memory`, in that
+/// order.
 pub static AI_SECTION: Section = Section {
     title: "AI",
     items: &[
@@ -363,11 +363,6 @@ impl MenuState {
     /// Whether the selection is on an AI task row (the ones with a picker).
     pub fn on_ai_row(&self) -> bool {
         matches!(self.selected_kind(), Some(ItemKind::Assign(_)))
-    }
-
-    /// Whether the selection is on the `Memory` row.
-    pub fn on_memory_row(&self) -> bool {
-        matches!(self.selected_kind(), Some(ItemKind::Memory(_)))
     }
 
     /// Whether the selection is on a row of the AI draft that is not a
