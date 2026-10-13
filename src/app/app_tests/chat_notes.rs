@@ -633,3 +633,312 @@ fn a_secret_in_the_reasoning_never_reaches_the_traffic() {
         "{traffic:?}"
     );
 }
+
+// 9.6: links to the conversation (chat.db) ------------------------------------
+
+use crate::core::ai::chat::store::{LinkKind, StoreCmd, StoreReply};
+
+fn created(conversation: i64, evicted: bool, evicted_notes: u32) -> AppEvent {
+    AppEvent::Store(StoreReply::Created {
+        pane: chat_id(),
+        conversation,
+        evicted,
+        evicted_notes,
+    })
+}
+
+fn link_session(conversation: i64) -> Effect {
+    Effect::Store(StoreCmd::LinkSession {
+        pane: chat_id(),
+        conversation,
+        session_id: SESSION.into(),
+        project: PROJECT.into(),
+    })
+}
+
+fn link_note(conversation: i64, id: i64, topic_key: &str, title: &str) -> Effect {
+    Effect::Store(StoreCmd::LinkNote {
+        pane: chat_id(),
+        conversation,
+        project: PROJECT.into(),
+        topic_key: topic_key.into(),
+        observation_id: id,
+        title: title.into(),
+    })
+}
+
+/// Writes a note called `title` and delivers the worker's `Saved`.
+fn write_note(a: &mut App, title: &str, id: i64) -> Vec<Effect> {
+    a.update(ctrl('n'));
+    type_text(a, title);
+    a.update(ctrl('s'));
+    let key = format!("chat/decision/{}", title.to_lowercase());
+    a.update(saved_reply(SESSION, id, &key, title))
+}
+
+#[test]
+fn a_saved_note_links_the_session_and_itself_once_the_conversation_exists() {
+    let mut a = ready("body");
+    a.update(created(7, false, 0));
+    type_text(&mut a, "One");
+    a.update(ctrl('s'));
+    let effects = a.update(saved_reply(SESSION, 41, "chat/decision/one", "One"));
+    assert_eq!(
+        effects,
+        vec![
+            link_session(7),
+            link_note(7, 41, "chat/decision/one", "One")
+        ]
+    );
+    // The session is linked once; later notes link themselves only.
+    let effects = write_note(&mut a, "Two", 42);
+    assert_eq!(effects, vec![link_note(7, 42, "chat/decision/two", "Two")]);
+}
+
+#[test]
+fn links_wait_for_the_conversation_and_follow_it() {
+    let mut a = ready("body");
+    type_text(&mut a, "One");
+    a.update(ctrl('s'));
+    let effects = a.update(saved_reply(SESSION, 41, "chat/decision/one", "One"));
+    assert_eq!(effects, vec![], "no conversation to link to yet");
+    assert_eq!(
+        a.update(created(7, false, 0)),
+        vec![
+            link_session(7),
+            link_note(7, 41, "chat/decision/one", "One")
+        ]
+    );
+}
+
+#[test]
+fn the_stored_pair_of_a_resumed_conversation_wins() {
+    let mut a = ready("body");
+    a.update(created(7, false, 0));
+    type_text(&mut a, "One");
+    a.update(ctrl('s'));
+    a.update(saved_reply(SESSION, 41, "chat/decision/one", "One"));
+    let stored = "lazarobox-ffffffffffffffffffffffffffffffff";
+    a.update(AppEvent::Store(StoreReply::SessionLinked {
+        pane: chat_id(),
+        conversation: 7,
+        session_id: stored.into(),
+        project: "other-project".into(),
+    }));
+    a.update(ctrl('n'));
+    type_text(&mut a, "Two");
+    let save = a.update(ctrl('s'));
+    let [
+        Effect::Memory(MemCmd::Save {
+            session, project, ..
+        }),
+    ] = save.as_slice()
+    else {
+        panic!("one save, got {save:?}");
+    };
+    assert_eq!(session.as_deref(), Some(stored));
+    assert_eq!(
+        project, "other-project",
+        "the project the session was made with"
+    );
+}
+
+#[test]
+fn a_link_failure_is_said_once_and_the_note_stays_saved() {
+    let mut a = ready("body");
+    a.update(created(7, false, 0));
+    type_text(&mut a, "One");
+    a.update(ctrl('s'));
+    a.update(saved_reply(SESSION, 41, "chat/decision/one", "One"));
+    for kind in [LinkKind::Note, LinkKind::Session, LinkKind::Note] {
+        let failed = AppEvent::Store(StoreReply::LinkFailed {
+            pane: chat_id(),
+            kind,
+        });
+        assert_eq!(a.update(failed), vec![]);
+    }
+    assert_eq!(
+        systems(&a),
+        ["saved note decision: One", "note saved but not linked"]
+    );
+    // The chat keeps working.
+    assert!(chat_of(&a).note_editor().is_none());
+    write_note(&mut a, "Two", 42);
+    assert_eq!(systems(&a).len(), 3);
+}
+
+#[test]
+fn store_replies_for_a_pane_that_is_gone_change_nothing() {
+    let mut a = ready("body");
+    let gone = PaneId::for_test(9);
+    for reply in [
+        StoreReply::Created {
+            pane: gone,
+            conversation: 1,
+            evicted: true,
+            evicted_notes: 3,
+        },
+        StoreReply::LinkFailed {
+            pane: gone,
+            kind: LinkKind::Note,
+        },
+        StoreReply::SessionLinked {
+            pane: gone,
+            conversation: 1,
+            session_id: SESSION.into(),
+            project: PROJECT.into(),
+        },
+    ] {
+        assert_eq!(a.update(AppEvent::Store(reply)), vec![]);
+    }
+    assert!(systems(&a).is_empty());
+}
+
+#[test]
+fn store_failures_the_pane_does_not_own_yet_are_ignored() {
+    let mut a = ready("body");
+    for reply in [
+        StoreReply::Unavailable {
+            pane: chat_id(),
+            reason: "disk".into(),
+        },
+        StoreReply::Failed {
+            pane: chat_id(),
+            notify: true,
+        },
+    ] {
+        assert_eq!(a.update(AppEvent::Store(reply)), vec![]);
+    }
+    assert!(systems(&a).is_empty());
+}
+
+// 8.6 / 8.8: the eviction lines reach the transcript ----------------------------
+
+#[test]
+fn an_eviction_adds_its_line_and_the_note_count() {
+    let mut a = with_answer(true, "x");
+    assert_eq!(a.update(created(7, true, 2)), vec![]);
+    assert_eq!(
+        systems(&a),
+        [
+            "oldest conversation removed (limit 200)",
+            "2 notes of removed conversations remain in engram"
+        ]
+    );
+}
+
+#[test]
+fn one_note_is_singular_and_zero_adds_no_line() {
+    let mut a = with_answer(true, "x");
+    a.update(created(7, true, 1));
+    assert_eq!(
+        systems(&a),
+        [
+            "oldest conversation removed (limit 200)",
+            "1 note of a removed conversation remains in engram"
+        ]
+    );
+    let mut b = with_answer(true, "x");
+    b.update(created(7, true, 0));
+    assert_eq!(systems(&b), ["oldest conversation removed (limit 200)"]);
+}
+
+#[test]
+fn nothing_evicted_adds_no_line() {
+    let mut a = with_answer(true, "x");
+    assert_eq!(a.update(created(7, false, 5)), vec![]);
+    assert!(systems(&a).is_empty());
+}
+
+#[test]
+fn the_eviction_lines_show_with_memory_off_and_ask_nothing() {
+    let mut a = with_answer(false, "x");
+    assert_eq!(a.update(created(7, true, 3)), vec![]);
+    assert_eq!(systems(&a).len(), 2);
+}
+
+// 9.6: the session ends once --------------------------------------------------
+
+fn end(summary: &str) -> Effect {
+    Effect::Memory(MemCmd::End {
+        session: SESSION.into(),
+        project: PROJECT.into(),
+        summary: summary.into(),
+    })
+}
+
+/// A chat that saved the notes `A` and `B` into the session.
+fn wrote_two() -> App {
+    let mut a = ready("body");
+    type_text(&mut a, "A");
+    a.update(ctrl('s'));
+    a.update(saved_reply(SESSION, 1, "chat/decision/a", "A"));
+    write_note(&mut a, "B", 2);
+    a
+}
+
+#[test]
+fn closing_the_pane_ends_the_session_with_the_note_titles() {
+    let mut a = wrote_two();
+    press(&mut a, "wq");
+    let effects = a.update(key('y'));
+    assert!(effects.contains(&end("Notes: A; B")), "{effects:?}");
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::Memory(MemCmd::End { .. })))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn quitting_ends_the_session_before_the_quit() {
+    let mut a = wrote_two();
+    press(&mut a, "q");
+    assert_eq!(a.update(key('y')), vec![end("Notes: A; B"), Effect::Quit]);
+}
+
+#[test]
+fn closing_a_tab_ends_the_sessions_of_its_chats() {
+    let mut a = wrote_two();
+    // A second tab keeps the app alive; the chat's tab is closed.
+    press(&mut a, "tn");
+    press(&mut a, "b1");
+    press(&mut a, "tc");
+    let effects = a.update(key('y'));
+    assert_eq!(a.tab_count(), 1, "{effects:?}");
+    assert!(effects.contains(&end("Notes: A; B")), "{effects:?}");
+}
+
+#[test]
+fn a_chat_that_never_wrote_sends_no_end() {
+    let mut a = with_answer(true, "x");
+    press(&mut a, "wq");
+    let effects = a.update(key('y'));
+    assert!(
+        effects.iter().all(|e| !matches!(e, Effect::Memory(_))),
+        "{effects:?}"
+    );
+    let mut b = with_answer(true, "x");
+    press(&mut b, "q");
+    assert_eq!(b.update(key('y')), vec![Effect::Quit]);
+}
+
+#[test]
+fn the_end_is_not_sent_twice() {
+    let mut a = wrote_two();
+    press(&mut a, "wq");
+    let first = a.update(key('y'));
+    assert!(first.contains(&end("Notes: A; B")));
+    press(&mut a, "q");
+    assert_eq!(a.update(key('y')), vec![Effect::Quit], "the pane is gone");
+}
+
+#[test]
+fn the_reasoning_never_reaches_the_end_summary() {
+    let mut a = wrote_two();
+    press(&mut a, "q");
+    let effects = a.update(key('y'));
+    assert!(!format!("{effects:?}").contains("secret plan"));
+}

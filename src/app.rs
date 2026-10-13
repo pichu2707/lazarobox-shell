@@ -935,8 +935,7 @@ impl App {
             }
             AppEvent::Chat(id, turn, event) => self.on_chat(id, turn, event),
             AppEvent::Memory(reply) => self.on_memory_reply(&reply),
-            // The chat pane consumes the replies once it saves its messages.
-            AppEvent::Store(_) => Vec::new(),
+            AppEvent::Store(reply) => self.on_store_reply(&reply),
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
         };
@@ -1253,7 +1252,9 @@ impl App {
     /// active (the last one if it was last); closing a tab before the active
     /// one keeps the active tab. The bar may disappear, which resizes every tab.
     fn drop_tab(&mut self, index: usize) -> Vec<Effect> {
-        for id in self.tabs.remove(index).tree.leaves() {
+        let leaves = self.tabs.remove(index).tree.leaves();
+        let mut effects = self.end_effects(&leaves);
+        for id in leaves {
             self.panes.remove(&id);
             self.drop_parked_send(id);
         }
@@ -1266,7 +1267,8 @@ impl App {
             self.active -= 1;
         }
         self.refresh_screen();
-        self.relayout()
+        effects.extend(self.relayout());
+        effects
     }
 
     /// Recomputes the screen rects: the tab bar exists while there is more
@@ -1386,9 +1388,10 @@ impl App {
         };
         let effects = match self.tabs[t].tree.remove(id) {
             Removal::NotFound => return Vec::new(),
-            Removal::WasLast if self.tabs.len() == 1 => return vec![Effect::Quit],
+            Removal::WasLast if self.tabs.len() == 1 => return self.quit_effects(),
             Removal::WasLast => self.drop_tab(t),
             Removal::Removed => {
+                let mut ends = self.end_effects(&[id]);
                 self.panes.remove(&id);
                 self.drop_parked_send(id);
                 self.tabs[t].zoom = false;
@@ -1398,7 +1401,8 @@ impl App {
                         pane_at(&tiling, old.x, old.y).unwrap_or(self.tabs[t].tree.leaves()[0]);
                     self.set_focus_in(t, next);
                 }
-                self.relayout()
+                ends.extend(self.relayout());
+                ends
             }
         };
         self.dirty = true;
@@ -1482,7 +1486,7 @@ impl App {
             return Vec::new();
         }
         match confirm {
-            Confirm::Quit => vec![Effect::Quit],
+            Confirm::Quit => self.quit_effects(),
             Confirm::CloseTab => self.close_tab(),
             Confirm::ClosePane => {
                 let id = self.tab().focus;
@@ -1497,7 +1501,7 @@ impl App {
     /// Closes the active tab with all its panes; the only tab quits instead.
     fn close_tab(&mut self) -> Vec<Effect> {
         if self.tabs.len() == 1 {
-            return vec![Effect::Quit];
+            return self.quit_effects();
         }
         let stops: Vec<_> = (self.tab().tree.leaves().into_iter())
             .map(|id| self.stop_effect(id))
