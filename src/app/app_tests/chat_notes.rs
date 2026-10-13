@@ -46,11 +46,11 @@ fn code(code: KeyCode, mods: KeyModifiers) -> AppEvent {
     AppEvent::Key(KeyEvent::new(code, mods))
 }
 
-fn ctrl(c: char) -> AppEvent {
+pub(super) fn ctrl(c: char) -> AppEvent {
     code(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
-fn plain(code_: KeyCode) -> AppEvent {
+pub(super) fn plain(code_: KeyCode) -> AppEvent {
     code(code_, KeyModifiers::NONE)
 }
 
@@ -76,7 +76,7 @@ pub(super) fn type_text(a: &mut App, text: &str) {
 }
 
 /// A chat opened from `/srv/app` whose first exchange answered `answer`.
-fn with_answer(memory: bool, answer: &str) -> App {
+pub(super) fn with_answer(memory: bool, answer: &str) -> App {
     answered(memory, answer, true)
 }
 
@@ -126,7 +126,7 @@ fn answered(memory: bool, answer: &str, known_cwd: bool) -> App {
 }
 
 /// The same chat once its project is known.
-fn ready(answer: &str) -> App {
+pub(super) fn ready(answer: &str) -> App {
     let mut a = with_answer(true, answer);
     press(&mut a, "n");
     a.update(AppEvent::Memory(MemReply::Project {
@@ -153,7 +153,7 @@ fn project_reply(result: Result<String, ProjectError>) -> AppEvent {
 
 /// The oldest save the chat still awaits: its token and the project it was
 /// sent under, as the worker would echo them.
-fn oldest_save(a: &App) -> (SaveId, String) {
+pub(super) fn oldest_save(a: &App) -> (SaveId, String) {
     let save = chat_of(a)
         .pending_save_ids()
         .first()
@@ -163,7 +163,13 @@ fn oldest_save(a: &App) -> (SaveId, String) {
 }
 
 /// The worker's `Saved` for the oldest pending save.
-fn saved_reply(a: &App, session: &str, id: i64, topic_key: &str, title: &str) -> AppEvent {
+pub(super) fn saved_reply(
+    a: &App,
+    session: &str,
+    id: i64,
+    topic_key: &str,
+    title: &str,
+) -> AppEvent {
     let (token, project) = oldest_save(a);
     AppEvent::Memory(MemReply::Saved {
         pane: chat_id(),
@@ -180,7 +186,7 @@ const SESSION: &str = "lazarobox-0123456789abcdef0123456789abcdef";
 
 /// A key that does nothing anywhere, between two presses of one key: a key
 /// pressed again within half a second counts as held, and is ignored.
-fn pause(a: &mut App) {
+pub(super) fn pause(a: &mut App) {
     a.update(plain(KeyCode::PageUp));
 }
 

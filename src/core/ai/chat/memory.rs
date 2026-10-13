@@ -5,6 +5,8 @@
 //! recorded here so that every decision (what to link, what to end) is a
 //! plain function of this state.
 
+use std::time::{Duration, Instant};
+
 use super::{
     ChatState, Entry,
     note::{NOTHING_TO_SAVE, NoteEditor},
@@ -18,6 +20,11 @@ use crate::core::ai::memory::{
 
 /// The longest end-of-session summary, in characters.
 pub const END_SUMMARY_CAP: usize = 1000;
+/// How long a view waits for a memory reply (project, context or a save)
+/// before it gives up. The worker can lose a reply when its reply channel is
+/// full, so no wait is unbounded: a health probe (300 ms) and a read (800 ms)
+/// behind a few 2 s writes fit in it.
+pub const MEMORY_WAIT: Duration = Duration::from_secs(5);
 /// Text of `Memory is not ready` when the project reply was not understood.
 const UNEXPECTED_REPLY: &str = "engram sent an unexpected reply";
 
@@ -118,6 +125,19 @@ pub struct PendingSave {
     pub project: String,
     /// Which editor sent it (see `ChatMemory::editors`).
     editor: u64,
+    /// When it was sent: the answer is awaited for `MEMORY_WAIT`.
+    since: Instant,
+}
+
+/// The waits that ran out (see `ChatState::expire_waits`).
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Expired {
+    /// The project request, with whether a note editor was waiting on it.
+    pub resolve: Option<bool>,
+    /// The context request.
+    pub context: bool,
+    /// The saves that got no answer.
+    pub saves: Vec<PendingSave>,
 }
 
 /// The memory slot of a chat.
@@ -140,6 +160,10 @@ pub struct ChatMemory {
     /// The block the next turns carry, once the context reply arrived.
     injected: Option<ContextBlock>,
     context: Fetch,
+    /// When the project request was sent, while it awaits its answer.
+    resolving_since: Option<Instant>,
+    /// When the context request was sent, while it awaits its answer.
+    context_since: Option<Instant>,
     /// The `memory unavailable` line was shown for this view.
     degraded: bool,
 }
@@ -159,6 +183,8 @@ impl ChatMemory {
             editors: 0,
             injected: None,
             context: Fetch::Idle,
+            resolving_since: None,
+            context_since: None,
             degraded: false,
         }
     }
@@ -183,17 +209,29 @@ impl ChatState {
 
     /// The project was asked for; `want_note` opens the editor on the answer.
     pub fn start_resolving(&mut self, want_note: bool) {
+        self.start_resolving_at(want_note, Instant::now());
+    }
+
+    /// `start_resolving` with the clock injected: `now` starts the wait. Asking
+    /// again while a request is out keeps the first start, so the wait never
+    /// grows.
+    pub fn start_resolving_at(&mut self, want_note: bool, now: Instant) {
+        if !matches!(self.memory.readiness, Readiness::Resolving { .. }) {
+            self.memory.resolving_since = Some(now);
+        }
         self.memory.readiness = Readiness::Resolving { want_note };
     }
 
     /// Memory cannot be used for this chat, whatever it was waiting for.
     pub fn set_unavailable(&mut self, reason: &str) {
+        self.memory.resolving_since = None;
         self.memory.readiness = Readiness::Unavailable(reason.to_owned());
     }
 
     /// The project reply. Returns whether the note editor was wanted.
     pub fn project_resolved(&mut self, result: Result<String, ProjectError>) -> bool {
         let want = self.take_want_note();
+        self.memory.resolving_since = None;
         self.memory.readiness = match result {
             Ok(project) => Readiness::Ready(project),
             Err(ProjectError::NotGit) => Readiness::Unavailable(Reason::NotGit.text()),
@@ -209,6 +247,7 @@ impl ChatState {
             return false;
         }
         let want = self.take_want_note();
+        self.memory.resolving_since = None;
         self.memory.readiness = Readiness::Unavailable(reason.to_owned());
         want
     }
@@ -285,10 +324,16 @@ impl ChatState {
     /// The view is about to ask for its context. True the first time only: a
     /// view makes one context request.
     pub fn start_context(&mut self) -> bool {
+        self.start_context_at(Instant::now())
+    }
+
+    /// `start_context` with the clock injected: `now` starts the wait.
+    pub fn start_context_at(&mut self, now: Instant) -> bool {
         if self.memory.context != Fetch::Idle {
             return false;
         }
         self.memory.context = Fetch::Pending;
+        self.memory.context_since = Some(now);
         true
     }
 
@@ -299,6 +344,7 @@ impl ChatState {
             return false;
         }
         self.memory.context = Fetch::Done;
+        self.memory.context_since = None;
         true
     }
 
@@ -391,12 +437,19 @@ impl ChatState {
     /// A save is about to be sent under `project`: its token, to put on the
     /// command. Its answer is awaited.
     pub fn save_sent(&mut self, project: &str) -> SaveId {
+        self.save_sent_at(project, Instant::now())
+    }
+
+    /// `save_sent` with the clock injected: `now` starts the wait for its
+    /// answer.
+    pub fn save_sent_at(&mut self, project: &str, now: Instant) -> SaveId {
         self.memory.saves_sent += 1;
         let id = SaveId(self.memory.saves_sent);
         self.memory.pending_saves.push(PendingSave {
             id,
             project: project.to_owned(),
             editor: self.memory.editors,
+            since: now,
         });
         id
     }
@@ -420,6 +473,42 @@ impl ChatState {
     /// The tokens of the saves still awaiting their answer, oldest first.
     pub fn pending_save_ids(&self) -> Vec<SaveId> {
         self.memory.pending_saves.iter().map(|s| s.id).collect()
+    }
+
+    /// Whether any memory reply is awaited: the project, the context or a
+    /// save. The runtime keeps a timer armed exactly while this holds.
+    pub fn memory_waiting(&self) -> bool {
+        self.memory.resolving_since.is_some()
+            || self.memory.context_since.is_some()
+            || !self.memory.pending_saves.is_empty()
+    }
+
+    /// Gives up on every wait older than `MEMORY_WAIT` at `now`. A project
+    /// request that runs out leaves memory unavailable (`engram did not
+    /// answer`); a context request is done; a save is no longer pending, so
+    /// its late answer is not tied to an editor. What it returns says what
+    /// was given up on, for the lines and notices.
+    pub fn expire_waits(&mut self, now: Instant) -> Expired {
+        let ran_out = |since: Instant| now.saturating_duration_since(since) >= MEMORY_WAIT;
+        let mut expired = Expired::default();
+        if let (Readiness::Resolving { want_note }, Some(since)) =
+            (&self.memory.readiness, self.memory.resolving_since)
+            && ran_out(since)
+        {
+            expired.resolve = Some(*want_note);
+            self.set_unavailable(&Reason::NoAnswer.text());
+        }
+        if self.memory.context == Fetch::Pending && self.memory.context_since.is_some_and(ran_out) {
+            expired.context = true;
+            self.memory.context = Fetch::Done;
+            self.memory.context_since = None;
+        }
+        let (late, waiting) = std::mem::take(&mut self.memory.pending_saves)
+            .into_iter()
+            .partition(|save| ran_out(save.since));
+        self.memory.pending_saves = waiting;
+        expired.saves = late;
+        expired
     }
 
     /// The editor that sent `save`, while it is open and waiting. Without a

@@ -743,3 +743,5 @@ mod reasoning_tests;
 mod state_tests;
 #[cfg(test)]
 mod stream_tests;
+#[cfg(test)]
+mod wait_tests;

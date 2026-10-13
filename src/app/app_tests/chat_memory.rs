@@ -1,7 +1,9 @@
 //! Memory in a chat view (engram-memory M6): the memory line and its key, the
 //! context flow, the degradation lines.
 
-use super::chat_notes::{CWD, PROJECT, ai, systems, type_text};
+use super::chat_notes::{
+    CWD, PROJECT, ai, ctrl, pause, ready, saved_reply, systems, type_text, with_answer,
+};
 use super::*;
 use crate::core::ai::{
     EngineState, Status,
@@ -394,4 +396,231 @@ fn a_reply_for_a_pane_that_is_gone_changes_nothing() {
     });
     assert_eq!(a.update(gone), vec![]);
     assert_eq!(head(&a), None);
+}
+
+// 10.9: no wait without a bound ---------------------------------------------
+
+const NO_ANSWER_LINE: &str = "memory unavailable: engram did not answer";
+
+fn tick(a: &mut App, ms: u64) -> Vec<Effect> {
+    at(a, ms, AppEvent::MemoryTick)
+}
+
+/// A chat opened at t = 0 whose project request is never answered.
+fn waiting_for_the_project() -> App {
+    let mut a = timed(launched(80, 25).with_ai(ai(true)));
+    at(&mut a, 0, cwd_event(CWD));
+    at(&mut a, 0, ctrl_space());
+    let effects = at(&mut a, 0, key('c'));
+    assert_eq!(memory_cmds(&effects), [resolve()]);
+    a
+}
+
+#[test]
+fn a_view_waiting_for_its_project_gives_up_after_five_seconds() {
+    let mut a = waiting_for_the_project();
+    assert!(a.memory_waiting());
+    assert_eq!(tick(&mut a, 4_999), vec![]);
+    assert!(systems(&a).is_empty(), "not yet");
+    assert!(a.memory_waiting());
+    assert_eq!(tick(&mut a, 5_000), vec![]);
+    assert_eq!(systems(&a), [NO_ANSWER_LINE]);
+    assert!(!a.memory_waiting(), "the timer can be disarmed");
+    // Once: later ticks add nothing.
+    tick(&mut a, 60_000);
+    assert_eq!(systems(&a), [NO_ANSWER_LINE]);
+}
+
+#[test]
+fn after_giving_up_the_chat_streams_and_the_late_project_reply_is_ignored() {
+    let mut a = waiting_for_the_project();
+    tick(&mut a, 5_000);
+    let late = a.update(AppEvent::Memory(MemReply::Project {
+        pane: chat_id(),
+        result: Ok(PROJECT.into()),
+    }));
+    assert_eq!(memory_cmds(&late), [], "no context is asked for any more");
+    assert_eq!(
+        chat_of(&a).readiness(),
+        &Readiness::Unavailable("engram did not answer".into())
+    );
+    a.update(AppEvent::PromptReady(
+        chat_id(),
+        Resolved {
+            text: "system".into(),
+            notices: Vec::new(),
+        },
+    ));
+    a.update(AppEvent::EnginesDetected(Detection {
+        engines: vec![EngineState {
+            id: "ollama",
+            status: Status::Available,
+            models: vec!["llama3:8b".to_owned()],
+            version: None,
+        }],
+    }));
+    assert_eq!(send(&mut a, "hi").memory, None);
+}
+
+#[test]
+fn a_lost_context_reply_gives_up_after_five_seconds_from_its_request() {
+    let mut a = waiting_for_the_project();
+    at(
+        &mut a,
+        1_000,
+        AppEvent::Memory(MemReply::Project {
+            pane: chat_id(),
+            result: Ok(PROJECT.into()),
+        }),
+    );
+    assert!(a.memory_waiting());
+    tick(&mut a, 5_999);
+    assert!(systems(&a).is_empty());
+    tick(&mut a, 6_000);
+    assert_eq!(systems(&a), [NO_ANSWER_LINE]);
+    assert!(!a.memory_waiting());
+    // The reply that finally comes finds nobody waiting.
+    at(
+        &mut a,
+        7_000,
+        AppEvent::Memory(MemReply::Context {
+            pane: chat_id(),
+            block: Some(block(3)),
+        }),
+    );
+    assert_eq!(head(&a), None);
+}
+
+#[test]
+fn an_answer_in_time_means_nothing_to_give_up() {
+    let mut a = waiting_for_the_project();
+    at(
+        &mut a,
+        100,
+        AppEvent::Memory(MemReply::Project {
+            pane: chat_id(),
+            result: Ok(PROJECT.into()),
+        }),
+    );
+    at(
+        &mut a,
+        200,
+        AppEvent::Memory(MemReply::Context {
+            pane: chat_id(),
+            block: Some(block(3)),
+        }),
+    );
+    assert!(!a.memory_waiting());
+    a.take_dirty();
+    tick(&mut a, 60_000);
+    assert!(systems(&a).is_empty());
+    assert!(
+        !a.take_dirty(),
+        "a tick with nothing to give up on redraws nothing"
+    );
+}
+
+#[test]
+fn a_save_key_waiting_for_its_project_gives_up_with_the_not_ready_notice() {
+    let mut a = timed(with_answer(false, "use Axum"));
+    a.ai.memory = ai(true).memory;
+    at(&mut a, 0, ctrl_space());
+    let effects = at(&mut a, 0, key('n'));
+    assert_eq!(memory_cmds(&effects), [resolve()]);
+    assert_eq!(a.notice(), Some("Checking memory…"));
+    tick(&mut a, 5_000);
+    assert_eq!(
+        a.notice(),
+        Some("Memory is not ready: engram did not answer")
+    );
+    assert!(chat_of(&a).note_editor().is_none());
+    assert_eq!(systems(&a), [NO_ANSWER_LINE]);
+}
+
+#[test]
+fn a_note_editor_waiting_for_its_reply_stops_waiting_and_keeps_the_text() {
+    let mut a = ready("use Axum");
+    let mut a = timed({
+        type_text(&mut a, "Use Axum");
+        a
+    });
+    let sent = at(&mut a, 0, ctrl('s'));
+    assert!(matches!(
+        sent.as_slice(),
+        [Effect::Memory(MemCmd::Save { .. })]
+    ));
+    assert!(chat_of(&a).note_editor().unwrap().is_saving());
+    assert!(a.memory_waiting());
+    let (token, _) = super::chat_notes::oldest_save(&a);
+    tick(&mut a, 4_999);
+    assert!(chat_of(&a).note_editor().unwrap().is_saving());
+    tick(&mut a, 5_000);
+    let editor = chat_of(&a).note_editor().expect("the editor stays open");
+    assert!(!editor.is_saving(), "free to save again");
+    assert_eq!(editor.title(), "Use Axum");
+    assert_eq!(editor.notice(), Some("engram did not answer"));
+    assert!(!a.memory_waiting());
+    // The reply that was only late: the note exists in engram, so it is
+    // recorded and linked; the editor the user may have reopened is untouched.
+    let late = AppEvent::Memory(MemReply::Saved {
+        pane: chat_id(),
+        id: token,
+        project: PROJECT.into(),
+        session: "lazarobox-0123456789abcdef0123456789abcdef".into(),
+        observation_id: 7,
+        topic_key: "chat/decision/use-axum".into(),
+        title: "Use Axum".into(),
+    });
+    at(&mut a, 8_000, late);
+    assert!(
+        chat_of(&a).note_editor().is_some(),
+        "not closed by a stale reply"
+    );
+    assert!(systems(&a).contains(&"saved note decision: Use Axum".to_owned()));
+}
+
+#[test]
+fn a_save_given_up_on_after_esc_is_a_system_line() {
+    let mut a = ready("use Axum");
+    let mut a = timed({
+        type_text(&mut a, "Use Axum");
+        a
+    });
+    at(&mut a, 0, ctrl('s'));
+    at(&mut a, 100, plain_key(KeyCode::Esc));
+    assert!(chat_of(&a).note_editor().is_none());
+    tick(&mut a, 5_000);
+    assert!(systems(&a).contains(&"note not saved: engram did not answer".to_owned()));
+}
+
+#[test]
+fn a_lost_save_reply_does_not_stop_a_retry() {
+    let mut a = ready("use Axum");
+    let mut a = timed({
+        type_text(&mut a, "Use Axum");
+        a
+    });
+    at(&mut a, 0, ctrl('s'));
+    tick(&mut a, 5_000);
+    pause(&mut a);
+    let again = at(&mut a, 6_000, ctrl('s'));
+    assert!(matches!(
+        again.as_slice(),
+        [Effect::Memory(MemCmd::Save { .. })]
+    ));
+    // This one is answered in time.
+    let reply = saved_reply(
+        &a,
+        "lazarobox-0123456789abcdef0123456789abcdef",
+        7,
+        "chat/decision/use-axum",
+        "Use Axum",
+    );
+    at(&mut a, 6_100, reply);
+    assert!(
+        chat_of(&a).note_editor().is_none(),
+        "closed by its own reply"
+    );
+    tick(&mut a, 60_000);
+    assert!(!systems(&a).iter().any(|l| l.starts_with("note not saved")));
 }

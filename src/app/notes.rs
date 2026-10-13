@@ -27,6 +27,7 @@ impl App {
             self.notice = Some(MEMORY_OFF.to_owned());
             return Vec::new();
         }
+        let now = (self.clock)();
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
@@ -44,7 +45,7 @@ impl App {
             return Vec::new();
         }
         let probe = |chat: &mut ChatState, want_note: bool| {
-            chat.start_resolving(want_note);
+            chat.start_resolving_at(want_note, now);
             cwd.clone()
                 .map(|cwd| Effect::Memory(MemCmd::Resolve { pane: id, cwd }))
         };
@@ -57,7 +58,7 @@ impl App {
                 Vec::new()
             }
             Readiness::Resolving { .. } => {
-                chat.start_resolving(true);
+                chat.start_resolving_at(true, now);
                 self.notice = Some(MEMORY_CHECKING.to_owned());
                 Vec::new()
             }
@@ -75,6 +76,7 @@ impl App {
 
     /// A key while the note editor of chat `id` is open.
     pub(super) fn on_note_key(&mut self, id: PaneId, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
+        let now = (self.clock)();
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
@@ -112,7 +114,7 @@ impl App {
                     }
                     return Vec::new();
                 };
-                let token = chat.save_sent(&project);
+                let token = chat.save_sent_at(&project, now);
                 vec![Effect::Memory(MemCmd::Save {
                     pane: id,
                     id: token,
@@ -224,6 +226,11 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        // A project nobody awaits (the wait ran out, or it came twice) changes
+        // nothing.
+        if !matches!(chat.readiness(), Readiness::Resolving { .. }) {
+            return Vec::new();
+        }
         let wanted = chat.project_resolved(result.clone());
         if wanted {
             match chat.readiness().clone() {
@@ -369,7 +376,7 @@ impl App {
 /// A save that did not go through: its editor shows why and keeps the text;
 /// when that editor is gone (Esc, or another one is open) the transcript says
 /// so instead.
-fn save_not_done(chat: &mut ChatState, save: Option<&PendingSave>, reason: &str) {
+pub(super) fn save_not_done(chat: &mut ChatState, save: Option<&PendingSave>, reason: &str) {
     if !chat.fail_save(save, reason) {
         chat.push_system(format!("note not saved: {reason}"));
     }

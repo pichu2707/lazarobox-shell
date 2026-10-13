@@ -4,7 +4,10 @@
 
 use super::*;
 use crate::core::ai::{
-    chat::memory::{Readiness, project_error_line},
+    chat::{
+        memory::{Readiness, project_error_line},
+        note,
+    },
     memory::{context::ContextBlock, port::Reason, reply::ProjectError},
 };
 
@@ -17,6 +20,7 @@ impl App {
         if !self.ai.memory.active() {
             return Vec::new();
         }
+        let now = (self.clock)();
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
@@ -29,7 +33,7 @@ impl App {
             self.dirty = true;
             return Vec::new();
         };
-        chat.start_resolving(false);
+        chat.start_resolving_at(false, now);
         vec![Effect::Memory(MemCmd::Resolve { pane: id, cwd })]
     }
 
@@ -40,12 +44,13 @@ impl App {
         id: PaneId,
         result: &Result<String, ProjectError>,
     ) -> Vec<Effect> {
+        let now = (self.clock)();
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
         match result {
             Ok(project) => chat
-                .start_context()
+                .start_context_at(now)
                 .then(|| {
                     Effect::Memory(MemCmd::Context {
                         pane: id,
@@ -79,5 +84,46 @@ impl App {
         if let Some(block) = block {
             chat.inject_memory_at(block.clone(), width, rows);
         }
+    }
+}
+
+impl App {
+    /// Whether any chat awaits a memory reply. The runtime keeps the timer of
+    /// `MemoryTick` armed exactly while this holds.
+    pub fn memory_waiting(&self) -> bool {
+        self.panes
+            .values()
+            .filter_map(PaneState::chat_state)
+            .any(ChatState::memory_waiting)
+    }
+
+    /// Time passed: every wait older than `MEMORY_WAIT` is given up, so no
+    /// view waits for engram without a bound. A project or context request
+    /// that runs out shows `memory unavailable: engram did not answer` once; a
+    /// save that runs out fails like any failed save (its editor keeps the
+    /// text). A reply that comes later finds nobody waiting.
+    pub(super) fn on_memory_tick(&mut self) -> Vec<Effect> {
+        let now = (self.clock)();
+        let mut ids: Vec<PaneId> = self.panes.keys().copied().collect();
+        ids.sort();
+        for id in ids {
+            let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+                continue;
+            };
+            let expired = chat.expire_waits(now);
+            let text = Reason::NoAnswer.text();
+            if expired.resolve.is_some() || expired.context {
+                chat.degrade_once(Reason::NoAnswer.line());
+                self.dirty = true;
+            }
+            if expired.resolve == Some(true) {
+                self.notice = Some(note::not_ready(&text));
+            }
+            for save in &expired.saves {
+                super::notes::save_not_done(chat, Some(save), &text);
+                self.dirty = true;
+            }
+        }
+        Vec::new()
     }
 }

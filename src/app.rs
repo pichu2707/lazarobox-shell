@@ -143,6 +143,10 @@ pub enum AppEvent {
     /// One step of the thinking-indicator animation. The runtime sends it
     /// only while a chat stream runs.
     AnimTick,
+    /// Time passed while a chat waits for memory: the waits older than
+    /// `MEMORY_WAIT` are given up. The runtime sends it only while
+    /// `memory_waiting` holds.
+    MemoryTick,
 }
 
 /// How the menu closed.
@@ -944,6 +948,7 @@ impl App {
             AppEvent::Store(reply) => self.on_store_reply(&reply),
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
+            AppEvent::MemoryTick => self.on_memory_tick(),
         };
         debug_assert_eq!(
             self.menu.is_some(),
