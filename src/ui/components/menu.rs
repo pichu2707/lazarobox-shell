@@ -12,7 +12,7 @@ use crate::{
     core::{
         ai::picker::{Mark, VIEW},
         config::Config,
-        menu::{Footer, MenuState, Row},
+        menu::{AI_SECTION, Footer, MenuState, Row, SECTIONS},
     },
     ui::theme::LazaroboxTheme,
 };
@@ -24,8 +24,24 @@ pub const WANT_WIDTH_AI: u16 = 62;
 /// Rows around the body: two borders, the blank row and the footer.
 const CHROME: u16 = 4;
 /// With the AI section the body is fixed: the popup never jumps between the
-/// task list and the picker (a title and `VIEW` rows).
-const AI_BODY: usize = 1 + VIEW;
+/// task list and the picker. The task list is the tallest view: a title row
+/// per section, then every settings row and every AI row (a picker is a title
+/// and `VIEW` rows, which also fits). Derived from the descriptor tables, so
+/// adding a row grows the popup instead of overflowing it.
+const AI_BODY: usize = ai_body();
+
+/// Rows of the task list: the section titles (those of `SECTIONS` and `AI`)
+/// plus every item.
+const fn ai_body() -> usize {
+    let mut rows = SECTIONS.len() + 1 + AI_SECTION.items.len();
+    let mut i = 0;
+    while i < SECTIONS.len() {
+        rows += SECTIONS[i].items.len();
+        i += 1;
+    }
+    rows
+}
+const _: () = assert!(VIEW < AI_BODY, "a picker must fit the fixed body");
 /// Smallest width that still shows the full popup.
 pub const MIN_WIDTH: u16 = 24;
 
@@ -243,6 +259,11 @@ impl Widget for MenuPopup<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The AI popup's height: its fixed body plus the chrome.
+    const POPUP_H: u16 = AI_BODY as u16 + CHROME;
+    /// The least height that still shows the full popup (no blank row).
+    const MIN_HEIGHT: u16 = POPUP_H - 1;
 
     fn r(w: u16, h: u16) -> Rect {
         Rect::new(0, 0, w, h)
@@ -545,21 +566,21 @@ mod tests {
 
     #[test]
     fn snapshot_ai_task_list_with_the_cursor_on_settings() {
-        insta::assert_snapshot!(text(&draw(62, 15, &mixed())));
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &mixed())));
     }
 
     #[test]
     fn snapshot_level_one_lists_the_engines() {
-        insta::assert_snapshot!(text(&draw(62, 15, &picker_of("code", 0))));
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &picker_of("code", 0))));
     }
 
     #[test]
     fn snapshot_ollama_scrolled_to_a_disabled_last_row() {
         let mut menu = picker_of("general", 0);
         press(&mut menu, &[KeyCode::Enter]);
-        let top = draw(62, 15, &menu);
+        let top = draw(62, POPUP_H, &menu);
         press(&mut menu, &[KeyCode::Char('k')]);
-        let buf = draw(62, 15, &menu);
+        let buf = draw(62, POPUP_H, &menu);
         let shown = text(&buf);
         assert!(shown.contains("18/18"), "{shown}");
         assert!(
@@ -575,9 +596,9 @@ mod tests {
     fn the_cursor_on_a_disabled_row_is_muted_and_reversed() {
         let mut menu = picker_of("general", 0);
         press(&mut menu, &[KeyCode::Enter, KeyCode::Char('k')]);
-        let buf = draw(62, 15, &menu);
+        let buf = draw(62, POPUP_H, &menu);
         let theme = LazaroboxTheme::default();
-        let y = (0..15)
+        let y = (0..POPUP_H)
             .find(|y| buf[(4, *y)].modifier.contains(Modifier::REVERSED))
             .expect("the cursor row is reversed");
         assert!(lines(&buf)[usize::from(y)].contains("download required"));
@@ -588,7 +609,7 @@ mod tests {
     fn snapshot_cli_models_end_with_custom() {
         let mut menu = picker_of("general", 1);
         press(&mut menu, &[KeyCode::Enter, KeyCode::Char('k')]);
-        insta::assert_snapshot!(text(&draw(62, 15, &menu)));
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
     }
 
     #[test]
@@ -599,7 +620,7 @@ mod tests {
             &[KeyCode::Enter, KeyCode::Char('k'), KeyCode::Enter],
         );
         press(&mut menu, &[KeyCode::Char('m'), KeyCode::Char('y')]);
-        insta::assert_snapshot!(text(&draw(62, 15, &menu)));
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
     }
 
     #[test]
@@ -607,7 +628,7 @@ mod tests {
         let saved = AiConfig::general(Some("ollama"), Some("llama3:8b"));
         let mut menu = fresh().with_ai(saved, None);
         goto(&mut menu, "code");
-        insta::assert_snapshot!(text(&draw(62, 15, &menu)));
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
     }
 
     #[test]
@@ -615,18 +636,72 @@ mod tests {
         let mut menu = mixed();
         goto(&mut menu, "code");
         menu.set_checking(true);
-        insta::assert_snapshot!(text(&draw(62, 15, &menu)));
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
+    }
+
+    // Spec (config-menu): Profile row render.
+    #[test]
+    fn snapshot_profile_row_selected_with_the_analyst_profile() {
+        let mut saved = AiConfig::general(Some("ollama"), Some("model1:7b"));
+        saved.set_profile(crate::core::ai::config::Profile::Analyst);
+        let mut menu = fresh().with_ai(saved, Some(rich()));
+        goto(&mut menu, "Profile");
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
+    }
+
+    // Spec (Context toggle): the row reads `on` by default and `off` when
+    // the flag is false.
+    #[test]
+    fn snapshot_context_row_selected_and_off() {
+        let mut saved = AiConfig::default();
+        saved.set_context(false);
+        let mut menu = fresh().with_ai(saved, None);
+        goto(&mut menu, "Context");
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
     }
 
     #[test]
-    fn the_ai_popup_is_62_by_15_in_both_views() {
+    fn the_context_row_reads_on_by_default() {
+        let mut menu = fresh().with_ai(AiConfig::default(), None);
+        goto(&mut menu, "Profile");
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(shown.contains("Context"), "{shown}");
+        assert!(shown.contains("on"), "{shown}");
+    }
+
+    #[test]
+    fn snapshot_profile_row_with_the_default_profile() {
+        let mut menu = fresh().with_ai(AiConfig::default(), None);
+        goto(&mut menu, "Profile");
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
+    }
+
+    // The body is fixed so the popup never jumps between views: every AI
+    // view must fit it.
+    #[test]
+    fn every_ai_view_fits_the_fixed_body() {
+        let views = [
+            mixed(),
+            picker_of("code", 0),
+            picker_of("general", 1),
+            fresh().with_ai(AiConfig::default(), None),
+        ];
+        for view in &views {
+            let rows = view.rows(&Config::default()).len();
+            assert!(rows <= AI_BODY, "{rows} rows > AI_BODY {AI_BODY}");
+        }
+        assert_eq!(AI_BODY, mixed().rows(&Config::default()).len());
+    }
+
+    #[test]
+    fn the_ai_popup_is_62_wide_and_body_plus_chrome_high_in_both_views() {
         for menu in [mixed(), picker_of("code", 0)] {
             let l = lines(&draw(80, 20, &menu));
             let border: Vec<usize> = (0..l.len())
                 .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
                 .collect();
             assert_eq!(border.len(), 2);
-            assert_eq!(border[1] - border[0] + 1, 15);
+            assert_eq!(border[1] - border[0] + 1, usize::from(POPUP_H));
             assert_eq!(l[border[0]].trim().chars().count(), 62);
         }
     }
@@ -636,17 +711,20 @@ mod tests {
         let task = mixed();
         let picker = picker_of("code", 0);
         for menu in [&task, &picker] {
-            let full = text(&draw(24, 14, menu));
+            let full = text(&draw(MIN_WIDTH, MIN_HEIGHT, menu));
             assert!(!full.contains("MENU"), "{full}");
             assert!(full.contains("Menu"), "{full}");
-            for (w, h) in [(23, 14), (24, 13)] {
+            for (w, h) in [(MIN_WIDTH - 1, MIN_HEIGHT), (MIN_WIDTH, MIN_HEIGHT - 1)] {
                 let fall = text(&draw(w, h, menu));
                 assert!(fall.contains("MENU"), "{w}x{h}");
                 assert!(!fall.contains("Menu"), "{w}x{h}");
             }
         }
-        insta::assert_snapshot!(text(&draw(24, 14, &task)));
-        insta::assert_snapshot!("picker_24x14", text(&draw(24, 14, &picker)));
+        insta::assert_snapshot!(text(&draw(MIN_WIDTH, MIN_HEIGHT, &task)));
+        insta::assert_snapshot!(
+            "picker_smallest_full",
+            text(&draw(MIN_WIDTH, MIN_HEIGHT, &picker))
+        );
     }
 
     #[test]
@@ -689,7 +767,7 @@ mod tests {
     #[test]
     fn a_long_model_name_is_clipped_and_keeps_the_download_mark() {
         let long = "qwen2.5-coder:32b-instruct-q4_K_M";
-        let shown = text(&draw(62, 15, &with_ai(long)));
+        let shown = text(&draw(62, POPUP_H, &with_ai(long)));
         assert!(shown.contains("· download required"), "{shown}");
         assert!(shown.contains("…"), "{shown}");
     }
@@ -697,7 +775,7 @@ mod tests {
     // The widget draws MenuState::footer(): `s` saves, Esc cancels.
     #[test]
     fn the_footer_is_the_menu_footer_not_the_old_hint() {
-        let shown = text(&draw(62, 15, &mixed()));
+        let shown = text(&draw(62, POPUP_H, &mixed()));
         assert!(shown.contains("s save"), "{shown}");
         assert!(!shown.contains("Enter save"), "{shown}");
     }
@@ -719,10 +797,10 @@ mod tests {
         let theme = LazaroboxTheme::default();
         assert_ne!(theme.error_red, theme.text_muted);
         let mut menu = with_ai("llama3:8b");
-        let hint = draw(62, 15, &menu);
+        let hint = draw(62, POPUP_H, &menu);
         assert_eq!(footer_fg(&hint, "j/k move"), theme.text_muted);
         menu.set_error("save failed: disk full".into());
-        let error = draw(62, 15, &menu);
+        let error = draw(62, POPUP_H, &menu);
         assert_eq!(footer_fg(&error, "save failed"), theme.error_red);
     }
 
@@ -744,7 +822,7 @@ mod tests {
     fn snapshot_task_row_hint_after_a_finished_detection() {
         let mut menu = mixed();
         goto(&mut menu, "code");
-        let shown = text(&draw(62, 15, &menu));
+        let shown = text(&draw(62, POPUP_H, &menu));
         assert!(shown.contains("Enter pick · r refresh · s save"), "{shown}");
         assert!(!shown.contains("h/l"), "{shown}");
         insta::assert_snapshot!(shown);
@@ -755,7 +833,7 @@ mod tests {
     fn snapshot_ollama_models_at_the_top_show_the_downloaded_rows() {
         let mut menu = picker_of("general", 0);
         press(&mut menu, &[KeyCode::Enter]);
-        let shown = text(&draw(62, 15, &menu));
+        let shown = text(&draw(62, POPUP_H, &menu));
         assert!(shown.contains("model1:7b ✓"), "{shown}");
         insta::assert_snapshot!(shown);
     }
@@ -765,21 +843,21 @@ mod tests {
     fn a_current_plain_row_carries_the_dot() {
         let mut menu = picker_of("code", 0);
         press(&mut menu, &[KeyCode::Enter]);
-        let shown = lines(&draw(62, 15, &menu));
+        let shown = lines(&draw(62, POPUP_H, &menu));
         assert!(shown.iter().any(|l| l.contains("│ opus ●")), "{shown:?}");
         assert!(!shown.iter().any(|l| l.contains("sonnet ●")), "{shown:?}");
     }
 
     #[test]
     fn titles_are_bold_and_the_selected_bar_spans_the_inner_width() {
-        let task = draw(62, 15, &mixed());
+        let task = draw(62, POPUP_H, &mixed());
         assert!(task[(2, 1)].modifier.contains(Modifier::BOLD));
         assert!(task[(2, 5)].modifier.contains(Modifier::BOLD));
         assert!(!task[(2, 2)].modifier.contains(Modifier::BOLD));
-        let picker = draw(62, 15, &picker_of("code", 0));
+        let picker = draw(62, POPUP_H, &picker_of("code", 0));
         assert!(picker[(2, 1)].modifier.contains(Modifier::BOLD));
         for buf in [&task, &picker] {
-            let bar: Vec<u16> = (0..15)
+            let bar: Vec<u16> = (0..POPUP_H)
                 .filter(|y| buf[(2, *y)].modifier.contains(Modifier::REVERSED))
                 .collect();
             assert_eq!(bar.len(), 1);
@@ -819,7 +897,7 @@ mod tests {
             let mut menu = fresh().with_ai(saved, Some(detection(name)));
             goto(&mut menu, "general");
             press(&mut menu, &[KeyCode::Enter, KeyCode::Enter]);
-            lines(&draw(62, 15, &menu))[2].clone()
+            lines(&draw(62, POPUP_H, &menu))[2].clone()
         };
         assert_eq!(row(&fitting), format!("│ {fitting} ✓│"));
         let clipped = row(&long);

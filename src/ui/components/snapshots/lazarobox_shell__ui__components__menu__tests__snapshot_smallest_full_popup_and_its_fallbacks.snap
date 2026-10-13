@@ -1,6 +1,6 @@
 ---
 source: src/ui/components/menu.rs
-expression: "text(&draw(24, 14, &task))"
+expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &task))"
 ---
 ┌ Menu ────────────────┐
 │ Settings             │
@@ -14,5 +14,7 @@ expression: "text(&draw(24, 14, &task))"
 │ chat       (default) │
 │ review     (default) │
 │ summarize  (default) │
+│ Profile   programmer │
+│ Context           on │
 │ j/k move · h/l chang…│
 └──────────────────────┘

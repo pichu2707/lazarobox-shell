@@ -1,6 +1,6 @@
 ---
 source: src/ui/components/menu.rs
-expression: "text(&draw(62, 15, &mixed()))"
+expression: "text(&draw(62, POPUP_H, &mixed()))"
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
 │ Settings                                                   │
@@ -14,6 +14,8 @@ expression: "text(&draw(62, 15, &mixed()))"
 │ chat                                             (default) │
 │ review                                           (default) │
 │ summarize                                        (default) │
+│ Profile                                         programmer │
+│ Context                                                 on │
 │                                                            │
 │ j/k move · h/l change · s save · Esc cancel                │
 └────────────────────────────────────────────────────────────┘

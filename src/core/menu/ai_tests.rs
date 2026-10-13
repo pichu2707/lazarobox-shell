@@ -108,7 +108,7 @@ pub(super) fn selected_label(menu: &MenuState) -> &'static str {
     labels[0]
 }
 
-const ORDER: [&str; 8] = [
+const ORDER: [&str; 10] = [
     "Statusline position",
     "Tab bar position",
     "Set all tasks",
@@ -117,6 +117,8 @@ const ORDER: [&str; 8] = [
     "chat",
     "review",
     "summarize",
+    "Profile",
+    "Context",
 ];
 
 // Spec: Descriptor integrity, Sections and items are data.
@@ -126,7 +128,7 @@ fn the_ai_descriptors_are_well_formed() {
     let labels: Vec<_> = AI_SECTION.items.iter().map(|i| i.label).collect();
     assert_eq!(labels, ORDER[2..]);
     let mut paths: Vec<&str> = Vec::new();
-    for (item, task) in AI_SECTION.items[1..].iter().zip(Task::ALL) {
+    for (item, task) in AI_SECTION.items[1..6].iter().zip(Task::ALL) {
         match item.kind {
             ItemKind::Assign(Some(t)) => {
                 assert_eq!(t, task);
@@ -161,14 +163,18 @@ fn the_ai_descriptors_are_well_formed() {
 fn navigation_visits_settings_then_the_six_ai_rows_and_wraps() {
     let mut m = menu(None, None, Some(machine()));
     let mut visited = vec![selected_label(&m)];
-    for _ in 0..8 {
+    for _ in 0..10 {
         press(&mut m, 'j');
         visited.push(selected_label(&m));
     }
-    assert_eq!(visited[..8], ORDER);
-    assert_eq!(visited[8], "Statusline position", "wraps past summarize");
+    assert_eq!(visited[..10], ORDER);
+    assert_eq!(visited[10], "Statusline position", "wraps past Context");
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "summarize", "wraps before the first");
+    assert_eq!(selected_label(&m), "Context", "wraps before the first");
+    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "Profile");
+    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "summarize");
     let mut back = Vec::new();
     for _ in 0..7 {
         press(&mut m, 'k');
@@ -299,7 +305,7 @@ fn ai_rows(menu: &MenuState) -> Vec<(&'static str, String)> {
 
 // Spec: Settings rows (AI part): six rows, no Engine/Model/Status.
 #[test]
-fn the_ai_section_lists_the_six_rows_with_their_values() {
+fn the_ai_section_lists_the_task_rows_and_the_profile_with_their_values() {
     let m = assigned(&[(Task::General, "ollama", "llama3:8b")], Some(machine()));
     let got: Vec<_> = ai_rows(&m)
         .iter()
@@ -314,6 +320,8 @@ fn the_ai_section_lists_the_six_rows_with_their_values() {
             "chat=(default)",
             "review=(default)",
             "summarize=(default)",
+            "Profile=programmer",
+            "Context=on",
         ]
     );
     assert_eq!(

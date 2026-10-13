@@ -62,6 +62,13 @@ fn chat_app() -> App {
         .with_ai(ollama());
     app.update(AppEvent::EnginesDetected(ready_detection()));
     prefixed(&mut app, "c");
+    app.update(AppEvent::PromptReady(
+        chat_id(),
+        crate::core::ai::chat::prompts::Resolved {
+            text: "system".into(),
+            notices: Vec::new(),
+        },
+    ));
     app
 }
 
@@ -213,6 +220,13 @@ fn several_streams_show_the_focused_one_and_the_count() {
     prefixed(&mut app, "c");
     let second = app.focused();
     assert_ne!(second, chat_id());
+    app.update(AppEvent::PromptReady(
+        second,
+        crate::core::ai::chat::prompts::Resolved {
+            text: "system".into(),
+            notices: Vec::new(),
+        },
+    ));
     send(&mut app, "second");
     assert!(status(&app).contains("+1"), "{}", status(&app));
     prefixed(&mut app, "wq");

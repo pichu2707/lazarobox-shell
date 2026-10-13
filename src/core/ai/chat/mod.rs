@@ -7,10 +7,12 @@ pub mod adapters;
 pub mod composer;
 pub mod engine;
 pub mod guidance;
+pub mod prompts;
 pub mod store;
 pub mod stream;
 pub mod streams;
 pub mod transcript;
+pub mod workspace;
 pub mod wrap;
 pub mod yank;
 
@@ -24,6 +26,7 @@ use engine::{
     Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, build_context,
     history_chars,
 };
+use prompts::Resolved;
 use transcript::{LineCache, Scroll};
 
 /// The longest answer kept, in bytes. Past it the answer is cut.
@@ -188,6 +191,9 @@ pub struct ChatState {
     generation: u64,
     scroll: Scroll,
     cache: LineCache,
+    /// The system prompt of the conversation, resolved once when it started.
+    /// `None` until the runtime has prepared it.
+    prompt: Option<String>,
 }
 
 impl ChatState {
@@ -204,6 +210,7 @@ impl ChatState {
             generation: 0,
             scroll: Scroll::Follow,
             cache: LineCache::default(),
+            prompt: None,
         }
     }
 
@@ -251,6 +258,25 @@ impl ChatState {
     /// The cwd of the pane the chat was opened from.
     pub fn origin_cwd(&self) -> Option<&Path> {
         self.origin_cwd.as_deref()
+    }
+
+    /// The system prompt of the conversation, once it is prepared.
+    pub fn prompt(&self) -> Option<&str> {
+        self.prompt.as_deref()
+    }
+
+    /// Pins the system prompt of the conversation and shows the notices of
+    /// the override files that were skipped as system lines. Done once: a
+    /// later call is ignored, so the prompt never changes mid-conversation.
+    pub fn set_prompt(&mut self, resolved: Resolved) {
+        if self.prompt.is_some() {
+            return;
+        }
+        self.prompt = Some(resolved.text);
+        for notice in resolved.notices {
+            self.entries.push(Entry::System(notice));
+        }
+        self.generation += 1;
     }
 
     /// The transcript, oldest first.

@@ -32,6 +32,12 @@ pub enum ItemKind {
     Disabled,
     /// An AI assignment row; `None` is `Set all tasks`.
     Assign(Option<Task>),
+    /// The AI profile: a static choice (`ai.profile`) that lives in the AI
+    /// draft, not in the live [`Config`].
+    Profile,
+    /// The workspace context flag (`ai.context`): an on/off row that lives in
+    /// the AI draft, like [`ItemKind::Profile`].
+    Context,
 }
 
 pub struct Item {
@@ -118,6 +124,14 @@ pub static AI_SECTION: Section = Section {
             label: "summarize",
             kind: ItemKind::Assign(Some(Task::Summarize)),
         },
+        Item {
+            label: "Profile",
+            kind: ItemKind::Profile,
+        },
+        Item {
+            label: "Context",
+            kind: ItemKind::Context,
+        },
     ],
 };
 
@@ -128,7 +142,9 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
         .flat_map(|section| section.items.iter())
         .filter_map(|item| match &item.kind {
             ItemKind::Choice(choice) => Some((item, choice)),
-            ItemKind::Disabled | ItemKind::Assign(_) => None,
+            ItemKind::Disabled | ItemKind::Assign(_) | ItemKind::Profile | ItemKind::Context => {
+                None
+            }
         })
 }
 
@@ -243,15 +259,33 @@ impl MenuState {
         self.ai.is_some()
     }
 
-    /// Whether the selection is on an AI task row.
-    pub fn on_ai_row(&self) -> bool {
-        self.ai.is_some()
-            && self
-                .selected
-                .is_some_and(|index| index >= choices().count())
+    /// The descriptor kind under the selection. Rows are found by kind, never
+    /// by a position in the AI section, so a row can be added there without
+    /// touching the key handling.
+    fn selected_kind(&self) -> Option<&'static ItemKind> {
+        let index = self.selected?;
+        match index.checked_sub(choices().count()) {
+            None => choices().nth(index).map(|(item, _)| &item.kind),
+            Some(n) if self.ai.is_some() => AI_SECTION.items.get(n).map(|item| &item.kind),
+            Some(_) => None,
+        }
     }
 
-    /// Selectable rows: the settings, then the six AI rows.
+    /// Whether the selection is on an AI task row (the ones with a picker).
+    pub fn on_ai_row(&self) -> bool {
+        matches!(self.selected_kind(), Some(ItemKind::Assign(_)))
+    }
+
+    /// Whether the selection is on a row of the AI draft that is not a
+    /// task: `Profile` or `Context`.
+    fn on_draft_row(&self) -> bool {
+        matches!(
+            self.selected_kind(),
+            Some(ItemKind::Profile | ItemKind::Context)
+        )
+    }
+
+    /// Selectable rows: the settings, then every AI row.
     fn selectable(&self) -> usize {
         choices().count()
             + if self.ai.is_some() {
@@ -299,9 +333,12 @@ impl MenuState {
 
     /// The target of the selected AI row.
     fn selected_target(&self) -> Option<Target> {
-        match self.selected?.checked_sub(choices().count())? {
-            0 => Some(Target::All),
-            n => Task::ALL.get(n - 1).map(|task| Target::Task(*task)),
+        match self.selected_kind()? {
+            ItemKind::Assign(None) => Some(Target::All),
+            ItemKind::Assign(Some(task)) => Some(Target::Task(*task)),
+            ItemKind::Choice(_) | ItemKind::Disabled | ItemKind::Profile | ItemKind::Context => {
+                None
+            }
         }
     }
 
@@ -320,6 +357,31 @@ impl MenuState {
                         let row = Row::Item {
                             label: item.label,
                             value: self.ai.as_ref().map(|ai| Cow::Owned(ai.value(*task))),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Profile => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self
+                                .ai
+                                .as_ref()
+                                .map(|ai| Cow::Borrowed(ai.draft().profile().id())),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Context => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self.ai.as_ref().map(|ai| {
+                                Cow::Borrowed(if ai.draft().context() { "on" } else { "off" })
+                            }),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
@@ -371,7 +433,9 @@ impl MenuState {
             KeyCode::Char('s') if !repeat => MenuCommand::Save,
             KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
             KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
-            KeyCode::Enter if repeat && self.on_ai_row() => MenuCommand::None,
+            KeyCode::Enter if repeat && (self.on_ai_row() || self.on_draft_row()) => {
+                MenuCommand::None
+            }
             KeyCode::Enter => self.cycle(true, config),
             KeyCode::Esc if !repeat => MenuCommand::Cancel,
             _ => MenuCommand::None,
@@ -455,6 +519,19 @@ impl MenuState {
         let Some(index) = self.selected else {
             return MenuCommand::None;
         };
+        if self.on_draft_row() {
+            // The profile and the context flag only change prompts: no
+            // relayout, no other effect.
+            let on_profile = matches!(self.selected_kind(), Some(ItemKind::Profile));
+            if let Some(ai) = &mut self.ai {
+                if on_profile {
+                    ai.cycle_profile(forward);
+                } else {
+                    ai.toggle_context();
+                }
+            }
+            return MenuCommand::None;
+        }
         let Some((_, choice)) = choices().nth(index) else {
             return MenuCommand::None;
         };
@@ -498,7 +575,29 @@ impl MenuState {
                     },
                 ]
             });
-        settings.chain(tasks).collect()
+        let profile = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::changed_profile)
+            .map(|profile| ConfigEdit {
+                table: "ai",
+                key: "profile",
+                value: Cow::Borrowed(profile.id()),
+            });
+        let context = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::changed_context)
+            .map(|on| ConfigEdit {
+                table: "ai",
+                key: "context",
+                value: Cow::Borrowed(if on { "true" } else { "false" }),
+            });
+        settings
+            .chain(tasks)
+            .chain(profile)
+            .chain(context)
+            .collect()
     }
 
     /// A paste: goes to the custom field when it is focused, else ignored.
@@ -821,3 +920,9 @@ mod guard_tests;
 
 #[cfg(test)]
 mod edits_tests;
+
+#[cfg(test)]
+mod profile_tests;
+
+#[cfg(test)]
+mod context_tests;
