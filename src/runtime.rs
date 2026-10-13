@@ -16,12 +16,14 @@ use std::{
 
 pub mod ai_detect;
 pub mod anim;
+pub mod bounded_read;
 pub mod chat;
 pub mod chat_store;
 mod config_write;
 pub mod loopback;
 pub mod proc;
 pub mod prompts;
+pub mod workspace;
 
 use ai_detect::spawn_detection;
 use chat::Chats;
