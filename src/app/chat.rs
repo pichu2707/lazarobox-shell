@@ -22,6 +22,7 @@ impl App {
         if self.panes.len() > before {
             effects.extend(self.request_detection());
             effects.extend(self.begin_memory(self.tab().focus));
+            self.show_server_offer();
             effects.push(Effect::PreparePrompt {
                 pane: self.tab().focus,
                 profile: self.ai.profile(),
@@ -91,6 +92,12 @@ impl App {
     /// editing and scrolling but never sends, cancels, yanks or toggles.
     pub(super) fn on_chat_key(&mut self, key: KeyEvent, repeat: bool) -> Vec<Effect> {
         let id = self.tab().focus;
+        // The `engram serve` question, when it is on screen, takes the key.
+        if !self.note_editor_open(id)
+            && let Some(effects) = self.answer_server_offer(key)
+        {
+            return effects;
+        }
         let mods = key.modifiers;
         let plain = mods - KeyModifiers::SHIFT == KeyModifiers::NONE;
         let debounced = matches!(
@@ -207,6 +214,9 @@ impl App {
     /// cannot be used. `None` while it is ready or the pane is busy.
     pub fn chat_guidance(&self, id: PaneId) -> Option<String> {
         let chat = self.panes.get(&id)?.chat_state()?;
+        if let Some(prompt) = self.server_offer_prompt(id) {
+            return Some(prompt);
+        }
         if chat.phase() != Phase::Idle {
             return None;
         }

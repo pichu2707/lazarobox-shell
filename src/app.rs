@@ -17,7 +17,10 @@ use crate::core::{
         },
         config::{AiConfig, Profile, Task},
         jail::JailSupport,
-        memory::port::{MemCmd, MemReply},
+        memory::{
+            offer::ServerOffer,
+            port::{MemCmd, MemReply},
+        },
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{
@@ -38,6 +41,7 @@ use crate::core::{
 mod chat;
 mod context;
 mod notes;
+mod offer;
 
 /// Rows of history kept by the emulator.
 const SCROLLBACK_LINES: usize = 10_000;
@@ -429,6 +433,13 @@ pub struct App {
     waiting_sends: Vec<(PaneId, String)>,
     /// The frame of the thinking-indicator animation.
     anim_frame: usize,
+    /// The one offer to start `engram serve` of this run, as the worker made
+    /// it.
+    server_offer: ServerOffer,
+    /// Whether the offer is on screen (see `offer.rs`).
+    offer_shown: bool,
+    /// The chat the offer was shown in: the outcome of the start is told there.
+    offer_pane: Option<PaneId>,
 }
 
 /// The key that left COPY and when it was last seen.
@@ -476,6 +487,9 @@ impl App {
             jail: JailSupport::Unavailable("no CLI jail yet"),
             waiting_sends: Vec::new(),
             anim_frame: 0,
+            server_offer: ServerOffer::new(),
+            offer_shown: false,
+            offer_pane: None,
         }
     }
 

@@ -28,6 +28,8 @@ impl App {
             return Vec::new();
         }
         let now = (self.clock)();
+        // A memory key brings the held `engram serve` offer in front of the user.
+        self.show_server_offer();
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
@@ -146,6 +148,11 @@ impl App {
     /// The memory worker's answer. A reply for a pane that is gone changes
     /// nothing.
     pub(super) fn on_memory_reply(&mut self, reply: &MemReply) -> Vec<Effect> {
+        match reply {
+            MemReply::ServerOffer(offer) => return self.on_server_offer(offer),
+            MemReply::Server(outcome) => return self.on_server_outcome(outcome),
+            _ => {}
+        }
         let Some(id) = reply.pane() else {
             return Vec::new();
         };

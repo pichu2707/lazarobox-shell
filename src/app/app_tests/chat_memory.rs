@@ -15,7 +15,8 @@ use crate::core::ai::{
     },
     memory::{
         context::ContextBlock,
-        port::{MemCmd, MemReply, Reason},
+        offer::Offer,
+        port::{MemCmd, MemReply, Reason, ServerOutcome},
         reply::ProjectError,
     },
 };
@@ -623,4 +624,211 @@ fn a_lost_save_reply_does_not_stop_a_retry() {
     );
     tick(&mut a, 60_000);
     assert!(!systems(&a).iter().any(|l| l.starts_with("note not saved")));
+}
+
+// 10.6: the `engram serve` offer -------------------------------------------------
+
+const OFFER_BIN: &str = "/usr/local/bin/engram";
+const OFFER_PROMPT: &str =
+    "engram is not running. Start \"/usr/local/bin/engram serve 7437\"? y start · n not now";
+
+fn offer() -> AppEvent {
+    AppEvent::Memory(MemReply::ServerOffer(Offer {
+        path: OFFER_BIN.into(),
+        port: 7437,
+    }))
+}
+
+/// A chat whose engram is down, with the worker's one offer received.
+fn offered() -> App {
+    let (mut a, _) = opened(true);
+    unavailable(&mut a, Reason::NotRunning);
+    assert_eq!(a.update(offer()), vec![]);
+    a
+}
+
+fn start_server() -> Vec<Effect> {
+    vec![Effect::Memory(MemCmd::StartServer)]
+}
+
+fn unmodified(c: char) -> AppEvent {
+    AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+}
+
+#[test]
+fn an_offer_is_shown_in_the_chat_view_with_the_absolute_path() {
+    let a = offered();
+    assert_eq!(a.chat_guidance(chat_id()).as_deref(), Some(OFFER_PROMPT));
+}
+
+#[test]
+fn an_unmodified_y_starts_the_server_and_is_not_typed() {
+    let mut a = offered();
+    assert_eq!(a.update(unmodified('y')), start_server());
+    assert_eq!(a.chat_guidance(chat_id()), None, "answered");
+    assert_eq!(chat_of(&a).composer().text(), "");
+}
+
+#[test]
+fn any_other_key_declines_and_is_not_typed() {
+    let others = [
+        unmodified('n'),
+        unmodified('x'),
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT)),
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)),
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT)),
+        plain_key(KeyCode::Esc),
+        plain_key(KeyCode::Enter),
+        plain_key(KeyCode::Left),
+        AppEvent::Key(KeyEvent::new_with_kind(
+            KeyCode::Char('y'),
+            KeyModifiers::NONE,
+            KeyEventKind::Repeat,
+        )),
+    ];
+    for key in others {
+        let mut a = offered();
+        assert_eq!(a.update(key.clone()), vec![], "{key:?}");
+        assert_eq!(a.chat_guidance(chat_id()), None, "{key:?}");
+        assert_eq!(chat_of(&a).composer().text(), "", "{key:?}");
+    }
+}
+
+#[test]
+fn the_offer_is_made_once_per_run() {
+    let mut a = offered();
+    a.update(unmodified('n'));
+    a.update(offer());
+    assert_eq!(
+        a.chat_guidance(chat_id()),
+        None,
+        "declined, not asked again"
+    );
+    // A memory key does not bring it back either.
+    send(&mut a, "q");
+    finish_turn(&mut a);
+    press(&mut a, "n");
+    assert_eq!(a.chat_guidance(chat_id()), None);
+    // And after a start nothing is asked again.
+    let mut a = offered();
+    a.update(unmodified('y'));
+    a.update(offer());
+    assert_eq!(a.chat_guidance(chat_id()), None);
+}
+
+#[test]
+fn the_offer_waits_while_no_chat_is_focused_and_shows_on_a_chat_open() {
+    let mut a = launched(80, 25).with_ai(ai(true));
+    assert_eq!(a.update(offer()), vec![]);
+    assert_eq!(a.chat_guidance(chat_id()), None, "no chat view yet");
+    a.update(cwd_event(CWD));
+    press(&mut a, "c");
+    assert_eq!(a.chat_guidance(chat_id()).as_deref(), Some(OFFER_PROMPT));
+    assert_eq!(a.update(unmodified('y')), start_server());
+}
+
+#[test]
+fn a_memory_key_shows_an_offer_held_while_the_chat_was_not_focused() {
+    let (mut a, _) = opened(true);
+    unavailable(&mut a, Reason::NotRunning);
+    send(&mut a, "q");
+    finish_turn(&mut a);
+    press(&mut a, "wv");
+    assert!(!a.focused_is_chat(), "the new pane is a shell");
+    a.update(offer());
+    assert_eq!(a.chat_guidance(chat_id()), None, "held");
+    press(&mut a, "h");
+    assert!(a.focused_is_chat());
+    assert_eq!(
+        a.chat_guidance(chat_id()),
+        None,
+        "focus alone does not show it"
+    );
+    press(&mut a, "n");
+    assert_eq!(a.chat_guidance(chat_id()).as_deref(), Some(OFFER_PROMPT));
+}
+
+#[test]
+fn an_offer_with_memory_off_is_ignored() {
+    let (mut a, _) = opened(false);
+    a.update(offer());
+    assert_eq!(a.chat_guidance(chat_id()), None);
+    assert_eq!(a.update(unmodified('y')).len(), 0);
+}
+
+#[test]
+fn the_offer_is_not_a_stream_cancel_but_a_stream_still_runs_under_it() {
+    let mut a = offered();
+    assert_eq!(a.chat_guidance(chat_id()).as_deref(), Some(OFFER_PROMPT));
+    let request = send(&mut a, "hi");
+    assert_eq!(request.memory, None);
+}
+
+#[test]
+fn a_started_server_is_a_system_line_and_the_down_views_look_again() {
+    let mut a = offered();
+    a.update(unmodified('y'));
+    let effects = a.update(AppEvent::Memory(MemReply::Server(ServerOutcome::Started {
+        pid: 4242,
+    })));
+    assert!(
+        systems(&a).contains(
+            &"started engram serve (pid 4242); it keeps running after lazarobox quits".to_owned()
+        ),
+        "{:?}",
+        systems(&a)
+    );
+    assert_eq!(
+        memory_cmds(&effects),
+        [resolve()],
+        "the project is asked again"
+    );
+    // The answer fetches the context as for any view.
+    let effects = project(&mut a);
+    assert_eq!(memory_cmds(&effects), [context_cmd()]);
+    assert_eq!(
+        systems(&a).len(),
+        2,
+        "no second unavailable line: {:?}",
+        systems(&a)
+    );
+}
+
+#[test]
+fn an_adopted_server_says_nothing_but_the_views_look_again() {
+    let mut a = offered();
+    a.update(unmodified('y'));
+    let before = systems(&a);
+    let effects = a.update(AppEvent::Memory(MemReply::Server(ServerOutcome::Adopted)));
+    assert_eq!(systems(&a), before);
+    assert_eq!(memory_cmds(&effects), [resolve()]);
+}
+
+#[test]
+fn a_failed_start_gives_its_reason_line_and_looks_nowhere() {
+    let mut a = offered();
+    a.update(unmodified('y'));
+    let effects = a.update(AppEvent::Memory(MemReply::Server(ServerOutcome::Failed(
+        Reason::StartFailed(Some("address already in use".into())),
+    ))));
+    assert_eq!(effects, vec![]);
+    assert!(
+        systems(&a).contains(
+            &"memory unavailable: could not start engram: address already in use".to_owned()
+        ),
+        "{:?}",
+        systems(&a)
+    );
+}
+
+#[test]
+fn a_server_outcome_with_no_chat_open_is_a_notice() {
+    let mut a = launched(80, 25).with_ai(ai(true));
+    a.update(AppEvent::Memory(MemReply::Server(ServerOutcome::Started {
+        pid: 7,
+    })));
+    assert_eq!(
+        a.notice(),
+        Some("started engram serve (pid 7); it keeps running after lazarobox quits")
+    );
 }
