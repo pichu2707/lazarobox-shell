@@ -51,6 +51,9 @@ const HELD_EXIT_WINDOW: Duration = Duration::from_millis(500);
 const CHAT_COPY_REFUSED: &str =
     "copy mode is not available in chat panes; Ctrl+Y copies the last answer";
 
+/// Shown when `Prefix n` (save a note) is pressed on a pane that is not a chat.
+const NOTE_CHAT_ONLY: &str = "Save as note is for chat panes; open one with Ctrl+Space c";
+
 /// Byte sent to the child when the prefix is pressed twice (NUL, Ctrl+Space).
 const PREFIX_LITERAL: u8 = 0x00;
 
@@ -1151,7 +1154,8 @@ impl App {
                 | PrefixAction::ToggleZoom
                 | PrefixAction::Focus(_)
                 | PrefixAction::OpenMenu
-                | PrefixAction::OpenChat,
+                | PrefixAction::OpenChat
+                | PrefixAction::SaveNote,
             ) => InputMode::Terminal,
             Step::Run(
                 PrefixAction::ShowCommands
@@ -1168,6 +1172,14 @@ impl App {
             }
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
             Step::Run(PrefixAction::OpenChat) => self.open_chat_pane(),
+            Step::Run(PrefixAction::SaveNote) if self.focused_is_chat() => {
+                let id = self.tab().focus;
+                self.chat_note_key(id)
+            }
+            Step::Run(PrefixAction::SaveNote) => {
+                self.notice = Some(NOTE_CHAT_ONLY.to_string());
+                Vec::new()
+            }
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
             Step::Run(PrefixAction::SplitBelow) => self.split(Axis::Y),
             Step::Run(PrefixAction::Focus(dir)) => self.move_focus(dir),
@@ -4148,7 +4160,7 @@ mod app_tests {
     }
 
     const ROOT_HINT: &str =
-        "w window · t tab · g go · b buffer · [ copy · m menu · c chat · q quit";
+        "w window · t tab · g go · b buffer · [ copy · m menu · c chat · n note · q quit";
     const WINDOW_HINT: &str = "v split right · h split below · q close · r resize · z zoom";
 
     // Spec: Root hint in PREFIX; Group hint; Hint gone after the group resolves.

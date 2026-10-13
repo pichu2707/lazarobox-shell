@@ -1,24 +1,28 @@
 # Delta for Modal Input
 
-All scenarios [auto] unless tagged. The Chat pane input table and its swallow rule are unchanged except for the keys added below, which are exempt from the swallow rule. The key bindings are defaults for design to confirm, chosen in the style of Ctrl+Y, Ctrl+B, Ctrl+T and Ctrl+R (Ctrl+N save note, Ctrl+O toggle the memory block, Ctrl+E summary draft, as in the design), and are an open question until confirmed in Kitty (manual check, with M8).
+All scenarios [auto] unless tagged. The Chat pane input table and its swallow rule are unchanged except for the keys added below, which are exempt from the swallow rule. The key bindings are defaults for design to confirm, chosen in the style of Ctrl+Y, Ctrl+B, Ctrl+T and Ctrl+R (Ctrl+O toggle the memory block, Ctrl+E summary draft, as in the design; the save-note action is the prefix key `n`, because Ctrl+N is taken outside the terminal in the user's setup, e.g. a new Kitty window), and are an open question until confirmed in Kitty (manual check, with M8).
 
 ## ADDED Requirements
 
 ### Requirement: Memory keys
-In TERMINAL, with a chat pane focused and the conversation view shown, three keys MUST be added to the Chat pane input table:
+In TERMINAL, with a chat pane focused and the conversation view shown, two keys MUST be added to the Chat pane input table:
 
 | Key | Effect |
 |---|---|
-| Ctrl+N | open the note editor on the last answer (see chat-memory) |
 | Ctrl+E | request the end-of-conversation summary (see chat-memory) |
 | Ctrl+O | expand or collapse the memory block (see chat-memory); it never touches the reasoning block, which stays on Ctrl+R |
 
-Repeat events of Ctrl+N, Ctrl+E and Ctrl+O MUST be ignored, as for Ctrl+Y and Ctrl+B. With memory off or not ready, Ctrl+N and Ctrl+E only show their notices and Ctrl+O does nothing when no memory line exists. These keys MUST NEVER reach a PTY and MUST NOT type anything into the composer. In the conversation list, the tag editor and the delete confirmation they do nothing.
+Repeat events of Ctrl+E and Ctrl+O MUST be ignored, as for Ctrl+Y and Ctrl+B. Ctrl+N is NOT bound: in a chat pane it is swallowed as any other unbound key. With memory off or not ready, Ctrl+E only shows their notices and Ctrl+O does nothing when no memory line exists. These keys MUST NEVER reach a PTY and MUST NOT type anything into the composer. In the conversation list, the tag editor and the delete confirmation they do nothing.
 
-#### Scenario: Ctrl+N opens the editor [auto]
+#### Scenario: Prefix n opens the editor [auto]
 - GIVEN a conversation with an answer and a ready memory
-- WHEN Ctrl+N is pressed
+- WHEN Ctrl+Space then `n` are pressed
 - THEN the note editor opens, no WritePty is emitted and the composer text is unchanged
+
+#### Scenario: Ctrl+N is not bound [auto]
+- GIVEN a focused chat pane
+- WHEN Ctrl+N is pressed, and as a Repeat event
+- THEN nothing happens, no notice shows and no effect is emitted
 
 #### Scenario: Ctrl+E requests a summary [auto]
 - GIVEN an idle conversation with an answer and a ready memory
@@ -32,18 +36,30 @@ Repeat events of Ctrl+N, Ctrl+E and Ctrl+O MUST be ignored, as for Ctrl+Y and Ct
 
 #### Scenario: Repeat ignored [auto]
 - GIVEN a focused chat pane
-- WHEN Repeat events for Ctrl+N, Ctrl+E and Ctrl+O arrive
+- WHEN Repeat events for Ctrl+E and Ctrl+O arrive
 - THEN nothing happens and no effect is emitted
 
 #### Scenario: Memory off [auto]
 - GIVEN memory off
-- WHEN Ctrl+N and Ctrl+E are pressed
+- WHEN Ctrl+Space then `n`, and Ctrl+E, are pressed
 - THEN only the notice `Memory is off; enable it in the menu (Ctrl+Space m)` appears and no effect is emitted
 
 #### Scenario: Other views ignore them [auto]
 - GIVEN the conversation list shown
-- WHEN Ctrl+N, Ctrl+E and Ctrl+O are pressed
+- WHEN Ctrl+E and Ctrl+O are pressed
 - THEN nothing changes and nothing is typed
+
+### Requirement: Save-note prefix key
+The root of the prefix table MUST bind `n` ("note", hinted, after `c` and before `q`) to the save-note action; the `n` of the `t` group (new tab) is unchanged. On a focused chat pane it MUST behave as the save-note action of chat-memory (memory active, a git project, the project resolved first). On a pane that is not a chat it MUST only show the notice `Save as note is for chat panes; open one with Ctrl+Space c` and emit nothing. The root hint reads `... m menu · c chat · n note · q quit`.
+
+#### Scenario: Prefix n on a shell pane [auto]
+- GIVEN a focused shell pane
+- WHEN Ctrl+Space then `n` are pressed
+- THEN only the notice `Save as note is for chat panes; open one with Ctrl+Space c` appears and no effect is emitted
+
+#### Scenario: Prefix n is in the root hint [auto]
+- WHEN the prefix is pending
+- THEN the root hint lists `n note` between `c chat` and `q quit`
 
 ### Requirement: Memory view keys
 While the note editor or the summary editor is open in a chat pane, keys act as follows and every other key that is not a printable character MUST be swallowed (no effect, no WritePty); Ctrl+C MUST NEVER emit Quit or a WritePty:
@@ -102,5 +118,5 @@ A paste is inserted into the focused text field with control and format characte
 
 #### Scenario: Real keys in Kitty [manual, Kitty]
 - GIVEN a chat with an answer and memory ready, in Kitty
-- WHEN the user presses Ctrl+N, edits the fields, saves with Ctrl+S, and presses Ctrl+O and Ctrl+E
+- WHEN the user presses Ctrl+Space then `n`, edits the fields, saves with Ctrl+S, and presses Ctrl+O and Ctrl+E
 - THEN each key is received as listed and none is intercepted by the terminal

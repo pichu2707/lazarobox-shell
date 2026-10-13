@@ -88,13 +88,13 @@ Before any text leaves lazarobox for engram (note title, note content, summary),
 - THEN the text is unchanged
 
 ### Requirement: Save as note
-In a conversation view with memory enabled and ready, the save-note key (see modal-input) MUST open the note editor, drawn inside the chat pane like the other chat views. The source text is the last finished or cancelled assistant answer, never reasoning; a chat pane has no selection, so the editable, prefilled editor stands in for it and the user trims there. With no such answer the key MUST show the notice `Nothing to save as a note` and open nothing. The editor has three fields: kind (cycled through the seven values, default `decision`), title (one line, 1 to 120 characters, starts empty) and content (multi-line, up to 16,000 characters; a longer source is cut and the notice `Cut to 16000 characters` is shown). The content MUST open already passed through the redaction pass, and when it redacted something the editor shows `N secrets redacted`. Content sent to engram is at most 50,000 bytes (cut on a character boundary), because 16,000 characters can exceed engram's limit. On save, the title and the edited content MUST pass the redaction pass again; if that changes either text, the editor MUST stay open showing the redacted text with the notice `Redacted again; review and save`, and only a save whose text the pass leaves unchanged is sent. A valid save sends one note (see engram-client), closes the editor and adds the system line `saved note <kind>: <title>`; the note is linked to the conversation and its title is kept for the session end. Discarding sends nothing. If the save fails, the editor MUST stay open with the edited text and show the failure text. Saving costs no model call and MUST NOT change the transcript.
+In a conversation view with memory enabled and ready, the save-note action (the prefix key `n`, see modal-input) MUST open the note editor, drawn inside the chat pane like the other chat views. The source text is the last finished or cancelled assistant answer, never reasoning; a chat pane has no selection, so the editable, prefilled editor stands in for it and the user trims there. With no such answer the key MUST show the notice `Nothing to save as a note` and open nothing. The editor has three fields: kind (cycled through the seven values, default `decision`), title (one line, 1 to 120 characters, starts empty) and content (multi-line, up to 16,000 characters; a longer source is cut and the notice `Cut to 16000 characters` is shown). The content MUST open already passed through the redaction pass, and when it redacted something the editor shows `N secrets redacted`. Content sent to engram is at most 50,000 bytes (cut on a character boundary), because 16,000 characters can exceed engram's limit. On save, the title and the edited content MUST pass the redaction pass again; if that changes either text, the editor MUST stay open showing the redacted text with the notice `Redacted again; review and save`, and only a save whose text the pass leaves unchanged is sent. A valid save sends one note (see engram-client), closes the editor and adds the system line `saved note <kind>: <title>`; the note is linked to the conversation and its title is kept for the session end. Discarding sends nothing. If the save fails, the editor MUST stay open with the edited text and show the failure text. Saving costs no model call and MUST NOT change the transcript.
 
 The key also obeys these rules (review of M7b). **No directory:** a chat with no origin directory has no project to look for, so the key MUST show `Memory is not ready: memory needs a git project`, send nothing and leave the chat `Unavailable` (never waiting for a reply that cannot come). **Memory turned off meanwhile:** a save MUST check again that memory is active when it is sent; if the menu turned it off while the editor was open, nothing is sent, the editor keeps its text and shows `Memory is off; enable it in the menu (Ctrl+Space m)`. **Memory turned on meanwhile:** the memory worker is built from the config at startup, so memory enabled in the menu during a run has none until the next start; a command of a pane sent to it MUST be answered at once with `Unavailable` and the text `memory applies after a restart` (so the pane shows `Memory is not ready: memory applies after a restart`, and a save shows it in the editor), without starting a worker or touching the network. **Which editor a reply is for:** each save is answered to the editor that sent it and the note is recorded and linked under the project the save was sent with. A reply for a save whose editor was discarded (Esc) or replaced by a newer one MUST NOT close or fail the newer editor; a failure with no editor to show it MUST add the system line `note not saved: <reason>`; a success is still recorded and linked. **While saving** the keys line reads `saving… · Esc close`, so Esc stays visible.
 
 #### Scenario: Editor opens redacted [auto]
 - GIVEN the last answer `use key sk-abcDEF1234567890 for tests`
-- WHEN the save-note key is pressed
+- WHEN the save-note action is pressed
 - THEN the content field reads `use key [REDACTED] for tests`, the kind is `decision`, the title is empty and the editor shows the hint `N secrets redacted` with N = 1
 
 #### Scenario: Reasoning is never the source [auto]
@@ -119,7 +119,7 @@ The key also obeys these rules (review of M7b). **No directory:** a chat with no
 
 #### Scenario: Nothing to save [auto]
 - GIVEN a conversation with no assistant answer
-- WHEN the save-note key is pressed
+- WHEN the save-note action is pressed
 - THEN the notice is `Nothing to save as a note` and no editor opens
 
 #### Scenario: Discard [auto]
@@ -129,7 +129,7 @@ The key also obeys these rules (review of M7b). **No directory:** a chat with no
 
 #### Scenario: No directory is not ready [auto]
 - GIVEN a conversation whose chat has no origin directory
-- WHEN the save-note key is pressed, twice
+- WHEN the save-note action is pressed, twice
 - THEN each time the notice is `Memory is not ready: memory needs a git project`, no request is sent and the chat is never left waiting
 
 #### Scenario: Memory turned off while the editor is open [auto]
@@ -397,12 +397,12 @@ When memory is enabled but not usable, the chat MUST work normally and memory er
 
 #### Scenario: Memory key when unavailable [auto]
 - GIVEN an unavailable memory
-- WHEN the save-note key is pressed
+- WHEN the save-note action is pressed
 - THEN the notice is `Memory is not ready: engram is not running`, a health probe is requested, and no editor opens
 
 #### Scenario: Memory key when off [auto]
 - GIVEN memory off
-- WHEN the save-note key is pressed
+- WHEN the save-note action is pressed
 - THEN the notice is `Memory is off; enable it in the menu (Ctrl+Space m)` and no request is made
 
 #### Scenario: No traffic without a user action [auto]

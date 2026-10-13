@@ -19,7 +19,7 @@ impl App {
             .is_some_and(|chat| chat.note_editor().is_some())
     }
 
-    /// Ctrl+N: opens the note editor on the last answer. It needs memory on,
+    /// `Prefix n`: opens the note editor on the last answer. It needs memory on,
     /// an answer and a known project; when the project is not known it is
     /// asked for, and the editor opens when the reply comes.
     pub(super) fn chat_note_key(&mut self, id: PaneId) -> Vec<Effect> {

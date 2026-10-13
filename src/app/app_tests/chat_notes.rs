@@ -1,4 +1,4 @@
-//! Save as note (engram-memory M7b): Ctrl+N, the note editor and its keys,
+//! Save as note (engram-memory M7b): the Prefix n key, the note editor and its keys,
 //! the save flow against the memory worker's replies.
 
 use super::*;
@@ -128,7 +128,7 @@ fn answered(memory: bool, answer: &str, known_cwd: bool) -> App {
 /// The same chat once its project is known.
 fn ready(answer: &str) -> App {
     let mut a = with_answer(true, answer);
-    a.update(ctrl('n'));
+    press(&mut a, "n");
     a.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
         result: Ok(PROJECT.into()),
@@ -180,12 +180,12 @@ fn systems(a: &App) -> Vec<String> {
         .collect()
 }
 
-// 9.3: Ctrl+N ----------------------------------------------------------------
+// 9.3: Prefix n ----------------------------------------------------------------
 
 #[test]
 fn memory_off_shows_the_notice_and_asks_for_nothing() {
     let mut a = with_answer(false, "an answer");
-    assert_eq!(a.update(ctrl('n')), vec![]);
+    assert_eq!(press(&mut a, "n"), vec![]);
     assert_eq!(a.notice(), Some(MEMORY_OFF));
     assert!(chat_of(&a).note_editor().is_none());
 }
@@ -194,7 +194,7 @@ fn memory_off_shows_the_notice_and_asks_for_nothing() {
 fn without_an_answer_there_is_nothing_to_save() {
     let mut a = launched(80, 25).with_ai(ai(true));
     press(&mut a, "c");
-    assert_eq!(a.update(ctrl('n')), vec![]);
+    assert_eq!(press(&mut a, "n"), vec![]);
     assert_eq!(a.notice(), Some(NOTHING_TO_SAVE));
     assert!(chat_of(&a).note_editor().is_none());
 }
@@ -202,7 +202,7 @@ fn without_an_answer_there_is_nothing_to_save() {
 #[test]
 fn the_first_ctrl_n_asks_for_the_project_and_opens_the_editor_on_the_reply() {
     let mut a = with_answer(true, "use Axum");
-    assert_eq!(a.update(ctrl('n')), vec![resolve()]);
+    assert_eq!(press(&mut a, "n"), vec![resolve()]);
     assert!(chat_of(&a).note_editor().is_none(), "waits for the project");
     assert_eq!(a.update(project_reply(Ok(PROJECT.into()))), vec![]);
     let editor = chat_of(&a).note_editor().expect("open");
@@ -217,7 +217,7 @@ fn a_known_project_opens_the_editor_at_once() {
     a.update(plain(KeyCode::Esc));
     assert!(chat_of(&a).note_editor().is_none());
     pause(&mut a);
-    assert_eq!(a.update(ctrl('n')), vec![], "no second resolve");
+    assert_eq!(press(&mut a, "n"), vec![], "no second resolve");
     assert!(chat_of(&a).note_editor().is_some());
 }
 
@@ -225,7 +225,7 @@ fn a_known_project_opens_the_editor_at_once() {
 fn ctrl_n_does_not_touch_the_composer_or_reach_a_pty() {
     let mut a = with_answer(true, "x");
     type_text(&mut a, "draft");
-    let effects = a.update(ctrl('n'));
+    let effects = press(&mut a, "n");
     assert!(
         effects.iter().all(|e| !matches!(e, Effect::WritePty(..))),
         "{effects:?}"
@@ -236,7 +236,7 @@ fn ctrl_n_does_not_touch_the_composer_or_reach_a_pty() {
 #[test]
 fn an_unavailable_memory_says_why_and_probes_again_on_the_next_try() {
     let mut a = with_answer(true, "x");
-    a.update(ctrl('n'));
+    press(&mut a, "n");
     a.update(AppEvent::Memory(MemReply::Unavailable {
         pane: Some(chat_id()),
         reason: Reason::NotRunning,
@@ -247,7 +247,7 @@ fn an_unavailable_memory_says_why_and_probes_again_on_the_next_try() {
     );
     assert!(chat_of(&a).note_editor().is_none());
     pause(&mut a);
-    assert_eq!(a.update(ctrl('n')), vec![resolve()], "a re-probe");
+    assert_eq!(press(&mut a, "n"), vec![resolve()], "a re-probe");
     assert_eq!(
         a.notice(),
         Some("Memory is not ready: engram is not running")
@@ -257,7 +257,7 @@ fn an_unavailable_memory_says_why_and_probes_again_on_the_next_try() {
 #[test]
 fn a_directory_that_is_not_git_is_not_ready() {
     let mut a = with_answer(true, "x");
-    a.update(ctrl('n'));
+    press(&mut a, "n");
     a.update(project_reply(Err(ProjectError::NotGit)));
     assert_eq!(
         a.notice(),
@@ -269,7 +269,7 @@ fn a_directory_that_is_not_git_is_not_ready() {
 #[test]
 fn without_a_known_directory_memory_is_not_ready_and_nothing_is_asked() {
     let mut a = answered(true, "x", false);
-    assert_eq!(a.update(ctrl('n')), vec![], "no directory to resolve");
+    assert_eq!(press(&mut a, "n"), vec![], "no directory to resolve");
     assert_eq!(
         a.notice(),
         Some("Memory is not ready: memory needs a git project")
@@ -281,7 +281,7 @@ fn without_a_known_directory_memory_is_not_ready_and_nothing_is_asked() {
     );
     // A later try says the same, not "Checking memory…" forever.
     pause(&mut a);
-    assert_eq!(a.update(ctrl('n')), vec![]);
+    assert_eq!(press(&mut a, "n"), vec![]);
     assert_eq!(
         a.notice(),
         Some("Memory is not ready: memory needs a git project")
@@ -291,9 +291,9 @@ fn without_a_known_directory_memory_is_not_ready_and_nothing_is_asked() {
 #[test]
 fn a_second_ctrl_n_while_waiting_asks_nothing_more() {
     let mut a = with_answer(true, "x");
-    a.update(ctrl('n'));
+    press(&mut a, "n");
     pause(&mut a);
-    assert_eq!(a.update(ctrl('n')), vec![]);
+    assert_eq!(press(&mut a, "n"), vec![]);
     assert_eq!(a.notice(), Some("Checking memory…"));
 }
 
@@ -317,14 +317,22 @@ fn the_reply_of_a_check_nobody_wanted_does_not_open_the_editor() {
 }
 
 #[test]
-fn repeat_of_ctrl_n_is_ignored() {
+fn ctrl_n_alone_does_nothing_in_a_chat() {
     let mut a = with_answer(true, "x");
-    assert_eq!(
-        a.update(held(KeyCode::Char('n'), KeyModifiers::CONTROL)),
-        vec![]
-    );
+    for event in [ctrl('n'), held(KeyCode::Char('n'), KeyModifiers::CONTROL)] {
+        assert_eq!(a.update(event), vec![]);
+    }
     assert_eq!(a.notice(), None);
     assert_eq!(chat_of(&a).readiness(), &Readiness::Unknown);
+    assert!(chat_of(&a).note_editor().is_none());
+}
+
+#[test]
+fn the_save_note_key_on_a_shell_pane_only_says_it_is_for_chats() {
+    let mut a = launched(80, 25);
+    assert_eq!(press(&mut a, "n"), vec![]);
+    assert_eq!(a.notice(), Some(NOTE_CHAT_ONLY));
+    assert_eq!(a.input(), InputMode::Terminal);
 }
 
 // 9.4: the editor keys ---------------------------------------------------------
@@ -362,7 +370,7 @@ fn the_editor_swallows_everything_else_and_ctrl_c_never_quits() {
 fn esc_discards_with_no_request_and_keeps_the_composer() {
     let mut a = with_answer(true, "body");
     type_text(&mut a, "draft");
-    a.update(ctrl('n'));
+    press(&mut a, "n");
     a.update(project_reply(Ok(PROJECT.into())));
     type_text(&mut a, "typed in the editor");
     assert_eq!(a.update(plain(KeyCode::Esc)), vec![]);
@@ -399,7 +407,7 @@ fn the_stream_keeps_updating_under_the_editor() {
         [Effect::ChatSend { turn, .. }] => *turn,
         other => panic!("{other:?}"),
     };
-    a.update(ctrl('n'));
+    press(&mut a, "n");
     a.update(project_reply(Ok(PROJECT.into())));
     a.update(AppEvent::Chat(
         chat_id(),
@@ -537,7 +545,7 @@ fn the_second_note_goes_into_the_same_session() {
     type_text(&mut a, "One");
     a.update(ctrl('s'));
     a.update(saved_reply(SESSION, 1, "chat/decision/one", "One"));
-    a.update(ctrl('n'));
+    press(&mut a, "n");
     type_text(&mut a, "Two");
     assert_eq!(
         a.update(ctrl('s')),
@@ -556,7 +564,7 @@ fn the_same_note_again_upserts_with_the_same_line() {
         "chat/decision/use-axum",
         "Use Axum",
     ));
-    a.update(ctrl('n'));
+    press(&mut a, "n");
     type_text(&mut a, "Use Axum");
     a.update(ctrl('s'));
     a.update(saved_reply(
@@ -616,7 +624,7 @@ fn a_note_saved_after_the_editor_was_discarded_is_still_recorded() {
     type_text(&mut a, "T");
     a.update(ctrl('s'));
     a.update(plain(KeyCode::Esc));
-    a.update(ctrl('n'));
+    press(&mut a, "n");
     type_text(&mut a, "Other");
     a.update(saved_reply(SESSION, 1, "chat/decision/t", "T"));
     assert_eq!(systems(&a), ["saved note decision: T"]);
@@ -663,7 +671,7 @@ fn an_old_reply_never_closes_or_fails_a_newer_editor() {
     a.update(ctrl('s'));
     a.update(plain(KeyCode::Esc));
     pause(&mut a);
-    a.update(ctrl('n'));
+    press(&mut a, "n");
     type_text(&mut a, "Two");
     a.update(ctrl('s'));
     // The answer to the first save: the second editor goes on waiting.
@@ -684,7 +692,7 @@ fn the_saved_reply_of_an_old_save_leaves_a_newer_saving_editor_open() {
     a.update(ctrl('s'));
     a.update(plain(KeyCode::Esc));
     pause(&mut a);
-    a.update(ctrl('n'));
+    press(&mut a, "n");
     type_text(&mut a, "Two");
     a.update(ctrl('s'));
     a.update(saved_reply(SESSION, 1, "chat/decision/one", "One"));
@@ -747,7 +755,7 @@ fn a_secret_in_the_reasoning_never_reaches_the_traffic() {
         turn,
         StreamEvent::Done(Finish::Stop),
     ));
-    let mut traffic = a.update(ctrl('n'));
+    let mut traffic = press(&mut a, "n");
     traffic.extend(a.update(project_reply(Ok(PROJECT.into()))));
     type_text(&mut a, "T");
     traffic.extend(a.update(ctrl('s')));
@@ -792,7 +800,7 @@ fn link_note(conversation: i64, id: i64, topic_key: &str, title: &str) -> Effect
 
 /// Writes a note called `title` and delivers the worker's `Saved`.
 fn write_note(a: &mut App, title: &str, id: i64) -> Vec<Effect> {
-    a.update(ctrl('n'));
+    press(a, "n");
     type_text(a, title);
     a.update(ctrl('s'));
     let key = format!("chat/decision/{}", title.to_lowercase());
@@ -848,7 +856,7 @@ fn the_stored_pair_of_a_resumed_conversation_wins() {
         session_id: stored.into(),
         project: "other-project".into(),
     }));
-    a.update(ctrl('n'));
+    press(&mut a, "n");
     type_text(&mut a, "Two");
     let save = a.update(ctrl('s'));
     let [

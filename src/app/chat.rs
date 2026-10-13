@@ -96,7 +96,7 @@ impl App {
             (key.code, mods),
             (KeyCode::Esc, KeyModifiers::NONE)
                 | (
-                    KeyCode::Char('c' | 'y' | 'b' | 'r' | 'n' | 's'),
+                    KeyCode::Char('c' | 'y' | 'b' | 'r' | 's'),
                     KeyModifiers::CONTROL
                 )
         );
@@ -127,7 +127,6 @@ impl App {
             (KeyCode::Char('r'), KeyModifiers::CONTROL) => {
                 one_shot(|app, _| app.chat_toggle_reasoning(), self)
             }
-            (KeyCode::Char('n'), KeyModifiers::CONTROL) => one_shot(App::chat_note_key, self),
             (KeyCode::PageUp, KeyModifiers::NONE) => self.chat_page(true),
             (KeyCode::PageDown, KeyModifiers::NONE) => self.chat_page(false),
             (KeyCode::Enter, KeyModifiers::ALT) | (KeyCode::Char('j'), KeyModifiers::CONTROL) => {

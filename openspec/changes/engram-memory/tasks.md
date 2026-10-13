@@ -42,7 +42,7 @@ ai-chat chain today: PR7 (#140) → PR8 (#141) → PR9 (live pane, in review fix
 | M4 | `[ai.memory]` config, persistence, menu row, privacy warning | PR6 | ~350 | M1 | reorderable after M1 |
 | M5 | `engram serve` offer: spawn, port race, adopt (worker side + pure decision) | PR7 | ~350 | M3b, M4 | fixed |
 | M7a | chat.db v2, link store commands, eviction note count | PR8 | ~250 | M3b, M4, ai-chat PR9 | fixed |
-| M7b | Note editor (Ctrl+N), session register/end | PR9 | ~300 | M7a | fixed |
+| M7b | Note editor (Prefix n), session register/end | PR9 | ~300 | M7a | fixed |
 | M6 | Context at open/resume, `Entry::Memory` (Ctrl+O), `ChatRequest.memory`, budget, statusline, offer hook | PR10 | ~350 | M5, M7b, ai-chat PR9 + PR13 | fixed |
 | M8 | Summary draft and approval (Ctrl+E) | PR11 | ~400-450 | M6, M7b, ai-chat PR13 | fixed |
 | M9 | Delete offer with token, store delete rows, README | PR12 | ~300 | M7a, ai-chat C9 (PR10) | fixed |
@@ -158,14 +158,15 @@ Blocked by task 1.8 if the E-3 fallback is needed (user acceptance first).
 
 - [x] 9.1 RED: `Composer::with_cap(16_000)` rejects input past the cap; paste clips at the cap.
 - [x] 9.2 GREEN: `with_cap` in `composer.rs`.
-- [x] 9.3 RED: Ctrl+N opens the `NoteEditor`: seeded with the last answer (never reasoning) already redacted, kind `decision`, empty title, hint `N secrets redacted`; `Cut to 16000 characters` for a long source; `Nothing to save as a note` with no answer; `Memory is off; enable it in the menu (Ctrl+Space m)` with memory off; `Memory is not ready: <reason>` plus a health re-probe request when unavailable.
+- [x] 9.3 RED: `Prefix n` (Ctrl+Space, `n`) opens the `NoteEditor`: seeded with the last answer (never reasoning) already redacted, kind `decision`, empty title, hint `N secrets redacted`; `Cut to 16000 characters` for a long source; `Nothing to save as a note` with no answer; `Memory is off; enable it in the menu (Ctrl+Space m)` with memory off; `Memory is not ready: <reason>` plus a health re-probe request when unavailable.
 - [x] 9.4 RED: editor keys (modal-input table): Left/Right cycle the kind, Tab/Shift+Tab move fields, Enter in the title saves, Enter in content is a newline, Ctrl+S saves, Esc discards with no request, everything else swallowed (no `WritePty`), Ctrl+C never quits, Repeat ignored on Ctrl+S and Esc.
 - [x] 9.5 RED: save flow: empty title or empty content refused naming the field; a second redaction pass that changes the text keeps the editor open with `Redacted again; review and save`, and only an unchanged text is sent; success closes with the system line `saved note <kind>: <title>` and costs no model call; failure keeps the edited text and shows the failure; same kind and title upsert silently with the same line; scope is always `project`; `StoreCmd::LinkNote` follows `Saved`; link failure shows `note saved but not linked` once.
 - [ ] 9.6 RED (partial: done for the first write, links, pane close, tab close and quit; open for a resume that hydrates the session before its first write and for the new-conversation End, both need the ai-chat history wiring, PR10 / M6): session lifecycle in App: first write emits register data via `Save{session: None}`, a `LinkSession` follows; a resume reuses the stored id (and, per M0, re-registers or falls back); a conversation that never wrote sends no End; pane close, new conversation and quit emit `End` once with `Notes: A; B` (at most 1,000 chars); reasoning (`secret plan`) never appears in any recorded traffic.
 - [x] 9.7 GREEN: `NoteEditor` view, `Entry` system lines, `Effect::Memory(Save/End)`, `StoreCmd::{LinkSession,LinkNote}` wiring, ui draw in `chat.rs`.
 - [x] 9.8 RED then GREEN: insta snapshots for the editor (normal, redacted hint, tiny pane no panic).
-- [ ] 9.9 [manual, Kitty] Ctrl+N, Ctrl+S and Esc reach the app in Kitty (including inside the editor); if Ctrl+N or Ctrl+S is swallowed, stop and propose an alternative key to the user.
+- [ ] 9.9 [manual, Kitty] Confirm Ctrl+Space then `n`, Ctrl+S and Esc reach the app in Kitty (including inside the editor); if Ctrl+S is swallowed, stop and propose an alternative key to the user.
 - [x] 9.11 Review fixes (M7b): a `Saved` reply is recorded and linked under the project its save was sent with (pending saves carry it, FIFO); a chat with no origin directory is `Unavailable("memory needs a git project")` and sends no `Resolve` (it used to stay in `Resolving`); `Ctrl+S` checks that memory is still active, else `Memory is off...` in the editor and nothing sent; an inactive runtime memory answers a pane's command with `Unavailable(RestartNeeded)` = `memory applies after a restart` (memory turned on during a run has no worker); each save reply goes to the editor that sent it (a late failure after Esc is the system line `note not saved: <reason>`, an old reply never closes or fails a newer editor); the keys line while saving is `saving… · Esc close`.
+- [x] 9.12 Save-note key moved from Ctrl+N to the prefix: root `n` "note" (`PrefixAction::SaveNote`), hint `n note`; on a non-chat pane the notice `Save as note is for chat panes; open one with Ctrl+Space c`; Ctrl+N leaves the chat key table and the one-shot debounce set (swallowed again). Reason: Ctrl+N is captured outside the terminal (a new Kitty window).
 - [x] 9.10 Gate (for what is done: 9.1-9.5, 9.7, 9.8; 9.6 and 9.9 stay open).
 
 ## PR10 / M6: Context at open/resume (`src/core/ai/chat/{mod,engine,transcript}.rs`, `src/runtime/chat.rs` + adapters, `src/ui/components/{chat,statusline}.rs`)
@@ -180,7 +181,7 @@ Starts after ai-chat PR9 and PR13 are in the ai-chat tracker.
 - [ ] 10.6 RED: offer hook: a Down state on the first conversation view of the run shows the M5 prompt once; `y` emits `StartServer`; other keys decline; memory keys while Down re-show it only if not yet used.
 - [ ] 10.7 GREEN: transcript entry, Ctrl+O routing, context flow, offer view, statusline memory segment/hint (spec `statusline`), insta snapshots (folded, expanded, singular, none, tiny pane).
 - [ ] 10.8 [manual, Kitty] Ctrl+O toggles the memory line in Kitty without clashing with Ctrl+R.
-- [ ] 10.9 RED/GREEN: a pane waiting for its `Resolve`/`Context` reply gives up after 5 s on tokio's paused clock (the worker's `Busy` reply can be dropped when the reply channel is full, review W3 of M3b): the view stops waiting (this covers a Ctrl+N waiting for its `Resolve` and a note editor waiting for its `Save`/`Saved` reply, i.e. every lost-reply or `Busy` hang, so no view waits without the 5 s bound), shows `memory unavailable: engram did not answer` once, the chat streams, and a late reply is ignored; no wait without a bound.
+- [ ] 10.9 RED/GREEN: a pane waiting for its `Resolve`/`Context` reply gives up after 5 s on tokio's paused clock (the worker's `Busy` reply can be dropped when the reply channel is full, review W3 of M3b): the view stops waiting (this covers a `Prefix n` waiting for its `Resolve` and a note editor waiting for its `Save`/`Saved` reply, i.e. every lost-reply or `Busy` hang, so no view waits without the 5 s bound), shows `memory unavailable: engram did not answer` once, the chat streams, and a late reply is ignored; no wait without a bound.
 - [ ] 10.10 Gate.
 
 ## PR11 / M8: Summary draft and approval (`src/core/ai/chat/{mod,engine}.rs`, `prompts/summary.md`, `src/ui/components/chat.rs`)
@@ -203,7 +204,7 @@ Starts after ai-chat PR10 (list/delete, `Effect::Store` wiring) is in the tracke
 - [ ] 12.3 RED: `d` prompt: plain `Delete conversation? (y/n)` without notes; with notes, memory on and a token present `Delete conversation? y · n · a also delete its N notes` (`its 1 note`); `n`, Esc, `x`, `Y`, `A` cancel with no request; `y` deletes the conversation only; without a token or with memory off, the plain prompt then the line `its N notes stay in engram (set ENGRAM_HTTP_TOKEN to delete them)` or `(memory is off)`.
 - [ ] 12.4 RED: `a`: `MemCmd::Delete` sends `DELETE /observations/{id}?expected_project=P` with the bearer token per notes; results `deleted N notes from engram`, `deleted K of N notes from engram` (204/404/403 mix gives 2 of 3 plus the refusal text), `could not delete notes: <reason>` when unreachable; the conversation stays deleted; eviction never sends a `DELETE`.
 - [ ] 12.5 GREEN: App prompt state, `token_present`, `MemCmd::Delete`/`MemReply::Deleted` wiring.
-- [ ] 12.6 README: memory privacy (open HTTP routes, shared db, sync), `ENGRAM_HTTP_TOKEN`, spawned server and its log, `chat/` topic-key prefix to find notes, chat.db v2 rollback note, keys Ctrl+N/Ctrl+O/Ctrl+E.
+- [ ] 12.6 README: memory privacy (open HTTP routes, shared db, sync), `ENGRAM_HTTP_TOKEN`, spawned server and its log, `chat/` topic-key prefix to find notes, chat.db v2 rollback note, keys Ctrl+Space n/Ctrl+O/Ctrl+E.
 - [ ] 12.7 Gate.
 
 ## PR13 / V: Final manual verify (no code)
@@ -211,5 +212,5 @@ Starts after ai-chat PR10 (list/delete, `Effect::Store` wiring) is in the tracke
 - [ ] 13.1 [manual] Live engram 3.4.0 end to end on a throwaway instance (temp `ENGRAM_DATA_DIR`, spare port set in config, never the user's db or `:7437`): enable memory and accept the warning, open a chat, save a note with a typed secret (redacted twice), save the same title again (revision 2), resume the conversation (memory line shows N), approve a summary, close, and find the session end and `chat/` note with `engram search`.
 - [ ] 13.2 [manual] Offer path: stop the throwaway server, open a chat, confirm the prompt shows the absolute binary path, accept, quit lazarobox, and confirm the server still runs.
 - [ ] 13.3 [manual] Delete path: with `ENGRAM_HTTP_TOKEN` set on the throwaway server, `d` then `a` removes the notes; without the token the stay-in-engram line shows.
-- [ ] 13.4 [manual, Kitty] Ctrl+N, Ctrl+O, Ctrl+E and Ctrl+S (editor) all reach the app; an old 1.20 server on a spare port gives the restart notice and no offer.
+- [ ] 13.4 [manual, Kitty] Ctrl+Space n, Ctrl+O, Ctrl+E and Ctrl+S (editor) all reach the app; an old 1.20 server on a spare port gives the restart notice and no offer.
 - [ ] 13.5 Final Gate on the tracker `feat/engram-memory`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`; kill any throwaway process.

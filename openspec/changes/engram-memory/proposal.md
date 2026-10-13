@@ -71,7 +71,7 @@ This change supersedes ai-chat **D15** ("Shared project memory is out of scope")
 
 ## Design rulings folded in (design #3016)
 
-ME1 chat.db v2 is in scope. ME2 note deletion is in scope for a user delete with a token. ME3 there is no selection in a chat pane; the redacted, editable last answer stands in. ME4 the approved summary is the session end summary only. ME5 CLI engines get the memory block on stdin, never in argv. Keys (all to be checked in Kitty): Ctrl+N save note, Ctrl+O toggle memory block, Ctrl+E summary draft. Config: `[ai.memory] enabled`, `port` (default `ENGRAM_PORT` if valid, else 7437), `acknowledged`.
+ME1 chat.db v2 is in scope. ME2 note deletion is in scope for a user delete with a token. ME3 there is no selection in a chat pane; the redacted, editable last answer stands in. ME4 the approved summary is the session end summary only. ME5 CLI engines get the memory block on stdin, never in argv. Keys (all to be checked in Kitty): Ctrl+Space n save note (Ctrl+N is captured outside the terminal), Ctrl+O toggle memory block, Ctrl+E summary draft. Config: `[ai.memory] enabled`, `port` (default `ENGRAM_PORT` if valid, else 7437), `acknowledged`.
 
 ## Scope
 

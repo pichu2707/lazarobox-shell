@@ -59,6 +59,8 @@ pub enum PrefixAction {
     OpenMenu,
     /// Opens a chat pane as a right split of the focused pane.
     OpenChat,
+    /// Opens the note editor on the last answer of the focused chat.
+    SaveNote,
     ToggleZoom,
     NewTab,
     CloseTab,
@@ -182,6 +184,7 @@ pub const PREFIX_TREE: &[Binding] = &[
     act('[', "copy", PrefixAction::EnterCopy),
     act('m', "menu", PrefixAction::OpenMenu),
     act('c', "chat", PrefixAction::OpenChat),
+    act('n', "note", PrefixAction::SaveNote),
     act('q', "quit", PrefixAction::RequestQuit),
     unhinted(act('h', "focus left", PrefixAction::Focus(Direction::Left))),
     unhinted(act('j', "focus down", PrefixAction::Focus(Direction::Down))),
@@ -384,6 +387,34 @@ mod tests {
         assert!(at('m') < at('c') && at('c') < at('q'), "{order:?}");
     }
 
+    // Spec: modal-input root `n` saves the last chat answer as a note, after
+    // `c` and before `q`; the `n` of the tab group stays a new tab.
+    #[test]
+    fn n_is_a_hinted_root_leaf_between_c_and_q_that_saves_a_note() {
+        let binding = PREFIX_TREE
+            .iter()
+            .find(|b| b.chord.matches(&plain('n')))
+            .expect("n is bound at the root");
+        assert_eq!(binding.target, Target::Action(PrefixAction::SaveNote));
+        assert_eq!(binding.description, "note");
+        assert!(binding.hinted);
+        let order: Vec<char> = PREFIX_TREE
+            .iter()
+            .filter_map(|b| match b.chord.code {
+                KeyCode::Char(c) if b.hinted => Some(c),
+                _ => None,
+            })
+            .collect();
+        let at = |c| order.iter().position(|x| *x == c).expect("listed");
+        assert!(at('c') < at('n') && at('n') < at('q'), "{order:?}");
+        for table in &tables()[1..] {
+            assert_ne!(
+                lookup(table, &plain('n')),
+                Step::Run(PrefixAction::SaveNote)
+            );
+        }
+    }
+
     #[test]
     fn c_inside_another_group_does_not_open_a_chat() {
         for table in &tables()[1..] {
@@ -420,8 +451,8 @@ mod tests {
         for (i, a) in all.iter().enumerate() {
             assert!(!all[i + 1..].contains(a), "duplicate action {a:?}");
         }
-        // literal + quit + copy + menu + chat + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
-        assert_eq!(all.len(), 28);
+        // literal + quit + copy + menu + chat + note + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
+        assert_eq!(all.len(), 29);
     }
 
     #[test]
@@ -447,7 +478,7 @@ mod tests {
             .iter()
             .map(|b| b.chord.label())
             .collect();
-        assert_eq!(labels, ["w", "t", "g", "b", "[", "m", "c", "q"]);
+        assert_eq!(labels, ["w", "t", "g", "b", "[", "m", "c", "n", "q"]);
     }
 
     #[test]
@@ -619,7 +650,7 @@ mod tests {
     }
 
     const FULL_ROOT: &str =
-        "w window · t tab · g go · b buffer · [ copy · m menu · c chat · q quit";
+        "w window · t tab · g go · b buffer · [ copy · m menu · c chat · n note · q quit";
 
     #[test]
     fn group_hints_list_every_binding_in_table_order() {
@@ -668,8 +699,8 @@ mod tests {
 
     #[test]
     fn hint_fits_exactly_at_its_own_width() {
-        assert_eq!(width(FULL_ROOT), 70);
-        assert_eq!(hint(PREFIX_TREE, 70), FULL_ROOT);
+        assert_eq!(width(FULL_ROOT), 79);
+        assert_eq!(hint(PREFIX_TREE, 79), FULL_ROOT);
     }
 
     #[test]
