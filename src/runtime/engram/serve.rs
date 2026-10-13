@@ -119,11 +119,15 @@ impl Server {
         let Some(path) = ai_detect::find_on_path("engram", &self.path) else {
             return Binary::Missing;
         };
+        // A path that is not UTF-8 cannot be shown to the user as it is.
+        let Some(shown) = path.to_str().map(str::to_string) else {
+            return Binary::Missing;
+        };
         let version = ai_detect::version(&path)
             .await
             .and_then(|out| parse_version(&out));
         Binary::Found {
-            path: path.to_string_lossy().into_owned(),
+            path: shown,
             version,
         }
     }
@@ -386,6 +390,17 @@ mod tests {
                 version: None,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn find_treats_a_path_that_is_not_utf8_as_missing() {
+        use std::os::unix::ffi::OsStrExt;
+        let rig = rig();
+        let odd = rig.bin_dir.join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+        fs::create_dir(&odd).unwrap();
+        fake(&odd, "engram 3.4.0", &rig.record, "exit 0");
+        let server = Server::new(odd.into_os_string(), rig.state.clone());
+        assert_eq!(server.find().await, Binary::Missing);
     }
 
     #[tokio::test]

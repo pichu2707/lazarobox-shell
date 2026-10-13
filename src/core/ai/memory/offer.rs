@@ -44,7 +44,8 @@ impl Offer {
     pub fn prompt(&self) -> String {
         format!(
             "engram is not running. Start \"{} serve {}\"? y start \u{b7} n not now",
-            self.path, self.port
+            clean(&self.path),
+            self.port
         )
     }
 }
@@ -100,9 +101,12 @@ pub fn decide(facts: &Facts) -> Decision {
 }
 
 /// The path of a binary that may be started: found, and a 3.x or later. Else
-/// why not: none (or one whose version cannot be read) or a 1.x.
+/// why not: none (or one whose version cannot be read) or a 1.x. A path the
+/// sanitizer would change cannot be shown as it is, and what the user sees
+/// must be what runs, so it counts as no binary.
 pub fn usable(binary: &Binary) -> Result<&str, Reason> {
     match binary {
+        Binary::Found { path, .. } if !shown_as_is(path) => Err(Reason::NoBinary),
         Binary::Found { path, version } => match version.as_deref().and_then(major) {
             Some(m) if m >= MIN_MAJOR => Ok(path),
             Some(_) => Err(Reason::OldBinary),
@@ -110,6 +114,13 @@ pub fn usable(binary: &Binary) -> Result<&str, Reason> {
         },
         Binary::NotChecked | Binary::Missing => Err(Reason::NoBinary),
     }
+}
+
+/// Whether a path can be put on screen unchanged: the sanitizer leaves it
+/// alone and it holds no control character (the sanitizer keeps newlines and
+/// tabs, which would still break the one-line prompt).
+fn shown_as_is(path: &str) -> bool {
+    clean(path) == path && !path.chars().any(char::is_control)
 }
 
 /// The major version in a version line such as `engram 3.4.0` or `v3.4`: the
@@ -316,6 +327,46 @@ mod tests {
         assert_eq!(usable(&found("???")), Err(Reason::NoBinary));
         assert_eq!(usable(&Binary::Missing), Err(Reason::NoBinary));
         assert_eq!(usable(&Binary::NotChecked), Err(Reason::NoBinary));
+    }
+
+    #[test]
+    fn a_path_the_sanitizer_would_change_is_never_offered() {
+        let config = active();
+        for path in [
+            "/opt/e\x1b[31m/engram",
+            "/opt/e\n/engram",
+            "/opt/e\u{7}/engram",
+            "/opt/\u{202e}e/engram",
+        ] {
+            let binary = Binary::Found {
+                path: path.into(),
+                version: Some("engram 3.4.0".into()),
+            };
+            assert_eq!(usable(&binary), Err(Reason::NoBinary), "{path:?}");
+            assert_eq!(
+                decide(&down(&config, &binary)),
+                Decision::Notice(Reason::NoBinary),
+                "{path:?}"
+            );
+        }
+        // Spaces, shell characters and non-ASCII letters are plain text.
+        for path in ["/opt/a b;$(x)/engram", "/opt/caf\u{e9}/engram"] {
+            let binary = Binary::Found {
+                path: path.into(),
+                version: Some("engram 3.4.0".into()),
+            };
+            assert_eq!(usable(&binary), Ok(path), "{path:?}");
+        }
+    }
+
+    #[test]
+    fn the_prompt_shows_exactly_the_path_that_would_run() {
+        let offer = Offer {
+            path: "/opt/e\x1b[31m/engram".into(),
+            port: PORT,
+        };
+        let prompt = offer.prompt();
+        assert!(!prompt.contains('\x1b'), "{prompt:?}");
     }
 
     #[test]
