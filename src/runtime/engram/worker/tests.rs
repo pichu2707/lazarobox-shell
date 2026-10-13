@@ -1086,6 +1086,8 @@ struct Launched {
     fail_spawn: bool,
     /// The launcher refuses: the binary is no longer the file offered.
     changed: bool,
+    /// The OS error the spawn fails with, when set (else a custom one).
+    errno: Option<i32>,
     exit: Exit,
     log: Option<String>,
     on_spawn: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -1104,6 +1106,7 @@ impl Launch {
             spawns: Vec::new(),
             fail_spawn: false,
             changed: false,
+            errno: None,
             exit: Exit::Never,
             log: None,
             on_spawn: None,
@@ -1140,6 +1143,9 @@ impl Launcher for Launch {
                 .push((binary.to_string_lossy().into_owned(), port));
             if state.changed {
                 return Err(io::Error::other(BinaryChanged));
+            }
+            if let Some(code) = state.errno {
+                return Err(io::Error::from_raw_os_error(code));
             }
             if state.fail_spawn {
                 return Err(io::Error::other("no such file"));
@@ -1424,11 +1430,28 @@ async fn a_spawn_that_fails_is_a_failure_and_not_retried() {
     rig.link.send(MemCmd::StartServer);
     assert_eq!(
         rig.answer().await,
-        MemReply::Server(ServerOutcome::Failed(Reason::StartFailed(None)))
+        MemReply::Server(ServerOutcome::Failed(Reason::StartFailed(Some(
+            "no such file".into()
+        ))))
     );
     rig.link.send(MemCmd::StartServer);
     rig.answer().await;
     assert_eq!(launch.spawns().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_spawn_refused_by_the_os_says_why_in_a_few_words() {
+    let launch = Launch::new(found("engram 3.4.0")).with(|l| l.errno = Some(libc::EACCES));
+    let mut rig = serve_rig(Mode::Down, &launch);
+    take_the_offer(&mut rig).await;
+    rig.link.send(MemCmd::StartServer);
+    let MemReply::Server(ServerOutcome::Failed(reason)) = rig.answer().await else {
+        panic!("not a failed start");
+    };
+    assert_eq!(
+        reason.line(),
+        "memory unavailable: could not start engram: permission denied"
+    );
 }
 
 #[tokio::test(start_paused = true)]

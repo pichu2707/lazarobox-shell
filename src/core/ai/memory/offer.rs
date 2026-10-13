@@ -212,6 +212,13 @@ pub fn last_log_line(log: &[u8]) -> Option<String> {
         })
 }
 
+/// A short hint for why a spawn failed, from an `io::Error`'s text: the
+/// `(os error N)` tail dropped, lowercase, sanitized and cut like a log line.
+pub fn spawn_hint(message: &str) -> Option<String> {
+    let message = message.split(" (os error").next().unwrap_or(message);
+    last_log_line(message.to_lowercase().as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -531,6 +538,28 @@ mod tests {
         let y = key(KeyCode::Char('y'), KeyModifiers::NONE);
         assert_eq!(state.answer(y), None);
         assert!(state.accept(offer()), "the stray key did not use the offer");
+    }
+
+    #[test]
+    fn a_spawn_error_becomes_a_short_lowercase_errno_hint() {
+        let os = |code| std::io::Error::from_raw_os_error(code).to_string();
+        assert_eq!(
+            spawn_hint(&os(libc::EACCES)).as_deref(),
+            Some("permission denied")
+        );
+        assert_eq!(
+            spawn_hint(&os(libc::ENOENT)).as_deref(),
+            Some("no such file or directory")
+        );
+        assert_eq!(
+            spawn_hint("no state directory").as_deref(),
+            Some("no state directory")
+        );
+        assert_eq!(spawn_hint(""), None);
+        let esc = spawn_hint("bad \x1b[31mthing\x07").unwrap();
+        assert!(!esc.contains('\x1b') && !esc.contains('\x07'), "{esc:?}");
+        let long = spawn_hint(&"x".repeat(500)).unwrap();
+        assert_eq!(long.chars().count(), LOG_LINE_CAP);
     }
 
     #[test]

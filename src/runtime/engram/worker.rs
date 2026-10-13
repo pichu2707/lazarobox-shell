@@ -379,7 +379,12 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
             Ok(Err(error)) if BinaryChanged::is(&error) => {
                 return ServerOutcome::Failed(Reason::Changed);
             }
-            _ => return ServerOutcome::Failed(Reason::StartFailed(None)),
+            Ok(Err(error)) => {
+                let hint = offer::spawn_hint(&error.to_string());
+                return ServerOutcome::Failed(Reason::StartFailed(hint));
+            }
+            // The launcher did not answer in time.
+            Err(_) => return ServerOutcome::Failed(Reason::StartFailed(None)),
         };
         self.await_server(running).await
     }
