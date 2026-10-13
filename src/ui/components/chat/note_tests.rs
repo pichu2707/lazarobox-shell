@@ -141,6 +141,19 @@ fn the_key_hint_is_the_last_row() {
 }
 
 #[test]
+fn while_saving_the_keys_line_still_says_how_to_close() {
+    let mut chat = editing("body");
+    type_in(&mut chat, "T");
+    chat.note_editor_mut().unwrap().on_key(
+        &KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        false,
+    );
+    assert!(chat.note_editor().unwrap().is_saving());
+    let shown = rows(&draw(&chat, 60, 16));
+    assert!(shown[15].contains("saving… · Esc close"), "{shown:?}");
+}
+
+#[test]
 fn the_cursor_follows_the_focused_field() {
     let mut chat = editing("ab\ncd");
     type_in(&mut chat, "Hi");

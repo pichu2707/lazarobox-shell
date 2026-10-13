@@ -15,7 +15,7 @@ use crate::core::ai::chat::note::{Field, NoteEditor};
 const LABEL_WIDTH: u16 = 12;
 /// The keys, shown on the last row.
 const KEYS: &str = "Ctrl+S save · Esc discard · Tab next field";
-const SAVING: &str = "saving…";
+const SAVING: &str = "saving… · Esc close";
 
 /// Where the parts of the editor sit in a pane.
 struct NoteLayout {
