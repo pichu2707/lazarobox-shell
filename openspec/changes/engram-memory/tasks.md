@@ -143,13 +143,13 @@ The chat-view hook that shows the prompt lands in M6 (and the memory keys in M7b
 
 Starts after ai-chat PR9 is in the ai-chat tracker. Note: ai-chat has no store delete until PR10, so the delete-returns-rows change is in M9 (PR12).
 
-- [ ] 8.1 RED: v1 database with conversations and messages opens as v2 with every row intact and `memory_sessions`/`memory_notes` empty; a v1-only opener refuses a v2 file and leaves its bytes unchanged; file modes 0600 and `secure_delete` cover the new tables.
-- [ ] 8.2 GREEN: additive v2 migration in one transaction (`memory_sessions(conversation_id PK FK CASCADE, session_id UNIQUE, project)`, `memory_notes(project, topic_key, observation_id, conversation_id FK CASCADE, title, PK(project, topic_key)) WITHOUT ROWID`).
-- [ ] 8.3 RED: `StoreCmd::LinkSession` and `LinkNote`: the same session id is returned on resume; a repeated note save leaves one row; a second conversation saving the same `(project, topic_key)` re-points the row; no note content in the db or side files (`SECRET-BODY` search); a failed link write reports without undoing anything.
-- [ ] 8.4 GREEN: link commands on the store thread and `StoreReply` variants.
-- [ ] 8.5 RED: retention counts `memory_notes` of the evicted conversations in the same transaction; `StoreReply::Created` carries `evicted_notes: u32` (replacing nothing else); rows go with an evicted conversation.
-- [ ] 8.6 GREEN: eviction count; the chat transcript adds, after `EVICTED_LINE`, `N notes of removed conversations remain in engram` (`1 note of a removed conversation remains in engram`), no line for zero, no prompt, no engram request, also with memory off (ruling 1).
-- [ ] 8.7 Gate.
+- [x] 8.1 RED: v1 database with conversations and messages opens as v2 with every row intact and `memory_sessions`/`memory_notes` empty; a v1-only opener refuses a v2 file and leaves its bytes unchanged; file modes 0600 and `secure_delete` cover the new tables.
+- [x] 8.2 GREEN: additive v2 migration in one transaction (`memory_sessions(conversation_id PK FK CASCADE, session_id UNIQUE, project)`, `memory_notes(project, topic_key, observation_id, conversation_id FK CASCADE, title, PK(project, topic_key)) WITHOUT ROWID`).
+- [x] 8.3 RED: `StoreCmd::LinkSession` and `LinkNote`: the same session id is returned on resume; a repeated note save leaves one row; a second conversation saving the same `(project, topic_key)` re-points the row; no note content in the db or side files (`SECRET-BODY` search); a failed link write reports without undoing anything.
+- [x] 8.4 GREEN: link commands on the store thread and `StoreReply` variants. `LinkSession` reads or sets (stored id wins, answered `SessionLinked`), `LinkNote` is silent on success, a failed link answers `LinkFailed{kind}`; session ids must be `lazarobox-` plus 32 lowercase hex; an extra index `memory_notes_by_conversation` serves the eviction count and the cascade. `PaneStore` ignores the new replies; App wiring is M7b (PR9).
+- [x] 8.5 RED: retention counts `memory_notes` of the evicted conversations in the same transaction; `StoreReply::Created` carries `evicted_notes: u32` (replacing nothing else); rows go with an evicted conversation.
+- [x] 8.6 GREEN: eviction count; the chat transcript adds, after `EVICTED_LINE`, `N notes of removed conversations remain in engram` (`1 note of a removed conversation remains in engram`), no line for zero, no prompt, no engram request, also with memory off (ruling 1). Done as the pure `eviction_lines` / `eviction_lines_of(&StoreReply)` in `core/ai/chat/store.rs`. Gap: nothing in App consumes `AppEvent::Store` yet (`app.rs` ignores it) and `EVICTED_LINE` has no consumer, so no transcript shows either line today; the ai-chat history wiring (PR10) must call `eviction_lines_of` where it handles `Created`, and its test covers the on-screen text.
+- [x] 8.7 Gate.
 
 ## PR9 / M7b: Save as note and sessions (`src/core/ai/chat/{mod,composer}.rs`, `src/ui/components/chat.rs`, `src/app.rs`)
 
