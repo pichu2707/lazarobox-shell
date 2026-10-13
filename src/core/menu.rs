@@ -41,6 +41,9 @@ pub enum ItemKind {
     /// The memory opt-in row: a static `off`/`on` item over the AI draft.
     /// Turning it on without the acknowledgement opens the privacy warning.
     Memory(MemoryRow),
+    /// The chat bell flag (`ai.notify`): an on/off row that lives in the AI
+    /// draft, like [`ItemKind::Context`].
+    Notify,
 }
 
 /// The descriptor of the `Memory` row; the value is the `enabled` key.
@@ -107,8 +110,8 @@ pub static SECTIONS: &[Section] = &[Section {
 
 /// The AI section, attached only by [`MenuState::with_ai`]. The labels of
 /// the task rows are the task ids; their key path is `Task::table`. The
-/// static rows follow the tasks: `Profile`, `Context` and `Memory`, in that
-/// order.
+/// static rows follow the tasks: `Profile`, `Context`, `Memory` and `Notify`,
+/// in that order.
 pub static AI_SECTION: Section = Section {
     title: "AI",
     items: &[
@@ -152,6 +155,10 @@ pub static AI_SECTION: Section = Section {
                 values: &["off", "on"],
             }),
         },
+        Item {
+            label: "Notify",
+            kind: ItemKind::Notify,
+        },
     ],
 };
 
@@ -166,7 +173,8 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
             | ItemKind::Assign(_)
             | ItemKind::Profile
             | ItemKind::Context
-            | ItemKind::Memory(_) => None,
+            | ItemKind::Memory(_)
+            | ItemKind::Notify => None,
         })
 }
 
@@ -366,11 +374,11 @@ impl MenuState {
     }
 
     /// Whether the selection is on a row of the AI draft that is not a
-    /// task: `Profile`, `Context` or `Memory`.
+    /// task: `Profile`, `Context`, `Memory` or `Notify`.
     fn on_draft_row(&self) -> bool {
         matches!(
             self.selected_kind(),
-            Some(ItemKind::Profile | ItemKind::Context | ItemKind::Memory(_))
+            Some(ItemKind::Profile | ItemKind::Context | ItemKind::Memory(_) | ItemKind::Notify)
         )
     }
 
@@ -460,7 +468,8 @@ impl MenuState {
             | ItemKind::Disabled
             | ItemKind::Profile
             | ItemKind::Context
-            | ItemKind::Memory(_) => None,
+            | ItemKind::Memory(_)
+            | ItemKind::Notify => None,
         }
     }
 
@@ -521,6 +530,18 @@ impl MenuState {
                         let row = Row::Item {
                             label: item.label,
                             value: Some(Cow::Borrowed(memory.values[usize::from(on)])),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Notify => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self.ai.as_ref().map(|ai| {
+                                Cow::Borrowed(if ai.draft().notify() { "on" } else { "off" })
+                            }),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
@@ -669,6 +690,7 @@ impl MenuState {
                 match kind {
                     Some(ItemKind::Profile) => ai.cycle_profile(forward),
                     Some(ItemKind::Memory(_)) => ai.toggle_memory(),
+                    Some(ItemKind::Notify) => ai.toggle_notify(),
                     _ => ai.toggle_context(),
                 }
             }
@@ -740,11 +762,21 @@ impl MenuState {
                 .into_iter()
                 .map(|(key, on)| ConfigEdit::memory_flag(key, on))
         });
+        let notify = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::changed_notify)
+            .map(|on| ConfigEdit {
+                table: "ai",
+                key: "notify",
+                value: Cow::Borrowed(if on { "true" } else { "false" }),
+            });
         settings
             .chain(tasks)
             .chain(profile)
             .chain(context)
             .chain(memory)
+            .chain(notify)
             .collect()
     }
 
@@ -1074,6 +1106,9 @@ mod edits_tests;
 
 #[cfg(test)]
 mod memory_tests;
+
+#[cfg(test)]
+mod notify_tests;
 
 #[cfg(test)]
 mod profile_tests;

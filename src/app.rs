@@ -5924,12 +5924,12 @@ mod app_tests {
     }
 
     // Spec (config-menu, engram-memory): the privacy warning follows the
-    // draft flow. `k` from the first row wraps to `Memory`.
+    // draft flow. `k` twice from the first row wraps to `Memory`.
     fn memory_warning_open() -> App {
         let mut a = ai_app();
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
-        a.update(key('k'));
+        to_memory_row(&mut a);
         assert!(a.update(key('l')).is_empty(), "turning on asks, no effect");
         assert!(a.menu().unwrap().in_warning());
         a
@@ -5975,7 +5975,7 @@ mod app_tests {
         assert_eq!(a.ai().memory, Default::default());
         open_menu(&mut a);
         assert_eq!(a.menu().unwrap().ai_draft().memory, Default::default());
-        a.update(key('k'));
+        to_memory_row(&mut a);
         a.update(key('l'));
         assert!(
             a.menu().unwrap().in_warning(),
@@ -5992,16 +5992,24 @@ mod app_tests {
         assert!(!menu.ai_draft().memory.enabled);
     }
 
-    /// Moves the menu selection to the `Context` row (before `Memory`, the
-    /// last one).
+    /// Moves the menu selection to the `Context` row (before `Memory` and
+    /// `Notify`, the last one).
     fn to_context_row(a: &mut App) {
-        a.update(key('k'));
-        a.update(key('k'));
+        for _ in 0..3 {
+            a.update(key('k'));
+        }
     }
 
     /// Moves the menu selection to the `Profile` row (before `Context`).
     fn to_profile_row(a: &mut App) {
-        a.update(key('k'));
+        for _ in 0..4 {
+            a.update(key('k'));
+        }
+    }
+
+    /// Moves the menu selection to the `Memory` row (before `Notify`, the
+    /// last one).
+    fn to_memory_row(a: &mut App) {
         a.update(key('k'));
         a.update(key('k'));
     }
@@ -6071,6 +6079,33 @@ mod app_tests {
         a.update(AppEvent::ConfigSaved);
         assert!(a.menu().is_none());
         assert!(!a.ai().context());
+    }
+
+    // Spec (chat-notify, Notify row): `s` saves only the notify key and the
+    // saved value becomes the app's flag; Esc restores the open value.
+    #[test]
+    fn the_notify_row_saves_only_the_flag_and_updates_the_app() {
+        let mut a = ai_app();
+        assert!(!a.ai().notify());
+        open_menu(&mut a);
+        a.update(key('k'));
+        assert_eq!(a.update(key('l')), Vec::<Effect>::new(), "no ResizePty");
+        assert!(a.menu().unwrap().ai_draft().notify());
+        assert!(!a.ai().notify(), "not saved yet");
+        let edit = ConfigEdit {
+            table: "ai",
+            key: "notify",
+            value: "true".into(),
+        };
+        assert_eq!(a.update(key('s')), vec![Effect::SaveConfig(vec![edit])]);
+        a.update(AppEvent::ConfigSaved);
+        assert!(a.menu().is_none());
+        assert!(a.ai().notify());
+        open_menu(&mut a);
+        a.update(key('k'));
+        a.update(key('l'));
+        a.update(esc());
+        assert!(a.ai().notify(), "Esc keeps the saved value");
     }
 
     // Spec (Context toggle): Esc restores the flag captured at open.

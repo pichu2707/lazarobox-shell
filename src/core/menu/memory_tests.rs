@@ -105,10 +105,10 @@ fn warned() -> MenuState {
 
 // Spec (config-menu): Sections and items are data, Descriptor integrity.
 #[test]
-fn the_memory_descriptor_is_well_formed_and_last_in_the_ai_section() {
-    let last = AI_SECTION.items.last().unwrap();
-    assert_eq!(last.label, "Memory");
-    let ItemKind::Memory(row) = &last.kind else {
+fn the_memory_descriptor_is_well_formed_and_precedes_notify() {
+    let memory = &AI_SECTION.items[AI_SECTION.items.len() - 2];
+    assert_eq!(memory.label, "Memory");
+    let ItemKind::Memory(row) = &memory.kind else {
         panic!("not a memory row");
     };
     assert_eq!((row.table, row.key), ("ai.memory", "enabled"));
@@ -125,7 +125,8 @@ fn the_memory_descriptor_is_well_formed_and_last_in_the_ai_section() {
             "summarize",
             "Profile",
             "Context",
-            "Memory"
+            "Memory",
+            "Notify"
         ]
     );
 }
@@ -145,12 +146,15 @@ fn navigation_visits_memory_after_summarize_and_wraps() {
         "Profile",
         "Context",
         "Memory",
+        "Notify",
         "Statusline position",
     ] {
         press(&mut menu, KeyCode::Char('j'));
         assert_eq!(selected_label(&menu), label);
     }
     press(&mut menu, KeyCode::Char('k'));
+    assert_eq!(selected_label(&menu), "Notify");
+    press(&mut menu, KeyCode::Up);
     assert_eq!(selected_label(&menu), "Memory");
     press(&mut menu, KeyCode::Up);
     assert_eq!(selected_label(&menu), "Context");
