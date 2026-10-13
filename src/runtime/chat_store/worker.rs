@@ -19,7 +19,9 @@ use crate::core::{
         chat::{
             MsgStatus,
             engine::Role,
-            store::{RETENTION_LIMIT, StoreCmd, StoreReply, StoredMessage, bounded_error},
+            store::{
+                LinkKind, RETENTION_LIMIT, StoreCmd, StoreReply, StoredMessage, bounded_error,
+            },
         },
         sanitize::clean,
     },
@@ -33,6 +35,10 @@ pub const THREAD_NAME: &str = "chat-store";
 
 /// The longest conversation title, in characters.
 const TITLE_MAX: usize = 80;
+
+/// The longest note title kept in a link row, in characters (the engram client
+/// accepts 120).
+const NOTE_TITLE_MAX: usize = 120;
 
 /// Runs commands against the database. The connection is opened on the first
 /// command, so a session that never chats never touches the data directory.
@@ -117,6 +123,51 @@ impl Worker {
                     Err(_) => Some(self.failure(pane)),
                 }
             }
+            StoreCmd::LinkSession {
+                pane,
+                conversation,
+                session_id,
+                project,
+            } => {
+                let reply = self
+                    .conn()
+                    .ok()
+                    .and_then(|conn| link_session(conn, conversation, &session_id, &project).ok());
+                Some(match reply {
+                    Some(session_id) => StoreReply::SessionLinked {
+                        pane,
+                        conversation,
+                        session_id,
+                    },
+                    None => StoreReply::LinkFailed {
+                        pane,
+                        kind: LinkKind::Session,
+                    },
+                })
+            }
+            StoreCmd::LinkNote {
+                pane,
+                conversation,
+                project,
+                topic_key,
+                observation_id,
+                title,
+            } => {
+                let linked = self.conn().ok().is_some_and(|conn| {
+                    link_note(
+                        conn,
+                        conversation,
+                        (&project, &topic_key),
+                        observation_id,
+                        &title,
+                    )
+                    .is_ok()
+                });
+                (!linked).then_some(StoreReply::LinkFailed {
+                    pane,
+                    kind: LinkKind::Note,
+                })
+            }
         }
     }
 
@@ -134,9 +185,11 @@ impl Worker {
         cmd: StoreCmd,
         run: impl FnOnce(&mut Self, StoreCmd) -> Option<StoreReply>,
     ) -> Option<StoreReply> {
-        let (pane, is_create) = match &cmd {
-            StoreCmd::Create { pane, .. } => (*pane, true),
-            StoreCmd::Append { pane, .. } => (*pane, false),
+        let (pane, on_panic) = match &cmd {
+            StoreCmd::Create { pane, .. } => (*pane, Panicked::Create),
+            StoreCmd::Append { pane, .. } => (*pane, Panicked::Append),
+            StoreCmd::LinkSession { pane, .. } => (*pane, Panicked::Link(LinkKind::Session)),
+            StoreCmd::LinkNote { pane, .. } => (*pane, Panicked::Link(LinkKind::Note)),
             StoreCmd::Quit => return None,
         };
         match catch_unwind(AssertUnwindSafe(|| run(self, cmd))) {
@@ -145,10 +198,10 @@ impl Worker {
                 let reason = bounded_error(&panic_text(payload.as_ref()));
                 self.conn = Some(Err(reason.clone()));
                 self.opener = None;
-                Some(if is_create {
-                    StoreReply::Unavailable { pane, reason }
-                } else {
-                    self.failure(pane)
+                Some(match on_panic {
+                    Panicked::Create => StoreReply::Unavailable { pane, reason },
+                    Panicked::Append => self.failure(pane),
+                    Panicked::Link(kind) => StoreReply::LinkFailed { pane, kind },
                 })
             }
         }
@@ -159,6 +212,13 @@ impl Worker {
         self.failing = true;
         StoreReply::Failed { pane, notify }
     }
+}
+
+/// What a command that panicked is answered with.
+enum Panicked {
+    Create,
+    Append,
+    Link(LinkKind),
 }
 
 /// The message of a panic payload, or a generic line.
@@ -256,6 +316,73 @@ fn append(
     }
     insert_message(&tx, conversation, message, &clean(&message.text), stamp)?;
     tx.commit()
+}
+
+/// Whether `id` has the form of a session id this build makes:
+/// `lazarobox-` and 32 lowercase hex digits.
+fn is_session_id(id: &str) -> bool {
+    id.strip_prefix("lazarobox-").is_some_and(|hex| {
+        hex.len() == 32 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
+/// The session id of `conversation`: the stored one, else `session_id`, which
+/// is stored first.
+fn link_session(
+    conn: &mut Connection,
+    conversation: i64,
+    session_id: &str,
+    project: &str,
+) -> Result<String, rusqlite::Error> {
+    if !is_session_id(session_id) {
+        return Err(rusqlite::Error::InvalidParameterName("session id".into()));
+    }
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute(
+        "INSERT OR IGNORE INTO memory_sessions(conversation_id, session_id, project)
+         VALUES (?1, ?2, ?3)",
+        (conversation, session_id, clean(project)),
+    )?;
+    let stored = tx.query_row(
+        "SELECT session_id FROM memory_sessions WHERE conversation_id = ?1",
+        [conversation],
+        |r| r.get(0),
+    )?;
+    tx.commit()?;
+    Ok(stored)
+}
+
+/// Upserts the note row: the last conversation to write a note owns it.
+fn link_note(
+    conn: &mut Connection,
+    conversation: i64,
+    (project, topic_key): (&str, &str),
+    observation_id: i64,
+    title: &str,
+) -> Result<(), rusqlite::Error> {
+    let title: String = clean(title)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(NOTE_TITLE_MAX)
+        .collect();
+    conn.execute(
+        "INSERT INTO memory_notes(project, topic_key, observation_id, conversation_id, title)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(project, topic_key) DO UPDATE SET
+             observation_id = excluded.observation_id,
+             conversation_id = excluded.conversation_id,
+             title = excluded.title",
+        (
+            clean(project),
+            clean(topic_key),
+            observation_id,
+            conversation,
+            title,
+        ),
+    )?;
+    Ok(())
 }
 
 fn insert_message(

@@ -46,8 +46,35 @@ pub enum StoreCmd {
         conversation: i64,
         message: StoredMessage,
     },
+    /// Reads or sets the engram session of a conversation: the stored id is
+    /// answered when there is one (a resume), else `session_id` is stored.
+    /// Answered with `SessionLinked`, or `LinkFailed`.
+    LinkSession {
+        pane: PaneId,
+        conversation: i64,
+        session_id: String,
+        project: String,
+    },
+    /// Records that `conversation` wrote the note `(project, topic_key)`. The
+    /// row is upserted, so the last writer owns it. Only ids and the title are
+    /// kept, never the note's content. Silent on success.
+    LinkNote {
+        pane: PaneId,
+        conversation: i64,
+        project: String,
+        topic_key: String,
+        observation_id: i64,
+        title: String,
+    },
     /// Finish what is queued and stop.
     Quit,
+}
+
+/// Which link a [`StoreReply::LinkFailed`] is about.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LinkKind {
+    Session,
+    Note,
 }
 
 /// What the store thread answers.
@@ -61,6 +88,16 @@ pub enum StoreReply {
     },
     /// The store cannot be used at all; `reason` is already bounded.
     Unavailable { pane: PaneId, reason: String },
+    /// The session of a conversation: the stored id, which is the one just
+    /// proposed unless the conversation already had another.
+    SessionLinked {
+        pane: PaneId,
+        conversation: i64,
+        session_id: String,
+    },
+    /// A link could not be written. Nothing else was undone; the caller says
+    /// so once if it wants to.
+    LinkFailed { pane: PaneId, kind: LinkKind },
     /// A write failed. `notify` is true for the first failure of a run, the
     /// only one that earns a system line.
     Failed { pane: PaneId, notify: bool },

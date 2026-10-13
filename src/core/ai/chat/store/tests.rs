@@ -209,3 +209,25 @@ fn error_text_is_sanitized_flat_and_bounded() {
 fn short_error_text_is_kept() {
     assert_eq!(bounded_error("database is corrupt"), "database is corrupt");
 }
+
+#[test]
+fn link_replies_do_not_change_where_the_conversation_is() {
+    let mut store = PaneStore::new();
+    store.save(pane(), user("hi"), &new_conv());
+    store.on_reply(pane(), &created(5));
+    let replies = [
+        StoreReply::SessionLinked {
+            pane: pane(),
+            conversation: 5,
+            session_id: "lazarobox-00112233445566778899aabbccddeeff".into(),
+        },
+        StoreReply::LinkFailed {
+            pane: pane(),
+            kind: LinkKind::Note,
+        },
+    ];
+    for reply in &replies {
+        assert!(store.on_reply(pane(), reply).is_empty());
+        assert_eq!(store.conversation(), Some(5));
+    }
+}
