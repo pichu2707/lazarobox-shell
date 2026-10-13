@@ -7,6 +7,7 @@ use super::chat_notes::{
 };
 use super::*;
 use crate::core::ai::{
+    EngineState, Status,
     chat::{
         Phase,
         engine::{ChatError, ChatRequest, Finish, Role, StreamEvent},
@@ -163,6 +164,45 @@ fn without_an_answer_there_is_nothing_to_summarize() {
     }));
     assert_eq!(press(&mut a, "s"), vec![]);
     assert_eq!(a.notice(), Some(NOTHING_TO_SUMMARIZE));
+}
+
+/// A chat whose first question is out and whose first answer is streaming.
+fn first_answer_streaming() -> App {
+    let mut a = launched(80, 25).with_ai(ai(true));
+    a.update(cwd_event(CWD));
+    a.update(AppEvent::EnginesDetected(Detection {
+        engines: vec![EngineState {
+            id: "ollama",
+            status: Status::Available,
+            models: vec!["llama3:8b".to_owned()],
+            version: None,
+        }],
+    }));
+    press(&mut a, "c");
+    a.update(AppEvent::PromptReady(
+        chat_id(),
+        crate::core::ai::chat::prompts::Resolved {
+            text: "system".into(),
+            notices: Vec::new(),
+        },
+    ));
+    a.update(AppEvent::Memory(MemReply::Project {
+        pane: chat_id(),
+        result: Ok(PROJECT.into()),
+    }));
+    type_text(&mut a, "q");
+    a.update(plain(KeyCode::Enter));
+    let turn = chat_of(&a).turn();
+    delta(&mut a, turn, "partial");
+    assert_eq!(chat_of(&a).phase(), Phase::Streaming);
+    a
+}
+
+#[test]
+fn while_the_first_answer_streams_the_key_says_busy_not_nothing() {
+    let mut a = first_answer_streaming();
+    assert_eq!(press(&mut a, "s"), vec![]);
+    assert_eq!(a.notice(), Some(SUMMARY_BUSY));
 }
 
 #[test]

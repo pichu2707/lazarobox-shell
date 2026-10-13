@@ -45,12 +45,14 @@ impl App {
         if chat.note_editor().is_some() || chat.summary_draft().is_some() {
             return Vec::new();
         }
-        if yank::last_answer(chat).is_none() {
-            self.notice = Some(NOTHING_TO_SUMMARIZE.to_owned());
-            return Vec::new();
-        }
+        // Busy first: while the first answer streams, there is no finished
+        // answer yet, but "nothing to summarize" would be the wrong reason.
         if chat.phase() != Phase::Idle {
             self.notice = Some(SUMMARY_BUSY.to_owned());
+            return Vec::new();
+        }
+        if yank::last_answer(chat).is_none() {
+            self.notice = Some(NOTHING_TO_SUMMARIZE.to_owned());
             return Vec::new();
         }
         let cwd = chat.origin_cwd().map(|p| p.to_string_lossy().into_owned());
