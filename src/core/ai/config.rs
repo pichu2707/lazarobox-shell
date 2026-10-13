@@ -87,10 +87,21 @@ pub struct Assignment {
 
 /// The saved AI choice of every task. `None` means unset (a missing key or
 /// `""`).
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct AiConfig {
     slots: [Assignment; 5],
     profile: Profile,
+    context: bool,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            slots: Default::default(),
+            profile: Profile::default(),
+            context: true,
+        }
+    }
 }
 
 impl AiConfig {
@@ -108,6 +119,15 @@ impl AiConfig {
 
     pub fn set_profile(&mut self, profile: Profile) {
         self.profile = profile;
+    }
+
+    /// Whether the workspace context block is appended to the system prompt.
+    pub fn context(&self) -> bool {
+        self.context
+    }
+
+    pub fn set_context(&mut self, context: bool) {
+        self.context = context;
     }
 
     /// The effective assignment of a task and whether it was inherited from
@@ -201,7 +221,20 @@ fn read_profile(section: &Table, problems: &mut Vec<String>) -> Profile {
     }
 }
 
-/// Reads `[ai]` (the general task and the profile) and `[ai.tasks.<id>]`
+/// Reads `context`: a missing key is `true`; a value that is not a boolean
+/// falls back to `true` with a problem.
+fn read_context(section: &Table, problems: &mut Vec<String>) -> bool {
+    match section.get("context") {
+        None => true,
+        Some(Value::Boolean(on)) => *on,
+        Some(_) => {
+            problems.push("ai.context: expected a boolean".to_owned());
+            true
+        }
+    }
+}
+
+/// Reads `[ai]` (the general task, the profile and the context flag) and `[ai.tasks.<id>]`
 /// (the others). Each key falls back to unset on its own; `general` and
 /// unknown names under `ai.tasks` are ignored.
 pub fn read(table: &Table, problems: &mut Vec<String>) -> AiConfig {
@@ -216,6 +249,7 @@ pub fn read(table: &Table, problems: &mut Vec<String>) -> AiConfig {
     };
     config.set(Task::General, read_assignment(section, "ai", problems));
     config.profile = read_profile(section, problems);
+    config.context = read_context(section, problems);
     let tasks = match section.get("tasks") {
         None => return config,
         Some(Value::Table(tasks)) => tasks,
@@ -657,6 +691,61 @@ mod tests {
         assert_eq!(
             read_text("ai = 3\n"),
             (AiConfig::default(), vec!["ai: expected a table".to_owned()])
+        );
+    }
+
+    // Spec (prompt-profiles): Context toggle, default and parse.
+    #[test]
+    fn the_context_defaults_to_true() {
+        assert!(AiConfig::default().context());
+        for text in ["", "[ai]\n", "ai = 3\n"] {
+            assert!(read_text(text).0.context(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_boolean_context_is_read_without_a_problem() {
+        for (value, want) in [("true", true), ("false", false)] {
+            let (config, problems) = read_text(&format!("[ai]\ncontext = {value}\n"));
+            assert_eq!(config.context(), want, "{value}");
+            assert_eq!(problems, Vec::<String>::new());
+        }
+    }
+
+    #[test]
+    fn a_non_boolean_context_falls_back_to_true_with_the_exact_problem() {
+        for value in ["\"no\"", "0", "[true]", "{ a = 1 }"] {
+            let (config, problems) = read_text(&format!("[ai]\ncontext = {value}\n"));
+            assert!(config.context(), "{value}");
+            assert_eq!(
+                problems,
+                vec!["ai.context: expected a boolean".to_owned()],
+                "{value}"
+            );
+        }
+    }
+
+    // The context is not an assignment and not the profile.
+    #[test]
+    fn the_context_is_independent_of_the_profile_and_the_assignments() {
+        let (config, _) = read_text("[ai]\ncontext = false\nprofile = \"analyst\"\n");
+        let mut want = AiConfig::default();
+        want.set_context(false);
+        want.set_profile(Profile::Analyst);
+        assert_eq!(config, want);
+        assert_ne!(config, AiConfig::default());
+    }
+
+    #[test]
+    fn the_context_problem_comes_after_the_profile_problem() {
+        let text = "[ai.tasks.code]\nengine = 5\n[ai]\ncontext = 1\nprofile = 1\n";
+        assert_eq!(
+            read_text(text).1,
+            vec![
+                "ai.profile: expected a string".to_owned(),
+                "ai.context: expected a boolean".to_owned(),
+                "ai.tasks.code.engine: expected a string".to_owned(),
+            ]
         );
     }
 }

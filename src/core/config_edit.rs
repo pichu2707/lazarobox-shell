@@ -59,7 +59,7 @@ pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String
             head
         });
         let table = walk_to_table(&mut doc, edit, &mut head)?;
-        let mut value = Value::from(edit.value.as_ref());
+        let mut value = edit_value(edit);
         match table.get_mut(edit.key) {
             // Replace in the slot so the key's own decor (leading comment,
             // spacing) stays, and keep the old value's decor so a trailing
@@ -96,6 +96,20 @@ pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String
     }
     out.push_str(&text[done..]);
     Ok(out)
+}
+
+/// The owned keys that hold a TOML boolean: their edit value is the text
+/// `true` or `false`. Every other owned key holds a string.
+const BOOLEAN_KEYS: [(&str, &str); 1] = [("ai", "context")];
+
+/// The TOML value of an edit.
+fn edit_value(edit: &ConfigEdit) -> Value {
+    let boolean = BOOLEAN_KEYS.contains(&(edit.table, edit.key));
+    match edit.value.as_ref() {
+        "true" if boolean => Value::from(true),
+        "false" if boolean => Value::from(false),
+        text => Value::from(text),
+    }
 }
 
 /// Walks the dotted `edit.table` path from the root and returns the leaf
@@ -890,5 +904,60 @@ other = 1
         assert_eq!(out, existing.replace("\"bottom\"", "\"top\""));
         let out = apply_edit(Some("ai = 3\n"), &[edit("statusline", "top")]).unwrap();
         assert!(out.starts_with("ai = 3\n"), "{out:?}");
+    }
+
+    // Spec (prompt-profiles, Context toggle): `ai.context` is an owned
+    // boolean key: the value text `true`/`false` is written as a TOML boolean.
+    fn context_edit(value: &'static str) -> [ConfigEdit; 1] {
+        [ConfigEdit {
+            table: "ai",
+            key: "context",
+            value: std::borrow::Cow::Borrowed(value),
+        }]
+    }
+
+    #[test]
+    fn the_context_is_written_as_a_boolean() {
+        let out = apply_edit(None, &context_edit("false")).unwrap();
+        assert_eq!(out, "[ai]\ncontext = false\n");
+        let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out));
+        assert!(!ai.context());
+        assert_eq!(notice, None);
+        let out = apply_edit(Some("[ai]\nprofile = \"analyst\"\n"), &context_edit("true")).unwrap();
+        assert_eq!(out, "[ai]\nprofile = \"analyst\"\ncontext = true\n");
+        let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out));
+        assert!(ai.context());
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn the_context_is_updated_in_place_and_a_scalar_is_replaced() {
+        let existing = "[ai]\n# c\ncontext = true  # on\nmodel = \"m\"\n";
+        let out = apply_edit(Some(existing), &context_edit("false")).unwrap();
+        assert_eq!(out, "[ai]\n# c\ncontext = false  # on\nmodel = \"m\"\n");
+        let out = apply_edit(Some("[ai]\ncontext = \"x\"\n"), &context_edit("true")).unwrap();
+        assert_eq!(out, "[ai]\ncontext = true\n");
+    }
+
+    #[test]
+    fn a_context_table_is_refused_and_an_unchanged_one_is_ignored() {
+        for text in [
+            "[ai.context]\nx = 1\n",
+            "[ai]\ncontext = { x = 1 }\n",
+            "[[ai.context]]\nx = 1\n",
+        ] {
+            assert_eq!(
+                apply_edit(Some(text), &context_edit("false")),
+                Err(EditError::KeyIsTable {
+                    table: "ai",
+                    key: "context"
+                }),
+                "{text:?}"
+            );
+        }
+        let position = [edit("statusline", "top")];
+        let existing = "[ai.context]\nx = 1\n";
+        let out = apply_edit(Some(existing), &position).unwrap();
+        assert!(out.starts_with(existing), "{out:?}");
     }
 }

@@ -189,12 +189,18 @@ Files changed:
 
 ## PR12 / C10b: Prompts (`src/core/ai/chat/prompts/**`, `src/core/ai/chat/prompts.rs`, `src/runtime/chat.rs`)
 
-- [ ] 12.1 RED: built-in table integrity (10 prompts, non-empty, at most 4 KiB, profiles differ per task), reply-in-user-language text, chat prompt states no files, shell or terminal.
-- [ ] 12.2 RED: pure `resolve_prompt`: task override, then general override, then built-in; other profile ignored; exact content after trim; resolved once per conversation; profile switch applies to new conversations only; resumed uses the stored profile.
-- [ ] 12.3 RED: bounded override read (at most 16,385 bytes, regular files only, no FIFO block, `/dev/zero` symlink): notices `not valid UTF-8`, `larger than 16 KiB`, `cannot be read`, `not a regular file`; at-cap file used; whitespace-only is missing; sanitized path.
-- [ ] 12.4 GREEN: write the 10 English `.md` files via `include_str!`, `resolve_prompt`, runtime reader.
-- [ ] 12.5 Gate. Prompt text counts toward the 400 lines; re-measure.
-- [ ] 12.6 (reorder, from PR13) Remove the temporary `DEFAULT_SYSTEM_PROMPT` constant and `adapters::system_prompt()` from `src/core/ai/chat/adapters.rs` (with its test) and make `app/chat.rs` pass the resolved prompt from `resolve_prompt` instead.
+- [x] 12.1 RED: built-in table integrity (10 prompts, non-empty, at most 4 KiB, profiles differ per task), reply-in-user-language text, chat prompt states no files, shell or terminal.
+- [x] 12.2 RED: pure `resolve_prompt`: task override, then general override, then built-in; other profile ignored; exact content after trim; resolved once per conversation; profile switch applies to new conversations only; resumed uses the stored profile (satisfied only at the pure `resolve_prompt` level, which takes the profile as an argument; wiring a resumed conversation to its stored profile is PR10, see 12.12).
+- [x] 12.3 RED: bounded override read (at most 16,385 bytes, regular files only, no FIFO block, `/dev/zero` symlink): notices `not valid UTF-8`, `larger than 16 KiB`, `cannot be read`, `not a regular file`; at-cap file used; whitespace-only is missing; sanitized path.
+- [x] 12.4 GREEN: write the 10 English `.md` files via `include_str!`, `resolve_prompt`, runtime reader.
+- [x] 12.5 Gate. Prompt text counts toward the 400 lines; re-measure.
+- [x] 12.6 (reorder, from PR13) Remove the temporary `DEFAULT_SYSTEM_PROMPT` constant and `adapters::system_prompt()` from `src/core/ai/chat/adapters.rs` (with its test) and make `app/chat.rs` pass the resolved prompt from `resolve_prompt` instead.
+- [x] 12.7 RED/GREEN (docs): amend chat-engines (request body and CLI context may carry the workspace block, never absolute paths, environment, file contents or terminal output), prompt-profiles (Workspace context block, Context toggle), design CHAT-14. Task 12.1 still holds: the chat prompt says the model has no access to files, shell or terminal, and adds that the workspace facts it is given are all it knows.
+- [x] 12.8 RED: pure `workspace` builder: repo root, nested dir, worktree, detached head, no repository (basename only, no absolute path), unknown cwd, hostile branch (control, newline, bidi), 64-character cap, empty-after-cleaning omitted, exact block text; `HEAD` parser; date formatter.
+- [x] 12.9 RED: runtime probe on temporary directories (repo walk with the 64-level bound, `.git` file with `gitdir:`, 1 KiB `HEAD` bound, unreadable `HEAD` omits the line) and the local date.
+- [x] 12.10 RED: `[ai] context` parse (default true, non-boolean notice), persistence (created, updated, explicit, untouched, collision) and the `Context` menu row (cycle, save, revert, snapshot); derive `AI_BODY` from the row count (PR11 review suggestion), keeping the fit test.
+- [x] 12.11 RED/GREEN: wiring: `Effect::PreparePrompt` and `AppEvent::PromptReady`, a send waits for the prompt, the request system prompt is resolved prompt plus block (or the resolved prompt alone when `context` is off), notices become system lines, block absent from history and the store.
+- [x] 12.12 Gate and re-measure (size:exception approved by the user). Deviation: PR10 (repository walk, tags, `Effect::Store`) is not merged, so the walk lives in `src/runtime/workspace.rs` (`find_repo`, 64 levels, worktree rule) and PR10 should reuse it for the project tag instead of writing a second walk. The prompt is prepared by `Effect::PreparePrompt` / `AppEvent::PromptReady` at chat open (profile from the current config); resume with a stored profile arrives with PR10. Review fixes: the prepare job is bounded to 2 s and panic-safe (`spawn_prepare_with` in `src/runtime.rs`: `catch_unwind`, `thread::Builder` error path, `tokio::time::timeout`), and falls back to the built-in prompt with a notice; the bound lives in the runtime, not in the pure app, because the app has no general tick.
 
 ## PR13 / C11: Ollama (`src/core/ai/chat/adapters.rs`, `src/runtime/chat.rs`)
 

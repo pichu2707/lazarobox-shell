@@ -52,35 +52,31 @@ fn profile_edit(value: &'static str) -> ConfigEdit {
 
 // Spec (config-menu): Descriptor integrity; the row is found by kind.
 #[test]
-fn the_profile_row_is_the_last_ai_descriptor() {
-    let last = AI_SECTION.items.last().unwrap();
-    assert_eq!(last.label, "Profile");
-    assert!(matches!(last.kind, ItemKind::Profile));
+fn the_profile_row_follows_the_task_rows() {
+    let row = &AI_SECTION.items[6];
+    assert_eq!(row.label, "Profile");
+    assert!(matches!(row.kind, ItemKind::Profile));
     let kinds = AI_SECTION
         .items
         .iter()
         .filter(|i| matches!(i.kind, ItemKind::Profile))
         .count();
     assert_eq!(kinds, 1);
-    assert_eq!(AI_SECTION.items.len(), 7);
+    assert_eq!(AI_SECTION.items.len(), 8);
 }
 
 // Spec (config-menu): Task rows in order, Wrap.
 #[test]
-fn profile_is_the_last_selectable_row_and_navigation_wraps_through_it() {
+fn profile_sits_between_summarize_and_context_in_navigation() {
     let mut m = menu(None, None, Some(machine()));
     for _ in 0..8 {
         press(&mut m, 'j');
     }
     assert_eq!(selected_label(&m), "Profile", "after summarize");
     press(&mut m, 'j');
-    assert_eq!(
-        selected_label(&m),
-        "Statusline position",
-        "wraps to the top"
-    );
+    assert_eq!(selected_label(&m), "Context", "then Context");
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Profile", "wraps back to Profile");
+    assert_eq!(selected_label(&m), "Profile");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "summarize");
 }

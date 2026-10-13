@@ -1,0 +1,21 @@
+---
+source: src/ui/components/menu.rs
+expression: "text(&draw(62, POPUP_H, &menu))"
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings                                                   │
+│ Statusline position                                 bottom │
+│ Tab bar position                                       top │
+│ Mouse: off (coming soon)                                   │
+│ AI                                                         │
+│ Set all tasks                                    (not set) │
+│ general                                          (not set) │
+│ code                                             (default) │
+│ chat                                             (default) │
+│ review                                           (default) │
+│ summarize                                        (default) │
+│ Profile                                         programmer │
+│ Context                                                off │
+│                                                            │
+│ j/k move · h/l change · s save · Esc cancel                │
+└────────────────────────────────────────────────────────────┘

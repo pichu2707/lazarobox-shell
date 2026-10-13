@@ -574,4 +574,38 @@ mod tests {
         );
         assert_eq!(names(dir.path()), ["config.toml"]);
     }
+
+    // Spec (prompt-profiles, Context toggle): Collision.
+    #[test]
+    fn a_context_table_maps_to_its_message_and_stays_byte_identical() {
+        let context = ConfigEdit {
+            table: "ai",
+            key: "context",
+            value: std::borrow::Cow::Borrowed("false"),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_in(&dir);
+        fs::write(&path, "[ai.context]\nx = 1\n").unwrap();
+        assert_eq!(
+            save_config(Some(&path), std::slice::from_ref(&context)),
+            Err("config.toml: ai.context is a table; fix it before saving".to_owned())
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "[ai.context]\nx = 1\n");
+    }
+
+    #[test]
+    fn a_context_save_writes_a_boolean_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_in(&dir);
+        let context = ConfigEdit {
+            table: "ai",
+            key: "context",
+            value: std::borrow::Cow::Borrowed("false"),
+        };
+        save_config(Some(&path), &[context]).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[ai]\ncontext = false\n"
+        );
+    }
 }

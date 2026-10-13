@@ -54,6 +54,17 @@ impl AiMenu {
         (self.draft.profile() != self.original.profile()).then(|| self.draft.profile())
     }
 
+    /// Flips the context flag of the draft.
+    pub fn toggle_context(&mut self) {
+        let next = !self.draft.context();
+        self.draft.set_context(next);
+    }
+
+    /// The context flag in the draft, when it differs from the open one.
+    pub fn changed_context(&self) -> Option<bool> {
+        (self.draft.context() != self.original.context()).then(|| self.draft.context())
+    }
+
     /// Replaces the detection. The draft is never touched.
     /// An open picker keeps its level and its row.
     pub fn set_engines(&mut self, engines: Option<Detection>) {

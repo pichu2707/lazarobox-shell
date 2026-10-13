@@ -89,17 +89,5 @@ fn ollama_body(request: &ChatRequest) -> Vec<u8> {
     serde_json::to_vec(&body).expect("a JSON value always serializes")
 }
 
-/// The pinned system prompt of a turn.
-///
-/// Temporary: one neutral prompt for the default `programmer` profile. PR12
-/// (C10b) replaces this function with `resolve_prompt`.
-pub fn system_prompt() -> &'static str {
-    DEFAULT_SYSTEM_PROMPT
-}
-
-/// TEMPORARY, removed by PR12 (task 12.x) when `resolve_prompt` lands.
-const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful programming assistant. Answer concisely and \
-     use fenced code blocks for code. If you are unsure, say so.";
-
 #[cfg(test)]
 mod tests;
