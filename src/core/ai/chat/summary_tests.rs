@@ -456,3 +456,31 @@ fn a_yank_during_the_summary_run_copies_the_newest_answer() {
         "the summary text is not a message, so nothing is skipped"
     );
 }
+
+#[test]
+fn a_cut_stream_opens_the_draft_with_an_incomplete_hint() {
+    let mut state = talked();
+    let turn = started(&mut state);
+    state.apply(turn, StreamEvent::Delta("half a summ".into()));
+    state.apply(turn, StreamEvent::Error(ChatError::Truncated));
+    let draft = state.summary_draft().expect("the draft opens");
+    assert_eq!(draft.content(), "half a summ");
+    assert_eq!(draft.hint().as_deref(), Some(STREAM_CUT));
+
+    // A run that ends well has no such hint.
+    let mut whole = talked();
+    let turn = started(&mut whole);
+    whole.apply(turn, StreamEvent::Delta("all of it".into()));
+    whole.apply(turn, StreamEvent::Done(Finish::Stop));
+    assert_eq!(whole.summary_draft().expect("a draft").hint(), None);
+}
+
+#[test]
+fn the_incomplete_hint_joins_the_other_hints() {
+    let mut state = talked();
+    let turn = started(&mut state);
+    state.apply(turn, StreamEvent::Delta("password=hunter2".into()));
+    state.apply(turn, StreamEvent::Error(ChatError::Truncated));
+    let hint = state.summary_draft().expect("a draft").hint().expect("hint");
+    assert_eq!(hint, format!("1 secret redacted · {STREAM_CUT}"));
+}

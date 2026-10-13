@@ -45,6 +45,8 @@ pub const REDACTED_AGAIN: &str = NOTE_REDACTED_AGAIN;
 pub const SUMMARY_REQUIRED: &str = "Summary is empty";
 /// Hint when the engine's summary was longer than the draft.
 pub const CUT_NOTICE: &str = "Cut to 4000 characters";
+/// Hint when the stream was cut before the model finished.
+pub const STREAM_CUT: &str = "stream cut; the summary may be incomplete";
 /// System line for a run that ended with no text.
 pub const NO_SUMMARY: &str = "the model sent no summary";
 /// Notice after an approval.
@@ -110,6 +112,14 @@ impl SummaryDraft {
     /// What the opening did, like `2 secrets redacted`.
     pub fn hint(&self) -> Option<String> {
         self.hint.clone()
+    }
+
+    /// The stream that wrote the text was cut: the hint says it may be short.
+    fn mark_cut(&mut self) {
+        self.hint = Some(match self.hint.take() {
+            Some(hint) => format!("{hint} · {STREAM_CUT}"),
+            None => STREAM_CUT.to_owned(),
+        });
     }
 
     /// The last refusal.
@@ -301,28 +311,33 @@ impl ChatState {
                     cut -= 1;
                 }
                 collected.push_str(&text[..cut]);
-                self.finish_summary(None);
+                self.finish_summary(None, false);
                 // Anything the engine still sends belongs to a turn nobody awaits.
                 self.turn += 1;
                 Follow::CancelEngine
             }
-            StreamEvent::Done(_) | StreamEvent::Error(ChatError::Truncated) => {
-                self.finish_summary(None);
+            StreamEvent::Done(_) => {
+                self.finish_summary(None, false);
+                Follow::Nothing
+            }
+            StreamEvent::Error(ChatError::Truncated) => {
+                self.finish_summary(None, true);
                 Follow::Nothing
             }
             StreamEvent::Error(ChatError::Interrupted) => {
-                self.finish_summary(Some(super::INTERRUPTED.to_owned()));
+                self.finish_summary(Some(super::INTERRUPTED.to_owned()), false);
                 Follow::Nothing
             }
             StreamEvent::Error(ChatError::Failed(message)) => {
-                self.finish_summary(Some(message));
+                self.finish_summary(Some(message), false);
                 Follow::Nothing
             }
         }
     }
 
     /// Ends the run: the draft opens on the text, or the failure is said once.
-    fn finish_summary(&mut self, failure: Option<String>) {
+    /// `cut` marks a stream that ended early: the draft says so.
+    fn finish_summary(&mut self, failure: Option<String>, cut: bool) {
         let text = self.summarizing.take().unwrap_or_default();
         self.phase = Phase::Idle;
         self.started = None;
@@ -335,7 +350,13 @@ impl ChatState {
             None if text.trim().is_empty() => {
                 self.entries.push(Entry::System(NO_SUMMARY.to_owned()));
             }
-            None => self.draft = Some(SummaryDraft::seeded(&text)),
+            None => {
+                let mut draft = SummaryDraft::seeded(&text);
+                if cut {
+                    draft.mark_cut();
+                }
+                self.draft = Some(draft);
+            }
         }
     }
 
