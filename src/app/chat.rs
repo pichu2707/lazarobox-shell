@@ -103,7 +103,7 @@ impl App {
     pub(super) fn on_chat_key(&mut self, key: KeyEvent, repeat: bool) -> Vec<Effect> {
         let id = self.tab().focus;
         // The `engram serve` question, when it is on screen, takes the key.
-        if !self.note_editor_open(id)
+        if !self.memory_view_open(id)
             && let Some(effects) = self.answer_server_offer(key)
         {
             return effects;
@@ -127,6 +127,9 @@ impl App {
         };
         if self.note_editor_open(id) {
             return self.on_note_key(id, &key, repeat);
+        }
+        if self.summary_draft_open(id) {
+            return self.on_summary_key(id, &key, repeat);
         }
         let one_shot = |effects: fn(&mut App, PaneId) -> Vec<Effect>, app: &mut App| {
             if repeat { Vec::new() } else { effects(app, id) }
@@ -187,6 +190,10 @@ impl App {
             self.note_paste(id, text);
             return;
         }
+        if self.summary_draft_open(id) {
+            self.summary_paste(id, text);
+            return;
+        }
         if let Some(chat) = self.focused_state_mut().chat_mut() {
             chat.composer_mut().paste(text);
             self.dirty = true;
@@ -216,7 +223,7 @@ impl App {
     }
 
     /// The engine the `chat` task resolves to right now.
-    fn chat_availability(&self) -> Availability {
+    pub(super) fn chat_availability(&self) -> Availability {
         availability(&self.ai, self.engines.as_ref(), self.jail)
     }
 

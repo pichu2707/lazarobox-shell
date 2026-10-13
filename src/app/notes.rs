@@ -6,6 +6,7 @@ use crate::core::ai::chat::{
     memory::{PendingSave, Readiness},
     note::{self, MEMORY_CHECKING, MEMORY_OFF, NOT_LINKED, NOTHING_TO_SAVE, NoteOutcome},
     store::eviction_lines_of,
+    summary::SUMMARY_BUSY,
     yank,
 };
 use crate::core::ai::memory::{port::Reason, reply::ProjectError};
@@ -33,6 +34,14 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        // One memory view at a time: a summary running or open holds the pane.
+        if chat.summary_draft().is_some() {
+            return Vec::new();
+        }
+        if chat.summarizing() {
+            self.notice = Some(SUMMARY_BUSY.to_owned());
+            return Vec::new();
+        }
         if yank::last_answer(chat).is_none() {
             self.notice = Some(NOTHING_TO_SAVE.to_owned());
             return Vec::new();

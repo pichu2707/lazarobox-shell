@@ -63,6 +63,8 @@ pub enum PrefixAction {
     SaveNote,
     /// Unfolds or folds the memory line of the focused chat.
     ToggleMemory,
+    /// Asks the focused chat's engine for the end-of-conversation summary.
+    Summarize,
     ToggleZoom,
     NewTab,
     CloseTab,
@@ -199,6 +201,7 @@ pub const PREFIX_TREE: &[Binding] = &[
     // Left out of the hint: the root hint is already 79 columns wide, and a
     // longer one would clip `q quit` on an 80-column terminal.
     unhinted(act('o', "memory", PrefixAction::ToggleMemory)),
+    unhinted(act('s', "summary", PrefixAction::Summarize)),
     unhinted(act('?', "commands (reserved)", PrefixAction::ShowCommands)),
     Binding {
         chord: PREFIX_KEY,
@@ -440,6 +443,32 @@ mod tests {
         }
     }
 
+    // Spec: modal-input root `s` asks for the end-of-conversation summary of a
+    // chat (no direct Ctrl+letter key: they are captured outside lazarobox in
+    // the user's setup). It stays out of the hint so `q quit` is never clipped
+    // on an 80-column terminal; no group binds it.
+    #[test]
+    fn s_is_an_unhinted_root_leaf_that_requests_the_summary() {
+        let binding = PREFIX_TREE
+            .iter()
+            .find(|b| b.chord.matches(&plain('s')))
+            .expect("s is bound at the root");
+        assert_eq!(binding.target, Target::Action(PrefixAction::Summarize));
+        assert_eq!(binding.description, "summary");
+        assert!(!binding.hinted);
+        for table in &tables()[1..] {
+            assert_ne!(
+                lookup(table, &plain('s')),
+                Step::Run(PrefixAction::Summarize)
+            );
+        }
+        assert!(
+            hint(PREFIX_TREE, 80).ends_with("q quit"),
+            "{}",
+            hint(PREFIX_TREE, 80)
+        );
+    }
+
     #[test]
     fn c_inside_another_group_does_not_open_a_chat() {
         for table in &tables()[1..] {
@@ -476,8 +505,8 @@ mod tests {
         for (i, a) in all.iter().enumerate() {
             assert!(!all[i + 1..].contains(a), "duplicate action {a:?}");
         }
-        // literal + quit + copy + menu + chat + note + memory + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
-        assert_eq!(all.len(), 30);
+        // literal + quit + copy + menu + chat + note + memory + summary + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
+        assert_eq!(all.len(), 31);
     }
 
     #[test]

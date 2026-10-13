@@ -117,6 +117,11 @@ impl SummaryDraft {
         self.notice.as_deref()
     }
 
+    /// The approval was refused: the text stays and the reason shows.
+    pub fn refused(&mut self, reason: &str) {
+        self.notice = Some(reason.to_owned());
+    }
+
     /// One key. Everything is consumed: nothing here reaches the composer
     /// underneath or a PTY, and Ctrl+C never quits. `repeat` marks a held key.
     pub fn on_key(&mut self, key: &KeyEvent, repeat: bool) -> SummaryOutcome {

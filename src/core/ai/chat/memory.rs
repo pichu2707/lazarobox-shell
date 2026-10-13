@@ -458,7 +458,8 @@ impl ChatState {
     /// the reasoning). An editor already open stays as it is. `Err` holds the
     /// notice when there is no answer.
     pub fn open_note_editor(&mut self) -> Result<(), String> {
-        if self.editor.is_some() {
+        // One memory view at a time.
+        if self.editor.is_some() || self.draft.is_some() || self.summarizing.is_some() {
             return Ok(());
         }
         let answer = yank::last_answer(self).ok_or_else(|| NOTHING_TO_SAVE.to_owned())?;
