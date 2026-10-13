@@ -13,6 +13,7 @@ use crate::core::ai::{
         memory::Readiness,
         prompts::Resolved,
     },
+    config::{Assignment, Task},
     memory::{
         context::ContextBlock,
         offer::Offer,
@@ -1038,4 +1039,55 @@ fn turning_memory_off_hides_the_serve_offer() {
     menu_turns_memory_off(&mut a);
     assert_ne!(a.chat_guidance(chat_id()).as_deref(), Some(OFFER_PROMPT));
     assert_eq!(a.update(unmodified('y')), vec![], "no server is started");
+}
+
+// S2: no line for an engine that cannot carry the block -------------------------------
+
+fn engine_is(a: &mut App, engine: &str) {
+    let mut ai = a.ai.clone();
+    ai.set(
+        Task::Chat,
+        Assignment {
+            engine: Some(engine.into()),
+            model: Some("m".into()),
+        },
+    );
+    a.ai = ai;
+}
+
+#[test]
+fn the_memory_line_is_not_shown_for_an_engine_that_cannot_carry_the_block() {
+    let (mut a, _) = opened(true);
+    engine_is(&mut a, "claude");
+    project(&mut a);
+    context(&mut a, Some(block(3)));
+    assert_eq!(head(&a), None, "the UI never claims notes the model lacks");
+}
+
+#[test]
+fn switching_to_an_engine_that_carries_it_shows_the_line_and_back_hides_it() {
+    let (mut a, _) = opened(true);
+    engine_is(&mut a, "claude");
+    project(&mut a);
+    context(&mut a, Some(block(3)));
+    assert_eq!(head(&a), None);
+    // The menu saves a draft with Ollama as the chat engine.
+    a.menu = Some(MenuState::open(&a.config).with_ai(ai(true), a.engines.clone()));
+    a.input = InputMode::Menu;
+    a.update(AppEvent::ConfigSaved);
+    assert_eq!(head(&a).as_deref(), Some("▸ memory (3 notes)"));
+    assert_eq!(send(&mut a, "hi").memory, Some(block(3).text));
+    finish_turn(&mut a);
+    let mut other = ai(true);
+    other.set(
+        Task::Chat,
+        Assignment {
+            engine: Some("claude".into()),
+            model: None,
+        },
+    );
+    a.menu = Some(MenuState::open(&a.config).with_ai(other, a.engines.clone()));
+    a.input = InputMode::Menu;
+    a.update(AppEvent::ConfigSaved);
+    assert_eq!(head(&a), None);
 }

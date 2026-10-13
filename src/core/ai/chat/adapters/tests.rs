@@ -134,3 +134,12 @@ fn without_a_block_the_system_message_is_the_prompt_alone() {
         json!({"role": "system", "content": "be brief"})
     );
 }
+
+#[test]
+fn only_ollama_carries_the_memory_block_so_far() {
+    assert!(Adapter::Ollama.carries_memory());
+    assert!(carries_memory("ollama"));
+    for id in ["opencode", "lmstudio", "claude", "codex", "nope"] {
+        assert!(!carries_memory(id), "{id}");
+    }
+}

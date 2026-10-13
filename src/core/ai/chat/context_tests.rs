@@ -138,3 +138,36 @@ fn a_block_larger_than_the_cap_still_keeps_the_newest_message() {
     let request = request_of(&mut state, "hello");
     assert_eq!(request.messages.len(), 1);
 }
+
+/// Ready, but on an engine whose adapter cannot carry the block.
+fn cli() -> Availability {
+    Availability::Ready {
+        engine: "claude".into(),
+        model: None,
+    }
+}
+
+#[test]
+fn an_engine_that_cannot_carry_the_block_gets_none_and_no_budget_is_taken() {
+    let long = "x".repeat(1200);
+    let mut state = chat();
+    for _ in 0..4 {
+        exchange(&mut state, &long);
+    }
+    state.inject_memory(block(1500));
+    let SendOutcome::Sent { request, .. } = state.send(&long, &cli(), SYSTEM) else {
+        panic!("refused");
+    };
+    assert_eq!(
+        request.memory, None,
+        "the model is not given notes it cannot get"
+    );
+    assert_eq!(request.messages.len(), 9, "the whole history, no deduction");
+    assert!(
+        state
+            .entries()
+            .iter()
+            .all(|e| *e != Entry::System(TRUNCATION_MARKER.into())),
+        "nothing omitted"
+    );
+}

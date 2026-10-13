@@ -337,6 +337,42 @@ impl ChatState {
         self.restore(anchor, width, height);
     }
 
+    /// Shows or hides the memory line for the block the chat holds, keeping a
+    /// scrolled view on the same content: the line is shown only while the
+    /// engine can carry the block. Nothing changes without a block or when the
+    /// line is already as asked.
+    pub fn show_memory_line_at(&mut self, show: bool, width: usize, height: usize) {
+        let had = self.has_memory_line();
+        if had == show {
+            return;
+        }
+        let anchor = self.anchor(width, height);
+        if show {
+            let Some(block) = self.memory.injected.clone().filter(|b| b.notes > 0) else {
+                return;
+            };
+            self.entries.insert(
+                0,
+                Entry::Memory(MemoryLine {
+                    text: block.text,
+                    notes: block.notes,
+                    expanded: false,
+                }),
+            );
+        } else {
+            self.entries.retain(|e| !matches!(e, Entry::Memory(_)));
+        }
+        self.generation += 1;
+        let has = self.has_memory_line();
+        let anchor = anchor.map(|(entry, row)| {
+            (
+                (entry + usize::from(has)).saturating_sub(usize::from(had)),
+                row,
+            )
+        });
+        self.restore(anchor, width, height);
+    }
+
     fn has_memory_line(&self) -> bool {
         self.entries.iter().any(|e| matches!(e, Entry::Memory(_)))
     }

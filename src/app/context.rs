@@ -5,9 +5,11 @@
 use super::*;
 use crate::core::ai::{
     chat::{
+        adapters::carries_memory,
         memory::{Readiness, project_error_line},
         note,
     },
+    config::Task,
     memory::{context::ContextBlock, port::Reason, reply::ProjectError},
 };
 
@@ -89,6 +91,37 @@ impl App {
         }
         if let Some(block) = block {
             chat.inject_memory_at(block.clone(), width, rows);
+        }
+        self.sync_memory_line(id);
+    }
+
+    /// Whether the engine assigned to the chat task has an adapter that
+    /// carries the memory block.
+    fn chat_engine_carries_memory(&self) -> bool {
+        let (assignment, _) = self.ai.resolve(Task::Chat);
+        assignment.engine.as_deref().is_some_and(carries_memory)
+    }
+
+    /// The memory line of chat `id` shows only while the engine carries the
+    /// block it announces.
+    pub(super) fn sync_memory_line(&mut self, id: PaneId) {
+        let show = self.chat_engine_carries_memory();
+        let width = self
+            .panes
+            .get(&id)
+            .map_or(0, |pane| usize::from(pane.size.cols));
+        let rows = self.chat_viewport(id);
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.show_memory_line_at(show, width, rows);
+        }
+        self.dirty = true;
+    }
+
+    /// The saved choice changed the engine: every chat follows it.
+    pub(super) fn sync_memory_lines(&mut self) {
+        let ids: Vec<PaneId> = self.panes.keys().copied().collect();
+        for id in ids {
+            self.sync_memory_line(id);
         }
     }
 }

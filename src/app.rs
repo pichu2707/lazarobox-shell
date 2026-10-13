@@ -1086,6 +1086,8 @@ impl App {
             }
             if !self.ai.memory.active() {
                 self.memory_turned_off();
+            } else {
+                self.sync_memory_lines();
             }
         }
         self.input = InputMode::Terminal;

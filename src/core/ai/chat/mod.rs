@@ -494,7 +494,11 @@ impl ChatState {
             .collect();
         // The memory block shares the history budget: its characters come off
         // the cap, and the newest message is kept whole whatever is left.
-        let memory = self.memory.injected().map(|block| block.text.clone());
+        // Only an adapter that carries it gets the block, and only then does it
+        // take budget.
+        let memory = adapters::carries_memory(engine)
+            .then(|| self.memory.injected().map(|block| block.text.clone()))
+            .flatten();
         let memory_chars = memory.as_ref().map_or(0, |text| text.chars().count());
         let context = build_context(&history, history_chars(engine).saturating_sub(memory_chars));
         let oldest = sendable[history.len() - context.messages.len()];

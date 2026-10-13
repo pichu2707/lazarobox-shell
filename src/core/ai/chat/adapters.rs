@@ -51,7 +51,24 @@ fn catalog_port(id: &str) -> u16 {
         .expect("a server adapter has a server catalog entry")
 }
 
+/// Whether the adapter of engine `id` carries the memory block. An engine
+/// without an adapter cannot be chatted with, so it carries nothing.
+pub fn carries_memory(id: &str) -> bool {
+    adapter_for(id).is_some_and(Adapter::carries_memory)
+}
+
 impl Adapter {
+    /// Whether `build` puts `ChatRequest::memory` in the request. The chat
+    /// injects the block, counts it against the history cap and announces it
+    /// (`▸ memory`) only for an adapter that says yes, so the UI never claims
+    /// the model got notes it did not. A CLI adapter that writes the block on
+    /// stdin flips its own answer when it arrives.
+    pub fn carries_memory(self) -> bool {
+        match self {
+            Adapter::Ollama => true,
+        }
+    }
+
     /// The invocation for `request`. The body holds the model, the system
     /// prompt, the history and the stream flag, and nothing else: no `think`
     /// option (a reasoning model streams its `thinking` without it, see the
