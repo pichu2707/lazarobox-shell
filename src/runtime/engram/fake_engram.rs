@@ -152,7 +152,7 @@ mod tests {
         core::{
             ai::memory::{
                 kind::MemKind,
-                port::{MemCmd, MemReply, Note, Reason},
+                port::{MemCmd, MemReply, Note, Reason, SaveId},
             },
             layout::PaneId,
         },
@@ -215,6 +215,7 @@ mod tests {
         });
         link.send(MemCmd::Save {
             pane: pane(),
+            id: SaveId(1),
             session: None,
             project: "widget".into(),
             cwd: "/tmp/a b&c".into(),
@@ -295,6 +296,7 @@ mod tests {
         let (_fake, link, mut rx) = start(routes).await;
         link.send(MemCmd::Save {
             pane: pane(),
+            id: SaveId(1),
             session: None,
             project: "widget".into(),
             cwd: "/tmp/a b&c".into(),
@@ -326,6 +328,7 @@ mod tests {
         let link = spawn(Loopback::new(port, Some(TOKEN.into())), port, tx);
         link.send(MemCmd::Save {
             pane: pane(),
+            id: SaveId(1),
             session: None,
             project: "widget".into(),
             cwd: "/tmp/a b&c".into(),
@@ -334,7 +337,7 @@ mod tests {
         let got = replies(&mut rx, 2).await;
         assert!(matches!(
             got[1],
-            MemReply::Unavailable {
+            MemReply::SaveUnavailable {
                 reason: Reason::NotRunning,
                 ..
             }

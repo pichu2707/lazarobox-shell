@@ -13,7 +13,7 @@ use crate::core::{
     ai::memory::{
         health::Health,
         kind::MemKind,
-        port::{Note, Reason},
+        port::{Note, Reason, SaveId},
         reply::ProjectError,
         testing::split,
     },
@@ -239,6 +239,7 @@ fn resolve(n: u32, cwd: &str) -> MemCmd {
 fn save(n: u32, session: Option<&str>) -> MemCmd {
     MemCmd::Save {
         pane: pane(n),
+        id: SaveId(u64::from(n)),
         session: session.map(Into::into),
         project: "widget".into(),
         cwd: CWD.into(),
@@ -400,8 +401,13 @@ async fn a_failed_registration_is_a_short_save_failure() {
     );
     rig.link.send(save(1, None));
     match rig.answer().await {
-        MemReply::SaveFailed { pane: p, reason } => {
+        MemReply::SaveFailed {
+            pane: p,
+            id,
+            reason,
+        } => {
             assert_eq!(p, pane(1));
+            assert_eq!(id, SaveId(1), "the reply carries the save's token");
             assert!(reason.chars().count() <= 120);
             assert!(!reason.contains("Axum"), "no content in errors");
         }
@@ -694,6 +700,25 @@ async fn a_full_queue_answers_busy_at_once() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_full_queue_refuses_a_save_by_its_own_token() {
+    let mut rig = up();
+    rig.fake.on("GET /health", Act::Hang);
+    for n in 0..QUEUE as u32 {
+        rig.link.send(resolve(n + 1, "/a"));
+    }
+    assert!(rig.quiet(), "64 fit");
+    rig.link.send(save(98, None));
+    assert_eq!(
+        rig.rx.try_recv().unwrap(),
+        MemReply::SaveUnavailable {
+            pane: pane(98),
+            id: SaveId(98),
+            reason: Reason::Busy
+        }
+    );
+}
+
 // ---- timeouts per call class ----
 
 #[tokio::test(start_paused = true)]
@@ -753,7 +778,8 @@ async fn a_silent_read_gives_up_at_800_ms_and_a_silent_write_at_2_s() {
     // The health probe and registration are instant; the save waits 2 s.
     assert!(matches!(
         rig.answer().await,
-        MemReply::Unavailable {
+        MemReply::SaveUnavailable {
+            id: SaveId(1),
             reason: Reason::NoAnswer,
             ..
         }
@@ -762,6 +788,21 @@ async fn a_silent_read_gives_up_at_800_ms_and_a_silent_write_at_2_s() {
 }
 
 // ---- panics ----
+
+#[tokio::test(start_paused = true)]
+async fn a_panic_while_saving_answers_that_save_by_its_token() {
+    let mut rig = up();
+    rig.fake.on("POST /sessions", Act::Panic);
+    rig.link.send(save(3, None));
+    assert_eq!(
+        rig.answer().await,
+        MemReply::SaveUnavailable {
+            pane: pane(3),
+            id: SaveId(3),
+            reason: Reason::NoAnswer
+        }
+    );
+}
 
 #[tokio::test(start_paused = true)]
 async fn a_panic_while_handling_still_gives_a_reply_and_the_worker_lives() {
@@ -849,8 +890,13 @@ async fn a_second_session_not_found_is_a_save_failure_not_a_loop() {
     }
     rig.link.send(save(1, Some(&session)));
     match rig.answer().await {
-        MemReply::SaveFailed { pane: p, reason } => {
+        MemReply::SaveFailed {
+            pane: p,
+            id,
+            reason,
+        } => {
             assert_eq!(p, pane(1));
+            assert_eq!(id, SaveId(1), "the reply carries the save's token");
             assert!(!reason.contains("Axum"));
         }
         other => panic!("{other:?}"),

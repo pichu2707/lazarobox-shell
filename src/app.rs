@@ -36,6 +36,7 @@ use crate::core::{
 };
 
 mod chat;
+mod notes;
 
 /// Rows of history kept by the emulator.
 const SCROLLBACK_LINES: usize = 10_000;
@@ -49,6 +50,9 @@ const HELD_EXIT_WINDOW: Duration = Duration::from_millis(500);
 /// Shown when `Prefix [` is pressed on a chat pane.
 const CHAT_COPY_REFUSED: &str =
     "copy mode is not available in chat panes; Ctrl+Y copies the last answer";
+
+/// Shown when `Prefix n` (save a note) is pressed on a pane that is not a chat.
+const NOTE_CHAT_ONLY: &str = "Save as note is for chat panes; open one with Ctrl+Space c";
 
 /// Byte sent to the child when the prefix is pressed twice (NUL, Ctrl+Space).
 const PREFIX_LITERAL: u8 = 0x00;
@@ -933,9 +937,8 @@ impl App {
                 self.run_waiting_sends()
             }
             AppEvent::Chat(id, turn, event) => self.on_chat(id, turn, event),
-            AppEvent::Memory(reply) => self.on_memory(&reply),
-            // The chat pane consumes the replies once it saves its messages.
-            AppEvent::Store(_) => Vec::new(),
+            AppEvent::Memory(reply) => self.on_memory_reply(&reply),
+            AppEvent::Store(reply) => self.on_store_reply(&reply),
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
         };
@@ -1151,7 +1154,8 @@ impl App {
                 | PrefixAction::ToggleZoom
                 | PrefixAction::Focus(_)
                 | PrefixAction::OpenMenu
-                | PrefixAction::OpenChat,
+                | PrefixAction::OpenChat
+                | PrefixAction::SaveNote,
             ) => InputMode::Terminal,
             Step::Run(
                 PrefixAction::ShowCommands
@@ -1168,6 +1172,14 @@ impl App {
             }
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
             Step::Run(PrefixAction::OpenChat) => self.open_chat_pane(),
+            Step::Run(PrefixAction::SaveNote) if self.focused_is_chat() => {
+                let id = self.tab().focus;
+                self.chat_note_key(id)
+            }
+            Step::Run(PrefixAction::SaveNote) => {
+                self.notice = Some(NOTE_CHAT_ONLY.to_string());
+                Vec::new()
+            }
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
             Step::Run(PrefixAction::SplitBelow) => self.split(Axis::Y),
             Step::Run(PrefixAction::Focus(dir)) => self.move_focus(dir),
@@ -1252,7 +1264,9 @@ impl App {
     /// active (the last one if it was last); closing a tab before the active
     /// one keeps the active tab. The bar may disappear, which resizes every tab.
     fn drop_tab(&mut self, index: usize) -> Vec<Effect> {
-        for id in self.tabs.remove(index).tree.leaves() {
+        let leaves = self.tabs.remove(index).tree.leaves();
+        let mut effects = self.end_effects(&leaves);
+        for id in leaves {
             self.panes.remove(&id);
             self.drop_parked_send(id);
         }
@@ -1265,7 +1279,8 @@ impl App {
             self.active -= 1;
         }
         self.refresh_screen();
-        self.relayout()
+        effects.extend(self.relayout());
+        effects
     }
 
     /// Recomputes the screen rects: the tab bar exists while there is more
@@ -1352,13 +1367,6 @@ impl App {
 
     /// Applies one event of a chat turn. Events for a pane that is gone, is a
     /// shell, or belongs to another turn change nothing and draw nothing.
-    /// Memory replies change nothing yet: the chat consumes them with the
-    /// memory features, and drops a reply for a pane that is gone (stale) by
-    /// the same lookup `on_chat` uses for a late delta.
-    fn on_memory(&mut self, _reply: &MemReply) -> Vec<Effect> {
-        Vec::new()
-    }
-
     fn on_chat(&mut self, id: PaneId, turn: u64, event: StreamEvent) -> Vec<Effect> {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
@@ -1392,9 +1400,10 @@ impl App {
         };
         let effects = match self.tabs[t].tree.remove(id) {
             Removal::NotFound => return Vec::new(),
-            Removal::WasLast if self.tabs.len() == 1 => return vec![Effect::Quit],
+            Removal::WasLast if self.tabs.len() == 1 => return self.quit_effects(),
             Removal::WasLast => self.drop_tab(t),
             Removal::Removed => {
+                let mut ends = self.end_effects(&[id]);
                 self.panes.remove(&id);
                 self.drop_parked_send(id);
                 self.tabs[t].zoom = false;
@@ -1404,7 +1413,8 @@ impl App {
                         pane_at(&tiling, old.x, old.y).unwrap_or(self.tabs[t].tree.leaves()[0]);
                     self.set_focus_in(t, next);
                 }
-                self.relayout()
+                ends.extend(self.relayout());
+                ends
             }
         };
         self.dirty = true;
@@ -1488,7 +1498,7 @@ impl App {
             return Vec::new();
         }
         match confirm {
-            Confirm::Quit => vec![Effect::Quit],
+            Confirm::Quit => self.quit_effects(),
             Confirm::CloseTab => self.close_tab(),
             Confirm::ClosePane => {
                 let id = self.tab().focus;
@@ -1503,7 +1513,7 @@ impl App {
     /// Closes the active tab with all its panes; the only tab quits instead.
     fn close_tab(&mut self) -> Vec<Effect> {
         if self.tabs.len() == 1 {
-            return vec![Effect::Quit];
+            return self.quit_effects();
         }
         let stops: Vec<_> = (self.tab().tree.leaves().into_iter())
             .map(|id| self.stop_effect(id))
@@ -4150,7 +4160,7 @@ mod app_tests {
     }
 
     const ROOT_HINT: &str =
-        "w window · t tab · g go · b buffer · [ copy · m menu · c chat · q quit";
+        "w window · t tab · g go · b buffer · [ copy · m menu · c chat · n note · q quit";
     const WINDOW_HINT: &str = "v split right · h split below · q close · r resize · z zoom";
 
     // Spec: Root hint in PREFIX; Group hint; Hint gone after the group resolves.
@@ -6326,6 +6336,9 @@ mod app_tests {
 
     /// The live chat pane (ai-chat C8).
     mod chat_live;
+
+    /// Save as note (engram-memory M7b).
+    mod chat_notes;
 
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.

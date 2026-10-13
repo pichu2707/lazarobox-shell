@@ -144,9 +144,10 @@ pub async fn run() -> io::Result<()> {
     let (ai_tx, ai_rx) = mpsc::channel(1);
     let (chat_tx, chat_rx) = mpsc::channel(chat::APP_CHANNEL);
     let (memory_tx, memory_rx) = mpsc::channel(MEMORY_CHANNEL);
-    // Off unless the config activates it: then the sender is dropped, no
-    // worker ever starts, nothing touches the network and the token is never
-    // read from the environment.
+    // Off unless the config activates it: then no worker ever starts, nothing
+    // touches the network and the token is never read from the environment.
+    // A pane's command still gets `memory applies after a restart` back, for
+    // memory turned on in the menu during this run.
     let memory = memory_for(
         &app.ai().memory,
         || env::var("ENGRAM_HTTP_TOKEN").ok(),
@@ -226,9 +227,11 @@ fn memory_for<L: engram::serve::Launcher>(
     launcher: impl FnOnce() -> L + 'static,
     replies: mpsc::Sender<crate::core::ai::memory::port::MemReply>,
 ) -> Memory {
+    let off_answers = replies.clone();
     Memory::for_config(config, move |port| {
         engram::spawn_with(Loopback::new(port, read_token()), launcher(), port, replies)
     })
+    .answering_when_off(off_answers)
 }
 
 /// This machine's hostname, for OSC 7 host checks. `None` when the lookup fails.
@@ -377,8 +380,8 @@ async fn run_loop(
                     }
                 }
             }
-            // The worker keeps a sender while it runs; with memory off the
-            // channel is closed and this branch never matches.
+            // The memory keeps a sender for its whole life, so this branch
+            // waits (it never reads a closed channel before shutdown).
             Some(reply) = memory_rx.recv() => {
                 if step(&mut app, AppEvent::Memory(reply), panes) {
                     return Ok(());
@@ -2339,6 +2342,41 @@ mod tests {
         );
         let dropped = dropped_at.lock().unwrap().expect("the turn was stopped");
         assert_eq!(dropped, start, "the chat stopped at once, not after memory");
+    }
+
+    // Memory turned on in the menu during a run has no worker: the pane that
+    // asks is told at once, nothing starts and nothing is read or called.
+    #[tokio::test]
+    async fn a_pane_command_to_an_inactive_memory_is_answered_with_a_restart_notice() {
+        use crate::core::ai::{
+            config::MemoryConfig,
+            memory::port::{MemCmd, MemReply, Reason},
+        };
+        let (tx, mut rx) = mpsc::channel(8);
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&reads);
+        let mut memory = memory_for(
+            &MemoryConfig::default(),
+            move || {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                None
+            },
+            || engram::serve::NoServer,
+            tx,
+        );
+        memory.send(MemCmd::Resolve {
+            pane: PaneId::FIRST,
+            cwd: "/x".into(),
+        });
+        assert_eq!(
+            rx.try_recv().expect("answered at once"),
+            MemReply::Unavailable {
+                pane: Some(PaneId::FIRST),
+                reason: Reason::RestartNeeded,
+            }
+        );
+        memory.shutdown(Duration::from_secs(1)).await;
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     // S1: the token is read only when memory is active, and only when the

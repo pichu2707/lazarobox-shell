@@ -72,6 +72,9 @@ impl<'a> ChatView<'a> {
 
     /// Where the real cursor goes, or `None` when the composer cannot show it.
     pub fn cursor(&self, area: Rect) -> Option<Position> {
+        if let Some(editor) = self.chat.note_editor() {
+            return self.note_cursor(editor, area);
+        }
         let (layout, plan) = self.plan(area);
         let composer = layout.composer;
         if composer.is_empty() {
@@ -114,6 +117,10 @@ impl Widget for ChatView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let area = area.intersection(buf.area);
         if area.is_empty() {
+            return;
+        }
+        if let Some(editor) = self.chat.note_editor() {
+            self.render_note(editor, area, buf);
             return;
         }
         let (layout, plan) = self.plan(area);
@@ -177,5 +184,8 @@ fn fill(buf: &mut Buffer, rect: Rect, style: Style) {
 
 #[cfg(test)]
 mod guidance_tests;
+mod note;
+#[cfg(test)]
+mod note_tests;
 #[cfg(test)]
 mod tests;

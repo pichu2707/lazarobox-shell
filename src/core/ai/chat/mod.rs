@@ -7,6 +7,8 @@ pub mod adapters;
 pub mod composer;
 pub mod engine;
 pub mod guidance;
+pub mod memory;
+pub mod note;
 pub mod prompts;
 pub mod store;
 pub mod stream;
@@ -194,6 +196,10 @@ pub struct ChatState {
     /// The system prompt of the conversation, resolved once when it started.
     /// `None` until the runtime has prepared it.
     prompt: Option<String>,
+    /// What the chat knows about engram: project, session, saved notes.
+    memory: memory::ChatMemory,
+    /// The note editor, while it is open over the conversation.
+    editor: Option<note::NoteEditor>,
 }
 
 impl ChatState {
@@ -211,6 +217,8 @@ impl ChatState {
             scroll: Scroll::Follow,
             cache: LineCache::default(),
             prompt: None,
+            memory: memory::ChatMemory::new(),
+            editor: None,
         }
     }
 
@@ -713,6 +721,10 @@ impl ChatState {
 
 #[cfg(test)]
 mod anchor_tests;
+#[cfg(test)]
+mod memory_tests;
+#[cfg(test)]
+mod note_tests;
 #[cfg(test)]
 mod reasoning_tests;
 #[cfg(test)]

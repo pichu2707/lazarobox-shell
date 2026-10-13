@@ -1,0 +1,20 @@
+---
+source: src/ui/components/chat/note_tests.rs
+expression: "text(&draw(&chat, 50, 16))"
+---
+  Category: < decision >
+▸ Title:
+  Content:
+  call it with password=[REDACTED] and [REDACTED]
+
+
+
+
+
+
+
+
+
+
+2 secrets redacted
+Ctrl+S save · Esc discard · Tab next field
