@@ -12,9 +12,10 @@ use crate::core::{
         chat::{
             ChatState, Follow, Phase,
             engine::{ChatRequest, StreamEvent},
+            prompts::Resolved,
             store::{StoreCmd, StoreReply},
         },
-        config::{AiConfig, Task},
+        config::{AiConfig, Profile, Task},
         jail::JailSupport,
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
@@ -125,6 +126,10 @@ pub enum AppEvent {
     Chat(PaneId, u64, StreamEvent),
     /// The store thread answered a command of a pane.
     Store(StoreReply),
+    /// The runtime prepared the system prompt of a chat pane (see
+    /// `Effect::PreparePrompt`): the resolved prompt with the workspace
+    /// block, and the notices of the override files it skipped.
+    PromptReady(PaneId, Resolved),
     /// One step of the thinking-indicator animation. The runtime sends it
     /// only while a chat stream runs.
     AnimTick,
@@ -167,6 +172,16 @@ pub enum Effect {
     ChatCancel(PaneId),
     /// A command for the store thread. It never waits for the database.
     Store(StoreCmd),
+    /// Resolve the system prompt of a conversation just started in `pane`:
+    /// the override files of `profile` for the chat task, then the built-in,
+    /// plus the workspace block of `origin` when `context` is set. Reads the
+    /// disk off the UI thread; the runtime answers with one `PromptReady`.
+    PreparePrompt {
+        pane: PaneId,
+        profile: Profile,
+        origin: Option<PathBuf>,
+        context: bool,
+    },
     Quit,
 }
 
@@ -259,7 +274,7 @@ pub enum PaneView<'a> {
 /// The kind of pane a split or a new tab creates.
 enum NewPane {
     Shell,
-    Chat(ChatState),
+    Chat(Box<ChatState>),
 }
 
 /// A pane's content and the size it was last laid out at (for a PTY pane, the
@@ -791,7 +806,7 @@ impl App {
     /// Test-only: opens a chat pane to the right of the focus.
     #[cfg(test)]
     pub(crate) fn open_chat(&mut self, origin: Option<PathBuf>) -> Vec<Effect> {
-        self.split_with(Axis::X, NewPane::Chat(ChatState::new(origin)))
+        self.split_with(Axis::X, NewPane::Chat(Box::new(ChatState::new(origin))))
     }
 
     /// Test-only: sends `text` from chat pane `id` to a ready ollama engine.
@@ -845,7 +860,7 @@ impl App {
     /// Test-only: opens a chat pane as a new tab.
     #[cfg(test)]
     fn open_chat_tab(&mut self, origin: Option<PathBuf>) -> Vec<Effect> {
-        self.new_tab_with(NewPane::Chat(ChatState::new(origin)))
+        self.new_tab_with(NewPane::Chat(Box::new(ChatState::new(origin))))
     }
 
     /// What the UI draws for pane `id`, if it exists.
@@ -914,6 +929,7 @@ impl App {
             AppEvent::Chat(id, turn, event) => self.on_chat(id, turn, event),
             // The chat pane consumes the replies once it saves its messages.
             AppEvent::Store(_) => Vec::new(),
+            AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
         };
         debug_assert_eq!(
@@ -1287,7 +1303,7 @@ impl App {
     fn new_state(&self, kind: NewPane, size: PaneSize) -> PaneState {
         match kind {
             NewPane::Shell => PaneState::new(size, self.hostname.as_deref()),
-            NewPane::Chat(chat) => PaneState::chat(size, chat),
+            NewPane::Chat(chat) => PaneState::chat(size, *chat),
         }
     }
 

@@ -4,9 +4,15 @@
 
 use std::path::Path;
 
-use super::bounded_read::{ReadError, read_regular};
+use super::{
+    bounded_read::{ReadError, read_regular},
+    workspace::probe,
+};
 use crate::core::ai::{
-    chat::prompts::{Override, Reason, Resolved, resolve_prompt},
+    chat::{
+        prompts::{Override, Reason, Resolved, resolve_prompt},
+        workspace::{block, with_block},
+    },
     config::{Profile, Task},
 };
 
@@ -45,6 +51,26 @@ pub fn load_prompt(config_dir: Option<&Path>, profile: Profile, task: Task) -> R
         read(Task::General)
     };
     resolve_prompt(profile, task, read(task), general)
+}
+
+/// The system prompt of a conversation: the resolved prompt of the chat task
+/// and, when `context` is set, the workspace block after a blank line.
+/// `shell` is the value of `$SHELL` and `date` the local date, both read by
+/// the caller so this stays testable.
+pub fn prepare_prompt(
+    config_dir: Option<&Path>,
+    profile: Profile,
+    origin: Option<&Path>,
+    context: bool,
+    shell: Option<&str>,
+    date: String,
+) -> Resolved {
+    let mut resolved = load_prompt(config_dir, profile, Task::Chat);
+    if context {
+        let block = block(&probe(origin, shell, date));
+        resolved.text = with_block(&resolved.text, Some(&block));
+    }
+    resolved
 }
 
 #[cfg(test)]

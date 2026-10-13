@@ -47,7 +47,11 @@ use tokio::{
 use crate::{
     app::{App, AppEvent, Effect},
     core::{
-        ai::{Detection, chat::store::StoreReply, config::AiConfig},
+        ai::{
+            Detection,
+            chat::{prompts::Resolved, store::StoreReply},
+            config::{AiConfig, Profile},
+        },
         config::{Config, config_path},
         layout::PaneId,
         pane::{CursorKind, CursorShape},
@@ -71,6 +75,8 @@ const QUIT_KILL_BOUND: Duration = Duration::from_secs(3);
 const STORE_JOIN_BOUND: Duration = Duration::from_secs(2);
 /// Capacity of the channel from the store thread to the event loop.
 const STORE_CHANNEL: usize = 64;
+/// Capacity of the channel from the prompt jobs to the event loop.
+const PROMPT_CHANNEL: usize = 16;
 /// How often `Panes::shutdown` checks whether the kills are done.
 const SHUTDOWN_POLL: Duration = Duration::from_millis(5);
 /// Most events one `drive` call processes (the first one plus its feedback).
@@ -127,6 +133,11 @@ pub async fn run() -> io::Result<()> {
     let (ai_tx, ai_rx) = mpsc::channel(1);
     let (chat_tx, chat_rx) = mpsc::channel(chat::APP_CHANNEL);
     let (store_tx, store_rx) = mpsc::channel(STORE_CHANNEL);
+    let (prompt_tx, prompt_rx) = mpsc::channel(PROMPT_CHANNEL);
+    let config_dir = config_path
+        .as_deref()
+        .and_then(Path::parent)
+        .map(Path::to_owned);
     let store_path = chat_store::resolve_path(
         env::var_os("XDG_DATA_HOME").as_deref(),
         env::var_os("HOME").as_deref(),
@@ -134,6 +145,13 @@ pub async fn run() -> io::Result<()> {
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
         .with_config_path(config_path)
         .with_detector(Box::new(move || spawn_detection(ai_tx.clone())))
+        .with_preparer(Box::new(move |pane, profile, origin, context| {
+            spawn_prepare(
+                config_dir.clone(),
+                (pane, profile, origin, context),
+                prompt_tx.clone(),
+            );
+        }))
         .with_chats(Chats::new(chat::adapter_runner(), chat_tx))
         .with_store(chat_store::spawn_at(store_path, store_tx));
     let inbox = Inbox {
@@ -141,6 +159,7 @@ pub async fn run() -> io::Result<()> {
         ai: ai_rx,
         chat: chat_rx,
         store: store_rx,
+        prompt: prompt_rx,
     };
     // The first pane is spawned before the UI starts: a failure is fatal.
     panes.spawn_pane(id, &spec)?;
@@ -208,6 +227,7 @@ struct Inbox {
     ai: mpsc::Receiver<Detection>,
     chat: mpsc::Receiver<chat::Tagged>,
     store: mpsc::Receiver<StoreReply>,
+    prompt: mpsc::Receiver<(PaneId, Resolved)>,
 }
 
 async fn event_loop(
@@ -247,6 +267,7 @@ async fn run_loop(
         ai: mut ai_rx,
         chat: mut chat_rx,
         store: mut store_rx,
+        prompt: mut prompt_rx,
     } = inbox;
     let theme = LazaroboxTheme::default();
     let mut events = EventStream::new();
@@ -312,6 +333,14 @@ async fn run_loop(
                     return Ok(());
                 }
             }
+            // Each job holds a sender only while it runs, and `run` keeps
+            // the preparer (and so a sender) alive, so this never reads a
+            // closed channel.
+            Some((pane, resolved)) = prompt_rx.recv() => {
+                if step(&mut app, AppEvent::PromptReady(pane, resolved), panes) {
+                    return Ok(());
+                }
+            }
             // Same exit path as Quit: the caller restores and kills the children.
             () = shutdown.requested() => return Ok(()),
             _ = cwd_poll.tick() => {
@@ -333,6 +362,32 @@ async fn run_loop(
             }
         }
     }
+}
+
+/// Starts a prompt preparation: pane, profile, origin cwd, context flag.
+type PrepareFn = dyn FnMut(PaneId, Profile, Option<PathBuf>, bool);
+
+/// Prepares the system prompt of the conversation started in a pane on a
+/// thread of its own (the override files and the repository are read from
+/// the disk) and sends it to the event loop.
+fn spawn_prepare(
+    config_dir: Option<PathBuf>,
+    (pane, profile, origin, context): (PaneId, Profile, Option<PathBuf>, bool),
+    tx: mpsc::Sender<(PaneId, Resolved)>,
+) {
+    thread::spawn(move || {
+        let shell = env::var("SHELL").ok();
+        let resolved = prompts::prepare_prompt(
+            config_dir.as_deref(),
+            profile,
+            origin.as_deref(),
+            context,
+            shell.as_deref(),
+            workspace::local_date(),
+        );
+        // A closed channel means the app is quitting.
+        let _ = tx.blocking_send((pane, resolved));
+    });
 }
 
 /// Builds the child of a pane; the production one is `spawn_portable`.
@@ -359,6 +414,11 @@ struct Panes {
     /// Starts one AI engine detection; the answer arrives on the AI channel.
     /// A no-op unless `with_detector` installs the production one.
     detect: Box<dyn FnMut()>,
+    /// Starts the preparation of a conversation's system prompt: pane,
+    /// profile, origin cwd and the context flag. The answer arrives on the
+    /// prompt channel. A no-op unless `with_preparer` installs the
+    /// production one.
+    prepare: Box<PrepareFn>,
     /// The chat turns. `None` ignores the chat effects (unit tests).
     chats: Option<Chats>,
     /// The chat history thread. `None` ignores the store effects (unit tests).
@@ -375,6 +435,7 @@ impl Panes {
             config_path: None,
             host_out: Vec::new(),
             detect: Box::new(|| {}),
+            prepare: Box::new(|_, _, _, _| {}),
             chats: None,
             store: None,
         }
@@ -404,6 +465,12 @@ impl Panes {
     /// Sets what `Effect::DetectEngines` runs.
     fn with_detector(mut self, detect: Box<dyn FnMut()>) -> Self {
         self.detect = detect;
+        self
+    }
+
+    /// Sets what `Effect::PreparePrompt` runs.
+    fn with_preparer(mut self, prepare: Box<PrepareFn>) -> Self {
+        self.prepare = prepare;
         self
     }
 
@@ -487,6 +554,13 @@ impl Panes {
                         store.send(cmd);
                     }
                 }
+                // Returns at once: the files are read on their own thread.
+                Effect::PreparePrompt {
+                    pane,
+                    profile,
+                    origin,
+                    context,
+                } => (self.prepare)(pane, profile, origin, context),
                 Effect::Quit => outcome = Outcome::Quit,
             }
         }
@@ -1220,6 +1294,45 @@ mod tests {
             (outcome, feedback, *calls.borrow()),
             (Outcome::Continue, Vec::new(), 1)
         );
+    }
+
+    #[test]
+    fn prepare_prompt_calls_the_injected_preparer_with_the_request() {
+        let (panes, _rx, _rec) = fake_panes(None);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&calls);
+        let mut panes = panes.with_preparer(Box::new(move |pane, profile, origin, context| {
+            seen.borrow_mut().push((pane, profile, origin, context));
+        }));
+        let (outcome, feedback) = panes.apply(vec![Effect::PreparePrompt {
+            pane: id(2),
+            profile: Profile::Analyst,
+            origin: Some("/srv".into()),
+            context: false,
+        }]);
+        assert_eq!((outcome, feedback), (Outcome::Continue, Vec::new()));
+        assert_eq!(
+            *calls.borrow(),
+            [(id(2), Profile::Analyst, Some(PathBuf::from("/srv")), false)]
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_prepare_answers_on_the_channel_with_the_resolved_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("prompts/analyst/chat.md");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "Be brief.").unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+        spawn_prepare(
+            Some(dir.path().to_owned()),
+            (id(2), Profile::Analyst, None, false),
+            tx,
+        );
+        let (pane, resolved) = rx.recv().await.unwrap();
+        assert_eq!(pane, id(2));
+        assert_eq!(resolved.text, "Be brief.");
+        assert!(resolved.notices.is_empty());
     }
 
     // Without a chat task (unit tests) the chat effects touch no pane.

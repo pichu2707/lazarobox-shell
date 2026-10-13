@@ -92,11 +92,3 @@ fn a_missing_model_is_sent_empty_so_the_server_answers_with_its_own_error() {
     let (_, _, _, body) = http(Adapter::Ollama.build(&req));
     assert_eq!(body["model"], "");
 }
-
-#[test]
-fn the_default_system_prompt_is_short_neutral_text() {
-    let prompt = system_prompt();
-    assert!(!prompt.is_empty());
-    assert!(prompt.chars().count() <= 400);
-    assert!(!prompt.contains('\n'));
-}

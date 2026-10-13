@@ -85,9 +85,24 @@ fn ready_app() -> App {
     a.update(AppEvent::EnginesDetected(detection(&["llama3:8b"])));
     press(&mut a, "c");
     assert_eq!(a.focused(), chat_id());
+    a.update(prompt_ready(SYSTEM, &[]));
     a.take_dirty();
     a
 }
+
+/// What the runtime would answer to the `PreparePrompt` of the chat pane.
+fn prompt_ready(system: &str, notices: &[&str]) -> AppEvent {
+    AppEvent::PromptReady(
+        chat_id(),
+        crate::core::ai::chat::prompts::Resolved {
+            text: system.to_owned(),
+            notices: notices.iter().map(|n| (*n).to_owned()).collect(),
+        },
+    )
+}
+
+/// The system prompt `ready_app` delivers.
+const SYSTEM: &str = "system prompt\n\nworkspace block";
 
 fn delta(turn: u64, text: &str) -> AppEvent {
     AppEvent::Chat(chat_id(), turn, StreamEvent::Delta(text.into()))
@@ -147,7 +162,9 @@ fn prefix_c_opens_a_focused_chat_to_the_right_without_spawning_anything() {
     assert!(
         effects.iter().all(|e| matches!(
             e,
-            Effect::ResizePty(PaneId::FIRST, _) | Effect::DetectEngines
+            Effect::ResizePty(PaneId::FIRST, _)
+                | Effect::DetectEngines
+                | Effect::PreparePrompt { .. }
         )),
         "{effects:?}"
     );
@@ -272,17 +289,13 @@ fn a_send_carries_the_assigned_engine_and_model() {
 }
 
 #[test]
-fn a_send_pins_the_default_system_prompt() {
+fn a_send_pins_the_prepared_system_prompt() {
     let mut a = ready_app();
     let effects = ask(&mut a, "hello");
     let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
         panic!("one ChatSend: {effects:?}");
     };
-    assert_eq!(
-        request.system,
-        crate::core::ai::chat::adapters::system_prompt()
-    );
-    assert!(!request.system.is_empty());
+    assert_eq!(request.system, SYSTEM);
 }
 
 #[test]
@@ -800,6 +813,7 @@ fn detection_with(status: Status, models: &[&str]) -> Detection {
 fn undetected_chat(ai: AiConfig) -> App {
     let mut a = launched(80, 25).with_ai(ai);
     press(&mut a, "c");
+    a.update(prompt_ready(SYSTEM, &[]));
     a
 }
 
@@ -991,11 +1005,7 @@ fn a_parked_send_carries_the_system_prompt() {
     let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
         panic!("one ChatSend: {effects:?}");
     };
-    assert_eq!(
-        request.system,
-        crate::core::ai::chat::adapters::system_prompt()
-    );
-    assert!(!request.system.is_empty());
+    assert_eq!(request.system, SYSTEM);
 }
 
 #[test]
@@ -1240,4 +1250,147 @@ fn a_held_cancel_sent_as_presses_cancels_once() {
     assert_eq!(ask(&mut a, "two").len(), 1);
     let again = at(&mut a, 2000, plain(KeyCode::Esc));
     assert_eq!(again, vec![Effect::ChatCancel(chat_id())]);
+}
+
+// PR12: the system prompt is prepared per conversation ------------------------
+
+fn prepare_effect(effects: &[Effect]) -> Option<&Effect> {
+    effects
+        .iter()
+        .find(|e| matches!(e, Effect::PreparePrompt { .. }))
+}
+
+// Spec (prompt-profiles): Resolved once per conversation, at start.
+#[test]
+fn opening_a_chat_asks_for_its_prompt_with_the_profile_origin_and_flag() {
+    use crate::core::ai::config::Profile;
+    let mut ai = AiConfig::default();
+    ai.set_profile(Profile::Analyst);
+    ai.set_context(false);
+    let mut a = launched(80, 25).with_ai(ai);
+    a.update(cwd_event("/srv/app"));
+    let effects = press(&mut a, "c");
+    assert_eq!(
+        prepare_effect(&effects),
+        Some(&Effect::PreparePrompt {
+            pane: chat_id(),
+            profile: Profile::Analyst,
+            origin: Some("/srv/app".into()),
+            context: false,
+        })
+    );
+}
+
+#[test]
+fn a_refused_split_asks_for_no_prompt() {
+    let mut a = launched(15, 5);
+    let effects = press(&mut a, "c");
+    assert_eq!(prepare_effect(&effects), None, "{effects:?}");
+}
+
+// Spec: a send waits for the prompt, then goes with it.
+#[test]
+fn a_send_before_the_prompt_arrives_waits_and_then_carries_it() {
+    let mut a = launched(80, 25).with_ai(ollama());
+    a.update(AppEvent::EnginesDetected(detection(&["llama3:8b"])));
+    press(&mut a, "c");
+    assert_eq!(ask(&mut a, "hello"), vec![], "parked, nothing is sent yet");
+    assert_eq!(composer(&a), "hello", "the text stays in the composer");
+    let effects = a.update(prompt_ready(SYSTEM, &[]));
+    let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+        panic!("one ChatSend: {effects:?}");
+    };
+    assert_eq!(request.system, SYSTEM);
+    assert_eq!(composer(&a), "");
+}
+
+#[test]
+fn editing_the_composer_drops_a_send_waiting_for_the_prompt() {
+    let mut a = launched(80, 25).with_ai(ollama());
+    a.update(AppEvent::EnginesDetected(detection(&["llama3:8b"])));
+    press(&mut a, "c");
+    ask(&mut a, "hello");
+    type_text(&mut a, "!");
+    assert_eq!(a.update(prompt_ready(SYSTEM, &[])), vec![]);
+    assert_eq!(composer(&a), "hello!");
+}
+
+// Both waits end together: the engine check and the prompt.
+#[test]
+fn a_send_waits_for_both_the_detection_and_the_prompt() {
+    let mut a = undetected_chat(ollama());
+    ask(&mut a, "hello");
+    assert_eq!(
+        a.update(prompt_ready(SYSTEM, &[])),
+        vec![],
+        "still detecting"
+    );
+    let effects = a.update(ready_detection());
+    let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+        panic!("one ChatSend: {effects:?}");
+    };
+    assert_eq!(request.system, SYSTEM);
+}
+
+// Spec (prompt-profiles): a skipped override file is a system line.
+#[test]
+fn the_notices_of_skipped_overrides_become_system_lines() {
+    let mut a = launched(80, 25).with_ai(ollama());
+    press(&mut a, "c");
+    a.update(prompt_ready(
+        SYSTEM,
+        &["prompt override ignored: analyst/chat.md not valid UTF-8"],
+    ));
+    let lines: Vec<&Entry> = chat_of(&a).entries().iter().collect();
+    assert_eq!(
+        lines,
+        [&Entry::System(
+            "prompt override ignored: analyst/chat.md not valid UTF-8".into()
+        )]
+    );
+    assert_eq!(chat_of(&a).messages().count(), 0, "never a message");
+}
+
+// Spec: Resolved once per conversation; the later turns reuse it.
+#[test]
+fn every_turn_of_the_conversation_carries_the_same_prompt() {
+    let mut a = answered("first");
+    let effects = ask(&mut a, "second");
+    let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+        panic!("one ChatSend: {effects:?}");
+    };
+    assert_eq!(request.system, SYSTEM);
+}
+
+// Spec (A switch applies to new conversations only): a profile switch while
+// the chat is open does not touch the prompt it already has.
+#[test]
+fn a_profile_change_after_the_start_keeps_the_prompt_of_the_open_chat() {
+    use crate::core::ai::config::Profile;
+    let mut a = ready_app();
+    let mut ai = ollama();
+    ai.set_profile(Profile::Analyst);
+    a = a.with_ai(ai);
+    let effects = ask(&mut a, "hello");
+    let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+        panic!("one ChatSend: {effects:?}");
+    };
+    assert_eq!(request.system, SYSTEM);
+}
+
+#[test]
+fn a_prompt_for_a_closed_pane_is_ignored() {
+    let mut a = launched(80, 25).with_ai(ollama());
+    assert_eq!(a.update(prompt_ready(SYSTEM, &["x"])), vec![]);
+}
+
+// The block is system text only: never a message of the transcript.
+#[test]
+fn the_prompt_is_not_part_of_the_transcript_or_the_history() {
+    let (a, _) = streaming();
+    assert!(
+        chat_of(&a)
+            .messages()
+            .all(|m| !m.text.contains("workspace block")),
+    );
 }

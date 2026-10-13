@@ -152,3 +152,128 @@ fn load_notes_a_bad_task_file_and_uses_general() {
         ["prompt override ignored: analyst/chat.md not valid UTF-8"]
     );
 }
+
+// Spec (Workspace context block): the prompt is the resolved text, a blank
+// line and the block; context off sends the resolved prompt alone.
+fn repo_with_branch(root: &Path, branch: &str) -> PathBuf {
+    let dir = root.join("proj");
+    fs::create_dir_all(dir.join(".git")).unwrap();
+    fs::write(dir.join(".git/HEAD"), format!("ref: refs/heads/{branch}\n")).unwrap();
+    dir
+}
+
+#[test]
+fn context_on_appends_the_block_after_the_resolved_prompt() {
+    let d = dir();
+    put(d.path(), "analyst/chat.md", b"Be brief.\n");
+    let repo = repo_with_branch(d.path(), "feat/x");
+    let got = prepare_prompt(
+        Some(d.path()),
+        Profile::Analyst,
+        Some(&repo),
+        true,
+        Some("/bin/zsh"),
+        "2026-10-13".into(),
+    );
+    assert!(got.notices.is_empty());
+    let (prompt, block) = got.text.split_once("\n\n").unwrap();
+    assert_eq!(prompt, "Be brief.");
+    assert!(
+        block.starts_with("Workspace (provided by lazarobox"),
+        "{block}"
+    );
+    assert!(block.contains("- project: proj"), "{block}");
+    assert!(block.contains("- git branch: feat/x"), "{block}");
+    assert!(
+        block.contains("- cwd: . (relative to the repository root)"),
+        "{block}"
+    );
+    assert!(block.contains("shell: zsh"), "{block}");
+    assert!(block.ends_with("- date: 2026-10-13"), "{block}");
+}
+
+#[test]
+fn context_off_is_the_resolved_prompt_exactly() {
+    let d = dir();
+    put(d.path(), "analyst/chat.md", b"Be brief.\n");
+    let repo = repo_with_branch(d.path(), "main");
+    let got = prepare_prompt(
+        Some(d.path()),
+        Profile::Analyst,
+        Some(&repo),
+        false,
+        Some("zsh"),
+        "2026-10-13".into(),
+    );
+    assert_eq!(got.text, "Be brief.");
+}
+
+#[test]
+fn notices_survive_the_block() {
+    let d = dir();
+    put(d.path(), "analyst/chat.md", b"\xff");
+    let got = prepare_prompt(
+        Some(d.path()),
+        Profile::Analyst,
+        None,
+        true,
+        None,
+        "d".into(),
+    );
+    assert_eq!(got.notices.len(), 1);
+    assert!(got.text.contains("Workspace (provided by lazarobox"));
+}
+
+// Spec (chat-engines): the block travels only inside the system prompt of an
+// engine's request; the body keeps its four members.
+#[test]
+fn the_ollama_body_holds_the_block_when_on_and_not_when_off() {
+    use crate::core::ai::chat::{
+        adapters::{Adapter, Invocation},
+        engine::{ChatMessage, ChatRequest, Role},
+    };
+    let d = dir();
+    let repo = repo_with_branch(d.path(), "feat/x");
+    let body_for = |context: bool| {
+        let system = prepare_prompt(
+            None,
+            Profile::Programmer,
+            Some(&repo),
+            context,
+            Some("zsh"),
+            "2026-10-13".into(),
+        )
+        .text;
+        let request = ChatRequest {
+            engine: "ollama".into(),
+            model: Some("m".into()),
+            system,
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: "hi".into(),
+            }],
+        };
+        let Invocation::Http { body, .. } = Adapter::Ollama.build(&request);
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+    };
+    let on = body_for(true);
+    let off = body_for(false);
+    assert_eq!(on.as_object().unwrap().len(), 3);
+    assert_eq!(off.as_object().unwrap().len(), 3);
+    let on_system = on["messages"][0]["content"].as_str().unwrap();
+    let off_system = off["messages"][0]["content"].as_str().unwrap();
+    assert!(on_system.contains("- git branch: feat/x"), "{on_system}");
+    assert!(on_system.starts_with(off_system));
+    assert!(!off_system.contains("Workspace (provided by lazarobox"));
+    // The history is untouched: only the user message follows.
+    assert_eq!(on["messages"][1]["content"], "hi");
+    assert_eq!(on["messages"].as_array().unwrap().len(), 2);
+    assert!(
+        !on["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Workspace")
+    );
+    // No absolute path of the machine leaks into the request.
+    assert!(!on.to_string().contains(d.path().to_str().unwrap()));
+}
