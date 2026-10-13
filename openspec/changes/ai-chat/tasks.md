@@ -190,7 +190,7 @@ Files changed:
 ## PR12 / C10b: Prompts (`src/core/ai/chat/prompts/**`, `src/core/ai/chat/prompts.rs`, `src/runtime/chat.rs`)
 
 - [x] 12.1 RED: built-in table integrity (10 prompts, non-empty, at most 4 KiB, profiles differ per task), reply-in-user-language text, chat prompt states no files, shell or terminal.
-- [x] 12.2 RED: pure `resolve_prompt`: task override, then general override, then built-in; other profile ignored; exact content after trim; resolved once per conversation; profile switch applies to new conversations only; resumed uses the stored profile.
+- [x] 12.2 RED: pure `resolve_prompt`: task override, then general override, then built-in; other profile ignored; exact content after trim; resolved once per conversation; profile switch applies to new conversations only; resumed uses the stored profile (satisfied only at the pure `resolve_prompt` level, which takes the profile as an argument; wiring a resumed conversation to its stored profile is PR10, see 12.12).
 - [x] 12.3 RED: bounded override read (at most 16,385 bytes, regular files only, no FIFO block, `/dev/zero` symlink): notices `not valid UTF-8`, `larger than 16 KiB`, `cannot be read`, `not a regular file`; at-cap file used; whitespace-only is missing; sanitized path.
 - [x] 12.4 GREEN: write the 10 English `.md` files via `include_str!`, `resolve_prompt`, runtime reader.
 - [x] 12.5 Gate. Prompt text counts toward the 400 lines; re-measure.
