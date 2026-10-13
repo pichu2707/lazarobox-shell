@@ -40,8 +40,8 @@ use ratatui::{
 };
 use tokio::{
     signal::unix::{Signal, SignalKind, signal},
-    sync::mpsc,
-    time::{MissedTickBehavior, interval},
+    sync::{mpsc, oneshot},
+    time::{MissedTickBehavior, interval, timeout},
 };
 
 use crate::{
@@ -75,6 +75,8 @@ const QUIT_KILL_BOUND: Duration = Duration::from_secs(3);
 const STORE_JOIN_BOUND: Duration = Duration::from_secs(2);
 /// Capacity of the channel from the store thread to the event loop.
 const STORE_CHANNEL: usize = 64;
+/// Longest the app waits for a prompt job before it uses the built-in prompt.
+const PREPARE_BOUND: Duration = Duration::from_secs(2);
 /// Capacity of the channel from the prompt jobs to the event loop.
 const PROMPT_CHANNEL: usize = 16;
 /// How often `Panes::shutdown` checks whether the kills are done.
@@ -375,10 +377,10 @@ fn spawn_prepare(
     (pane, profile, origin, context): (PaneId, Profile, Option<PathBuf>, bool),
     tx: mpsc::Sender<(PaneId, Resolved)>,
 ) {
-    thread::spawn(move || {
+    spawn_prepare_with(pane, profile, PREPARE_BOUND, tx, move || {
         let shell = env::var("SHELL").ok();
         let home = env::var_os("HOME").map(PathBuf::from);
-        let resolved = prompts::prepare_prompt(
+        prompts::prepare_prompt(
             config_dir.as_deref(),
             profile,
             origin.as_deref(),
@@ -386,9 +388,42 @@ fn spawn_prepare(
             context,
             shell.as_deref(),
             workspace::local_date(),
-        );
+        )
+    });
+}
+
+/// Runs `work` on a thread of its own and sends exactly one answer for
+/// `pane`: its result, or the built-in prompt with a notice when it panics,
+/// the thread cannot be spawned or it takes longer than `bound`. A result
+/// that arrives after the bound has nobody to receive it. Needs a tokio
+/// runtime for the wait.
+fn spawn_prepare_with(
+    pane: PaneId,
+    profile: Profile,
+    bound: Duration,
+    tx: mpsc::Sender<(PaneId, Resolved)>,
+    work: impl FnOnce() -> Resolved + Send + 'static,
+) {
+    let (done_tx, done_rx) = oneshot::channel();
+    let started = thread::Builder::new()
+        .name(prompts::THREAD_NAME.into())
+        .spawn(move || {
+            let result = panic::catch_unwind(panic::AssertUnwindSafe(work));
+            // The receiver is gone after the bound: the late result is dropped.
+            let _ = done_tx.send(result.ok());
+        });
+    tokio::spawn(async move {
+        let resolved = if started.is_err() {
+            prompts::fallback_prompt(profile, prompts::FAILED)
+        } else {
+            match timeout(bound, done_rx).await {
+                Ok(Ok(Some(resolved))) => resolved,
+                Ok(_) => prompts::fallback_prompt(profile, prompts::FAILED),
+                Err(_) => prompts::fallback_prompt(profile, prompts::TIMED_OUT),
+            }
+        };
         // A closed channel means the app is quitting.
-        let _ = tx.blocking_send((pane, resolved));
+        let _ = tx.send((pane, resolved)).await;
     });
 }
 
@@ -709,7 +744,9 @@ fn restore() {
 fn should_restore() -> bool {
     // The store thread catches its own panics and reports them as replies.
     let on_store_thread = thread::current().name() == Some(chat_store::worker::THREAD_NAME);
-    !chat::in_adapter_poll() && !on_store_thread
+    // The prompt job catches its panic and falls back to the built-in prompt.
+    let on_prepare_thread = thread::current().name() == Some(prompts::THREAD_NAME);
+    !chat::in_adapter_poll() && !on_store_thread && !on_prepare_thread
 }
 
 /// Restores the cursor and bracketed paste before the previous hook (which
@@ -1975,6 +2012,67 @@ mod tests {
             .join()
             .unwrap();
         assert!(!inside, "the store thread recovers from its own panics");
+    }
+
+    #[test]
+    fn a_panic_on_the_prepare_thread_leaves_the_terminal_alone() {
+        let inside = thread::Builder::new()
+            .name(prompts::THREAD_NAME.into())
+            .spawn(should_restore)
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(!inside, "spawn_prepare catches its own panics");
+    }
+
+    // Spec (prompt-profiles): a prepare job that panics still answers, with
+    // the built-in prompt, no block and a notice.
+    #[tokio::test]
+    async fn a_panicking_prepare_job_answers_with_the_built_in_prompt() {
+        let (tx, mut rx) = mpsc::channel(1);
+        spawn_prepare_with(id(2), Profile::Analyst, Duration::from_secs(5), tx, || {
+            panic!("boom")
+        });
+        let (pane, resolved) = rx.recv().await.unwrap();
+        assert_eq!(pane, id(2));
+        assert_eq!(
+            resolved,
+            prompts::fallback_prompt(Profile::Analyst, prompts::FAILED)
+        );
+        assert!(!resolved.text.contains("Workspace"));
+        assert_eq!(resolved.notices.len(), 1);
+        assert!(resolved.notices[0].contains("workspace context unavailable"));
+    }
+
+    // Spec: a prepare job that does not answer in time is replaced by the
+    // built-in prompt, and its late result is dropped.
+    #[tokio::test(start_paused = true)]
+    async fn a_stuck_prepare_job_times_out_to_the_built_in_prompt() {
+        let (tx, mut rx) = mpsc::channel(2);
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        spawn_prepare_with(id(2), Profile::Programmer, PREPARE_BOUND, tx, move || {
+            let _ = wait.recv();
+            Resolved {
+                text: "late".into(),
+                notices: Vec::new(),
+            }
+        });
+        let (pane, resolved) = rx.recv().await.unwrap();
+        assert_eq!(pane, id(2));
+        assert_eq!(
+            resolved,
+            prompts::fallback_prompt(Profile::Programmer, prompts::TIMED_OUT)
+        );
+        assert!(resolved.notices[0].contains("workspace context unavailable"));
+        // The stuck job finishes late: nothing more is sent.
+        release.send(()).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(rx.try_recv().is_err(), "the late result is dropped");
+    }
+
+    #[test]
+    fn the_prepare_bound_is_two_seconds() {
+        assert_eq!(PREPARE_BOUND, Duration::from_secs(2));
     }
 
     #[tokio::test(start_paused = true)]

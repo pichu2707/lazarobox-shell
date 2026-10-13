@@ -1412,6 +1412,31 @@ fn a_profile_change_after_the_start_keeps_the_prompt_of_the_open_chat() {
     assert_eq!(request.system, SYSTEM);
 }
 
+// Spec: the fallback prompt unblocks a waiting send; the real one that comes
+// late is ignored (the prompt is pinned once).
+#[test]
+fn a_late_prompt_after_the_fallback_is_ignored() {
+    let mut a = launched(80, 25).with_ai(ollama());
+    a.update(AppEvent::EnginesDetected(detection(&["llama3:8b"])));
+    press(&mut a, "c");
+    ask(&mut a, "hello");
+    let effects = a.update(prompt_ready(
+        "built-in",
+        &["prompt preparation timed out: workspace context unavailable"],
+    ));
+    let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+        panic!("one ChatSend: {effects:?}");
+    };
+    assert_eq!(request.system, "built-in");
+    assert_eq!(a.update(prompt_ready(SYSTEM, &["late"])), vec![]);
+    let notices = chat_of(&a)
+        .entries()
+        .iter()
+        .filter(|e| matches!(e, Entry::System(_)))
+        .count();
+    assert_eq!(notices, 1, "the late notices are not added");
+}
+
 #[test]
 fn a_prompt_for_a_closed_pane_is_ignored() {
     let mut a = launched(80, 25).with_ai(ollama());

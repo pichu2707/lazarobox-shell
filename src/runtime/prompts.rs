@@ -16,6 +16,16 @@ use crate::core::ai::{
     config::{Profile, Task},
 };
 
+/// The name of the thread that prepares a prompt; a panic on it is caught.
+pub const THREAD_NAME: &str = "prepare-prompt";
+
+/// The system line when preparing the prompt failed (a panic or no thread).
+pub const FAILED: &str =
+    "prompt preparation failed: built-in prompt used, workspace context unavailable";
+/// The system line when preparing the prompt took longer than the bound.
+pub const TIMED_OUT: &str =
+    "prompt preparation timed out: built-in prompt used, workspace context unavailable";
+
 /// The largest override file used, in bytes.
 pub const OVERRIDE_CAP: u64 = 16 * 1024;
 
@@ -71,6 +81,15 @@ pub fn prepare_prompt(
         let block = block(&probe(origin, home, shell, date));
         resolved.text = with_block(&resolved.text, Some(&block));
     }
+    resolved
+}
+
+/// The prompt used when `prepare_prompt` cannot answer: the built-in chat
+/// prompt (no override files, no workspace block) and `notice` as the system
+/// line that says why.
+pub fn fallback_prompt(profile: Profile, notice: &str) -> Resolved {
+    let mut resolved = resolve_prompt(profile, Task::Chat, Override::Missing, Override::Missing);
+    resolved.notices.push(notice.to_owned());
     resolved
 }
 
