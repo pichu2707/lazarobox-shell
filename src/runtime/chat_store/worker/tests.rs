@@ -1032,6 +1032,29 @@ fn a_panicking_link_replies_with_a_link_failure() {
 }
 
 #[test]
+fn a_panicking_link_keeps_the_store_usable() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    for cmd in [
+        link_session(id, SESSION_A),
+        link_note(id, "chat/decision/x", 7, "X"),
+    ] {
+        // The panic hits inside an open transaction, as a bug in a link would.
+        let reply = worker.guarded_with(cmd, |w, _| {
+            let conn = w.conn().unwrap();
+            let _tx = conn.transaction().unwrap();
+            panic!("handler bug")
+        });
+        assert!(matches!(reply, Some(StoreReply::LinkFailed { .. })));
+    }
+    assert_eq!(count(&conn, "memory_sessions"), 0);
+    // History stays available: the next Create and Append succeed.
+    let again = created_id(worker.guarded(create(user("still here"), vec![])));
+    assert!(worker.guarded(append(again, user("more"))).is_none());
+    assert_eq!(rows(&conn, again).len(), 2);
+}
+
+#[test]
 fn links_travel_through_the_store_thread_in_order() {
     let dir = TempDir::new().unwrap();
     let db = db_path(&dir);

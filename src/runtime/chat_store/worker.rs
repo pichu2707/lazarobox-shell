@@ -173,11 +173,13 @@ impl Worker {
         }
     }
 
-    /// `handle` that survives a panic. A panic leaves the connection in an
-    /// unknown state, so the store is marked unusable: the command that
-    /// panicked gets a reply (`Unavailable` for a `Create`, `Failed` for an
-    /// `Append`) and every later `Create` answers `Unavailable`. The thread
-    /// keeps running so it still drains its queue and honours `Quit`.
+    /// `handle` that survives a panic. A panic in a `Create` or `Append`
+    /// leaves the connection in an unknown state, so the store is marked
+    /// unusable: the command that panicked gets a reply (`Unavailable` for a
+    /// `Create`, `Failed` for an `Append`) and every later `Create` answers
+    /// `Unavailable`. A panic in a link command answers `LinkFailed` and keeps
+    /// an open connection, so one bad link does not take the history down. The
+    /// thread keeps running so it still drains its queue and honours `Quit`.
     pub(crate) fn guarded(&mut self, cmd: StoreCmd) -> Option<StoreReply> {
         self.guarded_with(cmd, Self::handle)
     }
@@ -198,7 +200,14 @@ impl Worker {
             Ok(reply) => reply,
             Err(payload) => {
                 let reason = bounded_error(&panic_text(payload.as_ref()));
-                self.conn = Some(Err(reason.clone()));
+                // A link runs in one transaction that rolled back on unwind, so
+                // an open connection is still sound and the history stays
+                // available; any other panic leaves it in an unknown state.
+                let keep =
+                    matches!(on_panic, Panicked::Link(_)) && matches!(self.conn, Some(Ok(_)));
+                if !keep {
+                    self.conn = Some(Err(reason.clone()));
+                }
                 self.opener = None;
                 Some(match on_panic {
                     Panicked::Create => StoreReply::Unavailable { pane, reason },
