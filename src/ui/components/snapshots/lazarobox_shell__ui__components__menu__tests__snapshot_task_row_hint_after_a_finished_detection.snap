@@ -15,6 +15,7 @@ expression: shown
 │ review                                           (default) │
 │ summarize                                        (default) │
 │ Profile                                         programmer │
+│ Context                                                 on │
 │                                                            │
 │ j/k move · Enter pick · r refresh · s save · Esc cancel    │
 └────────────────────────────────────────────────────────────┘

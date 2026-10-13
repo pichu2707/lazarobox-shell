@@ -5776,8 +5776,14 @@ mod app_tests {
         assert_eq!(a.menu().unwrap().ai_draft(), ai_of("ollama", "qwen2:7b"));
     }
 
-    /// Moves the menu selection to the `Profile` row (the last one).
+    /// Moves the menu selection to the `Context` row (the last one).
+    fn to_context_row(a: &mut App) {
+        a.update(key('k'));
+    }
+
+    /// Moves the menu selection to the `Profile` row (before `Context`).
     fn to_profile_row(a: &mut App) {
+        a.update(key('k'));
         a.update(key('k'));
     }
 
@@ -5824,6 +5830,42 @@ mod app_tests {
         assert_eq!(a.ai().profile(), Profile::Programmer);
         open_menu(&mut a);
         assert_eq!(a.menu().unwrap().ai_draft().profile(), Profile::Programmer);
+    }
+
+    // Spec (Context toggle): `s` saves only the context key and the saved
+    // value becomes the app's flag.
+    #[test]
+    fn the_context_row_saves_only_the_flag_and_updates_the_app() {
+        let mut a = ai_app();
+        assert!(a.ai().context());
+        open_menu(&mut a);
+        to_context_row(&mut a);
+        assert_eq!(a.update(key('l')), Vec::<Effect>::new(), "no ResizePty");
+        assert!(!a.menu().unwrap().ai_draft().context());
+        assert!(a.ai().context(), "not saved yet");
+        let edit = ConfigEdit {
+            table: "ai",
+            key: "context",
+            value: "false".into(),
+        };
+        assert_eq!(a.update(key('s')), vec![Effect::SaveConfig(vec![edit])]);
+        a.update(AppEvent::ConfigSaved);
+        assert!(a.menu().is_none());
+        assert!(!a.ai().context());
+    }
+
+    // Spec (Context toggle): Esc restores the flag captured at open.
+    #[test]
+    fn esc_reverts_the_context_draft() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        to_context_row(&mut a);
+        a.update(key('l'));
+        a.update(esc());
+        assert!(a.menu().is_none());
+        assert!(a.ai().context());
+        open_menu(&mut a);
+        assert!(a.menu().unwrap().ai_draft().context());
     }
 
     // Spec (config-menu): an unchanged profile does not touch the file.
