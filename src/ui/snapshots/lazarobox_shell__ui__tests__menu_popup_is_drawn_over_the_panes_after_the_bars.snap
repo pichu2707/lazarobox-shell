@@ -1,6 +1,6 @@
 ---
 source: src/ui/mod.rs
-expression: "(0..19).map(|y|\nrow(&buf, y).trim_end().to_string()).collect::<Vec<_>>().join(\"\\n\")"
+expression: "(0..21).map(|y|\nrow(&buf, y).trim_end().to_string()).collect::<Vec<_>>().join(\"\\n\")"
 ---
  1
 h┌ Menu ──────────────────────────────────────────────────────┐
@@ -15,6 +15,8 @@ h┌ Menu ───────────────────────�
  │ chat                                             (default) │
  │ review                                           (default) │
  │ summarize                                        (default) │
+ │ Profile                                         programmer │
+ │ Context                                                 on │
  │ Memory                                                 off │
  │                                                            │
  │ j/k move · h/l change · s save · Esc cancel                │

@@ -1,6 +1,6 @@
 # Delta for Configuration
 
-Tags: [auto] = `cargo test`. The file location, the fallback rules, the notices and every existing key are unchanged; `[ai.memory]` was an unknown table before this change and is now known.
+Tags: [auto] = `cargo test`. The file location, the fallback rules, the notices and every existing key (`ai.profile` and `ai.context` included) are unchanged; `[ai.memory]` was an unknown table before this change and is now known.
 
 ## ADDED Requirements
 

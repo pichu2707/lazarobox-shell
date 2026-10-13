@@ -1,26 +1,26 @@
 # Delta for Config Menu
 
-Tags: [auto] = `cargo test`; [manual] = real Kitty. The AI section gains a `Memory` row after `Profile`. Requirements not listed here (open and close, value cycling, live preview, input swallowed, footer, events while open, detection results, refresh key, AI draft, task picker, custom model entry, picker viewport, detection cues, AI task list, Profile row) are unchanged, except that the popup MUST also show the `Memory` row without clipping and the fallback threshold follows the popup size (exact dimensions are a design decision).
+Tags: [auto] = `cargo test`; [manual] = real Kitty. The AI section gains a `Memory` row after `Profile` and `Context`. Requirements not listed here (open and close, value cycling, live preview, input swallowed, footer, events while open, detection results, refresh key, AI draft, task picker, custom model entry, picker viewport, detection cues, AI task list, Profile row) are unchanged, except that the popup MUST also show the `Memory` row without clipping and the fallback threshold follows the popup size (exact dimensions are a design decision).
 
 ## MODIFIED Requirements
 
 ### Requirement: Sections and items are data
-Sections and items MUST come from a static descriptor table; adding a section or a setting MUST NOT require changing the popup drawing or navigation code. Each setting item MUST declare its label and its `config.toml` key path, and either an ordered list of allowed values (static item) or a task kind (assignment item, whose value is an `engine › model` chosen in the picker). The sections are "Settings" and "AI", shown in that order. Settings has the rows, in order: `Statusline position` (`statusline.position`: top, bottom), `Tab bar position` (`tabbar.position`: top, bottom) and a disabled row `Mouse: off (coming soon)`. AI has the assignment rows, in order: `Set all tasks` (aggregate over the five tasks, no single key path), `general` (`ai`), `code` (`ai.tasks.code`), `chat` (`ai.tasks.chat`), `review` (`ai.tasks.review`) and `summarize` (`ai.tasks.summarize`), followed by the static rows `Profile` (`ai.profile`: analyst, programmer) and `Memory` (`ai.memory.enabled`: off, on).
-(Previously: AI ended with the `Profile` row; there was no `Memory` row)
+Sections and items MUST come from a static descriptor table; adding a section or a setting MUST NOT require changing the popup drawing or navigation code. Each setting item MUST declare its label and its `config.toml` key path, and either an ordered list of allowed values (static item) or a task kind (assignment item, whose value is an `engine › model` chosen in the picker). The sections are "Settings" and "AI", shown in that order. Settings has the rows, in order: `Statusline position` (`statusline.position`: top, bottom), `Tab bar position` (`tabbar.position`: top, bottom) and a disabled row `Mouse: off (coming soon)`. AI has the assignment rows, in order: `Set all tasks` (aggregate over the five tasks, no single key path), `general` (`ai`), `code` (`ai.tasks.code`), `chat` (`ai.tasks.chat`), `review` (`ai.tasks.review`) and `summarize` (`ai.tasks.summarize`), followed by the static rows `Profile` (`ai.profile`: analyst, programmer), `Context` (`ai.context`: off, on) and `Memory` (`ai.memory.enabled`: off, on).
+(Previously: AI ended with the `Context` row; there was no `Memory` row)
 
 #### Scenario: Descriptor integrity [auto]
 - GIVEN the descriptor table
 - WHEN it is validated
-- THEN every section has a non-empty title, every item a non-empty label, every static item a non-empty key path and at least two allowed values, the five task rows have the task ids of ai-task-models and a key path, `Set all tasks` has no single key path, `Profile` has the key path `ai.profile` and the values `analyst`, `programmer`, `Memory` has the key path `ai.memory.enabled` and the values `off`, `on`, and there are no duplicate key paths
+- THEN every section has a non-empty title, every item a non-empty label, every static item a non-empty key path and at least two allowed values, the five task rows have the task ids of ai-task-models and a key path, `Set all tasks` has no single key path, `Profile` has the key path `ai.profile` and the values `analyst`, `programmer`, `Context` has the key path `ai.context` and the values `off`, `on`, `Memory` has the key path `ai.memory.enabled` and the values `off`, `on`, and there are no duplicate key paths
 
 #### Scenario: Settings rows [auto, TestBackend + insta]
 - GIVEN the menu just opened
 - WHEN rendered on a normal terminal
-- THEN the "Settings" title and the three rows are visible, each setting showing its current value, and the Mouse row is drawn muted; the `AI` section with `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, `Profile` and `Memory` follows them, and no `Engine`, `Model` or `Status` row exists
+- THEN the "Settings" title and the three rows are visible, each setting showing its current value, and the Mouse row is drawn muted; the `AI` section with `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, `Profile`, `Context` and `Memory` follows them, and no `Engine`, `Model` or `Status` row exists
 
 ### Requirement: Navigation
-`j`, `k`, Down and Up MUST move the selection between the selectable rows of all sections, in display order (`Statusline position`, `Tab bar position`, `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, `Profile`, `Memory`). Movement MUST wrap around at the ends (from the last selectable row to the first and back), because the list is short and wrapping never leaves the user on a dead end. The disabled `Mouse` row MUST be skipped: it is drawn but never selected, so no key can interact with it (picker disabled rows are different, see Task picker). Repeat events MUST be handled like Press.
-(Previously: the last selectable row was `Profile`)
+`j`, `k`, Down and Up MUST move the selection between the selectable rows of all sections, in display order (`Statusline position`, `Tab bar position`, `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, `Profile`, `Context`, `Memory`). Movement MUST wrap around at the ends (from the last selectable row to the first and back), because the list is short and wrapping never leaves the user on a dead end. The disabled `Mouse` row MUST be skipped: it is drawn but never selected, so no key can interact with it (picker disabled rows are different, see Task picker). Repeat events MUST be handled like Press.
+(Previously: the last selectable row was `Context`)
 
 #### Scenario: Move down and up [auto]
 - GIVEN MENU with the first row selected
@@ -40,7 +40,7 @@ Sections and items MUST come from a static descriptor table; adding a section or
 #### Scenario: Task rows in order [auto]
 - GIVEN `Set all tasks` selected
 - WHEN `j` is pressed five times
-- THEN the selection visits `general`, `code`, `chat`, `review`, `summarize` in that order, a sixth `j` selects `Profile`, a seventh selects `Memory`, and an eighth wraps to `Statusline position`
+- THEN the selection visits `general`, `code`, `chat`, `review`, `summarize` in that order, a sixth `j` selects `Profile`, a seventh selects `Context`, an eighth selects `Memory`, and a ninth wraps to `Statusline position`
 
 #### Scenario: Repeat moves [auto]
 - GIVEN MENU

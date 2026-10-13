@@ -1,10 +1,13 @@
 ---
 source: src/ui/components/menu.rs
-expression: "text(&draw(62, 15, &menu))"
+expression: "text(&draw(62, POPUP_H, &menu))"
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
 │ Model for general (claude)                                 │
 │ my                                                         │
+│                                                            │
+│                                                            │
+│                                                            │
 │                                                            │
 │                                                            │
 │                                                            │

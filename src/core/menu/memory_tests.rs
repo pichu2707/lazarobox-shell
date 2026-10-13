@@ -113,7 +113,6 @@ fn the_memory_descriptor_is_well_formed_and_last_in_the_ai_section() {
     };
     assert_eq!((row.table, row.key), ("ai.memory", "enabled"));
     assert_eq!(row.values, ["off", "on"]);
-    // No `Profile` row yet (ai-chat PR11): it slots in just before `Memory`.
     let labels: Vec<_> = AI_SECTION.items.iter().map(|i| i.label).collect();
     assert_eq!(
         labels,
@@ -124,6 +123,8 @@ fn the_memory_descriptor_is_well_formed_and_last_in_the_ai_section() {
             "chat",
             "review",
             "summarize",
+            "Profile",
+            "Context",
             "Memory"
         ]
     );
@@ -141,6 +142,8 @@ fn navigation_visits_memory_after_summarize_and_wraps() {
         "chat",
         "review",
         "summarize",
+        "Profile",
+        "Context",
         "Memory",
         "Statusline position",
     ] {
@@ -150,7 +153,7 @@ fn navigation_visits_memory_after_summarize_and_wraps() {
     press(&mut menu, KeyCode::Char('k'));
     assert_eq!(selected_label(&menu), "Memory");
     press(&mut menu, KeyCode::Up);
-    assert_eq!(selected_label(&menu), "summarize");
+    assert_eq!(selected_label(&menu), "Context");
 }
 
 #[test]
