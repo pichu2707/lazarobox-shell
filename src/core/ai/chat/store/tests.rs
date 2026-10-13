@@ -222,6 +222,7 @@ fn link_replies_do_not_change_where_the_conversation_is() {
             pane: pane(),
             conversation: 5,
             session_id: "lazarobox-00112233445566778899aabbccddeeff".into(),
+            project: "proj".into(),
         },
         StoreReply::LinkFailed {
             pane: pane(),

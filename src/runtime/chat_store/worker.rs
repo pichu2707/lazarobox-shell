@@ -135,10 +135,11 @@ impl Worker {
                     .ok()
                     .and_then(|conn| link_session(conn, conversation, &session_id, &project).ok());
                 Some(match reply {
-                    Some(session_id) => StoreReply::SessionLinked {
+                    Some((session_id, project)) => StoreReply::SessionLinked {
                         pane,
                         conversation,
                         session_id,
+                        project,
                     },
                     None => StoreReply::LinkFailed {
                         pane,
@@ -346,14 +347,14 @@ fn is_session_id(id: &str) -> bool {
     })
 }
 
-/// The session id of `conversation`: the stored one, else `session_id`, which
-/// is stored first.
+/// The `(session id, project)` of `conversation`: the stored pair, else the
+/// proposed one, which is stored first.
 fn link_session(
     conn: &mut Connection,
     conversation: i64,
     session_id: &str,
     project: &str,
-) -> Result<String, rusqlite::Error> {
+) -> Result<(String, String), rusqlite::Error> {
     if !is_session_id(session_id) {
         return Err(rusqlite::Error::InvalidParameterName("session id".into()));
     }
@@ -364,9 +365,9 @@ fn link_session(
         (conversation, session_id, clean(project)),
     )?;
     let stored = tx.query_row(
-        "SELECT session_id FROM memory_sessions WHERE conversation_id = ?1",
+        "SELECT session_id, project FROM memory_sessions WHERE conversation_id = ?1",
         [conversation],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     tx.commit()?;
     Ok(stored)

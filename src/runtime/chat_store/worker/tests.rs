@@ -804,6 +804,30 @@ fn the_same_session_id_is_returned_on_resume() {
 }
 
 #[test]
+fn a_resume_returns_the_stored_project_even_when_another_was_proposed() {
+    let (_dir, mut worker, _conn) = fixture();
+    let id = created_id(worker.handle(create(user("hi"), vec![])));
+    session_of(worker.handle(link_session(id, SESSION_A)));
+    // The caller may resume from another directory: engram rejects a project
+    // that differs from the registered one, so the stored pair wins.
+    let reply = worker.handle(StoreCmd::LinkSession {
+        pane: pane(),
+        conversation: id,
+        session_id: SESSION_B.into(),
+        project: "other".into(),
+    });
+    let Some(StoreReply::SessionLinked {
+        session_id,
+        project,
+        ..
+    }) = reply
+    else {
+        panic!("expected SessionLinked, got {reply:?}");
+    };
+    assert_eq!((session_id.as_str(), project.as_str()), (SESSION_A, "proj"));
+}
+
+#[test]
 fn a_session_id_that_is_not_ours_is_not_stored() {
     let (_dir, mut worker, conn) = fixture();
     let id = created_id(worker.handle(create(user("hi"), vec![])));

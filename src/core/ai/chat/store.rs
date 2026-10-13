@@ -47,7 +47,8 @@ pub enum StoreCmd {
         message: StoredMessage,
     },
     /// Reads or sets the engram session of a conversation: the stored id is
-    /// answered when there is one (a resume), else `session_id` is stored.
+    /// answered with its project when there is one (a resume), else
+    /// `session_id` and `project` are stored.
     /// Answered with `SessionLinked`, or `LinkFailed`.
     LinkSession {
         pane: PaneId,
@@ -91,12 +92,15 @@ pub enum StoreReply {
     },
     /// The store cannot be used at all; `reason` is already bounded.
     Unavailable { pane: PaneId, reason: String },
-    /// The session of a conversation: the stored id, which is the one just
-    /// proposed unless the conversation already had another.
+    /// The session of a conversation: the stored id and the project it was
+    /// registered with, which are the ones just proposed unless the
+    /// conversation already had a pair. The caller reuses both, because engram
+    /// rejects a session under another project (400 `session_project_mismatch`).
     SessionLinked {
         pane: PaneId,
         conversation: i64,
         session_id: String,
+        project: String,
     },
     /// A link could not be written. Nothing else was undone; the caller says
     /// so once if it wants to.
