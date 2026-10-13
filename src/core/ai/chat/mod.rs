@@ -489,7 +489,11 @@ impl ChatState {
                 content: all[i].text.clone(),
             })
             .collect();
-        let context = build_context(&history, history_chars(engine));
+        // The memory block shares the history budget: its characters come off
+        // the cap, and the newest message is kept whole whatever is left.
+        let memory = self.memory.injected().map(|block| block.text.clone());
+        let memory_chars = memory.as_ref().map_or(0, |text| text.chars().count());
+        let context = build_context(&history, history_chars(engine).saturating_sub(memory_chars));
         let oldest = sendable[history.len() - context.messages.len()];
         self.place_marker(oldest, context.omitted);
         self.turn += 1;
@@ -504,6 +508,7 @@ impl ChatState {
                 engine: engine.clone(),
                 model: model.clone(),
                 system: system.to_owned(),
+                memory,
                 messages: context.messages,
             },
         }
@@ -721,6 +726,8 @@ impl ChatState {
 
 #[cfg(test)]
 mod anchor_tests;
+#[cfg(test)]
+mod context_tests;
 #[cfg(test)]
 mod memory_tests;
 #[cfg(test)]

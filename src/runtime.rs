@@ -1460,6 +1460,7 @@ mod tests {
             engine: "ollama".into(),
             model: Some("llama3:8b".into()),
             system: String::new(),
+            memory: None,
             messages: Vec::new(),
         };
         let effects = vec![
@@ -2023,6 +2024,7 @@ mod tests {
             engine: "ollama".into(),
             model: Some("llama3:8b".into()),
             system: String::new(),
+            memory: None,
             messages: Vec::new(),
         }
     }

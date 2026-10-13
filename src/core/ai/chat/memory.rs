@@ -10,7 +10,7 @@ use super::{
     note::{NOTHING_TO_SAVE, NoteEditor},
     yank,
 };
-use crate::core::ai::memory::{port::SaveId, reply::ProjectError};
+use crate::core::ai::memory::{context::ContextBlock, port::SaveId, reply::ProjectError};
 
 /// The longest end-of-session summary, in characters.
 pub const END_SUMMARY_CAP: usize = 1000;
@@ -81,6 +81,8 @@ pub struct ChatMemory {
     saves_sent: u64,
     /// How many note editors this chat opened: the number of the open one.
     editors: u64,
+    /// The block the next turns carry, once the context reply arrived.
+    injected: Option<ContextBlock>,
 }
 
 impl ChatMemory {
@@ -96,7 +98,12 @@ impl ChatMemory {
             pending_saves: Vec::new(),
             saves_sent: 0,
             editors: 0,
+            injected: None,
         }
+    }
+
+    pub(super) fn injected(&self) -> Option<&ContextBlock> {
+        self.injected.as_ref()
     }
 }
 
@@ -152,6 +159,13 @@ impl ChatState {
             self.memory.readiness,
             Readiness::Resolving { want_note: true }
         )
+    }
+
+    /// The context reply of the view: the block the turns sent from now on
+    /// carry in their request. A turn already in flight keeps what it was
+    /// sent with, and the block is never part of the history.
+    pub fn inject_memory(&mut self, block: ContextBlock) {
+        self.memory.injected = Some(block);
     }
 
     /// The note editor, while it is open.

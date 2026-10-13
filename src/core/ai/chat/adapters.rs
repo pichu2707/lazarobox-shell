@@ -68,9 +68,20 @@ impl Adapter {
     }
 }
 
+/// The system text a server gets: the pinned prompt, then the memory block
+/// (the prompt, the workspace block and the memory block, in that order).
+/// Empty when there is neither.
+pub fn system_text(request: &ChatRequest) -> String {
+    match (request.system.is_empty(), request.memory.as_deref()) {
+        (_, None) => request.system.clone(),
+        (true, Some(memory)) => memory.to_owned(),
+        (false, Some(memory)) => format!("{}\n\n{memory}", request.system),
+    }
+}
+
 fn ollama_body(request: &ChatRequest) -> Vec<u8> {
-    let system =
-        (!request.system.is_empty()).then(|| json!({"role": "system", "content": request.system}));
+    let system = system_text(request);
+    let system = (!system.is_empty()).then(|| json!({"role": "system", "content": system}));
     let messages: Vec<Value> = system
         .into_iter()
         .chain(request.messages.iter().map(|m| {

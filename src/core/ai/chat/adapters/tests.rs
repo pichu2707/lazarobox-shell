@@ -15,6 +15,7 @@ fn request(system: &str) -> ChatRequest {
         engine: "ollama".into(),
         model: Some("llama3:8b".into()),
         system: system.into(),
+        memory: None,
         messages: vec![
             message(Role::User, "hi"),
             message(Role::Assistant, "hello"),
@@ -91,4 +92,45 @@ fn a_missing_model_is_sent_empty_so_the_server_answers_with_its_own_error() {
     req.model = None;
     let (_, _, _, body) = http(Adapter::Ollama.build(&req));
     assert_eq!(body["model"], "");
+}
+
+const BLOCK: &str = "<project-memory source=\"engram\" project=\"p\">\nx\n</project-memory>";
+
+#[test]
+fn ollama_appends_the_memory_block_to_the_system_message_after_the_prompt() {
+    let mut with_memory = request("be brief");
+    with_memory.memory = Some(BLOCK.into());
+    let (_, _, _, body) = http(Adapter::Ollama.build(&with_memory));
+    let messages = body["messages"].as_array().expect("messages");
+    assert_eq!(
+        messages[0],
+        json!({"role": "system", "content": format!("be brief\n\n{BLOCK}")})
+    );
+    assert_eq!(messages.len(), 4, "one system message, then the history");
+    assert!(
+        messages[1..]
+            .iter()
+            .all(|m| !m["content"].as_str().unwrap().contains("project-memory")),
+        "the block is not in the history"
+    );
+}
+
+#[test]
+fn a_memory_block_alone_is_the_whole_system_message() {
+    let mut with_memory = request("");
+    with_memory.memory = Some(BLOCK.into());
+    let (_, _, _, body) = http(Adapter::Ollama.build(&with_memory));
+    assert_eq!(
+        body["messages"][0],
+        json!({"role": "system", "content": BLOCK})
+    );
+}
+
+#[test]
+fn without_a_block_the_system_message_is_the_prompt_alone() {
+    let (_, _, _, body) = http(Adapter::Ollama.build(&request("be brief")));
+    assert_eq!(
+        body["messages"][0],
+        json!({"role": "system", "content": "be brief"})
+    );
 }
