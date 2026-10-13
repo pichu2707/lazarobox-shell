@@ -1042,16 +1042,35 @@ fn a_panicking_link_keeps_the_store_usable() {
         // The panic hits inside an open transaction, as a bug in a link would.
         let reply = worker.guarded_with(cmd, |w, _| {
             let conn = w.conn().unwrap();
-            let _tx = conn.transaction().unwrap();
+            let tx = conn.transaction().unwrap();
+            tx.execute(
+                "INSERT INTO memory_sessions VALUES (?1, ?2, 'proj')",
+                (id, SESSION_A),
+            )
+            .unwrap();
             panic!("handler bug")
         });
         assert!(matches!(reply, Some(StoreReply::LinkFailed { .. })));
     }
+    // Read from a separate connection: the write was rolled back.
     assert_eq!(count(&conn, "memory_sessions"), 0);
     // History stays available: the next Create and Append succeed.
     let again = created_id(worker.guarded(create(user("still here"), vec![])));
     assert!(worker.guarded(append(again, user("more"))).is_none());
     assert_eq!(rows(&conn, again).len(), 2);
+}
+
+#[test]
+fn a_link_panic_that_leaves_a_transaction_open_marks_the_store_unusable() {
+    let (_dir, mut worker, _conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    let reply = worker.guarded_with(link_note(id, "chat/decision/x", 7, "X"), |w, _| {
+        w.conn().unwrap().execute_batch("BEGIN").unwrap();
+        panic!("handler bug")
+    });
+    assert!(matches!(reply, Some(StoreReply::LinkFailed { .. })));
+    let after = worker.guarded(create(user("next"), vec![]));
+    assert!(matches!(after, Some(StoreReply::Unavailable { .. })));
 }
 
 #[test]

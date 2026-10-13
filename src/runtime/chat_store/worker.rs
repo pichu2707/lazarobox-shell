@@ -178,7 +178,9 @@ impl Worker {
     /// unusable: the command that panicked gets a reply (`Unavailable` for a
     /// `Create`, `Failed` for an `Append`) and every later `Create` answers
     /// `Unavailable`. A panic in a link command answers `LinkFailed` and keeps
-    /// an open connection, so one bad link does not take the history down. The
+    /// an open connection, so one bad link does not take the history down, but
+    /// only when the connection is back in autocommit (no transaction left
+    /// open); otherwise the store is marked unusable like the others. The
     /// thread keeps running so it still drains its queue and honours `Quit`.
     pub(crate) fn guarded(&mut self, cmd: StoreCmd) -> Option<StoreReply> {
         self.guarded_with(cmd, Self::handle)
@@ -201,10 +203,11 @@ impl Worker {
             Err(payload) => {
                 let reason = bounded_error(&panic_text(payload.as_ref()));
                 // A link runs in one transaction that rolled back on unwind, so
-                // an open connection is still sound and the history stays
-                // available; any other panic leaves it in an unknown state.
-                let keep =
-                    matches!(on_panic, Panicked::Link(_)) && matches!(self.conn, Some(Ok(_)));
+                // an open connection in autocommit is still sound and the
+                // history stays available; any other panic, or a link that
+                // left a transaction open, leaves it in an unknown state.
+                let keep = matches!(on_panic, Panicked::Link(_))
+                    && matches!(&self.conn, Some(Ok(conn)) if conn.is_autocommit());
                 if !keep {
                     self.conn = Some(Err(reason.clone()));
                 }

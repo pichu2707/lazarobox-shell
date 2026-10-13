@@ -30,7 +30,7 @@ The store MUST migrate from schema v1 to v2 in one additive transaction on first
 #### Scenario: A panic in a link keeps history available [auto]
 - GIVEN an open store and a link command that panics inside its transaction
 - WHEN the store thread answers
-- THEN the reply is `LinkFailed`, the transaction is rolled back, and the next conversation create and message append succeed (a panic in a create or an append still marks the store unusable for the run)
+- THEN the reply is `LinkFailed`, the transaction is rolled back, and, when the connection is back in autocommit (no transaction left open), the next conversation create and message append succeed; a link panic that leaves a transaction open, like a panic in a create or an append, marks the store unusable for the run
 
 #### Scenario: Old build refuses v2 [auto]
 - GIVEN a v2 database and a store opener that supports only v1
