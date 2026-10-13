@@ -443,3 +443,16 @@ fn the_new_notices_are_fixed_text() {
     assert_eq!(cannot_summarize("x"), "Cannot summarize: x");
     let _ = Readiness::Unknown;
 }
+
+#[test]
+fn a_yank_during_the_summary_run_copies_the_newest_answer() {
+    let mut state = talked();
+    let turn = started(&mut state);
+    state.apply(turn, StreamEvent::Delta("the summary so far".into()));
+    assert_eq!(state.phase(), Phase::Streaming);
+    assert_eq!(
+        super::yank::last_answer(&state).as_deref(),
+        Some("second a"),
+        "the summary text is not a message, so nothing is skipped"
+    );
+}
