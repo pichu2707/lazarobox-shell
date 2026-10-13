@@ -136,7 +136,7 @@ The chat-view hook that shows the prompt lands in M6 (and the memory keys in M7b
 - [x] 7.4 RED: re-probe before spawn adopts a ready server with zero spawns; bind-failure exit plus ready server is adopted with one spawn only; spawn that exits 1 with nothing answering gives `could not start engram` plus the sanitized last log line (at most 120 chars) and no further spawn; success shows `started engram serve (pid N); it keeps running after lazarobox quits`; no signal is ever sent on pane close or quit.
 - [x] 7.5 GREEN: `MemCmd::StartServer`, `serve.rs` (`pre_exec` calls only `setsid()`, 100 ms poll for 3 s, reaper task, `kill_on_drop(false)`).
 - [ ] 7.6 [manual] Real start: in a shell with `ENGRAM_DATA_DIR=<temp dir>` and the config `port` set to a spare port (never 7437), confirm the offer; quit lazarobox; `engram serve` still answers `/health`; kill it and remove the dir afterwards.
-- [ ] 7.7 Gate.
+- [x] 7.7 Gate.
 
 ## PR8 / M7a: chat.db v2 and eviction count (`src/runtime/chat_store.rs`, `chat_store/worker.rs`, `src/core/ai/chat/store.rs`)
 
