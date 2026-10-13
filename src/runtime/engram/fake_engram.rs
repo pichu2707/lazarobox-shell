@@ -242,6 +242,7 @@ mod tests {
             session: session.clone(),
             project: "widget".into(),
             summary: "Decided Axum.".into(),
+            cwd: None,
         });
         link.shutdown(Duration::from_secs(1)).await;
 

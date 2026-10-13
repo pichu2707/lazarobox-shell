@@ -1064,6 +1064,7 @@ fn end(summary: &str) -> Effect {
         session: SESSION.into(),
         project: PROJECT.into(),
         summary: summary.into(),
+        cwd: None,
     })
 }
 

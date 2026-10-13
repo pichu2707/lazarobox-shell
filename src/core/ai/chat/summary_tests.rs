@@ -481,6 +481,10 @@ fn the_incomplete_hint_joins_the_other_hints() {
     let turn = started(&mut state);
     state.apply(turn, StreamEvent::Delta("password=hunter2".into()));
     state.apply(turn, StreamEvent::Error(ChatError::Truncated));
-    let hint = state.summary_draft().expect("a draft").hint().expect("hint");
+    let hint = state
+        .summary_draft()
+        .expect("a draft")
+        .hint()
+        .expect("hint");
     assert_eq!(hint, format!("1 secret redacted · {STREAM_CUT}"));
 }

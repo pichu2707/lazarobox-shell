@@ -13,6 +13,7 @@ use crate::core::ai::{
         engine::{ChatError, ChatRequest, Finish, Role, StreamEvent},
         memory::Readiness,
         note::{MEMORY_CHECKING, MEMORY_OFF, not_ready},
+        store::{StoreCmd, StoreReply},
         summary::{
             INSTRUCTION, KEPT, NOTHING_TO_SUMMARIZE, REDACTED_AGAIN, SUMMARY_BUSY, SUMMARY_PROMPT,
         },
@@ -430,12 +431,29 @@ fn memory_turned_off_with_the_draft_open_refuses_the_approval() {
 
 // 11.3: the session end ------------------------------------------------------
 
+/// The end of a chat that wrote notes and approved no summary.
 fn end(summary: &str) -> Effect {
     Effect::Memory(MemCmd::End {
         session: SESSION.into(),
         project: PROJECT.into(),
         summary: summary.into(),
+        cwd: None,
     })
+}
+
+/// The end that carries an approved summary: the worker may register the
+/// session first.
+fn end_summary(summary: &str) -> Effect {
+    Effect::Memory(MemCmd::End {
+        session: SESSION.into(),
+        project: PROJECT.into(),
+        summary: summary.into(),
+        cwd: Some(CWD.into()),
+    })
+}
+
+fn fixed_session() -> Option<String> {
+    Some(SESSION.to_owned())
 }
 
 /// A chat that saved the note `A` into the session.
@@ -468,7 +486,7 @@ fn the_end_at_close_carries_the_latest_approved_summary_once() {
         .iter()
         .filter(|e| matches!(e, Effect::Memory(MemCmd::End { .. })))
         .collect();
-    assert_eq!(ends, [&end("second")], "{effects:?}");
+    assert_eq!(ends, [&end_summary("second")], "{effects:?}");
 }
 
 #[test]
@@ -478,7 +496,7 @@ fn quit_carries_the_summary_too() {
     press(&mut a, "q");
     assert_eq!(
         a.update(key('y')),
-        vec![end("We chose Axum."), Effect::Quit]
+        vec![end_summary("We chose Axum."), Effect::Quit]
     );
 }
 
@@ -493,12 +511,99 @@ fn a_discarded_summary_leaves_the_titles_at_close() {
     assert_eq!(a.update(key('y')), vec![end("Notes: A"), Effect::Quit]);
 }
 
+// An approved summary in a chat with no note still reaches engram: the session
+// is registered at close, as part of the End.
+
 #[test]
-fn a_summary_without_a_session_sends_nothing_at_close() {
+fn a_summary_alone_registers_a_session_and_ends_it_at_close() {
+    let mut a = ready_chat().with_session_ids(fixed_session);
+    approve_summary(&mut a, "alone");
+    // Approval sends nothing and takes no session yet.
+    assert_eq!(chat_of(&a).session(), None);
+    press(&mut a, "q");
+    assert_eq!(a.update(key('y')), vec![end_summary("alone"), Effect::Quit]);
+}
+
+#[test]
+fn a_summary_alone_links_the_new_session_once_the_conversation_exists() {
+    let mut a = ready_chat().with_session_ids(fixed_session);
+    a.update(AppEvent::Store(StoreReply::Created {
+        pane: chat_id(),
+        conversation: 7,
+        evicted: false,
+        evicted_notes: 0,
+    }));
+    approve_summary(&mut a, "alone");
+    press(&mut a, "q");
+    assert_eq!(
+        a.update(key('y')),
+        vec![
+            Effect::Store(StoreCmd::LinkSession {
+                pane: chat_id(),
+                conversation: 7,
+                session_id: SESSION.into(),
+                project: PROJECT.into(),
+            }),
+            end_summary("alone"),
+            Effect::Quit
+        ]
+    );
+}
+
+#[test]
+fn a_summary_alone_in_a_closed_pane_ends_once() {
+    let mut a = ready_chat().with_session_ids(fixed_session);
+    approve_summary(&mut a, "alone");
+    press(&mut a, "wq");
+    let effects = a.update(key('y'));
+    assert_eq!(ends_in(&effects), 1, "{effects:?}");
+    assert!(effects.contains(&end_summary("alone")), "{effects:?}");
+}
+
+#[test]
+fn a_summary_alone_keeps_the_pair_the_store_holds() {
+    let mut a =
+        ready_chat().with_session_ids(|| Some("lazarobox-ffffffffffffffffffffffffffffffff".into()));
+    a.update(AppEvent::Store(StoreReply::SessionLinked {
+        pane: chat_id(),
+        conversation: 7,
+        session_id: SESSION.into(),
+        project: PROJECT.into(),
+    }));
+    approve_summary(&mut a, "alone");
+    press(&mut a, "q");
+    assert_eq!(a.update(key('y')), vec![end_summary("alone"), Effect::Quit]);
+}
+
+#[test]
+fn a_summary_alone_with_memory_off_before_close_sends_nothing() {
+    let a = ready_chat().with_session_ids(fixed_session);
+    let mut a = a.with_ai(ai(true));
+    approve_summary(&mut a, "alone");
+    let mut a = a.with_ai(ai(false));
+    press(&mut a, "q");
+    assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+
+    let mut b = ready_chat().with_session_ids(fixed_session);
+    approve_summary(&mut b, "alone");
+    b.memory_turned_off();
+    press(&mut b, "q");
+    assert_eq!(b.update(key('y')), vec![Effect::Quit]);
+}
+
+#[test]
+fn a_summary_alone_without_a_session_id_sends_nothing() {
     let mut a = ready_chat();
     approve_summary(&mut a, "alone");
     press(&mut a, "q");
     assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+}
+
+#[test]
+fn a_chat_with_notes_and_no_summary_never_asks_for_a_session_id() {
+    let mut a = wrote_one().with_session_ids(|| panic!("no new id is needed"));
+    press(&mut a, "q");
+    assert_eq!(a.update(key('y')), vec![end("Notes: A"), Effect::Quit]);
 }
 
 #[test]

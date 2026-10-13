@@ -40,11 +40,15 @@ pub enum MemCmd {
         cwd: String,
         note: Note,
     },
-    /// End a registered session with its summary.
+    /// End a session with its summary. `cwd` is set when the end carries a
+    /// summary the user approved: a session no note registered (or the server
+    /// forgot) is registered first, with `cwd` as its directory. Without it,
+    /// only a registered session is ended.
     End {
         session: String,
         project: String,
         summary: String,
+        cwd: Option<String>,
     },
     /// Delete notes, each `(project, observation id)`, with the user's token.
     Delete {
@@ -282,6 +286,7 @@ mod tests {
                 session: "s".into(),
                 project: "p".into(),
                 summary: "x".into(),
+                cwd: None,
             },
             MemCmd::Delete {
                 pane,
@@ -379,6 +384,7 @@ mod tests {
             session: "s".into(),
             project: "p".into(),
             summary: "x".into(),
+            cwd: None,
         };
         assert_eq!(end.pane(), None);
         let busy = |pane| MemReply::Unavailable {

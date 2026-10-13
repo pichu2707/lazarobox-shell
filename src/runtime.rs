@@ -136,6 +136,7 @@ pub async fn run() -> io::Result<()> {
     let mut app = app_from_config(cols, rows, config_path.as_deref(), engram_port.as_deref())
         .with_hostname(local_hostname().as_deref())
         .with_dir_check(|dir| dir.is_dir())
+        .with_session_ids(engram::worker::new_session_id)
         .with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
     let (id, spec) = app.initial_spawn();
 

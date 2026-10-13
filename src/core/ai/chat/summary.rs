@@ -378,6 +378,24 @@ impl ChatState {
         self.draft = None;
     }
 
+    /// An approved summary in a chat that wrote no note has no session to end
+    /// yet: takes the one `new_id` gives, under the chat's project. A session
+    /// the chat already holds (its notes', or the pair the store kept) wins.
+    /// Returns whether the session is new. Nothing is sent: the worker
+    /// registers it with the end.
+    pub fn adopt_summary_session(&mut self, new_id: impl FnOnce() -> Option<String>) -> bool {
+        if self.approved_summary.is_none() || self.session().is_some() {
+            return false;
+        }
+        let Some(project) = self.project().map(str::to_owned) else {
+            return false;
+        };
+        match new_id() {
+            Some(id) => self.adopt_session(&id, &project),
+            None => false,
+        }
+    }
+
     /// Forgets the kept summary: it will not go out with the session end.
     pub fn drop_approved_summary(&mut self) {
         self.approved_summary = None;

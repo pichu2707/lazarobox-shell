@@ -1008,6 +1008,7 @@ async fn an_end_still_goes_out_after_a_panic() {
         session: session.clone(),
         project: "widget".into(),
         summary: "x".into(),
+        cwd: None,
     });
     rig.link.shutdown(Duration::from_secs(1)).await;
     assert_eq!(rig.fake.count(&format!("POST /sessions/{session}/end")), 1);
@@ -1039,6 +1040,7 @@ async fn quit_flushes_a_pending_end() {
         session: session.clone(),
         project: "widget".into(),
         summary: "Decided Axum.".into(),
+        cwd: None,
     });
     rig.link.shutdown(Duration::from_secs(1)).await;
     assert_eq!(rig.fake.count(&format!("POST /sessions/{session}/end")), 1);
@@ -1053,6 +1055,7 @@ async fn an_end_is_sent_once_and_only_for_a_registered_session() {
         session: s.into(),
         project: "widget".into(),
         summary: "x".into(),
+        cwd: None,
     };
     rig.link.send(end(&session));
     rig.link.send(end(&session));
@@ -1060,6 +1063,60 @@ async fn an_end_is_sent_once_and_only_for_a_registered_session() {
         .send(end("lazarobox-00000000000000000000000000000000"));
     rig.link.shutdown(Duration::from_secs(1)).await;
     assert_eq!(rig.fake.count("POST /sessions/"), 1);
+}
+
+const FRESH: &str = "lazarobox-00000000000000000000000000000000";
+
+fn end_with(session: &str, cwd: Option<&str>) -> MemCmd {
+    MemCmd::End {
+        session: session.into(),
+        project: "widget".into(),
+        summary: "Decided Axum.".into(),
+        cwd: cwd.map(Into::into),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_end_with_a_cwd_registers_an_unknown_session_then_ends_it() {
+    let rig = up();
+    rig.link.send(end_with(FRESH, Some("/srv/app")));
+    rig.link.shutdown(Duration::from_secs(1)).await;
+    let keys = rig.fake.keys();
+    let register = keys.iter().position(|k| k == "POST /sessions");
+    let end = keys
+        .iter()
+        .position(|k| *k == format!("POST /sessions/{FRESH}/end"));
+    assert!(
+        matches!((register, end), (Some(r), Some(e)) if r < e),
+        "{keys:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_end_with_a_cwd_goes_nowhere_when_the_server_is_down_or_refuses() {
+    let rig = rig(Mode::Down);
+    rig.link.send(end_with(FRESH, Some("/srv/app")));
+    rig.link.shutdown(Duration::from_secs(1)).await;
+    assert_eq!(rig.fake.count("POST /sessions"), 0);
+
+    let rig = up();
+    rig.fake
+        .on("POST /sessions", Act::Reply(500, b"{}".to_vec()));
+    rig.link.send(end_with(FRESH, Some("/srv/app")));
+    rig.link.shutdown(Duration::from_secs(1)).await;
+    assert_eq!(
+        rig.fake.count(&format!("POST /sessions/{FRESH}/end")),
+        0,
+        "not registered, so not ended"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_end_without_a_cwd_still_needs_a_registered_session() {
+    let rig = up();
+    rig.link.send(end_with(FRESH, None));
+    rig.link.shutdown(Duration::from_secs(1)).await;
+    assert_eq!(rig.fake.count("POST /sessions"), 0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1072,6 +1129,7 @@ async fn quit_against_a_server_that_never_answers_is_bounded_by_one_second() {
         session,
         project: "widget".into(),
         summary: "x".into(),
+        cwd: None,
     });
     let start = Instant::now();
     rig.link.shutdown(Duration::from_secs(1)).await;
