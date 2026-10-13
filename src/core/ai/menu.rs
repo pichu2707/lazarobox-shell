@@ -3,7 +3,7 @@
 
 use super::{
     Detection,
-    config::{AiConfig, Assignment, Task},
+    config::{AiConfig, Assignment, Profile, Task},
     picker::{Outcome, PickRow, Picker, Target, task_label},
 };
 
@@ -87,6 +87,28 @@ impl AiMenu {
         .filter(|(_, old, new)| old != new)
         .map(|(key, _, new)| (key, new))
         .collect()
+    }
+
+    /// Moves the draft profile to the next (or previous) one, wrapping.
+    pub fn cycle_profile(&mut self, forward: bool) {
+        let next = self.draft.profile().cycled(forward);
+        self.draft.set_profile(next);
+    }
+
+    /// The profile in the draft, and whether it differs from the open one.
+    pub fn changed_profile(&self) -> Option<Profile> {
+        (self.draft.profile() != self.original.profile()).then(|| self.draft.profile())
+    }
+
+    /// Flips the context flag of the draft.
+    pub fn toggle_context(&mut self) {
+        let next = !self.draft.context();
+        self.draft.set_context(next);
+    }
+
+    /// The context flag in the draft, when it differs from the open one.
+    pub fn changed_context(&self) -> Option<bool> {
+        (self.draft.context() != self.original.context()).then(|| self.draft.context())
     }
 
     /// Replaces the detection. The draft is never touched.

@@ -65,10 +65,11 @@ impl ConfigEdit {
     }
 
     /// Whether the key is a TOML boolean (written as `true` / `false`, not
-    /// as a string). Only the memory flags are; `ai.memory.port` is owned but
-    /// never edited.
+    /// as a string): the memory flags and `ai.context`. Every other owned key
+    /// holds a string; `ai.memory.port` is owned but never edited.
     pub fn is_flag(&self) -> bool {
-        self.table == MEMORY_TABLE && matches!(self.key, "enabled" | "acknowledged")
+        (self.table == MEMORY_TABLE && matches!(self.key, "enabled" | "acknowledged"))
+            || (self.table == "ai" && self.key == "context")
     }
 }
 
@@ -525,6 +526,66 @@ mod tests {
             notice.as_deref(),
             Some("config (3 problems): mouse: expected true or false")
         );
+    }
+
+    // Spec (configuration): Unknown profile value; Non-string profile; the
+    // other keys of the file are respected.
+    #[test]
+    fn a_bad_profile_gives_one_notice_and_keeps_the_rest() {
+        use crate::core::ai::config::Profile;
+        let text =
+            "[ai]\nprofile = \"wizard\"\nengine = \"ollama\"\n[tabbar]\nposition = \"bottom\"";
+        let (config, loaded, notice) = Config::load_with_ai(Ok(text.into()), None);
+        assert_eq!(config.bars.tabbar, Bottom);
+        assert_eq!(loaded.profile(), Profile::Programmer);
+        assert_eq!(
+            loaded
+                .get(crate::core::ai::config::Task::General)
+                .engine
+                .as_deref(),
+            Some("ollama")
+        );
+        assert_eq!(
+            notice.as_deref(),
+            Some("config: ai.profile: expected \"analyst\" or \"programmer\"")
+        );
+        let (_, _, notice) = Config::load_with_ai(Ok("[ai]\nprofile = 3".into()), None);
+        assert_eq!(
+            notice.as_deref(),
+            Some("config: ai.profile: expected a string")
+        );
+    }
+
+    // Spec (configuration): a valid profile never raises a notice.
+    #[test]
+    fn a_valid_profile_raises_no_notice() {
+        use crate::core::ai::config::Profile;
+        for (value, want) in [
+            ("analyst", Profile::Analyst),
+            ("programmer", Profile::Programmer),
+            ("", Profile::Programmer),
+        ] {
+            let (_, loaded, notice) =
+                Config::load_with_ai(Ok(format!("[ai]\nprofile = \"{value}\"")), None);
+            assert_eq!((loaded.profile(), notice), (want, None), "{value:?}");
+        }
+    }
+
+    // Spec (configuration): the profile counts with the other problems.
+    #[test]
+    fn a_profile_problem_counts_with_the_others() {
+        let text = "[statusline]\nposition = \"middle\"\n[ai]\nprofile = 3";
+        let (_, _, notice) = Config::load_with_ai(Ok(text.into()), None);
+        assert_eq!(
+            notice.as_deref(),
+            Some("config (2 problems): statusline.position: expected \"top\" or \"bottom\"")
+        );
+        let (_, loaded, notice) = Config::load_with_ai(Ok("ai = 3\n".into()), None);
+        assert_eq!(
+            loaded.profile(),
+            crate::core::ai::config::Profile::Programmer
+        );
+        assert_eq!(notice.as_deref(), Some("config: ai: expected a table"));
     }
 
     // Spec: File location.

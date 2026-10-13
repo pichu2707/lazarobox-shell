@@ -12,9 +12,10 @@ use crate::core::{
         chat::{
             ChatState, Follow, Phase,
             engine::{ChatRequest, StreamEvent},
+            prompts::Resolved,
             store::{StoreCmd, StoreReply},
         },
-        config::{AiConfig, Task},
+        config::{AiConfig, Profile, Task},
         jail::JailSupport,
         memory::port::{MemCmd, MemReply},
     },
@@ -128,6 +129,10 @@ pub enum AppEvent {
     Memory(MemReply),
     /// The store thread answered a command of a pane.
     Store(StoreReply),
+    /// The runtime prepared the system prompt of a chat pane (see
+    /// `Effect::PreparePrompt`): the resolved prompt with the workspace
+    /// block, and the notices of the override files it skipped.
+    PromptReady(PaneId, Resolved),
     /// One step of the thinking-indicator animation. The runtime sends it
     /// only while a chat stream runs.
     AnimTick,
@@ -173,6 +178,16 @@ pub enum Effect {
     Memory(MemCmd),
     /// A command for the store thread. It never waits for the database.
     Store(StoreCmd),
+    /// Resolve the system prompt of a conversation just started in `pane`:
+    /// the override files of `profile` for the chat task, then the built-in,
+    /// plus the workspace block of `origin` when `context` is set. Reads the
+    /// disk off the UI thread; the runtime answers with one `PromptReady`.
+    PreparePrompt {
+        pane: PaneId,
+        profile: Profile,
+        origin: Option<PathBuf>,
+        context: bool,
+    },
     Quit,
 }
 
@@ -265,7 +280,7 @@ pub enum PaneView<'a> {
 /// The kind of pane a split or a new tab creates.
 enum NewPane {
     Shell,
-    Chat(ChatState),
+    Chat(Box<ChatState>),
 }
 
 /// A pane's content and the size it was last laid out at (for a PTY pane, the
@@ -797,7 +812,7 @@ impl App {
     /// Test-only: opens a chat pane to the right of the focus.
     #[cfg(test)]
     pub(crate) fn open_chat(&mut self, origin: Option<PathBuf>) -> Vec<Effect> {
-        self.split_with(Axis::X, NewPane::Chat(ChatState::new(origin)))
+        self.split_with(Axis::X, NewPane::Chat(Box::new(ChatState::new(origin))))
     }
 
     /// Test-only: sends `text` from chat pane `id` to a ready ollama engine.
@@ -851,7 +866,7 @@ impl App {
     /// Test-only: opens a chat pane as a new tab.
     #[cfg(test)]
     fn open_chat_tab(&mut self, origin: Option<PathBuf>) -> Vec<Effect> {
-        self.new_tab_with(NewPane::Chat(ChatState::new(origin)))
+        self.new_tab_with(NewPane::Chat(Box::new(ChatState::new(origin))))
     }
 
     /// What the UI draws for pane `id`, if it exists.
@@ -921,6 +936,7 @@ impl App {
             AppEvent::Memory(reply) => self.on_memory(&reply),
             // The chat pane consumes the replies once it saves its messages.
             AppEvent::Store(_) => Vec::new(),
+            AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
         };
         debug_assert_eq!(
@@ -1238,6 +1254,7 @@ impl App {
     fn drop_tab(&mut self, index: usize) -> Vec<Effect> {
         for id in self.tabs.remove(index).tree.leaves() {
             self.panes.remove(&id);
+            self.drop_parked_send(id);
         }
         if index == self.active {
             self.active = index.min(self.tabs.len() - 1);
@@ -1295,7 +1312,7 @@ impl App {
     fn new_state(&self, kind: NewPane, size: PaneSize) -> PaneState {
         match kind {
             NewPane::Shell => PaneState::new(size, self.hostname.as_deref()),
-            NewPane::Chat(chat) => PaneState::chat(size, chat),
+            NewPane::Chat(chat) => PaneState::chat(size, *chat),
         }
     }
 
@@ -1379,6 +1396,7 @@ impl App {
             Removal::WasLast => self.drop_tab(t),
             Removal::Removed => {
                 self.panes.remove(&id);
+                self.drop_parked_send(id);
                 self.tabs[t].zoom = false;
                 if id == self.tabs[t].focus {
                     let tiling = tile(&self.tabs[t].tree, body);
@@ -5900,6 +5918,116 @@ mod app_tests {
         let menu = a.menu().expect("the menu stays open");
         assert!(!menu.in_warning());
         assert!(!menu.ai_draft().memory.enabled);
+    }
+
+    /// Moves the menu selection to the `Context` row (before `Memory`, the
+    /// last one).
+    fn to_context_row(a: &mut App) {
+        a.update(key('k'));
+        a.update(key('k'));
+    }
+
+    /// Moves the menu selection to the `Profile` row (before `Context`).
+    fn to_profile_row(a: &mut App) {
+        a.update(key('k'));
+        a.update(key('k'));
+        a.update(key('k'));
+    }
+
+    // Spec (config-menu): Profile row. Cycling is silent, `s` saves only the
+    // profile key, and the saved value becomes the app's profile.
+    #[test]
+    fn the_profile_row_saves_only_the_profile_and_updates_the_app() {
+        use crate::core::ai::config::Profile;
+        let mut a = ai_app();
+        open_menu(&mut a);
+        to_profile_row(&mut a);
+        assert_eq!(a.update(key('l')), Vec::<Effect>::new(), "no ResizePty");
+        assert_eq!(a.update(code(KeyCode::Enter)), Vec::<Effect>::new());
+        assert_eq!(a.update(key('h')), Vec::<Effect>::new());
+        assert_eq!(a.menu().unwrap().ai_draft().profile(), Profile::Analyst);
+        assert_eq!(a.ai().profile(), Profile::Programmer, "not saved yet");
+        let edit = ConfigEdit {
+            table: "ai",
+            key: "profile",
+            value: "analyst".into(),
+        };
+        assert_eq!(a.update(key('s')), vec![Effect::SaveConfig(vec![edit])]);
+        a.update(AppEvent::ConfigSaved);
+        assert!(a.menu().is_none());
+        assert_eq!(a.ai().profile(), Profile::Analyst);
+        let general = crate::core::ai::config::Task::General;
+        assert_eq!(
+            a.ai().get(general),
+            ai_of("ollama", "qwen2:7b").get(general)
+        );
+    }
+
+    // Spec (config-menu): Esc restores the profile captured at open.
+    #[test]
+    fn esc_reverts_the_profile_draft() {
+        use crate::core::ai::config::Profile;
+        let mut a = ai_app();
+        open_menu(&mut a);
+        to_profile_row(&mut a);
+        a.update(key('l'));
+        assert_eq!(a.menu().unwrap().ai_draft().profile(), Profile::Analyst);
+        a.update(esc());
+        assert!(a.menu().is_none());
+        assert_eq!(a.ai().profile(), Profile::Programmer);
+        open_menu(&mut a);
+        assert_eq!(a.menu().unwrap().ai_draft().profile(), Profile::Programmer);
+    }
+
+    // Spec (Context toggle): `s` saves only the context key and the saved
+    // value becomes the app's flag.
+    #[test]
+    fn the_context_row_saves_only_the_flag_and_updates_the_app() {
+        let mut a = ai_app();
+        assert!(a.ai().context());
+        open_menu(&mut a);
+        to_context_row(&mut a);
+        assert_eq!(a.update(key('l')), Vec::<Effect>::new(), "no ResizePty");
+        assert!(!a.menu().unwrap().ai_draft().context());
+        assert!(a.ai().context(), "not saved yet");
+        let edit = ConfigEdit {
+            table: "ai",
+            key: "context",
+            value: "false".into(),
+        };
+        assert_eq!(a.update(key('s')), vec![Effect::SaveConfig(vec![edit])]);
+        a.update(AppEvent::ConfigSaved);
+        assert!(a.menu().is_none());
+        assert!(!a.ai().context());
+    }
+
+    // Spec (Context toggle): Esc restores the flag captured at open.
+    #[test]
+    fn esc_reverts_the_context_draft() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        to_context_row(&mut a);
+        a.update(key('l'));
+        a.update(esc());
+        assert!(a.menu().is_none());
+        assert!(a.ai().context());
+        open_menu(&mut a);
+        assert!(a.menu().unwrap().ai_draft().context());
+    }
+
+    // Spec (config-menu): an unchanged profile does not touch the file.
+    #[test]
+    fn an_untouched_profile_saves_nothing() {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        to_profile_row(&mut a);
+        a.update(key('l'));
+        a.update(key('l'));
+        let effects = a.update(key('s'));
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::SaveConfig(_))),
+            "{effects:?}"
+        );
     }
 
     // Spec: a failed save keeps the picker where it was.

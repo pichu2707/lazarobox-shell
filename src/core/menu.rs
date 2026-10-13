@@ -32,6 +32,12 @@ pub enum ItemKind {
     Disabled,
     /// An AI assignment row; `None` is `Set all tasks`.
     Assign(Option<Task>),
+    /// The AI profile: a static choice (`ai.profile`) that lives in the AI
+    /// draft, not in the live [`Config`].
+    Profile,
+    /// The workspace context flag (`ai.context`): an on/off row that lives in
+    /// the AI draft, like [`ItemKind::Profile`].
+    Context,
     /// The memory opt-in row: a static `off`/`on` item over the AI draft.
     /// Turning it on without the acknowledgement opens the privacy warning.
     Memory(MemoryRow),
@@ -131,6 +137,14 @@ pub static AI_SECTION: Section = Section {
             kind: ItemKind::Assign(Some(Task::Summarize)),
         },
         Item {
+            label: "Profile",
+            kind: ItemKind::Profile,
+        },
+        Item {
+            label: "Context",
+            kind: ItemKind::Context,
+        },
+        Item {
             label: "Memory",
             kind: ItemKind::Memory(MemoryRow {
                 table: MEMORY_TABLE,
@@ -148,7 +162,11 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
         .flat_map(|section| section.items.iter())
         .filter_map(|item| match &item.kind {
             ItemKind::Choice(choice) => Some((item, choice)),
-            ItemKind::Disabled | ItemKind::Assign(_) | ItemKind::Memory(_) => None,
+            ItemKind::Disabled
+            | ItemKind::Assign(_)
+            | ItemKind::Profile
+            | ItemKind::Context
+            | ItemKind::Memory(_) => None,
         })
 }
 
@@ -156,10 +174,27 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
 pub const CHROME: u16 = 4;
 /// With the AI section the body is fixed: the popup never jumps between the
 /// task list, the picker (a title and `VIEW` rows) and the privacy warning.
-/// The task list is the tallest: two titles, three settings, the six task
-/// rows and `Memory` (`Profile` adds one more row when ai-chat lands it); a
-/// test keeps this equal to the tallest AI view.
-pub const AI_BODY: usize = 12;
+/// The task list is the tallest view: a title row per section, then every
+/// settings row and every AI row. Derived from the descriptor tables, so
+/// adding a row grows the popup instead of overflowing it; a test keeps this
+/// equal to the tallest AI view.
+pub const AI_BODY: usize = ai_body();
+
+/// Rows of the task list: the section titles (those of `SECTIONS` and `AI`)
+/// plus every item.
+const fn ai_body() -> usize {
+    let mut rows = SECTIONS.len() + 1 + AI_SECTION.items.len();
+    let mut i = 0;
+    while i < SECTIONS.len() {
+        rows += SECTIONS[i].items.len();
+        i += 1;
+    }
+    rows
+}
+const _: () = assert!(
+    crate::core::ai::picker::VIEW < AI_BODY,
+    "a picker must fit the fixed body"
+);
 /// Smallest width that still shows the full popup.
 pub const MIN_WIDTH: u16 = 24;
 
@@ -313,34 +348,40 @@ impl MenuState {
         self.ai.is_some()
     }
 
-    /// Whether the selection is on an AI task row.
+    /// The descriptor kind under the selection. Rows are found by kind, never
+    /// by a position in the AI section, so a row can be added there without
+    /// touching the key handling.
+    fn selected_kind(&self) -> Option<&'static ItemKind> {
+        let index = self.selected?;
+        match index.checked_sub(choices().count()) {
+            None => choices().nth(index).map(|(item, _)| &item.kind),
+            Some(n) if self.ai.is_some() => AI_SECTION.items.get(n).map(|item| &item.kind),
+            Some(_) => None,
+        }
+    }
+
+    /// Whether the selection is on an AI task row (the ones with a picker).
     pub fn on_ai_row(&self) -> bool {
-        self.ai.is_some()
-            && self
-                .selected
-                .is_some_and(|index| index >= choices().count())
+        matches!(self.selected_kind(), Some(ItemKind::Assign(_)))
     }
 
     /// Whether the selection is on the `Memory` row.
     pub fn on_memory_row(&self) -> bool {
-        let Some(first) = self.selected.and_then(|i| i.checked_sub(choices().count())) else {
-            return false;
-        };
-        self.ai.is_some()
-            && AI_SECTION
-                .items
-                .get(first)
-                .is_some_and(|item| matches!(item.kind, ItemKind::Memory(_)))
+        matches!(self.selected_kind(), Some(ItemKind::Memory(_)))
+    }
+
+    /// Whether the selection is on a row of the AI draft that is not a
+    /// task: `Profile`, `Context` or `Memory`.
+    fn on_draft_row(&self) -> bool {
+        matches!(
+            self.selected_kind(),
+            Some(ItemKind::Profile | ItemKind::Context | ItemKind::Memory(_))
+        )
     }
 
     /// Whether the privacy warning is shown over the menu.
     pub fn in_warning(&self) -> bool {
         self.ai.as_ref().is_some_and(AiMenu::warning)
-    }
-
-    /// Whether the selection is on a task row (an assignment, not `Memory`).
-    fn on_task_row(&self) -> bool {
-        self.on_ai_row() && !self.on_memory_row()
     }
 
     /// The privacy warning that replaces the rows while it is open.
@@ -369,7 +410,7 @@ impl MenuState {
         MenuCommand::None
     }
 
-    /// Selectable rows: the settings, then the AI rows.
+    /// Selectable rows: the settings, then every AI row.
     fn selectable(&self) -> usize {
         choices().count()
             + if self.ai.is_some() {
@@ -417,9 +458,14 @@ impl MenuState {
 
     /// The target of the selected AI row.
     fn selected_target(&self) -> Option<Target> {
-        match self.selected?.checked_sub(choices().count())? {
-            0 => Some(Target::All),
-            n => Task::ALL.get(n - 1).map(|task| Target::Task(*task)),
+        match self.selected_kind()? {
+            ItemKind::Assign(None) => Some(Target::All),
+            ItemKind::Assign(Some(task)) => Some(Target::Task(*task)),
+            ItemKind::Choice(_)
+            | ItemKind::Disabled
+            | ItemKind::Profile
+            | ItemKind::Context
+            | ItemKind::Memory(_) => None,
         }
     }
 
@@ -441,6 +487,31 @@ impl MenuState {
                         let row = Row::Item {
                             label: item.label,
                             value: self.ai.as_ref().map(|ai| Cow::Owned(ai.value(*task))),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Profile => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self
+                                .ai
+                                .as_ref()
+                                .map(|ai| Cow::Borrowed(ai.draft().profile().id())),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Context => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self.ai.as_ref().map(|ai| {
+                                Cow::Borrowed(if ai.draft().context() { "on" } else { "off" })
+                            }),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
@@ -507,9 +578,11 @@ impl MenuState {
             KeyCode::Char('l' | ' ') | KeyCode::Right => self.cycle(true, config),
             KeyCode::Char('h') | KeyCode::Left => self.cycle(false, config),
             KeyCode::Char('s') if !repeat => MenuCommand::Save,
-            KeyCode::Char('r') if !repeat && self.on_task_row() => MenuCommand::Refresh,
-            KeyCode::Enter if !repeat && self.on_task_row() => self.open_picker(),
-            KeyCode::Enter if repeat && self.on_ai_row() => MenuCommand::None,
+            KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
+            KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
+            KeyCode::Enter if repeat && (self.on_ai_row() || self.on_draft_row()) => {
+                MenuCommand::None
+            }
             KeyCode::Enter => self.cycle(true, config),
             KeyCode::Esc if !repeat => MenuCommand::Cancel,
             _ => MenuCommand::None,
@@ -593,9 +666,16 @@ impl MenuState {
         let Some(index) = self.selected else {
             return MenuCommand::None;
         };
-        if self.on_memory_row() {
+        if self.on_draft_row() {
+            // The draft rows only change prompts or the memory opt-in: no
+            // relayout, no other effect.
+            let kind = self.selected_kind();
             if let Some(ai) = &mut self.ai {
-                ai.toggle_memory();
+                match kind {
+                    Some(ItemKind::Profile) => ai.cycle_profile(forward),
+                    Some(ItemKind::Memory(_)) => ai.toggle_memory(),
+                    _ => ai.toggle_context(),
+                }
             }
             return MenuCommand::None;
         }
@@ -642,12 +722,35 @@ impl MenuState {
                     },
                 ]
             });
+        let profile = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::changed_profile)
+            .map(|profile| ConfigEdit {
+                table: "ai",
+                key: "profile",
+                value: Cow::Borrowed(profile.id()),
+            });
+        let context = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::changed_context)
+            .map(|on| ConfigEdit {
+                table: "ai",
+                key: "context",
+                value: Cow::Borrowed(if on { "true" } else { "false" }),
+            });
         let memory = self.ai.iter().flat_map(|ai| {
             ai.changed_memory()
                 .into_iter()
                 .map(|(key, on)| ConfigEdit::memory_flag(key, on))
         });
-        settings.chain(tasks).chain(memory).collect()
+        settings
+            .chain(tasks)
+            .chain(profile)
+            .chain(context)
+            .chain(memory)
+            .collect()
     }
 
     /// A paste: goes to the custom field when it is focused, else ignored.
@@ -679,7 +782,7 @@ impl MenuState {
             let reason = disabled_reason(&row);
             return Footer::Hint(Cow::Owned(format!("{reason} · not selectable")));
         }
-        let in_ai_view = picker.is_some() || self.on_task_row();
+        let in_ai_view = picker.is_some() || self.on_ai_row();
         let cue = ai.and_then(|ai| match (ai.has_result(), self.checking) {
             (false, _) => Some("checking engines…"),
             (true, true) => Some("refreshing…"),
@@ -976,3 +1079,9 @@ mod edits_tests;
 
 #[cfg(test)]
 mod memory_tests;
+
+#[cfg(test)]
+mod profile_tests;
+
+#[cfg(test)]
+mod context_tests;

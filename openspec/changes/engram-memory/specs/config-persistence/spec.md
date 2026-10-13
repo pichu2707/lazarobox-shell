@@ -1,6 +1,6 @@
 # Delta for Config Persistence
 
-Tags: [auto] = `cargo test`. The other requirements (save on `s`, create file, atomic write, refuse on errors, failure feedback, AI keys collisions, profile key collisions, nested table edits) are unchanged. The requirement below EXTENDS the owned-key list of "Owned keys only": at archive, that list gains `ai.memory.enabled`, `ai.memory.acknowledged` and `ai.memory.port`, and every preservation rule of that requirement (comments, key order, unknown keys, write only when changed, no secret) applies to them unchanged.
+Tags: [auto] = `cargo test`. The other requirements (save on `s`, create file, atomic write, refuse on errors, failure feedback, AI keys collisions, profile key collisions, context key collisions, nested table edits) are unchanged. The requirement below EXTENDS the owned-key list of "Owned keys only": at archive, that list gains `ai.memory.enabled`, `ai.memory.acknowledged` and `ai.memory.port` (next to the existing `ai.profile` and `ai.context`), and every preservation rule of that requirement (comments, key order, unknown keys, write only when changed, no secret) applies to them unchanged.
 
 ## ADDED Requirements
 

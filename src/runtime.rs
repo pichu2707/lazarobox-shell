@@ -16,12 +16,15 @@ use std::{
 
 pub mod ai_detect;
 pub mod anim;
+pub mod bounded_read;
 pub mod chat;
 pub mod chat_store;
 mod config_write;
 pub mod engram;
 pub mod loopback;
 pub mod proc;
+pub mod prompts;
+pub mod workspace;
 
 use ai_detect::spawn_detection;
 use chat::Chats;
@@ -39,14 +42,19 @@ use ratatui::{
 };
 use tokio::{
     signal::unix::{Signal, SignalKind, signal},
-    sync::mpsc,
-    time::{MissedTickBehavior, interval},
+    sync::{mpsc, oneshot},
+    time::{MissedTickBehavior, interval, timeout},
 };
 
 use crate::{
     app::{App, AppEvent, Effect},
     core::{
-        ai::{Detection, chat::store::StoreReply, config::AiConfig, memory::port::MemReply},
+        ai::{
+            Detection,
+            chat::{prompts::Resolved, store::StoreReply},
+            config::{AiConfig, Profile},
+            memory::port::MemReply,
+        },
         config::{Config, config_path},
         layout::PaneId,
         pane::{CursorKind, CursorShape},
@@ -74,6 +82,10 @@ const MEMORY_CHANNEL: usize = 64;
 const STORE_JOIN_BOUND: Duration = Duration::from_secs(2);
 /// Capacity of the channel from the store thread to the event loop.
 const STORE_CHANNEL: usize = 64;
+/// Longest the app waits for a prompt job before it uses the built-in prompt.
+const PREPARE_BOUND: Duration = Duration::from_secs(2);
+/// Capacity of the channel from the prompt jobs to the event loop.
+const PROMPT_CHANNEL: usize = 16;
 /// How often `Panes::shutdown` checks whether the kills are done.
 const SHUTDOWN_POLL: Duration = Duration::from_millis(5);
 /// Most events one `drive` call processes (the first one plus its feedback).
@@ -142,6 +154,11 @@ pub async fn run() -> io::Result<()> {
         memory_tx,
     );
     let (store_tx, store_rx) = mpsc::channel(STORE_CHANNEL);
+    let (prompt_tx, prompt_rx) = mpsc::channel(PROMPT_CHANNEL);
+    let config_dir = config_path
+        .as_deref()
+        .and_then(Path::parent)
+        .map(Path::to_owned);
     let store_path = chat_store::resolve_path(
         env::var_os("XDG_DATA_HOME").as_deref(),
         env::var_os("HOME").as_deref(),
@@ -150,6 +167,13 @@ pub async fn run() -> io::Result<()> {
         .with_memory(memory)
         .with_config_path(config_path)
         .with_detector(Box::new(move || spawn_detection(ai_tx.clone())))
+        .with_preparer(Box::new(move |pane, profile, origin, context| {
+            spawn_prepare(
+                config_dir.clone(),
+                (pane, profile, origin, context),
+                prompt_tx.clone(),
+            );
+        }))
         .with_chats(Chats::new(chat::adapter_runner(), chat_tx))
         .with_store(chat_store::spawn_at(store_path, store_tx));
     let inbox = Inbox {
@@ -158,6 +182,7 @@ pub async fn run() -> io::Result<()> {
         chat: chat_rx,
         memory: memory_rx,
         store: store_rx,
+        prompt: prompt_rx,
     };
     // The first pane is spawned before the UI starts: a failure is fatal.
     panes.spawn_pane(id, &spec)?;
@@ -254,6 +279,7 @@ struct Inbox {
     chat: mpsc::Receiver<chat::Tagged>,
     memory: mpsc::Receiver<MemReply>,
     store: mpsc::Receiver<StoreReply>,
+    prompt: mpsc::Receiver<(PaneId, Resolved)>,
 }
 
 async fn event_loop(
@@ -294,6 +320,7 @@ async fn run_loop(
         chat: mut chat_rx,
         memory: mut memory_rx,
         store: mut store_rx,
+        prompt: mut prompt_rx,
     } = inbox;
     let theme = LazaroboxTheme::default();
     let mut events = EventStream::new();
@@ -366,6 +393,14 @@ async fn run_loop(
                     return Ok(());
                 }
             }
+            // Each job holds a sender only while it runs, and `run` keeps
+            // the preparer (and so a sender) alive, so this never reads a
+            // closed channel.
+            Some((pane, resolved)) = prompt_rx.recv() => {
+                if step(&mut app, AppEvent::PromptReady(pane, resolved), panes) {
+                    return Ok(());
+                }
+            }
             // Same exit path as Quit: the caller restores and kills the children.
             () = shutdown.requested() => return Ok(()),
             _ = cwd_poll.tick() => {
@@ -387,6 +422,67 @@ async fn run_loop(
             }
         }
     }
+}
+
+/// Starts a prompt preparation: pane, profile, origin cwd, context flag.
+type PrepareFn = dyn FnMut(PaneId, Profile, Option<PathBuf>, bool);
+
+/// Prepares the system prompt of the conversation started in a pane on a
+/// thread of its own (the override files and the repository are read from
+/// the disk) and sends it to the event loop.
+fn spawn_prepare(
+    config_dir: Option<PathBuf>,
+    (pane, profile, origin, context): (PaneId, Profile, Option<PathBuf>, bool),
+    tx: mpsc::Sender<(PaneId, Resolved)>,
+) {
+    spawn_prepare_with(pane, profile, PREPARE_BOUND, tx, move || {
+        let shell = env::var("SHELL").ok();
+        let home = env::var_os("HOME").map(PathBuf::from);
+        prompts::prepare_prompt(
+            config_dir.as_deref(),
+            profile,
+            origin.as_deref(),
+            home.as_deref(),
+            context,
+            shell.as_deref(),
+            workspace::local_date(),
+        )
+    });
+}
+
+/// Runs `work` on a thread of its own and sends exactly one answer for
+/// `pane`: its result, or the built-in prompt with a notice when it panics,
+/// the thread cannot be spawned or it takes longer than `bound`. A result
+/// that arrives after the bound has nobody to receive it. Needs a tokio
+/// runtime for the wait.
+fn spawn_prepare_with(
+    pane: PaneId,
+    profile: Profile,
+    bound: Duration,
+    tx: mpsc::Sender<(PaneId, Resolved)>,
+    work: impl FnOnce() -> Resolved + Send + 'static,
+) {
+    let (done_tx, done_rx) = oneshot::channel();
+    let started = thread::Builder::new()
+        .name(prompts::THREAD_NAME.into())
+        .spawn(move || {
+            let result = panic::catch_unwind(panic::AssertUnwindSafe(work));
+            // The receiver is gone after the bound: the late result is dropped.
+            let _ = done_tx.send(result.ok());
+        });
+    tokio::spawn(async move {
+        let resolved = if started.is_err() {
+            prompts::fallback_prompt(profile, prompts::FAILED)
+        } else {
+            match timeout(bound, done_rx).await {
+                Ok(Ok(Some(resolved))) => resolved,
+                Ok(_) => prompts::fallback_prompt(profile, prompts::FAILED),
+                Err(_) => prompts::fallback_prompt(profile, prompts::TIMED_OUT),
+            }
+        };
+        // A closed channel means the app is quitting.
+        let _ = tx.send((pane, resolved)).await;
+    });
 }
 
 /// Builds the child of a pane; the production one is `spawn_portable`.
@@ -413,6 +509,11 @@ struct Panes {
     /// Starts one AI engine detection; the answer arrives on the AI channel.
     /// A no-op unless `with_detector` installs the production one.
     detect: Box<dyn FnMut()>,
+    /// Starts the preparation of a conversation's system prompt: pane,
+    /// profile, origin cwd and the context flag. The answer arrives on the
+    /// prompt channel. A no-op unless `with_preparer` installs the
+    /// production one.
+    prepare: Box<PrepareFn>,
     /// The chat turns. `None` ignores the chat effects (unit tests).
     chats: Option<Chats>,
     /// The engram memory worker; off unless the config activates it.
@@ -431,6 +532,7 @@ impl Panes {
             config_path: None,
             host_out: Vec::new(),
             detect: Box::new(|| {}),
+            prepare: Box::new(|_, _, _, _| {}),
             chats: None,
             memory: Memory::off(),
             store: None,
@@ -479,6 +581,12 @@ impl Panes {
     /// Sets what `Effect::DetectEngines` runs.
     fn with_detector(mut self, detect: Box<dyn FnMut()>) -> Self {
         self.detect = detect;
+        self
+    }
+
+    /// Sets what `Effect::PreparePrompt` runs.
+    fn with_preparer(mut self, prepare: Box<PrepareFn>) -> Self {
+        self.prepare = prepare;
         self
     }
 
@@ -557,6 +665,13 @@ impl Panes {
                         store.send(cmd);
                     }
                 }
+                // Returns at once: the files are read on their own thread.
+                Effect::PreparePrompt {
+                    pane,
+                    profile,
+                    origin,
+                    context,
+                } => (self.prepare)(pane, profile, origin, context),
                 Effect::Quit => outcome = Outcome::Quit,
             }
         }
@@ -703,7 +818,9 @@ fn restore() {
 fn should_restore() -> bool {
     // The store thread catches its own panics and reports them as replies.
     let on_store_thread = thread::current().name() == Some(chat_store::worker::THREAD_NAME);
-    !chat::in_adapter_poll() && !on_store_thread
+    // The prompt job catches its panic and falls back to the built-in prompt.
+    let on_prepare_thread = thread::current().name() == Some(prompts::THREAD_NAME);
+    !chat::in_adapter_poll() && !on_store_thread && !on_prepare_thread
 }
 
 /// Restores the cursor and bracketed paste before the previous hook (which
@@ -1290,6 +1407,45 @@ mod tests {
             (outcome, feedback, *calls.borrow()),
             (Outcome::Continue, Vec::new(), 1)
         );
+    }
+
+    #[test]
+    fn prepare_prompt_calls_the_injected_preparer_with_the_request() {
+        let (panes, _rx, _rec) = fake_panes(None);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&calls);
+        let mut panes = panes.with_preparer(Box::new(move |pane, profile, origin, context| {
+            seen.borrow_mut().push((pane, profile, origin, context));
+        }));
+        let (outcome, feedback) = panes.apply(vec![Effect::PreparePrompt {
+            pane: id(2),
+            profile: Profile::Analyst,
+            origin: Some("/srv".into()),
+            context: false,
+        }]);
+        assert_eq!((outcome, feedback), (Outcome::Continue, Vec::new()));
+        assert_eq!(
+            *calls.borrow(),
+            [(id(2), Profile::Analyst, Some(PathBuf::from("/srv")), false)]
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_prepare_answers_on_the_channel_with_the_resolved_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("prompts/analyst/chat.md");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "Be brief.").unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+        spawn_prepare(
+            Some(dir.path().to_owned()),
+            (id(2), Profile::Analyst, None, false),
+            tx,
+        );
+        let (pane, resolved) = rx.recv().await.unwrap();
+        assert_eq!(pane, id(2));
+        assert_eq!(resolved.text, "Be brief.");
+        assert!(resolved.notices.is_empty());
     }
 
     // Without a chat task (unit tests) the chat effects touch no pane.
@@ -2028,6 +2184,67 @@ mod tests {
             .join()
             .unwrap();
         assert!(!inside, "the store thread recovers from its own panics");
+    }
+
+    #[test]
+    fn a_panic_on_the_prepare_thread_leaves_the_terminal_alone() {
+        let inside = thread::Builder::new()
+            .name(prompts::THREAD_NAME.into())
+            .spawn(should_restore)
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(!inside, "spawn_prepare catches its own panics");
+    }
+
+    // Spec (prompt-profiles): a prepare job that panics still answers, with
+    // the built-in prompt, no block and a notice.
+    #[tokio::test]
+    async fn a_panicking_prepare_job_answers_with_the_built_in_prompt() {
+        let (tx, mut rx) = mpsc::channel(1);
+        spawn_prepare_with(id(2), Profile::Analyst, Duration::from_secs(5), tx, || {
+            panic!("boom")
+        });
+        let (pane, resolved) = rx.recv().await.unwrap();
+        assert_eq!(pane, id(2));
+        assert_eq!(
+            resolved,
+            prompts::fallback_prompt(Profile::Analyst, prompts::FAILED)
+        );
+        assert!(!resolved.text.contains("Workspace"));
+        assert_eq!(resolved.notices.len(), 1);
+        assert!(resolved.notices[0].contains("workspace context unavailable"));
+    }
+
+    // Spec: a prepare job that does not answer in time is replaced by the
+    // built-in prompt, and its late result is dropped.
+    #[tokio::test(start_paused = true)]
+    async fn a_stuck_prepare_job_times_out_to_the_built_in_prompt() {
+        let (tx, mut rx) = mpsc::channel(2);
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        spawn_prepare_with(id(2), Profile::Programmer, PREPARE_BOUND, tx, move || {
+            let _ = wait.recv();
+            Resolved {
+                text: "late".into(),
+                notices: Vec::new(),
+            }
+        });
+        let (pane, resolved) = rx.recv().await.unwrap();
+        assert_eq!(pane, id(2));
+        assert_eq!(
+            resolved,
+            prompts::fallback_prompt(Profile::Programmer, prompts::TIMED_OUT)
+        );
+        assert!(resolved.notices[0].contains("workspace context unavailable"));
+        // The stuck job finishes late: nothing more is sent.
+        release.send(()).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(rx.try_recv().is_err(), "the late result is dropped");
+    }
+
+    #[test]
+    fn the_prepare_bound_is_two_seconds() {
+        assert_eq!(PREPARE_BOUND, Duration::from_secs(2));
     }
 
     #[tokio::test(start_paused = true)]

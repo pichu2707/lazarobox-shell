@@ -4,9 +4,9 @@
 use super::*;
 use crate::core::ai::chat::{
     SendOutcome,
-    adapters::system_prompt,
     engine::{Availability, availability},
     guidance::guidance,
+    prompts::Resolved,
     streams::StreamInfo,
     yank,
 };
@@ -18,9 +18,18 @@ impl App {
     pub(super) fn open_chat_pane(&mut self) -> Vec<Effect> {
         let origin = self.focused_state().effective_cwd().map(Path::to_path_buf);
         let before = self.panes.len();
-        let mut effects = self.split_with(Axis::X, NewPane::Chat(ChatState::new(origin)));
+        let mut effects = self.split_with(Axis::X, NewPane::Chat(Box::new(ChatState::new(origin))));
         if self.panes.len() > before {
             effects.extend(self.request_detection());
+            effects.push(Effect::PreparePrompt {
+                pane: self.tab().focus,
+                profile: self.ai.profile(),
+                origin: self
+                    .focused_state()
+                    .chat_state()
+                    .and_then(|c| c.origin_cwd().map(Path::to_path_buf)),
+                context: self.ai.context(),
+            });
         }
         effects
     }
@@ -159,7 +168,7 @@ impl App {
 
     /// A parked send is the text as it was at Enter: editing the composer
     /// afterwards, or cancelling, drops it. The text stays in the composer.
-    fn drop_parked_send(&mut self, id: PaneId) {
+    pub(super) fn drop_parked_send(&mut self, id: PaneId) {
         self.waiting_sends.retain(|(pane, _)| *pane != id);
     }
 
@@ -201,7 +210,7 @@ impl App {
             return Vec::new();
         };
         let text = chat.composer().text();
-        if availability == Availability::Checking {
+        if availability == Availability::Checking || chat.prompt().is_none() {
             if !text.trim().is_empty() {
                 self.drop_parked_send(id);
                 self.waiting_sends.push((id, text));
@@ -212,11 +221,15 @@ impl App {
     }
 
     /// Sends `text` from pane `id` and clears its composer when it went.
+    /// Nothing goes before the conversation's prompt is prepared.
     fn send_text(&mut self, id: PaneId, text: &str, availability: &Availability) -> Vec<Effect> {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
-        match chat.send(text, availability, system_prompt()) {
+        let Some(system) = chat.prompt().map(str::to_owned) else {
+            return Vec::new();
+        };
+        match chat.send(text, availability, &system) {
             SendOutcome::Sent { turn, request } => {
                 chat.composer_mut().clear();
                 vec![Effect::ChatSend {
@@ -229,14 +242,38 @@ impl App {
         }
     }
 
-    /// The first detection arrived: the sends that waited for it go now.
+    /// The first detection or a conversation's prompt arrived: the sends that
+    /// waited for them go now, those still missing one of them keep waiting.
     pub(super) fn run_waiting_sends(&mut self) -> Vec<Effect> {
-        let waiting = std::mem::take(&mut self.waiting_sends);
         let availability = self.chat_availability();
-        waiting
+        // A send whose pane is gone is dropped here, not kept.
+        let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.waiting_sends)
+            .into_iter()
+            .filter(|(id, _)| self.panes.contains_key(id))
+            .partition(|(id, _)| {
+                availability != Availability::Checking
+                    && self
+                        .panes
+                        .get(id)
+                        .and_then(PaneState::chat_state)
+                        .is_some_and(|chat| chat.prompt().is_some())
+            });
+        self.waiting_sends = waiting;
+        ready
             .into_iter()
             .flat_map(|(id, text)| self.send_text(id, &text, &availability))
             .collect()
+    }
+
+    /// The runtime prepared the system prompt of chat `id`. A pane that is
+    /// gone in the meantime drops it.
+    pub(super) fn on_prompt_ready(&mut self, id: PaneId, resolved: Resolved) -> Vec<Effect> {
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        chat.set_prompt(resolved);
+        self.dirty = true;
+        self.run_waiting_sends()
     }
 
     /// Esc and Ctrl+C: stop the stream and drop a parked send, or do nothing
