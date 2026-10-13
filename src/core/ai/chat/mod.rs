@@ -7,6 +7,7 @@ pub mod adapters;
 pub mod composer;
 pub mod engine;
 pub mod guidance;
+pub mod prompts;
 pub mod store;
 pub mod stream;
 pub mod streams;
