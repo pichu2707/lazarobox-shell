@@ -12,6 +12,7 @@ use crate::core::{
         chat::{
             ChatState, Follow, Phase,
             engine::{ChatRequest, StreamEvent},
+            notify::{Ended, should_bell},
             prompts::Resolved,
             store::{StoreCmd, StoreReply},
         },
@@ -154,6 +155,10 @@ pub enum AppEvent {
     /// `MEMORY_WAIT` are given up. The runtime sends it only while
     /// `memory_waiting` holds.
     MemoryTick,
+    /// The terminal window gained (`true`) or lost (`false`) the focus, as
+    /// the terminal reports it. A terminal that does not report it never
+    /// sends this, and the window counts as focused.
+    WindowFocus(bool),
 }
 
 /// How the menu closed.
@@ -206,6 +211,9 @@ pub enum Effect {
         origin: Option<PathBuf>,
         context: bool,
     },
+    /// Ring the terminal bell (BEL) once the frame is drawn: a chat answer
+    /// finished while the user was not looking at it (chat-notify).
+    Bell,
     Quit,
 }
 
@@ -432,6 +440,9 @@ pub struct App {
     detecting: bool,
     /// The saved AI choice; the menu edits a draft of it.
     ai: AiConfig,
+    /// Whether the terminal window has the focus (chat-notify). Starts
+    /// `true`: without focus reporting only the pane rule applies.
+    window_focused: bool,
     /// Whether this system can jail a CLI. Nothing probes it yet.
     jail: JailSupport,
     /// Chat panes whose send waits for the first detection result, with the
@@ -494,6 +505,7 @@ impl App {
             engines: None,
             detecting: false,
             ai: AiConfig::default(),
+            window_focused: true,
             jail: JailSupport::Unavailable("no CLI jail yet"),
             waiting_sends: Vec::new(),
             anim_frame: 0,
@@ -981,6 +993,10 @@ impl App {
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
             AppEvent::MemoryTick => self.on_memory_tick(),
+            AppEvent::WindowFocus(focused) => {
+                self.window_focused = focused;
+                Vec::new()
+            }
         };
         debug_assert_eq!(
             self.menu.is_some(),
@@ -1434,13 +1450,27 @@ impl App {
             return Vec::new();
         };
         let live = turn == chat.turn() && chat.phase() != Phase::Idle;
+        // Only a final `Done` is a clean end; an error or the answer cap
+        // (a delta that ends the turn) count as `Error`.
+        let how = match event {
+            StreamEvent::Done(_) => Ended::Done,
+            _ => Ended::Error,
+        };
         let follow = chat.apply(turn, event);
+        let finished = live && chat.phase() == Phase::Idle;
         self.dirty |= live;
-        match follow {
+        let mut effects = match follow {
             // The state ended the turn itself (answer cap): stop the engine.
             Follow::CancelEngine => vec![Effect::ChatCancel(id)],
             Follow::Nothing => Vec::new(),
+        };
+        // A turn ends once: later events of it are dropped above, so a pane
+        // rings at most once per answer.
+        let focus = self.tab().focus;
+        if finished && should_bell(focus, self.window_focused, id, how, self.ai.notify()) {
+            effects.push(Effect::Bell);
         }
+        effects
     }
 
     /// Drops pane `id` of whichever tab holds it and gives its space to its
@@ -6442,6 +6472,9 @@ mod app_tests {
 
     /// Summary draft and approval (engram-memory M8).
     mod chat_summary;
+
+    /// The bell for an answer nobody watches (chat-notify).
+    mod chat_notify;
 
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.

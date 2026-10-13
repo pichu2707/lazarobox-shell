@@ -63,6 +63,8 @@ use crate::{
     ui::{self, theme::LazaroboxTheme},
 };
 
+/// The terminal bell character.
+const BEL: u8 = 0x07;
 /// Time between redraw checks.
 const TICK: Duration = Duration::from_millis(16);
 /// Capacity of the reader-to-loop channel; a full channel stalls the reader.
@@ -430,6 +432,7 @@ async fn run_loop(
                     terminal.draw(|frame| ui::render(frame, &app, &theme))?;
                 }
                 apply_cursor_style(out, app.cursor_shape(), &mut applied_cursor)?;
+                panes.stage_bell();
                 flush_host(out, &mut panes.host_out)?;
             }
         }
@@ -518,6 +521,9 @@ struct Panes {
     /// Bytes for the host terminal (OSC 52), written by `flush_host` after
     /// the draw so nothing lands in the middle of a frame.
     host_out: Vec<u8>,
+    /// A `Bell` effect arrived since the last flush (chat-notify). Several in
+    /// the same tick make one BEL; see [`Panes::stage_bell`].
+    bell: bool,
     /// Starts one AI engine detection; the answer arrives on the AI channel.
     /// A no-op unless `with_detector` installs the production one.
     detect: Box<dyn FnMut()>,
@@ -543,11 +549,23 @@ impl Panes {
             reapers: Vec::new(),
             config_path: None,
             host_out: Vec::new(),
+            bell: false,
             detect: Box::new(|| {}),
             prepare: Box::new(|_, _, _, _| {}),
             chats: None,
             memory: Memory::off(),
             store: None,
+        }
+    }
+
+    /// Moves a pending bell into the host bytes, after whatever is already
+    /// there (an OSC 52 yank). The loop calls it after the draw and right
+    /// before `flush_host`, so the BEL leaves in the same write as the other
+    /// host bytes, through the writer that draws the frame. One BEL covers all
+    /// the bells asked for since the last flush.
+    fn stage_bell(&mut self) {
+        if std::mem::take(&mut self.bell) {
+            self.host_out.push(BEL);
         }
     }
 
@@ -684,6 +702,9 @@ impl Panes {
                     origin,
                     context,
                 } => (self.prepare)(pane, profile, origin, context),
+                // Only flagged here: the BEL joins the host bytes after the
+                // draw (see `stage_bell`), never in the middle of a frame.
+                Effect::Bell => self.bell = true,
                 Effect::Quit => outcome = Outcome::Quit,
             }
         }
@@ -1240,6 +1261,72 @@ mod tests {
             let log = log.lock().unwrap();
             assert!(log.writes.is_empty() && log.resizes.is_empty());
         }
+    }
+
+    // chat-notify: Bell is staged for the flush, never written at once.
+    #[test]
+    fn a_bell_effect_is_flagged_and_writes_nothing_by_itself() {
+        let (mut panes, _rx, rec) = fake_panes(None);
+        spawn_two(&mut panes);
+        let (outcome, feedback) = panes.apply(vec![Effect::Bell]);
+        assert_eq!(outcome, Outcome::Continue);
+        assert!(feedback.is_empty());
+        assert!(panes.host_out.is_empty(), "nothing before the flush");
+        for log in &rec.borrow().logs {
+            let log = log.lock().unwrap();
+            assert!(
+                log.writes.is_empty() && log.resizes.is_empty(),
+                "no PTY write"
+            );
+        }
+        panes.stage_bell();
+        assert_eq!(panes.host_out, vec![0x07]);
+    }
+
+    // chat-notify: Coalescing.
+    #[test]
+    fn several_bells_of_one_tick_are_one_bel() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        panes.apply(vec![Effect::Bell, Effect::Bell]);
+        panes.apply(vec![Effect::Bell]);
+        panes.stage_bell();
+        assert_eq!(panes.host_out, b"\x07".to_vec());
+        panes.stage_bell();
+        assert_eq!(panes.host_out, b"\x07".to_vec(), "the flag was consumed");
+    }
+
+    #[test]
+    fn staging_without_a_bell_adds_nothing() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        panes.stage_bell();
+        assert!(panes.host_out.is_empty());
+    }
+
+    // chat-notify: Ordered after other host bytes, one write.
+    #[test]
+    fn the_bel_follows_the_osc_52_bytes_in_a_single_write() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        panes.apply(vec![
+            Effect::Bell,
+            Effect::SetClipboard(b"\x1b]52;c;aGk=\x07".to_vec()),
+        ]);
+        panes.stage_bell();
+        let mut out = SpyOut::default();
+        flush_host(&mut out, &mut panes.host_out).unwrap();
+        assert_eq!(out.bytes, b"\x1b]52;c;aGk=\x07\x07".to_vec());
+        assert_eq!((out.writes, out.flushes), (1, 1));
+        assert!(panes.host_out.is_empty());
+    }
+
+    // A bell asked for next to nothing else is the only byte written.
+    #[test]
+    fn a_lone_bell_flushes_exactly_one_bel() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        panes.apply(vec![Effect::Bell]);
+        panes.stage_bell();
+        let mut out = SpyOut::default();
+        flush_host(&mut out, &mut panes.host_out).unwrap();
+        assert_eq!(out.bytes, vec![0x07]);
     }
 
     #[test]
