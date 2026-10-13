@@ -122,6 +122,34 @@ fn outside_a_repository_only_the_name_is_known() {
     assert_eq!(got.cwd, Some(Cwd::Outside("notes".into())));
 }
 
+// Spec: A symlinked `.git` is not a repository marker.
+#[test]
+fn a_symlinked_dot_git_is_not_followed_and_the_walk_goes_on() {
+    let tmp = tempfile::tempdir().unwrap();
+    let real = repo(tmp.path(), "real", "ref: refs/heads/secret\n");
+    let linked = tmp.path().join("linked");
+    fs::create_dir(&linked).unwrap();
+    std::os::unix::fs::symlink(real.join(".git"), linked.join(".git")).unwrap();
+    let got = probe_in(&linked);
+    assert_eq!(got.project, None);
+    assert_eq!(got.head, None);
+    assert_eq!(got.cwd, Some(Cwd::Outside("linked".into())));
+}
+
+#[test]
+fn a_symlinked_dot_git_lets_an_outer_repository_win() {
+    let tmp = tempfile::tempdir().unwrap();
+    let outer = repo(tmp.path(), "outer", "ref: refs/heads/main\n");
+    let real = repo(tmp.path(), "real", "ref: refs/heads/secret\n");
+    let inner = outer.join("inner");
+    fs::create_dir(&inner).unwrap();
+    std::os::unix::fs::symlink(real.join(".git"), inner.join(".git")).unwrap();
+    let got = probe_in(&inner);
+    assert_eq!(got.project.as_deref(), Some("outer"));
+    assert_eq!(got.head, Some(Head::Branch("main".into())));
+    assert_eq!(got.cwd, Some(Cwd::InRepo("inner".into())));
+}
+
 // Spec: Unknown origin cwd, and one that vanished.
 #[test]
 fn an_unknown_or_vanished_origin_gives_os_shell_and_date_only() {

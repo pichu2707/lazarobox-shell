@@ -61,10 +61,11 @@ fn find_repo(cwd: &Path) -> Option<Repo> {
 }
 
 /// `dir` as a repository root: `.git` is a directory, or a file with a
-/// `gitdir:` line (worktrees and submodules).
+/// `gitdir:` line (worktrees and submodules). A symlinked `.git` is not a
+/// marker (it is not followed) and the walk goes on.
 fn inspect(dir: &Path) -> Option<Repo> {
     let dot_git = dir.join(".git");
-    let meta = fs::metadata(&dot_git).ok()?;
+    let meta = fs::symlink_metadata(&dot_git).ok()?;
     let own_name = || name_of(dir);
     if meta.is_dir() {
         return Some(Repo {
