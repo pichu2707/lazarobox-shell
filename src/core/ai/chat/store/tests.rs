@@ -37,6 +37,7 @@ fn created(conversation: i64) -> StoreReply {
         pane: pane(),
         conversation,
         evicted: false,
+        evicted_notes: 0,
     }
 }
 
@@ -191,6 +192,7 @@ fn a_reply_for_another_pane_changes_nothing() {
         pane: other,
         conversation: 5,
         evicted: false,
+        evicted_notes: 0,
     };
     assert!(store.on_reply(pane(), &reply).is_empty());
     assert_eq!(store.conversation(), None);
@@ -230,4 +232,58 @@ fn link_replies_do_not_change_where_the_conversation_is() {
         assert!(store.on_reply(pane(), reply).is_empty());
         assert_eq!(store.conversation(), Some(5));
     }
+}
+
+#[test]
+fn nothing_evicted_adds_no_line() {
+    assert!(eviction_lines(false, 0).is_empty());
+}
+
+#[test]
+fn an_eviction_without_notes_adds_only_the_first_line() {
+    assert_eq!(
+        eviction_lines(true, 0),
+        ["oldest conversation removed (limit 200)"]
+    );
+}
+
+#[test]
+fn the_note_line_follows_the_first_and_agrees_in_number() {
+    assert_eq!(
+        eviction_lines(true, 1),
+        [
+            "oldest conversation removed (limit 200)",
+            "1 note of a removed conversation remains in engram"
+        ]
+    );
+    assert_eq!(
+        eviction_lines(true, 3),
+        [
+            "oldest conversation removed (limit 200)",
+            "3 notes of removed conversations remain in engram"
+        ]
+    );
+}
+
+#[test]
+fn a_reply_gives_its_lines_and_other_replies_none() {
+    let evicted = StoreReply::Created {
+        pane: pane(),
+        conversation: 1,
+        evicted: true,
+        evicted_notes: 2,
+    };
+    assert_eq!(
+        eviction_lines_of(&evicted),
+        [
+            "oldest conversation removed (limit 200)",
+            "2 notes of removed conversations remain in engram"
+        ]
+    );
+    assert!(eviction_lines_of(&created(1)).is_empty());
+    let failed = StoreReply::Failed {
+        pane: pane(),
+        notify: true,
+    };
+    assert!(eviction_lines_of(&failed).is_empty());
 }

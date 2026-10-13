@@ -94,12 +94,13 @@ impl Worker {
                 };
                 let made = create(conn, &profile, tag.as_deref(), &first, &open);
                 Some(match made {
-                    Ok((conversation, evicted)) => {
+                    Ok((conversation, gone)) => {
                         self.failing = false;
                         StoreReply::Created {
                             pane,
                             conversation,
-                            evicted,
+                            evicted: gone.conversations > 0,
+                            evicted_notes: gone.notes,
                         }
                     }
                     Err(_) => self.failure(pane),
@@ -247,23 +248,34 @@ fn title_of(text: &str) -> String {
     line.chars().take(TITLE_MAX).collect()
 }
 
+/// What retention removed to make room.
+struct Evicted {
+    conversations: usize,
+    /// Note rows that went with them (the notes themselves stay in engram).
+    notes: u32,
+}
+
 /// Creates the conversation and its first message in one transaction, first
-/// making room under the retention limit. Returns the id and whether
-/// anything was evicted.
+/// making room under the retention limit. Returns the id and what was
+/// evicted; the notes are counted in the same transaction, before the cascade
+/// removes their rows.
 fn create(
     conn: &mut Connection,
     profile: &str,
     tag: Option<&str>,
     first: &StoredMessage,
     open: &[i64],
-) -> Result<(i64, bool), rusqlite::Error> {
+) -> Result<(i64, Evicted), rusqlite::Error> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let stored: i64 = tx.query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0))?;
     let excess = usize::try_from(stored)
         .unwrap_or(usize::MAX)
         .saturating_add(1)
         .saturating_sub(RETENTION_LIMIT);
-    let mut evicted = false;
+    let mut evicted = Evicted {
+        conversations: 0,
+        notes: 0,
+    };
     if excess > 0 {
         // The oldest last activity goes first; tags do not protect, open
         // conversations are skipped. Ids tie-break so the order is stable.
@@ -271,14 +283,22 @@ fn create(
             .map(|i| format!("?{}", i + 2))
             .collect::<Vec<_>>()
             .join(",");
-        let sql = format!(
-            "DELETE FROM conversations WHERE id IN (
-                 SELECT id FROM conversations WHERE id NOT IN ({marks})
-                 ORDER BY updated_at, id LIMIT ?1)"
+        let pick = format!(
+            "SELECT id FROM conversations WHERE id NOT IN ({marks})
+             ORDER BY updated_at, id LIMIT ?1"
         );
         let limit = i64::try_from(excess).unwrap_or(i64::MAX);
-        let params = std::iter::once(limit).chain(open.iter().copied());
-        evicted = tx.execute(&sql, rusqlite::params_from_iter(params))? > 0;
+        let params = || std::iter::once(limit).chain(open.iter().copied());
+        let notes: i64 = tx.query_row(
+            &format!("SELECT COUNT(*) FROM memory_notes WHERE conversation_id IN ({pick})"),
+            rusqlite::params_from_iter(params()),
+            |r| r.get(0),
+        )?;
+        evicted.notes = u32::try_from(notes).unwrap_or(u32::MAX);
+        evicted.conversations = tx.execute(
+            &format!("DELETE FROM conversations WHERE id IN ({pick})"),
+            rusqlite::params_from_iter(params()),
+        )?;
     }
     let text = clean(&first.text);
     let stamp = now();

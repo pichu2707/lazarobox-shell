@@ -85,6 +85,9 @@ pub enum StoreReply {
         conversation: i64,
         /// Retention removed at least one conversation to make room.
         evicted: bool,
+        /// Note rows of the conversations retention removed. Their notes stay
+        /// in engram; only the link is gone.
+        evicted_notes: u32,
     },
     /// The store cannot be used at all; `reason` is already bounded.
     Unavailable { pane: PaneId, reason: String },
@@ -101,6 +104,37 @@ pub enum StoreReply {
     /// A write failed. `notify` is true for the first failure of a run, the
     /// only one that earns a system line.
     Failed { pane: PaneId, notify: bool },
+}
+
+/// The system lines a new conversation shows when retention removed some: the
+/// eviction line, then, when notes stayed behind in engram, how many. Nothing
+/// when nothing was evicted. Shown whether or not memory is on; it needs no
+/// engram request and asks nothing.
+pub fn eviction_lines(evicted: bool, notes: u32) -> Vec<String> {
+    if !evicted {
+        return Vec::new();
+    }
+    let mut lines = vec![EVICTED_LINE.to_owned()];
+    match notes {
+        0 => {}
+        1 => lines.push("1 note of a removed conversation remains in engram".to_owned()),
+        n => lines.push(format!(
+            "{n} notes of removed conversations remain in engram"
+        )),
+    }
+    lines
+}
+
+/// [`eviction_lines`] for a store reply; empty for any reply but `Created`.
+pub fn eviction_lines_of(reply: &StoreReply) -> Vec<String> {
+    match reply {
+        StoreReply::Created {
+            evicted,
+            evicted_notes,
+            ..
+        } => eviction_lines(*evicted, *evicted_notes),
+        _ => Vec::new(),
+    }
 }
 
 /// An error text safe to show: sanitized, on one line, at most `ERROR_MAX`

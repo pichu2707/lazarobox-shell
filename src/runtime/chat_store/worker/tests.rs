@@ -1027,3 +1027,100 @@ fn links_travel_through_the_store_thread_in_order() {
     let conn = Connection::open(&db).unwrap();
     assert_eq!(count(&conn, "memory_notes"), 1);
 }
+
+// ---- eviction counts notes (8.5) -------------------------------------------
+
+fn seed_notes(conn: &Connection, conversation: i64, n: usize) {
+    for i in 0..n {
+        conn.execute(
+            "INSERT INTO memory_notes VALUES ('proj', ?1, ?2, ?3, 't')",
+            (
+                format!("chat/decision/c{conversation}-n{i}"),
+                i as i64,
+                conversation,
+            ),
+        )
+        .unwrap();
+    }
+}
+
+fn notes_of(reply: Option<StoreReply>) -> u32 {
+    match reply {
+        Some(StoreReply::Created { evicted_notes, .. }) => evicted_notes,
+        other => panic!("expected Created, got {other:?}"),
+    }
+}
+
+#[test]
+fn eviction_counts_the_notes_of_the_evicted_conversation_and_removes_them() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 200);
+    seed_notes(&conn, 1_000, 3);
+    seed_notes(&conn, 1_001, 2); // survives, so it is not counted
+    conn.execute(
+        "INSERT INTO memory_sessions VALUES (1000, ?1, 'proj')",
+        [SESSION_A],
+    )
+    .unwrap();
+
+    let reply = worker.handle(create(user("new"), vec![]));
+    assert!(matches!(
+        reply,
+        Some(StoreReply::Created { evicted: true, .. })
+    ));
+    assert_eq!(notes_of(reply), 3);
+    assert!(!exists(&conn, 1_000));
+    assert_eq!(count(&conn, "memory_notes"), 2, "only the survivor's rows");
+    assert_eq!(count(&conn, "memory_sessions"), 0);
+}
+
+#[test]
+fn one_note_counts_as_one() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 200);
+    seed_notes(&conn, 1_000, 1);
+    assert_eq!(notes_of(worker.handle(create(user("new"), vec![]))), 1);
+}
+
+#[test]
+fn an_evicted_conversation_without_notes_counts_zero() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 200);
+    seed_notes(&conn, 1_005, 4);
+    let reply = worker.handle(create(user("new"), vec![]));
+    assert!(matches!(
+        reply,
+        Some(StoreReply::Created { evicted: true, .. })
+    ));
+    assert_eq!(notes_of(reply), 0);
+}
+
+#[test]
+fn below_the_limit_the_count_is_zero_and_no_note_goes() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 199);
+    seed_notes(&conn, 1_000, 2);
+    assert_eq!(notes_of(worker.handle(create(user("new"), vec![]))), 0);
+    assert_eq!(count(&conn, "memory_notes"), 2);
+}
+
+#[test]
+fn a_trim_over_the_limit_sums_the_notes_of_every_evicted_conversation() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 205);
+    seed_notes(&conn, 1_000, 2);
+    seed_notes(&conn, 1_003, 1);
+    seed_notes(&conn, 1_006, 5); // the first to survive
+    assert_eq!(notes_of(worker.handle(create(user("new"), vec![]))), 3);
+    assert_eq!(count(&conn, "memory_notes"), 5);
+}
+
+#[test]
+fn the_notes_of_an_open_conversation_are_not_counted() {
+    let (_dir, mut worker, conn) = fixture();
+    seed(&conn, 200);
+    seed_notes(&conn, 1_000, 3); // open, so skipped
+    seed_notes(&conn, 1_001, 2); // evicted instead
+    assert_eq!(notes_of(worker.handle(create(user("new"), vec![1_000]))), 2);
+    assert_eq!(count(&conn, "memory_notes"), 3);
+}
