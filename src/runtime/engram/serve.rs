@@ -545,8 +545,58 @@ mod tests {
         assert_eq!(pgrp, running.pid.to_string());
     }
 
+    /// Sets the process umask and puts the old one back when dropped, so a
+    /// panic inside the guarded section cannot leave it changed.
+    ///
+    /// The umask is process-wide and tests run on parallel threads: keep the
+    /// guarded section short and synchronous (never an `.await`), and never
+    /// assert the mode of a file another test created with default options,
+    /// since it may have been created inside this window.
+    struct Umask(libc::mode_t);
+
+    impl Umask {
+        fn set(mask: libc::mode_t) -> Self {
+            // SAFETY: umask only changes this process's file mode mask.
+            Self(unsafe { libc::umask(mask) })
+        }
+    }
+
+    impl Drop for Umask {
+        fn drop(&mut self) {
+            // SAFETY: restores the mask read in `set`.
+            unsafe { libc::umask(self.0) };
+        }
+    }
+
+    #[test]
+    fn the_umask_guard_restores_the_mask_even_when_the_section_panics() {
+        let before = Umask::set(0o022);
+        let outcome = std::panic::catch_unwind(|| {
+            let _guard = Umask::set(0);
+            panic!("inside the guarded section");
+        });
+        assert!(outcome.is_err());
+        // SAFETY: reads the current mask by setting it back to itself.
+        let now = unsafe { libc::umask(0o022) };
+        assert_eq!(now, 0o022, "the panicking section left the umask changed");
+        drop(before);
+    }
+
+    #[test]
+    fn the_log_is_private_under_a_permissive_umask() {
+        let rig = rig();
+        let opened = {
+            let _umask = Umask::set(0);
+            open_log(&rig.state)
+        };
+        opened.unwrap();
+        let mode = |p: &Path| fs::metadata(p).unwrap().mode() & 0o777;
+        assert_eq!(mode(&rig.state), 0o700);
+        assert_eq!(mode(&rig.state.join("engram-serve.log")), 0o600);
+    }
+
     #[tokio::test]
-    async fn the_log_is_private_under_a_permissive_umask_and_gets_both_streams() {
+    async fn the_log_gets_both_output_streams_of_the_child() {
         let rig = rig();
         let script = fake(
             &rig.bin_dir,
@@ -554,18 +604,10 @@ mod tests {
             &rig.record,
             "echo to-stdout; echo to-stderr >&2; exec sleep 30",
         );
-        // SAFETY: umask only changes this process's file mode mask.
-        let old = unsafe { libc::umask(0) };
-        let spawned = start(&rig.server(), &script, 8123).await;
-        // SAFETY: restores the mask read above.
-        unsafe { libc::umask(old) };
-        let running = spawned.unwrap();
+        let running = start(&rig.server(), &script, 8123).await.unwrap();
         let _reap = Reap::new(running.pid);
         rig.recorded().await;
-        let mode = |p: &Path| fs::metadata(p).unwrap().mode() & 0o777;
-        assert_eq!(mode(&rig.state), 0o700);
         let log = rig.state.join("engram-serve.log");
-        assert_eq!(mode(&log), 0o600);
         for _ in 0..100 {
             let text = fs::read_to_string(&log).unwrap();
             if text.contains("to-stdout") && text.contains("to-stderr") {
