@@ -42,6 +42,9 @@ baseline.
 ### Known limitations
 
 - Conversations are not saved yet; chat history arrives in a later release.
+  Starting the app still creates an empty, private database file at
+  `$XDG_DATA_HOME/lazarobox/chat.db` (default `~/.local/share/lazarobox/`),
+  for that future history; nothing is written to it yet.
 - Only Ollama has a chat adapter. Other engines are detected but cannot chat.
 - The chat talks to `127.0.0.1` only and sends no credentials.
 
