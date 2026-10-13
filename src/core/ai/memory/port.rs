@@ -88,6 +88,9 @@ pub enum Reason {
     /// The `engram` on the PATH is not the file the user was shown when the
     /// start was confirmed, so nothing was started.
     Changed,
+    /// Memory was turned on while the app runs: the worker is built from the
+    /// config at startup, so it applies after a restart.
+    RestartNeeded,
 }
 
 impl Reason {
@@ -108,6 +111,7 @@ impl Reason {
             Reason::StartFailed(None) => "could not start engram".into(),
             Reason::StartFailed(Some(line)) => format!("could not start engram: {line}"),
             Reason::Changed => "engram on PATH changed; not started".into(),
+            Reason::RestartNeeded => "memory applies after a restart".into(),
         }
     }
 

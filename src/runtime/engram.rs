@@ -3,7 +3,12 @@
 
 use std::time::Duration;
 
-use crate::core::ai::{config::MemoryConfig, memory::port::MemCmd};
+use tokio::sync::mpsc;
+
+use crate::core::ai::{
+    config::MemoryConfig,
+    memory::port::{MemCmd, MemReply, Reason},
+};
 
 pub mod serve;
 pub mod worker;
@@ -19,6 +24,8 @@ mod fake_engram;
 pub struct Memory {
     start: Option<Box<dyn FnOnce() -> MemoryLink>>,
     link: Option<MemoryLink>,
+    /// Where an inactive memory tells a pane its command was not run.
+    declined: Option<mpsc::Sender<MemReply>>,
 }
 
 impl Memory {
@@ -27,7 +34,20 @@ impl Memory {
         Self {
             start: None,
             link: None,
+            declined: None,
         }
+    }
+
+    /// An inactive memory answers the commands of a pane with
+    /// `Unavailable(RestartNeeded)` on `replies`, instead of dropping them:
+    /// memory turned on in the menu during a run has no worker until the next
+    /// start, and the pane that asked must not wait for it. Nothing else
+    /// changes: no worker, no network. An active memory ignores `replies`.
+    pub fn answering_when_off(mut self, replies: mpsc::Sender<MemReply>) -> Self {
+        if self.start.is_none() {
+            self.declined = Some(replies);
+        }
+        self
     }
 
     /// Memory for `config`: off unless it is `active()`. `start` builds the
@@ -43,6 +63,7 @@ impl Memory {
         Self {
             start: Some(Box::new(move || start(port))),
             link: None,
+            declined: None,
         }
     }
 
@@ -60,12 +81,19 @@ impl Memory {
         }
         if let Some(link) = &self.link {
             link.send(cmd);
+        } else if let (Some(replies), Some(pane)) = (&self.declined, cmd.pane()) {
+            let reason = Reason::RestartNeeded;
+            let _ = replies.try_send(MemReply::Unavailable {
+                pane: Some(pane),
+                reason,
+            });
         }
     }
 
     /// Flushes what is queued and stops the worker, waiting at most `bound`.
     pub async fn shutdown(&mut self, bound: Duration) {
         self.start = None;
+        self.declined = None;
         if let Some(link) = self.link.take() {
             link.shutdown(bound).await;
         }
@@ -194,6 +222,45 @@ mod tests {
         rig.memory.send(MemCmd::Quit);
         rig.memory.shutdown(Duration::from_secs(1)).await;
         assert_eq!(rig.started.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_inactive_memory_that_answers_tells_the_pane_to_restart() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut rig = memory_of(MemoryConfig::default());
+        rig.memory = std::mem::replace(&mut rig.memory, Memory::off()).answering_when_off(tx);
+        rig.memory.send(resolve());
+        assert_eq!(
+            rx.try_recv().expect("an answer at once"),
+            MemReply::Unavailable {
+                pane: Some(PaneId::FIRST),
+                reason: Reason::RestartNeeded,
+            }
+        );
+        // Commands without a pane have nobody to tell.
+        rig.memory.send(MemCmd::StartServer);
+        rig.memory.send(MemCmd::End {
+            session: "s".into(),
+            project: "p".into(),
+            summary: "x".into(),
+        });
+        assert!(rx.try_recv().is_err());
+        assert_eq!(rig.started.get(), 0, "still no worker");
+        assert_eq!(rig.transport.0.load(Ordering::SeqCst), 0, "still no call");
+        rig.memory.shutdown(Duration::from_secs(1)).await;
+        rig.memory.send(resolve());
+        assert!(rx.try_recv().is_err(), "nothing after the shutdown");
+    }
+
+    #[tokio::test]
+    async fn an_active_memory_does_not_use_the_off_answer() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut rig = memory_of(config(true, true, 9123));
+        rig.memory = std::mem::replace(&mut rig.memory, Memory::off()).answering_when_off(tx);
+        rig.memory.send(resolve());
+        assert_eq!(rig.started.get(), 1);
+        assert!(rx.try_recv().is_err());
+        rig.memory.shutdown(Duration::from_secs(1)).await;
     }
 
     #[test]
