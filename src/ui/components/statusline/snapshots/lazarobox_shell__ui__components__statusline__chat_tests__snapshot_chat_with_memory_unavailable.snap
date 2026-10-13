@@ -1,0 +1,5 @@
+---
+source: src/ui/components/statusline/chat_tests.rs
+expression: "text(&draw(with_memory(InputMode::Terminal, None,\nSome(MemBadge::Unavailable)), 100))"
+---
+ ◐ CHAT  /srv/app                                          ollama › llama3:8b · mem: unavailable

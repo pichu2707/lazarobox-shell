@@ -334,9 +334,12 @@ async fn run_loop(
     let mut applied_cursor = CursorShape::default();
     // Armed only while a chat stream runs: an idle app never wakes for it.
     let mut anim = anim::Animation::new();
+    // Armed only while a chat awaits a memory reply: no wait lasts for ever.
+    let mut memory_watch = anim::Animation::every(anim::MEMORY_PERIOD);
 
     loop {
         anim.sync(app.animating());
+        memory_watch.sync(app.memory_waiting());
         tokio::select! {
             event = events.next() => match event {
                 Some(Ok(event)) => {
@@ -413,6 +416,11 @@ async fn run_loop(
             }
             () = anim.tick() => {
                 if step(&mut app, AppEvent::AnimTick, panes) {
+                    return Ok(());
+                }
+            }
+            () = memory_watch.tick() => {
+                if step(&mut app, AppEvent::MemoryTick, panes) {
                     return Ok(());
                 }
             }
@@ -1460,6 +1468,7 @@ mod tests {
             engine: "ollama".into(),
             model: Some("llama3:8b".into()),
             system: String::new(),
+            memory: None,
             messages: Vec::new(),
         };
         let effects = vec![
@@ -2023,6 +2032,7 @@ mod tests {
             engine: "ollama".into(),
             model: Some("llama3:8b".into()),
             system: String::new(),
+            memory: None,
             messages: Vec::new(),
         }
     }

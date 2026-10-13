@@ -94,6 +94,9 @@ pub enum Entry {
     System(String),
     /// The reasoning of one turn: shown, never stored, never sent back.
     Reasoning(Reasoning),
+    /// The memory the conversation was given, first in the transcript: shown,
+    /// never stored, never sent as history.
+    Memory(memory::MemoryLine),
 }
 
 /// The most reasoning text kept per turn, in bytes. Past it the rest is
@@ -296,7 +299,7 @@ impl ChatState {
     pub fn messages(&self) -> impl Iterator<Item = &Msg> {
         self.entries.iter().filter_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) => None,
+            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) => None,
         })
     }
 
@@ -489,7 +492,15 @@ impl ChatState {
                 content: all[i].text.clone(),
             })
             .collect();
-        let context = build_context(&history, history_chars(engine));
+        // The memory block shares the history budget: its characters come off
+        // the cap, and the newest message is kept whole whatever is left.
+        // Only an adapter that carries it gets the block, and only then does it
+        // take budget.
+        let memory = adapters::carries_memory(engine)
+            .then(|| self.memory.injected().map(|block| block.text.clone()))
+            .flatten();
+        let memory_chars = memory.as_ref().map_or(0, |text| text.chars().count());
+        let context = build_context(&history, history_chars(engine).saturating_sub(memory_chars));
         let oldest = sendable[history.len() - context.messages.len()];
         self.place_marker(oldest, context.omitted);
         self.turn += 1;
@@ -504,6 +515,7 @@ impl ChatState {
                 engine: engine.clone(),
                 model: model.clone(),
                 system: system.to_owned(),
+                memory,
                 messages: context.messages,
             },
         }
@@ -683,7 +695,7 @@ impl ChatState {
         }
         self.entries.iter_mut().rev().find_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) => None,
+            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) => None,
         })
     }
 
@@ -722,6 +734,10 @@ impl ChatState {
 #[cfg(test)]
 mod anchor_tests;
 #[cfg(test)]
+mod context_tests;
+#[cfg(test)]
+mod memory_line_tests;
+#[cfg(test)]
 mod memory_tests;
 #[cfg(test)]
 mod note_tests;
@@ -731,3 +747,5 @@ mod reasoning_tests;
 mod state_tests;
 #[cfg(test)]
 mod stream_tests;
+#[cfg(test)]
+mod wait_tests;

@@ -61,6 +61,8 @@ pub enum PrefixAction {
     OpenChat,
     /// Opens the note editor on the last answer of the focused chat.
     SaveNote,
+    /// Unfolds or folds the memory line of the focused chat.
+    ToggleMemory,
     ToggleZoom,
     NewTab,
     CloseTab,
@@ -194,6 +196,9 @@ pub const PREFIX_TREE: &[Binding] = &[
         "focus right",
         PrefixAction::Focus(Direction::Right),
     )),
+    // Left out of the hint: the root hint is already 79 columns wide, and a
+    // longer one would clip `q quit` on an 80-column terminal.
+    unhinted(act('o', "memory", PrefixAction::ToggleMemory)),
     unhinted(act('?', "commands (reserved)", PrefixAction::ShowCommands)),
     Binding {
         chord: PREFIX_KEY,
@@ -415,6 +420,26 @@ mod tests {
         }
     }
 
+    // Spec: modal-input root `o` folds and unfolds the memory line of a chat.
+    // It stays out of the hint (the root hint is already 79 columns); no group
+    // binds it.
+    #[test]
+    fn o_is_an_unhinted_root_leaf_that_toggles_the_memory_line() {
+        let binding = PREFIX_TREE
+            .iter()
+            .find(|b| b.chord.matches(&plain('o')))
+            .expect("o is bound at the root");
+        assert_eq!(binding.target, Target::Action(PrefixAction::ToggleMemory));
+        assert_eq!(binding.description, "memory");
+        assert!(!binding.hinted);
+        for table in &tables()[1..] {
+            assert_ne!(
+                lookup(table, &plain('o')),
+                Step::Run(PrefixAction::ToggleMemory)
+            );
+        }
+    }
+
     #[test]
     fn c_inside_another_group_does_not_open_a_chat() {
         for table in &tables()[1..] {
@@ -451,8 +476,8 @@ mod tests {
         for (i, a) in all.iter().enumerate() {
             assert!(!all[i + 1..].contains(a), "duplicate action {a:?}");
         }
-        // literal + quit + copy + menu + chat + note + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
-        assert_eq!(all.len(), 29);
+        // literal + quit + copy + menu + chat + note + memory + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
+        assert_eq!(all.len(), 30);
     }
 
     #[test]

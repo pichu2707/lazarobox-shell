@@ -252,6 +252,7 @@ fn the_ollama_body_holds_the_block_when_on_and_not_when_off() {
             engine: "ollama".into(),
             model: Some("m".into()),
             system,
+            memory: None,
             messages: vec![ChatMessage {
                 role: Role::User,
                 content: "hi".into(),

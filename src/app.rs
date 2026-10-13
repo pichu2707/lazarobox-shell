@@ -17,7 +17,10 @@ use crate::core::{
         },
         config::{AiConfig, Profile, Task},
         jail::JailSupport,
-        memory::port::{MemCmd, MemReply},
+        memory::{
+            offer::ServerOffer,
+            port::{MemCmd, MemReply, Reason},
+        },
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{
@@ -36,7 +39,9 @@ use crate::core::{
 };
 
 mod chat;
+mod context;
 mod notes;
+mod offer;
 
 /// Rows of history kept by the emulator.
 const SCROLLBACK_LINES: usize = 10_000;
@@ -53,6 +58,8 @@ const CHAT_COPY_REFUSED: &str =
 
 /// Shown when `Prefix n` (save a note) is pressed on a pane that is not a chat.
 const NOTE_CHAT_ONLY: &str = "Save as note is for chat panes; open one with Ctrl+Space c";
+/// Notice of the memory-line key on a pane that is not a chat.
+const MEMORY_CHAT_ONLY: &str = "The memory line is for chat panes; open one with Ctrl+Space c";
 
 /// Byte sent to the child when the prefix is pressed twice (NUL, Ctrl+Space).
 const PREFIX_LITERAL: u8 = 0x00;
@@ -140,6 +147,10 @@ pub enum AppEvent {
     /// One step of the thinking-indicator animation. The runtime sends it
     /// only while a chat stream runs.
     AnimTick,
+    /// Time passed while a chat waits for memory: the waits older than
+    /// `MEMORY_WAIT` are given up. The runtime sends it only while
+    /// `memory_waiting` holds.
+    MemoryTick,
 }
 
 /// How the menu closed.
@@ -422,6 +433,16 @@ pub struct App {
     waiting_sends: Vec<(PaneId, String)>,
     /// The frame of the thinking-indicator animation.
     anim_frame: usize,
+    /// The one offer to start `engram serve` of this run, as the worker made
+    /// it.
+    server_offer: ServerOffer,
+    /// Whether the offer is on screen (see `offer.rs`).
+    offer_shown: bool,
+    /// The chat the offer was shown in: the outcome of the start is told there.
+    offer_pane: Option<PaneId>,
+    /// Why no server can be offered (no usable `engram` on the PATH), as the
+    /// worker said once: it names the cause of every `engram is not running`.
+    no_server: Option<Reason>,
 }
 
 /// The key that left COPY and when it was last seen.
@@ -469,6 +490,10 @@ impl App {
             jail: JailSupport::Unavailable("no CLI jail yet"),
             waiting_sends: Vec::new(),
             anim_frame: 0,
+            server_offer: ServerOffer::new(),
+            offer_shown: false,
+            offer_pane: None,
+            no_server: None,
         }
     }
 
@@ -941,6 +966,7 @@ impl App {
             AppEvent::Store(reply) => self.on_store_reply(&reply),
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
+            AppEvent::MemoryTick => self.on_memory_tick(),
         };
         debug_assert_eq!(
             self.menu.is_some(),
@@ -1058,6 +1084,11 @@ impl App {
                 Outcome::Reverted => self.config = menu.original(),
                 Outcome::Saved => self.ai = menu.ai_draft(),
             }
+            if !self.ai.memory.active() {
+                self.memory_turned_off();
+            } else {
+                self.sync_memory_lines();
+            }
         }
         self.input = InputMode::Terminal;
         // The forced tab bar goes away with the menu, whatever the outcome.
@@ -1155,7 +1186,8 @@ impl App {
                 | PrefixAction::Focus(_)
                 | PrefixAction::OpenMenu
                 | PrefixAction::OpenChat
-                | PrefixAction::SaveNote,
+                | PrefixAction::SaveNote
+                | PrefixAction::ToggleMemory,
             ) => InputMode::Terminal,
             Step::Run(
                 PrefixAction::ShowCommands
@@ -1178,6 +1210,13 @@ impl App {
             }
             Step::Run(PrefixAction::SaveNote) => {
                 self.notice = Some(NOTE_CHAT_ONLY.to_string());
+                Vec::new()
+            }
+            Step::Run(PrefixAction::ToggleMemory) if self.focused_is_chat() => {
+                self.chat_toggle_memory()
+            }
+            Step::Run(PrefixAction::ToggleMemory) => {
+                self.notice = Some(MEMORY_CHAT_ONLY.to_string());
                 Vec::new()
             }
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
@@ -6336,6 +6375,9 @@ mod app_tests {
 
     /// The live chat pane (ai-chat C8).
     mod chat_live;
+
+    /// Memory in a chat view (engram-memory M6).
+    mod chat_memory;
 
     /// Save as note (engram-memory M7b).
     mod chat_notes;

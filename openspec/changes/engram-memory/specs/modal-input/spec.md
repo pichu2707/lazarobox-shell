@@ -1,18 +1,18 @@
 # Delta for Modal Input
 
-All scenarios [auto] unless tagged. The Chat pane input table and its swallow rule are unchanged except for the keys added below, which are exempt from the swallow rule. The key bindings are defaults for design to confirm, chosen in the style of Ctrl+Y, Ctrl+B, Ctrl+T and Ctrl+R (Ctrl+O toggle the memory block, Ctrl+E summary draft, as in the design; the save-note action is the prefix key `n`, because Ctrl+N is taken outside the terminal in the user's setup, e.g. a new Kitty window), and are an open question until confirmed in Kitty (manual check, with M8).
+All scenarios [auto] unless tagged. The Chat pane input table and its swallow rule are unchanged except for the keys added below, which are exempt from the swallow rule. The key bindings are defaults for design to confirm, chosen in the style of Ctrl+Y, Ctrl+B, Ctrl+T and Ctrl+R (the prefix key `o` toggles the memory block, Ctrl+E summary draft; the save-note action is the prefix key `n`, because Ctrl+N is taken outside the terminal in the user's setup, e.g. a new Kitty window), and are an open question until confirmed in Kitty (manual check, with M8).
 
 ## ADDED Requirements
 
 ### Requirement: Memory keys
-In TERMINAL, with a chat pane focused and the conversation view shown, two keys MUST be added to the Chat pane input table:
+In TERMINAL, with a chat pane focused and the conversation view shown, one key MUST be added to the Chat pane input table, and the memory block is folded with a prefix key:
 
 | Key | Effect |
 |---|---|
 | Ctrl+E | request the end-of-conversation summary (see chat-memory) |
-| Ctrl+O | expand or collapse the memory block (see chat-memory); it never touches the reasoning block, which stays on Ctrl+R |
+| Ctrl+Space then `o` | expand or collapse the memory block (see chat-memory); it never touches the reasoning block, which stays on Ctrl+R. A root leaf of the prefix table, left out of the hint; on a pane that is not a chat it shows `The memory line is for chat panes; open one with Ctrl+Space c` |
 
-Repeat events of Ctrl+E and Ctrl+O MUST be ignored, as for Ctrl+Y and Ctrl+B. Ctrl+N is NOT bound: in a chat pane it is swallowed as any other unbound key. With memory off or not ready, Ctrl+E only shows their notices and Ctrl+O does nothing when no memory line exists. These keys MUST NEVER reach a PTY and MUST NOT type anything into the composer. In the conversation list, the tag editor and the delete confirmation they do nothing.
+Repeat events of Ctrl+E MUST be ignored, as for Ctrl+Y and Ctrl+B. Ctrl+N and Ctrl+O are NOT bound: in a chat pane they are swallowed as any other unbound key. With memory off or not ready, Ctrl+E only shows its notices and `Prefix o` does nothing when no memory line exists. These keys MUST NEVER reach a PTY and MUST NOT type anything into the composer. In the conversation list, the tag editor and the delete confirmation they do nothing.
 
 #### Scenario: Prefix n opens the editor [auto]
 - GIVEN a conversation with an answer and a ready memory
@@ -29,14 +29,14 @@ Repeat events of Ctrl+E and Ctrl+O MUST be ignored, as for Ctrl+Y and Ctrl+B. Ct
 - WHEN Ctrl+E is pressed
 - THEN one summary request effect is emitted and no WritePty is emitted
 
-#### Scenario: Ctrl+O and Ctrl+R are independent [auto]
+#### Scenario: Prefix o and Ctrl+R are independent [auto]
 - GIVEN a last turn with a collapsed reasoning block and a collapsed memory line
-- WHEN Ctrl+O is pressed, then Ctrl+R
+- WHEN Ctrl+Space then `o` are pressed, then Ctrl+R
 - THEN the memory line expands first and the reasoning block expands second, each only on its own key
 
 #### Scenario: Repeat ignored [auto]
 - GIVEN a focused chat pane
-- WHEN Repeat events for Ctrl+E and Ctrl+O arrive
+- WHEN Repeat events for Ctrl+E arrive, and Ctrl+O is pressed
 - THEN nothing happens and no effect is emitted
 
 #### Scenario: Memory off [auto]
@@ -46,7 +46,7 @@ Repeat events of Ctrl+E and Ctrl+O MUST be ignored, as for Ctrl+Y and Ctrl+B. Ct
 
 #### Scenario: Other views ignore them [auto]
 - GIVEN the conversation list shown
-- WHEN Ctrl+E and Ctrl+O are pressed
+- WHEN Ctrl+E is pressed and Ctrl+Space then `o`
 - THEN nothing changes and nothing is typed
 
 ### Requirement: Save-note prefix key
@@ -74,7 +74,7 @@ While the note editor or the summary editor is open in a chat pane, keys act as 
 | Esc | discard the view |
 | Ctrl+Space | enter PREFIX as in any pane |
 
-A paste is inserted into the focused text field with control and format characters dropped and CRLF turned into newline, never saved, and clipped at the field cap. Repeat is handled like Press for editing keys and ignored for Ctrl+S and Esc. In the start-server confirmation only an unmodified lowercase `y` confirms and any other key declines. While MENU is open no key or paste reaches a memory view.
+A paste is inserted into the focused text field with control and format characters dropped and CRLF turned into newline, never saved, and clipped at the field cap. Repeat is handled like Press for editing keys and ignored for Ctrl+S and Esc. In the start-server confirmation, with an empty composer, only an unmodified lowercase `y` press confirms and `n` or Esc declines; every other key (and any key while the composer holds text) is typed or handled as in any chat and leaves the confirmation up, and a repeat or a modifier key on its own answers nothing. While MENU is open no key or paste reaches a memory view.
 
 #### Scenario: Typing and field cap [auto]
 - GIVEN the title field holding 120 characters
@@ -111,6 +111,12 @@ A paste is inserted into the focused text field with control and format characte
 - WHEN `Y`, `n`, Enter and then (in another run) `y` are pressed
 - THEN the first three decline and only `y` confirms
 
+#### Scenario: Server offer yields to the stream and to the first message [auto]
+- GIVEN the `engram serve` offer pending
+- WHEN a stream runs and Esc is pressed
+- THEN the stream is cancelled and the offer is not answered
+- AND WHEN a message was sent since the offer was shown THEN `y` and `n` at an empty composer are typed as text
+
 #### Scenario: Prefix still works [auto]
 - GIVEN the note editor open
 - WHEN Ctrl+Space then `w` then `v` are pressed
@@ -118,5 +124,5 @@ A paste is inserted into the focused text field with control and format characte
 
 #### Scenario: Real keys in Kitty [manual, Kitty]
 - GIVEN a chat with an answer and memory ready, in Kitty
-- WHEN the user presses Ctrl+Space then `n`, edits the fields, saves with Ctrl+S, and presses Ctrl+O and Ctrl+E
+- WHEN the user presses Ctrl+Space then `n`, edits the fields, saves with Ctrl+S, and presses Ctrl+Space then `o` and Ctrl+E
 - THEN each key is received as listed and none is intercepted by the terminal

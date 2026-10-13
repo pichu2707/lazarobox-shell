@@ -184,6 +184,8 @@ fn fill(buf: &mut Buffer, rect: Rect, style: Style) {
 
 #[cfg(test)]
 mod guidance_tests;
+#[cfg(test)]
+mod memory_tests;
 mod note;
 #[cfg(test)]
 mod note_tests;

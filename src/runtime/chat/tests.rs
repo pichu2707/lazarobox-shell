@@ -48,6 +48,7 @@ fn request(system: &str) -> ChatRequest {
         engine: "ollama".into(),
         model: Some("llama3:8b".into()),
         system: system.into(),
+        memory: None,
         messages: Vec::new(),
     }
 }

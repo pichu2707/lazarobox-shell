@@ -3,11 +3,7 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use super::{
-    health::Health,
-    port::{MemCmd, Reason},
-    reply::ProjectError,
-};
+use super::{health::Health, port::Reason, reply::ProjectError};
 use crate::core::ai::{config::MemoryConfig, sanitize::clean};
 
 /// The oldest engram major version that has the HTTP API lazarobox uses.
@@ -185,14 +181,39 @@ impl ServerOffer {
         }
     }
 
-    /// The user's answer. An unmodified `y` returns the command that starts
-    /// the server; any other key declines. Either way the offer is used up.
-    /// With nothing pending, a key does nothing.
-    pub fn answer(&mut self, key: KeyEvent) -> Option<MemCmd> {
-        self.pending()?;
+    /// What a key does to the offer. Only a press on an empty composer
+    /// answers: an unmodified `y` starts the server, an unmodified `n` or Esc
+    /// declines (either way the offer is used up). Everything else, a repeat,
+    /// a release, a modifier on its own, any other key, or any key while the
+    /// composer holds text, is for the composer and leaves the offer as it
+    /// was. With nothing pending, a key does nothing.
+    pub fn answer(&mut self, key: KeyEvent, composer_empty: bool) -> Answer {
+        if self.pending().is_none() || !composer_empty || key.kind != KeyEventKind::Press {
+            return Answer::Pass;
+        }
+        let answer = if confirms(key) {
+            Answer::Start
+        } else if key.modifiers == KeyModifiers::NONE
+            && matches!(key.code, KeyCode::Char('n') | KeyCode::Esc)
+        {
+            Answer::Decline
+        } else {
+            return Answer::Pass;
+        };
         self.stage = Stage::Used;
-        confirms(key).then_some(MemCmd::StartServer)
+        answer
     }
+}
+
+/// What a key did to the offer (see `ServerOffer::answer`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Answer {
+    /// Not for the offer: the key goes to the composer, the offer stays.
+    Pass,
+    /// Confirmed: start the server.
+    Start,
+    /// Declined for the run.
+    Decline,
 }
 
 /// The last non-empty line of a server's log, sanitized and cut to
@@ -226,11 +247,7 @@ mod tests {
     use super::*;
     use crate::core::ai::{
         config::MemoryConfig,
-        memory::{
-            health::Health,
-            port::{MemCmd, Reason},
-            reply::ProjectError,
-        },
+        memory::{health::Health, port::Reason, reply::ProjectError},
     };
 
     const PORT: u16 = 7437;
@@ -504,39 +521,81 @@ mod tests {
     }
 
     #[test]
-    fn y_starts_the_server_and_any_other_key_declines_for_the_run() {
+    fn y_starts_the_server_and_n_or_esc_decline_for_the_run() {
         let mut state = ServerOffer::new();
         assert!(state.pending().is_none());
         assert!(state.accept(offer()));
         assert_eq!(state.pending(), Some(&offer()));
         let y = key(KeyCode::Char('y'), KeyModifiers::NONE);
-        assert_eq!(state.answer(y), Some(MemCmd::StartServer));
+        assert_eq!(state.answer(y, true), Answer::Start);
         assert!(state.pending().is_none());
         assert!(!state.accept(offer()), "one offer per run");
 
-        for other in [KeyCode::Char('n'), KeyCode::Esc, KeyCode::Char('x')] {
+        for other in [KeyCode::Char('n'), KeyCode::Esc] {
             let mut state = ServerOffer::new();
             state.accept(offer());
             assert_eq!(
-                state.answer(key(other, KeyModifiers::NONE)),
-                None,
+                state.answer(key(other, KeyModifiers::NONE), true),
+                Answer::Decline,
                 "{other:?}"
             );
             assert!(state.pending().is_none());
             assert!(!state.accept(offer()), "{other:?}: no second offer");
         }
-        let mut state = ServerOffer::new();
-        state.accept(offer());
-        let upper = key(KeyCode::Char('Y'), KeyModifiers::SHIFT);
-        assert_eq!(state.answer(upper), None);
-        assert!(!state.accept(offer()));
+    }
+
+    #[test]
+    fn any_other_key_passes_and_leaves_the_offer_pending() {
+        let others = [
+            key(KeyCode::Char('Y'), KeyModifiers::SHIFT),
+            key(KeyCode::Char('N'), KeyModifiers::SHIFT),
+            key(KeyCode::Char('y'), KeyModifiers::CONTROL),
+            key(KeyCode::Char('n'), KeyModifiers::ALT),
+            key(KeyCode::Esc, KeyModifiers::SHIFT),
+            key(KeyCode::Char('x'), KeyModifiers::NONE),
+            key(KeyCode::Enter, KeyModifiers::NONE),
+            key(
+                KeyCode::Modifier(ratatui::crossterm::event::ModifierKeyCode::LeftShift),
+                KeyModifiers::SHIFT,
+            ),
+        ];
+        for other in others {
+            let mut state = ServerOffer::new();
+            state.accept(offer());
+            assert_eq!(state.answer(other, true), Answer::Pass, "{other:?}");
+            assert_eq!(state.pending(), Some(&offer()), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn repeats_and_releases_pass_and_leave_the_offer_pending() {
+        for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+            for code in [KeyCode::Char('y'), KeyCode::Char('n'), KeyCode::Esc] {
+                let mut state = ServerOffer::new();
+                state.accept(offer());
+                let k = KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind);
+                assert_eq!(state.answer(k, true), Answer::Pass, "{kind:?} {code:?}");
+                assert_eq!(state.pending(), Some(&offer()));
+            }
+        }
+    }
+
+    #[test]
+    fn a_composer_with_text_keeps_every_key_for_itself() {
+        for code in [KeyCode::Char('y'), KeyCode::Char('n'), KeyCode::Esc] {
+            let mut state = ServerOffer::new();
+            state.accept(offer());
+            let k = key(code, KeyModifiers::NONE);
+            assert_eq!(state.answer(k, false), Answer::Pass, "{code:?}");
+            assert_eq!(state.pending(), Some(&offer()));
+        }
     }
 
     #[test]
     fn a_key_without_a_pending_offer_does_nothing() {
         let mut state = ServerOffer::new();
         let y = key(KeyCode::Char('y'), KeyModifiers::NONE);
-        assert_eq!(state.answer(y), None);
+        assert_eq!(state.answer(y, true), Answer::Pass);
         assert!(state.accept(offer()), "the stray key did not use the offer");
     }
 

@@ -36,6 +36,7 @@ fn request(model: &str) -> ChatRequest {
         engine: "ollama".into(),
         model: Some(model.into()),
         system: "be brief".into(),
+        memory: None,
         messages: vec![
             ChatMessage {
                 role: Role::User,

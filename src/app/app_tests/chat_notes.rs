@@ -18,14 +18,14 @@ use crate::core::ai::{
     },
 };
 
-const PROJECT: &str = "lazarobox-shell";
-const CWD: &str = "/srv/app";
+pub(super) const PROJECT: &str = "lazarobox-shell";
+pub(super) const CWD: &str = "/srv/app";
 
 fn chat_id() -> PaneId {
     id2()
 }
 
-fn ai(memory: bool) -> AiConfig {
+pub(super) fn ai(memory: bool) -> AiConfig {
     let mut ai = AiConfig::default();
     ai.set(
         Task::Chat,
@@ -46,11 +46,11 @@ fn code(code: KeyCode, mods: KeyModifiers) -> AppEvent {
     AppEvent::Key(KeyEvent::new(code, mods))
 }
 
-fn ctrl(c: char) -> AppEvent {
+pub(super) fn ctrl(c: char) -> AppEvent {
     code(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
-fn plain(code_: KeyCode) -> AppEvent {
+pub(super) fn plain(code_: KeyCode) -> AppEvent {
     code(code_, KeyModifiers::NONE)
 }
 
@@ -69,14 +69,14 @@ fn chat_of(a: &App) -> &ChatState {
     }
 }
 
-fn type_text(a: &mut App, text: &str) {
+pub(super) fn type_text(a: &mut App, text: &str) {
     for c in text.chars() {
         a.update(key(c));
     }
 }
 
 /// A chat opened from `/srv/app` whose first exchange answered `answer`.
-fn with_answer(memory: bool, answer: &str) -> App {
+pub(super) fn with_answer(memory: bool, answer: &str) -> App {
     answered(memory, answer, true)
 }
 
@@ -126,7 +126,7 @@ fn answered(memory: bool, answer: &str, known_cwd: bool) -> App {
 }
 
 /// The same chat once its project is known.
-fn ready(answer: &str) -> App {
+pub(super) fn ready(answer: &str) -> App {
     let mut a = with_answer(true, answer);
     press(&mut a, "n");
     a.update(AppEvent::Memory(MemReply::Project {
@@ -153,7 +153,7 @@ fn project_reply(result: Result<String, ProjectError>) -> AppEvent {
 
 /// The oldest save the chat still awaits: its token and the project it was
 /// sent under, as the worker would echo them.
-fn oldest_save(a: &App) -> (SaveId, String) {
+pub(super) fn oldest_save(a: &App) -> (SaveId, String) {
     let save = chat_of(a)
         .pending_save_ids()
         .first()
@@ -163,7 +163,13 @@ fn oldest_save(a: &App) -> (SaveId, String) {
 }
 
 /// The worker's `Saved` for the oldest pending save.
-fn saved_reply(a: &App, session: &str, id: i64, topic_key: &str, title: &str) -> AppEvent {
+pub(super) fn saved_reply(
+    a: &App,
+    session: &str,
+    id: i64,
+    topic_key: &str,
+    title: &str,
+) -> AppEvent {
     let (token, project) = oldest_save(a);
     AppEvent::Memory(MemReply::Saved {
         pane: chat_id(),
@@ -180,11 +186,11 @@ const SESSION: &str = "lazarobox-0123456789abcdef0123456789abcdef";
 
 /// A key that does nothing anywhere, between two presses of one key: a key
 /// pressed again within half a second counts as held, and is ignored.
-fn pause(a: &mut App) {
+pub(super) fn pause(a: &mut App) {
     a.update(plain(KeyCode::PageUp));
 }
 
-fn systems(a: &App) -> Vec<String> {
+pub(super) fn systems(a: &App) -> Vec<String> {
     chat_of(a)
         .entries()
         .iter()
@@ -214,16 +220,47 @@ fn without_an_answer_there_is_nothing_to_save() {
     assert!(chat_of(&a).note_editor().is_none());
 }
 
+/// A chat opened while memory was off, which was then turned on in the menu:
+/// nobody asked for its project yet.
+fn opened_before_memory_was_on(answer: &str) -> App {
+    let mut a = with_answer(false, answer);
+    a.ai.memory = ai(true).memory;
+    a
+}
+
 #[test]
-fn the_first_ctrl_n_asks_for_the_project_and_opens_the_editor_on_the_reply() {
-    let mut a = with_answer(true, "use Axum");
+fn the_first_save_key_asks_for_the_project_and_opens_the_editor_on_the_reply() {
+    let mut a = opened_before_memory_was_on("use Axum");
+    assert_eq!(chat_of(&a).readiness(), &Readiness::Unknown);
     assert_eq!(press(&mut a, "n"), vec![resolve()]);
     assert!(chat_of(&a).note_editor().is_none(), "waits for the project");
-    assert_eq!(a.update(project_reply(Ok(PROJECT.into()))), vec![]);
+    let effects = a.update(project_reply(Ok(PROJECT.into())));
+    assert_eq!(
+        effects,
+        [Effect::Memory(MemCmd::Context {
+            pane: chat_id(),
+            project: PROJECT.into()
+        })],
+        "the view had no context yet, so it asks for it"
+    );
     let editor = chat_of(&a).note_editor().expect("open");
     assert_eq!(editor.content(), "use Axum");
     assert_eq!(editor.kind(), MemKind::Decision);
     assert_eq!(editor.title(), "");
+}
+
+#[test]
+fn a_save_key_pressed_while_the_open_check_runs_opens_the_editor_on_its_reply() {
+    let mut a = with_answer(true, "use Axum");
+    assert_eq!(
+        chat_of(&a).readiness(),
+        &Readiness::Resolving { want_note: false },
+        "the view asked for its project when it opened"
+    );
+    assert_eq!(press(&mut a, "n"), vec![], "no second resolve");
+    assert!(chat_of(&a).note_editor().is_none(), "waits for the project");
+    a.update(project_reply(Ok(PROJECT.into())));
+    assert!(chat_of(&a).note_editor().is_some());
 }
 
 #[test]
@@ -333,7 +370,7 @@ fn the_reply_of_a_check_nobody_wanted_does_not_open_the_editor() {
 
 #[test]
 fn ctrl_n_alone_does_nothing_in_a_chat() {
-    let mut a = with_answer(true, "x");
+    let mut a = opened_before_memory_was_on("x");
     for event in [ctrl('n'), held(KeyCode::Char('n'), KeyModifiers::CONTROL)] {
         assert_eq!(a.update(event), vec![]);
     }
