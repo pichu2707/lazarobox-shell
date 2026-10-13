@@ -24,8 +24,13 @@ The store MUST migrate from schema v1 to v2 in one additive transaction on first
 
 #### Scenario: Session id reused on resume [auto]
 - GIVEN a conversation with a stored session id
-- WHEN it is resumed and reads its memory session
-- THEN the same id is returned
+- WHEN it is resumed and reads its memory session, even if the caller proposes another id and another project
+- THEN the stored id and the stored project are returned (engram rejects a session under a different project, 400 `session_project_mismatch`, so the caller reuses the stored pair)
+
+#### Scenario: A panic in a link keeps history available [auto]
+- GIVEN an open store and a link command that panics inside its transaction
+- WHEN the store thread answers
+- THEN the reply is `LinkFailed`, the transaction is rolled back, and, when the connection is back in autocommit (no transaction left open), the next conversation create and message append succeed; a link panic that leaves a transaction open, like a panic in a create or an append, marks the store unusable for the run
 
 #### Scenario: Old build refuses v2 [auto]
 - GIVEN a v2 database and a store opener that supports only v1
