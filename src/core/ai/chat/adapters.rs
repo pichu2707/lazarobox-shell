@@ -17,6 +17,8 @@ pub enum Wire {
     Sse,
     /// The stream-json output of the claude CLI.
     ClaudeStreamJson,
+    /// The `--json` output of `codex exec`.
+    CodexJsonl,
 }
 
 /// The engines that can chat. More arrive with their adapters.
@@ -24,6 +26,7 @@ pub enum Wire {
 pub enum Adapter {
     Ollama,
     Claude,
+    Codex,
 }
 
 /// What the runtime runs for one turn.
@@ -61,6 +64,7 @@ pub fn adapter_for(id: &str) -> Option<Adapter> {
     match id {
         "ollama" => Some(Adapter::Ollama),
         "claude" => Some(Adapter::Claude),
+        "codex" => Some(Adapter::Codex),
         _ => None,
     }
 }
@@ -90,7 +94,7 @@ impl Adapter {
     /// stdin flips its own answer when it arrives.
     pub fn carries_memory(self) -> bool {
         match self {
-            Adapter::Ollama | Adapter::Claude => true,
+            Adapter::Ollama | Adapter::Claude | Adapter::Codex => true,
         }
     }
 
@@ -107,6 +111,7 @@ impl Adapter {
                 body: ollama_body(request),
             },
             Adapter::Claude => claude_invocation(request),
+            Adapter::Codex => codex_invocation(request),
         }
     }
 }
@@ -197,6 +202,84 @@ fn claude_invocation(request: &ChatRequest) -> Invocation {
         args,
         stdin: cli_stdin(request).into_bytes(),
         jail: JailPolicy::Layered,
+    })
+}
+
+/// Features codex runs with switched off. Together with the config keys in
+/// [`codex_invocation`] they remove every tool the model could call: the
+/// shell, patching, web search, image tools, sub-agents, connectors, plugins
+/// and hooks. A name the installed codex does not know makes it exit with
+/// `Unknown feature flag`, which the chat shows as the failure.
+const CODEX_DISABLED: [&str; 14] = [
+    "shell_tool",
+    "unified_exec",
+    "apps",
+    "browser_use",
+    "browser_use_external",
+    "computer_use",
+    "image_generation",
+    "in_app_browser",
+    "multi_agent",
+    "plugins",
+    "hooks",
+    "goals",
+    "tool_suggest",
+    "shell_snapshot",
+];
+
+/// The codex run: the pinned argv (text only, nothing from the user's setup,
+/// nothing kept on disk), and on stdin the profile prompt in an `Instructions:`
+/// block, then the memory block and the history. codex has no system-prompt
+/// flag, and argv is visible in `ps`, so nothing but fixed flags and the model
+/// goes there. The child starts in the private empty folder, which is also
+/// codex's working root, so no `-C` is passed.
+fn codex_invocation(request: &ChatRequest) -> Invocation {
+    let model = match cli_model(request.model.as_deref()) {
+        Ok(model) => model,
+        Err(reason) => return Invocation::Refused(reason),
+    };
+    let mut args: Vec<String> = [
+        "exec",
+        "--json",
+        "-s",
+        "read-only",
+        "--ephemeral",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--skip-git-repo-check",
+    ]
+    .map(str::to_owned)
+    .into();
+    for feature in CODEX_DISABLED {
+        args.extend(["--disable".to_owned(), feature.to_owned()]);
+    }
+    args.extend(
+        [
+            "-c",
+            "web_search=\"disabled\"",
+            "-c",
+            "include_apply_patch_tool=false",
+            "-c",
+            "tools.view_image=false",
+        ]
+        .map(str::to_owned),
+    );
+    args.extend(model.map(|m| format!("--model={m}")));
+    // The prompt is read from stdin.
+    args.push("-".to_owned());
+    let conversation = cli_stdin(request);
+    let stdin = if request.system.is_empty() {
+        conversation
+    } else {
+        format!("Instructions:\n{}\n\n{conversation}", request.system)
+    };
+    Invocation::Process(Job {
+        wire: Wire::CodexJsonl,
+        binary: "codex",
+        cli: Cli::Codex,
+        args,
+        stdin: stdin.into_bytes(),
+        jail: JailPolicy::Required,
     })
 }
 
