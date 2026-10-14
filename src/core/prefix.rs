@@ -237,21 +237,33 @@ pub fn lookup(table: &'static [Binding], key: &KeyEvent) -> Step {
 /// One-line key hint (`v split right · h split below · …`) from the hinted
 /// bindings, in table order, clipped by whole entries to `max_cols` columns.
 pub fn hint(bindings: &[Binding], max_cols: u16) -> String {
-    const SEP: &str = " · ";
-    const ELLIPSIS: &str = "…";
-    let fits = |text: &str| Line::from(text).width() <= usize::from(max_cols);
     let entries: Vec<String> = bindings
         .iter()
         .filter(|binding| binding.hinted)
         .map(|binding| format!("{} {}", binding.chord.label(), binding.description))
         .collect();
-    let full = entries.join(SEP);
+    clip_hint(&entries, max_cols)
+}
+
+/// `entries` joined by ` · ` and clipped by whole entries (ending with `…`)
+/// to `max_cols` columns; possibly empty.
+pub fn clip_hint<S: AsRef<str>>(entries: &[S], max_cols: u16) -> String {
+    const SEP: &str = " · ";
+    const ELLIPSIS: &str = "…";
+    let fits = |text: &str| Line::from(text).width() <= usize::from(max_cols);
+    let join = |kept: &[S]| {
+        kept.iter()
+            .map(AsRef::as_ref)
+            .collect::<Vec<&str>>()
+            .join(SEP)
+    };
+    let full = join(entries);
     if fits(&full) {
         return full;
     }
     (1..entries.len())
         .rev()
-        .map(|kept| format!("{}{SEP}{ELLIPSIS}", entries[..kept].join(SEP)))
+        .map(|kept| format!("{}{SEP}{ELLIPSIS}", join(&entries[..kept])))
         .find(|clipped| fits(clipped))
         .or_else(|| fits(ELLIPSIS).then(|| ELLIPSIS.to_string()))
         .unwrap_or_default()
@@ -260,6 +272,23 @@ pub fn hint(bindings: &[Binding], max_cols: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clip_hint_joins_and_clips_free_entries_by_whole_entries() {
+        let entries = ["j/k scroll", "v select", "y copy", "Esc exit"];
+        let full = "j/k scroll · v select · y copy · Esc exit";
+        assert_eq!(clip_hint(&entries, 80), full);
+        assert_eq!(clip_hint(&entries, 41), full);
+        assert_eq!(
+            clip_hint(&entries, 40),
+            "j/k scroll · v select · y copy · …"
+        );
+        assert_eq!(clip_hint(&entries, 25), "j/k scroll · v select · …");
+        assert_eq!(clip_hint(&entries, 24), "j/k scroll · …");
+        assert_eq!(clip_hint(&entries, 1), "…");
+        assert_eq!(clip_hint(&entries, 0), "");
+        assert_eq!(clip_hint::<&str>(&[], 10), "");
+    }
 
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, mods)

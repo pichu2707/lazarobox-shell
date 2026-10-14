@@ -1,0 +1,10 @@
+---
+source: src/ui/scroll_tests.rs
+expression: "frame(&app, 3, 6).join(\"\\n\")"
+---
+lin
+e22
+lin
+e23
+lin
+ ◐

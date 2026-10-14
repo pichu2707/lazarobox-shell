@@ -11,6 +11,7 @@ use crate::{
 use components::{
     chat::ChatView,
     menu::MenuPopup,
+    scroll_badge::ScrollBadge,
     separators::SeparatorView,
     statusline::{StatusLine, thinking::ThinkingView},
     tab_bar::TabBar,
@@ -59,10 +60,16 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
                 let chat_view = ChatView::new(chat, theme).guidance(guidance.as_deref());
                 // The composer owns the real cursor of a focused chat; MENU
                 // hides it like it hides a shell's.
-                let cursor = (id == focused && app.menu().is_none())
-                    .then(|| chat_view.cursor(area))
-                    .flatten();
+                // Chat COPY scrolls the transcript and edits nothing: no cursor.
+                let cursor = (id == focused
+                    && app.menu().is_none()
+                    && !matches!(app.input(), InputMode::ChatCopy(_)))
+                .then(|| chat_view.cursor(area))
+                .flatten();
                 frame.render_widget(chat_view, area);
+                if let Some(offset) = app.scrolled_by(id) {
+                    frame.render_widget(ScrollBadge::new(offset, theme), area);
+                }
                 if let Some(position) = cursor {
                     frame.set_cursor_position(position);
                 }
@@ -75,6 +82,9 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
             None
         };
         frame.render_widget(TerminalView::new(pane, theme).highlight(highlight), area);
+        if let Some(offset) = app.scrolled_by(id) {
+            frame.render_widget(ScrollBadge::new(offset, theme), area);
+        }
         if id == focused {
             // MENU hides the real cursor: it would blink under the popup.
             // In COPY the real cursor is the COPY cursor, even if the child hid its own.
@@ -112,7 +122,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
             .memory(app.status_memory())
             .thinking(thinking.clone())
             .zoomed(app.zoomed())
-            .copy_position(app.copy_position())
+            .copy_position(app.scroll_position())
             .marker(app.copy_selection_kind())
     };
     let path = app.status_path(line("").path_budget(status.width));
@@ -132,6 +142,8 @@ fn within(frame: &Frame, rect: Rect) -> ratatui::layout::Rect {
 
 #[cfg(test)]
 mod chat_status_tests;
+#[cfg(test)]
+mod scroll_tests;
 #[cfg(test)]
 mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -946,6 +958,8 @@ mod tests {
         let rows: Vec<(u16, String)> = (0..ROWS)
             .filter(|&y| !reversed_cells(&buf, y).is_empty())
             .map(|y| (y, row(&buf, y).trim_end().to_string()))
+            // The scrolled pane's `[+N]` badge sits on the first row.
+            .map(|(y, text)| (y, text.trim_end_matches("[+8]").trim_end().to_string()))
             .collect();
         assert_eq!(
             rows,

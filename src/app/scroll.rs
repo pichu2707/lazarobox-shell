@@ -3,7 +3,21 @@
 
 use super::*;
 
+/// The COPY key hint of a shell pane.
+const SHELL_COPY_HINT: [&str; 4] = ["j/k scroll", "v select", "y copy", "Esc exit"];
+/// The COPY key hint of a chat pane: no selection or yank.
+const CHAT_COPY_HINT: [&str; 2] = ["j/k scroll", "Esc exit"];
+
 impl App {
+    /// The static COPY key hint of the active COPY kind, clipped by whole
+    /// entries to `max_cols`.
+    pub(super) fn copy_hint(&self, max_cols: u16) -> String {
+        match self.input {
+            InputMode::ChatCopy(_) => prefix::clip_hint(&CHAT_COPY_HINT, max_cols),
+            _ => prefix::clip_hint(&SHELL_COPY_HINT, max_cols),
+        }
+    }
+
     /// How far pane `id` is scrolled back: the shell's offset in rows, or the
     /// transcript lines below a chat's view. `None` when it is live, on the
     /// alternate screen, or `id` is not a pane.
@@ -46,5 +60,16 @@ impl App {
         let top = chat.scroll().top(total, rows);
         let scrollable = total.saturating_sub(rows);
         Some((scrollable - top, scrollable))
+    }
+}
+
+#[cfg(test)]
+impl App {
+    /// Test-only: scrolls shell pane `id` back by `offset` rows, as the wheel
+    /// will.
+    pub(crate) fn scroll_shell_for_test(&mut self, id: PaneId, offset: usize) {
+        if let Some(pty) = self.panes.get_mut(&id).and_then(PaneState::pty_mut) {
+            pty.emu.set_scrollback(offset);
+        }
     }
 }

@@ -622,7 +622,7 @@ impl App {
     }
 
     /// What the statusline path segment shows, in order of precedence: the
-    /// notice, the key hint while PREFIX or a group is pending (clipped to
+    /// notice, the key hint while PREFIX, a group or COPY is active (clipped to
     /// `max_cols` cells, so possibly empty), else the cwd.
     pub fn status_path(&self, max_cols: u16) -> String {
         if let Some(notice) = &self.notice {
@@ -631,6 +631,7 @@ impl App {
         match self.input {
             InputMode::Prefix => prefix::hint(PREFIX_TREE, max_cols),
             InputMode::Group(group) => prefix::hint(group.bindings, max_cols),
+            InputMode::Copy(_) | InputMode::ChatCopy(_) => self.copy_hint(max_cols),
             _ => self.cwd_label(),
         }
     }
