@@ -28,6 +28,7 @@ fn new_conv() -> NewConversation {
     NewConversation {
         profile: "programmer".into(),
         tag: Some("proj".into()),
+        origin: Some("/work/proj".into()),
         open: vec![7],
     }
 }
@@ -52,6 +53,7 @@ fn the_first_save_creates_the_conversation() {
             profile: "programmer".into(),
             tag: Some("proj".into()),
             first: user("hi"),
+            origin: Some("/work/proj".into()),
             open: vec![7],
         })
     );
@@ -59,32 +61,36 @@ fn the_first_save_creates_the_conversation() {
 }
 
 #[test]
-fn saves_before_created_wait_and_are_released_in_order() {
+fn saves_before_created_append_at_once_and_the_worker_resolves_the_id() {
     let mut store = PaneStore::new();
     store.save(pane(), user("hi"), &new_conv());
+    // No id yet: the append names the pane only; the store thread knows the
+    // conversation it created for it.
     assert_eq!(
         store.save(pane(), assistant("Hel", MsgStatus::Cancelled), &new_conv()),
-        None
+        Some(StoreCmd::Append {
+            pane: pane(),
+            conversation: None,
+            message: assistant("Hel", MsgStatus::Cancelled),
+        })
     );
-    assert_eq!(store.save(pane(), user("again"), &new_conv()), None);
-
-    let released = store.on_reply(pane(), &created(42));
     assert_eq!(
-        released,
-        vec![
-            StoreCmd::Append {
-                pane: pane(),
-                conversation: 42,
-                message: assistant("Hel", MsgStatus::Cancelled),
-            },
-            StoreCmd::Append {
-                pane: pane(),
-                conversation: 42,
-                message: user("again"),
-            },
-        ]
+        store.save(pane(), user("again"), &new_conv()),
+        Some(StoreCmd::Append {
+            pane: pane(),
+            conversation: None,
+            message: user("again"),
+        })
     );
+    store.on_reply(pane(), &created(42));
     assert_eq!(store.conversation(), Some(42));
+    assert!(matches!(
+        store.save(pane(), user("later"), &new_conv()),
+        Some(StoreCmd::Append {
+            conversation: Some(42),
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -96,7 +102,7 @@ fn after_created_saves_append_at_once() {
         store.save(pane(), assistant("yo", MsgStatus::Complete), &new_conv()),
         Some(StoreCmd::Append {
             pane: pane(),
-            conversation: 3,
+            conversation: Some(3),
             message: assistant("yo", MsgStatus::Complete),
         })
     );
@@ -109,6 +115,7 @@ fn every_partial_status_is_saved_as_it_is() {
         MsgStatus::Cancelled,
         MsgStatus::Interrupted,
         MsgStatus::Truncated,
+        MsgStatus::Error,
     ] {
         let mut store = PaneStore::new();
         store.save(pane(), user("hi"), &new_conv());
@@ -121,33 +128,31 @@ fn every_partial_status_is_saved_as_it_is() {
     }
 }
 
+// An answer that failed after partial text keeps that text, with status
+// `error`; the error line itself is a system line and never reaches a save.
 #[test]
-fn errors_are_never_saved() {
+fn an_error_answer_is_saved_like_any_partial_one() {
     let mut store = PaneStore::new();
-    assert_eq!(
-        store.save(pane(), assistant("boom", MsgStatus::Error), &new_conv()),
-        None
-    );
-    // And it did not start a conversation.
+    store.save(pane(), user("hi"), &new_conv());
+    store.on_reply(pane(), &created(1));
     assert!(matches!(
-        store.save(pane(), user("hi"), &new_conv()),
-        Some(StoreCmd::Create { .. })
+        store.save(pane(), assistant("par", MsgStatus::Error), &new_conv()),
+        Some(StoreCmd::Append { message, .. }) if message.status == MsgStatus::Error
     ));
 }
 
 #[test]
-fn an_unavailable_store_drops_the_queue_and_later_saves() {
+fn an_unavailable_store_drops_later_saves() {
     let mut store = PaneStore::new();
     store.save(pane(), user("hi"), &new_conv());
     store.save(pane(), assistant("x", MsgStatus::Complete), &new_conv());
-    let released = store.on_reply(
+    store.on_reply(
         pane(),
         &StoreReply::Unavailable {
             pane: pane(),
             reason: "database is corrupt".into(),
         },
     );
-    assert!(released.is_empty());
     assert_eq!(store.save(pane(), user("more"), &new_conv()), None);
     assert_eq!(store.conversation(), None);
 }
@@ -156,14 +161,13 @@ fn an_unavailable_store_drops_the_queue_and_later_saves() {
 fn a_failed_create_detaches_the_conversation() {
     let mut store = PaneStore::new();
     store.save(pane(), user("hi"), &new_conv());
-    let released = store.on_reply(
+    store.on_reply(
         pane(),
         &StoreReply::Failed {
             pane: pane(),
             notify: true,
         },
     );
-    assert!(released.is_empty());
     assert_eq!(store.save(pane(), user("more"), &new_conv()), None);
 }
 
@@ -194,7 +198,7 @@ fn a_reply_for_another_pane_changes_nothing() {
         evicted: false,
         evicted_notes: 0,
     };
-    assert!(store.on_reply(pane(), &reply).is_empty());
+    store.on_reply(pane(), &reply);
     assert_eq!(store.conversation(), None);
 }
 
@@ -230,7 +234,7 @@ fn link_replies_do_not_change_where_the_conversation_is() {
         },
     ];
     for reply in &replies {
-        assert!(store.on_reply(pane(), reply).is_empty());
+        store.on_reply(pane(), reply);
         assert_eq!(store.conversation(), Some(5));
     }
 }
@@ -287,4 +291,34 @@ fn a_reply_gives_its_lines_and_other_replies_none() {
         notify: true,
     };
     assert!(eviction_lines_of(&failed).is_empty());
+}
+
+// A resumed conversation starts open, a deleted one is detached.
+#[test]
+fn an_opened_store_appends_to_that_conversation() {
+    let mut store = PaneStore::open(42);
+    assert_eq!(store.conversation(), Some(42));
+    assert_eq!(
+        store.save(pane(), user("hi"), &new_conv()),
+        Some(StoreCmd::Append {
+            pane: pane(),
+            conversation: Some(42),
+            message: user("hi"),
+        })
+    );
+}
+
+#[test]
+fn a_detached_store_drops_every_save() {
+    let mut store = PaneStore::open(42);
+    assert!(!store.is_detached());
+    store.detach();
+    assert!(store.is_detached());
+    assert_eq!(store.conversation(), None);
+    assert_eq!(store.save(pane(), user("hi"), &new_conv()), None);
+}
+
+#[test]
+fn a_fresh_store_is_not_detached() {
+    assert!(!PaneStore::new().is_detached());
 }

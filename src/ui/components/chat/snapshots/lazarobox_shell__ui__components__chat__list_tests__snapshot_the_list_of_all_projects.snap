@@ -1,0 +1,14 @@
+---
+source: src/ui/components/chat/list_tests.rs
+expression: "text(&draw(&chat, 60, 10))"
+---
+Conversations · all projects
+  2023-11-14 · programmer · How do I read a file in chunks?
+▸ 2023-07-22 · programmer · Explain the borrow checker
+  2023-03-28 · programmer · Write a retry loop
+
+
+
+
+
+↵ open · n new · d delete · a all projects

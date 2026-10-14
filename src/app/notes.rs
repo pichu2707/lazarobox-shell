@@ -374,7 +374,14 @@ impl App {
                 }
                 Vec::new()
             }
-            StoreReply::Unavailable { .. } | StoreReply::Failed { .. } => Vec::new(),
+            StoreReply::Unavailable { .. }
+            | StoreReply::Failed { .. }
+            | StoreReply::Listed { .. }
+            | StoreReply::ListFailed { .. }
+            | StoreReply::Resumed { .. }
+            | StoreReply::ResumeFailed { .. }
+            | StoreReply::Deleted { .. }
+            | StoreReply::DeleteFailed { .. } => Vec::new(),
         }
     }
 
@@ -385,7 +392,8 @@ impl App {
     pub(super) fn end_effects(&mut self, ids: &[PaneId]) -> Vec<Effect> {
         let memory_on = self.ai.memory.active();
         let new_id = self.session_id;
-        let mut effects = Vec::new();
+        // The text a closing chat has written so far is saved first.
+        let mut effects = self.close_store_effects(ids);
         for id in ids {
             let Some(chat) = self.panes.get_mut(id).and_then(PaneState::chat_mut) else {
                 continue;

@@ -1,0 +1,305 @@
+//! Chat history in the app (ai-chat C9): the conversation list a chat opens
+//! on, what is saved and when, resume and delete. The store thread does the
+//! IO; this side only builds its commands and applies its replies.
+
+use super::*;
+use crate::core::ai::chat::{
+    list::{DELETE_FAILED, LIST_FAILED, ListOutcome, OPEN_ELSEWHERE, RESUME_FAILED},
+    store::{ConvRow, SAVE_FAILED_LINE, UNAVAILABLE_PREFIX},
+};
+
+impl App {
+    /// A chat for a pane opened from `origin`: the current profile and, with
+    /// history on, the list as its first view. The project tag comes with the
+    /// store's answer to the list: its walk is IO.
+    pub(super) fn new_chat_state(&self, origin: Option<PathBuf>) -> ChatState {
+        let mut chat = ChatState::new(origin);
+        chat.set_profile(self.ai.profile());
+        if self.history {
+            chat.open_list();
+        }
+        chat
+    }
+
+    /// Whether chat `id` shows its conversation list.
+    pub(super) fn list_open(&self, id: PaneId) -> bool {
+        self.panes
+            .get(&id)
+            .and_then(PaneState::chat_state)
+            .is_some_and(|chat| chat.list().is_some())
+    }
+
+    /// The database ids of the conversations open in any pane, which
+    /// retention must not evict.
+    fn open_conversations(&self) -> Vec<i64> {
+        let mut open: Vec<i64> = self
+            .panes
+            .values()
+            .filter_map(PaneState::chat_state)
+            .filter_map(ChatState::conversation)
+            .collect();
+        open.sort_unstable();
+        open
+    }
+
+    /// Whether a pane other than `id` has conversation `conversation` open.
+    fn open_elsewhere(&self, conversation: i64, id: PaneId) -> bool {
+        self.panes.iter().any(|(pane, state)| {
+            *pane != id
+                && state
+                    .chat_state()
+                    .is_some_and(|chat| chat.conversation() == Some(conversation))
+        })
+    }
+
+    /// The commands that save what chat `id` sent and answered since the last
+    /// call. With history off nothing is saved and nothing is kept.
+    pub(super) fn store_effects(&mut self, id: PaneId) -> Vec<Effect> {
+        let open = self.open_conversations();
+        let history = self.history;
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        if !history {
+            chat.drop_saves();
+            return Vec::new();
+        }
+        chat.store_cmds(id, &open)
+            .into_iter()
+            .map(Effect::Store)
+            .collect()
+    }
+
+    /// Ends the streams of the chats among `ids` that are closing, so the
+    /// text written so far is saved, and returns the saves. The caller emits
+    /// them before the pane or the app goes away.
+    pub(super) fn close_store_effects(&mut self, ids: &[PaneId]) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        for id in ids {
+            if let Some(chat) = self.panes.get_mut(id).and_then(PaneState::chat_mut) {
+                chat.close_stream();
+            }
+            effects.extend(self.store_effects(*id));
+        }
+        effects
+    }
+
+    /// The effect that prepares chat `id`'s system prompt for its profile.
+    fn prepare_prompt(&self, id: PaneId) -> Option<Effect> {
+        let chat = self.panes.get(&id)?.chat_state()?;
+        Some(Effect::PreparePrompt {
+            pane: id,
+            profile: chat.profile(),
+            origin: chat.origin_cwd().map(Path::to_path_buf),
+            context: self.ai.context(),
+        })
+    }
+
+    fn set_list_line(&mut self, id: PaneId, line: &str) {
+        if let Some(list) = self
+            .panes
+            .get_mut(&id)
+            .and_then(PaneState::chat_mut)
+            .and_then(ChatState::list_mut)
+        {
+            list.set_line(line);
+            self.dirty = true;
+        }
+    }
+
+    /// A key while the conversation list of chat `id` is shown.
+    pub(super) fn on_list_key(&mut self, id: PaneId, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
+        let outcome = self
+            .panes
+            .get_mut(&id)
+            .and_then(PaneState::chat_mut)
+            .and_then(ChatState::list_mut)
+            .map(|list| list.on_key(key, repeat));
+        let Some(outcome) = outcome else {
+            return Vec::new();
+        };
+        self.dirty = true;
+        match outcome {
+            ListOutcome::Handled => Vec::new(),
+            ListOutcome::New => {
+                if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                    chat.close_list();
+                }
+                Vec::new()
+            }
+            ListOutcome::Resume(conversation) => {
+                if self.open_elsewhere(conversation, id) {
+                    self.set_list_line(id, OPEN_ELSEWHERE);
+                    return Vec::new();
+                }
+                vec![Effect::Store(StoreCmd::Resume {
+                    pane: id,
+                    conversation,
+                })]
+            }
+            ListOutcome::Delete(conversation) => vec![Effect::Store(StoreCmd::Delete {
+                pane: id,
+                conversation,
+            })],
+        }
+    }
+
+    /// The store thread's answer, as far as history is concerned: the list,
+    /// resume, delete, the write failures and the unusable store. What the
+    /// memory links need from `Created` is `on_store_reply`'s.
+    pub(super) fn on_history_reply(&mut self, reply: &StoreReply) -> Vec<Effect> {
+        match reply {
+            StoreReply::Created { pane, .. } | StoreReply::Failed { pane, .. } => {
+                self.on_write_reply(*pane, reply)
+            }
+            StoreReply::Unavailable { pane, reason } => {
+                let Some(chat) = self.panes.get_mut(pane).and_then(PaneState::chat_mut) else {
+                    return Vec::new();
+                };
+                // The first answer that finds the store unusable says so; the
+                // list of such a store is empty.
+                if !chat.store_detached() {
+                    chat.push_system(format!("{UNAVAILABLE_PREFIX}{reason}"));
+                }
+                chat.detach_store();
+                if let Some(list) = chat.list_mut()
+                    && !list.loaded()
+                {
+                    list.set_rows(Vec::new());
+                }
+                self.dirty = true;
+                Vec::new()
+            }
+            StoreReply::Listed { pane, tag, rows } => {
+                self.on_listed(*pane, tag, rows.clone());
+                Vec::new()
+            }
+            StoreReply::ListFailed { pane, tag } => {
+                self.on_listed(*pane, tag, Vec::new());
+                self.set_list_line(*pane, LIST_FAILED);
+                Vec::new()
+            }
+            StoreReply::Resumed {
+                pane,
+                conversation,
+                profile,
+                tag,
+                messages,
+            } => self.on_resumed(*pane, *conversation, profile, tag, messages),
+            StoreReply::ResumeFailed { pane } => {
+                self.set_list_line(*pane, RESUME_FAILED);
+                Vec::new()
+            }
+            StoreReply::Deleted {
+                pane, conversation, ..
+            } => {
+                // The row goes from every open list, not only this one's.
+                for state in self.panes.values_mut() {
+                    if let Some(list) = state.chat_mut().and_then(ChatState::list_mut) {
+                        list.remove(*conversation);
+                    }
+                }
+                // Another pane that has it open keeps working but stops saving.
+                for (id, state) in &mut self.panes {
+                    if let Some(chat) = state.chat_mut()
+                        && id != pane
+                        && chat.conversation() == Some(*conversation)
+                    {
+                        chat.detach_store_deleted();
+                    }
+                }
+                self.dirty = true;
+                Vec::new()
+            }
+            StoreReply::DeleteFailed { pane } => {
+                self.set_list_line(*pane, DELETE_FAILED);
+                Vec::new()
+            }
+            StoreReply::SessionLinked { .. } | StoreReply::LinkFailed { .. } => Vec::new(),
+        }
+    }
+
+    /// The list arrived (or could not be read): the pane learns its project
+    /// tag and the list shows its rows.
+    fn on_listed(&mut self, id: PaneId, tag: &Option<String>, rows: Vec<ConvRow>) {
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return;
+        };
+        // A conversation that began without waiting keeps the tag it was
+        // created with (the store thread resolved it from the origin).
+        if tag.is_some() && chat.store_fresh() {
+            chat.set_tag(tag.clone());
+        }
+        if let Some(list) = chat.list_mut() {
+            list.set_project(tag.clone());
+            list.set_rows(rows);
+        }
+        self.dirty = true;
+    }
+
+    /// The answer to a `Create` or an `Append`: the line for a first failed
+    /// write.
+    fn on_write_reply(&mut self, id: PaneId, reply: &StoreReply) -> Vec<Effect> {
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        // A write nobody sent is not news, and neither is one that was in
+        // flight when the pane stopped saving (its conversation was deleted).
+        if chat.store_fresh() {
+            return Vec::new();
+        }
+        let detached = chat.store_detached();
+        chat.on_store_reply(id, reply);
+        if matches!(reply, StoreReply::Failed { notify: true, .. }) && !detached {
+            chat.push_system(SAVE_FAILED_LINE);
+            self.dirty = true;
+        }
+        Vec::new()
+    }
+
+    /// The stored conversation arrived: it takes the place of the list. A pane
+    /// that no longer shows the list, or a conversation another pane opened
+    /// in the meantime, is left alone.
+    fn on_resumed(
+        &mut self,
+        id: PaneId,
+        conversation: i64,
+        profile: &str,
+        tag: &Option<String>,
+        messages: &[crate::core::ai::chat::Msg],
+    ) -> Vec<Effect> {
+        if !self.list_open(id) {
+            return Vec::new();
+        }
+        if self.open_elsewhere(conversation, id) {
+            self.set_list_line(id, OPEN_ELSEWHERE);
+            return Vec::new();
+        }
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        let profile = Profile::from_id(profile).unwrap_or_else(|| chat.profile());
+        let reprepare = chat.adopt_profile(profile);
+        chat.resume_into(conversation, profile, tag.clone(), messages.to_vec());
+        self.dirty = true;
+        if reprepare {
+            self.prepare_prompt(id).into_iter().collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The runtime prepared a system prompt for chat `id`. When the profile
+    /// changed while it was being prepared (a resume) it is dropped and
+    /// prepared again for the stored profile.
+    pub(super) fn on_prompt_for(&mut self, id: PaneId, resolved: Resolved) -> Vec<Effect> {
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return Vec::new();
+        };
+        if chat.set_prompt_or_reprepare(resolved) {
+            return self.prepare_prompt(id).into_iter().collect();
+        }
+        self.dirty = true;
+        self.run_waiting_sends()
+    }
+}

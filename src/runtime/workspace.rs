@@ -8,8 +8,9 @@ use std::{
 };
 
 use super::bounded_read::read_regular;
-use crate::core::ai::chat::workspace::{
-    Cwd, Head, Workspace, cwd_in_repo, cwd_outside, format_date, parse_head,
+use crate::core::ai::chat::{
+    tags::clean_tag,
+    workspace::{Cwd, Head, Workspace, cwd_in_repo, cwd_outside, format_date, parse_head},
 };
 
 /// How many directory levels the repository walk climbs.
@@ -56,6 +57,19 @@ pub fn probe(
         None => facts.cwd = Some(cwd_outside(cwd)),
     }
     facts
+}
+
+/// The project tag proposed for a chat opened in `cwd`: the name of the
+/// repository found by the same walk as the workspace block (the main
+/// repository for a linked worktree), else the name of `cwd` itself. A cwd
+/// that is not an existing directory has no tag. The name is cleaned like any
+/// tag (see `clean_tag`).
+pub fn project_tag(cwd: &Path) -> Option<String> {
+    if !cwd.is_dir() {
+        return None;
+    }
+    let dir = find_repo(cwd).map_or_else(|| cwd.to_owned(), |repo| repo.project_dir);
+    clean_tag(&name_of(&dir))
 }
 
 /// A repository found above the cwd.

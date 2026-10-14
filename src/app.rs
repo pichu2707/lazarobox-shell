@@ -41,6 +41,7 @@ use crate::core::{
 
 mod chat;
 mod context;
+mod history;
 mod notes;
 mod offer;
 mod summary;
@@ -460,6 +461,10 @@ pub struct App {
     /// Why no server can be offered (no usable `engram` on the PATH), as the
     /// worker said once: it names the cause of every `engram is not running`.
     no_server: Option<Reason>,
+    /// Whether chats keep a history: a chat opens on the conversation list and
+    /// its messages are saved through `Effect::Store`. Off by default, so a
+    /// build without a store thread behaves as a plain chat.
+    history: bool,
 }
 
 /// The key that left COPY and when it was last seen.
@@ -513,6 +518,7 @@ impl App {
             offer_shown: false,
             offer_pane: None,
             no_server: None,
+            history: false,
         }
     }
 
@@ -571,6 +577,12 @@ impl App {
     /// approved in a chat that wrote no note.
     pub fn with_session_ids(mut self, session_id: fn() -> Option<String>) -> Self {
         self.session_id = session_id;
+        self
+    }
+
+    /// Turns the chat history on: the list, saving, resume and delete.
+    pub fn with_chat_history(mut self) -> Self {
+        self.history = true;
         self
     }
 
@@ -989,7 +1001,11 @@ impl App {
             }
             AppEvent::Chat(id, turn, event) => self.on_chat(id, turn, event),
             AppEvent::Memory(reply) => self.on_memory_reply(&reply),
-            AppEvent::Store(reply) => self.on_store_reply(&reply),
+            AppEvent::Store(reply) => {
+                let mut effects = self.on_history_reply(&reply);
+                effects.extend(self.on_store_reply(&reply));
+                effects
+            }
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
             AppEvent::MemoryTick => self.on_memory_tick(),
@@ -1459,11 +1475,12 @@ impl App {
         let follow = chat.apply(turn, event);
         let finished = live && chat.phase() == Phase::Idle;
         self.dirty |= live;
-        let mut effects = match follow {
+        // A finished answer is saved (its status says how it ended).
+        let mut effects = self.store_effects(id);
+        if follow == Follow::CancelEngine {
             // The state ended the turn itself (answer cap): stop the engine.
-            Follow::CancelEngine => vec![Effect::ChatCancel(id)],
-            Follow::Nothing => Vec::new(),
-        };
+            effects.push(Effect::ChatCancel(id));
+        }
         // A turn ends once: later events of it are dropped above, so a pane
         // rings at most once per answer.
         let focus = self.tab().focus;
@@ -6463,6 +6480,9 @@ mod app_tests {
 
     /// The live chat pane (ai-chat C8).
     mod chat_live;
+
+    /// History in the chat pane: list, saving, resume, delete (ai-chat C9).
+    mod chat_history;
 
     /// Memory in a chat view (engram-memory M6).
     mod chat_memory;

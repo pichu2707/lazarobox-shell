@@ -1,0 +1,6 @@
+---
+source: src/ui/components/chat/list_tests.rs
+expression: "text(&draw(&chat, 3, 2))"
+---
+Con
+↵ o

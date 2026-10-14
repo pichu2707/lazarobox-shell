@@ -2,6 +2,7 @@
 //! commands of every pane in the order they were sent.
 
 use std::{
+    collections::HashMap,
     io,
     panic::{AssertUnwindSafe, catch_unwind},
     path::PathBuf,
@@ -17,16 +18,18 @@ use super::{StoreError, open};
 use crate::core::{
     ai::{
         chat::{
-            MsgStatus,
+            Msg, MsgStatus,
             engine::Role,
             store::{
-                LinkKind, RETENTION_LIMIT, StoreCmd, StoreReply, StoredMessage, bounded_error,
+                ConvRow, FIRST_MAX, LinkKind, NoteRow, RETENTION_LIMIT, StoreCmd, StoreReply,
+                StoredMessage, bounded_error,
             },
         },
         sanitize::clean,
     },
     layout::PaneId,
 };
+use crate::runtime::workspace::project_tag;
 
 type Opener = Box<dyn FnOnce() -> Result<Connection, StoreError> + Send>;
 
@@ -47,6 +50,9 @@ pub(crate) struct Worker {
     conn: Option<Result<Connection, String>>,
     /// The previous write failed: only the first failure of a run is notified.
     failing: bool,
+    /// The conversation each pane created, so an append that names only its
+    /// pane lands in the right place. Pane ids are never reused.
+    created: HashMap<PaneId, i64>,
 }
 
 impl Worker {
@@ -57,6 +63,7 @@ impl Worker {
             opener: Some(Box::new(open)),
             conn: None,
             failing: false,
+            created: HashMap::new(),
         }
     }
 
@@ -86,8 +93,11 @@ impl Worker {
                 profile,
                 tag,
                 first,
+                origin,
                 open,
             } => {
+                // The pane may have sent before its list answered.
+                let tag = tag.or_else(|| origin.as_deref().and_then(project_tag));
                 let conn = match self.conn() {
                     Ok(conn) => conn,
                     Err(reason) => return Some(StoreReply::Unavailable { pane, reason }),
@@ -96,6 +106,7 @@ impl Worker {
                 Some(match made {
                     Ok((conversation, gone)) => {
                         self.failing = false;
+                        self.created.insert(pane, conversation);
                         StoreReply::Created {
                             pane,
                             conversation,
@@ -111,9 +122,9 @@ impl Worker {
                 conversation,
                 message,
             } => {
-                if message.status == MsgStatus::Error {
-                    return None;
-                }
+                // Without an id the pane's own `Create` must have made one; if
+                // it failed, that was reported already and this is dropped.
+                let conversation = conversation.or_else(|| self.created.get(&pane).copied())?;
                 // An unusable store was already reported by the `Create`.
                 let conn = self.conn().ok()?;
                 match append(conn, conversation, &message) {
@@ -170,6 +181,52 @@ impl Worker {
                     kind: LinkKind::Note,
                 })
             }
+            StoreCmd::List { pane, origin } => {
+                // The walk to the repository root is filesystem IO: it is
+                // done here, not on the UI thread.
+                let tag = origin.as_deref().and_then(project_tag);
+                Some(match self.conn() {
+                    Err(reason) => StoreReply::Unavailable { pane, reason },
+                    Ok(conn) => match list(conn) {
+                        Ok(rows) => StoreReply::Listed { pane, tag, rows },
+                        Err(_) => StoreReply::ListFailed { pane, tag },
+                    },
+                })
+            }
+            StoreCmd::Resume { pane, conversation } => {
+                let read = self
+                    .conn()
+                    .ok()
+                    .and_then(|conn| resume(conn, conversation).ok());
+                Some(match read {
+                    Some((profile, tag, messages)) => StoreReply::Resumed {
+                        pane,
+                        conversation,
+                        profile,
+                        tag,
+                        messages,
+                    },
+                    None => StoreReply::ResumeFailed { pane },
+                })
+            }
+            StoreCmd::Delete { pane, conversation } => {
+                let gone = self
+                    .conn()
+                    .ok()
+                    .and_then(|conn| delete(conn, conversation).ok());
+                if gone.is_some() {
+                    // No pane appends to it any more.
+                    self.created.retain(|_, id| *id != conversation);
+                }
+                Some(match gone {
+                    Some(notes) => StoreReply::Deleted {
+                        pane,
+                        conversation,
+                        notes,
+                    },
+                    None => StoreReply::DeleteFailed { pane },
+                })
+            }
         }
     }
 
@@ -196,6 +253,9 @@ impl Worker {
             StoreCmd::Append { pane, .. } => (*pane, Panicked::Append),
             StoreCmd::LinkSession { pane, .. } => (*pane, Panicked::Link(LinkKind::Session)),
             StoreCmd::LinkNote { pane, .. } => (*pane, Panicked::Link(LinkKind::Note)),
+            StoreCmd::List { pane, .. } => (*pane, Panicked::List),
+            StoreCmd::Resume { pane, .. } => (*pane, Panicked::Resume),
+            StoreCmd::Delete { pane, .. } => (*pane, Panicked::Delete),
             StoreCmd::Quit => return None,
         };
         match catch_unwind(AssertUnwindSafe(|| run(self, cmd))) {
@@ -206,8 +266,10 @@ impl Worker {
                 // an open connection in autocommit is still sound and the
                 // history stays available; any other panic, or a link that
                 // left a transaction open, leaves it in an unknown state.
-                let keep = matches!(on_panic, Panicked::Link(_))
-                    && matches!(&self.conn, Some(Ok(conn)) if conn.is_autocommit());
+                let keep = matches!(
+                    on_panic,
+                    Panicked::Link(_) | Panicked::Resume | Panicked::Delete
+                ) && matches!(&self.conn, Some(Ok(conn)) if conn.is_autocommit());
                 if !keep {
                     self.conn = Some(Err(reason.clone()));
                 }
@@ -216,6 +278,9 @@ impl Worker {
                     Panicked::Create => StoreReply::Unavailable { pane, reason },
                     Panicked::Append => self.failure(pane),
                     Panicked::Link(kind) => StoreReply::LinkFailed { pane, kind },
+                    Panicked::List => StoreReply::Unavailable { pane, reason },
+                    Panicked::Resume => StoreReply::ResumeFailed { pane },
+                    Panicked::Delete => StoreReply::DeleteFailed { pane },
                 })
             }
         }
@@ -233,6 +298,9 @@ enum Panicked {
     Create,
     Append,
     Link(LinkKind),
+    List,
+    Resume,
+    Delete,
 }
 
 /// The message of a panic payload, or a generic line.
@@ -418,6 +486,97 @@ fn link_note(
     Ok(())
 }
 
+/// Every conversation, newest last activity first, with its project tag and
+/// the first user message.
+fn list(conn: &mut Connection) -> Result<Vec<ConvRow>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT c.id, c.updated_at, c.profile,
+                (SELECT tag FROM tags t WHERE t.conversation_id = c.id AND t.is_project = 1),
+                COALESCE((SELECT substr(content, 1, ?1) FROM messages m
+                          WHERE m.conversation_id = c.id AND m.role = 'user'
+                          ORDER BY seq LIMIT 1), '')
+         FROM conversations c
+         ORDER BY c.updated_at DESC, c.id DESC",
+    )?;
+    let limit = i64::try_from(FIRST_MAX).unwrap_or(i64::MAX);
+    stmt.query_map([limit], |r| {
+        Ok(ConvRow {
+            id: r.get(0)?,
+            updated_at: r.get(1)?,
+            profile: r.get(2)?,
+            tag: r.get(3)?,
+            first: r.get(4)?,
+        })
+    })?
+    .collect()
+}
+
+/// The profile, project tag and messages of a conversation, in order.
+fn resume(
+    conn: &mut Connection,
+    conversation: i64,
+) -> Result<(String, Option<String>, Vec<Msg>), rusqlite::Error> {
+    let tx = conn.transaction()?;
+    let profile: String = tx.query_row(
+        "SELECT profile FROM conversations WHERE id = ?1",
+        [conversation],
+        |r| r.get(0),
+    )?;
+    let tag = tx
+        .query_row(
+            "SELECT tag FROM tags WHERE conversation_id = ?1 AND is_project = 1",
+            [conversation],
+            |r| r.get(0),
+        )
+        .ok();
+    let messages = tx
+        .prepare(
+            "SELECT role, content, status FROM messages
+             WHERE conversation_id = ?1 ORDER BY seq",
+        )?
+        .query_map([conversation], |r| {
+            let role: String = r.get(0)?;
+            let status: String = r.get(2)?;
+            Ok(Msg {
+                role: if role == "user" {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
+                text: r.get(1)?,
+                // The column is constrained to the known names; an unknown one
+                // reads as a cut message rather than a finished one.
+                status: MsgStatus::from_name(&status).unwrap_or(MsgStatus::Interrupted),
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((profile, tag, messages))
+}
+
+/// Removes the conversation (its messages, tags and links go with it) and
+/// returns the note rows it had, read before the cascade removes them.
+fn delete(conn: &mut Connection, conversation: i64) -> Result<Vec<NoteRow>, rusqlite::Error> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let notes = tx
+        .prepare(
+            "SELECT project, observation_id FROM memory_notes
+             WHERE conversation_id = ?1 ORDER BY project, topic_key",
+        )?
+        .query_map([conversation], |r| {
+            Ok(NoteRow {
+                project: r.get(0)?,
+                observation_id: r.get(1)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let removed = tx.execute("DELETE FROM conversations WHERE id = ?1", [conversation])?;
+    if removed == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    tx.commit()?;
+    Ok(notes)
+}
+
 fn insert_message(
     tx: &rusqlite::Transaction<'_>,
     conversation: i64,
@@ -459,18 +618,23 @@ pub struct StoreHandle {
 impl StoreHandle {
     /// Queues `cmd`; never waits for the database.
     ///
-    /// With no thread behind the queue (it never started) a `Create` is
-    /// answered `Unavailable` so the pane detaches instead of waiting.
+    /// With no thread behind the queue (it never started) a `Create` or a
+    /// `List` is answered `Unavailable`, a `Resume` and a `Delete` with their
+    /// failures, so the pane detaches or reports instead of waiting.
     pub fn send(&self, cmd: StoreCmd) {
         let Err(std_mpsc::SendError(cmd)) = self.tx.send(cmd) else {
             return;
         };
-        if let StoreCmd::Create { pane, .. } = cmd {
-            let reason = bounded_error("store thread not running");
-            let _ = self
-                .replies
-                .try_send(StoreReply::Unavailable { pane, reason });
-        }
+        let reason = bounded_error("store thread not running");
+        let reply = match cmd {
+            StoreCmd::Create { pane, .. } | StoreCmd::List { pane, .. } => {
+                StoreReply::Unavailable { pane, reason }
+            }
+            StoreCmd::Resume { pane, .. } => StoreReply::ResumeFailed { pane },
+            StoreCmd::Delete { pane, .. } => StoreReply::DeleteFailed { pane },
+            _ => return,
+        };
+        let _ = self.replies.try_send(reply);
     }
 
     /// Queues `Quit` and waits up to `bound` for everything before it to be

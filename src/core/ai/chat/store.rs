@@ -3,9 +3,12 @@
 //!
 //! The pane sends `StoreCmd`s and gets `StoreReply`s back, in order. A pane
 //! does not know its conversation's database id until `Created` arrives, so
-//! `PaneStore` holds the appends that are produced before then.
+//! its appends before then name the pane only and the store thread resolves
+//! the conversation it created for it.
 
-use super::{MsgStatus, engine::Role};
+use std::path::PathBuf;
+
+use super::{Msg, MsgStatus, engine::Role};
 use crate::core::{ai::sanitize::clean, layout::PaneId};
 
 /// The most conversations the store keeps.
@@ -14,10 +17,16 @@ pub const RETENTION_LIMIT: usize = 200;
 pub const EVICTED_LINE: &str = "oldest conversation removed (limit 200)";
 /// System line for a write that failed in the middle of a session.
 pub const SAVE_FAILED_LINE: &str = "could not save conversation";
+/// System line for a conversation another pane deleted while this one has it
+/// open.
+pub const DELETED_LINE: &str = "conversation deleted; new messages are not saved";
 /// Start of the system line shown when the store cannot be used.
 pub const UNAVAILABLE_PREFIX: &str = "history unavailable: ";
 /// The longest error text shown to the user, in characters.
 pub const ERROR_MAX: usize = 120;
+
+/// The most characters of a conversation's first message the list carries.
+pub const FIRST_MAX: usize = 200;
 
 /// One message to save.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -39,11 +48,17 @@ pub enum StoreCmd {
         profile: String,
         tag: Option<String>,
         first: StoredMessage,
+        /// The cwd the chat was opened from: when `tag` is not known yet (the
+        /// list has not answered), the store thread resolves it from here.
+        origin: Option<PathBuf>,
         open: Vec<i64>,
     },
+    /// Adds a message. `conversation` is `None` while the pane does not know
+    /// its id yet: the store thread, which created the conversation for the
+    /// pane, resolves it. Commands run in order, so the `Create` is done.
     Append {
         pane: PaneId,
-        conversation: i64,
+        conversation: Option<i64>,
         message: StoredMessage,
     },
     /// Reads or sets the engram session of a conversation: the stored id is
@@ -67,8 +82,42 @@ pub enum StoreCmd {
         observation_id: i64,
         title: String,
     },
+    /// The conversations of the store, newest last activity first, and the
+    /// project tag of `origin` (resolved on the store thread: it walks the
+    /// filesystem). Answered with `Listed`, `ListFailed`, or `Unavailable`.
+    List {
+        pane: PaneId,
+        origin: Option<PathBuf>,
+    },
+    /// Reads a whole conversation. Answered with `Resumed`, or `ResumeFailed`.
+    Resume { pane: PaneId, conversation: i64 },
+    /// Removes a conversation with everything that hangs from it. Answered
+    /// with `Deleted` (carrying the note rows the delete took with it), or
+    /// `DeleteFailed`.
+    Delete { pane: PaneId, conversation: i64 },
     /// Finish what is queued and stop.
     Quit,
+}
+
+/// One row of the conversation list.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ConvRow {
+    pub id: i64,
+    /// Last activity, in seconds since the Unix epoch.
+    pub updated_at: i64,
+    pub profile: String,
+    /// The project tag, when the conversation has one.
+    pub tag: Option<String>,
+    /// The first user message, cut to `FIRST_MAX` characters.
+    pub first: String,
+}
+
+/// A note row a delete removed: the note itself stays in engram. What a later
+/// "also delete its notes" needs to find it there.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct NoteRow {
+    pub project: String,
+    pub observation_id: i64,
 }
 
 /// Which link a [`StoreReply::LinkFailed`] is about.
@@ -91,7 +140,10 @@ pub enum StoreReply {
         evicted_notes: u32,
     },
     /// The store cannot be used at all; `reason` is already bounded.
-    Unavailable { pane: PaneId, reason: String },
+    Unavailable {
+        pane: PaneId,
+        reason: String,
+    },
     /// The session of a conversation: the stored id and the project it was
     /// registered with, which are the ones just proposed unless the
     /// conversation already had a pair. The caller reuses both, because engram
@@ -104,10 +156,52 @@ pub enum StoreReply {
     },
     /// A link could not be written. Nothing else was undone; the caller says
     /// so once if it wants to.
-    LinkFailed { pane: PaneId, kind: LinkKind },
+    LinkFailed {
+        pane: PaneId,
+        kind: LinkKind,
+    },
     /// A write failed. `notify` is true for the first failure of a run, the
     /// only one that earns a system line.
-    Failed { pane: PaneId, notify: bool },
+    Failed {
+        pane: PaneId,
+        notify: bool,
+    },
+    /// The answer to `List`: the project tag of the origin (when it has one)
+    /// and the conversations, newest last activity first.
+    Listed {
+        pane: PaneId,
+        tag: Option<String>,
+        rows: Vec<ConvRow>,
+    },
+    /// The conversations could not be read. The store itself is not declared
+    /// unusable: the pane keeps saving.
+    ListFailed {
+        pane: PaneId,
+        tag: Option<String>,
+    },
+    /// The answer to `Resume`: the profile and project tag the conversation
+    /// was stored with and its messages in order (no reasoning, no system
+    /// lines: none is ever stored).
+    Resumed {
+        pane: PaneId,
+        conversation: i64,
+        profile: String,
+        tag: Option<String>,
+        messages: Vec<Msg>,
+    },
+    ResumeFailed {
+        pane: PaneId,
+    },
+    /// The conversation is gone. `notes` are the note rows it had, read in the
+    /// same transaction that removed it.
+    Deleted {
+        pane: PaneId,
+        conversation: i64,
+        notes: Vec<NoteRow>,
+    },
+    DeleteFailed {
+        pane: PaneId,
+    },
 }
 
 /// The system lines a new conversation shows when retention removed some: the
@@ -155,8 +249,8 @@ enum Link {
     /// Nothing sent yet: the next save creates the conversation.
     #[default]
     Fresh,
-    /// `Create` is in flight; later saves wait here.
-    Creating(Vec<StoredMessage>),
+    /// `Create` is in flight; later saves append by pane.
+    Creating,
     Open(i64),
     /// The store is unusable for this conversation: saves are dropped.
     Detached,
@@ -173,6 +267,7 @@ pub struct PaneStore {
 pub struct NewConversation {
     pub profile: String,
     pub tag: Option<String>,
+    pub origin: Option<PathBuf>,
     /// Conversations open in any pane, which retention must skip.
     pub open: Vec<i64>,
 }
@@ -180,6 +275,28 @@ pub struct NewConversation {
 impl PaneStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A store for a conversation that already exists (a resume): saves
+    /// append to it.
+    pub fn open(conversation: i64) -> Self {
+        Self {
+            link: Link::Open(conversation),
+        }
+    }
+
+    /// Stops saving: the conversation is gone or the store is unusable.
+    pub fn detach(&mut self) {
+        self.link = Link::Detached;
+    }
+
+    pub fn is_detached(&self) -> bool {
+        self.link == Link::Detached
+    }
+
+    /// Nothing was saved yet, so no write can be in flight.
+    pub fn is_fresh(&self) -> bool {
+        self.link == Link::Fresh
     }
 
     /// The database id once the conversation exists.
@@ -190,74 +307,60 @@ impl PaneStore {
         }
     }
 
-    /// Saves `message`: the command to send now, if any. Errors are never
-    /// saved.
+    /// Saves `message`: the command to send now, if any. An answer that failed
+    /// after partial text is saved with status `error`; the error line is a
+    /// system line and never reaches a save.
     pub fn save(
         &mut self,
         pane: PaneId,
         message: StoredMessage,
         new: &NewConversation,
     ) -> Option<StoreCmd> {
-        if message.status == MsgStatus::Error {
-            return None;
-        }
-        match &mut self.link {
+        match self.link {
             Link::Fresh => {
-                self.link = Link::Creating(Vec::new());
+                self.link = Link::Creating;
                 Some(StoreCmd::Create {
                     pane,
                     profile: new.profile.clone(),
                     tag: new.tag.clone(),
                     first: message,
+                    origin: new.origin.clone(),
                     open: new.open.clone(),
                 })
             }
-            Link::Creating(queue) => {
-                queue.push(message);
-                None
-            }
+            Link::Creating => Some(StoreCmd::Append {
+                pane,
+                conversation: None,
+                message,
+            }),
             Link::Open(conversation) => Some(StoreCmd::Append {
                 pane,
-                conversation: *conversation,
+                conversation: Some(conversation),
                 message,
             }),
             Link::Detached => None,
         }
     }
 
-    /// Applies a reply for this pane and returns the commands it releases.
-    pub fn on_reply(&mut self, pane: PaneId, reply: &StoreReply) -> Vec<StoreCmd> {
+    /// Applies a reply for this pane.
+    pub fn on_reply(&mut self, pane: PaneId, reply: &StoreReply) {
         match reply {
             StoreReply::Created {
                 pane: from,
                 conversation,
                 ..
-            } if *from == pane => {
-                match std::mem::replace(&mut self.link, Link::Open(*conversation)) {
-                    Link::Creating(queue) => queue
-                        .into_iter()
-                        .map(|message| StoreCmd::Append {
-                            pane,
-                            conversation: *conversation,
-                            message,
-                        })
-                        .collect(),
-                    _ => Vec::new(),
-                }
+            } if *from == pane => self.link = Link::Open(*conversation),
+            StoreReply::Unavailable { pane: from, .. } if *from == pane => {
+                self.link = Link::Detached;
             }
-            StoreReply::Unavailable { pane: from, .. } | StoreReply::Failed { pane: from, .. }
-                if *from == pane =>
+            // Only a conversation that is still being created is lost; one
+            // that exists keeps trying on its next append.
+            StoreReply::Failed { pane: from, .. }
+                if *from == pane && self.link == Link::Creating =>
             {
-                // Only a conversation that is still being created is lost;
-                // one that exists keeps trying on its next append.
-                if matches!(self.link, Link::Creating(_))
-                    || matches!(reply, StoreReply::Unavailable { .. })
-                {
-                    self.link = Link::Detached;
-                }
-                Vec::new()
+                self.link = Link::Detached;
             }
-            _ => Vec::new(),
+            _ => {}
         }
     }
 }
