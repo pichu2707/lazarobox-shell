@@ -66,6 +66,9 @@ fn lab() -> Lab {
     };
     for dir in [&lab.bin, &lab.home, &lab.rec] {
         fs::create_dir_all(dir).unwrap();
+        // An interpreter in a group-writable folder is refused, and a
+        // developer's umask can be 002.
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
     }
     fs::create_dir_all(&lab.data).unwrap();
     lab
@@ -587,6 +590,7 @@ fn codex_job(args: &[&str]) -> Job {
 fn node_style_codex(lab: &Lab) -> PathBuf {
     let interp_dir = lab.bin.parent().unwrap().join("nodebin");
     fs::create_dir_all(&interp_dir).unwrap();
+    fs::set_permissions(&interp_dir, fs::Permissions::from_mode(0o755)).unwrap();
     let interp = interp_dir.join("fakenode");
     script(&interp, &lab.rec, "exec /bin/sh \"$@\"");
     let cli = lab.bin.join("codex");
@@ -1017,6 +1021,7 @@ async fn the_interpreter_installed_next_to_the_cli_wins_over_the_first_one_on_pa
     let lab = lab();
     let elsewhere = lab.bin.parent().unwrap().join("first-on-path");
     fs::create_dir_all(&elsewhere).unwrap();
+    fs::set_permissions(&elsewhere, fs::Permissions::from_mode(0o755)).unwrap();
     script(&elsewhere.join("fakenode"), &lab.rec, "exit 97");
     script(&lab.bin.join("fakenode"), &lab.rec, "exec /bin/sh \"$@\"");
     let cli = lab.bin.join("codex");
@@ -1159,4 +1164,78 @@ async fn a_stream_that_just_ends_still_waits_for_the_exit_so_the_jail_marker_is_
     env.helper = lab.helper(PASS);
     let events = run_job(&env, codex_job(&["exec", "-"])).await;
     assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+}
+
+/// An executable file `name` in `dir` (mode 0755) and `dir` itself set to `mode`.
+fn exe_in(dir: &Path, name: &str, mode: u32) -> PathBuf {
+    fs::create_dir_all(dir).unwrap();
+    let file = dir.join(name);
+    fs::write(&file, "#!/bin/sh\n").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(dir, fs::Permissions::from_mode(mode)).unwrap();
+    file
+}
+
+#[test]
+fn an_interpreter_in_a_tmp_folder_is_never_trusted() {
+    for base in ["/tmp", "/var/tmp"] {
+        if !Path::new(base).is_dir() {
+            continue;
+        }
+        let dir = tempfile::tempdir_in(base).unwrap();
+        let file = exe_in(&dir.path().join("bin"), "fakenode", 0o755);
+        let path = dir.path().join("bin").into_os_string();
+        assert_eq!(
+            interpreter_for(&dir.path().join("bin/codex"), "fakenode", &path),
+            None,
+            "{base}"
+        );
+        assert!(!trusted_interpreter(&file), "{base}");
+    }
+}
+
+#[test]
+fn an_interpreter_in_a_group_or_world_writable_folder_is_not_trusted() {
+    let lab = lab();
+    let base = lab.bin.parent().unwrap().to_owned();
+    for mode in [0o775, 0o757, 0o777, 0o722] {
+        let file = exe_in(&base.join(format!("w{mode:o}")), "fakenode", mode);
+        assert!(!trusted_interpreter(&file), "{mode:o}");
+    }
+    let ok = exe_in(&base.join("ok"), "fakenode", 0o755);
+    assert!(trusted_interpreter(&ok));
+    // A file others can write is no better than a folder they can write.
+    fs::set_permissions(&ok, fs::Permissions::from_mode(0o757)).unwrap();
+    assert!(!trusted_interpreter(&ok));
+}
+
+#[test]
+fn an_untrusted_sibling_falls_back_to_a_trusted_interpreter_on_path_or_nothing() {
+    let lab = lab();
+    let base = lab.bin.parent().unwrap().to_owned();
+    let sibling_dir = base.join("loose");
+    exe_in(&sibling_dir, "fakenode", 0o777);
+    let other_loose = base.join("loose2");
+    exe_in(&other_loose, "fakenode", 0o775);
+    let good = exe_in(&base.join("good"), "fakenode", 0o755);
+    let found = sibling_dir.join("codex");
+    let path = std::env::join_paths([&other_loose, &base.join("good")]).unwrap();
+    // The first PATH entry is untrusted too: the first trusted one wins.
+    assert_eq!(interpreter_for(&found, "fakenode", &path), Some(good));
+    let only_loose = std::env::join_paths([&other_loose]).unwrap();
+    assert_eq!(interpreter_for(&found, "fakenode", &only_loose), None);
+}
+
+#[tokio::test]
+async fn a_cli_whose_only_interpreter_is_untrusted_is_not_started() {
+    let lab = lab();
+    let interp_dir = node_style_codex(&lab);
+    fs::set_permissions(&interp_dir, fs::Permissions::from_mode(0o777)).unwrap();
+    let mut env = lab.env();
+    env.path = std::env::join_paths([&lab.bin, &interp_dir]).unwrap();
+    env.jail = jail_on();
+    env.helper = lab.helper("echo called > \"$REC/helper_called\"\nexit 99");
+    let events = run_job(&env, codex_job(&["exec", "-"])).await;
+    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+    assert!(!lab.rec.join("helper_called").exists());
 }

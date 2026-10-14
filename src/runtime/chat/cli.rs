@@ -261,16 +261,35 @@ fn read_head(path: &Path, max: usize) -> Option<Vec<u8>> {
     Some(head)
 }
 
+/// Whether the interpreter at `path` may run a CLI inside the jail. Its
+/// canonical path must not be under a scratch folder (`/tmp`, `/var/tmp`, where
+/// anyone can plant a program) and neither its folder nor the file may be
+/// writable by group or others (they could swap it).
+fn trusted_interpreter(path: &Path) -> bool {
+    let Some(real) = resolve(path) else {
+        return false;
+    };
+    if real.starts_with("/tmp") || real.starts_with("/var/tmp") {
+        return false;
+    }
+    let closed =
+        |p: &Path| fs::metadata(p).is_ok_and(|meta| meta.permissions().mode() & 0o022 == 0);
+    closed(&real) && real.parent().is_some_and(closed)
+}
+
 /// The interpreter a script asks for by bare name (`#!/usr/bin/env node`): the
 /// one installed next to the CLI as it was found (npm, nvm, volta and the like
 /// put `node` beside the global packages' `bin` links), else the first on
 /// `PATH`. The first on `PATH` can be a different install whose libraries the
-/// jail does not grant.
+/// jail does not grant. A candidate that is not [trusted](trusted_interpreter)
+/// is skipped, so the answer can be none.
 fn interpreter_for(found: &Path, name: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
-    found
-        .parent()
-        .and_then(|dir| find_on_path(name, dir.as_os_str()))
-        .or_else(|| find_on_path(name, path))
+    let beside = found.parent().into_iter().map(Path::to_path_buf);
+    let listed = std::env::split_paths(path).filter(|dir| dir.is_absolute());
+    beside
+        .chain(listed)
+        .filter_map(|dir| find_on_path(name, dir.as_os_str()))
+        .find(|candidate| trusted_interpreter(candidate))
 }
 
 /// The ELF loader (`PT_INTERP`) of the executable at `path`. The program
