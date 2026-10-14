@@ -108,9 +108,10 @@ pub(super) fn selected_label(menu: &MenuState) -> &'static str {
     labels[0]
 }
 
-const ORDER: [&str; 12] = [
+const ORDER: [&str; 13] = [
     "Statusline position",
     "Tab bar position",
+    "Mouse",
     "Set all tasks",
     "general",
     "code",
@@ -128,7 +129,7 @@ const ORDER: [&str; 12] = [
 fn the_ai_descriptors_are_well_formed() {
     assert_eq!(AI_SECTION.title, "AI");
     let labels: Vec<_> = AI_SECTION.items.iter().map(|i| i.label).collect();
-    assert_eq!(labels, ORDER[2..]);
+    assert_eq!(labels, ORDER[3..]);
     let mut paths: Vec<&str> = Vec::new();
     for (item, task) in AI_SECTION.items[1..6].iter().zip(Task::ALL) {
         match item.kind {
@@ -160,17 +161,17 @@ fn the_ai_descriptors_are_well_formed() {
     );
 }
 
-// Spec: Task rows in order, Wrap, Disabled row is skipped.
+// Spec: Task rows in order, Wrap, Mouse row is selectable.
 #[test]
 fn navigation_visits_settings_then_the_ten_ai_rows_and_wraps() {
     let mut m = menu(None, None, Some(machine()));
     let mut visited = vec![selected_label(&m)];
-    for _ in 0..12 {
+    for _ in 0..13 {
         press(&mut m, 'j');
         visited.push(selected_label(&m));
     }
-    assert_eq!(visited[..12], ORDER);
-    assert_eq!(visited[12], "Statusline position", "wraps past Notify");
+    assert_eq!(visited[..13], ORDER);
+    assert_eq!(visited[13], "Statusline position", "wraps past Notify");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Notify", "wraps before the first");
     press(&mut m, 'k');
@@ -182,7 +183,7 @@ fn navigation_visits_settings_then_the_ten_ai_rows_and_wraps() {
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "summarize");
     let mut back = Vec::new();
-    for _ in 0..7 {
+    for _ in 0..8 {
         press(&mut m, 'k');
         back.push(selected_label(&m));
     }
@@ -194,27 +195,18 @@ fn navigation_visits_settings_then_the_ten_ai_rows_and_wraps() {
             "code",
             "general",
             "Set all tasks",
+            "Mouse",
             "Tab bar position",
             "Statusline position"
         ]
     );
 }
 
-#[test]
-fn the_mouse_row_is_skipped_in_both_directions() {
-    let mut m = menu(None, None, None);
-    press(&mut m, 'j');
-    press(&mut m, 'j');
-    assert_eq!(selected_label(&m), "Set all tasks");
-    press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Tab bar position");
-}
-
 // Spec: Repeat moves.
 #[test]
 fn repeat_moves_into_the_task_rows_like_a_press() {
     let mut m = menu(None, None, None);
-    for _ in 0..3 {
+    for _ in 0..4 {
         m.on_key(&ch('j'), true, &mut Config::default());
     }
     assert_eq!(selected_label(&m), "general");
@@ -224,7 +216,7 @@ fn repeat_moves_into_the_task_rows_like_a_press() {
 #[test]
 fn cycling_keys_do_nothing_on_task_rows() {
     let mut m = menu(Some("ollama"), Some("llama3:8b"), Some(machine()));
-    for _ in 0..4 {
+    for _ in 0..5 {
         press(&mut m, 'j');
     }
     assert_eq!(selected_label(&m), "code");
@@ -248,8 +240,9 @@ fn cycling_keys_do_nothing_on_task_rows() {
 fn r_on_a_task_row_asks_for_a_refresh_and_elsewhere_does_not() {
     let mut m = menu(None, None, Some(machine()));
     assert_eq!(press(&mut m, 'r'), MenuCommand::None, "Statusline row");
-    press(&mut m, 'j');
-    press(&mut m, 'j');
+    for _ in 0..3 {
+        press(&mut m, 'j');
+    }
     assert_eq!(press(&mut m, 'r'), MenuCommand::Refresh, "Set all tasks");
     press(&mut m, 'j');
     press(&mut m, 'j');
@@ -401,7 +394,7 @@ fn nothing_is_marked_before_the_first_detection() {
 #[test]
 fn a_result_marks_the_row_in_place_and_keeps_selection_and_draft() {
     let mut m = assigned(&[(Task::Code, "ollama", "llama3:8b")], None);
-    for _ in 0..4 {
+    for _ in 0..5 {
         press(&mut m, 'j');
     }
     assert_eq!(value_of(&m, "code"), "ollama › llama3:8b");

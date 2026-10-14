@@ -5896,7 +5896,7 @@ mod app_tests {
         let mut a = ai_app();
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
-        for _ in 0..4 {
+        for _ in 0..5 {
             a.update(key('j'));
         }
         let enter = || code(KeyCode::Enter);
@@ -5954,7 +5954,7 @@ mod app_tests {
     /// Opens the picker of `Set all tasks` on `none` and chooses it: the
     /// general assignment goes from `ollama` to unset.
     fn clear_all(a: &mut App) {
-        for _ in 0..2 {
+        for _ in 0..3 {
             a.update(key('j'));
         }
         a.update(code(KeyCode::Enter));
@@ -6246,7 +6246,7 @@ mod app_tests {
 
     /// Selection on the first AI task row.
     fn to_task_row(a: &mut App) {
-        for _ in 0..4 {
+        for _ in 0..5 {
             a.update(key('j'));
         }
     }

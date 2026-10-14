@@ -7,7 +7,7 @@ expression: "text(&draw(60, 11, &fresh()))"
     │ Settings                                        │     
     │ Statusline position                      bottom │     
     │ Tab bar position                            top │     
-    │ Mouse: off (coming soon)                        │     
+    │ Mouse                                        on │     
     │                                                 │     
     │ j/k move · h/l change · s save · Esc cancel     │     
     └─────────────────────────────────────────────────┘

@@ -346,11 +346,11 @@ mod tests {
     }
 
     #[test]
-    fn disabled_mouse_row_is_muted() {
+    fn the_mouse_row_is_drawn_like_the_other_settings() {
         let buf = draw(51, 8, &fresh());
         let theme = LazaroboxTheme::default();
-        assert_eq!(buf[(2, 4)].fg, theme.text_muted);
-        assert_ne!(buf[(2, 3)].fg, theme.text_muted);
+        assert_ne!(buf[(2, 4)].fg, theme.text_muted);
+        assert_eq!(buf[(2, 4)].fg, buf[(2, 3)].fg);
     }
 
     // Spec: Footer: Error replaces hint.
