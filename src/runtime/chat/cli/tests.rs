@@ -18,7 +18,7 @@ use crate::{
     core::{
         ai::{
             chat::{
-                adapters::{Job, Wire},
+                adapters::{Job, TmpFile, Wire},
                 engine::{ChatError, ChatMessage, ChatRequest, Finish, Role, StreamEvent},
             },
             jail::{Backend, Cli, JailPolicy, JailSupport},
@@ -153,6 +153,7 @@ fn job(policy: JailPolicy) -> Job {
         args: vec!["-p".into()],
         stdin: b"hi".to_vec(),
         jail: policy,
+        tmp_file: None,
     }
 }
 
@@ -582,6 +583,7 @@ fn codex_job(args: &[&str]) -> Job {
         args: args.iter().map(|a| (*a).to_owned()).collect(),
         stdin: b"hi".to_vec(),
         jail: JailPolicy::Required,
+        tmp_file: None,
     }
 }
 
@@ -1301,4 +1303,97 @@ async fn a_loader_in_tmp_stops_the_jailed_cli() {
     let (lab, events) = jailed_elf_with_loader(b"/tmp/evil-ld.so\0").await;
     assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
     assert!(!lab.rec.join("helper_called").exists());
+}
+
+const GEMINI_ANSWER: &str = r#"
+printf '%s\0' "$@" > "$REC/args"
+cat > "$REC/stdin"
+for last; do :; done
+cp "$last" "$REC/policy_copy"
+stat -c %a "$last" > "$REC/policy_mode"
+printf '%s\n' '{"type":"init","session_id":"s","model":"m"}'
+printf '%s\n' '{"type":"message","role":"assistant","content":"ok","delta":true}'
+printf '%s\n' '{"type":"result","status":"success"}'
+"#;
+
+const POLICY: &str = "[[rule]]\ntoolName = \"*\"\n";
+
+fn gemini_job(jail: JailPolicy) -> Job {
+    Job {
+        wire: Wire::GeminiStreamJson,
+        binary: "gemini",
+        cli: Cli::Gemini,
+        args: vec!["-p".into(), "x".into()],
+        stdin: b"hi".to_vec(),
+        jail,
+        tmp_file: Some(TmpFile {
+            flag: "--policy",
+            name: "gemini-policy.toml",
+            content: POLICY,
+        }),
+    }
+}
+
+#[tokio::test]
+async fn a_job_file_is_written_private_to_the_turn_folder_and_named_last() {
+    let lab = lab();
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_ANSWER);
+    let events = run_job(&lab.env(), gemini_job(JailPolicy::Layered)).await;
+    assert_eq!(
+        events,
+        [
+            StreamEvent::Notice("gemini runs without the jail here: test".into()),
+            StreamEvent::Delta("ok".into()),
+            StreamEvent::Done(Finish::Stop)
+        ]
+    );
+    let args = lab.args();
+    assert_eq!(args[..2], ["-p", "x"]);
+    assert_eq!(args[2], "--policy");
+    let path = PathBuf::from(&args[3]);
+    assert_eq!(args.len(), 4, "{args:?}");
+    assert_eq!(path.file_name().unwrap(), "gemini-policy.toml");
+    assert!(
+        path.starts_with(lab.data.join("cli-tmp")),
+        "inside the per-turn temp folder: {path:?}"
+    );
+    assert_eq!(lab.recorded("policy_copy"), POLICY);
+    assert_eq!(lab.recorded("policy_mode").trim(), "600");
+    assert!(!path.exists(), "the turn folder is wiped after the turn");
+}
+
+#[tokio::test]
+async fn a_jailed_job_file_is_inside_the_folder_the_jail_lets_the_cli_write() {
+    let lab = lab();
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_ANSWER);
+    let mut env = lab.env();
+    env.jail = jail_on();
+    env.helper = lab.helper(PASS);
+    let events = run_job(&env, gemini_job(JailPolicy::Required)).await;
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    let program = helper_program(&lab);
+    let n = program.len();
+    assert_eq!(program[n - 4..n - 2], ["-p", "x"]);
+    assert_eq!(program[n - 2], "--policy");
+    let path = PathBuf::from(&program[n - 1]);
+    let raw = lab.recorded("helper_args");
+    let rules: Vec<&str> = raw.split('\0').collect();
+    let rw: Vec<&str> = rules
+        .windows(2)
+        .filter(|w| w[0] == "--rw")
+        .map(|w| w[1])
+        .collect();
+    assert!(
+        rw.iter().any(|dir| path.parent() == Some(Path::new(dir))),
+        "{path:?} must sit in a rw folder: {rw:?}"
+    );
+    assert_eq!(lab.recorded("policy_copy"), POLICY);
+}
+
+#[tokio::test]
+async fn a_job_without_a_file_gets_no_extra_argument() {
+    let lab = lab();
+    lab.claude(GOOD);
+    run(lab.env(), request()).await;
+    assert!(lab.args().iter().all(|a| a != "--policy"));
 }

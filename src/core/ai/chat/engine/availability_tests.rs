@@ -151,7 +151,7 @@ fn codex_and_gemini_need_a_jail() {
 
 #[test]
 fn engines_without_an_adapter_are_unsupported_whatever_the_jail() {
-    for id in ["gemini", "lmstudio", "llamacpp", "vllm", "opencode"] {
+    for id in ["lmstudio", "llamacpp", "vllm", "opencode"] {
         let c = cfg(Task::Chat, Some(id), Some("default"));
         let d = detected(vec![state(id, Status::Available, &["default"])]);
         for jail in [NO_JAIL, JAIL] {
@@ -176,6 +176,22 @@ fn codex_is_ready_with_a_jail_and_no_jail_otherwise() {
         availability(&c, Some(&d), NO_JAIL),
         Availability::NoJail {
             engine: "codex".into()
+        }
+    );
+}
+
+#[test]
+fn gemini_is_ready_with_a_jail_and_no_jail_otherwise() {
+    let c = cfg(Task::Chat, Some("gemini"), Some("default"));
+    let d = detected(vec![state("gemini", Status::Available, &[])]);
+    assert_eq!(
+        availability(&c, Some(&d), JAIL),
+        ready("gemini", Some("default"))
+    );
+    assert_eq!(
+        availability(&c, Some(&d), NO_JAIL),
+        Availability::NoJail {
+            engine: "gemini".into()
         }
     );
 }
@@ -278,15 +294,12 @@ fn it_never_switches_engine() {
 }
 
 #[test]
-fn only_ollama_claude_and_codex_have_an_adapter_so_far() {
+fn only_ollama_claude_codex_and_gemini_have_an_adapter_so_far() {
     let mut without: Vec<_> = CATALOG
         .iter()
         .filter(|e| !has_adapter(e.id))
         .map(|e| e.id)
         .collect();
     without.sort_unstable();
-    assert_eq!(
-        without,
-        ["gemini", "llamacpp", "lmstudio", "opencode", "vllm"]
-    );
+    assert_eq!(without, ["llamacpp", "lmstudio", "opencode", "vllm"]);
 }

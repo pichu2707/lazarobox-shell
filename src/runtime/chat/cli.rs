@@ -19,8 +19,8 @@
 use std::{
     ffi::OsString,
     fs,
-    io::{self, Read, Seek, SeekFrom},
-    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
+    io::{self, Read, Seek, SeekFrom, Write},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
     sync::atomic::{AtomicU64, Ordering},
@@ -308,7 +308,13 @@ fn read_loader(path: &Path) -> Option<PathBuf> {
 
 /// The helper command line that runs `job` jailed, or `None` when the layout
 /// cannot be jailed (a path the rules refuse, a CLI that cannot be resolved).
-fn jailed(env: &CliEnv, job: &Job, binary: &Path, dirs: &Dirs) -> Option<(PathBuf, Vec<OsString>)> {
+fn jailed(
+    env: &CliEnv,
+    job: &Job,
+    args: &[OsString],
+    binary: &Path,
+    dirs: &Dirs,
+) -> Option<(PathBuf, Vec<OsString>)> {
     let home = resolve(env.home.as_deref()?)?;
     let bin = resolve(binary)?;
     let head = read_head(&bin, ELF_HEAD_BYTES)?;
@@ -350,7 +356,7 @@ fn jailed(env: &CliEnv, job: &Job, binary: &Path, dirs: &Dirs) -> Option<(PathBu
     // A script starts through its interpreter, which is granted by exact
     // path. Left to the kernel, `#!/usr/bin/env node` would run `env`, which
     // the jail does not grant.
-    let rest = job.args.iter().map(OsString::from);
+    let rest = args.iter().cloned();
     let (program, argv) = match layout.interpreter {
         Some(interpreter) => (
             interpreter,
@@ -441,6 +447,25 @@ struct Plan {
     notice: Option<String>,
 }
 
+/// The CLI's argv: the job's own, then the flag and path of the job's file
+/// when it has one. The file is written into the turn's private temp folder
+/// (0600, new), which the jail lets the CLI read and which is wiped after the
+/// turn.
+fn full_args(job: &Job, dirs: &Dirs) -> io::Result<Vec<OsString>> {
+    let mut argv: Vec<OsString> = job.args.iter().map(OsString::from).collect();
+    if let Some(file) = &job.tmp_file {
+        let path = dirs.tmp.join(file.name);
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?
+            .write_all(file.content.as_bytes())?;
+        argv.extend([OsString::from(file.flag), path.into_os_string()]);
+    }
+    Ok(argv)
+}
+
 /// Decides how the CLI starts. `Err` is the final event of a turn that never
 /// spawns anything.
 fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
@@ -457,9 +482,10 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
         .as_deref()
         .and_then(|data| Dirs::create(data).ok())
         .ok_or_else(|| StreamEvent::Error(ChatError::Failed(CANNOT_PREPARE.into())))?;
-    let argv: Vec<OsString> = job.args.iter().map(OsString::from).collect();
+    let argv = full_args(job, &dirs)
+        .map_err(|_| StreamEvent::Error(ChatError::Failed(CANNOT_PREPARE.into())))?;
     let reason = match (how, env.jail) {
-        (Launch::Jailed, _) => match jailed(env, job, &binary, &dirs) {
+        (Launch::Jailed, _) => match jailed(env, job, &argv, &binary, &dirs) {
             Some((program, argv)) => {
                 return Ok(Plan {
                     program,
