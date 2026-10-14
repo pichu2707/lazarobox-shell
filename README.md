@@ -180,7 +180,7 @@ El directorio de trabajo del CLI es una carpeta vacía y privada, el entorno se 
 - gemini **guarda sus propias sesiones** en `~/.gemini/tmp/cli-cwd/chats/` (archivos `session-*.jsonl`) y no hay opción para evitarlo. Esas copias quedan **fuera de `chat.db`**: no se borran al borrar una conversación ni por retención, y no tienen los permisos `0600` de `chat.db`. Elimínalas tú si lo necesitas.
 - gemini lee tu configuración propia de `~/.gemini` (`GEMINI.md`, `skills/`, `settings.json`), que va como contexto al proveedor.
 - Con gemini, el modo `plan` **no** basta como barrera (el modelo puede salir de él). El chat desactiva las herramientas con una política que deniega todas (un archivo temporal que lazarobox escribe en la carpeta privada del turno), sin extensiones y sin servidores MCP.
-- Si tu `node` es el de Homebrew (sus bibliotecas viven bajo `.linuxbrew/Cellar` y `opt`), la jaula concede en solo lectura exactamente las carpetas de bibliotecas que el propio ejecutable declara y los archivos `openssl.cnf` y `cert.pem` de Homebrew; nunca el prefijo completo.
+- Si tu `node` es el de Homebrew (sus bibliotecas viven bajo `.linuxbrew/Cellar` y `opt`), la jaula concede en solo lectura exactamente las carpetas de bibliotecas que el propio ejecutable declara y los archivos `openssl.cnf` y `cert.pem` de Homebrew; nunca el prefijo completo. Esta regla vale para cualquier CLI cuyo ejecutable (el intérprete de un script o el binario nativo) declare un RUNPATH o RPATH en su ELF, no solo para `node`.
 
 **Si un CLI cambia.** Las listas de herramientas desactivadas son fijas y los decodificadores aceptan solo los tipos de evento que conocen:
 
