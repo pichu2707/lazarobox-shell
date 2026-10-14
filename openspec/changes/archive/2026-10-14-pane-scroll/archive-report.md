@@ -51,7 +51,7 @@ Merged last of the three; every MODIFIED target existed by name in the post-ai-c
 
 ### Reconciliation of base drift (done at archive time)
 
-The pane-scroll deltas were written before engram-memory and, for two capabilities, before ai-chat reached the main specs. A plain replace of the MODIFIED requirements would have silently dropped later content. These were repaired in the main specs; the delta files are unchanged:
+The pane-scroll deltas were written before engram-memory and, for two capabilities, before ai-chat reached the main specs. A plain replace of the MODIFIED requirements would have silently dropped later content. These were repaired in the main specs; the reconciliation does not change the delta files (the mouse-input delta and `tasks.md` were edited separately at archive time, see W1 and Tasks):
 
 - `config-menu`: the replaced requirements "Sections and items are data" (and its integrity scenario), "Navigation" (and its wrap and order scenarios) and the "Task rows rendered" scenario had lost the `Context` and `Memory` rows of engram-memory. Restored them, keeping the new `Mouse` row. Also fixed the Terms sentence "The Settings Mouse row is the only row the cursor skips" (the delta states it no longer holds): it now reads "The cursor skips no row of the task list."
 - `configuration` "Schema and defaults": the replacement text omitted `[ai] profile` (ai-chat). Restored the key, its default `programmer`, the empty-string rule and the pointer to "Profile key validation", plus the profile mention in the defaults scenario. Nine unchanged scenarios (AI keys, profile, task tables, unknown engine) and "Positions in Kitty [manual]" had been left out of the replacement and were restored.

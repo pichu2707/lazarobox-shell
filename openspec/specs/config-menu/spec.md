@@ -37,20 +37,20 @@ The menu MUST open only from TERMINAL through the prefix: `Ctrl+Space` then `m`,
 - THEN the task list shows, the picker is closed and the draft equals the current values
 
 ### Requirement: Sections and items are data
-Sections and items MUST come from a static descriptor table; adding a section or a setting MUST NOT require changing the popup drawing or navigation code. Each setting item MUST declare its label and its `config.toml` key path, and either an ordered list of allowed values (static item) or a task kind (assignment item, whose value is an `engine › model` chosen in the picker). The sections are "Settings" and "AI", shown in that order. Settings has the rows, in order: `Statusline position` (`statusline.position`: top, bottom), `Tab bar position` (`tabbar.position`: top, bottom) and `Mouse` (`mouse`: on, off), whose values are written to the file as the booleans `true` and `false`. AI has the assignment rows, in order: `Set all tasks` (aggregate over the five tasks, no single key path), `general` (`ai`), `code` (`ai.tasks.code`), `chat` (`ai.tasks.chat`), `review` (`ai.tasks.review`) and `summarize` (`ai.tasks.summarize`), followed by the static rows `Profile` (`ai.profile`: analyst, programmer), `Context` (`ai.context`: off, on) and `Memory` (`ai.memory.enabled`: off, on).
+Sections and items MUST come from a static descriptor table; adding a section or a setting MUST NOT require changing the popup drawing or navigation code. Each setting item MUST declare its label and its `config.toml` key path, and either an ordered list of allowed values (static item) or a task kind (assignment item, whose value is an `engine › model` chosen in the picker). The sections are "Settings" and "AI", shown in that order. Settings has the rows, in order: `Statusline position` (`statusline.position`: top, bottom), `Tab bar position` (`tabbar.position`: top, bottom) and `Mouse` (`mouse`: on, off), whose values are written to the file as the booleans `true` and `false`. AI has the assignment rows, in order: `Set all tasks` (aggregate over the five tasks, no single key path), `general` (`ai`), `code` (`ai.tasks.code`), `chat` (`ai.tasks.chat`), `review` (`ai.tasks.review`) and `summarize` (`ai.tasks.summarize`), followed by the static rows `Profile` (`ai.profile`: analyst, programmer), `Context` (`ai.context`: off, on), `Memory` (`ai.memory.enabled`: off, on) and `Notify` (`ai.notify`: off, on).
 
 #### Scenario: Descriptor integrity [auto]
 - GIVEN the descriptor table
 - WHEN it is validated
-- THEN every section has a non-empty title, every item a non-empty label, every static item a non-empty key path and at least two allowed values, `Mouse` has the key path `mouse` and the values `on`, `off`, the five task rows have the task ids of ai-task-models and a key path, `Set all tasks` has no single key path, `Profile` has the key path `ai.profile` and the values `analyst`, `programmer`, `Context` has the key path `ai.context` and the values `off`, `on`, `Memory` has the key path `ai.memory.enabled` and the values `off`, `on`, and there are no duplicate key paths
+- THEN every section has a non-empty title, every item a non-empty label, every static item a non-empty key path and at least two allowed values, `Mouse` has the key path `mouse` and the values `on`, `off`, the five task rows have the task ids of ai-task-models and a key path, `Set all tasks` has no single key path, `Profile` has the key path `ai.profile` and the values `analyst`, `programmer`, `Context` has the key path `ai.context` and the values `off`, `on`, `Memory` has the key path `ai.memory.enabled` and the values `off`, `on`, `Notify` has the key path `ai.notify` and the values `off`, `on`, and there are no duplicate key paths
 
 #### Scenario: Settings rows [auto, TestBackend + insta]
 - GIVEN the menu just opened with `mouse` at its default
 - WHEN rendered on a normal terminal
-- THEN the "Settings" title and the three rows are visible, each showing its current value, and the Mouse row reads `Mouse` with the value `on` and is drawn like the other setting rows (not muted); the `AI` section with `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, `Profile`, `Context` and `Memory` follows them, and no `Engine`, `Model` or `Status` row exists
+- THEN the "Settings" title and the three rows are visible, each showing its current value, and the Mouse row reads `Mouse` with the value `on` and is drawn like the other setting rows (not muted); the `AI` section with `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, `Profile`, `Context`, `Memory` and `Notify` follows them, and no `Engine`, `Model` or `Status` row exists
 
 ### Requirement: Navigation
-`j`, `k`, Down and Up MUST move the selection between the selectable rows of all sections, in display order (`Statusline position`, `Tab bar position`, `Mouse`, `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, `Profile`, `Context`, `Memory`). Movement MUST wrap around at the ends (from the last selectable row to the first and back), because the list is short and wrapping never leaves the user on a dead end. No row is skipped (picker disabled rows are different, see Task picker). Repeat events MUST be handled like Press.
+`j`, `k`, Down and Up MUST move the selection between the selectable rows of all sections, in display order (`Statusline position`, `Tab bar position`, `Mouse`, `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, `Profile`, `Context`, `Memory`, `Notify`). Movement MUST wrap around at the ends (from the last selectable row to the first and back), because the list is short and wrapping never leaves the user on a dead end. No row is skipped (picker disabled rows are different, see Task picker). Repeat events MUST be handled like Press.
 
 #### Scenario: Move down and up [auto]
 - GIVEN MENU with the first row selected
@@ -58,7 +58,7 @@ Sections and items MUST come from a static descriptor table; adding a section or
 - THEN the second setting row is selected, then the first again
 
 #### Scenario: Wrap [auto]
-- GIVEN the last selectable row (`Memory`) selected
+- GIVEN the last selectable row (`Notify`) selected
 - WHEN `j` (or Down) is pressed
 - THEN the first selectable row is selected; and from the first row `k` (or Up) selects the last selectable row
 
@@ -69,8 +69,8 @@ Sections and items MUST come from a static descriptor table; adding a section or
 
 #### Scenario: Task rows in order [auto]
 - GIVEN `Set all tasks` selected
-- WHEN `j` is pressed five times
-- THEN the selection visits `general`, `code`, `chat`, `review`, `summarize` in that order, a sixth `j` selects `Profile`, a seventh selects `Context`, an eighth selects `Memory`, and a ninth wraps to `Statusline position`
+- WHEN `j` is pressed ten times
+- THEN the selection visits `general`, `code`, `chat`, `review`, `summarize` in that order, a sixth `j` selects `Profile`, a seventh selects `Context`, an eighth selects `Memory`, a ninth selects `Notify`, and a tenth wraps to `Statusline position`
 
 #### Scenario: Repeat moves [auto]
 - GIVEN MENU
@@ -198,7 +198,7 @@ When a detection cue is active (see Detection cues) the hint of an AI view (task
 - THEN the footer shows the message instead of the hint, and the next key press restores the hint
 
 ### Requirement: Tiny terminals
-The menu MUST never panic at any terminal size down to 0x0, in the task list and in every picker view. The popup is 62x15 and the full popup (task list and picker alike) needs at least 24 columns by 14 rows. Below that the menu MUST draw only a one-line fallback message instead of the full popup; the key handling MUST be unchanged, so Esc still reverts and closes (or goes back one level when a picker is open), and `s` still saves. Content that does not fit MUST be clipped.
+The menu MUST never panic at any terminal size down to 0x0, in the task list and in every picker view. The popup width is 62 and its height is derived from the descriptor tables (`AI_BODY` body rows plus 4 rows of chrome: two borders, the blank row and the footer); with the 3 Settings rows and the 10 AI rows that is 15 body rows, so 62x19. The full popup (task list and picker alike) needs at least 24 columns by `AI_BODY + 3` rows (18 today: the blank row is the first thing dropped); adding a row grows these numbers. Below that the menu MUST draw only a one-line fallback message instead of the full popup; the key handling MUST be unchanged, so Esc still reverts and closes (or goes back one level when a picker is open), and `s` still saves. Content that does not fit MUST be clipped.
 
 #### Scenario: No panic at any size [auto]
 - GIVEN the menu open on the task list, then in each picker view
@@ -221,7 +221,7 @@ The menu MUST never panic at any terminal size down to 0x0, in the task list and
 - THEN the one-line fallback is shown, then the task list view is the current view
 
 #### Scenario: Smallest full popup [auto, TestBackend + insta]
-- GIVEN a terminal of exactly 24x14
+- GIVEN a terminal of exactly the minimum size (24 columns by `AI_BODY + 3` rows, 24x18 today)
 - WHEN the task list and the picker are rendered
 - THEN the full popup is drawn (not the fallback), clipped, without panic
 
@@ -343,17 +343,17 @@ The AI draft (the five task assignments) is captured at open with the other menu
 - THEN the 8 downloaded models show `✓` and can be chosen, the curated ones show `download required`, are muted, the cursor reaches them (the list scrolls), the footer reads `download required · not selectable`, and Enter on them does nothing and never starts a download
 
 ### Requirement: AI task list
-The AI section MUST show, below the Settings rows, the section title `AI`, exactly six task rows in this order: `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, and then the `Profile` row. Each task row shows its label and its value (see ai-task-models): `<engine> › <model>`, `(default)` for an unassigned non-general task, `(not set)` for an unset `general` or an unset aggregate, `(mixed)` for the aggregate when the tasks differ, and the marks `· download required` and `(not detected)` as defined there. The `Profile` row shows the profile id. The number of AI rows MUST never change because of a detection result. The popup MUST show every row of both sections without clipping on a normal terminal, MUST keep the same size between the task list and the picker, and the minimum terminal size below which only the one-line fallback is drawn (see Tiny terminals) MUST be adjusted to the popup; the exact dimensions are a design decision.
+The AI section MUST show, below the Settings rows, the section title `AI`, exactly six task rows in this order: `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, and then the static rows `Profile`, `Context`, `Memory` and `Notify`. Each task row shows its label and its value (see ai-task-models): `<engine> › <model>`, `(default)` for an unassigned non-general task, `(not set)` for an unset `general` or an unset aggregate, `(mixed)` for the aggregate when the tasks differ, and the marks `· download required` and `(not detected)` as defined there. The `Profile` row shows the profile id; `Context`, `Memory` and `Notify` show `off` or `on`. The number of AI rows MUST never change because of a detection result. The popup MUST show every row of both sections without clipping on a normal terminal, MUST keep the same size between the task list and the picker, and the minimum terminal size below which only the one-line fallback is drawn (see Tiny terminals) MUST be adjusted to the popup; the exact dimensions are a design decision.
 
 #### Scenario: Task rows rendered [auto, TestBackend + insta]
 - GIVEN general is `claude` / `sonnet`, code is `ollama` / `llama3:8b` (ollama available with that model), the other tasks unassigned, the profile `analyst`
 - WHEN the menu is rendered on a normal terminal
-- THEN `AI` and the rows are visible: `Set all tasks` `(mixed)`, `general` `claude › sonnet`, `code` `ollama › llama3:8b`, `chat` `(default)`, `review` `(default)`, `summarize` `(default)`, `Profile` `analyst`
+- THEN `AI` and the rows are visible: `Set all tasks` `(mixed)`, `general` `claude › sonnet`, `code` `ollama › llama3:8b`, `chat` `(default)`, `review` `(default)`, `summarize` `(default)`, `Profile` `analyst`, and the `Context`, `Memory` and `Notify` rows with their `off` or `on` value
 
 #### Scenario: Nothing assigned [auto, TestBackend + insta]
 - GIVEN no task is assigned
 - WHEN the menu is rendered
-- THEN `Set all tasks` reads `(not set)`, `general` reads `(not set)`, the other four read `(default)` and `Profile` reads `programmer` (the default profile)
+- THEN `Set all tasks` reads `(not set)`, `general` reads `(not set)`, the other four read `(default)`, `Profile` reads `programmer` (the default profile) and `Context`, `Memory` and `Notify` read their defaults
 
 #### Scenario: Marks on rows [auto]
 - GIVEN code is `ollama` / `old:7b` not downloaded, and review is `codex` / `default` with codex `not installed`
@@ -467,7 +467,7 @@ The `custom…` row exists only at level 2 of the CLI engines (`claude`, `codex`
 - THEN there is no `custom…` row
 
 ### Requirement: Picker viewport
-The picker body MUST be a title plus a viewport of exactly 10 rows, inside the fixed 62x15 popup. When the rows do not fit, the list MUST scroll so that the cursor row is always visible (cursor above the window sets the window start to the cursor; cursor below it sets the window so the cursor is the last row), and the popup height MUST NOT change while scrolling. Disabled rows scroll with the rest, and `j`/`k` wrap with the window following.
+The picker body MUST be a title plus a viewport of exactly 10 rows, inside the fixed popup (62 columns wide, `AI_BODY + 4` rows high, 62x19 today; the task list is the tallest view and `VIEW` = 10 is below `AI_BODY`). When the rows do not fit, the list MUST scroll so that the cursor row is always visible (cursor above the window sets the window start to the cursor; cursor below it sets the window so the cursor is the last row), and the popup height MUST NOT change while scrolling. Disabled rows scroll with the rest, and `j`/`k` wrap with the window following.
 
 #### Scenario: Long list scrolls [auto, TestBackend + insta]
 - GIVEN level 2 for ollama with 18 rows (8 detected, 10 not downloaded) and the cursor moved to the last row, a disabled one

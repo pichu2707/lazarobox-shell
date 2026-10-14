@@ -22,6 +22,10 @@ When a live chat turn (or a summary run) ends with `Done` or any error, and the 
 | `config-persistence` | 1 ADDED | 10 -> 11 | 73 -> 76 |
 | `configuration` | 1 ADDED | 5 -> 6 | 42 -> 45 |
 
+### Reconciliation at archive time
+
+The `config-menu` text merged earlier (pane-scroll reconciliation) still named `Memory` as the last AI row. After this merge `Notify` is the last row (confirmed in `src/core/menu.rs`: `Profile`, `Context`, `Memory`, `Notify` follow the six task rows). Updated in the main spec: "Sections and items are data" and its descriptor and settings-rows scenarios, "Navigation" (order, "Wrap" now ends on `Notify`, "Task rows in order" now needs ten `j` presses to wrap), "AI task list" and its rendered-row scenarios, "Tiny terminals" and "Picker viewport" (fixed 62x15 and 14 rows replaced by sizes derived from `AI_BODY`: 15 body rows, 62x19 popup, 24x18 minimum today), and `config-persistence` "Owned keys only" (now lists `ai.context`, `ai.notify` and the `ai.memory.*` keys by cross-reference).
+
 ## Tasks
 
 11 tasks, all checked. Task 6.2 (`[manual]` Kitty bell check) was ticked at archive time `(user-checked 2026-10-14)`: the user reported on 2026-10-14 that they ran the 0.10.0 manual checks in Kitty, and the bell was among them. No open tasks.
