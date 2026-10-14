@@ -115,7 +115,7 @@ A wheel event MUST be routed to the pane of the active tab whose content rectang
 ### Requirement: Wheel routing for shell panes
 For a shell pane under the pointer the first matching rule MUST apply, in this order:
 1. The pane is in COPY (see Wheel in COPY).
-2. The child enabled a mouse protocol mode (vt100 mode other than None: Press, PressRelease, ButtonMotion or AnyMotion), on the main or the alternate screen: the wheel event is forwarded to the child (see Wheel encoding). The app does not scroll its own view.
+2. The child enabled a mouse protocol mode (PressRelease, ButtonMotion or AnyMotion; X10 `Press` (`?9`) reports no wheel and counts as no mouse mode, as in xterm), on the main or the alternate screen: the wheel event is forwarded to the child (see Wheel encoding). The app does not scroll its own view.
 3. The child is on the alternate screen with no mouse mode: three arrow keys are sent (see Alternate screen without mouse mode).
 4. Otherwise (main screen, no mouse mode): the pane's scrollback view moves (see Main screen scrollback).
 
@@ -145,12 +145,12 @@ For a shell pane under the pointer the first matching rule MUST apply, in this o
 - THEN the sequence is written to the right pane's PTY only
 
 ### Requirement: Wheel encoding
-A wheel event forwarded to a child MUST be encoded as a press of button 64 (wheel up) or 65 (wheel down), with NO release event, using the encoding the child selected (vt100 `mouse_protocol_encoding`). Modifier bits are added to the button number (Shift +4, Alt +8, Ctrl +16), except in mouse mode Press, where the wheel MUST be sent without modifier bits. The coordinates MUST be pane-local and 1-based: `col = pointer_x - pane_rect.x + 1`, `row = pointer_y - pane_rect.y + 1`. One wheel event produces exactly one sequence (the 3-line step does not apply to forwarded events; the child decides its own step).
+A wheel event forwarded to a child MUST be encoded as a press of button 64 (wheel up) or 65 (wheel down), with NO release event, using the encoding the child selected (vt100 `mouse_protocol_encoding`). Modifier bits are added to the button number (Shift +4, Alt +8, Ctrl +16). The coordinates MUST be pane-local and 1-based: `col = pointer_x - pane_rect.x + 1`, `row = pointer_y - pane_rect.y + 1`. One wheel event produces exactly one sequence (the 3-line step does not apply to forwarded events; the child decides its own step).
 - SGR encoding: `\x1b[<{64|65 + mods};{col};{row}M`; without modifiers `\x1b[<64;{col};{row}M` (up) and `\x1b[<65;{col};{row}M` (down).
 - Default (X10) encoding: `\x1b[M` followed by three bytes `32+button`, `32+col`, `32+row`, with button 64 (up, `\x60`) or 65 (down, `a`) plus modifier bits. When `col` or `row` exceeds 223 the event MUST be dropped (no bytes written).
 - UTF-8 (1005) encoding: as Default, but each of the three values is `32+value` written as a UTF-8 character; when `col` or `row` exceeds 2015 the event MUST be dropped.
 
-All four mouse modes (Press, PressRelease, ButtonMotion, AnyMotion) MUST receive the wheel events. When the child's mouse mode is None nothing is encoded.
+The three modes PressRelease, ButtonMotion and AnyMotion MUST receive the wheel events. When the child's mouse mode is None or Press (X10) nothing is encoded and the wheel follows the next routing rule (alternate screen arrows, or scrollback).
 
 #### Scenario: SGR wheel up
 - GIVEN a child in PressRelease mode with SGR encoding, pane rectangle origin (10, 5) and the pointer at (14, 8)
@@ -163,7 +163,7 @@ All four mouse modes (Press, PressRelease, ButtonMotion, AnyMotion) MUST receive
 - THEN `\x1b[<65;5;4M` is written
 
 #### Scenario: Default encoding wheel up
-- GIVEN a child in Press mode with Default encoding and the pointer at pane-local cell (col 1, row 1)
+- GIVEN a child in PressRelease mode with Default encoding and the pointer at pane-local cell (col 1, row 1)
 - WHEN the wheel moves up
 - THEN the bytes `\x1b[M` `\x60` `\x21` `\x21` are written
 
@@ -182,18 +182,18 @@ All four mouse modes (Press, PressRelease, ButtonMotion, AnyMotion) MUST receive
 - WHEN the wheel moves up at pane-local (1, 1)
 - THEN `\x1b[<80;1;1M` is written (64 + 16)
 
-#### Scenario: Press mode sends no modifiers
-- GIVEN a child in Press mode with SGR encoding and Ctrl held
-- WHEN the wheel moves up at pane-local (1, 1)
-- THEN `\x1b[<64;1;1M` is written
+#### Scenario: X10 Press mode gets no wheel
+- GIVEN a child in Press (X10, `?9`) mode with SGR encoding, on the alternate screen and, in another case, on the main screen
+- WHEN the wheel moves
+- THEN no mouse sequence is written: the alternate screen gets arrow keys and the main screen scrolls its own view
 
 #### Scenario: UTF-8 encoding
 - GIVEN a child with UTF-8 encoding and the pointer at pane-local (col 300, row 1)
 - WHEN the wheel moves up
 - THEN `\x1b[M`, `\x60`, the UTF-8 character U+014C (32+300) and `\x21` are written; at column 2016 nothing is written
 
-#### Scenario: Every mouse mode receives the wheel
-- GIVEN a child with SGR encoding in each of Press, PressRelease, ButtonMotion and AnyMotion
+#### Scenario: Every wheel-reporting mode receives the wheel
+- GIVEN a child with SGR encoding in each of PressRelease, ButtonMotion and AnyMotion
 - WHEN the wheel moves up once in each
 - THEN exactly one `\x1b[<64;...M` sequence is written each time
 

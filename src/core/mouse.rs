@@ -35,6 +35,14 @@ pub enum MouseMode {
     AnyMotion,
 }
 
+impl MouseMode {
+    /// Whether the child gets wheel events: the 1000-series modes. X10 (`?9`,
+    /// `Press`) reports only the three buttons, so like xterm it gets none.
+    fn reports_wheel(self) -> bool {
+        !matches!(self, Self::None | Self::Press)
+    }
+}
+
 /// How the child wants mouse events written (mirrors the emulator).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum MouseEncoding {
@@ -90,7 +98,7 @@ pub fn route_wheel(
     match facts {
         PaneFacts::Chat => WheelAction::ChatLines(dir),
         PaneFacts::Shell { copy: true, .. } => WheelAction::CopyScroll(dir),
-        PaneFacts::Shell { mouse, .. } if mouse.mode != MouseMode::None => {
+        PaneFacts::Shell { mouse, .. } if mouse.mode.reports_wheel() => {
             encode_wheel(dir, col, row, mods, mouse.mode, mouse.encoding)
                 .map_or(WheelAction::Ignore, WheelAction::Write)
         }
@@ -108,9 +116,9 @@ pub fn route_wheel(
 }
 
 /// The sequence for one wheel press: button 64 (up) or 65 (down) plus the
-/// modifier bits (none in `Press` mode), in the child's encoding. `col` and
+/// modifier bits, in the child's encoding. `col` and
 /// `row` are 0-based inside the pane and written 1-based. `None` when the
-/// child has no mouse mode or the coordinates do not fit the encoding.
+/// child has no wheel-reporting mode (none, or X10 `Press`) or the coordinates do not fit the encoding.
 pub fn encode_wheel(
     dir: WheelDir,
     col: u16,
@@ -119,19 +127,16 @@ pub fn encode_wheel(
     mode: MouseMode,
     encoding: MouseEncoding,
 ) -> Option<Vec<u8>> {
-    if mode == MouseMode::None {
+    if !mode.reports_wheel() {
         return None;
     }
     let mut button: u32 = match dir {
         WheelDir::Up => 64,
         WheelDir::Down => 65,
     };
-    // Press mode (X10 semantics) reports no modifiers.
-    if mode != MouseMode::Press {
-        button += 4 * u32::from(mods.contains(KeyModifiers::SHIFT))
-            + 8 * u32::from(mods.contains(KeyModifiers::ALT))
-            + 16 * u32::from(mods.contains(KeyModifiers::CONTROL));
-    }
+    button += 4 * u32::from(mods.contains(KeyModifiers::SHIFT))
+        + 8 * u32::from(mods.contains(KeyModifiers::ALT))
+        + 16 * u32::from(mods.contains(KeyModifiers::CONTROL));
     let (col, row) = (u32::from(col) + 1, u32::from(row) + 1);
     match encoding {
         MouseEncoding::Sgr => Some(format!("\x1b[<{button};{col};{row}M").into_bytes()),
@@ -242,7 +247,7 @@ mod tests {
     fn default_encoding_writes_three_offset_bytes() {
         let e = MouseEncoding::Default;
         assert_eq!(
-            enc(WheelDir::Up, 0, 0, NONE, MouseMode::Press, e).unwrap(),
+            enc(WheelDir::Up, 0, 0, NONE, MouseMode::PressRelease, e).unwrap(),
             b"\x1b[M\x60\x21\x21"
         );
         assert_eq!(
@@ -321,35 +326,39 @@ mod tests {
         assert_eq!(got.unwrap(), b"\x1b[Mp\x21\x21");
     }
 
-    // mouse-input: Press mode sends no modifiers.
+    // mouse-input: Press (X10, ?9) mode has no wheel: nothing is encoded.
     #[test]
-    fn press_mode_sends_no_modifier_bits() {
-        let all = KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL;
-        let got = enc(
-            WheelDir::Up,
-            0,
-            0,
-            all,
-            MouseMode::Press,
-            MouseEncoding::Sgr,
-        );
-        assert_eq!(got.unwrap(), b"\x1b[<64;1;1M");
-        let got = enc(
-            WheelDir::Up,
-            0,
-            0,
-            all,
-            MouseMode::Press,
+    fn press_mode_encodes_nothing() {
+        for encoding in [
             MouseEncoding::Default,
-        );
-        assert_eq!(got.unwrap(), b"\x1b[M\x60\x21\x21");
+            MouseEncoding::Utf8,
+            MouseEncoding::Sgr,
+        ] {
+            assert_eq!(
+                enc(WheelDir::Up, 0, 0, NONE, MouseMode::Press, encoding),
+                None
+            );
+        }
+    }
+
+    // mouse-input: modifier bits apply in every mode that gets the wheel.
+    #[test]
+    fn modifier_bits_apply_in_every_wheel_mode() {
+        let all = KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL;
+        for mode in [
+            MouseMode::PressRelease,
+            MouseMode::ButtonMotion,
+            MouseMode::AnyMotion,
+        ] {
+            let got = enc(WheelDir::Up, 0, 0, all, mode, MouseEncoding::Sgr);
+            assert_eq!(got.unwrap(), b"\x1b[<92;1;1M", "{mode:?}");
+        }
     }
 
     // mouse-input: every mouse mode receives one sequence; None encodes nothing.
     #[test]
-    fn every_mouse_mode_receives_one_sequence() {
+    fn every_wheel_mode_receives_one_sequence() {
         for mode in [
-            MouseMode::Press,
             MouseMode::PressRelease,
             MouseMode::ButtonMotion,
             MouseMode::AnyMotion,
@@ -423,7 +432,7 @@ mod tests {
     #[test]
     fn an_unencodable_coordinate_is_ignored() {
         let f = shell(
-            facts(MouseMode::Press, MouseEncoding::Default, false),
+            facts(MouseMode::PressRelease, MouseEncoding::Default, false),
             MODES,
             false,
         );
@@ -474,6 +483,21 @@ mod tests {
                 KeyModifiers::CONTROL
             ),
             WheelAction::Write(b"\x1b[A\x1b[A\x1b[A".to_vec())
+        );
+    }
+
+    // mouse-input: Press mode falls through, like xterm: arrows or scrollback.
+    #[test]
+    fn press_mode_falls_through_to_the_screen_rules() {
+        let alt = facts(MouseMode::Press, MouseEncoding::Sgr, true);
+        assert_eq!(
+            route_wheel(shell(alt, MODES, false), WheelDir::Down, 0, 0, NONE),
+            WheelAction::Write(b"\x1b[B\x1b[B\x1b[B".to_vec())
+        );
+        let main = facts(MouseMode::Press, MouseEncoding::Sgr, false);
+        assert_eq!(
+            route_wheel(shell(main, MODES, false), WheelDir::Up, 0, 0, NONE),
+            WheelAction::Scrollback(WheelDir::Up)
         );
     }
 
