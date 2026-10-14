@@ -4,12 +4,12 @@
 
 Mouse capture and the vertical mouse wheel for every pane: the wheel scrolls the pane under the pointer (shell or chat) or is forwarded to the child application when the child asked for mouse events. Only the wheel is handled; clicks, drags and motion are not (native selection needs Shift, see Capture lifecycle). Tags: [auto] = `cargo test`; [manual] = real Kitty. Scenarios without a tag are [auto]. All coordinates in this spec are terminal cells; "step" is the fixed wheel step of 3 lines.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Capture lifecycle
-When the effective `mouse` setting is true (default, see configuration) the app MUST enable host mouse capture with exactly the byte sequence `\x1b[?1000h\x1b[?1006h` (button press/release reporting plus SGR encoding) and no other mouse mode: `?1002`, `?1003` (motion) and `?1015` MUST NOT be enabled. Capture MUST be enabled after the host terminal setup (raw mode and alternate screen) and before the first frame is drawn. When `mouse` is false the app MUST NEVER write any mouse mode sequence, and no mouse event is ever delivered.
+When the effective `mouse` setting is true (default, see configuration) the app MUST enable host mouse capture with exactly the byte sequence `\x1b[?1000h\x1b[?1006h` (button press/release reporting plus SGR encoding) and no other mouse mode: `?1002`, `?1003` (motion) and `?1015` MUST NOT be enabled. Capture MUST be enabled after the host terminal setup (raw mode and alternate screen) and before the first frame is drawn. When `mouse` is false the app MUST NEVER write an ENABLE sequence (`?1000h`, `?1006h` or any other mouse mode enable), so no mouse event is ever delivered.
 
-On shutdown capture MUST be disabled with exactly `\x1b[?1006l\x1b[?1000l`, as part of restoring the host terminal and before the child teardown wait (see terminal-session). The panic hook MUST emit the same disable sequence whenever capture was enabled at the time of the panic, before the panic message is printed. Changing the effective `mouse` value while the app runs (config menu preview, revert or save) MUST enable or disable capture immediately with the same sequences, and MUST NOT write them when the effective value did not change. While capture is on, native terminal selection requires holding Shift (a documented tradeoff).
+On shutdown the disable sequence `\x1b[?1006l\x1b[?1000l` MUST be written on every exit path (quit and panic), as part of restoring the host terminal and before the child teardown wait (see terminal-session). Restore is unconditional: it writes the disable sequence even when `mouse` is false and capture was never enabled, because disabling a mode that is off is harmless and keeps restore independent of capture state. The panic hook MUST emit the same disable sequence always, before the panic message is printed. Changing the effective `mouse` value while the app runs (config menu preview, revert or save) MUST enable or disable capture immediately with the same sequences, and MUST NOT write them when the effective value did not change. While capture is on, native terminal selection requires holding Shift (a documented tradeoff).
 
 #### Scenario: Enabled at startup by default
 - GIVEN no `mouse` key in the config
@@ -19,7 +19,7 @@ On shutdown capture MUST be disabled with exactly `\x1b[?1006l\x1b[?1000l`, as p
 #### Scenario: Disabled by config
 - GIVEN `mouse = false`
 - WHEN the app starts, runs and quits
-- THEN no `?1000`, `?1002`, `?1003`, `?1006` or `?1015` sequence is ever written
+- THEN no mouse mode ENABLE sequence (`?1000h`, `?1002h`, `?1003h`, `?1006h` or `?1015h`) is ever written, and the only mouse bytes are the restore's `\x1b[?1006l\x1b[?1000l` on quit
 
 #### Scenario: Only minimal modes
 - GIVEN capture enabled
@@ -36,10 +36,10 @@ On shutdown capture MUST be disabled with exactly `\x1b[?1006l\x1b[?1000l`, as p
 - WHEN the app panics
 - THEN the panic hook writes `\x1b[?1006l\x1b[?1000l` and the rest of the restore still happens
 
-#### Scenario: Panic with capture off writes no mouse bytes
+#### Scenario: Panic with capture off still restores
 - GIVEN `mouse = false`
 - WHEN the app panics
-- THEN no mouse mode sequence is written
+- THEN the panic hook writes `\x1b[?1006l\x1b[?1000l` (harmless, since capture was never enabled) and no ENABLE sequence is ever written
 
 #### Scenario: Toggled at runtime
 - GIVEN the app running with capture on

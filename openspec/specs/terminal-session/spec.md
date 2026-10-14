@@ -73,8 +73,7 @@ Each pane's PTY size MUST equal its layout rect (minimum 1x1) after the statusli
 - THEN nvim redraws to the new size
 
 ### Requirement: Shell exit and shutdown
-When a pane's child exits, that pane MUST close (sibling expands; if it was focused, focus moves per the pane-layout close rule). When the last pane of a tab closes the tab MUST close; when the last tab closes the app MUST quit with the host terminal restored. On quit the host terminal MUST be restored first, so the user gets the prompt back immediately; then all child processes of all panes MUST be torn down in parallel, bounded to 3 seconds, after which no child process of any pane MUST remain. Terminal state MUST also be restored on panic.
-(Previously: a single child exit quit the app)
+When a pane's child exits, that pane MUST close (sibling expands; if it was focused, focus moves per the pane-layout close rule). When the last pane of a tab closes the tab MUST close; when the last tab closes the app MUST quit with the host terminal restored. On quit the host terminal MUST be restored first, including disabling mouse capture when it was enabled (see mouse-input), so the user gets the prompt back immediately; then all child processes of all panes MUST be torn down in parallel, bounded to 3 seconds, after which no child process of any pane MUST remain. Terminal state, including mouse capture, MUST also be restored on panic.
 
 #### Scenario: One of two shells exits [auto]
 - GIVEN two panes with pane 2 focused
@@ -91,25 +90,20 @@ When a pane's child exits, that pane MUST close (sibling expands; if it was focu
 - WHEN the app shuts down
 - THEN the terminal is restored before the teardown wait, and none of the child pids exists within 3 seconds
 
-Teardown sends SIGHUP to the shell's process group, waits a short grace so the shell can save history and run its traps, then sends SIGKILL to the group. Accepted limitation: jobs that an interactive shell with job control moved into their own process group are not reached and may outlive the app, as with tmux.
-
 #### Scenario: Terminal restored [manual]
 - GIVEN `exit` typed in the last pane, or prefix `q` then `y`
 - WHEN the app ends
-- THEN the host shell is usable (cooked mode, cursor visible, no alt screen, no mouse capture)
+- THEN the host shell is usable (cooked mode, cursor visible, no alt screen, mouse capture off: moving the wheel prints nothing)
+
+#### Scenario: Mouse disabled during restore [auto]
+- GIVEN mouse capture enabled
+- WHEN the app quits, and in another run panics
+- THEN `\x1b[?1006l\x1b[?1000l` is written as part of the restore in both cases
 
 #### Scenario: No orphan shells after quit [manual, Kitty]
 - GIVEN several panes and tabs open
 - WHEN the app quits
 - THEN `pgrep` / `ps` shows no leftover shells from the session
-
-### Requirement: No mouse capture
-The system MUST NOT enable mouse capture.
-
-#### Scenario: Native selection [manual]
-- GIVEN the app running in Kitty
-- WHEN the user drags with the mouse
-- THEN Kitty native selection works
 
 ### Requirement: Per-pane PTY registry
 Every shell pane MUST own exactly one PTY child; chat panes own none. PTY events and effects MUST be addressed by `PaneId`. Events from a pane that was already closed MUST be dropped silently. Output from shell panes MUST be delivered ordered per pane without blocking the UI loop. A PTY effect (WritePty, ResizePty, ClosePane for a PTY) addressed to a chat pane MUST never be produced.

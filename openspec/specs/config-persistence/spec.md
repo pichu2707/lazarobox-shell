@@ -35,11 +35,15 @@ How the config menu writes `config.toml`. Only the menu-owned keys change; the r
 - THEN the draft is saved (or the menu closes if unchanged) and the menu does not close silently without that outcome
 
 ### Requirement: Owned keys only
-The save MUST read the file at save time and change only `statusline.position`, `tabbar.position`, `ai.engine`, `ai.model`, `ai.profile` and `ai.tasks.<task>.engine` and `ai.tasks.<task>.model` for `<task>` in `code`, `chat`, `review`, `summarize`. Comments, key order, whitespace, unknown keys and tables and every other key MUST be preserved, including any `mouse` entry as it is and any `[ai.tasks.general]` table. The menu MUST NEVER write `mouse = true`, and MUST NOT add or modify the `mouse` key. A missing owned key or table MUST be created (including `ai` and `ai.tasks` implicitly, with no empty parent header added); a position value MUST be one of `"top"` or `"bottom"`. The `ai.*` keys MUST be written only when the AI draft differs from the values captured at open, as TOML strings with correct escaping, and whenever a task's draft differs, both its `engine` and `model` MUST be written together; tasks whose draft equals the open values MUST NOT be written. `ai.profile` MUST be written only when the profile draft differs from the value captured at open, as one of `"analyst"` or `"programmer"` (default `programmer`), and it MUST be written explicitly even when it equals the default; it is never removed. "No engine" and "no model" MUST be written as the empty string (`engine = ""`, `model = ""`), never by removing the key. No secret, token or key MUST ever be written. When the AI draft equals the open values, a file without `[ai]` MUST gain none.
+The save MUST read the file at save time and change only `statusline.position`, `tabbar.position`, `mouse`, `ai.engine`, `ai.model`, `ai.profile` and `ai.tasks.<task>.engine` and `ai.tasks.<task>.model` for `<task>` in `code`, `chat`, `review`, `summarize`. Comments, key order, whitespace, unknown keys and tables and every other key MUST be preserved, including any `[ai.tasks.general]` table. A missing owned key or table MUST be created (including `ai` and `ai.tasks` implicitly, with no empty parent header added); a position value MUST be one of `"top"` or `"bottom"`.
+
+`mouse` MUST be written only when the mouse draft differs from the value captured at open (the config value, default true when the key is absent or invalid), as the TOML boolean `true` or `false` (not a string), and it MUST be written explicitly even when it equals the default. It MUST remain a top-level key: a missing `mouse` key MUST be inserted before the first table header of the file (or appended when the file has no table), never inside a table. An existing `mouse` line (including a non-boolean value such as `mouse = "yes"`) MUST be updated in place keeping its trailing comment. When the mouse draft equals the open value the `mouse` line MUST be left exactly as it is, and a file without `mouse` MUST gain none.
+
+The `ai.*` keys MUST be written only when the AI draft differs from the values captured at open, as TOML strings with correct escaping, and whenever a task's draft differs, both its `engine` and `model` MUST be written together; tasks whose draft equals the open values MUST NOT be written. `ai.profile` MUST be written only when the profile draft differs from the value captured at open, as one of `"analyst"` or `"programmer"` (default `programmer`), and it MUST be written explicitly even when it equals the default; it is never removed. "No engine" and "no model" MUST be written as the empty string (`engine = ""`, `model = ""`), never by removing the key. No secret, token or key MUST ever be written. When the AI draft equals the open values, a file without `[ai]` MUST gain none.
 
 #### Scenario: Comments and order preserved [auto]
 - GIVEN a file with comments, an unknown table, `mouse = false` and `[statusline] position = "bottom"`
-- WHEN the position is saved as `top`
+- WHEN the position is saved as `top` and the mouse draft is unchanged
 - THEN only that value changes and every other byte of the file is identical
 
 #### Scenario: Missing keys are created [auto]
@@ -47,15 +51,50 @@ The save MUST read the file at save time and change only `statusline.position`, 
 - WHEN `tabbar.position` is saved
 - THEN a `[tabbar]` table with the value is added and existing content is untouched
 
-#### Scenario: Mouse untouched [auto]
-- GIVEN a file with `mouse = true`, and one without a `mouse` key
+#### Scenario: Mouse untouched when unchanged [auto]
+- GIVEN a file with `mouse = true`, and one without a `mouse` key, and an unchanged mouse draft
 - WHEN a position is saved
 - THEN the first keeps its `mouse = true` line unchanged and the second gains no `mouse` key
+
+#### Scenario: Mouse updated in place [auto]
+- GIVEN a file with `# input` then `mouse = true # wheel` and `[statusline]` after it, and the mouse draft changed to off
+- WHEN the save succeeds
+- THEN the line reads `mouse = false # wheel`, and every other byte is identical
+
+#### Scenario: Mouse created at top level [auto]
+- GIVEN a file `# mine\n[statusline]\nposition = "bottom"\n` (open value: default true) and the mouse draft changed to off
+- WHEN the save succeeds
+- THEN `mouse = false` appears before the `[statusline]` header, the original bytes are otherwise unchanged, and parsing gives `mouse` false with `statusline.position` still `bottom`
+
+#### Scenario: Mouse created in an empty or table-less file [auto]
+- GIVEN an empty file and the mouse draft changed to off
+- WHEN the save succeeds
+- THEN the file is `mouse = false\n`
+
+#### Scenario: Toggled back is not written [auto]
+- GIVEN a file without `mouse` (open value true) and a draft cycled to `off` and back to `on`
+- WHEN a position is saved
+- THEN the file gains no `mouse` key
+
+#### Scenario: Default value written explicitly [auto]
+- GIVEN a file with `mouse = false` and the mouse draft changed to `on` (the default)
+- WHEN the save succeeds
+- THEN the file contains `mouse = true` and the key is not removed
+
+#### Scenario: Wrong type replaced [auto]
+- GIVEN a file with `mouse = "yes"` (open value: the default true after a notice) and the mouse draft changed to off
+- WHEN the save succeeds
+- THEN the line reads `mouse = false` as a boolean
+
+#### Scenario: Mouse does not write other keys [auto]
+- GIVEN only the mouse draft changed
+- WHEN the save succeeds
+- THEN no position, `ai.*` or profile key is added or changed
 
 #### Scenario: Saved file parses back [auto]
 - GIVEN any save result
 - WHEN it is parsed by `Config::parse`
-- THEN the positions, the profile and the ai engine and model equal the saved draft and no notice is produced
+- THEN the positions, `mouse`, the profile and the ai engine and model equal the saved draft and no notice is produced
 
 #### Scenario: AI table created [auto]
 - GIVEN a file `# mine\n[statusline]\nposition = "bottom"\n` and the draft engine `ollama`, model `llama3:8b`
@@ -67,6 +106,16 @@ The save MUST read the file at save time and change only `statusline.position`, 
 - WHEN the save succeeds
 - THEN only the two values change, and the comment and order are kept
 
+#### Scenario: AI untouched when unchanged [auto]
+- GIVEN a file with no `[ai]` table and a changed statusline position only
+- WHEN the save succeeds
+- THEN the file has no `[ai]` table
+
+#### Scenario: Profile untouched when unchanged [auto]
+- GIVEN a file with `profile = "programmer"` and only a position changed
+- WHEN the save succeeds
+- THEN the profile line is byte-identical and a file without `profile` gains none
+
 #### Scenario: No engine saved as empty string [auto]
 - GIVEN `[ai]` with `engine = "ollama"`, `model = "llama3:8b"` and the draft engine changed to `none` (model empty)
 - WHEN the save succeeds
@@ -76,11 +125,6 @@ The save MUST read the file at save time and change only `statusline.position`, 
 - GIVEN the draft model `a"b\c`
 - WHEN the save succeeds and the file is parsed
 - THEN the parsed model equals `a"b\c`
-
-#### Scenario: AI untouched when unchanged [auto]
-- GIVEN a file with no `[ai]` table and a changed statusline position only
-- WHEN the save succeeds
-- THEN the file has no `[ai]` table
 
 #### Scenario: Undetected saved engine survives [auto]
 - GIVEN the file has `engine = "codex"`, detection found codex `not installed`, and only a position changed
@@ -131,11 +175,6 @@ The save MUST read the file at save time and change only `statusline.position`, 
 - GIVEN a file with `profile = "analyst"` and the profile draft changed to `programmer` (the default)
 - WHEN the save succeeds
 - THEN the file contains `profile = "programmer"` and the key is not removed
-
-#### Scenario: Profile untouched when unchanged [auto]
-- GIVEN a file with `profile = "programmer"` and only a position changed
-- WHEN the save succeeds
-- THEN the profile line is byte-identical and a file without `profile` gains none
 
 #### Scenario: Profile does not write engine keys [auto]
 - GIVEN only the profile draft changed
