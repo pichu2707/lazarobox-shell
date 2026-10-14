@@ -893,10 +893,10 @@ fn opencode_is_not_supported_in_chat() {
 
 #[test]
 fn a_cli_without_an_adapter_is_not_supported_in_chat_yet() {
-    let mut a = undetected_chat(assigned("gemini"));
+    let mut a = undetected_chat(assigned("opencode"));
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
-            id: "gemini",
+            id: "opencode",
             status: Status::Available,
             models: vec![],
             version: None,
@@ -904,7 +904,7 @@ fn a_cli_without_an_adapter_is_not_supported_in_chat_yet() {
     }));
     assert_eq!(
         guidance_of(&a).as_deref(),
-        Some("gemini: not supported in chat yet")
+        Some("opencode: not supported in chat yet")
     );
     assert_eq!(ask(&mut a, "hi"), vec![]);
     assert_eq!(composer(&a), "hi");
@@ -947,12 +947,33 @@ fn claude_chats_with_or_without_a_jail() {
 }
 
 #[test]
-fn a_jail_only_cli_stays_unsupported_until_its_adapter_lands() {
+fn a_cli_without_an_adapter_stays_unsupported_even_with_a_jail() {
+    let mut a = undetected_chat(assigned("opencode")).with_jail(working_jail());
+    a.update(cli_detected("opencode"));
+    assert_eq!(
+        guidance_of(&a).as_deref(),
+        Some("opencode: not supported in chat yet")
+    );
+    assert_eq!(ask(&mut a, "hi"), vec![]);
+}
+
+#[test]
+fn gemini_chats_only_with_a_jail() {
     let mut a = undetected_chat(assigned("gemini")).with_jail(working_jail());
+    a.update(cli_detected("gemini"));
+    assert_eq!(guidance_of(&a), None);
+    let effects = ask(&mut a, "hello");
+    let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+        panic!("a send expected: {effects:?}");
+    };
+    assert_eq!(request.engine, "gemini");
+
+    let mut a = undetected_chat(assigned("gemini"))
+        .with_jail(crate::core::ai::jail::JailSupport::Unavailable("test"));
     a.update(cli_detected("gemini"));
     assert_eq!(
         guidance_of(&a).as_deref(),
-        Some("gemini: not supported in chat yet")
+        Some("gemini: not available on this system yet")
     );
     assert_eq!(ask(&mut a, "hi"), vec![]);
 }
