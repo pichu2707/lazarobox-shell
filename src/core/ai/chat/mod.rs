@@ -4,6 +4,8 @@
 //! turn in flight and the cwd the pane was opened from.
 
 pub mod adapters;
+pub mod claude;
+pub mod cli;
 pub mod composer;
 pub mod engine;
 pub mod guidance;
@@ -652,6 +654,13 @@ impl ChatState {
             StreamEvent::Slow => {
                 if let Phase::Waiting { slow } = &mut self.phase {
                     *slow = true;
+                }
+                Follow::Nothing
+            }
+            StreamEvent::Notice(line) => {
+                let entry = Entry::System(line);
+                if !self.entries.contains(&entry) {
+                    self.entries.push(entry);
                 }
                 Follow::Nothing
             }

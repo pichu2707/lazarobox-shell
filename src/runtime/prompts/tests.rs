@@ -258,7 +258,9 @@ fn the_ollama_body_holds_the_block_when_on_and_not_when_off() {
                 content: "hi".into(),
             }],
         };
-        let Invocation::Http { body, .. } = Adapter::Ollama.build(&request);
+        let Invocation::Http { body, .. } = Adapter::Ollama.build(&request) else {
+            panic!("ollama builds an HTTP invocation");
+        };
         serde_json::from_slice::<serde_json::Value>(&body).unwrap()
     };
     let on = body_for(true);

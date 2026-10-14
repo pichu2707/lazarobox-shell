@@ -139,10 +139,11 @@ fn a_block_larger_than_the_cap_still_keeps_the_newest_message() {
     assert_eq!(request.messages.len(), 1);
 }
 
-/// Ready, but on an engine whose adapter cannot carry the block.
+/// Ready, but on an engine whose adapter cannot carry the block (opencode
+/// has none).
 fn cli() -> Availability {
     Availability::Ready {
-        engine: "claude".into(),
+        engine: "opencode".into(),
         model: None,
     }
 }
@@ -170,4 +171,23 @@ fn an_engine_that_cannot_carry_the_block_gets_none_and_no_budget_is_taken() {
             .all(|e| *e != Entry::System(TRUNCATION_MARKER.into())),
         "nothing omitted"
     );
+}
+
+#[test]
+fn claude_carries_the_block_and_it_takes_budget_from_the_cli_history() {
+    let long = "x".repeat(1200);
+    let mut state = chat();
+    for _ in 0..4 {
+        exchange(&mut state, &long);
+    }
+    state.inject_memory(block(1500));
+    let claude = Availability::Ready {
+        engine: "claude".into(),
+        model: None,
+    };
+    let SendOutcome::Sent { request, .. } = state.send(&long, &claude, SYSTEM) else {
+        panic!("refused");
+    };
+    assert!(request.memory.is_some(), "the block goes on stdin");
+    assert_eq!(request.messages.len(), 9, "100,000 characters hold it all");
 }

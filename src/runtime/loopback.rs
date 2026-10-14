@@ -65,6 +65,16 @@ impl Timeouts {
         total: Duration::from_secs(15 * 60),
         slow: Duration::from_secs(3),
     };
+
+    /// What a CLI turn gets: a CLI starts slower than a loaded server and may
+    /// think for a while between events. `connect` is not used.
+    pub const CLI: Self = Self {
+        connect: Duration::from_secs(2),
+        first_byte: Duration::from_secs(120),
+        idle: Duration::from_secs(90),
+        total: Duration::from_secs(15 * 60),
+        slow: Duration::from_secs(3),
+    };
 }
 
 /// POSTs `body` to `path` on `host:port` and sends the decoded reply to `tx`.
@@ -115,7 +125,7 @@ pub(crate) async fn post_stream_with(
 }
 
 /// Why a turn stopped before its reply was complete.
-enum Stop {
+pub(crate) enum Stop {
     /// The receiver is gone: nobody wants the rest.
     Cancelled,
     /// The turn ends with this message.
@@ -152,7 +162,7 @@ async fn fail(tx: &mpsc::Sender<StreamEvent>, message: &str) {
 }
 
 /// Where the clock stands for one reply.
-struct Wait<'a> {
+pub(crate) struct Wait<'a> {
     timeouts: &'a Timeouts,
     start: Instant,
     /// A byte of the reply has arrived.
@@ -160,11 +170,21 @@ struct Wait<'a> {
     slow_sent: bool,
 }
 
-impl Wait<'_> {
+impl<'a> Wait<'a> {
+    /// The clock of a reply that starts now.
+    pub(crate) fn new(timeouts: &'a Timeouts) -> Self {
+        Self {
+            timeouts,
+            start: Instant::now(),
+            started: false,
+            slow_sent: false,
+        }
+    }
+
     /// One read, under the limit that applies now. Before the first byte that
     /// is the first-byte limit, with a single `Slow` event on the way; after
     /// it, the idle limit.
-    async fn read<S: AsyncRead + Unpin>(
+    pub(crate) async fn read<S: AsyncRead + Unpin>(
         &mut self,
         stream: &mut S,
         buf: &mut [u8],

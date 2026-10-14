@@ -892,7 +892,7 @@ fn opencode_is_not_supported_in_chat() {
 }
 
 #[test]
-fn a_cli_without_a_jail_is_not_available_on_this_system() {
+fn a_cli_without_an_adapter_is_not_supported_in_chat_yet() {
     let mut a = undetected_chat(assigned("gemini"));
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
@@ -904,10 +904,57 @@ fn a_cli_without_a_jail_is_not_available_on_this_system() {
     }));
     assert_eq!(
         guidance_of(&a).as_deref(),
-        Some("gemini: not available on this system yet")
+        Some("gemini: not supported in chat yet")
     );
     assert_eq!(ask(&mut a, "hi"), vec![]);
     assert_eq!(composer(&a), "hi");
+}
+
+fn cli_detected(id: &'static str) -> AppEvent {
+    AppEvent::EnginesDetected(Detection {
+        engines: vec![EngineState {
+            id,
+            status: Status::Available,
+            models: vec![],
+            version: None,
+        }],
+    })
+}
+
+fn working_jail() -> crate::core::ai::jail::JailSupport {
+    crate::core::ai::jail::JailSupport::Available {
+        backend: crate::core::ai::jail::Backend::Landlock,
+        abi: 7,
+    }
+}
+
+#[test]
+fn claude_chats_with_or_without_a_jail() {
+    for jail in [
+        crate::core::ai::jail::JailSupport::Unavailable("test"),
+        working_jail(),
+    ] {
+        let mut a = undetected_chat(assigned("claude")).with_jail(jail);
+        a.update(cli_detected("claude"));
+        assert_eq!(guidance_of(&a), None, "{jail:?}");
+        let effects = ask(&mut a, "hello");
+        let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+            panic!("a send expected: {effects:?}");
+        };
+        assert_eq!(request.engine, "claude");
+        assert_eq!(request.model, None, "no model: the CLI's own default");
+    }
+}
+
+#[test]
+fn a_jail_only_cli_stays_unsupported_until_its_adapter_lands() {
+    let mut a = undetected_chat(assigned("gemini")).with_jail(working_jail());
+    a.update(cli_detected("gemini"));
+    assert_eq!(
+        guidance_of(&a).as_deref(),
+        Some("gemini: not supported in chat yet")
+    );
+    assert_eq!(ask(&mut a, "hi"), vec![]);
 }
 
 #[test]
