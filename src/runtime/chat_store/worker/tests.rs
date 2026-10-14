@@ -59,6 +59,7 @@ fn create(first: StoredMessage, open: Vec<i64>) -> StoreCmd {
         pane: pane(),
         profile: "programmer".into(),
         tag: Some("proj".into()),
+        extras: vec![],
         first,
         origin: None,
         open,
@@ -204,6 +205,7 @@ fn a_conversation_without_a_tag_stores_no_tag_row() {
         pane: pane(),
         profile: "analyst".into(),
         tag: None,
+        extras: vec![],
         first: user("hi"),
         origin: None,
         open: vec![],
@@ -319,6 +321,7 @@ fn an_append_after_a_failed_create_is_dropped_silently() {
         pane: other,
         profile: "programmer".into(),
         tag: None,
+        extras: vec![],
         first: user("q"),
         origin: None,
         open: vec![],
@@ -1314,6 +1317,7 @@ fn the_list_is_newest_activity_first_with_the_first_user_message() {
         pane: pane(),
         profile: "analyst".into(),
         tag: None,
+        extras: vec![],
         first: user("newer\nquestion"),
         origin: None,
         open: vec![],
@@ -1388,6 +1392,7 @@ fn a_resume_returns_the_messages_in_order_with_their_status() {
         profile,
         tag,
         messages,
+        ..
     }) = worker.handle(resume(id))
     else {
         panic!("expected Resumed");
@@ -1604,6 +1609,7 @@ fn a_create_without_a_tag_resolves_it_from_the_origin() {
         pane: pane(),
         profile: "programmer".into(),
         tag: tag.map(str::to_owned),
+        extras: vec![],
         first: user("hi"),
         origin,
         open: vec![],
@@ -1642,4 +1648,209 @@ fn a_deleted_conversation_is_forgotten_by_its_pane() {
         None
     );
     assert_eq!(count(&conn, "messages"), 0);
+}
+
+// ---- tags (10.5) -----------------------------------------------------------
+
+fn set_tags(conversation: Option<i64>, tags: Tags) -> StoreCmd {
+    StoreCmd::SetTags {
+        pane: pane(),
+        conversation,
+        tags,
+    }
+}
+
+/// `(tag, is_project)` of a conversation, project first, then by name.
+fn tag_rows(conn: &Connection, id: i64) -> Vec<(String, i64)> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT tag, is_project FROM tags WHERE conversation_id = ?1
+             ORDER BY is_project DESC, tag",
+        )
+        .unwrap();
+    stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+fn updated_at(conn: &Connection, id: i64) -> i64 {
+    conn.query_row(
+        "SELECT updated_at FROM conversations WHERE id = ?1",
+        [id],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn set_tags_replaces_the_project_tag_and_the_extras() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    let tags = Tags::parse("client-a, sql, etl");
+    let reply = worker.handle(set_tags(Some(id), tags.clone()));
+    assert_eq!(
+        reply,
+        Some(StoreReply::TagsSaved {
+            pane: pane(),
+            conversation: id,
+            tags,
+        })
+    );
+    assert_eq!(
+        tag_rows(&conn, id),
+        vec![("client-a".into(), 1), ("etl".into(), 0), ("sql".into(), 0)]
+    );
+}
+
+#[test]
+fn set_tags_with_nothing_removes_every_tag() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    worker.handle(set_tags(Some(id), Tags::parse("proj,a")));
+    worker.handle(set_tags(Some(id), Tags::default()));
+    assert_eq!(tag_rows(&conn, id), vec![]);
+}
+
+#[test]
+fn set_tags_updates_the_last_activity() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    conn.execute(
+        "UPDATE conversations SET updated_at = 5 WHERE id = ?1",
+        [id],
+    )
+    .unwrap();
+    worker.handle(set_tags(Some(id), Tags::parse("proj")));
+    assert!(updated_at(&conn, id) > 5);
+}
+
+#[test]
+fn set_tags_normalizes_what_it_stores() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    // Built by hand, bypassing the parse: the thread cleans again.
+    let raw = Tags {
+        project: Some(" proj ".into()),
+        extras: vec!["SQL".into(), "sql".into(), "a,b".into(), "".into()],
+    };
+    let Some(StoreReply::TagsSaved { tags, .. }) = worker.handle(set_tags(Some(id), raw)) else {
+        panic!("expected TagsSaved");
+    };
+    assert_eq!(tags, Tags::parse("proj, SQL, a_b"));
+    assert_eq!(
+        tag_rows(&conn, id),
+        vec![("proj".into(), 1), ("SQL".into(), 0), ("a_b".into(), 0)]
+    );
+}
+
+#[test]
+fn set_tags_is_all_or_nothing() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    // A trigger makes the second insert fail: the old tags must survive.
+    conn.execute_batch(
+        "CREATE TRIGGER no_boom BEFORE INSERT ON tags WHEN NEW.tag = 'boom'
+         BEGIN SELECT RAISE(ABORT, 'no'); END;",
+    )
+    .unwrap();
+    let reply = worker.handle(set_tags(Some(id), Tags::parse("new,boom")));
+    assert_eq!(reply, Some(StoreReply::TagsFailed { pane: pane() }));
+    assert_eq!(tag_rows(&conn, id), vec![("proj".into(), 1)]);
+}
+
+#[test]
+fn set_tags_on_a_missing_conversation_fails_and_stores_nothing() {
+    let (_dir, mut worker, conn) = fixture();
+    let reply = worker.handle(set_tags(Some(777), Tags::parse("proj")));
+    assert_eq!(reply, Some(StoreReply::TagsFailed { pane: pane() }));
+    assert_eq!(count(&conn, "tags"), 0);
+}
+
+#[test]
+fn set_tags_that_names_only_the_pane_lands_in_its_conversation() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    let reply = worker.handle(set_tags(None, Tags::parse("other")));
+    assert!(
+        matches!(reply, Some(StoreReply::TagsSaved { conversation, .. }) if conversation == id)
+    );
+    assert_eq!(tag_rows(&conn, id), vec![("other".into(), 1)]);
+}
+
+#[test]
+fn set_tags_after_a_failed_create_is_dropped_silently() {
+    // The pane never created a conversation (the fixture's probe is gone).
+    let (_dir, mut worker, conn) = fixture();
+    worker.created.clear();
+    assert_eq!(worker.handle(set_tags(None, Tags::parse("x"))), None);
+    assert_eq!(count(&conn, "tags"), 0);
+}
+
+#[test]
+fn a_create_stores_the_extra_tags_after_the_project_tag() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(StoreCmd::Create {
+        pane: pane(),
+        profile: "analyst".into(),
+        tag: Some("proj".into()),
+        extras: vec!["sql".into(), "SQL".into(), "etl".into()],
+        first: user("q"),
+        origin: None,
+        open: vec![],
+    }));
+    assert_eq!(
+        tag_rows(&conn, id),
+        vec![("proj".into(), 1), ("etl".into(), 0), ("sql".into(), 0)]
+    );
+}
+
+#[test]
+fn the_list_and_the_resume_carry_the_extra_tags() {
+    let (_dir, mut worker, _conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    worker.handle(set_tags(Some(id), Tags::parse("proj, b, a")));
+    let rows = listed(worker.handle(list()));
+    assert_eq!(rows[0].tag.as_deref(), Some("proj"));
+    assert_eq!(rows[0].extras, ["a", "b"]);
+    let Some(StoreReply::Resumed { tag, extras, .. }) = worker.handle(resume(id)) else {
+        panic!("expected Resumed");
+    };
+    assert_eq!(tag.as_deref(), Some("proj"));
+    assert_eq!(extras, ["a", "b"]);
+}
+
+#[test]
+fn the_list_filter_sees_a_retagged_conversation() {
+    let (_dir, mut worker, _conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    worker.handle(set_tags(Some(id), Tags::parse("client-a")));
+    let rows = listed(worker.handle(list()));
+    assert_eq!(rows[0].tag.as_deref(), Some("client-a"));
+}
+
+#[test]
+fn a_panicking_set_tags_replies_failed_and_keeps_an_idle_store() {
+    let (_dir, mut worker, _conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    let reply = worker.guarded_with(set_tags(Some(id), Tags::parse("x")), |_, _| {
+        panic!("handler bug")
+    });
+    assert_eq!(reply, Some(StoreReply::TagsFailed { pane: pane() }));
+    assert!(worker.guarded(create(user("next"), vec![])).is_some());
+}
+
+#[test]
+fn a_set_tags_with_no_store_thread_is_answered_failed() {
+    let (tx, mut rx) = mpsc::channel(4);
+    let handle = spawn_with(
+        |_body| Err(io::Error::other("no thread")),
+        || unreachable!(),
+        tx,
+    );
+    handle.send(set_tags(Some(1), Tags::parse("x")));
+    assert_eq!(
+        rx.try_recv().unwrap(),
+        StoreReply::TagsFailed { pane: pane() }
+    );
 }

@@ -102,6 +102,7 @@ fn row(id: i64, updated_at: i64, tag: Option<&str>, profile: &str, first: &str) 
         updated_at,
         profile: profile.into(),
         tag: tag.map(str::to_owned),
+        extras: vec![],
         first: first.into(),
     }
 }
@@ -368,6 +369,7 @@ fn the_first_send_creates_the_conversation_before_the_engine_starts() {
             pane,
             profile,
             tag,
+            extras: _,
             first,
             origin,
             open,
@@ -667,6 +669,7 @@ fn resumed(pane: PaneId, conversation: i64, profile: &str) -> AppEvent {
         conversation,
         profile: profile.into(),
         tag: Some("proj".into()),
+        extras: vec![],
         messages: vec![
             stored(Role::User, "old question", MsgStatus::Complete),
             stored(Role::Assistant, "old answer", MsgStatus::Complete),

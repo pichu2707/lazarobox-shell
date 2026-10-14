@@ -246,6 +246,10 @@ pub struct ChatState {
     approved_summary: Option<String>,
     /// The project tag proposed for the conversation (see `history`).
     tag: Option<String>,
+    /// The extra tags of the conversation.
+    extras: Vec<String>,
+    /// The user edited the tags: the project tag is theirs, not the origin's.
+    tags_edited: bool,
     /// The conversation list, while it is shown instead of the conversation.
     list: Option<list::ListView>,
     /// The profile of the conversation: the current one when it is new, the
@@ -285,6 +289,8 @@ impl ChatState {
             draft: None,
             approved_summary: None,
             tag: None,
+            extras: Vec::new(),
+            tags_edited: false,
             list: None,
             profile: Profile::default(),
             store: store::PaneStore::new(),

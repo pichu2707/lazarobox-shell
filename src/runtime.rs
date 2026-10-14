@@ -2008,6 +2008,7 @@ mod tests {
             pane: id(1),
             profile: "programmer".into(),
             tag: None,
+            extras: vec![],
             first: stored(Role::User, text, MsgStatus::Complete),
             origin: None,
             open: Vec::new(),

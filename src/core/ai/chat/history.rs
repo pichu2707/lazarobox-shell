@@ -7,6 +7,7 @@ use super::{
     engine::Role,
     list::ListView,
     store::{DELETED_LINE, NewConversation, StoreCmd, StoreReply, StoredMessage},
+    tags::Tags,
 };
 use crate::core::{ai::config::Profile, layout::PaneId};
 
@@ -18,6 +19,40 @@ impl ChatState {
 
     pub fn set_tag(&mut self, tag: Option<String>) {
         self.tag = tag;
+    }
+
+    /// The extra tags of the conversation.
+    pub fn extras(&self) -> &[String] {
+        &self.extras
+    }
+
+    /// The project tag and the extras together.
+    pub fn tags(&self) -> Tags {
+        Tags {
+            project: self.tag.clone(),
+            extras: self.extras.clone(),
+        }
+    }
+
+    /// Takes tags the store confirmed (or a resume brought).
+    pub fn set_tags(&mut self, tags: &Tags) {
+        self.tag = tags.project.clone();
+        self.extras = tags.extras.clone();
+    }
+
+    /// The user's tag edit: the pane takes the tags and, when the
+    /// conversation exists, the command that stores them is returned. Before
+    /// the first message nothing is stored: the `Create` carries them, and the
+    /// project tag is no longer the origin's to propose.
+    pub fn edit_tags(&mut self, pane: PaneId, tags: Tags) -> Option<StoreCmd> {
+        self.set_tags(&tags);
+        self.tags_edited = true;
+        self.store.set_tags(pane, tags)
+    }
+
+    /// Whether the user edited the tags of a conversation that is not stored.
+    pub fn tags_edited(&self) -> bool {
+        self.tags_edited
     }
 
     /// The profile of the conversation.
@@ -56,7 +91,14 @@ impl ChatState {
         let new = NewConversation {
             profile: self.profile.id().to_owned(),
             tag: self.tag.clone(),
-            origin: self.origin_cwd.clone(),
+            extras: self.extras.clone(),
+            // A project tag the user removed must not come back from the
+            // origin when the store creates the conversation.
+            origin: if self.tags_edited {
+                None
+            } else {
+                self.origin_cwd.clone()
+            },
             open: open.to_vec(),
         };
         std::mem::take(&mut self.outbox)
@@ -131,7 +173,7 @@ impl ChatState {
         &mut self,
         conversation: i64,
         profile: Profile,
-        tag: Option<String>,
+        tags: Tags,
         messages: Vec<Msg>,
     ) {
         let stored = Self::resumed(self.origin_cwd.clone(), messages).entries;
@@ -142,7 +184,8 @@ impl ChatState {
         self.entries = memory.into_iter().chain(stored).chain(others).collect();
         self.list = None;
         self.profile = profile;
-        self.tag = tag;
+        self.set_tags(&tags);
+        self.tags_edited = false;
         self.store = super::store::PaneStore::open(conversation);
         self.set_conversation(conversation);
         self.scroll = super::transcript::Scroll::Follow;

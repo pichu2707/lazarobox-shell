@@ -8,6 +8,7 @@ fn row(id: i64, updated_at: i64, tag: Option<&str>, first: &str) -> ConvRow {
         updated_at,
         profile: "programmer".into(),
         tag: tag.map(str::to_owned),
+        extras: vec![],
         first: first.into(),
     }
 }

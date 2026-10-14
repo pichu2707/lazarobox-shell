@@ -19,6 +19,7 @@ fn row(id: i64, updated_at: i64, tag: &str, first: &str) -> ConvRow {
         updated_at,
         profile: "programmer".into(),
         tag: Some(tag.into()),
+        extras: vec![],
         first: first.into(),
     }
 }

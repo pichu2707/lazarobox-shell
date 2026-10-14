@@ -381,7 +381,9 @@ impl App {
             | StoreReply::Resumed { .. }
             | StoreReply::ResumeFailed { .. }
             | StoreReply::Deleted { .. }
-            | StoreReply::DeleteFailed { .. } => Vec::new(),
+            | StoreReply::DeleteFailed { .. }
+            | StoreReply::TagsSaved { .. }
+            | StoreReply::TagsFailed { .. } => Vec::new(),
         }
     }
 
