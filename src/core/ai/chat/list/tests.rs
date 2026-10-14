@@ -1,6 +1,7 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::*;
+use crate::core::ai::chat::tags::Tags;
 
 fn row(id: i64, updated_at: i64, tag: Option<&str>, first: &str) -> ConvRow {
     ConvRow {
@@ -242,6 +243,7 @@ fn one_shot_keys_ignore_a_hold() {
         KeyCode::Char('n'),
         KeyCode::Char('d'),
         KeyCode::Char('a'),
+        KeyCode::Char('t'),
     ] {
         let out = list.on_key(&KeyEvent::new(code, KeyModifiers::NONE), true);
         assert_eq!(out, ListOutcome::Handled, "{code:?}");
@@ -263,7 +265,8 @@ fn other_keys_are_swallowed_and_type_nothing() {
         KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
         KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
         KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
-        KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Char('T'), KeyModifiers::SHIFT),
     ] {
         assert_eq!(list.on_key(&key, false), ListOutcome::Handled, "{key:?}");
     }
@@ -345,4 +348,78 @@ fn a_zero_width_row_is_empty() {
 fn an_empty_first_message_leaves_the_row_without_text() {
     let r = row(1, 0, None, "  \n ");
     assert_eq!(row_text(&r, 80), "1970-01-01 · programmer ·");
+}
+
+// ---- tags (10.5) -----------------------------------------------------------
+
+// Spec (Edit tags): `t` on a row.
+#[test]
+fn t_edits_the_tags_of_the_row_under_the_cursor() {
+    let mut list = loaded(Some("proj"));
+    assert_eq!(ch(&mut list, 't'), ListOutcome::EditTags(3));
+    ch(&mut list, 'j');
+    assert_eq!(ch(&mut list, 't'), ListOutcome::EditTags(1));
+}
+
+#[test]
+fn t_on_an_empty_list_edits_nothing() {
+    let mut list = ListView::new(None);
+    list.set_rows(Vec::new());
+    assert_eq!(ch(&mut list, 't'), ListOutcome::Handled);
+    // Nor while the rows are still loading.
+    let mut loading = ListView::new(None);
+    assert_eq!(ch(&mut loading, 't'), ListOutcome::Handled);
+}
+
+#[test]
+fn t_while_a_delete_waits_declines_it() {
+    let mut list = loaded(None);
+    ch(&mut list, 'd');
+    assert_eq!(ch(&mut list, 't'), ListOutcome::Handled);
+    assert!(!list.confirming());
+}
+
+#[test]
+fn a_row_knows_its_tags() {
+    let mut list = ListView::new(None);
+    let mut with_extras = row(5, 10, Some("proj"), "q");
+    with_extras.extras = vec!["a".into(), "b".into()];
+    list.set_rows(vec![with_extras, row(6, 9, None, "r")]);
+    assert_eq!(list.tags_of(5), Some(Tags::parse("proj, a, b")));
+    assert_eq!(list.tags_of(6), Some(Tags::default()));
+    assert_eq!(list.tags_of(99), None);
+}
+
+#[test]
+fn saved_tags_replace_those_of_the_row() {
+    let mut list = loaded(None);
+    list.set_tags(2, &Tags::parse("client, sql"));
+    assert_eq!(list.tags_of(2), Some(Tags::parse("client, sql")));
+}
+
+// Spec (Edit tags): the list filter reflects the change.
+#[test]
+fn a_retagged_row_moves_to_the_filter_of_its_new_project() {
+    let mut list = loaded(Some("proj"));
+    assert_eq!(ids(&list), vec![3, 1]);
+    list.set_tags(1, &Tags::parse("client-a"));
+    assert_eq!(ids(&list), vec![3]);
+    list.set_project(Some("client-a".into()));
+    assert_eq!(ids(&list), vec![1]);
+}
+
+#[test]
+fn retagging_the_row_under_the_cursor_keeps_the_cursor_in_range() {
+    let mut list = loaded(Some("proj"));
+    ch(&mut list, 'j');
+    assert_eq!(list.cursor(), 1);
+    list.set_tags(1, &Tags::parse("elsewhere"));
+    assert_eq!(list.cursor(), 0);
+}
+
+#[test]
+fn tags_of_an_unknown_row_change_nothing() {
+    let mut list = loaded(None);
+    list.set_tags(99, &Tags::parse("x"));
+    assert_eq!(list.tags_of(3), Some(Tags::parse("proj")));
 }

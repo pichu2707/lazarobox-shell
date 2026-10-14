@@ -459,7 +459,11 @@ impl ChatState {
     /// notice when there is no answer.
     pub fn open_note_editor(&mut self) -> Result<(), String> {
         // One memory view at a time.
-        if self.editor.is_some() || self.draft.is_some() || self.summarizing.is_some() {
+        if self.editor.is_some()
+            || self.draft.is_some()
+            || self.summarizing.is_some()
+            || self.tag_editor.is_some()
+        {
             return Ok(());
         }
         let answer = yank::last_answer(self).ok_or_else(|| NOTHING_TO_SAVE.to_owned())?;

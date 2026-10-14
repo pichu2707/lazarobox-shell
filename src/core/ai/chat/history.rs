@@ -7,6 +7,7 @@ use super::{
     engine::Role,
     list::ListView,
     store::{DELETED_LINE, NewConversation, StoreCmd, StoreReply, StoredMessage},
+    tag_editor::{TagEditor, TagTarget},
     tags::Tags,
 };
 use crate::core::{ai::config::Profile, layout::PaneId};
@@ -53,6 +54,43 @@ impl ChatState {
     /// Whether the user edited the tags of a conversation that is not stored.
     pub fn tags_edited(&self) -> bool {
         self.tags_edited
+    }
+
+    /// The tag editor, while it is open.
+    pub fn tag_editor(&self) -> Option<&TagEditor> {
+        self.tag_editor.as_ref()
+    }
+
+    pub fn tag_editor_mut(&mut self) -> Option<&mut TagEditor> {
+        self.tag_editor.as_mut()
+    }
+
+    /// Opens the editor on the tags of this conversation. `false` when
+    /// another view owns the pane: the list (it has its own `t`), the note
+    /// editor or the summary draft.
+    pub fn open_tag_editor(&mut self, target: TagTarget) -> bool {
+        if self.list.is_some() {
+            return false;
+        }
+        let tags = self.tags();
+        self.open_tag_editor_for(target, &tags)
+    }
+
+    /// Opens the editor on `tags`. An editor already open stays as it is.
+    /// `false` when the note editor or the summary draft is open.
+    pub fn open_tag_editor_for(&mut self, target: TagTarget, tags: &Tags) -> bool {
+        if self.tag_editor.is_some() {
+            return true;
+        }
+        if self.editor.is_some() || self.draft.is_some() {
+            return false;
+        }
+        self.tag_editor = Some(TagEditor::new(target, tags));
+        true
+    }
+
+    pub fn close_tag_editor(&mut self) {
+        self.tag_editor = None;
     }
 
     /// The profile of the conversation.
@@ -183,6 +221,7 @@ impl ChatState {
             .partition(|entry| matches!(entry, Entry::Memory(_)));
         self.entries = memory.into_iter().chain(stored).chain(others).collect();
         self.list = None;
+        self.tag_editor = None;
         self.profile = profile;
         self.set_tags(&tags);
         self.tags_edited = false;

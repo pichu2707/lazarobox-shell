@@ -35,7 +35,7 @@ impl App {
             return Vec::new();
         };
         // One memory view at a time: a summary running or open holds the pane.
-        if chat.summary_draft().is_some() {
+        if chat.summary_draft().is_some() || chat.tag_editor().is_some() {
             return Vec::new();
         }
         if chat.summarizing() {

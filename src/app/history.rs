@@ -96,7 +96,7 @@ impl App {
         })
     }
 
-    fn set_list_line(&mut self, id: PaneId, line: &str) {
+    pub(super) fn set_list_line(&mut self, id: PaneId, line: &str) {
         if let Some(list) = self
             .panes
             .get_mut(&id)
@@ -137,6 +137,10 @@ impl App {
                     pane: id,
                     conversation,
                 })]
+            }
+            ListOutcome::EditTags(conversation) => {
+                self.edit_row_tags(id, conversation);
+                Vec::new()
             }
             ListOutcome::Delete(conversation) => vec![Effect::Store(StoreCmd::Delete {
                 pane: id,
@@ -207,6 +211,7 @@ impl App {
                         list.remove(*conversation);
                     }
                 }
+                self.close_tag_editors_of(*conversation);
                 // Another pane that has it open keeps working but stops saving.
                 for (id, state) in &mut self.panes {
                     if let Some(chat) = state.chat_mut()
@@ -223,7 +228,10 @@ impl App {
                 self.set_list_line(*pane, DELETE_FAILED);
                 Vec::new()
             }
-            StoreReply::TagsSaved { .. } | StoreReply::TagsFailed { .. } => Vec::new(),
+            StoreReply::TagsSaved { .. } | StoreReply::TagsFailed { .. } => {
+                self.on_tags_reply(reply);
+                Vec::new()
+            }
             StoreReply::SessionLinked { .. } | StoreReply::LinkFailed { .. } => Vec::new(),
         }
     }

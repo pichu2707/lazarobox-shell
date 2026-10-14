@@ -5,6 +5,7 @@ use super::{
     engine::{ChatError, Finish, Role},
     state_tests::{chat, ready},
     store::{StoreCmd, StoreReply, StoredMessage},
+    tag_editor::TagTarget,
     tags::Tags,
     *,
 };
@@ -494,4 +495,65 @@ fn saved_tags_replace_the_pane_tags() {
         (state.tag(), state.extras()),
         (Some("p"), ["q".to_owned()].as_slice())
     );
+}
+
+// ---- the tag editor view (10.5) --------------------------------------------
+
+#[test]
+fn the_pane_editor_opens_on_the_tags_of_the_conversation() {
+    let mut state = chat();
+    state.set_tags(&Tags::parse("proj, a"));
+    assert!(state.open_tag_editor(TagTarget::Pane));
+    let editor = state.tag_editor().expect("open");
+    assert_eq!(editor.text(), "proj, a");
+    assert_eq!(editor.target(), TagTarget::Pane);
+}
+
+#[test]
+fn a_row_editor_opens_on_the_tags_it_is_given() {
+    let mut state = chat();
+    state.open_list();
+    assert!(state.open_tag_editor_for(TagTarget::Row(4), &Tags::parse("x, y")));
+    assert_eq!(state.tag_editor().unwrap().text(), "x, y");
+}
+
+#[test]
+fn the_pane_editor_does_not_open_over_the_list() {
+    let mut state = chat();
+    state.open_list();
+    assert!(!state.open_tag_editor(TagTarget::Pane));
+    assert!(state.tag_editor().is_none());
+}
+
+#[test]
+fn the_editor_does_not_open_over_the_note_editor_or_the_summary_draft() {
+    let (mut state, turn) = open_conversation("hi");
+    state.apply(turn, delta("an answer"));
+    state.apply(turn, done());
+    state.open_note_editor().unwrap();
+    assert!(!state.open_tag_editor(TagTarget::Pane));
+    state.close_note_editor();
+    assert!(state.open_tag_editor(TagTarget::Pane));
+}
+
+#[test]
+fn an_open_editor_keeps_its_text_when_asked_to_open_again() {
+    let mut state = chat();
+    state.set_tags(&Tags::parse("proj"));
+    state.open_tag_editor(TagTarget::Pane);
+    state.tag_editor_mut().unwrap().paste(",typed");
+    assert!(state.open_tag_editor(TagTarget::Pane));
+    assert_eq!(state.tag_editor().unwrap().text(), "proj,typed");
+}
+
+#[test]
+fn closing_drops_the_editor_and_changes_no_tag() {
+    let mut state = chat();
+    state.set_tags(&Tags::parse("proj"));
+    state.open_tag_editor(TagTarget::Pane);
+    state.tag_editor_mut().unwrap().paste(",typed");
+    state.close_tag_editor();
+    assert!(state.tag_editor().is_none());
+    assert_eq!(state.tags(), Tags::parse("proj"));
+    assert!(!state.tags_edited());
 }
