@@ -45,6 +45,10 @@ pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String
         None => DocumentMut::new(),
     };
     for edit in edits {
+        if edit.table.is_empty() {
+            set_root_key(&mut doc, edit)?;
+            continue;
+        }
         // Comments of a file with no entries are the document's trailing
         // text; they move in front of the first table written.
         let mut head = doc.as_table().is_empty().then(|| {
@@ -59,27 +63,7 @@ pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String
             head
         });
         let table = walk_to_table(&mut doc, edit, &mut head)?;
-        let mut value = edit_value(edit);
-        match table.get_mut(edit.key) {
-            // Replace in the slot so the key's own decor (leading comment,
-            // spacing) stays, and keep the old value's decor so a trailing
-            // `# comment` survives.
-            Some(slot) => {
-                if slot.is_table_like() || slot.is_array_of_tables() {
-                    return Err(EditError::KeyIsTable {
-                        table: edit.table,
-                        key: edit.key,
-                    });
-                }
-                if let Some(old) = slot.as_value() {
-                    *value.decor_mut() = old.decor().clone();
-                }
-                *slot = Item::Value(value);
-            }
-            None => {
-                table.insert(edit.key, Item::Value(value));
-            }
-        }
+        set_key(table, edit)?;
     }
     let text = doc.to_string();
     if !crlf {
@@ -96,6 +80,53 @@ pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String
     }
     out.push_str(&text[done..]);
     Ok(out)
+}
+
+/// Writes `edit.key` in `table`. An existing value is replaced in its slot so
+/// the key's own decor (leading comment, spacing) stays, and the old value's
+/// decor is kept so a trailing `# comment` survives.
+fn set_key(table: &mut dyn TableLike, edit: &ConfigEdit) -> Result<(), EditError> {
+    let mut value = edit_value(edit);
+    match table.get_mut(edit.key) {
+        Some(slot) => {
+            if slot.is_table_like() || slot.is_array_of_tables() {
+                return Err(EditError::KeyIsTable {
+                    table: edit.table,
+                    key: edit.key,
+                });
+            }
+            if let Some(old) = slot.as_value() {
+                *value.decor_mut() = old.decor().clone();
+            }
+            *slot = Item::Value(value);
+        }
+        None => {
+            table.insert(edit.key, Item::Value(value));
+        }
+    }
+    Ok(())
+}
+
+/// Writes a root key (`edit.table == ""`). `toml_edit` prints the root's
+/// key-value pairs before every table header, so a new key lands above the
+/// first table. In a file with no entries the comments are the document's
+/// trailing text; they stay above the key.
+fn set_root_key(doc: &mut DocumentMut, edit: &ConfigEdit) -> Result<(), EditError> {
+    let head = doc.as_table().is_empty().then(|| {
+        let mut head = doc.trailing().as_str().unwrap_or_default().to_owned();
+        if !head.is_empty() && !head.ends_with('\n') {
+            head.push('\n');
+        }
+        doc.set_trailing("");
+        head
+    });
+    set_key(doc.as_table_mut(), edit)?;
+    if let Some(head) = head.filter(|head| !head.is_empty())
+        && let Some(mut key) = doc.as_table_mut().key_mut(edit.key)
+    {
+        key.leaf_decor_mut().set_prefix(head);
+    }
+    Ok(())
 }
 
 /// The TOML value of an edit: a boolean key (see [`ConfigEdit::is_flag`])
@@ -287,6 +318,83 @@ other = 1
         assert_eq!(out, "mouse = true\n[tabbar]\nposition = \"bottom\"\n");
         let out = apply_edit(Some("[tabbar]\n"), &[edit("tabbar", "bottom")]).unwrap();
         assert_eq!(out, "[tabbar]\nposition = \"bottom\"\n");
+    }
+
+    fn mouse(on: bool) -> ConfigEdit {
+        ConfigEdit {
+            table: "",
+            key: "mouse",
+            value: std::borrow::Cow::Borrowed(if on { "true" } else { "false" }),
+        }
+    }
+
+    // Spec: the root key goes before the first table header.
+    #[test]
+    fn a_new_root_mouse_goes_before_the_first_table() {
+        let existing = "# hi\n[statusline]\nposition = \"top\"\n";
+        let out = apply_edit(Some(existing), &[mouse(false)]).unwrap();
+        assert_eq!(
+            out,
+            "mouse = false\n# hi\n[statusline]\nposition = \"top\"\n"
+        );
+        assert!(!Config::parse(&out).unwrap().config.mouse);
+    }
+
+    #[test]
+    fn a_new_root_mouse_is_appended_when_there_is_no_table() {
+        let out = apply_edit(Some("theme = \"x\"\n"), &[mouse(false)]).unwrap();
+        assert_eq!(out, "theme = \"x\"\nmouse = false\n");
+    }
+
+    #[test]
+    fn an_empty_or_missing_file_gets_only_the_mouse_line() {
+        assert_eq!(
+            apply_edit(None, &[mouse(false)]).unwrap(),
+            "mouse = false\n"
+        );
+        assert_eq!(
+            apply_edit(Some(""), &[mouse(false)]).unwrap(),
+            "mouse = false\n"
+        );
+    }
+
+    #[test]
+    fn a_comment_only_file_keeps_its_comments_above_the_mouse_line() {
+        let out = apply_edit(Some("# my shell\n"), &[mouse(false)]).unwrap();
+        assert_eq!(out, "# my shell\nmouse = false\n");
+    }
+
+    #[test]
+    fn an_existing_root_mouse_is_updated_in_place_with_its_comment() {
+        let out = apply_edit(Some(COMMENTED), &[mouse(true)]).unwrap();
+        assert_eq!(
+            out,
+            COMMENTED.replace("mouse = false   #", "mouse = true   #")
+        );
+    }
+
+    #[test]
+    fn a_non_boolean_root_mouse_is_replaced_by_a_boolean() {
+        let out = apply_edit(Some("mouse = \"yes\"\n[tabbar]\n"), &[mouse(false)]).unwrap();
+        assert_eq!(out, "mouse = false\n[tabbar]\n");
+    }
+
+    #[test]
+    fn mouse_true_is_written_explicitly_and_other_keys_stay() {
+        let existing = "a = 1\n[tabbar]\nposition = \"top\"\n";
+        let out = apply_edit(Some(existing), &[mouse(true)]).unwrap();
+        assert_eq!(out, "a = 1\nmouse = true\n[tabbar]\nposition = \"top\"\n");
+        assert!(Config::parse(&out).unwrap().config.mouse);
+    }
+
+    #[test]
+    fn a_root_edit_and_a_table_edit_apply_together() {
+        let out = apply_edit(
+            Some("[tabbar]\nposition = \"top\"\n"),
+            &[mouse(false), edit("tabbar", "bottom")],
+        )
+        .unwrap();
+        assert_eq!(out, "mouse = false\n[tabbar]\nposition = \"bottom\"\n");
     }
 
     #[test]
