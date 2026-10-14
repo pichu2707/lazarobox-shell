@@ -321,12 +321,13 @@ impl App {
                 tag,
                 extras,
                 messages,
+                session,
             } => {
                 let tags = Tags {
                     project: tag.clone(),
                     extras: extras.clone(),
                 };
-                self.on_resumed(*pane, *conversation, profile, tags, messages)
+                self.on_resumed(*pane, *conversation, profile, tags, messages, session)
             }
             StoreReply::ResumeFailed { pane } => {
                 self.set_list_line(*pane, RESUME_FAILED);
@@ -417,6 +418,7 @@ impl App {
         profile: &str,
         tags: Tags,
         messages: &[crate::core::ai::chat::Msg],
+        session: &Option<(String, String)>,
     ) -> Vec<Effect> {
         if !self.list_open(id) {
             return Vec::new();
@@ -431,6 +433,12 @@ impl App {
         let profile = Profile::from_id(profile).unwrap_or_else(|| chat.profile());
         let reprepare = chat.adopt_profile(profile);
         chat.resume_into(conversation, profile, tags, messages.to_vec());
+        // The pair its notes were written under is reused before the first
+        // write: engram rejects a session under another project, and the
+        // store already holds the link.
+        if let Some((session_id, project)) = session {
+            chat.replace_session(session_id, project);
+        }
         self.dirty = true;
         if reprepare {
             self.prepare_prompt(id).into_iter().collect()

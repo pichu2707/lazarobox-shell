@@ -11,7 +11,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use tokio::sync::mpsc;
 
 use super::{StoreError, open};
@@ -233,6 +233,7 @@ impl Worker {
                         tag,
                         extras,
                         messages,
+                        session,
                     }) => StoreReply::Resumed {
                         pane,
                         conversation,
@@ -240,6 +241,7 @@ impl Worker {
                         tag,
                         extras,
                         messages,
+                        session,
                     },
                     None => StoreReply::ResumeFailed { pane },
                 })
@@ -613,6 +615,8 @@ struct Resumed {
     tag: Option<String>,
     extras: Vec<String>,
     messages: Vec<Msg>,
+    /// The engram `(session id, project)` pair of its notes, if it has one.
+    session: Option<(String, String)>,
 }
 
 /// The profile, tags and messages of a conversation, in order.
@@ -655,11 +659,20 @@ fn resume(conn: &mut Connection, conversation: i64) -> Result<Resumed, rusqlite:
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
+    // A read only: the resume never writes a link.
+    let session = tx
+        .query_row(
+            "SELECT session_id, project FROM memory_sessions WHERE conversation_id = ?1",
+            [conversation],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
     Ok(Resumed {
         profile,
         tag,
         extras,
         messages,
+        session,
     })
 }
 

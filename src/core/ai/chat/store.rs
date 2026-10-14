@@ -200,7 +200,10 @@ pub enum StoreReply {
     },
     /// The answer to `Resume`: the profile and project tag the conversation
     /// was stored with and its messages in order (no reasoning, no system
-    /// lines: none is ever stored).
+    /// lines: none is ever stored). `session` is the engram pair `(session id,
+    /// project)` its notes were written under, when it has one: the resume
+    /// reuses it before its first write, because engram rejects a session
+    /// under another project.
     Resumed {
         pane: PaneId,
         conversation: i64,
@@ -208,6 +211,7 @@ pub enum StoreReply {
         tag: Option<String>,
         extras: Vec<String>,
         messages: Vec<Msg>,
+        session: Option<(String, String)>,
     },
     ResumeFailed {
         pane: PaneId,

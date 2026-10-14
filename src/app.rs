@@ -6593,6 +6593,9 @@ mod app_tests {
     /// The delete offer of the conversation list (engram-memory M9).
     mod chat_delete_notes;
 
+    /// A resumed conversation and its engram session (engram-memory 9.6).
+    mod chat_resume_memory;
+
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.
     mod seam {

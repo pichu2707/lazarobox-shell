@@ -688,6 +688,7 @@ pub(super) fn resumed(pane: PaneId, conversation: i64, profile: &str) -> AppEven
             stored(Role::User, "second", MsgStatus::Complete),
             stored(Role::Assistant, "par", MsgStatus::Interrupted),
         ],
+        session: None,
     })
 }
 

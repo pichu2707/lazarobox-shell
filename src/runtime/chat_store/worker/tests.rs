@@ -1417,6 +1417,27 @@ fn a_resume_returns_the_messages_in_order_with_their_status() {
     );
 }
 
+// Spec (Resume): a resumed conversation reuses the engram pair its notes were
+// written under, read with the conversation and never written by the resume.
+#[test]
+fn a_resume_returns_the_stored_session_pair() {
+    let (_dir, mut worker, conn) = fixture();
+    let linked = created_id(worker.handle(create(user("linked"), vec![])));
+    let plain = created_id(worker.handle(create(user("plain"), vec![])));
+    session_of(worker.handle(link_session(linked, SESSION_A)));
+    let before = count(&conn, "memory_sessions");
+    let session = |reply: Option<StoreReply>| match reply {
+        Some(StoreReply::Resumed { session, .. }) => session,
+        other => panic!("expected Resumed, got {other:?}"),
+    };
+    assert_eq!(
+        session(worker.handle(resume(linked))),
+        Some((SESSION_A.to_owned(), "proj".to_owned()))
+    );
+    assert_eq!(session(worker.handle(resume(plain))), None);
+    assert_eq!(count(&conn, "memory_sessions"), before, "a read only");
+}
+
 #[test]
 fn resuming_a_missing_conversation_fails() {
     let (_dir, mut worker, _conn) = fixture();
