@@ -1854,3 +1854,28 @@ fn a_set_tags_with_no_store_thread_is_answered_failed() {
         StoreReply::TagsFailed { pane: pane() }
     );
 }
+
+// A failed `Create` must not leave the pane pointing at its earlier
+// conversation: a later command that names only the pane would land there.
+#[test]
+fn a_failed_create_forgets_the_conversation_the_pane_had() {
+    let (_dir, mut worker, conn) = fixture();
+    let first = created_id(worker.handle(create(user("first"), vec![])));
+    conn.execute_batch(
+        "CREATE TRIGGER no_boom BEFORE INSERT ON conversations WHEN NEW.title = 'boom'
+         BEGIN SELECT RAISE(ABORT, 'no'); END;",
+    )
+    .unwrap();
+    let reply = worker.handle(create(user("boom"), vec![]));
+    assert!(
+        matches!(reply, Some(StoreReply::Failed { .. })),
+        "{reply:?}"
+    );
+    assert_eq!(
+        worker.handle(append_for_pane(reply_msg("late", MsgStatus::Complete))),
+        None
+    );
+    assert_eq!(worker.handle(set_tags(None, Tags::parse("late"))), None);
+    assert_eq!(rows(&conn, first).len(), 1, "nothing landed in the old one");
+    assert_eq!(count(&conn, "tags"), 1, "the old conversation kept its tag");
+}

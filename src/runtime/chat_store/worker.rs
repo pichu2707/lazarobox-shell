@@ -100,6 +100,9 @@ impl Worker {
             } => {
                 // The pane may have sent before its list answered.
                 let tag = tag.or_else(|| origin.as_deref().and_then(project_tag));
+                // A pane that creates again must not keep pointing at the
+                // conversation it had if this one fails.
+                self.created.remove(&pane);
                 let conn = match self.conn() {
                     Ok(conn) => conn,
                     Err(reason) => return Some(StoreReply::Unavailable { pane, reason }),
