@@ -793,3 +793,24 @@ async fn a_jailed_turn_and_a_refused_one_announce_nothing() {
     let events = run_job(&lab.env(), job(JailPolicy::Required)).await;
     assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
 }
+
+#[test]
+fn without_our_own_comm_nothing_is_swept_and_our_own_pid_is_always_alive() {
+    let lab = lab();
+    let scratch = lab.rec.join("cli-tmp");
+    let me = std::process::id();
+    let dead = scratch.join("100-1");
+    let mine = scratch.join(format!("{me}-5"));
+    for dir in [&dead, &mine] {
+        fs::create_dir_all(dir).unwrap();
+    }
+    // /proc/self/comm unreadable: the sweep cannot tell anyone apart.
+    sweep_with(&scratch, None, &|_| None);
+    assert!(dead.exists() && mine.exists(), "no sweep at all");
+    // Readable for everyone but unreadable for our own pid: still alive.
+    sweep_with(&scratch, Some("lazarobox"), &|pid| {
+        (pid != me).then(|| "other".to_owned())
+    });
+    assert!(!dead.exists(), "a foreign pid is swept");
+    assert!(mine.exists(), "our own pid is never swept");
+}

@@ -85,7 +85,7 @@ pub struct CliEnv {
     /// Variables set for the child before the scrub runs. Empty in the app;
     /// the tests use it to give the child something to scrub, because the
     /// test process cannot change its own environment safely.
-    pub inject: Vec<(OsString, OsString)>,
+    pub(crate) inject: Vec<(OsString, OsString)>,
 }
 
 /// Variables the child never inherits: the agents it could be talked into
@@ -161,13 +161,31 @@ impl Drop for TmpDir {
     }
 }
 
+/// The `comm` of a process (`self` or a pid), if readable.
+fn read_comm(who: &str) -> Option<String> {
+    fs::read_to_string(format!("/proc/{who}/comm")).ok()
+}
+
 /// Whether `pid` is a live process of this program (same `comm` as ours). A
-/// recycled pid that now belongs to something else counts as dead.
+/// recycled pid that now belongs to something else counts as dead. Our own pid
+/// is always alive. (An instance in another PID namespace that shares the data
+/// folder looks dead from here.)
+#[cfg(test)]
 fn is_lazarobox(pid: u32) -> bool {
-    let comm = |who: &str| fs::read_to_string(format!("/proc/{who}/comm")).ok();
-    match (comm("self"), comm(&pid.to_string())) {
-        (Some(ours), Some(theirs)) => ours == theirs,
-        _ => false,
+    alive_by_comm(pid, read_comm("self").as_deref(), &|p| {
+        read_comm(&p.to_string())
+    })
+}
+
+fn alive_by_comm(pid: u32, own: Option<&str>, read: &dyn Fn(u32) -> Option<String>) -> bool {
+    pid == std::process::id() || own.is_some_and(|own| read(pid).as_deref() == Some(own))
+}
+
+/// [`sweep_stale`] given our own `comm` and a way to read others'. Without our
+/// own `comm` nobody can be told apart, so nothing is swept.
+fn sweep_with(scratch: &Path, own: Option<&str>, read: &dyn Fn(u32) -> Option<String>) {
+    if own.is_some() {
+        sweep_stale(scratch, &|pid| alive_by_comm(pid, own, read));
     }
 }
 
@@ -208,7 +226,9 @@ impl Dirs {
         let scratch = data.join("cli-tmp");
         ensure_private_dir(&cwd)?;
         ensure_private_dir(&scratch)?;
-        sweep_stale(&scratch, &is_lazarobox);
+        sweep_with(&scratch, read_comm("self").as_deref(), &|p| {
+            read_comm(&p.to_string())
+        });
         let own = scratch.join(format!(
             "{}-{}",
             std::process::id(),
