@@ -19,7 +19,8 @@ impl App {
     pub(super) fn open_chat_pane(&mut self) -> Vec<Effect> {
         let origin = self.focused_state().effective_cwd().map(Path::to_path_buf);
         let before = self.panes.len();
-        let mut effects = self.split_with(Axis::X, NewPane::Chat(Box::new(ChatState::new(origin))));
+        let chat = self.new_chat_state(origin);
+        let mut effects = self.split_with(Axis::X, NewPane::Chat(Box::new(chat)));
         if self.panes.len() > before {
             effects.extend(self.request_detection());
             effects.extend(self.begin_memory(self.tab().focus));
@@ -33,6 +34,11 @@ impl App {
                     .and_then(|c| c.origin_cwd().map(Path::to_path_buf)),
                 context: self.ai.context(),
             });
+            if self.history {
+                effects.push(Effect::Store(StoreCmd::List {
+                    pane: self.tab().focus,
+                }));
+            }
         }
         effects
     }
@@ -133,6 +139,9 @@ impl App {
             let effects = self.on_summary_key(id, &key, repeat);
             return self.with_waiting_sends(effects);
         }
+        if self.list_open(id) {
+            return self.on_list_key(id, &key, repeat);
+        }
         let one_shot = |effects: fn(&mut App, PaneId) -> Vec<Effect>, app: &mut App| {
             if repeat { Vec::new() } else { effects(app, id) }
         };
@@ -188,6 +197,10 @@ impl App {
     /// A paste into the focused chat's composer.
     pub(super) fn chat_paste(&mut self, text: &str) {
         let id = self.tab().focus;
+        // The list takes keys only: a paste is not one.
+        if self.list_open(id) {
+            return;
+        }
         if self.note_editor_open(id) {
             self.note_paste(id, text);
             return;
@@ -277,11 +290,14 @@ impl App {
             SendOutcome::Sent { turn, request } => {
                 chat.composer_mut().clear();
                 self.hide_server_offer(id);
-                vec![Effect::ChatSend {
+                // The conversation is saved before the engine starts.
+                let mut effects = self.store_effects(id);
+                effects.push(Effect::ChatSend {
                     pane: id,
                     turn,
                     request,
-                }]
+                });
+                effects
             }
             SendOutcome::Refused => Vec::new(),
         }
@@ -323,12 +339,7 @@ impl App {
     /// The runtime prepared the system prompt of chat `id`. A pane that is
     /// gone in the meantime drops it.
     pub(super) fn on_prompt_ready(&mut self, id: PaneId, resolved: Resolved) -> Vec<Effect> {
-        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
-            return Vec::new();
-        };
-        chat.set_prompt(resolved);
-        self.dirty = true;
-        self.run_waiting_sends()
+        self.on_prompt_for(id, resolved)
     }
 
     /// Esc and Ctrl+C: stop the stream and drop a parked send, or do nothing
@@ -338,10 +349,13 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
-        match chat.cancel() {
-            Follow::CancelEngine => vec![Effect::ChatCancel(id)],
-            Follow::Nothing => Vec::new(),
+        let follow = chat.cancel();
+        // The partial answer is saved as cancelled.
+        let mut effects = self.store_effects(id);
+        if follow == Follow::CancelEngine {
+            effects.push(Effect::ChatCancel(id));
         }
+        effects
     }
 
     /// Ctrl+Y (the last answer) and Ctrl+B (its last code block).

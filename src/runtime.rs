@@ -265,6 +265,7 @@ fn app_from_config(
     App::new(cols, rows)
         .with_config(&config)
         .with_ai(ai)
+        .with_chat_history(workspace::project_tag)
         .with_notice(notice)
 }
 
@@ -2158,6 +2159,312 @@ mod tests {
             notify: true,
         };
         assert_eq!(app.update(AppEvent::Store(reply)), Vec::new());
+    }
+
+    // --- Chat history through the real store (ai-chat C9) ---
+
+    use crate::core::ai::{
+        EngineState, Status,
+        chat::engine::{ChatError, Finish as ChatFinish},
+    };
+
+    /// The app as `run` builds it, with a ready ollama engine, a shell pane
+    /// started in `work`, and the saved AI choice of `SAVED_AI`.
+    fn history_app(dir: &tempfile::TempDir) -> App {
+        let config = dir.path().join("config.toml");
+        fs::write(&config, SAVED_AI).unwrap();
+        let work = dir.path().join("work");
+        fs::create_dir_all(&work).unwrap();
+        let mut app =
+            app_from_config(120, 30, Some(&config), None).with_env(Some("/bin/zsh"), None, work);
+        app.update(AppEvent::EnginesDetected(Detection {
+            engines: vec![EngineState {
+                id: "ollama",
+                status: Status::Available,
+                models: vec!["llama3:8b".to_owned()],
+                version: None,
+            }],
+        }));
+        app
+    }
+
+    fn hkey(code: KeyCode, modifiers: KeyModifiers) -> AppEvent {
+        AppEvent::Key(KeyEvent::new(code, modifiers))
+    }
+
+    /// Hands the store effects among `effects` to the store thread and feeds
+    /// the replies they cause back to the app, until the queue is quiet.
+    async fn through_store(
+        app: &mut App,
+        panes: &mut Panes,
+        rx: &mut mpsc::Receiver<StoreReply>,
+        effects: Vec<Effect>,
+        replies: usize,
+    ) {
+        let store: Vec<Effect> = effects
+            .into_iter()
+            .filter(|e| matches!(e, Effect::Store(_)))
+            .collect();
+        panes.apply(store);
+        let mut pending = Vec::new();
+        for _ in 0..replies {
+            let reply = recv_store(rx).await.expect("a store reply");
+            pending.extend(app.update(AppEvent::Store(reply)));
+        }
+        panes.apply(
+            pending
+                .into_iter()
+                .filter(|e| matches!(e, Effect::Store(_)))
+                .collect(),
+        );
+    }
+
+    /// One whole turn in a new conversation, driven through the real store:
+    /// open a chat, `n`, send `q`, then `events` of the turn, then Esc when
+    /// `cancel`. Returns the database path after the store thread stopped.
+    async fn chat_turn(dir: &tempfile::TempDir, events: Vec<StreamEvent>, cancel: bool) -> PathBuf {
+        let db = store_db(dir);
+        let (mut panes, mut rx) = panes_with_store(db.clone());
+        let mut app = history_app(dir);
+        let chat = id(2);
+
+        let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        opened.extend(app.update(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
+        // The list is answered by the real store: empty.
+        through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
+        app.update(AppEvent::PromptReady(
+            chat,
+            crate::core::ai::chat::prompts::Resolved {
+                text: "system".into(),
+                notices: Vec::new(),
+            },
+        ));
+        app.update(hkey(KeyCode::Char('n'), KeyModifiers::NONE));
+        app.update(hkey(KeyCode::Char('q'), KeyModifiers::NONE));
+        let sent = app.update(hkey(KeyCode::Enter, KeyModifiers::NONE));
+        let turn = sent
+            .iter()
+            .find_map(|e| match e {
+                Effect::ChatSend { turn, .. } => Some(*turn),
+                _ => None,
+            })
+            .expect("the message was sent");
+        through_store(&mut app, &mut panes, &mut rx, sent, 1).await;
+        for event in events {
+            let effects = app.update(AppEvent::Chat(chat, turn, event));
+            through_store(&mut app, &mut panes, &mut rx, effects, 0).await;
+        }
+        if cancel {
+            let effects = app.update(hkey(KeyCode::Esc, KeyModifiers::NONE));
+            through_store(&mut app, &mut panes, &mut rx, effects, 0).await;
+        }
+        panes.shutdown_store(STORE_JOIN_BOUND);
+        db
+    }
+
+    /// `(role, content, status)` of every stored message.
+    fn stored_messages(db: &Path) -> Vec<(String, String, String)> {
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT role, content, status FROM messages ORDER BY conversation_id, seq")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn file_holds(db: &Path, needle: &[u8]) -> bool {
+        ["", "-journal", "-wal", "-shm"].iter().any(|suffix| {
+            let mut name = db.as_os_str().to_owned();
+            name.push(suffix);
+            fs::read(PathBuf::from(name))
+                .unwrap_or_default()
+                .windows(needle.len())
+                .any(|w| w == needle)
+        })
+    }
+
+    #[test]
+    fn the_app_from_config_keeps_a_chat_history() {
+        let mut app = app_from_config(80, 25, None, None);
+        let mut effects = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        effects.extend(app.update(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::Store(StoreCmd::List { .. }))),
+            "{effects:?}"
+        );
+    }
+
+    // Spec (Reasoning is not stored): Reasoning is absent from the file.
+    #[tokio::test]
+    async fn reasoning_is_absent_from_the_real_database_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = chat_turn(
+            &dir,
+            vec![
+                StreamEvent::ThinkingDelta("secret plan".into()),
+                StreamEvent::Delta("Hi".into()),
+                StreamEvent::Done(ChatFinish::Stop),
+            ],
+            false,
+        )
+        .await;
+        assert_eq!(
+            stored_messages(&db),
+            vec![
+                ("user".into(), "q".into(), "complete".into()),
+                ("assistant".into(), "Hi".into(), "complete".into()),
+            ]
+        );
+        assert!(!file_holds(&db, b"secret plan"));
+        assert!(file_holds(&db, b"Hi"), "the check looks at the right file");
+    }
+
+    // Spec: Reasoning only, then cancel, error or cut.
+    #[tokio::test]
+    async fn a_reasoning_only_turn_stores_no_assistant_row() {
+        let thinking = || StreamEvent::ThinkingDelta("secret plan".into());
+        let runs: Vec<(Vec<StreamEvent>, bool)> = vec![
+            (vec![thinking()], true),
+            (
+                vec![
+                    thinking(),
+                    StreamEvent::Error(ChatError::Failed("boom".into())),
+                ],
+                false,
+            ),
+            (
+                vec![thinking(), StreamEvent::Error(ChatError::Interrupted)],
+                false,
+            ),
+        ];
+        for (events, cancel) in runs {
+            let dir = tempfile::tempdir().unwrap();
+            let db = chat_turn(&dir, events, cancel).await;
+            assert_eq!(
+                stored_messages(&db),
+                vec![("user".into(), "q".into(), "complete".into())]
+            );
+            assert!(!file_holds(&db, b"secret plan"));
+            assert!(!file_holds(&db, b"boom"), "the error text is not stored");
+        }
+    }
+
+    // Spec: Partial answer keeps no reasoning.
+    #[tokio::test]
+    async fn a_cancelled_partial_answer_is_stored_without_its_reasoning() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = chat_turn(
+            &dir,
+            vec![
+                StreamEvent::ThinkingDelta("secret plan".into()),
+                StreamEvent::Delta("Hel".into()),
+            ],
+            true,
+        )
+        .await;
+        assert_eq!(
+            stored_messages(&db),
+            vec![
+                ("user".into(), "q".into(), "complete".into()),
+                ("assistant".into(), "Hel".into(), "cancelled".into()),
+            ]
+        );
+        assert!(!file_holds(&db, b"secret plan"));
+    }
+
+    /// A chat opened in a new session on the database `dir` holds, its list
+    /// answered by the real store.
+    async fn reopened(dir: &tempfile::TempDir) -> (App, Panes, mpsc::Receiver<StoreReply>) {
+        let (mut panes, mut rx) = panes_with_store(store_db(dir));
+        let mut app = history_app(dir);
+        let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        opened.extend(app.update(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
+        through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
+        app.update(AppEvent::PromptReady(
+            id(2),
+            crate::core::ai::chat::prompts::Resolved {
+                text: "system".into(),
+                notices: Vec::new(),
+            },
+        ));
+        (app, panes, rx)
+    }
+
+    // Spec (Resume): Appends to the same conversation.
+    #[tokio::test]
+    async fn a_resumed_conversation_gets_its_new_messages_in_the_same_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        chat_turn(
+            &dir,
+            vec![
+                StreamEvent::Delta("A1".into()),
+                StreamEvent::Done(ChatFinish::Stop),
+            ],
+            false,
+        )
+        .await;
+        let (mut app, mut panes, mut rx) = reopened(&dir).await;
+        // The one stored conversation was opened from the same directory.
+        let resume = app.update(hkey(KeyCode::Enter, KeyModifiers::NONE));
+        through_store(&mut app, &mut panes, &mut rx, resume, 1).await;
+        app.update(hkey(KeyCode::Char('x'), KeyModifiers::NONE));
+        let sent = app.update(hkey(KeyCode::Enter, KeyModifiers::NONE));
+        let turn = sent
+            .iter()
+            .find_map(|e| match e {
+                Effect::ChatSend { turn, .. } => Some(*turn),
+                _ => None,
+            })
+            .expect("the message was sent");
+        through_store(&mut app, &mut panes, &mut rx, sent, 0).await;
+        for event in [
+            StreamEvent::Delta("A2".into()),
+            StreamEvent::Done(ChatFinish::Stop),
+        ] {
+            let effects = app.update(AppEvent::Chat(id(2), turn, event));
+            through_store(&mut app, &mut panes, &mut rx, effects, 0).await;
+        }
+        panes.shutdown_store(STORE_JOIN_BOUND);
+        let db = store_db(&dir);
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let conversations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(conversations, 1, "no new conversation");
+        assert_eq!(
+            stored_messages(&db)
+                .into_iter()
+                .map(|(_, text, _)| text)
+                .collect::<Vec<_>>(),
+            vec!["q", "A1", "x", "A2"]
+        );
+    }
+
+    // Spec (Delete): the text is gone from the file.
+    #[tokio::test]
+    async fn a_deleted_conversation_is_gone_from_the_real_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = chat_turn(
+            &dir,
+            vec![
+                StreamEvent::Delta("ZZ-MARKER-ZZ".into()),
+                StreamEvent::Done(ChatFinish::Stop),
+            ],
+            false,
+        )
+        .await;
+        assert!(file_holds(&db, b"ZZ-MARKER-ZZ"));
+        let (mut app, mut panes, mut rx) = reopened(&dir).await;
+        app.update(hkey(KeyCode::Char('d'), KeyModifiers::NONE));
+        let delete = app.update(hkey(KeyCode::Char('y'), KeyModifiers::NONE));
+        through_store(&mut app, &mut panes, &mut rx, delete, 1).await;
+        panes.shutdown_store(STORE_JOIN_BOUND);
+        assert_eq!(stored_messages(&db), Vec::new());
+        assert!(!file_holds(&db, b"ZZ-MARKER-ZZ"));
     }
 
     // --- Chat effects ---
