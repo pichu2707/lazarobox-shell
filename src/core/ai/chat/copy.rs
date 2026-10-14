@@ -45,6 +45,8 @@ impl ChatCopy {
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
         let ctrl = key.modifiers == KeyModifiers::CONTROL;
         match key.code {
+            // A held g or G must not jump: only a fresh press moves to an end.
+            KeyCode::Char('g' | 'G') if repeat => ChatCopyCommand::Ignore,
             KeyCode::Char('g') if plain => {
                 if was_pending {
                     ChatCopyCommand::Top
@@ -152,6 +154,18 @@ mod tests {
             let mut copy = ChatCopy::default();
             assert_eq!(copy.on_key(&key, false), ChatCopyCommand::Ignore, "{key:?}");
         }
+    }
+
+    #[test]
+    fn a_held_g_and_capital_g_do_nothing() {
+        let mut copy = ChatCopy::default();
+        assert_eq!(copy.on_key(&ch('g'), true), ChatCopyCommand::Ignore);
+        assert_eq!(copy.on_key(&ch('g'), true), ChatCopyCommand::Ignore);
+        assert!(!copy.pending_g, "a held g never arms the pair");
+        assert_eq!(copy.on_key(&ch('G'), true), ChatCopyCommand::Ignore);
+        // A pressed g after a repeated one still starts a fresh pair.
+        assert_eq!(copy.on_key(&ch('g'), false), ChatCopyCommand::Ignore);
+        assert_eq!(copy.on_key(&ch('g'), false), ChatCopyCommand::Top);
     }
 
     #[test]

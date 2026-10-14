@@ -958,6 +958,10 @@ impl App {
             !matches!(self.input, InputMode::Copy(_)) || self.focused_pty().is_some(),
             "COPY is only active while a shell pane has the focus"
         );
+        debug_assert!(
+            !matches!(self.input, InputMode::ChatCopy(_)) || self.focused_is_chat(),
+            "chat COPY is only active while a chat pane has the focus"
+        );
     }
 
     /// Whether `id` names a pane with a PTY behind it.
@@ -1334,7 +1338,6 @@ impl App {
         if let Some(pty) = self.panes.get_mut(&left).and_then(PaneState::pty_mut) {
             pty.emu.set_scrollback(0);
         }
-        self.leave_chat_copy(left);
         if matches!(self.input, InputMode::Copy(_) | InputMode::Resize) {
             self.input = InputMode::Terminal;
         }
@@ -1382,10 +1385,7 @@ impl App {
         }
         if index == self.active {
             self.active = index.min(self.tabs.len() - 1);
-            if matches!(
-                self.input,
-                InputMode::Copy(_) | InputMode::ChatCopy(_) | InputMode::Resize
-            ) {
+            if matches!(self.input, InputMode::Copy(_) | InputMode::Resize) {
                 self.input = InputMode::Terminal;
             }
         } else if index < self.active {
@@ -1470,9 +1470,6 @@ impl App {
         }
         if let Some(pty) = self.panes.get_mut(&left).and_then(PaneState::pty_mut) {
             pty.emu.set_scrollback(0);
-        }
-        if t == self.active {
-            self.leave_chat_copy(left);
         }
         if t == self.active && matches!(self.input, InputMode::Copy(_) | InputMode::Resize) {
             self.input = InputMode::Terminal;

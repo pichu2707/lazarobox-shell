@@ -958,7 +958,9 @@ mod tests {
         let rows: Vec<(u16, String)> = (0..ROWS)
             .filter(|&y| !reversed_cells(&buf, y).is_empty())
             .map(|y| (y, row(&buf, y).trim_end().to_string()))
-            // The scrolled pane's `[+N]` badge sits on the first row.
+            // In COPY the scrolled pane (offset 8 here) draws its `[+8]` badge
+            // over the end of row 0; it is an overlay, not pane text, so the
+            // test compares the pane's own text only.
             .map(|(y, text)| (y, text.trim_end_matches("[+8]").trim_end().to_string()))
             .collect();
         assert_eq!(

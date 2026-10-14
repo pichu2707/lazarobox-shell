@@ -397,38 +397,54 @@ fn chat_copy_leaves_the_shell_offsets_alone() {
 
 // Resets ------------------------------------------------------------------------
 
+/// Ctrl+Space ends chat COPY (it is PREFIX), so a focus or tab change after it
+/// is an ordinary one: the view stays where COPY left it (R1).
 #[test]
-fn a_focus_change_ends_chat_copy_and_follows() {
+fn a_focus_change_after_ctrl_space_leaves_the_chat_pinned() {
     let mut a = long();
     enter(&mut a);
     keys(&mut a, "kkk");
-    let t = a.active;
-    a.set_focus_in(t, PaneId::FIRST);
-    assert_eq!(a.input(), InputMode::Terminal);
-    assert_eq!(chat_of(&a).scroll(), Scroll::Follow);
+    let pinned = chat_of(&a).scroll();
+    assert!(matches!(pinned, Scroll::Pinned(_)));
+    a.update(ctrl_space());
+    assert_eq!(a.input(), InputMode::Prefix);
+    keys(&mut a, "h");
     assert_eq!(a.focused(), PaneId::FIRST);
+    assert_eq!(a.input(), InputMode::Terminal);
+    assert_eq!(chat_of(&a).scroll(), pinned);
+    assert_eq!(a.scrolled_by(chat_id()), Some(3), "the badge keeps showing");
 }
 
 #[test]
-fn a_tab_change_ends_chat_copy_and_follows() {
+fn a_tab_change_after_ctrl_space_leaves_the_chat_pinned() {
     let mut a = long();
     a.new_tab();
     a.activate(0);
     assert_eq!(a.focused(), chat_id());
     enter(&mut a);
     keys(&mut a, "kkk");
-    a.activate(1);
+    let pinned = chat_of(&a).scroll();
+    a.update(ctrl_space());
+    keys(&mut a, "gb");
+    assert_eq!(a.active, 1);
     assert_eq!(a.input(), InputMode::Terminal);
+    assert_eq!(chat_of(&a).scroll(), pinned);
     a.activate(0);
-    assert_eq!(chat_of(&a).scroll(), Scroll::Follow);
+    assert_eq!(a.scrolled_by(chat_id()), Some(3));
 }
 
 #[test]
-fn closing_the_tab_of_the_chat_ends_chat_copy() {
+fn a_held_g_does_not_jump_to_the_top() {
     let mut a = long();
-    a.new_tab();
-    a.activate(0);
     enter(&mut a);
-    a.drop_tab(0);
-    assert_eq!(a.input(), InputMode::Terminal);
+    a.update(repeat(KeyCode::Char('g'), KeyModifiers::NONE));
+    a.update(repeat(KeyCode::Char('g'), KeyModifiers::NONE));
+    assert_eq!(chat_of(&a).scroll(), Scroll::Follow);
+    // A held `G` does not act either.
+    keys(&mut a, "gg");
+    assert_eq!(chat_of(&a).scroll(), Scroll::Pinned(0));
+    a.update(repeat(KeyCode::Char('G'), KeyModifiers::SHIFT));
+    assert_eq!(chat_of(&a).scroll(), Scroll::Pinned(0));
+    a.update(code(KeyCode::Char('G'), KeyModifiers::SHIFT));
+    assert_eq!(chat_of(&a).scroll(), Scroll::Follow);
 }

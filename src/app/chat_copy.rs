@@ -56,12 +56,10 @@ impl App {
         Vec::new()
     }
 
-    /// Ends chat COPY: the mode is TERMINAL and `pane`'s transcript follows
-    /// the bottom again. A no-op in any other mode.
-    pub(super) fn leave_chat_copy(&mut self, pane: PaneId) {
-        if !matches!(self.input, InputMode::ChatCopy(_)) {
-            return;
-        }
+    /// Ends chat COPY (Esc or `q`): the mode is TERMINAL and `pane`'s
+    /// transcript follows the bottom again. Focus and tab changes need the
+    /// prefix, which already ends COPY, so they never run through here.
+    fn leave_chat_copy(&mut self, pane: PaneId) {
         self.input = InputMode::Terminal;
         if let Some(chat) = self.panes.get_mut(&pane).and_then(PaneState::chat_mut) {
             chat.set_scroll(Scroll::Follow);
