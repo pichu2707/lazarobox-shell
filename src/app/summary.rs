@@ -42,7 +42,10 @@ impl App {
             return Vec::new();
         };
         // One memory view at a time.
-        if chat.note_editor().is_some() || chat.summary_draft().is_some() {
+        if chat.note_editor().is_some()
+            || chat.summary_draft().is_some()
+            || chat.tag_editor().is_some()
+        {
             return Vec::new();
         }
         // Busy first: while the first answer streams, there is no finished

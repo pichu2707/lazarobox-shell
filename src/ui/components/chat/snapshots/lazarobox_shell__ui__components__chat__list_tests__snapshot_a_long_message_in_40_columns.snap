@@ -1,0 +1,12 @@
+---
+source: src/ui/components/chat/list_tests.rs
+expression: "text(&draw(&chat, 40, 8))"
+---
+Conversations · all projects
+▸ 2023-11-14 · programmer · a long firs…
+
+
+
+
+
+↵ open · n new · d delete · t tags

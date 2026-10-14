@@ -10,6 +10,45 @@ baseline.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-14
+
+### Added
+
+- Conversation history for the AI chat. Messages are saved to the private
+  `chat.db` as you chat. An answer that stops early (an error or a cancel
+  after some text arrived) is saved too, marked as partial. The model's
+  reasoning is never stored.
+- Conversation list: `Ctrl+Space c` now opens the list instead of an empty
+  chat. It shows the conversations of the current project (the git
+  repository), newest first, as `date · profile · first message`.
+  - `a` shows or hides the conversations of all projects.
+  - `n` or `Esc` starts a new conversation.
+  - `Enter` resumes the selected one: the full history is loaded, new
+    messages are appended to the same conversation, and its stored profile is
+    used.
+  - `d` then `y` deletes it (any other key cancels). A pane that has the
+    deleted conversation open stops saving and says so.
+- Tags: each conversation has a project tag plus up to 8 extra tags. Edit them
+  with `t` on a list row or with `Ctrl+Space T` inside a conversation (one
+  comma-separated line; the project tag comes first; `Enter` saves, `Esc`
+  discards). A saved edit counts as activity, so the row moves to the top of
+  the list.
+
+### Changed
+
+- When an answer fails after some text was received, the partial text is kept
+  in the history with status `error`; the error line itself is not stored.
+- Closing a pane (or a tab, or quitting) while an answer is streaming saves
+  the text received so far as `cancelled`.
+
+### Known limits
+
+- Extra tags come back in alphabetical order after a conversation is reopened.
+- Deleting the engram notes of a deleted conversation and resuming the engram
+  memory session are not part of this release (they arrive with the
+  `engram-memory` follow-up).
+- `Ctrl+Space T` has not yet been checked by hand in Kitty.
+
 ## [0.10.0] - 2026-10-14
 
 ### Added
@@ -201,7 +240,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.7.0...v0.8.0

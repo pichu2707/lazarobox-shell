@@ -63,6 +63,8 @@ pub enum PrefixAction {
     SaveNote,
     /// Unfolds or folds the memory line of the focused chat.
     ToggleMemory,
+    /// Opens the tag editor of the focused chat.
+    EditTags,
     /// Asks the focused chat's engine for the end-of-conversation summary.
     Summarize,
     ToggleZoom,
@@ -202,6 +204,8 @@ pub const PREFIX_TREE: &[Binding] = &[
     // longer one would clip `q quit` on an 80-column terminal.
     unhinted(act('o', "memory", PrefixAction::ToggleMemory)),
     unhinted(act('s', "summary", PrefixAction::Summarize)),
+    // `t` is the tab group, so the tag editor takes the capital.
+    unhinted(act('T', "tags", PrefixAction::EditTags)),
     unhinted(act('?', "commands (reserved)", PrefixAction::ShowCommands)),
     Binding {
         chord: PREFIX_KEY,
@@ -423,6 +427,29 @@ mod tests {
         }
     }
 
+    // Deviation from the spec (Ctrl+T): a new chat key goes behind the prefix,
+    // and `t` is the tab group, so the tag editor is the capital `T`: an
+    // unhinted root leaf (the root hint is already 79 columns), bound nowhere
+    // else.
+    #[test]
+    fn capital_t_is_an_unhinted_root_leaf_that_edits_tags() {
+        let binding = PREFIX_TREE
+            .iter()
+            .find(|b| b.chord.matches(&plain('T')))
+            .expect("T is bound at the root");
+        assert_eq!(binding.target, Target::Action(PrefixAction::EditTags));
+        assert_eq!(binding.description, "tags");
+        assert!(!binding.hinted);
+        // `t` itself stays the tab group.
+        assert!(matches!(lookup(PREFIX_TREE, &plain('t')), Step::Enter(_)));
+        for table in &tables()[1..] {
+            assert_ne!(
+                lookup(table, &plain('T')),
+                Step::Run(PrefixAction::EditTags)
+            );
+        }
+    }
+
     // Spec: modal-input root `o` folds and unfolds the memory line of a chat.
     // It stays out of the hint (the root hint is already 79 columns); no group
     // binds it.
@@ -505,8 +532,8 @@ mod tests {
         for (i, a) in all.iter().enumerate() {
             assert!(!all[i + 1..].contains(a), "duplicate action {a:?}");
         }
-        // literal + quit + copy + menu + chat + note + memory + summary + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
-        assert_eq!(all.len(), 31);
+        // literal + quit + copy + menu + chat + note + memory + summary + tags + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
+        assert_eq!(all.len(), 32);
     }
 
     #[test]

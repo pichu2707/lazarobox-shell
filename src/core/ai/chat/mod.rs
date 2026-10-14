@@ -7,6 +7,8 @@ pub mod adapters;
 pub mod composer;
 pub mod engine;
 pub mod guidance;
+pub mod history;
+pub mod list;
 pub mod memory;
 pub mod note;
 pub mod notify;
@@ -15,6 +17,8 @@ pub mod store;
 pub mod stream;
 pub mod streams;
 pub mod summary;
+pub mod tag_editor;
+pub mod tags;
 pub mod transcript;
 pub mod workspace;
 pub mod wrap;
@@ -25,6 +29,7 @@ use std::{
     time::Instant,
 };
 
+use crate::core::ai::config::Profile;
 use composer::Composer;
 use engine::{
     Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, build_context,
@@ -67,6 +72,19 @@ pub enum MsgStatus {
 impl MsgStatus {
     pub fn is_partial(self) -> bool {
         self != Self::Complete
+    }
+
+    /// The status a stored name stands for.
+    pub fn from_name(name: &str) -> Option<Self> {
+        [
+            Self::Complete,
+            Self::Cancelled,
+            Self::Interrupted,
+            Self::Truncated,
+            Self::Error,
+        ]
+        .into_iter()
+        .find(|status| status.as_str() == name)
     }
 
     /// The name stored in the database.
@@ -227,6 +245,30 @@ pub struct ChatState {
     draft: Option<summary::SummaryDraft>,
     /// The summary the user approved: sent once, with the session end.
     approved_summary: Option<String>,
+    /// The project tag proposed for the conversation (see `history`).
+    tag: Option<String>,
+    /// The extra tags of the conversation.
+    extras: Vec<String>,
+    /// The user edited the tags: the project tag is theirs, not the origin's.
+    tags_edited: bool,
+    /// The tag editor, while it is open over the conversation or the list.
+    tag_editor: Option<tag_editor::TagEditor>,
+    /// The conversation list, while it is shown instead of the conversation.
+    list: Option<list::ListView>,
+    /// The profile of the conversation: the current one when it is new, the
+    /// stored one when it was resumed.
+    profile: Profile,
+    /// The pane's side of its conversation's storage.
+    store: store::PaneStore,
+    /// Messages to save, in order, until the app takes them.
+    outbox: Vec<store::StoredMessage>,
+    /// The engine of the request in flight, as sent.
+    request_engine: String,
+    /// `close_stream` already queued the answer in progress.
+    closing: bool,
+    /// The profile changed while the first system prompt was still being
+    /// prepared: that answer is dropped and the prompt prepared again.
+    reprepare_prompt: bool,
 }
 
 impl ChatState {
@@ -249,6 +291,17 @@ impl ChatState {
             summarizing: None,
             draft: None,
             approved_summary: None,
+            tag: None,
+            extras: Vec::new(),
+            tags_edited: false,
+            tag_editor: None,
+            list: None,
+            profile: Profile::default(),
+            store: store::PaneStore::new(),
+            outbox: Vec::new(),
+            request_engine: String::new(),
+            closing: false,
+            reprepare_prompt: false,
         }
     }
 
@@ -495,11 +548,19 @@ impl ChatState {
             self.push_system_once(FULL);
             return SendOutcome::Refused;
         }
+        let text = text.trim_end();
         self.entries.push(Entry::Message(Msg {
             role: Role::User,
-            text: text.trim_end().to_owned(),
+            text: text.to_owned(),
             status: MsgStatus::Complete,
         }));
+        self.outbox.push(store::StoredMessage {
+            role: Role::User,
+            text: text.to_owned(),
+            status: MsgStatus::Complete,
+            engine: engine.clone(),
+            model: model.clone(),
+        });
         // A user message nobody answered (cancelled while waiting, or an
         // error before any text) stays in the transcript but is not sent:
         // the engine never gets two user messages in a row.
@@ -527,6 +588,7 @@ impl ChatState {
         self.phase = Phase::Waiting { slow: false };
         self.started = Some(now);
         self.request_model = model.clone().unwrap_or_default();
+        self.request_engine = engine.clone();
         self.generation += 1;
         self.scroll = Scroll::Follow;
         SendOutcome::Sent {
@@ -726,8 +788,20 @@ impl ChatState {
     /// optional system line is added.
     fn finish(&mut self, status: MsgStatus, line: Option<String>, now: Instant) {
         self.collapse_reasoning(now);
-        if let Some(answer) = self.answer_mut() {
+        // Only the answer text is saved: reasoning is not a message, and a
+        // turn that never answered leaves no assistant message to save.
+        let answer = self.answer_mut().map(|answer| {
             answer.status = status;
+            answer.text.clone()
+        });
+        if let Some(text) = answer {
+            self.outbox.push(store::StoredMessage {
+                role: Role::Assistant,
+                text,
+                status,
+                engine: std::mem::take(&mut self.request_engine),
+                model: (!self.request_model.is_empty()).then(|| self.request_model.clone()),
+            });
         }
         if let Some(line) = line {
             self.entries.push(Entry::System(line));
@@ -735,6 +809,7 @@ impl ChatState {
         self.phase = Phase::Idle;
         self.started = None;
         self.request_model.clear();
+        self.request_engine.clear();
     }
 
     /// Stops the turn in flight, keeping the partial answer.
@@ -762,6 +837,8 @@ mod anchor_tests;
 #[cfg(test)]
 mod context_tests;
 #[cfg(test)]
+mod history_tests;
+#[cfg(test)]
 mod memory_line_tests;
 #[cfg(test)]
 mod memory_tests;
@@ -775,5 +852,7 @@ mod state_tests;
 mod stream_tests;
 #[cfg(test)]
 mod summary_tests;
+#[cfg(test)]
+mod tag_editor_tests;
 #[cfg(test)]
 mod wait_tests;

@@ -1,0 +1,7 @@
+---
+source: src/ui/components/chat/tag_tests.rs
+expression: "text(&draw(&chat, 16, 3))"
+---
+Edit tags
+▸ roj, sql, etl
+↵ save · Esc dis

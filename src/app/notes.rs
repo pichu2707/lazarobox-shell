@@ -35,7 +35,7 @@ impl App {
             return Vec::new();
         };
         // One memory view at a time: a summary running or open holds the pane.
-        if chat.summary_draft().is_some() {
+        if chat.summary_draft().is_some() || chat.tag_editor().is_some() {
             return Vec::new();
         }
         if chat.summarizing() {
@@ -374,7 +374,16 @@ impl App {
                 }
                 Vec::new()
             }
-            StoreReply::Unavailable { .. } | StoreReply::Failed { .. } => Vec::new(),
+            StoreReply::Unavailable { .. }
+            | StoreReply::Failed { .. }
+            | StoreReply::Listed { .. }
+            | StoreReply::ListFailed { .. }
+            | StoreReply::Resumed { .. }
+            | StoreReply::ResumeFailed { .. }
+            | StoreReply::Deleted { .. }
+            | StoreReply::DeleteFailed { .. }
+            | StoreReply::TagsSaved { .. }
+            | StoreReply::TagsFailed { .. } => Vec::new(),
         }
     }
 
@@ -385,7 +394,8 @@ impl App {
     pub(super) fn end_effects(&mut self, ids: &[PaneId]) -> Vec<Effect> {
         let memory_on = self.ai.memory.active();
         let new_id = self.session_id;
-        let mut effects = Vec::new();
+        // The text a closing chat has written so far is saved first.
+        let mut effects = self.close_store_effects(ids);
         for id in ids {
             let Some(chat) = self.panes.get_mut(id).and_then(PaneState::chat_mut) else {
                 continue;

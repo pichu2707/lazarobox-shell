@@ -994,21 +994,16 @@ fn store_replies_for_a_pane_that_is_gone_change_nothing() {
     assert!(systems(&a).is_empty());
 }
 
+// A write that failed for a pane that never saved is nobody's news. (An
+// `Unavailable` store does earn its line: see `chat_history`.)
 #[test]
-fn store_failures_the_pane_does_not_own_yet_are_ignored() {
+fn a_failed_write_for_a_pane_that_never_saved_is_ignored() {
     let mut a = ready("body");
-    for reply in [
-        StoreReply::Unavailable {
-            pane: chat_id(),
-            reason: "disk".into(),
-        },
-        StoreReply::Failed {
-            pane: chat_id(),
-            notify: true,
-        },
-    ] {
-        assert_eq!(a.update(AppEvent::Store(reply)), vec![]);
-    }
+    let reply = StoreReply::Failed {
+        pane: chat_id(),
+        notify: true,
+    };
+    assert_eq!(a.update(AppEvent::Store(reply)), vec![]);
     assert!(systems(&a).is_empty());
 }
 
