@@ -6,6 +6,8 @@
 //! its appends before then name the pane only and the store thread resolves
 //! the conversation it created for it.
 
+use std::path::PathBuf;
+
 use super::{Msg, MsgStatus, engine::Role};
 use crate::core::{ai::sanitize::clean, layout::PaneId};
 
@@ -77,9 +79,13 @@ pub enum StoreCmd {
         observation_id: i64,
         title: String,
     },
-    /// The conversations of the store, newest last activity first. Answered
-    /// with `Listed`, or `Unavailable`.
-    List { pane: PaneId },
+    /// The conversations of the store, newest last activity first, and the
+    /// project tag of `origin` (resolved on the store thread: it walks the
+    /// filesystem). Answered with `Listed`, `ListFailed`, or `Unavailable`.
+    List {
+        pane: PaneId,
+        origin: Option<PathBuf>,
+    },
     /// Reads a whole conversation. Answered with `Resumed`, or `ResumeFailed`.
     Resume { pane: PaneId, conversation: i64 },
     /// Removes a conversation with everything that hangs from it. Answered
@@ -157,10 +163,18 @@ pub enum StoreReply {
         pane: PaneId,
         notify: bool,
     },
-    /// The answer to `List`, newest last activity first.
+    /// The answer to `List`: the project tag of the origin (when it has one)
+    /// and the conversations, newest last activity first.
     Listed {
         pane: PaneId,
+        tag: Option<String>,
         rows: Vec<ConvRow>,
+    },
+    /// The conversations could not be read. The store itself is not declared
+    /// unusable: the pane keeps saving.
+    ListFailed {
+        pane: PaneId,
+        tag: Option<String>,
     },
     /// The answer to `Resume`: the profile and project tag the conversation
     /// was stored with and its messages in order (no reasoning, no system

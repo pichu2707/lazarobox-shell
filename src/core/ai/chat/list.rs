@@ -12,6 +12,8 @@ pub const DELETE_PROMPT: &str = "Delete conversation? (y/n)";
 pub const OPEN_ELSEWHERE: &str = "already open in another pane";
 /// System line when the delete failed.
 pub const DELETE_FAILED: &str = "could not delete conversation";
+/// System line when the list could not be read.
+pub const LIST_FAILED: &str = "could not read conversations";
 /// System line when the conversation could not be read.
 pub const RESUME_FAILED: &str = "could not open conversation";
 
@@ -60,6 +62,14 @@ impl ListView {
     /// The store's answer: every conversation, newest first.
     pub fn set_rows(&mut self, rows: Vec<ConvRow>) {
         self.rows = Some(rows);
+        self.clamp();
+    }
+
+    /// The project tag the list filters by, once the store thread resolved it.
+    /// Back to the project's rows.
+    pub fn set_project(&mut self, project: Option<String>) {
+        self.project = project;
+        self.all = false;
         self.clamp();
     }
 

@@ -1264,12 +1264,24 @@ use crate::core::ai::chat::{
 };
 
 fn list() -> StoreCmd {
-    StoreCmd::List { pane: pane() }
+    StoreCmd::List {
+        pane: pane(),
+        origin: None,
+    }
+}
+
+fn list_from(origin: &Path) -> StoreCmd {
+    StoreCmd::List {
+        pane: pane(),
+        origin: Some(origin.to_path_buf()),
+    }
 }
 
 fn listed(reply: Option<StoreReply>) -> Vec<ConvRow> {
     match reply {
-        Some(StoreReply::Listed { pane: from, rows }) => {
+        Some(StoreReply::Listed {
+            pane: from, rows, ..
+        }) => {
             assert_eq!(from, pane());
             rows
         }
@@ -1532,4 +1544,47 @@ fn a_panicking_history_command_still_gets_its_reply() {
     // A list that panics leaves the store unusable, like a create.
     let reply = worker.guarded_with(list(), |_, _| panic!("handler bug"));
     assert!(matches!(reply, Some(StoreReply::Unavailable { .. })));
+}
+
+// The project tag is resolved here, off the UI thread, from the origin cwd.
+#[test]
+fn the_list_carries_the_project_tag_of_the_origin() {
+    let (dir, mut worker, _conn) = fixture();
+    let proj = dir.path().join("proj");
+    fs::create_dir_all(proj.join(".git")).unwrap();
+    fs::create_dir_all(proj.join("src")).unwrap();
+    let reply = worker.handle(list_from(&proj.join("src")));
+    let Some(StoreReply::Listed { tag, .. }) = reply else {
+        panic!("expected Listed, got {reply:?}");
+    };
+    assert_eq!(tag.as_deref(), Some("proj"));
+}
+
+#[test]
+fn an_unknown_or_vanished_origin_lists_without_a_tag() {
+    let (dir, mut worker, _conn) = fixture();
+    for cmd in [list(), list_from(&dir.path().join("gone"))] {
+        let reply = worker.handle(cmd);
+        assert!(
+            matches!(reply, Some(StoreReply::Listed { tag: None, .. })),
+            "{reply:?}"
+        );
+    }
+}
+
+// A read that fails leaves the pane attached to the store.
+#[test]
+fn a_list_that_fails_to_read_is_not_an_unavailable_store() {
+    let (dir, mut worker, conn) = fixture();
+    conn.execute_batch("DROP TABLE tags").unwrap();
+    let origin = dir.path().join("work");
+    fs::create_dir_all(&origin).unwrap();
+    let reply = worker.handle(list_from(&origin));
+    assert_eq!(
+        reply,
+        Some(StoreReply::ListFailed {
+            pane: pane(),
+            tag: Some("work".into()),
+        })
+    );
 }

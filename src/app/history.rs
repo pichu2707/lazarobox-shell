@@ -4,19 +4,18 @@
 
 use super::*;
 use crate::core::ai::chat::{
-    list::{DELETE_FAILED, ListOutcome, OPEN_ELSEWHERE, RESUME_FAILED},
-    store::{SAVE_FAILED_LINE, UNAVAILABLE_PREFIX},
+    list::{DELETE_FAILED, LIST_FAILED, ListOutcome, OPEN_ELSEWHERE, RESUME_FAILED},
+    store::{ConvRow, SAVE_FAILED_LINE, UNAVAILABLE_PREFIX},
 };
 
 impl App {
-    /// A chat for a pane opened from `origin`: the current profile, the
-    /// project tag the origin gives and, with history on, the list as its
-    /// first view.
+    /// A chat for a pane opened from `origin`: the current profile and, with
+    /// history on, the list as its first view. The project tag comes with the
+    /// store's answer to the list: its walk is IO.
     pub(super) fn new_chat_state(&self, origin: Option<PathBuf>) -> ChatState {
-        let mut chat = ChatState::new(origin.clone());
+        let mut chat = ChatState::new(origin);
         chat.set_profile(self.ai.profile());
         if self.history {
-            chat.set_tag(origin.as_deref().and_then(self.project_tag));
             chat.open_list();
         }
         chat
@@ -171,16 +170,13 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
-            StoreReply::Listed { pane, rows } => {
-                if let Some(list) = self
-                    .panes
-                    .get_mut(pane)
-                    .and_then(PaneState::chat_mut)
-                    .and_then(ChatState::list_mut)
-                {
-                    list.set_rows(rows.clone());
-                    self.dirty = true;
-                }
+            StoreReply::Listed { pane, tag, rows } => {
+                self.on_listed(*pane, tag, rows.clone());
+                Vec::new()
+            }
+            StoreReply::ListFailed { pane, tag } => {
+                self.on_listed(*pane, tag, Vec::new());
+                self.set_list_line(*pane, LIST_FAILED);
                 Vec::new()
             }
             StoreReply::Resumed {
@@ -197,13 +193,11 @@ impl App {
             StoreReply::Deleted {
                 pane, conversation, ..
             } => {
-                if let Some(list) = self
-                    .panes
-                    .get_mut(pane)
-                    .and_then(PaneState::chat_mut)
-                    .and_then(ChatState::list_mut)
-                {
-                    list.remove(*conversation);
+                // The row goes from every open list, not only this one's.
+                for state in self.panes.values_mut() {
+                    if let Some(list) = state.chat_mut().and_then(ChatState::list_mut) {
+                        list.remove(*conversation);
+                    }
                 }
                 // Another pane that has it open keeps working but stops saving.
                 for (id, state) in &mut self.panes {
@@ -223,6 +217,22 @@ impl App {
             }
             StoreReply::SessionLinked { .. } | StoreReply::LinkFailed { .. } => Vec::new(),
         }
+    }
+
+    /// The list arrived (or could not be read): the pane learns its project
+    /// tag and the list shows its rows.
+    fn on_listed(&mut self, id: PaneId, tag: &Option<String>, rows: Vec<ConvRow>) {
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return;
+        };
+        if tag.is_some() {
+            chat.set_tag(tag.clone());
+        }
+        if let Some(list) = chat.list_mut() {
+            list.set_project(tag.clone());
+            list.set_rows(rows);
+        }
+        self.dirty = true;
     }
 
     /// The answer to a `Create` or an `Append`: the line for a first failed

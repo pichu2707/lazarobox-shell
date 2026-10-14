@@ -29,6 +29,7 @@ use crate::core::{
     },
     layout::PaneId,
 };
+use crate::runtime::workspace::project_tag;
 
 type Opener = Box<dyn FnOnce() -> Result<Connection, StoreError> + Send>;
 
@@ -177,13 +178,16 @@ impl Worker {
                     kind: LinkKind::Note,
                 })
             }
-            StoreCmd::List { pane } => {
-                let read = self.conn().and_then(|conn| {
-                    list(conn).map_err(|_| bounded_error("could not read history"))
-                });
-                Some(match read {
-                    Ok(rows) => StoreReply::Listed { pane, rows },
+            StoreCmd::List { pane, origin } => {
+                // The walk to the repository root is filesystem IO: it is
+                // done here, not on the UI thread.
+                let tag = origin.as_deref().and_then(project_tag);
+                Some(match self.conn() {
                     Err(reason) => StoreReply::Unavailable { pane, reason },
+                    Ok(conn) => match list(conn) {
+                        Ok(rows) => StoreReply::Listed { pane, tag, rows },
+                        Err(_) => StoreReply::ListFailed { pane, tag },
+                    },
                 })
             }
             StoreCmd::Resume { pane, conversation } => {
@@ -242,7 +246,7 @@ impl Worker {
             StoreCmd::Append { pane, .. } => (*pane, Panicked::Append),
             StoreCmd::LinkSession { pane, .. } => (*pane, Panicked::Link(LinkKind::Session)),
             StoreCmd::LinkNote { pane, .. } => (*pane, Panicked::Link(LinkKind::Note)),
-            StoreCmd::List { pane } => (*pane, Panicked::List),
+            StoreCmd::List { pane, .. } => (*pane, Panicked::List),
             StoreCmd::Resume { pane, .. } => (*pane, Panicked::Resume),
             StoreCmd::Delete { pane, .. } => (*pane, Panicked::Delete),
             StoreCmd::Quit => return None,
@@ -616,7 +620,7 @@ impl StoreHandle {
         };
         let reason = bounded_error("store thread not running");
         let reply = match cmd {
-            StoreCmd::Create { pane, .. } | StoreCmd::List { pane } => {
+            StoreCmd::Create { pane, .. } | StoreCmd::List { pane, .. } => {
                 StoreReply::Unavailable { pane, reason }
             }
             StoreCmd::Resume { pane, .. } => StoreReply::ResumeFailed { pane },

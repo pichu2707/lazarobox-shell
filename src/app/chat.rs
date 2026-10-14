@@ -35,9 +35,13 @@ impl App {
                 context: self.ai.context(),
             });
             if self.history {
-                effects.push(Effect::Store(StoreCmd::List {
-                    pane: self.tab().focus,
-                }));
+                let pane = self.tab().focus;
+                let origin = self
+                    .panes
+                    .get(&pane)
+                    .and_then(PaneState::chat_state)
+                    .and_then(|chat| chat.origin_cwd().map(Path::to_path_buf));
+                effects.push(Effect::Store(StoreCmd::List { pane, origin }));
             }
         }
         effects

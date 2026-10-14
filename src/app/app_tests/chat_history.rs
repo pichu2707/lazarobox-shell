@@ -47,14 +47,6 @@ fn plain(code_: KeyCode) -> AppEvent {
     code(code_, KeyModifiers::NONE)
 }
 
-fn probe(_: &Path) -> Option<String> {
-    Some("proj".into())
-}
-
-fn no_project(_: &Path) -> Option<String> {
-    None
-}
-
 fn ollama() -> AiConfig {
     let mut ai = AiConfig::default();
     ai.set(
@@ -90,7 +82,7 @@ fn prompt_for(id: PaneId) -> AppEvent {
 
 /// A launched app with history on and a ready ollama engine, before any chat.
 fn history_app() -> App {
-    let mut a = launched(120, 30).with_ai(ollama()).with_chat_history(probe);
+    let mut a = launched(120, 30).with_ai(ollama()).with_chat_history();
     a.update(AppEvent::EnginesDetected(detection()));
     a
 }
@@ -122,8 +114,17 @@ fn rows() -> Vec<ConvRow> {
     ]
 }
 
+/// The store's answer to the list, for an origin in project `proj`.
 fn listed(a: &mut App, id: PaneId, rows: Vec<ConvRow>) -> Vec<Effect> {
-    a.update(AppEvent::Store(StoreReply::Listed { pane: id, rows }))
+    listed_in(a, id, Some("proj"), rows)
+}
+
+fn listed_in(a: &mut App, id: PaneId, tag: Option<&str>, rows: Vec<ConvRow>) -> Vec<Effect> {
+    a.update(AppEvent::Store(StoreReply::Listed {
+        pane: id,
+        tag: tag.map(str::to_owned),
+        rows,
+    }))
 }
 
 /// A chat pane with its list answered.
@@ -207,9 +208,25 @@ fn systems(chat: &ChatState) -> Vec<String> {
 fn a_chat_opens_on_the_list_and_asks_the_store_for_it() {
     let (a, effects) = opened();
     assert!(chat_of(&a).list().is_some());
-    assert_eq!(chat_of(&a).list().unwrap().project(), Some("proj"));
+    // The tag is resolved by the store thread, from the origin: not yet known.
+    assert_eq!(chat_of(&a).tag(), None);
+    assert!(!chat_of(&a).list().unwrap().loaded());
+    assert_eq!(
+        stores(&effects),
+        vec![StoreCmd::List {
+            pane: chat_id(),
+            origin: Some(LAUNCH.into()),
+        }]
+    );
+}
+
+// Spec (Project tag): the answer carries the tag the list filters by.
+#[test]
+fn the_list_reply_brings_the_project_tag() {
+    let (mut a, _) = opened();
+    listed_in(&mut a, chat_id(), Some("proj"), rows());
     assert_eq!(chat_of(&a).tag(), Some("proj"));
-    assert_eq!(stores(&effects), vec![StoreCmd::List { pane: chat_id() }]);
+    assert_eq!(chat_of(&a).list().unwrap().project(), Some("proj"));
 }
 
 #[test]
@@ -223,19 +240,45 @@ fn without_history_a_chat_opens_on_the_conversation() {
 // Spec: No project.
 #[test]
 fn an_origin_without_a_project_lists_everything() {
-    let mut a = launched(120, 30)
-        .with_ai(ollama())
-        .with_chat_history(no_project);
-    press(&mut a, "c");
+    let (mut a, _) = opened();
+    listed_in(&mut a, chat_id(), None, rows());
     assert_eq!(chat_of(&a).tag(), None);
-    assert_eq!(chat_of(&a).list().unwrap().project(), None);
+    let list = chat_of(&a).list().unwrap();
+    assert_eq!(list.project(), None);
+    assert_eq!(list.visible().len(), 3);
+}
+
+// A read that failed is not an unusable store: the pane keeps saving.
+#[test]
+fn a_failed_list_read_leaves_the_pane_attached_to_the_store() {
+    let (mut a, _) = opened();
+    a.update(prompt_for(chat_id()));
+    a.update(AppEvent::Store(StoreReply::ListFailed {
+        pane: chat_id(),
+        tag: Some("proj".into()),
+    }));
+    let list = chat_of(&a).list().unwrap();
+    assert!(list.loaded());
+    assert_eq!(list.visible().len(), 0);
+    assert_eq!(chat_of(&a).tag(), Some("proj"));
+    a.update(key('n'));
+    let effects = ask(&mut a, "hello");
+    assert!(
+        matches!(stores(&effects).as_slice(), [StoreCmd::Create { .. }]),
+        "{effects:?}"
+    );
+    assert!(
+        !systems(chat_of(&a))
+            .iter()
+            .any(|l| l.starts_with(UNAVAILABLE_PREFIX))
+    );
 }
 
 #[test]
 fn the_new_conversation_takes_the_current_profile() {
     let mut ai = ollama();
     ai.set_profile(Profile::Analyst);
-    let mut a = launched(120, 30).with_ai(ai).with_chat_history(probe);
+    let mut a = launched(120, 30).with_ai(ai).with_chat_history();
     press(&mut a, "c");
     assert_eq!(chat_of(&a).profile(), Profile::Analyst);
 }
@@ -902,7 +945,7 @@ fn the_server_offer_does_not_take_the_keys_of_the_list() {
     use crate::core::ai::memory::{offer::Offer, port::MemReply};
     let mut a = launched(120, 30)
         .with_ai(super::chat_notes::ai(true))
-        .with_chat_history(probe);
+        .with_chat_history();
     a.update(AppEvent::EnginesDetected(detection()));
     press(&mut a, "c");
     a.update(AppEvent::Memory(MemReply::ServerOffer(Offer {
@@ -944,4 +987,32 @@ fn a_partial_message_keeps_its_mark_after_a_resume() {
         .filter(|line| line.kind == LineKind::Mark)
         .count();
     assert_eq!(marks, 1, "only the interrupted answer is marked");
+}
+
+// F3: a deleted conversation goes from every open list, not only the one that
+// asked.
+#[test]
+fn a_delete_removes_the_row_from_every_open_list() {
+    let mut a = listing();
+    press(&mut a, "c");
+    let b = second_chat();
+    a.update(prompt_for(b));
+    listed(&mut a, b, rows());
+    a.update(key('d'));
+    a.update(key('y'));
+    a.update(AppEvent::Store(StoreReply::Deleted {
+        pane: b,
+        conversation: 30,
+        notes: Vec::new(),
+    }));
+    for id in [chat_id(), b] {
+        let shown: Vec<i64> = chat_at(&a, id)
+            .list()
+            .unwrap()
+            .visible()
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(shown, vec![10], "{id:?}");
+    }
 }

@@ -465,9 +465,6 @@ pub struct App {
     /// its messages are saved through `Effect::Store`. Off by default, so a
     /// build without a store thread behaves as a plain chat.
     history: bool,
-    /// The project tag proposed for a chat opened in a directory. Injected so
-    /// the core does no IO: the runtime passes the repository walk.
-    project_tag: fn(&Path) -> Option<String>,
 }
 
 /// The key that left COPY and when it was last seen.
@@ -522,7 +519,6 @@ impl App {
             offer_pane: None,
             no_server: None,
             history: false,
-            project_tag: |_| None,
         }
     }
 
@@ -584,11 +580,9 @@ impl App {
         self
     }
 
-    /// Turns the chat history on (the list, saving, resume and delete) with
-    /// `project_tag` as the source of a chat's project tag.
-    pub fn with_chat_history(mut self, project_tag: fn(&Path) -> Option<String>) -> Self {
+    /// Turns the chat history on: the list, saving, resume and delete.
+    pub fn with_chat_history(mut self) -> Self {
         self.history = true;
-        self.project_tag = project_tag;
         self
     }
 

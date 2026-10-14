@@ -265,7 +265,7 @@ fn app_from_config(
     App::new(cols, rows)
         .with_config(&config)
         .with_ai(ai)
-        .with_chat_history(workspace::project_tag)
+        .with_chat_history()
         .with_notice(notice)
 }
 

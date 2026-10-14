@@ -377,6 +377,7 @@ impl App {
             StoreReply::Unavailable { .. }
             | StoreReply::Failed { .. }
             | StoreReply::Listed { .. }
+            | StoreReply::ListFailed { .. }
             | StoreReply::Resumed { .. }
             | StoreReply::ResumeFailed { .. }
             | StoreReply::Deleted { .. }
