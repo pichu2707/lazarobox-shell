@@ -449,7 +449,7 @@ pub struct App {
     /// Whether the terminal window has the focus (chat-notify). Starts
     /// `true`: without focus reporting only the pane rule applies.
     window_focused: bool,
-    /// Whether this system can jail a CLI. Nothing probes it yet.
+    /// Whether this system can jail a CLI; set from the startup probe.
     jail: JailSupport,
     /// Chat panes whose send waits for the first detection result, with the
     /// text parked at Enter.
@@ -516,7 +516,7 @@ impl App {
             detecting: false,
             ai: AiConfig::default(),
             window_focused: true,
-            jail: JailSupport::Unavailable("no CLI jail yet"),
+            jail: JailSupport::Unavailable("the jail was not probed"),
             waiting_sends: Vec::new(),
             anim_frame: 0,
             server_offer: ServerOffer::new(),
@@ -582,6 +582,14 @@ impl App {
     /// approved in a chat that wrote no note.
     pub fn with_session_ids(mut self, session_id: fn() -> Option<String>) -> Self {
         self.session_id = session_id;
+        self
+    }
+
+    /// Tells the app whether this system can jail a CLI (the startup probe).
+    /// Without it every CLI counts as unjailed: codex and gemini stay
+    /// unavailable, claude runs bare.
+    pub fn with_jail(mut self, jail: JailSupport) -> Self {
+        self.jail = jail;
         self
     }
 

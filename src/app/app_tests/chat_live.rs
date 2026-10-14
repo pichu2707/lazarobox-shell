@@ -910,6 +910,49 @@ fn a_cli_without_a_jail_is_not_available_on_this_system() {
     assert_eq!(composer(&a), "hi");
 }
 
+fn cli_detected(id: &'static str) -> AppEvent {
+    AppEvent::EnginesDetected(Detection {
+        engines: vec![EngineState {
+            id,
+            status: Status::Available,
+            models: vec![],
+            version: None,
+        }],
+    })
+}
+
+fn working_jail() -> crate::core::ai::jail::JailSupport {
+    crate::core::ai::jail::JailSupport::Available {
+        backend: crate::core::ai::jail::Backend::Landlock,
+        abi: 7,
+    }
+}
+
+#[test]
+fn claude_chats_with_or_without_a_jail() {
+    for jail in [
+        crate::core::ai::jail::JailSupport::Unavailable("test"),
+        working_jail(),
+    ] {
+        let mut a = undetected_chat(assigned("claude")).with_jail(jail);
+        a.update(cli_detected("claude"));
+        assert_eq!(guidance_of(&a), None, "{jail:?}");
+        let effects = ask(&mut a, "hello");
+        let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+            panic!("a send expected: {effects:?}");
+        };
+        assert_eq!(request.engine, "claude");
+        assert_eq!(request.model, None, "no model: the CLI's own default");
+    }
+}
+
+#[test]
+fn a_working_jail_makes_a_jail_only_cli_available() {
+    let mut a = undetected_chat(assigned("gemini")).with_jail(working_jail());
+    a.update(cli_detected("gemini"));
+    assert_eq!(guidance_of(&a), None);
+}
+
 #[test]
 fn checking_engines_shows_until_the_result_arrives_and_then_goes_away() {
     let mut a = undetected_chat(ollama());

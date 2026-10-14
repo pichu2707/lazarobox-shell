@@ -139,7 +139,10 @@ pub async fn run() -> io::Result<()> {
     let config_path = config_path(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"));
     // Read once, here: the config parser itself never touches the environment.
     let engram_port = env::var("ENGRAM_PORT").ok();
+    // Probed once: whether the CLI engines can be confined (Landlock).
+    let jail = jail::probe();
     let mut app = app_from_config(cols, rows, config_path.as_deref(), engram_port.as_deref())
+        .with_jail(jail)
         .with_hostname(local_hostname().as_deref())
         .with_dir_check(|dir| dir.is_dir())
         .with_session_ids(engram::worker::new_session_id)
@@ -182,7 +185,7 @@ pub async fn run() -> io::Result<()> {
                 prompt_tx.clone(),
             );
         }))
-        .with_chats(Chats::new(chat::adapter_runner(), chat_tx))
+        .with_chats(Chats::new(chat::adapter_runner(jail), chat_tx))
         .with_store(chat_store::spawn_at(store_path, store_tx));
     let inbox = Inbox {
         pty: rx,

@@ -114,7 +114,7 @@ pub async fn version(path: &Path) -> Option<Vec<u8>> {
 
 /// Waits for `pid` to exit WITHOUT reaping it, so the pid stays reserved.
 /// `Some(true)` for a clean exit 0.
-async fn wait_exit_unreaped(pid: libc::pid_t) -> Option<bool> {
+pub(crate) async fn wait_exit_unreaped(pid: libc::pid_t) -> Option<bool> {
     tokio::task::spawn_blocking(move || {
         // SAFETY: `info` is plain data for waitid to fill in; the pid is our
         // own child and WNOWAIT leaves it for `Child::wait` to reap.
