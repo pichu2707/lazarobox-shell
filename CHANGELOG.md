@@ -10,6 +10,44 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- AI chat with the `claude`, `codex` and `gemini` CLIs, using your own login
+  (no API key is read, stored or asked for). The conversation is sent to the
+  CLI's provider.
+  - Text only: each CLI starts with fixed options that remove its tools, so it
+    cannot run commands or edit files. gemini gets a deny-all tool policy file
+    written into the turn's private temp folder, no extensions and no MCP
+    servers (its `plan` mode alone can be left by the model).
+  - Linux jail (Landlock) for every CLI turn: no access to `$HOME`, `~/.ssh`
+    or other CLIs' folders, writes only in the CLI's own state folder and a
+    private per-turn temp folder, and only the interpreter and the CLI can be
+    executed. codex and gemini do not run without the jail
+    (`<engine>: not available on this system yet`); claude does, and says so
+    once in the pane.
+  - Script CLIs (npm installs) start through their interpreter. A Homebrew node
+    gets read-only access to exactly the library folders its own ELF lists and
+    to its OpenSSL config and CA bundle.
+  - A newer codex or gemini that adds an event kind, or a codex that drops a
+    feature flag lazarobox disables, makes the chat fail with an error until
+    lazarobox is updated.
+  - Tested with claude 2.1.299, codex-cli 0.142.5 and gemini 0.63.0.
+
+### Changed
+
+- The jail no longer lets a CLI read `/usr/bin`, `/usr/sbin` or `/bin`: the
+  dynamic loader could otherwise run any program there.
+- A script CLI's interpreter in a group- or world-writable folder, or under
+  `/tmp`, is refused inside the jail.
+
+### Security
+
+- Known limits, also in the README: the CLI state folders are writable
+  (a configuration written there runs on your next unjailed run), network is
+  not restricted, claude rewrites `~/.claude.json` in place under the jail,
+  claude's system prompt is visible in `ps`, gemini keeps its sessions in
+  `~/.gemini` outside `chat.db`, and `execve` limits are defense in depth.
+
 ## [0.11.0] - 2026-10-14
 
 ### Added
