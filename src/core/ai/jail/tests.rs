@@ -23,6 +23,7 @@ fn layout(cli: Cli, binary: &str, interpreter: Option<&str>) -> CliLayout {
         codex_home: None,
         binary: p(binary),
         interpreter: interpreter.map(p),
+        loaders: Vec::new(),
         helpers: Vec::new(),
         cwd: p("/run/user/1000/lazarobox/cli-cwd"),
         tmp: p("/run/user/1000/lazarobox/cli-tmp/1-1"),
@@ -445,4 +446,97 @@ fn helper_args_refuse_anything_unclear() {
     ] {
         assert!(parse_args(&bad).is_err(), "{bad:?}");
     }
+}
+
+// ---- the ELF loader ----
+
+/// A minimal little-endian ELF64 image: header, `phdrs` program headers
+/// (type, offset, size) and the bytes placed at the given offsets.
+fn elf64(phdrs: &[(u32, u64, u64)], blobs: &[(usize, &[u8])]) -> Vec<u8> {
+    let mut img = vec![0u8; 512];
+    img[..4].copy_from_slice(b"\x7fELF");
+    img[4] = 2; // 64-bit
+    img[5] = 1; // little endian
+    img[0x20..0x28].copy_from_slice(&64u64.to_le_bytes()); // e_phoff
+    img[0x36..0x38].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
+    img[0x38..0x3a].copy_from_slice(&(phdrs.len() as u16).to_le_bytes()); // e_phnum
+    for (i, (kind, offset, size)) in phdrs.iter().enumerate() {
+        let at = 64 + i * 56;
+        img[at..at + 4].copy_from_slice(&kind.to_le_bytes());
+        img[at + 8..at + 16].copy_from_slice(&offset.to_le_bytes());
+        img[at + 32..at + 40].copy_from_slice(&size.to_le_bytes());
+    }
+    for (at, bytes) in blobs {
+        img[*at..*at + bytes.len()].copy_from_slice(bytes);
+    }
+    img
+}
+
+#[test]
+fn elf_loader_is_the_pt_interp_path() {
+    let glibc = b"/lib64/ld-linux-x86-64.so.2\0";
+    let img = elf64(&[(1, 0, 0), (3, 300, glibc.len() as u64)], &[(300, glibc)]);
+    assert_eq!(elf_loader(&img), Some(p("/lib64/ld-linux-x86-64.so.2")));
+
+    let brew = b"/home/linuxbrew/.linuxbrew/lib/ld.so\0";
+    let img = elf64(&[(3, 400, brew.len() as u64)], &[(400, brew)]);
+    assert_eq!(
+        elf_loader(&img),
+        Some(p("/home/linuxbrew/.linuxbrew/lib/ld.so"))
+    );
+}
+
+#[test]
+fn elf_loader_is_none_when_there_is_nothing_clean_to_read() {
+    let name = b"/lib64/ld.so\0";
+    // Static binary: no PT_INTERP.
+    assert_eq!(elf_loader(&elf64(&[(1, 0, 0), (2, 0, 0)], &[])), None);
+    // A script, an empty file, a truncated header.
+    assert_eq!(elf_loader(b"#!/usr/bin/env node\n"), None);
+    assert_eq!(elf_loader(b""), None);
+    let img = elf64(&[(3, 300, name.len() as u64)], &[(300, name)]);
+    assert_eq!(elf_loader(&img[..70]), None);
+    // 32-bit and big-endian images are not read.
+    let mut c32 = img.clone();
+    c32[4] = 1;
+    assert_eq!(elf_loader(&c32), None);
+    let mut be = img.clone();
+    be[5] = 2;
+    assert_eq!(elf_loader(&be), None);
+    // The string lies outside the bytes we have, or is not absolute / UTF-8.
+    assert_eq!(elf_loader(&elf64(&[(3, 9000, 12)], &[])), None);
+    let rel = b"ld.so\0";
+    assert_eq!(elf_loader(&elf64(&[(3, 300, 6)], &[(300, rel)])), None);
+    let bad = b"/lib/\xff\0";
+    assert_eq!(elf_loader(&elf64(&[(3, 300, 7)], &[(300, bad)])), None);
+    // A header table that claims more entries than the image holds.
+    let mut many = img.clone();
+    many[0x38..0x3a].copy_from_slice(&u16::MAX.to_le_bytes());
+    assert_eq!(elf_loader(&many), None);
+}
+
+#[test]
+fn loaders_are_granted_as_exact_execute_files() {
+    let mut l = nvm_codex();
+    l.loaders = paths(&["/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"]);
+    let spec = jail_spec(&l).unwrap();
+    assert_eq!(
+        spec.rx,
+        paths(&[
+            "/home/u/.nvm/versions/node/v24.16.0/bin/node",
+            "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+            "/home/u/.nvm/versions/node/v24.16.0/lib/node_modules/@openai/codex",
+        ]),
+    );
+    // Still no system folder is executable.
+    assert!(!spec.rx.contains(&p("/usr/lib")));
+}
+
+#[test]
+fn a_loader_outside_the_system_dirs_is_granted_by_its_own_path() {
+    let mut l = brew_gemini();
+    l.loaders = paths(&["/home/linuxbrew/.linuxbrew/lib/ld.so"]);
+    let spec = jail_spec(&l).unwrap();
+    assert!(spec.rx.contains(&p("/home/linuxbrew/.linuxbrew/lib/ld.so")));
+    assert_eq!(spec.rx.len(), 3);
 }

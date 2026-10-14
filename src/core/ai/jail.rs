@@ -128,6 +128,60 @@ pub fn parse_shebang(head: &[u8]) -> Option<Interpreter> {
     Some(Interpreter::OnPath(name.to_owned()))
 }
 
+/// How many bytes of an executable are read to find its ELF loader. The
+/// program headers and the `.interp` string sit at the very start of the file.
+pub const ELF_HEAD_BYTES: usize = 4096;
+
+const PT_INTERP: u32 = 3;
+
+fn le_u16(bytes: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(
+        bytes.get(at..at.checked_add(2)?)?.try_into().ok()?,
+    ))
+}
+
+fn le_u32(bytes: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        bytes.get(at..at.checked_add(4)?)?.try_into().ok()?,
+    ))
+}
+
+fn le_u64(bytes: &[u8], at: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(
+        bytes.get(at..at.checked_add(8)?)?.try_into().ok()?,
+    ))
+}
+
+/// The dynamic loader a little-endian ELF64 executable asks for (its
+/// `PT_INTERP`). The kernel opens it with execute rights when the program
+/// starts, so it is the one extra file a dynamic program needs to run at all.
+/// `None` for static binaries, scripts and anything malformed.
+pub fn elf_loader(head: &[u8]) -> Option<PathBuf> {
+    const ELF64: &[u8] = b"\x7fELF\x02\x01";
+    if !head.starts_with(ELF64) {
+        return None;
+    }
+    let table = usize::try_from(le_u64(head, 0x20)?).ok()?;
+    let entry = usize::from(le_u16(head, 0x36)?);
+    let count = usize::from(le_u16(head, 0x38)?);
+    if entry < 40 || table.checked_add(entry.checked_mul(count)?)? > head.len() {
+        return None;
+    }
+    for i in 0..count {
+        let at = table + i * entry;
+        if le_u32(head, at)? != PT_INTERP {
+            continue;
+        }
+        let start = usize::try_from(le_u64(head, at + 8)?).ok()?;
+        let size = usize::try_from(le_u64(head, at + 32)?).ok()?;
+        let raw = head.get(start..start.checked_add(size)?)?;
+        let name = std::str::from_utf8(raw.split(|b| *b == 0).next()?).ok()?;
+        let path = Path::new(name);
+        return path.is_absolute().then(|| path.to_path_buf());
+    }
+    None
+}
+
 /// The directory that holds a CLI's own code: the `node_modules` package
 /// (`<pkg>` or `@scope/pkg`, innermost), else the folder of the binary.
 pub fn package_root(binary: &Path) -> Option<PathBuf> {
@@ -198,6 +252,9 @@ pub struct CliLayout {
     pub binary: PathBuf,
     /// The canonical interpreter file of a script CLI.
     pub interpreter: Option<PathBuf>,
+    /// The canonical ELF loaders (`PT_INTERP`) of the interpreter, or of the
+    /// native CLI when it has none. Without them nothing dynamic can start.
+    pub loaders: Vec<PathBuf>,
     /// Extra programs a manual check proved necessary, by exact path.
     pub helpers: Vec<PathBuf>,
     /// The private empty working directory.
@@ -253,6 +310,7 @@ pub fn jail_spec(layout: &CliLayout) -> Result<JailSpec, SpecError> {
     for path in layout
         .interpreter
         .iter()
+        .chain(&layout.loaders)
         .chain([&root])
         .chain(&layout.helpers)
     {
