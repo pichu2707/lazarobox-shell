@@ -374,7 +374,13 @@ impl App {
                 }
                 Vec::new()
             }
-            StoreReply::Unavailable { .. } | StoreReply::Failed { .. } => Vec::new(),
+            StoreReply::Unavailable { .. }
+            | StoreReply::Failed { .. }
+            | StoreReply::Listed { .. }
+            | StoreReply::Resumed { .. }
+            | StoreReply::ResumeFailed { .. }
+            | StoreReply::Deleted { .. }
+            | StoreReply::DeleteFailed { .. } => Vec::new(),
         }
     }
 

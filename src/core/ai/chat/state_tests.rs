@@ -346,3 +346,17 @@ fn the_composer_survives_a_send_of_other_text() {
         "send takes text, not the box"
     );
 }
+
+#[test]
+fn a_status_name_round_trips_and_an_unknown_one_is_none() {
+    for status in [
+        MsgStatus::Complete,
+        MsgStatus::Cancelled,
+        MsgStatus::Interrupted,
+        MsgStatus::Truncated,
+        MsgStatus::Error,
+    ] {
+        assert_eq!(MsgStatus::from_name(status.as_str()), Some(status));
+    }
+    assert_eq!(MsgStatus::from_name("done"), None);
+}

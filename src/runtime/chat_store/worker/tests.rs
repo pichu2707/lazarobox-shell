@@ -1190,3 +1190,281 @@ fn the_notes_of_an_open_conversation_are_not_counted() {
     assert_eq!(notes_of(worker.handle(create(user("new"), vec![1_000]))), 2);
     assert_eq!(count(&conn, "memory_notes"), 3);
 }
+
+// ---- list, resume, delete (ai-chat C9) ---------------------------------------
+
+use crate::core::ai::chat::{
+    Msg,
+    store::{ConvRow, FIRST_MAX, NoteRow},
+};
+
+fn list() -> StoreCmd {
+    StoreCmd::List { pane: pane() }
+}
+
+fn listed(reply: Option<StoreReply>) -> Vec<ConvRow> {
+    match reply {
+        Some(StoreReply::Listed { pane: from, rows }) => {
+            assert_eq!(from, pane());
+            rows
+        }
+        other => panic!("expected Listed, got {other:?}"),
+    }
+}
+
+fn resume(conversation: i64) -> StoreCmd {
+    StoreCmd::Resume {
+        pane: pane(),
+        conversation,
+    }
+}
+
+fn delete(conversation: i64) -> StoreCmd {
+    StoreCmd::Delete {
+        pane: pane(),
+        conversation,
+    }
+}
+
+#[test]
+fn the_list_is_newest_activity_first_with_the_first_user_message() {
+    let (_dir, mut worker, conn) = fixture();
+    let old = created_id(worker.handle(create(user("older question"), vec![])));
+    let new = created_id(worker.handle(StoreCmd::Create {
+        pane: pane(),
+        profile: "analyst".into(),
+        tag: None,
+        first: user("newer\nquestion"),
+        open: vec![],
+    }));
+    worker.handle(append(old, reply_msg("an answer", MsgStatus::Complete)));
+    conn.execute(
+        "UPDATE conversations SET updated_at = 5000 WHERE id = ?1",
+        [old],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE conversations SET updated_at = 4000 WHERE id = ?1",
+        [new],
+    )
+    .unwrap();
+    let rows = listed(worker.handle(list()));
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        (rows[0].id, rows[0].updated_at, rows[0].profile.as_str()),
+        (old, 5000, "programmer")
+    );
+    assert_eq!(rows[0].tag.as_deref(), Some("proj"));
+    // The first message of the conversation is the user's, not the answer.
+    assert_eq!(rows[0].first, "older question");
+    assert_eq!(
+        (rows[1].id, rows[1].tag.clone(), rows[1].first.as_str()),
+        (new, None, "newer\nquestion")
+    );
+}
+
+#[test]
+fn equal_activity_lists_the_higher_id_first() {
+    let (_dir, mut worker, conn) = fixture();
+    let a = created_id(worker.handle(create(user("a"), vec![])));
+    let b = created_id(worker.handle(create(user("b"), vec![])));
+    conn.execute("UPDATE conversations SET updated_at = 7", [])
+        .unwrap();
+    let ids: Vec<i64> = listed(worker.handle(list())).iter().map(|r| r.id).collect();
+    assert_eq!(ids, vec![b, a]);
+}
+
+#[test]
+fn a_long_first_message_is_cut_in_the_list() {
+    let (_dir, mut worker, _conn) = fixture();
+    created_id(worker.handle(create(user(&"é".repeat(FIRST_MAX + 50)), vec![])));
+    let rows = listed(worker.handle(list()));
+    assert_eq!(rows[0].first.chars().count(), FIRST_MAX);
+}
+
+#[test]
+fn an_empty_store_lists_nothing() {
+    let (_dir, mut worker, _conn) = fixture();
+    assert_eq!(listed(worker.handle(list())), Vec::new());
+}
+
+#[test]
+fn an_unusable_store_answers_unavailable_to_a_list() {
+    let reply = run_once(None, list());
+    assert_unavailable(reply);
+}
+
+#[test]
+fn a_resume_returns_the_messages_in_order_with_their_status() {
+    let (_dir, mut worker, _conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    worker.handle(append(id, reply_msg("full", MsgStatus::Complete)));
+    worker.handle(append(id, user("q2")));
+    worker.handle(append(id, reply_msg("Hel", MsgStatus::Cancelled)));
+    let Some(StoreReply::Resumed {
+        pane: from,
+        conversation,
+        profile,
+        tag,
+        messages,
+    }) = worker.handle(resume(id))
+    else {
+        panic!("expected Resumed");
+    };
+    assert_eq!((from, conversation), (pane(), id));
+    assert_eq!(
+        (profile.as_str(), tag.as_deref()),
+        ("programmer", Some("proj"))
+    );
+    let got: Vec<(Role, &str, MsgStatus)> = messages
+        .iter()
+        .map(|m: &Msg| (m.role, m.text.as_str(), m.status))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (Role::User, "q", MsgStatus::Complete),
+            (Role::Assistant, "full", MsgStatus::Complete),
+            (Role::User, "q2", MsgStatus::Complete),
+            (Role::Assistant, "Hel", MsgStatus::Cancelled),
+        ]
+    );
+}
+
+#[test]
+fn resuming_a_missing_conversation_fails() {
+    let (_dir, mut worker, _conn) = fixture();
+    assert_eq!(
+        worker.handle(resume(424_242)),
+        Some(StoreReply::ResumeFailed { pane: pane() })
+    );
+}
+
+#[test]
+fn a_delete_removes_the_conversation_and_everything_that_hangs_from_it() {
+    let (_dir, mut worker, conn) = fixture();
+    let keep = created_id(worker.handle(create(user("keep"), vec![])));
+    let id = created_id(worker.handle(create(user("gone"), vec![])));
+    worker.handle(append(id, reply_msg("answer", MsgStatus::Complete)));
+    session_of(worker.handle(link_session(id, SESSION_A)));
+    worker.handle(link_note(id, "decision/a", 11, "A"));
+    worker.handle(link_note(keep, "decision/b", 12, "B"));
+    let reply = worker.handle(delete(id));
+    // The note rows come back before the cascade removes them.
+    assert_eq!(
+        reply,
+        Some(StoreReply::Deleted {
+            pane: pane(),
+            conversation: id,
+            notes: vec![NoteRow {
+                project: "proj".into(),
+                observation_id: 11,
+            }],
+        })
+    );
+    assert!(!exists(&conn, id));
+    assert!(exists(&conn, keep));
+    assert_eq!(count(&conn, "messages"), 1);
+    assert_eq!(count(&conn, "tags"), 1);
+    assert_eq!(count(&conn, "memory_sessions"), 0);
+    assert_eq!(count(&conn, "memory_notes"), 1);
+}
+
+#[test]
+fn a_delete_without_notes_returns_none() {
+    let (_dir, mut worker, _conn) = fixture();
+    let id = created_id(worker.handle(create(user("x"), vec![])));
+    let Some(StoreReply::Deleted { notes, .. }) = worker.handle(delete(id)) else {
+        panic!("expected Deleted");
+    };
+    assert_eq!(notes, Vec::new());
+}
+
+#[test]
+fn deleting_a_missing_conversation_fails() {
+    let (_dir, mut worker, _conn) = fixture();
+    assert_eq!(
+        worker.handle(delete(424_242)),
+        Some(StoreReply::DeleteFailed { pane: pane() })
+    );
+}
+
+#[test]
+fn a_failing_delete_keeps_the_conversation() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("x"), vec![])));
+    conn.execute_batch(
+        "CREATE TRIGGER no_deletes BEFORE DELETE ON conversations
+         BEGIN SELECT RAISE(ABORT, 'disk on fire'); END;",
+    )
+    .unwrap();
+    assert_eq!(
+        worker.handle(delete(id)),
+        Some(StoreReply::DeleteFailed { pane: pane() })
+    );
+    assert!(exists(&conn, id));
+    assert_eq!(count(&conn, "messages"), 1);
+}
+
+// Spec: Deleted text is gone from the file.
+#[test]
+fn deleted_text_is_gone_from_the_file() {
+    let (dir, mut worker, _conn) = fixture();
+    let id = created_id(worker.handle(create(user("ZZ-MARKER-ZZ"), vec![])));
+    worker.handle(append(id, reply_msg("ZZ-MARKER-ZZ", MsgStatus::Complete)));
+    let has = |p: &Path| {
+        fs::read(p)
+            .unwrap_or_default()
+            .windows(12)
+            .any(|w| w == b"ZZ-MARKER-ZZ")
+    };
+    let db = db_path(&dir);
+    assert!(has(&db), "the marker is in the file before the delete");
+    worker.handle(delete(id));
+    assert!(!has(&db));
+    let mut journal = db.as_os_str().to_owned();
+    journal.push("-journal");
+    assert!(!has(Path::new(&journal)));
+}
+
+#[test]
+fn a_handle_without_a_thread_answers_every_history_read() {
+    let (tx, mut rx) = mpsc::channel(8);
+    let handle = spawn_with(
+        |_| Err(std::io::Error::other("no threads left")),
+        || Err(StoreError::NoPath),
+        tx,
+    );
+    handle.send(list());
+    handle.send(resume(1));
+    handle.send(delete(1));
+    assert!(matches!(
+        rx.blocking_recv(),
+        Some(StoreReply::Unavailable { .. })
+    ));
+    assert_eq!(
+        rx.blocking_recv(),
+        Some(StoreReply::ResumeFailed { pane: pane() })
+    );
+    assert_eq!(
+        rx.blocking_recv(),
+        Some(StoreReply::DeleteFailed { pane: pane() })
+    );
+    handle.shutdown(Duration::from_millis(200));
+}
+
+#[test]
+fn a_panicking_history_command_still_gets_its_reply() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    // A delete or a resume that panics fails without taking the history down.
+    let reply = worker.guarded_with(delete(id), |_, _| panic!("handler bug"));
+    assert_eq!(reply, Some(StoreReply::DeleteFailed { pane: pane() }));
+    let reply = worker.guarded_with(resume(id), |_, _| panic!("handler bug"));
+    assert_eq!(reply, Some(StoreReply::ResumeFailed { pane: pane() }));
+    assert!(exists(&conn, id));
+    assert_eq!(listed(worker.guarded(list())).len(), 1);
+    // A list that panics leaves the store unusable, like a create.
+    let reply = worker.guarded_with(list(), |_, _| panic!("handler bug"));
+    assert!(matches!(reply, Some(StoreReply::Unavailable { .. })));
+}

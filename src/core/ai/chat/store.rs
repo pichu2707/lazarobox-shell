@@ -5,7 +5,7 @@
 //! does not know its conversation's database id until `Created` arrives, so
 //! `PaneStore` holds the appends that are produced before then.
 
-use super::{MsgStatus, engine::Role};
+use super::{Msg, MsgStatus, engine::Role};
 use crate::core::{ai::sanitize::clean, layout::PaneId};
 
 /// The most conversations the store keeps.
@@ -18,6 +18,9 @@ pub const SAVE_FAILED_LINE: &str = "could not save conversation";
 pub const UNAVAILABLE_PREFIX: &str = "history unavailable: ";
 /// The longest error text shown to the user, in characters.
 pub const ERROR_MAX: usize = 120;
+
+/// The most characters of a conversation's first message the list carries.
+pub const FIRST_MAX: usize = 200;
 
 /// One message to save.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -67,8 +70,38 @@ pub enum StoreCmd {
         observation_id: i64,
         title: String,
     },
+    /// The conversations of the store, newest last activity first. Answered
+    /// with `Listed`, or `Unavailable`.
+    List { pane: PaneId },
+    /// Reads a whole conversation. Answered with `Resumed`, or `ResumeFailed`.
+    Resume { pane: PaneId, conversation: i64 },
+    /// Removes a conversation with everything that hangs from it. Answered
+    /// with `Deleted` (carrying the note rows the delete took with it), or
+    /// `DeleteFailed`.
+    Delete { pane: PaneId, conversation: i64 },
     /// Finish what is queued and stop.
     Quit,
+}
+
+/// One row of the conversation list.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ConvRow {
+    pub id: i64,
+    /// Last activity, in seconds since the Unix epoch.
+    pub updated_at: i64,
+    pub profile: String,
+    /// The project tag, when the conversation has one.
+    pub tag: Option<String>,
+    /// The first user message, cut to `FIRST_MAX` characters.
+    pub first: String,
+}
+
+/// A note row a delete removed: the note itself stays in engram. What a later
+/// "also delete its notes" needs to find it there.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct NoteRow {
+    pub project: String,
+    pub observation_id: i64,
 }
 
 /// Which link a [`StoreReply::LinkFailed`] is about.
@@ -91,7 +124,10 @@ pub enum StoreReply {
         evicted_notes: u32,
     },
     /// The store cannot be used at all; `reason` is already bounded.
-    Unavailable { pane: PaneId, reason: String },
+    Unavailable {
+        pane: PaneId,
+        reason: String,
+    },
     /// The session of a conversation: the stored id and the project it was
     /// registered with, which are the ones just proposed unless the
     /// conversation already had a pair. The caller reuses both, because engram
@@ -104,10 +140,44 @@ pub enum StoreReply {
     },
     /// A link could not be written. Nothing else was undone; the caller says
     /// so once if it wants to.
-    LinkFailed { pane: PaneId, kind: LinkKind },
+    LinkFailed {
+        pane: PaneId,
+        kind: LinkKind,
+    },
     /// A write failed. `notify` is true for the first failure of a run, the
     /// only one that earns a system line.
-    Failed { pane: PaneId, notify: bool },
+    Failed {
+        pane: PaneId,
+        notify: bool,
+    },
+    /// The answer to `List`, newest last activity first.
+    Listed {
+        pane: PaneId,
+        rows: Vec<ConvRow>,
+    },
+    /// The answer to `Resume`: the profile and project tag the conversation
+    /// was stored with and its messages in order (no reasoning, no system
+    /// lines: none is ever stored).
+    Resumed {
+        pane: PaneId,
+        conversation: i64,
+        profile: String,
+        tag: Option<String>,
+        messages: Vec<Msg>,
+    },
+    ResumeFailed {
+        pane: PaneId,
+    },
+    /// The conversation is gone. `notes` are the note rows it had, read in the
+    /// same transaction that removed it.
+    Deleted {
+        pane: PaneId,
+        conversation: i64,
+        notes: Vec<NoteRow>,
+    },
+    DeleteFailed {
+        pane: PaneId,
+    },
 }
 
 /// The system lines a new conversation shows when retention removed some: the

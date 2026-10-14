@@ -70,6 +70,19 @@ impl MsgStatus {
         self != Self::Complete
     }
 
+    /// The status a stored name stands for.
+    pub fn from_name(name: &str) -> Option<Self> {
+        [
+            Self::Complete,
+            Self::Cancelled,
+            Self::Interrupted,
+            Self::Truncated,
+            Self::Error,
+        ]
+        .into_iter()
+        .find(|status| status.as_str() == name)
+    }
+
     /// The name stored in the database.
     pub fn as_str(self) -> &'static str {
         match self {
