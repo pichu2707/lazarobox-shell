@@ -299,10 +299,11 @@ Reorder note (user-approved 2026-10-12): PR13 was applied ahead of PR10, PR11 an
 
 ## PR19 / C16: Docs (`README.md`)
 
-- [ ] 19.1 README: db is unencrypted plain text, path and how to delete it; CLI conversations go to the vendor; gemini keeps its sessions in `~/.gemini` outside `chat.db`; system prompt visible in `ps`; per-OS availability (Linux jail; codex and gemini unavailable elsewhere); CLI versions tested; execute-denied jail policy; reasoning is shown in the pane but never stored in `chat.db`.
-- [ ] 19.2 README: profiles, `prompts/<profile>/<task>.md`, the 16 KiB cap, order task then general then built-in, profile switch applies to new conversations only, whether claude runs jailed (M11 result).
-- [ ] 19.2a README (from PR16): (1) claude can run WITHOUT the jail (no Landlock, or a layout the jail refuses) and the pane says so once; (2) under the jail claude rewrites `~/.claude.json` in place, not atomically (M11), so a crash or two claudes at once can corrupt it (see 16.8); (3) the system prompt is visible in `ps` (argv); (4) the strace baseline (M12) is still pending.
-- [ ] 19.3 Gate (docs only; cargo fmt/clippy unaffected).
+- [x] 19.1 README: db is unencrypted plain text, path and how to delete it; CLI conversations go to the vendor; gemini keeps its sessions in `~/.gemini` outside `chat.db`; system prompt visible in `ps`; per-OS availability (Linux jail; codex and gemini unavailable elsewhere); CLI versions tested; execute-denied jail policy; reasoning is shown in the pane but never stored in `chat.db`.
+- [x] 19.2 README: profiles, `prompts/<profile>/<task>.md`, the 16 KiB cap, order task then general then built-in, profile switch applies to new conversations only, whether claude runs jailed (M11 result).
+- [x] 19.2a README (from PR16): (1) claude can run WITHOUT the jail (no Landlock, or a layout the jail refuses) and the pane says so once; (2) under the jail claude rewrites `~/.claude.json` in place, not atomically (M11), so a crash or two claudes at once can corrupt it (see 16.8); (3) the system prompt is visible in `ps` (argv); (4) the strace baseline (M12) is still pending.
+- [x] 19.3 Gate (docs only; cargo fmt/clippy unaffected).
+  - Apply note: README (Spanish) section `Motores CLI: claude, codex y gemini` plus the privacy, memory and limits lines it changes; CHANGELOG `[Unreleased]` in English. Covers 19.1, 19.2 (profiles and the cap were already documented; the claude jail result is in the new section) and 19.2a (jail-less claude, in-place `~/.claude.json`, `ps`, strace pending), plus the PR17 review facts (codex and gemini fail closed; a node in a group-writable folder is refused), the codex model note and the gemini notes. Docs only: fmt and clippy unaffected.
 
 ## PR20 (no code): Final manual verify, real machine [manual]
 
