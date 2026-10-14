@@ -17,10 +17,14 @@
 //! - **no reasoning**: the usage counts reasoning tokens, but no event
 //!   carries reasoning text with the pinned flags, so nothing is shown as
 //!   thinking.
-//! - an item that is a tool call (`command_execution`, `file_change`,
-//!   `mcp_tool_call`, `collab_tool_call`) means the flags that remove the
-//!   tools did not hold: the turn ends with an error (the runtime then stops
-//!   the process). The jail is what actually stops the tool.
+//! - an item of any kind but `agent_message`, `reasoning`, `error` and
+//!   `todo_list` (a command, a file change, a tool call, web search, or a kind
+//!   a newer codex adds) means the flags that remove the tools did not hold:
+//!   the turn ends with an error and the runtime then stops the process. An
+//!   allowlist, so nothing unknown runs unseen; the jail is what actually
+//!   stops the tool.
+//! - a failure that says the model is not supported for the login gets a hint
+//!   to pick another model.
 //! - everything else, including any line that does not start with `{`, is
 //!   ignored.
 
@@ -28,20 +32,23 @@ use serde_json::Value;
 
 use super::engine::{ChatError, Finish, StreamEvent};
 use super::stream::{
-    CLI_LINE_CAP, Lines, StreamDecoder, TooLong, emit, error_message, finish_with, malformed,
-    too_long,
+    CLI_LINE_CAP, ERROR_CAP, Lines, StreamDecoder, TooLong, emit, error_message, finish_with,
+    malformed, too_long,
 };
 
 /// The failure of a turn in which codex started a tool.
 pub const TOOL_REFUSED: &str = "codex tried to use a tool";
 
-/// Items that run something or change something.
-const TOOL_ITEMS: [&str; 4] = [
-    "command_execution",
-    "file_change",
-    "mcp_tool_call",
-    "collab_tool_call",
-];
+/// The only item kinds a text-only turn may hold. Any other kind (a command,
+/// a file change, a tool call, web search, or a kind a newer codex adds) ends
+/// the turn: an allowlist, so nothing unknown runs unseen.
+const ALLOWED_ITEMS: [&str; 4] = ["agent_message", "reasoning", "error", "todo_list"];
+
+/// Added to a failure that says the model is not available to the login.
+pub const MODEL_HINT: &str = " - pick a model your account supports (custom…)";
+
+/// What a failure text holds when the account cannot use the model.
+const MODEL_UNSUPPORTED: &str = "not supported when using Codex";
 
 /// Decodes the JSONL output of `codex exec --json`.
 pub struct CodexDecoder {
@@ -79,13 +86,13 @@ impl CodexDecoder {
         }
     }
 
-    /// The refusal when `value` is a tool item, else nothing.
+    /// The refusal when the item of `value` is not an allowed kind.
     fn tool_check(value: &Value) -> Vec<StreamEvent> {
         let kind = value["item"]["type"].as_str();
-        if kind.is_some_and(|k| TOOL_ITEMS.contains(&k)) {
-            vec![StreamEvent::Error(ChatError::Failed(TOOL_REFUSED.into()))]
-        } else {
+        if kind.is_some_and(|k| ALLOWED_ITEMS.contains(&k)) {
             vec![]
+        } else {
+            vec![StreamEvent::Error(ChatError::Failed(TOOL_REFUSED.into()))]
         }
     }
 
@@ -127,7 +134,14 @@ fn failure(value: &Value) -> String {
                 .or(body["message"].as_str())
         })
         .unwrap_or(message);
-    error_message(text)
+    let shown = error_message(text);
+    if !text.contains(MODEL_UNSUPPORTED) {
+        return shown;
+    }
+    // Keep the hint whole: cut the message, not the hint.
+    let room = ERROR_CAP - MODEL_HINT.chars().count();
+    let head: String = shown.chars().take(room).collect();
+    format!("{}{MODEL_HINT}", head.trim_end())
 }
 
 impl Default for CodexDecoder {

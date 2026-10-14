@@ -1064,11 +1064,14 @@ async fn a_failed_codex_turn_shows_the_api_message_even_though_the_process_exits
     env.jail = jail_on();
     env.helper = lab.helper(PASS);
     let events = run_job(&env, codex_job(&["exec", "-"])).await;
-    assert_eq!(
-        events,
-        [StreamEvent::Error(ChatError::Failed(
-            "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.".into()
-        ))]
+    let [StreamEvent::Error(ChatError::Failed(message))] = events.as_slice() else {
+        panic!("{events:?}");
+    };
+    assert!(
+        message.starts_with(
+            "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account."
+        ),
+        "{message}"
     );
 }
 

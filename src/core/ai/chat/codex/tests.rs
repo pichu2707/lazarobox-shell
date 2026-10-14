@@ -96,21 +96,25 @@ fn messages_of_one_turn_are_separated_by_a_blank_line() {
 
 #[test]
 fn a_failed_turn_gives_the_api_message_not_the_json_around_it() {
-    assert_eq!(
-        whole(MODEL_ERROR),
-        [failed(
+    let events = whole(MODEL_ERROR);
+    let [StreamEvent::Error(ChatError::Failed(message))] = events.as_slice() else {
+        panic!("{events:?}");
+    };
+    assert!(
+        message.starts_with(
             "The 'gpt-5.4-mini' model is not supported when using Codex with a ChatGPT account."
-        )]
+        ),
+        "{message}"
     );
 }
 
 #[test]
 fn a_warning_item_is_not_a_failure_and_the_error_events_do_not_end_the_turn() {
-    assert_eq!(
-        whole(WARNING_ERROR),
-        [failed(
-            "The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account."
-        )]
+    let events = whole(WARNING_ERROR);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(
+        matches!(&events[0], StreamEvent::Error(ChatError::Failed(m))
+        if m.starts_with("The 'gpt-5-codex' model is not supported"))
     );
 }
 
@@ -165,22 +169,66 @@ fn a_command_that_codex_starts_ends_the_turn_with_an_error() {
 }
 
 #[test]
-fn file_changes_and_mcp_calls_end_the_turn_too_but_other_items_do_not() {
-    for kind in ["file_change", "mcp_tool_call", "collab_tool_call"] {
-        let text = format!(
-            "{{\"type\":\"item.started\",\"item\":{{\"id\":\"item_1\",\"type\":\"{kind}\"}}}}\n"
-        );
-        assert_eq!(whole(&text), [failed(TOOL_REFUSED)], "{kind}");
+fn only_four_item_kinds_are_allowed_and_every_other_one_ends_the_turn() {
+    // An allowlist: a tool the pinned flags missed, or a kind a newer codex
+    // adds, must not run unseen.
+    for event in ["item.started", "item.updated", "item.completed"] {
+        for kind in [
+            "command_execution",
+            "file_change",
+            "mcp_tool_call",
+            "collab_tool_call",
+            "web_search",
+            "something_new",
+        ] {
+            let text = format!(
+                "{{\"type\":\"{event}\",\"item\":{{\"id\":\"item_1\",\"type\":\"{kind}\"}}}}\n"
+            );
+            assert_eq!(whole(&text), [failed(TOOL_REFUSED)], "{event} {kind}");
+        }
+        let untyped = format!("{{\"type\":\"{event}\",\"item\":{{\"id\":\"item_1\"}}}}\n");
+        assert_eq!(whole(&untyped), [failed(TOOL_REFUSED)], "{event} untyped");
     }
     let mut text = String::new();
-    for kind in ["web_search", "todo_list", "something_new"] {
-        text.push_str(&format!(
-            "{{\"type\":\"item.completed\",\"item\":{{\"id\":\"item_1\",\"type\":\"{kind}\"}}}}\n"
-        ));
+    for kind in ["reasoning", "todo_list", "error"] {
+        for event in ["item.started", "item.updated", "item.completed"] {
+            text.push_str(&format!(
+                "{{\"type\":\"{event}\",\"item\":{{\"id\":\"item_1\",\"type\":\"{kind}\"}}}}\n"
+            ));
+        }
     }
     text.push_str(&message_line("fine"));
     text.push_str(completed_line());
     assert_eq!(whole(&text), [delta("fine"), done()]);
+}
+
+#[test]
+fn an_unsupported_model_failure_gets_a_hint_inside_the_cap() {
+    let events = whole(MODEL_ERROR);
+    let [StreamEvent::Error(ChatError::Failed(message))] = events.as_slice() else {
+        panic!("one failure expected: {events:?}");
+    };
+    assert!(
+        message.starts_with("The 'gpt-5.4-mini' model is not supported"),
+        "{message}"
+    );
+    assert!(message.ends_with(MODEL_HINT), "{message}");
+    assert!(message.chars().count() <= ERROR_CAP);
+    // A long message keeps the hint, cuts the rest, and stays one clean line.
+    let long = format!(
+        "not supported when using Codex \\u001b[31m{}",
+        "x".repeat(500)
+    );
+    let events = whole(&turn_failed_line(&long));
+    let [StreamEvent::Error(ChatError::Failed(message))] = events.as_slice() else {
+        panic!("one failure expected: {events:?}");
+    };
+    assert!(message.ends_with(MODEL_HINT), "{message}");
+    assert!(message.chars().count() <= ERROR_CAP);
+    assert!(!message.contains('\u{1b}') && !message.contains('\n'));
+    // Other failures get none.
+    let events = whole(&turn_failed_line("boom"));
+    assert_eq!(events, [failed("boom")]);
 }
 
 #[test]
