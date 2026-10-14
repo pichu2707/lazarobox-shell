@@ -709,6 +709,7 @@ impl Panes {
                 // Only flagged here: the BEL joins the host bytes after the
                 // draw (see `stage_bell`), never in the middle of a frame.
                 Effect::Bell => self.bell = true,
+                Effect::MouseCapture(_) => {}
                 Effect::Quit => outcome = Outcome::Quit,
             }
         }
