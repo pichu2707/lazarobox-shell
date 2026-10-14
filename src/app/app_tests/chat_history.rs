@@ -110,6 +110,7 @@ pub(super) fn row(
         tag: tag.map(str::to_owned),
         extras: vec![],
         first: first.into(),
+        notes: 0,
     }
 }
 

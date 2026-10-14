@@ -62,6 +62,7 @@ fn row(id: i64, tag: &str) -> ConvRow {
         tag: Some(tag.into()),
         extras: vec![],
         first: "How do I read a file?".into(),
+        notes: 0,
     }
 }
 

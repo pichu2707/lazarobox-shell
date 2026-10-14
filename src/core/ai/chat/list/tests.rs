@@ -11,6 +11,7 @@ fn row(id: i64, updated_at: i64, tag: Option<&str>, first: &str) -> ConvRow {
         tag: tag.map(str::to_owned),
         extras: vec![],
         first: first.into(),
+        notes: 0,
     }
 }
 

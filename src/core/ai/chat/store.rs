@@ -125,6 +125,10 @@ pub struct ConvRow {
     pub extras: Vec<String>,
     /// The first user message, cut to `FIRST_MAX` characters.
     pub first: String,
+    /// How many note links the conversation had when the list was read: what
+    /// the delete prompt offers to remove. The delete itself answers with the
+    /// authoritative rows.
+    pub notes: u32,
 }
 
 /// A note row a delete removed: the note itself stays in engram. What a later

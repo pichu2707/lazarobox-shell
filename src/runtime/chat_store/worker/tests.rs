@@ -1456,6 +1456,59 @@ fn a_delete_removes_the_conversation_and_everything_that_hangs_from_it() {
     assert_eq!(count(&conn, "memory_notes"), 1);
 }
 
+// Spec (Delete): the prompt offers `its N notes`, so the list carries the
+// count of each conversation's note links.
+#[test]
+fn the_list_counts_the_note_links_of_each_conversation() {
+    let (_dir, mut worker, _conn) = fixture();
+    let none = created_id(worker.handle(create(user("none"), vec![])));
+    let three = created_id(worker.handle(create(user("three"), vec![])));
+    let one = created_id(worker.handle(create(user("one"), vec![])));
+    for (n, topic) in ["decision/a", "decision/b", "bugfix/c"].iter().enumerate() {
+        worker.handle(link_note(three, topic, 20 + n as i64, "T"));
+    }
+    worker.handle(link_note(one, "pattern/d", 30, "D"));
+    let rows = listed(worker.handle(list()));
+    let notes = |id: i64| rows.iter().find(|r| r.id == id).map(|r| r.notes);
+    assert_eq!(
+        (notes(none), notes(three), notes(one)),
+        (Some(0), Some(3), Some(1))
+    );
+}
+
+// A note re-pointed to another conversation belongs to the one that wrote it
+// last, so the older one no longer counts it.
+#[test]
+fn a_re_pointed_note_counts_for_its_last_conversation_only() {
+    let (_dir, mut worker, _conn) = fixture();
+    let first = created_id(worker.handle(create(user("first"), vec![])));
+    let second = created_id(worker.handle(create(user("second"), vec![])));
+    worker.handle(link_note(first, "decision/x", 41, "X"));
+    worker.handle(link_note(second, "decision/x", 41, "X"));
+    let rows = listed(worker.handle(list()));
+    let notes = |id: i64| rows.iter().find(|r| r.id == id).map(|r| r.notes);
+    assert_eq!((notes(first), notes(second)), (Some(0), Some(1)));
+}
+
+// Spec (Delete failure): nothing is returned for a delete that did not happen,
+// so the app has no rows to send a request for.
+#[test]
+fn a_failed_delete_returns_no_note_rows() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("x"), vec![])));
+    worker.handle(link_note(id, "decision/a", 11, "A"));
+    conn.execute_batch(
+        "CREATE TRIGGER no_deletes BEFORE DELETE ON conversations
+         BEGIN SELECT RAISE(ABORT, 'disk on fire'); END;",
+    )
+    .unwrap();
+    assert_eq!(
+        worker.handle(delete(id)),
+        Some(StoreReply::DeleteFailed { pane: pane() })
+    );
+    assert_eq!(count(&conn, "memory_notes"), 1, "the link stays too");
+}
+
 #[test]
 fn a_delete_without_notes_returns_none() {
     let (_dir, mut worker, _conn) = fixture();

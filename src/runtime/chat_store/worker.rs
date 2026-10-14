@@ -565,15 +565,16 @@ fn link_note(
     Ok(())
 }
 
-/// Every conversation, newest last activity first, with its project tag and
-/// the first user message.
+/// Every conversation, newest last activity first, with its project tag, the
+/// first user message and the number of note links it has.
 fn list(conn: &mut Connection) -> Result<Vec<ConvRow>, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT c.id, c.updated_at, c.profile,
                 (SELECT tag FROM tags t WHERE t.conversation_id = c.id AND t.is_project = 1),
                 COALESCE((SELECT substr(content, 1, ?1) FROM messages m
                           WHERE m.conversation_id = c.id AND m.role = 'user'
-                          ORDER BY seq LIMIT 1), '')
+                          ORDER BY seq LIMIT 1), ''),
+                (SELECT count(*) FROM memory_notes n WHERE n.conversation_id = c.id)
          FROM conversations c
          ORDER BY c.updated_at DESC, c.id DESC",
     )?;
@@ -587,6 +588,7 @@ fn list(conn: &mut Connection) -> Result<Vec<ConvRow>, rusqlite::Error> {
                 tag: r.get(3)?,
                 extras: Vec::new(),
                 first: r.get(4)?,
+                notes: r.get(5)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
