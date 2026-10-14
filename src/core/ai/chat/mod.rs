@@ -5,6 +5,7 @@
 
 pub mod adapters;
 pub mod claude;
+pub mod cli;
 pub mod composer;
 pub mod engine;
 pub mod guidance;
