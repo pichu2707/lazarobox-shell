@@ -5,6 +5,7 @@
 
 pub mod adapters;
 pub mod composer;
+pub mod copy;
 pub mod engine;
 pub mod guidance;
 pub mod history;
