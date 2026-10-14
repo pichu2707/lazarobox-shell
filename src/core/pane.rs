@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use vt100::{Callbacks, Parser, Screen};
 
 use super::copy::{LineSpan, LineText};
+use super::mouse::{MouseEncoding, MouseFacts, MouseMode};
 use super::osc7;
 
 /// DA1 reply: VT620-class terminal with no extensions.
@@ -435,6 +436,26 @@ impl Pane {
             bracketed_paste: screen.bracketed_paste(),
         }
     }
+
+    /// The mouse protocol the child enabled and the screen it is on.
+    pub fn mouse_facts(&self) -> MouseFacts {
+        let screen = self.parser.screen();
+        MouseFacts {
+            mode: match screen.mouse_protocol_mode() {
+                vt100::MouseProtocolMode::None => MouseMode::None,
+                vt100::MouseProtocolMode::Press => MouseMode::Press,
+                vt100::MouseProtocolMode::PressRelease => MouseMode::PressRelease,
+                vt100::MouseProtocolMode::ButtonMotion => MouseMode::ButtonMotion,
+                vt100::MouseProtocolMode::AnyMotion => MouseMode::AnyMotion,
+            },
+            encoding: match screen.mouse_protocol_encoding() {
+                vt100::MouseProtocolEncoding::Default => MouseEncoding::Default,
+                vt100::MouseProtocolEncoding::Utf8 => MouseEncoding::Utf8,
+                vt100::MouseProtocolEncoding::Sgr => MouseEncoding::Sgr,
+            },
+            alt_screen: screen.alternate_screen(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -443,6 +464,12 @@ mod tests {
 
     fn pane(rows: u16, cols: u16) -> Pane {
         Pane::new(PaneSize { rows, cols }, 100)
+    }
+
+    fn facts_after(bytes: &[u8]) -> MouseFacts {
+        let mut p = pane(3, 10);
+        p.feed(bytes);
+        p.mouse_facts()
     }
 
     fn text_at(p: &Pane, row: u16, col: u16) -> String {
@@ -1162,5 +1189,58 @@ mod tests {
         let mut p = small(3);
         p.feed(b"\x1b[?25l");
         assert_eq!(p.live_cursor(), None);
+    }
+
+    // mouse-input: the facts start with no mouse mode, Default encoding, main screen.
+    #[test]
+    fn mouse_facts_default_to_nothing_enabled() {
+        assert_eq!(facts_after(b""), MouseFacts::default());
+    }
+
+    // mouse-input: every vt100 mouse mode is mirrored.
+    #[test]
+    fn mouse_facts_mirror_each_protocol_mode() {
+        let cases = [
+            (&b"\x1b[?9h"[..], MouseMode::Press),
+            (b"\x1b[?1000h", MouseMode::PressRelease),
+            (b"\x1b[?1002h", MouseMode::ButtonMotion),
+            (b"\x1b[?1003h", MouseMode::AnyMotion),
+        ];
+        for (bytes, mode) in cases {
+            assert_eq!(facts_after(bytes).mode, mode, "{bytes:?}");
+        }
+    }
+
+    // mouse-input: every vt100 encoding is mirrored.
+    #[test]
+    fn mouse_facts_mirror_each_encoding() {
+        let cases = [
+            (&b""[..], MouseEncoding::Default),
+            (b"\x1b[?1005h", MouseEncoding::Utf8),
+            (b"\x1b[?1006h", MouseEncoding::Sgr),
+        ];
+        for (bytes, encoding) in cases {
+            assert_eq!(facts_after(bytes).encoding, encoding, "{bytes:?}");
+        }
+    }
+
+    // mouse-input: resetting a mode turns the facts back off.
+    #[test]
+    fn mouse_facts_follow_a_reset() {
+        let on = facts_after(b"\x1b[?1000h\x1b[?1006h");
+        assert_eq!(
+            (on.mode, on.encoding),
+            (MouseMode::PressRelease, MouseEncoding::Sgr)
+        );
+        let off = facts_after(b"\x1b[?1000h\x1b[?1006h\x1b[?1006l\x1b[?1000l");
+        assert_eq!(off, MouseFacts::default());
+    }
+
+    // mouse-input: the alternate screen flag follows ?1049.
+    #[test]
+    fn mouse_facts_report_the_alternate_screen() {
+        assert!(!facts_after(b"hi").alt_screen);
+        assert!(facts_after(b"\x1b[?1049h").alt_screen);
+        assert!(!facts_after(b"\x1b[?1049h\x1b[?1049l").alt_screen);
     }
 }

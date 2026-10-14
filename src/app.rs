@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent};
 
 use crate::core::{
     ai::{
@@ -127,6 +127,8 @@ impl InputMode {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
+    /// A mouse event. Only the vertical wheel does anything.
+    Mouse(MouseEvent),
     Paste(String),
     Resize {
         cols: u16,
@@ -750,11 +752,14 @@ impl App {
         }
     }
 
-    /// Fresh COPY state with the cursor on the focused pane's live cursor.
+    /// Fresh COPY state. The view stays where it is (a wheel-scrolled pane is
+    /// not thrown back to live); at the bottom the cursor is the live cursor,
+    /// scrolled it is on the last visible row.
     fn enter_copy(&self) -> CopyState {
         let pane = self.copy_pane();
         CopyState::enter(
             self.copy_geometry(),
+            pane.scrollback_offset(),
             pane.live_cursor(),
             pane.line_generation(),
         )
@@ -974,6 +979,7 @@ impl App {
     pub fn update(&mut self, event: AppEvent) -> Vec<Effect> {
         let effects = match event {
             AppEvent::Key(key) => self.on_key(key),
+            AppEvent::Mouse(mouse) => self.on_mouse(mouse),
             AppEvent::Paste(text) => self.on_paste(&text),
             AppEvent::Resize { cols, rows } => self.on_resize(cols, rows),
             // Events for panes that no longer exist are dropped.
@@ -1206,9 +1212,11 @@ impl App {
         let Some(pty) = self.focused_pty() else {
             return Vec::new();
         };
-        encode_key(key, pty.emu.modes())
-            .map(|bytes| vec![Effect::WritePty(self.tab().focus, bytes)])
-            .unwrap_or_default()
+        let Some(bytes) = encode_key(key, pty.emu.modes()) else {
+            return Vec::new();
+        };
+        self.return_to_live();
+        vec![Effect::WritePty(self.tab().focus, bytes)]
     }
 
     /// Resolve a key against the pending table (the root or an open group).
@@ -1258,6 +1266,7 @@ impl App {
         match step {
             // The literal is a byte for a child; a chat has none, so it swallows it.
             Step::Run(PrefixAction::SendPrefixLiteral) if self.focused_pty().is_some() => {
+                self.return_to_live();
                 vec![Effect::WritePty(self.tab().focus, vec![PREFIX_LITERAL])]
             }
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
@@ -1334,9 +1343,11 @@ impl App {
         if index >= self.tabs.len() || index == self.active {
             return;
         }
-        let left = self.tabs[self.active].focus;
-        if let Some(pty) = self.panes.get_mut(&left).and_then(PaneState::pty_mut) {
-            pty.emu.set_scrollback(0);
+        // Every pane of the tab left goes live, wheel-scrolled or not.
+        for left in self.tabs[self.active].tree.leaves() {
+            if let Some(pty) = self.panes.get_mut(&left).and_then(PaneState::pty_mut) {
+                pty.emu.set_scrollback(0);
+            }
         }
         if matches!(self.input, InputMode::Copy(_) | InputMode::Resize) {
             self.input = InputMode::Terminal;
@@ -1744,15 +1755,14 @@ impl App {
             return Vec::new();
         }
         match self.input {
-            InputMode::Terminal => self
-                .focused_pty()
-                .map(|pty| {
-                    vec![Effect::WritePty(
-                        self.tab().focus,
-                        encode_paste(text, pty.emu.modes()),
-                    )]
-                })
-                .unwrap_or_default(),
+            InputMode::Terminal => {
+                let Some(pty) = self.focused_pty() else {
+                    return Vec::new();
+                };
+                let bytes = encode_paste(text, pty.emu.modes());
+                self.return_to_live();
+                vec![Effect::WritePty(self.tab().focus, bytes)]
+            }
             InputMode::Menu => {
                 // Only the custom field takes a paste; nothing reaches a PTY.
                 if let Some(menu) = self.menu.as_mut() {
@@ -1789,8 +1799,8 @@ impl App {
         let geo = self.copy_geometry();
         if state.generation != self.copy_pane().line_generation() {
             // Line numbers are incomparable now: start over like entering COPY.
-            state = self.enter_copy();
             self.copy_pane_mut().set_scrollback(0);
+            state = self.enter_copy();
         }
         let pane = self.copy_pane();
         state.offset = pane.scrollback_offset();
@@ -6505,6 +6515,9 @@ mod app_tests {
 
     /// Where a pane is scrolled (pane-scroll S1).
     mod scroll_position;
+
+    /// The mouse wheel over a pane (pane-scroll S2).
+    mod wheel;
 
     /// History in the chat pane: list, saving, resume, delete (ai-chat C9).
     mod chat_history;
