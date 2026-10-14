@@ -1,5 +1,7 @@
 # Design: AI Chat (P2 chat pane, all engines, topic memory)
 
+> Archive note (2026-10-14): the OpenAI-compatible adapters for `lmstudio`, `llamacpp` and `vllm` named in this design (CHAT-2 `Adapter::OpenAi`, the SSE decoder, C12/PR14 and manual check M7 SSE `[DONE]`) were not shipped here. They moved to the follow-up change `ai-chat-openai-compat`. The design text below is kept as written.
+
 Revision 4 (2026-10-12, user-approved scope change "thinking indicator"): a statusline thinking bar (CHAT-12) and reasoning shown folded in the chat pane through a new `ThinkingDelta` engine event (CHAT-13); reasoning is never stored or sent back; rulings R30-R32 at the end. Project memory is out of scope (follow-up change `engram-memory`). Revision 3 (2026-10-12, tasks phase): SQLite journal mode is DELETE (R14 overridden by the user) and the jail grants execute per file only (R29). Revision 2 applies the user's design review (engram `sdd/ai-chat/question-round-design`):
 
 - the default profile is `programmer`;

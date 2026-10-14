@@ -63,7 +63,7 @@ Files changed:
 - [x] 1.9 GREEN: `src/app/scroll.rs` (`scrolled_by`, `scroll_position`). Commit.
 - [x] 1.10 RED: insta snapshots (TestBackend): `[+N]` badge on shell (wheel-scrolled and COPY), chat, unfocused, `[+0]` never, tiny pane (3 cols) and alternate screen show none, no content shift; statusline `COPY` hint for shell `j/k scroll · v select · y copy · Esc exit` and chat `j/k scroll · Esc exit`, VISUAL keeps the shell hint, notice replaces hint, whole-entry clipping with `…`, widths 0-40 do not panic; `TERMINAL ↑12/340`, `CHAT ↑9/120`, `COPY ↑0/N`, zoom marker order, unfocused scrolled pane has no position. Existing snapshots unchanged except COPY ones.
 - [x] 1.11 GREEN: `src/ui/components/scroll_badge.rs`; `src/ui/mod.rs` (badge per pane, `scroll_position()`, no composer cursor in `ChatCopy`); COPY hint in `status_path` (`src/app.rs`). Review and accept new snapshots. Commit.
-- [x] 1.12 Gate (fmt, clippy, tests) passed; every commit passes fmt+clippy. The PR is NOT opened yet (left to the orchestrator): open it against `feat/pane-scroll`.
+- [x] 1.12 Gate (fmt, clippy, tests) passed; every commit passes fmt+clippy. Merged as PR #170.
 
 ### Apply notes (PR1)
 
@@ -87,7 +87,7 @@ Files changed:
 - [x] 2.10 RED: chat overlays (list, tag editor, note editor, summary draft, guidance no transcript) ignore the wheel (R3).
 - [x] 2.11 RED: live reset: an encoded key and a paste on the focused scrolled shell set offset 0 (R2); swallowed keys (prefix then Esc) do not; focus change and tab switch reset the shell pane left (R1); an unfocused wheel-scrolled pane keeps its offset while focus moves between other panes, resets after being focused-and-left or when its tab is left; chat scroll survives focus and tab (R1).
 - [x] 2.12 GREEN: `src/app/scroll.rs` (`on_wheel`, live-reset helper); `src/app.rs` (`AppEvent::Mouse` arm, reset calls in `on_terminal_key` and `on_paste`, focus/tab reset keeps current behavior). Commit.
-- [x] 2.13 Gate (fmt, clippy, tests) passed; every commit passes fmt+clippy. The PR is NOT opened yet (left to the orchestrator): open it against `feat/pane-scroll`.
+- [x] 2.13 Gate (fmt, clippy, tests) passed; every commit passes fmt+clippy. Merged as PR #171.
 
 ### Apply notes (PR2)
 
@@ -113,12 +113,12 @@ Files changed:
 - [x] 3.9 RED: runtime byte tests: `to_app_event` forwards only `ScrollUp/ScrollDown` as `AppEvent::Mouse` (clicks, drags, motion, horizontal dropped); `MouseCapture` writes exactly `\x1b[?1000h\x1b[?1006h` / `\x1b[?1006l\x1b[?1000l` to `host_out`, no `?1002`/`?1003`/`?1015`; `restore_to` always contains `?1006l`/`?1000l` before child teardown; panic-hook path covered through `restore_to`; capture-off run never writes mouse bytes.
 - [x] 3.10 GREEN: `src/runtime.rs`: `to_app_event` wheel mapping, `Effect::MouseCapture` into `host_out`, `CAPTURE_OFF` in `restore_to`, startup capture after raw mode/alt screen and before the first frame. Commit.
 - [x] 3.11 Refactor: dedupe helpers, update doc comments and README mouse note (Shift-drag selects natively; `mouse = false` disables). Commit.
-- [x] 3.12 Gate (fmt, clippy, tests) passed; every commit passes fmt+clippy. The PR is NOT opened yet (left to the orchestrator): open it against `feat/pane-scroll`.
+- [x] 3.12 Gate (fmt, clippy, tests) passed; every commit passes fmt+clippy. Merged as PR #173.
 - [ ] 3.13 [manual] Kitty: wheel in a shell pane (scrollback, `[+N]` badge, key returns to live) and in less/man (3 lines per notch), vim (`:set mouse=a`) and htop.
 - [ ] 3.14 [manual] Kitty: wheel over a chat answer; COPY on the chat with `Ctrl+Space [`, j/k, Ctrl+u/d, gg, G, Esc; stream continues while scrolled.
 - [ ] 3.15 [manual] Kitty: Shift-drag native selection works; the terminal is clean (no escape junk, own scrollback works) after quit, after `exit` in the last pane, and after a forced panic if a debug path exists (otherwise record as not testable). There is no debug panic path in the binary: the panic exit is NOT TESTABLE by hand, only through the `restore_to` byte tests (the panic hook calls `restore_to`).
 - [ ] 3.16 [manual] Kitty: menu `Mouse` toggle on/off previews live, Esc reverts, `s` persists `mouse = false` before the first table; the new run honors it.
-- [ ] 3.17 After all three PRs merge into the tracker, run the final gate on `feat/pane-scroll` and open the tracker PR to main.
+- [x] 3.17 After all three PRs merge into the tracker, run the final gate on `feat/pane-scroll` and open the tracker PR to main. (shipped in release 0.12.0, PR #176; the three PRs #170, #171 and #173 merged to main, final gate passed on main)
 
 ### Apply notes (PR3)
 

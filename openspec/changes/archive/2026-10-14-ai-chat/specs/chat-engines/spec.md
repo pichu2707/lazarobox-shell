@@ -7,7 +7,7 @@ How a chat turn reaches a model and how the answer comes back: the `ChatEngine` 
 ## ADDED Requirements
 
 ### Requirement: ChatEngine contract
-Every adapter MUST implement one contract: it receives a model name, the system prompt and the ordered message history, and it produces events in order: zero or more content events, each either a text delta (part of the answer) or a thinking delta (part of the engine's reasoning, a distinct event type that is never a text delta), then exactly one terminal event (final or error). An engine or model that exposes no reasoning MUST simply never produce a thinking delta. It MUST support cancel, after which it produces no more events. The contract MUST NOT expose tool calls. Adapters exist for `ollama`; for `lmstudio`, `llamacpp` and `vllm` (OpenAI-compatible); and for `claude`, `codex` and `gemini` (CLIs). `opencode` has no adapter. Each adapter is usable as soon as it exists; an engine without an adapter resolves to the unsupported state.
+Every adapter MUST implement one contract: it receives a model name, the system prompt and the ordered message history, and it produces events in order: zero or more content events, each either a text delta (part of the answer) or a thinking delta (part of the engine's reasoning, a distinct event type that is never a text delta), then exactly one terminal event (final or error). An engine or model that exposes no reasoning MUST simply never produce a thinking delta. It MUST support cancel, after which it produces no more events. The contract MUST NOT expose tool calls. Adapters exist for `ollama` (server) and for `claude`, `codex` and `gemini` (CLIs). `lmstudio`, `llamacpp`, `vllm` and `opencode` have no adapter in this change: they resolve to the unsupported state and the guidance reads `not supported in chat yet`. The OpenAI-compatible adapters are specified in the follow-up change `ai-chat-openai-compat`. Each adapter is usable as soon as it exists; an engine without an adapter resolves to the unsupported state.
 
 #### Scenario: Events in order [auto]
 - GIVEN a fake adapter that emits `a`, `b` and a final event
@@ -34,10 +34,10 @@ Every adapter MUST implement one contract: it receives a model name, the system 
 - WHEN cancel is requested
 - THEN no further event is delivered
 
-#### Scenario: opencode has no adapter [auto]
+#### Scenario: Engines without an adapter [auto]
 - GIVEN the adapter table
 - WHEN it is queried for each catalog engine
-- THEN `opencode` has none and the other seven have one (`codex` and `gemini` are usable only where the CLI jail is available, see CLI jail)
+- THEN `ollama`, `claude`, `codex` and `gemini` have one, and `lmstudio`, `llamacpp`, `vllm` and `opencode` have none and resolve to unsupported (`codex` and `gemini` are usable only where the CLI jail is available, see CLI jail)
 
 ### Requirement: Engine resolution for chat
 The engine of a chat turn MUST come from the effective assignment of the `chat` task (its own assignment, else `general`; see ai-task-models) combined with the detection result. The result MUST be exactly one of: ready (engine and model), unassigned, undetected (with the status), unsupported, no jail (`codex` or `gemini` on a system without a working jail, see CLI jail), gated off (a CLI whose manual gate failed), or model problem (no model for a server, or a model that is not detected). Resolution MUST be pure, MUST be evaluated on every send, and MUST NEVER change the assignment or pick another engine.
@@ -76,9 +76,9 @@ The engine of a chat turn MUST come from the effective assignment of the `chat` 
 Server adapters MUST use the project's hand-written HTTP client extended with POST. Requests MUST be HTTP/1.1 with a JSON body, sent only to `127.0.0.1` on the catalog port of the chosen server engine. The client MUST refuse any other host or address, MUST NOT follow redirects, MUST NOT send `Authorization`, `Cookie` or any credential, and MUST NOT read any credential or config file of any engine. The request body MUST contain only the model, the system prompt, the history and the streaming flag. The system prompt MAY include the workspace context block (see prompt-profiles); that block is the only environment or location information a request carries, and a request MUST NEVER carry an absolute path, an environment variable, file contents or terminal output. A reply MUST be accepted only with an HTTP/1.x status 200 and the same strict framing rules as ai-engine-detection (conflicting or signed Content-Length, Content-Length with Transfer-Encoding and malformed chunking are rejected). The body is decoded incrementally (chunked, Content-Length or close-delimited) and MUST NOT be buffered whole. A non-200 reply MUST become an error event carrying the status code and a short sanitized message, never the full body. The total text of one answer MUST be capped at 1 MiB; beyond the cap the stream ends with an error.
 
 #### Scenario: Traffic audit [auto]
-- GIVEN a recording fake server on each engine port
-- WHEN one turn runs against each server engine
-- THEN each recorded request is a `POST` to its chat path on `127.0.0.1` with no `Authorization`/`Cookie` header, and nothing else connected
+- GIVEN a recording fake server on the Ollama port
+- WHEN one turn runs against it
+- THEN the recorded request is a `POST` to its chat path on `127.0.0.1` with no `Authorization`/`Cookie` header, and nothing else connected
 
 #### Scenario: Body content [auto]
 - GIVEN a turn with a system prompt and two messages
@@ -121,32 +121,22 @@ Server adapters MUST use the project's hand-written HTTP client extended with PO
 - THEN the first delta is delivered before the server sends the second
 
 ### Requirement: Stream parsers
-Ollama replies are NDJSON (one JSON object per line); OpenAI-compatible replies (lmstudio, llamacpp, vllm) are SSE. The parsers MUST be pure and incremental: feeding the same bytes in any chunking, including one byte at a time, MUST produce the same events as feeding them whole. For NDJSON, a line with a text fragment yields a delta, a line marked done yields the final event, and a line with an `error` yields an error event. For SSE, `data:` events with a text fragment yield deltas, a finish marker or `data: [DONE]` yields the final event, and comment lines (starting with `:`) and empty events are ignored. A malformed JSON line or event MUST yield an error event, not a panic. A single line or event over 1 MiB (2 MiB for the CLI decoders, because the final `result` event of a CLI repeats the whole answer) MUST yield an error event. UTF-8 characters split across chunks MUST be reassembled before decoding.
+Ollama replies are NDJSON (one JSON object per line), and the CLI adapters decode their line-delimited output the same way. The parsers MUST be pure and incremental: feeding the same bytes in any chunking, including one byte at a time, MUST produce the same events as feeding them whole. For NDJSON, a line with a text fragment yields a delta, a line marked done yields the final event, and a line with an `error` yields an error event. A malformed JSON line MUST yield an error event, not a panic. A single line over 1 MiB (2 MiB for the CLI decoders, because the final `result` event of a CLI repeats the whole answer) MUST yield an error event. UTF-8 characters split across chunks MUST be reassembled before decoding. (The SSE decoder for the OpenAI-compatible servers is specified in `ai-chat-openai-compat`.)
 
 #### Scenario: Ollama NDJSON [auto]
 - GIVEN lines with fragments `Hel`, `lo` and a final line with done true
 - WHEN parsed
 - THEN the events are delta `Hel`, delta `lo`, final
 
-#### Scenario: OpenAI SSE [auto]
-- GIVEN events with fragments `Hel`, `lo`, a finish marker and `data: [DONE]`
-- WHEN parsed
-- THEN the events are delta `Hel`, delta `lo` and exactly one final
-
 #### Scenario: Every split point [auto]
-- GIVEN a valid NDJSON stream and a valid SSE stream
-- WHEN each is cut at every byte position into two chunks
+- GIVEN a valid NDJSON stream
+- WHEN it is cut at every byte position into two chunks
 - THEN the events always equal the unsplit result
 
 #### Scenario: UTF-8 split across chunks [auto]
 - GIVEN a fragment containing a 4-byte character split between two chunks
 - WHEN parsed
 - THEN the delta contains the character intact, with no replacement character
-
-#### Scenario: SSE comments and CRLF [auto]
-- GIVEN a stream with `: keep-alive` lines and CRLF line endings
-- WHEN parsed
-- THEN the comments are ignored and the events are the same as with LF
 
 #### Scenario: Malformed data [auto]
 - GIVEN a line `{"message":` followed by a newline
@@ -172,7 +162,7 @@ Ollama replies are NDJSON (one JSON object per line); OpenAI-compatible replies 
 When an engine streams its reasoning separately from the answer, the adapter's decoder MUST emit it as thinking deltas, distinct from text deltas, in arrival order. The app keeps reasoning only until the first answer text of the turn: a thinking delta that arrives after the first non-empty text delta MUST be dropped without an error (by the stream pipe and again by the chat state), so reasoning never appears after the answer began. Mapping per adapter (design pins the exact field names from captured fixtures, never assumed):
 - Ollama: a streamed message carrying a separate `thinking` field yields a thinking delta for that field and a text delta for `content`; when one line carries both, the thinking delta comes first.
 - claude (stream-json): `thinking` content blocks yield thinking deltas. This applies only if the pinned flags make the CLI emit them (verified by manual check M2); otherwise the adapter emits none.
-- OpenAI-compatible servers, codex and gemini: a reasoning field or block is mapped only if that engine exposes one in its captured fixtures ("if available"); otherwise the adapter emits none and nothing changes for it.
+- codex and gemini: a reasoning field or block is mapped only if that engine exposes one in its captured fixtures ("if available"); otherwise the adapter emits none and nothing changes for it. (OpenAI-compatible servers: see `ai-chat-openai-compat`.)
 Empty reasoning fragments MUST yield no event. The request sent to the engine MUST NOT change because of reasoning: reasoning text is never sent back to any engine as history (see Context window), and the adapters' request bodies and argv stay as pinned elsewhere unless a manual check proves a request option is required. Reasoning text MUST be capped at 256 KiB per turn (design to confirm): thinking deltas beyond the cap are dropped without an error, and the answer cap is unaffected. A thinking delta is stream activity: it counts as the first byte and resets the idle timeout (see Timeouts).
 
 #### Scenario: Ollama thinking field [auto]
@@ -206,7 +196,7 @@ Empty reasoning fragments MUST yield no event. The request sent to the engine MU
 - THEN thinking blocks yield thinking deltas, text blocks yield text deltas, and the final event is unchanged; if the M2 fixtures hold no thinking blocks, this scenario is replaced by one asserting no thinking event is produced
 
 #### Scenario: Other adapters only if available [auto]
-- GIVEN the OpenAI-compatible, codex and gemini fixtures
+- GIVEN the codex and gemini fixtures
 - WHEN parsed
 - THEN a thinking delta is produced only where a fixture of that engine contains a reasoning field, and no format is assumed for the others
 
@@ -510,10 +500,10 @@ Prompts, messages, system prompts, engine answers and engine reasoning MUST NOT 
 ### Requirement: Real engines
 Each shipped adapter MUST stream a reply from the real engine.
 
-#### Scenario: Ollama and OpenAI-compatible servers [manual]
-- GIVEN Ollama running with a model and, separately, a running lmstudio, llama.cpp or vLLM
+#### Scenario: Ollama server [manual]
+- GIVEN Ollama running with a model
 - WHEN `chat` is assigned to it and a message is sent
-- THEN the reply streams into the pane and cancel stops it
+- THEN the reply streams into the pane and cancel stops it (the OpenAI-compatible scenario moved to `ai-chat-openai-compat`)
 
 #### Scenario: Cold model load [manual]
 - GIVEN an Ollama model that is not loaded in memory

@@ -217,11 +217,13 @@ Reorder note (user-approved 2026-10-12): PR13 was applied ahead of PR10, PR11 an
 
 ## PR14 / C12: OpenAI-compatible (`adapters.rs`, `runtime/chat.rs`)
 
-- [ ] 14.1 RED: lmstudio, llamacpp and vllm bodies and paths (`/v1/chat/completions`), SSE decoder deltas, finish marker and `[DONE]` exactly one final, traffic audit per catalog port.
-- [ ] 14.2 RED (reasoning, if available): only if a captured fixture of lmstudio, llama.cpp or vLLM shows a separate reasoning field in the SSE delta, map it to `ThinkingDelta` (with split points and an unchanged request body); otherwise record "no reasoning exposed" in the PR body and add no task. No format is assumed.
-- [ ] 14.3 GREEN: implement; `opencode` still unsupported (adapter table scenario: seven adapters, none for opencode).
-- [ ] 14.4 [manual] M7: a real lmstudio, llama.cpp or vLLM streams, the `[DONE]` ends the turn, cancel stops it.
-- [ ] 14.5 Gate.
+MOVED to `ai-chat-openai-compat` (user deferred PR14 at archive time, 2026-10-14). The tasks below keep their original text and are NOT open work in this change; they are tracked in `openspec/changes/ai-chat-openai-compat/tasks.md`.
+
+- MOVED to ai-chat-openai-compat: 14.1 RED: lmstudio, llamacpp and vllm bodies and paths (`/v1/chat/completions`), SSE decoder deltas, finish marker and `[DONE]` exactly one final, traffic audit per catalog port.
+- MOVED to ai-chat-openai-compat: 14.2 RED (reasoning, if available): only if a captured fixture of lmstudio, llama.cpp or vLLM shows a separate reasoning field in the SSE delta, map it to `ThinkingDelta` (with split points and an unchanged request body); otherwise record "no reasoning exposed" in the PR body and add no task. No format is assumed.
+- MOVED to ai-chat-openai-compat: 14.3 GREEN: implement; `opencode` still unsupported (adapter table scenario: seven adapters, none for opencode).
+- MOVED to ai-chat-openai-compat: 14.4 [manual] M7: a real lmstudio, llama.cpp or vLLM streams, the `[DONE]` ends the turn, cancel stops it.
+- MOVED to ai-chat-openai-compat: 14.5 Gate.
 
 ## PR15 / C13a: Landlock jail (`src/core/ai/jail.rs`, `src/runtime/jail.rs`, `src/main.rs`, `tests/jail.rs`, `Cargo.toml`)
 
