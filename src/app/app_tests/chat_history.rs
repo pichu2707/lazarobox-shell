@@ -369,6 +369,7 @@ fn the_first_send_creates_the_conversation_before_the_engine_starts() {
             profile,
             tag,
             first,
+            origin,
             open,
         }),
         Effect::ChatSend { .. },
@@ -388,6 +389,7 @@ fn the_first_send_creates_the_conversation_before_the_engine_starts() {
         ("ollama", Some("llama3:8b"))
     );
     assert_eq!(*open, Vec::<i64>::new());
+    assert_eq!(origin.as_deref(), Some(Path::new(LAUNCH)));
 }
 
 #[test]
@@ -1015,4 +1017,41 @@ fn a_delete_removes_the_row_from_every_open_list() {
             .collect();
         assert_eq!(shown, vec![10], "{id:?}");
     }
+}
+
+// A send before the list reply: the tag is not known yet, so the create names
+// the origin and the store thread resolves the tag.
+#[test]
+fn a_send_before_the_list_reply_creates_with_the_origin() {
+    let (mut a, _) = opened();
+    a.update(prompt_for(chat_id()));
+    a.update(key('n'));
+    let effects = ask(&mut a, "early");
+    let saved = stores(&effects);
+    let [StoreCmd::Create { tag, origin, .. }] = saved.as_slice() else {
+        panic!("expected one Create, got {effects:?}");
+    };
+    assert_eq!(tag, &None);
+    assert_eq!(origin.as_deref(), Some(Path::new(LAUNCH)));
+}
+
+// Nits: a list reply that arrives after the conversation began must not
+// change its tag, and a toggle made while loading survives the reply.
+#[test]
+fn a_late_list_reply_does_not_retag_a_conversation_that_began() {
+    let (mut a, _) = opened();
+    a.update(prompt_for(chat_id()));
+    a.update(key('n'));
+    ask(&mut a, "early");
+    listed_in(&mut a, chat_id(), Some("late"), rows());
+    assert_eq!(chat_of(&a).tag(), None);
+}
+
+#[test]
+fn a_toggle_made_while_the_list_loads_survives_its_reply() {
+    let (mut a, _) = opened();
+    a.update(key('a'));
+    listed(&mut a, chat_id(), rows());
+    // Showing all projects was asked for before the rows came.
+    assert!(chat_of(&a).list().unwrap().showing_all());
 }

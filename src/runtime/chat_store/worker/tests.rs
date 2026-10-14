@@ -60,6 +60,7 @@ fn create(first: StoredMessage, open: Vec<i64>) -> StoreCmd {
         profile: "programmer".into(),
         tag: Some("proj".into()),
         first,
+        origin: None,
         open,
     }
 }
@@ -204,6 +205,7 @@ fn a_conversation_without_a_tag_stores_no_tag_row() {
         profile: "analyst".into(),
         tag: None,
         first: user("hi"),
+        origin: None,
         open: vec![],
     };
     created_id(worker.handle(cmd));
@@ -318,6 +320,7 @@ fn an_append_after_a_failed_create_is_dropped_silently() {
         profile: "programmer".into(),
         tag: None,
         first: user("q"),
+        origin: None,
         open: vec![],
     });
     assert!(failed(made));
@@ -1312,6 +1315,7 @@ fn the_list_is_newest_activity_first_with_the_first_user_message() {
         profile: "analyst".into(),
         tag: None,
         first: user("newer\nquestion"),
+        origin: None,
         open: vec![],
     }));
     worker.handle(append(old, reply_msg("an answer", MsgStatus::Complete)));
@@ -1587,4 +1591,55 @@ fn a_list_that_fails_to_read_is_not_an_unavailable_store() {
             tag: Some("work".into()),
         })
     );
+}
+
+// A conversation created before the list answered has no tag yet: the store
+// thread resolves it from the origin the pane sent.
+#[test]
+fn a_create_without_a_tag_resolves_it_from_the_origin() {
+    let (dir, mut worker, conn) = fixture();
+    let proj = dir.path().join("proj");
+    fs::create_dir_all(proj.join(".git")).unwrap();
+    let cmd = |tag: Option<&str>, origin: Option<PathBuf>| StoreCmd::Create {
+        pane: pane(),
+        profile: "programmer".into(),
+        tag: tag.map(str::to_owned),
+        first: user("hi"),
+        origin,
+        open: vec![],
+    };
+    let id = created_id(worker.handle(cmd(None, Some(proj.clone()))));
+    let tag = |id: i64| -> Vec<String> {
+        let mut stmt = conn
+            .prepare("SELECT tag FROM tags WHERE conversation_id = ?1 AND is_project = 1")
+            .unwrap();
+        stmt.query_map([id], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(tag(id), vec!["proj".to_owned()]);
+    // A tag the pane knows wins over the origin.
+    let id = created_id(worker.handle(cmd(Some("client"), Some(proj))));
+    assert_eq!(tag(id), vec!["client".to_owned()]);
+    // No tag and no origin: no tag row.
+    let id = created_id(worker.handle(cmd(None, None)));
+    assert_eq!(tag(id), Vec::<String>::new());
+}
+
+#[test]
+fn a_deleted_conversation_is_forgotten_by_its_pane() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    assert!(matches!(
+        worker.handle(delete(id)),
+        Some(StoreReply::Deleted { .. })
+    ));
+    // The map no longer points the pane at a conversation that is gone: the
+    // append is dropped quietly instead of failing.
+    assert_eq!(
+        worker.handle(append_for_pane(reply_msg("A", MsgStatus::Complete))),
+        None
+    );
+    assert_eq!(count(&conn, "messages"), 0);
 }

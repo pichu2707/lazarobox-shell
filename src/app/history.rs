@@ -225,7 +225,9 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return;
         };
-        if tag.is_some() {
+        // A conversation that began without waiting keeps the tag it was
+        // created with (the store thread resolved it from the origin).
+        if tag.is_some() && chat.store_fresh() {
             chat.set_tag(tag.clone());
         }
         if let Some(list) = chat.list_mut() {

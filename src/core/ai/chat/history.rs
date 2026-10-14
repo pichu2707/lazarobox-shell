@@ -56,6 +56,7 @@ impl ChatState {
         let new = NewConversation {
             profile: self.profile.id().to_owned(),
             tag: self.tag.clone(),
+            origin: self.origin_cwd.clone(),
             open: open.to_vec(),
         };
         std::mem::take(&mut self.outbox)

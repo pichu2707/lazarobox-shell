@@ -48,6 +48,9 @@ pub enum StoreCmd {
         profile: String,
         tag: Option<String>,
         first: StoredMessage,
+        /// The cwd the chat was opened from: when `tag` is not known yet (the
+        /// list has not answered), the store thread resolves it from here.
+        origin: Option<PathBuf>,
         open: Vec<i64>,
     },
     /// Adds a message. `conversation` is `None` while the pane does not know
@@ -264,6 +267,7 @@ pub struct PaneStore {
 pub struct NewConversation {
     pub profile: String,
     pub tag: Option<String>,
+    pub origin: Option<PathBuf>,
     /// Conversations open in any pane, which retention must skip.
     pub open: Vec<i64>,
 }
@@ -320,6 +324,7 @@ impl PaneStore {
                     profile: new.profile.clone(),
                     tag: new.tag.clone(),
                     first: message,
+                    origin: new.origin.clone(),
                     open: new.open.clone(),
                 })
             }

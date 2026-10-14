@@ -69,7 +69,6 @@ impl ListView {
     /// Back to the project's rows.
     pub fn set_project(&mut self, project: Option<String>) {
         self.project = project;
-        self.all = false;
         self.clamp();
     }
 
@@ -194,7 +193,7 @@ impl ListView {
             }
             KeyCode::Char('n') | KeyCode::Esc => return ListOutcome::New,
             KeyCode::Char('d') => self.confirming = self.selected().map(|row| row.id),
-            KeyCode::Char('a') if self.project.is_some() => {
+            KeyCode::Char('a') => {
                 self.all = !self.all;
                 self.cursor = 0;
             }

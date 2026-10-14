@@ -2009,6 +2009,7 @@ mod tests {
             profile: "programmer".into(),
             tag: None,
             first: stored(Role::User, text, MsgStatus::Complete),
+            origin: None,
             open: Vec::new(),
         }
     }

@@ -28,6 +28,7 @@ fn new_conv() -> NewConversation {
     NewConversation {
         profile: "programmer".into(),
         tag: Some("proj".into()),
+        origin: Some("/work/proj".into()),
         open: vec![7],
     }
 }
@@ -52,6 +53,7 @@ fn the_first_save_creates_the_conversation() {
             profile: "programmer".into(),
             tag: Some("proj".into()),
             first: user("hi"),
+            origin: Some("/work/proj".into()),
             open: vec![7],
         })
     );

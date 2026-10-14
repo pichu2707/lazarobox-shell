@@ -84,6 +84,7 @@ fn the_first_send_creates_the_conversation_with_profile_tag_and_message() {
                 engine: "ollama".into(),
                 model: Some("llama3:8b".into()),
             },
+            origin: None,
             open: vec![3, 4],
         }]
     );

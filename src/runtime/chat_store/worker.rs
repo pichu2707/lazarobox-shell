@@ -93,8 +93,11 @@ impl Worker {
                 profile,
                 tag,
                 first,
+                origin,
                 open,
             } => {
+                // The pane may have sent before its list answered.
+                let tag = tag.or_else(|| origin.as_deref().and_then(project_tag));
                 let conn = match self.conn() {
                     Ok(conn) => conn,
                     Err(reason) => return Some(StoreReply::Unavailable { pane, reason }),
@@ -211,6 +214,10 @@ impl Worker {
                     .conn()
                     .ok()
                     .and_then(|conn| delete(conn, conversation).ok());
+                if gone.is_some() {
+                    // No pane appends to it any more.
+                    self.created.retain(|_, id| *id != conversation);
+                }
                 Some(match gone {
                     Some(notes) => StoreReply::Deleted {
                         pane,
