@@ -109,7 +109,11 @@ impl GeminiDecoder {
 /// advice after the closing bracket. The wrapper adds nothing to the user.
 fn unwrap_api_error(text: &str) -> String {
     match text.strip_prefix("[API Error: ") {
-        Some(rest) => rest.replacen(']', "", 1),
+        // The wrapper's bracket is the last one; a `]` inside the text stays.
+        Some(rest) => match rest.rfind(']') {
+            Some(at) => format!("{}{}", &rest[..at], &rest[at + 1..]),
+            None => rest.to_owned(),
+        },
         None => text.to_owned(),
     }
 }

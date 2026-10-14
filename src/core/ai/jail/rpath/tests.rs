@@ -254,3 +254,14 @@ fn only_the_opt_openssl_lib_shape_names_those_files() {
         "a repeated folder gives its files once"
     );
 }
+
+#[test]
+fn a_load_segment_that_would_overflow_maps_nothing() {
+    let loads = [Load {
+        vaddr: 0x1000,
+        offset: u64::MAX - 2,
+        size: 0x10,
+    }];
+    assert_eq!(file_offset(&loads, 0x1001), Some(u64::MAX - 1));
+    assert_eq!(file_offset(&loads, 0x1008), None);
+}

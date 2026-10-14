@@ -302,11 +302,15 @@ fn codex_invocation(request: &ChatRequest) -> Invocation {
 /// stdin, so it is fixed: the conversation is on stdin and never in argv.
 const GEMINI_PROMPT: &str = "Answer the last user message of the conversation given on stdin.";
 
-/// The policy gemini gets: one rule that denies every tool, above every rule
-/// of the CLI's own policies and of the approval mode. A denied tool is not
-/// offered to the model at all. `plan` mode alone is not enough (the model
+/// The policy gemini gets: one rule that denies every tool, at the highest
+/// priority the policy tiers document. On gemini 0.63.0 it was verified
+/// empirically that it works (zero tool calls, and `exit_plan_mode` is not
+/// offered to the model); precedence over every other rule is not guaranteed
+/// by the CLI's docs, so the decoder (it ends the turn on any tool event) and
+/// the jail remain the backstops. `plan` mode alone is not enough (the model
 /// can leave it), and neither is `tools.core` (the system settings file is
-/// skipped unless root owns it).
+/// skipped unless root owns it). `--allowed-mcp-server-names none` would let a
+/// server literally named "none" through; this rule covers it.
 const GEMINI_POLICY: &str = "[[rule]]\ntoolName = \"*\"\ndecision = \"deny\"\npriority = 999\ndenyMessage = \"This chat has no tools.\"\n";
 
 /// The gemini run: the pinned argv (text only, no extension, no MCP server, no

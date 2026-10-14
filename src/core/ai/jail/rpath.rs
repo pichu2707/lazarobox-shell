@@ -37,7 +37,7 @@ fn file_offset(loads: &[Load], vaddr: u64) -> Option<u64> {
     loads
         .iter()
         .find(|l| vaddr >= l.vaddr && vaddr - l.vaddr < l.size)
-        .map(|l| l.offset + (vaddr - l.vaddr))
+        .and_then(|l| l.offset.checked_add(vaddr - l.vaddr))
 }
 
 /// The library folders a little-endian ELF64 executable names in its own

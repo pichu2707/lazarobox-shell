@@ -322,7 +322,7 @@ fn elf_search_dirs(path: &Path) -> Vec<PathBuf> {
         let mut filled = 0;
         while filled < len {
             let n = file
-                .read_at(&mut buf[filled..], offset + filled as u64)
+                .read_at(&mut buf[filled..], offset.checked_add(filled as u64)?)
                 .ok()?;
             if n == 0 {
                 break;

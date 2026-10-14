@@ -304,3 +304,17 @@ fn a_broken_json_line_is_still_malformed_even_after_stray_text() {
         [failed("malformed stream data")]
     );
 }
+
+#[test]
+fn only_the_closing_bracket_of_the_api_wrapper_is_removed() {
+    // A `]` inside the text stays; the wrapper's is the last one.
+    assert_eq!(
+        whole(&error_line("[API Error: bad [x] thing]")),
+        [failed("bad [x] thing")]
+    );
+    // Text with no wrapper is left alone.
+    assert_eq!(
+        whole(&error_line("plain [x] text")),
+        [failed("plain [x] text")]
+    );
+}
