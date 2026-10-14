@@ -153,6 +153,7 @@ pub async fn run() -> io::Result<()> {
         .with_hostname(local_hostname().as_deref())
         .with_dir_check(|dir| dir.is_dir())
         .with_session_ids(engram::worker::new_session_id)
+        .with_token_check(token_in_env)
         .with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
     let (id, spec) = app.initial_spawn();
 
@@ -235,6 +236,19 @@ pub async fn run() -> io::Result<()> {
         .await;
     panes.shutdown(QUIT_KILL_BOUND.saturating_sub(started.elapsed()));
     result
+}
+
+/// Whether `ENGRAM_HTTP_TOKEN` is set and not empty: all the app learns of
+/// the token, which decides if the delete prompt can offer to delete notes.
+/// The app asks only when memory is on and a conversation has notes.
+fn token_in_env() -> bool {
+    token_is_set(env::var("ENGRAM_HTTP_TOKEN").ok().as_deref())
+}
+
+/// The rule behind [`token_in_env`], the same one the loopback client applies
+/// before it sends a bearer header: an empty token is no token.
+fn token_is_set(value: Option<&str>) -> bool {
+    value.is_some_and(|token| !token.is_empty())
 }
 
 /// The memory for `config`. `read_token` is called only when the worker
@@ -3145,6 +3159,14 @@ mod tests {
         );
         memory.shutdown(Duration::from_secs(1)).await;
         assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    // Spec (chat-memory): the token counts as present when set and non-empty.
+    #[test]
+    fn a_token_counts_as_present_only_when_set_and_not_empty() {
+        assert!(token_is_set(Some("tok-123")));
+        assert!(!token_is_set(Some("")));
+        assert!(!token_is_set(None));
     }
 
     // S1: the token is read only when memory is active, and only when the
