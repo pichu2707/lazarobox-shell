@@ -240,6 +240,29 @@ impl Scroll {
             }
         }
     }
+
+    /// `n` lines up. Content that fits stays glued; the top clamps at 0.
+    pub fn lines_up(self, n: usize, total: usize, height: usize) -> Scroll {
+        if total <= height {
+            return Scroll::Follow;
+        }
+        Scroll::Pinned(self.top(total, height).saturating_sub(n))
+    }
+
+    /// `n` lines down; reaching the end glues the view to the bottom again.
+    pub fn lines_down(self, n: usize, total: usize, height: usize) -> Scroll {
+        match self {
+            Scroll::Follow => Scroll::Follow,
+            Scroll::Pinned(_) => {
+                let top = self.top(total, height) + n;
+                if top >= total.saturating_sub(height) {
+                    Scroll::Follow
+                } else {
+                    Scroll::Pinned(top)
+                }
+            }
+        }
+    }
 }
 
 fn page(height: usize) -> usize {
