@@ -99,11 +99,26 @@ fn policy_decides_how_a_cli_starts() {
 }
 
 #[test]
-fn helper_exit_125_is_a_jail_error() {
-    assert_eq!(exit_error(Some(125)), Some(ChatError::Jail));
-    assert_eq!(exit_error(Some(1)), None);
-    assert_eq!(exit_error(Some(0)), None);
-    assert_eq!(exit_error(None), None);
+fn helper_exit_125_with_its_marker_is_a_jail_error() {
+    let said = format!("noise\n{NOT_ENFORCED_MARKER}: ABI 2 is below the required 6\n");
+    assert_eq!(exit_error(Some(125), &said), Some(ChatError::Jail));
+    assert_eq!(
+        exit_error(Some(125), NOT_ENFORCED_MARKER),
+        Some(ChatError::Jail)
+    );
+    // Other codes, even with the marker, are not the helper's refusal.
+    assert_eq!(exit_error(Some(1), &said), None);
+    assert_eq!(exit_error(Some(0), &said), None);
+    assert_eq!(exit_error(None, &said), None);
+}
+
+#[test]
+fn a_cli_that_exits_125_by_itself_is_not_a_jail_error() {
+    assert_eq!(exit_error(Some(125), ""), None);
+    assert_eq!(exit_error(Some(125), "error: quota exceeded\n"), None);
+    // The marker must start a line: quoting it mid-line does not count.
+    let quoted = format!("the log said {NOT_ENFORCED_MARKER}\n");
+    assert_eq!(exit_error(Some(125), &quoted), None);
 }
 
 // ---- shebang ----
@@ -189,10 +204,22 @@ fn package_root_without_node_modules_is_the_parent_dir() {
         package_root(&p("/home/u/.local/share/claude/versions/2.1.299")),
         Some(p("/home/u/.local/share/claude/versions")),
     );
-    // A file straight under node_modules has no package dir above it.
+}
+
+#[test]
+fn package_root_never_becomes_the_whole_node_modules_dir() {
+    // The binary is the package dir (or a bare scope dir) itself: there is no
+    // package folder above it, and node_modules would grant every package.
+    for binary in [
+        "/a/node_modules/tool",
+        "/a/node_modules/@scope",
+        "/a/node_modules/@scope/tool",
+    ] {
+        assert_eq!(package_root(&p(binary)), None, "{binary}");
+    }
     assert_eq!(
-        package_root(&p("/a/node_modules/tool")),
-        Some(p("/a/node_modules")),
+        package_root(&p("/a/node_modules/@scope/tool/x")),
+        Some(p("/a/node_modules/@scope/tool")),
     );
 }
 
@@ -539,4 +566,149 @@ fn a_loader_outside_the_system_dirs_is_granted_by_its_own_path() {
     let spec = jail_spec(&l).unwrap();
     assert!(spec.rx.contains(&p("/home/linuxbrew/.linuxbrew/lib/ld.so")));
     assert_eq!(spec.rx.len(), 3);
+}
+
+// ---- canonical paths and state dirs ----
+
+#[test]
+fn paths_with_dot_components_are_refused() {
+    let dotted = [
+        "/home/u/foo/../claude",
+        "/home/u/./claude",
+        "/home/u/x/../../claude",
+    ];
+    for binary in dotted {
+        let err = jail_spec(&layout(Cli::Codex, binary, None)).unwrap_err();
+        assert_eq!(err, SpecError::NotCanonical(p(binary)), "{binary}");
+    }
+    let mut l = nvm_codex();
+    l.home = p("/home/u/../u");
+    assert_eq!(
+        jail_spec(&l).unwrap_err(),
+        SpecError::NotCanonical(p("/home/u/../u"))
+    );
+    let mut l = nvm_codex();
+    l.codex_home = Some(p("/srv/a/../codex"));
+    assert_eq!(
+        jail_spec(&l).unwrap_err(),
+        SpecError::NotCanonical(p("/srv/a/../codex"))
+    );
+    let mut l = nvm_codex();
+    l.interpreter = Some(p("/usr/bin/../bin/node"));
+    assert!(matches!(jail_spec(&l), Err(SpecError::NotCanonical(_))));
+    let mut l = nvm_codex();
+    l.helpers = vec![p("rel/helper")];
+    assert!(matches!(jail_spec(&l), Err(SpecError::NotCanonical(_))));
+    // Canonical neighbours are fine.
+    assert!(jail_spec(&nvm_codex()).is_ok());
+}
+
+fn resolver(links: &'static [(&'static str, &'static str)]) -> impl Fn(&Path) -> Option<PathBuf> {
+    move |path| {
+        links
+            .iter()
+            .find(|(from, _)| Path::new(from) == path)
+            .map(|(_, to)| p(to))
+            .or_else(|| Some(path.to_path_buf()))
+    }
+}
+
+#[test]
+fn a_state_dir_that_resolves_to_home_or_ssh_is_refused() {
+    for target in ["/home/u", "/home/u/.ssh", "/home/u/.gnupg", "/"] {
+        let links: &'static [(&str, &str)] = Box::leak(Box::new([("/home/u/.claude", target)]));
+        let err = jail_spec_with(&native_claude(), &resolver(links)).unwrap_err();
+        assert_eq!(err, SpecError::RootTooBroad(p(target)), "{target}");
+    }
+}
+
+#[test]
+fn a_state_dir_that_resolves_elsewhere_is_granted_by_its_target() {
+    let links: &'static [(&str, &str)] =
+        Box::leak(Box::new([("/home/u/.gemini", "/data/gemini-state")]));
+    let spec = jail_spec_with(&brew_gemini(), &resolver(links)).unwrap();
+    assert!(spec.rw.contains(&p("/data/gemini-state")));
+    assert!(!spec.rw.contains(&p("/home/u/.gemini")));
+}
+
+#[test]
+fn the_claude_config_file_is_resolved_and_checked_too() {
+    let links: &'static [(&str, &str)] = Box::leak(Box::new([(
+        "/home/u/.claude.json",
+        "/home/u/.ssh/authorized_keys",
+    )]));
+    let err = jail_spec_with(&native_claude(), &resolver(links)).unwrap_err();
+    assert_eq!(
+        err,
+        SpecError::RootTooBroad(p("/home/u/.ssh/authorized_keys"))
+    );
+    let links: &'static [(&str, &str)] =
+        Box::leak(Box::new([("/home/u/.claude.json", "/data/claude.json")]));
+    let spec = jail_spec_with(&native_claude(), &resolver(links)).unwrap();
+    assert!(spec.rw_files.contains(&p("/data/claude.json")));
+}
+
+#[test]
+fn a_missing_state_dir_keeps_its_nominal_path_for_the_existence_filter() {
+    let spec = jail_spec_with(&native_claude(), &|_| None).unwrap();
+    assert!(spec.rw.contains(&p("/home/u/.claude")));
+    assert!(spec.rw_files.contains(&p("/home/u/.claude.json")));
+}
+
+#[test]
+fn codex_home_must_be_a_dedicated_dir() {
+    for state in [
+        "/home/u/.config",
+        "/home/u/.gnupg",
+        "/home/u/.local",
+        "/home/u/.local/share",
+        "/home/u/.local/state",
+        "/home/u/.cache",
+        "/home/u/.gnupg/private-keys-v1.d",
+        "/home/u/.config/gh/..hidden-not-dot-dot",
+    ] {
+        let mut l = nvm_codex();
+        l.codex_home = Some(p(state));
+        let result = jail_spec(&l);
+        if state.ends_with("hidden-not-dot-dot") {
+            assert!(result.is_ok(), "{state}");
+        } else {
+            assert_eq!(
+                result.unwrap_err(),
+                SpecError::RootTooBroad(p(state)),
+                "{state}"
+            );
+        }
+    }
+    // A dedicated dir under the same parents is fine.
+    let mut l = nvm_codex();
+    l.codex_home = Some(p("/home/u/.config/codex"));
+    assert!(jail_spec(&l).is_ok());
+    l.codex_home = Some(p("/home/u/.local/share/codex"));
+    assert!(jail_spec(&l).is_ok());
+}
+
+#[test]
+fn more_system_and_mount_folders_are_never_a_root() {
+    for dir in [
+        "/run",
+        "/mnt",
+        "/media",
+        "/srv",
+        "/snap",
+        "/usr/share",
+        "/usr/libexec",
+        "/var/lib",
+    ] {
+        let mut l = nvm_codex();
+        l.codex_home = Some(p(dir));
+        assert_eq!(
+            jail_spec(&l).unwrap_err(),
+            SpecError::RootTooBroad(p(dir)),
+            "{dir}"
+        );
+        let tool = format!("{dir}/codex");
+        let err = jail_spec(&layout(Cli::Codex, &tool, None)).unwrap_err();
+        assert_eq!(err, SpecError::RootTooBroad(p(dir)), "{tool}");
+    }
 }

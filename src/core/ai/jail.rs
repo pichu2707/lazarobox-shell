@@ -15,6 +15,10 @@ pub const MIN_ABI: u32 = 3;
 /// The helper's exit status when the rules could not be fully enforced.
 pub const NOT_ENFORCED_EXIT: i32 = 125;
 
+/// The line (start of a stderr line) the helper prints with that status. A CLI
+/// can exit 125 on its own, so the status alone is not proof of a jail error.
+pub const NOT_ENFORCED_MARKER: &str = "lazarobox-jail: jail not enforced";
+
 /// First argument of the re-exec'd binary that selects the helper.
 pub const SUBCOMMAND: &str = "__jail-exec";
 
@@ -77,9 +81,13 @@ pub fn launch(policy: JailPolicy, support: JailSupport) -> Launch {
     }
 }
 
-/// The jail error a helper exit status stands for, if any.
-pub fn exit_error(code: Option<i32>) -> Option<ChatError> {
-    (code == Some(NOT_ENFORCED_EXIT)).then_some(ChatError::Jail)
+/// The jail error a finished helper stands for, if any: the status is 125 AND
+/// a stderr line starts with [`NOT_ENFORCED_MARKER`].
+pub fn exit_error(code: Option<i32>, stderr: &str) -> Option<ChatError> {
+    let marked = stderr
+        .lines()
+        .any(|line| line.starts_with(NOT_ENFORCED_MARKER));
+    (code == Some(NOT_ENFORCED_EXIT) && marked).then_some(ChatError::Jail)
 }
 
 /// The CLIs that run jailed.
@@ -195,10 +203,9 @@ pub fn package_root(binary: &Path) -> Option<PathBuf> {
             .first()
             .is_some_and(|c| c.as_os_str().as_encoded_bytes().starts_with(b"@"));
         let name = if scoped { 2 } else { 1 };
-        // The package folder must sit above the binary, not be the binary.
-        if after.len() > name {
-            return Some(parts[..=at + name].iter().collect());
-        }
+        // The package folder must sit above the binary. When the binary is the
+        // package folder itself the parent would be the whole node_modules.
+        return (after.len() > name).then(|| parts[..=at + name].iter().collect());
     }
     binary.parent().map(Path::to_path_buf)
 }
@@ -222,15 +229,36 @@ const BROAD: &[&str] = &[
     "/opt",
     "/home",
     "/root",
+    "/run",
+    "/mnt",
+    "/media",
+    "/srv",
+    "/snap",
+    "/usr/share",
+    "/usr/libexec",
+    "/var/lib",
+];
+
+/// Folders under `$HOME` that hold many programs' data: a CLI's state must be
+/// a dedicated folder inside them, never one of them.
+const SHARED_IN_HOME: &[&str] = &[
+    ".config",
+    ".local",
+    ".local/share",
+    ".local/state",
+    ".cache",
 ];
 
 /// Whether granting `path` would open far more than one CLI's own files:
-/// `$HOME` or one of its parents, `/tmp`, `~/.ssh` or a system folder.
+/// `$HOME` or one of its parents, `/tmp`, `~/.ssh`, `~/.gnupg`, a shared data
+/// folder of `$HOME` or a system or mount folder.
 fn too_broad(path: &Path, home: &Path) -> bool {
     home.starts_with(path)
         || path.starts_with("/tmp")
         || path.starts_with("/var/tmp")
         || path.starts_with(home.join(".ssh"))
+        || path.starts_with(home.join(".gnupg"))
+        || SHARED_IN_HOME.iter().any(|d| path == home.join(d))
         || BROAD.iter().any(|b| path == Path::new(b))
 }
 
@@ -239,6 +267,18 @@ fn too_broad(path: &Path, home: &Path) -> bool {
 pub enum SpecError {
     /// A package root or state dir that would grant a whole broad folder.
     RootTooBroad(PathBuf),
+    /// A path that is not absolute or holds a `.` or `..` segment. `jail_spec`
+    /// takes canonical paths: a lexical check on `a/../b` would be fooled.
+    NotCanonical(PathBuf),
+}
+
+fn is_canonical_form(path: &Path) -> bool {
+    path.is_absolute()
+        && !path
+            .as_os_str()
+            .as_encoded_bytes()
+            .split(|b| *b == b'/')
+            .any(|segment| segment == b"." || segment == b"..")
 }
 
 /// The resolved facts about one CLI, with the paths already canonical.
@@ -280,14 +320,39 @@ fn push_unique(list: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
+/// Builds the rules for one CLI from canonical paths, taking the state dirs
+/// as written (`~/.claude`, `$CODEX_HOME`, …). Use [`jail_spec_with`] with a
+/// real canonicalizer so a symlinked state dir cannot reach a broad folder.
+pub fn jail_spec(layout: &CliLayout) -> Result<JailSpec, SpecError> {
+    jail_spec_with(layout, &|path| Some(path.to_path_buf()))
+}
+
 /// Builds the rules for one CLI. Pure: nothing is checked on disk, so the
 /// caller drops the paths that do not exist with [`JailSpec::retain_existing`].
-pub fn jail_spec(layout: &CliLayout) -> Result<JailSpec, SpecError> {
+///
+/// Every path of the layout must be canonical (absolute, no `.`/`..`). The
+/// state dirs are derived here, so `resolve` (a canonicalizer; `None` for a
+/// path that does not exist) maps them to their targets and the broad-folder
+/// check runs on the result.
+pub fn jail_spec_with(
+    layout: &CliLayout,
+    resolve: &dyn Fn(&Path) -> Option<PathBuf>,
+) -> Result<JailSpec, SpecError> {
+    let given = [&layout.home, &layout.binary, &layout.cwd, &layout.tmp]
+        .into_iter()
+        .chain(&layout.codex_home)
+        .chain(&layout.interpreter)
+        .chain(&layout.loaders)
+        .chain(&layout.helpers);
+    if let Some(bad) = given.into_iter().find(|p| !is_canonical_form(p)) {
+        return Err(SpecError::NotCanonical(bad.clone()));
+    }
     let root = package_root(&layout.binary)
         .ok_or_else(|| SpecError::RootTooBroad(layout.binary.clone()))?;
     if too_broad(&root, &layout.home) {
         return Err(SpecError::RootTooBroad(root));
     }
+    let resolved = |path: PathBuf| resolve(&path).unwrap_or(path);
     let (state, state_file) = match layout.cli {
         Cli::Claude => (
             layout.home.join(".claude"),
@@ -302,8 +367,12 @@ pub fn jail_spec(layout: &CliLayout) -> Result<JailSpec, SpecError> {
         ),
         Cli::Gemini => (layout.home.join(".gemini"), None),
     };
-    if too_broad(&state, &layout.home) {
-        return Err(SpecError::RootTooBroad(state));
+    let state = resolved(state);
+    let state_file = state_file.map(resolved);
+    for path in [Some(&state), state_file.as_ref()].into_iter().flatten() {
+        if too_broad(path, &layout.home) {
+            return Err(SpecError::RootTooBroad(path.clone()));
+        }
     }
 
     let mut spec = JailSpec::default();
