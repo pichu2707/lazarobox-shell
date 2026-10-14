@@ -36,4 +36,4 @@ Rules: strict TDD (RED then GREEN). Gate per commit: `cargo fmt --check`, `cargo
 
 ## 6. Verification
 - [x] 6.1 Full gate at HEAD, plain and with `ENGRAM_PORT=8123`
-- [ ] 6.2 [manual] (pending: needs a real Kitty session) In Kitty, with notify on, start a long answer, switch to another pane or window: the bell rings once when it finishes; looking at the chat: no bell
+- [x] 6.2 [manual] In Kitty, with notify on, start a long answer, switch to another pane or window: the bell rings once when it finishes; looking at the chat: no bell (user-checked 2026-10-14)
