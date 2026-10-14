@@ -14,6 +14,9 @@ pub const RETENTION_LIMIT: usize = 200;
 pub const EVICTED_LINE: &str = "oldest conversation removed (limit 200)";
 /// System line for a write that failed in the middle of a session.
 pub const SAVE_FAILED_LINE: &str = "could not save conversation";
+/// System line for a conversation another pane deleted while this one has it
+/// open.
+pub const DELETED_LINE: &str = "conversation deleted; new messages are not saved";
 /// Start of the system line shown when the store cannot be used.
 pub const UNAVAILABLE_PREFIX: &str = "history unavailable: ";
 /// The longest error text shown to the user, in characters.
@@ -250,6 +253,28 @@ pub struct NewConversation {
 impl PaneStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A store for a conversation that already exists (a resume): saves
+    /// append to it.
+    pub fn open(conversation: i64) -> Self {
+        Self {
+            link: Link::Open(conversation),
+        }
+    }
+
+    /// Stops saving: the conversation is gone or the store is unusable.
+    pub fn detach(&mut self) {
+        self.link = Link::Detached;
+    }
+
+    pub fn is_detached(&self) -> bool {
+        self.link == Link::Detached
+    }
+
+    /// Nothing was saved yet, so no write can be in flight.
+    pub fn is_fresh(&self) -> bool {
+        self.link == Link::Fresh
     }
 
     /// The database id once the conversation exists.

@@ -288,3 +288,33 @@ fn a_reply_gives_its_lines_and_other_replies_none() {
     };
     assert!(eviction_lines_of(&failed).is_empty());
 }
+
+// A resumed conversation starts open, a deleted one is detached.
+#[test]
+fn an_opened_store_appends_to_that_conversation() {
+    let mut store = PaneStore::open(42);
+    assert_eq!(store.conversation(), Some(42));
+    assert_eq!(
+        store.save(pane(), user("hi"), &new_conv()),
+        Some(StoreCmd::Append {
+            pane: pane(),
+            conversation: 42,
+            message: user("hi"),
+        })
+    );
+}
+
+#[test]
+fn a_detached_store_drops_every_save() {
+    let mut store = PaneStore::open(42);
+    assert!(!store.is_detached());
+    store.detach();
+    assert!(store.is_detached());
+    assert_eq!(store.conversation(), None);
+    assert_eq!(store.save(pane(), user("hi"), &new_conv()), None);
+}
+
+#[test]
+fn a_fresh_store_is_not_detached() {
+    assert!(!PaneStore::new().is_detached());
+}
