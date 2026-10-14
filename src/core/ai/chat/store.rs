@@ -20,6 +20,8 @@ pub const SAVE_FAILED_LINE: &str = "could not save conversation";
 /// System line for a conversation another pane deleted while this one has it
 /// open.
 pub const DELETED_LINE: &str = "conversation deleted; new messages are not saved";
+/// System line when tags are edited on a conversation that is not saving.
+pub const TAGS_NOT_SAVED_LINE: &str = "tags kept in this pane only: history is not saving";
 /// Start of the system line shown when the store cannot be used.
 pub const UNAVAILABLE_PREFIX: &str = "history unavailable: ";
 /// The longest error text shown to the user, in characters.

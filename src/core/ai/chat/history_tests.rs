@@ -422,6 +422,7 @@ fn tags_edited_before_the_first_message_go_with_the_create() {
 #[test]
 fn a_project_tag_removed_before_the_first_message_is_not_proposed_again() {
     let mut state = ChatState::new(Some("/work/proj".into()));
+    state.set_tag(Some("proj".into()));
     state.edit_tags(pane(), Tags::default());
     sent(&mut state, "hello");
     let out = cmds(&mut state);
@@ -555,5 +556,45 @@ fn closing_drops_the_editor_and_changes_no_tag() {
     state.close_tag_editor();
     assert!(state.tag_editor().is_none());
     assert_eq!(state.tags(), Tags::parse("proj"));
+    assert!(!state.tags_edited());
+}
+
+// The origin's project tag is only given up when the user changed the project
+// entry; extras alone leave it for the store to resolve.
+#[test]
+fn extras_alone_leave_the_project_tag_to_the_origin() {
+    let mut state = ChatState::new(Some("/work/proj".into()));
+    state.edit_tags(pane(), Tags::parse(", sql"));
+    assert!(!state.tags_edited());
+    sent(&mut state, "hello");
+    let out = cmds(&mut state);
+    let [
+        StoreCmd::Create {
+            tag,
+            extras,
+            origin,
+            ..
+        },
+    ] = out.as_slice()
+    else {
+        panic!("expected one Create, got {out:?}");
+    };
+    assert_eq!(tag, &None);
+    assert_eq!(extras, &["sql"]);
+    assert_eq!(origin.as_deref(), Some(std::path::Path::new("/work/proj")));
+}
+
+#[test]
+fn changing_the_project_entry_gives_up_the_origin() {
+    let mut state = ChatState::new(Some("/work/proj".into()));
+    state.edit_tags(pane(), Tags::parse("mine"));
+    assert!(state.tags_edited());
+}
+
+#[test]
+fn keeping_the_known_project_tag_and_adding_extras_does_not_count_as_a_change() {
+    let mut state = ChatState::new(Some("/work/proj".into()));
+    state.set_tag(Some("proj".into()));
+    state.edit_tags(pane(), Tags::parse("proj, sql"));
     assert!(!state.tags_edited());
 }

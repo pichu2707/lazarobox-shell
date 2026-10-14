@@ -4,6 +4,7 @@
 use super::*;
 use crate::core::ai::chat::{
     list::TAGS_FAILED,
+    store::TAGS_NOT_SAVED_LINE,
     tag_editor::{TagOutcome, TagTarget},
     tags::Tags,
 };
@@ -80,11 +81,16 @@ impl App {
                 conversation: Some(conversation),
                 tags,
             }),
-            TagTarget::Pane => self
-                .panes
-                .get_mut(&id)
-                .and_then(PaneState::chat_mut)
-                .and_then(|chat| chat.edit_tags(id, tags)),
+            TagTarget::Pane => {
+                let chat = self.panes.get_mut(&id).and_then(PaneState::chat_mut);
+                chat.and_then(|chat| {
+                    let cmd = chat.edit_tags(id, tags);
+                    if cmd.is_none() && chat.store_detached() {
+                        chat.push_system(TAGS_NOT_SAVED_LINE);
+                    }
+                    cmd
+                })
+            }
         };
         cmd.map(Effect::Store).into_iter().collect()
     }

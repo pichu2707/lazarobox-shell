@@ -46,12 +46,17 @@ impl ChatState {
     /// the first message nothing is stored: the `Create` carries them, and the
     /// project tag is no longer the origin's to propose.
     pub fn edit_tags(&mut self, pane: PaneId, tags: Tags) -> Option<StoreCmd> {
+        // Only a changed project entry takes the project tag away from the
+        // origin; extras alone leave it to be resolved.
+        if tags.project != self.tag {
+            self.tags_edited = true;
+        }
         self.set_tags(&tags);
-        self.tags_edited = true;
         self.store.set_tags(pane, tags)
     }
 
-    /// Whether the user edited the tags of a conversation that is not stored.
+    /// Whether the user changed the project tag of a conversation that is not
+    /// stored.
     pub fn tags_edited(&self) -> bool {
         self.tags_edited
     }

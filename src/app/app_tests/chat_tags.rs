@@ -11,7 +11,7 @@ use super::chat_notes::ai;
 use super::*;
 use crate::core::ai::chat::{
     list::ListView,
-    store::{ConvRow, StoreCmd, StoreReply},
+    store::{ConvRow, StoreCmd, StoreReply, TAGS_NOT_SAVED_LINE},
     tag_editor::TagTarget,
     tags::Tags,
 };
@@ -296,6 +296,49 @@ fn a_late_list_answer_does_not_undo_an_edited_tag() {
         rows: Vec::new(),
     }));
     assert_eq!(chat_of(&a).tag(), Some("mine"));
+}
+
+#[test]
+fn extras_typed_before_the_list_answers_leave_the_project_tag_to_the_answer() {
+    let (mut a, _) = opened();
+    a.update(key('n'));
+    press(&mut a, "T");
+    type_text(&mut a, ", sql");
+    a.update(plain(KeyCode::Enter));
+    assert_eq!(chat_of(&a).tag(), None);
+    a.update(AppEvent::Store(StoreReply::Listed {
+        pane: chat_id(),
+        tag: Some("proj".into()),
+        rows: Vec::new(),
+    }));
+    assert_eq!(chat_of(&a).tags(), Tags::parse("proj, sql"));
+}
+
+#[test]
+fn a_detached_conversation_says_the_tags_stay_in_the_pane() {
+    let mut a = stored();
+    a.update(AppEvent::Store(StoreReply::Unavailable {
+        pane: chat_id(),
+        reason: "disk gone".into(),
+    }));
+    press(&mut a, "T");
+    type_text(&mut a, ", sql");
+    let effects = a.update(plain(KeyCode::Enter));
+    assert_eq!(stores(&effects), Vec::new());
+    assert!(systems(chat_of(&a)).contains(&TAGS_NOT_SAVED_LINE.to_owned()));
+    assert_eq!(chat_of(&a).tags(), Tags::parse("proj, sql"));
+}
+
+#[test]
+fn a_fresh_or_stored_conversation_does_not_say_it_is_not_saving() {
+    let mut a = fresh();
+    press(&mut a, "T");
+    a.update(plain(KeyCode::Enter));
+    assert!(!systems(chat_of(&a)).contains(&TAGS_NOT_SAVED_LINE.to_owned()));
+    let mut b = stored();
+    press(&mut b, "T");
+    b.update(plain(KeyCode::Enter));
+    assert!(!systems(chat_of(&b)).contains(&TAGS_NOT_SAVED_LINE.to_owned()));
 }
 
 #[test]
