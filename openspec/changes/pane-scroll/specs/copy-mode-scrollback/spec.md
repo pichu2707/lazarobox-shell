@@ -85,10 +85,10 @@ In COPY on a chat pane the transcript MUST scroll by lines (see chat-pane, Trans
 - WHEN the shell pane's view offset is inspected
 - THEN it is unchanged (0)
 
-#### Scenario: Focus change exits chat COPY
-- GIVEN COPY on a chat pane scrolled up
-- WHEN focus moves to another pane or the tab changes
-- THEN the mode is TERMINAL and the chat transcript is at the bottom and following
+#### Scenario: Focus or tab change after Ctrl+Space keeps the view
+- GIVEN COPY on a chat pane scrolled up 3 lines
+- WHEN `Ctrl+Space` is pressed (mode PREFIX, COPY is over) and then the focus moves to another pane or the tab changes
+- THEN the mode is TERMINAL, the chat transcript stays pinned where it was and its `[+3]` badge keeps showing (consistent with the chat-pane rule that chat scroll survives focus and tab changes)
 
 ### Requirement: Scrolled view badge
 Any pane whose view is scrolled back MUST show the badge `[+N]` in its top-right corner, over the content rectangle: for a shell pane N is the scrollback offset (rows above the live bottom, whether the pane is in COPY or only scrolled by the wheel); for a chat pane N is the number of transcript lines below the viewport. The badge MUST NOT be shown at offset 0 (live, or following), on the alternate screen, or on a pane too narrow to hold it. It MUST update as the view moves and as anchored output arrives, MUST NOT shift the pane's content or its PTY size, and MUST NOT panic at any pane size. The badge is a drawing overlay: it is not part of the pane's text, selection or yank.
