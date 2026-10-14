@@ -165,6 +165,43 @@ fn the_end_lists_the_titles_once_and_only_once() {
     assert_eq!(state.take_end(), None, "the end goes out once");
 }
 
+const STORED: &str = "lazarobox-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+// 9.6: a session taken from the store has nothing to end until this view
+// writes to it.
+#[test]
+fn a_hydrated_session_that_was_not_written_to_has_no_end() {
+    let mut state = answered("a");
+    state.replace_session(STORED, "stored");
+    assert_eq!(state.session().map(|s| s.id.as_str()), Some(STORED));
+    assert_eq!(state.take_end(), None);
+    // Still no end after the failed take: a later note is not lost.
+    saved(&mut state, "chat/decision/a", 1, "A");
+    assert_eq!(
+        state.take_end(),
+        Some((
+            STORED.to_owned(),
+            "stored".to_owned(),
+            "Notes: A".to_owned()
+        ))
+    );
+}
+
+#[test]
+fn a_hydrated_session_with_an_approved_summary_ends_with_it() {
+    let mut state = answered("a");
+    state.replace_session(STORED, "stored");
+    state.approve_summary("We chose Axum.");
+    assert_eq!(
+        state.take_end(),
+        Some((
+            STORED.to_owned(),
+            "stored".to_owned(),
+            "We chose Axum.".to_owned()
+        ))
+    );
+}
+
 #[test]
 fn the_end_summary_is_capped_at_1000_characters() {
     let mut state = answered("a");

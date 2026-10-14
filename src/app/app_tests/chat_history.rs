@@ -110,6 +110,7 @@ pub(super) fn row(
         tag: tag.map(str::to_owned),
         extras: vec![],
         first: first.into(),
+        notes: 0,
     }
 }
 
@@ -687,6 +688,7 @@ pub(super) fn resumed(pane: PaneId, conversation: i64, profile: &str) -> AppEven
             stored(Role::User, "second", MsgStatus::Complete),
             stored(Role::Assistant, "par", MsgStatus::Interrupted),
         ],
+        session: None,
     })
 }
 

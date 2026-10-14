@@ -21,6 +21,7 @@ fn row(id: i64, updated_at: i64, tag: &str, first: &str) -> ConvRow {
         tag: Some(tag.into()),
         extras: vec![],
         first: first.into(),
+        notes: 0,
     }
 }
 
@@ -161,6 +162,26 @@ fn the_delete_prompt_takes_the_last_row() {
     press(&mut chat, 'd');
     let shown = rows(&draw(&chat, 60, 12));
     assert_eq!(shown[11], "Delete conversation? (y/n)");
+}
+
+#[test]
+fn the_three_way_prompt_takes_the_last_row_and_is_cut_on_a_narrow_pane() {
+    let mut chat = ChatState::new(None);
+    chat.open_list();
+    let list = chat.list_mut().unwrap();
+    let mut noted = row(3, 1_700_000_000, "proj", "question");
+    noted.notes = 3;
+    list.set_rows(vec![noted]);
+    list.set_notes_deletable(true);
+    press(&mut chat, 'd');
+    let wide = rows(&draw(&chat, 70, 12));
+    assert_eq!(
+        wide[11],
+        "Delete conversation? y · n · a also delete its 3 notes"
+    );
+    // A narrow pane clips the prompt instead of panicking.
+    let narrow = rows(&draw(&chat, 20, 6));
+    assert_eq!(narrow[5], "Delete conversation?");
 }
 
 #[test]

@@ -206,13 +206,13 @@ Los mensajes se guardan en `chat.db` a medida que conversas. Una respuesta que s
 | `Enter`      | Retoma la conversación: carga el historial completo y sigue en la misma, con su perfil guardado |
 | `n` / `Esc`  | Empieza una conversación nueva                                                  |
 | `a`          | Alterna entre las conversaciones del proyecto y las de todos los proyectos      |
-| `d`, luego `y` | Borra la conversación (cualquier otra tecla cancela); si está abierta en otro panel, ese panel deja de guardar |
+| `d`, luego `y` | Borra la conversación (cualquier otra tecla cancela); si está abierta en otro panel, ese panel deja de guardar. Con memoria activada, `ENGRAM_HTTP_TOKEN` definido y notas guardadas, la pregunta ofrece también `a`: borra la conversación y después sus notas en engram (ver «Memoria») |
 | `t`          | Edita las etiquetas de la fila                                                  |
 | `Ctrl+Espacio` `T` | Edita las etiquetas de la conversación abierta                            |
 
 **Etiquetas:** cada conversación lleva la etiqueta del proyecto (primero) y hasta 8 etiquetas extra. El editor es una sola línea separada por comas: `Enter` guarda y `Esc` descarta. Guardar cuenta como actividad, así que la fila sube al principio de la lista.
 
-Límites: al reabrir una conversación, las etiquetas extra salen en orden alfabético. Borrar de engram las notas de una conversación borrada y retomar su sesión de memoria llegarán en una versión posterior. La combinación `Ctrl+Espacio` `T` aún no se ha comprobado a mano en Kitty.
+Límites: al reabrir una conversación, las etiquetas extra salen en orden alfabético. La combinación `Ctrl+Espacio` `T` aún no se ha comprobado a mano en Kitty.
 
 ### Memoria del proyecto (engram)
 
@@ -237,7 +237,7 @@ port = 7437           # por defecto ENGRAM_PORT si es válido, si no 7437
 
 - Solo proyectos **git**; en otro directorio la memoria indica `memory needs a git project`.
 - Un servidor `engram` 3.x en marcha. Si no responde, lazarobox ofrece lanzarlo: muestra la ruta **absoluta** del binario, `y` lo inicia y `n` o `Esc` lo deja para otra vez. La oferta solo aparece antes del primer mensaje de un chat inactivo. El servidor lanzado **sigue en marcha cuando cierras lazarobox** (lazarobox nunca lo detiene) y su salida va a `$XDG_STATE_HOME/lazarobox/engram-serve.log` (o `~/.local/state/lazarobox/engram-serve.log`), un archivo privado `0600`.
-- `ENGRAM_PORT` fija el puerto por defecto. `ENGRAM_HTTP_TOKEN` es el token del servidor engram: lazarobox solo lo usará para **borrar** notas, y el borrado llega con el historial del chat (ver los límites).
+- `ENGRAM_PORT` fija el puerto por defecto. `ENGRAM_HTTP_TOKEN` es el token del servidor engram: lazarobox solo lo usa para **borrar** notas, y solo cuando tú lo pides con `a` al borrar una conversación (ver «Borrar notas»). Solo comprueba si está definido y no vacío; nunca lo guarda ni lo muestra.
 
 **Teclas** (dentro del chat):
 
@@ -253,7 +253,11 @@ La barra de estado muestra `mem: ready`, `mem: checking` o `mem: unavailable`.
 
 **Volver a una versión anterior:** la memoria sube el esquema de `chat.db` a la versión 2. Un lazarobox más antiguo se niega a abrir un `chat.db` más nuevo que él y lo deja intacto; al volver a actualizar, vuelve a estar disponible.
 
-Límites: borrar notas desde lazarobox y retomar la sesión de memoria de una conversación llegarán en una versión posterior. La memoria se envía con la conversación a los adaptadores de Ollama, claude, codex y gemini (en los tres CLIs, **al proveedor**).
+**Borrar notas:** una nota y una conversación tienen vidas separadas, así que borrar la conversación (`d`, `y`) deja sus notas en engram. Si la memoria está activada, `ENGRAM_HTTP_TOKEN` está definido y la conversación tiene notas, la pregunta pasa a `Delete conversation? y · n · a also delete its N notes`: `y` borra solo la conversación, `a` borra la conversación y después sus notas (`DELETE /observations/{id}` con el token, una por una), y cualquier otra tecla cancela. Sin token o con la memoria desactivada la pregunta es la normal y, tras borrar, una línea indica que las notas siguen en engram. El resultado de `a` se muestra como `deleted N notes from engram`, `deleted K of N notes from engram` o `could not delete notes: <motivo>`; la conversación ya está borrada en cualquiera de los casos. Al superar el límite de 200 conversaciones, la más antigua se elimina **sin** tocar sus notas.
+
+**Retomar una conversación:** al retomarla se reutiliza la sesión de engram que usaron sus notas (con su proyecto), así que las notas nuevas siguen en la misma sesión y se cierra una sola vez. Una conversación retomada que no escribe nada no cierra ninguna sesión. Sus notas nuevas siguen en el proyecto de engram con el que se guardó la conversación, aunque la retomes desde otro directorio.
+
+Límites: la memoria se envía con la conversación a los adaptadores de Ollama, claude, codex y gemini (en los tres CLIs, **al proveedor**).
 
 ---
 

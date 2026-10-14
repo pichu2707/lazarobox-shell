@@ -426,6 +426,7 @@ fn a_resumed_conversation_opens_the_editor_on_its_stored_tags() {
         tag: Some("proj".into()),
         extras: vec!["sql".into()],
         messages: Vec::new(),
+        session: None,
     }));
     press(&mut a, "T");
     assert_eq!(editor_text(&a), "proj, sql");

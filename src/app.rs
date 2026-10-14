@@ -448,6 +448,14 @@ pub struct App {
     /// A fresh engram session id, injected so the core does no IO: the
     /// runtime passes the random one. `None` (the default) gives no id.
     session_id: fn() -> Option<String>,
+    /// Whether `ENGRAM_HTTP_TOKEN` is set and not empty, injected so the core
+    /// reads no environment: the runtime passes the real check. The app only
+    /// ever learns that a token is present, never its value. The default says
+    /// no.
+    token_check: fn() -> bool,
+    /// What each delete in flight from a conversation list does with the
+    /// notes of its conversation (see `history::NoteChoice`).
+    note_choices: Vec<(PaneId, i64, history::NoteChoice)>,
     /// The last finished detection; `None` until the first run ends.
     engines: Option<Detection>,
     /// A detection is in flight: further requests are dropped.
@@ -521,6 +529,8 @@ impl App {
             held_chat_key: None,
             clock: Instant::now,
             session_id: || None,
+            token_check: || false,
+            note_choices: Vec::new(),
             engines: None,
             detecting: false,
             ai: AiConfig::default(),
@@ -591,6 +601,14 @@ impl App {
     /// approved in a chat that wrote no note.
     pub fn with_session_ids(mut self, session_id: fn() -> Option<String>) -> Self {
         self.session_id = session_id;
+        self
+    }
+
+    /// Injects the check for `ENGRAM_HTTP_TOKEN` (set and not empty), which
+    /// decides whether the delete prompt can offer to delete notes. Without
+    /// it no token counts as present.
+    pub fn with_token_check(mut self, token_check: fn() -> bool) -> Self {
+        self.token_check = token_check;
         self
     }
 
@@ -1418,6 +1436,7 @@ impl App {
         for id in leaves {
             self.panes.remove(&id);
             self.drop_parked_send(id);
+            self.drop_note_choices(id);
         }
         if index == self.active {
             self.active = index.min(self.tabs.len() - 1);
@@ -1570,6 +1589,7 @@ impl App {
                 let mut ends = self.end_effects(&[id]);
                 self.panes.remove(&id);
                 self.drop_parked_send(id);
+                self.drop_note_choices(id);
                 self.tabs[t].zoom = false;
                 if id == self.tabs[t].focus {
                     let tiling = tile(&self.tabs[t].tree, body);
@@ -6568,6 +6588,12 @@ mod app_tests {
 
     /// The bell for an answer nobody watches (chat-notify).
     mod chat_notify;
+
+    /// The delete offer of the conversation list (engram-memory M9).
+    mod chat_delete_notes;
+
+    /// A resumed conversation and its engram session (engram-memory 9.6).
+    mod chat_resume_memory;
 
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.

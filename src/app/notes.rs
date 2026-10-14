@@ -197,6 +197,16 @@ impl App {
                 let save = chat.save_answered(*token);
                 save_not_done(chat, save.as_ref(), &reason.text());
             }
+            // The worker could not even try the notes delete.
+            MemReply::NotesUnavailable { reason, .. } => {
+                self.on_notes_unavailable(id, &reason.text());
+            }
+            MemReply::Deleted {
+                ok,
+                failed,
+                refused,
+                ..
+            } => self.on_notes_deleted(id, *ok, *failed, *refused),
             MemReply::Unavailable { reason, .. } => {
                 let reason = match (&self.no_server, reason) {
                     (Some(cause), Reason::NotRunning) => cause.clone(),
@@ -241,10 +251,7 @@ impl App {
                 let links = self.link_effects(id);
                 return self.with_waiting_sends(links);
             }
-            MemReply::Health { .. }
-            | MemReply::Deleted { .. }
-            | MemReply::Server(_)
-            | MemReply::ServerOffer(_) => {}
+            MemReply::Health { .. } | MemReply::Server(_) | MemReply::ServerOffer(_) => {}
         }
         Vec::new()
     }
