@@ -6,7 +6,7 @@ expression: text(&buf)
 │ Settings                                        │
 │ Statusline position                      bottom │
 │ Tab bar position                            top │
-│ Mouse: off (coming soon)                        │
+│ Mouse                                        on │
 │                                                 │
 │ config.toml: statusline is not a table; fix it …│
 └─────────────────────────────────────────────────┘

@@ -1,0 +1,16 @@
+---
+source: src/ui/scroll_tests.rs
+expression: text(&app)
+---
+line58                                                                                         [+12]
+line59
+line60
+line61
+line62
+line63
+line64
+line65
+line66
+line67
+line68
+ ◐ TERMINAL ↑12/70  /work                                                                    zsh

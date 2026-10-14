@@ -6,7 +6,7 @@ expression: shown
 │ Settings                                                   │
 │ Statusline position                                 bottom │
 │ Tab bar position                                       top │
-│ Mouse: off (coming soon)                                   │
+│ Mouse                                                   on │
 │ AI                                                         │
 │ Set all tasks                                      (mixed) │
 │ general                                 ollama › model1:7b │

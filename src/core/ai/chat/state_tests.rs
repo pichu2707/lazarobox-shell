@@ -1,4 +1,4 @@
-use super::engine::ChatMessage;
+use super::engine::{ChatMessage, Finish};
 use super::*;
 
 pub(super) const SYSTEM: &str = "You are helpful.";
@@ -359,4 +359,29 @@ fn a_status_name_round_trips_and_an_unknown_one_is_none() {
         assert_eq!(MsgStatus::from_name(status.as_str()), Some(status));
     }
     assert_eq!(MsgStatus::from_name("done"), None);
+}
+
+#[test]
+fn a_notice_is_one_system_line_per_pane_however_many_turns_say_it() {
+    let mut state = chat();
+    let line = "claude runs without the jail here: no Landlock";
+    let (turn, _) = sent(&mut state, "one");
+    state.apply(turn, StreamEvent::Notice(line.into()));
+    state.apply(turn, StreamEvent::Notice(line.into()));
+    state.apply(turn, StreamEvent::Delta("a".into()));
+    state.apply(turn, StreamEvent::Done(Finish::Stop));
+    let (turn, _) = sent(&mut state, "two");
+    state.apply(turn, StreamEvent::Notice(line.into()));
+    state.apply(turn, StreamEvent::Delta("b".into()));
+    state.apply(turn, StreamEvent::Done(Finish::Stop));
+    assert_eq!(systems(&state), [line]);
+}
+
+#[test]
+fn a_notice_does_not_start_the_answer_or_end_the_turn() {
+    let mut state = chat();
+    let (turn, _) = sent(&mut state, "hi");
+    state.apply(turn, StreamEvent::Notice("x".into()));
+    assert_eq!(state.phase(), Phase::Waiting { slow: false });
+    assert_eq!(texts(&state).len(), 1, "only the user message");
 }

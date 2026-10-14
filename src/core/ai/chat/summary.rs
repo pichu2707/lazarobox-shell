@@ -292,7 +292,7 @@ impl ChatState {
                 }
                 Follow::Nothing
             }
-            StreamEvent::ThinkingDelta(_) => Follow::Nothing,
+            StreamEvent::ThinkingDelta(_) | StreamEvent::Notice(_) => Follow::Nothing,
             StreamEvent::Delta(text) => {
                 if text.is_empty() {
                     return Follow::Nothing;
@@ -330,6 +330,10 @@ impl ChatState {
             }
             StreamEvent::Error(ChatError::Failed(message)) => {
                 self.finish_summary(Some(message), false);
+                Follow::Nothing
+            }
+            StreamEvent::Error(ChatError::Jail) => {
+                self.finish_summary(Some(super::JAIL_ERROR.to_owned()), false);
                 Follow::Nothing
             }
         }

@@ -1,7 +1,7 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::{
-    ChatState, Entry, Follow, MsgStatus, Phase,
+    ChatState, Entry, Follow, JAIL_ERROR, MsgStatus, Phase,
     engine::{ChatError, Finish, Role, StreamEvent},
     memory::*,
     state_tests::{chat, ready, sent},
@@ -243,6 +243,19 @@ fn an_error_or_an_empty_summary_opens_no_draft_and_says_why() {
     cut.apply(turn, StreamEvent::Delta("half".into()));
     cut.apply(turn, StreamEvent::Error(ChatError::Interrupted));
     assert!(cut.summary_draft().is_none());
+}
+
+#[test]
+fn a_jail_error_ends_the_summary_run_with_its_line() {
+    let mut state = talked();
+    let turn = started(&mut state);
+    state.apply(turn, StreamEvent::Error(ChatError::Jail));
+    assert!(!state.summarizing());
+    assert!(state.summary_draft().is_none());
+    assert_eq!(
+        state.entries().last(),
+        Some(&Entry::System(format!("summary failed: {JAIL_ERROR}")))
+    );
 }
 
 #[test]

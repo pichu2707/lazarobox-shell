@@ -1,0 +1,5 @@
+---
+source: src/ui/scroll_tests.rs
+expression: line.trim_end()
+---
+ ◐ COPY ↑0/73  j/k scroll · Esc exit                                          ollama › llama3:8b

@@ -4,8 +4,13 @@
 //! turn in flight and the cwd the pane was opened from.
 
 pub mod adapters;
+pub mod claude;
+pub mod cli;
+pub mod codex;
 pub mod composer;
+pub mod copy;
 pub mod engine;
+pub mod gemini;
 pub mod guidance;
 pub mod history;
 pub mod list;
@@ -56,6 +61,8 @@ pub const BUSY: &str = "still answering: wait for it or press Esc to cancel";
 pub const FULL: &str = "this conversation is full: start a new one";
 /// System line for an answer that ended with no text at all.
 pub const NO_ANSWER: &str = "the model sent no answer";
+/// System line for a CLI the jail refused to start.
+pub const JAIL_ERROR: &str = "the CLI did not start: its jail could not be enforced";
 /// System line for an answer cut at `ANSWER_CAP`.
 pub const TOO_LONG: &str = "answer too long: cut at 1 MiB";
 
@@ -653,6 +660,13 @@ impl ChatState {
                 }
                 Follow::Nothing
             }
+            StreamEvent::Notice(line) => {
+                let entry = Entry::System(line);
+                if !self.entries.contains(&entry) {
+                    self.entries.push(entry);
+                }
+                Follow::Nothing
+            }
             StreamEvent::Delta(text) => self.push_delta(&text, now),
             StreamEvent::ThinkingDelta(text) => {
                 if self.push_thinking(&text, now) {
@@ -675,6 +689,10 @@ impl ChatState {
             }
             StreamEvent::Error(ChatError::Failed(message)) => {
                 self.finish(MsgStatus::Error, Some(message), now);
+                Follow::Nothing
+            }
+            StreamEvent::Error(ChatError::Jail) => {
+                self.finish(MsgStatus::Error, Some(JAIL_ERROR.to_owned()), now);
                 Follow::Nothing
             }
         }

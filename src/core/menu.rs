@@ -28,8 +28,9 @@ pub struct Choice {
 
 pub enum ItemKind {
     Choice(Choice),
-    /// Drawn but never selectable.
-    Disabled,
+    /// An `off`/`on` setting persisted as a TOML boolean (`on` is written
+    /// `true`), with an empty table for a root key.
+    Toggle(Choice),
     /// An AI assignment row; `None` is `Set all tasks`.
     Assign(Option<Task>),
     /// The AI profile: a static choice (`ai.profile`) that lives in the AI
@@ -102,8 +103,14 @@ pub static SECTIONS: &[Section] = &[Section {
             }),
         },
         Item {
-            label: "Mouse: off (coming soon)",
-            kind: ItemKind::Disabled,
+            label: "Mouse",
+            kind: ItemKind::Toggle(Choice {
+                table: "",
+                key: "mouse",
+                values: &["off", "on"],
+                get: |c| usize::from(c.mouse),
+                set: |c, i| c.mouse = i == 1,
+            }),
         },
     ],
 }];
@@ -168,9 +175,8 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
         .iter()
         .flat_map(|section| section.items.iter())
         .filter_map(|item| match &item.kind {
-            ItemKind::Choice(choice) => Some((item, choice)),
-            ItemKind::Disabled
-            | ItemKind::Assign(_)
+            ItemKind::Choice(choice) | ItemKind::Toggle(choice) => Some((item, choice)),
+            ItemKind::Assign(_)
             | ItemKind::Profile
             | ItemKind::Context
             | ItemKind::Memory(_)
@@ -465,7 +471,7 @@ impl MenuState {
             ItemKind::Assign(None) => Some(Target::All),
             ItemKind::Assign(Some(task)) => Some(Target::Task(*task)),
             ItemKind::Choice(_)
-            | ItemKind::Disabled
+            | ItemKind::Toggle(_)
             | ItemKind::Profile
             | ItemKind::Context
             | ItemKind::Memory(_)
@@ -548,7 +554,7 @@ impl MenuState {
                         index += 1;
                         row
                     }
-                    ItemKind::Choice(choice) => {
+                    ItemKind::Choice(choice) | ItemKind::Toggle(choice) => {
                         let row = Row::Item {
                             label: item.label,
                             value: Some(Cow::Borrowed(choice.values[(choice.get)(config)])),
@@ -558,12 +564,6 @@ impl MenuState {
                         index += 1;
                         row
                     }
-                    ItemKind::Disabled => Row::Item {
-                        label: item.label,
-                        value: None,
-                        selected: false,
-                        enabled: false,
-                    },
                 });
             }
         }
@@ -715,10 +715,15 @@ impl MenuState {
     pub fn edits(&self, live: &Config) -> Vec<ConfigEdit> {
         let settings = choices()
             .filter(|(_, c)| (c.get)(live) != (c.get)(&self.original))
-            .map(|(_, c)| ConfigEdit {
+            .map(|(item, c)| ConfigEdit {
                 table: c.table,
                 key: c.key,
-                value: Cow::Borrowed(c.values[(c.get)(live)]),
+                value: Cow::Borrowed(match item.kind {
+                    // A toggle is written as a TOML boolean.
+                    ItemKind::Toggle(_) if (c.get)(live) == 1 => "true",
+                    ItemKind::Toggle(_) => "false",
+                    _ => c.values[(c.get)(live)],
+                }),
             });
         let tasks = self
             .ai
@@ -857,6 +862,12 @@ mod tests {
                 assert!(c.values.len() >= 2);
                 paths.push((c.table, c.key));
             }
+            // A toggle may sit in the root table (empty table name).
+            if let ItemKind::Toggle(c) = &item.kind {
+                assert!(!c.key.is_empty());
+                assert_eq!(c.values, ["off", "on"]);
+                paths.push((c.table, c.key));
+            }
         }
         let mut unique = paths.clone();
         unique.sort_unstable();
@@ -874,7 +885,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_list_title_then_settings_then_disabled_mouse() {
+    fn rows_list_title_then_the_three_settings() {
         let menu = MenuState::open(&Config::default());
         assert_eq!(
             menu.rows(&Config::default()),
@@ -882,7 +893,7 @@ mod tests {
                 Row::Title("Settings".into()),
                 row("Statusline position", Some("bottom"), true),
                 row("Tab bar position", Some("top"), false),
-                row("Mouse: off (coming soon)", None, false),
+                row("Mouse", Some("on"), false),
             ]
         );
     }
@@ -922,9 +933,13 @@ mod tests {
             assert_eq!(menu.on_key(&down, false, &mut config), MenuCommand::None);
             assert_eq!(selected(&menu), Some(1));
             menu.on_key(&down, false, &mut config);
+            assert_eq!(selected(&menu), Some(2), "the Mouse row is selectable");
+            menu.on_key(&down, false, &mut config);
             assert_eq!(selected(&menu), Some(0), "wraps past the last row");
             menu.on_key(&up, false, &mut config);
-            assert_eq!(selected(&menu), Some(1), "wraps before the first row");
+            assert_eq!(selected(&menu), Some(2), "wraps before the first row");
+            menu.on_key(&up, false, &mut config);
+            assert_eq!(selected(&menu), Some(1));
             menu.on_key(&up, false, &mut config);
             assert_eq!(selected(&menu), Some(0));
         }
@@ -1115,3 +1130,6 @@ mod profile_tests;
 
 #[cfg(test)]
 mod context_tests;
+
+#[cfg(test)]
+mod mouse_tests;

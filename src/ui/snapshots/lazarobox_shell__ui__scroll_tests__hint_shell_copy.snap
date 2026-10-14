@@ -1,0 +1,5 @@
+---
+source: src/ui/scroll_tests.rs
+expression: line.trim_end()
+---
+ ◐ COPY ↑0/70  j/k scroll · v select · y copy · Esc exit                                     zsh

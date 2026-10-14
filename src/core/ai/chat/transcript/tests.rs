@@ -452,6 +452,50 @@ fn page_down_returns_to_following_at_the_end() {
 }
 
 #[test]
+fn lines_up_moves_the_view_by_n_lines_from_the_bottom() {
+    assert_eq!(Scroll::Follow.lines_up(1, 30, 10), Scroll::Pinned(19));
+    assert_eq!(Scroll::Follow.lines_up(3, 30, 10), Scroll::Pinned(17));
+    assert_eq!(Scroll::Pinned(17).lines_up(3, 30, 10), Scroll::Pinned(14));
+}
+
+#[test]
+fn lines_up_clamps_at_the_top() {
+    assert_eq!(Scroll::Pinned(2).lines_up(3, 30, 10), Scroll::Pinned(0));
+    assert_eq!(Scroll::Pinned(0).lines_up(1, 30, 10), Scroll::Pinned(0));
+    assert_eq!(Scroll::Follow.lines_up(100, 30, 10), Scroll::Pinned(0));
+}
+
+#[test]
+fn lines_up_counts_wrapped_lines_of_the_total() {
+    // 12 wrapped rows in a 5-row viewport: the bottom is top 7.
+    assert_eq!(Scroll::Follow.lines_up(2, 12, 5), Scroll::Pinned(5));
+}
+
+#[test]
+fn lines_with_everything_visible_stay_glued() {
+    assert_eq!(Scroll::Follow.lines_up(3, 5, 10), Scroll::Follow);
+    assert_eq!(Scroll::Follow.lines_up(1, 10, 10), Scroll::Follow);
+    assert_eq!(Scroll::Follow.lines_down(3, 5, 10), Scroll::Follow);
+}
+
+#[test]
+fn lines_down_returns_to_following_at_the_end() {
+    assert_eq!(Scroll::Pinned(0).lines_down(1, 30, 10), Scroll::Pinned(1));
+    assert_eq!(Scroll::Pinned(5).lines_down(3, 30, 10), Scroll::Pinned(8));
+    assert_eq!(Scroll::Pinned(18).lines_down(1, 30, 10), Scroll::Pinned(19));
+    assert_eq!(Scroll::Pinned(19).lines_down(1, 30, 10), Scroll::Follow);
+    assert_eq!(Scroll::Pinned(18).lines_down(3, 30, 10), Scroll::Follow);
+    assert_eq!(Scroll::Follow.lines_down(3, 30, 10), Scroll::Follow);
+}
+
+#[test]
+fn lines_down_clamps_a_stale_pin_before_moving() {
+    // The transcript shrank: Pinned(40) is really the bottom (top 20).
+    assert_eq!(Scroll::Pinned(40).lines_down(1, 30, 10), Scroll::Follow);
+    assert_eq!(Scroll::Pinned(40).lines_up(1, 30, 10), Scroll::Pinned(19));
+}
+
+#[test]
 fn a_pinned_view_stays_on_the_same_content_while_the_transcript_grows() {
     let s = Scroll::Pinned(7);
     assert_eq!(s.top(30, 10), 7);

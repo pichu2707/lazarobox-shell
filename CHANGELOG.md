@@ -10,6 +10,67 @@ baseline.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-14
+
+### Added
+
+- AI chat with the `claude`, `codex` and `gemini` CLIs, using your own login
+  (no API key is read, stored or asked for). The conversation is sent to the
+  CLI's provider.
+  - Text only: each CLI starts with fixed options that remove its tools, so it
+    cannot run commands or edit files. gemini gets a deny-all tool policy file
+    written into the turn's private temp folder, no extensions and no MCP
+    servers (its `plan` mode alone can be left by the model).
+  - Linux jail (Landlock) for every CLI turn: no access to `$HOME`, `~/.ssh`
+    or other CLIs' folders, writes only in the CLI's own state folder and a
+    private per-turn temp folder, and only the interpreter and the CLI can be
+    executed. codex and gemini do not run without the jail
+    (`<engine>: not available on this system yet`); claude does, and says so
+    once in the pane.
+  - Script CLIs (npm installs) start through their interpreter. A Homebrew node
+    gets read-only access to exactly the library folders its own ELF lists and
+    to its OpenSSL config and CA bundle.
+  - A newer codex or gemini that adds an event kind, or a codex that drops a
+    feature flag lazarobox disables, makes the chat fail with an error until
+    lazarobox is updated.
+  - Tested with claude 2.1.299, codex-cli 0.142.5 and gemini 0.63.0.
+- Scrolling for every pane. The mouse wheel scrolls the pane under the pointer
+  without moving the focus: three lines per notch in a shell pane's
+  scrollback and in the AI chat transcript, and straight to the application
+  when it asks for the mouse (`vim`, `htop`) or runs on the alternate screen
+  (`less`, `man`, which get arrow keys). Typing in the pane or pasting returns
+  it to the live screen.
+- COPY mode on AI chat panes (`Ctrl+Space [`): `j`/`k`, `Ctrl+u`/`Ctrl+d`,
+  `gg`, `G`, `Esc` or `q` to leave. The streaming answer keeps arriving while
+  the view is scrolled.
+- A `[+N]` badge on a scrolled pane, a position in the statusline
+  (`TERMINAL ↑12/340`) and a key hint in COPY mode.
+- The menu `Mouse` row is now a real `off`/`on` setting with a live preview;
+  `Esc` reverts it and `s` saves it as the root key `mouse` of `config.toml`.
+
+### Changed
+
+- The jail no longer lets a CLI read `/usr/bin`, `/usr/sbin` or `/bin`: the
+  dynamic loader could otherwise run any program there.
+- A script CLI's interpreter in a group- or world-writable folder, or under
+  `/tmp`, is refused inside the jail.
+- The mouse is captured by default (`mouse = true`), but only the wheel is
+  reported: hold `Shift` to select text with the terminal. Set `mouse = false`
+  to turn the capture off. The terminal is released on quit, on exit of the
+  last pane and on panic.
+
+### Removed
+
+- The `config: mouse is not supported yet` notice.
+
+### Security
+
+- Known limits, also in the README: the CLI state folders are writable
+  (a configuration written there runs on your next unjailed run), network is
+  not restricted, claude rewrites `~/.claude.json` in place under the jail,
+  claude's system prompt is visible in `ps`, gemini keeps its sessions in
+  `~/.gemini` outside `chat.db`, and `execve` limits are defense in depth.
+
 ## [0.11.0] - 2026-10-14
 
 ### Added
@@ -240,7 +301,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.8.0...v0.9.0

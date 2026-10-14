@@ -137,6 +137,7 @@ fn navigation_visits_memory_after_summarize_and_wraps() {
     let mut menu = fresh();
     for label in [
         "Tab bar position",
+        "Mouse",
         "Set all tasks",
         "general",
         "code",

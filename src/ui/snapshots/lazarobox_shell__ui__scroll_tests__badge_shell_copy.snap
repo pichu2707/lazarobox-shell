@@ -1,0 +1,16 @@
+---
+source: src/ui/scroll_tests.rs
+expression: text(&app)
+---
+line65                                                                                          [+5]
+line66
+line67
+line68
+line69
+line70
+line71
+line72
+line73
+line74
+line75
+ ◐ COPY ↑5/70  j/k scroll · v select · y copy · Esc exit                                     zsh

@@ -18,19 +18,26 @@ use futures::{
 };
 use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
 
+mod cli;
+
 use super::loopback::post_stream;
 use crate::core::{
     ai::{
         chat::{
             ANSWER_CAP, REASONING_CAP,
             adapters::{Invocation, Wire, adapter_for},
+            claude::ClaudeDecoder,
+            codex::CodexDecoder,
             engine::{ChatError, ChatRequest, StreamEvent},
+            gemini::GeminiDecoder,
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
+        jail::JailSupport,
         sanitize::{StreamSanitizer, Utf8Stream, clean},
     },
     layout::PaneId,
 };
+pub use cli::CliEnv;
 
 /// Capacity of the channel between an adapter and its turn task. A full
 /// channel only slows the adapter down (and, through the socket, the engine),
@@ -69,6 +76,9 @@ pub fn fresh_decoder(wire: Wire) -> Box<dyn StreamDecoder + Send> {
     match wire {
         Wire::Ndjson => Box::new(NdjsonSplitter::server()),
         Wire::Sse => Box::new(SseParser::server()),
+        Wire::ClaudeStreamJson => Box::new(ClaudeDecoder::new()),
+        Wire::CodexJsonl => Box::new(CodexDecoder::new()),
+        Wire::GeminiStreamJson => Box::new(GeminiDecoder::new()),
     }
 }
 
@@ -138,6 +148,17 @@ impl Pipe {
         }
         match event {
             StreamEvent::Slow => vec![StreamEvent::Slow],
+            StreamEvent::Notice(text) => {
+                let line = clean(&text)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if line.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![StreamEvent::Notice(line)]
+                }
+            }
             StreamEvent::Delta(text) => self.bytes(text.as_bytes()),
             StreamEvent::ThinkingDelta(text) => self.reasoning(&text),
             StreamEvent::Done(finish) => self.end(StreamEvent::Done(finish)),
@@ -238,14 +259,25 @@ impl Default for Pipe {
 /// The runner of the real engines: picks the adapter of the request's engine
 /// and runs what it builds. An engine without an adapter fails the turn at
 /// once, without connecting anywhere.
-pub fn adapter_runner() -> Runner {
-    adapter_runner_at(None)
+pub fn adapter_runner(jail: JailSupport) -> Runner {
+    runner_with(None, CliEnv::from_env(jail))
 }
 
 /// `adapter_runner` with the port of server engines overridden, so tests can
 /// talk to a fake server on an ephemeral port. The host stays `127.0.0.1`.
+#[cfg(test)]
 pub(crate) fn adapter_runner_at(port: Option<u16>) -> Runner {
+    runner_with(
+        port,
+        CliEnv::from_env(JailSupport::Unavailable("not used by a server test")),
+    )
+}
+
+/// The runner over an explicit machine: the port of server engines (when
+/// overridden) and the environment CLI engines run in.
+pub fn runner_with(port: Option<u16>, cli: CliEnv) -> Runner {
     Arc::new(move |request, tx| {
+        let cli = cli.clone();
         Box::pin(async move {
             let Some(adapter) = adapter_for(&request.engine) else {
                 let _ = tx
@@ -260,6 +292,12 @@ pub(crate) fn adapter_runner_at(port: Option<u16>) -> Runner {
                     path,
                     body,
                 } => http_turn(wire, port.unwrap_or(catalog_port), path, body, tx).await,
+                Invocation::Process(job) => cli::process_turn(&cli, job, &tx).await,
+                Invocation::Refused(reason) => {
+                    let _ = tx
+                        .send(StreamEvent::Error(ChatError::Failed(reason.into())))
+                        .await;
+                }
             }
         })
     })

@@ -4,13 +4,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent};
 
 use crate::core::{
     ai::{
         Detection,
         chat::{
             ChatState, Follow, Phase,
+            copy::ChatCopy,
             engine::{ChatRequest, StreamEvent},
             notify::{Ended, should_bell},
             prompts::Resolved,
@@ -40,10 +41,12 @@ use crate::core::{
 };
 
 mod chat;
+mod chat_copy;
 mod context;
 mod history;
 mod notes;
 mod offer;
+mod scroll;
 mod summary;
 mod tags;
 
@@ -55,10 +58,6 @@ const SCROLLBACK_LINES: usize = 10_000;
 /// terminal reports no event types). Trade-off: a deliberate retype of the
 /// exit key within this window is dropped.
 const HELD_EXIT_WINDOW: Duration = Duration::from_millis(500);
-
-/// Shown when `Prefix [` is pressed on a chat pane.
-const CHAT_COPY_REFUSED: &str =
-    "copy mode is not available in chat panes; Ctrl+Y copies the last answer";
 
 /// Shown when `Prefix n` (save a note) is pressed on a pane that is not a chat.
 const NOTE_CHAT_ONLY: &str = "Save as note is for chat panes; open one with Ctrl+Space c";
@@ -84,6 +83,8 @@ pub enum InputMode {
     Prefix,
     /// Read-only scrollback navigation.
     Copy(CopyState),
+    /// Line scrolling of a chat transcript; the view stays in the chat.
+    ChatCopy(ChatCopy),
     /// A group is open (WINDOW, TAB, GO, BUFFER); the next key picks its binding.
     Group(&'static Group),
     /// Pane resize mode; its keys arrive with the resize slice.
@@ -112,7 +113,7 @@ impl InputMode {
         match self {
             Self::Terminal => "TERMINAL",
             Self::Prefix => "PREFIX",
-            Self::Copy(_) => "COPY",
+            Self::Copy(_) | Self::ChatCopy(_) => "COPY",
             Self::Group(group) => group.label,
             Self::Resize => "RESIZE",
             Self::Confirm(Confirm::Quit) => "Quit? (y/n)",
@@ -126,6 +127,8 @@ impl InputMode {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
+    /// A mouse event. Only the vertical wheel does anything.
+    Mouse(MouseEvent),
     Paste(String),
     Resize {
         cols: u16,
@@ -220,6 +223,9 @@ pub enum Effect {
     /// Ring the terminal bell (BEL) once the frame is drawn: a chat answer
     /// finished while the user was not looking at it (chat-notify).
     Bell,
+    /// Turn the host terminal's mouse capture on (`true`) or off. Emitted
+    /// only when the wanted state differs from the one last asked for.
+    MouseCapture(bool),
     Quit,
 }
 
@@ -415,6 +421,8 @@ pub struct App {
     notice: Option<String>,
     dirty: bool,
     screen: ScreenLayout,
+    /// Whether the host terminal was last asked to capture the mouse.
+    mouse_captured: bool,
     /// The live config; while the menu is open it doubles as the draft.
     config: Config,
     menu: Option<MenuState>,
@@ -449,7 +457,7 @@ pub struct App {
     /// Whether the terminal window has the focus (chat-notify). Starts
     /// `true`: without focus reporting only the pane rule applies.
     window_focused: bool,
-    /// Whether this system can jail a CLI. Nothing probes it yet.
+    /// Whether this system can jail a CLI; set from the startup probe.
     jail: JailSupport,
     /// Chat panes whose send waits for the first detection result, with the
     /// text parked at Enter.
@@ -501,6 +509,7 @@ impl App {
             notice: None,
             dirty: true,
             screen,
+            mouse_captured: false,
             config,
             menu: None,
             launch_cwd: None,
@@ -516,7 +525,7 @@ impl App {
             detecting: false,
             ai: AiConfig::default(),
             window_focused: true,
-            jail: JailSupport::Unavailable("no CLI jail yet"),
+            jail: JailSupport::Unavailable("the jail was not probed"),
             waiting_sends: Vec::new(),
             anim_frame: 0,
             server_offer: ServerOffer::new(),
@@ -585,6 +594,14 @@ impl App {
         self
     }
 
+    /// Tells the app whether this system can jail a CLI (the startup probe).
+    /// Without it every CLI counts as unjailed: codex and gemini stay
+    /// unavailable, claude runs bare.
+    pub fn with_jail(mut self, jail: JailSupport) -> Self {
+        self.jail = jail;
+        self
+    }
+
     /// Turns the chat history on: the list, saving, resume and delete.
     pub fn with_chat_history(mut self) -> Self {
         self.history = true;
@@ -621,7 +638,7 @@ impl App {
     }
 
     /// What the statusline path segment shows, in order of precedence: the
-    /// notice, the key hint while PREFIX or a group is pending (clipped to
+    /// notice, the key hint while PREFIX, a group or COPY is active (clipped to
     /// `max_cols` cells, so possibly empty), else the cwd.
     pub fn status_path(&self, max_cols: u16) -> String {
         if let Some(notice) = &self.notice {
@@ -630,6 +647,7 @@ impl App {
         match self.input {
             InputMode::Prefix => prefix::hint(PREFIX_TREE, max_cols),
             InputMode::Group(group) => prefix::hint(group.bindings, max_cols),
+            InputMode::Copy(_) | InputMode::ChatCopy(_) => self.copy_hint(max_cols),
             _ => self.cwd_label(),
         }
     }
@@ -748,11 +766,14 @@ impl App {
         }
     }
 
-    /// Fresh COPY state with the cursor on the focused pane's live cursor.
+    /// Fresh COPY state. The view stays where it is (a wheel-scrolled pane is
+    /// not thrown back to live); at the bottom the cursor is the live cursor,
+    /// scrolled it is on the last visible row.
     fn enter_copy(&self) -> CopyState {
         let pane = self.copy_pane();
         CopyState::enter(
             self.copy_geometry(),
+            pane.scrollback_offset(),
             pane.live_cursor(),
             pane.line_generation(),
         )
@@ -956,6 +977,10 @@ impl App {
             !matches!(self.input, InputMode::Copy(_)) || self.focused_pty().is_some(),
             "COPY is only active while a shell pane has the focus"
         );
+        debug_assert!(
+            !matches!(self.input, InputMode::ChatCopy(_)) || self.focused_is_chat(),
+            "chat COPY is only active while a chat pane has the focus"
+        );
     }
 
     /// Whether `id` names a pane with a PTY behind it.
@@ -968,6 +993,7 @@ impl App {
     pub fn update(&mut self, event: AppEvent) -> Vec<Effect> {
         let effects = match event {
             AppEvent::Key(key) => self.on_key(key),
+            AppEvent::Mouse(mouse) => self.on_mouse(mouse),
             AppEvent::Paste(text) => self.on_paste(&text),
             AppEvent::Resize { cols, rows } => self.on_resize(cols, rows),
             // Events for panes that no longer exist are dropped.
@@ -1101,6 +1127,7 @@ impl App {
             InputMode::Prefix => self.on_pending_key(PREFIX_TREE, &key),
             InputMode::Group(group) => self.on_pending_key(group.bindings, &key),
             InputMode::Copy(state) => self.on_copy_key(state, &key, repeat),
+            InputMode::ChatCopy(state) => self.on_chat_copy_key(state, &key, repeat),
             InputMode::Resize => self.on_resize_key(&key),
             InputMode::Confirm(confirm) => self.on_confirm_key(confirm, &key),
             InputMode::Menu => self.on_menu_key(&key, repeat),
@@ -1146,11 +1173,22 @@ impl App {
         self.apply_config()
     }
 
+    /// Brings the host mouse capture in line with `config.mouse`: one effect
+    /// when it differs from the state last asked for, none otherwise.
+    pub fn sync_mouse(&mut self) -> Option<Effect> {
+        (self.config.mouse != self.mouse_captured).then(|| {
+            self.mouse_captured = self.config.mouse;
+            Effect::MouseCapture(self.mouse_captured)
+        })
+    }
+
     /// Lays the screen out again for the live config, telling only the panes
-    /// whose size changed.
+    /// whose size changed, and brings the mouse capture in line with it.
     fn apply_config(&mut self) -> Vec<Effect> {
         self.refresh_screen();
-        self.relayout()
+        let mut effects = self.relayout();
+        effects.extend(self.sync_mouse());
+        effects
     }
 
     fn on_menu_key(&mut self, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
@@ -1199,9 +1237,11 @@ impl App {
         let Some(pty) = self.focused_pty() else {
             return Vec::new();
         };
-        encode_key(key, pty.emu.modes())
-            .map(|bytes| vec![Effect::WritePty(self.tab().focus, bytes)])
-            .unwrap_or_default()
+        let Some(bytes) = encode_key(key, pty.emu.modes()) else {
+            return Vec::new();
+        };
+        self.return_to_live();
+        vec![Effect::WritePty(self.tab().focus, bytes)]
     }
 
     /// Resolve a key against the pending table (the root or an open group).
@@ -1211,10 +1251,8 @@ impl App {
         self.input = match step {
             Step::Enter(group) => InputMode::Group(group),
             Step::Run(PrefixAction::RequestQuit) => InputMode::Confirm(Confirm::Quit),
-            // A chat has no scrollback to select from: COPY is for shell panes.
             Step::Run(PrefixAction::EnterCopy) if self.focused_pty().is_none() => {
-                self.notice = Some(CHAT_COPY_REFUSED.to_string());
-                InputMode::Terminal
+                self.enter_chat_copy()
             }
             Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(self.enter_copy()),
             Step::Run(PrefixAction::EnterResize) => InputMode::Resize,
@@ -1253,6 +1291,7 @@ impl App {
         match step {
             // The literal is a byte for a child; a chat has none, so it swallows it.
             Step::Run(PrefixAction::SendPrefixLiteral) if self.focused_pty().is_some() => {
+                self.return_to_live();
                 vec![Effect::WritePty(self.tab().focus, vec![PREFIX_LITERAL])]
             }
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
@@ -1329,9 +1368,11 @@ impl App {
         if index >= self.tabs.len() || index == self.active {
             return;
         }
-        let left = self.tabs[self.active].focus;
-        if let Some(pty) = self.panes.get_mut(&left).and_then(PaneState::pty_mut) {
-            pty.emu.set_scrollback(0);
+        // Every pane of the tab left goes live, wheel-scrolled or not.
+        for left in self.tabs[self.active].tree.leaves() {
+            if let Some(pty) = self.panes.get_mut(&left).and_then(PaneState::pty_mut) {
+                pty.emu.set_scrollback(0);
+            }
         }
         if matches!(self.input, InputMode::Copy(_) | InputMode::Resize) {
             self.input = InputMode::Terminal;
@@ -1739,15 +1780,14 @@ impl App {
             return Vec::new();
         }
         match self.input {
-            InputMode::Terminal => self
-                .focused_pty()
-                .map(|pty| {
-                    vec![Effect::WritePty(
-                        self.tab().focus,
-                        encode_paste(text, pty.emu.modes()),
-                    )]
-                })
-                .unwrap_or_default(),
+            InputMode::Terminal => {
+                let Some(pty) = self.focused_pty() else {
+                    return Vec::new();
+                };
+                let bytes = encode_paste(text, pty.emu.modes());
+                self.return_to_live();
+                vec![Effect::WritePty(self.tab().focus, bytes)]
+            }
             InputMode::Menu => {
                 // Only the custom field takes a paste; nothing reaches a PTY.
                 if let Some(menu) = self.menu.as_mut() {
@@ -1784,8 +1824,8 @@ impl App {
         let geo = self.copy_geometry();
         if state.generation != self.copy_pane().line_generation() {
             // Line numbers are incomparable now: start over like entering COPY.
-            state = self.enter_copy();
             self.copy_pane_mut().set_scrollback(0);
+            state = self.enter_copy();
         }
         let pane = self.copy_pane();
         state.offset = pane.scrollback_offset();
@@ -5227,6 +5267,7 @@ mod app_tests {
     #[test]
     fn opening_the_menu_enters_menu_without_writing() {
         let mut a = launched(80, 25);
+        a.sync_mouse();
         // The forced bar shrinks the body by one row: exactly one resize.
         let effects = open_menu(&mut a);
         assert_eq!(
@@ -5562,6 +5603,7 @@ mod app_tests {
     #[test]
     fn with_two_panes_the_menu_resizes_each_pane_once_on_open_and_on_close() {
         let mut a = launched(80, 25);
+        a.sync_mouse();
         press(&mut a, "wv");
         let id2 = id2();
         let opened = open_menu(&mut a);
@@ -5585,6 +5627,7 @@ mod app_tests {
     #[test]
     fn with_several_tabs_the_menu_never_resizes_for_the_bar() {
         let mut a = launched(80, 25);
+        a.sync_mouse();
         press(&mut a, "tn");
         let bar = a.screen().tab_bar;
         assert_eq!(open_menu(&mut a), vec![Effect::DetectEngines]);
@@ -5837,6 +5880,7 @@ mod app_tests {
     /// Two tabs, so opening the menu never resizes; `ollama`/`qwen2:7b` saved.
     fn ai_app() -> App {
         let mut a = launched(80, 25).with_ai(ai_of("ollama", "qwen2:7b"));
+        a.sync_mouse();
         press(&mut a, "tn");
         a
     }
@@ -5881,7 +5925,7 @@ mod app_tests {
         let mut a = ai_app();
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
-        for _ in 0..4 {
+        for _ in 0..5 {
             a.update(key('j'));
         }
         let enter = || code(KeyCode::Enter);
@@ -5939,7 +5983,7 @@ mod app_tests {
     /// Opens the picker of `Set all tasks` on `none` and chooses it: the
     /// general assignment goes from `ollama` to unset.
     fn clear_all(a: &mut App) {
-        for _ in 0..2 {
+        for _ in 0..3 {
             a.update(key('j'));
         }
         a.update(code(KeyCode::Enter));
@@ -6231,7 +6275,7 @@ mod app_tests {
 
     /// Selection on the first AI task row.
     fn to_task_row(a: &mut App) {
-        for _ in 0..4 {
+        for _ in 0..5 {
             a.update(key('j'));
         }
     }
@@ -6495,6 +6539,18 @@ mod app_tests {
     /// The live chat pane (ai-chat C8).
     mod chat_live;
 
+    /// COPY on a chat pane (pane-scroll S1).
+    mod chat_copy;
+
+    /// Where a pane is scrolled (pane-scroll S1).
+    mod scroll_position;
+
+    /// The mouse wheel over a pane (pane-scroll S2).
+    mod wheel;
+
+    /// The mouse capture lifecycle (pane-scroll S3).
+    mod mouse_capture;
+
     /// History in the chat pane: list, saving, resume, delete (ai-chat C9).
     mod chat_history;
 
@@ -6654,18 +6710,15 @@ mod app_tests {
             assert_eq!(a.focused(), PaneId::for_test(4));
         }
 
-        // 1.2: the prefix still works on a chat, but nothing reaches a PTY.
+        // pane-scroll: COPY on a chat with nothing to scroll says so.
         #[test]
-        fn copy_on_a_chat_is_refused_with_the_notice() {
+        fn copy_on_a_chat_without_a_transcript_is_refused_with_the_notice() {
             let mut a = launched(80, 25);
             a.open_chat(None);
             let effects = press(&mut a, "[");
             assert_eq!(effects, vec![]);
             assert_eq!(a.input(), InputMode::Terminal);
-            assert_eq!(
-                a.notice(),
-                Some("copy mode is not available in chat panes; Ctrl+Y copies the last answer")
-            );
+            assert_eq!(a.notice(), Some("nothing to scroll here"));
             assert_eq!(a.copy_position(), None);
             assert!(a.take_dirty());
         }

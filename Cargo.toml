@@ -1,6 +1,6 @@
 [package]
 name = "lazarobox-shell"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Javi Lázaro <hola@javilazaro.es>"]
@@ -49,6 +49,11 @@ unicode-normalization = "0.1.25"
 unicode-width = "0.2"
 # Grapheme clusters: ratatui draws and measures per cluster, so must we
 unicode-segmentation = "1.13"
+
+# CLI jail (Linux Landlock). Pinned exactly: the helper treats anything but
+# FullyEnforced as "not jailed", so the API it was reviewed against must not drift.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "=0.4.7"
 
 [dev-dependencies]
 insta = "1"

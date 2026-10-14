@@ -15,23 +15,23 @@ use crate::core::{
     copy::osc52,
 };
 
-fn chat_id() -> PaneId {
+pub(super) fn chat_id() -> PaneId {
     id2()
 }
 
-fn code(code: KeyCode, mods: KeyModifiers) -> AppEvent {
+pub(super) fn code(code: KeyCode, mods: KeyModifiers) -> AppEvent {
     AppEvent::Key(KeyEvent::new(code, mods))
 }
 
-fn ctrl(c: char) -> AppEvent {
+pub(super) fn ctrl(c: char) -> AppEvent {
     code(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
-fn plain(code_: KeyCode) -> AppEvent {
+pub(super) fn plain(code_: KeyCode) -> AppEvent {
     code(code_, KeyModifiers::NONE)
 }
 
-fn repeat(code: KeyCode, modifiers: KeyModifiers) -> AppEvent {
+pub(super) fn repeat(code: KeyCode, modifiers: KeyModifiers) -> AppEvent {
     AppEvent::Key(KeyEvent::new_with_kind(
         code,
         modifiers,
@@ -39,18 +39,18 @@ fn repeat(code: KeyCode, modifiers: KeyModifiers) -> AppEvent {
     ))
 }
 
-fn chat_of(a: &App) -> &ChatState {
+pub(super) fn chat_of(a: &App) -> &ChatState {
     match a.pane_view(chat_id()) {
         Some(PaneView::Chat(chat)) => chat,
         _ => panic!("pane 2 is not a chat"),
     }
 }
 
-fn composer(a: &App) -> String {
+pub(super) fn composer(a: &App) -> String {
     chat_of(a).composer().text()
 }
 
-fn type_text(a: &mut App, text: &str) {
+pub(super) fn type_text(a: &mut App, text: &str) {
     for c in text.chars() {
         a.update(key(c));
     }
@@ -80,7 +80,7 @@ fn detection(models: &[&str]) -> Detection {
 }
 
 /// A launched app with a ready ollama engine and a focused chat pane (id 2).
-fn ready_app() -> App {
+pub(super) fn ready_app() -> App {
     let mut a = launched(80, 25).with_ai(ollama());
     a.update(AppEvent::EnginesDetected(detection(&["llama3:8b"])));
     press(&mut a, "c");
@@ -104,7 +104,7 @@ fn prompt_ready(system: &str, notices: &[&str]) -> AppEvent {
 /// The system prompt `ready_app` delivers.
 const SYSTEM: &str = "system prompt\n\nworkspace block";
 
-fn delta(turn: u64, text: &str) -> AppEvent {
+pub(super) fn delta(turn: u64, text: &str) -> AppEvent {
     AppEvent::Chat(chat_id(), turn, StreamEvent::Delta(text.into()))
 }
 
@@ -112,18 +112,18 @@ fn thinking(turn: u64, text: &str) -> AppEvent {
     AppEvent::Chat(chat_id(), turn, StreamEvent::ThinkingDelta(text.into()))
 }
 
-fn finish(turn: u64) -> AppEvent {
+pub(super) fn finish(turn: u64) -> AppEvent {
     AppEvent::Chat(chat_id(), turn, StreamEvent::Done(Finish::Stop))
 }
 
 /// Types `question`, sends it with Enter and returns the effects.
-fn ask(a: &mut App, question: &str) -> Vec<Effect> {
+pub(super) fn ask(a: &mut App, question: &str) -> Vec<Effect> {
     type_text(a, question);
     a.update(plain(KeyCode::Enter))
 }
 
 /// A chat that asked `q` and got `answer` back in full.
-fn answered(answer: &str) -> App {
+pub(super) fn answered(answer: &str) -> App {
     let mut a = ready_app();
     let turn = match ask(&mut a, "q").as_slice() {
         [Effect::ChatSend { turn, .. }] => *turn,
@@ -892,11 +892,11 @@ fn opencode_is_not_supported_in_chat() {
 }
 
 #[test]
-fn a_cli_without_a_jail_is_not_available_on_this_system() {
-    let mut a = undetected_chat(assigned("gemini"));
+fn a_cli_without_an_adapter_is_not_supported_in_chat_yet() {
+    let mut a = undetected_chat(assigned("opencode"));
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
-            id: "gemini",
+            id: "opencode",
             status: Status::Available,
             models: vec![],
             version: None,
@@ -904,10 +904,78 @@ fn a_cli_without_a_jail_is_not_available_on_this_system() {
     }));
     assert_eq!(
         guidance_of(&a).as_deref(),
-        Some("gemini: not available on this system yet")
+        Some("opencode: not supported in chat yet")
     );
     assert_eq!(ask(&mut a, "hi"), vec![]);
     assert_eq!(composer(&a), "hi");
+}
+
+fn cli_detected(id: &'static str) -> AppEvent {
+    AppEvent::EnginesDetected(Detection {
+        engines: vec![EngineState {
+            id,
+            status: Status::Available,
+            models: vec![],
+            version: None,
+        }],
+    })
+}
+
+fn working_jail() -> crate::core::ai::jail::JailSupport {
+    crate::core::ai::jail::JailSupport::Available {
+        backend: crate::core::ai::jail::Backend::Landlock,
+        abi: 7,
+    }
+}
+
+#[test]
+fn claude_chats_with_or_without_a_jail() {
+    for jail in [
+        crate::core::ai::jail::JailSupport::Unavailable("test"),
+        working_jail(),
+    ] {
+        let mut a = undetected_chat(assigned("claude")).with_jail(jail);
+        a.update(cli_detected("claude"));
+        assert_eq!(guidance_of(&a), None, "{jail:?}");
+        let effects = ask(&mut a, "hello");
+        let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+            panic!("a send expected: {effects:?}");
+        };
+        assert_eq!(request.engine, "claude");
+        assert_eq!(request.model, None, "no model: the CLI's own default");
+    }
+}
+
+#[test]
+fn a_cli_without_an_adapter_stays_unsupported_even_with_a_jail() {
+    let mut a = undetected_chat(assigned("opencode")).with_jail(working_jail());
+    a.update(cli_detected("opencode"));
+    assert_eq!(
+        guidance_of(&a).as_deref(),
+        Some("opencode: not supported in chat yet")
+    );
+    assert_eq!(ask(&mut a, "hi"), vec![]);
+}
+
+#[test]
+fn gemini_chats_only_with_a_jail() {
+    let mut a = undetected_chat(assigned("gemini")).with_jail(working_jail());
+    a.update(cli_detected("gemini"));
+    assert_eq!(guidance_of(&a), None);
+    let effects = ask(&mut a, "hello");
+    let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+        panic!("a send expected: {effects:?}");
+    };
+    assert_eq!(request.engine, "gemini");
+
+    let mut a = undetected_chat(assigned("gemini"))
+        .with_jail(crate::core::ai::jail::JailSupport::Unavailable("test"));
+    a.update(cli_detected("gemini"));
+    assert_eq!(
+        guidance_of(&a).as_deref(),
+        Some("gemini: not available on this system yet")
+    );
+    assert_eq!(ask(&mut a, "hi"), vec![]);
 }
 
 #[test]
