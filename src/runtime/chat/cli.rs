@@ -20,7 +20,7 @@ use std::{
     ffi::OsString,
     fs,
     io::{self, Read, Seek, SeekFrom, Write},
-    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, FileExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
     sync::atomic::{AtomicU64, Ordering},
@@ -47,6 +47,7 @@ use crate::{
         jail::{
             CliLayout, ELF_HEAD_BYTES, Interpreter, JailArgs, JailPolicy, JailSupport, Launch,
             elf_interp_at, interp_path, jail_spec_with, launch, parse_shebang,
+            rpath::{homebrew_openssl_files, search_dirs},
         },
     },
     runtime::{
@@ -306,6 +307,55 @@ fn read_loader(path: &Path) -> Option<PathBuf> {
     interp_path(&raw)
 }
 
+/// The library folders the ELF executable at `path` names in its own search
+/// path (`$ORIGIN` is its folder). Only small reads of the executable itself.
+fn elf_search_dirs(path: &Path) -> Vec<PathBuf> {
+    let (Some(head), Some(origin), Ok(file)) = (
+        read_head(path, ELF_HEAD_BYTES),
+        path.parent(),
+        fs::File::open(path),
+    ) else {
+        return Vec::new();
+    };
+    search_dirs(&head, origin, &|offset, len| {
+        let mut buf = vec![0u8; len];
+        let mut filled = 0;
+        while filled < len {
+            let n = file
+                .read_at(&mut buf[filled..], offset + filled as u64)
+                .ok()?;
+            if n == 0 {
+                break;
+            }
+            filled += n;
+        }
+        buf.truncate(filled);
+        Some(buf)
+    })
+}
+
+/// The existing folders among `dirs`, resolved and without repeats.
+fn existing_dirs(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for real in dirs.iter().filter_map(|d| resolve(d)) {
+        if fs::metadata(&real).is_ok_and(|m| m.is_dir()) && !out.contains(&real) {
+            out.push(real);
+        }
+    }
+    out
+}
+
+/// The existing regular files among `files`, resolved and without repeats.
+fn existing_files(files: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for real in files.iter().filter_map(|f| resolve(f)) {
+        if fs::metadata(&real).is_ok_and(|m| m.is_file()) && !out.contains(&real) {
+            out.push(real);
+        }
+    }
+    out
+}
+
 /// The helper command line that runs `job` jailed, or `None` when the layout
 /// cannot be jailed (a path the rules refuse, a CLI that cannot be resolved).
 fn jailed(
@@ -339,6 +389,10 @@ fn jailed(
             vec![real]
         }
     };
+    // The folders the started program names as its library path, and the
+    // OpenSSL files a Homebrew build reads, are read-only rules. Nothing else
+    // of an install is opened.
+    let named = elf_search_dirs(interpreter.as_deref().unwrap_or(&bin));
     let layout = CliLayout {
         cli: job.cli,
         home,
@@ -346,6 +400,8 @@ fn jailed(
         binary: bin.clone(),
         interpreter,
         loaders,
+        lib_dirs: existing_dirs(&named),
+        data_files: existing_files(&homebrew_openssl_files(&named)),
         helpers: Vec::new(),
         cwd: dirs.cwd.clone(),
         tmp: dirs.tmp.clone(),

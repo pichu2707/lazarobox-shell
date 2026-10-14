@@ -222,6 +222,8 @@ mod tests {
             binary: home.join(".local/share/claude/versions/1"),
             interpreter: None,
             loaders: Vec::new(),
+            lib_dirs: Vec::new(),
+            data_files: Vec::new(),
             helpers: Vec::new(),
             cwd: PathBuf::from("/run/user/1/cwd"),
             tmp: PathBuf::from("/run/user/1/tmp"),
