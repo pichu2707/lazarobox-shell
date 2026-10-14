@@ -126,12 +126,29 @@ model = "llama3.2"   # o cualquier modelo que tengas descargado
 
 Si la tarea `chat` no tiene motor propio, usa el motor general (`[ai]`). El panel indica qué falta cuando no hay motor, no está en marcha o no está soportado.
 
-**Privacidad:** todo es local. El chat solo habla con `127.0.0.1` y no envía credenciales (la memoria opcional de engram tiene su propia sección más abajo). Las conversaciones **no se guardan** todavía; el historial llegará en una versión futura.
+**Privacidad:** todo es local. El chat solo habla con `127.0.0.1` y no envía credenciales (la memoria opcional de engram tiene su propia sección más abajo). Las conversaciones se guardan en un `chat.db` privado (permisos `0600`) en tu máquina; el razonamiento del modelo **nunca** se guarda (ver «Historial de conversaciones»).
 
 Límites de esta versión:
 
 - Solo Ollama: los demás motores se detectan, pero aún no tienen adaptador de chat.
-- Sin historial: la conversación se pierde al cerrar el panel (salvo las notas y el resumen que guardes en engram si activas la memoria).
+- Las etiquetas extra de una conversación vuelven en orden alfabético al reabrirla.
+
+### Historial de conversaciones
+
+Los mensajes se guardan en `chat.db` a medida que conversas. Una respuesta que se interrumpe tras haber recibido texto (por un error o una cancelación) también se guarda, marcada como parcial. `Ctrl+Espacio` y `c` abre la **lista de conversaciones** del proyecto actual (el repositorio git), de la más reciente a la más antigua, con el formato `fecha · perfil · primer mensaje`.
+
+| Tecla        | Acción                                                                          |
+| :----------- | :------------------------------------------------------------------------------ |
+| `Enter`      | Retoma la conversación: carga el historial completo y sigue en la misma, con su perfil guardado |
+| `n` / `Esc`  | Empieza una conversación nueva                                                  |
+| `a`          | Alterna entre las conversaciones del proyecto y las de todos los proyectos      |
+| `d`, luego `y` | Borra la conversación (cualquier otra tecla cancela); si está abierta en otro panel, ese panel deja de guardar |
+| `t`          | Edita las etiquetas de la fila                                                  |
+| `Ctrl+Espacio` `T` | Edita las etiquetas de la conversación abierta                            |
+
+**Etiquetas:** cada conversación lleva la etiqueta del proyecto (primero) y hasta 8 etiquetas extra. El editor es una sola línea separada por comas: `Enter` guarda y `Esc` descarta. Guardar cuenta como actividad, así que la fila sube al principio de la lista.
+
+Límites: al reabrir una conversación, las etiquetas extra salen en orden alfabético. Borrar de engram las notas de una conversación borrada y retomar su sesión de memoria llegarán en una versión posterior. La combinación `Ctrl+Espacio` `T` aún no se ha comprobado a mano en Kitty.
 
 ### Memoria del proyecto (engram)
 
@@ -172,7 +189,7 @@ La barra de estado muestra `mem: ready`, `mem: checking` o `mem: unavailable`.
 
 **Volver a una versión anterior:** la memoria sube el esquema de `chat.db` a la versión 2. Un lazarobox más antiguo se niega a abrir un `chat.db` más nuevo que él y lo deja intacto; al volver a actualizar, vuelve a estar disponible.
 
-Límites: borrar notas desde lazarobox y retomar conversaciones llegarán con el historial del chat. Por ahora solo el adaptador de Ollama usa memoria.
+Límites: borrar notas desde lazarobox y retomar la sesión de memoria de una conversación llegarán en una versión posterior. Por ahora solo el adaptador de Ollama usa memoria.
 
 ---
 
