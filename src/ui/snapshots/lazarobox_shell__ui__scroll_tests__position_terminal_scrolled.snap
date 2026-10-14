@@ -1,0 +1,5 @@
+---
+source: src/ui/scroll_tests.rs
+expression: line.trim_end()
+---
+ ◐ TERMINAL ↑12/70  /work                                                                    zsh

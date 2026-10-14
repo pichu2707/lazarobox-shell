@@ -77,7 +77,7 @@ fn done(a: &mut App, turn: u64) {
 }
 
 /// A chat whose summary draft is open on `text`.
-fn with_draft(text: &str) -> App {
+pub(super) fn with_draft(text: &str) -> App {
     let mut a = ready_chat();
     let (turn, _) = summarize(&mut a);
     delta(&mut a, turn, text);

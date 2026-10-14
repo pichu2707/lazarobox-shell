@@ -11,6 +11,7 @@ use crate::core::{
         Detection,
         chat::{
             ChatState, Follow, Phase,
+            copy::ChatCopy,
             engine::{ChatRequest, StreamEvent},
             notify::{Ended, should_bell},
             prompts::Resolved,
@@ -40,10 +41,12 @@ use crate::core::{
 };
 
 mod chat;
+mod chat_copy;
 mod context;
 mod history;
 mod notes;
 mod offer;
+mod scroll;
 mod summary;
 mod tags;
 
@@ -55,10 +58,6 @@ const SCROLLBACK_LINES: usize = 10_000;
 /// terminal reports no event types). Trade-off: a deliberate retype of the
 /// exit key within this window is dropped.
 const HELD_EXIT_WINDOW: Duration = Duration::from_millis(500);
-
-/// Shown when `Prefix [` is pressed on a chat pane.
-const CHAT_COPY_REFUSED: &str =
-    "copy mode is not available in chat panes; Ctrl+Y copies the last answer";
 
 /// Shown when `Prefix n` (save a note) is pressed on a pane that is not a chat.
 const NOTE_CHAT_ONLY: &str = "Save as note is for chat panes; open one with Ctrl+Space c";
@@ -84,6 +83,8 @@ pub enum InputMode {
     Prefix,
     /// Read-only scrollback navigation.
     Copy(CopyState),
+    /// Line scrolling of a chat transcript; the view stays in the chat.
+    ChatCopy(ChatCopy),
     /// A group is open (WINDOW, TAB, GO, BUFFER); the next key picks its binding.
     Group(&'static Group),
     /// Pane resize mode; its keys arrive with the resize slice.
@@ -112,7 +113,7 @@ impl InputMode {
         match self {
             Self::Terminal => "TERMINAL",
             Self::Prefix => "PREFIX",
-            Self::Copy(_) => "COPY",
+            Self::Copy(_) | Self::ChatCopy(_) => "COPY",
             Self::Group(group) => group.label,
             Self::Resize => "RESIZE",
             Self::Confirm(Confirm::Quit) => "Quit? (y/n)",
@@ -621,7 +622,7 @@ impl App {
     }
 
     /// What the statusline path segment shows, in order of precedence: the
-    /// notice, the key hint while PREFIX or a group is pending (clipped to
+    /// notice, the key hint while PREFIX, a group or COPY is active (clipped to
     /// `max_cols` cells, so possibly empty), else the cwd.
     pub fn status_path(&self, max_cols: u16) -> String {
         if let Some(notice) = &self.notice {
@@ -630,6 +631,7 @@ impl App {
         match self.input {
             InputMode::Prefix => prefix::hint(PREFIX_TREE, max_cols),
             InputMode::Group(group) => prefix::hint(group.bindings, max_cols),
+            InputMode::Copy(_) | InputMode::ChatCopy(_) => self.copy_hint(max_cols),
             _ => self.cwd_label(),
         }
     }
@@ -956,6 +958,10 @@ impl App {
             !matches!(self.input, InputMode::Copy(_)) || self.focused_pty().is_some(),
             "COPY is only active while a shell pane has the focus"
         );
+        debug_assert!(
+            !matches!(self.input, InputMode::ChatCopy(_)) || self.focused_is_chat(),
+            "chat COPY is only active while a chat pane has the focus"
+        );
     }
 
     /// Whether `id` names a pane with a PTY behind it.
@@ -1101,6 +1107,7 @@ impl App {
             InputMode::Prefix => self.on_pending_key(PREFIX_TREE, &key),
             InputMode::Group(group) => self.on_pending_key(group.bindings, &key),
             InputMode::Copy(state) => self.on_copy_key(state, &key, repeat),
+            InputMode::ChatCopy(state) => self.on_chat_copy_key(state, &key, repeat),
             InputMode::Resize => self.on_resize_key(&key),
             InputMode::Confirm(confirm) => self.on_confirm_key(confirm, &key),
             InputMode::Menu => self.on_menu_key(&key, repeat),
@@ -1211,10 +1218,8 @@ impl App {
         self.input = match step {
             Step::Enter(group) => InputMode::Group(group),
             Step::Run(PrefixAction::RequestQuit) => InputMode::Confirm(Confirm::Quit),
-            // A chat has no scrollback to select from: COPY is for shell panes.
             Step::Run(PrefixAction::EnterCopy) if self.focused_pty().is_none() => {
-                self.notice = Some(CHAT_COPY_REFUSED.to_string());
-                InputMode::Terminal
+                self.enter_chat_copy()
             }
             Step::Run(PrefixAction::EnterCopy) => InputMode::Copy(self.enter_copy()),
             Step::Run(PrefixAction::EnterResize) => InputMode::Resize,
@@ -6495,6 +6500,12 @@ mod app_tests {
     /// The live chat pane (ai-chat C8).
     mod chat_live;
 
+    /// COPY on a chat pane (pane-scroll S1).
+    mod chat_copy;
+
+    /// Where a pane is scrolled (pane-scroll S1).
+    mod scroll_position;
+
     /// History in the chat pane: list, saving, resume, delete (ai-chat C9).
     mod chat_history;
 
@@ -6654,18 +6665,15 @@ mod app_tests {
             assert_eq!(a.focused(), PaneId::for_test(4));
         }
 
-        // 1.2: the prefix still works on a chat, but nothing reaches a PTY.
+        // pane-scroll: COPY on a chat with nothing to scroll says so.
         #[test]
-        fn copy_on_a_chat_is_refused_with_the_notice() {
+        fn copy_on_a_chat_without_a_transcript_is_refused_with_the_notice() {
             let mut a = launched(80, 25);
             a.open_chat(None);
             let effects = press(&mut a, "[");
             assert_eq!(effects, vec![]);
             assert_eq!(a.input(), InputMode::Terminal);
-            assert_eq!(
-                a.notice(),
-                Some("copy mode is not available in chat panes; Ctrl+Y copies the last answer")
-            );
+            assert_eq!(a.notice(), Some("nothing to scroll here"));
             assert_eq!(a.copy_position(), None);
             assert!(a.take_dirty());
         }

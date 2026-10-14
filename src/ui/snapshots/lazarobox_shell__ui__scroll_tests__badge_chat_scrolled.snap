@@ -1,0 +1,16 @@
+---
+source: src/ui/scroll_tests.rs
+expression: text(&app)
+---
+                                                 │answer 62                                     [+9]
+                                                 │answer 63
+                                                 │answer 64
+                                                 │answer 65
+                                                 │answer 66
+                                                 │answer 67
+                                                 │answer 68
+                                                 │answer 69
+                                                 │answer 70
+                                                 │answer 71
+                                                 │
+ ◐ CHAT ↑9/73  /srv/app                                                       ollama › llama3:8b
