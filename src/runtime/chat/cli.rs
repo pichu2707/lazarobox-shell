@@ -606,7 +606,18 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
         }
     };
 
-    let exit = settle(&mut child, &mut group, pid, env.grace).await;
+    // The decoder's own error (a refused tool, malformed data, a failure the
+    // CLI reported) is final: the process is stopped now, with no grace to
+    // exit. A stream that just ended (`Interrupted`) still waits, because the
+    // exit status or the jail marker explains it.
+    let decoder_error =
+        matches!(&ended.last, Some(StreamEvent::Error(e)) if *e != ChatError::Interrupted);
+    let exit = if decoder_error {
+        group.kill_and_reap(&mut child).await.ok();
+        None
+    } else {
+        settle(&mut child, &mut group, pid, env.grace).await
+    };
     // The group is dead and reaped: the pipes reach EOF at once.
     let tail = match stderr_tail {
         Some(tail) => tail,

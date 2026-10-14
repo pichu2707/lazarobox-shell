@@ -1041,6 +1041,14 @@ async fn the_interpreter_installed_next_to_the_cli_wins_over_the_first_one_on_pa
     assert_eq!(program[0], lab.bin.join("fakenode").to_str().unwrap());
 }
 
+/// A fake `codex` that records its pid and a background child's, then replays
+/// `line`, then waits: only a kill ends it.
+fn lingering_codex(lab: &Lab, line: &str) {
+    fs::write(lab.rec.join("lines"), format!("{line}\n")).unwrap();
+    let body = "cat > \"$REC/stdin\"\necho $$ > \"$REC/leader\"\nsleep 300 &\necho $! > \"$REC/child\"\ncat \"$REC/lines\"\nwait";
+    script(&lab.bin.join("codex"), &lab.rec, body);
+}
+
 /// A fake `codex` that replays `lines` on stdout and then runs `tail`.
 fn fake_codex(lab: &Lab, lines: &[&str], tail: &str) {
     fs::write(lab.rec.join("lines"), lines.join("\n") + "\n").unwrap();
@@ -1078,12 +1086,9 @@ async fn a_failed_codex_turn_shows_the_api_message_even_though_the_process_exits
 #[tokio::test]
 async fn a_tool_call_ends_the_codex_turn_and_stops_the_process() {
     let lab = lab();
-    fake_codex(
+    lingering_codex(
         &lab,
-        &[
-            r#"{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"id","status":"in_progress"}}"#,
-        ],
-        "echo $$ > \"$REC/leader\"\nsleep 300",
+        r#"{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"id","status":"in_progress"}}"#,
     );
     let mut env = lab.env();
     env.jail = jail_on();
@@ -1106,4 +1111,52 @@ async fn codex_without_a_jail_spawns_nothing() {
     assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
     assert!(!lab.rec.join("ran").exists());
     assert!(!lab.rec.join("stdin").exists());
+}
+
+#[tokio::test]
+async fn a_decoder_error_kills_the_group_at_once_without_the_exit_grace() {
+    // A tool refusal and malformed data are the decoder's own verdict: the
+    // process has nothing more to say, so it is not given the grace to exit.
+    for line in [
+        r#"{"type":"item.started","item":{"id":"item_1","type":"command_execution"}}"#,
+        "{this is not json",
+    ] {
+        let lab = lab();
+        lingering_codex(&lab, line);
+        let mut env = lab.env();
+        env.jail = jail_on();
+        env.helper = lab.helper(PASS);
+        env.grace = Duration::from_secs(20);
+        let started = Instant::now();
+        let events = run_job(&env, codex_job(&["exec", "-"])).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "took {:?} for {line}",
+            started.elapsed()
+        );
+        assert!(
+            matches!(
+                events.as_slice(),
+                [StreamEvent::Error(ChatError::Failed(_))]
+            ),
+            "{events:?}"
+        );
+        assert!(wait_gone(pid_of(&lab, "leader"), Duration::from_secs(2)).await);
+        assert!(wait_gone(pid_of(&lab, "child"), Duration::from_secs(2)).await);
+    }
+}
+
+#[tokio::test]
+async fn a_stream_that_just_ends_still_waits_for_the_exit_so_the_jail_marker_is_seen() {
+    let lab = lab();
+    fake_codex(
+        &lab,
+        &[],
+        "echo 'lazarobox-jail: jail not enforced: test' >&2\nexit 125",
+    );
+    let mut env = lab.env();
+    env.jail = jail_on();
+    env.helper = lab.helper(PASS);
+    let events = run_job(&env, codex_job(&["exec", "-"])).await;
+    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
 }
