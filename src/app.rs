@@ -65,11 +65,11 @@ const NOTE_CHAT_ONLY: &str = "Save as note is for chat panes; open one with Ctrl
 /// Notice of the summary key on a pane that is not a chat.
 const SUMMARY_CHAT_ONLY: &str = "The summary is for chat panes; open one with Ctrl+Space c";
 /// Notice of the memory-line key on a pane that is not a chat.
+const MEMORY_CHAT_ONLY: &str = "The memory line is for chat panes; open one with Ctrl+Space c";
 /// Notice for the tag key on a shell pane.
 const TAGS_CHAT_ONLY: &str = "Tags are for chat panes; open one with Ctrl+Space c";
 /// Notice for the tag key with no conversation store.
 const TAGS_NEED_HISTORY: &str = "Tags need the conversation history";
-const MEMORY_CHAT_ONLY: &str = "The memory line is for chat panes; open one with Ctrl+Space c";
 
 /// Byte sent to the child when the prefix is pressed twice (NUL, Ctrl+Space).
 const PREFIX_LITERAL: u8 = 0x00;
