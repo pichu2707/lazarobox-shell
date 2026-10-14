@@ -8,6 +8,8 @@ use crate::core::ai::sanitize::{clean, is_format};
 
 /// The prompt shown while a delete waits for its answer.
 pub const DELETE_PROMPT: &str = "Delete conversation? (y/n)";
+/// What the user sees of a refused note delete.
+const NOTES_REFUSED: &str = "engram refused the delete (check ENGRAM_HTTP_TOKEN)";
 /// System line when a conversation is open in another pane.
 pub const OPEN_ELSEWHERE: &str = "already open in another pane";
 /// System line when the delete failed.
@@ -28,8 +30,15 @@ pub enum ListOutcome {
     New,
     /// Open the conversation with this database id.
     Resume(i64),
-    /// The delete was confirmed for this database id.
+    /// The delete was confirmed for this database id. The prompt had no
+    /// choice about notes.
     Delete(i64),
+    /// `y` in the three-way prompt: delete the conversation, keep its notes
+    /// in engram.
+    DeleteKeepNotes(i64),
+    /// `a` in the three-way prompt: delete the conversation and then its
+    /// notes in engram.
+    DeleteWithNotes(i64),
     /// Edit the tags of the conversation with this database id.
     EditTags(i64),
 }
@@ -45,8 +54,12 @@ pub struct ListView {
     /// answers.
     rows: Option<Vec<ConvRow>>,
     cursor: usize,
-    /// The conversation a delete prompt is about.
-    confirming: Option<i64>,
+    /// The conversation a delete prompt is about, and how many notes the
+    /// prompt offered to delete with it (0: the plain prompt).
+    confirming: Option<(i64, u32)>,
+    /// Whether the app could delete notes in engram now: memory is on and a
+    /// token is present. Set by the app before each key.
+    notes_deletable: bool,
     /// A line for the user, until the next key.
     line: Option<String>,
 }
@@ -59,8 +72,17 @@ impl ListView {
             rows: None,
             cursor: 0,
             confirming: None,
+            notes_deletable: false,
             line: None,
         }
+    }
+
+    /// Tells the list whether notes can be deleted in engram (memory on and a
+    /// token present), so the delete prompt of a conversation with notes can
+    /// offer it. The app sets it before each key; it is read when `d` is
+    /// pressed.
+    pub fn set_notes_deletable(&mut self, deletable: bool) {
+        self.notes_deletable = deletable;
     }
 
     /// The store's answer: every conversation, newest first.
@@ -139,7 +161,11 @@ impl ListView {
 
     /// The delete prompt, while it is shown.
     pub fn prompt(&self) -> Option<String> {
-        self.confirming.map(|_| DELETE_PROMPT.to_owned())
+        self.confirming.map(|(_, offered)| match offered {
+            0 => DELETE_PROMPT.to_owned(),
+            1 => "Delete conversation? y · n · a also delete its 1 note".to_owned(),
+            n => format!("Delete conversation? y · n · a also delete its {n} notes"),
+        })
     }
 
     pub fn line(&self) -> Option<&str> {
@@ -199,16 +225,19 @@ impl ListView {
     /// PTY, and Ctrl+C never quits. `repeat` marks a held key, which moves the
     /// cursor but never decides anything.
     pub fn on_key(&mut self, key: &KeyEvent, repeat: bool) -> ListOutcome {
-        if let Some(id) = self.confirming {
+        if let Some((id, offered)) = self.confirming {
             if repeat {
                 return ListOutcome::Handled;
             }
             self.confirming = None;
-            let yes = key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::NONE;
-            return if yes {
-                ListOutcome::Delete(id)
-            } else {
-                ListOutcome::Handled
+            if key.modifiers != KeyModifiers::NONE {
+                return ListOutcome::Handled;
+            }
+            return match (key.code, offered) {
+                (KeyCode::Char('y'), 0) => ListOutcome::Delete(id),
+                (KeyCode::Char('y'), _) => ListOutcome::DeleteKeepNotes(id),
+                (KeyCode::Char('a'), 1..) => ListOutcome::DeleteWithNotes(id),
+                _ => ListOutcome::Handled,
             };
         }
         self.line = None;
@@ -226,7 +255,12 @@ impl ListView {
                 }
             }
             KeyCode::Char('n') | KeyCode::Esc => return ListOutcome::New,
-            KeyCode::Char('d') => self.confirming = self.selected().map(|row| row.id),
+            KeyCode::Char('d') => {
+                let deletable = self.notes_deletable;
+                self.confirming = self
+                    .selected()
+                    .map(|row| (row.id, if deletable { row.notes } else { 0 }));
+            }
             KeyCode::Char('t') => {
                 if let Some(row) = self.selected() {
                     return ListOutcome::EditTags(row.id);
@@ -239,6 +273,59 @@ impl ListView {
             _ => {}
         }
         ListOutcome::Handled
+    }
+}
+
+/// Why the notes of a deleted conversation stay in engram.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NotesStay {
+    /// Memory is off.
+    MemoryOff,
+    /// `ENGRAM_HTTP_TOKEN` is not set (or empty).
+    NoToken,
+    /// The prompt was the plain one because the list had no note for the
+    /// conversation; a note was saved after the list was read.
+    SavedLater,
+}
+
+/// The system line after a delete that leaves `notes` notes in engram.
+pub fn notes_stay_line(notes: usize, why: NotesStay) -> String {
+    let why = match why {
+        NotesStay::MemoryOff => "memory is off",
+        NotesStay::NoToken => "set ENGRAM_HTTP_TOKEN to delete them",
+        NotesStay::SavedLater if notes == 1 => "it was saved after the list was read",
+        NotesStay::SavedLater => "they were saved after the list was read",
+    };
+    match notes {
+        1 => format!("its 1 note stays in engram ({why})"),
+        n => format!("its {n} notes stay in engram ({why})"),
+    }
+}
+
+/// The system line after the notes of a deleted conversation were deleted one
+/// by one: `ok` went, `failed` did not, and `refused` says engram answered
+/// 401 or 403 to one of them.
+pub fn notes_result_line(ok: usize, failed: usize, refused: bool) -> String {
+    let total = ok + failed;
+    if failed == 0 {
+        return match ok {
+            1 => "deleted 1 note from engram".to_owned(),
+            n => format!("deleted {n} notes from engram"),
+        };
+    }
+    if ok == 0 {
+        let reason = if refused {
+            NOTES_REFUSED
+        } else {
+            "engram did not delete them"
+        };
+        return format!("could not delete notes: {reason}");
+    }
+    let line = format!("deleted {ok} of {total} notes from engram");
+    if refused {
+        format!("{line}; {NOTES_REFUSED}")
+    } else {
+        line
     }
 }
 

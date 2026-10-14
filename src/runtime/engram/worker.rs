@@ -232,7 +232,7 @@ impl<T: Transport, L: Launcher> Worker<T, L> {
             MemCmd::Delete { pane, notes } => {
                 let reply = match self.ready().await {
                     Ok(()) => self.delete(pane, &notes).await,
-                    Err(reason) => unavailable(pane, reason),
+                    Err(reason) => MemReply::NotesUnavailable { pane, reason },
                 };
                 self.say(reply).await;
             }

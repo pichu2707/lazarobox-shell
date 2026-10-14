@@ -11,7 +11,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use tokio::sync::mpsc;
 
 use super::{StoreError, open};
@@ -233,6 +233,7 @@ impl Worker {
                         tag,
                         extras,
                         messages,
+                        session,
                     }) => StoreReply::Resumed {
                         pane,
                         conversation,
@@ -240,6 +241,7 @@ impl Worker {
                         tag,
                         extras,
                         messages,
+                        session,
                     },
                     None => StoreReply::ResumeFailed { pane },
                 })
@@ -565,15 +567,16 @@ fn link_note(
     Ok(())
 }
 
-/// Every conversation, newest last activity first, with its project tag and
-/// the first user message.
+/// Every conversation, newest last activity first, with its project tag, the
+/// first user message and the number of note links it has.
 fn list(conn: &mut Connection) -> Result<Vec<ConvRow>, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT c.id, c.updated_at, c.profile,
                 (SELECT tag FROM tags t WHERE t.conversation_id = c.id AND t.is_project = 1),
                 COALESCE((SELECT substr(content, 1, ?1) FROM messages m
                           WHERE m.conversation_id = c.id AND m.role = 'user'
-                          ORDER BY seq LIMIT 1), '')
+                          ORDER BY seq LIMIT 1), ''),
+                (SELECT count(*) FROM memory_notes n WHERE n.conversation_id = c.id)
          FROM conversations c
          ORDER BY c.updated_at DESC, c.id DESC",
     )?;
@@ -587,6 +590,7 @@ fn list(conn: &mut Connection) -> Result<Vec<ConvRow>, rusqlite::Error> {
                 tag: r.get(3)?,
                 extras: Vec::new(),
                 first: r.get(4)?,
+                notes: r.get(5)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -611,6 +615,8 @@ struct Resumed {
     tag: Option<String>,
     extras: Vec<String>,
     messages: Vec<Msg>,
+    /// The engram `(session id, project)` pair of its notes, if it has one.
+    session: Option<(String, String)>,
 }
 
 /// The profile, tags and messages of a conversation, in order.
@@ -653,11 +659,20 @@ fn resume(conn: &mut Connection, conversation: i64) -> Result<Resumed, rusqlite:
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
+    // A read only: the resume never writes a link.
+    let session = tx
+        .query_row(
+            "SELECT session_id, project FROM memory_sessions WHERE conversation_id = ?1",
+            [conversation],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
     Ok(Resumed {
         profile,
         tag,
         extras,
         messages,
+        session,
     })
 }
 

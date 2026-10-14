@@ -695,6 +695,11 @@ impl ChatState {
         if self.memory.ended {
             return None;
         }
+        // A session adopted from the store (a resume) that this view never
+        // wrote to has nothing to end.
+        if self.memory.notes.is_empty() && self.approved_summary.is_none() {
+            return None;
+        }
         let session = self.memory.session.clone()?;
         self.memory.ended = true;
         let titles: Vec<&str> = self.memory.notes.iter().map(|n| n.title.as_str()).collect();

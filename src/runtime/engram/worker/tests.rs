@@ -548,6 +548,39 @@ async fn deletes_are_counted_one_by_one() {
     );
 }
 
+// Spec (Delete): Partial result: 204, 404 `observation not found` and a 403
+// give two deleted of three and the refusal.
+#[tokio::test(start_paused = true)]
+async fn a_204_a_404_and_a_403_give_two_of_three_with_the_refusal() {
+    let mut rig = up();
+    rig.fake
+        .on("DELETE /observations/1", Act::Reply(204, Vec::new()));
+    rig.fake.on(
+        "DELETE /observations/2",
+        reply(fx!("delete_404_already_deleted")),
+    );
+    rig.fake
+        .on("DELETE /observations/3", Act::Reply(403, b"{}".to_vec()));
+    rig.link.send(MemCmd::Delete {
+        pane: pane(1),
+        notes: vec![
+            ("widget".into(), 1),
+            ("widget".into(), 2),
+            ("widget".into(), 3),
+        ],
+    });
+    assert_eq!(
+        rig.answer().await,
+        MemReply::Deleted {
+            pane: pane(1),
+            ok: 2,
+            failed: 1,
+            refused: true
+        }
+    );
+    assert_eq!(rig.fake.count("DELETE"), 3);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_refused_delete_is_reported_and_stops_the_rest() {
     let mut rig = up();
@@ -570,6 +603,31 @@ async fn a_refused_delete_is_reported_and_stops_the_rest() {
 }
 
 // ---- degrade ----
+
+// A notes delete that finds engram down says so with its own reply.
+#[tokio::test(start_paused = true)]
+async fn a_delete_against_a_down_server_answers_notes_unavailable() {
+    let mut rig = rig(Mode::Down);
+    rig.link.send(MemCmd::Delete {
+        pane: pane(1),
+        notes: vec![("widget".into(), 1)],
+    });
+    let mut got = Vec::new();
+    for _ in 0..2 {
+        got.push(rig.next().await);
+    }
+    assert!(
+        got.contains(&MemReply::NotesUnavailable {
+            pane: pane(1),
+            reason: Reason::NotRunning
+        }),
+        "{got:?}"
+    );
+    assert!(
+        !got.iter()
+            .any(|r| matches!(r, MemReply::Unavailable { pane: Some(_), .. }))
+    );
+}
 
 #[tokio::test(start_paused = true)]
 async fn a_down_server_answers_unavailable_at_once_and_probes_every_10_seconds() {
