@@ -82,6 +82,9 @@ pub struct CliEnv {
     pub timeouts: Timeouts,
     /// See [`EXIT_GRACE`].
     pub grace: Duration,
+    /// `$CODEX_HOME`, when it is an absolute path: codex keeps its login and
+    /// state there instead of in `~/.codex`.
+    pub codex_home: Option<PathBuf>,
     /// Variables set for the child before the scrub runs. Empty in the app;
     /// the tests use it to give the child something to scrub, because the
     /// test process cannot change its own environment safely.
@@ -124,6 +127,9 @@ impl CliEnv {
             helper: PathBuf::from("/proc/self/exe"),
             timeouts: Timeouts::CLI,
             grace: EXIT_GRACE,
+            codex_home: std::env::var_os("CODEX_HOME")
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute()),
             inject: Vec::new(),
         }
     }
@@ -275,7 +281,7 @@ fn jailed(env: &CliEnv, job: &Job, binary: &Path, dirs: &Dirs) -> Option<(PathBu
     let layout = CliLayout {
         cli: job.cli,
         home,
-        codex_home: None,
+        codex_home: env.codex_home.as_deref().and_then(resolve),
         binary: bin.clone(),
         interpreter,
         loaders,
@@ -286,11 +292,22 @@ fn jailed(env: &CliEnv, job: &Job, binary: &Path, dirs: &Dirs) -> Option<(PathBu
     let spec = jail_spec_with(&layout, &resolve)
         .ok()?
         .retain_existing(|p| fs::symlink_metadata(p).is_ok());
+    // A script starts through its interpreter, which is granted by exact
+    // path. Left to the kernel, `#!/usr/bin/env node` would run `env`, which
+    // the jail does not grant.
+    let rest = job.args.iter().map(OsString::from);
+    let (program, argv) = match layout.interpreter {
+        Some(interpreter) => (
+            interpreter,
+            std::iter::once(bin.into_os_string()).chain(rest).collect(),
+        ),
+        None => (bin, rest.collect()),
+    };
     let args = JailArgs {
         min_abi: None,
         spec,
-        program: bin,
-        argv: job.args.iter().map(OsString::from).collect(),
+        program,
+        argv,
     };
     Some((env.helper.clone(), args.render()))
 }
