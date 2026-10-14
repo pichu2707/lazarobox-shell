@@ -11,7 +11,8 @@
 //! - the `result` line ends the turn. It repeats the whole answer too, which is
 //!   why CLI lines may be 2 MiB. A failure arrives as `is_error: true` (with
 //!   `subtype: "success"`, as the CLI reports an API error that way).
-//! - `system`, `rate_limit_event` and any unknown type are ignored.
+//! - `system`, `rate_limit_event` and any unknown type are ignored, and so is
+//!   any line that does not start with `{` (stray stdout text).
 
 use serde_json::Value;
 
@@ -40,7 +41,9 @@ impl ClaudeDecoder {
 
     /// Events of one line.
     fn line(&mut self, line: &[u8]) -> Vec<StreamEvent> {
-        if line.iter().all(u8::is_ascii_whitespace) {
+        // Only a line that starts like a JSON object is an event. Anything
+        // else (a warning a wrapper or runtime prints on stdout) is noise.
+        if line.trim_ascii_start().first() != Some(&b'{') {
             return vec![];
         }
         let Ok(value) = serde_json::from_str::<Value>(&String::from_utf8_lossy(line)) else {

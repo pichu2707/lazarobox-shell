@@ -250,7 +250,7 @@ fn a_last_line_without_a_newline_still_counts() {
 #[test]
 fn a_malformed_line_fails_the_stream() {
     assert_eq!(
-        whole("not json\n"),
+        whole("{not json\n"),
         [StreamEvent::Error(ChatError::Failed(
             "malformed stream data".into()
         ))]
@@ -288,4 +288,28 @@ fn a_subagent_stream_is_not_part_of_the_answer() {
     text.push_str(&text_line("outer"));
     text.push_str(&result_line("outer", ""));
     assert_eq!(whole(&text), [delta("outer"), done()]);
+}
+
+#[test]
+fn stray_non_json_output_before_and_inside_the_stream_is_ignored() {
+    let mut text = String::from("Warning: something on stdout\n");
+    text.push_str("  (node:1) ExperimentalWarning: x\n");
+    text.push_str(&text_line("a"));
+    text.push_str("DeprecationWarning: mid-stream\n\t \n");
+    text.push_str(&text_line("b"));
+    text.push_str(&result_line("ab", ""));
+    assert_eq!(whole(&text), [delta("a"), delta("b"), done()]);
+    let singles: Vec<&[u8]> = text.as_bytes().chunks(1).collect();
+    assert_eq!(run(&singles), [delta("a"), delta("b"), done()]);
+}
+
+#[test]
+fn a_broken_json_line_is_still_malformed_even_after_stray_text() {
+    let text = format!("noise\n{{\"type\":\n{}", result_line("a", ""));
+    assert_eq!(
+        whole(&text),
+        [StreamEvent::Error(ChatError::Failed(
+            "malformed stream data".into()
+        ))]
+    );
 }
