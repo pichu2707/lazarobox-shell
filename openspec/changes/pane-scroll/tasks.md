@@ -1,0 +1,132 @@
+# Tasks: Pane Scroll (mouse wheel + COPY for every pane)
+
+## Review Workload Forecast
+
+| Field | Value |
+|-------|-------|
+| Estimated changed lines | ~1,700 total (tests included): PR1 ~600, PR2 ~550, PR3 ~550 |
+| 400-line budget risk | High (each PR above 400; the user accepts `size:exception`) |
+| Chained PRs recommended | Yes |
+| Suggested split | PR1 (chat COPY) -> PR2 (wheel routing) -> PR3 (capture, config, menu) |
+| Delivery strategy | auto-chain |
+| Chain strategy | feature-branch-chain (tracker `feat/pane-scroll`) |
+
+Decision needed before apply: No
+Chained PRs recommended: Yes
+Chain strategy: feature-branch-chain
+400-line budget risk: High
+
+Rules for every PR:
+- Strict TDD: RED tests first (compiling stubs, exact assertions), then GREEN, then refactor. Tests are never trimmed.
+- Gate = `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `ENGRAM_PORT=8123 cargo test`. Every commit passes fmt and clippy.
+- One work-unit commit per task group (conventional commits, no AI attribution).
+- Logic lives in new modules; `src/app.rs` and `src/runtime.rs` get dispatch lines only (ai-chat PR15 edits them concurrently): rebase on the tracker before each PR.
+- PR1 base = `feat/pane-scroll` (tracker); PR2 base = PR1 branch; PR3 base = PR2 branch. Only the tracker merges to main.
+- Do not split below the three design slices; if a PR exceeds ~700 lines, report before opening.
+- Archive order: ai-chat, then engram-memory, then pane-scroll (R8).
+
+### Suggested Work Units
+
+| Unit | Goal | PR | Est. | Depends on | Base |
+|------|------|----|------|-----------|------|
+| S1 | Chat COPY, `lines_*`, `[+N]` badge, COPY hint, scroll position | PR1 | ~600 | ai-chat PR1-PR14 on main | `feat/pane-scroll` |
+| S2 | `core::mouse` route/encode, `mouse_facts`, `WheelUp/Down`, `on_wheel`, live reset | PR2 | ~550 | S1 | PR1 branch |
+| S3 | Capture lifecycle, config default, root `config_edit`, menu Toggle, runtime wiring, manual checks | PR3 | ~550 | S2 | PR2 branch |
+
+## Reconciliation applied
+
+Orchestrator rulings R1-R8 were applied in place to the spec deltas during this phase.
+
+Files changed:
+- `specs/mouse-input/spec.md`: R1 (offset reset on focus/tab switch for the pane left; an unfocused wheel-scrolled pane keeps its offset until wheeled to 0, focused-and-left, or its tab left; the "Persists across focus" scenario replaced by 4 scenarios; chat exception stated), R2 (paste returns to live, scenario added), R3 (overlay list: list, tag editor, note editor, summary draft, guidance), R7 (modifier bits encoded except in Press, Utf8 encoding with drop above 2015, 3 scenarios; "Modifier ignored" sentence narrowed to the step).
+- `specs/copy-mode-scrollback/spec.md`: R3 (note editor and summary draft refuse COPY with `nothing to scroll here`).
+- `specs/statusline/spec.md`: R5 (scenario: chat COPY always shows a position, `↑0` included).
+
+| Ruling | Result |
+|--------|--------|
+| R1, R2, R3, R5, R7 | Spec edited (see above) |
+| R4 | Spec already matched (mouse-input "Events handled", modal-input "Mouse events by mode"); no edit |
+| R5 hint text | Spec already matched (statusline COPY key hint) |
+| R6 | Spec matched (`Mouse` row cycles on/off, Esc reverts, root boolean before first table); `ItemKind::Toggle` is design only |
+| R8 | Already stated in every delta header; repeated in the rules above |
+
+## PR1 / S1: Chat COPY, badge, statusline (`src/core/ai/chat/{transcript,copy}.rs`, `src/app/{chat_copy,scroll}.rs`, `src/app.rs`, `src/ui/`)
+
+- [x] 1.1 RED: `Scroll::lines_up/lines_down(n,total,h)` tests in `transcript.rs`: 1 and 3 line steps, wrapped lines, clamp at both ends, short transcript unchanged, reaching the end gives `Follow`.
+- [x] 1.2 GREEN: implement `lines_up/lines_down` (same contract as `page_*`). Commit.
+- [x] 1.3 RED: `src/core/ai/chat/copy.rs` key table to `ChatCopyCommand`: `j k Ctrl+d Ctrl+u gg G Esc q Ctrl+Space`, lone `g` discarded, `v V y i h l 0 $ a Enter Backspace Tab` swallowed, Repeat rules (j/k/Ctrl+d/u act; Esc/q ignored).
+- [x] 1.4 GREEN: create `copy.rs` (`ChatCopy { pending_g }`) plus `mod` line. Commit.
+- [x] 1.5 RED: app tests for `InputMode::ChatCopy`: `[` on a conversation enters it with no notice and no `WritePty`; `[` on list, tag editor, note editor, summary draft, guidance with no transcript stays TERMINAL with notice `nothing to scroll here`, cleared by the next key (R3); `CHAT_COPY_REFUSED` gone; composer, `ChatSend`, clipboard untouched by swallowed keys.
+- [x] 1.6 RED: app tests: Esc/`q` leave to TERMINAL with `Follow`; held exit key debounced (`hold_exit`); stream pinned while in COPY; focus change, tab change and zoom-out of the chat reset COPY (3 reset matches); chat COPY on another pane's COPY does not touch shell offsets; `Ctrl+Space` gives PREFIX.
+- [x] 1.7 GREEN: `src/app/chat_copy.rs` (`on_chat_copy_key`), `InputMode::ChatCopy` variant, label `COPY`, `on_key` arm, `[` entry, drop `CHAT_COPY_REFUSED`, reset matches in `src/app.rs`. Commit.
+- [x] 1.8 RED: `App::scrolled_by(id)` and `App::scroll_position()` tests: shell offset, chat lines below view, `None` at 0; `copy_position()` in shell COPY; chat COPY always `Some` (explicit 0, R5); focused-only; none on the alternate screen.
+- [x] 1.9 GREEN: `src/app/scroll.rs` (`scrolled_by`, `scroll_position`). Commit.
+- [x] 1.10 RED: insta snapshots (TestBackend): `[+N]` badge on shell (wheel-scrolled and COPY), chat, unfocused, `[+0]` never, tiny pane (3 cols) and alternate screen show none, no content shift; statusline `COPY` hint for shell `j/k scroll · v select · y copy · Esc exit` and chat `j/k scroll · Esc exit`, VISUAL keeps the shell hint, notice replaces hint, whole-entry clipping with `…`, widths 0-40 do not panic; `TERMINAL ↑12/340`, `CHAT ↑9/120`, `COPY ↑0/N`, zoom marker order, unfocused scrolled pane has no position. Existing snapshots unchanged except COPY ones.
+- [x] 1.11 GREEN: `src/ui/components/scroll_badge.rs`; `src/ui/mod.rs` (badge per pane, `scroll_position()`, no composer cursor in `ChatCopy`); COPY hint in `status_path` (`src/app.rs`). Review and accept new snapshots. Commit.
+- [x] 1.12 Gate (fmt, clippy, tests) passed; every commit passes fmt+clippy. The PR is NOT opened yet (left to the orchestrator): open it against `feat/pane-scroll`.
+
+### Apply notes (PR1)
+
+- 1.6 / 1.7 (revised after review): `Ctrl+Space` inside chat COPY gives PREFIX, which ends COPY without resetting the view, so a focus or tab change after it leaves the chat pinned (R1). Spec scenarios amended (copy-mode-scrollback "Focus or tab change after Ctrl+Space keeps the view", chat-pane "State survives modes"). The unreachable `ChatCopy` reset arms in `activate`, `set_focus_in` and `drop_tab` were removed; tests drive real keys (ChatCopy, `kkk`, Ctrl+Space, `h` / `gb`). `debug_assert_copy_on_shell` also asserts ChatCopy implies a focused chat. A held `g`/`G` is ignored in `ChatCopy::on_key`.
+- 1.5: entering chat COPY is refused for the list, tag editor, note editor, summary draft, and for guidance with an empty transcript; an empty transcript with no guidance enters COPY (nothing scrolls). The old test `copy_on_a_chat_is_refused_with_the_notice` was replaced by the new-notice test.
+- 1.8: the chat total of `scroll_position()` is the scrollable lines (`lines - viewport rows`), the analogue of the shell's history rows; `COPY ↑0/0` on a short transcript.
+- 1.10 / 1.11: the existing test `the_highlight_lands_on_the_selected_rows_of_a_scrolled_viewport` now strips the `[+8]` badge from row 0 (the badge is the new overlay in COPY scrolled). No existing snapshot changed. Badge style: bold `bg_base` text on `warning_orange`. `prefix::clip_hint` was extracted from `prefix::hint` to clip the COPY hint with the same whole-entry rule.
+- Test plumbing: helpers of `chat_live.rs` and `with_draft` of `chat_summary.rs` became `pub(super)` so `chat_copy.rs` and `scroll_position.rs` test modules reuse them.
+
+## PR2 / S2: Wheel routing and app handling (`src/core/{mouse,pane,copy}.rs`, `src/app/scroll.rs`, `src/app.rs`)
+
+- [x] 2.1 RED: `route_wheel` table tests in `src/core/mouse.rs` (stubs compile): pane kind x mouse mode x alt screen x copy x app cursor. Order: copy gives `CopyScroll`; mode != None gives `Write(encode_wheel)`; alt screen gives 3x `encode_key(Up|Down)` honoring DECCKM (`\x1b[A` vs `\x1bOA`); else `Scrollback`; chat gives `ChatLines` in COPY or not.
+- [x] 2.2 RED: `encode_wheel` golden bytes: SGR up/down at pane-local coords (origin 10,5 pointer 14,8 gives `\x1b[<64;5;4M`), Default `\x1b[M` + `\x60 \x21 \x21` / `a # \x22`, drop above 223, Utf8 +32 as char and drop above 2015, modifiers Shift 4 / Alt 8 / Ctrl 16 (`\x1b[<80;1;1M`), none in Press (R7), all four modes receive the wheel, one sequence per event.
+- [x] 2.3 GREEN: create `src/core/mouse.rs` (`WHEEL_STEP`, `CAPTURE_ON/OFF`, enums, `PaneFacts`, `route_wheel`, `encode_wheel`) plus `mod` line. Commit.
+- [x] 2.4 RED: `Pane::mouse_facts()` tests in `src/core/pane.rs` mirroring vt100 mode/encoding/alt screen for each enum value.
+- [x] 2.5 GREEN: implement `mouse_facts()`. Commit.
+- [x] 2.6 RED: `CopyMotion::WheelUp/WheelDown` tests in `src/core/copy.rs`: offset +/-3, cursor clamped into the viewport, selection preserved and extended like `j/k`, clamp at top and bottom, alternate screen no panic.
+- [x] 2.7 GREEN: add the motions. Commit.
+- [x] 2.8 RED: `on_wheel` app tests: hit-test via `tiling()` rects (pane under pointer, unfocused pane, separator, statusline, tab bar, beyond body ignored, zoomed pane is the only target, after split/resize); no focus/tab/mode change; non-wheel and horizontal events ignored (R4: ignored in PREFIX, groups, RESIZE, MENU, confirmations, no state change and notice kept); no wheel when `config.mouse` is false.
+- [x] 2.9 RED: `on_wheel` behaviour: SGR write to the right pane's PTY only; mouse mode wins over scrollback; less/alt-screen arrows; main-screen offset +/-3 clamped with no bytes and no COPY; anchored under new output (offset grows); wheel over another pane while COPY is elsewhere leaves COPY untouched; wheel over the COPY pane moves the viewport; chat transcript 3 lines, unfocused chat, short transcript unchanged, wheel-down to bottom gives `Follow`.
+- [x] 2.10 RED: chat overlays (list, tag editor, note editor, summary draft, guidance no transcript) ignore the wheel (R3).
+- [x] 2.11 RED: live reset: an encoded key and a paste on the focused scrolled shell set offset 0 (R2); swallowed keys (prefix then Esc) do not; focus change and tab switch reset the shell pane left (R1); an unfocused wheel-scrolled pane keeps its offset while focus moves between other panes, resets after being focused-and-left or when its tab is left; chat scroll survives focus and tab (R1).
+- [x] 2.12 GREEN: `src/app/scroll.rs` (`on_wheel`, live-reset helper); `src/app.rs` (`AppEvent::Mouse` arm, reset calls in `on_terminal_key` and `on_paste`, focus/tab reset keeps current behavior). Commit.
+- [x] 2.13 Gate (fmt, clippy, tests) passed; every commit passes fmt+clippy. The PR is NOT opened yet (left to the orchestrator): open it against `feat/pane-scroll`.
+
+### Apply notes (PR2)
+
+- Commits: `feat(core): route and encode the mouse wheel` (2.1-2.3), `feat(pane): expose the child's mouse protocol` (2.4-2.5), `feat(copy): add wheel motions that keep the cursor in view` (2.6-2.7), `feat(app): scroll the pane under the mouse wheel` (2.8-2.12). Each work unit was RED first (compiling stubs), then GREEN, and is committed together with its tests.
+- 2.1 / 2.2: `route_wheel` and `encode_wheel` take the pointer cell 0-based inside the pane and write it 1-based; the drop limits (223, 2015) apply to the 1-based value. Press mode adds no modifier bits. An unencodable coordinate gives `WheelAction::Ignore`.
+- 2.6: `WheelUp/WheelDown` bypass `ensure_visible`: the viewport moves 3 rows (clamped to the history) and the cursor is clamped into the new viewport, never the other way round. No key is bound to them.
+- 2.8 / 2.9: `App::on_mouse` (in `src/app/scroll.rs`) is the dispatch; `AppEvent::Mouse` is the only addition to the `update` match. It reads `self.config.mouse` (the live config, also the menu draft while MENU is open), so tests set `config.mouse` explicitly; the default flip is PR3. Overlay chats (list, tag editor, note editor, summary draft, guidance with no transcript) are filtered with the existing `chat_scrollable` (now `pub(super)`). The runtime still drops mouse events.
+- 2.11 / 2.12: `return_to_live` runs after an encoded key and after a paste written to the focused shell. `activate` now resets every pane of the tab left (R1: an unfocused wheel-scrolled pane resets when its tab is left); `set_focus_in` already reset only the pane left.
+- Test note: a chat scrolled before opening a second tab compares its `Scroll` value, not the distance to the bottom, because the tab bar takes a row.
+- Review fixes (batch 2b): (1) `CopyState::enter` takes the pane's scrollback offset: entering COPY on a wheel-scrolled pane keeps the view, puts the cursor on the last visible row (live-cursor column clamped) and `sync_copy` resets the view before re-entering; spec scenario "COPY entered on a wheel-scrolled pane keeps the view". (2) X10 `Press` (`?9`) mode no longer receives the wheel: it falls through to alt-screen arrows or scrollback (as xterm); the Press no-modifier rule is gone and the spec requirement and scenarios were updated. (3) The literal prefix returns the pane to live (spec scenario added; supersedes the earlier note). (4) The rect is found once with `find` over the tiling, no `expect`. (5) `dirty` is set only when the offset, COPY state or chat view really changed. (6) Comment in `apply_motion` on why wheel motions skip `ensure_visible`.
+- size:exception: the PR2 diff is about 1,650 lines (about 1,050 of them tests), above the ~700-line report threshold.
+
+## PR3 / S3: Capture, config, menu, persistence (`src/runtime.rs`, `src/app.rs`, `src/core/{config,config_edit,menu}.rs`)
+
+- [x] 3.1 RED: config tests: empty file gives `mouse` true; `mouse = false` parses with no notice; `mouse = "yes"` gives true and `config: mouse: expected true or false`; 3 invalid keys give `config (3 problems): ...`; text `mouse is not supported yet` appears nowhere.
+- [x] 3.2 GREEN: `src/core/config.rs`: manual `Default` (`mouse: true`), drop the notice, root `is_flag` handling. Commit.
+- [x] 3.3 RED: `config_edit` root-table tests: new `mouse` inserted before the first table header, appended when no table, empty file gives `mouse = false\n`, existing line updated in place keeping trailing comment, non-boolean replaced by boolean, unchanged draft writes nothing, toggled back writes nothing, `mouse = true` written explicitly when changed to default, no other keys touched, round trip with `Config::parse`.
+- [x] 3.4 GREEN: `src/core/config_edit.rs`: `table == ""` targets the root table. Commit.
+- [x] 3.5 RED: menu tests: `ItemKind::Toggle` `Mouse` (key `mouse`, values `on`/`off`) third Settings row; descriptor integrity; cursor skips no row and wraps (`Tab bar position` -> `Mouse` -> `Set all tasks`); row reflects config; `edits` emit `mouse` only when the draft differs from open; insta snapshot of the Settings rows (R6).
+- [x] 3.6 GREEN: `src/core/menu.rs`: Toggle kind, Mouse row, `edits`; remove the disabled row and cursor skip. Commit.
+- [x] 3.7 RED: app tests: `Effect::MouseCapture(bool)` emitted by `sync_mouse()` only when the effective value changes; cycling the Mouse row emits it live with no `WritePty` and no `ResizePty`; Esc reverts capture and does not write the file; save keeps the previewed state with no extra sequence; failed save keeps the preview; `startup_effects` emits it by default and never when `mouse = false`.
+- [x] 3.8 GREEN: `src/app.rs`: `Effect::MouseCapture`, `mouse_captured`, `sync_mouse` called from `apply_config` and `startup_effects`. Commit.
+- [x] 3.9 RED: runtime byte tests: `to_app_event` forwards only `ScrollUp/ScrollDown` as `AppEvent::Mouse` (clicks, drags, motion, horizontal dropped); `MouseCapture` writes exactly `\x1b[?1000h\x1b[?1006h` / `\x1b[?1006l\x1b[?1000l` to `host_out`, no `?1002`/`?1003`/`?1015`; `restore_to` always contains `?1006l`/`?1000l` before child teardown; panic-hook path covered through `restore_to`; capture-off run never writes mouse bytes.
+- [x] 3.10 GREEN: `src/runtime.rs`: `to_app_event` wheel mapping, `Effect::MouseCapture` into `host_out`, `CAPTURE_OFF` in `restore_to`, startup capture after raw mode/alt screen and before the first frame. Commit.
+- [x] 3.11 Refactor: dedupe helpers, update doc comments and README mouse note (Shift-drag selects natively; `mouse = false` disables). Commit.
+- [x] 3.12 Gate (fmt, clippy, tests) passed; every commit passes fmt+clippy. The PR is NOT opened yet (left to the orchestrator): open it against `feat/pane-scroll`.
+- [ ] 3.13 [manual] Kitty: wheel in a shell pane (scrollback, `[+N]` badge, key returns to live) and in less/man (3 lines per notch), vim (`:set mouse=a`) and htop.
+- [ ] 3.14 [manual] Kitty: wheel over a chat answer; COPY on the chat with `Ctrl+Space [`, j/k, Ctrl+u/d, gg, G, Esc; stream continues while scrolled.
+- [ ] 3.15 [manual] Kitty: Shift-drag native selection works; the terminal is clean (no escape junk, own scrollback works) after quit, after `exit` in the last pane, and after a forced panic if a debug path exists (otherwise record as not testable). There is no debug panic path in the binary: the panic exit is NOT TESTABLE by hand, only through the `restore_to` byte tests (the panic hook calls `restore_to`).
+- [ ] 3.16 [manual] Kitty: menu `Mouse` toggle on/off previews live, Esc reverts, `s` persists `mouse = false` before the first table; the new run honors it.
+- [ ] 3.17 After all three PRs merge into the tracker, run the final gate on `feat/pane-scroll` and open the tracker PR to main.
+
+### Apply notes (PR3)
+
+- Commits: `feat(config): turn the mouse on by default and drop the unsupported notice` (3.1-3.2), `feat(config): write the mouse flag as a root key before the first table` (3.3-3.4), `feat(menu): make the Mouse row a selectable on/off toggle` (3.5-3.6), `feat(app): follow config.mouse with a mouse capture effect` (3.7-3.8), `feat(runtime): capture the wheel and always release the mouse on restore` (3.9-3.10), then the docs commit (3.11). Each work unit was RED first, then GREEN.
+- 3.2: `Config` has a manual `Default` (`mouse: true`); `ConfigEdit::is_flag` treats the root `mouse` key as a boolean. The mouse notice code is gone; the former tests that asserted the notice now assert no notice.
+- 3.4: `table == ""` targets the root table (`set_root_key`); `toml_edit` prints root key-value pairs before every header, so a new key lands above the first table. In a comment-only file the comments stay above the key.
+- 3.6: `ItemKind::Toggle(Choice)` (table `""`, key `mouse`, values `off`/`on`); `edits` writes it as `true`/`false`. `ItemKind::Disabled` became unused and was removed. `Row::Item.enabled` stays in the widget model (always true for items now; the muted drawing is still covered by the picker rows). The cursor skips no row: seven existing navigation tests gained the Mouse step. The existing insta snapshot `snapshot_settings_popup_at_the_wanted_size` is the "Settings rows" snapshot (thirteen snapshots changed only in the Mouse line).
+- 3.8: `App::mouse_captured` starts `false` (nothing asked yet); `sync_mouse()` returns `Some(Effect::MouseCapture(v))` only when `config.mouse` differs, and `apply_config` appends it (so the menu preview, Esc revert and close are all covered by one path). Four existing app tests and `ai_app()` call `sync_mouse()` first to model the startup sync.
+- 3.10: `Effect::MouseCapture` is staged into `host_out` (written after the draw, like OSC 52), `startup_effects` returns `[MouseCapture(true), DetectEngines]` (just `[DetectEngines]` with `mouse = false`) and `run` flushes `host_out` right after `enter_modes`, before the first frame. `restore_to` writes `CAPTURE_OFF` ALWAYS, before the cursor and paste resets (also on a run with `mouse = false`: harmless, and the panic hook cannot know the state).
+- 3.11: README gets a "Desplazamiento (scroll)" section (Spanish); CHANGELOG `[Unreleased]` entry (English); the stale line in `design.md` (Press mode and modifiers) now says X10 `Press` never receives the wheel, and the routing text names the three modes that do.
+- 3.13-3.16 stay [manual]. 3.15 panic: there is no debug panic path in the binary, so it is NOT TESTABLE by hand.

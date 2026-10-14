@@ -15,23 +15,23 @@ use crate::core::{
     copy::osc52,
 };
 
-fn chat_id() -> PaneId {
+pub(super) fn chat_id() -> PaneId {
     id2()
 }
 
-fn code(code: KeyCode, mods: KeyModifiers) -> AppEvent {
+pub(super) fn code(code: KeyCode, mods: KeyModifiers) -> AppEvent {
     AppEvent::Key(KeyEvent::new(code, mods))
 }
 
-fn ctrl(c: char) -> AppEvent {
+pub(super) fn ctrl(c: char) -> AppEvent {
     code(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
-fn plain(code_: KeyCode) -> AppEvent {
+pub(super) fn plain(code_: KeyCode) -> AppEvent {
     code(code_, KeyModifiers::NONE)
 }
 
-fn repeat(code: KeyCode, modifiers: KeyModifiers) -> AppEvent {
+pub(super) fn repeat(code: KeyCode, modifiers: KeyModifiers) -> AppEvent {
     AppEvent::Key(KeyEvent::new_with_kind(
         code,
         modifiers,
@@ -39,18 +39,18 @@ fn repeat(code: KeyCode, modifiers: KeyModifiers) -> AppEvent {
     ))
 }
 
-fn chat_of(a: &App) -> &ChatState {
+pub(super) fn chat_of(a: &App) -> &ChatState {
     match a.pane_view(chat_id()) {
         Some(PaneView::Chat(chat)) => chat,
         _ => panic!("pane 2 is not a chat"),
     }
 }
 
-fn composer(a: &App) -> String {
+pub(super) fn composer(a: &App) -> String {
     chat_of(a).composer().text()
 }
 
-fn type_text(a: &mut App, text: &str) {
+pub(super) fn type_text(a: &mut App, text: &str) {
     for c in text.chars() {
         a.update(key(c));
     }
@@ -80,7 +80,7 @@ fn detection(models: &[&str]) -> Detection {
 }
 
 /// A launched app with a ready ollama engine and a focused chat pane (id 2).
-fn ready_app() -> App {
+pub(super) fn ready_app() -> App {
     let mut a = launched(80, 25).with_ai(ollama());
     a.update(AppEvent::EnginesDetected(detection(&["llama3:8b"])));
     press(&mut a, "c");
@@ -104,7 +104,7 @@ fn prompt_ready(system: &str, notices: &[&str]) -> AppEvent {
 /// The system prompt `ready_app` delivers.
 const SYSTEM: &str = "system prompt\n\nworkspace block";
 
-fn delta(turn: u64, text: &str) -> AppEvent {
+pub(super) fn delta(turn: u64, text: &str) -> AppEvent {
     AppEvent::Chat(chat_id(), turn, StreamEvent::Delta(text.into()))
 }
 
@@ -112,18 +112,18 @@ fn thinking(turn: u64, text: &str) -> AppEvent {
     AppEvent::Chat(chat_id(), turn, StreamEvent::ThinkingDelta(text.into()))
 }
 
-fn finish(turn: u64) -> AppEvent {
+pub(super) fn finish(turn: u64) -> AppEvent {
     AppEvent::Chat(chat_id(), turn, StreamEvent::Done(Finish::Stop))
 }
 
 /// Types `question`, sends it with Enter and returns the effects.
-fn ask(a: &mut App, question: &str) -> Vec<Effect> {
+pub(super) fn ask(a: &mut App, question: &str) -> Vec<Effect> {
     type_text(a, question);
     a.update(plain(KeyCode::Enter))
 }
 
 /// A chat that asked `q` and got `answer` back in full.
-fn answered(answer: &str) -> App {
+pub(super) fn answered(answer: &str) -> App {
     let mut a = ready_app();
     let turn = match ask(&mut a, "q").as_slice() {
         [Effect::ChatSend { turn, .. }] => *turn,

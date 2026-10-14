@@ -54,7 +54,7 @@ impl LazaroboxTheme {
         match mode {
             InputMode::Terminal => self.success_green,
             InputMode::Prefix | InputMode::Group(_) => self.warning_orange,
-            InputMode::Copy(_) => self.primary_cyan,
+            InputMode::Copy(_) | InputMode::ChatCopy(_) => self.primary_cyan,
             InputMode::Resize => self.ai_purple,
             InputMode::Confirm(_) => self.error_red,
             InputMode::Menu => self.info_blue,

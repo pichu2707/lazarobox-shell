@@ -73,7 +73,7 @@ fn the_context_row_follows_profile_and_precedes_memory() {
 #[test]
 fn context_sits_between_profile_and_memory_and_navigation_wraps_through_them() {
     let mut m = open_with(true);
-    for _ in 0..9 {
+    for _ in 0..10 {
         press(&mut m, 'j');
     }
     assert_eq!(selected_label(&m), "Context");

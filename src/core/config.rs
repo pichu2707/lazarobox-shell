@@ -37,11 +37,21 @@ impl Default for BarPositions {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Config {
     pub bars: BarPositions,
-    /// Reserved for the future config menu: accepted, no effect yet.
+    /// Whether the host terminal reports the mouse wheel to the shell
+    /// (default on; `mouse = false` leaves the terminal's own handling).
     pub mouse: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            bars: BarPositions::default(),
+            mouse: true,
+        }
+    }
 }
 
 /// One changed, menu-owned key to write back to `config.toml`:
@@ -65,10 +75,11 @@ impl ConfigEdit {
     }
 
     /// Whether the key is a TOML boolean (written as `true` / `false`, not
-    /// as a string): the memory flags, `ai.context` and `ai.notify`. Every other owned key
+    /// as a string): the root `mouse`, the memory flags, `ai.context` and `ai.notify`. Every other owned key
     /// holds a string; `ai.memory.port` is owned but never edited.
     pub fn is_flag(&self) -> bool {
-        (self.table == MEMORY_TABLE && matches!(self.key, "enabled" | "acknowledged"))
+        (self.table.is_empty() && self.key == "mouse")
+            || (self.table == MEMORY_TABLE && matches!(self.key, "enabled" | "acknowledged"))
             || (self.table == "ai" && matches!(self.key, "context" | "notify"))
     }
 }
@@ -183,17 +194,10 @@ impl Config {
                 };
                 (config, ai, Some(format!("{head}: {}", problems[0])))
             }
-            // The privacy notice outranks the mouse one: it asks for an
-            // action, while the mouse one is informational.
             Ok(Parsed { config, ai, .. }) if ai.memory.enabled && !ai.memory.acknowledged => (
                 config,
                 ai,
                 Some(ai::config::UNACKNOWLEDGED_NOTICE.to_owned()),
-            ),
-            Ok(Parsed { config, ai, .. }) if config.mouse => (
-                config,
-                ai,
-                Some("config: mouse is not supported yet".to_owned()),
             ),
             Ok(Parsed { config, ai, .. }) => (config, ai, None),
             Err(error) => (
@@ -260,10 +264,10 @@ mod tests {
 
     // Spec: Defaults.
     #[test]
-    fn defaults_are_statusline_bottom_tabbar_top_no_mouse() {
+    fn defaults_are_statusline_bottom_tabbar_top_mouse_on() {
         let expected = Config {
             bars: bars(Bottom, Top),
-            mouse: false,
+            mouse: true,
         };
         assert_eq!(Config::default(), expected);
         assert_eq!(parse(""), expected);
@@ -347,7 +351,8 @@ mod tests {
     fn a_bad_mouse_keeps_the_valid_positions() {
         let c = parse("mouse = 1\n[statusline]\nposition = \"top\"");
         assert_eq!(c.bars.statusline, Top);
-        assert!(!c.mouse);
+        // A bad value falls back to the default, which is on.
+        assert!(c.mouse);
     }
 
     #[test]
@@ -411,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn a_problem_notice_wins_over_the_mouse_notice() {
+    fn a_problem_notice_is_the_only_notice_with_mouse_on() {
         let (config, notice) = Config::load(Ok("mouse = true\n[tabbar]\nposition = 1".into()));
         assert!(config.mouse);
         assert!(notice.unwrap().contains("tabbar.position"));
@@ -424,15 +429,37 @@ mod tests {
         assert_eq!(notice, None);
     }
 
+    // Spec: mouse is supported, so neither value gives a notice.
     #[test]
-    fn mouse_true_is_accepted_with_a_notice() {
+    fn mouse_true_is_accepted_without_a_notice() {
         let text = "mouse = true\n[tabbar]\nposition = \"bottom\"";
         let (config, notice) = Config::load(Ok(text.into()));
         assert!(config.mouse);
         assert_eq!(config.bars.tabbar, Bottom);
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn mouse_false_is_accepted_without_a_notice() {
+        let (config, notice) = Config::load(Ok("mouse = false\n".into()));
+        assert!(!config.mouse);
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn an_empty_file_turns_the_mouse_on_without_a_notice() {
+        let (config, notice) = Config::load(Ok(String::new()));
+        assert!(config.mouse);
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn a_bad_mouse_falls_back_to_on_and_names_the_key() {
+        let (config, notice) = Config::load(Ok("mouse = \"yes\"\n".into()));
+        assert!(config.mouse);
         assert_eq!(
             notice.as_deref(),
-            Some("config: mouse is not supported yet")
+            Some("config: mouse: expected true or false")
         );
     }
 
@@ -634,13 +661,25 @@ mod tests {
         }
     }
 
-    // The privacy note outranks the mouse notice.
     #[test]
-    fn the_privacy_notice_wins_over_the_mouse_notice() {
+    fn the_privacy_notice_is_shown_with_mouse_on() {
         let text = "mouse = true\n[ai.memory]\nenabled = true\n";
         let (config, _, notice) = Config::load_with_ai(Ok(text.into()), None);
         assert!(config.mouse);
         assert_eq!(notice.as_deref(), Some(ai::config::UNACKNOWLEDGED_NOTICE));
+    }
+
+    // The root `mouse` key is a boolean, written as `true` / `false`.
+    #[test]
+    fn the_root_mouse_edit_is_a_flag() {
+        let edit = |table, key| ConfigEdit {
+            table,
+            key,
+            value: Cow::Borrowed("false"),
+        };
+        assert!(edit("", "mouse").is_flag());
+        assert!(!edit("", "other").is_flag());
+        assert!(!edit("tabbar", "mouse").is_flag());
     }
 
     // The environment is a parameter, never read here.

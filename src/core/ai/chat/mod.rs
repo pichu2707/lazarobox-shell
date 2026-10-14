@@ -8,6 +8,7 @@ pub mod claude;
 pub mod cli;
 pub mod codex;
 pub mod composer;
+pub mod copy;
 pub mod engine;
 pub mod gemini;
 pub mod guidance;
