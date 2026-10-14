@@ -1,0 +1,5 @@
+{"type": "init", "timestamp": "2026-01-01T00:00:00.000Z", "session_id": "00000000-0000-4000-8000-000000000000", "model": "gemini-3-flash-preview"}
+{"type": "message", "timestamp": "2026-01-01T00:00:00.000Z", "role": "user", "content": "What is 17 times 23? Think it through, then answer with just the number.\n\nAnswer the last user message of the conversation given on stdin."}
+{"type": "message", "timestamp": "2026-01-01T00:00:00.000Z", "role": "assistant", "content": "3", "delta": true}
+{"type": "message", "timestamp": "2026-01-01T00:00:00.000Z", "role": "assistant", "content": "91", "delta": true}
+{"type": "result", "timestamp": "2026-01-01T00:00:00.000Z", "status": "success", "stats": {"total_tokens": 14953, "input_tokens": 14728, "output_tokens": 3, "cached": 12266, "input": 2462, "duration_ms": 48538, "tool_calls": 0, "models": {"gemini-3-flash-preview": {"total_tokens": 14953, "input_tokens": 14728, "output_tokens": 3, "cached": 12266, "input": 2462}}}}

@@ -24,6 +24,8 @@ fn layout(cli: Cli, binary: &str, interpreter: Option<&str>) -> CliLayout {
         binary: p(binary),
         interpreter: interpreter.map(p),
         loaders: Vec::new(),
+        lib_dirs: Vec::new(),
+        data_files: Vec::new(),
         helpers: Vec::new(),
         cwd: p("/run/user/1000/lazarobox/cli-cwd"),
         tmp: p("/run/user/1000/lazarobox/cli-tmp/1-1"),
@@ -903,4 +905,144 @@ fn a_loader_or_helper_in_a_broad_place_is_refused() {
     let mut l = nvm_codex();
     l.loaders = paths(&["/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"]);
     assert!(jail_spec(&l).is_ok());
+}
+
+// ---- library folders and data files the interpreter's ELF names ----
+
+const BREW: &str = "/home/linuxbrew/.linuxbrew";
+
+fn brew_node_gemini() -> CliLayout {
+    let mut l = brew_gemini();
+    l.lib_dirs = paths(&[
+        "/home/linuxbrew/.linuxbrew/Cellar/node/26.8.1/lib",
+        "/home/linuxbrew/.linuxbrew/Cellar/openssl@3/3.6.2/lib",
+        "/home/linuxbrew/.linuxbrew/Cellar/zlib-ng-compat/2.3.3/lib",
+    ]);
+    l.data_files = paths(&[
+        "/home/linuxbrew/.linuxbrew/etc/openssl@3/openssl.cnf",
+        "/home/linuxbrew/.linuxbrew/etc/ca-certificates/cert.pem",
+    ]);
+    l
+}
+
+#[test]
+fn the_library_folders_of_the_interpreter_are_read_only_and_nothing_else() {
+    let layout = brew_node_gemini();
+    let spec = jail_spec(&layout).unwrap();
+    for dir in &layout.lib_dirs {
+        assert!(spec.ro.contains(dir), "{dir:?}");
+        assert!(!spec.rx.contains(dir) && !spec.rw.contains(dir), "{dir:?}");
+    }
+    // The prefix itself is never granted.
+    for list in [&spec.rx, &spec.ro, &spec.rw] {
+        assert!(!list.contains(&p(BREW)), "{list:?}");
+        assert!(!list.contains(&p("/home/linuxbrew")), "{list:?}");
+    }
+}
+
+#[test]
+fn the_data_files_are_exact_read_only_files() {
+    let layout = brew_node_gemini();
+    let spec = jail_spec(&layout).unwrap();
+    for file in &layout.data_files {
+        assert!(spec.ro_files.contains(file), "{file:?}");
+        assert!(!spec.rw_files.contains(file), "{file:?}");
+    }
+}
+
+#[test]
+fn a_layout_without_them_gets_the_same_rules_as_before() {
+    let plain = jail_spec(&brew_gemini()).unwrap();
+    let with = jail_spec(&brew_node_gemini()).unwrap();
+    assert_eq!(plain.rx, with.rx);
+    assert_eq!(plain.rw, with.rw);
+    assert_eq!(plain.rw_files, with.rw_files);
+    assert_eq!(plain.ro[..], with.ro[..plain.ro.len()]);
+    assert_eq!(plain.ro_files[..], with.ro_files[..plain.ro_files.len()]);
+}
+
+#[test]
+fn a_folder_already_covered_is_not_listed_twice() {
+    let mut layout = brew_gemini();
+    layout.lib_dirs = paths(&[
+        "/usr/lib",
+        "/usr/lib/x86_64-linux-gnu",
+        "/lib64",
+        "/opt/dep/lib",
+    ]);
+    layout.lib_dirs.push(p("/opt/dep/lib"));
+    let spec = jail_spec(&layout).unwrap();
+    assert_eq!(spec.ro.iter().filter(|d| **d == p("/usr/lib")).count(), 1);
+    assert!(!spec.ro.contains(&p("/usr/lib/x86_64-linux-gnu")));
+    assert_eq!(
+        spec.ro.iter().filter(|d| **d == p("/opt/dep/lib")).count(),
+        1
+    );
+}
+
+#[test]
+fn a_broad_library_folder_is_dropped_never_granted() {
+    let mut layout = brew_gemini();
+    layout.lib_dirs = paths(&[
+        "/home/u",
+        "/home/u/.ssh",
+        "/home/u/.gnupg/lib",
+        "/home/u/.claude/lib",
+        "/home/u/.config",
+        "/tmp/lib",
+        "/",
+        "/home",
+        "/opt",
+        "/opt/dep/lib",
+    ]);
+    let spec = jail_spec(&layout).unwrap();
+    let plain = jail_spec(&brew_gemini()).unwrap();
+    let granted: Vec<&PathBuf> = spec.ro.iter().filter(|d| !plain.ro.contains(d)).collect();
+    assert_eq!(granted, [&p("/opt/dep/lib")]);
+}
+
+#[test]
+fn a_data_file_in_a_credential_place_is_dropped() {
+    let mut layout = brew_gemini();
+    layout.data_files = paths(&[
+        "/home/u/.ssh/config",
+        "/home/u/.claude/.credentials.json",
+        "/tmp/x.pem",
+        "/home/u/.gemini/settings.json",
+        "/opt/dep/etc/openssl.cnf",
+    ]);
+    let spec = jail_spec(&layout).unwrap();
+    let plain = jail_spec(&brew_gemini()).unwrap();
+    let granted: Vec<&PathBuf> = spec
+        .ro_files
+        .iter()
+        .filter(|d| !plain.ro_files.contains(d))
+        .collect();
+    // gemini's own folder is already its rw state, so the file is allowed (it
+    // adds nothing); the others are refused.
+    assert_eq!(
+        granted,
+        [
+            &p("/home/u/.gemini/settings.json"),
+            &p("/opt/dep/etc/openssl.cnf")
+        ]
+    );
+}
+
+#[test]
+fn a_library_folder_or_data_file_must_be_canonical() {
+    for bad in ["relative/lib", "/opt/../etc/lib", "/opt/./lib"] {
+        let mut layout = brew_gemini();
+        layout.lib_dirs = vec![p(bad)];
+        assert!(
+            matches!(jail_spec(&layout), Err(SpecError::NotCanonical(_))),
+            "{bad}"
+        );
+        let mut layout = brew_gemini();
+        layout.data_files = vec![p(bad)];
+        assert!(
+            matches!(jail_spec(&layout), Err(SpecError::NotCanonical(_))),
+            "{bad}"
+        );
+    }
 }

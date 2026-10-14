@@ -8,6 +8,8 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::core::ai::chat::engine::ChatError;
 
+pub mod rpath;
+
 /// Landlock ABI 3 (Linux 6.2) is the first with TRUNCATE; below it a jail
 /// would leave a hole, so it counts as no jail.
 pub const MIN_ABI: u32 = 3;
@@ -348,6 +350,13 @@ pub struct CliLayout {
     /// The canonical ELF loaders (`PT_INTERP`) of the interpreter, or of the
     /// native CLI when it has none. Without them nothing dynamic can start.
     pub loaders: Vec<PathBuf>,
+    /// The canonical library folders the interpreter's ELF names in its own
+    /// search path (Homebrew's node lists its own `opt` folders), read-only.
+    pub lib_dirs: Vec<PathBuf>,
+    /// The canonical data files the interpreter reads at startup that are in
+    /// none of the folders above (Homebrew's OpenSSL config and CA bundle),
+    /// read-only.
+    pub data_files: Vec<PathBuf>,
     /// Extra programs a manual check proved necessary, by exact path.
     pub helpers: Vec<PathBuf>,
     /// The private empty working directory.
@@ -397,6 +406,8 @@ pub fn jail_spec_with(
         .chain(&layout.codex_home)
         .chain(&layout.interpreter)
         .chain(&layout.loaders)
+        .chain(&layout.lib_dirs)
+        .chain(&layout.data_files)
         .chain(&layout.helpers);
     if let Some(bad) = given.into_iter().find(|p| !is_canonical_form(p)) {
         return Err(SpecError::NotCanonical(bad.clone()));
@@ -469,6 +480,16 @@ pub fn jail_spec_with(
         spec.ro.push(PathBuf::from(dir));
     }
     push_unique(&mut spec.ro, layout.cwd.clone());
+    // The interpreter's own library folders, read-only. A folder the system
+    // rules already cover adds nothing, and a broad one is dropped rather than
+    // granted: the program then reports the library it cannot load.
+    let system = spec.ro.clone();
+    for dir in &layout.lib_dirs {
+        let covered = system.iter().any(|s| dir.starts_with(s));
+        if !covered && !too_broad(dir, &homes, layout.cli) {
+            push_unique(&mut spec.ro, dir.clone());
+        }
+    }
     push_unique(&mut spec.rw, state);
     push_unique(&mut spec.rw, layout.tmp.clone());
     for file in [
@@ -479,6 +500,11 @@ pub fn jail_spec_with(
         "/dev/random",
     ] {
         spec.ro_files.push(PathBuf::from(file));
+    }
+    for file in &layout.data_files {
+        if !too_broad(file, &homes, layout.cli) {
+            push_unique(&mut spec.ro_files, file.clone());
+        }
     }
     spec.rw_files.push(PathBuf::from("/dev/null"));
     spec.rw_files.extend(state_file);

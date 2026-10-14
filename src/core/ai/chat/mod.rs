@@ -9,6 +9,7 @@ pub mod cli;
 pub mod codex;
 pub mod composer;
 pub mod engine;
+pub mod gemini;
 pub mod guidance;
 pub mod history;
 pub mod list;

@@ -18,7 +18,7 @@ use crate::{
     core::{
         ai::{
             chat::{
-                adapters::{Job, Wire},
+                adapters::{Job, TmpFile, Wire},
                 engine::{ChatError, ChatMessage, ChatRequest, Finish, Role, StreamEvent},
             },
             jail::{Backend, Cli, JailPolicy, JailSupport},
@@ -153,6 +153,7 @@ fn job(policy: JailPolicy) -> Job {
         args: vec!["-p".into()],
         stdin: b"hi".to_vec(),
         jail: policy,
+        tmp_file: None,
     }
 }
 
@@ -582,6 +583,7 @@ fn codex_job(args: &[&str]) -> Job {
         args: args.iter().map(|a| (*a).to_owned()).collect(),
         stdin: b"hi".to_vec(),
         jail: JailPolicy::Required,
+        tmp_file: None,
     }
 }
 
@@ -1301,4 +1303,240 @@ async fn a_loader_in_tmp_stops_the_jailed_cli() {
     let (lab, events) = jailed_elf_with_loader(b"/tmp/evil-ld.so\0").await;
     assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
     assert!(!lab.rec.join("helper_called").exists());
+}
+
+const GEMINI_ANSWER: &str = r#"
+printf '%s\0' "$@" > "$REC/args"
+cat > "$REC/stdin"
+for last; do :; done
+cp "$last" "$REC/policy_copy"
+stat -c %a "$last" > "$REC/policy_mode"
+printf '%s\n' '{"type":"init","session_id":"s","model":"m"}'
+printf '%s\n' '{"type":"message","role":"assistant","content":"ok","delta":true}'
+printf '%s\n' '{"type":"result","status":"success"}'
+"#;
+
+const POLICY: &str = "[[rule]]\ntoolName = \"*\"\n";
+
+fn gemini_job(jail: JailPolicy) -> Job {
+    Job {
+        wire: Wire::GeminiStreamJson,
+        binary: "gemini",
+        cli: Cli::Gemini,
+        args: vec!["-p".into(), "x".into()],
+        stdin: b"hi".to_vec(),
+        jail,
+        tmp_file: Some(TmpFile {
+            flag: "--policy",
+            name: "gemini-policy.toml",
+            content: POLICY,
+        }),
+    }
+}
+
+#[tokio::test]
+async fn a_job_file_is_written_private_to_the_turn_folder_and_named_last() {
+    let lab = lab();
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_ANSWER);
+    let events = run_job(&lab.env(), gemini_job(JailPolicy::Layered)).await;
+    assert_eq!(
+        events,
+        [
+            StreamEvent::Notice("gemini runs without the jail here: test".into()),
+            StreamEvent::Delta("ok".into()),
+            StreamEvent::Done(Finish::Stop)
+        ]
+    );
+    let args = lab.args();
+    assert_eq!(args[..2], ["-p", "x"]);
+    assert_eq!(args[2], "--policy");
+    let path = PathBuf::from(&args[3]);
+    assert_eq!(args.len(), 4, "{args:?}");
+    assert_eq!(path.file_name().unwrap(), "gemini-policy.toml");
+    assert!(
+        path.starts_with(lab.data.join("cli-tmp")),
+        "inside the per-turn temp folder: {path:?}"
+    );
+    assert_eq!(lab.recorded("policy_copy"), POLICY);
+    assert_eq!(lab.recorded("policy_mode").trim(), "600");
+    assert!(!path.exists(), "the turn folder is wiped after the turn");
+}
+
+#[tokio::test]
+async fn a_jailed_job_file_is_inside_the_folder_the_jail_lets_the_cli_write() {
+    let lab = lab();
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_ANSWER);
+    let mut env = lab.env();
+    env.jail = jail_on();
+    env.helper = lab.helper(PASS);
+    let events = run_job(&env, gemini_job(JailPolicy::Required)).await;
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    let program = helper_program(&lab);
+    let n = program.len();
+    assert_eq!(program[n - 4..n - 2], ["-p", "x"]);
+    assert_eq!(program[n - 2], "--policy");
+    let path = PathBuf::from(&program[n - 1]);
+    let raw = lab.recorded("helper_args");
+    let rules: Vec<&str> = raw.split('\0').collect();
+    let rw: Vec<&str> = rules
+        .windows(2)
+        .filter(|w| w[0] == "--rw")
+        .map(|w| w[1])
+        .collect();
+    assert!(
+        rw.iter().any(|dir| path.parent() == Some(Path::new(dir))),
+        "{path:?} must sit in a rw folder: {rw:?}"
+    );
+    assert_eq!(lab.recorded("policy_copy"), POLICY);
+}
+
+#[tokio::test]
+async fn a_job_without_a_file_gets_no_extra_argument() {
+    let lab = lab();
+    lab.claude(GOOD);
+    run(lab.env(), request()).await;
+    assert!(lab.args().iter().all(|a| a != "--policy"));
+}
+
+/// A Homebrew-like tree: an interpreter that is an ELF with a search path of
+/// its own (`opt` links into a Cellar), the OpenSSL config and a CA bundle
+/// reached through a link, and a script CLI that asks for the interpreter.
+fn brew_like(lab: &Lab) -> (PathBuf, PathBuf) {
+    let base = lab.bin.parent().unwrap().to_path_buf();
+    let dir = |path: PathBuf| {
+        fs::create_dir_all(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    };
+    let node_bin = dir(base.join("Cellar/node/1/bin"));
+    let node_lib = dir(base.join("Cellar/node/1/lib"));
+    let ssl_lib = dir(base.join("Cellar/openssl@3/3.6/lib"));
+    dir(base.join("opt"));
+    symlink(
+        base.join("Cellar/openssl@3/3.6"),
+        base.join("opt/openssl@3"),
+    )
+    .unwrap();
+    dir(base.join("etc/openssl@3"));
+    dir(base.join("etc/ca"));
+    fs::write(base.join("etc/openssl@3/openssl.cnf"), "").unwrap();
+    fs::write(base.join("etc/ca/cert.pem"), "").unwrap();
+    symlink(
+        base.join("etc/ca/cert.pem"),
+        base.join("etc/openssl@3/cert.pem"),
+    )
+    .unwrap();
+    let rpath = format!(
+        "$ORIGIN/../lib:{0}/opt/openssl@3/lib:{0}/opt/missing/lib:/usr/lib",
+        base.display()
+    );
+    let node = node_bin.join("fakenode");
+    fs::write(
+        &node,
+        crate::core::ai::jail::rpath::tests::image_with_rpath(&rpath),
+    )
+    .unwrap();
+    fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+    // The CLI is a script found through a link next to the interpreter.
+    let cli = node_bin.join("codex");
+    script(&cli, &lab.rec, CODEX_ANSWER);
+    let text =
+        fs::read_to_string(&cli)
+            .unwrap()
+            .replacen("#!/bin/sh", "#!/usr/bin/env fakenode", 1);
+    fs::write(&cli, text).unwrap();
+    symlink(&cli, lab.bin.join("codex")).unwrap();
+    let _ = (node_lib, ssl_lib);
+    (base, node_bin)
+}
+
+fn helper_rules(lab: &Lab, flag: &str) -> Vec<String> {
+    let raw = lab.recorded("helper_args");
+    let args: Vec<&str> = raw.split('\0').collect();
+    args.windows(2)
+        .filter(|w| w[0] == flag)
+        .map(|w| w[1].to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn the_library_folders_in_the_interpreters_elf_are_granted_read_only() {
+    let lab = lab();
+    let (base, node_bin) = brew_like(&lab);
+    let mut env = lab.env();
+    env.path = std::env::join_paths([&lab.bin, &node_bin]).unwrap();
+    env.jail = jail_on();
+    env.helper = lab.helper("printf '%s\\0' \"$@\" > \"$REC/helper_args\"\nexit 0");
+    run_job(&env, codex_job(&["exec", "-"])).await;
+    let canon = |p: PathBuf| fs::canonicalize(p).unwrap().to_str().unwrap().to_owned();
+
+    let ro = helper_rules(&lab, "--ro");
+    assert!(
+        ro.contains(&canon(base.join("Cellar/node/1/lib"))),
+        "{ro:?}"
+    );
+    assert!(
+        ro.contains(&canon(base.join("opt/openssl@3/lib"))),
+        "through the link: {ro:?}"
+    );
+    assert!(
+        !ro.iter().any(|d| d.contains("missing")),
+        "a folder that does not exist gets no rule: {ro:?}"
+    );
+    assert_eq!(ro.iter().filter(|d| *d == "/usr/lib").count(), 1, "{ro:?}");
+    let rx = helper_rules(&lab, "--rx");
+    assert!(
+        !rx.iter()
+            .any(|d| d.contains("openssl") || d.ends_with("/lib")),
+        "libraries are never executable: {rx:?}"
+    );
+    assert!(
+        !helper_rules(&lab, "--rw")
+            .iter()
+            .any(|d| d.contains("openssl"))
+    );
+}
+
+#[tokio::test]
+async fn the_homebrew_openssl_config_and_ca_bundle_are_exact_read_only_files() {
+    let lab = lab();
+    let (base, node_bin) = brew_like(&lab);
+    let mut env = lab.env();
+    env.path = std::env::join_paths([&lab.bin, &node_bin]).unwrap();
+    env.jail = jail_on();
+    env.helper = lab.helper("printf '%s\\0' \"$@\" > \"$REC/helper_args\"\nexit 0");
+    run_job(&env, codex_job(&["exec", "-"])).await;
+    let files = helper_rules(&lab, "--ro-file");
+    let cnf = fs::canonicalize(base.join("etc/openssl@3/openssl.cnf")).unwrap();
+    let cert = fs::canonicalize(base.join("etc/ca/cert.pem")).unwrap();
+    assert!(
+        files.contains(&cnf.to_str().unwrap().to_owned()),
+        "{files:?}"
+    );
+    assert!(
+        files.contains(&cert.to_str().unwrap().to_owned()),
+        "the link's target, not the link: {files:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_interpreter_without_a_search_path_gets_no_extra_rules() {
+    let lab = lab();
+    let _ = node_style_codex(&lab);
+    let interp_dir = lab.bin.parent().unwrap().join("nodebin");
+    let mut env = lab.env();
+    env.path = std::env::join_paths([&lab.bin, &interp_dir]).unwrap();
+    env.jail = jail_on();
+    env.helper = lab.helper("printf '%s\\0' \"$@\" > \"$REC/helper_args\"\nexit 0");
+    run_job(&env, codex_job(&["exec", "-"])).await;
+    let ro = helper_rules(&lab, "--ro");
+    assert!(
+        ro.iter().all(|d| d.starts_with("/usr")
+            || d.starts_with("/lib")
+            || d == "/etc"
+            || d.starts_with("/proc")
+            || d.starts_with("/sys")
+            || d.contains("cli-cwd")),
+        "{ro:?}"
+    );
 }

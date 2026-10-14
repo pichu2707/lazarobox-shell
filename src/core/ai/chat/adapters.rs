@@ -19,6 +19,8 @@ pub enum Wire {
     ClaudeStreamJson,
     /// The `--json` output of `codex exec`.
     CodexJsonl,
+    /// The `-o stream-json` output of the gemini CLI.
+    GeminiStreamJson,
 }
 
 /// The engines that can chat. More arrive with their adapters.
@@ -27,6 +29,7 @@ pub enum Adapter {
     Ollama,
     Claude,
     Codex,
+    Gemini,
 }
 
 /// What the runtime runs for one turn.
@@ -57,6 +60,20 @@ pub struct Job {
     pub args: Vec<String>,
     pub stdin: Vec<u8>,
     pub jail: JailPolicy,
+    /// A file the runtime writes into the turn's private temp folder, and
+    /// names to the CLI with a flag appended after `args`.
+    pub tmp_file: Option<TmpFile>,
+}
+
+/// A small fixed file a CLI is told to read. The content is a constant of the
+/// adapter, never user text.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TmpFile {
+    /// The flag that takes the file's path.
+    pub flag: &'static str,
+    /// The file name inside the turn's private temp folder.
+    pub name: &'static str,
+    pub content: &'static str,
 }
 
 /// The adapter of an engine id, if it has one.
@@ -65,6 +82,7 @@ pub fn adapter_for(id: &str) -> Option<Adapter> {
         "ollama" => Some(Adapter::Ollama),
         "claude" => Some(Adapter::Claude),
         "codex" => Some(Adapter::Codex),
+        "gemini" => Some(Adapter::Gemini),
         _ => None,
     }
 }
@@ -94,7 +112,7 @@ impl Adapter {
     /// stdin flips its own answer when it arrives.
     pub fn carries_memory(self) -> bool {
         match self {
-            Adapter::Ollama | Adapter::Claude | Adapter::Codex => true,
+            Adapter::Ollama | Adapter::Claude | Adapter::Codex | Adapter::Gemini => true,
         }
     }
 
@@ -112,6 +130,7 @@ impl Adapter {
             },
             Adapter::Claude => claude_invocation(request),
             Adapter::Codex => codex_invocation(request),
+            Adapter::Gemini => gemini_invocation(request),
         }
     }
 }
@@ -202,6 +221,7 @@ fn claude_invocation(request: &ChatRequest) -> Invocation {
         args,
         stdin: cli_stdin(request).into_bytes(),
         jail: JailPolicy::Layered,
+        tmp_file: None,
     })
 }
 
@@ -267,20 +287,85 @@ fn codex_invocation(request: &ChatRequest) -> Invocation {
     args.extend(model.map(|m| format!("--model={m}")));
     // The prompt is read from stdin.
     args.push("-".to_owned());
-    let conversation = cli_stdin(request);
-    let stdin = if request.system.is_empty() {
-        conversation
-    } else {
-        format!("Instructions:\n{}\n\n{conversation}", request.system)
-    };
     Invocation::Process(Job {
         wire: Wire::CodexJsonl,
         binary: "codex",
         cli: Cli::Codex,
         args,
-        stdin: stdin.into_bytes(),
+        stdin: instructed_stdin(request).into_bytes(),
         jail: JailPolicy::Required,
+        tmp_file: None,
     })
+}
+
+/// The `-p` text of a gemini turn. gemini appends it to what it reads on
+/// stdin, so it is fixed: the conversation is on stdin and never in argv.
+const GEMINI_PROMPT: &str = "Answer the last user message of the conversation given on stdin.";
+
+/// The policy gemini gets: one rule that denies every tool, at the highest
+/// priority the policy tiers document. On gemini 0.63.0 it was verified
+/// empirically that it works (zero tool calls, and `exit_plan_mode` is not
+/// offered to the model); precedence over every other rule is not guaranteed
+/// by the CLI's docs, so the decoder (it ends the turn on any tool event) and
+/// the jail remain the backstops. `plan` mode alone is not enough (the model
+/// can leave it), and neither is `tools.core` (the system settings file is
+/// skipped unless root owns it). `--allowed-mcp-server-names none` would let a
+/// server literally named "none" through; this rule covers it.
+const GEMINI_POLICY: &str = "[[rule]]\ntoolName = \"*\"\ndecision = \"deny\"\npriority = 999\ndenyMessage = \"This chat has no tools.\"\n";
+
+/// The gemini run: the pinned argv (text only, no extension, no MCP server, no
+/// tool), and on stdin the profile prompt in an `Instructions:` block, then the
+/// memory block and the history. gemini has no system-prompt flag, and argv is
+/// visible in `ps`, so nothing but fixed flags and the model goes there. The
+/// runtime appends `--policy <file>` after these flags.
+fn gemini_invocation(request: &ChatRequest) -> Invocation {
+    let model = match cli_model(request.model.as_deref()) {
+        Ok(model) => model,
+        Err(reason) => return Invocation::Refused(reason),
+    };
+    let mut args: Vec<String> = [
+        // The folder is our private empty one, and an untrusted folder makes
+        // the CLI drop out of `plan` mode and refuse to run headless.
+        "--skip-trust",
+        "-p",
+        GEMINI_PROMPT,
+        "-o",
+        "stream-json",
+        "--approval-mode",
+        "plan",
+        "-e",
+        "none",
+        "--allowed-mcp-server-names",
+        "none",
+    ]
+    .map(str::to_owned)
+    .into();
+    args.extend(model.map(|m| format!("--model={m}")));
+    Invocation::Process(Job {
+        wire: Wire::GeminiStreamJson,
+        binary: "gemini",
+        cli: Cli::Gemini,
+        args,
+        stdin: instructed_stdin(request).into_bytes(),
+        jail: JailPolicy::Required,
+        tmp_file: Some(TmpFile {
+            flag: "--policy",
+            name: "gemini-policy.toml",
+            content: GEMINI_POLICY,
+        }),
+    })
+}
+
+/// What a CLI without a system-prompt flag reads on stdin: the profile prompt
+/// in an `Instructions:` block (when there is one), then the memory block and
+/// the conversation.
+fn instructed_stdin(request: &ChatRequest) -> String {
+    let conversation = cli_stdin(request);
+    if request.system.is_empty() {
+        conversation
+    } else {
+        format!("Instructions:\n{}\n\n{conversation}", request.system)
+    }
 }
 
 /// What a CLI reads on stdin: the memory block, then the conversation. One
