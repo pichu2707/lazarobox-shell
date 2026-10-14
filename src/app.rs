@@ -223,6 +223,9 @@ pub enum Effect {
     /// Ring the terminal bell (BEL) once the frame is drawn: a chat answer
     /// finished while the user was not looking at it (chat-notify).
     Bell,
+    /// Turn the host terminal's mouse capture on (`true`) or off. Emitted
+    /// only when the wanted state differs from the one last asked for.
+    MouseCapture(bool),
     Quit,
 }
 
@@ -418,6 +421,8 @@ pub struct App {
     notice: Option<String>,
     dirty: bool,
     screen: ScreenLayout,
+    /// Whether the host terminal was last asked to capture the mouse.
+    mouse_captured: bool,
     /// The live config; while the menu is open it doubles as the draft.
     config: Config,
     menu: Option<MenuState>,
@@ -504,6 +509,7 @@ impl App {
             notice: None,
             dirty: true,
             screen,
+            mouse_captured: false,
             config,
             menu: None,
             launch_cwd: None,
@@ -1159,11 +1165,22 @@ impl App {
         self.apply_config()
     }
 
+    /// Brings the host mouse capture in line with `config.mouse`: one effect
+    /// when it differs from the state last asked for, none otherwise.
+    pub fn sync_mouse(&mut self) -> Option<Effect> {
+        (self.config.mouse != self.mouse_captured).then(|| {
+            self.mouse_captured = self.config.mouse;
+            Effect::MouseCapture(self.mouse_captured)
+        })
+    }
+
     /// Lays the screen out again for the live config, telling only the panes
-    /// whose size changed.
+    /// whose size changed, and brings the mouse capture in line with it.
     fn apply_config(&mut self) -> Vec<Effect> {
         self.refresh_screen();
-        self.relayout()
+        let mut effects = self.relayout();
+        effects.extend(self.sync_mouse());
+        effects
     }
 
     fn on_menu_key(&mut self, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
@@ -5242,6 +5259,7 @@ mod app_tests {
     #[test]
     fn opening_the_menu_enters_menu_without_writing() {
         let mut a = launched(80, 25);
+        a.sync_mouse();
         // The forced bar shrinks the body by one row: exactly one resize.
         let effects = open_menu(&mut a);
         assert_eq!(
@@ -5577,6 +5595,7 @@ mod app_tests {
     #[test]
     fn with_two_panes_the_menu_resizes_each_pane_once_on_open_and_on_close() {
         let mut a = launched(80, 25);
+        a.sync_mouse();
         press(&mut a, "wv");
         let id2 = id2();
         let opened = open_menu(&mut a);
@@ -5600,6 +5619,7 @@ mod app_tests {
     #[test]
     fn with_several_tabs_the_menu_never_resizes_for_the_bar() {
         let mut a = launched(80, 25);
+        a.sync_mouse();
         press(&mut a, "tn");
         let bar = a.screen().tab_bar;
         assert_eq!(open_menu(&mut a), vec![Effect::DetectEngines]);
@@ -5852,6 +5872,7 @@ mod app_tests {
     /// Two tabs, so opening the menu never resizes; `ollama`/`qwen2:7b` saved.
     fn ai_app() -> App {
         let mut a = launched(80, 25).with_ai(ai_of("ollama", "qwen2:7b"));
+        a.sync_mouse();
         press(&mut a, "tn");
         a
     }
@@ -5896,7 +5917,7 @@ mod app_tests {
         let mut a = ai_app();
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
-        for _ in 0..4 {
+        for _ in 0..5 {
             a.update(key('j'));
         }
         let enter = || code(KeyCode::Enter);
@@ -5954,7 +5975,7 @@ mod app_tests {
     /// Opens the picker of `Set all tasks` on `none` and chooses it: the
     /// general assignment goes from `ollama` to unset.
     fn clear_all(a: &mut App) {
-        for _ in 0..2 {
+        for _ in 0..3 {
             a.update(key('j'));
         }
         a.update(code(KeyCode::Enter));
@@ -6246,7 +6267,7 @@ mod app_tests {
 
     /// Selection on the first AI task row.
     fn to_task_row(a: &mut App) {
-        for _ in 0..4 {
+        for _ in 0..5 {
             a.update(key('j'));
         }
     }
@@ -6518,6 +6539,9 @@ mod app_tests {
 
     /// The mouse wheel over a pane (pane-scroll S2).
     mod wheel;
+
+    /// The mouse capture lifecycle (pane-scroll S3).
+    mod mouse_capture;
 
     /// History in the chat pane: list, saving, resume, delete (ai-chat C9).
     mod chat_history;

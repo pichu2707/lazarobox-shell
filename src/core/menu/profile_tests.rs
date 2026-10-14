@@ -69,7 +69,7 @@ fn the_profile_row_follows_the_task_rows() {
 #[test]
 fn profile_sits_between_summarize_and_context_in_navigation() {
     let mut m = menu(None, None, Some(machine()));
-    for _ in 0..8 {
+    for _ in 0..9 {
         press(&mut m, 'j');
     }
     assert_eq!(selected_label(&m), "Profile", "after summarize");

@@ -1,8 +1,10 @@
 //! The impure shell around `App`: terminal, PTY, timers and the event loop.
 //!
 //! Redraws are driven by a dirty flag and a 16 ms tick, so output floods are
-//! capped at about 60 fps. Mouse capture is never enabled, so the host
-//! terminal keeps its native selection.
+//! capped at about 60 fps. Mouse capture reports only the wheel (button
+//! reporting with SGR encoding, no motion modes) and is on by default; a
+//! terminal's own selection then needs Shift. `mouse = false` never enables it.
+//! `restore_to` always disables it, so every exit path leaves the terminal clean.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -38,7 +40,7 @@ use ratatui::{
         cursor::SetCursorStyle,
         event::{
             DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
-            Event, EventStream,
+            Event, EventStream, MouseEventKind,
         },
         execute, terminal,
     },
@@ -60,6 +62,7 @@ use crate::{
         },
         config::{Config, config_path},
         layout::PaneId,
+        mouse::{CAPTURE_OFF, CAPTURE_ON},
         pane::{CursorKind, CursorShape},
         pty::{PtyEvent, PtyHandle, PtySink, SpawnSpec, portable::spawn_portable},
     },
@@ -125,8 +128,12 @@ impl Shutdown {
 
 /// What runs before the UI starts.
 fn startup_effects(app: &mut App) -> Vec<Effect> {
+    // The capture bytes wait in `host_out` until `run` has entered the
+    // terminal modes; `mouse = false` yields no effect at all.
+    let mut effects: Vec<Effect> = app.sync_mouse().into_iter().collect();
     // Startup trigger: the first result arrives on `ai_rx` once the loop runs.
-    app.request_detection()
+    effects.extend(app.request_detection());
+    effects
 }
 
 /// Runs the terminal pane until the child exits or the user quits.
@@ -197,7 +204,11 @@ pub async fn run() -> io::Result<()> {
 
     let mut terminal = ratatui::init();
     install_panic_hook();
-    let result = match enter_modes(&mut stdout()) {
+    // The pending start-up capture leaves right after the modes, before the
+    // first frame.
+    let entered =
+        enter_modes(&mut stdout()).and_then(|()| flush_host(&mut stdout(), &mut panes.host_out));
+    let result = match entered {
         Ok(()) => event_loop(&mut terminal, &mut panes, inbox, shutdown, app).await,
         Err(error) => Err(error),
     };
@@ -709,6 +720,12 @@ impl Panes {
                 // Only flagged here: the BEL joins the host bytes after the
                 // draw (see `stage_bell`), never in the middle of a frame.
                 Effect::Bell => self.bell = true,
+                // Staged like the other host bytes: written after the draw by
+                // `flush_host`, never in the middle of a frame.
+                Effect::MouseCapture(on) => {
+                    self.host_out
+                        .extend_from_slice(if on { CAPTURE_ON } else { CAPTURE_OFF });
+                }
                 Effect::Quit => outcome = Outcome::Quit,
             }
         }
@@ -801,6 +818,16 @@ fn to_app_event(event: Event) -> Option<AppEvent> {
         // then keeps the window as focused.
         Event::FocusGained => Some(AppEvent::WindowFocus(true)),
         Event::FocusLost => Some(AppEvent::WindowFocus(false)),
+        // Only the vertical wheel: clicks, drags, motion and the horizontal
+        // wheel are not the app's.
+        Event::Mouse(mouse)
+            if matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            ) =>
+        {
+            Some(AppEvent::Mouse(mouse))
+        }
         _ => None,
     }
 }
@@ -842,14 +869,18 @@ fn flush_host<W: Write>(out: &mut W, pending: &mut Vec<u8>) -> io::Result<()> {
 }
 
 /// Undoes what the runtime changed in the host terminal, minus raw mode and
-/// the alternate screen, which `ratatui::restore` handles.
+/// the alternate screen, which `ratatui::restore` handles. The mouse capture
+/// is disabled whether or not it was on: the sequence is harmless when the
+/// capture is off, and the panic hook cannot know the state.
 fn restore_to<W: Write>(out: &mut W) -> io::Result<()> {
-    execute!(
+    let mouse = out.write_all(CAPTURE_OFF);
+    let rest = execute!(
         out,
         SetCursorStyle::DefaultUserShape,
         DisableBracketedPaste,
         DisableFocusChange
-    )
+    );
+    mouse.and(rest)
 }
 
 /// Enters the terminal modes the runtime needs on top of raw mode: bracketed
@@ -875,7 +906,7 @@ fn should_restore() -> bool {
     !chat::in_adapter_poll() && !on_store_thread && !on_prepare_thread
 }
 
-/// Restores the cursor, bracketed paste and focus reporting before the previous hook (which
+/// Restores the cursor, bracketed paste, focus reporting and mouse capture before the previous hook (which
 /// `ratatui::init` set up to leave raw mode and the alternate screen) runs.
 /// Panics inside a chat adapter are caught elsewhere and skip all of it,
 /// including the previous hook's output, which would scribble over the TUI.
@@ -893,8 +924,8 @@ fn install_panic_hook() {
 #[cfg(test)]
 mod tests {
     use ratatui::crossterm::event::{
-        Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseEvent,
-        MouseEventKind,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton,
+        MouseEvent, MouseEventKind,
     };
 
     use super::*;
@@ -908,7 +939,10 @@ mod tests {
     #[test]
     fn startup_requests_exactly_one_engine_detection() {
         let mut app = App::new(80, 24);
-        assert_eq!(startup_effects(&mut app), vec![Effect::DetectEngines]);
+        assert_eq!(
+            startup_effects(&mut app),
+            vec![Effect::MouseCapture(true), Effect::DetectEngines]
+        );
         // Single flight: a second request while one is pending is empty.
         assert_eq!(app.request_detection(), Vec::new());
     }
@@ -1161,15 +1195,50 @@ mod tests {
         );
     }
 
+    fn mouse(kind: MouseEventKind) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: 4,
+            row: 7,
+            modifiers: KeyModifiers::SHIFT,
+        }
+    }
+
+    // Spec (mouse-input): only the vertical wheel reaches the app.
+    #[test]
+    fn the_vertical_wheel_is_forwarded_whole() {
+        for kind in [MouseEventKind::ScrollUp, MouseEventKind::ScrollDown] {
+            let event = mouse(kind);
+            assert_eq!(
+                to_app_event(Event::Mouse(event)),
+                Some(AppEvent::Mouse(event)),
+                "{kind:?}"
+            );
+        }
+    }
+
+    // Spec (mouse-input): clicks, drags, motion and the horizontal wheel are dropped.
+    #[test]
+    fn other_mouse_events_are_dropped() {
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Down(MouseButton::Right),
+            MouseEventKind::Up(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+            MouseEventKind::Moved,
+            MouseEventKind::ScrollLeft,
+            MouseEventKind::ScrollRight,
+        ] {
+            assert_eq!(to_app_event(Event::Mouse(mouse(kind))), None, "{kind:?}");
+        }
+    }
+
     #[test]
     fn other_crossterm_events_are_dropped() {
-        let mouse = MouseEvent {
-            kind: MouseEventKind::Moved,
-            column: 0,
-            row: 0,
-            modifiers: KeyModifiers::NONE,
-        };
-        assert_eq!(to_app_event(Event::Mouse(mouse)), None);
+        assert_eq!(
+            to_app_event(Event::Mouse(mouse(MouseEventKind::Moved))),
+            None
+        );
     }
 
     // --- Panes registry, against a fake SpawnFn ---
@@ -1311,6 +1380,81 @@ mod tests {
             let log = log.lock().unwrap();
             assert!(log.writes.is_empty() && log.resizes.is_empty());
         }
+    }
+
+    // Spec (mouse-input): the capture sequences are exact, nothing else is enabled.
+    #[test]
+    fn mouse_capture_writes_exactly_the_wheel_sequences_to_the_host() {
+        let (mut panes, _rx, rec) = fake_panes(None);
+        spawn_two(&mut panes);
+        let (outcome, feedback) = panes.apply(vec![Effect::MouseCapture(true)]);
+        assert_eq!(outcome, Outcome::Continue);
+        assert!(feedback.is_empty());
+        assert_eq!(panes.host_out, b"\x1b[?1000h\x1b[?1006h".to_vec());
+        panes.host_out.clear();
+        panes.apply(vec![Effect::MouseCapture(false)]);
+        assert_eq!(panes.host_out, b"\x1b[?1006l\x1b[?1000l".to_vec());
+        for log in &rec.borrow().logs {
+            let log = log.lock().unwrap();
+            assert!(log.writes.is_empty() && log.resizes.is_empty());
+        }
+    }
+
+    #[test]
+    fn mouse_capture_never_enables_motion_or_urxvt_reporting() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        panes.apply(vec![
+            Effect::MouseCapture(true),
+            Effect::MouseCapture(false),
+        ]);
+        let text = String::from_utf8(panes.host_out).unwrap();
+        for forbidden in ["?1002", "?1003", "?1015"] {
+            assert!(!text.contains(forbidden), "{text:?}");
+        }
+    }
+
+    // Spec (terminal-session): Mouse disabled during restore.
+    #[test]
+    fn restore_always_disables_the_mouse_capture() {
+        let mut out = Vec::new();
+        restore_to(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[?1006l\x1b[?1000l"), "{text:?}");
+    }
+
+    // The panic hook restores through `restore_to`, so one check covers both exits.
+    #[test]
+    fn restore_writes_the_mouse_disable_in_one_piece_before_it_ends() {
+        let mut out = Vec::new();
+        restore_to(&mut out).unwrap();
+        assert!(
+            out.windows(CAPTURE_OFF.len()).any(|w| w == CAPTURE_OFF),
+            "{out:?}"
+        );
+        assert_eq!(CAPTURE_OFF, b"\x1b[?1006l\x1b[?1000l");
+    }
+
+    // A run with `mouse = false` never writes a capture sequence.
+    #[test]
+    fn a_config_with_the_mouse_off_starts_without_any_mouse_bytes() {
+        let mut app = App::new(80, 24).with_config(&Config {
+            mouse: false,
+            ..Config::default()
+        });
+        let effects = startup_effects(&mut app);
+        assert_eq!(effects, vec![Effect::DetectEngines]);
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        panes.apply(effects);
+        assert!(panes.host_out.is_empty());
+    }
+
+    // The start-up capture waits in the host bytes until the modes are entered.
+    #[test]
+    fn the_startup_capture_is_pending_host_bytes() {
+        let mut app = App::new(80, 24);
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        panes.apply(startup_effects(&mut app));
+        assert_eq!(panes.host_out, b"\x1b[?1000h\x1b[?1006h".to_vec());
     }
 
     // chat-notify: Bell is staged for the flush, never written at once.
