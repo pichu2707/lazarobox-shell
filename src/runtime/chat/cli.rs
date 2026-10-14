@@ -19,7 +19,7 @@
 use std::{
     ffi::OsString,
     fs,
-    io::{self, Read},
+    io::{self, Read, Seek, SeekFrom},
     os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
@@ -46,7 +46,7 @@ use crate::{
         },
         jail::{
             CliLayout, ELF_HEAD_BYTES, Interpreter, JailArgs, JailPolicy, JailSupport, Launch,
-            elf_loader, jail_spec_with, launch, parse_shebang,
+            elf_interp_at, interp_path, jail_spec_with, launch, parse_shebang,
         },
     },
     runtime::{
@@ -261,6 +261,32 @@ fn read_head(path: &Path, max: usize) -> Option<Vec<u8>> {
     Some(head)
 }
 
+/// The interpreter a script asks for by bare name (`#!/usr/bin/env node`): the
+/// one installed next to the CLI as it was found (npm, nvm, volta and the like
+/// put `node` beside the global packages' `bin` links), else the first on
+/// `PATH`. The first on `PATH` can be a different install whose libraries the
+/// jail does not grant.
+fn interpreter_for(found: &Path, name: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    found
+        .parent()
+        .and_then(|dir| find_on_path(name, dir.as_os_str()))
+        .or_else(|| find_on_path(name, path))
+}
+
+/// The ELF loader (`PT_INTERP`) of the executable at `path`. The program
+/// headers are in the first bytes of the file; the string they point to can
+/// be anywhere, so it is read from where they say. Only these two small reads
+/// happen: the file is an executable, not a credential.
+fn read_loader(path: &Path) -> Option<PathBuf> {
+    let head = read_head(path, ELF_HEAD_BYTES)?;
+    let (offset, size) = elf_interp_at(&head)?;
+    let mut file = fs::File::open(path).ok()?;
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let mut raw = vec![0u8; size];
+    file.read_exact(&mut raw).ok()?;
+    interp_path(&raw)
+}
+
 /// The helper command line that runs `job` jailed, or `None` when the layout
 /// cannot be jailed (a path the rules refuse, a CLI that cannot be resolved).
 fn jailed(env: &CliEnv, job: &Job, binary: &Path, dirs: &Dirs) -> Option<(PathBuf, Vec<OsString>)> {
@@ -269,12 +295,13 @@ fn jailed(env: &CliEnv, job: &Job, binary: &Path, dirs: &Dirs) -> Option<(PathBu
     let head = read_head(&bin, ELF_HEAD_BYTES)?;
     let interpreter = match parse_shebang(&head) {
         Some(Interpreter::Path(path)) => Some(resolve(&path)?),
-        Some(Interpreter::OnPath(name)) => Some(resolve(&find_on_path(&name, &env.path)?)?),
+        Some(Interpreter::OnPath(name)) => {
+            Some(resolve(&interpreter_for(binary, &name, &env.path)?)?)
+        }
         None => None,
     };
     // The file the kernel starts is the interpreter of a script, else the CLI.
-    let starter = read_head(interpreter.as_deref().unwrap_or(&bin), ELF_HEAD_BYTES)?;
-    let loaders = elf_loader(&starter)
+    let loaders = read_loader(interpreter.as_deref().unwrap_or(&bin))
         .and_then(|loader| resolve(&loader))
         .into_iter()
         .collect();

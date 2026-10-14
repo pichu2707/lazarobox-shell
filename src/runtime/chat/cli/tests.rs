@@ -954,3 +954,89 @@ fn without_our_own_comm_nothing_is_swept_and_our_own_pid_is_always_alive() {
     assert!(!dead.exists(), "a foreign pid is swept");
     assert!(mine.exists(), "our own pid is never swept");
 }
+
+/// A minimal little-endian ELF64 file whose `PT_INTERP` string is `interp`,
+/// stored at file offset `at`.
+fn elf_with_interp(path: &Path, interp: &[u8], at: usize) {
+    let mut img = vec![0u8; at + interp.len()];
+    img[..4].copy_from_slice(b"\x7fELF");
+    img[4] = 2;
+    img[5] = 1;
+    img[0x20..0x28].copy_from_slice(&64u64.to_le_bytes());
+    img[0x36..0x38].copy_from_slice(&56u16.to_le_bytes());
+    img[0x38..0x3a].copy_from_slice(&1u16.to_le_bytes());
+    img[64..68].copy_from_slice(&3u32.to_le_bytes());
+    img[72..80].copy_from_slice(&(at as u64).to_le_bytes());
+    img[96..104].copy_from_slice(&(interp.len() as u64).to_le_bytes());
+    img[at..].copy_from_slice(interp);
+    fs::write(path, img).unwrap();
+}
+
+#[test]
+fn the_loader_is_found_even_when_its_string_is_far_from_the_start_of_the_file() {
+    // Homebrew's node keeps `.interp` at 0x8d98, past the first 4 KiB.
+    let lab = lab();
+    let near = lab.bin.join("near");
+    let far = lab.bin.join("far");
+    elf_with_interp(&near, b"/lib64/near-ld.so\0", 300);
+    elf_with_interp(&far, b"/home/linuxbrew/.linuxbrew/lib/ld.so\0", 0x8d98);
+    assert_eq!(read_loader(&near), Some(PathBuf::from("/lib64/near-ld.so")));
+    assert_eq!(
+        read_loader(&far),
+        Some(PathBuf::from("/home/linuxbrew/.linuxbrew/lib/ld.so"))
+    );
+}
+
+#[test]
+fn no_loader_for_a_script_a_missing_file_or_a_string_past_the_end() {
+    let lab = lab();
+    let text = lab.bin.join("text");
+    fs::write(&text, "#!/bin/sh\necho hi\n").unwrap();
+    assert_eq!(read_loader(&text), None);
+    assert_eq!(read_loader(&lab.bin.join("missing")), None);
+    let cut = lab.bin.join("cut");
+    elf_with_interp(&cut, b"/lib64/ld.so\0", 0x9000);
+    let file = fs::OpenOptions::new().write(true).open(&cut).unwrap();
+    file.set_len(0x9000 + 3).unwrap();
+    assert_eq!(read_loader(&cut), None, "a cut string is not trusted");
+}
+
+#[test]
+fn the_loader_of_a_real_dynamic_binary_is_read() {
+    // The test binary itself is a dynamic executable.
+    let me = std::env::current_exe().unwrap();
+    let loader = read_loader(&me).expect("a dynamic executable has a loader");
+    assert!(loader.is_absolute(), "{loader:?}");
+}
+
+#[tokio::test]
+async fn the_interpreter_installed_next_to_the_cli_wins_over_the_first_one_on_path() {
+    // An npm install puts `node` and the CLI in the same `bin` folder, but the
+    // first `node` on PATH can be another one (Homebrew's, whose libraries the
+    // jail does not grant). The sibling is the one that came with the CLI.
+    let lab = lab();
+    let elsewhere = lab.bin.parent().unwrap().join("first-on-path");
+    fs::create_dir_all(&elsewhere).unwrap();
+    script(&elsewhere.join("fakenode"), &lab.rec, "exit 97");
+    script(&lab.bin.join("fakenode"), &lab.rec, "exec /bin/sh \"$@\"");
+    let cli = lab.bin.join("codex");
+    script(&cli, &lab.rec, CODEX_ANSWER);
+    let text =
+        fs::read_to_string(&cli)
+            .unwrap()
+            .replacen("#!/bin/sh", "#!/usr/bin/env fakenode", 1);
+    fs::write(&cli, text).unwrap();
+
+    let mut env = lab.env();
+    env.path = std::env::join_paths([&elsewhere, &lab.bin]).unwrap();
+    env.jail = jail_on();
+    env.helper = lab.helper(PASS);
+    let events = run_job(&env, codex_job(&["exec", "-"])).await;
+    assert_eq!(
+        events.last(),
+        Some(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+    let program = helper_program(&lab);
+    assert_eq!(program[0], lab.bin.join("fakenode").to_str().unwrap());
+}

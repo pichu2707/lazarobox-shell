@@ -160,11 +160,16 @@ fn le_u64(bytes: &[u8], at: usize) -> Option<u64> {
     ))
 }
 
-/// The dynamic loader a little-endian ELF64 executable asks for (its
-/// `PT_INTERP`). The kernel opens it with execute rights when the program
-/// starts, so it is the one extra file a dynamic program needs to run at all.
-/// `None` for static binaries, scripts and anything malformed.
-pub fn elf_loader(head: &[u8]) -> Option<PathBuf> {
+/// The longest loader path read (`PATH_MAX`).
+pub const INTERP_MAX: usize = 4096;
+
+/// Where the `PT_INTERP` string of a little-endian ELF64 executable lives:
+/// its file offset and size. The program headers are at the very start of
+/// the file, so `head` (the first [`ELF_HEAD_BYTES`]) is enough to find it;
+/// the string itself can be anywhere (Homebrew moves it to 0x8d98 in node),
+/// so the caller reads it from the file. `None` for a static binary, a script
+/// and anything malformed or with a size no path can have.
+pub fn elf_interp_at(head: &[u8]) -> Option<(u64, usize)> {
     const ELF64: &[u8] = b"\x7fELF\x02\x01";
     if !head.starts_with(ELF64) {
         return None;
@@ -180,14 +185,29 @@ pub fn elf_loader(head: &[u8]) -> Option<PathBuf> {
         if le_u32(head, at)? != PT_INTERP {
             continue;
         }
-        let start = usize::try_from(le_u64(head, at + 8)?).ok()?;
+        let offset = le_u64(head, at + 8)?;
         let size = usize::try_from(le_u64(head, at + 32)?).ok()?;
-        let raw = head.get(start..start.checked_add(size)?)?;
-        let name = std::str::from_utf8(raw.split(|b| *b == 0).next()?).ok()?;
-        let path = Path::new(name);
-        return path.is_absolute().then(|| path.to_path_buf());
+        return (1..=INTERP_MAX).contains(&size).then_some((offset, size));
     }
     None
+}
+
+/// The loader a `PT_INTERP` string names: absolute UTF-8, up to its NUL.
+pub fn interp_path(raw: &[u8]) -> Option<PathBuf> {
+    let name = std::str::from_utf8(raw.split(|b| *b == 0).next()?).ok()?;
+    let path = Path::new(name);
+    path.is_absolute().then(|| path.to_path_buf())
+}
+
+/// The dynamic loader a little-endian ELF64 executable asks for (its
+/// `PT_INTERP`), when the string lies inside `head`. The kernel opens it with
+/// execute rights when the program starts, so it is the one extra file a
+/// dynamic program needs to run at all. `None` for static binaries, scripts
+/// and anything malformed.
+pub fn elf_loader(head: &[u8]) -> Option<PathBuf> {
+    let (offset, size) = elf_interp_at(head)?;
+    let start = usize::try_from(offset).ok()?;
+    interp_path(head.get(start..start.checked_add(size)?)?)
 }
 
 /// The directory that holds a CLI's own code: the `node_modules` package

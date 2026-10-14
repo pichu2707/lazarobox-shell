@@ -541,6 +541,36 @@ fn elf_loader_is_the_pt_interp_path() {
 }
 
 #[test]
+fn the_interp_string_can_lie_far_beyond_the_head_and_is_still_located() {
+    // Homebrew rewrites the loader path with patchelf, which moves `.interp`
+    // to 0x8d98 in node: the program headers are at the start, the string is
+    // not.
+    let img = elf64(&[(1, 0, 0), (3, 0x8d98, 37)], &[]);
+    assert_eq!(elf_interp_at(&img), Some((0x8d98, 37)));
+    // Not an ELF64, or no PT_INTERP, or a size no path can have.
+    assert_eq!(elf_interp_at(b"#!/bin/sh\n"), None);
+    assert_eq!(elf_interp_at(&elf64(&[(1, 0, 0)], &[])), None);
+    assert_eq!(elf_interp_at(&elf64(&[(3, 300, 4097)], &[])), None);
+    assert_eq!(elf_interp_at(&elf64(&[(3, 300, 0)], &[])), None);
+    // Empty and truncated headers.
+    assert_eq!(elf_interp_at(b""), None);
+    assert_eq!(elf_interp_at(&elf64(&[(3, 300, 6)], &[])[..70]), None);
+}
+
+#[test]
+fn an_interp_string_is_an_absolute_utf8_path_up_to_its_nul() {
+    assert_eq!(
+        interp_path(b"/lib64/ld-linux-x86-64.so.2\0"),
+        Some(p("/lib64/ld-linux-x86-64.so.2"))
+    );
+    assert_eq!(interp_path(b"/lib/ld.so"), Some(p("/lib/ld.so")));
+    assert_eq!(interp_path(b"ld.so\0"), None);
+    assert_eq!(interp_path(b"/lib/\xff\0"), None);
+    assert_eq!(interp_path(b"\0"), None);
+    assert_eq!(interp_path(b""), None);
+}
+
+#[test]
 fn elf_loader_is_none_when_there_is_nothing_clean_to_read() {
     let name = b"/lib64/ld.so\0";
     // Static binary: no PT_INTERP.
