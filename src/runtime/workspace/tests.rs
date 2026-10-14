@@ -277,3 +277,111 @@ fn the_local_date_is_four_two_two_digits() {
     assert!(parts.iter().all(|p| p.bytes().all(|b| b.is_ascii_digit())));
     assert!(parts[0] >= "2025", "{date}");
 }
+
+// Chat history: the project tag of a conversation (chat-history, Project tag).
+fn tag_in(cwd: &Path) -> Option<String> {
+    project_tag(cwd)
+}
+
+#[test]
+fn the_tag_of_a_git_repository_is_the_repo_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = repo(tmp.path(), "proj", "ref: refs/heads/main\n");
+    let deep = dir.join("src/deep");
+    fs::create_dir_all(&deep).unwrap();
+    assert_eq!(tag_in(&deep).as_deref(), Some("proj"));
+    assert_eq!(tag_in(&dir).as_deref(), Some("proj"));
+}
+
+#[test]
+fn a_worktree_file_without_gitdir_gives_its_own_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let wt = tmp.path().join("wt");
+    fs::create_dir_all(wt.join("a")).unwrap();
+    fs::write(wt.join(".git"), "nothing useful\n").unwrap();
+    assert_eq!(tag_in(&wt.join("a")).as_deref(), Some("wt"));
+}
+
+// R13: the worktrees of one project share a tag.
+#[test]
+fn a_linked_worktree_gives_the_main_repository() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = repo(tmp.path(), "proj", "ref: refs/heads/main\n");
+    let wt = tmp.path().join("wt");
+    fs::create_dir_all(wt.join("a")).unwrap();
+    let gitdir = main.join(".git/worktrees/wt");
+    fs::create_dir_all(&gitdir).unwrap();
+    fs::write(wt.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+    assert_eq!(tag_in(&wt.join("a")).as_deref(), Some("proj"));
+}
+
+#[test]
+fn outside_a_repository_the_tag_is_the_cwd_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notes = tmp.path().join("notes");
+    fs::create_dir_all(&notes).unwrap();
+    assert_eq!(tag_in(&notes).as_deref(), Some("notes"));
+}
+
+#[test]
+fn an_unknown_or_vanished_cwd_has_no_tag() {
+    let tmp = tempfile::tempdir().unwrap();
+    assert_eq!(tag_in(&tmp.path().join("gone")), None);
+    // A file is not a directory either.
+    let file = tmp.path().join("file");
+    fs::write(&file, "x").unwrap();
+    assert_eq!(tag_in(&file), None);
+}
+
+#[test]
+fn the_tag_walk_reaches_64_levels_and_no_further() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = repo(tmp.path(), "p", "ref: refs/heads/main\n");
+    let mut deep = dir.clone();
+    for _ in 0..63 {
+        deep.push("d");
+    }
+    fs::create_dir_all(&deep).unwrap();
+    assert_eq!(tag_in(&deep).as_deref(), Some("p"));
+    deep.push("d");
+    fs::create_dir_all(&deep).unwrap();
+    // Out of reach: the repository is not found, so the cwd names the tag.
+    assert_eq!(tag_in(&deep).as_deref(), Some("d"));
+}
+
+#[test]
+fn a_symlinked_dot_git_is_not_a_marker_for_the_tag() {
+    let tmp = tempfile::tempdir().unwrap();
+    let outer = repo(tmp.path(), "outer", "ref: refs/heads/main\n");
+    let inner = outer.join("inner");
+    fs::create_dir_all(&inner).unwrap();
+    std::os::unix::fs::symlink(outer.join(".git"), inner.join(".git")).unwrap();
+    assert_eq!(tag_in(&inner).as_deref(), Some("outer"));
+}
+
+#[test]
+fn a_long_name_with_a_bidi_override_is_cleaned() {
+    let tmp = tempfile::tempdir().unwrap();
+    let name = format!("a\u{202e}{}", "b".repeat(99));
+    let dir = tmp.path().join(&name);
+    fs::create_dir_all(&dir).unwrap();
+    let tag = tag_in(&dir).unwrap();
+    assert_eq!(tag.chars().count(), 64);
+    assert!(tag.starts_with("ab"), "{tag}");
+    assert!(!tag.contains('\u{202e}'));
+}
+
+#[test]
+fn the_root_is_named_slash() {
+    assert_eq!(tag_in(Path::new("/")).as_deref(), Some("/"));
+}
+
+// Spec: No git process. The walk only reads the filesystem; nothing in this
+// module can start a process.
+#[test]
+fn the_module_never_starts_a_process() {
+    let source = include_str!("../workspace.rs");
+    let code = source.split("#[cfg(test)]").next().unwrap();
+    assert!(!code.contains("Command"), "no process is spawned");
+    assert!(!code.contains("process::"), "no process API is used");
+}

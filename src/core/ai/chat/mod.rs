@@ -15,6 +15,7 @@ pub mod store;
 pub mod stream;
 pub mod streams;
 pub mod summary;
+pub mod tags;
 pub mod transcript;
 pub mod workspace;
 pub mod wrap;
