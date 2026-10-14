@@ -299,11 +299,38 @@ fn a_package_outside_home_is_handled_by_its_own_prefix() {
     assert_eq!(home, vec![Path::new("/home/u/.gemini")]);
 }
 
+/// The system folders a jailed CLI may read: libraries and data, never the
+/// folders that hold programs (ro-system-dirs narrowing, decided in PR17).
+const SYSTEM_RO: [&str; 5] = ["/usr/lib", "/usr/share", "/lib", "/lib64", "/etc"];
+
+#[test]
+fn the_folders_that_hold_programs_are_not_readable_so_the_loader_cannot_run_them() {
+    // Landlock does not gate `mmap(PROT_EXEC)`, so a granted ELF loader can
+    // run `ld.so /usr/bin/curl` if it can read the program. Not readable, not
+    // runnable that way.
+    for l in [nvm_codex(), native_claude(), brew_gemini()] {
+        let spec = jail_spec(&l).unwrap();
+        for dir in [
+            "/usr",
+            "/usr/bin",
+            "/usr/sbin",
+            "/usr/local",
+            "/bin",
+            "/sbin",
+            "/opt",
+        ] {
+            assert!(!spec.ro.contains(&p(dir)), "{dir} must not be readable");
+            assert!(!spec.ro_files.contains(&p(dir)), "{dir}");
+        }
+        assert_eq!(spec.ro[..5], SYSTEM_RO.map(p));
+    }
+}
+
 #[test]
 fn system_dirs_are_read_only_and_never_executable() {
     for l in [nvm_codex(), native_claude(), brew_gemini()] {
         let spec = jail_spec(&l).unwrap();
-        for dir in ["/usr", "/bin", "/lib", "/lib64", "/etc"] {
+        for dir in SYSTEM_RO {
             assert!(spec.ro.contains(&p(dir)), "{dir} not read-only");
             for other in [&spec.rx, &spec.rw] {
                 assert!(!other.contains(&p(dir)), "{dir} must be read-only only");
@@ -417,7 +444,7 @@ fn retain_existing_drops_missing_paths_only() {
         .retain_existing(|path| path != Path::new("/home/u/.codex") && path != Path::new("/lib64"));
     assert!(!kept.rw.contains(&p("/home/u/.codex")));
     assert!(!kept.ro.contains(&p("/lib64")));
-    assert!(kept.ro.contains(&p("/usr")));
+    assert!(kept.ro.contains(&p("/usr/lib")));
     assert_eq!(kept.rx, spec.rx);
     assert_eq!(kept.rw.len(), spec.rw.len() - 1);
     let none = spec.retain_existing(|_| false);

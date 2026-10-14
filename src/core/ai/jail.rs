@@ -393,9 +393,15 @@ pub fn jail_spec_with(
     {
         push_unique(&mut spec.rx, path.clone());
     }
+    // Libraries and data only. The folders that hold programs (`/usr/bin`,
+    // `/usr/sbin`, `/bin`) stay unreadable: Landlock does not gate
+    // `mmap(PROT_EXEC)`, so the ELF loader that some CLI needs to start could
+    // otherwise run `ld.so /usr/bin/curl`. `/bin` is a link to `/usr/bin` on
+    // most systems, which is why it is not listed. `/lib` and `/lib64` are
+    // libraries (and links to `/usr/lib`).
     for dir in [
-        "/usr",
-        "/bin",
+        "/usr/lib",
+        "/usr/share",
         "/lib",
         "/lib64",
         "/etc",

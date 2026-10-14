@@ -34,9 +34,10 @@ fn canon(path: &str) -> PathBuf {
 }
 
 /// The system folders a dynamically linked program needs to load: read-only,
-/// never executable (R29).
+/// never executable (R29), and none of the folders that hold programs (the
+/// same list `jail_spec` grants).
 fn system_ro() -> Vec<PathBuf> {
-    ["/usr", "/bin", "/lib", "/lib64", "/etc"]
+    ["/usr/lib", "/usr/share", "/lib", "/lib64", "/etc"]
         .into_iter()
         .map(PathBuf::from)
         .filter(|p| p.exists())
@@ -374,4 +375,40 @@ fn probe_abi() -> u32 {
         JailSupport::Available { abi, .. } => abi,
         JailSupport::Unavailable(_) => 0,
     }
+}
+
+#[test]
+fn the_granted_loader_cannot_run_a_program_whose_folder_is_not_readable() {
+    if !jail_available() {
+        return;
+    }
+    // Landlock does not gate `mmap(PROT_EXEC)`: a program the process may READ
+    // can be run by the ELF loader it was granted, although a direct execve of
+    // it is denied. PR17 narrowed the read-only system folders to libraries
+    // and data so that `/usr/bin` is not readable.
+    let probe = canon("/usr/bin/true");
+    let loader = loader_of(&probe).expect("true is dynamically linked");
+    let through_loader = |ro: Vec<PathBuf>| {
+        run(&JailArgs {
+            min_abi: None,
+            spec: JailSpec {
+                ro,
+                rx: vec![loader.clone()],
+                ..JailSpec::default()
+            },
+            program: loader.clone(),
+            argv: vec![probe.clone().into_os_string()],
+        })
+    };
+
+    let out = through_loader(system_ro());
+    assert!(!out.status.success(), "the trampoline ran a program");
+    assert!(denied(&out), "{}", stderr(&out));
+
+    // Control: with `/usr` readable the same command runs, so the narrowing is
+    // what closes it.
+    let mut wide = system_ro();
+    wide.push(PathBuf::from("/usr"));
+    let out = through_loader(wide);
+    assert!(out.status.success(), "{}", stderr(&out));
 }
