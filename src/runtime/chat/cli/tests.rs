@@ -1040,3 +1040,67 @@ async fn the_interpreter_installed_next_to_the_cli_wins_over_the_first_one_on_pa
     let program = helper_program(&lab);
     assert_eq!(program[0], lab.bin.join("fakenode").to_str().unwrap());
 }
+
+/// A fake `codex` that replays `lines` on stdout and then runs `tail`.
+fn fake_codex(lab: &Lab, lines: &[&str], tail: &str) {
+    fs::write(lab.rec.join("lines"), lines.join("\n") + "\n").unwrap();
+    let body = format!("cat > \"$REC/stdin\"\ncat \"$REC/lines\"\n{tail}");
+    script(&lab.bin.join("codex"), &lab.rec, &body);
+}
+
+#[tokio::test]
+async fn a_failed_codex_turn_shows_the_api_message_even_though_the_process_exits_1() {
+    let lab = lab();
+    fake_codex(
+        &lab,
+        &[
+            r#"{"type":"thread.started","thread_id":"t"}"#,
+            r#"{"type":"turn.started"}"#,
+            r#"{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"status\":400,\"error\":{\"message\":\"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.\"}}"}}"#,
+        ],
+        "exit 1",
+    );
+    let mut env = lab.env();
+    env.jail = jail_on();
+    env.helper = lab.helper(PASS);
+    let events = run_job(&env, codex_job(&["exec", "-"])).await;
+    assert_eq!(
+        events,
+        [StreamEvent::Error(ChatError::Failed(
+            "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.".into()
+        ))]
+    );
+}
+
+#[tokio::test]
+async fn a_tool_call_ends_the_codex_turn_and_stops_the_process() {
+    let lab = lab();
+    fake_codex(
+        &lab,
+        &[
+            r#"{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"id","status":"in_progress"}}"#,
+        ],
+        "echo $$ > \"$REC/leader\"\nsleep 300",
+    );
+    let mut env = lab.env();
+    env.jail = jail_on();
+    env.helper = lab.helper(PASS);
+    let events = run_job(&env, codex_job(&["exec", "-"])).await;
+    assert_eq!(
+        events,
+        [StreamEvent::Error(ChatError::Failed(
+            "codex tried to use a tool".into()
+        ))]
+    );
+    assert!(wait_gone(pid_of(&lab, "leader"), Duration::from_secs(4)).await);
+}
+
+#[tokio::test]
+async fn codex_without_a_jail_spawns_nothing() {
+    let lab = lab();
+    fake_codex(&lab, &[], "touch \"$REC/ran\"");
+    let events = run_job(&lab.env(), codex_job(&["exec", "-"])).await;
+    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+    assert!(!lab.rec.join("ran").exists());
+    assert!(!lab.rec.join("stdin").exists());
+}
