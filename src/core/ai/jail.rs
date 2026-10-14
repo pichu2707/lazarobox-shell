@@ -252,14 +252,18 @@ const SHARED_IN_HOME: &[&str] = &[
 /// Whether granting `path` would open far more than one CLI's own files:
 /// `$HOME` or one of its parents, `/tmp`, `~/.ssh`, `~/.gnupg`, a shared data
 /// folder of `$HOME` or a system or mount folder.
-fn too_broad(path: &Path, home: &Path) -> bool {
-    home.starts_with(path)
-        || path.starts_with("/tmp")
+fn too_broad(path: &Path, homes: &[&Path]) -> bool {
+    path.starts_with("/tmp")
         || path.starts_with("/var/tmp")
+        || BROAD.iter().any(|b| path == Path::new(b))
+        || homes.iter().any(|home| too_broad_for_home(path, home))
+}
+
+fn too_broad_for_home(path: &Path, home: &Path) -> bool {
+    home.starts_with(path)
         || path.starts_with(home.join(".ssh"))
         || path.starts_with(home.join(".gnupg"))
         || SHARED_IN_HOME.iter().any(|d| path == home.join(d))
-        || BROAD.iter().any(|b| path == Path::new(b))
 }
 
 /// Why a layout cannot be jailed.
@@ -323,7 +327,8 @@ fn push_unique(list: &mut Vec<PathBuf>, path: PathBuf) {
 /// Builds the rules for one CLI from canonical paths, taking the state dirs
 /// as written (`~/.claude`, `$CODEX_HOME`, …). Use [`jail_spec_with`] with a
 /// real canonicalizer so a symlinked state dir cannot reach a broad folder.
-pub fn jail_spec(layout: &CliLayout) -> Result<JailSpec, SpecError> {
+#[cfg(test)]
+pub(crate) fn jail_spec(layout: &CliLayout) -> Result<JailSpec, SpecError> {
     jail_spec_with(layout, &|path| Some(path.to_path_buf()))
 }
 
@@ -347,9 +352,12 @@ pub fn jail_spec_with(
     if let Some(bad) = given.into_iter().find(|p| !is_canonical_form(p)) {
         return Err(SpecError::NotCanonical(bad.clone()));
     }
+    // $HOME can have two spellings (/home -> /var/home): check both.
+    let real_home = resolve(&layout.home).unwrap_or_else(|| layout.home.clone());
+    let homes = [layout.home.as_path(), real_home.as_path()];
     let root = package_root(&layout.binary)
         .ok_or_else(|| SpecError::RootTooBroad(layout.binary.clone()))?;
-    if too_broad(&root, &layout.home) {
+    if too_broad(&root, &homes) {
         return Err(SpecError::RootTooBroad(root));
     }
     let resolved = |path: PathBuf| resolve(&path).unwrap_or(path);
@@ -370,7 +378,7 @@ pub fn jail_spec_with(
     let state = resolved(state);
     let state_file = state_file.map(resolved);
     for path in [Some(&state), state_file.as_ref()].into_iter().flatten() {
-        if too_broad(path, &layout.home) {
+        if too_broad(path, &homes) {
             return Err(SpecError::RootTooBroad(path.clone()));
         }
     }

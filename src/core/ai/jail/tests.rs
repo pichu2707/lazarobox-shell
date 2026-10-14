@@ -712,3 +712,36 @@ fn more_system_and_mount_folders_are_never_a_root() {
         assert_eq!(err, SpecError::RootTooBroad(p(dir)), "{tool}");
     }
 }
+
+#[test]
+fn a_home_that_is_a_symlink_is_checked_under_both_spellings() {
+    // Silverblue style: /home is a link to /var/home, so $HOME has two names.
+    let links: &'static [(&str, &str)] = &[
+        ("/home/u", "/var/home/u"),
+        ("/home/u/.claude", "/var/home/u"),
+    ];
+    let err = jail_spec_with(&native_claude(), &resolver(links)).unwrap_err();
+    assert_eq!(err, SpecError::RootTooBroad(p("/var/home/u")));
+
+    for (sensitive, target) in [
+        ("/var/home/u/.ssh", "/var/home/u/.ssh"),
+        ("/var/home/u/.gnupg", "/var/home/u/.gnupg"),
+        ("/var/home/u/.config", "/var/home/u/.config"),
+        ("/var/home/u/.local/share", "/var/home/u/.local/share"),
+    ] {
+        let leaked: &'static [(&str, &str)] = Box::leak(Box::new([
+            ("/home/u", "/var/home/u"),
+            ("/home/u/.claude", sensitive),
+        ]));
+        let err = jail_spec_with(&native_claude(), &resolver(leaked)).unwrap_err();
+        assert_eq!(err, SpecError::RootTooBroad(p(target)), "{sensitive}");
+    }
+
+    // The same layout with a dedicated state dir under the real home passes.
+    let fine: &'static [(&str, &str)] = &[
+        ("/home/u", "/var/home/u"),
+        ("/home/u/.claude", "/var/home/u/.claude"),
+    ];
+    let spec = jail_spec_with(&native_claude(), &resolver(fine)).unwrap();
+    assert!(spec.rw.contains(&p("/var/home/u/.claude")));
+}

@@ -261,4 +261,24 @@ mod tests {
         let spec = jail_spec_with(&layout(&home), &resolve).unwrap();
         assert!(spec.rw.contains(&home.join(".claude")));
     }
+
+    #[test]
+    fn a_symlinked_home_is_refused_under_its_other_spelling() {
+        let dir = scratch();
+        let base = std::fs::canonicalize(dir.path()).unwrap();
+        let real = base.join("var-home-u");
+        std::fs::create_dir_all(real.join(".ssh")).unwrap();
+        let alias = base.join("home-u");
+        symlink(&real, &alias).unwrap();
+
+        // $HOME is named through the link; the state dir points at the real one.
+        let mut l = layout(&alias);
+        l.binary = real.join(".local/share/claude/versions/1");
+        for target in [real.clone(), real.join(".ssh")] {
+            let _ = std::fs::remove_file(real.join(".claude"));
+            symlink(&target, real.join(".claude")).unwrap();
+            let err = jail_spec_with(&l, &resolve).unwrap_err();
+            assert_eq!(err, SpecError::RootTooBroad(target));
+        }
+    }
 }
