@@ -5,6 +5,8 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use super::mouse::WHEEL_STEP;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CopyMotion {
     LineUp,
@@ -17,6 +19,10 @@ pub enum CopyMotion {
     Right,
     LineStart,
     LineEnd,
+    /// One mouse wheel tick up: the viewport goes back `WHEEL_STEP` rows.
+    WheelUp,
+    /// One mouse wheel tick down.
+    WheelDown,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -113,6 +119,10 @@ impl CopyState {
     /// `line_end` is the last non-blank column of the cursor's row, used by `$`.
     pub fn apply_motion(&mut self, motion: CopyMotion, geo: Geometry, line_end: u16) {
         let last_col = geo.cols.saturating_sub(1);
+        if matches!(motion, CopyMotion::WheelUp | CopyMotion::WheelDown) {
+            self.wheel(motion, geo);
+            return;
+        }
         match motion {
             CopyMotion::Left => self.cursor.col = self.cursor.col.saturating_sub(1),
             CopyMotion::Right => self.cursor.col = self.cursor.col.saturating_add(1).min(last_col),
@@ -122,6 +132,20 @@ impl CopyState {
         }
         // Any motion brings an off-screen cursor back into view.
         self.ensure_visible(geo);
+    }
+
+    /// One wheel tick: the viewport moves `WHEEL_STEP` rows and the cursor only
+    /// as far as needed to stay on a visible row (nearest edge, same column).
+    /// Unlike the other motions the viewport never follows the cursor.
+    fn wheel(&mut self, motion: CopyMotion, geo: Geometry) {
+        self.offset = match motion {
+            CopyMotion::WheelUp => self.offset.saturating_add(WHEEL_STEP),
+            _ => self.offset.saturating_sub(WHEEL_STEP),
+        }
+        .min(geo.history);
+        let top = geo.first_line + geo.history - self.offset;
+        let bottom = top + usize::from(geo.rows.max(1)) - 1;
+        self.cursor.line = self.cursor.line.clamp(top, bottom);
     }
 
     fn move_vertically(&mut self, motion: CopyMotion, geo: Geometry) {
@@ -680,6 +704,109 @@ mod tests {
         assert_eq!((s.cursor, s.offset), (pt(10, 0), 100));
         s.apply_motion(CopyMotion::Bottom, geo(), 0);
         assert_eq!((s.cursor, s.offset), (pt(133, 0), 0));
+    }
+
+    // mouse-input, Wheel in COPY: the viewport moves 3 rows.
+    #[test]
+    fn the_wheel_moves_the_viewport_by_three_rows() {
+        // Offset 20 shows lines 90..=113; the cursor on 100 stays in view.
+        let mut s = cursor_at(100, 4, 20);
+        s.apply_motion(CopyMotion::WheelUp, geo(), 0);
+        assert_eq!((s.cursor, s.offset), (pt(100, 4), 23));
+        s.apply_motion(CopyMotion::WheelDown, geo(), 0);
+        s.apply_motion(CopyMotion::WheelDown, geo(), 0);
+        assert_eq!((s.cursor, s.offset), (pt(100, 4), 17));
+    }
+
+    // mouse-input: the cursor is pulled to the nearest edge row, keeping its column.
+    #[test]
+    fn the_wheel_keeps_the_cursor_inside_the_viewport() {
+        // Cursor on the bottom visible row (133), offset 0: up 3 shows 107..=130.
+        let mut s = cursor_at(133, 7, 0);
+        s.apply_motion(CopyMotion::WheelUp, geo(), 0);
+        assert_eq!((s.cursor, s.offset), (pt(130, 7), 3));
+        // Cursor on the top visible row (107), offset 3: down 3 shows 110..=133.
+        let mut s = cursor_at(107, 7, 3);
+        s.apply_motion(CopyMotion::WheelDown, geo(), 0);
+        assert_eq!((s.cursor, s.offset), (pt(110, 7), 0));
+    }
+
+    // mouse-input: clamp at the top of the history.
+    #[test]
+    fn the_wheel_clamps_at_the_top() {
+        let mut s = cursor_at(10, 0, 100);
+        s.apply_motion(CopyMotion::WheelUp, geo(), 0);
+        assert_eq!((s.cursor, s.offset), (pt(10, 0), 100));
+        // Two rows short of the top: clamp to the top, not past it.
+        let mut s = cursor_at(15, 0, 98);
+        s.apply_motion(CopyMotion::WheelUp, geo(), 0);
+        assert_eq!(s.offset, 100);
+        assert!((10..=33).contains(&s.cursor.line));
+    }
+
+    // mouse-input: clamp at the bottom (live).
+    #[test]
+    fn the_wheel_clamps_at_the_bottom() {
+        let mut s = cursor_at(133, 0, 0);
+        s.apply_motion(CopyMotion::WheelDown, geo(), 0);
+        assert_eq!((s.cursor, s.offset), (pt(133, 0), 0));
+        let mut s = cursor_at(120, 0, 2);
+        s.apply_motion(CopyMotion::WheelDown, geo(), 0);
+        assert_eq!((s.cursor, s.offset), (pt(120, 0), 0));
+    }
+
+    // mouse-input: the selection survives and follows the cursor like j/k.
+    #[test]
+    fn the_wheel_preserves_and_extends_the_selection() {
+        let mut s = cursor_at(133, 2, 0);
+        s.selection = sel(pt(120, 1), SelectionKind::Char);
+        s.apply_motion(CopyMotion::WheelUp, geo(), 0);
+        assert_eq!(s.selection, sel(pt(120, 1), SelectionKind::Char));
+        assert_eq!(
+            s.span(80),
+            Some(LineSpan::new((120, 1), (130, 2))),
+            "the cursor edge moved, so the span follows it"
+        );
+    }
+
+    // mouse-input: with no history the wheel does nothing and does not panic.
+    #[test]
+    fn the_wheel_without_history_does_nothing() {
+        let geo = Geometry {
+            history: 0,
+            first_line: 0,
+            ..geo()
+        };
+        for motion in [CopyMotion::WheelUp, CopyMotion::WheelDown] {
+            let mut s = cursor_at(5, 3, 0);
+            s.apply_motion(motion, geo, 0);
+            assert_eq!((s.cursor, s.offset), (pt(5, 3), 0), "{motion:?}");
+        }
+    }
+
+    // A tiny pane still has a viewport row to keep the cursor in.
+    #[test]
+    fn the_wheel_on_a_one_row_pane_keeps_the_cursor_on_it() {
+        let geo = Geometry { rows: 1, ..geo() };
+        let mut s = cursor_at(110, 0, 0);
+        s.apply_motion(CopyMotion::WheelUp, geo, 0);
+        assert_eq!((s.cursor.line, s.offset), (107, 3));
+    }
+
+    // No key is bound to the wheel motions.
+    #[test]
+    fn no_key_maps_to_a_wheel_motion() {
+        for c in 'a'..='z' {
+            let mut s = CopyState::default();
+            let got = s.on_key(&press(c), false);
+            assert!(
+                !matches!(
+                    got,
+                    CopyCommand::Move(CopyMotion::WheelUp | CopyMotion::WheelDown)
+                ),
+                "{c}"
+            );
+        }
     }
 
     fn sel(anchor: Point, kind: SelectionKind) -> Option<Selection> {
