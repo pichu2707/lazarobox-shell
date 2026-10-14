@@ -92,6 +92,26 @@ fn an_error_before_any_text_leaves_no_empty_message() {
     assert_eq!(state.phase(), Phase::Idle);
 }
 #[test]
+fn a_jail_error_says_the_cli_never_ran() {
+    let mut state = chat();
+    let (turn, _) = sent(&mut state, "hi");
+    state.apply(turn, StreamEvent::Error(ChatError::Jail));
+    assert_eq!(texts(&state).len(), 1, "no empty assistant message");
+    assert_eq!(systems(&state), [JAIL_ERROR]);
+    assert_eq!(state.phase(), Phase::Idle);
+
+    // Same line after text, which stays and is marked as an error.
+    let mut state = chat();
+    let (turn, _) = sent(&mut state, "hi");
+    state.apply(turn, delta("part"));
+    state.apply(turn, StreamEvent::Error(ChatError::Jail));
+    assert_eq!(
+        texts(&state)[1],
+        (Role::Assistant, "part".into(), MsgStatus::Error)
+    );
+    assert_eq!(systems(&state), [JAIL_ERROR]);
+}
+#[test]
 fn a_cut_stream_keeps_the_text_and_says_interrupted() {
     let mut state = chat();
     let (turn, _) = sent(&mut state, "hi");

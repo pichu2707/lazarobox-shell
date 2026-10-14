@@ -53,6 +53,8 @@ pub enum ChatError {
     Truncated,
     /// The engine or the transport reported a problem.
     Failed(String),
+    /// The jail helper could not enforce the rules, so the CLI never ran.
+    Jail,
 }
 
 /// What an adapter task reports about one turn.
