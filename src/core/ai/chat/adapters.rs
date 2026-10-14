@@ -222,7 +222,18 @@ fn labelled(message: &ChatMessage) -> String {
         Role::User => "User",
         Role::Assistant => "Assistant",
     };
-    format!("{label}:\n{}", message.content)
+    // A content line that is exactly a label would read as a turn boundary the
+    // user never wrote: a leading space keeps it text.
+    let content = message
+        .content
+        .split('\n')
+        .map(|line| match line {
+            "User:" | "Assistant:" => format!(" {line}"),
+            _ => line.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{label}:\n{content}")
 }
 
 #[cfg(test)]
