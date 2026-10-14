@@ -10,6 +10,25 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Chat memory: deleting a conversation from the list (`d`) can also delete its
+  engram notes. With memory on, `ENGRAM_HTTP_TOKEN` set and at least one saved
+  note, the prompt reads `Delete conversation? y · n · a also delete its N
+  notes`: `y` keeps the notes, `a` deletes the conversation and then each note
+  (`DELETE /observations/{id}?expected_project=P` with the bearer token), and
+  any other key cancels. The result is one line (`deleted N notes from
+  engram`, `deleted K of N notes from engram` or `could not delete notes:
+  <reason>`). Without a token or with memory off, the notes stay and a line
+  says why. Retention eviction never sends a delete.
+
+### Changed
+
+- Chat memory: resuming a conversation reuses the engram session (and project)
+  its notes were written under, so new notes land in the same session and it is
+  ended once. A resumed conversation that writes nothing ends no session.
+- The conversation list carries the number of notes of each conversation.
+
 ## [0.12.0] - 2026-10-14
 
 ### Added
