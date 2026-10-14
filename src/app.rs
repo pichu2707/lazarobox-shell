@@ -752,11 +752,14 @@ impl App {
         }
     }
 
-    /// Fresh COPY state with the cursor on the focused pane's live cursor.
+    /// Fresh COPY state. The view stays where it is (a wheel-scrolled pane is
+    /// not thrown back to live); at the bottom the cursor is the live cursor,
+    /// scrolled it is on the last visible row.
     fn enter_copy(&self) -> CopyState {
         let pane = self.copy_pane();
         CopyState::enter(
             self.copy_geometry(),
+            pane.scrollback_offset(),
             pane.live_cursor(),
             pane.line_generation(),
         )
@@ -1263,6 +1266,7 @@ impl App {
         match step {
             // The literal is a byte for a child; a chat has none, so it swallows it.
             Step::Run(PrefixAction::SendPrefixLiteral) if self.focused_pty().is_some() => {
+                self.return_to_live();
                 vec![Effect::WritePty(self.tab().focus, vec![PREFIX_LITERAL])]
             }
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
@@ -1795,8 +1799,8 @@ impl App {
         let geo = self.copy_geometry();
         if state.generation != self.copy_pane().line_generation() {
             // Line numbers are incomparable now: start over like entering COPY.
-            state = self.enter_copy();
             self.copy_pane_mut().set_scrollback(0);
+            state = self.enter_copy();
         }
         let pane = self.copy_pane();
         state.offset = pane.scrollback_offset();

@@ -75,14 +75,28 @@ pub struct CopyState {
 }
 
 impl CopyState {
-    /// Copy mode entered with the cursor on the pane's live cursor.
-    pub fn enter(geo: Geometry, live_cursor: Option<(u16, u16)>, generation: u32) -> Self {
-        let (row, col) = live_cursor.unwrap_or((geo.rows, 0));
+    /// Copy mode entered at view `offset` (rows above the live screen). At 0
+    /// the cursor is the pane's live cursor; scrolled back it is on the last
+    /// visible row so the view does not move on the first key.
+    pub fn enter(
+        geo: Geometry,
+        offset: usize,
+        live_cursor: Option<(u16, u16)>,
+        generation: u32,
+    ) -> Self {
+        let offset = offset.min(geo.history);
+        let (row, col) = match (offset, live_cursor) {
+            // Scrolled back the live cursor is off screen: take the last
+            // visible row, keeping its column.
+            (1.., live) => (geo.rows.saturating_sub(1), live.map_or(0, |(_, col)| col)),
+            (0, live) => live.unwrap_or((geo.rows, 0)),
+        };
         let row = row.min(geo.rows.saturating_sub(1));
         let col = col.min(geo.cols.saturating_sub(1));
         Self {
+            offset,
             cursor: Point {
-                line: geo.first_line + geo.history + usize::from(row),
+                line: geo.first_line + geo.history - offset + usize::from(row),
                 col,
             },
             generation,
@@ -120,6 +134,8 @@ impl CopyState {
     pub fn apply_motion(&mut self, motion: CopyMotion, geo: Geometry, line_end: u16) {
         let last_col = geo.cols.saturating_sub(1);
         if matches!(motion, CopyMotion::WheelUp | CopyMotion::WheelDown) {
+            // The wheel moves the viewport and the cursor follows it; running
+            // `ensure_visible` would drag the viewport back to the cursor.
             self.wheel(motion, geo);
             return;
         }
@@ -560,7 +576,7 @@ mod tests {
 
     #[test]
     fn enter_puts_the_cursor_on_the_live_cursor() {
-        let s = CopyState::enter(geo(), Some((5, 3)), 7);
+        let s = CopyState::enter(geo(), 0, Some((5, 3)), 7);
         assert_eq!(s.cursor, pt(10 + 100 + 5, 3));
         assert_eq!(s.offset, 0);
         assert_eq!(s.selection, None);
@@ -569,13 +585,31 @@ mod tests {
 
     #[test]
     fn enter_clamps_the_live_cursor_into_the_pane() {
-        let s = CopyState::enter(geo(), Some((99, 200)), 0);
+        let s = CopyState::enter(geo(), 0, Some((99, 200)), 0);
         assert_eq!(s.cursor, pt(10 + 100 + 23, 79));
+    }
+
+    // COPY keeps a wheel-scrolled view: the cursor lands on the last visible row.
+    #[test]
+    fn enter_on_a_scrolled_view_keeps_the_offset_and_uses_the_last_visible_row() {
+        // Offset 5 shows lines 105..=128.
+        let s = CopyState::enter(geo(), 5, Some((2, 7)), 0);
+        assert_eq!((s.offset, s.cursor), (5, pt(128, 7)));
+        let s = CopyState::enter(geo(), 5, None, 0);
+        assert_eq!((s.offset, s.cursor), (5, pt(128, 0)));
+    }
+
+    #[test]
+    fn enter_on_a_scrolled_view_clamps_the_column_and_the_offset() {
+        let s = CopyState::enter(geo(), 5, Some((2, 200)), 0);
+        assert_eq!(s.cursor, pt(128, 79));
+        let s = CopyState::enter(geo(), 1000, Some((2, 3)), 0);
+        assert_eq!((s.offset, s.cursor), (100, pt(33, 3)));
     }
 
     #[test]
     fn enter_with_a_hidden_cursor_uses_the_bottom_row_at_column_zero() {
-        let s = CopyState::enter(geo(), None, 0);
+        let s = CopyState::enter(geo(), 0, None, 0);
         assert_eq!(s.cursor, pt(10 + 100 + 23, 0));
         assert_eq!(s.offset, 0);
     }

@@ -775,3 +775,94 @@ fn ready_app_has_the_chat_on_the_right() {
     assert_eq!(chat_id(), id2());
     assert!(rect_of(&a, chat_id()).x > rect_of(&a, PaneId::FIRST).x);
 }
+
+// Entering COPY on a wheel-scrolled pane -------------------------------------------
+
+#[test]
+fn copy_entered_on_a_wheel_scrolled_pane_keeps_the_view() {
+    let mut a = single();
+    for _ in 0..4 {
+        up_on(&mut a, PaneId::FIRST);
+    }
+    assert_eq!(offset(&a, PaneId::FIRST), 12);
+    press(&mut a, "[");
+    assert_eq!(copy_offset(&a), 12);
+    assert_eq!(offset(&a, PaneId::FIRST), 12);
+    let (row, _) = a.copy_cursor().expect("the cursor is on screen");
+    assert_eq!(row, 23, "the last visible row");
+    assert_eq!(a.copy_position(), Some((12, history(&a, PaneId::FIRST))));
+    assert_eq!(a.scrolled_by(PaneId::FIRST), Some(12));
+    assert_eq!(a.scroll_position(), Some((12, history(&a, PaneId::FIRST))));
+}
+
+#[test]
+fn the_first_key_in_copy_moves_the_cursor_without_jumping_the_view() {
+    let mut a = single();
+    for _ in 0..4 {
+        up_on(&mut a, PaneId::FIRST);
+    }
+    press(&mut a, "[");
+    a.update(key('k'));
+    assert_eq!(copy_offset(&a), 12);
+    assert_eq!(offset(&a, PaneId::FIRST), 12);
+    assert_eq!(a.copy_cursor().map(|c| c.0), Some(22));
+    a.update(key('j'));
+    a.update(key('j'));
+    assert_eq!(copy_offset(&a), 11, "only the edge scrolls");
+}
+
+#[test]
+fn copy_entered_at_the_bottom_still_uses_the_live_cursor() {
+    let mut a = single();
+    press(&mut a, "[");
+    assert_eq!(copy_offset(&a), 0);
+    assert!(a.copy_cursor().is_some());
+}
+
+#[test]
+fn leaving_copy_after_a_wheel_scrolled_entry_goes_live() {
+    let mut a = single();
+    up_on(&mut a, PaneId::FIRST);
+    press(&mut a, "[");
+    a.update(key('q'));
+    assert_eq!(a.input(), InputMode::Terminal);
+    assert_eq!(offset(&a, PaneId::FIRST), 0);
+}
+
+// X10 Press mode ------------------------------------------------------------------
+
+#[test]
+fn x10_press_mode_gets_no_wheel_and_scrolls_the_view() {
+    let mut a = single();
+    output(&mut a, PaneId::FIRST, b"\x1b[?9h\x1b[?1006h");
+    assert_eq!(up_on(&mut a, PaneId::FIRST), vec![]);
+    assert_eq!(offset(&a, PaneId::FIRST), 3);
+}
+
+#[test]
+fn x10_press_mode_on_the_alternate_screen_gets_arrows() {
+    let mut a = single();
+    output(&mut a, PaneId::FIRST, b"\x1b[?1049h\x1b[?9h");
+    assert_eq!(
+        down_on(&mut a, PaneId::FIRST),
+        vec![Effect::WritePty(
+            PaneId::FIRST,
+            b"\x1b[B\x1b[B\x1b[B".to_vec()
+        )]
+    );
+}
+
+// The literal prefix ---------------------------------------------------------------
+
+#[test]
+fn the_literal_prefix_returns_the_focused_pane_to_live() {
+    let mut a = single();
+    for _ in 0..4 {
+        up_on(&mut a, PaneId::FIRST);
+    }
+    a.update(ctrl_space());
+    let effects = a.update(ctrl_space());
+    assert_eq!(effects.len(), 1);
+    assert!(matches!(effects[0], Effect::WritePty(..)));
+    assert_eq!(offset(&a, PaneId::FIRST), 0);
+}

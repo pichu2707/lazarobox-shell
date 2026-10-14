@@ -280,6 +280,16 @@ The pane MUST return to the live screen (offset 0) when any key is encoded and w
 - WHEN `l` is pressed in TERMINAL (encoded and written to the PTY)
 - THEN the offset is 0
 
+#### Scenario: The literal prefix returns to live
+- GIVEN the focused pane has offset 12
+- WHEN `Ctrl+Space` is pressed twice (the second sends the prefix byte to the PTY)
+- THEN the offset is 0
+
+#### Scenario: COPY entered on a wheel-scrolled pane keeps the view
+- GIVEN the focused pane has offset 12 from the wheel
+- WHEN `Ctrl+Space [` is pressed
+- THEN the mode is COPY, the COPY viewport offset is 12, the cursor is on the last visible row, the badge and the statusline position read 12, and the first `k` moves the cursor up one row without moving the view
+
 #### Scenario: A swallowed key does not return to live
 - GIVEN the focused pane has offset 12
 - WHEN `Ctrl+Space` is pressed and then Esc cancels the PREFIX
