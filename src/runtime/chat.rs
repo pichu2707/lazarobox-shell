@@ -260,7 +260,7 @@ pub(crate) fn adapter_runner_at(port: Option<u16>) -> Runner {
 
 /// The runner over an explicit machine: the port of server engines (when
 /// overridden) and the environment CLI engines run in.
-pub(crate) fn runner_with(port: Option<u16>, cli: CliEnv) -> Runner {
+pub fn runner_with(port: Option<u16>, cli: CliEnv) -> Runner {
     Arc::new(move |request, tx| {
         let cli = cli.clone();
         Box::pin(async move {
