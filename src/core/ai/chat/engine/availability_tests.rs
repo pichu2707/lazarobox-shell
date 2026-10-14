@@ -139,10 +139,30 @@ fn codex_and_gemini_need_a_jail() {
             &[],
         )]);
         assert_eq!(
-            availability(&c, Some(&d), NO_JAIL),
+            availability_with(&c, Some(&d), NO_JAIL, &[], &|_| true),
             Availability::NoJail { engine: id.into() }
         );
-        assert_eq!(availability(&c, Some(&d), JAIL), ready(id, Some("default")));
+        assert_eq!(
+            availability_with(&c, Some(&d), JAIL, &[], &|_| true),
+            ready(id, Some("default"))
+        );
+    }
+}
+
+#[test]
+fn engines_without_an_adapter_are_unsupported_whatever_the_jail() {
+    for id in [
+        "codex", "gemini", "lmstudio", "llamacpp", "vllm", "opencode",
+    ] {
+        let c = cfg(Task::Chat, Some(id), Some("default"));
+        let d = detected(vec![state(id, Status::Available, &["default"])]);
+        for jail in [NO_JAIL, JAIL] {
+            assert_eq!(
+                availability(&c, Some(&d), jail),
+                Availability::Unsupported { engine: id.into() },
+                "{id}"
+            );
+        }
     }
 }
 
@@ -161,17 +181,17 @@ fn a_cli_whose_manual_check_failed_is_gated_off() {
     let c = cfg(Task::Chat, Some("codex"), Some("default"));
     let d = detected(vec![state("codex", Status::Available, &[])]);
     assert_eq!(
-        availability_with(&c, Some(&d), JAIL, &["codex"]),
+        availability_with(&c, Some(&d), JAIL, &["codex"], &|_| true),
         Availability::GatedOff {
             engine: "codex".into()
         }
     );
     assert_eq!(
-        availability_with(&c, Some(&d), JAIL, &["gemini"]),
+        availability_with(&c, Some(&d), JAIL, &["gemini"], &|_| true),
         ready("codex", Some("default"))
     );
     assert_eq!(
-        availability(&c, Some(&d), JAIL),
+        availability_with(&c, Some(&d), JAIL, &[], &|_| true),
         ready("codex", Some("default")),
         "nothing is gated off yet"
     );
@@ -244,11 +264,17 @@ fn it_never_switches_engine() {
 }
 
 #[test]
-fn only_opencode_lacks_an_adapter() {
-    let without: Vec<_> = CATALOG
+fn only_ollama_and_claude_have_an_adapter_so_far() {
+    let mut without: Vec<_> = CATALOG
         .iter()
         .filter(|e| !has_adapter(e.id))
         .map(|e| e.id)
         .collect();
-    assert_eq!(without, ["opencode"]);
+    without.sort_unstable();
+    assert_eq!(
+        without,
+        [
+            "codex", "gemini", "llamacpp", "lmstudio", "opencode", "vllm"
+        ]
+    );
 }

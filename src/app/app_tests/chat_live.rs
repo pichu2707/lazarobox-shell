@@ -892,7 +892,7 @@ fn opencode_is_not_supported_in_chat() {
 }
 
 #[test]
-fn a_cli_without_a_jail_is_not_available_on_this_system() {
+fn a_cli_without_an_adapter_is_not_supported_in_chat_yet() {
     let mut a = undetected_chat(assigned("gemini"));
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
@@ -904,7 +904,7 @@ fn a_cli_without_a_jail_is_not_available_on_this_system() {
     }));
     assert_eq!(
         guidance_of(&a).as_deref(),
-        Some("gemini: not available on this system yet")
+        Some("gemini: not supported in chat yet")
     );
     assert_eq!(ask(&mut a, "hi"), vec![]);
     assert_eq!(composer(&a), "hi");
@@ -947,10 +947,14 @@ fn claude_chats_with_or_without_a_jail() {
 }
 
 #[test]
-fn a_working_jail_makes_a_jail_only_cli_available() {
+fn a_jail_only_cli_stays_unsupported_until_its_adapter_lands() {
     let mut a = undetected_chat(assigned("gemini")).with_jail(working_jail());
     a.update(cli_detected("gemini"));
-    assert_eq!(guidance_of(&a), None);
+    assert_eq!(
+        guidance_of(&a).as_deref(),
+        Some("gemini: not supported in chat yet")
+    );
+    assert_eq!(ask(&mut a, "hi"), vec![]);
 }
 
 #[test]

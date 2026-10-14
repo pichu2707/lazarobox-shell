@@ -2,6 +2,7 @@
 //! sends and what a stream may say back, and whether an engine can be used.
 //! Pure data and functions, no IO.
 
+use super::adapters::adapter_for;
 use crate::core::ai::{
     CATALOG, Detection, Kind, Status,
     config::{AiConfig, Task},
@@ -109,7 +110,7 @@ pub fn availability(
     detection: Option<&Detection>,
     jail: JailSupport,
 ) -> Availability {
-    availability_with(cfg, detection, jail, GATED_OFF)
+    availability_with(cfg, detection, jail, GATED_OFF, &has_adapter)
 }
 
 /// The CLIs whose manual check failed. None yet: the checks run in C13-C15.
@@ -118,18 +119,21 @@ const GATED_OFF: &[&str] = &[];
 /// CLIs that must never start without a working jail.
 const JAIL_REQUIRED: &[&str] = &["codex", "gemini"];
 
-/// `availability` with an explicit list of CLIs whose manual check failed.
+/// `availability` with an explicit list of CLIs whose manual check failed and
+/// the test that says which engines have an adapter (so the jail and gate
+/// rules stay testable for engines whose adapter has not landed).
 pub fn availability_with(
     cfg: &AiConfig,
     detection: Option<&Detection>,
     jail: JailSupport,
     gated_off: &[&str],
+    adapter_exists: &dyn Fn(&str) -> bool,
 ) -> Availability {
     let (assignment, _) = cfg.resolve(Task::Chat);
     let Some(engine) = assignment.engine else {
         return Availability::Unassigned;
     };
-    if !has_adapter(&engine) {
+    if !adapter_exists(&engine) {
         return Availability::Unsupported { engine };
     }
     let Some(detection) = detection else {
@@ -175,9 +179,10 @@ fn same_model(a: &str, b: &str) -> bool {
     bare(a) == bare(b)
 }
 
-/// Whether an adapter exists for the engine. `opencode` has none.
+/// Whether an adapter exists for the engine. Only the engines whose adapter
+/// has landed (ollama, claude) can chat; the others are unsupported.
 pub fn has_adapter(id: &str) -> bool {
-    id != "opencode"
+    adapter_for(id).is_some()
 }
 
 /// The most messages one turn sends.
