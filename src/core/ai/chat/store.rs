@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use super::{Msg, MsgStatus, engine::Role};
+use super::{Msg, MsgStatus, engine::Role, tags::Tags};
 use crate::core::{ai::sanitize::clean, layout::PaneId};
 
 /// The most conversations the store keeps.
@@ -20,6 +20,8 @@ pub const SAVE_FAILED_LINE: &str = "could not save conversation";
 /// System line for a conversation another pane deleted while this one has it
 /// open.
 pub const DELETED_LINE: &str = "conversation deleted; new messages are not saved";
+/// System line when tags are edited on a conversation that is not saving.
+pub const TAGS_NOT_SAVED_LINE: &str = "tags kept in this pane only: history is not saving";
 /// Start of the system line shown when the store cannot be used.
 pub const UNAVAILABLE_PREFIX: &str = "history unavailable: ";
 /// The longest error text shown to the user, in characters.
@@ -47,6 +49,8 @@ pub enum StoreCmd {
         pane: PaneId,
         profile: String,
         tag: Option<String>,
+        /// The extra tags the pane set before its first message.
+        extras: Vec<String>,
         first: StoredMessage,
         /// The cwd the chat was opened from: when `tag` is not known yet (the
         /// list has not answered), the store thread resolves it from here.
@@ -82,6 +86,15 @@ pub enum StoreCmd {
         observation_id: i64,
         title: String,
     },
+    /// Replaces the project tag and the extra tags of a conversation, in one
+    /// transaction that also bumps its last activity. `conversation` is
+    /// `None` while the pane does not know its id yet (as for `Append`).
+    /// Answered with `TagsSaved`, or `TagsFailed`.
+    SetTags {
+        pane: PaneId,
+        conversation: Option<i64>,
+        tags: Tags,
+    },
     /// The conversations of the store, newest last activity first, and the
     /// project tag of `origin` (resolved on the store thread: it walks the
     /// filesystem). Answered with `Listed`, `ListFailed`, or `Unavailable`.
@@ -108,6 +121,8 @@ pub struct ConvRow {
     pub profile: String,
     /// The project tag, when the conversation has one.
     pub tag: Option<String>,
+    /// The extra tags, by name.
+    pub extras: Vec<String>,
     /// The first user message, cut to `FIRST_MAX` characters.
     pub first: String,
 }
@@ -187,6 +202,7 @@ pub enum StoreReply {
         conversation: i64,
         profile: String,
         tag: Option<String>,
+        extras: Vec<String>,
         messages: Vec<Msg>,
     },
     ResumeFailed {
@@ -200,6 +216,18 @@ pub enum StoreReply {
         notes: Vec<NoteRow>,
     },
     DeleteFailed {
+        pane: PaneId,
+    },
+    /// The tags of `conversation` are stored, as the store keeps them
+    /// (cleaned, without repeats, at most 8 extras).
+    TagsSaved {
+        pane: PaneId,
+        conversation: i64,
+        tags: Tags,
+        /// The last activity the edit set, in seconds since the Unix epoch.
+        updated_at: i64,
+    },
+    TagsFailed {
         pane: PaneId,
     },
 }
@@ -267,6 +295,7 @@ pub struct PaneStore {
 pub struct NewConversation {
     pub profile: String,
     pub tag: Option<String>,
+    pub extras: Vec<String>,
     pub origin: Option<PathBuf>,
     /// Conversations open in any pane, which retention must skip.
     pub open: Vec<i64>,
@@ -323,6 +352,7 @@ impl PaneStore {
                     pane,
                     profile: new.profile.clone(),
                     tag: new.tag.clone(),
+                    extras: new.extras.clone(),
                     first: message,
                     origin: new.origin.clone(),
                     open: new.open.clone(),
@@ -340,6 +370,23 @@ impl PaneStore {
             }),
             Link::Detached => None,
         }
+    }
+
+    /// The command that stores `tags` now, if the conversation can take them.
+    /// A conversation not created yet keeps them for its `Create` (they are in
+    /// `NewConversation`); one that is being created is named by its pane; a
+    /// detached one stores nothing.
+    pub fn set_tags(&self, pane: PaneId, tags: Tags) -> Option<StoreCmd> {
+        let conversation = match self.link {
+            Link::Fresh | Link::Detached => return None,
+            Link::Creating => None,
+            Link::Open(id) => Some(id),
+        };
+        Some(StoreCmd::SetTags {
+            pane,
+            conversation,
+            tags,
+        })
     }
 
     /// Applies a reply for this pane.

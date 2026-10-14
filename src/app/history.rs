@@ -6,6 +6,7 @@ use super::*;
 use crate::core::ai::chat::{
     list::{DELETE_FAILED, LIST_FAILED, ListOutcome, OPEN_ELSEWHERE, RESUME_FAILED},
     store::{ConvRow, SAVE_FAILED_LINE, UNAVAILABLE_PREFIX},
+    tags::Tags,
 };
 
 impl App {
@@ -95,7 +96,7 @@ impl App {
         })
     }
 
-    fn set_list_line(&mut self, id: PaneId, line: &str) {
+    pub(super) fn set_list_line(&mut self, id: PaneId, line: &str) {
         if let Some(list) = self
             .panes
             .get_mut(&id)
@@ -136,6 +137,10 @@ impl App {
                     pane: id,
                     conversation,
                 })]
+            }
+            ListOutcome::EditTags(conversation) => {
+                self.edit_row_tags(id, conversation);
+                Vec::new()
             }
             ListOutcome::Delete(conversation) => vec![Effect::Store(StoreCmd::Delete {
                 pane: id,
@@ -184,8 +189,15 @@ impl App {
                 conversation,
                 profile,
                 tag,
+                extras,
                 messages,
-            } => self.on_resumed(*pane, *conversation, profile, tag, messages),
+            } => {
+                let tags = Tags {
+                    project: tag.clone(),
+                    extras: extras.clone(),
+                };
+                self.on_resumed(*pane, *conversation, profile, tags, messages)
+            }
             StoreReply::ResumeFailed { pane } => {
                 self.set_list_line(*pane, RESUME_FAILED);
                 Vec::new()
@@ -199,6 +211,7 @@ impl App {
                         list.remove(*conversation);
                     }
                 }
+                self.close_tag_editors_of(*conversation);
                 // Another pane that has it open keeps working but stops saving.
                 for (id, state) in &mut self.panes {
                     if let Some(chat) = state.chat_mut()
@@ -215,6 +228,10 @@ impl App {
                 self.set_list_line(*pane, DELETE_FAILED);
                 Vec::new()
             }
+            StoreReply::TagsSaved { .. } | StoreReply::TagsFailed { .. } => {
+                self.on_tags_reply(reply);
+                Vec::new()
+            }
             StoreReply::SessionLinked { .. } | StoreReply::LinkFailed { .. } => Vec::new(),
         }
     }
@@ -227,7 +244,7 @@ impl App {
         };
         // A conversation that began without waiting keeps the tag it was
         // created with (the store thread resolved it from the origin).
-        if tag.is_some() && chat.store_fresh() {
+        if tag.is_some() && chat.store_fresh() && !chat.tags_edited() {
             chat.set_tag(tag.clone());
         }
         if let Some(list) = chat.list_mut() {
@@ -265,7 +282,7 @@ impl App {
         id: PaneId,
         conversation: i64,
         profile: &str,
-        tag: &Option<String>,
+        tags: Tags,
         messages: &[crate::core::ai::chat::Msg],
     ) -> Vec<Effect> {
         if !self.list_open(id) {
@@ -280,7 +297,7 @@ impl App {
         };
         let profile = Profile::from_id(profile).unwrap_or_else(|| chat.profile());
         let reprepare = chat.adopt_profile(profile);
-        chat.resume_into(conversation, profile, tag.clone(), messages.to_vec());
+        chat.resume_into(conversation, profile, tags, messages.to_vec());
         self.dirty = true;
         if reprepare {
             self.prepare_prompt(id).into_iter().collect()

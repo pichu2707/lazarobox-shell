@@ -116,6 +116,7 @@ impl App {
         // is drawn in the conversation view only, so a list does not give up
         // its keys to a question it hides.
         if !self.memory_view_open(id)
+            && !self.tag_editor_open(id)
             && !self.list_open(id)
             && let Some(effects) = self.answer_server_offer(key)
         {
@@ -138,6 +139,10 @@ impl App {
             self.held_chat_key = None;
             repeat
         };
+        // The tag editor is drawn first, so it takes the keys first.
+        if self.tag_editor_open(id) {
+            return self.on_tag_key(id, &key, repeat);
+        }
         if self.note_editor_open(id) {
             let effects = self.on_note_key(id, &key, repeat);
             return self.with_waiting_sends(effects);
@@ -204,6 +209,10 @@ impl App {
     /// A paste into the focused chat's composer.
     pub(super) fn chat_paste(&mut self, text: &str) {
         let id = self.tab().focus;
+        if self.tag_editor_open(id) {
+            self.tag_paste(id, text);
+            return;
+        }
         // The list takes keys only: a paste is not one.
         if self.list_open(id) {
             return;

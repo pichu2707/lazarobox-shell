@@ -28,6 +28,7 @@ fn new_conv() -> NewConversation {
     NewConversation {
         profile: "programmer".into(),
         tag: Some("proj".into()),
+        extras: vec![],
         origin: Some("/work/proj".into()),
         open: vec![7],
     }
@@ -52,6 +53,7 @@ fn the_first_save_creates_the_conversation() {
             pane: pane(),
             profile: "programmer".into(),
             tag: Some("proj".into()),
+            extras: vec![],
             first: user("hi"),
             origin: Some("/work/proj".into()),
             open: vec![7],
@@ -321,4 +323,58 @@ fn a_detached_store_drops_every_save() {
 #[test]
 fn a_fresh_store_is_not_detached() {
     assert!(!PaneStore::new().is_detached());
+}
+
+// ---- tags (10.5) -----------------------------------------------------------
+
+#[test]
+fn a_create_carries_the_extra_tags_of_the_pane() {
+    let mut store = PaneStore::new();
+    let mut new = new_conv();
+    new.extras = vec!["sql".into(), "etl".into()];
+    let Some(StoreCmd::Create { extras, tag, .. }) = store.save(pane(), user("hi"), &new) else {
+        panic!("expected Create");
+    };
+    assert_eq!(extras, ["sql", "etl"]);
+    assert_eq!(tag.as_deref(), Some("proj"));
+}
+
+#[test]
+fn tags_of_a_fresh_conversation_are_kept_for_its_create() {
+    let store = PaneStore::new();
+    assert_eq!(store.set_tags(pane(), Tags::parse("a,b")), None);
+}
+
+#[test]
+fn tags_of_an_open_conversation_are_stored_at_once() {
+    let store = PaneStore::open(9);
+    assert_eq!(
+        store.set_tags(pane(), Tags::parse("a,b")),
+        Some(StoreCmd::SetTags {
+            pane: pane(),
+            conversation: Some(9),
+            tags: Tags::parse("a,b"),
+        })
+    );
+}
+
+#[test]
+fn tags_while_the_create_is_in_flight_name_only_the_pane() {
+    let mut store = PaneStore::new();
+    store.save(pane(), user("hi"), &new_conv());
+    assert_eq!(
+        store.set_tags(pane(), Tags::parse("a")),
+        Some(StoreCmd::SetTags {
+            pane: pane(),
+            conversation: None,
+            tags: Tags::parse("a"),
+        })
+    );
+}
+
+#[test]
+fn a_detached_conversation_stores_no_tags() {
+    let mut store = PaneStore::open(9);
+    store.detach();
+    assert_eq!(store.set_tags(pane(), Tags::parse("a")), None);
 }

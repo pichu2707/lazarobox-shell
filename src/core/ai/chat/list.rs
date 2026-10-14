@@ -3,7 +3,7 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::{store::ConvRow, wrap::text_width};
+use super::{store::ConvRow, tags::Tags, wrap::text_width};
 use crate::core::ai::sanitize::{clean, is_format};
 
 /// The prompt shown while a delete waits for its answer.
@@ -14,6 +14,8 @@ pub const OPEN_ELSEWHERE: &str = "already open in another pane";
 pub const DELETE_FAILED: &str = "could not delete conversation";
 /// System line when the list could not be read.
 pub const LIST_FAILED: &str = "could not read conversations";
+/// System line when the tags could not be stored.
+pub const TAGS_FAILED: &str = "could not save tags";
 /// System line when the conversation could not be read.
 pub const RESUME_FAILED: &str = "could not open conversation";
 
@@ -28,6 +30,8 @@ pub enum ListOutcome {
     Resume(i64),
     /// The delete was confirmed for this database id.
     Delete(i64),
+    /// Edit the tags of the conversation with this database id.
+    EditTags(i64),
 }
 
 /// The list of conversations of a chat pane.
@@ -156,6 +160,36 @@ impl ListView {
         self.clamp();
     }
 
+    /// The tags of a row, or `None` when the list has no such row.
+    pub fn tags_of(&self, id: i64) -> Option<Tags> {
+        let row = self.rows.iter().flatten().find(|row| row.id == id)?;
+        Some(Tags {
+            project: row.tag.clone(),
+            extras: row.extras.clone(),
+        })
+    }
+
+    /// The store saved new tags for a conversation: its row takes them and the
+    /// new last activity, and the filter applies at once.
+    pub fn set_tags(&mut self, id: i64, tags: &Tags, updated_at: i64) {
+        let selected = self.selected().map(|row| row.id);
+        if let Some(rows) = &mut self.rows {
+            if let Some(row) = rows.iter_mut().find(|row| row.id == id) {
+                row.tag = tags.project.clone();
+                row.extras = tags.extras.clone();
+                row.updated_at = updated_at;
+            }
+            // Newest activity first, the higher id first on a tie, as the
+            // store lists them.
+            rows.sort_by_key(|row| std::cmp::Reverse((row.updated_at, row.id)));
+        }
+        // The cursor follows its row when the order changes.
+        if let Some(at) = selected.and_then(|sel| self.visible().iter().position(|r| r.id == sel)) {
+            self.cursor = at;
+        }
+        self.clamp();
+    }
+
     fn clamp(&mut self) {
         let last = self.visible().len().saturating_sub(1);
         self.cursor = self.cursor.min(last);
@@ -193,6 +227,11 @@ impl ListView {
             }
             KeyCode::Char('n') | KeyCode::Esc => return ListOutcome::New,
             KeyCode::Char('d') => self.confirming = self.selected().map(|row| row.id),
+            KeyCode::Char('t') => {
+                if let Some(row) = self.selected() {
+                    return ListOutcome::EditTags(row.id);
+                }
+            }
             KeyCode::Char('a') => {
                 self.all = !self.all;
                 self.cursor = 0;

@@ -17,6 +17,7 @@ pub mod store;
 pub mod stream;
 pub mod streams;
 pub mod summary;
+pub mod tag_editor;
 pub mod tags;
 pub mod transcript;
 pub mod workspace;
@@ -246,6 +247,12 @@ pub struct ChatState {
     approved_summary: Option<String>,
     /// The project tag proposed for the conversation (see `history`).
     tag: Option<String>,
+    /// The extra tags of the conversation.
+    extras: Vec<String>,
+    /// The user edited the tags: the project tag is theirs, not the origin's.
+    tags_edited: bool,
+    /// The tag editor, while it is open over the conversation or the list.
+    tag_editor: Option<tag_editor::TagEditor>,
     /// The conversation list, while it is shown instead of the conversation.
     list: Option<list::ListView>,
     /// The profile of the conversation: the current one when it is new, the
@@ -285,6 +292,9 @@ impl ChatState {
             draft: None,
             approved_summary: None,
             tag: None,
+            extras: Vec::new(),
+            tags_edited: false,
+            tag_editor: None,
             list: None,
             profile: Profile::default(),
             store: store::PaneStore::new(),
@@ -842,5 +852,7 @@ mod state_tests;
 mod stream_tests;
 #[cfg(test)]
 mod summary_tests;
+#[cfg(test)]
+mod tag_editor_tests;
 #[cfg(test)]
 mod wait_tests;

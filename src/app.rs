@@ -45,6 +45,7 @@ mod history;
 mod notes;
 mod offer;
 mod summary;
+mod tags;
 
 /// Rows of history kept by the emulator.
 const SCROLLBACK_LINES: usize = 10_000;
@@ -65,6 +66,10 @@ const NOTE_CHAT_ONLY: &str = "Save as note is for chat panes; open one with Ctrl
 const SUMMARY_CHAT_ONLY: &str = "The summary is for chat panes; open one with Ctrl+Space c";
 /// Notice of the memory-line key on a pane that is not a chat.
 const MEMORY_CHAT_ONLY: &str = "The memory line is for chat panes; open one with Ctrl+Space c";
+/// Notice for the tag key on a shell pane.
+const TAGS_CHAT_ONLY: &str = "Tags are for chat panes; open one with Ctrl+Space c";
+/// Notice for the tag key with no conversation store.
+const TAGS_NEED_HISTORY: &str = "Tags need the conversation history";
 
 /// Byte sent to the child when the prefix is pressed twice (NUL, Ctrl+Space).
 const PREFIX_LITERAL: u8 = 0x00;
@@ -1234,7 +1239,8 @@ impl App {
                 | PrefixAction::OpenChat
                 | PrefixAction::SaveNote
                 | PrefixAction::ToggleMemory
-                | PrefixAction::Summarize,
+                | PrefixAction::Summarize
+                | PrefixAction::EditTags,
             ) => InputMode::Terminal,
             Step::Run(
                 PrefixAction::ShowCommands
@@ -1257,6 +1263,14 @@ impl App {
             }
             Step::Run(PrefixAction::SaveNote) => {
                 self.notice = Some(NOTE_CHAT_ONLY.to_string());
+                Vec::new()
+            }
+            Step::Run(PrefixAction::EditTags) if self.focused_is_chat() => {
+                let id = self.tab().focus;
+                self.chat_tags_key(id)
+            }
+            Step::Run(PrefixAction::EditTags) => {
+                self.notice = Some(TAGS_CHAT_ONLY.to_string());
                 Vec::new()
             }
             Step::Run(PrefixAction::Summarize) if self.focused_is_chat() => {
@@ -6483,6 +6497,9 @@ mod app_tests {
 
     /// History in the chat pane: list, saving, resume, delete (ai-chat C9).
     mod chat_history;
+
+    /// The tag editor of a chat (ai-chat C9).
+    mod chat_tags;
 
     /// Memory in a chat view (engram-memory M6).
     mod chat_memory;

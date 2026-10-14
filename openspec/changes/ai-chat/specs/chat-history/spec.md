@@ -248,7 +248,7 @@ When a chat is opened, its project tag MUST be proposed from the origin cwd: wal
 - THEN the script was never run
 
 ### Requirement: Edit tags
-The user MUST be able to edit the project tag and to add extra tags, from the conversation list (`t` on a row) and from an open conversation (Ctrl+T). The editor MUST show the current project tag and extra tags, accept edits, save on Enter and discard on Esc. A conversation MAY have at most 8 extra tags; each is cleaned like a project tag; empty tags are dropped and duplicates (case-insensitive) are kept once. Tags are typed as a comma-separated line (the first entry is the project tag): a comma separates tags and is never part of one. Saved changes MUST be stored at once, update the last activity, and be reflected in the list filter.
+The user MUST be able to edit the project tag and to add extra tags, from the conversation list (`t` on a row) and from an open conversation (`Ctrl+Space T`; see modal-input). The editor MUST show the current project tag and extra tags, accept edits, save on Enter and discard on Esc. A conversation MAY have at most 8 extra tags; each is cleaned like a project tag; empty tags are dropped and duplicates (case-insensitive) are kept once. Tags are typed as a comma-separated line (the first entry is the project tag): a comma separates tags and is never part of one. Saved changes MUST be stored at once, update the last activity, and be reflected in the list filter.
 
 #### Scenario: Edit the project tag [auto]
 - GIVEN a conversation tagged `proj`
@@ -269,6 +269,16 @@ The user MUST be able to edit the project tag and to add extra tags, from the co
 - GIVEN an edited tag
 - WHEN Esc is pressed
 - THEN the stored tags are unchanged
+
+#### Scenario: Tags of a conversation not yet created [auto]
+- GIVEN a new conversation view with no message sent
+- WHEN the tags are edited and saved
+- THEN nothing is stored yet, the pane keeps them, and the first message creates the conversation with those tags; a project tag the user removed is not proposed again from the origin
+
+#### Scenario: Editor shares the pane [auto]
+- GIVEN the note editor or the summary draft is open
+- WHEN `Ctrl+Space T` is pressed
+- THEN the tag editor does not open; and while the tag editor is open `Ctrl+Space n` and `Ctrl+Space s` open nothing, and the `engram serve` question does not take its keys
 
 #### Scenario: Comma separates tags [auto]
 - GIVEN the editor line `proj,a,b`

@@ -2008,6 +2008,7 @@ mod tests {
             pane: id(1),
             profile: "programmer".into(),
             tag: None,
+            extras: vec![],
             first: stored(Role::User, text, MsgStatus::Complete),
             origin: None,
             open: Vec::new(),
@@ -2109,6 +2110,83 @@ mod tests {
             .unwrap();
         // The first message plus the 20 appends: the wait cost nothing.
         assert_eq!(stored, 21, "the appends held back by the lock were lost");
+    }
+
+    // ai-chat 10.5: a tag edit goes through the real store thread and file.
+    #[tokio::test]
+    async fn a_tag_edit_is_stored_in_the_real_file_and_listed() {
+        use crate::core::ai::chat::tags::Tags;
+        let dir = tempfile::tempdir().unwrap();
+        let db = store_db(&dir);
+        let (mut panes, mut rx) = panes_with_store(db.clone());
+        panes.apply(vec![Effect::Store(store_create("hi"))]);
+        let Some(StoreReply::Created { conversation, .. }) = recv_store(&mut rx).await else {
+            panic!("no Created reply");
+        };
+        let tags = Tags::parse("client-a, sql, SQL, etl");
+        panes.apply(vec![Effect::Store(StoreCmd::SetTags {
+            pane: id(1),
+            conversation: Some(conversation),
+            tags,
+        })]);
+        let reply = recv_store(&mut rx).await;
+        let Some(StoreReply::TagsSaved { tags: saved, .. }) = reply else {
+            panic!("expected TagsSaved, got {reply:?}");
+        };
+        assert_eq!(saved, Tags::parse("client-a, sql, etl"));
+        panes.apply(vec![Effect::Store(StoreCmd::List {
+            pane: id(1),
+            origin: None,
+        })]);
+        let Some(StoreReply::Listed { rows, .. }) = recv_store(&mut rx).await else {
+            panic!("no Listed reply");
+        };
+        assert_eq!(rows[0].tag.as_deref(), Some("client-a"));
+        assert_eq!(rows[0].extras, ["etl", "sql"]);
+        panes.shutdown_store(STORE_JOIN_BOUND);
+
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let stored: Vec<(String, i64)> = conn
+            .prepare("SELECT tag, is_project FROM tags ORDER BY is_project DESC, tag")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            stored,
+            vec![
+                ("client-a".to_string(), 1),
+                ("etl".to_string(), 0),
+                ("sql".to_string(), 0),
+            ]
+        );
+    }
+
+    // A tag edit queued right before quit is flushed within the join bound.
+    #[tokio::test]
+    async fn quit_flushes_a_tag_edit_within_the_join_bound() {
+        use crate::core::ai::chat::tags::Tags;
+        let dir = tempfile::tempdir().unwrap();
+        let db = store_db(&dir);
+        let (mut panes, mut rx) = panes_with_store(db.clone());
+        panes.apply(vec![Effect::Store(store_create("q"))]);
+        let Some(StoreReply::Created { conversation, .. }) = recv_store(&mut rx).await else {
+            panic!("no Created reply");
+        };
+        panes.apply(vec![Effect::Store(StoreCmd::SetTags {
+            pane: id(1),
+            conversation: Some(conversation),
+            tags: Tags::parse("late"),
+        })]);
+        let started = Instant::now();
+        panes.shutdown_store(STORE_JOIN_BOUND);
+        assert!(started.elapsed() < STORE_JOIN_BOUND);
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let tag: String = conn
+            .query_row("SELECT tag FROM tags", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tag, "late");
     }
 
     #[tokio::test]

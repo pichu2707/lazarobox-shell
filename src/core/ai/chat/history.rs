@@ -7,6 +7,8 @@ use super::{
     engine::Role,
     list::ListView,
     store::{DELETED_LINE, NewConversation, StoreCmd, StoreReply, StoredMessage},
+    tag_editor::{TagEditor, TagTarget},
+    tags::Tags,
 };
 use crate::core::{ai::config::Profile, layout::PaneId};
 
@@ -18,6 +20,82 @@ impl ChatState {
 
     pub fn set_tag(&mut self, tag: Option<String>) {
         self.tag = tag;
+    }
+
+    /// The extra tags of the conversation.
+    pub fn extras(&self) -> &[String] {
+        &self.extras
+    }
+
+    /// The project tag and the extras together.
+    pub fn tags(&self) -> Tags {
+        Tags {
+            project: self.tag.clone(),
+            extras: self.extras.clone(),
+        }
+    }
+
+    /// Takes tags the store confirmed (or a resume brought).
+    pub fn set_tags(&mut self, tags: &Tags) {
+        self.tag = tags.project.clone();
+        self.extras = tags.extras.clone();
+    }
+
+    /// The user's tag edit: the pane takes the tags and, when the
+    /// conversation exists, the command that stores them is returned. Before
+    /// the first message nothing is stored: the `Create` carries them, and the
+    /// project tag is no longer the origin's to propose.
+    pub fn edit_tags(&mut self, pane: PaneId, tags: Tags) -> Option<StoreCmd> {
+        // Only a changed project entry takes the project tag away from the
+        // origin; extras alone leave it to be resolved.
+        if tags.project != self.tag {
+            self.tags_edited = true;
+        }
+        self.set_tags(&tags);
+        self.store.set_tags(pane, tags)
+    }
+
+    /// Whether the user changed the project tag of a conversation that is not
+    /// stored.
+    pub fn tags_edited(&self) -> bool {
+        self.tags_edited
+    }
+
+    /// The tag editor, while it is open.
+    pub fn tag_editor(&self) -> Option<&TagEditor> {
+        self.tag_editor.as_ref()
+    }
+
+    pub fn tag_editor_mut(&mut self) -> Option<&mut TagEditor> {
+        self.tag_editor.as_mut()
+    }
+
+    /// Opens the editor on the tags of this conversation. `false` when
+    /// another view owns the pane: the list (it has its own `t`), the note
+    /// editor or the summary draft.
+    pub fn open_tag_editor(&mut self, target: TagTarget) -> bool {
+        if self.list.is_some() {
+            return false;
+        }
+        let tags = self.tags();
+        self.open_tag_editor_for(target, &tags)
+    }
+
+    /// Opens the editor on `tags`. An editor already open stays as it is.
+    /// `false` when the note editor or the summary draft is open.
+    pub fn open_tag_editor_for(&mut self, target: TagTarget, tags: &Tags) -> bool {
+        if self.tag_editor.is_some() {
+            return true;
+        }
+        if self.editor.is_some() || self.draft.is_some() {
+            return false;
+        }
+        self.tag_editor = Some(TagEditor::new(target, tags));
+        true
+    }
+
+    pub fn close_tag_editor(&mut self) {
+        self.tag_editor = None;
     }
 
     /// The profile of the conversation.
@@ -56,7 +134,14 @@ impl ChatState {
         let new = NewConversation {
             profile: self.profile.id().to_owned(),
             tag: self.tag.clone(),
-            origin: self.origin_cwd.clone(),
+            extras: self.extras.clone(),
+            // A project tag the user removed must not come back from the
+            // origin when the store creates the conversation.
+            origin: if self.tags_edited {
+                None
+            } else {
+                self.origin_cwd.clone()
+            },
             open: open.to_vec(),
         };
         std::mem::take(&mut self.outbox)
@@ -131,7 +216,7 @@ impl ChatState {
         &mut self,
         conversation: i64,
         profile: Profile,
-        tag: Option<String>,
+        tags: Tags,
         messages: Vec<Msg>,
     ) {
         let stored = Self::resumed(self.origin_cwd.clone(), messages).entries;
@@ -141,8 +226,10 @@ impl ChatState {
             .partition(|entry| matches!(entry, Entry::Memory(_)));
         self.entries = memory.into_iter().chain(stored).chain(others).collect();
         self.list = None;
+        self.tag_editor = None;
         self.profile = profile;
-        self.tag = tag;
+        self.set_tags(&tags);
+        self.tags_edited = false;
         self.store = super::store::PaneStore::open(conversation);
         self.set_conversation(conversation);
         self.scroll = super::transcript::Scroll::Follow;

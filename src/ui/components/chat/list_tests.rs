@@ -19,6 +19,7 @@ fn row(id: i64, updated_at: i64, tag: &str, first: &str) -> ConvRow {
         updated_at,
         profile: "programmer".into(),
         tag: Some(tag.into()),
+        extras: vec![],
         first: first.into(),
     }
 }
@@ -189,6 +190,17 @@ fn the_hints_list_the_keys_and_all_projects_only_with_a_project() {
     none.list_mut().unwrap().set_rows(Vec::new());
     let shown = rows(&draw(&none, 70, 12));
     assert!(!shown[11].contains("all projects"), "{shown:?}");
+}
+
+#[test]
+fn the_hints_name_the_tag_key() {
+    let shown = rows(&draw(&listing(), 70, 12));
+    assert!(shown[11].contains("t tags"), "{shown:?}");
+    let mut none = ChatState::new(None);
+    none.open_list();
+    none.list_mut().unwrap().set_rows(Vec::new());
+    let shown = rows(&draw(&none, 70, 12));
+    assert!(shown[11].contains("t tags"), "{shown:?}");
 }
 
 #[test]

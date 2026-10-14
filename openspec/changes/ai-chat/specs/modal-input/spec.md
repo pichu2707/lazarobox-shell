@@ -234,8 +234,9 @@ In TERMINAL, with a chat pane focused and the conversation view shown, keys MUST
 | Ctrl+B | yank the last code block of the last assistant answer (see chat-pane) |
 | PageUp, PageDown | scroll the transcript |
 | Ctrl+R | expand or collapse the most recent reasoning block (see chat-pane) |
-| Ctrl+T | open the tag editor (see chat-history) |
 | Ctrl+Space | enter PREFIX as in any pane |
+
+The tag editor (see chat-history) is opened by the prefix key `T` (`Ctrl+Space T`, capital), not by a direct Ctrl+letter chord: new chat keys live behind the prefix (user rule 2026-10-13), and `t` is already the TAB group. `T` MUST be a root leaf of the prefix table, left out of the key hint like `o` and `s`, and on a shell pane it MUST only show a notice.
 
 Ctrl+C on a chat pane MUST NEVER emit Quit or a WritePty, whether a stream is running or not. Pressing Ctrl+Space twice MUST swallow the second press (no NUL is inserted in the composer). While the conversation list, the tag editor or the delete confirmation is shown, keys act as defined in chat-history, with the same swallow rule. The key bindings are defaults for design to confirm; Ctrl+R (R for reasoning) is a proposed default chosen in the style of Ctrl+Y, Ctrl+B and Ctrl+T, and is an open question until confirmed on a real terminal (manual check M8).
 

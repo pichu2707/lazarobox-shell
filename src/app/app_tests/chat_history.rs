@@ -20,34 +20,34 @@ use crate::core::{
     layout::PaneId,
 };
 
-fn chat_id() -> PaneId {
+pub(super) fn chat_id() -> PaneId {
     id2()
 }
 
-fn second_chat() -> PaneId {
+pub(super) fn second_chat() -> PaneId {
     PaneId::for_test(3)
 }
 
-fn chat_at(a: &App, id: PaneId) -> &ChatState {
+pub(super) fn chat_at(a: &App, id: PaneId) -> &ChatState {
     match a.pane_view(id) {
         Some(PaneView::Chat(chat)) => chat,
         _ => panic!("pane {id:?} is not a chat"),
     }
 }
 
-fn chat_of(a: &App) -> &ChatState {
+pub(super) fn chat_of(a: &App) -> &ChatState {
     chat_at(a, chat_id())
 }
 
-fn code(code: KeyCode, mods: KeyModifiers) -> AppEvent {
+pub(super) fn code(code: KeyCode, mods: KeyModifiers) -> AppEvent {
     AppEvent::Key(KeyEvent::new(code, mods))
 }
 
-fn plain(code_: KeyCode) -> AppEvent {
+pub(super) fn plain(code_: KeyCode) -> AppEvent {
     code(code_, KeyModifiers::NONE)
 }
 
-fn ollama() -> AiConfig {
+pub(super) fn ollama() -> AiConfig {
     let mut ai = AiConfig::default();
     ai.set(
         Task::Chat,
@@ -59,7 +59,7 @@ fn ollama() -> AiConfig {
     ai
 }
 
-fn detection() -> Detection {
+pub(super) fn detection() -> Detection {
     Detection {
         engines: vec![EngineState {
             id: "ollama",
@@ -70,7 +70,7 @@ fn detection() -> Detection {
     }
 }
 
-fn prompt_for(id: PaneId) -> AppEvent {
+pub(super) fn prompt_for(id: PaneId) -> AppEvent {
     AppEvent::PromptReady(
         id,
         Resolved {
@@ -81,7 +81,7 @@ fn prompt_for(id: PaneId) -> AppEvent {
 }
 
 /// A launched app with history on and a ready ollama engine, before any chat.
-fn history_app() -> App {
+pub(super) fn history_app() -> App {
     let mut a = launched(120, 30).with_ai(ollama()).with_chat_history();
     a.update(AppEvent::EnginesDetected(detection()));
     a
@@ -89,24 +89,31 @@ fn history_app() -> App {
 
 /// `Prefix c` on `history_app`: the chat pane (id 2) shows its list, which
 /// has not been answered yet.
-fn opened() -> (App, Vec<Effect>) {
+pub(super) fn opened() -> (App, Vec<Effect>) {
     let mut a = history_app();
     let effects = press(&mut a, "c");
     assert_eq!(a.focused(), chat_id());
     (a, effects)
 }
 
-fn row(id: i64, updated_at: i64, tag: Option<&str>, profile: &str, first: &str) -> ConvRow {
+pub(super) fn row(
+    id: i64,
+    updated_at: i64,
+    tag: Option<&str>,
+    profile: &str,
+    first: &str,
+) -> ConvRow {
     ConvRow {
         id,
         updated_at,
         profile: profile.into(),
         tag: tag.map(str::to_owned),
+        extras: vec![],
         first: first.into(),
     }
 }
 
-fn rows() -> Vec<ConvRow> {
+pub(super) fn rows() -> Vec<ConvRow> {
     vec![
         row(30, 3_000, Some("proj"), "programmer", "newest"),
         row(20, 2_000, Some("other"), "programmer", "elsewhere"),
@@ -115,11 +122,16 @@ fn rows() -> Vec<ConvRow> {
 }
 
 /// The store's answer to the list, for an origin in project `proj`.
-fn listed(a: &mut App, id: PaneId, rows: Vec<ConvRow>) -> Vec<Effect> {
+pub(super) fn listed(a: &mut App, id: PaneId, rows: Vec<ConvRow>) -> Vec<Effect> {
     listed_in(a, id, Some("proj"), rows)
 }
 
-fn listed_in(a: &mut App, id: PaneId, tag: Option<&str>, rows: Vec<ConvRow>) -> Vec<Effect> {
+pub(super) fn listed_in(
+    a: &mut App,
+    id: PaneId,
+    tag: Option<&str>,
+    rows: Vec<ConvRow>,
+) -> Vec<Effect> {
     a.update(AppEvent::Store(StoreReply::Listed {
         pane: id,
         tag: tag.map(str::to_owned),
@@ -128,7 +140,7 @@ fn listed_in(a: &mut App, id: PaneId, tag: Option<&str>, rows: Vec<ConvRow>) -> 
 }
 
 /// A chat pane with its list answered.
-fn listing() -> App {
+pub(super) fn listing() -> App {
     let (mut a, _) = opened();
     a.update(prompt_for(chat_id()));
     listed(&mut a, chat_id(), rows());
@@ -136,20 +148,20 @@ fn listing() -> App {
 }
 
 /// A chat in the conversation view: the list closed with `n`.
-fn conversation() -> App {
+pub(super) fn conversation() -> App {
     let mut a = listing();
     a.update(key('n'));
     a.take_dirty();
     a
 }
 
-fn type_text(a: &mut App, text: &str) {
+pub(super) fn type_text(a: &mut App, text: &str) {
     for c in text.chars() {
         a.update(key(c));
     }
 }
 
-fn stores(effects: &[Effect]) -> Vec<StoreCmd> {
+pub(super) fn stores(effects: &[Effect]) -> Vec<StoreCmd> {
     effects
         .iter()
         .filter_map(|e| match e {
@@ -159,7 +171,7 @@ fn stores(effects: &[Effect]) -> Vec<StoreCmd> {
         .collect()
 }
 
-fn sent_turn(effects: &[Effect]) -> u64 {
+pub(super) fn sent_turn(effects: &[Effect]) -> u64 {
     effects
         .iter()
         .find_map(|e| match e {
@@ -169,12 +181,12 @@ fn sent_turn(effects: &[Effect]) -> u64 {
         .expect("a ChatSend")
 }
 
-fn ask(a: &mut App, question: &str) -> Vec<Effect> {
+pub(super) fn ask(a: &mut App, question: &str) -> Vec<Effect> {
     type_text(a, question);
     a.update(plain(KeyCode::Enter))
 }
 
-fn created(id: PaneId, conversation: i64) -> AppEvent {
+pub(super) fn created(id: PaneId, conversation: i64) -> AppEvent {
     AppEvent::Store(StoreReply::Created {
         pane: id,
         conversation,
@@ -183,15 +195,15 @@ fn created(id: PaneId, conversation: i64) -> AppEvent {
     })
 }
 
-fn delta(id: PaneId, turn: u64, text: &str) -> AppEvent {
+pub(super) fn delta(id: PaneId, turn: u64, text: &str) -> AppEvent {
     AppEvent::Chat(id, turn, StreamEvent::Delta(text.into()))
 }
 
-fn finish(id: PaneId, turn: u64) -> AppEvent {
+pub(super) fn finish(id: PaneId, turn: u64) -> AppEvent {
     AppEvent::Chat(id, turn, StreamEvent::Done(Finish::Stop))
 }
 
-fn systems(chat: &ChatState) -> Vec<String> {
+pub(super) fn systems(chat: &ChatState) -> Vec<String> {
     chat.entries()
         .iter()
         .filter_map(|e| match e {
@@ -368,6 +380,7 @@ fn the_first_send_creates_the_conversation_before_the_engine_starts() {
             pane,
             profile,
             tag,
+            extras: _,
             first,
             origin,
             open,
@@ -661,12 +674,13 @@ fn stored(role: Role, text: &str, status: MsgStatus) -> Msg {
     }
 }
 
-fn resumed(pane: PaneId, conversation: i64, profile: &str) -> AppEvent {
+pub(super) fn resumed(pane: PaneId, conversation: i64, profile: &str) -> AppEvent {
     AppEvent::Store(StoreReply::Resumed {
         pane,
         conversation,
         profile: profile.into(),
         tag: Some("proj".into()),
+        extras: vec![],
         messages: vec![
             stored(Role::User, "old question", MsgStatus::Complete),
             stored(Role::Assistant, "old answer", MsgStatus::Complete),

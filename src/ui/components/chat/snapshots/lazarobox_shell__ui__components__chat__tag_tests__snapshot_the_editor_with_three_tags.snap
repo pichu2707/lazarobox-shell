@@ -1,0 +1,12 @@
+---
+source: src/ui/components/chat/tag_tests.rs
+expression: "text(&draw(&editing(), 50, 8))"
+---
+Edit tags
+▸ proj, sql, etl
+project tag first · extras 2/8
+
+
+
+
+↵ save · Esc discard

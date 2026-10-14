@@ -5,6 +5,8 @@ use super::{
     engine::{ChatError, Finish, Role},
     state_tests::{chat, ready},
     store::{StoreCmd, StoreReply, StoredMessage},
+    tag_editor::TagTarget,
+    tags::Tags,
     *,
 };
 use crate::core::{ai::config::Profile, layout::PaneId};
@@ -77,6 +79,7 @@ fn the_first_send_creates_the_conversation_with_profile_tag_and_message() {
             pane: pane(),
             profile: "analyst".into(),
             tag: Some("proj".into()),
+            extras: vec![],
             first: StoredMessage {
                 role: Role::User,
                 text: "hello".into(),
@@ -355,7 +358,12 @@ fn a_resumed_conversation_appends_to_the_same_id() {
             status: MsgStatus::Cancelled,
         },
     ];
-    state.resume_into(42, Profile::Analyst, Some("proj".into()), stored);
+    state.resume_into(
+        42,
+        Profile::Analyst,
+        Tags::new(Some("proj".into()), vec![]),
+        stored,
+    );
     let turn = sent(&mut state, "new q");
     let out = cmds(&mut state);
     assert_eq!(out.len(), 1);
@@ -386,4 +394,207 @@ fn an_event_of_another_turn_saves_nothing() {
     state.apply(turn + 5, delta("stray"));
     state.apply(turn + 5, done());
     assert_eq!(cmds(&mut state), Vec::new());
+}
+
+// ---- tags (10.5) -----------------------------------------------------------
+
+// Spec (Edit tags): a conversation not yet created keeps the edit for its
+// Create; nothing is stored before the first message.
+#[test]
+fn tags_edited_before_the_first_message_go_with_the_create() {
+    let mut state = chat();
+    state.set_tag(Some("proj".into()));
+    assert_eq!(
+        state.edit_tags(pane(), Tags::parse("client, sql, etl")),
+        None
+    );
+    assert_eq!(state.tag(), Some("client"));
+    assert_eq!(state.extras(), ["sql", "etl"]);
+    sent(&mut state, "hello");
+    let out = cmds(&mut state);
+    let [StoreCmd::Create { tag, extras, .. }] = out.as_slice() else {
+        panic!("expected one Create, got {out:?}");
+    };
+    assert_eq!(tag.as_deref(), Some("client"));
+    assert_eq!(extras, &["sql", "etl"]);
+}
+
+#[test]
+fn a_project_tag_removed_before_the_first_message_is_not_proposed_again() {
+    let mut state = ChatState::new(Some("/work/proj".into()));
+    state.set_tag(Some("proj".into()));
+    state.edit_tags(pane(), Tags::default());
+    sent(&mut state, "hello");
+    let out = cmds(&mut state);
+    let [StoreCmd::Create { tag, origin, .. }] = out.as_slice() else {
+        panic!("expected one Create, got {out:?}");
+    };
+    assert_eq!((tag, origin), (&None, &None));
+}
+
+#[test]
+fn an_untouched_tag_keeps_the_origin_for_the_store_to_resolve() {
+    let mut state = ChatState::new(Some("/work/proj".into()));
+    sent(&mut state, "hello");
+    let out = cmds(&mut state);
+    let [StoreCmd::Create { origin, .. }] = out.as_slice() else {
+        panic!("expected one Create");
+    };
+    assert_eq!(origin.as_deref(), Some(std::path::Path::new("/work/proj")));
+}
+
+#[test]
+fn tags_of_an_open_conversation_are_stored_at_once() {
+    let (mut state, _) = open_conversation("hi");
+    let cmd = state.edit_tags(pane(), Tags::parse("client-a, sql"));
+    assert_eq!(
+        cmd,
+        Some(StoreCmd::SetTags {
+            pane: pane(),
+            conversation: Some(7),
+            tags: Tags::parse("client-a, sql"),
+        })
+    );
+    assert_eq!(state.tags(), Tags::parse("client-a, sql"));
+}
+
+#[test]
+fn tags_edited_while_the_create_is_in_flight_name_the_pane() {
+    let mut state = chat();
+    sent(&mut state, "hi");
+    cmds(&mut state);
+    let cmd = state.edit_tags(pane(), Tags::parse("x"));
+    assert!(matches!(
+        cmd,
+        Some(StoreCmd::SetTags {
+            conversation: None,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn a_detached_conversation_keeps_the_tags_in_the_pane_only() {
+    let (mut state, _) = open_conversation("hi");
+    state.detach_store();
+    assert_eq!(state.edit_tags(pane(), Tags::parse("x")), None);
+    assert_eq!(state.tag(), Some("x"));
+}
+
+#[test]
+fn a_resumed_conversation_brings_its_tags() {
+    let mut state = chat();
+    state.resume_into(42, Profile::Analyst, Tags::parse("proj, a, b"), Vec::new());
+    assert_eq!(state.tags(), Tags::parse("proj, a, b"));
+}
+
+#[test]
+fn saved_tags_replace_the_pane_tags() {
+    let mut state = chat();
+    state.set_tags(&Tags::parse("p, q"));
+    assert_eq!(
+        (state.tag(), state.extras()),
+        (Some("p"), ["q".to_owned()].as_slice())
+    );
+}
+
+// ---- the tag editor view (10.5) --------------------------------------------
+
+#[test]
+fn the_pane_editor_opens_on_the_tags_of_the_conversation() {
+    let mut state = chat();
+    state.set_tags(&Tags::parse("proj, a"));
+    assert!(state.open_tag_editor(TagTarget::Pane));
+    let editor = state.tag_editor().expect("open");
+    assert_eq!(editor.text(), "proj, a");
+    assert_eq!(editor.target(), TagTarget::Pane);
+}
+
+#[test]
+fn a_row_editor_opens_on_the_tags_it_is_given() {
+    let mut state = chat();
+    state.open_list();
+    assert!(state.open_tag_editor_for(TagTarget::Row(4), &Tags::parse("x, y")));
+    assert_eq!(state.tag_editor().unwrap().text(), "x, y");
+}
+
+#[test]
+fn the_pane_editor_does_not_open_over_the_list() {
+    let mut state = chat();
+    state.open_list();
+    assert!(!state.open_tag_editor(TagTarget::Pane));
+    assert!(state.tag_editor().is_none());
+}
+
+#[test]
+fn the_editor_does_not_open_over_the_note_editor_or_the_summary_draft() {
+    let (mut state, turn) = open_conversation("hi");
+    state.apply(turn, delta("an answer"));
+    state.apply(turn, done());
+    state.open_note_editor().unwrap();
+    assert!(!state.open_tag_editor(TagTarget::Pane));
+    state.close_note_editor();
+    assert!(state.open_tag_editor(TagTarget::Pane));
+}
+
+#[test]
+fn an_open_editor_keeps_its_text_when_asked_to_open_again() {
+    let mut state = chat();
+    state.set_tags(&Tags::parse("proj"));
+    state.open_tag_editor(TagTarget::Pane);
+    state.tag_editor_mut().unwrap().paste(",typed");
+    assert!(state.open_tag_editor(TagTarget::Pane));
+    assert_eq!(state.tag_editor().unwrap().text(), "proj,typed");
+}
+
+#[test]
+fn closing_drops_the_editor_and_changes_no_tag() {
+    let mut state = chat();
+    state.set_tags(&Tags::parse("proj"));
+    state.open_tag_editor(TagTarget::Pane);
+    state.tag_editor_mut().unwrap().paste(",typed");
+    state.close_tag_editor();
+    assert!(state.tag_editor().is_none());
+    assert_eq!(state.tags(), Tags::parse("proj"));
+    assert!(!state.tags_edited());
+}
+
+// The origin's project tag is only given up when the user changed the project
+// entry; extras alone leave it for the store to resolve.
+#[test]
+fn extras_alone_leave_the_project_tag_to_the_origin() {
+    let mut state = ChatState::new(Some("/work/proj".into()));
+    state.edit_tags(pane(), Tags::parse(", sql"));
+    assert!(!state.tags_edited());
+    sent(&mut state, "hello");
+    let out = cmds(&mut state);
+    let [
+        StoreCmd::Create {
+            tag,
+            extras,
+            origin,
+            ..
+        },
+    ] = out.as_slice()
+    else {
+        panic!("expected one Create, got {out:?}");
+    };
+    assert_eq!(tag, &None);
+    assert_eq!(extras, &["sql"]);
+    assert_eq!(origin.as_deref(), Some(std::path::Path::new("/work/proj")));
+}
+
+#[test]
+fn changing_the_project_entry_gives_up_the_origin() {
+    let mut state = ChatState::new(Some("/work/proj".into()));
+    state.edit_tags(pane(), Tags::parse("mine"));
+    assert!(state.tags_edited());
+}
+
+#[test]
+fn keeping_the_known_project_tag_and_adding_extras_does_not_count_as_a_change() {
+    let mut state = ChatState::new(Some("/work/proj".into()));
+    state.set_tag(Some("proj".into()));
+    state.edit_tags(pane(), Tags::parse("proj, sql"));
+    assert!(!state.tags_edited());
 }
