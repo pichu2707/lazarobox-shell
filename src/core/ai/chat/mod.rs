@@ -7,6 +7,8 @@ pub mod adapters;
 pub mod composer;
 pub mod engine;
 pub mod guidance;
+pub mod history;
+pub mod list;
 pub mod memory;
 pub mod note;
 pub mod notify;
@@ -241,6 +243,10 @@ pub struct ChatState {
     draft: Option<summary::SummaryDraft>,
     /// The summary the user approved: sent once, with the session end.
     approved_summary: Option<String>,
+    /// The project tag proposed for the conversation (see `history`).
+    tag: Option<String>,
+    /// The conversation list, while it is shown instead of the conversation.
+    list: Option<list::ListView>,
 }
 
 impl ChatState {
@@ -263,6 +269,8 @@ impl ChatState {
             summarizing: None,
             draft: None,
             approved_summary: None,
+            tag: None,
+            list: None,
         }
     }
 

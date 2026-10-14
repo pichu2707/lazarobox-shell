@@ -1,0 +1,12 @@
+---
+source: src/ui/components/chat/list_tests.rs
+expression: "text(&draw(&chat, 60, 8))"
+---
+Conversations · all projects
+No conversations yet. Press n to start one.
+
+
+
+
+
+↵ open · n new · d delete
