@@ -10,6 +10,33 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Scrolling for every pane. The mouse wheel scrolls the pane under the pointer
+  without moving the focus: three lines per notch in a shell pane's
+  scrollback and in the AI chat transcript, and straight to the application
+  when it asks for the mouse (`vim`, `htop`) or runs on the alternate screen
+  (`less`, `man`, which get arrow keys). Typing in the pane or pasting returns
+  it to the live screen.
+- COPY mode on AI chat panes (`Ctrl+Space [`): `j`/`k`, `Ctrl+u`/`Ctrl+d`,
+  `gg`, `G`, `Esc` or `q` to leave. The streaming answer keeps arriving while
+  the view is scrolled.
+- A `[+N]` badge on a scrolled pane, a position in the statusline
+  (`TERMINAL ↑12/340`) and a key hint in COPY mode.
+- The menu `Mouse` row is now a real `off`/`on` setting with a live preview;
+  `Esc` reverts it and `s` saves it as the root key `mouse` of `config.toml`.
+
+### Changed
+
+- The mouse is captured by default (`mouse = true`), but only the wheel is
+  reported: hold `Shift` to select text with the terminal. Set `mouse = false`
+  to turn the capture off. The terminal is released on quit, on exit of the
+  last pane and on panic.
+
+### Removed
+
+- The `config: mouse is not supported yet` notice.
+
 ## [0.11.0] - 2026-10-14
 
 ### Added

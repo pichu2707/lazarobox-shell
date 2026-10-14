@@ -52,7 +52,7 @@ pub fn route_wheel(f: PaneFacts, d: WheelDir, col: u16, row: u16, m: KeyModifier
 pub fn encode_wheel(d: WheelDir, col: u16, row: u16, m: KeyModifiers, mode: MouseMode, enc: MouseEncoding) -> Option<Vec<u8>>;
 ```
 
-Routing order: copy → `CopyScroll`; mode != None → `Write(encode_wheel)`, with col/row 0-based pane-relative and 1-based in the bytes, button 64/65 plus shift 4, alt 8, ctrl 16 (no modifiers in `Press`); alt screen → `Write` of 3x `encode_key(Up|Down, modes)`; otherwise `Scrollback`. Chat goes to `ChatLines`, in COPY or not.
+Routing order: copy → `CopyScroll`; mode in `PressRelease`, `ButtonMotion`, `AnyMotion` → `Write(encode_wheel)`, with col/row 0-based pane-relative and 1-based in the bytes, button 64/65 plus shift 4, alt 8, ctrl 16 (X10 `Press` never receives the wheel: it falls through to the alt-screen and scrollback rules); alt screen → `Write` of 3x `encode_key(Up|Down, modes)`; otherwise `Scrollback`. Chat goes to `ChatLines`, in COPY or not.
 
 `Scroll::lines_up(n,total,h)` / `lines_down`: same contract as `page_*` (a view that fits stays `Follow`, reaching the end gives `Follow`). `App::scrolled_by(id) -> Option<usize>` (shell offset, or chat lines below the view, `None` at 0) feeds the badge. `App::scroll_position()` gives `copy_position()` in COPY, otherwise the focused pane's `(N, total)` when scrolled, and in `ChatCopy` always (an explicit 0).
 
