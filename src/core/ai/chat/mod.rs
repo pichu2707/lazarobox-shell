@@ -4,6 +4,7 @@
 //! turn in flight and the cwd the pane was opened from.
 
 pub mod adapters;
+pub mod claude;
 pub mod composer;
 pub mod engine;
 pub mod guidance;

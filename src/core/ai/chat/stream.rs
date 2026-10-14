@@ -27,7 +27,7 @@ pub trait StreamDecoder {
 
 /// Splits bytes into lines at `\n`, dropping a trailing `\r`. A line over the
 /// cap is reported once and the buffer is dropped.
-struct Lines {
+pub(super) struct Lines {
     buf: Vec<u8>,
     /// Leading bytes of `buf` already known to hold no newline.
     scanned: usize,
@@ -35,10 +35,10 @@ struct Lines {
 }
 
 /// A line was longer than the cap.
-struct TooLong;
+pub(super) struct TooLong;
 
 impl Lines {
-    fn new(cap: usize) -> Self {
+    pub(super) fn new(cap: usize) -> Self {
         Self {
             buf: Vec::new(),
             scanned: 0,
@@ -46,7 +46,7 @@ impl Lines {
         }
     }
 
-    fn feed(&mut self, bytes: &[u8]) -> Vec<Result<Vec<u8>, TooLong>> {
+    pub(super) fn feed(&mut self, bytes: &[u8]) -> Vec<Result<Vec<u8>, TooLong>> {
         self.buf.extend_from_slice(bytes);
         let mut out = Vec::new();
         let mut start = 0;
@@ -76,7 +76,7 @@ impl Lines {
     }
 
     /// The last line, when the stream ended without a newline.
-    fn rest(&mut self) -> Result<Vec<u8>, TooLong> {
+    pub(super) fn rest(&mut self) -> Result<Vec<u8>, TooLong> {
         self.scanned = 0;
         let buf = std::mem::take(&mut self.buf);
         let line = trim_cr(&buf);
@@ -92,17 +92,17 @@ fn trim_cr(line: &[u8]) -> &[u8] {
     line.strip_suffix(b"\r").unwrap_or(line)
 }
 
-fn too_long() -> StreamEvent {
+pub(super) fn too_long() -> StreamEvent {
     StreamEvent::Error(ChatError::Failed("stream line over the size limit".into()))
 }
 
-fn malformed() -> StreamEvent {
+pub(super) fn malformed() -> StreamEvent {
     StreamEvent::Error(ChatError::Failed("malformed stream data".into()))
 }
 
 /// Appends `events` to `out` up to and including the first final one, which
 /// also ends the stream.
-fn emit(ended: &mut bool, out: &mut Vec<StreamEvent>, events: Vec<StreamEvent>) {
+pub(super) fn emit(ended: &mut bool, out: &mut Vec<StreamEvent>, events: Vec<StreamEvent>) {
     for event in events {
         let last = matches!(event, StreamEvent::Done(_) | StreamEvent::Error(_));
         out.push(event);
@@ -113,7 +113,7 @@ fn emit(ended: &mut bool, out: &mut Vec<StreamEvent>, events: Vec<StreamEvent>) 
     }
 }
 
-fn finish_with(ended: &mut bool, mut out: Vec<StreamEvent>) -> Vec<StreamEvent> {
+pub(super) fn finish_with(ended: &mut bool, mut out: Vec<StreamEvent>) -> Vec<StreamEvent> {
     if !*ended {
         *ended = true;
         out.push(StreamEvent::Error(ChatError::Interrupted));
@@ -140,16 +140,22 @@ fn server_error(value: &Value) -> Option<StreamEvent> {
         Value::Object(_) => error.get("message").and_then(Value::as_str).unwrap_or(""),
         _ => return None,
     };
+    let message = error_message(text);
+    Some(StreamEvent::Error(ChatError::Failed(message)))
+}
+
+/// An engine's error text as one safe line: sanitized, whitespace collapsed,
+/// at most `ERROR_CAP` characters, `engine error` when nothing is left.
+pub(super) fn error_message(text: &str) -> String {
     // `clean` keeps `\n` and `\t`; both would let the text fake extra lines.
     let flat = clean(text).split_whitespace().collect::<Vec<_>>().join(" ");
     let capped: String = flat.chars().take(ERROR_CAP).collect();
     let capped = capped.trim_end();
-    let message = if capped.is_empty() {
-        "engine error"
+    if capped.is_empty() {
+        "engine error".to_owned()
     } else {
-        capped
-    };
-    Some(StreamEvent::Error(ChatError::Failed(message.into())))
+        capped.to_owned()
+    }
 }
 
 fn delta(text: Option<&str>) -> Option<StreamEvent> {
