@@ -192,6 +192,140 @@ fn d_then_y_deletes_the_row_under_the_cursor() {
     assert!(!list.confirming());
 }
 
+/// A list whose newest row (3) has `notes` note links; `deletable` says
+/// whether the app can offer to delete them (memory on and a token present).
+fn noted(notes: u32, deletable: bool) -> ListView {
+    let mut list = ListView::new(None);
+    let mut rows = rows();
+    rows[0].notes = notes;
+    list.set_rows(rows);
+    list.set_notes_deletable(deletable);
+    list
+}
+
+// Spec (Delete): Three-way prompt with a token.
+#[test]
+fn notes_with_memory_and_a_token_offer_a_three_way_prompt() {
+    let mut list = noted(3, true);
+    ch(&mut list, 'd');
+    assert_eq!(
+        list.prompt().as_deref(),
+        Some("Delete conversation? y · n · a also delete its 3 notes")
+    );
+    let mut one = noted(1, true);
+    ch(&mut one, 'd');
+    assert_eq!(
+        one.prompt().as_deref(),
+        Some("Delete conversation? y · n · a also delete its 1 note")
+    );
+}
+
+// Spec (Delete): Delete conversation only / Delete both.
+#[test]
+fn in_the_three_way_prompt_y_keeps_the_notes_and_a_deletes_them() {
+    let mut list = noted(3, true);
+    ch(&mut list, 'd');
+    assert_eq!(ch(&mut list, 'y'), ListOutcome::DeleteKeepNotes(3));
+    assert!(!list.confirming());
+    let mut list = noted(3, true);
+    ch(&mut list, 'd');
+    assert_eq!(ch(&mut list, 'a'), ListOutcome::DeleteWithNotes(3));
+    assert!(!list.confirming());
+}
+
+// Spec (Delete): Other keys cancel the three-way prompt.
+#[test]
+fn every_other_key_cancels_the_three_way_prompt() {
+    for key in [
+        KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT),
+        KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT),
+        KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT),
+    ] {
+        let mut list = noted(3, true);
+        ch(&mut list, 'd');
+        assert_eq!(list.on_key(&key, false), ListOutcome::Handled, "{key:?}");
+        assert!(!list.confirming(), "{key:?} cancels the prompt");
+        assert_eq!(ids(&list), vec![3, 2, 1], "nothing is removed");
+    }
+}
+
+// Spec (Delete): a held key never decides, in either prompt.
+#[test]
+fn a_held_key_does_not_answer_the_three_way_prompt() {
+    let mut list = noted(3, true);
+    ch(&mut list, 'd');
+    let held = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+    assert_eq!(list.on_key(&held, true), ListOutcome::Handled);
+    assert!(list.confirming(), "still asking");
+}
+
+// Spec (Delete): No token / Memory off: the plain prompt, `a` is not offered.
+#[test]
+fn without_the_offer_the_prompt_is_plain_and_a_cancels() {
+    for (notes, deletable) in [(3, false), (0, true), (0, false)] {
+        let mut list = noted(notes, deletable);
+        ch(&mut list, 'd');
+        assert_eq!(
+            list.prompt().as_deref(),
+            Some("Delete conversation? (y/n)"),
+            "{notes} notes, deletable {deletable}"
+        );
+        assert_eq!(ch(&mut list, 'a'), ListOutcome::Handled);
+        assert!(!list.confirming(), "`a` is not an answer here");
+        assert_eq!(ids(&list), vec![3, 2, 1]);
+        let mut list = noted(notes, deletable);
+        ch(&mut list, 'd');
+        assert_eq!(ch(&mut list, 'y'), ListOutcome::Delete(3));
+    }
+}
+
+// Spec (chat-memory): the line says why the notes stay, singular for one.
+#[test]
+fn the_stay_line_gives_the_reason_and_the_count() {
+    assert_eq!(
+        notes_stay_line(3, NotesStay::NoToken),
+        "its 3 notes stay in engram (set ENGRAM_HTTP_TOKEN to delete them)"
+    );
+    assert_eq!(
+        notes_stay_line(2, NotesStay::MemoryOff),
+        "its 2 notes stay in engram (memory is off)"
+    );
+    assert_eq!(
+        notes_stay_line(1, NotesStay::MemoryOff),
+        "its 1 note stays in engram (memory is off)"
+    );
+}
+
+// Spec (Delete): the result line of `a`.
+#[test]
+fn the_result_line_counts_what_engram_deleted() {
+    assert_eq!(
+        notes_result_line(3, 0, false),
+        "deleted 3 notes from engram"
+    );
+    assert_eq!(notes_result_line(1, 0, false), "deleted 1 note from engram");
+    assert_eq!(
+        notes_result_line(2, 1, false),
+        "deleted 2 of 3 notes from engram"
+    );
+    assert_eq!(
+        notes_result_line(2, 1, true),
+        "deleted 2 of 3 notes from engram; engram refused the delete (check ENGRAM_HTTP_TOKEN)"
+    );
+    assert_eq!(
+        notes_result_line(0, 3, true),
+        "could not delete notes: engram refused the delete (check ENGRAM_HTTP_TOKEN)"
+    );
+    assert_eq!(
+        notes_result_line(0, 2, false),
+        "could not delete notes: engram did not delete them"
+    );
+}
+
 #[test]
 fn anything_but_a_plain_lowercase_y_declines() {
     for key in [

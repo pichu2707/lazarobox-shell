@@ -4,10 +4,24 @@
 
 use super::*;
 use crate::core::ai::chat::{
-    list::{DELETE_FAILED, LIST_FAILED, ListOutcome, OPEN_ELSEWHERE, RESUME_FAILED},
-    store::{ConvRow, SAVE_FAILED_LINE, UNAVAILABLE_PREFIX},
+    list::{
+        DELETE_FAILED, LIST_FAILED, ListOutcome, NotesStay, OPEN_ELSEWHERE, RESUME_FAILED,
+        notes_result_line, notes_stay_line,
+    },
+    store::{ConvRow, NoteRow, SAVE_FAILED_LINE, UNAVAILABLE_PREFIX},
     tags::Tags,
 };
+
+/// What a confirmed delete does with the notes of its conversation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum NoteChoice {
+    /// The prompt had no choice about notes: they stay in engram.
+    Plain,
+    /// `y` in the three-way prompt: the user keeps them.
+    Keep,
+    /// `a`: delete them in engram once the conversation is gone.
+    Delete,
+}
 
 impl App {
     /// A chat for a pane opened from `origin`: the current profile and, with
@@ -110,12 +124,20 @@ impl App {
 
     /// A key while the conversation list of chat `id` is shown.
     pub(super) fn on_list_key(&mut self, id: PaneId, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
+        // Whether notes can be deleted is looked up when the prompt opens, and
+        // only when it matters: memory on and the row under the cursor has
+        // notes (so a run without memory never reads the environment).
+        let asks = key.code == KeyCode::Char('d') && key.modifiers == KeyModifiers::NONE;
+        let deletable = asks && !repeat && self.notes_deletable(id);
         let outcome = self
             .panes
             .get_mut(&id)
             .and_then(PaneState::chat_mut)
             .and_then(ChatState::list_mut)
-            .map(|list| list.on_key(key, repeat));
+            .map(|list| {
+                list.set_notes_deletable(deletable);
+                list.on_key(key, repeat)
+            });
         let Some(outcome) = outcome else {
             return Vec::new();
         };
@@ -142,11 +164,119 @@ impl App {
                 self.edit_row_tags(id, conversation);
                 Vec::new()
             }
-            ListOutcome::Delete(conversation) => vec![Effect::Store(StoreCmd::Delete {
-                pane: id,
-                conversation,
-            })],
+            ListOutcome::Delete(conversation) => self.delete_conversation(id, conversation, None),
+            ListOutcome::DeleteKeepNotes(conversation) => {
+                self.delete_conversation(id, conversation, Some(NoteChoice::Keep))
+            }
+            ListOutcome::DeleteWithNotes(conversation) => {
+                self.delete_conversation(id, conversation, Some(NoteChoice::Delete))
+            }
         }
+    }
+
+    /// Whether the delete prompt of the row under the cursor of chat `id` can
+    /// offer to delete its notes: memory is on, the row has notes and a token
+    /// is present.
+    fn notes_deletable(&self, id: PaneId) -> bool {
+        if !self.ai.memory.active() {
+            return false;
+        }
+        let has_notes = self
+            .panes
+            .get(&id)
+            .and_then(PaneState::chat_state)
+            .and_then(ChatState::list)
+            .and_then(|list| list.selected())
+            .is_some_and(|row| row.notes > 0);
+        has_notes && (self.token_check)()
+    }
+
+    /// The store command for a confirmed delete, remembering what to do with
+    /// the notes when its answer arrives. `choice` is `None` for the plain
+    /// prompt.
+    fn delete_conversation(
+        &mut self,
+        id: PaneId,
+        conversation: i64,
+        choice: Option<NoteChoice>,
+    ) -> Vec<Effect> {
+        self.note_choices
+            .retain(|(pane, conv, _)| (*pane, *conv) != (id, conversation));
+        self.note_choices
+            .push((id, conversation, choice.unwrap_or(NoteChoice::Plain)));
+        vec![Effect::Store(StoreCmd::Delete {
+            pane: id,
+            conversation,
+        })]
+    }
+
+    /// Shows `line` to the user of chat `id`: on its list while it is open,
+    /// else in the transcript.
+    fn say_in(&mut self, id: PaneId, line: &str) {
+        if self.list_open(id) {
+            self.set_list_line(id, line);
+        } else if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.push_system(line);
+            self.dirty = true;
+        }
+    }
+
+    /// What follows a delete that removed the conversation and `notes` with
+    /// it: nothing for a kept choice, the request to delete them for `a`,
+    /// else the line that says why they stay.
+    fn after_delete(&mut self, id: PaneId, conversation: i64, notes: &[NoteRow]) -> Vec<Effect> {
+        let at = self
+            .note_choices
+            .iter()
+            .position(|(pane, conv, _)| (*pane, *conv) == (id, conversation));
+        let choice = at
+            .map(|at| self.note_choices.remove(at).2)
+            .unwrap_or(NoteChoice::Plain);
+        if notes.is_empty() || choice == NoteChoice::Keep {
+            return Vec::new();
+        }
+        // The state may have changed since the prompt: memory turned off, and
+        // `a` only ever deletes with memory on and a token present.
+        let why = if !self.ai.memory.active() {
+            Some(NotesStay::MemoryOff)
+        } else if !(self.token_check)() {
+            Some(NotesStay::NoToken)
+        } else if choice == NoteChoice::Plain {
+            // The list had no notes for it, so the prompt had no `a`.
+            Some(NotesStay::SavedLater)
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            self.say_in(id, &notes_stay_line(notes.len(), why));
+            return Vec::new();
+        }
+        self.deleting_notes.push(id);
+        vec![Effect::Memory(MemCmd::Delete {
+            pane: id,
+            notes: notes
+                .iter()
+                .map(|note| (note.project.clone(), note.observation_id))
+                .collect(),
+        })]
+    }
+
+    /// The memory worker deleted (some of) the notes of a deleted
+    /// conversation.
+    pub(super) fn on_notes_deleted(&mut self, id: PaneId, ok: usize, failed: usize, refused: bool) {
+        self.deleting_notes.retain(|pane| *pane != id);
+        self.say_in(id, &notes_result_line(ok, failed, refused));
+    }
+
+    /// The memory worker could not try the notes delete at all. Returns
+    /// whether the reply was the answer to one.
+    pub(super) fn on_notes_unavailable(&mut self, id: PaneId, reason: &str) -> bool {
+        let Some(at) = self.deleting_notes.iter().position(|pane| *pane == id) else {
+            return false;
+        };
+        self.deleting_notes.remove(at);
+        self.say_in(id, &format!("could not delete notes: {reason}"));
+        true
     }
 
     /// The store thread's answer, as far as history is concerned: the list,
@@ -203,7 +333,9 @@ impl App {
                 Vec::new()
             }
             StoreReply::Deleted {
-                pane, conversation, ..
+                pane,
+                conversation,
+                notes,
             } => {
                 // The row goes from every open list, not only this one's.
                 for state in self.panes.values_mut() {
@@ -222,9 +354,10 @@ impl App {
                     }
                 }
                 self.dirty = true;
-                Vec::new()
+                self.after_delete(*pane, *conversation, notes)
             }
             StoreReply::DeleteFailed { pane } => {
+                self.note_choices.retain(|(p, _, _)| p != pane);
                 self.set_list_line(*pane, DELETE_FAILED);
                 Vec::new()
             }
