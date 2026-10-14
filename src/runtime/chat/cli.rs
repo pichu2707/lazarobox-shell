@@ -320,10 +320,19 @@ fn jailed(env: &CliEnv, job: &Job, binary: &Path, dirs: &Dirs) -> Option<(PathBu
         None => None,
     };
     // The file the kernel starts is the interpreter of a script, else the CLI.
-    let loaders = read_loader(interpreter.as_deref().unwrap_or(&bin))
-        .and_then(|loader| resolve(&loader))
-        .into_iter()
-        .collect();
+    // A loader the file names must resolve to a regular file; anything else
+    // (a folder, a pipe, a missing path) refuses the layout. The spec then
+    // refuses a broad place such as `/tmp`.
+    let loaders = match read_loader(interpreter.as_deref().unwrap_or(&bin)) {
+        None => Vec::new(),
+        Some(loader) => {
+            let real = resolve(&loader)?;
+            if !fs::metadata(&real).is_ok_and(|meta| meta.is_file()) {
+                return None;
+            }
+            vec![real]
+        }
+    };
     let layout = CliLayout {
         cli: job.cli,
         home,

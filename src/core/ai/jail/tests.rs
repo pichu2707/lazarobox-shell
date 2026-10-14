@@ -875,3 +875,32 @@ fn a_package_root_inside_another_tools_folder_is_refused() {
     c.binary = p("/home/u/.claude/local/claude");
     assert!(jail_spec(&c).is_ok());
 }
+
+#[test]
+fn a_loader_or_helper_in_a_broad_place_is_refused() {
+    for bad in [
+        "/tmp/ld.so",
+        "/var/tmp/x/ld.so",
+        "/usr/lib",
+        "/home/u/.ssh/ld.so",
+        "/home/u/.aws/ld.so",
+    ] {
+        let mut l = nvm_codex();
+        l.loaders = paths(&[bad]);
+        assert_eq!(
+            jail_spec(&l).unwrap_err(),
+            SpecError::RootTooBroad(p(bad)),
+            "{bad}"
+        );
+        let mut l = nvm_codex();
+        l.helpers = paths(&[bad]);
+        assert_eq!(
+            jail_spec(&l).unwrap_err(),
+            SpecError::RootTooBroad(p(bad)),
+            "{bad}"
+        );
+    }
+    let mut l = nvm_codex();
+    l.loaders = paths(&["/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"]);
+    assert!(jail_spec(&l).is_ok());
+}

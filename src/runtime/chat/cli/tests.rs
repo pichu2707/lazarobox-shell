@@ -1261,3 +1261,44 @@ async fn a_relative_codex_home_never_reaches_the_child_but_an_absolute_one_does(
         assert_eq!(has, kept, "{value:?}");
     }
 }
+
+/// A CLI that is an ELF whose loader is `interp`, run jailed with a helper that
+/// must never be called.
+async fn jailed_elf_with_loader(interp: &[u8]) -> (Lab, Vec<StreamEvent>) {
+    let lab = lab();
+    let cli = lab.bin.join("codex");
+    elf_with_interp(&cli, interp, 300);
+    fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut env = lab.env();
+    env.jail = jail_on();
+    env.helper = lab.helper("echo called > \"$REC/helper_called\"\nexit 99");
+    let events = run_job(&env, codex_job(&["exec", "-"])).await;
+    (lab, events)
+}
+
+#[tokio::test]
+async fn a_loader_that_is_not_a_regular_file_stops_the_jailed_cli() {
+    let lab_dir = lab();
+    let folder = lab_dir.bin.display().to_string();
+    for interp in [
+        format!("{folder}\0"),
+        "/nonexistent/ld.so\0".to_owned(),
+        format!("{}/pipe\0", lab_dir.rec.display()),
+    ] {
+        if interp.contains("/pipe") {
+            let c = std::ffi::CString::new(format!("{}/pipe", lab_dir.rec.display())).unwrap();
+            // SAFETY: a plain mkfifo with a valid NUL-terminated path.
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        }
+        let (lab, events) = jailed_elf_with_loader(interp.as_bytes()).await;
+        assert_eq!(events, [StreamEvent::Error(ChatError::Jail)], "{interp:?}");
+        assert!(!lab.rec.join("helper_called").exists());
+    }
+}
+
+#[tokio::test]
+async fn a_loader_in_tmp_stops_the_jailed_cli() {
+    let (lab, events) = jailed_elf_with_loader(b"/tmp/evil-ld.so\0").await;
+    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+    assert!(!lab.rec.join("helper_called").exists());
+}

@@ -409,6 +409,15 @@ pub fn jail_spec_with(
     if too_broad(&root, &homes, layout.cli) {
         return Err(SpecError::RootTooBroad(root));
     }
+    // A loader or helper is one exact file: never a broad place.
+    if let Some(bad) = layout
+        .loaders
+        .iter()
+        .chain(&layout.helpers)
+        .find(|p| too_broad(p, &homes, layout.cli))
+    {
+        return Err(SpecError::RootTooBroad(bad.clone()));
+    }
     let resolved = |path: PathBuf| resolve(&path).unwrap_or(path);
     let (state, state_file) = match layout.cli {
         Cli::Claude => (
