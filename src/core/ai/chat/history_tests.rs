@@ -118,7 +118,7 @@ fn a_finished_answer_is_appended_complete() {
     assert!(matches!(
         &out[0],
         StoreCmd::Append {
-            conversation: 7,
+            conversation: Some(7),
             ..
         }
     ));
@@ -169,12 +169,20 @@ fn an_error_with_no_text_stores_only_the_user_message() {
     assert!(!format!("{out:?}").contains("boom"));
 }
 
+// Spec: an answer that fails after partial text is saved with status error;
+// the error text (a system line) is not.
 #[test]
-fn an_error_after_partial_text_is_not_stored_either() {
+fn an_error_after_partial_text_is_saved_as_an_error_answer() {
     let (mut state, turn) = open_conversation("q");
     state.apply(turn, delta("par"));
     state.apply(turn, StreamEvent::Error(ChatError::Failed("boom".into())));
-    assert_eq!(cmds(&mut state), Vec::new());
+    let out = cmds(&mut state);
+    assert_eq!(out.len(), 1);
+    assert_eq!(
+        (appended(&out[0]).text.as_str(), appended(&out[0]).status),
+        ("par", MsgStatus::Error)
+    );
+    assert!(!format!("{out:?}").contains("boom"));
 }
 
 // Spec: Reasoning only, then cancel, error or cut.
@@ -208,9 +216,8 @@ fn reasoning_never_reaches_the_store_commands() {
     state.apply(turn, thinking("secret plan"));
     state.apply(turn, delta("Hi"));
     state.apply(turn, done());
-    let mut out = cmds(&mut state);
-    // The answer was queued behind the create and comes out with the reply.
-    out.extend(state.on_store_reply(pane(), &created(7)));
+    // The answer follows the create at once, by pane.
+    let out = cmds(&mut state);
     assert!(!format!("{out:?}").contains("secret plan"));
     let saved: Vec<(&str, MsgStatus)> = out
         .iter()
@@ -256,24 +263,32 @@ fn a_summary_request_is_never_saved() {
     assert_eq!(cmds(&mut state), Vec::new());
 }
 
-// Messages sent before the conversation exists wait for its id.
+// Messages sent before the conversation exists name the pane: the store
+// thread resolves the id it made.
 #[test]
-fn saves_made_before_created_wait_for_the_reply() {
+fn saves_made_before_created_go_out_at_once_by_pane() {
     let mut state = chat();
     let turn = sent(&mut state, "q");
     let first = cmds(&mut state);
     assert!(matches!(&first[0], StoreCmd::Create { .. }));
     state.apply(turn, delta("A"));
     state.apply(turn, done());
-    assert_eq!(cmds(&mut state), Vec::new(), "queued behind the create");
-    let released = state.on_store_reply(pane(), &created(9));
-    assert_eq!(released.len(), 1);
+    let out = cmds(&mut state);
     assert!(matches!(
-        &released[0],
-        StoreCmd::Append {
-            conversation: 9,
+        &out[..],
+        [StoreCmd::Append {
+            conversation: None,
             ..
-        }
+        }]
+    ));
+    state.on_store_reply(pane(), &created(9));
+    sent(&mut state, "next");
+    assert!(matches!(
+        &cmds(&mut state)[..],
+        [StoreCmd::Append {
+            conversation: Some(9),
+            ..
+        }]
     ));
 }
 
@@ -346,7 +361,7 @@ fn a_resumed_conversation_appends_to_the_same_id() {
     assert!(matches!(
         &out[0],
         StoreCmd::Append {
-            conversation: 42,
+            conversation: Some(42),
             ..
         }
     ));
@@ -357,7 +372,7 @@ fn a_resumed_conversation_appends_to_the_same_id() {
     assert!(matches!(
         &out[0],
         StoreCmd::Append {
-            conversation: 42,
+            conversation: Some(42),
             ..
         }
     ));

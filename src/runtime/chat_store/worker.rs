@@ -2,6 +2,7 @@
 //! commands of every pane in the order they were sent.
 
 use std::{
+    collections::HashMap,
     io,
     panic::{AssertUnwindSafe, catch_unwind},
     path::PathBuf,
@@ -48,6 +49,9 @@ pub(crate) struct Worker {
     conn: Option<Result<Connection, String>>,
     /// The previous write failed: only the first failure of a run is notified.
     failing: bool,
+    /// The conversation each pane created, so an append that names only its
+    /// pane lands in the right place. Pane ids are never reused.
+    created: HashMap<PaneId, i64>,
 }
 
 impl Worker {
@@ -58,6 +62,7 @@ impl Worker {
             opener: Some(Box::new(open)),
             conn: None,
             failing: false,
+            created: HashMap::new(),
         }
     }
 
@@ -97,6 +102,7 @@ impl Worker {
                 Some(match made {
                     Ok((conversation, gone)) => {
                         self.failing = false;
+                        self.created.insert(pane, conversation);
                         StoreReply::Created {
                             pane,
                             conversation,
@@ -112,9 +118,9 @@ impl Worker {
                 conversation,
                 message,
             } => {
-                if message.status == MsgStatus::Error {
-                    return None;
-                }
+                // Without an id the pane's own `Create` must have made one; if
+                // it failed, that was reported already and this is dropped.
+                let conversation = conversation.or_else(|| self.created.get(&pane).copied())?;
                 // An unusable store was already reported by the `Create`.
                 let conn = self.conn().ok()?;
                 match append(conn, conversation, &message) {

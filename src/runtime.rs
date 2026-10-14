@@ -2077,7 +2077,7 @@ mod tests {
             .map(|i| {
                 Effect::Store(StoreCmd::Append {
                     pane: id(1),
-                    conversation,
+                    conversation: Some(conversation),
                     message: stored(Role::User, &format!("m{i}"), MsgStatus::Complete),
                 })
             })
@@ -2122,7 +2122,7 @@ mod tests {
         let append = |text: &str, status| {
             Effect::Store(StoreCmd::Append {
                 pane: id(1),
-                conversation,
+                conversation: Some(conversation),
                 message: stored(Role::Assistant, text, status),
             })
         };
@@ -2374,6 +2374,93 @@ mod tests {
             ]
         );
         assert!(!file_holds(&db, b"secret plan"));
+    }
+
+    /// A turn whose pane goes away before the store answered the create: the
+    /// partial answer is appended by pane and lands in the real db.
+    async fn closed_before_created(quit: bool) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = store_db(&dir);
+        let (mut panes, mut rx) = panes_with_store(db.clone());
+        let mut app = history_app(&dir);
+        let mut opened = app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        opened.extend(app.update(hkey(KeyCode::Char('c'), KeyModifiers::NONE)));
+        through_store(&mut app, &mut panes, &mut rx, opened, 1).await;
+        app.update(AppEvent::PromptReady(
+            id(2),
+            crate::core::ai::chat::prompts::Resolved {
+                text: "system".into(),
+                notices: Vec::new(),
+            },
+        ));
+        app.update(hkey(KeyCode::Char('n'), KeyModifiers::NONE));
+        app.update(hkey(KeyCode::Char('q'), KeyModifiers::NONE));
+        let sent = app.update(hkey(KeyCode::Enter, KeyModifiers::NONE));
+        let turn = sent
+            .iter()
+            .find_map(|e| match e {
+                Effect::ChatSend { turn, .. } => Some(*turn),
+                _ => None,
+            })
+            .expect("the message was sent");
+        // The create is queued; its reply is never read by the app.
+        panes.apply(
+            sent.into_iter()
+                .filter(|e| matches!(e, Effect::Store(_)))
+                .collect(),
+        );
+        app.update(AppEvent::Chat(
+            id(2),
+            turn,
+            StreamEvent::Delta("par".into()),
+        ));
+        let keys = ['q', 'y'];
+        let mut closing = Vec::new();
+        closing.extend(app.update(hkey(KeyCode::Char(' '), KeyModifiers::CONTROL)));
+        if !quit {
+            closing.extend(app.update(hkey(KeyCode::Char('w'), KeyModifiers::NONE)));
+        }
+        for c in keys {
+            closing.extend(app.update(hkey(KeyCode::Char(c), KeyModifiers::NONE)));
+        }
+        assert!(
+            closing.iter().any(|e| matches!(
+                e,
+                Effect::Store(StoreCmd::Append {
+                    conversation: None,
+                    ..
+                })
+            )),
+            "{closing:?}"
+        );
+        panes.apply(
+            closing
+                .into_iter()
+                .filter(|e| matches!(e, Effect::Store(_)))
+                .collect(),
+        );
+        panes.shutdown_store(STORE_JOIN_BOUND);
+        drop(rx);
+        (dir, db)
+    }
+
+    // Close and quit before `Created` arrives: the answer is in the real db.
+    #[tokio::test]
+    async fn closing_a_pane_before_created_still_stores_the_partial_answer() {
+        let (_dir, db) = closed_before_created(false).await;
+        assert_eq!(
+            stored_messages(&db),
+            vec![
+                ("user".into(), "q".into(), "complete".into()),
+                ("assistant".into(), "par".into(), "cancelled".into()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn quitting_before_created_still_stores_the_partial_answer() {
+        let (_dir, db) = closed_before_created(true).await;
+        assert_eq!(stored_messages(&db).len(), 2);
     }
 
     /// A chat opened in a new session on the database `dir` holds, its list

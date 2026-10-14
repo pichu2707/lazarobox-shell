@@ -225,8 +225,8 @@ impl App {
         }
     }
 
-    /// The answer to a `Create` or an `Append`: the saves it releases, and the
-    /// line for a first failed write.
+    /// The answer to a `Create` or an `Append`: the line for a first failed
+    /// write.
     fn on_write_reply(&mut self, id: PaneId, reply: &StoreReply) -> Vec<Effect> {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
@@ -237,12 +237,12 @@ impl App {
             return Vec::new();
         }
         let detached = chat.store_detached();
-        let released = chat.on_store_reply(id, reply);
+        chat.on_store_reply(id, reply);
         if matches!(reply, StoreReply::Failed { notify: true, .. }) && !detached {
             chat.push_system(SAVE_FAILED_LINE);
             self.dirty = true;
         }
-        released.into_iter().map(Effect::Store).collect()
+        Vec::new()
     }
 
     /// The stored conversation arrived: it takes the place of the list. A pane

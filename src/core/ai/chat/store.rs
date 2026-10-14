@@ -3,7 +3,8 @@
 //!
 //! The pane sends `StoreCmd`s and gets `StoreReply`s back, in order. A pane
 //! does not know its conversation's database id until `Created` arrives, so
-//! `PaneStore` holds the appends that are produced before then.
+//! its appends before then name the pane only and the store thread resolves
+//! the conversation it created for it.
 
 use super::{Msg, MsgStatus, engine::Role};
 use crate::core::{ai::sanitize::clean, layout::PaneId};
@@ -47,9 +48,12 @@ pub enum StoreCmd {
         first: StoredMessage,
         open: Vec<i64>,
     },
+    /// Adds a message. `conversation` is `None` while the pane does not know
+    /// its id yet: the store thread, which created the conversation for the
+    /// pane, resolves it. Commands run in order, so the `Create` is done.
     Append {
         pane: PaneId,
-        conversation: i64,
+        conversation: Option<i64>,
         message: StoredMessage,
     },
     /// Reads or sets the engram session of a conversation: the stored id is
@@ -228,8 +232,8 @@ enum Link {
     /// Nothing sent yet: the next save creates the conversation.
     #[default]
     Fresh,
-    /// `Create` is in flight; later saves wait here.
-    Creating(Vec<StoredMessage>),
+    /// `Create` is in flight; later saves append by pane.
+    Creating,
     Open(i64),
     /// The store is unusable for this conversation: saves are dropped.
     Detached,
@@ -285,20 +289,18 @@ impl PaneStore {
         }
     }
 
-    /// Saves `message`: the command to send now, if any. Errors are never
-    /// saved.
+    /// Saves `message`: the command to send now, if any. An answer that failed
+    /// after partial text is saved with status `error`; the error line is a
+    /// system line and never reaches a save.
     pub fn save(
         &mut self,
         pane: PaneId,
         message: StoredMessage,
         new: &NewConversation,
     ) -> Option<StoreCmd> {
-        if message.status == MsgStatus::Error {
-            return None;
-        }
-        match &mut self.link {
+        match self.link {
             Link::Fresh => {
-                self.link = Link::Creating(Vec::new());
+                self.link = Link::Creating;
                 Some(StoreCmd::Create {
                     pane,
                     profile: new.profile.clone(),
@@ -307,52 +309,39 @@ impl PaneStore {
                     open: new.open.clone(),
                 })
             }
-            Link::Creating(queue) => {
-                queue.push(message);
-                None
-            }
+            Link::Creating => Some(StoreCmd::Append {
+                pane,
+                conversation: None,
+                message,
+            }),
             Link::Open(conversation) => Some(StoreCmd::Append {
                 pane,
-                conversation: *conversation,
+                conversation: Some(conversation),
                 message,
             }),
             Link::Detached => None,
         }
     }
 
-    /// Applies a reply for this pane and returns the commands it releases.
-    pub fn on_reply(&mut self, pane: PaneId, reply: &StoreReply) -> Vec<StoreCmd> {
+    /// Applies a reply for this pane.
+    pub fn on_reply(&mut self, pane: PaneId, reply: &StoreReply) {
         match reply {
             StoreReply::Created {
                 pane: from,
                 conversation,
                 ..
-            } if *from == pane => {
-                match std::mem::replace(&mut self.link, Link::Open(*conversation)) {
-                    Link::Creating(queue) => queue
-                        .into_iter()
-                        .map(|message| StoreCmd::Append {
-                            pane,
-                            conversation: *conversation,
-                            message,
-                        })
-                        .collect(),
-                    _ => Vec::new(),
-                }
+            } if *from == pane => self.link = Link::Open(*conversation),
+            StoreReply::Unavailable { pane: from, .. } if *from == pane => {
+                self.link = Link::Detached;
             }
-            StoreReply::Unavailable { pane: from, .. } | StoreReply::Failed { pane: from, .. }
-                if *from == pane =>
+            // Only a conversation that is still being created is lost; one
+            // that exists keeps trying on its next append.
+            StoreReply::Failed { pane: from, .. }
+                if *from == pane && self.link == Link::Creating =>
             {
-                // Only a conversation that is still being created is lost;
-                // one that exists keeps trying on its next append.
-                if matches!(self.link, Link::Creating(_))
-                    || matches!(reply, StoreReply::Unavailable { .. })
-                {
-                    self.link = Link::Detached;
-                }
-                Vec::new()
+                self.link = Link::Detached;
             }
-            _ => Vec::new(),
+            _ => {}
         }
     }
 }

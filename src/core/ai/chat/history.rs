@@ -69,9 +69,9 @@ impl ChatState {
         self.outbox.clear();
     }
 
-    /// The store's answer to a write of this pane: the commands it releases.
-    pub fn on_store_reply(&mut self, pane: PaneId, reply: &StoreReply) -> Vec<StoreCmd> {
-        self.store.on_reply(pane, reply)
+    /// The store's answer to a write of this pane.
+    pub fn on_store_reply(&mut self, pane: PaneId, reply: &StoreReply) {
+        self.store.on_reply(pane, reply);
     }
 
     /// Whether nothing was ever saved for this pane: no write can be in

@@ -364,7 +364,7 @@ fn a_second_send_appends_once_the_conversation_exists() {
     else {
         panic!("expected Append, got {saved:?}");
     };
-    assert_eq!(*conversation, 5);
+    assert_eq!(*conversation, Some(5));
     assert_eq!(
         (message.role, message.text.as_str(), message.status),
         (Role::Assistant, "answer", MsgStatus::Complete)
@@ -373,27 +373,27 @@ fn a_second_send_appends_once_the_conversation_exists() {
     assert!(matches!(
         stores(&next).as_slice(),
         [StoreCmd::Append {
-            conversation: 5,
+            conversation: Some(5),
             ..
         }]
     ));
 }
 
 #[test]
-fn an_answer_that_ends_before_created_is_released_by_it() {
+fn an_answer_that_ends_before_created_is_appended_by_pane() {
     let mut a = conversation();
     let turn = sent_turn(&ask(&mut a, "one"));
     a.update(delta(chat_id(), turn, "A"));
     let done = a.update(finish(chat_id(), turn));
-    assert_eq!(stores(&done), Vec::new(), "waits for the id");
-    let released = a.update(created(chat_id(), 8));
     assert!(matches!(
-        stores(&released).as_slice(),
+        stores(&done).as_slice(),
         [StoreCmd::Append {
-            conversation: 8,
+            conversation: None,
             ..
         }]
     ));
+    // The reply changes nothing to send: the append is already out.
+    assert_eq!(stores(&a.update(created(chat_id(), 8))), Vec::new());
 }
 
 // Spec: Partial saved on cancel.
@@ -690,7 +690,7 @@ fn a_message_after_a_resume_appends_and_uses_the_current_engine() {
     assert!(matches!(
         saved.as_slice(),
         [StoreCmd::Append {
-            conversation: 30,
+            conversation: Some(30),
             ..
         }]
     ));

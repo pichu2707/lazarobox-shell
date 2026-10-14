@@ -67,7 +67,16 @@ fn create(first: StoredMessage, open: Vec<i64>) -> StoreCmd {
 fn append(conversation: i64, message: StoredMessage) -> StoreCmd {
     StoreCmd::Append {
         pane: pane(),
-        conversation,
+        conversation: Some(conversation),
+        message,
+    }
+}
+
+/// An append that names only the pane: the thread knows its conversation.
+fn append_for_pane(message: StoredMessage) -> StoreCmd {
+    StoreCmd::Append {
+        pane: pane(),
+        conversation: None,
         message,
     }
 }
@@ -255,15 +264,71 @@ fn an_append_keeps_the_conversation_alive() {
     assert!(updated > 1_000_000, "updated_at is the clock, not the seed");
 }
 
+// Spec (Saving conversations): an answer that failed after partial text is
+// stored with status `error`.
 #[test]
-fn errors_are_not_stored() {
+fn an_error_answer_is_stored_with_its_partial_text() {
     let (_dir, mut worker, conn) = fixture();
     let id = created_id(worker.handle(create(user("q"), vec![])));
     assert_eq!(
-        worker.handle(append(id, reply_msg("boom", MsgStatus::Error))),
+        worker.handle(append(id, reply_msg("par", MsgStatus::Error))),
         None
     );
-    assert_eq!(rows(&conn, id).len(), 1);
+    let stored = rows(&conn, id);
+    assert_eq!(stored.len(), 2);
+    assert_eq!(
+        (
+            stored[1].1.as_str(),
+            stored[1].2.as_str(),
+            stored[1].3.as_str()
+        ),
+        ("assistant", "par", "error")
+    );
+}
+
+// The thread maps a pane to the conversation it created, so a pane need not
+// wait for the id before it appends.
+#[test]
+fn an_append_that_names_only_the_pane_lands_in_its_conversation() {
+    let (_dir, mut worker, conn) = fixture();
+    let id = created_id(worker.handle(create(user("q"), vec![])));
+    assert_eq!(
+        worker.handle(append_for_pane(reply_msg("A", MsgStatus::Complete))),
+        None
+    );
+    assert_eq!(rows(&conn, id).len(), 2);
+    // Another pane's append is not misplaced.
+    let other = StoreCmd::Append {
+        pane: PaneId::for_test(9),
+        conversation: None,
+        message: user("stray"),
+    };
+    assert_eq!(worker.handle(other), None);
+    assert_eq!(rows(&conn, id).len(), 2);
+    assert_eq!(count(&conn, "messages"), 2);
+}
+
+#[test]
+fn an_append_after_a_failed_create_is_dropped_silently() {
+    let (_dir, mut worker, conn) = fixture();
+    let other = PaneId::for_test(9);
+    break_writes(&conn);
+    let made = worker.handle(StoreCmd::Create {
+        pane: other,
+        profile: "programmer".into(),
+        tag: None,
+        first: user("q"),
+        open: vec![],
+    });
+    assert!(failed(made));
+    mend_writes(&conn);
+    let late = StoreCmd::Append {
+        pane: other,
+        conversation: None,
+        message: reply_msg("A", MsgStatus::Complete),
+    };
+    assert_eq!(worker.handle(late), None);
+    assert_eq!(count(&conn, "messages"), 0);
 }
 
 #[test]
