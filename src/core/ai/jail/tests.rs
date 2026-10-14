@@ -299,11 +299,38 @@ fn a_package_outside_home_is_handled_by_its_own_prefix() {
     assert_eq!(home, vec![Path::new("/home/u/.gemini")]);
 }
 
+/// The system folders a jailed CLI may read: libraries and data, never the
+/// folders that hold programs (ro-system-dirs narrowing, decided in PR17).
+const SYSTEM_RO: [&str; 5] = ["/usr/lib", "/usr/share", "/lib", "/lib64", "/etc"];
+
+#[test]
+fn the_folders_that_hold_programs_are_not_readable_so_the_loader_cannot_run_them() {
+    // Landlock does not gate `mmap(PROT_EXEC)`, so a granted ELF loader can
+    // run `ld.so /usr/bin/curl` if it can read the program. Not readable, not
+    // runnable that way.
+    for l in [nvm_codex(), native_claude(), brew_gemini()] {
+        let spec = jail_spec(&l).unwrap();
+        for dir in [
+            "/usr",
+            "/usr/bin",
+            "/usr/sbin",
+            "/usr/local",
+            "/bin",
+            "/sbin",
+            "/opt",
+        ] {
+            assert!(!spec.ro.contains(&p(dir)), "{dir} must not be readable");
+            assert!(!spec.ro_files.contains(&p(dir)), "{dir}");
+        }
+        assert_eq!(spec.ro[..5], SYSTEM_RO.map(p));
+    }
+}
+
 #[test]
 fn system_dirs_are_read_only_and_never_executable() {
     for l in [nvm_codex(), native_claude(), brew_gemini()] {
         let spec = jail_spec(&l).unwrap();
-        for dir in ["/usr", "/bin", "/lib", "/lib64", "/etc"] {
+        for dir in SYSTEM_RO {
             assert!(spec.ro.contains(&p(dir)), "{dir} not read-only");
             for other in [&spec.rx, &spec.rw] {
                 assert!(!other.contains(&p(dir)), "{dir} must be read-only only");
@@ -417,7 +444,7 @@ fn retain_existing_drops_missing_paths_only() {
         .retain_existing(|path| path != Path::new("/home/u/.codex") && path != Path::new("/lib64"));
     assert!(!kept.rw.contains(&p("/home/u/.codex")));
     assert!(!kept.ro.contains(&p("/lib64")));
-    assert!(kept.ro.contains(&p("/usr")));
+    assert!(kept.ro.contains(&p("/usr/lib")));
     assert_eq!(kept.rx, spec.rx);
     assert_eq!(kept.rw.len(), spec.rw.len() - 1);
     let none = spec.retain_existing(|_| false);
@@ -511,6 +538,36 @@ fn elf_loader_is_the_pt_interp_path() {
         elf_loader(&img),
         Some(p("/home/linuxbrew/.linuxbrew/lib/ld.so"))
     );
+}
+
+#[test]
+fn the_interp_string_can_lie_far_beyond_the_head_and_is_still_located() {
+    // Homebrew rewrites the loader path with patchelf, which moves `.interp`
+    // to 0x8d98 in node: the program headers are at the start, the string is
+    // not.
+    let img = elf64(&[(1, 0, 0), (3, 0x8d98, 37)], &[]);
+    assert_eq!(elf_interp_at(&img), Some((0x8d98, 37)));
+    // Not an ELF64, or no PT_INTERP, or a size no path can have.
+    assert_eq!(elf_interp_at(b"#!/bin/sh\n"), None);
+    assert_eq!(elf_interp_at(&elf64(&[(1, 0, 0)], &[])), None);
+    assert_eq!(elf_interp_at(&elf64(&[(3, 300, 4097)], &[])), None);
+    assert_eq!(elf_interp_at(&elf64(&[(3, 300, 0)], &[])), None);
+    // Empty and truncated headers.
+    assert_eq!(elf_interp_at(b""), None);
+    assert_eq!(elf_interp_at(&elf64(&[(3, 300, 6)], &[])[..70]), None);
+}
+
+#[test]
+fn an_interp_string_is_an_absolute_utf8_path_up_to_its_nul() {
+    assert_eq!(
+        interp_path(b"/lib64/ld-linux-x86-64.so.2\0"),
+        Some(p("/lib64/ld-linux-x86-64.so.2"))
+    );
+    assert_eq!(interp_path(b"/lib/ld.so"), Some(p("/lib/ld.so")));
+    assert_eq!(interp_path(b"ld.so\0"), None);
+    assert_eq!(interp_path(b"/lib/\xff\0"), None);
+    assert_eq!(interp_path(b"\0"), None);
+    assert_eq!(interp_path(b""), None);
 }
 
 #[test]
@@ -744,4 +801,106 @@ fn a_home_that_is_a_symlink_is_checked_under_both_spellings() {
     ];
     let spec = jail_spec_with(&native_claude(), &resolver(fine)).unwrap();
     assert!(spec.rw.contains(&p("/var/home/u/.claude")));
+}
+
+/// Folders under `$HOME` that hold another tool's credentials or state.
+const OTHER_STATE: [&str; 6] = [
+    ".claude",
+    ".gemini",
+    ".aws",
+    ".kube",
+    ".docker",
+    ".password-store",
+];
+
+#[test]
+fn codex_home_may_not_be_another_tools_credential_folder() {
+    for dir in OTHER_STATE {
+        for state in [format!("/home/u/{dir}"), format!("/home/u/{dir}/sub")] {
+            let mut l = nvm_codex();
+            l.codex_home = Some(p(&state));
+            assert_eq!(
+                jail_spec(&l).unwrap_err(),
+                SpecError::RootTooBroad(p(&state)),
+                "{state}"
+            );
+        }
+    }
+    // The CLI's own folder, and a dedicated one elsewhere, stay fine.
+    let mut l = nvm_codex();
+    l.codex_home = Some(p("/home/u/.codex"));
+    assert!(jail_spec(&l).is_ok());
+}
+
+#[test]
+fn a_cli_may_only_have_its_own_state_folder_from_that_list() {
+    // A link that makes one CLI's state folder point at another's is refused;
+    // claude keeps `~/.claude` and gemini keeps `~/.gemini`.
+    let to =
+        |from: &'static str, target: &'static str| -> &'static [(&'static str, &'static str)] {
+            Box::leak(Box::new([(from, target)]))
+        };
+    let err = jail_spec_with(
+        &native_claude(),
+        &resolver(to("/home/u/.claude", "/home/u/.aws")),
+    );
+    assert_eq!(err.unwrap_err(), SpecError::RootTooBroad(p("/home/u/.aws")));
+    let err = jail_spec_with(
+        &brew_gemini(),
+        &resolver(to("/home/u/.gemini", "/home/u/.claude")),
+    );
+    assert_eq!(
+        err.unwrap_err(),
+        SpecError::RootTooBroad(p("/home/u/.claude"))
+    );
+    let err = jail_spec_with(
+        &nvm_codex(),
+        &resolver(to("/home/u/.codex", "/home/u/.gemini")),
+    );
+    assert_eq!(
+        err.unwrap_err(),
+        SpecError::RootTooBroad(p("/home/u/.gemini"))
+    );
+    assert!(jail_spec(&native_claude()).is_ok());
+    assert!(jail_spec(&brew_gemini()).is_ok());
+}
+
+#[test]
+fn a_package_root_inside_another_tools_folder_is_refused() {
+    let mut l = nvm_codex();
+    l.binary = p("/home/u/.aws/node_modules/@openai/codex/bin/codex.js");
+    assert!(matches!(jail_spec(&l), Err(SpecError::RootTooBroad(_))));
+    // claude's older installs live in its own folder: allowed for claude.
+    let mut c = native_claude();
+    c.binary = p("/home/u/.claude/local/claude");
+    assert!(jail_spec(&c).is_ok());
+}
+
+#[test]
+fn a_loader_or_helper_in_a_broad_place_is_refused() {
+    for bad in [
+        "/tmp/ld.so",
+        "/var/tmp/x/ld.so",
+        "/usr/lib",
+        "/home/u/.ssh/ld.so",
+        "/home/u/.aws/ld.so",
+    ] {
+        let mut l = nvm_codex();
+        l.loaders = paths(&[bad]);
+        assert_eq!(
+            jail_spec(&l).unwrap_err(),
+            SpecError::RootTooBroad(p(bad)),
+            "{bad}"
+        );
+        let mut l = nvm_codex();
+        l.helpers = paths(&[bad]);
+        assert_eq!(
+            jail_spec(&l).unwrap_err(),
+            SpecError::RootTooBroad(p(bad)),
+            "{bad}"
+        );
+    }
+    let mut l = nvm_codex();
+    l.loaders = paths(&["/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"]);
+    assert!(jail_spec(&l).is_ok());
 }

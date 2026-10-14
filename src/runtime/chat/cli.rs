@@ -19,7 +19,7 @@
 use std::{
     ffi::OsString,
     fs,
-    io::{self, Read},
+    io::{self, Read, Seek, SeekFrom},
     os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
@@ -46,7 +46,7 @@ use crate::{
         },
         jail::{
             CliLayout, ELF_HEAD_BYTES, Interpreter, JailArgs, JailPolicy, JailSupport, Launch,
-            elf_loader, jail_spec_with, launch, parse_shebang,
+            elf_interp_at, interp_path, jail_spec_with, launch, parse_shebang,
         },
     },
     runtime::{
@@ -82,6 +82,9 @@ pub struct CliEnv {
     pub timeouts: Timeouts,
     /// See [`EXIT_GRACE`].
     pub grace: Duration,
+    /// `$CODEX_HOME`, when it is an absolute path: codex keeps its login and
+    /// state there instead of in `~/.codex`.
+    pub codex_home: Option<PathBuf>,
     /// Variables set for the child before the scrub runs. Empty in the app;
     /// the tests use it to give the child something to scrub, because the
     /// test process cannot change its own environment safely.
@@ -124,6 +127,9 @@ impl CliEnv {
             helper: PathBuf::from("/proc/self/exe"),
             timeouts: Timeouts::CLI,
             grace: EXIT_GRACE,
+            codex_home: std::env::var_os("CODEX_HOME")
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute()),
             inject: Vec::new(),
         }
     }
@@ -255,6 +261,51 @@ fn read_head(path: &Path, max: usize) -> Option<Vec<u8>> {
     Some(head)
 }
 
+/// Whether the interpreter at `path` may run a CLI inside the jail. Its
+/// canonical path must not be under a scratch folder (`/tmp`, `/var/tmp`, where
+/// anyone can plant a program) and neither its folder nor the file may be
+/// writable by group or others (they could swap it).
+fn trusted_interpreter(path: &Path) -> bool {
+    let Some(real) = resolve(path) else {
+        return false;
+    };
+    if real.starts_with("/tmp") || real.starts_with("/var/tmp") {
+        return false;
+    }
+    let closed =
+        |p: &Path| fs::metadata(p).is_ok_and(|meta| meta.permissions().mode() & 0o022 == 0);
+    closed(&real) && real.parent().is_some_and(closed)
+}
+
+/// The interpreter a script asks for by bare name (`#!/usr/bin/env node`): the
+/// one installed next to the CLI as it was found (npm, nvm, volta and the like
+/// put `node` beside the global packages' `bin` links), else the first on
+/// `PATH`. The first on `PATH` can be a different install whose libraries the
+/// jail does not grant. A candidate that is not [trusted](trusted_interpreter)
+/// is skipped, so the answer can be none.
+fn interpreter_for(found: &Path, name: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    let beside = found.parent().into_iter().map(Path::to_path_buf);
+    let listed = std::env::split_paths(path).filter(|dir| dir.is_absolute());
+    beside
+        .chain(listed)
+        .filter_map(|dir| find_on_path(name, dir.as_os_str()))
+        .find(|candidate| trusted_interpreter(candidate))
+}
+
+/// The ELF loader (`PT_INTERP`) of the executable at `path`. The program
+/// headers are in the first bytes of the file; the string they point to can
+/// be anywhere, so it is read from where they say. Only these two small reads
+/// happen: the file is an executable, not a credential.
+fn read_loader(path: &Path) -> Option<PathBuf> {
+    let head = read_head(path, ELF_HEAD_BYTES)?;
+    let (offset, size) = elf_interp_at(&head)?;
+    let mut file = fs::File::open(path).ok()?;
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let mut raw = vec![0u8; size];
+    file.read_exact(&mut raw).ok()?;
+    interp_path(&raw)
+}
+
 /// The helper command line that runs `job` jailed, or `None` when the layout
 /// cannot be jailed (a path the rules refuse, a CLI that cannot be resolved).
 fn jailed(env: &CliEnv, job: &Job, binary: &Path, dirs: &Dirs) -> Option<(PathBuf, Vec<OsString>)> {
@@ -263,19 +314,29 @@ fn jailed(env: &CliEnv, job: &Job, binary: &Path, dirs: &Dirs) -> Option<(PathBu
     let head = read_head(&bin, ELF_HEAD_BYTES)?;
     let interpreter = match parse_shebang(&head) {
         Some(Interpreter::Path(path)) => Some(resolve(&path)?),
-        Some(Interpreter::OnPath(name)) => Some(resolve(&find_on_path(&name, &env.path)?)?),
+        Some(Interpreter::OnPath(name)) => {
+            Some(resolve(&interpreter_for(binary, &name, &env.path)?)?)
+        }
         None => None,
     };
     // The file the kernel starts is the interpreter of a script, else the CLI.
-    let starter = read_head(interpreter.as_deref().unwrap_or(&bin), ELF_HEAD_BYTES)?;
-    let loaders = elf_loader(&starter)
-        .and_then(|loader| resolve(&loader))
-        .into_iter()
-        .collect();
+    // A loader the file names must resolve to a regular file; anything else
+    // (a folder, a pipe, a missing path) refuses the layout. The spec then
+    // refuses a broad place such as `/tmp`.
+    let loaders = match read_loader(interpreter.as_deref().unwrap_or(&bin)) {
+        None => Vec::new(),
+        Some(loader) => {
+            let real = resolve(&loader)?;
+            if !fs::metadata(&real).is_ok_and(|meta| meta.is_file()) {
+                return None;
+            }
+            vec![real]
+        }
+    };
     let layout = CliLayout {
         cli: job.cli,
         home,
-        codex_home: None,
+        codex_home: env.codex_home.as_deref().and_then(resolve),
         binary: bin.clone(),
         interpreter,
         loaders,
@@ -286,11 +347,22 @@ fn jailed(env: &CliEnv, job: &Job, binary: &Path, dirs: &Dirs) -> Option<(PathBu
     let spec = jail_spec_with(&layout, &resolve)
         .ok()?
         .retain_existing(|p| fs::symlink_metadata(p).is_ok());
+    // A script starts through its interpreter, which is granted by exact
+    // path. Left to the kernel, `#!/usr/bin/env node` would run `env`, which
+    // the jail does not grant.
+    let rest = job.args.iter().map(OsString::from);
+    let (program, argv) = match layout.interpreter {
+        Some(interpreter) => (
+            interpreter,
+            std::iter::once(bin.into_os_string()).chain(rest).collect(),
+        ),
+        None => (bin, rest.collect()),
+    };
     let args = JailArgs {
         min_abi: None,
         spec,
-        program: bin,
-        argv: job.args.iter().map(OsString::from).collect(),
+        program,
+        argv,
     };
     Some((env.helper.clone(), args.render()))
 }
@@ -313,6 +385,16 @@ fn command(
     command.envs(inject.iter().map(|(k, v)| (k, v)));
     for name in SCRUBBED {
         command.env_remove(name);
+    }
+    // The jail ignores a relative `$CODEX_HOME`, so the child must not use it.
+    let codex_home = inject
+        .iter()
+        .rev()
+        .find(|(k, _)| k == "CODEX_HOME")
+        .map(|(_, v)| v.clone())
+        .or_else(|| std::env::var_os("CODEX_HOME"));
+    if codex_home.is_some_and(|v| !Path::new(&v).is_absolute()) {
+        command.env_remove("CODEX_HOME");
     }
     command
         .env("NO_COLOR", "1")
@@ -562,7 +644,18 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
         }
     };
 
-    let exit = settle(&mut child, &mut group, pid, env.grace).await;
+    // The decoder's own error (a refused tool, malformed data, a failure the
+    // CLI reported) is final: the process is stopped now, with no grace to
+    // exit. A stream that just ended (`Interrupted`) still waits, because the
+    // exit status or the jail marker explains it.
+    let decoder_error =
+        matches!(&ended.last, Some(StreamEvent::Error(e)) if *e != ChatError::Interrupted);
+    let exit = if decoder_error {
+        group.kill_and_reap(&mut child).await.ok();
+        None
+    } else {
+        settle(&mut child, &mut group, pid, env.grace).await
+    };
     // The group is dead and reaped: the pipes reach EOF at once.
     let tail = match stderr_tail {
         Some(tail) => tail,

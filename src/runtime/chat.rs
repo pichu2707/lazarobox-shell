@@ -27,6 +27,7 @@ use crate::core::{
             ANSWER_CAP, REASONING_CAP,
             adapters::{Invocation, Wire, adapter_for},
             claude::ClaudeDecoder,
+            codex::CodexDecoder,
             engine::{ChatError, ChatRequest, StreamEvent},
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
@@ -75,6 +76,7 @@ pub fn fresh_decoder(wire: Wire) -> Box<dyn StreamDecoder + Send> {
         Wire::Ndjson => Box::new(NdjsonSplitter::server()),
         Wire::Sse => Box::new(SseParser::server()),
         Wire::ClaudeStreamJson => Box::new(ClaudeDecoder::new()),
+        Wire::CodexJsonl => Box::new(CodexDecoder::new()),
     }
 }
 

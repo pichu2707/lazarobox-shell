@@ -160,11 +160,16 @@ fn le_u64(bytes: &[u8], at: usize) -> Option<u64> {
     ))
 }
 
-/// The dynamic loader a little-endian ELF64 executable asks for (its
-/// `PT_INTERP`). The kernel opens it with execute rights when the program
-/// starts, so it is the one extra file a dynamic program needs to run at all.
-/// `None` for static binaries, scripts and anything malformed.
-pub fn elf_loader(head: &[u8]) -> Option<PathBuf> {
+/// The longest loader path read (`PATH_MAX`).
+pub const INTERP_MAX: usize = 4096;
+
+/// Where the `PT_INTERP` string of a little-endian ELF64 executable lives:
+/// its file offset and size. The program headers are at the very start of
+/// the file, so `head` (the first [`ELF_HEAD_BYTES`]) is enough to find it;
+/// the string itself can be anywhere (Homebrew moves it to 0x8d98 in node),
+/// so the caller reads it from the file. `None` for a static binary, a script
+/// and anything malformed or with a size no path can have.
+pub fn elf_interp_at(head: &[u8]) -> Option<(u64, usize)> {
     const ELF64: &[u8] = b"\x7fELF\x02\x01";
     if !head.starts_with(ELF64) {
         return None;
@@ -180,14 +185,29 @@ pub fn elf_loader(head: &[u8]) -> Option<PathBuf> {
         if le_u32(head, at)? != PT_INTERP {
             continue;
         }
-        let start = usize::try_from(le_u64(head, at + 8)?).ok()?;
+        let offset = le_u64(head, at + 8)?;
         let size = usize::try_from(le_u64(head, at + 32)?).ok()?;
-        let raw = head.get(start..start.checked_add(size)?)?;
-        let name = std::str::from_utf8(raw.split(|b| *b == 0).next()?).ok()?;
-        let path = Path::new(name);
-        return path.is_absolute().then(|| path.to_path_buf());
+        return (1..=INTERP_MAX).contains(&size).then_some((offset, size));
     }
     None
+}
+
+/// The loader a `PT_INTERP` string names: absolute UTF-8, up to its NUL.
+pub fn interp_path(raw: &[u8]) -> Option<PathBuf> {
+    let name = std::str::from_utf8(raw.split(|b| *b == 0).next()?).ok()?;
+    let path = Path::new(name);
+    path.is_absolute().then(|| path.to_path_buf())
+}
+
+/// The dynamic loader a little-endian ELF64 executable asks for (its
+/// `PT_INTERP`), when the string lies inside `head`. The kernel opens it with
+/// execute rights when the program starts, so it is the one extra file a
+/// dynamic program needs to run at all. `None` for static binaries, scripts
+/// and anything malformed.
+pub fn elf_loader(head: &[u8]) -> Option<PathBuf> {
+    let (offset, size) = elf_interp_at(head)?;
+    let start = usize::try_from(offset).ok()?;
+    interp_path(head.get(start..start.checked_add(size)?)?)
 }
 
 /// The directory that holds a CLI's own code: the `node_modules` package
@@ -249,20 +269,49 @@ const SHARED_IN_HOME: &[&str] = &[
     ".cache",
 ];
 
-/// Whether granting `path` would open far more than one CLI's own files:
-/// `$HOME` or one of its parents, `/tmp`, `~/.ssh`, `~/.gnupg`, a shared data
-/// folder of `$HOME` or a system or mount folder.
-fn too_broad(path: &Path, homes: &[&Path]) -> bool {
+/// Folders under `$HOME` (and everything below them) that hold another tool's
+/// credentials or state. A CLI may only be given its own one: codex gets
+/// `~/.codex`, never `~/.claude`.
+const CREDENTIAL_DIRS: &[&str] = &[
+    ".claude",
+    ".gemini",
+    ".codex",
+    ".aws",
+    ".kube",
+    ".docker",
+    ".password-store",
+];
+
+impl Cli {
+    /// The folder under `$HOME` that is this CLI's own by default.
+    fn own_dir(self) -> &'static str {
+        match self {
+            Cli::Claude => ".claude",
+            Cli::Codex => ".codex",
+            Cli::Gemini => ".gemini",
+        }
+    }
+}
+
+/// Whether granting `path` to `cli` would open far more than its own files:
+/// `$HOME` or one of its parents, `/tmp`, `~/.ssh`, `~/.gnupg`, another
+/// tool's credential folder, a shared data folder of `$HOME` or a system or
+/// mount folder.
+fn too_broad(path: &Path, homes: &[&Path], cli: Cli) -> bool {
     path.starts_with("/tmp")
         || path.starts_with("/var/tmp")
         || BROAD.iter().any(|b| path == Path::new(b))
-        || homes.iter().any(|home| too_broad_for_home(path, home))
+        || homes.iter().any(|home| too_broad_for_home(path, home, cli))
 }
 
-fn too_broad_for_home(path: &Path, home: &Path) -> bool {
+fn too_broad_for_home(path: &Path, home: &Path, cli: Cli) -> bool {
     home.starts_with(path)
         || path.starts_with(home.join(".ssh"))
         || path.starts_with(home.join(".gnupg"))
+        || CREDENTIAL_DIRS
+            .iter()
+            .filter(|d| **d != cli.own_dir())
+            .any(|d| path.starts_with(home.join(d)))
         || SHARED_IN_HOME.iter().any(|d| path == home.join(d))
 }
 
@@ -357,8 +406,17 @@ pub fn jail_spec_with(
     let homes = [layout.home.as_path(), real_home.as_path()];
     let root = package_root(&layout.binary)
         .ok_or_else(|| SpecError::RootTooBroad(layout.binary.clone()))?;
-    if too_broad(&root, &homes) {
+    if too_broad(&root, &homes, layout.cli) {
         return Err(SpecError::RootTooBroad(root));
+    }
+    // A loader or helper is one exact file: never a broad place.
+    if let Some(bad) = layout
+        .loaders
+        .iter()
+        .chain(&layout.helpers)
+        .find(|p| too_broad(p, &homes, layout.cli))
+    {
+        return Err(SpecError::RootTooBroad(bad.clone()));
     }
     let resolved = |path: PathBuf| resolve(&path).unwrap_or(path);
     let (state, state_file) = match layout.cli {
@@ -378,7 +436,7 @@ pub fn jail_spec_with(
     let state = resolved(state);
     let state_file = state_file.map(resolved);
     for path in [Some(&state), state_file.as_ref()].into_iter().flatten() {
-        if too_broad(path, &homes) {
+        if too_broad(path, &homes, layout.cli) {
             return Err(SpecError::RootTooBroad(path.clone()));
         }
     }
@@ -393,9 +451,15 @@ pub fn jail_spec_with(
     {
         push_unique(&mut spec.rx, path.clone());
     }
+    // Libraries and data only. The folders that hold programs (`/usr/bin`,
+    // `/usr/sbin`, `/bin`) stay unreadable: Landlock does not gate
+    // `mmap(PROT_EXEC)`, so the ELF loader that some CLI needs to start could
+    // otherwise run `ld.so /usr/bin/curl`. `/bin` is a link to `/usr/bin` on
+    // most systems, which is why it is not listed. `/lib` and `/lib64` are
+    // libraries (and links to `/usr/lib`).
     for dir in [
-        "/usr",
-        "/bin",
+        "/usr/lib",
+        "/usr/share",
         "/lib",
         "/lib64",
         "/etc",

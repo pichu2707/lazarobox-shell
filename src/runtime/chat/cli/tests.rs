@@ -66,6 +66,9 @@ fn lab() -> Lab {
     };
     for dir in [&lab.bin, &lab.home, &lab.rec] {
         fs::create_dir_all(dir).unwrap();
+        // An interpreter in a group-writable folder is refused, and a
+        // developer's umask can be 002.
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
     }
     fs::create_dir_all(&lab.data).unwrap();
     lab
@@ -104,6 +107,7 @@ impl Lab {
                 slow: Duration::from_secs(20),
             },
             grace: Duration::from_secs(2),
+            codex_home: None,
             inject: Vec::new(),
         }
     }
@@ -544,9 +548,149 @@ async fn a_jailed_turn_goes_through_the_helper_with_the_spec_rules() {
         !args.iter().any(|a| *a == lab.home.to_str().unwrap()),
         "never $HOME"
     );
+    // A script is started through its interpreter, one exact file the jail
+    // allows, and not through the kernel's shebang handling.
     let dashes = args.iter().position(|a| *a == "--").expect("--");
-    assert_eq!(args[dashes + 1], lab.bin.join("claude").to_str().unwrap());
-    assert_eq!(args[dashes + 2..], ["-p"]);
+    assert_eq!(args[dashes + 1], sh.to_str().unwrap());
+    assert_eq!(args[dashes + 2], lab.bin.join("claude").to_str().unwrap());
+    assert_eq!(args[dashes + 3..], ["-p"]);
+}
+
+/// The args after `--` of what the pass-through helper was given.
+fn helper_program(lab: &Lab) -> Vec<String> {
+    let raw = lab.recorded("helper_args");
+    let args: Vec<&str> = raw.split('\0').filter(|a| !a.is_empty()).collect();
+    let dashes = args.iter().position(|a| *a == "--").expect("--");
+    args[dashes + 1..].iter().map(|a| (*a).to_owned()).collect()
+}
+
+/// The pass-through helper: records its argv, drops the rules, execs the CLI.
+const PASS: &str = "printf '%s\\0' \"$@\" > \"$REC/helper_args\"\nwhile [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"";
+
+const CODEX_ANSWER: &str = r#"
+cat > "$REC/stdin"
+printf '%s\n' '{"type":"thread.started","thread_id":"t"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{}}'
+"#;
+
+fn codex_job(args: &[&str]) -> Job {
+    Job {
+        wire: Wire::CodexJsonl,
+        binary: "codex",
+        cli: Cli::Codex,
+        args: args.iter().map(|a| (*a).to_owned()).collect(),
+        stdin: b"hi".to_vec(),
+        jail: JailPolicy::Required,
+    }
+}
+
+/// A `#!/usr/bin/env fakenode` codex (as an npm install has) and the
+/// interpreter in another folder of `PATH`.
+fn node_style_codex(lab: &Lab) -> PathBuf {
+    let interp_dir = lab.bin.parent().unwrap().join("nodebin");
+    fs::create_dir_all(&interp_dir).unwrap();
+    fs::set_permissions(&interp_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    let interp = interp_dir.join("fakenode");
+    script(&interp, &lab.rec, "exec /bin/sh \"$@\"");
+    let cli = lab.bin.join("codex");
+    script(&cli, &lab.rec, CODEX_ANSWER);
+    let text =
+        fs::read_to_string(&cli)
+            .unwrap()
+            .replacen("#!/bin/sh", "#!/usr/bin/env fakenode", 1);
+    fs::write(&cli, text).unwrap();
+    interp_dir
+}
+
+#[tokio::test]
+async fn an_env_shebang_script_is_started_through_its_interpreter_not_through_env() {
+    let lab = lab();
+    let interp_dir = node_style_codex(&lab);
+    let mut env = lab.env();
+    env.path = std::env::join_paths([&lab.bin, &interp_dir]).unwrap();
+    env.jail = jail_on();
+    env.helper = lab.helper(PASS);
+    let events = run_job(&env, codex_job(&["exec", "-"])).await;
+    assert_eq!(
+        events.last(),
+        Some(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+    let program = helper_program(&lab);
+    let interp = fs::canonicalize(interp_dir.join("fakenode")).unwrap();
+    assert_eq!(
+        program,
+        [
+            interp.to_str().unwrap(),
+            lab.bin.join("codex").to_str().unwrap(),
+            "exec",
+            "-"
+        ]
+    );
+    let raw = lab.recorded("helper_args");
+    let args: Vec<&str> = raw.split('\0').collect();
+    let granted = |flag: &str, path: &Path| {
+        args.windows(2)
+            .any(|w| w[0] == flag && w[1] == path.to_str().unwrap())
+    };
+    assert!(
+        granted("--rx", &interp),
+        "the interpreter, one file: {args:?}"
+    );
+    assert!(
+        !args.iter().any(|a| a.ends_with("/usr/bin/env")),
+        "env is never granted: {args:?}"
+    );
+}
+
+#[tokio::test]
+async fn codex_home_is_the_state_folder_when_set_and_dot_codex_otherwise() {
+    let lab = lab();
+    let _ = node_style_codex(&lab);
+    let interp_dir = lab.bin.parent().unwrap().join("nodebin");
+    let mut env = lab.env();
+    env.path = std::env::join_paths([&lab.bin, &interp_dir]).unwrap();
+    env.jail = jail_on();
+    env.helper = lab.helper(PASS);
+    let rw = |lab: &Lab| -> Vec<String> {
+        let raw = lab.recorded("helper_args");
+        let args: Vec<&str> = raw.split('\0').collect();
+        args.windows(2)
+            .filter(|w| w[0] == "--rw")
+            .map(|w| w[1].to_owned())
+            .collect()
+    };
+
+    fs::create_dir(lab.home.join(".codex")).unwrap();
+    run_job(&env, codex_job(&["exec", "-"])).await;
+    assert!(rw(&lab).contains(&lab.home.join(".codex").to_str().unwrap().to_owned()));
+
+    let custom = lab.home.join("custom-codex");
+    fs::create_dir(&custom).unwrap();
+    env.codex_home = Some(custom.clone());
+    run_job(&env, codex_job(&["exec", "-"])).await;
+    let rw = rw(&lab);
+    assert!(rw.contains(&custom.to_str().unwrap().to_owned()), "{rw:?}");
+    assert!(
+        !rw.contains(&lab.home.join(".codex").to_str().unwrap().to_owned()),
+        "{rw:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_codex_home_that_is_the_home_folder_is_refused_so_codex_does_not_start() {
+    let lab = lab();
+    let _ = node_style_codex(&lab);
+    let interp_dir = lab.bin.parent().unwrap().join("nodebin");
+    let mut env = lab.env();
+    env.path = std::env::join_paths([&lab.bin, &interp_dir]).unwrap();
+    env.jail = jail_on();
+    env.helper = lab.helper("echo called > \"$REC/helper_called\"\nexit 99");
+    env.codex_home = Some(lab.home.clone());
+    let events = run_job(&env, codex_job(&["exec", "-"])).await;
+    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+    assert!(!lab.rec.join("helper_called").exists());
 }
 
 #[tokio::test]
@@ -813,4 +957,348 @@ fn without_our_own_comm_nothing_is_swept_and_our_own_pid_is_always_alive() {
     });
     assert!(!dead.exists(), "a foreign pid is swept");
     assert!(mine.exists(), "our own pid is never swept");
+}
+
+/// A minimal little-endian ELF64 file whose `PT_INTERP` string is `interp`,
+/// stored at file offset `at`.
+fn elf_with_interp(path: &Path, interp: &[u8], at: usize) {
+    let mut img = vec![0u8; at + interp.len()];
+    img[..4].copy_from_slice(b"\x7fELF");
+    img[4] = 2;
+    img[5] = 1;
+    img[0x20..0x28].copy_from_slice(&64u64.to_le_bytes());
+    img[0x36..0x38].copy_from_slice(&56u16.to_le_bytes());
+    img[0x38..0x3a].copy_from_slice(&1u16.to_le_bytes());
+    img[64..68].copy_from_slice(&3u32.to_le_bytes());
+    img[72..80].copy_from_slice(&(at as u64).to_le_bytes());
+    img[96..104].copy_from_slice(&(interp.len() as u64).to_le_bytes());
+    img[at..].copy_from_slice(interp);
+    fs::write(path, img).unwrap();
+}
+
+#[test]
+fn the_loader_is_found_even_when_its_string_is_far_from_the_start_of_the_file() {
+    // Homebrew's node keeps `.interp` at 0x8d98, past the first 4 KiB.
+    let lab = lab();
+    let near = lab.bin.join("near");
+    let far = lab.bin.join("far");
+    elf_with_interp(&near, b"/lib64/near-ld.so\0", 300);
+    elf_with_interp(&far, b"/home/linuxbrew/.linuxbrew/lib/ld.so\0", 0x8d98);
+    assert_eq!(read_loader(&near), Some(PathBuf::from("/lib64/near-ld.so")));
+    assert_eq!(
+        read_loader(&far),
+        Some(PathBuf::from("/home/linuxbrew/.linuxbrew/lib/ld.so"))
+    );
+}
+
+#[test]
+fn no_loader_for_a_script_a_missing_file_or_a_string_past_the_end() {
+    let lab = lab();
+    let text = lab.bin.join("text");
+    fs::write(&text, "#!/bin/sh\necho hi\n").unwrap();
+    assert_eq!(read_loader(&text), None);
+    assert_eq!(read_loader(&lab.bin.join("missing")), None);
+    let cut = lab.bin.join("cut");
+    elf_with_interp(&cut, b"/lib64/ld.so\0", 0x9000);
+    let file = fs::OpenOptions::new().write(true).open(&cut).unwrap();
+    file.set_len(0x9000 + 3).unwrap();
+    assert_eq!(read_loader(&cut), None, "a cut string is not trusted");
+}
+
+#[test]
+fn the_loader_of_a_real_dynamic_binary_is_read() {
+    // The test binary itself is a dynamic executable.
+    let me = std::env::current_exe().unwrap();
+    let loader = read_loader(&me).expect("a dynamic executable has a loader");
+    assert!(loader.is_absolute(), "{loader:?}");
+}
+
+#[tokio::test]
+async fn the_interpreter_installed_next_to_the_cli_wins_over_the_first_one_on_path() {
+    // An npm install puts `node` and the CLI in the same `bin` folder, but the
+    // first `node` on PATH can be another one (Homebrew's, whose libraries the
+    // jail does not grant). The sibling is the one that came with the CLI.
+    let lab = lab();
+    let elsewhere = lab.bin.parent().unwrap().join("first-on-path");
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::set_permissions(&elsewhere, fs::Permissions::from_mode(0o755)).unwrap();
+    script(&elsewhere.join("fakenode"), &lab.rec, "exit 97");
+    script(&lab.bin.join("fakenode"), &lab.rec, "exec /bin/sh \"$@\"");
+    let cli = lab.bin.join("codex");
+    script(&cli, &lab.rec, CODEX_ANSWER);
+    let text =
+        fs::read_to_string(&cli)
+            .unwrap()
+            .replacen("#!/bin/sh", "#!/usr/bin/env fakenode", 1);
+    fs::write(&cli, text).unwrap();
+
+    let mut env = lab.env();
+    env.path = std::env::join_paths([&elsewhere, &lab.bin]).unwrap();
+    env.jail = jail_on();
+    env.helper = lab.helper(PASS);
+    let events = run_job(&env, codex_job(&["exec", "-"])).await;
+    assert_eq!(
+        events.last(),
+        Some(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+    let program = helper_program(&lab);
+    assert_eq!(program[0], lab.bin.join("fakenode").to_str().unwrap());
+}
+
+/// A fake `codex` that records its pid and a background child's, then replays
+/// `line`, then waits: only a kill ends it.
+fn lingering_codex(lab: &Lab, line: &str) {
+    fs::write(lab.rec.join("lines"), format!("{line}\n")).unwrap();
+    let body = "cat > \"$REC/stdin\"\necho $$ > \"$REC/leader\"\nsleep 300 &\necho $! > \"$REC/child\"\ncat \"$REC/lines\"\nwait";
+    script(&lab.bin.join("codex"), &lab.rec, body);
+}
+
+/// A fake `codex` that replays `lines` on stdout and then runs `tail`.
+fn fake_codex(lab: &Lab, lines: &[&str], tail: &str) {
+    fs::write(lab.rec.join("lines"), lines.join("\n") + "\n").unwrap();
+    let body = format!("cat > \"$REC/stdin\"\ncat \"$REC/lines\"\n{tail}");
+    script(&lab.bin.join("codex"), &lab.rec, &body);
+}
+
+#[tokio::test]
+async fn a_failed_codex_turn_shows_the_api_message_even_though_the_process_exits_1() {
+    let lab = lab();
+    fake_codex(
+        &lab,
+        &[
+            r#"{"type":"thread.started","thread_id":"t"}"#,
+            r#"{"type":"turn.started"}"#,
+            r#"{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"status\":400,\"error\":{\"message\":\"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.\"}}"}}"#,
+        ],
+        "exit 1",
+    );
+    let mut env = lab.env();
+    env.jail = jail_on();
+    env.helper = lab.helper(PASS);
+    let events = run_job(&env, codex_job(&["exec", "-"])).await;
+    let [StreamEvent::Error(ChatError::Failed(message))] = events.as_slice() else {
+        panic!("{events:?}");
+    };
+    assert!(
+        message.starts_with(
+            "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account."
+        ),
+        "{message}"
+    );
+}
+
+#[tokio::test]
+async fn a_tool_call_ends_the_codex_turn_and_stops_the_process() {
+    let lab = lab();
+    lingering_codex(
+        &lab,
+        r#"{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"id","status":"in_progress"}}"#,
+    );
+    let mut env = lab.env();
+    env.jail = jail_on();
+    env.helper = lab.helper(PASS);
+    let events = run_job(&env, codex_job(&["exec", "-"])).await;
+    assert_eq!(
+        events,
+        [StreamEvent::Error(ChatError::Failed(
+            "codex tried to use a tool".into()
+        ))]
+    );
+    assert!(wait_gone(pid_of(&lab, "leader"), Duration::from_secs(4)).await);
+}
+
+#[tokio::test]
+async fn codex_without_a_jail_spawns_nothing() {
+    let lab = lab();
+    fake_codex(&lab, &[], "touch \"$REC/ran\"");
+    let events = run_job(&lab.env(), codex_job(&["exec", "-"])).await;
+    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+    assert!(!lab.rec.join("ran").exists());
+    assert!(!lab.rec.join("stdin").exists());
+}
+
+#[tokio::test]
+async fn a_decoder_error_kills_the_group_at_once_without_the_exit_grace() {
+    // A tool refusal and malformed data are the decoder's own verdict: the
+    // process has nothing more to say, so it is not given the grace to exit.
+    for line in [
+        r#"{"type":"item.started","item":{"id":"item_1","type":"command_execution"}}"#,
+        "{this is not json",
+    ] {
+        let lab = lab();
+        lingering_codex(&lab, line);
+        let mut env = lab.env();
+        env.jail = jail_on();
+        env.helper = lab.helper(PASS);
+        env.grace = Duration::from_secs(20);
+        let started = Instant::now();
+        let events = run_job(&env, codex_job(&["exec", "-"])).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "took {:?} for {line}",
+            started.elapsed()
+        );
+        assert!(
+            matches!(
+                events.as_slice(),
+                [StreamEvent::Error(ChatError::Failed(_))]
+            ),
+            "{events:?}"
+        );
+        assert!(wait_gone(pid_of(&lab, "leader"), Duration::from_secs(2)).await);
+        assert!(wait_gone(pid_of(&lab, "child"), Duration::from_secs(2)).await);
+    }
+}
+
+#[tokio::test]
+async fn a_stream_that_just_ends_still_waits_for_the_exit_so_the_jail_marker_is_seen() {
+    let lab = lab();
+    fake_codex(
+        &lab,
+        &[],
+        "echo 'lazarobox-jail: jail not enforced: test' >&2\nexit 125",
+    );
+    let mut env = lab.env();
+    env.jail = jail_on();
+    env.helper = lab.helper(PASS);
+    let events = run_job(&env, codex_job(&["exec", "-"])).await;
+    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+}
+
+/// An executable file `name` in `dir` (mode 0755) and `dir` itself set to `mode`.
+fn exe_in(dir: &Path, name: &str, mode: u32) -> PathBuf {
+    fs::create_dir_all(dir).unwrap();
+    let file = dir.join(name);
+    fs::write(&file, "#!/bin/sh\n").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(dir, fs::Permissions::from_mode(mode)).unwrap();
+    file
+}
+
+#[test]
+fn an_interpreter_in_a_tmp_folder_is_never_trusted() {
+    for base in ["/tmp", "/var/tmp"] {
+        if !Path::new(base).is_dir() {
+            continue;
+        }
+        let dir = tempfile::tempdir_in(base).unwrap();
+        let file = exe_in(&dir.path().join("bin"), "fakenode", 0o755);
+        let path = dir.path().join("bin").into_os_string();
+        assert_eq!(
+            interpreter_for(&dir.path().join("bin/codex"), "fakenode", &path),
+            None,
+            "{base}"
+        );
+        assert!(!trusted_interpreter(&file), "{base}");
+    }
+}
+
+#[test]
+fn an_interpreter_in_a_group_or_world_writable_folder_is_not_trusted() {
+    let lab = lab();
+    let base = lab.bin.parent().unwrap().to_owned();
+    for mode in [0o775, 0o757, 0o777, 0o722] {
+        let file = exe_in(&base.join(format!("w{mode:o}")), "fakenode", mode);
+        assert!(!trusted_interpreter(&file), "{mode:o}");
+    }
+    let ok = exe_in(&base.join("ok"), "fakenode", 0o755);
+    assert!(trusted_interpreter(&ok));
+    // A file others can write is no better than a folder they can write.
+    fs::set_permissions(&ok, fs::Permissions::from_mode(0o757)).unwrap();
+    assert!(!trusted_interpreter(&ok));
+}
+
+#[test]
+fn an_untrusted_sibling_falls_back_to_a_trusted_interpreter_on_path_or_nothing() {
+    let lab = lab();
+    let base = lab.bin.parent().unwrap().to_owned();
+    let sibling_dir = base.join("loose");
+    exe_in(&sibling_dir, "fakenode", 0o777);
+    let other_loose = base.join("loose2");
+    exe_in(&other_loose, "fakenode", 0o775);
+    let good = exe_in(&base.join("good"), "fakenode", 0o755);
+    let found = sibling_dir.join("codex");
+    let path = std::env::join_paths([&other_loose, &base.join("good")]).unwrap();
+    // The first PATH entry is untrusted too: the first trusted one wins.
+    assert_eq!(interpreter_for(&found, "fakenode", &path), Some(good));
+    let only_loose = std::env::join_paths([&other_loose]).unwrap();
+    assert_eq!(interpreter_for(&found, "fakenode", &only_loose), None);
+}
+
+#[tokio::test]
+async fn a_cli_whose_only_interpreter_is_untrusted_is_not_started() {
+    let lab = lab();
+    let interp_dir = node_style_codex(&lab);
+    fs::set_permissions(&interp_dir, fs::Permissions::from_mode(0o777)).unwrap();
+    let mut env = lab.env();
+    env.path = std::env::join_paths([&lab.bin, &interp_dir]).unwrap();
+    env.jail = jail_on();
+    env.helper = lab.helper("echo called > \"$REC/helper_called\"\nexit 99");
+    let events = run_job(&env, codex_job(&["exec", "-"])).await;
+    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+    assert!(!lab.rec.join("helper_called").exists());
+}
+
+#[tokio::test]
+async fn a_relative_codex_home_never_reaches_the_child_but_an_absolute_one_does() {
+    // The jail ignores a relative `$CODEX_HOME` (it would resolve against the
+    // private cwd), so codex must not see it either: it would then keep its
+    // state somewhere the rules do not cover.
+    for (value, kept) in [
+        ("rel/codex", false),
+        (".", false),
+        ("", false),
+        ("/abs/codex", true),
+    ] {
+        let lab = lab();
+        lab.claude(GOOD);
+        let mut env = lab.env();
+        env.inject.push(("CODEX_HOME".into(), value.into()));
+        run(env, request()).await;
+        let dump = lab.recorded("env");
+        let has = dump.lines().any(|l| l.starts_with("CODEX_HOME="));
+        assert_eq!(has, kept, "{value:?}");
+    }
+}
+
+/// A CLI that is an ELF whose loader is `interp`, run jailed with a helper that
+/// must never be called.
+async fn jailed_elf_with_loader(interp: &[u8]) -> (Lab, Vec<StreamEvent>) {
+    let lab = lab();
+    let cli = lab.bin.join("codex");
+    elf_with_interp(&cli, interp, 300);
+    fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut env = lab.env();
+    env.jail = jail_on();
+    env.helper = lab.helper("echo called > \"$REC/helper_called\"\nexit 99");
+    let events = run_job(&env, codex_job(&["exec", "-"])).await;
+    (lab, events)
+}
+
+#[tokio::test]
+async fn a_loader_that_is_not_a_regular_file_stops_the_jailed_cli() {
+    let lab_dir = lab();
+    let folder = lab_dir.bin.display().to_string();
+    for interp in [
+        format!("{folder}\0"),
+        "/nonexistent/ld.so\0".to_owned(),
+        format!("{}/pipe\0", lab_dir.rec.display()),
+    ] {
+        if interp.contains("/pipe") {
+            let c = std::ffi::CString::new(format!("{}/pipe", lab_dir.rec.display())).unwrap();
+            // SAFETY: a plain mkfifo with a valid NUL-terminated path.
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        }
+        let (lab, events) = jailed_elf_with_loader(interp.as_bytes()).await;
+        assert_eq!(events, [StreamEvent::Error(ChatError::Jail)], "{interp:?}");
+        assert!(!lab.rec.join("helper_called").exists());
+    }
+}
+
+#[tokio::test]
+async fn a_loader_in_tmp_stops_the_jailed_cli() {
+    let (lab, events) = jailed_elf_with_loader(b"/tmp/evil-ld.so\0").await;
+    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+    assert!(!lab.rec.join("helper_called").exists());
 }
