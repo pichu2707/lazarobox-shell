@@ -193,6 +193,17 @@ fn the_hints_list_the_keys_and_all_projects_only_with_a_project() {
 }
 
 #[test]
+fn the_hints_name_the_tag_key() {
+    let shown = rows(&draw(&listing(), 70, 12));
+    assert!(shown[11].contains("t tags"), "{shown:?}");
+    let mut none = ChatState::new(None);
+    none.open_list();
+    none.list_mut().unwrap().set_rows(Vec::new());
+    let shown = rows(&draw(&none, 70, 12));
+    assert!(shown[11].contains("t tags"), "{shown:?}");
+}
+
+#[test]
 fn snapshot_the_list_of_a_project() {
     insta::assert_snapshot!(text(&draw(&listing(), 60, 10)));
 }
