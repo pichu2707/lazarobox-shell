@@ -161,6 +161,37 @@ impl Drop for TmpDir {
     }
 }
 
+/// Whether `pid` is a live process of this program (same `comm` as ours). A
+/// recycled pid that now belongs to something else counts as dead.
+fn is_lazarobox(pid: u32) -> bool {
+    let comm = |who: &str| fs::read_to_string(format!("/proc/{who}/comm")).ok();
+    match (comm("self"), comm(&pid.to_string())) {
+        (Some(ours), Some(theirs)) => ours == theirs,
+        _ => false,
+    }
+}
+
+/// Best effort: removes the turn folders (`<pid>-<n>`) of runs that are gone
+/// (crashed or killed before they could wipe their own). A folder whose pid
+/// `alive` accepts, or whose name is not of that shape, stays.
+fn sweep_stale(scratch: &Path, alive: &dyn Fn(u32) -> bool) {
+    let Ok(entries) = fs::read_dir(scratch) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let pid = name
+            .to_str()
+            .and_then(|n| n.split_once('-'))
+            .and_then(|(pid, turn)| turn.bytes().all(|b| b.is_ascii_digit()).then_some(pid))
+            .and_then(|pid| pid.parse::<u32>().ok());
+        let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+        if pid.is_some_and(|pid| is_dir && !alive(pid)) {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 static TURNS: AtomicU64 = AtomicU64::new(0);
 
 /// The private folders of one turn.
@@ -177,6 +208,7 @@ impl Dirs {
         let scratch = data.join("cli-tmp");
         ensure_private_dir(&cwd)?;
         ensure_private_dir(&scratch)?;
+        sweep_stale(&scratch, &is_lazarobox);
         let own = scratch.join(format!(
             "{}-{}",
             std::process::id(),

@@ -690,3 +690,44 @@ async fn background_children_of_a_cli_that_exits_normally_are_killed() {
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
     assert!(wait_gone(pid_of(&lab, "child"), Duration::from_secs(2)).await);
 }
+
+#[test]
+fn the_sweep_removes_turn_dirs_of_dead_processes_only() {
+    let lab = lab();
+    let scratch = lab.rec.join("cli-tmp");
+    for name in ["100-1", "200-2", "300-3", "weird", "7x-1"] {
+        fs::create_dir_all(scratch.join(name)).unwrap();
+        fs::write(scratch.join(name).join("leftover"), "x").unwrap();
+    }
+    fs::write(scratch.join("400-4"), "a file, not a turn dir").unwrap();
+    sweep_stale(&scratch, &|pid| pid == 200);
+    let left = |name: &str| scratch.join(name).exists();
+    assert!(!left("100-1") && !left("300-3"), "dead pids are removed");
+    assert!(left("200-2"), "a live lazarobox keeps its dir");
+    assert!(
+        left("weird") && left("7x-1"),
+        "unknown names are left alone"
+    );
+    assert!(left("400-4"), "only folders are removed");
+}
+
+#[test]
+fn liveness_means_a_live_process_of_ours_not_just_any_pid() {
+    let me = std::process::id();
+    assert!(is_lazarobox(me), "this very process");
+    assert!(!is_lazarobox(1), "init is alive but is not us");
+    assert!(!is_lazarobox(u32::MAX - 1), "no such process");
+}
+
+#[tokio::test]
+async fn a_turn_sweeps_the_leftovers_of_a_crashed_run_but_not_a_concurrent_turn() {
+    let lab = lab();
+    lab.claude(GOOD);
+    let scratch = lab.data.join("cli-tmp");
+    fs::create_dir_all(scratch.join("2000000000-1")).unwrap();
+    let mine = scratch.join(format!("{}-4000000000", std::process::id()));
+    fs::create_dir_all(&mine).unwrap();
+    run(lab.env(), request()).await;
+    assert!(!scratch.join("2000000000-1").exists(), "dead run swept");
+    assert!(mine.exists(), "a turn of this process is never swept");
+}
