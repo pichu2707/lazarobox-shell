@@ -50,6 +50,11 @@ unicode-width = "0.2"
 # Grapheme clusters: ratatui draws and measures per cluster, so must we
 unicode-segmentation = "1.13"
 
+# CLI jail (Linux Landlock). Pinned exactly: the helper treats anything but
+# FullyEnforced as "not jailed", so the API it was reviewed against must not drift.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "=0.4.7"
+
 [dev-dependencies]
 insta = "1"
 tempfile = "3"

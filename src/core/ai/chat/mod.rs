@@ -56,6 +56,8 @@ pub const BUSY: &str = "still answering: wait for it or press Esc to cancel";
 pub const FULL: &str = "this conversation is full: start a new one";
 /// System line for an answer that ended with no text at all.
 pub const NO_ANSWER: &str = "the model sent no answer";
+/// System line for a CLI the jail refused to start.
+pub const JAIL_ERROR: &str = "the CLI did not start: its jail could not be enforced";
 /// System line for an answer cut at `ANSWER_CAP`.
 pub const TOO_LONG: &str = "answer too long: cut at 1 MiB";
 
@@ -675,6 +677,10 @@ impl ChatState {
             }
             StreamEvent::Error(ChatError::Failed(message)) => {
                 self.finish(MsgStatus::Error, Some(message), now);
+                Follow::Nothing
+            }
+            StreamEvent::Error(ChatError::Jail) => {
+                self.finish(MsgStatus::Error, Some(JAIL_ERROR.to_owned()), now);
                 Follow::Nothing
             }
         }
