@@ -269,20 +269,49 @@ const SHARED_IN_HOME: &[&str] = &[
     ".cache",
 ];
 
-/// Whether granting `path` would open far more than one CLI's own files:
-/// `$HOME` or one of its parents, `/tmp`, `~/.ssh`, `~/.gnupg`, a shared data
-/// folder of `$HOME` or a system or mount folder.
-fn too_broad(path: &Path, homes: &[&Path]) -> bool {
+/// Folders under `$HOME` (and everything below them) that hold another tool's
+/// credentials or state. A CLI may only be given its own one: codex gets
+/// `~/.codex`, never `~/.claude`.
+const CREDENTIAL_DIRS: &[&str] = &[
+    ".claude",
+    ".gemini",
+    ".codex",
+    ".aws",
+    ".kube",
+    ".docker",
+    ".password-store",
+];
+
+impl Cli {
+    /// The folder under `$HOME` that is this CLI's own by default.
+    fn own_dir(self) -> &'static str {
+        match self {
+            Cli::Claude => ".claude",
+            Cli::Codex => ".codex",
+            Cli::Gemini => ".gemini",
+        }
+    }
+}
+
+/// Whether granting `path` to `cli` would open far more than its own files:
+/// `$HOME` or one of its parents, `/tmp`, `~/.ssh`, `~/.gnupg`, another
+/// tool's credential folder, a shared data folder of `$HOME` or a system or
+/// mount folder.
+fn too_broad(path: &Path, homes: &[&Path], cli: Cli) -> bool {
     path.starts_with("/tmp")
         || path.starts_with("/var/tmp")
         || BROAD.iter().any(|b| path == Path::new(b))
-        || homes.iter().any(|home| too_broad_for_home(path, home))
+        || homes.iter().any(|home| too_broad_for_home(path, home, cli))
 }
 
-fn too_broad_for_home(path: &Path, home: &Path) -> bool {
+fn too_broad_for_home(path: &Path, home: &Path, cli: Cli) -> bool {
     home.starts_with(path)
         || path.starts_with(home.join(".ssh"))
         || path.starts_with(home.join(".gnupg"))
+        || CREDENTIAL_DIRS
+            .iter()
+            .filter(|d| **d != cli.own_dir())
+            .any(|d| path.starts_with(home.join(d)))
         || SHARED_IN_HOME.iter().any(|d| path == home.join(d))
 }
 
@@ -377,7 +406,7 @@ pub fn jail_spec_with(
     let homes = [layout.home.as_path(), real_home.as_path()];
     let root = package_root(&layout.binary)
         .ok_or_else(|| SpecError::RootTooBroad(layout.binary.clone()))?;
-    if too_broad(&root, &homes) {
+    if too_broad(&root, &homes, layout.cli) {
         return Err(SpecError::RootTooBroad(root));
     }
     let resolved = |path: PathBuf| resolve(&path).unwrap_or(path);
@@ -398,7 +427,7 @@ pub fn jail_spec_with(
     let state = resolved(state);
     let state_file = state_file.map(resolved);
     for path in [Some(&state), state_file.as_ref()].into_iter().flatten() {
-        if too_broad(path, &homes) {
+        if too_broad(path, &homes, layout.cli) {
             return Err(SpecError::RootTooBroad(path.clone()));
         }
     }

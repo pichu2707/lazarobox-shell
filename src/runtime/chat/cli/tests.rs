@@ -1239,3 +1239,25 @@ async fn a_cli_whose_only_interpreter_is_untrusted_is_not_started() {
     assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
     assert!(!lab.rec.join("helper_called").exists());
 }
+
+#[tokio::test]
+async fn a_relative_codex_home_never_reaches_the_child_but_an_absolute_one_does() {
+    // The jail ignores a relative `$CODEX_HOME` (it would resolve against the
+    // private cwd), so codex must not see it either: it would then keep its
+    // state somewhere the rules do not cover.
+    for (value, kept) in [
+        ("rel/codex", false),
+        (".", false),
+        ("", false),
+        ("/abs/codex", true),
+    ] {
+        let lab = lab();
+        lab.claude(GOOD);
+        let mut env = lab.env();
+        env.inject.push(("CODEX_HOME".into(), value.into()));
+        run(env, request()).await;
+        let dump = lab.recorded("env");
+        let has = dump.lines().any(|l| l.starts_with("CODEX_HOME="));
+        assert_eq!(has, kept, "{value:?}");
+    }
+}

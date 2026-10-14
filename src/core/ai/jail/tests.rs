@@ -802,3 +802,76 @@ fn a_home_that_is_a_symlink_is_checked_under_both_spellings() {
     let spec = jail_spec_with(&native_claude(), &resolver(fine)).unwrap();
     assert!(spec.rw.contains(&p("/var/home/u/.claude")));
 }
+
+/// Folders under `$HOME` that hold another tool's credentials or state.
+const OTHER_STATE: [&str; 6] = [
+    ".claude",
+    ".gemini",
+    ".aws",
+    ".kube",
+    ".docker",
+    ".password-store",
+];
+
+#[test]
+fn codex_home_may_not_be_another_tools_credential_folder() {
+    for dir in OTHER_STATE {
+        for state in [format!("/home/u/{dir}"), format!("/home/u/{dir}/sub")] {
+            let mut l = nvm_codex();
+            l.codex_home = Some(p(&state));
+            assert_eq!(
+                jail_spec(&l).unwrap_err(),
+                SpecError::RootTooBroad(p(&state)),
+                "{state}"
+            );
+        }
+    }
+    // The CLI's own folder, and a dedicated one elsewhere, stay fine.
+    let mut l = nvm_codex();
+    l.codex_home = Some(p("/home/u/.codex"));
+    assert!(jail_spec(&l).is_ok());
+}
+
+#[test]
+fn a_cli_may_only_have_its_own_state_folder_from_that_list() {
+    // A link that makes one CLI's state folder point at another's is refused;
+    // claude keeps `~/.claude` and gemini keeps `~/.gemini`.
+    let to =
+        |from: &'static str, target: &'static str| -> &'static [(&'static str, &'static str)] {
+            Box::leak(Box::new([(from, target)]))
+        };
+    let err = jail_spec_with(
+        &native_claude(),
+        &resolver(to("/home/u/.claude", "/home/u/.aws")),
+    );
+    assert_eq!(err.unwrap_err(), SpecError::RootTooBroad(p("/home/u/.aws")));
+    let err = jail_spec_with(
+        &brew_gemini(),
+        &resolver(to("/home/u/.gemini", "/home/u/.claude")),
+    );
+    assert_eq!(
+        err.unwrap_err(),
+        SpecError::RootTooBroad(p("/home/u/.claude"))
+    );
+    let err = jail_spec_with(
+        &nvm_codex(),
+        &resolver(to("/home/u/.codex", "/home/u/.gemini")),
+    );
+    assert_eq!(
+        err.unwrap_err(),
+        SpecError::RootTooBroad(p("/home/u/.gemini"))
+    );
+    assert!(jail_spec(&native_claude()).is_ok());
+    assert!(jail_spec(&brew_gemini()).is_ok());
+}
+
+#[test]
+fn a_package_root_inside_another_tools_folder_is_refused() {
+    let mut l = nvm_codex();
+    l.binary = p("/home/u/.aws/node_modules/@openai/codex/bin/codex.js");
+    assert!(matches!(jail_spec(&l), Err(SpecError::RootTooBroad(_))));
+    // claude's older installs live in its own folder: allowed for claude.
+    let mut c = native_claude();
+    c.binary = p("/home/u/.claude/local/claude");
+    assert!(jail_spec(&c).is_ok());
+}

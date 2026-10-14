@@ -377,6 +377,16 @@ fn command(
     for name in SCRUBBED {
         command.env_remove(name);
     }
+    // The jail ignores a relative `$CODEX_HOME`, so the child must not use it.
+    let codex_home = inject
+        .iter()
+        .rev()
+        .find(|(k, _)| k == "CODEX_HOME")
+        .map(|(_, v)| v.clone())
+        .or_else(|| std::env::var_os("CODEX_HOME"));
+    if codex_home.is_some_and(|v| !Path::new(&v).is_absolute()) {
+        command.env_remove("CODEX_HOME");
+    }
     command
         .env("NO_COLOR", "1")
         .env("TMPDIR", tmp)
