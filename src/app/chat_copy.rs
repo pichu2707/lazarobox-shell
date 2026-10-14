@@ -21,7 +21,7 @@ impl App {
     }
 
     /// Whether chat `id` shows a transcript view.
-    fn chat_scrollable(&self, id: PaneId) -> bool {
+    pub(super) fn chat_scrollable(&self, id: PaneId) -> bool {
         if self.list_open(id) || self.tag_editor_open(id) || self.memory_view_open(id) {
             return false;
         }
