@@ -975,3 +975,14 @@ async fn shutdown_kills_every_engine_process_group() {
     chats.shutdown(Duration::from_secs(3)).await;
     assert!(wait_gone(&pids, Duration::from_secs(1)).await, "{pids:?}");
 }
+
+#[test]
+fn a_notice_is_sanitized_flattened_and_dropped_after_the_end() {
+    let mut pipe = Pipe::new();
+    assert_eq!(
+        pipe.event(StreamEvent::Notice("a\n\u{1b}[31mb\tc".into())),
+        vec![StreamEvent::Notice("a b c".into())]
+    );
+    pipe.event(StreamEvent::Done(Finish::Stop));
+    assert_eq!(pipe.event(StreamEvent::Notice("late".into())), vec![]);
+}

@@ -64,6 +64,9 @@ pub enum StreamEvent {
     /// No byte arrived yet and the wait is getting long.
     Slow,
     Delta(String),
+    /// Something the user should know about how this turn runs, as one line
+    /// (a CLI that runs without its jail). Shown once per pane.
+    Notice(String),
     /// A piece of the engine's reasoning, kept apart from the answer.
     ThinkingDelta(String),
     Done(Finish),

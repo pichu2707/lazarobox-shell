@@ -657,6 +657,13 @@ impl ChatState {
                 }
                 Follow::Nothing
             }
+            StreamEvent::Notice(line) => {
+                let entry = Entry::System(line);
+                if !self.entries.contains(&entry) {
+                    self.entries.push(entry);
+                }
+                Follow::Nothing
+            }
             StreamEvent::Delta(text) => self.push_delta(&text, now),
             StreamEvent::ThinkingDelta(text) => {
                 if self.push_thinking(&text, now) {

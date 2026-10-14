@@ -184,8 +184,15 @@ where
         .expect("the turn ends within 30 s")
 }
 
-/// One turn through the real runner, up to the final event.
+/// `run_all` without the notices, which most tests are not about.
 async fn run(env: CliEnv, req: ChatRequest) -> Vec<StreamEvent> {
+    let mut events = run_all(env, req).await;
+    events.retain(|e| !matches!(e, StreamEvent::Notice(_)));
+    events
+}
+
+/// One turn through the real runner, up to the final event.
+async fn run_all(env: CliEnv, req: ChatRequest) -> Vec<StreamEvent> {
     let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
     let mut chats = Chats::new(runner_with(None, env), tx);
     chats.send(PaneId::for_test(1), 1, req);
@@ -490,7 +497,8 @@ async fn a_required_cli_without_a_jail_never_starts() {
 async fn a_layered_cli_without_a_jail_runs_bare() {
     let lab = lab();
     lab.claude(GOOD);
-    let events = run_job(&lab.env(), job(JailPolicy::Layered)).await;
+    let mut events = run_job(&lab.env(), job(JailPolicy::Layered)).await;
+    events.retain(|e| !matches!(e, StreamEvent::Notice(_)));
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
     assert_eq!(lab.args(), ["-p"]);
 }
@@ -664,7 +672,9 @@ async fn cancelling_a_turn_kills_the_whole_group_within_a_second() {
     chats.cancel(PaneId::for_test(1));
     assert!(wait_gone(leader, Duration::from_secs(1)).await, "leader");
     assert!(wait_gone(child, Duration::from_secs(1)).await, "grandchild");
-    assert!(rx.try_recv().is_err(), "a cancelled turn says nothing more");
+    while let Ok((_, _, event)) = rx.try_recv() {
+        assert!(matches!(event, StreamEvent::Notice(_)), "{event:?}");
+    }
 }
 
 #[tokio::test]
@@ -730,4 +740,56 @@ async fn a_turn_sweeps_the_leftovers_of_a_crashed_run_but_not_a_concurrent_turn(
     run(lab.env(), request()).await;
     assert!(!scratch.join("2000000000-1").exists(), "dead run swept");
     assert!(mine.exists(), "a turn of this process is never swept");
+}
+
+fn notices(events: &[StreamEvent]) -> Vec<&str> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Notice(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn running_bare_because_there_is_no_jail_is_announced_first() {
+    let lab = lab();
+    lab.claude(GOOD);
+    let events = run_all(lab.env(), request()).await;
+    assert_eq!(
+        events[0],
+        StreamEvent::Notice("claude runs without the jail here: test".into())
+    );
+    assert_eq!(notices(&events).len(), 1);
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+}
+
+#[tokio::test]
+async fn running_bare_because_the_layout_was_refused_is_announced_too() {
+    let lab = lab();
+    lab.claude(GOOD);
+    symlink(&lab.home, lab.home.join(".claude")).unwrap();
+    let mut env = lab.env();
+    env.jail = jail_on();
+    env.helper = lab.helper("exit 99");
+    let events = run_all(env, request()).await;
+    assert_eq!(
+        notices(&events),
+        ["claude runs without the jail here: its folders cannot be restricted safely"]
+    );
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+}
+
+#[tokio::test]
+async fn a_jailed_turn_and_a_refused_one_announce_nothing() {
+    let lab = lab();
+    lab.claude(GOOD);
+    let mut env = lab.env();
+    env.jail = jail_on();
+    env.helper = lab.helper("while [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"");
+    let events = run_all(env, request()).await;
+    assert!(notices(&events).is_empty(), "{events:?}");
+    let events = run_job(&lab.env(), job(JailPolicy::Required)).await;
+    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
 }

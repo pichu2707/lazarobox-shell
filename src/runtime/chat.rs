@@ -144,6 +144,17 @@ impl Pipe {
         }
         match event {
             StreamEvent::Slow => vec![StreamEvent::Slow],
+            StreamEvent::Notice(text) => {
+                let line = clean(&text)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if line.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![StreamEvent::Notice(line)]
+                }
+            }
             StreamEvent::Delta(text) => self.bytes(text.as_bytes()),
             StreamEvent::ThinkingDelta(text) => self.reasoning(&text),
             StreamEvent::Done(finish) => self.end(StreamEvent::Done(finish)),

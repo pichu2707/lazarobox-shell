@@ -334,6 +334,9 @@ struct Plan {
     program: PathBuf,
     argv: Vec<OsString>,
     dirs: Dirs,
+    /// Said to the user before the turn starts, when the CLI runs without the
+    /// jail it would normally have.
+    notice: Option<String>,
 }
 
 /// Decides how the CLI starts. `Err` is the final event of a turn that never
@@ -353,13 +356,14 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
         .and_then(|data| Dirs::create(data).ok())
         .ok_or_else(|| StreamEvent::Error(ChatError::Failed(CANNOT_PREPARE.into())))?;
     let argv: Vec<OsString> = job.args.iter().map(OsString::from).collect();
-    if how == Launch::Jailed {
-        match jailed(env, job, &binary, &dirs) {
+    let reason = match (how, env.jail) {
+        (Launch::Jailed, _) => match jailed(env, job, &binary, &dirs) {
             Some((program, argv)) => {
                 return Ok(Plan {
                     program,
                     argv,
                     dirs,
+                    notice: None,
                 });
             }
             // Layered: the flags alone are text-only, so a layout the jail
@@ -367,13 +371,19 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
             None if job.jail == JailPolicy::Required => {
                 return Err(StreamEvent::Error(ChatError::Jail));
             }
-            None => {}
-        }
-    }
+            None => "its folders cannot be restricted safely",
+        },
+        (_, JailSupport::Unavailable(why)) => why,
+        (_, JailSupport::Available { .. }) => "the jail is off",
+    };
     Ok(Plan {
         program: binary,
         argv,
         dirs,
+        notice: Some(format!(
+            "{} runs without the jail here: {reason}",
+            job.binary
+        )),
     })
 }
 
@@ -465,10 +475,13 @@ async fn settle(
 /// `Error` ends it, unless it is cancelled: dropping the future (or the
 /// receiver) kills the process group and sends nothing more.
 pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>) {
-    let plan = match plan(env, &job) {
+    let mut plan = match plan(env, &job) {
         Ok(plan) => plan,
         Err(event) => return send(tx, event).await,
     };
+    if let Some(line) = plan.notice.take() {
+        send(tx, StreamEvent::Notice(line)).await;
+    }
     // Declared in this order so the group guard drops before the child, and
     // the private folders last.
     let mut child = match spawn(&plan.program, &plan.argv, &plan.dirs, &env.inject).await {
