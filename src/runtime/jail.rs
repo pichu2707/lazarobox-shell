@@ -7,11 +7,9 @@
 
 use std::ffi::OsString;
 
-use crate::core::ai::jail::{JailSupport, NOT_ENFORCED_EXIT};
+use std::path::{Path, PathBuf};
 
-/// What the helper prints when the jail cannot be applied; the turn then ends
-/// with a jail error.
-pub const NOT_ENFORCED: &str = "jail not enforced";
+use crate::core::ai::jail::{JailSupport, NOT_ENFORCED_EXIT, NOT_ENFORCED_MARKER};
 
 /// Exit status of a program the helper could not execute (shell convention).
 const EXEC_FAILED: i32 = 127;
@@ -22,6 +20,12 @@ pub fn probe() -> JailSupport {
     imp::probe()
 }
 
+/// The canonicalizer `jail_spec_with` needs: the real target of a path, or
+/// `None` when it does not exist (or loops). Reads no file content.
+pub fn resolve(path: &Path) -> Option<PathBuf> {
+    std::fs::canonicalize(path).ok()
+}
+
 /// Runs the helper with the arguments that follow `__jail-exec`. On success
 /// the process image is replaced and this never returns; it returns the exit
 /// status only when the program did not run.
@@ -29,7 +33,7 @@ pub fn exec_main(args: &[OsString]) -> i32 {
     match imp::exec(args) {
         Ok(never) => match never {},
         Err(Failure::NotEnforced(why)) => {
-            eprintln!("{NOT_ENFORCED}: {why}");
+            eprintln!("{NOT_ENFORCED_MARKER}: {why}");
             NOT_ENFORCED_EXIT
         }
         Err(Failure::Exec(program, error)) => {
@@ -56,8 +60,8 @@ mod imp {
     use std::process::Command;
 
     use landlock::{
-        ABI, Access, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
-        RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope,
+        ABI, Access, AccessFs, AccessNet, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd,
+        Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope,
     };
 
     use super::Failure;
@@ -69,6 +73,8 @@ mod imp {
     const CREATE_RULESET_VERSION: libc::c_ulong = 1;
     /// The first ABI with `Scope` (abstract unix sockets and signals).
     const SCOPE_ABI: u32 = 6;
+    /// The first ABI with TCP rules (`AccessNet`).
+    const NET_ABI: u32 = 4;
 
     pub fn probe() -> JailSupport {
         support_from_abi(kernel_abi())
@@ -125,6 +131,13 @@ mod imp {
         if abi >= SCOPE_ABI {
             ruleset = ruleset
                 .scope(Scope::from_all(abi_v))
+                .map_err(|e| e.to_string())?;
+        }
+        if abi >= NET_ABI {
+            // Handled with no rule at all: nothing may listen on TCP, while
+            // outgoing connect (not handled) stays open for the CLIs' APIs.
+            ruleset = ruleset
+                .handle_access(AccessNet::BindTcp)
                 .map_err(|e| e.to_string())?;
         }
         let mut created = ruleset.create().map_err(|e| e.to_string())?;
@@ -191,5 +204,61 @@ mod imp {
 
     pub fn exec(_args: &[OsString]) -> Result<Infallible, Failure> {
         Err(Failure::NotEnforced("the CLI jail needs Linux".to_owned()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::symlink;
+
+    use super::*;
+    use crate::core::ai::jail::{Cli, CliLayout, SpecError, jail_spec_with};
+
+    fn layout(home: &Path) -> CliLayout {
+        CliLayout {
+            cli: Cli::Claude,
+            home: home.to_path_buf(),
+            codex_home: None,
+            binary: home.join(".local/share/claude/versions/1"),
+            interpreter: None,
+            loaders: Vec::new(),
+            helpers: Vec::new(),
+            cwd: PathBuf::from("/run/user/1/cwd"),
+            tmp: PathBuf::from("/run/user/1/tmp"),
+        }
+    }
+
+    /// A temp dir outside `/tmp`, which the broad-folder check always refuses.
+    fn scratch() -> tempfile::TempDir {
+        tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap()
+    }
+
+    #[test]
+    fn resolve_follows_symlinks_and_reports_missing_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir(real.join("target")).unwrap();
+        symlink(real.join("target"), real.join("link")).unwrap();
+        assert_eq!(resolve(&real.join("link")), Some(real.join("target")));
+        assert_eq!(resolve(&real.join("nothing")), None);
+    }
+
+    #[test]
+    fn a_state_symlink_to_home_or_ssh_is_refused_with_the_real_resolver() {
+        let dir = scratch();
+        let home = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir(home.join(".ssh")).unwrap();
+        for target in [home.clone(), home.join(".ssh")] {
+            let link = home.join(".claude");
+            let _ = std::fs::remove_file(&link);
+            symlink(&target, &link).unwrap();
+            let err = jail_spec_with(&layout(&home), &resolve).unwrap_err();
+            assert_eq!(err, SpecError::RootTooBroad(target));
+        }
+        // A real, dedicated state dir passes and is granted by its path.
+        let _ = std::fs::remove_file(home.join(".claude"));
+        std::fs::create_dir(home.join(".claude")).unwrap();
+        let spec = jail_spec_with(&layout(&home), &resolve).unwrap();
+        assert!(spec.rw.contains(&home.join(".claude")));
     }
 }

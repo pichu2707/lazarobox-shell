@@ -12,7 +12,10 @@ use std::{
 };
 
 use lazarobox_shell::{
-    core::ai::jail::{ELF_HEAD_BYTES, JailArgs, JailSpec, JailSupport, elf_loader},
+    core::ai::{
+        chat::engine::ChatError,
+        jail::{ELF_HEAD_BYTES, JailArgs, JailSpec, JailSupport, elf_loader, exit_error},
+    },
     runtime::jail::probe,
 };
 
@@ -88,6 +91,16 @@ fn stdout(out: &Output) -> String {
 
 fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+/// Status 125 plus the marker line: what the app turns into a jail error.
+fn assert_jail_error(out: &Output) {
+    assert_eq!(
+        exit_error(out.status.code(), &stderr(out)),
+        Some(ChatError::Jail),
+        "{}",
+        stderr(out)
+    );
 }
 
 fn denied(out: &Output) -> bool {
@@ -184,11 +197,7 @@ fn a_minimum_abi_above_the_kernels_exits_125_and_never_execs() {
     j.min_abi = Some(99);
     let out = run(&j);
     assert_eq!(out.status.code(), Some(125));
-    assert!(
-        stderr(&out).contains("jail not enforced"),
-        "{}",
-        stderr(&out)
-    );
+    assert_jail_error(&out);
     assert!(!marker.exists(), "the program must not run");
 
     // The same job without the floor does run.
@@ -210,11 +219,7 @@ fn a_rule_that_cannot_be_applied_refuses_to_run() {
         s.ro.push(missing.clone());
     }));
     assert_eq!(out.status.code(), Some(125), "{}", stderr(&out));
-    assert!(
-        stderr(&out).contains("jail not enforced"),
-        "{}",
-        stderr(&out)
-    );
+    assert_jail_error(&out);
     assert!(!marker.exists());
 }
 
@@ -231,11 +236,7 @@ fn bad_helper_arguments_exit_125_without_running_anything() {
         let args: Vec<OsString> = args.into_iter().map(OsString::from).collect();
         let out = run_raw(&args);
         assert_eq!(out.status.code(), Some(125), "{args:?}: {}", stderr(&out));
-        assert!(
-            stderr(&out).contains("jail not enforced"),
-            "{}",
-            stderr(&out)
-        );
+        assert_jail_error(&out);
     }
 }
 
@@ -326,4 +327,51 @@ fn an_execute_rule_on_a_folder_runs_what_lives_inside_it() {
     let out = run_tool(&elsewhere);
     assert_eq!(out.status.code(), Some(127), "{}", stderr(&out));
     assert!(denied(&out), "{}", stderr(&out));
+}
+
+#[test]
+fn a_cli_exiting_125_by_itself_is_not_a_jail_error() {
+    if !jail_available() {
+        return;
+    }
+    // `env` execs `false`-like programs? Use `sh`-free coreutils: `timeout`
+    // exits 125 only for its own failures, so use a bad option to get 125.
+    let out = run(&job("/usr/bin/timeout", &["--bogus-option"], |_| {}));
+    assert_eq!(out.status.code(), Some(125), "{}", stderr(&out));
+    assert_eq!(exit_error(out.status.code(), &stderr(&out)), None);
+}
+
+#[test]
+fn a_jailed_program_cannot_listen_on_tcp_but_can_still_connect() {
+    if !jail_available() {
+        return;
+    }
+    if probe_abi() < 4 {
+        eprintln!("skipped: ABI below 4 has no TCP rules");
+        return;
+    }
+    let Ok(python) = fs::canonicalize("/usr/bin/python3") else {
+        eprintln!("skipped: /usr/bin/python3 is not installed");
+        return;
+    };
+    let python = python.to_str().unwrap();
+    let bind = "import socket\ntry:\n socket.socket().bind(('127.0.0.1',0))\n print('BOUND')\nexcept OSError as e:\n print('ERR',e.errno)\n";
+    let out = run(&job(python, &["-S", "-c", bind], |_| {}));
+    assert_eq!(stdout(&out).trim(), "ERR 13", "{}", stderr(&out));
+
+    // Outgoing connections stay allowed: the CLIs need their APIs.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let connect = format!(
+        "import socket\nsocket.create_connection(('127.0.0.1',{port}),2)\nprint('CONNECTED')\n"
+    );
+    let out = run(&job(python, &["-S", "-c", &connect], |_| {}));
+    assert_eq!(stdout(&out).trim(), "CONNECTED", "{}", stderr(&out));
+}
+
+fn probe_abi() -> u32 {
+    match probe() {
+        JailSupport::Available { abi, .. } => abi,
+        JailSupport::Unavailable(_) => 0,
+    }
 }
