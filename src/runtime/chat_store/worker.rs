@@ -199,15 +199,15 @@ impl Worker {
                 let saved = self
                     .conn()
                     .ok()
-                    .is_some_and(|conn| replace_tags(conn, conversation, &tags).is_ok());
-                Some(if saved {
-                    StoreReply::TagsSaved {
+                    .and_then(|conn| replace_tags(conn, conversation, &tags).ok());
+                Some(match saved {
+                    Some(updated_at) => StoreReply::TagsSaved {
                         pane,
                         conversation,
                         tags,
-                    }
-                } else {
-                    StoreReply::TagsFailed { pane }
+                        updated_at,
+                    },
+                    None => StoreReply::TagsFailed { pane },
                 })
             }
             StoreCmd::List { pane, origin } => {
@@ -454,16 +454,18 @@ fn insert_tags(
 }
 
 /// Replaces the tags of a conversation and bumps its last activity, in one
-/// transaction. A conversation that does not exist is an error.
+/// transaction, and returns that last activity. A conversation that does not
+/// exist is an error.
 fn replace_tags(
     conn: &mut Connection,
     conversation: i64,
     tags: &Tags,
-) -> Result<(), rusqlite::Error> {
+) -> Result<i64, rusqlite::Error> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let stamp = now();
     let touched = tx.execute(
         "UPDATE conversations SET updated_at = ?2 WHERE id = ?1",
-        (conversation, now()),
+        (conversation, stamp),
     )?;
     if touched == 0 {
         return Err(rusqlite::Error::QueryReturnedNoRows);
@@ -473,7 +475,8 @@ fn replace_tags(
         [conversation],
     )?;
     insert_tags(&tx, conversation, tags)?;
-    tx.commit()
+    tx.commit()?;
+    Ok(stamp)
 }
 
 /// Appends a message and bumps the conversation's last activity.

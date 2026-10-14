@@ -112,14 +112,17 @@ impl App {
     pub(super) fn on_tags_reply(&mut self, reply: &StoreReply) {
         match reply {
             StoreReply::TagsSaved {
-                conversation, tags, ..
+                conversation,
+                tags,
+                updated_at,
+                ..
             } => {
                 for state in self.panes.values_mut() {
                     let Some(chat) = state.chat_mut() else {
                         continue;
                     };
                     if let Some(list) = chat.list_mut() {
-                        list.set_tags(*conversation, tags);
+                        list.set_tags(*conversation, tags, *updated_at);
                     }
                     if chat.conversation() == Some(*conversation) {
                         chat.set_tags(tags);

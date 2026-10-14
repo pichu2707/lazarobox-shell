@@ -224,6 +224,8 @@ pub enum StoreReply {
         pane: PaneId,
         conversation: i64,
         tags: Tags,
+        /// The last activity the edit set, in seconds since the Unix epoch.
+        updated_at: i64,
     },
     TagsFailed {
         pane: PaneId,

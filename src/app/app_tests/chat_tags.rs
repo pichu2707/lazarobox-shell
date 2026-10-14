@@ -60,6 +60,7 @@ fn saved(pane: PaneId, conversation: i64, tags: &str) -> AppEvent {
         pane,
         conversation,
         tags: Tags::parse(tags),
+        updated_at: 10_000,
     })
 }
 
@@ -164,6 +165,18 @@ fn escape_discards_and_sends_nothing() {
     // The list is back: `d` asks again for a delete.
     a.update(key('d'));
     assert!(list_of(&a).confirming());
+}
+
+#[test]
+fn a_saved_edit_moves_the_row_to_the_top_of_the_list() {
+    let mut a = tag_listing();
+    a.update(AppEvent::Store(StoreReply::TagsSaved {
+        pane: chat_id(),
+        conversation: 10,
+        tags: Tags::parse("proj"),
+        updated_at: 9_999,
+    }));
+    assert_eq!(ids(&a), vec![10, 30]);
 }
 
 #[test]

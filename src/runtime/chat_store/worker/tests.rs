@@ -1695,6 +1695,7 @@ fn set_tags_replaces_the_project_tag_and_the_extras() {
             pane: pane(),
             conversation: id,
             tags,
+            updated_at: updated_at(&conn, id),
         })
     );
     assert_eq!(
@@ -1721,8 +1722,16 @@ fn set_tags_updates_the_last_activity() {
         [id],
     )
     .unwrap();
-    worker.handle(set_tags(Some(id), Tags::parse("proj")));
+    let reply = worker.handle(set_tags(Some(id), Tags::parse("proj")));
     assert!(updated_at(&conn, id) > 5);
+    // The reply carries the stamp the row got.
+    let Some(StoreReply::TagsSaved {
+        updated_at: stamp, ..
+    }) = reply
+    else {
+        panic!("expected TagsSaved");
+    };
+    assert_eq!(stamp, updated_at(&conn, id));
 }
 
 #[test]

@@ -169,12 +169,23 @@ impl ListView {
         })
     }
 
-    /// The store saved new tags for a conversation: its row takes them, and
-    /// the filter applies at once.
-    pub fn set_tags(&mut self, id: i64, tags: &Tags) {
-        if let Some(row) = self.rows.iter_mut().flatten().find(|row| row.id == id) {
-            row.tag = tags.project.clone();
-            row.extras = tags.extras.clone();
+    /// The store saved new tags for a conversation: its row takes them and the
+    /// new last activity, and the filter applies at once.
+    pub fn set_tags(&mut self, id: i64, tags: &Tags, updated_at: i64) {
+        let selected = self.selected().map(|row| row.id);
+        if let Some(rows) = &mut self.rows {
+            if let Some(row) = rows.iter_mut().find(|row| row.id == id) {
+                row.tag = tags.project.clone();
+                row.extras = tags.extras.clone();
+                row.updated_at = updated_at;
+            }
+            // Newest activity first, the higher id first on a tie, as the
+            // store lists them.
+            rows.sort_by_key(|row| std::cmp::Reverse((row.updated_at, row.id)));
+        }
+        // The cursor follows its row when the order changes.
+        if let Some(at) = selected.and_then(|sel| self.visible().iter().position(|r| r.id == sel)) {
+            self.cursor = at;
         }
         self.clamp();
     }

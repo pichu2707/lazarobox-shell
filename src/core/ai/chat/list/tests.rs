@@ -393,7 +393,7 @@ fn a_row_knows_its_tags() {
 #[test]
 fn saved_tags_replace_those_of_the_row() {
     let mut list = loaded(None);
-    list.set_tags(2, &Tags::parse("client, sql"));
+    list.set_tags(2, &Tags::parse("client, sql"), 0);
     assert_eq!(list.tags_of(2), Some(Tags::parse("client, sql")));
 }
 
@@ -402,7 +402,7 @@ fn saved_tags_replace_those_of_the_row() {
 fn a_retagged_row_moves_to_the_filter_of_its_new_project() {
     let mut list = loaded(Some("proj"));
     assert_eq!(ids(&list), vec![3, 1]);
-    list.set_tags(1, &Tags::parse("client-a"));
+    list.set_tags(1, &Tags::parse("client-a"), 0);
     assert_eq!(ids(&list), vec![3]);
     list.set_project(Some("client-a".into()));
     assert_eq!(ids(&list), vec![1]);
@@ -413,13 +413,42 @@ fn retagging_the_row_under_the_cursor_keeps_the_cursor_in_range() {
     let mut list = loaded(Some("proj"));
     ch(&mut list, 'j');
     assert_eq!(list.cursor(), 1);
-    list.set_tags(1, &Tags::parse("elsewhere"));
+    list.set_tags(1, &Tags::parse("elsewhere"), 0);
     assert_eq!(list.cursor(), 0);
 }
 
 #[test]
 fn tags_of_an_unknown_row_change_nothing() {
     let mut list = loaded(None);
-    list.set_tags(99, &Tags::parse("x"));
+    list.set_tags(99, &Tags::parse("x"), 0);
     assert_eq!(list.tags_of(3), Some(Tags::parse("proj")));
+}
+
+// Spec (Edit tags): a tag edit updates the last activity, so the row is the
+// newest and the list stays newest first.
+#[test]
+fn a_retagged_row_takes_the_new_activity_and_moves_to_the_top() {
+    let mut list = loaded(None);
+    assert_eq!(ids(&list), vec![3, 2, 1]);
+    list.set_tags(1, &Tags::parse("proj"), 1_800_000_000);
+    assert_eq!(ids(&list), vec![1, 3, 2]);
+    assert_eq!(list.visible()[0].updated_at, 1_800_000_000);
+}
+
+#[test]
+fn equal_activity_keeps_the_higher_id_first() {
+    let mut list = loaded(None);
+    list.set_tags(1, &Tags::parse("proj"), 1_700_000_000);
+    assert_eq!(ids(&list), vec![3, 1, 2]);
+}
+
+#[test]
+fn the_cursor_stays_on_the_same_row_when_the_order_changes() {
+    let mut list = loaded(None);
+    press(&mut list, KeyCode::Char('j'));
+    press(&mut list, KeyCode::Char('j'));
+    assert_eq!(list.selected().map(|r| r.id), Some(1));
+    list.set_tags(1, &Tags::parse("proj"), 1_800_000_000);
+    assert_eq!(list.selected().map(|r| r.id), Some(1));
+    assert_eq!(list.cursor(), 0);
 }
