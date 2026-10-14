@@ -52,18 +52,26 @@ Files changed:
 
 ## PR1 / S1: Chat COPY, badge, statusline (`src/core/ai/chat/{transcript,copy}.rs`, `src/app/{chat_copy,scroll}.rs`, `src/app.rs`, `src/ui/`)
 
-- [ ] 1.1 RED: `Scroll::lines_up/lines_down(n,total,h)` tests in `transcript.rs`: 1 and 3 line steps, wrapped lines, clamp at both ends, short transcript unchanged, reaching the end gives `Follow`.
-- [ ] 1.2 GREEN: implement `lines_up/lines_down` (same contract as `page_*`). Commit.
-- [ ] 1.3 RED: `src/core/ai/chat/copy.rs` key table to `ChatCopyCommand`: `j k Ctrl+d Ctrl+u gg G Esc q Ctrl+Space`, lone `g` discarded, `v V y i h l 0 $ a Enter Backspace Tab` swallowed, Repeat rules (j/k/Ctrl+d/u act; Esc/q ignored).
-- [ ] 1.4 GREEN: create `copy.rs` (`ChatCopy { pending_g }`) plus `mod` line. Commit.
-- [ ] 1.5 RED: app tests for `InputMode::ChatCopy`: `[` on a conversation enters it with no notice and no `WritePty`; `[` on list, tag editor, note editor, summary draft, guidance with no transcript stays TERMINAL with notice `nothing to scroll here`, cleared by the next key (R3); `CHAT_COPY_REFUSED` gone; composer, `ChatSend`, clipboard untouched by swallowed keys.
-- [ ] 1.6 RED: app tests: Esc/`q` leave to TERMINAL with `Follow`; held exit key debounced (`hold_exit`); stream pinned while in COPY; focus change, tab change and zoom-out of the chat reset COPY (3 reset matches); chat COPY on another pane's COPY does not touch shell offsets; `Ctrl+Space` gives PREFIX.
-- [ ] 1.7 GREEN: `src/app/chat_copy.rs` (`on_chat_copy_key`), `InputMode::ChatCopy` variant, label `COPY`, `on_key` arm, `[` entry, drop `CHAT_COPY_REFUSED`, reset matches in `src/app.rs`. Commit.
-- [ ] 1.8 RED: `App::scrolled_by(id)` and `App::scroll_position()` tests: shell offset, chat lines below view, `None` at 0; `copy_position()` in shell COPY; chat COPY always `Some` (explicit 0, R5); focused-only; none on the alternate screen.
-- [ ] 1.9 GREEN: `src/app/scroll.rs` (`scrolled_by`, `scroll_position`). Commit.
-- [ ] 1.10 RED: insta snapshots (TestBackend): `[+N]` badge on shell (wheel-scrolled and COPY), chat, unfocused, `[+0]` never, tiny pane (3 cols) and alternate screen show none, no content shift; statusline `COPY` hint for shell `j/k scroll · v select · y copy · Esc exit` and chat `j/k scroll · Esc exit`, VISUAL keeps the shell hint, notice replaces hint, whole-entry clipping with `…`, widths 0-40 do not panic; `TERMINAL ↑12/340`, `CHAT ↑9/120`, `COPY ↑0/N`, zoom marker order, unfocused scrolled pane has no position. Existing snapshots unchanged except COPY ones.
-- [ ] 1.11 GREEN: `src/ui/components/scroll_badge.rs`; `src/ui/mod.rs` (badge per pane, `scroll_position()`, no composer cursor in `ChatCopy`); COPY hint in `status_path` (`src/app.rs`). Review and accept new snapshots. Commit.
-- [ ] 1.12 Gate (fmt, clippy, tests). Open PR1 against `feat/pane-scroll`.
+- [x] 1.1 RED: `Scroll::lines_up/lines_down(n,total,h)` tests in `transcript.rs`: 1 and 3 line steps, wrapped lines, clamp at both ends, short transcript unchanged, reaching the end gives `Follow`.
+- [x] 1.2 GREEN: implement `lines_up/lines_down` (same contract as `page_*`). Commit.
+- [x] 1.3 RED: `src/core/ai/chat/copy.rs` key table to `ChatCopyCommand`: `j k Ctrl+d Ctrl+u gg G Esc q Ctrl+Space`, lone `g` discarded, `v V y i h l 0 $ a Enter Backspace Tab` swallowed, Repeat rules (j/k/Ctrl+d/u act; Esc/q ignored).
+- [x] 1.4 GREEN: create `copy.rs` (`ChatCopy { pending_g }`) plus `mod` line. Commit.
+- [x] 1.5 RED: app tests for `InputMode::ChatCopy`: `[` on a conversation enters it with no notice and no `WritePty`; `[` on list, tag editor, note editor, summary draft, guidance with no transcript stays TERMINAL with notice `nothing to scroll here`, cleared by the next key (R3); `CHAT_COPY_REFUSED` gone; composer, `ChatSend`, clipboard untouched by swallowed keys.
+- [x] 1.6 RED: app tests: Esc/`q` leave to TERMINAL with `Follow`; held exit key debounced (`hold_exit`); stream pinned while in COPY; focus change, tab change and zoom-out of the chat reset COPY (3 reset matches); chat COPY on another pane's COPY does not touch shell offsets; `Ctrl+Space` gives PREFIX.
+- [x] 1.7 GREEN: `src/app/chat_copy.rs` (`on_chat_copy_key`), `InputMode::ChatCopy` variant, label `COPY`, `on_key` arm, `[` entry, drop `CHAT_COPY_REFUSED`, reset matches in `src/app.rs`. Commit.
+- [x] 1.8 RED: `App::scrolled_by(id)` and `App::scroll_position()` tests: shell offset, chat lines below view, `None` at 0; `copy_position()` in shell COPY; chat COPY always `Some` (explicit 0, R5); focused-only; none on the alternate screen.
+- [x] 1.9 GREEN: `src/app/scroll.rs` (`scrolled_by`, `scroll_position`). Commit.
+- [x] 1.10 RED: insta snapshots (TestBackend): `[+N]` badge on shell (wheel-scrolled and COPY), chat, unfocused, `[+0]` never, tiny pane (3 cols) and alternate screen show none, no content shift; statusline `COPY` hint for shell `j/k scroll · v select · y copy · Esc exit` and chat `j/k scroll · Esc exit`, VISUAL keeps the shell hint, notice replaces hint, whole-entry clipping with `…`, widths 0-40 do not panic; `TERMINAL ↑12/340`, `CHAT ↑9/120`, `COPY ↑0/N`, zoom marker order, unfocused scrolled pane has no position. Existing snapshots unchanged except COPY ones.
+- [x] 1.11 GREEN: `src/ui/components/scroll_badge.rs`; `src/ui/mod.rs` (badge per pane, `scroll_position()`, no composer cursor in `ChatCopy`); COPY hint in `status_path` (`src/app.rs`). Review and accept new snapshots. Commit.
+- [x] 1.12 Gate (fmt, clippy, tests) passed; every commit passes fmt+clippy. The PR is NOT opened yet (left to the orchestrator): open it against `feat/pane-scroll`.
+
+### Apply notes (PR1)
+
+- 1.6 / 1.7: `Ctrl+Space` inside chat COPY gives PREFIX (spec), which already ends COPY, so a prefix-driven focus or tab change leaves the chat transcript where it is (consistent with R1: chat scroll survives focus/tab). The three reset matches (`set_focus_in`, `activate`, `drop_tab`) reset COPY while the mode is still `ChatCopy` (events that move focus without the prefix); tested by calling `set_focus_in`/`activate`/`drop_tab` directly. No zoom reset was added: toggling zoom needs the prefix, which has ended COPY already.
+- 1.5: entering chat COPY is refused for the list, tag editor, note editor, summary draft, and for guidance with an empty transcript; an empty transcript with no guidance enters COPY (nothing scrolls). The old test `copy_on_a_chat_is_refused_with_the_notice` was replaced by the new-notice test.
+- 1.8: the chat total of `scroll_position()` is the scrollable lines (`lines - viewport rows`), the analogue of the shell's history rows; `COPY ↑0/0` on a short transcript.
+- 1.10 / 1.11: the existing test `the_highlight_lands_on_the_selected_rows_of_a_scrolled_viewport` now strips the `[+8]` badge from row 0 (the badge is the new overlay in COPY scrolled). No existing snapshot changed. Badge style: bold `bg_base` text on `warning_orange`. `prefix::clip_hint` was extracted from `prefix::hint` to clip the COPY hint with the same whole-entry rule.
+- Test plumbing: helpers of `chat_live.rs` and `with_draft` of `chat_summary.rs` became `pub(super)` so `chat_copy.rs` and `scroll_position.rs` test modules reuse them.
 
 ## PR2 / S2: Wheel routing and app handling (`src/core/{mouse,pane,copy}.rs`, `src/app/scroll.rs`, `src/app.rs`)
 
