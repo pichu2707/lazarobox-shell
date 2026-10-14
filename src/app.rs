@@ -46,6 +46,7 @@ mod context;
 mod history;
 mod notes;
 mod offer;
+mod scroll;
 mod summary;
 mod tags;
 
@@ -6503,6 +6504,9 @@ mod app_tests {
 
     /// COPY on a chat pane (pane-scroll S1).
     mod chat_copy;
+
+    /// Where a pane is scrolled (pane-scroll S1).
+    mod scroll_position;
 
     /// History in the chat pane: list, saving, resume, delete (ai-chat C9).
     mod chat_history;
