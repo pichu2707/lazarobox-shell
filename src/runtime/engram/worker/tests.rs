@@ -604,6 +604,31 @@ async fn a_refused_delete_is_reported_and_stops_the_rest() {
 
 // ---- degrade ----
 
+// A notes delete that finds engram down says so with its own reply.
+#[tokio::test(start_paused = true)]
+async fn a_delete_against_a_down_server_answers_notes_unavailable() {
+    let mut rig = rig(Mode::Down);
+    rig.link.send(MemCmd::Delete {
+        pane: pane(1),
+        notes: vec![("widget".into(), 1)],
+    });
+    let mut got = Vec::new();
+    for _ in 0..2 {
+        got.push(rig.next().await);
+    }
+    assert!(
+        got.contains(&MemReply::NotesUnavailable {
+            pane: pane(1),
+            reason: Reason::NotRunning
+        }),
+        "{got:?}"
+    );
+    assert!(
+        !got.iter()
+            .any(|r| matches!(r, MemReply::Unavailable { pane: Some(_), .. }))
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_down_server_answers_unavailable_at_once_and_probes_every_10_seconds() {
     let mut rig = rig(Mode::Down);

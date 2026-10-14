@@ -456,8 +456,6 @@ pub struct App {
     /// What each delete in flight from a conversation list does with the
     /// notes of its conversation (see `history::NoteChoice`).
     note_choices: Vec<(PaneId, i64, history::NoteChoice)>,
-    /// Panes whose notes delete waits for engram's answer.
-    deleting_notes: Vec<PaneId>,
     /// The last finished detection; `None` until the first run ends.
     engines: Option<Detection>,
     /// A detection is in flight: further requests are dropped.
@@ -533,7 +531,6 @@ impl App {
             session_id: || None,
             token_check: || false,
             note_choices: Vec::new(),
-            deleting_notes: Vec::new(),
             engines: None,
             detecting: false,
             ai: AiConfig::default(),
@@ -1439,6 +1436,7 @@ impl App {
         for id in leaves {
             self.panes.remove(&id);
             self.drop_parked_send(id);
+            self.drop_note_choices(id);
         }
         if index == self.active {
             self.active = index.min(self.tabs.len() - 1);
@@ -1591,6 +1589,7 @@ impl App {
                 let mut ends = self.end_effects(&[id]);
                 self.panes.remove(&id);
                 self.drop_parked_send(id);
+                self.drop_note_choices(id);
                 self.tabs[t].zoom = false;
                 if id == self.tabs[t].focus {
                     let tiling = tile(&self.tabs[t].tree, body);

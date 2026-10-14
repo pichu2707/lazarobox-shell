@@ -10,6 +10,7 @@ use super::*;
 use crate::core::ai::{
     chat::{
         list::DELETE_FAILED,
+        memory::Readiness,
         store::{ConvRow, NoteRow, StoreCmd, StoreReply},
     },
     memory::port::{MemCmd, MemReply, Reason},
@@ -286,8 +287,8 @@ fn an_unreachable_engram_says_why_and_the_list_is_usable() {
     a.update(key('d'));
     a.update(key('a'));
     a.update(deleted(30, note_rows(3)));
-    a.update(AppEvent::Memory(MemReply::Unavailable {
-        pane: Some(chat_id()),
+    a.update(AppEvent::Memory(MemReply::NotesUnavailable {
+        pane: chat_id(),
         reason: Reason::NotRunning,
     }));
     assert_eq!(
@@ -436,4 +437,70 @@ fn type_all(a: &mut App, text: &str) {
     for c in text.chars() {
         a.update(key(c));
     }
+}
+
+// A project or context failure of the same pane, while a notes delete waits,
+// is the view's own: it degrades, and the delete line is not touched.
+#[test]
+fn another_commands_unavailable_is_not_taken_for_the_delete_failure() {
+    let mut a = listing(true, token, 3);
+    assert!(
+        matches!(chat_of(&a).readiness(), Readiness::Resolving { .. }),
+        "the view waits for its project"
+    );
+    a.update(key('d'));
+    a.update(key('a'));
+    a.update(deleted(30, note_rows(3)));
+    a.update(AppEvent::Memory(MemReply::Unavailable {
+        pane: Some(chat_id()),
+        reason: Reason::NotRunning,
+    }));
+    assert!(
+        matches!(chat_of(&a).readiness(), Readiness::Unavailable(_)),
+        "the view stopped waiting: {:?}",
+        chat_of(&a).readiness()
+    );
+    assert_eq!(line(&a), None, "no delete failure was invented");
+    // The delete's own answer still lands.
+    a.update(mem_deleted(3, 0, false));
+    assert_eq!(line(&a).as_deref(), Some("deleted 3 notes from engram"));
+}
+
+// The result counts the notes the delete found, which can be more than the
+// prompt offered when a note was saved after the list was read.
+#[test]
+fn the_result_counts_the_real_number_of_notes() {
+    let mut a = listing(true, token, 1);
+    a.update(key('d'));
+    a.update(key('a'));
+    a.update(deleted(30, note_rows(2)));
+    a.update(mem_deleted(2, 0, false));
+    assert_eq!(line(&a).as_deref(), Some("deleted 2 notes from engram"));
+}
+
+// A pane that closes while its delete is in flight leaves no choice behind.
+#[test]
+fn closing_the_pane_forgets_its_pending_delete_choice() {
+    let mut a = listing(true, token, 3);
+    a.update(key('d'));
+    a.update(key('a'));
+    assert_eq!(a.note_choices.len(), 1);
+    press(&mut a, "wq");
+    a.update(key('y'));
+    assert_eq!(a.note_choices, Vec::new());
+}
+
+// Closing a tab does the same for every pane in it.
+#[test]
+fn closing_the_tab_forgets_the_pending_delete_choices_of_its_panes() {
+    let mut a = listing(true, token, 3);
+    a.update(key('d'));
+    a.update(key('y'));
+    assert_eq!(a.note_choices.len(), 1);
+    press(&mut a, "tn");
+    press(&mut a, "b1");
+    press(&mut a, "tc");
+    a.update(key('y'));
+    assert_eq!(a.tab_count(), 1);
+    assert_eq!(a.note_choices, Vec::new());
 }

@@ -251,7 +251,6 @@ impl App {
             self.say_in(id, &notes_stay_line(notes.len(), why));
             return Vec::new();
         }
-        self.deleting_notes.push(id);
         vec![Effect::Memory(MemCmd::Delete {
             pane: id,
             notes: notes
@@ -264,19 +263,18 @@ impl App {
     /// The memory worker deleted (some of) the notes of a deleted
     /// conversation.
     pub(super) fn on_notes_deleted(&mut self, id: PaneId, ok: usize, failed: usize, refused: bool) {
-        self.deleting_notes.retain(|pane| *pane != id);
         self.say_in(id, &notes_result_line(ok, failed, refused));
     }
 
-    /// The memory worker could not try the notes delete at all. Returns
-    /// whether the reply was the answer to one.
-    pub(super) fn on_notes_unavailable(&mut self, id: PaneId, reason: &str) -> bool {
-        let Some(at) = self.deleting_notes.iter().position(|pane| *pane == id) else {
-            return false;
-        };
-        self.deleting_notes.remove(at);
+    /// The memory worker could not try the notes delete at all.
+    pub(super) fn on_notes_unavailable(&mut self, id: PaneId, reason: &str) {
         self.say_in(id, &format!("could not delete notes: {reason}"));
-        true
+    }
+
+    /// Pane `id` is gone: what it chose for the notes of a delete in flight
+    /// is not needed any more.
+    pub(super) fn drop_note_choices(&mut self, id: PaneId) {
+        self.note_choices.retain(|(pane, _, _)| *pane != id);
     }
 
     /// The store thread's answer, as far as history is concerned: the list,

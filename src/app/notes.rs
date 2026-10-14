@@ -197,8 +197,8 @@ impl App {
                 let save = chat.save_answered(*token);
                 save_not_done(chat, save.as_ref(), &reason.text());
             }
-            // The answer to a notes delete: the worker could not even try.
-            MemReply::Unavailable { reason, .. } if self.deleting_notes.contains(&id) => {
+            // The worker could not even try the notes delete.
+            MemReply::NotesUnavailable { reason, .. } => {
                 self.on_notes_unavailable(id, &reason.text());
             }
             MemReply::Deleted {

@@ -74,12 +74,17 @@ impl MemCmd {
     }
 
     /// The reply that says this command cannot be done: a save answers with
-    /// its token, any other command with a plain `Unavailable`.
+    /// its token, a delete with `NotesUnavailable`, any other command with a
+    /// plain `Unavailable`.
     pub fn unavailable(&self, reason: Reason) -> MemReply {
         match self {
             MemCmd::Save { pane, id, .. } => MemReply::SaveUnavailable {
                 pane: *pane,
                 id: *id,
+                reason,
+            },
+            MemCmd::Delete { pane, .. } => MemReply::NotesUnavailable {
+                pane: *pane,
                 reason,
             },
             other => MemReply::Unavailable {
@@ -225,6 +230,10 @@ pub enum MemReply {
         failed: usize,
         refused: bool,
     },
+    /// A notes delete could not run (memory unavailable, queue full, no
+    /// worker). Its own reply, so it is never taken for the failure of a
+    /// project or context request of the same pane.
+    NotesUnavailable { pane: PaneId, reason: Reason },
     /// The result of `StartServer`.
     Server(ServerOutcome),
     /// Nothing runs on the port and a 3.x `engram` can start one: the app
@@ -246,6 +255,7 @@ impl MemReply {
             | MemReply::Saved { pane, .. }
             | MemReply::SaveFailed { pane, .. }
             | MemReply::SaveUnavailable { pane, .. }
+            | MemReply::NotesUnavailable { pane, .. }
             | MemReply::Deleted { pane, .. } => Some(*pane),
             MemReply::Unavailable { pane, .. } => *pane,
             MemReply::Health { .. } | MemReply::Server(_) | MemReply::ServerOffer(_) => None,
@@ -256,6 +266,26 @@ impl MemReply {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A notes delete that cannot run has its own failure reply, so it is never
+    // taken for the failure of a project or context request of the same pane.
+    #[test]
+    fn a_delete_that_cannot_run_answers_with_its_own_reply() {
+        let pane = PaneId::FIRST;
+        let delete = MemCmd::Delete {
+            pane,
+            notes: vec![("p".into(), 1)],
+        };
+        let refused = delete.unavailable(Reason::Busy);
+        assert_eq!(
+            refused,
+            MemReply::NotesUnavailable {
+                pane,
+                reason: Reason::Busy
+            }
+        );
+        assert_eq!(refused.pane(), Some(pane));
+    }
 
     #[test]
     fn commands_and_replies_are_plain_values() {
@@ -330,6 +360,10 @@ mod tests {
                 ok: 1,
                 failed: 0,
                 refused: false,
+            },
+            MemReply::NotesUnavailable {
+                pane,
+                reason: Reason::Busy,
             },
             MemReply::Server(ServerOutcome::Adopted),
             MemReply::ServerOffer(Offer {
