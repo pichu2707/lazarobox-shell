@@ -10,6 +10,12 @@ const SHELL_COPY_HINT: [&str; 4] = ["j/k scroll", "v select", "y copy", "Esc exi
 /// The COPY key hint of a chat pane: no selection or yank.
 const CHAT_COPY_HINT: [&str; 2] = ["j/k scroll", "Esc exit"];
 
+/// Whether the cell `(x, y)` is inside `rect`.
+fn rect_has(rect: &Rect, x: u16, y: u16) -> bool {
+    (rect.x..rect.x.saturating_add(rect.width)).contains(&x)
+        && (rect.y..rect.y.saturating_add(rect.height)).contains(&y)
+}
+
 impl App {
     /// The static COPY key hint of the active COPY kind, clipped by whole
     /// entries to `max_cols`.
@@ -68,14 +74,14 @@ impl App {
             return Vec::new();
         }
         let tiling = self.tiling();
-        let Some(id) = pane_at(&tiling, mouse.column, mouse.row) else {
-            return Vec::new();
-        };
-        let rect = tiling
+        let Some((id, rect)) = tiling
             .panes
             .iter()
-            .find_map(|(pane, rect)| (*pane == id).then_some(*rect))
-            .expect("pane_at returned a laid out pane");
+            .find(|(_, rect)| rect_has(rect, mouse.column, mouse.row))
+            .copied()
+        else {
+            return Vec::new();
+        };
         let (col, row) = (mouse.column - rect.x, mouse.row - rect.y);
         let Some(facts) = self.wheel_facts(id) else {
             return Vec::new();
@@ -122,7 +128,7 @@ impl App {
             WheelDir::Down => now.saturating_sub(WHEEL_STEP),
         };
         pty.emu.set_scrollback(next);
-        self.dirty = true;
+        self.dirty |= pty.emu.scrollback_offset() != now;
     }
 
     /// One wheel tick on the pane in COPY: the viewport moves, COPY stays.
@@ -135,10 +141,11 @@ impl App {
             WheelDir::Down => CopyMotion::WheelDown,
         };
         let geo = self.copy_geometry();
+        let before = state;
         state.apply_motion(motion, geo, 0);
         self.copy_pane_mut().set_scrollback(state.offset);
         self.input = InputMode::Copy(state);
-        self.dirty = true;
+        self.dirty |= state != before;
     }
 
     /// One wheel tick on chat `id`: the transcript moves by whole lines.
@@ -153,11 +160,14 @@ impl App {
         };
         let total = chat.lines(cols).len();
         let scroll = chat.scroll();
-        chat.set_scroll(match dir {
+        let next = match dir {
             WheelDir::Up => scroll.lines_up(WHEEL_STEP, total, rows),
             WheelDir::Down => scroll.lines_down(WHEEL_STEP, total, rows),
-        });
-        self.dirty = true;
+        };
+        chat.set_scroll(next);
+        // Compare where the view is, not the enum: `Pinned` at the bottom
+        // and `Follow` show the same lines.
+        self.dirty |= scroll.top(total, rows) != next.top(total, rows);
     }
 
     /// Back to the live screen: the focused shell pane after a key or a paste

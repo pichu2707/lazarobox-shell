@@ -866,3 +866,46 @@ fn the_literal_prefix_returns_the_focused_pane_to_live() {
     assert!(matches!(effects[0], Effect::WritePty(..)));
     assert_eq!(offset(&a, PaneId::FIRST), 0);
 }
+
+// Redraws only on a change -----------------------------------------------------------
+
+#[test]
+fn a_clamped_shell_tick_does_not_mark_the_screen_dirty() {
+    let mut a = single();
+    a.take_dirty();
+    down_on(&mut a, PaneId::FIRST);
+    assert!(!a.take_dirty(), "already live");
+    let total = history(&a, PaneId::FIRST);
+    a.scroll_shell_for_test(PaneId::FIRST, total);
+    a.take_dirty();
+    up_on(&mut a, PaneId::FIRST);
+    assert!(!a.take_dirty(), "already at the top");
+    down_on(&mut a, PaneId::FIRST);
+    assert!(a.take_dirty(), "a real move redraws");
+}
+
+#[test]
+fn a_clamped_copy_tick_does_not_mark_the_screen_dirty() {
+    let mut a = single();
+    press(&mut a, "[");
+    a.take_dirty();
+    down_on(&mut a, PaneId::FIRST);
+    assert!(!a.take_dirty(), "COPY already at the bottom");
+    up_on(&mut a, PaneId::FIRST);
+    assert!(a.take_dirty());
+}
+
+#[test]
+fn a_clamped_chat_tick_does_not_mark_the_screen_dirty() {
+    let mut a = enabled(answered("short"));
+    a.take_dirty();
+    up_on(&mut a, chat_id());
+    down_on(&mut a, chat_id());
+    assert!(!a.take_dirty(), "nothing to scroll");
+    let mut a = long_chat();
+    a.take_dirty();
+    down_on(&mut a, chat_id());
+    assert!(!a.take_dirty(), "already at the bottom");
+    up_on(&mut a, chat_id());
+    assert!(a.take_dirty());
+}
