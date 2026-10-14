@@ -82,7 +82,27 @@ pub struct CliEnv {
     pub timeouts: Timeouts,
     /// See [`EXIT_GRACE`].
     pub grace: Duration,
+    /// Variables set for the child before the scrub runs. Empty in the app;
+    /// the tests use it to give the child something to scrub, because the
+    /// test process cannot change its own environment safely.
+    pub inject: Vec<(OsString, OsString)>,
 }
+
+/// Variables the child never inherits: the agents it could be talked into
+/// using (ssh, gpg, askpass helpers) and the state of an outer Claude Code
+/// session, which would make the CLI think it runs inside one. Settings
+/// (`ANTHROPIC_*`, proxy, certificates, XDG, `HOME`, `PATH`, the D-Bus
+/// address a keyring login needs) are kept.
+const SCRUBBED: [&str; 8] = [
+    "SSH_AUTH_SOCK",
+    "SSH_AGENT_PID",
+    "SSH_ASKPASS",
+    "GIT_ASKPASS",
+    "GPG_AGENT_INFO",
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_SSE_PORT",
+];
 
 impl CliEnv {
     /// The real machine: the process environment and `/proc/self/exe` as the
@@ -104,6 +124,7 @@ impl CliEnv {
             helper: PathBuf::from("/proc/self/exe"),
             timeouts: Timeouts::CLI,
             grace: EXIT_GRACE,
+            inject: Vec::new(),
         }
     }
 }
@@ -224,17 +245,24 @@ fn jailed(env: &CliEnv, job: &Job, binary: &Path, dirs: &Dirs) -> Option<(PathBu
 
 /// The child process: no shell, the private folders, a scrubbed environment
 /// and a process group of its own.
-fn command(program: &Path, argv: Vec<OsString>, cwd: &Path, tmp: &Path) -> Command {
+fn command(
+    program: &Path,
+    argv: Vec<OsString>,
+    (cwd, tmp): (&Path, &Path),
+    inject: &[(OsString, OsString)],
+) -> Command {
     let mut command = Command::new(program);
     command
         .args(argv)
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // Agents the CLI could be talked into using.
-        .env_remove("SSH_AUTH_SOCK")
-        .env_remove("GPG_AGENT_INFO")
+        .stderr(Stdio::piped());
+    command.envs(inject.iter().map(|(k, v)| (k, v)));
+    for name in SCRUBBED {
+        command.env_remove(name);
+    }
+    command
         .env("NO_COLOR", "1")
         .env("TMPDIR", tmp)
         .kill_on_drop(true)
@@ -247,10 +275,11 @@ async fn spawn(
     program: &Path,
     argv: &[OsString],
     dirs: &Dirs,
+    inject: &[(OsString, OsString)],
 ) -> io::Result<tokio::process::Child> {
     let mut attempt = 0;
     loop {
-        match command(program, argv.to_vec(), &dirs.cwd, &dirs.tmp).spawn() {
+        match command(program, argv.to_vec(), (&dirs.cwd, &dirs.tmp), inject).spawn() {
             Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 4 => {
                 attempt += 1;
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -410,7 +439,7 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
     };
     // Declared in this order so the group guard drops before the child, and
     // the private folders last.
-    let mut child = match spawn(&plan.program, &plan.argv, &plan.dirs).await {
+    let mut child = match spawn(&plan.program, &plan.argv, &plan.dirs, &env.inject).await {
         Ok(child) => child,
         Err(e) => {
             let text = format!("could not start {}: {}", job.binary, e.kind());

@@ -104,6 +104,7 @@ impl Lab {
                 slow: Duration::from_secs(20),
             },
             grace: Duration::from_secs(2),
+            inject: Vec::new(),
         }
     }
 
@@ -346,8 +347,8 @@ fn the_command_drops_the_agent_variables_and_sets_the_private_ones() {
     let command = command(
         Path::new("/bin/true"),
         vec![OsString::from("-p")],
-        Path::new("/data/cli-cwd"),
-        Path::new("/data/cli-tmp/1-1"),
+        (Path::new("/data/cli-cwd"), Path::new("/data/cli-tmp/1-1")),
+        &[],
     );
     let envs: Vec<_> = command
         .as_std()
@@ -357,14 +358,52 @@ fn the_command_drops_the_agent_variables_and_sets_the_private_ones() {
     let has = |key: &str, value: Option<&str>| {
         envs.contains(&(OsString::from(key), value.map(OsString::from)))
     };
-    assert!(has("SSH_AUTH_SOCK", None), "removed");
-    assert!(has("GPG_AGENT_INFO", None), "removed");
+    for name in SCRUBBED {
+        assert!(has(name, None), "{name} removed");
+    }
     assert!(has("NO_COLOR", Some("1")));
     assert!(has("TMPDIR", Some("/data/cli-tmp/1-1")));
     assert_eq!(
         command.as_std().get_current_dir(),
         Some(Path::new("/data/cli-cwd"))
     );
+}
+
+#[tokio::test]
+async fn the_cli_sees_neither_agents_nor_outer_claude_state_but_keeps_its_settings() {
+    let lab = lab();
+    lab.claude(GOOD);
+    let mut env = lab.env();
+    let gone = [
+        "SSH_AUTH_SOCK",
+        "SSH_AGENT_PID",
+        "SSH_ASKPASS",
+        "GIT_ASKPASS",
+        "GPG_AGENT_INFO",
+        "CLAUDECODE",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_SSE_PORT",
+    ];
+    let kept = [
+        "ANTHROPIC_BASE_URL",
+        "HTTPS_PROXY",
+        "SSL_CERT_FILE",
+        "XDG_CONFIG_HOME",
+        "DBUS_SESSION_BUS_ADDRESS",
+    ];
+    for name in gone.iter().chain(&kept) {
+        env.inject.push(((*name).into(), "v".into()));
+    }
+    run(env, request()).await;
+    let dump = lab.recorded("env");
+    let has = |name: &str| dump.lines().any(|l| l.starts_with(&format!("{name}=")));
+    for name in gone {
+        assert!(!has(name), "{name} must be removed");
+    }
+    for name in kept {
+        assert!(has(name), "{name} must be kept");
+    }
+    assert!(has("HOME") && has("PATH"));
 }
 
 #[tokio::test]
