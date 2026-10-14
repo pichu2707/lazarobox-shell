@@ -892,3 +892,56 @@ fn a_failed_delete_keeps_the_row_and_says_so() {
     assert_eq!(list.line(), Some(DELETE_FAILED));
     assert_eq!(list.visible().len(), 2);
 }
+
+// ---- the list and the other views ------------------------------------------
+
+// The `engram serve` question is drawn in the conversation view only, so it
+// must not take the keys of a list that hides it.
+#[test]
+fn the_server_offer_does_not_take_the_keys_of_the_list() {
+    use crate::core::ai::memory::{offer::Offer, port::MemReply};
+    let mut a = launched(120, 30)
+        .with_ai(super::chat_notes::ai(true))
+        .with_chat_history(probe);
+    a.update(AppEvent::EnginesDetected(detection()));
+    press(&mut a, "c");
+    a.update(AppEvent::Memory(MemReply::ServerOffer(Offer {
+        path: "/usr/local/bin/engram".into(),
+        port: 7437,
+    })));
+    // `n` starts the conversation: it is not an answer to a hidden question.
+    a.update(key('n'));
+    assert!(chat_of(&a).list().is_none());
+    assert!(
+        a.chat_guidance(chat_id()).is_some(),
+        "the question shows now"
+    );
+    // In the conversation view the offer takes its keys again.
+    a.update(key('n'));
+    assert_eq!(a.chat_guidance(chat_id()), None, "declined");
+}
+
+// Spec (Resume): Resumed conversation shows no reasoning, Ctrl+R does nothing.
+#[test]
+fn ctrl_r_does_nothing_in_a_resumed_conversation() {
+    let mut a = listing();
+    a.update(resumed(chat_id(), 30, "programmer"));
+    let before = chat_of(&a).generation();
+    let effects = a.update(ctrl('r'));
+    assert_eq!(effects, Vec::new());
+    assert_eq!(chat_of(&a).generation(), before);
+}
+
+// Spec: the partial message of a resumed conversation is marked.
+#[test]
+fn a_partial_message_keeps_its_mark_after_a_resume() {
+    use crate::core::ai::chat::transcript::LineKind;
+    let mut a = listing();
+    a.update(resumed(chat_id(), 30, "programmer"));
+    let marks = chat_of(&a)
+        .lines(80)
+        .iter()
+        .filter(|line| line.kind == LineKind::Mark)
+        .count();
+    assert_eq!(marks, 1, "only the interrupted answer is marked");
+}

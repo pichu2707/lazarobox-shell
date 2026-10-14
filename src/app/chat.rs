@@ -108,8 +108,11 @@ impl App {
     /// editing and scrolling but never sends, cancels, yanks or toggles.
     pub(super) fn on_chat_key(&mut self, key: KeyEvent, repeat: bool) -> Vec<Effect> {
         let id = self.tab().focus;
-        // The `engram serve` question, when it is on screen, takes the key.
+        // The `engram serve` question, when it is on screen, takes the key. It
+        // is drawn in the conversation view only, so a list does not give up
+        // its keys to a question it hides.
         if !self.memory_view_open(id)
+            && !self.list_open(id)
             && let Some(effects) = self.answer_server_offer(key)
         {
             return effects;
