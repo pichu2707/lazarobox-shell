@@ -161,6 +161,8 @@ pub async fn run() -> io::Result<()> {
     let shutdown = Shutdown::new()?;
     let (tx, rx) = mpsc::channel(PTY_CHANNEL);
     let (ai_tx, ai_rx) = mpsc::channel(1);
+    // Detection reads codex's model list through the same jail as its chat.
+    let detect_env = chat::CliEnv::from_env(jail);
     let (chat_tx, chat_rx) = mpsc::channel(chat::APP_CHANNEL);
     let (memory_tx, memory_rx) = mpsc::channel(MEMORY_CHANNEL);
     // Off unless the config activates it: then no worker ever starts, nothing
@@ -186,7 +188,9 @@ pub async fn run() -> io::Result<()> {
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
         .with_memory(memory)
         .with_config_path(config_path)
-        .with_detector(Box::new(move || spawn_detection(ai_tx.clone())))
+        .with_detector(Box::new(move || {
+            spawn_detection(ai_tx.clone(), detect_env.clone());
+        }))
         .with_preparer(Box::new(move |pane, profile, origin, context| {
             spawn_prepare(
                 config_dir.clone(),

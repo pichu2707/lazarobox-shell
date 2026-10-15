@@ -19,7 +19,7 @@ use futures::{
 use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
 
 mod cli;
-pub(crate) use cli::SCRUBBED;
+pub(crate) use cli::run_listing;
 
 use super::loopback::post_stream;
 use crate::core::{
