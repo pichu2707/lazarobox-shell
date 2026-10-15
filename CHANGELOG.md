@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-15
+
 ### Added
 
 - Nesting guard, modelled on tmux's `$TMUX`: every shell pane child gets
@@ -365,7 +367,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.10.0...v0.11.0
