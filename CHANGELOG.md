@@ -16,8 +16,8 @@ baseline.
   `LAZAROBOX=<pid of the instance>`. Starting `lazarobox-shell` with that
   variable set (and non-empty) prints `lazarobox-shell is already running in
   this terminal; use --force to nest anyway` to stderr and exits 1, before the
-  terminal enters raw mode. `--force` skips the check. The internal
-  `__jail-exec` subcommand is never blocked.
+  terminal enters raw mode. `--force` (a top-level flag) skips the check.
+  Subcommands, such as the internal `__jail-exec`, are never blocked.
 
 ### Fixed
 

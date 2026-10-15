@@ -25,7 +25,7 @@ The system MUST spawn `$SHELL` (fallback `/bin/sh`) for each shell pane, in the 
 - THEN no SpawnPane effect is emitted
 
 ### Requirement: Nesting guard
-Every shell pane child MUST get `LAZAROBOX=<pid of the owning instance>` in its environment. At startup, when `LAZAROBOX` is set and non-empty and `--force` is absent, the system MUST print one line to stderr, exit with status 1 and NOT enter raw mode or the alternate screen. `--force` MUST skip the check. The internal `__jail-exec` subcommand MUST NOT be subject to the guard. AI CLI children (scrubbed environment) are not marked.
+Every shell pane child MUST get `LAZAROBOX=<pid of the owning instance>` in its environment. At startup, when `LAZAROBOX` is set and non-empty and `--force` is absent, the system MUST print one line to stderr, exit with status 1 and NOT enter raw mode or the alternate screen. `--force` MUST skip the check, and is recognised only as a top-level flag. The guard MUST apply only to the plain TUI start: any subcommand (for example the internal `__jail-exec`) MUST NOT be subject to it, and a `--force` after a subcommand is not an override. AI CLI children (scrubbed environment) are not marked.
 
 #### Scenario: Pane child marked [auto]
 - GIVEN a shell pane is spawned
@@ -47,9 +47,9 @@ Every shell pane child MUST get `LAZAROBOX=<pid of the owning instance>` in its 
 - WHEN the nesting check runs
 - THEN the start is allowed
 
-#### Scenario: Internal subcommand not blocked [auto]
+#### Scenario: Subcommand not blocked [auto]
 - GIVEN `LAZAROBOX` is set
-- WHEN the binary is started with `__jail-exec`
+- WHEN the binary is started with a subcommand such as `__jail-exec`
 - THEN the guard does not run
 
 ### Requirement: PTY I/O

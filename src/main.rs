@@ -13,8 +13,12 @@ fn main() -> std::io::Result<()> {
     }
     // Before the runtime enters raw mode or the alternate screen.
     let marker = std::env::var_os(nesting::ENV_VAR).map(|v| v.to_string_lossy().into_owned());
-    let force = nesting::has_force(std::env::args_os().skip(1));
-    if let Err(message) = nesting::nesting_check(marker.as_deref(), force) {
+    let argv: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let exempt = !nesting::guarded_start(&argv);
+    if let Err(message) = nesting::nesting_check(marker.as_deref(), exempt) {
         eprintln!("{message}");
         std::process::exit(1);
     }
