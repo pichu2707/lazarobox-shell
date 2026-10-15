@@ -38,22 +38,28 @@ impl Refusal {
 /// Characters that draw as nothing or as blanks and are not in the output
 /// sanitizer's format set: the combining grapheme joiner, Hangul and Khmer
 /// fillers, Mongolian and variation selectors, the interlinear annotation
-/// controls, the tag block, the braille blank and the half-width filler.
+/// controls, the tag block, the braille blank and the half-width filler, the
+/// shorthand-format and musical invisibles, the object replacement character,
+/// and every non-ASCII whitespace (no-break space, ideographic space, ...).
 fn is_invisible(c: char) -> bool {
-    matches!(
-        c,
-        '\u{034f}'
-            | '\u{115f}'..='\u{1160}'
-            | '\u{17b4}'..='\u{17b5}'
-            | '\u{180b}'..='\u{180f}'
-            | '\u{2800}'
-            | '\u{3164}'
-            | '\u{fe00}'..='\u{fe0f}'
-            | '\u{ffa0}'
-            | '\u{fff9}'..='\u{fffb}'
-            | '\u{e0000}'..='\u{e007f}'
-            | '\u{e0100}'..='\u{e01ef}'
-    )
+    (c.is_whitespace() && !c.is_ascii())
+        || matches!(
+            c,
+            '\u{034f}'
+                | '\u{115f}'..='\u{1160}'
+                | '\u{17b4}'..='\u{17b5}'
+                | '\u{180b}'..='\u{180f}'
+                | '\u{2800}'
+                | '\u{3164}'
+                | '\u{fe00}'..='\u{fe0f}'
+                | '\u{ffa0}'
+                | '\u{fff9}'..='\u{fffb}'
+                | '\u{e0000}'..='\u{e007f}'
+                | '\u{e0100}'..='\u{e01ef}'
+                | '\u{1bca0}'..='\u{1bca3}'
+                | '\u{1d173}'..='\u{1d17a}'
+                | '\u{fffc}'
+        )
 }
 
 /// Validate `text` for a pane.
@@ -169,6 +175,47 @@ mod tests {
             '\u{e0080}',
             '\u{e01f0}',
             '\u{2801}',
+        ] {
+            assert!(
+                !refused(&format!("a{c}b")),
+                "U+{:04X} must be valid",
+                c as u32
+            );
+        }
+    }
+
+    #[test]
+    fn non_ascii_whitespace_and_musical_invisibles_are_refused() {
+        for c in [
+            '\u{00a0}',
+            '\u{1680}',
+            '\u{2000}',
+            '\u{2005}',
+            '\u{200a}',
+            '\u{202f}',
+            '\u{205f}',
+            '\u{3000}',
+            '\u{1d173}',
+            '\u{1d17a}',
+            '\u{1bca0}',
+            '\u{1bca3}',
+            '\u{fffc}',
+        ] {
+            assert!(
+                refused(&format!("a{c}b")),
+                "U+{:04X} must be refused",
+                c as u32
+            );
+            assert!(refused(&format!("ls{c}")), "trailing U+{:04X}", c as u32);
+        }
+        // A plain space stays valid; so do the neighbours of the ranges.
+        for c in [
+            ' ',
+            '\u{1d172}',
+            '\u{1d17b}',
+            '\u{1bc9f}',
+            '\u{1bca4}',
+            '\u{fffd}',
         ] {
             assert!(
                 !refused(&format!("a{c}b")),
