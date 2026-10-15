@@ -88,6 +88,10 @@ pub struct EngineState {
     pub id: &'static str,
     pub status: Status,
     pub models: Vec<String>,
+    /// `(label, value)` pairs of a CLI model list read from the account
+    /// (codex today), best first and without `default`. Empty when the CLI
+    /// has no listing or the listing failed.
+    pub model_labels: Vec<(String, String)>,
     pub version: Option<String>,
 }
 
@@ -109,6 +113,9 @@ pub enum Probe {
         id: &'static str,
         path: Option<PathBuf>,
         stdout: Option<Vec<u8>>,
+        /// Raw output of the CLI's model listing (`codex debug models`);
+        /// `None` when the CLI has none or it failed.
+        models: Option<Vec<u8>>,
     },
 }
 
@@ -129,19 +136,35 @@ pub fn reduce(probes: &[Probe]) -> Detection {
                     Some(Probe::Cli {
                         path: Some(_),
                         stdout,
+                        models,
                         ..
                     }),
                     Kind::Cli,
-                ) => EngineState {
-                    models: vec!["default".to_string()],
-                    version: stdout.as_deref().and_then(parse::parse_version),
-                    ..bare(engine.id, Status::Available)
-                },
+                ) => cli_state(engine.id, stdout.as_deref(), models.as_deref()),
                 _ => bare(engine.id, Status::NotInstalled),
             }
         })
         .collect();
     Detection { engines }
+}
+
+/// An available CLI. Only codex has a listing (`codex debug models`); its
+/// models come after `default`, and a failed or empty listing leaves just
+/// `default`.
+fn cli_state(id: &'static str, stdout: Option<&[u8]>, listing: Option<&[u8]>) -> EngineState {
+    let labels = match (id, listing.and_then(|b| std::str::from_utf8(b).ok())) {
+        ("codex", Some(raw)) => parse::codex_models(raw),
+        _ => Vec::new(),
+    };
+    let models = std::iter::once("default".to_string())
+        .chain(labels.iter().map(|(_, value)| value.clone()))
+        .collect();
+    EngineState {
+        models,
+        model_labels: labels,
+        version: stdout.and_then(parse::parse_version),
+        ..bare(id, Status::Available)
+    }
 }
 
 fn bare(id: &'static str, status: Status) -> EngineState {
@@ -150,6 +173,7 @@ fn bare(id: &'static str, status: Status) -> EngineState {
         status,
         models: Vec::new(),
         version: None,
+        model_labels: Vec::new(),
     }
 }
 
@@ -272,6 +296,7 @@ mod tests {
             status,
             models: models.iter().map(|m| m.to_string()).collect(),
             version: version.map(str::to_string),
+            model_labels: Vec::new(),
         })
     }
 
@@ -424,6 +449,7 @@ mod tests {
             id,
             path: path.map(PathBuf::from),
             stdout: stdout.map(|s| s.as_bytes().to_vec()),
+            models: None,
         }
     }
 
@@ -438,6 +464,57 @@ mod tests {
                 &["default"],
                 Some("codex 0.5.0")
             )
+        );
+    }
+
+    #[test]
+    fn codex_listing_becomes_labeled_models_after_default() {
+        let raw = include_str!("../../../tests/fixtures/codex/debug-models.json");
+        let d = reduce(&[Probe::Cli {
+            id: "codex",
+            path: Some(PathBuf::from("/bin/codex")),
+            stdout: Some(b"codex-cli 0.162.1\n".to_vec()),
+            models: Some(raw.as_bytes().to_vec()),
+        }]);
+        let codex = get(&d, "codex").unwrap();
+        assert_eq!(codex.status, Status::Available);
+        assert_eq!(codex.model_labels.len(), 7);
+        assert_eq!(
+            codex.model_labels[0],
+            ("GPT-6.1-Sol".to_string(), "gpt-6.1-sol".to_string())
+        );
+        assert_eq!(codex.models.len(), 8);
+        assert_eq!(codex.models[0], "default");
+        assert_eq!(codex.models[1], "gpt-6.1-sol");
+    }
+
+    #[test]
+    fn a_failed_or_foreign_listing_leaves_just_default() {
+        for models in [None, Some(&b"not json"[..]), Some(&b"{\"models\":[]}"[..])] {
+            let d = reduce(&[Probe::Cli {
+                id: "codex",
+                path: Some(PathBuf::from("/bin/codex")),
+                stdout: None,
+                models: models.map(<[u8]>::to_vec),
+            }]);
+            assert_eq!(
+                get(&d, "codex"),
+                state("codex", Status::Available, &["default"], None)
+            );
+        }
+    }
+
+    #[test]
+    fn only_codex_reads_a_listing() {
+        let d = reduce(&[Probe::Cli {
+            id: "claude",
+            path: Some(PathBuf::from("/bin/claude")),
+            stdout: None,
+            models: Some(br#"{"models":[{"slug":"x","visibility":"list"}]}"#.to_vec()),
+        }]);
+        assert_eq!(
+            get(&d, "claude"),
+            state("claude", Status::Available, &["default"], None)
         );
     }
 
@@ -487,6 +564,7 @@ mod tests {
         let mk = |id, status, models, version: Option<&str>| EngineState {
             models,
             version: version.map(str::to_string),
+            model_labels: Vec::new(),
             ..bare(id, status)
         };
         let d = Detection {

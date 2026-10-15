@@ -108,6 +108,7 @@ fn chat_app() -> App {
             status: Status::Available,
             models: vec!["llama3:8b".into()],
             version: None,
+            model_labels: Vec::new(),
         }],
     }));
     prefixed(&mut app, "c");

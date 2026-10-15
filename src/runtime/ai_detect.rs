@@ -8,7 +8,8 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Stdio,
-    time::Duration,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use tokio::{
@@ -21,7 +22,7 @@ use tokio::{
 
 use futures::future::join_all;
 
-use super::proc::GroupKill;
+use super::{chat::CliEnv, proc::GroupKill};
 use crate::core::ai::{
     CATALOG, Detection, Engine, Kind, Probe,
     http::{MAX_BODY, parse_response},
@@ -86,16 +87,46 @@ const EXIT_GRACE: Duration = Duration::from_millis(100);
 /// output (it is dropped, not truncated). The child runs in its own process
 /// group, which is killed on every way out so no grandchild survives.
 pub async fn version(path: &Path) -> Option<Vec<u8>> {
-    let mut child = spawn_version(path).await?;
+    run_capped(
+        || {
+            let mut command = Command::new(path);
+            command
+                .arg("--version")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .kill_on_drop(true)
+                .process_group(0);
+            command
+        },
+        VERSION_TIMEOUT,
+        VERSION_CAP,
+    )
+    .await
+}
+
+/// Runs the command `make` builds and returns its stdout. `None` on a spawn
+/// failure, a non-zero exit, a timeout or more than `cap` bytes of output
+/// (dropped, not truncated). The command must pipe stdout and run in its own
+/// process group (`process_group(0)`); its stdin is closed here. The group is
+/// killed on every way out so no grandchild survives.
+pub(crate) async fn run_capped(
+    make: impl Fn() -> Command,
+    limit: Duration,
+    cap: usize,
+) -> Option<Vec<u8>> {
+    let mut child = spawn_capped(&make).await?;
+    // The child sees EOF on stdin at once.
+    drop(child.stdin.take());
     let pid = child.id()? as libc::pid_t;
     // Declared after `child`, so it drops first: a dropped future still kills
     // the group while the child has not been reaped yet.
     // A refused pid (never a real fresh group) drops `child`, which kills it
     // through `kill_on_drop`; no group signal is ever sent.
     let mut group = GroupKill::new(pid)?;
-    let output = timeout(VERSION_TIMEOUT, collect_version(&mut child, pid)).await;
+    let output = timeout(limit, collect_capped(&mut child, pid, cap)).await;
     // INVARIANT: the group is signalled while the child is still unreaped.
-    // A reaped pid can be recycled, and its pgid with it, so `collect_version`
+    // A reaped pid can be recycled, and its pgid with it, so `collect_capped`
     // only waits for the exit (WNOWAIT) and the reap comes after this kill.
     group.kill();
     // Reap the child so it does not linger as a zombie. `reap` disarms right
@@ -110,6 +141,88 @@ pub async fn version(path: &Path) -> Option<Vec<u8>> {
         group.disarm();
     }
     output.ok()?
+}
+
+/// Longest `codex debug models` is allowed to run. The probe runs next to the
+/// version probe, so this bounds how long it can delay a detection.
+pub const LISTING_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// Most listing output kept. The real catalog is about 560 KB, so the cap
+/// leaves room for growth; more than this means the probe gave up.
+pub const LISTING_CAP: usize = 2 * 1024 * 1024;
+
+/// How long a successful codex listing is reused.
+pub const LISTING_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// The clock the listing cache reads; tests inject a fake one.
+pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
+
+/// The last successful codex listing and when it was read, kept in memory
+/// for the life of the process (no files).
+pub struct ListingCache {
+    clock: Clock,
+    last: Mutex<Option<(Instant, Vec<u8>)>>,
+}
+
+impl ListingCache {
+    pub fn new(clock: Clock) -> Self {
+        Self {
+            clock,
+            last: Mutex::new(None),
+        }
+    }
+
+    /// The listing to use now. Fresh enough (under [`LISTING_TTL`]) and not
+    /// `force`d: the cached one, with no process started. Otherwise the jailed
+    /// run; a success replaces the cache, a failure falls back to the cached
+    /// listing while it is still under the TTL, else `None` (just `default`).
+    pub async fn listing(&self, env: &CliEnv, force: bool) -> Option<Vec<u8>> {
+        let now = (self.clock)();
+        let cached = || {
+            let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+            last.as_ref()
+                .filter(|(at, _)| now.saturating_duration_since(*at) < LISTING_TTL)
+                .map(|(_, raw)| raw.clone())
+        };
+        if !force && let Some(raw) = cached() {
+            return Some(raw);
+        }
+        match codex_listing(env).await {
+            Some(raw) => {
+                *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, raw.clone()));
+                Some(raw)
+            }
+            // A failure is never cached as a success.
+            None => cached(),
+        }
+    }
+}
+
+/// Where detection reads codex's model list from.
+pub struct Lister<'a> {
+    pub env: &'a CliEnv,
+    pub cache: &'a ListingCache,
+    /// Bypass the cache (the menu's `r`).
+    pub force: bool,
+}
+
+/// Runs `codex debug models` and returns its stdout. `None` on any failure
+/// (no jail, an old codex without the subcommand, a timeout, too much
+/// output).
+///
+/// The command may refresh the catalog from OpenAI with the user's own
+/// codex login and rewrite codex's cache (`models_cache.json`), exactly as
+/// running codex does; that is how the list reflects the account. So it runs
+/// the way a codex chat turn does: through the jail (`__jail-exec`, the codex
+/// layout with its state folder writable), with the chat's scrubbed
+/// environment, stdin closed and the private working folder. Like the chat,
+/// codex requires the jail: without it nothing is started.
+pub async fn codex_listing(env: &CliEnv) -> Option<Vec<u8>> {
+    listing(env, LISTING_TIMEOUT, LISTING_CAP).await
+}
+
+async fn listing(env: &CliEnv, limit: Duration, cap: usize) -> Option<Vec<u8>> {
+    super::chat::run_listing(env, limit, cap).await
 }
 
 /// Waits for `pid` to exit WITHOUT reaping it, so the pid stays reserved.
@@ -136,21 +249,12 @@ pub(crate) async fn wait_exit_unreaped(pid: libc::pid_t) -> Option<bool> {
     .ok()?
 }
 
-/// Spawns `<path> --version`. A binary that is being written (an upgrade, or
-/// a concurrent fork holding its write handle) fails with ETXTBSY for a
-/// moment, so that one error is retried briefly.
-async fn spawn_version(path: &Path) -> Option<tokio::process::Child> {
+/// Spawns the command `make` builds. A binary that is being written (an
+/// upgrade, or a concurrent fork holding its write handle) fails with ETXTBSY
+/// for a moment, so that one error is retried briefly.
+async fn spawn_capped(make: &impl Fn() -> Command) -> Option<tokio::process::Child> {
     for attempt in 0..5 {
-        // No shell: the resolved absolute path is the program.
-        let spawned = Command::new(path)
-            .arg("--version")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .process_group(0)
-            .spawn();
-        match spawned {
+        match make().spawn() {
             Ok(child) => return Some(child),
             Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 4 => {
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -162,16 +266,20 @@ async fn spawn_version(path: &Path) -> Option<tokio::process::Child> {
 }
 
 /// Reads stdout (bounded) while waiting for the exit, not for the pipe EOF.
-async fn collect_version(child: &mut tokio::process::Child, pid: libc::pid_t) -> Option<Vec<u8>> {
+async fn collect_capped(
+    child: &mut tokio::process::Child,
+    pid: libc::pid_t,
+    cap: usize,
+) -> Option<Vec<u8>> {
     let mut stdout = child.stdout.take()?;
     let mut buf = Vec::new();
     let success = {
-        let mut limited = (&mut stdout).take(VERSION_CAP as u64 + 1);
+        let mut limited = (&mut stdout).take(cap as u64 + 1);
         let read = limited.read_to_end(&mut buf);
         tokio::pin!(read);
         tokio::select! {
             n = &mut read => {
-                if n.ok()? > VERSION_CAP {
+                if n.ok()? > cap {
                     return None;
                 }
                 wait_exit_unreaped(pid).await?
@@ -182,7 +290,7 @@ async fn collect_version(child: &mut tokio::process::Child, pid: libc::pid_t) ->
             }
         }
     };
-    (success && buf.len() <= VERSION_CAP).then_some(buf)
+    (success && buf.len() <= cap).then_some(buf)
 }
 
 /// What `detect_with` probes: an entry of the catalog, or a test double
@@ -192,14 +300,32 @@ pub type Target = Engine;
 /// Probes every target concurrently and classifies the facts. `path` is the
 /// PATH value, read once by the caller.
 pub async fn detect_with(targets: &[Target], path: &OsStr) -> Detection {
-    let probes = join_all(targets.iter().map(|target| probe(target, path))).await;
+    detect_in(targets, path, None).await
+}
+
+/// Like [`detect_with`]; with a `lister`, codex's model list is read through
+/// the jail its env describes (its `path` is replaced by `path`), reusing the
+/// cache unless the lister forces a fresh read.
+pub async fn detect_in(targets: &[Target], path: &OsStr, lister: Option<Lister<'_>>) -> Detection {
+    let env = lister.as_ref().map(|l| CliEnv {
+        path: path.to_owned(),
+        ..l.env.clone()
+    });
+    let lister = lister.zip(env.as_ref()).map(|(l, env)| Lister { env, ..l });
+    let probes = join_all(
+        targets
+            .iter()
+            .map(|target| probe(target, path, lister.as_ref())),
+    )
+    .await;
     reduce(&probes)
 }
 
 /// Detection over the real catalog and the process PATH.
-pub async fn detect_all() -> Detection {
+pub async fn detect_all(env: &CliEnv, cache: &ListingCache, force: bool) -> Detection {
     let path = std::env::var_os("PATH").unwrap_or_default();
-    detect_with(CATALOG, &path).await
+    let lister = Lister { env, cache, force };
+    detect_in(CATALOG, &path, Some(lister)).await
 }
 
 /// Runs `fut` off the caller and sends exactly one `Detection` to `tx`: the
@@ -217,11 +343,16 @@ where
 }
 
 /// Starts a real detection; its result arrives on `tx`.
-pub fn spawn_detection(tx: mpsc::Sender<Detection>) {
-    spawn_detection_of(tx, detect_all());
+pub fn spawn_detection(
+    tx: mpsc::Sender<Detection>,
+    env: CliEnv,
+    cache: Arc<ListingCache>,
+    force: bool,
+) {
+    spawn_detection_of(tx, async move { detect_all(&env, &cache, force).await });
 }
 
-async fn probe(target: &Target, path: &OsStr) -> Probe {
+async fn probe(target: &Target, path: &OsStr, lister: Option<&Lister<'_>>) -> Probe {
     let found = find_on_path(target.binary, path);
     match target.kind {
         Kind::Server { port, path, .. } => Probe::Server {
@@ -230,15 +361,26 @@ async fn probe(target: &Target, path: &OsStr) -> Probe {
             reply: http_get(port, path).await,
         },
         Kind::Cli => {
-            // Only a resolved absolute path is ever run.
-            let stdout = match &found {
-                Some(file) => version(file).await,
-                None => None,
+            // Only a resolved absolute path is ever run. Only codex has a
+            // model listing, and it runs next to the version probe, so a slow
+            // listing never adds to the version's time.
+            let (stdout, models) = match &found {
+                Some(file) => {
+                    let list = async {
+                        match (lister, target.id) {
+                            (Some(l), "codex") => l.cache.listing(l.env, l.force).await,
+                            _ => None,
+                        }
+                    };
+                    tokio::join!(async { version(file).await }, list)
+                }
+                None => (None, None),
             };
             Probe::Cli {
                 id: target.id,
                 path: found,
                 stdout,
+                models,
             }
         }
     }
@@ -247,7 +389,10 @@ async fn probe(target: &Target, path: &OsStr) -> Probe {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::ai::{EngineState, Status};
+    use crate::core::ai::{
+        EngineState, Status,
+        jail::{Backend, JailSupport},
+    };
     use std::sync::{Arc, Mutex};
 
     #[tokio::test]
@@ -405,6 +550,409 @@ mod tests {
 
     fn write_file(dir: &Path, name: &str, mode: u32) -> PathBuf {
         write_script(dir, name, "", mode)
+    }
+
+    const LISTING: &str = include_str!("../../tests/fixtures/codex/debug-models.json");
+
+    /// A scratch machine under the crate dir (the jail layout refuses `/tmp`):
+    /// a `bin` dir, a home with `.codex`, a private data dir and a record dir.
+    struct Lab {
+        _root: tempfile::TempDir,
+        bin: PathBuf,
+        home: PathBuf,
+        data: PathBuf,
+        rec: PathBuf,
+    }
+
+    fn lab() -> Lab {
+        let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let base = fs::canonicalize(root.path()).unwrap();
+        let lab = Lab {
+            bin: base.join("bin"),
+            home: base.join("home"),
+            data: base.join("data/lazarobox"),
+            rec: base.join("rec"),
+            _root: root,
+        };
+        for dir in [&lab.bin, &lab.home.join(".codex"), &lab.rec, &lab.data] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        for dir in [&lab.bin, &lab.home, &lab.rec] {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        lab
+    }
+
+    /// A fake codex: `body` answers `debug models`, anything else is the
+    /// version probe.
+    fn fake_codex(lab: &Lab, body: &str) -> PathBuf {
+        write_script(
+            &lab.bin,
+            "codex",
+            &format!(
+                "REC='{}'\nif [ \"$1\" = debug ] && [ \"$2\" = models ]; then\n{body}\nelse echo codex 0.5.0; fi",
+                lab.rec.display()
+            ),
+            0o755,
+        )
+    }
+
+    /// A pass-through helper: records its argv, drops the rules, execs the CLI.
+    fn pass_helper(lab: &Lab) -> PathBuf {
+        write_script(
+            &lab.rec,
+            "helper",
+            &format!(
+                "printf '%s\\0' \"$@\" > '{}/helper_args'\nwhile [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"",
+                lab.rec.display()
+            ),
+            0o755,
+        )
+    }
+
+    fn env_of(lab: &Lab, jail: bool) -> CliEnv {
+        let support = if jail {
+            JailSupport::Available {
+                backend: Backend::Landlock,
+                abi: 7,
+            }
+        } else {
+            JailSupport::Unavailable("test")
+        };
+        let mut env = CliEnv::from_env(support);
+        env.path = lab.bin.clone().into_os_string();
+        env.home = Some(lab.home.clone());
+        env.data = Some(lab.data.clone());
+        env.codex_home = None;
+        env.helper = pass_helper(lab);
+        env
+    }
+
+    fn helper_args(lab: &Lab) -> Vec<String> {
+        fs::read_to_string(lab.rec.join("helper_args"))
+            .unwrap_or_default()
+            .split('\0')
+            .filter(|a| !a.is_empty())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn listing_runs_through_the_codex_jail_with_its_state_folder_writable() {
+        let lab = lab();
+        fake_codex(&lab, "echo '{\"models\":[]}'");
+        let env = env_of(&lab, true);
+        assert_eq!(
+            codex_listing(&env).await,
+            Some(b"{\"models\":[]}\n".to_vec())
+        );
+        let args = helper_args(&lab);
+        assert_eq!(args[0], "__jail-exec");
+        let codex_dir = fs::canonicalize(lab.home.join(".codex")).unwrap();
+        let rw: Vec<_> = args
+            .windows(2)
+            .filter(|w| w[0] == "--rw")
+            .map(|w| w[1].clone())
+            .collect();
+        assert!(rw.contains(&codex_dir.display().to_string()), "{rw:?}");
+        let tail: Vec<_> = args.iter().rev().take(3).rev().cloned().collect();
+        assert!(tail[0].ends_with("/codex"), "{tail:?}");
+        assert_eq!(&tail[1..], ["debug", "models"]);
+    }
+
+    #[tokio::test]
+    async fn listing_honors_codex_home_for_the_writable_folder() {
+        let lab = lab();
+        fake_codex(&lab, "echo '{}'");
+        let custom = lab.home.join("custom-codex");
+        fs::create_dir(&custom).unwrap();
+        let mut env = env_of(&lab, true);
+        env.codex_home = Some(custom.clone());
+        assert!(codex_listing(&env).await.is_some());
+        let args = helper_args(&lab);
+        let rw: Vec<_> = args
+            .windows(2)
+            .filter(|w| w[0] == "--rw")
+            .map(|w| w[1].clone())
+            .collect();
+        assert!(rw.contains(&custom.display().to_string()), "{rw:?}");
+        assert!(
+            !rw.contains(&lab.home.join(".codex").display().to_string()),
+            "{rw:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_without_a_jail_never_starts_codex() {
+        let lab = lab();
+        fake_codex(&lab, &format!("echo x > '{}/ran'", lab.rec.display()));
+        let env = env_of(&lab, false);
+        assert_eq!(codex_listing(&env).await, None);
+        assert!(!lab.rec.join("ran").exists());
+        assert!(!lab.rec.join("helper_args").exists());
+    }
+
+    #[tokio::test]
+    async fn listing_fails_soft_for_an_old_codex_without_the_subcommand() {
+        let lab = lab();
+        write_script(
+            &lab.bin,
+            "codex",
+            "echo 'unknown command' >&2\nexit 2",
+            0o755,
+        );
+        assert_eq!(codex_listing(&env_of(&lab, true)).await, None);
+    }
+
+    #[tokio::test]
+    async fn listing_has_stdin_closed_a_private_cwd_and_a_scrubbed_env() {
+        let lab = lab();
+        fake_codex(
+            &lab,
+            "pwd\nif read line; then echo STDIN-OPEN; else echo STDIN-EOF; fi\necho \"agent=${SSH_AUTH_SOCK-unset}\"",
+        );
+        let mut env = env_of(&lab, true);
+        env.inject = vec![("SSH_AUTH_SOCK".into(), "/tmp/agent".into())];
+        let out = String::from_utf8(codex_listing(&env).await.unwrap()).unwrap();
+        let mut lines = out.lines();
+        let cwd = Path::new(lines.next().unwrap());
+        assert!(
+            cwd.starts_with(fs::canonicalize(&lab.data).unwrap()),
+            "{cwd:?}"
+        );
+        assert_ne!(cwd, std::env::current_dir().unwrap());
+        assert_eq!(lines.next(), Some("STDIN-EOF"));
+        assert_eq!(lines.next(), Some("agent=unset"));
+    }
+
+    #[tokio::test]
+    async fn listing_kills_the_process_group_after_the_timeout() {
+        let lab = lab();
+        let marker = lab.rec.join("grandchild-survived");
+        fake_codex(
+            &lab,
+            &format!("(sleep 1; echo x > {}) &\nsleep 30", marker.display()),
+        );
+        let started = std::time::Instant::now();
+        let got = listing(&env_of(&lab, true), Duration::from_millis(300), LISTING_CAP).await;
+        assert_eq!(got, None);
+        assert!(started.elapsed() < Duration::from_secs(3));
+        tokio::time::sleep(Duration::from_millis(1300)).await;
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn listing_drops_output_over_the_cap() {
+        let lab = lab();
+        fake_codex(&lab, "head -c 2000 /dev/zero | tr '\\0' x");
+        let env = env_of(&lab, true);
+        assert_eq!(listing(&env, LISTING_TIMEOUT, 1000).await, None);
+        assert!(listing(&env, LISTING_TIMEOUT, 2000).await.is_some());
+    }
+
+    #[test]
+    fn the_cap_fits_the_real_catalog_size_and_the_timeout_is_short() {
+        // `codex debug models` printed 560491 bytes with codex-cli 0.162.1.
+        const { assert!(LISTING_CAP > 560_491) };
+        assert!(LISTING_TIMEOUT <= Duration::from_secs(4));
+    }
+
+    #[tokio::test]
+    async fn detect_reads_the_codex_listing_but_no_other_cli() {
+        let lab = lab();
+        let data = lab.rec.join("listing.json");
+        fs::write(&data, LISTING).unwrap();
+        fake_codex(&lab, &format!("cat {}", data.display()));
+        write_script(
+            &lab.bin,
+            "claude",
+            &format!("cat {}", data.display()),
+            0o755,
+        );
+        let targets = cli_targets(&["claude", "codex"]);
+        let env = env_of(&lab, true);
+        let cache = real_cache();
+        let d = detect_in(
+            &targets,
+            &join(&[&lab.bin]),
+            Some(lister(&env, &cache, false)),
+        )
+        .await;
+        let get = |id| d.engines.iter().find(|e| e.id == id).unwrap().clone();
+        assert_eq!(get("codex").model_labels.len(), 7);
+        assert_eq!(get("codex").version.as_deref(), Some("codex 0.5.0"));
+        assert!(get("claude").model_labels.is_empty());
+    }
+
+    #[tokio::test]
+    async fn detection_without_an_env_skips_the_listing() {
+        let lab = lab();
+        fake_codex(&lab, "cat /dev/null; exit 9");
+        let d = detect_with(&cli_targets(&["codex"]), &join(&[&lab.bin])).await;
+        let codex = d.engines.iter().find(|e| e.id == "codex").unwrap();
+        assert!(codex.model_labels.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_codex_probe_takes_the_longer_run_not_the_sum() {
+        let lab = lab();
+        write_script(
+            &lab.bin,
+            "codex",
+            "if [ \"$1\" = debug ]; then sleep 1; echo '{\"models\":[]}'; else sleep 1; echo codex 0.5.0; fi",
+            0o755,
+        );
+        let env = env_of(&lab, true);
+        let started = std::time::Instant::now();
+        let cache = real_cache();
+        let lister = lister(&env, &cache, false);
+        let d = detect_in(&cli_targets(&["codex"]), &join(&[&lab.bin]), Some(lister)).await;
+        let took = started.elapsed();
+        let codex = d.engines.iter().find(|e| e.id == "codex").unwrap();
+        assert_eq!(codex.version.as_deref(), Some("codex 0.5.0"));
+        assert!(took < Duration::from_millis(1800), "{took:?}");
+    }
+
+    fn real_cache() -> ListingCache {
+        ListingCache::new(Arc::new(Instant::now))
+    }
+
+    fn lister<'a>(env: &'a CliEnv, cache: &'a ListingCache, force: bool) -> Lister<'a> {
+        Lister { env, cache, force }
+    }
+
+    /// A clock the test moves by hand.
+    fn fake_clock() -> (Clock, Arc<Mutex<Instant>>) {
+        let now = Arc::new(Mutex::new(Instant::now()));
+        let read = Arc::clone(&now);
+        (Arc::new(move || *read.lock().unwrap()), now)
+    }
+
+    fn advance(now: &Arc<Mutex<Instant>>, by: Duration) {
+        let mut at = now.lock().unwrap();
+        *at += by;
+    }
+
+    /// A codex whose `debug models` counts its runs and prints `reply`.
+    fn counting_codex(lab: &Lab, reply: &str) {
+        fake_codex(
+            lab,
+            &format!("echo run >> '{}/runs'\n{reply}", lab.rec.display()),
+        );
+    }
+
+    fn runs(lab: &Lab) -> usize {
+        fs::read_to_string(lab.rec.join("runs")).map_or(0, |t| t.lines().count())
+    }
+
+    #[tokio::test]
+    async fn a_listing_is_reused_for_ten_minutes_without_a_second_spawn() {
+        let lab = lab();
+        counting_codex(&lab, "echo '{\"models\":[]}'");
+        let env = env_of(&lab, true);
+        let (clock, now) = fake_clock();
+        let cache = ListingCache::new(clock);
+        let first = cache.listing(&env, false).await;
+        assert!(first.is_some());
+        assert_eq!(runs(&lab), 1);
+        advance(&now, Duration::from_secs(9 * 60 + 59));
+        assert_eq!(cache.listing(&env, false).await, first);
+        assert_eq!(runs(&lab), 1, "no second spawn inside the window");
+    }
+
+    #[tokio::test]
+    async fn the_listing_is_read_again_after_ten_minutes() {
+        let lab = lab();
+        counting_codex(&lab, "echo '{\"models\":[]}'");
+        let env = env_of(&lab, true);
+        let (clock, now) = fake_clock();
+        let cache = ListingCache::new(clock);
+        cache.listing(&env, false).await;
+        advance(&now, LISTING_TTL);
+        cache.listing(&env, false).await;
+        assert_eq!(runs(&lab), 2);
+        // The new read restarts the window.
+        advance(&now, Duration::from_secs(60));
+        cache.listing(&env, false).await;
+        assert_eq!(runs(&lab), 2);
+    }
+
+    #[tokio::test]
+    async fn a_forced_refresh_always_re_lists() {
+        let lab = lab();
+        counting_codex(&lab, "echo '{\"models\":[]}'");
+        let env = env_of(&lab, true);
+        let (clock, _now) = fake_clock();
+        let cache = ListingCache::new(clock);
+        cache.listing(&env, false).await;
+        cache.listing(&env, true).await;
+        cache.listing(&env, true).await;
+        assert_eq!(runs(&lab), 3);
+    }
+
+    #[tokio::test]
+    async fn a_failure_falls_back_to_a_fresh_cache_and_is_never_cached() {
+        let lab = lab();
+        counting_codex(&lab, "echo '{\"models\":[]}'");
+        let env = env_of(&lab, true);
+        let (clock, now) = fake_clock();
+        let cache = ListingCache::new(clock);
+        let good = cache.listing(&env, false).await;
+        assert!(good.is_some());
+
+        // codex starts failing: a forced refresh keeps the cached list...
+        counting_codex(&lab, "exit 2");
+        advance(&now, Duration::from_secs(5 * 60));
+        assert_eq!(cache.listing(&env, true).await, good);
+        // ...and the failure did not extend the cache: it expires on schedule.
+        advance(&now, Duration::from_secs(5 * 60));
+        assert_eq!(cache.listing(&env, false).await, None);
+        assert_eq!(runs(&lab), 3);
+    }
+
+    #[tokio::test]
+    async fn a_failure_with_nothing_cached_is_just_default_and_is_retried() {
+        let lab = lab();
+        counting_codex(&lab, "exit 2");
+        let env = env_of(&lab, true);
+        let (clock, _now) = fake_clock();
+        let cache = ListingCache::new(clock);
+        assert_eq!(cache.listing(&env, false).await, None);
+        assert_eq!(cache.listing(&env, false).await, None);
+        assert_eq!(runs(&lab), 2, "a failure is not remembered");
+    }
+
+    #[tokio::test]
+    async fn detection_runs_reuse_the_cache_and_only_r_forces() {
+        let lab = lab();
+        let data = lab.rec.join("listing.json");
+        fs::write(&data, LISTING).unwrap();
+        counting_codex(&lab, &format!("cat {}", data.display()));
+        let env = env_of(&lab, true);
+        let (clock, _now) = fake_clock();
+        let cache = ListingCache::new(clock);
+        let targets = cli_targets(&["codex"]);
+        let path = join(&[&lab.bin]);
+        for force in [false, false, true] {
+            let d = detect_in(&targets, &path, Some(lister(&env, &cache, force))).await;
+            let codex = d.engines.iter().find(|e| e.id == "codex").unwrap();
+            assert_eq!(codex.model_labels.len(), 7, "force={force}");
+        }
+        assert_eq!(
+            runs(&lab),
+            2,
+            "startup + menu open share one run; r adds one"
+        );
+    }
+
+    fn cli_targets(ids: &[&'static str]) -> Vec<Target> {
+        ids.iter()
+            .map(|id| Engine {
+                id,
+                kind: Kind::Cli,
+                binary: id,
+            })
+            .collect()
     }
 
     #[tokio::test]
@@ -631,6 +1179,7 @@ mod tests {
             status,
             models: models.iter().map(ToString::to_string).collect(),
             version: v.map(ToString::to_string),
+            model_labels: Vec::new(),
         }
     }
 

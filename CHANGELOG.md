@@ -10,6 +10,26 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- The codex model list now comes from your account. At detection time
+  lazarobox runs `codex debug models` once (4 s timeout, 2 MiB output cap,
+  stdin closed, private working folder, scrubbed environment, next to the
+  version probe) through the same jail as the codex chat. Like running codex,
+  that command may refresh the catalog from OpenAI with your login and update
+  codex's own cache (`models_cache.json`). Without the jail it is not run. The
+  picker offers `default (CLI picks)` followed by the models the account
+  lists, with their display names as labels and the slugs as saved values. An
+  older codex without the subcommand, or any failure, shows only `default`.
+  The listing is kept in memory and refreshed at most every 10 minutes; the
+  menu's `r` forces a new one. A failed refresh keeps the cached list while it
+  is under 10 minutes old.
+- A codex model that is assigned or typed in `custom…` but is not in the
+  account's list is marked `not in your account's list` in the picker, on the
+  task row and in the footer. It is a warning only.
+- The menu footer shows `unsaved changes · s to save · Esc discards` while the
+  AI draft differs from the saved config.
+
 ## [0.14.0] - 2026-10-15
 
 ### Added

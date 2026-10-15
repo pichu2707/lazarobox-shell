@@ -39,19 +39,19 @@ use super::fresh_decoder;
 use crate::{
     core::ai::{
         chat::{
-            adapters::Job,
+            adapters::{Job, Wire},
             cli::{Exit, STDERR_CAP, verdict},
             engine::{ChatError, StreamEvent},
             stream::StreamDecoder,
         },
         jail::{
-            CliLayout, ELF_HEAD_BYTES, Interpreter, JailArgs, JailPolicy, JailSupport, Launch,
+            Cli, CliLayout, ELF_HEAD_BYTES, Interpreter, JailArgs, JailPolicy, JailSupport, Launch,
             elf_interp_at, interp_path, jail_spec_with, launch, parse_shebang,
             rpath::{homebrew_openssl_files, search_dirs},
         },
     },
     runtime::{
-        ai_detect::{find_on_path, wait_exit_unreaped},
+        ai_detect::{self, find_on_path, wait_exit_unreaped},
         chat_store,
         jail::resolve,
         loopback::{Stop, TOO_LONG, Timeouts, Wait},
@@ -569,6 +569,44 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
             job.binary
         )),
     })
+}
+
+/// Runs `codex debug models` the way a codex turn starts: the same plan (the
+/// jail helper with the codex layout, `Required`: no jail, no process), the
+/// same private folders and scrubbed environment. stdin is closed and stderr
+/// is discarded. `None` on any failure.
+pub(crate) async fn run_listing(env: &CliEnv, limit: Duration, cap: usize) -> Option<Vec<u8>> {
+    let job = Job {
+        wire: Wire::CodexJsonl,
+        binary: "codex",
+        cli: Cli::Codex,
+        args: vec!["debug".to_owned(), "models".to_owned()],
+        stdin: Vec::new(),
+        jail: JailPolicy::Required,
+        tmp_file: None,
+    };
+    let plan = plan(env, &job).ok()?;
+    // Defence in depth: `Required` never plans a bare run (it refuses
+    // instead), so this is unreachable today. If a future policy change let
+    // the plan fall back to a bare run, the listing must not use it.
+    if plan.notice.is_some() {
+        return None;
+    }
+    ai_detect::run_capped(
+        || {
+            let mut command = command(
+                &plan.program,
+                plan.argv.clone(),
+                (&plan.dirs.cwd, &plan.dirs.tmp),
+                &env.inject,
+            );
+            command.stderr(Stdio::null());
+            command
+        },
+        limit,
+        cap,
+    )
+    .await
 }
 
 /// Writes the transcript, then drops the pipe: the CLI sees EOF.

@@ -66,6 +66,7 @@ pub(super) fn detection() -> Detection {
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],
             version: None,
+            model_labels: Vec::new(),
         }],
     }
 }
