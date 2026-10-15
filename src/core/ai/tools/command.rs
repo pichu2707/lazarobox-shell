@@ -35,6 +35,27 @@ impl Refusal {
     }
 }
 
+/// Characters that draw as nothing or as blanks and are not in the output
+/// sanitizer's format set: the combining grapheme joiner, Hangul and Khmer
+/// fillers, Mongolian and variation selectors, the interlinear annotation
+/// controls, the tag block, the braille blank and the half-width filler.
+fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{034f}'
+            | '\u{115f}'..='\u{1160}'
+            | '\u{17b4}'..='\u{17b5}'
+            | '\u{180b}'..='\u{180f}'
+            | '\u{2800}'
+            | '\u{3164}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{ffa0}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{e0000}'..='\u{e007f}'
+            | '\u{e0100}'..='\u{e01ef}'
+    )
+}
+
 /// Validate `text` for a pane.
 ///
 /// Refused: ESC, any C0 control except `\n` and `\t`, DEL, any C1 control, a
@@ -51,7 +72,9 @@ pub fn validate(text: &str) -> Result<Command, Refusal> {
             '\r' => return Err(Refusal::new("lone carriage return")),
             '\u{1b}' => return Err(Refusal::new("escape character")),
             c if c.is_control() => return Err(Refusal::new("control character")),
-            c if is_format(c) => return Err(Refusal::new("invisible format character")),
+            c if is_format(c) || is_invisible(c) => {
+                return Err(Refusal::new("invisible format character"));
+            }
             _ => {}
         }
     }
@@ -103,6 +126,55 @@ mod tests {
             "a\u{0b}b",
         ] {
             assert!(refused(bad), "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn invisible_and_spoofing_characters_are_refused() {
+        for c in [
+            '\u{034f}',
+            '\u{115f}',
+            '\u{1160}',
+            '\u{17b4}',
+            '\u{17b5}',
+            '\u{180b}',
+            '\u{180d}',
+            '\u{180f}',
+            '\u{3164}',
+            '\u{fe00}',
+            '\u{fe0f}',
+            '\u{ffa0}',
+            '\u{fff9}',
+            '\u{fffa}',
+            '\u{fffb}',
+            '\u{e0000}',
+            '\u{e0041}',
+            '\u{e007f}',
+            '\u{e0100}',
+            '\u{e01ef}',
+            '\u{2800}',
+        ] {
+            assert!(
+                refused(&format!("a{c}b")),
+                "U+{:04X} must be refused",
+                c as u32
+            );
+        }
+        // Neighbours of the ranges stay valid.
+        for c in [
+            '\u{034e}',
+            '\u{1161}',
+            '\u{180a}',
+            '\u{fdff}',
+            '\u{e0080}',
+            '\u{e01f0}',
+            '\u{2801}',
+        ] {
+            assert!(
+                !refused(&format!("a{c}b")),
+                "U+{:04X} must be valid",
+                c as u32
+            );
         }
     }
 
