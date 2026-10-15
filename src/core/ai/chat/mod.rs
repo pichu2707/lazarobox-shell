@@ -4,6 +4,7 @@
 //! turn in flight and the cwd the pane was opened from.
 
 pub mod adapters;
+pub mod approval;
 pub mod claude;
 pub mod cli;
 pub mod codex;

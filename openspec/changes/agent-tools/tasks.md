@@ -66,13 +66,13 @@ Order note: 2g and 2h are independent of each other (both need 2f). 2c may run b
 
 ## PR1 / 1a: Command validation, shell block, Approval type (`src/core/ai/tools/{mod,command}.rs`, `src/core/ai/chat/{yank,approval,mod}.rs`)
 
-- [ ] 1a.1 RED: `validate` table tests (pane-commands "Command validation"): ESC refused, `\x1b[201~` refused and `echo x[201~` valid, `\x07 \x00 \x7f \x9b` lone `\r` U+202E refused, `\n`/`\t` kept, trailing newlines and blanks trimmed, empty/blank/over 4096 bytes refused.
-- [ ] 1a.2 RED: `yank::last_shell_block`: bash/sh/shell/zsh case-insensitive; rust, no language, unclosed, and streaming message give None; last closed block wins.
-- [ ] 1a.3 RED: `Approval` state: one pending at most, second request refused with `another approval is pending`, `ApprovalAsk::{Run, Read, External}`, withdraw on cancel/close, repeat/release do not answer (pure transitions).
-- [ ] 1a.4 GREEN: implement the three units; `Refusal` carries a short content-free reason.
-- [ ] 1a.5 REFACTOR: share the fence parser with yank.rs; no duplicate.
-- [ ] 1a.6 Gate.
-- [ ] 1a.7 Docs: doc comments on `validate` caps and `Approval` invariants.
+- [x] 1a.1 RED: `validate` table tests (pane-commands "Command validation"): ESC refused, `\x1b[201~` refused and `echo x[201~` valid, `\x07 \x00 \x7f \x9b` lone `\r` U+202E refused, `\n`/`\t` kept, trailing newlines and blanks trimmed, empty/blank/over 4096 bytes refused.
+- [x] 1a.2 RED: `yank::last_shell_block`: bash/sh/shell/zsh case-insensitive; rust, no language, unclosed, and streaming message give None; last closed block wins.
+- [x] 1a.3 RED: `Approval` state: one pending at most, second request refused with `another approval is pending`, `ApprovalAsk::{Run, Read, External}`, withdraw on cancel/close, repeat/release do not answer (pure transitions).
+- [x] 1a.4 GREEN: implement the three units; `Refusal` carries a short content-free reason.
+- [x] 1a.5 REFACTOR: share the fence parser with yank.rs; no duplicate.
+- [x] 1a.6 Gate.
+- [x] 1a.7 Docs: doc comments on `validate` caps and `Approval` invariants.
 
 ## PR2 / 1b: Run in pane (`src/core/prefix.rs`, `src/app.rs`, `src/app/{chat,run}.rs`, `src/ui/components/chat.rs`, `src/core/ai/config.rs`)
 
