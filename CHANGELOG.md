@@ -10,6 +10,15 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Nesting guard, modelled on tmux's `$TMUX`: every shell pane child gets
+  `LAZAROBOX=<pid of the instance>`. Starting `lazarobox-shell` with that
+  variable set (and non-empty) prints `lazarobox-shell is already running in
+  this terminal; use --force to nest anyway` to stderr and exits 1, before the
+  terminal enters raw mode. `--force` skips the check. The internal
+  `__jail-exec` subcommand is never blocked.
+
 ### Fixed
 
 - AI chat with the `gemini` CLI no longer ends with `the engine stopped
