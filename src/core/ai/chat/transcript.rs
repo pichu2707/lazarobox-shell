@@ -137,7 +137,7 @@ fn entry_rows(entry: &Entry, width: usize, out: &mut Vec<Line>) {
 /// An answer: plain text with fenced blocks drawn as code. An unclosed fence
 /// makes the rest of the message code. The fence lines are code too, shown as
 /// they are.
-fn assistant_rows(text: &str, width: usize, out: &mut Vec<Line>) {
+pub(super) fn assistant_rows(text: &str, width: usize, out: &mut Vec<Line>) {
     let mut in_code = false;
     for line in text.split('\n') {
         let fence = is_fence(line, in_code);
@@ -156,7 +156,7 @@ fn assistant_rows(text: &str, width: usize, out: &mut Vec<Line>) {
 /// Whether `line` is a fence. One that closes a block is any line starting
 /// with three backticks. One that opens a block must have no backtick after
 /// its opening run (CommonMark), so inline code like ```a``` is prose.
-fn is_fence(line: &str, in_code: bool) -> bool {
+pub(super) fn is_fence(line: &str, in_code: bool) -> bool {
     let Some(rest) = line.trim_start().strip_prefix("```") else {
         return false;
     };

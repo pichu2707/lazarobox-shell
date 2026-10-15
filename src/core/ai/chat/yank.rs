@@ -1,7 +1,7 @@
 //! What a yank copies out of a chat: the last finished answer, or the last
 //! fenced code block of it. Reasoning and system lines are never part of it.
 
-use super::{ChatState, Phase, engine::Role};
+use super::{ChatState, Phase, engine::Role, transcript::is_fence};
 
 /// The text of the last assistant message that is not still being written.
 /// `None` when there is none; an empty one is passed over for the one before.
@@ -33,21 +33,23 @@ struct Fence<'a> {
 }
 
 /// The fenced blocks of `text`, in order. An unclosed fence runs to the end.
-/// This is the one fence parser: every yank of a block goes through it.
+/// This is the one fence parser, and it asks the renderer's own predicate
+/// (`transcript::is_fence`) on the renderer's own lines, so what is selected
+/// is what the user sees drawn as code.
 fn fences(text: &str) -> Vec<Fence<'_>> {
     let mut done = Vec::new();
     let mut open: Option<Fence<'_>> = None;
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if let Some(info) = trimmed.strip_prefix("```") {
+    for line in text.split('\n') {
+        if is_fence(line, open.is_some()) {
             match open.take() {
                 Some(mut fence) => {
                     fence.closed = true;
                     done.push(fence);
                 }
                 None => {
+                    let info = line.trim_start().trim_start_matches('`').trim();
                     open = Some(Fence {
-                        info: info.trim(),
+                        info,
                         body: Vec::new(),
                         closed: false,
                     });
@@ -69,20 +71,21 @@ pub fn last_code_block(chat: &ChatState) -> Option<String> {
     (!last.body.is_empty()).then(|| last.body.join("\n"))
 }
 
-/// The body of the last closed fenced block of the last finished answer whose
-/// language is a shell: `bash`, `sh`, `shell` or `zsh`, any case. The language
-/// is the first word after the opening fence. `None` when that block is empty.
+/// The body of the last code block of the last finished answer, when that
+/// block is closed and its language is a shell: `bash`, `sh`, `shell` or
+/// `zsh`, any case (the first word after the fence). Only the last block
+/// counts, the one the user sees at the bottom: if it is another language or
+/// still open, nothing is offered, and an earlier shell block is never
+/// reached back for. `None` too when the block is empty.
 pub fn last_shell_block(chat: &ChatState) -> Option<String> {
     let text = last_answer(chat)?;
-    let last = fences(&text).into_iter().rev().find(|f| {
-        f.closed
-            && f.info.split_whitespace().next().is_some_and(|lang| {
-                ["bash", "sh", "shell", "zsh"]
-                    .iter()
-                    .any(|s| lang.eq_ignore_ascii_case(s))
-            })
-    })?;
-    (!last.body.is_empty()).then(|| last.body.join("\n"))
+    let last = fences(&text).pop()?;
+    let shell = last.info.split_whitespace().next().is_some_and(|lang| {
+        ["bash", "sh", "shell", "zsh"]
+            .iter()
+            .any(|s| lang.eq_ignore_ascii_case(s))
+    });
+    (last.closed && shell && !last.body.is_empty()).then(|| last.body.join("\n"))
 }
 
 #[cfg(test)]
@@ -92,6 +95,7 @@ mod tests {
         Entry, Msg, MsgStatus,
         engine::{Finish, StreamEvent},
         state_tests::{chat, sent},
+        transcript::{LineKind, assistant_rows},
     };
 
     /// A chat whose last turn answered `body`.
@@ -258,9 +262,67 @@ mod tests {
     }
 
     #[test]
-    fn the_last_closed_shell_block_wins() {
-        let state = answered("```bash\none\n```\n```rust\nx\n```\n```sh\ntwo\nthree\n```");
+    fn only_the_last_block_counts_and_it_must_be_a_closed_shell_block() {
+        let state = answered("```bash\none\n```\n```sh\ntwo\nthree\n```");
         assert_eq!(last_shell_block(&state).as_deref(), Some("two\nthree"));
+        // A later block of another language hides the earlier shell block.
+        let state = answered("```bash\none\n```\ntext\n```rust\nx\n```");
+        assert_eq!(last_shell_block(&state), None);
+        // So does a later block that is still open.
+        let state = answered("```bash\none\n```\ntext\n```bash\ntwo");
+        assert_eq!(last_shell_block(&state), None);
+    }
+
+    /// The last code block the renderer shows, as a shell command would be
+    /// read from it: `Some(body)` only for a closed shell block.
+    fn rendered_shell_block(text: &str) -> Option<String> {
+        let mut rows = Vec::new();
+        assistant_rows(text, 10_000, &mut rows);
+        let mut run: Vec<&str> = Vec::new();
+        for row in rows.iter().rev().skip_while(|r| r.kind != LineKind::Code) {
+            if row.kind != LineKind::Code {
+                break;
+            }
+            run.push(&row.text);
+        }
+        run.reverse();
+        let first = run.first()?;
+        let closed = run.len() > 1 && run.last()?.trim_start().starts_with("```");
+        let lang = first
+            .trim_start()
+            .trim_start_matches('`')
+            .split_whitespace()
+            .next()?;
+        let shell = ["bash", "sh", "shell", "zsh"]
+            .iter()
+            .any(|s| lang.eq_ignore_ascii_case(s));
+        (closed && shell && run.len() > 2).then(|| run[1..run.len() - 1].join("\n"))
+    }
+
+    #[test]
+    fn the_selected_block_is_the_one_the_renderer_shows() {
+        for body in [
+            "```bash\nrm -rf ~\n```\n```a```\nprose\n```bash\necho safe\n```",
+            "```bash\nrm -rf ~\n```\ntext\n```a```\necho safe\n```",
+            "```bash\necho one\n```\ntext ```a``` more\n```bash\necho two\n```",
+            "````bash\necho four\n```",
+            "```bash\necho a\n```\ntext\n````bash\necho four\n````",
+            "  ```bash\n  echo indented\n  ```",
+            "```bash`x\necho tick\n```",
+            "text\n```bash\necho x\n```rust\nafter close",
+            "```bash\necho x\n```rust\n",
+            "```bash\necho one\n```\ntext\n```bash\necho unclosed",
+            "```bash\necho one\n```\ntext\n```rust\nnot shell\n```",
+            "```bash\nrm -rf ~\n```\n```a```b\ntext\n```sh\necho safe\n```",
+            "```bash\r\necho crlf\n```",
+        ] {
+            let state = answered(body);
+            assert_eq!(
+                last_shell_block(&state),
+                rendered_shell_block(body),
+                "{body:?}"
+            );
+        }
     }
 
     #[test]
