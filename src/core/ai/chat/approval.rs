@@ -6,7 +6,22 @@
 //! module holds no IO and does not know which key means what: the caller
 //! maps keys to a [`Reply`].
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::core::ai::tools::command::Refusal;
+
+/// Ids come from one counter for the whole process, so an `Approvals` that is
+/// rebuilt (a chat reopened, a state replaced) never hands out an id an older
+/// one gave, and a late answer for the old approval cannot hit the new one.
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_id() -> u64 {
+    NEXT_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            Some(n.saturating_add(1))
+        })
+        .unwrap_or(u64::MAX)
+}
 
 /// The reason given to a request made while another is pending.
 pub const ANOTHER_PENDING: &str = "another approval is pending";
@@ -78,8 +93,6 @@ pub enum Press {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Approvals {
     pending: Option<Approval>,
-    /// The id the next request gets.
-    next: u64,
 }
 
 impl Approvals {
@@ -94,8 +107,7 @@ impl Approvals {
         if self.pending.is_some() {
             return Err(Refusal::new(ANOTHER_PENDING));
         }
-        let id = self.next;
-        self.next += 1;
+        let id = next_id();
         self.pending = Some(Approval { id, ask, origin });
         Ok(id)
     }
@@ -241,5 +253,25 @@ mod tests {
         a.request(run("B"), Origin::Tool).unwrap();
         assert_eq!(a.withdraw(old), None);
         assert_eq!(a.pending().unwrap().ask(), &run("B"));
+    }
+
+    #[test]
+    fn two_instances_never_share_an_id() {
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..5 {
+            let mut a = Approvals::default();
+            let id = a.request(run("x"), Origin::Block).unwrap();
+            assert!(ids.insert(id), "id {id} was reused");
+            a.withdraw(id).unwrap();
+            let id = a.request(run("y"), Origin::Tool).unwrap();
+            assert!(ids.insert(id), "id {id} was reused");
+        }
+        // A rebuilt Approvals cannot be answered with an old id.
+        let mut old = Approvals::default();
+        let stale = old.request(run("A"), Origin::Block).unwrap();
+        let mut fresh = Approvals::default();
+        fresh.request(run("B"), Origin::Block).unwrap();
+        assert_eq!(fresh.answer(stale, Reply::Approve, Press::Press), None);
+        assert!(fresh.pending().is_some());
     }
 }
