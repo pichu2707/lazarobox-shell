@@ -27,6 +27,31 @@ The catalog MUST be fixed and ordered as follows. Servers are probed over HTTP o
 - WHEN it is validated
 - THEN it has exactly the 8 ids above in that order, ids are unique, every server endpoint host is `127.0.0.1`, and every CLI has no endpoint
 
+### Requirement: opencode model listing
+When `opencode` is found on PATH, detection MUST also run `<path> --pure models` once and use its stdout as the list of models of the engine. It is the only CLI that is asked for its models; the other CLIs keep the single model `default`. The child MUST run the way the chat runs opencode: `OPENCODE_PURE`, `OPENCODE_DISABLE_PROJECT_CONFIG` and `OPENCODE_DISABLE_AUTOUPDATE` set, and `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `OPENCODE_DB` and `TMPDIR` pointing into a private empty folder created for the run (`0700`, a name that did not exist) and removed afterwards, so the list holds the models a chat turn can use and the user's plugins, config and sessions are not involved. It MUST be bounded: it is killed with its whole process group after 5 seconds, and an output over 256 KiB, a failing exit or a spawn error counts as no list. It MUST fail soft: with no list the engine is `available` with the single model `default`, as before. The detection never waits for it more than that limit, and the other probes run concurrently with it.
+
+The output is parsed as one `provider/model` id per line, in the CLI's order: a line is kept only when it is trimmed, holds a `/` that is neither its first nor its last character, does not start with `-`, holds no whitespace or control character and is at most 128 characters; repeats are dropped, `default` is never repeated, and at most 256 ids are kept. The models of the engine are `default` followed by the ids. The status text is unchanged (a CLI shows its version).
+
+#### Scenario: Listing becomes models [auto]
+- GIVEN a fake `opencode` that prints its version for `--version` and `openai/gpt-5.4` and `opencode/big-pickle` for `--pure models`
+- WHEN detection runs
+- THEN opencode is `available` with the models `default`, `openai/gpt-5.4` and `opencode/big-pickle` and its version
+
+#### Scenario: Listing runs isolated and leaves nothing [auto]
+- GIVEN a fake `opencode` recording its arguments and environment
+- WHEN the listing runs
+- THEN the arguments are `--pure models`, the pure and disable variables are set, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `OPENCODE_DB` and `TMPDIR` are inside one private folder, and that folder no longer exists afterwards
+
+#### Scenario: Listing fails soft [auto]
+- GIVEN an `opencode` whose listing exits 1, hangs, prints more than 256 KiB, or prints lines that are not ids
+- WHEN detection runs
+- THEN opencode is `available` with only `default`, a hung listing is killed with its process group within the limit, and no line that is not an id becomes a model
+
+#### Scenario: Only opencode is asked [auto]
+- GIVEN a fake `codex` recording its arguments
+- WHEN detection runs
+- THEN it was run with `--version` only
+
 ### Requirement: Status values
 Every engine MUST have exactly one status: `detecting` (no result yet), `available`, `not running` (servers only), `not installed` or `unknown` (a detection run failed unexpectedly and produced no result). For a server: a valid endpoint response makes it `available` (even when its binary is not on PATH). Otherwise, if its binary is on PATH, it is `not running`; if not, it is `not installed`. For a CLI: `available` when its binary is on PATH, otherwise `not installed`. The display text MUST be exactly: `detecting…`, `available`, `not running`, `not installed`, `unknown`, with detail appended as ` · <detail>` on `available`: a server shows `<N> models` (`1 model` when N is 1, `0 models` when empty), and a CLI shows its version when known (`available · <version>`). Where the UI marks an engine id that is not available, it uses `(checking)` while the status is `detecting` and `(not detected)` otherwise; a saved model that the engine no longer lists is marked `<name> · not found`.
 

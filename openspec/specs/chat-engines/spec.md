@@ -7,7 +7,7 @@ How a chat turn reaches a model and how the answer comes back: the `ChatEngine` 
 ## Requirements
 
 ### Requirement: ChatEngine contract
-Every adapter MUST implement one contract: it receives a model name, the system prompt and the ordered message history, and it produces events in order: zero or more content events, each either a text delta (part of the answer) or a thinking delta (part of the engine's reasoning, a distinct event type that is never a text delta), then exactly one terminal event (final or error). An engine or model that exposes no reasoning MUST simply never produce a thinking delta. It MUST support cancel, after which it produces no more events. The contract MUST NOT expose tool calls. Adapters exist for `ollama` (server) and for `claude`, `codex` and `gemini` (CLIs). `lmstudio`, `llamacpp`, `vllm` and `opencode` have no adapter in this change: they resolve to the unsupported state and the guidance reads `not supported in chat yet`. The OpenAI-compatible adapters are specified in the follow-up change `ai-chat-openai-compat`. Each adapter is usable as soon as it exists; an engine without an adapter resolves to the unsupported state.
+Every adapter MUST implement one contract: it receives a model name, the system prompt and the ordered message history, and it produces events in order: zero or more content events, each either a text delta (part of the answer) or a thinking delta (part of the engine's reasoning, a distinct event type that is never a text delta), then exactly one terminal event (final or error). An engine or model that exposes no reasoning MUST simply never produce a thinking delta. It MUST support cancel, after which it produces no more events. The contract MUST NOT expose tool calls. Adapters exist for `ollama` (server) and for `claude`, `codex`, `gemini` and `opencode` (CLIs). `lmstudio`, `llamacpp` and `vllm` have no adapter in this change: they resolve to the unsupported state and the guidance reads `not supported in chat yet`. The OpenAI-compatible adapters are specified in the follow-up change `ai-chat-openai-compat`. Each adapter is usable as soon as it exists; an engine without an adapter resolves to the unsupported state.
 
 #### Scenario: Events in order [auto]
 - GIVEN a fake adapter that emits `a`, `b` and a final event
@@ -37,10 +37,10 @@ Every adapter MUST implement one contract: it receives a model name, the system 
 #### Scenario: Engines without an adapter [auto]
 - GIVEN the adapter table
 - WHEN it is queried for each catalog engine
-- THEN `ollama`, `claude`, `codex` and `gemini` have one, and `lmstudio`, `llamacpp`, `vllm` and `opencode` have none and resolve to unsupported (`codex` and `gemini` are usable only where the CLI jail is available, see CLI jail)
+- THEN `ollama`, `claude`, `codex`, `gemini` and `opencode` have one, and `lmstudio`, `llamacpp` and `vllm` have none and resolve to unsupported (`codex`, `gemini` and `opencode` are usable only where the CLI jail is available, see CLI jail)
 
 ### Requirement: Engine resolution for chat
-The engine of a chat turn MUST come from the effective assignment of the `chat` task (its own assignment, else `general`; see ai-task-models) combined with the detection result. The result MUST be exactly one of: ready (engine and model), unassigned, undetected (with the status), unsupported, no jail (`codex` or `gemini` on a system without a working jail, see CLI jail), gated off (a CLI whose manual gate failed), or model problem (no model for a server, or a model that is not detected). Resolution MUST be pure, MUST be evaluated on every send, and MUST NEVER change the assignment or pick another engine.
+The engine of a chat turn MUST come from the effective assignment of the `chat` task (its own assignment, else `general`; see ai-task-models) combined with the detection result. The result MUST be exactly one of: ready (engine and model), unassigned, undetected (with the status), unsupported, no jail (`codex`, `gemini` or `opencode` on a system without a working jail, see CLI jail), gated off (a CLI whose manual gate failed), or model problem (no model for a server, or a model that is not detected). Resolution MUST be pure, MUST be evaluated on every send, and MUST NEVER change the assignment or pick another engine.
 
 #### Scenario: Ready server [auto]
 - GIVEN `chat` is `ollama` / `llama3:8b`, ollama is `available` and lists `llama3:8b`
@@ -152,6 +152,11 @@ Ollama replies are NDJSON (one JSON object per line), and the CLI adapters decod
 - GIVEN a single line of 1 MiB plus one byte for a server decoder, and one of 2 MiB plus one byte for a CLI decoder
 - WHEN parsed
 - THEN an error event is produced in each case
+
+#### Scenario: opencode events [auto]
+- GIVEN the `opencode run --format json` events of a plain answer, of two text parts, of a tool event, of a `tool-calls` finish, of an `error` event and of an event kind the decoder does not know
+- WHEN each is decoded, whole and in every chunking
+- THEN the plain answer is one text delta and a stop, two text parts are separated by a blank line, a tool event or a `tool-calls` finish ends the turn with an error, an `error` event ends it with the provider's message (else the error's name), and an unknown kind ends it with an error that asks to update lazarobox (fail closed)
 
 #### Scenario: CLI decoder accepts a long result event [auto]
 - GIVEN a CLI `result` event line of 1.5 MiB
@@ -277,7 +282,9 @@ Cancelling a server turn MUST close the socket, so the server sees the connectio
 - THEN the connection is closed and no event is delivered afterwards
 
 ### Requirement: CLI adapters are text-only
-The `claude`, `codex` and `gemini` adapters MUST launch the CLI in a mode where it cannot execute tools, run commands or edit files. Design MUST verify, against each CLI's real `--help` and output, the flags and the output format that give that guarantee, and MUST pin them; if a CLI cannot be made tool-less safely, that adapter MUST be gated off (resolution `gated off`) instead of shipping. Flags are a first layer only; the guarantee that a CLI has the same reach as an API connection comes from the CLI jail (see below). The CLI MUST be started directly (no shell, no `sh -c`), with each argument a separate argv element, stdout and stderr piped, and no credential, token or key added to its arguments or environment by lazarobox. The conversation (system prompt for CLIs without a system-prompt flag, and every message) MUST travel on stdin, which is written and then closed; argv MUST NEVER hold a message or history. lazarobox MUST NOT open for reading any credential or config file of the CLI; the CLI uses the user's own login. Holding a directory handle, or a handle on the claude config file, only to grant the jail access to it is not reading. The prompt text and the model name MUST be passed so they can never be read as an option (a message or model starting with `-` is data). Model `default` MUST mean no model option. Text is streamed to the pane as the CLI produces it. A non-zero exit, a launch failure or empty output MUST end the turn with an error event carrying the CLI's sanitized, capped stderr summary. The system prompt MAY include the workspace context block (see prompt-profiles); it is text in the prompt and does not change the CLI's neutral empty cwd or its jail. The conversation context for each turn MUST be the system prompt plus the capped history (see Context window); a CLI session of its own is not used.
+The `claude`, `codex`, `gemini` and `opencode` adapters MUST launch the CLI in a mode where it cannot execute tools, run commands or edit files. Design MUST verify, against each CLI's real `--help` and output, the flags and the output format that give that guarantee, and MUST pin them; if a CLI cannot be made tool-less safely, that adapter MUST be gated off (resolution `gated off`) instead of shipping. Flags are a first layer only; the guarantee that a CLI has the same reach as an API connection comes from the CLI jail (see below). The CLI MUST be started directly (no shell, no `sh -c`), with each argument a separate argv element, stdout and stderr piped, and no credential, token or key added to its arguments or environment by lazarobox. The conversation (system prompt for CLIs without a system-prompt flag, and every message) MUST travel on stdin, which is written and then closed; argv MUST NEVER hold a message or history. lazarobox MUST NOT open for reading any credential or config file of the CLI; the CLI uses the user's own login. Holding a directory handle, or a handle on the claude config file, only to grant the jail access to it is not reading. The prompt text and the model name MUST be passed so they can never be read as an option (a message or model starting with `-` is data). Model `default` MUST mean no model option. Text is streamed to the pane as the CLI produces it. A non-zero exit, a launch failure or empty output MUST end the turn with an error event carrying the CLI's sanitized, capped stderr summary. The system prompt MAY include the workspace context block (see prompt-profiles); it is text in the prompt and does not change the CLI's neutral empty cwd or its jail. The conversation context for each turn MUST be the system prompt plus the capped history (see Context window); a CLI session of its own is not used.
+
+`opencode` is started as `opencode --pure run --format json --agent lazarobox-chat [--model=<provider/model>]`, with no message in argv: `opencode run` reads its message from stdin, where the `Instructions:` block, the memory block and the history are written. Its tools are removed by an inline config the adapter passes in `OPENCODE_CONFIG_CONTENT` (a constant, never user text): `permission` denies every tool name (`{"*": "deny"}`), globally and on the agent it runs (a primary agent with its own text-only prompt, so opencode's coding-agent prompt never applies); no MCP server is configured and LSP, formatter, share, snapshot and auto-update are off. `opencode debug agent lazarobox-chat` (1.19.0) lists every tool as disabled with it, plugin tools included. The user's own opencode setup MUST NOT reach the chat, because a plugin runs code outside the permission rules and a config can add MCP servers, instructions and skills: the adapter sets `OPENCODE_PURE`, `OPENCODE_DISABLE_PROJECT_CONFIG`, `OPENCODE_DISABLE_CLAUDE_CODE`, `OPENCODE_DISABLE_EXTERNAL_SKILLS` and `OPENCODE_DISABLE_AUTOUPDATE`, points `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `OPENCODE_DB` into the turn's private temp folder (wiped after the turn, so the session never reaches the user's opencode database), and the runtime removes `OPENCODE_CONFIG`, `OPENCODE_CONFIG_DIR` and `OPENCODE_PERMISSION` from the inherited environment. Providers that only exist in the user's own config or in a plugin (for example a login provided by a plugin) are therefore not available to the chat; a provider with a login in opencode's data folder is. A decoder that sees a tool event ends the turn with an error, as a second layer under the permission rules and the jail. A job MAY carry environment variables (a constant, or a path inside the turn's private temp folder); they are set after the scrub of the inherited ones and win over an inherited variable of the same name.
 
 #### Scenario: Tools are disabled in argv [auto]
 - GIVEN a fake `claude`, a fake `codex` and a fake `gemini` that record their argv
@@ -293,6 +300,16 @@ The `claude`, `codex` and `gemini` adapters MUST launch the CLI in a mode where 
 - GIVEN a user message `--dangerous-flag` and a model named `-m`
 - WHEN a turn runs
 - THEN neither is interpreted as an option by the adapter's argv construction
+
+#### Scenario: opencode tools are denied by its config [auto]
+- GIVEN the `opencode` invocation built for a turn
+- WHEN its argv and environment are inspected
+- THEN the argv is exactly the pinned list (plus `--model=<id>` for a model other than `default`) with no message and no flag that continues, shares, attaches, auto-approves or adds files, the inline config denies `*` globally and on the agent named in the argv, and the system prompt, the memory block and the history are only on stdin
+
+#### Scenario: opencode ignores the user's setup [auto]
+- GIVEN a fake `opencode` recording its environment, and `OPENCODE_CONFIG`, `OPENCODE_CONFIG_DIR` and `OPENCODE_PERMISSION` set in the parent
+- WHEN a turn runs
+- THEN the child has none of the three, has the pure and disable variables, and its `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `OPENCODE_DB` are inside the turn's private temp folder
 
 #### Scenario: Default model passes no model option [auto]
 - GIVEN the model `default`
@@ -322,9 +339,9 @@ The `claude`, `codex` and `gemini` adapters MUST launch the CLI in a mode where 
 ### Requirement: CLI jail
 On Linux, a CLI MUST run inside a Landlock jail applied by a re-exec helper (`__jail-exec`) before the CLI is executed. The jail has two goals: a CLI MUST NOT read, write or list the user's files outside its own state, and a CLI MUST NOT be able to execute any program other than its own interpreter, its own package and the helper binaries proven necessary. This gives a CLI connection the same guarantee as an API connection: text only. The jail MUST be applied in a single-threaded helper (never in `pre_exec`), MUST require full enforcement of every right of the probed ABI (Landlock ABI 3 or newer), and a partial or absent enforcement MUST count as not jailed: the helper exits 125 with `jail not enforced` and never executes the CLI.
 
-Filesystem rules. Read and execute (rx) is granted only to the CLI's interpreter binary (for example the canonical node path), the CLI's own package root, and the specific helper binaries a manual check proves necessary, each by exact path and never as a whole directory. `/usr/lib`, `/usr/share`, `/lib`, `/lib64` and `/etc` MUST be read-only with NO execute right (shared libraries still load, because mapping needs only read). The folders that hold programs (`/usr/bin`, `/usr/sbin`, `/bin`) are NOT granted at all, not even for reading: Landlock does not gate `mmap(PROT_EXEC)`, so a granted ELF loader could otherwise run any program it can read (`ld.so /usr/bin/curl`). Read-only is also granted to `/etc`, the minimal `/proc` and `/sys/fs/cgroup` entries, and `/dev/urandom`, `/dev/random`; `/dev/null` is read-write. The private empty cwd is read-only and a private per-turn `TMPDIR` is read-write. Each CLI's own state directory is read-write (claude `~/.claude/` and `~/.claude.json`; codex `$CODEX_HOME` else `~/.codex/`; gemini `~/.gemini/`). Everything else, including `$HOME`, projects, `~/.ssh`, `/tmp` and other CLIs' directories, is denied. The network is not restricted, because the CLIs need their APIs. Paths MUST be resolved by existence checks and directory handles, never by reading a credential file.
+Filesystem rules. Read and execute (rx) is granted only to the CLI's interpreter binary (for example the canonical node path), the CLI's own package root, and the specific helper binaries a manual check proves necessary, each by exact path and never as a whole directory. `/usr/lib`, `/usr/share`, `/lib`, `/lib64` and `/etc` MUST be read-only with NO execute right (shared libraries still load, because mapping needs only read). The folders that hold programs (`/usr/bin`, `/usr/sbin`, `/bin`) are NOT granted at all, not even for reading: Landlock does not gate `mmap(PROT_EXEC)`, so a granted ELF loader could otherwise run any program it can read (`ld.so /usr/bin/curl`). Read-only is also granted to `/etc`, the minimal `/proc` and `/sys/fs/cgroup` entries, and `/dev/urandom`, `/dev/random`; `/dev/null` is read-write. The private empty cwd is read-only and a private per-turn `TMPDIR` is read-write. Each CLI's own state directory is read-write (claude `~/.claude/` and `~/.claude.json`; codex `$CODEX_HOME` else `~/.codex/`; gemini `~/.gemini/`; opencode `~/.local/share/opencode/` and `~/.cache/opencode/`, because its config and state folders are redirected into the per-turn `TMPDIR`). Everything else, including `$HOME`, projects, `~/.ssh`, `/tmp` and other CLIs' directories, is denied. The network is not restricted, because the CLIs need their APIs. Paths MUST be resolved by existence checks and directory handles, never by reading a credential file.
 
-Policy. `codex` and `gemini` are jail-required: without a working jail they MUST NOT start and resolve to `no jail`, shown as `<engine>: not available on this system yet`. A helper exit of 125 becomes a jail error. `claude` is jail-layered: jailed when the jail is available, and run with its flags alone when it is not. Any OS without a backend (everything except Linux for now) is `Unavailable`; Ollama, the OpenAI-compatible servers and `claude` keep working there.
+Policy. `codex`, `gemini` and `opencode` are jail-required: without a working jail they MUST NOT start and resolve to `no jail`, shown as `<engine>: not available on this system yet`. A helper exit of 125 becomes a jail error. `claude` is jail-layered: jailed when the jail is available, and run with its flags alone when it is not. Any OS without a backend (everything except Linux for now) is `Unavailable`; Ollama, the OpenAI-compatible servers and `claude` keep working there.
 
 If a CLI cannot work without a general shell or a wider execute right, its slice is GATED (`gated off`) and the user is told; the jail is never widened to a whole directory.
 
@@ -368,7 +385,12 @@ If a CLI cannot work without a general shell or a wider execute right, its slice
 - WHEN it runs
 - THEN it exits with status 125, prints `jail not enforced` and never executes the program
 
-#### Scenario: No jail, no codex or gemini [auto]
+#### Scenario: opencode jail layout [auto]
+- GIVEN the native opencode install at `~/.opencode/bin/opencode`
+- WHEN the jail spec is built
+- THEN execute is granted to `~/.opencode/bin` and the ELF loader only, `~/.local/share/opencode` and `~/.cache/opencode` are read-write, nothing else under `$HOME` is granted, and another CLI's spec never holds the opencode data folder
+
+#### Scenario: No jail, no codex, gemini or opencode [auto]
 - GIVEN a jail probe that is Unavailable and `chat` assigned to `codex`
 - WHEN a message is sent
 - THEN no process is started and the guidance reads `codex: not available on this system yet`
@@ -521,9 +543,14 @@ Each shipped adapter MUST stream a reply from the real engine.
 - THEN the reasoning streams dimmed in the pane, collapses when the answer starts, and the statusline shows the thinking indicator throughout; a non-reasoning model shows no reasoning line
 
 #### Scenario: CLI engines [manual]
-- GIVEN `claude`, `codex` and `gemini` installed and logged in
+- GIVEN `claude`, `codex`, `gemini` and `opencode` installed and logged in
 - WHEN each is assigned to `chat` in turn and a message is sent
 - THEN each streams a text reply and no credential file is touched by lazarobox; codex and gemini run jailed
+
+#### Scenario: opencode keeps the user's database untouched [manual]
+- GIVEN `opencode` installed and logged in, and a model chosen from the picker
+- WHEN a message is sent with `tests/opencode_live.rs`, or from the app
+- THEN the reply streams, the user's `~/.local/share/opencode/opencode.db` does not change, and a request to read a file or run a command gets a text answer only
 
 #### Scenario: Jailed claude keeps its login [manual]
 - GIVEN a logged-in `claude` under the jail

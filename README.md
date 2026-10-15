@@ -119,7 +119,7 @@ El catálogo de modelos de Ollama es solo informativo y puede estar desactualiza
 
 Se detectan estos motores: `ollama`, `lmstudio`, `llamacpp` y `vllm` (servidores locales) y los CLIs `claude`, `codex`, `gemini` y `opencode`. Los servidores se consultan en sus puertos habituales y los CLIs se buscan en el `PATH`.
 
-La detección es de solo lectura y solo usa `127.0.0.1`: no se envían credenciales ni datos de tus paneles, y no se ejecuta nada salvo `--version` de los CLIs encontrados.
+La detección es de solo lectura y solo usa `127.0.0.1`: no se envían credenciales ni datos de tus paneles, y no se ejecuta nada salvo `--version` de los CLIs encontrados y, para opencode, `opencode --pure models` (ver «Motores CLI: claude, codex, gemini y opencode»).
 
 Límites de esta fase:
 
@@ -130,7 +130,7 @@ Límites de esta fase:
 
 ## 💬 Chat de IA (experimental)
 
-Con `Ctrl+Espacio` y `c` se abre un panel de chat con un modelo, sin salir del workspace. Es una función **experimental**. Funciona con **Ollama** (local: debe estar instalado y en ejecución con `ollama serve`, y el modelo elegido debe estar descargado con `ollama pull <modelo>`) y con los CLIs **claude**, **codex** y **gemini**, que usan tu propio inicio de sesión (ver «Motores CLI: claude, codex y gemini»).
+Con `Ctrl+Espacio` y `c` se abre un panel de chat con un modelo, sin salir del workspace. Es una función **experimental**. Funciona con **Ollama** (local: debe estar instalado y en ejecución con `ollama serve`, y el modelo elegido debe estar descargado con `ollama pull <modelo>`) y con los CLIs **claude**, **codex**, **gemini** y **opencode**, que usan tu propio inicio de sesión (ver «Motores CLI: claude, codex, gemini y opencode»).
 
 Teclas dentro del chat:
 
@@ -162,27 +162,27 @@ Si la tarea `chat` no tiene motor propio, usa el motor general (`[ai]`). El pane
 **Privacidad:**
 
 - Con **Ollama** todo es local: el chat solo habla con `127.0.0.1` y no envía credenciales (la memoria opcional de engram tiene su propia sección más abajo).
-- Con **claude, codex y gemini** la conversación (tus mensajes, el prompt del perfil y, si la activas, la memoria del proyecto) **se envía al proveedor** del CLI, con tu cuenta y bajo sus condiciones. lazarobox no lee ni copia tus credenciales.
+- Con **claude, codex, gemini y opencode** la conversación (tus mensajes, el prompt del perfil y, si la activas, la memoria del proyecto) **se envía al proveedor** del CLI, con tu cuenta y bajo sus condiciones. lazarobox no lee ni copia tus credenciales.
 - Las conversaciones se guardan en un `chat.db` **sin cifrar**, texto plano con permisos `0600`, en `$XDG_DATA_HOME/lazarobox/chat.db` (por defecto `~/.local/share/lazarobox/chat.db`). Para borrarlas todas, cierra lazarobox y elimina ese archivo (y los auxiliares `chat.db-journal` si existen). Una conversación se borra por separado desde la lista (`d`, luego `y`).
 - El razonamiento del modelo se muestra en el panel pero **nunca** se guarda en `chat.db` (ver «Historial de conversaciones»).
 
 Límites de esta versión:
 
-- Los motores `lmstudio`, `llamacpp`, `vllm` y `opencode` se detectan, pero aún no tienen adaptador de chat.
+- Los motores `lmstudio`, `llamacpp` y `vllm` se detectan, pero aún no tienen adaptador de chat.
 - Las etiquetas extra de una conversación vuelven en orden alfabético al reabrirla.
 
-### Motores CLI: claude, codex y gemini
+### Motores CLI: claude, codex, gemini y opencode
 
-El chat puede hablar con los CLIs **claude**, **codex** y **gemini** que ya tengas instalados y con la sesión iniciada (`claude`, `codex login`, `gemini`). lazarobox no pide ni guarda claves de API: arranca el CLI, le pasa la conversación por la entrada estándar y lee su respuesta. Se eligen como cualquier otro motor, en el menú de IA o en `[ai.tasks.chat]`.
+El chat puede hablar con los CLIs **claude**, **codex**, **gemini** y **opencode** que ya tengas instalados y con la sesión iniciada (`claude`, `codex login`, `gemini`, `opencode providers login`). lazarobox no pide ni guarda claves de API: arranca el CLI, le pasa la conversación por la entrada estándar y lee su respuesta. Se eligen como cualquier otro motor, en el menú de IA o en `[ai.tasks.chat]`.
 
-Versiones comprobadas: claude 2.1.299, codex-cli 0.142.5 y gemini 0.63.0. Otras versiones pueden fallar (ver «Si un CLI cambia»).
+Versiones comprobadas: claude 2.1.299, codex-cli 0.142.5, gemini 0.63.0 y opencode 1.19.0. Otras versiones pueden fallar (ver «Si un CLI cambia»).
 
 **Solo texto.** El chat es de texto: el CLI se lanza con opciones fijas que le quitan las herramientas, de modo que no ejecuta comandos, no edita archivos ni usa servidores MCP. Pedirle «crea un archivo» no crea nada. Es la primera capa; la segunda es la jaula.
 
 **La jaula (Landlock, solo Linux).** Cada turno de un CLI se ejecuta dentro de una jaula del núcleo (Landlock, ABI 3 o superior; lazarobox se relanza a sí mismo para aplicarla antes de arrancar el CLI). La jaula **bloquea**:
 
 - la lectura de todo lo que no se haya concedido: tu `$HOME`, `~/.ssh`, `~/.gnupg`, las carpetas de otros CLIs (`codex` no puede leer `~/.claude`) y `/tmp`;
-- la escritura fuera de la carpeta de estado del propio CLI (`~/.claude` y `~/.claude.json`, `$CODEX_HOME` o `~/.codex`, `~/.gemini`) y de un directorio temporal privado de cada turno;
+- la escritura fuera de la carpeta de estado del propio CLI (`~/.claude` y `~/.claude.json`, `$CODEX_HOME` o `~/.codex`, `~/.gemini`, `~/.local/share/opencode` y `~/.cache/opencode`) y de un directorio temporal privado de cada turno;
 - la ejecución de programas: solo se puede ejecutar el intérprete (node) y el propio CLI. `ssh`, `curl`, `bash` o `git` no se pueden lanzar directamente;
 - abrir puertos TCP para escuchar (desde Landlock ABI 4).
 
@@ -190,16 +190,16 @@ El directorio de trabajo del CLI es una carpeta vacía y privada, el entorno se 
 
 **Disponibilidad por sistema:**
 
-- **codex y gemini** exigen la jaula. Sin ella (otro sistema operativo, un núcleo sin Landlock o una instalación que la jaula rechaza) no se lanza ningún proceso y el panel indica `<motor>: not available on this system yet`.
+- **codex, gemini y opencode** exigen la jaula. Sin ella (otro sistema operativo, un núcleo sin Landlock o una instalación que la jaula rechaza) no se lanza ningún proceso y el panel indica `<motor>: not available on this system yet`.
 - **claude** funciona también sin la jaula: en ese caso el panel avisa una vez con `claude runs without the jail here: <motivo>`. En ese modo solo lo protegen las opciones de solo texto.
 - Fuera de Linux no hay jaula por ahora.
 
 **Riesgos que quedan (léelos):**
 
 - **La jaula limita, no es un sello.** Landlock no controla `mmap` con permiso de ejecución, así que el cargador dinámico que necesita un CLI de scripts podría arrancar un programa legible; por eso se retiran de la lectura `/usr/bin`, `/usr/sbin` y `/bin`. Los programas que quedan bajo `/usr/lib` siguen siendo alcanzables. Las restricciones de `execve` son defensa en profundidad. La red **no** está restringida: un CLI puede conectar a cualquier destino (es lo que necesita para hablar con su proveedor).
-- **Las carpetas de estado son escribibles.** El CLI debe poder renovar su sesión, así que `~/.claude`, `$CODEX_HOME`/`~/.codex` y `~/.gemini` están en modo escritura. Si un modelo consiguiera que el CLI escribiera ahí una configuración (por ejemplo, hooks o servidores MCP), una ejecución posterior de ese CLI **sin** la jaula (tú, en tu terminal) la ejecutaría con tus permisos.
+- **Las carpetas de estado son escribibles.** El CLI debe poder renovar su sesión, así que `~/.claude`, `$CODEX_HOME`/`~/.codex`, `~/.gemini`, `~/.local/share/opencode` y `~/.cache/opencode` están en modo escritura. Si un modelo consiguiera que el CLI escribiera ahí una configuración (por ejemplo, hooks o servidores MCP), una ejecución posterior de ese CLI **sin** la jaula (tú, en tu terminal) la ejecutaría con tus permisos.
 - **claude reescribe `~/.claude.json` en el sitio.** Dentro de la jaula no puede crear el archivo temporal junto a `~/.claude.json`, y escribe directamente sobre él. Un corte en mitad de la escritura, o dos claude a la vez, pueden dejarlo dañado. Se está estudiando `CLAUDE_CONFIG_DIR` para evitarlo.
-- **El _system prompt_ de claude se ve en `ps`.** claude recibe el prompt del perfil como argumento de línea de comandos, visible para cualquier proceso local mientras dura el turno. codex y gemini lo reciben por la entrada estándar y en `ps` solo se ven opciones fijas y el nombre del modelo.
+- **El _system prompt_ de claude se ve en `ps`.** claude recibe el prompt del perfil como argumento de línea de comandos, visible para cualquier proceso local mientras dura el turno. codex, gemini y opencode lo reciben por la entrada estándar y en `ps` solo se ven opciones fijas y el nombre del modelo.
 - **La respuesta es la palabra del modelo.** Los modelos pueden negarse o inventar una justificación («no tengo permisos»). La garantía real está en la ausencia de herramientas y en la jaula, no en lo que diga el modelo.
 - **Comprobación pendiente:** la línea base de llamadas al sistema con `strace` (M12/M14) no se ha tomado porque `strace` no estaba instalado. En su lugar se midió qué programas arranca cada turno (solo node y el CLI nativo) y que el turno funciona con la jaula completa.
 
@@ -215,9 +215,17 @@ El directorio de trabajo del CLI es una carpeta vacía y privada, el entorno se 
 - Con gemini, el modo `plan` **no** basta como barrera (el modelo puede salir de él). El chat desactiva las herramientas con una política que deniega todas (un archivo temporal que lazarobox escribe en la carpeta privada del turno), sin extensiones y sin servidores MCP.
 - Si tu `node` es el de Homebrew (sus bibliotecas viven bajo `.linuxbrew/Cellar` y `opt`), la jaula concede en solo lectura exactamente las carpetas de bibliotecas que el propio ejecutable declara y los archivos `openssl.cnf` y `cert.pem` de Homebrew; nunca el prefijo completo. Esta regla vale para cualquier CLI cuyo ejecutable (el intérprete de un script o el binario nativo) declare un RUNPATH o RPATH en su ELF, no solo para `node`.
 
+**opencode.** Notas:
+
+- El chat lanza `opencode --pure run --format json --agent lazarobox-chat`, con la conversación por la entrada estándar. Las herramientas se quitan con una configuración en línea que deniega todos los permisos (`permission: {"*": "deny"}`, también en el agente), sin servidores MCP, LSP, formateador ni _snapshots_. Con ella, `opencode debug agent lazarobox-chat` (1.19.0) muestra todas las herramientas desactivadas.
+- **No se usa tu configuración de opencode.** Los plugins ejecutan código fuera de las reglas de permisos y una configuración puede añadir servidores MCP, instrucciones (`AGENTS.md`) y _skills_, así que el chat arranca opencode con `--pure`, sin la configuración global ni la del proyecto (`XDG_CONFIG_HOME` apunta a una carpeta vacía del turno) y sin `~/.claude`. Consecuencia: los proveedores que solo existen en tu configuración o que dependen de un plugin (por ejemplo un inicio de sesión de Anthropic o de Google que aporte un plugin) **no están disponibles en el chat**; sí lo están los que tienen sesión iniciada en `opencode providers login`. Los modelos gratuitos de opencode aparecen en la lista, pero el proveedor puede rechazarlos fuera de su aplicación.
+- La sesión de cada turno se escribe en una base de datos privada del turno (`OPENCODE_DB`), que se borra al terminar: no se añade nada a tu `opencode.db`.
+- **Lista de modelos dinámica.** Al detectar motores se ejecuta `opencode --pure models` (con las mismas restricciones, en una carpeta privada que se borra; 5 s como máximo) y el selector muestra `default` seguido de los modelos que devuelve, en formato `proveedor/modelo`. Si falla, se agota el tiempo o no devuelve nada, solo aparece `default`. `custom…` sigue disponible. `default` no pasa ninguna opción de modelo: opencode elige el suyo, que puede ser un modelo gratuito que solo responde dentro de la aplicación de opencode; si el chat muestra ese error, elige un modelo concreto.
+- opencode **falla cerrado** como gemini: un tipo de evento desconocido termina el turno con un error hasta que se actualice lazarobox.
+
 **Si un CLI cambia.** Las listas de herramientas desactivadas son fijas y los decodificadores aceptan solo los tipos de evento que conocen:
 
-- codex **falla cerrado**: si una versión nueva añade un tipo de elemento o retira una opción que lazarobox desactiva (`Unknown feature flag`), el chat muestra un error hasta que se actualice lazarobox. gemini hace lo mismo con los tipos de evento desconocidos.
+- codex **falla cerrado**: si una versión nueva añade un tipo de elemento o retira una opción que lazarobox desactiva (`Unknown feature flag`), el chat muestra un error hasta que se actualice lazarobox. gemini y opencode hacen lo mismo con los tipos de evento desconocidos.
 - Un `node` ubicado en una carpeta con permiso de escritura para el grupo (por ejemplo con `umask 002`), o bajo `/tmp`, se **rechaza** para los CLIs de scripts dentro de la jaula: se prueba primero el `node` instalado junto al CLI y luego los del `PATH`, y si ninguno es de confianza el CLI no arranca (si es obligatorio, el panel dice que no está disponible).
 
 ### Historial de conversaciones
@@ -280,7 +288,7 @@ La barra de estado muestra `mem: ready`, `mem: checking` o `mem: unavailable`.
 
 **Retomar una conversación:** al retomarla se reutiliza la sesión de engram que usaron sus notas (con su proyecto), así que las notas nuevas siguen en la misma sesión y se cierra una sola vez. Una conversación retomada que no escribe nada no cierra ninguna sesión. Sus notas nuevas siguen en el proyecto de engram con el que se guardó la conversación, aunque la retomes desde otro directorio.
 
-Límites: la memoria se envía con la conversación a los adaptadores de Ollama, claude, codex y gemini (en los tres CLIs, **al proveedor**).
+Límites: la memoria se envía con la conversación a los adaptadores de Ollama, claude, codex, gemini y opencode (en los cuatro CLIs, **al proveedor**).
 
 ---
 

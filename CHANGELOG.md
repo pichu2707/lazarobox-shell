@@ -10,6 +10,35 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Chat adapter for the `opencode` CLI. It runs `opencode --pure run --format
+  json --agent lazarobox-chat` with the conversation on stdin and no tools: an
+  inline config denies every permission (`{"*": "deny"}`), globally and on a
+  text-only agent, with no MCP server, LSP, formatter, share or snapshot. The
+  user's own opencode config, plugins, project config and `~/.claude` skills
+  are not read (`--pure`, an empty `XDG_CONFIG_HOME`, `OPENCODE_DISABLE_*`), and
+  the turn's session goes to a private database that is removed afterwards.
+  opencode is jail-required, like codex and gemini: it may write only
+  `~/.local/share/opencode`, `~/.cache/opencode` and the per-turn temp folder.
+  The decoder fails closed on unknown event kinds and ends the turn on any tool
+  event.
+- The opencode model list is dynamic: detection runs `opencode --pure models`
+  (bounded to 5 s, in a private folder, output capped) and the picker shows
+  `default` followed by the `provider/model` ids it prints, then `custom…`.
+  Without a listing only `default` is shown.
+- CLI jobs can carry environment variables (a constant, or a path inside the
+  turn's private temp folder), set after the scrub of the inherited ones.
+  `OPENCODE_CONFIG`, `OPENCODE_CONFIG_DIR` and `OPENCODE_PERMISSION` are now
+  never inherited by a CLI.
+- `tests/opencode_live.rs`, an ignored manual check of the real opencode.
+
+### Known limits
+
+- Providers that exist only in the user's opencode config or in a plugin (for
+  example a plugin-provided Anthropic or Google login) are not available to the
+  chat, by design.
+
 ## [0.14.0] - 2026-10-15
 
 ### Added
