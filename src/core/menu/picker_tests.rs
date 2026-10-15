@@ -1,6 +1,8 @@
 //! Tests of the picker wiring at the `MenuState` level.
 
-use super::ai_tests::{assigned, ch, machine, menu, press, selected_label, value_of};
+use super::ai_tests::{
+    assigned, ch, detection, engine, machine, menu, press, selected_label, value_of,
+};
 use super::*;
 
 pub(super) fn key(code: KeyCode) -> KeyEvent {
@@ -69,6 +71,28 @@ fn enter_on_a_task_row_opens_level_one_on_the_first_entry() {
             pick("codex", status("available · 0.5.0"), false, false),
         ]
     );
+}
+
+// Spec: CLI model catalog. A labeled gemini row saves its explicit id.
+#[test]
+fn choosing_a_labeled_gemini_row_saves_the_explicit_id() {
+    let found = detection(&[engine(
+        "gemini",
+        crate::core::ai::Status::Available,
+        &[],
+        None,
+    )]);
+    let mut m = menu(None, None, Some(found));
+    open(&mut m, "code");
+    while cursor_label(&m) != "gemini" {
+        press(&mut m, 'j');
+    }
+    assert_eq!(send(&mut m, key(KeyCode::Enter)), MenuCommand::None);
+    assert_eq!(title(&m), "Model for code (gemini)");
+    press(&mut m, 'j');
+    assert_eq!(cursor_label(&m), "Flash 3.8");
+    assert_eq!(send(&mut m, key(KeyCode::Enter)), MenuCommand::None);
+    assert_eq!(value_of(&m, "code"), "gemini › gemini-3.8-flash");
 }
 
 // Spec: Assign a CLI model.

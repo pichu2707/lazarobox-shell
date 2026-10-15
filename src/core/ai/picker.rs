@@ -889,9 +889,9 @@ mod tests {
             model_rows("gemini", Target::Task(Task::Code), &draft, Some(&d)),
             [
                 labeled("default (auto)", "default"),
+                labeled("Flash 3.8", "gemini-3.8-flash"),
                 labeled("Flash 3.5", "gemini-3.5-flash"),
                 labeled("Flash Lite 3.5", "gemini-3.5-flash-lite"),
-                labeled("Pro 3.1 (preview)", "gemini-3.1-pro-preview"),
                 custom.clone(),
             ]
         );

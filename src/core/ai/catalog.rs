@@ -37,9 +37,9 @@ pub fn cli_models(engine: &str) -> &'static [(&'static str, &'static str)] {
         ],
         "gemini" => &[
             ("default (auto)", "default"),
+            ("Flash 3.8", "gemini-3.8-flash"),
             ("Flash 3.5", "gemini-3.5-flash"),
             ("Flash Lite 3.5", "gemini-3.5-flash-lite"),
-            ("Pro 3.1 (preview)", "gemini-3.1-pro-preview"),
         ],
         "codex" | "opencode" => &[("default", "default")],
         _ => &[],
@@ -129,9 +129,9 @@ mod tests {
             cli_models("gemini"),
             [
                 ("default (auto)", "default"),
+                ("Flash 3.8", "gemini-3.8-flash"),
                 ("Flash 3.5", "gemini-3.5-flash"),
                 ("Flash Lite 3.5", "gemini-3.5-flash-lite"),
-                ("Pro 3.1 (preview)", "gemini-3.1-pro-preview"),
             ]
         );
         for id in ["codex", "opencode"] {
