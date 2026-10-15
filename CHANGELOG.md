@@ -10,6 +10,16 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- AI chat with the `gemini` CLI no longer ends with `the engine stopped
+  answering` when the model is slow. gemini prints its first line at once and
+  can then stay silent for a minute or more while it retries a busy model
+  (HTTP 503), which tripped the 90 s idle limit. A CLI turn now waits up to
+  300 s between outputs (the 15 minute total limit is unchanged; servers keep
+  their 60 s), and after 10 s of silence the pane shows `loading model…`
+  instead of a silent spinner.
+
 ## [0.13.0] - 2026-10-14
 
 ### Added

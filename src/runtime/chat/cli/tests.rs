@@ -105,6 +105,7 @@ impl Lab {
                 idle: Duration::from_secs(10),
                 total: Duration::from_secs(30),
                 slow: Duration::from_secs(20),
+                quiet: None,
             },
             grace: Duration::from_secs(2),
             codex_home: None,
@@ -772,6 +773,23 @@ async fn a_stalled_stream_fails_after_the_idle_limit() {
     env.timeouts.idle = Duration::from_millis(400);
     let events = run(env, request()).await;
     assert_eq!(failure(&events), "the engine stopped answering");
+}
+
+#[tokio::test]
+async fn a_cli_quiet_after_its_init_line_sends_one_slow_event_and_still_answers() {
+    let lab = lab();
+    // GOOD, with a pause between the init line and the first token.
+    let pause = "sleep 0.8\nprintf '%s\\n' '{\"type\":\"stream_event\"";
+    lab.claude(&GOOD.replacen("printf '%s\\n' '{\"type\":\"stream_event\"", pause, 1));
+    let mut env = lab.env();
+    env.timeouts.quiet = Some(Duration::from_millis(200));
+    env.timeouts.idle = Duration::from_secs(5);
+    let events = run(env, request()).await;
+    assert_eq!(
+        events.iter().filter(|e| **e == StreamEvent::Slow).count(),
+        1
+    );
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
 }
 
 #[tokio::test]

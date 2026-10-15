@@ -792,3 +792,124 @@ async fn a_reset_after_partial_text_is_an_interruption_with_the_text_kept() {
         vec![delta("Hel"), StreamEvent::Error(ChatError::Interrupted)]
     );
 }
+
+// The CLI limits, straight on the wait, on the paused clock ---------------------
+
+/// One CLI stdout over a duplex: the client end is read through a `Wait`.
+struct Stdout {
+    wait: Wait<'static>,
+    client: DuplexStream,
+    server: DuplexStream,
+    tx: mpsc::Sender<StreamEvent>,
+    events: mpsc::Receiver<StreamEvent>,
+}
+
+impl Stdout {
+    fn new(timeouts: &'static Timeouts) -> Self {
+        let (client, server) = duplex(1024);
+        let (tx, events) = mpsc::channel(16);
+        Self {
+            wait: Wait::new(timeouts),
+            client,
+            server,
+            tx,
+            events,
+        }
+    }
+
+    async fn read(&mut self) -> Result<usize, Stop> {
+        let mut buf = [0u8; 64];
+        self.wait.read(&mut self.client, &mut buf, &self.tx).await
+    }
+
+    /// The first bytes arrive, like a CLI's `init` line.
+    async fn start(&mut self) {
+        self.server.write_all(b"init\n").await.unwrap();
+        assert_eq!(self.read().await.ok().unwrap(), 5);
+    }
+
+    /// After `silence`, the server writes one byte; the next read returns it.
+    async fn read_after(&mut self, silence: Duration) -> Result<usize, Stop> {
+        tokio::time::sleep(silence).await;
+        self.server.write_all(b"x").await.unwrap();
+        self.read().await
+    }
+
+    fn nothing_sent(&mut self) -> bool {
+        self.events.try_recv() == Err(mpsc::error::TryRecvError::Empty)
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cli_silent_for_100_s_after_its_first_bytes_still_answers() {
+    let mut out = Stdout::new(&Timeouts::CLI);
+    out.start().await;
+    let begun = Instant::now();
+    let silence = Duration::from_secs(100);
+    let mut buf = [0u8; 64];
+    // The write lands while `read` waits: run both on one task.
+    let (read, ()) = tokio::join!(out.wait.read(&mut out.client, &mut buf, &out.tx), async {
+        tokio::time::sleep(silence).await;
+        out.server.write_all(b"delta\n").await.unwrap();
+    });
+    assert_eq!(read.ok().unwrap(), 6);
+    assert_eq!(begun.elapsed(), silence);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cli_that_never_writes_again_is_stalled_at_300_s() {
+    let mut out = Stdout::new(&Timeouts::CLI);
+    out.start().await;
+    let begun = Instant::now();
+    assert!(matches!(out.read().await, Err(Stop::Failed(STALLED))));
+    assert_eq!(begun.elapsed(), Duration::from_secs(300));
+    // The hint came once on the way, not again.
+    assert_eq!(out.events.try_recv(), Ok(StreamEvent::Slow));
+    assert!(out.nothing_sent());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cli_silent_for_10_s_after_its_first_bytes_sends_slow_once() {
+    let mut out = Stdout::new(&Timeouts::CLI);
+    out.start().await;
+    let mut buf = [0u8; 64];
+    let (read, ()) = tokio::join!(out.wait.read(&mut out.client, &mut buf, &out.tx), async {
+        tokio::time::sleep(Duration::from_millis(9_900)).await;
+        assert_eq!(
+            out.events.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty),
+            "no hint before 10 s of silence"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(out.events.try_recv(), Ok(StreamEvent::Slow));
+        out.server.write_all(b"x").await.unwrap();
+    });
+    assert_eq!(read.ok().unwrap(), 1);
+    // More silence after the output resumed adds no second hint.
+    assert_eq!(
+        out.read_after(Duration::from_secs(20)).await.ok().unwrap(),
+        1
+    );
+    assert!(out.nothing_sent());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cli_that_keeps_writing_never_sends_the_hint() {
+    let mut out = Stdout::new(&Timeouts::CLI);
+    out.start().await;
+    for _ in 0..10 {
+        assert_eq!(
+            out.read_after(Duration::from_secs(9)).await.ok().unwrap(),
+            1
+        );
+    }
+    assert!(out.nothing_sent());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_server_silent_after_its_first_bytes_sends_no_hint() {
+    let mut out = Stdout::new(&Timeouts::SERVER);
+    out.start().await;
+    assert!(matches!(out.read().await, Err(Stop::Failed(STALLED))));
+    assert!(out.nothing_sent());
+}
