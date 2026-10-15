@@ -54,8 +54,9 @@ pub struct Timeouts {
     pub total: Duration,
     /// Without a first byte after this long, a `Slow` event is sent once.
     pub slow: Duration,
-    /// Once the reply started, this much silence sends a `Slow` event (at most
-    /// one per turn, with the pre-first-byte one). `None` sends none.
+    /// Once the reply started, this much silence sends a `Slow` event. It
+    /// shares the single `Slow` budget with the pre-first-byte hint. `None`
+    /// sends none.
     pub quiet: Option<Duration>,
 }
 

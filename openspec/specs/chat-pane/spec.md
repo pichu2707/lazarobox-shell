@@ -88,12 +88,12 @@ The composer MUST accept typed characters, Backspace, Delete, Left, Right, Home 
 - THEN the composer is unchanged
 
 ### Requirement: Stream lifecycle
-A send MUST append the user message, show a waiting state and start one request. Until the first byte arrives the pane MUST show `waiting for the model…`, and when the first byte has not arrived after 3 seconds it MUST show `loading model…` instead (a cold model load is not a hang). Each text delta MUST be appended to the assistant message in arrival order and drawn incrementally. A final event MUST finish the message, return the pane to idle and persist the exchange (see chat-history). An error MUST add an error system line, keep any partial text received before it, and return the pane to idle. A stream that ends without a final event (cut stream) MUST keep the partial text, add the system line `stream interrupted`, and return to idle. A pane MUST run at most one stream at a time; several chat panes MAY stream at once.
+A send MUST append the user message, show a waiting state and start one request. Until the first byte arrives the pane MUST show `waiting for the model…`, and when the first byte has not arrived after 3 seconds it MUST show `still waiting for the model…` instead (a cold model load is not a hang). Each text delta MUST be appended to the assistant message in arrival order and drawn incrementally. A final event MUST finish the message, return the pane to idle and persist the exchange (see chat-history). An error MUST add an error system line, keep any partial text received before it, and return the pane to idle. A stream that ends without a final event (cut stream) MUST keep the partial text, add the system line `stream interrupted`, and return to idle. A pane MUST run at most one stream at a time; several chat panes MAY stream at once.
 
 #### Scenario: First-byte wait [auto]
 - GIVEN a send was issued and no byte arrived
 - WHEN 1 second passes, then 3 seconds
-- THEN the pane shows `waiting for the model…` and then `loading model…`
+- THEN the pane shows `waiting for the model…` and then `still waiting for the model…`
 
 #### Scenario: Deltas in order [auto]
 - GIVEN a stream waiting for its first byte
@@ -126,12 +126,12 @@ A send MUST append the user message, show a waiting state and start one request.
 - THEN only the first transcript changes
 
 ### Requirement: Stream phase
-A chat pane with a running stream MUST expose a phase, a start instant and the model of the request as sent. The phase is `thinking` from the send until the first non-empty text delta arrives (this covers waiting for the first byte and a stream that has only delivered reasoning), and `answering` from the first non-empty text delta until the terminal event. An idle pane has no phase. The statusline reads these values (see statusline). The pane's own waiting texts are unchanged: `waiting for the model…` and, after 3 seconds without a first byte, `loading model…`; a thinking delta counts as the first byte, after which the waiting text is replaced by the reasoning block.
+A chat pane with a running stream MUST expose a phase, a start instant and the model of the request as sent. The phase is `thinking` from the send until the first non-empty text delta arrives (this covers waiting for the first byte and a stream that has only delivered reasoning), and `answering` from the first non-empty text delta until the terminal event. An idle pane has no phase. The statusline reads these values (see statusline). The pane's own waiting texts are unchanged: `waiting for the model…` and, after 3 seconds without a first byte, `still waiting for the model…`; a thinking delta counts as the first byte, after which the waiting text is replaced by the reasoning block.
 
 #### Scenario: Phase while waiting [auto]
 - GIVEN a send was issued and no byte arrived
 - WHEN the phase is read, and again after 3 seconds
-- THEN it is `thinking` both times, and the pane shows `waiting for the model…` and then `loading model…`
+- THEN it is `thinking` both times, and the pane shows `waiting for the model…` and then `still waiting for the model…`
 
 #### Scenario: Phase with reasoning only [auto]
 - GIVEN a stream that delivered only thinking deltas
@@ -149,7 +149,7 @@ A chat pane with a running stream MUST expose a phase, a start instant and the m
 - THEN the pane has no phase, no start instant and no streaming flag
 
 #### Scenario: Thinking delta replaces the waiting text [auto]
-- GIVEN a stream showing `loading model…`
+- GIVEN a stream showing `still waiting for the model…`
 - WHEN the first thinking delta arrives
 - THEN the waiting text is gone and the reasoning block is drawn
 

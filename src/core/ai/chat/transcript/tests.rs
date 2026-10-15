@@ -234,7 +234,10 @@ fn the_waiting_text_ends_the_transcript() {
     );
     let turn = state.turn();
     state.apply_at(turn, StreamEvent::Slow, at(base, 3000));
-    assert_eq!(rows(&build(&state, 30)).last().unwrap(), "W|loading model…");
+    assert_eq!(
+        rows(&build(&state, 30)).last().unwrap(),
+        "W|still waiting for the model…"
+    );
     state.apply_at(turn, StreamEvent::Delta("a".into()), at(base, 3001));
     assert!(!rows(&build(&state, 30)).iter().any(|r| r.starts_with("W|")));
 }
