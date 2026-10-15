@@ -80,9 +80,9 @@ fn choosing_a_cli_model_assigns_it_and_returns_to_the_task_row() {
     press(&mut m, 'j');
     assert_eq!(send(&mut m, key(KeyCode::Enter)), MenuCommand::None);
     assert_eq!(title(&m), "Model for code (claude)");
-    assert_eq!(cursor_label(&m), "default");
+    assert_eq!(cursor_label(&m), "default (CLI picks)");
     press(&mut m, 'j');
-    assert_eq!(cursor_label(&m), "opus");
+    assert_eq!(cursor_label(&m), "Opus 5.5");
     assert_eq!(send(&mut m, key(KeyCode::Enter)), MenuCommand::None);
     assert_eq!(selected_label(&m), "code");
     assert_eq!(value_of(&m, "code"), "claude › opus");

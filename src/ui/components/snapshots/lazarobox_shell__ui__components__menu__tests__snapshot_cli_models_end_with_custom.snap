@@ -4,12 +4,12 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
 │ Model for general (claude)                                 │
-│ default                                                    │
-│ opus                                                       │
-│ sonnet                                                     │
-│ fable                                                      │
+│ default (CLI picks)                                        │
+│ Opus 5.5                                                   │
+│ Sonnet 5.5                                                 │
+│ Haiku 5.5                                                  │
+│ Fable 5.1                                                  │
 │ custom…                                                    │
-│                                                            │
 │                                                            │
 │                                                            │
 │                                                            │

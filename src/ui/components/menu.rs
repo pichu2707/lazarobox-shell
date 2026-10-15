@@ -904,8 +904,14 @@ mod tests {
         let mut menu = picker_of("code", 0);
         press(&mut menu, &[KeyCode::Enter]);
         let shown = lines(&draw(62, POPUP_H, &menu));
-        assert!(shown.iter().any(|l| l.contains("│ opus ●")), "{shown:?}");
-        assert!(!shown.iter().any(|l| l.contains("sonnet ●")), "{shown:?}");
+        assert!(
+            shown.iter().any(|l| l.contains("│ Opus 5.5 ●")),
+            "{shown:?}"
+        );
+        assert!(
+            !shown.iter().any(|l| l.contains("Sonnet 5.5 ●")),
+            "{shown:?}"
+        );
     }
 
     #[test]

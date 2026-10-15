@@ -23,7 +23,7 @@ fn s_saves_from_the_settings_the_task_list_and_both_picker_levels() {
     assert_eq!(title(&m), "Model for code (claude)");
     assert_eq!(send(&mut m, ch('s')), MenuCommand::Save, "level 2");
     assert_eq!(title(&m), "Model for code (claude)");
-    assert_eq!(cursor_label(&m), "default");
+    assert_eq!(cursor_label(&m), "default (CLI picks)");
 }
 
 // Spec: Save on s. The key is a press: not a repeat, not Ctrl+S, not `S`.

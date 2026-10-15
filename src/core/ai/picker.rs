@@ -169,13 +169,15 @@ pub fn model_rows(
             .as_deref()
             .is_some_and(|c| same_model(engine, c, name))
     };
-    let row = |name: &str, mark: Mark, enabled: bool| PickRow {
+    // `label` is display only; the key and the match carry the saved value.
+    let labeled = |label: &str, name: &str, mark: Mark, enabled: bool| PickRow {
         key: PickKey::Model(name.to_owned()),
-        label: name.to_owned(),
+        label: label.to_owned(),
         mark,
         enabled,
         current: is_current(name),
     };
+    let row = |name: &str, mark: Mark, enabled: bool| labeled(name, name, mark, enabled);
     let info = |label: &str, mark: Mark| PickRow {
         key: PickKey::Info,
         label: label.to_owned(),
@@ -200,11 +202,14 @@ pub fn model_rows(
 
     if is_cli {
         let catalog = cli_models(engine);
-        let mut rows: Vec<PickRow> = catalog.iter().map(|m| row(m, Mark::Plain, true)).collect();
+        let mut rows: Vec<PickRow> = catalog
+            .iter()
+            .map(|(label, value)| labeled(label, value, Mark::Plain, true))
+            .collect();
         rows.extend(
             assigned
                 .iter()
-                .filter(|m| !catalog.contains(m))
+                .filter(|m| !catalog.iter().any(|(_, value)| value == *m))
                 .map(|m| row(m, Mark::Plain, true)),
         );
         rows.push(PickRow {
@@ -857,15 +862,36 @@ mod tests {
         let d = detection(vec![
             state("claude", Status::Available, &[]),
             state("codex", Status::Available, &[]),
+            state("gemini", Status::Available, &[]),
         ]);
         let custom = row(PickKey::Custom, "custom…", Mark::Plain, true, false);
+        let labeled = |label: &str, value: &str| {
+            row(
+                PickKey::Model(value.to_owned()),
+                label,
+                Mark::Plain,
+                true,
+                false,
+            )
+        };
         assert_eq!(
             model_rows("claude", Target::Task(Task::Code), &draft, Some(&d)),
             [
-                model("default", Mark::Plain, true, false),
-                model("opus", Mark::Plain, true, false),
-                model("sonnet", Mark::Plain, true, false),
-                model("fable", Mark::Plain, true, false),
+                labeled("default (CLI picks)", "default"),
+                labeled("Opus 5.5", "opus"),
+                labeled("Sonnet 5.5", "sonnet"),
+                labeled("Haiku 5.5", "haiku"),
+                labeled("Fable 5.1", "fable"),
+                custom.clone(),
+            ]
+        );
+        assert_eq!(
+            model_rows("gemini", Target::Task(Task::Code), &draft, Some(&d)),
+            [
+                labeled("default (auto)", "default"),
+                labeled("Flash 3.5", "gemini-3.5-flash"),
+                labeled("Flash Lite 3.5", "gemini-3.5-flash-lite"),
+                labeled("Pro 3.1 (preview)", "gemini-3.1-pro-preview"),
                 custom.clone(),
             ]
         );
@@ -875,15 +901,73 @@ mod tests {
         );
     }
 
+    // The saved value stays the CLI value: a saved alias or id loads on its
+    // labeled row, and committing a labeled row yields the value.
+    #[test]
+    fn a_saved_value_is_current_on_its_labeled_row() {
+        let d = detection(vec![
+            state("claude", Status::Available, &[]),
+            state("gemini", Status::Available, &[]),
+        ]);
+        let current = |engine: &str, saved: &str| {
+            let mut draft = AiConfig::default();
+            assign(&mut draft, Task::Code, engine, Some(saved));
+            model_rows(engine, Target::Task(Task::Code), &draft, Some(&d))
+                .into_iter()
+                .filter(|r| r.current)
+                .map(|r| (r.label, r.key))
+                .collect::<Vec<_>>()
+        };
+        let key = |v: &str| PickKey::Model(v.to_owned());
+        assert_eq!(
+            current("claude", "opus"),
+            [("Opus 5.5".into(), key("opus"))]
+        );
+        assert_eq!(
+            current("claude", "default"),
+            [("default (CLI picks)".into(), key("default"))]
+        );
+        assert_eq!(
+            current("gemini", "gemini-3.5-flash"),
+            [("Flash 3.5".into(), key("gemini-3.5-flash"))]
+        );
+    }
+
+    // A saved value outside the catalog (a retired id, a full model id) is not
+    // an error: it is listed under its own value, before `custom…`.
+    #[test]
+    fn a_saved_value_outside_the_catalog_is_a_custom_row() {
+        let d = detection(vec![
+            state("claude", Status::Available, &[]),
+            state("gemini", Status::Available, &[]),
+        ]);
+        for (engine, saved) in [
+            ("gemini", "gemini-2.5-flash"),
+            ("claude", "claude-opus-4-1"),
+        ] {
+            let mut draft = AiConfig::default();
+            assign(&mut draft, Task::Code, engine, Some(saved));
+            let rows = model_rows(engine, Target::Task(Task::Code), &draft, Some(&d));
+            let n = rows.len();
+            assert_eq!(
+                rows[n - 2],
+                model(saved, Mark::Plain, true, true),
+                "{engine}"
+            );
+            assert_eq!(rows[n - 1].key, PickKey::Custom, "{engine}");
+            assert_eq!(rows.iter().filter(|r| r.current).count(), 1, "{engine}");
+        }
+    }
+
     #[test]
     fn an_assigned_custom_cli_model_is_listed_before_custom() {
         let mut draft = AiConfig::default();
-        assign(&mut draft, Task::Code, "gemini", Some("gem-exp"));
-        assign(&mut draft, Task::Chat, "gemini", Some("default"));
-        assign(&mut draft, Task::Review, "gemini", Some("gem-exp"));
-        let d = detection(vec![state("gemini", Status::Available, &[])]);
+        assign(&mut draft, Task::Code, "codex", Some("gem-exp"));
+        assign(&mut draft, Task::Chat, "codex", Some("default"));
+        assign(&mut draft, Task::Review, "codex", Some("gem-exp"));
+        let d = detection(vec![state("codex", Status::Available, &[])]);
         assert_eq!(
-            model_rows("gemini", Target::Task(Task::Code), &draft, Some(&d)),
+            model_rows("codex", Target::Task(Task::Code), &draft, Some(&d)),
             [
                 model("default", Mark::Plain, true, false),
                 model("gem-exp", Mark::Plain, true, true),
@@ -905,9 +989,9 @@ mod tests {
                 .map(|r| r.current)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(current(&draft), [false, true, false, false, false]);
+        assert_eq!(current(&draft), [false, true, false, false, false, false]);
         assign(&mut draft, Task::Chat, "claude", Some("sonnet"));
-        assert_eq!(current(&draft), [false; 5]);
+        assert_eq!(current(&draft), [false; 6]);
     }
 
     // --- engine_rows -----------------------------------------------------
@@ -1036,7 +1120,7 @@ mod tests {
         );
         assert_eq!(
             currents(model_rows("claude", Target::All, &draft, Some(&d))),
-            [false, true, false, false, false]
+            [false, true, false, false, false, false]
         );
     }
 

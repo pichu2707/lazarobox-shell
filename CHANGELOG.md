@@ -33,6 +33,17 @@ baseline.
   accepts the same options. The launcher template moved from
   `packaging/lazarobox.desktop` into the binary.
 
+- AI model picker: CLI models now show readable labels while the saved value
+  stays the CLI value, so `config.toml` is unchanged. claude lists `default
+  (CLI picks)`, `Opus 5.5`, `Sonnet 5.5`, `Haiku 5.5` and `Fable 5.1` (the
+  CLI aliases `opus`, `sonnet`, `haiku` and `fable`). gemini lists `default
+  (auto)`, `Flash 3.5`, `Flash Lite 3.5` and `Pro 3.1 (preview)` as explicit
+  ids (`gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`)
+  instead of the CLI aliases, which may point at retired 2.5 models. A saved
+  value outside the list, such as `gemini-2.5-flash`, still loads and is shown
+  as a custom value. Task rows and the chat statusline keep showing the saved
+  value (`claude › opus`).
+
 ### Fixed
 
 - AI chat with the `gemini` CLI no longer ends with `the engine stopped
