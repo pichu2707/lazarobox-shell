@@ -56,6 +56,58 @@ pub fn openai_models(body: &[u8], owner: Option<&str>) -> Option<Vec<String>> {
     Some(model_names(&items, "id"))
 }
 
+/// Most codex models kept.
+const MAX_CODEX_MODELS: usize = 64;
+
+/// The listed models of a `codex debug models` output as `(label, slug)`,
+/// ordered by the account's priority. Only `visibility == "list"` entries
+/// count. A slug must be usable as a CLI model value (same rules as the chat
+/// adapters: no leading `-`, no whitespace or control characters, at most
+/// `MAX_NAME` characters) and not `default`; later duplicates are dropped.
+/// The label is the display name, or the slug when that is empty. Anything
+/// malformed yields an empty list.
+pub fn codex_models(raw: &str) -> Vec<(String, String)> {
+    let Some(items) = array_field(raw.as_bytes(), "models") else {
+        return Vec::new();
+    };
+    let mut found: Vec<(i64, String, String)> = items
+        .iter()
+        .filter(|item| item.get("visibility").and_then(Value::as_str) == Some("list"))
+        .filter_map(|item| {
+            let slug = item.get("slug")?.as_str()?;
+            if !valid_slug(slug) {
+                return None;
+            }
+            let label = item
+                .get("display_name")
+                .and_then(Value::as_str)
+                .map(sanitize)
+                .map(|l| l.trim().chars().take(MAX_NAME).collect::<String>())
+                .filter(|l| !l.is_empty())
+                .unwrap_or_else(|| slug.to_owned());
+            let priority = item.get("priority").and_then(Value::as_i64);
+            Some((priority.unwrap_or(i64::MAX), label, slug.to_owned()))
+        })
+        .collect();
+    // Stable: equal priorities keep the order codex printed.
+    found.sort_by_key(|(priority, ..)| *priority);
+    let mut seen = std::collections::HashSet::new();
+    found
+        .into_iter()
+        .filter(|(_, _, slug)| seen.insert(slug.clone()))
+        .map(|(_, label, slug)| (label, slug))
+        .take(MAX_CODEX_MODELS)
+        .collect()
+}
+
+fn valid_slug(slug: &str) -> bool {
+    !slug.is_empty()
+        && slug != "default"
+        && slug.chars().count() <= MAX_NAME
+        && !slug.starts_with('-')
+        && !slug.chars().any(|c| c.is_control() || c.is_whitespace())
+}
+
 /// Longest model name kept, in characters.
 const MAX_NAME: usize = 128;
 
@@ -81,6 +133,99 @@ mod tests {
 
     fn strs(v: &[&str]) -> Option<Vec<String>> {
         Some(v.iter().map(|s| s.to_string()).collect())
+    }
+
+    const CODEX_FIXTURE: &str = include_str!("../../../tests/fixtures/codex/debug-models.json");
+
+    fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
+        v.iter()
+            .map(|(l, s)| (l.to_string(), s.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn codex_fixture_keeps_listed_models_by_priority() {
+        assert_eq!(
+            codex_models(CODEX_FIXTURE),
+            pairs(&[
+                ("GPT-6.1-Sol", "gpt-6.1-sol"),
+                ("GPT-6-Astra", "gpt-6-astra"),
+                ("GPT-6-Sol", "gpt-6-sol"),
+                ("GPT-6-Luna", "gpt-6-luna"),
+                ("GPT-5.6-Sol", "gpt-5.6-sol"),
+                ("GPT-5.6-Terra", "gpt-5.6-terra"),
+                ("GPT-5.6-Luna", "gpt-5.6-luna"),
+            ])
+        );
+    }
+
+    #[test]
+    fn codex_sorts_by_priority_and_keeps_ties_stable() {
+        let raw = r#"{"models":[
+            {"slug":"c","display_name":"C","visibility":"list","priority":3},
+            {"slug":"a","display_name":"A","visibility":"list","priority":1},
+            {"slug":"b2","display_name":"B2","visibility":"list","priority":2},
+            {"slug":"b1","display_name":"B1","visibility":"list","priority":2},
+            {"slug":"z","display_name":"Z","visibility":"list"}]}"#;
+        let slugs: Vec<_> = codex_models(raw).into_iter().map(|(_, s)| s).collect();
+        assert_eq!(slugs, ["a", "b2", "b1", "c", "z"]);
+    }
+
+    #[test]
+    fn codex_label_falls_back_to_the_slug() {
+        let raw = r#"{"models":[
+            {"slug":"a","visibility":"list","priority":1},
+            {"slug":"b","display_name":"\u001b[31m","visibility":"list","priority":2}]}"#;
+        assert_eq!(codex_models(raw), pairs(&[("a", "a"), ("b", "b")]));
+    }
+
+    #[test]
+    fn codex_drops_invalid_hidden_and_duplicate_slugs() {
+        let long = "x".repeat(129);
+        let raw = format!(
+            r#"{{"models":[
+            {{"slug":"-flag","display_name":"F","visibility":"list","priority":1}},
+            {{"slug":"has space","display_name":"S","visibility":"list","priority":2}},
+            {{"slug":"tab\there","display_name":"T","visibility":"list","priority":3}},
+            {{"slug":"nl\n","display_name":"N","visibility":"list","priority":4}},
+            {{"slug":"","display_name":"E","visibility":"list","priority":5}},
+            {{"slug":"default","display_name":"D","visibility":"list","priority":6}},
+            {{"slug":"{long}","display_name":"L","visibility":"list","priority":7}},
+            {{"slug":"hid","display_name":"H","visibility":"hide","priority":8}},
+            {{"slug":"nov","display_name":"V","priority":9}},
+            {{"slug":7,"display_name":"Num","visibility":"list","priority":10}},
+            {{"slug":"ok","display_name":"OK","visibility":"list","priority":11}},
+            {{"slug":"ok","display_name":"Again","visibility":"list","priority":12}},
+            "junk", null]}}"#
+        );
+        assert_eq!(codex_models(&raw), pairs(&[("OK", "ok")]));
+    }
+
+    #[test]
+    fn codex_caps_the_list_at_sixty_four() {
+        let items: Vec<_> = (0..100)
+            .map(|i| format!(r#"{{"slug":"m{i}","display_name":"M{i}","visibility":"list","priority":{i}}}"#))
+            .collect();
+        let raw = format!(r#"{{"models":[{}]}}"#, items.join(","));
+        let got = codex_models(&raw);
+        assert_eq!(got.len(), 64);
+        assert_eq!(got[63].1, "m63");
+    }
+
+    #[test]
+    fn codex_malformed_inputs_are_empty() {
+        for raw in [
+            "",
+            "not json",
+            "[]",
+            "{}",
+            r#"{"models":{}}"#,
+            r#"{"models":"x"}"#,
+            r#"{"models":[]}"#,
+            r#"{"models":[{"slug":"a""#,
+        ] {
+            assert_eq!(codex_models(raw), Vec::<(String, String)>::new(), "{raw}");
+        }
     }
 
     #[test]
