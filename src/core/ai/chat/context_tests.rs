@@ -139,11 +139,11 @@ fn a_block_larger_than_the_cap_still_keeps_the_newest_message() {
     assert_eq!(request.messages.len(), 1);
 }
 
-/// Ready, but on an engine whose adapter cannot carry the block (opencode
+/// Ready, but on an engine whose adapter cannot carry the block (lmstudio
 /// has none).
 fn cli() -> Availability {
     Availability::Ready {
-        engine: "opencode".into(),
+        engine: "lmstudio".into(),
         model: None,
     }
 }

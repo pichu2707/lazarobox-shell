@@ -30,6 +30,7 @@ use crate::core::{
             codex::CodexDecoder,
             engine::{ChatError, ChatRequest, StreamEvent},
             gemini::GeminiDecoder,
+            opencode::OpencodeDecoder,
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
         jail::JailSupport,
@@ -79,6 +80,7 @@ pub fn fresh_decoder(wire: Wire) -> Box<dyn StreamDecoder + Send> {
         Wire::ClaudeStreamJson => Box::new(ClaudeDecoder::new()),
         Wire::CodexJsonl => Box::new(CodexDecoder::new()),
         Wire::GeminiStreamJson => Box::new(GeminiDecoder::new()),
+        Wire::OpencodeJson => Box::new(OpencodeDecoder::new()),
     }
 }
 

@@ -98,6 +98,7 @@ pub enum Cli {
     Claude,
     Codex,
     Gemini,
+    Opencode,
 }
 
 /// What a script's first line names as its interpreter.
@@ -277,6 +278,7 @@ const SHARED_IN_HOME: &[&str] = &[
 const CREDENTIAL_DIRS: &[&str] = &[
     ".claude",
     ".gemini",
+    ".local/share/opencode",
     ".codex",
     ".aws",
     ".kube",
@@ -291,6 +293,7 @@ impl Cli {
             Cli::Claude => ".claude",
             Cli::Codex => ".codex",
             Cli::Gemini => ".gemini",
+            Cli::Opencode => ".local/share/opencode",
         }
     }
 }
@@ -430,23 +433,36 @@ pub fn jail_spec_with(
         return Err(SpecError::RootTooBroad(bad.clone()));
     }
     let resolved = |path: PathBuf| resolve(&path).unwrap_or(path);
-    let (state, state_file) = match layout.cli {
+    // The folders the CLI keeps its login and state in (read and write), and
+    // the one file beside them, if any.
+    let (states, state_file) = match layout.cli {
         Cli::Claude => (
-            layout.home.join(".claude"),
+            vec![layout.home.join(".claude")],
             Some(layout.home.join(".claude.json")),
         ),
         Cli::Codex => (
-            layout
-                .codex_home
-                .clone()
-                .unwrap_or_else(|| layout.home.join(".codex")),
+            vec![
+                layout
+                    .codex_home
+                    .clone()
+                    .unwrap_or_else(|| layout.home.join(".codex")),
+            ],
             None,
         ),
-        Cli::Gemini => (layout.home.join(".gemini"), None),
+        Cli::Gemini => (vec![layout.home.join(".gemini")], None),
+        // Its login and logs; the config and state folders are redirected
+        // into the turn's private folder, and the cache holds the model list.
+        Cli::Opencode => (
+            vec![
+                layout.home.join(".local/share/opencode"),
+                layout.home.join(".cache/opencode"),
+            ],
+            None,
+        ),
     };
-    let state = resolved(state);
+    let states: Vec<PathBuf> = states.into_iter().map(resolved).collect();
     let state_file = state_file.map(resolved);
-    for path in [Some(&state), state_file.as_ref()].into_iter().flatten() {
+    for path in states.iter().chain(state_file.as_ref()) {
         if too_broad(path, &homes, layout.cli) {
             return Err(SpecError::RootTooBroad(path.clone()));
         }
@@ -490,7 +506,9 @@ pub fn jail_spec_with(
             push_unique(&mut spec.ro, dir.clone());
         }
     }
-    push_unique(&mut spec.rw, state);
+    for state in states {
+        push_unique(&mut spec.rw, state);
+    }
     push_unique(&mut spec.rw, layout.tmp.clone());
     for file in [
         "/proc/cpuinfo",

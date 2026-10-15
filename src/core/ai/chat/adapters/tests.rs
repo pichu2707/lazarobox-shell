@@ -41,12 +41,13 @@ fn http(invocation: Invocation) -> (Wire, u16, &'static str, Value) {
 }
 
 #[test]
-fn only_ollama_claude_codex_and_gemini_have_an_adapter_so_far() {
+fn only_ollama_and_the_cli_engines_have_an_adapter_so_far() {
     assert_eq!(adapter_for("ollama"), Some(Adapter::Ollama));
     assert_eq!(adapter_for("claude"), Some(Adapter::Claude));
     assert_eq!(adapter_for("codex"), Some(Adapter::Codex));
     assert_eq!(adapter_for("gemini"), Some(Adapter::Gemini));
-    for id in ["opencode", "lmstudio", "llamacpp", "vllm", "nope"] {
+    assert_eq!(adapter_for("opencode"), Some(Adapter::Opencode));
+    for id in ["lmstudio", "llamacpp", "vllm", "nope"] {
         assert_eq!(adapter_for(id), None, "{id}");
     }
 }
@@ -145,7 +146,7 @@ fn without_a_block_the_system_message_is_the_prompt_alone() {
 }
 
 #[test]
-fn only_ollama_claude_codex_and_gemini_carry_the_memory_block_so_far() {
+fn only_ollama_and_the_cli_engines_carry_the_memory_block_so_far() {
     assert!(Adapter::Ollama.carries_memory());
     assert!(carries_memory("ollama"));
     assert!(Adapter::Claude.carries_memory());
@@ -154,7 +155,9 @@ fn only_ollama_claude_codex_and_gemini_carry_the_memory_block_so_far() {
     assert!(carries_memory("codex"));
     assert!(Adapter::Gemini.carries_memory());
     assert!(carries_memory("gemini"));
-    for id in ["opencode", "lmstudio", "nope"] {
+    assert!(Adapter::Opencode.carries_memory());
+    assert!(carries_memory("opencode"));
+    for id in ["lmstudio", "nope"] {
         assert!(!carries_memory(id), "{id}");
     }
 }
@@ -217,6 +220,7 @@ struct Process {
     stdin: String,
     jail: JailPolicy,
     tmp_file: Option<TmpFile>,
+    env: Vec<JobEnv>,
 }
 
 fn process(invocation: Invocation) -> Process {
@@ -228,6 +232,7 @@ fn process(invocation: Invocation) -> Process {
         stdin,
         jail,
         tmp_file,
+        env,
     }) = invocation
     else {
         panic!("a process invocation expected: {invocation:?}");
@@ -240,6 +245,7 @@ fn process(invocation: Invocation) -> Process {
         stdin: String::from_utf8(stdin).expect("stdin is text"),
         jail,
         tmp_file,
+        env,
     }
 }
 
@@ -812,4 +818,185 @@ fn a_gemini_message_cannot_forge_a_turn_boundary() {
         .filter(|l| *l == "User:" || *l == "Assistant:")
         .collect();
     assert_eq!(labels, ["User:", "Assistant:", "User:"]);
+}
+
+fn opencode_request(model: Option<&str>) -> ChatRequest {
+    let mut req = request("be brief");
+    req.engine = "opencode".into();
+    req.model = model.map(str::to_owned);
+    req
+}
+
+/// The argv every opencode turn has, up to the model flag. The prompt is on
+/// stdin, so `run` gets no message.
+fn opencode_argv(model: Option<&str>) -> Vec<String> {
+    let mut argv = strings(&[
+        "--pure",
+        "run",
+        "--format",
+        "json",
+        "--agent",
+        "lazarobox-chat",
+    ]);
+    argv.extend(model.map(|m| format!("--model={m}")));
+    argv
+}
+
+fn env_of<'a>(p: &'a Process, name: &str) -> Option<&'a EnvValue> {
+    p.env.iter().find(|e| e.name == name).map(|e| &e.value)
+}
+
+#[test]
+fn opencode_runs_the_cli_jail_required_with_the_opencode_decoder() {
+    let p = process(Adapter::Opencode.build(&opencode_request(None)));
+    assert_eq!(p.binary, "opencode");
+    assert_eq!(p.cli, Cli::Opencode);
+    assert_eq!(p.wire, Wire::OpencodeJson);
+    assert_eq!(p.jail, JailPolicy::Required);
+    assert_eq!(p.tmp_file, None);
+}
+
+#[test]
+fn the_opencode_argv_is_exactly_the_pinned_list() {
+    let p = process(Adapter::Opencode.build(&opencode_request(Some("anthropic/claude-haiku-4-5"))));
+    assert_eq!(p.args, opencode_argv(Some("anthropic/claude-haiku-4-5")));
+}
+
+#[test]
+fn opencode_default_model_and_no_model_omit_the_flag() {
+    for model in [None, Some("default"), Some("")] {
+        let p = process(Adapter::Opencode.build(&opencode_request(model)));
+        assert_eq!(p.args, opencode_argv(None), "{model:?}");
+    }
+}
+
+#[test]
+fn opencode_refuses_a_model_that_could_be_another_option() {
+    for model in ["-c", "--auto", "-", "a b", "a\nb"] {
+        let built = Adapter::Opencode.build(&opencode_request(Some(model)));
+        assert_eq!(
+            built,
+            Invocation::Refused("invalid model name"),
+            "{model:?}"
+        );
+    }
+}
+
+#[test]
+fn opencode_never_gets_a_flag_that_widens_what_it_may_do() {
+    let p = process(Adapter::Opencode.build(&opencode_request(Some("a/b"))));
+    for forbidden in [
+        "--auto",
+        "--attach",
+        "--share",
+        "--continue",
+        "-c",
+        "--session",
+        "-s",
+        "--fork",
+        "--file",
+        "-f",
+        "--dir",
+        "--command",
+        "--interactive",
+        "-i",
+        "--thinking",
+    ] {
+        assert!(p.args.iter().all(|a| a != forbidden), "{forbidden}");
+    }
+    // No positional message: argv shows in `ps`.
+    assert_eq!(p.args.iter().filter(|a| !a.starts_with('-')).count(), 3);
+}
+
+#[test]
+fn every_opencode_tool_is_denied_by_the_inline_config() {
+    let p = process(Adapter::Opencode.build(&opencode_request(None)));
+    let Some(EnvValue::Literal(config)) = env_of(&p, "OPENCODE_CONFIG_CONTENT") else {
+        panic!("an inline config expected: {:?}", p.env);
+    };
+    let config: Value = serde_json::from_str(config).expect("the inline config is JSON");
+    assert_eq!(config["permission"], json!({"*": "deny"}));
+    let agent = &config["agent"]["lazarobox-chat"];
+    assert_eq!(agent["permission"], json!({"*": "deny"}));
+    assert_eq!(agent["mode"], "primary");
+    assert!(agent["prompt"].as_str().is_some_and(|p| !p.is_empty()));
+    // The agent we run is the one the argv names.
+    assert!(p.args.iter().any(|a| a == "lazarobox-chat"));
+    assert_eq!(config["lsp"], false);
+    assert_eq!(config["share"], "disabled");
+    assert_eq!(config["snapshot"], false);
+}
+
+#[test]
+fn opencode_reads_nothing_of_the_users_setup() {
+    let p = process(Adapter::Opencode.build(&opencode_request(None)));
+    for name in [
+        "OPENCODE_PURE",
+        "OPENCODE_DISABLE_PROJECT_CONFIG",
+        "OPENCODE_DISABLE_CLAUDE_CODE",
+        "OPENCODE_DISABLE_EXTERNAL_SKILLS",
+        "OPENCODE_DISABLE_AUTOUPDATE",
+    ] {
+        assert_eq!(env_of(&p, name), Some(&EnvValue::Literal("1")), "{name}");
+    }
+    // Config, state and the session database live in the turn's private
+    // folder, which is wiped after the turn.
+    for name in ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "OPENCODE_DB"] {
+        assert!(
+            matches!(env_of(&p, name), Some(EnvValue::InTmp(_))),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn the_other_clis_set_no_environment() {
+    for (engine, build) in [
+        ("claude", Adapter::Claude),
+        ("codex", Adapter::Codex),
+        ("gemini", Adapter::Gemini),
+    ] {
+        let mut req = request("be brief");
+        req.engine = engine.into();
+        assert_eq!(process(build.build(&req)).env, vec![], "{engine}");
+    }
+}
+
+#[test]
+fn the_opencode_instructions_block_comes_first_on_stdin_and_never_in_argv() {
+    let mut req = opencode_request(None);
+    req.system = "-x; touch /tmp/x $(id) | cat".into();
+    req.memory = Some(BLOCK.into());
+    let p = process(Adapter::Opencode.build(&req));
+    assert_eq!(
+        p.stdin,
+        format!(
+            "Instructions:\n-x; touch /tmp/x $(id) | cat\n\n{BLOCK}\n\nUser:\nhi\n\nAssistant:\nhello\n\nUser:\nand now?"
+        )
+    );
+    assert_eq!(p.args, opencode_argv(None));
+    for value in p.env.iter().filter_map(|e| match &e.value {
+        EnvValue::Literal(v) => Some(*v),
+        EnvValue::InTmp(_) => None,
+    }) {
+        assert!(!value.contains("touch"), "{value}");
+        assert!(!value.contains("project-memory"), "{value}");
+    }
+}
+
+#[test]
+fn a_single_opencode_message_follows_the_instructions_as_it_is() {
+    let mut req = opencode_request(None);
+    req.messages = vec![message(Role::User, "--auto")];
+    let p = process(Adapter::Opencode.build(&req));
+    assert_eq!(p.stdin, "Instructions:\nbe brief\n\n--auto");
+    assert!(p.args.iter().all(|a| a != "--auto"));
+}
+
+#[test]
+fn opencode_without_a_system_prompt_has_no_instructions_block() {
+    let mut req = opencode_request(None);
+    req.system = String::new();
+    req.messages = vec![message(Role::User, "hi")];
+    assert_eq!(process(Adapter::Opencode.build(&req)).stdin, "hi");
 }

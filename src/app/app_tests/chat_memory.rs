@@ -1118,7 +1118,7 @@ fn engine_is(a: &mut App, engine: &str) {
 #[test]
 fn the_memory_line_is_not_shown_for_an_engine_that_cannot_carry_the_block() {
     let (mut a, _) = opened(true);
-    engine_is(&mut a, "opencode");
+    engine_is(&mut a, "lmstudio");
     project(&mut a);
     context(&mut a, Some(block(3)));
     assert_eq!(head(&a), None, "the UI never claims notes the model lacks");
@@ -1127,7 +1127,7 @@ fn the_memory_line_is_not_shown_for_an_engine_that_cannot_carry_the_block() {
 #[test]
 fn switching_to_an_engine_that_carries_it_shows_the_line_and_back_hides_it() {
     let (mut a, _) = opened(true);
-    engine_is(&mut a, "opencode");
+    engine_is(&mut a, "lmstudio");
     project(&mut a);
     context(&mut a, Some(block(3)));
     assert_eq!(head(&a), None);
@@ -1142,7 +1142,7 @@ fn switching_to_an_engine_that_carries_it_shows_the_line_and_back_hides_it() {
     other.set(
         Task::Chat,
         Assignment {
-            engine: Some("opencode".into()),
+            engine: Some("lmstudio".into()),
             model: None,
         },
     );

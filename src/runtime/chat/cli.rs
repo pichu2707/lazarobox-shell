@@ -39,7 +39,7 @@ use super::fresh_decoder;
 use crate::{
     core::ai::{
         chat::{
-            adapters::Job,
+            adapters::{EnvValue, Job},
             cli::{Exit, STDERR_CAP, verdict},
             engine::{ChatError, StreamEvent},
             stream::StreamDecoder,
@@ -94,10 +94,12 @@ pub struct CliEnv {
 
 /// Variables the child never inherits: the agents it could be talked into
 /// using (ssh, gpg, askpass helpers) and the state of an outer Claude Code
-/// session, which would make the CLI think it runs inside one. Settings
+/// session, which would make the CLI think it runs inside one, and the
+/// opencode variables that would load a config, a permission rule set or a
+/// config folder of the user's into the chat. Settings
 /// (`ANTHROPIC_*`, proxy, certificates, XDG, `HOME`, `PATH`, the D-Bus
 /// address a keyring login needs) are kept.
-const SCRUBBED: [&str; 8] = [
+const SCRUBBED: [&str; 11] = [
     "SSH_AUTH_SOCK",
     "SSH_AGENT_PID",
     "SSH_ASKPASS",
@@ -106,6 +108,9 @@ const SCRUBBED: [&str; 8] = [
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDE_CODE_SSE_PORT",
+    "OPENCODE_CONFIG",
+    "OPENCODE_CONFIG_DIR",
+    "OPENCODE_PERMISSION",
 ];
 
 impl CliEnv {
@@ -498,6 +503,8 @@ struct Plan {
     program: PathBuf,
     argv: Vec<OsString>,
     dirs: Dirs,
+    /// The job's variables, resolved against the turn's folders.
+    env: Vec<(OsString, OsString)>,
     /// Said to the user before the turn starts, when the CLI runs without the
     /// jail it would normally have.
     notice: Option<String>,
@@ -522,6 +529,21 @@ fn full_args(job: &Job, dirs: &Dirs) -> io::Result<Vec<OsString>> {
     Ok(argv)
 }
 
+/// The variables of `job`: constants as they are, and a temp value as a path
+/// inside the turn's private temp folder (which the jail lets the CLI write).
+fn job_env(job: &Job, dirs: &Dirs) -> Vec<(OsString, OsString)> {
+    job.env
+        .iter()
+        .map(|var| {
+            let value = match &var.value {
+                EnvValue::Literal(text) => OsString::from(text),
+                EnvValue::InTmp(name) => dirs.tmp.join(name).into_os_string(),
+            };
+            (OsString::from(var.name), value)
+        })
+        .collect()
+}
+
 /// Decides how the CLI starts. `Err` is the final event of a turn that never
 /// spawns anything.
 fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
@@ -540,6 +562,7 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
         .ok_or_else(|| StreamEvent::Error(ChatError::Failed(CANNOT_PREPARE.into())))?;
     let argv = full_args(job, &dirs)
         .map_err(|_| StreamEvent::Error(ChatError::Failed(CANNOT_PREPARE.into())))?;
+    let vars = job_env(job, &dirs);
     let reason = match (how, env.jail) {
         (Launch::Jailed, _) => match jailed(env, job, &argv, &binary, &dirs) {
             Some((program, argv)) => {
@@ -547,6 +570,7 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
                     program,
                     argv,
                     dirs,
+                    env: vars,
                     notice: None,
                 });
             }
@@ -564,6 +588,7 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
         program: binary,
         argv,
         dirs,
+        env: vars,
         notice: Some(format!(
             "{} runs without the jail here: {reason}",
             job.binary
@@ -668,7 +693,9 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
     }
     // Declared in this order so the group guard drops before the child, and
     // the private folders last.
-    let mut child = match spawn(&plan.program, &plan.argv, &plan.dirs, &env.inject).await {
+    // The job's variables come last, so they win over an inherited one.
+    let vars: Vec<_> = env.inject.iter().chain(&plan.env).cloned().collect();
+    let mut child = match spawn(&plan.program, &plan.argv, &plan.dirs, &vars).await {
         Ok(child) => child,
         Err(e) => {
             let text = format!("could not start {}: {}", job.binary, e.kind());

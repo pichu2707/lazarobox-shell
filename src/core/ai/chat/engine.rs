@@ -120,7 +120,7 @@ pub fn availability(
 const GATED_OFF: &[&str] = &[];
 
 /// CLIs that must never start without a working jail.
-const JAIL_REQUIRED: &[&str] = &["codex", "gemini"];
+const JAIL_REQUIRED: &[&str] = &["codex", "gemini", "opencode"];
 
 /// `availability` with an explicit list of CLIs whose manual check failed and
 /// the test that says which engines have an adapter (so the jail and gate

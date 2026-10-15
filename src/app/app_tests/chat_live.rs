@@ -880,8 +880,8 @@ fn a_model_that_was_not_downloaded_needs_a_download() {
 }
 
 #[test]
-fn opencode_is_not_supported_in_chat() {
-    let mut a = undetected_chat(assigned("opencode"));
+fn lmstudio_is_not_supported_in_chat() {
+    let mut a = undetected_chat(assigned("lmstudio"));
     a.update(AppEvent::EnginesDetected(detection(&[])));
     assert!(
         guidance_of(&a)
@@ -892,11 +892,11 @@ fn opencode_is_not_supported_in_chat() {
 }
 
 #[test]
-fn a_cli_without_an_adapter_is_not_supported_in_chat_yet() {
-    let mut a = undetected_chat(assigned("opencode"));
+fn an_engine_without_an_adapter_is_not_supported_in_chat_yet() {
+    let mut a = undetected_chat(assigned("lmstudio"));
     a.update(AppEvent::EnginesDetected(Detection {
         engines: vec![EngineState {
-            id: "opencode",
+            id: "lmstudio",
             status: Status::Available,
             models: vec![],
             version: None,
@@ -904,7 +904,7 @@ fn a_cli_without_an_adapter_is_not_supported_in_chat_yet() {
     }));
     assert_eq!(
         guidance_of(&a).as_deref(),
-        Some("opencode: not supported in chat yet")
+        Some("lmstudio: not supported in chat yet")
     );
     assert_eq!(ask(&mut a, "hi"), vec![]);
     assert_eq!(composer(&a), "hi");
@@ -947,12 +947,12 @@ fn claude_chats_with_or_without_a_jail() {
 }
 
 #[test]
-fn a_cli_without_an_adapter_stays_unsupported_even_with_a_jail() {
-    let mut a = undetected_chat(assigned("opencode")).with_jail(working_jail());
-    a.update(cli_detected("opencode"));
+fn an_engine_without_an_adapter_stays_unsupported_even_with_a_jail() {
+    let mut a = undetected_chat(assigned("lmstudio")).with_jail(working_jail());
+    a.update(cli_detected("lmstudio"));
     assert_eq!(
         guidance_of(&a).as_deref(),
-        Some("opencode: not supported in chat yet")
+        Some("lmstudio: not supported in chat yet")
     );
     assert_eq!(ask(&mut a, "hi"), vec![]);
 }

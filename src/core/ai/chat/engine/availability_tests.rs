@@ -112,32 +112,10 @@ fn a_failed_detection_run_is_undetected_unknown() {
 }
 
 #[test]
-fn opencode_has_no_adapter_even_when_available() {
-    let c = cfg(Task::Chat, Some("opencode"), Some("default"));
-    let d = detected(vec![state("opencode", Status::Available, &[])]);
-    assert_eq!(
-        availability(&c, Some(&d), JAIL),
-        Availability::Unsupported {
-            engine: "opencode".into()
-        }
-    );
-    assert_eq!(
-        availability(&c, None, JAIL),
-        Availability::Unsupported {
-            engine: "opencode".into()
-        }
-    );
-}
-
-#[test]
-fn codex_and_gemini_need_a_jail() {
-    for id in ["codex", "gemini"] {
+fn codex_gemini_and_opencode_need_a_jail() {
+    for id in ["codex", "gemini", "opencode"] {
         let c = cfg(Task::Chat, Some(id), Some("default"));
-        let d = detected(vec![state(
-            if id == "codex" { "codex" } else { "gemini" },
-            Status::Available,
-            &[],
-        )]);
+        let d = detected(vec![state(id, Status::Available, &[])]);
         assert_eq!(
             availability_with(&c, Some(&d), NO_JAIL, &[], &|_| true),
             Availability::NoJail { engine: id.into() }
@@ -151,7 +129,7 @@ fn codex_and_gemini_need_a_jail() {
 
 #[test]
 fn engines_without_an_adapter_are_unsupported_whatever_the_jail() {
-    for id in ["lmstudio", "llamacpp", "vllm", "opencode"] {
+    for id in ["lmstudio", "llamacpp", "vllm"] {
         let c = cfg(Task::Chat, Some(id), Some("default"));
         let d = detected(vec![state(id, Status::Available, &["default"])]);
         for jail in [NO_JAIL, JAIL] {
@@ -294,12 +272,12 @@ fn it_never_switches_engine() {
 }
 
 #[test]
-fn only_ollama_claude_codex_and_gemini_have_an_adapter_so_far() {
+fn only_the_local_servers_but_ollama_have_no_adapter_so_far() {
     let mut without: Vec<_> = CATALOG
         .iter()
         .filter(|e| !has_adapter(e.id))
         .map(|e| e.id)
         .collect();
     without.sort_unstable();
-    assert_eq!(without, ["llamacpp", "lmstudio", "opencode", "vllm"]);
+    assert_eq!(without, ["llamacpp", "lmstudio", "vllm"]);
 }

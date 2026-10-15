@@ -1046,3 +1046,74 @@ fn a_library_folder_or_data_file_must_be_canonical() {
         );
     }
 }
+
+// ---- opencode ----
+
+fn native_opencode() -> CliLayout {
+    layout(Cli::Opencode, "/home/u/.opencode/bin/opencode", None)
+}
+
+#[test]
+fn opencode_gets_its_own_binary_folder_and_its_data_and_cache_folders() {
+    let spec = jail_spec(&native_opencode()).unwrap();
+    assert_eq!(spec.rx, paths(&["/home/u/.opencode/bin"]));
+    assert!(spec.rw.contains(&p("/home/u/.local/share/opencode")));
+    assert!(spec.rw.contains(&p("/home/u/.cache/opencode")));
+    assert!(spec.rw.contains(&native_opencode().tmp));
+    // The config folder is never read (the chat points opencode away from it),
+    // and no other tool's folder is opened.
+    let home: Vec<_> = every_path(&spec)
+        .into_iter()
+        .filter(|path| path.starts_with(HOME))
+        .collect();
+    assert_eq!(
+        home,
+        vec![
+            Path::new("/home/u/.opencode/bin"),
+            Path::new("/home/u/.local/share/opencode"),
+            Path::new("/home/u/.cache/opencode"),
+        ]
+    );
+}
+
+#[test]
+fn the_other_clis_never_get_the_opencode_login_folder() {
+    for l in [nvm_codex(), native_claude(), brew_gemini()] {
+        let spec = jail_spec(&l).unwrap();
+        assert!(
+            every_path(&spec)
+                .iter()
+                .all(|path| !path.starts_with("/home/u/.local/share/opencode")),
+            "{:?}",
+            l.cli
+        );
+    }
+    let mut codex = nvm_codex();
+    codex.codex_home = Some(p("/home/u/.local/share/opencode"));
+    assert!(matches!(jail_spec(&codex), Err(SpecError::RootTooBroad(_))));
+}
+
+#[test]
+fn opencode_never_gets_another_tools_credentials() {
+    for dir in ["/home/u/.claude", "/home/u/.codex", "/home/u/.gemini"] {
+        let mut l = native_opencode();
+        l.binary = p(&format!("{dir}/bin/opencode"));
+        assert!(
+            matches!(jail_spec(&l), Err(SpecError::RootTooBroad(_))),
+            "{dir}"
+        );
+    }
+}
+
+#[test]
+fn a_symlinked_opencode_data_folder_cannot_reach_a_broad_folder() {
+    let resolver = |path: &Path| {
+        Some(if path == Path::new("/home/u/.local/share/opencode") {
+            p("/home/u/.ssh")
+        } else {
+            path.to_path_buf()
+        })
+    };
+    let err = jail_spec_with(&native_opencode(), &resolver).unwrap_err();
+    assert_eq!(err, SpecError::RootTooBroad(p("/home/u/.ssh")));
+}

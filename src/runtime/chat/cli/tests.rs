@@ -18,7 +18,7 @@ use crate::{
     core::{
         ai::{
             chat::{
-                adapters::{Job, TmpFile, Wire},
+                adapters::{EnvValue, Job, JobEnv, TmpFile, Wire},
                 engine::{ChatError, ChatMessage, ChatRequest, Finish, Role, StreamEvent},
             },
             jail::{Backend, Cli, JailPolicy, JailSupport},
@@ -155,6 +155,7 @@ fn job(policy: JailPolicy) -> Job {
         stdin: b"hi".to_vec(),
         jail: policy,
         tmp_file: None,
+        env: Vec::new(),
     }
 }
 
@@ -585,6 +586,7 @@ fn codex_job(args: &[&str]) -> Job {
         stdin: b"hi".to_vec(),
         jail: JailPolicy::Required,
         tmp_file: None,
+        env: Vec::new(),
     }
 }
 
@@ -1349,7 +1351,95 @@ fn gemini_job(jail: JailPolicy) -> Job {
             name: "gemini-policy.toml",
             content: POLICY,
         }),
+        env: Vec::new(),
     }
+}
+
+const OPENCODE_ANSWER: &str = r#"
+printf '%s\0' "$@" > "$REC/args"
+cat > "$REC/stdin"
+env > "$REC/env"
+printf '%s\n' '{"type":"text","part":{"type":"text","text":"ok"}}'
+printf '%s\n' '{"type":"step_finish","part":{"reason":"stop"}}'
+"#;
+
+fn opencode_job() -> Job {
+    Job {
+        wire: Wire::OpencodeJson,
+        binary: "opencode",
+        cli: Cli::Opencode,
+        args: vec!["run".into()],
+        stdin: b"hi".to_vec(),
+        jail: JailPolicy::Layered,
+        tmp_file: None,
+        env: vec![
+            JobEnv {
+                name: "OPENCODE_PURE",
+                value: EnvValue::Literal("1"),
+            },
+            JobEnv {
+                name: "OPENCODE_DB",
+                value: EnvValue::InTmp("opencode.db"),
+            },
+        ],
+    }
+}
+
+fn recorded_var(lab: &Lab, name: &str) -> Option<String> {
+    lab.recorded("env")
+        .lines()
+        .find_map(|l| l.strip_prefix(&format!("{name}=")).map(str::to_owned))
+}
+
+#[tokio::test]
+async fn a_job_env_reaches_the_child_and_a_tmp_value_is_inside_the_turn_folder() {
+    let lab = lab();
+    script(&lab.bin.join("opencode"), &lab.rec, OPENCODE_ANSWER);
+    let events = run_job(&lab.env(), opencode_job()).await;
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    assert_eq!(recorded_var(&lab, "OPENCODE_PURE").as_deref(), Some("1"));
+    let tmpdir = recorded_var(&lab, "TMPDIR").expect("TMPDIR");
+    assert!(
+        PathBuf::from(&tmpdir).starts_with(lab.data.join("cli-tmp")),
+        "{tmpdir}"
+    );
+    assert_eq!(
+        recorded_var(&lab, "OPENCODE_DB"),
+        Some(format!("{tmpdir}/opencode.db"))
+    );
+}
+
+#[tokio::test]
+async fn a_job_env_wins_over_the_inherited_variable_and_the_users_opencode_setup_is_removed() {
+    let lab = lab();
+    script(&lab.bin.join("opencode"), &lab.rec, OPENCODE_ANSWER);
+    let mut env = lab.env();
+    for name in [
+        "OPENCODE_PURE",
+        "OPENCODE_CONFIG",
+        "OPENCODE_CONFIG_DIR",
+        "OPENCODE_PERMISSION",
+    ] {
+        env.inject.push((name.into(), "0".into()));
+    }
+    run_job(&env, opencode_job()).await;
+    assert_eq!(recorded_var(&lab, "OPENCODE_PURE").as_deref(), Some("1"));
+    for name in [
+        "OPENCODE_CONFIG",
+        "OPENCODE_CONFIG_DIR",
+        "OPENCODE_PERMISSION",
+    ] {
+        assert_eq!(recorded_var(&lab, name), None, "{name} must be removed");
+    }
+}
+
+#[tokio::test]
+async fn a_job_without_env_adds_nothing() {
+    let lab = lab();
+    lab.claude(GOOD);
+    run(lab.env(), request()).await;
+    assert_eq!(recorded_var(&lab, "OPENCODE_DB"), None);
+    assert_eq!(recorded_var(&lab, "OPENCODE_PURE"), None);
 }
 
 #[tokio::test]

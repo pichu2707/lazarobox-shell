@@ -21,6 +21,8 @@ pub enum Wire {
     CodexJsonl,
     /// The `-o stream-json` output of the gemini CLI.
     GeminiStreamJson,
+    /// The `--format json` output of `opencode run`.
+    OpencodeJson,
 }
 
 /// The engines that can chat. More arrive with their adapters.
@@ -30,6 +32,7 @@ pub enum Adapter {
     Claude,
     Codex,
     Gemini,
+    Opencode,
 }
 
 /// What the runtime runs for one turn.
@@ -63,6 +66,24 @@ pub struct Job {
     /// A file the runtime writes into the turn's private temp folder, and
     /// names to the CLI with a flag appended after `args`.
     pub tmp_file: Option<TmpFile>,
+    /// Variables set for the child, after the scrub of the inherited ones.
+    pub env: Vec<JobEnv>,
+}
+
+/// One variable a CLI is started with.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct JobEnv {
+    pub name: &'static str,
+    pub value: EnvValue,
+}
+
+/// The value of a [`JobEnv`]: a constant of the adapter (never user text), or
+/// a path the runtime resolves inside the turn's private temp folder.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum EnvValue {
+    Literal(&'static str),
+    /// `<turn temp folder>/<name>`. Nothing is created: the CLI does.
+    InTmp(&'static str),
 }
 
 /// A small fixed file a CLI is told to read. The content is a constant of the
@@ -83,6 +104,7 @@ pub fn adapter_for(id: &str) -> Option<Adapter> {
         "claude" => Some(Adapter::Claude),
         "codex" => Some(Adapter::Codex),
         "gemini" => Some(Adapter::Gemini),
+        "opencode" => Some(Adapter::Opencode),
         _ => None,
     }
 }
@@ -112,7 +134,11 @@ impl Adapter {
     /// stdin flips its own answer when it arrives.
     pub fn carries_memory(self) -> bool {
         match self {
-            Adapter::Ollama | Adapter::Claude | Adapter::Codex | Adapter::Gemini => true,
+            Adapter::Ollama
+            | Adapter::Claude
+            | Adapter::Codex
+            | Adapter::Gemini
+            | Adapter::Opencode => true,
         }
     }
 
@@ -131,6 +157,7 @@ impl Adapter {
             Adapter::Claude => claude_invocation(request),
             Adapter::Codex => codex_invocation(request),
             Adapter::Gemini => gemini_invocation(request),
+            Adapter::Opencode => opencode_invocation(request),
         }
     }
 }
@@ -222,6 +249,7 @@ fn claude_invocation(request: &ChatRequest) -> Invocation {
         stdin: cli_stdin(request).into_bytes(),
         jail: JailPolicy::Layered,
         tmp_file: None,
+        env: Vec::new(),
     })
 }
 
@@ -295,6 +323,7 @@ fn codex_invocation(request: &ChatRequest) -> Invocation {
         stdin: instructed_stdin(request).into_bytes(),
         jail: JailPolicy::Required,
         tmp_file: None,
+        env: Vec::new(),
     })
 }
 
@@ -353,6 +382,102 @@ fn gemini_invocation(request: &ChatRequest) -> Invocation {
             name: "gemini-policy.toml",
             content: GEMINI_POLICY,
         }),
+        env: Vec::new(),
+    })
+}
+
+/// The agent every opencode turn runs as, defined by [`OPENCODE_CONFIG`].
+const OPENCODE_AGENT: &str = "lazarobox-chat";
+
+/// The inline config opencode gets (`OPENCODE_CONFIG_CONTENT`, a constant of
+/// ours: the user's prompt never goes in it, as the process environment is
+/// not the place for it). It removes every tool the model could call:
+///
+/// - `permission` denies every tool name, globally and on the agent we run
+///   (the agent also has its own prompt, so opencode's coding-agent prompt
+///   never applies). `opencode debug agent lazarobox-chat` (1.19.0) lists
+///   every tool as `false` with this config, plugin tools included.
+/// - `mcp` has no server, `lsp` and `formatter` are off, and `share`,
+///   `snapshot` and `autoupdate` are off, so nothing starts or phones home.
+///
+/// The user's own config is not read at all (see [`opencode_invocation`]), so
+/// nothing of it can add a tool or an MCP server back.
+const OPENCODE_CONFIG: &str = concat!(
+    r#"{"permission":{"*":"deny"},"#,
+    r#""agent":{"lazarobox-chat":{"mode":"primary","#,
+    r#""description":"lazarobox text-only chat","#,
+    r#""prompt":"You are a text-only chat assistant. You have no tools and cannot read files, run commands or browse. Follow the Instructions block at the start of the user's message.","#,
+    r#""permission":{"*":"deny"}}},"#,
+    r#""mcp":{},"lsp":false,"formatter":false,"#,
+    r#""share":"disabled","snapshot":false,"autoupdate":false}"#
+);
+
+/// The opencode run: the pinned argv (text only, no tools), and on stdin the
+/// profile prompt in an `Instructions:` block, then the memory block and the
+/// history. `opencode run` reads its message from stdin when none is given in
+/// argv, which is visible in `ps`, so nothing but fixed flags and the model
+/// goes there.
+///
+/// The environment keeps opencode away from the user's setup, which would
+/// otherwise add plugins (code that runs outside the permission rules), MCP
+/// servers, instructions (`AGENTS.md`) and skills to a chat that has none:
+///
+/// - `XDG_CONFIG_HOME` points at an empty folder in the turn's private temp
+///   folder, so `~/.config/opencode` is never read; `--pure` and
+///   `OPENCODE_PURE` skip external plugins;
+/// - `OPENCODE_DISABLE_PROJECT_CONFIG`, `..._CLAUDE_CODE` and
+///   `..._EXTERNAL_SKILLS` skip a project config, `~/.claude` and the skills
+///   under `~/.claude` and `~/.agents`;
+/// - `XDG_STATE_HOME` and `OPENCODE_DB` also live in the temp folder, so the
+///   turn's session is never written to the user's opencode database and
+///   leaves nothing behind. The login (`~/.local/share/opencode/auth.json`)
+///   is still read from the real data folder.
+///
+/// The cost is that providers and models defined only in the user's own
+/// config are not available to the chat; the ones with a login are.
+fn opencode_invocation(request: &ChatRequest) -> Invocation {
+    let model = match cli_model(request.model.as_deref()) {
+        Ok(model) => model,
+        Err(reason) => return Invocation::Refused(reason),
+    };
+    let mut args: Vec<String> = [
+        "--pure",
+        "run",
+        "--format",
+        "json",
+        "--agent",
+        OPENCODE_AGENT,
+    ]
+    .map(str::to_owned)
+    .into();
+    args.extend(model.map(|m| format!("--model={m}")));
+    let literal = |name, value| JobEnv {
+        name,
+        value: EnvValue::Literal(value),
+    };
+    let in_tmp = |name, file| JobEnv {
+        name,
+        value: EnvValue::InTmp(file),
+    };
+    Invocation::Process(Job {
+        wire: Wire::OpencodeJson,
+        binary: "opencode",
+        cli: Cli::Opencode,
+        args,
+        stdin: instructed_stdin(request).into_bytes(),
+        jail: JailPolicy::Required,
+        tmp_file: None,
+        env: vec![
+            literal("OPENCODE_CONFIG_CONTENT", OPENCODE_CONFIG),
+            literal("OPENCODE_PURE", "1"),
+            literal("OPENCODE_DISABLE_PROJECT_CONFIG", "1"),
+            literal("OPENCODE_DISABLE_CLAUDE_CODE", "1"),
+            literal("OPENCODE_DISABLE_EXTERNAL_SKILLS", "1"),
+            literal("OPENCODE_DISABLE_AUTOUPDATE", "1"),
+            in_tmp("XDG_CONFIG_HOME", "xdg-config"),
+            in_tmp("XDG_STATE_HOME", "xdg-state"),
+            in_tmp("OPENCODE_DB", "opencode.db"),
+        ],
     })
 }
 
