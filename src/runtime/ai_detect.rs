@@ -151,17 +151,6 @@ pub const LISTING_TIMEOUT: Duration = Duration::from_secs(4);
 /// leaves room for growth; more than this means the probe gave up.
 pub const LISTING_CAP: usize = 2 * 1024 * 1024;
 
-/// Runs `codex debug models` and returns its stdout. `None` on any failure
-/// (no jail, an old codex without the subcommand, a timeout, too much
-/// output).
-///
-/// The command may refresh the catalog from OpenAI with the user's own
-/// codex login and rewrite codex's cache (`models_cache.json`), exactly as
-/// running codex does; that is how the list reflects the account. So it runs
-/// the way a codex chat turn does: through the jail (`__jail-exec`, the codex
-/// layout with its state folder writable), with the chat's scrubbed
-/// environment, stdin closed and the private working folder. Like the chat,
-/// codex requires the jail: without it nothing is started.
 /// How long a successful codex listing is reused.
 pub const LISTING_TTL: Duration = Duration::from_secs(10 * 60);
 
@@ -217,6 +206,17 @@ pub struct Lister<'a> {
     pub force: bool,
 }
 
+/// Runs `codex debug models` and returns its stdout. `None` on any failure
+/// (no jail, an old codex without the subcommand, a timeout, too much
+/// output).
+///
+/// The command may refresh the catalog from OpenAI with the user's own
+/// codex login and rewrite codex's cache (`models_cache.json`), exactly as
+/// running codex does; that is how the list reflects the account. So it runs
+/// the way a codex chat turn does: through the jail (`__jail-exec`, the codex
+/// layout with its state folder writable), with the chat's scrubbed
+/// environment, stdin closed and the private working folder. Like the chat,
+/// codex requires the jail: without it nothing is started.
 pub async fn codex_listing(env: &CliEnv) -> Option<Vec<u8>> {
     listing(env, LISTING_TIMEOUT, LISTING_CAP).await
 }
