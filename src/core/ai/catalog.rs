@@ -21,11 +21,27 @@ pub const OLLAMA_CURATED: &[&str] = &[
     "gpt-oss:20b",
 ];
 
-/// The static model list of a CLI engine; empty for any other id.
-pub fn cli_models(engine: &str) -> &'static [&'static str] {
+/// The static model list of a CLI engine as `(label, value)` pairs; empty for
+/// any other id. The label is what the picker shows, the value is what is
+/// saved and passed to the CLI. claude uses the CLI aliases, which always
+/// resolve to the newest model of each family. gemini uses explicit ids: its
+/// own `flash` and `pro` aliases may still point at retired 2.5 models.
+pub fn cli_models(engine: &str) -> &'static [(&'static str, &'static str)] {
     match engine {
-        "claude" => &["default", "opus", "sonnet", "fable"],
-        "codex" | "gemini" | "opencode" => &["default"],
+        "claude" => &[
+            ("default (CLI picks)", "default"),
+            ("Opus 5.5", "opus"),
+            ("Sonnet 5.5", "sonnet"),
+            ("Haiku 5.5", "haiku"),
+            ("Fable 5.1", "fable"),
+        ],
+        "gemini" => &[
+            ("default (auto)", "default"),
+            ("Flash 3.8", "gemini-3.8-flash"),
+            ("Flash 3.5", "gemini-3.5-flash"),
+            ("Flash Lite 3.5", "gemini-3.5-flash-lite"),
+        ],
+        "codex" | "opencode" => &[("default", "default")],
         _ => &[],
     }
 }
@@ -99,12 +115,43 @@ mod tests {
 
     #[test]
     fn cli_catalogs() {
-        assert_eq!(cli_models("claude"), ["default", "opus", "sonnet", "fable"]);
-        for id in ["codex", "gemini", "opencode"] {
-            assert_eq!(cli_models(id), ["default"], "{id}");
+        assert_eq!(
+            cli_models("claude"),
+            [
+                ("default (CLI picks)", "default"),
+                ("Opus 5.5", "opus"),
+                ("Sonnet 5.5", "sonnet"),
+                ("Haiku 5.5", "haiku"),
+                ("Fable 5.1", "fable"),
+            ]
+        );
+        assert_eq!(
+            cli_models("gemini"),
+            [
+                ("default (auto)", "default"),
+                ("Flash 3.8", "gemini-3.8-flash"),
+                ("Flash 3.5", "gemini-3.5-flash"),
+                ("Flash Lite 3.5", "gemini-3.5-flash-lite"),
+            ]
+        );
+        for id in ["codex", "opencode"] {
+            assert_eq!(cli_models(id), [("default", "default")], "{id}");
         }
         for id in ["ollama", "lmstudio", "llamacpp", "vllm", "nope"] {
-            assert_eq!(cli_models(id), &[] as &[&str], "{id}");
+            assert_eq!(cli_models(id), &[] as &[(&str, &str)], "{id}");
+        }
+    }
+
+    #[test]
+    fn cli_values_are_valid_unique_cli_model_names() {
+        for id in ["claude", "gemini", "codex", "opencode"] {
+            let mut seen = std::collections::HashSet::new();
+            for (label, value) in cli_models(id) {
+                assert!(!label.is_empty() && !value.is_empty(), "{id}");
+                assert!(!value.starts_with('-') && !value.contains(char::is_whitespace));
+                assert!(seen.insert(*value), "duplicate {value}");
+            }
+            assert_eq!(cli_models(id)[0].1, "default", "{id}");
         }
     }
 

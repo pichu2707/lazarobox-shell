@@ -5959,7 +5959,7 @@ mod app_tests {
         }
         // Into the custom field of claude and type, delete, leave.
         quiet(&mut a, enter());
-        for _ in 0..4 {
+        for _ in 0..5 {
             quiet(&mut a, key('j'));
         }
         for event in [enter(), key('m'), key('s'), code(KeyCode::Backspace)] {
@@ -6316,7 +6316,7 @@ mod app_tests {
     /// The custom field of that engine's last model row.
     fn to_custom_field(a: &mut App) {
         to_level_two(a);
-        for _ in 0..4 {
+        for _ in 0..5 {
             a.update(key('j'));
         }
         a.update(code(KeyCode::Enter));
