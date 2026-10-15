@@ -195,6 +195,9 @@ pub enum Effect {
     SetClipboard(Vec<u8>),
     /// Probe the AI engines; the runtime answers with one `EnginesDetected`.
     DetectEngines,
+    /// Like `DetectEngines`, but the codex model listing is read again even
+    /// when a recent one is cached (the menu's `r`).
+    RedetectEngines,
     /// Start one chat turn for a pane. Events of the turn come back tagged
     /// with `turn`.
     ChatSend {
@@ -570,6 +573,16 @@ impl App {
         }
         self.detecting = true;
         vec![Effect::DetectEngines]
+    }
+
+    /// Like [`Self::request_detection`], for the menu's `r`: the codex model
+    /// list is read again instead of reused.
+    pub fn request_forced_detection(&mut self) -> Vec<Effect> {
+        if self.detecting {
+            return Vec::new();
+        }
+        self.detecting = true;
+        vec![Effect::RedetectEngines]
     }
 
     /// Sets the facts the statusline shows. They are inputs, not lookups, so
@@ -1220,7 +1233,7 @@ impl App {
             MenuCommand::Cancel => self.close_menu(Outcome::Reverted),
             MenuCommand::Save => self.request_save(),
             MenuCommand::Refresh => {
-                let effects = self.request_detection();
+                let effects = self.request_forced_detection();
                 self.sync_checking();
                 effects
             }
@@ -5821,6 +5834,14 @@ mod app_tests {
     }
 
     #[test]
+    fn a_forced_detection_is_the_same_single_flight_run() {
+        let mut a = app();
+        assert_eq!(a.request_forced_detection(), vec![Effect::RedetectEngines]);
+        assert_eq!(a.request_detection(), Vec::<Effect>::new());
+        assert_eq!(a.request_forced_detection(), Vec::<Effect>::new());
+    }
+
+    #[test]
     fn detection_is_single_flight() {
         let mut a = app();
         assert_eq!(a.request_detection(), vec![Effect::DetectEngines]);
@@ -5932,7 +5953,7 @@ mod app_tests {
         assert_eq!(a.update(key('R')), Vec::<Effect>::new(), "uppercase, bare");
         let held = kind(KeyCode::Char('r'), KeyEventKind::Repeat);
         assert_eq!(a.update(held), Vec::<Effect>::new(), "repeat");
-        assert_eq!(a.update(key('r')), vec![Effect::DetectEngines], "press");
+        assert_eq!(a.update(key('r')), vec![Effect::RedetectEngines], "press");
         assert_eq!(a.update(key('r')), Vec::<Effect>::new(), "in flight");
         // Only the refreshing cue differs from before the press.
         let mut expected = before.unwrap();
@@ -6435,7 +6456,7 @@ mod app_tests {
         a.update(AppEvent::EnginesDetected(machine()));
         to_task_row(&mut a);
         assert!(footer_of(&a).starts_with("j/k move"));
-        assert_eq!(a.update(key('r')), vec![Effect::DetectEngines]);
+        assert_eq!(a.update(key('r')), vec![Effect::RedetectEngines]);
         assert!(
             footer_of(&a).starts_with("refreshing…"),
             "{}",

@@ -12,6 +12,7 @@ use std::{
     io::{self, Write, stdout},
     panic,
     path::{Path, PathBuf},
+    sync::Arc,
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -163,6 +164,8 @@ pub async fn run() -> io::Result<()> {
     let (ai_tx, ai_rx) = mpsc::channel(1);
     // Detection reads codex's model list through the same jail as its chat.
     let detect_env = chat::CliEnv::from_env(jail);
+    // The codex model list is reused for 10 minutes across runs (`r` re-lists).
+    let listing_cache = Arc::new(ai_detect::ListingCache::new(Arc::new(Instant::now)));
     let (chat_tx, chat_rx) = mpsc::channel(chat::APP_CHANNEL);
     let (memory_tx, memory_rx) = mpsc::channel(MEMORY_CHANNEL);
     // Off unless the config activates it: then no worker ever starts, nothing
@@ -188,8 +191,13 @@ pub async fn run() -> io::Result<()> {
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
         .with_memory(memory)
         .with_config_path(config_path)
-        .with_detector(Box::new(move || {
-            spawn_detection(ai_tx.clone(), detect_env.clone());
+        .with_detector(Box::new(move |force| {
+            spawn_detection(
+                ai_tx.clone(),
+                detect_env.clone(),
+                Arc::clone(&listing_cache),
+                force,
+            );
         }))
         .with_preparer(Box::new(move |pane, profile, origin, context| {
             spawn_prepare(
@@ -564,7 +572,7 @@ struct Panes {
     bell: bool,
     /// Starts one AI engine detection; the answer arrives on the AI channel.
     /// A no-op unless `with_detector` installs the production one.
-    detect: Box<dyn FnMut()>,
+    detect: Box<dyn FnMut(bool)>,
     /// Starts the preparation of a conversation's system prompt: pane,
     /// profile, origin cwd and the context flag. The answer arrives on the
     /// prompt channel. A no-op unless `with_preparer` installs the
@@ -588,7 +596,7 @@ impl Panes {
             config_path: None,
             host_out: Vec::new(),
             bell: false,
-            detect: Box::new(|| {}),
+            detect: Box::new(|_| {}),
             prepare: Box::new(|_, _, _, _| {}),
             chats: None,
             memory: Memory::off(),
@@ -647,7 +655,7 @@ impl Panes {
     }
 
     /// Sets what `Effect::DetectEngines` runs.
-    fn with_detector(mut self, detect: Box<dyn FnMut()>) -> Self {
+    fn with_detector(mut self, detect: Box<dyn FnMut(bool)>) -> Self {
         self.detect = detect;
         self
     }
@@ -707,7 +715,8 @@ impl Panes {
                 }
                 Effect::SetClipboard(bytes) => self.host_out.extend_from_slice(&bytes),
                 // Returns at once: the probes run on their own tasks.
-                Effect::DetectEngines => (self.detect)(),
+                Effect::DetectEngines => (self.detect)(false),
+                Effect::RedetectEngines => (self.detect)(true),
                 // Both return at once: the turn runs on its own task, and a
                 // cancel only aborts it (the adapter's drop does the killing).
                 Effect::ChatSend {
@@ -1717,12 +1726,22 @@ mod tests {
         let (panes, _rx, _rec) = fake_panes(None);
         let calls = Rc::new(RefCell::new(0));
         let seen = Rc::clone(&calls);
-        let mut panes = panes.with_detector(Box::new(move || *seen.borrow_mut() += 1));
+        let mut panes = panes.with_detector(Box::new(move |_| *seen.borrow_mut() += 1));
         let (outcome, feedback) = panes.apply(vec![Effect::DetectEngines]);
         assert_eq!(
             (outcome, feedback, *calls.borrow()),
             (Outcome::Continue, Vec::new(), 1)
         );
+    }
+
+    #[test]
+    fn only_a_redetect_tells_the_detector_to_force() {
+        let (panes, _rx, _rec) = fake_panes(None);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&calls);
+        let mut panes = panes.with_detector(Box::new(move |force| seen.borrow_mut().push(force)));
+        panes.apply(vec![Effect::DetectEngines, Effect::RedetectEngines]);
+        assert_eq!(*calls.borrow(), [false, true]);
     }
 
     #[test]
@@ -2924,7 +2943,7 @@ mod tests {
         let runner = scripted(vec![StreamEvent::Done(Finish::Stop)]);
         let mut panes = panes
             .with_chats(Chats::new(runner, tx))
-            .with_detector(Box::new(move || *seen.borrow_mut() += 1));
+            .with_detector(Box::new(move |_| *seen.borrow_mut() += 1));
         // Two live PTYs, one on the very id the chat uses.
         spawn_two(&mut panes);
         panes.apply(vec![

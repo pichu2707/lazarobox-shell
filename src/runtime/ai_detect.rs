@@ -8,7 +8,8 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Stdio,
-    time::Duration,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use tokio::{
@@ -161,6 +162,61 @@ pub const LISTING_CAP: usize = 2 * 1024 * 1024;
 /// layout with its state folder writable), with the chat's scrubbed
 /// environment, stdin closed and the private working folder. Like the chat,
 /// codex requires the jail: without it nothing is started.
+/// How long a successful codex listing is reused.
+pub const LISTING_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// The clock the listing cache reads; tests inject a fake one.
+pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
+
+/// The last successful codex listing and when it was read, kept in memory
+/// for the life of the process (no files).
+pub struct ListingCache {
+    clock: Clock,
+    last: Mutex<Option<(Instant, Vec<u8>)>>,
+}
+
+impl ListingCache {
+    pub fn new(clock: Clock) -> Self {
+        Self {
+            clock,
+            last: Mutex::new(None),
+        }
+    }
+
+    /// The listing to use now. Fresh enough (under [`LISTING_TTL`]) and not
+    /// `force`d: the cached one, with no process started. Otherwise the jailed
+    /// run; a success replaces the cache, a failure falls back to the cached
+    /// listing while it is still under the TTL, else `None` (just `default`).
+    pub async fn listing(&self, env: &CliEnv, force: bool) -> Option<Vec<u8>> {
+        let now = (self.clock)();
+        let cached = || {
+            let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+            last.as_ref()
+                .filter(|(at, _)| now.saturating_duration_since(*at) < LISTING_TTL)
+                .map(|(_, raw)| raw.clone())
+        };
+        if !force && let Some(raw) = cached() {
+            return Some(raw);
+        }
+        match codex_listing(env).await {
+            Some(raw) => {
+                *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, raw.clone()));
+                Some(raw)
+            }
+            // A failure is never cached as a success.
+            None => cached(),
+        }
+    }
+}
+
+/// Where detection reads codex's model list from.
+pub struct Lister<'a> {
+    pub env: &'a CliEnv,
+    pub cache: &'a ListingCache,
+    /// Bypass the cache (the menu's `r`).
+    pub force: bool,
+}
+
 pub async fn codex_listing(env: &CliEnv) -> Option<Vec<u8>> {
     listing(env, LISTING_TIMEOUT, LISTING_CAP).await
 }
@@ -247,26 +303,29 @@ pub async fn detect_with(targets: &[Target], path: &OsStr) -> Detection {
     detect_in(targets, path, None).await
 }
 
-/// Like [`detect_with`]; with an `env`, codex's model list is read through
-/// the jail it describes (its own `path` is replaced by `path`).
-pub async fn detect_in(targets: &[Target], path: &OsStr, env: Option<&CliEnv>) -> Detection {
-    let env = env.map(|env| CliEnv {
+/// Like [`detect_with`]; with a `lister`, codex's model list is read through
+/// the jail its env describes (its `path` is replaced by `path`), reusing the
+/// cache unless the lister forces a fresh read.
+pub async fn detect_in(targets: &[Target], path: &OsStr, lister: Option<Lister<'_>>) -> Detection {
+    let env = lister.as_ref().map(|l| CliEnv {
         path: path.to_owned(),
-        ..env.clone()
+        ..l.env.clone()
     });
+    let lister = lister.zip(env.as_ref()).map(|(l, env)| Lister { env, ..l });
     let probes = join_all(
         targets
             .iter()
-            .map(|target| probe(target, path, env.as_ref())),
+            .map(|target| probe(target, path, lister.as_ref())),
     )
     .await;
     reduce(&probes)
 }
 
 /// Detection over the real catalog and the process PATH.
-pub async fn detect_all(env: &CliEnv) -> Detection {
+pub async fn detect_all(env: &CliEnv, cache: &ListingCache, force: bool) -> Detection {
     let path = std::env::var_os("PATH").unwrap_or_default();
-    detect_in(CATALOG, &path, Some(env)).await
+    let lister = Lister { env, cache, force };
+    detect_in(CATALOG, &path, Some(lister)).await
 }
 
 /// Runs `fut` off the caller and sends exactly one `Detection` to `tx`: the
@@ -284,11 +343,16 @@ where
 }
 
 /// Starts a real detection; its result arrives on `tx`.
-pub fn spawn_detection(tx: mpsc::Sender<Detection>, env: CliEnv) {
-    spawn_detection_of(tx, async move { detect_all(&env).await });
+pub fn spawn_detection(
+    tx: mpsc::Sender<Detection>,
+    env: CliEnv,
+    cache: Arc<ListingCache>,
+    force: bool,
+) {
+    spawn_detection_of(tx, async move { detect_all(&env, &cache, force).await });
 }
 
-async fn probe(target: &Target, path: &OsStr, env: Option<&CliEnv>) -> Probe {
+async fn probe(target: &Target, path: &OsStr, lister: Option<&Lister<'_>>) -> Probe {
     let found = find_on_path(target.binary, path);
     match target.kind {
         Kind::Server { port, path, .. } => Probe::Server {
@@ -303,8 +367,8 @@ async fn probe(target: &Target, path: &OsStr, env: Option<&CliEnv>) -> Probe {
             let (stdout, models) = match &found {
                 Some(file) => {
                     let list = async {
-                        match (env, target.id) {
-                            (Some(env), "codex") => codex_listing(env).await,
+                        match (lister, target.id) {
+                            (Some(l), "codex") => l.cache.listing(l.env, l.force).await,
                             _ => None,
                         }
                     };
@@ -707,7 +771,13 @@ mod tests {
         );
         let targets = cli_targets(&["claude", "codex"]);
         let env = env_of(&lab, true);
-        let d = detect_in(&targets, &join(&[&lab.bin]), Some(&env)).await;
+        let cache = real_cache();
+        let d = detect_in(
+            &targets,
+            &join(&[&lab.bin]),
+            Some(lister(&env, &cache, false)),
+        )
+        .await;
         let get = |id| d.engines.iter().find(|e| e.id == id).unwrap().clone();
         assert_eq!(get("codex").model_labels.len(), 7);
         assert_eq!(get("codex").version.as_deref(), Some("codex 0.5.0"));
@@ -734,11 +804,145 @@ mod tests {
         );
         let env = env_of(&lab, true);
         let started = std::time::Instant::now();
-        let d = detect_in(&cli_targets(&["codex"]), &join(&[&lab.bin]), Some(&env)).await;
+        let cache = real_cache();
+        let lister = lister(&env, &cache, false);
+        let d = detect_in(&cli_targets(&["codex"]), &join(&[&lab.bin]), Some(lister)).await;
         let took = started.elapsed();
         let codex = d.engines.iter().find(|e| e.id == "codex").unwrap();
         assert_eq!(codex.version.as_deref(), Some("codex 0.5.0"));
         assert!(took < Duration::from_millis(1800), "{took:?}");
+    }
+
+    fn real_cache() -> ListingCache {
+        ListingCache::new(Arc::new(Instant::now))
+    }
+
+    fn lister<'a>(env: &'a CliEnv, cache: &'a ListingCache, force: bool) -> Lister<'a> {
+        Lister { env, cache, force }
+    }
+
+    /// A clock the test moves by hand.
+    fn fake_clock() -> (Clock, Arc<Mutex<Instant>>) {
+        let now = Arc::new(Mutex::new(Instant::now()));
+        let read = Arc::clone(&now);
+        (Arc::new(move || *read.lock().unwrap()), now)
+    }
+
+    fn advance(now: &Arc<Mutex<Instant>>, by: Duration) {
+        let mut at = now.lock().unwrap();
+        *at += by;
+    }
+
+    /// A codex whose `debug models` counts its runs and prints `reply`.
+    fn counting_codex(lab: &Lab, reply: &str) {
+        fake_codex(
+            lab,
+            &format!("echo run >> '{}/runs'\n{reply}", lab.rec.display()),
+        );
+    }
+
+    fn runs(lab: &Lab) -> usize {
+        fs::read_to_string(lab.rec.join("runs")).map_or(0, |t| t.lines().count())
+    }
+
+    #[tokio::test]
+    async fn a_listing_is_reused_for_ten_minutes_without_a_second_spawn() {
+        let lab = lab();
+        counting_codex(&lab, "echo '{\"models\":[]}'");
+        let env = env_of(&lab, true);
+        let (clock, now) = fake_clock();
+        let cache = ListingCache::new(clock);
+        let first = cache.listing(&env, false).await;
+        assert!(first.is_some());
+        assert_eq!(runs(&lab), 1);
+        advance(&now, Duration::from_secs(9 * 60 + 59));
+        assert_eq!(cache.listing(&env, false).await, first);
+        assert_eq!(runs(&lab), 1, "no second spawn inside the window");
+    }
+
+    #[tokio::test]
+    async fn the_listing_is_read_again_after_ten_minutes() {
+        let lab = lab();
+        counting_codex(&lab, "echo '{\"models\":[]}'");
+        let env = env_of(&lab, true);
+        let (clock, now) = fake_clock();
+        let cache = ListingCache::new(clock);
+        cache.listing(&env, false).await;
+        advance(&now, LISTING_TTL);
+        cache.listing(&env, false).await;
+        assert_eq!(runs(&lab), 2);
+        // The new read restarts the window.
+        advance(&now, Duration::from_secs(60));
+        cache.listing(&env, false).await;
+        assert_eq!(runs(&lab), 2);
+    }
+
+    #[tokio::test]
+    async fn a_forced_refresh_always_re_lists() {
+        let lab = lab();
+        counting_codex(&lab, "echo '{\"models\":[]}'");
+        let env = env_of(&lab, true);
+        let (clock, _now) = fake_clock();
+        let cache = ListingCache::new(clock);
+        cache.listing(&env, false).await;
+        cache.listing(&env, true).await;
+        cache.listing(&env, true).await;
+        assert_eq!(runs(&lab), 3);
+    }
+
+    #[tokio::test]
+    async fn a_failure_falls_back_to_a_fresh_cache_and_is_never_cached() {
+        let lab = lab();
+        counting_codex(&lab, "echo '{\"models\":[]}'");
+        let env = env_of(&lab, true);
+        let (clock, now) = fake_clock();
+        let cache = ListingCache::new(clock);
+        let good = cache.listing(&env, false).await;
+        assert!(good.is_some());
+
+        // codex starts failing: a forced refresh keeps the cached list...
+        counting_codex(&lab, "exit 2");
+        advance(&now, Duration::from_secs(5 * 60));
+        assert_eq!(cache.listing(&env, true).await, good);
+        // ...and the failure did not extend the cache: it expires on schedule.
+        advance(&now, Duration::from_secs(5 * 60));
+        assert_eq!(cache.listing(&env, false).await, None);
+        assert_eq!(runs(&lab), 3);
+    }
+
+    #[tokio::test]
+    async fn a_failure_with_nothing_cached_is_just_default_and_is_retried() {
+        let lab = lab();
+        counting_codex(&lab, "exit 2");
+        let env = env_of(&lab, true);
+        let (clock, _now) = fake_clock();
+        let cache = ListingCache::new(clock);
+        assert_eq!(cache.listing(&env, false).await, None);
+        assert_eq!(cache.listing(&env, false).await, None);
+        assert_eq!(runs(&lab), 2, "a failure is not remembered");
+    }
+
+    #[tokio::test]
+    async fn detection_runs_reuse_the_cache_and_only_r_forces() {
+        let lab = lab();
+        let data = lab.rec.join("listing.json");
+        fs::write(&data, LISTING).unwrap();
+        counting_codex(&lab, &format!("cat {}", data.display()));
+        let env = env_of(&lab, true);
+        let (clock, _now) = fake_clock();
+        let cache = ListingCache::new(clock);
+        let targets = cli_targets(&["codex"]);
+        let path = join(&[&lab.bin]);
+        for force in [false, false, true] {
+            let d = detect_in(&targets, &path, Some(lister(&env, &cache, force))).await;
+            let codex = d.engines.iter().find(|e| e.id == "codex").unwrap();
+            assert_eq!(codex.model_labels.len(), 7, "force={force}");
+        }
+        assert_eq!(
+            runs(&lab),
+            2,
+            "startup + menu open share one run; r adds one"
+        );
     }
 
     fn cli_targets(ids: &[&'static str]) -> Vec<Target> {

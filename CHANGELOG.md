@@ -21,6 +21,9 @@ baseline.
   picker offers `default (CLI picks)` followed by the models the account
   lists, with their display names as labels and the slugs as saved values. An
   older codex without the subcommand, or any failure, shows only `default`.
+  The listing is kept in memory and refreshed at most every 10 minutes; the
+  menu's `r` forces a new one. A failed refresh keeps the cached list while it
+  is under 10 minutes old.
 - A codex model that is assigned or typed in `custom…` but is not in the
   account's list is marked `not in your account's list` in the picker, on the
   task row and in the footer. It is a warning only.

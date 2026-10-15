@@ -122,7 +122,7 @@ A CLI is `available` when a regular file with an execute permission bit exists u
 - THEN it is `not installed`
 
 ### Requirement: Codex model listing
-When codex is `available`, detection MUST run `<codex> debug models` once and keep the models that the account can use. The command MAY refresh the catalog from OpenAI with the user's own codex login and update codex's own cache (`models_cache.json` under `$CODEX_HOME` or `~/.codex`), exactly as running codex does; that is how the list reflects the account, and `--bundled` (which skips the refresh) is deliberately not used. Because of that it MUST start the way a codex chat turn starts: through the jail helper (`__jail-exec`) with the codex layout (read-execute on its install, read-write on its state folder only, the usual read-only system folders), with the chat's scrubbed environment, stdin closed, the private working folder and temp folder, and its own process group. codex is `JailPolicy::Required`: when the jail is unavailable, or the layout cannot be jailed, no process is started and codex keeps just `default`. The run is bounded by a timeout of 4 s (the group is killed on timeout) and an output cap of 2 MiB (the real catalog printed about 560 KB with codex-cli 0.162.1; more than the cap is dropped, not truncated). It MUST run concurrently with the `--version` probe of the same CLI, so the time a CLI adds to a detection is the longer of the two, not their sum. No other CLI is probed this way (gemini has no listing command).
+When codex is `available`, detection MUST run `<codex> debug models` once and keep the models that the account can use. The command MAY refresh the catalog from OpenAI with the user's own codex login and update codex's own cache (`models_cache.json` under `$CODEX_HOME` or `~/.codex`), exactly as running codex does; that is how the list reflects the account, and `--bundled` (which skips the refresh) is deliberately not used. Because of that it MUST start the way a codex chat turn starts: through the jail helper (`__jail-exec`) with the codex layout (read-execute on its install, read-write on its state folder only, the usual read-only system folders), with the chat's scrubbed environment, stdin closed, the private working folder and temp folder, and its own process group. codex is `JailPolicy::Required`: when the jail is unavailable, or the layout cannot be jailed, no process is started and codex keeps just `default`. The run is bounded by a timeout of 4 s (the group is killed on timeout) and an output cap of 2 MiB (the real catalog printed about 560 KB with codex-cli 0.162.1; more than the cap is dropped, not truncated). A successful listing MUST be kept in memory (no files) with the time it was read and reused by every detection run for 10 minutes, at startup and on every menu open alike, without starting codex again. The menu's `r` refresh MUST bypass the cache and list again. A failed listing MUST NOT be cached as a success: it falls back to the cached listing while that is younger than 10 minutes (the failure does not extend its age), otherwise to just `default`, and the next run tries again. The `--version` probe and the other engines are not cached. The cache reads its time from an injectable clock. It MUST run concurrently with the `--version` probe of the same CLI, so the time a CLI adds to a detection is the longer of the two, not their sum. No other CLI is probed this way (gemini has no listing command).
 
 The pure parser MUST read the JSON object `{"models": [...]}`, keep only entries with `visibility == "list"`, order them by `priority` ascending (stable; a missing priority sorts last), and return `(label, slug)` pairs where the label is the sanitized `display_name` (the slug when empty) and the slug is the value saved and passed to the CLI. A slug MUST be rejected unless it is made only of ASCII letters, digits and `._-:/@+`, is not empty, not `default`, does not start with `-` and is at most 128 characters; this rules out whitespace, control, bidi, zero-width and every other Unicode format or separator character. Duplicates are dropped and at most 64 models are kept. The engine state exposes the pairs as `model_labels`, and `models` is `default` followed by the slugs.
 
@@ -162,6 +162,26 @@ On any failure (no jail, an old codex without the subcommand, a non-zero exit, a
 - GIVEN a fake `codex` that prints its cwd, whether stdin is open and `$SSH_AUTH_SOCK`
 - WHEN the listing runs
 - THEN the cwd is under the private data folder, stdin is at EOF, the variable is scrubbed, and a hanging run is killed with its process group after the timeout
+
+#### Scenario: Listing reused for 10 minutes [auto]
+- GIVEN a fake `codex` that counts its `debug models` runs and a fake clock
+- WHEN two detection runs happen 9 min 59 s apart
+- THEN codex was started for the listing once and both runs show the same models
+
+#### Scenario: Listing re-read after 10 minutes [auto]
+- GIVEN a cached listing read 10 minutes ago
+- WHEN detection runs
+- THEN codex is started again and the window restarts
+
+#### Scenario: Refresh bypasses the cache [auto]
+- GIVEN a fresh cached listing
+- WHEN the menu's `r` triggers a detection
+- THEN codex is started again
+
+#### Scenario: Failure falls back to the cache [auto]
+- GIVEN a cached listing 5 minutes old and a codex that now fails
+- WHEN a refresh runs
+- THEN the cached list is still used, and 5 minutes later (when it expires) the result is just `default`; with nothing cached a failure is retried on the next run
 
 #### Scenario: Listing does not add to the version time [auto]
 - GIVEN a fake `codex` whose `--version` and `debug models` each take 1 s
