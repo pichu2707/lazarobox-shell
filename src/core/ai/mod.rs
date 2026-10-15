@@ -109,6 +109,9 @@ pub enum Probe {
         id: &'static str,
         path: Option<PathBuf>,
         stdout: Option<Vec<u8>>,
+        /// The stdout of the CLI's own model listing, for the CLIs that have
+        /// one (opencode). `None` when it was not asked for or it failed.
+        models: Option<Vec<u8>>,
     },
 }
 
@@ -129,11 +132,12 @@ pub fn reduce(probes: &[Probe]) -> Detection {
                     Some(Probe::Cli {
                         path: Some(_),
                         stdout,
+                        models,
                         ..
                     }),
                     Kind::Cli,
                 ) => EngineState {
-                    models: vec!["default".to_string()],
+                    models: cli_model_list(engine.id, models.as_deref()),
                     version: stdout.as_deref().and_then(parse::parse_version),
                     ..bare(engine.id, Status::Available)
                 },
@@ -142,6 +146,18 @@ pub fn reduce(probes: &[Probe]) -> Detection {
         })
         .collect();
     Detection { engines }
+}
+
+/// The models of an available CLI: `default` (the CLI's own pick, no model
+/// flag), then the ids its listing gave, for the CLIs that have one.
+fn cli_model_list(id: &str, listing: Option<&[u8]>) -> Vec<String> {
+    let listed = match (id, listing) {
+        ("opencode", Some(stdout)) => parse::opencode_models(stdout),
+        _ => Vec::new(),
+    };
+    std::iter::once("default".to_owned())
+        .chain(listed.into_iter().filter(|m| m != "default"))
+        .collect()
 }
 
 fn bare(id: &'static str, status: Status) -> EngineState {
@@ -424,7 +440,63 @@ mod tests {
             id,
             path: path.map(PathBuf::from),
             stdout: stdout.map(|s| s.as_bytes().to_vec()),
+            models: None,
         }
+    }
+
+    fn cli_listing(id: &'static str, models: Option<&str>) -> Probe {
+        Probe::Cli {
+            id,
+            path: Some(PathBuf::from("/bin/x")),
+            stdout: Some(b"x 1.0\n".to_vec()),
+            models: models.map(|m| m.as_bytes().to_vec()),
+        }
+    }
+
+    #[test]
+    fn opencode_models_follow_default_in_the_clis_order() {
+        let d = reduce(&[cli_listing(
+            "opencode",
+            Some("openai/gpt-5.4\nopencode/big-pickle\n"),
+        )]);
+        assert_eq!(
+            get(&d, "opencode"),
+            state(
+                "opencode",
+                Status::Available,
+                &["default", "openai/gpt-5.4", "opencode/big-pickle"],
+                Some("x 1.0")
+            )
+        );
+    }
+
+    #[test]
+    fn opencode_without_a_listing_keeps_just_default() {
+        for models in [None, Some(""), Some("Error: not logged in\n")] {
+            let d = reduce(&[cli_listing("opencode", models)]);
+            assert_eq!(
+                get(&d, "opencode").expect("state").models,
+                ["default"],
+                "{models:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_opencode_lists_models_the_other_clis_keep_default() {
+        for id in ["claude", "codex", "gemini"] {
+            let d = reduce(&[cli_listing(id, Some("a/b\nc/d\n"))]);
+            assert_eq!(get(&d, id).expect("state").models, ["default"], "{id}");
+        }
+    }
+
+    #[test]
+    fn a_listing_cannot_add_a_second_default() {
+        let d = reduce(&[cli_listing("opencode", Some("default\na/b\n"))]);
+        assert_eq!(
+            get(&d, "opencode").expect("state").models,
+            ["default", "a/b"]
+        );
     }
 
     #[test]

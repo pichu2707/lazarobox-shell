@@ -26,6 +26,8 @@ pub const OLLAMA_CURATED: &[&str] = &[
 /// saved and passed to the CLI. claude uses the CLI aliases, which always
 /// resolve to the newest model of each family. gemini uses explicit ids: its
 /// own `flash` and `pro` aliases may still point at retired 2.5 models.
+/// opencode has only `default` here: the rest of its models are listed by the
+/// CLI itself at detection (`opencode models`) and added by the picker.
 pub fn cli_models(engine: &str) -> &'static [(&'static str, &'static str)] {
     match engine {
         "claude" => &[

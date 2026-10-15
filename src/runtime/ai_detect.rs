@@ -2,7 +2,7 @@
 //! `--version`. The facts are classified by the pure `core::ai::reduce`.
 
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fs,
     net::SocketAddr,
     os::unix::fs::PermissionsExt,
@@ -39,6 +39,23 @@ pub const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Most `--version` output kept; more than this means the probe gave up.
 const VERSION_CAP: usize = 64 * 1024;
+
+/// Longest `opencode models` is allowed to run. It reads a cached list and
+/// takes under a second; a slow or hung one only costs this much of the
+/// detection, and the engine then offers just `default`.
+pub const MODELS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Most `opencode models` output kept; more than this means the probe gave up
+/// (the list is a few KiB).
+const MODELS_CAP: usize = 256 * 1024;
+
+/// One short-lived child whose stdout is read.
+struct Capture<'a> {
+    args: &'a [&'a str],
+    env: &'a [(&'a str, OsString)],
+    timeout: Duration,
+    cap: usize,
+}
 
 /// GETs `path` from `127.0.0.1:port`. `None` on any failure or timeout.
 pub async fn http_get(port: u16, path: &'static str) -> Option<(u16, Vec<u8>)> {
@@ -86,14 +103,80 @@ const EXIT_GRACE: Duration = Duration::from_millis(100);
 /// output (it is dropped, not truncated). The child runs in its own process
 /// group, which is killed on every way out so no grandchild survives.
 pub async fn version(path: &Path) -> Option<Vec<u8>> {
-    let mut child = spawn_version(path).await?;
+    let capture = Capture {
+        args: &["--version"],
+        env: &[],
+        timeout: VERSION_TIMEOUT,
+        cap: VERSION_CAP,
+    };
+    run_capture(path, &capture).await
+}
+
+/// A private empty folder for one run, removed when dropped. Created `0700`
+/// with a name no one can have planted (`mkdir` fails if it exists).
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn create() -> Option<Self> {
+        use std::os::unix::fs::DirBuilderExt;
+        static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "lazarobox-models-{}-{n}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos())
+        ));
+        fs::DirBuilder::new().mode(0o700).create(&dir).ok()?;
+        Some(Self(dir))
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Runs `<path> models` and returns its stdout, the way the chat will see the
+/// CLI: no external plugin, no project config, and the config, state and
+/// session folders of the user left out (they live in a private empty folder
+/// for this run), so the list holds the models a chat turn can use. `None`
+/// when it fails, times out after `limit` or prints too much; detection then
+/// offers just `default`.
+pub async fn opencode_models(path: &Path, limit: Duration) -> Option<Vec<u8>> {
+    let scratch = Scratch::create()?;
+    let at = |name: &str| scratch.0.join(name).into_os_string();
+    let env = [
+        ("OPENCODE_PURE", OsString::from("1")),
+        ("OPENCODE_DISABLE_PROJECT_CONFIG", OsString::from("1")),
+        ("OPENCODE_DISABLE_AUTOUPDATE", OsString::from("1")),
+        ("XDG_CONFIG_HOME", at("config")),
+        ("XDG_STATE_HOME", at("state")),
+        ("OPENCODE_DB", at("opencode.db")),
+        ("TMPDIR", scratch.0.clone().into_os_string()),
+    ];
+    let capture = Capture {
+        args: &["--pure", "models"],
+        env: &env,
+        timeout: limit,
+        cap: MODELS_CAP,
+    };
+    run_capture(path, &capture).await
+}
+
+/// Runs a short-lived child and returns its stdout; see [`version`] for the
+/// rules (own process group killed on every way out, bounded output).
+async fn run_capture(path: &Path, capture: &Capture<'_>) -> Option<Vec<u8>> {
+    let mut child = spawn_capture(path, capture).await?;
     let pid = child.id()? as libc::pid_t;
     // Declared after `child`, so it drops first: a dropped future still kills
     // the group while the child has not been reaped yet.
     // A refused pid (never a real fresh group) drops `child`, which kills it
     // through `kill_on_drop`; no group signal is ever sent.
     let mut group = GroupKill::new(pid)?;
-    let output = timeout(VERSION_TIMEOUT, collect_version(&mut child, pid)).await;
+    let output = timeout(capture.timeout, collect(&mut child, pid, capture.cap)).await;
     // INVARIANT: the group is signalled while the child is still unreaped.
     // A reaped pid can be recycled, and its pgid with it, so `collect_version`
     // only waits for the exit (WNOWAIT) and the reap comes after this kill.
@@ -136,14 +219,15 @@ pub(crate) async fn wait_exit_unreaped(pid: libc::pid_t) -> Option<bool> {
     .ok()?
 }
 
-/// Spawns `<path> --version`. A binary that is being written (an upgrade, or
+/// Spawns `<path>` with the capture's args. A binary that is being written (an upgrade, or
 /// a concurrent fork holding its write handle) fails with ETXTBSY for a
 /// moment, so that one error is retried briefly.
-async fn spawn_version(path: &Path) -> Option<tokio::process::Child> {
+async fn spawn_capture(path: &Path, capture: &Capture<'_>) -> Option<tokio::process::Child> {
     for attempt in 0..5 {
         // No shell: the resolved absolute path is the program.
         let spawned = Command::new(path)
-            .arg("--version")
+            .args(capture.args)
+            .envs(capture.env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -162,16 +246,20 @@ async fn spawn_version(path: &Path) -> Option<tokio::process::Child> {
 }
 
 /// Reads stdout (bounded) while waiting for the exit, not for the pipe EOF.
-async fn collect_version(child: &mut tokio::process::Child, pid: libc::pid_t) -> Option<Vec<u8>> {
+async fn collect(
+    child: &mut tokio::process::Child,
+    pid: libc::pid_t,
+    cap: usize,
+) -> Option<Vec<u8>> {
     let mut stdout = child.stdout.take()?;
     let mut buf = Vec::new();
     let success = {
-        let mut limited = (&mut stdout).take(VERSION_CAP as u64 + 1);
+        let mut limited = (&mut stdout).take(cap as u64 + 1);
         let read = limited.read_to_end(&mut buf);
         tokio::pin!(read);
         tokio::select! {
             n = &mut read => {
-                if n.ok()? > VERSION_CAP {
+                if n.ok()? > cap {
                     return None;
                 }
                 wait_exit_unreaped(pid).await?
@@ -182,7 +270,7 @@ async fn collect_version(child: &mut tokio::process::Child, pid: libc::pid_t) ->
             }
         }
     };
-    (success && buf.len() <= VERSION_CAP).then_some(buf)
+    (success && buf.len() <= cap).then_some(buf)
 }
 
 /// What `detect_with` probes: an entry of the catalog, or a test double
@@ -235,10 +323,16 @@ async fn probe(target: &Target, path: &OsStr) -> Probe {
                 Some(file) => version(file).await,
                 None => None,
             };
+            // Only opencode lists its models; the others have a fixed list.
+            let models = match (&found, target.id) {
+                (Some(file), "opencode") => opencode_models(file, MODELS_TIMEOUT).await,
+                _ => None,
+            };
             Probe::Cli {
                 id: target.id,
                 path: found,
                 stdout,
+                models,
             }
         }
     }
@@ -752,6 +846,144 @@ mod tests {
         let bystander = tokio::time::timeout(Duration::from_millis(50), f.bystander.accept()).await;
         assert!(bystander.is_err(), "an unrelated listener was contacted");
         assert!(!f.marker.exists(), "a binary was run besides --version");
+    }
+
+    /// An `opencode` that answers `--version`, and for `models` records how
+    /// it was run and prints two ids.
+    fn fake_opencode(dir: &Path) -> PathBuf {
+        let rec = dir.join("rec");
+        let body = format!(
+            "for a; do case $a in --version) echo opencode 1.2.3; exit 0;; esac; done\n\
+             printf '%s\\n' \"$@\" > {rec}.args\n\
+             env > {rec}.env\n\
+             echo openai/gpt-5.4\n\
+             echo opencode/big-pickle",
+            rec = rec.display()
+        );
+        write_script(dir, "opencode", &body, 0o755)
+    }
+
+    #[tokio::test]
+    async fn opencode_models_runs_pure_in_a_private_folder_that_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = fake_opencode(dir.path());
+        let listing = opencode_models(&script, MODELS_TIMEOUT).await;
+        assert_eq!(
+            listing,
+            Some(b"openai/gpt-5.4\nopencode/big-pickle\n".to_vec())
+        );
+        let args = fs::read_to_string(dir.path().join("rec.args")).unwrap();
+        assert_eq!(args, "--pure\nmodels\n");
+        let env = fs::read_to_string(dir.path().join("rec.env")).unwrap();
+        let var = |name: &str| {
+            env.lines()
+                .find_map(|l| l.strip_prefix(&format!("{name}=")))
+                .map(str::to_owned)
+        };
+        assert_eq!(var("OPENCODE_PURE").as_deref(), Some("1"));
+        assert_eq!(var("OPENCODE_DISABLE_PROJECT_CONFIG").as_deref(), Some("1"));
+        let folder = PathBuf::from(var("TMPDIR").expect("TMPDIR"));
+        assert!(
+            folder.starts_with(std::env::temp_dir()) && folder != std::env::temp_dir(),
+            "{folder:?}"
+        );
+        for name in ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "OPENCODE_DB"] {
+            let value = var(name).unwrap_or_default();
+            assert!(PathBuf::from(&value).starts_with(&folder), "{name}={value}");
+        }
+        assert!(!folder.exists(), "the private folder is removed");
+    }
+
+    #[tokio::test]
+    async fn opencode_models_gives_up_after_its_limit_and_leaves_no_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let body = format!("echo $$ > {}\nexec sleep 30", pid_file.display());
+        let script = write_script(dir.path(), "opencode", &body, 0o755);
+        let started = std::time::Instant::now();
+        let listing = opencode_models(&script, Duration::from_millis(300)).await;
+        assert_eq!(listing, None);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let pid = read_pid(&pid_file);
+        assert!(
+            dead_within(&pid, Duration::from_secs(5)).await,
+            "process {pid} survived"
+        );
+    }
+
+    #[tokio::test]
+    async fn opencode_models_fails_soft_on_an_error_or_too_much_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let failing = write_script(dir.path(), "fail", "echo oops\nexit 1", 0o755);
+        assert_eq!(opencode_models(&failing, MODELS_TIMEOUT).await, None);
+        let flood = write_script(dir.path(), "flood", "exec yes openai/gpt-5.4", 0o755);
+        assert_eq!(opencode_models(&flood, MODELS_TIMEOUT).await, None);
+        let missing = dir.path().join("missing");
+        assert_eq!(opencode_models(&missing, MODELS_TIMEOUT).await, None);
+    }
+
+    #[tokio::test]
+    async fn detection_lists_the_models_opencode_reports_after_default() {
+        let dir = tempfile::tempdir().unwrap();
+        fake_opencode(dir.path());
+        let targets = [Engine {
+            id: "opencode",
+            kind: Kind::Cli,
+            binary: "opencode",
+        }];
+        let detection = detect_with(&targets, &join(&[dir.path()])).await;
+        let found = detection.engines.iter().find(|s| s.id == "opencode");
+        assert_eq!(
+            found,
+            Some(&state(
+                "opencode",
+                Status::Available,
+                &["default", "openai/gpt-5.4", "opencode/big-pickle"],
+                Some("opencode 1.2.3")
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn detection_keeps_default_when_the_listing_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        write_script(
+            dir.path(),
+            "opencode",
+            "for a; do case $a in --version) echo opencode 1.2.3; exit 0;; esac; done\nexit 1",
+            0o755,
+        );
+        let targets = [Engine {
+            id: "opencode",
+            kind: Kind::Cli,
+            binary: "opencode",
+        }];
+        let detection = detect_with(&targets, &join(&[dir.path()])).await;
+        let found = detection.engines.iter().find(|s| s.id == "opencode");
+        assert_eq!(
+            found,
+            Some(&state(
+                "opencode",
+                Status::Available,
+                &["default"],
+                Some("opencode 1.2.3")
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn only_opencode_is_asked_for_its_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let rec = dir.path().join("calls");
+        let body = format!("echo \"$@\" >> {}\necho tool 1.0", rec.display());
+        write_script(dir.path(), "codex", &body, 0o755);
+        let targets = [Engine {
+            id: "codex",
+            kind: Kind::Cli,
+            binary: "codex",
+        }];
+        detect_with(&targets, &join(&[dir.path()])).await;
+        assert_eq!(fs::read_to_string(&rec).unwrap(), "--version\n");
     }
 
     #[tokio::test]

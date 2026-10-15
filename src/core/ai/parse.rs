@@ -62,6 +62,31 @@ const MAX_NAME: usize = 128;
 /// Most models kept from one engine.
 const MAX_MODELS: usize = 256;
 
+/// The model ids in the stdout of `opencode models`: one `provider/model` per
+/// line, in the CLI's order. A line that is not exactly one such id (an error
+/// message, an option-like or spaced text, a control character, a name over
+/// the cap) is skipped, repeats are dropped and at most `MAX_MODELS` are kept.
+/// Each id can be passed to `--model` as it is.
+pub fn opencode_models(stdout: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(stdout);
+    let mut models: Vec<String> = Vec::new();
+    for id in text.lines().map(str::trim) {
+        let valid = !id.starts_with('-')
+            && !id.starts_with('/')
+            && !id.ends_with('/')
+            && id.contains('/')
+            && id.chars().count() <= MAX_NAME
+            && !id.chars().any(|c| c.is_control() || c.is_whitespace());
+        if valid && !models.iter().any(|m| m == id) {
+            models.push(id.to_owned());
+            if models.len() == MAX_MODELS {
+                break;
+            }
+        }
+    }
+    models
+}
+
 /// First non-empty stdout line, sanitized, trimmed and capped at 40
 /// characters.
 pub fn parse_version(stdout: &[u8]) -> Option<String> {
@@ -81,6 +106,69 @@ mod tests {
 
     fn strs(v: &[&str]) -> Option<Vec<String>> {
         Some(v.iter().map(|s| s.to_string()).collect())
+    }
+
+    fn lines(text: &str) -> Vec<String> {
+        opencode_models(text.as_bytes())
+    }
+
+    #[test]
+    fn opencode_lists_provider_model_ids_in_order() {
+        assert_eq!(
+            lines("opencode/big-pickle\nopenai/gpt-5.4\nopenai/gpt-5.4-mini\n"),
+            [
+                "opencode/big-pickle",
+                "openai/gpt-5.4",
+                "openai/gpt-5.4-mini"
+            ]
+        );
+    }
+
+    #[test]
+    fn opencode_skips_what_is_not_a_model_id() {
+        let text = "\
+  openai/gpt-5.4  \n\
+\n\
+Error: something went wrong\n\
+-m/evil\n\
+--auto/x\n\
+no-slash\n\
+/leading\n\
+trailing/\n\
+a b/c\n\
+a/b\tc\n\
+ok/\u{1b}[31mred\n\
+ok/with\u{0}nul\n";
+        assert_eq!(lines(text), ["openai/gpt-5.4"]);
+    }
+
+    #[test]
+    fn opencode_keeps_a_model_id_with_more_slashes_dots_and_colons() {
+        assert_eq!(
+            lines("openrouter/anthropic/claude-3.5:beta\nlocal/llama3:8b\n"),
+            ["openrouter/anthropic/claude-3.5:beta", "local/llama3:8b"]
+        );
+    }
+
+    #[test]
+    fn opencode_drops_repeats_and_a_name_over_the_cap() {
+        let long = format!("p/{}", "x".repeat(MAX_NAME));
+        let text = format!("a/b\na/b\n{long}\nc/d\n");
+        assert_eq!(lines(&text), ["a/b", "c/d"]);
+    }
+
+    #[test]
+    fn opencode_keeps_at_most_the_model_cap() {
+        let text: String = (0..MAX_MODELS + 50).map(|n| format!("p/m{n}\n")).collect();
+        let got = lines(&text);
+        assert_eq!(got.len(), MAX_MODELS);
+        assert_eq!(got[0], "p/m0");
+    }
+
+    #[test]
+    fn opencode_output_that_is_not_text_gives_nothing() {
+        assert_eq!(lines(""), Vec::<String>::new());
+        assert_eq!(opencode_models(&[0xff, 0xfe, b'\n']), Vec::<String>::new());
     }
 
     #[test]

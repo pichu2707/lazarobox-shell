@@ -206,10 +206,27 @@ pub fn model_rows(
             .iter()
             .map(|(label, value)| labeled(label, value, Mark::Plain, true))
             .collect();
+        // The models the CLI itself listed at detection (opencode), in its
+        // order, after the catalog ones.
+        let listed: Vec<&str> = detection
+            .and_then(|d| {
+                d.engines
+                    .iter()
+                    .find(|s| s.id == engine && s.status == Status::Available)
+            })
+            .map(|s| s.models.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        let known = |m: &str| catalog.iter().any(|(_, value)| *value == m);
+        rows.extend(
+            listed
+                .iter()
+                .filter(|m| !known(m))
+                .map(|m| row(m, Mark::Plain, true)),
+        );
         rows.extend(
             assigned
                 .iter()
-                .filter(|m| !catalog.iter().any(|(_, value)| value == *m))
+                .filter(|m| !known(m) && !listed.contains(m))
                 .map(|m| row(m, Mark::Plain, true)),
         );
         rows.push(PickRow {
@@ -899,6 +916,79 @@ mod tests {
             model_rows("codex", Target::Task(Task::Code), &draft, Some(&d)),
             [model("default", Mark::Plain, true, false), custom]
         );
+    }
+
+    // opencode lists its models at detection: they follow `default`, in the
+    // CLI's order, and `custom…` stays last.
+    #[test]
+    fn opencode_models_are_default_then_the_detected_ones_then_custom() {
+        let d = detection(vec![state(
+            "opencode",
+            Status::Available,
+            &["default", "openai/gpt-5.4", "opencode/big-pickle"],
+        )]);
+        let plain = |value: &str| {
+            row(
+                PickKey::Model(value.to_owned()),
+                value,
+                Mark::Plain,
+                true,
+                false,
+            )
+        };
+        assert_eq!(
+            model_rows(
+                "opencode",
+                Target::Task(Task::Code),
+                &AiConfig::default(),
+                Some(&d)
+            ),
+            [
+                plain("default"),
+                plain("openai/gpt-5.4"),
+                plain("opencode/big-pickle"),
+                row(PickKey::Custom, "custom…", Mark::Plain, true, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn opencode_without_a_listing_is_default_then_custom() {
+        let d = detection(vec![state("opencode", Status::Available, &["default"])]);
+        let rows = model_rows(
+            "opencode",
+            Target::Task(Task::Code),
+            &AiConfig::default(),
+            Some(&d),
+        );
+        assert_eq!(
+            rows,
+            [
+                model("default", Mark::Plain, true, false),
+                row(PickKey::Custom, "custom…", Mark::Plain, true, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_opencode_model_missing_from_the_listing_stays_selectable_before_custom() {
+        let d = detection(vec![state(
+            "opencode",
+            Status::Available,
+            &["default", "openai/gpt-5.4"],
+        )]);
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Code, "opencode", Some("local/mine"));
+        let rows = model_rows("opencode", Target::Task(Task::Code), &draft, Some(&d));
+        let n = rows.len();
+        assert_eq!(rows[n - 2], model("local/mine", Mark::Plain, true, true));
+        assert_eq!(rows[n - 1].key, PickKey::Custom);
+        // A saved model that the listing has is the one current row.
+        assign(&mut draft, Task::Code, "opencode", Some("openai/gpt-5.4"));
+        let rows = model_rows("opencode", Target::Task(Task::Code), &draft, Some(&d));
+        let current: Vec<_> = rows.iter().filter(|r| r.current).collect();
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].key, PickKey::Model("openai/gpt-5.4".into()));
     }
 
     // The saved value stays the CLI value: a saved alias or id loads on its
