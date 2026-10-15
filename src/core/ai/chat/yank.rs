@@ -22,24 +22,67 @@ pub fn last_answer(chat: &ChatState) -> Option<String> {
     Some(finished.text.clone())
 }
 
+/// One fenced block of a message.
+struct Fence<'a> {
+    /// The text after the opening fence, trimmed.
+    info: &'a str,
+    /// The lines between the fences.
+    body: Vec<&'a str>,
+    /// The closing fence was seen. Only the last block can be unclosed.
+    closed: bool,
+}
+
+/// The fenced blocks of `text`, in order. An unclosed fence runs to the end.
+/// This is the one fence parser: every yank of a block goes through it.
+fn fences(text: &str) -> Vec<Fence<'_>> {
+    let mut done = Vec::new();
+    let mut open: Option<Fence<'_>> = None;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if let Some(info) = trimmed.strip_prefix("```") {
+            match open.take() {
+                Some(mut fence) => {
+                    fence.closed = true;
+                    done.push(fence);
+                }
+                None => {
+                    open = Some(Fence {
+                        info: info.trim(),
+                        body: Vec::new(),
+                        closed: false,
+                    });
+                }
+            }
+        } else if let Some(fence) = open.as_mut() {
+            fence.body.push(line);
+        }
+    }
+    done.extend(open);
+    done
+}
+
 /// The code lines (without the fence lines) of the last fenced block of the
 /// last assistant message. An unclosed fence runs to the end of the message.
 pub fn last_code_block(chat: &ChatState) -> Option<String> {
     let text = last_answer(chat)?;
-    let mut block: Option<Vec<&str>> = None;
-    let mut open: Option<Vec<&str>> = None;
-    for line in text.lines() {
-        if line.trim_start().starts_with("```") {
-            match open.take() {
-                Some(done) => block = Some(done),
-                None => open = Some(Vec::new()),
-            }
-        } else if let Some(lines) = open.as_mut() {
-            lines.push(line);
-        }
-    }
-    let last = open.or(block)?;
-    (!last.is_empty()).then(|| last.join("\n"))
+    let last = fences(&text).pop()?;
+    (!last.body.is_empty()).then(|| last.body.join("\n"))
+}
+
+/// The body of the last closed fenced block of the last finished answer whose
+/// language is a shell: `bash`, `sh`, `shell` or `zsh`, any case. The language
+/// is the first word after the opening fence. `None` when that block is empty.
+pub fn last_shell_block(chat: &ChatState) -> Option<String> {
+    let text = last_answer(chat)?;
+    let last = fences(&text).into_iter().rev().find(|f| {
+        f.closed
+            && f.info.split_whitespace().next().is_some_and(|lang| {
+                ["bash", "sh", "shell", "zsh"]
+                    .iter()
+                    .any(|s| lang.eq_ignore_ascii_case(s))
+            })
+    })?;
+    (!last.body.is_empty()).then(|| last.body.join("\n"))
 }
 
 #[cfg(test)]
@@ -176,5 +219,55 @@ mod tests {
             m.status = MsgStatus::Truncated;
         }
         assert_eq!(last_answer(&state).as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn shell_languages_are_found_in_any_case() {
+        for lang in [
+            "bash",
+            "sh",
+            "shell",
+            "zsh",
+            "BASH",
+            "Sh",
+            "Zsh",
+            "bash title=x",
+        ] {
+            let state = answered(&format!("text\n```{lang}\nls -la\n```\n"));
+            assert_eq!(
+                last_shell_block(&state).as_deref(),
+                Some("ls -la"),
+                "{lang}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_or_no_language_gives_nothing() {
+        for body in [
+            "```rust\nlet x = 1;\n```",
+            "```\nls\n```",
+            "```bashful\nls\n```",
+            "```python\nprint(1)\n```",
+            "```bash\nls\n",
+            "plain",
+            "```bash\n```",
+        ] {
+            assert_eq!(last_shell_block(&answered(body)), None, "{body:?}");
+        }
+    }
+
+    #[test]
+    fn the_last_closed_shell_block_wins() {
+        let state = answered("```bash\none\n```\n```rust\nx\n```\n```sh\ntwo\nthree\n```");
+        assert_eq!(last_shell_block(&state).as_deref(), Some("two\nthree"));
+    }
+
+    #[test]
+    fn a_shell_block_still_streaming_is_not_offered() {
+        let mut state = answered("```bash\nold\n```");
+        let (turn, _) = sent(&mut state, "again");
+        state.apply(turn, StreamEvent::Delta("```bash\nnew\n```".into()));
+        assert_eq!(last_shell_block(&state).as_deref(), Some("old"));
     }
 }
