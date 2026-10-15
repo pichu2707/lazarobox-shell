@@ -234,11 +234,25 @@ pub fn validate_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether `path` lives in a cargo `target/debug` or `target/release` dir,
+/// which `cargo clean` removes.
+pub fn is_build_artefact(path: &Path) -> bool {
+    let parts: Vec<_> = path.components().map(|c| c.as_os_str()).collect();
+    parts
+        .windows(2)
+        .any(|w| w[0] == "target" && (w[1] == "debug" || w[1] == "release"))
+}
+
+const BUILD_ARTEFACT_NOTE: &str = "the launcher points at a build artefact that `cargo clean` removes; run install-desktop from the installed binary (cargo install) instead.";
+
 /// Renders the launcher for `choice` running `bin`.
 pub fn plan_install(choice: &Choice, bin: &Path) -> Result<Plan, String> {
     validate_path(bin)?;
     let bin_text = bin.to_string_lossy().into_owned();
     let mut notes = Vec::new();
+    if is_build_artefact(bin) {
+        notes.push(BUILD_ARTEFACT_NOTE.to_string());
+    }
     let (exec, terminal_flag, wm_class) = match choice {
         Choice::Terminal {
             name, path, known, ..
@@ -281,11 +295,31 @@ fn render(exec: &str, terminal: &str, wm_class: bool) -> String {
         match line {
             "@STARTUP_WM_CLASS@" if !wm_class => continue,
             "@STARTUP_WM_CLASS@" => out.push_str(&format!("StartupWMClass={WM_CLASS}")),
-            _ => out.push_str(&line.replace("@EXEC@", exec).replace("@TERMINAL@", terminal)),
+            _ => substitute(
+                line,
+                &[("@EXEC@", exec), ("@TERMINAL@", terminal)],
+                &mut out,
+            ),
         }
         out.push('\n');
     }
     out
+}
+
+/// Replaces each placeholder of `line` in one left-to-right pass, so text
+/// that was substituted in is never scanned again.
+fn substitute(line: &str, vars: &[(&str, &str)], out: &mut String) {
+    let mut rest = line;
+    while let Some((at, key, value)) = vars
+        .iter()
+        .filter_map(|(k, v)| rest.find(k).map(|at| (at, *k, *v)))
+        .min_by_key(|(at, ..)| *at)
+    {
+        out.push_str(&rest[..at]);
+        out.push_str(value);
+        rest = &rest[at + key.len()..];
+    }
+    out.push_str(rest);
 }
 
 #[cfg(test)]

@@ -277,3 +277,46 @@ fn unsafe_terminal_path_is_refused_too() {
     };
     assert!(plan_install(&choice, Path::new(BIN)).is_err());
 }
+
+#[test]
+fn build_artefact_paths_are_detected_by_component() {
+    for yes in [
+        "/src/lazarobox-shell/target/debug/lazarobox-shell",
+        "/src/x/target/release/lazarobox-shell",
+    ] {
+        assert!(is_build_artefact(Path::new(yes)), "{yes}");
+    }
+    for no in [
+        "/home/u/.cargo/bin/lazarobox-shell",
+        "/opt/target/bin/lazarobox-shell",
+        "/opt/mytarget/debug/lazarobox-shell",
+        "/opt/target-debug/lazarobox-shell",
+    ] {
+        assert!(!is_build_artefact(Path::new(no)), "{no}");
+    }
+}
+
+#[test]
+fn a_build_artefact_binary_gets_a_cargo_clean_note() {
+    let bin = Path::new("/src/lazarobox-shell/target/debug/lazarobox-shell");
+    let plan = plan_install(&Choice::Fallback, bin).unwrap();
+    assert!(plan.notes.iter().any(|n| n.contains("cargo clean")));
+    assert!(
+        !plan_for("kitty")
+            .notes
+            .iter()
+            .any(|n| n.contains("cargo clean"))
+    );
+}
+
+#[test]
+fn placeholders_in_a_path_are_not_rewritten() {
+    let choice = pick(None, None, &["kitty"]);
+    let bin = Path::new("/opt/@TERMINAL@/@EXEC@/lazarobox-shell");
+    let plan = plan_install(&choice, bin).unwrap();
+    assert!(plan.contents.contains(&format!(
+        "Exec=/usr/bin/kitty --class lazarobox --title Lazarobox {}\n",
+        bin.display()
+    )));
+    assert!(plan.contents.contains("Terminal=false\n"));
+}

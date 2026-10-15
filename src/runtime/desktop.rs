@@ -89,7 +89,14 @@ pub fn execute(options: &Options, ctx: &Context, out: &mut dyn Write) -> Result<
         Options::Uninstall => {
             match fs::remove_file(&target) {
                 Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return writeln!(
+                        out,
+                        "Nothing to remove: {} does not exist",
+                        target.display()
+                    )
+                    .map_err(io_error);
+                }
                 Err(e) => return Err(format!("cannot remove {}: {e}", target.display())),
             }
             (ctx.refresh_db)(&apps_dir);
@@ -124,12 +131,24 @@ fn write_atomically(dir: &Path, target: &Path, contents: &str) -> std::io::Resul
     fs::create_dir_all(dir)?;
     let tmp = dir.join(format!(".{FILE_NAME}.{}.tmp", std::process::id()));
     let result = (|| {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
+        let open = || {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)
+        };
+        let mut file = match open() {
+            // A temp file left by a crashed run with the same pid: drop it
+            // and retry once.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                fs::remove_file(&tmp)?;
+                open()?
+            }
+            other => other?,
+        };
         file.write_all(contents.as_bytes())?;
         file.set_permissions(fs::Permissions::from_mode(0o644))?;
+        file.sync_all()?;
         drop(file);
         fs::rename(&tmp, target)
     })();

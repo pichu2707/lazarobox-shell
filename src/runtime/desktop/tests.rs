@@ -129,6 +129,45 @@ fn uninstall_removes_the_file_and_is_idempotent() {
 }
 
 #[test]
+fn uninstall_without_a_file_says_nothing_to_remove() {
+    let fx = Fixture::new();
+    let (result, out) = fx.run(&Options::Uninstall, None, None, &[]);
+    result.unwrap();
+    assert!(out.starts_with("Nothing to remove"), "{out}");
+    assert!(!out.contains("Removed"), "{out}");
+}
+
+#[test]
+fn a_stale_temp_file_from_a_crashed_run_does_not_block_install() {
+    let fx = Fixture::new();
+    let apps = fx.target().parent().unwrap().to_path_buf();
+    fs::create_dir_all(&apps).unwrap();
+    let stale = apps.join(format!(".lazarobox.desktop.{}.tmp", std::process::id()));
+    fs::write(&stale, "stale").unwrap();
+    fx.run(&install(None), None, None, &["kitty"]).0.unwrap();
+    assert!(fx.target().is_file());
+    assert!(!stale.exists());
+}
+
+#[test]
+fn a_build_artefact_exe_is_reported_with_a_note() {
+    let fx = Fixture::new();
+    let lookup = |_: &str| None;
+    let refresh = |_: &Path| {};
+    let ctx = Context {
+        env_terminal: None,
+        xdg_data_home: None,
+        home: Some(fx.home.path().as_os_str().to_owned()),
+        exe: PathBuf::from("/src/lazarobox-shell/target/debug/lazarobox-shell"),
+        lookup: &lookup,
+        refresh_db: &refresh,
+    };
+    let mut out = Vec::new();
+    execute(&install(None), &ctx, &mut out).unwrap();
+    assert!(String::from_utf8(out).unwrap().contains("cargo clean"));
+}
+
+#[test]
 fn reinstall_replaces_a_symlink_instead_of_writing_through_it() {
     let fx = Fixture::new();
     let apps = fx.target().parent().unwrap().to_path_buf();
