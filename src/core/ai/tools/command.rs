@@ -226,6 +226,13 @@ mod tests {
     }
 
     #[test]
+    fn next_line_is_refused() {
+        // NEL is a C1 control that some terminals treat as a line break.
+        assert!(refused("a\u{0085}b"));
+        assert!(refused("ls\u{0085}"));
+    }
+
+    #[test]
     fn newline_and_tab_are_kept() {
         let text = "for f in *; do\n\techo $f\ndone";
         assert_eq!(validate(text).unwrap().as_str(), text);

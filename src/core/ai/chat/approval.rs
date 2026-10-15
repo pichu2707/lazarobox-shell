@@ -16,6 +16,10 @@ use crate::core::ai::tools::command::Refusal;
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 fn next_id() -> u64 {
+    // Saturating, not wrapping: reaching u64::MAX takes longer than the
+    // process can live, and if it ever happened the id would stop moving
+    // rather than roll over to an old one. `fetch_update` always succeeds
+    // here (the closure never returns None), so the fallback is unreachable.
     NEXT_ID
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
             Some(n.saturating_add(1))
