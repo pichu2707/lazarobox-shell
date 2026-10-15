@@ -49,8 +49,9 @@ pub const ANSWER_CAP: usize = 1 << 20;
 pub const MAX_MESSAGES: usize = 400;
 /// Shown until the first byte of an answer arrives.
 pub const WAITING: &str = "waiting for the model…";
-/// Shown when the first byte is late (a cold model load).
-pub const LOADING: &str = "loading model…";
+/// Shown when the wait runs long: no first byte after 3 s (a cold model load),
+/// or a CLI silent for 10 s after its first bytes (a slow or busy model).
+pub const STILL_WAITING: &str = "still waiting for the model…";
 /// System line for a stream that ended without a final event.
 pub const INTERRUPTED: &str = "stream interrupted";
 /// System line shown once, before the oldest message the model still sees.
@@ -423,7 +424,7 @@ impl ChatState {
             // Reasoning counts as the first byte: its block replaces the text.
             Phase::Waiting { .. } if self.live_reasoning().is_some() => None,
             Phase::Waiting { slow: false } => Some(WAITING),
-            Phase::Waiting { slow: true } => Some(LOADING),
+            Phase::Waiting { slow: true } => Some(STILL_WAITING),
             Phase::Idle | Phase::Streaming => None,
         }
     }

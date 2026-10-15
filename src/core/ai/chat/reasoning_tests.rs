@@ -65,7 +65,7 @@ fn a_thinking_delta_replaces_the_loading_text_too() {
     let mut state = chat();
     let (turn, _) = sent_at(&mut state, "hi", base);
     state.apply_at(turn, StreamEvent::Slow, at(base, 3000));
-    assert_eq!(state.waiting_text(), Some(LOADING));
+    assert_eq!(state.waiting_text(), Some(STILL_WAITING));
     state.apply_at(turn, thinking("x"), at(base, 3100));
     assert_eq!(state.waiting_text(), None);
 }

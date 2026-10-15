@@ -54,6 +54,10 @@ pub struct Timeouts {
     pub total: Duration,
     /// Without a first byte after this long, a `Slow` event is sent once.
     pub slow: Duration,
+    /// Once the reply started, this much silence sends a `Slow` event. It
+    /// shares the single `Slow` budget with the pre-first-byte hint. `None`
+    /// sends none.
+    pub quiet: Option<Duration>,
 }
 
 impl Timeouts {
@@ -64,16 +68,22 @@ impl Timeouts {
         idle: Duration::from_secs(60),
         total: Duration::from_secs(15 * 60),
         slow: Duration::from_secs(3),
+        quiet: None,
     };
 
     /// What a CLI turn gets: a CLI starts slower than a loaded server and may
-    /// think for a while between events. `connect` is not used.
+    /// think for a while between events. A CLI prints its `init` line at once
+    /// and can then stay silent for minutes while it retries a busy model
+    /// (gemini measured 25 s to over 120 s), so the idle limit is 300 s and a
+    /// `Slow` event after 10 s of silence says the wait is on the model.
+    /// `connect` is not used.
     pub const CLI: Self = Self {
         connect: Duration::from_secs(2),
         first_byte: Duration::from_secs(120),
-        idle: Duration::from_secs(90),
+        idle: Duration::from_secs(300),
         total: Duration::from_secs(15 * 60),
         slow: Duration::from_secs(3),
+        quiet: Some(Duration::from_secs(10)),
     };
 }
 
@@ -181,9 +191,19 @@ impl<'a> Wait<'a> {
         }
     }
 
+    /// Best effort: a full channel must not hold back the read or the timers,
+    /// so the hint is dropped instead. `Err` when the receiver is gone.
+    fn hint(&self, tx: &mpsc::Sender<StreamEvent>) -> Result<(), ()> {
+        match tx.try_send(StreamEvent::Slow) {
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(()),
+            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
+        }
+    }
+
     /// One read, under the limit that applies now. Before the first byte that
     /// is the first-byte limit, with a single `Slow` event on the way; after
-    /// it, the idle limit.
+    /// it, the idle limit, with that one `Slow` event if `quiet` is set and the
+    /// silence lasts that long.
     pub(crate) async fn read<S: AsyncRead + Unpin>(
         &mut self,
         stream: &mut S,
@@ -191,12 +211,22 @@ impl<'a> Wait<'a> {
         tx: &mpsc::Sender<StreamEvent>,
     ) -> Result<usize, Stop> {
         let read = if self.started {
-            tokio::select! {
-                read = timeout(self.timeouts.idle, stream.read(buf)) => match read {
-                    Ok(read) => read,
-                    Err(_) => return Err(Stop::Failed(STALLED)),
-                },
-                _ = tx.closed() => return Err(Stop::Cancelled),
+            let give_up = Instant::now() + self.timeouts.idle;
+            let quiet_at = self.timeouts.quiet.map(|quiet| Instant::now() + quiet);
+            let mut hinted = self.slow_sent;
+            loop {
+                tokio::select! {
+                    read = stream.read(buf) => break read,
+                    _ = sleep_until(quiet_at.unwrap_or(give_up)), if !hinted && quiet_at.is_some() => {
+                        hinted = true;
+                        self.slow_sent = true;
+                        if self.hint(tx).is_err() {
+                            return Err(Stop::Cancelled);
+                        }
+                    }
+                    _ = sleep_until(give_up) => return Err(Stop::Failed(STALLED)),
+                    _ = tx.closed() => return Err(Stop::Cancelled),
+                }
             }
         } else {
             let slow_at = self.start + self.timeouts.slow;
@@ -206,11 +236,8 @@ impl<'a> Wait<'a> {
                     read = stream.read(buf) => break read,
                     _ = sleep_until(slow_at), if !self.slow_sent => {
                         self.slow_sent = true;
-                        // Best effort: a full channel must not hold back the
-                        // read or the timers, so the hint is dropped instead.
-                        match tx.try_send(StreamEvent::Slow) {
-                            Err(mpsc::error::TrySendError::Closed(_)) => return Err(Stop::Cancelled),
-                            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
+                        if self.hint(tx).is_err() {
+                            return Err(Stop::Cancelled);
                         }
                     }
                     _ = sleep_until(give_up) => return Err(Stop::Failed(NO_ANSWER)),

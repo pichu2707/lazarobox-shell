@@ -17,7 +17,7 @@ pub enum LineKind {
     /// Inside a fenced block, fences included.
     Code,
     System,
-    /// `waiting for the model…` / `loading model…`.
+    /// `waiting for the model…` / `still waiting for the model…`.
     Waiting,
     /// `(cancelled)` and the like, after a partial answer.
     Mark,

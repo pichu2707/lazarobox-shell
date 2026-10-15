@@ -216,7 +216,7 @@ Empty reasoning fragments MUST yield no event. The request sent to the engine MU
 - THEN the body or argv and stdin contain no reasoning text
 
 ### Requirement: Timeouts
-A server turn MUST use separate timeouts: connect 2 s, first byte 120 s (a cold model load can be slow), and idle 60 s between chunks once streaming. A CLI turn MUST use first byte 120 s and idle 90 s. Every turn MUST also end after a total of 15 minutes. Each timeout MUST end the turn with a distinct error event (cannot connect, no answer, stalled, too long) and release its resources (socket closed or child killed). When no first byte has arrived after 3 seconds the runtime MUST emit a `Slow` event, which the pane shows as `loading model…`. A thinking delta counts as the first byte and as stream activity: it stops the `Slow` timer, satisfies the first-byte timeout and resets the idle timeout.
+A server turn MUST use separate timeouts: connect 2 s, first byte 120 s (a cold model load can be slow), and idle 60 s between chunks once streaming. A CLI turn MUST use first byte 120 s and idle 300 s (a CLI can go silent for minutes after its first line while it retries a busy model). Every turn MUST also end after a total of 15 minutes. Each timeout MUST end the turn with a distinct error event (cannot connect, no answer, stalled, too long) and release its resources (socket closed or child killed). When no first byte has arrived after 3 seconds the runtime MUST emit a `Slow` event, which the pane shows as `still waiting for the model…`. A CLI turn MUST also emit one `Slow` event after 10 s of silence once its first bytes have arrived (unless the pre-first-byte `Slow` was already sent this turn; at most one `Slow` per turn), so a long wait on the model is not a silent spinner; a server turn does not. A thinking delta counts as the first byte and as stream activity: it stops the `Slow` timer, satisfies the first-byte timeout and resets the idle timeout.
 
 #### Scenario: Connect refused [auto]
 - GIVEN nothing listens on the engine port
@@ -236,7 +236,12 @@ A server turn MUST use separate timeouts: connect 2 s, first byte 120 s (a cold 
 #### Scenario: CLI timeouts [auto]
 - GIVEN a fake CLI that prints nothing, and another that prints one delta and then stalls (time injected)
 - WHEN each turn runs
-- THEN the first ends with a no-answer error after 120 s, the second with a stalled error after 90 s, and the child group is killed
+- THEN the first ends with a no-answer error after 120 s, the second with a stalled error after 300 s, and the child group is killed
+
+#### Scenario: CLI quiet after its first line [auto]
+- GIVEN a fake CLI that prints its init line, stays silent for 100 s (time injected) and then streams a delta and a result
+- WHEN the turn runs
+- THEN one `Slow` event is sent after 10 s of silence, and the turn ends with `Done` (no stalled error)
 
 #### Scenario: Total time cap [auto]
 - GIVEN a server (and a fake CLI) that keeps sending a delta every 10 s (time injected)
@@ -508,7 +513,7 @@ Each shipped adapter MUST stream a reply from the real engine.
 #### Scenario: Cold model load [manual]
 - GIVEN an Ollama model that is not loaded in memory
 - WHEN a message is sent
-- THEN the pane shows `waiting for the model…` then `loading model…` and no timeout error occurs while it loads
+- THEN the pane shows `waiting for the model…` then `still waiting for the model…` and no timeout error occurs while it loads
 
 #### Scenario: Live reasoning model [manual]
 - GIVEN an Ollama reasoning model (one that streams a `thinking` field) assigned to `chat`

@@ -25,7 +25,7 @@ fn waiting_text_follows_the_first_byte_and_the_slow_event() {
     let (turn, _) = sent(&mut state, "hi");
     assert_eq!(state.waiting_text(), Some("waiting for the model…"));
     state.apply(turn, StreamEvent::Slow);
-    assert_eq!(state.waiting_text(), Some("loading model…"));
+    assert_eq!(state.waiting_text(), Some("still waiting for the model…"));
     state.apply(turn, delta("a"));
     assert_eq!(state.waiting_text(), None);
 }
