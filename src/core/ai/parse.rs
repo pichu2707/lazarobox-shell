@@ -204,7 +204,11 @@ mod tests {
     #[test]
     fn codex_caps_the_list_at_sixty_four() {
         let items: Vec<_> = (0..100)
-            .map(|i| format!(r#"{{"slug":"m{i}","display_name":"M{i}","visibility":"list","priority":{i}}}"#))
+            .map(|i| {
+                format!(
+                    r#"{{"slug":"m{i}","display_name":"M{i}","visibility":"list","priority":{i}}}"#
+                )
+            })
             .collect();
         let raw = format!(r#"{{"models":[{}]}}"#, items.join(","));
         let got = codex_models(&raw);

@@ -796,13 +796,7 @@ mod tests {
     }
 
     fn pick(label: &str, value: &str, mark: Mark, current: bool) -> PickRow {
-        row(
-            PickKey::Model(value.to_owned()),
-            label,
-            mark,
-            true,
-            current,
-        )
+        row(PickKey::Model(value.to_owned()), label, mark, true, current)
     }
 
     fn custom_row() -> PickRow {
@@ -899,7 +893,10 @@ mod tests {
             task_label(&draft, Task::Chat, Some(&d)),
             "codex › gpt-6.1-sol"
         );
-        assert_eq!(task_label(&draft, Task::Review, Some(&d)), "codex › default");
+        assert_eq!(
+            task_label(&draft, Task::Review, Some(&d)),
+            "codex › default"
+        );
         let none = codex_with(&[]);
         assert_eq!(
             task_label(&draft, Task::Code, Some(&none)),
@@ -1065,10 +1062,7 @@ mod tests {
         );
         assert_eq!(
             model_rows("codex", Target::Task(Task::Code), &draft, Some(&d)),
-            [
-                labeled("default (CLI picks)", "default"),
-                custom
-            ]
+            [labeled("default (CLI picks)", "default"), custom]
         );
     }
 

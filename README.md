@@ -113,7 +113,7 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 
 Con `Ctrl+Espacio` y `m` se abre el menú. Su sección **AI** muestra el motor general (**Set all tasks**) y una fila por tarea. `Enter` sobre una fila de tarea abre su selector de dos niveles (motor y modelo); `Esc` vuelve un nivel. La fila `custom…` permite escribir o pegar el nombre de un modelo. `r` sobre una fila de tarea o dentro del selector vuelve a detectar los motores.
 
-`s` guarda la elección en la tabla `[ai]` de `config.toml` (y la de cada tarea en `[ai.tasks.*]`); `Esc` en el nivel superior la descarta. `Enter` nunca guarda ni cierra el menú.
+`s` guarda la elección en la tabla `[ai]` de `config.toml` (y la de cada tarea en `[ai.tasks.*]`); `Esc` en el nivel superior la descarta. `Enter` nunca guarda ni cierra el menú. Mientras la elección difiera de la guardada, el pie del menú muestra `unsaved changes · s to save · Esc discards`.
 
 El catálogo de modelos de Ollama es solo informativo y puede estar desactualizado. Los modelos del catálogo que no están instalados aparecen como `download required` y no se pueden elegir: **no se descarga nada**. Para usar uno, instálalo tú (`ollama pull <modelo>`) y pulsa `r`.
 
@@ -205,7 +205,7 @@ El directorio de trabajo del CLI es una carpeta vacía y privada, el entorno se 
 
 **claude.** Usa `--tools ""`, sin servidores MCP, sin comandos con barra y sin guardar sesión (`--no-session-persistence`). El prompt del perfil sustituye al prompt integrado del CLI.
 
-**codex.** Elige un modelo que **tu cuenta admita**. Con una cuenta de ChatGPT, solo algunos modelos funcionan: el modelo por defecto de codex (por ejemplo `gpt-5.5`) puede fallar con `The '<modelo>' model is not supported when using Codex with a ChatGPT account`. Pon el nombre en `[ai.tasks.chat] model = "..."` o en la fila `custom…` del selector. codex usa `$CODEX_HOME` si está definido. Se lanza sin guardar sesión (`--ephemeral`), con el sandbox de solo lectura y con todas sus herramientas desactivadas.
+**codex.** La lista de modelos sale de **tu cuenta**: al detectar los motores, lazarobox ejecuta una vez `codex debug models` (con un límite de 5 s, sin entrada estándar y en una carpeta temporal privada; lee el catálogo que codex ya tiene en `~/.codex/models_cache.json` y no hace llamadas de red ni de modelo). El selector muestra `default (CLI picks)` y, a continuación, los modelos que tu cuenta lista, con su nombre visible; lo que se guarda en `config.toml` es siempre el identificador (por ejemplo `gpt-6.1-sol`). Con un codex antiguo, sin ese subcomando, o si el comando falla, solo aparece `default`. Un modelo asignado o escrito en `custom…` que no esté en la lista de tu cuenta se marca `not in your account's list`; es solo un aviso y no bloquea la elección, porque la lista puede estar desactualizada. Elige un modelo que **tu cuenta admita**. Con una cuenta de ChatGPT, solo algunos modelos funcionan: el modelo por defecto de codex (por ejemplo `gpt-5.5`) puede fallar con `The '<modelo>' model is not supported when using Codex with a ChatGPT account`. Pon el nombre en `[ai.tasks.chat] model = "..."` o en la fila `custom…` del selector. codex usa `$CODEX_HOME` si está definido. Se lanza sin guardar sesión (`--ephemeral`), con el sandbox de solo lectura y con todas sus herramientas desactivadas.
 
 **gemini.** Notas:
 

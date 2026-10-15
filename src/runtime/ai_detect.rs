@@ -593,7 +593,7 @@ mod tests {
     #[test]
     fn the_cap_fits_the_real_catalog_size() {
         // `codex debug models` printed 560491 bytes with codex-cli 0.162.1.
-        assert!(LISTING_CAP > 560_491);
+        const { assert!(LISTING_CAP > 560_491) };
     }
 
     #[tokio::test]

@@ -168,9 +168,11 @@ The menu footer MUST show, while there is no error, the hint of the current view
 - Picker level 1: `j/k move · Enter choose · r refresh · Esc back · s save`
 - Picker level 2: `j/k move · Enter choose · r refresh · Esc back · s save`
 - Picker, cursor on a disabled row: `<reason> · not selectable`, where `<reason>` is the row's mark text: `download required`, `no models detected`, `engine not detected` or `checking…`
+- Picker, cursor on a CLI model that is not in the account's list: `not in your account's list · kept as typed, the list may be stale` (a warning; the row stays selectable)
 - Custom field: `type a model · Enter ok · Ctrl+U clear · Esc back`
+- Any other AI or Settings view while the AI draft differs from the saved config: `unsaved changes · s to save · Esc discards` (`Esc back` in the picker), because Enter never saves and Esc at the top level discards the draft
 
-When a detection cue is active (see Detection cues) the hint of an AI view (task row, picker level 1 or 2) is replaced by `<cue> · s save · Esc cancel` on the task list and `<cue> · s save · Esc back` in the picker, so the footer fits the 62-column popup. Precedence, highest first: error, disabled-row text, cue, hint. A pending error MUST be cleared by the next key press (Press, not Repeat or Release), which then acts normally; an unlisted key clears it and has no other effect.
+When a detection cue is active (see Detection cues) the hint of an AI view (task row, picker level 1 or 2) is replaced by `<cue> · s save · Esc cancel` on the task list and `<cue> · s save · Esc back` in the picker, so the footer fits the 62-column popup. Precedence, highest first: error, disabled-row text, not-in-list warning, cue, unsaved-changes hint, hint. A pending error MUST be cleared by the next key press (Press, not Repeat or Release), which then acts normally; an unlisted key clears it and has no other effect.
 
 #### Scenario: Footer hint [auto, TestBackend + insta]
 - GIVEN MENU just opened and detection finished
@@ -191,6 +193,11 @@ When a detection cue is active (see Detection cues) the hint of an AI view (task
 - GIVEN level 2 for ollama with the cursor on a curated not-downloaded model, detection finished
 - WHEN rendered
 - THEN the footer reads `download required · not selectable`
+
+#### Scenario: Unsaved changes hint [auto]
+- GIVEN the code task is assigned in the saved config and the user picks another model in the picker
+- WHEN the footer is read after returning to the task list
+- THEN it reads `unsaved changes · s to save · Esc discards`, and it is the normal hint again once the draft matches the saved config
 
 #### Scenario: Error replaces hint [auto]
 - GIVEN a save failure message

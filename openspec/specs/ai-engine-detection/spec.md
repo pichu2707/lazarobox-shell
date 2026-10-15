@@ -121,6 +121,48 @@ A CLI is `available` when a regular file with an execute permission bit exists u
 - WHEN codex is detected
 - THEN it is `not installed`
 
+### Requirement: Codex model listing
+When codex is `available`, detection MUST run `<codex> debug models` once and keep the models that the account can use. The run MUST be direct (no shell), with stdin closed, in a fresh private (0700) scratch folder that is removed afterwards, in its own process group, and bounded by a timeout of 5 s (the group is killed on timeout) and an output cap of 2 MiB (the real catalog printed about 560 KB with codex-cli 0.162.1; more than the cap is dropped, not truncated). The child gets the chat's scrubbed environment (ssh/gpg agents, askpass helpers and the state of an outer Claude Code session removed, a relative `$CODEX_HOME` dropped). It is NOT run inside the jail: the subcommand only prints the catalog codex already cached under `$CODEX_HOME` or `~/.codex` (`models_cache.json`), makes no model call and no network request, and runs no tool, so it is as read-only as `--version`. No other CLI is probed this way (gemini has no listing command).
+
+The pure parser MUST read the JSON object `{"models": [...]}`, keep only entries with `visibility == "list"`, order them by `priority` ascending (stable; a missing priority sorts last), and return `(label, slug)` pairs where the label is the sanitized `display_name` (the slug when empty) and the slug is the value saved and passed to the CLI. A slug MUST be rejected when it is empty, `default`, longer than 128 characters, starts with `-` or holds whitespace or a control character (the same rules the chat adapters apply to a model name); duplicates are dropped and at most 64 models are kept. The engine state exposes the pairs as `model_labels`, and `models` is `default` followed by the slugs.
+
+On any failure (an old codex without the subcommand, a non-zero exit, a timeout, too much output, invalid JSON, no listed model) the CLI stays `available` with just `default` and no error is shown.
+
+#### Scenario: Listing parsed [auto]
+- GIVEN the fixture `tests/fixtures/codex/debug-models.json` with nine entries, two of them `hide`
+- WHEN it is parsed
+- THEN seven `(label, slug)` pairs result, ordered by priority, starting with `GPT-6.1-Sol` = `gpt-6.1-sol`
+
+#### Scenario: Invalid entries dropped [auto]
+- GIVEN entries whose slug starts with `-`, holds a space, a tab or a newline, is empty, is `default`, is 129 characters long, is not a string, or repeats an earlier slug, plus a `hide` entry and non-object items
+- WHEN parsed
+- THEN none of them is returned
+
+#### Scenario: Malformed output [auto]
+- GIVEN empty text, `not json`, `[]`, `{}`, `{"models":{}}` or truncated JSON
+- WHEN parsed
+- THEN the result is empty
+
+#### Scenario: Old codex fails soft [auto]
+- GIVEN a fake `codex` that exits 2 on `debug models`
+- WHEN codex is detected
+- THEN it is `available` with models `default` only
+
+#### Scenario: Listing run is contained [auto]
+- GIVEN a fake `codex` that prints its cwd, its mode and whether stdin is open
+- WHEN the listing runs
+- THEN the cwd is a fresh 0700 folder (removed afterwards), stdin is at EOF, and a hanging run is killed with its process group after the timeout
+
+#### Scenario: Output over the cap [auto]
+- GIVEN a fake `codex` that prints more than the cap
+- WHEN the listing runs
+- THEN the result is dropped
+
+#### Scenario: Only codex is probed [auto]
+- GIVEN fake `codex` and `claude` that both print the fixture
+- WHEN both are detected
+- THEN codex has seven labeled models and claude has none
+
 ### Requirement: Untrusted text is sanitized and bounded
 Every string taken from an engine (the first line of `--version` output and each model name from a server reply) is untrusted. Detection MUST strip ANSI CSI and OSC sequences (an OSC ends with BEL or ST), control characters, and bidi and format characters before the text is stored or shown. A version MUST be capped at 40 characters (and trimmed again after the cap), a model name at 128 characters, and a model list at 256 models per engine. A model name that is empty after sanitizing MUST be dropped. A duplicate model name MUST be offered only once in the menu.
 

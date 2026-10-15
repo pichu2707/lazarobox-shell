@@ -830,10 +830,12 @@ impl MenuState {
         // Enter never saves and Esc at the top level discards the draft, so
         // say it while the draft differs from the saved config.
         if ai.is_some_and(AiMenu::changed) && cue.is_none() {
-            let leave = if picker.is_some() { "Esc back" } else { "Esc discards" };
-            return Footer::Hint(Cow::Owned(format!(
-                "unsaved changes · s to save · {leave}"
-            )));
+            let leave = if picker.is_some() {
+                "Esc back"
+            } else {
+                "Esc discards"
+            };
+            return Footer::Hint(Cow::Owned(format!("unsaved changes · s to save · {leave}")));
         }
         Footer::Hint(match cue {
             Some(cue) if in_ai_view => {

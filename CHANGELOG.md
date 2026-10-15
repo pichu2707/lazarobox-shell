@@ -10,6 +10,20 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- The codex model list now comes from your account. At detection time
+  lazarobox runs `codex debug models` once (5 s timeout, 2 MiB output cap,
+  stdin closed, private scratch folder, scrubbed environment) and the picker
+  offers `default (CLI picks)` followed by the models the account lists, with
+  their display names as labels and the slugs as saved values. An older codex
+  without the subcommand, or any failure, shows only `default`.
+- A codex model that is assigned or typed in `custom…` but is not in the
+  account's list is marked `not in your account's list` in the picker, on the
+  task row and in the footer. It is a warning only.
+- The menu footer shows `unsaved changes · s to save · Esc discards` while the
+  AI draft differs from the saved config.
+
 ## [0.14.0] - 2026-10-15
 
 ### Added
