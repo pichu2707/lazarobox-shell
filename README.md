@@ -61,10 +61,29 @@ Desde el código fuente:
 
 ```bash
 cargo install --path .           # instala lazarobox-shell en ~/.cargo/bin
-scripts/install-desktop.sh       # añade el lanzador "Lazarobox" (rofi, menú de aplicaciones)
 ```
 
-El lanzador abre `lazarobox-shell` dentro de Kitty (`--class lazarobox`), así que no hace falta tener una terminal abierta. Requiere tener `kitty` y `lazarobox-shell` instalados; si falta alguno, el script termina con error. Las rutas de ambos se resuelven al instalar; si cambian, vuelve a ejecutar el script. Respeta `XDG_DATA_HOME` y `CARGO_HOME`. Para quitarlo: `scripts/install-desktop.sh --uninstall`.
+### Lanzador de escritorio
+
+Para abrir lazarobox desde un menú de aplicaciones (rofi, GNOME, KDE…) sin tener una terminal abierta:
+
+```bash
+lazarobox-shell install-desktop                       # instala el lanzador "Lazarobox"
+lazarobox-shell install-desktop --terminal alacritty  # fuerza una terminal concreta
+lazarobox-shell install-desktop --uninstall           # lo quita
+```
+
+Funciona con cualquier instalación (`cargo install lazarobox-shell` o desde el código fuente) y con cualquier terminal. El comando escribe `<XDG_DATA_HOME>/applications/lazarobox.desktop` (por defecto `~/.local/share/applications`; `XDG_DATA_HOME` solo se respeta si es una ruta absoluta) y usa rutas absolutas, porque la sesión de escritorio suele no tener `~/.cargo/bin` en el `PATH`. Si el binario se mueve, vuelve a ejecutar el comando.
+
+La terminal se elige en este orden:
+
+1. `--terminal <cmd>`.
+2. La variable `$TERMINAL`.
+3. `xdg-terminal-exec`.
+4. La primera encontrada en el `PATH`: `kitty`, `ghostty`, `wezterm`, `alacritty`, `foot`, `gnome-terminal`, `konsole`, `xfce4-terminal`, `x-terminal-emulator`.
+5. Si no hay ninguna, el lanzador usa `Terminal=true` y el escritorio decide qué terminal abrir.
+
+Para una terminal desconocida se usa `<cmd> -e <lazarobox-shell>` y el comando lo indica en su salida. Lazarobox está probado en Kitty: en otras terminales algunas teclas o el portapapeles por OSC 52 pueden no funcionar, y el comando lo avisa al instalar. Las rutas con caracteres especiales de la especificación Desktop Entry (espacios, comillas, `$`, `%`…) se rechazan en lugar de escaparse. `scripts/install-desktop.sh` sigue disponible como atajo que llama a este mismo comando.
 
 ### Anidamiento
 
