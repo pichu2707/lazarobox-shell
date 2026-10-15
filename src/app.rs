@@ -463,6 +463,11 @@ pub struct App {
     engines: Option<Detection>,
     /// A detection is in flight: further requests are dropped.
     detecting: bool,
+    /// The run in flight bypasses the codex listing cache.
+    detecting_forced: bool,
+    /// `r` was pressed during a run that was not forced: one forced run
+    /// follows it.
+    pending_force: bool,
     /// The saved AI choice; the menu edits a draft of it.
     ai: AiConfig,
     /// Whether the terminal window has the focus (chat-notify). Starts
@@ -536,6 +541,8 @@ impl App {
             note_choices: Vec::new(),
             engines: None,
             detecting: false,
+            detecting_forced: false,
+            pending_force: false,
             ai: AiConfig::default(),
             window_focused: true,
             jail: JailSupport::Unavailable("the jail was not probed"),
@@ -572,17 +579,29 @@ impl App {
             return Vec::new();
         }
         self.detecting = true;
+        self.detecting_forced = false;
         vec![Effect::DetectEngines]
     }
 
     /// Like [`Self::request_detection`], for the menu's `r`: the codex model
     /// list is read again instead of reused.
+    ///
+    /// A press during a run that was not forced is remembered and answered by
+    /// exactly one forced run once that run ends, so `r` is never dropped.
     pub fn request_forced_detection(&mut self) -> Vec<Effect> {
         if self.detecting {
+            self.pending_force |= !self.detecting_forced;
             return Vec::new();
         }
         self.detecting = true;
+        self.detecting_forced = true;
         vec![Effect::RedetectEngines]
+    }
+
+    /// Whether a detection run (or a queued forced one) is in progress.
+    #[cfg(test)]
+    fn detecting_now(&self) -> bool {
+        self.detecting
     }
 
     /// Sets the facts the statusline shows. They are inputs, not lookups, so
@@ -1059,7 +1078,12 @@ impl App {
                 self.engines = Some(detection);
                 self.detecting = false;
                 self.dirty = true;
-                self.run_waiting_sends()
+                let mut effects = self.run_waiting_sends();
+                if std::mem::take(&mut self.pending_force) {
+                    effects.extend(self.request_forced_detection());
+                    self.sync_checking();
+                }
+                effects
             }
             AppEvent::Chat(id, turn, event) => self.on_chat(id, turn, event),
             AppEvent::Memory(reply) => self.on_memory_reply(&reply),
@@ -5834,11 +5858,58 @@ mod app_tests {
     }
 
     #[test]
-    fn a_forced_detection_is_the_same_single_flight_run() {
+    fn a_forced_detection_starts_when_idle_and_is_single_flight() {
         let mut a = app();
         assert_eq!(a.request_forced_detection(), vec![Effect::RedetectEngines]);
         assert_eq!(a.request_detection(), Vec::<Effect>::new());
+    }
+
+    #[test]
+    fn a_refresh_during_a_normal_run_leads_to_exactly_one_forced_run_after_it() {
+        use crate::core::ai::Status;
+        let mut a = app();
+        assert_eq!(a.request_detection(), vec![Effect::DetectEngines]);
         assert_eq!(a.request_forced_detection(), Vec::<Effect>::new());
+        assert!(a.detecting_now(), "still refreshing while it waits");
+        let first = a.update(AppEvent::EnginesDetected(detection(Status::NotRunning)));
+        assert_eq!(first, vec![Effect::RedetectEngines]);
+        assert!(a.detecting_now(), "the follow-up is in flight");
+        let second = a.update(AppEvent::EnginesDetected(detection(Status::NotRunning)));
+        assert_eq!(second, Vec::<Effect>::new(), "and no third run");
+        assert!(!a.detecting_now());
+    }
+
+    #[test]
+    fn pressing_refresh_twice_in_flight_gives_one_follow_up() {
+        use crate::core::ai::Status;
+        let mut a = app();
+        a.request_detection();
+        a.request_forced_detection();
+        a.request_forced_detection();
+        let first = a.update(AppEvent::EnginesDetected(detection(Status::NotRunning)));
+        assert_eq!(first, vec![Effect::RedetectEngines]);
+        let second = a.update(AppEvent::EnginesDetected(detection(Status::NotRunning)));
+        assert_eq!(second, Vec::<Effect>::new());
+    }
+
+    #[test]
+    fn a_normal_request_in_flight_adds_nothing() {
+        use crate::core::ai::Status;
+        let mut a = app();
+        a.request_detection();
+        assert_eq!(a.request_detection(), Vec::<Effect>::new());
+        let done = a.update(AppEvent::EnginesDetected(detection(Status::NotRunning)));
+        assert_eq!(done, Vec::<Effect>::new());
+    }
+
+    #[test]
+    fn a_refresh_during_a_forced_run_needs_no_follow_up() {
+        use crate::core::ai::Status;
+        let mut a = app();
+        a.request_forced_detection();
+        assert_eq!(a.request_forced_detection(), Vec::<Effect>::new());
+        let done = a.update(AppEvent::EnginesDetected(detection(Status::NotRunning)));
+        assert_eq!(done, Vec::<Effect>::new());
     }
 
     #[test]
