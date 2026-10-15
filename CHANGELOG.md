@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-15
+
 ### Added
 
 - The codex model list now comes from your account. At detection time
@@ -387,7 +389,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.11.0...v0.12.0
