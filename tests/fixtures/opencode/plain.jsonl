@@ -1,0 +1,3 @@
+{"type":"step_start","timestamp":1700000000000,"sessionID":"ses_REDACTED","part":{"id":"prt_1","sessionID":"ses_REDACTED","messageID":"msg_1","type":"step-start"}}
+{"type":"text","timestamp":1700000001000,"sessionID":"ses_REDACTED","part":{"id":"prt_2","sessionID":"ses_REDACTED","messageID":"msg_1","type":"text","text":"Hi!","time":{"start":1700000000500,"end":1700000001000}}}
+{"type":"step_finish","timestamp":1700000001100,"sessionID":"ses_REDACTED","part":{"id":"prt_3","sessionID":"ses_REDACTED","messageID":"msg_1","type":"step-finish","reason":"stop","cost":0,"tokens":{"input":10,"output":2,"reasoning":0,"cache":{"read":0,"write":0}}}}

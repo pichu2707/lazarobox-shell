@@ -17,6 +17,7 @@ pub mod list;
 pub mod memory;
 pub mod note;
 pub mod notify;
+pub mod opencode;
 pub mod prompts;
 pub mod store;
 pub mod stream;

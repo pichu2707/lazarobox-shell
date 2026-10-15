@@ -1,0 +1,4 @@
+{"type":"step_start","timestamp":1700000000000,"sessionID":"ses_REDACTED","part":{"type":"step-start"}}
+{"type":"text","timestamp":1700000001000,"sessionID":"ses_REDACTED","part":{"type":"text","text":"First note."}}
+{"type":"text","timestamp":1700000002000,"sessionID":"ses_REDACTED","part":{"type":"text","text":"The answer."}}
+{"type":"step_finish","timestamp":1700000002100,"sessionID":"ses_REDACTED","part":{"type":"step-finish","reason":"stop"}}
