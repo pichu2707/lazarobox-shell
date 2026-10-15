@@ -458,7 +458,8 @@ mod tests {
     #[test]
     fn a_newer_turn_without_an_answer_never_reaches_back() {
         use crate::core::ai::chat::engine::ChatError;
-        let ends: [(&str, fn(&mut ChatState, u64)); 5] = [
+        type End = fn(&mut ChatState, u64);
+        let ends: [(&str, End); 5] = [
             ("done with no delta", |s, t| {
                 s.apply(t, StreamEvent::Done(Finish::Stop));
             }),
