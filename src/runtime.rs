@@ -1903,6 +1903,7 @@ mod tests {
                 status: Status::Available,
                 models: vec!["default".to_string()],
                 version: None,
+                model_labels: Vec::new(),
             }],
         };
         let quit = step(
@@ -2425,6 +2426,7 @@ mod tests {
                 status: Status::Available,
                 models: vec!["llama3:8b".to_owned()],
                 version: None,
+                model_labels: Vec::new(),
             }],
         }));
         app

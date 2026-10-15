@@ -51,6 +51,7 @@ fn ready_detection() -> Detection {
             status: Status::Available,
             models: vec!["llama3:8b".into()],
             version: None,
+            model_labels: Vec::new(),
         }],
     }
 }

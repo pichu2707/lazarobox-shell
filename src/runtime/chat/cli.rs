@@ -97,7 +97,7 @@ pub struct CliEnv {
 /// session, which would make the CLI think it runs inside one. Settings
 /// (`ANTHROPIC_*`, proxy, certificates, XDG, `HOME`, `PATH`, the D-Bus
 /// address a keyring login needs) are kept.
-const SCRUBBED: [&str; 8] = [
+pub(crate) const SCRUBBED: [&str; 8] = [
     "SSH_AUTH_SOCK",
     "SSH_AGENT_PID",
     "SSH_ASKPASS",

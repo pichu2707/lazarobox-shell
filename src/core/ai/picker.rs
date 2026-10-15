@@ -621,6 +621,7 @@ mod tests {
             status,
             models: models.iter().map(|m| m.to_string()).collect(),
             version: None,
+            model_labels: Vec::new(),
         }
     }
 

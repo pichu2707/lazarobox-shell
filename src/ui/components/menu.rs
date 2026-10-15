@@ -437,6 +437,7 @@ mod tests {
                         Vec::new()
                     },
                     version: None,
+                    model_labels: Vec::new(),
                 })
                 .collect(),
         }
@@ -503,6 +504,7 @@ mod tests {
                         Vec::new()
                     },
                     version: (e.id == "claude").then(|| "2.1.0".to_owned()),
+                    model_labels: Vec::new(),
                 })
                 .collect(),
         }
@@ -955,6 +957,7 @@ mod tests {
                         Vec::new()
                     },
                     version: None,
+                    model_labels: Vec::new(),
                 })
                 .collect(),
         };

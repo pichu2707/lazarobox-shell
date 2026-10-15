@@ -7,6 +7,7 @@ pub(super) fn state(id: &'static str, status: Status, models: &[&str]) -> Engine
         status,
         models: models.iter().map(|m| m.to_string()).collect(),
         version: None,
+        model_labels: Vec::new(),
     }
 }
 

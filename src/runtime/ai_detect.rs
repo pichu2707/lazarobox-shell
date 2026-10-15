@@ -5,7 +5,7 @@ use std::{
     ffi::OsStr,
     fs,
     net::SocketAddr,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -21,7 +21,7 @@ use tokio::{
 
 use futures::future::join_all;
 
-use super::proc::GroupKill;
+use super::{chat::SCRUBBED, proc::GroupKill};
 use crate::core::ai::{
     CATALOG, Detection, Engine, Kind, Probe,
     http::{MAX_BODY, parse_response},
@@ -86,16 +86,41 @@ const EXIT_GRACE: Duration = Duration::from_millis(100);
 /// output (it is dropped, not truncated). The child runs in its own process
 /// group, which is killed on every way out so no grandchild survives.
 pub async fn version(path: &Path) -> Option<Vec<u8>> {
-    let mut child = spawn_version(path).await?;
+    let probe = Run {
+        args: &["--version"],
+        limit: VERSION_TIMEOUT,
+        cap: VERSION_CAP,
+        sandbox: None,
+    };
+    run_capped(path, &probe).await
+}
+
+/// How one capped run is made: the argv, the bounds and, for a hardened run,
+/// the private scratch folder.
+struct Run<'a> {
+    args: &'a [&'a str],
+    limit: Duration,
+    cap: usize,
+    /// `Some`: a hardened run (scrubbed environment, this folder as cwd and
+    /// `TMPDIR`). `None`: the plain `--version` run.
+    sandbox: Option<&'a Path>,
+}
+
+/// Runs `<path> <args>` and returns its stdout. `None` on a spawn failure, a
+/// non-zero exit, a timeout or more than `cap` bytes of output (dropped, not
+/// truncated). The child runs in its own process group, which is killed on
+/// every way out so no grandchild survives.
+async fn run_capped(path: &Path, probe: &Run<'_>) -> Option<Vec<u8>> {
+    let mut child = spawn_capped(path, probe).await?;
     let pid = child.id()? as libc::pid_t;
     // Declared after `child`, so it drops first: a dropped future still kills
     // the group while the child has not been reaped yet.
     // A refused pid (never a real fresh group) drops `child`, which kills it
     // through `kill_on_drop`; no group signal is ever sent.
     let mut group = GroupKill::new(pid)?;
-    let output = timeout(VERSION_TIMEOUT, collect_version(&mut child, pid)).await;
+    let output = timeout(probe.limit, collect_capped(&mut child, pid, probe.cap)).await;
     // INVARIANT: the group is signalled while the child is still unreaped.
-    // A reaped pid can be recycled, and its pgid with it, so `collect_version`
+    // A reaped pid can be recycled, and its pgid with it, so `collect_capped`
     // only waits for the exit (WNOWAIT) and the reap comes after this kill.
     group.kill();
     // Reap the child so it does not linger as a zombie. `reap` disarms right
@@ -110,6 +135,60 @@ pub async fn version(path: &Path) -> Option<Vec<u8>> {
         group.disarm();
     }
     output.ok()?
+}
+
+/// Longest `codex debug models` is allowed to run.
+pub const LISTING_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Most listing output kept. The real catalog is about 560 KB, so the cap
+/// leaves room for growth; more than this means the probe gave up.
+pub const LISTING_CAP: usize = 2 * 1024 * 1024;
+
+/// Runs `<path> debug models` and returns its stdout. `None` on any failure
+/// (an old codex without the subcommand, a timeout, too much output).
+///
+/// Not jailed: the subcommand only prints the catalog codex already cached
+/// (`~/.codex/models_cache.json`), makes no model call and runs no tool, so
+/// it is as read-only as `--version`. It still gets the chat's scrubbed
+/// environment, a closed stdin and a fresh private cwd.
+pub async fn codex_listing(path: &Path) -> Option<Vec<u8>> {
+    listing(path, LISTING_TIMEOUT, LISTING_CAP).await
+}
+
+async fn listing(path: &Path, limit: Duration, cap: usize) -> Option<Vec<u8>> {
+    let scratch = Scratch::new()?;
+    let probe = Run {
+        args: &["debug", "models"],
+        limit,
+        cap,
+        sandbox: Some(&scratch.0),
+    };
+    run_capped(path, &probe).await
+}
+
+/// A fresh 0700 folder, removed on drop.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new() -> Option<Self> {
+        let base = std::env::temp_dir();
+        if !base.is_absolute() {
+            return None;
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let dir = base.join(format!("lazarobox-codex-{}-{nanos}", std::process::id()));
+        // Not recursive: an existing name is refused, never reused.
+        fs::DirBuilder::new().mode(0o700).create(&dir).ok()?;
+        Some(Self(dir))
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 /// Waits for `pid` to exit WITHOUT reaping it, so the pid stays reserved.
@@ -136,21 +215,24 @@ pub(crate) async fn wait_exit_unreaped(pid: libc::pid_t) -> Option<bool> {
     .ok()?
 }
 
-/// Spawns `<path> --version`. A binary that is being written (an upgrade, or
+/// Spawns `<path> <args>`. A binary that is being written (an upgrade, or
 /// a concurrent fork holding its write handle) fails with ETXTBSY for a
 /// moment, so that one error is retried briefly.
-async fn spawn_version(path: &Path) -> Option<tokio::process::Child> {
+async fn spawn_capped(path: &Path, probe: &Run<'_>) -> Option<tokio::process::Child> {
     for attempt in 0..5 {
         // No shell: the resolved absolute path is the program.
-        let spawned = Command::new(path)
-            .arg("--version")
+        let mut command = Command::new(path);
+        command
+            .args(probe.args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true)
-            .process_group(0)
-            .spawn();
-        match spawned {
+            .process_group(0);
+        if let Some(scratch) = probe.sandbox {
+            harden(&mut command, scratch);
+        }
+        match command.spawn() {
             Ok(child) => return Some(child),
             Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 4 => {
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -161,17 +243,37 @@ async fn spawn_version(path: &Path) -> Option<tokio::process::Child> {
     None
 }
 
+/// The chat's child environment: the agents it could use and the state of an
+/// outer Claude Code session are removed, a relative `$CODEX_HOME` is dropped,
+/// and the folder is both cwd and `TMPDIR`.
+fn harden(command: &mut Command, scratch: &Path) {
+    for name in SCRUBBED {
+        command.env_remove(name);
+    }
+    if std::env::var_os("CODEX_HOME").is_some_and(|v| !Path::new(&v).is_absolute()) {
+        command.env_remove("CODEX_HOME");
+    }
+    command
+        .current_dir(scratch)
+        .env("NO_COLOR", "1")
+        .env("TMPDIR", scratch);
+}
+
 /// Reads stdout (bounded) while waiting for the exit, not for the pipe EOF.
-async fn collect_version(child: &mut tokio::process::Child, pid: libc::pid_t) -> Option<Vec<u8>> {
+async fn collect_capped(
+    child: &mut tokio::process::Child,
+    pid: libc::pid_t,
+    cap: usize,
+) -> Option<Vec<u8>> {
     let mut stdout = child.stdout.take()?;
     let mut buf = Vec::new();
     let success = {
-        let mut limited = (&mut stdout).take(VERSION_CAP as u64 + 1);
+        let mut limited = (&mut stdout).take(cap as u64 + 1);
         let read = limited.read_to_end(&mut buf);
         tokio::pin!(read);
         tokio::select! {
             n = &mut read => {
-                if n.ok()? > VERSION_CAP {
+                if n.ok()? > cap {
                     return None;
                 }
                 wait_exit_unreaped(pid).await?
@@ -182,7 +284,7 @@ async fn collect_version(child: &mut tokio::process::Child, pid: libc::pid_t) ->
             }
         }
     };
-    (success && buf.len() <= VERSION_CAP).then_some(buf)
+    (success && buf.len() <= cap).then_some(buf)
 }
 
 /// What `detect_with` probes: an entry of the catalog, or a test double
@@ -235,10 +337,16 @@ async fn probe(target: &Target, path: &OsStr) -> Probe {
                 Some(file) => version(file).await,
                 None => None,
             };
+            // Only codex has a model listing.
+            let models = match (&found, target.id) {
+                (Some(file), "codex") => codex_listing(file).await,
+                _ => None,
+            };
             Probe::Cli {
                 id: target.id,
                 path: found,
                 stdout,
+                models,
             }
         }
     }
@@ -405,6 +513,114 @@ mod tests {
 
     fn write_file(dir: &Path, name: &str, mode: u32) -> PathBuf {
         write_script(dir, name, "", mode)
+    }
+
+    const LISTING: &str = include_str!("../../tests/fixtures/codex/debug-models.json");
+
+    fn fake_codex(dir: &Path, listing_body: &str) -> PathBuf {
+        write_script(
+            dir,
+            "codex",
+            &format!(
+                "if [ \"$1\" = debug ] && [ \"$2\" = models ]; then\n{listing_body}\nelse echo codex 0.5.0; fi"
+            ),
+            0o755,
+        )
+    }
+
+    #[tokio::test]
+    async fn listing_returns_the_debug_models_stdout() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = fake_codex(dir.path(), "echo '{\"models\":[]}'");
+        assert_eq!(
+            codex_listing(&script).await,
+            Some(b"{\"models\":[]}\n".to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_fails_soft_for_an_old_codex_without_the_subcommand() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_script(
+            dir.path(),
+            "codex",
+            "echo 'unknown command' >&2\nexit 2",
+            0o755,
+        );
+        assert_eq!(codex_listing(&script).await, None);
+    }
+
+    #[tokio::test]
+    async fn listing_runs_in_a_private_scratch_cwd_with_stdin_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = fake_codex(
+            dir.path(),
+            "stat -c '%a' .\npwd\nif read line; then echo STDIN-OPEN; else echo STDIN-EOF; fi",
+        );
+        let out = String::from_utf8(codex_listing(&script).await.unwrap()).unwrap();
+        let mut lines = out.lines();
+        assert_eq!(lines.next(), Some("700"));
+        let cwd = lines.next().unwrap();
+        assert_ne!(Path::new(cwd), std::env::current_dir().unwrap());
+        assert_eq!(lines.next(), Some("STDIN-EOF"));
+        assert!(!Path::new(cwd).exists(), "scratch dir is removed");
+    }
+
+    #[tokio::test]
+    async fn listing_kills_the_process_group_after_the_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("grandchild-survived");
+        let script = fake_codex(
+            dir.path(),
+            &format!("(sleep 1; echo x > {}) &\nsleep 30", marker.display()),
+        );
+        let started = std::time::Instant::now();
+        let got = listing(&script, Duration::from_millis(300), LISTING_CAP).await;
+        assert_eq!(got, None);
+        assert!(started.elapsed() < Duration::from_secs(3));
+        tokio::time::sleep(Duration::from_millis(1300)).await;
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn listing_drops_output_over_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = fake_codex(dir.path(), "head -c 2000 /dev/zero | tr '\\0' x");
+        assert_eq!(listing(&script, LISTING_TIMEOUT, 1000).await, None);
+        assert!(listing(&script, LISTING_TIMEOUT, 2000).await.is_some());
+    }
+
+    #[test]
+    fn the_cap_fits_the_real_catalog_size() {
+        // `codex debug models` printed 560491 bytes with codex-cli 0.162.1.
+        assert!(LISTING_CAP > 560_491);
+    }
+
+    #[tokio::test]
+    async fn detect_reads_the_codex_listing_but_no_other_cli() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("listing.json");
+        fs::write(&data, LISTING).unwrap();
+        fake_codex(dir.path(), &format!("cat {}", data.display()));
+        write_script(
+            dir.path(),
+            "claude",
+            &format!("cat {}", data.display()),
+            0o755,
+        );
+        let targets: Vec<Target> = ["claude", "codex"]
+            .into_iter()
+            .map(|id| Engine {
+                id,
+                kind: Kind::Cli,
+                binary: id,
+            })
+            .collect();
+        let d = detect_with(&targets, &join(&[dir.path()])).await;
+        let get = |id| d.engines.iter().find(|e| e.id == id).unwrap().clone();
+        assert_eq!(get("codex").model_labels.len(), 7);
+        assert_eq!(get("codex").version.as_deref(), Some("codex 0.5.0"));
+        assert!(get("claude").model_labels.is_empty());
     }
 
     #[tokio::test]
@@ -631,6 +847,7 @@ mod tests {
             status,
             models: models.iter().map(ToString::to_string).collect(),
             version: v.map(ToString::to_string),
+            model_labels: Vec::new(),
         }
     }
 

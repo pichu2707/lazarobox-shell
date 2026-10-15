@@ -75,6 +75,7 @@ fn detection(models: &[&str]) -> Detection {
             status: Status::Available,
             models: models.iter().map(|m| (*m).to_owned()).collect(),
             version: None,
+            model_labels: Vec::new(),
         }],
     }
 }
@@ -805,6 +806,7 @@ fn detection_with(status: Status, models: &[&str]) -> Detection {
             status,
             models: models.iter().map(|m| (*m).to_owned()).collect(),
             version: None,
+            model_labels: Vec::new(),
         }],
     }
 }
@@ -900,6 +902,7 @@ fn a_cli_without_an_adapter_is_not_supported_in_chat_yet() {
             status: Status::Available,
             models: vec![],
             version: None,
+            model_labels: Vec::new(),
         }],
     }));
     assert_eq!(
@@ -917,6 +920,7 @@ fn cli_detected(id: &'static str) -> AppEvent {
             status: Status::Available,
             models: vec![],
             version: None,
+            model_labels: Vec::new(),
         }],
     })
 }
