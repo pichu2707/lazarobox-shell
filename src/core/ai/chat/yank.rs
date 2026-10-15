@@ -1,7 +1,7 @@
 //! What a yank copies out of a chat: the last finished answer, or the last
 //! fenced code block of it. Reasoning and system lines are never part of it.
 
-use super::{ChatState, MsgStatus, Phase, engine::Role, transcript::is_fence};
+use super::{ChatState, Entry, MsgStatus, Phase, engine::Role, transcript::is_fence};
 
 /// The text of the last assistant message that is not still being written.
 /// `None` when there is none; an empty one is passed over for the one before.
@@ -85,13 +85,26 @@ pub fn last_shell_block(chat: &ChatState) -> Option<String> {
     if chat.phase() != Phase::Idle {
         return None;
     }
-    // Only a finished, successful answer counts: a cancelled or failed one
-    // is partial text the user never saw complete.
-    let msg = chat
-        .messages()
-        .filter(|m| m.role == Role::Assistant && !m.text.is_empty())
-        .last()?;
-    if msg.status != MsgStatus::Complete {
+    // Only the answer of the last turn counts. The last message of any role
+    // must be a finished, successful, non-empty assistant answer, with no
+    // system line (an error or a notice) after it: a turn that produced no
+    // answer must not bring an older answer back.
+    let (index, msg) = chat
+        .entries
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(i, e)| match e {
+            Entry::Message(m) => Some((i, m)),
+            _ => None,
+        })?;
+    if msg.role != Role::Assistant || msg.status != MsgStatus::Complete || msg.text.is_empty() {
+        return None;
+    }
+    if chat.entries[index + 1..]
+        .iter()
+        .any(|e| matches!(e, Entry::System(_)))
+    {
         return None;
     }
     let last = fences(&msg.text).pop()?;
@@ -440,5 +453,49 @@ mod tests {
             }
             assert_eq!(last_shell_block(&state), None, "{status:?}");
         }
+    }
+
+    #[test]
+    fn a_newer_turn_without_an_answer_never_reaches_back() {
+        use crate::core::ai::chat::engine::ChatError;
+        let ends: [(&str, fn(&mut ChatState, u64)); 5] = [
+            ("done with no delta", |s, t| {
+                s.apply(t, StreamEvent::Done(Finish::Stop));
+            }),
+            ("failed", |s, t| {
+                s.apply(t, StreamEvent::Error(ChatError::Failed("boom".into())));
+            }),
+            ("truncated", |s, t| {
+                s.apply(t, StreamEvent::Error(ChatError::Truncated));
+            }),
+            ("interrupted", |s, t| {
+                s.apply(t, StreamEvent::Error(ChatError::Interrupted));
+            }),
+            ("cancelled while waiting", |s, _| {
+                s.cancel();
+            }),
+        ];
+        for (name, end) in ends {
+            let mut state = answered("```bash\nrm -rf ~\n```");
+            assert_eq!(last_shell_block(&state).as_deref(), Some("rm -rf ~"));
+            let (turn, _) = sent(&mut state, "again");
+            end(&mut state, turn);
+            assert_eq!(state.phase(), Phase::Idle, "{name}");
+            assert_eq!(last_shell_block(&state), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_user_message_after_the_answer_hides_it() {
+        let mut state = answered("```bash\nls\n```");
+        sent(&mut state, "again");
+        assert_eq!(last_shell_block(&state), None);
+    }
+
+    #[test]
+    fn a_notice_after_the_answer_hides_it() {
+        let mut state = answered("```bash\nls\n```");
+        state.entries.push(Entry::System("a notice".into()));
+        assert_eq!(last_shell_block(&state), None);
     }
 }
