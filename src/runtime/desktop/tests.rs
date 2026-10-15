@@ -29,8 +29,7 @@ impl Fixture {
     ) -> (Result<(), String>, String) {
         let lookup = |cmd: &str| {
             names
-                .iter()
-                .any(|n| *n == cmd)
+                .contains(&cmd)
                 .then(|| PathBuf::from(format!("/usr/bin/{cmd}")))
         };
         let refresh = |dir: &Path| self.refreshed.borrow_mut().push(dir.to_path_buf());

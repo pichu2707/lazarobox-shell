@@ -15,8 +15,7 @@ fn path_with(names: &[&'static str]) -> impl Fn(&str) -> Option<PathBuf> {
                 .then(|| PathBuf::from(cmd));
         }
         names
-            .iter()
-            .any(|n| *n == cmd)
+            .contains(&cmd)
             .then(|| PathBuf::from(format!("/usr/bin/{cmd}")))
     }
 }
