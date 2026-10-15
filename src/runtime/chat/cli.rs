@@ -586,7 +586,9 @@ pub(crate) async fn run_listing(env: &CliEnv, limit: Duration, cap: usize) -> Op
         tmp_file: None,
     };
     let plan = plan(env, &job).ok()?;
-    // A plan that fell back to a bare run is never used for the listing.
+    // Defence in depth: `Required` never plans a bare run (it refuses
+    // instead), so this is unreachable today. If a future policy change let
+    // the plan fall back to a bare run, the listing must not use it.
     if plan.notice.is_some() {
         return None;
     }

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Finds which AI engines exist on the machine: four local model servers and four agent CLIs. Detection is read-only and local. It never sends a prompt. Tags: [auto] = `cargo test` (fake servers on ephemeral ports, fake PATH directories); [manual] = real machine.
+Finds which AI engines exist on the machine: four local model servers and four agent CLIs. Detection is read-only and local, with one exception: for codex it also runs `codex debug models` through the jail, which may refresh the catalog from OpenAI and update codex's own cache (see Codex model listing). It never sends a prompt. Tags: [auto] = `cargo test` (fake servers on ephemeral ports, fake PATH directories); [manual] = real machine.
 
 ## Requirements
 
@@ -265,12 +265,12 @@ The hand-written HTTP client, for detection probes, chat requests and the engram
 - THEN both are rejected
 
 ### Requirement: Concurrency and timeouts
-All 8 probes MUST run concurrently and in the background; the UI and the input MUST never wait on them. Each server probe MUST finish (success, failure or timeout) within 800 ms, covering connect, request and response; each `--version` run MUST finish or be killed within 2 s. The whole run therefore ends within about 2 s. The results of a run MUST be delivered together, as ONE `Detection` containing all 8 engines, once every probe has finished; a single run never delivers partial results.
+All 8 probes MUST run concurrently and in the background; the UI and the input MUST never wait on them. Each server probe MUST finish (success, failure or timeout) within 800 ms, covering connect, request and response; each `--version` run MUST finish or be killed within 2 s, and the codex model listing within 4 s, concurrently with codex's `--version`. The whole run therefore ends within about 4 s, and within about 2 s when codex is absent or has no listing. The UI never waits for it, because detection runs in the background. The results of a run MUST be delivered together, as ONE `Detection` containing all 8 engines, once every probe has finished; a single run never delivers partial results.
 
 #### Scenario: Hanging server [auto]
 - GIVEN `:11434` accepts the connection but never answers, and all other engines answer at once
 - WHEN detection runs
-- THEN exactly one `Detection` with all 8 engines is delivered after the 800 ms server timeout, ollama is `not running` or `not installed` in it, the other seven engines carry their real statuses, and total time is below 2.5 s
+- THEN exactly one `Detection` with all 8 engines is delivered after the 800 ms server timeout, ollama is `not running` or `not installed` in it, the other seven engines carry their real statuses, and total time is below 2.5 s (no codex listing is involved in that run; with codex available the bound is the 4 s listing timeout)
 
 #### Scenario: UI stays responsive [auto]
 - GIVEN detection is in flight with a hanging server
@@ -306,7 +306,7 @@ Detection MUST start at app startup, each time the config menu opens, on the ref
 - THEN an empty `Detection` is delivered, every engine reads `unknown`, and the next trigger requests a new run (the single-flight flag is cleared)
 
 ### Requirement: Read-only and localhost-only
-Detection MUST send only `GET` requests with no body and no credentials to the 4 catalog endpoints on `127.0.0.1`. It MUST NOT connect to any other host or port. It MUST execute only `<id> --version` for the 4 CLI ids, never a server binary, and MUST NOT open any credential, token or config file of any engine. This rule describes detection: the chat requests (POST to the same loopback servers, and the text-only CLI runs) are specified in chat-engines and never happen as part of a detection run, and the engram requests (GET, POST and DELETE to the memory port, see engram-client) are never made by a detection run and never touch a catalog endpoint. The client remains bound to `127.0.0.1` for all three uses. The engram client is the only user that MAY send a credential, and only `Authorization: Bearer` on a user-confirmed `DELETE` to the memory port, from `ENGRAM_HTTP_TOKEN` in the environment.
+Detection MUST send only `GET` requests with no body and no credentials to the 4 catalog endpoints on `127.0.0.1`. It MUST NOT connect to any other host or port. It MUST execute only `<id> --version` for the 4 CLI ids, plus, for codex only, `codex debug models` through the jail (Codex model listing), which may refresh the catalog from OpenAI with the user's own login and update codex's own cache; it never executes a server binary, and MUST NOT open any credential, token or config file of any engine. This rule describes detection: the chat requests (POST to the same loopback servers, and the text-only CLI runs) are specified in chat-engines and never happen as part of a detection run, and the engram requests (GET, POST and DELETE to the memory port, see engram-client) are never made by a detection run and never touch a catalog endpoint. The client remains bound to `127.0.0.1` for all three uses. The engram client is the only user that MAY send a credential, and only `Authorization: Bearer` on a user-confirmed `DELETE` to the memory port, from `ENGRAM_HTTP_TOKEN` in the environment.
 
 #### Scenario: Traffic audit [auto]
 - GIVEN a recording fake server per endpoint
@@ -321,7 +321,7 @@ Detection MUST send only `GET` requests with no body and no credentials to the 4
 #### Scenario: Chat never runs during detection [auto]
 - GIVEN fake CLIs that record their argv
 - WHEN a detection run completes
-- THEN only `<id> --version` was executed for each CLI
+- THEN only `<id> --version` was executed for each CLI, except that codex was also run as `codex debug models` through the jail helper, and no other engine received any other argument
 
 #### Scenario: The shared client stays loopback-only [auto]
 - GIVEN the client asked to connect to a non-loopback host for a GET, a POST or a DELETE

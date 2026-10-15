@@ -17,10 +17,10 @@ baseline.
   stdin closed, private working folder, scrubbed environment, next to the
   version probe) through the same jail as the codex chat. Like running codex,
   that command may refresh the catalog from OpenAI with your login and update
-  codex's own cache (`models_cache.json`). Without the jail it is not run. The picker
-  offers `default (CLI picks)` followed by the models the account lists, with
-  their display names as labels and the slugs as saved values. An older codex
-  without the subcommand, or any failure, shows only `default`.
+  codex's own cache (`models_cache.json`). Without the jail it is not run. The
+  picker offers `default (CLI picks)` followed by the models the account
+  lists, with their display names as labels and the slugs as saved values. An
+  older codex without the subcommand, or any failure, shows only `default`.
 - A codex model that is assigned or typed in `custom…` but is not in the
   account's list is marked `not in your account's list` in the picker, on the
   task row and in the footer. It is a warning only.
