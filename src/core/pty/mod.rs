@@ -33,6 +33,10 @@ impl SpawnSpec {
             env: vec![
                 ("TERM".into(), "xterm-256color".into()),
                 ("COLORTERM".into(), "truecolor".into()),
+                (
+                    crate::core::nesting::ENV_VAR.into(),
+                    std::process::id().to_string(),
+                ),
             ],
             size,
         }
@@ -83,6 +87,17 @@ mod tests {
         assert_eq!(spec.size, SIZE);
         assert_eq!(env_of(&spec, "TERM"), Some("xterm-256color"));
         assert_eq!(env_of(&spec, "COLORTERM"), Some("truecolor"));
+    }
+
+    // Spec: Nesting marker.
+    #[test]
+    fn spawn_spec_marks_the_child_as_inside_lazarobox() {
+        let spec = SpawnSpec::new(None, "/".into(), SIZE);
+        let pid = std::process::id().to_string();
+        assert_eq!(
+            env_of(&spec, crate::core::nesting::ENV_VAR),
+            Some(pid.as_str())
+        );
     }
 
     #[test]
