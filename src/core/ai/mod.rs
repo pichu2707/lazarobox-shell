@@ -14,6 +14,7 @@ pub mod menu;
 pub mod parse;
 pub mod picker;
 pub mod sanitize;
+pub mod tools;
 
 /// How an engine is detected.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
