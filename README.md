@@ -66,6 +66,10 @@ scripts/install-desktop.sh       # añade el lanzador "Lazarobox" (rofi, menú d
 
 El lanzador abre `lazarobox-shell` dentro de Kitty (`--class lazarobox`), así que no hace falta tener una terminal abierta. Requiere tener `kitty` y `lazarobox-shell` instalados; si falta alguno, el script termina con error. Las rutas de ambos se resuelven al instalar; si cambian, vuelve a ejecutar el script. Respeta `XDG_DATA_HOME` y `CARGO_HOME`. Para quitarlo: `scripts/install-desktop.sh --uninstall`.
 
+### Anidamiento
+
+Cada panel de shell define `LAZAROBOX=<pid>` (el pid de la instancia que lo abrió), igual que tmux hace con `$TMUX`, y los programas lanzados desde un panel la heredan. Si ejecutas `lazarobox-shell` dentro de un panel, no arranca: imprime `lazarobox-shell is already running in this terminal; use --force to nest anyway` y sale con código 1, antes de tocar la terminal. Para anidar a propósito usa `lazarobox-shell --force`; ten en cuenta que ambas instancias compartirán la misma tecla de prefijo.
+
 ---
 
 ## 📋 Modo COPY

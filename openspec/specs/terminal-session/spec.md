@@ -24,6 +24,34 @@ The system MUST spawn `$SHELL` (fallback `/bin/sh`) for each shell pane, in the 
 - WHEN the effects are computed
 - THEN no SpawnPane effect is emitted
 
+### Requirement: Nesting guard
+Every shell pane child MUST get `LAZAROBOX=<pid of the owning instance>` in its environment. At startup, when `LAZAROBOX` is set and non-empty and `--force` is absent, the system MUST print one line to stderr, exit with status 1 and NOT enter raw mode or the alternate screen. `--force` MUST skip the check, and is recognised only as a top-level flag. The guard MUST apply only to the plain TUI start: any subcommand (for example the internal `__jail-exec`) MUST NOT be subject to it, and a `--force` after a subcommand is not an override. AI CLI children (scrubbed environment) are not marked.
+
+#### Scenario: Pane child marked [auto]
+- GIVEN a shell pane is spawned
+- WHEN the spawn request is built
+- THEN its environment contains `LAZAROBOX` equal to the current process id
+
+#### Scenario: Nested start refused [auto]
+- GIVEN `LAZAROBOX` is set to a non-empty value and no `--force`
+- WHEN the binary starts
+- THEN stderr holds one line naming `--force`, stdout is empty and the exit status is 1
+
+#### Scenario: Empty or unset variable [auto]
+- GIVEN `LAZAROBOX` is unset or empty
+- WHEN the nesting check runs
+- THEN the start is allowed
+
+#### Scenario: Force skips the guard [auto]
+- GIVEN `LAZAROBOX` is set and `--force` is given
+- WHEN the nesting check runs
+- THEN the start is allowed
+
+#### Scenario: Subcommand not blocked [auto]
+- GIVEN `LAZAROBOX` is set
+- WHEN the binary is started with a subcommand such as `__jail-exec`
+- THEN the guard does not run
+
 ### Requirement: PTY I/O
 Bytes written for a pane MUST reach that pane's child unmodified; child output MUST be delivered to the app as ordered per-pane events without blocking the UI loop.
 (Previously: one child, one stream)
