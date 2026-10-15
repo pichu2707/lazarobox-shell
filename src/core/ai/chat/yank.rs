@@ -1,7 +1,7 @@
 //! What a yank copies out of a chat: the last finished answer, or the last
 //! fenced code block of it. Reasoning and system lines are never part of it.
 
-use super::{ChatState, Phase, engine::Role, transcript::is_fence};
+use super::{ChatState, MsgStatus, Phase, engine::Role, transcript::is_fence};
 
 /// The text of the last assistant message that is not still being written.
 /// `None` when there is none; an empty one is passed over for the one before.
@@ -76,10 +76,25 @@ pub fn last_code_block(chat: &ChatState) -> Option<String> {
 /// `zsh`, any case (the first word after the fence). Only the last block
 /// counts, the one the user sees at the bottom: if it is another language or
 /// still open, nothing is offered, and an earlier shell block is never
-/// reached back for. `None` too when the block is empty.
+/// reached back for. `None` too when the block is empty, while a turn is in
+/// flight, and when the answer was cancelled, cut or failed.
 pub fn last_shell_block(chat: &ChatState) -> Option<String> {
-    let text = last_answer(chat)?;
-    let last = fences(&text).pop()?;
+    // The bottom block of the transcript is the one the user sees. While a
+    // turn is in flight (waiting or streaming) that block is, or is about to
+    // be, the new answer: offer nothing until it has finished.
+    if chat.phase() != Phase::Idle {
+        return None;
+    }
+    // Only a finished, successful answer counts: a cancelled or failed one
+    // is partial text the user never saw complete.
+    let msg = chat
+        .messages()
+        .filter(|m| m.role == Role::Assistant && !m.text.is_empty())
+        .last()?;
+    if msg.status != MsgStatus::Complete {
+        return None;
+    }
+    let last = fences(&msg.text).pop()?;
     let shell = last.info.split_whitespace().next().is_some_and(|lang| {
         ["bash", "sh", "shell", "zsh"]
             .iter()
@@ -274,20 +289,34 @@ mod tests {
     }
 
     /// The last code block the renderer shows, as a shell command would be
-    /// read from it: `Some(body)` only for a closed shell block.
+    /// read from it: `Some(body)` only for a closed shell block. Blocks are
+    /// split at closing fences, so adjacent blocks stay apart.
     fn rendered_shell_block(text: &str) -> Option<String> {
         let mut rows = Vec::new();
         assistant_rows(text, 10_000, &mut rows);
-        let mut run: Vec<&str> = Vec::new();
-        for row in rows.iter().rev().skip_while(|r| r.kind != LineKind::Code) {
+        // (opening row, body rows, closed)
+        let mut blocks: Vec<(String, Vec<String>, bool)> = Vec::new();
+        let mut open: Option<(String, Vec<String>)> = None;
+        for row in &rows {
             if row.kind != LineKind::Code {
-                break;
+                assert!(open.is_none(), "prose inside a block: {row:?}");
+                continue;
             }
-            run.push(&row.text);
+            match open.take() {
+                None => open = Some((row.text.clone(), Vec::new())),
+                Some((first, body)) if row.text.trim_start().starts_with("```") => {
+                    blocks.push((first, body, true));
+                }
+                Some((first, mut body)) => {
+                    body.push(row.text.clone());
+                    open = Some((first, body));
+                }
+            }
         }
-        run.reverse();
-        let first = run.first()?;
-        let closed = run.len() > 1 && run.last()?.trim_start().starts_with("```");
+        if let Some((first, body)) = open {
+            blocks.push((first, body, false));
+        }
+        let (first, body, closed) = blocks.pop()?;
         let lang = first
             .trim_start()
             .trim_start_matches('`')
@@ -296,7 +325,54 @@ mod tests {
         let shell = ["bash", "sh", "shell", "zsh"]
             .iter()
             .any(|s| lang.eq_ignore_ascii_case(s));
-        (closed && shell && run.len() > 2).then(|| run[1..run.len() - 1].join("\n"))
+        (closed && shell && !body.is_empty()).then(|| body.join("\n"))
+    }
+
+    /// Every sequence of 1 to 4 lines drawn from `lines`.
+    fn sequences(lines: &[&str], depth: usize, stack: &mut Vec<usize>, out: &mut Vec<String>) {
+        if !stack.is_empty() {
+            out.push(
+                stack
+                    .iter()
+                    .map(|&i| lines[i])
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+        }
+        if depth == 0 {
+            return;
+        }
+        for i in 0..lines.len() {
+            stack.push(i);
+            sequences(lines, depth - 1, stack, out);
+            stack.pop();
+        }
+    }
+
+    #[test]
+    fn every_small_fence_combination_agrees_with_the_renderer() {
+        let lines = [
+            "```bash",
+            "```sh",
+            "```",
+            "```a```",
+            "````bash",
+            "  ```bash",
+            "  ```",
+            "echo x",
+            "text",
+            "```rust",
+        ];
+        let mut all = Vec::new();
+        sequences(&lines, 4, &mut Vec::new(), &mut all);
+        assert_eq!(all.len(), 10 + 100 + 1000 + 10_000);
+        for body in all {
+            assert_eq!(
+                last_shell_block(&answered(&body)),
+                rendered_shell_block(&body),
+                "{body:?}"
+            );
+        }
     }
 
     #[test]
@@ -315,6 +391,13 @@ mod tests {
             "```bash\necho one\n```\ntext\n```rust\nnot shell\n```",
             "```bash\nrm -rf ~\n```\n```a```b\ntext\n```sh\necho safe\n```",
             "```bash\r\necho crlf\n```",
+            "```bash\na\n```\n```sh\nb\n```",
+            "```sh\nb\n```\n```rust\nr\n```",
+            "```rust\nr\n```\n```sh\nb\n```",
+            "```bash\na\n```\n```sh\nb",
+            "```bash\na\n```\n```sh",
+            "```bash\n  ```\nafter\n```",
+            "```bash\n  ```bash\nx\n```\n```sh\nb\n```",
         ] {
             let state = answered(body);
             assert_eq!(
@@ -326,10 +409,36 @@ mod tests {
     }
 
     #[test]
-    fn a_shell_block_still_streaming_is_not_offered() {
+    fn nothing_is_offered_while_an_answer_streams_or_is_awaited() {
         let mut state = answered("```bash\nold\n```");
         let (turn, _) = sent(&mut state, "again");
+        // Waiting: the new message does not exist yet.
+        assert_eq!(last_shell_block(&state), None);
+        // Streaming: the bottom block is the one being written.
         state.apply(turn, StreamEvent::Delta("```bash\nnew\n```".into()));
-        assert_eq!(last_shell_block(&state).as_deref(), Some("old"));
+        assert_eq!(last_shell_block(&state), None);
+        state.apply(turn, StreamEvent::Done(Finish::Stop));
+        assert_eq!(last_shell_block(&state).as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn a_cancelled_or_failed_answer_offers_nothing() {
+        let mut state = chat();
+        let (turn, _) = sent(&mut state, "q");
+        state.apply(turn, StreamEvent::Delta("```bash\nrm -rf ~\n```".into()));
+        state.cancel();
+        assert_eq!(last_shell_block(&state), None);
+        for status in [
+            MsgStatus::Interrupted,
+            MsgStatus::Truncated,
+            MsgStatus::Error,
+        ] {
+            let mut state = answered("```bash\nls\n```");
+            assert_eq!(last_shell_block(&state).as_deref(), Some("ls"));
+            if let Some(Entry::Message(m)) = state.entries.last_mut() {
+                m.status = status;
+            }
+            assert_eq!(last_shell_block(&state), None, "{status:?}");
+        }
     }
 }
