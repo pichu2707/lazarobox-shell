@@ -4,6 +4,7 @@ pub mod ai;
 pub mod config;
 pub mod config_edit;
 pub mod copy;
+pub mod desktop;
 pub mod keys;
 pub mod layout;
 pub mod menu;

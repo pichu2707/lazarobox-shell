@@ -7,9 +7,14 @@ use lazarobox_shell::core::nesting;
 /// exists, so the tokio runtime is built only after that dispatch.
 fn main() -> std::io::Result<()> {
     let mut args = std::env::args_os().skip(1);
-    if args.next().as_deref() == Some(OsStr::new(SUBCOMMAND)) {
+    let first = args.next();
+    if first.as_deref() == Some(OsStr::new(SUBCOMMAND)) {
         let rest: Vec<OsString> = args.collect();
         std::process::exit(lazarobox_shell::runtime::jail::exec_main(&rest));
+    }
+    if first.as_deref() == Some(OsStr::new(lazarobox_shell::core::desktop::SUBCOMMAND)) {
+        let rest: Vec<OsString> = args.collect();
+        std::process::exit(lazarobox_shell::runtime::desktop::main(&rest));
     }
     // Before the runtime enters raw mode or the alternate screen.
     let marker = std::env::var_os(nesting::ENV_VAR).map(|v| v.to_string_lossy().into_owned());

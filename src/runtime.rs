@@ -22,6 +22,7 @@ pub mod bounded_read;
 pub mod chat;
 pub mod chat_store;
 mod config_write;
+pub mod desktop;
 pub mod engram;
 pub mod jail;
 pub mod loopback;

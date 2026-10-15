@@ -3,8 +3,8 @@ Type=Application
 Name=Lazarobox
 GenericName=Terminal Workspace
 Comment=Terminal workspace with panes and tabs
-Exec=@KITTY@ --class lazarobox --title Lazarobox @LAZAROBOX@
+Exec=@EXEC@
 Icon=utilities-terminal
-Terminal=false
+Terminal=@TERMINAL@
 Categories=Utility;
-StartupWMClass=lazarobox
+@STARTUP_WM_CLASS@

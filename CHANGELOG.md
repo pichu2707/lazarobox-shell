@@ -18,6 +18,20 @@ baseline.
   this terminal; use --force to nest anyway` to stderr and exits 1, before the
   terminal enters raw mode. `--force` (a top-level flag) skips the check.
   Subcommands, such as the internal `__jail-exec`, are never blocked.
+- `lazarobox-shell install-desktop [--terminal <cmd>] [--uninstall]` installs
+  the desktop launcher from the binary itself, so it works after
+  `cargo install lazarobox-shell` and with any terminal. The terminal is
+  `--terminal`, then `$TERMINAL`, then `xdg-terminal-exec`, then the first of
+  kitty, ghostty, wezterm, alacritty, foot, gnome-terminal, konsole,
+  xfce4-terminal and x-terminal-emulator in `PATH`, else `Terminal=true`. An
+  unknown terminal is launched as `<cmd> -e <bin>`, and any terminal other
+  than Kitty prints a compatibility notice.
+
+### Changed
+
+- `scripts/install-desktop.sh` is now a thin wrapper around the subcommand and
+  accepts the same options. The launcher template moved from
+  `packaging/lazarobox.desktop` into the binary.
 
 ### Fixed
 
