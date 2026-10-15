@@ -10,7 +10,7 @@ use ratatui::{
 use super::tab_bar::{cells, clip};
 use crate::{
     core::{
-        ai::picker::Mark,
+        ai::picker::{Mark, NOT_IN_LIST},
         config::Config,
         menu::{AI_BODY, CHROME, Footer, MenuState, Row, fits_size},
     },
@@ -158,6 +158,7 @@ fn mark_text(mark: &Mark) -> &str {
         Mark::Downloaded => "✓",
         Mark::DownloadRequired => "download required",
         Mark::Checking => "checking…",
+        Mark::NotInList => NOT_IN_LIST,
         Mark::Status(text) => text,
     }
 }

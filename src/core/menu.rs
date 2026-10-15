@@ -11,7 +11,7 @@ use super::{
         Detection,
         config::{AiConfig, Task},
         menu::AiMenu,
-        picker::{Level, Mark, Outcome, PickKey, PickRow, Picker, Target},
+        picker::{Level, Mark, NOT_IN_LIST, Outcome, PickKey, PickRow, Picker, Target},
     },
     config::{BarPosition, Config, ConfigEdit, MEMORY_TABLE},
 };
@@ -810,9 +810,16 @@ impl MenuState {
         if picker.is_some_and(|p| p.text().is_some()) {
             return Footer::Hint(Cow::Borrowed(HINT_CUSTOM));
         }
-        if let Some(row) = ai.and_then(AiMenu::cursor_row).filter(|r| !r.enabled) {
-            let reason = disabled_reason(&row);
+        let cursor = ai.and_then(AiMenu::cursor_row);
+        if let Some(row) = cursor.as_ref().filter(|r| !r.enabled) {
+            let reason = disabled_reason(row);
             return Footer::Hint(Cow::Owned(format!("{reason} · not selectable")));
+        }
+        // A warning, not a block: the account list may be stale.
+        if picker.is_some() && cursor.is_some_and(|r| r.mark == Mark::NotInList) {
+            return Footer::Hint(Cow::Owned(format!(
+                "{NOT_IN_LIST} · kept as typed, the list may be stale"
+            )));
         }
         let in_ai_view = picker.is_some() || self.on_ai_row();
         let cue = ai.and_then(|ai| match (ai.has_result(), self.checking) {
@@ -820,6 +827,14 @@ impl MenuState {
             (true, true) => Some("refreshing…"),
             (true, false) => None,
         });
+        // Enter never saves and Esc at the top level discards the draft, so
+        // say it while the draft differs from the saved config.
+        if ai.is_some_and(AiMenu::changed) && cue.is_none() {
+            let leave = if picker.is_some() { "Esc back" } else { "Esc discards" };
+            return Footer::Hint(Cow::Owned(format!(
+                "unsaved changes · s to save · {leave}"
+            )));
+        }
         Footer::Hint(match cue {
             Some(cue) if in_ai_view => {
                 let leave = if picker.is_some() { "back" } else { "cancel" };
