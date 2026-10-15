@@ -100,12 +100,19 @@ pub fn codex_models(raw: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// A slug that is safe to show and to pass as a CLI argument: printable ASCII
+/// ids only (letters, digits and `._-:/@+`). That rules out whitespace,
+/// control, bidi, zero-width and every other Unicode format or separator
+/// character, so a model cannot be shown as something it is not.
 fn valid_slug(slug: &str) -> bool {
     !slug.is_empty()
         && slug != "default"
         && slug.chars().count() <= MAX_NAME
         && !slug.starts_with('-')
-        && !slug.chars().any(|c| c.is_control() || c.is_whitespace())
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-:/@+".contains(c))
+        && clean(slug) == slug
 }
 
 /// Longest model name kept, in characters.
@@ -199,6 +206,52 @@ mod tests {
             "junk", null]}}"#
         );
         assert_eq!(codex_models(&raw), pairs(&[("OK", "ok")]));
+    }
+
+    #[test]
+    fn codex_rejects_invisible_and_non_ascii_slugs() {
+        let bad = [
+            "gpt\u{202e}x",
+            "gpt\u{200b}x",
+            "gpt\u{2028}x",
+            "gpt\u{2029}x",
+            "gpt\u{feff}x",
+            "gpt\u{00a0}x",
+            "gpt\u{00ad}x",
+            "gpt\u{e0041}x",
+            "gpt-\u{00e9}",
+            "gpt\u{1b}[31m",
+            "gpt/../x y",
+        ];
+        for slug in bad {
+            let value = serde_json::json!({"models":[{"slug":slug,"display_name":"Name","visibility":"list","priority":1}]});
+            assert_eq!(
+                codex_models(&value.to_string()),
+                Vec::<(String, String)>::new(),
+                "{slug:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_keeps_ordinary_model_ids() {
+        for slug in ["gpt-6.1-sol", "o3_mini", "ns/model:tag", "a@b+c", "GPT5"] {
+            let value = serde_json::json!({"models":[{"slug":slug,"display_name":"N","visibility":"list","priority":1}]});
+            assert_eq!(
+                codex_models(&value.to_string()),
+                vec![("N".to_string(), slug.to_string())],
+                "{slug}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_labels_never_carry_invisible_characters() {
+        let value = serde_json::json!({"models":[{"slug":"ok","display_name":"A\u{202e}B\u{200b}C","visibility":"list","priority":1}]});
+        assert_eq!(
+            codex_models(&value.to_string()),
+            vec![("ABC".to_string(), "ok".to_string())]
+        );
     }
 
     #[test]
