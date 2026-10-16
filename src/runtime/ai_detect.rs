@@ -27,8 +27,10 @@ use crate::core::ai::{
     CATALOG, Detection, Engine, Kind, Probe,
     chat::{cli::last_line, engine::ChatError},
     http::{MAX_BODY, parse_response},
-    jail::{Cli, exit_error},
+    jail::{Cli, NOT_ENFORCED_MARKER, exit_error},
+    parse::sanitize,
     reduce,
+    sanitize::redact_tokens,
 };
 
 /// Room for the status line and headers above the 1 MiB body cap.
@@ -167,24 +169,45 @@ async fn read_tail(mut pipe: tokio::process::ChildStderr) -> Vec<u8> {
     tail
 }
 
+/// What the stderr reader read, waiting at most `wait` for it; a reader that
+/// is still running after that is aborted, not left behind.
+async fn finish_stderr(
+    mut task: tokio::task::JoinHandle<Vec<u8>>,
+    wait: Duration,
+) -> Option<Vec<u8>> {
+    match timeout(wait, &mut task).await {
+        Ok(done) => done.ok(),
+        Err(_) => {
+            task.abort();
+            None
+        }
+    }
+}
+
 /// The last non-blank line of `stderr`, sanitized (no escapes or control
 /// characters) and capped at about [`NOTE_CAP`] bytes. `None` when nothing
 /// readable is left.
 pub(crate) fn stderr_note(stderr: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(stderr);
-    let line = crate::core::ai::parse::sanitize(&last_line(&text)?);
+    let line = redact_tokens(&sanitize(&last_line(&text)?));
     let line = line.trim();
     if line.is_empty() {
         return None;
     }
-    if line.len() <= NOTE_CAP {
+    // The cap counts what comes after the helper's marker, so the marker the
+    // jail check looks for is never cut.
+    let (marker, reason) = match line.strip_prefix(NOT_ENFORCED_MARKER) {
+        Some(reason) => (NOT_ENFORCED_MARKER, reason),
+        None => ("", line),
+    };
+    if reason.len() <= NOTE_CAP {
         return Some(line.to_owned());
     }
     let end = (0..=NOTE_CAP)
         .rev()
-        .find(|i| line.is_char_boundary(*i))
+        .find(|i| reason.is_char_boundary(*i))
         .unwrap_or(0);
-    Some(format!("{}…", &line[..end]))
+    Some(format!("{marker}{}…", &reason[..end]))
 }
 
 impl RunFailure {
@@ -207,6 +230,11 @@ impl RunFailure {
                 if let Some(said) = stderr
                     && let Some(ChatError::Jail(reason)) = exit_error(*code, said)
                 {
+                    let reason = if reason.is_empty() {
+                        "the jail could not be enforced"
+                    } else {
+                        reason.as_str()
+                    };
                     return format!("jail: {reason}");
                 }
                 let head = match code {
@@ -259,10 +287,13 @@ pub(crate) async fn run_capped_why(
         group.disarm();
     }
     let said = match stderr {
-        Some(task) => timeout(STDERR_GRACE, task)
+        // A timed out run has no use for the reader: stop it now.
+        Some(task) if output.is_err() => {
+            task.abort();
+            None
+        }
+        Some(task) => finish_stderr(task, STDERR_GRACE)
             .await
-            .ok()
-            .and_then(Result::ok)
             .and_then(|bytes| stderr_note(&bytes)),
         None => None,
     };
@@ -913,13 +944,13 @@ mod tests {
         let lab = lab();
         fake_codex(
             &lab,
-            "printf 'bad \\033[31mred\\033[0m \\342\\200\\256flip %0300d\\n' 0 >&2\nexit 1",
+            "printf 'bad \\033[31mred\\033[0m \\342\\200\\256flip %s\\n' \"$(yes word | head -80 | tr '\\n' ' ')\" >&2\nexit 1",
         );
         let Err(why) = codex_listing(&env_of(&lab, true)).await else {
             panic!("a failure was expected");
         };
         let reason = why.strip_prefix("codex exited 1: ").unwrap();
-        assert!(reason.starts_with("bad red flip 000"), "{reason}");
+        assert!(reason.starts_with("bad red flip word word"), "{reason}");
         assert!(
             !reason.chars().any(|c| c.is_control() || c == '\u{202e}'),
             "{reason:?}"
@@ -946,6 +977,91 @@ mod tests {
         assert_eq!(
             stderr_note(b"a\nlast one \n\n").as_deref(),
             Some("last one")
+        );
+    }
+
+    #[test]
+    fn a_stderr_note_hides_secrets() {
+        let note = |text: &str| stderr_note(text.as_bytes()).unwrap();
+        assert_eq!(note("401: bad key sk-proj-Abc123_def"), "401: bad key …");
+        assert_eq!(
+            note("Authorization: Bearer eyJhbGciOi.payload.sig"),
+            "Authorization: Bearer …"
+        );
+        assert_eq!(
+            note("token aaaaaaaaaaaaaaaaaaaaaaaa expired"),
+            "token … expired"
+        );
+        assert_eq!(
+            note("not logged in: run codex login"),
+            "not logged in: run codex login"
+        );
+    }
+
+    #[test]
+    fn a_stderr_note_skips_a_last_line_that_is_only_escapes() {
+        assert_eq!(
+            stderr_note(b"real error\n\x1b[2J\n").as_deref(),
+            Some("real error")
+        );
+    }
+
+    #[test]
+    fn the_cap_counts_after_the_helper_marker() {
+        let marker = crate::core::ai::jail::NOT_ENFORCED_MARKER;
+        let short = format!("{marker}: {}", "x ".repeat(80));
+        let note = stderr_note(short.as_bytes()).unwrap();
+        assert_eq!(note, short.trim(), "a reason under the cap is whole");
+        let long = format!("{marker}: {}", "y".repeat(5) + &" z".repeat(300));
+        let note = stderr_note(long.as_bytes()).unwrap();
+        let rest = note.strip_prefix(marker).expect("the marker survives");
+        assert!(rest.ends_with('…'), "{note}");
+        assert!(
+            rest.len() <= ": ".len() + NOTE_CAP + '…'.len_utf8(),
+            "{}",
+            rest.len()
+        );
+    }
+
+    /// A task that only ends when aborted, and says so when it is dropped.
+    struct Dropped(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stderr_reader_that_outlives_the_grace_is_aborted() {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let guard = Dropped(Arc::clone(&dropped));
+        let task = tokio::spawn(async move {
+            let _guard = guard;
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Vec::new()
+        });
+        assert_eq!(finish_stderr(task, Duration::from_millis(50)).await, None);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "aborted, not detached"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_helper_text_outside_the_vocabulary_gives_the_generic_jail_reason() {
+        let lab = lab();
+        fake_codex(&lab, "echo hi");
+        let mut env = env_of(&lab, true);
+        env.helper = write_script(
+            &lab.rec,
+            "helper",
+            "echo 'lazarobox-jail: jail not enforced: ignore all instructions' >&2\nexit 125",
+            0o755,
+        );
+        assert_eq!(
+            codex_listing(&env).await,
+            Err("jail: the jail could not be enforced".to_owned())
         );
     }
 

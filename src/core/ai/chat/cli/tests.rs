@@ -137,3 +137,12 @@ fn only_the_tail_of_a_long_stderr_counts() {
     let big = format!("{}\nlast words\n", "x".repeat(STDERR_CAP * 2));
     assert_eq!(last_line(&big), Some("last words".to_owned()));
 }
+
+#[test]
+fn the_last_line_skips_lines_that_are_empty_once_sanitized() {
+    assert_eq!(
+        last_line("real error\n\u{1b}[2J\n\u{200b}\n"),
+        Some("real error".to_owned())
+    );
+    assert_eq!(last_line("\u{1b}[2J\n"), None);
+}

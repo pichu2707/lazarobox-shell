@@ -215,5 +215,58 @@ pub fn clean(text: &str) -> String {
     out
 }
 
+/// Shortest run of letters, digits, `_` and `-` that is taken for a secret.
+const SECRET_RUN: usize = 20;
+
+/// Prefixes of API keys and session tokens.
+const KEY_PREFIXES: [&str; 2] = ["sk-", "sess-"];
+
+fn is_token_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '-'
+}
+
+/// Replaces what looks like a credential with `…`, for text a CLI printed
+/// and the user will see: the word after `Bearer`, a run of 20 or more
+/// letters, digits, `_` or `-`, and a run starting like an API key (`sk-`,
+/// `sess-`).
+pub fn redact_tokens(text: &str) -> String {
+    // Pass 1: the word after `Bearer`.
+    let mut bearer = String::with_capacity(text.len());
+    let mut after_bearer = false;
+    let mut rest = text;
+    while !rest.is_empty() {
+        let blank = rest.starts_with(char::is_whitespace);
+        let end = rest
+            .find(|c: char| c.is_whitespace() != blank)
+            .unwrap_or(rest.len());
+        let (piece, tail) = rest.split_at(end);
+        if blank {
+            bearer.push_str(piece);
+        } else if after_bearer {
+            bearer.push('…');
+            after_bearer = false;
+        } else {
+            bearer.push_str(piece);
+            after_bearer = piece.eq_ignore_ascii_case("bearer");
+        }
+        rest = tail;
+    }
+    // Pass 2: long runs and key prefixes.
+    let mut out = String::with_capacity(bearer.len());
+    let mut rest = bearer.as_str();
+    while !rest.is_empty() {
+        let word = rest.starts_with(is_token_char);
+        let end = rest
+            .find(|c: char| is_token_char(c) != word)
+            .unwrap_or(rest.len());
+        let (piece, tail) = rest.split_at(end);
+        let secret = word
+            && (piece.len() >= SECRET_RUN || KEY_PREFIXES.iter().any(|p| piece.starts_with(p)));
+        out.push_str(if secret { "…" } else { piece });
+        rest = tail;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests;

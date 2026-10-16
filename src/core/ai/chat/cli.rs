@@ -4,6 +4,7 @@
 
 use super::engine::{ChatError, StreamEvent};
 use crate::core::ai::jail::exit_error;
+use crate::core::ai::parse::sanitize;
 
 /// Most bytes of stderr kept for a turn: the tail, which is where the reason
 /// for a failure is.
@@ -22,12 +23,13 @@ impl Exit {
     }
 }
 
-/// The last non-blank line of `stderr`, trimmed.
+/// The last line of `stderr` that still has text once its escapes and
+/// control characters are gone, trimmed.
 pub fn last_line(stderr: &str) -> Option<String> {
     stderr
         .lines()
         .map(str::trim)
-        .rfind(|line| !line.is_empty())
+        .rfind(|line| !sanitize(line).trim().is_empty())
         .map(str::to_owned)
 }
 

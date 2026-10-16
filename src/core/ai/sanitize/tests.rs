@@ -243,3 +243,39 @@ fn random_bytes_cut_at_random_points_never_leak_a_control() {
         assert!(!whole.chars().any(bad), "{bytes:?} gave {whole:?}");
     }
 }
+
+// ---- redact_tokens ----
+
+#[test]
+fn long_runs_and_key_prefixes_are_replaced() {
+    assert_eq!(redact_tokens("id aaaaaaaaaaaaaaaaaaaa end"), "id … end");
+    assert_eq!(
+        redact_tokens("id aaaaaaaaaaaaaaaaaaa end"),
+        "id aaaaaaaaaaaaaaaaaaa end"
+    );
+    assert_eq!(redact_tokens("bad key sk-abc123 here"), "bad key … here");
+    assert_eq!(redact_tokens("session sess-AbC_9 gone"), "session … gone");
+    assert_eq!(redact_tokens("x_Y-0123456789_abcdefghij!"), "…!");
+}
+
+#[test]
+fn a_bearer_credential_is_replaced_whatever_it_looks_like() {
+    assert_eq!(
+        redact_tokens("Authorization: Bearer abc.def+ghi/jkl=="),
+        "Authorization: Bearer …"
+    );
+    assert_eq!(redact_tokens("bearer   s3cr3t then"), "bearer   … then");
+    assert_eq!(redact_tokens("a Bearer"), "a Bearer");
+}
+
+#[test]
+fn ordinary_error_text_is_untouched() {
+    for text in [
+        "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account",
+        "codex exited 1: not logged in: run codex login",
+        "task-runner failed: ask-me-later",
+        "",
+    ] {
+        assert_eq!(redact_tokens(text), text);
+    }
+}
