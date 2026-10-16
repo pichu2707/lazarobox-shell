@@ -22,7 +22,9 @@ use super::{
     chat::trusted_real_path,
 };
 use crate::core::ai::{
-    chat::notify::{bell_after_failed_desktop, describe_test, plays_sound, wants_desktop},
+    chat::notify::{
+        SoundEnd, bell_after_failed_desktop, describe_test, plays_sound, wants_desktop,
+    },
     config::NotifyMode,
 };
 
@@ -207,24 +209,29 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(16);
 /// `PATH` every time.
 const PROBE_TTL: Duration = Duration::from_secs(60);
 
-/// Clears the stuck flag when the probe closure ends, a panic included.
-struct Unstick(Arc<AtomicBool>);
+/// Raises its flag when the probe closure ends, a panic included.
+struct Done(Arc<AtomicBool>);
 
-impl Drop for Unstick {
+impl Drop for Done {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        self.0.store(true, Ordering::Release);
     }
 }
 
-/// The probes, with their guard rails. At most one probe thread exists at a
-/// time: if one is stuck (a hung disk), new probes say so instead of piling
-/// up blocking threads. Good results are cached for a minute; failures are
-/// not (installing the tool must work at once).
+type Slot<T> = Mutex<Option<(Instant, OsString, T)>>;
+
+/// The probes, with their guard rails. Healthy probes run side by side. A
+/// probe that outlives [`PROBE_TIMEOUT`] marks the probes as stuck until its
+/// thread really ends, and new probes then say so instead of piling up
+/// blocking threads. Good results are cached for a minute, keyed by the
+/// `PATH` they were probed with, and re-checked (the cheap trust check on the
+/// cached real paths) before each use; failures are never cached.
 pub struct Probe {
-    stuck: Arc<AtomicBool>,
+    /// The end flag of the probe thread that timed out, while it may still run.
+    stuck: Mutex<Option<Arc<AtomicBool>>>,
     ttl: Duration,
-    desktop: Mutex<Option<(Instant, PathBuf)>>,
-    sound: Mutex<Option<(Instant, Vec<Candidate>)>>,
+    desktop: Slot<PathBuf>,
+    sound: Slot<Vec<Candidate>>,
 }
 
 impl Default for Probe {
@@ -236,24 +243,31 @@ impl Default for Probe {
 impl Probe {
     pub fn with_ttl(ttl: Duration) -> Self {
         Self {
-            stuck: Arc::new(AtomicBool::new(false)),
+            stuck: Mutex::new(None),
             ttl,
             desktop: Mutex::new(None),
             sound: Mutex::new(None),
         }
     }
 
-    /// Runs `f` on a blocking thread and waits at most [`PROBE_TIMEOUT`]. On a
-    /// timeout the thread is left to finish and the stuck flag stays set until
-    /// it does.
+    fn is_stuck(&self) -> bool {
+        self.stuck
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+            .is_some_and(|done| !done.load(Ordering::Acquire))
+    }
+
+    /// Runs `f` on a blocking thread and waits at most [`PROBE_TIMEOUT`].
     async fn run<T: Send + 'static>(
         &self,
         f: impl FnOnce() -> T + Send + 'static,
     ) -> Result<T, String> {
-        if self.stuck.swap(true, Ordering::AcqRel) {
+        if self.is_stuck() {
             return Err("PATH lookup still running".to_owned());
         }
-        let guard = Unstick(Arc::clone(&self.stuck));
+        let done = Arc::new(AtomicBool::new(false));
+        let guard = Done(Arc::clone(&done));
         let task = tokio::task::spawn_blocking(move || {
             let _guard = guard;
             f()
@@ -261,33 +275,45 @@ impl Probe {
         match timeout(PROBE_TIMEOUT, task).await {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(_)) => Err("the check failed".to_owned()),
-            Err(_) => Err("the check timed out".to_owned()),
+            Err(_) => {
+                if let Ok(mut slot) = self.stuck.lock() {
+                    *slot = Some(done);
+                }
+                Err("the check timed out".to_owned())
+            }
         }
     }
 
-    fn fresh<T: Clone>(&self, slot: &Mutex<Option<(Instant, T)>>) -> Option<T> {
+    fn fresh<T: Clone>(&self, slot: &Slot<T>, path: &OsStr) -> Option<T> {
         let slot = slot.lock().ok()?;
         slot.as_ref()
-            .filter(|(at, _)| at.elapsed() < self.ttl)
-            .map(|(_, value)| value.clone())
+            .filter(|(at, key, _)| at.elapsed() < self.ttl && key == path)
+            .map(|(_, _, value)| value.clone())
+    }
+
+    fn store<T>(slot: &Slot<T>, path: &OsStr, value: T) {
+        if let Ok(mut slot) = slot.lock() {
+            *slot = Some((Instant::now(), path.to_owned(), value));
+        }
     }
 
     /// The `notify-send` to run, or why there is none. `cached` reuses a good
-    /// result from the last minute.
+    /// result from the last minute, after checking it is still trusted.
     pub async fn desktop(
         &self,
         session: fn() -> Session,
         path: &OsStr,
         cached: bool,
     ) -> Result<PathBuf, String> {
-        if cached && let Some(program) = self.fresh(&self.desktop) {
-            return Ok(program);
-        }
-        let path = path.to_owned();
-        let program = self.run(move || desktop_plan(&session(), &path)).await??;
-        if let Ok(mut slot) = self.desktop.lock() {
-            *slot = Some((Instant::now(), program.clone()));
-        }
+        let hit = cached.then(|| self.fresh(&self.desktop, path)).flatten();
+        let owned = path.to_owned();
+        let program = self
+            .run(move || match hit {
+                Some(p) if trusted_real_path(&p).as_ref() == Some(&p) => Ok(p),
+                _ => desktop_plan(&session(), &owned),
+            })
+            .await??;
+        Self::store(&self.desktop, path, program.clone());
         Ok(program)
     }
 
@@ -299,22 +325,25 @@ impl Probe {
         path: &OsStr,
         cached: bool,
     ) -> Result<Vec<Candidate>, String> {
-        if cached && let Some(plan) = self.fresh(&self.sound) {
-            return Ok(plan);
-        }
-        let path = path.to_owned();
+        let hit = cached.then(|| self.fresh(&self.sound, path)).flatten();
+        let owned = path.to_owned();
         let plan = self
             .run(move || {
+                if let Some(plan) = hit
+                    && plan
+                        .iter()
+                        .all(|c| trusted_real_path(&c.program).as_ref() == Some(&c.program))
+                {
+                    return Ok(plan);
+                }
                 let session = session();
                 if session.ssh || !session.display || !session.bus {
                     return Err("no desktop session".to_owned());
                 }
-                sound_plan(&path, |f| f.exists())
+                sound_plan(&owned, |f| f.exists())
             })
             .await??;
-        if let Ok(mut slot) = self.sound.lock() {
-            *slot = Some((Instant::now(), plan.clone()));
-        }
+        Self::store(&self.sound, path, plan.clone());
         Ok(plan)
     }
 }
@@ -443,7 +472,7 @@ async fn play_plan(
     plan: &[Candidate],
     path: &OsStr,
     vars: &[(OsString, OsString)],
-) -> Result<(), String> {
+) -> Result<SoundEnd, String> {
     for candidate in plan {
         match run_tool(
             &candidate.program,
@@ -454,7 +483,8 @@ async fn play_plan(
         )
         .await
         {
-            Ok(()) | Err(RunFailure::Timeout) => return Ok(()),
+            Ok(()) => return Ok(SoundEnd::Played),
+            Err(RunFailure::Timeout) => return Ok(SoundEnd::StillPlaying),
             Err(_) => {}
         }
     }
@@ -466,7 +496,7 @@ pub async fn play(
     path: &OsStr,
     vars: &[(OsString, OsString)],
     exists: impl Fn(&Path) -> bool,
-) -> Result<(), String> {
+) -> Result<SoundEnd, String> {
     play_plan(&sound_plan(path, exists)?, path, vars).await
 }
 
@@ -1178,14 +1208,17 @@ mod tests {
         note("pw-play", 1);
         note("paplay", 0);
         let path = dir.path().as_os_str().to_owned();
-        assert_eq!(play(&path, &[], |f| f == Path::new(OGA)).await, Ok(()));
+        assert_eq!(
+            play(&path, &[], |f| f == Path::new(OGA)).await,
+            Ok(SoundEnd::Played)
+        );
         assert_eq!(
             fs::read_to_string(&log).unwrap(),
             "canberra-gtk-play\npw-play\npaplay\n"
         );
         fs::remove_file(&log).unwrap();
         note("canberra-gtk-play", 0);
-        assert_eq!(play(&path, &[], |_| true).await, Ok(()));
+        assert_eq!(play(&path, &[], |_| true).await, Ok(SoundEnd::Played));
         assert_eq!(
             fs::read_to_string(&log).unwrap(),
             "canberra-gtk-play\n",
@@ -1207,7 +1240,7 @@ mod tests {
             ),
         );
         let path = dir.path().as_os_str().to_owned();
-        assert_eq!(play(&path, &[], |_| false).await, Ok(()));
+        assert_eq!(play(&path, &[], |_| false).await, Ok(SoundEnd::Played));
         let dump = fs::read_to_string(&out).unwrap();
         assert!(dump.starts_with("-i\nmessage-new-instant\n"), "{dump}");
         assert!(!dump.contains("CARGO_MANIFEST_DIR"), "{dump}");
@@ -1454,44 +1487,161 @@ mod tests {
     // W1: a good probe is cached for the TTL; a bad one never is.
     #[tokio::test]
     async fn a_good_probe_is_cached_and_a_failure_is_not() {
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn counted() -> Session {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            here()
+        }
         let dir = lab().unwrap();
         let path = dir.path().as_os_str().to_owned();
         let probe = Probe::with_ttl(Duration::from_secs(60));
-        assert!(probe.desktop(here, &path, true).await.is_err());
+        assert!(probe.desktop(counted, &path, true).await.is_err());
         script(dir.path(), "exit 0");
         assert!(
-            probe.desktop(here, &path, true).await.is_ok(),
+            probe.desktop(counted, &path, true).await.is_ok(),
             "a failure was not cached"
         );
-        fs::remove_file(dir.path().join(PROGRAM)).unwrap();
-        assert!(
-            probe.desktop(here, &path, true).await.is_ok(),
-            "served from the cache"
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+        assert!(probe.desktop(counted, &path, true).await.is_ok());
+        assert_eq!(
+            CALLS.load(Ordering::SeqCst),
+            2,
+            "served from the cache: no new probe"
         );
-        assert!(
-            probe.desktop(here, &path, false).await.is_err(),
+        assert!(probe.desktop(counted, &path, false).await.is_ok());
+        assert_eq!(
+            CALLS.load(Ordering::SeqCst),
+            3,
             "the test action looks again"
         );
         let cold = Probe::with_ttl(Duration::ZERO);
+        assert!(cold.desktop(counted, &path, true).await.is_ok());
+        assert!(cold.desktop(counted, &path, true).await.is_ok());
+        assert_eq!(CALLS.load(Ordering::SeqCst), 5, "expired at once");
+    }
+
+    // W2 (fourth review): a cached path is re-checked before it runs.
+    #[tokio::test]
+    async fn a_cached_path_that_stopped_being_trusted_is_refreshed_away() {
+        let dir = lab().unwrap();
         script(dir.path(), "exit 0");
-        assert!(cold.desktop(here, &path, true).await.is_ok());
+        let path = dir.path().as_os_str().to_owned();
+        let probe = Probe::default();
+        assert!(probe.desktop(here, &path, true).await.is_ok());
+        fs::set_permissions(dir.path().join(PROGRAM), fs::Permissions::from_mode(0o757)).unwrap();
+        assert_eq!(
+            probe.desktop(here, &path, true).await,
+            Err("notify-send on PATH is untrusted (under /tmp or writable by others)".to_owned())
+        );
+        fs::set_permissions(dir.path().join(PROGRAM), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(probe.desktop(here, &path, true).await.is_ok());
         fs::remove_file(dir.path().join(PROGRAM)).unwrap();
         assert!(
-            cold.desktop(here, &path, true).await.is_err(),
-            "expired at once"
+            probe.desktop(here, &path, true).await.is_err(),
+            "a removed file is not served"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cached_sound_plan_is_rechecked_too() {
+        let dir = lab().unwrap();
+        tool(dir.path(), "canberra-gtk-play", "exit 0");
+        let path = dir.path().as_os_str().to_owned();
+        let probe = Probe::default();
+        assert!(probe.sound(here, &path, true).await.is_ok());
+        fs::set_permissions(
+            dir.path().join("canberra-gtk-play"),
+            fs::Permissions::from_mode(0o757),
+        )
+        .unwrap();
+        assert!(probe.sound(here, &path, true).await.is_err());
+    }
+
+    // W3 (fourth review): the cache belongs to the PATH it was probed with.
+    #[tokio::test]
+    async fn the_cache_is_keyed_by_the_path() {
+        let one = lab().unwrap();
+        let two = lab().unwrap();
+        script(one.path(), "exit 0");
+        let probe = Probe::default();
+        assert!(
+            probe
+                .desktop(here, one.path().as_os_str(), true)
+                .await
+                .is_ok()
+        );
+        assert!(
+            probe
+                .desktop(here, two.path().as_os_str(), true)
+                .await
+                .is_err(),
+            "another PATH is not served from the first one's cache"
+        );
+    }
+
+    // W1 (fourth review): healthy concurrent probes both run.
+    #[tokio::test]
+    async fn desktop_and_sound_probed_together_on_a_cold_cache_both_succeed() {
+        let dir = lab().unwrap();
+        script(dir.path(), "exit 0");
+        tool(dir.path(), "canberra-gtk-play", "exit 0");
+        let path = dir.path().as_os_str().to_owned();
+        let probe = Probe::default();
+        let (desktop, sound) = tokio::join!(
+            probe.desktop(here, &path, true),
+            probe.sound(here, &path, true)
+        );
+        assert!(desktop.is_ok(), "{desktop:?}");
+        assert!(sound.is_ok(), "{sound:?}");
+    }
+
+    // W6 (fourth review): the test report tells a player still running apart.
+    #[tokio::test]
+    async fn the_test_report_says_when_the_sound_is_still_playing() {
+        let dir = lab().unwrap();
+        script(dir.path(), "exit 0");
+        tool(
+            dir.path(),
+            "canberra-gtk-play",
+            "PATH=\"$PATH:/usr/bin:/bin\"\nsleep 30",
+        );
+        let path = dir.path().as_os_str().to_owned();
+        let report = run_test(
+            &path,
+            &Probe::default(),
+            here,
+            NotifyMode::Auto,
+            true,
+            &[],
+            SOUND_STEP,
+        )
+        .await;
+        assert_eq!(
+            report.text,
+            "sent: bell + desktop · sound: still playing after 2 s"
         );
     }
 
     #[tokio::test]
     async fn the_sound_plan_is_cached_too() {
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn counted() -> Session {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            here()
+        }
         let dir = lab().unwrap();
         let path = dir.path().as_os_str().to_owned();
         tool(dir.path(), "canberra-gtk-play", "exit 0");
         let probe = Probe::default();
-        assert_eq!(probe.sound(here, &path, true).await.unwrap().len(), 1);
+        assert_eq!(probe.sound(counted, &path, true).await.unwrap().len(), 1);
+        assert_eq!(probe.sound(counted, &path, true).await.unwrap().len(), 1);
+        assert_eq!(
+            CALLS.load(Ordering::SeqCst),
+            1,
+            "the second came from the cache"
+        );
         fs::remove_file(dir.path().join("canberra-gtk-play")).unwrap();
-        assert_eq!(probe.sound(here, &path, true).await.unwrap().len(), 1);
-        assert!(probe.sound(here, &path, false).await.is_err());
+        assert!(probe.sound(counted, &path, false).await.is_err());
     }
 
     // W2: the sound step times out on its own and keeps the desktop outcome.
@@ -1549,7 +1699,7 @@ mod tests {
             &format!("echo pw >> '{}'", log.display()),
         );
         let path = dir.path().as_os_str().to_owned();
-        assert_eq!(play(&path, &[], |_| true).await, Ok(()));
+        assert_eq!(play(&path, &[], |_| true).await, Ok(SoundEnd::StillPlaying));
         assert!(!log.exists(), "the next candidate never ran");
     }
 
@@ -1567,7 +1717,7 @@ mod tests {
             &format!("echo pw >> '{}'", log.display()),
         );
         let path = dir.path().as_os_str().to_owned();
-        assert_eq!(play(&path, &[], |_| true).await, Ok(()));
+        assert_eq!(play(&path, &[], |_| true).await, Ok(SoundEnd::Played));
         assert_eq!(fs::read_to_string(&log).unwrap(), "pw\n");
     }
 

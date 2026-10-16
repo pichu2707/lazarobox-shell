@@ -149,18 +149,44 @@ fn startup_effects(app: &mut App) -> Vec<Effect> {
     effects
 }
 
-/// Runs the terminal pane until the child exits or the user quits.
 /// How long the runtime waits for blocking threads when it is dropped at
 /// exit. All the quit work (store, memory, chats, children) is awaited inside
 /// [`run`]; what can still be running here is a wedged probe or a `waitid` on
 /// a child that is being killed, and neither may hang the quit.
 pub const RUNTIME_QUIT_BOUND: Duration = Duration::from_secs(1);
 
-/// Drops `rt`, waiting at most `bound` for its blocking threads.
-pub fn shutdown_runtime(rt: tokio::runtime::Runtime, bound: Duration) {
-    rt.shutdown_timeout(bound);
+/// Owns the runtime and bounds its shutdown on every way out, a panic
+/// included: dropping it waits at most `bound` for the blocking threads.
+pub struct QuitGuard {
+    rt: Option<tokio::runtime::Runtime>,
+    bound: Duration,
 }
 
+impl QuitGuard {
+    pub fn new(rt: tokio::runtime::Runtime, bound: Duration) -> Self {
+        Self {
+            rt: Some(rt),
+            bound,
+        }
+    }
+
+    pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        self.rt
+            .as_ref()
+            .expect("the runtime lives until the guard drops")
+            .block_on(future)
+    }
+}
+
+impl Drop for QuitGuard {
+    fn drop(&mut self) {
+        if let Some(rt) = self.rt.take() {
+            rt.shutdown_timeout(self.bound);
+        }
+    }
+}
+
+/// Runs the terminal pane until the child exits or the user quits.
 pub async fn run() -> io::Result<()> {
     // Asked first so the shell runs while the rest of the start-up goes on.
     let login_path = tokio::spawn(login_path::resolve(
@@ -1681,16 +1707,41 @@ mod tests {
 
     #[test]
     fn a_wedged_blocking_thread_cannot_hang_the_runtime_shutdown() {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async {
-            tokio::task::spawn_blocking(|| thread::sleep(Duration::from_secs(5)));
-            tokio::task::yield_now().await;
-        });
         let started = Instant::now();
-        shutdown_runtime(rt, Duration::from_millis(200));
+        {
+            let guard = QuitGuard::new(
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap(),
+                Duration::from_millis(200),
+            );
+            guard.block_on(async {
+                tokio::task::spawn_blocking(|| thread::sleep(Duration::from_secs(5)));
+                tokio::task::yield_now().await;
+            });
+        }
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn the_panic_path_is_bounded_too() {
+        let started = Instant::now();
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            let guard = QuitGuard::new(
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap(),
+                Duration::from_millis(200),
+            );
+            guard.block_on(async {
+                tokio::task::spawn_blocking(|| thread::sleep(Duration::from_secs(5)));
+                tokio::task::yield_now().await;
+            });
+            panic!("boom");
+        }));
+        assert!(result.is_err());
         assert!(started.elapsed() < Duration::from_secs(3));
     }
 

@@ -30,9 +30,9 @@ fn main() -> std::io::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let result = rt.block_on(lazarobox_shell::runtime::run());
-    // The quit work is done inside `run`; do not let a wedged blocking thread
-    // (a hung PATH lookup) hold the exit.
-    lazarobox_shell::runtime::shutdown_runtime(rt, lazarobox_shell::runtime::RUNTIME_QUIT_BOUND);
-    result
+    // The quit work is done inside `run`; the guard keeps a wedged blocking
+    // thread (a hung PATH lookup) from holding the exit, panics included.
+    let guard =
+        lazarobox_shell::runtime::QuitGuard::new(rt, lazarobox_shell::runtime::RUNTIME_QUIT_BOUND);
+    guard.block_on(lazarobox_shell::runtime::run())
 }

@@ -48,7 +48,14 @@ baseline.
   (the guard exists before the task does); a probe thread that is truly
   stuck is not interrupted, but at most one exists at a time (new probes say
   "PATH lookup still running") and the process exit waits at most 1 s for
-  it. Good probe results are cached for a minute, failures never. A send
+  it. Healthy probes run side by side; only one that exceeded its limit is
+  treated as stuck. Good probe results are cached for a minute per `PATH`
+  and re-checked (exists, not under `/tmp`, not group- or world-writable)
+  before each use; failures never are. A player still running at its limit
+  counts as played, and the test report shows it as `sound: still playing
+  after 2 s` (a player hung while connecting to the audio server looks the
+  same). The runtime is held by a guard that bounds its shutdown on every
+  way out, panics included. A send
   dropped because another is in flight rings the bell in `desktop` mode.
   The checked real path of `notify-send` is the one that runs, with the found
   name as `argv[0]`. The sound tries canberra, then `pw-play` and `paplay`
