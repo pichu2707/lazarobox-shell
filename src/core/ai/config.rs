@@ -132,6 +132,7 @@ pub struct AiConfig {
     profile: Profile,
     context: bool,
     notify: bool,
+    tools: bool,
     pub memory: MemoryConfig,
 }
 
@@ -142,6 +143,7 @@ impl Default for AiConfig {
             profile: Profile::default(),
             context: true,
             notify: false,
+            tools: true,
             memory: MemoryConfig::default(),
         }
     }
@@ -181,6 +183,12 @@ impl AiConfig {
 
     pub fn set_notify(&mut self, notify: bool) {
         self.notify = notify;
+    }
+
+    /// Whether the chat may act in the user's panes (`[ai.tools] enabled`).
+    /// On by default: nothing is written without the user's `y` anyway.
+    pub fn tools_enabled(&self) -> bool {
+        self.tools
     }
 
     /// The effective assignment of a task and whether it was inherited from
@@ -347,8 +355,34 @@ pub fn read_with_port_env(
     port_env: Option<&str>,
 ) -> AiConfig {
     let mut config = read_tasks(table, problems);
+    config.tools = read_tools(table, problems);
     config.memory = read_memory(table, problems, port_env);
     config
+}
+
+/// Reads `[ai.tools] enabled`: a missing table or key is `true`; a value of
+/// the wrong type falls back to `true` with a problem. Unknown keys are
+/// ignored. Only the key is parsed here; the menu row comes later.
+fn read_tools(table: &Table, problems: &mut Vec<String>) -> bool {
+    let Some(ai) = table.get("ai").and_then(Value::as_table) else {
+        return true;
+    };
+    let section = match ai.get("tools") {
+        None => return true,
+        Some(Value::Table(section)) => section,
+        Some(_) => {
+            problems.push("ai.tools: expected a table".to_owned());
+            return true;
+        }
+    };
+    match section.get("enabled") {
+        None => true,
+        Some(Value::Boolean(on)) => *on,
+        Some(_) => {
+            problems.push("ai.tools.enabled: expected a boolean".to_owned());
+            true
+        }
+    }
 }
 
 /// A valid port in the text of `ENGRAM_PORT`: an integer from 1 to 65535.
@@ -1028,6 +1062,54 @@ mod tests {
                 "{value}"
             );
         }
+    }
+
+    // Spec (configuration): `[ai.tools] enabled`, default and parse.
+    #[test]
+    fn tools_default_to_enabled() {
+        assert!(AiConfig::default().tools_enabled());
+        for text in ["", "[ai]\n", "[ai.tools]\n", "[ai.tools]\nother = 1\n"] {
+            let (config, problems) = read_text(text);
+            assert!(config.tools_enabled(), "{text:?}");
+            assert!(problems.is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_boolean_tools_flag_is_read_without_a_problem() {
+        for (value, want) in [("true", true), ("false", false)] {
+            let (config, problems) = read_text(&format!("[ai.tools]\nenabled = {value}\n"));
+            assert_eq!(config.tools_enabled(), want, "{value}");
+            assert!(problems.is_empty(), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_bad_tools_value_falls_back_to_enabled_with_the_exact_problem() {
+        for value in ["1", "\"no\"", "[]"] {
+            let (config, problems) = read_text(&format!("[ai.tools]\nenabled = {value}\n"));
+            assert!(config.tools_enabled(), "{value}");
+            assert_eq!(
+                problems,
+                vec!["ai.tools.enabled: expected a boolean".to_owned()],
+                "{value}"
+            );
+        }
+        let (config, problems) = read_text("[ai]\ntools = 3\n");
+        assert!(config.tools_enabled());
+        assert_eq!(problems, vec!["ai.tools: expected a table".to_owned()]);
+    }
+
+    #[test]
+    fn the_tools_problem_follows_the_task_ones() {
+        let (_, problems) = read_text("[ai]\nnotify = 1\n[ai.tools]\nenabled = 1\n");
+        assert_eq!(
+            problems,
+            vec![
+                "ai.notify: expected a boolean".to_owned(),
+                "ai.tools.enabled: expected a boolean".to_owned(),
+            ]
+        );
     }
 
     #[test]
