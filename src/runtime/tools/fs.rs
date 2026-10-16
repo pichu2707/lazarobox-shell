@@ -181,6 +181,12 @@ fn read_file(
     // Clean first: a zero-width or control character inside a token would
     // otherwise hide it from the redaction.
     let mut out = redact(&clean(&text)).text;
+    // The window edge may have cut a token in two, and redaction cannot see
+    // a secret it only half has: drop the trailing partial token, even when
+    // redaction left the text under the cap.
+    if more {
+        out.truncate(out.rfind(char::is_whitespace).unwrap_or(0));
+    }
     let cut = more || out.len() > limits.read_bytes;
     if out.len() > limits.read_bytes {
         let mut end = limits.read_bytes;
@@ -429,6 +435,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out, format!("xxxxxxxxx [REDACTED]\n{READ_MARKER}"));
+    }
+
+    #[test]
+    fn a_secret_cut_by_the_window_edge_never_survives_even_when_redaction_shrank_the_text() {
+        let f = fixture();
+        let secret = format!("sk-{}", "a1B2".repeat(50));
+        let mut text = String::new();
+        for _ in 0..9 {
+            text.push_str(&secret);
+            text.push(' ');
+        }
+        // The window is read_bytes + REDACT_MARGIN = 2024 bytes: the last
+        // secret starts at 2016 and is cut by the edge.
+        text.push_str(&"p".repeat(2016 - text.len() - 1));
+        text.push(' ');
+        assert_eq!(text.len(), 2016);
+        text.push_str("sk-QWERTYUIOPASDF1234567890 tail");
+        fs::write(f.home.join("conf"), &text).unwrap();
+        let limits = Limits { read_bytes: 1000 };
+        let out = execute(
+            &Call::ReadFile {
+                path: "~/conf".into(),
+            },
+            &env(&f.home),
+            &limits,
+        )
+        .unwrap();
+        assert!(!out.contains("sk-"), "{out:?}");
+        assert!(out.ends_with(READ_MARKER), "{out:?}");
+        assert!(out.contains("[REDACTED]"), "{out:?}");
     }
 
     #[test]
