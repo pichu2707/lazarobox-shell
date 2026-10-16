@@ -10,6 +10,19 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- The login-shell PATH lookup works from a launcher again. The shell was
+  started with the launcher's bare PATH, so rc files that call `tr` or
+  `readlink` (`brew shellenv`, nvm) failed and linuxbrew and nvm never reached
+  the merged PATH. The probe shell now starts with the process PATH plus
+  `/usr/local/bin:/usr/bin:/bin`. If `$SHELL` gives nothing, `/bin/bash -l -c`
+  is tried once (not when `$SHELL` is bash already); both share one 3 s
+  deadline instead of 2.5 s for the first alone.
+- The login-shell entries now come first in the merged PATH, then the process
+  entries it lacks, so the launcher picks the program your terminal picks. A
+  stale `/usr/local/bin/codex` no longer hides the one in linuxbrew.
+
 ## [0.15.1] - 2026-10-16
 
 ### Fixed
