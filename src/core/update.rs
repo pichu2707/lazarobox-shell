@@ -117,9 +117,16 @@ impl Cache {
     }
 }
 
-/// Whether a check must go to the network at `now`.
-pub fn is_due(cache: Option<&Cache>, now: u64) -> bool {
+/// Whether a check must go to the network at `now`, for a binary that runs
+/// `current`. A worked check holds for a day, unless what it found is not
+/// newer than `current` any more (the user installed it, or went back): then
+/// the answer is old news and the next check is due at once. A failed check
+/// keeps the short retry either way.
+pub fn is_due(cache: Option<&Cache>, now: u64, current: &str) -> bool {
     let Some(cache) = cache else { return true };
+    if cache.ok && latest_is_stale(cache, current) {
+        return true;
+    }
     let wait = if cache.ok {
         CHECK_EVERY_SECS
     } else {
@@ -128,6 +135,12 @@ pub fn is_due(cache: Option<&Cache>, now: u64) -> bool {
     // A stamp in the future (the clock went back) must not freeze the check.
     now.checked_sub(cache.checked_at)
         .is_none_or(|elapsed| elapsed >= wait)
+}
+
+/// Whether the cached `latest` is known and no newer than `current`.
+fn latest_is_stale(cache: &Cache, current: &str) -> bool {
+    let latest = cache.latest.as_deref().and_then(Version::parse);
+    matches!((latest, Version::parse(current)), (Some(latest), Some(current)) if latest <= current)
 }
 
 /// `crate.max_stable_version` (else `crate.max_version`) of the crates.io
@@ -174,6 +187,8 @@ mod tests {
             latest: latest.map(str::to_owned),
         }
     }
+
+    const CURRENT: &str = "0.15.1";
 
     #[test]
     fn parses_plain_and_prerelease_versions() {
@@ -276,28 +291,68 @@ mod tests {
 
     #[test]
     fn without_a_cache_a_check_is_due() {
-        assert!(is_due(None, 1_000));
+        assert!(is_due(None, 1_000, CURRENT));
     }
 
     #[test]
     fn a_worked_check_holds_for_24_hours() {
         let c = cache(1_000, true, Some("0.16.0"));
-        assert!(!is_due(Some(&c), 1_000));
-        assert!(!is_due(Some(&c), 1_000 + CHECK_EVERY_SECS - 1));
-        assert!(is_due(Some(&c), 1_000 + CHECK_EVERY_SECS));
+        assert!(!is_due(Some(&c), 1_000, CURRENT));
+        assert!(!is_due(Some(&c), 1_000 + CHECK_EVERY_SECS - 1, CURRENT));
+        assert!(is_due(Some(&c), 1_000 + CHECK_EVERY_SECS, CURRENT));
+    }
+
+    #[test]
+    fn a_cached_latest_that_is_not_newer_is_stale_at_once() {
+        // Equal: the user just installed the announced version. Older: a
+        // downgrade or a yanked release. Either way the 24 h wait is moot.
+        for latest in ["0.15.1", "0.15.0", "0.14.9"] {
+            let c = cache(1_000, true, Some(latest));
+            assert!(is_due(Some(&c), 1_000, CURRENT), "{latest}");
+        }
+    }
+
+    #[test]
+    fn a_cache_without_a_usable_latest_keeps_the_daily_rule() {
+        for latest in [None, Some("soon")] {
+            let c = cache(1_000, true, latest);
+            assert!(!is_due(Some(&c), 1_001, CURRENT), "{latest:?}");
+        }
+    }
+
+    #[test]
+    fn a_newer_cached_latest_keeps_the_daily_rule() {
+        let c = cache(1_000, true, Some("0.15.2"));
+        assert!(!is_due(Some(&c), 1_000 + CHECK_EVERY_SECS - 1, CURRENT));
+        assert!(is_due(Some(&c), 1_000 + CHECK_EVERY_SECS, CURRENT));
+    }
+
+    #[test]
+    fn a_failed_check_keeps_the_hourly_retry_even_with_a_stale_latest() {
+        let c = cache(1_000, false, Some("0.15.1"));
+        assert!(!is_due(
+            Some(&c),
+            1_000 + RETRY_AFTER_FAILURE_SECS - 1,
+            CURRENT
+        ));
+        assert!(is_due(Some(&c), 1_000 + RETRY_AFTER_FAILURE_SECS, CURRENT));
     }
 
     #[test]
     fn a_failed_check_retries_after_an_hour() {
         let c = cache(1_000, false, None);
-        assert!(!is_due(Some(&c), 1_000 + RETRY_AFTER_FAILURE_SECS - 1));
-        assert!(is_due(Some(&c), 1_000 + RETRY_AFTER_FAILURE_SECS));
+        assert!(!is_due(
+            Some(&c),
+            1_000 + RETRY_AFTER_FAILURE_SECS - 1,
+            CURRENT
+        ));
+        assert!(is_due(Some(&c), 1_000 + RETRY_AFTER_FAILURE_SECS, CURRENT));
     }
 
     #[test]
     fn a_clock_that_went_back_does_not_freeze_the_check() {
         let c = cache(10 * CHECK_EVERY_SECS, true, None);
-        assert!(is_due(Some(&c), 1_000));
+        assert!(is_due(Some(&c), 1_000, CURRENT));
     }
 
     #[test]

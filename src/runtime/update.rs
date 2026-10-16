@@ -117,7 +117,7 @@ pub fn startup(enabled: bool, path: Option<&Path>, now: u64, current: &str) -> S
     let cache = read_cache(path);
     Startup {
         announce: update::announced(cache.as_ref(), current),
-        due: update::is_due(cache.as_ref(), now),
+        due: update::is_due(cache.as_ref(), now, current),
     }
 }
 

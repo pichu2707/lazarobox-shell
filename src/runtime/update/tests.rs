@@ -172,6 +172,39 @@ fn a_stale_cache_still_announces_while_the_check_runs() {
 }
 
 #[test]
+fn an_installed_version_in_the_cache_is_due_at_once_and_announces_nothing() {
+    let (_dir, path) = cache_file();
+    let c = Cache {
+        checked_at: 1_000,
+        ok: true,
+        latest: Some("0.16.0".into()),
+    };
+    write_cache(&path, &c).unwrap();
+    // One minute later the user runs 0.16.0: the cached answer is old news.
+    let s = startup(true, Some(&path), 1_060, "0.16.0");
+    assert_eq!(
+        s,
+        Startup {
+            announce: None,
+            due: true
+        }
+    );
+}
+
+#[test]
+fn a_quick_restart_after_the_stamp_does_not_ask_again() {
+    let (_dir, path) = cache_file();
+    // What `begin` leaves while a check is in flight: failed, latest kept.
+    let c = Cache {
+        checked_at: 1_000,
+        ok: false,
+        latest: Some("0.16.0".into()),
+    };
+    write_cache(&path, &c).unwrap();
+    assert!(!startup(true, Some(&path), 1_060, "0.16.0").due);
+}
+
+#[test]
 fn no_cache_location_means_no_check() {
     let s = startup(true, None, 100, "0.15.1");
     assert_eq!(
