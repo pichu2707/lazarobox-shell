@@ -1,6 +1,8 @@
 //! Runtime of the read tools: runs a validated call off the event loop and
 //! wraps what it returns as untrusted data.
 
+#[cfg(test)]
+mod audit;
 pub mod fs;
 pub mod open;
 
@@ -49,6 +51,12 @@ const GRACE: Duration = if cfg!(test) {
 /// Runs a read tool on the blocking pool, so a slow filesystem never stalls
 /// the event loop. `Ok` is the result wrapped for the model; `Err` is a short
 /// content-free failure.
+///
+/// The walker's own deadline starts when its blocking thread starts, but the
+/// outer timeout starts at submission: a wait for a free pool thread is spent
+/// out of the grace (and out of `limits.time` as seen by the caller), so under
+/// a saturated pool the call can end as `TimedOut` before the walker would
+/// have stopped itself. That is the safe side: the model gets a short failure.
 ///
 /// The call is bounded by `limits.time` plus a short grace, and a dropped
 /// future cancels the walk. Both stop the walker at its next entry; a syscall
@@ -180,40 +188,6 @@ mod tests {
             assert_eq!(out.matches(&closing).count(), 1, "{out}");
             assert!(out.ends_with(label::DATA_NOTE));
             assert!(out.contains(name), "{out}");
-        }
-    }
-
-    #[test]
-    fn the_tool_code_starts_no_process_opens_no_socket_and_creates_no_file() {
-        // A static stand-in for a recording sandbox: no in-process hook can
-        // see a spawn or a socket, so the non-test code is checked instead.
-        let banned = [
-            "std::process",
-            "Command::new",
-            "UnixStream",
-            "UnixListener",
-            "TcpStream",
-            "TcpListener",
-            "UdpSocket",
-            "File::create",
-            "OpenOptions",
-            "O_WRONLY",
-            "O_RDWR",
-            "O_CREAT",
-            "fs::write",
-            "remove_file",
-            "create_dir",
-            "rename(",
-        ];
-        for source in [
-            include_str!("fs.rs"),
-            include_str!("open.rs"),
-            include_str!("mod.rs"),
-        ] {
-            let code = source.split("mod tests {").next().unwrap();
-            for word in banned {
-                assert!(!code.contains(word), "found {word}");
-            }
         }
     }
 
