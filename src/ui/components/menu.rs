@@ -1154,16 +1154,50 @@ mod tests {
         }
     }
 
+    const LONG_WHY: &str = "jail: no node found to run the CLI script; install it next to the CLI or on PATH (looked in /usr/local/bin)";
+
     #[test]
-    fn a_long_listing_reason_is_clipped_to_the_row() {
-        let why = format!("codex exited 1: {}", "x".repeat(200));
+    fn snapshot_a_long_listing_reason_wraps_across_rows_and_the_cursor_can_copy_it() {
+        let mut menu = codex_models_level(codex_without_list(LONG_WHY));
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(shown.contains("/usr/local/bin)"), "{shown}");
+        assert!(shown.contains("no node found to run the CLI"), "{shown}");
+        insta::assert_snapshot!("long_reason_wrapped", shown);
+        // On the note the footer says how to copy it.
+        press(&mut menu, &[KeyCode::Down, KeyCode::Down]);
+        let on_note = text(&draw(62, POPUP_H, &menu));
+        assert!(
+            on_note.contains("Enter or y copies the full reason"),
+            "{on_note}"
+        );
+        insta::assert_snapshot!("long_reason_cursor_on_note", on_note);
+    }
+
+    #[test]
+    fn a_huge_listing_reason_is_bounded_to_four_rows_with_the_last_clipped() {
+        let why = format!("codex exited 1: {}", "word ".repeat(100));
         let menu = codex_models_level(codex_without_list(&why));
         let buf = draw(62, POPUP_H, &menu);
-        let note = lines(&buf)
-            .into_iter()
-            .find(|l| l.contains("model list unavailable"))
+        let rows = lines(&buf);
+        let first = rows
+            .iter()
+            .position(|l| l.contains("model list unavailable"))
             .unwrap();
-        assert!(note.contains('…') && note.ends_with('│'), "{note}");
-        assert_eq!(cells(&note), 62);
+        assert!(rows[first + 3].contains('…'), "{rows:#?}");
+        assert!(!rows[first + 4].contains("word"), "{rows:#?}");
+        for l in &rows[first..first + 4] {
+            assert_eq!(cells(l), 62);
+        }
+    }
+
+    #[test]
+    fn a_narrow_popup_still_clips_the_note_rows_as_a_last_resort() {
+        let menu = codex_models_level(codex_without_list(LONG_WHY));
+        for w in [30, 40, 50] {
+            let buf = draw(w, POPUP_H, &menu);
+            for l in lines(&buf) {
+                assert_eq!(cells(&l), usize::from(w), "{l}");
+            }
+        }
     }
 }

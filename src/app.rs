@@ -1289,7 +1289,31 @@ impl App {
                 self.sync_checking();
                 effects
             }
+            MenuCommand::Copy(text) => self.copy_from_menu(&text),
             MenuCommand::None => Vec::new(),
+        }
+    }
+
+    /// Puts `text` on the host clipboard (OSC 52) and says so in the menu
+    /// footer and the notice. A text too large for one sequence is refused.
+    fn copy_from_menu(&mut self, text: &str) -> Vec<Effect> {
+        let Some(menu) = self.menu.as_mut() else {
+            return Vec::new();
+        };
+        match osc52(text) {
+            Ok(sequence) => {
+                let said = match text.chars().count() {
+                    1 => "Copied 1 character".to_string(),
+                    n => format!("Copied {n} characters"),
+                };
+                menu.set_copied(said.clone());
+                self.notice = Some(said);
+                vec![Effect::SetClipboard(sequence)]
+            }
+            Err(TooLarge) => {
+                menu.set_error("Too large to copy".to_string());
+                Vec::new()
+            }
         }
     }
 
@@ -6721,6 +6745,9 @@ mod app_tests {
 
     /// The update notice: statusline mark and menu note.
     mod update;
+
+    /// Copying the reason behind a degraded engine from the AI picker.
+    mod menu_copy;
 
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.
