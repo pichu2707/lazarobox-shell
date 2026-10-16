@@ -6,6 +6,7 @@
 //! everything outside `$HOME`. Every refusal looks the same, so a model cannot probe which files
 //! exist or which are excluded.
 
+use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 
 use crate::core::ai::jail::CREDENTIAL_DIRS;
@@ -16,7 +17,9 @@ pub const REFUSED: &str = "path not available";
 /// Folders and files under `$HOME`, given as a path relative to it, that are
 /// never readable, besides `CREDENTIAL_DIRS`. `.local/share/lazarobox` is the
 /// app's own store (chat history, engram, update cache) at its default XDG
-/// place; a custom `$XDG_DATA_HOME` is not followed here.
+/// place; a custom `$XDG_DATA_HOME` is not followed here, nor are
+/// `$XDG_CONFIG_HOME` or `$GH_CONFIG_DIR`. The list is best effort, not
+/// complete.
 const SECRET_DIRS: &[&str] = &[
     ".ssh",
     ".gnupg",
@@ -25,10 +28,13 @@ const SECRET_DIRS: &[&str] = &[
     ".local/share/keyrings",
     ".local/share/fish/fish_history",
     ".local/share/lazarobox",
+    // The app's config holds `config.toml` with MCP env tokens.
+    ".config/lazarobox",
 ];
 
 /// File names that are never readable wherever they sit below `$HOME`:
-/// credential files, `.envrc` and shell or REPL histories.
+/// credential files, `.envrc`, `.npmrc` (denied at any depth on purpose, as a
+/// project file may hold a token) and shell or REPL histories.
 const SECRET_FILES: &[&str] = &[
     ".netrc",
     ".git-credentials",
@@ -135,36 +141,86 @@ fn expand_tilde(home: &Path, input: &str) -> Option<PathBuf> {
     }
 }
 
-/// The real paths of the secret roots that exist under `real_home`: `~/.ssh`,
-/// `~/.gnupg`, every credential folder, and each excluded file name directly
-/// in HOME. Following the links here is what stops a second name for the same
-/// secret (`~/foo -> ~/dotfiles/ssh`) or a link with an ordinary target
-/// (`~/.env -> ~/secrets/app.env`). `.env` links deeper than HOME are not
-/// followed: the requested-name check and the real-name check still apply.
-fn real_secret_roots(real_home: &Path) -> Vec<PathBuf> {
-    let mut roots: Vec<PathBuf> = SECRET_DIRS
-        .iter()
-        .chain(CREDENTIAL_DIRS)
-        .filter_map(|dir| real_home.join(dir).canonicalize().ok())
-        .collect();
-    if let Ok(entries) = std::fs::read_dir(real_home) {
-        roots.extend(
-            entries
-                .flatten()
-                .filter(|entry| is_excluded_name(&entry.file_name().to_string_lossy()))
-                .filter_map(|entry| entry.path().canonicalize().ok()),
-        );
-    }
-    roots
+/// Top folders that are never a home: `/` and the system trees. `/root` is a
+/// real home and is allowed.
+const SYSTEM_DIRS: &[&str] = &[
+    "/home", "/Users", "/usr", "/var", "/etc", "/opt", "/tmp", "/bin", "/lib", "/proc", "/sys",
+    "/dev",
+];
+
+/// Whether a canonical HOME is `/` or one of [`SYSTEM_DIRS`].
+fn is_system_dir(home: &Path) -> bool {
+    home == Path::new("/") || SYSTEM_DIRS.iter().any(|dir| home == Path::new(dir))
 }
 
-/// Whether HOME is too close to the filesystem root to be a real home: fewer
-/// than two normal components (`/`, `/home`).
-fn is_shallow(home: &Path) -> bool {
-    home.components()
-        .filter(|part| matches!(part, Component::Normal(_)))
-        .count()
-        < 2
+/// The real path of `path`, `Ok(None)` when it is not there (missing, or a
+/// parent is not a folder) and `Err` for anything else (permissions, loops):
+/// an unreadable root must refuse, never be skipped.
+fn real_or_absent(path: &Path) -> Result<Option<PathBuf>, ()> {
+    match path.canonicalize() {
+        Ok(real) => Ok(Some(real)),
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => Ok(None),
+        Err(_) => Err(()),
+    }
+}
+
+/// A validated HOME and the real paths of its secret roots: `~/.ssh`,
+/// `~/.gnupg`, the other nested roots, every credential folder, and each
+/// excluded file name directly in HOME. Following the links is what stops a
+/// second name for the same secret (`~/foo -> ~/dotfiles/ssh`) or a link with
+/// an ordinary target (`~/.env -> ~/secrets/app.env`).
+///
+/// Building it reads the disk, so a tool call builds it ONCE and judges every
+/// path (and every listed entry) against it. Known limit: a link BELOW HOME
+/// depth one, named like any excluded file (`.env`, `.netrc`, `.npmrc`, a
+/// history file) with an ordinary target, is judged by its requested name
+/// only, and so is any root the user moved with `XDG_CONFIG_HOME`,
+/// `XDG_DATA_HOME` or `GH_CONFIG_DIR`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SecretRoots {
+    /// HOME as given, folded by text.
+    given: PathBuf,
+    /// HOME with every link followed.
+    real: PathBuf,
+    roots: Vec<PathBuf>,
+}
+
+impl SecretRoots {
+    /// Validates `home` and reads its secret roots. `None` (refuse everything)
+    /// when `home` is relative, cannot be resolved, resolves to `/` or a system
+    /// folder, or when any root or HOME itself cannot be read. A root that is
+    /// simply absent is skipped.
+    pub fn load(home: &Path) -> Option<SecretRoots> {
+        if !home.is_absolute() {
+            return None;
+        }
+        let real = home.canonicalize().ok()?;
+        // Judge the name as given too: `/bin` resolves to `/usr/bin` on a
+        // merged-usr system.
+        if is_system_dir(&real) || is_system_dir(&normalize(home)) {
+            return None;
+        }
+        let mut roots = Vec::new();
+        for dir in SECRET_DIRS.iter().chain(CREDENTIAL_DIRS) {
+            roots.extend(real_or_absent(&real.join(dir)).ok()?);
+        }
+        for entry in std::fs::read_dir(&real).ok()? {
+            let entry = entry.ok()?;
+            if is_excluded_name(&entry.file_name().to_string_lossy()) {
+                roots.extend(real_or_absent(&entry.path()).ok()?);
+            }
+        }
+        Some(SecretRoots {
+            given: normalize(home),
+            real,
+            roots,
+        })
+    }
+
+    /// The resolved HOME.
+    pub fn home(&self) -> &Path {
+        &self.real
+    }
 }
 
 /// Resolves what a model asked for and judges it twice. A canonical-only
@@ -173,23 +229,15 @@ fn is_shallow(home: &Path) -> bool {
 /// REQUESTED (`~` expanded, relative input read against `origin`, `.` and `..`
 /// folded by text) and as REAL (every symlink followed). It is allowed only
 /// when both pass, and the real path is not (under) the real target of a
-/// secret root.
+/// secret root in `roots`.
 ///
-/// `home` and `origin` must be absolute and `home` must not be `/`; anything
-/// else is refused, because `canonicalize` on a relative path would depend on
-/// the process cwd. A path that cannot be resolved is `Refused`.
-pub fn resolve(home: &Path, origin: &Path, input: &str) -> PathVerdict {
-    if !home.is_absolute() || home == Path::new("/") || !origin.is_absolute() {
+/// `origin` must be absolute, because `canonicalize` on a relative path would
+/// depend on the process cwd. A path that cannot be resolved is `Refused`.
+pub fn resolve(roots: &SecretRoots, origin: &Path, input: &str) -> PathVerdict {
+    if !origin.is_absolute() {
         return PathVerdict::Refused;
     }
-    let Ok(real_home) = home.canonicalize() else {
-        return PathVerdict::Refused;
-    };
-    // A link can make HOME resolve to `/` or a top folder such as `/home`.
-    if is_shallow(&real_home) {
-        return PathVerdict::Refused;
-    }
-    let Some(expanded) = expand_tilde(&real_home, input) else {
+    let Some(expanded) = expand_tilde(&roots.real, input) else {
         return PathVerdict::Refused;
     };
     let full = if expanded.is_absolute() {
@@ -199,7 +247,7 @@ pub fn resolve(home: &Path, origin: &Path, input: &str) -> PathVerdict {
     };
     let requested = normalize(&full);
     // The requested path may name HOME as given (a link) or as resolved.
-    let lexical_ok = [normalize(home), real_home.clone()]
+    let lexical_ok = [&roots.given, &roots.real]
         .iter()
         .find_map(|h| requested.strip_prefix(h).ok())
         .is_some_and(judge_rest);
@@ -207,14 +255,8 @@ pub fn resolve(home: &Path, origin: &Path, input: &str) -> PathVerdict {
         return PathVerdict::Refused;
     }
     match full.canonicalize() {
-        Ok(real)
-            if real_secret_roots(&real_home)
-                .iter()
-                .any(|root| real.starts_with(root)) =>
-        {
-            PathVerdict::Refused
-        }
-        Ok(real) => check_path(&real_home, &real),
+        Ok(real) if roots.roots.iter().any(|root| real.starts_with(root)) => PathVerdict::Refused,
+        Ok(real) => check_path(&roots.real, &real),
         Err(_) => PathVerdict::Refused,
     }
 }
@@ -223,7 +265,15 @@ pub fn resolve(home: &Path, origin: &Path, input: &str) -> PathVerdict {
 mod tests {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    /// Loads the roots of `home` and resolves; an unusable HOME refuses.
+    fn res(home: &Path, origin: &Path, input: &str) -> PathVerdict {
+        match SecretRoots::load(home) {
+            Some(roots) => resolve(&roots, origin, input),
+            None => PathVerdict::Refused,
+        }
+    }
 
     /// A temp `$HOME` with a few files, canonical like the real one.
     struct Fixture {
@@ -268,7 +318,7 @@ mod tests {
 
     fn allowed(f: &Fixture, input: &str) -> bool {
         matches!(
-            resolve(&f.home, &f.home.join("project"), input),
+            res(&f.home, &f.home.join("project"), input),
             PathVerdict::Allowed(_)
         )
     }
@@ -386,7 +436,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            resolve(&f.home, &f.home.join("project"), "link"),
+            res(&f.home, &f.home.join("project"), "link"),
             PathVerdict::Allowed(f.home.join("project/src/lib.rs"))
         );
     }
@@ -396,20 +446,20 @@ mod tests {
         let f = fixture();
         let real = f.home.join("project/src/lib.rs");
         assert_eq!(
-            resolve(&f.home, &f.home.join("project"), "src/lib.rs"),
+            res(&f.home, &f.home.join("project"), "src/lib.rs"),
             PathVerdict::Allowed(real.clone())
         );
         assert_eq!(
-            resolve(&f.home, &f.home.join("project/src"), "lib.rs"),
+            res(&f.home, &f.home.join("project/src"), "lib.rs"),
             PathVerdict::Allowed(real.clone())
         );
         assert_eq!(
-            resolve(&f.home, &f.home.join("deep"), "src/lib.rs"),
+            res(&f.home, &f.home.join("deep"), "src/lib.rs"),
             PathVerdict::Refused,
             "missing against another origin"
         );
         assert_eq!(
-            resolve(&f.home, &f.outside, real.to_str().unwrap()),
+            res(&f.home, &f.outside, real.to_str().unwrap()),
             PathVerdict::Allowed(real),
             "absolute ignores the origin"
         );
@@ -420,13 +470,13 @@ mod tests {
     fn excluded_outside_and_missing_are_one_identical_verdict_and_text() {
         let f = fixture();
         let origin = f.home.join("project");
-        let excluded = resolve(&f.home, &origin, "../.ssh/id");
-        let outside = resolve(
+        let excluded = res(&f.home, &origin, "../.ssh/id");
+        let outside = res(
             &f.home,
             &origin,
             f.outside.join("note.txt").to_str().unwrap(),
         );
-        let missing = resolve(&f.home, &origin, "nope/nothing");
+        let missing = res(&f.home, &origin, "nope/nothing");
         assert_eq!(excluded, PathVerdict::Refused);
         assert_eq!(excluded, outside);
         assert_eq!(excluded, missing);
@@ -437,7 +487,7 @@ mod tests {
     fn a_home_that_cannot_be_resolved_refuses_everything() {
         let f = fixture();
         assert_eq!(
-            resolve(&f.home.join("gone"), &f.home, "project"),
+            res(&f.home.join("gone"), &f.home, "project"),
             PathVerdict::Refused
         );
     }
@@ -468,7 +518,7 @@ mod tests {
             "./.env",
         ] {
             assert_eq!(
-                resolve(&f.home, &origin, input),
+                res(&f.home, &origin, input),
                 PathVerdict::Refused,
                 "{input}"
             );
@@ -517,11 +567,12 @@ mod tests {
             Path::new("x/.."),
             Path::new("/home"),
             Path::new("/tmp"),
+            Path::new("/usr"),
             Path::new("/."),
             &f.home.join("rootlink"),
         ] {
             assert_eq!(
-                resolve(home, &origin, "/etc/hostname"),
+                res(home, &origin, "/etc/hostname"),
                 PathVerdict::Refused,
                 "{home:?}"
             );
@@ -549,7 +600,7 @@ mod tests {
         assert!(allowed(&f, "~/"));
         assert!(allowed(&f, "~/project/src/lib.rs"));
         assert_eq!(
-            resolve(&f.home, &f.outside, "~/project/src/lib.rs"),
+            res(&f.home, &f.outside, "~/project/src/lib.rs"),
             PathVerdict::Allowed(f.home.join("project/src/lib.rs"))
         );
         for input in [
@@ -580,24 +631,24 @@ mod tests {
         let origin = f.home.join("project");
         for home in ["", "/", "relative/home", "."] {
             assert_eq!(
-                resolve(Path::new(home), &origin, "/"),
+                res(Path::new(home), &origin, "/"),
                 PathVerdict::Refused,
                 "{home:?}"
             );
             assert_eq!(
-                resolve(Path::new(home), &origin, "project"),
+                res(Path::new(home), &origin, "project"),
                 PathVerdict::Refused,
                 "{home:?}"
             );
         }
         for origin in ["", "project", "."] {
             assert_eq!(
-                resolve(&f.home, Path::new(origin), "project"),
+                res(&f.home, Path::new(origin), "project"),
                 PathVerdict::Refused,
                 "{origin:?}"
             );
             assert_eq!(
-                resolve(&f.home, Path::new(origin), "~/project"),
+                res(&f.home, Path::new(origin), "~/project"),
                 PathVerdict::Refused,
                 "{origin:?}"
             );
@@ -726,5 +777,93 @@ mod tests {
         }
         assert!(is_env_name(".ENV.prod"));
         assert!(!is_env_name(".ENVRC"));
+    }
+
+    // Review W1 (round 2): `/root` is a real home, the system trees are not.
+    #[test]
+    fn system_folders_are_not_a_home_but_root_is() {
+        for dir in [
+            "/", "/home", "/Users", "/usr", "/var", "/etc", "/opt", "/tmp", "/bin", "/lib",
+            "/proc", "/sys", "/dev",
+        ] {
+            assert!(is_system_dir(Path::new(dir)), "{dir}");
+            assert!(SecretRoots::load(Path::new(dir)).is_none(), "{dir}");
+        }
+        for dir in ["/root", "/home/u", "/srv/u"] {
+            assert!(!is_system_dir(Path::new(dir)), "{dir}");
+        }
+    }
+
+    /// Whether the test can make a folder unreadable (not running as root).
+    fn can_deny(path: &Path) -> bool {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
+        let denied = fs::read_dir(path).is_err();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        denied
+    }
+
+    // Review W2: an unreadable HOME or root fails closed.
+    #[test]
+    fn an_unreadable_home_refuses_everything() {
+        let f = fixture();
+        if !can_deny(&f.home) {
+            return;
+        }
+        fs::set_permissions(&f.home, fs::Permissions::from_mode(0o000)).unwrap();
+        let verdict = res(&f.home, &f.outside, "~/project/src/lib.rs");
+        fs::set_permissions(&f.home, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(verdict, PathVerdict::Refused);
+    }
+
+    #[test]
+    fn a_root_that_cannot_be_inspected_refuses_but_an_absent_one_is_skipped() {
+        let f = fixture();
+        assert!(allowed(&f, "src/lib.rs"), "absent roots are fine");
+        fs::create_dir_all(f.home.join(".config")).unwrap();
+        if !can_deny(&f.home.join(".config")) {
+            return;
+        }
+        fs::set_permissions(f.home.join(".config"), fs::Permissions::from_mode(0o000)).unwrap();
+        let verdict = res(&f.home, &f.home.join("project"), "src/lib.rs");
+        fs::set_permissions(f.home.join(".config"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(verdict, PathVerdict::Refused);
+    }
+
+    // Review W3: one load serves many paths.
+    #[test]
+    fn one_load_judges_many_paths() {
+        let f = fixture();
+        let roots = SecretRoots::load(&f.home).unwrap();
+        assert_eq!(roots.home(), f.home);
+        let origin = f.home.join("project");
+        assert!(matches!(
+            resolve(&roots, &origin, "src/lib.rs"),
+            PathVerdict::Allowed(_)
+        ));
+        assert_eq!(resolve(&roots, &origin, "~/.ssh/id"), PathVerdict::Refused);
+    }
+
+    // Review W4: the app's own config holds MCP env tokens.
+    #[test]
+    fn the_app_config_folder_is_refused() {
+        let f = fixture();
+        fs::create_dir_all(f.home.join(".config/lazarobox")).unwrap();
+        fs::write(f.home.join(".config/lazarobox/config.toml"), "t").unwrap();
+        assert!(!allowed(&f, "~/.config/lazarobox/config.toml"));
+        assert_eq!(
+            check_path(&f.home, &f.home.join(".config/lazarobox")),
+            PathVerdict::Refused
+        );
+    }
+
+    // Review suggestion: a secret root that links to HOME refuses everything.
+    #[test]
+    fn a_secret_root_that_links_to_home_refuses_everything_under_it() {
+        let f = fixture();
+        fs::remove_dir_all(f.home.join(".gnupg")).unwrap();
+        symlink(&f.home, f.home.join(".gnupg")).unwrap();
+        assert!(!allowed(&f, "project/src/lib.rs"));
+        assert!(!allowed(&f, "~"));
+        assert!(!allowed(&f, "~/.gnupg/project/src/lib.rs"));
     }
 }

@@ -120,7 +120,9 @@ pub fn registry(external: &[ExternalTool]) -> Vec<ToolSpec> {
     built_in.chain(external).collect()
 }
 
-/// The longest `path`, `query` or `command` argument accepted, in bytes.
+/// The longest `path`, `query` or `command` argument accepted, in bytes. It
+/// bounds the decoded text only; the cap on the raw wire message belongs to
+/// slices 2b and 2e.
 pub const MAX_ARG_BYTES: usize = 4096;
 
 /// Checks a call by name against the built-in argument schemas: an object
@@ -149,6 +151,9 @@ pub fn parse_call(name: &str, args: &Value) -> Result<Call, ToolError> {
         "list_dir" => Ok(Call::ListDir { path: text }),
         "read_file" => Ok(Call::ReadFile { path: text }),
         "run_in_pane" => Ok(Call::RunInPane { command: text }),
+        // Unreachable: the name was found in `BUILT_INS` above and every
+        // built-in has an arm. Kept so a new built-in cannot become a
+        // `run_in_pane` by falling through.
         _ => Err(ToolError::UnknownTool),
     }
 }
