@@ -144,13 +144,53 @@ fn expand_tilde(home: &Path, input: &str) -> Option<PathBuf> {
 /// Top folders that are never a home: `/` and the system trees. `/root` is a
 /// real home and is allowed.
 const SYSTEM_DIRS: &[&str] = &[
-    "/home", "/Users", "/usr", "/var", "/etc", "/opt", "/tmp", "/bin", "/lib", "/proc", "/sys",
+    "/home",
+    "/Users",
+    "/usr",
+    "/var",
+    "/etc",
+    "/opt",
+    "/tmp",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/proc",
+    "/sys",
     "/dev",
+    "/run",
+    "/mnt",
+    "/media",
+    "/srv",
+    "/boot",
+    "/private",
+    "/private/tmp",
+    "/private/var",
+    "/private/etc",
+    "/System",
+    "/Library",
 ];
 
-/// Whether a canonical HOME is `/` or one of [`SYSTEM_DIRS`].
+/// Whether a canonical HOME is `/` or one of [`SYSTEM_DIRS`], compared
+/// component by component and ASCII case-insensitive (a case-folding
+/// filesystem makes `/USERS` the same folder as `/Users`).
 fn is_system_dir(home: &Path) -> bool {
-    home == Path::new("/") || SYSTEM_DIRS.iter().any(|dir| home == Path::new(dir))
+    let same = |dir: &str| {
+        let (mut a, mut b) = (home.components(), Path::new(dir).components());
+        loop {
+            match (a.next(), b.next()) {
+                (None, None) => return true,
+                (Some(x), Some(y)) => {
+                    let (x, y) = (x.as_os_str(), y.as_os_str());
+                    if !x.eq_ignore_ascii_case(y) {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+    };
+    same("/") || SYSTEM_DIRS.iter().any(|dir| same(dir))
 }
 
 /// The real path of `path`, `Ok(None)` when it is not there (missing, or a
@@ -175,7 +215,13 @@ fn real_or_absent(path: &Path) -> Result<Option<PathBuf>, ()> {
 /// depth one, named like any excluded file (`.env`, `.netrc`, `.npmrc`, a
 /// history file) with an ordinary target, is judged by its requested name
 /// only, and so is any root the user moved with `XDG_CONFIG_HOME`,
-/// `XDG_DATA_HOME` or `GH_CONFIG_DIR`.
+/// `XDG_DATA_HOME` or `GH_CONFIG_DIR`, unless the caller passes the real
+/// folders as `extra` roots (the tool runtime passes lazarobox's own config and
+/// data folders, which honour `XDG_CONFIG_HOME` and `XDG_DATA_HOME`).
+///
+/// The roots are a SNAPSHOT taken at load: a root created after the load is
+/// out of scope for that call. The tool runtime re-checks the real path of the
+/// opened file descriptor against them.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SecretRoots {
     /// HOME as given, folded by text.
@@ -189,9 +235,11 @@ impl SecretRoots {
     /// Validates `home` and reads its secret roots. `None` (refuse everything)
     /// when `home` is relative, cannot be resolved, resolves to `/` or a system
     /// folder, or when any root or HOME itself cannot be read. A root that is
-    /// simply absent is skipped.
-    pub fn load(home: &Path) -> Option<SecretRoots> {
-        if !home.is_absolute() {
+    /// simply absent (not found, or a parent that is not a folder) is skipped.
+    /// `extra` are further absolute roots, resolved with the same fail-closed
+    /// rules; a relative one refuses everything.
+    pub fn load(home: &Path, extra: &[PathBuf]) -> Option<SecretRoots> {
+        if !home.is_absolute() || extra.iter().any(|root| !root.is_absolute()) {
             return None;
         }
         let real = home.canonicalize().ok()?;
@@ -203,6 +251,9 @@ impl SecretRoots {
         let mut roots = Vec::new();
         for dir in SECRET_DIRS.iter().chain(CREDENTIAL_DIRS) {
             roots.extend(real_or_absent(&real.join(dir)).ok()?);
+        }
+        for root in extra {
+            roots.extend(real_or_absent(root).ok()?);
         }
         for entry in std::fs::read_dir(&real).ok()? {
             let entry = entry.ok()?;
@@ -269,7 +320,7 @@ mod tests {
 
     /// Loads the roots of `home` and resolves; an unusable HOME refuses.
     fn res(home: &Path, origin: &Path, input: &str) -> PathVerdict {
-        match SecretRoots::load(home) {
+        match SecretRoots::load(home, &[]) {
             Some(roots) => resolve(&roots, origin, input),
             None => PathVerdict::Refused,
         }
@@ -783,11 +834,37 @@ mod tests {
     #[test]
     fn system_folders_are_not_a_home_but_root_is() {
         for dir in [
-            "/", "/home", "/Users", "/usr", "/var", "/etc", "/opt", "/tmp", "/bin", "/lib",
-            "/proc", "/sys", "/dev",
+            "/",
+            "/home",
+            "/Users",
+            "/usr",
+            "/var",
+            "/etc",
+            "/opt",
+            "/tmp",
+            "/bin",
+            "/lib",
+            "/proc",
+            "/sys",
+            "/dev",
+            "/USERS",
+            "/Home",
+            "/private/tmp",
+            "/Private/VAR",
+            "/run",
+            "/mnt",
+            "/media",
+            "/srv",
+            "/sbin",
+            "/boot",
+            "/lib64",
+            "/System",
+            "/Library",
+            "/private",
+            "/private/etc",
         ] {
             assert!(is_system_dir(Path::new(dir)), "{dir}");
-            assert!(SecretRoots::load(Path::new(dir)).is_none(), "{dir}");
+            assert!(SecretRoots::load(Path::new(dir), &[]).is_none(), "{dir}");
         }
         for dir in ["/root", "/home/u", "/srv/u"] {
             assert!(!is_system_dir(Path::new(dir)), "{dir}");
@@ -807,6 +884,7 @@ mod tests {
     fn an_unreadable_home_refuses_everything() {
         let f = fixture();
         if !can_deny(&f.home) {
+            eprintln!("SKIPPED: cannot deny read access (running as root?)");
             return;
         }
         fs::set_permissions(&f.home, fs::Permissions::from_mode(0o000)).unwrap();
@@ -821,6 +899,7 @@ mod tests {
         assert!(allowed(&f, "src/lib.rs"), "absent roots are fine");
         fs::create_dir_all(f.home.join(".config")).unwrap();
         if !can_deny(&f.home.join(".config")) {
+            eprintln!("SKIPPED: cannot deny read access (running as root?)");
             return;
         }
         fs::set_permissions(f.home.join(".config"), fs::Permissions::from_mode(0o000)).unwrap();
@@ -833,7 +912,7 @@ mod tests {
     #[test]
     fn one_load_judges_many_paths() {
         let f = fixture();
-        let roots = SecretRoots::load(&f.home).unwrap();
+        let roots = SecretRoots::load(&f.home, &[]).unwrap();
         assert_eq!(roots.home(), f.home);
         let origin = f.home.join("project");
         assert!(matches!(
@@ -865,5 +944,53 @@ mod tests {
         assert!(!allowed(&f, "project/src/lib.rs"));
         assert!(!allowed(&f, "~"));
         assert!(!allowed(&f, "~/.gnupg/project/src/lib.rs"));
+    }
+
+    // Review W4 (round 3): a failure that is not a permission error, so it
+    // also fails when the tests run as root.
+    #[test]
+    fn a_symlink_loop_on_a_secret_root_refuses_everything() {
+        let f = fixture();
+        fs::remove_dir_all(f.home.join(".gnupg")).unwrap();
+        symlink(f.home.join(".gnupg"), f.home.join(".gnupg")).unwrap();
+        assert!(SecretRoots::load(&f.home, &[]).is_none());
+        assert!(!allowed(&f, "src/lib.rs"));
+    }
+
+    // Review W3 (round 3): extra roots are resolved like the built-in ones.
+    #[test]
+    fn extra_roots_are_resolved_and_fail_closed() {
+        let f = fixture();
+        let store = f.home.join("custom/store");
+        fs::create_dir_all(&store).unwrap();
+        fs::write(store.join("chat.db"), "c").unwrap();
+        symlink(&store, f.home.join("project/alias")).unwrap();
+        let origin = f.home.join("project");
+        let before = SecretRoots::load(&f.home, &[]).unwrap();
+        assert!(matches!(
+            resolve(&before, &origin, "alias/chat.db"),
+            PathVerdict::Allowed(_)
+        ));
+        let roots = SecretRoots::load(&f.home, std::slice::from_ref(&store)).unwrap();
+        for input in ["alias/chat.db", "~/custom/store/chat.db", "~/custom/store"] {
+            assert_eq!(
+                resolve(&roots, &origin, input),
+                PathVerdict::Refused,
+                "{input}"
+            );
+        }
+        assert!(matches!(
+            resolve(&roots, &origin, "src/lib.rs"),
+            PathVerdict::Allowed(_)
+        ));
+        let missing = f.home.join("nope");
+        assert!(
+            SecretRoots::load(&f.home, &[missing]).is_some(),
+            "absent skipped"
+        );
+        assert!(SecretRoots::load(&f.home, &[PathBuf::from("rel")]).is_none());
+        let looped = f.home.join("loop");
+        symlink(&looped, &looped).unwrap();
+        assert!(SecretRoots::load(&f.home, &[looped]).is_none());
     }
 }
