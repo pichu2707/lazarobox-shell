@@ -96,24 +96,13 @@ pub fn plays_sound(mode: NotifyMode, sound: bool) -> bool {
     sound && wants_desktop(mode)
 }
 
-/// How the sound step of the test ended.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SoundEnd {
-    /// A player exited 0.
-    Played,
-    /// A player was still running at its time limit. It started, so it is
-    /// counted as playing, but a player hung while connecting to the audio
-    /// server looks exactly the same.
-    StillPlaying,
-}
-
 /// The footer line of the test action. `desktop` and `sound` are the results
 /// of the attempts that were made (`None`: not attempted); an `Err` carries
 /// the short reason.
 pub fn describe_test(
     mode: NotifyMode,
     desktop: Option<Result<(), String>>,
-    sound: Option<Result<SoundEnd, String>>,
+    sound: Option<Result<String, String>>,
 ) -> String {
     let desktop_up = matches!(desktop, Some(Ok(())));
     let mut sent = Vec::new();
@@ -123,8 +112,12 @@ pub fn describe_test(
     if desktop_up {
         sent.push("desktop");
     }
-    if matches!(sound, Some(Ok(SoundEnd::Played))) {
-        sent.push("sound");
+    let sound_label = match &sound {
+        Some(Ok(player)) => Some(format!("sound ({player})")),
+        _ => None,
+    };
+    if let Some(label) = &sound_label {
+        sent.push(label);
     }
     let mut parts = Vec::new();
     if !sent.is_empty() {
@@ -133,10 +126,8 @@ pub fn describe_test(
     if let Some(Err(why)) = desktop {
         parts.push(format!("desktop unavailable: {why}"));
     }
-    match sound {
-        Some(Ok(SoundEnd::StillPlaying)) => parts.push("sound: still playing after 2 s".to_owned()),
-        Some(Err(why)) => parts.push(format!("no sound: {why}")),
-        _ => {}
+    if let Some(Err(why)) = sound {
+        parts.push(format!("no sound: {why}"));
     }
     if parts.is_empty() {
         return "notify is off".to_owned();
@@ -341,23 +332,14 @@ mod tests {
     #[test]
     fn the_test_report_lists_what_was_sent() {
         let ok = Some(Ok(()));
-        let played = Some(Ok(SoundEnd::Played));
+        let played = Some(Ok("canberra-gtk-play".to_owned()));
         assert_eq!(
             describe_test(NotifyMode::Auto, ok.clone(), played),
-            "sent: bell + desktop + sound"
+            "sent: bell + desktop + sound (canberra-gtk-play)"
         );
         assert_eq!(
             describe_test(NotifyMode::Desktop, ok.clone(), None),
             "sent: desktop"
-        );
-        // A player still running at the limit is not plain success.
-        assert_eq!(
-            describe_test(
-                NotifyMode::Auto,
-                ok.clone(),
-                Some(Ok(SoundEnd::StillPlaying))
-            ),
-            "sent: bell + desktop · sound: still playing after 2 s"
         );
         assert_eq!(describe_test(NotifyMode::Bell, None, None), "sent: bell");
         assert_eq!(describe_test(NotifyMode::Off, None, None), "notify is off");

@@ -40,37 +40,34 @@ baseline.
   now, with the mode shown (saved or not) and ignoring the focus rule. The
   footer says what happened (`sent: bell + desktop + sound`) or why not
   (`desktop unavailable: no session bus`).
-- Notification robustness. Time limits: the PATH and session probe 1 s, a
-  desktop send 4 s in all (probe plus the 2 s `notify-send`), each sound
-  player 2 s, the sound chain 10 s, the whole test action 16 s, and each test
-  step has its own bound so a slow sound keeps the desktop outcome. The
-  in-flight flags are released when a task times out, panics or is dropped
-  (the guard exists before the task does); a probe thread that is truly
-  stuck is not interrupted, but at most one exists at a time (new probes say
-  "PATH lookup still running") and the process exit waits at most 1 s for
-  it. Healthy probes run side by side; only one that exceeded its limit is
-  treated as stuck. Good probe results are cached for a minute per `PATH`
-  and re-checked (exists, not under `/tmp`, not group- or world-writable)
-  before each use; failures never are. A player still running at its limit
-  counts as played, and the test report shows it as `sound: still playing
-  after 2 s` (a player hung while connecting to the audio server looks the
-  same). The runtime is held by a guard that bounds its shutdown on every
-  way out, panics included. A send
-  dropped because another is in flight rings the bell in `desktop` mode.
-  The checked real path of `notify-send` is the one that runs, with the found
-  name as `argv[0]`. The sound tries canberra, then `pw-play` and `paplay`
-  with each existing sound file, stopping at the first that exits 0 or is
-  still playing at the 2 s limit (it started, so the next one is not tried);
-  only a spawn error or a failing exit moves to the next candidate. The
-  environment allow-list adds the audio and XDG variables (`PULSE_*`,
-  `PIPEWIRE_*`, `XDG_DATA_*`, `XDG_CONFIG_*`, `LANGUAGE`, `USER`, `LOGNAME`).
-  SSH only disables the desktop when no local display is set, so a stale
-  `SSH_CONNECTION` in a local tmux does not. One test at a time (`test
-  running`), and its report lives in its own footer field until the next key
-  press or the menu closing, and is never reported while the flag still says
-  running. In `desktop` mode a missing `notify-send` rings the bell and the
-  sound may play too: they overlap by design. A turn that ended by cancel
-  never notifies; its fallback body would read "Turn ended in pane N".
+- How the notification machinery works, and its guard rails. The machine is
+  probed once at startup, in the background, and again by the `t` test: the
+  session (display, session bus, not over SSH), the trusted `notify-send` and
+  the sound players. No send ever waits for a probe; if the result is not
+  there yet, or the probe failed, the desktop and the sound are unavailable
+  for that event and `desktop` mode rings the bell. A tool installed after
+  startup is seen after `t` or a restart. Just before an exec the real path
+  is re-checked (exists, not under `/tmp`, not group- or world-writable),
+  and that is the path that runs, with the found name as `argv[0]`. The
+  child gets an empty environment plus an allow-list (`PATH`, `HOME`, `USER`,
+  `LOGNAME`, `LANG`, `LANGUAGE`, `LC_*`, the session bus, display, audio and
+  XDG variables), never secrets. SSH only disables the desktop when no local
+  display is set, so a stale `SSH_CONNECTION` in a local tmux does not.
+  Limits: 2 s per program (a program still running is killed and counts as
+  failed), 4 s per send, 10 s for the sound chain, 3 s for the test probe.
+  At most one send, one sound and one test run at a time; a send dropped
+  because another is running rings the bell in `desktop` mode, as does an
+  unavailable, untrusted or failed one, even if the send task dies. The
+  sound tries canberra, then `pw-play` and `paplay` with each existing sound
+  file; only an exit 0 within the limit is success, anything else moves to
+  the next candidate, and the test report names the player that worked or
+  why all failed. The test report lives in its own footer field until the
+  next key press and is sent after its in-flight flag is cleared. In
+  `desktop` mode a missing `notify-send` rings the bell and the sound may
+  play too: they overlap by design. A turn that ended by cancel never
+  notifies; its fallback body would read "Turn ended in pane N". The
+  runtime is held by a guard that bounds its shutdown to 1 s on every way
+  out, panics included.
 
 ## [0.15.2] - 2026-10-16
 

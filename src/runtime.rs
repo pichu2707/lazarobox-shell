@@ -272,9 +272,11 @@ pub async fn run() -> io::Result<()> {
         env::var_os("XDG_DATA_HOME").as_deref(),
         env::var_os("HOME").as_deref(),
     );
-    // One probe for the desktop send, the sound and the test action: a single
-    // stuck PATH lookup at most, and a one-minute cache of good results.
-    let probe = Arc::new(notify::Probe::default());
+    // What the machine offers for notifications (display, bus, notify-send,
+    // sound players), probed once now in the background: a slow lookup never
+    // delays a send, it just fills the slot later. The `t` test refreshes it.
+    let plan = notify::PlanSlot::default();
+    notify::probe_in_background(&plan, notify::Session::current, cli_env.path.clone());
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
         .with_memory(memory)
         .with_config_path(config_path)
@@ -289,35 +291,33 @@ pub async fn run() -> io::Result<()> {
         .with_desktop(Box::new({
             let path = cli_env.path.clone();
             let busy = Arc::new(AtomicBool::new(false));
-            let probe = Arc::clone(&probe);
+            let plan = plan.clone();
             move |body, fallback| {
                 notify::spawn_send(notify::Job {
                     path: path.clone(),
                     body,
                     fallback,
                     busy: Arc::clone(&busy),
-                    probe: Arc::clone(&probe),
-                    session: notify::Session::current,
+                    plan: plan.clone(),
                 });
             }
         }))
         .with_sound(Box::new({
             let path = cli_env.path.clone();
             let busy = Arc::new(AtomicBool::new(false));
-            let probe = Arc::clone(&probe);
+            let plan = plan.clone();
             move || {
                 notify::spawn_sound(notify::SoundJob {
                     path: path.clone(),
                     busy: Arc::clone(&busy),
-                    probe: Arc::clone(&probe),
-                    session: notify::Session::current,
+                    plan: plan.clone(),
                 });
             }
         }))
         .with_notify_test(Box::new({
             let path = cli_env.path.clone();
             let busy = Arc::new(AtomicBool::new(false));
-            let probe = Arc::clone(&probe);
+            let plan = plan.clone();
             move |mode, sound, fallback| {
                 notify::spawn_test(notify::TestJob {
                     path: path.clone(),
@@ -327,7 +327,7 @@ pub async fn run() -> io::Result<()> {
                     report: notified_tx.clone(),
                     session: notify::Session::current,
                     busy: Arc::clone(&busy),
-                    probe: Arc::clone(&probe),
+                    plan: plan.clone(),
                 });
             }
         }))
