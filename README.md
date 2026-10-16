@@ -188,6 +188,8 @@ Every other key is swallowed while the confirmation is open, and a held key or a
 
 There is no "always allow". To turn the feature off, set `enabled = false` in `[ai.tools]` of `config.toml`, or flip the **Tools** row of the AI menu (last row, on by default); the hint and the binding then disappear. The menu writes only `ai.tools.enabled`; it never touches `[ai.mcp.*]`.
 
+**Which paths the read tools refuse.** Anything outside `$HOME`, `~/.ssh`, `~/.gnupg`, the credential folders of other CLIs and `.env` files. Links do not get around it: the path is judged as requested and as resolved, and the REAL folder behind a secret folder is refused too, so with `~/.ssh -> ~/dotfiles/ssh` neither `~/.ssh/id` nor `~/dotfiles/ssh/id` nor a second link such as `~/foo -> ~/dotfiles/ssh` is readable. A `.env`-style link directly in `$HOME` protects its target the same way. Known limit: a `.env` link deeper than `$HOME` whose target has an ordinary name is only caught by its requested name; hard links are not detected yet (planned for the tool runtime). A `$HOME` that resolves to `/` or to a single folder such as `/home` is refused.
+
 ```toml
 [ai.tools]
 enabled = true

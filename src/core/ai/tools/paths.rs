@@ -98,12 +98,45 @@ fn expand_tilde(home: &Path, input: &str) -> Option<PathBuf> {
     }
 }
 
+/// The real paths of the secret roots that exist under `real_home`: `~/.ssh`,
+/// `~/.gnupg`, every credential folder, and each `.env`-style entry directly
+/// in HOME. Following the links here is what stops a second name for the same
+/// secret (`~/foo -> ~/dotfiles/ssh`) or a link with an ordinary target
+/// (`~/.env -> ~/secrets/app.env`). `.env` links deeper than HOME are not
+/// followed: the requested-name check and the real-name check still apply.
+fn real_secret_roots(real_home: &Path) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = SECRET_DIRS
+        .iter()
+        .chain(CREDENTIAL_DIRS)
+        .filter_map(|dir| real_home.join(dir).canonicalize().ok())
+        .collect();
+    if let Ok(entries) = std::fs::read_dir(real_home) {
+        roots.extend(
+            entries
+                .flatten()
+                .filter(|entry| is_env_name(&entry.file_name().to_string_lossy()))
+                .filter_map(|entry| entry.path().canonicalize().ok()),
+        );
+    }
+    roots
+}
+
+/// Whether HOME is too close to the filesystem root to be a real home: fewer
+/// than two normal components (`/`, `/home`).
+fn is_shallow(home: &Path) -> bool {
+    home.components()
+        .filter(|part| matches!(part, Component::Normal(_)))
+        .count()
+        < 2
+}
+
 /// Resolves what a model asked for and judges it twice. A canonical-only
 /// check is not enough: with a dotfile manager `~/.ssh` may be a link to
 /// `~/dotfiles/ssh`, whose real path looks ordinary. So the path is judged as
 /// REQUESTED (`~` expanded, relative input read against `origin`, `.` and `..`
 /// folded by text) and as REAL (every symlink followed). It is allowed only
-/// when both pass.
+/// when both pass, and the real path is not (under) the real target of a
+/// secret root.
 ///
 /// `home` and `origin` must be absolute and `home` must not be `/`; anything
 /// else is refused, because `canonicalize` on a relative path would depend on
@@ -115,6 +148,10 @@ pub fn resolve(home: &Path, origin: &Path, input: &str) -> PathVerdict {
     let Ok(real_home) = home.canonicalize() else {
         return PathVerdict::Refused;
     };
+    // A link can make HOME resolve to `/` or a top folder such as `/home`.
+    if is_shallow(&real_home) {
+        return PathVerdict::Refused;
+    }
     let Some(expanded) = expand_tilde(&real_home, input) else {
         return PathVerdict::Refused;
     };
@@ -133,6 +170,13 @@ pub fn resolve(home: &Path, origin: &Path, input: &str) -> PathVerdict {
         return PathVerdict::Refused;
     }
     match full.canonicalize() {
+        Ok(real)
+            if real_secret_roots(&real_home)
+                .iter()
+                .any(|root| real.starts_with(root)) =>
+        {
+            PathVerdict::Refused
+        }
         Ok(real) => check_path(&real_home, &real),
         Err(_) => PathVerdict::Refused,
     }
@@ -392,8 +436,59 @@ mod tests {
                 "{input}"
             );
         }
-        // The real files are ordinary and stay readable by their real name.
-        assert!(allowed(&f, "../dotfiles/ssh/id_ed25519"));
+        // Review C1: the real folder behind a secret root is secret too.
+        assert!(!allowed(&f, "../dotfiles/ssh/id_ed25519"));
+        assert!(!allowed(&f, "../dotfiles/ssh"));
+        assert!(!allowed(&f, "../dotfiles/claude/token"));
+        assert!(allowed(&f, "../dotfiles"), "the parent stays ordinary");
+    }
+
+    // Review C1: another name for the same secret folder is refused too.
+    #[test]
+    fn a_second_alias_of_a_secret_folder_is_refused() {
+        let f = fixture();
+        let dot = f.home.join("dotfiles");
+        fs::create_dir_all(&dot).unwrap();
+        fs::rename(f.home.join(".ssh"), dot.join("ssh")).unwrap();
+        symlink(dot.join("ssh"), f.home.join(".ssh")).unwrap();
+        symlink(dot.join("ssh"), f.home.join("foo")).unwrap();
+        assert!(!allowed(&f, "~/foo/id"));
+        assert!(!allowed(&f, "~/foo"));
+        assert!(!allowed(&f, "~/dotfiles/ssh/id"));
+    }
+
+    // Review C1: a `.env` link whose target has an ordinary name.
+    #[test]
+    fn an_env_link_in_home_protects_its_target() {
+        let f = fixture();
+        fs::remove_file(f.home.join(".env")).unwrap();
+        fs::create_dir_all(f.home.join("secrets")).unwrap();
+        fs::write(f.home.join("secrets/app.env"), "k").unwrap();
+        symlink(f.home.join("secrets/app.env"), f.home.join(".env")).unwrap();
+        assert!(!allowed(&f, "~/.env"));
+        assert!(!allowed(&f, "~/secrets/app.env"));
+        assert!(!allowed(&f, "../secrets/app.env"));
+    }
+
+    // Review W1: a HOME that is, or resolves to, the filesystem root.
+    #[test]
+    fn a_home_that_resolves_to_the_root_or_is_too_shallow_is_refused() {
+        let f = fixture();
+        let origin = f.home.join("project");
+        symlink("/", f.home.join("rootlink")).unwrap();
+        for home in [
+            Path::new("x/.."),
+            Path::new("/home"),
+            Path::new("/tmp"),
+            Path::new("/."),
+            &f.home.join("rootlink"),
+        ] {
+            assert_eq!(
+                resolve(home, &origin, "/etc/hostname"),
+                PathVerdict::Refused,
+                "{home:?}"
+            );
+        }
     }
 
     #[test]

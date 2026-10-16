@@ -90,7 +90,7 @@ There MUST be one registry of tools, the single source of truth for names, argum
 - THEN the event loop keeps handling events and the call ends at its time bound
 
 ### Requirement: Path policy
-Tools MUST only return or open paths inside `$HOME` (absolute, or `~`-relative as input). A path MUST be refused when, after resolving `.`, `..` and every symlink to its real location, it is outside `$HOME`, is `$HOME/.ssh` or `$HOME/.gnupg`, is or lies under any entry of `CREDENTIAL_DIRS` directly under `$HOME` (`.claude`, `.gemini`, `.codex`, `.aws`, `.kube`, `.docker`, `.password-store`), or is a file named `.env` or `.env.*` at any depth. The check MUST be made on both the requested path (`~` expanded, a relative input resolved against the origin cwd, `.` and `..` folded by text) and the real path that is opened, and the path is allowed only if both pass. So a symlink inside `$HOME` that points to an excluded or outside path is refused, and so is an excluded name that is itself a symlink to an ordinary place (for example `~/.ssh` linked to `~/dotfiles/ssh`). Comparison of the excluded names is ASCII case-insensitive. `~user` input, a relative or `/` home and a relative origin MUST be refused. A relative input path is resolved against the chat's origin cwd and then checked like any other. Excluded entries MUST be omitted from `list_dir` and `find_dir` results, and `find_dir` MUST NOT descend into excluded directories. A refusal MUST use one message for excluded, outside and non-existent paths, so the existence of an excluded path is not revealed.
+Tools MUST only return or open paths inside `$HOME` (absolute, or `~`-relative as input). A path MUST be refused when, after resolving `.`, `..` and every symlink to its real location, it is outside `$HOME`, is `$HOME/.ssh` or `$HOME/.gnupg`, is or lies under any entry of `CREDENTIAL_DIRS` directly under `$HOME` (`.claude`, `.gemini`, `.codex`, `.aws`, `.kube`, `.docker`, `.password-store`), or is a file named `.env` or `.env.*` at any depth. The check MUST be made on both the requested path (`~` expanded, a relative input resolved against the origin cwd, `.` and `..` folded by text) and the real path that is opened, and the path is allowed only if both pass. So a symlink inside `$HOME` that points to an excluded or outside path is refused, and so is an excluded name that is itself a symlink to an ordinary place (for example `~/.ssh` linked to `~/dotfiles/ssh`). The real path of every existing secret root (`~/.ssh`, `~/.gnupg`, each `CREDENTIAL_DIRS` entry and each `.env`-style entry directly in `$HOME`) MUST also be resolved, and a real path equal to or under one of those real roots MUST be refused, so the real target of an aliased secret folder (`~/dotfiles/ssh`) and any second link to it are excluded as well. Known limit: a `.env` link below `$HOME` depth one whose target has an ordinary name is judged by its requested name only, and hard links are not detected here (slice 2b checks `st_nlink`). A `$HOME` that resolves to `/` or has fewer than two normal path components MUST be refused. Comparison of the excluded names is ASCII case-insensitive. `~user` input, a relative or `/` home and a relative origin MUST be refused. A relative input path is resolved against the chat's origin cwd and then checked like any other. Excluded entries MUST be omitted from `list_dir` and `find_dir` results, and `find_dir` MUST NOT descend into excluded directories. A refusal MUST use one message for excluded, outside and non-existent paths, so the existence of an excluded path is not revealed.
 
 #### Scenario: Credential directories [auto]
 - GIVEN `$HOME/.ssh/id_ed25519`, `$HOME/.aws/credentials`, `$HOME/.claude/x`, `$HOME/.gnupg/k`
@@ -126,6 +126,16 @@ Tools MUST only return or open paths inside `$HOME` (absolute, or `~`-relative a
 - GIVEN a dotfile manager: `$HOME/.ssh -> $HOME/dotfiles/ssh` and `$HOME/app/.env -> $HOME/secrets/app.env`
 - WHEN `read_file` is called on `~/.ssh/id_ed25519` and on `~/app/.env`
 - THEN both are refused, because the requested path names an excluded entry even though the real path does not
+
+#### Scenario: Real target of an aliased secret folder [auto]
+- GIVEN `$HOME/.ssh -> $HOME/dotfiles/ssh`, `$HOME/foo -> $HOME/dotfiles/ssh` and `$HOME/.env -> $HOME/secrets/app.env`
+- WHEN `read_file` is called on `~/dotfiles/ssh/id_ed25519`, on `~/foo/id_ed25519` and on `~/secrets/app.env`
+- THEN all three are refused
+
+#### Scenario: HOME that is the root [auto]
+- GIVEN a HOME that is a symlink to `/`, or is `/home`
+- WHEN any path is resolved
+- THEN it is refused
 
 #### Scenario: Tilde input [auto]
 - GIVEN `$HOME/dev/link -> /etc`
