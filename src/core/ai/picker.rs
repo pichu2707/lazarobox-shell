@@ -7,6 +7,7 @@
 
 use super::catalog::{cli_models, curated, same_model};
 use super::config::{AiConfig, Assignment, Task};
+use super::parse::sanitize;
 use super::sanitize::is_format;
 use super::{CATALOG, Detection, Kind, Status, status_text};
 
@@ -243,6 +244,19 @@ pub fn model_rows(
                 .filter(|m| !catalog.iter().any(|(_, value)| value == *m))
                 .map(|m| row(m, missing_mark.clone(), true)),
         );
+        // Why the account's list is missing, as a line that cannot be picked.
+        let why = detection.and_then(|d| {
+            d.engines
+                .iter()
+                .find(|s| s.id == engine && s.status == Status::Available)
+                .and_then(|s| s.diagnostics.models.as_deref())
+        });
+        if let Some(why) = why {
+            rows.push(info(
+                &format!("model list unavailable: {}", sanitize(why)),
+                Mark::Plain,
+            ));
+        }
         rows.push(PickRow {
             key: PickKey::Custom,
             label: "custom…".to_owned(),
@@ -664,6 +678,7 @@ mod tests {
             models: models.iter().map(|m| m.to_string()).collect(),
             version: None,
             model_labels: Vec::new(),
+            diagnostics: Default::default(),
         }
     }
 
@@ -820,6 +835,51 @@ mod tests {
                 custom_row(),
             ]
         );
+    }
+
+    fn codex_failed(why: &str) -> Detection {
+        let mut codex = state("codex", Status::Available, &["default"]);
+        codex.diagnostics.models = Some(why.to_owned());
+        detection(vec![codex])
+    }
+
+    #[test]
+    fn a_failed_codex_listing_adds_a_note_row_that_cannot_be_picked() {
+        let d = codex_failed("codex exited 1: not logged in");
+        assert_eq!(
+            model_rows(
+                "codex",
+                Target::Task(Task::Code),
+                &AiConfig::default(),
+                Some(&d)
+            ),
+            [
+                pick("default (CLI picks)", "default", Mark::Plain, false),
+                row(
+                    PickKey::Info,
+                    "model list unavailable: codex exited 1: not logged in",
+                    Mark::Plain,
+                    false,
+                    false
+                ),
+                custom_row(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_good_listing_has_no_note_row() {
+        let d = codex_with(&[("GPT-6.1-Sol", "gpt-6.1-sol")]);
+        let rows = model_rows("codex", Target::All, &AiConfig::default(), Some(&d));
+        assert!(rows.iter().all(|r| r.key != PickKey::Info));
+    }
+
+    #[test]
+    fn a_listing_note_is_one_clean_line() {
+        let d = codex_failed("a\u{1b}[31mb\nc\u{202e}d");
+        let rows = model_rows("codex", Target::All, &AiConfig::default(), Some(&d));
+        let note = rows.iter().find(|r| r.key == PickKey::Info).unwrap();
+        assert_eq!(note.label, "model list unavailable: abcd");
     }
 
     #[test]
@@ -1182,7 +1242,7 @@ mod tests {
                     false
                 ),
                 engine("ollama", "available · 2 models", false),
-                engine("claude", "available", false),
+                engine("claude", "available · version unknown", false),
                 engine("codex", "(not detected)", true),
             ]
         );
@@ -1233,7 +1293,7 @@ mod tests {
                     true,
                     true
                 ),
-                engine("claude", "available", false),
+                engine("claude", "available · version unknown", false),
                 engine("vllm", "(not detected)", false),
             ]
         );

@@ -18,7 +18,7 @@ use crate::core::{
             store::{StoreCmd, StoreReply},
         },
         config::{AiConfig, Profile, Task},
-        jail::JailSupport,
+        jail::{JailOff, JailSupport},
         memory::{
             offer::ServerOffer,
             port::{MemCmd, MemReply, Reason},
@@ -545,7 +545,7 @@ impl App {
             pending_force: false,
             ai: AiConfig::default(),
             window_focused: true,
-            jail: JailSupport::Unavailable("the jail was not probed"),
+            jail: JailSupport::Unavailable(JailOff::NotProbed),
             waiting_sends: Vec::new(),
             anim_frame: 0,
             server_offer: ServerOffer::new(),
@@ -5844,6 +5844,7 @@ mod app_tests {
                     models: Vec::new(),
                     version: None,
                     model_labels: Vec::new(),
+                    diagnostics: Default::default(),
                 })
                 .collect(),
         }
@@ -5981,6 +5982,7 @@ mod app_tests {
                         models: models.into_iter().map(str::to_owned).collect(),
                         version: None,
                         model_labels: Vec::new(),
+                        diagnostics: Default::default(),
                     }
                 })
                 .collect(),

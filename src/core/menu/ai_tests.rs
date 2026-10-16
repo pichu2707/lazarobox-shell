@@ -15,6 +15,7 @@ pub(super) fn engine(
         models: models.iter().map(|m| (*m).to_owned()).collect(),
         version: version.map(str::to_owned),
         model_labels: Vec::new(),
+        diagnostics: Default::default(),
     }
 }
 

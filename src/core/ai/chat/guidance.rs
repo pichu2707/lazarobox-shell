@@ -26,7 +26,9 @@ pub fn guidance(availability: &Availability) -> Option<String> {
              (Ctrl+Space m, then r)"
         ),
         Availability::Unsupported { engine } => format!("{engine}: not supported in chat yet"),
-        Availability::NoJail { engine } => format!("{engine}: not available on this system yet"),
+        Availability::NoJail { engine, reason } => {
+            format!("{engine}: not available on this system yet: {reason}")
+        }
         Availability::GatedOff { engine } => format!("{engine}: gated off"),
         Availability::NoModel { engine } => {
             format!("{engine}: no model chosen: pick one in the menu (Ctrl+Space m)")
@@ -106,10 +108,14 @@ mod tests {
     fn no_jail_is_the_exact_line() {
         assert_eq!(
             guidance(&Availability::NoJail {
-                engine: s("gemini")
+                engine: s("gemini"),
+                reason: s("Landlock ABI 3+ needed (Linux 6.2); this kernel has ABI 2"),
             })
             .as_deref(),
-            Some("gemini: not available on this system yet")
+            Some(
+                "gemini: not available on this system yet: Landlock ABI 3+ needed \
+                 (Linux 6.2); this kernel has ABI 2"
+            )
         );
     }
 

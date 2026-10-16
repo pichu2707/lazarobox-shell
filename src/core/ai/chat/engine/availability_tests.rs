@@ -2,14 +2,14 @@ use super::*;
 use crate::core::ai::{
     EngineState,
     config::Assignment,
-    jail::{Backend, JailSupport},
+    jail::{Backend, JailOff, JailSupport},
 };
 
 const JAIL: JailSupport = JailSupport::Available {
     backend: Backend::Landlock,
     abi: 6,
 };
-const NO_JAIL: JailSupport = JailSupport::Unavailable("not linux");
+const NO_JAIL: JailSupport = JailSupport::Unavailable(JailOff::NotLinux);
 
 fn cfg(task: Task, engine: Option<&str>, model: Option<&str>) -> AiConfig {
     let mut cfg = AiConfig::default();
@@ -30,6 +30,7 @@ fn state(id: &'static str, status: Status, models: &[&str]) -> EngineState {
         models: models.iter().map(|m| (*m).to_owned()).collect(),
         version: None,
         model_labels: Vec::new(),
+        diagnostics: Default::default(),
     }
 }
 
@@ -141,13 +142,30 @@ fn codex_and_gemini_need_a_jail() {
         )]);
         assert_eq!(
             availability_with(&c, Some(&d), NO_JAIL, &[], &|_| true),
-            Availability::NoJail { engine: id.into() }
+            Availability::NoJail {
+                engine: id.into(),
+                reason: JailOff::NotLinux.text(),
+            }
         );
         assert_eq!(
             availability_with(&c, Some(&d), JAIL, &[], &|_| true),
             ready(id, Some("default"))
         );
     }
+}
+
+#[test]
+fn the_no_jail_reason_names_the_kernel_abi() {
+    let c = cfg(Task::Chat, Some("codex"), Some("default"));
+    let d = detected(vec![state("codex", Status::Available, &[])]);
+    let old_kernel = JailSupport::Unavailable(JailOff::NoLandlock(2));
+    assert_eq!(
+        availability(&c, Some(&d), old_kernel),
+        Availability::NoJail {
+            engine: "codex".into(),
+            reason: "Landlock ABI 3+ needed (Linux 6.2); this kernel has ABI 2".into()
+        }
+    );
 }
 
 #[test]
@@ -176,7 +194,8 @@ fn codex_is_ready_with_a_jail_and_no_jail_otherwise() {
     assert_eq!(
         availability(&c, Some(&d), NO_JAIL),
         Availability::NoJail {
-            engine: "codex".into()
+            engine: "codex".into(),
+            reason: "the CLI jail needs Linux".into()
         }
     );
 }
@@ -192,7 +211,8 @@ fn gemini_is_ready_with_a_jail_and_no_jail_otherwise() {
     assert_eq!(
         availability(&c, Some(&d), NO_JAIL),
         Availability::NoJail {
-            engine: "gemini".into()
+            engine: "gemini".into(),
+            reason: "the CLI jail needs Linux".into()
         }
     );
 }

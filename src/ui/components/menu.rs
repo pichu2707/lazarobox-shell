@@ -113,11 +113,24 @@ impl MenuPopup<'_> {
                 enabled,
                 current,
             } => {
-                let tail = match (mark_text(mark), current) {
+                // A long mark (an engine status with a reason) gives way to
+                // the label, but never below half of the row, and the `●`
+                // of the current row stays. A very narrow popup keeps the
+                // old rule: the label gives way and the mark stays whole.
+                let dot = if *current { " ●" } else { "" };
+                let mark = mark_text(mark);
+                let mark_cap = width
+                    .saturating_sub(cells(label) + 1 + cells(dot) + 1)
+                    .max(width / 2);
+                let mark = if width >= CLIP_MARK_FROM && cells(mark) > mark_cap {
+                    clip(mark, mark_cap)
+                } else {
+                    mark.to_owned()
+                };
+                let tail = match (mark.as_str(), current) {
                     ("", false) => String::new(),
-                    ("", true) => " ●".to_owned(),
-                    (mark, false) => format!(" {mark}"),
-                    (mark, true) => format!(" {mark} ●"),
+                    ("", true) => dot.to_owned(),
+                    (mark, _) => format!(" {mark}{dot}"),
                 };
                 let room = width.saturating_sub(cells(&tail) + 1);
                 let label = if cells(label) > room {
@@ -162,6 +175,9 @@ fn mark_text(mark: &Mark) -> &str {
         Mark::Status(text) => text,
     }
 }
+
+/// The row width from which a long picker mark is clipped to keep its label.
+const CLIP_MARK_FROM: usize = 40;
 
 /// Suffix of a task-row value that must survive clipping.
 const REQUIRED_MARK: &str = " · download required";
@@ -439,6 +455,7 @@ mod tests {
                     },
                     version: None,
                     model_labels: Vec::new(),
+                    diagnostics: Default::default(),
                 })
                 .collect(),
         }
@@ -506,6 +523,7 @@ mod tests {
                     },
                     version: (e.id == "claude").then(|| "2.1.0".to_owned()),
                     model_labels: Vec::new(),
+                    diagnostics: Default::default(),
                 })
                 .collect(),
         }
@@ -959,6 +977,7 @@ mod tests {
                     },
                     version: None,
                     model_labels: Vec::new(),
+                    diagnostics: Default::default(),
                 })
                 .collect(),
         };
@@ -973,5 +992,137 @@ mod tests {
         let clipped = row(&long);
         assert!(clipped.contains("…"), "{clipped}");
         assert!(clipped.ends_with("✓│"), "{clipped}");
+    }
+
+    /// A machine where only codex is installed and its model list failed.
+    fn codex_without_list(why: &str) -> Detection {
+        codex_degraded(Some(why), None)
+    }
+
+    /// Only codex is installed; `models` and `jail` are the reasons it is
+    /// degraded.
+    fn codex_degraded(models: Option<&str>, jail: Option<&str>) -> Detection {
+        Detection {
+            engines: CATALOG
+                .iter()
+                .map(|e| EngineState {
+                    id: e.id,
+                    status: if e.id == "codex" {
+                        Status::Available
+                    } else {
+                        Status::NotInstalled
+                    },
+                    models: if e.id == "codex" {
+                        vec!["default".to_owned()]
+                    } else {
+                        Vec::new()
+                    },
+                    version: (e.id == "codex").then(|| "codex-cli 0.130.0".to_owned()),
+                    model_labels: Vec::new(),
+                    diagnostics: crate::core::ai::Diagnostics {
+                        models: models.filter(|_| e.id == "codex").map(str::to_owned),
+                        jail: jail.filter(|_| e.id == "codex").map(str::to_owned),
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    fn codex_models_level(detection: Detection) -> MenuState {
+        let saved = AiConfig::general(Some("codex"), None);
+        let mut menu = fresh().with_ai(saved, Some(detection));
+        goto(&mut menu, "general");
+        press(&mut menu, &[KeyCode::Enter, KeyCode::Enter]);
+        menu
+    }
+
+    #[test]
+    fn snapshot_codex_models_say_why_the_list_is_missing() {
+        let menu = codex_models_level(codex_without_list("codex exited 1: not logged in"));
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(
+            shown.contains("model list unavailable: codex exited 1: not logged in"),
+            "{shown}"
+        );
+        insta::assert_snapshot!(shown);
+    }
+
+    fn codex_engines_level(detection: Detection) -> MenuState {
+        let saved = AiConfig::general(Some("codex"), None);
+        let mut menu = fresh().with_ai(saved, Some(detection));
+        goto(&mut menu, "general");
+        press(&mut menu, &[KeyCode::Enter]);
+        menu
+    }
+
+    #[test]
+    fn snapshot_engine_row_says_why_codex_has_no_jail() {
+        let menu = codex_engines_level(codex_degraded(None, Some("Landlock ABI 2, needs 3+")));
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(shown.contains("no jail: Landlock"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    #[test]
+    fn a_long_engine_status_is_clipped_but_keeps_its_label() {
+        let why = "a-very-long-folder-name-that-cannot-fit-at-all-in-the-row too broad";
+        let menu = codex_engines_level(codex_degraded(None, Some(why)));
+        let buf = draw(62, POPUP_H, &menu);
+        let row = lines(&buf)
+            .into_iter()
+            .find(|l| l.contains("codex"))
+            .unwrap();
+        assert!(
+            row.starts_with("│ codex available · no jail: a-very-long"),
+            "{row}"
+        );
+        assert!(row.contains('…') && row.ends_with("●│"), "{row}");
+        assert_eq!(cells(&row), 62);
+    }
+
+    #[test]
+    fn every_short_jail_reason_survives_whole_at_62_columns() {
+        use crate::core::ai::jail::{JailOff, JailRefusal, Untrusted};
+        let home = Some(std::path::Path::new("/home/u"));
+        let long = std::path::PathBuf::from("/very/long/folder/structure/that/goes/on/lib");
+        let reasons = [
+            JailRefusal::Unsupported(JailOff::NoLandlock(12)),
+            JailRefusal::Unsupported(JailOff::NoLandlock(0)),
+            JailRefusal::Unsupported(JailOff::NotLinux),
+            JailRefusal::NoHome,
+            JailRefusal::HomeMissing("/h".into()),
+            JailRefusal::NoInterpreter("node".into()),
+            JailRefusal::InterpreterMissing(long.clone()),
+            JailRefusal::UntrustedInterpreter {
+                path: "/n".into(),
+                why: Untrusted::Scratch,
+            },
+            JailRefusal::BadLoader(long.clone()),
+            JailRefusal::RootTooBroad(long.clone()),
+            JailRefusal::Unreadable(long.clone()),
+            JailRefusal::NotCanonical(long),
+        ];
+        for refusal in reasons {
+            let why = refusal.short(home);
+            let menu = codex_engines_level(codex_degraded(None, Some(&why)));
+            let row = lines(&draw(62, POPUP_H, &menu))
+                .into_iter()
+                .find(|l| l.contains("codex"))
+                .unwrap();
+            assert!(row.contains(&format!("no jail: {why} ●")), "{why}: {row}");
+        }
+    }
+
+    #[test]
+    fn a_long_listing_reason_is_clipped_to_the_row() {
+        let why = format!("codex exited 1: {}", "x".repeat(200));
+        let menu = codex_models_level(codex_without_list(&why));
+        let buf = draw(62, POPUP_H, &menu);
+        let note = lines(&buf)
+            .into_iter()
+            .find(|l| l.contains("model list unavailable"))
+            .unwrap();
+        assert!(note.contains('…') && note.ends_with('│'), "{note}");
+        assert_eq!(cells(&note), 62);
     }
 }

@@ -178,6 +178,7 @@ fn first_answer_streaming() -> App {
             models: vec!["llama3:8b".to_owned()],
             version: None,
             model_labels: Vec::new(),
+            diagnostics: Default::default(),
         }],
     }));
     press(&mut a, "c");
@@ -675,6 +676,7 @@ fn detected() -> AppEvent {
             models: vec!["llama3:8b".to_owned()],
             version: None,
             model_labels: Vec::new(),
+            diagnostics: Default::default(),
         }],
     })
 }

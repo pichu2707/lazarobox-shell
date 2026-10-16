@@ -5,7 +5,7 @@ use serde_json::Value;
 use super::sanitize::clean;
 
 /// `clean` for one-line text: newlines and tabs go too.
-fn sanitize(text: &str) -> String {
+pub(crate) fn sanitize(text: &str) -> String {
     clean(text).chars().filter(|c| !c.is_control()).collect()
 }
 
@@ -67,9 +67,13 @@ const MAX_CODEX_MODELS: usize = 64;
 /// The label is the display name, or the slug when that is empty. Anything
 /// malformed yields an empty list.
 pub fn codex_models(raw: &str) -> Vec<(String, String)> {
-    let Some(items) = array_field(raw.as_bytes(), "models") else {
-        return Vec::new();
-    };
+    codex_catalog(raw).unwrap_or_default()
+}
+
+/// [`codex_models`], but `None` when `raw` is not a catalog at all (not JSON,
+/// or no `models` array), so a foreign shape differs from an empty list.
+pub fn codex_catalog(raw: &str) -> Option<Vec<(String, String)>> {
+    let items = array_field(raw.as_bytes(), "models")?;
     let mut found: Vec<(i64, String, String)> = items
         .iter()
         .filter(|item| item.get("visibility").and_then(Value::as_str) == Some("list"))
@@ -92,12 +96,14 @@ pub fn codex_models(raw: &str) -> Vec<(String, String)> {
     // Stable: equal priorities keep the order codex printed.
     found.sort_by_key(|(priority, ..)| *priority);
     let mut seen = std::collections::HashSet::new();
-    found
-        .into_iter()
-        .filter(|(_, _, slug)| seen.insert(slug.clone()))
-        .map(|(_, label, slug)| (label, slug))
-        .take(MAX_CODEX_MODELS)
-        .collect()
+    Some(
+        found
+            .into_iter()
+            .filter(|(_, _, slug)| seen.insert(slug.clone()))
+            .map(|(_, label, slug)| (label, slug))
+            .take(MAX_CODEX_MODELS)
+            .collect(),
+    )
 }
 
 /// A slug that is safe to show and to pass as a CLI argument: printable ASCII

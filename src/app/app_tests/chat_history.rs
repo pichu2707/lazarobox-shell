@@ -67,6 +67,7 @@ pub(super) fn detection() -> Detection {
             models: vec!["llama3:8b".to_owned()],
             version: None,
             model_labels: Vec::new(),
+            diagnostics: Default::default(),
         }],
     }
 }

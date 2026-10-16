@@ -332,8 +332,8 @@ impl ChatState {
                 self.finish_summary(Some(message), false);
                 Follow::Nothing
             }
-            StreamEvent::Error(ChatError::Jail) => {
-                self.finish_summary(Some(super::JAIL_ERROR.to_owned()), false);
+            StreamEvent::Error(ChatError::Jail(reason)) => {
+                self.finish_summary(Some(super::jail_error(&reason)), false);
                 Follow::Nothing
             }
         }

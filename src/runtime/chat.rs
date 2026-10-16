@@ -19,7 +19,7 @@ use futures::{
 use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
 
 mod cli;
-pub(crate) use cli::run_listing;
+pub(crate) use cli::{jail_note, run_listing};
 
 use super::loopback::post_stream;
 use crate::core::{
@@ -263,7 +263,7 @@ pub(crate) fn adapter_runner_at(port: Option<u16>) -> Runner {
     runner_with(
         port,
         CliEnv::from_env(crate::core::ai::jail::JailSupport::Unavailable(
-            "not used by a server test",
+            crate::core::ai::jail::JailOff::NotProbed,
         )),
     )
 }
