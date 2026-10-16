@@ -6122,7 +6122,7 @@ mod app_tests {
         let mut a = ai_app();
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
-        for _ in 0..4 {
+        for _ in 0..7 {
             a.update(key('j'));
         }
         let before = a.menu().cloned();
@@ -6146,7 +6146,7 @@ mod app_tests {
         let mut a = ai_app();
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
-        for _ in 0..5 {
+        for _ in 0..8 {
             a.update(key('j'));
         }
         let enter = || code(KeyCode::Enter);
@@ -6204,7 +6204,7 @@ mod app_tests {
     /// Opens the picker of `Set all tasks` on `none` and chooses it: the
     /// general assignment goes from `ollama` to unset.
     fn clear_all(a: &mut App) {
-        for _ in 0..3 {
+        for _ in 0..6 {
             a.update(key('j'));
         }
         a.update(code(KeyCode::Enter));
@@ -6250,7 +6250,7 @@ mod app_tests {
     }
 
     // Spec (config-menu, engram-memory): the privacy warning follows the
-    // draft flow. `k` three times from the first row wraps to `Memory`.
+    // draft flow. `k` once from the first row wraps to `Memory`.
     fn memory_warning_open() -> App {
         let mut a = ai_app();
         open_menu(&mut a);
@@ -6318,25 +6318,31 @@ mod app_tests {
         assert!(!menu.ai_draft().memory.enabled);
     }
 
-    /// Moves the menu selection to the `Context` row (before `Memory` and
-    /// `Notify`, the last one).
+    /// Moves the menu selection to the `Context` row (before `Memory`, the
+    /// last one).
     fn to_context_row(a: &mut App) {
-        for _ in 0..4 {
+        for _ in 0..2 {
             a.update(key('k'));
         }
     }
 
     /// Moves the menu selection to the `Profile` row (before `Context`).
     fn to_profile_row(a: &mut App) {
-        for _ in 0..5 {
+        for _ in 0..3 {
             a.update(key('k'));
         }
     }
 
-    /// Moves the menu selection to the `Memory` row (before `Notify`, the
-    /// last one).
-    fn to_memory_row(a: &mut App) {
+    /// Moves the menu selection to the `Notify` row (right after `Mouse`).
+    fn to_notify_row(a: &mut App) {
         for _ in 0..3 {
+            a.update(key('j'));
+        }
+    }
+
+    /// Moves the menu selection to the `Memory` row (the last one).
+    fn to_memory_row(a: &mut App) {
+        for _ in 0..1 {
             a.update(key('k'));
         }
     }
@@ -6415,8 +6421,7 @@ mod app_tests {
         let mut a = ai_app();
         assert_eq!(a.ai().notify(), NotifyMode::Off);
         open_menu(&mut a);
-        a.update(key('k'));
-        a.update(key('k'));
+        to_notify_row(&mut a);
         assert_eq!(a.update(key('l')), Vec::<Effect>::new(), "no ResizePty");
         assert_eq!(a.menu().unwrap().ai_draft().notify(), NotifyMode::Auto);
         assert_eq!(a.ai().notify(), NotifyMode::Off, "not saved yet");
@@ -6430,8 +6435,7 @@ mod app_tests {
         assert!(a.menu().is_none());
         assert_eq!(a.ai().notify(), NotifyMode::Auto);
         open_menu(&mut a);
-        a.update(key('k'));
-        a.update(key('k'));
+        to_notify_row(&mut a);
         a.update(key('l'));
         a.update(esc());
         assert_eq!(
@@ -6445,8 +6449,7 @@ mod app_tests {
     fn on_notify_row(mode_presses: usize) -> App {
         let mut a = ai_app();
         open_menu(&mut a);
-        a.update(key('k'));
-        a.update(key('k'));
+        to_notify_row(&mut a);
         for _ in 0..mode_presses {
             a.update(key('l'));
         }
@@ -6568,7 +6571,7 @@ mod app_tests {
 
     /// Selection on the first AI task row.
     fn to_task_row(a: &mut App) {
-        for _ in 0..5 {
+        for _ in 0..8 {
             a.update(key('j'));
         }
     }
@@ -6799,7 +6802,7 @@ mod app_tests {
         a.update(AppEvent::EnginesDetected(machine()));
         assert_eq!(a.menu().unwrap().ai_draft(), saved, "refreshed");
         // Change an unrelated setting: the save carries no [ai] key.
-        for _ in 0..4 {
+        for _ in 0..7 {
             a.update(key('k'));
         }
         a.update(key('l'));

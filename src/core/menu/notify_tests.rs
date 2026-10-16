@@ -47,30 +47,42 @@ fn notify_edit(value: &'static str) -> ConfigEdit {
     }
 }
 
-// Spec (Notify row): the row is last in the AI section and found by kind.
+// Spec (Notify row): the rows sit in Settings, after Mouse, found by kind.
 #[test]
-fn the_notify_row_is_found_by_kind_and_the_sound_row_closes_the_section() {
-    let items = AI_SECTION.items;
-    assert_eq!(items[items.len() - 2].label, "Notify");
-    assert!(matches!(items[items.len() - 1].kind, ItemKind::NotifySound));
-    assert_eq!(items[items.len() - 1].label, "Sound");
-    let count = AI_SECTION
-        .items
-        .iter()
-        .filter(|i| matches!(i.kind, ItemKind::Notify))
-        .count();
-    assert_eq!(count, 1);
+fn the_notify_rows_follow_mouse_in_settings_and_leave_the_ai_section() {
+    let items = SECTIONS[0].items;
+    let labels: Vec<_> = items.iter().map(|i| i.label).collect();
+    assert_eq!(
+        labels,
+        [
+            "Statusline position",
+            "Tab bar position",
+            "Mouse",
+            "Notify",
+            "Sound",
+            "Updates"
+        ]
+    );
+    assert!(matches!(items[3].kind, ItemKind::Notify));
+    assert!(matches!(items[4].kind, ItemKind::NotifySound));
+    assert!(
+        AI_SECTION
+            .items
+            .iter()
+            .all(|i| !matches!(i.kind, ItemKind::Notify | ItemKind::NotifySound))
+    );
 }
 
 #[test]
 fn the_popup_body_grows_with_the_row() {
-    // 3 settings sections' rows + their titles + the AI title + the AI rows.
+    // The settings titles and rows + the AI title + the AI rows.
     let settings: usize = SECTIONS.iter().map(|s| s.items.len()).sum();
     assert_eq!(
         AI_BODY,
         SECTIONS.len() + 1 + settings + AI_SECTION.items.len()
     );
-    assert_eq!(AI_SECTION.items.len(), 11);
+    assert_eq!(AI_SECTION.items.len(), 9);
+    assert_eq!(SECTIONS[0].items.len(), 6);
 }
 
 #[test]
@@ -176,10 +188,9 @@ fn the_edit_is_the_notify_key_alone_and_only_when_changed() {
 fn the_notify_edit_comes_after_the_context_and_memory_edits() {
     let mut m = on_notify(NotifyMode::Off);
     press(&mut m, 'l');
-    press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Memory");
-    press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Context");
+    while selected_label(&m) != "Context" {
+        press(&mut m, 'j');
+    }
     press(&mut m, 'l');
     let edits = m.edits(&Config::default());
     assert_eq!(edits.len(), 2);
@@ -270,6 +281,11 @@ fn t_elsewhere_or_on_repeat_does_nothing() {
     assert_eq!(send(&mut m, KeyCode::Char('t'), true), MenuCommand::None);
     press(&mut m, 'k');
     assert_ne!(selected_label(&m), "Notify");
+    assert_eq!(send(&mut m, KeyCode::Char('t'), false), MenuCommand::None);
+    // Nor on the Updates row, which sits right after Sound.
+    while selected_label(&m) != "Updates" {
+        press(&mut m, 'j');
+    }
     assert_eq!(send(&mut m, KeyCode::Char('t'), false), MenuCommand::None);
 }
 

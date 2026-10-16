@@ -7,6 +7,9 @@ expression: "text(&draw(62, POPUP_H + 2, &with_update()))"
 │ Statusline position                                 bottom │
 │ Tab bar position                                       top │
 │ Mouse                                                   on │
+│ Notify                                                 off │
+│ Sound                                                   on │
+│ * Updates                                 0.16.0 available │
 │ AI                                                         │
 │ Set all tasks                                      (mixed) │
 │ general                                 ollama › model1:7b │
@@ -17,8 +20,6 @@ expression: "text(&draw(62, POPUP_H + 2, &with_update()))"
 │ Profile                                         programmer │
 │ Context                                                 on │
 │ Memory                                                 off │
-│ Notify                                                 off │
-│ Sound                                                   on │
 │ update 0.16.0 available —                                  │
 │ run: cargo install lazarobox-shell                         │
 │                                                            │

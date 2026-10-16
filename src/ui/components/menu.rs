@@ -315,6 +315,7 @@ mod tests {
 
     #[test]
     fn the_full_popup_needs_exactly_24_by_7() {
+        // Four body rows: the popup is 24 wide and rows + 3 high.
         assert!(fits(r(24, 7), 4));
         assert!(!fits(r(23, 7), 4));
         assert!(!fits(r(24, 6), 4));
@@ -412,11 +413,11 @@ mod tests {
     }
 
     #[test]
-    fn exactly_24_by_7_shows_the_full_popup() {
-        let buf = draw(24, 7, &fresh());
+    fn exactly_24_by_8_shows_the_full_popup() {
+        let buf = draw(24, 8, &fresh());
         assert!(text(&buf).contains("Settings"));
         assert!(!text(&buf).contains("MENU"));
-        let below = draw(23, 7, &fresh());
+        let below = draw(23, 8, &fresh());
         assert!(!text(&below).contains("Settings"));
         assert!(text(&below).contains("MENU"));
     }
@@ -595,16 +596,14 @@ mod tests {
 
     #[test]
     fn the_update_note_gives_way_when_the_height_is_tight() {
-        // The same height as without a note: the note is not drawn and the
-        // popup is the one it always was.
-        assert_eq!(
-            text(&draw(62, POPUP_H, &with_update())),
-            text(&draw(62, POPUP_H, &mixed()))
-        );
-        assert_eq!(
-            text(&draw(62, MIN_HEIGHT, &with_update())),
-            text(&draw(62, MIN_HEIGHT, &mixed()))
-        );
+        // At the popup's own height the note has no room and is not drawn;
+        // the Updates row still says what is waiting.
+        for height in [POPUP_H, MIN_HEIGHT] {
+            let shown = text(&draw(62, height, &with_update()));
+            assert!(!shown.contains("run: cargo install"), "{shown}");
+            assert!(!shown.contains("update 0.16.0 available"), "{shown}");
+            assert!(shown.contains("0.16.0 available"), "{shown}");
+        }
     }
 
     #[test]
@@ -729,7 +728,7 @@ mod tests {
     #[test]
     fn the_ai_popup_is_62_wide_and_body_plus_chrome_high_in_both_views() {
         for menu in [mixed(), picker_of("code", 0), warned()] {
-            let l = lines(&draw(80, 20, &menu));
+            let l = lines(&draw(80, POPUP_H + 4, &menu));
             let border: Vec<usize> = (0..l.len())
                 .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
                 .collect();
@@ -980,7 +979,10 @@ mod tests {
     fn titles_are_bold_and_the_selected_bar_spans_the_inner_width() {
         let task = draw(62, POPUP_H, &mixed());
         assert!(task[(2, 1)].modifier.contains(Modifier::BOLD));
-        assert!(task[(2, 5)].modifier.contains(Modifier::BOLD));
+        assert!(
+            task[(2, 8)].modifier.contains(Modifier::BOLD),
+            "the AI title"
+        );
         assert!(!task[(2, 2)].modifier.contains(Modifier::BOLD));
         let picker = draw(62, POPUP_H, &picker_of("code", 0));
         assert!(picker[(2, 1)].modifier.contains(Modifier::BOLD));

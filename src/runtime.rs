@@ -1225,7 +1225,7 @@ mod tests {
             step(&mut app, event, &mut panes);
         }
         let rows = app.menu().unwrap().rows(&Config::default());
-        let general = match &rows[6] {
+        let general = match &rows[9] {
             crate::core::menu::Row::Item { label, value, .. } => {
                 assert_eq!(*label, "general");
                 value.as_deref().unwrap().to_owned()

@@ -48,13 +48,31 @@ pub enum ItemKind {
     /// The notification sound flag (`ai.notify_sound`): an on/off row over
     /// the AI draft.
     NotifySound,
+    /// The running version, and the newer one when the update check found it.
+    /// Not a setting: `[updates] check` stays config-only. `h`/`l` do nothing
+    /// here; Enter acts only when an update is available.
+    Updates,
 }
+
+/// The version shown on the Updates row. Tests see a fixed one, so a release
+/// bump does not rewrite every snapshot.
+#[cfg(not(test))]
+const RUNNING_VERSION: &str = env!("CARGO_PKG_VERSION");
+#[cfg(test)]
+const RUNNING_VERSION: &str = "0.15.3";
 
 /// The descriptor of the `Memory` row; the value is the `enabled` key.
 pub struct MemoryRow {
     pub table: &'static str,
     pub key: &'static str,
     pub values: &'static [&'static str],
+}
+
+impl ItemKind {
+    /// Whether the row edits the AI draft, so it needs the AI section.
+    const fn needs_ai(&self) -> bool {
+        matches!(self, Self::Notify | Self::NotifySound)
+    }
 }
 
 pub struct Item {
@@ -115,13 +133,25 @@ pub static SECTIONS: &[Section] = &[Section {
                 set: |c, i| c.mouse = i == 1,
             }),
         },
+        Item {
+            label: "Notify",
+            kind: ItemKind::Notify,
+        },
+        Item {
+            label: "Sound",
+            kind: ItemKind::NotifySound,
+        },
+        Item {
+            label: "Updates",
+            kind: ItemKind::Updates,
+        },
     ],
 }];
 
 /// The AI section, attached only by [`MenuState::with_ai`]. The labels of
 /// the task rows are the task ids; their key path is `Task::table`. The
-/// static rows follow the tasks: `Profile`, `Context`, `Memory` and `Notify`,
-/// in that order.
+/// static rows follow the tasks: `Profile`, `Context` and `Memory`, in that
+/// order. `Notify` and `Sound` live in the Settings section.
 pub static AI_SECTION: Section = Section {
     title: "AI",
     items: &[
@@ -165,14 +195,6 @@ pub static AI_SECTION: Section = Section {
                 values: &["off", "on"],
             }),
         },
-        Item {
-            label: "Notify",
-            kind: ItemKind::Notify,
-        },
-        Item {
-            label: "Sound",
-            kind: ItemKind::NotifySound,
-        },
     ],
 };
 
@@ -188,7 +210,8 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
             | ItemKind::Context
             | ItemKind::Memory(_)
             | ItemKind::Notify
-            | ItemKind::NotifySound => None,
+            | ItemKind::NotifySound
+            | ItemKind::Updates => None,
         })
 }
 
@@ -330,12 +353,14 @@ pub struct MenuState {
     term: Option<(u16, u16)>,
     /// The newer version the update check found. Only ever shown as text.
     update: Option<String>,
+    /// The version this binary is, for the Updates row.
+    current: String,
 }
 
 impl MenuState {
     pub fn open(original: &Config) -> Self {
         Self {
-            selected: (choices().count() > 0).then_some(0),
+            selected: (SECTIONS.iter().any(|s| !s.items.is_empty())).then_some(0),
             original: *original,
             error: None,
             test_report: None,
@@ -344,7 +369,16 @@ impl MenuState {
             checking: false,
             term: None,
             update: None,
+            current: RUNNING_VERSION.to_owned(),
         }
+    }
+
+    /// Tells the menu which version is running (tests; the binary's own
+    /// version is the default).
+    #[cfg(test)]
+    pub fn with_current(mut self, current: &str) -> Self {
+        self.current = current.to_owned();
+        self
     }
 
     /// Tells the menu which newer version is known, if any.
@@ -413,13 +447,24 @@ impl MenuState {
         self.ai.is_some()
     }
 
+    /// The Settings rows this menu shows, in table order. The chat bell rows
+    /// edit the AI draft, so a menu without an AI section has none of them.
+    fn settings(&self) -> impl Iterator<Item = &'static Item> + use<> {
+        let has_ai = self.ai.is_some();
+        SECTIONS
+            .iter()
+            .flat_map(|section| section.items.iter())
+            .filter(move |item| has_ai || !item.kind.needs_ai())
+    }
+
     /// The descriptor kind under the selection. Rows are found by kind, never
-    /// by a position in the AI section, so a row can be added there without
+    /// by a position in a table, so a row can be added there without
     /// touching the key handling.
     fn selected_kind(&self) -> Option<&'static ItemKind> {
         let index = self.selected?;
-        match index.checked_sub(choices().count()) {
-            None => choices().nth(index).map(|(item, _)| &item.kind),
+        let settings = self.settings().count();
+        match index.checked_sub(settings) {
+            None => self.settings().nth(index).map(|item| &item.kind),
             Some(n) if self.ai.is_some() => AI_SECTION.items.get(n).map(|item| &item.kind),
             Some(_) => None,
         }
@@ -496,7 +541,7 @@ impl MenuState {
 
     /// Selectable rows: the settings, then every AI row.
     fn selectable(&self) -> usize {
-        choices().count()
+        self.settings().count()
             + if self.ai.is_some() {
                 AI_SECTION.items.len()
             } else {
@@ -551,7 +596,23 @@ impl MenuState {
             | ItemKind::Context
             | ItemKind::Memory(_)
             | ItemKind::Notify
-            | ItemKind::NotifySound => None,
+            | ItemKind::NotifySound
+            | ItemKind::Updates => None,
+        }
+    }
+
+    /// The Updates row: the running version, and the newer one when known.
+    /// The name carries a `*` while an update is waiting.
+    fn updates_row(&self, selected: bool) -> Row {
+        let (label, value) = match &self.update {
+            Some(latest) => ("* Updates", format!("{latest} available")),
+            None => ("Updates", self.current.clone()),
+        };
+        Row::Item {
+            label,
+            value: Some(Cow::Owned(value)),
+            selected,
+            enabled: true,
         }
     }
 
@@ -567,7 +628,11 @@ impl MenuState {
         let ai_section = self.ai.as_ref().map(|_| &AI_SECTION);
         for section in SECTIONS.iter().chain(ai_section) {
             rows.push(Row::Title(Cow::Borrowed(section.title)));
-            for item in section.items {
+            for item in section
+                .items
+                .iter()
+                .filter(|item| self.ai.is_some() || !item.kind.needs_ai())
+            {
                 rows.push(match &item.kind {
                     ItemKind::Assign(task) => {
                         let row = Row::Item {
@@ -644,6 +709,11 @@ impl MenuState {
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Updates => {
+                        let row = self.updates_row(self.selected == Some(index));
                         index += 1;
                         row
                     }
@@ -782,9 +852,9 @@ impl MenuState {
     }
 
     fn cycle(&mut self, forward: bool, config: &mut Config) -> MenuCommand {
-        let Some(index) = self.selected else {
+        if self.selected.is_none() {
             return MenuCommand::None;
-        };
+        }
         if self.on_draft_row() {
             // The draft rows only change prompts or the memory opt-in: no
             // relayout, no other effect.
@@ -800,7 +870,7 @@ impl MenuState {
             }
             return MenuCommand::None;
         }
-        let Some((_, choice)) = choices().nth(index) else {
+        let Some(ItemKind::Choice(choice) | ItemKind::Toggle(choice)) = self.selected_kind() else {
             return MenuCommand::None;
         };
         let len = choice.values.len();
@@ -1049,7 +1119,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_list_title_then_the_three_settings() {
+    fn rows_list_title_then_the_settings_without_the_ai_ones() {
         let menu = MenuState::open(&Config::default());
         assert_eq!(
             menu.rows(&Config::default()),
@@ -1058,6 +1128,7 @@ mod tests {
                 row("Statusline position", Some("bottom"), true),
                 row("Tab bar position", Some("top"), false),
                 row("Mouse", Some("on"), false),
+                row("Updates", Some("0.15.3"), false),
             ]
         );
     }
@@ -1099,9 +1170,13 @@ mod tests {
             menu.on_key(&down, false, &mut config);
             assert_eq!(selected(&menu), Some(2), "the Mouse row is selectable");
             menu.on_key(&down, false, &mut config);
+            assert_eq!(selected(&menu), Some(3), "so is the Updates row");
+            menu.on_key(&down, false, &mut config);
             assert_eq!(selected(&menu), Some(0), "wraps past the last row");
             menu.on_key(&up, false, &mut config);
-            assert_eq!(selected(&menu), Some(2), "wraps before the first row");
+            assert_eq!(selected(&menu), Some(3), "wraps before the first row");
+            menu.on_key(&up, false, &mut config);
+            assert_eq!(selected(&menu), Some(2));
             menu.on_key(&up, false, &mut config);
             assert_eq!(selected(&menu), Some(1));
             menu.on_key(&up, false, &mut config);

@@ -7,6 +7,9 @@ expression: shown
 │ Statusline position                                 bottom │
 │ Tab bar position                                       top │
 │ Mouse                                                   on │
+│ Notify                                                 off │
+│ Sound                                                   on │
+│ Updates                                             0.15.3 │
 │ AI                                                         │
 │ Set all tasks                                      (mixed) │
 │ general                                 ollama › model1:7b │
@@ -17,8 +20,6 @@ expression: shown
 │ Profile                                         programmer │
 │ Context                                                 on │
 │ Memory                                                 off │
-│ Notify                                                 off │
-│ Sound                                                   on │
 │                                                            │
 │ j/k move · h/l change · s save · Esc cancel                │
 └────────────────────────────────────────────────────────────┘
