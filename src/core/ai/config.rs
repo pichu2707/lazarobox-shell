@@ -178,6 +178,7 @@ pub struct AiConfig {
     profile: Profile,
     context: bool,
     notify: NotifyMode,
+    notify_sound: bool,
     pub memory: MemoryConfig,
 }
 
@@ -188,6 +189,7 @@ impl Default for AiConfig {
             profile: Profile::default(),
             context: true,
             notify: NotifyMode::Off,
+            notify_sound: true,
             memory: MemoryConfig::default(),
         }
     }
@@ -227,6 +229,16 @@ impl AiConfig {
 
     pub fn set_notify(&mut self, notify: NotifyMode) {
         self.notify = notify;
+    }
+
+    /// Whether lazarobox plays its own sound with the desktop notification
+    /// (`auto` and `desktop` modes).
+    pub fn notify_sound(&self) -> bool {
+        self.notify_sound
+    }
+
+    pub fn set_notify_sound(&mut self, sound: bool) {
+        self.notify_sound = sound;
     }
 
     /// The effective assignment of a task and whether it was inherited from
@@ -351,6 +363,19 @@ fn read_notify(section: &Table, problems: &mut Vec<String>) -> NotifyMode {
     }
 }
 
+/// Reads `notify_sound`: a missing key is `true`; a value that is not a
+/// boolean falls back to `true` with a problem.
+fn read_notify_sound(section: &Table, problems: &mut Vec<String>) -> bool {
+    match section.get("notify_sound") {
+        None => true,
+        Some(Value::Boolean(on)) => *on,
+        Some(_) => {
+            problems.push("ai.notify_sound: expected a boolean".to_owned());
+            true
+        }
+    }
+}
+
 /// Reads `[ai]` (the general task, the profile and the context and notify flags) and `[ai.tasks.<id>]`
 /// (the others). Each key falls back to unset on its own; `general` and
 /// unknown names under `ai.tasks` are ignored.
@@ -368,6 +393,7 @@ fn read_tasks(table: &Table, problems: &mut Vec<String>) -> AiConfig {
     config.profile = read_profile(section, problems);
     config.context = read_context(section, problems);
     config.notify = read_notify(section, problems);
+    config.notify_sound = read_notify_sound(section, problems);
     let tasks = match section.get("tasks") {
         None => return config,
         Some(Value::Table(tasks)) => tasks,
@@ -1083,6 +1109,33 @@ mod tests {
             let (config, problems) = read_text(&format!("[ai]\nnotify = {value}\n"));
             assert_eq!(config.notify(), NotifyMode::Off, "{value}");
             assert_eq!(problems, vec![NOTIFY_PROBLEM.to_owned()], "{value}");
+        }
+    }
+
+    #[test]
+    fn notify_sound_defaults_to_true_and_reads_a_boolean() {
+        assert!(AiConfig::default().notify_sound());
+        for (text, want) in [
+            ("", true),
+            ("[ai]\nnotify_sound = false\n", false),
+            ("[ai]\nnotify_sound = true\n", true),
+        ] {
+            let (config, problems) = read_text(text);
+            assert_eq!(config.notify_sound(), want, "{text:?}");
+            assert_eq!(problems, Vec::<String>::new());
+        }
+    }
+
+    #[test]
+    fn a_non_boolean_notify_sound_falls_back_to_true_with_the_exact_problem() {
+        for value in ["\"no\"", "0", "[false]"] {
+            let (config, problems) = read_text(&format!("[ai]\nnotify_sound = {value}\n"));
+            assert!(config.notify_sound(), "{value}");
+            assert_eq!(
+                problems,
+                vec!["ai.notify_sound: expected a boolean".to_owned()],
+                "{value}"
+            );
         }
     }
 

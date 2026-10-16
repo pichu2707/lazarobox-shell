@@ -5,7 +5,7 @@ use super::footer_tests::hint;
 use super::*;
 use crate::core::ai::config::{NotifyMode, Profile};
 
-const SETTINGS_HINT: &str = "j/k move · h/l change · s save · Esc cancel";
+const NOTIFY_HINT: &str = "j/k move · h/l change · t test · s save · Esc cancel";
 
 fn open_with(notify: NotifyMode) -> MenuState {
     let mut ai = AiConfig::default();
@@ -49,10 +49,11 @@ fn notify_edit(value: &'static str) -> ConfigEdit {
 
 // Spec (Notify row): the row is last in the AI section and found by kind.
 #[test]
-fn the_notify_row_is_last_and_found_by_kind() {
-    let last = AI_SECTION.items.last().unwrap();
-    assert_eq!(last.label, "Notify");
-    assert!(matches!(last.kind, ItemKind::Notify));
+fn the_notify_row_is_found_by_kind_and_the_sound_row_closes_the_section() {
+    let items = AI_SECTION.items;
+    assert_eq!(items[items.len() - 2].label, "Notify");
+    assert!(matches!(items[items.len() - 1].kind, ItemKind::NotifySound));
+    assert_eq!(items[items.len() - 1].label, "Sound");
     let count = AI_SECTION
         .items
         .iter()
@@ -69,7 +70,7 @@ fn the_popup_body_grows_with_the_row() {
         AI_BODY,
         SECTIONS.len() + 1 + settings + AI_SECTION.items.len()
     );
-    assert_eq!(AI_SECTION.items.len(), 10);
+    assert_eq!(AI_SECTION.items.len(), 11);
 }
 
 #[test]
@@ -138,7 +139,7 @@ fn toggling_touches_neither_the_live_config_nor_the_other_drafts() {
 #[test]
 fn the_footer_is_the_settings_hint_and_r_does_nothing() {
     let mut m = on_notify(NotifyMode::Off);
-    assert_eq!(hint(&m), SETTINGS_HINT);
+    assert_eq!(hint(&m), NOTIFY_HINT);
     let before = m.clone();
     assert_eq!(
         m.on_key(&ch('r'), false, &mut Config::default()),
@@ -184,4 +185,108 @@ fn the_notify_edit_comes_after_the_context_and_memory_edits() {
     assert_eq!(edits.len(), 2);
     assert_eq!(edits[0].key, "context");
     assert_eq!(edits[1], notify_edit("auto"));
+}
+
+// Sound row: an on/off draft flag, written as a boolean.
+fn on_sound(sound: bool) -> MenuState {
+    let mut ai = AiConfig::default();
+    ai.set_notify_sound(sound);
+    let mut m = MenuState::open(&Config::default()).with_ai(ai, Some(machine()));
+    while selected_label(&m) != "Sound" {
+        press(&mut m, 'j');
+    }
+    m
+}
+
+fn sound_edit(value: &'static str) -> ConfigEdit {
+    ConfigEdit {
+        table: "ai",
+        key: "notify_sound",
+        value: value.into(),
+    }
+}
+
+#[test]
+fn the_sound_row_reads_on_or_off_and_toggles_the_draft() {
+    let mut m = on_sound(true);
+    assert_eq!(value_of(&m, "Sound").as_deref(), Some("on"));
+    press(&mut m, 'l');
+    assert_eq!(value_of(&m, "Sound").as_deref(), Some("off"));
+    assert!(!m.ai_draft().notify_sound());
+    press(&mut m, 'h');
+    assert!(m.ai_draft().notify_sound());
+}
+
+#[test]
+fn the_sound_edit_is_a_boolean_and_only_when_changed() {
+    let live = Config::default();
+    let mut m = on_sound(true);
+    assert_eq!(m.edits(&live), vec![]);
+    press(&mut m, 'l');
+    assert_eq!(m.edits(&live), vec![sound_edit("false")]);
+    assert!(m.edits(&live)[0].is_flag());
+    press(&mut m, 'l');
+    assert_eq!(m.edits(&live), vec![]);
+}
+
+// Test action: `t` on the Notify row fires the mode shown in the row.
+#[test]
+fn t_on_the_notify_row_tests_the_draft_mode_without_saving() {
+    let mut m = on_notify(NotifyMode::Off);
+    press(&mut m, 'l');
+    assert_eq!(
+        send(&mut m, KeyCode::Char('t'), false),
+        MenuCommand::TestNotify {
+            mode: NotifyMode::Auto,
+            sound: true
+        }
+    );
+    assert_eq!(
+        m.ai_draft().notify(),
+        NotifyMode::Auto,
+        "the draft is untouched"
+    );
+}
+
+#[test]
+fn t_carries_the_sound_flag_and_works_from_the_sound_row_too() {
+    let mut m = on_notify(NotifyMode::Desktop);
+    while selected_label(&m) != "Sound" {
+        press(&mut m, 'j');
+    }
+    press(&mut m, 'l');
+    assert_eq!(
+        send(&mut m, KeyCode::Char('t'), false),
+        MenuCommand::TestNotify {
+            mode: NotifyMode::Desktop,
+            sound: false
+        }
+    );
+}
+
+#[test]
+fn t_elsewhere_or_on_repeat_does_nothing() {
+    let mut m = on_notify(NotifyMode::Auto);
+    assert_eq!(send(&mut m, KeyCode::Char('t'), true), MenuCommand::None);
+    press(&mut m, 'k');
+    assert_ne!(selected_label(&m), "Notify");
+    assert_eq!(send(&mut m, KeyCode::Char('t'), false), MenuCommand::None);
+}
+
+#[test]
+fn the_notify_rows_hint_names_the_test_key() {
+    let m = on_notify(NotifyMode::Auto);
+    assert_eq!(
+        hint(&m),
+        "j/k move · h/l change · t test · s save · Esc cancel"
+    );
+}
+
+#[test]
+fn the_test_outcome_shows_in_the_footer_until_the_next_press() {
+    let mut m = on_notify(NotifyMode::Auto);
+    m.set_copied("sent: bell".to_owned());
+    assert_eq!(hint(&m), "sent: bell");
+    press(&mut m, 'j');
+    assert_ne!(hint(&m), "sent: bell");
 }

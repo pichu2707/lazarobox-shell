@@ -70,7 +70,7 @@ use crate::{
                 prompts::Resolved,
                 store::StoreReply,
             },
-            config::{AiConfig, Profile},
+            config::{AiConfig, NotifyMode, Profile},
             memory::port::MemReply,
         },
         config::{Config, config_path},
@@ -212,6 +212,7 @@ pub async fn run() -> io::Result<()> {
     // Notify only: a cached or fetched newer version becomes a text mark.
     // Off (`[updates] check = false`) nothing is read, asked or shown.
     let (update_tx, update_rx) = mpsc::channel(1);
+    let (notified_tx, notified_rx) = mpsc::channel(4);
     let announced = update::begin(
         app.config().update_check,
         update::cache_path(
@@ -258,6 +259,30 @@ pub async fn run() -> io::Result<()> {
                 });
             }
         }))
+        .with_sound(Box::new({
+            let path = cli_env.path.clone();
+            let busy = Arc::new(AtomicBool::new(false));
+            move || {
+                notify::spawn_sound(notify::SoundJob {
+                    path: path.clone(),
+                    busy: Arc::clone(&busy),
+                    session: notify::Session::current,
+                });
+            }
+        }))
+        .with_notify_test(Box::new({
+            let path = cli_env.path.clone();
+            move |mode, sound, fallback| {
+                notify::spawn_test(notify::TestJob {
+                    path: path.clone(),
+                    mode,
+                    sound,
+                    fallback,
+                    report: notified_tx.clone(),
+                    session: notify::Session::current,
+                });
+            }
+        }))
         .with_preparer(Box::new(move |pane, profile, origin, context| {
             spawn_prepare(
                 config_dir.clone(),
@@ -278,6 +303,7 @@ pub async fn run() -> io::Result<()> {
         store: store_rx,
         prompt: prompt_rx,
         update: update_rx,
+        notified: notified_rx,
     };
     // The first pane is spawned before the UI starts: a failure is fatal.
     panes.spawn_pane(id, &spec)?;
@@ -396,6 +422,8 @@ struct Inbox {
     store: mpsc::Receiver<StoreReply>,
     prompt: mpsc::Receiver<(PaneId, Resolved)>,
     update: mpsc::Receiver<Option<String>>,
+    /// What the notification test did.
+    notified: mpsc::Receiver<String>,
 }
 
 async fn event_loop(
@@ -438,6 +466,7 @@ async fn run_loop(
         store: mut store_rx,
         prompt: mut prompt_rx,
         update: mut update_rx,
+        notified: mut notified_rx,
     } = inbox;
     let theme = LazaroboxTheme::default();
     let mut events = EventStream::new();
@@ -528,6 +557,11 @@ async fn run_loop(
                     return Ok(());
                 }
             }
+            Some(report) = notified_rx.recv() => {
+                if step(&mut app, AppEvent::NotifyTested(report), panes) {
+                    return Ok(());
+                }
+            }
             // Same exit path as Quit: the caller restores and kills the children.
             () = shutdown.requested() => return Ok(()),
             _ = cwd_poll.tick() => {
@@ -559,6 +593,9 @@ async fn run_loop(
 
 /// Starts one desktop notification: the body and the failure fallback flag.
 type DesktopSendFn = dyn FnMut(String, Option<Arc<AtomicBool>>);
+
+/// Starts the notification test: mode, sound flag, fallback flag.
+type TestSendFn = dyn FnMut(NotifyMode, bool, Option<Arc<AtomicBool>>);
 
 /// Starts a prompt preparation: pane, profile, origin cwd, context flag.
 type PrepareFn = dyn FnMut(PaneId, Profile, Option<PathBuf>, bool);
@@ -653,6 +690,12 @@ struct Panes {
     /// raise. The availability is probed there, off the UI thread. Does
     /// nothing unless `with_desktop` installs the production one.
     desktop_send: Box<DesktopSendFn>,
+    /// Starts lazarobox's own sound in the background. Does nothing unless
+    /// `with_sound` installs the production one.
+    sound_send: Box<dyn FnMut()>,
+    /// Starts the test action in the background: mode, sound, and the
+    /// fallback flag for `desktop`. The report comes back on its channel.
+    test_send: Box<TestSendFn>,
     /// Starts one AI engine detection; the answer arrives on the AI channel.
     /// A no-op unless `with_detector` installs the production one.
     detect: Box<dyn FnMut(bool)>,
@@ -681,6 +724,8 @@ impl Panes {
             bell: false,
             late_bell: Arc::new(AtomicBool::new(false)),
             desktop_send: Box::new(|_, _| {}),
+            sound_send: Box::new(|| {}),
+            test_send: Box::new(|_, _, _| {}),
             detect: Box::new(|_| {}),
             prepare: Box::new(|_, _, _, _| {}),
             chats: None,
@@ -743,6 +788,18 @@ impl Panes {
     /// Sets how `Effect::Notify` starts a desktop notification.
     fn with_desktop(mut self, send: Box<DesktopSendFn>) -> Self {
         self.desktop_send = send;
+        self
+    }
+
+    /// Sets what plays the notification sound.
+    fn with_sound(mut self, sound: Box<dyn FnMut()>) -> Self {
+        self.sound_send = sound;
+        self
+    }
+
+    /// Sets what runs the test action of the Notify row.
+    fn with_notify_test(mut self, test: Box<TestSendFn>) -> Self {
+        self.test_send = test;
         self
     }
 
@@ -846,11 +903,22 @@ impl Panes {
                 Effect::Bell => self.bell = true,
                 // The core table decides; the send returns at once (its own
                 // task owns the timeout and the reaping).
-                Effect::Notify { mode, body } => {
+                Effect::Notify { mode, body, sound } => {
                     self.bell |= rings_at_once(mode);
                     let fallback =
                         bell_after_failed_desktop(mode).then(|| Arc::clone(&self.late_bell));
                     (self.desktop_send)(body, fallback);
+                    if sound {
+                        (self.sound_send)();
+                    }
+                }
+                // The key press that asks for it: the bell now (when the mode
+                // has one), the rest in the background with a report.
+                Effect::NotifyTest { mode, sound } => {
+                    self.bell |= rings_at_once(mode);
+                    let fallback =
+                        bell_after_failed_desktop(mode).then(|| Arc::clone(&self.late_bell));
+                    (self.test_send)(mode, sound, fallback);
                 }
                 // Staged like the other host bytes: written after the draw by
                 // `flush_host`, never in the middle of a frame.
@@ -1062,7 +1130,6 @@ mod tests {
 
     use super::*;
     use crate::core::ai::chat::engine::Finish;
-    use crate::core::ai::config::NotifyMode;
     use crate::{
         app::{AppEvent, Effect},
         core::pane::{CursorKind, CursorShape, PaneSize},
@@ -1640,6 +1707,45 @@ mod tests {
         Effect::Notify {
             mode,
             body: "Answer ready in pane 2".to_owned(),
+            sound: false,
+        }
+    }
+
+    #[test]
+    fn the_sound_starts_only_when_the_effect_asks_for_it() {
+        let (panes, _rx, _rec) = fake_panes(None);
+        let plays = Rc::new(RefCell::new(0));
+        let count = Rc::clone(&plays);
+        let mut panes = panes.with_sound(Box::new(move || *count.borrow_mut() += 1));
+        panes.apply(vec![notify(NotifyMode::Auto)]);
+        assert_eq!(*plays.borrow(), 0);
+        panes.apply(vec![Effect::Notify {
+            mode: NotifyMode::Auto,
+            body: "x".to_owned(),
+            sound: true,
+        }]);
+        assert_eq!(*plays.borrow(), 1);
+    }
+
+    #[test]
+    fn a_test_effect_rings_at_once_per_mode_and_arms_the_fallback_for_desktop() {
+        // (mode, sound, bell now, fallback armed)
+        let table = [
+            (NotifyMode::Auto, true, true, false),
+            (NotifyMode::Desktop, true, false, true),
+            (NotifyMode::Bell, false, true, false),
+        ];
+        for (mode, sound, bell, fallback) in table {
+            let (panes, _rx, _rec) = fake_panes(None);
+            let seen: Rc<RefCell<Vec<(NotifyMode, bool, bool)>>> = Rc::default();
+            let log = Rc::clone(&seen);
+            let mut panes = panes.with_notify_test(Box::new(move |mode, sound, fallback| {
+                log.borrow_mut().push((mode, sound, fallback.is_some()))
+            }));
+            panes.apply(vec![Effect::NotifyTest { mode, sound }]);
+            panes.stage_bell();
+            assert_eq!(panes.host_out == vec![0x07], bell, "{mode:?}");
+            assert_eq!(*seen.borrow(), vec![(mode, sound, fallback)], "{mode:?}");
         }
     }
 

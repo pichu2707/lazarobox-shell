@@ -9,7 +9,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::{
     ai::{
         Detection,
-        config::{AiConfig, Task},
+        config::{AiConfig, NotifyMode, Task},
         menu::AiMenu,
         picker::{Level, Mark, NOT_IN_LIST, Outcome, PickKey, PickRow, Picker, Target},
     },
@@ -45,6 +45,9 @@ pub enum ItemKind {
     /// The chat bell flag (`ai.notify`): an on/off row that lives in the AI
     /// draft, like [`ItemKind::Context`].
     Notify,
+    /// The notification sound flag (`ai.notify_sound`): an on/off row over
+    /// the AI draft.
+    NotifySound,
 }
 
 /// The descriptor of the `Memory` row; the value is the `enabled` key.
@@ -166,6 +169,10 @@ pub static AI_SECTION: Section = Section {
             label: "Notify",
             kind: ItemKind::Notify,
         },
+        Item {
+            label: "Sound",
+            kind: ItemKind::NotifySound,
+        },
     ],
 };
 
@@ -180,7 +187,8 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
             | ItemKind::Profile
             | ItemKind::Context
             | ItemKind::Memory(_)
-            | ItemKind::Notify => None,
+            | ItemKind::Notify
+            | ItemKind::NotifySound => None,
         })
 }
 
@@ -232,9 +240,16 @@ pub enum MenuCommand {
     /// Put this text on the clipboard (the full reason behind a degraded
     /// engine or a failed model listing).
     Copy(String),
+    /// Fire one notification now, with the mode and sound flag shown in the
+    /// menu (saved or not), ignoring the focus rule.
+    TestNotify {
+        mode: NotifyMode,
+        sound: bool,
+    },
 }
 
 const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
+const HINT_NOTIFY: &str = "j/k move · h/l change · t test · s save · Esc cancel";
 const HINT_TASK: &str = "j/k move · Enter pick · r refresh · s save · Esc cancel";
 const HINT_PICKER: &str = "j/k move · Enter choose · r refresh · Esc back · s save";
 const HINT_NOTE: &str = "Enter or y copies the full reason · Esc back";
@@ -416,8 +431,32 @@ impl MenuState {
     fn on_draft_row(&self) -> bool {
         matches!(
             self.selected_kind(),
-            Some(ItemKind::Profile | ItemKind::Context | ItemKind::Memory(_) | ItemKind::Notify)
+            Some(
+                ItemKind::Profile
+                    | ItemKind::Context
+                    | ItemKind::Memory(_)
+                    | ItemKind::Notify
+                    | ItemKind::NotifySound
+            )
         )
+    }
+
+    /// Whether the selection is on the Notify or the Sound row.
+    fn on_notify_row(&self) -> bool {
+        matches!(
+            self.selected_kind(),
+            Some(ItemKind::Notify | ItemKind::NotifySound)
+        )
+    }
+
+    fn test_notify(&self) -> MenuCommand {
+        match &self.ai {
+            Some(ai) => MenuCommand::TestNotify {
+                mode: ai.draft().notify(),
+                sound: ai.draft().notify_sound(),
+            },
+            None => MenuCommand::None,
+        }
     }
 
     /// Whether the privacy warning is shown over the menu.
@@ -507,7 +546,8 @@ impl MenuState {
             | ItemKind::Profile
             | ItemKind::Context
             | ItemKind::Memory(_)
-            | ItemKind::Notify => None,
+            | ItemKind::Notify
+            | ItemKind::NotifySound => None,
         }
     }
 
@@ -574,6 +614,22 @@ impl MenuState {
                         index += 1;
                         row
                     }
+                    ItemKind::NotifySound => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self.ai.as_ref().map(|ai| {
+                                Cow::Borrowed(if ai.draft().notify_sound() {
+                                    "on"
+                                } else {
+                                    "off"
+                                })
+                            }),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
                     ItemKind::Notify => {
                         let row = Row::Item {
                             label: item.label,
@@ -629,6 +685,7 @@ impl MenuState {
             KeyCode::Char('h') | KeyCode::Left => self.cycle(false, config),
             KeyCode::Char('s') if !repeat => MenuCommand::Save,
             KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
+            KeyCode::Char('t') if !repeat && self.on_notify_row() => self.test_notify(),
             KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
             KeyCode::Enter if repeat && (self.on_ai_row() || self.on_draft_row()) => {
                 MenuCommand::None
@@ -732,6 +789,7 @@ impl MenuState {
                     Some(ItemKind::Profile) => ai.cycle_profile(forward),
                     Some(ItemKind::Memory(_)) => ai.toggle_memory(),
                     Some(ItemKind::Notify) => ai.cycle_notify(forward),
+                    Some(ItemKind::NotifySound) => ai.toggle_notify_sound(),
                     _ => ai.toggle_context(),
                 }
             }
@@ -817,12 +875,22 @@ impl MenuState {
                 key: "notify",
                 value: Cow::Borrowed(mode.id()),
             });
+        let sound = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::changed_notify_sound)
+            .map(|on| ConfigEdit {
+                table: "ai",
+                key: "notify_sound",
+                value: Cow::Borrowed(if on { "true" } else { "false" }),
+            });
         settings
             .chain(tasks)
             .chain(profile)
             .chain(context)
             .chain(memory)
             .chain(notify)
+            .chain(sound)
             .collect()
     }
 
@@ -900,6 +968,7 @@ impl MenuState {
             }
             _ if picker.is_some() => Cow::Borrowed(HINT_PICKER),
             _ if in_ai_view => Cow::Borrowed(HINT_TASK),
+            _ if self.on_notify_row() => Cow::Borrowed(HINT_NOTIFY),
             _ => Cow::Borrowed(HINT_SETTINGS),
         })
     }

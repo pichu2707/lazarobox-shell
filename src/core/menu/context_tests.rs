@@ -63,10 +63,11 @@ fn the_context_row_follows_profile_and_precedes_memory() {
             "Profile",
             "Context",
             "Memory",
-            "Notify"
+            "Notify",
+            "Sound"
         ]
     );
-    let context = &AI_SECTION.items[AI_SECTION.items.len() - 3];
+    let context = &AI_SECTION.items[AI_SECTION.items.len() - 4];
     assert!(matches!(context.kind, ItemKind::Context));
 }
 
@@ -82,7 +83,11 @@ fn context_sits_between_profile_and_memory_and_navigation_wraps_through_them() {
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Notify");
     press(&mut m, 'j');
+    assert_eq!(selected_label(&m), "Sound");
+    press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Statusline position");
+    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "Sound");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Notify");
     press(&mut m, 'k');

@@ -18,6 +18,7 @@ expression: "text(&draw(62, POPUP_H + 2, &with_update()))"
 │ Context                                                 on │
 │ Memory                                                 off │
 │ Notify                                                 off │
+│ Sound                                                   on │
 │ update 0.16.0 available —                                  │
 │ run: cargo install lazarobox-shell                         │
 │                                                            │

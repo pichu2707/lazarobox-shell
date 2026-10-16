@@ -235,6 +235,7 @@ fn notice(mode: NotifyMode) -> Effect {
     Effect::Notify {
         mode,
         body: "Answer ready in pane 2".to_owned(),
+        sound: true,
     }
 }
 
@@ -255,7 +256,8 @@ fn a_failed_turn_says_so_and_a_watched_or_cancelled_one_is_silent() {
         a.update(error(1)),
         vec![Effect::Notify {
             mode: NotifyMode::Auto,
-            body: "Turn failed in pane 2".to_owned()
+            body: "Turn failed in pane 2".to_owned(),
+            sound: true
         }]
     );
     let mut a = streaming(NotifyMode::Desktop);
@@ -271,4 +273,31 @@ fn the_notify_body_never_carries_the_answer() {
         [Effect::Notify { body, .. }] => assert!(!body.contains("SECRET"), "{body}"),
         other => panic!("expected one Notify, got {other:?}"),
     }
+}
+
+// Regression: a blurred window over the focused chat pane notifies (the case
+// of switching to another OS window while the answer is still coming).
+#[test]
+fn a_blurred_window_over_the_focused_chat_emits_a_notify() {
+    for mode in [NotifyMode::Auto, NotifyMode::Desktop] {
+        let mut a = streaming(mode);
+        assert_eq!(a.focused(), chat_id());
+        assert_eq!(a.update(AppEvent::WindowFocus(false)), vec![]);
+        assert_eq!(a.update(done(1)), vec![notice(mode)], "{mode:?}");
+    }
+}
+
+#[test]
+fn the_sound_flag_rides_the_effect_only_in_auto_and_desktop() {
+    let mut a = streaming(NotifyMode::Auto);
+    a.ai.set_notify_sound(false);
+    a.set_focus(shell_id());
+    assert_eq!(
+        a.update(done(1)),
+        vec![Effect::Notify {
+            mode: NotifyMode::Auto,
+            body: "Answer ready in pane 2".to_owned(),
+            sound: false
+        }]
+    );
 }
