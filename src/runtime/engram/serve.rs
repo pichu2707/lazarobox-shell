@@ -2,7 +2,7 @@
 //! detached and keeping its log. Nothing here ever signals the server.
 
 use std::{
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fmt,
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom},
@@ -152,10 +152,11 @@ pub struct Server {
 }
 
 impl Server {
-    /// A server for the process environment.
-    pub fn from_env() -> Self {
+    /// A server for the process environment, looking `engram` up and running
+    /// it with `path` (the process one extended with the login shell's).
+    pub fn from_env(path: OsString) -> Self {
         Self {
-            path: std::env::var_os("PATH").unwrap_or_default(),
+            path,
             state: state_dir(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME")),
             seen: Mutex::new(None),
         }
@@ -182,7 +183,7 @@ impl Server {
             return Binary::Missing;
         };
         *self.seen.lock().unwrap_or_else(|e| e.into_inner()) = Some((path.clone(), identity));
-        let version = ai_detect::version(&path)
+        let version = ai_detect::version(&path, &self.path)
             .await
             .and_then(|out| parse_version(&out));
         Binary::Found {
@@ -218,7 +219,7 @@ impl Server {
         for attempt in 0..5 {
             // A binary that is still being written fails with ETXTBSY for a
             // moment (an upgrade): that one error is retried briefly.
-            match command(binary, port, &log)?.spawn() {
+            match command(binary, port, &log, &self.path)?.spawn() {
                 Ok(spawned) => {
                     child = Some(spawned);
                     break;
@@ -333,11 +334,12 @@ fn clear_nonblocking(file: &File) -> io::Result<()> {
 /// output streams on the log, `ENGRAM_PORT` removed (the argument wins),
 /// everything else (including `ENGRAM_DATA_DIR`) inherited as is, its own
 /// session, and left running if the handle is dropped.
-fn command(binary: &Path, port: u16, log: &File) -> io::Result<Command> {
+fn command(binary: &Path, port: u16, log: &File, path: &OsStr) -> io::Result<Command> {
     let mut cmd = Command::new(binary);
     cmd.arg("serve")
         .arg(port.to_string())
         .env_remove("ENGRAM_PORT")
+        .env("PATH", path)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log.try_clone()?))
@@ -432,7 +434,9 @@ mod tests {
 
     impl Rig {
         fn server(&self) -> Server {
-            Server::new(self.bin_dir.clone().into(), self.state.clone())
+            // The child gets this `PATH`: the system tools the fake uses too.
+            let path = format!("{}:/usr/bin:/bin", self.bin_dir.display());
+            Server::new(path.into(), self.state.clone())
         }
 
         async fn recorded(&self) -> String {
@@ -557,11 +561,39 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn spawn_gives_the_child_the_path_it_was_found_on() {
+        let rig = rig();
+        let script = fake(&rig.bin_dir, "engram 3.4.0", &rig.record, "exec sleep 30");
+        let wanted = format!("{}:/usr/bin:/bin:/opt/login/bin", rig.bin_dir.display());
+        let server = Server::new(wanted.clone().into(), rig.state.clone());
+        let running = start(&server, &script, 8123).await.unwrap();
+        let _reap = Reap::new(running.pid);
+        let record = rig.recorded().await;
+        assert_eq!(lines_of(&record, "PATH"), [wanted]);
+    }
+
+    #[tokio::test]
+    async fn find_runs_the_version_command_with_its_path() {
+        let rig = rig();
+        let script = rig.bin_dir.join("engram");
+        fs::write(&script, "#!/bin/sh\necho \"engram 1.0 ${PATH##*:}\"\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:/opt/login/bin", rig.bin_dir.display());
+        let found = Server::new(path.clone().into(), rig.state.clone())
+            .find()
+            .await;
+        let Binary::Found { version, .. } = found else {
+            panic!("found expected, got {found:?}");
+        };
+        assert_eq!(version.as_deref(), Some("engram 1.0 /opt/login/bin"));
+    }
+
     #[test]
     fn the_command_removes_engram_port_and_never_sets_the_data_dir() {
         let rig = rig();
         let log = fs::File::create(rig.record.with_extension("log")).unwrap();
-        let cmd = command(Path::new("/bin/true"), 8123, &log).unwrap();
+        let cmd = command(Path::new("/bin/true"), 8123, &log, OsStr::new("/usr/bin")).unwrap();
         let std_cmd = cmd.as_std();
         let envs: Vec<_> = std_cmd.get_envs().collect();
         assert!(
@@ -797,7 +829,8 @@ mod tests {
         let odd = rig.bin_dir.join("a b;$(touch pwned)");
         fs::create_dir(&odd).unwrap();
         let script = fake(&odd, "engram 3.4.0", &rig.record, "exec sleep 30");
-        let server = Server::new(odd.clone().into_os_string(), rig.state.clone());
+        let path = format!("{}:/usr/bin:/bin", odd.display());
+        let server = Server::new(path.into(), rig.state.clone());
         let running = start(&server, &script, 8123).await.unwrap();
         let _reap = Reap::new(running.pid);
         let record = rig.recorded().await;

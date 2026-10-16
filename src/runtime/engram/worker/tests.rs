@@ -1714,7 +1714,9 @@ mod with_processes {
         );
         fs::write(&script, text).unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-        let server = Server::new(bin.into(), dir.path().join("state"));
+        // The child gets this `PATH`: the system tools the fake uses too.
+        let path = format!("{}:/usr/bin:/bin", bin.display());
+        let server = Server::new(path.into(), dir.path().join("state"));
         Setup {
             _dir: dir,
             server,

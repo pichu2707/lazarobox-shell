@@ -188,7 +188,10 @@ pub async fn run() -> io::Result<()> {
     let memory = memory_for(
         &app.ai().memory,
         || env::var("ENGRAM_HTTP_TOKEN").ok(),
-        engram::serve::Server::from_env,
+        {
+            let path = cli_env.path.clone();
+            move || engram::serve::Server::from_env(path)
+        },
         memory_tx,
     );
     let (store_tx, store_rx) = mpsc::channel(STORE_CHANNEL);
