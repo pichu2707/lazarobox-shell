@@ -105,32 +105,53 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 - **Selección nativa:** con la captura del ratón activa, mantén pulsado un modificador mientras arrastras para seleccionar texto con la terminal: `Shift` en Kitty y en la mayoría de terminales de Linux, `Option` en Terminal e iTerm2 de macOS.
 - **Modo COPY:** `Ctrl+Espacio` y `[` funciona en paneles de shell y de chat. Se mueve con `j`/`k` (línea), `Ctrl+u`/`Ctrl+d` (media página), `gg` (inicio) y `G` (final); `Esc` o `q` sale. En un panel de shell, además, `v`, `V` e `y` seleccionan y copian.
 - **Indicador `[+N]`:** un panel desplazado muestra en su esquina superior derecha cuántas líneas quedan por debajo; la línea de estado indica la posición (`↑N/total`) del panel enfocado.
-- **Desactivar la captura:** `mouse = false` en `config.toml` (o la fila `Mouse` del menú `Ctrl+Espacio m`) deja la rueda y la selección a la terminal. Por defecto está activada.
+- **Desactivar la captura:** `mouse = false` en `config.toml` (o la fila `Mouse` de la sección Settings del menú `Ctrl+Espacio m`) deja la rueda y la selección a la terminal. Por defecto está activada.
 
 ---
 
-## 🔔 Update notice (`[updates]`)
+## ⚙️ Menú: sección Settings
 
-lazarobox can tell you that a newer version is on crates.io. It only **tells**: it never installs, downloads or runs an update, and never opens a pane for it. When one exists, the statusline shows `update 0.16.0` and the main menu (`Ctrl+Espacio m`) shows a note with the command to run yourself:
+`Ctrl+Espacio` y `m` abre el menú. Su sección **Settings** tiene, en este orden:
 
-```
-update 0.16.0 available — run: cargo install lazarobox-shell
-```
+| Fila | Qué hace | Clave en `config.toml` |
+| ---- | -------- | ---------------------- |
+| `Statusline position` | Barra de estado arriba o abajo (`h`/`l`) | `[statusline] position` |
+| `Tab bar position` | Barra de pestañas arriba o abajo | `[tabbar] position` |
+| `Mouse` | Captura del ratón | `mouse` |
+| `Notify` | Aviso al terminar una respuesta del chat (`off`, `auto`, `desktop`, `bell`); `t` lo prueba | `[ai] notify` |
+| `Sound` | Sonido propio del aviso; `t` lo prueba | `[ai] notify_sound` |
+| `Updates` | Versión en ejecución y actualización disponible (ver abajo) | `[updates] check` (solo en el fichero) |
 
-The command is plain text and is never executed.
+`Notify` y `Sound` antes estaban en la sección **AI**; solo cambian de sitio, y sus claves y su comportamiento siguen igual.
 
-**Configuration** (`config.toml`):
+---
+
+## 🔔 Avisos de actualización (`[updates]`)
+
+lazarobox puede avisarte de que hay una versión nueva en crates.io. Cuando existe, la barra de estado muestra `update 0.16.0` y el menú muestra una nota con el comando. La fila **Updates** del menú muestra la versión que estás ejecutando (`Updates  0.15.3`); si hay una nueva, el nombre lleva un `*` y el valor dice la versión (`* Updates  0.16.0 available`).
+
+**`Enter` sobre `Updates`** solo actúa si hay una actualización disponible (si no, el pie dice `up to date` y no hace nada):
+
+- **Instalaste con `cargo install`** (el binario en ejecución, con rutas resueltas, incluidos los enlaces simbólicos de `~/.cargo`, está bajo `$CARGO_HOME/bin`, o `~/.cargo/bin` si `CARGO_HOME` no está definido): lazarobox abre una **pestaña nueva** que ejecuta directamente `cargo install lazarobox-shell --locked --root <raíz>`, sin shell, donde `<raíz>` es la carpeta que contiene ese `bin`; así cargo instala siempre encima del binario en ejecución, aunque `CARGO_INSTALL_ROOT` o `install.root` apunten a otro sitio. Es un panel normal: ves la compilación, y su primera línea, escrita por lazarobox, dice qué se ejecuta (`running /home/u/.cargo/bin/cargo install lazarobox-shell --locked --root /home/u/.cargo`).
+  - **Qué `cargo`:** el que está junto al binario en ejecución (`<CARGO_HOME>/bin/cargo`) y, si no existe, el primero del `PATH` de login que ya usa lazarobox (nunca el directorio actual). Se ejecuta tal como se encontró (el proxy de rustup decide según el nombre con que se lanza). Debe cumplir la misma regla de confianza que los CLIs de IA: ni él ni su carpeta pueden estar bajo `/tmp` ni ser escribibles por grupo u otros; si no la cumple, no se ejecuta nada y se muestra el comando como en el caso siguiente.
+  - **Entorno:** cargo recibe el entorno normal de un panel (el de lazarobox más `TERM`/`COLORTERM`), con el `PATH` de login; no se depura como el de los CLIs de IA, porque cargo necesita tu `RUSTUP_*`, proxy, certificados, etc. Se ejecuta desde tu carpeta personal, no desde la de un proyecto.
+  - **Resultado:** si termina bien, la pestaña se cierra sola, un aviso dice `lazarobox X.Y.Z installed: restart lazarobox to use it` y la fila pasa a `X.Y.Z installed: restart` hasta que reinicies. Si falla, la pestaña **se queda abierta** con la última línea `update failed (exit N)` (o `update failed (no exit status)` si el proceso desaparece sin código) para que leas el error de cargo; ciérrala cuando quieras (`Ctrl+Espacio`, `w`, `q`). **Reinicia lazarobox** para usar la versión nueva: el proceso en marcha no se reemplaza.
+- **Cualquier otra instalación** (paquete de la distribución, tarball, compilación local) o sin `cargo` en el `PATH`: **no se ejecuta nada**. El pie muestra `cargo install lazarobox-shell --locked` y `Enter` o `y` lo copia al portapapeles (OSC 52).
+
+No hay interruptor: `[updates] check` solo se cambia en el fichero.
+
+**Configuración** (`config.toml`):
 
 ```toml
 [updates]
-check = true   # default; false = no network call at all and no notice
+check = true   # por defecto; false = ninguna llamada de red y ningún aviso
 ```
 
-With `check = false` lazarobox makes no request, reads no cache and shows nothing. A value that is not `true` or `false` is reported once at startup, like any other config problem, and the default is used.
+Con `check = false` lazarobox no hace ninguna petición, no lee la caché y no muestra nada. Un valor que no sea `true` o `false` se avisa una vez al arrancar, como cualquier otro problema de configuración, y se usa el valor por defecto.
 
-**What is sent.** One `GET https://crates.io/api/v1/crates/lazarobox-shell`, made with the system `curl` (HTTPS only, no redirects, 5 s limit), with the header `User-Agent: lazarobox-shell/<version> (+https://github.com/pichu2707/lazarobox-shell)` and `Accept: application/json`. Nothing else: no identifier, no cookies, no telemetry. If `curl` is not installed the check silently does nothing. Relative or empty `PATH` entries are never used to find `curl` or the AI CLIs. `curl` honours your usual proxy and CA environment (`HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`), so a corporate proxy works as it does for any other `curl` call; only `~/.curlrc` is ignored.
+**Qué se envía.** Un único `GET https://crates.io/api/v1/crates/lazarobox-shell`, hecho con el `curl` del sistema (solo HTTPS, sin redirecciones, límite de 5 s), con las cabeceras `User-Agent: lazarobox-shell/<versión> (+https://github.com/pichu2707/lazarobox-shell)` y `Accept: application/json`. Nada más: ni identificadores, ni cookies, ni telemetría. Si `curl` no está instalado, la comprobación no hace nada, en silencio. Las entradas relativas o vacías del `PATH` nunca se usan para encontrar `curl`, `cargo` ni los CLIs de IA. `curl` respeta tu entorno habitual de proxy y certificados (`HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`); solo se ignora `~/.curlrc`.
 
-**How often.** At startup, in the background, and at most once every 24 hours. In between, the last answer is read from `update-check.json` in lazarobox's data directory (`$XDG_DATA_HOME/lazarobox/`, else `~/.local/share/lazarobox/`), so a known update is still shown on every start without a new request. A failed check (no network, timeout, an error status, an unreadable reply) is silent, keeps any newer version already known, and is retried after one hour. If the cache file cannot be written (read-only directory), no check is made at all, so the API is never asked on every start. Pre-releases are never announced.
+**Cada cuánto.** Al arrancar, en segundo plano, y como máximo una vez cada 24 horas mientras la versión cacheada sea más nueva que la que ejecutas. Entre medias se lee la última respuesta de `update-check.json` en el directorio de datos de lazarobox (`$XDG_DATA_HOME/lazarobox/`, o `~/.local/share/lazarobox/`), así que una actualización conocida se sigue mostrando en cada arranque sin nueva petición. La caché guarda qué versión de lazarobox la escribió (`checked_by`). Si la escribió otra versión (o una antigua, sin ese campo) y su versión más nueva es igual o menor que la que ejecutas, por ejemplo tras actualizar, se comprueba en el siguiente arranque sin esperar 24 h; si la escribió esta misma versión, rige el límite de una vez al día. Límite conocido: si dos versiones de lazarobox comparten el mismo directorio de datos y se usan a la vez, cada arranque de la que no escribió la caché puede hacer una petición (como mucho una por arranque; nunca más de una al día para la misma versión). Una comprobación fallida (sin red, tiempo agotado, error de estado, respuesta ilegible) es silenciosa, conserva la versión nueva ya conocida y se reintenta pasada una hora. Si no se puede escribir la caché (directorio de solo lectura), no se comprueba nada, para no consultar la API en cada arranque. Las versiones preliminares nunca se anuncian.
 
 ---
 
@@ -171,7 +192,7 @@ Teclas dentro del chat:
 
 **Perfiles y prompts:** `profile = "analyst"` o `"programmer"` (por defecto) en `[ai]`, o la fila Profile del menú de IA, elige el _system prompt_ integrado. Puedes sustituirlo con `~/.config/lazarobox/prompts/<perfil>/<tarea>.md` (después `general.md`; máx. 16 KiB). El prompt incluye un bloque de contexto del workspace (proyecto, rama, directorio relativo, SO, shell y fecha; nunca rutas absolutas ni contenido); se desactiva con `context = false` o la fila Context del menú.
 
-**Aviso al terminar:** `notify` en `[ai]` (o la fila Notify del menú de IA, que recorre los valores con `h`/`l`) avisa cuando una respuesta termina por sí sola y no la estás mirando (otro panel, pestaña o ventana sin foco). Una cancelación tuya nunca avisa. Valores:
+**Aviso al terminar:** `notify` en `[ai]` (o la fila Notify de la sección Settings del menú, que recorre los valores con `h`/`l`) avisa cuando una respuesta termina por sí sola y no la estás mirando (otro panel, pestaña o ventana sin foco). Una cancelación tuya nunca avisa. Valores:
 
 | Valor       | Qué hace                                                                                                          |
 | ----------- | ----------------------------------------------------------------------------------------------------------------- |
@@ -198,9 +219,9 @@ La notificación de escritorio se ejecuta con `notify-send` (título `lazarobox`
 - **Una ráfaga no apila procesos:** solo hay un envío en curso a la vez, un sonido a la vez y una prueba a la vez; los que llegan mientras tanto se descartan. En `"auto"` la campana sí suena en cada respuesta; en `"desktop"`, un envío descartado, no disponible o fallido hace sonar la campana (también si la tarea del envío muriera por un fallo interno).
 - Al salir, lazarobox espera como máximo 1 s a los hilos bloqueados.
 
-**Sonido propio:** en `"auto"` y `"desktop"`, lazarobox reproduce además un sonido (`[ai] notify_sound = true`, por defecto; fila Sound del menú), porque un demonio como dunst no suena por sí mismo. Prueba, por orden, `canberra-gtk-play -i message-new-instant`, después `pw-play <fichero>` y después `paplay <fichero>`, con cada uno de los ficheros que existan de `/usr/share/sounds/freedesktop/stereo/message-new-instant.oga` y `complete.oga`. Solo cuenta como éxito una salida con código 0 dentro de los 2 s: un reproductor que sigue ejecutándose pasado el límite se mata y se pasa al siguiente candidato (igual que ante un error al arrancar o una salida con fallo). Si ninguno funciona, no hace nada. En modo `"desktop"`, si `notify-send` no está disponible suena la campana y el sonido propio también puede sonar: se solapan, es esperado. Mismas reglas que `notify-send`: sin shell, entorno depurado, confianza del `PATH` y nada por SSH o sin sesión.
+**Sonido propio:** en `"auto"` y `"desktop"`, lazarobox reproduce además un sonido (`[ai] notify_sound = true`, por defecto; fila Sound de la sección Settings del menú), porque un demonio como dunst no suena por sí mismo. Prueba, por orden, `canberra-gtk-play -i message-new-instant`, después `pw-play <fichero>` y después `paplay <fichero>`, con cada uno de los ficheros que existan de `/usr/share/sounds/freedesktop/stereo/message-new-instant.oga` y `complete.oga`. Solo cuenta como éxito una salida con código 0 dentro de los 2 s: un reproductor que sigue ejecutándose pasado el límite se mata y se pasa al siguiente candidato (igual que ante un error al arrancar o una salida con fallo). Si ninguno funciona, no hace nada. En modo `"desktop"`, si `notify-send` no está disponible suena la campana y el sonido propio también puede sonar: se solapan, es esperado. Mismas reglas que `notify-send`: sin shell, entorno depurado, confianza del `PATH` y nada por SSH o sin sesión.
 
-**Probar la configuración:** en la fila Notify (o Sound) del menú de IA, `t` vuelve a comprobar la máquina y lanza ahora mismo un aviso con el modo y el sonido que muestra la fila (aunque no estén guardados y sin importar el foco; el texto es `Test notification`). Solo una prueba a la vez (mientras corre, el pie dice `test running`). El pie de esas filas (hasta la siguiente tecla) dice qué pasó: `sent: bell + desktop + sound (pw-play)` (con el reproductor que funcionó), o por qué no, por ejemplo `desktop unavailable: no notify-send on PATH`, `no session bus`, `SSH session`, `notify-send on PATH is untrusted (...)` o `no sound: no player worked (canberra-gtk-play: still running after 2 s, killed, ...)`.
+**Probar la configuración:** en la fila Notify (o Sound) de la sección Settings del menú, `t` vuelve a comprobar la máquina y lanza ahora mismo un aviso con el modo y el sonido que muestra la fila (aunque no estén guardados y sin importar el foco; el texto es `Test notification`). Solo una prueba a la vez (mientras corre, el pie dice `test running`). El pie de esas filas (hasta la siguiente tecla) dice qué pasó: `sent: bell + desktop + sound (pw-play)` (con el reproductor que funcionó), o por qué no, por ejemplo `desktop unavailable: no notify-send on PATH`, `no session bus`, `SSH session`, `notify-send on PATH is untrusted (...)` o `no sound: no player worked (canberra-gtk-play: still running after 2 s, killed, ...)`.
 
 Para cerrar el panel: `Ctrl+Espacio`, `w`, `q`. La respuesta se muestra mientras se genera; si el modelo "piensa" (por ejemplo `qwen3`), la barra de estado muestra un indicador `thinking` y el razonamiento queda en un bloque aparte.
 

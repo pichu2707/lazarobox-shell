@@ -117,7 +117,7 @@ pub fn startup(enabled: bool, path: Option<&Path>, now: u64, current: &str) -> S
     let cache = read_cache(path);
     Startup {
         announce: update::announced(cache.as_ref(), current),
-        due: update::is_due(cache.as_ref(), now),
+        due: update::is_due(cache.as_ref(), now, current),
     }
 }
 
@@ -130,7 +130,7 @@ pub fn refresh(path: &Path, now: u64, current: &str, fetcher: &dyn Fetcher) -> O
         .ok()
         .and_then(|body| update::parse_response(&body))
         .ok_or(());
-    let cache = known.after(now, result);
+    let cache = known.after(now, result, current);
     // A cache that cannot be written only costs a check on the next start.
     let _ = write_cache(path, &cache);
     update::announced(Some(&cache), current)
@@ -297,11 +297,52 @@ pub fn begin(
         // (otherwise every start would ask again) and makes a quit within the
         // timeout leave a record; the answer overwrites it.
         let known = read_cache(&path).unwrap_or_default();
-        if write_cache(&path, &known.after(now, Err(()))).is_ok() {
+        if write_cache(&path, &known.after(now, Err(()), current)).is_ok() {
             spawn_refresh(path, now, current, fetcher, reply);
         }
     }
     started.announce
+}
+
+/// How this process was installed, read from the real machine: the running
+/// binary, `CARGO_HOME`, `$HOME` and `cargo` on the login `path`.
+pub fn install_env(path: &OsStr) -> update::InstallEnv {
+    install_env_from(
+        std::env::current_exe().ok(),
+        std::env::var_os("CARGO_HOME").map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+        path,
+    )
+}
+
+/// [`install_env`] with the facts given. Paths that exist are canonicalized,
+/// so a link to the binary or to the cargo dir compares by where it points;
+/// one that does not exist stays as given. The `cargo` is the one beside the
+/// running binary, else the first on `path`, and only if lazarobox may run it
+/// on its own account (the rule the AI CLIs follow: not under `/tmp`, not
+/// writable by group or others, nor its folder). It is kept as found, not
+/// resolved: the rustup proxy dispatches on the name it is started under.
+pub fn install_env_from(
+    exe: Option<PathBuf>,
+    cargo_home: Option<PathBuf>,
+    home: Option<PathBuf>,
+    path: &OsStr,
+) -> update::InstallEnv {
+    let real = |p: PathBuf| fs::canonicalize(&p).unwrap_or(p);
+    let bin_dir = update::cargo_bin_dir(cargo_home.as_deref(), home.as_deref()).map(real);
+    let which = crate::runtime::desktop::which;
+    let beside = bin_dir
+        .as_deref()
+        .and_then(|dir| which("cargo", Some(dir.as_os_str())));
+    let cargo = beside
+        .or_else(|| which("cargo", Some(path)))
+        .filter(|candidate| crate::runtime::chat::trusted_real_path(candidate).is_some());
+    update::InstallEnv {
+        exe: exe.map(real),
+        bin_dir,
+        cargo,
+        path: path.to_owned(),
+    }
 }
 
 /// Now, in Unix seconds. A clock before 1970 reads as 0.

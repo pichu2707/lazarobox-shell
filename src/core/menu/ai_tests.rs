@@ -110,10 +110,13 @@ pub(super) fn selected_label(menu: &MenuState) -> &'static str {
     labels[0]
 }
 
-const ORDER: [&str; 14] = [
+const ORDER: [&str; 15] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
+    "Notify",
+    "Sound",
+    "Updates",
     "Set all tasks",
     "general",
     "code",
@@ -123,8 +126,6 @@ const ORDER: [&str; 14] = [
     "Profile",
     "Context",
     "Memory",
-    "Notify",
-    "Sound",
 ];
 
 // Spec: Descriptor integrity, Sections and items are data.
@@ -132,7 +133,7 @@ const ORDER: [&str; 14] = [
 fn the_ai_descriptors_are_well_formed() {
     assert_eq!(AI_SECTION.title, "AI");
     let labels: Vec<_> = AI_SECTION.items.iter().map(|i| i.label).collect();
-    assert_eq!(labels, ORDER[3..]);
+    assert_eq!(labels, ORDER[6..]);
     let mut paths: Vec<&str> = Vec::new();
     for (item, task) in AI_SECTION.items[1..6].iter().zip(Task::ALL) {
         match item.kind {
@@ -166,52 +167,34 @@ fn the_ai_descriptors_are_well_formed() {
 
 // Spec: Task rows in order, Wrap, Mouse row is selectable.
 #[test]
-fn navigation_visits_settings_then_the_eleven_ai_rows_and_wraps() {
+fn navigation_visits_the_settings_then_the_nine_ai_rows_and_wraps() {
     let mut m = menu(None, None, Some(machine()));
     let mut visited = vec![selected_label(&m)];
-    for _ in 0..14 {
+    for _ in 0..ORDER.len() - 1 {
         press(&mut m, 'j');
         visited.push(selected_label(&m));
     }
-    assert_eq!(visited[..14], ORDER);
-    assert_eq!(visited[14], "Statusline position", "wraps past Sound");
-    press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Sound", "wraps before the first");
-    press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Notify");
-    press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Memory");
-    press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Context");
-    press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Profile");
-    press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "summarize");
+    assert_eq!(visited, ORDER);
+    press(&mut m, 'j');
+    assert_eq!(
+        selected_label(&m),
+        "Statusline position",
+        "wraps past Memory"
+    );
     let mut back = Vec::new();
-    for _ in 0..8 {
+    for _ in 0..ORDER.len() {
         press(&mut m, 'k');
         back.push(selected_label(&m));
     }
-    assert_eq!(
-        back,
-        [
-            "review",
-            "chat",
-            "code",
-            "general",
-            "Set all tasks",
-            "Mouse",
-            "Tab bar position",
-            "Statusline position"
-        ]
-    );
+    let expected: Vec<_> = ORDER.iter().rev().copied().collect();
+    assert_eq!(back, expected, "wraps before the first and walks back");
 }
 
 // Spec: Repeat moves.
 #[test]
 fn repeat_moves_into_the_task_rows_like_a_press() {
     let mut m = menu(None, None, None);
-    for _ in 0..4 {
+    for _ in 0..7 {
         m.on_key(&ch('j'), true, &mut Config::default());
     }
     assert_eq!(selected_label(&m), "general");
@@ -221,7 +204,7 @@ fn repeat_moves_into_the_task_rows_like_a_press() {
 #[test]
 fn cycling_keys_do_nothing_on_task_rows() {
     let mut m = menu(Some("ollama"), Some("llama3:8b"), Some(machine()));
-    for _ in 0..5 {
+    for _ in 0..8 {
         press(&mut m, 'j');
     }
     assert_eq!(selected_label(&m), "code");
@@ -245,7 +228,7 @@ fn cycling_keys_do_nothing_on_task_rows() {
 fn r_on_a_task_row_asks_for_a_refresh_and_elsewhere_does_not() {
     let mut m = menu(None, None, Some(machine()));
     assert_eq!(press(&mut m, 'r'), MenuCommand::None, "Statusline row");
-    for _ in 0..3 {
+    for _ in 0..6 {
         press(&mut m, 'j');
     }
     assert_eq!(press(&mut m, 'r'), MenuCommand::Refresh, "Set all tasks");
@@ -328,16 +311,14 @@ fn the_ai_section_lists_the_task_rows_and_the_static_rows_with_their_values() {
             "Profile=programmer",
             "Context=on",
             "Memory=off",
-            "Notify=off",
-            "Sound=on",
         ]
     );
     assert_eq!(
         MenuState::open(&Config::default())
             .rows(&Config::default())
             .len(),
-        4,
-        "no AI section without AI"
+        5,
+        "no AI section without AI: a title and four settings"
     );
 }
 
@@ -400,7 +381,7 @@ fn nothing_is_marked_before_the_first_detection() {
 #[test]
 fn a_result_marks_the_row_in_place_and_keeps_selection_and_draft() {
     let mut m = assigned(&[(Task::Code, "ollama", "llama3:8b")], None);
-    for _ in 0..5 {
+    for _ in 0..8 {
         press(&mut m, 'j');
     }
     assert_eq!(value_of(&m, "code"), "ollama › llama3:8b");

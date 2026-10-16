@@ -86,6 +86,7 @@ fn the_cache_file_round_trips_and_is_private() {
         checked_at: 42,
         ok: true,
         latest: Some("0.16.0".into()),
+        checked_by: None,
     };
     write_cache(&path, &cache).unwrap();
     assert_eq!(read_cache(&path), Some(cache));
@@ -113,6 +114,7 @@ fn disabled_shows_nothing_and_checks_nothing() {
         checked_at: 1,
         ok: true,
         latest: Some("0.16.0".into()),
+        checked_by: None,
     };
     write_cache(&path, &newer).unwrap();
     let s = startup(false, Some(&path), 2, "0.15.1");
@@ -145,6 +147,7 @@ fn a_fresh_cache_announces_without_a_check() {
         checked_at: 1_000,
         ok: true,
         latest: Some("0.16.0".into()),
+        checked_by: None,
     };
     write_cache(&path, &c).unwrap();
     let s = startup(true, Some(&path), 1_000 + DAY - 1, "0.15.1");
@@ -164,11 +167,84 @@ fn a_stale_cache_still_announces_while_the_check_runs() {
         checked_at: 1_000,
         ok: true,
         latest: Some("0.16.0".into()),
+        checked_by: None,
     };
     write_cache(&path, &c).unwrap();
     let s = startup(true, Some(&path), 1_000 + DAY, "0.15.1");
     assert_eq!(s.announce.as_deref(), Some("0.16.0"));
     assert!(s.due);
+}
+
+#[test]
+fn an_installed_version_in_the_cache_is_due_at_once_and_announces_nothing() {
+    let (_dir, path) = cache_file();
+    let c = Cache {
+        checked_at: 1_000,
+        ok: true,
+        latest: Some("0.16.0".into()),
+        checked_by: None,
+    };
+    write_cache(&path, &c).unwrap();
+    // One minute later the user runs 0.16.0: the cached answer is old news.
+    let s = startup(true, Some(&path), 1_060, "0.16.0");
+    assert_eq!(
+        s,
+        Startup {
+            announce: None,
+            due: true
+        }
+    );
+}
+
+#[test]
+fn a_quick_restart_after_the_stamp_does_not_ask_again() {
+    let (_dir, path) = cache_file();
+    // What `begin` leaves while a check is in flight: failed, latest kept.
+    let c = Cache {
+        checked_at: 1_000,
+        ok: false,
+        latest: Some("0.16.0".into()),
+        checked_by: None,
+    };
+    write_cache(&path, &c).unwrap();
+    assert!(!startup(true, Some(&path), 1_060, "0.16.0").due);
+}
+
+#[test]
+fn an_up_to_date_cache_of_this_version_waits_a_day() {
+    let (_dir, path) = cache_file();
+    // This very version looked a minute ago and found nothing newer.
+    let c = Cache {
+        checked_at: 1_000,
+        ok: true,
+        latest: Some("0.15.1".into()),
+        checked_by: Some("0.15.1".into()),
+    };
+    write_cache(&path, &c).unwrap();
+    assert!(!startup(true, Some(&path), 1_060, "0.15.1").due);
+    assert!(startup(true, Some(&path), 1_000 + DAY, "0.15.1").due);
+}
+
+#[test]
+fn a_cache_written_by_an_older_lazarobox_is_checked_again_at_once() {
+    let (_dir, path) = cache_file();
+    let c = Cache {
+        checked_at: 1_000,
+        ok: true,
+        latest: Some("0.15.1".into()),
+        checked_by: Some("0.15.0".into()),
+    };
+    write_cache(&path, &c).unwrap();
+    assert!(startup(true, Some(&path), 1_060, "0.15.1").due);
+}
+
+#[test]
+fn a_refresh_records_the_checking_version_so_the_next_start_waits() {
+    let (_dir, path) = cache_file();
+    let fake = Fake::ok("0.15.1");
+    assert_eq!(refresh(&path, 500, "0.15.1", &fake), None);
+    assert_eq!(stored(&path).checked_by.as_deref(), Some("0.15.1"));
+    assert!(!startup(true, Some(&path), 560, "0.15.1").due);
 }
 
 #[test]
@@ -197,7 +273,8 @@ fn a_refresh_stores_the_new_version_and_announces_it() {
         Cache {
             checked_at: 500,
             ok: true,
-            latest: Some("0.16.0".into())
+            latest: Some("0.16.0".into()),
+            checked_by: Some("0.15.1".into()),
         }
     );
 }
@@ -219,6 +296,7 @@ fn a_failed_refresh_keeps_the_cached_newer_version_and_moves_the_clock() {
             checked_at: 1,
             ok: true,
             latest: Some("0.16.0".into()),
+            checked_by: None,
         },
     )
     .unwrap();
@@ -232,7 +310,8 @@ fn a_failed_refresh_keeps_the_cached_newer_version_and_moves_the_clock() {
         Cache {
             checked_at: 900,
             ok: false,
-            latest: Some("0.16.0".into())
+            latest: Some("0.16.0".into()),
+            checked_by: Some("0.15.1".into()),
         }
     );
 }
@@ -534,6 +613,7 @@ fn begin_with_the_check_off_makes_no_request_and_shows_nothing() {
             checked_at: 1,
             ok: true,
             latest: Some("0.16.0".into()),
+            checked_by: None,
         },
     )
     .unwrap();
@@ -557,6 +637,7 @@ fn begin_within_24_hours_uses_the_cache_and_makes_no_request() {
             checked_at: 1_000,
             ok: true,
             latest: Some("0.16.0".into()),
+            checked_by: None,
         },
     )
     .unwrap();
@@ -670,6 +751,7 @@ fn a_symlink_at_the_cache_path_is_not_followed() {
             checked_at: 1,
             ok: true,
             latest: None,
+            checked_by: None,
         }
         .to_json(),
     )
@@ -796,5 +878,165 @@ fn begin_does_not_ask_on_a_read_only_cache_directory() {
     fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).unwrap();
     if !writable_anyway {
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+}
+
+mod install_env {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    /// A scratch folder inside the repo: the trust rule refuses `/tmp`.
+    fn lab() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        (dir, root)
+    }
+
+    fn executable(path: &Path) {
+        let dir = path.parent().unwrap();
+        fs::create_dir_all(dir).unwrap();
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(path, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn env_for(root: &Path, cargo_home: Option<&Path>, path: &OsStr) -> update::InstallEnv {
+        install_env_from(
+            Some(root.join("cargo-home/bin/lazarobox")),
+            cargo_home.map(Path::to_path_buf),
+            Some(root.to_path_buf()),
+            path,
+        )
+    }
+
+    #[test]
+    fn it_canonicalizes_the_binary_and_prefers_the_cargo_next_to_it() {
+        let (_dir, root) = lab();
+        let bin = root.join("cargo-home/bin");
+        executable(&bin.join("lazarobox"));
+        executable(&bin.join("cargo"));
+        // Another cargo earlier on the PATH must lose to the one beside us.
+        executable(&root.join("other/cargo"));
+        let link = root.join("link");
+        std::os::unix::fs::symlink(bin.join("lazarobox"), &link).unwrap();
+        let path = std::env::join_paths([root.join("other"), bin.clone()]).unwrap();
+        let env = install_env_from(
+            Some(link),
+            Some(root.join("cargo-home")),
+            Some(root.clone()),
+            &path,
+        );
+        assert_eq!(env.exe, Some(bin.join("lazarobox")));
+        assert_eq!(env.bin_dir, Some(bin.clone()));
+        assert_eq!(env.cargo, Some(bin.join("cargo")));
+        assert_eq!(env.path, path);
+        assert!(matches!(
+            env.plan(Some("0.16.0")),
+            update::UpdateAction::CargoInstall { ref root, .. } if *root == bin.parent().unwrap()
+        ));
+    }
+
+    #[test]
+    fn without_a_cargo_beside_it_the_login_path_is_the_fallback() {
+        let (_dir, root) = lab();
+        executable(&root.join("cargo-home/bin/lazarobox"));
+        executable(&root.join("login/cargo"));
+        let path = std::env::join_paths([root.join("login")]).unwrap();
+        let env = env_for(&root, Some(&root.join("cargo-home")), &path);
+        assert_eq!(env.cargo, Some(root.join("login/cargo")));
+    }
+
+    #[test]
+    fn the_cargo_is_kept_as_found_not_resolved() {
+        // rustup's proxy decides what to run from the name it is started as.
+        let (_dir, root) = lab();
+        let bin = root.join("cargo-home/bin");
+        executable(&bin.join("lazarobox"));
+        executable(&bin.join("rustup"));
+        std::os::unix::fs::symlink(bin.join("rustup"), bin.join("cargo")).unwrap();
+        let env = env_for(&root, Some(&root.join("cargo-home")), OsStr::new(""));
+        assert_eq!(env.cargo, Some(bin.join("cargo")));
+    }
+
+    #[test]
+    fn a_cargo_that_others_can_write_is_not_trusted() {
+        let (_dir, root) = lab();
+        let bin = root.join("cargo-home/bin");
+        executable(&bin.join("lazarobox"));
+        executable(&bin.join("cargo"));
+        fs::set_permissions(bin.join("cargo"), fs::Permissions::from_mode(0o757)).unwrap();
+        let env = env_for(&root, Some(&root.join("cargo-home")), OsStr::new(""));
+        assert_eq!(env.cargo, None);
+        assert_eq!(env.plan(Some("0.16.0")), update::UpdateAction::ShowCommand);
+    }
+
+    #[test]
+    fn a_cargo_in_a_folder_others_can_write_is_not_trusted() {
+        let (_dir, root) = lab();
+        executable(&root.join("cargo-home/bin/lazarobox"));
+        executable(&root.join("login/cargo"));
+        fs::set_permissions(root.join("login"), fs::Permissions::from_mode(0o777)).unwrap();
+        let path = std::env::join_paths([root.join("login")]).unwrap();
+        let env = env_for(&root, Some(&root.join("cargo-home")), &path);
+        assert_eq!(env.cargo, None);
+    }
+
+    #[test]
+    fn a_cargo_under_tmp_is_not_trusted() {
+        let planted = tempfile::tempdir_in("/tmp").unwrap();
+        executable(&planted.path().join("cargo"));
+        let path = std::env::join_paths([planted.path()]).unwrap();
+        let (_dir, root) = lab();
+        executable(&root.join("cargo-home/bin/lazarobox"));
+        let env = env_for(&root, Some(&root.join("cargo-home")), &path);
+        assert_eq!(env.cargo, None);
+    }
+
+    #[test]
+    fn a_symlinked_cargo_dir_is_compared_by_where_it_points() {
+        // ~/.cargo is a link to another disk: the binary's real path is on
+        // the target, and so must the bin dir be.
+        let (_dir, root) = lab();
+        executable(&root.join("disk/cargo/bin/lazarobox"));
+        executable(&root.join("disk/cargo/bin/cargo"));
+        fs::create_dir_all(root.join("home")).unwrap();
+        std::os::unix::fs::symlink(root.join("disk/cargo"), root.join("home/.cargo")).unwrap();
+        let exe = fs::canonicalize(root.join("home/.cargo/bin/lazarobox")).unwrap();
+        let env = install_env_from(Some(exe), None, Some(root.join("home")), OsStr::new(""));
+        assert_eq!(env.bin_dir, Some(root.join("disk/cargo/bin")));
+        match env.plan(Some("0.16.0")) {
+            update::UpdateAction::CargoInstall { root: r, .. } => {
+                assert_eq!(r, root.join("disk/cargo"), "the real root");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn cargo_is_never_taken_from_a_relative_path_entry() {
+        let (_dir, root) = lab();
+        executable(&root.join("cargo"));
+        let env = install_env_from(None, None, None, OsStr::new(".:"));
+        assert_eq!(env.cargo, None);
+    }
+
+    #[test]
+    fn a_missing_binary_or_cargo_home_is_left_unknown() {
+        let env = install_env_from(
+            Some(PathBuf::from("/lazarobox-no-such/bin/lazarobox")),
+            Some(PathBuf::from("/lazarobox-no-such/cargo")),
+            None,
+            OsStr::new("/usr/bin"),
+        );
+        assert_eq!(
+            env.exe,
+            Some(PathBuf::from("/lazarobox-no-such/bin/lazarobox"))
+        );
+        assert_eq!(
+            env.bin_dir,
+            Some(PathBuf::from("/lazarobox-no-such/cargo/bin"))
+        );
     }
 }

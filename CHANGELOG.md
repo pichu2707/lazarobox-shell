@@ -10,6 +10,51 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Updates row in the Settings section of the menu. It shows the running
+  version (`Updates  0.15.3`); when the update check knows a newer one the
+  name carries a `*` and the value reads `0.15.4 available`. Enter acts only
+  when an update is available. If the running binary (canonicalized) is under
+  `$CARGO_HOME/bin` (default `~/.cargo/bin`), it opens a new tab that runs
+  `cargo install lazarobox-shell --locked` directly as the pane's program (no
+  shell), with `cargo` resolved on the login `PATH` and run from `$HOME`. On
+  exit 0 the tab closes, a notice says `lazarobox X.Y.Z installed: restart
+  lazarobox to use it` and the row reads `X.Y.Z installed: restart`. On a
+  failure the tab stays open with `update failed (exit N)` so the error can
+  be read. Any other install runs nothing: the footer shows the command, and
+  Enter or `y` copies it (OSC 52). `[updates] check` stays config-only.
+- Spawning a pane with a program and its arguments, and an exit-status event
+  (`PtyEvent::Status`) that is sent before `Exited` for panes that ask for it.
+
+### Changed
+
+- The Notify and Sound rows moved from the AI section to Settings (after
+  Mouse). Their behaviour (h/l cycling, `t` test and its footer report,
+  saving) and the config keys `[ai] notify` and `[ai] notify_sound` are
+  unchanged.
+- The update check no longer waits for 24 h when the cache was written by
+  another lazarobox version and its latest version is not newer than the
+  running one (for example right after an upgrade): the next start checks at
+  once. The cache now records the checking version (`checked_by`; an old file
+  without it counts as another version). A cache written by the running
+  version keeps the once-a-day rule, as do a newer cached version and the
+  one-hour retry after a failure.
+- The update pane trusts its `cargo` like the AI CLIs are trusted. It prefers
+  the `cargo` beside the running binary (`<cargo bin dir>/cargo`), else the
+  first on the login `PATH`, kept as found for the rustup proxy; one under
+  `/tmp`, or writable by group or others (or in such a folder), is refused and
+  the command is shown instead. The pane's first line names what runs, a
+  non-UTF-8 `PATH` is passed through unchanged, and the install gets
+  `--root <parent of the cargo bin dir>` so it always replaces the running
+  binary. A symlinked `~/.cargo` is compared by where it points. A child that
+  ends without an exit status is a failure (`update failed (no exit status)`)
+  and its pane stays open.
+- The menu has one more row (Updates), so the smallest full popup is now 8
+  rows high (it was 7); below that the one-line fallback is shown.
+- The install command shown by the menu note, the statusline hint and the
+  footer is `cargo install lazarobox-shell --locked` everywhere.
+
 ## [0.15.3] - 2026-10-16
 
 ### Added

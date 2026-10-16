@@ -2,12 +2,14 @@
 source: src/ui/mod.rs
 expression: frame
 ---
- 1
-         ┌ Menu ──────────────────────────────────────────────────────┐
+ 1       ┌ Menu ──────────────────────────────────────────────────────┐
          │ Settings                                                   │
          │ Statusline position                                 bottom │
          │ Tab bar position                                       top │
          │ Mouse                                                   on │
+         │ Notify                                                 off │
+         │ Sound                                                   on │
+         │ * Updates                                 0.16.0 available │
          │ AI                                                         │
          │ Set all tasks                                    (not set) │
          │ general                                          (not set) │
@@ -18,10 +20,8 @@ expression: frame
          │ Profile                                         programmer │
          │ Context                                                 on │
          │ Memory                                                 off │
-         │ Notify                                                 off │
-         │ Sound                                                   on │
          │ update 0.16.0 available —                                  │
-         │ run: cargo install lazarobox-shell                         │
+         │ run: cargo install lazarobox-shell --locked                │
          │                                                            │
          │ j/k move · h/l change · s save · Esc cancel                │
          └────────────────────────────────────────────────────────────┘

@@ -65,23 +65,28 @@ fn the_row_shows_the_live_value_and_is_not_muted() {
 
 // Spec: Mouse row is selectable.
 #[test]
-fn the_cursor_goes_through_mouse_between_the_bar_row_and_the_ai_rows() {
+fn the_cursor_goes_through_mouse_between_the_bar_row_and_the_notify_rows() {
     let mut m = menu(None, None, Some(machine()));
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Tab bar position");
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Mouse");
     press(&mut m, 'j');
-    assert_eq!(selected_label(&m), "Set all tasks");
+    assert_eq!(selected_label(&m), "Notify");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Mouse");
 }
 
 #[test]
-fn without_the_ai_section_the_cursor_wraps_over_three_rows() {
+fn without_the_ai_section_the_cursor_wraps_over_four_rows() {
     let mut m = MenuState::open(&Config::default());
     let mut live = Config::default();
-    for expected in ["Tab bar position", "Mouse", "Statusline position"] {
+    for expected in [
+        "Tab bar position",
+        "Mouse",
+        "Updates",
+        "Statusline position",
+    ] {
         m.on_key(
             &KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
             false,
