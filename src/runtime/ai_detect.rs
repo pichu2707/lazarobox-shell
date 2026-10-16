@@ -169,6 +169,23 @@ async fn read_tail(mut pipe: tokio::process::ChildStderr) -> Vec<u8> {
     tail
 }
 
+/// The note for the last line of what the stderr reader read. A run that
+/// timed out has no use for it, so the reader is aborted at once; otherwise
+/// it is waited for up to [`STDERR_GRACE`] and then aborted.
+async fn stderr_said(
+    task: Option<tokio::task::JoinHandle<Vec<u8>>>,
+    timed_out: bool,
+) -> Option<String> {
+    let task = task?;
+    if timed_out {
+        task.abort();
+        return None;
+    }
+    finish_stderr(task, STDERR_GRACE)
+        .await
+        .and_then(|bytes| stderr_note(&bytes))
+}
+
 /// What the stderr reader read, waiting at most `wait` for it; a reader that
 /// is still running after that is aborted, not left behind.
 async fn finish_stderr(
@@ -286,17 +303,7 @@ pub(crate) async fn run_capped_why(
     {
         group.disarm();
     }
-    let said = match stderr {
-        // A timed out run has no use for the reader: stop it now.
-        Some(task) if output.is_err() => {
-            task.abort();
-            None
-        }
-        Some(task) => finish_stderr(task, STDERR_GRACE)
-            .await
-            .and_then(|bytes| stderr_note(&bytes)),
-        None => None,
-    };
+    let said = stderr_said(stderr, output.is_err()).await;
     match output {
         Err(_) => Err(RunFailure::Timeout),
         Ok(Err(RunFailure::Exit { code, .. })) => Err(RunFailure::Exit { code, stderr: said }),
@@ -1029,6 +1036,69 @@ mod tests {
         fn drop(&mut self) {
             self.0.store(true, std::sync::atomic::Ordering::SeqCst);
         }
+    }
+
+    /// A reader task that never ends by itself and flags when it is dropped.
+    fn endless_reader() -> (
+        tokio::task::JoinHandle<Vec<u8>>,
+        Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let guard = Dropped(Arc::clone(&dropped));
+        let task = tokio::spawn(async move {
+            let _guard = guard;
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Vec::new()
+        });
+        (task, dropped)
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_run_aborts_its_stderr_reader_at_once() {
+        let (task, dropped) = endless_reader();
+        let started = std::time::Instant::now();
+        assert_eq!(stderr_said(Some(task), true).await, None);
+        // No grace is waited for: the abort is immediate.
+        assert!(
+            started.elapsed() < STDERR_GRACE / 2,
+            "{:?}",
+            started.elapsed()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "aborted, not detached"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_finished_run_reads_the_reader_within_the_grace_and_aborts_a_late_one() {
+        let done = tokio::spawn(async { b"oops\n".to_vec() });
+        assert_eq!(
+            stderr_said(Some(done), false).await.as_deref(),
+            Some("oops")
+        );
+        let (late, dropped) = endless_reader();
+        assert_eq!(stderr_said(Some(late), false).await, None);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(stderr_said(None, true).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_run_that_times_out_with_stderr_piped_is_a_timeout() {
+        let make = || {
+            let mut command = Command::new("/bin/sh");
+            command
+                .args(["-c", "echo late >&2; sleep 30"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .process_group(0);
+            command
+        };
+        let got = run_capped_why(make, Duration::from_millis(300), 1000).await;
+        assert_eq!(got, Err(RunFailure::Timeout));
     }
 
     #[tokio::test]
