@@ -48,8 +48,10 @@ Inspirado en la paleta de colores de lazarobox (tonos oscuros suavizados con ace
 Desde crates.io (requiere Rust 1.88 o superior):
 
 ```bash
-cargo install lazarobox-shell    # instala el binario `lazarobox-shell` en ~/.cargo/bin
+cargo install lazarobox-shell --locked    # instala el binario `lazarobox-shell` en ~/.cargo/bin
 ```
+
+`--locked` compila con las mismas versiones de dependencias que se probaron al publicar (las del `Cargo.lock` del paquete). Sin él, cargo vuelve a resolver cada dependencia a su última versión compatible, lo que casi siempre funciona igual, pero una dependencia recién publicada con un fallo puede romper la compilación. Para actualizar, usa el mismo comando o la fila **Updates** del menú (Settings).
 
 Compatibilidad de plataformas:
 
