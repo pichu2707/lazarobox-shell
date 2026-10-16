@@ -7,7 +7,10 @@
 //! `cargo install` put in `$CARGO_HOME/bin`: [`plan`] decides, the runtime
 //! executes. Any other install gets the command to copy, never a run.
 
-use std::path::{Component, Path, PathBuf};
+use std::{
+    ffi::OsString,
+    path::{Component, Path, PathBuf},
+};
 
 use serde_json::{Value, json};
 
@@ -223,6 +226,34 @@ pub fn plan(
     }
 }
 
+/// What the machine says about how lazarobox got here, read once at start-up
+/// by the runtime. The paths are canonical when they exist.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct InstallEnv {
+    /// The running binary.
+    pub exe: Option<PathBuf>,
+    /// `$CARGO_HOME`.
+    pub cargo_home: Option<PathBuf>,
+    pub home: Option<PathBuf>,
+    /// `cargo` found on the login `PATH`, absolute.
+    pub cargo: Option<PathBuf>,
+    /// The login `PATH`, given to cargo so it finds `rustc` and the linker.
+    pub path: OsString,
+}
+
+impl InstallEnv {
+    /// [`plan`] for this machine.
+    pub fn plan(&self, latest: Option<&str>) -> UpdateAction {
+        plan(
+            latest,
+            self.exe.as_deref(),
+            self.cargo_home.as_deref(),
+            self.home.as_deref(),
+            self.cargo.as_deref(),
+        )
+    }
+}
+
 /// The final line of a successful install.
 pub fn installed_text(version: &str) -> String {
     format!("lazarobox {version} installed: restart lazarobox to use it")
@@ -232,6 +263,9 @@ pub fn installed_text(version: &str) -> String {
 pub fn installed_value(version: &str) -> String {
     format!("{version} installed: restart")
 }
+
+/// The final line when cargo could not even be started.
+pub const NOT_STARTED_TEXT: &str = "update failed (cannot start cargo)";
 
 /// The final line of a failed install.
 pub fn failed_text(code: u32) -> String {

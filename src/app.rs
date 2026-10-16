@@ -38,6 +38,7 @@ use crate::core::{
     pane::{CursorKind, CursorShape, Pane, PaneSize},
     prefix::{self, Binding, Group, PREFIX_KEY, PREFIX_TREE, PrefixAction, Step},
     pty::{PtyEvent, SpawnSpec},
+    update::{InstallEnv, UpdateAction},
 };
 
 mod chat;
@@ -323,6 +324,24 @@ struct PtyPane {
     emu: Pane,
     /// The `/proc` poll result; the OSC 7 cwd, when seen, lives in `emu`.
     proc_cwd: Option<PathBuf>,
+    /// Set when the pane runs `cargo install` for an update, not a shell.
+    update: Option<UpdateRun>,
+}
+
+/// The install an update pane runs.
+struct UpdateRun {
+    /// The version being installed.
+    version: String,
+    state: RunState,
+}
+
+/// How an update pane's job stands.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RunState {
+    Running,
+    Installed,
+    /// Failed or never started: the pane stays so the error can be read.
+    Failed,
 }
 
 /// What a pane holds: a shell behind a PTY, or an AI chat that owns its
@@ -341,6 +360,12 @@ pub enum PaneView<'a> {
 /// The kind of pane a split or a new tab creates.
 enum NewPane {
     Shell,
+    /// `cargo install lazarobox-shell --locked`, run directly (no shell).
+    Update {
+        program: PathBuf,
+        version: String,
+        path: std::ffi::OsString,
+    },
     Chat(Box<ChatState>),
 }
 
@@ -357,6 +382,7 @@ impl PaneState {
             content: PaneContent::Pty(Box::new(PtyPane {
                 emu: Pane::new(size, SCROLLBACK_LINES).with_host(host),
                 proc_cwd: None,
+                update: None,
             })),
             size,
         }
@@ -444,6 +470,11 @@ pub struct App {
     notice: Option<String>,
     /// The newer released version, when the update check knows one.
     update: Option<String>,
+    /// How this binary was installed, for Enter on the Updates row.
+    install_env: Option<InstallEnv>,
+    /// The version an install in this run put on disk. The running binary is
+    /// still the old one until the restart.
+    installed: Option<String>,
     dirty: bool,
     screen: ScreenLayout,
     /// Whether the host terminal was last asked to capture the mouse.
@@ -546,6 +577,8 @@ impl App {
             input: InputMode::default(),
             notice: None,
             update: None,
+            install_env: None,
+            installed: None,
             dirty: true,
             screen,
             mouse_captured: false,
@@ -702,6 +735,12 @@ impl App {
     /// Shows `notice` in the statusline path segment until the next key.
     pub fn with_notice(mut self, notice: Option<String>) -> Self {
         self.notice = notice;
+        self
+    }
+
+    /// What the runtime found out about the install, for the Updates row.
+    pub fn with_install_env(mut self, env: Option<InstallEnv>) -> Self {
+        self.install_env = env;
         self
     }
 
@@ -1068,6 +1107,111 @@ impl App {
     }
 
     /// Whether `id` names a pane with a PTY behind it.
+    /// The install an update pane runs, if `id` is one.
+    fn update_run(&self, id: PaneId) -> Option<&UpdateRun> {
+        self.panes.get(&id)?.pty()?.update.as_ref()
+    }
+
+    /// Whether an install is running right now.
+    fn update_running(&self) -> bool {
+        self.panes.values().any(|state| {
+            state
+                .pty()
+                .and_then(|pty| pty.update.as_ref())
+                .is_some_and(|run| run.state == RunState::Running)
+        })
+    }
+
+    /// Enter on the Updates row with a newer version known.
+    fn on_update_command(&mut self) -> Vec<Effect> {
+        let Some(latest) = self.update.clone() else {
+            return Vec::new();
+        };
+        if self.update_running() {
+            if let Some(menu) = self.menu.as_mut() {
+                menu.set_copied("update already running in its own tab".to_owned());
+            }
+            return Vec::new();
+        }
+        let action = match &self.install_env {
+            Some(env) => env.plan(Some(&latest)),
+            None => UpdateAction::ShowCommand,
+        };
+        match action {
+            UpdateAction::UpToDate => Vec::new(),
+            UpdateAction::ShowCommand => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.show_update_command();
+                }
+                Vec::new()
+            }
+            UpdateAction::CargoInstall { program, version } => {
+                let path = self
+                    .install_env
+                    .as_ref()
+                    .map(|env| env.path.clone())
+                    .unwrap_or_default();
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.set_copied(format!("installing {version} in a new tab"));
+                }
+                self.new_tab_with(NewPane::Update {
+                    program,
+                    version,
+                    path,
+                })
+            }
+        }
+    }
+
+    /// An update pane's job ended: `code` is cargo's exit code, `None` when
+    /// it could not even start. Writes the final line into the pane (so a
+    /// pane that stays shows it) and tells the user.
+    fn update_ended(&mut self, id: PaneId, state: RunState, code: Option<u32>) {
+        let Some(version) = self.update_run(id).map(|run| run.version.clone()) else {
+            return;
+        };
+        let text = match (state, code) {
+            (RunState::Installed, _) => crate::core::update::installed_text(&version),
+            (_, Some(code)) => crate::core::update::failed_text(code),
+            (_, None) => crate::core::update::NOT_STARTED_TEXT.to_owned(),
+        };
+        if let Some(pty) = self.panes.get_mut(&id).and_then(PaneState::pty_mut) {
+            pty.emu.feed(format!("\r\n{text}\r\n").as_bytes());
+            if let Some(run) = pty.update.as_mut() {
+                run.state = state;
+            }
+        }
+        if state == RunState::Installed {
+            self.installed = Some(version);
+            self.update = None;
+            if let Some(menu) = self.menu.as_mut() {
+                menu.set_installed(self.installed.clone());
+                menu.set_update(None);
+            }
+        }
+        self.notice = Some(text);
+        self.dirty = true;
+    }
+
+    /// A pty child is gone. A failed update pane stays so the error can be
+    /// read, and so does a finished one that would be the last pane (closing
+    /// it would quit the app); everything else closes.
+    fn on_pty_exited(&mut self, id: PaneId) -> Vec<Effect> {
+        let keep = match self.update_run(id).map(|run| run.state) {
+            Some(RunState::Failed) => true,
+            Some(RunState::Installed) => {
+                self.tabs.len() == 1 && self.tabs[0].tree.leaves().len() == 1
+            }
+            Some(RunState::Running) | None => false,
+        };
+        if keep {
+            self.dirty = true;
+            Vec::new()
+        } else {
+            self.remove_pane(id)
+        }
+    }
+
     fn is_shell(&self, id: PaneId) -> bool {
         self.panes
             .get(&id)
@@ -1085,6 +1229,10 @@ impl App {
             AppEvent::Pty(id, event) if self.is_shell(id) => self.on_pty(id, event),
             AppEvent::Cwd(id, cwd) if self.is_shell(id) => self.on_cwd(id, cwd),
             AppEvent::Pty(..) | AppEvent::Cwd(..) => Vec::new(),
+            AppEvent::SpawnFailed(id, _) if self.update_run(id).is_some() => {
+                self.update_ended(id, RunState::Failed, None);
+                Vec::new()
+            }
             AppEvent::SpawnFailed(id, error) if self.is_shell(id) => {
                 let effects = self.remove_pane(id);
                 self.notice = Some(format!("spawn failed: {error}"));
@@ -1126,6 +1274,8 @@ impl App {
                 effects.extend(self.on_store_reply(&reply));
                 effects
             }
+            // What was just installed is not news any more.
+            AppEvent::UpdateChecked(_) if self.installed.is_some() => Vec::new(),
             AppEvent::UpdateChecked(update) => {
                 if let Some(menu) = self.menu.as_mut() {
                     menu.set_update(update.clone());
@@ -1244,7 +1394,8 @@ impl App {
         self.menu = Some(
             MenuState::open(&self.config)
                 .with_ai(self.ai.clone(), self.engines.clone())
-                .with_update(self.update.clone()),
+                .with_update(self.update.clone())
+                .with_installed(self.installed.clone()),
         );
         self.input = InputMode::Menu;
         let mut effects = self.apply_config();
@@ -1314,6 +1465,7 @@ impl App {
                 effects
             }
             MenuCommand::Copy(text) => self.copy_from_menu(&text),
+            MenuCommand::Update => self.on_update_command(),
             MenuCommand::TestNotify { mode, sound } => self.test_notify(mode, sound),
             MenuCommand::None => Vec::new(),
         }
@@ -1537,7 +1689,7 @@ impl App {
         self.new_tab_with(NewPane::Shell)
     }
 
-    /// `new_tab` for any kind of pane; only a shell is spawned.
+    /// `new_tab` for any kind of pane; a shell or an update job is spawned.
     fn new_tab_with(&mut self, kind: NewPane) -> Vec<Effect> {
         let cwd = self.inherited_cwd();
         let id = self.ids.alloc();
@@ -1549,14 +1701,39 @@ impl App {
         self.activate(self.tabs.len() - 1);
         self.refresh_screen();
         let size = body_size(self.screen.body);
+        let spec = self.spec_for(&kind, cwd, size);
         let state = self.new_state(kind, size);
         let spawn = matches!(state.content, PaneContent::Pty(_));
         self.panes.insert(id, state);
         let mut effects = self.relayout();
         if spawn {
-            effects.push(Effect::SpawnPane(id, self.spawn_spec(cwd, size)));
+            effects.push(Effect::SpawnPane(id, spec));
         }
         effects
+    }
+
+    /// How to start the child of a new pane of `kind`.
+    fn spec_for(&self, kind: &NewPane, cwd: Option<PathBuf>, size: PaneSize) -> SpawnSpec {
+        match kind {
+            NewPane::Update { program, path, .. } => {
+                // Home, else the root: never the cwd of a pane, where a
+                // `rust-toolchain` or `.cargo/config` of a project would
+                // change what gets installed.
+                let home = self.home.as_deref().filter(|h| (self.dir_exists)(h));
+                let cwd = home.unwrap_or(Path::new("/")).to_path_buf();
+                let mut spec = SpawnSpec::new(None, cwd, size);
+                spec.program = program.clone();
+                spec.args = crate::core::update::INSTALL_ARGS
+                    .map(str::to_owned)
+                    .to_vec();
+                spec.report_status = true;
+                if let Some(path) = path.to_str() {
+                    spec.env.push(("PATH".into(), path.to_owned()));
+                }
+                spec
+            }
+            NewPane::Shell | NewPane::Chat(_) => self.spawn_spec(cwd, size),
+        }
     }
 
     /// Drops tab `index` and its panes. The tab that takes its index becomes
@@ -1627,6 +1804,16 @@ impl App {
     fn new_state(&self, kind: NewPane, size: PaneSize) -> PaneState {
         match kind {
             NewPane::Shell => PaneState::new(size, self.hostname.as_deref()),
+            NewPane::Update { version, .. } => {
+                let mut state = PaneState::new(size, self.hostname.as_deref());
+                if let Some(pty) = state.pty_mut() {
+                    pty.update = Some(UpdateRun {
+                        version,
+                        state: RunState::Running,
+                    });
+                }
+                state
+            }
             NewPane::Chat(chat) => PaneState::chat(size, *chat),
         }
     }
@@ -2059,7 +2246,16 @@ impl App {
                     vec![Effect::WritePty(id, reply)]
                 }
             }
-            PtyEvent::Exited => self.remove_pane(id),
+            PtyEvent::Status(code) => {
+                let state = if code == 0 {
+                    RunState::Installed
+                } else {
+                    RunState::Failed
+                };
+                self.update_ended(id, state, Some(code));
+                Vec::new()
+            }
+            PtyEvent::Exited => self.on_pty_exited(id),
         }
     }
 }
@@ -6873,6 +7069,9 @@ mod app_tests {
 
     /// The update notice: statusline mark and menu note.
     mod update;
+
+    /// Enter on the Updates row: the install pane and the copy fallback.
+    mod update_install;
 
     /// Copying the reason behind a degraded engine from the AI picker.
     mod menu_copy;

@@ -131,3 +131,123 @@ fn the_row_has_no_toggle_and_no_edit() {
     assert_eq!(live, Config::default());
     assert!(m.edits(&live).is_empty());
 }
+
+fn press_key(m: &mut MenuState, code: KeyCode) -> MenuCommand {
+    m.on_key(
+        &KeyEvent::new(code, KeyModifiers::NONE),
+        false,
+        &mut Config::default(),
+    )
+}
+
+fn on_updates(update: Option<&str>) -> MenuState {
+    let mut m = menu().with_update(update.map(str::to_owned));
+    go_to_updates(&mut m);
+    m
+}
+
+fn footer_text(m: &MenuState) -> String {
+    match m.footer() {
+        Footer::Hint(text) => text.into_owned(),
+        Footer::Error(text) => text.to_owned(),
+    }
+}
+
+#[test]
+fn enter_without_an_update_does_nothing_and_the_footer_says_up_to_date() {
+    let mut m = on_updates(None);
+    assert!(
+        footer_text(&m).starts_with("up to date"),
+        "{}",
+        footer_text(&m)
+    );
+    let before = m.clone();
+    assert_eq!(press_key(&mut m, KeyCode::Enter), MenuCommand::None);
+    assert_eq!(press_key(&mut m, KeyCode::Char('y')), MenuCommand::None);
+    assert_eq!(m, before);
+}
+
+#[test]
+fn enter_with_an_update_asks_the_app_to_update() {
+    let mut m = on_updates(Some("0.15.4"));
+    assert!(
+        footer_text(&m).starts_with("Enter updates"),
+        "{}",
+        footer_text(&m)
+    );
+    assert_eq!(press_key(&mut m, KeyCode::Enter), MenuCommand::Update);
+}
+
+#[test]
+fn a_held_enter_does_not_ask_twice() {
+    let mut m = on_updates(Some("0.15.4"));
+    let held = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(
+        m.on_key(&held, true, &mut Config::default()),
+        MenuCommand::None
+    );
+}
+
+#[test]
+fn y_on_the_row_does_not_update_before_the_command_is_shown() {
+    let mut m = on_updates(Some("0.15.4"));
+    assert_eq!(press_key(&mut m, KeyCode::Char('y')), MenuCommand::None);
+}
+
+#[test]
+fn once_shown_enter_and_y_copy_the_command() {
+    for code in [KeyCode::Enter, KeyCode::Char('y')] {
+        let mut m = on_updates(Some("0.15.4"));
+        m.show_update_command();
+        assert_eq!(
+            footer_text(&m),
+            "cargo install lazarobox-shell --locked · Enter or y copies · Esc cancel"
+        );
+        assert_eq!(
+            press_key(&mut m, code),
+            MenuCommand::Copy("cargo install lazarobox-shell --locked".to_owned()),
+            "{code:?}"
+        );
+        // Still shown: a second copy is possible.
+        assert_eq!(
+            press_key(&mut m, code),
+            MenuCommand::Copy("cargo install lazarobox-shell --locked".to_owned())
+        );
+    }
+}
+
+#[test]
+fn moving_away_hides_the_shown_command() {
+    let mut m = on_updates(Some("0.15.4"));
+    m.show_update_command();
+    press_key(&mut m, KeyCode::Char('k'));
+    press_key(&mut m, KeyCode::Char('j'));
+    assert!(footer_text(&m).starts_with("Enter updates"));
+    assert_eq!(press_key(&mut m, KeyCode::Enter), MenuCommand::Update);
+}
+
+#[test]
+fn after_an_install_the_row_reads_installed_until_restart() {
+    let mut m = on_updates(Some("0.15.4"));
+    m.set_installed(Some("0.15.4".into()));
+    m.set_update(None);
+    assert_eq!(
+        updates_row(&m),
+        ("Updates", "0.15.4 installed: restart".to_owned())
+    );
+    assert_eq!(press_key(&mut m, KeyCode::Enter), MenuCommand::None);
+    assert!(
+        footer_text(&m).starts_with("0.15.4 installed"),
+        "{}",
+        footer_text(&m)
+    );
+}
+
+#[test]
+fn a_menu_opened_after_the_install_starts_with_the_installed_value() {
+    let m = menu().with_installed(Some("0.15.4".into()));
+    assert_eq!(
+        updates_row(&m),
+        ("Updates", "0.15.4 installed: restart".to_owned())
+    );
+}

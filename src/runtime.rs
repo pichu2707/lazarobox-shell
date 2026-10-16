@@ -261,7 +261,9 @@ pub async fn run() -> io::Result<()> {
         update::CurlFetcher::crates_io(cli_env.path.clone()),
         update_tx,
     );
-    app = app.with_update(announced);
+    app = app
+        .with_update(announced)
+        .with_install_env(Some(update::install_env(&cli_env.path)));
     let (store_tx, store_rx) = mpsc::channel(STORE_CHANNEL);
     let (prompt_tx, prompt_rx) = mpsc::channel(PROMPT_CHANNEL);
     let config_dir = config_path

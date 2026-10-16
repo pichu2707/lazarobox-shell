@@ -263,6 +263,9 @@ pub enum MenuCommand {
     /// Put this text on the clipboard (the full reason behind a degraded
     /// engine or a failed model listing).
     Copy(String),
+    /// Enter on the Updates row with a newer version known: the app decides
+    /// between installing it and showing the command.
+    Update,
     /// Fire one notification now, with the mode and sound flag shown in the
     /// menu (saved or not), ignoring the focus rule.
     TestNotify {
@@ -355,6 +358,11 @@ pub struct MenuState {
     update: Option<String>,
     /// The version this binary is, for the Updates row.
     current: String,
+    /// The install command is on the footer, ready to copy.
+    command_shown: bool,
+    /// The version an install in this run put on disk; the running binary is
+    /// still the old one, so the row says so until the restart.
+    installed: Option<String>,
 }
 
 impl MenuState {
@@ -370,7 +378,30 @@ impl MenuState {
             term: None,
             update: None,
             current: RUNNING_VERSION.to_owned(),
+            command_shown: false,
+            installed: None,
         }
+    }
+
+    /// Tells the menu a version was installed in this run, if any.
+    pub fn with_installed(mut self, installed: Option<String>) -> Self {
+        self.installed = installed;
+        self
+    }
+
+    /// An install finished while the menu is open.
+    pub fn set_installed(&mut self, installed: Option<String>) {
+        self.installed = installed;
+    }
+
+    /// Puts the install command on the footer: Enter or `y` copies it.
+    pub fn show_update_command(&mut self) {
+        self.command_shown = true;
+    }
+
+    /// Whether the selection is on the Updates row.
+    fn on_updates_row(&self) -> bool {
+        matches!(self.selected_kind(), Some(ItemKind::Updates))
     }
 
     /// Tells the menu which version is running (tests; the binary's own
@@ -604,9 +635,10 @@ impl MenuState {
     /// The Updates row: the running version, and the newer one when known.
     /// The name carries a `*` while an update is waiting.
     fn updates_row(&self, selected: bool) -> Row {
-        let (label, value) = match &self.update {
-            Some(latest) => ("* Updates", format!("{latest} available")),
-            None => ("Updates", self.current.clone()),
+        let (label, value) = match (&self.installed, &self.update) {
+            (Some(done), _) => ("Updates", crate::core::update::installed_value(done)),
+            (None, Some(latest)) => ("* Updates", format!("{latest} available")),
+            (None, None) => ("Updates", self.current.clone()),
         };
         Row::Item {
             label,
@@ -743,6 +775,14 @@ impl MenuState {
             self.error = None;
             self.copied = None;
             self.test_report = None;
+            // Enter and `y` on the row copy the shown command; any other
+            // press hides it.
+            let copies = self.command_shown
+                && self.on_updates_row()
+                && matches!(key.code, KeyCode::Enter | KeyCode::Char('y'));
+            if !copies {
+                self.command_shown = false;
+            }
         }
         if self.in_warning() {
             return self.on_warning_key(key, repeat);
@@ -761,6 +801,16 @@ impl MenuState {
             KeyCode::Char('s') if !repeat => MenuCommand::Save,
             KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
             KeyCode::Char('t') if !repeat && self.on_notify_row() => self.test_notify(),
+            KeyCode::Enter | KeyCode::Char('y') if !repeat && self.command_shown => {
+                MenuCommand::Copy(crate::core::update::INSTALL_COMMAND_LOCKED.to_owned())
+            }
+            KeyCode::Enter if self.on_updates_row() => {
+                if !repeat && self.update.is_some() && self.installed.is_none() {
+                    MenuCommand::Update
+                } else {
+                    MenuCommand::None
+                }
+            }
             KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
             KeyCode::Enter if repeat && (self.on_ai_row() || self.on_draft_row()) => {
                 MenuCommand::None
@@ -1043,12 +1093,28 @@ impl MenuState {
             }
             _ if picker.is_some() => Cow::Borrowed(HINT_PICKER),
             _ if in_ai_view => Cow::Borrowed(HINT_TASK),
+            _ if self.on_updates_row() => Cow::Owned(self.updates_hint()),
             _ if self.on_notify_row() => match &self.test_report {
                 Some(report) => Cow::Owned(report.clone()),
                 None => Cow::Borrowed(HINT_NOTIFY),
             },
             _ => Cow::Borrowed(HINT_SETTINGS),
         })
+    }
+
+    /// The footer on the Updates row.
+    fn updates_hint(&self) -> String {
+        if self.command_shown {
+            return format!(
+                "{} · Enter or y copies · Esc cancel",
+                crate::core::update::INSTALL_COMMAND_LOCKED
+            );
+        }
+        match (&self.installed, &self.update) {
+            (Some(done), _) => format!("{done} installed · restart lazarobox to use it"),
+            (None, Some(_)) => "Enter updates · j/k move · s save · Esc cancel".to_owned(),
+            (None, None) => "up to date · j/k move · s save · Esc cancel".to_owned(),
+        }
     }
 
     /// Says what a copy did, in the footer, until the next press.

@@ -831,3 +831,69 @@ fn begin_does_not_ask_on_a_read_only_cache_directory() {
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }
+
+mod install_env {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    fn executable(path: &Path) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn it_canonicalizes_the_binary_and_finds_cargo_on_the_given_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let bin = root.join("cargo-home/bin");
+        executable(&bin.join("lazarobox"));
+        executable(&bin.join("cargo"));
+        // A link to the binary: the real location is what counts.
+        let link = root.join("link");
+        std::os::unix::fs::symlink(bin.join("lazarobox"), &link).unwrap();
+        let path = std::env::join_paths([root.join("nothing"), bin.clone()]).unwrap();
+        let env = install_env_from(
+            Some(link),
+            Some(root.join("cargo-home")),
+            Some(root.clone()),
+            &path,
+        );
+        assert_eq!(env.exe, Some(bin.join("lazarobox")));
+        assert_eq!(env.cargo, Some(bin.join("cargo")));
+        assert_eq!(env.cargo_home, Some(root.join("cargo-home")));
+        assert_eq!(env.path, path);
+        assert!(matches!(
+            env.plan(Some("0.16.0")),
+            update::UpdateAction::CargoInstall { .. }
+        ));
+    }
+
+    #[test]
+    fn cargo_is_never_taken_from_a_relative_path_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        executable(&root.join("cargo"));
+        let env = install_env_from(None, None, None, OsStr::new(".:"));
+        assert_eq!(env.cargo, None);
+    }
+
+    #[test]
+    fn a_missing_binary_or_cargo_home_is_left_unknown() {
+        let env = install_env_from(
+            Some(PathBuf::from("/lazarobox-no-such/bin/lazarobox")),
+            Some(PathBuf::from("/lazarobox-no-such/cargo")),
+            None,
+            OsStr::new("/usr/bin"),
+        );
+        assert_eq!(
+            env.exe,
+            Some(PathBuf::from("/lazarobox-no-such/bin/lazarobox"))
+        );
+        assert_eq!(
+            env.cargo_home,
+            Some(PathBuf::from("/lazarobox-no-such/cargo"))
+        );
+    }
+}

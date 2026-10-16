@@ -304,6 +304,37 @@ pub fn begin(
     started.announce
 }
 
+/// How this process was installed, read from the real machine: the running
+/// binary, `CARGO_HOME`, `$HOME` and `cargo` on the login `path`.
+pub fn install_env(path: &OsStr) -> update::InstallEnv {
+    install_env_from(
+        std::env::current_exe().ok(),
+        std::env::var_os("CARGO_HOME").map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+        path,
+    )
+}
+
+/// [`install_env`] with the facts given. Paths that exist are canonicalized,
+/// so a link to the binary or to the cargo home compares by where it points;
+/// one that does not exist stays as given.
+pub fn install_env_from(
+    exe: Option<PathBuf>,
+    cargo_home: Option<PathBuf>,
+    home: Option<PathBuf>,
+    path: &OsStr,
+) -> update::InstallEnv {
+    let real = |p: PathBuf| fs::canonicalize(&p).unwrap_or(p);
+    update::InstallEnv {
+        exe: exe.map(real),
+        // A relative CARGO_HOME would mean "under whatever cwd we have".
+        cargo_home: cargo_home.filter(|p| p.is_absolute()).map(real),
+        home: home.map(real),
+        cargo: crate::runtime::desktop::which("cargo", Some(path)),
+        path: path.to_owned(),
+    }
+}
+
 /// Now, in Unix seconds. A clock before 1970 reads as 0.
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
