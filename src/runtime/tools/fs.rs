@@ -118,6 +118,11 @@ pub const NO_CUT_MARKER: &str = "[not shown: no safe cut point in the read windo
 /// Bytes read past the cap so redaction sees a whole secret.
 const REDACT_MARGIN: usize = 1024;
 
+/// Appended when a name was left out because it looks like a secret. It does
+/// not depend on any query, so it tells nothing about which name was left out.
+/// A harmless name can match (`sk-learn-extras`): it is omitted too.
+pub const OMITTED_MARKER: &str = "[some names omitted: they look like secrets]";
+
 /// Appended when `list_dir` cut the list.
 pub const LIST_MARKER: &str = "[truncated: more entries than the list cap]";
 
@@ -369,10 +374,14 @@ fn list_dir(
     };
     let fd = open_checked(roots, &real, true)?;
     let (found, scan_cut) = entries(&fd, limits.visited, budget)?;
+    let mut omitted = false;
     let mut shown: Vec<(String, char)> = found
         .iter()
-        .filter(|(name, kind)| {
-            visible(roots, budget, &real, name, *kind) && !redaction_changes(name)
+        .filter(|(name, kind)| visible(roots, budget, &real, name, *kind))
+        .filter(|(name, _)| {
+            let hide = redaction_changes(name);
+            omitted |= hide;
+            !hide
         })
         .map(|(name, kind)| {
             let tag = if kind.is_dir() {
@@ -394,8 +403,11 @@ fn list_dir(
         .into_iter()
         .map(|(name, tag)| format!("{tag} {name}"))
         .collect();
-    if lines.is_empty() && !cut {
+    if lines.is_empty() && !cut && !omitted {
         lines.push("(empty)".into());
+    }
+    if omitted {
+        lines.push(OMITTED_MARKER.into());
     }
     if cut {
         lines.push(LIST_MARKER.into());
@@ -418,7 +430,7 @@ fn find_dir(
         return Err(Failure::EmptyQuery);
     }
     let mut queue = VecDeque::from([PathBuf::new()]);
-    let (mut visited, mut cut) = (0usize, false);
+    let (mut visited, mut cut, mut omitted) = (0usize, false, false);
     let mut found: Vec<String> = Vec::new();
     'search: while let Some(rel) = queue.pop_front() {
         // A spent budget stops the walk before the next open, even when the
@@ -448,10 +460,11 @@ fn find_dir(
                 cut = true;
                 break 'search;
             }
-            if !kind.is_dir()
-                || !visible(roots, budget, &dir, &name, kind)
-                || redaction_changes(&name)
-            {
+            if !kind.is_dir() || !visible(roots, budget, &dir, &name, kind) {
+                continue;
+            }
+            if redaction_changes(&name) {
+                omitted = true;
                 continue;
             }
             if level >= limits.depth {
@@ -460,6 +473,11 @@ fn find_dir(
                 break;
             }
             let child = rel.join(&name);
+            // The joined path can read as a secret where no part does alone.
+            if redaction_changes(child.as_os_str()) {
+                omitted = true;
+                continue;
+            }
             if name.to_string_lossy().to_lowercase().contains(&needle) {
                 found.push(format!("~/{}", one_line(child.as_os_str())));
                 if found.len() == limits.results {
@@ -475,6 +493,10 @@ fn find_dir(
     } else {
         found.join("\n")
     };
+    if omitted {
+        out.push('\n');
+        out.push_str(OMITTED_MARKER);
+    }
     if cut {
         out.push('\n');
         out.push_str(FIND_MARKER);
@@ -761,7 +783,10 @@ mod tests {
         let f = fixture();
         // Minified JSON or base64: one long line, no whitespace to cut at.
         fs::write(f.home.join("blob"), "A".repeat(3000)).unwrap();
-        let limits = Limits { read_bytes: 100 };
+        let limits = Limits {
+            read_bytes: 100,
+            ..Limits::default()
+        };
         let out = execute(
             &Call::ReadFile {
                 path: "~/blob".into(),
@@ -1070,23 +1095,48 @@ mod tests {
         fs::create_dir_all(f.home.join("dev/sk-ghiJKL1234567890/inner-hit")).unwrap();
         fs::create_dir_all(f.home.join("dev/plain-hit")).unwrap();
         let out = list(&env(&f.home), "~", &Limits::default()).unwrap();
-        assert_eq!(out, "d dev");
+        assert_eq!(out, format!("d dev\n{OMITTED_MARKER}"));
         let out = list(&env(&f.home), "~/dev", &Limits::default()).unwrap();
-        assert_eq!(out, "d app\nd plain-hit");
+        assert_eq!(out, format!("d app\nd plain-hit\n{OMITTED_MARKER}"));
         // A prefix of the key must not confirm that such a name exists.
         for query in ["sk-g", "sk-ghiJKL", "ghiJKL1234567890", "REDACTED"] {
             let out = find(&env(&f.home), query, &Limits::default()).unwrap();
-            assert_eq!(out, "no match", "{query}");
+            assert_eq!(out, format!("no match\n{OMITTED_MARKER}"), "{query}");
         }
         // Nor is the folder entered: its children would carry the name.
         assert_eq!(
             find(&env(&f.home), "inner-hit", &Limits::default()).unwrap(),
-            "no match"
+            format!("no match\n{OMITTED_MARKER}")
         );
         assert_eq!(
             find(&env(&f.home), "plain-hit", &Limits::default()).unwrap(),
-            "~/dev/plain-hit"
+            format!("~/dev/plain-hit\n{OMITTED_MARKER}")
         );
+    }
+
+    #[test]
+    fn the_omitted_marker_appears_only_when_something_was_omitted() {
+        let f = fixture();
+        let out = list(&env(&f.home), "~/dev", &Limits::default()).unwrap();
+        assert_eq!(out, "d app");
+        assert_eq!(
+            find(&env(&f.home), "app", &Limits::default()).unwrap(),
+            "~/dev/app"
+        );
+    }
+
+    #[test]
+    fn a_joined_path_that_redaction_would_change_is_not_a_result() {
+        let f = fixture();
+        // `token=` and `abc` are harmless alone; `token=/abc` reads as an
+        // assignment whose value is `/abc`.
+        fs::create_dir_all(f.home.join("token=/abc")).unwrap();
+        let name = OsStr::new("token=");
+        assert!(!redaction_changes(name));
+        assert!(redaction_changes(OsStr::new("token=/abc")));
+        let out = find(&env(&f.home), "abc", &Limits::default()).unwrap();
+        assert!(!out.contains("abc"), "{out}");
+        assert!(out.contains(OMITTED_MARKER), "{out}");
     }
 
     #[test]
