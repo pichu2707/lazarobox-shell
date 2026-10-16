@@ -82,16 +82,19 @@ pub fn find_on_path(name: &str, path: &OsStr) -> Option<PathBuf> {
 /// background process still holds open.
 const EXIT_GRACE: Duration = Duration::from_millis(100);
 
-/// Runs `<path> --version` and returns its stdout. `None` on a spawn
+/// Runs `<path> --version` with `search` as its `PATH` and returns its stdout. `None` on a spawn
 /// failure, a non-zero exit, a timeout or more than `VERSION_CAP` bytes of
 /// output (it is dropped, not truncated). The child runs in its own process
 /// group, which is killed on every way out so no grandchild survives.
-pub async fn version(path: &Path) -> Option<Vec<u8>> {
+pub async fn version(path: &Path, search: &OsStr) -> Option<Vec<u8>> {
     run_capped(
         || {
             let mut command = Command::new(path);
             command
                 .arg("--version")
+                // The `PATH` the binary was found on, so a script's
+                // `#!/usr/bin/env node` resolves like it does in a turn.
+                .env("PATH", search)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -321,11 +324,11 @@ pub async fn detect_in(targets: &[Target], path: &OsStr, lister: Option<Lister<'
     reduce(&probes)
 }
 
-/// Detection over the real catalog and the process PATH.
+/// Detection over the real catalog and the `PATH` of `env`, the one the chat
+/// turns run with, so what is detected is what can be started.
 pub async fn detect_all(env: &CliEnv, cache: &ListingCache, force: bool) -> Detection {
-    let path = std::env::var_os("PATH").unwrap_or_default();
     let lister = Lister { env, cache, force };
-    detect_in(CATALOG, &path, Some(lister)).await
+    detect_in(CATALOG, &env.path, Some(lister)).await
 }
 
 /// Runs `fut` off the caller and sends exactly one `Detection` to `tx`: the
@@ -372,7 +375,7 @@ async fn probe(target: &Target, path: &OsStr, lister: Option<&Lister<'_>>) -> Pr
                             _ => None,
                         }
                     };
-                    tokio::join!(async { version(file).await }, list)
+                    tokio::join!(version(file, path), list)
                 }
                 None => (None, None),
             };
@@ -543,7 +546,11 @@ mod tests {
     /// this test fixture; production code never spawns a shell.
     fn write_script(dir: &Path, name: &str, body: &str, mode: u32) -> PathBuf {
         let path = dir.join(name);
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        // The probes run the child with the `PATH` it was found on, which a
+        // test often sets to the fake bin dir alone: give the fixture the
+        // system tools back.
+        let text = format!("#!/bin/sh\nPATH=\"$PATH:/usr/bin:/bin\"\n{body}\n");
+        fs::write(&path, text).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
         path
     }
@@ -785,6 +792,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn detect_all_looks_in_the_env_path_not_the_process_one() {
+        let lab = lab();
+        write_script(&lab.bin, "claude", "echo claude 9.9.9", 0o755);
+        let env = env_of(&lab, false);
+        let d = detect_all(&env, &real_cache(), false).await;
+        let claude = d.engines.iter().find(|e| e.id == "claude").unwrap();
+        assert_eq!(claude.version.as_deref(), Some("claude 9.9.9"));
+    }
+
+    #[tokio::test]
+    async fn the_version_child_sees_the_given_path() {
+        let dir = tempfile::tempdir().unwrap();
+        // No prelude: the script prints the PATH it was started with.
+        let script = dir.path().join("claude");
+        fs::write(&script, "#!/bin/sh\necho \"$PATH\"\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let got = version(&script, OsStr::new("/opt/login/bin:/usr/bin")).await;
+        assert_eq!(got, Some(b"/opt/login/bin:/usr/bin\n".to_vec()));
+    }
+
+    #[tokio::test]
     async fn detection_without_an_env_skips_the_listing() {
         let lab = lab();
         fake_codex(&lab, "cat /dev/null; exit 9");
@@ -959,14 +987,17 @@ mod tests {
     async fn version_returns_stdout() {
         let dir = tempfile::tempdir().unwrap();
         let script = write_script(dir.path(), "codex", "echo codex 0.5.0", 0o755);
-        assert_eq!(version(&script).await, Some(b"codex 0.5.0\n".to_vec()));
+        assert_eq!(
+            version(&script, OsStr::new("/usr/bin:/bin")).await,
+            Some(b"codex 0.5.0\n".to_vec())
+        );
     }
 
     #[tokio::test]
     async fn version_gives_none_on_a_non_zero_exit() {
         let dir = tempfile::tempdir().unwrap();
         let script = write_script(dir.path(), "claude", "echo oops\nexit 1", 0o755);
-        assert_eq!(version(&script).await, None);
+        assert_eq!(version(&script, OsStr::new("/usr/bin:/bin")).await, None);
     }
 
     /// Dead for our purposes: gone, or a zombie waiting for a reaper.
@@ -1007,7 +1038,7 @@ mod tests {
         let body = format!("echo $$ > {}\nexec sleep 30", pid_file.display());
         let script = write_script(dir.path(), "hang", &body, 0o755);
         let started = std::time::Instant::now();
-        let answer = version(&script).await;
+        let answer = version(&script, OsStr::new("/usr/bin:/bin")).await;
         let elapsed = started.elapsed();
         assert_eq!(
             (answer, elapsed < Duration::from_millis(2500)),
@@ -1026,7 +1057,7 @@ mod tests {
         let pid_file = dir.path().join("grandchild");
         let body = format!("sleep 30 &\necho $! > {}\nwait", pid_file.display());
         let script = write_script(dir.path(), "tree", &body, 0o755);
-        assert_eq!(version(&script).await, None);
+        assert_eq!(version(&script, OsStr::new("/usr/bin:/bin")).await, None);
         let pid = read_pid(&pid_file);
         assert!(
             dead_within(&pid, Duration::from_secs(5)).await,
@@ -1041,7 +1072,11 @@ mod tests {
         let body = format!("sleep 30 &\necho $! > {}\nwait", pid_file.display());
         let script = write_script(dir.path(), "tree", &body, 0o755);
         // The wrapper is shorter than the probe, so version() is dropped mid-way.
-        let cut = timeout(Duration::from_millis(500), version(&script)).await;
+        let cut = timeout(
+            Duration::from_millis(500),
+            version(&script, OsStr::new("/usr/bin:/bin")),
+        )
+        .await;
         assert!(cut.is_err(), "the probe finished before it was dropped");
         let pid = read_pid(&pid_file);
         assert!(
@@ -1061,7 +1096,7 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         let probe = tokio::spawn({
             let path = path.clone();
-            async move { version(&path).await }
+            async move { version(&path, OsStr::new("/usr/bin:/bin")).await }
         });
         tokio::time::sleep(Duration::from_millis(30)).await;
         drop(file);
@@ -1073,7 +1108,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let script = write_script(dir.path(), "flood", "exec yes AAAAAAAAAAAAAAAA", 0o755);
         let started = std::time::Instant::now();
-        let answer = version(&script).await;
+        let answer = version(&script, OsStr::new("/usr/bin:/bin")).await;
         assert_eq!(
             (answer, started.elapsed() < Duration::from_millis(1500)),
             (None, true)
@@ -1085,7 +1120,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let body = format!("head -c {VERSION_CAP} /dev/zero | tr '\\0' a");
         let script = write_script(dir.path(), "full", &body, 0o755);
-        let answer = version(&script).await;
+        let answer = version(&script, OsStr::new("/usr/bin:/bin")).await;
         assert_eq!(answer.map(|v| v.len()), Some(VERSION_CAP));
     }
 
@@ -1096,7 +1131,7 @@ mod tests {
         let body = format!("sleep 30 &\necho $! > {}\necho v1.0", pid_file.display());
         let script = write_script(dir.path(), "bg", &body, 0o755);
         let started = std::time::Instant::now();
-        let answer = version(&script).await;
+        let answer = version(&script, OsStr::new("/usr/bin:/bin")).await;
         assert_eq!(
             (answer, started.elapsed() < Duration::from_secs(1)),
             (Some(b"v1.0\n".to_vec()), true)

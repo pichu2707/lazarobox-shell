@@ -94,7 +94,8 @@ impl Lab {
 
     fn env(&self) -> CliEnv {
         CliEnv {
-            path: self.bin.clone().into_os_string(),
+            // The child gets this `PATH`: the system tools the fakes use too.
+            path: OsString::from(format!("{}:/usr/bin:/bin", self.bin.display())),
             home: Some(self.home.clone()),
             data: Some(self.data.clone()),
             jail: JailSupport::Unavailable("test"),
@@ -245,6 +246,18 @@ async fn wait_gone(pid: libc::pid_t, bound: Duration) -> bool {
 
 fn pid_of(lab: &Lab, name: &str) -> libc::pid_t {
     lab.recorded(name).trim().parse().expect("a recorded pid")
+}
+
+#[tokio::test]
+async fn the_child_runs_with_the_path_the_cli_was_found_on() {
+    let lab = lab();
+    lab.claude(&format!("echo \"$PATH\" > \"$REC/path\"\n{GOOD}"));
+    let mut env = lab.env();
+    let wanted = format!("{}:/usr/bin:/bin:/opt/login/bin", lab.bin.display());
+    env.path = OsString::from(&wanted);
+    let events = run(env, request()).await;
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    assert_eq!(lab.recorded("path").trim(), wanted);
 }
 
 #[tokio::test]
