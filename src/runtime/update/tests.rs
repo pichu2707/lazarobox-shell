@@ -438,3 +438,115 @@ fn the_production_request_is_https_only_and_targets_crates_io() {
     assert_eq!(f.url, "https://crates.io/api/v1/crates/lazarobox-shell");
     assert!(f.user_agent.starts_with("lazarobox-shell/"));
 }
+
+// --- the start-up entry ---------------------------------------------------
+
+#[derive(Clone)]
+struct Counting {
+    calls: Arc<std::sync::atomic::AtomicU32>,
+    latest: &'static str,
+}
+
+impl Fetcher for Counting {
+    fn fetch(&self) -> Result<String, Failed> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(format!(
+            r#"{{"crate":{{"max_stable_version":"{}"}}}}"#,
+            self.latest
+        ))
+    }
+}
+
+fn counting(latest: &'static str) -> (Counting, Arc<std::sync::atomic::AtomicU32>) {
+    let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    (
+        Counting {
+            calls: Arc::clone(&calls),
+            latest,
+        },
+        calls,
+    )
+}
+
+fn settle() {
+    thread::sleep(Duration::from_millis(150));
+}
+
+#[test]
+fn begin_with_the_check_off_makes_no_request_and_shows_nothing() {
+    let (_dir, path) = cache_file();
+    write_cache(
+        &path,
+        &Cache {
+            checked_at: 1,
+            ok: true,
+            latest: Some("0.16.0".into()),
+        },
+    )
+    .unwrap();
+    let (fetcher, calls) = counting("0.17.0");
+    let (tx, mut rx) = mpsc::channel(1);
+    assert_eq!(
+        begin(false, Some(path), 1 + 2 * DAY, "0.15.1", fetcher, tx),
+        None
+    );
+    settle();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn begin_within_24_hours_uses_the_cache_and_makes_no_request() {
+    let (_dir, path) = cache_file();
+    write_cache(
+        &path,
+        &Cache {
+            checked_at: 1_000,
+            ok: true,
+            latest: Some("0.16.0".into()),
+        },
+    )
+    .unwrap();
+    let (fetcher, calls) = counting("0.17.0");
+    let (tx, mut rx) = mpsc::channel(1);
+    let shown = begin(true, Some(path), 1_000 + DAY - 1, "0.15.1", fetcher, tx);
+    assert_eq!(shown.as_deref(), Some("0.16.0"));
+    settle();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn begin_when_due_returns_at_once_and_reports_later() {
+    let (_dir, path) = cache_file();
+    let (fetcher, calls) = counting("0.16.0");
+    let (tx, mut rx) = mpsc::channel(1);
+    assert_eq!(
+        begin(true, Some(path.clone()), 5_000, "0.15.1", fetcher, tx),
+        None
+    );
+    let got = loop {
+        match rx.try_recv() {
+            Ok(v) => break v,
+            Err(mpsc::error::TryRecvError::Empty) => thread::sleep(Duration::from_millis(5)),
+            Err(e) => panic!("{e:?}"),
+        }
+    };
+    assert_eq!(got.as_deref(), Some("0.16.0"));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(stored(&path).latest.as_deref(), Some("0.16.0"));
+}
+
+#[test]
+fn begin_without_a_cache_location_makes_no_request() {
+    let (fetcher, calls) = counting("0.16.0");
+    let (tx, _rx) = mpsc::channel(1);
+    assert_eq!(begin(true, None, 5_000, "0.15.1", fetcher, tx), None);
+    settle();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[test]
+fn the_clock_reads_unix_seconds() {
+    assert!(now_secs() > 1_700_000_000);
+}

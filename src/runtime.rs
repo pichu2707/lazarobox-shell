@@ -195,6 +195,21 @@ pub async fn run() -> io::Result<()> {
         },
         memory_tx,
     );
+    // Notify only: a cached or fetched newer version becomes a text mark.
+    // Off (`[updates] check = false`) nothing is read, asked or shown.
+    let (update_tx, update_rx) = mpsc::channel(1);
+    let announced = update::begin(
+        app.config().update_check,
+        update::cache_path(
+            env::var_os("XDG_DATA_HOME").as_deref(),
+            env::var_os("HOME").as_deref(),
+        ),
+        update::now_secs(),
+        env!("CARGO_PKG_VERSION"),
+        update::CurlFetcher::crates_io(cli_env.path.clone()),
+        update_tx,
+    );
+    app = app.with_update(announced);
     let (store_tx, store_rx) = mpsc::channel(STORE_CHANNEL);
     let (prompt_tx, prompt_rx) = mpsc::channel(PROMPT_CHANNEL);
     let config_dir = config_path
@@ -235,6 +250,7 @@ pub async fn run() -> io::Result<()> {
         memory: memory_rx,
         store: store_rx,
         prompt: prompt_rx,
+        update: update_rx,
     };
     // The first pane is spawned before the UI starts: a failure is fatal.
     panes.spawn_pane(id, &spec)?;
@@ -352,6 +368,7 @@ struct Inbox {
     memory: mpsc::Receiver<MemReply>,
     store: mpsc::Receiver<StoreReply>,
     prompt: mpsc::Receiver<(PaneId, Resolved)>,
+    update: mpsc::Receiver<Option<String>>,
 }
 
 async fn event_loop(
@@ -393,6 +410,7 @@ async fn run_loop(
         memory: mut memory_rx,
         store: mut store_rx,
         prompt: mut prompt_rx,
+        update: mut update_rx,
     } = inbox;
     let theme = LazaroboxTheme::default();
     let mut events = EventStream::new();
@@ -473,6 +491,13 @@ async fn run_loop(
             // closed channel.
             Some((pane, resolved)) = prompt_rx.recv() => {
                 if step(&mut app, AppEvent::PromptReady(pane, resolved), panes) {
+                    return Ok(());
+                }
+            }
+            // The check thread holds the only sender and may be gone already,
+            // so a closed channel just ends this arm's pattern.
+            Some(update) = update_rx.recv() => {
+                if step(&mut app, AppEvent::UpdateChecked(update), panes) {
                     return Ok(());
                 }
             }

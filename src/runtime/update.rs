@@ -224,5 +224,30 @@ pub fn spawn_refresh(
         .spawn(job);
 }
 
+/// The start-up entry: what to show now, and, when a check is due, the
+/// background request whose answer comes through `reply`. Disabled or without
+/// a cache location it does nothing and shows nothing.
+pub fn begin(
+    enabled: bool,
+    cache: Option<PathBuf>,
+    now: u64,
+    current: &'static str,
+    fetcher: impl Fetcher,
+    reply: mpsc::Sender<Option<String>>,
+) -> Option<String> {
+    let started = startup(enabled, cache.as_deref(), now, current);
+    if let (true, Some(path)) = (started.due, cache) {
+        spawn_refresh(path, now, current, fetcher, reply);
+    }
+    started.announce
+}
+
+/// Now, in Unix seconds. A clock before 1970 reads as 0.
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
 #[cfg(test)]
 mod tests;
