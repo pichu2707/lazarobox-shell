@@ -53,12 +53,19 @@ pub fn cache_path(xdg: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> 
 
 /// The cache, or `None` when it is missing, too big or damaged.
 pub fn read_cache(path: &Path) -> Option<Cache> {
-    let mut text = String::new();
-    fs::File::open(path)
-        .ok()?
-        .take(CACHE_CAP + 1)
-        .read_to_string(&mut text)
+    use std::os::unix::fs::OpenOptionsExt;
+    // Never follow a link, never wait on a FIFO or a device: only a plain
+    // file is read.
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
         .ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(CACHE_CAP + 1).read_to_string(&mut text).ok()?;
     if text.len() as u64 > CACHE_CAP {
         return None;
     }
@@ -71,13 +78,14 @@ pub fn write_cache(path: &Path, cache: &Cache) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let mut temp = path.as_os_str().to_owned();
-    temp.push(".tmp");
-    let temp = PathBuf::from(temp);
+    let temp = temp_path(path);
+    // A stale file of a past process with this pid is replaced; a link
+    // planted there is removed, never written through.
+    let _ = fs::remove_file(&temp);
     let written = fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
         .mode(0o600)
         .open(&temp)
         .and_then(|mut file| file.write_all(cache.to_json().as_bytes()))
@@ -128,35 +136,6 @@ pub fn refresh(path: &Path, now: u64, current: &str, fetcher: &dyn Fetcher) -> O
     update::announced(Some(&cache), current)
 }
 
-/// The arguments of the request. The URL comes last, after `--`.
-pub fn curl_args(url: &str, user_agent: &str, https_only: bool) -> Vec<String> {
-    let mut args: Vec<String> = [
-        // Not the user's ~/.curlrc: it could add redirects, output files...
-        "-q",
-        "--silent",
-        "--max-time",
-        &TIMEOUT_SECS.to_string(),
-        "--connect-timeout",
-        &TIMEOUT_SECS.to_string(),
-        "--max-filesize",
-        &REPLY_CAP.to_string(),
-        "--user-agent",
-        user_agent,
-        "--header",
-        "Accept: application/json",
-        // The status code goes after the body, on its own line.
-        "--write-out",
-        "\n%{http_code}",
-    ]
-    .map(str::to_owned)
-    .into();
-    if https_only {
-        args.extend(["--proto".to_owned(), "=https".to_owned()]);
-    }
-    args.extend(["--".to_owned(), url.to_owned()]);
-    args
-}
-
 /// The descriptive `User-Agent` crates.io asks for.
 pub fn user_agent(version: &str) -> String {
     format!("lazarobox-shell/{version} (+https://github.com/pichu2707/lazarobox-shell)")
@@ -169,9 +148,54 @@ pub struct CurlFetcher {
     url: String,
     user_agent: String,
     https_only: bool,
+    /// Test requests must not go through the developer's proxy.
+    noproxy: bool,
+    /// Most reply bytes read before curl is killed.
+    read_cap: usize,
+    /// The `--max-filesize` given to curl.
+    file_cap: usize,
+}
+
+/// The temporary file `write_cache` fills before the rename.
+fn temp_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".{}.tmp", std::process::id()));
+    PathBuf::from(name)
 }
 
 impl CurlFetcher {
+    /// The arguments of the request. The URL comes last, after `--`.
+    pub fn args(&self) -> Vec<String> {
+        let mut args: Vec<String> = [
+            // Not the user's ~/.curlrc: it could add redirects, output files...
+            "-q",
+            "--silent",
+            "--max-time",
+            &TIMEOUT_SECS.to_string(),
+            "--connect-timeout",
+            &TIMEOUT_SECS.to_string(),
+            "--max-filesize",
+            &self.file_cap.to_string(),
+            "--user-agent",
+            &self.user_agent,
+            "--header",
+            "Accept: application/json",
+            // The status code goes after the body, on its own line.
+            "--write-out",
+            "\n%{http_code}",
+        ]
+        .map(str::to_owned)
+        .into();
+        if self.https_only {
+            args.extend(["--proto".to_owned(), "=https".to_owned()]);
+        }
+        if self.noproxy {
+            args.extend(["--noproxy".to_owned(), "*".to_owned()]);
+        }
+        args.extend(["--".to_owned(), self.url.clone()]);
+        args
+    }
+
     /// The production request: crates.io over HTTPS only, with `path` as the
     /// `PATH` to find `curl` in.
     pub fn crates_io(path: OsString) -> Self {
@@ -181,23 +205,41 @@ impl CurlFetcher {
             url: update::API_URL.to_owned(),
             user_agent: user_agent(env!("CARGO_PKG_VERSION")),
             https_only: true,
+            noproxy: false,
+            read_cap: REPLY_CAP,
+            file_cap: REPLY_CAP,
         }
     }
 }
 
 impl Fetcher for CurlFetcher {
     fn fetch(&self) -> Result<String, Failed> {
-        let output = Command::new(&self.program)
-            .args(curl_args(&self.url, &self.user_agent, self.https_only))
+        let mut child = Command::new(&self.program)
+            .args(self.args())
             .env("PATH", &self.path)
             .stdin(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .output()
+            .spawn()
             .map_err(|_| Failed)?;
-        if !output.status.success() || output.stdout.len() > REPLY_CAP + 16 {
+        let mut out = Vec::new();
+        // The status line is 4 bytes; a reply longer than the cap is cut off.
+        let limit = self.read_cap as u64 + 8;
+        let read = child
+            .stdout
+            .take()
+            .ok_or(Failed)
+            .and_then(|stdout| stdout.take(limit).read_to_end(&mut out).map_err(|_| Failed));
+        if read.is_err() || out.len() as u64 >= limit {
+            let _ = child.kill();
+            let _ = child.wait();
             return Err(Failed);
         }
-        let text = String::from_utf8(output.stdout).map_err(|_| Failed)?;
+        let status = child.wait().map_err(|_| Failed)?;
+        if !status.success() {
+            return Err(Failed);
+        }
+        let text = String::from_utf8(out).map_err(|_| Failed)?;
         match text.rsplit_once('\n') {
             Some((body, "200")) => Ok(body.to_owned()),
             _ => Err(Failed),
@@ -237,7 +279,13 @@ pub fn begin(
 ) -> Option<String> {
     let started = startup(enabled, cache.as_deref(), now, current);
     if let (true, Some(path)) = (started.due, cache) {
-        spawn_refresh(path, now, current, fetcher, reply);
+        // Stamp the clock before asking. It proves the cache can be written
+        // (otherwise every start would ask again) and makes a quit within the
+        // timeout leave a record; the answer overwrites it.
+        let known = read_cache(&path).unwrap_or_default();
+        if write_cache(&path, &known.after(now, Err(()))).is_ok() {
+            spawn_refresh(path, now, current, fetcher, reply);
+        }
     }
     started.announce
 }

@@ -302,9 +302,22 @@ fn the_user_agent_names_the_app_the_version_and_the_repository() {
     );
 }
 
+fn request(url: &str, https_only: bool) -> CurlFetcher {
+    CurlFetcher {
+        program: "curl".into(),
+        path: "/usr/bin".into(),
+        url: url.to_owned(),
+        user_agent: "ua/1".into(),
+        https_only,
+        noproxy: false,
+        read_cap: REPLY_CAP,
+        file_cap: REPLY_CAP,
+    }
+}
+
 #[test]
 fn the_request_is_one_quiet_https_get_with_no_redirects_and_no_download() {
-    let args = curl_args("https://example.test/x", "ua/1", true);
+    let args = request("https://example.test/x", true).args();
     assert_eq!(args[0], "-q", "ignore ~/.curlrc");
     let has = |a: &str| args.iter().any(|x| x == a);
     assert!(has("--proto") && has("=https"));
@@ -322,15 +335,25 @@ fn the_request_is_one_quiet_https_get_with_no_redirects_and_no_download() {
 #[test]
 fn plain_http_is_only_allowed_when_asked_for() {
     assert!(
-        !curl_args("http://x", "u", false)
+        !request("http://x", false)
+            .args()
             .iter()
             .any(|a| a == "=https")
     );
     assert!(
-        curl_args("http://x", "u", true)
+        request("http://x", true)
+            .args()
             .iter()
             .any(|a| a == "=https")
     );
+}
+
+#[test]
+fn the_production_request_honours_the_users_proxy() {
+    // Corporate proxies and CA bundles come from the environment curl reads.
+    let args = CurlFetcher::crates_io("/usr/bin".into()).args();
+    assert!(!args.iter().any(|a| a.contains("noproxy")));
+    assert!(!args.iter().any(|a| a == "--insecure" || a == "-k"));
 }
 
 // --- the real curl against a local fake server -------------------------
@@ -360,6 +383,27 @@ fn serve(replies: Vec<&'static str>) -> (String, Arc<Mutex<Vec<String>>>) {
     (url, seen)
 }
 
+fn curl_available() -> bool {
+    Command::new("curl")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Ends the test early, saying so, when the machine has no curl.
+macro_rules! need_curl {
+    () => {
+        if !curl_available() {
+            eprintln!("SKIPPED: curl is not installed; the curl-backed checks did not run");
+            return;
+        }
+    };
+}
+
+/// A test request: plain HTTP to a local server, and never through the
+/// developer's proxy.
 fn fetcher(url: String) -> CurlFetcher {
     CurlFetcher {
         program: "curl".into(),
@@ -367,6 +411,9 @@ fn fetcher(url: String) -> CurlFetcher {
         url,
         user_agent: user_agent("9.9.9"),
         https_only: false,
+        noproxy: true,
+        read_cap: REPLY_CAP,
+        file_cap: REPLY_CAP,
     }
 }
 
@@ -374,6 +421,7 @@ const OK: &str = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnectio
 
 #[test]
 fn a_200_gives_the_body_and_sends_the_user_agent() {
+    need_curl!();
     let (url, seen) = serve(vec![OK]);
     assert_eq!(fetcher(url).fetch().as_deref(), Ok("{\"crate\":{\"a\":1}}"));
     let request = seen.lock().unwrap()[0].clone();
@@ -391,6 +439,7 @@ fn a_200_gives_the_body_and_sends_the_user_agent() {
 
 #[test]
 fn any_non_200_is_a_failure() {
+    need_curl!();
     for reply in [
         "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}",
         "HTTP/1.1 500 Oops\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}",
@@ -404,6 +453,7 @@ fn any_non_200_is_a_failure() {
 
 #[test]
 fn a_refused_connection_is_a_failure() {
+    need_curl!();
     let port = {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         l.local_addr().unwrap().port()
@@ -416,6 +466,7 @@ fn a_refused_connection_is_a_failure() {
 
 #[test]
 fn a_server_that_never_answers_times_out() {
+    need_curl!();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/", listener.local_addr().unwrap());
     let started = Instant::now();
@@ -549,4 +600,173 @@ fn begin_without_a_cache_location_makes_no_request() {
 #[test]
 fn the_clock_reads_unix_seconds() {
     assert!(now_secs() > 1_700_000_000);
+}
+
+// --- review fixes -----------------------------------------------------------
+
+#[test]
+fn an_endless_reply_is_cut_at_the_cap_and_curl_is_killed() {
+    need_curl!();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = stream.read(&mut buf);
+        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
+        let chunk = format!("{:x}\r\n{}\r\n", 4096, "a".repeat(4096));
+        // Until the client goes away.
+        let mut sent = 0usize;
+        while stream.write_all(chunk.as_bytes()).is_ok() {
+            sent += chunk.len();
+        }
+        sent
+    });
+    let mut f = fetcher(url);
+    f.read_cap = 10_000;
+    f.file_cap = 1_000_000_000;
+    let started = Instant::now();
+    assert_eq!(f.fetch(), Err(Failed));
+    assert!(started.elapsed() < Duration::from_secs(TIMEOUT_SECS - 1));
+    // Killed at the cap: the server could push only what the sockets buffer,
+    // not the 1 GB that curl's own limit would have let through.
+    let sent = server.join().unwrap();
+    assert!(sent < 32 * 1024 * 1024, "{sent} bytes were sent");
+}
+
+#[test]
+fn a_reply_within_the_cap_is_kept() {
+    need_curl!();
+    let (url, _) = serve(vec![OK]);
+    let mut f = fetcher(url);
+    f.read_cap = 64;
+    assert_eq!(f.fetch().as_deref(), Ok("{\"crate\":{\"a\":1}}"));
+}
+
+#[test]
+fn a_fifo_at_the_cache_path_does_not_block() {
+    let (_dir, path) = cache_file();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+    // SAFETY: a valid NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let probe = path.clone();
+    thread::spawn(move || tx.send(read_cache(&probe)).unwrap());
+    let got = rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("read_cache blocked");
+    assert_eq!(got, None);
+}
+
+#[test]
+fn a_symlink_at_the_cache_path_is_not_followed() {
+    let (dir, path) = cache_file();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let real = dir.path().join("real.json");
+    fs::write(
+        &real,
+        Cache {
+            checked_at: 1,
+            ok: true,
+            latest: None,
+        }
+        .to_json(),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&real, &path).unwrap();
+    assert_eq!(read_cache(&path), None);
+}
+
+#[test]
+fn the_temp_file_is_private_unique_and_never_left_behind() {
+    let (_dir, path) = cache_file();
+    write_cache(&path, &Cache::default()).unwrap();
+    let names: Vec<_> = fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(names, ["update-check.json"]);
+    assert!(
+        temp_path(&path)
+            .to_string_lossy()
+            .contains(&std::process::id().to_string())
+    );
+}
+
+#[test]
+fn a_planted_temp_symlink_is_not_written_through() {
+    let (dir, path) = cache_file();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let victim = dir.path().join("victim");
+    fs::write(&victim, "keep").unwrap();
+    std::os::unix::fs::symlink(&victim, temp_path(&path)).unwrap();
+    write_cache(&path, &Cache::default()).unwrap();
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "keep");
+    assert!(read_cache(&path).is_some());
+}
+
+#[test]
+fn a_failed_write_removes_its_temp_file() {
+    let (_dir, path) = cache_file();
+    fs::create_dir_all(&path).unwrap(); // the target is a directory: rename fails
+    assert!(write_cache(&path, &Cache::default()).is_err());
+    assert!(!temp_path(&path).exists());
+}
+
+#[test]
+fn begin_stamps_the_clock_before_the_request() {
+    let (_dir, path) = cache_file();
+    // A fetcher that never answers in the test's lifetime.
+    struct Slow;
+    impl Fetcher for Slow {
+        fn fetch(&self) -> Result<String, Failed> {
+            thread::sleep(Duration::from_secs(2));
+            Err(Failed)
+        }
+    }
+    let (tx, _rx) = mpsc::channel(1);
+    assert_eq!(
+        begin(true, Some(path.clone()), 7_000, "0.15.1", Slow, tx),
+        None
+    );
+    // Right away, while the request is in flight, a quit-and-restart finds it.
+    let c = stored(&path);
+    assert_eq!(c.checked_at, 7_000);
+    let again = startup(true, Some(&path), 7_000 + 60, "0.15.1");
+    assert!(!again.due, "a quick restart must not ask again");
+}
+
+#[test]
+fn begin_does_not_ask_when_the_cache_cannot_be_written() {
+    let (dir, _) = cache_file();
+    let blocker = dir.path().join("blocker");
+    fs::write(&blocker, "x").unwrap();
+    let path = blocker.join("sub").join("update-check.json");
+    let (fetcher, calls) = counting("0.16.0");
+    let (tx, mut rx) = mpsc::channel(1);
+    assert_eq!(begin(true, Some(path), 5_000, "0.15.1", fetcher, tx), None);
+    settle();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn begin_does_not_ask_on_a_read_only_cache_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_dir, path) = cache_file();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::set_permissions(path.parent().unwrap(), fs::Permissions::from_mode(0o500)).unwrap();
+    // A superuser ignores the mode: nothing to prove then.
+    // SAFETY: geteuid cannot fail.
+    let writable_anyway = unsafe { libc::geteuid() } == 0;
+    let (fetcher, calls) = counting("0.16.0");
+    let (tx, _rx) = mpsc::channel(1);
+    begin(true, Some(path.clone()), 5_000, "0.15.1", fetcher, tx);
+    settle();
+    let parent = path.parent().unwrap();
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).unwrap();
+    if !writable_anyway {
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
 }
