@@ -98,6 +98,7 @@ Fallback split if over 400: 1b-i (state, keys, effects) and 1b-ii (bar and snaps
 - [x] 2a.4 RED: config `[ai.tools] enabled` default true, bad value falls back with the startup notice order; menu Tools row after Notify; save writes only `ai.tools.enabled`, never `ai.mcp.*`; popup size lists updated.
 - [x] 2a.5 GREEN: implement; make `CREDENTIAL_DIRS` `pub(crate)`.
 - [x] 2a.6 Gate.
+- [x] 2a.8 Review follow-up: deny list widened by user decision (credential files, `.config/gh`, `.config/gcloud`, keyrings, shell/REPL histories, `.envrc`, lazarobox store); real roots canonicalized for every dir root; tests per group.
 - [x] 2a.7 Docs: doc comments; README config key `[ai.tools]`.
 
 ## PR4 / 2b: Read tools and wrapper (`src/runtime/tools/{mod,fs}.rs`, `src/core/ai/tools/label.rs`)

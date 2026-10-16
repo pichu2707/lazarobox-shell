@@ -1,8 +1,9 @@
 //! Which paths the read tools may touch.
 //!
 //! The rule is a deny list under `$HOME`: another tool's credential folders,
-//! `~/.ssh`, `~/.gnupg` and `.env` files at any depth, plus everything outside
-//! `$HOME`. Every refusal looks the same, so a model cannot probe which files
+//! `~/.ssh`, `~/.gnupg`, tool configs that hold tokens, keyrings, lazarobox's
+//! own store, and credential, history and `.env` files at any depth, plus
+//! everything outside `$HOME`. Every refusal looks the same, so a model cannot probe which files
 //! exist or which are excluded.
 
 use std::path::{Component, Path, PathBuf};
@@ -12,8 +13,37 @@ use crate::core::ai::jail::CREDENTIAL_DIRS;
 /// The one text returned for an excluded, outside or missing path.
 pub const REFUSED: &str = "path not available";
 
-/// Folders under `$HOME` that are never readable, besides `CREDENTIAL_DIRS`.
-const SECRET_DIRS: &[&str] = &[".ssh", ".gnupg"];
+/// Folders and files under `$HOME`, given as a path relative to it, that are
+/// never readable, besides `CREDENTIAL_DIRS`. `.local/share/lazarobox` is the
+/// app's own store (chat history, engram, update cache) at its default XDG
+/// place; a custom `$XDG_DATA_HOME` is not followed here.
+const SECRET_DIRS: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".config/gh",
+    ".config/gcloud",
+    ".local/share/keyrings",
+    ".local/share/fish/fish_history",
+    ".local/share/lazarobox",
+];
+
+/// File names that are never readable wherever they sit below `$HOME`:
+/// credential files, `.envrc` and shell or REPL histories.
+const SECRET_FILES: &[&str] = &[
+    ".netrc",
+    ".git-credentials",
+    ".pgpass",
+    ".npmrc",
+    ".envrc",
+    ".bash_history",
+    ".zsh_history",
+    ".zhistory",
+    ".python_history",
+    ".node_repl_history",
+    ".psql_history",
+    ".mysql_history",
+    ".sqlite_history",
+];
 
 /// The verdict on a path. `Allowed` carries the real path to open.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -34,14 +64,22 @@ pub fn is_env_name(name: &str) -> bool {
 /// in [`check_path`].
 pub fn is_excluded_name(name: &str) -> bool {
     is_env_name(name)
+        || SECRET_FILES
+            .iter()
+            .any(|file| file.eq_ignore_ascii_case(name))
 }
 
-/// Whether `name` is an excluded folder when it sits directly under `$HOME`.
-fn is_secret_root(name: &str) -> bool {
-    SECRET_DIRS
-        .iter()
-        .chain(CREDENTIAL_DIRS)
-        .any(|dir| dir.eq_ignore_ascii_case(name))
+/// Whether the names below `$HOME` start with an excluded root (ASCII
+/// case-insensitive, component by component).
+fn starts_with_secret_root(names: &[std::borrow::Cow<'_, str>]) -> bool {
+    SECRET_DIRS.iter().chain(CREDENTIAL_DIRS).any(|root| {
+        let mut parts = root.split('/');
+        names.len() >= root.split('/').count()
+            && names
+                .iter()
+                .zip(&mut parts)
+                .all(|(name, part)| part.eq_ignore_ascii_case(name))
+    })
 }
 
 /// Judges what follows `$HOME` in a path: refused when it holds a `.` or `..`
@@ -54,8 +92,7 @@ fn judge_rest(rest: &Path) -> bool {
             _ => return false,
         }
     }
-    !names.first().is_some_and(|first| is_secret_root(first))
-        && !names.iter().any(|name| is_excluded_name(name))
+    !starts_with_secret_root(&names) && !names.iter().any(|name| is_excluded_name(name))
 }
 
 /// Judges an already resolved path (no symlinks, no `.` or `..`) against the
@@ -99,7 +136,7 @@ fn expand_tilde(home: &Path, input: &str) -> Option<PathBuf> {
 }
 
 /// The real paths of the secret roots that exist under `real_home`: `~/.ssh`,
-/// `~/.gnupg`, every credential folder, and each `.env`-style entry directly
+/// `~/.gnupg`, every credential folder, and each excluded file name directly
 /// in HOME. Following the links here is what stops a second name for the same
 /// secret (`~/foo -> ~/dotfiles/ssh`) or a link with an ordinary target
 /// (`~/.env -> ~/secrets/app.env`). `.env` links deeper than HOME are not
@@ -114,7 +151,7 @@ fn real_secret_roots(real_home: &Path) -> Vec<PathBuf> {
         roots.extend(
             entries
                 .flatten()
-                .filter(|entry| is_env_name(&entry.file_name().to_string_lossy()))
+                .filter(|entry| is_excluded_name(&entry.file_name().to_string_lossy()))
                 .filter_map(|entry| entry.path().canonicalize().ok()),
         );
     }
@@ -280,7 +317,7 @@ mod tests {
                 "{p}"
             );
         }
-        for name in [".envrc", ".environment", "env", "x.env"] {
+        for name in [".environment", "env", "x.env"] {
             let p = f.home.join(name);
             assert_eq!(check_path(&f.home, &p), PathVerdict::Allowed(p), "{name}");
         }
@@ -565,6 +602,107 @@ mod tests {
                 "{origin:?}"
             );
         }
+    }
+
+    // User decision: wider deny list (credential files, tool configs,
+    // keyrings, shell histories, lazarobox's own store).
+    #[test]
+    fn credential_files_at_any_depth_are_refused() {
+        let f = fixture();
+        for name in [
+            ".netrc",
+            ".git-credentials",
+            ".pgpass",
+            ".npmrc",
+            ".envrc",
+            ".bash_history",
+            ".zsh_history",
+            ".zhistory",
+            ".python_history",
+            ".node_repl_history",
+            ".psql_history",
+            ".mysql_history",
+            ".sqlite_history",
+            ".NETRC",
+        ] {
+            for p in [name.to_owned(), format!("project/{name}")] {
+                assert_eq!(
+                    check_path(&f.home, &f.home.join(&p)),
+                    PathVerdict::Refused,
+                    "{p}"
+                );
+            }
+        }
+        assert!(is_excluded_name(".envrc"));
+    }
+
+    #[test]
+    fn nested_secret_roots_are_refused_with_their_children() {
+        let f = fixture();
+        for root in [
+            ".config/gh",
+            ".config/gcloud",
+            ".local/share/keyrings",
+            ".local/share/fish/fish_history",
+            ".local/share/lazarobox",
+            ".password-store",
+            ".Config/GH",
+        ] {
+            for p in [root.to_owned(), format!("{root}/child")] {
+                assert_eq!(
+                    check_path(&f.home, &f.home.join(&p)),
+                    PathVerdict::Refused,
+                    "{p}"
+                );
+            }
+        }
+        for p in [
+            ".config",
+            ".config/nvim",
+            ".config/github",
+            ".local/share",
+            ".local/share/fish",
+            ".local/share/fish/other",
+            ".local/share/lazarobox-x",
+        ] {
+            let path = f.home.join(p);
+            assert_eq!(
+                check_path(&f.home, &path),
+                PathVerdict::Allowed(path),
+                "{p}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_credential_file_link_in_home_protects_its_target() {
+        let f = fixture();
+        fs::create_dir_all(f.home.join("vault")).unwrap();
+        fs::write(f.home.join("vault/n"), "k").unwrap();
+        symlink(f.home.join("vault/n"), f.home.join(".netrc")).unwrap();
+        assert!(!allowed(&f, "~/.netrc"));
+        assert!(!allowed(&f, "~/vault/n"));
+    }
+
+    #[test]
+    fn an_alias_of_a_nested_secret_root_is_refused() {
+        let f = fixture();
+        let dot = f.home.join("dotfiles");
+        fs::create_dir_all(dot.join("gh")).unwrap();
+        fs::write(dot.join("gh/hosts.yml"), "t").unwrap();
+        fs::create_dir_all(f.home.join(".config")).unwrap();
+        symlink(dot.join("gh"), f.home.join(".config/gh")).unwrap();
+        fs::create_dir_all(f.home.join(".local/share/lazarobox")).unwrap();
+        fs::write(f.home.join(".local/share/lazarobox/chat.db"), "c").unwrap();
+        symlink(
+            f.home.join(".local/share/lazarobox"),
+            f.home.join("project/store"),
+        )
+        .unwrap();
+        assert!(!allowed(&f, "~/.config/gh/hosts.yml"));
+        assert!(!allowed(&f, "~/dotfiles/gh/hosts.yml"));
+        assert!(!allowed(&f, "store/chat.db"));
+        assert!(!allowed(&f, "~/.local/share/lazarobox/chat.db"));
     }
 
     // Review W4.

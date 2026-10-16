@@ -34,7 +34,7 @@ The jail is not weakened, and the engine and model are never chosen by lazarobox
   - They are configured once and re-exposed to every engine.
 - **T5 Paths.**
   - Tools may return absolute or `~`-relative paths within `$HOME`.
-  - Excluded: `~/.ssh`, `~/.gnupg`, every entry of `CREDENTIAL_DIRS` (`.claude`, `.gemini`, `.codex`, `.aws`, `.kube`, `.docker`, `.password-store`), and `.env`/`.env.*` files.
+  - Excluded: `~/.ssh`, `~/.gnupg`, every entry of `CREDENTIAL_DIRS` (`.claude`, `.gemini`, `.codex`, `.aws`, `.kube`, `.docker`, `.password-store`), `~/.config/gh`, `~/.config/gcloud`, `~/.local/share/keyrings`, `~/.local/share/lazarobox`, and, at any depth, `.env`/`.env.*`/`.envrc`, `.netrc`, `.git-credentials`, `.pgpass`, `.npmrc` and shell or REPL history files.
 - **T6 Execution.**
   - State changes run ONLY in the user's own pane, visible and approved.
   - The AI's own tools are read-only.
