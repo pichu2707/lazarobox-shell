@@ -140,6 +140,15 @@ impl Budget<'_> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Folders `find_dir` opened on this thread, so a test can see a spent
+    /// budget stop the walk.
+    static OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// What one folder open costs on this thread, as a slow mount would.
+    static OPEN_DELAY: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
+}
+
 /// Runs one read tool, synchronously. Builds the secret roots ONCE for the
 /// whole call and refuses the call when they cannot be built.
 pub fn execute(call: &Call, env: &ToolEnv, limits: &Limits) -> Result<String, Failure> {
@@ -322,6 +331,15 @@ fn visible(roots: &SecretRoots, budget: &Budget, dir: &Path, name: &OsStr, kind:
     }
 }
 
+/// Whether redaction would change the name. Such a name is skipped: neither
+/// listed nor matched, and a folder with one is not entered. Showing it as
+/// `[REDACTED]`, or matching a query against the raw name, would tell the
+/// model which prefixes of a key exist.
+fn redaction_changes(name: &OsStr) -> bool {
+    let line = one_line(name);
+    redact(&line).text != line
+}
+
 /// A name that fits on one line: escapes and bidi marks are gone, and so is
 /// every remaining control character.
 fn one_line(name: &OsStr) -> String {
@@ -345,7 +363,9 @@ fn list_dir(
     let (found, scan_cut) = entries(&fd, limits.visited, budget)?;
     let mut shown: Vec<(String, char)> = found
         .iter()
-        .filter(|(name, kind)| visible(roots, budget, &real, name, *kind))
+        .filter(|(name, kind)| {
+            visible(roots, budget, &real, name, *kind) && !redaction_changes(name)
+        })
         .map(|(name, kind)| {
             let tag = if kind.is_dir() {
                 'd'
@@ -356,7 +376,7 @@ fn list_dir(
             } else {
                 '?'
             };
-            (redact(&one_line(name)).text, tag)
+            (one_line(name), tag)
         })
         .collect();
     shown.sort();
@@ -393,8 +413,19 @@ fn find_dir(
     let (mut visited, mut cut) = (0usize, false);
     let mut found: Vec<String> = Vec::new();
     'search: while let Some(rel) = queue.pop_front() {
+        // A spent budget stops the walk before the next open, even when the
+        // folders left in the queue have no entries to trip the per-entry check.
+        if budget.spent() {
+            cut = true;
+            break;
+        }
         let level = rel.components().count();
         let dir = roots.home().join(&rel);
+        #[cfg(test)]
+        {
+            OPENS.with(|c| c.set(c.get() + 1));
+            std::thread::sleep(OPEN_DELAY.with(|c| c.get()));
+        }
         let Ok(fd) = open_checked(roots, &dir, true) else {
             continue;
         };
@@ -409,7 +440,10 @@ fn find_dir(
                 cut = true;
                 break 'search;
             }
-            if !kind.is_dir() || !visible(roots, budget, &dir, &name, kind) {
+            if !kind.is_dir()
+                || !visible(roots, budget, &dir, &name, kind)
+                || redaction_changes(&name)
+            {
                 continue;
             }
             if level >= limits.depth {
@@ -419,7 +453,7 @@ fn find_dir(
             }
             let child = rel.join(&name);
             if name.to_string_lossy().to_lowercase().contains(&needle) {
-                found.push(format!("~/{}", redact(&one_line(child.as_os_str())).text));
+                found.push(format!("~/{}", one_line(child.as_os_str())));
                 if found.len() == limits.results {
                     cut = true;
                     break 'search;
@@ -697,7 +731,10 @@ mod tests {
         assert_eq!(text.len(), 2016);
         text.push_str("sk-QWERTYUIOPASDF1234567890 tail");
         fs::write(f.home.join("conf"), &text).unwrap();
-        let limits = Limits { read_bytes: 1000 };
+        let limits = Limits {
+            read_bytes: 1000,
+            ..Limits::default()
+        };
         let out = execute(
             &Call::ReadFile {
                 path: "~/conf".into(),
@@ -1002,16 +1039,48 @@ mod tests {
     }
 
     #[test]
-    fn listed_and_found_names_are_redacted() {
+    fn a_name_that_redaction_would_change_is_neither_listed_nor_found() {
         let f = fixture();
         fs::write(f.home.join("sk-abcDEF1234567890"), "x").unwrap();
-        fs::create_dir_all(f.home.join("dev/sk-ghiJKL1234567890")).unwrap();
+        fs::create_dir_all(f.home.join("dev/sk-ghiJKL1234567890/inner-hit")).unwrap();
+        fs::create_dir_all(f.home.join("dev/plain-hit")).unwrap();
         let out = list(&env(&f.home), "~", &Limits::default()).unwrap();
-        assert!(!out.contains("abcDEF"), "{out}");
-        assert!(out.contains("f [REDACTED]"), "{out}");
-        let out = find(&env(&f.home), "ghiJKL", &Limits::default()).unwrap();
-        assert!(!out.contains("ghiJKL"), "{out}");
-        assert_eq!(out, "~/dev/[REDACTED]");
+        assert_eq!(out, "d dev");
+        let out = list(&env(&f.home), "~/dev", &Limits::default()).unwrap();
+        assert_eq!(out, "d app\nd plain-hit");
+        // A prefix of the key must not confirm that such a name exists.
+        for query in ["sk-g", "sk-ghiJKL", "ghiJKL1234567890", "REDACTED"] {
+            let out = find(&env(&f.home), query, &Limits::default()).unwrap();
+            assert_eq!(out, "no match", "{query}");
+        }
+        // Nor is the folder entered: its children would carry the name.
+        assert_eq!(
+            find(&env(&f.home), "inner-hit", &Limits::default()).unwrap(),
+            "no match"
+        );
+        assert_eq!(
+            find(&env(&f.home), "plain-hit", &Limits::default()).unwrap(),
+            "~/dev/plain-hit"
+        );
+    }
+
+    #[test]
+    fn a_spent_budget_stops_find_dir_before_it_opens_the_next_folder() {
+        let f = fixture();
+        for n in 0..200 {
+            fs::create_dir_all(f.home.join(format!("d{n}"))).unwrap();
+        }
+        // Every open costs 10 ms; the call has 60 ms.
+        let limits = Limits {
+            time: Duration::from_millis(60),
+            ..Limits::default()
+        };
+        OPEN_DELAY.with(|c| c.set(Duration::from_millis(10)));
+        OPENS.with(|c| c.set(0));
+        let out = find(&env(&f.home), "nothing", &limits).unwrap();
+        let opens = OPENS.with(|c| c.get());
+        assert!(opens < 20, "{opens} folders were opened");
+        assert!(out.ends_with(FIND_MARKER), "{out}");
     }
 
     #[test]
