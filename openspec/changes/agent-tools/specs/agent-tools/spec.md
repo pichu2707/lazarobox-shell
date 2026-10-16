@@ -90,7 +90,7 @@ There MUST be one registry of tools, the single source of truth for names, argum
 - THEN the event loop keeps handling events and the call ends at its time bound
 
 ### Requirement: Path policy
-Tools MUST only return or open paths inside `$HOME` (absolute, or `~`-relative as input). A path MUST be refused when, after resolving `.`, `..` and every symlink to its real location, it is outside `$HOME`, is `$HOME/.ssh` or `$HOME/.gnupg`, is or lies under any entry of `CREDENTIAL_DIRS` directly under `$HOME` (`.claude`, `.gemini`, `.codex`, `.aws`, `.kube`, `.docker`, `.password-store`), or is a file named `.env` or `.env.*` at any depth. The check MUST be made on the real path that is opened, so a symlink inside `$HOME` that points to an excluded or outside path is refused. A relative input path is resolved against the chat's origin cwd and then checked like any other. Excluded entries MUST be omitted from `list_dir` and `find_dir` results, and `find_dir` MUST NOT descend into excluded directories. A refusal MUST use one message for excluded, outside and non-existent paths, so the existence of an excluded path is not revealed.
+Tools MUST only return or open paths inside `$HOME` (absolute, or `~`-relative as input). A path MUST be refused when, after resolving `.`, `..` and every symlink to its real location, it is outside `$HOME`, is `$HOME/.ssh` or `$HOME/.gnupg`, is or lies under any entry of `CREDENTIAL_DIRS` directly under `$HOME` (`.claude`, `.gemini`, `.codex`, `.aws`, `.kube`, `.docker`, `.password-store`), or is a file named `.env` or `.env.*` at any depth. The check MUST be made on both the requested path (`~` expanded, a relative input resolved against the origin cwd, `.` and `..` folded by text) and the real path that is opened, and the path is allowed only if both pass. So a symlink inside `$HOME` that points to an excluded or outside path is refused, and so is an excluded name that is itself a symlink to an ordinary place (for example `~/.ssh` linked to `~/dotfiles/ssh`). Comparison of the excluded names is ASCII case-insensitive. `~user` input, a relative or `/` home and a relative origin MUST be refused. A relative input path is resolved against the chat's origin cwd and then checked like any other. Excluded entries MUST be omitted from `list_dir` and `find_dir` results, and `find_dir` MUST NOT descend into excluded directories. A refusal MUST use one message for excluded, outside and non-existent paths, so the existence of an excluded path is not revealed.
 
 #### Scenario: Credential directories [auto]
 - GIVEN `$HOME/.ssh/id_ed25519`, `$HOME/.aws/credentials`, `$HOME/.claude/x`, `$HOME/.gnupg/k`
@@ -121,6 +121,16 @@ Tools MUST only return or open paths inside `$HOME` (absolute, or `~`-relative a
 - GIVEN `$HOME/dev/link -> $HOME/.ssh/id_ed25519`
 - WHEN `read_file` is called on `~/dev/link`
 - THEN it is refused
+
+#### Scenario: Excluded name that is a symlink to an ordinary place [auto]
+- GIVEN a dotfile manager: `$HOME/.ssh -> $HOME/dotfiles/ssh` and `$HOME/app/.env -> $HOME/secrets/app.env`
+- WHEN `read_file` is called on `~/.ssh/id_ed25519` and on `~/app/.env`
+- THEN both are refused, because the requested path names an excluded entry even though the real path does not
+
+#### Scenario: Tilde input [auto]
+- GIVEN `$HOME/dev/link -> /etc`
+- WHEN `list_dir` is called on `~/dev`, on `~/dev/link`, on `~/../other/file` and on `~root`
+- THEN only `~/dev` is listed; the others are refused
 
 #### Scenario: Symlink out of HOME and symlinked directory [auto]
 - GIVEN `$HOME/dev/etc -> /etc` and `$HOME/dev/keys -> $HOME/.aws`
