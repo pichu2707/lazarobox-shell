@@ -39,17 +39,27 @@ pub fn shell_program(shell: Option<&OsStr>) -> PathBuf {
         .map_or_else(|| PathBuf::from("/bin/sh"), Path::to_path_buf)
 }
 
-/// The value between the first two marks of `output`. `None` when the marks
-/// are missing, the value is empty or it has a newline or NUL in it.
+/// The last well-formed value fenced by two marks in `output`: absolute (it
+/// starts with `/`), not empty, no newline or NUL. Every mark is tried as an
+/// opening one, so a fake pair printed earlier (an rc file or xtrace echoing
+/// the script, with a literal `%s` between its marks) cannot hide the real
+/// one.
 pub fn parse_marked(output: &[u8]) -> Option<OsString> {
     let mark = MARK.as_bytes();
-    let start = find(output, mark)? + mark.len();
-    let len = find(&output[start..], mark)?;
-    let value = &output[start..start + len];
-    if value.is_empty() || value.iter().any(|b| matches!(b, b'\n' | 0)) {
-        return None;
+    let mut best = None;
+    let mut from = 0;
+    while let Some(at) = find(&output[from..], mark) {
+        let start = from + at + mark.len();
+        let Some(len) = find(&output[start..], mark) else {
+            break;
+        };
+        let value = &output[start..start + len];
+        if value.first() == Some(&b'/') && !value.iter().any(|b| matches!(b, b'\n' | 0)) {
+            best = Some(value);
+        }
+        from = start;
     }
-    Some(OsString::from_vec(value.to_vec()))
+    best.map(|value| OsString::from_vec(value.to_vec()))
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -142,6 +152,30 @@ mod tests {
         out.extend(marked("/a:/b"));
         out.extend(b"\nbye\n");
         assert_eq!(parse_marked(&out), Some(os("/a:/b")));
+    }
+
+    #[test]
+    fn an_echoed_script_cannot_mask_the_real_value() {
+        // xtrace or an rc file that echoes the script prints a fake pair
+        // around a literal `%s` before the real one.
+        let mut out = format!("+ printf '{MARK}%s{MARK}' \"$PATH\"\n").into_bytes();
+        out.extend(marked("/a:/b"));
+        assert_eq!(parse_marked(&out), Some(os("/a:/b")));
+        let mut traced = format!("+ printf '{MARK}%s{MARK}' /x:/y\n").into_bytes();
+        traced.extend(marked("/a:/b"));
+        assert_eq!(parse_marked(&traced), Some(os("/a:/b")));
+    }
+
+    #[test]
+    fn the_last_well_formed_value_wins_and_it_must_be_absolute() {
+        let mut out = marked("/first");
+        out.extend(marked("/second"));
+        assert_eq!(parse_marked(&out), Some(os("/second")));
+        assert_eq!(parse_marked(&marked("bin:/a")), None);
+        assert_eq!(parse_marked(&marked("%s")), None);
+        let mut tail = marked("/real");
+        tail.extend(marked("junk"));
+        assert_eq!(parse_marked(&tail), Some(os("/real")));
     }
 
     #[test]
