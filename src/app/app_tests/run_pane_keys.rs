@@ -376,3 +376,143 @@ fn turning_tools_off_ends_the_confirm_and_the_hint() {
     assert_eq!(pending_id(&a, id2()), None);
     assert!(!chat(&a, id2()).run_hint());
 }
+
+// A hidden confirm must never be answerable --------------------------------
+
+const PENDING_FIRST: &str = "Answer the pending confirm first";
+
+fn overlays_open(a: &App) -> bool {
+    let c = chat(a, id2());
+    c.tag_editor().is_some()
+        || c.note_editor().is_some()
+        || c.summary_draft().is_some()
+        || c.list().is_some()
+}
+
+#[test]
+fn prefix_actions_that_replace_the_conversation_refuse_while_a_confirm_waits() {
+    for keys in ["T", "n", "s"] {
+        let mut a = opened(BLOCK);
+        let id = pending_id(&a, id2());
+        assert_eq!(press(&mut a, keys), vec![], "{keys}");
+        assert_eq!(a.notice(), Some(PENDING_FIRST), "{keys}");
+        assert!(!overlays_open(&a), "{keys}");
+        assert_eq!(pending_id(&a, id2()), id, "{keys}");
+    }
+}
+
+#[test]
+fn the_blind_y_after_prefix_t_writes_nothing() {
+    let mut a = opened(BLOCK);
+    press(&mut a, "T");
+    let mut effects = Vec::new();
+    for c in "python".chars() {
+        effects.extend(a.update(key(c)));
+    }
+    effects.extend(a.update(key('y')));
+    // The tag editor never opened, so the visible prompt took the keys.
+    assert!(
+        !overlays_open(&a),
+        "no overlay ever replaced the prompt: {effects:?}"
+    );
+}
+
+#[test]
+fn keys_go_to_an_overlay_that_is_open_and_never_answer_the_hidden_confirm() {
+    use crate::core::ai::chat::tag_editor::TagTarget;
+    type Open = fn(&mut ChatState);
+    let openers: [(&str, Open); 3] = [
+        ("tags", |c| {
+            assert!(c.open_tag_editor(TagTarget::Pane));
+        }),
+        ("note", |c| {
+            c.open_note_editor().unwrap();
+        }),
+        ("list", ChatState::open_list),
+    ];
+    for (name, open) in openers {
+        let mut a = opened(BLOCK);
+        let id = pending_id(&a, id2());
+        open(a.focused_state_mut().chat_mut().unwrap());
+        let effects = a.update(key('y'));
+        assert!(writes(&effects).is_empty(), "{name}: {effects:?}");
+        assert_eq!(pending_id(&a, id2()), id, "{name}");
+        assert_eq!(
+            a.update(AppEvent::Paste("y".into())),
+            vec![],
+            "{name}: a paste goes to the overlay"
+        );
+        assert_eq!(pending_id(&a, id2()), id, "{name}");
+    }
+}
+
+// The outcome line ------------------------------------------------------------
+
+fn system_lines(a: &App) -> Vec<String> {
+    chat(a, id2())
+        .entries()
+        .iter()
+        .filter_map(|e| match e {
+            crate::core::ai::chat::Entry::System(t) => Some(t.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn an_accept_leaves_a_sent_line_and_a_decline_a_cancelled_line() {
+    let mut a = opened(BLOCK);
+    a.update(key('y'));
+    assert_eq!(
+        system_lines(&a),
+        vec!["sent to pane 1; press Enter there to run it".to_owned()]
+    );
+    for decline in [key('n'), plain_key(KeyCode::Esc)] {
+        let mut a = opened(BLOCK);
+        a.update(decline);
+        assert_eq!(system_lines(&a), vec!["cancelled".to_owned()]);
+    }
+}
+
+#[test]
+fn a_refused_write_leaves_no_sent_line() {
+    let mut a = opened(BLOCK);
+    shell_output(&mut a, PaneId::FIRST, b"\x1b[?1049h");
+    a.update(key('y'));
+    assert!(system_lines(&a).iter().all(|l| !l.starts_with("sent to")));
+}
+
+#[test]
+fn the_outcome_line_is_never_stored_or_sent_and_does_not_hide_the_block() {
+    let mut a = opened(BLOCK);
+    a.update(key('y'));
+    let mut b = opened(BLOCK);
+    b.update(key('n'));
+    for app in [&mut a, &mut b] {
+        // Not stored: no message of the conversation carries it.
+        assert!(
+            chat(app, id2())
+                .messages()
+                .all(|m| !m.text.contains("sent to pane") && m.text != "cancelled")
+        );
+        // Not sent: the next request's history holds no such line.
+        app.update(key('q'));
+        let effects = app.update(plain_key(KeyCode::Enter));
+        let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+            panic!("{effects:?}");
+        };
+        assert!(
+            request
+                .messages
+                .iter()
+                .all(|m| !m.content.contains("sent to pane") && m.content != "cancelled"),
+            "{:?}",
+            request.messages
+        );
+    }
+    // The run action stays available after an outcome line.
+    let mut c = opened(BLOCK);
+    c.update(key('n'));
+    press(&mut c, "e");
+    assert!(pending_id(&c, id2()).is_some());
+}

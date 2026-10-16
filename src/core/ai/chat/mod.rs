@@ -324,6 +324,13 @@ impl ChatState {
         }
     }
 
+    /// Adds a transient system line: shown in the transcript, never stored
+    /// and never sent to the model (like every `Entry::System`).
+    pub fn push_system_line(&mut self, line: String) {
+        self.entries.push(Entry::System(line));
+        self.generation += 1;
+    }
+
     /// The pending approval of this chat.
     pub fn approvals(&self) -> &approval::Approvals {
         &self.approvals

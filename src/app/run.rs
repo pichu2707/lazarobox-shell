@@ -4,7 +4,10 @@
 use super::*;
 use crate::core::ai::{
     chat::{
-        approval::{Approval, ApprovalAsk, ApprovalPrompt, Origin, Press, Reply},
+        approval::{
+            Approval, ApprovalAsk, ApprovalPrompt, Origin, Press, RUN_CANCELLED, Reply,
+            run_sent_line,
+        },
         yank,
     },
     sanitize,
@@ -19,6 +22,7 @@ const NO_COMMAND: &str = "No runnable command in the last answer";
 const NO_SHELL: &str = "No shell pane in this tab";
 const TARGET_GONE: &str = "That pane is gone: press p to pick another";
 const NO_PASTE_MODE: &str = "The shell cannot take a multi-line command safely";
+const ANSWER_FIRST: &str = "Answer the pending confirm first";
 const ALREADY_OPEN: &str = "A confirm is already open: answer it first";
 
 impl App {
@@ -39,11 +43,30 @@ impl App {
     }
 
     /// Whether chat `id` has an approval waiting for an answer.
-    pub(super) fn has_approval(&self, id: PaneId) -> bool {
+    pub(super) fn approval_pending(&self, id: PaneId) -> bool {
         self.panes
             .get(&id)
             .and_then(PaneState::chat_state)
             .is_some_and(|chat| chat.approvals().pending().is_some())
+    }
+
+    /// Whether the approval of chat `id` takes the keys: it is pending and
+    /// the conversation view, the one that draws the prompt, is the one
+    /// shown. Under the list, an editor or a draft the keys belong to that
+    /// view, so a hidden prompt is never answered blind.
+    pub(super) fn has_approval(&self, id: PaneId) -> bool {
+        self.approval_pending(id)
+            && !(self.list_open(id) || self.memory_view_open(id) || self.tag_editor_open(id))
+    }
+
+    /// `Prefix T`, `n` or `s` on a chat whose confirm waits: they would
+    /// replace the conversation and hide the prompt, so they refuse.
+    pub(super) fn refuse_over_approval(&mut self) -> bool {
+        let pending = self.focused_is_chat() && self.approval_pending(self.tab().focus);
+        if pending {
+            self.notice = Some(ANSWER_FIRST.to_owned());
+        }
+        pending
     }
 
     /// A key in a chat with a pending approval. It is routed before the chat
@@ -85,6 +108,9 @@ impl App {
             .approvals_mut()
             .answer(approval_id, reply, Press::Press)?;
         chat.set_run_target(None);
+        if reply == Reply::Decline {
+            chat.push_system_line(RUN_CANCELLED.to_owned());
+        }
         Some(approval)
     }
 
@@ -136,6 +162,9 @@ impl App {
             text.as_bytes().to_vec()
         };
         pty.emu.set_scrollback(0);
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.push_system_line(run_sent_line(number));
+        }
         vec![Effect::WritePty(target, bytes)]
     }
 

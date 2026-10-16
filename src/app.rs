@@ -1327,6 +1327,10 @@ impl App {
             }
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
             Step::Run(PrefixAction::OpenChat) => self.open_chat_pane(),
+            // They would replace the conversation and hide a waiting confirm.
+            Step::Run(
+                PrefixAction::EditTags | PrefixAction::SaveNote | PrefixAction::Summarize,
+            ) if self.refuse_over_approval() => Vec::new(),
             Step::Run(PrefixAction::SaveNote) if self.focused_is_chat() => {
                 let id = self.tab().focus;
                 self.chat_note_key(id)

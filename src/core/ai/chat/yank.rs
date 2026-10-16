@@ -1,7 +1,10 @@
 //! What a yank copies out of a chat: the last finished answer, or the last
 //! fenced code block of it. Reasoning and system lines are never part of it.
 
-use super::{ChatState, Entry, MsgStatus, Phase, engine::Role, transcript::is_fence};
+use super::{
+    ChatState, Entry, MsgStatus, Phase, approval::is_run_outcome, engine::Role,
+    transcript::is_fence,
+};
 
 /// The text of the last assistant message that is not still being written.
 /// `None` when there is none; an empty one is passed over for the one before.
@@ -103,7 +106,7 @@ pub fn last_shell_block(chat: &ChatState) -> Option<String> {
     }
     if chat.entries[index + 1..]
         .iter()
-        .any(|e| matches!(e, Entry::System(_)))
+        .any(|e| matches!(e, Entry::System(line) if !is_run_outcome(line)))
     {
         return None;
     }

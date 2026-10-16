@@ -30,6 +30,21 @@ fn next_id() -> u64 {
 /// The reason given to a request made while another is pending.
 pub const ANOTHER_PENDING: &str = "another approval is pending";
 
+/// The outcome line of a run action that was declined or withdrawn.
+pub const RUN_CANCELLED: &str = "cancelled";
+
+/// The outcome line of a command typed into pane `number`.
+pub fn run_sent_line(number: usize) -> String {
+    format!("sent to pane {number}; press Enter there to run it")
+}
+
+/// Whether `line` is the outcome line of a run action. Such a line is shown
+/// but never stored or sent, and it does not hide the block it came from.
+pub fn is_run_outcome(line: &str) -> bool {
+    line == RUN_CANCELLED
+        || (line.starts_with("sent to pane ") && line.ends_with("; press Enter there to run it"))
+}
+
 /// What the user is asked to allow.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ApprovalAsk {
