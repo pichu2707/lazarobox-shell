@@ -120,6 +120,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
         StatusLine::input(theme, app.input(), path, &right)
             .chat(app.focused_is_chat())
             .memory(app.status_memory())
+            .update(app.status_update())
             .thinking(thinking.clone())
             .zoomed(app.zoomed())
             .copy_position(app.scroll_position())
@@ -850,6 +851,34 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
+    }
+
+    #[test]
+    fn a_known_update_marks_the_statusline_and_the_menu_note_fits_a_real_frame() {
+        let mut app = App::new(80, 24).with_update(Some("0.16.0".into()));
+        let line = status(&app);
+        assert!(line.contains("update 0.16.0"), "{line:?}");
+        insta::assert_snapshot!("update_statusline", line.trim_end());
+
+        press(&mut app, ' ', KeyModifiers::CONTROL);
+        press(&mut app, 'm', KeyModifiers::NONE);
+        let (buf, _) = draw_at(&app, 80, 24);
+        let frame = (0..24)
+            .map(|y| row(&buf, y).trim_end().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(frame.contains("update 0.16.0 available"), "{frame}");
+        assert!(
+            frame.contains("run: cargo install lazarobox-shell"),
+            "{frame}"
+        );
+        insta::assert_snapshot!("update_menu_frame", frame);
+    }
+
+    #[test]
+    fn without_an_update_the_statusline_has_no_mark() {
+        let app = App::new(80, 24);
+        assert!(!status(&app).contains("update"));
     }
 
     #[test]

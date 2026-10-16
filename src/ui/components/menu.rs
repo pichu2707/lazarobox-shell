@@ -217,7 +217,10 @@ impl Widget for MenuPopup<'_> {
         } else {
             WANT_WIDTH
         };
-        let want_height = body as u16 + CHROME;
+        // The update note is extra: it never makes the popup fall back.
+        let note = self.menu.update_note();
+        let note_rows = note.as_ref().map_or(0, |lines| lines.len());
+        let want_height = (body + note_rows) as u16 + CHROME;
         let popup = popup_area(area, want_width, want_height);
         Clear.render(popup, buf);
         let accent = Style::default().fg(self.theme.info_blue);
@@ -230,8 +233,11 @@ impl Widget for MenuPopup<'_> {
         let inner = block.inner(popup);
         block.render(popup, buf);
 
-        // Body rows, then (height permitting) a blank row, then the footer.
-        let blank = usize::from(inner.height) > body + 1;
+        // Body rows, the update note when all of it fits above the footer,
+        // then (height permitting) a blank row, then the footer.
+        let note = note.filter(|lines| usize::from(inner.height) > body + lines.len());
+        let used = body + note.as_ref().map_or(0, |lines| lines.len());
+        let blank = usize::from(inner.height) > used + 1;
         let width = usize::from(inner.width);
         for (offset, row) in rows.iter().enumerate() {
             let (text, style) = self.line(row, inner.width);
@@ -242,7 +248,12 @@ impl Widget for MenuPopup<'_> {
             buf.set_style(Rect::new(inner.x, y, inner.width, 1), style);
             buf.set_stringn(inner.x, y, clip(&text, width), width, style);
         }
-        let footer_y = inner.y + body as u16 + u16::from(blank);
+        for (offset, line) in note.iter().flatten().enumerate() {
+            let y = inner.y + (body + offset) as u16;
+            let style = Style::default().fg(self.theme.warning_orange);
+            buf.set_stringn(inner.x, y, clip(&format!(" {line}"), width), width, style);
+        }
+        let footer_y = inner.y + used as u16 + u16::from(blank);
         if footer_y < inner.bottom() {
             let (text, style) = match self.menu.footer() {
                 Footer::Error(error) => {
@@ -571,6 +582,36 @@ mod tests {
         press(&mut menu, &[KeyCode::Enter]);
         press(&mut menu, &vec![KeyCode::Char('j'); downs]);
         menu
+    }
+
+    fn with_update() -> MenuState {
+        mixed().with_update(Some("0.16.0".into()))
+    }
+
+    #[test]
+    fn snapshot_update_note_under_the_task_list() {
+        insta::assert_snapshot!(text(&draw(62, POPUP_H + 2, &with_update())));
+    }
+
+    #[test]
+    fn the_update_note_gives_way_when_the_height_is_tight() {
+        // The same height as without a note: the note is not drawn and the
+        // popup is the one it always was.
+        assert_eq!(
+            text(&draw(62, POPUP_H, &with_update())),
+            text(&draw(62, POPUP_H, &mixed()))
+        );
+        assert_eq!(
+            text(&draw(62, MIN_HEIGHT, &with_update())),
+            text(&draw(62, MIN_HEIGHT, &mixed()))
+        );
+    }
+
+    #[test]
+    fn the_update_note_is_not_drawn_over_a_picker() {
+        let mut menu = picker_of("code", 0);
+        menu.set_update(Some("0.16.0".into()));
+        assert!(!text(&draw(62, POPUP_H + 2, &menu)).contains("update"));
     }
 
     #[test]

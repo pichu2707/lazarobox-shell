@@ -66,8 +66,14 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
+/// What a `PATH` falls back to when nothing absolute is left. Never empty:
+/// `execvp` reads an empty `PATH` as the current directory.
+pub const DEFAULT_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
+
 /// The entries of `process` first, then those of `login` that are missing.
-/// Only absolute entries stay; empty and repeated ones are dropped.
+/// Only absolute entries stay; empty and repeated ones are dropped. When none
+/// is left the result is [`DEFAULT_PATH`], so every caller (the merge and the
+/// fallback alike) gets a `PATH` that cannot reach the current directory.
 pub fn merge_paths(process: &OsStr, login: &OsStr) -> OsString {
     let mut seen: Vec<PathBuf> = Vec::new();
     for dir in std::env::split_paths(process).chain(std::env::split_paths(login)) {
@@ -75,7 +81,17 @@ pub fn merge_paths(process: &OsStr, login: &OsStr) -> OsString {
             seen.push(dir);
         }
     }
-    std::env::join_paths(seen).unwrap_or_else(|_| process.to_owned())
+    if seen.is_empty() {
+        return OsString::from(DEFAULT_PATH);
+    }
+    // Absolute directories never contain the separator, so this cannot fail.
+    std::env::join_paths(seen).unwrap_or_else(|_| OsString::from(DEFAULT_PATH))
+}
+
+/// The process `PATH` alone, held to the same rule as a merged one: only
+/// absolute entries stay. Used when the login lookup gave nothing.
+pub fn sanitize(process: &OsStr) -> OsString {
+    merge_paths(process, OsStr::new(""))
 }
 
 /// Asks `shell` (a login, interactive one) for its `PATH`. `None` on a
@@ -116,7 +132,7 @@ pub async fn login_shell_path(shell: &Path, limit: Duration) -> Option<OsString>
 pub async fn resolve(process: OsString, shell: Option<OsString>, limit: Duration) -> OsString {
     match login_shell_path(&shell_program(shell.as_deref()), limit).await {
         Some(login) => merge_paths(&process, &login),
-        None => process,
+        None => sanitize(&process),
     }
 }
 
@@ -293,6 +309,44 @@ mod tests {
         assert_eq!(
             resolve(os("/p"), Some(bad.clone().into_os_string()), t).await,
             os("/p")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_lookup_still_drops_relative_and_empty_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = fake_shell(dir.path(), "bad", "exit 1");
+        let t = Duration::from_secs(5);
+        assert_eq!(
+            resolve(os(":rel:/p:bin:/p"), Some(bad.into_os_string()), t).await,
+            os("/p")
+        );
+    }
+
+    #[test]
+    fn the_fallback_path_keeps_only_absolute_entries() {
+        assert_eq!(sanitize(&os(":rel:/a:./b:/c")), os("/a:/c"));
+    }
+
+    #[test]
+    fn an_empty_or_all_relative_path_gives_the_fixed_default() {
+        // An empty PATH makes execvp search the current directory.
+        for process in ["", ":", "rel", ":rel:./bin"] {
+            assert_eq!(sanitize(&os(process)), os(DEFAULT_PATH), "{process:?}");
+            assert_eq!(merge_paths(&os(process), &os("")), os(DEFAULT_PATH));
+            assert_eq!(merge_paths(&os(process), &os("also/rel")), os(DEFAULT_PATH));
+        }
+        assert_eq!(merge_paths(&os(""), &os("/l")), os("/l"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_lookup_with_no_usable_path_gives_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = fake_shell(dir.path(), "bad", "exit 1");
+        let t = Duration::from_secs(5);
+        assert_eq!(
+            resolve(os(""), Some(bad.into_os_string()), t).await,
+            os(DEFAULT_PATH)
         );
     }
 }

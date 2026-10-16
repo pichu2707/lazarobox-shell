@@ -1,0 +1,5 @@
+---
+source: src/ui/components/statusline/update_tests.rs
+expression: shown.trim_end()
+---
+ ◐ TERMINAL  /srv/app                zsh · update 0.16.0

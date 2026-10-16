@@ -43,6 +43,9 @@ pub struct Config {
     /// Whether the host terminal reports the mouse wheel to the shell
     /// (default on; `mouse = false` leaves the terminal's own handling).
     pub mouse: bool,
+    /// Whether a background check may ask crates.io for a newer version
+    /// (default on; `[updates] check = false` makes no network call at all).
+    pub update_check: bool,
 }
 
 impl Default for Config {
@@ -50,6 +53,7 @@ impl Default for Config {
         Self {
             bars: BarPositions::default(),
             mouse: true,
+            update_check: true,
         }
     }
 }
@@ -145,11 +149,14 @@ impl Config {
                 defaults.mouse
             }
         };
+        let update_check =
+            read_update_check(&table, &mut problems).unwrap_or(defaults.update_check);
         let ai = ai::config::read_with_port_env(&table, &mut problems, port_env);
         Ok(Parsed {
             config: Self {
                 bars: BarPositions { statusline, tabbar },
                 mouse,
+                update_check,
             },
             ai,
             problems,
@@ -205,6 +212,25 @@ impl Config {
                 AiConfig::default(),
                 Some(format!("config: {error}")),
             ),
+        }
+    }
+}
+
+/// `updates.check`, or `None` (with a problem noted) when it is missing or
+/// invalid, so the caller falls back to the default.
+fn read_update_check(table: &Table, problems: &mut Vec<String>) -> Option<bool> {
+    let section = match table.get("updates")? {
+        Value::Table(section) => section,
+        _ => {
+            problems.push("updates: expected a table".to_owned());
+            return None;
+        }
+    };
+    match section.get("check")? {
+        Value::Boolean(on) => Some(*on),
+        _ => {
+            problems.push("updates.check: expected true or false".to_owned());
+            None
         }
     }
 }
@@ -268,6 +294,7 @@ mod tests {
         let expected = Config {
             bars: bars(Bottom, Top),
             mouse: true,
+            update_check: true,
         };
         assert_eq!(Config::default(), expected);
         assert_eq!(parse(""), expected);
@@ -461,6 +488,37 @@ mod tests {
             notice.as_deref(),
             Some("config: mouse: expected true or false")
         );
+    }
+
+    #[test]
+    fn the_update_check_is_on_by_default() {
+        assert!(parse("").update_check);
+        assert!(parse("[updates]\n").update_check);
+    }
+
+    #[test]
+    fn the_update_check_can_be_turned_off() {
+        assert!(!parse("[updates]\ncheck = false").update_check);
+        assert!(parse("[updates]\ncheck = true").update_check);
+    }
+
+    #[test]
+    fn a_bad_update_check_falls_back_to_on_with_the_usual_notice() {
+        let (config, notice) = Config::load(Ok("[updates]\ncheck = \"no\"\n".into()));
+        assert!(config.update_check);
+        assert_eq!(
+            notice.as_deref(),
+            Some("config: updates.check: expected true or false")
+        );
+        let (config, notice) = Config::load(Ok("updates = 1\n".into()));
+        assert!(config.update_check);
+        assert_eq!(notice.as_deref(), Some("config: updates: expected a table"));
+    }
+
+    #[test]
+    fn a_bad_update_check_keeps_the_other_keys() {
+        let c = parse("mouse = false\n[updates]\ncheck = 3");
+        assert!(!c.mouse);
     }
 
     fn ai(engine: Option<&str>, model: Option<&str>) -> AiConfig {

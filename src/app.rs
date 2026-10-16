@@ -153,6 +153,9 @@ pub enum AppEvent {
     Memory(MemReply),
     /// The store thread answered a command of a pane.
     Store(StoreReply),
+    /// The background update check answered (or the cache was read): the
+    /// newer version to announce, if any. Never carries an action.
+    UpdateChecked(Option<String>),
     /// The runtime prepared the system prompt of a chat pane (see
     /// `Effect::PreparePrompt`): the resolved prompt with the workspace
     /// block, and the notices of the override files it skipped.
@@ -422,6 +425,8 @@ pub struct App {
     input: InputMode,
     /// Shown in the statusline path segment until the next key press.
     notice: Option<String>,
+    /// The newer released version, when the update check knows one.
+    update: Option<String>,
     dirty: bool,
     screen: ScreenLayout,
     /// Whether the host terminal was last asked to capture the mouse.
@@ -523,6 +528,7 @@ impl App {
             ids,
             input: InputMode::default(),
             notice: None,
+            update: None,
             dirty: true,
             screen,
             mouse_captured: false,
@@ -680,6 +686,17 @@ impl App {
     pub fn with_notice(mut self, notice: Option<String>) -> Self {
         self.notice = notice;
         self
+    }
+
+    /// Announces a newer released version (text only) from the start-up cache.
+    pub fn with_update(mut self, update: Option<String>) -> Self {
+        self.update = update;
+        self
+    }
+
+    /// The newer version for the statusline mark.
+    pub fn status_update(&self) -> Option<&str> {
+        self.update.as_deref()
     }
 
     /// The spawn-failure notice, if one is showing.
@@ -1092,6 +1109,14 @@ impl App {
                 effects.extend(self.on_store_reply(&reply));
                 effects
             }
+            AppEvent::UpdateChecked(update) => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.set_update(update.clone());
+                }
+                self.update = update;
+                self.dirty = true;
+                Vec::new()
+            }
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
             AppEvent::MemoryTick => self.on_memory_tick(),
@@ -1192,8 +1217,11 @@ impl App {
     /// Opens the menu: captures the live config as the original.
     /// The forced tab bar may resize the panes.
     fn open_menu(&mut self) -> Vec<Effect> {
-        self.menu =
-            Some(MenuState::open(&self.config).with_ai(self.ai.clone(), self.engines.clone()));
+        self.menu = Some(
+            MenuState::open(&self.config)
+                .with_ai(self.ai.clone(), self.engines.clone())
+                .with_update(self.update.clone()),
+        );
         self.input = InputMode::Menu;
         let mut effects = self.apply_config();
         effects.extend(self.request_detection());
@@ -6690,6 +6718,9 @@ mod app_tests {
 
     /// A resumed conversation and its engram session (engram-memory 9.6).
     mod chat_resume_memory;
+
+    /// The update notice: statusline mark and menu note.
+    mod update;
 
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.

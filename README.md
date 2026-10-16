@@ -109,6 +109,31 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 
 ---
 
+## 🔔 Update notice (`[updates]`)
+
+lazarobox can tell you that a newer version is on crates.io. It only **tells**: it never installs, downloads or runs an update, and never opens a pane for it. When one exists, the statusline shows `update 0.16.0` and the main menu (`Ctrl+Espacio m`) shows a note with the command to run yourself:
+
+```
+update 0.16.0 available — run: cargo install lazarobox-shell
+```
+
+The command is plain text and is never executed.
+
+**Configuration** (`config.toml`):
+
+```toml
+[updates]
+check = true   # default; false = no network call at all and no notice
+```
+
+With `check = false` lazarobox makes no request, reads no cache and shows nothing. A value that is not `true` or `false` is reported once at startup, like any other config problem, and the default is used.
+
+**What is sent.** One `GET https://crates.io/api/v1/crates/lazarobox-shell`, made with the system `curl` (HTTPS only, no redirects, 5 s limit), with the header `User-Agent: lazarobox-shell/<version> (+https://github.com/pichu2707/lazarobox-shell)` and `Accept: application/json`. Nothing else: no identifier, no cookies, no telemetry. If `curl` is not installed the check silently does nothing. Relative or empty `PATH` entries are never used to find `curl` or the AI CLIs. `curl` honours your usual proxy and CA environment (`HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`), so a corporate proxy works as it does for any other `curl` call; only `~/.curlrc` is ignored.
+
+**How often.** At startup, in the background, and at most once every 24 hours. In between, the last answer is read from `update-check.json` in lazarobox's data directory (`$XDG_DATA_HOME/lazarobox/`, else `~/.local/share/lazarobox/`), so a known update is still shown on every start without a new request. A failed check (no network, timeout, an error status, an unreadable reply) is silent, keeps any newer version already known, and is retried after one hour. If the cache file cannot be written (read-only directory), no check is made at all, so the API is never asked on every start. Pre-releases are never announced.
+
+---
+
 ## 🤖 Menú de IA
 
 Con `Ctrl+Espacio` y `m` se abre el menú. Su sección **AI** muestra el motor general (**Set all tasks**) y una fila por tarea. `Enter` sobre una fila de tarea abre su selector de dos niveles (motor y modelo); `Esc` vuelve un nivel. La fila `custom…` permite escribir o pegar el nombre de un modelo. `r` sobre una fila de tarea o dentro del selector vuelve a detectar los motores.
