@@ -1,11 +1,24 @@
 //! The read tools: `read_file`, `list_dir` and `find_dir`. Read only: no
 //! process, no socket, no write, and no path that the policy refuses.
+//!
+//! Known limit: a regular file with more than one hard link is refused by
+//! `read_file`, because a hard link to a secret has an ordinary path. Files
+//! that are legitimately hard-linked (pnpm and nix stores, git objects) are
+//! refused with it. Listings still show their names.
 
 use std::{
+    collections::VecDeque,
+    ffi::OsStr,
     ffi::OsString,
+    fs::FileType,
     io::Read,
-    os::{fd::OwnedFd, unix::fs::MetadataExt},
+    os::{
+        fd::{AsRawFd, OwnedFd},
+        unix::fs::MetadataExt,
+    },
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -15,7 +28,7 @@ use crate::{
             sanitize::clean,
             tools::{
                 Call,
-                paths::{PathVerdict, REFUSED, SecretRoots, resolve},
+                paths::{PathVerdict, REFUSED, SecretRoots, is_excluded_name, resolve},
             },
         },
         config::config_path,
@@ -29,13 +42,35 @@ use crate::{
 /// The caps pinned by the design.
 #[derive(Clone, Debug)]
 pub struct Limits {
+    /// `read_file`: bytes of text.
     pub read_bytes: usize,
+    /// `list_dir`: entries returned.
+    pub list_entries: usize,
+    /// `find_dir`: folder levels below HOME.
+    pub depth: usize,
+    /// `find_dir`: entries looked at (also bounds one `list_dir` scan).
+    pub visited: usize,
+    /// `find_dir`: wall time.
+    pub time: Duration,
+    /// `find_dir`: paths returned.
+    pub results: usize,
+    /// A test seam that makes every looked-at entry cost this long, as a slow
+    /// filesystem would.
+    #[cfg(test)]
+    pub(crate) entry_delay: Duration,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Limits {
             read_bytes: 64 * 1024,
+            list_entries: 200,
+            depth: 8,
+            visited: 20_000,
+            time: Duration::from_secs(2),
+            results: 20,
+            #[cfg(test)]
+            entry_delay: Duration::ZERO,
         }
     }
 }
@@ -57,6 +92,7 @@ pub enum Failure {
     Refused,
     NotText,
     Unreadable,
+    TimedOut,
     EmptyQuery,
     NotReadTool,
 }
@@ -68,6 +104,7 @@ impl Failure {
             Failure::Refused => REFUSED,
             Failure::NotText => "the file is not text",
             Failure::Unreadable => "could not read",
+            Failure::TimedOut => "timed out",
             Failure::EmptyQuery => "the query is empty",
             Failure::NotReadTool => "not a read tool",
         }
@@ -81,16 +118,70 @@ pub const NO_CUT_MARKER: &str = "[not shown: no safe cut point in the read windo
 /// Bytes read past the cap so redaction sees a whole secret.
 const REDACT_MARGIN: usize = 1024;
 
+/// Appended when a name was left out because it looks like a secret. It does
+/// not depend on any query, so it tells nothing about which name was left out.
+/// A harmless name can match (`sk-learn-extras`): it is omitted too.
+pub const OMITTED_MARKER: &str = "[some names omitted: they look like secrets]";
+
+/// Appended when `list_dir` cut the list.
+pub const LIST_MARKER: &str = "[truncated: more entries than the list cap]";
+
+/// Appended when `find_dir` hit a depth, visit, time or result bound.
+pub const FIND_MARKER: &str = "[truncated: the search was bounded]";
+
 /// Appended when `read_file` cut the text at the cap.
 pub const READ_MARKER: &str = "[truncated: the file is larger than the read cap]";
+
+/// When a walk must stop: its wall-time deadline or the caller's cancel flag.
+/// Checked per entry and before each `canonicalize`, so a cancelled or late
+/// call stops touching the disk. A syscall already blocked (a hung open on a
+/// dead mount) cannot be interrupted and can still pin one blocking thread.
+struct Budget<'a> {
+    deadline: Instant,
+    cancel: &'a AtomicBool,
+    #[cfg(test)]
+    entry_delay: Duration,
+}
+
+impl Budget<'_> {
+    fn spent(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed) || Instant::now() >= self.deadline
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Folders `find_dir` opened on this thread, so a test can see a spent
+    /// budget stop the walk.
+    static OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// What one folder open costs on this thread, as a slow mount would.
+    static OPEN_DELAY: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
+}
 
 /// Runs one read tool, synchronously. Builds the secret roots ONCE for the
 /// whole call and refuses the call when they cannot be built.
 pub fn execute(call: &Call, env: &ToolEnv, limits: &Limits) -> Result<String, Failure> {
+    execute_with(call, env, limits, &AtomicBool::new(false))
+}
+
+/// [`execute`] that stops early when `cancel` is set or `limits.time` passes.
+pub fn execute_with(
+    call: &Call,
+    env: &ToolEnv,
+    limits: &Limits,
+    cancel: &AtomicBool,
+) -> Result<String, Failure> {
     let roots = load_roots(env)?;
+    let budget = Budget {
+        deadline: Instant::now() + limits.time,
+        cancel,
+        #[cfg(test)]
+        entry_delay: limits.entry_delay,
+    };
     match call {
         Call::ReadFile { path } => read_file(&roots, env, path, limits),
-        Call::ListDir { .. } | Call::FindDir { .. } => Err(Failure::Unreadable),
+        Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits),
+        Call::FindDir { query } => find_dir(&roots, &budget, query, limits),
         Call::RunInPane { .. } => Err(Failure::NotReadTool),
     }
 }
@@ -206,6 +297,209 @@ fn read_file(
     if cut {
         out.push('\n');
         out.push_str(READ_MARKER);
+    }
+    Ok(out)
+}
+
+/// The entries of an open directory, at most `max` of them, and whether more
+/// were left. Read through `/proc/self/fd`, so it is the opened directory and
+/// not a path that is listed. A symlink is reported as such, never followed.
+fn entries(
+    fd: &OwnedFd,
+    max: usize,
+    budget: &Budget,
+) -> Result<(Vec<(OsString, FileType)>, bool), Failure> {
+    let dir = std::fs::read_dir(format!("/proc/self/fd/{}", fd.as_raw_fd()))
+        .map_err(|_| Failure::Unreadable)?;
+    let mut out = Vec::new();
+    for entry in dir {
+        if out.len() == max || budget.spent() {
+            return Ok((out, true));
+        }
+        #[cfg(test)]
+        std::thread::sleep(budget.entry_delay);
+        let entry = entry.map_err(|_| Failure::Unreadable)?;
+        out.push((
+            entry.file_name(),
+            entry.file_type().map_err(|_| Failure::Unreadable)?,
+        ));
+    }
+    Ok((out, false))
+}
+
+/// Whether `dir/name` may be shown. A link is judged by where it leads, and a
+/// dangling one is hidden.
+fn visible(roots: &SecretRoots, budget: &Budget, dir: &Path, name: &OsStr, kind: FileType) -> bool {
+    if is_excluded_name(&name.to_string_lossy()) {
+        return false;
+    }
+    let full = dir.join(name);
+    if kind.is_symlink() {
+        !budget.spent()
+            && full
+                .canonicalize()
+                .is_ok_and(|real| roots.judge_real(&real))
+    } else {
+        roots.judge_real(&full)
+    }
+}
+
+/// Whether redaction would change the name. Such a name is skipped: neither
+/// listed nor matched, and a folder with one is not entered. Showing it as
+/// `[REDACTED]`, or matching a query against the raw name, would tell the
+/// model which prefixes of a key exist.
+fn redaction_changes(name: &OsStr) -> bool {
+    let line = one_line(name);
+    redact(&line).text != line
+}
+
+/// A name that fits on one line: escapes and bidi marks are gone, and so is
+/// every remaining control character.
+fn one_line(name: &OsStr) -> String {
+    clean(&name.to_string_lossy())
+        .chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
+}
+
+fn list_dir(
+    roots: &SecretRoots,
+    budget: &Budget,
+    env: &ToolEnv,
+    path: &str,
+    limits: &Limits,
+) -> Result<String, Failure> {
+    let PathVerdict::Allowed(real) = resolve(roots, &env.origin, path) else {
+        return Err(Failure::Refused);
+    };
+    let fd = open_checked(roots, &real, true)?;
+    let (found, scan_cut) = entries(&fd, limits.visited, budget)?;
+    let mut omitted = false;
+    let mut shown: Vec<(String, char)> = found
+        .iter()
+        .filter(|(name, kind)| visible(roots, budget, &real, name, *kind))
+        .filter(|(name, _)| {
+            let hide = redaction_changes(name);
+            omitted |= hide;
+            !hide
+        })
+        .map(|(name, kind)| {
+            let tag = if kind.is_dir() {
+                'd'
+            } else if kind.is_file() {
+                'f'
+            } else if kind.is_symlink() {
+                'l'
+            } else {
+                '?'
+            };
+            (one_line(name), tag)
+        })
+        .collect();
+    shown.sort();
+    let cut = scan_cut || shown.len() > limits.list_entries;
+    shown.truncate(limits.list_entries);
+    let mut lines: Vec<String> = shown
+        .into_iter()
+        .map(|(name, tag)| format!("{tag} {name}"))
+        .collect();
+    if lines.is_empty() && !cut && !omitted {
+        lines.push("(empty)".into());
+    }
+    if omitted {
+        lines.push(OMITTED_MARKER.into());
+    }
+    if cut {
+        lines.push(LIST_MARKER.into());
+    }
+    Ok(lines.join("\n"))
+}
+
+/// Breadth-first search below HOME for folders whose name contains `query`.
+/// Each folder is opened without following a link and judged again; a link is
+/// never entered; excluded folders are skipped, never entered. The bounds are
+/// depth, entries looked at, wall time and results.
+fn find_dir(
+    roots: &SecretRoots,
+    budget: &Budget,
+    query: &str,
+    limits: &Limits,
+) -> Result<String, Failure> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return Err(Failure::EmptyQuery);
+    }
+    let mut queue = VecDeque::from([PathBuf::new()]);
+    let (mut visited, mut cut, mut omitted) = (0usize, false, false);
+    let mut found: Vec<String> = Vec::new();
+    'search: while let Some(rel) = queue.pop_front() {
+        // A spent budget stops the walk before the next open, even when the
+        // folders left in the queue have no entries to trip the per-entry check.
+        if budget.spent() {
+            cut = true;
+            break;
+        }
+        let level = rel.components().count();
+        let dir = roots.home().join(&rel);
+        #[cfg(test)]
+        {
+            OPENS.with(|c| c.set(c.get() + 1));
+            std::thread::sleep(OPEN_DELAY.with(|c| c.get()));
+        }
+        let Ok(fd) = open_checked(roots, &dir, true) else {
+            continue;
+        };
+        let Ok((mut children, more)) = entries(&fd, limits.visited, budget) else {
+            continue;
+        };
+        cut |= more;
+        children.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, kind) in children {
+            visited += 1;
+            if budget.spent() || visited > limits.visited {
+                cut = true;
+                break 'search;
+            }
+            if !kind.is_dir() || !visible(roots, budget, &dir, &name, kind) {
+                continue;
+            }
+            if redaction_changes(&name) {
+                omitted = true;
+                continue;
+            }
+            if level >= limits.depth {
+                // Frontier: nothing here is reported, only noted as unexplored.
+                cut = true;
+                break;
+            }
+            let child = rel.join(&name);
+            // The joined path can read as a secret where no part does alone.
+            if redaction_changes(child.as_os_str()) {
+                omitted = true;
+                continue;
+            }
+            if name.to_string_lossy().to_lowercase().contains(&needle) {
+                found.push(format!("~/{}", one_line(child.as_os_str())));
+                if found.len() == limits.results {
+                    cut = true;
+                    break 'search;
+                }
+            }
+            queue.push_back(child);
+        }
+    }
+    let mut out = if found.is_empty() {
+        "no match".to_owned()
+    } else {
+        found.join("\n")
+    };
+    if omitted {
+        out.push('\n');
+        out.push_str(OMITTED_MARKER);
+    }
+    if cut {
+        out.push('\n');
+        out.push_str(FIND_MARKER);
     }
     Ok(out)
 }
@@ -365,7 +659,10 @@ mod tests {
     #[test]
     fn a_big_file_is_cut_at_the_cap_on_a_char_boundary_and_says_so() {
         let f = fixture();
-        let limits = Limits { read_bytes: 9 };
+        let limits = Limits {
+            read_bytes: 9,
+            ..Limits::default()
+        };
         fs::write(f.home.join("big"), "aaaaaaaaé-tail").unwrap();
         let out = execute(
             &Call::ReadFile {
@@ -433,7 +730,10 @@ mod tests {
     fn a_secret_straddling_the_cap_is_redacted_whole_before_the_cut() {
         let f = fixture();
         fs::write(f.home.join("conf"), "xxxxxxxxx sk-abcDEF1234567890 tail").unwrap();
-        let limits = Limits { read_bytes: 20 };
+        let limits = Limits {
+            read_bytes: 20,
+            ..Limits::default()
+        };
         let out = execute(
             &Call::ReadFile {
                 path: "~/conf".into(),
@@ -461,7 +761,10 @@ mod tests {
         assert_eq!(text.len(), 2016);
         text.push_str("sk-QWERTYUIOPASDF1234567890 tail");
         fs::write(f.home.join("conf"), &text).unwrap();
-        let limits = Limits { read_bytes: 1000 };
+        let limits = Limits {
+            read_bytes: 1000,
+            ..Limits::default()
+        };
         let out = execute(
             &Call::ReadFile {
                 path: "~/conf".into(),
@@ -480,7 +783,10 @@ mod tests {
         let f = fixture();
         // Minified JSON or base64: one long line, no whitespace to cut at.
         fs::write(f.home.join("blob"), "A".repeat(3000)).unwrap();
-        let limits = Limits { read_bytes: 100 };
+        let limits = Limits {
+            read_bytes: 100,
+            ..Limits::default()
+        };
         let out = execute(
             &Call::ReadFile {
                 path: "~/blob".into(),
@@ -525,6 +831,344 @@ mod tests {
         }
     }
 
+    fn list(env: &ToolEnv, path: &str, limits: &Limits) -> Result<String, Failure> {
+        execute(&Call::ListDir { path: path.into() }, env, limits)
+    }
+
+    fn find(env: &ToolEnv, query: &str, limits: &Limits) -> Result<String, Failure> {
+        execute(
+            &Call::FindDir {
+                query: query.into(),
+            },
+            env,
+            limits,
+        )
+    }
+
+    #[test]
+    fn list_dir_returns_sorted_entries_with_kinds_and_omits_excluded_ones() {
+        let f = fixture();
+        let dev = f.home.join("dev");
+        fs::create_dir_all(dev.join("zeta")).unwrap();
+        fs::write(dev.join("a.txt"), "x").unwrap();
+        fs::write(dev.join(".env"), "x").unwrap();
+        fs::write(dev.join(".NPMRC"), "x").unwrap();
+        fs::create_dir_all(dev.join(".env.d")).unwrap();
+        symlink(dev.join("a.txt"), dev.join("ok-link")).unwrap();
+        symlink(f.home.join(".ssh/id"), dev.join("secret-link")).unwrap();
+        symlink(f.home.join("nowhere"), dev.join("dangling")).unwrap();
+        let out = list(&env(&f.home), "~/dev", &Limits::default()).unwrap();
+        assert_eq!(out, "f a.txt\nd app\nl ok-link\nd zeta");
+    }
+
+    #[test]
+    fn list_dir_of_home_hides_the_secret_folders() {
+        let f = fixture();
+        fs::create_dir_all(f.home.join(".claude")).unwrap();
+        let out = list(&env(&f.home), "~", &Limits::default()).unwrap();
+        assert_eq!(out, "d dev");
+    }
+
+    #[test]
+    fn list_dir_cleans_control_and_bidi_names_and_cannot_forge_a_line() {
+        let f = fixture();
+        fs::write(f.home.join("a\nf fake\u{202e}b\x1b[31m"), "x").unwrap();
+        let out = list(&env(&f.home), "~", &Limits::default()).unwrap();
+        assert_eq!(out.lines().count(), 2, "{out:?}");
+        assert!(out.chars().all(|c| !c.is_control() || c == '\n'), "{out:?}");
+        assert!(!out.contains('\u{202e}'));
+    }
+
+    #[test]
+    fn list_dir_stops_at_the_cap_and_says_so() {
+        let f = fixture();
+        for n in 0..5 {
+            fs::write(f.home.join(format!("f{n}")), "x").unwrap();
+        }
+        let limits = Limits {
+            list_entries: 3,
+            ..Limits::default()
+        };
+        let out = list(&env(&f.home), "~", &limits).unwrap();
+        assert_eq!(out.lines().count(), 4, "{out}");
+        assert!(out.ends_with(LIST_MARKER), "{out}");
+        let out = list(&env(&f.home), "~/dev", &limits).unwrap();
+        assert!(!out.contains("truncated"), "{out}");
+    }
+
+    #[test]
+    fn list_dir_refuses_excluded_outside_missing_and_file_targets() {
+        let f = fixture();
+        let e = env(&f.home);
+        symlink(f.home.join("../outside"), f.home.join("dev/out")).unwrap();
+        for path in [
+            "~/.ssh",
+            "~/dev/out",
+            "..",
+            "~/missing",
+            "~/dev/app/main.rs",
+        ] {
+            assert_eq!(
+                list(&e, path, &Limits::default()),
+                Err(Failure::Refused),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn find_dir_finds_nested_folders_case_insensitively_as_tilde_paths() {
+        let f = fixture();
+        fs::create_dir_all(f.home.join("dev/Curso-Rust/src")).unwrap();
+        fs::create_dir_all(f.home.join("old/deep/curso-rust-2")).unwrap();
+        let out = find(&env(&f.home), "curso-rust", &Limits::default()).unwrap();
+        assert_eq!(out, "~/dev/Curso-Rust\n~/old/deep/curso-rust-2");
+        assert_eq!(
+            find(&env(&f.home), "zzz", &Limits::default()).unwrap(),
+            "no match"
+        );
+        assert_eq!(
+            find(&env(&f.home), "  ", &Limits::default()),
+            Err(Failure::EmptyQuery)
+        );
+    }
+
+    #[test]
+    fn find_dir_skips_excluded_folders_and_does_not_descend_into_them() {
+        let f = fixture();
+        for dir in [
+            ".ssh/curso-rust",
+            ".claude/curso-rust",
+            "x/.env.d/curso-rust",
+            ".aws",
+        ] {
+            fs::create_dir_all(f.home.join(dir)).unwrap();
+        }
+        assert_eq!(
+            find(&env(&f.home), "curso-rust", &Limits::default()).unwrap(),
+            "no match"
+        );
+        assert_eq!(
+            find(&env(&f.home), "aws", &Limits::default()).unwrap(),
+            "no match"
+        );
+        assert_eq!(
+            find(&env(&f.home), ".env", &Limits::default()).unwrap(),
+            "no match"
+        );
+    }
+
+    #[test]
+    fn find_dir_never_follows_a_symlink() {
+        let f = fixture();
+        fs::create_dir_all(f.home.join("../outside/curso-rust")).unwrap();
+        symlink(f.home.join("../outside"), f.home.join("dev/gate")).unwrap();
+        symlink(f.home.join("dev/app"), f.home.join("curso-link")).unwrap();
+        assert_eq!(
+            find(&env(&f.home), "curso", &Limits::default()).unwrap(),
+            "no match"
+        );
+    }
+
+    #[test]
+    fn find_dir_obeys_the_depth_and_result_caps_and_says_so() {
+        let f = fixture();
+        fs::create_dir_all(f.home.join("a/b/c/target")).unwrap();
+        let shallow = Limits {
+            depth: 3,
+            ..Limits::default()
+        };
+        let out = find(&env(&f.home), "target", &shallow).unwrap();
+        assert_eq!(out, format!("no match\n{FIND_MARKER}"));
+        let deep = Limits {
+            depth: 4,
+            ..Limits::default()
+        };
+        assert_eq!(
+            find(&env(&f.home), "target", &deep).unwrap(),
+            "~/a/b/c/target"
+        );
+        for n in 0..3 {
+            fs::create_dir_all(f.home.join(format!("t{n}-hit"))).unwrap();
+        }
+        let few = Limits {
+            results: 2,
+            ..Limits::default()
+        };
+        let out = find(&env(&f.home), "hit", &few).unwrap();
+        assert_eq!(out.lines().count(), 3, "{out}");
+        assert!(out.ends_with(FIND_MARKER));
+    }
+
+    #[test]
+    fn find_dir_obeys_the_visited_cap() {
+        let f = fixture();
+        for n in 0..10 {
+            fs::create_dir_all(f.home.join(format!("d{n}"))).unwrap();
+        }
+        let limits = Limits {
+            visited: 4,
+            ..Limits::default()
+        };
+        let out = find(&env(&f.home), "d9", &limits).unwrap();
+        assert!(out.ends_with(FIND_MARKER), "{out}");
+    }
+
+    #[test]
+    fn find_dir_ends_at_its_time_bound_on_a_slow_filesystem() {
+        let f = fixture();
+        for n in 0..200 {
+            fs::create_dir_all(f.home.join(format!("d{n}"))).unwrap();
+        }
+        let limits = Limits {
+            time: Duration::from_millis(40),
+            entry_delay: Duration::from_millis(5),
+            ..Limits::default()
+        };
+        let start = Instant::now();
+        let out = find(&env(&f.home), "nothing", &limits).unwrap();
+        assert!(
+            start.elapsed() < Duration::from_millis(400),
+            "{:?}",
+            start.elapsed()
+        );
+        assert!(out.ends_with(FIND_MARKER), "{out}");
+    }
+
+    #[test]
+    fn a_cancelled_find_dir_stops_at_once_and_says_it_was_bounded() {
+        let f = fixture();
+        for n in 0..200 {
+            fs::create_dir_all(f.home.join(format!("d{n}"))).unwrap();
+        }
+        let limits = Limits {
+            entry_delay: Duration::from_millis(20),
+            ..Limits::default()
+        };
+        let cancel = AtomicBool::new(true);
+        let call = Call::FindDir { query: "d1".into() };
+        let start = Instant::now();
+        let out = execute_with(&call, &env(&f.home), &limits, &cancel).unwrap();
+        assert!(
+            start.elapsed() < Duration::from_millis(150),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(out, format!("no match\n{FIND_MARKER}"));
+    }
+
+    #[test]
+    fn a_cancelled_list_dir_does_not_resolve_links_and_says_it_was_cut() {
+        let f = fixture();
+        symlink(f.home.join("dev"), f.home.join("a-link")).unwrap();
+        let cancel = AtomicBool::new(true);
+        let call = Call::ListDir { path: "~".into() };
+        let out = execute_with(&call, &env(&f.home), &Limits::default(), &cancel).unwrap();
+        assert_eq!(out, LIST_MARKER);
+        let live = AtomicBool::new(false);
+        let out = execute_with(&call, &env(&f.home), &Limits::default(), &live).unwrap();
+        assert_eq!(out, "l a-link\nd dev");
+        assert!(!live.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn the_visited_cap_is_exact() {
+        // dev, .ssh, dev/app and app/main.rs: four entries in all.
+        let f = fixture();
+        let exact = Limits {
+            visited: 4,
+            ..Limits::default()
+        };
+        assert_eq!(find(&env(&f.home), "zzz", &exact).unwrap(), "no match");
+        let short = Limits {
+            visited: 3,
+            ..Limits::default()
+        };
+        let out = find(&env(&f.home), "zzz", &short).unwrap();
+        assert_eq!(out, format!("no match\n{FIND_MARKER}"));
+    }
+
+    #[test]
+    fn a_name_that_redaction_would_change_is_neither_listed_nor_found() {
+        let f = fixture();
+        fs::write(f.home.join("sk-abcDEF1234567890"), "x").unwrap();
+        fs::create_dir_all(f.home.join("dev/sk-ghiJKL1234567890/inner-hit")).unwrap();
+        fs::create_dir_all(f.home.join("dev/plain-hit")).unwrap();
+        let out = list(&env(&f.home), "~", &Limits::default()).unwrap();
+        assert_eq!(out, format!("d dev\n{OMITTED_MARKER}"));
+        let out = list(&env(&f.home), "~/dev", &Limits::default()).unwrap();
+        assert_eq!(out, format!("d app\nd plain-hit\n{OMITTED_MARKER}"));
+        // A prefix of the key must not confirm that such a name exists.
+        for query in ["sk-g", "sk-ghiJKL", "ghiJKL1234567890", "REDACTED"] {
+            let out = find(&env(&f.home), query, &Limits::default()).unwrap();
+            assert_eq!(out, format!("no match\n{OMITTED_MARKER}"), "{query}");
+        }
+        // Nor is the folder entered: its children would carry the name.
+        assert_eq!(
+            find(&env(&f.home), "inner-hit", &Limits::default()).unwrap(),
+            format!("no match\n{OMITTED_MARKER}")
+        );
+        assert_eq!(
+            find(&env(&f.home), "plain-hit", &Limits::default()).unwrap(),
+            format!("~/dev/plain-hit\n{OMITTED_MARKER}")
+        );
+    }
+
+    #[test]
+    fn the_omitted_marker_appears_only_when_something_was_omitted() {
+        let f = fixture();
+        let out = list(&env(&f.home), "~/dev", &Limits::default()).unwrap();
+        assert_eq!(out, "d app");
+        assert_eq!(
+            find(&env(&f.home), "app", &Limits::default()).unwrap(),
+            "~/dev/app"
+        );
+    }
+
+    #[test]
+    fn a_joined_path_that_redaction_would_change_is_not_a_result() {
+        let f = fixture();
+        // `token=` and `abc` are harmless alone; `token=/abc` reads as an
+        // assignment whose value is `/abc`.
+        fs::create_dir_all(f.home.join("token=/abc")).unwrap();
+        let name = OsStr::new("token=");
+        assert!(!redaction_changes(name));
+        assert!(redaction_changes(OsStr::new("token=/abc")));
+        let out = find(&env(&f.home), "abc", &Limits::default()).unwrap();
+        assert!(!out.contains("abc"), "{out}");
+        assert!(out.contains(OMITTED_MARKER), "{out}");
+    }
+
+    #[test]
+    fn a_spent_budget_stops_find_dir_before_it_opens_the_next_folder() {
+        let f = fixture();
+        for n in 0..200 {
+            fs::create_dir_all(f.home.join(format!("d{n}"))).unwrap();
+        }
+        // Every open costs 10 ms; the call has 60 ms.
+        let limits = Limits {
+            time: Duration::from_millis(60),
+            ..Limits::default()
+        };
+        OPEN_DELAY.with(|c| c.set(Duration::from_millis(10)));
+        OPENS.with(|c| c.set(0));
+        let out = find(&env(&f.home), "nothing", &limits).unwrap();
+        let opens = OPENS.with(|c| c.get());
+        assert!(opens < 20, "{opens} folders were opened");
+        assert!(out.ends_with(FIND_MARKER), "{out}");
+    }
+
+    #[test]
+    fn a_hard_linked_file_is_listed_by_name_but_not_readable() {
+        let f = fixture();
+        fs::hard_link(f.home.join(".ssh/id"), f.home.join("linked.txt")).unwrap();
+        let e = env(&f.home);
+        let out = list(&e, "~", &Limits::default()).unwrap();
+        assert!(out.contains("f linked.txt"), "{out}");
+        assert!(!out.contains("SECRET"));
+        assert_eq!(read(&e, "~/linked.txt"), Err(Failure::Refused));
+    }
+
     #[test]
     fn the_tools_leave_the_tree_untouched() {
         let f = fixture();
@@ -548,6 +1192,8 @@ mod tests {
         let e = env(&f.home);
         let _ = read(&e, "~/dev/app/main.rs");
         let _ = read(&e, "~/.ssh/id");
+        let _ = list(&e, "~/dev", &Limits::default());
+        let _ = find(&e, "app", &Limits::default());
         assert_eq!(snapshot(f.dir.path()), before);
     }
 }
