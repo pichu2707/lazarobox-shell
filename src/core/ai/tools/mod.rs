@@ -62,13 +62,13 @@ const BUILT_INS: [(&str, &str, &str, Access); 4] = [
     (
         "find_dir",
         "query",
-        "Find directories under the user's home whose name contains the query.",
+        "Find directories under the user's home whose name contains the query. Names that look like secrets are left out and the result says so.",
         Access::Read,
     ),
     (
         "list_dir",
         "path",
-        "List the entries of a directory under the user's home.",
+        "List the entries of a directory under the user's home. Names that look like secrets are left out and the result says so.",
         Access::Read,
     ),
     (

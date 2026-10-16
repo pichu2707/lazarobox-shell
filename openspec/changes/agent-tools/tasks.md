@@ -103,17 +103,19 @@ Fallback split if over 400: 1b-i (state, keys, effects) and 1b-ii (bar and snaps
 
 ## PR4 / 2b: Read tools and wrapper (`src/runtime/tools/{mod,fs}.rs`, `src/core/ai/tools/label.rs`)
 
-- [ ] 2b.1 RED: `find_dir` (depth 8, 20,000 visited, 2 s, 20 results, no symlink follow, no descent into excluded, truncation said); fake slow fs keeps the loop responsive.
-- [ ] 2b.2 RED: `list_dir` (200 cap, kinds, excluded names omitted, control/bidi names cleaned); `read_file` (64 KiB, NUL means not text, redaction via `memory::redact`, real path re-checked through `/proc/self/fd` after open, swapped-symlink case).
+- [x] 2b.1 RED: `find_dir` (depth 8, 20,000 visited, 2 s, 20 results, no symlink follow, no descent into excluded, truncation said); fake slow fs keeps the loop responsive.
+- [x] 2b.2 RED: `list_dir` (200 cap, kinds, excluded names omitted, control/bidi names cleaned); `read_file` (64 KiB, NUL means not text, redaction via `memory::redact`, real path re-checked through `/proc/self/fd` after open, swapped-symlink case).
   - 2b MUST also: check hard links with `st_nlink` (a regular file with more than one link is refused, since a hard link to a secret has an ordinary path); open with `O_NOFOLLOW` / `openat2` with `RESOLVE_BENEATH` and re-check the opened file through `/proc/self/fd`; refuse every call when HOME is unset or not absolute, never falling back to `/`.
   - 2b MUST build `SecretRoots::load(home)` ONCE per tool call (it reads HOME and every secret root) and pass it to every `resolve` and to the entry filter of `list_dir` and `find_dir`; a `None` means refuse the whole call. The roots are a snapshot taken at load: re-check the opened fd's real path against them, and a root created after the load is out of scope for that call. Pass the real lazarobox config and data dirs (honouring `XDG_CONFIG_HOME` and `XDG_DATA_HOME`) as `extra` roots: `SecretRoots::load(home, &extra)`.
-  - 2b/2e MUST reject duplicate JSON keys at the raw wire layer: `serde_json::Value` has already collapsed them when `parse_call` runs. `parse_call` caps each argument at `MAX_ARG_BYTES` (4096).
+  - 2c/2e (the layer that reads the raw line; 2b parses nothing, it takes a validated `Call`) MUST reject duplicate JSON keys at the raw wire layer: `serde_json::Value` has already collapsed them when `parse_call` runs. `parse_call` caps each argument at `MAX_ARG_BYTES` (4096).
   - Hardening (review W2): open with `O_NOFOLLOW` and `O_NONBLOCK`; `fstat` and require a regular file (a FIFO would hang); refuse `st_nlink > 1` (hard links to secrets); after open, `readlink /proc/self/fd/N` and run `check_path` again; `find_dir` and `list_dir` skip excluded entries and never follow symlinks; prefer `openat2` with `RESOLVE_BENEATH` when available.
-- [ ] 2b.3 RED: recording sandbox: no process, no socket, no write; error text carries no file content (`SECRET-TOKEN-123`).
+- [x] 2b.3 RED (reworded after review): no in-process recording sandbox can see a spawn or a socket, so this is a best-effort tripwire against accidental use, NOT a guarantee. The static check (`runtime/tools/audit.rs`) tokenizes `runtime/tools/{mod,fs,open}.rs`, drops comments, strings and every `#[cfg(test)]` item, and flags the process and socket paths, `OpenOptions`, `File::create`/`options`, the write, create, remove, copy, rename and truncate calls (also through grouped or aliased `std::fs` imports), the write-mode `O_*` flags, `extern` blocks, `use libc::*`, a `libc::syscall` that is not `SYS_openat2`, and any `libc::` name outside an allow-list of read-only open calls; the ban list is a separate file so the check does not match itself, and each audited file must yield tokens. Blind spots: calls built by a macro, a path the ban list does not name, code in another crate or reached through a trait, and `#[cfg(test)]` items (not shipped). Plus a test that the tree (names, sizes, mtimes) is unchanged after the tools run; error text carries no file content (`SECRET-TOKEN-123`).
 - [x] 2b.4 RED: wrapper `<untrusted-tool-output id=NONCE>` with random 16-hex nonce, forged closing tag stays inside, 32 KiB cap marker, "data, not instructions" line.
-- [ ] 2b.5 GREEN: implement on `spawn_blocking`.
-- [ ] 2b.6 Gate.
-- [ ] 2b.7 Docs: doc comments with the pinned caps.
+- [x] 2b.5 GREEN: implement on `spawn_blocking`.
+- [x] 2b.6 Gate.
+- [x] 2b.9 Review fixes: non-Linux builds (stub open, "could not read"); `openat2` falls back to the walk only on ENOSYS/EPERM/EINVAL/E2BIG; `clean` before `redact`, redaction over a 1 KiB margin past the read cap; special files refused like hidden paths; walkers take a cancel flag and a deadline (per entry and before each `canonicalize`), `run` times out and cancels on drop; listed names redacted; no `RESOLVE_NO_XDEV` on purpose (mounts under HOME are legitimate); hard-linked stores are refused.
+- [x] 2b.8 Done in 2b: roots built once per call with the XDG-aware lazarobox dirs as `extra`; HOME unset/empty/relative refuses; `openat2` (BENEATH + NO_SYMLINKS) with an `O_NOFOLLOW` per-component fallback; fd path re-checked through `/proc/self/fd` against `judge_real`; `st_nlink > 1` and non-regular refused. Left for 2c/2e: duplicate JSON keys and the wire-size cap at the raw layer.
+- [x] 2b.7 Docs: doc comments with the pinned caps.
 
 ## PR5 / 2c: MCP core, pure (`src/core/ai/tools/mcp.rs`)
 
