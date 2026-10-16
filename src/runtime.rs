@@ -173,7 +173,8 @@ pub async fn run() -> io::Result<()> {
     // One machine for detection and chat turns: the process `PATH` extended
     // with the login shell's (a launcher gives the app a bare one). Never
     // written back to the process environment. A failed or panicked lookup
-    // leaves the process `PATH` as it was.
+    // keeps the process `PATH` but only its absolute entries (relative and
+    // empty ones are dropped); with none left it is a fixed default.
     let process_path = env::var_os("PATH").unwrap_or_default();
     let path = login_path
         .await

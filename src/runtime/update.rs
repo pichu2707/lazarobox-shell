@@ -58,7 +58,7 @@ pub fn read_cache(path: &Path) -> Option<Cache> {
     // file is read.
     let file = fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY)
         .open(path)
         .ok()?;
     if !file.metadata().ok()?.is_file() {
@@ -150,6 +150,8 @@ pub struct CurlFetcher {
     https_only: bool,
     /// Test requests must not go through the developer's proxy.
     noproxy: bool,
+    /// Working directory of the child; `None` keeps ours. Tests only.
+    cwd: Option<PathBuf>,
     /// Most reply bytes read before curl is killed.
     read_cap: usize,
     /// The `--max-filesize` given to curl.
@@ -206,6 +208,7 @@ impl CurlFetcher {
             user_agent: user_agent(env!("CARGO_PKG_VERSION")),
             https_only: true,
             noproxy: false,
+            cwd: None,
             read_cap: REPLY_CAP,
             file_cap: REPLY_CAP,
         }
@@ -214,7 +217,18 @@ impl CurlFetcher {
 
 impl Fetcher for CurlFetcher {
     fn fetch(&self) -> Result<String, Failed> {
-        let mut child = Command::new(&self.program)
+        // An empty or relative entry makes the lookup search the current
+        // directory, where a planted `curl` could be: refuse such a `PATH`.
+        let safe =
+            !self.path.is_empty() && std::env::split_paths(&self.path).all(|dir| dir.is_absolute());
+        if !safe {
+            return Err(Failed);
+        }
+        let mut command = Command::new(&self.program);
+        if let Some(cwd) = &self.cwd {
+            command.current_dir(cwd);
+        }
+        let mut child = command
             .args(self.args())
             .env("PATH", &self.path)
             .stdin(Stdio::null())

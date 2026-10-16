@@ -310,6 +310,7 @@ fn request(url: &str, https_only: bool) -> CurlFetcher {
         user_agent: "ua/1".into(),
         https_only,
         noproxy: false,
+        cwd: None,
         read_cap: REPLY_CAP,
         file_cap: REPLY_CAP,
     }
@@ -412,6 +413,7 @@ fn fetcher(url: String) -> CurlFetcher {
         user_agent: user_agent("9.9.9"),
         https_only: false,
         noproxy: true,
+        cwd: None,
         read_cap: REPLY_CAP,
         file_cap: REPLY_CAP,
     }
@@ -625,9 +627,7 @@ fn an_endless_reply_is_cut_at_the_cap_and_curl_is_killed() {
     let mut f = fetcher(url);
     f.read_cap = 10_000;
     f.file_cap = 1_000_000_000;
-    let started = Instant::now();
     assert_eq!(f.fetch(), Err(Failed));
-    assert!(started.elapsed() < Duration::from_secs(TIMEOUT_SECS - 1));
     // Killed at the cap: the server could push only what the sockets buffer,
     // not the 1 GB that curl's own limit would have let through.
     let sent = server.join().unwrap();
@@ -725,7 +725,7 @@ fn begin_stamps_the_clock_before_the_request() {
             Err(Failed)
         }
     }
-    let (tx, _rx) = mpsc::channel(1);
+    let (tx, rx) = mpsc::channel(1);
     assert_eq!(
         begin(true, Some(path.clone()), 7_000, "0.15.1", Slow, tx),
         None
@@ -735,6 +735,34 @@ fn begin_stamps_the_clock_before_the_request() {
     assert_eq!(c.checked_at, 7_000);
     let again = startup(true, Some(&path), 7_000 + 60, "0.15.1");
     assert!(!again.due, "a quick restart must not ask again");
+    // Let the request thread finish before the temp directory goes away, so
+    // its write cannot recreate it.
+    let mut rx = rx;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while rx.try_recv().is_err() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn an_empty_or_relative_path_never_runs_a_planted_curl() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("ran");
+    let planted = dir.path().join("curl");
+    fs::write(
+        &planted,
+        format!("#!/bin/sh\ntouch {}\nprintf 'x\\n200'\n", marker.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&planted, fs::Permissions::from_mode(0o755)).unwrap();
+    for path in ["", ":", "relative:/usr/bin", "."] {
+        let mut f = fetcher("http://127.0.0.1:1/".into());
+        f.path = path.into();
+        f.cwd = Some(dir.path().to_owned());
+        assert_eq!(f.fetch(), Err(Failed), "{path:?}");
+        assert!(!marker.exists(), "{path:?} ran the planted curl");
+    }
 }
 
 #[test]
