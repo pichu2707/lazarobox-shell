@@ -166,3 +166,29 @@ fn a_failed_turn_never_shows_a_key_from_stderr() {
     };
     assert!(!text.contains("abc.def"), "{text}");
 }
+
+#[test]
+fn hidden_characters_cannot_split_a_key_out_of_the_redaction() {
+    let cut = || Some(StreamEvent::Error(ChatError::Interrupted));
+    let show = |stderr: &str| {
+        let StreamEvent::Error(ChatError::Failed(text)) =
+            verdict("codex", cut(), false, exit(1), stderr)
+        else {
+            panic!("a failure was expected");
+        };
+        text
+    };
+    assert_eq!(show("bad key sk-ab\u{200b}cdefghijkl\n"), "bad key …");
+    assert_eq!(show("bad key sk-ab\u{1b}[31mcdefghijkl\n"), "bad key …");
+    assert_eq!(
+        show("bad key sk-ab\u{1b}]0;t\u{7}cdefghijkl\n"),
+        "bad key …"
+    );
+    assert_eq!(show("Bearer\u{200b} abc123\n"), "Bearer …");
+    for text in [show("x \u{1b}[2Jsk-abcdef\n"), show("y\u{202e}z\n")] {
+        assert!(
+            !text.chars().any(|c| c.is_control() || c == '\u{202e}'),
+            "{text:?}"
+        );
+    }
+}

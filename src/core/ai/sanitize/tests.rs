@@ -248,10 +248,10 @@ fn random_bytes_cut_at_random_points_never_leak_a_control() {
 
 #[test]
 fn long_runs_and_key_prefixes_are_replaced() {
-    assert_eq!(redact_tokens("id aaaaaaaaaaaaaaaaaaaa end"), "id … end");
+    assert_eq!(redact_tokens("id aaaaaaaaaaaaaaaaaaa1 end"), "id … end");
     assert_eq!(
-        redact_tokens("id aaaaaaaaaaaaaaaaaaa end"),
-        "id aaaaaaaaaaaaaaaaaaa end"
+        redact_tokens("id aaaaaaaaaaaaaaaaaa1 end"),
+        "id aaaaaaaaaaaaaaaaaa1 end"
     );
     assert_eq!(redact_tokens("bad key sk-abc123 here"), "bad key … here");
     assert_eq!(redact_tokens("session sess-AbC_9 gone"), "session … gone");
@@ -366,5 +366,57 @@ fn base64_with_its_marks_is_a_secret_from_twenty_characters() {
         "src/Foo2/barBaz/quxQuux",
     ] {
         assert_eq!(redact_tokens(text), text);
+    }
+}
+
+#[test]
+fn error_codes_made_of_lower_case_and_underscores_survive() {
+    for text in [
+        "authentication_error",
+        "context_length_exceeded",
+        "invalid_request_error: insufficient_quota",
+        "rate_limit_exceeded_for_this_organization",
+    ] {
+        assert_eq!(redact_tokens(text), text);
+    }
+}
+
+#[test]
+fn a_long_run_with_digits_or_upper_case_is_still_a_secret() {
+    for run in [
+        "authentication_error_1234",
+        "Authentication_Error_Exceeded",
+        "context-length-exceeded-for",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaa1",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    ] {
+        assert_eq!(redact_tokens(&format!("e {run} x")), "e … x", "{run}");
+    }
+    // The prefix rules do not depend on the shape of the rest.
+    assert_eq!(redact_tokens("k sk-authentication_error x"), "k … x");
+    assert_eq!(redact_tokens("k ghp_abcdefgh x"), "k … x");
+}
+
+#[test]
+fn a_plain_word_after_a_scheme_is_kept() {
+    for text in [
+        "Basic usage is documented",
+        "Bearer token is invalid",
+        "basic auth failed",
+        "the Bearer is missing",
+    ] {
+        assert_eq!(redact_tokens(text), text);
+    }
+    // 8 or more characters, or a digit, `.`, `=`, `+`, `/` or `-`, is a credential.
+    for (text, want) in [
+        ("Bearer abcdefgh x", "Bearer … x"),
+        ("Bearer abc.de x", "Bearer … x"),
+        ("Basic ab=c x", "Basic … x"),
+        ("Basic a+b x", "Basic … x"),
+        ("Basic a/b x", "Basic … x"),
+        ("Bearer a-b x", "Bearer … x"),
+        ("Bearer ab1 x", "Bearer … x"),
+    ] {
+        assert_eq!(redact_tokens(text), want, "{text}");
     }
 }

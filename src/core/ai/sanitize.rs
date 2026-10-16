@@ -253,7 +253,10 @@ fn is_base64_char(c: char) -> bool {
 }
 
 fn token_secret(run: &str) -> bool {
-    run.len() >= SECRET_RUN
+    // A long run of only lower case and `_` is an error code
+    // (`context_length_exceeded`), not a key.
+    let code = run.chars().all(|c| c.is_ascii_lowercase() || c == '_');
+    (run.len() >= SECRET_RUN && !code)
         || KEY_PREFIXES.iter().any(|p| run.starts_with(p))
         || (run.len() >= PREFIXED_RUN && TOKEN_PREFIXES.iter().any(|p| run.starts_with(p)))
 }
@@ -320,7 +323,16 @@ fn is_scheme(token: &str) -> bool {
         .is_some_and(|piece| SCHEMES.iter().any(|s| piece.eq_ignore_ascii_case(s)))
 }
 
-/// The word after `Bearer` or `Basic` becomes `…`.
+/// A word after a scheme is taken for the credential when it is 8 or more
+/// characters long or holds a digit, `.`, `=`, `+`, `/` or `-`.
+fn looks_like_credential(word: &str) -> bool {
+    word.len() >= PREFIXED_RUN
+        || word
+            .chars()
+            .any(|c| c.is_ascii_digit() || matches!(c, '.' | '=' | '+' | '/' | '-'))
+}
+
+/// The word after `Bearer` or `Basic` becomes `…` when it looks like one.
 fn redact_schemes(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut after_scheme = false;
@@ -334,7 +346,12 @@ fn redact_schemes(text: &str) -> String {
         if blank {
             out.push_str(piece);
         } else if after_scheme {
-            out.push('…');
+            // Prose after the word (`Basic usage`) is not a credential.
+            out.push_str(if looks_like_credential(piece) {
+                "…"
+            } else {
+                piece
+            });
             after_scheme = false;
         } else {
             out.push_str(piece);
@@ -351,11 +368,13 @@ fn redact_schemes(text: &str) -> String {
 /// - the userinfo of a URL (`scheme://user:pass@host` gives `scheme://…@host`);
 /// - the word after the schemes `Bearer` and `Basic`, in any case, through
 ///   quotes, braces, colons, commas and semicolons (`"Bearer"`, `Bearer:`,
-///   `{"Authorization":"Bearer x"}`);
+///   `{"Authorization":"Bearer x1"}`), when it is 8 or more characters or
+///   holds a digit, `.`, `=`, `+`, `/` or `-` (`Basic usage` is prose);
 /// - a run of letters, digits, `+`, `/` and `=` of 20 or more characters that
 ///   holds `+` or `=`, or one of 32 or more with `/` only, that does not start
 ///   with `/` and mixes upper case, lower case and digits (so paths stay);
-/// - a run of letters, digits, `_` and `-` of 20 or more characters;
+/// - a run of letters, digits, `_` and `-` of 20 or more characters, unless it
+///   is only lower case and `_` (an error code such as `invalid_request_error`);
 /// - a run starting with `sk-` or `sess-`, at any length;
 /// - a run of 8 or more characters starting with `ghp_`, `gho_`, `ghs_`,
 ///   `github_pat_`, `glpat-`, `xox`, `AKIA` or `eyJ`.

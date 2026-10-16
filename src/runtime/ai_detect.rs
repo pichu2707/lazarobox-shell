@@ -996,7 +996,7 @@ mod tests {
             "Authorization: Bearer …"
         );
         assert_eq!(
-            note("token aaaaaaaaaaaaaaaaaaaaaaaa expired"),
+            note("token aaaaaaaaaaaaaaaaaaaaaaa9 expired"),
             "token … expired"
         );
         assert_eq!(

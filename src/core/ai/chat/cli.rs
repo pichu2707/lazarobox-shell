@@ -61,7 +61,7 @@ pub fn verdict(
             _ => format!("{name} was stopped by a signal"),
         };
         StreamEvent::Error(ChatError::Failed(
-            last_line(stderr).map_or(reason, |line| redact_tokens(&line)),
+            last_line(stderr).map_or(reason, |line| redact_tokens(&sanitize(&line))),
         ))
     };
     let failed_exit = exit.is_some_and(|e| !e.success());
