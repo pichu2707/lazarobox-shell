@@ -33,10 +33,15 @@ baseline.
   Mouse). Their behaviour (h/l cycling, `t` test and its footer report,
   saving) and the config keys `[ai] notify` and `[ai] notify_sound` are
   unchanged.
-- The update check no longer waits for 24 h when the cached latest version is
-  not newer than the running one (for example right after installing it): the
-  next start checks at once. A newer cached version keeps the once-a-day rule,
-  and a failed check keeps the one-hour retry.
+- The update check no longer waits for 24 h when the cache was written by
+  another lazarobox version and its latest version is not newer than the
+  running one (for example right after an upgrade): the next start checks at
+  once. The cache now records the checking version (`checked_by`; an old file
+  without it counts as another version). A cache written by the running
+  version keeps the once-a-day rule, as do a newer cached version and the
+  one-hour retry after a failure.
+- The install command shown by the menu note, the statusline hint and the
+  footer is `cargo install lazarobox-shell --locked` everywhere.
 
 ## [0.15.3] - 2026-10-16
 

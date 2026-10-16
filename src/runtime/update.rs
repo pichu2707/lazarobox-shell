@@ -130,7 +130,7 @@ pub fn refresh(path: &Path, now: u64, current: &str, fetcher: &dyn Fetcher) -> O
         .ok()
         .and_then(|body| update::parse_response(&body))
         .ok_or(());
-    let cache = known.after(now, result);
+    let cache = known.after(now, result, current);
     // A cache that cannot be written only costs a check on the next start.
     let _ = write_cache(path, &cache);
     update::announced(Some(&cache), current)
@@ -297,7 +297,7 @@ pub fn begin(
         // (otherwise every start would ask again) and makes a quit within the
         // timeout leave a record; the answer overwrites it.
         let known = read_cache(&path).unwrap_or_default();
-        if write_cache(&path, &known.after(now, Err(()))).is_ok() {
+        if write_cache(&path, &known.after(now, Err(()), current)).is_ok() {
             spawn_refresh(path, now, current, fetcher, reply);
         }
     }

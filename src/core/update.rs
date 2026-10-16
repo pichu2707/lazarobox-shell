@@ -17,14 +17,11 @@ use serde_json::{Value, json};
 /// The public crates.io endpoint of this crate.
 pub const API_URL: &str = "https://crates.io/api/v1/crates/lazarobox-shell";
 
-/// The command the notice shows. Text only: it is never executed.
-pub const INSTALL_COMMAND: &str = "cargo install lazarobox-shell";
+/// The command the notice shows and the update pane runs. `--locked` builds
+/// with the dependency versions the release was tested with.
+pub const INSTALL_COMMAND: &str = "cargo install lazarobox-shell --locked";
 
-/// What the Updates row runs or shows. `--locked`: the versions the release
-/// was tested with.
-pub const INSTALL_COMMAND_LOCKED: &str = "cargo install lazarobox-shell --locked";
-
-/// The arguments of `cargo` for [`INSTALL_COMMAND_LOCKED`].
+/// The arguments of `cargo` for [`INSTALL_COMMAND`].
 pub const INSTALL_ARGS: [&str; 3] = ["install", "lazarobox-shell", "--locked"];
 
 /// Between two checks that worked.
@@ -93,6 +90,10 @@ pub struct Cache {
     pub ok: bool,
     /// The newest stable version seen by a check that worked.
     pub latest: Option<String>,
+    /// The lazarobox version that wrote this file. A cache from another
+    /// version (or from one that did not record it) says nothing about what
+    /// the running version has already seen.
+    pub checked_by: Option<String>,
 }
 
 impl Cache {
@@ -106,26 +107,40 @@ impl Cache {
                 .get("latest")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            checked_by: value
+                .get("checked_by")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
         })
     }
 
     pub fn to_json(&self) -> String {
-        json!({ "checked_at": self.checked_at, "ok": self.ok, "latest": self.latest }).to_string()
+        json!({
+            "checked_at": self.checked_at,
+            "ok": self.ok,
+            "latest": self.latest,
+            "checked_by": self.checked_by,
+        })
+        .to_string()
     }
 
-    /// The cache after a check at `now`: a worked check replaces `latest`, a
-    /// failed one keeps what was known and only moves the clock.
-    pub fn after(&self, now: u64, result: Result<String, ()>) -> Self {
+    /// The cache after a check at `now` by lazarobox `by`: a worked check
+    /// replaces `latest`, a failed one keeps what was known and only moves the
+    /// clock.
+    pub fn after(&self, now: u64, result: Result<String, ()>, by: &str) -> Self {
+        let checked_by = Some(by.to_owned());
         match result {
             Ok(latest) => Self {
                 checked_at: now,
                 ok: true,
                 latest: Some(latest),
+                checked_by,
             },
             Err(()) => Self {
                 checked_at: now,
                 ok: false,
                 latest: self.latest.clone(),
+                checked_by,
             },
         }
     }
@@ -134,8 +149,10 @@ impl Cache {
 /// Whether a check must go to the network at `now`, for a binary that runs
 /// `current`. A worked check holds for a day, unless what it found is not
 /// newer than `current` any more (the user installed it, or went back): then
-/// the answer is old news and the next check is due at once. A failed check
-/// keeps the short retry either way.
+/// the answer is old news and the next check is due at once, but only when
+/// another lazarobox wrote it (an upgrade: this version has not looked yet).
+/// The same version that found nothing newer waits its day, so an up-to-date
+/// user is not asked on every start. A failed check keeps the short retry.
 pub fn is_due(cache: Option<&Cache>, now: u64, current: &str) -> bool {
     let Some(cache) = cache else { return true };
     if cache.ok && latest_is_stale(cache, current) {
@@ -151,8 +168,12 @@ pub fn is_due(cache: Option<&Cache>, now: u64, current: &str) -> bool {
         .is_none_or(|elapsed| elapsed >= wait)
 }
 
-/// Whether the cached `latest` is known and no newer than `current`.
+/// Whether the cache was written by another lazarobox than `current` and its
+/// `latest` is known and no newer than `current`.
 fn latest_is_stale(cache: &Cache, current: &str) -> bool {
+    if cache.checked_by.as_deref() == Some(current) {
+        return false;
+    }
     let latest = cache.latest.as_deref().and_then(Version::parse);
     matches!((latest, Version::parse(current)), (Some(latest), Some(current)) if latest <= current)
 }
@@ -284,7 +305,7 @@ pub fn status_mark(latest: &str) -> String {
 }
 
 /// The menu note, in the two lines the popup has room for. Joined by a space
-/// they read `update <ver> available — run: cargo install lazarobox-shell`.
+/// they read `update <ver> available — run: cargo install lazarobox-shell --locked`.
 pub fn menu_lines(latest: &str) -> [String; 2] {
     [
         format!("update {latest} available \u{2014}"),
@@ -301,6 +322,21 @@ mod tests {
             checked_at,
             ok,
             latest: latest.map(str::to_owned),
+            checked_by: Some(CURRENT.to_owned()),
+        }
+    }
+
+    impl Cache {
+        fn with_clock(self, checked_at: u64) -> Self {
+            Self { checked_at, ..self }
+        }
+    }
+
+    /// A cache written by another lazarobox (or an old one with no field).
+    fn cache_by(by: Option<&str>, latest: Option<&str>) -> Cache {
+        Cache {
+            checked_by: by.map(str::to_owned),
+            ..cache(1_000, true, latest)
         }
     }
 
@@ -419,12 +455,39 @@ mod tests {
     }
 
     #[test]
-    fn a_cached_latest_that_is_not_newer_is_stale_at_once() {
-        // Equal: the user just installed the announced version. Older: a
-        // downgrade or a yanked release. Either way the 24 h wait is moot.
+    fn an_up_to_date_cache_of_this_version_waits_a_day() {
+        // This version looked and found nothing newer: once a day, not on
+        // every start.
+        for latest in ["0.15.1", "0.15.0"] {
+            let c = cache_by(Some(CURRENT), Some(latest));
+            assert!(!is_due(Some(&c), 1_001, CURRENT), "{latest}");
+            assert!(!is_due(Some(&c), 1_000 + CHECK_EVERY_SECS - 1, CURRENT));
+            assert!(is_due(Some(&c), 1_000 + CHECK_EVERY_SECS, CURRENT));
+        }
+    }
+
+    #[test]
+    fn after_an_upgrade_a_cache_that_is_not_newer_is_due_at_once() {
+        // Another version wrote it, and the version it found is the one now
+        // running (or older): the answer is old news.
         for latest in ["0.15.1", "0.15.0", "0.14.9"] {
-            let c = cache(1_000, true, Some(latest));
+            let c = cache_by(Some("0.15.0"), Some(latest));
             assert!(is_due(Some(&c), 1_000, CURRENT), "{latest}");
+        }
+    }
+
+    #[test]
+    fn an_old_cache_without_the_field_is_due_at_once() {
+        let c = cache_by(None, Some("0.15.1"));
+        assert!(is_due(Some(&c), 1_000, CURRENT));
+    }
+
+    #[test]
+    fn another_versions_cache_with_a_newer_latest_keeps_the_daily_rule() {
+        for by in [None, Some("0.15.0")] {
+            let c = cache_by(by, Some("0.15.2"));
+            assert!(!is_due(Some(&c), 1_000 + CHECK_EVERY_SECS - 1, CURRENT));
+            assert!(is_due(Some(&c), 1_000 + CHECK_EVERY_SECS, CURRENT));
         }
     }
 
@@ -445,7 +508,10 @@ mod tests {
 
     #[test]
     fn a_failed_check_keeps_the_hourly_retry_even_with_a_stale_latest() {
-        let c = cache(1_000, false, Some("0.15.1"));
+        let c = Cache {
+            ok: false,
+            ..cache_by(Some("0.15.0"), Some("0.15.1"))
+        };
         assert!(!is_due(
             Some(&c),
             1_000 + RETRY_AFTER_FAILURE_SECS - 1,
@@ -474,14 +540,14 @@ mod tests {
     #[test]
     fn a_worked_check_replaces_the_latest_version() {
         let old = cache(1, true, Some("0.15.2"));
-        let new = old.after(500, Ok("0.16.0".into()));
+        let new = old.after(500, Ok("0.16.0".into()), CURRENT);
         assert_eq!(new, cache(500, true, Some("0.16.0")));
     }
 
     #[test]
     fn a_failed_check_keeps_the_known_version_and_moves_the_clock() {
         let old = cache(1, true, Some("0.16.0"));
-        let new = old.after(500, Err(()));
+        let new = old.after(500, Err(()), CURRENT);
         assert_eq!(new, cache(500, false, Some("0.16.0")));
     }
 
@@ -509,7 +575,25 @@ mod tests {
     #[test]
     fn a_cache_without_latest_is_valid() {
         let c = Cache::parse(r#"{"checked_at":7,"ok":true}"#).unwrap();
-        assert_eq!(c, cache(7, true, None));
+        assert_eq!(c, cache_by(None, None).with_clock(7));
+    }
+
+    #[test]
+    fn the_writer_version_round_trips_and_an_old_file_has_none() {
+        let c = Cache::parse(r#"{"checked_at":7,"ok":true,"checked_by":"0.15.3"}"#).unwrap();
+        assert_eq!(c.checked_by.as_deref(), Some("0.15.3"));
+        assert!(c.to_json().contains(r#""checked_by":"0.15.3""#));
+        let old = Cache::parse(r#"{"checked_at":7,"ok":true,"latest":"0.16.0"}"#).unwrap();
+        assert_eq!(old.checked_by, None);
+    }
+
+    #[test]
+    fn every_check_stamps_the_version_that_made_it() {
+        let old = cache_by(Some("0.15.0"), Some("0.15.0"));
+        let ok = old.after(9, Ok("0.15.2".into()), "0.15.3");
+        assert_eq!(ok.checked_by.as_deref(), Some("0.15.3"));
+        let failed = old.after(9, Err(()), "0.15.3");
+        assert_eq!(failed.checked_by.as_deref(), Some("0.15.3"));
     }
 
     #[test]
@@ -654,10 +738,7 @@ mod tests {
 
     #[test]
     fn the_install_texts_are_fixed() {
-        assert_eq!(
-            INSTALL_COMMAND_LOCKED,
-            format!("cargo {}", INSTALL_ARGS.join(" "))
-        );
+        assert_eq!(INSTALL_COMMAND, format!("cargo {}", INSTALL_ARGS.join(" ")));
         assert_eq!(
             installed_text("0.16.0"),
             "lazarobox 0.16.0 installed: restart lazarobox to use it"
@@ -671,7 +752,7 @@ mod tests {
         assert_eq!(status_mark("0.16.0"), "update 0.16.0");
         assert_eq!(
             menu_lines("0.16.0").join(" "),
-            "update 0.16.0 available \u{2014} run: cargo install lazarobox-shell"
+            "update 0.16.0 available \u{2014} run: cargo install lazarobox-shell --locked"
         );
     }
 }

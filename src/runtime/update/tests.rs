@@ -86,6 +86,7 @@ fn the_cache_file_round_trips_and_is_private() {
         checked_at: 42,
         ok: true,
         latest: Some("0.16.0".into()),
+        checked_by: None,
     };
     write_cache(&path, &cache).unwrap();
     assert_eq!(read_cache(&path), Some(cache));
@@ -113,6 +114,7 @@ fn disabled_shows_nothing_and_checks_nothing() {
         checked_at: 1,
         ok: true,
         latest: Some("0.16.0".into()),
+        checked_by: None,
     };
     write_cache(&path, &newer).unwrap();
     let s = startup(false, Some(&path), 2, "0.15.1");
@@ -145,6 +147,7 @@ fn a_fresh_cache_announces_without_a_check() {
         checked_at: 1_000,
         ok: true,
         latest: Some("0.16.0".into()),
+        checked_by: None,
     };
     write_cache(&path, &c).unwrap();
     let s = startup(true, Some(&path), 1_000 + DAY - 1, "0.15.1");
@@ -164,6 +167,7 @@ fn a_stale_cache_still_announces_while_the_check_runs() {
         checked_at: 1_000,
         ok: true,
         latest: Some("0.16.0".into()),
+        checked_by: None,
     };
     write_cache(&path, &c).unwrap();
     let s = startup(true, Some(&path), 1_000 + DAY, "0.15.1");
@@ -178,6 +182,7 @@ fn an_installed_version_in_the_cache_is_due_at_once_and_announces_nothing() {
         checked_at: 1_000,
         ok: true,
         latest: Some("0.16.0".into()),
+        checked_by: None,
     };
     write_cache(&path, &c).unwrap();
     // One minute later the user runs 0.16.0: the cached answer is old news.
@@ -199,9 +204,47 @@ fn a_quick_restart_after_the_stamp_does_not_ask_again() {
         checked_at: 1_000,
         ok: false,
         latest: Some("0.16.0".into()),
+        checked_by: None,
     };
     write_cache(&path, &c).unwrap();
     assert!(!startup(true, Some(&path), 1_060, "0.16.0").due);
+}
+
+#[test]
+fn an_up_to_date_cache_of_this_version_waits_a_day() {
+    let (_dir, path) = cache_file();
+    // This very version looked a minute ago and found nothing newer.
+    let c = Cache {
+        checked_at: 1_000,
+        ok: true,
+        latest: Some("0.15.1".into()),
+        checked_by: Some("0.15.1".into()),
+    };
+    write_cache(&path, &c).unwrap();
+    assert!(!startup(true, Some(&path), 1_060, "0.15.1").due);
+    assert!(startup(true, Some(&path), 1_000 + DAY, "0.15.1").due);
+}
+
+#[test]
+fn a_cache_written_by_an_older_lazarobox_is_checked_again_at_once() {
+    let (_dir, path) = cache_file();
+    let c = Cache {
+        checked_at: 1_000,
+        ok: true,
+        latest: Some("0.15.1".into()),
+        checked_by: Some("0.15.0".into()),
+    };
+    write_cache(&path, &c).unwrap();
+    assert!(startup(true, Some(&path), 1_060, "0.15.1").due);
+}
+
+#[test]
+fn a_refresh_records_the_checking_version_so_the_next_start_waits() {
+    let (_dir, path) = cache_file();
+    let fake = Fake::ok("0.15.1");
+    assert_eq!(refresh(&path, 500, "0.15.1", &fake), None);
+    assert_eq!(stored(&path).checked_by.as_deref(), Some("0.15.1"));
+    assert!(!startup(true, Some(&path), 560, "0.15.1").due);
 }
 
 #[test]
@@ -230,7 +273,8 @@ fn a_refresh_stores_the_new_version_and_announces_it() {
         Cache {
             checked_at: 500,
             ok: true,
-            latest: Some("0.16.0".into())
+            latest: Some("0.16.0".into()),
+            checked_by: Some("0.15.1".into()),
         }
     );
 }
@@ -252,6 +296,7 @@ fn a_failed_refresh_keeps_the_cached_newer_version_and_moves_the_clock() {
             checked_at: 1,
             ok: true,
             latest: Some("0.16.0".into()),
+            checked_by: None,
         },
     )
     .unwrap();
@@ -265,7 +310,8 @@ fn a_failed_refresh_keeps_the_cached_newer_version_and_moves_the_clock() {
         Cache {
             checked_at: 900,
             ok: false,
-            latest: Some("0.16.0".into())
+            latest: Some("0.16.0".into()),
+            checked_by: Some("0.15.1".into()),
         }
     );
 }
@@ -567,6 +613,7 @@ fn begin_with_the_check_off_makes_no_request_and_shows_nothing() {
             checked_at: 1,
             ok: true,
             latest: Some("0.16.0".into()),
+            checked_by: None,
         },
     )
     .unwrap();
@@ -590,6 +637,7 @@ fn begin_within_24_hours_uses_the_cache_and_makes_no_request() {
             checked_at: 1_000,
             ok: true,
             latest: Some("0.16.0".into()),
+            checked_by: None,
         },
     )
     .unwrap();
@@ -703,6 +751,7 @@ fn a_symlink_at_the_cache_path_is_not_followed() {
             checked_at: 1,
             ok: true,
             latest: None,
+            checked_by: None,
         }
         .to_json(),
     )

@@ -21,7 +21,7 @@ fn a_known_update_gives_the_two_note_lines() {
         .unwrap();
     assert_eq!(
         note.join(" "),
-        "update 0.16.0 available \u{2014} run: cargo install lazarobox-shell"
+        "update 0.16.0 available \u{2014} run: cargo install lazarobox-shell --locked"
     );
 }
 

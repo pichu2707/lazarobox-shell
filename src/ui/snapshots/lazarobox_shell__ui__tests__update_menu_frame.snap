@@ -21,7 +21,7 @@ expression: frame
          │ Context                                                 on │
          │ Memory                                                 off │
          │ update 0.16.0 available —                                  │
-         │ run: cargo install lazarobox-shell                         │
+         │ run: cargo install lazarobox-shell --locked                │
          │                                                            │
          │ j/k move · h/l change · s save · Esc cancel                │
          └────────────────────────────────────────────────────────────┘

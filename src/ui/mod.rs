@@ -869,7 +869,7 @@ mod tests {
             .join("\n");
         assert!(frame.contains("update 0.16.0 available"), "{frame}");
         assert!(
-            frame.contains("run: cargo install lazarobox-shell"),
+            frame.contains("run: cargo install lazarobox-shell --locked"),
             "{frame}"
         );
         insta::assert_snapshot!("update_menu_frame", frame);

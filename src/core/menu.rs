@@ -802,7 +802,7 @@ impl MenuState {
             KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
             KeyCode::Char('t') if !repeat && self.on_notify_row() => self.test_notify(),
             KeyCode::Enter | KeyCode::Char('y') if !repeat && self.command_shown => {
-                MenuCommand::Copy(crate::core::update::INSTALL_COMMAND_LOCKED.to_owned())
+                MenuCommand::Copy(crate::core::update::INSTALL_COMMAND.to_owned())
             }
             KeyCode::Enter if self.on_updates_row() => {
                 if !repeat && self.update.is_some() && self.installed.is_none() {
@@ -1107,7 +1107,7 @@ impl MenuState {
         if self.command_shown {
             return format!(
                 "{} · Enter or y copies · Esc cancel",
-                crate::core::update::INSTALL_COMMAND_LOCKED
+                crate::core::update::INSTALL_COMMAND
             );
         }
         match (&self.installed, &self.update) {

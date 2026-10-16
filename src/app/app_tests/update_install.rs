@@ -4,7 +4,7 @@
 use std::{ffi::OsString, path::PathBuf};
 
 use super::*;
-use crate::core::update::{INSTALL_COMMAND_LOCKED, InstallEnv};
+use crate::core::update::{INSTALL_COMMAND, InstallEnv};
 
 const CARGO: &str = "/home/ana/.cargo/bin/cargo";
 
@@ -123,13 +123,9 @@ fn a_binary_outside_cargo_only_shows_the_command_and_copies_it() {
     for code in [KeyCode::Enter, KeyCode::Char('y')] {
         let mut a = on_updates(Some("0.15.4"), Some(distro_env()));
         assert!(a.update(enter()).is_empty(), "nothing runs");
-        assert!(
-            footer(&a).starts_with(INSTALL_COMMAND_LOCKED),
-            "{}",
-            footer(&a)
-        );
+        assert!(footer(&a).starts_with(INSTALL_COMMAND), "{}", footer(&a));
         let copy = a.update(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
-        let sequence = crate::core::copy::osc52(INSTALL_COMMAND_LOCKED).unwrap();
+        let sequence = crate::core::copy::osc52(INSTALL_COMMAND).unwrap();
         assert_eq!(copy, vec![Effect::SetClipboard(sequence)], "{code:?}");
     }
 }
@@ -142,14 +138,14 @@ fn without_cargo_on_the_path_the_command_is_shown_not_run() {
     };
     let mut a = on_updates(Some("0.15.4"), Some(env));
     assert!(a.update(enter()).is_empty());
-    assert!(footer(&a).starts_with(INSTALL_COMMAND_LOCKED));
+    assert!(footer(&a).starts_with(INSTALL_COMMAND));
 }
 
 #[test]
 fn without_an_environment_the_command_is_shown_not_run() {
     let mut a = on_updates(Some("0.15.4"), None);
     assert!(a.update(enter()).is_empty());
-    assert!(footer(&a).starts_with(INSTALL_COMMAND_LOCKED));
+    assert!(footer(&a).starts_with(INSTALL_COMMAND));
 }
 
 #[test]
