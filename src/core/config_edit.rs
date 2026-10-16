@@ -1241,7 +1241,7 @@ other = 1
         assert!(out.starts_with(existing), "{out:?}");
     }
 
-    // Spec (chat-notify, config-persistence): `ai.notify` is an owned boolean.
+    // Spec (chat-notify, config-persistence): `ai.notify` is an owned string.
     fn notify_edit(value: &'static str) -> [ConfigEdit; 1] {
         [ConfigEdit {
             table: "ai",
@@ -1251,23 +1251,52 @@ other = 1
     }
 
     #[test]
-    fn the_notify_flag_is_written_as_a_boolean() {
-        let out = apply_edit(None, &notify_edit("true")).unwrap();
-        assert_eq!(out, "[ai]\nnotify = true\n");
+    fn the_notify_mode_is_written_as_a_string() {
+        let out = apply_edit(None, &notify_edit("desktop")).unwrap();
+        assert_eq!(out, "[ai]\nnotify = \"desktop\"\n");
         let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out), None);
-        assert!(ai.notify());
+        assert_eq!(ai.notify(), crate::core::ai::config::NotifyMode::Desktop);
         assert_eq!(notice, None);
-        let out = apply_edit(Some("[ai]\ncontext = false\n"), &notify_edit("false")).unwrap();
-        assert_eq!(out, "[ai]\ncontext = false\nnotify = false\n");
+        let out = apply_edit(Some("[ai]\ncontext = false\n"), &notify_edit("off")).unwrap();
+        assert_eq!(out, "[ai]\ncontext = false\nnotify = \"off\"\n");
     }
 
     #[test]
-    fn the_notify_flag_is_updated_in_place_and_a_scalar_is_replaced() {
-        let existing = "[ai]\n# c\nnotify = false  # off\nmodel = \"m\"\n";
-        let out = apply_edit(Some(existing), &notify_edit("true")).unwrap();
-        assert_eq!(out, "[ai]\n# c\nnotify = true  # off\nmodel = \"m\"\n");
-        let out = apply_edit(Some("[ai]\nnotify = \"x\"\n"), &notify_edit("true")).unwrap();
-        assert_eq!(out, "[ai]\nnotify = true\n");
+    fn notify_sound_round_trips_as_a_toml_boolean() {
+        for (value, want) in [("false", false), ("true", true)] {
+            let edit = [ConfigEdit {
+                table: "ai",
+                key: "notify_sound",
+                value: std::borrow::Cow::Borrowed(value),
+            }];
+            let out = apply_edit(Some("[ai]\ncontext = false\n"), &edit).unwrap();
+            assert_eq!(
+                out,
+                format!("[ai]\ncontext = false\nnotify_sound = {value}\n")
+            );
+            let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out), None);
+            assert_eq!(ai.notify_sound(), want);
+            assert_eq!(notice, None);
+        }
+        let out = apply_edit(
+            Some("[ai]\nnotify_sound = \"yes\" # old\n"),
+            &[ConfigEdit {
+                table: "ai",
+                key: "notify_sound",
+                value: std::borrow::Cow::Borrowed("false"),
+            }],
+        )
+        .unwrap();
+        assert_eq!(out, "[ai]\nnotify_sound = false # old\n");
+    }
+
+    #[test]
+    fn a_legacy_boolean_is_replaced_in_place_by_the_mode() {
+        let existing = "[ai]\n# c\nnotify = true  # on\nmodel = \"m\"\n";
+        let out = apply_edit(Some(existing), &notify_edit("bell")).unwrap();
+        assert_eq!(out, "[ai]\n# c\nnotify = \"bell\"  # on\nmodel = \"m\"\n");
+        let out = apply_edit(Some("[ai]\nnotify = \"x\"\n"), &notify_edit("auto")).unwrap();
+        assert_eq!(out, "[ai]\nnotify = \"auto\"\n");
     }
 
     #[test]
@@ -1278,7 +1307,7 @@ other = 1
             "[[ai.notify]]\nx = 1\n",
         ] {
             assert_eq!(
-                apply_edit(Some(text), &notify_edit("true")),
+                apply_edit(Some(text), &notify_edit("auto")),
                 Err(EditError::KeyIsTable {
                     table: "ai",
                     key: "notify"

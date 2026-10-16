@@ -12,7 +12,10 @@ use std::{
     io::{self, Write, stdout},
     panic,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -28,6 +31,7 @@ pub mod engram;
 pub mod jail;
 pub mod login_path;
 pub mod loopback;
+pub mod notify;
 pub mod proc;
 pub mod prompts;
 pub mod update;
@@ -61,8 +65,12 @@ use crate::{
     core::{
         ai::{
             Detection,
-            chat::{prompts::Resolved, store::StoreReply},
-            config::{AiConfig, Profile},
+            chat::{
+                notify::{bell_after_failed_desktop, rings_at_once},
+                prompts::Resolved,
+                store::StoreReply,
+            },
+            config::{AiConfig, NotifyMode, Profile},
             memory::port::MemReply,
         },
         config::{Config, config_path},
@@ -141,6 +149,43 @@ fn startup_effects(app: &mut App) -> Vec<Effect> {
     effects
 }
 
+/// How long the runtime waits for blocking threads when it is dropped at
+/// exit. All the quit work (store, memory, chats, children) is awaited inside
+/// [`run`]; what can still be running here is a wedged probe or a `waitid` on
+/// a child that is being killed, and neither may hang the quit.
+pub const RUNTIME_QUIT_BOUND: Duration = Duration::from_secs(1);
+
+/// Owns the runtime and bounds its shutdown on every way out, a panic
+/// included: dropping it waits at most `bound` for the blocking threads.
+pub struct QuitGuard {
+    rt: Option<tokio::runtime::Runtime>,
+    bound: Duration,
+}
+
+impl QuitGuard {
+    pub fn new(rt: tokio::runtime::Runtime, bound: Duration) -> Self {
+        Self {
+            rt: Some(rt),
+            bound,
+        }
+    }
+
+    pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        self.rt
+            .as_ref()
+            .expect("the runtime lives until the guard drops")
+            .block_on(future)
+    }
+}
+
+impl Drop for QuitGuard {
+    fn drop(&mut self) {
+        if let Some(rt) = self.rt.take() {
+            rt.shutdown_timeout(self.bound);
+        }
+    }
+}
+
 /// Runs the terminal pane until the child exits or the user quits.
 pub async fn run() -> io::Result<()> {
     // Asked first so the shell runs while the rest of the start-up goes on.
@@ -204,6 +249,7 @@ pub async fn run() -> io::Result<()> {
     // Notify only: a cached or fetched newer version becomes a text mark.
     // Off (`[updates] check = false`) nothing is read, asked or shown.
     let (update_tx, update_rx) = mpsc::channel(1);
+    let (notified_tx, notified_rx) = mpsc::channel(4);
     let announced = update::begin(
         app.config().update_check,
         update::cache_path(
@@ -226,6 +272,11 @@ pub async fn run() -> io::Result<()> {
         env::var_os("XDG_DATA_HOME").as_deref(),
         env::var_os("HOME").as_deref(),
     );
+    // What the machine offers for notifications (display, bus, notify-send,
+    // sound players), probed once now in the background: a slow lookup never
+    // delays a send, it just fills the slot later. The `t` test refreshes it.
+    let plan = notify::PlanSlot::default();
+    notify::probe_in_background(&plan, notify::Session::current, cli_env.path.clone());
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
         .with_memory(memory)
         .with_config_path(config_path)
@@ -236,6 +287,49 @@ pub async fn run() -> io::Result<()> {
                 Arc::clone(&listing_cache),
                 force,
             );
+        }))
+        .with_desktop(Box::new({
+            let path = cli_env.path.clone();
+            let busy = Arc::new(AtomicBool::new(false));
+            let plan = plan.clone();
+            move |body, fallback| {
+                notify::spawn_send(notify::Job {
+                    path: path.clone(),
+                    body,
+                    fallback,
+                    busy: Arc::clone(&busy),
+                    plan: plan.clone(),
+                });
+            }
+        }))
+        .with_sound(Box::new({
+            let path = cli_env.path.clone();
+            let busy = Arc::new(AtomicBool::new(false));
+            let plan = plan.clone();
+            move || {
+                notify::spawn_sound(notify::SoundJob {
+                    path: path.clone(),
+                    busy: Arc::clone(&busy),
+                    plan: plan.clone(),
+                });
+            }
+        }))
+        .with_notify_test(Box::new({
+            let path = cli_env.path.clone();
+            let busy = Arc::new(AtomicBool::new(false));
+            let plan = plan.clone();
+            move |mode, sound, fallback| {
+                notify::spawn_test(notify::TestJob {
+                    path: path.clone(),
+                    mode,
+                    sound,
+                    fallback,
+                    report: notified_tx.clone(),
+                    session: notify::Session::current,
+                    busy: Arc::clone(&busy),
+                    plan: plan.clone(),
+                });
+            }
         }))
         .with_preparer(Box::new(move |pane, profile, origin, context| {
             spawn_prepare(
@@ -257,6 +351,7 @@ pub async fn run() -> io::Result<()> {
         store: store_rx,
         prompt: prompt_rx,
         update: update_rx,
+        notified: notified_rx,
     };
     // The first pane is spawned before the UI starts: a failure is fatal.
     panes.spawn_pane(id, &spec)?;
@@ -375,6 +470,8 @@ struct Inbox {
     store: mpsc::Receiver<StoreReply>,
     prompt: mpsc::Receiver<(PaneId, Resolved)>,
     update: mpsc::Receiver<Option<String>>,
+    /// What the notification test did.
+    notified: mpsc::Receiver<String>,
 }
 
 async fn event_loop(
@@ -417,6 +514,7 @@ async fn run_loop(
         store: mut store_rx,
         prompt: mut prompt_rx,
         update: mut update_rx,
+        notified: mut notified_rx,
     } = inbox;
     let theme = LazaroboxTheme::default();
     let mut events = EventStream::new();
@@ -507,6 +605,11 @@ async fn run_loop(
                     return Ok(());
                 }
             }
+            Some(report) = notified_rx.recv() => {
+                if step(&mut app, AppEvent::NotifyTested(report), panes) {
+                    return Ok(());
+                }
+            }
             // Same exit path as Quit: the caller restores and kills the children.
             () = shutdown.requested() => return Ok(()),
             _ = cwd_poll.tick() => {
@@ -535,6 +638,12 @@ async fn run_loop(
         }
     }
 }
+
+/// Starts one desktop notification: the body and the failure fallback flag.
+type DesktopSendFn = dyn FnMut(String, Option<Arc<AtomicBool>>);
+
+/// Starts the notification test: mode, sound flag, fallback flag.
+type TestSendFn = dyn FnMut(NotifyMode, bool, Option<Arc<AtomicBool>>);
 
 /// Starts a prompt preparation: pane, profile, origin cwd, context flag.
 type PrepareFn = dyn FnMut(PaneId, Profile, Option<PathBuf>, bool);
@@ -621,6 +730,20 @@ struct Panes {
     /// A `Bell` effect arrived since the last flush (chat-notify). Several in
     /// the same tick make one BEL; see [`Panes::stage_bell`].
     bell: bool,
+    /// Raised by a desktop send that failed in `desktop` mode: the next
+    /// flush rings the bell for that event.
+    late_bell: Arc<AtomicBool>,
+    /// Starts one desktop notification in the background: the body and, when
+    /// an unavailable desktop or a failure must ring the bell, the flag to
+    /// raise. The availability is probed there, off the UI thread. Does
+    /// nothing unless `with_desktop` installs the production one.
+    desktop_send: Box<DesktopSendFn>,
+    /// Starts lazarobox's own sound in the background. Does nothing unless
+    /// `with_sound` installs the production one.
+    sound_send: Box<dyn FnMut()>,
+    /// Starts the test action in the background: mode, sound, and the
+    /// fallback flag for `desktop`. The report comes back on its channel.
+    test_send: Box<TestSendFn>,
     /// Starts one AI engine detection; the answer arrives on the AI channel.
     /// A no-op unless `with_detector` installs the production one.
     detect: Box<dyn FnMut(bool)>,
@@ -647,6 +770,10 @@ impl Panes {
             config_path: None,
             host_out: Vec::new(),
             bell: false,
+            late_bell: Arc::new(AtomicBool::new(false)),
+            desktop_send: Box::new(|_, _| {}),
+            sound_send: Box::new(|| {}),
+            test_send: Box::new(|_, _, _| {}),
             detect: Box::new(|_| {}),
             prepare: Box::new(|_, _, _, _| {}),
             chats: None,
@@ -661,7 +788,8 @@ impl Panes {
     /// host bytes, through the writer that draws the frame. One BEL covers all
     /// the bells asked for since the last flush.
     fn stage_bell(&mut self) {
-        if std::mem::take(&mut self.bell) {
+        let late = self.late_bell.swap(false, Ordering::AcqRel);
+        if std::mem::take(&mut self.bell) || late {
             self.host_out.push(BEL);
         }
     }
@@ -703,6 +831,24 @@ impl Panes {
         if let Some(store) = self.store.take() {
             store.shutdown(bound);
         }
+    }
+
+    /// Sets how `Effect::Notify` starts a desktop notification.
+    fn with_desktop(mut self, send: Box<DesktopSendFn>) -> Self {
+        self.desktop_send = send;
+        self
+    }
+
+    /// Sets what plays the notification sound.
+    fn with_sound(mut self, sound: Box<dyn FnMut()>) -> Self {
+        self.sound_send = sound;
+        self
+    }
+
+    /// Sets what runs the test action of the Notify row.
+    fn with_notify_test(mut self, test: Box<TestSendFn>) -> Self {
+        self.test_send = test;
+        self
     }
 
     /// Sets what `Effect::DetectEngines` runs.
@@ -803,6 +949,25 @@ impl Panes {
                 // Only flagged here: the BEL joins the host bytes after the
                 // draw (see `stage_bell`), never in the middle of a frame.
                 Effect::Bell => self.bell = true,
+                // The core table decides; the send returns at once (its own
+                // task owns the timeout and the reaping).
+                Effect::Notify { mode, body, sound } => {
+                    self.bell |= rings_at_once(mode);
+                    let fallback =
+                        bell_after_failed_desktop(mode).then(|| Arc::clone(&self.late_bell));
+                    (self.desktop_send)(body, fallback);
+                    if sound {
+                        (self.sound_send)();
+                    }
+                }
+                // The key press that asks for it: the bell now (when the mode
+                // has one), the rest in the background with a report.
+                Effect::NotifyTest { mode, sound } => {
+                    self.bell |= rings_at_once(mode);
+                    let fallback =
+                        bell_after_failed_desktop(mode).then(|| Arc::clone(&self.late_bell));
+                    (self.test_send)(mode, sound, fallback);
+                }
                 // Staged like the other host bytes: written after the draw by
                 // `flush_host`, never in the middle of a frame.
                 Effect::MouseCapture(on) => {
@@ -986,7 +1151,8 @@ fn should_restore() -> bool {
     let on_store_thread = thread::current().name() == Some(chat_store::worker::THREAD_NAME);
     // The prompt job catches its panic and falls back to the built-in prompt.
     let on_prepare_thread = thread::current().name() == Some(prompts::THREAD_NAME);
-    !chat::in_adapter_poll() && !on_store_thread && !on_prepare_thread
+    // The notification probe catches its own panic and reports it as failed.
+    !chat::in_adapter_poll() && !on_store_thread && !on_prepare_thread && !notify::in_probe()
 }
 
 /// Restores the cursor, bracketed paste, focus reporting and mouse capture before the previous hook (which
@@ -1540,6 +1706,46 @@ mod tests {
         assert_eq!(panes.host_out, b"\x1b[?1000h\x1b[?1006h".to_vec());
     }
 
+    #[test]
+    fn a_wedged_blocking_thread_cannot_hang_the_runtime_shutdown() {
+        let started = Instant::now();
+        {
+            let guard = QuitGuard::new(
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap(),
+                Duration::from_millis(200),
+            );
+            guard.block_on(async {
+                tokio::task::spawn_blocking(|| thread::sleep(Duration::from_secs(5)));
+                tokio::task::yield_now().await;
+            });
+        }
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn the_panic_path_is_bounded_too() {
+        let started = Instant::now();
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            let guard = QuitGuard::new(
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap(),
+                Duration::from_millis(200),
+            );
+            guard.block_on(async {
+                tokio::task::spawn_blocking(|| thread::sleep(Duration::from_secs(5)));
+                tokio::task::yield_now().await;
+            });
+            panic!("boom");
+        }));
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
     // chat-notify: Bell is staged for the flush, never written at once.
     #[test]
     fn a_bell_effect_is_flagged_and_writes_nothing_by_itself() {
@@ -1570,6 +1776,113 @@ mod tests {
         assert_eq!(panes.host_out, b"\x07".to_vec());
         panes.stage_bell();
         assert_eq!(panes.host_out, b"\x07".to_vec(), "the flag was consumed");
+    }
+
+    type Sent = Rc<RefCell<Vec<(String, bool)>>>;
+
+    /// Panes whose desktop sends are recorded (body, whether a failure or an
+    /// unavailable desktop would ring the bell).
+    fn desktop_panes() -> (Panes, Sent) {
+        let (panes, _rx, _rec) = fake_panes(None);
+        let sent: Sent = Rc::default();
+        let log = Rc::clone(&sent);
+        let panes = panes.with_desktop(Box::new(move |body, fallback| {
+            log.borrow_mut().push((body, fallback.is_some()))
+        }));
+        (panes, sent)
+    }
+
+    fn notify(mode: NotifyMode) -> Effect {
+        Effect::Notify {
+            mode,
+            body: "Answer ready in pane 2".to_owned(),
+            sound: false,
+        }
+    }
+
+    #[test]
+    fn the_sound_starts_only_when_the_effect_asks_for_it() {
+        let (panes, _rx, _rec) = fake_panes(None);
+        let plays = Rc::new(RefCell::new(0));
+        let count = Rc::clone(&plays);
+        let mut panes = panes.with_sound(Box::new(move || *count.borrow_mut() += 1));
+        panes.apply(vec![notify(NotifyMode::Auto)]);
+        assert_eq!(*plays.borrow(), 0);
+        panes.apply(vec![Effect::Notify {
+            mode: NotifyMode::Auto,
+            body: "x".to_owned(),
+            sound: true,
+        }]);
+        assert_eq!(*plays.borrow(), 1);
+    }
+
+    #[test]
+    fn a_test_effect_rings_at_once_per_mode_and_arms_the_fallback_for_desktop() {
+        // (mode, sound, bell now, fallback armed)
+        let table = [
+            (NotifyMode::Auto, true, true, false),
+            (NotifyMode::Desktop, true, false, true),
+            (NotifyMode::Bell, false, true, false),
+        ];
+        for (mode, sound, bell, fallback) in table {
+            let (panes, _rx, _rec) = fake_panes(None);
+            let seen: Rc<RefCell<Vec<(NotifyMode, bool, bool)>>> = Rc::default();
+            let log = Rc::clone(&seen);
+            let mut panes = panes.with_notify_test(Box::new(move |mode, sound, fallback| {
+                log.borrow_mut().push((mode, sound, fallback.is_some()))
+            }));
+            panes.apply(vec![Effect::NotifyTest { mode, sound }]);
+            panes.stage_bell();
+            assert_eq!(panes.host_out == vec![0x07], bell, "{mode:?}");
+            assert_eq!(*seen.borrow(), vec![(mode, sound, fallback)], "{mode:?}");
+        }
+    }
+
+    // Decision table, executed: the availability is probed off the UI thread,
+    // so `apply` only rings what is certain and hands the rest to the send.
+    #[test]
+    fn a_notify_effect_rings_at_once_only_in_auto_and_always_hands_off_the_send() {
+        // (mode, bell now, fallback armed)
+        let table = [
+            (NotifyMode::Auto, true, false),
+            (NotifyMode::Desktop, false, true),
+        ];
+        for (mode, bell, fallback) in table {
+            let (mut panes, sent) = desktop_panes();
+            panes.apply(vec![notify(mode)]);
+            panes.stage_bell();
+            assert_eq!(panes.host_out == vec![0x07], bell, "{mode:?}");
+            assert_eq!(
+                *sent.borrow(),
+                vec![("Answer ready in pane 2".to_owned(), fallback)],
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_desktop_send_rings_on_the_next_flush_only_once() {
+        let (mut panes, _sent) = desktop_panes();
+        panes.late_bell.store(true, Ordering::Release);
+        panes.stage_bell();
+        assert_eq!(panes.host_out, vec![0x07]);
+        panes.stage_bell();
+        assert_eq!(panes.host_out, vec![0x07], "consumed");
+    }
+
+    #[test]
+    fn the_fallback_flag_handed_to_the_send_is_the_one_stage_bell_reads() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let seen: Rc<RefCell<Option<Arc<AtomicBool>>>> = Rc::default();
+        let slot = Rc::clone(&seen);
+        panes = panes.with_desktop(Box::new(move |_, fallback| *slot.borrow_mut() = fallback));
+        panes.apply(vec![notify(NotifyMode::Desktop)]);
+        seen.borrow()
+            .as_ref()
+            .unwrap()
+            .store(true, Ordering::Release);
+        panes.stage_bell();
+        assert_eq!(panes.host_out, vec![0x07]);
     }
 
     #[test]

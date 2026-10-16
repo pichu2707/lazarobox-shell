@@ -641,7 +641,7 @@ mod tests {
         let notify = ConfigEdit {
             table: "ai",
             key: "notify",
-            value: std::borrow::Cow::Borrowed("true"),
+            value: std::borrow::Cow::Borrowed("auto"),
         };
         let dir = tempfile::tempdir().unwrap();
         let path = config_in(&dir);
@@ -654,15 +654,18 @@ mod tests {
     }
 
     #[test]
-    fn a_notify_save_writes_a_boolean_on_disk() {
+    fn a_notify_save_writes_a_string_on_disk() {
         let dir = tempfile::tempdir().unwrap();
         let path = config_in(&dir);
         let notify = ConfigEdit {
             table: "ai",
             key: "notify",
-            value: std::borrow::Cow::Borrowed("true"),
+            value: std::borrow::Cow::Borrowed("auto"),
         };
         save_config(Some(&path), &[notify]).unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "[ai]\nnotify = true\n");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[ai]\nnotify = \"auto\"\n"
+        );
     }
 }

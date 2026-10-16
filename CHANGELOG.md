@@ -10,6 +10,68 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Desktop notification for finished chat turns, independent of the outer
+  terminal. `[ai] notify` now takes `"auto"`, `"desktop"`, `"bell"` or
+  `"off"` (the Notify row of the AI menu cycles them). `"auto"` always rings
+  the bell and also sends a desktop notification when `DISPLAY` or
+  `WAYLAND_DISPLAY` is set and `notify-send` is on the login `PATH`.
+  `"desktop"` sends only the notification and rings the bell if it is
+  unavailable or fails. `notify-send` runs without a shell, detached, with a
+  2 s limit; its title is `lazarobox` and its text is a fixed line naming the
+  pane, never any of the answer. The old booleans keep working (`true` is
+  `"auto"`, `false` is `"off"`), and the default stays off.
+- The desktop notification is hardened. The child gets an empty environment
+  plus an allow-list (`PATH`, `HOME`, `LANG`, `LC_*`, the session bus and
+  display variables), never secrets. A `notify-send` under `/tmp` or writable
+  by group or others is skipped, like the CLI interpreters. The availability
+  check runs off the UI thread. The desktop counts as unavailable over SSH or
+  without a display and a session bus. At most one send is in flight, so a
+  burst of finished turns is coalesced (`"auto"` still rings the bell for
+  each).
+- lazarobox plays its own sound with the notification in `"auto"` and
+  `"desktop"` (`[ai] notify_sound`, default true, and a Sound row in the AI
+  menu): `canberra-gtk-play -i message-new-instant`, else `pw-play` or
+  `paplay` with the first of the freedesktop `message-new-instant.oga` and
+  `complete.oga`. It follows the same rules as `notify-send` and does
+  nothing when no player is found.
+- `t` on the Notify or Sound row of the AI menu fires one test notification
+  now, with the mode shown (saved or not) and ignoring the focus rule. The
+  footer says what happened (`sent: bell + desktop + sound`) or why not
+  (`desktop unavailable: no session bus`).
+- How the notification machinery works, and its guard rails. The machine is
+  probed once at startup, in the background, and again by the `t` test: the
+  session (display, session bus, not over SSH), the trusted `notify-send` and
+  the sound players. No send ever waits for a probe; if the result is not
+  there yet, or the probe failed, the desktop and the sound are unavailable
+  for that event and `desktop` mode rings the bell. A tool installed after
+  startup is seen after `t` or a restart. Each probe takes a ticket and a
+  slow or old probe never overwrites a newer plan; a probe that panics is
+  caught (without tearing the terminal down) and recorded as failed, and `t`
+  reports "the check failed" and probes again. Just before an exec the real path
+  is re-checked (exists, not under `/tmp`, not group- or world-writable),
+  and that is the path that runs, with the found name as `argv[0]`. The
+  child gets an empty environment plus an allow-list (`PATH`, `HOME`, `USER`,
+  `LOGNAME`, `LANG`, `LANGUAGE`, `LC_*`, the session bus, display, audio and
+  XDG variables), never secrets. SSH only disables the desktop when no local
+  display is set, so a stale `SSH_CONNECTION` in a local tmux does not.
+  Limits: 2 s per program (a program still running is killed and counts as
+  failed), 4 s per send, 12 s for the sound chain, 3 s for the test probe.
+  At most one send, one sound and one test run at a time; a send dropped
+  because another is running rings the bell in `desktop` mode, as does an
+  unavailable, untrusted or failed one, even if the send task dies. The
+  sound tries canberra, then `pw-play` and `paplay` with each existing sound
+  file; only an exit 0 within the limit is success, anything else moves to
+  the next candidate, and the test report names the player that worked or
+  why all failed. The test report lives in its own footer field until the
+  next key press and is sent after its in-flight flag is cleared. In
+  `desktop` mode a missing `notify-send` rings the bell and the sound may
+  play too: they overlap by design. A turn that ended by cancel never
+  notifies; its fallback body would read "Turn ended in pane N". The
+  runtime is held by a guard that bounds its shutdown to 1 s on every way
+  out, panics included.
+
 ## [0.15.2] - 2026-10-16
 
 ### Added

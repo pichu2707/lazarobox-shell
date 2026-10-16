@@ -19,10 +19,10 @@ expression: frame
          │ Context                                                 on │
          │ Memory                                                 off │
          │ Notify                                                 off │
+         │ Sound                                                   on │
          │ update 0.16.0 available —                                  │
          │ run: cargo install lazarobox-shell                         │
          │                                                            │
          │ j/k move · h/l change · s save · Esc cancel                │
          └────────────────────────────────────────────────────────────┘
-
  ◐ MENU                                                   sh · update 0.16.0

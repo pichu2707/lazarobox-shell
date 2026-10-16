@@ -110,7 +110,7 @@ pub(super) fn selected_label(menu: &MenuState) -> &'static str {
     labels[0]
 }
 
-const ORDER: [&str; 13] = [
+const ORDER: [&str; 14] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
@@ -124,6 +124,7 @@ const ORDER: [&str; 13] = [
     "Context",
     "Memory",
     "Notify",
+    "Sound",
 ];
 
 // Spec: Descriptor integrity, Sections and items are data.
@@ -165,17 +166,19 @@ fn the_ai_descriptors_are_well_formed() {
 
 // Spec: Task rows in order, Wrap, Mouse row is selectable.
 #[test]
-fn navigation_visits_settings_then_the_ten_ai_rows_and_wraps() {
+fn navigation_visits_settings_then_the_eleven_ai_rows_and_wraps() {
     let mut m = menu(None, None, Some(machine()));
     let mut visited = vec![selected_label(&m)];
-    for _ in 0..13 {
+    for _ in 0..14 {
         press(&mut m, 'j');
         visited.push(selected_label(&m));
     }
-    assert_eq!(visited[..13], ORDER);
-    assert_eq!(visited[13], "Statusline position", "wraps past Notify");
+    assert_eq!(visited[..14], ORDER);
+    assert_eq!(visited[14], "Statusline position", "wraps past Sound");
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Notify", "wraps before the first");
+    assert_eq!(selected_label(&m), "Sound", "wraps before the first");
+    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "Notify");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Memory");
     press(&mut m, 'k');
@@ -326,6 +329,7 @@ fn the_ai_section_lists_the_task_rows_and_the_static_rows_with_their_values() {
             "Context=on",
             "Memory=off",
             "Notify=off",
+            "Sound=on",
         ]
     );
     assert_eq!(

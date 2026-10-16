@@ -171,7 +171,36 @@ Teclas dentro del chat:
 
 **Perfiles y prompts:** `profile = "analyst"` o `"programmer"` (por defecto) en `[ai]`, o la fila Profile del menú de IA, elige el _system prompt_ integrado. Puedes sustituirlo con `~/.config/lazarobox/prompts/<perfil>/<tarea>.md` (después `general.md`; máx. 16 KiB). El prompt incluye un bloque de contexto del workspace (proyecto, rama, directorio relativo, SO, shell y fecha; nunca rutas absolutas ni contenido); se desactiva con `context = false` o la fila Context del menú.
 
-**Aviso al terminar:** con `notify = true` en `[ai]` (o la fila Notify del menú de IA; desactivado por defecto), el chat emite la campana del terminal cuando una respuesta termina y no la estás mirando (otro panel, pestaña o ventana).
+**Aviso al terminar:** `notify` en `[ai]` (o la fila Notify del menú de IA, que recorre los valores con `h`/`l`) avisa cuando una respuesta termina por sí sola y no la estás mirando (otro panel, pestaña o ventana sin foco). Una cancelación tuya nunca avisa. Valores:
+
+| Valor       | Qué hace                                                                                                          |
+| ----------- | ----------------------------------------------------------------------------------------------------------------- |
+| `"off"`     | Nada (por defecto).                                                                                               |
+| `"bell"`    | Solo la campana del terminal (BEL).                                                                               |
+| `"desktop"` | Solo una notificación de escritorio con `notify-send`. Si no está disponible o falla, suena la campana.           |
+| `"auto"`    | Siempre la campana **y**, si hay `DISPLAY` o `WAYLAND_DISPLAY` y `notify-send` está en el `PATH`, la notificación. |
+
+```toml
+[ai]
+notify = "auto"
+```
+
+Los valores antiguos siguen valiendo: `true` equivale a `"auto"` y `false` a `"off"`. La campana sola depende de cada terminal (el tuyo puede tener el sonido apagado, o tmux / zellij pueden filtrarla), por eso existe la notificación de escritorio.
+
+La notificación de escritorio se ejecuta con `notify-send` (título `lazarobox`; el texto es fijo y solo nombra el panel: `Answer ready in pane N` o `Turn failed in pane N`, nunca la respuesta). Cómo funciona:
+
+- **Se comprueba una vez al arrancar, en segundo plano, y otra vez con `t`.** La comprobación mira la sesión (display, bus), busca `notify-send` y los reproductores de sonido en el `PATH` de login que ya usan los CLIs (nunca el directorio actual), y guarda el resultado. Ningún aviso espera nunca a esa comprobación: si todavía no ha terminado (o falló), el escritorio y el sonido cuentan como no disponibles para ese aviso y, en modo `"desktop"`, suena la campana. Una herramienta instalada después de arrancar se ve tras pulsar `t` o reiniciar. Una comprobación lenta o antigua nunca pisa a una más reciente, y si la comprobación falla por un error interno, `t` lo dice (`the check failed`) y vuelve a comprobar.
+- **Sin shell**, con un vector de argumentos, fuera del hilo de la interfaz, sin dejar procesos zombi. Lo que se ejecuta es la ruta real comprobada (con el nombre original como `argv[0]`), y justo antes de ejecutarla se vuelve a comprobar que sigue siendo de confianza; si ya no lo es, cuenta como no disponible.
+- **Confianza en el `PATH`:** se ignora un `notify-send` (o un reproductor) bajo `/tmp` o `/var/tmp`, o cuyo fichero o carpeta se pueda escribir por grupo u otros, y se sigue con la siguiente entrada del `PATH`.
+- **Entorno depurado:** el proceso hijo solo recibe `PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LANGUAGE`, `LC_*`, `DBUS_SESSION_BUS_ADDRESS`, `DISPLAY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, `XAUTHORITY`, `XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`, `XDG_DATA_DIRS`, `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CONFIG_DIRS`, `PULSE_SERVER`, `PULSE_RUNTIME_PATH`, `PIPEWIRE_RUNTIME_DIR` y `PIPEWIRE_REMOTE`; ninguna otra variable (claves de API, tokens).
+- **Solo con sesión de escritorio:** `DISPLAY` o `WAYLAND_DISPLAY`, y un bus de sesión (`DBUS_SESSION_BUS_ADDRESS` o el socket `$XDG_RUNTIME_DIR/bus`). Por SSH no está disponible: solo si `SSH_CONNECTION` o `SSH_TTY` está definida **y** no hay `WAYLAND_DISPLAY` ni un `DISPLAY` local (`:N`, sin host); así una variable de SSH heredada por un servidor tmux local no desactiva el escritorio, y un `DISPLAY` reenviado (`localhost:10.0`) sí cuenta como remoto.
+- **Límites de tiempo:** 2 s por programa (`notify-send` o cada reproductor; pasado el límite se mata y cuenta como fallo), 4 s el envío completo, 12 s la cadena de sonido (cabe cada reproductor, para poder explicar por qué falló cada uno) y 3 s la comprobación de `t`.
+- **Una ráfaga no apila procesos:** solo hay un envío en curso a la vez, un sonido a la vez y una prueba a la vez; los que llegan mientras tanto se descartan. En `"auto"` la campana sí suena en cada respuesta; en `"desktop"`, un envío descartado, no disponible o fallido hace sonar la campana (también si la tarea del envío muriera por un fallo interno).
+- Al salir, lazarobox espera como máximo 1 s a los hilos bloqueados.
+
+**Sonido propio:** en `"auto"` y `"desktop"`, lazarobox reproduce además un sonido (`[ai] notify_sound = true`, por defecto; fila Sound del menú), porque un demonio como dunst no suena por sí mismo. Prueba, por orden, `canberra-gtk-play -i message-new-instant`, después `pw-play <fichero>` y después `paplay <fichero>`, con cada uno de los ficheros que existan de `/usr/share/sounds/freedesktop/stereo/message-new-instant.oga` y `complete.oga`. Solo cuenta como éxito una salida con código 0 dentro de los 2 s: un reproductor que sigue ejecutándose pasado el límite se mata y se pasa al siguiente candidato (igual que ante un error al arrancar o una salida con fallo). Si ninguno funciona, no hace nada. En modo `"desktop"`, si `notify-send` no está disponible suena la campana y el sonido propio también puede sonar: se solapan, es esperado. Mismas reglas que `notify-send`: sin shell, entorno depurado, confianza del `PATH` y nada por SSH o sin sesión.
+
+**Probar la configuración:** en la fila Notify (o Sound) del menú de IA, `t` vuelve a comprobar la máquina y lanza ahora mismo un aviso con el modo y el sonido que muestra la fila (aunque no estén guardados y sin importar el foco; el texto es `Test notification`). Solo una prueba a la vez (mientras corre, el pie dice `test running`). El pie de esas filas (hasta la siguiente tecla) dice qué pasó: `sent: bell + desktop + sound (pw-play)` (con el reproductor que funcionó), o por qué no, por ejemplo `desktop unavailable: no notify-send on PATH`, `no session bus`, `SSH session`, `notify-send on PATH is untrusted (...)` o `no sound: no player worked (canberra-gtk-play: still running after 2 s, killed, ...)`.
 
 Para cerrar el panel: `Ctrl+Espacio`, `w`, `q`. La respuesta se muestra mientras se genera; si el modelo "piensa" (por ejemplo `qwen3`), la barra de estado muestra un indicador `thinking` y el razonamiento queda en un bloque aparte.
 

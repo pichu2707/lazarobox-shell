@@ -13,11 +13,11 @@ use crate::core::{
             ChatState, Follow, Phase,
             copy::ChatCopy,
             engine::{ChatRequest, StreamEvent},
-            notify::{Ended, should_bell},
+            notify::{Ended, body, plays_sound, should_notify},
             prompts::Resolved,
             store::{StoreCmd, StoreReply},
         },
-        config::{AiConfig, Profile, Task},
+        config::{AiConfig, NotifyMode, Profile, Task},
         jail::{JailOff, JailSupport},
         memory::{
             offer::ServerOffer,
@@ -171,6 +171,8 @@ pub enum AppEvent {
     /// the terminal reports it. A terminal that does not report it never
     /// sends this, and the window counts as focused.
     WindowFocus(bool),
+    /// What the notification test did (a footer line), from the runtime.
+    NotifyTested(String),
 }
 
 /// How the menu closed.
@@ -229,6 +231,21 @@ pub enum Effect {
     /// Ring the terminal bell (BEL) once the frame is drawn: a chat answer
     /// finished while the user was not looking at it (chat-notify).
     Bell,
+    /// Announce a finished chat turn per `mode` (`auto` or `desktop`): the
+    /// runtime picks the bell and/or a desktop notification. `body` is fixed
+    /// text naming the pane, never any of the answer.
+    Notify {
+        mode: NotifyMode,
+        body: String,
+        /// Play lazarobox's own sound too.
+        sound: bool,
+    },
+    /// The test action of the Notify row: notify now with `mode`, ignoring
+    /// the focus rule. The runtime answers with `AppEvent::NotifyTested`.
+    NotifyTest {
+        mode: NotifyMode,
+        sound: bool,
+    },
     /// Turn the host terminal's mouse capture on (`true`) or off. Emitted
     /// only when the wanted state differs from the one last asked for.
     MouseCapture(bool),
@@ -1120,6 +1137,13 @@ impl App {
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
             AppEvent::MemoryTick => self.on_memory_tick(),
+            AppEvent::NotifyTested(report) => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.set_test_report(report);
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
             AppEvent::WindowFocus(focused) => {
                 self.window_focused = focused;
                 Vec::new()
@@ -1290,12 +1314,31 @@ impl App {
                 effects
             }
             MenuCommand::Copy(text) => self.copy_from_menu(&text),
+            MenuCommand::TestNotify { mode, sound } => self.test_notify(mode, sound),
             MenuCommand::None => Vec::new(),
         }
     }
 
     /// Puts `text` on the host clipboard (OSC 52) and says so in the menu
     /// footer and the notice. A text too large for one sequence is refused.
+    /// The test action: Off has nothing to fire and says so; any other mode
+    /// goes to the runtime, which reports what happened.
+    fn test_notify(&mut self, mode: NotifyMode, sound: bool) -> Vec<Effect> {
+        if mode == NotifyMode::Off {
+            if let Some(menu) = self.menu.as_mut() {
+                menu.set_test_report("notify is off".to_owned());
+            }
+            return Vec::new();
+        }
+        if let Some(menu) = self.menu.as_mut() {
+            menu.set_test_report("test running".to_owned());
+        }
+        vec![Effect::NotifyTest {
+            mode,
+            sound: plays_sound(mode, sound),
+        }]
+    }
+
     fn copy_from_menu(&mut self, text: &str) -> Vec<Effect> {
         let Some(menu) = self.menu.as_mut() else {
             return Vec::new();
@@ -1647,8 +1690,18 @@ impl App {
         // A turn ends once: later events of it are dropped above, so a pane
         // rings at most once per answer.
         let focus = self.tab().focus;
-        if finished && should_bell(focus, self.window_focused, id, how, self.ai.notify()) {
-            effects.push(Effect::Bell);
+        let mode = self.ai.notify();
+        if finished && should_notify(focus, self.window_focused, id, how, mode) {
+            effects.push(match mode {
+                NotifyMode::Bell => Effect::Bell,
+                // The runtime knows whether a desktop notification can be
+                // sent; the body is fixed text, never the answer.
+                _ => Effect::Notify {
+                    mode,
+                    body: body(id, how),
+                    sound: plays_sound(mode, self.ai.notify_sound()),
+                },
+            });
         }
         effects
     }
@@ -6197,7 +6250,7 @@ mod app_tests {
     }
 
     // Spec (config-menu, engram-memory): the privacy warning follows the
-    // draft flow. `k` twice from the first row wraps to `Memory`.
+    // draft flow. `k` three times from the first row wraps to `Memory`.
     fn memory_warning_open() -> App {
         let mut a = ai_app();
         open_menu(&mut a);
@@ -6268,14 +6321,14 @@ mod app_tests {
     /// Moves the menu selection to the `Context` row (before `Memory` and
     /// `Notify`, the last one).
     fn to_context_row(a: &mut App) {
-        for _ in 0..3 {
+        for _ in 0..4 {
             a.update(key('k'));
         }
     }
 
     /// Moves the menu selection to the `Profile` row (before `Context`).
     fn to_profile_row(a: &mut App) {
-        for _ in 0..4 {
+        for _ in 0..5 {
             a.update(key('k'));
         }
     }
@@ -6283,8 +6336,9 @@ mod app_tests {
     /// Moves the menu selection to the `Memory` row (before `Notify`, the
     /// last one).
     fn to_memory_row(a: &mut App) {
-        a.update(key('k'));
-        a.update(key('k'));
+        for _ in 0..3 {
+            a.update(key('k'));
+        }
     }
 
     // Spec (config-menu): Profile row. Cycling is silent, `s` saves only the
@@ -6359,26 +6413,97 @@ mod app_tests {
     #[test]
     fn the_notify_row_saves_only_the_flag_and_updates_the_app() {
         let mut a = ai_app();
-        assert!(!a.ai().notify());
+        assert_eq!(a.ai().notify(), NotifyMode::Off);
         open_menu(&mut a);
         a.update(key('k'));
+        a.update(key('k'));
         assert_eq!(a.update(key('l')), Vec::<Effect>::new(), "no ResizePty");
-        assert!(a.menu().unwrap().ai_draft().notify());
-        assert!(!a.ai().notify(), "not saved yet");
+        assert_eq!(a.menu().unwrap().ai_draft().notify(), NotifyMode::Auto);
+        assert_eq!(a.ai().notify(), NotifyMode::Off, "not saved yet");
         let edit = ConfigEdit {
             table: "ai",
             key: "notify",
-            value: "true".into(),
+            value: "auto".into(),
         };
         assert_eq!(a.update(key('s')), vec![Effect::SaveConfig(vec![edit])]);
         a.update(AppEvent::ConfigSaved);
         assert!(a.menu().is_none());
-        assert!(a.ai().notify());
+        assert_eq!(a.ai().notify(), NotifyMode::Auto);
         open_menu(&mut a);
+        a.update(key('k'));
         a.update(key('k'));
         a.update(key('l'));
         a.update(esc());
-        assert!(a.ai().notify(), "Esc keeps the saved value");
+        assert_eq!(
+            a.ai().notify(),
+            NotifyMode::Auto,
+            "Esc keeps the saved value"
+        );
+    }
+
+    // Test action: `t` on the Notify row fires the mode shown, saved or not.
+    fn on_notify_row(mode_presses: usize) -> App {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        a.update(key('k'));
+        a.update(key('k'));
+        for _ in 0..mode_presses {
+            a.update(key('l'));
+        }
+        a
+    }
+
+    #[test]
+    fn t_on_the_notify_row_asks_the_runtime_for_one_test_with_the_draft_mode() {
+        let mut a = on_notify_row(1); // off -> auto, unsaved
+        assert_eq!(a.ai().notify(), NotifyMode::Off);
+        assert_eq!(
+            a.update(key('t')),
+            vec![Effect::NotifyTest {
+                mode: NotifyMode::Auto,
+                sound: true
+            }]
+        );
+        assert!(a.menu().is_some(), "the menu stays open");
+        assert_eq!(a.menu().unwrap().test_report(), Some("test running"));
+    }
+
+    #[test]
+    fn t_with_the_bell_mode_does_not_ask_for_a_sound() {
+        let mut a = on_notify_row(3); // off -> auto -> desktop -> bell
+        assert_eq!(
+            a.update(key('t')),
+            vec![Effect::NotifyTest {
+                mode: NotifyMode::Bell,
+                sound: false
+            }]
+        );
+    }
+
+    #[test]
+    fn t_with_notify_off_says_so_in_the_footer_and_emits_nothing() {
+        let mut a = on_notify_row(0);
+        assert_eq!(a.update(key('t')), Vec::<Effect>::new());
+        assert_eq!(
+            a.menu().unwrap().footer(),
+            crate::core::menu::Footer::Hint("notify is off".into())
+        );
+    }
+
+    #[test]
+    fn the_runtime_report_lands_in_the_menu_footer() {
+        let mut a = on_notify_row(1);
+        a.update(key('t'));
+        a.take_dirty();
+        a.update(AppEvent::NotifyTested("sent: bell + desktop".to_owned()));
+        assert!(a.take_dirty());
+        assert_eq!(
+            a.menu().unwrap().footer(),
+            crate::core::menu::Footer::Hint("sent: bell + desktop".into())
+        );
+        // With the menu closed the report is dropped, not a crash.
+        a.update(esc());
+        a.update(AppEvent::NotifyTested("late".to_owned()));
     }
 
     // Spec (Context toggle): Esc restores the flag captured at open.

@@ -18,5 +18,6 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &task))"
 │ Context           on │
 │ Memory           off │
 │ Notify           off │
+│ Sound             on │
 │ j/k move · h/l chang…│
 └──────────────────────┘
