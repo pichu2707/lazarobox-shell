@@ -193,7 +193,7 @@ impl AiMenu {
                 self.picker = None;
             }
             Outcome::Close => self.picker = None,
-            Outcome::Stay | Outcome::Refresh => {}
+            Outcome::Stay | Outcome::Refresh | Outcome::Copy(_) => {}
         }
         outcome
     }

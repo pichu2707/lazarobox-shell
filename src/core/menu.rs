@@ -220,7 +220,7 @@ pub fn fits_size(width: u16, height: u16, rows: usize) -> bool {
 }
 
 /// What a key did, for the app to act on.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum MenuCommand {
     None,
     /// The live config changed: relayout.
@@ -229,11 +229,16 @@ pub enum MenuCommand {
     Cancel,
     /// Run the engine detection again.
     Refresh,
+    /// Put this text on the clipboard (the full reason behind a degraded
+    /// engine or a failed model listing).
+    Copy(String),
 }
 
 const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
 const HINT_TASK: &str = "j/k move · Enter pick · r refresh · s save · Esc cancel";
 const HINT_PICKER: &str = "j/k move · Enter choose · r refresh · Esc back · s save";
+const HINT_NOTE: &str = "Enter or y copies the full reason · Esc back";
+const HINT_ENGINE_REASON: &str = "j/k move · Enter choose · y copies the reason · Esc back";
 const HINT_WARNING: &str = "y accept (then s to save) · any other key declines";
 /// The privacy warning: the three facts, each line short enough for the AI
 /// popup width.
@@ -256,6 +261,7 @@ fn disabled_reason(row: &PickRow) -> &str {
         Mark::DownloadRequired => "download required",
         Mark::Checking => "checking…",
         _ if row.key == PickKey::Info => &row.label,
+        _ if matches!(row.key, PickKey::Note { .. }) => &row.label,
         _ => "engine not detected",
     }
 }
@@ -297,6 +303,8 @@ pub struct MenuState {
     selected: Option<usize>,
     original: Config,
     error: Option<String>,
+    /// What the last copy did, shown in the footer until the next press.
+    copied: Option<String>,
     ai: Option<AiMenu>,
     /// A detection run is in flight.
     checking: bool,
@@ -312,6 +320,7 @@ impl MenuState {
             selected: (choices().count() > 0).then_some(0),
             original: *original,
             error: None,
+            copied: None,
             ai: None,
             checking: false,
             term: None,
@@ -601,6 +610,7 @@ impl MenuState {
         }
         if !repeat {
             self.error = None;
+            self.copied = None;
         }
         if self.in_warning() {
             return self.on_warning_key(key, repeat);
@@ -669,7 +679,14 @@ impl MenuState {
             KeyCode::Char('j') | KeyCode::Down => ai.edit_with(|p, d, e| p.step(true, d, e)),
             KeyCode::Char('k') | KeyCode::Up => ai.edit_with(|p, d, e| p.step(false, d, e)),
             KeyCode::Enter if !repeat => {
-                ai.drive(Picker::enter);
+                if let Outcome::Copy(text) = ai.drive(Picker::enter) {
+                    return MenuCommand::Copy(text);
+                }
+            }
+            KeyCode::Char('y') if !repeat => {
+                if let Outcome::Copy(text) = ai.drive(|p, d, e| p.copy(d, e)) {
+                    return MenuCommand::Copy(text);
+                }
             }
             KeyCode::Esc if !repeat => {
                 ai.drive(Picker::back);
@@ -833,7 +850,22 @@ impl MenuState {
         if picker.is_some_and(|p| p.text().is_some()) {
             return Footer::Hint(Cow::Borrowed(HINT_CUSTOM));
         }
+        if let Some(copied) = &self.copied {
+            return Footer::Hint(Cow::Owned(copied.clone()));
+        }
         let cursor = ai.and_then(AiMenu::cursor_row);
+        if cursor
+            .as_ref()
+            .is_some_and(|r| matches!(r.key, PickKey::Note { .. }))
+        {
+            return Footer::Hint(Cow::Borrowed(HINT_NOTE));
+        }
+        if let (Some(row), Some(picker)) = (&cursor, picker)
+            && matches!(picker.level, Level::Engines)
+            && matches!(row.mark, Mark::Status(ref t) if t.contains(" · no jail: "))
+        {
+            return Footer::Hint(Cow::Borrowed(HINT_ENGINE_REASON));
+        }
         if let Some(row) = cursor.as_ref().filter(|r| !r.enabled) {
             let reason = disabled_reason(row);
             return Footer::Hint(Cow::Owned(format!("{reason} · not selectable")));
@@ -869,6 +901,11 @@ impl MenuState {
             _ if in_ai_view => Cow::Borrowed(HINT_TASK),
             _ => Cow::Borrowed(HINT_SETTINGS),
         })
+    }
+
+    /// Says what a copy did, in the footer, until the next press.
+    pub fn set_copied(&mut self, message: String) {
+        self.copied = Some(message);
     }
 
     pub fn set_error(&mut self, message: String) {
@@ -1135,6 +1172,8 @@ mod tests {
 #[cfg(test)]
 mod ai_tests;
 
+#[cfg(test)]
+mod copy_tests;
 #[cfg(test)]
 mod picker_tests;
 

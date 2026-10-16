@@ -5,6 +5,8 @@
 //! The model catalogs behind these rows are informational and possibly
 //! stale (see `catalog`); nothing here downloads a model.
 
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
 use super::catalog::{cli_models, curated, same_model};
 use super::config::{AiConfig, Assignment, Task};
 use super::parse::sanitize;
@@ -46,6 +48,13 @@ pub enum PickKey {
     /// A non-selectable explanation row (`no models detected`,
     /// `engine not detected`).
     Info,
+    /// Row `row` of a wrapped note that can be copied but never chosen. Every
+    /// row of the note carries its whole, sanitized text; `row` keeps the
+    /// keys distinct, so a cursor on one row stays there after a refresh.
+    Note {
+        row: usize,
+        text: String,
+    },
 }
 
 /// The mark drawn after a row label.
@@ -252,10 +261,22 @@ pub fn model_rows(
                 .and_then(|s| s.diagnostics.models.as_deref())
         });
         if let Some(why) = why {
-            rows.push(info(
-                &format!("model list unavailable: {}", sanitize(why)),
-                Mark::Plain,
-            ));
+            let full = format!("model list unavailable: {}", sanitize(why));
+            rows.extend(
+                wrap_note(&full)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(row, line)| PickRow {
+                        key: PickKey::Note {
+                            row,
+                            text: full.clone(),
+                        },
+                        label: line,
+                        mark: Mark::Plain,
+                        enabled: false,
+                        current: false,
+                    }),
+            );
         }
         rows.push(PickRow {
             key: PickKey::Custom,
@@ -317,6 +338,65 @@ pub fn model_rows(
     rows
 }
 
+/// Cells a wrapped note row may use: the AI popup is 62 wide, 60 inside, and
+/// a row has a leading space.
+pub const NOTE_WIDTH: usize = 58;
+
+/// Most rows a note takes; a longer text is clipped on the last one.
+pub const NOTE_ROWS: usize = 4;
+
+/// `text` wrapped on spaces to [`NOTE_WIDTH`], a word longer than a row
+/// broken, and at most [`NOTE_ROWS`] rows, the last one ending in `…` when
+/// text was left out. The full text stays available to copy.
+pub fn wrap_note(text: &str) -> Vec<String> {
+    let width = |s: &str| UnicodeWidthStr::width(s);
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        // A word wider than a row is cut at the last character that fits.
+        let mut rest = word;
+        while width(rest) > NOTE_WIDTH {
+            let cut = fit_chars(rest, NOTE_WIDTH);
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+            }
+            lines.push(rest[..cut].to_owned());
+            rest = &rest[cut..];
+        }
+        if !line.is_empty() && width(&line) + 1 + width(rest) > NOTE_WIDTH {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(rest);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    if lines.len() > NOTE_ROWS {
+        lines.truncate(NOTE_ROWS);
+        let last = &lines[NOTE_ROWS - 1];
+        let cut = fit_chars(last, NOTE_WIDTH - 1);
+        lines[NOTE_ROWS - 1] = format!("{}…", last[..cut].trim_end());
+    }
+    lines
+}
+
+/// Byte length of the longest prefix of `s` within `room` display cells, at
+/// least one character so a wide one cannot stall the caller.
+fn fit_chars(s: &str, room: usize) -> usize {
+    let mut used = 0;
+    for (at, c) in s.char_indices() {
+        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > room && at > 0 {
+            return at;
+        }
+        used += w;
+    }
+    s.len()
+}
+
 /// The warning for a CLI model the account's own list does not contain.
 pub const NOT_IN_LIST: &str = "not in your account's list";
 
@@ -367,6 +447,17 @@ pub fn task_label(config: &AiConfig, task: Task, detection: Option<&Detection>) 
     }
 }
 
+/// Why an available CLI engine runs without the jail, sanitized.
+fn jail_reason(detection: Option<&Detection>, id: &str) -> Option<String> {
+    detection?
+        .engines
+        .iter()
+        .find(|s| s.id == id && s.status == Status::Available)
+        .and_then(|s| s.diagnostics.jail.as_deref())
+        .map(sanitize)
+        .filter(|why| !why.is_empty())
+}
+
 /// Rows visible at once in the picker body.
 pub const VIEW: usize = 10;
 
@@ -408,6 +499,9 @@ pub enum Outcome {
     Close,
     /// Run a new detection.
     Refresh,
+    /// Put this text on the clipboard. The picker and the draft stay as they
+    /// are.
+    Copy(String),
 }
 
 /// The picker state: where it is and where the cursor is. Rows are never
@@ -486,6 +580,11 @@ impl Picker {
     /// Choose the row under the cursor.
     pub fn enter(&mut self, draft: &AiConfig, detection: Option<&Detection>) -> Outcome {
         let rows = self.rows(draft, detection);
+        if let Some(PickKey::Note { text, .. }) = rows.get(self.cursor).map(|r| &r.key)
+            && !matches!(self.level, Level::Custom { .. })
+        {
+            return Outcome::Copy(text.clone());
+        }
         match self.level.clone() {
             Level::Engines => {
                 let Some(row) = rows.get(self.cursor).filter(|r| r.enabled) else {
@@ -529,6 +628,23 @@ impl Picker {
                 }),
                 None => Outcome::Stay,
             },
+        }
+    }
+
+    /// `y`: copy what the row under the cursor explains. A note row gives its
+    /// whole text; an engine row gives its no-jail reason, if it has one.
+    /// Anything else, and the custom field, copies nothing.
+    pub fn copy(&self, draft: &AiConfig, detection: Option<&Detection>) -> Outcome {
+        if matches!(self.level, Level::Custom { .. }) {
+            return Outcome::Stay;
+        }
+        let rows = self.rows(draft, detection);
+        match rows.get(self.cursor).map(|r| &r.key) {
+            Some(PickKey::Note { text, .. }) => Outcome::Copy(text.clone()),
+            Some(PickKey::Engine(id)) if matches!(self.level, Level::Engines) => {
+                jail_reason(detection, id).map_or(Outcome::Stay, Outcome::Copy)
+            }
+            _ => Outcome::Stay,
         }
     }
 
@@ -661,6 +777,8 @@ mod assign_tests;
 mod custom_tests;
 #[cfg(test)]
 mod machine_tests;
+#[cfg(test)]
+mod note_tests;
 #[cfg(test)]
 mod rekey_tests;
 #[cfg(test)]
@@ -856,7 +974,10 @@ mod tests {
             [
                 pick("default (CLI picks)", "default", Mark::Plain, false),
                 row(
-                    PickKey::Info,
+                    PickKey::Note {
+                        row: 0,
+                        text: "model list unavailable: codex exited 1: not logged in".to_owned()
+                    },
                     "model list unavailable: codex exited 1: not logged in",
                     Mark::Plain,
                     false,
@@ -871,14 +992,17 @@ mod tests {
     fn a_good_listing_has_no_note_row() {
         let d = codex_with(&[("GPT-6.1-Sol", "gpt-6.1-sol")]);
         let rows = model_rows("codex", Target::All, &AiConfig::default(), Some(&d));
-        assert!(rows.iter().all(|r| r.key != PickKey::Info));
+        assert!(rows.iter().all(|r| !matches!(r.key, PickKey::Note { .. })));
     }
 
     #[test]
     fn a_listing_note_is_one_clean_line() {
         let d = codex_failed("a\u{1b}[31mb\nc\u{202e}d");
         let rows = model_rows("codex", Target::All, &AiConfig::default(), Some(&d));
-        let note = rows.iter().find(|r| r.key == PickKey::Info).unwrap();
+        let note = rows
+            .iter()
+            .find(|r| matches!(r.key, PickKey::Note { .. }))
+            .unwrap();
         assert_eq!(note.label, "model list unavailable: abcd");
     }
 

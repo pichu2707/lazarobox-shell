@@ -10,6 +10,47 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- The AI picker now says why an engine is degraded, and lets you copy it. A
+  codex model list that could not be read shows `model list unavailable:
+  <reason>` wrapped over up to four rows instead of one clipped row. Move onto
+  the note and press Enter or `y` to copy the whole, sanitized reason through
+  OSC 52 (the usual copied notice appears). The note is never a model choice
+  and never changes the saved model. On the engine list, `y` on an engine
+  that runs without the jail copies its full `no jail` reason; Enter still
+  picks the engine.
+- A background check for a newer version, made with the system `curl` at most
+  once a day. When one exists, a text mark shows in the statusline and a note
+  in the menu. Nothing is sent but one `GET` to crates.io; with no `curl` it
+  does nothing.
+- Diagnostics for the AI CLIs: the engine list shows why a CLI runs without
+  the jail (`available · no jail: <reason>`), a failed codex model listing
+  says why, and a failed chat turn shows the CLI's last stderr line with
+  credentials redacted. The suggested `chmod` command ends its options with
+  `--`.
+
+### Fixed
+
+- The login-shell PATH lookup works from a launcher again. The shell was
+  started with the launcher's bare PATH, so rc files that call `tr` or
+  `readlink` (`brew shellenv`, nvm) failed and linuxbrew and nvm never reached
+  the merged PATH. The probe shell now starts with the process PATH plus
+  `/usr/local/bin:/usr/bin:/bin`. If `$SHELL` gives nothing, `/bin/bash -l -c`
+  is tried once (not when `$SHELL` is bash already; it reads the login files
+  but not `~/.bashrc`, so a PATH set only there is not seen). Both share one
+  3 s deadline, reaping included, instead of 2.5 s for the first alone.
+- The login-shell entries now come first in the merged PATH, then the process
+  entries it lacks, so the launcher picks the program your terminal picks. A
+  stale `/usr/local/bin/codex` no longer hides the one in linuxbrew.
+- An empty PATH, or one with only relative entries, no longer reaches the
+  current directory: relative and empty entries are dropped everywhere, and
+  when nothing absolute is left the PATH is `/usr/local/bin:/usr/bin:/bin`.
+- A failed chat turn's error line is sanitized before secrets are redacted,
+  so a zero-width character cannot split a key out of the redaction, and an
+  error code such as `context_length_exceeded` is no longer taken for a
+  secret.
+
 ## [0.15.1] - 2026-10-16
 
 ### Fixed
