@@ -51,6 +51,7 @@ pub enum ToolError {
     MissingArgument,
     WrongType,
     ExtraArgument,
+    TooLong,
 }
 
 /// The built-ins in offer order: name, argument, description, access.
@@ -119,8 +120,16 @@ pub fn registry(external: &[ExternalTool]) -> Vec<ToolSpec> {
     built_in.chain(external).collect()
 }
 
+/// The longest `path`, `query` or `command` argument accepted, in bytes.
+pub const MAX_ARG_BYTES: usize = 4096;
+
 /// Checks a call by name against the built-in argument schemas: an object
-/// with the one required string argument and no other key.
+/// with the one required string argument and no other key, at most
+/// [`MAX_ARG_BYTES`] long.
+///
+/// Duplicate JSON keys cannot be seen here: `serde_json::Value` has already
+/// collapsed them to the last one. They MUST be rejected at the raw wire layer
+/// (slices 2b and 2e), before the arguments become a `Value`.
 pub fn parse_call(name: &str, args: &Value) -> Result<Call, ToolError> {
     let (_, arg, ..) = BUILT_INS
         .iter()
@@ -132,12 +141,16 @@ pub fn parse_call(name: &str, args: &Value) -> Result<Call, ToolError> {
     if object.len() > 1 {
         return Err(ToolError::ExtraArgument);
     }
-    Ok(match name {
-        "find_dir" => Call::FindDir { query: text },
-        "list_dir" => Call::ListDir { path: text },
-        "read_file" => Call::ReadFile { path: text },
-        _ => Call::RunInPane { command: text },
-    })
+    if text.len() > MAX_ARG_BYTES {
+        return Err(ToolError::TooLong);
+    }
+    match name {
+        "find_dir" => Ok(Call::FindDir { query: text }),
+        "list_dir" => Ok(Call::ListDir { path: text }),
+        "read_file" => Ok(Call::ReadFile { path: text }),
+        "run_in_pane" => Ok(Call::RunInPane { command: text }),
+        _ => Err(ToolError::UnknownTool),
+    }
 }
 
 #[cfg(test)]
@@ -302,5 +315,27 @@ mod tests {
             parse_call("run_in_pane", &json!({"command": "ls", "enter": true})),
             Err(ToolError::ExtraArgument)
         );
+    }
+
+    // Review W4: oversized arguments are refused, the limit itself is not.
+    #[test]
+    fn parse_call_caps_the_argument_length() {
+        let arg = |len: usize| "a".repeat(len);
+        for (name, key) in [
+            ("find_dir", "query"),
+            ("list_dir", "path"),
+            ("read_file", "path"),
+            ("run_in_pane", "command"),
+        ] {
+            assert!(
+                parse_call(name, &json!({ key: arg(MAX_ARG_BYTES) })).is_ok(),
+                "{name} at the limit"
+            );
+            assert_eq!(
+                parse_call(name, &json!({ key: arg(MAX_ARG_BYTES + 1) })),
+                Err(ToolError::TooLong),
+                "{name} over the limit"
+            );
+        }
     }
 }
