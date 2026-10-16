@@ -1242,7 +1242,7 @@ mod tests {
                     false
                 ),
                 engine("ollama", "available · 2 models", false),
-                engine("claude", "available", false),
+                engine("claude", "available · version unknown", false),
                 engine("codex", "(not detected)", true),
             ]
         );
@@ -1293,7 +1293,7 @@ mod tests {
                     true,
                     true
                 ),
-                engine("claude", "available", false),
+                engine("claude", "available · version unknown", false),
                 engine("vllm", "(not detected)", false),
             ]
         );

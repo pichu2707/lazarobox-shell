@@ -1,0 +1,23 @@
+---
+source: src/ui/components/menu.rs
+expression: shown
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Engine for general                                         │
+│ none                                                       │
+│ codex available · codex-cli 0.130.0 · no jail: Landlock … ●│
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ j/k move · Enter choose · r refresh · Esc back · s save    │
+└────────────────────────────────────────────────────────────┘

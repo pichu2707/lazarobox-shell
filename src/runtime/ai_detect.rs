@@ -27,7 +27,7 @@ use crate::core::ai::{
     CATALOG, Detection, Engine, Kind, Probe,
     chat::{cli::last_line, engine::ChatError},
     http::{MAX_BODY, parse_response},
-    jail::exit_error,
+    jail::{Cli, exit_error},
     reduce,
 };
 
@@ -502,6 +502,17 @@ pub fn spawn_detection(
     spawn_detection_of(tx, async move { detect_all(&env, &cache, force).await });
 }
 
+/// Why the jailed CLI `id`, found at `file`, would run without its jail.
+fn jail_note_of(id: &str, env: &CliEnv, file: &Path) -> Option<String> {
+    let cli = match id {
+        "claude" => Cli::Claude,
+        "codex" => Cli::Codex,
+        "gemini" => Cli::Gemini,
+        _ => return None,
+    };
+    super::chat::jail_note(env, cli, file)
+}
+
 async fn probe(target: &Target, path: &OsStr, lister: Option<&Lister<'_>>) -> Probe {
     let found = find_on_path(target.binary, path);
     match target.kind {
@@ -514,7 +525,7 @@ async fn probe(target: &Target, path: &OsStr, lister: Option<&Lister<'_>>) -> Pr
             // Only a resolved absolute path is ever run. Only codex has a
             // model listing, and it runs next to the version probe, so a slow
             // listing never adds to the version's time.
-            let (stdout, listing) = match &found {
+            let (stdout, listing, jail) = match &found {
                 Some(file) => {
                     let list = async {
                         match (lister, target.id) {
@@ -522,15 +533,18 @@ async fn probe(target: &Target, path: &OsStr, lister: Option<&Lister<'_>>) -> Pr
                             _ => None,
                         }
                     };
-                    tokio::join!(version(file, path), list)
+                    let (stdout, listing) = tokio::join!(version(file, path), list);
+                    let jail = lister.and_then(|l| jail_note_of(target.id, l.env, file));
+                    (stdout, listing, jail)
                 }
-                None => (None, None),
+                None => (None, None, None),
             };
             Probe::Cli {
                 id: target.id,
                 path: found,
                 stdout,
                 listing,
+                jail,
             }
         }
     }
@@ -1057,6 +1071,92 @@ mod tests {
         assert_eq!(get("codex").model_labels.len(), 7);
         assert_eq!(get("codex").version.as_deref(), Some("codex 0.5.0"));
         assert!(get("claude").model_labels.is_empty());
+    }
+
+    /// A script-free fake CLI for every jailed engine.
+    fn fake_jailed_clis(lab: &Lab) {
+        for name in ["claude", "gemini"] {
+            write_script(&lab.bin, name, &format!("echo {name} 1.0.0"), 0o755);
+        }
+        fake_codex(lab, "echo '{\"models\":[]}'");
+    }
+
+    async fn jail_notes(env: &CliEnv, lab: &Lab) -> Vec<(&'static str, Option<String>)> {
+        let targets = cli_targets(&["claude", "codex", "gemini", "opencode"]);
+        write_script(&lab.bin, "opencode", "echo oc 1", 0o755);
+        let cache = real_cache();
+        let d = detect_in(
+            &targets,
+            &join(&[&lab.bin]),
+            Some(lister(env, &cache, false)),
+        )
+        .await;
+        d.engines
+            .into_iter()
+            .filter(|e| e.status == Status::Available)
+            .map(|e| (e.id, e.diagnostics.jail))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_kernel_without_the_abi_is_noted_on_every_jailed_cli_but_not_opencode() {
+        let lab = lab();
+        fake_jailed_clis(&lab);
+        let mut env = env_of(&lab, false);
+        env.jail = JailSupport::Unavailable(JailOff::NoLandlock(2));
+        let note = Some("Landlock ABI 2, needs 3+".to_owned());
+        assert_eq!(
+            jail_notes(&env, &lab).await,
+            [
+                ("claude", note.clone()),
+                ("codex", note.clone()),
+                ("gemini", note),
+                ("opencode", None)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_layout_the_jail_refuses_is_noted_without_running_the_helper() {
+        let lab = lab();
+        fake_jailed_clis(&lab);
+        let mut env = env_of(&lab, true);
+        env.helper = lab.rec.join("never-called");
+        env.codex_home = Some(lab.home.clone());
+        let notes = jail_notes(&env, &lab).await;
+        assert_eq!(
+            notes,
+            [
+                ("claude", None),
+                ("codex", Some("~ too broad".to_owned())),
+                ("gemini", None),
+                ("opencode", None)
+            ]
+        );
+        assert!(!lab.rec.join("helper_args").exists());
+    }
+
+    #[tokio::test]
+    async fn a_jailable_layout_has_no_jail_note() {
+        let lab = lab();
+        fake_jailed_clis(&lab);
+        let env = env_of(&lab, true);
+        let notes = jail_notes(&env, &lab).await;
+        assert!(notes.iter().all(|(_, note)| note.is_none()), "{notes:?}");
+    }
+
+    #[tokio::test]
+    async fn a_failing_version_probe_is_available_with_an_unknown_version() {
+        let lab = lab();
+        write_script(&lab.bin, "claude", "echo broken >&2\nexit 1", 0o755);
+        let d = detect_with(&cli_targets(&["claude"]), &join(&[&lab.bin])).await;
+        let claude = d.engines.iter().find(|e| e.id == "claude").unwrap();
+        assert_eq!(claude.status, Status::Available);
+        assert_eq!(claude.version, None);
+        assert_eq!(
+            crate::core::ai::status_text(Some(&d), "claude"),
+            "available · version unknown"
+        );
     }
 
     #[tokio::test]

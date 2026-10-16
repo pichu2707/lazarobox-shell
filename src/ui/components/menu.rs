@@ -113,11 +113,24 @@ impl MenuPopup<'_> {
                 enabled,
                 current,
             } => {
-                let tail = match (mark_text(mark), current) {
+                // A long mark (an engine status with a reason) gives way to
+                // the label, but never below half of the row, and the `●`
+                // of the current row stays. A very narrow popup keeps the
+                // old rule: the label gives way and the mark stays whole.
+                let dot = if *current { " ●" } else { "" };
+                let mark = mark_text(mark);
+                let mark_cap = width
+                    .saturating_sub(cells(label) + 1 + cells(dot) + 1)
+                    .max(width / 2);
+                let mark = if width >= CLIP_MARK_FROM && cells(mark) > mark_cap {
+                    clip(mark, mark_cap)
+                } else {
+                    mark.to_owned()
+                };
+                let tail = match (mark.as_str(), current) {
                     ("", false) => String::new(),
-                    ("", true) => " ●".to_owned(),
-                    (mark, false) => format!(" {mark}"),
-                    (mark, true) => format!(" {mark} ●"),
+                    ("", true) => dot.to_owned(),
+                    (mark, _) => format!(" {mark}{dot}"),
                 };
                 let room = width.saturating_sub(cells(&tail) + 1);
                 let label = if cells(label) > room {
@@ -162,6 +175,9 @@ fn mark_text(mark: &Mark) -> &str {
         Mark::Status(text) => text,
     }
 }
+
+/// The row width from which a long picker mark is clipped to keep its label.
+const CLIP_MARK_FROM: usize = 40;
 
 /// Suffix of a task-row value that must survive clipping.
 const REQUIRED_MARK: &str = " · download required";
@@ -980,6 +996,12 @@ mod tests {
 
     /// A machine where only codex is installed and its model list failed.
     fn codex_without_list(why: &str) -> Detection {
+        codex_degraded(Some(why), None)
+    }
+
+    /// Only codex is installed; `models` and `jail` are the reasons it is
+    /// degraded.
+    fn codex_degraded(models: Option<&str>, jail: Option<&str>) -> Detection {
         Detection {
             engines: CATALOG
                 .iter()
@@ -998,7 +1020,8 @@ mod tests {
                     version: (e.id == "codex").then(|| "codex-cli 0.130.0".to_owned()),
                     model_labels: Vec::new(),
                     diagnostics: crate::core::ai::Diagnostics {
-                        models: (e.id == "codex").then(|| why.to_owned()),
+                        models: models.filter(|_| e.id == "codex").map(str::to_owned),
+                        jail: jail.filter(|_| e.id == "codex").map(str::to_owned),
                     },
                 })
                 .collect(),
@@ -1022,6 +1045,39 @@ mod tests {
             "{shown}"
         );
         insta::assert_snapshot!(shown);
+    }
+
+    fn codex_engines_level(detection: Detection) -> MenuState {
+        let saved = AiConfig::general(Some("codex"), None);
+        let mut menu = fresh().with_ai(saved, Some(detection));
+        goto(&mut menu, "general");
+        press(&mut menu, &[KeyCode::Enter]);
+        menu
+    }
+
+    #[test]
+    fn snapshot_engine_row_says_why_codex_has_no_jail() {
+        let menu = codex_engines_level(codex_degraded(None, Some("Landlock ABI 2, needs 3+")));
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(shown.contains("no jail: Landlock"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    #[test]
+    fn a_long_engine_status_is_clipped_but_keeps_its_label() {
+        let why = "a-very-long-folder-name-that-cannot-fit too broad";
+        let menu = codex_engines_level(codex_degraded(None, Some(why)));
+        let buf = draw(62, POPUP_H, &menu);
+        let row = lines(&buf)
+            .into_iter()
+            .find(|l| l.contains("codex"))
+            .unwrap();
+        assert!(
+            row.starts_with("│ codex available · codex-cli 0.130.0 · no jail"),
+            "{row}"
+        );
+        assert!(row.contains('…') && row.ends_with('│'), "{row}");
+        assert_eq!(cells(&row), 62);
     }
 
     #[test]

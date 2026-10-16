@@ -458,6 +458,19 @@ fn jail_plan(
     Ok((layout, spec))
 }
 
+/// Why the CLI at `binary` would run without its jail here, in a few words:
+/// the system cannot jail, or its layout is refused. `None` when it can be
+/// jailed (or cannot be told). Nothing is started.
+pub(crate) fn jail_note(env: &CliEnv, cli: Cli, binary: &Path) -> Option<String> {
+    let home = env.home.as_deref();
+    if let JailSupport::Unavailable(off) = env.jail {
+        return Some(JailRefusal::Unsupported(off).short(home));
+    }
+    let dirs = Dirs::create(env.data.as_deref()?).ok()?;
+    let refusal = jail_plan(env, cli, binary, &dirs).err()?;
+    Some(refusal.short(home))
+}
+
 /// The helper command line that runs `job` jailed, or why the layout cannot
 /// be jailed.
 fn jailed(

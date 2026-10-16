@@ -102,6 +102,9 @@ pub struct EngineState {
 pub struct Diagnostics {
     /// Why the model list could not be read (`None`: it was, or there is none).
     pub models: Option<String>,
+    /// Why this CLI would run without its jail here (`None`: it is jailed,
+    /// or it has no jail).
+    pub jail: Option<String>,
 }
 
 /// One finished run. An empty `Detection` means the run failed.
@@ -125,6 +128,9 @@ pub enum Probe {
         /// The CLI's model listing (`codex debug models`): its raw output, or
         /// why it failed. `None` when the CLI has no listing.
         listing: Option<Result<Vec<u8>, String>>,
+        /// A few words on why the CLI cannot be jailed here; `None` when it
+        /// can, or when the CLI has no jail.
+        jail: Option<String>,
     },
 }
 
@@ -146,10 +152,11 @@ pub fn reduce(probes: &[Probe]) -> Detection {
                         path: Some(_),
                         stdout,
                         listing,
+                        jail,
                         ..
                     }),
                     Kind::Cli,
-                ) => cli_state(engine.id, stdout.as_deref(), listing.as_ref()),
+                ) => cli_state(engine.id, stdout.as_deref(), listing.as_ref(), jail.clone()),
                 _ => bare(engine.id, Status::NotInstalled),
             }
         })
@@ -170,6 +177,7 @@ fn cli_state(
     id: &'static str,
     stdout: Option<&[u8]>,
     listing: Option<&Result<Vec<u8>, String>>,
+    jail: Option<String>,
 ) -> EngineState {
     let (labels, note) = match (id, listing) {
         ("codex", Some(Ok(raw))) => {
@@ -189,7 +197,7 @@ fn cli_state(
         models,
         model_labels: labels,
         version: stdout.and_then(parse::parse_version),
-        diagnostics: Diagnostics { models: note },
+        diagnostics: Diagnostics { models: note, jail },
         ..bare(id, Status::Available)
     }
 }
@@ -247,10 +255,13 @@ pub fn status_text(detection: Option<&Detection>, id: &str) -> String {
             1 => "available · 1 model".to_string(),
             n => format!("available · {n} models"),
         },
-        (Status::Available, Kind::Cli) => match &state.version {
-            Some(version) => format!("available · {version}"),
-            None => "available".to_string(),
-        },
+        (Status::Available, Kind::Cli) => {
+            let version = state.version.as_deref().unwrap_or("version unknown");
+            match &state.diagnostics.jail {
+                Some(why) => format!("available · {version} · no jail: {why}"),
+                None => format!("available · {version}"),
+            }
+        }
     }
 }
 
@@ -479,6 +490,7 @@ mod tests {
             path: path.map(PathBuf::from),
             stdout: stdout.map(|s| s.as_bytes().to_vec()),
             listing: None,
+            jail: None,
         }
     }
 
@@ -504,6 +516,7 @@ mod tests {
             path: Some(PathBuf::from("/bin/codex")),
             stdout: Some(b"codex-cli 0.162.1\n".to_vec()),
             listing: Some(Ok(raw.as_bytes().to_vec())),
+            jail: None,
         }]);
         let codex = get(&d, "codex").unwrap();
         assert_eq!(codex.status, Status::Available);
@@ -524,6 +537,7 @@ mod tests {
             path: Some(PathBuf::from("/bin/codex")),
             stdout: None,
             listing: listing.map(|l| l.map(<[u8]>::to_vec).map_err(str::to_owned)),
+            jail: None,
         }]);
         get(&d, "codex").unwrap()
     }
@@ -561,6 +575,7 @@ mod tests {
             listing: Some(Ok(
                 br#"{"models":[{"slug":"x","visibility":"list"}]}"#.to_vec()
             )),
+            jail: None,
         }]);
         assert_eq!(
             get(&d, "claude"),
@@ -633,9 +648,55 @@ mod tests {
         assert_eq!(text(&d, "lmstudio"), "available · 1 model");
         assert_eq!(text(&d, "llamacpp"), "available · 0 models");
         assert_eq!(text(&d, "vllm"), "not running");
-        assert_eq!(text(&d, "claude"), "available");
+        assert_eq!(text(&d, "claude"), "available · version unknown");
         assert_eq!(text(&d, "codex"), "available · 0.5.0");
         assert_eq!(text(&d, "gemini"), "not installed");
+    }
+
+    #[test]
+    fn a_cli_without_a_jail_says_why_after_its_version() {
+        let mut codex = state_of("codex", Some("codex-cli 0.130.0"));
+        codex.diagnostics.jail = Some("Landlock ABI 2, needs 3+".to_owned());
+        let d = Detection {
+            engines: vec![codex],
+        };
+        assert_eq!(
+            text(&d, "codex"),
+            "available · codex-cli 0.130.0 · no jail: Landlock ABI 2, needs 3+"
+        );
+        let mut unknown = state_of("gemini", None);
+        unknown.diagnostics.jail = Some("~/.nvm too broad".to_owned());
+        let d = Detection {
+            engines: vec![unknown],
+        };
+        assert_eq!(
+            text(&d, "gemini"),
+            "available · version unknown · no jail: ~/.nvm too broad"
+        );
+    }
+
+    fn state_of(id: &'static str, version: Option<&str>) -> EngineState {
+        EngineState {
+            version: version.map(str::to_owned),
+            ..bare(id, Status::Available)
+        }
+    }
+
+    #[test]
+    fn a_jail_note_of_the_probe_reaches_the_state_of_a_cli_only() {
+        let probe = |id, jail: Option<&str>| Probe::Cli {
+            id,
+            path: Some(PathBuf::from("/bin/x")),
+            stdout: None,
+            listing: None,
+            jail: jail.map(str::to_owned),
+        };
+        let d = reduce(&[probe("codex", Some("needs Linux")), probe("claude", None)]);
+        assert_eq!(
+            get(&d, "codex").unwrap().diagnostics.jail.as_deref(),
+            Some("needs Linux")
+        );
+        assert_eq!(get(&d, "claude").unwrap().diagnostics.jail, None);
     }
 
     #[test]
