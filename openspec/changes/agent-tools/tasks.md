@@ -78,16 +78,16 @@ Order note: 2g and 2h are independent of each other (both need 2f). 2c may run b
 
 Fallback split if over 400: 1b-i (state, keys, effects) and 1b-ii (bar and snapshots).
 
-- [ ] 1b.1 RED: prefix table has root leaf `e` (non-empty description, no duplicate, hint at most 80 columns); on shell pane, list/editor view and tools off it only notices and emits nothing.
-- [ ] 1b.2 RED: `Tab.last_shell` set in `set_focus_in`; target is last focused shell, never chat or another tab; no shell pane refuses; `p` cycles with wrap and writes nothing.
-- [ ] 1b.3 RED: keys routed first in `on_chat_key`: `y` approves; `n`/Esc decline; `Y`, Enter, Space, Ctrl+y, Alt+y, `a`, Tab, F5 swallowed; Repeat/Release and paste do not answer; Ctrl+C cancels and denies, never Quit; Ctrl+Space still works; MENU shields it.
-- [ ] 1b.4 RED: accept-time rechecks (pane gone, other tab, alt screen `\e[?1049h`), bracketed paste on frames via `encode_paste`, off refuses multi-line/tab and writes single line raw, state read at accept time, one accept is one `Effect::WritePty`, no `\r`.
-- [ ] 1b.5 RED: lifecycle: survives tab switch and focus change; pane close, cancel, tools off and quit end it with no write; keys elsewhere go to the PTY; target removed refuses `y` but `p` still works.
-- [ ] 1b.6 RED: `tools_enabled` gate reads `[ai.tools] enabled` (default true; key parse only, menu row is in 2a); off gives the tools-off notice.
-- [ ] 1b.7 RED: TestBackend + insta: prompt `run in pane 2 (~/dev)` + command + keys, composer kept, clipped 20-line command states the line count, sanitized cwd, hint under the block, prompt visible when scrolled.
-- [ ] 1b.8 GREEN: implement `PrefixAction::RunInPane`, `Tab.last_shell`, overlay keys, rechecks, bar. No `InputMode` variant.
-- [ ] 1b.9 Gate.
-- [ ] 1b.10 Docs: README section "Run a command from the chat" (`Ctrl+Space e`, `y`/`n`/`p`, never Enter).
+- [x] 1b.1 RED: prefix table has root leaf `e` (non-empty description, no duplicate, hint at most 80 columns); on shell pane, list/editor view and tools off it only notices and emits nothing.
+- [x] 1b.2 RED: `Tab.last_shell` set in `set_focus_in`; target is last focused shell, never chat or another tab; no shell pane refuses; `p` cycles with wrap and writes nothing.
+- [x] 1b.3 RED: keys routed first in `on_chat_key`: `y` approves; `n`/Esc decline; `Y`, Enter, Space, Ctrl+y, Alt+y, `a`, Tab, F5 swallowed; Repeat/Release and paste do not answer; Ctrl+C cancels and denies, never Quit; Ctrl+Space still works; MENU shields it.
+- [x] 1b.4 RED: accept-time rechecks (pane gone, other tab, alt screen `\e[?1049h`), bracketed paste on frames via `encode_paste`, off refuses multi-line/tab and writes single line raw, state read at accept time, one accept is one `Effect::WritePty`, no `\r`.
+- [x] 1b.5 RED: lifecycle: survives tab switch and focus change; pane close, cancel, tools off and quit end it with no write; keys elsewhere go to the PTY; target removed refuses `y` but `p` still works.
+- [x] 1b.6 RED: `tools_enabled` gate reads `[ai.tools] enabled` (default true; key parse only, menu row is in 2a); off gives the tools-off notice.
+- [x] 1b.7 RED: TestBackend + insta: prompt `run in pane 2 (~/dev)` + command + keys, composer kept, clipped 20-line command states the line count, sanitized cwd, hint under the block, prompt visible when scrolled.
+- [x] 1b.8 GREEN: implement `PrefixAction::RunInPane`, `Tab.last_shell`, overlay keys, rechecks, bar. No `InputMode` variant.
+- [x] 1b.9 Gate.
+- [x] 1b.10 Docs: README section "Run a command from the chat" (`Ctrl+Space e`, `y`/`n`/`p`, never Enter).
 - [ ] 1b.11 [manual] Kitty: `echo hi` appears on the input line unexecuted in bash, zsh and fish; two-line command is an editable buffer; `Ctrl+Space e`, `p`, `y`, `n` reach the app.
 
 ## PR3 / 2a: Registry, path policy, config (`src/core/ai/tools/{mod,paths}.rs`, `src/core/ai/{config,menu}.rs`, `src/core/config_edit.rs`, `src/core/ai/jail.rs`)

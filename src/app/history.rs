@@ -30,6 +30,7 @@ impl App {
     pub(super) fn new_chat_state(&self, origin: Option<PathBuf>) -> ChatState {
         let mut chat = ChatState::new(origin);
         chat.set_profile(self.ai.profile());
+        chat.set_run_hint(self.ai.tools_enabled());
         if self.history {
             chat.open_list();
         }

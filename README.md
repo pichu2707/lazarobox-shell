@@ -171,6 +171,23 @@ Límites de esta versión:
 - Los motores `lmstudio`, `llamacpp`, `vllm` y `opencode` se detectan, pero aún no tienen adaptador de chat.
 - Las etiquetas extra de una conversación vuelven en orden alfabético al reabrirla.
 
+### Run a command from the chat
+
+When the last answer of a chat ends with a shell code block (` ```bash `, `sh`, `shell` or `zsh`), a hint under the block names the binding: `Ctrl+Space`, then `e`. It works with every engine, because it reads the block of the answer and needs nothing from the model.
+
+`e` opens a confirmation over the composer: `run in pane N (<cwd>)`, the exact command and the keys. The target is the shell pane of the current tab that you used last; a chat or a pane of another tab is never a target.
+
+| Key       | Action                                                                 |
+| :-------- | :--------------------------------------------------------------------- |
+| `y`       | Types the command into the target pane. **It never presses Enter.**   |
+| `n` / `Esc` | Declines. Nothing is written.                                        |
+| `p`       | Moves the target to the next shell pane of the tab (with wrap).        |
+| `Ctrl+C`  | Cancels the answer in progress and declines.                           |
+
+Every other key is swallowed while the confirmation is open, and a held key or a paste never answers it. You review the typed line in your own shell and run it yourself with Enter. A multi-line command is sent as one bracketed paste, so the shell shows it as an editable buffer; if the shell did not ask for bracketed paste, a multi-line command is refused. A pane that runs a full-screen app (an editor, a pager) is refused, and the command is checked again when you press `y`: control characters and escape sequences make it be refused, never cleaned.
+
+There is no "always allow". To turn the feature off, set `enabled = false` in `[ai.tools]` of `config.toml` (it is on by default); the hint and the binding then disappear.
+
 ### Motores CLI: claude, codex y gemini
 
 El chat puede hablar con los CLIs **claude**, **codex** y **gemini** que ya tengas instalados y con la sesión iniciada (`claude`, `codex login`, `gemini`). lazarobox no pide ni guarda claves de API: arranca el CLI, le pasa la conversación por la entrada estándar y lee su respuesta. Se eligen como cualquier otro motor, en el menú de IA o en `[ai.tasks.chat]`.

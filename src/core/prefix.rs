@@ -67,6 +67,9 @@ pub enum PrefixAction {
     EditTags,
     /// Asks the focused chat's engine for the end-of-conversation summary.
     Summarize,
+    /// Opens the confirm to type the last shell block of the focused chat's
+    /// last answer into a shell pane. Never runs it.
+    RunInPane,
     ToggleZoom,
     NewTab,
     CloseTab,
@@ -204,6 +207,8 @@ pub const PREFIX_TREE: &[Binding] = &[
     // longer one would clip `q quit` on an 80-column terminal.
     unhinted(act('o', "memory", PrefixAction::ToggleMemory)),
     unhinted(act('s', "summary", PrefixAction::Summarize)),
+    // Left out of the hint for the same reason: the root hint is full.
+    unhinted(act('e', "run in pane", PrefixAction::RunInPane)),
     // `t` is the tab group, so the tag editor takes the capital.
     unhinted(act('T', "tags", PrefixAction::EditTags)),
     unhinted(act('?', "commands (reserved)", PrefixAction::ShowCommands)),
@@ -525,6 +530,30 @@ mod tests {
         );
     }
 
+    // Spec: modal-input "Run-in-pane binding". `e` is an unhinted root leaf
+    // with a description, bound nowhere else, and the hint stays within 80
+    // columns.
+    #[test]
+    fn e_is_an_unhinted_root_leaf_that_runs_in_a_pane() {
+        let binding = PREFIX_TREE
+            .iter()
+            .find(|b| b.chord.matches(&plain('e')))
+            .expect("e is bound at the root");
+        assert_eq!(binding.target, Target::Action(PrefixAction::RunInPane));
+        assert!(!binding.description.is_empty());
+        assert!(!binding.hinted);
+        let roots = PREFIX_TREE.iter().filter(|b| b.chord.matches(&plain('e')));
+        assert_eq!(roots.count(), 1, "no duplicate key at the root");
+        for table in &tables()[1..] {
+            assert_ne!(
+                lookup(table, &plain('e')),
+                Step::Run(PrefixAction::RunInPane)
+            );
+        }
+        assert!(Line::from(hint(PREFIX_TREE, 80)).width() <= 80);
+        assert!(!hint(PREFIX_TREE, 80).contains("run in pane"));
+    }
+
     #[test]
     fn c_inside_another_group_does_not_open_a_chat() {
         for table in &tables()[1..] {
@@ -561,8 +590,8 @@ mod tests {
         for (i, a) in all.iter().enumerate() {
             assert!(!all[i + 1..].contains(a), "duplicate action {a:?}");
         }
-        // literal + quit + copy + menu + chat + note + memory + summary + tags + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
-        assert_eq!(all.len(), 32);
+        // literal + quit + copy + menu + chat + note + memory + summary + run + tags + `?` + 4 focus + 5 window + 2 tab + 2 go + 9 goto
+        assert_eq!(all.len(), 33);
     }
 
     #[test]
