@@ -78,6 +78,12 @@ pub fn merge_paths(process: &OsStr, login: &OsStr) -> OsString {
     std::env::join_paths(seen).unwrap_or_else(|_| process.to_owned())
 }
 
+/// The process `PATH` alone, held to the same rule as a merged one: only
+/// absolute entries stay. Used when the login lookup gave nothing.
+pub fn sanitize(process: &OsStr) -> OsString {
+    merge_paths(process, OsStr::new(""))
+}
+
 /// Asks `shell` (a login, interactive one) for its `PATH`. `None` on a
 /// spawn failure, a non-zero exit, a timeout or output without the marks.
 pub async fn login_shell_path(shell: &Path, limit: Duration) -> Option<OsString> {
@@ -116,7 +122,7 @@ pub async fn login_shell_path(shell: &Path, limit: Duration) -> Option<OsString>
 pub async fn resolve(process: OsString, shell: Option<OsString>, limit: Duration) -> OsString {
     match login_shell_path(&shell_program(shell.as_deref()), limit).await {
         Some(login) => merge_paths(&process, &login),
-        None => process,
+        None => sanitize(&process),
     }
 }
 
@@ -294,5 +300,22 @@ mod tests {
             resolve(os("/p"), Some(bad.clone().into_os_string()), t).await,
             os("/p")
         );
+    }
+
+    #[tokio::test]
+    async fn a_failed_lookup_still_drops_relative_and_empty_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = fake_shell(dir.path(), "bad", "exit 1");
+        let t = Duration::from_secs(5);
+        assert_eq!(
+            resolve(os(":rel:/p:bin:/p"), Some(bad.into_os_string()), t).await,
+            os("/p")
+        );
+    }
+
+    #[test]
+    fn the_fallback_path_keeps_only_absolute_entries() {
+        assert_eq!(sanitize(&os(":rel:/a:./b:/c")), os("/a:/c"));
+        assert_eq!(sanitize(&os("")), os(""));
     }
 }

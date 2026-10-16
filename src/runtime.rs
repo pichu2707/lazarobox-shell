@@ -175,7 +175,10 @@ pub async fn run() -> io::Result<()> {
     // written back to the process environment. A failed or panicked lookup
     // leaves the process `PATH` as it was.
     let process_path = env::var_os("PATH").unwrap_or_default();
-    let cli_env = chat::CliEnv::from_env(jail).with_path(login_path.await.unwrap_or(process_path));
+    let path = login_path
+        .await
+        .unwrap_or_else(|_| login_path::sanitize(&process_path));
+    let cli_env = chat::CliEnv::from_env(jail).with_path(path);
     // Detection reads codex's model list through the same jail as its chat.
     let detect_env = cli_env.clone();
     // The codex model list is reused for 10 minutes across runs (`r` re-lists).
