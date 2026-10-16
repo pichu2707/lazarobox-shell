@@ -57,7 +57,10 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
             PaneView::Pty(pane) => pane,
             PaneView::Chat(chat) => {
                 let guidance = app.chat_guidance(id);
-                let chat_view = ChatView::new(chat, theme).guidance(guidance.as_deref());
+                let approval = app.approval_prompt(id);
+                let chat_view = ChatView::new(chat, theme)
+                    .guidance(guidance.as_deref())
+                    .approval(approval.as_ref());
                 // The composer owns the real cursor of a focused chat; MENU
                 // hides it like it hides a shell's.
                 // Chat COPY scrolls the transcript and edits nothing: no cursor.

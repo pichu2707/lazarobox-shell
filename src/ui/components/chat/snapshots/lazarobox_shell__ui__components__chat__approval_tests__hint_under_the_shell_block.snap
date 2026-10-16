@@ -1,0 +1,11 @@
+---
+source: src/ui/components/chat/approval_tests.rs
+expression: shot
+---
+› how?
+
+Try this:
+```bash
+cd ~/dev/curso-rust
+```
+Ctrl+Space e  run in pane

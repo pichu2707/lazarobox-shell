@@ -13,6 +13,7 @@ use ratatui::{
 use crate::{
     core::ai::chat::{
         ChatState,
+        approval::ApprovalPrompt,
         composer::ComposerPlan,
         guidance::guidance_rows,
         transcript::{Line, LineKind},
@@ -33,6 +34,7 @@ pub struct ChatView<'a> {
     chat: &'a ChatState,
     theme: &'a LazaroboxTheme,
     guidance: Option<&'a str>,
+    approval: Option<&'a ApprovalPrompt>,
 }
 
 impl<'a> ChatView<'a> {
@@ -41,7 +43,14 @@ impl<'a> ChatView<'a> {
             chat,
             theme,
             guidance: None,
+            approval: None,
         }
+    }
+
+    /// The pending run-in-pane confirm, drawn over the composer.
+    pub fn approval(mut self, approval: Option<&'a ApprovalPrompt>) -> Self {
+        self.approval = approval;
+        self
     }
 
     /// Text shown above the composer while the engine cannot be used.
@@ -61,7 +70,11 @@ impl<'a> ChatView<'a> {
     /// The composer is as wide as the area, so one plan serves all three.
     fn plan(&self, area: Rect) -> (ChatLayout, ComposerPlan<'_>) {
         let plan = self.chat.composer().plan(usize::from(area.width));
-        let wanted = if area.is_empty() { 0 } else { plan.height() };
+        let wanted = match self.approval {
+            _ if area.is_empty() => 0,
+            Some(prompt) => approval::wanted(prompt, usize::from(area.width)),
+            None => plan.height(),
+        };
         let rows = ChatState::clamp_composer_rows(wanted, area.height);
         let layout = ChatLayout {
             transcript: Rect::new(area.x, area.y, area.width, area.height - rows),
@@ -74,6 +87,10 @@ impl<'a> ChatView<'a> {
     pub fn cursor(&self, area: Rect) -> Option<Position> {
         if let Some(editor) = self.chat.tag_editor() {
             return self.tag_cursor(editor, area);
+        }
+        // The prompt owns the bottom rows: the composer is hidden under it.
+        if self.approval.is_some() {
+            return None;
         }
         if self.chat.list().is_some() {
             return None;
@@ -107,6 +124,7 @@ impl<'a> ChatView<'a> {
             LineKind::Waiting => base.fg(theme.text_muted).add_modifier(Modifier::ITALIC),
             LineKind::Mark | LineKind::Reasoning => base.fg(theme.text_muted),
             LineKind::ReasoningHead => base.fg(theme.ai_purple),
+            LineKind::Hint => base.fg(theme.text_muted).add_modifier(Modifier::ITALIC),
         }
     }
 
@@ -183,7 +201,9 @@ impl Widget for ChatView<'_> {
         }
 
         let composer = layout.composer;
-        if !composer.is_empty() {
+        if let Some(prompt) = self.approval {
+            self.render_approval(prompt, composer, buf);
+        } else if !composer.is_empty() {
             let view = plan.view(usize::from(composer.height));
             let style = Style::default().bg(self.theme.bg_panel);
             for (row, text) in view.rows.iter().enumerate() {
@@ -203,6 +223,9 @@ fn fill(buf: &mut Buffer, rect: Rect, style: Style) {
     }
 }
 
+mod approval;
+#[cfg(test)]
+mod approval_tests;
 #[cfg(test)]
 mod guidance_tests;
 mod list;

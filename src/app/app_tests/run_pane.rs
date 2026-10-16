@@ -306,3 +306,47 @@ fn the_label_has_no_control_characters() {
         "{text:?}"
     );
 }
+
+// 1b.7: what the screen shows ------------------------------------------------
+
+fn screen(a: &App) -> String {
+    use ratatui::{Terminal, backend::TestBackend};
+    let theme = crate::ui::theme::LazaroboxTheme::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 25)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::render(frame, a, &theme))
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    (0..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn the_screen_shows_the_hint_then_the_prompt_and_then_neither() {
+    let mut a = one_shell_and_a_chat(BLOCK);
+    assert!(chat(&a, id2()).run_hint(), "tools are on by default");
+    assert!(screen(&a).contains("Ctrl+Space e  run in pane"));
+    press(&mut a, "e");
+    let shot = screen(&a);
+    assert!(shot.contains("run in pane 1 (/launch)"), "{shot}");
+    assert!(shot.contains("y type it (no Enter)"), "{shot}");
+    a.update(key('n'));
+    let shot = screen(&a);
+    assert!(!shot.contains("y type it"), "{shot}");
+}
+
+#[test]
+fn with_tools_off_a_new_chat_shows_no_hint() {
+    let mut ai = ollama();
+    ai.set_tools_enabled(false);
+    let mut a = launched(80, 25).with_ai(ai);
+    press(&mut a, "c");
+    answer(&mut a, id2(), BLOCK);
+    assert!(!screen(&a).contains("Ctrl+Space e"));
+}

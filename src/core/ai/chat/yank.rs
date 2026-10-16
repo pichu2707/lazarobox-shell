@@ -306,7 +306,7 @@ mod tests {
     /// split at closing fences, so adjacent blocks stay apart.
     fn rendered_shell_block(text: &str) -> Option<String> {
         let mut rows = Vec::new();
-        assistant_rows(text, 10_000, &mut rows);
+        assistant_rows(text, 10_000, false, &mut rows);
         // (opening row, body rows, closed)
         let mut blocks: Vec<(String, Vec<String>, bool)> = Vec::new();
         let mut open: Option<(String, Vec<String>)> = None;
