@@ -66,7 +66,7 @@ use crate::{
         ai::{
             Detection,
             chat::{
-                notify::{bell_after_failed_desktop, delivery},
+                notify::{bell_after_failed_desktop, rings_at_once},
                 prompts::Resolved,
                 store::StoreReply,
             },
@@ -245,16 +245,19 @@ pub async fn run() -> io::Result<()> {
                 force,
             );
         }))
-        .with_desktop(
-            Box::new({
-                let path = cli_env.path.clone();
-                move || notify::available(notify::display_set(), &path)
-            }),
-            Box::new({
-                let path = cli_env.path.clone();
-                move |body, fallback| notify::spawn_send(path.clone(), body, fallback)
-            }),
-        )
+        .with_desktop(Box::new({
+            let path = cli_env.path.clone();
+            let busy = Arc::new(AtomicBool::new(false));
+            move |body, fallback| {
+                notify::spawn_send(notify::Job {
+                    path: path.clone(),
+                    body,
+                    fallback,
+                    busy: Arc::clone(&busy),
+                    session: notify::Session::current,
+                });
+            }
+        }))
         .with_preparer(Box::new(move |pane, profile, origin, context| {
             spawn_prepare(
                 config_dir.clone(),
@@ -645,12 +648,10 @@ struct Panes {
     /// Raised by a desktop send that failed in `desktop` mode: the next
     /// flush rings the bell for that event.
     late_bell: Arc<AtomicBool>,
-    /// Whether a desktop notification can be sent now (a display is set and
-    /// `notify-send` resolves on the login `PATH`). Never, unless
-    /// `with_desktop` installs the production one.
-    desktop_available: Box<dyn Fn() -> bool>,
-    /// Starts one desktop notification in the background: the body and, when a
-    /// failure must ring the bell, the flag to raise.
+    /// Starts one desktop notification in the background: the body and, when
+    /// an unavailable desktop or a failure must ring the bell, the flag to
+    /// raise. The availability is probed there, off the UI thread. Does
+    /// nothing unless `with_desktop` installs the production one.
     desktop_send: Box<DesktopSendFn>,
     /// Starts one AI engine detection; the answer arrives on the AI channel.
     /// A no-op unless `with_detector` installs the production one.
@@ -679,7 +680,6 @@ impl Panes {
             host_out: Vec::new(),
             bell: false,
             late_bell: Arc::new(AtomicBool::new(false)),
-            desktop_available: Box::new(|| false),
             desktop_send: Box::new(|_, _| {}),
             detect: Box::new(|_| {}),
             prepare: Box::new(|_, _, _, _| {}),
@@ -740,9 +740,8 @@ impl Panes {
         }
     }
 
-    /// Sets how `Effect::Notify` probes and sends a desktop notification.
-    fn with_desktop(mut self, available: Box<dyn Fn() -> bool>, send: Box<DesktopSendFn>) -> Self {
-        self.desktop_available = available;
+    /// Sets how `Effect::Notify` starts a desktop notification.
+    fn with_desktop(mut self, send: Box<DesktopSendFn>) -> Self {
         self.desktop_send = send;
         self
     }
@@ -848,13 +847,10 @@ impl Panes {
                 // The core table decides; the send returns at once (its own
                 // task owns the timeout and the reaping).
                 Effect::Notify { mode, body } => {
-                    let plan = delivery(mode, (self.desktop_available)());
-                    self.bell |= plan.bell;
-                    if plan.desktop {
-                        let fallback =
-                            bell_after_failed_desktop(mode).then(|| Arc::clone(&self.late_bell));
-                        (self.desktop_send)(body, fallback);
-                    }
+                    self.bell |= rings_at_once(mode);
+                    let fallback =
+                        bell_after_failed_desktop(mode).then(|| Arc::clone(&self.late_bell));
+                    (self.desktop_send)(body, fallback);
                 }
                 // Staged like the other host bytes: written after the draw by
                 // `flush_host`, never in the middle of a frame.
@@ -1628,16 +1624,15 @@ mod tests {
 
     type Sent = Rc<RefCell<Vec<(String, bool)>>>;
 
-    /// Panes whose desktop is `available` and whose sends are recorded
-    /// (body, whether a failure would ring the bell).
-    fn desktop_panes(available: bool) -> (Panes, Sent) {
+    /// Panes whose desktop sends are recorded (body, whether a failure or an
+    /// unavailable desktop would ring the bell).
+    fn desktop_panes() -> (Panes, Sent) {
         let (panes, _rx, _rec) = fake_panes(None);
         let sent: Sent = Rc::default();
         let log = Rc::clone(&sent);
-        let panes = panes.with_desktop(
-            Box::new(move || available),
-            Box::new(move |body, fallback| log.borrow_mut().push((body, fallback.is_some()))),
-        );
+        let panes = panes.with_desktop(Box::new(move |body, fallback| {
+            log.borrow_mut().push((body, fallback.is_some()))
+        }));
         (panes, sent)
     }
 
@@ -1648,33 +1643,31 @@ mod tests {
         }
     }
 
-    // Decision table, executed: the bell flag and the desktop send per mode.
+    // Decision table, executed: the availability is probed off the UI thread,
+    // so `apply` only rings what is certain and hands the rest to the send.
     #[test]
-    fn a_notify_effect_executes_the_delivery_table() {
-        // (mode, available, bell, sends, fallback armed)
+    fn a_notify_effect_rings_at_once_only_in_auto_and_always_hands_off_the_send() {
+        // (mode, bell now, fallback armed)
         let table = [
-            (NotifyMode::Auto, true, true, 1, false),
-            (NotifyMode::Auto, false, true, 0, false),
-            (NotifyMode::Desktop, true, false, 1, true),
-            (NotifyMode::Desktop, false, true, 0, false),
+            (NotifyMode::Auto, true, false),
+            (NotifyMode::Desktop, false, true),
         ];
-        for (mode, available, bell, sends, fallback) in table {
-            let (mut panes, sent) = desktop_panes(available);
+        for (mode, bell, fallback) in table {
+            let (mut panes, sent) = desktop_panes();
             panes.apply(vec![notify(mode)]);
             panes.stage_bell();
-            assert_eq!(panes.host_out == vec![0x07], bell, "{mode:?} {available}");
-            let sent = sent.borrow();
-            assert_eq!(sent.len(), sends, "{mode:?} {available}");
-            assert!(
-                sent.iter()
-                    .all(|(b, f)| b == "Answer ready in pane 2" && *f == fallback)
+            assert_eq!(panes.host_out == vec![0x07], bell, "{mode:?}");
+            assert_eq!(
+                *sent.borrow(),
+                vec![("Answer ready in pane 2".to_owned(), fallback)],
+                "{mode:?}"
             );
         }
     }
 
     #[test]
     fn a_failed_desktop_send_rings_on_the_next_flush_only_once() {
-        let (mut panes, _sent) = desktop_panes(true);
+        let (mut panes, _sent) = desktop_panes();
         panes.late_bell.store(true, Ordering::Release);
         panes.stage_bell();
         assert_eq!(panes.host_out, vec![0x07]);
@@ -1687,10 +1680,7 @@ mod tests {
         let (mut panes, _rx, _rec) = fake_panes(None);
         let seen: Rc<RefCell<Option<Arc<AtomicBool>>>> = Rc::default();
         let slot = Rc::clone(&seen);
-        panes = panes.with_desktop(
-            Box::new(|| true),
-            Box::new(move |_, fallback| *slot.borrow_mut() = fallback),
-        );
+        panes = panes.with_desktop(Box::new(move |_, fallback| *slot.borrow_mut() = fallback));
         panes.apply(vec![notify(NotifyMode::Desktop)]);
         seen.borrow()
             .as_ref()

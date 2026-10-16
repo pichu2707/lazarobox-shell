@@ -316,6 +316,12 @@ fn interpreter_trust(path: &Path) -> Result<PathBuf, (PathBuf, Untrusted)> {
     }
 }
 
+/// Whether the program at `path` may be run by lazarobox on its own account:
+/// the [`interpreter_trust`] rule.
+pub(crate) fn is_trusted_program(path: &Path) -> bool {
+    interpreter_trust(path).is_ok()
+}
+
 /// The interpreter a script asks for by bare name (`#!/usr/bin/env node`): the
 /// one installed next to the CLI as it was found (npm, nvm, volta and the like
 /// put `node` beside the global packages' `bin` links), else the first on

@@ -72,6 +72,13 @@ pub fn delivery(mode: NotifyMode, desktop_available: bool) -> Delivery {
     }
 }
 
+/// Whether `mode` rings the bell before anything else is known. Whether the
+/// desktop is available is only learned off the UI thread, so `desktop` rings
+/// later (through [`bell_after_failed_desktop`]) when it is not.
+pub fn rings_at_once(mode: NotifyMode) -> bool {
+    delivery(mode, true).bell
+}
+
 /// Whether a desktop notification that failed to start rings the bell for
 /// that event. Only `desktop` needs it: `auto` rang the bell already.
 pub fn bell_after_failed_desktop(mode: NotifyMode) -> bool {
@@ -84,7 +91,9 @@ pub fn body(pane: PaneId, ended: Ended) -> String {
     let n = pane.number();
     match ended {
         Ended::Done => format!("Answer ready in pane {n}"),
-        Ended::Error | Ended::Cancelled => format!("Turn failed in pane {n}"),
+        Ended::Error => format!("Turn failed in pane {n}"),
+        // Never asked for (a cancel does not notify), but never a failure.
+        Ended::Cancelled => format!("Turn ended in pane {n}"),
     }
 }
 
@@ -206,6 +215,16 @@ mod tests {
         }
     }
 
+    // The bell that rings at once is the table's with the desktop up: the
+    // availability is only known later, off the UI thread.
+    #[test]
+    fn the_immediate_bell_follows_the_table() {
+        for mode in NotifyMode::ALL {
+            assert_eq!(rings_at_once(mode), delivery(mode, true).bell, "{mode:?}");
+        }
+        assert!(rings_at_once(NotifyMode::Auto) && !rings_at_once(NotifyMode::Desktop));
+    }
+
     #[test]
     fn only_desktop_rings_after_a_failed_spawn() {
         for mode in NotifyMode::ALL {
@@ -221,6 +240,8 @@ mod tests {
     fn the_body_is_fixed_text_naming_only_the_pane() {
         assert_eq!(body(A, Ended::Done), "Answer ready in pane 1");
         assert_eq!(body(A, Ended::Error), "Turn failed in pane 1");
+        // A cancel never notifies; if it ever got here it is not a failure.
+        assert_eq!(body(A, Ended::Cancelled), "Turn ended in pane 1");
         assert_eq!(
             body(PaneId::for_test(42), Ended::Done),
             "Answer ready in pane 42"
