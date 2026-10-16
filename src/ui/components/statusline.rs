@@ -9,6 +9,7 @@ use ratatui::{
 use crate::app::{AppMode, InputMode};
 use crate::core::ai::chat::memory::MemBadge;
 use crate::core::copy::SelectionKind;
+use crate::core::update;
 use crate::ui::theme::LazaroboxTheme;
 
 pub mod thinking;
@@ -38,6 +39,7 @@ pub struct StatusLine<'a> {
     marker: Option<SelectionKind>,
     thinking: Option<ThinkingView>,
     memory: Option<MemBadge>,
+    update: Option<&'a str>,
 }
 
 impl<'a> StatusLine<'a> {
@@ -53,6 +55,7 @@ impl<'a> StatusLine<'a> {
             marker: None,
             thinking: None,
             memory: None,
+            update: None,
         }
     }
 
@@ -74,6 +77,7 @@ impl<'a> StatusLine<'a> {
             marker: None,
             thinking: None,
             memory: None,
+            update: None,
         }
     }
 
@@ -113,6 +117,14 @@ impl<'a> StatusLine<'a> {
         self
     }
 
+    /// The newer released version, shown as ` · update <ver>` after the
+    /// engine. Text only. It outranks the memory state when the line is narrow
+    /// and is dropped when even it does not fit.
+    pub fn update(mut self, update: Option<&'a str>) -> Self {
+        self.update = update;
+        self
+    }
+
     /// The thinking indicator of the stream being shown, if any.
     pub fn thinking(mut self, view: Option<ThinkingView>) -> Self {
         self.thinking = view;
@@ -134,18 +146,27 @@ impl<'a> StatusLine<'a> {
 
     /// The right segment for a statusline `width` columns wide and the columns
     /// it takes (0 when it does not fit next to the mode block, which has
-    /// priority). The memory state is part of it only if it fits and showing
-    /// it costs the thinking indicator nothing: it goes first.
+    /// priority). The update mark and the memory state are part of it only if
+    /// they fit and showing them costs the thinking indicator nothing; the
+    /// memory state goes first.
     fn fit_right(&self, width: u16) -> (Line<'a>, usize) {
         let fits = |line: &Line| line.width() + self.mode_block_width() <= usize::from(width);
-        let plain = self.right_line(false);
+        let plain = self.right_line(false, false);
         let plain_width = if fits(&plain) { plain.width() } else { 0 };
-        if self.memory.is_some() {
-            let with = self.right_line(true);
-            let indicator = |right: usize| Line::from(self.indicator(width, right)).width();
-            if fits(&with) && indicator(with.width()) == indicator(plain_width) {
-                let columns = with.width();
-                return (with, columns);
+        let indicator = |right: usize| Line::from(self.indicator(width, right)).width();
+        let wanted = [
+            (self.memory.is_some(), self.update.is_some()),
+            (false, self.update.is_some()),
+            (self.memory.is_some(), false),
+        ];
+        for (memory, update) in wanted {
+            if !(memory || update) {
+                continue;
+            }
+            let line = self.right_line(memory, update);
+            if fits(&line) && indicator(line.width()) == indicator(plain_width) {
+                let columns = line.width();
+                return (line, columns);
             }
         }
         (plain, plain_width)
@@ -198,9 +219,9 @@ impl<'a> StatusLine<'a> {
         ])
     }
 
-    /// The right segment: the engine (or shell) text, and the memory state
-    /// after it when `with_memory`.
-    fn right_line(&self, with_memory: bool) -> Line<'a> {
+    /// The right segment: the engine (or shell) text, then the update mark
+    /// when `with_update`, then the memory state when `with_memory`.
+    fn right_line(&self, with_memory: bool, with_update: bool) -> Line<'a> {
         let t = self.theme;
         let mut spans = vec![
             Span::styled(SLANT_LEFT, Style::new().fg(t.bg_panel).bg(t.bg_base)),
@@ -209,6 +230,12 @@ impl<'a> StatusLine<'a> {
                 Style::new().fg(t.primary_cyan).bg(t.bg_panel),
             ),
         ];
+        if let Some(version) = self.update.filter(|_| with_update) {
+            spans.push(Span::styled(
+                format!(" \u{b7} {}", update::status_mark(version)),
+                Style::new().fg(t.warning_orange).bg(t.bg_panel),
+            ));
+        }
         match self.memory.filter(|_| with_memory) {
             Some(badge) => {
                 let (text, color) = match badge {
@@ -745,3 +772,5 @@ mod tests {
         }
     }
 }
+#[cfg(test)]
+mod update_tests;

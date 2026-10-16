@@ -302,6 +302,8 @@ pub struct MenuState {
     checking: bool,
     /// The terminal size at the last key, `None` before the app gave one.
     term: Option<(u16, u16)>,
+    /// The newer version the update check found. Only ever shown as text.
+    update: Option<String>,
 }
 
 impl MenuState {
@@ -313,7 +315,28 @@ impl MenuState {
             ai: None,
             checking: false,
             term: None,
+            update: None,
         }
+    }
+
+    /// Tells the menu which newer version is known, if any.
+    pub fn with_update(mut self, update: Option<String>) -> Self {
+        self.update = update;
+        self
+    }
+
+    /// A late result of the update check, while the menu is open.
+    pub fn set_update(&mut self, update: Option<String>) {
+        self.update = update;
+    }
+
+    /// The two lines of the update note, shown under the task list. Plain
+    /// text: it is not a row, takes no key and runs nothing. Hidden over the
+    /// warning and the pickers, which have their own full-height views.
+    pub fn update_note(&self) -> Option<[String; 2]> {
+        let latest = self.update.as_deref()?;
+        let in_picker = self.ai.as_ref().is_some_and(|ai| ai.picker().is_some());
+        (!self.in_warning() && !in_picker).then(|| crate::core::update::menu_lines(latest))
     }
 
     /// The terminal size, given by the app before each key so the menu knows
@@ -1150,3 +1173,5 @@ mod context_tests;
 
 #[cfg(test)]
 mod mouse_tests;
+#[cfg(test)]
+mod update_tests;
