@@ -320,6 +320,9 @@ pub struct MenuState {
     error: Option<String>,
     /// What the last copy did, shown in the footer until the next press.
     copied: Option<String>,
+    /// What the last notification test did; shown on the Notify and Sound
+    /// rows until the menu closes.
+    test_report: Option<String>,
     ai: Option<AiMenu>,
     /// A detection run is in flight.
     checking: bool,
@@ -335,6 +338,7 @@ impl MenuState {
             selected: (choices().count() > 0).then_some(0),
             original: *original,
             error: None,
+            test_report: None,
             copied: None,
             ai: None,
             checking: false,
@@ -968,7 +972,10 @@ impl MenuState {
             }
             _ if picker.is_some() => Cow::Borrowed(HINT_PICKER),
             _ if in_ai_view => Cow::Borrowed(HINT_TASK),
-            _ if self.on_notify_row() => Cow::Borrowed(HINT_NOTIFY),
+            _ if self.on_notify_row() => match &self.test_report {
+                Some(report) => Cow::Owned(report.clone()),
+                None => Cow::Borrowed(HINT_NOTIFY),
+            },
             _ => Cow::Borrowed(HINT_SETTINGS),
         })
     }
@@ -976,6 +983,15 @@ impl MenuState {
     /// Says what a copy did, in the footer, until the next press.
     pub fn set_copied(&mut self, message: String) {
         self.copied = Some(message);
+    }
+
+    /// Says what the notification test did, in the footer of the Notify rows.
+    pub fn set_test_report(&mut self, message: String) {
+        self.test_report = Some(message);
+    }
+
+    pub fn test_report(&self) -> Option<&str> {
+        self.test_report.as_deref()
     }
 
     pub fn set_error(&mut self, message: String) {

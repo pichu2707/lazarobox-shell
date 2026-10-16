@@ -40,6 +40,21 @@ baseline.
   now, with the mode shown (saved or not) and ignoring the focus rule. The
   footer says what happened (`sent: bell + desktop + sound`) or why not
   (`desktop unavailable: no session bus`).
+- Notification robustness. The availability probe has its own 1 s limit and
+  every send, sound and test task is bounded and always releases its
+  in-flight flag, so a hung probe cannot block later notifications. A send
+  dropped because another is in flight rings the bell in `desktop` mode.
+  The checked real path of `notify-send` is the one that runs, with the found
+  name as `argv[0]`. The sound tries canberra, then `pw-play` and `paplay`
+  with each existing sound file, stopping at the first that exits 0. The
+  environment allow-list adds the audio and XDG variables (`PULSE_*`,
+  `PIPEWIRE_*`, `XDG_DATA_*`, `XDG_CONFIG_*`, `LANGUAGE`, `USER`, `LOGNAME`).
+  SSH only disables the desktop when no local display is set, so a stale
+  `SSH_CONNECTION` in a local tmux does not. One test at a time (`test
+  running`), and its report lives in its own footer field until the menu
+  closes. In `desktop` mode a missing `notify-send` rings the bell and the
+  sound may play too: they overlap by design. A turn that ended by cancel
+  never notifies; its fallback body would read "Turn ended in pane N".
 
 ## [0.15.2] - 2026-10-16
 

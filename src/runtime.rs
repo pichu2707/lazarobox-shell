@@ -272,6 +272,7 @@ pub async fn run() -> io::Result<()> {
         }))
         .with_notify_test(Box::new({
             let path = cli_env.path.clone();
+            let busy = Arc::new(AtomicBool::new(false));
             move |mode, sound, fallback| {
                 notify::spawn_test(notify::TestJob {
                     path: path.clone(),
@@ -280,6 +281,7 @@ pub async fn run() -> io::Result<()> {
                     fallback,
                     report: notified_tx.clone(),
                     session: notify::Session::current,
+                    busy: Arc::clone(&busy),
                 });
             }
         }))

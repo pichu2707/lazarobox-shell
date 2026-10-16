@@ -1262,6 +1262,35 @@ other = 1
     }
 
     #[test]
+    fn notify_sound_round_trips_as_a_toml_boolean() {
+        for (value, want) in [("false", false), ("true", true)] {
+            let edit = [ConfigEdit {
+                table: "ai",
+                key: "notify_sound",
+                value: std::borrow::Cow::Borrowed(value),
+            }];
+            let out = apply_edit(Some("[ai]\ncontext = false\n"), &edit).unwrap();
+            assert_eq!(
+                out,
+                format!("[ai]\ncontext = false\nnotify_sound = {value}\n")
+            );
+            let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out), None);
+            assert_eq!(ai.notify_sound(), want);
+            assert_eq!(notice, None);
+        }
+        let out = apply_edit(
+            Some("[ai]\nnotify_sound = \"yes\" # old\n"),
+            &[ConfigEdit {
+                table: "ai",
+                key: "notify_sound",
+                value: std::borrow::Cow::Borrowed("false"),
+            }],
+        )
+        .unwrap();
+        assert_eq!(out, "[ai]\nnotify_sound = false # old\n");
+    }
+
+    #[test]
     fn a_legacy_boolean_is_replaced_in_place_by_the_mode() {
         let existing = "[ai]\n# c\nnotify = true  # on\nmodel = \"m\"\n";
         let out = apply_edit(Some(existing), &notify_edit("bell")).unwrap();

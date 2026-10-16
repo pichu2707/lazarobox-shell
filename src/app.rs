@@ -1139,7 +1139,7 @@ impl App {
             AppEvent::MemoryTick => self.on_memory_tick(),
             AppEvent::NotifyTested(report) => {
                 if let Some(menu) = self.menu.as_mut() {
-                    menu.set_copied(report);
+                    menu.set_test_report(report);
                     self.dirty = true;
                 }
                 Vec::new()
@@ -1326,9 +1326,12 @@ impl App {
     fn test_notify(&mut self, mode: NotifyMode, sound: bool) -> Vec<Effect> {
         if mode == NotifyMode::Off {
             if let Some(menu) = self.menu.as_mut() {
-                menu.set_copied("notify is off".to_owned());
+                menu.set_test_report("notify is off".to_owned());
             }
             return Vec::new();
+        }
+        if let Some(menu) = self.menu.as_mut() {
+            menu.set_test_report("test running".to_owned());
         }
         vec![Effect::NotifyTest {
             mode,
@@ -6462,6 +6465,7 @@ mod app_tests {
             }]
         );
         assert!(a.menu().is_some(), "the menu stays open");
+        assert_eq!(a.menu().unwrap().test_report(), Some("test running"));
     }
 
     #[test]

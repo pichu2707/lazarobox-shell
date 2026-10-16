@@ -15,11 +15,11 @@ use std::{
     time::Duration,
 };
 
-use tokio::{process::Command, sync::mpsc};
+use tokio::{process::Command, sync::mpsc, time::timeout};
 
 use super::{
     ai_detect::{find_on_path, run_capped},
-    chat::is_trusted_program,
+    chat::trusted_real_path,
 };
 use crate::core::ai::{
     chat::notify::{bell_after_failed_desktop, describe_test, plays_sound, wants_desktop},
@@ -44,7 +44,7 @@ const BODY_CAP: usize = 120;
 /// The only variables the child inherits (besides `LC_*` and the merged
 /// `PATH`, which is set apart): enough to find the session bus and the
 /// display, nothing that could hold a secret.
-const ALLOWED_ENV: [&str; 9] = [
+const ALLOWED_ENV: [&str; 20] = [
     "HOME",
     "LANG",
     "DBUS_SESSION_BUS_ADDRESS",
@@ -54,6 +54,19 @@ const ALLOWED_ENV: [&str; 9] = [
     "XAUTHORITY",
     "XDG_CURRENT_DESKTOP",
     "XDG_SESSION_TYPE",
+    // The audio servers the sound players talk to.
+    "PULSE_SERVER",
+    "PULSE_RUNTIME_PATH",
+    "PIPEWIRE_RUNTIME_DIR",
+    "PIPEWIRE_REMOTE",
+    // Where the sound themes and the locale data are looked up.
+    "XDG_DATA_DIRS",
+    "XDG_DATA_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_CONFIG_DIRS",
+    "LANGUAGE",
+    "USER",
+    "LOGNAME",
 ];
 
 /// The facts of the session that decide whether a desktop notification can
@@ -62,8 +75,9 @@ const ALLOWED_ENV: [&str; 9] = [
 pub struct Session {
     /// `DISPLAY` or `WAYLAND_DISPLAY` is set.
     pub display: bool,
-    /// Running over SSH: the notification would pop up on a machine the user
-    /// is not at (or nowhere).
+    /// Running over SSH (an SSH variable is set and the display is not a
+    /// local one): the notification would pop up on a machine the user is not
+    /// at (or nowhere).
     pub ssh: bool,
     /// A session bus address is set, or `$XDG_RUNTIME_DIR/bus` exists.
     pub bus: bool,
@@ -78,9 +92,14 @@ impl Session {
             || get("XDG_RUNTIME_DIR")
                 .filter(|dir| !dir.is_empty())
                 .is_some_and(|dir| exists(&Path::new(&dir).join("bus")));
+        // A local X display is `:N` with no host. A stale SSH variable in a
+        // long-lived local tmux server must not disable the desktop, and a
+        // forwarded `localhost:N` display must not count as local.
+        let local_display = set("WAYLAND_DISPLAY")
+            || get("DISPLAY").is_some_and(|d| d.to_string_lossy().starts_with(':'));
         Self {
             display: set("DISPLAY") || set("WAYLAND_DISPLAY"),
-            ssh: set("SSH_CONNECTION") || set("SSH_TTY"),
+            ssh: (set("SSH_CONNECTION") || set("SSH_TTY")) && !local_display,
             bus,
         }
     }
@@ -91,8 +110,8 @@ impl Session {
     }
 }
 
-/// The first program called `name` on `path` that is trusted: a regular
-/// executable whose real path is not under a scratch folder and that neither it
+/// The real path of the first program called `name` on `path` that is
+/// trusted: a regular executable whose real path is not under a scratch folder and that neither it
 /// nor its folder is writable by group or others (the rule the CLI
 /// interpreters follow). An untrusted entry is skipped, not fatal. Absolute
 /// entries only. The error says why none was usable.
@@ -103,8 +122,8 @@ fn program_state(name: &str, path: &OsStr) -> Result<PathBuf, String> {
             continue;
         };
         found = true;
-        if is_trusted_program(&file) {
-            return Ok(file);
+        if let Some(real) = trusted_real_path(&file) {
+            return Ok(real);
         }
     }
     Err(if found {
@@ -122,16 +141,21 @@ fn trusted_program(path: &OsStr) -> Option<PathBuf> {
 /// can: the session has a display and a bus, is not over SSH, and a trusted
 /// `notify-send` is on `path`.
 pub fn unavailable_reason(session: &Session, path: &OsStr) -> Option<String> {
+    desktop_plan(session, path).err()
+}
+
+/// The real path of the `notify-send` to run, or why there is none.
+pub fn desktop_plan(session: &Session, path: &OsStr) -> Result<PathBuf, String> {
     if session.ssh {
-        return Some("SSH session".to_owned());
+        return Err("SSH session".to_owned());
     }
     if !session.display {
-        return Some("no display".to_owned());
+        return Err("no display".to_owned());
     }
     if !session.bus {
-        return Some("no session bus".to_owned());
+        return Err("no session bus".to_owned());
     }
-    program_state(PROGRAM, path).err()
+    program_state(PROGRAM, path)
 }
 
 /// Whether a desktop notification can be sent.
@@ -160,12 +184,35 @@ fn clean(text: &str) -> String {
         .collect()
 }
 
-/// Runs `program` with `args`, with an empty environment but `PATH` and
-/// `vars`. `true` when it started and exited 0 inside the timeout. The child
-/// has no stdin or stderr, runs in its own process group, and is killed and
-/// reaped on every way out.
+/// Longest a probe (session, trust, file checks) may take. A stalled disk
+/// must not hold anything up.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Longest a whole desktop send may take, probe included.
+const SEND_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// Longest the whole sound chain (up to six tries) may take.
+const SOUND_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Longest the test action may take.
+const TEST_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// Runs `f` on a blocking thread and waits at most [`PROBE_TIMEOUT`]. `None`
+/// when it timed out (the thread is left to finish on its own) or panicked.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    timeout(PROBE_TIMEOUT, tokio::task::spawn_blocking(f))
+        .await
+        .ok()?
+        .ok()
+}
+
+/// Runs `program` (a checked real path) as `name`, with `args`, with an empty
+/// environment but `PATH` and `vars`. `true` when it started and exited 0
+/// inside the timeout. The child has no stdin or stderr, runs in its own
+/// process group, and is killed and reaped on every way out.
 async fn run_tool(
     program: &Path,
+    name: &str,
     args: &[OsString],
     path: &OsStr,
     vars: &[(OsString, OsString)],
@@ -173,7 +220,9 @@ async fn run_tool(
     run_capped(
         || {
             let mut command = Command::new(program);
+            // The name it was found under, for a multi-call binary.
             command
+                .arg0(name)
                 .args(args)
                 .env_clear()
                 .envs(vars.iter().map(|(k, v)| (k, v)))
@@ -192,18 +241,23 @@ async fn run_tool(
     .is_some()
 }
 
-/// Runs the trusted `notify-send` on `path` with `body`.
-pub async fn send(path: &OsStr, body: &str, vars: &[(OsString, OsString)]) -> bool {
-    let Some(program) = trusted_program(path) else {
-        return false;
-    };
+/// Runs the checked `notify-send` at `program` with `body`.
+async fn send_via(program: &Path, path: &OsStr, body: &str, vars: &[(OsString, OsString)]) -> bool {
     // `--` so a body can never be read as an option.
     let args: Vec<OsString> = ["--app-name", TITLE, "--", TITLE]
         .iter()
         .map(OsString::from)
         .chain([OsString::from(clean(body))])
         .collect();
-    run_tool(&program, &args, path, vars).await
+    run_tool(program, PROGRAM, &args, path, vars).await
+}
+
+/// Runs the trusted `notify-send` on `path` with `body`.
+pub async fn send(path: &OsStr, body: &str, vars: &[(OsString, OsString)]) -> bool {
+    let Some(program) = trusted_program(path) else {
+        return false;
+    };
+    send_via(&program, path, body, vars).await
 }
 
 /// The sound files, in order of preference.
@@ -216,27 +270,51 @@ const SOUND_FILES: [&str; 2] = [
 /// others need a file.
 const PLAYERS: [&str; 3] = ["canberra-gtk-play", "pw-play", "paplay"];
 
-/// The program and argument vector that play the sound: the first trusted
-/// player on `path` that can run (`exists` says which sound files exist).
-pub fn sound_plan(
-    path: &OsStr,
-    exists: impl Fn(&Path) -> bool,
-) -> Result<(PathBuf, Vec<OsString>), String> {
-    let file = SOUND_FILES.iter().map(Path::new).find(|f| exists(f));
+/// One way to play the sound.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Candidate {
+    /// The checked real path to run.
+    pub program: PathBuf,
+    /// The name it was found under (argv[0]).
+    pub name: &'static str,
+    pub args: Vec<OsString>,
+}
+
+/// Every way to play the sound, in the order to try them: canberra, then each
+/// file-based player with each existing sound file. Only trusted players on
+/// `path` appear (`exists` says which sound files exist).
+pub fn sound_plan(path: &OsStr, exists: impl Fn(&Path) -> bool) -> Result<Vec<Candidate>, String> {
+    let files: Vec<&Path> = SOUND_FILES
+        .iter()
+        .map(Path::new)
+        .filter(|f| exists(f))
+        .collect();
     let mut found = false;
     let mut needed_file = false;
+    let mut plan = Vec::new();
     for name in PLAYERS {
         let Ok(program) = program_state(name, path) else {
             continue;
         };
         found = true;
         if name == "canberra-gtk-play" {
-            return Ok((program, vec!["-i".into(), "message-new-instant".into()]));
+            plan.push(Candidate {
+                program,
+                name,
+                args: vec!["-i".into(), "message-new-instant".into()],
+            });
+        } else if files.is_empty() {
+            needed_file = true;
+        } else {
+            plan.extend(files.iter().map(|file| Candidate {
+                program: program.clone(),
+                name,
+                args: vec![file.as_os_str().to_owned()],
+            }));
         }
-        match file {
-            Some(file) => return Ok((program, vec![file.as_os_str().to_owned()])),
-            None => needed_file = true,
-        }
+    }
+    if !plan.is_empty() {
+        return Ok(plan);
     }
     Err(if found && needed_file {
         "no sound file found".to_owned()
@@ -245,18 +323,35 @@ pub fn sound_plan(
     })
 }
 
+/// Tries the candidates in order until one exits 0.
+async fn play_plan(
+    plan: &[Candidate],
+    path: &OsStr,
+    vars: &[(OsString, OsString)],
+) -> Result<(), String> {
+    for candidate in plan {
+        if run_tool(
+            &candidate.program,
+            candidate.name,
+            &candidate.args,
+            path,
+            vars,
+        )
+        .await
+        {
+            return Ok(());
+        }
+    }
+    Err("the sound player failed".to_owned())
+}
+
 /// Plays the sound. The error says why not.
 pub async fn play(
     path: &OsStr,
     vars: &[(OsString, OsString)],
     exists: impl Fn(&Path) -> bool,
 ) -> Result<(), String> {
-    let (program, args) = sound_plan(path, exists)?;
-    if run_tool(&program, &args, path, vars).await {
-        Ok(())
-    } else {
-        Err("the sound player failed".to_owned())
-    }
+    play_plan(&sound_plan(path, exists)?, path, vars).await
 }
 
 /// One desktop notification to send in the background.
@@ -264,8 +359,8 @@ pub struct Job {
     /// The merged login `PATH`.
     pub path: OsString,
     pub body: String,
-    /// Raised when the notification cannot be sent or fails, so the next
-    /// flush rings the bell instead.
+    /// Raised when the notification cannot be sent, fails, or is dropped
+    /// because another is in flight, so the next flush rings the bell.
     pub fallback: Option<Arc<AtomicBool>>,
     /// Set while a send is in flight: a job that finds it set is dropped.
     pub busy: Arc<AtomicBool>,
@@ -273,7 +368,8 @@ pub struct Job {
     pub session: fn() -> Session,
 }
 
-/// Clears the in-flight flag on every way out, a panic included.
+/// Clears the in-flight flag on every way out: a panic, a timeout, or a task
+/// that is dropped before it ever ran.
 struct Release(Arc<AtomicBool>);
 
 impl Drop for Release {
@@ -284,15 +380,23 @@ impl Drop for Release {
 
 /// Sends in the background and returns at once, without touching the disk.
 /// At most one send is in flight: a burst of finished turns shows one
-/// notification and the rest are dropped (the bell of `auto` already rang for
-/// each). A desktop that is unavailable counts as a failed send.
+/// notification and the rest are dropped. A dropped send still raises the
+/// fallback (so `desktop` mode rings; `auto` has none, its bell already
+/// rang). An unavailable or hung desktop counts as a failed send. The whole
+/// task is bounded, and the in-flight guard exists before the task does.
 pub fn spawn_send(job: Job) {
     if job.busy.swap(true, Ordering::AcqRel) {
+        if let Some(flag) = &job.fallback {
+            flag.store(true, Ordering::Release);
+        }
         return;
     }
+    let release = Release(Arc::clone(&job.busy));
     tokio::spawn(async move {
-        let _release = Release(Arc::clone(&job.busy));
-        let sent = available_then_send(&job).await;
+        let _release = release;
+        let sent = timeout(SEND_TIMEOUT, available_then_send(&job))
+            .await
+            .unwrap_or(false);
         if !sent && let Some(flag) = &job.fallback {
             flag.store(true, Ordering::Release);
         }
@@ -300,11 +404,17 @@ pub fn spawn_send(job: Job) {
 }
 
 async fn available_then_send(job: &Job) -> bool {
-    let session = (job.session)();
-    if !available(&session, &job.path) {
+    let (session, path) = (job.session, job.path.clone());
+    let Some(Ok(program)) = blocking(move || desktop_plan(&session(), &path)).await else {
         return false;
-    }
-    send(&job.path, &job.body, &allowed_env(std::env::vars_os())).await
+    };
+    send_via(
+        &program,
+        &job.path,
+        &job.body,
+        &allowed_env(std::env::vars_os()),
+    )
+    .await
 }
 
 /// One sound to play in the background.
@@ -318,20 +428,41 @@ pub struct SoundJob {
 }
 
 /// Plays in the background and returns at once, with the same rules as
-/// [`spawn_send`]: one in flight, nothing over SSH or without a session, and
-/// nothing at all when no player is found.
+/// [`spawn_send`]: one in flight, bounded, nothing over SSH or without a
+/// session, and nothing at all when no player works.
 pub fn spawn_sound(job: SoundJob) {
     if job.busy.swap(true, Ordering::AcqRel) {
         return;
     }
+    let release = Release(Arc::clone(&job.busy));
     tokio::spawn(async move {
-        let _release = Release(Arc::clone(&job.busy));
-        let session = (job.session)();
-        if session.ssh || !session.display || !session.bus {
-            return;
-        }
-        let _ = play(&job.path, &allowed_env(std::env::vars_os()), Path::exists).await;
+        let _release = release;
+        let _ = timeout(SOUND_TIMEOUT, async {
+            let (session, path) = (job.session, job.path.clone());
+            let plan = blocking(move || {
+                let session = session();
+                if session.ssh || !session.display || !session.bus {
+                    return None;
+                }
+                sound_plan(&path, |f| f.exists()).ok()
+            })
+            .await
+            .flatten()?;
+            play_plan(&plan, &job.path, &allowed_env(std::env::vars_os()))
+                .await
+                .ok()
+        })
+        .await;
     });
+}
+
+/// What the test action found.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TestReport {
+    /// The footer line.
+    pub text: String,
+    /// The desktop notification was wanted and did not happen.
+    pub desktop_failed: bool,
 }
 
 /// What the test action does and reports, with the focus rule ignored. The
@@ -343,12 +474,17 @@ pub async fn run_test(
     mode: NotifyMode,
     sound: bool,
     vars: &[(OsString, OsString)],
-) -> String {
+) -> TestReport {
+    let session = *session;
     let desktop = if wants_desktop(mode) {
-        Some(match unavailable_reason(session, path) {
-            Some(why) => Err(why),
-            None if send(path, "Test notification", vars).await => Ok(()),
-            None => Err("notify-send failed".to_owned()),
+        let owned = path.to_owned();
+        let plan = blocking(move || desktop_plan(&session, &owned))
+            .await
+            .unwrap_or_else(|| Err("the check timed out".to_owned()));
+        Some(match plan {
+            Err(why) => Err(why),
+            Ok(program) if send_via(&program, path, "Test notification", vars).await => Ok(()),
+            Ok(_) => Err("notify-send failed".to_owned()),
         })
     } else {
         None
@@ -357,12 +493,21 @@ pub async fn run_test(
         Some(if session.ssh || !session.display || !session.bus {
             Err("no desktop session".to_owned())
         } else {
-            play(path, vars, Path::exists).await
+            let owned = path.to_owned();
+            match blocking(move || sound_plan(&owned, |f| f.exists())).await {
+                Some(Ok(plan)) => play_plan(&plan, path, vars).await,
+                Some(Err(why)) => Err(why),
+                None => Err("the check timed out".to_owned()),
+            }
         })
     } else {
         None
     };
-    describe_test(mode, desktop, sound)
+    let desktop_failed = matches!(desktop, Some(Err(_)));
+    TestReport {
+        text: describe_test(mode, desktop, sound),
+        desktop_failed,
+    }
 }
 
 /// One test action to run in the background.
@@ -375,27 +520,43 @@ pub struct TestJob {
     pub fallback: Option<Arc<AtomicBool>>,
     pub report: mpsc::Sender<String>,
     pub session: fn() -> Session,
+    /// Set while a test runs: a second one only says "test running".
+    pub busy: Arc<AtomicBool>,
 }
 
-/// Runs the test in the background and sends the report line. It is never
-/// coalesced: it answers a key press.
+/// Runs the test in the background and sends the report line. One at a time.
 pub fn spawn_test(job: TestJob) {
+    if job.busy.swap(true, Ordering::AcqRel) {
+        let _ = job.report.try_send("test running".to_owned());
+        return;
+    }
+    let release = Release(Arc::clone(&job.busy));
     tokio::spawn(async move {
-        let session = (job.session)();
-        let text = run_test(
-            &job.path,
-            &session,
-            job.mode,
-            job.sound,
-            &allowed_env(std::env::vars_os()),
-        )
-        .await;
-        if text.contains("desktop unavailable")
-            && bell_after_failed_desktop(job.mode)
-            && let Some(flag) = &job.fallback
+        let _release = release;
+        let text = match timeout(TEST_TIMEOUT, async {
+            let session = job.session;
+            let session = blocking(session).await;
+            let vars = allowed_env(std::env::vars_os());
+            match session {
+                Some(session) => {
+                    Some(run_test(&job.path, &session, job.mode, job.sound, &vars).await)
+                }
+                None => None,
+            }
+        })
+        .await
         {
-            flag.store(true, Ordering::Release);
-        }
+            Ok(Some(report)) => {
+                if report.desktop_failed
+                    && bell_after_failed_desktop(job.mode)
+                    && let Some(flag) = &job.fallback
+                {
+                    flag.store(true, Ordering::Release);
+                }
+                report.text
+            }
+            Ok(None) | Err(_) => "the check timed out".to_owned(),
+        };
         let _ = job.report.send(text).await;
     });
 }
@@ -540,6 +701,17 @@ mod tests {
             ("XAUTHORITY", "/home/u/.Xauthority"),
             ("XDG_CURRENT_DESKTOP", "GNOME"),
             ("XDG_SESSION_TYPE", "wayland"),
+            ("PULSE_SERVER", "unix:/run/pulse"),
+            ("PULSE_RUNTIME_PATH", "/run/user/1/pulse"),
+            ("PIPEWIRE_RUNTIME_DIR", "/run/user/1"),
+            ("PIPEWIRE_REMOTE", "pipewire-0"),
+            ("XDG_DATA_DIRS", "/usr/share"),
+            ("XDG_DATA_HOME", "/home/u/.local/share"),
+            ("XDG_CONFIG_HOME", "/home/u/.config"),
+            ("XDG_CONFIG_DIRS", "/etc/xdg"),
+            ("LANGUAGE", "en"),
+            ("USER", "u"),
+            ("LOGNAME", "u"),
             ("ANTHROPIC_API_KEY", "secret"),
             ("GITHUB_TOKEN", "secret"),
             ("LCX", "not a locale"),
@@ -561,7 +733,18 @@ mod tests {
                 "XDG_RUNTIME_DIR",
                 "XAUTHORITY",
                 "XDG_CURRENT_DESKTOP",
-                "XDG_SESSION_TYPE"
+                "XDG_SESSION_TYPE",
+                "PULSE_SERVER",
+                "PULSE_RUNTIME_PATH",
+                "PIPEWIRE_RUNTIME_DIR",
+                "PIPEWIRE_REMOTE",
+                "XDG_DATA_DIRS",
+                "XDG_DATA_HOME",
+                "XDG_CONFIG_HOME",
+                "XDG_CONFIG_DIRS",
+                "LANGUAGE",
+                "USER",
+                "LOGNAME"
             ]
         );
     }
@@ -649,7 +832,7 @@ mod tests {
         for name in ["SSH_CONNECTION", "SSH_TTY"] {
             let s = Session::probe(
                 get(&[
-                    ("DISPLAY", ":0"),
+                    ("DISPLAY", "localhost:10.0"),
                     ("DBUS_SESSION_BUS_ADDRESS", "u"),
                     (name, "x"),
                 ]),
@@ -780,53 +963,68 @@ mod tests {
     const OGA: &str = "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga";
     const COMPLETE: &str = "/usr/share/sounds/freedesktop/stereo/complete.oga";
 
-    fn plan_in(
-        dir: &Path,
-        files: &'static [&'static str],
-    ) -> Result<(String, Vec<String>), String> {
-        sound_plan(dir.as_os_str(), |f| files.iter().any(|x| Path::new(x) == f)).map(|(p, a)| {
-            (
-                p.file_name().unwrap().to_string_lossy().into_owned(),
-                a.iter().map(|x| x.to_string_lossy().into_owned()).collect(),
-            )
+    type Plan = Vec<(String, Vec<String>)>;
+
+    fn plan_in(dir: &Path, files: &'static [&'static str]) -> Result<Plan, String> {
+        sound_plan(dir.as_os_str(), |f| files.iter().any(|x| Path::new(x) == f)).map(|list| {
+            list.into_iter()
+                .map(|c| {
+                    (
+                        c.name.to_owned(),
+                        c.args
+                            .iter()
+                            .map(|x| x.to_string_lossy().into_owned())
+                            .collect(),
+                    )
+                })
+                .collect()
         })
     }
 
+    fn cand(name: &str, args: &[&str]) -> (String, Vec<String>) {
+        (
+            name.to_owned(),
+            args.iter().map(|a| (*a).to_owned()).collect(),
+        )
+    }
+
     #[test]
-    fn canberra_comes_first_and_needs_no_file() {
+    fn the_candidates_run_canberra_then_pw_play_then_paplay_with_both_files() {
         let dir = lab().unwrap();
         for name in ["pw-play", "paplay", "canberra-gtk-play"] {
             tool(dir.path(), name, "exit 0");
         }
         assert_eq!(
-            plan_in(dir.path(), &[]),
-            Ok((
-                "canberra-gtk-play".to_owned(),
-                vec!["-i".to_owned(), "message-new-instant".to_owned()]
-            ))
+            plan_in(dir.path(), &[COMPLETE, OGA]).unwrap(),
+            vec![
+                cand("canberra-gtk-play", &["-i", "message-new-instant"]),
+                cand("pw-play", &[OGA]),
+                cand("pw-play", &[COMPLETE]),
+                cand("paplay", &[OGA]),
+                cand("paplay", &[COMPLETE]),
+            ]
         );
     }
 
     #[test]
-    fn pw_play_then_paplay_take_the_first_existing_sound_file() {
+    fn a_missing_file_or_player_drops_only_its_candidates() {
         let dir = lab().unwrap();
         tool(dir.path(), "paplay", "exit 0");
         assert_eq!(
-            plan_in(dir.path(), &[OGA]),
-            Ok(("paplay".to_owned(), vec![OGA.to_owned()]))
+            plan_in(dir.path(), &[OGA]).unwrap(),
+            vec![cand("paplay", &[OGA])]
         );
         assert_eq!(
-            plan_in(dir.path(), &[COMPLETE]),
-            Ok(("paplay".to_owned(), vec![COMPLETE.to_owned()])),
+            plan_in(dir.path(), &[COMPLETE]).unwrap(),
+            vec![cand("paplay", &[COMPLETE])],
             "complete.oga when the first is missing"
         );
+        tool(dir.path(), "canberra-gtk-play", "exit 0");
         assert_eq!(
-            plan_in(dir.path(), &[COMPLETE, OGA]).unwrap().1,
-            vec![OGA.to_owned()],
-            "the first of the two wins"
+            plan_in(dir.path(), &[]).unwrap().len(),
+            1,
+            "canberra needs no file"
         );
-        tool(dir.path(), "pw-play", "exit 0");
-        assert_eq!(plan_in(dir.path(), &[OGA]).unwrap().0, "pw-play");
     }
 
     #[test]
@@ -840,6 +1038,37 @@ mod tests {
         assert_eq!(
             plan_in(dir.path(), &[]),
             Err("no sound file found".to_owned())
+        );
+    }
+
+    // W4: a failing player falls through to the next one; the first success stops.
+    #[tokio::test]
+    async fn a_failing_player_falls_through_and_the_first_success_stops_the_chain() {
+        let dir = lab().unwrap();
+        let log = dir.path().join("log");
+        let note = |name: &str, code: u8| {
+            tool(
+                dir.path(),
+                name,
+                &format!("echo {name} >> '{}'; exit {code}", log.display()),
+            );
+        };
+        note("canberra-gtk-play", 1);
+        note("pw-play", 1);
+        note("paplay", 0);
+        let path = dir.path().as_os_str().to_owned();
+        assert_eq!(play(&path, &[], |f| f == Path::new(OGA)).await, Ok(()));
+        assert_eq!(
+            fs::read_to_string(&log).unwrap(),
+            "canberra-gtk-play\npw-play\npaplay\n"
+        );
+        fs::remove_file(&log).unwrap();
+        note("canberra-gtk-play", 0);
+        assert_eq!(play(&path, &[], |_| true).await, Ok(()));
+        assert_eq!(
+            fs::read_to_string(&log).unwrap(),
+            "canberra-gtk-play\n",
+            "stops at the first success"
         );
     }
 
@@ -871,6 +1100,12 @@ mod tests {
         assert_eq!(
             play(&path, &[], |_| false).await,
             Err("the sound player failed".to_owned())
+        );
+        tool(dir.path(), "pw-play", "exit 1");
+        assert_eq!(
+            play(&path, &[], |_| true).await,
+            Err("the sound player failed".to_owned()),
+            "every candidate failed"
         );
     }
 
@@ -960,18 +1195,181 @@ mod tests {
             let path = path.clone();
             async move { run_test(&path, &here(), mode, sound, &[]).await }
         };
+        let r = report(NotifyMode::Auto, true).await;
         assert_eq!(
-            report(NotifyMode::Auto, true).await,
+            r.text,
             "sent: bell · desktop unavailable: no notify-send on PATH · no sound: no sound player on PATH"
         );
+        assert!(r.desktop_failed);
         script(dir.path(), "exit 0");
         tool(dir.path(), "canberra-gtk-play", "exit 0");
+        let r = report(NotifyMode::Auto, true).await;
+        assert_eq!(r.text, "sent: bell + desktop + sound");
+        assert!(!r.desktop_failed);
         assert_eq!(
-            report(NotifyMode::Auto, true).await,
-            "sent: bell + desktop + sound"
+            report(NotifyMode::Desktop, false).await.text,
+            "sent: desktop"
         );
-        assert_eq!(report(NotifyMode::Desktop, false).await, "sent: desktop");
-        assert_eq!(report(NotifyMode::Bell, true).await, "sent: bell");
-        assert_eq!(report(NotifyMode::Off, true).await, "notify is off");
+        assert_eq!(report(NotifyMode::Bell, true).await.text, "sent: bell");
+        assert_eq!(report(NotifyMode::Off, true).await.text, "notify is off");
+    }
+
+    // S1: one test at a time; a second says so, structurally.
+    #[tokio::test]
+    async fn a_second_test_while_one_runs_reports_test_running() {
+        let dir = lab().unwrap();
+        script(dir.path(), "PATH=\"$PATH:/usr/bin:/bin\"\nsleep 1");
+        let busy = Arc::new(AtomicBool::new(false));
+        let (tx, mut rx) = mpsc::channel(4);
+        let job = || TestJob {
+            path: dir.path().as_os_str().to_owned(),
+            mode: NotifyMode::Desktop,
+            sound: false,
+            fallback: None,
+            report: tx.clone(),
+            session: here,
+            busy: Arc::clone(&busy),
+        };
+        spawn_test(job());
+        spawn_test(job());
+        assert_eq!(rx.recv().await.unwrap(), "test running");
+        assert_eq!(rx.recv().await.unwrap(), "sent: desktop");
+        assert!(!busy.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn a_failed_desktop_test_arms_the_fallback_without_parsing_text() {
+        let dir = lab().unwrap();
+        let flag = Arc::new(AtomicBool::new(false));
+        let (tx, mut rx) = mpsc::channel(4);
+        spawn_test(TestJob {
+            path: dir.path().as_os_str().to_owned(),
+            mode: NotifyMode::Desktop,
+            sound: false,
+            fallback: Some(Arc::clone(&flag)),
+            report: tx,
+            session: here,
+            busy: Arc::default(),
+        });
+        assert!(rx.recv().await.unwrap().contains("unavailable"));
+        assert!(flag.load(Ordering::Acquire));
+    }
+
+    // W1: a probe that never returns must not stick the in-flight flag.
+    #[tokio::test]
+    async fn a_hung_probe_releases_the_flag_and_later_sends_still_work() {
+        let dir = lab().unwrap();
+        let log = dir.path().join("log");
+        script(dir.path(), &format!("echo x >> '{}'", log.display()));
+        let busy = Arc::new(AtomicBool::new(false));
+        let flag = Arc::new(AtomicBool::new(false));
+        let job = |session: fn() -> Session, fallback| Job {
+            path: dir.path().as_os_str().to_owned(),
+            body: "x".to_owned(),
+            fallback,
+            busy: Arc::clone(&busy),
+            session,
+        };
+        spawn_send(job(
+            || {
+                std::thread::sleep(Duration::from_secs(3));
+                here()
+            },
+            Some(Arc::clone(&flag)),
+        ));
+        for _ in 0..100 {
+            if !busy.load(Ordering::Acquire) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            !busy.load(Ordering::Acquire),
+            "released after the probe timeout"
+        );
+        assert!(
+            flag.load(Ordering::Acquire),
+            "a hung probe counts as unavailable"
+        );
+        spawn_send(job(here, None));
+        assert!(wait_lines(&log, 1).await, "the next send went through");
+    }
+
+    // W2: a dropped send in desktop mode still rings.
+    #[tokio::test]
+    async fn a_send_dropped_while_busy_raises_the_fallback() {
+        let dir = lab().unwrap();
+        let busy = Arc::new(AtomicBool::new(true));
+        let flag = Arc::new(AtomicBool::new(false));
+        let job = |fallback| Job {
+            path: dir.path().as_os_str().to_owned(),
+            body: "x".to_owned(),
+            fallback,
+            busy: Arc::clone(&busy),
+            session: here,
+        };
+        spawn_send(job(None));
+        assert!(!flag.load(Ordering::Acquire));
+        spawn_send(job(Some(Arc::clone(&flag))));
+        assert!(flag.load(Ordering::Acquire));
+        assert!(
+            busy.load(Ordering::Acquire),
+            "the running one keeps its flag"
+        );
+    }
+
+    // W3: the program that runs is the checked real path.
+    #[tokio::test]
+    async fn the_executed_program_is_the_real_path_not_the_found_symlink() {
+        let dir = lab().unwrap();
+        let out = dir.path().join("who");
+        fs::write(
+            dir.path().join("real-notify.sh"),
+            format!("#!/bin/sh\necho \"$0\" > '{}'\n", out.display()),
+        )
+        .unwrap();
+        fs::set_permissions(
+            dir.path().join("real-notify.sh"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("real-notify.sh", dir.path().join(PROGRAM)).unwrap();
+        let path = dir.path().as_os_str().to_owned();
+        assert!(send(&path, "x", &[]).await);
+        let ran = fs::read_to_string(&out).unwrap();
+        assert!(ran.trim_end().ends_with("/real-notify.sh"), "{ran}");
+    }
+
+    // W5: SSH only counts when the desktop is not local.
+    #[test]
+    fn a_stale_ssh_variable_does_not_hide_a_local_desktop() {
+        let get = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| OsString::from(*v))
+            }
+        };
+        let none = |_: &Path| false;
+        let ssh = |pairs| Session::probe(get(pairs), none).ssh;
+        assert!(
+            !ssh(&[("SSH_CONNECTION", "x"), ("DISPLAY", ":0")]),
+            "local X"
+        );
+        assert!(
+            !ssh(&[("SSH_TTY", "x"), ("DISPLAY", ":1.0")]),
+            "local X with a screen"
+        );
+        assert!(!ssh(&[
+            ("SSH_CONNECTION", "x"),
+            ("WAYLAND_DISPLAY", "wayland-0")
+        ]));
+        assert!(
+            ssh(&[("SSH_CONNECTION", "x"), ("DISPLAY", "localhost:10.0")]),
+            "forwarded X"
+        );
+        assert!(ssh(&[("SSH_TTY", "x")]), "no display at all");
+        assert!(!ssh(&[("DISPLAY", "localhost:10.0")]), "no SSH variable");
     }
 }

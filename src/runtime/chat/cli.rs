@@ -316,10 +316,11 @@ fn interpreter_trust(path: &Path) -> Result<PathBuf, (PathBuf, Untrusted)> {
     }
 }
 
-/// Whether the program at `path` may be run by lazarobox on its own account:
-/// the [`interpreter_trust`] rule.
-pub(crate) fn is_trusted_program(path: &Path) -> bool {
-    interpreter_trust(path).is_ok()
+/// The real path of the program at `path` when lazarobox may run it on its
+/// own account: the [`interpreter_trust`] rule. Run that path, not `path`, so
+/// what was checked is what runs.
+pub(crate) fn trusted_real_path(path: &Path) -> Option<PathBuf> {
+    interpreter_trust(path).ok()
 }
 
 /// The interpreter a script asks for by bare name (`#!/usr/bin/env node`): the
