@@ -171,7 +171,21 @@ Teclas dentro del chat:
 
 **Perfiles y prompts:** `profile = "analyst"` o `"programmer"` (por defecto) en `[ai]`, o la fila Profile del menú de IA, elige el _system prompt_ integrado. Puedes sustituirlo con `~/.config/lazarobox/prompts/<perfil>/<tarea>.md` (después `general.md`; máx. 16 KiB). El prompt incluye un bloque de contexto del workspace (proyecto, rama, directorio relativo, SO, shell y fecha; nunca rutas absolutas ni contenido); se desactiva con `context = false` o la fila Context del menú.
 
-**Aviso al terminar:** con `notify = true` en `[ai]` (o la fila Notify del menú de IA; desactivado por defecto), el chat emite la campana del terminal cuando una respuesta termina y no la estás mirando (otro panel, pestaña o ventana).
+**Aviso al terminar:** `notify` en `[ai]` (o la fila Notify del menú de IA, que recorre los valores con `h`/`l`) avisa cuando una respuesta termina por sí sola y no la estás mirando (otro panel, pestaña o ventana sin foco). Una cancelación tuya nunca avisa. Valores:
+
+| Valor       | Qué hace                                                                                                          |
+| ----------- | ----------------------------------------------------------------------------------------------------------------- |
+| `"off"`     | Nada (por defecto).                                                                                               |
+| `"bell"`    | Solo la campana del terminal (BEL).                                                                               |
+| `"desktop"` | Solo una notificación de escritorio con `notify-send`. Si no está disponible o falla, suena la campana.           |
+| `"auto"`    | Siempre la campana **y**, si hay `DISPLAY` o `WAYLAND_DISPLAY` y `notify-send` está en el `PATH`, la notificación. |
+
+```toml
+[ai]
+notify = "auto"
+```
+
+Los valores antiguos siguen valiendo: `true` equivale a `"auto"` y `false` a `"off"`. La campana sola depende de cada terminal (el tuyo puede tener el sonido apagado, o tmux / zellij pueden filtrarla), por eso existe la notificación de escritorio. La notificación se ejecuta sin shell, con el `PATH` de login que ya usan los CLIs (nunca el directorio actual), sin bloquear la interfaz y con un límite de unos 2 s. El título es `lazarobox` y el texto es fijo y solo nombra el panel (`Answer ready in pane N` o `Turn failed in pane N`): nunca incluye la respuesta.
 
 Para cerrar el panel: `Ctrl+Espacio`, `w`, `q`. La respuesta se muestra mientras se genera; si el modelo "piensa" (por ejemplo `qwen3`), la barra de estado muestra un indicador `thinking` y el razonamiento queda en un bloque aparte.
 

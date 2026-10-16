@@ -10,6 +10,19 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Desktop notification for finished chat turns, independent of the outer
+  terminal. `[ai] notify` now takes `"auto"`, `"desktop"`, `"bell"` or
+  `"off"` (the Notify row of the AI menu cycles them). `"auto"` always rings
+  the bell and also sends a desktop notification when `DISPLAY` or
+  `WAYLAND_DISPLAY` is set and `notify-send` is on the login `PATH`.
+  `"desktop"` sends only the notification and rings the bell if it is
+  unavailable or fails. `notify-send` runs without a shell, detached, with a
+  2 s limit; its title is `lazarobox` and its text is a fixed line naming the
+  pane, never any of the answer. The old booleans keep working (`true` is
+  `"auto"`, `false` is `"off"`), and the default stays off.
+
 ## [0.15.2] - 2026-10-16
 
 ### Added
