@@ -56,7 +56,7 @@ pub(super) fn type_text(a: &mut App, text: &str) {
     }
 }
 
-fn ollama() -> AiConfig {
+pub(super) fn ollama() -> AiConfig {
     let mut ai = AiConfig::default();
     ai.set(
         Task::Chat,
@@ -68,7 +68,7 @@ fn ollama() -> AiConfig {
     ai
 }
 
-fn detection(models: &[&str]) -> Detection {
+pub(super) fn detection(models: &[&str]) -> Detection {
     Detection {
         engines: vec![EngineState {
             id: "ollama",

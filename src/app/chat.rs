@@ -112,6 +112,10 @@ impl App {
     /// editing and scrolling but never sends, cancels, yanks or toggles.
     pub(super) fn on_chat_key(&mut self, key: KeyEvent, repeat: bool) -> Vec<Effect> {
         let id = self.tab().focus;
+        // A pending approval takes every key first.
+        if self.has_approval(id) {
+            return self.on_approval_key(id, key, repeat);
+        }
         // The `engram serve` question, when it is on screen, takes the key. It
         // is drawn in the conversation view only, so a list does not give up
         // its keys to a question it hides.
@@ -209,6 +213,11 @@ impl App {
     /// A paste into the focused chat's composer.
     pub(super) fn chat_paste(&mut self, text: &str) {
         let id = self.tab().focus;
+        // A paste never answers an approval and never lands in the composer
+        // while one waits.
+        if self.has_approval(id) {
+            return;
+        }
         if self.tag_editor_open(id) {
             self.tag_paste(id, text);
             return;
@@ -360,7 +369,7 @@ impl App {
 
     /// Esc and Ctrl+C: stop the stream and drop a parked send, or do nothing
     /// when idle.
-    fn chat_cancel_key(&mut self, id: PaneId) -> Vec<Effect> {
+    pub(super) fn chat_cancel_key(&mut self, id: PaneId) -> Vec<Effect> {
         self.drop_parked_send(id);
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();

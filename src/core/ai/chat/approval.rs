@@ -93,6 +93,16 @@ pub enum Press {
     Release,
 }
 
+/// What the pane draws for a pending approval: all text is already
+/// sanitized and is exactly what will be done.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ApprovalPrompt {
+    /// Where it goes: `run in pane 2 (~/dev)`.
+    pub target: String,
+    /// The exact command, as it will be written.
+    pub command: String,
+}
+
 /// The pending approval of a chat, if any.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Approvals {

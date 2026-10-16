@@ -46,6 +46,7 @@ mod context;
 mod history;
 mod notes;
 mod offer;
+mod run;
 mod scroll;
 mod summary;
 mod tags;
@@ -390,6 +391,9 @@ struct Tab {
     focus: PaneId,
     /// The focused pane fills the whole body; the others keep running hidden.
     zoom: bool,
+    /// The last shell pane that had the focus in this tab: where a command
+    /// from a chat is typed unless the user cycles to another.
+    last_shell: Option<PaneId>,
 }
 
 impl Tab {
@@ -509,6 +513,7 @@ impl App {
                 tree: Node::Leaf(first),
                 focus: first,
                 zoom: false,
+                last_shell: None,
             }],
             active: 0,
             term: (cols, rows),
@@ -912,6 +917,11 @@ impl App {
         let Some(cwd) = self.focused_state().effective_cwd() else {
             return String::new();
         };
+        self.home_label(cwd)
+    }
+
+    /// `cwd` as text, with `$HOME` shown as `~`.
+    fn home_label(&self, cwd: &Path) -> String {
         let home = self.home.as_deref().filter(|home| home.parent().is_some());
         match home.and_then(|home| cwd.strip_prefix(home).ok()) {
             Some(rest) if rest.as_os_str().is_empty() => "~".into(),
@@ -1188,7 +1198,9 @@ impl App {
         }
         self.input = InputMode::Terminal;
         // The forced tab bar goes away with the menu, whatever the outcome.
-        self.apply_config()
+        let mut effects = self.apply_config();
+        effects.extend(self.sync_tools());
+        effects
     }
 
     /// Brings the host mouse capture in line with `config.mouse`: one effect
@@ -1296,6 +1308,7 @@ impl App {
                 | PrefixAction::SaveNote
                 | PrefixAction::ToggleMemory
                 | PrefixAction::Summarize
+                | PrefixAction::RunInPane
                 | PrefixAction::EditTags,
             ) => InputMode::Terminal,
             Step::Run(
@@ -1345,6 +1358,7 @@ impl App {
                 self.notice = Some(MEMORY_CHAT_ONLY.to_string());
                 Vec::new()
             }
+            Step::Run(PrefixAction::RunInPane) => self.run_in_pane(),
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
             Step::Run(PrefixAction::SplitBelow) => self.split(Axis::Y),
             Step::Run(PrefixAction::Focus(dir)) => self.move_focus(dir),
@@ -1413,6 +1427,7 @@ impl App {
             tree: Node::Leaf(id),
             focus: id,
             zoom: false,
+            last_shell: None,
         });
         self.activate(self.tabs.len() - 1);
         self.refresh_screen();
@@ -1522,6 +1537,12 @@ impl App {
         let left = self.tabs[t].focus;
         if next == left {
             return;
+        }
+        // The last shell the user was in is where a chat types its commands.
+        for pane in [left, next] {
+            if self.is_shell(pane) {
+                self.tabs[t].last_shell = Some(pane);
+            }
         }
         if let Some(pty) = self.panes.get_mut(&left).and_then(PaneState::pty_mut) {
             pty.emu.set_scrollback(0);
@@ -6558,6 +6579,12 @@ mod app_tests {
 
     /// The live chat pane (ai-chat C8).
     mod chat_live;
+
+    /// Run in pane: the confirm that types a chat's shell block.
+    mod run_pane;
+
+    /// The keys, rechecks and lifecycle of the run-in-pane confirm.
+    mod run_pane_keys;
 
     /// COPY on a chat pane (pane-scroll S1).
     mod chat_copy;

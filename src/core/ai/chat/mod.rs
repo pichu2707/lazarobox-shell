@@ -35,7 +35,7 @@ use std::{
     time::Instant,
 };
 
-use crate::core::ai::config::Profile;
+use crate::core::{ai::config::Profile, layout::PaneId};
 use composer::Composer;
 use engine::{
     Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, build_context,
@@ -278,6 +278,13 @@ pub struct ChatState {
     /// The profile changed while the first system prompt was still being
     /// prepared: that answer is dropped and the prompt prepared again.
     reprepare_prompt: bool,
+    /// The approval waiting for the user, if any (see `approval`).
+    approvals: approval::Approvals,
+    /// The shell pane a pending run-in-pane command will be typed into.
+    /// Meaningful only while a `Run` approval is pending.
+    run_target: Option<PaneId>,
+    /// Draw the `run in pane` hint under the last shell block (tools are on).
+    run_hint: bool,
 }
 
 impl ChatState {
@@ -311,6 +318,41 @@ impl ChatState {
             request_engine: String::new(),
             closing: false,
             reprepare_prompt: false,
+            approvals: approval::Approvals::default(),
+            run_target: None,
+            run_hint: false,
+        }
+    }
+
+    /// The pending approval of this chat.
+    pub fn approvals(&self) -> &approval::Approvals {
+        &self.approvals
+    }
+
+    pub fn approvals_mut(&mut self) -> &mut approval::Approvals {
+        &mut self.approvals
+    }
+
+    /// The shell pane a pending run-in-pane command is aimed at.
+    pub fn run_target(&self) -> Option<PaneId> {
+        self.run_target
+    }
+
+    pub fn set_run_target(&mut self, target: Option<PaneId>) {
+        self.run_target = target;
+    }
+
+    /// Whether the hint under the last shell block is drawn.
+    pub fn run_hint(&self) -> bool {
+        self.run_hint
+    }
+
+    /// Turns the hint on or off with the tools. Rebuilds the transcript rows
+    /// only when the flag changes.
+    pub fn set_run_hint(&mut self, on: bool) {
+        if self.run_hint != on {
+            self.run_hint = on;
+            self.generation += 1;
         }
     }
 

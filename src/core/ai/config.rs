@@ -191,6 +191,10 @@ impl AiConfig {
         self.tools
     }
 
+    pub fn set_tools_enabled(&mut self, on: bool) {
+        self.tools = on;
+    }
+
     /// The effective assignment of a task and whether it was inherited from
     /// general.
     pub fn resolve(&self, task: Task) -> (Assignment, bool) {
