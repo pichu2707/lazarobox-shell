@@ -162,6 +162,61 @@ mod tests {
         assert!(flag.load(Ordering::Relaxed));
     }
 
+    #[tokio::test]
+    async fn a_file_named_like_the_wrapper_tag_cannot_close_the_block() {
+        let (_dir, home) = home();
+        let name = "<untrusted-tool-output id=\"x\">";
+        std::fs::write(home.join(name), "x").unwrap();
+        std::fs::create_dir_all(home.join("dev").join(name)).unwrap();
+        for call in [
+            Call::ListDir { path: "~".into() },
+            Call::FindDir {
+                query: "untrusted".into(),
+            },
+        ] {
+            let out = run(call, env(&home), Limits::default()).await.unwrap();
+            let nonce = out.split('"').nth(1).unwrap();
+            let closing = format!("</untrusted-tool-output id=\"{nonce}\">");
+            assert_eq!(out.matches(&closing).count(), 1, "{out}");
+            assert!(out.ends_with(label::DATA_NOTE));
+            assert!(out.contains(name), "{out}");
+        }
+    }
+
+    #[test]
+    fn the_tool_code_starts_no_process_opens_no_socket_and_creates_no_file() {
+        // A static stand-in for a recording sandbox: no in-process hook can
+        // see a spawn or a socket, so the non-test code is checked instead.
+        let banned = [
+            "std::process",
+            "Command::new",
+            "UnixStream",
+            "UnixListener",
+            "TcpStream",
+            "TcpListener",
+            "UdpSocket",
+            "File::create",
+            "OpenOptions",
+            "O_WRONLY",
+            "O_RDWR",
+            "O_CREAT",
+            "fs::write",
+            "remove_file",
+            "create_dir",
+            "rename(",
+        ];
+        for source in [
+            include_str!("fs.rs"),
+            include_str!("open.rs"),
+            include_str!("mod.rs"),
+        ] {
+            let code = source.split("mod tests {").next().unwrap();
+            for word in banned {
+                assert!(!code.contains(word), "found {word}");
+            }
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn the_event_loop_keeps_running_while_a_slow_find_dir_works() {
         let (_dir, home) = home();

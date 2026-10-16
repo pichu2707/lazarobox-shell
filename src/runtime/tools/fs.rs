@@ -1,5 +1,10 @@
 //! The read tools: `read_file`, `list_dir` and `find_dir`. Read only: no
 //! process, no socket, no write, and no path that the policy refuses.
+//!
+//! Known limit: a regular file with more than one hard link is refused by
+//! `read_file`, because a hard link to a secret has an ordinary path. Files
+//! that are legitimately hard-linked (pnpm and nix stores, git objects) are
+//! refused with it. Listings still show their names.
 
 use std::{
     collections::VecDeque,
@@ -351,7 +356,7 @@ fn list_dir(
             } else {
                 '?'
             };
-            (one_line(name), tag)
+            (redact(&one_line(name)).text, tag)
         })
         .collect();
     shown.sort();
@@ -414,7 +419,7 @@ fn find_dir(
             }
             let child = rel.join(&name);
             if name.to_string_lossy().to_lowercase().contains(&needle) {
-                found.push(format!("~/{}", one_line(child.as_os_str())));
+                found.push(format!("~/{}", redact(&one_line(child.as_os_str())).text));
                 if found.len() == limits.results {
                     cut = true;
                     break 'search;
@@ -994,6 +999,30 @@ mod tests {
         };
         let out = find(&env(&f.home), "zzz", &short).unwrap();
         assert_eq!(out, format!("no match\n{FIND_MARKER}"));
+    }
+
+    #[test]
+    fn listed_and_found_names_are_redacted() {
+        let f = fixture();
+        fs::write(f.home.join("sk-abcDEF1234567890"), "x").unwrap();
+        fs::create_dir_all(f.home.join("dev/sk-ghiJKL1234567890")).unwrap();
+        let out = list(&env(&f.home), "~", &Limits::default()).unwrap();
+        assert!(!out.contains("abcDEF"), "{out}");
+        assert!(out.contains("f [REDACTED]"), "{out}");
+        let out = find(&env(&f.home), "ghiJKL", &Limits::default()).unwrap();
+        assert!(!out.contains("ghiJKL"), "{out}");
+        assert_eq!(out, "~/dev/[REDACTED]");
+    }
+
+    #[test]
+    fn a_hard_linked_file_is_listed_by_name_but_not_readable() {
+        let f = fixture();
+        fs::hard_link(f.home.join(".ssh/id"), f.home.join("linked.txt")).unwrap();
+        let e = env(&f.home);
+        let out = list(&e, "~", &Limits::default()).unwrap();
+        assert!(out.contains("f linked.txt"), "{out}");
+        assert!(!out.contains("SECRET"));
+        assert_eq!(read(&e, "~/linked.txt"), Err(Failure::Refused));
     }
 
     #[test]
