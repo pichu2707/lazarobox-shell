@@ -26,6 +26,7 @@ mod config_write;
 pub mod desktop;
 pub mod engram;
 pub mod jail;
+pub mod login_path;
 pub mod loopback;
 pub mod proc;
 pub mod prompts;
