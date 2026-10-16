@@ -46,7 +46,10 @@ baseline.
   the sound players. No send ever waits for a probe; if the result is not
   there yet, or the probe failed, the desktop and the sound are unavailable
   for that event and `desktop` mode rings the bell. A tool installed after
-  startup is seen after `t` or a restart. Just before an exec the real path
+  startup is seen after `t` or a restart. Each probe takes a ticket and a
+  slow or old probe never overwrites a newer plan; a probe that panics is
+  caught (without tearing the terminal down) and recorded as failed, and `t`
+  reports "the check failed" and probes again. Just before an exec the real path
   is re-checked (exists, not under `/tmp`, not group- or world-writable),
   and that is the path that runs, with the found name as `argv[0]`. The
   child gets an empty environment plus an allow-list (`PATH`, `HOME`, `USER`,
@@ -54,7 +57,7 @@ baseline.
   XDG variables), never secrets. SSH only disables the desktop when no local
   display is set, so a stale `SSH_CONNECTION` in a local tmux does not.
   Limits: 2 s per program (a program still running is killed and counts as
-  failed), 4 s per send, 10 s for the sound chain, 3 s for the test probe.
+  failed), 4 s per send, 12 s for the sound chain, 3 s for the test probe.
   At most one send, one sound and one test run at a time; a send dropped
   because another is running rings the bell in `desktop` mode, as does an
   unavailable, untrusted or failed one, even if the send task dies. The

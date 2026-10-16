@@ -1151,7 +1151,8 @@ fn should_restore() -> bool {
     let on_store_thread = thread::current().name() == Some(chat_store::worker::THREAD_NAME);
     // The prompt job catches its panic and falls back to the built-in prompt.
     let on_prepare_thread = thread::current().name() == Some(prompts::THREAD_NAME);
-    !chat::in_adapter_poll() && !on_store_thread && !on_prepare_thread
+    // The notification probe catches its own panic and reports it as failed.
+    !chat::in_adapter_poll() && !on_store_thread && !on_prepare_thread && !notify::in_probe()
 }
 
 /// Restores the cursor, bracketed paste, focus reporting and mouse capture before the previous hook (which

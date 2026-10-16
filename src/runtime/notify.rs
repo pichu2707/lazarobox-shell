@@ -1,16 +1,19 @@
 //! The desktop half of chat-notify: `notify-send`, run directly (no shell)
 //! from the merged login `PATH`, detached from the UI thread.
 //!
-//! Everything that can touch the disk or wait (the availability probe, the
-//! trust check, the spawn) runs inside the spawned task, never in `apply`.
+//! The machine is probed once at startup and again by the `t` test action
+//! (display, session bus, SSH, the trusted `notify-send`, the sound players);
+//! the result lives in a shared [`PlanSlot`]. A send or a sound only reads that
+//! slot and re-checks the chosen path just before it runs, so nothing here
+//! ever waits for the disk on the caller's thread.
 
 use std::{
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -133,17 +136,6 @@ fn program_state(name: &str, path: &OsStr) -> Result<PathBuf, String> {
     })
 }
 
-fn trusted_program(path: &OsStr) -> Option<PathBuf> {
-    program_state(PROGRAM, path).ok()
-}
-
-/// Why a desktop notification cannot be sent, in a few words; `None` when it
-/// can: the session has a display and a bus, is not over SSH, and a trusted
-/// `notify-send` is on `path`.
-pub fn unavailable_reason(session: &Session, path: &OsStr) -> Option<String> {
-    desktop_plan(session, path).err()
-}
-
 /// The real path of the `notify-send` to run, or why there is none.
 pub fn desktop_plan(session: &Session, path: &OsStr) -> Result<PathBuf, String> {
     if session.ssh {
@@ -156,11 +148,6 @@ pub fn desktop_plan(session: &Session, path: &OsStr) -> Result<PathBuf, String> 
         return Err("no session bus".to_owned());
     }
     program_state(PROGRAM, path)
-}
-
-/// Whether a desktop notification can be sent.
-pub fn available(session: &Session, path: &OsStr) -> bool {
-    unavailable_reason(session, path).is_none()
 }
 
 /// The part of `env` the child may see: the allow-list and every `LC_*`.
@@ -188,8 +175,9 @@ fn clean(text: &str) -> String {
 const SEND_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// Longest the sound chain may take: at most five candidates (canberra, then
-/// two files for each of `pw-play` and `paplay`), each bounded by [`TIMEOUT`].
-const SOUND_STEP: Duration = Duration::from_secs(10);
+/// two files for each of `pw-play` and `paplay`), each bounded by [`TIMEOUT`],
+/// plus headroom for the trust re-checks, so every player's reason is reported.
+const SOUND_STEP: Duration = Duration::from_secs(12);
 
 /// Longest the test action waits for its fresh probe.
 const PROBE_BOUND: Duration = Duration::from_secs(3);
@@ -218,43 +206,137 @@ pub fn probe_plan(session: fn() -> Session, path: &OsStr) -> Plan {
     }
 }
 
+thread_local! {
+    /// Set while a probe runs on this thread: its panic is caught and reported,
+    /// so the panic hook must not tear the terminal down for it.
+    static IN_PROBE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the current thread is running a probe (see the panic hook).
+pub fn in_probe() -> bool {
+    IN_PROBE.with(std::cell::Cell::get)
+}
+
+/// Runs the probe with the marker set and its panic caught.
+fn probe_caught(session: fn() -> Session, path: &OsStr) -> Option<Plan> {
+    IN_PROBE.with(|flag| flag.set(true));
+    let plan = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| probe_plan(session, path)));
+    IN_PROBE.with(|flag| flag.set(false));
+    plan.ok()
+}
+
+struct Slot {
+    plan: Option<Plan>,
+    /// The ticket of the probe that wrote last.
+    stamp: u64,
+    /// The newest probe panicked and left no plan.
+    failed: bool,
+}
+
+struct SlotInner {
+    state: Mutex<Slot>,
+    next: AtomicU64,
+}
+
 /// The shared slot of the last [`Plan`]. Empty until the first probe ends; a
 /// send or a sound that finds it empty treats the desktop as unavailable.
-#[derive(Clone, Default)]
-pub struct PlanSlot(Arc<Mutex<Option<Plan>>>);
+/// Every probe takes a ticket when it starts, and a write only counts if its
+/// ticket is newer than the stored one, so a slow probe never overwrites a
+/// newer plan.
+#[derive(Clone)]
+pub struct PlanSlot(Arc<SlotInner>);
+
+impl Default for PlanSlot {
+    fn default() -> Self {
+        Self(Arc::new(SlotInner {
+            state: Mutex::new(Slot {
+                plan: None,
+                stamp: 0,
+                failed: false,
+            }),
+            next: AtomicU64::new(0),
+        }))
+    }
+}
 
 impl PlanSlot {
-    pub fn get(&self) -> Option<Plan> {
-        self.0.lock().ok()?.clone()
+    fn lock(&self) -> std::sync::MutexGuard<'_, Slot> {
+        self.0.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn fill(&self, plan: Plan) {
-        if let Ok(mut slot) = self.0.lock() {
-            *slot = Some(plan);
+    /// The ticket of a probe that is about to start.
+    fn ticket(&self) -> u64 {
+        self.0.next.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    pub fn get(&self) -> Option<Plan> {
+        self.lock().plan.clone()
+    }
+
+    /// Whether the newest probe panicked and left no plan.
+    pub fn failed(&self) -> bool {
+        self.lock().failed
+    }
+
+    fn fill(&self, ticket: u64, plan: Plan) {
+        let mut slot = self.lock();
+        if ticket > slot.stamp {
+            *slot = Slot {
+                plan: Some(plan),
+                stamp: ticket,
+                failed: false,
+            };
+        }
+    }
+
+    fn fail(&self, ticket: u64) {
+        let mut slot = self.lock();
+        if ticket > slot.stamp {
+            *slot = Slot {
+                plan: None,
+                stamp: ticket,
+                failed: true,
+            };
         }
     }
 }
 
 /// Probes once in the background, at startup. The closure fills the slot
 /// itself when it ends, so a slow probe still fills it for later and nothing
-/// ever waits for it.
+/// ever waits for it. A probe that panics is recorded as failed.
 pub fn probe_in_background(slot: &PlanSlot, session: fn() -> Session, path: OsString) {
-    let slot = slot.clone();
+    let (slot, ticket) = (slot.clone(), slot.ticket());
     drop(tokio::task::spawn_blocking(move || {
-        slot.fill(probe_plan(session, &path));
+        match probe_caught(session, &path) {
+            Some(plan) => slot.fill(ticket, plan),
+            None => slot.fail(ticket),
+        }
     }));
 }
 
 /// A fresh probe for the test action, waited for at most [`PROBE_BOUND`].
-/// `None` on a timeout; the closure still fills the slot when it ends.
-async fn probe_now(slot: &PlanSlot, session: fn() -> Session, path: OsString) -> Option<Plan> {
-    let slot = slot.clone();
-    let task = tokio::task::spawn_blocking(move || {
-        let plan = probe_plan(session, &path);
-        slot.fill(plan.clone());
-        plan
+/// The closure fills the slot when it ends, even after the bound.
+async fn probe_now(
+    slot: &PlanSlot,
+    session: fn() -> Session,
+    path: OsString,
+) -> Result<Plan, String> {
+    let (slot, ticket) = (slot.clone(), slot.ticket());
+    let task = tokio::task::spawn_blocking(move || match probe_caught(session, &path) {
+        Some(plan) => {
+            slot.fill(ticket, plan.clone());
+            Some(plan)
+        }
+        None => {
+            slot.fail(ticket);
+            None
+        }
     });
-    timeout(PROBE_BOUND, task).await.ok()?.ok()
+    match timeout(PROBE_BOUND, task).await {
+        Ok(Ok(Some(plan))) => Ok(plan),
+        Ok(_) => Err("the check failed".to_owned()),
+        Err(_) => Err("the check timed out".to_owned()),
+    }
 }
 
 /// Whether `program` (a real path from a probe) is still trusted right now:
@@ -310,14 +392,6 @@ async fn send_via(program: &Path, path: &OsStr, body: &str, vars: &[(OsString, O
         .chain([OsString::from(clean(body))])
         .collect();
     run_tool(program, PROGRAM, &args, path, vars).await.is_ok()
-}
-
-/// Runs the trusted `notify-send` on `path` with `body`.
-pub async fn send(path: &OsStr, body: &str, vars: &[(OsString, OsString)]) -> bool {
-    let Some(program) = trusted_program(path) else {
-        return false;
-    };
-    send_via(&program, path, body, vars).await
 }
 
 /// The sound files, in order of preference.
@@ -426,15 +500,6 @@ async fn play_plan(
         }
     }
     Err(format!("no player worked ({})", failures.join(", ")))
-}
-
-/// Plays the sound. The error says why not.
-pub async fn play(
-    path: &OsStr,
-    vars: &[(OsString, OsString)],
-    exists: impl Fn(&Path) -> bool,
-) -> Result<&'static str, String> {
-    play_plan(&sound_plan(path, exists)?, path, vars).await
 }
 
 /// Raises the bell fallback when dropped, unless settled as fine first: so
@@ -638,16 +703,16 @@ pub fn spawn_test(job: TestJob) {
     let mut fallback = FallbackGuard::new(job.fallback.clone());
     tokio::spawn(async move {
         let text = match probe_now(&job.plan, job.session, job.path.clone()).await {
-            Some(plan) => {
+            Ok(plan) => {
                 let vars = allowed_env(std::env::vars_os());
                 let report =
                     run_test(&job.path, &plan, job.mode, job.sound, &vars, SOUND_STEP).await;
                 fallback.settle(report.desktop_failed);
                 report.text
             }
-            None => {
+            Err(why) => {
                 fallback.settle(wants_desktop(job.mode));
-                "the check timed out".to_owned()
+                why
             }
         };
         drop(fallback);
@@ -679,9 +744,34 @@ mod tests {
         }
     }
 
+    // Thin helpers over the production path (`desktop_plan`, `sound_plan`,
+    // `send_via`, `play_plan`), for tests that only need a yes or a reason.
+    async fn send(path: &OsStr, body: &str, vars: &[(OsString, OsString)]) -> bool {
+        match probe_plan(here, path).desktop {
+            Ok(program) => send_via(&program, path, body, vars).await,
+            Err(_) => false,
+        }
+    }
+
+    fn unavailable_reason(session: &Session, path: &OsStr) -> Option<String> {
+        desktop_plan(session, path).err()
+    }
+
+    fn available(session: &Session, path: &OsStr) -> bool {
+        unavailable_reason(session, path).is_none()
+    }
+
+    async fn play(
+        path: &OsStr,
+        vars: &[(OsString, OsString)],
+        exists: impl Fn(&Path) -> bool,
+    ) -> Result<&'static str, String> {
+        play_plan(&sound_plan(path, exists)?, path, vars).await
+    }
+
     fn plan_with(dir: &Path, session: fn() -> Session) -> PlanSlot {
         let slot = PlanSlot::default();
-        slot.fill(probe_plan(session, dir.as_os_str()));
+        slot.fill(slot.ticket(), probe_plan(session, dir.as_os_str()));
         slot
     }
 
@@ -997,9 +1087,10 @@ mod tests {
         panic!("the next send after the burst never ran");
     }
 
-    // W4: the probe runs in the task; an unavailable desktop is a failure.
+    // A plan without a desktop (here: no notify-send on the PATH) is a failed
+    // send, so `desktop` mode rings.
     #[tokio::test]
-    async fn an_unavailable_desktop_raises_the_fallback_inside_the_task() {
+    async fn a_plan_without_a_desktop_raises_the_fallback() {
         let dir = lab().unwrap();
         let flag = Arc::new(AtomicBool::new(false));
         spawn_send(Job {
@@ -1775,5 +1866,154 @@ mod tests {
         .await;
         assert!(!report.desktop_failed);
         assert!(report.text.starts_with("sent: desktop"), "{}", report.text);
+    }
+
+    // ---- the slot: generations, a failed probe, poisoning ----
+
+    #[test]
+    fn an_older_probe_never_overwrites_a_newer_plan() {
+        let dir = lab().unwrap();
+        let slot = PlanSlot::default();
+        let (older, newer) = (slot.ticket(), slot.ticket());
+        script(dir.path(), "exit 0");
+        let good = probe_plan(here, dir.path().as_os_str());
+        let bad = probe_plan(
+            || Session {
+                ssh: true,
+                ..here()
+            },
+            dir.path().as_os_str(),
+        );
+        slot.fill(newer, good);
+        slot.fill(older, bad);
+        assert!(slot.get().unwrap().desktop.is_ok(), "the newer plan stays");
+    }
+
+    #[tokio::test]
+    async fn a_slow_startup_probe_cannot_overwrite_the_test_probe() {
+        fn slow_and_remote() -> Session {
+            std::thread::sleep(Duration::from_millis(600));
+            Session {
+                ssh: true,
+                ..here()
+            }
+        }
+        let dir = lab().unwrap();
+        script(dir.path(), "exit 0");
+        let path = dir.path().as_os_str().to_owned();
+        let slot = PlanSlot::default();
+        probe_in_background(&slot, slow_and_remote, path.clone());
+        let (tx, mut rx) = mpsc::channel(4);
+        spawn_test(TestJob {
+            path,
+            mode: NotifyMode::Desktop,
+            sound: false,
+            fallback: None,
+            report: tx,
+            session: here,
+            busy: Arc::default(),
+            plan: slot.clone(),
+        });
+        assert_eq!(rx.recv().await.unwrap(), "sent: desktop");
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        assert!(
+            slot.get().unwrap().desktop.is_ok(),
+            "the late startup probe lost"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_panicking_startup_probe_is_recorded_and_the_test_still_probes() {
+        fn boom() -> Session {
+            panic!("the probe died");
+        }
+        let dir = lab().unwrap();
+        script(dir.path(), "exit 0");
+        let slot = PlanSlot::default();
+        probe_in_background(&slot, boom, dir.path().as_os_str().to_owned());
+        for _ in 0..100 {
+            if slot.failed() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(slot.failed());
+        assert!(slot.get().is_none());
+        let (tx, mut rx) = mpsc::channel(4);
+        spawn_test(TestJob {
+            path: dir.path().as_os_str().to_owned(),
+            mode: NotifyMode::Desktop,
+            sound: false,
+            fallback: None,
+            report: tx,
+            session: here,
+            busy: Arc::default(),
+            plan: slot.clone(),
+        });
+        assert_eq!(rx.recv().await.unwrap(), "sent: desktop");
+        assert!(!slot.failed(), "a good plan clears the failure");
+    }
+
+    #[tokio::test]
+    async fn a_panicking_test_probe_says_the_check_failed_and_rings_in_desktop_mode() {
+        fn boom() -> Session {
+            panic!("the probe died");
+        }
+        let flag = Arc::new(AtomicBool::new(false));
+        let (tx, mut rx) = mpsc::channel(4);
+        spawn_test(TestJob {
+            path: OsString::new(),
+            mode: NotifyMode::Desktop,
+            sound: false,
+            fallback: Some(Arc::clone(&flag)),
+            report: tx,
+            session: boom,
+            busy: Arc::default(),
+            plan: PlanSlot::default(),
+        });
+        assert_eq!(rx.recv().await.unwrap(), "the check failed");
+        assert!(flag.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn a_poisoned_slot_still_reads_and_writes() {
+        let dir = lab().unwrap();
+        let slot = PlanSlot::default();
+        let held = slot.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = held.0.state.lock().unwrap();
+            panic!("poison it");
+        })
+        .join();
+        assert!(slot.get().is_none());
+        slot.fill(slot.ticket(), probe_plan(here, dir.path().as_os_str()));
+        assert!(slot.get().is_some());
+    }
+
+    #[test]
+    fn the_sound_chain_has_headroom_for_every_candidate() {
+        // Five candidates at the per-program limit, plus the trust checks.
+        assert!(SOUND_STEP > TIMEOUT * 5);
+    }
+
+    // A probe panic is caught and must not tear the terminal down.
+    #[tokio::test]
+    async fn the_probe_thread_is_marked_so_the_panic_hook_leaves_the_terminal_alone() {
+        static MARKED: AtomicBool = AtomicBool::new(false);
+        fn spy() -> Session {
+            MARKED.store(in_probe(), Ordering::SeqCst);
+            here()
+        }
+        assert!(!in_probe());
+        let dir = lab().unwrap();
+        let slot = PlanSlot::default();
+        probe_in_background(&slot, spy, dir.path().as_os_str().to_owned());
+        for _ in 0..100 {
+            if slot.get().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(MARKED.load(Ordering::SeqCst));
     }
 }
