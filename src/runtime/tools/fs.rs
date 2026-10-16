@@ -2,19 +2,27 @@
 //! process, no socket, no write, and no path that the policy refuses.
 
 use std::{
+    collections::VecDeque,
+    ffi::OsStr,
     ffi::OsString,
+    fs::FileType,
     io::Read,
-    os::{fd::OwnedFd, unix::fs::MetadataExt},
+    os::{
+        fd::{AsRawFd, OwnedFd},
+        unix::fs::MetadataExt,
+    },
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use crate::{
     core::{
         ai::{
             memory::redact::redact,
+            sanitize::clean,
             tools::{
                 Call,
-                paths::{PathVerdict, REFUSED, SecretRoots, resolve},
+                paths::{PathVerdict, REFUSED, SecretRoots, is_excluded_name, resolve},
             },
         },
         config::config_path,
@@ -28,13 +36,33 @@ use crate::{
 /// The caps pinned by the design.
 #[derive(Clone, Debug)]
 pub struct Limits {
+    /// `read_file`: bytes of text.
     pub read_bytes: usize,
+    /// `list_dir`: entries returned.
+    pub list_entries: usize,
+    /// `find_dir`: folder levels below HOME.
+    pub depth: usize,
+    /// `find_dir`: entries looked at (also bounds one `list_dir` scan).
+    pub visited: usize,
+    /// `find_dir`: wall time.
+    pub time: Duration,
+    /// `find_dir`: paths returned.
+    pub results: usize,
+    /// A test seam that makes every looked-at entry cost this long, as a slow
+    /// filesystem would. Zero in production.
+    pub entry_delay: Duration,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Limits {
             read_bytes: 64 * 1024,
+            list_entries: 200,
+            depth: 8,
+            visited: 20_000,
+            time: Duration::from_secs(2),
+            results: 20,
+            entry_delay: Duration::ZERO,
         }
     }
 }
@@ -73,6 +101,12 @@ impl Failure {
     }
 }
 
+/// Appended when `list_dir` cut the list.
+pub const LIST_MARKER: &str = "[truncated: more entries than the list cap]";
+
+/// Appended when `find_dir` hit a depth, visit, time or result bound.
+pub const FIND_MARKER: &str = "[truncated: the search was bounded]";
+
 /// Appended when `read_file` cut the text at the cap.
 pub const READ_MARKER: &str = "[truncated: the file is larger than the read cap]";
 
@@ -82,7 +116,8 @@ pub fn execute(call: &Call, env: &ToolEnv, limits: &Limits) -> Result<String, Fa
     let roots = load_roots(env)?;
     match call {
         Call::ReadFile { path } => read_file(&roots, env, path, limits),
-        Call::ListDir { .. } | Call::FindDir { .. } => Err(Failure::Unreadable),
+        Call::ListDir { path } => list_dir(&roots, env, path, limits),
+        Call::FindDir { query } => find_dir(&roots, query, limits),
         Call::RunInPane { .. } => Err(Failure::NotReadTool),
     }
 }
@@ -169,6 +204,157 @@ fn read_file(
     if cut {
         out.push('\n');
         out.push_str(READ_MARKER);
+    }
+    Ok(out)
+}
+
+/// The entries of an open directory, at most `max` of them, and whether more
+/// were left. Read through `/proc/self/fd`, so it is the opened directory and
+/// not a path that is listed. A symlink is reported as such, never followed.
+fn entries(fd: &OwnedFd, max: usize) -> Result<(Vec<(OsString, FileType)>, bool), Failure> {
+    let dir = std::fs::read_dir(format!("/proc/self/fd/{}", fd.as_raw_fd()))
+        .map_err(|_| Failure::Unreadable)?;
+    let mut out = Vec::new();
+    for entry in dir {
+        if out.len() == max {
+            return Ok((out, true));
+        }
+        let entry = entry.map_err(|_| Failure::Unreadable)?;
+        out.push((
+            entry.file_name(),
+            entry.file_type().map_err(|_| Failure::Unreadable)?,
+        ));
+    }
+    Ok((out, false))
+}
+
+/// Whether `dir/name` may be shown. A link is judged by where it leads, and a
+/// dangling one is hidden.
+fn visible(roots: &SecretRoots, dir: &Path, name: &OsStr, kind: FileType) -> bool {
+    if is_excluded_name(&name.to_string_lossy()) {
+        return false;
+    }
+    let full = dir.join(name);
+    if kind.is_symlink() {
+        full.canonicalize()
+            .is_ok_and(|real| roots.judge_real(&real))
+    } else {
+        roots.judge_real(&full)
+    }
+}
+
+/// A name that fits on one line: escapes and bidi marks are gone, and so is
+/// every remaining control character.
+fn one_line(name: &OsStr) -> String {
+    clean(&name.to_string_lossy())
+        .chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
+}
+
+fn list_dir(
+    roots: &SecretRoots,
+    env: &ToolEnv,
+    path: &str,
+    limits: &Limits,
+) -> Result<String, Failure> {
+    let PathVerdict::Allowed(real) = resolve(roots, &env.origin, path) else {
+        return Err(Failure::Refused);
+    };
+    let fd = open_checked(roots, &real, true)?;
+    let (found, scan_cut) = entries(&fd, limits.visited)?;
+    let mut shown: Vec<(String, char)> = found
+        .iter()
+        .filter(|(name, kind)| visible(roots, &real, name, *kind))
+        .map(|(name, kind)| {
+            let tag = if kind.is_dir() {
+                'd'
+            } else if kind.is_file() {
+                'f'
+            } else if kind.is_symlink() {
+                'l'
+            } else {
+                '?'
+            };
+            (one_line(name), tag)
+        })
+        .collect();
+    shown.sort();
+    let cut = scan_cut || shown.len() > limits.list_entries;
+    shown.truncate(limits.list_entries);
+    let mut lines: Vec<String> = shown
+        .into_iter()
+        .map(|(name, tag)| format!("{tag} {name}"))
+        .collect();
+    if lines.is_empty() && !cut {
+        lines.push("(empty)".into());
+    }
+    if cut {
+        lines.push(LIST_MARKER.into());
+    }
+    Ok(lines.join("\n"))
+}
+
+/// Breadth-first search below HOME for folders whose name contains `query`.
+/// Each folder is opened without following a link and judged again; a link is
+/// never entered; excluded folders are skipped, never entered. The bounds are
+/// depth, entries looked at, wall time and results.
+fn find_dir(roots: &SecretRoots, query: &str, limits: &Limits) -> Result<String, Failure> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return Err(Failure::EmptyQuery);
+    }
+    let started = Instant::now();
+    let mut queue = VecDeque::from([PathBuf::new()]);
+    let (mut visited, mut cut) = (0usize, false);
+    let mut found: Vec<String> = Vec::new();
+    'search: while let Some(rel) = queue.pop_front() {
+        let level = rel.components().count();
+        let dir = roots.home().join(&rel);
+        let Ok(fd) = open_checked(roots, &dir, true) else {
+            continue;
+        };
+        let Ok((mut children, more)) = entries(&fd, limits.visited) else {
+            continue;
+        };
+        cut |= more;
+        children.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, kind) in children {
+            visited += 1;
+            if started.elapsed() > limits.time || visited > limits.visited {
+                cut = true;
+                break 'search;
+            }
+            if !limits.entry_delay.is_zero() {
+                std::thread::sleep(limits.entry_delay);
+            }
+            if !kind.is_dir() || !visible(roots, &dir, &name, kind) {
+                continue;
+            }
+            if level >= limits.depth {
+                // Frontier: nothing here is reported, only noted as unexplored.
+                cut = true;
+                break;
+            }
+            let child = rel.join(&name);
+            if name.to_string_lossy().to_lowercase().contains(&needle) {
+                found.push(format!("~/{}", one_line(child.as_os_str())));
+                if found.len() == limits.results {
+                    cut = true;
+                    break 'search;
+                }
+            }
+            queue.push_back(child);
+        }
+    }
+    let mut out = if found.is_empty() {
+        "no match".to_owned()
+    } else {
+        found.join("\n")
+    };
+    if cut {
+        out.push('\n');
+        out.push_str(FIND_MARKER);
     }
     Ok(out)
 }
@@ -328,7 +514,10 @@ mod tests {
     #[test]
     fn a_big_file_is_cut_at_the_cap_on_a_char_boundary_and_says_so() {
         let f = fixture();
-        let limits = Limits { read_bytes: 9 };
+        let limits = Limits {
+            read_bytes: 9,
+            ..Limits::default()
+        };
         fs::write(f.home.join("big"), "aaaaaaaaé-tail").unwrap();
         let out = execute(
             &Call::ReadFile {
@@ -415,6 +604,210 @@ mod tests {
         }
     }
 
+    fn list(env: &ToolEnv, path: &str, limits: &Limits) -> Result<String, Failure> {
+        execute(&Call::ListDir { path: path.into() }, env, limits)
+    }
+
+    fn find(env: &ToolEnv, query: &str, limits: &Limits) -> Result<String, Failure> {
+        execute(
+            &Call::FindDir {
+                query: query.into(),
+            },
+            env,
+            limits,
+        )
+    }
+
+    #[test]
+    fn list_dir_returns_sorted_entries_with_kinds_and_omits_excluded_ones() {
+        let f = fixture();
+        let dev = f.home.join("dev");
+        fs::create_dir_all(dev.join("zeta")).unwrap();
+        fs::write(dev.join("a.txt"), "x").unwrap();
+        fs::write(dev.join(".env"), "x").unwrap();
+        fs::write(dev.join(".NPMRC"), "x").unwrap();
+        fs::create_dir_all(dev.join(".env.d")).unwrap();
+        symlink(dev.join("a.txt"), dev.join("ok-link")).unwrap();
+        symlink(f.home.join(".ssh/id"), dev.join("secret-link")).unwrap();
+        symlink(f.home.join("nowhere"), dev.join("dangling")).unwrap();
+        let out = list(&env(&f.home), "~/dev", &Limits::default()).unwrap();
+        assert_eq!(out, "f a.txt\nd app\nl ok-link\nd zeta");
+    }
+
+    #[test]
+    fn list_dir_of_home_hides_the_secret_folders() {
+        let f = fixture();
+        fs::create_dir_all(f.home.join(".claude")).unwrap();
+        let out = list(&env(&f.home), "~", &Limits::default()).unwrap();
+        assert_eq!(out, "d dev");
+    }
+
+    #[test]
+    fn list_dir_cleans_control_and_bidi_names_and_cannot_forge_a_line() {
+        let f = fixture();
+        fs::write(f.home.join("a\nf fake\u{202e}b\x1b[31m"), "x").unwrap();
+        let out = list(&env(&f.home), "~", &Limits::default()).unwrap();
+        assert_eq!(out.lines().count(), 2, "{out:?}");
+        assert!(out.chars().all(|c| !c.is_control() || c == '\n'), "{out:?}");
+        assert!(!out.contains('\u{202e}'));
+    }
+
+    #[test]
+    fn list_dir_stops_at_the_cap_and_says_so() {
+        let f = fixture();
+        for n in 0..5 {
+            fs::write(f.home.join(format!("f{n}")), "x").unwrap();
+        }
+        let limits = Limits {
+            list_entries: 3,
+            ..Limits::default()
+        };
+        let out = list(&env(&f.home), "~", &limits).unwrap();
+        assert_eq!(out.lines().count(), 4, "{out}");
+        assert!(out.ends_with(LIST_MARKER), "{out}");
+        let out = list(&env(&f.home), "~/dev", &limits).unwrap();
+        assert!(!out.contains("truncated"), "{out}");
+    }
+
+    #[test]
+    fn list_dir_refuses_excluded_outside_missing_and_file_targets() {
+        let f = fixture();
+        let e = env(&f.home);
+        symlink(f.home.join("../outside"), f.home.join("dev/out")).unwrap();
+        for path in [
+            "~/.ssh",
+            "~/dev/out",
+            "..",
+            "~/missing",
+            "~/dev/app/main.rs",
+        ] {
+            assert_eq!(
+                list(&e, path, &Limits::default()),
+                Err(Failure::Refused),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn find_dir_finds_nested_folders_case_insensitively_as_tilde_paths() {
+        let f = fixture();
+        fs::create_dir_all(f.home.join("dev/Curso-Rust/src")).unwrap();
+        fs::create_dir_all(f.home.join("old/deep/curso-rust-2")).unwrap();
+        let out = find(&env(&f.home), "curso-rust", &Limits::default()).unwrap();
+        assert_eq!(out, "~/dev/Curso-Rust\n~/old/deep/curso-rust-2");
+        assert_eq!(
+            find(&env(&f.home), "zzz", &Limits::default()).unwrap(),
+            "no match"
+        );
+        assert_eq!(
+            find(&env(&f.home), "  ", &Limits::default()),
+            Err(Failure::EmptyQuery)
+        );
+    }
+
+    #[test]
+    fn find_dir_skips_excluded_folders_and_does_not_descend_into_them() {
+        let f = fixture();
+        for dir in [
+            ".ssh/curso-rust",
+            ".claude/curso-rust",
+            "x/.env.d/curso-rust",
+            ".aws",
+        ] {
+            fs::create_dir_all(f.home.join(dir)).unwrap();
+        }
+        assert_eq!(
+            find(&env(&f.home), "curso-rust", &Limits::default()).unwrap(),
+            "no match"
+        );
+        assert_eq!(
+            find(&env(&f.home), "aws", &Limits::default()).unwrap(),
+            "no match"
+        );
+        assert_eq!(
+            find(&env(&f.home), ".env", &Limits::default()).unwrap(),
+            "no match"
+        );
+    }
+
+    #[test]
+    fn find_dir_never_follows_a_symlink() {
+        let f = fixture();
+        fs::create_dir_all(f.home.join("../outside/curso-rust")).unwrap();
+        symlink(f.home.join("../outside"), f.home.join("dev/gate")).unwrap();
+        symlink(f.home.join("dev/app"), f.home.join("curso-link")).unwrap();
+        assert_eq!(
+            find(&env(&f.home), "curso", &Limits::default()).unwrap(),
+            "no match"
+        );
+    }
+
+    #[test]
+    fn find_dir_obeys_the_depth_and_result_caps_and_says_so() {
+        let f = fixture();
+        fs::create_dir_all(f.home.join("a/b/c/target")).unwrap();
+        let shallow = Limits {
+            depth: 3,
+            ..Limits::default()
+        };
+        let out = find(&env(&f.home), "target", &shallow).unwrap();
+        assert_eq!(out, format!("no match\n{FIND_MARKER}"));
+        let deep = Limits {
+            depth: 4,
+            ..Limits::default()
+        };
+        assert_eq!(
+            find(&env(&f.home), "target", &deep).unwrap(),
+            "~/a/b/c/target"
+        );
+        for n in 0..3 {
+            fs::create_dir_all(f.home.join(format!("t{n}-hit"))).unwrap();
+        }
+        let few = Limits {
+            results: 2,
+            ..Limits::default()
+        };
+        let out = find(&env(&f.home), "hit", &few).unwrap();
+        assert_eq!(out.lines().count(), 3, "{out}");
+        assert!(out.ends_with(FIND_MARKER));
+    }
+
+    #[test]
+    fn find_dir_obeys_the_visited_cap() {
+        let f = fixture();
+        for n in 0..10 {
+            fs::create_dir_all(f.home.join(format!("d{n}"))).unwrap();
+        }
+        let limits = Limits {
+            visited: 4,
+            ..Limits::default()
+        };
+        let out = find(&env(&f.home), "d9", &limits).unwrap();
+        assert!(out.ends_with(FIND_MARKER), "{out}");
+    }
+
+    #[test]
+    fn find_dir_ends_at_its_time_bound_on_a_slow_filesystem() {
+        let f = fixture();
+        for n in 0..200 {
+            fs::create_dir_all(f.home.join(format!("d{n}"))).unwrap();
+        }
+        let limits = Limits {
+            time: Duration::from_millis(40),
+            entry_delay: Duration::from_millis(5),
+            ..Limits::default()
+        };
+        let start = Instant::now();
+        let out = find(&env(&f.home), "nothing", &limits).unwrap();
+        assert!(
+            start.elapsed() < Duration::from_millis(400),
+            "{:?}",
+            start.elapsed()
+        );
+        assert!(out.ends_with(FIND_MARKER), "{out}");
+    }
+
     #[test]
     fn the_tools_leave_the_tree_untouched() {
         let f = fixture();
@@ -438,6 +831,8 @@ mod tests {
         let e = env(&f.home);
         let _ = read(&e, "~/dev/app/main.rs");
         let _ = read(&e, "~/.ssh/id");
+        let _ = list(&e, "~/dev", &Limits::default());
+        let _ = find(&e, "app", &Limits::default());
         assert_eq!(snapshot(f.dir.path()), before);
     }
 }
