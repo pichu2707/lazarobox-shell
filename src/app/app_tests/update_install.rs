@@ -11,8 +11,7 @@ const CARGO: &str = "/home/ana/.cargo/bin/cargo";
 fn cargo_env() -> InstallEnv {
     InstallEnv {
         exe: Some("/home/ana/.cargo/bin/lazarobox".into()),
-        cargo_home: None,
-        home: Some("/home/ana".into()),
+        bin_dir: Some("/home/ana/.cargo/bin".into()),
         cargo: Some(CARGO.into()),
         path: OsString::from("/home/ana/.cargo/bin:/usr/bin"),
     }
@@ -94,15 +93,25 @@ fn a_cargo_install_runs_cargo_directly_in_a_new_visible_tab() {
     assert_eq!(spawns.len(), 1, "{effects:?}");
     let (id, spec) = spawns[0];
     assert_eq!(spec.program, PathBuf::from(CARGO));
-    assert_eq!(spec.args, ["install", "lazarobox-shell", "--locked"]);
+    assert_eq!(
+        spec.args,
+        [
+            "install",
+            "lazarobox-shell",
+            "--locked",
+            "--root",
+            "/home/ana/.cargo"
+        ],
+        "the root is named, so CARGO_INSTALL_ROOT cannot redirect the install"
+    );
     assert!(spec.report_status);
     assert!(
-        spec.env.contains(&(
-            "PATH".to_owned(),
-            "/home/ana/.cargo/bin:/usr/bin".to_owned()
+        spec.env_os.contains(&(
+            OsString::from("PATH"),
+            OsString::from("/home/ana/.cargo/bin:/usr/bin")
         )),
         "cargo runs on the login PATH: {:?}",
-        spec.env
+        spec.env_os
     );
     assert_eq!(spec.cwd, PathBuf::from("/"), "never the user's cwd");
     assert_eq!(a.tabs.len(), tabs + 1);
@@ -265,4 +274,43 @@ fn a_shell_exit_still_closes_its_pane_without_a_status() {
     let id = a.tab().focus;
     a.update(AppEvent::Pty(id, PtyEvent::Exited));
     assert!(!a.panes.contains_key(&id));
+}
+
+#[test]
+fn a_path_that_is_not_utf8_reaches_cargo_unchanged() {
+    use std::os::unix::ffi::OsStringExt;
+    let path = OsString::from_vec(b"/home/an\xff/bin:/usr/bin".to_vec());
+    let env = InstallEnv {
+        path: path.clone(),
+        ..cargo_env()
+    };
+    let mut a = on_updates(Some("0.15.4"), Some(env));
+    let effects = a.update(enter());
+    let (_, spec) = spawned(&effects)[0];
+    assert!(spec.env_os.contains(&(OsString::from("PATH"), path)));
+}
+
+#[test]
+fn the_pane_starts_with_the_line_naming_what_runs() {
+    let (a, id) = started();
+    // The line is longer than the pane is wide, so it wraps.
+    let text = pane_text(&a, id).replace('\n', "");
+    assert!(
+        text.starts_with(
+            "running /home/ana/.cargo/bin/cargo install lazarobox-shell --locked --root /home/ana/.cargo"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_child_that_ends_without_a_status_is_a_failure_and_the_pane_stays() {
+    let (mut a, id) = started();
+    let tabs = a.tabs.len();
+    let effects = a.update(AppEvent::Pty(id, PtyEvent::Exited));
+    assert!(effects.is_empty(), "{effects:?}");
+    assert_eq!(a.tabs.len(), tabs, "the pane stays");
+    assert!(pane_text(&a, id).contains("update failed (no exit status)"));
+    assert_eq!(a.notice(), Some("update failed (no exit status)"));
+    assert_eq!(a.status_update(), Some("0.15.4"), "still not installed");
 }

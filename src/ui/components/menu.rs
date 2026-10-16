@@ -362,7 +362,7 @@ mod tests {
     // Spec: the blank row is dropped first on a short height.
     #[test]
     fn snapshot_short_height_drops_the_blank_row() {
-        insta::assert_snapshot!(text(&draw(51, 7, &fresh())));
+        insta::assert_snapshot!(text(&draw(51, 8, &fresh())));
     }
 
     #[test]

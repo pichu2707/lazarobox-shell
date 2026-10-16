@@ -316,8 +316,12 @@ pub fn install_env(path: &OsStr) -> update::InstallEnv {
 }
 
 /// [`install_env`] with the facts given. Paths that exist are canonicalized,
-/// so a link to the binary or to the cargo home compares by where it points;
-/// one that does not exist stays as given.
+/// so a link to the binary or to the cargo dir compares by where it points;
+/// one that does not exist stays as given. The `cargo` is the one beside the
+/// running binary, else the first on `path`, and only if lazarobox may run it
+/// on its own account (the rule the AI CLIs follow: not under `/tmp`, not
+/// writable by group or others, nor its folder). It is kept as found, not
+/// resolved: the rustup proxy dispatches on the name it is started under.
 pub fn install_env_from(
     exe: Option<PathBuf>,
     cargo_home: Option<PathBuf>,
@@ -325,12 +329,18 @@ pub fn install_env_from(
     path: &OsStr,
 ) -> update::InstallEnv {
     let real = |p: PathBuf| fs::canonicalize(&p).unwrap_or(p);
+    let bin_dir = update::cargo_bin_dir(cargo_home.as_deref(), home.as_deref()).map(real);
+    let which = crate::runtime::desktop::which;
+    let beside = bin_dir
+        .as_deref()
+        .and_then(|dir| which("cargo", Some(dir.as_os_str())));
+    let cargo = beside
+        .or_else(|| which("cargo", Some(path)))
+        .filter(|candidate| crate::runtime::chat::trusted_real_path(candidate).is_some());
     update::InstallEnv {
         exe: exe.map(real),
-        // A relative CARGO_HOME would mean "under whatever cwd we have".
-        cargo_home: cargo_home.filter(|p| p.is_absolute()).map(real),
-        home: home.map(real),
-        cargo: crate::runtime::desktop::which("cargo", Some(path)),
+        bin_dir,
+        cargo,
         path: path.to_owned(),
     }
 }

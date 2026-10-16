@@ -335,6 +335,16 @@ struct UpdateRun {
     state: RunState,
 }
 
+/// How an update pane's child ended.
+enum UpdateEnded {
+    /// Its exit code.
+    Code(u32),
+    /// It never started.
+    NotStarted,
+    /// It is gone and nothing said how it ended.
+    NoStatus,
+}
+
 /// How an update pane's job stands.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum RunState {
@@ -363,6 +373,8 @@ enum NewPane {
     /// `cargo install lazarobox-shell --locked`, run directly (no shell).
     Update {
         program: PathBuf,
+        /// The install root, passed as `--root`.
+        root: PathBuf,
         version: String,
         path: std::ffi::OsString,
     },
@@ -1145,7 +1157,11 @@ impl App {
                 }
                 Vec::new()
             }
-            UpdateAction::CargoInstall { program, version } => {
+            UpdateAction::CargoInstall {
+                program,
+                root,
+                version,
+            } => {
                 let path = self
                     .install_env
                     .as_ref()
@@ -1156,6 +1172,7 @@ impl App {
                 }
                 self.new_tab_with(NewPane::Update {
                     program,
+                    root,
                     version,
                     path,
                 })
@@ -1163,17 +1180,26 @@ impl App {
         }
     }
 
-    /// An update pane's job ended: `code` is cargo's exit code, `None` when
-    /// it could not even start. Writes the final line into the pane (so a
+    /// An update pane's job ended, `ended` says how. Writes the final line into the pane (so a
     /// pane that stays shows it) and tells the user.
-    fn update_ended(&mut self, id: PaneId, state: RunState, code: Option<u32>) {
+    fn update_ended(&mut self, id: PaneId, ended: UpdateEnded) {
         let Some(version) = self.update_run(id).map(|run| run.version.clone()) else {
             return;
         };
-        let text = match (state, code) {
-            (RunState::Installed, _) => crate::core::update::installed_text(&version),
-            (_, Some(code)) => crate::core::update::failed_text(code),
-            (_, None) => crate::core::update::NOT_STARTED_TEXT.to_owned(),
+        let (state, text) = match ended {
+            UpdateEnded::Code(0) => (
+                RunState::Installed,
+                crate::core::update::installed_text(&version),
+            ),
+            UpdateEnded::Code(code) => (RunState::Failed, crate::core::update::failed_text(code)),
+            UpdateEnded::NotStarted => (
+                RunState::Failed,
+                crate::core::update::NOT_STARTED_TEXT.to_owned(),
+            ),
+            UpdateEnded::NoStatus => (
+                RunState::Failed,
+                crate::core::update::NO_STATUS_TEXT.to_owned(),
+            ),
         };
         if let Some(pty) = self.panes.get_mut(&id).and_then(PaneState::pty_mut) {
             pty.emu.feed(format!("\r\n{text}\r\n").as_bytes());
@@ -1197,6 +1223,14 @@ impl App {
     /// read, and so does a finished one that would be the last pane (closing
     /// it would quit the app); everything else closes.
     fn on_pty_exited(&mut self, id: PaneId) -> Vec<Effect> {
+        // Gone without ever reporting a status (it was killed, or the
+        // adapter lost it): a failure, and the pane stays to say so.
+        if self
+            .update_run(id)
+            .is_some_and(|run| run.state == RunState::Running)
+        {
+            self.update_ended(id, UpdateEnded::NoStatus);
+        }
         let keep = match self.update_run(id).map(|run| run.state) {
             Some(RunState::Failed) => true,
             Some(RunState::Installed) => {
@@ -1230,7 +1264,7 @@ impl App {
             AppEvent::Cwd(id, cwd) if self.is_shell(id) => self.on_cwd(id, cwd),
             AppEvent::Pty(..) | AppEvent::Cwd(..) => Vec::new(),
             AppEvent::SpawnFailed(id, _) if self.update_run(id).is_some() => {
-                self.update_ended(id, RunState::Failed, None);
+                self.update_ended(id, UpdateEnded::NotStarted);
                 Vec::new()
             }
             AppEvent::SpawnFailed(id, error) if self.is_shell(id) => {
@@ -1715,7 +1749,12 @@ impl App {
     /// How to start the child of a new pane of `kind`.
     fn spec_for(&self, kind: &NewPane, cwd: Option<PathBuf>, size: PaneSize) -> SpawnSpec {
         match kind {
-            NewPane::Update { program, path, .. } => {
+            NewPane::Update {
+                program,
+                root,
+                path,
+                ..
+            } => {
                 // Home, else the root: never the cwd of a pane, where a
                 // `rust-toolchain` or `.cargo/config` of a project would
                 // change what gets installed.
@@ -1723,13 +1762,9 @@ impl App {
                 let cwd = home.unwrap_or(Path::new("/")).to_path_buf();
                 let mut spec = SpawnSpec::new(None, cwd, size);
                 spec.program = program.clone();
-                spec.args = crate::core::update::INSTALL_ARGS
-                    .map(str::to_owned)
-                    .to_vec();
+                spec.args = crate::core::update::install_args(root.to_str().unwrap_or_default());
                 spec.report_status = true;
-                if let Some(path) = path.to_str() {
-                    spec.env.push(("PATH".into(), path.to_owned()));
-                }
+                spec.env_os.push(("PATH".into(), path.clone()));
                 spec
             }
             NewPane::Shell | NewPane::Chat(_) => self.spawn_spec(cwd, size),
@@ -1804,9 +1839,19 @@ impl App {
     fn new_state(&self, kind: NewPane, size: PaneSize) -> PaneState {
         match kind {
             NewPane::Shell => PaneState::new(size, self.hostname.as_deref()),
-            NewPane::Update { version, .. } => {
+            NewPane::Update {
+                program,
+                root,
+                version,
+                ..
+            } => {
                 let mut state = PaneState::new(size, self.hostname.as_deref());
                 if let Some(pty) = state.pty_mut() {
+                    // What is about to run, in lazarobox's own words, before
+                    // anything cargo prints.
+                    let args = crate::core::update::install_args(root.to_str().unwrap_or_default());
+                    let line = crate::core::update::running_text(&program, &args);
+                    pty.emu.feed(format!("{line}\r\n").as_bytes());
                     pty.update = Some(UpdateRun {
                         version,
                         state: RunState::Running,
@@ -2247,12 +2292,7 @@ impl App {
                 }
             }
             PtyEvent::Status(code) => {
-                let state = if code == 0 {
-                    RunState::Installed
-                } else {
-                    RunState::Failed
-                };
-                self.update_ended(id, state, Some(code));
+                self.update_ended(id, UpdateEnded::Code(code));
                 Vec::new()
             }
             PtyEvent::Exited => self.on_pty_exited(id),

@@ -40,6 +40,18 @@ baseline.
   without it counts as another version). A cache written by the running
   version keeps the once-a-day rule, as do a newer cached version and the
   one-hour retry after a failure.
+- The update pane trusts its `cargo` like the AI CLIs are trusted. It prefers
+  the `cargo` beside the running binary (`<cargo bin dir>/cargo`), else the
+  first on the login `PATH`, kept as found for the rustup proxy; one under
+  `/tmp`, or writable by group or others (or in such a folder), is refused and
+  the command is shown instead. The pane's first line names what runs, a
+  non-UTF-8 `PATH` is passed through unchanged, and the install gets
+  `--root <parent of the cargo bin dir>` so it always replaces the running
+  binary. A symlinked `~/.cargo` is compared by where it points. A child that
+  ends without an exit status is a failure (`update failed (no exit status)`)
+  and its pane stays open.
+- The menu has one more row (Updates), so the smallest full popup is now 8
+  rows high (it was 7); below that the one-line fallback is shown.
 - The install command shown by the menu note, the statusline hint and the
   footer is `cargo install lazarobox-shell --locked` everywhere.
 

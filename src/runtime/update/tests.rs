@@ -886,23 +886,42 @@ mod install_env {
 
     use super::*;
 
+    /// A scratch folder inside the repo: the trust rule refuses `/tmp`.
+    fn lab() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        (dir, root)
+    }
+
     fn executable(path: &Path) {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let dir = path.parent().unwrap();
+        fs::create_dir_all(dir).unwrap();
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(path, "#!/bin/sh\n").unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    fn env_for(root: &Path, cargo_home: Option<&Path>, path: &OsStr) -> update::InstallEnv {
+        install_env_from(
+            Some(root.join("cargo-home/bin/lazarobox")),
+            cargo_home.map(Path::to_path_buf),
+            Some(root.to_path_buf()),
+            path,
+        )
+    }
+
     #[test]
-    fn it_canonicalizes_the_binary_and_finds_cargo_on_the_given_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = fs::canonicalize(dir.path()).unwrap();
+    fn it_canonicalizes_the_binary_and_prefers_the_cargo_next_to_it() {
+        let (_dir, root) = lab();
         let bin = root.join("cargo-home/bin");
         executable(&bin.join("lazarobox"));
         executable(&bin.join("cargo"));
-        // A link to the binary: the real location is what counts.
+        // Another cargo earlier on the PATH must lose to the one beside us.
+        executable(&root.join("other/cargo"));
         let link = root.join("link");
         std::os::unix::fs::symlink(bin.join("lazarobox"), &link).unwrap();
-        let path = std::env::join_paths([root.join("nothing"), bin.clone()]).unwrap();
+        let path = std::env::join_paths([root.join("other"), bin.clone()]).unwrap();
         let env = install_env_from(
             Some(link),
             Some(root.join("cargo-home")),
@@ -910,19 +929,94 @@ mod install_env {
             &path,
         );
         assert_eq!(env.exe, Some(bin.join("lazarobox")));
+        assert_eq!(env.bin_dir, Some(bin.clone()));
         assert_eq!(env.cargo, Some(bin.join("cargo")));
-        assert_eq!(env.cargo_home, Some(root.join("cargo-home")));
         assert_eq!(env.path, path);
         assert!(matches!(
             env.plan(Some("0.16.0")),
-            update::UpdateAction::CargoInstall { .. }
+            update::UpdateAction::CargoInstall { ref root, .. } if *root == bin.parent().unwrap()
         ));
     }
 
     #[test]
+    fn without_a_cargo_beside_it_the_login_path_is_the_fallback() {
+        let (_dir, root) = lab();
+        executable(&root.join("cargo-home/bin/lazarobox"));
+        executable(&root.join("login/cargo"));
+        let path = std::env::join_paths([root.join("login")]).unwrap();
+        let env = env_for(&root, Some(&root.join("cargo-home")), &path);
+        assert_eq!(env.cargo, Some(root.join("login/cargo")));
+    }
+
+    #[test]
+    fn the_cargo_is_kept_as_found_not_resolved() {
+        // rustup's proxy decides what to run from the name it is started as.
+        let (_dir, root) = lab();
+        let bin = root.join("cargo-home/bin");
+        executable(&bin.join("lazarobox"));
+        executable(&bin.join("rustup"));
+        std::os::unix::fs::symlink(bin.join("rustup"), bin.join("cargo")).unwrap();
+        let env = env_for(&root, Some(&root.join("cargo-home")), OsStr::new(""));
+        assert_eq!(env.cargo, Some(bin.join("cargo")));
+    }
+
+    #[test]
+    fn a_cargo_that_others_can_write_is_not_trusted() {
+        let (_dir, root) = lab();
+        let bin = root.join("cargo-home/bin");
+        executable(&bin.join("lazarobox"));
+        executable(&bin.join("cargo"));
+        fs::set_permissions(bin.join("cargo"), fs::Permissions::from_mode(0o757)).unwrap();
+        let env = env_for(&root, Some(&root.join("cargo-home")), OsStr::new(""));
+        assert_eq!(env.cargo, None);
+        assert_eq!(env.plan(Some("0.16.0")), update::UpdateAction::ShowCommand);
+    }
+
+    #[test]
+    fn a_cargo_in_a_folder_others_can_write_is_not_trusted() {
+        let (_dir, root) = lab();
+        executable(&root.join("cargo-home/bin/lazarobox"));
+        executable(&root.join("login/cargo"));
+        fs::set_permissions(root.join("login"), fs::Permissions::from_mode(0o777)).unwrap();
+        let path = std::env::join_paths([root.join("login")]).unwrap();
+        let env = env_for(&root, Some(&root.join("cargo-home")), &path);
+        assert_eq!(env.cargo, None);
+    }
+
+    #[test]
+    fn a_cargo_under_tmp_is_not_trusted() {
+        let planted = tempfile::tempdir_in("/tmp").unwrap();
+        executable(&planted.path().join("cargo"));
+        let path = std::env::join_paths([planted.path()]).unwrap();
+        let (_dir, root) = lab();
+        executable(&root.join("cargo-home/bin/lazarobox"));
+        let env = env_for(&root, Some(&root.join("cargo-home")), &path);
+        assert_eq!(env.cargo, None);
+    }
+
+    #[test]
+    fn a_symlinked_cargo_dir_is_compared_by_where_it_points() {
+        // ~/.cargo is a link to another disk: the binary's real path is on
+        // the target, and so must the bin dir be.
+        let (_dir, root) = lab();
+        executable(&root.join("disk/cargo/bin/lazarobox"));
+        executable(&root.join("disk/cargo/bin/cargo"));
+        fs::create_dir_all(root.join("home")).unwrap();
+        std::os::unix::fs::symlink(root.join("disk/cargo"), root.join("home/.cargo")).unwrap();
+        let exe = fs::canonicalize(root.join("home/.cargo/bin/lazarobox")).unwrap();
+        let env = install_env_from(Some(exe), None, Some(root.join("home")), OsStr::new(""));
+        assert_eq!(env.bin_dir, Some(root.join("disk/cargo/bin")));
+        match env.plan(Some("0.16.0")) {
+            update::UpdateAction::CargoInstall { root: r, .. } => {
+                assert_eq!(r, root.join("disk/cargo"), "the real root");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn cargo_is_never_taken_from_a_relative_path_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = fs::canonicalize(dir.path()).unwrap();
+        let (_dir, root) = lab();
         executable(&root.join("cargo"));
         let env = install_env_from(None, None, None, OsStr::new(".:"));
         assert_eq!(env.cargo, None);
@@ -941,8 +1035,8 @@ mod install_env {
             Some(PathBuf::from("/lazarobox-no-such/bin/lazarobox"))
         );
         assert_eq!(
-            env.cargo_home,
-            Some(PathBuf::from("/lazarobox-no-such/cargo"))
+            env.bin_dir,
+            Some(PathBuf::from("/lazarobox-no-such/cargo/bin"))
         );
     }
 }

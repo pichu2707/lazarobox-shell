@@ -181,6 +181,9 @@ pub fn spawn_portable(spec: &SpawnSpec, sink: PtySink) -> io::Result<Box<dyn Pty
     for (key, value) in &spec.env {
         cmd.env(key, value);
     }
+    for (key, value) in &spec.env_os {
+        cmd.env(key, value);
+    }
     let child = pair.slave.spawn_command(cmd).map_err(io::Error::other)?;
     // Keep no slave end open here, or the reader would never see EOF.
     drop(pair.slave);

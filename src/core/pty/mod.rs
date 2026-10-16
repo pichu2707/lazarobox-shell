@@ -20,6 +20,9 @@ pub struct SpawnSpec {
     pub cwd: PathBuf,
     /// Variables set on top of the inherited environment.
     pub env: Vec<(String, String)>,
+    /// Variables that are not necessarily text (a `PATH` with raw bytes),
+    /// set after `env`.
+    pub env_os: Vec<(std::ffi::OsString, std::ffi::OsString)>,
     pub size: PaneSize,
     /// Ask the adapter for a [`PtyEvent::Status`] before `Exited`. Off for
     /// shells: only a pane that runs one job cares how it ended.
@@ -37,6 +40,7 @@ impl SpawnSpec {
             program,
             args: Vec::new(),
             cwd,
+            env_os: Vec::new(),
             env: vec![
                 ("TERM".into(), "xterm-256color".into()),
                 ("COLORTERM".into(), "truecolor".into()),
