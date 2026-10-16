@@ -74,6 +74,10 @@ impl Failure {
     }
 }
 
+/// Returned when the read window holds one run of text with no whitespace to
+/// cut at (minified JSON, base64): showing any of it could show half a secret.
+pub const NO_CUT_MARKER: &str = "[not shown: no safe cut point in the read window]";
+
 /// Bytes read past the cap so redaction sees a whole secret.
 const REDACT_MARGIN: usize = 1024;
 
@@ -185,7 +189,11 @@ fn read_file(
     // a secret it only half has: drop the trailing partial token, even when
     // redaction left the text under the cap.
     if more {
+        let had_text = !out.trim().is_empty();
         out.truncate(out.rfind(char::is_whitespace).unwrap_or(0));
+        if had_text && out.trim().is_empty() {
+            return Ok(NO_CUT_MARKER.to_owned());
+        }
     }
     let cut = more || out.len() > limits.read_bytes;
     if out.len() > limits.read_bytes {
@@ -465,6 +473,23 @@ mod tests {
         assert!(!out.contains("sk-"), "{out:?}");
         assert!(out.ends_with(READ_MARKER), "{out:?}");
         assert!(out.contains("[REDACTED]"), "{out:?}");
+    }
+
+    #[test]
+    fn a_window_with_no_safe_cut_point_says_so_instead_of_an_empty_body() {
+        let f = fixture();
+        // Minified JSON or base64: one long line, no whitespace to cut at.
+        fs::write(f.home.join("blob"), "A".repeat(3000)).unwrap();
+        let limits = Limits { read_bytes: 100 };
+        let out = execute(
+            &Call::ReadFile {
+                path: "~/blob".into(),
+            },
+            &env(&f.home),
+            &limits,
+        )
+        .unwrap();
+        assert_eq!(out, NO_CUT_MARKER);
     }
 
     #[test]
