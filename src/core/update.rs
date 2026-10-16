@@ -2,8 +2,12 @@
 //! schedule, the crates.io reply, the cache file and the texts. The request
 //! and the files live in `runtime::update`.
 //!
-//! lazarobox only ever TELLS the user a newer version exists. Nothing here (or
-//! anywhere else) installs, downloads or runs an update.
+//! lazarobox TELLS the user a newer version exists. It installs one only when
+//! the user asks (Enter on the Updates row) and only for a binary that
+//! `cargo install` put in `$CARGO_HOME/bin`: [`plan`] decides, the runtime
+//! executes. Any other install gets the command to copy, never a run.
+
+use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Value, json};
 
@@ -12,6 +16,13 @@ pub const API_URL: &str = "https://crates.io/api/v1/crates/lazarobox-shell";
 
 /// The command the notice shows. Text only: it is never executed.
 pub const INSTALL_COMMAND: &str = "cargo install lazarobox-shell";
+
+/// What the Updates row runs or shows. `--locked`: the versions the release
+/// was tested with.
+pub const INSTALL_COMMAND_LOCKED: &str = "cargo install lazarobox-shell --locked";
+
+/// The arguments of `cargo` for [`INSTALL_COMMAND_LOCKED`].
+pub const INSTALL_ARGS: [&str; 3] = ["install", "lazarobox-shell", "--locked"];
 
 /// Between two checks that worked.
 pub const CHECK_EVERY_SECS: u64 = 24 * 60 * 60;
@@ -154,6 +165,77 @@ pub fn parse_response(body: &str) -> Option<String> {
         .filter_map(Version::parse)
         .find(Version::is_stable)
         .map(|version| version.core_text())
+}
+
+/// What Enter does on the Updates row.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum UpdateAction {
+    /// No newer version is known: nothing to do.
+    UpToDate,
+    /// Not a cargo install (or no cargo to run): show the command to copy.
+    ShowCommand,
+    /// Run `program install lazarobox-shell --locked` in a new pane.
+    CargoInstall {
+        /// The `cargo` found on the login `PATH`, as an absolute path.
+        program: PathBuf,
+        /// The version being installed, for the final line.
+        version: String,
+    },
+}
+
+/// `<cargo home>/bin`: `$CARGO_HOME` when it is absolute, else `~/.cargo`.
+pub fn cargo_bin_dir(cargo_home: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    let absolute = |p: Option<&Path>| p.filter(|p| p.is_absolute()).map(Path::to_path_buf);
+    let base = absolute(cargo_home).or_else(|| absolute(home).map(|h| h.join(".cargo")))?;
+    Some(base.join("bin"))
+}
+
+/// Decides what Enter does. Pure: the caller gives the running binary
+/// (`exe`, canonicalized), `CARGO_HOME`, `$HOME` and the `cargo` it found.
+/// The install is only run for a binary under `<cargo home>/bin`: that is
+/// the one `cargo install` replaces. A distro package, a release tarball or a
+/// build tree must not be overwritten behind the package manager's back.
+pub fn plan(
+    latest: Option<&str>,
+    exe: Option<&Path>,
+    cargo_home: Option<&Path>,
+    home: Option<&Path>,
+    cargo: Option<&Path>,
+) -> UpdateAction {
+    let Some(latest) = latest else {
+        return UpdateAction::UpToDate;
+    };
+    let installed_by_cargo = match (exe, cargo_bin_dir(cargo_home, home)) {
+        (Some(exe), Some(bin)) => {
+            // `starts_with` is textual: a `..` could climb out of the dir.
+            exe.is_absolute()
+                && exe.starts_with(bin)
+                && !exe.components().any(|c| c == Component::ParentDir)
+        }
+        _ => false,
+    };
+    match cargo {
+        Some(program) if installed_by_cargo => UpdateAction::CargoInstall {
+            program: program.to_path_buf(),
+            version: latest.to_owned(),
+        },
+        _ => UpdateAction::ShowCommand,
+    }
+}
+
+/// The final line of a successful install.
+pub fn installed_text(version: &str) -> String {
+    format!("lazarobox {version} installed: restart lazarobox to use it")
+}
+
+/// The Updates row value once an install worked, until the restart.
+pub fn installed_value(version: &str) -> String {
+    format!("{version} installed: restart")
+}
+
+/// The final line of a failed install.
+pub fn failed_text(code: u32) -> String {
+    format!("update failed (exit {code})")
 }
 
 /// What to show for `cache` when running `current`: the version to announce.
@@ -410,6 +492,144 @@ mod tests {
     fn a_tampered_cache_cannot_inject_text() {
         let c = cache(1, true, Some("0.16.0\u{1b}[2J"));
         assert_eq!(announced(Some(&c), "0.15.1"), None);
+    }
+
+    fn home() -> Option<&'static Path> {
+        Some(Path::new("/home/ana"))
+    }
+
+    fn cargo_path() -> Option<&'static Path> {
+        Some(Path::new("/home/ana/.cargo/bin/cargo"))
+    }
+
+    #[test]
+    fn the_cargo_bin_dir_defaults_to_the_home_cargo() {
+        assert_eq!(
+            cargo_bin_dir(None, home()),
+            Some(PathBuf::from("/home/ana/.cargo/bin"))
+        );
+        assert_eq!(
+            cargo_bin_dir(Some(Path::new("/opt/cargo")), home()),
+            Some(PathBuf::from("/opt/cargo/bin"))
+        );
+    }
+
+    #[test]
+    fn a_relative_cargo_home_or_home_is_ignored() {
+        assert_eq!(
+            cargo_bin_dir(Some(Path::new("cargo")), home()),
+            Some(PathBuf::from("/home/ana/.cargo/bin")),
+            "a relative CARGO_HOME falls back to ~/.cargo"
+        );
+        assert_eq!(cargo_bin_dir(None, Some(Path::new("ana"))), None);
+        assert_eq!(cargo_bin_dir(None, None), None);
+    }
+
+    #[test]
+    fn without_an_update_there_is_nothing_to_do() {
+        let exe = Path::new("/home/ana/.cargo/bin/lazarobox");
+        assert_eq!(
+            plan(None, Some(exe), None, home(), cargo_path()),
+            UpdateAction::UpToDate
+        );
+    }
+
+    #[test]
+    fn a_binary_in_the_cargo_bin_dir_installs_with_cargo() {
+        let exe = Path::new("/home/ana/.cargo/bin/lazarobox");
+        assert_eq!(
+            plan(Some("0.16.0"), Some(exe), None, home(), cargo_path()),
+            UpdateAction::CargoInstall {
+                program: PathBuf::from("/home/ana/.cargo/bin/cargo"),
+                version: "0.16.0".into()
+            }
+        );
+    }
+
+    #[test]
+    fn cargo_home_moves_the_bin_dir() {
+        let home_dir = Some(Path::new("/opt/cargo"));
+        let inside = Path::new("/opt/cargo/bin/lazarobox");
+        let old_default = Path::new("/home/ana/.cargo/bin/lazarobox");
+        let cargo = Some(Path::new("/usr/bin/cargo"));
+        assert!(matches!(
+            plan(Some("0.16.0"), Some(inside), home_dir, home(), cargo),
+            UpdateAction::CargoInstall { .. }
+        ));
+        assert_eq!(
+            plan(Some("0.16.0"), Some(old_default), home_dir, home(), cargo),
+            UpdateAction::ShowCommand
+        );
+    }
+
+    #[test]
+    fn any_other_install_only_shows_the_command() {
+        for exe in [
+            "/usr/bin/lazarobox",
+            "/usr/local/bin/lazarobox",
+            "/home/ana/src/lazarobox/target/release/lazarobox",
+            "/home/ana/.cargo/binx/lazarobox",
+            "/home/ana/.cargo/lazarobox",
+            "bin/lazarobox",
+        ] {
+            assert_eq!(
+                plan(
+                    Some("0.16.0"),
+                    Some(Path::new(exe)),
+                    None,
+                    home(),
+                    cargo_path()
+                ),
+                UpdateAction::ShowCommand,
+                "{exe}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_binary_location_only_shows_the_command() {
+        assert_eq!(
+            plan(Some("0.16.0"), None, None, home(), cargo_path()),
+            UpdateAction::ShowCommand
+        );
+        let exe = Path::new("/home/ana/.cargo/bin/lazarobox");
+        assert_eq!(
+            plan(Some("0.16.0"), Some(exe), None, None, cargo_path()),
+            UpdateAction::ShowCommand,
+            "no home and no CARGO_HOME: no bin dir to compare with"
+        );
+    }
+
+    #[test]
+    fn without_cargo_on_the_path_the_command_is_shown() {
+        let exe = Path::new("/home/ana/.cargo/bin/lazarobox");
+        assert_eq!(
+            plan(Some("0.16.0"), Some(exe), None, home(), None),
+            UpdateAction::ShowCommand
+        );
+    }
+
+    #[test]
+    fn a_dotdot_path_does_not_pass_for_the_bin_dir() {
+        let exe = Path::new("/home/ana/.cargo/bin/../../evil/lazarobox");
+        assert_eq!(
+            plan(Some("0.16.0"), Some(exe), None, home(), cargo_path()),
+            UpdateAction::ShowCommand
+        );
+    }
+
+    #[test]
+    fn the_install_texts_are_fixed() {
+        assert_eq!(
+            INSTALL_COMMAND_LOCKED,
+            format!("cargo {}", INSTALL_ARGS.join(" "))
+        );
+        assert_eq!(
+            installed_text("0.16.0"),
+            "lazarobox 0.16.0 installed: restart lazarobox to use it"
+        );
+        assert_eq!(installed_value("0.16.0"), "0.16.0 installed: restart");
+        assert_eq!(failed_text(101), "update failed (exit 101)");
     }
 
     #[test]
