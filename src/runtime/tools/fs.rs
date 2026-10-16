@@ -12,6 +12,7 @@ use std::{
         unix::fs::MetadataExt,
     },
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
 
@@ -49,8 +50,9 @@ pub struct Limits {
     /// `find_dir`: paths returned.
     pub results: usize,
     /// A test seam that makes every looked-at entry cost this long, as a slow
-    /// filesystem would. Zero in production.
-    pub entry_delay: Duration,
+    /// filesystem would.
+    #[cfg(test)]
+    pub(crate) entry_delay: Duration,
 }
 
 impl Default for Limits {
@@ -62,6 +64,7 @@ impl Default for Limits {
             visited: 20_000,
             time: Duration::from_secs(2),
             results: 20,
+            #[cfg(test)]
             entry_delay: Duration::ZERO,
         }
     }
@@ -84,6 +87,7 @@ pub enum Failure {
     Refused,
     NotText,
     Unreadable,
+    TimedOut,
     EmptyQuery,
     NotReadTool,
 }
@@ -95,6 +99,7 @@ impl Failure {
             Failure::Refused => REFUSED,
             Failure::NotText => "the file is not text",
             Failure::Unreadable => "could not read",
+            Failure::TimedOut => "timed out",
             Failure::EmptyQuery => "the query is empty",
             Failure::NotReadTool => "not a read tool",
         }
@@ -113,14 +118,47 @@ pub const FIND_MARKER: &str = "[truncated: the search was bounded]";
 /// Appended when `read_file` cut the text at the cap.
 pub const READ_MARKER: &str = "[truncated: the file is larger than the read cap]";
 
+/// When a walk must stop: its wall-time deadline or the caller's cancel flag.
+/// Checked per entry and before each `canonicalize`, so a cancelled or late
+/// call stops touching the disk. A syscall already blocked (a hung open on a
+/// dead mount) cannot be interrupted and can still pin one blocking thread.
+struct Budget<'a> {
+    deadline: Instant,
+    cancel: &'a AtomicBool,
+    #[cfg(test)]
+    entry_delay: Duration,
+}
+
+impl Budget<'_> {
+    fn spent(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed) || Instant::now() >= self.deadline
+    }
+}
+
 /// Runs one read tool, synchronously. Builds the secret roots ONCE for the
 /// whole call and refuses the call when they cannot be built.
 pub fn execute(call: &Call, env: &ToolEnv, limits: &Limits) -> Result<String, Failure> {
+    execute_with(call, env, limits, &AtomicBool::new(false))
+}
+
+/// [`execute`] that stops early when `cancel` is set or `limits.time` passes.
+pub fn execute_with(
+    call: &Call,
+    env: &ToolEnv,
+    limits: &Limits,
+    cancel: &AtomicBool,
+) -> Result<String, Failure> {
     let roots = load_roots(env)?;
+    let budget = Budget {
+        deadline: Instant::now() + limits.time,
+        cancel,
+        #[cfg(test)]
+        entry_delay: limits.entry_delay,
+    };
     match call {
         Call::ReadFile { path } => read_file(&roots, env, path, limits),
-        Call::ListDir { path } => list_dir(&roots, env, path, limits),
-        Call::FindDir { query } => find_dir(&roots, query, limits),
+        Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits),
+        Call::FindDir { query } => find_dir(&roots, &budget, query, limits),
         Call::RunInPane { .. } => Err(Failure::NotReadTool),
     }
 }
@@ -239,14 +277,20 @@ fn read_file(
 /// The entries of an open directory, at most `max` of them, and whether more
 /// were left. Read through `/proc/self/fd`, so it is the opened directory and
 /// not a path that is listed. A symlink is reported as such, never followed.
-fn entries(fd: &OwnedFd, max: usize) -> Result<(Vec<(OsString, FileType)>, bool), Failure> {
+fn entries(
+    fd: &OwnedFd,
+    max: usize,
+    budget: &Budget,
+) -> Result<(Vec<(OsString, FileType)>, bool), Failure> {
     let dir = std::fs::read_dir(format!("/proc/self/fd/{}", fd.as_raw_fd()))
         .map_err(|_| Failure::Unreadable)?;
     let mut out = Vec::new();
     for entry in dir {
-        if out.len() == max {
+        if out.len() == max || budget.spent() {
             return Ok((out, true));
         }
+        #[cfg(test)]
+        std::thread::sleep(budget.entry_delay);
         let entry = entry.map_err(|_| Failure::Unreadable)?;
         out.push((
             entry.file_name(),
@@ -258,14 +302,16 @@ fn entries(fd: &OwnedFd, max: usize) -> Result<(Vec<(OsString, FileType)>, bool)
 
 /// Whether `dir/name` may be shown. A link is judged by where it leads, and a
 /// dangling one is hidden.
-fn visible(roots: &SecretRoots, dir: &Path, name: &OsStr, kind: FileType) -> bool {
+fn visible(roots: &SecretRoots, budget: &Budget, dir: &Path, name: &OsStr, kind: FileType) -> bool {
     if is_excluded_name(&name.to_string_lossy()) {
         return false;
     }
     let full = dir.join(name);
     if kind.is_symlink() {
-        full.canonicalize()
-            .is_ok_and(|real| roots.judge_real(&real))
+        !budget.spent()
+            && full
+                .canonicalize()
+                .is_ok_and(|real| roots.judge_real(&real))
     } else {
         roots.judge_real(&full)
     }
@@ -282,6 +328,7 @@ fn one_line(name: &OsStr) -> String {
 
 fn list_dir(
     roots: &SecretRoots,
+    budget: &Budget,
     env: &ToolEnv,
     path: &str,
     limits: &Limits,
@@ -290,10 +337,10 @@ fn list_dir(
         return Err(Failure::Refused);
     };
     let fd = open_checked(roots, &real, true)?;
-    let (found, scan_cut) = entries(&fd, limits.visited)?;
+    let (found, scan_cut) = entries(&fd, limits.visited, budget)?;
     let mut shown: Vec<(String, char)> = found
         .iter()
-        .filter(|(name, kind)| visible(roots, &real, name, *kind))
+        .filter(|(name, kind)| visible(roots, budget, &real, name, *kind))
         .map(|(name, kind)| {
             let tag = if kind.is_dir() {
                 'd'
@@ -327,12 +374,16 @@ fn list_dir(
 /// Each folder is opened without following a link and judged again; a link is
 /// never entered; excluded folders are skipped, never entered. The bounds are
 /// depth, entries looked at, wall time and results.
-fn find_dir(roots: &SecretRoots, query: &str, limits: &Limits) -> Result<String, Failure> {
+fn find_dir(
+    roots: &SecretRoots,
+    budget: &Budget,
+    query: &str,
+    limits: &Limits,
+) -> Result<String, Failure> {
     let needle = query.trim().to_lowercase();
     if needle.is_empty() {
         return Err(Failure::EmptyQuery);
     }
-    let started = Instant::now();
     let mut queue = VecDeque::from([PathBuf::new()]);
     let (mut visited, mut cut) = (0usize, false);
     let mut found: Vec<String> = Vec::new();
@@ -342,21 +393,18 @@ fn find_dir(roots: &SecretRoots, query: &str, limits: &Limits) -> Result<String,
         let Ok(fd) = open_checked(roots, &dir, true) else {
             continue;
         };
-        let Ok((mut children, more)) = entries(&fd, limits.visited) else {
+        let Ok((mut children, more)) = entries(&fd, limits.visited, budget) else {
             continue;
         };
         cut |= more;
         children.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, kind) in children {
             visited += 1;
-            if started.elapsed() > limits.time || visited > limits.visited {
+            if budget.spent() || visited > limits.visited {
                 cut = true;
                 break 'search;
             }
-            if !limits.entry_delay.is_zero() {
-                std::thread::sleep(limits.entry_delay);
-            }
-            if !kind.is_dir() || !visible(roots, &dir, &name, kind) {
+            if !kind.is_dir() || !visible(roots, budget, &dir, &name, kind) {
                 continue;
             }
             if level >= limits.depth {
@@ -893,6 +941,59 @@ mod tests {
             start.elapsed()
         );
         assert!(out.ends_with(FIND_MARKER), "{out}");
+    }
+
+    #[test]
+    fn a_cancelled_find_dir_stops_at_once_and_says_it_was_bounded() {
+        let f = fixture();
+        for n in 0..200 {
+            fs::create_dir_all(f.home.join(format!("d{n}"))).unwrap();
+        }
+        let limits = Limits {
+            entry_delay: Duration::from_millis(20),
+            ..Limits::default()
+        };
+        let cancel = AtomicBool::new(true);
+        let call = Call::FindDir { query: "d1".into() };
+        let start = Instant::now();
+        let out = execute_with(&call, &env(&f.home), &limits, &cancel).unwrap();
+        assert!(
+            start.elapsed() < Duration::from_millis(150),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(out, format!("no match\n{FIND_MARKER}"));
+    }
+
+    #[test]
+    fn a_cancelled_list_dir_does_not_resolve_links_and_says_it_was_cut() {
+        let f = fixture();
+        symlink(f.home.join("dev"), f.home.join("a-link")).unwrap();
+        let cancel = AtomicBool::new(true);
+        let call = Call::ListDir { path: "~".into() };
+        let out = execute_with(&call, &env(&f.home), &Limits::default(), &cancel).unwrap();
+        assert_eq!(out, LIST_MARKER);
+        let live = AtomicBool::new(false);
+        let out = execute_with(&call, &env(&f.home), &Limits::default(), &live).unwrap();
+        assert_eq!(out, "l a-link\nd dev");
+        assert!(!live.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn the_visited_cap_is_exact() {
+        // dev, .ssh, dev/app and app/main.rs: four entries in all.
+        let f = fixture();
+        let exact = Limits {
+            visited: 4,
+            ..Limits::default()
+        };
+        assert_eq!(find(&env(&f.home), "zzz", &exact).unwrap(), "no match");
+        let short = Limits {
+            visited: 3,
+            ..Limits::default()
+        };
+        let out = find(&env(&f.home), "zzz", &short).unwrap();
+        assert_eq!(out, format!("no match\n{FIND_MARKER}"));
     }
 
     #[test]

@@ -4,6 +4,14 @@
 pub mod fs;
 pub mod open;
 
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+
 use crate::core::ai::tools::{Call, label};
 pub use fs::{Failure, Limits, ToolEnv};
 
@@ -22,12 +30,38 @@ fn new_nonce() -> Option<String> {
     None
 }
 
+/// Sets the flag when dropped, so a walk whose caller went away stops.
+struct CancelOnDrop(Arc<AtomicBool>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Extra time past `Limits::time` before the caller gives up on the thread.
+const GRACE: Duration = if cfg!(test) {
+    Duration::from_millis(30)
+} else {
+    Duration::from_millis(500)
+};
+
 /// Runs a read tool on the blocking pool, so a slow filesystem never stalls
 /// the event loop. `Ok` is the result wrapped for the model; `Err` is a short
 /// content-free failure.
+///
+/// The call is bounded by `limits.time` plus a short grace, and a dropped
+/// future cancels the walk. Both stop the walker at its next entry; a syscall
+/// already blocked (a hung open on a dead mount) cannot be interrupted and may
+/// still pin one blocking thread until the kernel returns.
 pub async fn run(call: Call, env: ToolEnv, limits: Limits) -> Result<String, Failure> {
-    let text = tokio::task::spawn_blocking(move || fs::execute(&call, &env, &limits))
+    let cancel = Arc::new(AtomicBool::new(false));
+    let _guard = CancelOnDrop(cancel.clone());
+    let bound = limits.time + GRACE;
+    let work = tokio::task::spawn_blocking(move || fs::execute_with(&call, &env, &limits, &cancel));
+    let text = tokio::time::timeout(bound, work)
         .await
+        .map_err(|_| Failure::TimedOut)?
         .map_err(|_| Failure::Unreadable)??;
     let nonce = new_nonce().ok_or(Failure::Unreadable)?;
     Ok(label::wrap(&nonce, &text))
@@ -36,7 +70,13 @@ pub async fn run(call: Call, env: ToolEnv, limits: Limits) -> Result<String, Fai
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
 
     fn env(home: &std::path::Path) -> ToolEnv {
         ToolEnv {
@@ -92,6 +132,34 @@ mod tests {
             run(write, env(&home), Limits::default()).await,
             Err(Failure::NotReadTool)
         );
+    }
+
+    #[tokio::test]
+    async fn a_call_that_hangs_past_its_time_bound_ends_as_timed_out() {
+        let (_dir, home) = home();
+        let limits = Limits {
+            time: Duration::from_millis(20),
+            entry_delay: Duration::from_millis(400),
+            ..Limits::default()
+        };
+        let call = Call::FindDir {
+            query: "dev".into(),
+        };
+        let start = std::time::Instant::now();
+        let out = run(call, env(&home), limits).await;
+        assert_eq!(out, Err(Failure::TimedOut));
+        assert!(
+            start.elapsed() < Duration::from_millis(300),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn dropping_the_guard_cancels_the_walk() {
+        let flag = Arc::new(AtomicBool::new(false));
+        drop(CancelOnDrop(flag.clone()));
+        assert!(flag.load(Ordering::Relaxed));
     }
 
     #[tokio::test(flavor = "current_thread")]
