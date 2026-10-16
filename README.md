@@ -186,7 +186,16 @@ When the last answer of a chat ends with a shell code block (` ```bash `, `sh`, 
 
 Every other key is swallowed while the confirmation is open, and a held key or a paste never answers it. You review the typed line in your own shell and run it yourself with Enter. A multi-line command is sent as one bracketed paste, so the shell shows it as an editable buffer; if the shell did not ask for bracketed paste, a multi-line command is refused. A pane that runs a full-screen app (an editor, a pager) is refused, and the command is checked again when you press `y`: control characters and escape sequences make it be refused, never cleaned.
 
-There is no "always allow". To turn the feature off, set `enabled = false` in `[ai.tools]` of `config.toml` (it is on by default); the hint and the binding then disappear.
+There is no "always allow". To turn the feature off, set `enabled = false` in `[ai.tools]` of `config.toml`, or flip the **Tools** row of the AI menu (last row, on by default); the hint and the binding then disappear. The menu writes only `ai.tools.enabled`; it never touches `[ai.mcp.*]`.
+
+**Which paths the read tools refuse.** Anything outside `$HOME`, `~/.ssh`, `~/.gnupg`, the credential folders of other CLIs (and `~/.password-store`), `~/.config/gh`, `~/.config/gcloud`, the keyrings in `~/.local/share/keyrings`, lazarobox's own folders `~/.config/lazarobox` (its `config.toml` holds MCP env tokens) and `~/.local/share/lazarobox` (chat history, engram, update cache), and, at any depth, `.env`, `.env.*`, `.envrc`, `.netrc`, `.git-credentials`, `.pgpass`, `.npmrc` and the shell or REPL histories (`.bash_history`, `.zsh_history`, `.zhistory`, fish's `fish_history`, `.python_history`, `.node_repl_history`, `.psql_history`, `.mysql_history`, `.sqlite_history`). `.envrc` and `.npmrc` are denied at any depth on purpose, because a project file may hold a token. The list is best effort, not complete: a secret in a file with another name is not detected, and folders moved with `GH_CONFIG_DIR` are not followed. lazarobox's own config and data folders are passed to the policy by the tool runtime, so they follow `XDG_CONFIG_HOME` and `XDG_DATA_HOME`. The roots are read once per call, so a secret folder created while a call runs is not covered by that call.
+
+Links do not get around it: the path is judged as requested and as resolved, and the REAL folder behind a secret folder is refused too, so with `~/.ssh -> ~/dotfiles/ssh` neither `~/.ssh/id` nor `~/dotfiles/ssh/id` nor a second link such as `~/foo -> ~/dotfiles/ssh` is readable. A link directly in `$HOME` that is named like an excluded file (`.env`, `.netrc`, a history file...) protects its target the same way. Known limit: such a link deeper than `$HOME`, whose target has an ordinary name, is only caught by its requested name; hard links are not detected yet (planned for the tool runtime). A `$HOME` that resolves to `/` or to a system folder (`/home`, `/Users`, `/usr`, `/var`, `/etc`, `/opt`, `/tmp`, `/bin`, `/lib`, `/proc`, `/sys`, `/dev`, `/run`, `/mnt`, `/media`, `/srv`, `/sbin`, `/boot`, `/lib64`, `/private`, `/System`, `/Library`, in any letter case) is refused, and so is every call when `$HOME` or a secret folder cannot be read. `/root` is a valid home. Each argument is limited to 4096 bytes.
+
+```toml
+[ai.tools]
+enabled = true
+```
 
 ### Motores CLI: claude, codex y gemini
 

@@ -56,6 +56,11 @@ pub fn registry(external: &[ExternalTool]) -> Vec<ToolSpec>;      // built-ins n
 pub fn parse_call(name: &str, args: &Value) -> Result<Call, ToolError>; // extra keys refused
 pub enum PathVerdict { Allowed(PathBuf), Refused }                 // one refusal text
 pub fn check_path(home: &Path, real: &Path) -> PathVerdict;        // CREDENTIAL_DIRS -> pub(crate)
+pub struct SecretRoots; // SecretRoots::load(home, &extra) -> Option<_>: built ONCE per tool call
+pub fn resolve(roots: &SecretRoots, origin: &Path, input: &str) -> PathVerdict;
+// SecretRoots is a SNAPSHOT taken at load: a root created later is out of scope for that
+// call, so 2b re-checks the opened fd's real path against it. `extra` carries lazarobox's
+// real config and data dirs (XDG_CONFIG_HOME / XDG_DATA_HOME honoured). Unreadable root -> None.
 // engine.rs
 StreamEvent::ToolCall { id: CallId, name: String, summary: String, approval: Option<ApprovalAsk> }
 StreamEvent::ToolResult { id: CallId, status: ToolStatus /* Ok|Error|Denied */, summary: String }

@@ -92,18 +92,23 @@ Fallback split if over 400: 1b-i (state, keys, effects) and 1b-ii (bar and snaps
 
 ## PR3 / 2a: Registry, path policy, config (`src/core/ai/tools/{mod,paths}.rs`, `src/core/ai/{config,menu}.rs`, `src/core/config_edit.rs`, `src/core/ai/jail.rs`)
 
-- [ ] 2a.1 RED: registry lists `find_dir`, `list_dir`, `read_file`, `run_in_pane` with schema and Access; same list for MCP and Ollama builders; built-in names never shadowed.
-- [ ] 2a.2 RED: `parse_call` refuses unknown tool, missing/mistyped args and extra keys (`mode`).
-- [ ] 2a.3 RED: `check_path` over a temp `$HOME`: every `CREDENTIAL_DIRS` entry and a child, `.ssh`, `.gnupg`, `.env`/`.env.*` at any depth, outside HOME, traversal, symlink to excluded, symlinked dir out, symlink inside HOME fine, relative input vs origin cwd, one identical refusal text for excluded/outside/missing.
-- [ ] 2a.4 RED: config `[ai.tools] enabled` default true, bad value falls back with the startup notice order; menu Tools row after Notify; save writes only `ai.tools.enabled`, never `ai.mcp.*`; popup size lists updated.
-- [ ] 2a.5 GREEN: implement; make `CREDENTIAL_DIRS` `pub(crate)`.
-- [ ] 2a.6 Gate.
-- [ ] 2a.7 Docs: doc comments; README config key `[ai.tools]`.
+- [x] 2a.1 RED: registry lists `find_dir`, `list_dir`, `read_file`, `run_in_pane` with schema and Access; same list for MCP and Ollama builders; built-in names never shadowed.
+- [x] 2a.2 RED: `parse_call` refuses unknown tool, missing/mistyped args and extra keys (`mode`).
+- [x] 2a.3 RED: `check_path` over a temp `$HOME`: every `CREDENTIAL_DIRS` entry and a child, `.ssh`, `.gnupg`, `.env`/`.env.*` at any depth, outside HOME, traversal, symlink to excluded, symlinked dir out, symlink inside HOME fine, relative input vs origin cwd, one identical refusal text for excluded/outside/missing.
+- [x] 2a.4 RED: config `[ai.tools] enabled` default true, bad value falls back with the startup notice order; menu Tools row after Notify; save writes only `ai.tools.enabled`, never `ai.mcp.*`; popup size lists updated.
+- [x] 2a.5 GREEN: implement; make `CREDENTIAL_DIRS` `pub(crate)`.
+- [x] 2a.6 Gate.
+- [x] 2a.8 Review follow-up: deny list widened by user decision (credential files, `.config/gh`, `.config/gcloud`, keyrings, shell/REPL histories, `.envrc`, lazarobox store); real roots canonicalized for every dir root; tests per group.
+- [x] 2a.7 Docs: doc comments; README config key `[ai.tools]`.
 
 ## PR4 / 2b: Read tools and wrapper (`src/runtime/tools/{mod,fs}.rs`, `src/core/ai/tools/label.rs`)
 
 - [ ] 2b.1 RED: `find_dir` (depth 8, 20,000 visited, 2 s, 20 results, no symlink follow, no descent into excluded, truncation said); fake slow fs keeps the loop responsive.
 - [ ] 2b.2 RED: `list_dir` (200 cap, kinds, excluded names omitted, control/bidi names cleaned); `read_file` (64 KiB, NUL means not text, redaction via `memory::redact`, real path re-checked through `/proc/self/fd` after open, swapped-symlink case).
+  - 2b MUST also: check hard links with `st_nlink` (a regular file with more than one link is refused, since a hard link to a secret has an ordinary path); open with `O_NOFOLLOW` / `openat2` with `RESOLVE_BENEATH` and re-check the opened file through `/proc/self/fd`; refuse every call when HOME is unset or not absolute, never falling back to `/`.
+  - 2b MUST build `SecretRoots::load(home)` ONCE per tool call (it reads HOME and every secret root) and pass it to every `resolve` and to the entry filter of `list_dir` and `find_dir`; a `None` means refuse the whole call. The roots are a snapshot taken at load: re-check the opened fd's real path against them, and a root created after the load is out of scope for that call. Pass the real lazarobox config and data dirs (honouring `XDG_CONFIG_HOME` and `XDG_DATA_HOME`) as `extra` roots: `SecretRoots::load(home, &extra)`.
+  - 2b/2e MUST reject duplicate JSON keys at the raw wire layer: `serde_json::Value` has already collapsed them when `parse_call` runs. `parse_call` caps each argument at `MAX_ARG_BYTES` (4096).
+  - Hardening (review W2): open with `O_NOFOLLOW` and `O_NONBLOCK`; `fstat` and require a regular file (a FIFO would hang); refuse `st_nlink > 1` (hard links to secrets); after open, `readlink /proc/self/fd/N` and run `check_path` again; `find_dir` and `list_dir` skip excluded entries and never follow symlinks; prefer `openat2` with `RESOLVE_BENEATH` when available.
 - [ ] 2b.3 RED: recording sandbox: no process, no socket, no write; error text carries no file content (`SECRET-TOKEN-123`).
 - [ ] 2b.4 RED: wrapper `<untrusted-tool-output id=NONCE>` with random 16-hex nonce, forged closing tag stays inside, 32 KiB cap marker, "data, not instructions" line.
 - [ ] 2b.5 GREEN: implement on `spawn_blocking`.
@@ -211,7 +216,7 @@ Conditional on the opencode adapter, which is parked. Not part of this change's 
 ## PR13 / 4a: User MCP server config (`src/core/ai/{config,tools/servers}.rs`, `src/core/config_edit.rs`)
 
 - [ ] 4a.1 RED: `[[ai.mcp.servers]]` parse: name, command, args, env as variable NAMES only, optional `project`; per-entry fallback and startup notices after `ai.tools`; a secret value in env is refused.
-- [ ] 4a.2 RED: resolution: global plus project servers for the chat's origin git root, other project excluded, project wins on a name clash, a repo `.lazarobox/mcp.toml` is never read, qualified name `<server>__<tool>` matching `[a-z0-9_-]{1,24}`.
+- [ ] 4a.2 RED (also: a colliding external tool is exposed under its server-qualified name and same-named externals are deduplicated here; 2a only drops them): resolution: global plus project servers for the chat's origin git root, other project excluded, project wins on a name clash, a repo `.lazarobox/mcp.toml` is never read, qualified name `<server>__<tool>` matching `[a-z0-9_-]{1,24}`.
 - [ ] 4a.3 RED: persistence: save never adds, changes, reorders or removes `ai.mcp.*` bytes (comments, invalid entries, arrays of tables kept).
 - [ ] 4a.4 GREEN: implement.
 - [ ] 4a.5 Gate.

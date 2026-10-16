@@ -6142,24 +6142,31 @@ mod app_tests {
         assert!(!menu.ai_draft().memory.enabled);
     }
 
-    /// Moves the menu selection to the `Context` row (before `Memory` and
-    /// `Notify`, the last one).
+    /// Moves the menu selection to the `Context` row (before `Memory`,
+    /// `Notify` and `Tools`, the last one).
     fn to_context_row(a: &mut App) {
-        for _ in 0..3 {
+        for _ in 0..4 {
             a.update(key('k'));
         }
     }
 
     /// Moves the menu selection to the `Profile` row (before `Context`).
     fn to_profile_row(a: &mut App) {
-        for _ in 0..4 {
+        for _ in 0..5 {
             a.update(key('k'));
         }
     }
 
-    /// Moves the menu selection to the `Memory` row (before `Notify`, the
-    /// last one).
+    /// Moves the menu selection to the `Memory` row (before `Notify` and
+    /// `Tools`, the last one).
     fn to_memory_row(a: &mut App) {
+        for _ in 0..3 {
+            a.update(key('k'));
+        }
+    }
+
+    /// Moves the menu selection to the `Notify` row (before `Tools`).
+    fn to_notify_row(a: &mut App) {
         a.update(key('k'));
         a.update(key('k'));
     }
@@ -6238,7 +6245,7 @@ mod app_tests {
         let mut a = ai_app();
         assert!(!a.ai().notify());
         open_menu(&mut a);
-        a.update(key('k'));
+        to_notify_row(&mut a);
         assert_eq!(a.update(key('l')), Vec::<Effect>::new(), "no ResizePty");
         assert!(a.menu().unwrap().ai_draft().notify());
         assert!(!a.ai().notify(), "not saved yet");
@@ -6252,10 +6259,37 @@ mod app_tests {
         assert!(a.menu().is_none());
         assert!(a.ai().notify());
         open_menu(&mut a);
-        a.update(key('k'));
+        to_notify_row(&mut a);
         a.update(key('l'));
         a.update(esc());
         assert!(a.ai().notify(), "Esc keeps the saved value");
+    }
+
+    // Spec (agent-tools, config menu): `s` saves only `ai.tools.enabled` and
+    // the saved value becomes the app's flag; Esc keeps the saved one.
+    #[test]
+    fn the_tools_row_saves_only_its_key_and_updates_the_app() {
+        let mut a = ai_app();
+        assert!(a.ai().tools_enabled());
+        open_menu(&mut a);
+        a.update(key('k'));
+        assert_eq!(a.update(key('l')), Vec::<Effect>::new(), "no ResizePty");
+        assert!(!a.menu().unwrap().ai_draft().tools_enabled());
+        assert!(a.ai().tools_enabled(), "not saved yet");
+        let edit = ConfigEdit {
+            table: "ai.tools",
+            key: "enabled",
+            value: "false".into(),
+        };
+        assert_eq!(a.update(key('s')), vec![Effect::SaveConfig(vec![edit])]);
+        a.update(AppEvent::ConfigSaved);
+        assert!(a.menu().is_none());
+        assert!(!a.ai().tools_enabled());
+        open_menu(&mut a);
+        a.update(key('k'));
+        a.update(key('l'));
+        a.update(esc());
+        assert!(!a.ai().tools_enabled(), "Esc keeps the saved value");
     }
 
     // Spec (Context toggle): Esc restores the flag captured at open.

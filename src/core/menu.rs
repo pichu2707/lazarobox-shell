@@ -45,6 +45,9 @@ pub enum ItemKind {
     /// The chat bell flag (`ai.notify`): an on/off row that lives in the AI
     /// draft, like [`ItemKind::Context`].
     Notify,
+    /// The agent tools flag (`ai.tools.enabled`): an on/off row that lives in
+    /// the AI draft, like [`ItemKind::Notify`].
+    Tools,
 }
 
 /// The descriptor of the `Memory` row; the value is the `enabled` key.
@@ -117,7 +120,7 @@ pub static SECTIONS: &[Section] = &[Section {
 
 /// The AI section, attached only by [`MenuState::with_ai`]. The labels of
 /// the task rows are the task ids; their key path is `Task::table`. The
-/// static rows follow the tasks: `Profile`, `Context`, `Memory` and `Notify`,
+/// static rows follow the tasks: `Profile`, `Context`, `Memory`, `Notify` and `Tools`,
 /// in that order.
 pub static AI_SECTION: Section = Section {
     title: "AI",
@@ -166,6 +169,10 @@ pub static AI_SECTION: Section = Section {
             label: "Notify",
             kind: ItemKind::Notify,
         },
+        Item {
+            label: "Tools",
+            kind: ItemKind::Tools,
+        },
     ],
 };
 
@@ -180,7 +187,8 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
             | ItemKind::Profile
             | ItemKind::Context
             | ItemKind::Memory(_)
-            | ItemKind::Notify => None,
+            | ItemKind::Notify
+            | ItemKind::Tools => None,
         })
 }
 
@@ -380,11 +388,17 @@ impl MenuState {
     }
 
     /// Whether the selection is on a row of the AI draft that is not a
-    /// task: `Profile`, `Context`, `Memory` or `Notify`.
+    /// task: `Profile`, `Context`, `Memory`, `Notify` or `Tools`.
     fn on_draft_row(&self) -> bool {
         matches!(
             self.selected_kind(),
-            Some(ItemKind::Profile | ItemKind::Context | ItemKind::Memory(_) | ItemKind::Notify)
+            Some(
+                ItemKind::Profile
+                    | ItemKind::Context
+                    | ItemKind::Memory(_)
+                    | ItemKind::Notify
+                    | ItemKind::Tools
+            )
         )
     }
 
@@ -475,7 +489,8 @@ impl MenuState {
             | ItemKind::Profile
             | ItemKind::Context
             | ItemKind::Memory(_)
-            | ItemKind::Notify => None,
+            | ItemKind::Notify
+            | ItemKind::Tools => None,
         }
     }
 
@@ -547,6 +562,22 @@ impl MenuState {
                             label: item.label,
                             value: self.ai.as_ref().map(|ai| {
                                 Cow::Borrowed(if ai.draft().notify() { "on" } else { "off" })
+                            }),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Tools => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self.ai.as_ref().map(|ai| {
+                                Cow::Borrowed(if ai.draft().tools_enabled() {
+                                    "on"
+                                } else {
+                                    "off"
+                                })
                             }),
                             selected: self.selected == Some(index),
                             enabled: true,
@@ -691,6 +722,7 @@ impl MenuState {
                     Some(ItemKind::Profile) => ai.cycle_profile(forward),
                     Some(ItemKind::Memory(_)) => ai.toggle_memory(),
                     Some(ItemKind::Notify) => ai.toggle_notify(),
+                    Some(ItemKind::Tools) => ai.toggle_tools(),
                     _ => ai.toggle_context(),
                 }
             }
@@ -776,12 +808,18 @@ impl MenuState {
                 key: "notify",
                 value: Cow::Borrowed(if on { "true" } else { "false" }),
             });
+        let tools = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::changed_tools)
+            .map(ConfigEdit::tools_flag);
         settings
             .chain(tasks)
             .chain(profile)
             .chain(context)
             .chain(memory)
             .chain(notify)
+            .chain(tools)
             .collect()
     }
 
@@ -1094,6 +1132,9 @@ mod tests {
 
 #[cfg(test)]
 mod ai_tests;
+
+#[cfg(test)]
+mod tools_tests;
 
 #[cfg(test)]
 mod picker_tests;

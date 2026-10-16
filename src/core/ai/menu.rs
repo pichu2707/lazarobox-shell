@@ -122,6 +122,18 @@ impl AiMenu {
         (self.draft.notify() != self.original.notify()).then(|| self.draft.notify())
     }
 
+    /// Flips the agent tools flag of the draft.
+    pub fn toggle_tools(&mut self) {
+        let next = !self.draft.tools_enabled();
+        self.draft.set_tools_enabled(next);
+    }
+
+    /// The tools flag in the draft, when it differs from the open one.
+    pub fn changed_tools(&self) -> Option<bool> {
+        (self.draft.tools_enabled() != self.original.tools_enabled())
+            .then(|| self.draft.tools_enabled())
+    }
+
     /// Replaces the detection. The draft is never touched.
     /// An open picker keeps its level and its row.
     pub fn set_engines(&mut self, engines: Option<Detection>) {

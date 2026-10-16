@@ -74,18 +74,33 @@ impl ConfigEdit {
         }
     }
 
+    /// The `ai.tools.enabled` edit: the only key the menu writes about the
+    /// agent tools. `ai.mcp.*` is never written by the menu.
+    pub fn tools_flag(on: bool) -> Self {
+        Self {
+            table: TOOLS_TABLE,
+            key: "enabled",
+            value: Cow::Borrowed(if on { "true" } else { "false" }),
+        }
+    }
+
     /// Whether the key is a TOML boolean (written as `true` / `false`, not
-    /// as a string): the root `mouse`, the memory flags, `ai.context` and `ai.notify`. Every other owned key
+    /// as a string): the root `mouse`, the memory flags, `ai.context`, `ai.notify` and
+    /// `ai.tools.enabled`. Every other owned key
     /// holds a string; `ai.memory.port` is owned but never edited.
     pub fn is_flag(&self) -> bool {
         (self.table.is_empty() && self.key == "mouse")
             || (self.table == MEMORY_TABLE && matches!(self.key, "enabled" | "acknowledged"))
             || (self.table == "ai" && matches!(self.key, "context" | "notify"))
+            || (self.table == TOOLS_TABLE && self.key == "enabled")
     }
 }
 
 /// The dotted table of the memory keys.
 pub const MEMORY_TABLE: &str = "ai.memory";
+
+/// The dotted table of the agent tools keys.
+pub const TOOLS_TABLE: &str = "ai.tools";
 
 /// Why a config file was rejected; the text is one short line.
 #[derive(Clone, PartialEq, Eq, Debug)]

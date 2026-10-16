@@ -47,10 +47,10 @@ fn notify_edit(value: &'static str) -> ConfigEdit {
     }
 }
 
-// Spec (Notify row): the row is last in the AI section and found by kind.
+// Spec (Notify row): the row is found by kind; only Tools follows it.
 #[test]
-fn the_notify_row_is_last_and_found_by_kind() {
-    let last = AI_SECTION.items.last().unwrap();
+fn the_notify_row_precedes_tools_and_is_found_by_kind() {
+    let last = &AI_SECTION.items[AI_SECTION.items.len() - 2];
     assert_eq!(last.label, "Notify");
     assert!(matches!(last.kind, ItemKind::Notify));
     let count = AI_SECTION
@@ -69,7 +69,7 @@ fn the_popup_body_grows_with_the_row() {
         AI_BODY,
         SECTIONS.len() + 1 + settings + AI_SECTION.items.len()
     );
-    assert_eq!(AI_SECTION.items.len(), 10);
+    assert_eq!(AI_SECTION.items.len(), 11);
 }
 
 #[test]
