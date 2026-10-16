@@ -146,3 +146,23 @@ fn the_last_line_skips_lines_that_are_empty_once_sanitized() {
     );
     assert_eq!(last_line("\u{1b}[2J\n"), None);
 }
+
+#[test]
+fn a_failed_turn_never_shows_a_key_from_stderr() {
+    let key = "sk-abcdefghijklmnop";
+    let stderr = format!("warming up\n401 Unauthorized: invalid key {key}\n");
+    let cut = Some(StreamEvent::Error(ChatError::Interrupted));
+    let StreamEvent::Error(ChatError::Failed(text)) =
+        verdict("codex", cut, false, exit(1), &stderr)
+    else {
+        panic!("a failure was expected");
+    };
+    assert_eq!(text, "401 Unauthorized: invalid key …");
+    let bearer = "boom: Authorization: Bearer abc.def\n";
+    let StreamEvent::Error(ChatError::Failed(text)) =
+        verdict("codex", None, false, exit(1), bearer)
+    else {
+        panic!("a failure was expected");
+    };
+    assert!(!text.contains("abc.def"), "{text}");
+}

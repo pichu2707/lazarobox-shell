@@ -279,3 +279,92 @@ fn ordinary_error_text_is_untouched() {
         assert_eq!(redact_tokens(text), text);
     }
 }
+
+#[test]
+fn bearer_and_basic_are_matched_in_any_case_through_quotes_and_punctuation() {
+    for (input, want) in [
+        ("BEARER abc123", "BEARER …"),
+        ("Basic dXNlcjpwYXNz", "Basic …"),
+        ("basic dXNlcjpwYXNz", "basic …"),
+        ("Bearer: abc123 end", "Bearer: … end"),
+        (
+            r#"{"Authorization":"Bearer abc123"}"#,
+            r#"{"Authorization":"Bearer …"#,
+        ),
+        (r#""Bearer" "abc123""#, r#""Bearer" …"#),
+        ("auth,Basic Zm9v;", "auth,Basic …"),
+    ] {
+        assert_eq!(redact_tokens(input), want, "{input}");
+    }
+}
+
+#[test]
+fn url_userinfo_is_replaced() {
+    assert_eq!(
+        redact_tokens("clone https://user:pass@example.com/repo.git failed"),
+        "clone https://…@example.com/repo.git failed"
+    );
+    assert_eq!(
+        redact_tokens("proxy http://tok@10.0.0.1:8080"),
+        "proxy http://…@10.0.0.1:8080"
+    );
+    assert_eq!(
+        redact_tokens("see https://example.com/a@b and mail@x.org"),
+        "see https://example.com/a@b and mail@x.org"
+    );
+}
+
+#[test]
+fn known_token_prefixes_are_secrets_from_eight_characters() {
+    for token in [
+        "ghp_abcd1234",
+        "gho_abcd1234",
+        "ghs_abcd1234",
+        "github_pat_11AAAA",
+        "glpat-abcd12",
+        "xoxb-1234",
+        "AKIAIOSFODNN7",
+        "eyJhbGciOi",
+    ] {
+        assert_eq!(
+            redact_tokens(&format!("key {token} end")),
+            "key … end",
+            "{token}"
+        );
+    }
+    // Too short to be one, or only alike by accident.
+    for text in [
+        "key ghp_ab end",
+        "xox is a word",
+        "AKIA",
+        "eyJ",
+        "my glpat-1 note",
+    ] {
+        assert_eq!(redact_tokens(text), text);
+    }
+}
+
+#[test]
+fn base64_with_its_marks_is_a_secret_from_twenty_characters() {
+    assert_eq!(
+        redact_tokens("data dGhpcyBpcyBhIHNlY3JldA+Zm9v end"),
+        "data … end"
+    );
+    assert_eq!(
+        redact_tokens("pad dGhpcyBpcyBhIHNlY3JldA== end"),
+        "pad … end"
+    );
+    assert_eq!(
+        redact_tokens("blob QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0NTY3ODkwYWJjZGVm/wxyz end"),
+        "blob … end"
+    );
+    // Paths and short or plain text stay.
+    for text in [
+        "open /usr/local/lib/python3/site-packages/x failed",
+        "a+b=c is fine",
+        "short dGhpcy+Zm9v=",
+        "src/Foo2/barBaz/quxQuux",
+    ] {
+        assert_eq!(redact_tokens(text), text);
+    }
+}
