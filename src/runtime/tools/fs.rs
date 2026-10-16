@@ -12,6 +12,7 @@ use crate::{
     core::{
         ai::{
             memory::redact::redact,
+            sanitize::clean,
             tools::{
                 Call,
                 paths::{PathVerdict, REFUSED, SecretRoots, resolve},
@@ -72,6 +73,9 @@ impl Failure {
         }
     }
 }
+
+/// Bytes read past the cap so redaction sees a whole secret.
+const REDACT_MARGIN: usize = 1024;
 
 /// Appended when `read_file` cut the text at the cap.
 pub const READ_MARKER: &str = "[truncated: the file is larger than the read cap]";
@@ -142,26 +146,31 @@ fn read_file(
     };
     let file = std::fs::File::from(open_checked(roots, &real, false)?);
     let meta = file.metadata().map_err(|_| Failure::Unreadable)?;
+    // A directory, FIFO, socket or device: refused like any hidden path.
     if !meta.is_file() {
-        return Err(Failure::NotText);
+        return Err(Failure::Refused);
     }
-    // A hard link to a secret has an ordinary path.
+    // A hard link to a secret has an ordinary path. Files that really are
+    // hard-linked (pnpm and nix stores, git objects) are refused too.
     if meta.nlink() > 1 {
         return Err(Failure::Refused);
     }
+    // Read a margin past the cap: a secret that straddles the cap must be
+    // redacted whole, and only then is the text cut.
+    let window = limits.read_bytes + REDACT_MARGIN;
     let mut bytes = Vec::new();
-    file.take(limits.read_bytes as u64 + 1)
+    file.take(window as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| Failure::Unreadable)?;
     if bytes.contains(&0) {
         return Err(Failure::NotText);
     }
-    let cut = bytes.len() > limits.read_bytes;
-    bytes.truncate(limits.read_bytes);
+    let more = bytes.len() > window;
+    bytes.truncate(window);
     let text = match String::from_utf8(bytes) {
         Ok(text) => text,
-        // A character split by the cap is the only decoding error allowed.
-        Err(error) if cut && error.utf8_error().error_len().is_none() => {
+        // A character split by the window is the only decoding error allowed.
+        Err(error) if more && error.utf8_error().error_len().is_none() => {
             let valid = error.utf8_error().valid_up_to();
             let mut bytes = error.into_bytes();
             bytes.truncate(valid);
@@ -169,7 +178,17 @@ fn read_file(
         }
         Err(_) => return Err(Failure::NotText),
     };
-    let mut out = redact(&text).text;
+    // Clean first: a zero-width or control character inside a token would
+    // otherwise hide it from the redaction.
+    let mut out = redact(&clean(&text)).text;
+    let cut = more || out.len() > limits.read_bytes;
+    if out.len() > limits.read_bytes {
+        let mut end = limits.read_bytes;
+        while !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.truncate(end);
+    }
     if cut {
         out.push('\n');
         out.push_str(READ_MARKER);
@@ -381,9 +400,35 @@ mod tests {
         // SAFETY: a valid NUL-terminated path.
         assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
         let e = env(&f.home);
-        for path in ["~/pipe", "~/dev"] {
-            assert_eq!(read(&e, path), Err(Failure::NotText), "{path}");
+        let _socket = std::os::unix::net::UnixListener::bind(f.home.join("sock")).unwrap();
+        for path in ["~/pipe", "~/dev", "~/sock"] {
+            assert_eq!(read(&e, path), Err(Failure::Refused), "{path}");
         }
+    }
+
+    #[test]
+    fn a_token_split_by_a_zero_width_char_is_redacted() {
+        let f = fixture();
+        fs::write(f.home.join("conf"), "k = sk-abcDEF\u{200b}1234567890\n").unwrap();
+        let out = read(&env(&f.home), "~/conf").unwrap();
+        assert!(!out.contains("1234567890"), "{out:?}");
+        assert!(out.contains("[REDACTED]"), "{out:?}");
+    }
+
+    #[test]
+    fn a_secret_straddling_the_cap_is_redacted_whole_before_the_cut() {
+        let f = fixture();
+        fs::write(f.home.join("conf"), "xxxxxxxxx sk-abcDEF1234567890 tail").unwrap();
+        let limits = Limits { read_bytes: 20 };
+        let out = execute(
+            &Call::ReadFile {
+                path: "~/conf".into(),
+            },
+            &env(&f.home),
+            &limits,
+        )
+        .unwrap();
+        assert_eq!(out, format!("xxxxxxxxx [REDACTED]\n{READ_MARKER}"));
     }
 
     #[test]
