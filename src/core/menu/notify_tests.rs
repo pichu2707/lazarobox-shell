@@ -283,22 +283,15 @@ fn the_notify_rows_hint_names_the_test_key() {
 }
 
 #[test]
-fn the_test_report_has_its_own_field_and_shows_on_the_notify_rows() {
+fn the_test_report_has_its_own_field_and_any_press_clears_it() {
     let mut m = on_notify(NotifyMode::Auto);
     assert_eq!(m.test_report(), None);
     m.set_test_report("sent: bell".to_owned());
     assert_eq!(hint(&m), "sent: bell");
     press(&mut m, 'j');
-    assert_eq!(selected_label(&m), "Sound");
-    assert_eq!(
-        hint(&m),
-        "sent: bell",
-        "it stays across presses on the rows"
-    );
-    press(&mut m, 'j');
-    assert_ne!(hint(&m), "sent: bell", "other rows keep their own hint");
-    assert_eq!(m.test_report(), Some("sent: bell"));
-    // A copy notice is a different field and wins while it lasts.
+    assert_eq!(m.test_report(), None, "cleared like the copy notice");
+    assert_eq!(hint(&m), NOTIFY_HINT, "the row hint is back");
+    // A copy notice is a different field and wins while both are set.
     let mut m = on_notify(NotifyMode::Auto);
     m.set_test_report("sent: bell".to_owned());
     m.set_copied("Copied 3 characters".to_owned());

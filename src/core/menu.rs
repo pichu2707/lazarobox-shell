@@ -672,6 +672,7 @@ impl MenuState {
         if !repeat {
             self.error = None;
             self.copied = None;
+            self.test_report = None;
         }
         if self.in_warning() {
             return self.on_warning_key(key, repeat);

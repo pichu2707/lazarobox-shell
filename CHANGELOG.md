@@ -40,19 +40,28 @@ baseline.
   now, with the mode shown (saved or not) and ignoring the focus rule. The
   footer says what happened (`sent: bell + desktop + sound`) or why not
   (`desktop unavailable: no session bus`).
-- Notification robustness. The availability probe has its own 1 s limit and
-  every send, sound and test task is bounded and always releases its
-  in-flight flag, so a hung probe cannot block later notifications. A send
+- Notification robustness. Time limits: the PATH and session probe 1 s, a
+  desktop send 4 s in all (probe plus the 2 s `notify-send`), each sound
+  player 2 s, the sound chain 10 s, the whole test action 16 s, and each test
+  step has its own bound so a slow sound keeps the desktop outcome. The
+  in-flight flags are released when a task times out, panics or is dropped
+  (the guard exists before the task does); a probe thread that is truly
+  stuck is not interrupted, but at most one exists at a time (new probes say
+  "PATH lookup still running") and the process exit waits at most 1 s for
+  it. Good probe results are cached for a minute, failures never. A send
   dropped because another is in flight rings the bell in `desktop` mode.
   The checked real path of `notify-send` is the one that runs, with the found
   name as `argv[0]`. The sound tries canberra, then `pw-play` and `paplay`
-  with each existing sound file, stopping at the first that exits 0. The
+  with each existing sound file, stopping at the first that exits 0 or is
+  still playing at the 2 s limit (it started, so the next one is not tried);
+  only a spawn error or a failing exit moves to the next candidate. The
   environment allow-list adds the audio and XDG variables (`PULSE_*`,
   `PIPEWIRE_*`, `XDG_DATA_*`, `XDG_CONFIG_*`, `LANGUAGE`, `USER`, `LOGNAME`).
   SSH only disables the desktop when no local display is set, so a stale
   `SSH_CONNECTION` in a local tmux does not. One test at a time (`test
-  running`), and its report lives in its own footer field until the menu
-  closes. In `desktop` mode a missing `notify-send` rings the bell and the
+  running`), and its report lives in its own footer field until the next key
+  press or the menu closing, and is never reported while the flag still says
+  running. In `desktop` mode a missing `notify-send` rings the bell and the
   sound may play too: they overlap by design. A turn that ended by cancel
   never notifies; its fallback body would read "Turn ended in pane N".
 

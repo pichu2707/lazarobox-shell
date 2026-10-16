@@ -27,8 +27,12 @@ fn main() -> std::io::Result<()> {
         eprintln!("{message}");
         std::process::exit(1);
     }
-    tokio::runtime::Builder::new_multi_thread()
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?
-        .block_on(lazarobox_shell::runtime::run())
+        .build()?;
+    let result = rt.block_on(lazarobox_shell::runtime::run());
+    // The quit work is done inside `run`; do not let a wedged blocking thread
+    // (a hung PATH lookup) hold the exit.
+    lazarobox_shell::runtime::shutdown_runtime(rt, lazarobox_shell::runtime::RUNTIME_QUIT_BOUND);
+    result
 }

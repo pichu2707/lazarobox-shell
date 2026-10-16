@@ -9,16 +9,16 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use tokio::{process::Command, sync::mpsc, time::timeout};
 
 use super::{
-    ai_detect::{find_on_path, run_capped},
+    ai_detect::{RunFailure, find_on_path, run_capped_why},
     chat::trusted_real_path,
 };
 use crate::core::ai::{
@@ -188,27 +188,140 @@ fn clean(text: &str) -> String {
 /// must not hold anything up.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Longest a whole desktop send may take, probe included.
+/// Longest a whole desktop send may take, probe included (1 s probe, 2 s run).
 const SEND_TIMEOUT: Duration = Duration::from_secs(4);
 
-/// Longest the whole sound chain (up to six tries) may take.
-const SOUND_TIMEOUT: Duration = Duration::from_secs(8);
+/// Longest the sound chain may take: at most five candidates (canberra, then
+/// two files for each of `pw-play` and `paplay`), each bounded by [`TIMEOUT`].
+const SOUND_STEP: Duration = Duration::from_secs(10);
 
-/// Longest the test action may take.
-const TEST_TIMEOUT: Duration = Duration::from_secs(12);
+/// Longest a whole background sound may take, probe included.
+const SOUND_TIMEOUT: Duration = Duration::from_secs(12);
 
-/// Runs `f` on a blocking thread and waits at most [`PROBE_TIMEOUT`]. `None`
-/// when it timed out (the thread is left to finish on its own) or panicked.
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
-    timeout(PROBE_TIMEOUT, tokio::task::spawn_blocking(f))
-        .await
-        .ok()?
-        .ok()
+/// Longest the whole test action may take: the sum of its steps (desktop
+/// probe and send, sound probe and chain) plus a margin. Every step has its
+/// own bound, so this one only catches what they cannot.
+const TEST_TIMEOUT: Duration = Duration::from_secs(16);
+
+/// How long a good probe result is reused, so a normal turn does not stat the
+/// `PATH` every time.
+const PROBE_TTL: Duration = Duration::from_secs(60);
+
+/// Clears the stuck flag when the probe closure ends, a panic included.
+struct Unstick(Arc<AtomicBool>);
+
+impl Drop for Unstick {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// The probes, with their guard rails. At most one probe thread exists at a
+/// time: if one is stuck (a hung disk), new probes say so instead of piling
+/// up blocking threads. Good results are cached for a minute; failures are
+/// not (installing the tool must work at once).
+pub struct Probe {
+    stuck: Arc<AtomicBool>,
+    ttl: Duration,
+    desktop: Mutex<Option<(Instant, PathBuf)>>,
+    sound: Mutex<Option<(Instant, Vec<Candidate>)>>,
+}
+
+impl Default for Probe {
+    fn default() -> Self {
+        Self::with_ttl(PROBE_TTL)
+    }
+}
+
+impl Probe {
+    pub fn with_ttl(ttl: Duration) -> Self {
+        Self {
+            stuck: Arc::new(AtomicBool::new(false)),
+            ttl,
+            desktop: Mutex::new(None),
+            sound: Mutex::new(None),
+        }
+    }
+
+    /// Runs `f` on a blocking thread and waits at most [`PROBE_TIMEOUT`]. On a
+    /// timeout the thread is left to finish and the stuck flag stays set until
+    /// it does.
+    async fn run<T: Send + 'static>(
+        &self,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<T, String> {
+        if self.stuck.swap(true, Ordering::AcqRel) {
+            return Err("PATH lookup still running".to_owned());
+        }
+        let guard = Unstick(Arc::clone(&self.stuck));
+        let task = tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            f()
+        });
+        match timeout(PROBE_TIMEOUT, task).await {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(_)) => Err("the check failed".to_owned()),
+            Err(_) => Err("the check timed out".to_owned()),
+        }
+    }
+
+    fn fresh<T: Clone>(&self, slot: &Mutex<Option<(Instant, T)>>) -> Option<T> {
+        let slot = slot.lock().ok()?;
+        slot.as_ref()
+            .filter(|(at, _)| at.elapsed() < self.ttl)
+            .map(|(_, value)| value.clone())
+    }
+
+    /// The `notify-send` to run, or why there is none. `cached` reuses a good
+    /// result from the last minute.
+    pub async fn desktop(
+        &self,
+        session: fn() -> Session,
+        path: &OsStr,
+        cached: bool,
+    ) -> Result<PathBuf, String> {
+        if cached && let Some(program) = self.fresh(&self.desktop) {
+            return Ok(program);
+        }
+        let path = path.to_owned();
+        let program = self.run(move || desktop_plan(&session(), &path)).await??;
+        if let Ok(mut slot) = self.desktop.lock() {
+            *slot = Some((Instant::now(), program.clone()));
+        }
+        Ok(program)
+    }
+
+    /// The ways to play the sound, or why there are none (also: no desktop
+    /// session). `cached` as in [`Probe::desktop`].
+    pub async fn sound(
+        &self,
+        session: fn() -> Session,
+        path: &OsStr,
+        cached: bool,
+    ) -> Result<Vec<Candidate>, String> {
+        if cached && let Some(plan) = self.fresh(&self.sound) {
+            return Ok(plan);
+        }
+        let path = path.to_owned();
+        let plan = self
+            .run(move || {
+                let session = session();
+                if session.ssh || !session.display || !session.bus {
+                    return Err("no desktop session".to_owned());
+                }
+                sound_plan(&path, |f| f.exists())
+            })
+            .await??;
+        if let Ok(mut slot) = self.sound.lock() {
+            *slot = Some((Instant::now(), plan.clone()));
+        }
+        Ok(plan)
+    }
 }
 
 /// Runs `program` (a checked real path) as `name`, with `args`, with an empty
-/// environment but `PATH` and `vars`. `true` when it started and exited 0
-/// inside the timeout. The child has no stdin or stderr, runs in its own
+/// environment but `PATH` and `vars`. `Ok` when it exited 0 inside the timeout;
+/// the failure says if it never started, failed, or was still running. The child has no stdin or stderr, runs in its own
 /// process group, and is killed and reaped on every way out.
 async fn run_tool(
     program: &Path,
@@ -216,8 +329,8 @@ async fn run_tool(
     args: &[OsString],
     path: &OsStr,
     vars: &[(OsString, OsString)],
-) -> bool {
-    run_capped(
+) -> Result<(), RunFailure> {
+    run_capped_why(
         || {
             let mut command = Command::new(program);
             // The name it was found under, for a multi-call binary.
@@ -238,7 +351,7 @@ async fn run_tool(
         OUTPUT_CAP,
     )
     .await
-    .is_some()
+    .map(|_| ())
 }
 
 /// Runs the checked `notify-send` at `program` with `body`.
@@ -249,7 +362,7 @@ async fn send_via(program: &Path, path: &OsStr, body: &str, vars: &[(OsString, O
         .map(OsString::from)
         .chain([OsString::from(clean(body))])
         .collect();
-    run_tool(program, PROGRAM, &args, path, vars).await
+    run_tool(program, PROGRAM, &args, path, vars).await.is_ok()
 }
 
 /// Runs the trusted `notify-send` on `path` with `body`.
@@ -323,14 +436,16 @@ pub fn sound_plan(path: &OsStr, exists: impl Fn(&Path) -> bool) -> Result<Vec<Ca
     })
 }
 
-/// Tries the candidates in order until one exits 0.
+/// Tries the candidates in order until one plays. A player that exits 0, or
+/// is still running at the limit (it started, so it is playing), ends the
+/// chain; only a spawn error or a failing exit moves on to the next one.
 async fn play_plan(
     plan: &[Candidate],
     path: &OsStr,
     vars: &[(OsString, OsString)],
 ) -> Result<(), String> {
     for candidate in plan {
-        if run_tool(
+        match run_tool(
             &candidate.program,
             candidate.name,
             &candidate.args,
@@ -339,7 +454,8 @@ async fn play_plan(
         )
         .await
         {
-            return Ok(());
+            Ok(()) | Err(RunFailure::Timeout) => return Ok(()),
+            Err(_) => {}
         }
     }
     Err("the sound player failed".to_owned())
@@ -366,6 +482,8 @@ pub struct Job {
     pub busy: Arc<AtomicBool>,
     /// Reads the session; run inside the task.
     pub session: fn() -> Session,
+    /// The shared probe: one stuck thread at most, and a cache.
+    pub probe: Arc<Probe>,
 }
 
 /// Clears the in-flight flag on every way out: a panic, a timeout, or a task
@@ -404,8 +522,7 @@ pub fn spawn_send(job: Job) {
 }
 
 async fn available_then_send(job: &Job) -> bool {
-    let (session, path) = (job.session, job.path.clone());
-    let Some(Ok(program)) = blocking(move || desktop_plan(&session(), &path)).await else {
+    let Ok(program) = job.probe.desktop(job.session, &job.path, true).await else {
         return false;
     };
     send_via(
@@ -425,6 +542,8 @@ pub struct SoundJob {
     pub busy: Arc<AtomicBool>,
     /// Reads the session; run inside the task.
     pub session: fn() -> Session,
+    /// The shared probe: one stuck thread at most, and a cache.
+    pub probe: Arc<Probe>,
 }
 
 /// Plays in the background and returns at once, with the same rules as
@@ -438,18 +557,11 @@ pub fn spawn_sound(job: SoundJob) {
     tokio::spawn(async move {
         let _release = release;
         let _ = timeout(SOUND_TIMEOUT, async {
-            let (session, path) = (job.session, job.path.clone());
-            let plan = blocking(move || {
-                let session = session();
-                if session.ssh || !session.display || !session.bus {
-                    return None;
-                }
-                sound_plan(&path, |f| f.exists()).ok()
-            })
-            .await
-            .flatten()?;
-            play_plan(&plan, &job.path, &allowed_env(std::env::vars_os()))
+            let plan = job.probe.sound(job.session, &job.path, true).await.ok()?;
+            let vars = allowed_env(std::env::vars_os());
+            timeout(SOUND_STEP, play_plan(&plan, &job.path, &vars))
                 .await
+                .ok()?
                 .ok()
         })
         .await;
@@ -467,38 +579,42 @@ pub struct TestReport {
 
 /// What the test action does and reports, with the focus rule ignored. The
 /// bell is the caller's; this attempts the desktop and the sound the mode
-/// asks for and describes the result.
+/// asks for and describes the result. Each step has its own bound, so a slow
+/// sound never hides the desktop outcome.
 pub async fn run_test(
     path: &OsStr,
-    session: &Session,
+    probe: &Probe,
+    session: fn() -> Session,
     mode: NotifyMode,
     sound: bool,
     vars: &[(OsString, OsString)],
+    sound_step: Duration,
 ) -> TestReport {
-    let session = *session;
     let desktop = if wants_desktop(mode) {
-        let owned = path.to_owned();
-        let plan = blocking(move || desktop_plan(&session, &owned))
-            .await
-            .unwrap_or_else(|| Err("the check timed out".to_owned()));
-        Some(match plan {
+        Some(match probe.desktop(session, path, false).await {
             Err(why) => Err(why),
-            Ok(program) if send_via(&program, path, "Test notification", vars).await => Ok(()),
-            Ok(_) => Err("notify-send failed".to_owned()),
+            Ok(program) => {
+                match timeout(
+                    TIMEOUT + PROBE_TIMEOUT,
+                    send_via(&program, path, "Test notification", vars),
+                )
+                .await
+                {
+                    Ok(true) => Ok(()),
+                    _ => Err("notify-send failed".to_owned()),
+                }
+            }
         })
     } else {
         None
     };
     let sound = if plays_sound(mode, sound) {
-        Some(if session.ssh || !session.display || !session.bus {
-            Err("no desktop session".to_owned())
-        } else {
-            let owned = path.to_owned();
-            match blocking(move || sound_plan(&owned, |f| f.exists())).await {
-                Some(Ok(plan)) => play_plan(&plan, path, vars).await,
-                Some(Err(why)) => Err(why),
-                None => Err("the check timed out".to_owned()),
-            }
+        Some(match probe.sound(session, path, false).await {
+            Err(why) => Err(why),
+            Ok(plan) => match timeout(sound_step, play_plan(&plan, path, vars)).await {
+                Ok(result) => result,
+                Err(_) => Err("the sound step timed out".to_owned()),
+            },
         })
     } else {
         None
@@ -522,9 +638,13 @@ pub struct TestJob {
     pub session: fn() -> Session,
     /// Set while a test runs: a second one only says "test running".
     pub busy: Arc<AtomicBool>,
+    /// The shared probe: one stuck thread at most, and a cache.
+    pub probe: Arc<Probe>,
 }
 
-/// Runs the test in the background and sends the report line. One at a time.
+/// Runs the test in the background and sends the report line. One at a time;
+/// the in-flight guard is dropped before the report goes out, so a report
+/// never arrives while the flag still says "running".
 pub fn spawn_test(job: TestJob) {
     if job.busy.swap(true, Ordering::AcqRel) {
         let _ = job.report.try_send("test running".to_owned());
@@ -532,31 +652,29 @@ pub fn spawn_test(job: TestJob) {
     }
     let release = Release(Arc::clone(&job.busy));
     tokio::spawn(async move {
-        let _release = release;
-        let text = match timeout(TEST_TIMEOUT, async {
-            let session = job.session;
-            let session = blocking(session).await;
-            let vars = allowed_env(std::env::vars_os());
-            match session {
-                Some(session) => {
-                    Some(run_test(&job.path, &session, job.mode, job.sound, &vars).await)
-                }
-                None => None,
-            }
-        })
-        .await
-        {
-            Ok(Some(report)) => {
-                if report.desktop_failed
-                    && bell_after_failed_desktop(job.mode)
-                    && let Some(flag) = &job.fallback
-                {
-                    flag.store(true, Ordering::Release);
-                }
-                report.text
-            }
-            Ok(None) | Err(_) => "the check timed out".to_owned(),
+        let vars = allowed_env(std::env::vars_os());
+        let run = run_test(
+            &job.path,
+            &job.probe,
+            job.session,
+            job.mode,
+            job.sound,
+            &vars,
+            SOUND_STEP,
+        );
+        let (text, desktop_failed) = match timeout(TEST_TIMEOUT, run).await {
+            Ok(report) => (report.text, report.desktop_failed),
+            // The backstop: the steps bound themselves, so this is not
+            // expected. Assume the worst for the desktop.
+            Err(_) => ("the check timed out".to_owned(), true),
         };
+        if desktop_failed
+            && bell_after_failed_desktop(job.mode)
+            && let Some(flag) = &job.fallback
+        {
+            flag.store(true, Ordering::Release);
+        }
+        drop(release);
         let _ = job.report.send(text).await;
     });
 }
@@ -675,6 +793,7 @@ mod tests {
             body: "x".to_owned(),
             fallback: Some(Arc::clone(&flag)),
             busy: Arc::default(),
+            probe: Arc::default(),
             session: here,
         });
         for _ in 0..100 {
@@ -865,6 +984,7 @@ mod tests {
             body: "x".to_owned(),
             fallback: None,
             busy: Arc::clone(busy),
+            probe: Arc::default(),
             session: here,
         };
         spawn_send(job(&busy));
@@ -902,6 +1022,7 @@ mod tests {
             body: "x".to_owned(),
             fallback: Some(Arc::clone(&flag)),
             busy: Arc::default(),
+            probe: Arc::default(),
             session: here,
         });
         for _ in 0..100 {
@@ -1113,6 +1234,7 @@ mod tests {
         SoundJob {
             path: dir.as_os_str().to_owned(),
             busy: Arc::clone(busy),
+            probe: Arc::default(),
             session,
         }
     }
@@ -1193,7 +1315,7 @@ mod tests {
         let path = dir.path().as_os_str().to_owned();
         let report = |mode, sound| {
             let path = path.clone();
-            async move { run_test(&path, &here(), mode, sound, &[]).await }
+            async move { run_test(&path, &Probe::default(), here, mode, sound, &[], SOUND_STEP).await }
         };
         let r = report(NotifyMode::Auto, true).await;
         assert_eq!(
@@ -1229,6 +1351,7 @@ mod tests {
             report: tx.clone(),
             session: here,
             busy: Arc::clone(&busy),
+            probe: Arc::default(),
         };
         spawn_test(job());
         spawn_test(job());
@@ -1250,6 +1373,7 @@ mod tests {
             report: tx,
             session: here,
             busy: Arc::default(),
+            probe: Arc::default(),
         });
         assert!(rx.recv().await.unwrap().contains("unavailable"));
         assert!(flag.load(Ordering::Acquire));
@@ -1263,11 +1387,12 @@ mod tests {
         script(dir.path(), &format!("echo x >> '{}'", log.display()));
         let busy = Arc::new(AtomicBool::new(false));
         let flag = Arc::new(AtomicBool::new(false));
-        let job = |session: fn() -> Session, fallback| Job {
+        let job = |session: fn() -> Session, fallback, probe: &Arc<Probe>| Job {
             path: dir.path().as_os_str().to_owned(),
             body: "x".to_owned(),
             fallback,
             busy: Arc::clone(&busy),
+            probe: Arc::clone(probe),
             session,
         };
         spawn_send(job(
@@ -1276,6 +1401,7 @@ mod tests {
                 here()
             },
             Some(Arc::clone(&flag)),
+            &Arc::default(),
         ));
         for _ in 0..100 {
             if !busy.load(Ordering::Acquire) {
@@ -1291,8 +1417,179 @@ mod tests {
             flag.load(Ordering::Acquire),
             "a hung probe counts as unavailable"
         );
-        spawn_send(job(here, None));
+        spawn_send(job(here, None, &Arc::default()));
         assert!(wait_lines(&log, 1).await, "the next send went through");
+    }
+
+    // W1 (third review): a stuck probe blocks new probes instead of piling up threads.
+    #[tokio::test]
+    async fn a_stuck_probe_is_not_spawned_again_until_it_ends() {
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn slow() -> Session {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(1800));
+            here()
+        }
+        let dir = lab().unwrap();
+        script(dir.path(), "exit 0");
+        let path = dir.path().as_os_str().to_owned();
+        let probe = Probe::default();
+        assert_eq!(
+            probe.desktop(slow, &path, true).await,
+            Err("the check timed out".to_owned())
+        );
+        assert_eq!(
+            probe.desktop(slow, &path, true).await,
+            Err("PATH lookup still running".to_owned())
+        );
+        assert_eq!(
+            probe.sound(slow, &path, true).await.unwrap_err(),
+            "PATH lookup still running"
+        );
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1, "no second thread");
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert!(probe.desktop(here, &path, true).await.is_ok(), "free again");
+    }
+
+    // W1: a good probe is cached for the TTL; a bad one never is.
+    #[tokio::test]
+    async fn a_good_probe_is_cached_and_a_failure_is_not() {
+        let dir = lab().unwrap();
+        let path = dir.path().as_os_str().to_owned();
+        let probe = Probe::with_ttl(Duration::from_secs(60));
+        assert!(probe.desktop(here, &path, true).await.is_err());
+        script(dir.path(), "exit 0");
+        assert!(
+            probe.desktop(here, &path, true).await.is_ok(),
+            "a failure was not cached"
+        );
+        fs::remove_file(dir.path().join(PROGRAM)).unwrap();
+        assert!(
+            probe.desktop(here, &path, true).await.is_ok(),
+            "served from the cache"
+        );
+        assert!(
+            probe.desktop(here, &path, false).await.is_err(),
+            "the test action looks again"
+        );
+        let cold = Probe::with_ttl(Duration::ZERO);
+        script(dir.path(), "exit 0");
+        assert!(cold.desktop(here, &path, true).await.is_ok());
+        fs::remove_file(dir.path().join(PROGRAM)).unwrap();
+        assert!(
+            cold.desktop(here, &path, true).await.is_err(),
+            "expired at once"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_sound_plan_is_cached_too() {
+        let dir = lab().unwrap();
+        let path = dir.path().as_os_str().to_owned();
+        tool(dir.path(), "canberra-gtk-play", "exit 0");
+        let probe = Probe::default();
+        assert_eq!(probe.sound(here, &path, true).await.unwrap().len(), 1);
+        fs::remove_file(dir.path().join("canberra-gtk-play")).unwrap();
+        assert_eq!(probe.sound(here, &path, true).await.unwrap().len(), 1);
+        assert!(probe.sound(here, &path, false).await.is_err());
+    }
+
+    // W2: the sound step times out on its own and keeps the desktop outcome.
+    #[tokio::test]
+    async fn a_sound_timeout_keeps_the_desktop_outcome_and_the_fallback_flag() {
+        let dir = lab().unwrap();
+        tool(
+            dir.path(),
+            "canberra-gtk-play",
+            "PATH=\"$PATH:/usr/bin:/bin\"\nsleep 30",
+        );
+        let path = dir.path().as_os_str().to_owned();
+        let report = run_test(
+            &path,
+            &Probe::default(),
+            here,
+            NotifyMode::Desktop,
+            true,
+            &[],
+            Duration::from_millis(300),
+        )
+        .await;
+        assert_eq!(
+            report.text,
+            "sent: bell · desktop unavailable: no notify-send on PATH · no sound: the sound step timed out"
+        );
+        assert!(report.desktop_failed);
+    }
+
+    #[test]
+    fn the_test_bound_covers_the_sum_of_its_steps() {
+        // desktop: probe + send; sound: probe + the chain; plus a margin.
+        assert!(
+            TEST_TIMEOUT
+                >= PROBE_TIMEOUT + TIMEOUT + PROBE_TIMEOUT + SOUND_STEP + Duration::from_secs(1)
+        );
+        // At most five candidates, each bounded by the per-tool timeout.
+        assert!(SOUND_STEP >= TIMEOUT * 5);
+        assert!(SOUND_TIMEOUT >= PROBE_TIMEOUT + SOUND_STEP);
+    }
+
+    // W3 (third review): a player still running at the limit did start; do not play twice.
+    #[tokio::test]
+    async fn a_slow_player_counts_as_played_and_ends_the_chain() {
+        let dir = lab().unwrap();
+        let log = dir.path().join("log");
+        tool(
+            dir.path(),
+            "canberra-gtk-play",
+            "PATH=\"$PATH:/usr/bin:/bin\"\nsleep 30",
+        );
+        tool(
+            dir.path(),
+            "pw-play",
+            &format!("echo pw >> '{}'", log.display()),
+        );
+        let path = dir.path().as_os_str().to_owned();
+        assert_eq!(play(&path, &[], |_| true).await, Ok(()));
+        assert!(!log.exists(), "the next candidate never ran");
+    }
+
+    #[tokio::test]
+    async fn a_player_that_cannot_start_falls_through() {
+        let dir = lab().unwrap();
+        let log = dir.path().join("log");
+        // Executable bit set but not a program the kernel can run.
+        let bad = dir.path().join("canberra-gtk-play");
+        fs::write(&bad, "\u{0}garbage").unwrap();
+        fs::set_permissions(&bad, fs::Permissions::from_mode(0o755)).unwrap();
+        tool(
+            dir.path(),
+            "pw-play",
+            &format!("echo pw >> '{}'", log.display()),
+        );
+        let path = dir.path().as_os_str().to_owned();
+        assert_eq!(play(&path, &[], |_| true).await, Ok(()));
+        assert_eq!(fs::read_to_string(&log).unwrap(), "pw\n");
+    }
+
+    // W4 (third review): the guard is gone before the report is out.
+    #[tokio::test]
+    async fn the_test_flag_is_free_by_the_time_the_report_arrives() {
+        let dir = lab().unwrap();
+        script(dir.path(), "exit 0");
+        let busy = Arc::new(AtomicBool::new(false));
+        let (tx, mut rx) = mpsc::channel(4);
+        spawn_test(TestJob {
+            path: dir.path().as_os_str().to_owned(),
+            mode: NotifyMode::Desktop,
+            sound: false,
+            fallback: None,
+            report: tx,
+            session: here,
+            busy: Arc::clone(&busy),
+            probe: Arc::default(),
+        });
+        assert_eq!(rx.recv().await.unwrap(), "sent: desktop");
+        assert!(!busy.load(Ordering::Acquire), "no stale test running");
     }
 
     // W2: a dropped send in desktop mode still rings.
@@ -1306,6 +1603,7 @@ mod tests {
             body: "x".to_owned(),
             fallback,
             busy: Arc::clone(&busy),
+            probe: Arc::default(),
             session: here,
         };
         spawn_send(job(None));

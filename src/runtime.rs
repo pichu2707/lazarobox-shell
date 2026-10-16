@@ -150,6 +150,17 @@ fn startup_effects(app: &mut App) -> Vec<Effect> {
 }
 
 /// Runs the terminal pane until the child exits or the user quits.
+/// How long the runtime waits for blocking threads when it is dropped at
+/// exit. All the quit work (store, memory, chats, children) is awaited inside
+/// [`run`]; what can still be running here is a wedged probe or a `waitid` on
+/// a child that is being killed, and neither may hang the quit.
+pub const RUNTIME_QUIT_BOUND: Duration = Duration::from_secs(1);
+
+/// Drops `rt`, waiting at most `bound` for its blocking threads.
+pub fn shutdown_runtime(rt: tokio::runtime::Runtime, bound: Duration) {
+    rt.shutdown_timeout(bound);
+}
+
 pub async fn run() -> io::Result<()> {
     // Asked first so the shell runs while the rest of the start-up goes on.
     let login_path = tokio::spawn(login_path::resolve(
@@ -235,6 +246,9 @@ pub async fn run() -> io::Result<()> {
         env::var_os("XDG_DATA_HOME").as_deref(),
         env::var_os("HOME").as_deref(),
     );
+    // One probe for the desktop send, the sound and the test action: a single
+    // stuck PATH lookup at most, and a one-minute cache of good results.
+    let probe = Arc::new(notify::Probe::default());
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
         .with_memory(memory)
         .with_config_path(config_path)
@@ -249,12 +263,14 @@ pub async fn run() -> io::Result<()> {
         .with_desktop(Box::new({
             let path = cli_env.path.clone();
             let busy = Arc::new(AtomicBool::new(false));
+            let probe = Arc::clone(&probe);
             move |body, fallback| {
                 notify::spawn_send(notify::Job {
                     path: path.clone(),
                     body,
                     fallback,
                     busy: Arc::clone(&busy),
+                    probe: Arc::clone(&probe),
                     session: notify::Session::current,
                 });
             }
@@ -262,10 +278,12 @@ pub async fn run() -> io::Result<()> {
         .with_sound(Box::new({
             let path = cli_env.path.clone();
             let busy = Arc::new(AtomicBool::new(false));
+            let probe = Arc::clone(&probe);
             move || {
                 notify::spawn_sound(notify::SoundJob {
                     path: path.clone(),
                     busy: Arc::clone(&busy),
+                    probe: Arc::clone(&probe),
                     session: notify::Session::current,
                 });
             }
@@ -273,6 +291,7 @@ pub async fn run() -> io::Result<()> {
         .with_notify_test(Box::new({
             let path = cli_env.path.clone();
             let busy = Arc::new(AtomicBool::new(false));
+            let probe = Arc::clone(&probe);
             move |mode, sound, fallback| {
                 notify::spawn_test(notify::TestJob {
                     path: path.clone(),
@@ -282,6 +301,7 @@ pub async fn run() -> io::Result<()> {
                     report: notified_tx.clone(),
                     session: notify::Session::current,
                     busy: Arc::clone(&busy),
+                    probe: Arc::clone(&probe),
                 });
             }
         }))
@@ -1657,6 +1677,21 @@ mod tests {
         let (mut panes, _rx, _rec) = fake_panes(None);
         panes.apply(startup_effects(&mut app));
         assert_eq!(panes.host_out, b"\x1b[?1000h\x1b[?1006h".to_vec());
+    }
+
+    #[test]
+    fn a_wedged_blocking_thread_cannot_hang_the_runtime_shutdown() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            tokio::task::spawn_blocking(|| thread::sleep(Duration::from_secs(5)));
+            tokio::task::yield_now().await;
+        });
+        let started = Instant::now();
+        shutdown_runtime(rt, Duration::from_millis(200));
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 
     // chat-notify: Bell is staged for the flush, never written at once.
