@@ -142,6 +142,12 @@ fn startup_effects(app: &mut App) -> Vec<Effect> {
 
 /// Runs the terminal pane until the child exits or the user quits.
 pub async fn run() -> io::Result<()> {
+    // Asked first so the shell runs while the rest of the start-up goes on.
+    let login_path = tokio::spawn(login_path::resolve(
+        env::var_os("PATH").unwrap_or_default(),
+        env::var_os("SHELL"),
+        login_path::LOGIN_TIMEOUT,
+    ));
     let (cols, rows) = terminal::size()?;
     let cwd = env::current_dir().unwrap_or_else(|_| "/".into());
     let shell = env::var("SHELL").ok();
@@ -163,8 +169,14 @@ pub async fn run() -> io::Result<()> {
     let shutdown = Shutdown::new()?;
     let (tx, rx) = mpsc::channel(PTY_CHANNEL);
     let (ai_tx, ai_rx) = mpsc::channel(1);
+    // One machine for detection and chat turns: the process `PATH` extended
+    // with the login shell's (a launcher gives the app a bare one). Never
+    // written back to the process environment. A failed or panicked lookup
+    // leaves the process `PATH` as it was.
+    let process_path = env::var_os("PATH").unwrap_or_default();
+    let cli_env = chat::CliEnv::from_env(jail).with_path(login_path.await.unwrap_or(process_path));
     // Detection reads codex's model list through the same jail as its chat.
-    let detect_env = chat::CliEnv::from_env(jail);
+    let detect_env = cli_env.clone();
     // The codex model list is reused for 10 minutes across runs (`r` re-lists).
     let listing_cache = Arc::new(ai_detect::ListingCache::new(Arc::new(Instant::now)));
     let (chat_tx, chat_rx) = mpsc::channel(chat::APP_CHANNEL);
@@ -207,7 +219,10 @@ pub async fn run() -> io::Result<()> {
                 prompt_tx.clone(),
             );
         }))
-        .with_chats(Chats::new(chat::adapter_runner(jail), chat_tx))
+        .with_chats(Chats::new(
+            chat::runner_with(None, cli_env.clone()),
+            chat_tx,
+        ))
         .with_store(chat_store::spawn_at(store_path, store_tx));
     let inbox = Inbox {
         pty: rx,

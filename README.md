@@ -125,6 +125,7 @@ Límites de esta fase:
 
 - No se admiten endpoints ni puertos personalizados.
 - Los alias de shell no se detectan: el binario debe estar en el `PATH`.
+- Al arrancar desde un lanzador de escritorio o rofi, el `PATH` suele ser mínimo. lazarobox pregunta una vez a tu shell de login (`$SHELL -l -i -c`, con un límite de unos 2,5 s; `/bin/sh` si `$SHELL` no está definido) y añade sus carpetas al final del `PATH` del proceso, tanto para detectar los CLIs como para lanzarlos en el chat. Si la consulta falla o tarda demasiado, se usa el `PATH` del proceso tal cual. El entorno del proceso no se modifica.
 
 ---
 

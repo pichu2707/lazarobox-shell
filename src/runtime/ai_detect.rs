@@ -321,11 +321,11 @@ pub async fn detect_in(targets: &[Target], path: &OsStr, lister: Option<Lister<'
     reduce(&probes)
 }
 
-/// Detection over the real catalog and the process PATH.
+/// Detection over the real catalog and the `PATH` of `env`, the one the chat
+/// turns run with, so what is detected is what can be started.
 pub async fn detect_all(env: &CliEnv, cache: &ListingCache, force: bool) -> Detection {
-    let path = std::env::var_os("PATH").unwrap_or_default();
     let lister = Lister { env, cache, force };
-    detect_in(CATALOG, &path, Some(lister)).await
+    detect_in(CATALOG, &env.path, Some(lister)).await
 }
 
 /// Runs `fut` off the caller and sends exactly one `Detection` to `tx`: the
@@ -543,7 +543,10 @@ mod tests {
     /// this test fixture; production code never spawns a shell.
     fn write_script(dir: &Path, name: &str, body: &str, mode: u32) -> PathBuf {
         let path = dir.join(name);
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        // The probes now run the child with the `PATH` it was found on, which
+        // is only the fake bin dir: give the fixture the system tools back.
+        let text = format!("#!/bin/sh\nPATH=\"$PATH:/usr/bin:/bin\"\n{body}\n");
+        fs::write(&path, text).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
         path
     }
@@ -782,6 +785,16 @@ mod tests {
         assert_eq!(get("codex").model_labels.len(), 7);
         assert_eq!(get("codex").version.as_deref(), Some("codex 0.5.0"));
         assert!(get("claude").model_labels.is_empty());
+    }
+
+    #[tokio::test]
+    async fn detect_all_looks_in_the_env_path_not_the_process_one() {
+        let lab = lab();
+        write_script(&lab.bin, "claude", "echo claude 9.9.9", 0o755);
+        let env = env_of(&lab, false);
+        let d = detect_all(&env, &real_cache(), false).await;
+        let claude = d.engines.iter().find(|e| e.id == "claude").unwrap();
+        assert_eq!(claude.version.as_deref(), Some("claude 9.9.9"));
     }
 
     #[tokio::test]

@@ -134,6 +134,23 @@ impl CliEnv {
             inject: Vec::new(),
         }
     }
+
+    /// The same machine with another `PATH` (the process one extended with the
+    /// login shell's). Never touches the process environment.
+    pub fn with_path(mut self, path: OsString) -> Self {
+        self.path = path;
+        self
+    }
+
+    /// What the child gets set before the scrub: its `PATH` (the one the CLI
+    /// was found on, so a script's `#!/usr/bin/env node` and the tools the CLI
+    /// starts resolve the same way) and then `inject`, which wins.
+    fn child_vars(&self) -> Vec<(OsString, OsString)> {
+        let path = (OsString::from("PATH"), self.path.clone());
+        std::iter::once(path)
+            .chain(self.inject.iter().cloned())
+            .collect()
+    }
 }
 
 /// A private folder: created 0700, or an existing real folder of ours made
@@ -598,7 +615,7 @@ pub(crate) async fn run_listing(env: &CliEnv, limit: Duration, cap: usize) -> Op
                 &plan.program,
                 plan.argv.clone(),
                 (&plan.dirs.cwd, &plan.dirs.tmp),
-                &env.inject,
+                &env.child_vars(),
             );
             command.stderr(Stdio::null());
             command
@@ -706,7 +723,7 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
     }
     // Declared in this order so the group guard drops before the child, and
     // the private folders last.
-    let mut child = match spawn(&plan.program, &plan.argv, &plan.dirs, &env.inject).await {
+    let mut child = match spawn(&plan.program, &plan.argv, &plan.dirs, &env.child_vars()).await {
         Ok(child) => child,
         Err(e) => {
             let text = format!("could not start {}: {}", job.binary, e.kind());
