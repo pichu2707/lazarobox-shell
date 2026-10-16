@@ -577,9 +577,10 @@ impl MenuState {
                     ItemKind::Notify => {
                         let row = Row::Item {
                             label: item.label,
-                            value: self.ai.as_ref().map(|ai| {
-                                Cow::Borrowed(if ai.draft().notify() { "on" } else { "off" })
-                            }),
+                            value: self
+                                .ai
+                                .as_ref()
+                                .map(|ai| Cow::Borrowed(ai.draft().notify().id())),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
@@ -730,7 +731,7 @@ impl MenuState {
                 match kind {
                     Some(ItemKind::Profile) => ai.cycle_profile(forward),
                     Some(ItemKind::Memory(_)) => ai.toggle_memory(),
-                    Some(ItemKind::Notify) => ai.toggle_notify(),
+                    Some(ItemKind::Notify) => ai.cycle_notify(forward),
                     _ => ai.toggle_context(),
                 }
             }
@@ -811,10 +812,10 @@ impl MenuState {
             .ai
             .as_ref()
             .and_then(AiMenu::changed_notify)
-            .map(|on| ConfigEdit {
+            .map(|mode| ConfigEdit {
                 table: "ai",
                 key: "notify",
-                value: Cow::Borrowed(if on { "true" } else { "false" }),
+                value: Cow::Borrowed(mode.id()),
             });
         settings
             .chain(tasks)

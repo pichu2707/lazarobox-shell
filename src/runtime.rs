@@ -12,7 +12,10 @@ use std::{
     io::{self, Write, stdout},
     panic,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -28,6 +31,7 @@ pub mod engram;
 pub mod jail;
 pub mod login_path;
 pub mod loopback;
+pub mod notify;
 pub mod proc;
 pub mod prompts;
 pub mod update;
@@ -61,7 +65,11 @@ use crate::{
     core::{
         ai::{
             Detection,
-            chat::{prompts::Resolved, store::StoreReply},
+            chat::{
+                notify::{bell_after_failed_desktop, delivery},
+                prompts::Resolved,
+                store::StoreReply,
+            },
             config::{AiConfig, Profile},
             memory::port::MemReply,
         },
@@ -237,6 +245,16 @@ pub async fn run() -> io::Result<()> {
                 force,
             );
         }))
+        .with_desktop(
+            Box::new({
+                let path = cli_env.path.clone();
+                move || notify::available(notify::display_set(), &path)
+            }),
+            Box::new({
+                let path = cli_env.path.clone();
+                move |body, fallback| notify::spawn_send(path.clone(), body, fallback)
+            }),
+        )
         .with_preparer(Box::new(move |pane, profile, origin, context| {
             spawn_prepare(
                 config_dir.clone(),
@@ -536,6 +554,9 @@ async fn run_loop(
     }
 }
 
+/// Starts one desktop notification: the body and the failure fallback flag.
+type DesktopSendFn = dyn FnMut(String, Option<Arc<AtomicBool>>);
+
 /// Starts a prompt preparation: pane, profile, origin cwd, context flag.
 type PrepareFn = dyn FnMut(PaneId, Profile, Option<PathBuf>, bool);
 
@@ -621,6 +642,16 @@ struct Panes {
     /// A `Bell` effect arrived since the last flush (chat-notify). Several in
     /// the same tick make one BEL; see [`Panes::stage_bell`].
     bell: bool,
+    /// Raised by a desktop send that failed in `desktop` mode: the next
+    /// flush rings the bell for that event.
+    late_bell: Arc<AtomicBool>,
+    /// Whether a desktop notification can be sent now (a display is set and
+    /// `notify-send` resolves on the login `PATH`). Never, unless
+    /// `with_desktop` installs the production one.
+    desktop_available: Box<dyn Fn() -> bool>,
+    /// Starts one desktop notification in the background: the body and, when a
+    /// failure must ring the bell, the flag to raise.
+    desktop_send: Box<DesktopSendFn>,
     /// Starts one AI engine detection; the answer arrives on the AI channel.
     /// A no-op unless `with_detector` installs the production one.
     detect: Box<dyn FnMut(bool)>,
@@ -647,6 +678,9 @@ impl Panes {
             config_path: None,
             host_out: Vec::new(),
             bell: false,
+            late_bell: Arc::new(AtomicBool::new(false)),
+            desktop_available: Box::new(|| false),
+            desktop_send: Box::new(|_, _| {}),
             detect: Box::new(|_| {}),
             prepare: Box::new(|_, _, _, _| {}),
             chats: None,
@@ -661,7 +695,8 @@ impl Panes {
     /// host bytes, through the writer that draws the frame. One BEL covers all
     /// the bells asked for since the last flush.
     fn stage_bell(&mut self) {
-        if std::mem::take(&mut self.bell) {
+        let late = self.late_bell.swap(false, Ordering::AcqRel);
+        if std::mem::take(&mut self.bell) || late {
             self.host_out.push(BEL);
         }
     }
@@ -703,6 +738,13 @@ impl Panes {
         if let Some(store) = self.store.take() {
             store.shutdown(bound);
         }
+    }
+
+    /// Sets how `Effect::Notify` probes and sends a desktop notification.
+    fn with_desktop(mut self, available: Box<dyn Fn() -> bool>, send: Box<DesktopSendFn>) -> Self {
+        self.desktop_available = available;
+        self.desktop_send = send;
+        self
     }
 
     /// Sets what `Effect::DetectEngines` runs.
@@ -803,6 +845,17 @@ impl Panes {
                 // Only flagged here: the BEL joins the host bytes after the
                 // draw (see `stage_bell`), never in the middle of a frame.
                 Effect::Bell => self.bell = true,
+                // The core table decides; the send returns at once (its own
+                // task owns the timeout and the reaping).
+                Effect::Notify { mode, body } => {
+                    let plan = delivery(mode, (self.desktop_available)());
+                    self.bell |= plan.bell;
+                    if plan.desktop {
+                        let fallback =
+                            bell_after_failed_desktop(mode).then(|| Arc::clone(&self.late_bell));
+                        (self.desktop_send)(body, fallback);
+                    }
+                }
                 // Staged like the other host bytes: written after the draw by
                 // `flush_host`, never in the middle of a frame.
                 Effect::MouseCapture(on) => {
@@ -1013,6 +1066,7 @@ mod tests {
 
     use super::*;
     use crate::core::ai::chat::engine::Finish;
+    use crate::core::ai::config::NotifyMode;
     use crate::{
         app::{AppEvent, Effect},
         core::pane::{CursorKind, CursorShape, PaneSize},
@@ -1570,6 +1624,80 @@ mod tests {
         assert_eq!(panes.host_out, b"\x07".to_vec());
         panes.stage_bell();
         assert_eq!(panes.host_out, b"\x07".to_vec(), "the flag was consumed");
+    }
+
+    type Sent = Rc<RefCell<Vec<(String, bool)>>>;
+
+    /// Panes whose desktop is `available` and whose sends are recorded
+    /// (body, whether a failure would ring the bell).
+    fn desktop_panes(available: bool) -> (Panes, Sent) {
+        let (panes, _rx, _rec) = fake_panes(None);
+        let sent: Sent = Rc::default();
+        let log = Rc::clone(&sent);
+        let panes = panes.with_desktop(
+            Box::new(move || available),
+            Box::new(move |body, fallback| log.borrow_mut().push((body, fallback.is_some()))),
+        );
+        (panes, sent)
+    }
+
+    fn notify(mode: NotifyMode) -> Effect {
+        Effect::Notify {
+            mode,
+            body: "Answer ready in pane 2".to_owned(),
+        }
+    }
+
+    // Decision table, executed: the bell flag and the desktop send per mode.
+    #[test]
+    fn a_notify_effect_executes_the_delivery_table() {
+        // (mode, available, bell, sends, fallback armed)
+        let table = [
+            (NotifyMode::Auto, true, true, 1, false),
+            (NotifyMode::Auto, false, true, 0, false),
+            (NotifyMode::Desktop, true, false, 1, true),
+            (NotifyMode::Desktop, false, true, 0, false),
+        ];
+        for (mode, available, bell, sends, fallback) in table {
+            let (mut panes, sent) = desktop_panes(available);
+            panes.apply(vec![notify(mode)]);
+            panes.stage_bell();
+            assert_eq!(panes.host_out == vec![0x07], bell, "{mode:?} {available}");
+            let sent = sent.borrow();
+            assert_eq!(sent.len(), sends, "{mode:?} {available}");
+            assert!(
+                sent.iter()
+                    .all(|(b, f)| b == "Answer ready in pane 2" && *f == fallback)
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_desktop_send_rings_on_the_next_flush_only_once() {
+        let (mut panes, _sent) = desktop_panes(true);
+        panes.late_bell.store(true, Ordering::Release);
+        panes.stage_bell();
+        assert_eq!(panes.host_out, vec![0x07]);
+        panes.stage_bell();
+        assert_eq!(panes.host_out, vec![0x07], "consumed");
+    }
+
+    #[test]
+    fn the_fallback_flag_handed_to_the_send_is_the_one_stage_bell_reads() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let seen: Rc<RefCell<Option<Arc<AtomicBool>>>> = Rc::default();
+        let slot = Rc::clone(&seen);
+        panes = panes.with_desktop(
+            Box::new(|| true),
+            Box::new(move |_, fallback| *slot.borrow_mut() = fallback),
+        );
+        panes.apply(vec![notify(NotifyMode::Desktop)]);
+        seen.borrow()
+            .as_ref()
+            .unwrap()
+            .store(true, Ordering::Release);
+        panes.stage_bell();
+        assert_eq!(panes.host_out, vec![0x07]);
     }
 
     #[test]

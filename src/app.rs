@@ -13,11 +13,11 @@ use crate::core::{
             ChatState, Follow, Phase,
             copy::ChatCopy,
             engine::{ChatRequest, StreamEvent},
-            notify::{Ended, should_bell},
+            notify::{Ended, body, should_notify},
             prompts::Resolved,
             store::{StoreCmd, StoreReply},
         },
-        config::{AiConfig, Profile, Task},
+        config::{AiConfig, NotifyMode, Profile, Task},
         jail::{JailOff, JailSupport},
         memory::{
             offer::ServerOffer,
@@ -229,6 +229,13 @@ pub enum Effect {
     /// Ring the terminal bell (BEL) once the frame is drawn: a chat answer
     /// finished while the user was not looking at it (chat-notify).
     Bell,
+    /// Announce a finished chat turn per `mode` (`auto` or `desktop`): the
+    /// runtime picks the bell and/or a desktop notification. `body` is fixed
+    /// text naming the pane, never any of the answer.
+    Notify {
+        mode: NotifyMode,
+        body: String,
+    },
     /// Turn the host terminal's mouse capture on (`true`) or off. Emitted
     /// only when the wanted state differs from the one last asked for.
     MouseCapture(bool),
@@ -1647,8 +1654,17 @@ impl App {
         // A turn ends once: later events of it are dropped above, so a pane
         // rings at most once per answer.
         let focus = self.tab().focus;
-        if finished && should_bell(focus, self.window_focused, id, how, self.ai.notify()) {
-            effects.push(Effect::Bell);
+        let mode = self.ai.notify();
+        if finished && should_notify(focus, self.window_focused, id, how, mode) {
+            effects.push(match mode {
+                NotifyMode::Bell => Effect::Bell,
+                // The runtime knows whether a desktop notification can be
+                // sent; the body is fixed text, never the answer.
+                _ => Effect::Notify {
+                    mode,
+                    body: body(id, how),
+                },
+            });
         }
         effects
     }
@@ -6359,26 +6375,30 @@ mod app_tests {
     #[test]
     fn the_notify_row_saves_only_the_flag_and_updates_the_app() {
         let mut a = ai_app();
-        assert!(!a.ai().notify());
+        assert_eq!(a.ai().notify(), NotifyMode::Off);
         open_menu(&mut a);
         a.update(key('k'));
         assert_eq!(a.update(key('l')), Vec::<Effect>::new(), "no ResizePty");
-        assert!(a.menu().unwrap().ai_draft().notify());
-        assert!(!a.ai().notify(), "not saved yet");
+        assert_eq!(a.menu().unwrap().ai_draft().notify(), NotifyMode::Auto);
+        assert_eq!(a.ai().notify(), NotifyMode::Off, "not saved yet");
         let edit = ConfigEdit {
             table: "ai",
             key: "notify",
-            value: "true".into(),
+            value: "auto".into(),
         };
         assert_eq!(a.update(key('s')), vec![Effect::SaveConfig(vec![edit])]);
         a.update(AppEvent::ConfigSaved);
         assert!(a.menu().is_none());
-        assert!(a.ai().notify());
+        assert_eq!(a.ai().notify(), NotifyMode::Auto);
         open_menu(&mut a);
         a.update(key('k'));
         a.update(key('l'));
         a.update(esc());
-        assert!(a.ai().notify(), "Esc keeps the saved value");
+        assert_eq!(
+            a.ai().notify(),
+            NotifyMode::Auto,
+            "Esc keeps the saved value"
+        );
     }
 
     // Spec (Context toggle): Esc restores the flag captured at open.

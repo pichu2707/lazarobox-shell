@@ -3,7 +3,7 @@
 
 use super::{
     Detection,
-    config::{AiConfig, Assignment, Profile, Task},
+    config::{AiConfig, Assignment, NotifyMode, Profile, Task},
     picker::{Outcome, PickRow, Picker, Target, task_label},
 };
 
@@ -111,14 +111,14 @@ impl AiMenu {
         (self.draft.context() != self.original.context()).then(|| self.draft.context())
     }
 
-    /// Flips the notify flag of the draft.
-    pub fn toggle_notify(&mut self) {
-        let next = !self.draft.notify();
+    /// Steps the notify mode of the draft.
+    pub fn cycle_notify(&mut self, forward: bool) {
+        let next = self.draft.notify().cycled(forward);
         self.draft.set_notify(next);
     }
 
-    /// The notify flag in the draft, when it differs from the open one.
-    pub fn changed_notify(&self) -> Option<bool> {
+    /// The notify mode in the draft, when it differs from the open one.
+    pub fn changed_notify(&self) -> Option<NotifyMode> {
         (self.draft.notify() != self.original.notify()).then(|| self.draft.notify())
     }
 
