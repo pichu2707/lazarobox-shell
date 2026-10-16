@@ -274,7 +274,7 @@ const SHARED_IN_HOME: &[&str] = &[
 /// Folders under `$HOME` (and everything below them) that hold another tool's
 /// credentials or state. A CLI may only be given its own one: codex gets
 /// `~/.codex`, never `~/.claude`.
-const CREDENTIAL_DIRS: &[&str] = &[
+pub(crate) const CREDENTIAL_DIRS: &[&str] = &[
     ".claude",
     ".gemini",
     ".codex",

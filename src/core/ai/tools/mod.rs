@@ -2,6 +2,7 @@
 //! do. No IO lives here.
 
 pub mod command;
+pub mod paths;
 
 use serde_json::{Value, json};
 
