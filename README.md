@@ -186,7 +186,12 @@ When the last answer of a chat ends with a shell code block (` ```bash `, `sh`, 
 
 Every other key is swallowed while the confirmation is open, and a held key or a paste never answers it. You review the typed line in your own shell and run it yourself with Enter. A multi-line command is sent as one bracketed paste, so the shell shows it as an editable buffer; if the shell did not ask for bracketed paste, a multi-line command is refused. A pane that runs a full-screen app (an editor, a pager) is refused, and the command is checked again when you press `y`: control characters and escape sequences make it be refused, never cleaned.
 
-There is no "always allow". To turn the feature off, set `enabled = false` in `[ai.tools]` of `config.toml` (it is on by default); the hint and the binding then disappear.
+There is no "always allow". To turn the feature off, set `enabled = false` in `[ai.tools]` of `config.toml`, or flip the **Tools** row of the AI menu (last row, on by default); the hint and the binding then disappear. The menu writes only `ai.tools.enabled`; it never touches `[ai.mcp.*]`.
+
+```toml
+[ai.tools]
+enabled = true
+```
 
 ### Motores CLI: claude, codex y gemini
 

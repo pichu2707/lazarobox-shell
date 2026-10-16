@@ -18,6 +18,7 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 │ Context                                                off │
 │ Memory                                                 off │
 │ Notify                                                 off │
+│ Tools                                                   on │
 │                                                            │
 │ j/k move · h/l change · s save · Esc cancel                │
 └────────────────────────────────────────────────────────────┘

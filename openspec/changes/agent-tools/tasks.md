@@ -92,13 +92,13 @@ Fallback split if over 400: 1b-i (state, keys, effects) and 1b-ii (bar and snaps
 
 ## PR3 / 2a: Registry, path policy, config (`src/core/ai/tools/{mod,paths}.rs`, `src/core/ai/{config,menu}.rs`, `src/core/config_edit.rs`, `src/core/ai/jail.rs`)
 
-- [ ] 2a.1 RED: registry lists `find_dir`, `list_dir`, `read_file`, `run_in_pane` with schema and Access; same list for MCP and Ollama builders; built-in names never shadowed.
-- [ ] 2a.2 RED: `parse_call` refuses unknown tool, missing/mistyped args and extra keys (`mode`).
-- [ ] 2a.3 RED: `check_path` over a temp `$HOME`: every `CREDENTIAL_DIRS` entry and a child, `.ssh`, `.gnupg`, `.env`/`.env.*` at any depth, outside HOME, traversal, symlink to excluded, symlinked dir out, symlink inside HOME fine, relative input vs origin cwd, one identical refusal text for excluded/outside/missing.
-- [ ] 2a.4 RED: config `[ai.tools] enabled` default true, bad value falls back with the startup notice order; menu Tools row after Notify; save writes only `ai.tools.enabled`, never `ai.mcp.*`; popup size lists updated.
-- [ ] 2a.5 GREEN: implement; make `CREDENTIAL_DIRS` `pub(crate)`.
-- [ ] 2a.6 Gate.
-- [ ] 2a.7 Docs: doc comments; README config key `[ai.tools]`.
+- [x] 2a.1 RED: registry lists `find_dir`, `list_dir`, `read_file`, `run_in_pane` with schema and Access; same list for MCP and Ollama builders; built-in names never shadowed.
+- [x] 2a.2 RED: `parse_call` refuses unknown tool, missing/mistyped args and extra keys (`mode`).
+- [x] 2a.3 RED: `check_path` over a temp `$HOME`: every `CREDENTIAL_DIRS` entry and a child, `.ssh`, `.gnupg`, `.env`/`.env.*` at any depth, outside HOME, traversal, symlink to excluded, symlinked dir out, symlink inside HOME fine, relative input vs origin cwd, one identical refusal text for excluded/outside/missing.
+- [x] 2a.4 RED: config `[ai.tools] enabled` default true, bad value falls back with the startup notice order; menu Tools row after Notify; save writes only `ai.tools.enabled`, never `ai.mcp.*`; popup size lists updated.
+- [x] 2a.5 GREEN: implement; make `CREDENTIAL_DIRS` `pub(crate)`.
+- [x] 2a.6 Gate.
+- [x] 2a.7 Docs: doc comments; README config key `[ai.tools]`.
 
 ## PR4 / 2b: Read tools and wrapper (`src/runtime/tools/{mod,fs}.rs`, `src/core/ai/tools/label.rs`)
 

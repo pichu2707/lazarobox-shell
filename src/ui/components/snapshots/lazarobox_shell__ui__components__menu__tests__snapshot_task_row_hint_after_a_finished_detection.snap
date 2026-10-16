@@ -18,6 +18,7 @@ expression: shown
 │ Context                                                 on │
 │ Memory                                                 off │
 │ Notify                                                 off │
+│ Tools                                                   on │
 │                                                            │
 │ j/k move · Enter pick · r refresh · s save · Esc cancel    │
 └────────────────────────────────────────────────────────────┘

@@ -1291,4 +1291,51 @@ other = 1
         let out = apply_edit(Some(existing), &position).unwrap();
         assert!(out.starts_with(existing), "{out:?}");
     }
+
+    // Spec (agent-tools, config-persistence): `ai.tools.enabled` is an owned
+    // boolean and the only key the menu writes about the tools.
+    fn tools_edit(on: bool) -> [ConfigEdit; 1] {
+        [ConfigEdit::tools_flag(on)]
+    }
+
+    #[test]
+    fn the_tools_flag_is_written_as_a_boolean_in_its_own_table() {
+        let out = apply_edit(None, &tools_edit(false)).unwrap();
+        assert_eq!(out, "[ai.tools]\nenabled = false\n");
+        let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out), None);
+        assert!(!ai.tools_enabled());
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn the_tools_flag_is_updated_in_place_and_a_scalar_is_replaced() {
+        let existing = "[ai.tools]\n# c\nenabled = false  # off\n";
+        let out = apply_edit(Some(existing), &tools_edit(true)).unwrap();
+        assert_eq!(out, "[ai.tools]\n# c\nenabled = true  # off\n");
+        let out = apply_edit(Some("[ai.tools]\nenabled = \"x\"\n"), &tools_edit(true)).unwrap();
+        assert_eq!(out, "[ai.tools]\nenabled = true\n");
+    }
+
+    #[test]
+    fn saving_the_tools_flag_leaves_the_mcp_servers_byte_for_byte() {
+        let mcp = "[[ai.mcp.servers]]\nname = \"docs\"\ncommand = \"/usr/bin/docs-mcp\"\nargs = [\"--x\"]\n";
+        let existing = format!("[ai]\nnotify = true\n\n{mcp}");
+        let out = apply_edit(Some(&existing), &tools_edit(false)).unwrap();
+        assert!(out.contains(mcp), "{out:?}");
+        assert!(out.contains("enabled = false"), "{out:?}");
+        let again = apply_edit(Some(&out), &tools_edit(false)).unwrap();
+        assert_eq!(again, out, "saving the same value is a no-op");
+    }
+
+    #[test]
+    fn a_tools_flag_that_holds_a_table_is_refused() {
+        let existing = "[ai.tools.enabled]\nx = 1\n";
+        assert_eq!(
+            apply_edit(Some(existing), &tools_edit(true)),
+            Err(EditError::KeyIsTable {
+                table: "ai.tools",
+                key: "enabled"
+            })
+        );
+    }
 }
