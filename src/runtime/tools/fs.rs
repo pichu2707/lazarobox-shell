@@ -155,7 +155,11 @@ pub fn open_checked(roots: &SecretRoots, real: &Path, dir: bool) -> Result<Owned
     let rel = real
         .strip_prefix(roots.home())
         .map_err(|_| Failure::Refused)?;
-    let fd = open_beneath(roots.home(), rel, dir).map_err(|_| Failure::Refused)?;
+    let fd = open_beneath(roots.home(), rel, dir).map_err(|error| match error.kind() {
+        // No safe open on this platform: the tool cannot work at all.
+        std::io::ErrorKind::Unsupported => Failure::Unreadable,
+        _ => Failure::Refused,
+    })?;
     match fd_path(&fd) {
         Ok(opened) if opened == real && roots.judge_real(&opened) => Ok(fd),
         _ => Err(Failure::Refused),
