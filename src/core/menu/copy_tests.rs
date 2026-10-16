@@ -24,7 +24,7 @@ fn models_level(d: Detection) -> MenuState {
 fn is_note(m: &MenuState) -> bool {
     m.ai.as_ref()
         .and_then(AiMenu::cursor_row)
-        .is_some_and(|r| matches!(r.key, PickKey::Note(_)))
+        .is_some_and(|r| matches!(r.key, PickKey::Note { .. }))
 }
 
 fn go_to_note(m: &mut MenuState) {

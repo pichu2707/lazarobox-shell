@@ -261,7 +261,7 @@ fn disabled_reason(row: &PickRow) -> &str {
         Mark::DownloadRequired => "download required",
         Mark::Checking => "checking…",
         _ if row.key == PickKey::Info => &row.label,
-        _ if matches!(row.key, PickKey::Note(_)) => &row.label,
+        _ if matches!(row.key, PickKey::Note { .. }) => &row.label,
         _ => "engine not detected",
     }
 }
@@ -856,7 +856,7 @@ impl MenuState {
         let cursor = ai.and_then(AiMenu::cursor_row);
         if cursor
             .as_ref()
-            .is_some_and(|r| matches!(r.key, PickKey::Note(_)))
+            .is_some_and(|r| matches!(r.key, PickKey::Note { .. }))
         {
             return Footer::Hint(Cow::Borrowed(HINT_NOTE));
         }

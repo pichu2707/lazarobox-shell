@@ -84,6 +84,9 @@ pub fn find_on_path(name: &str, path: &OsStr) -> Option<PathBuf> {
 
 /// How long the output is read after the child has exited, for a pipe a
 /// background process still holds open.
+/// Longest a killed run waits to reap its child, on top of its limit.
+pub(crate) const REAP_GRACE: Duration = Duration::from_millis(500);
+
 const EXIT_GRACE: Duration = Duration::from_millis(100);
 
 /// Runs `<path> --version` with `search` as its `PATH` and returns its stdout. `None` on a spawn
@@ -297,10 +300,7 @@ pub(crate) async fn run_capped_why(
     // and the guard armed; disarm it by hand so the drop does not signal the
     // group a second time. The group already got SIGKILL above and the child
     // is spawned with `kill_on_drop(true)`, so nothing is left running.
-    if timeout(Duration::from_millis(500), group.reap(&mut child))
-        .await
-        .is_err()
-    {
+    if timeout(REAP_GRACE, group.reap(&mut child)).await.is_err() {
         group.disarm();
     }
     let said = stderr_said(stderr, output.is_err()).await;

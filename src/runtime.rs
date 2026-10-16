@@ -173,9 +173,8 @@ pub async fn run() -> io::Result<()> {
     // One machine for detection and chat turns: the login shell's `PATH`
     // first, then the process entries it lacks (a launcher gives the app a
     // bare one, and the user's terminal resolves programs by the login
-    // order). Never
-    // written back to the process environment. A failed or panicked lookup
-    // keeps the process `PATH` but only its absolute entries (relative and
+    // order). Never written back to the process environment. A failed or
+    // panicked lookup keeps the process `PATH` but only its absolute entries (relative and
     // empty ones are dropped); with none left it is a fixed default.
     let process_path = env::var_os("PATH").unwrap_or_default();
     let path = login_path

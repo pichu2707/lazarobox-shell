@@ -20,7 +20,7 @@ use std::{
 
 use tokio::process::Command;
 
-use super::ai_detect::run_capped;
+use super::ai_detect::{REAP_GRACE, run_capped};
 
 /// Longest the whole lookup may take, rc files included, before it is killed.
 /// The `$SHELL` probe and the bash fallback share it.
@@ -168,12 +168,22 @@ pub async fn login_shell_path(shell: &Path, path: &OsStr, limit: Duration) -> Op
 const FALLBACK_SHELL: &str = "/bin/bash";
 
 /// Time kept for the fallback out of the overall deadline.
-const FALLBACK_RESERVE: Duration = Duration::from_millis(500);
+const FALLBACK_RESERVE: Duration = Duration::from_millis(1000);
 
-/// [`login_shell_path`], then `bash` (a login, non-interactive one, the same
-/// script and `PATH`) once when that gave nothing and `shell` is not already
+/// What the fallback may run for: what is left of `total` after `elapsed`,
+/// less the time a timed-out run may take to reap its child, so the whole
+/// lookup stays within `total`. `None` when nothing is left.
+fn fallback_budget(total: Duration, elapsed: Duration) -> Option<Duration> {
+    let left = total.saturating_sub(elapsed).saturating_sub(REAP_GRACE);
+    (!left.is_zero()).then_some(left)
+}
+
+/// [`login_shell_path`], then `bash` (a login, non-interactive one: `-l -c`
+/// does not read `~/.bashrc`, only the login files, so a `PATH` set only
+/// there is not seen; the same script and `PATH`) once when that gave nothing and `shell` is not already
 /// bash. Both share the one `total` deadline: the first attempt leaves
-/// [`FALLBACK_RESERVE`] of it to the second. `bash` is never run when `shell`
+/// [`FALLBACK_RESERVE`] of it to the second, which also gives up the time a
+/// timed-out run may spend reaping, so the total never passes `total`. `bash` is never run when `shell`
 /// succeeded.
 async fn login_with_fallback(
     shell: &Path,
@@ -190,10 +200,7 @@ async fn login_with_fallback(
     if shell.file_name() == bash.file_name() {
         return None;
     }
-    let left = total.saturating_sub(started.elapsed());
-    if left.is_zero() {
-        return None;
-    }
+    let left = fallback_budget(total, started.elapsed())?;
     probe(bash, &["-l", "-c"], &path, left).await
 }
 
@@ -503,6 +510,15 @@ mod tests {
         assert_eq!(fs::read_to_string(&ran).unwrap().lines().count(), 1);
     }
 
+    #[test]
+    fn the_fallback_budget_leaves_room_to_reap() {
+        let ms = Duration::from_millis;
+        assert_eq!(fallback_budget(ms(3000), ms(2000)), Some(ms(500)));
+        assert_eq!(fallback_budget(ms(3000), ms(2500)), None);
+        assert_eq!(fallback_budget(ms(3000), ms(2600)), None);
+        assert_eq!(fallback_budget(ms(3000), ms(0)), Some(ms(2500)));
+    }
+
     #[tokio::test]
     async fn both_attempts_share_one_deadline() {
         let dir = tempfile::tempdir().unwrap();
@@ -517,7 +533,7 @@ mod tests {
         };
         let (zsh, bash) = (hang("zsh", &one), hang("fakebash", &two));
         let started = Instant::now();
-        let got = login_with_fallback(&zsh, &bash, &os("/p"), Duration::from_millis(1200)).await;
+        let got = login_with_fallback(&zsh, &bash, &os("/p"), Duration::from_millis(2000)).await;
         assert_eq!(got, None);
         assert!(one.exists() && two.exists(), "bash got no time to run");
         // Not 2 x 1.2 s: one budget for both.
