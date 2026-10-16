@@ -724,12 +724,14 @@ async fn a_codex_home_that_is_the_home_folder_is_refused_so_codex_does_not_start
 async fn the_helper_refusing_with_its_marker_is_a_jail_error() {
     let lab = lab();
     lab.claude(GOOD);
-    let helper = lab.helper("echo 'lazarobox-jail: jail not enforced: test' >&2\nexit 125");
+    let helper = lab.helper(
+        "echo 'lazarobox-jail: jail not enforced: ABI 2 is below the required 3' >&2\nexit 125",
+    );
     let mut env = lab.env();
     env.jail = jail_on();
     env.helper = helper;
     let events = run(env, request()).await;
-    assert_eq!(jail_reason(&events), "test");
+    assert_eq!(jail_reason(&events), "ABI 2 is below the required 3");
     assert!(!lab.rec.join("args").exists(), "the CLI never ran");
 }
 
@@ -1207,13 +1209,17 @@ async fn a_stream_that_just_ends_still_waits_for_the_exit_so_the_jail_marker_is_
     fake_codex(
         &lab,
         &[],
-        "echo 'lazarobox-jail: jail not enforced: test' >&2\nexit 125",
+        "echo 'lazarobox-jail: jail not enforced: whatever the CLI made it say' >&2\nexit 125",
     );
     let mut env = lab.env();
     env.jail = jail_on();
     env.helper = lab.helper(PASS);
     let events = run_job(&env, codex_job(&["exec", "-"])).await;
-    assert_eq!(jail_reason(&events), "test");
+    assert_eq!(
+        jail_reason(&events),
+        "",
+        "text outside the vocabulary is hidden"
+    );
 }
 
 /// An executable file `name` in `dir` (mode 0755) and `dir` itself set to `mode`.
@@ -1243,7 +1249,12 @@ fn an_interpreter_in_a_tmp_folder_is_never_trusted() {
             }),
             "{base}"
         );
-        assert_eq!(interpreter_trust(&file), Err(Untrusted::Scratch), "{base}");
+        let real = fs::canonicalize(&file).unwrap();
+        assert_eq!(
+            interpreter_trust(&file),
+            Err((real, Untrusted::Scratch)),
+            "{base}"
+        );
     }
 }
 
@@ -1256,10 +1267,15 @@ fn an_interpreter_in_a_group_or_world_writable_folder_is_not_trusted() {
         assert!(interpreter_trust(&file).is_err(), "{mode:o}");
     }
     let ok = exe_in(&base.join("ok"), "fakenode", 0o755);
-    assert_eq!(interpreter_trust(&ok), Ok(()));
+    assert_eq!(interpreter_trust(&ok), Ok(fs::canonicalize(&ok).unwrap()));
     // A file others can write is no better than a folder they can write.
     fs::set_permissions(&ok, fs::Permissions::from_mode(0o757)).unwrap();
-    assert_eq!(interpreter_trust(&ok), Err(Untrusted::Writable(ok.clone())));
+    let real = fs::canonicalize(&ok).unwrap();
+    let writable = Untrusted::Writable {
+        path: real.clone(),
+        yours: true,
+    };
+    assert_eq!(interpreter_trust(&ok), Err((real, writable)));
 }
 
 #[test]
@@ -1274,13 +1290,19 @@ fn an_untrusted_sibling_falls_back_to_a_trusted_interpreter_on_path_or_nothing()
     let found = sibling_dir.join("codex");
     let path = std::env::join_paths([&other_loose, &base.join("good")]).unwrap();
     // The first PATH entry is untrusted too: the first trusted one wins.
-    assert_eq!(interpreter_for(&found, "fakenode", &path), Ok(good));
+    assert_eq!(
+        interpreter_for(&found, "fakenode", &path),
+        Ok(fs::canonicalize(good).unwrap())
+    );
     let only_loose = std::env::join_paths([&other_loose]).unwrap();
     assert_eq!(
         interpreter_for(&found, "fakenode", &only_loose),
         Err(JailRefusal::UntrustedInterpreter {
-            path: sibling_dir.join("fakenode"),
-            why: Untrusted::Writable(sibling_dir.clone()),
+            path: fs::canonicalize(sibling_dir.join("fakenode")).unwrap(),
+            why: Untrusted::Writable {
+                path: fs::canonicalize(&sibling_dir).unwrap(),
+                yours: true,
+            },
         })
     );
     // No such interpreter anywhere: the refusal names the missing one.
@@ -1302,10 +1324,51 @@ async fn a_cli_whose_only_interpreter_is_untrusted_is_not_started() {
     let events = run_job(&env, codex_job(&["exec", "-"])).await;
     let reason = jail_reason(&events);
     assert!(
-        reason.contains("writable by group or others; run: chmod go-w "),
+        reason.contains("is writable by group or others") && reason.contains("; run: chmod go-w '"),
         "{reason}"
     );
     assert!(!lab.rec.join("helper_called").exists());
+}
+
+#[tokio::test]
+async fn a_script_whose_fixed_interpreter_path_is_gone_says_so() {
+    let lab = lab();
+    let cli = lab.bin.join("codex");
+    script(&cli, &lab.rec, CODEX_ANSWER);
+    let text =
+        fs::read_to_string(&cli)
+            .unwrap()
+            .replacen("#!/bin/sh", "#!/nonexistent/old/node", 1);
+    fs::write(&cli, text).unwrap();
+    let mut env = lab.env();
+    env.jail = jail_on();
+    env.helper = lab.helper("exit 99");
+    let events = run_job(&env, codex_job(&["exec", "-"])).await;
+    assert_eq!(
+        jail_reason(&events),
+        "/nonexistent/old/node (from the script's #! line) does not exist; reinstall the CLI"
+    );
+}
+
+#[tokio::test]
+async fn a_home_that_is_not_set_or_does_not_exist_gets_its_own_reason() {
+    let lab = lab();
+    lab.claude(GOOD);
+    let mut env = lab.env();
+    env.jail = jail_on();
+    env.home = None;
+    let events = run_job(&env, job(JailPolicy::Required)).await;
+    assert_eq!(
+        jail_reason(&events),
+        "$HOME is not set or not an absolute path; set it and restart"
+    );
+    env.home = Some(lab.home.join("gone"));
+    let events = run_job(&env, job(JailPolicy::Required)).await;
+    let reason = jail_reason(&events);
+    assert!(
+        reason.ends_with("gone) does not exist; create it or fix $HOME"),
+        "{reason}"
+    );
 }
 
 #[tokio::test]

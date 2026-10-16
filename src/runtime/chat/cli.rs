@@ -284,22 +284,35 @@ fn read_head(path: &Path, max: usize) -> Option<Vec<u8>> {
 /// canonical path must not be under a scratch folder (`/tmp`, `/var/tmp`, where
 /// anyone can plant a program) and neither its folder nor the file may be
 /// writable by group or others (they could swap it).
-fn interpreter_trust(path: &Path) -> Result<(), Untrusted> {
+fn interpreter_trust(path: &Path) -> Result<PathBuf, (PathBuf, Untrusted)> {
     let Some(real) = resolve(path) else {
-        return Err(Untrusted::Unresolvable);
+        return Err((path.to_path_buf(), Untrusted::Unresolvable));
     };
     if real.starts_with("/tmp") || real.starts_with("/var/tmp") {
-        return Err(Untrusted::Scratch);
+        return Err((real, Untrusted::Scratch));
     }
-    let closed =
-        |p: &Path| fs::metadata(p).is_ok_and(|meta| meta.permissions().mode() & 0o022 == 0);
-    if !closed(&real) {
-        return Err(Untrusted::Writable(real));
+    // A file or folder that cannot be read counts as writable, as before.
+    let closed = |p: &Path| match fs::metadata(p) {
+        Ok(meta) if meta.permissions().mode() & 0o022 == 0 => Ok(()),
+        Ok(meta) => Err(Untrusted::Writable {
+            path: p.to_path_buf(),
+            // SAFETY: `geteuid` has no arguments and cannot fail.
+            yours: meta.uid() == unsafe { libc::geteuid() },
+        }),
+        Err(_) => Err(Untrusted::Writable {
+            path: p.to_path_buf(),
+            yours: false,
+        }),
+    };
+    if let Err(why) = closed(&real) {
+        return Err((real, why));
     }
     match real.parent() {
-        Some(dir) if closed(dir) => Ok(()),
-        Some(dir) => Err(Untrusted::Writable(dir.to_path_buf())),
-        None => Err(Untrusted::Unresolvable),
+        Some(dir) => match closed(dir) {
+            Ok(()) => Ok(real),
+            Err(why) => Err((real, why)),
+        },
+        None => Err((real, Untrusted::Unresolvable)),
     }
 }
 
@@ -323,12 +336,9 @@ fn interpreter_for(
         .filter_map(|dir| find_on_path(name, dir.as_os_str()))
     {
         match interpreter_trust(&candidate) {
-            Ok(()) => return Ok(candidate),
-            Err(why) => {
-                skipped.get_or_insert(JailRefusal::UntrustedInterpreter {
-                    path: candidate,
-                    why,
-                });
+            Ok(real) => return Ok(real),
+            Err((path, why)) => {
+                skipped.get_or_insert(JailRefusal::UntrustedInterpreter { path, why });
             }
         }
     }
@@ -408,18 +418,16 @@ fn jail_plan(
     dirs: &Dirs,
 ) -> Result<(CliLayout, JailSpec), JailRefusal> {
     let home_dir = env.home.as_deref().ok_or(JailRefusal::NoHome)?;
-    let home = resolve(home_dir).ok_or(JailRefusal::NoHome)?;
+    let home = resolve(home_dir).ok_or_else(|| JailRefusal::HomeMissing(home_dir.to_path_buf()))?;
     let bin = resolve(binary).ok_or_else(|| JailRefusal::Unreadable(binary.to_path_buf()))?;
     let head =
         read_head(&bin, ELF_HEAD_BYTES).ok_or_else(|| JailRefusal::Unreadable(bin.clone()))?;
     let interpreter = match parse_shebang(&head) {
-        Some(Interpreter::Path(path)) => Some(
-            resolve(&path).ok_or_else(|| JailRefusal::NoInterpreter(path.display().to_string()))?,
-        ),
-        Some(Interpreter::OnPath(name)) => {
-            let found = interpreter_for(binary, &name, &env.path)?;
-            Some(resolve(&found).ok_or(JailRefusal::NoInterpreter(name))?)
+        Some(Interpreter::Path(path)) => {
+            Some(resolve(&path).ok_or(JailRefusal::InterpreterMissing(path))?)
         }
+        // `interpreter_for` returns a resolved, trusted path.
+        Some(Interpreter::OnPath(name)) => Some(interpreter_for(binary, &name, &env.path)?),
         None => None,
     };
     // The file the kernel starts is the interpreter of a script, else the CLI.

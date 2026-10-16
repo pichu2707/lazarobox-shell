@@ -56,7 +56,7 @@ impl JailOff {
     pub fn text(self) -> String {
         match self {
             Self::NoLandlock(0) => {
-                format!("Landlock is not enabled in this kernel; ABI {MIN_ABI}+ needed (Linux 6.2)")
+                "Landlock is unavailable or blocked (kernel, container or seccomp)".to_owned()
             }
             Self::NoLandlock(abi) => {
                 format!("Landlock ABI {MIN_ABI}+ needed (Linux 6.2); this kernel has ABI {abi}")
@@ -119,12 +119,32 @@ pub fn launch(policy: JailPolicy, support: JailSupport) -> Launch {
     }
 }
 
-/// Most characters of the helper's reason that reach the user.
-const REASON_CAP: usize = 200;
+/// The reasons the helper can print that are safe to show, as the user will
+/// read them. The helper builds them from numbers and fixed text; everything
+/// else it might print (library errors, argument errors) can echo paths or
+/// other data a CLI controls, so it is not shown.
+fn known_helper_reason(said: &str) -> Option<String> {
+    let number = |text: &str| text.parse::<u32>().ok().filter(|_| !text.starts_with('+'));
+    if let Some(rest) = said.strip_prefix("ABI ")
+        && let Some((abi, min)) = rest.split_once(" is below the required ")
+        && let (Some(abi), Some(min)) = (number(abi), number(min))
+    {
+        return Some(format!("ABI {abi} is below the required {min}"));
+    }
+    let abi_prefix = format!("Landlock ABI {MIN_ABI}+ needed (Linux 6.2); this kernel has ABI ");
+    if let Some(abi) = said.strip_prefix(abi_prefix.as_str()).and_then(number) {
+        return Some(JailOff::NoLandlock(abi).text());
+    }
+    [JailOff::NoLandlock(0), JailOff::NotLinux]
+        .into_iter()
+        .map(JailOff::text)
+        .find(|text| text == said)
+}
 
 /// The jail error a finished helper stands for, if any: the status is 125 AND
-/// a stderr line starts with [`NOT_ENFORCED_MARKER`]. It carries what the
-/// helper said after the marker, sanitized and capped.
+/// a stderr line starts with [`NOT_ENFORCED_MARKER`]. It carries the helper's
+/// reason only when it is one of the fixed texts the helper emits; any other
+/// text gives an empty reason (the generic message).
 pub fn exit_error(code: Option<i32>, stderr: &str) -> Option<ChatError> {
     let marked = stderr
         .lines()
@@ -133,8 +153,9 @@ pub fn exit_error(code: Option<i32>, stderr: &str) -> Option<ChatError> {
         return None;
     }
     let said = marked[NOT_ENFORCED_MARKER.len()..].trim_start_matches(':');
-    let reason: String = one_line(said).trim().chars().take(REASON_CAP).collect();
-    Some(ChatError::Jail(reason))
+    Some(ChatError::Jail(
+        known_helper_reason(said.trim()).unwrap_or_default(),
+    ))
 }
 
 /// Why a layout cannot be jailed, with the text the user sees. The jail
@@ -143,14 +164,18 @@ pub fn exit_error(code: Option<i32>, stderr: &str) -> Option<ChatError> {
 pub enum JailRefusal {
     /// The system cannot jail anything.
     Unsupported(JailOff),
-    /// `$HOME` is missing, relative or cannot be resolved.
+    /// `$HOME` is not set or not an absolute path.
     NoHome,
+    /// `$HOME` names a folder that does not exist.
+    HomeMissing(PathBuf),
     /// The CLI file cannot be resolved or read.
     Unreadable(PathBuf),
     /// The file the kernel loads the program with is not a regular file.
     BadLoader(PathBuf),
-    /// The script names an interpreter (a name or a path) that is not found.
+    /// The script asks for an interpreter by name and none is found.
     NoInterpreter(String),
+    /// The script's `#!` line names this interpreter path, which is gone.
+    InterpreterMissing(PathBuf),
     /// The interpreter is found but is not trusted.
     UntrustedInterpreter { path: PathBuf, why: Untrusted },
     /// A package root, state folder or loader that is a broad place.
@@ -164,8 +189,9 @@ pub enum JailRefusal {
 pub enum Untrusted {
     /// It lives under a scratch folder (`/tmp`, `/var/tmp`).
     Scratch,
-    /// The file or its folder (this path) is writable by group or others.
-    Writable(PathBuf),
+    /// The file or folder at `path` (the real one that failed the check) is
+    /// writable by group or others; `yours` says the user owns it.
+    Writable { path: PathBuf, yours: bool },
     /// Its real path cannot be resolved.
     Unresolvable,
 }
@@ -176,6 +202,29 @@ impl From<SpecError> for JailRefusal {
             SpecError::RootTooBroad(path) => Self::RootTooBroad(path),
             SpecError::NotCanonical(path) => Self::NotCanonical(path),
         }
+    }
+}
+
+/// `path` as one shell word, single-quoted, to paste into a command. `None`
+/// when it is not valid text or holds a control character: a command built
+/// from a cleaned-up copy would name another path.
+fn quoted(path: &Path) -> Option<String> {
+    let text = path.to_str()?;
+    (one_line(text) == text).then(|| format!("'{}'", text.replace('\'', r"'\''")))
+}
+
+/// Longest path a menu row shows whole.
+const BRIEF_CAP: usize = 24;
+
+/// `path` for a menu row: whole when short, else `…/` and its last part.
+fn brief(path: &Path, home: Option<&Path>) -> String {
+    let whole = shown(path, home);
+    if whole.chars().count() <= BRIEF_CAP {
+        return whole;
+    }
+    match path.file_name() {
+        Some(name) => format!("…/{}", one_line(&name.to_string_lossy())),
+        None => whole,
     }
 }
 
@@ -196,7 +245,15 @@ impl JailRefusal {
         let at = |p: &Path| shown(p, home);
         match self {
             Self::Unsupported(off) => off.text(),
-            Self::NoHome => "$HOME is not an absolute path; set it and restart".to_owned(),
+            Self::NoHome => {
+                "$HOME is not set or not an absolute path; set it and restart".to_owned()
+            }
+            Self::HomeMissing(path) => {
+                format!(
+                    "$HOME ({}) does not exist; create it or fix $HOME",
+                    one_line(&path.display().to_string())
+                )
+            }
             Self::Unreadable(path) => {
                 format!(
                     "cannot read {}; check that it exists and is readable",
@@ -217,18 +274,39 @@ impl JailRefusal {
                 "{} is under a scratch folder; install the interpreter elsewhere",
                 at(path)
             ),
+            Self::InterpreterMissing(path) => format!(
+                "{} (from the script's #! line) does not exist; reinstall the CLI",
+                at(path)
+            ),
             Self::UntrustedInterpreter {
                 path,
                 why: Untrusted::Unresolvable,
-            } => format!("{} cannot be resolved to a real path", at(path)),
+            } => format!(
+                "{} cannot be resolved to a real path (a broken link?)",
+                at(path)
+            ),
             Self::UntrustedInterpreter {
                 path,
-                why: Untrusted::Writable(writable),
-            } => format!(
-                "{} is writable by group or others; run: chmod go-w {}",
-                at(path),
-                at(writable)
-            ),
+                why: Untrusted::Writable { path: bad, yours },
+            } => {
+                let head = if bad == path {
+                    format!("{} is writable by group or others", at(bad))
+                } else {
+                    format!(
+                        "{} is writable by group or others, so {} is not trusted",
+                        at(bad),
+                        at(path)
+                    )
+                };
+                if !yours {
+                    format!("{head}; it is not yours, so its owner must fix it (sudo)")
+                } else {
+                    match quoted(bad) {
+                        Some(arg) => format!("{head}; run: chmod go-w {arg}"),
+                        None => format!("{head}; remove the group and other write permissions"),
+                    }
+                }
+            }
             Self::RootTooBroad(path) => format!(
                 "{} is too broad for the jail; keep the CLI and its state in folders of their own",
                 at(path)
@@ -239,16 +317,17 @@ impl JailRefusal {
 
     /// A few words for a menu row.
     pub fn short(&self, home: Option<&Path>) -> String {
-        let at = |p: &Path| shown(p, home);
         match self {
             Self::Unsupported(off) => off.short(),
             Self::NoHome => "no usable $HOME".to_owned(),
-            Self::Unreadable(path) => format!("cannot read {}", at(path)),
+            Self::HomeMissing(_) => "$HOME missing".to_owned(),
+            Self::Unreadable(path) => format!("cannot read {}", brief(path, home)),
+            Self::InterpreterMissing(path) => format!("{} missing", brief(path, home)),
             Self::BadLoader(_) => "bad program loader".to_owned(),
             Self::NoInterpreter(name) => format!("no {}", one_line(name)),
             Self::UntrustedInterpreter { .. } => "interpreter not trusted".to_owned(),
-            Self::RootTooBroad(path) => format!("{} too broad", at(path)),
-            Self::NotCanonical(path) => format!("{} not canonical", at(path)),
+            Self::RootTooBroad(path) => format!("{} too broad", brief(path, home)),
+            Self::NotCanonical(path) => format!("{} not canonical", brief(path, home)),
         }
     }
 }
