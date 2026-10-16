@@ -30,6 +30,7 @@ pub mod login_path;
 pub mod loopback;
 pub mod proc;
 pub mod prompts;
+pub mod update;
 pub mod workspace;
 
 use ai_detect::spawn_detection;
