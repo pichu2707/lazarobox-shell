@@ -28,6 +28,7 @@ pub mod jail;
 pub mod loopback;
 pub mod proc;
 pub mod prompts;
+pub mod tools;
 pub mod workspace;
 
 use ai_detect::spawn_detection;
