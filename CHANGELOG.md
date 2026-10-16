@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [0.15.4] - 2026-10-17
+
 ### Added
 
 - Updates row in the Settings section of the menu. It shows the running
@@ -552,7 +554,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.3...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.4...HEAD
+[0.15.4]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.3...v0.15.4
 [0.15.3]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.2...v0.15.3
 [0.15.2]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.0...v0.15.1
