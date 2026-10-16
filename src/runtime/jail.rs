@@ -103,8 +103,8 @@ mod imp {
                 "ABI {abi} is below the required {min}"
             )));
         }
-        if let JailSupport::Unavailable(why) = support_from_abi(abi) {
-            return Err(Failure::NotEnforced(why.to_owned()));
+        if let JailSupport::Unavailable(off) = support_from_abi(abi) {
+            return Err(Failure::NotEnforced(off.text()));
         }
         enforce(&job.spec, abi).map_err(Failure::NotEnforced)?;
         launch(&job)
@@ -196,10 +196,10 @@ mod imp {
     use std::ffi::OsString;
 
     use super::Failure;
-    use crate::core::ai::jail::JailSupport;
+    use crate::core::ai::jail::{JailOff, JailSupport};
 
     pub fn probe() -> JailSupport {
-        JailSupport::Unavailable("the CLI jail needs Linux")
+        JailSupport::Unavailable(JailOff::NotLinux)
     }
 
     pub fn exec(_args: &[OsString]) -> Result<Infallible, Failure> {

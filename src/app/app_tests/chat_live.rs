@@ -935,7 +935,7 @@ fn working_jail() -> crate::core::ai::jail::JailSupport {
 #[test]
 fn claude_chats_with_or_without_a_jail() {
     for jail in [
-        crate::core::ai::jail::JailSupport::Unavailable("test"),
+        crate::core::ai::jail::JailSupport::Unavailable(crate::core::ai::jail::JailOff::NotProbed),
         working_jail(),
     ] {
         let mut a = undetected_chat(assigned("claude")).with_jail(jail);
@@ -972,12 +972,13 @@ fn gemini_chats_only_with_a_jail() {
     };
     assert_eq!(request.engine, "gemini");
 
-    let mut a = undetected_chat(assigned("gemini"))
-        .with_jail(crate::core::ai::jail::JailSupport::Unavailable("test"));
+    let mut a = undetected_chat(assigned("gemini")).with_jail(
+        crate::core::ai::jail::JailSupport::Unavailable(crate::core::ai::jail::JailOff::NotProbed),
+    );
     a.update(cli_detected("gemini"));
     assert_eq!(
         guidance_of(&a).as_deref(),
-        Some("gemini: not available on this system yet")
+        Some("gemini: not available on this system yet: the jail was not probed")
     );
     assert_eq!(ask(&mut a, "hi"), vec![]);
 }

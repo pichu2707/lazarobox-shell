@@ -95,7 +95,7 @@ fn an_error_before_any_text_leaves_no_empty_message() {
 fn a_jail_error_says_the_cli_never_ran() {
     let mut state = chat();
     let (turn, _) = sent(&mut state, "hi");
-    state.apply(turn, StreamEvent::Error(ChatError::Jail));
+    state.apply(turn, StreamEvent::Error(ChatError::Jail(String::new())));
     assert_eq!(texts(&state).len(), 1, "no empty assistant message");
     assert_eq!(systems(&state), [JAIL_ERROR]);
     assert_eq!(state.phase(), Phase::Idle);
@@ -104,12 +104,20 @@ fn a_jail_error_says_the_cli_never_ran() {
     let mut state = chat();
     let (turn, _) = sent(&mut state, "hi");
     state.apply(turn, delta("part"));
-    state.apply(turn, StreamEvent::Error(ChatError::Jail));
+    state.apply(turn, StreamEvent::Error(ChatError::Jail(String::new())));
     assert_eq!(
         texts(&state)[1],
         (Role::Assistant, "part".into(), MsgStatus::Error)
     );
     assert_eq!(systems(&state), [JAIL_ERROR]);
+}
+#[test]
+fn a_jail_error_appends_its_reason() {
+    let mut state = chat();
+    let (turn, _) = sent(&mut state, "hi");
+    let reason = "/usr/local is too broad to share with the CLI";
+    state.apply(turn, StreamEvent::Error(ChatError::Jail(reason.into())));
+    assert_eq!(systems(&state), [format!("{JAIL_ERROR}: {reason}")]);
 }
 #[test]
 fn a_cut_stream_keeps_the_text_and_says_interrupted() {

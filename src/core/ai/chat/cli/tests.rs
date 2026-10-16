@@ -98,15 +98,10 @@ fn no_final_event_at_all_is_an_interruption() {
 #[test]
 fn status_125_with_the_marker_line_is_a_jail_error_whatever_else_happened() {
     let stderr = format!("{NOT_ENFORCED_MARKER}: ABI 2 is below the required 3\n");
+    let jail = || StreamEvent::Error(ChatError::Jail("ABI 2 is below the required 3".into()));
     let cut = Some(StreamEvent::Error(ChatError::Interrupted));
-    assert_eq!(
-        verdict("claude", cut, false, exit(125), &stderr),
-        StreamEvent::Error(ChatError::Jail)
-    );
-    assert_eq!(
-        verdict("claude", done(), true, exit(125), &stderr),
-        StreamEvent::Error(ChatError::Jail)
-    );
+    assert_eq!(verdict("claude", cut, false, exit(125), &stderr), jail());
+    assert_eq!(verdict("claude", done(), true, exit(125), &stderr), jail());
 }
 
 #[test]

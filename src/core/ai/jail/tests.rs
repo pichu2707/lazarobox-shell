@@ -71,10 +71,14 @@ fn abi_below_three_is_unavailable() {
     for abi in [0, 1, 2] {
         assert!(!support_from_abi(abi).is_available(), "abi {abi}");
     }
-    match support_from_abi(2) {
-        JailSupport::Unavailable(reason) => assert!(reason.contains("ABI 3"), "{reason}"),
-        other => panic!("expected Unavailable, got {other:?}"),
-    }
+    assert_eq!(
+        support_from_abi(2),
+        JailSupport::Unavailable(JailOff::NoLandlock(2))
+    );
+    assert_eq!(
+        support_from_abi(0),
+        JailSupport::Unavailable(JailOff::NoLandlock(0))
+    );
 }
 
 #[test]
@@ -103,10 +107,11 @@ fn policy_decides_how_a_cli_starts() {
 #[test]
 fn helper_exit_125_with_its_marker_is_a_jail_error() {
     let said = format!("noise\n{NOT_ENFORCED_MARKER}: ABI 2 is below the required 6\n");
-    assert_eq!(exit_error(Some(125), &said), Some(ChatError::Jail));
+    let reason = "ABI 2 is below the required 6".to_owned();
+    assert_eq!(exit_error(Some(125), &said), Some(ChatError::Jail(reason)));
     assert_eq!(
         exit_error(Some(125), NOT_ENFORCED_MARKER),
-        Some(ChatError::Jail)
+        Some(ChatError::Jail(String::new()))
     );
     // Other codes, even with the marker, are not the helper's refusal.
     assert_eq!(exit_error(Some(1), &said), None);
@@ -1045,4 +1050,118 @@ fn a_library_folder_or_data_file_must_be_canonical() {
             "{bad}"
         );
     }
+}
+
+// ---- refusal texts ----
+
+fn home() -> Option<&'static Path> {
+    Some(Path::new(HOME))
+}
+
+#[test]
+fn the_helper_reason_is_sanitized_and_capped() {
+    let said = format!(
+        "{NOT_ENFORCED_MARKER}: bad \u{1b}[31mthing\u{202e}{}\n",
+        "x".repeat(500)
+    );
+    let Some(ChatError::Jail(reason)) = exit_error(Some(125), &said) else {
+        panic!("expected a jail error");
+    };
+    assert!(reason.starts_with("bad thing"), "{reason}");
+    assert!(
+        !reason.contains('\u{1b}') && !reason.contains('\u{202e}'),
+        "{reason}"
+    );
+    assert_eq!(reason.chars().count(), 200);
+}
+
+#[test]
+fn a_kernel_without_the_abi_says_what_to_upgrade_to() {
+    let abi2 = JailRefusal::Unsupported(JailOff::NoLandlock(2));
+    assert_eq!(
+        abi2.hint(home()),
+        "Landlock ABI 3+ needed (Linux 6.2); this kernel has ABI 2"
+    );
+    assert_eq!(abi2.short(home()), "Landlock ABI 2, needs 3+");
+    let none = JailRefusal::Unsupported(JailOff::NoLandlock(0));
+    assert_eq!(
+        none.hint(home()),
+        "Landlock is not enabled in this kernel; ABI 3+ needed (Linux 6.2)"
+    );
+    let other_os = JailRefusal::Unsupported(JailOff::NotLinux);
+    assert_eq!(other_os.hint(home()), "the CLI jail needs Linux");
+    assert_eq!(other_os.short(home()), "needs Linux");
+}
+
+#[test]
+fn a_group_writable_interpreter_says_which_chmod_to_run() {
+    let refusal = JailRefusal::UntrustedInterpreter {
+        path: p("/home/u/.nvm/versions/node/v24/bin/node"),
+        why: Untrusted::Writable(p("/home/u/.nvm/versions/node/v24/bin")),
+    };
+    assert_eq!(
+        refusal.hint(home()),
+        "~/.nvm/versions/node/v24/bin/node is writable by group or others; \
+         run: chmod go-w ~/.nvm/versions/node/v24/bin"
+    );
+    assert_eq!(refusal.short(home()), "interpreter not trusted");
+    let scratch = JailRefusal::UntrustedInterpreter {
+        path: p("/tmp/x/node"),
+        why: Untrusted::Scratch,
+    };
+    assert_eq!(
+        scratch.hint(home()),
+        "/tmp/x/node is under a scratch folder; install the interpreter elsewhere"
+    );
+}
+
+#[test]
+fn a_broad_root_names_the_folder_and_what_to_do() {
+    let refusal = JailRefusal::from(SpecError::RootTooBroad(p("/usr/local")));
+    assert_eq!(
+        refusal.hint(home()),
+        "/usr/local is too broad for the jail; keep the CLI and its state in folders of their own"
+    );
+    assert_eq!(refusal.short(home()), "/usr/local too broad");
+    assert_eq!(
+        JailRefusal::from(SpecError::NotCanonical(p("/a/../b"))),
+        JailRefusal::NotCanonical(p("/a/../b"))
+    );
+}
+
+#[test]
+fn the_other_refusals_have_a_text_each() {
+    assert_eq!(
+        JailRefusal::NoHome.hint(home()),
+        "$HOME is not an absolute path; set it and restart"
+    );
+    assert_eq!(
+        JailRefusal::NoInterpreter("node".into()).hint(home()),
+        "no node found to run the CLI script; install it next to the CLI or on PATH"
+    );
+    assert_eq!(
+        JailRefusal::NoInterpreter("node".into()).short(home()),
+        "no node"
+    );
+    assert_eq!(
+        JailRefusal::BadLoader(p("/lib/ld.so")).hint(home()),
+        "the program loader /lib/ld.so is not a regular file"
+    );
+    assert_eq!(
+        JailRefusal::Unreadable(p("/home/u/bin/codex")).hint(home()),
+        "cannot read ~/bin/codex; check that it exists and is readable"
+    );
+}
+
+#[test]
+fn paths_in_a_refusal_are_abbreviated_and_sanitized() {
+    let evil = p("/home/u/\u{1b}]0;pwned\u{7}dir\u{202e}/node");
+    let refusal = JailRefusal::NoInterpreter(evil.display().to_string());
+    let text = refusal.hint(home());
+    assert!(
+        !text.chars().any(|c| c.is_control() || c == '\u{202e}'),
+        "{text:?}"
+    );
+    let broad = JailRefusal::RootTooBroad(p("/home/u")).hint(home());
+    assert!(broad.starts_with("~ is too broad"), "{broad}");
 }

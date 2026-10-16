@@ -7,6 +7,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 
 use crate::core::ai::chat::engine::ChatError;
+use crate::core::ai::parse::sanitize as one_line;
 
 pub mod rpath;
 
@@ -37,7 +38,43 @@ pub enum Backend {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum JailSupport {
     Available { backend: Backend, abi: u32 },
-    Unavailable(&'static str),
+    Unavailable(JailOff),
+}
+
+/// Why this system cannot jail a CLI at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum JailOff {
+    /// The kernel has no Landlock (`0`) or an ABI below [`MIN_ABI`].
+    NoLandlock(u32),
+    NotLinux,
+    /// Nothing probed the system yet (tests, the first frame).
+    NotProbed,
+}
+
+impl JailOff {
+    /// The full sentence, with what to do.
+    pub fn text(self) -> String {
+        match self {
+            Self::NoLandlock(0) => {
+                format!("Landlock is not enabled in this kernel; ABI {MIN_ABI}+ needed (Linux 6.2)")
+            }
+            Self::NoLandlock(abi) => {
+                format!("Landlock ABI {MIN_ABI}+ needed (Linux 6.2); this kernel has ABI {abi}")
+            }
+            Self::NotLinux => "the CLI jail needs Linux".to_owned(),
+            Self::NotProbed => "the jail was not probed".to_owned(),
+        }
+    }
+
+    /// A few words for a menu row.
+    pub fn short(self) -> String {
+        match self {
+            Self::NoLandlock(0) => "no Landlock".to_owned(),
+            Self::NoLandlock(abi) => format!("Landlock ABI {abi}, needs {MIN_ABI}+"),
+            Self::NotLinux => "needs Linux".to_owned(),
+            Self::NotProbed => "not probed".to_owned(),
+        }
+    }
 }
 
 impl JailSupport {
@@ -49,8 +86,7 @@ impl JailSupport {
 /// Maps the ABI the kernel reported (0 when Landlock is absent).
 pub fn support_from_abi(abi: u32) -> JailSupport {
     match abi {
-        0 => JailSupport::Unavailable("Landlock is not enabled in this kernel"),
-        1..MIN_ABI => JailSupport::Unavailable("Landlock needs ABI 3 or newer (Linux 6.2)"),
+        0..MIN_ABI => JailSupport::Unavailable(JailOff::NoLandlock(abi)),
         _ => JailSupport::Available {
             backend: Backend::Landlock,
             abi,
@@ -83,13 +119,138 @@ pub fn launch(policy: JailPolicy, support: JailSupport) -> Launch {
     }
 }
 
+/// Most characters of the helper's reason that reach the user.
+const REASON_CAP: usize = 200;
+
 /// The jail error a finished helper stands for, if any: the status is 125 AND
-/// a stderr line starts with [`NOT_ENFORCED_MARKER`].
+/// a stderr line starts with [`NOT_ENFORCED_MARKER`]. It carries what the
+/// helper said after the marker, sanitized and capped.
 pub fn exit_error(code: Option<i32>, stderr: &str) -> Option<ChatError> {
     let marked = stderr
         .lines()
-        .any(|line| line.starts_with(NOT_ENFORCED_MARKER));
-    (code == Some(NOT_ENFORCED_EXIT) && marked).then_some(ChatError::Jail)
+        .find(|line| line.starts_with(NOT_ENFORCED_MARKER))?;
+    if code != Some(NOT_ENFORCED_EXIT) {
+        return None;
+    }
+    let said = marked[NOT_ENFORCED_MARKER.len()..].trim_start_matches(':');
+    let reason: String = one_line(said).trim().chars().take(REASON_CAP).collect();
+    Some(ChatError::Jail(reason))
+}
+
+/// Why a layout cannot be jailed, with the text the user sees. The jail
+/// rules themselves are unchanged: this only names the rule that refused.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum JailRefusal {
+    /// The system cannot jail anything.
+    Unsupported(JailOff),
+    /// `$HOME` is missing, relative or cannot be resolved.
+    NoHome,
+    /// The CLI file cannot be resolved or read.
+    Unreadable(PathBuf),
+    /// The file the kernel loads the program with is not a regular file.
+    BadLoader(PathBuf),
+    /// The script names an interpreter (a name or a path) that is not found.
+    NoInterpreter(String),
+    /// The interpreter is found but is not trusted.
+    UntrustedInterpreter { path: PathBuf, why: Untrusted },
+    /// A package root, state folder or loader that is a broad place.
+    RootTooBroad(PathBuf),
+    /// A path that is not canonical.
+    NotCanonical(PathBuf),
+}
+
+/// Why an interpreter is not trusted.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Untrusted {
+    /// It lives under a scratch folder (`/tmp`, `/var/tmp`).
+    Scratch,
+    /// The file or its folder (this path) is writable by group or others.
+    Writable(PathBuf),
+    /// Its real path cannot be resolved.
+    Unresolvable,
+}
+
+impl From<SpecError> for JailRefusal {
+    fn from(error: SpecError) -> Self {
+        match error {
+            SpecError::RootTooBroad(path) => Self::RootTooBroad(path),
+            SpecError::NotCanonical(path) => Self::NotCanonical(path),
+        }
+    }
+}
+
+/// `path` for a message: `~` for `home`, no control or format characters.
+fn shown(path: &Path, home: Option<&Path>) -> String {
+    let text = match home.and_then(|h| path.strip_prefix(h).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    };
+    one_line(&text)
+}
+
+impl JailRefusal {
+    /// The sentence for the chat: what refused and what to do. Paths are
+    /// shown with `~` for `home` and sanitized.
+    pub fn hint(&self, home: Option<&Path>) -> String {
+        let at = |p: &Path| shown(p, home);
+        match self {
+            Self::Unsupported(off) => off.text(),
+            Self::NoHome => "$HOME is not an absolute path; set it and restart".to_owned(),
+            Self::Unreadable(path) => {
+                format!(
+                    "cannot read {}; check that it exists and is readable",
+                    at(path)
+                )
+            }
+            Self::BadLoader(path) => {
+                format!("the program loader {} is not a regular file", at(path))
+            }
+            Self::NoInterpreter(name) => format!(
+                "no {} found to run the CLI script; install it next to the CLI or on PATH",
+                one_line(name)
+            ),
+            Self::UntrustedInterpreter {
+                path,
+                why: Untrusted::Scratch,
+            } => format!(
+                "{} is under a scratch folder; install the interpreter elsewhere",
+                at(path)
+            ),
+            Self::UntrustedInterpreter {
+                path,
+                why: Untrusted::Unresolvable,
+            } => format!("{} cannot be resolved to a real path", at(path)),
+            Self::UntrustedInterpreter {
+                path,
+                why: Untrusted::Writable(writable),
+            } => format!(
+                "{} is writable by group or others; run: chmod go-w {}",
+                at(path),
+                at(writable)
+            ),
+            Self::RootTooBroad(path) => format!(
+                "{} is too broad for the jail; keep the CLI and its state in folders of their own",
+                at(path)
+            ),
+            Self::NotCanonical(path) => format!("{} is not a canonical path", at(path)),
+        }
+    }
+
+    /// A few words for a menu row.
+    pub fn short(&self, home: Option<&Path>) -> String {
+        let at = |p: &Path| shown(p, home);
+        match self {
+            Self::Unsupported(off) => off.short(),
+            Self::NoHome => "no usable $HOME".to_owned(),
+            Self::Unreadable(path) => format!("cannot read {}", at(path)),
+            Self::BadLoader(_) => "bad program loader".to_owned(),
+            Self::NoInterpreter(name) => format!("no {}", one_line(name)),
+            Self::UntrustedInterpreter { .. } => "interpreter not trusted".to_owned(),
+            Self::RootTooBroad(path) => format!("{} too broad", at(path)),
+            Self::NotCanonical(path) => format!("{} not canonical", at(path)),
+        }
+    }
 }
 
 /// The CLIs that run jailed.

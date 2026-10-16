@@ -5,7 +5,7 @@ use serde_json::Value;
 use super::sanitize::clean;
 
 /// `clean` for one-line text: newlines and tabs go too.
-fn sanitize(text: &str) -> String {
+pub(crate) fn sanitize(text: &str) -> String {
     clean(text).chars().filter(|c| !c.is_control()).collect()
 }
 

@@ -394,7 +394,7 @@ mod tests {
     use super::*;
     use crate::core::ai::{
         EngineState, Status,
-        jail::{Backend, JailSupport},
+        jail::{Backend, JailOff, JailSupport},
     };
     use std::sync::{Arc, Mutex};
 
@@ -624,7 +624,7 @@ mod tests {
                 abi: 7,
             }
         } else {
-            JailSupport::Unavailable("test")
+            JailSupport::Unavailable(JailOff::NotProbed)
         };
         let mut env = CliEnv::from_env(support);
         env.path = lab.bin.clone().into_os_string();

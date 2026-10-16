@@ -64,6 +64,15 @@ pub const FULL: &str = "this conversation is full: start a new one";
 pub const NO_ANSWER: &str = "the model sent no answer";
 /// System line for a CLI the jail refused to start.
 pub const JAIL_ERROR: &str = "the CLI did not start: its jail could not be enforced";
+
+/// [`JAIL_ERROR`] with the reason, when there is one.
+pub fn jail_error(reason: &str) -> String {
+    if reason.is_empty() {
+        JAIL_ERROR.to_owned()
+    } else {
+        format!("{JAIL_ERROR}: {reason}")
+    }
+}
 /// System line for an answer cut at `ANSWER_CAP`.
 pub const TOO_LONG: &str = "answer too long: cut at 1 MiB";
 
@@ -692,8 +701,8 @@ impl ChatState {
                 self.finish(MsgStatus::Error, Some(message), now);
                 Follow::Nothing
             }
-            StreamEvent::Error(ChatError::Jail) => {
-                self.finish(MsgStatus::Error, Some(JAIL_ERROR.to_owned()), now);
+            StreamEvent::Error(ChatError::Jail(reason)) => {
+                self.finish(MsgStatus::Error, Some(jail_error(&reason)), now);
                 Follow::Nothing
             }
         }

@@ -191,7 +191,7 @@ El directorio de trabajo del CLI es una carpeta vacía y privada, el entorno se 
 
 **Disponibilidad por sistema:**
 
-- **codex y gemini** exigen la jaula. Sin ella (otro sistema operativo, un núcleo sin Landlock o una instalación que la jaula rechaza) no se lanza ningún proceso y el panel indica `<motor>: not available on this system yet`.
+- **codex y gemini** exigen la jaula. Sin ella (otro sistema operativo, un núcleo sin Landlock o una instalación que la jaula rechaza) no se lanza ningún proceso y el panel indica `<motor>: not available on this system yet: <motivo>`.
 - **claude** funciona también sin la jaula: en ese caso el panel avisa una vez con `claude runs without the jail here: <motivo>`. En ese modo solo lo protegen las opciones de solo texto.
 - Fuera de Linux no hay jaula por ahora.
 
@@ -220,6 +220,23 @@ El directorio de trabajo del CLI es una carpeta vacía y privada, el entorno se 
 
 - codex **falla cerrado**: si una versión nueva añade un tipo de elemento o retira una opción que lazarobox desactiva (`Unknown feature flag`), el chat muestra un error hasta que se actualice lazarobox. gemini hace lo mismo con los tipos de evento desconocidos.
 - Un `node` ubicado en una carpeta con permiso de escritura para el grupo (por ejemplo con `umask 002`), o bajo `/tmp`, se **rechaza** para los CLIs de scripts dentro de la jaula: se prueba primero el `node` instalado junto al CLI y luego los del `PATH`, y si ninguno es de confianza el CLI no arranca (si es obligatorio, el panel dice que no está disponible).
+
+#### Troubleshooting the AI CLI messages
+
+Every message below says why a CLI cannot be used. None of them changes what the jail allows: they only report which rule said no.
+
+| Message | What it means and what to do |
+| --- | --- |
+| `<cli>: not available on this system yet: Landlock ABI 3+ needed (Linux 6.2); this kernel has ABI 2` | codex and gemini need the jail and the kernel is too old. Upgrade to Linux 6.2 or newer. |
+| `<cli>: not available on this system yet: Landlock is not enabled in this kernel; ...` | The kernel has no Landlock (it may be off in the boot options or the LSM list). |
+| `<cli>: not available on this system yet: the CLI jail needs Linux` | Other operating systems have no jail yet. |
+| `the CLI did not start: its jail could not be enforced: <reason>` | The jail refused this install or the helper could not apply it. The reason is one of the next rows, or the helper's own line. Nothing was started. |
+| `... <path> is writable by group or others; run: chmod go-w <path>` | The `node` that runs a script-based CLI (or its folder) can be swapped by other users, so it is not trusted. Remove the group and other write bits. |
+| `... <path> is under a scratch folder; install the interpreter elsewhere` | The interpreter lives under `/tmp` or `/var/tmp`. Install `node` outside of them. |
+| `... no node found to run the CLI script; install it next to the CLI or on PATH` | The CLI is a script and no trusted interpreter was found. |
+| `... <path> is too broad for the jail; keep the CLI and its state in folders of their own` | The CLI, its loader or its state folder (`$CODEX_HOME`, `~/.codex`, ...) is a broad place such as `/usr/local` or `$HOME`. Install the CLI in its own folder. |
+| `... cannot read <path>`, `... the program loader <path> is not a regular file`, `... $HOME is not an absolute path` | The CLI file, its loader or `$HOME` could not be resolved. Check that they exist. |
+| `claude runs without the jail here: <reason>` | claude is allowed to run with only its text-only flags; the reason is any row above. |
 
 ### Historial de conversaciones
 

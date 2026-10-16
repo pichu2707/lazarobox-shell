@@ -249,12 +249,14 @@ fn an_error_or_an_empty_summary_opens_no_draft_and_says_why() {
 fn a_jail_error_ends_the_summary_run_with_its_line() {
     let mut state = talked();
     let turn = started(&mut state);
-    state.apply(turn, StreamEvent::Error(ChatError::Jail));
+    state.apply(turn, StreamEvent::Error(ChatError::Jail("no node".into())));
     assert!(!state.summarizing());
     assert!(state.summary_draft().is_none());
     assert_eq!(
         state.entries().last(),
-        Some(&Entry::System(format!("summary failed: {JAIL_ERROR}")))
+        Some(&Entry::System(format!(
+            "summary failed: {JAIL_ERROR}: no node"
+        )))
     );
 }
 
