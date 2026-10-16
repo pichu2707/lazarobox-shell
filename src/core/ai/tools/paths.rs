@@ -272,6 +272,15 @@ impl SecretRoots {
     pub fn home(&self) -> &Path {
         &self.real
     }
+
+    /// Whether an already resolved path (no symlinks, no `.` or `..`) may be
+    /// opened or listed: inside HOME, not excluded by name or position, and
+    /// not (under) the real target of a secret root of this snapshot. Pure.
+    /// The runtime runs it on the real path of an opened file descriptor.
+    pub fn judge_real(&self, real: &Path) -> bool {
+        matches!(check_path(&self.real, real), PathVerdict::Allowed(_))
+            && !self.roots.iter().any(|root| real.starts_with(root))
+    }
 }
 
 /// Resolves what a model asked for and judges it twice. A canonical-only
@@ -306,9 +315,8 @@ pub fn resolve(roots: &SecretRoots, origin: &Path, input: &str) -> PathVerdict {
         return PathVerdict::Refused;
     }
     match full.canonicalize() {
-        Ok(real) if roots.roots.iter().any(|root| real.starts_with(root)) => PathVerdict::Refused,
-        Ok(real) => check_path(&roots.real, &real),
-        Err(_) => PathVerdict::Refused,
+        Ok(real) if roots.judge_real(&real) => PathVerdict::Allowed(real),
+        _ => PathVerdict::Refused,
     }
 }
 
@@ -992,5 +1000,19 @@ mod tests {
         let looped = f.home.join("loop");
         symlink(&looped, &looped).unwrap();
         assert!(SecretRoots::load(&f.home, &[looped]).is_none());
+    }
+
+    #[test]
+    fn judge_real_applies_name_position_and_root_targets() {
+        let f = fixture();
+        let store = f.home.join("custom/store");
+        fs::create_dir_all(&store).unwrap();
+        fs::write(store.join("chat.db"), "x").unwrap();
+        let roots = SecretRoots::load(&f.home, std::slice::from_ref(&store)).unwrap();
+        assert!(roots.judge_real(&f.home.join("project/src/lib.rs")));
+        assert!(!roots.judge_real(&f.home.join(".ssh/id")));
+        assert!(!roots.judge_real(&f.home.join("deep/er/.env")));
+        assert!(!roots.judge_real(&store.join("chat.db")));
+        assert!(!roots.judge_real(&f.outside.join("note.txt")));
     }
 }
