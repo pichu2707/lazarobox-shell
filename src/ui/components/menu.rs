@@ -1065,7 +1065,7 @@ mod tests {
 
     #[test]
     fn a_long_engine_status_is_clipped_but_keeps_its_label() {
-        let why = "a-very-long-folder-name-that-cannot-fit too broad";
+        let why = "a-very-long-folder-name-that-cannot-fit-at-all-in-the-row too broad";
         let menu = codex_engines_level(codex_degraded(None, Some(why)));
         let buf = draw(62, POPUP_H, &menu);
         let row = lines(&buf)
@@ -1073,11 +1073,44 @@ mod tests {
             .find(|l| l.contains("codex"))
             .unwrap();
         assert!(
-            row.starts_with("│ codex available · codex-cli 0.130.0 · no jail"),
+            row.starts_with("│ codex available · no jail: a-very-long"),
             "{row}"
         );
-        assert!(row.contains('…') && row.ends_with('│'), "{row}");
+        assert!(row.contains('…') && row.ends_with("●│"), "{row}");
         assert_eq!(cells(&row), 62);
+    }
+
+    #[test]
+    fn every_short_jail_reason_survives_whole_at_62_columns() {
+        use crate::core::ai::jail::{JailOff, JailRefusal, Untrusted};
+        let home = Some(std::path::Path::new("/home/u"));
+        let long = std::path::PathBuf::from("/very/long/folder/structure/that/goes/on/lib");
+        let reasons = [
+            JailRefusal::Unsupported(JailOff::NoLandlock(12)),
+            JailRefusal::Unsupported(JailOff::NoLandlock(0)),
+            JailRefusal::Unsupported(JailOff::NotLinux),
+            JailRefusal::NoHome,
+            JailRefusal::HomeMissing("/h".into()),
+            JailRefusal::NoInterpreter("node".into()),
+            JailRefusal::InterpreterMissing(long.clone()),
+            JailRefusal::UntrustedInterpreter {
+                path: "/n".into(),
+                why: Untrusted::Scratch,
+            },
+            JailRefusal::BadLoader(long.clone()),
+            JailRefusal::RootTooBroad(long.clone()),
+            JailRefusal::Unreadable(long.clone()),
+            JailRefusal::NotCanonical(long),
+        ];
+        for refusal in reasons {
+            let why = refusal.short(home);
+            let menu = codex_engines_level(codex_degraded(None, Some(&why)));
+            let row = lines(&draw(62, POPUP_H, &menu))
+                .into_iter()
+                .find(|l| l.contains("codex"))
+                .unwrap();
+            assert!(row.contains(&format!("no jail: {why} ●")), "{why}: {row}");
+        }
     }
 
     #[test]

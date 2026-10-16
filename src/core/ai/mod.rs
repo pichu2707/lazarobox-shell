@@ -257,8 +257,10 @@ pub fn status_text(detection: Option<&Detection>, id: &str) -> String {
         },
         (Status::Available, Kind::Cli) => {
             let version = state.version.as_deref().unwrap_or("version unknown");
+            // The reason replaces the version: a narrow row clips the tail,
+            // and the reason matters more than the version.
             match &state.diagnostics.jail {
-                Some(why) => format!("available · {version} · no jail: {why}"),
+                Some(why) => format!("available · no jail: {why}"),
                 None => format!("available · {version}"),
             }
         }
@@ -654,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cli_without_a_jail_says_why_after_its_version() {
+    fn a_cli_without_a_jail_puts_the_reason_where_a_narrow_row_keeps_it() {
         let mut codex = state_of("codex", Some("codex-cli 0.130.0"));
         codex.diagnostics.jail = Some("Landlock ABI 2, needs 3+".to_owned());
         let d = Detection {
@@ -662,17 +664,14 @@ mod tests {
         };
         assert_eq!(
             text(&d, "codex"),
-            "available · codex-cli 0.130.0 · no jail: Landlock ABI 2, needs 3+"
+            "available · no jail: Landlock ABI 2, needs 3+"
         );
         let mut unknown = state_of("gemini", None);
         unknown.diagnostics.jail = Some("~/.nvm too broad".to_owned());
         let d = Detection {
             engines: vec![unknown],
         };
-        assert_eq!(
-            text(&d, "gemini"),
-            "available · version unknown · no jail: ~/.nvm too broad"
-        );
+        assert_eq!(text(&d, "gemini"), "available · no jail: ~/.nvm too broad");
     }
 
     fn state_of(id: &'static str, version: Option<&str>) -> EngineState {
