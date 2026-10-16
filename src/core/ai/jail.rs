@@ -302,7 +302,7 @@ impl JailRefusal {
                     format!("{head}; it is not yours, so its owner must fix it (sudo)")
                 } else {
                     match quoted(bad) {
-                        Some(arg) => format!("{head}; run: chmod go-w {arg}"),
+                        Some(arg) => format!("{head}; run: chmod go-w -- {arg}"),
                         None => format!("{head}; remove the group and other write permissions"),
                     }
                 }

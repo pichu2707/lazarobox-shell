@@ -1324,7 +1324,8 @@ async fn a_cli_whose_only_interpreter_is_untrusted_is_not_started() {
     let events = run_job(&env, codex_job(&["exec", "-"])).await;
     let reason = jail_reason(&events);
     assert!(
-        reason.contains("is writable by group or others") && reason.contains("; run: chmod go-w '"),
+        reason.contains("is writable by group or others")
+            && reason.contains("; run: chmod go-w -- '"),
         "{reason}"
     );
     assert!(!lab.rec.join("helper_called").exists());
