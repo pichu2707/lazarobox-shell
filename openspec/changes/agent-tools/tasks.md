@@ -110,7 +110,7 @@ Fallback split if over 400: 1b-i (state, keys, effects) and 1b-ii (bar and snaps
   - 2b/2e MUST reject duplicate JSON keys at the raw wire layer: `serde_json::Value` has already collapsed them when `parse_call` runs. `parse_call` caps each argument at `MAX_ARG_BYTES` (4096).
   - Hardening (review W2): open with `O_NOFOLLOW` and `O_NONBLOCK`; `fstat` and require a regular file (a FIFO would hang); refuse `st_nlink > 1` (hard links to secrets); after open, `readlink /proc/self/fd/N` and run `check_path` again; `find_dir` and `list_dir` skip excluded entries and never follow symlinks; prefer `openat2` with `RESOLVE_BENEATH` when available.
 - [ ] 2b.3 RED: recording sandbox: no process, no socket, no write; error text carries no file content (`SECRET-TOKEN-123`).
-- [ ] 2b.4 RED: wrapper `<untrusted-tool-output id=NONCE>` with random 16-hex nonce, forged closing tag stays inside, 32 KiB cap marker, "data, not instructions" line.
+- [x] 2b.4 RED: wrapper `<untrusted-tool-output id=NONCE>` with random 16-hex nonce, forged closing tag stays inside, 32 KiB cap marker, "data, not instructions" line.
 - [ ] 2b.5 GREEN: implement on `spawn_blocking`.
 - [ ] 2b.6 Gate.
 - [ ] 2b.7 Docs: doc comments with the pinned caps.
