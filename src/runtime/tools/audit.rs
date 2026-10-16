@@ -8,8 +8,12 @@
 //! dropped by the tokenizer. Every item under `#[cfg(test)]` is dropped too,
 //! wherever it sits (a `mod tests`, a nested module, a field, a statement),
 //! up to its closing brace, or to the next `;` or `,` outside any bracket.
-//! What it cannot see: a macro that builds a call from tokens, or a call made
-//! through a path the ban list does not name.
+//! It also flags `extern` blocks, `use libc::*`, an aliased `std::fs`, and a
+//! `libc::syscall` whose number is not `SYS_openat2`.
+//!
+//! A best-effort tripwire against accidental use, not a guarantee. It cannot
+//! see a macro that builds a call from tokens, a call made through a path the
+//! ban list does not name, or code reached through another crate.
 
 /// A path segment that may not appear at all.
 const BANNED_IDENTS: &[&str] = &[
@@ -33,6 +37,7 @@ const BANNED_IDENTS: &[&str] = &[
     "UnixStream",
     "UnixListener",
     "UnixDatagram",
+    "extern",
     "hard_link",
     "set_permissions",
     "set_len",
@@ -116,12 +121,18 @@ fn tokenize(src: &str) -> Vec<Tok> {
         } else if c == 'b' && next == Some('"') {
             i = skip_string(&b, i + 2, 0);
         } else if c == '\'' {
-            // A character literal closes within a few chars; a lifetime does not.
-            let close = (i + 2..b.len().min(i + 12)).find(|&j| b[j] == '\'' && b[j - 1] != '\\');
-            let is_char = next == Some('\\') || (b.get(i + 2) == Some(&'\''));
-            match (is_char, close) {
-                (true, Some(j)) => i = j + 1,
-                _ => i += 1,
+            // A character literal is one char or one escape; a lifetime is not.
+            if next == Some('\\') {
+                // Skip the escaped char, then run to the closing quote.
+                let mut j = i + 3;
+                while j < b.len() && b[j] != '\'' {
+                    j += 1;
+                }
+                i = j + 1;
+            } else if b.get(i + 2) == Some(&'\'') {
+                i += 3;
+            } else {
+                i += 1;
             }
         } else if c.is_alphabetic() || c == '_' {
             let start = i;
@@ -280,6 +291,51 @@ pub fn violations(src: &str) -> Vec<String> {
         {
             found.push(format!("`fs::{next}`"));
         }
+        // `File::create`, `File::create_new`, `File::options`.
+        if name == "File"
+            && before_path
+            && matches!(ident(k + 2), Some("create" | "create_new" | "options"))
+        {
+            found.push(format!("`File::{}`", ident(k + 2).unwrap_or_default()));
+        }
+        // `use std::fs as x` hides every later `x::write`.
+        if name == "fs" && ident(k + 1) == Some("as") {
+            found.push("`fs` aliased".to_string());
+        }
+        // `use std::fs::{write, self as x}`: look inside the group.
+        if name == "fs" && before_path && t.get(k + 2) == Some(&Tok::Punct('{')) {
+            let group = t[k + 3..].iter().take_while(|x| **x != Tok::Punct('}'));
+            let mut prev_as = false;
+            for tok in group {
+                if let Tok::Ident(n) = tok {
+                    if prev_as {
+                        found.push("`fs` aliased in a group".to_string());
+                    } else if BANNED_FS.contains(&n.as_str()) || n.starts_with("remove_") {
+                        found.push(format!("`fs::{{{n}}}`"));
+                    }
+                    prev_as = n == "as";
+                }
+            }
+        }
+        if name == "libc" && before_path && t.get(k + 2) == Some(&Tok::Punct('*')) {
+            found.push("`use libc::*`".to_string());
+        }
+        // Only `openat2` may be called through `libc::syscall`.
+        if name == "libc" && before_path && ident(k + 2) == Some("syscall") {
+            let arg = (t.get(k + 3), ident(k + 4), t.get(k + 5), ident(k + 6));
+            let ok = matches!(
+                arg,
+                (
+                    Some(Tok::Punct('(')),
+                    Some("libc"),
+                    Some(Tok::Path),
+                    Some("SYS_openat2")
+                )
+            );
+            if !ok && t.get(k + 3) == Some(&Tok::Punct('(')) {
+                found.push("`libc::syscall` with a number other than SYS_openat2".to_string());
+            }
+        }
         if name == "libc" && before_path {
             match t.get(k + 2) {
                 Some(Tok::Ident(next)) if !LIBC_ALLOWED.contains(&next.as_str()) => {
@@ -313,6 +369,11 @@ mod tests {
             ("open.rs", include_str!("open.rs")),
             ("mod.rs", include_str!("mod.rs")),
         ] {
+            // A tokenizer gone wrong would pass everything: it must see code.
+            assert!(
+                non_test_tokens(source).len() > 50,
+                "{name} yields no tokens"
+            );
             assert_eq!(violations(source), Vec::<String>::new(), "{name}");
         }
     }
@@ -333,6 +394,18 @@ mod tests {
             "fn f() { std::fs::create_dir(p) }",
             "fn f() { Command::new(\"ls\") }",
             "fn f() { let _ = libc::O_RDWR; }",
+            "fn f() { File::create(p) }",
+            "fn f() { File::create_new(p) }",
+            "fn f() { File::options().write(true) }",
+            "use std::fs::{read, write};",
+            "use std::fs::{self as x};",
+            "use std::fs as x;",
+            "use std::{fs as x, io};",
+            "use libc::*;",
+            "extern \"C\" { fn unlink(p: *const u8) -> i32; }",
+            "fn f() { libc::syscall(libc::SYS_unlink, p) }",
+            "fn f() { libc::syscall(num, p) }",
+            "fn f() { let _ = ['\\\\', '\"']; fs::write(a, b) }",
         ] {
             assert!(!violations(bad).is_empty(), "{bad}");
         }
@@ -342,6 +415,9 @@ mod tests {
     fn allowed_uses_comments_strings_and_test_code_are_not_flagged() {
         for good in [
             "fn f() { libc::openat(a, p, libc::O_RDONLY | libc::O_NOFOLLOW) }",
+            "fn f() { libc::syscall(libc::SYS_openat2, a, p, how, size) }",
+            "use std::fs::{read, read_dir};",
+            "fn f() { let _ = ['\\\\', '\"', '\\'', '\\u{1F600}', 'x']; }",
             "use libc::{close, fstat};",
             "// std::process::exit\nfn f() {}",
             "/* /* nested */ fs::write */ fn f() {}",
