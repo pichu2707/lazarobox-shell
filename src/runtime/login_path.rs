@@ -178,13 +178,16 @@ fn fallback_budget(total: Duration, elapsed: Duration) -> Option<Duration> {
     (!left.is_zero()).then_some(left)
 }
 
-/// [`login_shell_path`], then `bash` (a login, non-interactive one: `-l -c`
-/// does not read `~/.bashrc`, only the login files, so a `PATH` set only
-/// there is not seen; the same script and `PATH`) once when that gave nothing and `shell` is not already
-/// bash. Both share the one `total` deadline: the first attempt leaves
-/// [`FALLBACK_RESERVE`] of it to the second, which also gives up the time a
-/// timed-out run may spend reaping, so the total never passes `total`. `bash` is never run when `shell`
-/// succeeded.
+/// [`login_shell_path`], then `bash` once when that gave nothing and `shell`
+/// is not already bash. Bash runs as a login, non-interactive shell: `-l -c`
+/// reads the login files but not `~/.bashrc`, so a `PATH` set only there is
+/// not seen. It gets the same script and `PATH`.
+///
+/// Both share the one `total` deadline: the first attempt leaves
+/// [`FALLBACK_RESERVE`] of it to the second, less the time a timed-out run may
+/// spend reaping. With the 3 s default, a first attempt that times out leaves
+/// bash about 500 ms. The lookup takes about `total` at most (spawn retries
+/// can add a few ms). `bash` is never run when `shell` succeeded.
 async fn login_with_fallback(
     shell: &Path,
     bash: &Path,

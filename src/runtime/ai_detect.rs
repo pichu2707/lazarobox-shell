@@ -82,11 +82,11 @@ pub fn find_on_path(name: &str, path: &OsStr) -> Option<PathBuf> {
         })
 }
 
-/// How long the output is read after the child has exited, for a pipe a
-/// background process still holds open.
 /// Longest a killed run waits to reap its child, on top of its limit.
 pub(crate) const REAP_GRACE: Duration = Duration::from_millis(500);
 
+/// How long the output is read after the child has exited, for a pipe a
+/// background process still holds open.
 const EXIT_GRACE: Duration = Duration::from_millis(100);
 
 /// Runs `<path> --version` with `search` as its `PATH` and returns its stdout. `None` on a spawn
