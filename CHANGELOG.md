@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [0.15.3] - 2026-10-16
+
 ### Added
 
 - Desktop notification for finished chat turns, independent of the outer
@@ -505,7 +507,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.2...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.3...HEAD
+[0.15.3]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.2...v0.15.3
 [0.15.2]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.14.0...v0.15.0
