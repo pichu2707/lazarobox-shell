@@ -93,6 +93,15 @@ pub struct EngineState {
     /// has no listing or the listing failed.
     pub model_labels: Vec<(String, String)>,
     pub version: Option<String>,
+    /// Why something about this engine is degraded, for the menu.
+    pub diagnostics: Diagnostics,
+}
+
+/// Short, already sanitized reasons the menu shows next to a CLI engine.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Diagnostics {
+    /// Why the model list could not be read (`None`: it was, or there is none).
+    pub models: Option<String>,
 }
 
 /// One finished run. An empty `Detection` means the run failed.
@@ -113,9 +122,9 @@ pub enum Probe {
         id: &'static str,
         path: Option<PathBuf>,
         stdout: Option<Vec<u8>>,
-        /// Raw output of the CLI's model listing (`codex debug models`);
-        /// `None` when the CLI has none or it failed.
-        models: Option<Vec<u8>>,
+        /// The CLI's model listing (`codex debug models`): its raw output, or
+        /// why it failed. `None` when the CLI has no listing.
+        listing: Option<Result<Vec<u8>, String>>,
     },
 }
 
@@ -136,11 +145,11 @@ pub fn reduce(probes: &[Probe]) -> Detection {
                     Some(Probe::Cli {
                         path: Some(_),
                         stdout,
-                        models,
+                        listing,
                         ..
                     }),
                     Kind::Cli,
-                ) => cli_state(engine.id, stdout.as_deref(), models.as_deref()),
+                ) => cli_state(engine.id, stdout.as_deref(), listing.as_ref()),
                 _ => bare(engine.id, Status::NotInstalled),
             }
         })
@@ -148,13 +157,30 @@ pub fn reduce(probes: &[Probe]) -> Detection {
     Detection { engines }
 }
 
+/// What the menu says when the listing's output is not a model catalog.
+pub const BAD_LISTING: &str = "unexpected output format";
+
+/// What the menu says when the catalog lists no model.
+pub const EMPTY_LISTING: &str = "the list is empty";
+
 /// An available CLI. Only codex has a listing (`codex debug models`); its
 /// models come after `default`, and a failed or empty listing leaves just
-/// `default`.
-fn cli_state(id: &'static str, stdout: Option<&[u8]>, listing: Option<&[u8]>) -> EngineState {
-    let labels = match (id, listing.and_then(|b| std::str::from_utf8(b).ok())) {
-        ("codex", Some(raw)) => parse::codex_models(raw),
-        _ => Vec::new(),
+/// `default` and the reason.
+fn cli_state(
+    id: &'static str,
+    stdout: Option<&[u8]>,
+    listing: Option<&Result<Vec<u8>, String>>,
+) -> EngineState {
+    let (labels, note) = match (id, listing) {
+        ("codex", Some(Ok(raw))) => {
+            match std::str::from_utf8(raw).ok().and_then(parse::codex_catalog) {
+                Some(labels) if labels.is_empty() => (labels, Some(EMPTY_LISTING.to_owned())),
+                Some(labels) => (labels, None),
+                None => (Vec::new(), Some(BAD_LISTING.to_owned())),
+            }
+        }
+        ("codex", Some(Err(why))) => (Vec::new(), Some(why.clone())),
+        _ => (Vec::new(), None),
     };
     let models = std::iter::once("default".to_string())
         .chain(labels.iter().map(|(_, value)| value.clone()))
@@ -163,6 +189,7 @@ fn cli_state(id: &'static str, stdout: Option<&[u8]>, listing: Option<&[u8]>) ->
         models,
         model_labels: labels,
         version: stdout.and_then(parse::parse_version),
+        diagnostics: Diagnostics { models: note },
         ..bare(id, Status::Available)
     }
 }
@@ -174,6 +201,7 @@ fn bare(id: &'static str, status: Status) -> EngineState {
         models: Vec::new(),
         version: None,
         model_labels: Vec::new(),
+        diagnostics: Diagnostics::default(),
     }
 }
 
@@ -297,6 +325,7 @@ mod tests {
             models: models.iter().map(|m| m.to_string()).collect(),
             version: version.map(str::to_string),
             model_labels: Vec::new(),
+            diagnostics: Default::default(),
         })
     }
 
@@ -449,7 +478,7 @@ mod tests {
             id,
             path: path.map(PathBuf::from),
             stdout: stdout.map(|s| s.as_bytes().to_vec()),
-            models: None,
+            listing: None,
         }
     }
 
@@ -474,7 +503,7 @@ mod tests {
             id: "codex",
             path: Some(PathBuf::from("/bin/codex")),
             stdout: Some(b"codex-cli 0.162.1\n".to_vec()),
-            models: Some(raw.as_bytes().to_vec()),
+            listing: Some(Ok(raw.as_bytes().to_vec())),
         }]);
         let codex = get(&d, "codex").unwrap();
         assert_eq!(codex.status, Status::Available);
@@ -486,21 +515,40 @@ mod tests {
         assert_eq!(codex.models.len(), 8);
         assert_eq!(codex.models[0], "default");
         assert_eq!(codex.models[1], "gpt-6.1-sol");
+        assert_eq!(codex.diagnostics.models, None, "a good list needs no note");
+    }
+
+    fn codex_with(listing: Option<Result<&[u8], &str>>) -> EngineState {
+        let d = reduce(&[Probe::Cli {
+            id: "codex",
+            path: Some(PathBuf::from("/bin/codex")),
+            stdout: None,
+            listing: listing.map(|l| l.map(<[u8]>::to_vec).map_err(str::to_owned)),
+        }]);
+        get(&d, "codex").unwrap()
     }
 
     #[test]
-    fn a_failed_or_foreign_listing_leaves_just_default() {
-        for models in [None, Some(&b"not json"[..]), Some(&b"{\"models\":[]}"[..])] {
-            let d = reduce(&[Probe::Cli {
-                id: "codex",
-                path: Some(PathBuf::from("/bin/codex")),
-                stdout: None,
-                models: models.map(<[u8]>::to_vec),
-            }]);
-            assert_eq!(
-                get(&d, "codex"),
-                state("codex", Status::Available, &["default"], None)
-            );
+    fn a_failed_or_foreign_listing_leaves_just_default_and_says_why() {
+        let none = codex_with(None);
+        assert_eq!(none.models, ["default"]);
+        assert_eq!(none.diagnostics.models, None, "no listing, nothing to say");
+        let cases: [(Result<&[u8], &str>, &str); 5] = [
+            (
+                Err("codex exited 1: not logged in"),
+                "codex exited 1: not logged in",
+            ),
+            (Ok(b"not json"), BAD_LISTING),
+            (Ok(b"{\"data\":[]}"), BAD_LISTING),
+            (Ok(&[0xff, 0xfe, 0x00]), BAD_LISTING),
+            (Ok(b"{\"models\":[]}"), EMPTY_LISTING),
+        ];
+        for (listing, note) in cases {
+            let codex = codex_with(Some(listing));
+            assert_eq!(codex.models, ["default"], "{note}");
+            assert!(codex.model_labels.is_empty(), "{note}");
+            assert_eq!(codex.diagnostics.models.as_deref(), Some(note));
+            assert_eq!(codex.status, Status::Available);
         }
     }
 
@@ -510,7 +558,9 @@ mod tests {
             id: "claude",
             path: Some(PathBuf::from("/bin/claude")),
             stdout: None,
-            models: Some(br#"{"models":[{"slug":"x","visibility":"list"}]}"#.to_vec()),
+            listing: Some(Ok(
+                br#"{"models":[{"slug":"x","visibility":"list"}]}"#.to_vec()
+            )),
         }]);
         assert_eq!(
             get(&d, "claude"),
@@ -565,6 +615,7 @@ mod tests {
             models,
             version: version.map(str::to_string),
             model_labels: Vec::new(),
+            diagnostics: Default::default(),
             ..bare(id, status)
         };
         let d = Detection {

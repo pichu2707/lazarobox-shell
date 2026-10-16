@@ -636,9 +636,13 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
 
 /// Runs `codex debug models` the way a codex turn starts: the same plan (the
 /// jail helper with the codex layout, `Required`: no jail, no process), the
-/// same private folders and scrubbed environment. stdin is closed and stderr
-/// is discarded. `None` on any failure.
-pub(crate) async fn run_listing(env: &CliEnv, limit: Duration, cap: usize) -> Option<Vec<u8>> {
+/// same private folders and scrubbed environment. stdin is closed. `Err` is
+/// the reason on any failure; stderr is read only for its last line.
+pub(crate) async fn run_listing(
+    env: &CliEnv,
+    limit: Duration,
+    cap: usize,
+) -> Result<Vec<u8>, String> {
     let job = Job {
         wire: Wire::CodexJsonl,
         binary: "codex",
@@ -648,14 +652,19 @@ pub(crate) async fn run_listing(env: &CliEnv, limit: Duration, cap: usize) -> Op
         jail: JailPolicy::Required,
         tmp_file: None,
     };
-    let plan = plan(env, &job).ok()?;
+    let plan = match plan(env, &job) {
+        Ok(plan) => plan,
+        Err(StreamEvent::Error(ChatError::Jail(why))) => return Err(format!("jail: {why}")),
+        Err(StreamEvent::Error(ChatError::Failed(text))) => return Err(text),
+        Err(_) => return Err("could not start codex".to_owned()),
+    };
     // Defence in depth: `Required` never plans a bare run (it refuses
     // instead), so this is unreachable today. If a future policy change let
     // the plan fall back to a bare run, the listing must not use it.
     if plan.notice.is_some() {
-        return None;
+        return Err("jail: the jail is off".to_owned());
     }
-    ai_detect::run_capped(
+    ai_detect::run_capped_why(
         || {
             let mut command = command(
                 &plan.program,
@@ -663,13 +672,14 @@ pub(crate) async fn run_listing(env: &CliEnv, limit: Duration, cap: usize) -> Op
                 (&plan.dirs.cwd, &plan.dirs.tmp),
                 &env.child_vars(),
             );
-            command.stderr(Stdio::null());
+            command.stderr(Stdio::piped());
             command
         },
         limit,
         cap,
     )
     .await
+    .map_err(|failure| failure.text("codex", limit, cap))
 }
 
 /// Writes the transcript, then drops the pipe: the CLI sees EOF.

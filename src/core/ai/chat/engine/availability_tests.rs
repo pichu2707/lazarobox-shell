@@ -30,6 +30,7 @@ fn state(id: &'static str, status: Status, models: &[&str]) -> EngineState {
         models: models.iter().map(|m| (*m).to_owned()).collect(),
         version: None,
         model_labels: Vec::new(),
+        diagnostics: Default::default(),
     }
 }
 

@@ -236,6 +236,10 @@ Every message below says why a CLI cannot be used. None of them changes what the
 | `... no node found to run the CLI script; install it next to the CLI or on PATH` | The CLI is a script and no trusted interpreter was found. |
 | `... <path> is too broad for the jail; keep the CLI and its state in folders of their own` | The CLI, its loader or its state folder (`$CODEX_HOME`, `~/.codex`, ...) is a broad place such as `/usr/local` or `$HOME`. Install the CLI in its own folder. |
 | `... cannot read <path>`, `... the program loader <path> is not a regular file`, `... $HOME is not an absolute path` | The CLI file, its loader or `$HOME` could not be resolved. Check that they exist. |
+| `model list unavailable: codex exited <n>: <last stderr line>` | In the model picker. `codex debug models` failed (an old codex without the subcommand, not logged in, ...). Run `codex login` or update codex, then press `r` in the menu. Only `default` and `custom...` are offered meanwhile. |
+| `model list unavailable: timed out after 4 s` / `output over 2 MiB` | The listing was too slow or too large and was dropped. Press `r` to try again. |
+| `model list unavailable: unexpected output format` / `the list is empty` | codex answered but not with a model catalog (a newer or older codex), or with no listed model. |
+| `model list unavailable: jail: <reason>` | The listing runs in the same jail as the chat, so the jail rows above apply. |
 | `claude runs without the jail here: <reason>` | claude is allowed to run with only its text-only flags; the reason is any row above. |
 
 ### Historial de conversaciones

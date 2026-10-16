@@ -1946,6 +1946,7 @@ mod tests {
                 models: vec!["default".to_string()],
                 version: None,
                 model_labels: Vec::new(),
+                diagnostics: Default::default(),
             }],
         };
         let quit = step(
@@ -2469,6 +2470,7 @@ mod tests {
                 models: vec!["llama3:8b".to_owned()],
                 version: None,
                 model_labels: Vec::new(),
+                diagnostics: Default::default(),
             }],
         }));
         app

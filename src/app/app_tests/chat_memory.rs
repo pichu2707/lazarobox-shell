@@ -124,6 +124,7 @@ fn opened(memory: bool) -> (App, Vec<Effect>) {
             models: vec!["llama3:8b".to_owned()],
             version: None,
             model_labels: Vec::new(),
+            diagnostics: Default::default(),
         }],
     }));
     let effects = press(&mut a, "c");
@@ -462,6 +463,7 @@ fn after_giving_up_the_chat_streams_and_the_late_project_reply_is_ignored() {
             models: vec!["llama3:8b".to_owned()],
             version: None,
             model_labels: Vec::new(),
+            diagnostics: Default::default(),
         }],
     }));
     assert_eq!(send(&mut a, "hi").memory, None);

@@ -439,6 +439,7 @@ mod tests {
                     },
                     version: None,
                     model_labels: Vec::new(),
+                    diagnostics: Default::default(),
                 })
                 .collect(),
         }
@@ -506,6 +507,7 @@ mod tests {
                     },
                     version: (e.id == "claude").then(|| "2.1.0".to_owned()),
                     model_labels: Vec::new(),
+                    diagnostics: Default::default(),
                 })
                 .collect(),
         }
@@ -959,6 +961,7 @@ mod tests {
                     },
                     version: None,
                     model_labels: Vec::new(),
+                    diagnostics: Default::default(),
                 })
                 .collect(),
         };
@@ -973,5 +976,64 @@ mod tests {
         let clipped = row(&long);
         assert!(clipped.contains("…"), "{clipped}");
         assert!(clipped.ends_with("✓│"), "{clipped}");
+    }
+
+    /// A machine where only codex is installed and its model list failed.
+    fn codex_without_list(why: &str) -> Detection {
+        Detection {
+            engines: CATALOG
+                .iter()
+                .map(|e| EngineState {
+                    id: e.id,
+                    status: if e.id == "codex" {
+                        Status::Available
+                    } else {
+                        Status::NotInstalled
+                    },
+                    models: if e.id == "codex" {
+                        vec!["default".to_owned()]
+                    } else {
+                        Vec::new()
+                    },
+                    version: (e.id == "codex").then(|| "codex-cli 0.130.0".to_owned()),
+                    model_labels: Vec::new(),
+                    diagnostics: crate::core::ai::Diagnostics {
+                        models: (e.id == "codex").then(|| why.to_owned()),
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    fn codex_models_level(detection: Detection) -> MenuState {
+        let saved = AiConfig::general(Some("codex"), None);
+        let mut menu = fresh().with_ai(saved, Some(detection));
+        goto(&mut menu, "general");
+        press(&mut menu, &[KeyCode::Enter, KeyCode::Enter]);
+        menu
+    }
+
+    #[test]
+    fn snapshot_codex_models_say_why_the_list_is_missing() {
+        let menu = codex_models_level(codex_without_list("codex exited 1: not logged in"));
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(
+            shown.contains("model list unavailable: codex exited 1: not logged in"),
+            "{shown}"
+        );
+        insta::assert_snapshot!(shown);
+    }
+
+    #[test]
+    fn a_long_listing_reason_is_clipped_to_the_row() {
+        let why = format!("codex exited 1: {}", "x".repeat(200));
+        let menu = codex_models_level(codex_without_list(&why));
+        let buf = draw(62, POPUP_H, &menu);
+        let note = lines(&buf)
+            .into_iter()
+            .find(|l| l.contains("model list unavailable"))
+            .unwrap();
+        assert!(note.contains('…') && note.ends_with('│'), "{note}");
+        assert_eq!(cells(&note), 62);
     }
 }

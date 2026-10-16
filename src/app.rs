@@ -5844,6 +5844,7 @@ mod app_tests {
                     models: Vec::new(),
                     version: None,
                     model_labels: Vec::new(),
+                    diagnostics: Default::default(),
                 })
                 .collect(),
         }
@@ -5981,6 +5982,7 @@ mod app_tests {
                         models: models.into_iter().map(str::to_owned).collect(),
                         version: None,
                         model_labels: Vec::new(),
+                        diagnostics: Default::default(),
                     }
                 })
                 .collect(),
