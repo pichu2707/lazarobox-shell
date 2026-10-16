@@ -7,6 +7,10 @@ pub mod paths;
 use serde_json::{Value, json};
 
 /// Whether a tool only reads or can change the user's session.
+///
+/// `Read` does NOT mean free. Whether a call needs the user's `y` is decided
+/// by the engine's locality in slice 2e (a cloud engine asks before
+/// `read_file`). Nothing may dispatch on `Access` alone before then.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Access {
     Read,
@@ -50,6 +54,8 @@ pub enum ToolError {
 }
 
 /// The built-ins in offer order: name, argument, description, access.
+/// `Access::Read` is only a classification, not an approval rule: see
+/// [`Access`].
 const BUILT_INS: [(&str, &str, &str, Access); 4] = [
     (
         "find_dir",
@@ -88,7 +94,9 @@ fn one_string(arg: &str) -> Value {
 }
 
 /// The tools offered to every engine: the built-ins, then the external ones
-/// whose name does not shadow a built-in. An external tool is never `Read`:
+/// whose name does not shadow a built-in. Dropping a colliding external tool
+/// is temporary: slice 4a exposes it under its server-qualified name and
+/// removes duplicates among externals. An external tool is never `Read`:
 /// it runs code the user did not write here.
 pub fn registry(external: &[ExternalTool]) -> Vec<ToolSpec> {
     let built_in = BUILT_INS

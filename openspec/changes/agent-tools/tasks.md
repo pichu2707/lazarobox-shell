@@ -104,6 +104,7 @@ Fallback split if over 400: 1b-i (state, keys, effects) and 1b-ii (bar and snaps
 
 - [ ] 2b.1 RED: `find_dir` (depth 8, 20,000 visited, 2 s, 20 results, no symlink follow, no descent into excluded, truncation said); fake slow fs keeps the loop responsive.
 - [ ] 2b.2 RED: `list_dir` (200 cap, kinds, excluded names omitted, control/bidi names cleaned); `read_file` (64 KiB, NUL means not text, redaction via `memory::redact`, real path re-checked through `/proc/self/fd` after open, swapped-symlink case).
+  - Hardening (review W2): open with `O_NOFOLLOW` and `O_NONBLOCK`; `fstat` and require a regular file (a FIFO would hang); refuse `st_nlink > 1` (hard links to secrets); after open, `readlink /proc/self/fd/N` and run `check_path` again; `find_dir` and `list_dir` skip excluded entries and never follow symlinks; prefer `openat2` with `RESOLVE_BENEATH` when available.
 - [ ] 2b.3 RED: recording sandbox: no process, no socket, no write; error text carries no file content (`SECRET-TOKEN-123`).
 - [ ] 2b.4 RED: wrapper `<untrusted-tool-output id=NONCE>` with random 16-hex nonce, forged closing tag stays inside, 32 KiB cap marker, "data, not instructions" line.
 - [ ] 2b.5 GREEN: implement on `spawn_blocking`.
@@ -211,7 +212,7 @@ Conditional on the opencode adapter, which is parked. Not part of this change's 
 ## PR13 / 4a: User MCP server config (`src/core/ai/{config,tools/servers}.rs`, `src/core/config_edit.rs`)
 
 - [ ] 4a.1 RED: `[[ai.mcp.servers]]` parse: name, command, args, env as variable NAMES only, optional `project`; per-entry fallback and startup notices after `ai.tools`; a secret value in env is refused.
-- [ ] 4a.2 RED: resolution: global plus project servers for the chat's origin git root, other project excluded, project wins on a name clash, a repo `.lazarobox/mcp.toml` is never read, qualified name `<server>__<tool>` matching `[a-z0-9_-]{1,24}`.
+- [ ] 4a.2 RED (also: a colliding external tool is exposed under its server-qualified name and same-named externals are deduplicated here; 2a only drops them): resolution: global plus project servers for the chat's origin git root, other project excluded, project wins on a name clash, a repo `.lazarobox/mcp.toml` is never read, qualified name `<server>__<tool>` matching `[a-z0-9_-]{1,24}`.
 - [ ] 4a.3 RED: persistence: save never adds, changes, reorders or removes `ai.mcp.*` bytes (comments, invalid entries, arrays of tables kept).
 - [ ] 4a.4 GREEN: implement.
 - [ ] 4a.5 Gate.

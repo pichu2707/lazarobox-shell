@@ -366,7 +366,7 @@ pub fn read_with_port_env(
 
 /// Reads `[ai.tools] enabled`: a missing table or key is `true`; a value of
 /// the wrong type falls back to `true` with a problem. Unknown keys are
-/// ignored. Only the key is parsed here; the menu row comes later.
+/// ignored. The menu row (`Tools`) edits the same key.
 fn read_tools(table: &Table, problems: &mut Vec<String>) -> bool {
     let Some(ai) = table.get("ai").and_then(Value::as_table) else {
         return true;
