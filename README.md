@@ -185,7 +185,19 @@ Teclas dentro del chat:
 notify = "auto"
 ```
 
-Los valores antiguos siguen valiendo: `true` equivale a `"auto"` y `false` a `"off"`. La campana sola depende de cada terminal (el tuyo puede tener el sonido apagado, o tmux / zellij pueden filtrarla), por eso existe la notificación de escritorio. La notificación se ejecuta sin shell, con el `PATH` de login que ya usan los CLIs (nunca el directorio actual), sin bloquear la interfaz y con un límite de unos 2 s. El título es `lazarobox` y el texto es fijo y solo nombra el panel (`Answer ready in pane N` o `Turn failed in pane N`): nunca incluye la respuesta.
+Los valores antiguos siguen valiendo: `true` equivale a `"auto"` y `false` a `"off"`. La campana sola depende de cada terminal (el tuyo puede tener el sonido apagado, o tmux / zellij pueden filtrarla), por eso existe la notificación de escritorio.
+
+La notificación de escritorio se ejecuta con `notify-send` (título `lazarobox`; el texto es fijo y solo nombra el panel: `Answer ready in pane N` o `Turn failed in pane N`, nunca la respuesta). Detalles de seguridad y de uso:
+
+- Sin shell, con un vector de argumentos, y con el `PATH` de login que ya usan los CLIs (nunca el directorio actual). Fuera del hilo de la interfaz (la comprobación de disponibilidad también), con un límite de unos 2 s y sin dejar procesos zombi.
+- Entorno depurado: el proceso hijo solo recibe `PATH`, `HOME`, `LANG`, `LC_*`, `DBUS_SESSION_BUS_ADDRESS`, `DISPLAY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, `XAUTHORITY`, `XDG_CURRENT_DESKTOP` y `XDG_SESSION_TYPE`; ninguna otra variable (claves de API, tokens).
+- Confianza en el `PATH`: se ignora un `notify-send` (o un reproductor de sonido) que esté bajo `/tmp` o `/var/tmp`, o cuyo fichero o carpeta se pueda escribir por grupo u otros, y se sigue con la siguiente entrada del `PATH`.
+- Disponible solo con sesión de escritorio: `DISPLAY` o `WAYLAND_DISPLAY`, y un bus de sesión (`DBUS_SESSION_BUS_ADDRESS` o el socket `$XDG_RUNTIME_DIR/bus`). Por SSH (`SSH_CONNECTION` o `SSH_TTY`) se considera no disponible. En modo `"desktop"`, si no está disponible o falla, suena la campana.
+- Una ráfaga de respuestas no apila procesos: solo hay un envío en curso a la vez; los que llegan mientras tanto se descartan (en `"auto"` la campana sí suena en cada una).
+
+**Sonido propio:** en `"auto"` y `"desktop"`, lazarobox reproduce además un sonido (`[ai] notify_sound = true`, por defecto; fila Sound del menú), porque un demonio como dunst no suena por sí mismo. Prueba, por orden, `canberra-gtk-play -i message-new-instant`, `pw-play <fichero>` y `paplay <fichero>`, donde `<fichero>` es el primero que exista de `/usr/share/sounds/freedesktop/stereo/message-new-instant.oga` y `complete.oga`. Si no hay ninguno, no hace nada. Las mismas reglas que `notify-send`: sin shell, entorno depurado, confianza del `PATH`, fuera del hilo de la interfaz, límite de 2 s, un sonido a la vez y nada por SSH o sin sesión.
+
+**Probar la configuración:** en la fila Notify (o Sound) del menú de IA, `t` lanza ahora mismo un aviso con el modo y el sonido que muestra la fila (aunque no estén guardados y sin importar el foco; el texto es `Test notification`). El pie del menú dice qué pasó: `sent: bell + desktop + sound`, o por qué no, por ejemplo `desktop unavailable: no notify-send on PATH`, `no session bus`, `SSH session` o `notify-send on PATH is untrusted (...)`.
 
 Para cerrar el panel: `Ctrl+Espacio`, `w`, `q`. La respuesta se muestra mientras se genera; si el modelo "piensa" (por ejemplo `qwen3`), la barra de estado muestra un indicador `thinking` y el razonamiento queda en un bloque aparte.
 

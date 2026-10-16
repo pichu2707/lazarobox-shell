@@ -22,6 +22,24 @@ baseline.
   2 s limit; its title is `lazarobox` and its text is a fixed line naming the
   pane, never any of the answer. The old booleans keep working (`true` is
   `"auto"`, `false` is `"off"`), and the default stays off.
+- The desktop notification is hardened. The child gets an empty environment
+  plus an allow-list (`PATH`, `HOME`, `LANG`, `LC_*`, the session bus and
+  display variables), never secrets. A `notify-send` under `/tmp` or writable
+  by group or others is skipped, like the CLI interpreters. The availability
+  check runs off the UI thread. The desktop counts as unavailable over SSH or
+  without a display and a session bus. At most one send is in flight, so a
+  burst of finished turns is coalesced (`"auto"` still rings the bell for
+  each).
+- lazarobox plays its own sound with the notification in `"auto"` and
+  `"desktop"` (`[ai] notify_sound`, default true, and a Sound row in the AI
+  menu): `canberra-gtk-play -i message-new-instant`, else `pw-play` or
+  `paplay` with the first of the freedesktop `message-new-instant.oga` and
+  `complete.oga`. It follows the same rules as `notify-send` and does
+  nothing when no player is found.
+- `t` on the Notify or Sound row of the AI menu fires one test notification
+  now, with the mode shown (saved or not) and ignoring the focus rule. The
+  footer says what happened (`sent: bell + desktop + sound`) or why not
+  (`desktop unavailable: no session bus`).
 
 ## [0.15.2] - 2026-10-16
 
