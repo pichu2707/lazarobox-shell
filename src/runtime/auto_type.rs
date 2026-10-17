@@ -179,6 +179,42 @@ mod tests {
         drop(rx);
     }
 
+    // The command is written before the park: when the turn ended meanwhile,
+    // the park fails and the call must be told the command ran.
+    #[tokio::test]
+    async fn a_park_that_fails_after_the_write_tells_the_call_it_ran() {
+        use crate::core::{
+            ai::chat::{approval::ApprovalAsk, engine::CallId},
+            layout::PaneId,
+        };
+        use crate::runtime::tools::{Pending, Waits, approver::RAN_ENDED};
+        let waits = Waits::new();
+        let pane_id = PaneId::for_test(1);
+        let wait = waits.approver(pane_id, 1, Pending::new()).ask(
+            CallId(1),
+            &ApprovalAsk::Run {
+                command: "ls".into(),
+            },
+        );
+        let (mut pane, log) = run_pty(Some("/home/u"), Some(true));
+        let claim = || waits.take(pane_id, 1, CallId(1));
+        let mut parked = None;
+        let done = run_if_idle(
+            Some(&mut pane),
+            Path::new("/home/u"),
+            b"ls\r".to_vec(),
+            claim,
+            |sender| {
+                waits.end_turn(pane_id, 1);
+                parked = Some(waits.park(pane_id, 1, CallId(1), sender));
+            },
+        );
+        assert_eq!(done, Ok(()));
+        assert_eq!(parked, Some(false));
+        assert_eq!(log.lock().unwrap().writes, vec![b"ls\r".to_vec()]);
+        assert_eq!(wait.await, Decision::Denied(RAN_ENDED).into());
+    }
+
     #[test]
     fn a_moved_or_unreadable_cwd_and_a_busy_foreground_write_nothing_and_claim_nothing() {
         let cases = [

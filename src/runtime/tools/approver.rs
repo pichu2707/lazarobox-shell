@@ -30,6 +30,10 @@ use crate::core::{
 /// What a call is told when its chat or turn ended before the user answered.
 pub const ENDED: &str = "the chat ended before the user answered";
 
+/// What a call is told when its turn or chat ended while a command it had
+/// started was still running: the command did run.
+pub const RAN_ENDED: &str = "the command was typed and run, but the turn ended before it finished";
+
 type Key = (PaneId, u64, CallId);
 
 /// The calls waiting for the user's answer, for every chat of the app.
@@ -45,6 +49,9 @@ pub struct Waits {
 struct Ended {
     turns: HashSet<(PaneId, u64)>,
     panes: HashSet<PaneId>,
+    /// The calls whose command was written and whose wait is parked, so an
+    /// end tells them the truth (`RAN_ENDED`) and not `ENDED`.
+    parked: HashSet<Key>,
 }
 
 impl Waits {
@@ -84,10 +91,11 @@ impl Waits {
 
     /// Puts a claimed wait back after the command was written, so the turn and
     /// chat cleanup, and the drop of the call, also cover the running call.
-    /// `false` (and the sender is dropped, which ends the call as `ENDED`)
-    /// when the call is gone, or its turn or chat already ended. The checks
-    /// run under the lock, so an `end_*` or a dropped call cannot slip in
-    /// between the check and the insert.
+    /// `false` when the call is gone, or its turn or chat already ended; the
+    /// command was written, so the call is then told `RAN_ENDED`. A call whose
+    /// future was dropped has a closed sender, which covers an entry that left
+    /// the map already. The checks run under the lock, so an `end_*` or a
+    /// dropped call cannot slip in between the check and the insert.
     pub fn park(
         &self,
         pane: PaneId,
@@ -100,9 +108,14 @@ impl Waits {
             let ended = self.ended();
             ended.panes.contains(&pane) || ended.turns.contains(&(pane, turn))
         };
-        if dead || wait.is_closed() {
+        if wait.is_closed() {
             return false;
         }
+        if dead {
+            let _ = wait.send(Decision::Denied(RAN_ENDED).into());
+            return false;
+        }
+        self.ended().parked.insert((pane, turn, call));
         waiting.insert((pane, turn, call), wait);
         true
     }
@@ -110,7 +123,9 @@ impl Waits {
     /// Ends a parked call with the report of its run. `false` when nothing is
     /// parked under the key (the turn ended, the call was dropped).
     pub fn finish(&self, pane: PaneId, turn: u64, call: CallId, report: Box<RunReport>) -> bool {
-        match self.map().remove(&(pane, turn, call)) {
+        let wait = self.map().remove(&(pane, turn, call));
+        self.ended().parked.remove(&(pane, turn, call));
+        match wait {
             Some(wait) => wait.send(Answer::Ran(report)).is_ok(),
             None => false,
         }
@@ -128,17 +143,31 @@ impl Waits {
         self.ended.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Ends every wait `ended` names: a parked run is told it did run, any
+    /// other is dropped (`ENDED`).
+    fn end_where(&self, ended: impl Fn(&Key) -> bool) {
+        let mut waiting = self.map();
+        let keys: Vec<Key> = waiting.keys().filter(|key| ended(key)).copied().collect();
+        let mut state = self.ended();
+        for key in keys {
+            if let Some(wait) = waiting.remove(&key)
+                && state.parked.remove(&key)
+            {
+                let _ = wait.send(Decision::Denied(RAN_ENDED).into());
+            }
+        }
+        state.parked.retain(|key| !ended(key));
+    }
+
     /// Denies every call of `pane`: its chat closed.
     pub fn end_pane(&self, pane: PaneId) {
-        let mut waiting = self.map();
-        waiting.retain(|(p, _, _), _| *p != pane);
+        self.end_where(|key| key.0 == pane);
         self.ended().panes.insert(pane);
     }
 
     /// Denies every call of one turn: the turn is over.
     pub fn end_turn(&self, pane: PaneId, turn: u64) {
-        let mut waiting = self.map();
-        waiting.retain(|(p, t, _), _| (*p, *t) != (pane, turn));
+        self.end_where(|key| (key.0, key.1) == (pane, turn));
         self.ended().turns.insert((pane, turn));
     }
 
@@ -177,6 +206,7 @@ impl Approver for ForTurn {
             let mut ended = self.waits.ended();
             ended.panes.remove(&self.pane);
             ended.turns.remove(&(self.pane, self.turn));
+            ended.parked.remove(&key);
             waiting.insert(key, answer);
         }
         let entry = Entry {
@@ -397,7 +427,7 @@ mod tests {
             waits.park(pane(1), 1, call, sender);
         }
         waits.end_turn(pane(1), 1);
-        assert_eq!(a.await, Decision::Denied(ENDED).into());
+        assert_eq!(a.await, Decision::Denied(RAN_ENDED).into());
         assert_eq!(waits.len(), 0);
         let again = waits
             .approver(pane(1), 2, Pending::new())
@@ -405,7 +435,7 @@ mod tests {
         let sender = waits.take(pane(1), 2, CallId(3)).expect("it waits");
         waits.park(pane(1), 2, CallId(3), sender);
         waits.end_pane(pane(1));
-        assert_eq!(again.await, Decision::Denied(ENDED).into());
+        assert_eq!(again.await, Decision::Denied(RAN_ENDED).into());
         drop(b);
     }
 
@@ -432,7 +462,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_parked_call_of_an_ended_turn_or_chat_is_dropped() {
+    async fn a_parked_call_of_an_ended_turn_or_chat_is_told_it_ran() {
         let waits = Waits::new();
         let a = waits.approver(pane(1), 1, Pending::new());
         let (w1, w2, w3) = (
@@ -450,12 +480,9 @@ mod tests {
         assert!(!waits.park(pane(1), 1, CallId(1), s1), "turn ended");
         assert!(!waits.park(pane(2), 1, CallId(3), s3), "chat ended");
         assert_eq!(waits.len(), 0);
-        assert_eq!(
-            w1.await,
-            Decision::Denied(ENDED).into(),
-            "the dropped sender ends it"
-        );
-        assert_eq!(w3.await, Decision::Denied(ENDED).into());
+        // The command was written before the park: the call is told so.
+        assert_eq!(w1.await, Decision::Denied(RAN_ENDED).into());
+        assert_eq!(w3.await, Decision::Denied(RAN_ENDED).into());
         // A later turn of the same chat is alive.
         let w4 = waits
             .approver(pane(1), 2, Pending::new())
