@@ -367,11 +367,17 @@ impl App {
         self.shell_panes_in(self.tab())
     }
 
+    /// Whether `pane` runs the `cargo install` of an update: a PTY, but its
+    /// stdin is cargo's, never a place for a command.
+    fn is_update(&self, pane: PaneId) -> bool {
+        (self.panes.get(&pane).and_then(PaneState::pty)).is_some_and(|pty| pty.update.is_some())
+    }
+
     fn shell_panes_in(&self, tab: &Tab) -> Vec<PaneId> {
         tab.tree
             .leaves()
             .into_iter()
-            .filter(|pane| self.is_shell(*pane))
+            .filter(|pane| self.is_shell(*pane) && !self.is_update(*pane))
             .collect()
     }
 

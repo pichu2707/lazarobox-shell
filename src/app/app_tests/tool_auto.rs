@@ -229,6 +229,38 @@ fn a_zoomed_chat_hides_the_target_so_the_call_prompts() {
     assert_eq!(auto_typed(&a), 0);
 }
 
+// A `cargo install` update pane is not a shell: nothing is typed into its
+// stdin, by `auto` or by `y`, and a tab with only that pane has no shell.
+#[test]
+fn an_update_pane_is_never_a_target() {
+    use crate::app::{RunState, UpdateRun};
+    let make_update = |a: &mut App| {
+        a.panes
+            .get_mut(&PaneId::FIRST)
+            .and_then(PaneState::pty_mut)
+            .unwrap()
+            .update = Some(UpdateRun {
+            version: "9.9.9".into(),
+            state: RunState::Running,
+        });
+    };
+    let no_shell = Decision::Denied("there is no shell pane in this tab");
+    let (mut a, turn) = auto_live();
+    make_update(&mut a);
+    assert_eq!(
+        announce(&mut a, turn, 1, run("cd x")),
+        vec![decision(turn, 1, no_shell)]
+    );
+    assert_eq!(auto_typed(&a), 0);
+
+    let (mut a, turn) = live();
+    make_update(&mut a);
+    assert_eq!(
+        announce(&mut a, turn, 1, run("cd x")),
+        vec![decision(turn, 1, no_shell)]
+    );
+}
+
 // One batch, one pane: the first is typed, the second prompts (the line is
 // pending as soon as the effect is emitted).
 #[test]
