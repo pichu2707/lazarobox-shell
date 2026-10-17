@@ -5,10 +5,29 @@ fn origin() -> Option<PathBuf> {
 }
 
 #[test]
-fn nothing_is_verified_yet() {
-    assert!(MCP_VERIFIED.is_empty());
+fn the_four_engines_are_verified() {
+    assert_eq!(MCP_VERIFIED, ["claude", "codex", "gemini", "ollama"]);
+    for engine in MCP_VERIFIED {
+        assert_eq!(
+            tools_for(engine, true, origin(), MCP_VERIFIED),
+            Tools::On {
+                origin: origin(),
+                mcp: None
+            },
+            "{engine}"
+        );
+        assert_eq!(
+            tools_for(engine, false, origin(), MCP_VERIFIED),
+            Tools::Off,
+            "{engine}"
+        );
+    }
+}
+
+#[test]
+fn with_an_empty_verified_set_every_engine_stays_off() {
     for engine in ["claude", "codex", "gemini", "ollama"] {
-        assert_eq!(tools_for(engine, true, origin(), MCP_VERIFIED), Tools::Off);
+        assert_eq!(tools_for(engine, true, origin(), &[]), Tools::Off);
     }
 }
 

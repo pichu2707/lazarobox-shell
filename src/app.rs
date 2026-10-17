@@ -4290,8 +4290,17 @@ mod app_tests {
         PaneSize { rows, cols }
     }
 
+    /// An app with no tool engine: the tests that offer tools opt in with
+    /// `with_tool_engines`, so none depends on which engines are verified.
     fn launched(cols: u16, rows: u16) -> App {
-        App::new(cols, rows).with_env(Some("/bin/zsh"), None, LAUNCH.into())
+        App::new(cols, rows)
+            .with_env(Some("/bin/zsh"), None, LAUNCH.into())
+            .with_tool_engines(&[])
+    }
+
+    #[test]
+    fn a_new_app_offers_tools_to_the_verified_engines() {
+        assert_eq!(App::new(80, 25).tool_engines, MCP_VERIFIED);
     }
 
     fn spec(cwd: &str, size: PaneSize) -> SpawnSpec {

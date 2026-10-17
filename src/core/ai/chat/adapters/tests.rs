@@ -823,10 +823,10 @@ fn a_gemini_message_cannot_forge_a_turn_boundary() {
     assert_eq!(labels, ["User:", "Assistant:", "User:"]);
 }
 
-// Spec (agent-tools): with tools off every request is byte-identical. No
-// adapter reads `ChatRequest.tools` yet (the wiring of an engine lands with its
-// manual check), so a turn that offers tools builds the same invocation: argv,
-// stdin, env and body. `build` reads the real `MCP_VERIFIED`, which is empty.
+// Spec (agent-tools): with tools off every request is byte-identical. While an
+// engine is outside the verified set (an empty one here, through `build_with`)
+// a turn that offers tools builds the same invocation: argv, stdin, env and
+// body.
 #[test]
 fn the_tools_flag_changes_no_invocation() {
     for engine in ["ollama", "claude", "codex", "gemini"] {
@@ -838,7 +838,11 @@ fn the_tools_flag_changes_no_invocation() {
             mcp: None,
         };
         let adapter = adapter_for(engine).unwrap();
-        assert_eq!(adapter.build(&off), adapter.build(&on), "{engine}");
+        assert_eq!(
+            adapter.build_with(&off, &[]),
+            adapter.build_with(&on, &[]),
+            "{engine}"
+        );
     }
 }
 
@@ -966,6 +970,35 @@ fn a_verified_gemini_without_a_session_stays_text_only() {
     );
 }
 
+// The real verified set is live: `build` itself wires the three CLIs and
+// leaves Ollama's body to the runtime's tool loop.
+#[test]
+fn the_real_build_wires_claude_codex_and_gemini_with_a_session() {
+    for engine in ["claude", "codex", "gemini"] {
+        let (off, on) = tools_on(engine, true);
+        let adapter = adapter_for(engine).unwrap();
+        assert_eq!(
+            adapter.build(&on),
+            adapter.build_with(&on, &[engine]),
+            "{engine}"
+        );
+        let wired = process(adapter.build(&on));
+        assert!(wired.mcp.is_some(), "{engine}");
+        assert!(wired.tools.is_some(), "{engine}");
+        let text = process(adapter.build(&off));
+        assert!(text.mcp.is_none() && text.tools.is_none(), "{engine}");
+    }
+}
+
+#[test]
+fn the_real_build_without_a_session_stays_text_only_for_every_engine() {
+    for engine in ["ollama", "claude", "codex", "gemini"] {
+        let (off, on) = tools_on(engine, false);
+        let adapter = adapter_for(engine).unwrap();
+        assert_eq!(adapter.build(&on), adapter.build(&off), "{engine}");
+    }
+}
+
 fn chat_system() -> String {
     use crate::core::ai::config::{Profile, Task};
     prompts::builtin(Profile::Programmer, Task::Chat)
@@ -1030,10 +1063,10 @@ fn a_job_without_a_wire_has_no_tools_text_and_a_server_engine_is_untouched() {
             .is_none(),
             "{engine}"
         );
-        // An engine that is not verified yet.
+        // An engine that is not verified.
         let (_, on) = tools_on(engine, true);
         assert!(
-            process(adapter_for(engine).unwrap().build(&on))
+            process(adapter_for(engine).unwrap().build_with(&on, &[]))
                 .tools
                 .is_none()
         );
