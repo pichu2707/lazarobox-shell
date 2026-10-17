@@ -1,11 +1,5 @@
 use std::{
-    os::unix::fs::PermissionsExt,
-    path::Path,
-    sync::{
-        Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
+    os::unix::fs::PermissionsExt, path::Path, sync::Mutex, sync::atomic::Ordering, time::Duration,
 };
 
 use futures::{FutureExt, future::BoxFuture};
@@ -16,6 +10,8 @@ use tokio::{
         UnixStream,
         unix::{OwnedReadHalf, OwnedWriteHalf},
     },
+    sync::mpsc,
+    time::timeout,
 };
 
 use super::*;
@@ -41,25 +37,75 @@ impl Dispatch for Fake {
     }
 }
 
-/// Never answers; says when the call was dropped.
-struct Hang(Arc<AtomicBool>);
+/// Never answers; says when a call starts and when it is dropped.
+struct Hang {
+    called: mpsc::UnboundedSender<()>,
+    dropped: mpsc::UnboundedSender<()>,
+}
 
-struct SetOnDrop(Arc<AtomicBool>);
+/// The test's end of a [`Hang`].
+struct Probe {
+    called: mpsc::UnboundedReceiver<()>,
+    dropped: mpsc::UnboundedReceiver<()>,
+}
 
-impl Drop for SetOnDrop {
+fn hang() -> (Arc<Hang>, Probe) {
+    let (called, called_rx) = mpsc::unbounded_channel();
+    let (dropped, dropped_rx) = mpsc::unbounded_channel();
+    let probe = Probe {
+        called: called_rx,
+        dropped: dropped_rx,
+    };
+    (Arc::new(Hang { called, dropped }), probe)
+}
+
+impl Probe {
+    async fn called(&mut self) {
+        timeout(Duration::from_secs(5), self.called.recv())
+            .await
+            .expect("no call arrived")
+            .unwrap();
+    }
+
+    async fn dropped(&mut self) {
+        timeout(Duration::from_secs(5), self.dropped.recv())
+            .await
+            .expect("the call was not dropped")
+            .unwrap();
+    }
+}
+
+struct SignalOnDrop(mpsc::UnboundedSender<()>);
+
+impl Drop for SignalOnDrop {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::SeqCst);
+        let _ = self.0.send(());
     }
 }
 
 impl Dispatch for Hang {
     fn call(&self, _: Call) -> BoxFuture<'static, Outcome> {
-        let guard = SetOnDrop(self.0.clone());
+        let _ = self.called.send(());
+        let guard = SignalOnDrop(self.dropped.clone());
         async move {
             let _guard = guard;
             std::future::pending::<Outcome>().await
         }
         .boxed()
+    }
+}
+
+/// Panics before it returns a future, or inside it.
+struct Panics {
+    in_future: bool,
+}
+
+impl Dispatch for Panics {
+    fn call(&self, _: Call) -> BoxFuture<'static, Outcome> {
+        if !self.in_future {
+            panic!("boom");
+        }
+        async { panic!("boom") }.boxed()
     }
 }
 
@@ -305,30 +351,21 @@ async fn a_peer_of_another_uid_is_closed_even_with_the_right_token() {
 async fn closing_the_chat_removes_the_socket_and_ends_everything_live() {
     let tmp = tempfile::tempdir().unwrap();
     let mut hub = hub(tmp.path());
-    let dropped = Arc::new(AtomicBool::new(false));
-    let s = open(&mut hub, 1, Arc::new(Hang(dropped.clone())));
+    let (fake, mut probe) = hang();
+    let s = open(&mut hub, 1, fake);
     let mut c = ready(&s).await;
     send(
         &mut c,
         r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"find_dir","arguments":{"query":"x"}}}"#,
     )
     .await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(!dropped.load(Ordering::SeqCst));
+    probe.called().await;
+    assert!(probe.dropped.try_recv().is_err());
     hub.close(pane(1));
     assert!(!s.socket.exists());
     assert_eq!(recv(&mut c).await, None);
     assert!(UnixStream::connect(&s.socket).await.is_err());
-    for _ in 0..100 {
-        if dropped.load(Ordering::SeqCst) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(
-        dropped.load(Ordering::SeqCst),
-        "the pending call is dropped"
-    );
+    probe.dropped().await;
     hub.close(pane(1));
 }
 
@@ -336,15 +373,15 @@ async fn closing_the_chat_removes_the_socket_and_ends_everything_live() {
 async fn a_client_cancel_drops_the_call_and_the_session_keeps_serving() {
     let tmp = tempfile::tempdir().unwrap();
     let mut hub = hub(tmp.path());
-    let dropped = Arc::new(AtomicBool::new(false));
-    let s = open(&mut hub, 1, Arc::new(Hang(dropped.clone())));
+    let (fake, mut probe) = hang();
+    let s = open(&mut hub, 1, fake);
     let mut c = ready(&s).await;
     send(
         &mut c,
         r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"find_dir","arguments":{"query":"x"}}}"#,
     )
     .await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    probe.called().await;
     send(
         &mut c,
         r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":5}}"#,
@@ -352,25 +389,24 @@ async fn a_client_cancel_drops_the_call_and_the_session_keeps_serving() {
     .await;
     send(&mut c, r#"{"jsonrpc":"2.0","id":9,"method":"ping"}"#).await;
     assert_eq!(recv(&mut c).await.unwrap()["id"], 9);
-    assert!(dropped.load(Ordering::SeqCst));
+    probe.dropped().await;
 }
 
 #[tokio::test]
 async fn a_client_that_hangs_up_drops_its_pending_call() {
     let tmp = tempfile::tempdir().unwrap();
     let mut hub = hub(tmp.path());
-    let dropped = Arc::new(AtomicBool::new(false));
-    let s = open(&mut hub, 1, Arc::new(Hang(dropped.clone())));
+    let (fake, mut probe) = hang();
+    let s = open(&mut hub, 1, fake);
     let mut c = ready(&s).await;
     send(
         &mut c,
         r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"find_dir","arguments":{"query":"x"}}}"#,
     )
     .await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    probe.called().await;
     drop(c);
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(dropped.load(Ordering::SeqCst));
+    probe.dropped().await;
 }
 
 #[tokio::test]
@@ -452,4 +488,165 @@ async fn read_line_caps_what_it_keeps_and_resyncs_at_the_newline() {
         Line::Text("last".into())
     );
     assert_eq!(read_line(&mut r, 8).await.unwrap(), Line::Eof);
+}
+
+const CALL: &str = r#"{"jsonrpc":"2.0","id":ID,"method":"tools/call","params":{"name":"find_dir","arguments":{"query":"x"}}}"#;
+
+fn call_line(id: u32) -> String {
+    CALL.replace("ID", &id.to_string())
+}
+
+#[tokio::test]
+async fn a_call_whose_id_is_still_in_flight_is_refused_with_its_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = hub(tmp.path());
+    let (fake, mut probe) = hang();
+    let s = open(&mut hub, 1, fake);
+    let mut c = ready(&s).await;
+    send(&mut c, &call_line(5)).await;
+    probe.called().await;
+    send(&mut c, &call_line(5)).await;
+    let got = recv(&mut c).await.unwrap();
+    assert_eq!(
+        (got["id"].clone(), got["error"]["code"].clone()),
+        (json!(5), json!(-32600))
+    );
+    // The first call was not replaced: cancelling id 5 drops exactly it.
+    assert!(
+        probe.called.try_recv().is_err(),
+        "the duplicate was not dispatched"
+    );
+    send(
+        &mut c,
+        r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":5}}"#,
+    )
+    .await;
+    probe.dropped().await;
+}
+
+#[tokio::test]
+async fn calls_over_the_in_flight_cap_are_refused_with_their_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = hub(tmp.path());
+    let (fake, mut probe) = hang();
+    let s = open(&mut hub, 1, fake);
+    let mut c = ready(&s).await;
+    for id in 1..=MAX_IN_FLIGHT as u32 {
+        send(&mut c, &call_line(id)).await;
+        probe.called().await;
+    }
+    let over = MAX_IN_FLIGHT as u32 + 1;
+    send(&mut c, &call_line(over)).await;
+    let got = recv(&mut c).await.unwrap();
+    assert_eq!(
+        (got["id"].clone(), got["error"]["code"].clone()),
+        (json!(over), json!(TOO_BUSY))
+    );
+    assert!(probe.called.try_recv().is_err());
+    // A slot frees up when a call is cancelled.
+    send(
+        &mut c,
+        r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}"#,
+    )
+    .await;
+    probe.dropped().await;
+    send(&mut c, &call_line(over)).await;
+    probe.called().await;
+}
+
+#[tokio::test]
+async fn connections_over_the_per_session_cap_are_closed_after_the_handshake() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = hub(tmp.path());
+    let s = open(&mut hub, 1, Arc::new(Fake::default()));
+    let mut held = Vec::new();
+    for _ in 0..MAX_CONNS {
+        held.push(ready(&s).await);
+    }
+    let mut c = connect(&s.socket).await;
+    send(&mut c, &hello(s.token.reveal())).await;
+    assert_eq!(recv(&mut c).await, None);
+    // Hanging up frees a slot.
+    drop(held.pop());
+    let mut c = connect(&s.socket).await;
+    send(&mut c, &hello(s.token.reveal())).await;
+    for _ in 0..200 {
+        if let Some(reply) = recv(&mut c).await {
+            assert_eq!(reply, json!({"ok": true}));
+            return;
+        }
+        c = connect(&s.socket).await;
+        send(&mut c, &hello(s.token.reveal())).await;
+        tokio::task::yield_now().await;
+    }
+    panic!("the freed slot was never reusable");
+}
+
+#[tokio::test]
+async fn connections_waiting_for_their_handshake_are_capped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = hub(tmp.path());
+    let s = open(&mut hub, 1, Arc::new(Fake::default()));
+    let mut silent = Vec::new();
+    for _ in 0..MAX_PENDING {
+        silent.push(connect(&s.socket).await);
+    }
+    // The next one is dropped at once, not after the handshake timeout.
+    let mut extra = connect(&s.socket).await;
+    assert_eq!(recv(&mut extra).await, None);
+}
+
+#[tokio::test]
+async fn nothing_is_dispatched_once_the_session_is_marked_closed() {
+    let fake = Arc::new(Fake::default());
+    let token = Token::generate().unwrap();
+    let secret = token.reveal().to_owned();
+    let conn = Conn::new(
+        token,
+        tools(),
+        fake.clone(),
+        unsafe { libc::geteuid() },
+        Duration::from_secs(5),
+    );
+    let closed = conn.closed.clone();
+    let permit = conn.pending.clone().try_acquire_owned().unwrap();
+    let (near, far) = UnixStream::pair().unwrap();
+    let server = tokio::spawn(serve(near, conn, permit));
+    let (r, w) = far.into_split();
+    let mut c: Client = (BufReader::new(r), w);
+    send(&mut c, &hello(&secret)).await;
+    assert_eq!(recv(&mut c).await, Some(json!({"ok": true})));
+    send(
+        &mut c,
+        r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
+    )
+    .await;
+    assert!(recv(&mut c).await.unwrap()["result"].is_object());
+    // `close()` sets this before it aborts anything; abort lands later.
+    closed.store(true, Ordering::SeqCst);
+    send(&mut c, &call_line(1)).await;
+    server.await.unwrap();
+    assert!(fake.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_panicking_dispatch_answers_an_error_result_and_the_session_survives() {
+    for in_future in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut hub = hub(tmp.path());
+        let s = open(&mut hub, 1, Arc::new(Panics { in_future }));
+        let mut c = ready(&s).await;
+        send(&mut c, &call_line(5)).await;
+        let got = recv(&mut c).await.unwrap();
+        assert_eq!(got["id"], 5, "{in_future}");
+        assert_eq!(got["result"]["isError"], true);
+        assert!(
+            !got["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("boom")
+        );
+        send(&mut c, r#"{"jsonrpc":"2.0","id":9,"method":"ping"}"#).await;
+        assert_eq!(recv(&mut c).await.unwrap()["id"], 9);
+    }
 }
