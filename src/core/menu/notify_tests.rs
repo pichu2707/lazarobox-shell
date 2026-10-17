@@ -15,9 +15,7 @@ fn open_with(notify: NotifyMode) -> MenuState {
 
 fn on_notify(notify: NotifyMode) -> MenuState {
     let mut m = open_with(notify);
-    while selected_label(&m) != "Notify" {
-        press(&mut m, 'j');
-    }
+    m.goto("Notify");
     m
 }
 
@@ -188,9 +186,7 @@ fn the_edit_is_the_notify_key_alone_and_only_when_changed() {
 fn the_notify_edit_comes_after_the_context_and_memory_edits() {
     let mut m = on_notify(NotifyMode::Off);
     press(&mut m, 'l');
-    while selected_label(&m) != "Context" {
-        press(&mut m, 'j');
-    }
+    m.goto("Context");
     press(&mut m, 'l');
     let edits = m.edits(&Config::default());
     assert_eq!(edits.len(), 2);
@@ -203,9 +199,7 @@ fn on_sound(sound: bool) -> MenuState {
     let mut ai = AiConfig::default();
     ai.set_notify_sound(sound);
     let mut m = MenuState::open(&Config::default()).with_ai(ai, Some(machine()));
-    while selected_label(&m) != "Sound" {
-        press(&mut m, 'j');
-    }
+    m.goto("Sound");
     m
 }
 
@@ -262,9 +256,7 @@ fn t_on_the_notify_row_tests_the_draft_mode_without_saving() {
 #[test]
 fn t_carries_the_sound_flag_and_works_from_the_sound_row_too() {
     let mut m = on_notify(NotifyMode::Desktop);
-    while selected_label(&m) != "Sound" {
-        press(&mut m, 'j');
-    }
+    m.goto("Sound");
     press(&mut m, 'l');
     assert_eq!(
         send(&mut m, KeyCode::Char('t'), false),
@@ -283,9 +275,7 @@ fn t_elsewhere_or_on_repeat_does_nothing() {
     assert_ne!(selected_label(&m), "Notify");
     assert_eq!(send(&mut m, KeyCode::Char('t'), false), MenuCommand::None);
     // Nor on the Updates row, which sits right after Sound.
-    while selected_label(&m) != "Updates" {
-        press(&mut m, 'j');
-    }
+    m.goto("Updates");
     assert_eq!(send(&mut m, KeyCode::Char('t'), false), MenuCommand::None);
 }
 

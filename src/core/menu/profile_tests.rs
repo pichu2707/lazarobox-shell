@@ -15,9 +15,7 @@ fn open_with(profile: Profile, found: Option<Detection>) -> MenuState {
 
 fn on_profile(profile: Profile, found: Option<Detection>) -> MenuState {
     let mut m = open_with(profile, found);
-    while selected_label(&m) != "Profile" {
-        press(&mut m, 'j');
-    }
+    m.goto("Profile");
     m
 }
 
@@ -69,9 +67,8 @@ fn the_profile_row_follows_the_task_rows() {
 #[test]
 fn profile_sits_between_summarize_and_context_in_navigation() {
     let mut m = menu(None, None, Some(machine()));
-    for _ in 0..12 {
-        press(&mut m, 'j');
-    }
+    m.goto("summarize");
+    press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Profile", "after summarize");
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Context", "then Context");

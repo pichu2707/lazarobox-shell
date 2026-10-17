@@ -195,9 +195,8 @@ fn navigation_visits_the_settings_then_the_ten_ai_rows_and_wraps() {
 #[test]
 fn repeat_moves_into_the_task_rows_like_a_press() {
     let mut m = menu(None, None, None);
-    for _ in 0..7 {
-        m.on_key(&ch('j'), true, &mut Config::default());
-    }
+    m.goto("Set all tasks");
+    m.on_key(&ch('j'), true, &mut Config::default());
     assert_eq!(selected_label(&m), "general");
 }
 
@@ -205,10 +204,7 @@ fn repeat_moves_into_the_task_rows_like_a_press() {
 #[test]
 fn cycling_keys_do_nothing_on_task_rows() {
     let mut m = menu(Some("ollama"), Some("llama3:8b"), Some(machine()));
-    for _ in 0..8 {
-        press(&mut m, 'j');
-    }
-    assert_eq!(selected_label(&m), "code");
+    m.goto("code");
     let before = m.clone();
     for key in [
         ch('h'),
@@ -229,12 +225,9 @@ fn cycling_keys_do_nothing_on_task_rows() {
 fn r_on_a_task_row_asks_for_a_refresh_and_elsewhere_does_not() {
     let mut m = menu(None, None, Some(machine()));
     assert_eq!(press(&mut m, 'r'), MenuCommand::None, "Statusline row");
-    for _ in 0..6 {
-        press(&mut m, 'j');
-    }
+    m.goto("Set all tasks");
     assert_eq!(press(&mut m, 'r'), MenuCommand::Refresh, "Set all tasks");
-    press(&mut m, 'j');
-    press(&mut m, 'j');
+    m.goto("code");
     assert_eq!(press(&mut m, 'r'), MenuCommand::Refresh, "code");
     assert_eq!(
         m.on_key(&ch('r'), true, &mut Config::default()),
@@ -383,9 +376,7 @@ fn nothing_is_marked_before_the_first_detection() {
 #[test]
 fn a_result_marks_the_row_in_place_and_keeps_selection_and_draft() {
     let mut m = assigned(&[(Task::Code, "ollama", "llama3:8b")], None);
-    for _ in 0..8 {
-        press(&mut m, 'j');
-    }
+    m.goto("code");
     assert_eq!(value_of(&m, "code"), "ollama › llama3:8b");
     let draft = m.ai_draft();
     m.set_engines(Some(detection(&[engine(

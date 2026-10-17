@@ -1,6 +1,6 @@
 //! The update note of the menu: shown on the task list only.
 
-use super::ai_tests::{machine, press, selected_label};
+use super::ai_tests::machine;
 use super::*;
 
 fn menu() -> MenuState {
@@ -53,9 +53,7 @@ fn a_late_result_reaches_an_open_menu() {
 #[test]
 fn the_note_hides_while_a_picker_is_open() {
     let mut m = menu().with_update(Some("0.16.0".into()));
-    while selected_label(&m) != "code" {
-        press(&mut m, 'j');
-    }
+    m.goto("code");
     assert!(m.update_note().is_some());
     let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
     m.on_key(&enter, false, &mut Config::default());
@@ -81,9 +79,7 @@ fn updates_row(m: &MenuState) -> (&'static str, String) {
 }
 
 fn go_to_updates(m: &mut MenuState) {
-    while !selected_label(m).ends_with("Updates") {
-        press(m, 'j');
-    }
+    m.goto("Updates");
 }
 
 #[test]

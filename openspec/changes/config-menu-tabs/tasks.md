@@ -48,13 +48,13 @@ Rules for every unit:
 
 Goal: after this unit, no test depends on the AI rows being below the Settings rows by position or count. Behaviour and snapshots are untouched. Commit: `test(menu): drive menu tests through a label-based goto helper`.
 
-- [ ] 1.1 RED: tests for `#[cfg(test)] MenuState::goto(&mut self, label)`: reaches every row label of the current stacked layout from any start; panics with `no row {label}` for an unknown label (`#[should_panic]`); the loop is bounded (it never spins more than the selectable count, so a missing label fails instead of hanging). Stub `goto` with `todo!()` so it compiles and fails.
-- [ ] 1.2 GREEN: implement `goto(label)` by pressing `j` through the rows, bounded by `selectable()`. It does not press Tab yet (Tab is still swallowed). Put it next to the other `#[cfg(test)]` helpers in `src/core/menu.rs`.
-- [ ] 1.3 REFACTOR: replace the bodies of the seven local helpers with `goto`: ui `goto`, `footer_tests::goto`, `memory_tests::goto_memory`, `save_tests::on_task_row`, `picker_tests::open`, `profile_tests::on_profile`, `tools_tests::on_tools`. Remove the `while selected_label != X { j }` loops that target AI rows.
-- [ ] 1.4 REFACTOR: rewrite the fixed-count `j` loops to `goto(label)` in `ai_tests` (~198, 208, 232, 386), `context_tests` (~76), `profile_tests` (~72), `memory_tests` (~447), `reanchor_tests` (~64) and `custom_flow_tests`. Keep each assertion exactly as strong as before.
-- [ ] 1.5 REFACTOR: do the same for the menu-driving tests in `src/app.rs` and `src/app/app_tests/menu_copy.rs` (any fixed `j` count that lands on an AI row). Tests only; no non-test change in `app.rs`.
-- [ ] 1.6 Gate. Confirm `git diff --stat` shows no `.snap` file touched.
-- [ ] 1.7 Docs: doc comment on `goto` stating it is tab-aware from unit 3 and bounded.
+- [x] 1.1 RED: tests for `#[cfg(test)] MenuState::goto(&mut self, label)`: reaches every row label of the current stacked layout from any start; panics with `no row {label}` for an unknown label (`#[should_panic]`); the loop is bounded (it never spins more than the selectable count, so a missing label fails instead of hanging). Stub `goto` with `todo!()` so it compiles and fails.
+- [x] 1.2 GREEN: implement `goto(label)` by pressing `j` through the rows, bounded by `selectable()`. It does not press Tab yet (Tab is still swallowed). Put it next to the other `#[cfg(test)]` helpers in `src/core/menu.rs`.
+- [x] 1.3 REFACTOR: replace the bodies of the seven local helpers with `goto`: ui `goto`, `footer_tests::goto`, `memory_tests::goto_memory`, `save_tests::on_task_row`, `picker_tests::open`, `profile_tests::on_profile`, `tools_tests::on_tools`. Remove the `while selected_label != X { j }` loops that target AI rows.
+- [x] 1.4 REFACTOR: rewrite the fixed-count `j` loops to `goto(label)` in `ai_tests` (~198, 208, 232, 386), `context_tests` (~76), `profile_tests` (~72), `memory_tests` (~447), `reanchor_tests` (~64) and `custom_flow_tests`. Keep each assertion exactly as strong as before.
+- [x] 1.5 REFACTOR: do the same for the menu-driving tests in `src/app.rs` and `src/app/app_tests/menu_copy.rs` (any fixed `j` count that lands on an AI row). Tests only; no non-test change in `app.rs`.
+- [x] 1.6 Gate. Confirm `git diff --stat` shows no `.snap` file touched.
+- [x] 1.7 Docs: doc comment on `goto` stating it is tab-aware from unit 3 and bounded.
 
 ## Unit 2: Pure `tab_line` (`src/ui/components/menu.rs`)
 

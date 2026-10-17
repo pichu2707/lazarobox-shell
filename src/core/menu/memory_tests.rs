@@ -59,13 +59,7 @@ fn selected_label(menu: &MenuState) -> &'static str {
 }
 
 fn goto_memory(menu: &mut MenuState) {
-    for _ in 0..20 {
-        if selected_label(menu) == "Memory" {
-            return;
-        }
-        press(menu, KeyCode::Char('k'));
-    }
-    panic!("no Memory row");
+    menu.goto("Memory");
 }
 
 /// The value shown on the `Memory` row.

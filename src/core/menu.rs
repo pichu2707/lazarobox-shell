@@ -1171,6 +1171,38 @@ impl MenuState {
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
+
+    /// Test helper: moves the cursor onto the row labelled `label` with the
+    /// keys a user would press, and panics with `no row {label}` when no
+    /// row has it. Bounded: it never presses more keys than there are
+    /// selectable rows, so a missing label fails instead of hanging. Once
+    /// the menu has tabs it presses `Tab` too, visiting every visible tab.
+    #[cfg(test)]
+    pub fn goto(&mut self, label: &str) {
+        let mut config = Config::default();
+        let down = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+        for _ in 0..=self.selectable() {
+            if self.selected_label(&config) == Some(label) {
+                return;
+            }
+            self.on_key(&down, false, &mut config);
+        }
+        panic!("no row {label}");
+    }
+
+    /// Test helper: the label of the selected row, without the `* ` the
+    /// Updates row wears while an update waits.
+    #[cfg(test)]
+    fn selected_label(&self, config: &Config) -> Option<&'static str> {
+        self.rows(config).into_iter().find_map(|row| match row {
+            Row::Item {
+                label,
+                selected: true,
+                ..
+            } => Some(label.strip_prefix("* ").unwrap_or(label)),
+            _ => None,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1432,6 +1464,9 @@ mod tests {
 
 #[cfg(test)]
 mod ai_tests;
+
+#[cfg(test)]
+mod goto_tests;
 
 #[cfg(test)]
 mod tools_tests;

@@ -2447,6 +2447,25 @@ mod app_tests {
         AppEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
     }
 
+    /// Moves the open menu's cursor onto the row labelled `label` with the
+    /// keys a user would press. Bounded: it panics with `no row {label}`
+    /// instead of looping forever when the row does not exist.
+    fn goto_row(a: &mut App, label: &str) {
+        for _ in 0..=64 {
+            let on_label = a.menu().unwrap().rows(&a.config).iter().any(|row| {
+                matches!(
+                    row,
+                    crate::core::menu::Row::Item { label: l, selected: true, .. } if *l == label
+                )
+            });
+            if on_label {
+                return;
+            }
+            a.update(key('j'));
+        }
+        panic!("no row {label}");
+    }
+
     fn in_prefix() -> App {
         let mut a = app();
         a.update(ctrl_space());
@@ -6412,9 +6431,7 @@ mod app_tests {
         let mut a = ai_app();
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
-        for _ in 0..7 {
-            a.update(key('j'));
-        }
+        goto_row(&mut a, "general");
         let before = a.menu().cloned();
         let upper = AppEvent::Key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT));
         assert_eq!(a.update(upper), Vec::<Effect>::new(), "uppercase");
@@ -6436,9 +6453,7 @@ mod app_tests {
         let mut a = ai_app();
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
-        for _ in 0..8 {
-            a.update(key('j'));
-        }
+        goto_row(&mut a, "code");
         let enter = || code(KeyCode::Enter);
         let quiet = |a: &mut App, event: AppEvent| {
             assert_eq!(a.update(event.clone()), Vec::<Effect>::new(), "{event:?}");
@@ -6494,9 +6509,7 @@ mod app_tests {
     /// Opens the picker of `Set all tasks` on `none` and chooses it: the
     /// general assignment goes from `ollama` to unset.
     fn clear_all(a: &mut App) {
-        for _ in 0..6 {
-            a.update(key('j'));
-        }
+        goto_row(a, "Set all tasks");
         a.update(code(KeyCode::Enter));
         a.update(key('k'));
         a.update(code(KeyCode::Enter));
@@ -6863,9 +6876,7 @@ mod app_tests {
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
         clear_all(&mut a);
-        for _ in 0..2 {
-            a.update(key('j'));
-        }
+        goto_row(&mut a, "code");
         a.update(code(KeyCode::Enter));
         a.update(key('j'));
         a.update(key('j'));
@@ -6889,9 +6900,7 @@ mod app_tests {
 
     /// Selection on the first AI task row.
     fn to_task_row(a: &mut App) {
-        for _ in 0..8 {
-            a.update(key('j'));
-        }
+        goto_row(a, "code");
     }
 
     /// The picker of the first task, on the engine two rows down, at level 2.

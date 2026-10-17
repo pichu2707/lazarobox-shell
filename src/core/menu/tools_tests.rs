@@ -14,9 +14,7 @@ fn open_with(tools: bool) -> MenuState {
 
 fn on_tools(tools: bool) -> MenuState {
     let mut m = open_with(tools);
-    while selected_label(&m) != "Tools" {
-        press(&mut m, 'j');
-    }
+    m.goto("Tools");
     m
 }
 
@@ -153,9 +151,7 @@ fn the_edit_is_the_tools_key_alone_and_only_when_changed() {
 fn the_tools_edit_comes_last_after_notify_and_sound() {
     let mut m = on_tools(true);
     press(&mut m, 'l');
-    while selected_label(&m) != "Notify" {
-        press(&mut m, 'j');
-    }
+    m.goto("Notify");
     press(&mut m, 'l');
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Sound");

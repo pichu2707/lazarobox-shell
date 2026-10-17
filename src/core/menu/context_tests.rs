@@ -15,9 +15,7 @@ fn open_with(context: bool) -> MenuState {
 
 fn on_context(context: bool) -> MenuState {
     let mut m = open_with(context);
-    while selected_label(&m) != "Context" {
-        press(&mut m, 'j');
-    }
+    m.goto("Context");
     m
 }
 
@@ -73,9 +71,7 @@ fn the_context_row_follows_profile_and_precedes_memory() {
 #[test]
 fn context_sits_between_profile_and_memory_and_navigation_wraps_through_them() {
     let mut m = open_with(true);
-    for _ in 0..13 {
-        press(&mut m, 'j');
-    }
+    m.goto("Context");
     assert_eq!(selected_label(&m), "Context");
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Memory");

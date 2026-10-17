@@ -31,9 +31,7 @@ fn a_settings_row_shows_the_settings_hint() {
 #[test]
 fn every_task_row_shows_the_task_hint() {
     let mut m = menu(None, None, Some(machine()));
-    while selected_label(&m) != "Set all tasks" {
-        press(&mut m, 'j');
-    }
+    m.goto("Set all tasks");
     for label in [
         "Set all tasks",
         "general",
@@ -93,9 +91,7 @@ fn on_code_in_the_picker(m: &mut MenuState, levels: usize) {
 fn before_the_first_result_the_ai_views_show_the_checking_cue() {
     let mut m = assigned(&[(Task::Code, "codex", "default")], None);
     assert_eq!(hint(&m), SETTINGS, "no cue on a Settings row");
-    while selected_label(&m) != "code" {
-        press(&mut m, 'j');
-    }
+    m.goto("code");
     assert_eq!(hint(&m), "checking engines… · s save · Esc cancel");
     send(&mut m, key(KeyCode::Enter));
     assert_eq!(hint(&m), "checking engines… · s save · Esc back", "level 1");
@@ -110,9 +106,7 @@ fn a_run_in_flight_shows_the_refreshing_cue_with_the_engines_kept() {
     let mut m = menu(None, None, Some(machine()));
     m.set_checking(true);
     assert_eq!(hint(&m), SETTINGS, "no cue on a Settings row");
-    while selected_label(&m) != "code" {
-        press(&mut m, 'j');
-    }
+    m.goto("code");
     assert_eq!(hint(&m), "refreshing… · s save · Esc cancel");
     on_code_in_the_picker(&mut m, 1);
     assert_eq!(hint(&m), "refreshing… · s save · Esc back", "level 1");
@@ -128,9 +122,7 @@ fn a_run_in_flight_shows_the_refreshing_cue_with_the_engines_kept() {
 #[test]
 fn a_result_or_a_finished_run_clears_the_cue() {
     let mut m = menu(None, None, None);
-    while selected_label(&m) != "code" {
-        press(&mut m, 'j');
-    }
+    m.goto("code");
     m.set_engines(Some(machine()));
     assert_eq!(hint(&m), TASK);
     m.set_checking(true);

@@ -565,16 +565,7 @@ mod tests {
     }
 
     fn goto(menu: &mut MenuState, label: &str) {
-        for _ in 0..20 {
-            let hit = menu.rows(&Config::default()).iter().any(
-                |row| matches!(row, Row::Item { label: l, selected: true, .. } if *l == label),
-            );
-            if hit {
-                return;
-            }
-            press(menu, &[KeyCode::Char('j')]);
-        }
-        panic!("no row {label}");
+        menu.goto(label);
     }
 
     fn picker_of(task: &str, downs: usize) -> MenuState {
