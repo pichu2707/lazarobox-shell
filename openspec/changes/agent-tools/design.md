@@ -62,9 +62,12 @@ pub fn resolve(roots: &SecretRoots, origin: &Path, input: &str) -> PathVerdict;
 // call, so 2b re-checks the opened fd's real path against it. `extra` carries lazarobox's
 // real config and data dirs (XDG_CONFIG_HOME / XDG_DATA_HOME honoured). Unreadable root -> None.
 // engine.rs
-StreamEvent::ToolCall { id: CallId, name: String, summary: String, approval: Option<ApprovalAsk> }
+StreamEvent::ToolCall { id: CallId, name: String, summary: String, approval: Option<Box<ApprovalAsk>> }  // boxed: keeps the event small
 StreamEvent::ToolResult { id: CallId, status: ToolStatus /* Ok|Error|Denied */, summary: String }
 pub enum Decision { Sent, Denied(&'static str) }
+// D17 as built (2e-1): `EngineKind::locality()` is `Kind::locality()` (core::ai), `engine::locality(id)` maps an
+// engine id to it, and `needs_approval` is the pure `chat::approval::ask_for(call, locality) -> Option<ApprovalAsk>`
+// that `ToolHost` calls. The host asks a per-turn `Approver` (default `Unwired`, which denies); 2e-2 supplies the real one.
 // app.rs
 Effect::ToolDecision { pane: PaneId, turn: u64, call: CallId, decision: Decision }
 Effect::EndToolSession(PaneId)          // emitted with ChatCancel when a chat closes

@@ -8,7 +8,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::core::ai::tools::command::Refusal;
+use crate::core::ai::tools::{Call, Locality, command::Refusal, summary::clip};
 
 /// Ids come from one counter for the whole process, so an `Approvals` that is
 /// rebuilt (a chat reopened, a state replaced) never hands out an id an older
@@ -58,6 +58,26 @@ pub enum ApprovalAsk {
         tool: String,
         args: String,
     },
+}
+
+/// Which calls wait for the user's answer before they run (D17).
+/// `run_in_pane` always does. `read_file` does on a cloud engine, because the
+/// text it returns goes to the provider, and runs free on a local one. The
+/// directory tools never ask. The mode of the chat (ask or auto-type, D18) is
+/// not an input: the app applies it to the ask this returns.
+///
+/// The path of a read ask is shown as a summary (sanitized, capped); the host
+/// opens the file from the call, never from the ask.
+pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
+    match call {
+        Call::RunInPane { command } => Some(ApprovalAsk::Run {
+            command: command.clone(),
+        }),
+        Call::ReadFile { path } if locality == Locality::Cloud => {
+            Some(ApprovalAsk::Read { path: clip(path) })
+        }
+        Call::ReadFile { .. } | Call::FindDir { .. } | Call::ListDir { .. } => None,
+    }
 }
 
 /// Where the request came from.
@@ -168,6 +188,48 @@ impl Approvals {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Spec (agent-tools, approval by locality): D17 table.
+    #[test]
+    fn which_calls_ask_depends_on_the_tool_and_the_locality() {
+        let find = Call::FindDir { query: "x".into() };
+        let list = Call::ListDir { path: "~".into() };
+        let read = Call::ReadFile {
+            path: "~/a.txt".into(),
+        };
+        let run = Call::RunInPane {
+            command: "cd x".into(),
+        };
+        for locality in [Locality::Local, Locality::Cloud] {
+            assert_eq!(ask_for(&find, locality), None);
+            assert_eq!(ask_for(&list, locality), None);
+            assert_eq!(
+                ask_for(&run, locality),
+                Some(ApprovalAsk::Run {
+                    command: "cd x".into()
+                })
+            );
+        }
+        assert_eq!(ask_for(&read, Locality::Local), None);
+        assert_eq!(
+            ask_for(&read, Locality::Cloud),
+            Some(ApprovalAsk::Read {
+                path: "~/a.txt".into()
+            })
+        );
+    }
+
+    #[test]
+    fn the_path_of_a_read_ask_is_sanitized_and_capped_for_display() {
+        let read = Call::ReadFile {
+            path: format!("~/a\u{1b}[31m\n{}", "b".repeat(500)),
+        };
+        let Some(ApprovalAsk::Read { path }) = ask_for(&read, Locality::Cloud) else {
+            panic!("a cloud read asks");
+        };
+        assert!(!path.contains('\u{1b}') && !path.contains('\n'));
+        assert!(path.chars().count() <= crate::core::ai::tools::summary::SUMMARY_CAP);
+    }
 
     fn run(command: &str) -> ApprovalAsk {
         ApprovalAsk::Run {

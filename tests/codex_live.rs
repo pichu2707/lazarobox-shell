@@ -71,7 +71,7 @@ fn listing(dir: &Path) -> Vec<String> {
 
 async fn turn(env: CliEnv, model: Option<String>, text: &str) -> Vec<StreamEvent> {
     let (tx, mut rx) = tokio::sync::mpsc::channel(256);
-    let mut chats = Chats::new(runner_with(None, env), tx);
+    let mut chats = Chats::new(runner_with(None, env, None), tx);
     let request = ChatRequest {
         engine: "codex".into(),
         model,
