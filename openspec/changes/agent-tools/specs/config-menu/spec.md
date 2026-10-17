@@ -13,24 +13,54 @@ Sections, items and tabs MUST come from static descriptor tables; adding a secti
 - WHEN they are validated
 - THEN every section has a non-empty title, every item a non-empty label, every static item with a key path has at least two allowed values, `Mouse` has the key path `mouse` and the values `on`, `off`, the five task rows have the task ids of ai-task-models and a key path, `Set all tasks` has no single key path, `Profile`, `Context`, `Memory`, `Tools` and `Approval` have their key paths and values above, every tab lists only rows that exist, and there are no duplicate key paths
 
+#### Scenario: Settings rows [auto, TestBackend + insta]
+- GIVEN the menu just opened with the AI section attached and `mouse` at its default
+- WHEN rendered on a normal terminal
+- THEN, with no `Settings` title row (the bar names the tab), the Settings tab shows `Statusline position`, `Tab bar position`, `Mouse` (`on`, not muted), `Notify`, `Sound` and `Updates`, each with its current value, and the AI rows are not drawn
+
 #### Scenario: AI rows end with Approval [auto, TestBackend + insta]
 - GIVEN the AI tab active
 - WHEN rendered
 - THEN the rows read `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, `Profile`, `Context`, `Memory`, `Tools`, `Approval` in that order, and no `Engine`, `Model`, `Status`, `Notify` or `Sound` row exists there
 
+#### Scenario: No AI hides Notify and Sound [auto]
+- GIVEN the menu without the AI section
+- WHEN the rows are built
+- THEN the Settings tab holds `Statusline position`, `Tab bar position`, `Mouse` and `Updates`, and there is no AI tab
+
 ### Requirement: Navigation
 `j`, `k`, Down and Up MUST move the selection between the selectable rows of the ACTIVE tab only, in display order, and MUST wrap around at the ends of that tab (from its last row to its first and back); they MUST NOT cross to another tab, because Tab and Shift+Tab are the only way across tabs. No row is skipped (picker disabled rows are different, see Task picker). Repeat events MUST be handled like Press. The `Settings` tab order is `Statusline position`, `Tab bar position`, `Mouse`, `Notify`, `Sound`, `Updates`. The `AI` tab order is `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, `Profile`, `Context`, `Memory`, `Tools`, `Approval`.
 (Previously: the AI tab order ended with `Tools`)
+
+#### Scenario: Move down and up [auto]
+- GIVEN MENU with the first row selected
+- WHEN `j` is pressed, then `k`
+- THEN the second setting row is selected, then the first again
+
+#### Scenario: Wrap within Settings [auto]
+- GIVEN the `Updates` row selected on Settings
+- WHEN `j` (or Down) is pressed
+- THEN `Statusline position` is selected and the active tab is still `Settings`; and from the first row `k` (or Up) selects `Updates`
 
 #### Scenario: Wrap within AI [auto]
 - GIVEN the AI tab active with `Approval` selected
 - WHEN `j` is pressed, then `k`
 - THEN `Set all tasks` is selected, then `Approval`, and the active tab is still `AI`
 
+#### Scenario: Mouse row is selectable [auto]
+- GIVEN the Tab bar position row selected
+- WHEN `j` is pressed
+- THEN `Mouse` is selected, `j` again selects `Notify`; from `Notify` `k` goes back to `Mouse`
+
 #### Scenario: Task rows in order [auto]
 - GIVEN the AI tab active with `Set all tasks` selected
 - WHEN `j` is pressed eleven times
 - THEN the selection visits `general`, `code`, `chat`, `review`, `summarize`, `Profile`, `Context`, `Memory`, `Tools`, `Approval` in that order and the eleventh press wraps to `Set all tasks`
+
+#### Scenario: Repeat moves [auto]
+- GIVEN MENU
+- WHEN a Repeat event for `j` arrives
+- THEN the selection moves like a Press
 
 ### Requirement: AI task list
 The AI tab MUST show, as its rows (with no section title row while the tab bar is shown), exactly six task rows in this order: `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, and then the static rows `Profile`, `Context`, `Memory`, `Tools` and `Approval`. Each task row shows its label and its value (see ai-task-models): `<engine> › <model>`, `(default)` for an unassigned non-general task, `(not set)` for an unset `general` or an unset aggregate, `(mixed)` for the aggregate when the tasks differ, and the marks `· download required` and `(not detected)` as defined there. The `Profile` row shows the profile id; `Context`, `Memory` and `Tools` show `off` or `on`; `Approval` shows `ask` or `auto`. The number of AI rows MUST never change because of a detection result. The popup MUST show every row of the active tab without clipping on a normal terminal, MUST keep the same size between both tabs and the picker, and the minimum terminal size below which only the one-line fallback is drawn (see Tiny terminals) MUST follow the popup; the exact dimensions are a design decision.
@@ -46,6 +76,21 @@ The AI tab MUST show, as its rows (with no section title row while the tab bar i
 - WHEN the menu is rendered
 - THEN `Set all tasks` reads `(not set)`, `general` reads `(not set)`, the other four read `(default)`, `Profile` reads `programmer` (the default profile), `Context`, `Memory` and `Tools` read their defaults and `Approval` reads `ask`
 
+#### Scenario: Marks on rows [auto]
+- GIVEN code is `ollama` / `old:7b` not downloaded, and review is `codex` / `default` with codex `not installed`
+- WHEN the AI tab is rendered
+- THEN the rows read `ollama › old:7b · download required` and `codex (not detected) › default`
+
+#### Scenario: Popup size is stable [auto, TestBackend + insta]
+- GIVEN the Settings tab, the AI tab and then the picker open on a normal terminal
+- WHEN each is rendered
+- THEN the popup has the same size in all and every row of the active tab is visible
+
+#### Scenario: Fallback threshold follows the popup [auto]
+- GIVEN a terminal one column or one row smaller than the popup minimum, and one exactly at it
+- WHEN rendered
+- THEN the first shows the one-line fallback and the second shows the full popup without panic
+
 ### Requirement: Popup height is fixed
 The popup body height MUST be the maximum over every view: each tab's rows, the picker (title plus its viewport) and the privacy warning. The popup height MUST be that body plus the chrome and MUST NOT change when switching tabs or entering or leaving a picker, the custom field or the warning. The tab bar row is part of the body. The body (`MENU_BODY`) is 12 rows: a 1-row bar plus 11 rows for the tallest view (`VIEW_BODY`: the picker's title plus its 10-row viewport). The chrome stays 4 rows, so the popup is 16 rows. The privacy warning needs 10 rows, the AI tab 11 (with `Tools` and `Approval`), the Settings tab 9 (six rows, one gap, the two-line note) and the custom entry 2; the picker and the AI tab are both at the binding 11, so the two rows of this change fit with no size change and the minimum stays 24 columns by 15 rows. The single-tab (no-AI) layout keeps its previous size.
 (Previously: the AI tab needed 10 rows and Approval was foreseen as a fit without a size change)
@@ -54,6 +99,11 @@ The popup body height MUST be the maximum over every view: each tab's rows, the 
 - GIVEN a normal terminal
 - WHEN the Settings tab, the AI tab (with `Approval`), a picker level 1 and 2, the custom field and the warning are rendered
 - THEN the popup border spans 16 rows in all of them
+
+#### Scenario: Adding a row grows only the tallest view [auto]
+- GIVEN the height is derived from the tables, with the AI tab at 11 rows, which equals `VIEW_BODY` 11
+- WHEN the tallest view is measured, and then a 12th AI row is added
+- THEN the fixed body equals the tallest view and no view exceeds it, and with the 12th AI row the popup grows by one row (only the tallest view moves the height)
 
 ## ADDED Requirements
 
@@ -117,6 +167,8 @@ The AI tab MUST hold a static row `Tools` after `Memory` and before `Approval` (
 
 ### Requirement: Approval row
 The AI tab MUST end with a static row `Approval` after `Tools` (key path `ai.tools.approval`, values `ask`, `auto`; it reads `ask` by default). It is found by its own `ItemKind`, never by position. `h`, `l`, Left, Right, Space and Enter cycle the draft (an Enter repeat is ignored); the footer is the Settings-row hint `j/k move · h/l change · s save · Esc cancel`; detection cues and `r` do not apply. Changing the draft MUST have no live effect: no relayout, no ResizePty or WritePty, no change to the mode of any open chat pane, a pending approval or a running tool; after a successful save it applies to chat panes opened afterwards and at the next conversation switch inside an open pane. Esc at the top level restores the draft; `s` saves `ai.tools.approval` through config-persistence only when it differs, and the value is written explicitly even when it equals the default. The row is shown whatever the `Tools` draft. With it the AI tab has 11 rows and the popup keeps its 16 rows and its 24x15 minimum (see Popup height is fixed); the descriptor integrity rules extend to the row.
+
+Note: when the file holds a bad value (for example `approval = "AUTO"`), the row opens on `ask` and choosing `ask` writes nothing, so the bad value stays in the file until `auto` is saved. `Tools` behaves the same way. This is accepted (design D18); no force flag exists.
 
 #### Scenario: Cycle [auto]
 - GIVEN `Approval` selected with the draft `ask`
