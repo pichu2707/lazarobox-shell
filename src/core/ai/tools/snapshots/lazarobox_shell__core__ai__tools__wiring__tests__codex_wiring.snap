@@ -1,0 +1,6 @@
+---
+source: src/core/ai/tools/wiring.rs
+expression: text
+---
+argv: -c mcp_servers.lazarobox.command="/opt/lb/bin/lazarobox-shell" -c mcp_servers.lazarobox.args=["__mcp-serve", "/run/user/1000/lazarobox/s-42-1.sock"] -c mcp_servers.lazarobox.env_vars=["LAZAROBOX_MCP_TOKEN"] -c mcp_servers.lazarobox.tool_timeout_sec=900 -c mcp_servers.lazarobox.startup_timeout_sec=20
+env: LAZAROBOX_MCP_TOKEN=<32 bytes>

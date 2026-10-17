@@ -19,10 +19,14 @@
 //!   thinking.
 //! - an item of any kind but `agent_message`, `reasoning`, `error` and
 //!   `todo_list` (a command, a file change, a tool call, web search, or a kind
-//!   a newer codex adds) means the flags that remove the tools did not hold:
-//!   the turn ends with an error and the runtime then stops the process. An
-//!   allowlist, so nothing unknown runs unseen; the jail is what actually
-//!   stops the tool.
+//!   a newer codex adds) means the flags that remove the tools did not hold.
+//!   The one exception is a wired turn (the lazarobox MCP server is on): an
+//!   `mcp_tool_call` whose `server` is exactly `lazarobox` passes, any other
+//!   server or a missing one does not. Unlike claude's, the text-only mode
+//!   stays an allowlist too (every unknown kind ends the turn), because the
+//!   shell is the tool a missed flag would leave open. The turn then ends with
+//!   an error and the runtime stops the process. The allowlist means nothing
+//!   unknown runs unseen; the jail is what actually stops the tool.
 //! - a failure that says the model is not supported for the login gets a hint
 //!   to pick another model.
 //! - everything else, including any line that does not start with `{`, is
@@ -35,6 +39,7 @@ use super::stream::{
     CLI_LINE_CAP, ERROR_CAP, Lines, StreamDecoder, TooLong, emit, error_message, finish_with,
     malformed, too_long,
 };
+use crate::core::ai::tools::wiring::SERVER;
 
 /// The failure of a turn in which codex started a tool.
 pub const TOOL_REFUSED: &str = "codex tried to use a tool";
@@ -56,6 +61,9 @@ pub struct CodexDecoder {
     ended: bool,
     /// A message went out: the next one starts after a blank line.
     answered: bool,
+    /// The turn has the lazarobox tools wired in: its `mcp_tool_call` items
+    /// (and only those) are allowed.
+    wired: bool,
 }
 
 impl CodexDecoder {
@@ -64,6 +72,15 @@ impl CodexDecoder {
             lines: Lines::new(CLI_LINE_CAP),
             ended: false,
             answered: false,
+            wired: false,
+        }
+    }
+
+    /// For a turn whose codex got the lazarobox MCP server.
+    pub fn wired() -> Self {
+        Self {
+            wired: true,
+            ..Self::new()
         }
     }
 
@@ -78,7 +95,7 @@ impl CodexDecoder {
             return vec![malformed()];
         };
         match value["type"].as_str() {
-            Some("item.started" | "item.updated") => Self::tool_check(&value),
+            Some("item.started" | "item.updated") => self.tool_check(&value),
             Some("item.completed") => self.completed(&value),
             Some("turn.completed") => vec![StreamEvent::Done(Finish::Stop)],
             Some("turn.failed") => vec![StreamEvent::Error(ChatError::Failed(failure(&value)))],
@@ -86,10 +103,16 @@ impl CodexDecoder {
         }
     }
 
-    /// The refusal when the item of `value` is not an allowed kind.
-    fn tool_check(value: &Value) -> Vec<StreamEvent> {
-        let kind = value["item"]["type"].as_str();
-        if kind.is_some_and(|k| ALLOWED_ITEMS.contains(&k)) {
+    /// The refusal when the item of `value` is not an allowed kind. A wired
+    /// turn also allows an `mcp_tool_call` whose `server` is exactly ours (the
+    /// host announces the call, so it adds nothing here); a text-only turn
+    /// allows no tool at all, ours included.
+    fn tool_check(&self, value: &Value) -> Vec<StreamEvent> {
+        let item = &value["item"];
+        let kind = item["type"].as_str();
+        let ours =
+            self.wired && kind == Some("mcp_tool_call") && item["server"].as_str() == Some(SERVER);
+        if ours || kind.is_some_and(|k| ALLOWED_ITEMS.contains(&k)) {
             vec![]
         } else {
             vec![StreamEvent::Error(ChatError::Failed(TOOL_REFUSED.into()))]
@@ -98,7 +121,7 @@ impl CodexDecoder {
 
     fn completed(&mut self, value: &Value) -> Vec<StreamEvent> {
         if value["item"]["type"].as_str() != Some("agent_message") {
-            return Self::tool_check(value);
+            return self.tool_check(value);
         }
         let Some(text) = value["item"]["text"].as_str().filter(|t| !t.is_empty()) else {
             return vec![];

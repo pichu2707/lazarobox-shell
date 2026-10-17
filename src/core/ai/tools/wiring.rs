@@ -129,6 +129,56 @@ pub fn claude(shim: &Path, config: &Path, wire: &McpWire) -> Option<ClaudeWiring
     })
 }
 
+/// What codex gets for one turn with tools: `-c` overrides for the server
+/// entry, and the one variable its own process env must hold.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CodexWiring {
+    pub args: Vec<String>,
+    /// The token's variable and value. `Secret` never prints, so the derived
+    /// `Debug` is safe.
+    pub env: Vec<(&'static str, Secret)>,
+}
+
+/// How long codex waits for one MCP call, in seconds: a call may wait for the
+/// user's `y` (D13).
+const CODEX_TOOL_TIMEOUT_SEC: u32 = 900;
+/// How long codex waits for the shim to start, in seconds.
+const CODEX_STARTUP_TIMEOUT_SEC: u32 = 20;
+
+/// A TOML basic string, escaped by the toml crate.
+fn toml_string(text: &str) -> String {
+    toml::Value::String(text.to_owned()).to_string()
+}
+
+/// The wiring for codex: `-c mcp_servers.lazarobox.*` overrides (the value is
+/// TOML). The token is NOT in them: argv is visible in `ps`. `env_vars` names
+/// the variable, and codex forwards it from its own process env, where the
+/// runtime sets it. `None` when a path is not UTF-8.
+pub fn codex(shim: &Path, wire: &McpWire) -> Option<CodexWiring> {
+    let key = |name: &str| format!("mcp_servers.{SERVER}.{name}");
+    let pairs = [
+        ("command", toml_string(shim.to_str()?)),
+        (
+            "args",
+            format!(
+                "[{}, {}]",
+                toml_string(SUBCOMMAND),
+                toml_string(wire.socket.to_str()?)
+            ),
+        ),
+        ("env_vars", format!("[{}]", toml_string(TOKEN_ENV))),
+        ("tool_timeout_sec", CODEX_TOOL_TIMEOUT_SEC.to_string()),
+        ("startup_timeout_sec", CODEX_STARTUP_TIMEOUT_SEC.to_string()),
+    ];
+    Some(CodexWiring {
+        args: pairs
+            .into_iter()
+            .flat_map(|(name, value)| ["-c".to_owned(), format!("{}={value}", key(name))])
+            .collect(),
+        env: vec![(TOKEN_ENV, wire.token.clone())],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,5 +251,56 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         let odd = Path::new(std::ffi::OsStr::from_bytes(b"/a/\xff"));
         assert!(claude(odd, Path::new("/c"), &wire()).is_none());
+    }
+
+    fn codex_wiring() -> CodexWiring {
+        codex(Path::new("/opt/lb/bin/lazarobox-shell"), &wire()).unwrap()
+    }
+
+    #[test]
+    fn the_codex_wiring_snapshot() {
+        let w = codex_wiring();
+        let env: Vec<String> = w
+            .env
+            .iter()
+            .map(|(k, v)| format!("{k}=<{} bytes>", v.reveal().len()))
+            .collect();
+        let text = format!("argv: {}\nenv: {}\n", w.args.join(" "), env.join(" "));
+        insta::assert_snapshot!("codex_wiring", text);
+    }
+
+    #[test]
+    fn the_codex_token_is_only_in_the_env_never_argv_or_debug() {
+        let w = codex_wiring();
+        let token = wire().token.reveal().to_owned();
+        assert_eq!(w.env.len(), 1);
+        assert_eq!(w.env[0].0, TOKEN_ENV);
+        assert_eq!(w.env[0].1.reveal(), token);
+        assert!(!w.args.iter().any(|a| a.contains(&token)), "{:?}", w.args);
+        // The variable is named in `env_vars`, so codex forwards it.
+        assert!(
+            w.args
+                .contains(&format!("mcp_servers.lazarobox.env_vars=[\"{TOKEN_ENV}\"]"))
+        );
+        assert!(!format!("{w:?}").contains(&token), "{w:?}");
+    }
+
+    #[test]
+    fn a_codex_value_is_a_toml_string_even_for_an_odd_path() {
+        let w = codex(Path::new("/a \"b\"/c\\d\te"), &wire()).unwrap();
+        let command = w
+            .args
+            .iter()
+            .find_map(|a| a.strip_prefix("mcp_servers.lazarobox.command="))
+            .unwrap();
+        let parsed: toml::Value = toml::from_str(&format!("v = {command}")).unwrap();
+        assert_eq!(parsed["v"].as_str(), Some("/a \"b\"/c\\d\te"));
+    }
+
+    #[test]
+    fn a_codex_path_that_is_not_utf8_gives_no_wiring() {
+        use std::os::unix::ffi::OsStrExt;
+        let odd = Path::new(std::ffi::OsStr::from_bytes(b"/a/\xff"));
+        assert!(codex(odd, &wire()).is_none());
     }
 }

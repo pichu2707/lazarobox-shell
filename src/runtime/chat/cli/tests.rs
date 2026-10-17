@@ -2219,3 +2219,181 @@ fn the_real_machine_resolves_its_own_executable_once_as_the_shim() {
     assert_eq!(shim, fs::canonicalize(&shim).unwrap());
     assert_ne!(shim, Path::new("/proc/self/exe"));
 }
+
+/// A codex of a turn with tools: it records its argv and env, then answers.
+const MCP_CODEX: &str = r#"
+printf '%s\0' "$@" > "$REC/args"
+env > "$REC/env"
+if [ -e "$TMPDIR/mcp.json" ]; then echo yes > "$REC/mcp_during"; fi
+"#;
+
+fn wired_codex_job(lab: &Lab) -> Job {
+    Job {
+        mcp: claude_job(lab, true).mcp,
+        ..codex_job(&["exec", "-"])
+    }
+}
+
+fn trusted_shim(lab: &Lab) -> PathBuf {
+    let shim = lab.bin.join("shim");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    shim
+}
+
+#[tokio::test]
+async fn a_wired_codex_gets_the_overrides_and_the_jail_grant_and_the_token_only_in_its_env() {
+    let lab = lab();
+    script(
+        &lab.bin.join("codex"),
+        &lab.rec,
+        &format!("{MCP_CODEX}{CODEX_ANSWER}"),
+    );
+    let shim = trusted_shim(&lab);
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let events = run_job(&env, wired_codex_job(&lab)).await;
+    assert_eq!(
+        events.last(),
+        Some(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, StreamEvent::Notice(_))),
+        "{events:?}"
+    );
+    let args = lab.args();
+    assert_eq!(args[..2], ["exec", "-"]);
+    let socket = lab.rec.join("s.sock");
+    let want = wiring::codex(&shim, &wired_codex_job(&lab).mcp.unwrap())
+        .unwrap()
+        .args;
+    assert_eq!(args[2..], want[..], "{args:?}");
+    assert!(args.contains(&format!(
+        "mcp_servers.lazarobox.command=\"{}\"",
+        shim.display()
+    )));
+    assert!(args.iter().any(|a| a.contains(socket.to_str().unwrap())));
+    // The token reaches codex only through its own environment.
+    assert!(
+        lab.recorded("env")
+            .lines()
+            .any(|l| l == format!("LAZAROBOX_MCP_TOKEN={TOKEN}"))
+    );
+    assert!(!args.iter().any(|a| a.contains(TOKEN)), "{args:?}");
+    assert!(!lab.recorded("helper_args").contains(TOKEN));
+    // codex has no config file: the turn's folder held no `mcp.json` while it
+    // ran (the fake records one if it finds it, and it is not there).
+    assert_eq!(
+        lab.recorded("mcp_during"),
+        "",
+        "no config file while it ran"
+    );
+    assert!(!args.iter().any(|a| a.contains("mcp.json")), "{args:?}");
+    let helper = lab.recorded("helper_args");
+    let helper: Vec<&str> = helper.split('\0').collect();
+    let has = |flag: &str, path: &str| helper.windows(2).any(|w| w == [flag, path]);
+    assert!(has("--rx", shim.to_str().unwrap()), "{helper:?}");
+    assert!(has("--rw-file", socket.to_str().unwrap()), "{helper:?}");
+}
+
+/// A codex turn that fell back to text: it ran bare of the tools, said so, and
+/// ended its session once.
+async fn assert_codex_text_fallback(lab: &Lab, env: &CliEnv) {
+    script(
+        &lab.bin.join("codex"),
+        &lab.rec,
+        &format!("{MCP_CODEX}{CODEX_ANSWER}"),
+    );
+    let mut job = wired_codex_job(lab);
+    let count = counted(&mut job);
+    let events = run_job(env, job).await;
+    assert_eq!(
+        events[0],
+        StreamEvent::Notice(OFF_NOTICE.into()),
+        "{events:?}"
+    );
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    assert_eq!(count.load(Ordering::SeqCst), 1, "Unwire exactly once");
+    assert!(
+        !lab.recorded("env").contains("LAZAROBOX_MCP_TOKEN"),
+        "no token in the child env"
+    );
+    let args = lab.args();
+    assert_eq!(args, ["exec", "-"], "no -c mcp_servers entries: {args:?}");
+    assert!(!args.iter().any(|a| a.contains("mcp_servers")));
+    assert_eq!(lab.recorded("mcp_during"), "");
+}
+
+#[tokio::test]
+async fn a_shim_the_jail_refuses_retries_codex_without_the_tools() {
+    let lab = lab();
+    let shim = shim_in_ssh(&lab);
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    assert_codex_text_fallback(&lab, &env).await;
+    let helper = lab.recorded("helper_args");
+    assert!(
+        !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
+        "{helper:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_untrusted_shim_runs_codex_as_text_with_the_notice() {
+    let lab = lab();
+    let shim = lab.bin.join("shim");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o666)).unwrap();
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    assert_codex_text_fallback(&lab, &env).await;
+    let helper = lab.recorded("helper_args");
+    assert!(
+        !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
+        "{helper:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_turns_token_is_not_shown_from_a_codex_stderr_tail() {
+    let lab = lab();
+    script(
+        &lab.bin.join("codex"),
+        &lab.rec,
+        "cat > /dev/null\necho \"cannot reach $LAZAROBOX_MCP_TOKEN now\" >&2\nexit 1",
+    );
+    let shim = trusted_shim(&lab);
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let mut job = wired_codex_job(&lab);
+    job.mcp.as_mut().unwrap().token = Secret::new("hunter2");
+    let events = run_job(&env, job).await;
+    assert_eq!(failure(&events), "cannot reach (..) now", "{events:?}");
+}
+
+/// A codex that starts one of lazarobox's own tools, then answers.
+const CODEX_OWN_TOOL: &str = r#"
+cat > /dev/null
+printf '%s\n' '{"type":"item.started","item":{"id":"i","type":"mcp_tool_call","server":"lazarobox","tool":"find_dir","arguments":{},"status":"in_progress"}}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"j","type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{}}'
+"#;
+
+#[tokio::test]
+async fn only_a_wired_turn_lets_codex_use_our_tools() {
+    let lab = lab();
+    script(&lab.bin.join("codex"), &lab.rec, CODEX_OWN_TOOL);
+    let shim = trusted_shim(&lab);
+    let wired = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let events = run_job(&wired, wired_codex_job(&lab)).await;
+    assert_eq!(
+        events.last(),
+        Some(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+    // The same stream in a turn that fell back to text (no shim program).
+    let mut bare = with_shim(&lab, lab.env(), "/unused");
+    bare.shim = None;
+    let mut job = wired_codex_job(&lab);
+    let count = counted(&mut job);
+    let events = run_job(&bare, job).await;
+    assert_eq!(failure(&events), "codex tried to use a tool", "{events:?}");
+    assert_eq!(count.load(Ordering::SeqCst), 1, "its session ended");
+}

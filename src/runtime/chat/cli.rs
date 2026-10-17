@@ -666,22 +666,37 @@ struct Wired {
     socket: PathBuf,
 }
 
-/// Writes the engine's MCP config (it holds the token: 0600, in the turn
-/// folder that is wiped) and says what the turn gains. `None` when the job has
-/// no wire, there is no shim program, or the file cannot be written: the turn
-/// then runs as text.
+/// What the engine is told about the tools, and writes the config file where
+/// the engine takes one (claude's holds the token: 0600, in the turn folder
+/// that is wiped). `None` when the job has no wire, there is no shim program,
+/// the engine has no wiring, or the file cannot be written: the turn then
+/// runs as text.
 fn wire_mcp(env: &CliEnv, job: &Job, dirs: &Dirs) -> Option<Wired> {
     let wire = job.mcp.as_ref()?;
-    let path = dirs.tmp.join("mcp.json");
-    let wiring = wiring::claude(env.shim.as_deref()?, &path, wire)?;
-    write_private(&path, wiring.config.as_bytes()).ok()?;
+    let shim = env.shim.as_deref()?;
+    let (args, vars) = match job.cli {
+        Cli::Claude => {
+            let path = dirs.tmp.join("mcp.json");
+            let wiring = wiring::claude(shim, &path, wire)?;
+            write_private(&path, wiring.config.as_bytes()).ok()?;
+            let vars = wiring.env.into_iter().map(|(k, v)| (k.into(), v.into()));
+            (wiring.args, vars.collect())
+        }
+        // The token is only in codex's environment: `env_vars` names it, so
+        // codex hands it on to the shim.
+        Cli::Codex => {
+            let wiring = wiring::codex(shim, wire)?;
+            let vars = wiring
+                .env
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.reveal().into()));
+            (wiring.args, vars.collect())
+        }
+        _ => return None,
+    };
     Some(Wired {
-        args: wiring.args.into_iter().map(OsString::from).collect(),
-        vars: wiring
-            .env
-            .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
-            .collect(),
+        args: args.into_iter().map(OsString::from).collect(),
+        vars,
         socket: wire.socket.clone(),
     })
 }

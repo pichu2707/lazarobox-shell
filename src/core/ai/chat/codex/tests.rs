@@ -341,3 +341,90 @@ fn a_broken_json_line_is_still_malformed_even_after_stray_text() {
         [failed("malformed stream data")]
     );
 }
+
+fn item_line(event: &str, item: &str) -> String {
+    format!("{{\"type\":\"{event}\",\"item\":{item}}}\n")
+}
+
+fn ours(event: &str) -> String {
+    item_line(
+        event,
+        "{\"id\":\"item_1\",\"type\":\"mcp_tool_call\",\"server\":\"lazarobox\",\"tool\":\"find_dir\",\"arguments\":{},\"status\":\"in_progress\"}",
+    )
+}
+
+fn run_wired(text: &str) -> Vec<StreamEvent> {
+    let mut decoder = CodexDecoder::wired();
+    let mut events = decoder.feed(text.as_bytes());
+    events.extend(decoder.finish());
+    events
+}
+
+#[test]
+fn a_wired_turn_lets_our_mcp_tool_call_through_and_shows_nothing_for_it() {
+    let mut text = String::new();
+    for event in ["item.started", "item.updated", "item.completed"] {
+        text.push_str(&ours(event));
+    }
+    text.push_str(&message_line("found"));
+    text.push_str(completed_line());
+    assert_eq!(run_wired(&text), [delta("found"), done()]);
+}
+
+#[test]
+fn a_wired_turn_refuses_an_mcp_tool_call_that_is_not_ours() {
+    for server in [
+        "\"server\":\"other\"",
+        "\"server\":\"Lazarobox\"",
+        "\"server\":\"lazarobox \"",
+        "\"server\":\"\"",
+        "\"server\":7",
+        "\"server\":null",
+        "\"tool\":\"find_dir\"",
+    ] {
+        for event in ["item.started", "item.updated", "item.completed"] {
+            let item = format!("{{\"id\":\"i\",\"type\":\"mcp_tool_call\",{server}}}");
+            assert_eq!(
+                run_wired(&item_line(event, &item)),
+                [failed(TOOL_REFUSED)],
+                "{event} {server}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_wired_turn_still_refuses_every_other_tool_and_unknown_item() {
+    for event in ["item.started", "item.updated", "item.completed"] {
+        for kind in [
+            "command_execution",
+            "file_change",
+            "collab_tool_call",
+            "web_search",
+            "mcp_tool_result",
+            "something_new",
+        ] {
+            let item = format!("{{\"id\":\"i\",\"type\":\"{kind}\",\"server\":\"lazarobox\"}}");
+            assert_eq!(
+                run_wired(&item_line(event, &item)),
+                [failed(TOOL_REFUSED)],
+                "{event} {kind}"
+            );
+        }
+        assert_eq!(
+            run_wired(&item_line(event, "{\"id\":\"i\",\"server\":\"lazarobox\"}")),
+            [failed(TOOL_REFUSED)],
+            "{event} untyped"
+        );
+    }
+    // The recorded shell attempt ends a wired turn too.
+    let events = run_wired(SHELL);
+    assert_eq!(events.last(), Some(&failed(TOOL_REFUSED)));
+}
+
+#[test]
+fn a_text_only_turn_refuses_our_mcp_tool_call_too() {
+    for event in ["item.started", "item.updated", "item.completed"] {
+        assert_eq!(whole(&ours(event)), [failed(TOOL_REFUSED)], "{event}");
+    }
+}
