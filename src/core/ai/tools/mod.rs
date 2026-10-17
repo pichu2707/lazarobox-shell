@@ -2,6 +2,7 @@
 //! do. No IO lives here.
 
 pub mod command;
+pub mod exec;
 pub mod label;
 pub mod mcp;
 pub mod paths;
