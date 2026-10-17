@@ -963,8 +963,10 @@ impl Panes {
                         chats.decide(pane, turn, call, decision);
                     }
                 }
-                // The write and the answer are one step: `Sent` is only said
-                // after the bytes were handed to a pane at its prompt.
+                // The write and the answer are one step: the answer is claimed
+                // first (a call that is over is owed none, so nothing is
+                // typed), and `Sent` is only said after the bytes were handed
+                // to a pane at its prompt.
                 Effect::AutoType {
                     chat,
                     target,
@@ -972,9 +974,15 @@ impl Panes {
                     turn,
                     call,
                 } => {
-                    let decision = auto_type::type_if_idle(self.handles.get_mut(&target), bytes);
-                    if let Some(chats) = self.chats.as_ref() {
-                        chats.decide(chat, turn, call, decision);
+                    let answer = self
+                        .chats
+                        .as_ref()
+                        .and_then(|chats| chats.take(chat, turn, call))
+                        .filter(|answer| !answer.is_closed());
+                    if let Some(answer) = answer {
+                        let decision =
+                            auto_type::type_if_idle(self.handles.get_mut(&target), bytes);
+                        let _ = answer.send(decision);
                     }
                 }
                 Effect::EndToolSession(pane) => {
@@ -3252,7 +3260,7 @@ mod tests {
 
     // --- Chat effects ---
 
-    use crate::core::ai::chat::engine::{ChatRequest, StreamEvent, Tools};
+    use crate::core::ai::chat::engine::{ChatRequest, Decision, StreamEvent, Tools};
 
     fn chat_request() -> ChatRequest {
         ChatRequest {
@@ -3442,11 +3450,34 @@ mod tests {
         }
     }
 
+    /// A call of chat 9 turn 1 that waits for its answer, as a model's does.
+    fn waiting(panes: &Panes, call: u64) -> futures::future::BoxFuture<'static, Decision> {
+        use crate::core::ai::chat::{approval::ApprovalAsk, engine::CallId};
+        let ask = ApprovalAsk::Read {
+            path: String::new(),
+        };
+        let waits = panes.chats.as_ref().unwrap().waits();
+        waits
+            .approver(id(9), 1, tools::Pending::new())
+            .ask(CallId(call), &ask)
+    }
+
+    fn auto_type_effect(target: u32, call: u64) -> Effect {
+        Effect::AutoType {
+            chat: id(9),
+            target: id(target),
+            bytes: format!("cmd{target}").into_bytes(),
+            turn: 1,
+            call: crate::core::ai::chat::engine::CallId(call),
+        }
+    }
+
     // The effect writes to the target, not to the chat, and only at a prompt.
-    #[test]
-    fn an_auto_type_writes_only_to_a_pane_whose_shell_is_in_the_foreground() {
-        let (mut panes, _rx, _rec) = fake_panes(None);
+    #[tokio::test]
+    async fn an_auto_type_writes_only_to_a_pane_whose_shell_is_in_the_foreground() {
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
         let mut logs = Vec::new();
+        let mut waits = Vec::new();
         for (n, foreground) in [(1, Some(true)), (2, Some(false)), (3, None)] {
             let pty = FakePty {
                 foreground,
@@ -3454,20 +3485,43 @@ mod tests {
             };
             logs.push(pty.log.clone());
             panes.handles.insert(id(n), Box::new(pty));
+            waits.push(waiting(&panes, n.into()));
         }
-        let effects = (1..=4)
-            .map(|n| Effect::AutoType {
-                chat: id(9),
-                target: id(n),
-                bytes: format!("cmd{n}").into_bytes(),
-                turn: 1,
-                call: crate::core::ai::chat::engine::CallId(n.into()),
-            })
-            .collect();
-        panes.apply(effects);
+        waits.push(waiting(&panes, 4));
+        panes.apply((1..=4).map(|n| auto_type_effect(n, n.into())).collect());
         assert_eq!(logs[0].lock().unwrap().writes, vec![b"cmd1".to_vec()]);
         assert!(logs[1].lock().unwrap().writes.is_empty());
         assert!(logs[2].lock().unwrap().writes.is_empty());
+        let mut answers = Vec::new();
+        for wait in waits {
+            answers.push(wait.await);
+        }
+        assert_eq!(answers[0], Decision::Sent);
+        assert!(
+            answers[1..]
+                .iter()
+                .all(|a| matches!(a, Decision::Denied(_)))
+        );
+    }
+
+    // One answer per call, and bytes only when that answer is `Sent`: when
+    // the wait is gone before the effect runs, nothing is typed.
+    #[tokio::test]
+    async fn an_auto_type_whose_call_is_over_writes_nothing() {
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let pty = FakePty {
+            foreground: Some(true),
+            ..FakePty::default()
+        };
+        let log = pty.log.clone();
+        panes.handles.insert(id(1), Box::new(pty));
+        let ended = waiting(&panes, 1);
+        let dropped = waiting(&panes, 2);
+        panes.chats.as_ref().unwrap().waits().end_turn(id(9), 1);
+        drop(dropped);
+        panes.apply(vec![auto_type_effect(1, 1), auto_type_effect(1, 2)]);
+        assert!(log.lock().unwrap().writes.is_empty(), "no wait, no bytes");
+        assert!(matches!(ended.await, Decision::Denied(_)));
     }
 
     #[tokio::test]

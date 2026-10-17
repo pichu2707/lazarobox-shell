@@ -595,6 +595,22 @@ impl Chats {
         self.waits.decide(pane, turn, call, decision)
     }
 
+    /// Claims the answer of a call that waits (see [`Waits::take`]).
+    pub fn take(
+        &self,
+        pane: PaneId,
+        turn: u64,
+        call: CallId,
+    ) -> Option<tokio::sync::oneshot::Sender<Decision>> {
+        self.waits.take(pane, turn, call)
+    }
+
+    /// The waits, so a test can register one without a model turn.
+    #[cfg(test)]
+    pub fn waits(&self) -> &Arc<Waits> {
+        &self.waits
+    }
+
     /// Ends the tool session of `pane`: its socket goes and every call it
     /// holds, answered or not, is denied.
     pub fn end_session(&mut self, pane: PaneId) {
