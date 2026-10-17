@@ -6906,6 +6906,54 @@ mod app_tests {
         assert!(!a.ai().tools_enabled(), "Esc keeps the saved value");
     }
 
+    // Spec (agent-tools, config menu): `s` saves only `ai.tools.approval`, the
+    // saved value becomes the app's mode and Esc keeps the saved one.
+    #[test]
+    fn the_approval_row_saves_only_its_key_and_updates_the_app() {
+        use crate::core::ai::config::ApprovalMode;
+        let mut a = ai_app();
+        assert_eq!(a.ai().approval(), ApprovalMode::Ask);
+        open_menu(&mut a);
+        goto_row(&mut a, "Approval");
+        assert_eq!(a.update(key('l')), Vec::<Effect>::new(), "no ResizePty");
+        assert_eq!(a.menu().unwrap().ai_draft().approval(), ApprovalMode::Auto);
+        assert_eq!(a.ai().approval(), ApprovalMode::Ask, "not saved yet");
+        let edit = ConfigEdit {
+            table: "ai.tools",
+            key: "approval",
+            value: "auto".into(),
+        };
+        assert_eq!(a.update(key('s')), vec![Effect::SaveConfig(vec![edit])]);
+        a.update(AppEvent::ConfigSaved);
+        assert!(a.menu().is_none());
+        assert_eq!(a.ai().approval(), ApprovalMode::Auto);
+        open_menu(&mut a);
+        goto_row(&mut a, "Approval");
+        a.update(key('l'));
+        a.update(esc());
+        assert_eq!(a.ai().approval(), ApprovalMode::Auto, "Esc keeps the saved");
+    }
+
+    // Spec (agent-tools, config menu): the saved mode reaches later opens, not
+    // a chat that is already open.
+    #[test]
+    fn a_saved_approval_does_not_touch_an_open_chat() {
+        use crate::core::ai::config::ApprovalMode;
+        let mut a = launched(80, 25).with_ai(ai_of("ollama", "qwen2:7b"));
+        press(&mut a, "c");
+        let mode = |a: &mut App| a.focused_state_mut().chat_mut().unwrap().approval_mode();
+        assert_eq!(mode(&mut a), ApprovalMode::Ask);
+        open_menu(&mut a);
+        goto_row(&mut a, "Approval");
+        a.update(key('l'));
+        a.update(key('s'));
+        a.update(AppEvent::ConfigSaved);
+        assert_eq!(a.ai().approval(), ApprovalMode::Auto);
+        assert_eq!(mode(&mut a), ApprovalMode::Ask, "the open chat keeps ask");
+        press(&mut a, "c");
+        assert_eq!(mode(&mut a), ApprovalMode::Auto, "a later open takes it");
+    }
+
     // Spec (Context toggle): Esc restores the flag captured at open.
     #[test]
     fn esc_reverts_the_context_draft() {

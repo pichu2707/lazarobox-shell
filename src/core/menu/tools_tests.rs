@@ -44,14 +44,15 @@ fn tools_edit(value: &'static str) -> ConfigEdit {
     }
 }
 
-// Spec (agent-tools, config menu): the row is last, right after Memory.
+// Spec (agent-tools, config menu): the row is right after Memory; Approval
+// follows it.
 #[test]
 fn the_tools_row_follows_memory_and_is_found_by_kind() {
     let items = AI_SECTION.items;
-    let last = items.last().unwrap();
-    assert_eq!(last.label, "Tools");
-    assert!(matches!(last.kind, ItemKind::Tools));
-    assert_eq!(items[items.len() - 2].label, "Memory");
+    let tools = &items[items.len() - 2];
+    assert_eq!(tools.label, "Tools");
+    assert!(matches!(tools.kind, ItemKind::Tools));
+    assert_eq!(items[items.len() - 3].label, "Memory");
     let count = items
         .iter()
         .filter(|i| matches!(i.kind, ItemKind::Tools))
@@ -60,19 +61,10 @@ fn the_tools_row_follows_memory_and_is_found_by_kind() {
 }
 
 #[test]
-fn the_ai_tab_holds_ten_rows() {
-    assert_eq!(AI_SECTION.items.len(), 10);
-}
-
-#[test]
-fn navigation_goes_memory_tools_then_wraps_to_the_first_ai_row() {
+fn navigation_goes_memory_tools_approval() {
     let mut m = on_tools(true);
     press(&mut m, 'j');
-    assert_eq!(
-        selected_label(&m),
-        "Set all tasks",
-        "wraps inside the AI tab"
-    );
+    assert_eq!(selected_label(&m), "Approval");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Tools");
     press(&mut m, 'k');

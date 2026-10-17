@@ -1367,4 +1367,78 @@ other = 1
             })
         );
     }
+
+    // Spec (agent-tools, config-persistence): `ai.tools.approval` is an owned
+    // string, written next to `enabled` and left untouched when unchanged.
+    fn approval_edit(mode: crate::core::ai::config::ApprovalMode) -> [ConfigEdit; 1] {
+        [ConfigEdit::approval(mode)]
+    }
+
+    #[test]
+    fn the_approval_key_is_created_in_its_own_table_as_a_string() {
+        use crate::core::ai::config::ApprovalMode;
+        let out = apply_edit(None, &approval_edit(ApprovalMode::Auto)).unwrap();
+        assert_eq!(out, "[ai.tools]\napproval = \"auto\"\n");
+        let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out), None);
+        assert_eq!(ai.approval(), ApprovalMode::Auto);
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn the_approval_key_is_created_next_to_enabled() {
+        use crate::core::ai::config::ApprovalMode;
+        let existing = "[ai.tools]\nenabled = true  # on\n\n[ai]\nnotify = \"bell\"\n";
+        let out = apply_edit(Some(existing), &approval_edit(ApprovalMode::Auto)).unwrap();
+        assert_eq!(
+            out,
+            "[ai.tools]\nenabled = true  # on\napproval = \"auto\"\n\n[ai]\nnotify = \"bell\"\n"
+        );
+        let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out), None);
+        assert_eq!(ai.approval(), ApprovalMode::Auto);
+        assert!(ai.tools_enabled());
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn an_existing_approval_is_updated_in_place_and_keeps_its_comment() {
+        use crate::core::ai::config::ApprovalMode;
+        let existing = "[ai.tools]\n# how\napproval = \"auto\"  # careful\nenabled = true\n";
+        let out = apply_edit(Some(existing), &approval_edit(ApprovalMode::Ask)).unwrap();
+        assert_eq!(
+            out,
+            "[ai.tools]\n# how\napproval = \"ask\"  # careful\nenabled = true\n"
+        );
+    }
+
+    #[test]
+    fn the_default_is_written_explicitly_and_saving_it_twice_is_a_no_op() {
+        use crate::core::ai::config::ApprovalMode;
+        let out = apply_edit(None, &approval_edit(ApprovalMode::Ask)).unwrap();
+        assert_eq!(out, "[ai.tools]\napproval = \"ask\"\n");
+        let again = apply_edit(Some(&out), &approval_edit(ApprovalMode::Ask)).unwrap();
+        assert_eq!(again, out);
+    }
+
+    #[test]
+    fn saving_the_approval_leaves_the_mcp_servers_and_enabled_byte_for_byte() {
+        use crate::core::ai::config::ApprovalMode;
+        let mcp = "[[ai.mcp.servers]]\nname = \"docs\"\ncommand = \"/usr/bin/docs-mcp\"\n";
+        let existing = format!("[ai.tools]\nenabled = false\n\n{mcp}");
+        let out = apply_edit(Some(&existing), &approval_edit(ApprovalMode::Auto)).unwrap();
+        assert!(out.contains(mcp), "{out:?}");
+        assert!(out.contains("enabled = false"), "{out:?}");
+    }
+
+    #[test]
+    fn an_approval_key_that_holds_a_table_is_refused() {
+        use crate::core::ai::config::ApprovalMode;
+        let existing = "[ai.tools.approval]\nx = 1\n";
+        assert_eq!(
+            apply_edit(Some(existing), &approval_edit(ApprovalMode::Auto)),
+            Err(EditError::KeyIsTable {
+                table: "ai.tools",
+                key: "approval"
+            })
+        );
+    }
 }

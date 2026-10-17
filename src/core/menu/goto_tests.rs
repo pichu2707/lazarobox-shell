@@ -3,7 +3,7 @@
 use super::ai_tests::{machine, menu, selected_label};
 use super::*;
 
-const LABELS: [&str; 16] = [
+const LABELS: [&str; 17] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
@@ -20,6 +20,7 @@ const LABELS: [&str; 16] = [
     "Context",
     "Memory",
     "Tools",
+    "Approval",
 ];
 
 #[test]

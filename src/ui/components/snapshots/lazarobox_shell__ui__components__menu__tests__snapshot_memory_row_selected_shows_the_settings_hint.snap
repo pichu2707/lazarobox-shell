@@ -14,7 +14,7 @@ expression: shown
 │ Context                                                 on │
 │ Memory                                                 off │
 │ Tools                                                   on │
-│                                                            │
+│ Approval                                               ask │
 │                                                            │
 │ j/k move · h/l change · s save · Esc cancel                │
 └────────────────────────────────────────────────────────────┘

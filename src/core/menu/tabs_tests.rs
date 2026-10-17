@@ -15,7 +15,7 @@ const SETTINGS: [&str; 6] = [
     "Updates",
 ];
 
-const AI: [&str; 10] = [
+const AI: [&str; 11] = [
     "Set all tasks",
     "general",
     "code",
@@ -26,6 +26,7 @@ const AI: [&str; 10] = [
     "Context",
     "Memory",
     "Tools",
+    "Approval",
 ];
 
 fn with_mods(m: &mut MenuState, code: KeyCode, mods: KeyModifiers, repeat: bool) -> MenuCommand {
@@ -200,7 +201,7 @@ fn j_and_k_wrap_inside_the_ai_tab() {
     assert_eq!(selected_label(&m), "Set all tasks", "wraps, no crossing");
     assert_eq!(m.active_tab(), 1);
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Tools");
+    assert_eq!(selected_label(&m), "Approval");
     assert_eq!(m.active_tab(), 1);
 }
 

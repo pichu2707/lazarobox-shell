@@ -48,6 +48,10 @@ pub enum ItemKind {
     /// The agent tools flag (`ai.tools.enabled`): an on/off row that lives in
     /// the AI draft, like [`ItemKind::Notify`].
     Tools,
+    /// The approval mode of the model's commands (`ai.tools.approval`): an
+    /// `ask`/`auto` row over the AI draft. It only reaches later chat opens
+    /// and conversation switches, never an open chat or a pending approval.
+    Approval,
     /// The notification sound flag (`ai.notify_sound`): an on/off row over
     /// the AI draft.
     NotifySound,
@@ -202,6 +206,10 @@ pub static AI_SECTION: Section = Section {
             label: "Tools",
             kind: ItemKind::Tools,
         },
+        Item {
+            label: "Approval",
+            kind: ItemKind::Approval,
+        },
     ],
 };
 
@@ -250,6 +258,7 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
             | ItemKind::Memory(_)
             | ItemKind::Notify
             | ItemKind::Tools
+            | ItemKind::Approval
             | ItemKind::NotifySound
             | ItemKind::Updates => None,
         })
@@ -603,7 +612,7 @@ impl MenuState {
     }
 
     /// Whether the selection is on a row of the AI draft that is not a
-    /// task: `Profile`, `Context`, `Memory`, `Notify` or `Tools`.
+    /// task: `Profile`, `Context`, `Memory`, `Notify`, `Tools` or `Approval`.
     fn on_draft_row(&self) -> bool {
         matches!(
             self.selected_kind(),
@@ -613,6 +622,7 @@ impl MenuState {
                     | ItemKind::Memory(_)
                     | ItemKind::Notify
                     | ItemKind::Tools
+                    | ItemKind::Approval
                     | ItemKind::NotifySound
             )
         )
@@ -720,6 +730,7 @@ impl MenuState {
             | ItemKind::Memory(_)
             | ItemKind::Notify
             | ItemKind::Tools
+            | ItemKind::Approval
             | ItemKind::NotifySound
             | ItemKind::Updates => None,
         }
@@ -842,6 +853,19 @@ impl MenuState {
                                     "off"
                                 })
                             }),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Approval => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self
+                                .ai
+                                .as_ref()
+                                .map(|ai| Cow::Borrowed(ai.draft().approval().id())),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
@@ -1055,6 +1079,7 @@ impl MenuState {
                     Some(ItemKind::Profile) => ai.cycle_profile(forward),
                     Some(ItemKind::Memory(_)) => ai.toggle_memory(),
                     Some(ItemKind::Tools) => ai.toggle_tools(),
+                    Some(ItemKind::Approval) => ai.flip_approval(),
                     Some(ItemKind::Notify) => ai.cycle_notify(forward),
                     Some(ItemKind::NotifySound) => ai.toggle_notify_sound(),
                     _ => ai.toggle_context(),
@@ -1156,6 +1181,11 @@ impl MenuState {
             .as_ref()
             .and_then(AiMenu::changed_tools)
             .map(ConfigEdit::tools_flag);
+        let approval = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::changed_approval)
+            .map(ConfigEdit::approval);
         settings
             .chain(tasks)
             .chain(profile)
@@ -1164,6 +1194,7 @@ impl MenuState {
             .chain(notify)
             .chain(sound)
             .chain(tools)
+            .chain(approval)
             .collect()
     }
 
@@ -1610,6 +1641,9 @@ mod tabs_tests;
 
 #[cfg(test)]
 mod tools_tests;
+
+#[cfg(test)]
+mod approval_tests;
 
 #[cfg(test)]
 mod copy_tests;
