@@ -5,6 +5,15 @@ expression: text
 argv: --allowed-mcp-server-names=lazarobox --admin-policy=/data/lazarobox/cli-tmp/42-7/gemini-mcp-policy.toml
 settings.json:
 {
+  "advanced": {
+    "ignoreLocalEnv": true
+  },
+  "context": {
+    "memoryBoundaryMarkers": []
+  },
+  "hooksConfig": {
+    "enabled": false
+  },
   "mcpServers": {
     "lazarobox": {
       "args": [
@@ -18,10 +27,14 @@ settings.json:
       "timeout": 900000,
       "trust": true
     }
+  },
+  "skills": {
+    "enabled": false
   }
 }
 policy:
 [[rule]]
 mcpName = "lazarobox"
+toolName = "*"
 decision = "allow"
 priority = 999

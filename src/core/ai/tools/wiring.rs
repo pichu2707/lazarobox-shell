@@ -244,17 +244,28 @@ pub fn gemini(shim: &Path, policy: &Path, wire: &McpWire) -> Option<GeminiWiring
     if !policy_flag_safe(policy.to_str()?) || shim.contains('$') || socket.contains('$') {
         return None;
     }
-    let doc = json!({"mcpServers": {SERVER: {
-        "command": shim,
-        "args": [SUBCOMMAND, socket],
-        "env": {TOKEN_ENV: wire.token.reveal()},
-        "timeout": GEMINI_TOOL_TIMEOUT_MS,
-        "trust": true,
-    }}});
+    // The folder is trusted (the turn sets the env var), which would also
+    // load what sits above it: this switches off what a setting can (gemini
+    // 0.63.0 schema). Workspace policies are off in that build; a
+    // `.gemini/.env` above the folder has no setting.
+    let doc = json!({
+        "mcpServers": {SERVER: {
+            "command": shim,
+            "args": [SUBCOMMAND, socket],
+            "env": {TOKEN_ENV: wire.token.reveal()},
+            "timeout": GEMINI_TOOL_TIMEOUT_MS,
+            "trust": true,
+        }},
+        "advanced": {"ignoreLocalEnv": true},
+        // An empty list stops the GEMINI.md walk upwards from the folder.
+        "context": {"memoryBoundaryMarkers": []},
+        "hooksConfig": {"enabled": false},
+        "skills": {"enabled": false},
+    });
     Some(GeminiWiring {
         settings: serde_json::to_string_pretty(&doc).ok()?,
         policy: format!(
-            "[[rule]]\nmcpName = {}\ndecision = \"allow\"\npriority = 999\n",
+            "[[rule]]\nmcpName = {}\ntoolName = \"*\"\ndecision = \"allow\"\npriority = 999\n",
             toml_string(SERVER)
         ),
         args: vec![
@@ -437,6 +448,17 @@ mod tests {
     }
 
     #[test]
+    fn the_gemini_settings_switch_off_what_a_trusted_folder_would_load() {
+        let doc: serde_json::Value = serde_json::from_str(&gemini_wiring().settings).unwrap();
+        // `.env` files above the folder, the GEMINI.md walk upwards, hooks and
+        // skills (all keys of the gemini 0.63.0 settings schema).
+        assert_eq!(doc["advanced"]["ignoreLocalEnv"], true);
+        assert_eq!(doc["context"]["memoryBoundaryMarkers"], json!([]));
+        assert_eq!(doc["hooksConfig"]["enabled"], false);
+        assert_eq!(doc["skills"]["enabled"], false);
+    }
+
+    #[test]
     fn the_gemini_flags_use_the_equals_form_so_nothing_after_them_is_swallowed() {
         let w = gemini_wiring();
         assert_eq!(w.args.len(), 2);
@@ -456,7 +478,9 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0]["mcpName"].as_str(), Some("lazarobox"));
         assert_eq!(rules[0]["decision"].as_str(), Some("allow"));
-        assert!(rules[0].get("toolName").is_none(), "no tool wildcard");
+        // gemini's schema requires `toolName` even with `mcpName` set.
+        assert_eq!(rules[0]["toolName"].as_str(), Some("*"));
+        assert_eq!(rules[0]["priority"].as_integer(), Some(999));
     }
 
     #[test]

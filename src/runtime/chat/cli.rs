@@ -102,12 +102,17 @@ pub struct CliEnv {
     pub(crate) inject: Vec<(OsString, OsString)>,
 }
 
+/// The variable that makes gemini trust its working folder; only a wired
+/// gemini turn sets it, so one inherited from the user's shell is dropped.
+const GEMINI_TRUST_ENV: &str = "GEMINI_CLI_TRUST_WORKSPACE";
+
 /// Variables the child never inherits: the agents it could be talked into
 /// using (ssh, gpg, askpass helpers) and the state of an outer Claude Code
 /// session, which would make the CLI think it runs inside one. Settings
 /// (`ANTHROPIC_*`, proxy, certificates, XDG, `HOME`, `PATH`, the D-Bus
 /// address a keyring login needs) are kept.
-const SCRUBBED: [&str; 8] = [
+const SCRUBBED: [&str; 9] = [
+    GEMINI_TRUST_ENV,
     "SSH_AUTH_SOCK",
     "SSH_AGENT_PID",
     "SSH_ASKPASS",
@@ -578,6 +583,13 @@ fn command(
     for name in SCRUBBED {
         command.env_remove(name);
     }
+    // The wired turn's own value is set after the scrub, so it wins.
+    command.envs(
+        inject
+            .iter()
+            .filter(|(k, _)| k == GEMINI_TRUST_ENV)
+            .map(|(k, v)| (k, v)),
+    );
     // The jail ignores a relative `$CODEX_HOME`, so the child must not use it.
     let codex_home = inject
         .iter()
@@ -753,14 +765,17 @@ fn wire_mcp(env: &CliEnv, job: &Job, dirs: &Dirs) -> Option<Wired> {
             (wiring.args, Vec::new(), vars.collect())
         }
         // gemini reads the workspace settings of its working folder; the token
-        // is in that file only (0600), and in none of its argv or env.
+        // is in that file only (0600), and in none of its argv or env. The
+        // folder is trusted by env var: `--skip-trust` sets it only after the
+        // workspace settings were read as untrusted, which drops `mcpServers`.
         Cli::Gemini => {
             let Some((args, work)) = write_gemini(shim, dirs, wire) else {
                 unwrite_mcp(dirs);
                 return None;
             };
             cwd = Some(work);
-            (args, Vec::new(), Vec::new())
+            let trust = vec![(GEMINI_TRUST_ENV.into(), "true".into())];
+            (args, Vec::new(), trust)
         }
     };
     Some(Wired {
