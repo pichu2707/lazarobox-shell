@@ -72,17 +72,17 @@ Files: `src/core/ai/config.rs`, `src/core/ai/menu.rs`, `src/core/menu*.rs`, `src
 
 Files: `src/core/ai/tools/exec.rs` (new), `src/core/ai/tools/paths.rs` (`resolve_exec`, `Want`), `src/core/ai/tools/mod.rs` (mod only). No behaviour change at runtime; nothing calls these yet. Spec: pane-execution (grammar, flags, path policy).
 
-- [ ] S2.1 RED: `parse` accept tables per verb: `cd`, `cd ~`, `cd ~/dev/x`, `pwd`, `ls`, `ls -la x`, `ls -1thr a b`, `tree`, `tree -a`, `tree -d -L 2 src`, `mkdir -p a/b`, single-quoted words with spaces, accented letters and digits (`música`, `año-2026`).
-- [ ] S2.2 RED: refuse table for every R5 row: `; & | < > ( ) { } $ \` \ ! * ? [ ] #`, newline, tab, `"`, env assignment, globs, `-` and `--` words, long options, `ls -R`, `tree -o f`, `mkdir` without `-p`-only flags or with 0 or more than 4 paths, over 8 words, a word starting with `=`, `+`, `%`, `~user`, leading/trailing/doubled space, single-quoted words starting with `~` or `-`, containing `'` or `\`.
-- [ ] S2.3 RED: Unicode refusals: U+202E and the bidi range, U+200B/C/D, U+FEFF, U+00A0, U+2028/2029, U+0085, a combining mark (decomposed accent), ESC, C1 controls and DEL.
-- [ ] S2.4 RED: `Fallback.at` is the byte span of the offending token and `Fallback.why` names the reason (used by the S5 prompt).
-- [ ] S2.5 RED: property test: for every accepted `s`, `validate(s) == s`; `SafeCommand::as_str()` borrows the input (pointer equality) and the API has no `String` (zero-alloc).
-- [ ] S2.6 RED: `targets` yields `(path, Want)`: `cd` Existing (or HOME for bare `cd`), `ls`/`tree` Existing, `mkdir` New; cwd-implied targets for `ls`/`tree`/`pwd`/relative `mkdir`.
-- [ ] S2.7 RED: `resolve_exec` on tempdir fixtures: secret roots refused (`~/.ssh`, `~/.aws`), a dotfiles symlink into a secret root refused on the real path, outside-HOME allowed for `Existing`, `New` canonicalizes the deepest existing ancestor, `mkdir` outside HOME refused, cwd itself must pass for every verb except `cd`, `SecretRoots::load` returning `None` gives a fallback.
-- [ ] S2.8 GREEN: implement `exec.rs` (`CLASS` table, single pass, fixed `[&str; 8]`, per-verb flag table) and `resolve_exec` / `Want` in `paths.rs`.
-- [ ] S2.9 REFACTOR: share lexical normalization with `resolve`; no duplicated secret-root logic.
-- [ ] S2.10 Docs: module docs listing the allow-list and the invariant `checked bytes == written bytes`.
-- [ ] S2.11 Gate. Measure; expect ~300. Fallback split if over 400: S2a (`exec.rs`) and S2b (`resolve_exec`).
+- [x] S2.1 RED: `parse` accept tables per verb: `cd`, `cd ~`, `cd ~/dev/x`, `pwd`, `ls`, `ls -la x`, `ls -1thr a b`, `tree`, `tree -a`, `tree -d -L 2 src`, `mkdir -p a/b`, single-quoted words with spaces, accented letters and digits (`música`, `año-2026`).
+- [x] S2.2 RED: refuse table for every R5 row: `; & | < > ( ) { } $ \` \ ! * ? [ ] #`, newline, tab, `"`, env assignment, globs, `-` and `--` words, long options, `ls -R`, `tree -o f`, `mkdir` without `-p`-only flags or with 0 or more than 4 paths, over 8 words, a word starting with `=`, `+`, `%`, `~user`, leading/trailing/doubled space, single-quoted words starting with `~` or `-`, containing `'` or `\`.
+- [x] S2.3 RED: Unicode refusals: U+202E and the bidi range, U+200B/C/D, U+FEFF, U+00A0, U+2028/2029, U+0085, a combining mark (decomposed accent), ESC, C1 controls and DEL.
+- [x] S2.4 RED: `Fallback.at` is the byte span of the offending token and `Fallback.why` names the reason (used by the S5 prompt).
+- [x] S2.5 RED: property test: for every accepted `s`, `validate(s) == s`; `SafeCommand::as_str()` borrows the input (pointer equality) and the API has no `String` (zero-alloc).
+- [x] S2.6 RED: `targets` yields `(path, Want)`: `cd` Existing (or HOME for bare `cd`), `ls`/`tree` Existing, `mkdir` New; cwd-implied targets for `ls`/`tree`/`pwd`/relative `mkdir`.
+- [x] S2.7 RED: `resolve_exec` on tempdir fixtures: secret roots refused (`~/.ssh`, `~/.aws`), a dotfiles symlink into a secret root refused on the real path, outside-HOME allowed for `Existing`, `New` canonicalizes the deepest existing ancestor, `mkdir` outside HOME refused, cwd itself must pass for every verb except `cd`, `SecretRoots::load` returning `None` gives a fallback.
+- [x] S2.8 GREEN: implement `exec.rs` (`CLASS` table, single pass, fixed `[&str; 8]`, per-verb flag table) and `resolve_exec` / `Want` in `paths.rs`.
+- [x] S2.9 REFACTOR: share lexical normalization with `resolve`; no duplicated secret-root logic.
+- [x] S2.10 Docs: module docs listing the allow-list and the invariant `checked bytes == written bytes`.
+- [x] S2.11 Gate. Measure; expect ~300. Fallback split if over 400: S2a (`exec.rs`) and S2b (`resolve_exec`).
 
 ## S3: CheckRun round trip, Enter write, dirty guard, cwd re-check (~340 non-test lines)
 
@@ -96,6 +96,7 @@ Interim (until S4a): the host answers `Decision::Ran(N)` at once with "output no
 - [ ] S3.4 RED: app test: `RunEvent::Checked` re-runs `route`; if it passes, emits `Effect::AutoRun` whose bytes end in `\r` exactly once (`frame_bytes` plus `\r`, same alt-screen and paste checks as `typed_bytes`); `Refused{reason}` and `NotRun{reason}` open the prompt with that reason.
 - [ ] S3.5 RED: app test: `y` on a prompt and the `auto` path never emit `\r` (distinct Effect variant, structurally impossible); an off-list command in `run` prompts and `y` types without Enter.
 - [ ] S3.6 RED: dirty guard: `user_dirty` set by every forwarded key, paste or wheel write; cleared only by Enter and Ctrl+C; Ctrl+U does NOT clear it but still clears `line_pending`; a dirty pane prompts.
+- [ ] S3.6b RED: locale gate: a command with non-ASCII bytes runs only when the pane's locale (`LC_ALL`, then `LC_CTYPE`, then `LANG` of the spawned shell's env) names UTF-8; otherwise `route` returns the prompt with a reason (`cd música` under `LANG=C` prompts, under `en_US.UTF-8` runs; ASCII commands are unaffected).
 - [ ] S3.7 RED: macOS path: `cwd_known == false` always prompts with `the pane's directory cannot be read on this system`.
 - [ ] S3.8 RED: runtime `run_check::check` on tempdir fixtures: re-parses the same bytes, builds `load_roots`, calls `resolve_exec` per target; 2 s timeout gives `Refused`; the answer carries `cwd` and `cd_target`.
 - [ ] S3.9 RED: runtime with `FakePty`: write step requires `readlink == cwd` AND foreground is the shell; mismatch or busy gives `NotRun` and nothing is written; `take` happens before the write; one write only.
