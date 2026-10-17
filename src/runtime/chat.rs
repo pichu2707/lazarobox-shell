@@ -19,7 +19,9 @@ use futures::{
 use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
 
 mod cli;
-pub(crate) use cli::{jail_note, run_listing, trusted_real_path};
+pub(crate) use cli::{
+    alive_by_comm, ensure_private_dir, jail_note, read_comm, run_listing, trusted_real_path,
+};
 
 use super::loopback::post_stream;
 use crate::core::{
