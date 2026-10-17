@@ -199,7 +199,9 @@ fn cli_model(model: Option<&str>) -> Result<Option<&str>, &'static str> {
 /// verified.
 fn wire_for(request: &ChatRequest, verified: &[&str]) -> Option<McpWire> {
     match &request.tools {
-        Tools::On { mcp, .. } if verified.contains(&request.engine.as_str()) => mcp.clone(),
+        Tools::On { mcp, .. } if verified.contains(&request.engine.as_str()) => {
+            mcp.as_deref().cloned()
+        }
         _ => None,
     }
 }

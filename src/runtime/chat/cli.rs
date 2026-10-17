@@ -916,14 +916,28 @@ async fn settle(
     })
 }
 
+/// Tells the session of a turn that asked for tools that its engine runs as
+/// text after all: nothing will connect, so the socket and token go now.
+fn unwire(job: &Job) {
+    if let Some(wire) = &job.mcp {
+        wire.unwire.call();
+    }
+}
+
 /// Runs one CLI turn and sends its events to `tx`. Exactly one `Done` or
 /// `Error` ends it, unless it is cancelled: dropping the future (or the
 /// receiver) kills the process group and sends nothing more.
 pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>) {
     let mut plan = match plan(env, &job) {
         Ok(plan) => plan,
-        Err(event) => return send(tx, event).await,
+        Err(event) => {
+            unwire(&job);
+            return send(tx, event).await;
+        }
     };
+    if !plan.wired {
+        unwire(&job);
+    }
     if let Some(line) = plan.notice.take() {
         send(tx, StreamEvent::Notice(line)).await;
     }

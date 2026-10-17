@@ -3,7 +3,7 @@
 //! is decided elsewhere (`MCP_VERIFIED`); the runtime writes the file and
 //! starts the process.
 
-use std::{fmt, path::Path, path::PathBuf};
+use std::{fmt, path::Path, path::PathBuf, sync::Arc};
 
 use serde_json::json;
 
@@ -40,11 +40,51 @@ impl fmt::Debug for Secret {
     }
 }
 
+/// How a turn ends its session early: the engine's adapter calls it when the
+/// turn runs as text after all (no jail, a layout the jail refuses, no shim
+/// program), so the socket and token do not stay live for nothing. It does
+/// nothing when the session is already over or was replaced. Equality ignores
+/// it.
+#[derive(Clone)]
+pub struct Unwire(Option<Arc<dyn Fn() + Send + Sync>>);
+
+impl Unwire {
+    /// A session nobody needs to end.
+    pub fn none() -> Self {
+        Self(None)
+    }
+
+    pub fn new(end: impl Fn() + Send + Sync + 'static) -> Self {
+        Self(Some(Arc::new(end)))
+    }
+
+    pub fn call(&self) {
+        if let Some(end) = &self.0 {
+            end();
+        }
+    }
+}
+
+impl fmt::Debug for Unwire {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Unwire")
+    }
+}
+
+impl PartialEq for Unwire {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for Unwire {}
+
 /// The session a turn's engine connects to.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct McpWire {
     pub socket: PathBuf,
     pub token: Secret,
+    pub unwire: Unwire,
 }
 
 /// What claude gets for one turn with tools.
@@ -97,6 +137,7 @@ mod tests {
         McpWire {
             socket: PathBuf::from("/run/user/1000/lazarobox/s-42-1.sock"),
             token: Secret::new("0123456789abcdef0123456789abcdef"),
+            unwire: Unwire::none(),
         }
     }
 

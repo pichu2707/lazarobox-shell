@@ -65,6 +65,7 @@ use crate::{
         ai::tools::{
             ToolSpec,
             mcp::{Action, Frame, MAX_LINE_BYTES, Server, tool_result},
+            wiring::Unwire,
         },
         layout::PaneId,
     },
@@ -107,6 +108,8 @@ const INVALID_REQUEST: i64 = -32600;
 pub struct Started {
     pub socket: PathBuf,
     pub token: Token,
+    /// Ends this session from outside the hub (see [`Unwire`]).
+    pub end: Unwire,
 }
 
 struct Live {
@@ -184,6 +187,18 @@ impl Hub {
         );
         let closed = conn.closed.clone();
         let task = tokio::spawn(accept(listener, conn));
+        // The same steps as `close`, from a handle: the flag first, so it is
+        // a no-op once the session was closed or replaced (the next session
+        // of the pane binds the same path, and must keep it).
+        let end = {
+            let (closed, abort, socket) = (closed.clone(), task.abort_handle(), socket.clone());
+            Unwire::new(move || {
+                if !closed.swap(true, Ordering::SeqCst) {
+                    abort.abort();
+                    let _ = fs::remove_file(&socket);
+                }
+            })
+        };
         self.sessions.insert(
             pane,
             Live {
@@ -192,7 +207,7 @@ impl Hub {
                 closed,
             },
         );
-        Ok(Started { socket, token })
+        Ok(Started { socket, token, end })
     }
 
     /// Ends the session of `pane`: its socket goes, live connections and calls

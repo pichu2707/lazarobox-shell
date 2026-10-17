@@ -56,8 +56,9 @@ pub enum Tools {
         /// against.
         origin: Option<PathBuf>,
         /// The session the engine connects to, set by the runtime once it
-        /// has opened the turn's socket. The app never sets it.
-        mcp: Option<McpWire>,
+        /// has opened the turn's socket. The app never sets it. Boxed so the
+        /// request stays small (`SendOutcome` carries one).
+        mcp: Option<Box<McpWire>>,
     },
 }
 

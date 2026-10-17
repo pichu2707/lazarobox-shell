@@ -317,6 +317,36 @@ async fn a_newer_turn_replaces_the_session_and_ends_the_old_calls() {
     assert!(ended.is_none_or(|r| r["result"]["isError"] == true));
 }
 
+// An adapter that finds its engine cannot be wired (no jail, a layout the jail
+// refuses) says so through the wire it was given, and the session goes then,
+// not at the next send.
+#[tokio::test]
+async fn a_turn_that_falls_back_to_text_closes_its_session() {
+    let lab = lab();
+    let runner: Runner = Arc::new(|request, tx| {
+        Box::pin(async move {
+            let Tools::On {
+                mcp: Some(wire), ..
+            } = &request.tools
+            else {
+                panic!("the turn must carry the session: {:?}", request.tools);
+            };
+            wire.unwire.call();
+            let _ = tx.send(StreamEvent::Done(Finish::Stop)).await;
+        })
+    });
+    let (mut chats, mut rx) = tooled(&lab, runner);
+    chats.send(pane(1), 1, with_tools(&lab));
+    let socket = chats.session(pane(1)).unwrap().socket.clone();
+    loop {
+        if matches!(next(&mut rx).await.2, StreamEvent::Done(_)) {
+            break;
+        }
+    }
+    assert!(!socket.exists(), "the socket goes with the fallback");
+    assert!(UnixStream::connect(&socket).await.is_err());
+}
+
 #[tokio::test]
 async fn a_turn_without_tools_has_no_session_and_closes_the_old_one() {
     let lab = lab();

@@ -7,6 +7,7 @@ use std::{
     fs,
     os::unix::fs::{PermissionsExt, symlink},
     path::{Path, PathBuf},
+    sync::{Arc, atomic::AtomicUsize},
     time::{Duration, Instant},
 };
 
@@ -22,7 +23,7 @@ use crate::{
                 engine::{ChatError, ChatMessage, ChatRequest, Finish, Role, StreamEvent, Tools},
             },
             jail::{Backend, Cli, JailPolicy, JailSupport},
-            tools::wiring::{McpWire, Secret},
+            tools::wiring::{McpWire, Secret, Unwire},
         },
         layout::PaneId,
     },
@@ -1761,6 +1762,7 @@ fn claude_job(lab: &Lab, wired: bool) -> Job {
         mcp: wired.then(|| McpWire {
             socket: lab.rec.join("s.sock"),
             token: Secret::new(TOKEN),
+            unwire: Unwire::none(),
         }),
     }
 }
@@ -1974,6 +1976,65 @@ async fn a_shim_whose_loader_others_can_write_is_not_granted() {
     let shim = lab.bin.join("shim");
     fs::write(&shim, img).unwrap();
     assert_untrusted_shim_falls_back(&lab, &shim).await;
+}
+
+/// A wire that counts how often its turn said the engine is not wired.
+fn counted(job: &mut Job) -> Arc<AtomicUsize> {
+    let count = Arc::new(AtomicUsize::new(0));
+    let seen = count.clone();
+    job.mcp.as_mut().unwrap().unwire = Unwire::new(move || {
+        seen.fetch_add(1, Ordering::SeqCst);
+    });
+    count
+}
+
+#[tokio::test]
+async fn a_turn_that_runs_as_text_ends_its_session_and_a_wired_one_keeps_it() {
+    // Wired: the session is the engine's.
+    let lab = lab();
+    script(
+        &lab.bin.join("claude"),
+        &lab.rec,
+        &format!("{MCP_CLAUDE}{GOOD}"),
+    );
+    let shim = lab.bin.join("shim");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let mut job = claude_job(&lab, true);
+    let wired = counted(&mut job);
+    run_job(&env, job).await;
+    assert_eq!(wired.load(Ordering::SeqCst), 0);
+
+    // No jail (a bare run), no shim program, a shim the jail refuses: text.
+    let mut bare_env = lab.env();
+    bare_env.shim = Some(shim.clone());
+    let mut no_shim = with_shim(&lab, lab.env(), "/unused");
+    no_shim.shim = None;
+    let refused = with_shim(&lab, lab.env(), "/tmp/lazarobox-shell");
+    for (what, env) in [
+        ("bare", bare_env),
+        ("no shim", no_shim),
+        ("refused", refused),
+    ] {
+        let mut job = claude_job(&lab, true);
+        let count = counted(&mut job);
+        let events = run_job(&env, job).await;
+        assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+        assert_eq!(count.load(Ordering::SeqCst), 1, "{what}");
+    }
+}
+
+#[tokio::test]
+async fn a_turn_the_plan_refuses_ends_its_session_too() {
+    let lab = lab();
+    let mut env = lab.env();
+    env.path = OsString::new();
+    let mut job = claude_job(&lab, true);
+    let count = counted(&mut job);
+    let events = run_job(&env, job).await;
+    assert!(matches!(events.last(), Some(StreamEvent::Error(_))));
+    assert_eq!(count.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

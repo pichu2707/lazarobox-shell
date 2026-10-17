@@ -547,10 +547,11 @@ impl Chats {
         if let (Tools::On { mcp, .. }, Some(started), Some(_)) =
             (&mut request.tools, self.session(pane), &pending)
         {
-            *mcp = Some(McpWire {
+            *mcp = Some(Box::new(McpWire {
                 socket: started.socket.clone(),
                 token: Secret::new(started.token.reveal()),
-            });
+                unwire: started.end.clone(),
+            }));
         }
         let task = tokio::spawn(run_turn(
             self.runner.clone(),

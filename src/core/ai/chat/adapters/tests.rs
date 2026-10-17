@@ -4,7 +4,7 @@ use super::*;
 use crate::core::ai::{
     chat::engine::{ChatMessage, ChatRequest, Role, Tools},
     jail::{Cli, JailPolicy},
-    tools::wiring::{McpWire, Secret},
+    tools::wiring::{McpWire, Secret, Unwire},
 };
 
 fn message(role: Role, content: &str) -> ChatMessage {
@@ -845,9 +845,12 @@ fn tools_on(engine: &str, session: bool) -> (ChatRequest, ChatRequest) {
     let mut on = off.clone();
     on.tools = Tools::On {
         origin: Some("/home/u/dev".into()),
-        mcp: session.then(|| McpWire {
-            socket: "/run/user/1000/lazarobox/s-1-1.sock".into(),
-            token: Secret::new("0123456789abcdef0123456789abcdef"),
+        mcp: session.then(|| {
+            Box::new(McpWire {
+                socket: "/run/user/1000/lazarobox/s-1-1.sock".into(),
+                token: Secret::new("0123456789abcdef0123456789abcdef"),
+                unwire: Unwire::none(),
+            })
         }),
     };
     (off, on)
@@ -881,7 +884,7 @@ fn a_verified_claude_with_a_session_carries_the_wire_and_nothing_else_changes() 
     assert_eq!(
         with.mcp,
         match &on.tools {
-            Tools::On { mcp, .. } => mcp.clone(),
+            Tools::On { mcp, .. } => mcp.as_deref().cloned(),
             Tools::Off => unreachable!(),
         }
     );
