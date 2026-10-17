@@ -364,10 +364,14 @@ impl ChatState {
         self.approval_mode = mode;
     }
 
-    /// Whether the pane wears the `AUTO` badge: auto mode, and only while the
-    /// tools are on (the run hint is that flag).
-    pub fn auto_badge(&self) -> bool {
-        self.run_hint && self.approval_mode == ApprovalMode::Auto
+    /// The mode the pane's badge names: `auto` or `run`, and only while the
+    /// tools are on (the run hint is that flag). `ask` wears none. The badge
+    /// is drawn by the view and never stored or sent to the model.
+    pub fn mode_badge(&self) -> Option<ApprovalMode> {
+        match self.approval_mode {
+            ApprovalMode::Ask => None,
+            mode => self.run_hint.then_some(mode),
+        }
     }
 
     /// Commands typed without a prompt in the turn in flight.

@@ -120,7 +120,11 @@ pub fn route(ask: &ApprovalAsk, origin: Origin, mode: ApprovalMode, ctx: AutoCtx
         && !ctx.target_focused
         && ctx.tab_shown;
     match (ask, origin, mode) {
-        (ApprovalAsk::Run { .. }, Origin::Tool, ApprovalMode::Auto) if free => Route::AutoType,
+        // `run` types like `auto` until its guards exist: it never presses
+        // Enter yet.
+        (ApprovalAsk::Run { .. }, Origin::Tool, ApprovalMode::Auto | ApprovalMode::Run) if free => {
+            Route::AutoType
+        }
         _ => Route::Prompt,
     }
 }
@@ -362,6 +366,48 @@ mod tests {
         assert_eq!(MAX_AUTO_PER_TURN, 5);
         assert_eq!(
             route(&run_ask(), Origin::Tool, ApprovalMode::Auto, fifth),
+            Route::AutoType
+        );
+    }
+
+    // Until the run guards exist, `run` routes exactly like `auto`: it types
+    // and never presses Enter.
+    #[test]
+    fn run_routes_like_auto_for_every_ask_origin_and_context() {
+        let read = ApprovalAsk::Read { path: "~/a".into() };
+        let asks = [run_ask(), read];
+        let ctxs = [
+            FREE,
+            AutoCtx {
+                line_pending: true,
+                ..FREE
+            },
+            AutoCtx {
+                target_focused: true,
+                ..FREE
+            },
+            AutoCtx {
+                tab_shown: false,
+                ..FREE
+            },
+            AutoCtx {
+                typed_this_turn: MAX_AUTO_PER_TURN,
+                ..FREE
+            },
+        ];
+        for ask in &asks {
+            for origin in [Origin::Tool, Origin::Block] {
+                for ctx in ctxs {
+                    assert_eq!(
+                        route(ask, origin, ApprovalMode::Run, ctx),
+                        route(ask, origin, ApprovalMode::Auto, ctx),
+                        "{ask:?} {origin:?} {ctx:?}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            route(&run_ask(), Origin::Tool, ApprovalMode::Run, FREE),
             Route::AutoType
         );
     }

@@ -91,7 +91,7 @@ impl ConfigEdit {
         }
     }
 
-    /// The `ai.tools.approval` edit: a string, `ask` or `auto`, written even
+    /// The `ai.tools.approval` edit: a string, `ask`, `auto` or `run`, written even
     /// when it equals the default.
     pub fn approval(mode: ApprovalMode) -> Self {
         Self {

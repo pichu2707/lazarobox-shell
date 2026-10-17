@@ -1441,6 +1441,41 @@ mod tests {
         insta::assert_snapshot!(text(&draw(62, POPUP_H, &ai_tab())));
     }
 
+    // Spec (config-menu): `run` only changes the value of the row, never the
+    // popup.
+    #[test]
+    fn the_run_value_shows_and_the_popup_keeps_its_height() {
+        let ask = ai_tab();
+        let mut run = ai_tab();
+        run.goto("Approval");
+        press(&mut run, &[KeyCode::Char('l'), KeyCode::Char('l')]);
+        let (ask, run) = (
+            lines(&draw(62, POPUP_H, &ask)),
+            lines(&draw(62, POPUP_H, &run)),
+        );
+        assert_eq!(ask.len(), run.len());
+        let row = |lines: &[String]| {
+            lines
+                .iter()
+                .find(|l| l.contains("Approval"))
+                .cloned()
+                .unwrap_or_default()
+        };
+        assert!(row(&ask).contains("ask"), "{:?}", row(&ask));
+        assert!(row(&run).contains("run"), "{:?}", row(&run));
+        let others = |lines: &[String]| {
+            lines
+                .iter()
+                // The footer reads "unsaved changes" once the draft differs.
+                .filter(|l| {
+                    !l.contains("Approval") && !l.contains("s to save") && !l.contains("s save")
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(others(&ask), others(&run), "no other row changes");
+    }
+
     #[test]
     fn snapshot_settings_tab_with_the_update_note() {
         insta::assert_snapshot!(text(&draw(62, POPUP_H, &with_update())));

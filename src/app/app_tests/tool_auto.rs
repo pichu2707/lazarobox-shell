@@ -494,8 +494,12 @@ fn lines(a: &App) -> Vec<String> {
         .collect()
 }
 
+const RUN_LINE: &str = "approval: run (cd, pwd, ls, tree, mkdir run at once and their output goes to the model; other commands ask)";
+
+// Spec (modal-input): `a` cycles ask, auto, run, ask, with one system line per
+// mode and nothing written to a PTY.
 #[test]
-fn prefix_a_flips_the_mode_of_the_focused_chat_and_says_so() {
+fn prefix_a_cycles_the_mode_of_the_focused_chat_and_says_so() {
     let (mut a, _) = live();
     assert_eq!(press(&mut a, "a"), vec![]);
     assert_eq!(chat_of_focus(&a), ApprovalMode::Auto);
@@ -504,9 +508,22 @@ fn prefix_a_flips_the_mode_of_the_focused_chat_and_says_so() {
         "{:?}",
         lines(&a)
     );
-    press(&mut a, "a");
+    assert_eq!(press(&mut a, "a"), vec![]);
+    assert_eq!(chat_of_focus(&a), ApprovalMode::Run);
+    assert_eq!(lines(&a).last().map(String::as_str), Some(RUN_LINE));
+    assert_eq!(press(&mut a, "a"), vec![]);
     assert_eq!(chat_of_focus(&a), ApprovalMode::Ask);
     assert_eq!(lines(&a).last().map(String::as_str), Some("approval: ask"));
+}
+
+#[test]
+fn entering_run_needs_no_confirmation() {
+    let (mut a, _) = live();
+    set_mode(&mut a, ApprovalMode::Auto);
+    assert_eq!(press(&mut a, "a"), vec![]);
+    assert_eq!(chat_of_focus(&a), ApprovalMode::Run);
+    assert!(a.menu().is_none());
+    assert_eq!(pending(&a), None);
 }
 
 // The toggle flips only the focused chat.
@@ -526,12 +543,14 @@ fn the_toggle_leaves_the_other_chats_alone() {
 
 // A pending approval is never answered by the mode.
 #[test]
-fn toggling_to_auto_leaves_a_pending_confirm_pending() {
+fn cycling_the_mode_leaves_a_pending_confirm_pending() {
     let (mut a, turn) = live();
     announce(&mut a, turn, 1, run("cd x"));
-    assert_eq!(press(&mut a, "a"), vec![]);
-    assert_eq!(chat_of_focus(&a), ApprovalMode::Auto);
-    assert_eq!(pending(&a), Some((run("cd x"), Some((turn, CallId(1))))));
+    for want in [ApprovalMode::Auto, ApprovalMode::Run, ApprovalMode::Ask] {
+        assert_eq!(press(&mut a, "a"), vec![]);
+        assert_eq!(chat_of_focus(&a), want);
+        assert_eq!(pending(&a), Some((run("cd x"), Some((turn, CallId(1))))));
+    }
 }
 
 #[test]

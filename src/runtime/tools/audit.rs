@@ -267,6 +267,26 @@ fn skip_item(t: &[Tok], mut i: usize) -> usize {
     i
 }
 
+/// The names that carry the approval mode. The model must never be able to
+/// reach them, so no runtime code may name them (design D19).
+const MODE_NAMES: &[&str] = &[
+    "ApprovalMode",
+    "set_approval_mode",
+    "approval_mode",
+    "set_approval",
+];
+
+/// Every use of a mode name in the non-test code of `src`.
+pub fn mode_violations(src: &str) -> Vec<String> {
+    non_test_tokens(src)
+        .into_iter()
+        .filter_map(|tok| match tok {
+            Tok::Ident(name) if MODE_NAMES.contains(&name.as_str()) => Some(format!("`{name}`")),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Every banned use in the non-test code of `src`, one line each.
 pub fn violations(src: &str) -> Vec<String> {
     let t = non_test_tokens(src);
@@ -375,6 +395,53 @@ mod tests {
                 "{name} yields no tokens"
             );
             assert_eq!(violations(source), Vec::<String>::new(), "{name}");
+        }
+    }
+
+    /// Every `.rs` file under `dir`, recursively.
+    fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    // Design D19: the model can never switch the approval mode, because no
+    // runtime code can even name it.
+    #[test]
+    fn the_runtime_never_names_the_approval_mode() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![src.join("runtime.rs")];
+        rust_files(&src.join("runtime"), &mut files);
+        assert!(files.len() > 20, "the walk found {} files", files.len());
+        for file in files {
+            let text = std::fs::read_to_string(&file).unwrap();
+            assert_eq!(mode_violations(&text), Vec::<String>::new(), "{file:?}");
+        }
+    }
+
+    #[test]
+    fn each_mode_name_is_seen_and_strings_comments_and_tests_are_not() {
+        for bad in [
+            "use crate::core::ai::config::ApprovalMode;",
+            "fn f(c: &mut Chat) { c.set_approval_mode(m) }",
+            "fn f(a: &mut AiConfig) { a.set_approval(m) }",
+            "fn f(c: &Chat) { let _ = c.approval_mode(); }",
+            "fn f() { let _ = crate::ApprovalMode::Run; }",
+        ] {
+            assert!(!mode_violations(bad).is_empty(), "{bad}");
+        }
+        for good in [
+            "// ApprovalMode\nfn f() {}",
+            "fn f() { let _ = \"set_approval_mode\"; }",
+            "#[cfg(test)]\nmod tests { use ApprovalMode; }",
+            "fn approval() {}",
+        ] {
+            assert_eq!(mode_violations(good), Vec::<String>::new(), "{good}");
         }
     }
 

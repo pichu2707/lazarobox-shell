@@ -49,7 +49,7 @@ pub enum ItemKind {
     /// the AI draft, like [`ItemKind::Notify`].
     Tools,
     /// The approval mode of the model's commands (`ai.tools.approval`): an
-    /// `ask`/`auto` row over the AI draft. It only reaches later chat opens
+    /// `ask`/`auto`/`run` row over the AI draft. It only reaches later chat opens
     /// and conversation switches, never an open chat or a pending approval.
     Approval,
     /// The notification sound flag (`ai.notify_sound`): an on/off row over
@@ -1079,7 +1079,7 @@ impl MenuState {
                     Some(ItemKind::Profile) => ai.cycle_profile(forward),
                     Some(ItemKind::Memory(_)) => ai.toggle_memory(),
                     Some(ItemKind::Tools) => ai.toggle_tools(),
-                    Some(ItemKind::Approval) => ai.flip_approval(),
+                    Some(ItemKind::Approval) => ai.cycle_approval(forward),
                     Some(ItemKind::Notify) => ai.cycle_notify(forward),
                     Some(ItemKind::NotifySound) => ai.toggle_notify_sound(),
                     _ => ai.toggle_context(),

@@ -212,7 +212,11 @@ pub const PREFIX_TREE: &[Binding] = &[
     // Left out of the hint for the same reason: the root hint is full.
     unhinted(act('e', "run in pane", PrefixAction::RunInPane)),
     // Left out of the hint for the same reason: the root hint is full.
-    unhinted(act('a', "approval: ask/auto", PrefixAction::ToggleApproval)),
+    unhinted(act(
+        'a',
+        "approval: ask/auto/run",
+        PrefixAction::ToggleApproval,
+    )),
     // `t` is the tab group, so the tag editor takes the capital.
     unhinted(act('T', "tags", PrefixAction::EditTags)),
     unhinted(act('?', "commands (reserved)", PrefixAction::ShowCommands)),

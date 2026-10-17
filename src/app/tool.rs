@@ -203,7 +203,7 @@ impl App {
         }]
     }
 
-    /// `Prefix a`: flips the focused chat between `ask` and `auto`.
+    /// `Prefix a`: cycles the focused chat through `ask`, `auto` and `run`.
     /// Works in any chat view and with an approval pending (which it leaves
     /// alone); a shell pane, or tools off, only gets a notice.
     pub(super) fn toggle_approval(&mut self) -> Vec<Effect> {
@@ -218,10 +218,11 @@ impl App {
         let Some(chat) = self.focused_state_mut().chat_mut() else {
             return Vec::new();
         };
-        let mode = chat.approval_mode().flipped();
+        let mode = chat.approval_mode().cycled(true);
         chat.set_approval_mode(mode);
         chat.push_system_line(match mode {
             ApprovalMode::Auto => "approval: auto (commands are typed, never run)".to_owned(),
+            ApprovalMode::Run => "approval: run (cd, pwd, ls, tree, mkdir run at once and their output goes to the model; other commands ask)".to_owned(),
             ApprovalMode::Ask => "approval: ask".to_owned(),
         });
         self.dirty = true;

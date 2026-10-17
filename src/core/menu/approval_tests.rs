@@ -85,7 +85,7 @@ fn navigation_goes_tools_approval_then_wraps_to_the_first_ai_row() {
 }
 
 #[test]
-fn the_row_reads_ask_or_auto_and_needs_the_ai_section() {
+fn the_row_reads_ask_auto_or_run_and_needs_the_ai_section() {
     assert_eq!(
         value_of(&open_with(ApprovalMode::Ask), "Approval").as_deref(),
         Some("ask")
@@ -94,24 +94,36 @@ fn the_row_reads_ask_or_auto_and_needs_the_ai_section() {
         value_of(&open_with(ApprovalMode::Auto), "Approval").as_deref(),
         Some("auto")
     );
+    assert_eq!(
+        value_of(&open_with(ApprovalMode::Run), "Approval").as_deref(),
+        Some("run")
+    );
     let plain_menu = MenuState::open(&Config::default());
     assert_eq!(value_of(&plain_menu, "Approval"), None, "no AI, no row");
 }
 
+// Spec (config-menu): the row cycles ask, auto, run, ask; the backward keys
+// walk the same ring the other way.
 #[test]
-fn every_cycle_key_flips_the_draft_and_emits_nothing() {
-    for code in [
-        KeyCode::Char('l'),
-        KeyCode::Right,
-        KeyCode::Char('h'),
-        KeyCode::Left,
-    ] {
+fn the_forward_keys_cycle_ask_auto_run_and_emit_nothing() {
+    for code in [KeyCode::Char('l'), KeyCode::Right] {
         let mut m = on_approval(ApprovalMode::Ask);
-        assert_eq!(send(&mut m, code, false), MenuCommand::None, "{code:?}");
-        assert_eq!(m.ai_draft().approval(), ApprovalMode::Auto, "{code:?}");
-        assert_eq!(value_of(&m, "Approval").as_deref(), Some("auto"));
-        send(&mut m, code, false);
-        assert_eq!(m.ai_draft().approval(), ApprovalMode::Ask, "back {code:?}");
+        for want in [ApprovalMode::Auto, ApprovalMode::Run, ApprovalMode::Ask] {
+            assert_eq!(send(&mut m, code, false), MenuCommand::None, "{code:?}");
+            assert_eq!(m.ai_draft().approval(), want, "{code:?}");
+            assert_eq!(value_of(&m, "Approval").as_deref(), Some(want.id()));
+        }
+    }
+}
+
+#[test]
+fn the_backward_keys_cycle_ask_run_auto_ask() {
+    for code in [KeyCode::Char('h'), KeyCode::Left] {
+        let mut m = on_approval(ApprovalMode::Ask);
+        for want in [ApprovalMode::Run, ApprovalMode::Auto, ApprovalMode::Ask] {
+            assert_eq!(send(&mut m, code, false), MenuCommand::None, "{code:?}");
+            assert_eq!(m.ai_draft().approval(), want, "{code:?}");
+        }
     }
 }
 
@@ -157,8 +169,15 @@ fn the_edit_is_the_approval_key_alone_and_only_when_changed() {
     press(&mut m, 'l');
     assert_eq!(m.edits(&live), vec![approval_edit("auto")]);
     press(&mut m, 'l');
+    press(&mut m, 'l');
     assert_eq!(m.edits(&live), vec![], "back to the open value");
     let mut auto = on_approval(ApprovalMode::Auto);
+    press(&mut auto, 'l');
+    assert_eq!(
+        auto.edits(&live),
+        vec![approval_edit("run")],
+        "run is written as the string"
+    );
     press(&mut auto, 'l');
     assert_eq!(
         auto.edits(&live),

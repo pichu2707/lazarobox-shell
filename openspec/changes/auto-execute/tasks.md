@@ -54,18 +54,18 @@ write-tools W5 (depends on S1; runs directly in `run` only after S3)
 
 Files: `src/core/ai/config.rs`, `src/core/ai/menu.rs`, `src/core/menu*.rs`, `src/core/prefix.rs`, `src/app/tool.rs`, `src/core/ai/chat/mod.rs`, `src/ui/components/chat.rs`. Behaviour: `run` routes exactly like `auto` until S3.
 
-- [ ] S1.1 RED: config parse table: `approval = "run"` parses to `Run`; `"RUN"`, `"Run"` and unknown values give `Ask` plus a problem naming all three values (`APPROVAL_PROBLEM`). Spec: configuration, config-persistence.
-- [ ] S1.2 RED: `ApprovalMode::{ALL, id, from_id, cycled(forward)}` round trip both directions (ask→auto→run→ask and back); `flipped` no longer exists.
-- [ ] S1.3 RED: Approval menu row cycles three values in both directions; popup height unchanged (buffer test). Spec: config-menu.
-- [ ] S1.4 RED: `Prefix a` cycles the focused chat with `cycled(true)`; one system line per mode; the `run` line is exactly `approval: run (cd, pwd, ls, tree, mkdir run at once and their output goes to the model; other commands ask)`; no confirmation to enter `run`; a pending approval survives the cycle; the mode resets on pane open and conversation switch. Spec: modal-input.
-- [ ] S1.5 RED: `ChatState::mode_badge() -> Option<ApprovalMode>`; badge buffer tests: ` AUTO ` on `warning_orange`, ` RUN ` on `error_red`, fg `bg_base`, bold; narrow forms `A` (below 6 columns) and `R` (below 5 columns). Spec: chat-pane.
-- [ ] S1.6 RED: `route` with mode `Run` returns the same result as `Auto` for every existing `auto` test (pins "run routes like auto until S3").
-- [ ] S1.7 RED: audit test: `ApprovalMode` and `set_approval_mode` do not appear under `src/runtime/` (extend the `runtime/tools/audit.rs` tokenizer rule).
-- [ ] S1.8 GREEN: add `Run`, `ALL`, `id`, `from_id`, `cycled`; remove `flipped`; update `APPROVAL_PROBLEM`; menu row; `Prefix a`; `mode_badge` replaces `auto_badge`; render badges; audit rule.
-- [ ] S1.9 REFACTOR: reuse the `NotifyMode` cycle pattern; delete dead `auto_badge` and `flipped` call sites.
-- [ ] S1.10 Snapshots: regenerate chat badge and menu snapshots by the manual insta procedure; review each `.snap.new`.
-- [ ] S1.11 Docs: doc comments on `ApprovalMode` (model can never switch it) and `mode_badge`.
-- [ ] S1.12 Gate. Measure non-test lines; expect ~150.
+- [x] S1.1 RED: config parse table: `approval = "run"` parses to `Run`; `"RUN"`, `"Run"` and unknown values give `Ask` plus a problem naming all three values (`APPROVAL_PROBLEM`). Spec: configuration, config-persistence.
+- [x] S1.2 RED: `ApprovalMode::{ALL, id, from_id, cycled(forward)}` round trip both directions (ask→auto→run→ask and back); `flipped` no longer exists.
+- [x] S1.3 RED: Approval menu row cycles three values in both directions; popup height unchanged (buffer test). Spec: config-menu.
+- [x] S1.4 RED: `Prefix a` cycles the focused chat with `cycled(true)`; one system line per mode; the `run` line is exactly `approval: run (cd, pwd, ls, tree, mkdir run at once and their output goes to the model; other commands ask)`; no confirmation to enter `run`; a pending approval survives the cycle; the mode resets on pane open and conversation switch. Spec: modal-input.
+- [x] S1.5 RED: `ChatState::mode_badge() -> Option<ApprovalMode>`; badge buffer tests: ` AUTO ` on `warning_orange`, ` RUN ` on `error_red`, fg `bg_base`, bold; narrow forms `A` (below 6 columns) and `R` (below 5 columns). Spec: chat-pane.
+- [x] S1.6 RED: `route` with mode `Run` returns the same result as `Auto` for every existing `auto` test (pins "run routes like auto until S3").
+- [x] S1.7 RED: audit test: `ApprovalMode` and `set_approval_mode` do not appear under `src/runtime/` (extend the `runtime/tools/audit.rs` tokenizer rule).
+- [x] S1.8 GREEN: add `Run`, `ALL`, `id`, `from_id`, `cycled`; remove `flipped`; update `APPROVAL_PROBLEM`; menu row; `Prefix a`; `mode_badge` replaces `auto_badge`; render badges; audit rule.
+- [x] S1.9 REFACTOR: reuse the `NotifyMode` cycle pattern; delete dead `auto_badge` and `flipped` call sites.
+- [x] S1.10 Snapshots: regenerate chat badge and menu snapshots by the manual insta procedure; review each `.snap.new`.
+- [x] S1.11 Docs: doc comments on `ApprovalMode` (model can never switch it) and `mode_badge`.
+- [x] S1.12 Gate. Measure non-test lines; expect ~150. Measured: 77 added non-test lines, gate green (4592 lib tests).
 - [ ] S1.M [manual] M2: narrow-width badge check in a real terminal: shrink the chat pane and confirm ` RUN ` becomes `R` and ` AUTO ` becomes `A` without wrapping or overlapping the title.
 
 ## S2: Grammar and path policy, pure (~300 non-test lines)
