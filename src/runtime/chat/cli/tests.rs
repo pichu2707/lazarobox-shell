@@ -1773,7 +1773,11 @@ fn claude_job(lab: &Lab, wired: bool) -> Job {
         wire: Wire::ClaudeStreamJson,
         binary: "claude",
         cli: Cli::Claude,
-        args: vec!["-p".into(), "--strict-mcp-config".into()],
+        args: vec![
+            "-p".into(),
+            "--strict-mcp-config".into(),
+            "--safe-mode".into(),
+        ],
         stdin: b"hi".to_vec(),
         jail: JailPolicy::Layered,
         tmp_files: Vec::new(),
@@ -1820,10 +1824,14 @@ async fn a_wired_claude_gets_the_config_the_flags_the_timeout_and_the_jail_grant
     );
     let args = lab.args();
     let n = args.len();
+    // --safe-mode hides MCP servers: a wired turn trades it for an empty
+    // --setting-sources, in the = form so nothing after it is its value.
     assert_eq!(args[..2], ["-p", "--strict-mcp-config"]);
-    assert!(args[n - 2].starts_with("--mcp-config="), "{args:?}");
-    assert!(args[n - 2].ends_with("/mcp.json"), "{args:?}");
-    assert_eq!(args[n - 1], "--allowedTools=mcp__lazarobox");
+    assert!(args.iter().all(|a| a != "--safe-mode"), "{args:?}");
+    assert!(args[n - 3].starts_with("--mcp-config="), "{args:?}");
+    assert!(args[n - 3].ends_with("/mcp.json"), "{args:?}");
+    assert_eq!(args[n - 2], "--allowedTools=mcp__lazarobox");
+    assert_eq!(args[n - 1], "--setting-sources=");
     let config = lab.recorded("mcp_copy");
     assert!(
         config.contains(TOKEN) && config.contains(shim.to_str().unwrap()),
@@ -1832,7 +1840,7 @@ async fn a_wired_claude_gets_the_config_the_flags_the_timeout_and_the_jail_grant
     assert_eq!(lab.recorded("mcp_mode").trim(), "600");
     // The config existed while claude ran, and the token file is gone after.
     assert_eq!(lab.recorded("mcp_during").trim(), "yes");
-    let config_path = PathBuf::from(args[n - 2].trim_start_matches("--mcp-config="));
+    let config_path = PathBuf::from(args[n - 3].trim_start_matches("--mcp-config="));
     assert!(!config_path.exists(), "mcp.json is wiped after the turn");
     assert!(!config_path.parent().unwrap().exists(), "so is its folder");
     assert!(
@@ -1879,7 +1887,7 @@ async fn without_a_jail_a_wired_claude_runs_as_text_and_says_so() {
         .collect();
     assert_eq!(notices.len(), 1, "{events:?}");
     assert!(notices[0].contains(OFF_NOTICE), "{notices:?}");
-    assert_eq!(lab.args(), ["-p", "--strict-mcp-config"]);
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config", "--safe-mode"]);
     assert_eq!(lab.recorded("mcp_copy"), "");
     assert!(!lab.recorded("env").contains("MCP_TOOL_TIMEOUT"));
 }
@@ -1901,7 +1909,7 @@ async fn a_jailed_claude_without_a_shim_program_stays_jailed_and_text_only() {
         "{events:?}"
     );
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
-    assert_eq!(lab.args(), ["-p", "--strict-mcp-config"]);
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config", "--safe-mode"]);
     assert!(
         !lab.recorded("helper_args").is_empty(),
         "still through the jail helper"
@@ -1956,7 +1964,7 @@ async fn a_shim_the_jail_refuses_retries_the_jail_without_it() {
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
     // The retry ran: through the jail helper, with no flag of the tools, no
     // grant for the shim or the socket, and no config file on disk.
-    assert_eq!(lab.args(), ["-p", "--strict-mcp-config"]);
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config", "--safe-mode"]);
     let helper = lab.recorded("helper_args");
     assert!(!helper.is_empty(), "still through the jail helper");
     assert!(
@@ -1990,7 +1998,7 @@ async fn assert_untrusted_shim_falls_back(lab: &Lab, shim: &Path) {
         "{events:?}"
     );
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
-    assert_eq!(lab.args(), ["-p", "--strict-mcp-config"]);
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config", "--safe-mode"]);
     let helper = lab.recorded("helper_args");
     assert!(
         !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
@@ -2218,7 +2226,7 @@ async fn a_claude_job_without_a_wire_is_untouched_even_with_a_shim_program() {
             StreamEvent::Done(Finish::Stop)
         ]
     );
-    assert_eq!(lab.args(), ["-p", "--strict-mcp-config"]);
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config", "--safe-mode"]);
 }
 
 #[test]

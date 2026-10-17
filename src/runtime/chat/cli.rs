@@ -681,6 +681,8 @@ fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// must let the engine reach.
 struct Wired {
     args: Vec<OsString>,
+    /// Flags of the text-only argv this wiring replaces (first match each).
+    drops: Vec<&'static str>,
     vars: Vec<(OsString, OsString)>,
     socket: PathBuf,
     /// Where the engine runs instead of the shared empty folder, when its
@@ -732,13 +734,13 @@ fn wire_mcp(env: &CliEnv, job: &Job, dirs: &Dirs) -> Option<Wired> {
     let wire = job.mcp.as_ref()?;
     let shim = env.shim.as_deref()?;
     let mut cwd = None;
-    let (args, vars) = match job.cli {
+    let (args, drops, vars) = match job.cli {
         Cli::Claude => {
             let path = dirs.tmp.join("mcp.json");
             let wiring = wiring::claude(shim, &path, wire)?;
             write_private(&path, wiring.config.as_bytes()).ok()?;
             let vars = wiring.env.into_iter().map(|(k, v)| (k.into(), v.into()));
-            (wiring.args, vars.collect())
+            (wiring.args, wiring.drops, vars.collect())
         }
         // The token is only in codex's environment: `env_vars` names it, so
         // codex hands it on to the shim.
@@ -748,7 +750,7 @@ fn wire_mcp(env: &CliEnv, job: &Job, dirs: &Dirs) -> Option<Wired> {
                 .env
                 .into_iter()
                 .map(|(k, v)| (k.into(), v.reveal().into()));
-            (wiring.args, vars.collect())
+            (wiring.args, Vec::new(), vars.collect())
         }
         // gemini reads the workspace settings of its working folder; the token
         // is in that file only (0600), and in none of its argv or env.
@@ -758,11 +760,12 @@ fn wire_mcp(env: &CliEnv, job: &Job, dirs: &Dirs) -> Option<Wired> {
                 return None;
             };
             cwd = Some(work);
-            (args, Vec::new())
+            (args, Vec::new(), Vec::new())
         }
     };
     Some(Wired {
         args: args.into_iter().map(OsString::from).collect(),
+        drops,
         vars,
         socket: wire.socket.clone(),
         cwd,
@@ -828,7 +831,16 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
             };
             for attempt in tries {
                 let mut full = argv.clone();
-                full.extend(attempt.iter().flat_map(|w| w.args.iter().cloned()));
+                if let Some(w) = &attempt {
+                    // Once, from the front: the system prompt that follows the
+                    // fixed flags could itself read like one of them.
+                    for flag in &w.drops {
+                        if let Some(at) = full.iter().position(|a| a == flag) {
+                            full.remove(at);
+                        }
+                    }
+                    full.extend(w.args.iter().cloned());
+                }
                 match jailed(env, job, &full, &binary, &dirs, attempt.as_ref()) {
                     Ok((program, argv)) => {
                         let notice = tools_off(None).filter(|_| attempt.is_none());
