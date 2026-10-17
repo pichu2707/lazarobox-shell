@@ -95,31 +95,57 @@ pub fn validate(text: &str) -> Result<Command, Refusal> {
     Ok(Command(command.to_string()))
 }
 
-/// Why text that leaves a quote open is refused.
+/// Why model text is refused because it would leave the shell waiting for
+/// more input, or expand something the user did not see.
 pub const UNBALANCED: &str = "the quotes of the command are not balanced";
-/// Why text that ends in a lone backslash is refused.
 pub const TRAILING_BACKSLASH: &str = "the command ends with a backslash";
+pub const OPERATOR: &str = "the command ends with an operator";
+pub const BACKTICK: &str = "the command uses a backtick";
+pub const SUBSHELL: &str = "the command uses $(";
+pub const HEREDOC: &str = "the command uses a heredoc";
+/// Every reason above: `typed_bytes` returns them to the model as they are.
+pub const CONTINUATION: [&str; 6] = [
+    UNBALANCED,
+    TRAILING_BACKSLASH,
+    OPERATOR,
+    BACKTICK,
+    SUBSHELL,
+    HEREDOC,
+];
 
-/// Refuses text that would leave the shell at a continuation prompt: an open
-/// single or double quote, or a trailing backslash. A later run would then
-/// type into that continuation, and the shell would read it as part of the
-/// open text. Conservative: an apostrophe in a comment is refused too.
+/// Refuses text that would leave the shell at a continuation prompt (an open
+/// quote, a trailing backslash or operator) or hide a command (a backtick,
+/// `$(` or `<<` outside single quotes). A later run would type into that
+/// continuation. A backslash escapes the next character outside single quotes;
+/// `$'...'` escapes are not modelled, which is harmless: run text is inert
+/// (D20). Conservative: an apostrophe in a comment is refused too.
 fn open_construct(command: &str) -> Result<(), Refusal> {
     let (mut quote, mut escaped) = (None, false);
-    for c in command.chars() {
+    for (at, c) in command.char_indices() {
+        let rest = &command[at..];
         match (quote, escaped, c) {
             (_, true, _) => escaped = false,
             (None | Some('"'), false, '\\') => escaped = true,
+            (None | Some('"'), false, '`') => return Err(Refusal::new(BACKTICK)),
+            (None | Some('"'), false, '$') if rest.starts_with("$(") => {
+                return Err(Refusal::new(SUBSHELL));
+            }
+            (None, false, '<') if rest.starts_with("<<") => return Err(Refusal::new(HEREDOC)),
             (None, false, '\'' | '"') => quote = Some(c),
             (Some(open), false, c) if c == open => quote = None,
             _ => {}
         }
     }
-    match (quote, escaped) {
-        (Some(_), _) => Err(Refusal::new(UNBALANCED)),
-        (None, true) => Err(Refusal::new(TRAILING_BACKSLASH)),
-        (None, false) => Ok(()),
+    if quote.is_some() {
+        return Err(Refusal::new(UNBALANCED));
     }
+    if escaped {
+        return Err(Refusal::new(TRAILING_BACKSLASH));
+    }
+    if command.ends_with('|') || command.ends_with("&&") {
+        return Err(Refusal::new(OPERATOR));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -149,6 +175,44 @@ mod tests {
         }
         assert_eq!(validate("echo \"hi").unwrap_err().reason(), UNBALANCED);
         assert_eq!(validate("ls \\").unwrap_err().reason(), TRAILING_BACKSLASH);
+    }
+
+    // Suggestion 1: text that would wait for more input, or run something
+    // the model did not show, is refused too.
+    #[test]
+    fn a_trailing_operator_a_backtick_a_subshell_or_a_heredoc_is_refused() {
+        let cases = [
+            ("ls &&", OPERATOR),
+            ("ls ||  ", OPERATOR),
+            ("ls |", OPERATOR),
+            ("ls &&\n", OPERATOR),
+            ("echo `id`", BACKTICK),
+            ("echo \"`id`\"", BACKTICK),
+            ("echo $(id)", SUBSHELL),
+            ("echo \"$(id)\"", SUBSHELL),
+            ("cat <<EOF", HEREDOC),
+            ("cat <<'EOF'", HEREDOC),
+        ];
+        for (text, want) in cases {
+            assert_eq!(validate(text).unwrap_err().reason(), want, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn escaped_or_single_quoted_forms_and_inner_operators_pass() {
+        for ok in [
+            "echo \\`x\\`",
+            "echo '`x` $(y) <<z'",
+            "echo \\$(x)",
+            "ls | wc -l",
+            "ls && pwd",
+            "a || b",
+            "echo $HOME",
+            "cat < f",
+            "echo '|'",
+        ] {
+            assert!(!refused(ok), "{ok:?}");
+        }
     }
 
     #[test]

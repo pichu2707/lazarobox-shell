@@ -16,7 +16,7 @@ use crate::core::ai::{
         yank,
     },
     sanitize,
-    tools::command::{TRAILING_BACKSLASH, UNBALANCED, validate},
+    tools::command::{CONTINUATION, validate},
 };
 
 /// Notices for the refusals of `Prefix e`.
@@ -256,9 +256,10 @@ impl App {
     ) -> Result<Vec<u8>, Refused> {
         let command = validate(command).map_err(|refusal| Refused {
             notice: format!("Command refused: {}", refusal.reason()),
-            reason: match refusal.reason() {
-                reason @ (UNBALANCED | TRAILING_BACKSLASH) => reason,
-                _ => "the command was refused",
+            reason: if CONTINUATION.contains(&refusal.reason()) {
+                refusal.reason()
+            } else {
+                "the command was refused"
             },
         })?;
         self.frame_bytes(target, command.as_str())
