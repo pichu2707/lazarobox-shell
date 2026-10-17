@@ -15,6 +15,12 @@
 //! does not stop the connection from reading `notifications/cancelled`.
 //! Replies from every task go through one writer task.
 //!
+//! Drain. When the client's read side ends (the shim half-closes when its
+//! stdin ends) the connection stops reading but lets the calls in flight
+//! finish and their replies flush, for at most [`DRAIN_GRACE`]; then it
+//! aborts what is left. A client that hung up for good (both directions) and
+//! `Hub::close` end the wait at once.
+//!
 //! Limits, per session: [`MAX_PENDING`] connections may wait for their
 //! handshake (a newcomer beyond that is dropped at once, so silent clients
 //! cannot starve descriptors), and [`MAX_CONNS`] may be authenticated (a
@@ -44,7 +50,7 @@ use std::{
 use futures::FutureExt;
 use serde_json::{Value, json};
 use tokio::{
-    io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Interest},
     net::{UnixListener, UnixStream},
     sync::{OwnedSemaphorePermit, Semaphore, mpsc},
     task::{AbortHandle, JoinHandle, JoinSet},
@@ -72,6 +78,12 @@ const HELLO_MAX: usize = 512;
 /// How long a new connection has to present its handshake. The shim sends
 /// it as its first act, so a client that is silent for 2 s is not one.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long the calls in flight may keep running after the client stopped
+/// sending (its read side hit EOF) so their replies still go out. It is the
+/// time the shim waits for those replies after its stdin ends. Past it the
+/// calls are aborted.
+const DRAIN_GRACE: Duration = super::shim::DRAIN_GRACE;
 
 /// Connections per session that may wait for their handshake at once.
 const MAX_PENDING: usize = 8;
@@ -109,6 +121,7 @@ pub struct Hub {
     dir: PathBuf,
     sessions: HashMap<PaneId, Live>,
     handshake: Duration,
+    drain: Duration,
     /// The only UID whose connections are served.
     uid: u32,
 }
@@ -133,6 +146,7 @@ impl Hub {
             dir,
             sessions: HashMap::new(),
             handshake: HANDSHAKE_TIMEOUT,
+            drain: DRAIN_GRACE,
             // SAFETY: `geteuid` has no preconditions and cannot fail.
             uid: unsafe { libc::geteuid() },
         })
@@ -158,7 +172,14 @@ impl Hub {
             let _ = fs::remove_file(&socket);
             return Err(e);
         }
-        let conn = Conn::new(token.clone(), tools, dispatch, self.uid, self.handshake);
+        let conn = Conn::new(
+            token.clone(),
+            tools,
+            dispatch,
+            self.uid,
+            self.handshake,
+            self.drain,
+        );
         let closed = conn.closed.clone();
         let task = tokio::spawn(accept(listener, conn));
         self.sessions.insert(
@@ -201,6 +222,7 @@ struct Conn {
     dispatch: Arc<dyn Dispatch>,
     uid: u32,
     handshake: Duration,
+    drain: Duration,
     closed: Arc<AtomicBool>,
     pending: Arc<Semaphore>,
     live: Arc<Semaphore>,
@@ -213,6 +235,7 @@ impl Conn {
         dispatch: Arc<dyn Dispatch>,
         uid: u32,
         handshake: Duration,
+        drain: Duration,
     ) -> Conn {
         Conn {
             token: Arc::new(token),
@@ -220,6 +243,7 @@ impl Conn {
             dispatch,
             uid,
             handshake,
+            drain,
             closed: Arc::new(AtomicBool::new(false)),
             pending: Arc::new(Semaphore::new(MAX_PENDING)),
             live: Arc::new(Semaphore::new(MAX_CONNS)),
@@ -395,10 +419,15 @@ async fn serve(stream: UnixStream, conn: Conn, pending: OwnedSemaphorePermit) {
     });
     let mut server = Server::new(conn.tools);
     let mut in_flight: HashMap<String, AbortHandle> = HashMap::new();
+    let mut drain = false;
     loop {
         while tasks.try_join_next().is_some() {}
         let reply = match read_line(&mut reader, MAX_LINE_BYTES).await {
-            Ok(Line::Eof) | Err(_) => break,
+            Ok(Line::Eof) => {
+                drain = true;
+                break;
+            }
+            Err(_) => break,
             Ok(Line::Oversize) => Some(refusal(INVALID_REQUEST, "line too long")),
             Ok(Line::Invalid) => Some(refusal(PARSE_ERROR, "invalid UTF-8")),
             Ok(Line::Text(line)) => match server.handle(&line) {
@@ -449,5 +478,44 @@ async fn serve(stream: UnixStream, conn: Conn, pending: OwnedSemaphorePermit) {
         {
             break;
         }
+    }
+    if drain {
+        drain_calls(tasks, out, reader.get_ref().as_ref(), conn.drain).await;
+    }
+}
+
+/// How often a drain looks for a client that hung up.
+const HANGUP_POLL: Duration = Duration::from_millis(100);
+
+/// The client stopped sending but may still be reading (the shim half-closes
+/// when its stdin ends). Lets the calls in flight finish and the writer flush
+/// their replies, for at most `grace`; the writer ends once the last call has
+/// dropped its sender. A hangup, `Hub::close` (which aborts this whole task)
+/// or the end of the grace stops the wait, and returning drops `tasks`, which
+/// aborts whatever is left.
+async fn drain_calls(
+    mut tasks: JoinSet<()>,
+    out: mpsc::Sender<String>,
+    stream: &UnixStream,
+    grace: Duration,
+) {
+    drop(out);
+    let finished = async { while tasks.join_next().await.is_some() {} };
+    tokio::select! {
+        _ = timeout(grace, finished) => {}
+        _ = hung_up(stream) => {}
+    }
+}
+
+/// Resolves once the peer has closed both directions, not just its writing
+/// one. Tokio reports that as a write-closed readiness (`EPOLLHUP`), which
+/// has no waiter to wake, so it is looked at every [`HANGUP_POLL`].
+async fn hung_up(stream: &UnixStream) {
+    loop {
+        match stream.ready(Interest::READABLE | Interest::WRITABLE).await {
+            Ok(ready) if !ready.is_write_closed() => {}
+            _ => return,
+        }
+        tokio::time::sleep(HANGUP_POLL).await;
     }
 }
