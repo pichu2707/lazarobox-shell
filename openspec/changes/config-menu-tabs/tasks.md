@@ -93,10 +93,31 @@ Goal: the behaviour change. This is the atomic unit: code, tests and regenerated
 
 Goal: the 700 lines of snapshot diff are reviewed by hand, not trusted.
 
-- [ ] 4.1 Review the 21 changed menu snapshots and the 2 `ui` snapshots, one file at a time, against this checklist: (a) 16 rows border to border; (b) the bar text is right for the state, with the hint present at the right width and absent over sub-levels; (c) the row values equal the old snapshot's values for the same tab; (d) no section title under the bar; (e) the footer is unchanged; (f) the update note is on Settings only and sits in the last 2 body rows.
-- [ ] 4.2 Confirm with `git diff --stat` that the 4 no-AI `.snap` files and the tiny warning fallback `.snap` are untouched (byte-identical). Any change there is a bug in the single-tab path.
-- [ ] 4.3 Confirm no `.snap.new` / `.pending-snap` files are left in the tree.
-- [ ] 4.4 Re-run the full gate once more after the last accepted snapshot.
+- [x] 4.1 Review the 21 changed menu snapshots and the 2 `ui` snapshots, one file at a time, against this checklist: (a) 16 rows border to border; (b) the bar text is right for the state, with the hint present at the right width and absent over sub-levels; (c) the row values equal the old snapshot's values for the same tab; (d) no section title under the bar; (e) the footer is unchanged; (f) the update note is on Settings only and sits in the last 2 body rows.
+- [x] 4.2 Confirm with `git diff --stat` that the 4 no-AI `.snap` files and the tiny warning fallback `.snap` are untouched (byte-identical). Any change there is a bug in the single-tab path.
+- [x] 4.3 Confirm no `.snap.new` / `.pending-snap` files are left in the tree.
+- [x] 4.4 Re-run the full gate once more after the last accepted snapshot.
+
+### Snapshot review result (units 3 and 4)
+
+Method: `cargo-insta` was not installed, so the snapshots were regenerated with `INSTA_UPDATE=new INSTA_FORCE_PASS=1 cargo test --lib` (each new output lands as `.snap.new` beside the old `.snap`). Every pair was then compared line by line (a multiset diff of the popup rows, with counts) and read against the checklist, before the old file was replaced. No bulk accept. `assertion_line:` headers were stripped, as `cargo insta accept` does.
+
+Counts against `origin/feat/agent-tools`: 26 `.snap` files differ: 23 modified (21 menu + 2 `ui`) and 3 new (`snapshot_ai_tab`, `snapshot_settings_tab_with_the_update_note`, `snapshot_24_columns_with_the_starred_label`). About 320 changed snapshot lines, not the ~700 forecast.
+
+| Checklist item | Result |
+|---|---|
+| (a) 16 rows border to border (15 at 24x15) | Pass for all 26 (old popup: 22 / 21 rows) |
+| (b) bar text and hint | `Settings │ AI` with `⇥ Tab` on both tabs; the sub-level views (engines, models, custom field, warning, codex notes) show the bar without the hint; `Settings*` where an update is pending; at 24 columns `Settings* │ AI` has no hint, `Settings │ AI  ⇥ Tab` has it |
+| (c) row values equal the old ones for the same tab | Pass. The multiset diff shows only: removed section titles, removed rows of the other tab, added blank rows and the bar. No value changed |
+| (d) no section title under the bar | Pass (the `Settings` / `AI` title rows are gone from all tabbed views) |
+| (e) footer unchanged | Pass: no footer line appears in any diff |
+| (f) update note on Settings only, in the last two body rows | Pass: `snapshot_settings_tab_with_the_update_note`, `update_note_under_the_task_list` and `ui` `update_menu_frame` show it right above the blank row; no AI-tab or sub-level snapshot has it |
+
+Byte-identical (checked with `git diff --quiet origin/feat/agent-tools -- <file>`): the 4 no-AI snapshots (`settings_popup_at_the_wanted_size`, `popup_is_centred_in_a_larger_area`, `short_height_drops_the_blank_row`, `error_replaces_the_hint_and_is_clipped`), the tiny warning fallback (`the_warning_on_a_tiny_terminal_asks_to_enlarge_and_offers_no_choice`) and the statusline `snapshot_input_menu`.
+
+Nothing suspicious. One expected side effect: in `ui` `menu_popup_is_drawn_over_the_panes_after_the_bars` the pane text `hi there` is now fully visible on row 1, because the popup is 6 rows shorter and no longer covers it.
+
+No `.snap.new` or `.pending-snap` file is left in the tree.
 
 ## Unit 5: Manual check and docs
 
