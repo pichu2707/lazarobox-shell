@@ -197,6 +197,7 @@ impl App {
             chat: id,
             target,
             bytes,
+            number: self.pane_number(target).unwrap_or(0),
             turn,
             call,
         }]

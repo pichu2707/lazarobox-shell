@@ -235,6 +235,9 @@ pub enum Effect {
         chat: PaneId,
         target: PaneId,
         bytes: Vec<u8>,
+        /// The number of `target` in its tab, as the user sees it; the
+        /// answers and the result row name the pane by it.
+        number: usize,
         turn: u64,
         call: CallId,
     },

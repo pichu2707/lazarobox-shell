@@ -971,6 +971,7 @@ impl Panes {
                     chat,
                     target,
                     bytes,
+                    number,
                     turn,
                     call,
                 } => {
@@ -981,7 +982,7 @@ impl Panes {
                         .filter(|answer| !answer.is_closed());
                     if let Some(answer) = answer {
                         let decision =
-                            auto_type::type_if_idle(self.handles.get_mut(&target), bytes);
+                            auto_type::type_if_idle(self.handles.get_mut(&target), number, bytes);
                         let _ = answer.send(decision);
                     }
                 }
@@ -3467,6 +3468,7 @@ mod tests {
             chat: id(9),
             target: id(target),
             bytes: format!("cmd{target}").into_bytes(),
+            number: target as usize,
             turn: 1,
             call: crate::core::ai::chat::engine::CallId(call),
         }
@@ -3496,12 +3498,10 @@ mod tests {
         for wait in waits {
             answers.push(wait.await);
         }
-        assert_eq!(answers[0], Decision::Sent);
-        assert!(
-            answers[1..]
-                .iter()
-                .all(|a| matches!(a, Decision::Denied(_)))
-        );
+        assert_eq!(answers[0], Decision::Typed(1));
+        assert_eq!(answers[1], Decision::Busy(2), "a child in the foreground");
+        assert_eq!(answers[2], Decision::Busy(3), "an unknown foreground");
+        assert!(matches!(answers[3], Decision::Denied(_)), "no such pane");
     }
 
     // One answer per call, and bytes only when that answer is `Sent`: when

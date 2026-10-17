@@ -310,7 +310,7 @@ impl App {
     }
 
     /// The 1-based number of `pane` in the active tab.
-    fn pane_number(&self, pane: PaneId) -> Option<usize> {
+    pub(super) fn pane_number(&self, pane: PaneId) -> Option<usize> {
         Some(self.tab().tree.leaves().iter().position(|p| *p == pane)? + 1)
     }
 

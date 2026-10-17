@@ -100,6 +100,7 @@ fn typed(turn: u64, call: u64, bytes: &[u8]) -> Effect {
         chat: id2(),
         target: PaneId::FIRST,
         bytes: bytes.to_vec(),
+        number: 1,
         turn,
         call: CallId(call),
     }
@@ -449,10 +450,16 @@ fn a_mark_on_one_pane_never_affects_another() {
     a.tab_mut().focus = id2();
     a.tab_mut().last_shell = Some(second);
     let effects = announce(&mut a, turn, 2, run("ls"));
-    let [Effect::AutoType { target, .. }] = effects.as_slice() else {
+    let [Effect::AutoType { target, number, .. }] = effects.as_slice() else {
         panic!("{effects:?}")
     };
     assert_eq!(*target, second);
+    assert_eq!(
+        Some(*number),
+        a.pane_number(second),
+        "the number the user sees"
+    );
+    assert_ne!(*number, 1);
 }
 
 // Enter after each command lets five be typed and the sixth prompts.

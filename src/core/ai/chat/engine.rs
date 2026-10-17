@@ -129,6 +129,13 @@ pub enum Decision {
     /// A check that fails (a full-screen app, a shell that cannot take a
     /// multi-line paste) is a `Denied` with the reason instead.
     Sent,
+    /// `Sent` for a command typed without a prompt (design D18) into the pane
+    /// the user knows as number `.0`; the result row names it.
+    Typed(usize),
+    /// Nothing was typed: pane number `.0` has a program in the foreground
+    /// (or the runtime cannot tell). Carries the number so the reason can name
+    /// the pane; the host words it as `pane N is running a program`.
+    Busy(usize),
     /// Why nothing was done; short, and it goes back to the model.
     Denied(&'static str),
 }
