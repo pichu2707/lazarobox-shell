@@ -318,3 +318,84 @@ fn only_the_closing_bracket_of_the_api_wrapper_is_removed() {
         [failed("plain [x] text")]
     );
 }
+
+fn tool_use_line(name: &str) -> String {
+    format!(
+        "{{\"type\":\"tool_use\",\"tool_name\":\"{name}\",\"tool_id\":\"t\",\"parameters\":{{}}}}\n"
+    )
+}
+
+fn run_wired(text: &str) -> Vec<StreamEvent> {
+    let mut decoder = GeminiDecoder::wired();
+    let mut events = decoder.feed(text.as_bytes());
+    events.extend(decoder.finish());
+    events
+}
+
+/// A turn that calls `name`, then answers.
+fn calls_then_answers(name: &str) -> String {
+    let mut text = tool_use_line(name);
+    text.push_str("{\"type\":\"tool_result\",\"tool_id\":\"t\",\"status\":\"success\"}\n");
+    text.push_str(&assistant_line("done"));
+    text.push_str(success_line());
+    text
+}
+
+#[test]
+fn a_wired_turn_lets_a_lazarobox_tool_through() {
+    for name in ["mcp_lazarobox_read_file", "mcp_lazarobox_run_in_pane"] {
+        assert_eq!(
+            run_wired(&calls_then_answers(name)),
+            [delta("done"), done()],
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_wired_turn_still_refuses_every_other_tool() {
+    // `read_file` is also gemini's own built-in: only the qualified name is
+    // ours.
+    for name in [
+        "read_file",
+        "run_shell_command",
+        "mcp_other_read_file",
+        "mcp_lazarobox",
+        "mcp_lazarobox_",
+        "MCP_LAZAROBOX_read_file",
+        "lazarobox__read_file",
+        " mcp_lazarobox_read_file",
+        "",
+    ] {
+        assert_eq!(
+            run_wired(&calls_then_answers(name)),
+            [failed(TOOL_REFUSED)],
+            "{name:?}"
+        );
+    }
+}
+
+#[test]
+fn a_wired_tool_call_without_a_name_or_with_a_non_text_name_is_refused() {
+    for line in [
+        "{\"type\":\"tool_use\",\"parameters\":{}}\n",
+        "{\"type\":\"tool_use\",\"tool_name\":7}\n",
+        "{\"type\":\"tool_use\",\"tool_name\":[\"mcp_lazarobox_read_file\"]}\n",
+    ] {
+        assert_eq!(run_wired(line), [failed(TOOL_REFUSED)], "{line}");
+    }
+}
+
+#[test]
+fn a_wired_turn_keeps_failing_closed_on_an_unknown_event() {
+    let text = "{\"type\":\"thought\",\"content\":\"x\"}\n";
+    assert_eq!(run_wired(text), [failed(UNKNOWN_EVENT)]);
+}
+
+#[test]
+fn a_text_only_turn_refuses_even_our_own_tool() {
+    assert_eq!(
+        whole(&calls_then_answers("mcp_lazarobox_read_file")),
+        [failed(TOOL_REFUSED)]
+    );
+}

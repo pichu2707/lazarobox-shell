@@ -142,7 +142,7 @@ impl Adapter {
             },
             Adapter::Claude => claude_invocation(request, wire_for(request, verified)),
             Adapter::Codex => codex_invocation(request, wire_for(request, verified)),
-            Adapter::Gemini => gemini_invocation(request),
+            Adapter::Gemini => gemini_invocation(request, wire_for(request, verified)),
         }
     }
 }
@@ -342,15 +342,19 @@ const GEMINI_POLICY: &str = "[[rule]]\ntoolName = \"*\"\ndecision = \"deny\"\npr
 /// tool), and on stdin the profile prompt in an `Instructions:` block, then the
 /// memory block and the history. gemini has no system-prompt flag, and argv is
 /// visible in `ps`, so nothing but fixed flags and the model goes there. The
-/// runtime appends `--policy <file>` after these flags.
-fn gemini_invocation(request: &ChatRequest) -> Invocation {
+/// runtime appends `--policy <file>` after these flags, and for a turn with
+/// tools it adds its own (`--allowed-mcp-server-names=lazarobox`, an admin
+/// policy that allows the server) and runs gemini in a work folder that holds
+/// the workspace settings.
+fn gemini_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation {
     let model = match cli_model(request.model.as_deref()) {
         Ok(model) => model,
         Err(reason) => return Invocation::Refused(reason),
     };
     let mut args: Vec<String> = [
-        // The folder is our private empty one, and an untrusted folder makes
-        // the CLI drop out of `plan` mode and refuse to run headless.
+        // The folder is our private one (on a wired turn it holds
+        // `.gemini/settings.json`), and an untrusted folder makes the CLI
+        // drop out of `plan` mode and refuse to run headless.
         "--skip-trust",
         "-p",
         GEMINI_PROMPT,
@@ -378,7 +382,7 @@ fn gemini_invocation(request: &ChatRequest) -> Invocation {
             name: "gemini-policy.toml",
             content: GEMINI_POLICY,
         }],
-        mcp: None,
+        mcp,
     })
 }
 

@@ -1520,6 +1520,23 @@ async fn a_job_file_is_written_private_to_the_turn_folder_and_named_last() {
 }
 
 #[tokio::test]
+async fn a_policy_file_whose_path_gemini_would_split_refuses_the_turn() {
+    // gemini splits `--policy` on `,`: `<data>,x/..` would load `<data>`.
+    let lab = lab();
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_ANSWER);
+    let mut env = lab.env();
+    env.data = Some(lab.data.with_file_name("data,x"));
+    let events = run_job(&env, gemini_job(JailPolicy::Layered)).await;
+    assert_eq!(
+        events,
+        [StreamEvent::Error(ChatError::Failed(
+            UNUSABLE_FILE_PATH.into()
+        ))]
+    );
+    assert!(!lab.rec.join("argv").exists(), "gemini never started");
+}
+
+#[tokio::test]
 async fn a_jailed_job_file_is_inside_the_folder_the_jail_lets_the_cli_write() {
     let lab = lab();
     script(&lab.bin.join("gemini"), &lab.rec, GEMINI_ANSWER);
@@ -2395,5 +2412,246 @@ async fn only_a_wired_turn_lets_codex_use_our_tools() {
     let count = counted(&mut job);
     let events = run_job(&bare, job).await;
     assert_eq!(failure(&events), "codex tried to use a tool", "{events:?}");
+    assert_eq!(count.load(Ordering::SeqCst), 1, "its session ended");
+}
+
+/// A gemini of a turn with tools: it records where it runs, what it finds in
+/// the workspace `.gemini` folder, its argv and its env.
+macro_rules! gemini_record {
+    () => {
+        r#"
+printf '%s\0' "$@" > "$REC/args"
+pwd -P > "$REC/cwd"
+env > "$REC/env"
+cat > /dev/null
+if [ -e "$TMPDIR/work" ]; then echo yes > "$REC/work_during"; fi
+if [ -e .gemini/settings.json ]; then
+  cp .gemini/settings.json "$REC/settings_copy"
+  stat -c %a .gemini/settings.json > "$REC/settings_mode"
+  stat -c %a .gemini > "$REC/dotgemini_mode"
+  stat -c %a . > "$REC/work_mode"
+fi
+for a; do
+  case "$a" in
+    --admin-policy=*)
+      cp "${a#--admin-policy=}" "$REC/policy_copy"
+      stat -c %a "${a#--admin-policy=}" > "$REC/policy_mode"
+      ;;
+  esac
+done
+printf '%s\n' '{"type":"init","session_id":"s","model":"m"}'
+"#
+    };
+}
+
+const GEMINI_END: &str = r#"
+printf '%s\n' '{"type":"message","role":"assistant","content":"ok","delta":true}'
+printf '%s\n' '{"type":"result","status":"success"}'
+"#;
+
+/// The record, a call to one of lazarobox's tools, and an answer.
+const MCP_GEMINI: &str = concat!(
+    gemini_record!(),
+    r#"
+printf '%s\n' '{"type":"tool_use","tool_name":"mcp_lazarobox_find_dir","tool_id":"t","parameters":{}}'
+printf '%s\n' '{"type":"tool_result","tool_id":"t","status":"success"}'
+"#
+);
+
+/// The record and an answer, no tool.
+const MCP_GEMINI_TEXT: &str = gemini_record!();
+
+fn wired_gemini_job(lab: &Lab) -> Job {
+    Job {
+        wire: Wire::GeminiStreamJson,
+        binary: "gemini",
+        cli: Cli::Gemini,
+        args: [
+            "--skip-trust",
+            "-p",
+            "x",
+            "--allowed-mcp-server-names",
+            "none",
+        ]
+        .map(str::to_owned)
+        .into(),
+        stdin: b"hi".to_vec(),
+        jail: JailPolicy::Required,
+        tmp_files: vec![TmpFile {
+            flag: "--policy",
+            name: "gemini-policy.toml",
+            content: POLICY,
+        }],
+        mcp: claude_job(lab, true).mcp,
+    }
+}
+
+#[tokio::test]
+async fn a_wired_gemini_runs_in_a_private_work_folder_with_the_settings_and_the_admin_policy() {
+    let lab = lab();
+    script(
+        &lab.bin.join("gemini"),
+        &lab.rec,
+        &format!("{MCP_GEMINI}{GEMINI_END}"),
+    );
+    let shim = trusted_shim(&lab);
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let events = run_job(&env, wired_gemini_job(&lab)).await;
+    assert_eq!(
+        events,
+        [
+            StreamEvent::Delta("ok".into()),
+            StreamEvent::Done(Finish::Stop)
+        ],
+        "our tool call passes the wired decoder, no notice"
+    );
+    let args = lab.args();
+    // The pinned argv, its own policy file, then the wiring in the `=` form
+    // (both flags are variadic: nothing is left to swallow what follows).
+    assert_eq!(
+        args[..5],
+        [
+            "--skip-trust",
+            "-p",
+            "x",
+            "--allowed-mcp-server-names",
+            "none"
+        ]
+    );
+    assert_eq!(args[5], "--policy");
+    assert!(args[6].ends_with("/gemini-policy.toml"), "{args:?}");
+    let n = args.len();
+    assert_eq!(n, 9, "{args:?}");
+    assert_eq!(args[7], "--allowed-mcp-server-names=lazarobox");
+    assert!(args[8].starts_with("--admin-policy="), "{args:?}");
+    assert!(args[8].ends_with("/gemini-mcp-policy.toml"), "{args:?}");
+    // It ran in `<turn tmp>/work`, not in the shared empty folder.
+    let tmp = Path::new(&args[6]).parent().unwrap().to_owned();
+    assert_eq!(
+        lab.recorded("cwd").trim(),
+        tmp.join("work").to_str().unwrap()
+    );
+    assert!(tmp.starts_with(lab.data.join("cli-tmp")));
+    // The settings hold the token and the server, 0600 in 0700 folders.
+    let settings = lab.recorded("settings_copy");
+    assert!(
+        settings.contains(TOKEN) && settings.contains(shim.to_str().unwrap()),
+        "{settings}"
+    );
+    assert!(settings.contains("\"trust\": true") && settings.contains("900000"));
+    assert_eq!(lab.recorded("settings_mode").trim(), "600");
+    assert_eq!(lab.recorded("dotgemini_mode").trim(), "700");
+    assert_eq!(lab.recorded("work_mode").trim(), "700");
+    let policy = lab.recorded("policy_copy");
+    assert!(policy.contains("mcpName = \"lazarobox\""), "{policy}");
+    assert_eq!(lab.recorded("policy_mode").trim(), "600");
+    // The token is in the file only: not argv, not the helper's, not the env.
+    assert!(!args.iter().any(|a| a.contains(TOKEN)), "{args:?}");
+    assert!(!lab.recorded("helper_args").contains(TOKEN));
+    assert!(!lab.recorded("env").contains(TOKEN));
+    let helper = lab.recorded("helper_args");
+    let helper: Vec<&str> = helper.split('\0').collect();
+    let has = |flag: &str, path: &str| helper.windows(2).any(|w| w == [flag, path]);
+    assert!(has("--rx", shim.to_str().unwrap()), "{helper:?}");
+    assert!(
+        has("--rw-file", lab.rec.join("s.sock").to_str().unwrap()),
+        "{helper:?}"
+    );
+    // Wiped after the turn, the work folder and the token with it.
+    assert!(!tmp.exists(), "{tmp:?}");
+}
+
+#[tokio::test]
+async fn the_turns_token_is_not_shown_from_a_gemini_stderr_tail() {
+    let lab = lab();
+    script(
+        &lab.bin.join("gemini"),
+        &lab.rec,
+        "cat > /dev/null\necho \"cannot reach $(cat .gemini/settings.json | tr -d ' \\n') now\" >&2\nexit 1",
+    );
+    let shim = trusted_shim(&lab);
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let mut job = wired_gemini_job(&lab);
+    job.mcp.as_mut().unwrap().token = Secret::new("hunter2");
+    let events = run_job(&env, job).await;
+    let text = failure(&events);
+    assert!(!text.contains("hunter2"), "{text}");
+    assert!(text.contains("(..)"), "{text}");
+}
+
+/// A gemini turn that fell back to text: it ran in the shared empty folder
+/// with the pinned argv and nothing of the wiring, said so, and ended its
+/// session once.
+async fn assert_gemini_text_fallback(lab: &Lab, env: &CliEnv) {
+    script(
+        &lab.bin.join("gemini"),
+        &lab.rec,
+        &format!("{MCP_GEMINI_TEXT}{GEMINI_END}"),
+    );
+    let mut job = wired_gemini_job(lab);
+    let count = counted(&mut job);
+    let events = run_job(env, job).await;
+    assert_eq!(
+        events[0],
+        StreamEvent::Notice(OFF_NOTICE.into()),
+        "{events:?}"
+    );
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    assert_eq!(count.load(Ordering::SeqCst), 1, "Unwire exactly once");
+    let args = lab.args();
+    assert_eq!(args.len(), 7, "{args:?}");
+    assert!(
+        !args.iter().any(|a| a.starts_with("--admin-policy")
+            || a.starts_with("--allowed-mcp-server-names=")
+            || a.contains("gemini-mcp-policy")),
+        "{args:?}"
+    );
+    assert_eq!(
+        Path::new(lab.recorded("cwd").trim()),
+        lab.data.join("cli-cwd")
+    );
+    assert_eq!(lab.recorded("work_during"), "");
+    assert_eq!(lab.recorded("settings_copy"), "");
+    assert!(!lab.recorded("env").contains(TOKEN));
+}
+
+#[tokio::test]
+async fn a_shim_the_jail_refuses_retries_gemini_without_the_tools() {
+    let lab = lab();
+    let shim = shim_in_ssh(&lab);
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    assert_gemini_text_fallback(&lab, &env).await;
+    let helper = lab.recorded("helper_args");
+    assert!(
+        !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
+        "{helper:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_untrusted_shim_runs_gemini_as_text_with_the_notice() {
+    let lab = lab();
+    let shim = lab.bin.join("shim");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o666)).unwrap();
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    assert_gemini_text_fallback(&lab, &env).await;
+}
+
+#[tokio::test]
+async fn only_a_wired_turn_lets_gemini_use_our_tools() {
+    let lab = lab();
+    script(
+        &lab.bin.join("gemini"),
+        &lab.rec,
+        &format!("{MCP_GEMINI}{GEMINI_END}"),
+    );
+    // No shim program: the same stream in a turn that fell back to text.
+    let mut bare = with_shim(&lab, lab.env(), "/unused");
+    bare.shim = None;
+    let mut job = wired_gemini_job(&lab);
+    let count = counted(&mut job);
+    let events = run_job(&bare, job).await;
+    assert_eq!(failure(&events), "gemini tried to use a tool", "{events:?}");
     assert_eq!(count.load(Ordering::SeqCst), 1, "its session ended");
 }

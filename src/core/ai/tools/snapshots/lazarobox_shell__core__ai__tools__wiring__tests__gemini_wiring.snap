@@ -1,0 +1,27 @@
+---
+source: src/core/ai/tools/wiring.rs
+expression: text
+---
+argv: --allowed-mcp-server-names=lazarobox --admin-policy=/data/lazarobox/cli-tmp/42-7/gemini-mcp-policy.toml
+settings.json:
+{
+  "mcpServers": {
+    "lazarobox": {
+      "args": [
+        "__mcp-serve",
+        "/run/user/1000/lazarobox/s-42-1.sock"
+      ],
+      "command": "/opt/lb/bin/lazarobox-shell",
+      "env": {
+        "LAZAROBOX_MCP_TOKEN": "0123456789abcdef0123456789abcdef"
+      },
+      "timeout": 900000,
+      "trust": true
+    }
+  }
+}
+policy:
+[[rule]]
+mcpName = "lazarobox"
+decision = "allow"
+priority = 999

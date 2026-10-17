@@ -904,15 +904,6 @@ fn a_verified_claude_without_a_session_stays_text_only() {
 }
 
 #[test]
-fn only_claude_and_codex_carry_a_wire_yet() {
-    let (off, on) = tools_on("gemini", true);
-    assert_eq!(
-        Adapter::Gemini.build_with(&on, &["gemini"]),
-        Adapter::Gemini.build(&off)
-    );
-}
-
-#[test]
 fn a_verified_codex_with_a_session_carries_the_wire_and_nothing_else_changes() {
     let (off, on) = tools_on("codex", true);
     let with = process(Adapter::Codex.build_with(&on, &["codex"]));
@@ -939,5 +930,35 @@ fn a_verified_codex_without_a_session_stays_text_only() {
     assert_eq!(
         Adapter::Codex.build_with(&on, &["codex"]),
         Adapter::Codex.build(&off)
+    );
+}
+
+#[test]
+fn a_verified_gemini_with_a_session_carries_the_wire_and_nothing_else_changes() {
+    let (off, on) = tools_on("gemini", true);
+    let with = process(Adapter::Gemini.build_with(&on, &["gemini"]));
+    let without = process(Adapter::Gemini.build(&off));
+    assert_eq!(
+        with.mcp,
+        match &on.tools {
+            Tools::On { mcp, .. } => mcp.as_deref().cloned(),
+            Tools::Off => unreachable!(),
+        }
+    );
+    assert!(with.mcp.is_some());
+    // The pinned argv and its own deny-all policy are what the runtime adds
+    // to, and what a turn that falls back to text runs with.
+    assert_eq!(
+        (with.args, with.stdin, with.tmp_files, with.jail),
+        (without.args, without.stdin, without.tmp_files, without.jail)
+    );
+}
+
+#[test]
+fn a_verified_gemini_without_a_session_stays_text_only() {
+    let (off, on) = tools_on("gemini", false);
+    assert_eq!(
+        Adapter::Gemini.build_with(&on, &["gemini"]),
+        Adapter::Gemini.build(&off)
     );
 }

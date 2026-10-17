@@ -626,6 +626,28 @@ mod tests {
     }
 
     #[test]
+    fn the_per_turn_cli_files_with_the_token_are_refused_under_any_data_dir() {
+        let f = fixture();
+        let turn_files = |data: &Path| {
+            let turn = data.join("cli-tmp/42-1");
+            fs::create_dir_all(turn.join("work/.gemini")).unwrap();
+            fs::write(turn.join("mcp.json"), "TOKEN").unwrap();
+            fs::write(turn.join("work/.gemini/settings.json"), "TOKEN").unwrap();
+        };
+        let mut e = env(&f.home);
+        // The default data dir, then one moved by `XDG_DATA_HOME` in HOME.
+        turn_files(&f.home.join(".local/share/lazarobox"));
+        turn_files(&f.home.join("moved/lazarobox"));
+        for (data, xdg) in [(".local/share", None), ("moved", Some("moved"))] {
+            e.xdg_data_home = xdg.map(|x| f.home.join(x).into());
+            for file in ["mcp.json", "work/.gemini/settings.json"] {
+                let path = format!("~/{data}/lazarobox/cli-tmp/42-1/{file}");
+                assert_eq!(read(&e, &path), Err(Failure::Refused), "{path}");
+            }
+        }
+    }
+
+    #[test]
     fn excluded_outside_and_missing_paths_give_the_same_refusal() {
         let f = fixture();
         symlink(f.home.join("../outside/note.txt"), f.home.join("link")).unwrap();
