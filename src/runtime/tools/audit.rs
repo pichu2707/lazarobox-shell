@@ -269,7 +269,12 @@ fn skip_item(t: &[Tok], mut i: usize) -> usize {
 
 /// The names that carry the approval mode. The model must never be able to
 /// reach them, so no runtime code may name them (design D19).
-const MODE_NAMES: &[&str] = &["ApprovalMode", "set_approval_mode"];
+const MODE_NAMES: &[&str] = &[
+    "ApprovalMode",
+    "set_approval_mode",
+    "approval_mode",
+    "set_approval",
+];
 
 /// Every use of a mode name in the non-test code of `src`.
 pub fn mode_violations(src: &str) -> Vec<String> {
@@ -424,6 +429,8 @@ mod tests {
         for bad in [
             "use crate::core::ai::config::ApprovalMode;",
             "fn f(c: &mut Chat) { c.set_approval_mode(m) }",
+            "fn f(a: &mut AiConfig) { a.set_approval(m) }",
+            "fn f(c: &Chat) { let _ = c.approval_mode(); }",
             "fn f() { let _ = crate::ApprovalMode::Run; }",
         ] {
             assert!(!mode_violations(bad).is_empty(), "{bad}");

@@ -1375,6 +1375,16 @@ other = 1
     }
 
     #[test]
+    fn the_run_mode_is_written_as_a_string_and_reads_back() {
+        use crate::core::ai::config::ApprovalMode;
+        let out = apply_edit(None, &approval_edit(ApprovalMode::Run)).unwrap();
+        assert_eq!(out, "[ai.tools]\napproval = \"run\"\n");
+        let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out), None);
+        assert_eq!(ai.approval(), ApprovalMode::Run);
+        assert_eq!(notice, None);
+    }
+
+    #[test]
     fn the_approval_key_is_created_in_its_own_table_as_a_string() {
         use crate::core::ai::config::ApprovalMode;
         let out = apply_edit(None, &approval_edit(ApprovalMode::Auto)).unwrap();
