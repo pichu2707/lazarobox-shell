@@ -54,12 +54,17 @@ The engine list of a picker MUST contain, in this order: the unassign entry (`(d
 - THEN their first entry is `none`
 
 ### Requirement: CLI model catalog
-For the CLI engines the model list MUST be static, and each entry is a `label` shown by the picker and a `value` that is saved and passed to the CLI (the label is display only). `claude` offers `default (CLI picks)` = `default`, `Opus 5.5` = `opus`, `Sonnet 5.5` = `sonnet`, `Haiku 5.5` = `haiku` and `Fable 5.1` = `fable`; the values are CLI aliases, which always resolve to the newest model of each family. `gemini` offers `default (auto)` = `default` (no `-m` flag, so the CLI runs its own `auto`), `Flash 3.8` = `gemini-3.8-flash`, `Flash 3.5` = `gemini-3.5-flash` and `Flash Lite 3.5` = `gemini-3.5-flash-lite`; these are explicit ids, not the CLI's `flash` and `pro` aliases, which may point at retired 2.5 models. `codex` and `opencode` offer `default` (label and value). Every CLI list ends with the entry `custom…`. CLI entries are selectable and have no mark (no `✓`), because their availability is not checkable. A saved model is matched to an entry by value, so an existing `opus` or `default` shows its label. A model already assigned for that engine and absent from the catalog (for example `gemini-2.5-flash`) MUST NOT be an error: it is listed under its own value before `custom…`, selectable and unmarked. Task rows, the aggregate and the chat statusline keep showing the saved value (`claude › opus`).
+For the CLI engines the model list MUST be static, and each entry is a `label` shown by the picker and a `value` that is saved and passed to the CLI (the label is display only). `claude` offers `default (CLI picks)` = `default`, `Opus 5.5` = `opus`, `Sonnet 5.5` = `sonnet`, `Haiku 5.5` = `haiku` and `Fable 5.1` = `fable`; the values are CLI aliases, which always resolve to the newest model of each family. `gemini` offers `default (auto)` = `default` (no `-m` flag, so the CLI runs its own `auto`), `Flash 3.8` = `gemini-3.8-flash`, `Flash 3.5` = `gemini-3.5-flash` and `Flash Lite 3.5` = `gemini-3.5-flash-lite`; these are explicit ids, not the CLI's `flash` and `pro` aliases, which may point at retired 2.5 models. `opencode` offers `default` (label and value). `codex` offers `default (CLI picks)` = `default` and then the models its account lists (see ai-engine-detection, Codex model listing): the label is the `display_name` and the saved value is the `slug`, in the account's priority order; when the listing is missing or failed, only `default (CLI picks)` is offered. Every CLI list ends with the entry `custom…`. CLI entries are selectable and have no mark (no `✓`), because their availability is not checkable. A saved model is matched to an entry by value, so an existing `opus` or `default` shows its label. A model already assigned for that engine and absent from the catalog (for example `gemini-2.5-flash`) MUST NOT be an error: it is listed under its own value before `custom…`, selectable and unmarked. Task rows, the aggregate and the chat statusline keep showing the saved value (`claude › opus`).
 
 #### Scenario: CLI lists [auto]
 - GIVEN claude and codex are available
 - WHEN their model lists are built
-- THEN claude reads `default (CLI picks)`, `Opus 5.5`, `Sonnet 5.5`, `Haiku 5.5`, `Fable 5.1`, `custom…`, gemini reads `default (auto)`, `Flash 3.8`, `Flash 3.5`, `Flash Lite 3.5`, `custom…`, and codex reads `default`, `custom…`, none with a mark
+- THEN claude reads `default (CLI picks)`, `Opus 5.5`, `Sonnet 5.5`, `Haiku 5.5`, `Fable 5.1`, `custom…`, gemini reads `default (auto)`, `Flash 3.8`, `Flash 3.5`, `Flash Lite 3.5`, `custom…`, and codex reads `default (CLI picks)`, `custom…` (no account list), none with a mark
+
+#### Scenario: Codex account list [auto]
+- GIVEN codex is available and its listing holds `GPT-6.1-Sol` = `gpt-6.1-sol` and `GPT-6-Luna` = `gpt-6-luna`
+- WHEN the models of codex are listed
+- THEN the rows are `default (CLI picks)`, `GPT-6.1-Sol`, `GPT-6-Luna`, `custom…`, and choosing the second saves `gpt-6.1-sol`
 
 #### Scenario: Saved value shows its label [auto]
 - GIVEN code is saved as `claude` / `opus` (or `default`)
@@ -75,6 +80,19 @@ For the CLI engines the model list MUST be static, and each entry is a `label` s
 - GIVEN code is assigned `gemini` / `gem-exp`
 - WHEN gemini's model list is built for code
 - THEN it reads `default`, `gem-exp`, `custom…`, all selectable
+
+### Requirement: Codex model outside the account list
+When the codex listing is non-empty, a codex model that is assigned or typed as custom, is not `default` and is not in the listing MUST be listed after the account models, selectable, with the warning mark `not in your account's list`; the task row of that assignment MUST end with ` · not in your account's list`, and the picker footer on that row MUST read `not in your account's list · kept as typed, the list may be stale`. The warning never blocks: detection can be stale. When the listing is empty or failed, and for every other CLI engine, no warning is shown.
+
+#### Scenario: Unlisted codex model warned [auto]
+- GIVEN codex lists `gpt-6.1-sol` and code is assigned `codex` / `gpt-5.4`
+- WHEN the codex models are listed
+- THEN `gpt-5.4` appears before `custom…`, selectable and marked `not in your account's list`, and the code task row reads `codex › gpt-5.4 · not in your account's list`
+
+#### Scenario: No listing, no warning [auto]
+- GIVEN the codex listing failed and code is assigned `codex` / `gpt-5.4`
+- WHEN the codex models are listed
+- THEN `gpt-5.4` is unmarked and the task row has no warning
 
 ### Requirement: Server model list and marks
 For the server engines (`ollama`, `lmstudio`, `llamacpp`, `vllm`) the model list MUST be, in this order: (a) the detected models, in response order, each selectable and marked `✓`; (b) any model assigned in the draft for that engine that is not detected, NOT selectable, marked `download required` and `●` when it is the current assignment of the target (the assignment is kept); (c) the curated static catalog entries that are in neither group, each NOT selectable, drawn muted and marked `download required`. All rows, disabled ones included, can hold the cursor; Enter on a disabled row does nothing. Matching is exact string equality, except that for Ollama a name without a tag equals the same name with `:latest`; a name is listed once and the detected spelling wins. Servers offer no `custom…` entry. A server whose list would be empty shows a single muted non-selectable row `no models detected`. Before the first detection result, server model rows are disabled and marked `checking…`.

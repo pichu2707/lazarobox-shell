@@ -105,8 +105,8 @@ fn warned() -> MenuState {
 
 // Spec (config-menu): Sections and items are data, Descriptor integrity.
 #[test]
-fn the_memory_descriptor_is_well_formed_and_precedes_notify() {
-    let memory = &AI_SECTION.items[AI_SECTION.items.len() - 3];
+fn the_memory_descriptor_is_well_formed_and_precedes_tools() {
+    let memory = &AI_SECTION.items[AI_SECTION.items.len() - 2];
     assert_eq!(memory.label, "Memory");
     let ItemKind::Memory(row) = &memory.kind else {
         panic!("not a memory row");
@@ -126,7 +126,6 @@ fn the_memory_descriptor_is_well_formed_and_precedes_notify() {
             "Profile",
             "Context",
             "Memory",
-            "Notify",
             "Tools"
         ]
     );
@@ -139,6 +138,9 @@ fn navigation_visits_memory_after_summarize_and_wraps() {
     for label in [
         "Tab bar position",
         "Mouse",
+        "Notify",
+        "Sound",
+        "Updates",
         "Set all tasks",
         "general",
         "code",
@@ -148,7 +150,6 @@ fn navigation_visits_memory_after_summarize_and_wraps() {
         "Profile",
         "Context",
         "Memory",
-        "Notify",
         "Tools",
         "Statusline position",
     ] {
@@ -157,8 +158,6 @@ fn navigation_visits_memory_after_summarize_and_wraps() {
     }
     press(&mut menu, KeyCode::Char('k'));
     assert_eq!(selected_label(&menu), "Tools");
-    press(&mut menu, KeyCode::Up);
-    assert_eq!(selected_label(&menu), "Notify");
     press(&mut menu, KeyCode::Up);
     assert_eq!(selected_label(&menu), "Memory");
     press(&mut menu, KeyCode::Up);

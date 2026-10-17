@@ -8,6 +8,7 @@ use crate::core::ai::{
         ANSWER_CAP,
         engine::{ChatError, Finish, StreamEvent},
     },
+    config::NotifyMode,
     memory::port::MemReply,
 };
 
@@ -32,8 +33,8 @@ fn error(turn: u64) -> AppEvent {
 }
 
 /// A shell and a chat (focused) whose turn 1 is streaming; `notify` is the
-/// `[ai] notify` flag.
-fn streaming(notify: bool) -> App {
+/// `[ai] notify` mode.
+fn streaming(notify: NotifyMode) -> App {
     let mut ai = AiConfig::default();
     ai.set_notify(notify);
     let mut a = launched(80, 25).with_ai(ai);
@@ -49,7 +50,7 @@ fn streaming(notify: bool) -> App {
 
 /// The same, with the user looking at the shell pane.
 fn unwatched() -> App {
-    let mut a = streaming(true);
+    let mut a = streaming(NotifyMode::Bell);
     a.set_focus(shell_id());
     a
 }
@@ -66,14 +67,14 @@ fn an_answer_that_finishes_in_another_pane_rings_once() {
 // Spec: Answer finishes in the focused pane of a focused window.
 #[test]
 fn an_answer_in_the_focused_pane_of_a_focused_window_is_silent() {
-    let mut a = streaming(true);
+    let mut a = streaming(NotifyMode::Bell);
     assert_eq!(a.update(done(1)), vec![]);
 }
 
 // Spec: Window blurred.
 #[test]
 fn a_blurred_window_rings_and_a_focused_one_does_not() {
-    let mut a = streaming(true);
+    let mut a = streaming(NotifyMode::Bell);
     assert_eq!(a.update(AppEvent::WindowFocus(false)), vec![]);
     assert_eq!(a.update(done(1)), BELL);
     a.chat_send(chat_id(), "again");
@@ -84,7 +85,7 @@ fn a_blurred_window_rings_and_a_focused_one_does_not() {
 // Spec: Window focus is tracked; it never draws.
 #[test]
 fn window_focus_events_emit_nothing_and_do_not_redraw() {
-    let mut a = streaming(true);
+    let mut a = streaming(NotifyMode::Bell);
     a.take_dirty();
     for focused in [false, true, false] {
         assert_eq!(a.update(AppEvent::WindowFocus(focused)), vec![]);
@@ -95,14 +96,14 @@ fn window_focus_events_emit_nothing_and_do_not_redraw() {
 // Spec: Unsupported reporting: no focus event ever arrives.
 #[test]
 fn without_focus_events_the_window_counts_as_focused() {
-    let mut a = streaming(true);
+    let mut a = streaming(NotifyMode::Bell);
     assert_eq!(a.update(done(1)), vec![]);
 }
 
 // Spec: Notify off.
 #[test]
 fn notify_off_never_rings() {
-    let mut a = streaming(false);
+    let mut a = streaming(NotifyMode::Off);
     a.set_focus(shell_id());
     a.update(AppEvent::WindowFocus(false));
     assert_eq!(a.update(done(1)), vec![]);
@@ -185,7 +186,7 @@ fn each_answer_of_a_pane_rings_once() {
 
 #[test]
 fn a_chat_in_another_tab_rings_when_it_finishes() {
-    let mut a = streaming(true);
+    let mut a = streaming(NotifyMode::Bell);
     a.open_chat_tab(None);
     assert_ne!(a.focused(), chat_id());
     assert_eq!(a.update(done(1)), BELL);
@@ -194,7 +195,7 @@ fn a_chat_in_another_tab_rings_when_it_finishes() {
 // Spec: Error and summary: a finished summary run rings under the same rule.
 fn summarizing(watched: bool) -> (App, u64) {
     let mut a = with_answer(true, "We use Axum.");
-    a.ai.set_notify(true);
+    a.ai.set_notify(NotifyMode::Bell);
     a.update(AppEvent::Memory(MemReply::Project {
         pane: chat_id(),
         result: Ok(PROJECT.into()),
@@ -226,4 +227,77 @@ fn a_failed_summary_run_rings_when_unwatched() {
 fn a_watched_summary_run_is_silent() {
     let (mut a, turn) = summarizing(true);
     assert_eq!(a.update(done(turn)), vec![]);
+}
+
+// Spec (desktop notify): auto and desktop ask the runtime to decide; the pane
+// is named and the answer text never travels with the effect.
+fn notice(mode: NotifyMode) -> Effect {
+    Effect::Notify {
+        mode,
+        body: "Answer ready in pane 2".to_owned(),
+        sound: true,
+    }
+}
+
+#[test]
+fn auto_and_desktop_emit_one_notify_and_no_bell() {
+    for mode in [NotifyMode::Auto, NotifyMode::Desktop] {
+        let mut a = streaming(mode);
+        a.set_focus(shell_id());
+        assert_eq!(a.update(done(1)), vec![notice(mode)], "{mode:?}");
+    }
+}
+
+#[test]
+fn a_failed_turn_says_so_and_a_watched_or_cancelled_one_is_silent() {
+    let mut a = streaming(NotifyMode::Auto);
+    a.set_focus(shell_id());
+    assert_eq!(
+        a.update(error(1)),
+        vec![Effect::Notify {
+            mode: NotifyMode::Auto,
+            body: "Turn failed in pane 2".to_owned(),
+            sound: true
+        }]
+    );
+    let mut a = streaming(NotifyMode::Desktop);
+    assert_eq!(a.update(done(1)), vec![], "watched");
+}
+
+#[test]
+fn the_notify_body_never_carries_the_answer() {
+    let mut a = streaming(NotifyMode::Auto);
+    a.set_focus(shell_id());
+    a.update(event(1, StreamEvent::Delta("SECRET-ANSWER".into())));
+    match a.update(done(1)).as_slice() {
+        [Effect::Notify { body, .. }] => assert!(!body.contains("SECRET"), "{body}"),
+        other => panic!("expected one Notify, got {other:?}"),
+    }
+}
+
+// Regression: a blurred window over the focused chat pane notifies (the case
+// of switching to another OS window while the answer is still coming).
+#[test]
+fn a_blurred_window_over_the_focused_chat_emits_a_notify() {
+    for mode in [NotifyMode::Auto, NotifyMode::Desktop] {
+        let mut a = streaming(mode);
+        assert_eq!(a.focused(), chat_id());
+        assert_eq!(a.update(AppEvent::WindowFocus(false)), vec![]);
+        assert_eq!(a.update(done(1)), vec![notice(mode)], "{mode:?}");
+    }
+}
+
+#[test]
+fn the_sound_flag_rides_the_effect_only_in_auto_and_desktop() {
+    let mut a = streaming(NotifyMode::Auto);
+    a.ai.set_notify_sound(false);
+    a.set_focus(shell_id());
+    assert_eq!(
+        a.update(done(1)),
+        vec![Effect::Notify {
+            mode: NotifyMode::Auto,
+            body: "Answer ready in pane 2".to_owned(),
+            sound: false
+        }]
+    );
 }

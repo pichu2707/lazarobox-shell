@@ -215,5 +215,177 @@ pub fn clean(text: &str) -> String {
     out
 }
 
+/// Shortest run that is taken for a secret by its length alone.
+const SECRET_RUN: usize = 20;
+
+/// Shortest run starting like a known token (`ghp_`, `AKIA`, `eyJ`, ...).
+const PREFIXED_RUN: usize = 8;
+
+/// Shortest base64 run with only `/` as its mark (no `+` or `=`).
+const SLASH_RUN: usize = 32;
+
+/// Prefixes of API keys and session tokens that are secrets at any length.
+const KEY_PREFIXES: [&str; 2] = ["sk-", "sess-"];
+
+/// Prefixes of well-known tokens: GitHub (`ghp_`, `gho_`, `ghs_`,
+/// `github_pat_`), GitLab (`glpat-`), Slack (`xox`), AWS (`AKIA`) and JWTs
+/// (`eyJ`).
+const TOKEN_PREFIXES: [&str; 8] = [
+    "ghp_",
+    "gho_",
+    "ghs_",
+    "github_pat_",
+    "glpat-",
+    "xox",
+    "AKIA",
+    "eyJ",
+];
+
+/// Authentication schemes whose next word is a credential.
+const SCHEMES: [&str; 2] = ["bearer", "basic"];
+
+fn is_token_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '-'
+}
+
+fn is_base64_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=')
+}
+
+fn token_secret(run: &str) -> bool {
+    // A long run of only lower case and `_` is an error code
+    // (`context_length_exceeded`), not a key.
+    let code = run.chars().all(|c| c.is_ascii_lowercase() || c == '_');
+    (run.len() >= SECRET_RUN && !code)
+        || KEY_PREFIXES.iter().any(|p| run.starts_with(p))
+        || (run.len() >= PREFIXED_RUN && TOKEN_PREFIXES.iter().any(|p| run.starts_with(p)))
+}
+
+fn base64_secret(run: &str) -> bool {
+    if run.len() < SECRET_RUN {
+        return false;
+    }
+    if run.contains(['+', '=']) {
+        return true;
+    }
+    // Only `/`: a path looks the same, so ask for more (a long run that does
+    // not start with `/` and mixes upper case, lower case and digits).
+    run.len() >= SLASH_RUN
+        && !run.starts_with('/')
+        && run.contains('/')
+        && run.chars().any(|c| c.is_ascii_uppercase())
+        && run.chars().any(|c| c.is_ascii_lowercase())
+        && run.chars().any(|c| c.is_ascii_digit())
+}
+
+/// Replaces every maximal run of `class` characters for which `secret` holds.
+fn redact_runs(text: &str, class: fn(char) -> bool, secret: fn(&str) -> bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        let word = rest.starts_with(class);
+        let end = rest.find(|c: char| class(c) != word).unwrap_or(rest.len());
+        let (piece, tail) = rest.split_at(end);
+        out.push_str(if word && secret(piece) { "…" } else { piece });
+        rest = tail;
+    }
+    out
+}
+
+/// `scheme://user:pass@host` becomes `scheme://…@host`.
+fn redact_userinfo(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        let (head, tail) = rest.split_at(at + 3);
+        out.push_str(head);
+        let end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, '/' | '?' | '#'))
+            .unwrap_or(tail.len());
+        match tail[..end].rfind('@') {
+            Some(user) => {
+                out.push('…');
+                rest = &tail[user..];
+            }
+            None => rest = tail,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The word of `token` that names a scheme, if it is one: the last piece
+/// once quotes, braces, colons, commas and semicolons are split off.
+fn is_scheme(token: &str) -> bool {
+    token
+        .rsplit(['"', '\'', '{', '}', ':', ',', ';'])
+        .find(|piece| !piece.is_empty())
+        .is_some_and(|piece| SCHEMES.iter().any(|s| piece.eq_ignore_ascii_case(s)))
+}
+
+/// A word after a scheme is taken for the credential when it is 8 or more
+/// characters long or holds a digit, `.`, `=`, `+`, `/` or `-`.
+fn looks_like_credential(word: &str) -> bool {
+    word.len() >= PREFIXED_RUN
+        || word
+            .chars()
+            .any(|c| c.is_ascii_digit() || matches!(c, '.' | '=' | '+' | '/' | '-'))
+}
+
+/// The word after `Bearer` or `Basic` becomes `…` when it looks like one.
+fn redact_schemes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut after_scheme = false;
+    let mut rest = text;
+    while !rest.is_empty() {
+        let blank = rest.starts_with(char::is_whitespace);
+        let end = rest
+            .find(|c: char| c.is_whitespace() != blank)
+            .unwrap_or(rest.len());
+        let (piece, tail) = rest.split_at(end);
+        if blank {
+            out.push_str(piece);
+        } else if after_scheme {
+            // Prose after the word (`Basic usage`) is not a credential.
+            out.push_str(if looks_like_credential(piece) {
+                "…"
+            } else {
+                piece
+            });
+            after_scheme = false;
+        } else {
+            out.push_str(piece);
+            after_scheme = is_scheme(piece);
+        }
+        rest = tail;
+    }
+    out
+}
+
+/// Replaces what looks like a credential with `…`, for text a CLI printed
+/// and the user will see. It covers exactly:
+///
+/// - the userinfo of a URL (`scheme://user:pass@host` gives `scheme://…@host`);
+/// - the word after the schemes `Bearer` and `Basic`, in any case, through
+///   quotes, braces, colons, commas and semicolons (`"Bearer"`, `Bearer:`,
+///   `{"Authorization":"Bearer x1"}`), when it is 8 or more characters or
+///   holds a digit, `.`, `=`, `+`, `/` or `-` (`Basic usage` is prose);
+/// - a run of letters, digits, `+`, `/` and `=` of 20 or more characters that
+///   holds `+` or `=`, or one of 32 or more with `/` only, that does not start
+///   with `/` and mixes upper case, lower case and digits (so paths stay);
+/// - a run of letters, digits, `_` and `-` of 20 or more characters, unless it
+///   is only lower case and `_` (an error code such as `invalid_request_error`);
+/// - a run starting with `sk-` or `sess-`, at any length;
+/// - a run of 8 or more characters starting with `ghp_`, `gho_`, `ghs_`,
+///   `github_pat_`, `glpat-`, `xox`, `AKIA` or `eyJ`.
+///
+/// Nothing else is changed: a secret in another shape is not caught.
+pub fn redact_tokens(text: &str) -> String {
+    let text = redact_userinfo(text);
+    let text = redact_schemes(&text);
+    let text = redact_runs(&text, is_base64_char, base64_secret);
+    redact_runs(&text, is_token_char, token_secret)
+}
+
 #[cfg(test)]
 mod tests;

@@ -141,3 +141,26 @@ async fn a_jailed_codex_starts_and_answers() {
         "codex should answer: {events:?}"
     );
 }
+
+/// `codex debug models` through the jail, the way detection runs it. It may
+/// refresh codex's catalog from OpenAI with the user's login (and rewrite
+/// `models_cache.json`), like running codex does.
+#[tokio::test]
+#[ignore = "runs the real codex through the jail"]
+async fn the_model_listing_runs_through_the_jail() {
+    let support = probe();
+    if !support.is_available() {
+        eprintln!("jail unavailable here: {support:?}");
+        return;
+    }
+    let scratch = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let mut env = CliEnv::from_env(support);
+    env.data = Some(fs::canonicalize(scratch.path()).unwrap().join("lazarobox"));
+    env.helper = PathBuf::from(env!("CARGO_BIN_EXE_lazarobox-shell"));
+    let raw = lazarobox_shell::runtime::ai_detect::codex_listing(&env).await;
+    let raw = raw.expect("the jailed listing should succeed");
+    let text = String::from_utf8(raw).unwrap();
+    let models = lazarobox_shell::core::ai::parse::codex_models(&text);
+    eprintln!("jailed listing: {} bytes, models {models:?}", text.len());
+    assert!(!models.is_empty());
+}

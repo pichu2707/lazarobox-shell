@@ -1,11 +1,12 @@
 ---
 source: src/ui/components/menu.rs
-expression: "text(&draw(51, 7, &fresh()))"
+expression: "text(&draw(51, 8, &fresh()))"
 ---
 ┌ Menu ───────────────────────────────────────────┐
 │ Settings                                        │
 │ Statusline position                      bottom │
 │ Tab bar position                            top │
 │ Mouse                                        on │
+│ Updates                                  0.15.3 │
 │ j/k move · h/l change · s save · Esc cancel     │
 └─────────────────────────────────────────────────┘

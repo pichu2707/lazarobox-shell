@@ -92,6 +92,8 @@ fn answered(memory: bool, answer: &str, known_cwd: bool) -> App {
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],
             version: None,
+            model_labels: Vec::new(),
+            diagnostics: Default::default(),
         }],
     }));
     if known_cwd {
@@ -787,6 +789,8 @@ fn a_secret_in_the_reasoning_never_reaches_the_traffic() {
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],
             version: None,
+            model_labels: Vec::new(),
+            diagnostics: Default::default(),
         }],
     }));
     press(&mut a, "c");

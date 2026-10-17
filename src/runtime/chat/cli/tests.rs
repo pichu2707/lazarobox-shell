@@ -94,10 +94,11 @@ impl Lab {
 
     fn env(&self) -> CliEnv {
         CliEnv {
-            path: self.bin.clone().into_os_string(),
+            // The child gets this `PATH`: the system tools the fakes use too.
+            path: OsString::from(format!("{}:/usr/bin:/bin", self.bin.display())),
             home: Some(self.home.clone()),
             data: Some(self.data.clone()),
-            jail: JailSupport::Unavailable("test"),
+            jail: JailSupport::Unavailable(JailOff::NotProbed),
             helper: PathBuf::from("/nonexistent/helper"),
             timeouts: Timeouts {
                 connect: Duration::from_secs(1),
@@ -216,6 +217,14 @@ async fn run_all(env: CliEnv, req: ChatRequest) -> Vec<StreamEvent> {
     }
 }
 
+/// The reason of the one jail error `events` hold.
+fn jail_reason(events: &[StreamEvent]) -> String {
+    match events {
+        [StreamEvent::Error(ChatError::Jail(reason))] => reason.clone(),
+        other => panic!("one jail error expected, got {other:?}"),
+    }
+}
+
 fn failure(events: &[StreamEvent]) -> String {
     match events.last() {
         Some(StreamEvent::Error(ChatError::Failed(text))) => text.clone(),
@@ -245,6 +254,18 @@ async fn wait_gone(pid: libc::pid_t, bound: Duration) -> bool {
 
 fn pid_of(lab: &Lab, name: &str) -> libc::pid_t {
     lab.recorded(name).trim().parse().expect("a recorded pid")
+}
+
+#[tokio::test]
+async fn the_child_runs_with_the_path_the_cli_was_found_on() {
+    let lab = lab();
+    lab.claude(&format!("echo \"$PATH\" > \"$REC/path\"\n{GOOD}"));
+    let mut env = lab.env();
+    let wanted = format!("{}:/usr/bin:/bin:/opt/login/bin", lab.bin.display());
+    env.path = OsString::from(&wanted);
+    let events = run(env, request()).await;
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    assert_eq!(lab.recorded("path").trim(), wanted);
 }
 
 #[tokio::test]
@@ -495,7 +516,7 @@ async fn a_required_cli_without_a_jail_never_starts() {
     let lab = lab();
     lab.claude(GOOD);
     let events = run_job(&lab.env(), job(JailPolicy::Required)).await;
-    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+    assert_eq!(jail_reason(&events), "the jail was not probed");
     assert!(!lab.rec.join("args").exists(), "nothing was spawned");
 }
 
@@ -692,7 +713,10 @@ async fn a_codex_home_that_is_the_home_folder_is_refused_so_codex_does_not_start
     env.helper = lab.helper("echo called > \"$REC/helper_called\"\nexit 99");
     env.codex_home = Some(lab.home.clone());
     let events = run_job(&env, codex_job(&["exec", "-"])).await;
-    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+    assert!(
+        jail_reason(&events).contains("too broad for the jail"),
+        "{events:?}"
+    );
     assert!(!lab.rec.join("helper_called").exists());
 }
 
@@ -700,12 +724,14 @@ async fn a_codex_home_that_is_the_home_folder_is_refused_so_codex_does_not_start
 async fn the_helper_refusing_with_its_marker_is_a_jail_error() {
     let lab = lab();
     lab.claude(GOOD);
-    let helper = lab.helper("echo 'lazarobox-jail: jail not enforced: test' >&2\nexit 125");
+    let helper = lab.helper(
+        "echo 'lazarobox-jail: jail not enforced: ABI 2 is below the required 3' >&2\nexit 125",
+    );
     let mut env = lab.env();
     env.jail = jail_on();
     env.helper = helper;
     let events = run(env, request()).await;
-    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+    assert_eq!(jail_reason(&events), "ABI 2 is below the required 3");
     assert!(!lab.rec.join("args").exists(), "the CLI never ran");
 }
 
@@ -723,7 +749,10 @@ async fn a_layout_the_jail_refuses_runs_claude_bare_but_stops_a_required_cli() {
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
     assert!(!lab.rec.join("helper_called").exists(), "bare: no helper");
     let events = run_job(&env, job(JailPolicy::Required)).await;
-    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+    assert!(
+        jail_reason(&events).contains("too broad for the jail"),
+        "{events:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -923,7 +952,7 @@ async fn running_bare_because_there_is_no_jail_is_announced_first() {
     let events = run_all(lab.env(), request()).await;
     assert_eq!(
         events[0],
-        StreamEvent::Notice("claude runs without the jail here: test".into())
+        StreamEvent::Notice("claude runs without the jail here: the jail was not probed".into())
     );
     assert_eq!(notices(&events).len(), 1);
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
@@ -940,7 +969,10 @@ async fn running_bare_because_the_layout_was_refused_is_announced_too() {
     let events = run_all(env, request()).await;
     assert_eq!(
         notices(&events),
-        ["claude runs without the jail here: its folders cannot be restricted safely"]
+        [
+            "claude runs without the jail here: ~ is too broad for the jail; keep the CLI and its \
+         state in folders of their own"
+        ]
     );
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
 }
@@ -955,7 +987,7 @@ async fn a_jailed_turn_and_a_refused_one_announce_nothing() {
     let events = run_all(env, request()).await;
     assert!(notices(&events).is_empty(), "{events:?}");
     let events = run_job(&lab.env(), job(JailPolicy::Required)).await;
-    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+    assert_eq!(jail_reason(&events), "the jail was not probed");
 }
 
 #[test]
@@ -1133,7 +1165,7 @@ async fn codex_without_a_jail_spawns_nothing() {
     let lab = lab();
     fake_codex(&lab, &[], "touch \"$REC/ran\"");
     let events = run_job(&lab.env(), codex_job(&["exec", "-"])).await;
-    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+    assert_eq!(jail_reason(&events), "the jail was not probed");
     assert!(!lab.rec.join("ran").exists());
     assert!(!lab.rec.join("stdin").exists());
 }
@@ -1177,13 +1209,17 @@ async fn a_stream_that_just_ends_still_waits_for_the_exit_so_the_jail_marker_is_
     fake_codex(
         &lab,
         &[],
-        "echo 'lazarobox-jail: jail not enforced: test' >&2\nexit 125",
+        "echo 'lazarobox-jail: jail not enforced: whatever the CLI made it say' >&2\nexit 125",
     );
     let mut env = lab.env();
     env.jail = jail_on();
     env.helper = lab.helper(PASS);
     let events = run_job(&env, codex_job(&["exec", "-"])).await;
-    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+    assert_eq!(
+        jail_reason(&events),
+        "",
+        "text outside the vocabulary is hidden"
+    );
 }
 
 /// An executable file `name` in `dir` (mode 0755) and `dir` itself set to `mode`.
@@ -1207,10 +1243,18 @@ fn an_interpreter_in_a_tmp_folder_is_never_trusted() {
         let path = dir.path().join("bin").into_os_string();
         assert_eq!(
             interpreter_for(&dir.path().join("bin/codex"), "fakenode", &path),
-            None,
+            Err(JailRefusal::UntrustedInterpreter {
+                path: file.clone(),
+                why: Untrusted::Scratch
+            }),
             "{base}"
         );
-        assert!(!trusted_interpreter(&file), "{base}");
+        let real = fs::canonicalize(&file).unwrap();
+        assert_eq!(
+            interpreter_trust(&file),
+            Err((real, Untrusted::Scratch)),
+            "{base}"
+        );
     }
 }
 
@@ -1220,13 +1264,18 @@ fn an_interpreter_in_a_group_or_world_writable_folder_is_not_trusted() {
     let base = lab.bin.parent().unwrap().to_owned();
     for mode in [0o775, 0o757, 0o777, 0o722] {
         let file = exe_in(&base.join(format!("w{mode:o}")), "fakenode", mode);
-        assert!(!trusted_interpreter(&file), "{mode:o}");
+        assert!(interpreter_trust(&file).is_err(), "{mode:o}");
     }
     let ok = exe_in(&base.join("ok"), "fakenode", 0o755);
-    assert!(trusted_interpreter(&ok));
+    assert_eq!(interpreter_trust(&ok), Ok(fs::canonicalize(&ok).unwrap()));
     // A file others can write is no better than a folder they can write.
     fs::set_permissions(&ok, fs::Permissions::from_mode(0o757)).unwrap();
-    assert!(!trusted_interpreter(&ok));
+    let real = fs::canonicalize(&ok).unwrap();
+    let writable = Untrusted::Writable {
+        path: real.clone(),
+        yours: true,
+    };
+    assert_eq!(interpreter_trust(&ok), Err((real, writable)));
 }
 
 #[test]
@@ -1241,9 +1290,26 @@ fn an_untrusted_sibling_falls_back_to_a_trusted_interpreter_on_path_or_nothing()
     let found = sibling_dir.join("codex");
     let path = std::env::join_paths([&other_loose, &base.join("good")]).unwrap();
     // The first PATH entry is untrusted too: the first trusted one wins.
-    assert_eq!(interpreter_for(&found, "fakenode", &path), Some(good));
+    assert_eq!(
+        interpreter_for(&found, "fakenode", &path),
+        Ok(fs::canonicalize(good).unwrap())
+    );
     let only_loose = std::env::join_paths([&other_loose]).unwrap();
-    assert_eq!(interpreter_for(&found, "fakenode", &only_loose), None);
+    assert_eq!(
+        interpreter_for(&found, "fakenode", &only_loose),
+        Err(JailRefusal::UntrustedInterpreter {
+            path: fs::canonicalize(sibling_dir.join("fakenode")).unwrap(),
+            why: Untrusted::Writable {
+                path: fs::canonicalize(&sibling_dir).unwrap(),
+                yours: true,
+            },
+        })
+    );
+    // No such interpreter anywhere: the refusal names the missing one.
+    assert_eq!(
+        interpreter_for(&found, "absent-node", &only_loose),
+        Err(JailRefusal::NoInterpreter("absent-node".into()))
+    );
 }
 
 #[tokio::test]
@@ -1256,8 +1322,54 @@ async fn a_cli_whose_only_interpreter_is_untrusted_is_not_started() {
     env.jail = jail_on();
     env.helper = lab.helper("echo called > \"$REC/helper_called\"\nexit 99");
     let events = run_job(&env, codex_job(&["exec", "-"])).await;
-    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+    let reason = jail_reason(&events);
+    assert!(
+        reason.contains("is writable by group or others")
+            && reason.contains("; run: chmod go-w -- '"),
+        "{reason}"
+    );
     assert!(!lab.rec.join("helper_called").exists());
+}
+
+#[tokio::test]
+async fn a_script_whose_fixed_interpreter_path_is_gone_says_so() {
+    let lab = lab();
+    let cli = lab.bin.join("codex");
+    script(&cli, &lab.rec, CODEX_ANSWER);
+    let text =
+        fs::read_to_string(&cli)
+            .unwrap()
+            .replacen("#!/bin/sh", "#!/nonexistent/old/node", 1);
+    fs::write(&cli, text).unwrap();
+    let mut env = lab.env();
+    env.jail = jail_on();
+    env.helper = lab.helper("exit 99");
+    let events = run_job(&env, codex_job(&["exec", "-"])).await;
+    assert_eq!(
+        jail_reason(&events),
+        "/nonexistent/old/node (from the script's #! line) does not exist; reinstall the CLI"
+    );
+}
+
+#[tokio::test]
+async fn a_home_that_is_not_set_or_does_not_exist_gets_its_own_reason() {
+    let lab = lab();
+    lab.claude(GOOD);
+    let mut env = lab.env();
+    env.jail = jail_on();
+    env.home = None;
+    let events = run_job(&env, job(JailPolicy::Required)).await;
+    assert_eq!(
+        jail_reason(&events),
+        "$HOME is not set or not an absolute path; set it and restart"
+    );
+    env.home = Some(lab.home.join("gone"));
+    let events = run_job(&env, job(JailPolicy::Required)).await;
+    let reason = jail_reason(&events);
+    assert!(
+        reason.ends_with("gone) does not exist; create it or fix $HOME"),
+        "{reason}"
+    );
 }
 
 #[tokio::test]
@@ -1311,7 +1423,11 @@ async fn a_loader_that_is_not_a_regular_file_stops_the_jailed_cli() {
             assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         }
         let (lab, events) = jailed_elf_with_loader(interp.as_bytes()).await;
-        assert_eq!(events, [StreamEvent::Error(ChatError::Jail)], "{interp:?}");
+        let reason = jail_reason(&events);
+        assert!(
+            reason.contains("is not a regular file"),
+            "{interp:?}: {reason}"
+        );
         assert!(!lab.rec.join("helper_called").exists());
     }
 }
@@ -1319,7 +1435,10 @@ async fn a_loader_that_is_not_a_regular_file_stops_the_jailed_cli() {
 #[tokio::test]
 async fn a_loader_in_tmp_stops_the_jailed_cli() {
     let (lab, events) = jailed_elf_with_loader(b"/tmp/evil-ld.so\0").await;
-    assert_eq!(events, [StreamEvent::Error(ChatError::Jail)]);
+    assert!(
+        jail_reason(&events).contains("program loader /tmp/evil-ld.so"),
+        "{events:?}"
+    );
     assert!(!lab.rec.join("helper_called").exists());
 }
 
@@ -1360,7 +1479,9 @@ async fn a_job_file_is_written_private_to_the_turn_folder_and_named_last() {
     assert_eq!(
         events,
         [
-            StreamEvent::Notice("gemini runs without the jail here: test".into()),
+            StreamEvent::Notice(
+                "gemini runs without the jail here: the jail was not probed".into()
+            ),
             StreamEvent::Delta("ok".into()),
             StreamEvent::Done(Finish::Stop)
         ]

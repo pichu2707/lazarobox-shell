@@ -24,7 +24,7 @@ use lazarobox_shell::{
     core::{
         ai::{
             chat::engine::{ChatMessage, ChatRequest, Role, StreamEvent},
-            jail::JailSupport,
+            jail::{JailOff, JailSupport},
         },
         layout::PaneId,
     },
@@ -105,7 +105,7 @@ async fn a_jailed_claude_starts_and_answers() {
 #[tokio::test]
 #[ignore = "manual M11 (comparison): runs the real claude CLI bare, with no jail"]
 async fn a_bare_claude_starts_and_answers() {
-    live(JailSupport::Unavailable("bare run, for comparison")).await;
+    live(JailSupport::Unavailable(JailOff::NotProbed)).await;
 }
 
 async fn live(jail: JailSupport) {

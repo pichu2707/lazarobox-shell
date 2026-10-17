@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Finds which AI engines exist on the machine: four local model servers and four agent CLIs. Detection is read-only and local. It never sends a prompt. Tags: [auto] = `cargo test` (fake servers on ephemeral ports, fake PATH directories); [manual] = real machine.
+Finds which AI engines exist on the machine: four local model servers and four agent CLIs. Detection is read-only and local, with one exception: for codex it also runs `codex debug models` through the jail, which may refresh the catalog from OpenAI and update codex's own cache (see Codex model listing). It never sends a prompt. Tags: [auto] = `cargo test` (fake servers on ephemeral ports, fake PATH directories); [manual] = real machine.
 
 ## Requirements
 
@@ -121,6 +121,83 @@ A CLI is `available` when a regular file with an execute permission bit exists u
 - WHEN codex is detected
 - THEN it is `not installed`
 
+### Requirement: Codex model listing
+When codex is `available`, detection MUST run `<codex> debug models` once and keep the models that the account can use. The command MAY refresh the catalog from OpenAI with the user's own codex login and update codex's own cache (`models_cache.json` under `$CODEX_HOME` or `~/.codex`), exactly as running codex does; that is how the list reflects the account, and `--bundled` (which skips the refresh) is deliberately not used. Because of that it MUST start the way a codex chat turn starts: through the jail helper (`__jail-exec`) with the codex layout (read-execute on its install, read-write on its state folder only, the usual read-only system folders), with the chat's scrubbed environment, stdin closed, the private working folder and temp folder, and its own process group. codex is `JailPolicy::Required`: when the jail is unavailable, or the layout cannot be jailed, no process is started and codex keeps just `default`. The run is bounded by a timeout of 4 s (the group is killed on timeout) and an output cap of 2 MiB (the real catalog printed about 560 KB with codex-cli 0.162.1; more than the cap is dropped, not truncated). A successful listing MUST be kept in memory (no files) with the time it was read and reused by every detection run for 10 minutes, at startup and on every menu open alike, without starting codex again. The menu's `r` refresh MUST bypass the cache and list again. A failed listing MUST NOT be cached as a success: it falls back to the cached listing while that is younger than 10 minutes (the failure does not extend its age), otherwise to just `default`, and the next run tries again. The `--version` probe and the other engines are not cached. The cache reads its time from an injectable clock. The cache is not keyed by the codex binary or `$CODEX_HOME`, so a switch of account or install shows up after at most 10 minutes or at once with `r`. An `r` pressed while a non-forced run is in flight MUST NOT be dropped: exactly one forced run follows that run, and the footer keeps showing `refreshing…` meanwhile. It MUST run concurrently with the `--version` probe of the same CLI, so the time a CLI adds to a detection is the longer of the two, not their sum. No other CLI is probed this way (gemini has no listing command).
+
+The pure parser MUST read the JSON object `{"models": [...]}`, keep only entries with `visibility == "list"`, order them by `priority` ascending (stable; a missing priority sorts last), and return `(label, slug)` pairs where the label is the sanitized `display_name` (the slug when empty) and the slug is the value saved and passed to the CLI. A slug MUST be rejected unless it is made only of ASCII letters, digits and `._-:/@+`, is not empty, not `default`, does not start with `-` and is at most 128 characters; this rules out whitespace, control, bidi, zero-width and every other Unicode format or separator character. Duplicates are dropped and at most 64 models are kept. The engine state exposes the pairs as `model_labels`, and `models` is `default` followed by the slugs.
+
+On any failure (no jail, an old codex without the subcommand, a non-zero exit, a timeout, too much output, invalid JSON, no listed model) the CLI stays `available` with just `default` and no error is shown.
+
+#### Scenario: Listing parsed [auto]
+- GIVEN the fixture `tests/fixtures/codex/debug-models.json` with nine entries, two of them `hide`
+- WHEN it is parsed
+- THEN seven `(label, slug)` pairs result, ordered by priority, starting with `GPT-6.1-Sol` = `gpt-6.1-sol`
+
+#### Scenario: Invalid entries dropped [auto]
+- GIVEN entries whose slug starts with `-`, holds a space, a tab, a newline, a bidi override, a zero-width or line-separator character, a no-break space or any other non-ASCII character, is empty, is `default`, is 129 characters long, is not a string, or repeats an earlier slug, plus a `hide` entry and non-object items
+- WHEN parsed
+- THEN none of them is returned
+
+#### Scenario: Malformed output [auto]
+- GIVEN empty text, `not json`, `[]`, `{}`, `{"models":{}}` or truncated JSON
+- WHEN parsed
+- THEN the result is empty
+
+#### Scenario: Old codex fails soft [auto]
+- GIVEN a fake `codex` that exits 2 on `debug models`
+- WHEN codex is detected
+- THEN it is `available` with models `default` only
+
+#### Scenario: Listing runs jailed [auto]
+- GIVEN a fake `codex` and a recording pass-through helper with the jail available
+- WHEN the listing runs
+- THEN the helper is called as `__jail-exec` with the codex state folder (or `$CODEX_HOME`) read-write and `codex debug models` after `--`
+
+#### Scenario: No jail, no listing [auto]
+- GIVEN the jail is unavailable
+- WHEN codex is detected
+- THEN codex is not started for the listing and keeps just `default`
+
+#### Scenario: Listing run is contained [auto]
+- GIVEN a fake `codex` that prints its cwd, whether stdin is open and `$SSH_AUTH_SOCK`
+- WHEN the listing runs
+- THEN the cwd is under the private data folder, stdin is at EOF, the variable is scrubbed, and a hanging run is killed with its process group after the timeout
+
+#### Scenario: Listing reused for 10 minutes [auto]
+- GIVEN a fake `codex` that counts its `debug models` runs and a fake clock
+- WHEN two detection runs happen 9 min 59 s apart
+- THEN codex was started for the listing once and both runs show the same models
+
+#### Scenario: Listing re-read after 10 minutes [auto]
+- GIVEN a cached listing read 10 minutes ago
+- WHEN detection runs
+- THEN codex is started again and the window restarts
+
+#### Scenario: Refresh bypasses the cache [auto]
+- GIVEN a fresh cached listing
+- WHEN the menu's `r` triggers a detection
+- THEN codex is started again
+
+#### Scenario: Failure falls back to the cache [auto]
+- GIVEN a cached listing 5 minutes old and a codex that now fails
+- WHEN a refresh runs
+- THEN the cached list is still used, and 5 minutes later (when it expires) the result is just `default`; with nothing cached a failure is retried on the next run
+
+#### Scenario: Listing does not add to the version time [auto]
+- GIVEN a fake `codex` whose `--version` and `debug models` each take 1 s
+- WHEN codex is detected
+- THEN detection finishes in under 1.8 s
+
+#### Scenario: Output over the cap [auto]
+- GIVEN a fake `codex` that prints more than the cap
+- WHEN the listing runs
+- THEN the result is dropped
+
+#### Scenario: Only codex is probed [auto]
+- GIVEN fake `codex` and `claude` that both print the fixture
+- WHEN both are detected
+- THEN codex has seven labeled models and claude has none
+
 ### Requirement: Untrusted text is sanitized and bounded
 Every string taken from an engine (the first line of `--version` output and each model name from a server reply) is untrusted. Detection MUST strip ANSI CSI and OSC sequences (an OSC ends with BEL or ST), control characters, and bidi and format characters before the text is stored or shown. A version MUST be capped at 40 characters (and trimmed again after the cap), a model name at 128 characters, and a model list at 256 models per engine. A model name that is empty after sanitizing MUST be dropped. A duplicate model name MUST be offered only once in the menu.
 
@@ -208,12 +285,12 @@ The hand-written HTTP client, for detection probes, chat requests and the engram
 - THEN both are rejected
 
 ### Requirement: Concurrency and timeouts
-All 8 probes MUST run concurrently and in the background; the UI and the input MUST never wait on them. Each server probe MUST finish (success, failure or timeout) within 800 ms, covering connect, request and response; each `--version` run MUST finish or be killed within 2 s. The whole run therefore ends within about 2 s. The results of a run MUST be delivered together, as ONE `Detection` containing all 8 engines, once every probe has finished; a single run never delivers partial results.
+All 8 probes MUST run concurrently and in the background; the UI and the input MUST never wait on them. Each server probe MUST finish (success, failure or timeout) within 800 ms, covering connect, request and response; each `--version` run MUST finish or be killed within 2 s, and the codex model listing within 4 s, concurrently with codex's `--version`. The whole run therefore ends within about 4 s, and within about 2 s when codex is absent or has no listing. The UI never waits for it, because detection runs in the background. The results of a run MUST be delivered together, as ONE `Detection` containing all 8 engines, once every probe has finished; a single run never delivers partial results.
 
 #### Scenario: Hanging server [auto]
 - GIVEN `:11434` accepts the connection but never answers, and all other engines answer at once
 - WHEN detection runs
-- THEN exactly one `Detection` with all 8 engines is delivered after the 800 ms server timeout, ollama is `not running` or `not installed` in it, the other seven engines carry their real statuses, and total time is below 2.5 s
+- THEN exactly one `Detection` with all 8 engines is delivered after the 800 ms server timeout, ollama is `not running` or `not installed` in it, the other seven engines carry their real statuses, and total time is below 2.5 s (no codex listing is involved in that run; with codex available the bound is the 4 s listing timeout)
 
 #### Scenario: UI stays responsive [auto]
 - GIVEN detection is in flight with a hanging server
@@ -249,7 +326,7 @@ Detection MUST start at app startup, each time the config menu opens, on the ref
 - THEN an empty `Detection` is delivered, every engine reads `unknown`, and the next trigger requests a new run (the single-flight flag is cleared)
 
 ### Requirement: Read-only and localhost-only
-Detection MUST send only `GET` requests with no body and no credentials to the 4 catalog endpoints on `127.0.0.1`. It MUST NOT connect to any other host or port. It MUST execute only `<id> --version` for the 4 CLI ids, never a server binary, and MUST NOT open any credential, token or config file of any engine. This rule describes detection: the chat requests (POST to the same loopback servers, and the text-only CLI runs) are specified in chat-engines and never happen as part of a detection run, and the engram requests (GET, POST and DELETE to the memory port, see engram-client) are never made by a detection run and never touch a catalog endpoint. The client remains bound to `127.0.0.1` for all three uses. The engram client is the only user that MAY send a credential, and only `Authorization: Bearer` on a user-confirmed `DELETE` to the memory port, from `ENGRAM_HTTP_TOKEN` in the environment.
+Detection MUST send only `GET` requests with no body and no credentials to the 4 catalog endpoints on `127.0.0.1`. It MUST NOT connect to any other host or port. It MUST execute only `<id> --version` for the 4 CLI ids, plus, for codex only, `codex debug models` through the jail (Codex model listing), which may refresh the catalog from OpenAI with the user's own login and update codex's own cache; it never executes a server binary, and MUST NOT open any credential, token or config file of any engine. This rule describes detection: the chat requests (POST to the same loopback servers, and the text-only CLI runs) are specified in chat-engines and never happen as part of a detection run, and the engram requests (GET, POST and DELETE to the memory port, see engram-client) are never made by a detection run and never touch a catalog endpoint. The client remains bound to `127.0.0.1` for all three uses. The engram client is the only user that MAY send a credential, and only `Authorization: Bearer` on a user-confirmed `DELETE` to the memory port, from `ENGRAM_HTTP_TOKEN` in the environment.
 
 #### Scenario: Traffic audit [auto]
 - GIVEN a recording fake server per endpoint
@@ -264,7 +341,7 @@ Detection MUST send only `GET` requests with no body and no credentials to the 4
 #### Scenario: Chat never runs during detection [auto]
 - GIVEN fake CLIs that record their argv
 - WHEN a detection run completes
-- THEN only `<id> --version` was executed for each CLI
+- THEN only `<id> --version` was executed for each CLI, except that codex was also run as `codex debug models` through the jail helper, and no other engine received any other argument
 
 #### Scenario: The shared client stays loopback-only [auto]
 - GIVEN the client asked to connect to a non-loopback host for a GET, a POST or a DELETE

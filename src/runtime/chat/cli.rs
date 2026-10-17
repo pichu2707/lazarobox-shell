@@ -39,19 +39,20 @@ use super::fresh_decoder;
 use crate::{
     core::ai::{
         chat::{
-            adapters::Job,
+            adapters::{Job, Wire},
             cli::{Exit, STDERR_CAP, verdict},
             engine::{ChatError, StreamEvent},
             stream::StreamDecoder,
         },
         jail::{
-            CliLayout, ELF_HEAD_BYTES, Interpreter, JailArgs, JailPolicy, JailSupport, Launch,
-            elf_interp_at, interp_path, jail_spec_with, launch, parse_shebang,
+            Cli, CliLayout, ELF_HEAD_BYTES, Interpreter, JailArgs, JailOff, JailPolicy,
+            JailRefusal, JailSpec, JailSupport, Launch, Untrusted, elf_interp_at, interp_path,
+            jail_spec_with, launch, parse_shebang,
             rpath::{homebrew_openssl_files, search_dirs},
         },
     },
     runtime::{
-        ai_detect::{find_on_path, wait_exit_unreaped},
+        ai_detect::{self, find_on_path, wait_exit_unreaped},
         chat_store,
         jail::resolve,
         loopback::{Stop, TOO_LONG, Timeouts, Wait},
@@ -133,6 +134,23 @@ impl CliEnv {
                 .filter(|p| p.is_absolute()),
             inject: Vec::new(),
         }
+    }
+
+    /// The same machine with another `PATH` (the process one extended with the
+    /// login shell's). Never touches the process environment.
+    pub fn with_path(mut self, path: OsString) -> Self {
+        self.path = path;
+        self
+    }
+
+    /// What the child gets set before the scrub: its `PATH` (the one the CLI
+    /// was found on, so a script's `#!/usr/bin/env node` and the tools the CLI
+    /// starts resolve the same way) and then `inject`, which wins.
+    fn child_vars(&self) -> Vec<(OsString, OsString)> {
+        let path = (OsString::from("PATH"), self.path.clone());
+        std::iter::once(path)
+            .chain(self.inject.iter().cloned())
+            .collect()
     }
 }
 
@@ -266,31 +284,72 @@ fn read_head(path: &Path, max: usize) -> Option<Vec<u8>> {
 /// canonical path must not be under a scratch folder (`/tmp`, `/var/tmp`, where
 /// anyone can plant a program) and neither its folder nor the file may be
 /// writable by group or others (they could swap it).
-fn trusted_interpreter(path: &Path) -> bool {
+fn interpreter_trust(path: &Path) -> Result<PathBuf, (PathBuf, Untrusted)> {
     let Some(real) = resolve(path) else {
-        return false;
+        return Err((path.to_path_buf(), Untrusted::Unresolvable));
     };
     if real.starts_with("/tmp") || real.starts_with("/var/tmp") {
-        return false;
+        return Err((real, Untrusted::Scratch));
     }
-    let closed =
-        |p: &Path| fs::metadata(p).is_ok_and(|meta| meta.permissions().mode() & 0o022 == 0);
-    closed(&real) && real.parent().is_some_and(closed)
+    // A file or folder that cannot be read counts as writable, as before.
+    let closed = |p: &Path| match fs::metadata(p) {
+        Ok(meta) if meta.permissions().mode() & 0o022 == 0 => Ok(()),
+        Ok(meta) => Err(Untrusted::Writable {
+            path: p.to_path_buf(),
+            // SAFETY: `geteuid` has no arguments and cannot fail.
+            yours: meta.uid() == unsafe { libc::geteuid() },
+        }),
+        Err(_) => Err(Untrusted::Writable {
+            path: p.to_path_buf(),
+            yours: false,
+        }),
+    };
+    if let Err(why) = closed(&real) {
+        return Err((real, why));
+    }
+    match real.parent() {
+        Some(dir) => match closed(dir) {
+            Ok(()) => Ok(real),
+            Err(why) => Err((real, why)),
+        },
+        None => Err((real, Untrusted::Unresolvable)),
+    }
+}
+
+/// The real path of the program at `path` when lazarobox may run it on its
+/// own account: the [`interpreter_trust`] rule. Run that path, not `path`, so
+/// what was checked is what runs.
+pub(crate) fn trusted_real_path(path: &Path) -> Option<PathBuf> {
+    interpreter_trust(path).ok()
 }
 
 /// The interpreter a script asks for by bare name (`#!/usr/bin/env node`): the
 /// one installed next to the CLI as it was found (npm, nvm, volta and the like
 /// put `node` beside the global packages' `bin` links), else the first on
 /// `PATH`. The first on `PATH` can be a different install whose libraries the
-/// jail does not grant. A candidate that is not [trusted](trusted_interpreter)
-/// is skipped, so the answer can be none.
-fn interpreter_for(found: &Path, name: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+/// jail does not grant. A candidate that is not [trusted](interpreter_trust)
+/// is skipped; when none is left the refusal names the first one skipped, or
+/// the missing name.
+fn interpreter_for(
+    found: &Path,
+    name: &str,
+    path: &std::ffi::OsStr,
+) -> Result<PathBuf, JailRefusal> {
     let beside = found.parent().into_iter().map(Path::to_path_buf);
     let listed = std::env::split_paths(path).filter(|dir| dir.is_absolute());
-    beside
+    let mut skipped = None;
+    for candidate in beside
         .chain(listed)
         .filter_map(|dir| find_on_path(name, dir.as_os_str()))
-        .find(|candidate| trusted_interpreter(candidate))
+    {
+        match interpreter_trust(&candidate) {
+            Ok(real) => return Ok(real),
+            Err((path, why)) => {
+                skipped.get_or_insert(JailRefusal::UntrustedInterpreter { path, why });
+            }
+        }
+    }
+    Err(skipped.unwrap_or_else(|| JailRefusal::NoInterpreter(name.to_owned())))
 }
 
 /// The ELF loader (`PT_INTERP`) of the executable at `path`. The program
@@ -356,23 +415,26 @@ fn existing_files(files: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
-/// The helper command line that runs `job` jailed, or `None` when the layout
-/// cannot be jailed (a path the rules refuse, a CLI that cannot be resolved).
-fn jailed(
+/// The layout of the CLI at `binary`, and the spec the jail would enforce for
+/// it, or why the layout cannot be jailed (a path the rules refuse, a CLI
+/// that cannot be resolved).
+fn jail_plan(
     env: &CliEnv,
-    job: &Job,
-    args: &[OsString],
+    cli: Cli,
     binary: &Path,
     dirs: &Dirs,
-) -> Option<(PathBuf, Vec<OsString>)> {
-    let home = resolve(env.home.as_deref()?)?;
-    let bin = resolve(binary)?;
-    let head = read_head(&bin, ELF_HEAD_BYTES)?;
+) -> Result<(CliLayout, JailSpec), JailRefusal> {
+    let home_dir = env.home.as_deref().ok_or(JailRefusal::NoHome)?;
+    let home = resolve(home_dir).ok_or_else(|| JailRefusal::HomeMissing(home_dir.to_path_buf()))?;
+    let bin = resolve(binary).ok_or_else(|| JailRefusal::Unreadable(binary.to_path_buf()))?;
+    let head =
+        read_head(&bin, ELF_HEAD_BYTES).ok_or_else(|| JailRefusal::Unreadable(bin.clone()))?;
     let interpreter = match parse_shebang(&head) {
-        Some(Interpreter::Path(path)) => Some(resolve(&path)?),
-        Some(Interpreter::OnPath(name)) => {
-            Some(resolve(&interpreter_for(binary, &name, &env.path)?)?)
+        Some(Interpreter::Path(path)) => {
+            Some(resolve(&path).ok_or(JailRefusal::InterpreterMissing(path))?)
         }
+        // `interpreter_for` returns a resolved, trusted path.
+        Some(Interpreter::OnPath(name)) => Some(interpreter_for(binary, &name, &env.path)?),
         None => None,
     };
     // The file the kernel starts is the interpreter of a script, else the CLI.
@@ -382,9 +444,9 @@ fn jailed(
     let loaders = match read_loader(interpreter.as_deref().unwrap_or(&bin)) {
         None => Vec::new(),
         Some(loader) => {
-            let real = resolve(&loader)?;
+            let real = resolve(&loader).ok_or_else(|| JailRefusal::BadLoader(loader.clone()))?;
             if !fs::metadata(&real).is_ok_and(|meta| meta.is_file()) {
-                return None;
+                return Err(JailRefusal::BadLoader(real));
             }
             vec![real]
         }
@@ -394,7 +456,7 @@ fn jailed(
     // of an install is opened.
     let named = elf_search_dirs(interpreter.as_deref().unwrap_or(&bin));
     let layout = CliLayout {
-        cli: job.cli,
+        cli,
         home,
         codex_home: env.codex_home.as_deref().and_then(resolve),
         binary: bin.clone(),
@@ -406,9 +468,35 @@ fn jailed(
         cwd: dirs.cwd.clone(),
         tmp: dirs.tmp.clone(),
     };
-    let spec = jail_spec_with(&layout, &resolve)
-        .ok()?
-        .retain_existing(|p| fs::symlink_metadata(p).is_ok());
+    let spec =
+        jail_spec_with(&layout, &resolve)?.retain_existing(|p| fs::symlink_metadata(p).is_ok());
+    Ok((layout, spec))
+}
+
+/// Why the CLI at `binary` would run without its jail here, in a few words:
+/// the system cannot jail, or its layout is refused. `None` when it can be
+/// jailed (or cannot be told). Nothing is started.
+pub(crate) fn jail_note(env: &CliEnv, cli: Cli, binary: &Path) -> Option<String> {
+    let home = env.home.as_deref();
+    if let JailSupport::Unavailable(off) = env.jail {
+        return Some(JailRefusal::Unsupported(off).short(home));
+    }
+    let dirs = Dirs::create(env.data.as_deref()?).ok()?;
+    let refusal = jail_plan(env, cli, binary, &dirs).err()?;
+    Some(refusal.short(home))
+}
+
+/// The helper command line that runs `job` jailed, or why the layout cannot
+/// be jailed.
+fn jailed(
+    env: &CliEnv,
+    job: &Job,
+    args: &[OsString],
+    binary: &Path,
+    dirs: &Dirs,
+) -> Result<(PathBuf, Vec<OsString>), JailRefusal> {
+    let (layout, spec) = jail_plan(env, job.cli, binary, dirs)?;
+    let bin = layout.binary.clone();
     // A script starts through its interpreter, which is granted by exact
     // path. Left to the kernel, `#!/usr/bin/env node` would run `env`, which
     // the jail does not grant.
@@ -426,7 +514,7 @@ fn jailed(
         program,
         argv,
     };
-    Some((env.helper.clone(), args.render()))
+    Ok((env.helper.clone(), args.render()))
 }
 
 /// The child process: no shell, the private folders, a scrubbed environment
@@ -526,8 +614,13 @@ fn full_args(job: &Job, dirs: &Dirs) -> io::Result<Vec<OsString>> {
 /// spawns anything.
 fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
     let how = launch(job.jail, env.jail);
+    let home = env.home.as_deref();
+    let refused = |why: &JailRefusal| StreamEvent::Error(ChatError::Jail(why.hint(home)));
     if how == Launch::Refuse {
-        return Err(StreamEvent::Error(ChatError::Jail));
+        let JailSupport::Unavailable(off) = env.jail else {
+            return Err(refused(&JailRefusal::Unsupported(JailOff::NotProbed)));
+        };
+        return Err(refused(&JailRefusal::Unsupported(off)));
     }
     let Some(binary) = find_on_path(job.binary, &env.path) else {
         let text = format!("{} was not found on PATH", job.binary);
@@ -542,7 +635,7 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
         .map_err(|_| StreamEvent::Error(ChatError::Failed(CANNOT_PREPARE.into())))?;
     let reason = match (how, env.jail) {
         (Launch::Jailed, _) => match jailed(env, job, &argv, &binary, &dirs) {
-            Some((program, argv)) => {
+            Ok((program, argv)) => {
                 return Ok(Plan {
                     program,
                     argv,
@@ -552,13 +645,11 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
             }
             // Layered: the flags alone are text-only, so a layout the jail
             // refuses runs bare. Required: no jail, no process.
-            None if job.jail == JailPolicy::Required => {
-                return Err(StreamEvent::Error(ChatError::Jail));
-            }
-            None => "its folders cannot be restricted safely",
+            Err(why) if job.jail == JailPolicy::Required => return Err(refused(&why)),
+            Err(why) => why.hint(home),
         },
-        (_, JailSupport::Unavailable(why)) => why,
-        (_, JailSupport::Available { .. }) => "the jail is off",
+        (_, JailSupport::Unavailable(off)) => off.text(),
+        (_, JailSupport::Available { .. }) => "the jail is off".to_owned(),
     };
     Ok(Plan {
         program: binary,
@@ -569,6 +660,54 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
             job.binary
         )),
     })
+}
+
+/// Runs `codex debug models` the way a codex turn starts: the same plan (the
+/// jail helper with the codex layout, `Required`: no jail, no process), the
+/// same private folders and scrubbed environment. stdin is closed. `Err` is
+/// the reason on any failure; stderr is read only for its last line.
+pub(crate) async fn run_listing(
+    env: &CliEnv,
+    limit: Duration,
+    cap: usize,
+) -> Result<Vec<u8>, String> {
+    let job = Job {
+        wire: Wire::CodexJsonl,
+        binary: "codex",
+        cli: Cli::Codex,
+        args: vec!["debug".to_owned(), "models".to_owned()],
+        stdin: Vec::new(),
+        jail: JailPolicy::Required,
+        tmp_file: None,
+    };
+    let plan = match plan(env, &job) {
+        Ok(plan) => plan,
+        Err(StreamEvent::Error(ChatError::Jail(why))) => return Err(format!("jail: {why}")),
+        Err(StreamEvent::Error(ChatError::Failed(text))) => return Err(text),
+        Err(_) => return Err("could not start codex".to_owned()),
+    };
+    // Defence in depth: `Required` never plans a bare run (it refuses
+    // instead), so this is unreachable today. If a future policy change let
+    // the plan fall back to a bare run, the listing must not use it.
+    if plan.notice.is_some() {
+        return Err("jail: the jail is off".to_owned());
+    }
+    ai_detect::run_capped_why(
+        || {
+            let mut command = command(
+                &plan.program,
+                plan.argv.clone(),
+                (&plan.dirs.cwd, &plan.dirs.tmp),
+                &env.child_vars(),
+            );
+            command.stderr(Stdio::piped());
+            command
+        },
+        limit,
+        cap,
+    )
+    .await
+    .map_err(|failure| failure.text("codex", limit, cap))
 }
 
 /// Writes the transcript, then drops the pipe: the CLI sees EOF.
@@ -668,7 +807,7 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
     }
     // Declared in this order so the group guard drops before the child, and
     // the private folders last.
-    let mut child = match spawn(&plan.program, &plan.argv, &plan.dirs, &env.inject).await {
+    let mut child = match spawn(&plan.program, &plan.argv, &plan.dirs, &env.child_vars()).await {
         Ok(child) => child,
         Err(e) => {
             let text = format!("could not start {}: {}", job.binary, e.kind());

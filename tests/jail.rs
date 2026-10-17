@@ -23,7 +23,7 @@ fn jail_available() -> bool {
     match probe() {
         JailSupport::Available { .. } => true,
         JailSupport::Unavailable(why) => {
-            eprintln!("skipped: no Landlock jail on this system ({why})");
+            eprintln!("skipped: no Landlock jail on this system ({})", why.text());
             false
         }
     }
@@ -96,9 +96,11 @@ fn stderr(out: &Output) -> String {
 
 /// Status 125 plus the marker line: what the app turns into a jail error.
 fn assert_jail_error(out: &Output) {
-    assert_eq!(
-        exit_error(out.status.code(), &stderr(out)),
-        Some(ChatError::Jail),
+    assert!(
+        matches!(
+            exit_error(out.status.code(), &stderr(out)),
+            Some(ChatError::Jail(_))
+        ),
         "{}",
         stderr(out)
     );

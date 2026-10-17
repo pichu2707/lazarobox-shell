@@ -54,8 +54,9 @@ pub enum ChatError {
     Truncated,
     /// The engine or the transport reported a problem.
     Failed(String),
-    /// The jail helper could not enforce the rules, so the CLI never ran.
-    Jail,
+    /// The jail helper could not enforce the rules, so the CLI never ran. The
+    /// text is why (sanitized, may be empty).
+    Jail(String),
 }
 
 /// What an adapter task reports about one turn.
@@ -93,6 +94,8 @@ pub enum Availability {
     },
     NoJail {
         engine: String,
+        /// Why this system cannot jail it, with what to do.
+        reason: String,
     },
     GatedOff {
         engine: String,
@@ -151,8 +154,13 @@ pub fn availability_with(
         let status = status_text(Some(detection), &engine);
         return Availability::Undetected { engine, status };
     };
-    if JAIL_REQUIRED.contains(&engine.as_str()) && !jail.is_available() {
-        return Availability::NoJail { engine };
+    if let JailSupport::Unavailable(off) = jail
+        && JAIL_REQUIRED.contains(&engine.as_str())
+    {
+        return Availability::NoJail {
+            engine,
+            reason: off.text(),
+        };
     }
     if gated_off.contains(&engine.as_str()) {
         return Availability::GatedOff { engine };

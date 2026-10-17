@@ -46,14 +46,14 @@ fn tools_edit(value: &'static str) -> ConfigEdit {
     }
 }
 
-// Spec (agent-tools, config menu): the row is last, right after Notify.
+// Spec (agent-tools, config menu): the row is last, right after Memory.
 #[test]
-fn the_tools_row_follows_notify_and_is_found_by_kind() {
+fn the_tools_row_follows_memory_and_is_found_by_kind() {
     let items = AI_SECTION.items;
     let last = items.last().unwrap();
     assert_eq!(last.label, "Tools");
     assert!(matches!(last.kind, ItemKind::Tools));
-    assert_eq!(items[items.len() - 2].label, "Notify");
+    assert_eq!(items[items.len() - 2].label, "Memory");
     let count = items
         .iter()
         .filter(|i| matches!(i.kind, ItemKind::Tools))
@@ -68,18 +68,18 @@ fn the_popup_body_grows_with_the_row() {
         AI_BODY,
         SECTIONS.len() + 1 + settings + AI_SECTION.items.len()
     );
-    assert_eq!(AI_SECTION.items.len(), 11);
+    assert_eq!(AI_SECTION.items.len(), 10);
 }
 
 #[test]
-fn navigation_goes_notify_tools_then_wraps_to_the_first_row() {
+fn navigation_goes_memory_tools_then_wraps_to_the_first_row() {
     let mut m = on_tools(true);
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Statusline position");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Tools");
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Notify");
+    assert_eq!(selected_label(&m), "Memory");
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn toggling_touches_neither_the_live_config_nor_the_other_drafts() {
     let mut config = Config::default();
     m.on_key(&ch('l'), false, &mut config);
     assert_eq!(config, Config::default());
-    assert!(!m.ai_draft().notify());
+    assert_eq!(m.ai_draft().notify(), NotifyMode::Off);
     assert!(m.ai_draft().context());
     assert!(!m.ai_draft().memory.enabled);
 }
@@ -150,14 +150,19 @@ fn the_edit_is_the_tools_key_alone_and_only_when_changed() {
 }
 
 #[test]
-fn the_tools_edit_comes_last_after_notify() {
+fn the_tools_edit_comes_last_after_notify_and_sound() {
     let mut m = on_tools(true);
     press(&mut m, 'l');
-    press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Notify");
+    while selected_label(&m) != "Notify" {
+        press(&mut m, 'j');
+    }
+    press(&mut m, 'l');
+    press(&mut m, 'j');
+    assert_eq!(selected_label(&m), "Sound");
     press(&mut m, 'l');
     let edits = m.edits(&Config::default());
-    assert_eq!(edits.len(), 2);
+    assert_eq!(edits.len(), 3);
     assert_eq!(edits[0].key, "notify");
-    assert_eq!(edits[1], tools_edit("false"));
+    assert_eq!(edits[1].key, "notify_sound");
+    assert_eq!(edits[2], tools_edit("false"));
 }

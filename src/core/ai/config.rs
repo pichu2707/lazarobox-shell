@@ -78,6 +78,52 @@ impl Profile {
     }
 }
 
+/// How a finished chat turn reaches a user who is not looking
+/// (`[ai] notify`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum NotifyMode {
+    /// The bell always, plus a desktop notification when one is available.
+    Auto,
+    /// A desktop notification; the bell only when that is unavailable or
+    /// fails.
+    Desktop,
+    /// The terminal bell alone.
+    Bell,
+    /// Nothing. The default.
+    #[default]
+    Off,
+}
+
+/// The exact problem of an unreadable `ai.notify`.
+pub const NOTIFY_PROBLEM: &str =
+    "ai.notify: expected true, false, \"auto\", \"desktop\", \"bell\" or \"off\"";
+
+impl NotifyMode {
+    pub const ALL: [Self; 4] = [Self::Auto, Self::Desktop, Self::Bell, Self::Off];
+
+    /// The lowercase id: the value of `[ai] notify`.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Desktop => "desktop",
+            Self::Bell => "bell",
+            Self::Off => "off",
+        }
+    }
+
+    /// The mode of an id; case-sensitive, no trimming.
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.id() == id)
+    }
+
+    /// The next mode, wrapping.
+    pub fn cycled(self, forward: bool) -> Self {
+        let len = Self::ALL.len();
+        let step = if forward { 1 } else { len - 1 };
+        Self::ALL[(self as usize + step) % len]
+    }
+}
+
 /// An engine id plus a model name; either may be unset.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Assignment {
@@ -131,7 +177,8 @@ pub struct AiConfig {
     slots: [Assignment; 5],
     profile: Profile,
     context: bool,
-    notify: bool,
+    notify: NotifyMode,
+    notify_sound: bool,
     tools: bool,
     pub memory: MemoryConfig,
 }
@@ -142,7 +189,8 @@ impl Default for AiConfig {
             slots: Default::default(),
             profile: Profile::default(),
             context: true,
-            notify: false,
+            notify: NotifyMode::Off,
+            notify_sound: true,
             tools: true,
             memory: MemoryConfig::default(),
         }
@@ -175,14 +223,24 @@ impl AiConfig {
         self.context = context;
     }
 
-    /// Whether a chat answer that finishes while the user is not looking
-    /// rings the terminal bell.
-    pub fn notify(&self) -> bool {
+    /// How a chat answer that finishes while the user is not looking is
+    /// announced.
+    pub fn notify(&self) -> NotifyMode {
         self.notify
     }
 
-    pub fn set_notify(&mut self, notify: bool) {
+    pub fn set_notify(&mut self, notify: NotifyMode) {
         self.notify = notify;
+    }
+
+    /// Whether lazarobox plays its own sound with the desktop notification
+    /// (`auto` and `desktop` modes).
+    pub fn notify_sound(&self) -> bool {
+        self.notify_sound
+    }
+
+    pub fn set_notify_sound(&mut self, sound: bool) {
+        self.notify_sound = sound;
     }
 
     /// Whether the chat may act in the user's panes (`[ai.tools] enabled`).
@@ -299,20 +357,38 @@ fn read_context(section: &Table, problems: &mut Vec<String>) -> bool {
     }
 }
 
-/// Reads `notify`: a missing key is `false`; a value that is not a boolean
-/// falls back to `false` with a problem.
-fn read_notify(section: &Table, problems: &mut Vec<String>) -> bool {
+/// Reads `notify`: a missing key is `off`; the old booleans stay valid
+/// (`true` is `auto`, `false` is `off`); anything else falls back to `off`
+/// with a problem.
+fn read_notify(section: &Table, problems: &mut Vec<String>) -> NotifyMode {
     match section.get("notify") {
-        None => false,
-        Some(Value::Boolean(on)) => *on,
+        None => NotifyMode::Off,
+        Some(Value::Boolean(true)) => NotifyMode::Auto,
+        Some(Value::Boolean(false)) => NotifyMode::Off,
+        Some(Value::String(id)) if NotifyMode::from_id(id).is_some() => {
+            NotifyMode::from_id(id).unwrap_or_default()
+        }
         Some(_) => {
-            problems.push("ai.notify: expected a boolean".to_owned());
-            false
+            problems.push(NOTIFY_PROBLEM.to_owned());
+            NotifyMode::Off
         }
     }
 }
 
-/// Reads `[ai]` (the general task, the profile and the context and notify flags) and `[ai.tasks.<id>]`
+/// Reads `notify_sound`: a missing key is `true`; a value that is not a
+/// boolean falls back to `true` with a problem.
+fn read_notify_sound(section: &Table, problems: &mut Vec<String>) -> bool {
+    match section.get("notify_sound") {
+        None => true,
+        Some(Value::Boolean(on)) => *on,
+        Some(_) => {
+            problems.push("ai.notify_sound: expected a boolean".to_owned());
+            true
+        }
+    }
+}
+
+/// Reads `[ai]` (the general task, the profile and the context flag and the notify settings) and `[ai.tasks.<id>]`
 /// (the others). Each key falls back to unset on its own; `general` and
 /// unknown names under `ai.tasks` are ignored.
 fn read_tasks(table: &Table, problems: &mut Vec<String>) -> AiConfig {
@@ -329,6 +405,7 @@ fn read_tasks(table: &Table, problems: &mut Vec<String>) -> AiConfig {
     config.profile = read_profile(section, problems);
     config.context = read_context(section, problems);
     config.notify = read_notify(section, problems);
+    config.notify_sound = read_notify_sound(section, problems);
     let tasks = match section.get("tasks") {
         None => return config,
         Some(Value::Table(tasks)) => tasks,
@@ -1037,18 +1114,18 @@ mod tests {
         );
     }
 
-    // Spec (chat-notify, configuration): the notify flag, default and parse.
+    // Spec (chat-notify, configuration): the notify mode, default and parse.
     #[test]
-    fn the_notify_flag_defaults_to_false() {
-        assert!(!AiConfig::default().notify());
+    fn the_notify_mode_defaults_to_off_like_the_old_false() {
+        assert_eq!(AiConfig::default().notify(), NotifyMode::Off);
         for text in ["", "[ai]\n", "ai = 3\n"] {
-            assert!(!read_text(text).0.notify(), "{text:?}");
+            assert_eq!(read_text(text).0.notify(), NotifyMode::Off, "{text:?}");
         }
     }
 
     #[test]
-    fn a_boolean_notify_is_read_without_a_problem() {
-        for (value, want) in [("true", true), ("false", false)] {
+    fn a_legacy_boolean_maps_true_to_auto_and_false_to_off() {
+        for (value, want) in [("true", NotifyMode::Auto), ("false", NotifyMode::Off)] {
             let (config, problems) = read_text(&format!("[ai]\nnotify = {value}\n"));
             assert_eq!(config.notify(), want, "{value}");
             assert_eq!(problems, Vec::<String>::new());
@@ -1056,13 +1133,45 @@ mod tests {
     }
 
     #[test]
-    fn a_non_boolean_notify_falls_back_to_false_with_the_exact_problem() {
-        for value in ["\"yes\"", "1", "[true]", "{ a = 1 }"] {
+    fn the_four_mode_strings_are_read_without_a_problem() {
+        for mode in NotifyMode::ALL {
+            let (config, problems) = read_text(&format!("[ai]\nnotify = \"{}\"\n", mode.id()));
+            assert_eq!(config.notify(), mode);
+            assert_eq!(problems, Vec::<String>::new());
+        }
+    }
+
+    #[test]
+    fn an_unknown_notify_falls_back_to_off_with_the_exact_problem() {
+        for value in ["\"yes\"", "\"Auto\"", "\"\"", "1", "[true]", "{ a = 1 }"] {
             let (config, problems) = read_text(&format!("[ai]\nnotify = {value}\n"));
-            assert!(!config.notify(), "{value}");
+            assert_eq!(config.notify(), NotifyMode::Off, "{value}");
+            assert_eq!(problems, vec![NOTIFY_PROBLEM.to_owned()], "{value}");
+        }
+    }
+
+    #[test]
+    fn notify_sound_defaults_to_true_and_reads_a_boolean() {
+        assert!(AiConfig::default().notify_sound());
+        for (text, want) in [
+            ("", true),
+            ("[ai]\nnotify_sound = false\n", false),
+            ("[ai]\nnotify_sound = true\n", true),
+        ] {
+            let (config, problems) = read_text(text);
+            assert_eq!(config.notify_sound(), want, "{text:?}");
+            assert_eq!(problems, Vec::<String>::new());
+        }
+    }
+
+    #[test]
+    fn a_non_boolean_notify_sound_falls_back_to_true_with_the_exact_problem() {
+        for value in ["\"no\"", "0", "[false]"] {
+            let (config, problems) = read_text(&format!("[ai]\nnotify_sound = {value}\n"));
+            assert!(config.notify_sound(), "{value}");
             assert_eq!(
                 problems,
-                vec!["ai.notify: expected a boolean".to_owned()],
+                vec!["ai.notify_sound: expected a boolean".to_owned()],
                 "{value}"
             );
         }
@@ -1110,10 +1219,31 @@ mod tests {
         assert_eq!(
             problems,
             vec![
-                "ai.notify: expected a boolean".to_owned(),
+                NOTIFY_PROBLEM.to_owned(),
                 "ai.tools.enabled: expected a boolean".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn the_mode_cycles_through_the_four_values_both_ways() {
+        let mut mode = NotifyMode::Auto;
+        let mut seen = vec![mode];
+        for _ in 0..4 {
+            mode = mode.cycled(true);
+            seen.push(mode);
+        }
+        assert_eq!(
+            seen,
+            [
+                NotifyMode::Auto,
+                NotifyMode::Desktop,
+                NotifyMode::Bell,
+                NotifyMode::Off,
+                NotifyMode::Auto
+            ]
+        );
+        assert_eq!(NotifyMode::Auto.cycled(false), NotifyMode::Off);
     }
 
     #[test]
@@ -1121,14 +1251,14 @@ mod tests {
         let (config, _) = read_text("[ai]\nnotify = true\ncontext = false\n");
         let mut want = AiConfig::default();
         want.set_context(false);
-        want.set_notify(true);
+        want.set_notify(NotifyMode::Auto);
         assert_eq!(config, want);
         let text = "[ai.tasks.code]\nengine = 5\n[ai]\nnotify = 1\ncontext = 1\n";
         assert_eq!(
             read_text(text).1,
             vec![
                 "ai.context: expected a boolean".to_owned(),
-                "ai.notify: expected a boolean".to_owned(),
+                NOTIFY_PROBLEM.to_owned(),
                 "ai.tasks.code.engine: expected a string".to_owned(),
             ]
         );

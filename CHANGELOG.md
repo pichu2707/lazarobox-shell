@@ -10,6 +10,193 @@ baseline.
 
 ## [Unreleased]
 
+## [0.15.4] - 2026-10-17
+
+### Added
+
+- Updates row in the Settings section of the menu. It shows the running
+  version (`Updates  0.15.3`); when the update check knows a newer one the
+  name carries a `*` and the value reads `0.15.4 available`. Enter acts only
+  when an update is available. If the running binary (canonicalized) is under
+  `$CARGO_HOME/bin` (default `~/.cargo/bin`), it opens a new tab that runs
+  `cargo install lazarobox-shell --locked` directly as the pane's program (no
+  shell), with `cargo` resolved on the login `PATH` and run from `$HOME`. On
+  exit 0 the tab closes, a notice says `lazarobox X.Y.Z installed: restart
+  lazarobox to use it` and the row reads `X.Y.Z installed: restart`. On a
+  failure the tab stays open with `update failed (exit N)` so the error can
+  be read. Any other install runs nothing: the footer shows the command, and
+  Enter or `y` copies it (OSC 52). `[updates] check` stays config-only.
+- Spawning a pane with a program and its arguments, and an exit-status event
+  (`PtyEvent::Status`) that is sent before `Exited` for panes that ask for it.
+
+### Changed
+
+- The Notify and Sound rows moved from the AI section to Settings (after
+  Mouse). Their behaviour (h/l cycling, `t` test and its footer report,
+  saving) and the config keys `[ai] notify` and `[ai] notify_sound` are
+  unchanged.
+- The update check no longer waits for 24 h when the cache was written by
+  another lazarobox version and its latest version is not newer than the
+  running one (for example right after an upgrade): the next start checks at
+  once. The cache now records the checking version (`checked_by`; an old file
+  without it counts as another version). A cache written by the running
+  version keeps the once-a-day rule, as do a newer cached version and the
+  one-hour retry after a failure.
+- The update pane trusts its `cargo` like the AI CLIs are trusted. It prefers
+  the `cargo` beside the running binary (`<cargo bin dir>/cargo`), else the
+  first on the login `PATH`, kept as found for the rustup proxy; one under
+  `/tmp`, or writable by group or others (or in such a folder), is refused and
+  the command is shown instead. The pane's first line names what runs, a
+  non-UTF-8 `PATH` is passed through unchanged, and the install gets
+  `--root <parent of the cargo bin dir>` so it always replaces the running
+  binary. A symlinked `~/.cargo` is compared by where it points. A child that
+  ends without an exit status is a failure (`update failed (no exit status)`)
+  and its pane stays open.
+- The menu has one more row (Updates), so the smallest full popup is now 8
+  rows high (it was 7); below that the one-line fallback is shown.
+- The install command shown by the menu note, the statusline hint and the
+  footer is `cargo install lazarobox-shell --locked` everywhere.
+
+## [0.15.3] - 2026-10-16
+
+### Added
+
+- Desktop notification for finished chat turns, independent of the outer
+  terminal. `[ai] notify` now takes `"auto"`, `"desktop"`, `"bell"` or
+  `"off"` (the Notify row of the AI menu cycles them). `"auto"` always rings
+  the bell and also sends a desktop notification when `DISPLAY` or
+  `WAYLAND_DISPLAY` is set and `notify-send` is on the login `PATH`.
+  `"desktop"` sends only the notification and rings the bell if it is
+  unavailable or fails. `notify-send` runs without a shell, detached, with a
+  2 s limit; its title is `lazarobox` and its text is a fixed line naming the
+  pane, never any of the answer. The old booleans keep working (`true` is
+  `"auto"`, `false` is `"off"`), and the default stays off.
+- The desktop notification is hardened. The child gets an empty environment
+  plus an allow-list (`PATH`, `HOME`, `LANG`, `LC_*`, the session bus and
+  display variables), never secrets. A `notify-send` under `/tmp` or writable
+  by group or others is skipped, like the CLI interpreters. The availability
+  check runs off the UI thread. The desktop counts as unavailable over SSH or
+  without a display and a session bus. At most one send is in flight, so a
+  burst of finished turns is coalesced (`"auto"` still rings the bell for
+  each).
+- lazarobox plays its own sound with the notification in `"auto"` and
+  `"desktop"` (`[ai] notify_sound`, default true, and a Sound row in the AI
+  menu): `canberra-gtk-play -i message-new-instant`, else `pw-play` or
+  `paplay` with the first of the freedesktop `message-new-instant.oga` and
+  `complete.oga`. It follows the same rules as `notify-send` and does
+  nothing when no player is found.
+- `t` on the Notify or Sound row of the AI menu fires one test notification
+  now, with the mode shown (saved or not) and ignoring the focus rule. The
+  footer says what happened (`sent: bell + desktop + sound`) or why not
+  (`desktop unavailable: no session bus`).
+- How the notification machinery works, and its guard rails. The machine is
+  probed once at startup, in the background, and again by the `t` test: the
+  session (display, session bus, not over SSH), the trusted `notify-send` and
+  the sound players. No send ever waits for a probe; if the result is not
+  there yet, or the probe failed, the desktop and the sound are unavailable
+  for that event and `desktop` mode rings the bell. A tool installed after
+  startup is seen after `t` or a restart. Each probe takes a ticket and a
+  slow or old probe never overwrites a newer plan; a probe that panics is
+  caught (without tearing the terminal down) and recorded as failed, and `t`
+  reports "the check failed" and probes again. Just before an exec the real path
+  is re-checked (exists, not under `/tmp`, not group- or world-writable),
+  and that is the path that runs, with the found name as `argv[0]`. The
+  child gets an empty environment plus an allow-list (`PATH`, `HOME`, `USER`,
+  `LOGNAME`, `LANG`, `LANGUAGE`, `LC_*`, the session bus, display, audio and
+  XDG variables), never secrets. SSH only disables the desktop when no local
+  display is set, so a stale `SSH_CONNECTION` in a local tmux does not.
+  Limits: 2 s per program (a program still running is killed and counts as
+  failed), 4 s per send, 12 s for the sound chain, 3 s for the test probe.
+  At most one send, one sound and one test run at a time; a send dropped
+  because another is running rings the bell in `desktop` mode, as does an
+  unavailable, untrusted or failed one, even if the send task dies. The
+  sound tries canberra, then `pw-play` and `paplay` with each existing sound
+  file; only an exit 0 within the limit is success, anything else moves to
+  the next candidate, and the test report names the player that worked or
+  why all failed. The test report lives in its own footer field until the
+  next key press and is sent after its in-flight flag is cleared. In
+  `desktop` mode a missing `notify-send` rings the bell and the sound may
+  play too: they overlap by design. A turn that ended by cancel never
+  notifies; its fallback body would read "Turn ended in pane N". The
+  runtime is held by a guard that bounds its shutdown to 1 s on every way
+  out, panics included.
+
+## [0.15.2] - 2026-10-16
+
+### Added
+
+- The AI picker now says why an engine is degraded, and lets you copy it. A
+  codex model list that could not be read shows `model list unavailable:
+  <reason>` wrapped over up to four rows instead of one clipped row. Move onto
+  the note and press Enter or `y` to copy the whole, sanitized reason through
+  OSC 52 (the usual copied notice appears). The note is never a model choice
+  and never changes the saved model. On the engine list, `y` on an engine
+  that runs without the jail copies its full `no jail` reason; Enter still
+  picks the engine.
+- A background check for a newer version, made with the system `curl` at most
+  once a day. When one exists, a text mark shows in the statusline and a note
+  in the menu. Nothing is sent but one `GET` to crates.io; with no `curl` it
+  does nothing.
+- Diagnostics for the AI CLIs: the engine list shows why a CLI runs without
+  the jail (`available · no jail: <reason>`), a failed codex model listing
+  says why, and a failed chat turn shows the CLI's last stderr line with
+  credentials redacted. The suggested `chmod` command ends its options with
+  `--`.
+
+### Fixed
+
+- The login-shell PATH lookup works from a launcher again. The shell was
+  started with the launcher's bare PATH, so rc files that call `tr` or
+  `readlink` (`brew shellenv`, nvm) failed and linuxbrew and nvm never reached
+  the merged PATH. The probe shell now starts with the process PATH plus
+  `/usr/local/bin:/usr/bin:/bin`. If `$SHELL` gives nothing, `/bin/bash -l -c`
+  is tried once (not when `$SHELL` is bash already; it reads the login files
+  but not `~/.bashrc`, so a PATH set only there is not seen). Both share one
+  3 s deadline, reaping included, instead of 2.5 s for the first alone.
+- The login-shell entries now come first in the merged PATH, then the process
+  entries it lacks, so the launcher picks the program your terminal picks. A
+  stale `/usr/local/bin/codex` no longer hides the one in linuxbrew.
+- An empty PATH, or one with only relative entries, no longer reaches the
+  current directory: relative and empty entries are dropped everywhere, and
+  when nothing absolute is left the PATH is `/usr/local/bin:/usr/bin:/bin`.
+- A failed chat turn's error line is sanitized before secrets are redacted,
+  so a zero-width character cannot split a key out of the redaction, and an
+  error code such as `context_length_exceeded` is no longer taken for a
+  secret.
+
+## [0.15.1] - 2026-10-16
+
+### Fixed
+
+- Started from a desktop launcher or rofi, lazarobox inherited a bare PATH, so
+  `claude`, `gemini` and `codex` were not detected. lazarobox now reads the
+  login-shell PATH once at startup, with a bounded 2.5 s probe. If the probe
+  fails or times out, it falls back to the process PATH. The probe runs your
+  interactive rc files. The merged PATH is used for detection, `--version`,
+  chat turns, the codex model listing and the engram server.
+
+## [0.15.0] - 2026-10-15
+
+### Added
+
+- The codex model list now comes from your account. At detection time
+  lazarobox runs `codex debug models` once (4 s timeout, 2 MiB output cap,
+  stdin closed, private working folder, scrubbed environment, next to the
+  version probe) through the same jail as the codex chat. Like running codex,
+  that command may refresh the catalog from OpenAI with your login and update
+  codex's own cache (`models_cache.json`). Without the jail it is not run. The
+  picker offers `default (CLI picks)` followed by the models the account
+  lists, with their display names as labels and the slugs as saved values. An
+  older codex without the subcommand, or any failure, shows only `default`.
+  The listing is kept in memory and refreshed at most every 10 minutes; the
+  menu's `r` forces a new one. A failed refresh keeps the cached list while it
+  is under 10 minutes old.
+- A codex model that is assigned or typed in `custom…` but is not in the
+  account's list is marked `not in your account's list` in the picker, on the
+  task row and in the footer. It is a warning only.
+- The menu footer shows `unsaved changes · s to save · Esc discards` while the
+  AI draft differs from the saved config.
+
 ## [0.14.0] - 2026-10-15
 
 ### Added
@@ -367,7 +554,12 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.4...HEAD
+[0.15.4]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.3...v0.15.4
+[0.15.3]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.2...v0.15.3
+[0.15.2]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.1...v0.15.2
+[0.15.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.0...v0.15.1
+[0.15.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.11.0...v0.12.0

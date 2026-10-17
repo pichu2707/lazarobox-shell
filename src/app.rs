@@ -13,12 +13,12 @@ use crate::core::{
             ChatState, Follow, Phase,
             copy::ChatCopy,
             engine::{ChatRequest, StreamEvent},
-            notify::{Ended, should_bell},
+            notify::{Ended, body, plays_sound, should_notify},
             prompts::Resolved,
             store::{StoreCmd, StoreReply},
         },
-        config::{AiConfig, Profile, Task},
-        jail::JailSupport,
+        config::{AiConfig, NotifyMode, Profile, Task},
+        jail::{JailOff, JailSupport},
         memory::{
             offer::ServerOffer,
             port::{MemCmd, MemReply, Reason},
@@ -38,6 +38,7 @@ use crate::core::{
     pane::{CursorKind, CursorShape, Pane, PaneSize},
     prefix::{self, Binding, Group, PREFIX_KEY, PREFIX_TREE, PrefixAction, Step},
     pty::{PtyEvent, SpawnSpec},
+    update::{InstallEnv, UpdateAction},
 };
 
 mod chat;
@@ -154,6 +155,9 @@ pub enum AppEvent {
     Memory(MemReply),
     /// The store thread answered a command of a pane.
     Store(StoreReply),
+    /// The background update check answered (or the cache was read): the
+    /// newer version to announce, if any. Never carries an action.
+    UpdateChecked(Option<String>),
     /// The runtime prepared the system prompt of a chat pane (see
     /// `Effect::PreparePrompt`): the resolved prompt with the workspace
     /// block, and the notices of the override files it skipped.
@@ -169,6 +173,8 @@ pub enum AppEvent {
     /// the terminal reports it. A terminal that does not report it never
     /// sends this, and the window counts as focused.
     WindowFocus(bool),
+    /// What the notification test did (a footer line), from the runtime.
+    NotifyTested(String),
 }
 
 /// How the menu closed.
@@ -196,6 +202,9 @@ pub enum Effect {
     SetClipboard(Vec<u8>),
     /// Probe the AI engines; the runtime answers with one `EnginesDetected`.
     DetectEngines,
+    /// Like `DetectEngines`, but the codex model listing is read again even
+    /// when a recent one is cached (the menu's `r`).
+    RedetectEngines,
     /// Start one chat turn for a pane. Events of the turn come back tagged
     /// with `turn`.
     ChatSend {
@@ -224,6 +233,21 @@ pub enum Effect {
     /// Ring the terminal bell (BEL) once the frame is drawn: a chat answer
     /// finished while the user was not looking at it (chat-notify).
     Bell,
+    /// Announce a finished chat turn per `mode` (`auto` or `desktop`): the
+    /// runtime picks the bell and/or a desktop notification. `body` is fixed
+    /// text naming the pane, never any of the answer.
+    Notify {
+        mode: NotifyMode,
+        body: String,
+        /// Play lazarobox's own sound too.
+        sound: bool,
+    },
+    /// The test action of the Notify row: notify now with `mode`, ignoring
+    /// the focus rule. The runtime answers with `AppEvent::NotifyTested`.
+    NotifyTest {
+        mode: NotifyMode,
+        sound: bool,
+    },
     /// Turn the host terminal's mouse capture on (`true`) or off. Emitted
     /// only when the wanted state differs from the one last asked for.
     MouseCapture(bool),
@@ -301,6 +325,34 @@ struct PtyPane {
     emu: Pane,
     /// The `/proc` poll result; the OSC 7 cwd, when seen, lives in `emu`.
     proc_cwd: Option<PathBuf>,
+    /// Set when the pane runs `cargo install` for an update, not a shell.
+    update: Option<UpdateRun>,
+}
+
+/// The install an update pane runs.
+struct UpdateRun {
+    /// The version being installed.
+    version: String,
+    state: RunState,
+}
+
+/// How an update pane's child ended.
+enum UpdateEnded {
+    /// Its exit code.
+    Code(u32),
+    /// It never started.
+    NotStarted,
+    /// It is gone and nothing said how it ended.
+    NoStatus,
+}
+
+/// How an update pane's job stands.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RunState {
+    Running,
+    Installed,
+    /// Failed or never started: the pane stays so the error can be read.
+    Failed,
 }
 
 /// What a pane holds: a shell behind a PTY, or an AI chat that owns its
@@ -319,6 +371,14 @@ pub enum PaneView<'a> {
 /// The kind of pane a split or a new tab creates.
 enum NewPane {
     Shell,
+    /// `cargo install lazarobox-shell --locked`, run directly (no shell).
+    Update {
+        program: PathBuf,
+        /// The install root, passed as `--root`.
+        root: PathBuf,
+        version: String,
+        path: std::ffi::OsString,
+    },
     Chat(Box<ChatState>),
 }
 
@@ -335,6 +395,7 @@ impl PaneState {
             content: PaneContent::Pty(Box::new(PtyPane {
                 emu: Pane::new(size, SCROLLBACK_LINES).with_host(host),
                 proc_cwd: None,
+                update: None,
             })),
             size,
         }
@@ -423,6 +484,13 @@ pub struct App {
     input: InputMode,
     /// Shown in the statusline path segment until the next key press.
     notice: Option<String>,
+    /// The newer released version, when the update check knows one.
+    update: Option<String>,
+    /// How this binary was installed, for Enter on the Updates row.
+    install_env: Option<InstallEnv>,
+    /// The version an install in this run put on disk. The running binary is
+    /// still the old one until the restart.
+    installed: Option<String>,
     dirty: bool,
     screen: ScreenLayout,
     /// Whether the host terminal was last asked to capture the mouse.
@@ -464,6 +532,11 @@ pub struct App {
     engines: Option<Detection>,
     /// A detection is in flight: further requests are dropped.
     detecting: bool,
+    /// The run in flight bypasses the codex listing cache.
+    detecting_forced: bool,
+    /// `r` was pressed during a run that was not forced: one forced run
+    /// follows it.
+    pending_force: bool,
     /// The saved AI choice; the menu edits a draft of it.
     ai: AiConfig,
     /// Whether the terminal window has the focus (chat-notify). Starts
@@ -520,6 +593,9 @@ impl App {
             ids,
             input: InputMode::default(),
             notice: None,
+            update: None,
+            install_env: None,
+            installed: None,
             dirty: true,
             screen,
             mouse_captured: false,
@@ -538,9 +614,11 @@ impl App {
             note_choices: Vec::new(),
             engines: None,
             detecting: false,
+            detecting_forced: false,
+            pending_force: false,
             ai: AiConfig::default(),
             window_focused: true,
-            jail: JailSupport::Unavailable("the jail was not probed"),
+            jail: JailSupport::Unavailable(JailOff::NotProbed),
             waiting_sends: Vec::new(),
             anim_frame: 0,
             server_offer: ServerOffer::new(),
@@ -574,7 +652,29 @@ impl App {
             return Vec::new();
         }
         self.detecting = true;
+        self.detecting_forced = false;
         vec![Effect::DetectEngines]
+    }
+
+    /// Like [`Self::request_detection`], for the menu's `r`: the codex model
+    /// list is read again instead of reused.
+    ///
+    /// A press during a run that was not forced is remembered and answered by
+    /// exactly one forced run once that run ends, so `r` is never dropped.
+    pub fn request_forced_detection(&mut self) -> Vec<Effect> {
+        if self.detecting {
+            self.pending_force |= !self.detecting_forced;
+            return Vec::new();
+        }
+        self.detecting = true;
+        self.detecting_forced = true;
+        vec![Effect::RedetectEngines]
+    }
+
+    /// Whether a detection run (or a queued forced one) is in progress.
+    #[cfg(test)]
+    fn detecting_now(&self) -> bool {
+        self.detecting
     }
 
     /// Sets the facts the statusline shows. They are inputs, not lookups, so
@@ -653,6 +753,23 @@ impl App {
     pub fn with_notice(mut self, notice: Option<String>) -> Self {
         self.notice = notice;
         self
+    }
+
+    /// What the runtime found out about the install, for the Updates row.
+    pub fn with_install_env(mut self, env: Option<InstallEnv>) -> Self {
+        self.install_env = env;
+        self
+    }
+
+    /// Announces a newer released version (text only) from the start-up cache.
+    pub fn with_update(mut self, update: Option<String>) -> Self {
+        self.update = update;
+        self
+    }
+
+    /// The newer version for the statusline mark.
+    pub fn status_update(&self) -> Option<&str> {
+        self.update.as_deref()
     }
 
     /// The spawn-failure notice, if one is showing.
@@ -1012,6 +1129,133 @@ impl App {
     }
 
     /// Whether `id` names a pane with a PTY behind it.
+    /// The install an update pane runs, if `id` is one.
+    fn update_run(&self, id: PaneId) -> Option<&UpdateRun> {
+        self.panes.get(&id)?.pty()?.update.as_ref()
+    }
+
+    /// Whether an install is running right now.
+    fn update_running(&self) -> bool {
+        self.panes.values().any(|state| {
+            state
+                .pty()
+                .and_then(|pty| pty.update.as_ref())
+                .is_some_and(|run| run.state == RunState::Running)
+        })
+    }
+
+    /// Enter on the Updates row with a newer version known.
+    fn on_update_command(&mut self) -> Vec<Effect> {
+        let Some(latest) = self.update.clone() else {
+            return Vec::new();
+        };
+        if self.update_running() {
+            if let Some(menu) = self.menu.as_mut() {
+                menu.set_copied("update already running in its own tab".to_owned());
+            }
+            return Vec::new();
+        }
+        let action = match &self.install_env {
+            Some(env) => env.plan(Some(&latest)),
+            None => UpdateAction::ShowCommand,
+        };
+        match action {
+            UpdateAction::UpToDate => Vec::new(),
+            UpdateAction::ShowCommand => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.show_update_command();
+                }
+                Vec::new()
+            }
+            UpdateAction::CargoInstall {
+                program,
+                root,
+                version,
+            } => {
+                let path = self
+                    .install_env
+                    .as_ref()
+                    .map(|env| env.path.clone())
+                    .unwrap_or_default();
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.set_copied(format!("installing {version} in a new tab"));
+                }
+                self.new_tab_with(NewPane::Update {
+                    program,
+                    root,
+                    version,
+                    path,
+                })
+            }
+        }
+    }
+
+    /// An update pane's job ended, `ended` says how. Writes the final line into the pane (so a
+    /// pane that stays shows it) and tells the user.
+    fn update_ended(&mut self, id: PaneId, ended: UpdateEnded) {
+        let Some(version) = self.update_run(id).map(|run| run.version.clone()) else {
+            return;
+        };
+        let (state, text) = match ended {
+            UpdateEnded::Code(0) => (
+                RunState::Installed,
+                crate::core::update::installed_text(&version),
+            ),
+            UpdateEnded::Code(code) => (RunState::Failed, crate::core::update::failed_text(code)),
+            UpdateEnded::NotStarted => (
+                RunState::Failed,
+                crate::core::update::NOT_STARTED_TEXT.to_owned(),
+            ),
+            UpdateEnded::NoStatus => (
+                RunState::Failed,
+                crate::core::update::NO_STATUS_TEXT.to_owned(),
+            ),
+        };
+        if let Some(pty) = self.panes.get_mut(&id).and_then(PaneState::pty_mut) {
+            pty.emu.feed(format!("\r\n{text}\r\n").as_bytes());
+            if let Some(run) = pty.update.as_mut() {
+                run.state = state;
+            }
+        }
+        if state == RunState::Installed {
+            self.installed = Some(version);
+            self.update = None;
+            if let Some(menu) = self.menu.as_mut() {
+                menu.set_installed(self.installed.clone());
+                menu.set_update(None);
+            }
+        }
+        self.notice = Some(text);
+        self.dirty = true;
+    }
+
+    /// A pty child is gone. A failed update pane stays so the error can be
+    /// read, and so does a finished one that would be the last pane (closing
+    /// it would quit the app); everything else closes.
+    fn on_pty_exited(&mut self, id: PaneId) -> Vec<Effect> {
+        // Gone without ever reporting a status (it was killed, or the
+        // adapter lost it): a failure, and the pane stays to say so.
+        if self
+            .update_run(id)
+            .is_some_and(|run| run.state == RunState::Running)
+        {
+            self.update_ended(id, UpdateEnded::NoStatus);
+        }
+        let keep = match self.update_run(id).map(|run| run.state) {
+            Some(RunState::Failed) => true,
+            Some(RunState::Installed) => {
+                self.tabs.len() == 1 && self.tabs[0].tree.leaves().len() == 1
+            }
+            Some(RunState::Running) | None => false,
+        };
+        if keep {
+            self.dirty = true;
+            Vec::new()
+        } else {
+            self.remove_pane(id)
+        }
+    }
+
     fn is_shell(&self, id: PaneId) -> bool {
         self.panes
             .get(&id)
@@ -1029,6 +1273,10 @@ impl App {
             AppEvent::Pty(id, event) if self.is_shell(id) => self.on_pty(id, event),
             AppEvent::Cwd(id, cwd) if self.is_shell(id) => self.on_cwd(id, cwd),
             AppEvent::Pty(..) | AppEvent::Cwd(..) => Vec::new(),
+            AppEvent::SpawnFailed(id, _) if self.update_run(id).is_some() => {
+                self.update_ended(id, UpdateEnded::NotStarted);
+                Vec::new()
+            }
             AppEvent::SpawnFailed(id, error) if self.is_shell(id) => {
                 let effects = self.remove_pane(id);
                 self.notice = Some(format!("spawn failed: {error}"));
@@ -1056,7 +1304,12 @@ impl App {
                 self.engines = Some(detection);
                 self.detecting = false;
                 self.dirty = true;
-                self.run_waiting_sends()
+                let mut effects = self.run_waiting_sends();
+                if std::mem::take(&mut self.pending_force) {
+                    effects.extend(self.request_forced_detection());
+                    self.sync_checking();
+                }
+                effects
             }
             AppEvent::Chat(id, turn, event) => self.on_chat(id, turn, event),
             AppEvent::Memory(reply) => self.on_memory_reply(&reply),
@@ -1065,9 +1318,26 @@ impl App {
                 effects.extend(self.on_store_reply(&reply));
                 effects
             }
+            // What was just installed is not news any more.
+            AppEvent::UpdateChecked(_) if self.installed.is_some() => Vec::new(),
+            AppEvent::UpdateChecked(update) => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.set_update(update.clone());
+                }
+                self.update = update;
+                self.dirty = true;
+                Vec::new()
+            }
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
             AppEvent::MemoryTick => self.on_memory_tick(),
+            AppEvent::NotifyTested(report) => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.set_test_report(report);
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
             AppEvent::WindowFocus(focused) => {
                 self.window_focused = focused;
                 Vec::new()
@@ -1165,8 +1435,12 @@ impl App {
     /// Opens the menu: captures the live config as the original.
     /// The forced tab bar may resize the panes.
     fn open_menu(&mut self) -> Vec<Effect> {
-        self.menu =
-            Some(MenuState::open(&self.config).with_ai(self.ai.clone(), self.engines.clone()));
+        self.menu = Some(
+            MenuState::open(&self.config)
+                .with_ai(self.ai.clone(), self.engines.clone())
+                .with_update(self.update.clone())
+                .with_installed(self.installed.clone()),
+        );
         self.input = InputMode::Menu;
         let mut effects = self.apply_config();
         effects.extend(self.request_detection());
@@ -1232,11 +1506,55 @@ impl App {
             MenuCommand::Cancel => self.close_menu(Outcome::Reverted),
             MenuCommand::Save => self.request_save(),
             MenuCommand::Refresh => {
-                let effects = self.request_detection();
+                let effects = self.request_forced_detection();
                 self.sync_checking();
                 effects
             }
+            MenuCommand::Copy(text) => self.copy_from_menu(&text),
+            MenuCommand::Update => self.on_update_command(),
+            MenuCommand::TestNotify { mode, sound } => self.test_notify(mode, sound),
             MenuCommand::None => Vec::new(),
+        }
+    }
+
+    /// Puts `text` on the host clipboard (OSC 52) and says so in the menu
+    /// footer and the notice. A text too large for one sequence is refused.
+    /// The test action: Off has nothing to fire and says so; any other mode
+    /// goes to the runtime, which reports what happened.
+    fn test_notify(&mut self, mode: NotifyMode, sound: bool) -> Vec<Effect> {
+        if mode == NotifyMode::Off {
+            if let Some(menu) = self.menu.as_mut() {
+                menu.set_test_report("notify is off".to_owned());
+            }
+            return Vec::new();
+        }
+        if let Some(menu) = self.menu.as_mut() {
+            menu.set_test_report("test running".to_owned());
+        }
+        vec![Effect::NotifyTest {
+            mode,
+            sound: plays_sound(mode, sound),
+        }]
+    }
+
+    fn copy_from_menu(&mut self, text: &str) -> Vec<Effect> {
+        let Some(menu) = self.menu.as_mut() else {
+            return Vec::new();
+        };
+        match osc52(text) {
+            Ok(sequence) => {
+                let said = match text.chars().count() {
+                    1 => "Copied 1 character".to_string(),
+                    n => format!("Copied {n} characters"),
+                };
+                menu.set_copied(said.clone());
+                self.notice = Some(said);
+                vec![Effect::SetClipboard(sequence)]
+            }
+            Err(TooLarge) => {
+                menu.set_error("Too large to copy".to_string());
+                Vec::new()
+            }
         }
     }
 
@@ -1423,7 +1741,7 @@ impl App {
         self.new_tab_with(NewPane::Shell)
     }
 
-    /// `new_tab` for any kind of pane; only a shell is spawned.
+    /// `new_tab` for any kind of pane; a shell or an update job is spawned.
     fn new_tab_with(&mut self, kind: NewPane) -> Vec<Effect> {
         let cwd = self.inherited_cwd();
         let id = self.ids.alloc();
@@ -1436,14 +1754,40 @@ impl App {
         self.activate(self.tabs.len() - 1);
         self.refresh_screen();
         let size = body_size(self.screen.body);
+        let spec = self.spec_for(&kind, cwd, size);
         let state = self.new_state(kind, size);
         let spawn = matches!(state.content, PaneContent::Pty(_));
         self.panes.insert(id, state);
         let mut effects = self.relayout();
         if spawn {
-            effects.push(Effect::SpawnPane(id, self.spawn_spec(cwd, size)));
+            effects.push(Effect::SpawnPane(id, spec));
         }
         effects
+    }
+
+    /// How to start the child of a new pane of `kind`.
+    fn spec_for(&self, kind: &NewPane, cwd: Option<PathBuf>, size: PaneSize) -> SpawnSpec {
+        match kind {
+            NewPane::Update {
+                program,
+                root,
+                path,
+                ..
+            } => {
+                // Home, else the root: never the cwd of a pane, where a
+                // `rust-toolchain` or `.cargo/config` of a project would
+                // change what gets installed.
+                let home = self.home.as_deref().filter(|h| (self.dir_exists)(h));
+                let cwd = home.unwrap_or(Path::new("/")).to_path_buf();
+                let mut spec = SpawnSpec::new(None, cwd, size);
+                spec.program = program.clone();
+                spec.args = crate::core::update::install_args(root.to_str().unwrap_or_default());
+                spec.report_status = true;
+                spec.env_os.push(("PATH".into(), path.clone()));
+                spec
+            }
+            NewPane::Shell | NewPane::Chat(_) => self.spawn_spec(cwd, size),
+        }
     }
 
     /// Drops tab `index` and its panes. The tab that takes its index becomes
@@ -1514,6 +1858,26 @@ impl App {
     fn new_state(&self, kind: NewPane, size: PaneSize) -> PaneState {
         match kind {
             NewPane::Shell => PaneState::new(size, self.hostname.as_deref()),
+            NewPane::Update {
+                program,
+                root,
+                version,
+                ..
+            } => {
+                let mut state = PaneState::new(size, self.hostname.as_deref());
+                if let Some(pty) = state.pty_mut() {
+                    // What is about to run, in lazarobox's own words, before
+                    // anything cargo prints.
+                    let args = crate::core::update::install_args(root.to_str().unwrap_or_default());
+                    let line = crate::core::update::running_text(&program, &args);
+                    pty.emu.feed(format!("{line}\r\n").as_bytes());
+                    pty.update = Some(UpdateRun {
+                        version,
+                        state: RunState::Running,
+                    });
+                }
+                state
+            }
             NewPane::Chat(chat) => PaneState::chat(size, *chat),
         }
     }
@@ -1583,8 +1947,18 @@ impl App {
         // A turn ends once: later events of it are dropped above, so a pane
         // rings at most once per answer.
         let focus = self.tab().focus;
-        if finished && should_bell(focus, self.window_focused, id, how, self.ai.notify()) {
-            effects.push(Effect::Bell);
+        let mode = self.ai.notify();
+        if finished && should_notify(focus, self.window_focused, id, how, mode) {
+            effects.push(match mode {
+                NotifyMode::Bell => Effect::Bell,
+                // The runtime knows whether a desktop notification can be
+                // sent; the body is fixed text, never the answer.
+                _ => Effect::Notify {
+                    mode,
+                    body: body(id, how),
+                    sound: plays_sound(mode, self.ai.notify_sound()),
+                },
+            });
         }
         effects
     }
@@ -1942,7 +2316,11 @@ impl App {
                     vec![Effect::WritePty(id, reply)]
                 }
             }
-            PtyEvent::Exited => self.remove_pane(id),
+            PtyEvent::Status(code) => {
+                self.update_ended(id, UpdateEnded::Code(code));
+                Vec::new()
+            }
+            PtyEvent::Exited => self.on_pty_exited(id),
         }
     }
 }
@@ -5831,6 +6209,8 @@ mod app_tests {
                     status,
                     models: Vec::new(),
                     version: None,
+                    model_labels: Vec::new(),
+                    diagnostics: Default::default(),
                 })
                 .collect(),
         }
@@ -5842,6 +6222,61 @@ mod app_tests {
             .iter()
             .map(|e| status_text(a.engines(), e.id))
             .collect()
+    }
+
+    #[test]
+    fn a_forced_detection_starts_when_idle_and_is_single_flight() {
+        let mut a = app();
+        assert_eq!(a.request_forced_detection(), vec![Effect::RedetectEngines]);
+        assert_eq!(a.request_detection(), Vec::<Effect>::new());
+    }
+
+    #[test]
+    fn a_refresh_during_a_normal_run_leads_to_exactly_one_forced_run_after_it() {
+        use crate::core::ai::Status;
+        let mut a = app();
+        assert_eq!(a.request_detection(), vec![Effect::DetectEngines]);
+        assert_eq!(a.request_forced_detection(), Vec::<Effect>::new());
+        assert!(a.detecting_now(), "still refreshing while it waits");
+        let first = a.update(AppEvent::EnginesDetected(detection(Status::NotRunning)));
+        assert_eq!(first, vec![Effect::RedetectEngines]);
+        assert!(a.detecting_now(), "the follow-up is in flight");
+        let second = a.update(AppEvent::EnginesDetected(detection(Status::NotRunning)));
+        assert_eq!(second, Vec::<Effect>::new(), "and no third run");
+        assert!(!a.detecting_now());
+    }
+
+    #[test]
+    fn pressing_refresh_twice_in_flight_gives_one_follow_up() {
+        use crate::core::ai::Status;
+        let mut a = app();
+        a.request_detection();
+        a.request_forced_detection();
+        a.request_forced_detection();
+        let first = a.update(AppEvent::EnginesDetected(detection(Status::NotRunning)));
+        assert_eq!(first, vec![Effect::RedetectEngines]);
+        let second = a.update(AppEvent::EnginesDetected(detection(Status::NotRunning)));
+        assert_eq!(second, Vec::<Effect>::new());
+    }
+
+    #[test]
+    fn a_normal_request_in_flight_adds_nothing() {
+        use crate::core::ai::Status;
+        let mut a = app();
+        a.request_detection();
+        assert_eq!(a.request_detection(), Vec::<Effect>::new());
+        let done = a.update(AppEvent::EnginesDetected(detection(Status::NotRunning)));
+        assert_eq!(done, Vec::<Effect>::new());
+    }
+
+    #[test]
+    fn a_refresh_during_a_forced_run_needs_no_follow_up() {
+        use crate::core::ai::Status;
+        let mut a = app();
+        a.request_forced_detection();
+        assert_eq!(a.request_forced_detection(), Vec::<Effect>::new());
+        let done = a.update(AppEvent::EnginesDetected(detection(Status::NotRunning)));
+        assert_eq!(done, Vec::<Effect>::new());
     }
 
     #[test]
@@ -5912,6 +6347,8 @@ mod app_tests {
                         status,
                         models: models.into_iter().map(str::to_owned).collect(),
                         version: None,
+                        model_labels: Vec::new(),
+                        diagnostics: Default::default(),
                     }
                 })
                 .collect(),
@@ -5946,7 +6383,7 @@ mod app_tests {
         let mut a = ai_app();
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
-        for _ in 0..4 {
+        for _ in 0..7 {
             a.update(key('j'));
         }
         let before = a.menu().cloned();
@@ -5955,7 +6392,7 @@ mod app_tests {
         assert_eq!(a.update(key('R')), Vec::<Effect>::new(), "uppercase, bare");
         let held = kind(KeyCode::Char('r'), KeyEventKind::Repeat);
         assert_eq!(a.update(held), Vec::<Effect>::new(), "repeat");
-        assert_eq!(a.update(key('r')), vec![Effect::DetectEngines], "press");
+        assert_eq!(a.update(key('r')), vec![Effect::RedetectEngines], "press");
         assert_eq!(a.update(key('r')), Vec::<Effect>::new(), "in flight");
         // Only the refreshing cue differs from before the press.
         let mut expected = before.unwrap();
@@ -5970,7 +6407,7 @@ mod app_tests {
         let mut a = ai_app();
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
-        for _ in 0..5 {
+        for _ in 0..8 {
             a.update(key('j'));
         }
         let enter = || code(KeyCode::Enter);
@@ -6028,7 +6465,7 @@ mod app_tests {
     /// Opens the picker of `Set all tasks` on `none` and chooses it: the
     /// general assignment goes from `ollama` to unset.
     fn clear_all(a: &mut App) {
-        for _ in 0..3 {
+        for _ in 0..6 {
             a.update(key('j'));
         }
         a.update(code(KeyCode::Enter));
@@ -6074,7 +6511,7 @@ mod app_tests {
     }
 
     // Spec (config-menu, engram-memory): the privacy warning follows the
-    // draft flow. `k` twice from the first row wraps to `Memory`.
+    // draft flow. `k` once from the first row wraps to `Memory`.
     fn memory_warning_open() -> App {
         let mut a = ai_app();
         open_menu(&mut a);
@@ -6142,33 +6579,34 @@ mod app_tests {
         assert!(!menu.ai_draft().memory.enabled);
     }
 
-    /// Moves the menu selection to the `Context` row (before `Memory`,
-    /// `Notify` and `Tools`, the last one).
+    /// Moves the menu selection to the `Context` row (before `Memory` and
+    /// `Tools`, the last one).
     fn to_context_row(a: &mut App) {
-        for _ in 0..4 {
+        for _ in 0..3 {
             a.update(key('k'));
         }
     }
 
     /// Moves the menu selection to the `Profile` row (before `Context`).
     fn to_profile_row(a: &mut App) {
-        for _ in 0..5 {
+        for _ in 0..4 {
             a.update(key('k'));
         }
     }
 
-    /// Moves the menu selection to the `Memory` row (before `Notify` and
-    /// `Tools`, the last one).
-    fn to_memory_row(a: &mut App) {
-        for _ in 0..3 {
-            a.update(key('k'));
-        }
-    }
-
-    /// Moves the menu selection to the `Notify` row (before `Tools`).
+    /// Moves the menu selection to the `Notify` row (right after `Mouse`).
     fn to_notify_row(a: &mut App) {
-        a.update(key('k'));
-        a.update(key('k'));
+        for _ in 0..3 {
+            a.update(key('j'));
+        }
+    }
+
+    /// Moves the menu selection to the `Memory` row (before `Tools`, the last
+    /// one).
+    fn to_memory_row(a: &mut App) {
+        for _ in 0..2 {
+            a.update(key('k'));
+        }
     }
 
     // Spec (config-menu): Profile row. Cycling is silent, `s` saves only the
@@ -6243,26 +6681,94 @@ mod app_tests {
     #[test]
     fn the_notify_row_saves_only_the_flag_and_updates_the_app() {
         let mut a = ai_app();
-        assert!(!a.ai().notify());
+        assert_eq!(a.ai().notify(), NotifyMode::Off);
         open_menu(&mut a);
         to_notify_row(&mut a);
         assert_eq!(a.update(key('l')), Vec::<Effect>::new(), "no ResizePty");
-        assert!(a.menu().unwrap().ai_draft().notify());
-        assert!(!a.ai().notify(), "not saved yet");
+        assert_eq!(a.menu().unwrap().ai_draft().notify(), NotifyMode::Auto);
+        assert_eq!(a.ai().notify(), NotifyMode::Off, "not saved yet");
         let edit = ConfigEdit {
             table: "ai",
             key: "notify",
-            value: "true".into(),
+            value: "auto".into(),
         };
         assert_eq!(a.update(key('s')), vec![Effect::SaveConfig(vec![edit])]);
         a.update(AppEvent::ConfigSaved);
         assert!(a.menu().is_none());
-        assert!(a.ai().notify());
+        assert_eq!(a.ai().notify(), NotifyMode::Auto);
         open_menu(&mut a);
         to_notify_row(&mut a);
         a.update(key('l'));
         a.update(esc());
-        assert!(a.ai().notify(), "Esc keeps the saved value");
+        assert_eq!(
+            a.ai().notify(),
+            NotifyMode::Auto,
+            "Esc keeps the saved value"
+        );
+    }
+
+    // Test action: `t` on the Notify row fires the mode shown, saved or not.
+    fn on_notify_row(mode_presses: usize) -> App {
+        let mut a = ai_app();
+        open_menu(&mut a);
+        to_notify_row(&mut a);
+        for _ in 0..mode_presses {
+            a.update(key('l'));
+        }
+        a
+    }
+
+    #[test]
+    fn t_on_the_notify_row_asks_the_runtime_for_one_test_with_the_draft_mode() {
+        let mut a = on_notify_row(1); // off -> auto, unsaved
+        assert_eq!(a.ai().notify(), NotifyMode::Off);
+        assert_eq!(
+            a.update(key('t')),
+            vec![Effect::NotifyTest {
+                mode: NotifyMode::Auto,
+                sound: true
+            }]
+        );
+        assert!(a.menu().is_some(), "the menu stays open");
+        assert_eq!(a.menu().unwrap().test_report(), Some("test running"));
+    }
+
+    #[test]
+    fn t_with_the_bell_mode_does_not_ask_for_a_sound() {
+        let mut a = on_notify_row(3); // off -> auto -> desktop -> bell
+        assert_eq!(
+            a.update(key('t')),
+            vec![Effect::NotifyTest {
+                mode: NotifyMode::Bell,
+                sound: false
+            }]
+        );
+    }
+
+    #[test]
+    fn t_with_notify_off_says_so_in_the_footer_and_emits_nothing() {
+        let mut a = on_notify_row(0);
+        assert_eq!(a.update(key('t')), Vec::<Effect>::new());
+        assert_eq!(
+            a.menu().unwrap().footer(),
+            crate::core::menu::Footer::Hint("notify is off".into())
+        );
+    }
+
+    #[test]
+    fn the_runtime_report_lands_in_the_menu_footer() {
+        let mut a = on_notify_row(1);
+        a.update(key('t'));
+        a.take_dirty();
+        a.update(AppEvent::NotifyTested("sent: bell + desktop".to_owned()));
+        assert!(a.take_dirty());
+        assert_eq!(
+            a.menu().unwrap().footer(),
+            crate::core::menu::Footer::Hint("sent: bell + desktop".into())
+        );
+        // With the menu closed the report is dropped, not a crash.
+        a.update(esc());
+        a.update(AppEvent::NotifyTested("late".to_owned()));
     }
 
     // Spec (agent-tools, config menu): `s` saves only `ai.tools.enabled` and
@@ -6354,7 +6860,7 @@ mod app_tests {
 
     /// Selection on the first AI task row.
     fn to_task_row(a: &mut App) {
-        for _ in 0..5 {
+        for _ in 0..8 {
             a.update(key('j'));
         }
     }
@@ -6492,7 +6998,7 @@ mod app_tests {
         a.update(AppEvent::EnginesDetected(machine()));
         to_task_row(&mut a);
         assert!(footer_of(&a).starts_with("j/k move"));
-        assert_eq!(a.update(key('r')), vec![Effect::DetectEngines]);
+        assert_eq!(a.update(key('r')), vec![Effect::RedetectEngines]);
         assert!(
             footer_of(&a).starts_with("refreshing…"),
             "{}",
@@ -6585,7 +7091,7 @@ mod app_tests {
         a.update(AppEvent::EnginesDetected(machine()));
         assert_eq!(a.menu().unwrap().ai_draft(), saved, "refreshed");
         // Change an unrelated setting: the save carries no [ai] key.
-        for _ in 0..4 {
+        for _ in 0..7 {
             a.update(key('k'));
         }
         a.update(key('l'));
@@ -6659,6 +7165,15 @@ mod app_tests {
 
     /// A resumed conversation and its engram session (engram-memory 9.6).
     mod chat_resume_memory;
+
+    /// The update notice: statusline mark and menu note.
+    mod update;
+
+    /// Enter on the Updates row: the install pane and the copy fallback.
+    mod update_install;
+
+    /// Copying the reason behind a degraded engine from the AI picker.
+    mod menu_copy;
 
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.
