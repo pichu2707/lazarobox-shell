@@ -2563,6 +2563,21 @@ async fn a_wired_gemini_runs_in_a_private_work_folder_with_the_settings_and_the_
     assert!(!args.iter().any(|a| a.contains(TOKEN)), "{args:?}");
     assert!(!lab.recorded("helper_args").contains(TOKEN));
     assert!(!lab.recorded("env").contains(TOKEN));
+    // `--skip-trust` trusts the folder too late: the env var does it in time.
+    assert!(
+        lab.recorded("env")
+            .lines()
+            .any(|l| l == "GEMINI_CLI_TRUST_WORKSPACE=true"),
+        "{}",
+        lab.recorded("env")
+    );
+    // Trusting the folder lets gemini read the user's servers: the allow-list
+    // is what keeps them out.
+    assert!(
+        args.iter()
+            .any(|a| a == "--allowed-mcp-server-names=lazarobox"),
+        "{args:?}"
+    );
     let helper = lab.recorded("helper_args");
     let helper: Vec<&str> = helper.split('\0').collect();
     let has = |flag: &str, path: &str| helper.windows(2).any(|w| w == [flag, path]);
@@ -2627,6 +2642,7 @@ async fn assert_gemini_text_fallback(lab: &Lab, env: &CliEnv) {
     assert_eq!(lab.recorded("work_during"), "");
     assert_eq!(lab.recorded("settings_copy"), "");
     assert!(!lab.recorded("env").contains(TOKEN));
+    assert!(!lab.recorded("env").contains("GEMINI_CLI_TRUST_WORKSPACE"));
 }
 
 #[tokio::test]

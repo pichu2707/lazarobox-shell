@@ -254,7 +254,7 @@ pub fn gemini(shim: &Path, policy: &Path, wire: &McpWire) -> Option<GeminiWiring
     Some(GeminiWiring {
         settings: serde_json::to_string_pretty(&doc).ok()?,
         policy: format!(
-            "[[rule]]\nmcpName = {}\ndecision = \"allow\"\npriority = 999\n",
+            "[[rule]]\nmcpName = {}\ntoolName = \"*\"\ndecision = \"allow\"\npriority = 999\n",
             toml_string(SERVER)
         ),
         args: vec![
@@ -456,7 +456,9 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0]["mcpName"].as_str(), Some("lazarobox"));
         assert_eq!(rules[0]["decision"].as_str(), Some("allow"));
-        assert!(rules[0].get("toolName").is_none(), "no tool wildcard");
+        // gemini's schema requires `toolName` even with `mcpName` set.
+        assert_eq!(rules[0]["toolName"].as_str(), Some("*"));
+        assert_eq!(rules[0]["priority"].as_integer(), Some(999));
     }
 
     #[test]

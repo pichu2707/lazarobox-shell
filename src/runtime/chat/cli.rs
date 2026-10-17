@@ -753,14 +753,17 @@ fn wire_mcp(env: &CliEnv, job: &Job, dirs: &Dirs) -> Option<Wired> {
             (wiring.args, Vec::new(), vars.collect())
         }
         // gemini reads the workspace settings of its working folder; the token
-        // is in that file only (0600), and in none of its argv or env.
+        // is in that file only (0600), and in none of its argv or env. The
+        // folder is trusted by env var: `--skip-trust` sets it only after the
+        // workspace settings were read as untrusted, which drops `mcpServers`.
         Cli::Gemini => {
             let Some((args, work)) = write_gemini(shim, dirs, wire) else {
                 unwrite_mcp(dirs);
                 return None;
             };
             cwd = Some(work);
-            (args, Vec::new(), Vec::new())
+            let trust = vec![("GEMINI_CLI_TRUST_WORKSPACE".into(), "true".into())];
+            (args, Vec::new(), trust)
         }
     };
     Some(Wired {

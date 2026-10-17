@@ -23,5 +23,6 @@ settings.json:
 policy:
 [[rule]]
 mcpName = "lazarobox"
+toolName = "*"
 decision = "allow"
 priority = 999
