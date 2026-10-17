@@ -34,9 +34,14 @@ use crate::{
     core::ai::{
         chat::{
             approval::{ApprovalAsk, ask_for},
-            engine::{CallId, Decision, StreamEvent, ToolStatus},
+            engine::{Answer, CallId, Decision, StreamEvent, ToolStatus},
         },
-        tools::{Call, Locality, command, paths::display_target, summary::clip},
+        tools::{
+            Call, Locality, command,
+            paths::display_target,
+            report::{self, RunReport},
+            summary::clip,
+        },
     },
     runtime::mcp::{Dispatch, Outcome},
 };
@@ -54,7 +59,7 @@ pub const NOT_APPROVED: &str = "the user did not approve it";
 /// delivered the instant the announcement is seen. A wait registered only
 /// when the future is first polled could miss it.
 pub trait Approver: Send + Sync {
-    fn ask(&self, id: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Decision>;
+    fn ask(&self, id: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Answer>;
 }
 
 /// The approver of a turn that has none: it denies every call. A turn that
@@ -65,8 +70,8 @@ pub trait Approver: Send + Sync {
 pub struct Unwired;
 
 impl Approver for Unwired {
-    fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Decision> {
-        async { Decision::Denied(NOT_APPROVED) }.boxed()
+    fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
+        async { Decision::Denied(NOT_APPROVED).into() }.boxed()
     }
 }
 
@@ -202,6 +207,21 @@ const UNSHOWABLE: &str = "path cannot be shown safely";
 const TYPED_TEXT: &str = "The command was typed into the user's pane. Enter was not pressed: \
                           the user runs it themselves.";
 
+/// The result of a command the app ran in the pane: the words of the report,
+/// with the output cleaned, redacted and wrapped here, off the UI thread.
+///
+/// The fourth element is the system line of a `cd` (`pane N: <cmd> → <cwd>`),
+/// which the app emits once the run effects are wired (S4a.W3).
+fn ran(call: &Call, report: &RunReport) -> (Outcome, ToolStatus, String, Option<String>) {
+    let command = match call {
+        Call::RunInPane { command } => command.as_str(),
+        _ => "",
+    };
+    let words = report::words(command, report, super::new_nonce().as_deref());
+    let (outcome, status, summary) = ended(ToolStatus::Ok, words.text, &words.row);
+    (outcome, status, summary, words.system)
+}
+
 async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outcome {
     let id = CallId(host.next.fetch_add(1, Ordering::Relaxed));
     // The command is the sanitizer's, so the ask shows what would be typed.
@@ -266,9 +286,17 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     let (outcome, status, summary) = match checked {
         Err(reason) => ended(ToolStatus::Error, reason.to_owned(), reason),
         Ok(call) => {
-            let decision = match pending {
+            let answer = match pending {
                 Some(pending) => pending.await,
-                None => Decision::Sent,
+                None => Decision::Sent.into(),
+            };
+            let decision = match answer {
+                Answer::Decided(decision) => decision,
+                Answer::Ran(report) => {
+                    let (outcome, status, summary, _system) = ran(&call, &report);
+                    owed.answer(status, &summary);
+                    return outcome;
+                }
             };
             match (decision, call) {
                 (Decision::Denied(reason), _) => {

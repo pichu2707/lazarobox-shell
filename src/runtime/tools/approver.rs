@@ -10,7 +10,7 @@
 //! its waits through `end_turn`.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
@@ -21,8 +21,9 @@ use super::{Approver, Pending, pending::Waiting};
 use crate::core::{
     ai::chat::{
         approval::ApprovalAsk,
-        engine::{CallId, Decision},
+        engine::{Answer, CallId, Decision},
     },
+    ai::tools::report::RunReport,
     layout::PaneId,
 };
 
@@ -34,7 +35,16 @@ type Key = (PaneId, u64, CallId);
 /// The calls waiting for the user's answer, for every chat of the app.
 #[derive(Default)]
 pub struct Waits {
-    waiting: Mutex<HashMap<Key, oneshot::Sender<Decision>>>,
+    waiting: Mutex<HashMap<Key, oneshot::Sender<Answer>>>,
+    /// Turns and chats that ended: `park` refuses them. A new `ask` under the
+    /// same key revives it. Lock order: `waiting`, then `ended`.
+    ended: Mutex<Ended>,
+}
+
+#[derive(Default)]
+struct Ended {
+    turns: HashSet<(PaneId, u64)>,
+    panes: HashSet<PaneId>,
 }
 
 impl Waits {
@@ -42,7 +52,7 @@ impl Waits {
         Arc::new(Self::default())
     }
 
-    fn map(&self) -> MutexGuard<'_, HashMap<Key, oneshot::Sender<Decision>>> {
+    fn map(&self) -> MutexGuard<'_, HashMap<Key, oneshot::Sender<Answer>>> {
         self.waiting.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -67,7 +77,41 @@ impl Waits {
     /// belongs to another turn.
     pub fn decide(&self, pane: PaneId, turn: u64, call: CallId, decision: Decision) -> bool {
         match self.map().remove(&(pane, turn, call)) {
-            Some(wait) => wait.send(decision).is_ok(),
+            Some(wait) => wait.send(decision.into()).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Puts a claimed wait back after the command was written, so the turn and
+    /// chat cleanup, and the drop of the call, also cover the running call.
+    /// `false` (and the sender is dropped, which ends the call as `ENDED`)
+    /// when the call is gone, or its turn or chat already ended. The checks
+    /// run under the lock, so an `end_*` or a dropped call cannot slip in
+    /// between the check and the insert.
+    pub fn park(
+        &self,
+        pane: PaneId,
+        turn: u64,
+        call: CallId,
+        wait: oneshot::Sender<Answer>,
+    ) -> bool {
+        let mut waiting = self.map();
+        let dead = {
+            let ended = self.ended();
+            ended.panes.contains(&pane) || ended.turns.contains(&(pane, turn))
+        };
+        if dead || wait.is_closed() {
+            return false;
+        }
+        waiting.insert((pane, turn, call), wait);
+        true
+    }
+
+    /// Ends a parked call with the report of its run. `false` when nothing is
+    /// parked under the key (the turn ended, the call was dropped).
+    pub fn finish(&self, pane: PaneId, turn: u64, call: CallId, report: Box<RunReport>) -> bool {
+        match self.map().remove(&(pane, turn, call)) {
+            Some(wait) => wait.send(Answer::Ran(report)).is_ok(),
             None => false,
         }
     }
@@ -76,18 +120,26 @@ impl Waits {
     /// can answer it now. `None` when nothing waits (the turn ended, the call
     /// was cancelled or answered). An effect that must happen only if the call
     /// is still owed an answer takes the wait first and sends on the result.
-    pub fn take(&self, pane: PaneId, turn: u64, call: CallId) -> Option<oneshot::Sender<Decision>> {
+    pub fn take(&self, pane: PaneId, turn: u64, call: CallId) -> Option<oneshot::Sender<Answer>> {
         self.map().remove(&(pane, turn, call))
+    }
+
+    fn ended(&self) -> MutexGuard<'_, Ended> {
+        self.ended.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Denies every call of `pane`: its chat closed.
     pub fn end_pane(&self, pane: PaneId) {
-        self.map().retain(|(p, _, _), _| *p != pane);
+        let mut waiting = self.map();
+        waiting.retain(|(p, _, _), _| *p != pane);
+        self.ended().panes.insert(pane);
     }
 
     /// Denies every call of one turn: the turn is over.
     pub fn end_turn(&self, pane: PaneId, turn: u64) {
-        self.map().retain(|(p, t, _), _| (*p, *t) != (pane, turn));
+        let mut waiting = self.map();
+        waiting.retain(|(p, t, _), _| (*p, *t) != (pane, turn));
+        self.ended().turns.insert((pane, turn));
     }
 
     #[cfg(test)]
@@ -117,10 +169,16 @@ impl Drop for Entry {
 }
 
 impl Approver for ForTurn {
-    fn ask(&self, id: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Decision> {
+    fn ask(&self, id: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
         let (answer, rx) = oneshot::channel();
         let key = (self.pane, self.turn, id);
-        self.waits.map().insert(key, answer);
+        {
+            let mut waiting = self.waits.map();
+            let mut ended = self.waits.ended();
+            ended.panes.remove(&self.pane);
+            ended.turns.remove(&(self.pane, self.turn));
+            waiting.insert(key, answer);
+        }
         let entry = Entry {
             waits: self.waits.clone(),
             key,
@@ -129,7 +187,7 @@ impl Approver for ForTurn {
         async move {
             let _entry = entry;
             // A sender dropped without an answer is an ended chat or turn.
-            rx.await.unwrap_or(Decision::Denied(ENDED))
+            rx.await.unwrap_or(Decision::Denied(ENDED).into())
         }
         .boxed()
     }
@@ -140,6 +198,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::core::ai::tools::settle::End;
 
     const ASK: ApprovalAsk = ApprovalAsk::Read {
         path: String::new(),
@@ -159,7 +218,7 @@ mod tests {
         let approver = waits.approver(pane(1), 3, Pending::new());
         let wait = approver.ask(CallId(9), &read("/a"));
         assert!(waits.decide(pane(1), 3, CallId(9), Decision::Sent));
-        assert_eq!(wait.await, Decision::Sent);
+        assert_eq!(wait.await, Decision::Sent.into());
         assert_eq!(waits.len(), 0);
     }
 
@@ -173,7 +232,7 @@ mod tests {
         let wait = approver.ask(CallId(1), &read("/a"));
         assert_eq!(waits.len(), 1);
         assert!(waits.decide(pane(1), 1, CallId(1), Decision::Denied("no")));
-        assert_eq!(wait.await, Decision::Denied("no"));
+        assert_eq!(wait.await, Decision::Denied("no").into());
     }
 
     #[tokio::test]
@@ -199,8 +258,8 @@ mod tests {
         let sender = waits.take(pane(1), 1, CallId(1)).expect("it waits");
         assert!(waits.take(pane(1), 1, CallId(1)).is_none(), "taken once");
         assert!(!waits.decide(pane(1), 1, CallId(1), Decision::Sent));
-        assert!(sender.send(Decision::Sent).is_ok());
-        assert_eq!(wait.await, Decision::Sent);
+        assert!(sender.send(Decision::Sent.into()).is_ok());
+        assert_eq!(wait.await, Decision::Sent.into());
         assert_eq!(waits.len(), 0);
     }
 
@@ -213,7 +272,7 @@ mod tests {
         assert!(waits.take(pane(1), 1, CallId(1)).is_none());
         drop(dropped);
         assert!(waits.take(pane(1), 1, CallId(2)).is_none());
-        assert_eq!(ended.await, Decision::Denied(ENDED));
+        assert_eq!(ended.await, Decision::Denied(ENDED).into());
     }
 
     #[tokio::test]
@@ -223,7 +282,7 @@ mod tests {
         let wait = approver.ask(CallId(1), &read("/a"));
         assert!(waits.decide(pane(1), 1, CallId(1), Decision::Sent));
         assert!(!waits.decide(pane(1), 1, CallId(1), Decision::Denied("late")));
-        assert_eq!(wait.await, Decision::Sent);
+        assert_eq!(wait.await, Decision::Sent.into());
     }
 
     #[tokio::test]
@@ -262,11 +321,11 @@ mod tests {
         let (a1, a2) = (a.ask(CallId(1), &ASK), a.ask(CallId(2), &ASK));
         let mut kept = b.ask(CallId(3), &ASK);
         waits.end_pane(pane(1));
-        assert_eq!(a1.await, Decision::Denied(ENDED));
-        assert_eq!(a2.await, Decision::Denied(ENDED));
+        assert_eq!(a1.await, Decision::Denied(ENDED).into());
+        assert_eq!(a2.await, Decision::Denied(ENDED).into());
         assert!((&mut kept).now_or_never().is_none());
         assert!(waits.decide(pane(2), 1, CallId(3), Decision::Sent));
-        assert_eq!(kept.await, Decision::Sent);
+        assert_eq!(kept.await, Decision::Sent.into());
     }
 
     #[tokio::test]
@@ -279,9 +338,9 @@ mod tests {
             .approver(pane(1), 2, Pending::new())
             .ask(CallId(2), &ASK);
         waits.end_turn(pane(1), 1);
-        assert_eq!(old.await, Decision::Denied(ENDED));
+        assert_eq!(old.await, Decision::Denied(ENDED).into());
         assert!(waits.decide(pane(1), 2, CallId(2), Decision::Sent));
-        assert_eq!(new.await, Decision::Sent);
+        assert_eq!(new.await, Decision::Sent.into());
     }
 
     // A timer never approves: however long the user takes, the call stays
@@ -295,5 +354,144 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(3600)).await;
         assert!((&mut wait).now_or_never().is_none());
         assert_eq!(waits.len(), 1);
+    }
+
+    fn report() -> Box<RunReport> {
+        Box::new(RunReport {
+            number: 2,
+            end: End::Settled,
+            cwd: None,
+            cd_target: None,
+            output: Some(String::new()),
+        })
+    }
+
+    // The runtime takes the wait, writes, then parks the sender again so the
+    // cleanup of the wait also covers the running call.
+    #[tokio::test]
+    async fn a_parked_call_is_finished_with_the_report() {
+        let waits = Waits::new();
+        let wait = waits
+            .approver(pane(1), 1, Pending::new())
+            .ask(CallId(1), &ASK);
+        let sender = waits.take(pane(1), 1, CallId(1)).expect("it waits");
+        waits.park(pane(1), 1, CallId(1), sender);
+        assert_eq!(waits.len(), 1);
+        assert!(
+            !waits.decide(pane(1), 1, CallId(2), Decision::Sent),
+            "other key"
+        );
+        assert!(waits.finish(pane(1), 1, CallId(1), report()));
+        assert_eq!(wait.await, Answer::Ran(report()));
+        assert!(!waits.finish(pane(1), 1, CallId(1), report()), "once");
+        assert_eq!(waits.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn ending_a_turn_or_chat_also_covers_a_parked_call() {
+        let waits = Waits::new();
+        let approver = waits.approver(pane(1), 1, Pending::new());
+        let (a, b) = (approver.ask(CallId(1), &ASK), approver.ask(CallId(2), &ASK));
+        for call in [CallId(1), CallId(2)] {
+            let sender = waits.take(pane(1), 1, call).expect("it waits");
+            waits.park(pane(1), 1, call, sender);
+        }
+        waits.end_turn(pane(1), 1);
+        assert_eq!(a.await, Decision::Denied(ENDED).into());
+        assert_eq!(waits.len(), 0);
+        let again = waits
+            .approver(pane(1), 2, Pending::new())
+            .ask(CallId(3), &ASK);
+        let sender = waits.take(pane(1), 2, CallId(3)).expect("it waits");
+        waits.park(pane(1), 2, CallId(3), sender);
+        waits.end_pane(pane(1));
+        assert_eq!(again.await, Decision::Denied(ENDED).into());
+        drop(b);
+    }
+
+    #[tokio::test]
+    async fn parking_a_call_whose_future_was_dropped_leaves_nothing() {
+        let waits = Waits::new();
+        let wait = waits
+            .approver(pane(1), 1, Pending::new())
+            .ask(CallId(1), &ASK);
+        let sender = waits.take(pane(1), 1, CallId(1)).expect("it waits");
+        drop(wait);
+        waits.park(pane(1), 1, CallId(1), sender);
+        assert_eq!(waits.len(), 0);
+    }
+
+    #[test]
+    fn a_decision_converts_and_stays_copy() {
+        fn copy<T: Copy>(_: T) {}
+        copy(Decision::Sent);
+        assert_eq!(
+            Answer::from(Decision::Busy(3)),
+            Answer::Decided(Decision::Busy(3))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_parked_call_of_an_ended_turn_or_chat_is_dropped() {
+        let waits = Waits::new();
+        let a = waits.approver(pane(1), 1, Pending::new());
+        let (w1, w2, w3) = (
+            a.ask(CallId(1), &ASK),
+            a.ask(CallId(2), &ASK),
+            waits
+                .approver(pane(2), 1, Pending::new())
+                .ask(CallId(3), &ASK),
+        );
+        let s1 = waits.take(pane(1), 1, CallId(1)).unwrap();
+        let s2 = waits.take(pane(1), 1, CallId(2)).unwrap();
+        let s3 = waits.take(pane(2), 1, CallId(3)).unwrap();
+        waits.end_turn(pane(1), 1);
+        waits.end_pane(pane(2));
+        assert!(!waits.park(pane(1), 1, CallId(1), s1), "turn ended");
+        assert!(!waits.park(pane(2), 1, CallId(3), s3), "chat ended");
+        assert_eq!(waits.len(), 0);
+        assert_eq!(
+            w1.await,
+            Decision::Denied(ENDED).into(),
+            "the dropped sender ends it"
+        );
+        assert_eq!(w3.await, Decision::Denied(ENDED).into());
+        // A later turn of the same chat is alive.
+        let w4 = waits
+            .approver(pane(1), 2, Pending::new())
+            .ask(CallId(4), &ASK);
+        let s4 = waits.take(pane(1), 2, CallId(4)).unwrap();
+        assert!(waits.park(pane(1), 2, CallId(4), s4));
+        drop((w2, w4, s2));
+    }
+
+    #[tokio::test]
+    async fn a_closed_sender_is_not_parked_and_a_new_ask_revives_a_key() {
+        let waits = Waits::new();
+        let approver = waits.approver(pane(1), 1, Pending::new());
+        let wait = approver.ask(CallId(1), &ASK);
+        let sender = waits.take(pane(1), 1, CallId(1)).unwrap();
+        drop(wait);
+        assert!(!waits.park(pane(1), 1, CallId(1), sender));
+        waits.end_turn(pane(1), 1);
+        let again = approver.ask(CallId(2), &ASK);
+        let sender = waits.take(pane(1), 1, CallId(2)).unwrap();
+        assert!(
+            waits.park(pane(1), 1, CallId(2), sender),
+            "a new wait is alive"
+        );
+        drop(again);
+    }
+
+    // A consumer of the taken sender still answers with a plain Decision.
+    #[tokio::test]
+    async fn a_decision_sent_through_the_taken_sender_reaches_the_call() {
+        let waits = Waits::new();
+        let wait = waits
+            .approver(pane(1), 1, Pending::new())
+            .ask(CallId(1), &ASK);
+        let sender = waits.take(pane(1), 1, CallId(1)).unwrap();
+        assert!(sender.send(Decision::Busy(3).into()).is_ok());
+        assert_eq!(wait.await, Answer::Decided(Decision::Busy(3)));
     }
 }

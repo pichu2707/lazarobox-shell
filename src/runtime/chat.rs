@@ -36,7 +36,9 @@ use crate::core::{
             adapters::{Invocation, Wire, adapter_for},
             claude::ClaudeDecoder,
             codex::CodexDecoder,
-            engine::{CallId, ChatError, ChatRequest, Decision, StreamEvent, Tools, locality},
+            engine::{
+                Answer, CallId, ChatError, ChatRequest, Decision, StreamEvent, Tools, locality,
+            },
             gemini::GeminiDecoder,
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
@@ -623,7 +625,7 @@ impl Chats {
         pane: PaneId,
         turn: u64,
         call: CallId,
-    ) -> Option<tokio::sync::oneshot::Sender<Decision>> {
+    ) -> Option<tokio::sync::oneshot::Sender<Answer>> {
         self.waits.take(pane, turn, call)
     }
 

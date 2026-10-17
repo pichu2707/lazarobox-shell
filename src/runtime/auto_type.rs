@@ -6,7 +6,10 @@ use std::path::Path;
 
 use tokio::sync::oneshot;
 
-use crate::core::{ai::chat::engine::Decision, pty::PtyHandle};
+use crate::core::{
+    ai::chat::engine::{Answer, Decision},
+    pty::PtyHandle,
+};
 
 /// Why nothing was typed into a pane that no longer exists.
 pub const GONE: &str = crate::app::PANE_GONE;
@@ -46,7 +49,7 @@ pub fn run_if_idle(
     number: usize,
     checked: &Path,
     bytes: Vec<u8>,
-    claim: impl FnOnce() -> Option<oneshot::Sender<Decision>>,
+    claim: impl FnOnce() -> Option<oneshot::Sender<Answer>>,
 ) -> Result<(), &'static str> {
     let Some(pane) = pane else {
         return Err(GONE);
@@ -65,7 +68,7 @@ pub fn run_if_idle(
     }
     if let Some(answer) = claim() {
         pane.write(bytes);
-        let _ = answer.send(Decision::Ran(number));
+        let _ = answer.send(Decision::Ran(number).into());
     }
     Ok(())
 }
@@ -130,8 +133,8 @@ mod tests {
     fn claim_of(
         log: &Arc<Mutex<FakeLog>>,
     ) -> (
-        tokio::sync::oneshot::Receiver<Decision>,
-        impl FnOnce() -> Option<tokio::sync::oneshot::Sender<Decision>>,
+        tokio::sync::oneshot::Receiver<Answer>,
+        impl FnOnce() -> Option<tokio::sync::oneshot::Sender<Answer>>,
     ) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let log = log.clone();
@@ -158,7 +161,7 @@ mod tests {
         );
         assert_eq!(done, Ok(()));
         assert_eq!(log.lock().unwrap().writes, vec![b"cd x\r".to_vec()]);
-        assert_eq!(rx.try_recv(), Ok(Decision::Ran(3)));
+        assert_eq!(rx.try_recv(), Ok(Decision::Ran(3).into()));
     }
 
     #[test]
@@ -171,7 +174,7 @@ mod tests {
         ];
         for (cwd, foreground, want) in cases {
             let (mut pane, log) = run_pty(cwd, foreground);
-            let claim = || -> Option<tokio::sync::oneshot::Sender<Decision>> { panic!("claimed") };
+            let claim = || -> Option<tokio::sync::oneshot::Sender<Answer>> { panic!("claimed") };
             let done = run_if_idle(
                 Some(&mut pane),
                 2,
@@ -200,7 +203,7 @@ mod tests {
             b"",
         ] {
             let (mut pane, log) = run_pty(Some("/home/u"), Some(true));
-            let claim = || -> Option<tokio::sync::oneshot::Sender<Decision>> { panic!("claimed") };
+            let claim = || -> Option<tokio::sync::oneshot::Sender<Answer>> { panic!("claimed") };
             let done = run_if_idle(
                 Some(&mut pane),
                 1,
@@ -215,7 +218,7 @@ mod tests {
 
     #[test]
     fn a_pane_that_is_gone_and_a_call_that_is_over_write_nothing() {
-        let claim = || -> Option<tokio::sync::oneshot::Sender<Decision>> { None };
+        let claim = || -> Option<tokio::sync::oneshot::Sender<Answer>> { None };
         assert_eq!(
             run_if_idle(None, 1, Path::new("/"), b"ls\r".to_vec(), claim),
             Err(GONE)
