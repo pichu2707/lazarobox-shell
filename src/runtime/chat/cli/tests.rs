@@ -2281,13 +2281,75 @@ async fn a_wired_codex_gets_the_overrides_and_the_jail_grant_and_the_token_only_
     );
     assert!(!args.iter().any(|a| a.contains(TOKEN)), "{args:?}");
     assert!(!lab.recorded("helper_args").contains(TOKEN));
-    // codex has no config file: nothing was written.
-    assert!(lab.recorded("mcp_during").trim().is_empty());
+    // codex has no config file: the turn's folder held no `mcp.json` while it
+    // ran (the fake records one if it finds it, and it is not there).
+    assert_eq!(
+        lab.recorded("mcp_during"),
+        "",
+        "no config file while it ran"
+    );
+    assert!(!args.iter().any(|a| a.contains("mcp.json")), "{args:?}");
     let helper = lab.recorded("helper_args");
     let helper: Vec<&str> = helper.split('\0').collect();
     let has = |flag: &str, path: &str| helper.windows(2).any(|w| w == [flag, path]);
     assert!(has("--rx", shim.to_str().unwrap()), "{helper:?}");
     assert!(has("--rw-file", socket.to_str().unwrap()), "{helper:?}");
+}
+
+/// A codex turn that fell back to text: it ran bare of the tools, said so, and
+/// ended its session once.
+async fn assert_codex_text_fallback(lab: &Lab, env: &CliEnv) {
+    script(
+        &lab.bin.join("codex"),
+        &lab.rec,
+        &format!("{MCP_CODEX}{CODEX_ANSWER}"),
+    );
+    let mut job = wired_codex_job(lab);
+    let count = counted(&mut job);
+    let events = run_job(env, job).await;
+    assert_eq!(
+        events[0],
+        StreamEvent::Notice(OFF_NOTICE.into()),
+        "{events:?}"
+    );
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    assert_eq!(count.load(Ordering::SeqCst), 1, "Unwire exactly once");
+    assert!(
+        !lab.recorded("env").contains("LAZAROBOX_MCP_TOKEN"),
+        "no token in the child env"
+    );
+    let args = lab.args();
+    assert_eq!(args, ["exec", "-"], "no -c mcp_servers entries: {args:?}");
+    assert!(!args.iter().any(|a| a.contains("mcp_servers")));
+    assert_eq!(lab.recorded("mcp_during"), "");
+}
+
+#[tokio::test]
+async fn a_shim_the_jail_refuses_retries_codex_without_the_tools() {
+    let lab = lab();
+    let shim = shim_in_ssh(&lab);
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    assert_codex_text_fallback(&lab, &env).await;
+    let helper = lab.recorded("helper_args");
+    assert!(
+        !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
+        "{helper:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_untrusted_shim_runs_codex_as_text_with_the_notice() {
+    let lab = lab();
+    let shim = lab.bin.join("shim");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o666)).unwrap();
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    assert_codex_text_fallback(&lab, &env).await;
+    let helper = lab.recorded("helper_args");
+    assert!(
+        !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
+        "{helper:?}"
+    );
 }
 
 #[tokio::test]
