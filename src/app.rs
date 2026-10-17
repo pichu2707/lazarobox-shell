@@ -227,6 +227,17 @@ pub enum Effect {
         call: CallId,
         decision: Decision,
     },
+    /// Chat `chat` has a model's command for the shell pane `target` typed
+    /// without a prompt (design D18): the runtime writes `bytes` only when
+    /// the shell owns the terminal, and answers the call of turn `turn`
+    /// `Sent` or `Denied` itself. Never followed by Enter.
+    AutoType {
+        chat: PaneId,
+        target: PaneId,
+        bytes: Vec<u8>,
+        turn: u64,
+        call: CallId,
+    },
     /// Close the tool session of chat `pane`: its socket goes and every call
     /// it holds is denied. Emitted with `ChatCancel` for a chat that had one.
     EndToolSession(PaneId),
@@ -7201,6 +7212,9 @@ mod app_tests {
 
     /// Tool calls that need the user, answered through the same overlay.
     mod tool_approval;
+
+    /// The chat approval mode: where it comes from, when it resets.
+    mod tool_auto;
 
     /// The keys, rechecks and lifecycle of the run-in-pane confirm.
     mod run_pane_keys;

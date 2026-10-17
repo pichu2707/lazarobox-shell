@@ -75,6 +75,13 @@ pub trait PtyHandle: Send {
     fn write(&mut self, bytes: Vec<u8>);
     fn resize(&mut self, size: PaneSize) -> io::Result<()>;
     fn pid(&self) -> Option<u32>;
+    /// Whether the shell itself, and not a program it started, owns the
+    /// terminal now: the foreground process group of the PTY is the shell's.
+    /// `None` when that cannot be told (an error, a target without process
+    /// groups); the caller treats it as "not at the prompt".
+    fn shell_in_foreground(&self) -> Option<bool> {
+        None
+    }
     /// Terminates the child. Idempotent; implementations also call it on drop.
     fn kill(&mut self);
 }

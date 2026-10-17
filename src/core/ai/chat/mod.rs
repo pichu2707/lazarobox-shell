@@ -37,7 +37,10 @@ use std::{
     time::Instant,
 };
 
-use crate::core::{ai::config::Profile, layout::PaneId};
+use crate::core::{
+    ai::config::{ApprovalMode, Profile},
+    layout::PaneId,
+};
 use composer::Composer;
 use engine::{
     Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools, build_context,
@@ -304,6 +307,11 @@ pub struct ChatState {
     tool_session: bool,
     /// When the keys start to answer the approval the model opened.
     armed_at: Option<Instant>,
+    /// What a model's `run_in_pane` does in this chat (D18). Never stored and
+    /// never sent.
+    approval_mode: ApprovalMode,
+    /// Commands typed without a prompt in the turn in flight.
+    auto_typed: u8,
 }
 
 impl ChatState {
@@ -342,7 +350,28 @@ impl ChatState {
             run_hint: false,
             tool_session: false,
             armed_at: None,
+            approval_mode: ApprovalMode::default(),
+            auto_typed: 0,
         }
+    }
+
+    /// What a model's `run_in_pane` does in this chat.
+    pub fn approval_mode(&self) -> ApprovalMode {
+        self.approval_mode
+    }
+
+    pub fn set_approval_mode(&mut self, mode: ApprovalMode) {
+        self.approval_mode = mode;
+    }
+
+    /// Commands typed without a prompt in the turn in flight.
+    pub fn auto_typed(&self) -> u8 {
+        self.auto_typed
+    }
+
+    /// One more command was typed without a prompt in this turn.
+    pub fn note_auto_typed(&mut self) {
+        self.auto_typed = self.auto_typed.saturating_add(1);
     }
 
     /// When the keys start to answer the approval the model opened; `None`
@@ -688,6 +717,7 @@ impl ChatState {
         let oldest = sendable[history.len() - context.messages.len()];
         self.place_marker(oldest, context.omitted);
         self.turn += 1;
+        self.auto_typed = 0;
         self.phase = Phase::Waiting { slow: false };
         self.started = Some(now);
         self.request_model = model.clone().unwrap_or_default();

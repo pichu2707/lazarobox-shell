@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::core::ai::{
     chat::engine::CallId,
+    config::ApprovalMode,
     tools::{Call, Locality, command::Refusal},
 };
 
@@ -81,6 +82,46 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
             Some(ApprovalAsk::Read { path: path.clone() })
         }
         Call::ReadFile { .. } | Call::FindDir { .. } | Call::ListDir { .. } => None,
+    }
+}
+
+/// What the app does with a model's ask (D18).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Route {
+    /// Open the approval overlay, as in `ask` mode.
+    Prompt,
+    /// Type the command into the target pane without a prompt, no Enter.
+    AutoType,
+}
+
+/// The most commands one turn may type without a prompt.
+pub const MAX_AUTO_PER_TURN: u8 = 5;
+
+/// What the app knows when a call arrives, beyond the call itself.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct AutoCtx {
+    /// Commands already typed without a prompt in this turn.
+    pub typed_this_turn: u8,
+    /// An earlier auto-typed command in the target pane is still unsent.
+    pub line_pending: bool,
+    /// The target pane has the focus: the user may be typing in it.
+    pub target_focused: bool,
+    /// The chat's tab is the shown one: the user can see the typing.
+    pub tab_shown: bool,
+}
+
+/// `AutoType` only for a model `run_in_pane` in `auto` mode, with fewer than
+/// [`MAX_AUTO_PER_TURN`] typed this turn, no pending line in the target, the
+/// target not focused and the tab shown. Every other case, a read, an
+/// external call or a command the user started, prompts.
+pub fn route(ask: &ApprovalAsk, origin: Origin, mode: ApprovalMode, ctx: AutoCtx) -> Route {
+    let free = ctx.typed_this_turn < MAX_AUTO_PER_TURN
+        && !ctx.line_pending
+        && !ctx.target_focused
+        && ctx.tab_shown;
+    match (ask, origin, mode) {
+        (ApprovalAsk::Run { .. }, Origin::Tool, ApprovalMode::Auto) if free => Route::AutoType,
+        _ => Route::Prompt,
     }
 }
 
@@ -238,6 +279,92 @@ impl Approvals {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const FREE: AutoCtx = AutoCtx {
+        typed_this_turn: 0,
+        line_pending: false,
+        target_focused: false,
+        tab_shown: true,
+    };
+
+    fn run_ask() -> ApprovalAsk {
+        ApprovalAsk::Run {
+            command: "cd x".into(),
+        }
+    }
+
+    // Spec (chat-pane, approval mode): D18 routing.
+    #[test]
+    fn a_model_run_in_auto_mode_is_typed_when_nothing_blocks_it() {
+        let route = route(&run_ask(), Origin::Tool, ApprovalMode::Auto, FREE);
+        assert_eq!(route, Route::AutoType);
+    }
+
+    #[test]
+    fn ask_mode_and_other_asks_always_prompt() {
+        let read = ApprovalAsk::Read { path: "~/a".into() };
+        let external = ApprovalAsk::External {
+            server: "s".into(),
+            tool: "t".into(),
+            args: "{}".into(),
+        };
+        assert_eq!(
+            route(&run_ask(), Origin::Tool, ApprovalMode::Ask, FREE),
+            Route::Prompt
+        );
+        for ask in [&read, &external] {
+            assert_eq!(
+                route(ask, Origin::Tool, ApprovalMode::Auto, FREE),
+                Route::Prompt
+            );
+        }
+        assert_eq!(
+            route(&run_ask(), Origin::Block, ApprovalMode::Auto, FREE),
+            Route::Prompt
+        );
+    }
+
+    #[test]
+    fn each_flood_limit_falls_back_to_the_prompt() {
+        let blocked = [
+            AutoCtx {
+                line_pending: true,
+                ..FREE
+            },
+            AutoCtx {
+                target_focused: true,
+                ..FREE
+            },
+            AutoCtx {
+                tab_shown: false,
+                ..FREE
+            },
+            AutoCtx {
+                typed_this_turn: MAX_AUTO_PER_TURN,
+                ..FREE
+            },
+        ];
+        for ctx in blocked {
+            assert_eq!(
+                route(&run_ask(), Origin::Tool, ApprovalMode::Auto, ctx),
+                Route::Prompt,
+                "{ctx:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_fifth_call_of_a_turn_is_typed_and_the_sixth_prompts() {
+        let fifth = AutoCtx {
+            typed_this_turn: MAX_AUTO_PER_TURN - 1,
+            ..FREE
+        };
+        assert_eq!(MAX_AUTO_PER_TURN, 5);
+        assert_eq!(
+            route(&run_ask(), Origin::Tool, ApprovalMode::Auto, fifth),
+            Route::AutoType
+        );
+    }
 
     // Spec (agent-tools, approval by locality): D17 table.
     #[test]

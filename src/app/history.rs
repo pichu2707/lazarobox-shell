@@ -31,6 +31,7 @@ impl App {
         let mut chat = ChatState::new(origin);
         chat.set_profile(self.ai.profile());
         chat.set_run_hint(self.ai.tools_enabled());
+        chat.set_approval_mode(self.ai.approval());
         if self.history {
             chat.open_list();
         }
@@ -146,8 +147,11 @@ impl App {
         match outcome {
             ListOutcome::Handled => Vec::new(),
             ListOutcome::New => {
+                let mode = self.ai.approval();
                 if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
                     chat.close_list();
+                    // A mode chosen with the toggle lasts for one conversation.
+                    chat.set_approval_mode(mode);
                 }
                 Vec::new()
             }
@@ -426,9 +430,11 @@ impl App {
             self.set_list_line(id, OPEN_ELSEWHERE);
             return Vec::new();
         }
+        let mode = self.ai.approval();
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Vec::new();
         };
+        chat.set_approval_mode(mode);
         let profile = Profile::from_id(profile).unwrap_or_else(|| chat.profile());
         let reprepare = chat.adopt_profile(profile);
         chat.resume_into(conversation, profile, tags, messages.to_vec());

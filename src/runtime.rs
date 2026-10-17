@@ -22,6 +22,7 @@ use std::{
 
 pub mod ai_detect;
 pub mod anim;
+mod auto_type;
 pub mod bounded_read;
 pub mod chat;
 pub mod chat_store;
@@ -960,6 +961,20 @@ impl Panes {
                 } => {
                     if let Some(chats) = self.chats.as_ref() {
                         chats.decide(pane, turn, call, decision);
+                    }
+                }
+                // The write and the answer are one step: `Sent` is only said
+                // after the bytes were handed to a pane at its prompt.
+                Effect::AutoType {
+                    chat,
+                    target,
+                    bytes,
+                    turn,
+                    call,
+                } => {
+                    let decision = auto_type::type_if_idle(self.handles.get_mut(&target), bytes);
+                    if let Some(chats) = self.chats.as_ref() {
+                        chats.decide(chat, turn, call, decision);
                     }
                 }
                 Effect::EndToolSession(pane) => {
@@ -3425,6 +3440,34 @@ mod tests {
             let log = log.lock().unwrap();
             assert!(log.writes.is_empty() && log.resizes.is_empty() && log.kills == 0);
         }
+    }
+
+    // The effect writes to the target, not to the chat, and only at a prompt.
+    #[test]
+    fn an_auto_type_writes_only_to_a_pane_whose_shell_is_in_the_foreground() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let mut logs = Vec::new();
+        for (n, foreground) in [(1, Some(true)), (2, Some(false)), (3, None)] {
+            let pty = FakePty {
+                foreground,
+                ..FakePty::default()
+            };
+            logs.push(pty.log.clone());
+            panes.handles.insert(id(n), Box::new(pty));
+        }
+        let effects = (1..=4)
+            .map(|n| Effect::AutoType {
+                chat: id(9),
+                target: id(n),
+                bytes: format!("cmd{n}").into_bytes(),
+                turn: 1,
+                call: crate::core::ai::chat::engine::CallId(n.into()),
+            })
+            .collect();
+        panes.apply(effects);
+        assert_eq!(logs[0].lock().unwrap().writes, vec![b"cmd1".to_vec()]);
+        assert!(logs[1].lock().unwrap().writes.is_empty());
+        assert!(logs[2].lock().unwrap().writes.is_empty());
     }
 
     #[tokio::test]
