@@ -165,7 +165,8 @@ impl App {
             line_pending: (self.panes.get(&target).and_then(PaneState::pty))
                 .is_some_and(|pty| pty.line_pending.is_some()),
             target_focused: self.tab().focus == target,
-            tab_shown: self.tab().tree.leaves().contains(&id),
+            // A zoomed tab draws only the focused pane, never the target.
+            tab_shown: !self.tab().zoom && self.tab().tree.leaves().contains(&id),
         };
         route(ask, Origin::Tool, chat.approval_mode(), ctx)
     }

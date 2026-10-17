@@ -217,6 +217,18 @@ fn a_focused_target_or_a_hidden_tab_falls_back_to_the_prompt() {
     assert!(pending(&a).is_some());
 }
 
+// A zoomed tab shows only the focused pane: the user cannot see the typing in
+// the target, so the call prompts.
+#[test]
+fn a_zoomed_chat_hides_the_target_so_the_call_prompts() {
+    let (mut a, turn) = auto_live();
+    assert_eq!(a.tab().focus, id2());
+    a.tab_mut().zoom = true;
+    assert_eq!(announce(&mut a, turn, 1, run("cd x")), vec![]);
+    assert!(pending(&a).is_some());
+    assert_eq!(auto_typed(&a), 0);
+}
+
 // One batch, one pane: the first is typed, the second prompts (the line is
 // pending as soon as the effect is emitted).
 #[test]
