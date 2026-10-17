@@ -63,6 +63,7 @@ fn with_tools(lab: &Lab) -> ChatRequest {
     req.engine = "claude".into();
     req.tools = Tools::On {
         origin: Some(lab.home.clone()),
+        mcp: None,
     };
     req
 }

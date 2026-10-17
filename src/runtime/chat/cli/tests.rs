@@ -157,6 +157,7 @@ fn job(policy: JailPolicy) -> Job {
         stdin: b"hi".to_vec(),
         jail: policy,
         tmp_files: Vec::new(),
+        mcp: None,
     }
 }
 
@@ -607,6 +608,7 @@ fn codex_job(args: &[&str]) -> Job {
         stdin: b"hi".to_vec(),
         jail: JailPolicy::Required,
         tmp_files: Vec::new(),
+        mcp: None,
     }
 }
 
@@ -1469,6 +1471,7 @@ fn gemini_job(jail: JailPolicy) -> Job {
             name: "gemini-policy.toml",
             content: POLICY,
         }],
+        mcp: None,
     }
 }
 

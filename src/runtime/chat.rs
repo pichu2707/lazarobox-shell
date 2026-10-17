@@ -561,7 +561,8 @@ impl Chats {
     ) -> Option<Pending> {
         let tooling = self.tooling.as_mut()?;
         tooling.started.remove(&pane);
-        let (Tools::On { origin }, Some(locality)) = (&request.tools, locality(&request.engine))
+        let (Tools::On { origin, .. }, Some(locality)) =
+            (&request.tools, locality(&request.engine))
         else {
             if let Some(hub) = tooling.hub.as_mut() {
                 hub.close(pane);

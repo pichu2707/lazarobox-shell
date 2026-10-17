@@ -6,6 +6,7 @@ pub mod label;
 pub mod mcp;
 pub mod paths;
 pub mod summary;
+pub mod wiring;
 
 use serde_json::{Value, json};
 

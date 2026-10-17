@@ -684,6 +684,7 @@ pub(crate) async fn run_listing(
         stdin: Vec::new(),
         jail: JailPolicy::Required,
         tmp_files: Vec::new(),
+        mcp: None,
     };
     let plan = match plan(env, &job) {
         Ok(plan) => plan,

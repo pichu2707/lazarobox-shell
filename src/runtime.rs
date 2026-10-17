@@ -3427,7 +3427,10 @@ mod tests {
         spawn_two(&mut panes);
         let mut request = chat_request();
         request.engine = "claude".into();
-        request.tools = Tools::On { origin: None };
+        request.tools = Tools::On {
+            origin: None,
+            mcp: None,
+        };
         panes.apply(vec![Effect::ChatSend {
             pane: id(1),
             turn: 1,

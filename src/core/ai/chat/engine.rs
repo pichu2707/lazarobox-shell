@@ -10,7 +10,7 @@ use crate::core::ai::{
     config::{AiConfig, Task},
     jail::JailSupport,
     status_text,
-    tools::Locality,
+    tools::{Locality, wiring::McpWire},
 };
 
 /// Who wrote a message.
@@ -55,6 +55,9 @@ pub enum Tools {
         /// The cwd the chat was opened from: what a relative path is read
         /// against.
         origin: Option<PathBuf>,
+        /// The session the engine connects to, set by the runtime once it
+        /// has opened the turn's socket. The app never sets it.
+        mcp: Option<McpWire>,
     },
 }
 
@@ -67,7 +70,7 @@ pub const MCP_VERIFIED: &[&str] = &[];
 /// and the engine is in `verified`.
 pub fn tools_for(engine: &str, enabled: bool, origin: Option<PathBuf>, verified: &[&str]) -> Tools {
     if enabled && verified.contains(&engine) {
-        Tools::On { origin }
+        Tools::On { origin, mcp: None }
     } else {
         Tools::Off
     }
