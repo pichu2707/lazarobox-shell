@@ -196,6 +196,56 @@ fn fit(value: &str, room: usize) -> String {
     }
 }
 
+/// The tab bar of the menu as styled segments for `width` inner cells: each
+/// label padded as ` label `, joined by `│`, the `active` one on the accent
+/// colour and the rest muted. It picks the first step that fits, with BAR the
+/// width of the whole bar:
+///
+/// 1. `width >= BAR + hint + 2`: the bar, then the `hint` right-aligned, ending
+///    one column before the inner right edge (like row values);
+/// 2. `width >= BAR`: the bar alone;
+/// 3. otherwise only the active tab as ` ‹ label › `, clipped to `width`.
+///
+/// Without a `hint` (the keys are inert over a sub-level) step 1 is skipped.
+pub fn tab_line(
+    labels: &[&str],
+    active: usize,
+    width: usize,
+    hint: Option<&str>,
+    theme: &LazaroboxTheme,
+) -> Vec<(String, Style)> {
+    let muted = Style::default().fg(theme.text_muted);
+    let accent = Style::default()
+        .fg(theme.bg_base)
+        .bg(theme.primary_cyan)
+        .add_modifier(Modifier::BOLD);
+    if width == 0 || labels.is_empty() {
+        return Vec::new();
+    }
+    let mut bar = Vec::new();
+    for (index, label) in labels.iter().enumerate() {
+        if index > 0 {
+            bar.push(("│".to_owned(), muted));
+        }
+        let style = if index == active { accent } else { muted };
+        bar.push((format!(" {label} "), style));
+    }
+    let bar_width: usize = bar.iter().map(|(text, _)| cells(text)).sum();
+    if bar_width > width {
+        let label = labels.get(active).copied().unwrap_or(labels[0]);
+        return vec![(clip(&format!(" ‹ {label} › "), width), accent)];
+    }
+    if let Some(hint) = hint
+        && width >= bar_width + cells(hint) + 2
+    {
+        let gap = width - bar_width - cells(hint) - 1;
+        bar.push((" ".repeat(gap), muted));
+        bar.push((hint.to_owned(), muted));
+        bar.push((" ".to_owned(), muted));
+    }
+    bar
+}
+
 impl Widget for MenuPopup<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let area = area.intersection(buf.area);
@@ -1191,6 +1241,193 @@ mod tests {
             for l in lines(&buf) {
                 assert_eq!(cells(&l), usize::from(w), "{l}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tab_line_tests {
+    use super::*;
+
+    const HINT: &str = "⇥ Tab";
+
+    fn theme() -> LazaroboxTheme {
+        LazaroboxTheme::default()
+    }
+
+    fn line(
+        labels: &[&str],
+        active: usize,
+        width: usize,
+        hint: Option<&str>,
+    ) -> Vec<(String, Style)> {
+        tab_line(labels, active, width, hint, &theme())
+    }
+
+    fn joined(segments: &[(String, Style)]) -> String {
+        segments.iter().map(|(text, _)| text.as_str()).collect()
+    }
+
+    const TWO: [&str; 2] = ["Settings", "AI"];
+    const STAR: [&str; 2] = ["Settings*", "AI"];
+    const THREE: [&str; 3] = ["Settings", "AI", "MCP"];
+    const THREE_STAR: [&str; 3] = ["Settings*", "AI", "MCP"];
+
+    #[test]
+    fn two_tabs_with_room_draw_the_bar_and_the_right_aligned_hint() {
+        for width in [22, 23, 30, 60] {
+            let text = joined(&line(&TWO, 0, width, Some(HINT)));
+            assert_eq!(cells(&text), width, "W {width}");
+            assert!(text.starts_with(" Settings │ AI "), "{text:?}");
+            assert!(
+                text.ends_with("⇥ Tab "),
+                "one column before the edge: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_bar_is_15_cells_and_16_with_the_update_star() {
+        assert_eq!(joined(&line(&TWO, 0, 21, Some(HINT))), " Settings │ AI ");
+        assert_eq!(cells(&joined(&line(&TWO, 0, 21, Some(HINT)))), 15);
+        assert_eq!(joined(&line(&STAR, 0, 22, Some(HINT))), " Settings* │ AI ");
+        assert_eq!(cells(&joined(&line(&STAR, 0, 22, Some(HINT)))), 16);
+    }
+
+    #[test]
+    fn the_hint_needs_seven_more_cells_than_the_bar() {
+        // BAR 15: hint from W 22. BAR 16 (star): hint from W 23.
+        assert!(!joined(&line(&TWO, 0, 21, Some(HINT))).contains('⇥'));
+        assert!(joined(&line(&TWO, 0, 22, Some(HINT))).contains('⇥'));
+        assert!(!joined(&line(&STAR, 0, 22, Some(HINT))).contains('⇥'));
+        assert!(joined(&line(&STAR, 0, 23, Some(HINT))).contains('⇥'));
+    }
+
+    #[test]
+    fn the_bar_alone_shows_from_its_own_width_up_to_the_hint_threshold() {
+        for width in 15..22 {
+            assert_eq!(
+                joined(&line(&TWO, 1, width, Some(HINT))),
+                " Settings │ AI ",
+                "W {width}"
+            );
+        }
+        for width in 16..23 {
+            assert_eq!(
+                joined(&line(&STAR, 1, width, Some(HINT))),
+                " Settings* │ AI ",
+                "W {width}"
+            );
+        }
+    }
+
+    #[test]
+    fn below_the_bar_only_the_active_tab_shows_between_chevrons() {
+        assert_eq!(joined(&line(&TWO, 1, 14, Some(HINT))), " ‹ AI › ");
+        assert_eq!(joined(&line(&TWO, 0, 14, Some(HINT))), " ‹ Settings › ");
+        assert_eq!(joined(&line(&TWO, 1, 8, None)), " ‹ AI › ");
+    }
+
+    #[test]
+    fn the_active_only_form_is_clipped_to_the_width() {
+        for width in 1..8 {
+            let text = joined(&line(&TWO, 1, width, Some(HINT)));
+            assert_eq!(cells(&text), width, "W {width}: {text:?}");
+        }
+        assert_eq!(joined(&line(&TWO, 1, 5, None)), " ‹ A…");
+    }
+
+    #[test]
+    fn three_tabs_use_the_same_step_table() {
+        // BAR 21 (22 with the star); the hint adds seven.
+        assert_eq!(
+            joined(&line(&THREE, 2, 21, Some(HINT))),
+            " Settings │ AI │ MCP "
+        );
+        assert_eq!(cells(&joined(&line(&THREE, 2, 21, Some(HINT)))), 21);
+        assert!(!joined(&line(&THREE, 0, 27, Some(HINT))).contains('⇥'));
+        assert!(joined(&line(&THREE, 0, 28, Some(HINT))).contains('⇥'));
+        assert_eq!(cells(&joined(&line(&THREE_STAR, 0, 22, Some(HINT)))), 22);
+        assert!(!joined(&line(&THREE_STAR, 0, 28, Some(HINT))).contains('⇥'));
+        assert!(joined(&line(&THREE_STAR, 0, 29, Some(HINT))).contains('⇥'));
+        assert_eq!(joined(&line(&THREE, 1, 20, Some(HINT))), " ‹ AI › ");
+    }
+
+    #[test]
+    fn a_zero_or_one_cell_width_never_panics() {
+        for hint in [Some(HINT), None] {
+            for width in 0..=1 {
+                for labels in [&TWO[..], &THREE[..], &STAR[..]] {
+                    for active in 0..labels.len() {
+                        let text = joined(&line(labels, active, width, hint));
+                        assert!(cells(&text) <= width, "{text:?}");
+                    }
+                }
+            }
+        }
+        assert_eq!(joined(&line(&TWO, 0, 0, Some(HINT))), "");
+    }
+
+    #[test]
+    fn the_active_segment_is_bold_dark_on_cyan_and_the_rest_is_muted() {
+        let theme = theme();
+        let segments = line(&TWO, 0, 30, Some(HINT));
+        let style_of = |needle: &str| {
+            segments
+                .iter()
+                .find(|(text, _)| text.contains(needle))
+                .map(|(_, style)| *style)
+                .unwrap_or_else(|| panic!("no segment with {needle}"))
+        };
+        let active = Style::default()
+            .fg(theme.bg_base)
+            .bg(theme.primary_cyan)
+            .add_modifier(Modifier::BOLD);
+        let muted = Style::default().fg(theme.text_muted);
+        assert_eq!(style_of("Settings"), active);
+        assert_eq!(style_of("AI"), muted);
+        assert_eq!(style_of("│"), muted);
+        assert_eq!(style_of("⇥"), muted);
+        // The second tab active swaps the styles.
+        let segments = line(&TWO, 1, 30, Some(HINT));
+        let ai = segments.iter().find(|(t, _)| t.contains("AI")).unwrap().1;
+        let settings = segments
+            .iter()
+            .find(|(t, _)| t.contains("Settings"))
+            .unwrap()
+            .1;
+        assert_eq!(ai, active);
+        assert_eq!(settings, muted);
+    }
+
+    #[test]
+    fn the_active_only_form_keeps_the_active_style() {
+        let theme = theme();
+        let segments = line(&TWO, 1, 10, Some(HINT));
+        assert!(
+            segments
+                .iter()
+                .all(|(_, s)| s.bg == Some(theme.primary_cyan))
+        );
+    }
+
+    #[test]
+    fn the_active_style_differs_from_the_selected_row_style() {
+        let theme = theme();
+        let active = line(&TWO, 0, 30, None)[0].1;
+        let selected = Style::default()
+            .fg(theme.info_blue)
+            .add_modifier(Modifier::REVERSED);
+        assert_ne!(active, selected);
+        assert!(!active.add_modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn without_a_hint_the_bar_is_alone_at_any_width() {
+        for width in [15, 22, 30, 80] {
+            let text = joined(&line(&TWO, 0, width, None));
+            assert_eq!(text, " Settings │ AI ", "W {width}");
+            assert!(!text.contains('⇥'));
         }
     }
 }

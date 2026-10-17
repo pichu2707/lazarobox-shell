@@ -58,14 +58,14 @@ Goal: after this unit, no test depends on the AI rows being below the Settings r
 
 ## Unit 2: Pure `tab_line` (`src/ui/components/menu.rs`)
 
-Goal: the bar-degradation rule exists as a pure, fully tested function before anything uses it. Commit: `feat(menu): add the pure tab bar line builder`. It carries a temporary `#[allow(dead_code)]` that unit 3 removes (needed so clippy `-D warnings` stays green).
+Goal: the bar-degradation rule exists as a pure, fully tested function before anything uses it. Commit: `feat(menu): add the pure tab bar line builder`. It needs no `#[allow(dead_code)]`: the function is `pub` in a library crate, so clippy stays green without it. Unlike the planned signature it also takes the theme (the styles come from it).
 
-- [ ] 2.1 RED: `tab_line(labels, active, width, hint) -> Vec<(String, Style)>` tests with a stub that returns an empty vec. Cases: 2 labels `Settings`,`AI` give ` Settings │ AI ` (15 cells) plus the hint right-aligned ending one column before the inner right edge when W >= 22; with `Settings*` BAR is 16 and the hint shows only when W >= 23; bar-only when BAR <= W < BAR + 7; active-only ` ‹ AI › ` clipped to W when W < BAR; a 3-label table (BAR 21/22; hint at 28/29 W); width 0 and 1 give no panic.
-- [ ] 2.2 RED: style tests: active segment is `fg bg_base, bg primary_cyan, BOLD`; idle labels, `│` and hint are `text_muted`; the active style differs from the selected-row style (`info_blue` REVERSED).
-- [ ] 2.3 RED: the hint is absent when the caller passes `None` (used over sub-levels, design T9).
-- [ ] 2.4 GREEN: implement `tab_line` with the step table from the design (bar + hint, bar only, active only, using the existing `clip`).
-- [ ] 2.5 Gate.
-- [ ] 2.6 Docs: doc comment on `tab_line` with the step thresholds.
+- [x] 2.1 RED: `tab_line(labels, active, width, hint) -> Vec<(String, Style)>` tests with a stub that returns an empty vec. Cases: 2 labels `Settings`,`AI` give ` Settings │ AI ` (15 cells) plus the hint right-aligned ending one column before the inner right edge when W >= 22; with `Settings*` BAR is 16 and the hint shows only when W >= 23; bar-only when BAR <= W < BAR + 7; active-only ` ‹ AI › ` clipped to W when W < BAR; a 3-label table (BAR 21/22; hint at 28/29 W); width 0 and 1 give no panic.
+- [x] 2.2 RED: style tests: active segment is `fg bg_base, bg primary_cyan, BOLD`; idle labels, `│` and hint are `text_muted`; the active style differs from the selected-row style (`info_blue` REVERSED).
+- [x] 2.3 RED: the hint is absent when the caller passes `None` (used over sub-levels, design T9).
+- [x] 2.4 GREEN: implement `tab_line` with the step table from the design (bar + hint, bar only, active only, using the existing `clip`).
+- [x] 2.5 Gate.
+- [x] 2.6 Docs: doc comment on `tab_line` with the step thresholds.
 
 ## Unit 3: Tabs in the core and the widget, snapshots regenerated (`src/core/menu.rs`, `src/ui/components/menu.rs`, tests, snapshots)
 
