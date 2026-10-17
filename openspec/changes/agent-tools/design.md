@@ -192,6 +192,7 @@ For the post-open race, `read_file` opens the file and then re-checks the real p
 - **claude**: add `--mcp-config <turn tmp>/mcp.json` (0600; the `env` field carries the token). Keep `--strict-mcp-config` and `--tools ""`. Add `--allowedTools mcp__lazarobox`. Set the child env `MCP_TOOL_TIMEOUT=900000`.
 - **codex**: pass `-c mcp_servers.lazarobox.command=…`, `.args=["__mcp-serve","<sock>"]`, `.env_vars=["LAZAROBOX_MCP_TOKEN"]`, `.tool_timeout_sec=900` and `.startup_timeout_sec=20`. The token goes in the CLI's own env. Executable and socket paths in argv are not secrets. The decoder accepts `mcp_tool_call` items with `server=="lazarobox"`.
 - **gemini**: use a per-turn cwd `<turn tmp>/work/.gemini/settings.json` with `mcpServers.lazarobox` (`env`, `timeout: 900000`, `trust: true`). Pass `--allowed-mcp-server-names lazarobox`. Add a policy rule that allows `mcpName="lazarobox"` above the deny-all rule.
+  - As built (2h): the allow rule is a second policy file passed with `--admin-policy=` (admin tier), not a rule above the deny-all in the same file: a file's priorities stop at 999 and the deny-all already uses it. The token is the literal `env` value of that `settings.json` (0600, 0700 folder). The decoder allows a `tool_use` named `mcp_lazarobox_<tool>` in a wired turn only.
 - **opencode**: deferred to slice 2i, conditional on the opencode adapter, which is parked.
 
 A failed wiring turns tools off for that engine. It never widens the jail.
