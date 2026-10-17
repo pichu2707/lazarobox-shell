@@ -119,12 +119,13 @@ Fallback split if over 400: 1b-i (state, keys, effects) and 1b-ii (bar and snaps
 
 ## PR5 / 2c: MCP core, pure (`src/core/ai/tools/mcp.rs`)
 
-- [ ] 2c.1 RED: `handle(&mut self, line) -> Action` for `initialize` (2025-06-18; 2025-03-26 and 2024-11-05 echoed), `notifications/initialized`, `ping`, `tools/list`, `tools/call`, `notifications/cancelled`.
-- [ ] 2c.2 RED: errors -32601 (`resources/read`), -32700 bad JSON, -32600 array, -32602 bad params; line over 1 MiB gets an error with `id: null` and the state machine keeps going; unknown tool `bash` is an error result.
-- [ ] 2c.3 GREEN: implement on `serde_json::Value` (no serde derive, no rmcp).
-- [ ] 2c.4 REFACTOR: reuse the codec later for the client (4b) via a shared `Frame` type.
-- [ ] 2c.5 Gate.
-- [ ] 2c.6 Docs: protocol subset table in module docs.
+- [x] 2c.1 RED: `handle(&mut self, line) -> Action` for `initialize` (2025-06-18; 2025-03-26 and 2024-11-05 echoed), `notifications/initialized`, `ping`, `tools/list`, `tools/call`, `notifications/cancelled`.
+- [x] 2c.2 RED: errors -32601 (`resources/read`), -32700 bad JSON, -32600 array, -32602 bad params; line over 1 MiB gets an error with `id: null` and the state machine keeps going; unknown tool `bash` is an error result.
+- [x] 2c.3 GREEN: implement on `serde_json::Value` (no serde derive, no rmcp).
+- [x] 2c.4 REFACTOR: reuse the codec later for the client (4b) via a shared `Frame` type.
+- [x] 2c.5 Gate.
+- [x] 2c.6 Docs: protocol subset table in module docs.
+  - Done in 2c: duplicate JSON keys are rejected at the raw layer (`Frame::parse`, a hand-written scanner, any depth, after unescaping) with -32600 (echoing the request id when usable, else `id: null`); a line over 1 MiB (`MAX_LINE_BYTES`) gets the same. The wire cap is a module constant, not a config `Limits` type (the design has none). Left for 2d: the shim and session must also cap the bytes they buffer before calling `handle`.
 
 ## PR6 / 2d: Session, shim, jail test (`src/runtime/mcp/{mod,session,shim}.rs`, `src/main.rs`, `tests/jail.rs`)
 
