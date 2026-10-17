@@ -12,6 +12,15 @@ use std::{
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
+/// A folder only we can enter, like the session's: `tempdir` alone follows the
+/// umask.
+fn private_dir() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    dir
+}
+
 /// Accepts one connection, failing the test instead of hanging when the shim
 /// never comes.
 fn accept_within(listener: &UnixListener) -> std::os::unix::net::UnixStream {
@@ -61,7 +70,7 @@ fn the_nesting_marker_does_not_block_the_shim() {
 
 #[test]
 fn the_shim_hands_the_token_over_the_socket_and_relays_lines() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_dir();
     let socket = dir.path().join("s.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let app = thread::spawn(move || {
@@ -106,7 +115,7 @@ fn the_shim_hands_the_token_over_the_socket_and_relays_lines() {
 
 #[test]
 fn a_refused_shim_exits_non_zero_and_never_prints_the_token() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_dir();
     let socket = dir.path().join("s.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let app = thread::spawn(move || {

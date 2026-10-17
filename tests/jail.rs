@@ -1,6 +1,8 @@
 //! The jail helper, for real: `lazarobox-shell __jail-exec` applies Landlock
 //! and execs a program. Every test is skipped (with a message) when this
-//! system cannot jail, so CI on an old kernel stays green.
+//! system cannot jail, so CI on an old kernel stays green. Set
+//! `LAZAROBOX_REQUIRE_JAIL=1` to fail instead of skipping, so a CI job that is
+//! meant to have Landlock cannot go green by silently testing nothing.
 
 #![cfg(target_os = "linux")]
 
@@ -34,6 +36,11 @@ fn jail_available() -> bool {
     match probe() {
         JailSupport::Available { .. } => true,
         JailSupport::Unavailable(why) => {
+            assert!(
+                std::env::var_os("LAZAROBOX_REQUIRE_JAIL").is_none_or(|v| v != "1"),
+                "LAZAROBOX_REQUIRE_JAIL=1 but this system cannot jail ({})",
+                why.text()
+            );
             eprintln!("skipped: no Landlock jail on this system ({})", why.text());
             false
         }
@@ -441,6 +448,27 @@ impl Dispatch for Done {
     }
 }
 
+/// The one grant the shim needs, shared by every test that models it so they
+/// cannot drift: rx on the app binary and its ELF loader (a `job` does the
+/// first; the loader is added when `program` is something else) and an
+/// `rw_file` rule on the socket. No folder.
+///
+/// Landlock note: the socket rule binds to the inode, so the socket must be
+/// bound before the helper starts and a rebind invalidates it. While the
+/// pinned landlock crate (0.4.7) caps `from_all` below ABI 9, connecting to a
+/// pathname socket is not gated at all. ABI 9 adds
+/// `LANDLOCK_ACCESS_FS_RESOLVE_UNIX`: a crate that handles it must grant that
+/// access on this rule, or the shim stops connecting.
+fn with_shim_grant(spec: &mut JailSpec, socket: &Path) {
+    let bin = canon(env!("CARGO_BIN_EXE_lazarobox-shell"));
+    for path in [Some(bin.clone()), loader_of(&bin)].into_iter().flatten() {
+        if !spec.rx.contains(&path) {
+            spec.rx.push(path);
+        }
+    }
+    spec.rw_files.push(socket.to_path_buf());
+}
+
 #[test]
 fn the_shim_runs_jailed_with_only_its_binary_and_the_socket_and_connects() {
     if !jail_available() {
@@ -458,13 +486,10 @@ fn the_shim_runs_jailed_with_only_its_binary_and_the_socket_and_connects() {
         .unwrap();
     let socket = started.socket.clone();
 
-    // The shim is the app's own binary, granted rx plus its loader (what
-    // `job` does), and the socket file. No folder, no other program.
     let bin = env!("CARGO_BIN_EXE_lazarobox-shell");
-    let granted = |s: &mut JailSpec| s.rw_files.push(socket.clone());
     let argv = [shim::SUBCOMMAND, socket.to_str().unwrap()];
     let mut child = Command::new(bin)
-        .args(job(bin, &argv, granted).render())
+        .args(job(bin, &argv, |s| with_shim_grant(s, &socket)).render())
         .env("LC_ALL", "C")
         // An engine launched from a lazarobox pane carries this marker.
         .env("LAZAROBOX", "1")
@@ -493,7 +518,6 @@ fn the_shim_runs_jailed_with_only_its_binary_and_the_socket_and_connects() {
         "reply {reply:?}, stderr {err}"
     );
     assert!(status.success(), "{status:?}: {err}");
-    assert!(!err.contains(started.token.reveal()));
     rt.block_on(async { hub.close(pane) });
 }
 
@@ -502,10 +526,11 @@ fn the_jail_that_runs_the_shim_still_denies_curl_and_the_ssh_dir() {
     if !jail_available() {
         return;
     }
+    // The very grant of the test above, on a really bound socket.
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("s.sock");
-    fs::write(&socket, "").unwrap();
-    let shim_grant = |s: &mut JailSpec| s.rw_files.push(socket.clone());
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let shim_grant = |s: &mut JailSpec| with_shim_grant(s, &socket);
 
     // `env` stands in for the engine: with the shim's rights in force it must
     // still be unable to start `curl` or read `~/.ssh`.

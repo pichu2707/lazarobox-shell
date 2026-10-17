@@ -26,13 +26,17 @@ struct Rig {
 }
 
 fn rig(wait: Duration) -> Rig {
+    rig_with(wait, DRAIN_GRACE)
+}
+
+fn rig_with(wait: Duration, grace: Duration) -> Rig {
     let (shim_sock, app) = UnixStream::pair().unwrap();
     let (stdin, shim_in) = UnixStream::pair().unwrap();
     let (shim_out, stdout) = UnixStream::pair().unwrap();
     for end in [&app, &stdout] {
         end.set_read_timeout(Some(WAIT)).unwrap();
     }
-    let shim = thread::spawn(move || serve(shim_sock, TOKEN, wait, shim_in, shim_out));
+    let shim = thread::spawn(move || serve_with(shim_sock, TOKEN, wait, grace, shim_in, shim_out));
     Rig {
         stdin,
         stdout: BufReader::new(stdout),
@@ -117,7 +121,7 @@ fn an_oversized_line_is_answered_not_forwarded_and_the_next_one_passes() {
 fn an_oversized_line_with_no_newline_is_not_buffered_whole() {
     // The cap is applied while reading: a flood with no newline at all never
     // grows a buffer past the cap, and the shim ends cleanly at EOF.
-    let mut rig = rig(WAIT);
+    let mut rig = rig_with(WAIT, Duration::from_millis(100));
     rig.accept();
     let mut stdin = rig.stdin.try_clone().unwrap();
     let writer = thread::spawn(move || {
@@ -167,7 +171,7 @@ fn an_oversized_line_from_the_app_is_answered_to_the_client_instead() {
 
 #[test]
 fn the_shim_ends_when_the_client_closes_stdin() {
-    let mut rig = rig(WAIT);
+    let mut rig = rig_with(WAIT, Duration::from_millis(100));
     rig.accept();
     drop(rig.stdin.try_clone());
     let Rig {
@@ -310,4 +314,209 @@ fn a_missing_token_stops_before_touching_the_socket() {
 fn an_unreachable_socket_is_a_connect_failure() {
     let failure = run(&["/nonexistent/lazarobox.sock".into()], Some(TOKEN)).unwrap_err();
     assert!(matches!(failure, Failure::Connect(_)), "{failure:?}");
+}
+
+fn euid() -> u32 {
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
+}
+
+fn facts(is_dir: bool, is_socket: bool, uid: u32, mode: u32) -> Facts {
+    Facts {
+        is_dir,
+        is_socket,
+        uid,
+        mode,
+    }
+}
+
+#[test]
+fn only_a_private_dir_and_a_socket_of_ours_are_trusted() {
+    let me = euid();
+    let dir = facts(true, false, me, 0o700);
+    let sock = facts(false, true, me, 0o600);
+    assert!(trusted(dir, sock, me));
+    // A foreign owner, on either.
+    assert!(!trusted(facts(true, false, me + 1, 0o700), sock, me));
+    assert!(!trusted(dir, facts(false, true, me + 1, 0o600), me));
+    // A parent that is not 0700, or not a directory.
+    assert!(!trusted(facts(true, false, me, 0o755), sock, me));
+    assert!(!trusted(facts(true, false, me, 0o770), sock, me));
+    assert!(!trusted(facts(false, false, me, 0o700), sock, me));
+    // A socket path that is not a socket.
+    assert!(!trusted(dir, facts(false, false, me, 0o600), me));
+}
+
+#[test]
+fn the_peer_of_a_pair_is_this_user() {
+    let (a, _b) = UnixStream::pair().unwrap();
+    assert_eq!(peer_uid(&a).unwrap(), euid());
+}
+
+/// A listener in a private dir, and a refusal that must come before any
+/// connection: the listener is never even connected to.
+struct Bait {
+    dir: tempfile::TempDir,
+    listener: std::os::unix::net::UnixListener,
+}
+
+fn bait() -> Bait {
+    use std::os::unix::fs::PermissionsExt;
+    // `tempdir` follows the umask; the session's folder is 0700.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(dir.path().join("s.sock")).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    Bait { dir, listener }
+}
+
+impl Bait {
+    fn path(&self) -> std::path::PathBuf {
+        self.dir.path().join("s.sock")
+    }
+
+    /// Runs the shim at `socket` and checks that nobody was connected to.
+    fn refused(&self, socket: &std::path::Path, token: &str) -> Failure {
+        let failure = run(&[socket.into()], Some(token)).unwrap_err();
+        let accepted = self.listener.accept();
+        assert!(
+            matches!(&accepted, Err(e) if e.kind() == io::ErrorKind::WouldBlock),
+            "something connected: {accepted:?}"
+        );
+        let text = format!("{failure} {failure:?}");
+        assert!(!text.contains(token) || token.is_empty(), "{text}");
+        failure
+    }
+}
+
+#[test]
+fn a_relative_socket_path_is_refused_before_connecting() {
+    let bait = bait();
+    let failure = bait.refused(std::path::Path::new("s.sock"), TOKEN);
+    assert!(matches!(failure, Failure::Usage), "{failure:?}");
+}
+
+#[test]
+fn a_symlinked_socket_never_gets_the_token() {
+    let bait = bait();
+    let link = bait.dir.path().join("link.sock");
+    std::os::unix::fs::symlink(bait.path(), &link).unwrap();
+    let failure = bait.refused(&link, TOKEN);
+    assert!(matches!(failure, Failure::Untrusted), "{failure:?}");
+}
+
+#[test]
+fn a_symlinked_parent_never_gets_the_token() {
+    let bait = bait();
+    let other = tempfile::tempdir().unwrap();
+    let link = other.path().join("dirlink");
+    std::os::unix::fs::symlink(bait.dir.path(), &link).unwrap();
+    let failure = bait.refused(&link.join("s.sock"), TOKEN);
+    assert!(matches!(failure, Failure::Untrusted), "{failure:?}");
+}
+
+#[test]
+fn a_parent_that_others_can_enter_never_gets_the_token() {
+    use std::os::unix::fs::PermissionsExt;
+    let bait = bait();
+    std::fs::set_permissions(bait.dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let failure = bait.refused(&bait.path(), TOKEN);
+    assert!(matches!(failure, Failure::Untrusted), "{failure:?}");
+}
+
+#[test]
+fn a_regular_file_is_not_a_socket() {
+    let bait = bait();
+    let file = bait.dir.path().join("plain");
+    std::fs::write(&file, "").unwrap();
+    let failure = bait.refused(&file, TOKEN);
+    assert!(matches!(failure, Failure::Untrusted), "{failure:?}");
+}
+
+#[test]
+fn a_token_that_is_not_32_lowercase_hex_is_refused_before_connecting() {
+    let bait = bait();
+    for token in [
+        "short",
+        "0123456789ABCDEF0123456789ABCDEF",
+        "0123456789abcdef0123456789abcde",
+        "0123456789abcdef0123456789abcdef0",
+        "0123456789abcdef0123456789abcde\n",
+        "0123456789abcdef0123456789abcdeg",
+    ] {
+        let failure = bait.refused(&bait.path(), token);
+        assert!(
+            matches!(failure, Failure::BadToken),
+            "{token:?}: {failure:?}"
+        );
+    }
+}
+
+#[test]
+fn a_reply_still_in_flight_when_stdin_closes_is_printed() {
+    let mut rig = rig(WAIT);
+    rig.accept();
+    let request = "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"ping\"}\n";
+    rig.stdin.write_all(request.as_bytes()).unwrap();
+    assert_eq!(line(&mut rig.app), request);
+    rig.stdin.shutdown(std::net::Shutdown::Both).unwrap();
+    // The session only answers once it sees the client's half-close.
+    let mut rest = Vec::new();
+    let mut probe = [0u8; 1];
+    assert_eq!(
+        rig.app.get_mut().read(&mut probe).unwrap(),
+        0,
+        "no half-close"
+    );
+    rest.extend_from_slice(b"{\"id\":7,\"result\":{}}\n");
+    rig.app.get_mut().write_all(&rest).unwrap();
+    assert_eq!(line(&mut rig.stdout), "{\"id\":7,\"result\":{}}\n");
+    drop(rig.app);
+    assert!(rig.shim.join().unwrap().is_ok());
+}
+
+#[test]
+fn a_session_that_never_closes_does_not_hold_the_shim_past_the_grace() {
+    let grace = Duration::from_millis(200);
+    let mut rig = rig_with(WAIT, grace);
+    rig.accept();
+    rig.stdin.shutdown(std::net::Shutdown::Both).unwrap();
+    let started = std::time::Instant::now();
+    // The app end stays open and silent.
+    assert!(rig.shim.join().unwrap().is_ok());
+    assert!(started.elapsed() >= grace);
+    assert!(started.elapsed() < Duration::from_secs(3));
+    drop(rig.app);
+}
+
+#[test]
+fn a_handshake_answer_that_trickles_in_is_cut_by_an_overall_deadline() {
+    let mut rig = rig(Duration::from_millis(300));
+    let _ = line(&mut rig.app);
+    let mut app = rig.app.get_ref().try_clone().unwrap();
+    // One byte every 50 ms, never a newline: each read finishes in time, the
+    // whole answer does not.
+    let drip = thread::spawn(move || {
+        for _ in 0..200 {
+            if app.write_all(b"x").is_err() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    });
+    let started = std::time::Instant::now();
+    let failure = rig.shim.join().unwrap().unwrap_err();
+    assert!(matches!(failure, Failure::TimedOut), "{failure:?}");
+    assert!(started.elapsed() < Duration::from_secs(3));
+    drip.join().unwrap();
+}
+
+#[test]
+fn the_preflight_passes_for_a_private_dir_and_its_socket() {
+    // The control for the refusals above: with nothing wrong, it passes.
+    let bait = bait();
+    assert!(preflight(&bait.path()).is_ok());
+    let link = bait.dir.path().join("link.sock");
+    std::os::unix::fs::symlink(bait.path(), &link).unwrap();
+    assert!(matches!(preflight(&link), Err(Failure::Untrusted)));
 }
