@@ -443,6 +443,18 @@ Every message below says why a CLI cannot be used. None of them changes what the
 | `model list unavailable: jail: <reason>` | The listing runs in the same jail as the chat, so the jail rows above apply. |
 | `claude runs without the jail here: <reason>` | claude is allowed to run with only its text-only flags; the reason is any row above. |
 
+### Tools with Ollama
+
+Ollama no tiene un CLI que ejecute herramientas, así que lazarobox ejecuta el bucle él mismo sobre `/api/chat`: envía las herramientas en el campo `tools`, ejecuta las llamadas del modelo con el mismo registro, las mismas aprobaciones y el mismo modo (`ask`, `auto`, `run`) que los CLIs, y devuelve los resultados en una nueva petición del mismo turno. En la conversación se ven las mismas filas de herramienta que con cualquier otro motor.
+
+- Como Ollama es local, `find_dir`, `list_dir` y `read_file` se ejecutan sin preguntar; `run_in_pane` siempre espera tu `y` y nunca pulsa Enter.
+- Un turno hace como máximo 8 peticiones. Si el modelo sigue pidiendo herramientas, el turno termina con una línea de sistema y se conserva la respuesta parcial.
+- Si el modelo no admite herramientas (el servidor responde con un 400 a la petición con `tools`), se repite una sola vez sin ellas (solo si aún no hubo ninguna ronda; después, un 400 es un error normal) y la respuesta llega como texto normal. El motor y el modelo asignados no cambian.
+- Los mensajes de herramienta viven solo en ese turno: no se guardan ni se envían en turnos posteriores. Los límites de tiempo, la sanitización y el tope de la respuesta son los de cualquier turno.
+- Solo hay herramientas si **Tools** está activado en el menú de IA (`[ai.tools] enabled`). Si lo desactivas a mitad de un turno, solo se deniegan las llamadas que piden aprobación, igual que con los CLIs.
+- **Estado:** las herramientas con Ollama están desactivadas hasta que se verifiquen con un modelo real (activación pendiente); hasta entonces Ollama sigue respondiendo solo con texto.
+- El límite de tiempo total del turno (15 minutos) incluye el tiempo que pasas decidiendo una aprobación.
+
 ### Historial de conversaciones
 
 Los mensajes se guardan en `chat.db` a medida que conversas. Una respuesta que se interrumpe tras haber recibido texto (por un error o una cancelación) también se guarda, marcada como parcial. `Ctrl+Espacio` y `c` abre la **lista de conversaciones** del proyecto actual (el repositorio git), de la más reciente a la más antigua, con el formato `fecha · perfil · primer mensaje`.

@@ -558,3 +558,19 @@ async fn a_hub_that_cannot_open_leaves_the_turn_text_with_its_prompt() {
     );
     assert_eq!(got.system, chat_prompt());
 }
+
+// A pane that moves from a CLI engine to Ollama must not keep the socket of
+// the CLI session: Ollama opens none of its own.
+#[tokio::test]
+async fn a_turn_on_ollama_closes_the_cli_session_the_pane_had() {
+    let lab = lab();
+    let (mut chats, _rx) = tooled(&lab, idle());
+    chats.send(pane(1), 1, with_tools(&lab));
+    let socket = chats.session(pane(1)).expect("a session").socket.clone();
+    assert!(socket.exists());
+    let mut req = with_tools(&lab);
+    req.engine = "ollama".into();
+    chats.send(pane(1), 2, req);
+    assert!(chats.session(pane(1)).is_none());
+    assert!(!socket.exists(), "the old socket is still there");
+}

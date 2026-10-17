@@ -25,15 +25,15 @@ pub(crate) use cli::{
 };
 
 use super::{
-    loopback::post_stream,
-    mcp::{Hub, Started},
+    loopback::{Timeouts, post_stream},
+    mcp::{Dispatch, Hub, Started},
     tools::{Pending, ToolHost, TurnScope, Waits, pending::TURN},
 };
 use crate::core::{
     ai::{
         chat::{
             ANSWER_CAP, REASONING_CAP,
-            adapters::{Invocation, Wire, adapter_for},
+            adapters::{Adapter, Invocation, Wire, adapter_for},
             claude::ClaudeDecoder,
             codex::CodexDecoder,
             engine::{
@@ -315,10 +315,10 @@ pub(crate) fn adapter_runner_at(port: Option<u16>) -> Runner {
 
 /// The runner over an explicit machine: the port of server engines (when
 /// overridden), the environment CLI engines run in and the host for the direct
-/// tool loop of a server engine (not used yet). The tool session of a CLI turn
-/// is not made here but by [`Chats::send`], which knows the pane and turn; a
-/// turn without `Tools::On` never touches either, so its requests stay as they
-/// were without tools.
+/// tool loop of a server engine (unused: that loop runs on the dispatch of the
+/// turn). The tool session of a turn is not made here but by [`Chats::send`],
+/// which knows the pane and turn; a turn without `Tools::On` never touches
+/// either, so its requests stay as they were without tools.
 pub fn runner_with(port: Option<u16>, cli: CliEnv, tools: Option<Arc<ToolHost>>) -> Runner {
     Arc::new(move |request, tx| {
         let cli = cli.clone();
@@ -337,7 +337,17 @@ pub fn runner_with(port: Option<u16>, cli: CliEnv, tools: Option<Arc<ToolHost>>)
                     port: catalog_port,
                     path,
                     body,
-                } => http_turn(wire, port.unwrap_or(catalog_port), path, body, tx).await,
+                } => {
+                    let port = port.unwrap_or(catalog_port);
+                    // Only a turn that offers tools has a dispatch to loop on.
+                    match (adapter, &request.tools, ollama::current()) {
+                        (Adapter::Ollama, Tools::On { .. }, Some(dispatch)) => {
+                            ollama::tool_turn(&request, port, dispatch, &Timeouts::SERVER, &tx)
+                                .await
+                        }
+                        _ => http_turn(wire, port, path, body, tx).await,
+                    }
+                }
                 Invocation::Process(job) => cli::process_turn(&cli, job, &tx).await,
                 Invocation::Refused(reason) => {
                     let _ = tx
@@ -431,6 +441,7 @@ async fn run_turn(
     request: ChatRequest,
     channel: (mpsc::Sender<StreamEvent>, mpsc::Receiver<StreamEvent>),
     pending: Option<Pending>,
+    dispatch: Option<Arc<dyn Dispatch>>,
 ) {
     let Turn { pane, turn, waits } = turn;
     let _end = EndTurn { waits, pane, turn };
@@ -440,6 +451,11 @@ async fn run_turn(
     // The call itself sits inside the guarded future: a runner that panics
     // before it returns its future is caught the same way.
     let adapter = async move { runner(request, tx).await };
+    // A server engine runs its tool loop in the adapter, on this dispatch.
+    let adapter: BoxFuture<'static, ()> = match dispatch {
+        Some(dispatch) => Box::pin(ollama::DISPATCH.scope(dispatch, adapter)),
+        None => Box::pin(adapter),
+    };
     let adapter: BoxFuture<'static, ()> = match pending {
         Some(pending) => Box::pin(TURN.scope(pending, adapter)),
         None => Box::pin(adapter),
@@ -546,7 +562,10 @@ impl Chats {
         // old turn must find nothing from here on.
         self.waits.end_pane(pane);
         let channel = mpsc::channel(TURN_CHANNEL);
-        let pending = self.open_session(pane, turn, &request, &channel.0);
+        let (pending, dispatch) = match self.open_session(pane, turn, &request, &channel.0) {
+            Some((pending, dispatch)) => (Some(pending), dispatch),
+            None => (None, None),
+        };
         // Tell the engine's adapter which session is this turn's. Without a
         // session the request keeps `mcp: None` and the turn runs as text.
         if let (Tools::On { mcp, .. }, Some(started), Some(_)) =
@@ -569,6 +588,7 @@ impl Chats {
             request,
             channel,
             pending,
+            dispatch,
         ));
         self.turns.insert(pane, task);
     }
@@ -576,13 +596,16 @@ impl Chats {
     /// The session of this turn, if it offers tools: any earlier session of
     /// the pane is replaced (its token stops working), or closed when this
     /// turn has no tools. `None` when the turn runs without a session.
+    ///
+    /// A server engine (Ollama) gets no socket: its dispatch comes back for
+    /// the turn's tool loop, which reaches the same host and approvals.
     fn open_session(
         &mut self,
         pane: PaneId,
         turn: u64,
         request: &ChatRequest,
         events: &mpsc::Sender<StreamEvent>,
-    ) -> Option<Pending> {
+    ) -> Option<(Pending, Option<Arc<dyn Dispatch>>)> {
         let tooling = self.tooling.as_mut()?;
         tooling.started.remove(&pane);
         let (Tools::On { origin, .. }, Some(locality)) =
@@ -593,10 +616,6 @@ impl Chats {
             }
             return None;
         };
-        if tooling.hub.is_none() {
-            tooling.hub = Hub::new(&tooling.dirs).ok();
-        }
-        let hub = tooling.hub.as_mut()?;
         let pending = Pending::new();
         let scope = TurnScope {
             events: events.clone(),
@@ -607,10 +626,21 @@ impl Chats {
             approver: self.waits.approver(pane, turn, pending.clone()),
         };
         let dispatch = tooling.host.dispatch(scope);
+        if adapter_for(&request.engine) == Some(Adapter::Ollama) {
+            // The pane may have had a CLI session: it must not stay open.
+            if let Some(hub) = tooling.hub.as_mut() {
+                hub.close(pane);
+            }
+            return Some((pending, Some(dispatch)));
+        }
+        if tooling.hub.is_none() {
+            tooling.hub = Hub::new(&tooling.dirs).ok();
+        }
+        let hub = tooling.hub.as_mut()?;
         // No session means no tools for this turn: it runs as text.
         let started = hub.open(pane, registry(&[]), dispatch).ok()?;
         tooling.started.insert(pane, started);
-        Some(pending)
+        Some((pending, None))
     }
 
     /// The user's answer to a call that waits: the app's `ToolDecision`.
@@ -691,6 +721,9 @@ impl Chats {
 
 #[cfg(test)]
 mod adapter_tests;
+mod ollama;
+#[cfg(test)]
+mod ollama_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
