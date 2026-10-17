@@ -11,6 +11,9 @@
 //! - the `result` line ends the turn. It repeats the whole answer too, which is
 //!   why CLI lines may be 2 MiB. A failure arrives as `is_error: true` (with
 //!   `subtype: "success"`, as the CLI reports an API error that way).
+//! - a tool block that is not `mcp__lazarobox__*` fails the turn closed; one that
+//!   is ours adds nothing (the host announces the call). The shape is the one
+//!   claude 2.1.x documents; the manual check records the real one.
 //! - `system`, `rate_limit_event` and any unknown type are ignored, and so is
 //!   any line that does not start with `{` (stray stdout text).
 
@@ -21,6 +24,38 @@ use super::stream::{
     CLI_LINE_CAP, Lines, StreamDecoder, TooLong, emit, error_message, finish_with, malformed,
     too_long,
 };
+use crate::core::ai::tools::wiring::CLAUDE_TOOL_PREFIX;
+
+/// The failure of a turn in which claude started a tool that is not ours.
+pub const TOOL_REFUSED: &str = "claude tried to use a tool";
+
+/// Whether this line starts a tool that is not one of lazarobox's own. The
+/// only tool claude may use is `mcp__lazarobox__*` (what the app serves; its
+/// rows come from the host, not from this stream), so anything else, in the
+/// stream or in a repeated message, sub-agents included, means the flags that
+/// remove the other tools did not hold. A content block whose type ends in
+/// `tool_use` (`server_tool_use` too) counts, and so does one without a name.
+fn started_foreign_tool(value: &Value) -> bool {
+    let blocks: Vec<&Value> = match value["type"].as_str() {
+        Some("stream_event") if value["event"]["type"].as_str() == Some("content_block_start") => {
+            vec![&value["event"]["content_block"]]
+        }
+        Some("assistant") => value["message"]["content"]
+            .as_array()
+            .map(|items| items.iter().collect())
+            .unwrap_or_default(),
+        _ => return false,
+    };
+    blocks
+        .into_iter()
+        .any(|block| match block["type"].as_str() {
+            Some("tool_use") => !block["name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with(CLAUDE_TOOL_PREFIX)),
+            Some(other) => other.ends_with("tool_use"),
+            None => false,
+        })
+}
 
 /// Decodes the stream-json output of the claude CLI.
 pub struct ClaudeDecoder {
@@ -49,6 +84,9 @@ impl ClaudeDecoder {
         let Ok(value) = serde_json::from_str::<Value>(&String::from_utf8_lossy(line)) else {
             return vec![malformed()];
         };
+        if started_foreign_tool(&value) {
+            return vec![StreamEvent::Error(ChatError::Failed(TOOL_REFUSED.into()))];
+        }
         match value["type"].as_str() {
             Some("stream_event") => self.stream_event(&value),
             Some("result") => self.result(&value),

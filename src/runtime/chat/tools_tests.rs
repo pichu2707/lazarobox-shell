@@ -399,3 +399,44 @@ async fn a_waiting_call_is_counted_for_the_timers_of_its_turn() {
             .unwrap()
     );
 }
+
+/// A runner that hands the request it got to the test, then ends the turn.
+fn capturing(seen: Arc<Mutex<Vec<ChatRequest>>>) -> Runner {
+    Arc::new(move |request, tx| {
+        let seen = seen.clone();
+        Box::pin(async move {
+            seen.lock().unwrap().push(request);
+            let _ = tx.send(done()).await;
+        })
+    })
+}
+
+#[tokio::test]
+async fn the_runner_gets_the_session_of_the_turn_in_the_request() {
+    let lab = lab();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (mut chats, mut rx) = tooled(&lab, capturing(seen.clone()));
+    chats.send(pane(1), 1, with_tools(&lab));
+    next(&mut rx).await;
+    let started = chats.session(pane(1)).expect("a session");
+    let seen = seen.lock().unwrap();
+    let Tools::On {
+        mcp: Some(wire), ..
+    } = &seen[0].tools
+    else {
+        panic!("a wire expected: {:?}", seen[0].tools);
+    };
+    assert_eq!(wire.socket, started.socket);
+    assert_eq!(wire.token.reveal(), started.token.reveal());
+}
+
+#[tokio::test]
+async fn a_turn_without_tools_gets_no_wire_and_no_session() {
+    let lab = lab();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (mut chats, mut rx) = tooled(&lab, capturing(seen.clone()));
+    chats.send(pane(1), 1, request(""));
+    next(&mut rx).await;
+    assert!(chats.session(pane(1)).is_none());
+    assert_eq!(seen.lock().unwrap()[0].tools, Tools::Off);
+}

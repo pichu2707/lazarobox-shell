@@ -41,7 +41,11 @@ use crate::core::{
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
         sanitize::{StreamSanitizer, Utf8Stream, clean},
-        tools::{registry, summary::clip},
+        tools::{
+            registry,
+            summary::clip,
+            wiring::{McpWire, Secret},
+        },
     },
     layout::PaneId,
 };
@@ -524,7 +528,7 @@ impl Chats {
     }
 
     /// Starts turn `turn` of `pane`, replacing any turn it still had.
-    pub fn send(&mut self, pane: PaneId, turn: u64, request: ChatRequest) {
+    pub fn send(&mut self, pane: PaneId, turn: u64, mut request: ChatRequest) {
         self.turns.retain(|_, task| !task.is_finished());
         if let Some(old) = self.turns.remove(&pane) {
             old.abort();
@@ -534,6 +538,16 @@ impl Chats {
         self.waits.end_pane(pane);
         let channel = mpsc::channel(TURN_CHANNEL);
         let pending = self.open_session(pane, turn, &request, &channel.0);
+        // Tell the engine's adapter which session is this turn's. Without a
+        // session the request keeps `mcp: None` and the turn runs as text.
+        if let (Tools::On { mcp, .. }, Some(started), Some(_)) =
+            (&mut request.tools, self.session(pane), &pending)
+        {
+            *mcp = Some(McpWire {
+                socket: started.socket.clone(),
+                token: Secret::new(started.token.reveal()),
+            });
+        }
         let task = tokio::spawn(run_turn(
             self.runner.clone(),
             self.tx.clone(),

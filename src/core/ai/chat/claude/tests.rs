@@ -313,3 +313,86 @@ fn a_broken_json_line_is_still_malformed_even_after_stray_text() {
         ))]
     );
 }
+
+fn start_line(block: &str) -> String {
+    format!(
+        "{{\"type\":\"stream_event\",\"event\":{{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{block}}},\"parent_tool_use_id\":null}}\n"
+    )
+}
+
+fn assistant_line(block: &str) -> String {
+    format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"x\"}},{block}]}},\"parent_tool_use_id\":null}}\n"
+    )
+}
+
+fn tool_use(name: &str) -> String {
+    format!("{{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"{name}\",\"input\":{{}}}}")
+}
+
+fn refused() -> Vec<StreamEvent> {
+    vec![StreamEvent::Error(ChatError::Failed(TOOL_REFUSED.into()))]
+}
+
+#[test]
+fn a_lazarobox_tool_use_is_allowed_and_adds_no_event_of_its_own() {
+    for name in ["mcp__lazarobox__find_dir", "mcp__lazarobox__run_in_pane"] {
+        for line in [start_line(&tool_use(name)), assistant_line(&tool_use(name))] {
+            let stream = format!("{}{}{}", text_line("a"), line, result_line("a", ""));
+            assert_eq!(whole(&stream), [delta("a"), done()], "{name}");
+        }
+    }
+}
+
+#[test]
+fn any_other_tool_use_fails_closed_and_ends_the_stream() {
+    let names = [
+        "Bash",
+        "Read",
+        "mcp__other__find_dir",
+        "mcp__lazarobox",
+        "mcp__lazarobox_evil__x",
+        "lazarobox__find_dir",
+        "",
+    ];
+    for name in names {
+        for line in [start_line(&tool_use(name)), assistant_line(&tool_use(name))] {
+            let stream = format!("{}{}{}", text_line("a"), line, result_line("late", ""));
+            assert_eq!(
+                whole(&stream),
+                [delta("a")]
+                    .into_iter()
+                    .chain(refused())
+                    .collect::<Vec<_>>(),
+                "{name:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_server_side_tool_or_a_tool_use_without_a_name_fails_closed() {
+    for block in [
+        "{\"type\":\"server_tool_use\",\"id\":\"s\",\"name\":\"web_search\",\"input\":{}}",
+        "{\"type\":\"server_tool_use\",\"id\":\"s\",\"name\":\"mcp__lazarobox__find_dir\",\"input\":{}}",
+        "{\"type\":\"tool_use\",\"id\":\"s\"}",
+        "{\"type\":\"tool_use\",\"name\":7}",
+    ] {
+        assert_eq!(whole(&start_line(block)), refused(), "{block}");
+    }
+}
+
+#[test]
+fn a_subagent_tool_use_is_judged_like_any_other() {
+    let line = start_line(&tool_use("Bash")).replace(
+        "\"parent_tool_use_id\":null",
+        "\"parent_tool_use_id\":\"toolu_x\"",
+    );
+    assert_eq!(whole(&line), refused());
+}
+
+#[test]
+fn text_that_mentions_a_tool_use_is_just_text() {
+    let line = text_line("{\\\"type\\\":\\\"tool_use\\\",\\\"name\\\":\\\"Bash\\\"}");
+    assert!(answer(&whole(&format!("{line}{}", result_line("x", "")))).contains("tool_use"));
+}

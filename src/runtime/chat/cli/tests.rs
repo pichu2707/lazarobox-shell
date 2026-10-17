@@ -22,6 +22,7 @@ use crate::{
                 engine::{ChatError, ChatMessage, ChatRequest, Finish, Role, StreamEvent, Tools},
             },
             jail::{Backend, Cli, JailPolicy, JailSupport},
+            tools::wiring::{McpWire, Secret},
         },
         layout::PaneId,
     },
@@ -110,6 +111,7 @@ impl Lab {
             },
             grace: Duration::from_secs(2),
             codex_home: None,
+            shim: None,
             inject: Vec::new(),
         }
     }
@@ -1721,3 +1723,210 @@ printf '%s\n' '{"type":"init","session_id":"s","model":"m"}'
 printf '%s\n' '{"type":"message","role":"assistant","content":"ok","delta":true}'
 printf '%s\n' '{"type":"result","status":"success"}'
 "#;
+
+/// The claude of a turn with tools: it also copies the config it was given.
+const MCP_CLAUDE: &str = r#"
+for a; do
+  case "$a" in
+    --mcp-config=*)
+      cp "${a#--mcp-config=}" "$REC/mcp_copy"
+      stat -c %a "${a#--mcp-config=}" > "$REC/mcp_mode"
+      ;;
+  esac
+done
+"#;
+
+const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
+fn claude_job(lab: &Lab, wired: bool) -> Job {
+    Job {
+        wire: Wire::ClaudeStreamJson,
+        binary: "claude",
+        cli: Cli::Claude,
+        args: vec!["-p".into(), "--strict-mcp-config".into()],
+        stdin: b"hi".to_vec(),
+        jail: JailPolicy::Layered,
+        tmp_files: Vec::new(),
+        mcp: wired.then(|| McpWire {
+            socket: lab.rec.join("s.sock"),
+            token: Secret::new(TOKEN),
+        }),
+    }
+}
+
+fn with_shim(lab: &Lab, mut env: CliEnv, shim: &str) -> CliEnv {
+    fs::write(lab.rec.join("s.sock"), "").unwrap();
+    env.shim = Some(PathBuf::from(shim));
+    env.jail = jail_on();
+    env.helper = lab.helper(PASS);
+    env
+}
+
+const OFF_NOTICE: &str = "tools are off for this turn: they could not be set up";
+
+#[tokio::test]
+async fn a_wired_claude_gets_the_config_the_flags_the_timeout_and_the_jail_grant() {
+    let lab = lab();
+    script(
+        &lab.bin.join("claude"),
+        &lab.rec,
+        &format!("{MCP_CLAUDE}{GOOD}"),
+    );
+    let shim = lab.bin.join("shim");
+    fs::write(&shim, "").unwrap();
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let events = run_job(&env, claude_job(&lab, true)).await;
+    assert_eq!(
+        events.last(),
+        Some(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, StreamEvent::Notice(_))),
+        "{events:?}"
+    );
+    let args = lab.args();
+    let n = args.len();
+    assert_eq!(args[..2], ["-p", "--strict-mcp-config"]);
+    assert!(args[n - 2].starts_with("--mcp-config="), "{args:?}");
+    assert!(args[n - 2].ends_with("/mcp.json"), "{args:?}");
+    assert_eq!(args[n - 1], "--allowedTools=mcp__lazarobox");
+    let config = lab.recorded("mcp_copy");
+    assert!(
+        config.contains(TOKEN) && config.contains(shim.to_str().unwrap()),
+        "{config}"
+    );
+    assert_eq!(lab.recorded("mcp_mode").trim(), "600");
+    assert!(
+        lab.recorded("env")
+            .lines()
+            .any(|l| l == "MCP_TOOL_TIMEOUT=900000")
+    );
+    // The token reaches the engine only through the config file.
+    assert!(!lab.recorded("helper_args").contains(TOKEN));
+    assert!(!args.iter().any(|a| a.contains(TOKEN)));
+    assert!(!lab.recorded("env").contains(TOKEN));
+    let helper = lab.recorded("helper_args");
+    let helper: Vec<&str> = helper.split('\0').collect();
+    let has = |flag: &str, path: &str| helper.windows(2).any(|w| w == [flag, path]);
+    assert!(has("--rx", shim.to_str().unwrap()), "{helper:?}");
+    assert!(
+        has("--rw-file", lab.rec.join("s.sock").to_str().unwrap()),
+        "{helper:?}"
+    );
+}
+
+#[tokio::test]
+async fn without_a_jail_a_wired_claude_runs_as_text_and_says_so() {
+    let lab = lab();
+    script(
+        &lab.bin.join("claude"),
+        &lab.rec,
+        &format!("{MCP_CLAUDE}{GOOD}"),
+    );
+    let mut env = lab.env();
+    env.shim = Some(lab.bin.join("shim"));
+    let events = run_job(&env, claude_job(&lab, true)).await;
+    assert_eq!(
+        events.last(),
+        Some(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+    let notices: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Notice(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notices.len(), 1, "{events:?}");
+    assert!(notices[0].contains(OFF_NOTICE), "{notices:?}");
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config"]);
+    assert_eq!(lab.recorded("mcp_copy"), "");
+    assert!(!lab.recorded("env").contains("MCP_TOOL_TIMEOUT"));
+}
+
+#[tokio::test]
+async fn a_jailed_claude_without_a_shim_program_stays_jailed_and_text_only() {
+    let lab = lab();
+    script(
+        &lab.bin.join("claude"),
+        &lab.rec,
+        &format!("{MCP_CLAUDE}{GOOD}"),
+    );
+    let mut env = with_shim(&lab, lab.env(), "/unused");
+    env.shim = None;
+    let events = run_job(&env, claude_job(&lab, true)).await;
+    assert_eq!(
+        events[0],
+        StreamEvent::Notice(OFF_NOTICE.into()),
+        "{events:?}"
+    );
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config"]);
+    assert!(
+        !lab.recorded("helper_args").is_empty(),
+        "still through the jail helper"
+    );
+}
+
+#[tokio::test]
+async fn a_shim_the_jail_refuses_retries_the_jail_without_it() {
+    let lab = lab();
+    script(
+        &lab.bin.join("claude"),
+        &lab.rec,
+        &format!("{MCP_CLAUDE}{GOOD}"),
+    );
+    // /tmp is a place the jail never grants.
+    let env = with_shim(&lab, lab.env(), "/tmp/lazarobox-shell");
+    let events = run_job(&env, claude_job(&lab, true)).await;
+    assert_eq!(
+        events[0],
+        StreamEvent::Notice(OFF_NOTICE.into()),
+        "{events:?}"
+    );
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config"]);
+    let helper = lab.recorded("helper_args");
+    assert!(
+        !helper.contains("/tmp/lazarobox-shell") && !helper.contains("s.sock"),
+        "{helper:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_claude_job_without_a_wire_is_untouched_even_with_a_shim_program() {
+    let lab = lab();
+    script(
+        &lab.bin.join("claude"),
+        &lab.rec,
+        &format!("{MCP_CLAUDE}{GOOD}"),
+    );
+    let env = with_shim(&lab, lab.env(), "/opt/lb/lazarobox-shell");
+    let events = run_job(&env, claude_job(&lab, false)).await;
+    assert_eq!(
+        events,
+        [
+            StreamEvent::Delta("hi".into()),
+            StreamEvent::Done(Finish::Stop)
+        ]
+    );
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config"]);
+}
+
+#[test]
+fn the_wiring_names_the_shims_subcommand_and_token_variable() {
+    use crate::runtime::mcp::shim;
+    assert_eq!(wiring::SUBCOMMAND, shim::SUBCOMMAND);
+    assert_eq!(wiring::TOKEN_ENV, shim::TOKEN_ENV);
+}
+
+#[test]
+fn the_real_machine_resolves_its_own_executable_once_as_the_shim() {
+    let env = CliEnv::from_env(JailSupport::Unavailable(JailOff::NotProbed));
+    let shim = env.shim.expect("current_exe works in tests");
+    assert!(shim.is_absolute() && shim.is_file(), "{shim:?}");
+    assert_eq!(shim, fs::canonicalize(&shim).unwrap());
+    assert_ne!(shim, Path::new("/proc/self/exe"));
+}
