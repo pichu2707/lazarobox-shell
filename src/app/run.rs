@@ -34,9 +34,9 @@ const PROMPT_TOO_SMALL: &str = "Pane too small to show it all: enlarge it or pre
 
 /// A command that was not typed: what the user sees, and why, in the short
 /// words that go back to the model when a tool call asked for it.
-struct Refused {
+pub(super) struct Refused {
     notice: String,
-    reason: &'static str,
+    pub(super) reason: &'static str,
 }
 
 impl App {
@@ -217,7 +217,7 @@ impl App {
             return Vec::new();
         };
         let mut effects = Vec::new();
-        let decision = match self.type_command(target, command) {
+        let decision = match self.typed_bytes(target, command) {
             Ok(bytes) => {
                 let number = self.pane_number(target).unwrap_or(0);
                 if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
@@ -237,7 +237,11 @@ impl App {
 
     /// The accept-time checks of a command bound for `target`, and the bytes
     /// to write when they pass. Shared by every way a command gets typed.
-    fn type_command(&mut self, target: PaneId, command: &str) -> Result<Vec<u8>, Refused> {
+    pub(super) fn typed_bytes(
+        &mut self,
+        target: PaneId,
+        command: &str,
+    ) -> Result<Vec<u8>, Refused> {
         let command = validate(command).map_err(|refusal| Refused {
             notice: format!("Command refused: {}", refusal.reason()),
             reason: "the command was refused",

@@ -11,24 +11,24 @@ use crate::core::ai::chat::{
     engine::{CallId, Decision, Finish, StreamEvent, ToolStatus, Tools},
 };
 
-fn chat(a: &App, id: PaneId) -> &ChatState {
+pub(super) fn chat(a: &App, id: PaneId) -> &ChatState {
     super::run_pane::chat(a, id)
 }
 
-fn run(command: &str) -> ApprovalAsk {
+pub(super) fn run(command: &str) -> ApprovalAsk {
     ApprovalAsk::Run {
         command: command.to_owned(),
     }
 }
 
-fn read(path: &str) -> ApprovalAsk {
+pub(super) fn read(path: &str) -> ApprovalAsk {
     ApprovalAsk::Read {
         path: path.to_owned(),
     }
 }
 
 /// A shell (pane 1), a focused chat (pane 2) and a turn in flight.
-fn live() -> (App, u64) {
+pub(super) fn live() -> (App, u64) {
     NOW_MS.with(|n| n.set(0));
     let mut a = one_shell_and_a_chat("hello").with_clock(mock_now);
     a.update(key('q'));
@@ -37,13 +37,13 @@ fn live() -> (App, u64) {
 }
 
 /// The ask arrives and the prompt's delay passes (see `guard` for the delay).
-fn announce(a: &mut App, turn: u64, call: u64, ask: ApprovalAsk) -> Vec<Effect> {
+pub(super) fn announce(a: &mut App, turn: u64, call: u64, ask: ApprovalAsk) -> Vec<Effect> {
     let effects = announce_now(a, turn, call, ask);
     NOW_MS.with(|n| n.set(n.get() + 1_000));
     effects
 }
 
-fn announce_now(a: &mut App, turn: u64, call: u64, ask: ApprovalAsk) -> Vec<Effect> {
+pub(super) fn announce_now(a: &mut App, turn: u64, call: u64, ask: ApprovalAsk) -> Vec<Effect> {
     a.update(AppEvent::Chat(
         id2(),
         turn,
@@ -56,7 +56,7 @@ fn announce_now(a: &mut App, turn: u64, call: u64, ask: ApprovalAsk) -> Vec<Effe
     ))
 }
 
-fn result(a: &mut App, turn: u64, call: u64, status: ToolStatus) -> Vec<Effect> {
+pub(super) fn result(a: &mut App, turn: u64, call: u64, status: ToolStatus) -> Vec<Effect> {
     a.update(AppEvent::Chat(
         id2(),
         turn,
@@ -68,7 +68,7 @@ fn result(a: &mut App, turn: u64, call: u64, status: ToolStatus) -> Vec<Effect> 
     ))
 }
 
-fn decision(turn: u64, call: u64, decision: Decision) -> Effect {
+pub(super) fn decision(turn: u64, call: u64, decision: Decision) -> Effect {
     Effect::ToolDecision {
         pane: id2(),
         turn,
@@ -77,14 +77,14 @@ fn decision(turn: u64, call: u64, decision: Decision) -> Effect {
     }
 }
 
-fn pending(a: &App) -> Option<(ApprovalAsk, Option<(u64, CallId)>)> {
+pub(super) fn pending(a: &App) -> Option<(ApprovalAsk, Option<(u64, CallId)>)> {
     chat(a, id2())
         .approvals()
         .pending()
         .map(|p| (p.ask().clone(), p.call()))
 }
 
-fn shell_output(a: &mut App, bytes: &[u8]) {
+pub(super) fn shell_output(a: &mut App, bytes: &[u8]) {
     a.update(AppEvent::Pty(
         PaneId::FIRST,
         PtyEvent::Output(bytes.to_vec()),

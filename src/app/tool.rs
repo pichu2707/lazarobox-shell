@@ -4,13 +4,14 @@
 //! pane, turn and id.
 //!
 //! `on_tool_ask` is the single place an ask enters the app. It always opens
-//! the overlay today; the chat approval mode (D18) will route there first.
+//! the overlay, unless the chat is in `auto` mode and `approval::route` says
+//! the command can be typed at once (D18).
 
 use std::time::Duration;
 
 use super::*;
 use crate::core::ai::chat::{
-    approval::{Approval, ApprovalAsk, Origin},
+    approval::{Approval, ApprovalAsk, AutoCtx, Origin, Route, route},
     engine::{CallId, Decision, Tools, tools_for},
 };
 
@@ -122,6 +123,11 @@ impl App {
             ApprovalAsk::Read { .. } => None,
             ApprovalAsk::External { .. } => return Self::deny(id, turn, call, NO_USER_TOOLS),
         };
+        if let (ApprovalAsk::Run { command }, Some(target)) = (&ask, target)
+            && self.auto_route(id, target, &ask) == Route::AutoType
+        {
+            return self.auto_type(id, (turn, call), target, command);
+        }
         let armed_at = (self.clock)() + ARM_DELAY;
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Self::deny(id, turn, call, CHAT_GONE);
@@ -135,6 +141,57 @@ impl App {
             }
             Err(refusal) => Self::deny(id, turn, call, refusal.reason()),
         }
+    }
+
+    /// What chat `id` does with a model's `ask` for `target`: the mode and the
+    /// flood limits decide (see `approval::route`). A pending approval is not
+    /// the mode's to answer, so it prompts, and the request is then refused.
+    fn auto_route(&self, id: PaneId, target: PaneId, ask: &ApprovalAsk) -> Route {
+        let Some(chat) = self.panes.get(&id).and_then(PaneState::chat_state) else {
+            return Route::Prompt;
+        };
+        if chat.approvals().pending().is_some() {
+            return Route::Prompt;
+        }
+        let ctx = AutoCtx {
+            typed_this_turn: chat.auto_typed(),
+            line_pending: (self.panes.get(&target).and_then(PaneState::pty))
+                .is_some_and(|pty| pty.line_pending.is_some()),
+            target_focused: self.tab().focus == target,
+            tab_shown: self.tab().tree.leaves().contains(&id),
+        };
+        route(ask, Origin::Tool, chat.approval_mode(), ctx)
+    }
+
+    /// Types a model's command into `target` without a prompt: the same
+    /// checks as `y`, then one `Effect::AutoType` and the marks that stop the
+    /// next command from landing on this line, all before the runtime acts.
+    /// A check that fails denies the call with its reason.
+    fn auto_type(
+        &mut self,
+        id: PaneId,
+        (turn, call): (u64, CallId),
+        target: PaneId,
+        command: &str,
+    ) -> Vec<Effect> {
+        let bytes = match self.typed_bytes(target, command) {
+            Ok(bytes) => bytes,
+            Err(refused) => return Self::deny(id, turn, call, refused.reason),
+        };
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.note_auto_typed();
+        }
+        if let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) {
+            pty.line_pending = Some(call);
+        }
+        self.dirty = true;
+        vec![Effect::AutoType {
+            chat: id,
+            target,
+            bytes,
+            turn,
+            call,
+        }]
     }
 
     /// Ends the pending approval of chat `id` when it belongs to a tool call

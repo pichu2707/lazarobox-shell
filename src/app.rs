@@ -353,6 +353,9 @@ struct PtyPane {
     proc_cwd: Option<PathBuf>,
     /// Set when the pane runs `cargo install` for an update, not a shell.
     update: Option<UpdateRun>,
+    /// The auto-typed command of a chat that sits unsent on this pane's line
+    /// (design D18): a later auto call to this pane prompts instead.
+    line_pending: Option<CallId>,
 }
 
 /// The install an update pane runs.
@@ -422,6 +425,7 @@ impl PaneState {
                 emu: Pane::new(size, SCROLLBACK_LINES).with_host(host),
                 proc_cwd: None,
                 update: None,
+                line_pending: None,
             })),
             size,
         }
