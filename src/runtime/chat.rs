@@ -45,6 +45,7 @@ use crate::core::{
         sanitize::{StreamSanitizer, Utf8Stream, clean},
         tools::{
             registry,
+            report::RunReport,
             summary::clip,
             wiring::{McpWire, Secret},
         },
@@ -627,6 +628,23 @@ impl Chats {
         call: CallId,
     ) -> Option<tokio::sync::oneshot::Sender<Answer>> {
         self.waits.take(pane, turn, call)
+    }
+
+    /// Puts a claimed wait back once its command was written (see
+    /// [`Waits::park`]).
+    pub fn park(
+        &self,
+        pane: PaneId,
+        turn: u64,
+        call: CallId,
+        wait: tokio::sync::oneshot::Sender<Answer>,
+    ) -> bool {
+        self.waits.park(pane, turn, call, wait)
+    }
+
+    /// Ends a parked call with the report of its run (see [`Waits::finish`]).
+    pub fn finish(&self, pane: PaneId, turn: u64, call: CallId, report: Box<RunReport>) -> bool {
+        self.waits.finish(pane, turn, call, report)
     }
 
     /// The waits, so a test can register one without a model turn.

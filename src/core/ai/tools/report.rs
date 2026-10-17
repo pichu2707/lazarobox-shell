@@ -55,7 +55,12 @@ const PATH_CAP: usize = 256;
 /// control characters are shown as escapes (`\n`), secrets are redacted and a
 /// long path is cut in the middle.
 fn shown(path: &Path) -> String {
-    let text: String = clean(&path.display().to_string())
+    shown_text(&path.display().to_string())
+}
+
+/// Text from outside as one visible line (see [`shown`]).
+fn shown_text(text: &str) -> String {
+    let text: String = clean(text)
         .chars()
         .flat_map(|c| {
             let escaped = if c.is_control() {
@@ -197,14 +202,28 @@ pub fn words(command: &str, report: &RunReport, nonce: Option<&str>) -> Words {
             format!("{ran} \u{2014} the pane closed"),
         ),
     };
-    let ended = matches!(report.end, End::Settled | End::TimedOut | End::Unconfirmed);
-    let system = match (&report.cd_target, cwd) {
-        (Some(_), Some((path, CwdSource::Proc))) if ended => {
-            Some(format!("pane {n}: {command} \u{2192} {}", shown(path)))
-        }
+    Words {
+        text,
+        row,
+        system: system_line(command, report),
+    }
+}
+
+/// `pane N: <cmd> → <cwd>`, the transcript line of a `cd` that settled with
+/// its real cwd known: a run that timed out or could not be confirmed has no
+/// new directory to show, and an OSC 7 cwd is any program's claim. The command
+/// goes through the same sanitizer as the paths (it is the model's text). The
+/// app adds the line when the run ends, with no output to clean.
+pub fn system_line(command: &str, report: &RunReport) -> Option<String> {
+    match (&report.cd_target, &report.cwd) {
+        (Some(_), Some((path, CwdSource::Proc))) if report.end == End::Settled => Some(format!(
+            "pane {}: {} \u{2192} {}",
+            report.number,
+            shown_text(command),
+            shown(path)
+        )),
         _ => None,
-    };
-    Words { text, row, system }
+    }
 }
 
 #[cfg(test)]
@@ -489,5 +508,15 @@ mod tests {
         ));
         assert!(w.text.contains("redx"), "{}", w.text);
         assert!(!w.text.contains(['\u{1b}', '\u{7}', '\u{9b}']));
+    }
+
+    #[test]
+    fn the_system_line_shows_the_command_as_clean_text() {
+        let mut r = report(End::Settled, None);
+        r.cd_target = Some("/home/u".into());
+        let line = system_line("cd \u{1b}[31mx\ny", &r).unwrap();
+        assert!(!line.contains(['\u{1b}', '\n']), "{line:?}");
+        r.end = End::TimedOut;
+        assert_eq!(system_line("cd x", &r), None, "only a settled cd");
     }
 }

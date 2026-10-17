@@ -23,6 +23,7 @@ use crate::core::{
             offer::ServerOffer,
             port::{MemCmd, MemReply, Reason},
         },
+        tools::report::RunReport,
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{
@@ -55,7 +56,7 @@ mod tags;
 mod tool;
 
 use auto_run::RunSlot;
-pub use auto_run::{PANE_GONE, RunEvent};
+pub use auto_run::{CALL_OVER, PANE_GONE, RunEvent};
 use tool::ToolEvent;
 
 /// Rows of history kept by the emulator.
@@ -248,17 +249,25 @@ pub enum Effect {
     },
     /// A run that passed its check (design D21): the runtime writes `bytes`,
     /// which end in the one `\r`, in ONE write, only if the pane's real
-    /// directory still is `cwd` and the shell owns the terminal; it claims the
-    /// answer first and says `Ran`. Otherwise it sends `RunEvent::NotRun`. The
-    /// only effect with an Enter: `y` and `auto` cannot carry one.
+    /// directory still is `cwd` and the shell owns the terminal. It claims the
+    /// answer first and parks it after the write; `RunDone` finishes it.
+    /// Otherwise it sends `RunEvent::NotRun`. The only effect with an Enter:
+    /// `y` and `auto` cannot carry one.
     AutoRun {
         chat: PaneId,
         target: PaneId,
         bytes: Vec<u8>,
-        number: usize,
         turn: u64,
         call: CallId,
         cwd: PathBuf,
+    },
+    /// The run of call `call` ended (design D22): the runtime finishes the
+    /// parked call with `report`. Emitted once per written run.
+    RunDone {
+        chat: PaneId,
+        turn: u64,
+        call: CallId,
+        report: Box<RunReport>,
     },
     /// Chat `chat` routed a model's safe command for the shell pane `target`
     /// to a run (design D21): the runtime reads the pane's real directory,
@@ -1741,6 +1750,7 @@ impl App {
             Step::Run(PrefixAction::SendPrefixLiteral) if self.focused_pty().is_some() => {
                 self.return_to_live();
                 self.mark_dirty(self.tab().focus);
+                self.note_typed(self.tab().focus);
                 vec![Effect::WritePty(self.tab().focus, vec![PREFIX_LITERAL])]
             }
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
@@ -2323,6 +2333,7 @@ impl App {
                     pty.line_pending = None;
                 }
                 self.mark_dirty(self.tab().focus);
+                self.note_typed(self.tab().focus);
                 self.return_to_live();
                 vec![Effect::WritePty(self.tab().focus, bytes)]
             }
@@ -2409,6 +2420,7 @@ impl App {
             PtyEvent::Output(bytes) => {
                 // Panes of hidden tabs are not on screen: feed them, don't redraw.
                 self.dirty |= self.tab().tree.leaves().contains(&id);
+                let now = (self.clock)();
                 let mut cwd_changed = false;
                 let reply = self
                     .panes
@@ -2417,7 +2429,12 @@ impl App {
                         let before = state.effective_cwd().map(Path::to_path_buf);
                         let reply = state
                             .pty_mut()
-                            .map(|pty| pty.emu.feed(&bytes))
+                            .map(|pty| {
+                                if let Some(slot) = pty.run.as_mut() {
+                                    slot.output(now);
+                                }
+                                pty.emu.feed(&bytes)
+                            })
                             .unwrap_or_default();
                         cwd_changed = state.effective_cwd() != before.as_deref();
                         reply
@@ -7345,6 +7362,7 @@ mod app_tests {
 
     /// The `run` mode: routing, the check round trip and its cleanup.
     mod tool_run;
+    mod tool_run_settle;
 
     /// The keys, rechecks and lifecycle of the run-in-pane confirm.
     mod run_pane_keys;

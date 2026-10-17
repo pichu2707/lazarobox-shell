@@ -263,29 +263,6 @@ async fn an_auto_typed_run_names_the_pane_in_its_result_row() {
     );
 }
 
-// Interim (S3, until the answer channel of S4a): a run is answered at once and
-// says plainly that its output was not read back.
-#[tokio::test]
-async fn a_run_is_answered_at_once_and_says_the_output_was_not_read_back() {
-    let (_dir, home, host) = fixture();
-    let (mut scope, mut rx) = scope(Locality::Cloud, &home);
-    scope.approver = Scripted::new(Decision::Ran(2));
-    let out = host.dispatch(scope).call(run_cmd("ls")).await;
-    assert!(!out.is_error, "{out:?}");
-    assert!(
-        out.text.contains("pane 2") && out.text.contains("not read back"),
-        "{out:?}"
-    );
-    let (_, _, status, summary) = pair(&events(&mut rx));
-    assert_eq!(
-        (status, summary.as_str()),
-        (
-            ToolStatus::Ok,
-            "ran in pane 2 \u{2014} output not read back"
-        )
-    );
-}
-
 /// Answers with the report of a run the app made.
 struct Ran(RunReport);
 
@@ -312,6 +289,29 @@ fn the_system_line_exists_for_cd_only() {
     assert_eq!(cd.3.as_deref(), Some("pane 3: cd dev \u{2192} /home/u/dev"));
     report.cd_target = None;
     assert_eq!(ran(&run_cmd("ls"), &report).3, None);
+}
+
+// A run is the only call a report can end; any other is denied, whatever the
+// approver says.
+#[tokio::test]
+async fn a_ran_answer_to_a_call_that_is_not_a_command_is_denied() {
+    use crate::core::ai::tools::{report::CwdSource, settle::End};
+    let (_dir, home, host) = fixture();
+    let (mut scope, mut rx) = scope(Locality::Cloud, &home);
+    scope.approver = Arc::new(Ran(RunReport {
+        number: 1,
+        end: End::Settled,
+        cwd: Some(("/home/u".into(), CwdSource::Proc)),
+        cd_target: None,
+        output: None,
+    }));
+    let out = host.dispatch(scope).call(read("note.txt")).await;
+    assert!(
+        out.is_error && out.text.contains("not a command"),
+        "{out:?}"
+    );
+    let (_, _, status, _) = pair(&events(&mut rx));
+    assert_eq!(status, ToolStatus::Denied);
 }
 
 // Spec (pane-execution, result contract): a run that settled is worded from

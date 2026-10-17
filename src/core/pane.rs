@@ -342,6 +342,13 @@ impl Pane {
         (!screen.hide_cursor()).then(|| screen.cursor_position())
     }
 
+    /// The stable line the child's cursor is on, ignoring the scrollback
+    /// offset; `None` when the child hid it.
+    pub fn live_cursor_line(&self) -> Option<usize> {
+        let (row, _) = self.live_cursor()?;
+        Some(self.first_line + self.history_len + usize::from(row))
+    }
+
     /// Last non-blank column of stable line `line`; 0 for a blank or
     /// unavailable line. The scrollback offset is restored.
     pub fn line_end(&mut self, line: usize) -> u16 {
