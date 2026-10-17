@@ -297,8 +297,21 @@ impl SecretRoots {
     /// not (under) the real target of a secret root of this snapshot. Pure.
     /// The runtime runs it on the real path of an opened file descriptor.
     pub fn judge_real(&self, real: &Path) -> bool {
-        matches!(check_path(&self.real, real), PathVerdict::Allowed(_))
-            && !self.roots.iter().any(|root| real.starts_with(root))
+        matches!(check_path(&self.real, real), PathVerdict::Allowed(_)) && !self.under_root(real)
+    }
+
+    fn under_root(&self, real: &Path) -> bool {
+        self.roots.iter().any(|root| real.starts_with(root))
+    }
+
+    /// [`judge_real`](Self::judge_real) for the safe commands: outside HOME is
+    /// fine for an existing target as long as it is not (under) a secret root.
+    fn judge_exec(&self, real: &Path, want: Want) -> bool {
+        if real.starts_with(&self.real) {
+            self.judge_real(real)
+        } else {
+            want == Want::Existing && !self.under_root(real)
+        }
     }
 }
 
@@ -313,29 +326,90 @@ impl SecretRoots {
 /// `origin` must be absolute, because `canonicalize` on a relative path would
 /// depend on the process cwd. A path that cannot be resolved is `Refused`.
 pub fn resolve(roots: &SecretRoots, origin: &Path, input: &str) -> PathVerdict {
-    if !origin.is_absolute() {
-        return PathVerdict::Refused;
-    }
-    let Some(expanded) = expand_tilde(&roots.real, input) else {
+    let Some(full) = locate(roots, origin, input) else {
         return PathVerdict::Refused;
     };
-    let full = if expanded.is_absolute() {
-        expanded
-    } else {
-        origin.join(expanded)
-    };
-    let requested = normalize(&full);
-    // The requested path may name HOME as given (a link) or as resolved.
-    let lexical_ok = [&roots.given, &roots.real]
-        .iter()
-        .find_map(|h| requested.strip_prefix(h).ok())
-        .is_some_and(judge_rest);
-    if !lexical_ok {
+    if !home_rest(roots, &normalize(&full)).is_some_and(judge_rest) {
         return PathVerdict::Refused;
     }
     match full.canonicalize() {
         Ok(real) if roots.judge_real(&real) => PathVerdict::Allowed(real),
         _ => PathVerdict::Refused,
+    }
+}
+
+/// `input` with `~` expanded and a relative path joined to `origin`. `None`
+/// for a relative `origin` (`canonicalize` would depend on the process cwd)
+/// or an unsupported `~user`.
+fn locate(roots: &SecretRoots, origin: &Path, input: &str) -> Option<PathBuf> {
+    if !origin.is_absolute() {
+        return None;
+    }
+    let expanded = expand_tilde(&roots.real, input)?;
+    Some(if expanded.is_absolute() {
+        expanded
+    } else {
+        origin.join(expanded)
+    })
+}
+
+/// The part of a requested path below HOME, whether the path names HOME as
+/// given (a link) or as resolved. `None` when it is not under HOME.
+fn home_rest<'a>(roots: &SecretRoots, requested: &'a Path) -> Option<&'a Path> {
+    [&roots.given, &roots.real]
+        .iter()
+        .find_map(|h| requested.strip_prefix(h).ok())
+}
+
+/// What a path handed to [`resolve_exec`] is for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Want {
+    /// It must exist (`cd`, `ls`, `tree`, `pwd`).
+    Existing,
+    /// It will be created (`mkdir`): it must be inside HOME.
+    New,
+}
+
+/// The path policy of the safe commands that may run unprompted. Like
+/// [`resolve`] it judges the requested and the real path, but paths outside
+/// HOME are allowed for [`Want::Existing`] unless they are (under) a secret
+/// root. A [`Want::New`] path is judged by its deepest existing ancestor,
+/// canonicalized, plus the names that do not exist yet, and must be inside
+/// HOME. A dangling link is refused. `cwd` must be the shell's real directory.
+pub fn resolve_exec(roots: &SecretRoots, cwd: &Path, input: &str, want: Want) -> PathVerdict {
+    let Some(full) = locate(roots, cwd, input) else {
+        return PathVerdict::Refused;
+    };
+    let requested = normalize(&full);
+    let lexical = match home_rest(roots, &requested) {
+        Some(rest) => judge_rest(rest),
+        None => want == Want::Existing && !roots.under_root(&requested),
+    };
+    let real = match want {
+        Want::Existing => full.canonicalize().ok(),
+        Want::New => canonical_new(&full),
+    };
+    match real {
+        Some(real) if lexical && roots.judge_exec(&real, want) => PathVerdict::Allowed(real),
+        _ => PathVerdict::Refused,
+    }
+}
+
+/// `path` with its deepest existing ancestor canonicalized and the missing
+/// names appended. `None` when something exists but cannot be resolved (a
+/// dangling link, a permission error) or a missing name is not a plain name.
+fn canonical_new(path: &Path) -> Option<PathBuf> {
+    let mut missing = Vec::new();
+    let mut current = path;
+    loop {
+        match current.canonicalize() {
+            Ok(real) => return Some(missing.iter().rev().fold(real, |p, name| p.join(name))),
+            Err(e) if e.kind() == ErrorKind::NotFound && current.symlink_metadata().is_err() => {
+                missing.push(current.file_name()?);
+                current = current.parent()?;
+            }
+            Err(_) => return None,
+        }
     }
 }
 
@@ -1078,5 +1152,164 @@ mod tests {
         assert!(!roots.judge_real(&f.home.join("deep/er/.env")));
         assert!(!roots.judge_real(&store.join("chat.db")));
         assert!(!roots.judge_real(&f.outside.join("note.txt")));
+    }
+}
+
+#[cfg(test)]
+mod exec_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        home: PathBuf,
+        outside: PathBuf,
+        roots: SecretRoots,
+    }
+
+    fn fixture() -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let (home, outside) = (root.join("home"), root.join("srv"));
+        for sub in [
+            "home/project/src",
+            "home/dotfiles/ssh",
+            "home/.ssh",
+            "home/.aws",
+            "home/.config/gcloud",
+            "srv/data",
+        ] {
+            fs::create_dir_all(root.join(sub)).unwrap();
+        }
+        symlink(home.join("dotfiles/ssh"), home.join(".ssh/keys")).unwrap();
+        fs::write(home.join(".ssh/id"), "x").unwrap();
+        symlink(home.join(".ssh"), home.join("project/s")).unwrap();
+        symlink(&outside, home.join("project/out")).unwrap();
+        symlink(home.join(".ssh/nope"), home.join("project/dangling")).unwrap();
+        let roots = SecretRoots::load(&home, &[]).unwrap();
+        Fixture {
+            _dir: dir,
+            home,
+            outside,
+            roots,
+        }
+    }
+
+    fn exec(f: &Fixture, cwd: &str, input: &str, want: Want) -> PathVerdict {
+        resolve_exec(&f.roots, &f.home.join(cwd), input, want)
+    }
+
+    fn ok(f: &Fixture, cwd: &str, input: &str, want: Want) -> bool {
+        matches!(exec(f, cwd, input, want), PathVerdict::Allowed(_))
+    }
+
+    #[test]
+    fn secret_roots_are_refused_for_every_input_shape() {
+        let f = fixture();
+        for input in ["~/.ssh", "~/.aws", ".ssh", "../.ssh", "~/.config/gcloud"] {
+            assert!(!ok(&f, "project", input, Want::Existing), "{input}");
+        }
+        assert!(!ok(&f, "project", "~/.aws/x", Want::New));
+        assert!(!ok(&f, ".", ".ssh", Want::Existing));
+    }
+
+    #[test]
+    fn a_link_into_a_secret_root_is_refused_on_the_real_path() {
+        let f = fixture();
+        assert!(!ok(&f, "project", "s", Want::Existing));
+        assert!(!ok(&f, "project", "s/id", Want::Existing));
+        assert!(!ok(&f, "project", "s/x", Want::New));
+    }
+
+    #[test]
+    fn dot_dot_is_resolved_and_ordinary_paths_pass() {
+        let f = fixture();
+        assert_eq!(
+            exec(&f, "project/src", "..", Want::Existing),
+            PathVerdict::Allowed(f.home.join("project"))
+        );
+        assert!(ok(&f, "project", "~", Want::Existing));
+        assert!(ok(&f, "project", ".", Want::Existing));
+        assert!(ok(&f, "project", "src", Want::Existing));
+    }
+
+    #[test]
+    fn outside_home_is_allowed_for_existing_unless_it_is_missing() {
+        let f = fixture();
+        let data = f.outside.join("data");
+        assert!(ok(&f, "project", data.to_str().unwrap(), Want::Existing));
+        assert!(ok(&f, "project", "out/data", Want::Existing));
+        assert!(!ok(&f, "project", "/srv/missing-for-sure", Want::Existing));
+        assert!(!ok(&f, "project", "nope", Want::Existing));
+    }
+
+    #[test]
+    fn new_must_stay_inside_home_and_resolves_the_deepest_ancestor() {
+        let f = fixture();
+        assert_eq!(
+            exec(&f, "project", "a/b/c", Want::New),
+            PathVerdict::Allowed(f.home.join("project/a/b/c"))
+        );
+        assert_eq!(
+            exec(&f, "project", "src", Want::New),
+            PathVerdict::Allowed(f.home.join("project/src"))
+        );
+        let tmp = f.outside.join("x");
+        assert!(!ok(&f, "project", tmp.to_str().unwrap(), Want::New));
+        assert!(!ok(&f, "project", "out/x", Want::New));
+        assert!(!ok(&f, "project", "dangling/x", Want::New));
+        assert!(!ok(&f, "project", "dangling", Want::New));
+    }
+
+    #[test]
+    fn a_secret_root_outside_home_refuses_what_is_under_it() {
+        let f = fixture();
+        let secret = f.outside.join("data");
+        let roots = SecretRoots::load(&f.home, std::slice::from_ref(&secret)).unwrap();
+        let cwd = f.home.join("project");
+        for input in [secret.to_str().unwrap(), "out/data"] {
+            let verdict = resolve_exec(&roots, &cwd, input, Want::Existing);
+            assert_eq!(verdict, PathVerdict::Refused, "{input}");
+        }
+        let sibling = f.outside.to_str().unwrap();
+        assert!(matches!(
+            resolve_exec(&roots, &cwd, sibling, Want::Existing),
+            PathVerdict::Allowed(_)
+        ));
+    }
+
+    #[test]
+    fn a_home_reached_through_a_link_is_judged_by_both_names() {
+        let f = fixture();
+        let link = f.home.parent().unwrap().join("homelink");
+        symlink(&f.home, &link).unwrap();
+        let roots = SecretRoots::load(&link, &[]).unwrap();
+        assert_ne!(roots.given, roots.real);
+        let go = |cwd: &str, input: &str, want| resolve_exec(&roots, &link.join(cwd), input, want);
+        assert_eq!(
+            go("project", "src", Want::Existing),
+            PathVerdict::Allowed(f.home.join("project/src"))
+        );
+        assert_eq!(
+            go("project", "a/b", Want::New),
+            PathVerdict::Allowed(f.home.join("project/a/b"))
+        );
+        assert_eq!(go("project", ".ssh", Want::Existing), PathVerdict::Refused);
+        assert_eq!(
+            go("project", "../.ssh", Want::Existing),
+            PathVerdict::Refused
+        );
+        assert_eq!(go(".ssh", ".", Want::Existing), PathVerdict::Refused);
+        assert_eq!(go("project", "~/.aws/x", Want::New), PathVerdict::Refused);
+    }
+
+    #[test]
+    fn a_relative_cwd_or_an_unreadable_home_form_refuses() {
+        let f = fixture();
+        let verdict = resolve_exec(&f.roots, Path::new("project"), ".", Want::Existing);
+        assert_eq!(verdict, PathVerdict::Refused);
+        assert!(!ok(&f, "project", "~root", Want::Existing));
+        assert_eq!(SecretRoots::load(Path::new("relative"), &[]), None);
     }
 }
