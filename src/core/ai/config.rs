@@ -124,6 +124,44 @@ impl NotifyMode {
     }
 }
 
+/// What a model's `run_in_pane` does in a chat (`[ai.tools] approval`, design
+/// D18).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ApprovalMode {
+    /// The user confirms each command with `y`. The default.
+    #[default]
+    Ask,
+    /// The command is typed into the pane without a prompt, never followed
+    /// by Enter.
+    Auto,
+}
+
+/// The exact problem of an unreadable `ai.tools.approval`.
+pub const APPROVAL_PROBLEM: &str = "ai.tools.approval: expected \"ask\" or \"auto\"";
+
+impl ApprovalMode {
+    /// The lowercase id: the value of `[ai.tools] approval`.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Auto => "auto",
+        }
+    }
+
+    /// The mode of an id; case-sensitive, no trimming.
+    pub fn from_id(id: &str) -> Option<Self> {
+        [Self::Ask, Self::Auto].into_iter().find(|m| m.id() == id)
+    }
+
+    /// The other mode.
+    pub fn flipped(self) -> Self {
+        match self {
+            Self::Ask => Self::Auto,
+            Self::Auto => Self::Ask,
+        }
+    }
+}
+
 /// An engine id plus a model name; either may be unset.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Assignment {
@@ -180,6 +218,7 @@ pub struct AiConfig {
     notify: NotifyMode,
     notify_sound: bool,
     tools: bool,
+    approval: ApprovalMode,
     pub memory: MemoryConfig,
 }
 
@@ -192,6 +231,7 @@ impl Default for AiConfig {
             notify: NotifyMode::Off,
             notify_sound: true,
             tools: true,
+            approval: ApprovalMode::Ask,
             memory: MemoryConfig::default(),
         }
     }
@@ -251,6 +291,16 @@ impl AiConfig {
 
     pub fn set_tools_enabled(&mut self, on: bool) {
         self.tools = on;
+    }
+
+    /// What a model's `run_in_pane` does in a chat opened now
+    /// (`[ai.tools] approval`).
+    pub fn approval(&self) -> ApprovalMode {
+        self.approval
+    }
+
+    pub fn set_approval(&mut self, mode: ApprovalMode) {
+        self.approval = mode;
     }
 
     /// The effective assignment of a task and whether it was inherited from
@@ -437,6 +487,7 @@ pub fn read_with_port_env(
 ) -> AiConfig {
     let mut config = read_tasks(table, problems);
     config.tools = read_tools(table, problems);
+    config.approval = read_approval(table, problems);
     config.memory = read_memory(table, problems, port_env);
     config
 }
@@ -462,6 +513,27 @@ fn read_tools(table: &Table, problems: &mut Vec<String>) -> bool {
         Some(_) => {
             problems.push("ai.tools.enabled: expected a boolean".to_owned());
             true
+        }
+    }
+}
+
+/// Reads `[ai.tools] approval`. A missing table or key is `ask`; a value that
+/// is not exactly `"ask"` or `"auto"` falls back to `ask` with a problem. A
+/// table that is not a table was already reported by `read_tools`.
+fn read_approval(table: &Table, problems: &mut Vec<String>) -> ApprovalMode {
+    let section = table
+        .get("ai")
+        .and_then(Value::as_table)
+        .and_then(|ai| ai.get("tools"))
+        .and_then(Value::as_table);
+    match section.and_then(|section| section.get("approval")) {
+        None => ApprovalMode::Ask,
+        Some(Value::String(id)) if ApprovalMode::from_id(id).is_some() => {
+            ApprovalMode::from_id(id).unwrap_or_default()
+        }
+        Some(_) => {
+            problems.push(APPROVAL_PROBLEM.to_owned());
+            ApprovalMode::Ask
         }
     }
 }
@@ -1223,6 +1295,67 @@ mod tests {
                 "ai.tools.enabled: expected a boolean".to_owned(),
             ]
         );
+    }
+
+    // Spec (configuration): `[ai.tools] approval`, default and parse (D18).
+    #[test]
+    fn approval_defaults_to_ask() {
+        assert_eq!(AiConfig::default().approval(), ApprovalMode::Ask);
+        for text in [
+            "",
+            "[ai]\n",
+            "[ai.tools]\n",
+            "[ai.tools]\nenabled = false\n",
+        ] {
+            let (config, problems) = read_text(text);
+            assert_eq!(config.approval(), ApprovalMode::Ask, "{text:?}");
+            assert!(problems.is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn approval_reads_its_two_ids() {
+        for (id, want) in [("ask", ApprovalMode::Ask), ("auto", ApprovalMode::Auto)] {
+            let (config, problems) = read_text(&format!("[ai.tools]\napproval = \"{id}\"\n"));
+            assert_eq!(config.approval(), want, "{id}");
+            assert!(problems.is_empty(), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_bad_approval_falls_back_to_ask_with_the_exact_problem() {
+        for value in ["\"AUTO\"", "\"yes\"", "true", "1", "\" auto\""] {
+            let (config, problems) = read_text(&format!("[ai.tools]\napproval = {value}\n"));
+            assert_eq!(config.approval(), ApprovalMode::Ask, "{value}");
+            assert_eq!(problems, vec![APPROVAL_PROBLEM.to_owned()], "{value}");
+        }
+    }
+
+    #[test]
+    fn the_approval_problem_follows_the_enabled_one() {
+        let (_, problems) = read_text("[ai.tools]\napproval = 1\nenabled = 1\n");
+        assert_eq!(
+            problems,
+            vec![
+                "ai.tools.enabled: expected a boolean".to_owned(),
+                APPROVAL_PROBLEM.to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_non_table_tools_reports_only_the_table_problem() {
+        let (config, problems) = read_text("[ai]\ntools = \"auto\"\n");
+        assert_eq!(config.approval(), ApprovalMode::Ask);
+        assert_eq!(problems, vec!["ai.tools: expected a table".to_owned()]);
+    }
+
+    #[test]
+    fn the_approval_mode_flips_and_names_itself() {
+        assert_eq!(ApprovalMode::Ask.flipped(), ApprovalMode::Auto);
+        assert_eq!(ApprovalMode::Auto.flipped(), ApprovalMode::Ask);
+        assert_eq!(ApprovalMode::from_id("auto"), Some(ApprovalMode::Auto));
+        assert_eq!(ApprovalMode::from_id("Auto"), None);
     }
 
     #[test]
