@@ -986,3 +986,59 @@ fn a_notice_is_sanitized_flattened_and_dropped_after_the_end() {
     pipe.event(StreamEvent::Done(Finish::Stop));
     assert_eq!(pipe.event(StreamEvent::Notice("late".into())), vec![]);
 }
+
+fn tool_call(id: u64, summary: &str) -> StreamEvent {
+    StreamEvent::ToolCall {
+        id: crate::core::ai::chat::engine::CallId(id),
+        name: "find_dir".into(),
+        summary: summary.into(),
+        approval: None,
+    }
+}
+
+fn tool_result(id: u64, summary: &str) -> StreamEvent {
+    StreamEvent::ToolResult {
+        id: crate::core::ai::chat::engine::CallId(id),
+        status: crate::core::ai::chat::engine::ToolStatus::Ok,
+        summary: summary.into(),
+    }
+}
+
+#[test]
+fn tool_summaries_are_flattened_sanitized_and_capped_on_the_way_to_the_app() {
+    use crate::core::ai::tools::summary::SUMMARY_CAP;
+    let mut pipe = Pipe::new();
+    let out = pipe.event(tool_call(1, "a\u{1b}[31m red\nline\u{7}"));
+    assert_eq!(out, [tool_call(1, "a red line")]);
+    let long = "x".repeat(SUMMARY_CAP * 3);
+    let StreamEvent::ToolResult { summary, .. } = &pipe.event(tool_result(1, &long))[0] else {
+        panic!("not a result");
+    };
+    assert_eq!(summary.chars().count(), SUMMARY_CAP);
+}
+
+#[test]
+fn tool_events_keep_their_place_between_deltas_and_stop_after_the_final_event() {
+    let mut pipe = Pipe::new();
+    let mut out = pipe.event(tool_call(1, "q"));
+    out.extend(pipe.event(tool_result(1, "ok")));
+    out.extend(pipe.event(delta("text")));
+    out.extend(pipe.event(done()));
+    assert!(matches!(out[0], StreamEvent::ToolCall { .. }));
+    assert!(matches!(out[1], StreamEvent::ToolResult { .. }));
+    assert_eq!(text_of(&out), "text");
+    assert_eq!(out.last(), Some(&done()));
+    // A late result, or a late call, is dropped here.
+    assert!(pipe.event(tool_result(2, "late")).is_empty());
+    assert!(pipe.event(tool_call(3, "late")).is_empty());
+}
+
+#[test]
+fn answer_text_that_imitates_a_tool_row_stays_a_delta() {
+    let mut pipe = Pipe::new();
+    let out = pipe.bytes("» find_dir x\n  ok: 1 result".as_bytes());
+    assert!(
+        out.iter().all(|e| matches!(e, StreamEvent::Delta(_))),
+        "{out:?}"
+    );
+}

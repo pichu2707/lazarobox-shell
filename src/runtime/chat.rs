@@ -36,6 +36,7 @@ use crate::core::{
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
         sanitize::{StreamSanitizer, Utf8Stream, clean},
+        tools::summary::clip,
     },
     layout::PaneId,
 };
@@ -161,6 +162,29 @@ impl Pipe {
                     vec![StreamEvent::Notice(line)]
                 }
             }
+            // Made by the host that ran the call, never decoded from text.
+            // The texts still pass the output sanitizer: a path or a command
+            // in them is data.
+            StreamEvent::ToolCall {
+                id,
+                name,
+                summary,
+                approval,
+            } => vec![StreamEvent::ToolCall {
+                id,
+                name: clip(&name),
+                summary: clip(&summary),
+                approval,
+            }],
+            StreamEvent::ToolResult {
+                id,
+                status,
+                summary,
+            } => vec![StreamEvent::ToolResult {
+                id,
+                status,
+                summary: clip(&summary),
+            }],
             StreamEvent::Delta(text) => self.bytes(text.as_bytes()),
             StreamEvent::ThinkingDelta(text) => self.reasoning(&text),
             StreamEvent::Done(finish) => self.end(StreamEvent::Done(finish)),

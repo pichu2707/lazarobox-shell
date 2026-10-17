@@ -124,6 +124,8 @@ impl<'a> ChatView<'a> {
             LineKind::Waiting => base.fg(theme.text_muted).add_modifier(Modifier::ITALIC),
             LineKind::Mark | LineKind::Reasoning => base.fg(theme.text_muted),
             LineKind::ReasoningHead => base.fg(theme.ai_purple),
+            LineKind::Tool => base.fg(theme.info_blue),
+            LineKind::ToolAlert => base.fg(theme.warning_orange),
             LineKind::Hint => base.fg(theme.text_muted).add_modifier(Modifier::ITALIC),
         }
     }
@@ -244,3 +246,5 @@ mod tag_tests;
 mod tags;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tool_tests;

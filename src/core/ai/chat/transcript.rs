@@ -5,7 +5,7 @@ use std::{cell::RefCell, sync::Arc};
 
 use super::{
     ChatState, Entry, ReasoningState,
-    engine::Role,
+    engine::{Role, ToolStatus},
     wrap::{expand_tabs, text_width, wrap_ranges, wrap_words},
     yank,
 };
@@ -26,6 +26,10 @@ pub enum LineKind {
     Reasoning,
     /// `▸ reasoning (N.Ns)` / `▾ reasoning (N.Ns)`.
     ReasoningHead,
+    /// A tool call row, and the result row of one that went well.
+    Tool,
+    /// The result row of a tool call that failed or was denied.
+    ToolAlert,
     /// The line under the last shell block that names the run binding. It is
     /// drawn, never stored, yanked or sent.
     Hint,
@@ -46,6 +50,8 @@ pub const RUN_HINT: &str = "Ctrl+Space e  run in pane";
 pub const GUTTER: &str = "┊ ";
 /// In front of the first row of a user message.
 pub const USER_PREFIX: &str = "› ";
+/// In front of the first row of a tool call.
+pub const TOOL_PREFIX: &str = "» ";
 /// In front of a system line.
 pub const SYSTEM_PREFIX: &str = "• ";
 
@@ -122,6 +128,29 @@ fn entry_rows(entry: &Entry, width: usize, hint: bool, out: &mut Vec<Line>) {
             push_wrapped(out, LineKind::ReasoningHead, "", "", &line.head(), width);
             if line.expanded() {
                 push_wrapped(out, LineKind::Reasoning, GUTTER, GUTTER, line.text(), width);
+            }
+        }
+        Entry::Tool(row) => {
+            let call = format!("{} {}", row.name(), row.summary());
+            push_wrapped(
+                out,
+                LineKind::Tool,
+                TOOL_PREFIX,
+                "  ",
+                call.trim_end(),
+                width,
+            );
+            if let Some((status, summary)) = row.result() {
+                let kind = match status {
+                    ToolStatus::Ok => LineKind::Tool,
+                    ToolStatus::Error | ToolStatus::Denied => LineKind::ToolAlert,
+                };
+                let text = if summary.is_empty() {
+                    status.as_str().to_owned()
+                } else {
+                    format!("{}: {summary}", status.as_str())
+                };
+                push_wrapped(out, kind, "  ", "    ", &text, width);
             }
         }
         Entry::Reasoning(block) => {

@@ -5,6 +5,7 @@ pub mod command;
 pub mod label;
 pub mod mcp;
 pub mod paths;
+pub mod summary;
 
 use serde_json::{Value, json};
 
@@ -17,6 +18,16 @@ use serde_json::{Value, json};
 pub enum Access {
     Read,
     Write,
+}
+
+/// Where what a tool returns goes. Known from the adapter kind (see
+/// `Kind::locality`), never configured and never guessed from a model name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Locality {
+    /// An HTTP loopback server: file text stays on the machine.
+    Local,
+    /// A CLI: what a tool returns goes to the provider.
+    Cloud,
 }
 
 /// One tool as offered to an engine.
@@ -43,6 +54,27 @@ pub enum Call {
     ListDir { path: String },
     ReadFile { path: String },
     RunInPane { command: String },
+}
+
+impl Call {
+    /// The tool's name, as the registry offers it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Call::FindDir { .. } => "find_dir",
+            Call::ListDir { .. } => "list_dir",
+            Call::ReadFile { .. } => "read_file",
+            Call::RunInPane { .. } => "run_in_pane",
+        }
+    }
+
+    /// The one argument of the call: a query, a path or a command.
+    pub fn argument(&self) -> &str {
+        match self {
+            Call::FindDir { query } => query,
+            Call::ListDir { path } | Call::ReadFile { path } => path,
+            Call::RunInPane { command } => command,
+        }
+    }
 }
 
 /// Why a call was refused. Short and content-free: it may go back to a model.
@@ -165,6 +197,27 @@ pub fn parse_call(name: &str, args: &Value) -> Result<Call, ToolError> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_call_knows_its_registry_name_and_argument() {
+        for (name, arg) in [
+            ("find_dir", "q"),
+            ("list_dir", "~/p"),
+            ("read_file", "~/f"),
+            ("run_in_pane", "ls"),
+        ] {
+            let call = parse_call(name, &json!({ registry_arg(name): arg })).unwrap();
+            assert_eq!((call.name(), call.argument()), (name, arg));
+        }
+    }
+
+    fn registry_arg(name: &str) -> &'static str {
+        match name {
+            "find_dir" => "query",
+            "run_in_pane" => "command",
+            _ => "path",
+        }
+    }
 
     fn names(tools: &[ToolSpec]) -> Vec<&str> {
         tools.iter().map(|t| t.name.as_str()).collect()

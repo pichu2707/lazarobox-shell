@@ -25,6 +25,7 @@ pub mod streams;
 pub mod summary;
 pub mod tag_editor;
 pub mod tags;
+pub mod tool;
 pub mod transcript;
 pub mod workspace;
 pub mod wrap;
@@ -135,6 +136,9 @@ pub enum Entry {
     /// The memory the conversation was given, first in the transcript: shown,
     /// never stored, never sent as history.
     Memory(memory::MemoryLine),
+    /// A tool call and its result: shown, never stored, never sent as
+    /// history.
+    Tool(tool::ToolRow),
 }
 
 /// The most reasoning text kept per turn, in bytes. Past it the rest is
@@ -446,7 +450,7 @@ impl ChatState {
     pub fn messages(&self) -> impl Iterator<Item = &Msg> {
         self.entries.iter().filter_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) => None,
+            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) | Entry::Tool(_) => None,
         })
     }
 
@@ -728,6 +732,20 @@ impl ChatState {
                 Follow::Nothing
             }
             StreamEvent::Delta(text) => self.push_delta(&text, now),
+            StreamEvent::ToolCall {
+                id, name, summary, ..
+            } => {
+                self.tool_call(id, name, summary);
+                Follow::Nothing
+            }
+            StreamEvent::ToolResult {
+                id,
+                status,
+                summary,
+            } => {
+                self.tool_result(id, status, summary);
+                Follow::Nothing
+            }
             StreamEvent::ThinkingDelta(text) => {
                 if self.push_thinking(&text, now) {
                     self.generation += 1;
@@ -858,7 +876,7 @@ impl ChatState {
         }
         self.entries.iter_mut().rev().find_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) => None,
+            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) | Entry::Tool(_) => None,
         })
     }
 
@@ -866,6 +884,7 @@ impl ChatState {
     /// optional system line is added.
     fn finish(&mut self, status: MsgStatus, line: Option<String>, now: Instant) {
         self.collapse_reasoning(now);
+        self.settle_tool_rows();
         // Only the answer text is saved: reasoning is not a message, and a
         // turn that never answered leaves no assistant message to save.
         let answer = self.answer_mut().map(|answer| {
@@ -932,5 +951,7 @@ mod stream_tests;
 mod summary_tests;
 #[cfg(test)]
 mod tag_editor_tests;
+#[cfg(test)]
+mod tool_tests;
 #[cfg(test)]
 mod wait_tests;
