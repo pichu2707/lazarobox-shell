@@ -4,10 +4,11 @@
 
 use serde_json::{Value, json};
 
-use super::engine::{ChatMessage, ChatRequest, Role};
+use super::engine::{ChatMessage, ChatRequest, MCP_VERIFIED, Role, Tools};
 use crate::core::ai::{
     CATALOG, Kind,
     jail::{Cli, JailPolicy},
+    tools::wiring::McpWire,
 };
 
 /// The wire format of a local server's reply.
@@ -60,9 +61,13 @@ pub struct Job {
     pub args: Vec<String>,
     pub stdin: Vec<u8>,
     pub jail: JailPolicy,
-    /// A file the runtime writes into the turn's private temp folder, and
-    /// names to the CLI with a flag appended after `args`.
-    pub tmp_file: Option<TmpFile>,
+    /// Files the runtime writes into the turn's private temp folder, each
+    /// named to the CLI with its flag, appended after `args` in this order.
+    pub tmp_files: Vec<TmpFile>,
+    /// The tool session the CLI connects to (tools on, engine verified). The
+    /// runtime turns it into the engine's config and flags; if that fails the
+    /// turn runs as text.
+    pub mcp: Option<McpWire>,
 }
 
 /// A small fixed file a CLI is told to read. The content is a constant of the
@@ -121,6 +126,13 @@ impl Adapter {
     /// option (a reasoning model streams its `thinking` without it, see the
     /// recorded fixtures) and no earlier reasoning.
     pub fn build(self, request: &ChatRequest) -> Invocation {
+        self.build_with(request, MCP_VERIFIED)
+    }
+
+    /// [`build`](Self::build) with the engines whose tool wiring passed its
+    /// manual check given (D12). An engine outside `verified` gets exactly the
+    /// invocation of a request without tools.
+    pub fn build_with(self, request: &ChatRequest, verified: &[&str]) -> Invocation {
         match self {
             Adapter::Ollama => Invocation::Http {
                 wire: Wire::Ndjson,
@@ -128,7 +140,7 @@ impl Adapter {
                 path: "/api/chat",
                 body: ollama_body(request),
             },
-            Adapter::Claude => claude_invocation(request),
+            Adapter::Claude => claude_invocation(request, wire_for(request, verified)),
             Adapter::Codex => codex_invocation(request),
             Adapter::Gemini => gemini_invocation(request),
         }
@@ -183,11 +195,22 @@ fn cli_model(model: Option<&str>) -> Result<Option<&str>, &'static str> {
     }
 }
 
+/// The session of this turn, when the request has tools on and its engine is
+/// verified.
+fn wire_for(request: &ChatRequest, verified: &[&str]) -> Option<McpWire> {
+    match &request.tools {
+        Tools::On { mcp, .. } if verified.contains(&request.engine.as_str()) => {
+            mcp.as_deref().cloned()
+        }
+        _ => None,
+    }
+}
+
 /// The claude run: the pinned argv (text only, no tools, nothing from the
 /// user's setup), the profile prompt as the system prompt, and the memory block
 /// and the history on stdin. argv is visible in `ps`, so only the prompt goes
 /// there.
-fn claude_invocation(request: &ChatRequest) -> Invocation {
+fn claude_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation {
     let model = match cli_model(request.model.as_deref()) {
         Ok(model) => model,
         Err(reason) => return Invocation::Refused(reason),
@@ -221,7 +244,8 @@ fn claude_invocation(request: &ChatRequest) -> Invocation {
         args,
         stdin: cli_stdin(request).into_bytes(),
         jail: JailPolicy::Layered,
-        tmp_file: None,
+        tmp_files: Vec::new(),
+        mcp,
     })
 }
 
@@ -294,7 +318,8 @@ fn codex_invocation(request: &ChatRequest) -> Invocation {
         args,
         stdin: instructed_stdin(request).into_bytes(),
         jail: JailPolicy::Required,
-        tmp_file: None,
+        tmp_files: Vec::new(),
+        mcp: None,
     })
 }
 
@@ -348,11 +373,12 @@ fn gemini_invocation(request: &ChatRequest) -> Invocation {
         args,
         stdin: instructed_stdin(request).into_bytes(),
         jail: JailPolicy::Required,
-        tmp_file: Some(TmpFile {
+        tmp_files: vec![TmpFile {
             flag: "--policy",
             name: "gemini-policy.toml",
             content: GEMINI_POLICY,
-        }),
+        }],
+        mcp: None,
     })
 }
 

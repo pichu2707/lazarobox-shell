@@ -41,7 +41,11 @@ use crate::core::{
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
         sanitize::{StreamSanitizer, Utf8Stream, clean},
-        tools::{registry, summary::clip},
+        tools::{
+            registry,
+            summary::clip,
+            wiring::{McpWire, Secret},
+        },
     },
     layout::PaneId,
 };
@@ -80,10 +84,14 @@ pub type Runner =
 /// A decoder that has seen no byte yet. Every turn builds its own: a decoder
 /// keeps a partial line and an `ended` flag, and neither may leak into the
 /// next turn of the pane.
-pub fn fresh_decoder(wire: Wire) -> Box<dyn StreamDecoder + Send> {
+///
+/// `wired` is true for a CLI turn that got the tool server; only claude's
+/// decoder reads it.
+pub fn fresh_decoder(wire: Wire, wired: bool) -> Box<dyn StreamDecoder + Send> {
     match wire {
         Wire::Ndjson => Box::new(NdjsonSplitter::server()),
         Wire::Sse => Box::new(SseParser::server()),
+        Wire::ClaudeStreamJson if wired => Box::new(ClaudeDecoder::wired()),
         Wire::ClaudeStreamJson => Box::new(ClaudeDecoder::new()),
         Wire::CodexJsonl => Box::new(CodexDecoder::new()),
         Wire::GeminiStreamJson => Box::new(GeminiDecoder::new()),
@@ -98,7 +106,7 @@ pub async fn http_turn(
     body: Vec<u8>,
     tx: mpsc::Sender<StreamEvent>,
 ) {
-    let mut decoder = fresh_decoder(wire);
+    let mut decoder = fresh_decoder(wire, false);
     post_stream("127.0.0.1", port, path, &body, &mut *decoder, &tx).await;
 }
 
@@ -524,7 +532,7 @@ impl Chats {
     }
 
     /// Starts turn `turn` of `pane`, replacing any turn it still had.
-    pub fn send(&mut self, pane: PaneId, turn: u64, request: ChatRequest) {
+    pub fn send(&mut self, pane: PaneId, turn: u64, mut request: ChatRequest) {
         self.turns.retain(|_, task| !task.is_finished());
         if let Some(old) = self.turns.remove(&pane) {
             old.abort();
@@ -534,6 +542,17 @@ impl Chats {
         self.waits.end_pane(pane);
         let channel = mpsc::channel(TURN_CHANNEL);
         let pending = self.open_session(pane, turn, &request, &channel.0);
+        // Tell the engine's adapter which session is this turn's. Without a
+        // session the request keeps `mcp: None` and the turn runs as text.
+        if let (Tools::On { mcp, .. }, Some(started), Some(_)) =
+            (&mut request.tools, self.session(pane), &pending)
+        {
+            *mcp = Some(Box::new(McpWire {
+                socket: started.socket.clone(),
+                token: Secret::new(started.token.reveal()),
+                unwire: started.end.clone(),
+            }));
+        }
         let task = tokio::spawn(run_turn(
             self.runner.clone(),
             self.tx.clone(),
@@ -561,7 +580,8 @@ impl Chats {
     ) -> Option<Pending> {
         let tooling = self.tooling.as_mut()?;
         tooling.started.remove(&pane);
-        let (Tools::On { origin }, Some(locality)) = (&request.tools, locality(&request.engine))
+        let (Tools::On { origin, .. }, Some(locality)) =
+            (&request.tools, locality(&request.engine))
         else {
             if let Some(hub) = tooling.hub.as_mut() {
                 hub.close(pane);

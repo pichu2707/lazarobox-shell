@@ -7,6 +7,7 @@ use std::{
     fs,
     os::unix::fs::{PermissionsExt, symlink},
     path::{Path, PathBuf},
+    sync::{Arc, atomic::AtomicUsize},
     time::{Duration, Instant},
 };
 
@@ -21,7 +22,8 @@ use crate::{
                 adapters::{Job, TmpFile, Wire},
                 engine::{ChatError, ChatMessage, ChatRequest, Finish, Role, StreamEvent, Tools},
             },
-            jail::{Backend, Cli, JailPolicy, JailSupport},
+            jail::{Backend, Cli, JailOff, JailPolicy, JailSupport},
+            tools::wiring::{McpWire, Secret, Unwire},
         },
         layout::PaneId,
     },
@@ -110,6 +112,7 @@ impl Lab {
             },
             grace: Duration::from_secs(2),
             codex_home: None,
+            shim: None,
             inject: Vec::new(),
         }
     }
@@ -156,7 +159,8 @@ fn job(policy: JailPolicy) -> Job {
         args: vec!["-p".into()],
         stdin: b"hi".to_vec(),
         jail: policy,
-        tmp_file: None,
+        tmp_files: Vec::new(),
+        mcp: None,
     }
 }
 
@@ -452,6 +456,17 @@ async fn a_failing_cli_shows_the_last_stderr_line_sanitized() {
 }
 
 #[tokio::test]
+async fn the_turns_token_is_not_shown_from_the_stderr_tail() {
+    // A short token, which the generic token filter would let through.
+    let lab = lab();
+    lab.claude("cat > /dev/null\necho 'cannot reach hunter2 now' >&2\nexit 1");
+    let mut job = claude_job(&lab, true);
+    job.mcp.as_mut().unwrap().token = Secret::new("hunter2");
+    let events = run_job(&lab.env(), job).await;
+    assert_eq!(failure(&events), "cannot reach (..) now", "{events:?}");
+}
+
+#[tokio::test]
 async fn a_huge_stderr_does_not_block_and_only_its_tail_counts() {
     let lab = lab();
     lab.claude("cat > /dev/null\nhead -c 300000 /dev/zero | tr '\\0' x >&2\necho >&2\necho the end >&2\nexit 1");
@@ -606,7 +621,8 @@ fn codex_job(args: &[&str]) -> Job {
         args: args.iter().map(|a| (*a).to_owned()).collect(),
         stdin: b"hi".to_vec(),
         jail: JailPolicy::Required,
-        tmp_file: None,
+        tmp_files: Vec::new(),
+        mcp: None,
     }
 }
 
@@ -1464,11 +1480,12 @@ fn gemini_job(jail: JailPolicy) -> Job {
         args: vec!["-p".into(), "x".into()],
         stdin: b"hi".to_vec(),
         jail,
-        tmp_file: Some(TmpFile {
+        tmp_files: vec![TmpFile {
             flag: "--policy",
             name: "gemini-policy.toml",
             content: POLICY,
-        }),
+        }],
+        mcp: None,
     }
 }
 
@@ -1679,4 +1696,526 @@ async fn an_interpreter_without_a_search_path_gets_no_extra_rules() {
             || d.contains("cli-cwd")),
         "{ro:?}"
     );
+}
+
+#[tokio::test]
+async fn several_job_files_are_each_private_and_named_in_order() {
+    let lab = lab();
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_TWO);
+    let mut job = gemini_job(JailPolicy::Layered);
+    job.tmp_files.push(TmpFile {
+        flag: "--extra",
+        name: "extra.txt",
+        content: "more",
+    });
+    let events = run_job(&lab.env(), job).await;
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    let args = lab.args();
+    assert_eq!(args[..2], ["-p", "x"]);
+    assert_eq!(args[2], "--policy");
+    assert_eq!(args[4], "--extra");
+    assert_eq!(args.len(), 6, "{args:?}");
+    let (policy, extra) = (PathBuf::from(&args[3]), PathBuf::from(&args[5]));
+    assert_eq!(extra.file_name().unwrap(), "extra.txt");
+    assert_eq!(policy.parent(), extra.parent(), "one per-turn folder");
+    assert_eq!(lab.recorded("extra_copy"), "more");
+    assert_eq!(lab.recorded("extra_mode").trim(), "600");
+    assert_eq!(lab.recorded("dir_mode").trim(), "700");
+    assert!(!extra.exists() && !policy.exists(), "wiped after the turn");
+}
+
+const GEMINI_TWO: &str = r#"
+printf '%s\0' "$@" > "$REC/args"
+cat > "$REC/stdin"
+for last; do :; done
+cp "$last" "$REC/extra_copy"
+stat -c %a "$last" > "$REC/extra_mode"
+stat -c %a "$(dirname "$last")" > "$REC/dir_mode"
+printf '%s\n' '{"type":"init","session_id":"s","model":"m"}'
+printf '%s\n' '{"type":"message","role":"assistant","content":"ok","delta":true}'
+printf '%s\n' '{"type":"result","status":"success"}'
+"#;
+
+/// The claude of a turn with tools: it also copies the config it was given.
+const MCP_CLAUDE: &str = r#"
+if [ -e "$TMPDIR/mcp.json" ]; then echo yes > "$REC/mcp_during"; fi
+for a; do
+  case "$a" in
+    --mcp-config=*)
+      cp "${a#--mcp-config=}" "$REC/mcp_copy"
+      stat -c %a "${a#--mcp-config=}" > "$REC/mcp_mode"
+      ;;
+  esac
+done
+"#;
+
+const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
+fn claude_job(lab: &Lab, wired: bool) -> Job {
+    Job {
+        wire: Wire::ClaudeStreamJson,
+        binary: "claude",
+        cli: Cli::Claude,
+        args: vec!["-p".into(), "--strict-mcp-config".into()],
+        stdin: b"hi".to_vec(),
+        jail: JailPolicy::Layered,
+        tmp_files: Vec::new(),
+        mcp: wired.then(|| McpWire {
+            socket: lab.rec.join("s.sock"),
+            token: Secret::new(TOKEN),
+            unwire: Unwire::none(),
+        }),
+    }
+}
+
+fn with_shim(lab: &Lab, mut env: CliEnv, shim: &str) -> CliEnv {
+    fs::write(lab.rec.join("s.sock"), "").unwrap();
+    env.shim = Some(PathBuf::from(shim));
+    env.jail = jail_on();
+    env.helper = lab.helper(PASS);
+    env
+}
+
+const OFF_NOTICE: &str = "tools are off for this turn: they could not be set up";
+
+#[tokio::test]
+async fn a_wired_claude_gets_the_config_the_flags_the_timeout_and_the_jail_grant() {
+    let lab = lab();
+    script(
+        &lab.bin.join("claude"),
+        &lab.rec,
+        &format!("{MCP_CLAUDE}{GOOD}"),
+    );
+    let shim = lab.bin.join("shim");
+    fs::write(&shim, "").unwrap();
+    // The shim must pass the trust check, whatever the developer's umask.
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let events = run_job(&env, claude_job(&lab, true)).await;
+    assert_eq!(
+        events.last(),
+        Some(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, StreamEvent::Notice(_))),
+        "{events:?}"
+    );
+    let args = lab.args();
+    let n = args.len();
+    assert_eq!(args[..2], ["-p", "--strict-mcp-config"]);
+    assert!(args[n - 2].starts_with("--mcp-config="), "{args:?}");
+    assert!(args[n - 2].ends_with("/mcp.json"), "{args:?}");
+    assert_eq!(args[n - 1], "--allowedTools=mcp__lazarobox");
+    let config = lab.recorded("mcp_copy");
+    assert!(
+        config.contains(TOKEN) && config.contains(shim.to_str().unwrap()),
+        "{config}"
+    );
+    assert_eq!(lab.recorded("mcp_mode").trim(), "600");
+    // The config existed while claude ran, and the token file is gone after.
+    assert_eq!(lab.recorded("mcp_during").trim(), "yes");
+    let config_path = PathBuf::from(args[n - 2].trim_start_matches("--mcp-config="));
+    assert!(!config_path.exists(), "mcp.json is wiped after the turn");
+    assert!(!config_path.parent().unwrap().exists(), "so is its folder");
+    assert!(
+        lab.recorded("env")
+            .lines()
+            .any(|l| l == "MCP_TOOL_TIMEOUT=900000")
+    );
+    // The token reaches the engine only through the config file.
+    assert!(!lab.recorded("helper_args").contains(TOKEN));
+    assert!(!args.iter().any(|a| a.contains(TOKEN)));
+    assert!(!lab.recorded("env").contains(TOKEN));
+    let helper = lab.recorded("helper_args");
+    let helper: Vec<&str> = helper.split('\0').collect();
+    let has = |flag: &str, path: &str| helper.windows(2).any(|w| w == [flag, path]);
+    assert!(has("--rx", shim.to_str().unwrap()), "{helper:?}");
+    assert!(
+        has("--rw-file", lab.rec.join("s.sock").to_str().unwrap()),
+        "{helper:?}"
+    );
+}
+
+#[tokio::test]
+async fn without_a_jail_a_wired_claude_runs_as_text_and_says_so() {
+    let lab = lab();
+    script(
+        &lab.bin.join("claude"),
+        &lab.rec,
+        &format!("{MCP_CLAUDE}{GOOD}"),
+    );
+    let mut env = lab.env();
+    env.shim = Some(lab.bin.join("shim"));
+    let events = run_job(&env, claude_job(&lab, true)).await;
+    assert_eq!(
+        events.last(),
+        Some(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+    let notices: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Notice(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notices.len(), 1, "{events:?}");
+    assert!(notices[0].contains(OFF_NOTICE), "{notices:?}");
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config"]);
+    assert_eq!(lab.recorded("mcp_copy"), "");
+    assert!(!lab.recorded("env").contains("MCP_TOOL_TIMEOUT"));
+}
+
+#[tokio::test]
+async fn a_jailed_claude_without_a_shim_program_stays_jailed_and_text_only() {
+    let lab = lab();
+    script(
+        &lab.bin.join("claude"),
+        &lab.rec,
+        &format!("{MCP_CLAUDE}{GOOD}"),
+    );
+    let mut env = with_shim(&lab, lab.env(), "/unused");
+    env.shim = None;
+    let events = run_job(&env, claude_job(&lab, true)).await;
+    assert_eq!(
+        events[0],
+        StreamEvent::Notice(OFF_NOTICE.into()),
+        "{events:?}"
+    );
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config"]);
+    assert!(
+        !lab.recorded("helper_args").is_empty(),
+        "still through the jail helper"
+    );
+}
+
+/// A shim program that passes the trust check and that the jail still refuses
+/// to grant: it sits in `~/.ssh`, which no layout may open.
+fn shim_in_ssh(lab: &Lab) -> PathBuf {
+    let dir = lab.home.join(".ssh");
+    fs::create_dir_all(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    let shim = dir.join("lazarobox-shell");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    shim
+}
+
+#[test]
+fn the_jail_refuses_that_shim_and_only_that_shim() {
+    let lab = lab();
+    script(&lab.bin.join("claude"), &lab.rec, GOOD);
+    let shim = shim_in_ssh(&lab);
+    let socket = lab.rec.join("s.sock");
+    fs::write(&socket, "").unwrap();
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let dirs = Dirs::create(env.data.as_deref().unwrap()).unwrap();
+    let binary = lab.bin.join("claude");
+    let grant = Some((shim.as_path(), socket.as_path()));
+    let refusal = jail_plan(&env, Cli::Claude, &binary, &dirs, grant).unwrap_err();
+    assert_eq!(refusal, JailRefusal::RootTooBroad(shim.clone()));
+    // The same layout without the shim is fine: it is the only cause.
+    assert!(jail_plan(&env, Cli::Claude, &binary, &dirs, None).is_ok());
+}
+
+#[tokio::test]
+async fn a_shim_the_jail_refuses_retries_the_jail_without_it() {
+    let lab = lab();
+    script(
+        &lab.bin.join("claude"),
+        &lab.rec,
+        &format!("{MCP_CLAUDE}{GOOD}"),
+    );
+    let shim = shim_in_ssh(&lab);
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let events = run_job(&env, claude_job(&lab, true)).await;
+    assert_eq!(
+        events[0],
+        StreamEvent::Notice(OFF_NOTICE.into()),
+        "{events:?}"
+    );
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    // The retry ran: through the jail helper, with no flag of the tools, no
+    // grant for the shim or the socket, and no config file on disk.
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config"]);
+    let helper = lab.recorded("helper_args");
+    assert!(!helper.is_empty(), "still through the jail helper");
+    assert!(
+        !helper.contains(shim.to_str().unwrap()) && !helper.contains("s.sock"),
+        "{helper:?}"
+    );
+    assert_eq!(lab.recorded("mcp_copy"), "", "no --mcp-config was given");
+    assert_eq!(
+        lab.recorded("mcp_during"),
+        "",
+        "no config file while it ran"
+    );
+    assert!(!lab.recorded("env").contains("MCP_TOOL_TIMEOUT"));
+    let leftovers = fs::read_dir(lab.data.join("cli-tmp")).unwrap().count();
+    assert_eq!(leftovers, 0, "the turn's folder is wiped");
+}
+
+/// A shim program the trust check refuses (it sits in a folder others can
+/// write) is retried without it, like an interpreter: text with the notice.
+async fn assert_untrusted_shim_falls_back(lab: &Lab, shim: &Path) {
+    script(
+        &lab.bin.join("claude"),
+        &lab.rec,
+        &format!("{MCP_CLAUDE}{GOOD}"),
+    );
+    let env = with_shim(lab, lab.env(), shim.to_str().unwrap());
+    let events = run_job(&env, claude_job(lab, true)).await;
+    assert_eq!(
+        events[0],
+        StreamEvent::Notice(OFF_NOTICE.into()),
+        "{events:?}"
+    );
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config"]);
+    let helper = lab.recorded("helper_args");
+    assert!(
+        !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
+        "{helper:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_shim_in_a_folder_others_can_write_is_not_granted() {
+    let lab = lab();
+    let dir = lab.bin.join("shimdir");
+    fs::create_dir(&dir).unwrap();
+    let shim = dir.join("lazarobox-shell");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o775)).unwrap();
+    assert_untrusted_shim_falls_back(&lab, &shim).await;
+}
+
+#[tokio::test]
+async fn a_shim_that_others_can_write_is_not_granted() {
+    let lab = lab();
+    let shim = lab.bin.join("shim");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o666)).unwrap();
+    assert_untrusted_shim_falls_back(&lab, &shim).await;
+}
+
+#[tokio::test]
+async fn a_shim_whose_loader_others_can_write_is_not_granted() {
+    let lab = lab();
+    let dir = lab.bin.join("loaderdir");
+    fs::create_dir(&dir).unwrap();
+    let loader = dir.join("ld.so");
+    fs::write(&loader, "").unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o775)).unwrap();
+    // A minimal ELF64 whose PT_INTERP names the loader.
+    let name = format!("{}\0", loader.display());
+    let mut img = vec![0u8; 512];
+    img[..6].copy_from_slice(b"\x7fELF\x02\x01");
+    img[0x20..0x28].copy_from_slice(&64u64.to_le_bytes());
+    img[0x36..0x38].copy_from_slice(&56u16.to_le_bytes());
+    img[0x38..0x3a].copy_from_slice(&1u16.to_le_bytes());
+    img[64..68].copy_from_slice(&3u32.to_le_bytes());
+    img[72..80].copy_from_slice(&300u64.to_le_bytes());
+    img[96..104].copy_from_slice(&(name.len() as u64).to_le_bytes());
+    img[300..300 + name.len()].copy_from_slice(name.as_bytes());
+    let shim = lab.bin.join("shim");
+    fs::write(&shim, img).unwrap();
+    assert_untrusted_shim_falls_back(&lab, &shim).await;
+}
+
+/// A wire that counts how often its turn said the engine is not wired.
+fn counted(job: &mut Job) -> Arc<AtomicUsize> {
+    let count = Arc::new(AtomicUsize::new(0));
+    let seen = count.clone();
+    job.mcp.as_mut().unwrap().unwire = Unwire::new(move || {
+        seen.fetch_add(1, Ordering::SeqCst);
+    });
+    count
+}
+
+#[tokio::test]
+async fn a_turn_that_runs_as_text_ends_its_session_and_a_wired_one_keeps_it() {
+    // Wired: the session is the engine's.
+    let lab = lab();
+    script(
+        &lab.bin.join("claude"),
+        &lab.rec,
+        &format!("{MCP_CLAUDE}{GOOD}"),
+    );
+    let shim = lab.bin.join("shim");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let mut job = claude_job(&lab, true);
+    let wired = counted(&mut job);
+    run_job(&env, job).await;
+    assert_eq!(wired.load(Ordering::SeqCst), 0);
+
+    // No jail (a bare run), no shim program, a shim the jail refuses: text.
+    let mut bare_env = lab.env();
+    bare_env.shim = Some(shim.clone());
+    let mut no_shim = with_shim(&lab, lab.env(), "/unused");
+    no_shim.shim = None;
+    let refused = with_shim(&lab, lab.env(), "/tmp/lazarobox-shell");
+    for (what, env) in [
+        ("bare", bare_env),
+        ("no shim", no_shim),
+        ("refused", refused),
+    ] {
+        let mut job = claude_job(&lab, true);
+        let count = counted(&mut job);
+        let events = run_job(&env, job).await;
+        assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+        assert_eq!(count.load(Ordering::SeqCst), 1, "{what}");
+    }
+}
+
+#[tokio::test]
+async fn a_turn_the_plan_refuses_ends_its_session_too() {
+    let lab = lab();
+    let mut env = lab.env();
+    env.path = OsString::new();
+    let mut job = claude_job(&lab, true);
+    let count = counted(&mut job);
+    let events = run_job(&env, job).await;
+    assert!(matches!(events.last(), Some(StreamEvent::Error(_))));
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+}
+
+/// A claude that starts one of lazarobox's own tools, then answers.
+const OWN_TOOL: &str = r#"
+cat > /dev/null
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t","name":"mcp__lazarobox__find_dir","input":{}}},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"hi"}'
+"#;
+
+#[tokio::test]
+async fn only_a_wired_turn_lets_claude_use_our_tools() {
+    let lab = lab();
+    script(&lab.bin.join("claude"), &lab.rec, OWN_TOOL);
+    let shim = lab.bin.join("shim");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    let wired = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let events = run_job(&wired, claude_job(&lab, true)).await;
+    assert_eq!(
+        events.last(),
+        Some(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+    // The same stream in a turn that fell back to text: nothing was offered.
+    let mut bare = lab.env();
+    bare.shim = Some(shim);
+    let events = run_job(&bare, claude_job(&lab, true)).await;
+    assert_eq!(failure(&events), "claude tried to use a tool", "{events:?}");
+}
+
+/// The final process of a plan, with the turn's own private folder (which is
+/// different every time) named `<tmp>`.
+fn final_process(plan: &Plan) -> (PathBuf, Vec<String>, Vec<(String, String)>) {
+    let tmp = plan.dirs.tmp.display().to_string();
+    let text = |s: &OsString| s.to_string_lossy().replace(&tmp, "<tmp>");
+    (
+        plan.program.clone(),
+        plan.argv.iter().map(text).collect(),
+        plan.vars.iter().map(|(k, v)| (text(k), text(v))).collect(),
+    )
+}
+
+// Spec (agent-tools): while an engine is outside `MCP_VERIFIED` (all of them
+// today), a turn with tools on starts exactly the process of a turn without:
+// the same program, argv (jail helper arguments included), variables, notice
+// and stdin, with the real `MCP_VERIFIED`.
+#[test]
+fn while_dormant_no_engine_starts_a_different_process_with_tools_on() {
+    use crate::core::ai::chat::adapters::{Invocation, adapter_for};
+    assert!(crate::core::ai::chat::engine::MCP_VERIFIED.is_empty());
+    let lab = lab();
+    for name in ["claude", "codex", "gemini"] {
+        script(&lab.bin.join(name), &lab.rec, GOOD);
+    }
+    let shim = lab.bin.join("shim");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    let socket = lab.rec.join("s.sock");
+    fs::write(&socket, "").unwrap();
+    let wire = Box::new(McpWire {
+        socket,
+        token: Secret::new(TOKEN),
+        unwire: Unwire::none(),
+    });
+    for (jail, shim) in [
+        (JailSupport::Unavailable(JailOff::NotProbed), None),
+        (jail_on(), Some(shim)),
+    ] {
+        let jail_off = matches!(jail, JailSupport::Unavailable(_));
+        let mut env = lab.env();
+        env.jail = jail;
+        env.helper = lab.helper(PASS);
+        env.shim = shim;
+        for engine in ["claude", "codex", "gemini"] {
+            let mut off = request();
+            off.engine = engine.into();
+            let mut on = off.clone();
+            on.tools = Tools::On {
+                origin: Some(lab.home.clone()),
+                mcp: Some(wire.clone()),
+            };
+            let adapter = adapter_for(engine).unwrap();
+            let (Invocation::Process(off), Invocation::Process(on)) =
+                (adapter.build(&off), adapter.build(&on))
+            else {
+                panic!("{engine} is a CLI engine");
+            };
+            assert_eq!(on.mcp, None, "{engine}");
+            assert_eq!(on, off, "{engine}");
+            // A refusal (a required jail that is off) is part of the process
+            // too: it must be the same.
+            let render = |planned: Result<Plan, StreamEvent>| {
+                planned.map(|p| (final_process(&p), p.notice.clone(), p.wired))
+            };
+            let (off, on) = (render(plan(&env, &off)), render(plan(&env, &on)));
+            assert_eq!(on, off, "{engine}");
+            assert!(on.is_ok_and(|(_, _, wired)| !wired) || jail_off, "{engine}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_claude_job_without_a_wire_is_untouched_even_with_a_shim_program() {
+    let lab = lab();
+    script(
+        &lab.bin.join("claude"),
+        &lab.rec,
+        &format!("{MCP_CLAUDE}{GOOD}"),
+    );
+    let env = with_shim(&lab, lab.env(), "/opt/lb/lazarobox-shell");
+    let events = run_job(&env, claude_job(&lab, false)).await;
+    assert_eq!(
+        events,
+        [
+            StreamEvent::Delta("hi".into()),
+            StreamEvent::Done(Finish::Stop)
+        ]
+    );
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config"]);
+}
+
+#[test]
+fn the_wiring_names_the_shims_subcommand_and_token_variable() {
+    use crate::runtime::mcp::shim;
+    assert_eq!(wiring::SUBCOMMAND, shim::SUBCOMMAND);
+    assert_eq!(wiring::TOKEN_ENV, shim::TOKEN_ENV);
+}
+
+#[test]
+fn the_real_machine_resolves_its_own_executable_once_as_the_shim() {
+    let env = CliEnv::from_env(JailSupport::Unavailable(JailOff::NotProbed));
+    let shim = env.shim.expect("current_exe works in tests");
+    assert!(shim.is_absolute() && shim.is_file(), "{shim:?}");
+    assert_eq!(shim, fs::canonicalize(&shim).unwrap());
+    assert_ne!(shim, Path::new("/proc/self/exe"));
 }

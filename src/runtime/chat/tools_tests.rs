@@ -63,6 +63,7 @@ fn with_tools(lab: &Lab) -> ChatRequest {
     req.engine = "claude".into();
     req.tools = Tools::On {
         origin: Some(lab.home.clone()),
+        mcp: None,
     };
     req
 }
@@ -316,6 +317,36 @@ async fn a_newer_turn_replaces_the_session_and_ends_the_old_calls() {
     assert!(ended.is_none_or(|r| r["result"]["isError"] == true));
 }
 
+// An adapter that finds its engine cannot be wired (no jail, a layout the jail
+// refuses) says so through the wire it was given, and the session goes then,
+// not at the next send.
+#[tokio::test]
+async fn a_turn_that_falls_back_to_text_closes_its_session() {
+    let lab = lab();
+    let runner: Runner = Arc::new(|request, tx| {
+        Box::pin(async move {
+            let Tools::On {
+                mcp: Some(wire), ..
+            } = &request.tools
+            else {
+                panic!("the turn must carry the session: {:?}", request.tools);
+            };
+            wire.unwire.call();
+            let _ = tx.send(StreamEvent::Done(Finish::Stop)).await;
+        })
+    });
+    let (mut chats, mut rx) = tooled(&lab, runner);
+    chats.send(pane(1), 1, with_tools(&lab));
+    let socket = chats.session(pane(1)).unwrap().socket.clone();
+    loop {
+        if matches!(next(&mut rx).await.2, StreamEvent::Done(_)) {
+            break;
+        }
+    }
+    assert!(!socket.exists(), "the socket goes with the fallback");
+    assert!(UnixStream::connect(&socket).await.is_err());
+}
+
 #[tokio::test]
 async fn a_turn_without_tools_has_no_session_and_closes_the_old_one() {
     let lab = lab();
@@ -397,4 +428,45 @@ async fn a_waiting_call_is_counted_for_the_timers_of_its_turn() {
             .unwrap()
             .unwrap()
     );
+}
+
+/// A runner that hands the request it got to the test, then ends the turn.
+fn capturing(seen: Arc<Mutex<Vec<ChatRequest>>>) -> Runner {
+    Arc::new(move |request, tx| {
+        let seen = seen.clone();
+        Box::pin(async move {
+            seen.lock().unwrap().push(request);
+            let _ = tx.send(done()).await;
+        })
+    })
+}
+
+#[tokio::test]
+async fn the_runner_gets_the_session_of_the_turn_in_the_request() {
+    let lab = lab();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (mut chats, mut rx) = tooled(&lab, capturing(seen.clone()));
+    chats.send(pane(1), 1, with_tools(&lab));
+    next(&mut rx).await;
+    let started = chats.session(pane(1)).expect("a session");
+    let seen = seen.lock().unwrap();
+    let Tools::On {
+        mcp: Some(wire), ..
+    } = &seen[0].tools
+    else {
+        panic!("a wire expected: {:?}", seen[0].tools);
+    };
+    assert_eq!(wire.socket, started.socket);
+    assert_eq!(wire.token.reveal(), started.token.reveal());
+}
+
+#[tokio::test]
+async fn a_turn_without_tools_gets_no_wire_and_no_session() {
+    let lab = lab();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (mut chats, mut rx) = tooled(&lab, capturing(seen.clone()));
+    chats.send(pane(1), 1, request(""));
+    next(&mut rx).await;
+    assert!(chats.session(pane(1)).is_none());
+    assert_eq!(seen.lock().unwrap()[0].tools, Tools::Off);
 }

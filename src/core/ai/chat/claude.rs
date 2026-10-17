@@ -11,6 +11,11 @@
 //! - the `result` line ends the turn. It repeats the whole answer too, which is
 //!   why CLI lines may be 2 MiB. A failure arrives as `is_error: true` (with
 //!   `subtype: "success"`, as the CLI reports an API error that way).
+//! - a tool block fails the turn closed unless the turn is wired and the tool
+//!   is `mcp__lazarobox__*` (then it adds nothing: the host announces the
+//!   call). A wired turn reads content blocks with an allow-list, a text-only
+//!   one refuses tool-like types only (see `foreign_block`). The shape is the
+//!   one claude 2.1.x documents; the manual check records the real one.
 //! - `system`, `rate_limit_event` and any unknown type are ignored, and so is
 //!   any line that does not start with `{` (stray stdout text).
 
@@ -21,6 +26,81 @@ use super::stream::{
     CLI_LINE_CAP, Lines, StreamDecoder, TooLong, emit, error_message, finish_with, malformed,
     too_long,
 };
+use crate::core::ai::tools::wiring::CLAUDE_TOOL_PREFIX;
+
+/// The failure of a turn in which claude started a tool that is not ours.
+pub const TOOL_REFUSED: &str = "claude tried to use a tool";
+
+/// Whether a type names a tool in any case: `tool_use`, `server_tool_use`,
+/// `mcp_tool_result`, `computer_use`.
+fn tool_like(kind: &str) -> bool {
+    let kind = kind.to_ascii_lowercase();
+    kind.contains("tool") || kind.ends_with("_use")
+}
+
+/// Whether a content block is not allowed in this turn.
+///
+/// - Wired (the lazarobox tools are on): a strict allow-list. Only `text`,
+///   `thinking`, `redacted_thinking` and a `tool_use` of ours (the prefix and
+///   at least one more character) pass; any other type is foreign, including
+///   one a new claude adds. The tools are a security boundary, so what the
+///   list does not know ends the turn.
+/// - Text-only (no tools were offered): any tool at all is foreign, ours
+///   included, and so is any type that contains `tool` or ends in `_use` in
+///   any case. Other new block types stay tolerated, so an ordinary chat does
+///   not break when claude adds one.
+///
+/// A block with no string type is judged like an unknown type.
+fn foreign_block(block: &Value, wired: bool) -> bool {
+    let kind = block["type"].as_str();
+    if !wired {
+        return kind.is_some_and(tool_like);
+    }
+    match kind {
+        Some("text" | "thinking" | "redacted_thinking") => false,
+        Some("tool_use") => !block["name"].as_str().is_some_and(|name| {
+            name.strip_prefix(CLAUDE_TOOL_PREFIX)
+                .is_some_and(|rest| !rest.is_empty())
+        }),
+        _ => true,
+    }
+}
+
+/// Whether this line carries a tool that is not allowed (see
+/// [`foreign_block`]) in a content block: a block start, the first message
+/// (`message_start`) or the repeated message (`assistant`), sub-agents
+/// included. A delta whose type is tool-like, or that carries a block, counts
+/// too (the `input_json_delta` of an allowed call does not). Usage counters
+/// such as `message.usage.server_tool_use` are not blocks and are not read.
+fn started_foreign_tool(value: &Value, wired: bool) -> bool {
+    let event = &value["event"];
+    let blocks: Vec<&Value> = match value["type"].as_str() {
+        Some("stream_event") => match event["type"].as_str() {
+            Some("content_block_start") => vec![&event["content_block"]],
+            Some("message_start") => event["message"]["content"]
+                .as_array()
+                .map(|items| items.iter().collect())
+                .unwrap_or_default(),
+            Some("content_block_delta") => {
+                let delta = &event["delta"];
+                if delta["type"].as_str().is_some_and(tool_like) {
+                    return true;
+                }
+                match &delta["content_block"] {
+                    Value::Null => Vec::new(),
+                    block => vec![block],
+                }
+            }
+            _ => return false,
+        },
+        Some("assistant") => value["message"]["content"]
+            .as_array()
+            .map(|items| items.iter().collect())
+            .unwrap_or_default(),
+        _ => return false,
+    };
+    blocks.into_iter().any(|block| foreign_block(block, wired))
+}
 
 /// Decodes the stream-json output of the claude CLI.
 pub struct ClaudeDecoder {
@@ -28,14 +108,26 @@ pub struct ClaudeDecoder {
     ended: bool,
     /// An answer fragment went out: the `result` text is a repeat.
     streamed: bool,
+    /// The turn has the lazarobox tools wired in (see [`started_foreign_tool`]).
+    wired: bool,
 }
 
 impl ClaudeDecoder {
+    /// For a turn with no tools offered.
     pub fn new() -> Self {
         Self {
             lines: Lines::new(CLI_LINE_CAP),
             ended: false,
             streamed: false,
+            wired: false,
+        }
+    }
+
+    /// For a turn whose claude got the lazarobox MCP server.
+    pub fn wired() -> Self {
+        Self {
+            wired: true,
+            ..Self::new()
         }
     }
 
@@ -49,6 +141,9 @@ impl ClaudeDecoder {
         let Ok(value) = serde_json::from_str::<Value>(&String::from_utf8_lossy(line)) else {
             return vec![malformed()];
         };
+        if started_foreign_tool(&value, self.wired) {
+            return vec![StreamEvent::Error(ChatError::Failed(TOOL_REFUSED.into()))];
+        }
         match value["type"].as_str() {
             Some("stream_event") => self.stream_event(&value),
             Some("result") => self.result(&value),

@@ -4,6 +4,7 @@ use super::*;
 use crate::core::ai::{
     chat::engine::{ChatMessage, ChatRequest, Role, Tools},
     jail::{Cli, JailPolicy},
+    tools::wiring::{McpWire, Secret, Unwire},
 };
 
 fn message(role: Role, content: &str) -> ChatMessage {
@@ -217,7 +218,8 @@ struct Process {
     args: Vec<String>,
     stdin: String,
     jail: JailPolicy,
-    tmp_file: Option<TmpFile>,
+    tmp_files: Vec<TmpFile>,
+    mcp: Option<McpWire>,
 }
 
 fn process(invocation: Invocation) -> Process {
@@ -228,7 +230,8 @@ fn process(invocation: Invocation) -> Process {
         args,
         stdin,
         jail,
-        tmp_file,
+        tmp_files,
+        mcp,
     }) = invocation
     else {
         panic!("a process invocation expected: {invocation:?}");
@@ -240,7 +243,8 @@ fn process(invocation: Invocation) -> Process {
         args,
         stdin: String::from_utf8(stdin).expect("stdin is text"),
         jail,
-        tmp_file,
+        tmp_files,
+        mcp,
     }
 }
 
@@ -733,7 +737,8 @@ fn gemini_has_no_extension_and_no_mcp_server() {
 #[test]
 fn every_gemini_tool_is_denied_by_a_policy_file_the_runtime_writes() {
     let p = process(Adapter::Gemini.build(&gemini_request(None)));
-    let file = p.tmp_file.expect("a policy file");
+    assert_eq!(p.tmp_files.len(), 1);
+    let file = p.tmp_files.into_iter().next().expect("a policy file");
     assert_eq!(file.flag, "--policy");
     assert_eq!(file.name, "gemini-policy.toml");
     // One rule: every tool, denied, above every other rule.
@@ -752,7 +757,7 @@ fn the_other_clis_write_no_file() {
     for (engine, build) in [("claude", Adapter::Claude), ("codex", Adapter::Codex)] {
         let mut req = request("be brief");
         req.engine = engine.into();
-        assert_eq!(process(build.build(&req)).tmp_file, None, "{engine}");
+        assert!(process(build.build(&req)).tmp_files.is_empty(), "{engine}");
     }
 }
 
@@ -818,7 +823,7 @@ fn a_gemini_message_cannot_forge_a_turn_boundary() {
 // Spec (agent-tools): with tools off every request is byte-identical. No
 // adapter reads `ChatRequest.tools` yet (the wiring of an engine lands with its
 // manual check), so a turn that offers tools builds the same invocation: argv,
-// stdin, env and body.
+// stdin, env and body. `build` reads the real `MCP_VERIFIED`, which is empty.
 #[test]
 fn the_tools_flag_changes_no_invocation() {
     for engine in ["ollama", "claude", "codex", "gemini"] {
@@ -827,8 +832,85 @@ fn the_tools_flag_changes_no_invocation() {
         let mut on = off.clone();
         on.tools = Tools::On {
             origin: Some("/home/u/dev".into()),
+            mcp: None,
         };
         let adapter = adapter_for(engine).unwrap();
         assert_eq!(adapter.build(&off), adapter.build(&on), "{engine}");
+    }
+}
+
+fn tools_on(engine: &str, session: bool) -> (ChatRequest, ChatRequest) {
+    let mut off = request("be brief");
+    off.engine = engine.into();
+    let mut on = off.clone();
+    on.tools = Tools::On {
+        origin: Some("/home/u/dev".into()),
+        mcp: session.then(|| {
+            Box::new(McpWire {
+                socket: "/run/user/1000/lazarobox/s-1-1.sock".into(),
+                token: Secret::new("0123456789abcdef0123456789abcdef"),
+                unwire: Unwire::none(),
+            })
+        }),
+    };
+    (off, on)
+}
+
+#[test]
+fn an_engine_outside_the_verified_set_is_byte_identical_with_tools_on() {
+    for engine in ["ollama", "claude", "codex", "gemini"] {
+        let (off, on) = tools_on(engine, true);
+        let adapter = adapter_for(engine).unwrap();
+        // Nothing verified, and another engine verified: the same bytes.
+        for verified in [&[][..], &["codex"][..], &["gemini"][..]]
+            .into_iter()
+            .filter(|v| !v.contains(&engine))
+        {
+            assert_eq!(
+                adapter.build_with(&on, verified),
+                adapter.build(&off),
+                "{engine} {verified:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_verified_claude_with_a_session_carries_the_wire_and_nothing_else_changes() {
+    let (off, on) = tools_on("claude", true);
+    let with = process(Adapter::Claude.build_with(&on, &["claude"]));
+    let without = process(Adapter::Claude.build(&off));
+    assert!(with.mcp.is_some());
+    assert_eq!(
+        with.mcp,
+        match &on.tools {
+            Tools::On { mcp, .. } => mcp.as_deref().cloned(),
+            Tools::Off => unreachable!(),
+        }
+    );
+    assert_eq!(
+        (with.args, with.stdin, with.tmp_files),
+        (without.args, without.stdin, without.tmp_files)
+    );
+}
+
+#[test]
+fn a_verified_claude_without_a_session_stays_text_only() {
+    let (off, on) = tools_on("claude", false);
+    assert_eq!(
+        Adapter::Claude.build_with(&on, &["claude"]),
+        Adapter::Claude.build(&off)
+    );
+}
+
+#[test]
+fn only_the_claude_adapter_carries_a_wire_yet() {
+    for (engine, adapter) in [("codex", Adapter::Codex), ("gemini", Adapter::Gemini)] {
+        let (off, on) = tools_on(engine, true);
+        assert_eq!(
+            adapter.build_with(&on, &[engine]),
+            adapter.build(&off),
+            "{engine}"
+        );
     }
 }

@@ -408,6 +408,43 @@ async fn closing_the_chat_removes_the_socket_and_ends_everything_live() {
 }
 
 #[tokio::test]
+async fn ending_a_session_from_its_handle_does_what_close_does() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = hub(tmp.path());
+    let (fake, mut probe) = hang();
+    let s = open(&mut hub, 1, fake);
+    let mut c = ready(&s).await;
+    send(
+        &mut c,
+        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"find_dir","arguments":{"query":"x"}}}"#,
+    )
+    .await;
+    probe.called().await;
+    s.end.call();
+    assert!(!s.socket.exists());
+    assert_eq!(recv(&mut c).await, None);
+    assert!(UnixStream::connect(&s.socket).await.is_err());
+    probe.dropped().await;
+    // Twice is harmless, and so is the hub's own close afterwards.
+    s.end.call();
+    hub.close(pane(1));
+}
+
+#[tokio::test]
+async fn the_handle_of_a_replaced_session_leaves_the_new_one_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = hub(tmp.path());
+    let old = open(&mut hub, 1, Arc::new(Fake::default()));
+    let new = open(&mut hub, 1, Arc::new(Fake::default()));
+    assert_eq!(old.socket, new.socket, "one socket path per pane");
+    old.end.call();
+    assert!(new.socket.exists());
+    let mut c = ready(&new).await;
+    send(&mut c, r#"{"jsonrpc":"2.0","id":9,"method":"ping"}"#).await;
+    assert_eq!(recv(&mut c).await.unwrap()["id"], 9);
+}
+
+#[tokio::test]
 async fn a_client_cancel_drops_the_call_and_the_session_keeps_serving() {
     let tmp = tempfile::tempdir().unwrap();
     let mut hub = hub(tmp.path());

@@ -16,7 +16,10 @@ fn nothing_is_verified_yet() {
 fn a_verified_engine_with_tools_enabled_gets_them_with_the_origin() {
     assert_eq!(
         tools_for("claude", true, origin(), &["claude"]),
-        Tools::On { origin: origin() }
+        Tools::On {
+            origin: origin(),
+            mcp: None
+        }
     );
 }
 

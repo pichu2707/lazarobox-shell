@@ -225,6 +225,7 @@ mod tests {
             lib_dirs: Vec::new(),
             data_files: Vec::new(),
             helpers: Vec::new(),
+            shim: None,
             cwd: PathBuf::from("/run/user/1/cwd"),
             tmp: PathBuf::from("/run/user/1/tmp"),
         }

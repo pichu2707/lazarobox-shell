@@ -599,10 +599,25 @@ pub struct CliLayout {
     pub data_files: Vec<PathBuf>,
     /// Extra programs a manual check proved necessary, by exact path.
     pub helpers: Vec<PathBuf>,
+    /// What the engine's MCP shim needs (tools on): see [`ShimGrant`].
+    pub shim: Option<ShimGrant>,
     /// The private empty working directory.
     pub cwd: PathBuf,
     /// The private per-turn `TMPDIR`.
     pub tmp: PathBuf,
+}
+
+/// The minimum the engine needs to start `lazarobox __mcp-serve <socket>` and
+/// connect: execute the lazarobox program, and read and write the one socket
+/// file. No folder is granted (D11). Every path is canonical; the program is
+/// the resolved executable, not `/proc/self/exe` (inside the CLI that is node).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ShimGrant {
+    pub binary: PathBuf,
+    /// The ELF loader of `binary`; it adds a rule only when the CLI's own
+    /// loaders do not already cover it.
+    pub loader: Option<PathBuf>,
+    pub socket: PathBuf,
 }
 
 /// The paths a jailed CLI may use.
@@ -648,7 +663,13 @@ pub fn jail_spec_with(
         .chain(&layout.loaders)
         .chain(&layout.lib_dirs)
         .chain(&layout.data_files)
-        .chain(&layout.helpers);
+        .chain(&layout.helpers)
+        .chain(
+            layout
+                .shim
+                .iter()
+                .flat_map(|s| [&s.binary, &s.socket].into_iter().chain(s.loader.as_ref())),
+        );
     if let Some(bad) = given.into_iter().find(|p| !is_canonical_form(p)) {
         return Err(SpecError::NotCanonical(bad.clone()));
     }
@@ -665,6 +686,12 @@ pub fn jail_spec_with(
         .loaders
         .iter()
         .chain(&layout.helpers)
+        .chain(
+            layout
+                .shim
+                .iter()
+                .flat_map(|s| [&s.binary].into_iter().chain(s.loader.as_ref())),
+        )
         .find(|p| too_broad(p, &homes, layout.cli))
     {
         return Err(SpecError::RootTooBroad(bad.clone()));
@@ -748,6 +775,13 @@ pub fn jail_spec_with(
     }
     spec.rw_files.push(PathBuf::from("/dev/null"));
     spec.rw_files.extend(state_file);
+    if let Some(shim) = &layout.shim {
+        push_unique(&mut spec.rx, shim.binary.clone());
+        if let Some(loader) = &shim.loader {
+            push_unique(&mut spec.rx, loader.clone());
+        }
+        push_unique(&mut spec.rw_files, shim.socket.clone());
+    }
     Ok(spec)
 }
 
