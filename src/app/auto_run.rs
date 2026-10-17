@@ -192,7 +192,9 @@ impl App {
                             Err(refused) => Self::deny(slot.chat, slot.turn, call, refused.reason),
                         };
                     }
-                    Route::Prompt(fallback) => self.fallback_why(slot.chat, fallback),
+                    Route::Prompt(fallback) => {
+                        self.fallback_why(slot.chat, fallback, &slot.command)
+                    }
                     Route::AutoType => None,
                 }
             }

@@ -114,11 +114,43 @@ pub const NO_CWD: &str = "the pane's directory cannot be read on this system";
 pub const NOT_ALLOWED: &str = "a path in the command is not allowed to run directly";
 pub const PAUSED: &str = "auto-run paused for this turn";
 pub const NON_UTF8: &str = "the pane's locale is not UTF-8";
+/// Why a command that the grammar accepts still takes the prompt: the pane
+/// or the turn is not free. None of them is the model's doing.
+pub const RUNNING: &str = "a command is still running in the pane";
+pub const HALF_TYPED: &str = "the pane has a half-typed line";
+pub const FOCUSED: &str = "the pane has the focus";
+pub const HIDDEN: &str = "the chat's tab is not shown";
+pub const TOO_MANY: &str = "too many commands this turn";
 
 /// Whether a fallback is the model's doing: the reasons of the pane and of
 /// the pause itself never count toward the pause.
 pub fn counts_toward_pause(fallback: &Fallback) -> bool {
-    !matches!(fallback.why, NO_CWD | PAUSED | NON_UTF8)
+    !matches!(
+        fallback.why,
+        NO_CWD | PAUSED | NON_UTF8 | RUNNING | HALF_TYPED | FOCUSED | HIDDEN | TOO_MANY
+    )
+}
+
+/// The longest token the reason line names.
+const MAX_TOKEN_CHARS: usize = 24;
+
+/// The one line the prompt shows for a fallback: the reason and, when it
+/// has a span inside `command`, the token it names in backticks. Control
+/// characters are drawn as `?` and a long token is cut.
+pub fn reason_line(fallback: &Fallback, command: &str) -> String {
+    let token = command
+        .get(fallback.at.clone())
+        .filter(|t| !t.trim().is_empty());
+    let Some(token) = token else {
+        return fallback.why.to_owned();
+    };
+    let mut shown: String = (token.chars().take(MAX_TOKEN_CHARS))
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect();
+    if token.chars().nth(MAX_TOKEN_CHARS).is_some() {
+        shown.push('…');
+    }
+    format!("{}: `{shown}`", fallback.why)
 }
 
 /// Whether the locale of a shell names UTF-8: `LC_ALL`, else `LC_CTYPE`, else
@@ -173,24 +205,36 @@ pub fn route<'a>(
     mode: ApprovalMode,
     ctx: AutoCtx,
 ) -> Route<'a> {
-    let free = ctx.typed_this_turn < MAX_AUTO_PER_TURN
-        && !ctx.line_pending
-        && !ctx.target_focused
-        && ctx.tab_shown
-        && !ctx.executing
-        && !ctx.dirty;
     match (ask, origin, mode) {
-        (ApprovalAsk::Run { .. }, Origin::Tool, ApprovalMode::Auto) if free => Route::AutoType,
-        (ApprovalAsk::Run { command }, Origin::Tool, ApprovalMode::Run) => {
-            route_run(command, ctx, free)
+        (ApprovalAsk::Run { .. }, Origin::Tool, ApprovalMode::Auto) if busy(ctx).is_none() => {
+            Route::AutoType
         }
+        (ApprovalAsk::Run { command }, Origin::Tool, ApprovalMode::Run) => route_run(command, ctx),
         _ => Route::Prompt(None),
     }
 }
 
+/// Why the target or the turn is not free for a command to go without a
+/// prompt: a limit, a run in flight, the user's line or the user's eyes.
+fn busy(ctx: AutoCtx) -> Option<&'static str> {
+    Some(if ctx.typed_this_turn >= MAX_AUTO_PER_TURN {
+        TOO_MANY
+    } else if ctx.executing {
+        RUNNING
+    } else if ctx.line_pending || ctx.dirty {
+        HALF_TYPED
+    } else if ctx.target_focused {
+        FOCUSED
+    } else if !ctx.tab_shown {
+        HIDDEN
+    } else {
+        return None;
+    })
+}
+
 /// The `run` half of [`route`]: the reasons of the pane and the pause first,
 /// then the grammar, then the limits.
-fn route_run(command: &str, ctx: AutoCtx, free: bool) -> Route<'_> {
+fn route_run(command: &str, ctx: AutoCtx) -> Route<'_> {
     let because = |why| Route::Prompt(Some(Fallback { at: 0..0, why }));
     if !ctx.cwd_known {
         return because(NO_CWD);
@@ -202,8 +246,7 @@ fn route_run(command: &str, ctx: AutoCtx, free: bool) -> Route<'_> {
         // A non-UTF-8 locale or readline's `convert-meta` could read the
         // bytes as something else than what was checked.
         Ok(safe) if !ctx.utf8 && !safe.as_str().is_ascii() => because(NON_UTF8),
-        Ok(safe) if free => Route::AutoRun(safe),
-        Ok(_) => Route::Prompt(None),
+        Ok(safe) => busy(ctx).map_or(Route::AutoRun(safe), because),
         Err(fallback) => Route::Prompt(Some(fallback)),
     }
 }
@@ -286,6 +329,8 @@ pub struct ApprovalPrompt {
     /// a moment, so a key typed before it appeared cannot answer it; the keys
     /// line shows `…` meanwhile.
     pub armed: bool,
+    /// Why a `run` command was not run directly, as one line.
+    pub why: Option<String>,
 }
 
 /// The keys of a run prompt.
@@ -632,6 +677,99 @@ mod tests {
             let route = route(&ask, origin, ApprovalMode::Run, FREE);
             assert_eq!(route, Route::Prompt(None), "{ask:?} {origin:?}");
         }
+    }
+
+    // The pane being busy is a reason too, so the prompt can say it.
+    #[test]
+    fn a_busy_pane_names_its_reason_and_never_counts_toward_the_pause() {
+        let ask = ask_of("pwd");
+        let table = [
+            (
+                AutoCtx {
+                    executing: true,
+                    ..FREE
+                },
+                RUNNING,
+            ),
+            (
+                AutoCtx {
+                    line_pending: true,
+                    ..FREE
+                },
+                HALF_TYPED,
+            ),
+            (
+                AutoCtx {
+                    dirty: true,
+                    ..FREE
+                },
+                HALF_TYPED,
+            ),
+            (
+                AutoCtx {
+                    target_focused: true,
+                    ..FREE
+                },
+                FOCUSED,
+            ),
+            (
+                AutoCtx {
+                    tab_shown: false,
+                    ..FREE
+                },
+                HIDDEN,
+            ),
+            (
+                AutoCtx {
+                    typed_this_turn: MAX_AUTO_PER_TURN,
+                    ..FREE
+                },
+                TOO_MANY,
+            ),
+        ];
+        for (ctx, reason) in table {
+            let got = route(&ask, Origin::Tool, ApprovalMode::Run, ctx);
+            assert_eq!(why(&got), Some(reason), "{ctx:?}");
+            assert!(matches!(&got, Route::Prompt(Some(f)) if !counts_toward_pause(f)));
+        }
+        // A command off the grammar still names the grammar, not the pane.
+        let off = ask_of("git status");
+        let busy = AutoCtx {
+            executing: true,
+            ..FREE
+        };
+        let got = route(&off, Origin::Tool, ApprovalMode::Run, busy);
+        assert_eq!(why(&got), Some("not a safe command"));
+    }
+
+    // The line the prompt shows: the reason and the offending token.
+    #[test]
+    fn the_reason_line_names_the_token_when_there_is_one() {
+        let line = |text: &str| {
+            let fallback = exec::parse(text).unwrap_err();
+            reason_line(&fallback, text)
+        };
+        assert_eq!(line("cd a && ls"), "shell metacharacter: `&&`");
+        assert_eq!(line("git status"), "not a safe command: `git`");
+        assert_eq!(line("ls -R src"), "flag not allowed: `-R`");
+        // Nothing to name: no token, or a token that is only a space.
+        assert_eq!(line("ls "), "trailing space");
+        let no_token = Fallback {
+            at: 0..0,
+            why: NO_CWD,
+        };
+        assert_eq!(reason_line(&no_token, "pwd"), NO_CWD);
+        // A span outside the text is ignored, never sliced.
+        let stale = Fallback {
+            at: 2..90,
+            why: "x",
+        };
+        assert_eq!(reason_line(&stale, "pwd"), "x");
+        // A long token is cut and a control character is not drawn raw.
+        let long = format!("cd {}&", "a".repeat(200));
+        assert!(line(&long).chars().count() < 60, "{}", line(&long));
+        let ctl = Fallback { at: 0..3, why: "w" };
+        assert_eq!(reason_line(&ctl, "a\u{1b}b"), "w: `a?b`");
     }
 
     // Reasons of the pause: the ones that are not the model's doing do not count.
