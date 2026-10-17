@@ -1628,6 +1628,7 @@ impl App {
         let Some(bytes) = encode_key(key, pty.emu.modes()) else {
             return Vec::new();
         };
+        self.note_user_key(&key);
         self.return_to_live();
         vec![Effect::WritePty(self.tab().focus, bytes)]
     }
@@ -2248,6 +2249,11 @@ impl App {
                     return Vec::new();
                 };
                 let bytes = encode_paste(text, pty.emu.modes());
+                if text.contains('\r')
+                    && let Some(pty) = self.focused_state_mut().pty_mut()
+                {
+                    pty.line_pending = None;
+                }
                 self.return_to_live();
                 vec![Effect::WritePty(self.tab().focus, bytes)]
             }

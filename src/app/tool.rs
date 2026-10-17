@@ -12,7 +12,7 @@ use std::time::Duration;
 use super::*;
 use crate::core::ai::chat::{
     approval::{Approval, ApprovalAsk, AutoCtx, Origin, Route, route},
-    engine::{CallId, Decision, Tools, tools_for},
+    engine::{CallId, Decision, ToolStatus, Tools, tools_for},
 };
 
 /// Why a call is denied without the user being asked, or when a refusal has no
@@ -33,7 +33,7 @@ pub(super) enum ToolEvent {
     /// The call is announced and needs the user.
     Ask(CallId, ApprovalAsk),
     /// The call ended: whatever waited for it is stale.
-    Over(CallId),
+    Over(CallId, ToolStatus),
 }
 
 impl ToolEvent {
@@ -44,7 +44,7 @@ impl ToolEvent {
                 approval: Some(ask),
                 ..
             } => Some(Self::Ask(*id, (**ask).clone())),
-            StreamEvent::ToolResult { id, .. } => Some(Self::Over(*id)),
+            StreamEvent::ToolResult { id, status, .. } => Some(Self::Over(*id, *status)),
             _ => None,
         }
     }
@@ -87,8 +87,12 @@ impl App {
             self.withdraw_tool_approval(id, |(t, _)| t == turn);
         }
         match event {
-            Some(ToolEvent::Over(call)) => {
+            Some(ToolEvent::Over(call, status)) => {
                 self.withdraw_tool_approval(id, |key| key == (turn, call));
+                // A refused write left nothing on the line.
+                if status == ToolStatus::Denied {
+                    self.clear_line_pending(|marked| marked == call);
+                }
                 Vec::new()
             }
             Some(ToolEvent::Ask(call, ask)) if live => self.on_tool_ask(id, turn, call, ask),
@@ -192,6 +196,30 @@ impl App {
             turn,
             call,
         }]
+    }
+
+    /// Clears the line-pending mark of every shell pane whose marked call
+    /// `stale` names.
+    fn clear_line_pending(&mut self, stale: impl Fn(CallId) -> bool) {
+        for pty in self.panes.values_mut().filter_map(PaneState::pty_mut) {
+            if pty.line_pending.is_some_and(&stale) {
+                pty.line_pending = None;
+            }
+        }
+    }
+
+    /// The user is about to send to the focused pane: Enter, Ctrl+C or Ctrl+U
+    /// ends the line an auto-typed command was waiting on. Read from the key
+    /// event, so a child's keyboard protocol does not matter.
+    pub(super) fn note_user_key(&mut self, key: &KeyEvent) {
+        let sends = match key.code {
+            KeyCode::Enter => true,
+            KeyCode::Char('c' | 'u') => key.modifiers.contains(KeyModifiers::CONTROL),
+            _ => false,
+        };
+        if sends && let Some(pty) = self.focused_state_mut().pty_mut() {
+            pty.line_pending = None;
+        }
     }
 
     /// Ends the pending approval of chat `id` when it belongs to a tool call

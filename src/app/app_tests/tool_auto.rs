@@ -233,3 +233,157 @@ fn two_calls_to_one_pane_in_a_batch_type_one_and_prompt_the_other() {
         "the second one waits for the user"
     );
 }
+
+// 2e-3.4b: the line-pending mark ----------------------------------------------
+
+use super::tool_approval::result;
+use crate::core::ai::chat::engine::ToolStatus;
+
+/// Types one command so pane 1 holds an unsent line, then gives the focus to
+/// the shell, as when the user goes to look at it.
+fn marked() -> (App, u64) {
+    let (mut a, turn) = auto_live();
+    assert_eq!(
+        announce(&mut a, turn, 1, run("cd x")),
+        vec![typed(turn, 1, b"cd x")]
+    );
+    (a, turn)
+}
+
+fn prompts(a: &mut App, turn: u64, call: u64) -> bool {
+    let effects = announce(a, turn, call, run("ls"));
+    let waits = pending(a).is_some_and(|(ask, _)| ask == run("ls"));
+    if waits {
+        // Leave the chat as it was for the next probe.
+        a.update(key('n'));
+        assert_eq!(effects, vec![]);
+    }
+    waits
+}
+
+fn user_in_the_shell(a: &mut App) {
+    a.tab_mut().focus = PaneId::FIRST;
+}
+
+#[test]
+fn a_later_auto_call_to_a_marked_pane_prompts() {
+    let (mut a, turn) = marked();
+    assert!(prompts(&mut a, turn, 2), "same turn");
+}
+
+#[test]
+fn the_mark_survives_into_a_later_turn() {
+    let (mut a, turn) = marked();
+    a.tab_mut().focus = id2();
+    a.update(AppEvent::Chat(
+        id2(),
+        turn,
+        StreamEvent::Done(crate::core::ai::chat::engine::Finish::Stop),
+    ));
+    a.update(key('q'));
+    let next = super::run_pane::enter_turn(&mut a);
+    assert!(prompts(&mut a, next, 2), "later turn");
+}
+
+#[test]
+fn enter_ctrl_c_and_ctrl_u_in_the_shell_clear_the_mark() {
+    for send in [
+        chat_live::plain(KeyCode::Enter),
+        chat_live::ctrl('c'),
+        chat_live::ctrl('u'),
+    ] {
+        let (mut a, turn) = marked();
+        user_in_the_shell(&mut a);
+        a.update(send);
+        a.tab_mut().focus = id2();
+        assert!(!prompts(&mut a, turn, 2), "cleared");
+    }
+}
+
+// The rule reads key events, not the bytes the child would see.
+#[test]
+fn enter_clears_the_mark_also_with_an_extended_keyboard_protocol() {
+    let (mut a, turn) = marked();
+    shell_output(&mut a, b"\x1b[>1u");
+    user_in_the_shell(&mut a);
+    a.update(chat_live::plain(KeyCode::Enter));
+    a.tab_mut().focus = id2();
+    assert!(!prompts(&mut a, turn, 2));
+}
+
+#[test]
+fn other_keys_leave_the_mark_set() {
+    let (mut a, turn) = marked();
+    user_in_the_shell(&mut a);
+    for other in [
+        chat_live::plain(KeyCode::Backspace),
+        key('x'),
+        chat_live::plain(KeyCode::Left),
+        chat_live::ctrl('a'),
+    ] {
+        a.update(other);
+    }
+    a.tab_mut().focus = id2();
+    assert!(prompts(&mut a, turn, 2));
+}
+
+#[test]
+fn a_paste_holding_a_carriage_return_clears_the_mark_and_one_without_does_not() {
+    let (mut a, turn) = marked();
+    user_in_the_shell(&mut a);
+    a.update(AppEvent::Paste("abc".into()));
+    a.tab_mut().focus = id2();
+    assert!(prompts(&mut a, turn, 2), "no CR: still pending");
+    user_in_the_shell(&mut a);
+    a.update(AppEvent::Paste("abc\rdef".into()));
+    a.tab_mut().focus = id2();
+    assert!(!prompts(&mut a, turn, 3));
+}
+
+#[test]
+fn a_denied_result_of_the_marked_call_clears_the_mark() {
+    let (mut a, turn) = marked();
+    // The runtime refused the write: nothing sits on the line.
+    result(&mut a, turn, 1, ToolStatus::Denied);
+    assert!(!prompts(&mut a, turn, 2));
+}
+
+#[test]
+fn an_ok_result_leaves_the_mark() {
+    let (mut a, turn) = marked();
+    result(&mut a, turn, 1, ToolStatus::Ok);
+    assert!(prompts(&mut a, turn, 2));
+}
+
+#[test]
+fn a_mark_on_one_pane_never_affects_another() {
+    let (mut a, turn) = marked();
+    press(&mut a, "wv");
+    let second = a.focused();
+    assert_ne!(second, PaneId::FIRST);
+    a.tab_mut().focus = id2();
+    a.tab_mut().last_shell = Some(second);
+    let effects = announce(&mut a, turn, 2, run("ls"));
+    let [Effect::AutoType { target, .. }] = effects.as_slice() else {
+        panic!("{effects:?}")
+    };
+    assert_eq!(*target, second);
+}
+
+// Enter after each command lets five be typed and the sixth prompts.
+#[test]
+fn five_commands_a_turn_with_enter_between_and_the_sixth_prompts() {
+    let (mut a, turn) = auto_live();
+    for call in 1..=5 {
+        let effects = announce(&mut a, turn, call, run("ls"));
+        assert!(
+            matches!(effects.as_slice(), [Effect::AutoType { .. }]),
+            "{call}"
+        );
+        user_in_the_shell(&mut a);
+        a.update(chat_live::plain(KeyCode::Enter));
+        a.tab_mut().focus = id2();
+    }
+    assert_eq!(auto_typed(&a), 5);
+    assert!(prompts(&mut a, turn, 6));
+}
