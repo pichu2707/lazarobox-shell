@@ -1,5 +1,5 @@
 //! Run in pane: the confirm that types a command of a chat into a shell pane.
-//! The confirm only types; lazarobox never sends Enter.
+//! The confirm only types; Enter is sent only by a run (see `auto_run`).
 
 use super::{
     tool::{CANCELLED, DECLINED},
@@ -16,7 +16,7 @@ use crate::core::ai::{
         yank,
     },
     sanitize,
-    tools::command::validate,
+    tools::command::{TRAILING_BACKSLASH, UNBALANCED, validate},
 };
 
 /// Notices for the refusals of `Prefix e`.
@@ -69,6 +69,10 @@ impl App {
             if !on && chat.take_tool_session() {
                 effects.push(Effect::EndToolSession(id));
             }
+        }
+        if !on {
+            // The session ends and answers its calls: no run is left to wait for.
+            self.drop_run_slots(|_| true);
         }
         self.dirty = true;
         effects
@@ -252,8 +256,18 @@ impl App {
     ) -> Result<Vec<u8>, Refused> {
         let command = validate(command).map_err(|refusal| Refused {
             notice: format!("Command refused: {}", refusal.reason()),
-            reason: "the command was refused",
+            reason: match refusal.reason() {
+                reason @ (UNBALANCED | TRAILING_BACKSLASH) => reason,
+                _ => "the command was refused",
+            },
         })?;
+        self.frame_bytes(target, command.as_str())
+    }
+
+    /// The post-validation half of [`typed_bytes`](Self::typed_bytes): the
+    /// pane checks and the bytes for `text`, already validated, framed by the
+    /// state of the pane now. A run appends its `\r` to these.
+    pub(super) fn frame_bytes(&mut self, target: PaneId, text: &str) -> Result<Vec<u8>, Refused> {
         let number = self.pane_number(target).unwrap_or(0);
         let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) else {
             return Err(Refused {
@@ -267,7 +281,6 @@ impl App {
                 reason: "the pane runs a full-screen app",
             });
         }
-        let text = command.as_str();
         let modes = pty.emu.modes();
         let bytes = if modes.bracketed_paste {
             encode_paste(text, modes)

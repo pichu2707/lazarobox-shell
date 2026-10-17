@@ -70,6 +70,7 @@ use crate::{
         ai::{
             Detection,
             chat::{
+                approval,
                 notify::{bell_after_failed_desktop, rings_at_once},
                 prompts::Resolved,
                 store::StoreReply,
@@ -213,6 +214,11 @@ pub async fn run() -> io::Result<()> {
         .with_jail(jail)
         .with_hostname(local_hostname().as_deref())
         .with_dir_check(|dir| dir.is_dir())
+        .with_utf8_locale(approval::names_utf8(
+            env::var("LC_ALL").ok().as_deref(),
+            env::var("LC_CTYPE").ok().as_deref(),
+            env::var("LANG").ok().as_deref(),
+        ))
         .with_session_ids(engram::worker::new_session_id)
         .with_token_check(token_in_env)
         .with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
@@ -1011,6 +1017,28 @@ impl Panes {
                         let _ = answer.send(decision);
                     }
                 }
+                // The write and the answer are one step, as for `AutoType`, but
+                // the pane must also still be in the directory that was
+                // checked. A refusal writes nothing and claims nothing; the app
+                // is told, and asks the user.
+                Effect::AutoRun {
+                    chat,
+                    target,
+                    bytes,
+                    number,
+                    turn,
+                    call,
+                    cwd,
+                } => {
+                    let claim = || {
+                        let wait = self.chats.as_ref()?.take(chat, turn, call);
+                        wait.filter(|answer| !answer.is_closed())
+                    };
+                    let pane = self.handles.get_mut(&target);
+                    if let Err(reason) = auto_type::run_if_idle(pane, number, &cwd, bytes, claim) {
+                        feedback.push(AppEvent::Run(target, RunEvent::NotRun { call, reason }));
+                    }
+                }
                 // The pane's real directory is read here (the kernel resolves the
                 // link, no disk is touched); the paths are checked on the
                 // blocking pool and the answer comes back on the run channel.
@@ -1029,7 +1057,7 @@ impl Panes {
                             target,
                             RunEvent::Refused {
                                 call,
-                                reason: run_check::NO_CWD,
+                                reason: approval::NO_CWD,
                             },
                         )),
                     }
@@ -3632,7 +3660,7 @@ mod tests {
                 id(pane),
                 RunEvent::Refused {
                     call: CallId(call),
-                    reason: run_check::NO_CWD,
+                    reason: approval::NO_CWD,
                 },
             )
         };
@@ -3652,6 +3680,99 @@ mod tests {
             vec![refused(1, 8), refused(2, 9)],
             "an unreadable cwd, and a pane that is gone"
         );
+    }
+
+    fn auto_run_effect(target: u32, call: u64, cwd: &str) -> Effect {
+        Effect::AutoRun {
+            chat: id(9),
+            target: id(target),
+            bytes: format!("cmd{target}\r").into_bytes(),
+            number: target as usize,
+            turn: 1,
+            call: crate::core::ai::chat::engine::CallId(call),
+            cwd: cwd.into(),
+        }
+    }
+
+    // The write step: the pane must still be where the check was done and the
+    // shell must own the terminal; otherwise nothing is written, the answer is
+    // not claimed, and the app is told so it can ask the user.
+    #[tokio::test]
+    async fn an_auto_run_writes_only_where_it_was_checked_and_at_a_prompt() {
+        use crate::app::RunEvent;
+        use crate::core::ai::chat::engine::CallId;
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let mut logs = Vec::new();
+        let mut waits = Vec::new();
+        let panes_under_test = [
+            (1, Some("/srv/a"), Some(true)),
+            (2, Some("/srv/other"), Some(true)),
+            (3, Some("/srv/a"), Some(false)),
+            (4, None, Some(true)),
+        ];
+        for (n, cwd, foreground) in panes_under_test {
+            let pty = FakePty {
+                foreground,
+                cwd: cwd.map(Into::into),
+                ..FakePty::default()
+            };
+            logs.push(pty.log.clone());
+            panes.handles.insert(id(n), Box::new(pty));
+            waits.push(waiting(&panes, n.into()));
+        }
+        let effects = (1..=4)
+            .map(|n| auto_run_effect(n, n.into(), "/srv/a"))
+            .collect();
+        let (_, feedback) = panes.apply(effects);
+        assert_eq!(logs[0].lock().unwrap().writes, vec![b"cmd1\r".to_vec()]);
+        for log in &logs[1..] {
+            assert!(log.lock().unwrap().writes.is_empty());
+        }
+        let not_run = |pane, call, reason| {
+            AppEvent::Run(
+                id(pane),
+                RunEvent::NotRun {
+                    call: CallId(call),
+                    reason,
+                },
+            )
+        };
+        assert_eq!(
+            feedback,
+            vec![
+                not_run(2, 2, auto_type::MOVED),
+                not_run(3, 3, auto_type::BUSY),
+                not_run(4, 4, auto_type::MOVED),
+            ]
+        );
+        assert_eq!(waits.remove(0).await, Decision::Ran(1));
+        // The others still wait for the user: their answers were not claimed.
+        let waits_map = panes.chats.as_ref().unwrap().waits();
+        for call in 2..=4 {
+            assert!(
+                waits_map.take(id(9), 1, CallId(call)).is_some(),
+                "call {call}"
+            );
+        }
+    }
+
+    // Only one write per run: a call that is over is owed no bytes.
+    #[tokio::test]
+    async fn an_auto_run_whose_call_is_over_writes_nothing() {
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let pty = FakePty {
+            foreground: Some(true),
+            cwd: Some("/srv/a".into()),
+            ..FakePty::default()
+        };
+        let log = pty.log.clone();
+        panes.handles.insert(id(1), Box::new(pty));
+        let ended = waiting(&panes, 1);
+        panes.chats.as_ref().unwrap().waits().end_turn(id(9), 1);
+        let (_, feedback) = panes.apply(vec![auto_run_effect(1, 1, "/srv/a")]);
+        assert!(log.lock().unwrap().writes.is_empty());
+        assert_eq!(feedback, Vec::new());
+        assert!(matches!(ended.await, Decision::Denied(_)));
     }
 
     #[tokio::test]

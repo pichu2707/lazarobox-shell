@@ -11,10 +11,10 @@ use std::time::Duration;
 
 use super::*;
 use crate::core::ai::chat::{
-    approval::{Approval, ApprovalAsk, AutoCtx, Origin, Route, route},
+    approval::{Approval, ApprovalAsk, AutoCtx, Origin, Route, counts_toward_pause, route},
     engine::{CallId, Decision, ToolStatus, Tools, tools_for},
 };
-use crate::core::ai::config::ApprovalMode;
+use crate::core::ai::{config::ApprovalMode, tools::exec::Fallback};
 
 /// Why a call is denied without the user being asked, or when a refusal has no
 /// other reason to give. Short, and it goes back to the model.
@@ -65,7 +65,7 @@ impl App {
         })
     }
 
-    fn deny(pane: PaneId, turn: u64, call: CallId, reason: &'static str) -> Vec<Effect> {
+    pub(super) fn deny(pane: PaneId, turn: u64, call: CallId, reason: &'static str) -> Vec<Effect> {
         vec![Effect::ToolDecision {
             pane,
             turn,
@@ -93,7 +93,14 @@ impl App {
         match event {
             Some(ToolEvent::Over(call, status)) => {
                 self.withdraw_tool_approval(id, |key| key == (turn, call));
-                self.drop_run_slots(|slot| (slot.chat, slot.turn, slot.call) == (id, turn, call));
+                let ran = self
+                    .drop_run_slots(|slot| (slot.chat, slot.turn, slot.call) == (id, turn, call));
+                if ran
+                    && status == ToolStatus::Ok
+                    && let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut)
+                {
+                    chat.clear_run_fallbacks();
+                }
                 // A refused write left nothing on the line.
                 if status == ToolStatus::Denied {
                     self.clear_line_pending(|marked| marked == call);
@@ -139,7 +146,7 @@ impl App {
                 Route::AutoRun(safe) => {
                     return self.check_run(id, (turn, call), target, safe.as_str());
                 }
-                Route::Prompt(fallback) => why = fallback.map(|f| f.why.to_owned()),
+                Route::Prompt(fallback) => why = self.fallback_why(id, fallback),
             }
         }
         self.open_prompt(id, (turn, call), target, ask, why)
@@ -171,6 +178,22 @@ impl App {
         }
     }
 
+    /// The reason a `run` command takes the prompt, and the pause count: a
+    /// fallback that is the model's doing brings the pause one step closer.
+    pub(super) fn fallback_why(
+        &mut self,
+        id: PaneId,
+        fallback: Option<Fallback>,
+    ) -> Option<String> {
+        let fallback = fallback?;
+        if counts_toward_pause(&fallback)
+            && let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut)
+        {
+            chat.note_run_fallback();
+        }
+        Some(fallback.why.to_owned())
+    }
+
     /// What chat `id` does with a model's `ask` for `target`: the mode and the
     /// flood limits decide (see `approval::route`). A pending approval is not
     /// the mode's to answer, so it prompts, and the request is then refused.
@@ -197,7 +220,10 @@ impl App {
             // A zoomed tab draws only the focused pane, never the target.
             tab_shown: !self.tab().zoom && self.tab().tree.leaves().contains(&id),
             executing: pty.is_some_and(|pty| pty.run.is_some()),
-            cwd_known: pty.is_some_and(|pty| pty.proc_cwd.is_some()),
+            cwd_known: self.cwd_readable && pty.is_some_and(|pty| pty.proc_cwd.is_some()),
+            paused: chat.run_paused(),
+            dirty: pty.is_some_and(|pty| pty.user_dirty),
+            utf8: self.utf8_locale,
         };
         route(ask, Origin::Tool, chat.approval_mode(), ctx)
     }
@@ -270,17 +296,42 @@ impl App {
         }
     }
 
-    /// The user is about to send to the focused pane: Enter, Ctrl+C or Ctrl+U
-    /// ends the line an auto-typed command was waiting on. Read from the key
-    /// event, so a child's keyboard protocol does not matter.
+    /// The user sends a key to the focused pane. Enter, Ctrl+C and Ctrl+U end
+    /// the line an auto-typed command waited on. Every key marks the pane
+    /// dirty; only Enter and Ctrl+C clear it. Ctrl+U does not: a shell may kill
+    /// only the text left of the cursor (design D21).
     pub(super) fn note_user_key(&mut self, key: &KeyEvent) {
-        let sends = match key.code {
-            KeyCode::Enter => true,
-            KeyCode::Char('c' | 'u') => key.modifiers.contains(KeyModifiers::CONTROL),
-            _ => false,
-        };
-        if sends && let Some(pty) = self.focused_state_mut().pty_mut() {
-            pty.line_pending = None;
+        let ctrl =
+            |c| key.code == KeyCode::Char(c) && key.modifiers.contains(KeyModifiers::CONTROL);
+        // Exact modifiers: Alt+Enter, Shift+Enter and Ctrl+Alt+C end no line.
+        let enter = key.code == KeyCode::Enter && key.modifiers.is_empty();
+        let menu = matches!(
+            key.code,
+            KeyCode::Tab
+                | KeyCode::BackTab
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Left
+                | KeyCode::Right
+        );
+        if let Some(pty) = self.focused_state_mut().pty_mut() {
+            // After Tab or an arrow, Enter may only accept a menu entry and
+            // leave the line in place: stay dirty until the next bare Enter.
+            let ends_line = (enter && !pty.after_menu)
+                || (key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL);
+            pty.after_menu = menu;
+            if key.code == KeyCode::Enter || ctrl('c') || ctrl('u') {
+                pty.line_pending = None;
+            }
+            pty.user_dirty = !ends_line;
+        }
+    }
+
+    /// Marks pane `id` dirty: the user's paste, wheel or prefix literal
+    /// reached its line.
+    pub(super) fn mark_dirty(&mut self, id: PaneId) {
+        if let Some(pty) = self.panes.get_mut(&id).and_then(PaneState::pty_mut) {
+            pty.user_dirty = true;
         }
     }
 

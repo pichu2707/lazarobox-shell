@@ -91,7 +91,35 @@ pub fn validate(text: &str) -> Result<Command, Refusal> {
     if command.len() > MAX_COMMAND_BYTES {
         return Err(Refusal::new("command too long"));
     }
+    open_construct(command)?;
     Ok(Command(command.to_string()))
+}
+
+/// Why text that leaves a quote open is refused.
+pub const UNBALANCED: &str = "the quotes of the command are not balanced";
+/// Why text that ends in a lone backslash is refused.
+pub const TRAILING_BACKSLASH: &str = "the command ends with a backslash";
+
+/// Refuses text that would leave the shell at a continuation prompt: an open
+/// single or double quote, or a trailing backslash. A later run would then
+/// type into that continuation, and the shell would read it as part of the
+/// open text. Conservative: an apostrophe in a comment is refused too.
+fn open_construct(command: &str) -> Result<(), Refusal> {
+    let (mut quote, mut escaped) = (None, false);
+    for c in command.chars() {
+        match (quote, escaped, c) {
+            (_, true, _) => escaped = false,
+            (None | Some('"'), false, '\\') => escaped = true,
+            (None, false, '\'' | '"') => quote = Some(c),
+            (Some(open), false, c) if c == open => quote = None,
+            _ => {}
+        }
+    }
+    match (quote, escaped) {
+        (Some(_), _) => Err(Refusal::new(UNBALANCED)),
+        (None, true) => Err(Refusal::new(TRAILING_BACKSLASH)),
+        (None, false) => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -100,6 +128,42 @@ mod tests {
 
     fn refused(text: &str) -> bool {
         validate(text).is_err()
+    }
+
+    // Spec (pane-commands): text that leaves the shell inside an open quote or
+    // a continuation line is refused, so what a later run types cannot be
+    // read as part of it.
+    #[test]
+    fn an_open_quote_or_a_trailing_backslash_is_refused() {
+        for bad in [
+            "echo \"hello",
+            "echo 'hello",
+            "echo \"a'b",
+            "echo it's",
+            "ls \\",
+            "ls \\\n",
+            "echo \"a\\\"",
+            "echo 'a\\'b'",
+        ] {
+            assert!(refused(bad), "{bad:?}");
+        }
+        assert_eq!(validate("echo \"hi").unwrap_err().reason(), UNBALANCED);
+        assert_eq!(validate("ls \\").unwrap_err().reason(), TRAILING_BACKSLASH);
+    }
+
+    #[test]
+    fn balanced_quotes_and_escapes_pass() {
+        for ok in [
+            "echo \"hello\"",
+            "echo 'a \"b\"'",
+            "echo \"it's\"",
+            "echo \\' \\\"",
+            "echo \"a\\\"b\"",
+            "echo 'a\\'",
+            "printf '%s\\n' a\necho \"b\"",
+        ] {
+            assert!(!refused(ok), "{ok:?}");
+        }
     }
 
     #[test]

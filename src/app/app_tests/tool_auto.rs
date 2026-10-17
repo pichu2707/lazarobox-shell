@@ -331,18 +331,36 @@ fn the_mark_survives_into_a_later_turn() {
 }
 
 #[test]
-fn enter_ctrl_c_and_ctrl_u_in_the_shell_clear_the_mark() {
-    for send in [
-        chat_live::plain(KeyCode::Enter),
-        chat_live::ctrl('c'),
-        chat_live::ctrl('u'),
-    ] {
+fn enter_and_ctrl_c_in_the_shell_clear_the_mark() {
+    for send in [chat_live::plain(KeyCode::Enter), chat_live::ctrl('c')] {
         let (mut a, turn) = marked();
         user_in_the_shell(&mut a);
         a.update(send);
         a.tab_mut().focus = id2();
         assert!(!prompts(&mut a, turn, 2), "cleared");
     }
+}
+
+// Ctrl+U clears the line-pending mark, but the pane stays dirty (a shell may
+// kill only the text left of the cursor), so a call still prompts until Enter
+// or Ctrl+C.
+#[test]
+fn ctrl_u_clears_the_line_pending_mark_but_not_the_dirty_one() {
+    let (mut a, turn) = marked();
+    user_in_the_shell(&mut a);
+    a.update(chat_live::ctrl('u'));
+    let pty = a
+        .panes
+        .get(&PaneId::FIRST)
+        .and_then(PaneState::pty)
+        .unwrap();
+    assert!(pty.line_pending.is_none());
+    a.tab_mut().focus = id2();
+    assert!(prompts(&mut a, turn, 2), "still dirty");
+    user_in_the_shell(&mut a);
+    a.update(chat_live::ctrl('c'));
+    a.tab_mut().focus = id2();
+    assert!(!prompts(&mut a, turn, 3), "Ctrl+C cleared it");
 }
 
 // The rule reads key events, not the bytes the child would see.
@@ -373,7 +391,7 @@ fn other_keys_leave_the_mark_set() {
 }
 
 // Without bracketed paste a newline of the paste is turned into `\r` and runs
-// the line.
+// the line. Any paste leaves the pane dirty, so a call prompts anyway.
 #[test]
 fn a_paste_with_a_newline_clears_the_mark_when_paste_mode_is_off() {
     for newline in ["\r", "\n", "\r\n"] {
@@ -381,11 +399,19 @@ fn a_paste_with_a_newline_clears_the_mark_when_paste_mode_is_off() {
         user_in_the_shell(&mut a);
         a.update(AppEvent::Paste("abc".into()));
         a.tab_mut().focus = id2();
-        assert!(prompts(&mut a, turn, 2), "no newline: still pending");
+        let line = |a: &App| {
+            a.panes
+                .get(&PaneId::FIRST)
+                .and_then(PaneState::pty)
+                .unwrap()
+                .line_pending
+        };
+        assert!(line(&a).is_some(), "no newline: still pending");
         user_in_the_shell(&mut a);
         a.update(AppEvent::Paste(format!("abc{newline}def")));
         a.tab_mut().focus = id2();
-        assert!(!prompts(&mut a, turn, 3), "{newline:?}");
+        assert!(line(&a).is_none(), "{newline:?}");
+        assert!(prompts(&mut a, turn, 3), "{newline:?}: the paste is dirty");
     }
 }
 

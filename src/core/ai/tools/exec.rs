@@ -5,7 +5,9 @@
 //! (ASCII letters and digits, Latin letters U+00C0..=U+024F without the
 //! multiplication and division signs, and ``. _ / @ % + : , = ~ -``; a `~`
 //! only leads a word) or a whole
-//! single-quoted `'...'`; words are separated by exactly one ASCII space.
+//! single-quoted `'...'` holding only those characters and the space, so a
+//! quoted word is inert even when the shell is inside an open quote or `$(`
+//! (a continuation prompt); words are separated by exactly one ASCII space.
 //! Anything else, shell metacharacters, controls, format characters, other
 //! whitespace and combining marks included, is a [`Fallback`] to the prompt.
 //!
@@ -36,14 +38,16 @@ const CLASS: [u8; 128] = {
     let mut b = 0;
     while b < 128 {
         let c = b as u8;
-        if c >= b' ' && c < 0x7f && c != b'\'' && c != b'\\' {
-            table[b] |= QUOTED;
-        }
         if c.is_ascii_alphanumeric()
             || matches!(c, b'.' | b'_' | b'/' | b'@' | b'%' | b'+')
             || matches!(c, b':' | b',' | b'=' | b'~' | b'-')
         {
-            table[b] |= WORD;
+            table[b] |= WORD | QUOTED;
+        }
+        // The space is the only extra byte a quote holds: a quoted word is
+        // inert text, even inside an open quote, `$(` or heredoc.
+        if c == b' ' {
+            table[b] |= QUOTED;
         }
         b += 1;
     }

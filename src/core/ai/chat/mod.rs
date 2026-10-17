@@ -312,6 +312,8 @@ pub struct ChatState {
     approval_mode: ApprovalMode,
     /// Commands typed or run without a prompt in the turn in flight.
     auto_typed: u8,
+    /// Consecutive grammar or policy fallbacks of `run` (D23).
+    run_fallbacks: u8,
 }
 
 impl ChatState {
@@ -352,6 +354,7 @@ impl ChatState {
             armed_at: None,
             approval_mode: ApprovalMode::default(),
             auto_typed: 0,
+            run_fallbacks: 0,
         }
     }
 
@@ -382,6 +385,21 @@ impl ChatState {
     /// One more command was typed without a prompt in this turn.
     pub fn note_auto_typed(&mut self) {
         self.auto_typed = self.auto_typed.saturating_add(1);
+    }
+
+    /// Whether `run` is paused for the rest of the turn (D23).
+    pub fn run_paused(&self) -> bool {
+        self.run_fallbacks >= approval::MAX_RUN_FALLBACKS
+    }
+
+    /// One more consecutive fallback of `run`.
+    pub fn note_run_fallback(&mut self) {
+        self.run_fallbacks = self.run_fallbacks.saturating_add(1);
+    }
+
+    /// A run was written: the fallbacks before it no longer count.
+    pub fn clear_run_fallbacks(&mut self) {
+        self.run_fallbacks = 0;
     }
 
     /// When the keys start to answer the approval the model opened; `None`
@@ -728,6 +746,7 @@ impl ChatState {
         self.place_marker(oldest, context.omitted);
         self.turn += 1;
         self.auto_typed = 0;
+        self.run_fallbacks = 0;
         self.phase = Phase::Waiting { slow: false };
         self.started = Some(now);
         self.request_model = model.clone().unwrap_or_default();

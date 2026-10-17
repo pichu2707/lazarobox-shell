@@ -263,6 +263,29 @@ async fn an_auto_typed_run_names_the_pane_in_its_result_row() {
     );
 }
 
+// Interim (S3, until the answer channel of S4a): a run is answered at once and
+// says plainly that its output was not read back.
+#[tokio::test]
+async fn a_run_is_answered_at_once_and_says_the_output_was_not_read_back() {
+    let (_dir, home, host) = fixture();
+    let (mut scope, mut rx) = scope(Locality::Cloud, &home);
+    scope.approver = Scripted::new(Decision::Ran(2));
+    let out = host.dispatch(scope).call(run_cmd("ls")).await;
+    assert!(!out.is_error, "{out:?}");
+    assert!(
+        out.text.contains("pane 2") && out.text.contains("not read back"),
+        "{out:?}"
+    );
+    let (_, _, status, summary) = pair(&events(&mut rx));
+    assert_eq!(
+        (status, summary.as_str()),
+        (
+            ToolStatus::Ok,
+            "ran in pane 2 \u{2014} output not read back"
+        )
+    );
+}
+
 #[tokio::test]
 async fn a_busy_pane_is_denied_by_its_number() {
     let (_dir, home, host) = fixture();

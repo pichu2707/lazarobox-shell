@@ -10,7 +10,7 @@ use crate::{
     app::RunEvent,
     core::{
         ai::{
-            chat::engine::CallId,
+            chat::{approval::NOT_ALLOWED, engine::CallId},
             tools::{
                 exec::{Verb, parse},
                 paths::{PathVerdict, resolve_exec},
@@ -24,9 +24,7 @@ use crate::{
 /// Longest the disk work of one check may take.
 pub const TIMEOUT: Duration = Duration::from_secs(2);
 pub const TIMED_OUT: &str = "the path check did not finish in time";
-pub const NO_CWD: &str = "the pane's directory cannot be read";
 const NO_ROOTS: &str = "the secret locations cannot be read";
-const NOT_ALLOWED: &str = "a path in the command is not allowed to run directly";
 
 /// What the check reads from the process: the same environment the read tools
 /// judge paths by.
@@ -144,7 +142,7 @@ mod tests {
     fn reason(event: &RunEvent) -> Option<&'static str> {
         match event {
             RunEvent::Refused { reason, .. } => Some(reason),
-            RunEvent::Checked { .. } => None,
+            RunEvent::Checked { .. } | RunEvent::NotRun { .. } => None,
         }
     }
 

@@ -54,8 +54,8 @@ mod summary;
 mod tags;
 mod tool;
 
-pub use auto_run::RunEvent;
 use auto_run::RunSlot;
+pub use auto_run::{PANE_GONE, RunEvent};
 use tool::ToolEvent;
 
 /// Rows of history kept by the emulator.
@@ -246,6 +246,20 @@ pub enum Effect {
         turn: u64,
         call: CallId,
     },
+    /// A run that passed its check (design D21): the runtime writes `bytes`,
+    /// which end in the one `\r`, in ONE write, only if the pane's real
+    /// directory still is `cwd` and the shell owns the terminal; it claims the
+    /// answer first and says `Ran`. Otherwise it sends `RunEvent::NotRun`. The
+    /// only effect with an Enter: `y` and `auto` cannot carry one.
+    AutoRun {
+        chat: PaneId,
+        target: PaneId,
+        bytes: Vec<u8>,
+        number: usize,
+        turn: u64,
+        call: CallId,
+        cwd: PathBuf,
+    },
     /// Chat `chat` routed a model's safe command for the shell pane `target`
     /// to a run (design D21): the runtime reads the pane's real directory,
     /// checks the paths of `command` off the UI thread and answers with one
@@ -378,6 +392,12 @@ struct PtyPane {
     /// The run routed to this pane that is still in flight (design D21); its
     /// presence is the pane's `executing` mark.
     run: Option<RunSlot>,
+    /// The user wrote to this pane since its last Enter or Ctrl+C: its line
+    /// may hold text a run would join (design D21).
+    user_dirty: bool,
+    /// The last key forwarded here was Tab, BackTab or an arrow: a completion
+    /// menu may be open, and the next Enter then only accepts an entry.
+    after_menu: bool,
 }
 
 /// The install an update pane runs.
@@ -449,6 +469,8 @@ impl PaneState {
                 update: None,
                 line_pending: None,
                 run: None,
+                user_dirty: false,
+                after_menu: false,
             })),
             size,
         }
@@ -570,6 +592,10 @@ pub struct App {
     held_chat_key: Option<HeldExit>,
     /// The engines whose requests carry tools (`MCP_VERIFIED`).
     tool_engines: &'static [&'static str],
+    /// Whether the shells' locale names UTF-8 (injected); a non-ASCII run needs it.
+    utf8_locale: bool,
+    /// Whether `/proc/<pid>/cwd` exists; without it no run is routed.
+    cwd_readable: bool,
     /// Monotonic clock, injected so `update` stays deterministic.
     clock: fn() -> Instant,
     /// A fresh engram session id, injected so the core does no IO: the
@@ -664,6 +690,8 @@ impl App {
             held_exit: None,
             held_chat_key: None,
             tool_engines: MCP_VERIFIED,
+            utf8_locale: false,
+            cwd_readable: cfg!(target_os = "linux"),
             clock: Instant::now,
             session_id: || None,
             token_check: || false,
@@ -791,6 +819,11 @@ impl App {
     /// Turns the chat history on: the list, saving, resume and delete.
     pub fn with_chat_history(mut self) -> Self {
         self.history = true;
+        self
+    }
+
+    pub fn with_utf8_locale(mut self, utf8: bool) -> Self {
+        self.utf8_locale = utf8;
         self
     }
 
@@ -1707,6 +1740,7 @@ impl App {
             // The literal is a byte for a child; a chat has none, so it swallows it.
             Step::Run(PrefixAction::SendPrefixLiteral) if self.focused_pty().is_some() => {
                 self.return_to_live();
+                self.mark_dirty(self.tab().focus);
                 vec![Effect::WritePty(self.tab().focus, vec![PREFIX_LITERAL])]
             }
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
@@ -1863,6 +1897,7 @@ impl App {
     fn drop_tab(&mut self, index: usize) -> Vec<Effect> {
         let leaves = self.tabs.remove(index).tree.leaves();
         let mut effects = self.end_effects(&leaves);
+        effects.extend(self.deny_closing_runs(&leaves));
         for id in leaves {
             self.panes.remove(&id);
             self.drop_parked_send(id);
@@ -2056,6 +2091,7 @@ impl App {
             Removal::WasLast => self.drop_tab(t),
             Removal::Removed => {
                 let mut ends = self.end_effects(&[id]);
+                ends.extend(self.deny_closing_runs(&[id]));
                 self.panes.remove(&id);
                 self.drop_parked_send(id);
                 self.drop_note_choices(id);
@@ -2286,6 +2322,7 @@ impl App {
                 {
                     pty.line_pending = None;
                 }
+                self.mark_dirty(self.tab().focus);
                 self.return_to_live();
                 vec![Effect::WritePty(self.tab().focus, bytes)]
             }
