@@ -4,8 +4,8 @@
 //! pane, turn and id.
 //!
 //! `on_tool_ask` is the single place an ask enters the app. It always opens
-//! the overlay, unless the chat is in `auto` mode and `approval::route` says
-//! the command can be typed at once (D18).
+//! the overlay, unless `approval::route` says the command can be typed at once
+//! (`auto`, D18) or run after a check (`run`, D21).
 
 use std::time::Duration;
 
@@ -88,10 +88,12 @@ impl App {
         // has nothing left to answer.
         if finished {
             self.withdraw_tool_approval(id, |(t, _)| t == turn);
+            self.drop_run_slots(|slot| slot.chat == id && slot.turn == turn);
         }
         match event {
             Some(ToolEvent::Over(call, status)) => {
                 self.withdraw_tool_approval(id, |key| key == (turn, call));
+                self.drop_run_slots(|slot| (slot.chat, slot.turn, slot.call) == (id, turn, call));
                 // A refused write left nothing on the line.
                 if status == ToolStatus::Denied {
                     self.clear_line_pending(|marked| marked == call);
@@ -130,16 +132,35 @@ impl App {
             ApprovalAsk::Read { .. } => None,
             ApprovalAsk::External { .. } => return Self::deny(id, turn, call, NO_USER_TOOLS),
         };
-        if let (ApprovalAsk::Run { command }, Some(target)) = (&ask, target)
-            && self.auto_route(id, target, &ask) == Route::AutoType
-        {
-            return self.auto_type(id, (turn, call), target, command);
+        let mut why = None;
+        if let (ApprovalAsk::Run { command }, Some(target)) = (&ask, target) {
+            match self.auto_route(id, target, &ask, false) {
+                Route::AutoType => return self.auto_type(id, (turn, call), target, command),
+                Route::AutoRun(safe) => {
+                    return self.check_run(id, (turn, call), target, safe.as_str());
+                }
+                Route::Prompt(fallback) => why = fallback.map(|f| f.why.to_owned()),
+            }
         }
+        self.open_prompt(id, (turn, call), target, ask, why)
+    }
+
+    /// Opens the approval overlay of the call for `ask`, aimed at `target`.
+    /// `why` says why a `run` command was not run directly. A request refused
+    /// (another approval pending) denies the call.
+    pub(super) fn open_prompt(
+        &mut self,
+        id: PaneId,
+        (turn, call): (u64, CallId),
+        target: Option<PaneId>,
+        ask: ApprovalAsk,
+        why: Option<String>,
+    ) -> Vec<Effect> {
         let armed_at = (self.clock)() + ARM_DELAY;
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Self::deny(id, turn, call, CHAT_GONE);
         };
-        match chat.approvals_mut().request_call(ask, turn, call) {
+        match chat.approvals_mut().request_call(ask, turn, call, why) {
             Ok(_) => {
                 chat.set_run_target(target);
                 chat.set_armed_at(Some(armed_at));
@@ -153,20 +174,30 @@ impl App {
     /// What chat `id` does with a model's `ask` for `target`: the mode and the
     /// flood limits decide (see `approval::route`). A pending approval is not
     /// the mode's to answer, so it prompts, and the request is then refused.
-    fn auto_route(&self, id: PaneId, target: PaneId, ask: &ApprovalAsk) -> Route {
+    /// `rechecking` is the route after the check of a run, whose own count is
+    /// already taken.
+    pub(super) fn auto_route<'a>(
+        &self,
+        id: PaneId,
+        target: PaneId,
+        ask: &'a ApprovalAsk,
+        rechecking: bool,
+    ) -> Route<'a> {
         let Some(chat) = self.panes.get(&id).and_then(PaneState::chat_state) else {
-            return Route::Prompt;
+            return Route::Prompt(None);
         };
         if chat.approvals().pending().is_some() {
-            return Route::Prompt;
+            return Route::Prompt(None);
         }
+        let pty = self.panes.get(&target).and_then(PaneState::pty);
         let ctx = AutoCtx {
-            typed_this_turn: chat.auto_typed(),
-            line_pending: (self.panes.get(&target).and_then(PaneState::pty))
-                .is_some_and(|pty| pty.line_pending.is_some()),
+            typed_this_turn: chat.auto_typed().saturating_sub(u8::from(rechecking)),
+            line_pending: pty.is_some_and(|pty| pty.line_pending.is_some()),
             target_focused: self.tab().focus == target,
             // A zoomed tab draws only the focused pane, never the target.
             tab_shown: !self.tab().zoom && self.tab().tree.leaves().contains(&id),
+            executing: pty.is_some_and(|pty| pty.run.is_some()),
+            cwd_known: pty.is_some_and(|pty| pty.proc_cwd.is_some()),
         };
         route(ask, Origin::Tool, chat.approval_mode(), ctx)
     }
@@ -289,6 +320,7 @@ impl App {
     /// Stops the turn of chat `id`, and ends its tool session when its last
     /// turn offered tools.
     pub(super) fn cancel_chat(&mut self, id: PaneId) -> Vec<Effect> {
+        self.drop_run_slots(|slot| slot.chat == id);
         let session = self
             .panes
             .get_mut(&id)

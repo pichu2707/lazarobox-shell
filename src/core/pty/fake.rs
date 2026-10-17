@@ -23,6 +23,8 @@ pub struct FakePty {
     pub pid: Option<u32>,
     /// What `shell_in_foreground` answers; `None` is "cannot tell".
     pub foreground: Option<bool>,
+    /// What `cwd` answers; `None` is "cannot read".
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 impl PtyHandle for FakePty {
@@ -41,6 +43,10 @@ impl PtyHandle for FakePty {
 
     fn shell_in_foreground(&self) -> Option<bool> {
         self.foreground
+    }
+
+    fn cwd(&self) -> Option<std::path::PathBuf> {
+        self.cwd.clone()
     }
 
     fn kill(&mut self) {

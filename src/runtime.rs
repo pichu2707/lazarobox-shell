@@ -36,6 +36,7 @@ pub mod mcp;
 pub mod notify;
 pub mod proc;
 pub mod prompts;
+mod run_check;
 pub mod tools;
 pub mod update;
 pub mod workspace;
@@ -64,7 +65,7 @@ use tokio::{
 };
 
 use crate::{
-    app::{App, AppEvent, Effect},
+    app::{App, AppEvent, Effect, RunEvent},
     core::{
         ai::{
             Detection,
@@ -104,6 +105,8 @@ const MEMORY_QUIT_BOUND: Duration = Duration::from_secs(1);
 const MEMORY_CHANNEL: usize = 64;
 /// Longest a quit waits for the store thread to write what is queued.
 const STORE_JOIN_BOUND: Duration = Duration::from_secs(2);
+/// Capacity of the channel from the path checks of runs to the event loop.
+const RUN_CHANNEL: usize = 16;
 /// Capacity of the channel from the store thread to the event loop.
 const STORE_CHANNEL: usize = 64;
 /// Longest the app waits for a prompt job before it uses the built-in prompt.
@@ -267,6 +270,7 @@ pub async fn run() -> io::Result<()> {
     app = app
         .with_update(announced)
         .with_install_env(Some(update::install_env(&cli_env.path)));
+    let (run_tx, run_rx) = mpsc::channel(RUN_CHANNEL);
     let (store_tx, store_rx) = mpsc::channel(STORE_CHANNEL);
     let (prompt_tx, prompt_rx) = mpsc::channel(PROMPT_CHANNEL);
     let config_dir = config_path
@@ -289,6 +293,7 @@ pub async fn run() -> io::Result<()> {
     notify::probe_in_background(&plan, notify::Session::current, cli_env.path.clone());
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
         .with_memory(memory)
+        .with_run_checks(run_check::Checker::new(run_check::process_env(), run_tx))
         .with_config_path(config_path)
         .with_detector(Box::new(move |force| {
             spawn_detection(
@@ -372,6 +377,7 @@ pub async fn run() -> io::Result<()> {
         store: store_rx,
         prompt: prompt_rx,
         update: update_rx,
+        run: run_rx,
         notified: notified_rx,
     };
     // The first pane is spawned before the UI starts: a failure is fatal.
@@ -491,6 +497,8 @@ struct Inbox {
     store: mpsc::Receiver<StoreReply>,
     prompt: mpsc::Receiver<(PaneId, Resolved)>,
     update: mpsc::Receiver<Option<String>>,
+    /// What the path checks of runs found.
+    run: mpsc::Receiver<(PaneId, RunEvent)>,
     /// What the notification test did.
     notified: mpsc::Receiver<String>,
 }
@@ -535,6 +543,7 @@ async fn run_loop(
         store: mut store_rx,
         prompt: mut prompt_rx,
         update: mut update_rx,
+        run: mut run_rx,
         notified: mut notified_rx,
     } = inbox;
     let theme = LazaroboxTheme::default();
@@ -623,6 +632,13 @@ async fn run_loop(
             // so a closed channel just ends this arm's pattern.
             Some(update) = update_rx.recv() => {
                 if step(&mut app, AppEvent::UpdateChecked(update), panes) {
+                    return Ok(());
+                }
+            }
+            // `panes` keeps the sender of the checks for the whole loop, so
+            // this never reads a closed channel.
+            Some((pane, event)) = run_rx.recv() => {
+                if step(&mut app, AppEvent::Run(pane, event), panes) {
                     return Ok(());
                 }
             }
@@ -775,6 +791,8 @@ struct Panes {
     prepare: Box<PrepareFn>,
     /// The chat turns. `None` ignores the chat effects (unit tests).
     chats: Option<Chats>,
+    /// Starts the path checks of runs. `None` refuses every run (unit tests).
+    run_checks: Option<run_check::Checker>,
     /// The engram memory worker; off unless the config activates it.
     memory: Memory,
     /// The chat history thread. `None` ignores the store effects (unit tests).
@@ -798,6 +816,7 @@ impl Panes {
             detect: Box::new(|_| {}),
             prepare: Box::new(|_, _, _, _| {}),
             chats: None,
+            run_checks: None,
             memory: Memory::off(),
             store: None,
         }
@@ -836,6 +855,12 @@ impl Panes {
     /// Sets the task that runs chat turns.
     fn with_chats(mut self, chats: Chats) -> Self {
         self.chats = Some(chats);
+        self
+    }
+
+    /// Sets what checks the runs of `Effect::CheckRun`.
+    fn with_run_checks(mut self, checker: run_check::Checker) -> Self {
+        self.run_checks = Some(checker);
         self
     }
 
@@ -984,6 +1009,29 @@ impl Panes {
                         let decision =
                             auto_type::type_if_idle(self.handles.get_mut(&target), number, bytes);
                         let _ = answer.send(decision);
+                    }
+                }
+                // The pane's real directory is read here (the kernel resolves the
+                // link, no disk is touched); the paths are checked on the
+                // blocking pool and the answer comes back on the run channel.
+                // Without a directory or a checker the run is refused, which
+                // opens the prompt.
+                Effect::CheckRun {
+                    target,
+                    call,
+                    command,
+                    ..
+                } => {
+                    let cwd = self.handles.get(&target).and_then(|pty| pty.cwd());
+                    match (cwd, self.run_checks.as_ref()) {
+                        (Some(cwd), Some(checks)) => checks.start(target, call, cwd, command),
+                        _ => feedback.push(AppEvent::Run(
+                            target,
+                            RunEvent::Refused {
+                                call,
+                                reason: run_check::NO_CWD,
+                            },
+                        )),
                     }
                 }
                 Effect::EndToolSession(pane) => {
@@ -3525,6 +3573,85 @@ mod tests {
         panes.apply(vec![auto_type_effect(1, 1), auto_type_effect(1, 2)]);
         assert!(log.lock().unwrap().writes.is_empty(), "no wait, no bytes");
         assert!(matches!(ended.await, Decision::Denied(_)));
+    }
+
+    fn check_effect(target: u32, call: u64, command: &str) -> Effect {
+        Effect::CheckRun {
+            chat: id(9),
+            target: id(target),
+            turn: 1,
+            call: crate::core::ai::chat::engine::CallId(call),
+            command: command.to_owned(),
+        }
+    }
+
+    // S3.8: the cwd is read from the pane, the paths are checked off the loop
+    // and the answer comes back on the run channel.
+    #[tokio::test]
+    async fn a_check_run_reads_the_pane_cwd_and_answers_on_the_run_channel() {
+        use crate::app::RunEvent;
+        use crate::core::ai::chat::engine::CallId;
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap().join("home");
+        std::fs::create_dir_all(home.join("dev")).unwrap();
+        let env = run_check::process_env();
+        let env = crate::runtime::tools::ToolEnv {
+            home: Some(home.clone().into()),
+            ..env
+        };
+        let (tx, mut rx) = mpsc::channel(4);
+        let (panes, _rx, _rec) = fake_panes(None);
+        let mut panes = panes.with_run_checks(run_check::Checker::new(env, tx));
+        let pty = FakePty {
+            cwd: Some(home.join("dev")),
+            ..FakePty::default()
+        };
+        panes.handles.insert(id(1), Box::new(pty));
+        let (_, feedback) = panes.apply(vec![check_effect(1, 7, "ls")]);
+        assert_eq!(feedback, Vec::new(), "the answer is not synchronous");
+        assert_eq!(
+            rx.recv().await,
+            Some((
+                id(1),
+                RunEvent::Checked {
+                    call: CallId(7),
+                    cwd: home.join("dev"),
+                    cd_target: None,
+                }
+            ))
+        );
+    }
+
+    // No cwd to check against, or nothing to check with: the prompt, at once.
+    #[test]
+    fn a_check_run_that_cannot_read_the_cwd_is_refused_at_once() {
+        use crate::app::RunEvent;
+        use crate::core::ai::chat::engine::CallId;
+        let refused = |pane, call| {
+            AppEvent::Run(
+                id(pane),
+                RunEvent::Refused {
+                    call: CallId(call),
+                    reason: run_check::NO_CWD,
+                },
+            )
+        };
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        panes.handles.insert(id(1), Box::new(FakePty::default()));
+        let (_, feedback) = panes.apply(vec![check_effect(1, 7, "ls")]);
+        assert_eq!(feedback, vec![refused(1, 7)], "no checker");
+
+        let (tx, _rx) = mpsc::channel(1);
+        let (panes, _rx, _rec) = fake_panes(None);
+        let mut panes =
+            panes.with_run_checks(run_check::Checker::new(run_check::process_env(), tx));
+        panes.handles.insert(id(1), Box::new(FakePty::default()));
+        let (_, feedback) = panes.apply(vec![check_effect(1, 8, "ls"), check_effect(2, 9, "ls")]);
+        assert_eq!(
+            feedback,
+            vec![refused(1, 8), refused(2, 9)],
+            "an unreadable cwd, and a pane that is gone"
+        );
     }
 
     #[tokio::test]

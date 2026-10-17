@@ -103,7 +103,7 @@ pub struct Fallback {
 }
 
 /// A command that passed the grammar: the exact text to show and to write.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SafeCommand<'a> {
     text: &'a str,
     verb: Verb,

@@ -310,7 +310,7 @@ pub struct ChatState {
     /// What a model's `run_in_pane` does in this chat (D18). Never stored and
     /// never sent.
     approval_mode: ApprovalMode,
-    /// Commands typed without a prompt in the turn in flight.
+    /// Commands typed or run without a prompt in the turn in flight.
     auto_typed: u8,
 }
 
