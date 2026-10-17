@@ -53,6 +53,7 @@ fn prompt(command: &str) -> ApprovalPrompt {
         target: "run in pane 2 (~/dev)".into(),
         command: command.into(),
         keys: RUN_KEYS,
+        armed: true,
     }
 }
 
@@ -63,6 +64,7 @@ fn read_prompt(path: &str) -> ApprovalPrompt {
         target: "send a file's text to the engine".into(),
         command: format!("read {path}"),
         keys: READ_KEYS,
+        armed: true,
     }
 }
 
@@ -154,17 +156,23 @@ fn a_multi_line_command_with_a_tab_is_drawn_visibly_line_by_line() {
 }
 
 #[test]
-fn a_long_command_is_clipped_marked_and_its_line_count_stated() {
+fn a_command_over_the_row_budget_says_the_pane_is_too_small_and_shows_no_part_of_it() {
     let command = (1..=20)
         .map(|n| format!("echo line{n}"))
         .collect::<Vec<_>>()
         .join("\n");
     let chat = exchange(BLOCK);
     let shot = draw(&chat, Some(&prompt(&command)), 60, 16);
-    insta::assert_snapshot!("approval_long_command_clipped", shot);
-    assert!(shot.contains("echo line1"));
-    assert!(!shot.contains("echo line20"));
-    assert!(shot.contains("20 lines"), "{shot}");
+    insta::assert_snapshot!("approval_too_small", shot);
+    assert!(shot.contains("pane too small to show it all"), "{shot}");
+    assert!(
+        !shot.contains("echo line1"),
+        "no part of it is shown: {shot}"
+    );
+    assert!(
+        !shot.contains("y type"),
+        "no approve key is offered: {shot}"
+    );
 }
 
 #[test]
@@ -198,14 +206,14 @@ fn a_prompt_in_a_tiny_pane_never_panics_and_never_hides_the_command_silently() {
     for height in 1..=12 {
         for width in 1..=24 {
             let shot = draw(&chat, Some(&p), width, height);
-            if height >= 3 && width >= 24 {
+            if height >= 6 && width >= 24 {
                 assert!(shot.contains('a'), "{width}x{height}: {shot}");
             }
         }
     }
-    // Too small for three lines: the prompt says it is clipped.
+    // Too small for three lines: the prompt says so.
     let shot = draw(&chat, Some(&p), 40, 3);
-    assert!(shot.contains("3 lines"), "{shot}");
+    assert!(shot.contains("too small"), "{shot}");
 }
 
 // The hint under the block --------------------------------------------------

@@ -11,6 +11,7 @@ use crate::core::ai::{
             Approval, ApprovalAsk, ApprovalPrompt, Origin, Press, READ_KEYS, RUN_CANCELLED,
             RUN_KEYS, Reply, run_sent_line,
         },
+        approval_rows::fits,
         engine::Decision,
         yank,
     },
@@ -29,6 +30,7 @@ const NO_PASTE_MODE: &str = "The shell cannot take a multi-line command safely";
 const ANSWER_FIRST: &str = "Answer the pending confirm first";
 const ALREADY_OPEN: &str = "A confirm is already open: answer it first";
 const TOOLS_OFF_REASON: &str = "tools are off";
+const PROMPT_TOO_SMALL: &str = "Pane too small to show it all: enlarge it or press n";
 
 /// A command that was not typed: what the user sees, and why, in the short
 /// words that go back to the model when a tool call asked for it.
@@ -58,6 +60,11 @@ impl App {
                     &approval,
                     Decision::Denied(TOOLS_OFF_REASON),
                 ));
+            }
+            // The session goes too, so free tools stop at once and the socket
+            // closes; the turn itself keeps running as text.
+            if !on && chat.take_tool_session() {
+                effects.push(Effect::EndToolSession(id));
             }
         }
         self.dirty = true;
@@ -104,6 +111,15 @@ impl App {
         if repeat {
             return Vec::new();
         }
+        // A prompt the model just opened takes no answer yet: the key may have
+        // been typed for the composer. Ctrl+C always works.
+        let answers = matches!(
+            (key.code, key.modifiers),
+            (KeyCode::Char('y' | 'n') | KeyCode::Esc, KeyModifiers::NONE)
+        );
+        if answers && !self.approval_armed(id) {
+            return Vec::new();
+        }
         match (key.code, key.modifiers) {
             (KeyCode::Char('y'), KeyModifiers::NONE) => self.approve(id),
             (KeyCode::Char('n') | KeyCode::Esc, KeyModifiers::NONE) => self.decline(id, DECLINED),
@@ -145,8 +161,24 @@ impl App {
             .collect()
     }
 
-    /// `y`: a run types the command; a read (or another tool) is allowed.
+    /// Whether the prompt of chat `id` shows all of what `y` would approve in
+    /// the pane as it is now: the same rows the renderer draws.
+    fn prompt_fits(&self, id: PaneId) -> bool {
+        let Some(prompt) = self.approval_prompt(id) else {
+            return true;
+        };
+        let size = self.panes.get(&id).map(|state| state.size);
+        size.is_none_or(|size| fits(&prompt, usize::from(size.cols), usize::from(size.rows)))
+    }
+
+    /// `y`: a run types the command; a read (or another tool) is allowed. Only
+    /// when the prompt shows the whole path or command: a partly hidden text
+    /// is never approved. The prompt stays, and `n` still denies.
     fn approve(&mut self, id: PaneId) -> Vec<Effect> {
+        if !self.prompt_fits(id) {
+            self.notice = Some(PROMPT_TOO_SMALL.to_owned());
+            return Vec::new();
+        }
         let is_run = (self.panes.get(&id))
             .and_then(PaneState::chat_state)
             .and_then(|chat| chat.approvals().pending())
@@ -351,6 +383,7 @@ impl App {
     /// pane by its number in the tab and its cwd, and the exact command.
     pub fn approval_prompt(&self, id: PaneId) -> Option<ApprovalPrompt> {
         let chat = self.panes.get(&id)?.chat_state()?;
+        let armed = self.approval_armed(id);
         match chat.approvals().pending()?.ask() {
             ApprovalAsk::Run { command } => {
                 let target = chat.run_target().and_then(|pane| self.pane_label(pane));
@@ -358,6 +391,7 @@ impl App {
                     target: target.unwrap_or_else(|| "target pane is gone".to_owned()),
                     command: command.clone(),
                     keys: RUN_KEYS,
+                    armed,
                 })
             }
             // The path was resolved and made safe to show before it was asked.
@@ -365,6 +399,7 @@ impl App {
                 target: "send a file's text to the engine".to_owned(),
                 command: format!("read {path}"),
                 keys: READ_KEYS,
+                armed,
             }),
             ApprovalAsk::External { .. } => None,
         }

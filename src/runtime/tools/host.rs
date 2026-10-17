@@ -225,6 +225,13 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     // Asked before the announcement: `Approver::ask` registers the wait at
     // once, so an answer that comes the instant the `ToolCall` is seen (D18
     // auto-type) finds it.
+    //
+    // Tradeoff, on purpose: registering also counts the call as pending (the
+    // turn's timers pause) while `reserve_owned` below may still be waiting for
+    // room in the channel, so for that moment the call is not yet visible to
+    // the user. Registering after the announcement would let a fast answer
+    // miss its wait, which loses a decision; a short pause of the timers
+    // while the channel drains costs nothing, and the total limit still runs.
     let pending = ask.as_ref().map(|ask| scope.approver.ask(id, ask));
     let gone = || Outcome {
         text: CANCELLED.to_owned(),

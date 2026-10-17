@@ -151,6 +151,10 @@ pub struct ApprovalPrompt {
     pub command: String,
     /// The keys line.
     pub keys: &'static str,
+    /// Whether the keys answer yet. A prompt the model opened ignores them for
+    /// a moment, so a key typed before it appeared cannot answer it; the keys
+    /// line shows `…` meanwhile.
+    pub armed: bool,
 }
 
 /// The keys of a run prompt.
