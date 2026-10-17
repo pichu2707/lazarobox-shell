@@ -10,6 +10,150 @@ baseline.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-17
+
+Agent tools: the chat can now ask lazarobox to look at the user's files and to
+use the user's terminal panes. The whole tool layer ships in this release, but
+the engine wiring is still switched off: no engine is listed in
+`MCP_VERIFIED` yet, so every engine (claude, codex, gemini and Ollama) keeps
+answering with text only until its manual verification passes. What is usable
+today is the `Ctrl+Space`, `e` command run from a shell block, the approval
+modes and the menu rows.
+
+### Added
+
+- Run a command from the chat. When the last finished answer of a chat ends
+  with a shell block (`bash`, `sh`, `shell` or `zsh`), a hint under the block
+  names `Ctrl+Space`, then `e`. It opens a confirmation over the composer
+  (`run in pane N (<cwd>)`, the exact command and the keys): `y` types the
+  command into the target pane and never presses Enter, `n` or `Esc` declines,
+  `p` moves the target to the next shell pane of the tab, and `Ctrl+C` cancels
+  the answer and declines. The target is the shell pane of the current tab used
+  last. Commands with control characters, escape sequences, invisible or
+  spoofing characters, or non-ASCII whitespace are refused, never cleaned; a
+  multi-line command needs bracketed paste; a pane running a full-screen app
+  is refused. It works with every engine because it reads the block of the
+  answer.
+- Built-in agent tools: `find_dir`, `list_dir`, `read_file` and `run_in_pane`,
+  with strict argument parsing (4096 bytes at most per argument). The read
+  tools run on the blocking pool with a time limit and cancellation, wrap what
+  they return in an untrusted-output block with a per-call nonce (32 KiB cap),
+  and redact secrets before the model sees them. `read_file` opens below
+  `$HOME` without following symlinks (`openat2`, with a per-component fallback)
+  and refuses hard-linked and special files; `list_dir` and `find_dir` leave
+  out names that look like secrets and say so.
+- Path policy for the read tools. Anything outside `$HOME` is refused, and so
+  are the secret roots: `~/.ssh`, `~/.gnupg`, the credential folders of other
+  CLIs, `~/.password-store`, `~/.config/gh`, `~/.config/gcloud`, the keyrings,
+  lazarobox's own config and data folders (they follow `XDG_CONFIG_HOME` and
+  `XDG_DATA_HOME`), and at any depth `.env`, `.env.*`, `.envrc`, `.netrc`,
+  `.git-credentials`, `.pgpass`, `.npmrc` and the shell and REPL histories. A
+  path is judged as requested and as resolved, so a link to a secret folder
+  does not get around it. Every call fails closed when `$HOME` or a secret
+  root cannot be read. The list is best effort and is documented as such.
+- MCP for the CLI engines. A hand-rolled MCP JSON-RPC core, a per-chat unix
+  socket session behind a token, and a stdio shim that relays a chat's MCP
+  lines to that socket. The shim is the only extra binary the jail grants,
+  together with one socket, and it sends its token only to a private socket
+  owned by the user. A tool session lives for one turn and ends at once when a
+  turn falls back to text.
+- Per-engine wiring, behind the `MCP_VERIFIED` gate: claude (a per-turn MCP
+  config, `--allowedTools=mcp__lazarobox`, an empty `--setting-sources`),
+  codex (the server through `-c` overrides and its own environment) and
+  gemini (a per-turn work folder with an admin policy). Each decoder lets
+  through only the lazarobox tool calls, and a failed wiring falls back to a
+  text-only turn. A turn with tools tells the model it has them, only on the
+  attempt that is wired. The per-turn CLI files are refused to `read_file`.
+- Tool rows in the transcript for each call and result, and an approval
+  overlay answered per pane, turn and call. Reads from a cloud engine ask
+  first with the resolved path, because what a tool returns goes to the
+  provider; Ollama is local and reads without asking. A prompt the model opens
+  ignores `y`, `n` and `Esc` for a short arming delay, and the timers of a
+  turn pause while a call waits for the user. Turning tools off ends the tool
+  session of every chat that has one.
+- Approval modes `ask`, `auto` and `run`. `ask` (the default) needs a `y` for
+  every command. In `auto` a model's `run_in_pane` is typed into the target
+  pane without a prompt, but Enter is still never pressed. `Ctrl+Space`, then
+  `a` cycles the mode of the focused chat, and a system line says which one is
+  on. A chat in `auto` wears an amber ` AUTO ` badge and one in `run` a red
+  ` RUN ` badge. `approval = "ask" | "auto" | "run"` in `[ai.tools]` sets the
+  starting mode; anything else falls back to `ask` with a notice. The mode
+  lasts for the conversation. Auto-typing needs the shell in the foreground of
+  an unfocused, visible pane with no earlier unsent auto-typed line; otherwise
+  it falls back to the normal prompt, and so it does after five commands in a
+  turn.
+- `run` mode (auto-execute). For a single command from a short safe list
+  (`cd`, `pwd`, `ls`, `tree`, `mkdir`) lazarobox types the command, presses
+  Enter, waits for it to settle and returns the output to the model. Words
+  accept Latin letters (accented too), digits and `. _ / @ % + : , = ~ -`;
+  paths may be unquoted or inside single or double quotes. `&&`, `;`, `|`, `$`,
+  redirections, globs and long options are not accepted and use the normal
+  prompt. At most 5 commands run in a turn, and three consecutive refusals by
+  grammar or path pause `run` until the turn ends. The confirmation of a
+  command that did not run directly shows a reason line with the piece that
+  caused it, with invisible characters drawn as `?`. The model is told which
+  commands run directly and how to ask for them.
+- Output of a run goes back to the model as the screen text left after the
+  command: 8 KiB and 200 rows at most (head and tail, with the cut marked),
+  cleaned, redacted and wrapped like the output of the read tools. A command
+  that does not end in 10 s returns `still running` with what is visible. A
+  `cd` also reports the new directory in a system line. The result never
+  includes the exit code, and a shell that rewrites the typed line (fish
+  abbreviations) gives `output not available`.
+- `[ai.tools] enabled` (default on) and `approval` in `config.toml`, with a
+  **Tools** row and an **Approval** row in the AI menu. The menu writes only
+  those two keys and never touches `[ai.mcp.*]`.
+- Tools with Ollama. Because Ollama has no CLI that runs tools, lazarobox runs
+  the tool loop itself over `/api/chat`: it sends the tools in the `tools`
+  field, runs the model's calls through the same registry, approvals and modes
+  as the CLIs, and sends the results in a new request of the same turn. At
+  most 8 requests per turn; past that the turn ends with a system line and
+  keeps the partial answer. A model that does not support tools (a 400 on the
+  request with `tools`) is retried once without them, before any round. Tool
+  messages live only inside their turn. Like the CLI engines, this is gated
+  off until verified with a real model.
+
+### Changed
+
+- When the AI section is shown, the config menu groups its rows into two
+  tabs, **Settings** and **AI**, switched with `Tab` and `Shift+Tab`. `j` and
+  `k` wrap inside the active tab and each tab remembers its row.
+
+### Fixed
+
+- The Gemini workspace trust: the folder is now trusted by environment
+  variable and the policy rule carries a `toolName`, so gemini loads the
+  lazarobox tools. The env, context, hooks and skills a trusted folder would
+  load are switched off, and the inherited trust variable is scrubbed.
+- A zoomed tab, an update pane, a half-typed line and a paste that does not
+  run the line no longer let an auto-typed command land in the wrong place:
+  these cases prompt or clear the unsent mark as appropriate.
+- Approvals carry an id drawn from a process-wide counter, so a stale answer
+  or withdraw is ignored, and a shell block is offered only from a finished,
+  successful answer of the last turn.
+- A dispatch that panics no longer leaves the terminal broken, and a client
+  that half-closes the MCP connection still gets the replies of its calls in
+  flight.
+
+### Security
+
+- Tool output and everything the model can read passes the same cleaning and
+  redaction; secrets are removed even when they sit across the read cap or at
+  the cut edge of a window.
+- Commands are refused, not cleaned, when they contain invisible, bidi or
+  spoofing characters, and the text of a model that opens a continuation
+  (unclosed quote, `$(`, heredoc, trailing `\`) is refused in `run`.
+- The MCP session token is never printed (not in `Debug`, not in the stderr
+  tail of a failed CLI), `mcp.json` is wiped after a wired turn, and the
+  shim token goes only to a private socket of ours.
+- In `run` the pane output is sent to the model, also with cloud engines; in
+  `ask` and `auto` the model receives none of it. `cd` and `ls` may go
+  outside `$HOME` (secret folders stay refused, also through symlinks) and
+  expose only names and `ls -l` metadata; `tree` and `mkdir` stay inside it.
+- Residual risks of `auto` and `run` (typing after a half-typed line, `cd`
+  hooks, `CDPATH`, the path-check window, PS2 continuation, prompt lines in
+  the output) are listed in the README.
+
 ## [0.15.4] - 2026-10-17
 
 ### Added
@@ -554,7 +698,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.4...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.4...v0.16.0
 [0.15.4]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.3...v0.15.4
 [0.15.3]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.2...v0.15.3
 [0.15.2]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.1...v0.15.2
