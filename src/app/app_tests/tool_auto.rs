@@ -339,17 +339,34 @@ fn other_keys_leave_the_mark_set() {
     assert!(prompts(&mut a, turn, 2));
 }
 
+// Without bracketed paste a newline of the paste is turned into `\r` and runs
+// the line.
 #[test]
-fn a_paste_holding_a_carriage_return_clears_the_mark_and_one_without_does_not() {
+fn a_paste_with_a_newline_clears_the_mark_when_paste_mode_is_off() {
+    for newline in ["\r", "\n", "\r\n"] {
+        let (mut a, turn) = marked();
+        user_in_the_shell(&mut a);
+        a.update(AppEvent::Paste("abc".into()));
+        a.tab_mut().focus = id2();
+        assert!(prompts(&mut a, turn, 2), "no newline: still pending");
+        user_in_the_shell(&mut a);
+        a.update(AppEvent::Paste(format!("abc{newline}def")));
+        a.tab_mut().focus = id2();
+        assert!(!prompts(&mut a, turn, 3), "{newline:?}");
+    }
+}
+
+// Inside the paste frame a newline executes nothing: the line is still there.
+#[test]
+fn a_bracketed_paste_never_clears_the_mark() {
     let (mut a, turn) = marked();
+    shell_output(&mut a, b"\x1b[?2004h");
     user_in_the_shell(&mut a);
-    a.update(AppEvent::Paste("abc".into()));
+    for text in ["abc\rdef", "abc\ndef", "abc\r\ndef"] {
+        a.update(AppEvent::Paste(text.into()));
+    }
     a.tab_mut().focus = id2();
-    assert!(prompts(&mut a, turn, 2), "no CR: still pending");
-    user_in_the_shell(&mut a);
-    a.update(AppEvent::Paste("abc\rdef".into()));
-    a.tab_mut().focus = id2();
-    assert!(!prompts(&mut a, turn, 3));
+    assert!(prompts(&mut a, turn, 2));
 }
 
 #[test]

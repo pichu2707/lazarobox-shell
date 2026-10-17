@@ -2250,8 +2250,12 @@ impl App {
                 let Some(pty) = self.focused_pty() else {
                     return Vec::new();
                 };
-                let bytes = encode_paste(text, pty.emu.modes());
-                if text.contains('\r')
+                let modes = pty.emu.modes();
+                let bytes = encode_paste(text, modes);
+                // Inside a bracketed paste a newline executes nothing; without
+                // it, a newline becomes `\r` and runs the line.
+                if !modes.bracketed_paste
+                    && text.contains(['\r', '\n'])
                     && let Some(pty) = self.focused_state_mut().pty_mut()
                 {
                     pty.line_pending = None;
