@@ -388,7 +388,7 @@ fn read_notify_sound(section: &Table, problems: &mut Vec<String>) -> bool {
     }
 }
 
-/// Reads `[ai]` (the general task, the profile and the context and notify flags) and `[ai.tasks.<id>]`
+/// Reads `[ai]` (the general task, the profile and the context flag and the notify settings) and `[ai.tasks.<id>]`
 /// (the others). Each key falls back to unset on its own; `general` and
 /// unknown names under `ai.tasks` are ignored.
 fn read_tasks(table: &Table, problems: &mut Vec<String>) -> AiConfig {

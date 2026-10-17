@@ -42,8 +42,8 @@ pub enum ItemKind {
     /// The memory opt-in row: a static `off`/`on` item over the AI draft.
     /// Turning it on without the acknowledgement opens the privacy warning.
     Memory(MemoryRow),
-    /// The chat bell flag (`ai.notify`): an on/off row that lives in the AI
-    /// draft, like [`ItemKind::Context`].
+    /// The chat notify mode (`ai.notify`): a Settings row that cycles
+    /// auto, desktop, bell and off.
     Notify,
     /// The agent tools flag (`ai.tools.enabled`): an on/off row that lives in
     /// the AI draft, like [`ItemKind::Notify`].
