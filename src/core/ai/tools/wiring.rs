@@ -95,6 +95,9 @@ pub struct ClaudeWiring {
     /// Appended to the argv, in the `--flag=value` form: both flags are
     /// variadic in claude, so a separate value would swallow what follows.
     pub args: Vec<String>,
+    /// Flags of the text-only argv this wiring replaces: the first match of
+    /// each is removed before `args` are appended.
+    pub drops: Vec<&'static str>,
     pub env: Vec<(&'static str, &'static str)>,
 }
 
@@ -104,6 +107,7 @@ impl fmt::Debug for ClaudeWiring {
         f.debug_struct("ClaudeWiring")
             .field("config", &"(..)")
             .field("args", &self.args)
+            .field("drops", &self.drops)
             .field("env", &self.env)
             .finish()
     }
@@ -124,7 +128,11 @@ pub fn claude(shim: &Path, config: &Path, wire: &McpWire) -> Option<ClaudeWiring
         args: vec![
             format!("--mcp-config={}", config.to_str()?),
             format!("--allowedTools=mcp__{SERVER}"),
+            // Empty: no settings file of the user's is read, and, unlike
+            // --safe-mode, our MCP server still loads.
+            "--setting-sources=".to_owned(),
         ],
+        drops: vec!["--safe-mode"],
         env: vec![("MCP_TOOL_TIMEOUT", CLAUDE_TOOL_TIMEOUT_MS)],
     })
 }
@@ -282,8 +290,9 @@ mod tests {
         let w = wiring();
         let env: Vec<String> = w.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
         let text = format!(
-            "argv: {}\nenv: {}\nmcp.json:\n{}\n",
+            "argv: {}\ndrops: {}\nenv: {}\nmcp.json:\n{}\n",
             w.args.join(" "),
+            w.drops.join(" "),
             env.join(" "),
             w.config
         );
@@ -305,6 +314,16 @@ mod tests {
                 .any(|(k, v)| k.contains(&token) || v.contains(&token))
         );
         assert!(!format!("{:?}", wire()).contains(&token), "Debug hides it");
+    }
+
+    #[test]
+    fn a_wired_turn_trades_safe_mode_for_an_empty_setting_sources() {
+        // --safe-mode disables MCP servers (claude 2.1.302, checked with a
+        // real server); an empty --setting-sources keeps the user's settings
+        // out and lets ours load.
+        let w = wiring();
+        assert_eq!(w.drops, ["--safe-mode"]);
+        assert!(w.args.iter().any(|a| a == "--setting-sources="), "{w:?}");
     }
 
     #[test]

@@ -681,6 +681,8 @@ fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// must let the engine reach.
 struct Wired {
     args: Vec<OsString>,
+    /// Flags of the text-only argv this wiring replaces (first match each).
+    drops: Vec<&'static str>,
     vars: Vec<(OsString, OsString)>,
     socket: PathBuf,
     /// Where the engine runs instead of the shared empty folder, when its
@@ -732,13 +734,13 @@ fn wire_mcp(env: &CliEnv, job: &Job, dirs: &Dirs) -> Option<Wired> {
     let wire = job.mcp.as_ref()?;
     let shim = env.shim.as_deref()?;
     let mut cwd = None;
-    let (args, vars) = match job.cli {
+    let (args, drops, vars) = match job.cli {
         Cli::Claude => {
             let path = dirs.tmp.join("mcp.json");
             let wiring = wiring::claude(shim, &path, wire)?;
             write_private(&path, wiring.config.as_bytes()).ok()?;
             let vars = wiring.env.into_iter().map(|(k, v)| (k.into(), v.into()));
-            (wiring.args, vars.collect())
+            (wiring.args, wiring.drops, vars.collect())
         }
         // The token is only in codex's environment: `env_vars` names it, so
         // codex hands it on to the shim.
@@ -748,7 +750,7 @@ fn wire_mcp(env: &CliEnv, job: &Job, dirs: &Dirs) -> Option<Wired> {
                 .env
                 .into_iter()
                 .map(|(k, v)| (k.into(), v.reveal().into()));
-            (wiring.args, vars.collect())
+            (wiring.args, Vec::new(), vars.collect())
         }
         // gemini reads the workspace settings of its working folder; the token
         // is in that file only (0600), and in none of its argv or env.
@@ -758,11 +760,12 @@ fn wire_mcp(env: &CliEnv, job: &Job, dirs: &Dirs) -> Option<Wired> {
                 return None;
             };
             cwd = Some(work);
-            (args, Vec::new())
+            (args, Vec::new(), Vec::new())
         }
     };
     Some(Wired {
         args: args.into_iter().map(OsString::from).collect(),
+        drops,
         vars,
         socket: wire.socket.clone(),
         cwd,
@@ -828,7 +831,23 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
             };
             for attempt in tries {
                 let mut full = argv.clone();
-                full.extend(attempt.iter().flat_map(|w| w.args.iter().cloned()));
+                if let Some(w) = &attempt {
+                    // The tools prompt, on this attempt only.
+                    if let Some(text) = &job.tools {
+                        let len = text.args.len().min(full.len());
+                        full.splice(..len, text.args.iter().map(OsString::from));
+                    }
+                    // Once, from the front: the system prompt that follows the
+                    // fixed flags could itself read like one of them.
+                    for flag in &w.drops {
+                        let at = full.iter().position(|a| a == flag);
+                        debug_assert!(at.is_some(), "{flag} is not in the argv");
+                        if let Some(at) = at {
+                            full.remove(at);
+                        }
+                    }
+                    full.extend(w.args.iter().cloned());
+                }
                 match jailed(env, job, &full, &binary, &dirs, attempt.as_ref()) {
                     Ok((program, argv)) => {
                         let notice = tools_off(None).filter(|_| attempt.is_none());
@@ -891,6 +910,7 @@ pub(crate) async fn run_listing(
         jail: JailPolicy::Required,
         tmp_files: Vec::new(),
         mcp: None,
+        tools: None,
     };
     let plan = match plan(env, &job) {
         Ok(plan) => plan,
@@ -1054,7 +1074,12 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
     let mut stdout = stdout;
 
     let mut decoder = fresh_decoder(job.wire, plan.wired);
-    let mut stdin_task = std::pin::pin!(write_stdin(stdin, &job.stdin).fuse());
+    // The tools prompt is in the stdin of a wired attempt only.
+    let text = match (&job.tools, plan.wired) {
+        (Some(tools), true) => &tools.stdin,
+        _ => &job.stdin,
+    };
+    let mut stdin_task = std::pin::pin!(write_stdin(stdin, text).fuse());
     let mut stderr_task = std::pin::pin!(read_stderr(stderr).fuse());
     let mut stderr_tail = None;
     let relayed = {

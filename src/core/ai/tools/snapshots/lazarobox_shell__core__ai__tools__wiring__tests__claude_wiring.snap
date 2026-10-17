@@ -2,7 +2,8 @@
 source: src/core/ai/tools/wiring.rs
 expression: text
 ---
-argv: --mcp-config=/data/lazarobox/cli-tmp/42-7/mcp.json --allowedTools=mcp__lazarobox
+argv: --mcp-config=/data/lazarobox/cli-tmp/42-7/mcp.json --allowedTools=mcp__lazarobox --setting-sources=
+drops: --safe-mode
 env: MCP_TOOL_TIMEOUT=900000
 mcp.json:
 {

@@ -206,3 +206,64 @@ fn notices_hold_no_control_characters() {
         }
     }
 }
+
+// Spec (agent-tools): a turn with tools stops telling the model it has none.
+#[test]
+fn the_tools_block_replaces_the_no_access_sentence_in_every_profile() {
+    for profile in Profile::ALL {
+        let chat = builtin(profile, Task::Chat);
+        let got = with_tools(chat);
+        assert!(!got.contains(CHAT_LIMITS), "{profile:?}");
+        assert!(!got.contains("You are a text assistant."), "{profile:?}");
+        assert!(got.contains(TOOLS.trim_end()), "{profile:?}");
+        // Everything else of the prompt stays, in its place.
+        assert!(got.contains(REPLY_IN_USER_LANGUAGE), "{profile:?}");
+        assert!(got.contains("workspace facts"), "{profile:?}");
+        assert!(got.starts_with(chat.lines().next().unwrap()), "{profile:?}");
+        assert_eq!(got.matches(TOOLS.trim_end()).count(), 1, "{profile:?}");
+    }
+}
+
+#[test]
+fn the_tools_block_names_the_tools_by_purpose_and_the_pane_rule() {
+    let text = TOOLS;
+    for needle in [
+        "find a directory",
+        "list a directory",
+        "read a file",
+        "run a command in the user's shell pane",
+        "only types it",
+        "presses Enter",
+        "never see its output unless the user pastes it",
+        "instead of asking the user to run find, ls or cat",
+        "single line",
+        "cannot change files",
+    ] {
+        assert!(text.contains(needle), "{needle}");
+    }
+    assert!(!text.contains("mcp__") && !text.contains("run_in_pane"));
+    assert!(text.chars().all(|c| c == '\n' || (' '..='~').contains(&c)));
+}
+
+// A user's override file need not have the sentence: the block is appended.
+#[test]
+fn a_prompt_without_the_sentence_gets_the_block_as_a_last_bullet() {
+    let got = with_tools("My own prompt.\n\nWorkspace: x\n");
+    assert_eq!(
+        got,
+        format!("My own prompt.\n\nWorkspace: x\n\n- {}", TOOLS.trim_end())
+    );
+}
+
+#[test]
+fn the_workspace_block_after_the_sentence_is_kept() {
+    let chat = builtin(Profile::Programmer, Task::Chat).trim_end();
+    let system = format!("{chat}\n\nWorkspace facts: cwd /home/u");
+    let got = with_tools(&system);
+    assert!(got.ends_with("Workspace facts: cwd /home/u"), "{got}");
+}
+
+#[test]
+fn an_empty_prompt_becomes_the_block_alone() {
+    assert_eq!(with_tools(""), TOOLS.trim_end());
+}
