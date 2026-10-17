@@ -24,11 +24,15 @@
 mod session;
 
 use std::{
+    cell::Cell,
     ffi::OsStr,
     fmt,
     fs::File,
+    future::Future,
     io::{self, Read},
     path::{Path, PathBuf},
+    pin::Pin,
+    task::{Context, Poll},
 };
 
 use futures::future::BoxFuture;
@@ -50,6 +54,59 @@ pub struct Outcome {
 /// pending approval is withdrawn.
 pub trait Dispatch: Send + Sync {
     fn call(&self, call: Call) -> BoxFuture<'static, Outcome>;
+}
+
+thread_local! {
+    /// How many dispatch calls or polls are running on this thread right now.
+    static IN_DISPATCH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Whether the current thread is inside a [`Dispatch`] call or a poll of its
+/// future. The panic hook reads it: the session catches a panic there and
+/// answers the call with an error result, so the terminal must stay intact.
+/// Same mechanism as `chat::in_adapter_poll`: per poll, not per task, because
+/// a task can move between threads and the hook runs where the panic happens.
+pub fn in_dispatch() -> bool {
+    IN_DISPATCH.with(|depth| depth.get() > 0)
+}
+
+/// Counts one dispatch scope in; the drop counts it out, also on unwind.
+struct DispatchGuard;
+
+impl DispatchGuard {
+    fn enter() -> Self {
+        IN_DISPATCH.with(|depth| depth.set(depth.get() + 1));
+        Self
+    }
+}
+
+impl Drop for DispatchGuard {
+    fn drop(&mut self) {
+        IN_DISPATCH.with(|depth| depth.set(depth.get() - 1));
+    }
+}
+
+/// Wraps a dispatch future so [`in_dispatch`] is true during each poll.
+pub fn scoped<F: Future>(inner: F) -> Scoped<F> {
+    Scoped(Box::pin(inner))
+}
+
+pub struct Scoped<F>(Pin<Box<F>>);
+
+impl<F: Future> Future for Scoped<F> {
+    type Output = F::Output;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+        let _guard = DispatchGuard::enter();
+        self.0.as_mut().poll(cx)
+    }
+}
+
+/// `dispatch.call(call)` with [`in_dispatch`] set around the synchronous part
+/// and around every poll of the future it returns.
+fn guarded_call(dispatch: &dyn Dispatch, call: Call) -> BoxFuture<'static, Outcome> {
+    let _guard = DispatchGuard::enter();
+    Box::pin(scoped(dispatch.call(call)))
 }
 
 /// The secret of one session: 128 random bits as 32 lowercase hex digits.

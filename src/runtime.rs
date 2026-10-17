@@ -1149,19 +1149,25 @@ fn restore() {
 
 /// Whether a panic on this thread should tear the terminal down. A panic
 /// inside a chat adapter poll is caught by its turn task and becomes an
-/// `Interrupted` turn: the app keeps running, so the terminal must stay intact.
+/// `Interrupted` turn, and one inside an MCP tool dispatch becomes an error
+/// result: the app keeps running, so the terminal must stay intact.
 fn should_restore() -> bool {
     // The store thread catches its own panics and reports them as replies.
     let on_store_thread = thread::current().name() == Some(chat_store::worker::THREAD_NAME);
     // The prompt job catches its panic and falls back to the built-in prompt.
     let on_prepare_thread = thread::current().name() == Some(prompts::THREAD_NAME);
     // The notification probe catches its own panic and reports it as failed.
-    !chat::in_adapter_poll() && !on_store_thread && !on_prepare_thread && !notify::in_probe()
+    // An MCP dispatch panic is caught by its session and answered as an error.
+    !chat::in_adapter_poll()
+        && !on_store_thread
+        && !on_prepare_thread
+        && !notify::in_probe()
+        && !mcp::in_dispatch()
 }
 
 /// Restores the cursor, bracketed paste, focus reporting and mouse capture before the previous hook (which
 /// `ratatui::init` set up to leave raw mode and the alternate screen) runs.
-/// Panics inside a chat adapter are caught elsewhere and skip all of it,
+/// Panics inside a chat adapter or an MCP dispatch are caught elsewhere and skip all of it,
 /// including the previous hook's output, which would scribble over the TUI.
 fn install_panic_hook() {
     let previous = panic::take_hook();
@@ -3353,6 +3359,14 @@ mod tests {
             !inside,
             "inside an adapter poll the panic is caught: leave the TUI alone"
         );
+        assert!(should_restore(), "and it is back to normal afterwards");
+    }
+
+    #[tokio::test]
+    async fn a_panic_hook_leaves_the_terminal_alone_inside_an_mcp_dispatch() {
+        assert!(should_restore());
+        let inside = mcp::scoped(async { should_restore() }).await;
+        assert!(!inside, "a dispatch panic is caught and answered");
         assert!(should_restore(), "and it is back to normal afterwards");
     }
 

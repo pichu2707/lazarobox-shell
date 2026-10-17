@@ -51,7 +51,7 @@ use tokio::{
     time::timeout,
 };
 
-use super::{Dispatch, Outcome, Token};
+use super::{Dispatch, Outcome, Token, guarded_call};
 use crate::{
     core::{
         ai::tools::{
@@ -419,8 +419,9 @@ async fn serve(stream: UnixStream, conn: Conn, pending: OwnedSemaphorePermit) {
                         Some(refusal_for(id, TOO_BUSY, "too many calls in flight"))
                     } else {
                         // A panic in the dispatch must still answer the call.
-                        let work = catch_unwind(AssertUnwindSafe(|| conn.dispatch.call(call)))
-                            .unwrap_or_else(|_| async { failed() }.boxed());
+                        let work =
+                            catch_unwind(AssertUnwindSafe(|| guarded_call(&*conn.dispatch, call)))
+                                .unwrap_or_else(|_| async { failed() }.boxed());
                         let out = out.clone();
                         let handle = tasks.spawn(async move {
                             let done = AssertUnwindSafe(work)
