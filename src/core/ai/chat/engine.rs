@@ -10,7 +10,7 @@ use crate::core::ai::{
     config::{AiConfig, Task},
     jail::JailSupport,
     status_text,
-    tools::{Locality, wiring::McpWire},
+    tools::{Locality, report::RunReport, wiring::McpWire},
 };
 
 /// Who wrote a message.
@@ -145,6 +145,21 @@ pub enum Decision {
     Busy(usize),
     /// Why nothing was done; short, and it goes back to the model.
     Denied(&'static str),
+}
+
+/// What a waiting call is finally told: the user's `Decision`, or, for a
+/// command the app ran, the report of the run. `Decision` stays `Copy`; the
+/// report travels boxed so the channel stays small.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Answer {
+    Decided(Decision),
+    Ran(Box<RunReport>),
+}
+
+impl From<Decision> for Answer {
+    fn from(decision: Decision) -> Self {
+        Self::Decided(decision)
+    }
 }
 
 /// Whether the adapter of `engine` keeps what a tool returns on this machine.

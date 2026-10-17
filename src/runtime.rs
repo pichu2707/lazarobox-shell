@@ -1014,7 +1014,7 @@ impl Panes {
                     if let Some(answer) = answer {
                         let decision =
                             auto_type::type_if_idle(self.handles.get_mut(&target), number, bytes);
-                        let _ = answer.send(decision);
+                        let _ = answer.send(decision.into());
                     }
                 }
                 // The write and the answer are one step, as for `AutoType`, but
@@ -3532,7 +3532,11 @@ mod tests {
 
     /// A call of chat 9 turn 1 that waits for its answer, as a model's does.
     fn waiting(panes: &Panes, call: u64) -> futures::future::BoxFuture<'static, Decision> {
-        use crate::core::ai::chat::{approval::ApprovalAsk, engine::CallId};
+        use crate::core::ai::chat::{
+            approval::ApprovalAsk,
+            engine::{Answer, CallId},
+        };
+        use futures::FutureExt;
         let ask = ApprovalAsk::Read {
             path: String::new(),
         };
@@ -3540,6 +3544,11 @@ mod tests {
         waits
             .approver(id(9), 1, tools::Pending::new())
             .ask(CallId(call), &ask)
+            .map(|answer| match answer {
+                Answer::Decided(decision) => decision,
+                Answer::Ran(_) => unreachable!("no run is parked here"),
+            })
+            .boxed()
     }
 
     fn auto_type_effect(target: u32, call: u64) -> Effect {

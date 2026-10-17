@@ -52,10 +52,10 @@ impl Scripted {
 }
 
 impl Approver for Scripted {
-    fn ask(&self, _: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Decision> {
+    fn ask(&self, _: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Answer> {
         self.asked.lock().unwrap().push(ask.clone());
         let answer = self.answer;
-        async move { answer }.boxed()
+        async move { answer.into() }.boxed()
     }
 }
 
@@ -63,7 +63,7 @@ impl Approver for Scripted {
 struct Waiting;
 
 impl Approver for Waiting {
-    fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Decision> {
+    fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
         std::future::pending().boxed()
     }
 }
@@ -286,6 +286,62 @@ async fn a_run_is_answered_at_once_and_says_the_output_was_not_read_back() {
     );
 }
 
+/// Answers with the report of a run the app made.
+struct Ran(RunReport);
+
+impl Approver for Ran {
+    fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
+        let report = Answer::Ran(Box::new(self.0.clone()));
+        async move { report }.boxed()
+    }
+}
+
+// The system line of a `cd` is built by the words; the host carries it to
+// the app in S4a.W3. Other commands have none.
+#[test]
+fn the_system_line_exists_for_cd_only() {
+    use crate::core::ai::tools::{report::CwdSource, settle::End};
+    let mut report = RunReport {
+        number: 3,
+        end: End::Settled,
+        cwd: Some(("/home/u/dev".into(), CwdSource::Proc)),
+        cd_target: Some("/home/u/dev".into()),
+        output: Some(String::new()),
+    };
+    let cd = ran(&run_cmd("cd dev"), &report);
+    assert_eq!(cd.3.as_deref(), Some("pane 3: cd dev \u{2192} /home/u/dev"));
+    report.cd_target = None;
+    assert_eq!(ran(&run_cmd("ls"), &report).3, None);
+}
+
+// Spec (pane-execution, result contract): a run that settled is worded from
+// its report, and the output goes through clean, redact and the nonce wrapper.
+#[tokio::test]
+async fn a_ran_answer_becomes_the_wrapped_result_and_a_ran_row() {
+    use crate::core::ai::tools::{report::CwdSource, settle::End};
+    let (_dir, home, host) = fixture();
+    let (mut scope, mut rx) = scope(Locality::Cloud, &home);
+    scope.approver = Arc::new(Ran(RunReport {
+        number: 3,
+        end: End::Settled,
+        cwd: Some(("/home/u".into(), CwdSource::Proc)),
+        cd_target: None,
+        output: Some("one\napi_key=sk-abcdefghijklmnopqrstuvwxyz".into()),
+    }));
+    let out = host.dispatch(scope).call(run_cmd("ls")).await;
+    assert!(!out.is_error, "{out:?}");
+    assert!(
+        out.text
+            .starts_with("Ran in pane 3. cwd: /home/u. Exit status is not known.\n<untrusted")
+    );
+    assert!(out.text.contains("one\n") && !out.text.contains("abcdefghij"));
+    let (_, _, status, summary) = pair(&events(&mut rx));
+    assert_eq!(
+        (status, summary.as_str()),
+        (ToolStatus::Ok, "ran in pane 3 \u{2014} 2 lines")
+    );
+}
+
 #[tokio::test]
 async fn a_busy_pane_is_denied_by_its_number() {
     let (_dir, home, host) = fixture();
@@ -494,10 +550,10 @@ struct Latched {
 }
 
 impl Approver for Latched {
-    fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Decision> {
+    fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         *self.slot.lock().unwrap() = Some(tx);
-        async move { rx.await.unwrap_or(Decision::Denied("gone")) }.boxed()
+        async move { rx.await.unwrap_or(Decision::Denied("gone")).into() }.boxed()
     }
 }
 
