@@ -166,29 +166,38 @@ fn the_ai_descriptors_are_well_formed() {
     );
 }
 
-// Spec: Task rows in order, Wrap, Mouse row is selectable.
+// Spec: Task rows in order, Wrap (tab-local), Mouse row is selectable.
 #[test]
-fn navigation_visits_the_settings_then_the_ten_ai_rows_and_wraps() {
+fn navigation_visits_each_tab_in_order_and_wraps_inside_it() {
+    let (settings, ai) = ORDER.split_at(6);
     let mut m = menu(None, None, Some(machine()));
-    let mut visited = vec![selected_label(&m)];
-    for _ in 0..ORDER.len() - 1 {
+    for (rows, tab) in [(settings, 0), (ai, 1)] {
+        let mut visited = vec![selected_label(&m)];
+        for _ in 0..rows.len() - 1 {
+            press(&mut m, 'j');
+            visited.push(selected_label(&m));
+        }
+        assert_eq!(visited, rows);
         press(&mut m, 'j');
-        visited.push(selected_label(&m));
+        assert_eq!(selected_label(&m), rows[0], "wraps inside tab {tab}");
+        let mut back = Vec::new();
+        for _ in 0..rows.len() {
+            press(&mut m, 'k');
+            back.push(selected_label(&m));
+        }
+        let expected: Vec<_> = rows.iter().rev().copied().collect();
+        assert_eq!(back, expected, "walks back through tab {tab}");
+        assert_eq!(m.active_tab(), tab, "never crosses tabs");
+        send_tab(&mut m);
     }
-    assert_eq!(visited, ORDER);
-    press(&mut m, 'j');
-    assert_eq!(
-        selected_label(&m),
-        "Statusline position",
-        "wraps past Tools"
+}
+
+fn send_tab(menu: &mut MenuState) {
+    menu.on_key(
+        &KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        false,
+        &mut Config::default(),
     );
-    let mut back = Vec::new();
-    for _ in 0..ORDER.len() {
-        press(&mut m, 'k');
-        back.push(selected_label(&m));
-    }
-    let expected: Vec<_> = ORDER.iter().rev().copied().collect();
-    assert_eq!(back, expected, "wraps before the first and walks back");
 }
 
 // Spec: Repeat moves.
@@ -251,7 +260,7 @@ pub(super) fn assigned(entries: &[(Task, &str, &str)], found: Option<Detection>)
 }
 
 pub(super) fn value_of(menu: &MenuState, label: &str) -> String {
-    menu.rows(&Config::default())
+    menu.all_rows(&Config::default())
         .iter()
         .find_map(|row| match row {
             Row::Item {
@@ -263,11 +272,10 @@ pub(super) fn value_of(menu: &MenuState, label: &str) -> String {
 }
 
 fn ai_rows(menu: &MenuState) -> Vec<(&'static str, String)> {
-    let rows = menu.rows(&Config::default());
-    let Some(at) = rows.iter().position(|r| *r == Row::Title("AI".into())) else {
-        panic!("no AI title");
-    };
-    rows[at + 1..]
+    let mut menu = menu.clone();
+    menu.goto("Set all tasks");
+    assert_eq!(menu.active_tab(), 1, "the AI tab");
+    menu.rows(&Config::default())
         .iter()
         .map(|row| match row {
             Row::Item {
@@ -313,7 +321,7 @@ fn the_ai_section_lists_the_task_rows_and_the_static_rows_with_their_values() {
             .rows(&Config::default())
             .len(),
         5,
-        "no AI section without AI: a title and four settings"
+        "no AI section without AI: a title and four settings, no bar"
     );
 }
 

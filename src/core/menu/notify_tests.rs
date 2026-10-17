@@ -72,13 +72,7 @@ fn the_notify_rows_follow_mouse_in_settings_and_leave_the_ai_section() {
 }
 
 #[test]
-fn the_popup_body_grows_with_the_row() {
-    // The settings titles and rows + the AI title + the AI rows.
-    let settings: usize = SECTIONS.iter().map(|s| s.items.len()).sum();
-    assert_eq!(
-        AI_BODY,
-        SECTIONS.len() + 1 + settings + AI_SECTION.items.len()
-    );
+fn the_tabs_hold_six_settings_rows_and_ten_ai_rows() {
     assert_eq!(AI_SECTION.items.len(), 10);
     assert_eq!(SECTIONS[0].items.len(), 6);
 }

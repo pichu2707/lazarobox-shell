@@ -53,8 +53,9 @@ fn a_late_result_reaches_an_open_menu() {
 #[test]
 fn the_note_hides_while_a_picker_is_open() {
     let mut m = menu().with_update(Some("0.16.0".into()));
+    assert!(m.update_note().is_some(), "on the Settings tab");
     m.goto("code");
-    assert!(m.update_note().is_some());
+    assert_eq!(m.update_note(), None, "gone on the AI tab");
     let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
     m.on_key(&enter, false, &mut Config::default());
     assert!(

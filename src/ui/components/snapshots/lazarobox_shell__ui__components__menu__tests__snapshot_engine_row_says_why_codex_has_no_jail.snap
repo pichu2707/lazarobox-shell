@@ -3,16 +3,10 @@ source: src/ui/components/menu.rs
 expression: shown
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ AI                                              │
 │ Engine for general                                         │
 │ none                                                       │
 │ codex available · no jail: Landlock ABI 2, needs 3+ ●      │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
 │                                                            │
 │                                                            │
 │                                                            │

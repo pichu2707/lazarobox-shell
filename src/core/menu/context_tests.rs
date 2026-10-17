@@ -25,7 +25,7 @@ fn send(menu: &mut MenuState, code: KeyCode, repeat: bool) -> MenuCommand {
 }
 
 fn value_of(menu: &MenuState, wanted: &str) -> Option<String> {
-    menu.rows(&Config::default())
+    menu.all_rows(&Config::default())
         .into_iter()
         .find_map(|row| match row {
             Row::Item {
@@ -78,7 +78,11 @@ fn context_sits_between_profile_and_memory_and_navigation_wraps_through_them() {
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Tools");
     press(&mut m, 'j');
-    assert_eq!(selected_label(&m), "Statusline position");
+    assert_eq!(
+        selected_label(&m),
+        "Set all tasks",
+        "wraps inside the AI tab"
+    );
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Tools");
     press(&mut m, 'k');

@@ -3,6 +3,7 @@ source: src/ui/components/menu.rs
 expression: shown
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ AI                                              │
 │ Model for general (ollama) 1/18                            │
 │ model1:7b ✓ ●                                              │
 │ model2:7b ✓                                                │
@@ -14,13 +15,6 @@ expression: shown
 │ model8:7b ✓                                                │
 │ llama3.2:3b download required                              │
 │ llama3.1:8b download required                              │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
 │                                                            │
 │ j/k move · Enter choose · r refresh · Esc back · s save    │
 └────────────────────────────────────────────────────────────┘

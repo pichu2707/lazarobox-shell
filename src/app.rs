@@ -2448,20 +2448,27 @@ mod app_tests {
     }
 
     /// Moves the open menu's cursor onto the row labelled `label` with the
-    /// keys a user would press. Bounded: it panics with `no row {label}`
-    /// instead of looping forever when the row does not exist.
+    /// keys a user would press: `j` through the current tab, then `Tab`
+    /// into the next one. Bounded: it panics with `no row {label}` instead
+    /// of looping forever when the row does not exist.
     fn goto_row(a: &mut App, label: &str) {
-        for _ in 0..=64 {
-            let on_label = a.menu().unwrap().rows(&a.config).iter().any(|row| {
-                matches!(
-                    row,
-                    crate::core::menu::Row::Item { label: l, selected: true, .. } if *l == label
-                )
-            });
-            if on_label {
-                return;
+        for _ in 0..=crate::core::menu::TAB_COUNT {
+            for _ in 0..=32 {
+                let on_label = a.menu().unwrap().rows(&a.config).iter().any(|row| {
+                    matches!(
+                        row,
+                        crate::core::menu::Row::Item { label: l, selected: true, .. } if *l == label
+                    )
+                });
+                if on_label {
+                    return;
+                }
+                a.update(key('j'));
             }
-            a.update(key('j'));
+            a.update(AppEvent::Key(KeyEvent::new(
+                KeyCode::Tab,
+                KeyModifiers::NONE,
+            )));
         }
         panic!("no row {label}");
     }
@@ -5773,7 +5780,7 @@ mod app_tests {
         open_menu(&mut a);
         let rows = a.menu().unwrap().rows(&a.config);
         assert!(matches!(
-            &rows[1],
+            &rows[0],
             Row::Item {
                 selected: true,
                 value: Some(v),
@@ -5781,12 +5788,47 @@ mod app_tests {
             } if v == "bottom"
         ));
         assert!(matches!(
-            &rows[2],
+            &rows[1],
             Row::Item {
                 selected: false,
                 value: Some(v),
                 ..
             } if v == "top"
+        ));
+    }
+
+    // Spec: Open and close. A reopened menu starts on Settings, row 0, with
+    // the tab and the per-tab cursors forgotten.
+    #[test]
+    fn reopening_starts_on_the_settings_tab_whatever_tab_was_left() {
+        let mut a = menu_app();
+        a.update(code(KeyCode::Tab));
+        a.update(key('j'));
+        a.update(key('j'));
+        assert_eq!(a.menu().unwrap().active_tab(), 1);
+        a.update(esc());
+        open_menu(&mut a);
+        let menu = a.menu().unwrap();
+        assert_eq!(menu.active_tab(), 0);
+        let rows = menu.rows(&a.config);
+        assert!(matches!(
+            &rows[0],
+            Row::Item {
+                label: "Statusline position",
+                selected: true,
+                ..
+            }
+        ));
+        // The AI tab starts on its first row too: the old cursor is gone.
+        a.update(code(KeyCode::Tab));
+        let rows = a.menu().unwrap().rows(&a.config);
+        assert!(matches!(
+            &rows[0],
+            Row::Item {
+                label: "Set all tasks",
+                selected: true,
+                ..
+            }
         ));
     }
 
@@ -6624,16 +6666,12 @@ mod app_tests {
     /// Moves the menu selection to the `Context` row (before `Memory` and
     /// `Tools`, the last one).
     fn to_context_row(a: &mut App) {
-        for _ in 0..3 {
-            a.update(key('k'));
-        }
+        goto_row(a, "Context");
     }
 
     /// Moves the menu selection to the `Profile` row (before `Context`).
     fn to_profile_row(a: &mut App) {
-        for _ in 0..4 {
-            a.update(key('k'));
-        }
+        goto_row(a, "Profile");
     }
 
     /// Moves the menu selection to the `Notify` row (right after `Mouse`).
@@ -6646,9 +6684,7 @@ mod app_tests {
     /// Moves the menu selection to the `Memory` row (before `Tools`, the last
     /// one).
     fn to_memory_row(a: &mut App) {
-        for _ in 0..2 {
-            a.update(key('k'));
-        }
+        goto_row(a, "Memory");
     }
 
     // Spec (config-menu): Profile row. Cycling is silent, `s` saves only the
@@ -6820,7 +6856,7 @@ mod app_tests {
         let mut a = ai_app();
         assert!(a.ai().tools_enabled());
         open_menu(&mut a);
-        a.update(key('k'));
+        goto_row(&mut a, "Tools");
         assert_eq!(a.update(key('l')), Vec::<Effect>::new(), "no ResizePty");
         assert!(!a.menu().unwrap().ai_draft().tools_enabled());
         assert!(a.ai().tools_enabled(), "not saved yet");
@@ -6834,7 +6870,7 @@ mod app_tests {
         assert!(a.menu().is_none());
         assert!(!a.ai().tools_enabled());
         open_menu(&mut a);
-        a.update(key('k'));
+        goto_row(&mut a, "Tools");
         a.update(key('l'));
         a.update(esc());
         assert!(!a.ai().tools_enabled(), "Esc keeps the saved value");
@@ -7129,9 +7165,7 @@ mod app_tests {
         a.update(AppEvent::EnginesDetected(machine()));
         assert_eq!(a.menu().unwrap().ai_draft(), saved, "refreshed");
         // Change an unrelated setting: the save carries no [ai] key.
-        for _ in 0..7 {
-            a.update(key('k'));
-        }
+        goto_row(&mut a, "Tab bar position");
         a.update(key('l'));
         let effects = a.update(key('s'));
         let Some(Effect::SaveConfig(edits)) = effects.first() else {

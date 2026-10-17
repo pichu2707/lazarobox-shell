@@ -113,7 +113,7 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 
 ## ⚙️ Menú: sección Settings
 
-`Ctrl+Espacio` y `m` abre el menú. Su sección **Settings** tiene, en este orden:
+`Ctrl+Espacio` y `m` abre el menú. Con la sección de IA, el menú se divide en pestañas, **Settings** y **AI**, que se cambian con `Tab` y `Shift+Tab`; `j`/`k` se mueven y dan la vuelta dentro de la pestaña activa, y cada pestaña recuerda su fila. Al abrir el menú siempre empieza en **Settings**. El aviso de actualización solo se muestra en esa pestaña, y su etiqueta lleva un `*` mientras haya una actualización pendiente. Dentro de un selector, del campo `custom…` o de la advertencia de privacidad, `Tab` no hace nada. Su sección **Settings** tiene, en este orden:
 
 | Fila | Qué hace | Clave en `config.toml` |
 | ---- | -------- | ---------------------- |
@@ -159,7 +159,7 @@ Con `check = false` lazarobox no hace ninguna petición, no lee la caché y no m
 
 ## 🤖 Menú de IA
 
-Con `Ctrl+Espacio` y `m` se abre el menú. Su sección **AI** muestra el motor general (**Set all tasks**) y una fila por tarea. `Enter` sobre una fila de tarea abre su selector de dos niveles (motor y modelo); `Esc` vuelve un nivel. La fila `custom…` permite escribir o pegar el nombre de un modelo. `r` sobre una fila de tarea o dentro del selector vuelve a detectar los motores.
+Con `Ctrl+Espacio` y `m` se abre el menú; la pestaña **AI** (`Tab`) muestra el motor general (**Set all tasks**) y una fila por tarea. `Enter` sobre una fila de tarea abre su selector de dos niveles (motor y modelo); `Esc` vuelve un nivel. La fila `custom…` permite escribir o pegar el nombre de un modelo. `r` sobre una fila de tarea o dentro del selector vuelve a detectar los motores.
 
 `s` guarda la elección en la tabla `[ai]` de `config.toml` (y la de cada tarea en `[ai.tasks.*]`); `Esc` en el nivel superior la descarta. `Enter` nunca guarda ni cierra el menú. Mientras la elección difiera de la guardada, el pie del menú muestra `unsaved changes · s to save · Esc discards`.
 

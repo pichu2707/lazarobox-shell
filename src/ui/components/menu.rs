@@ -12,7 +12,7 @@ use crate::{
     core::{
         ai::picker::{Mark, NOT_IN_LIST},
         config::Config,
-        menu::{AI_BODY, CHROME, Footer, MenuState, Row, fits_size},
+        menu::{CHROME, Footer, MENU_BODY, MenuState, NOTE_ROWS, Row, TAB_BAR, fits_size},
     },
     ui::theme::LazaroboxTheme,
 };
@@ -58,6 +58,8 @@ impl<'a> MenuPopup<'a> {
 }
 
 const FALLBACK: &str = "MENU · s save · Esc cancel";
+/// The hint at the right of the tab bar: the key that switches tabs.
+const TAB_HINT: &str = "⇥ Tab";
 /// The one line shown instead of the privacy warning on a tiny terminal. It
 /// offers no choice: the menu declines every key then (informed consent).
 const FALLBACK_WARNING: &str = "Enlarge the terminal to read the privacy note";
@@ -253,8 +255,12 @@ impl Widget for MenuPopup<'_> {
             return;
         }
         let rows = self.menu.rows(self.config);
-        let body = if self.menu.has_ai() {
-            AI_BODY.max(rows.len())
+        let labels = self.menu.tab_labels();
+        let tabbed = labels.len() > 1;
+        // Tabbed, the body is fixed (the bar and the tallest view); with a
+        // single tab it is just the rows, as before tabs existed.
+        let body = if tabbed {
+            MENU_BODY.max(TAB_BAR + rows.len())
         } else {
             rows.len()
         };
@@ -267,10 +273,15 @@ impl Widget for MenuPopup<'_> {
         } else {
             WANT_WIDTH
         };
-        // The update note is extra: it never makes the popup fall back.
+        // Tabbed, the update note lives inside the fixed body. Single tab,
+        // it is extra rows: it never makes the popup fall back.
         let note = self.menu.update_note();
-        let note_rows = note.as_ref().map_or(0, |lines| lines.len());
-        let want_height = (body + note_rows) as u16 + CHROME;
+        let extra = if tabbed {
+            0
+        } else {
+            note.as_ref().map_or(0, |lines| lines.len())
+        };
+        let want_height = (body + extra) as u16 + CHROME;
         let popup = popup_area(area, want_width, want_height);
         Clear.render(popup, buf);
         let accent = Style::default().fg(self.theme.info_blue);
@@ -283,15 +294,34 @@ impl Widget for MenuPopup<'_> {
         let inner = block.inner(popup);
         block.render(popup, buf);
 
-        // Body rows, the update note when all of it fits above the footer,
-        // then (height permitting) a blank row, then the footer.
-        let note = note.filter(|lines| usize::from(inner.height) > body + lines.len());
-        let used = body + note.as_ref().map_or(0, |lines| lines.len());
+        // The bar (tabbed), the body rows, the update note when all of it
+        // fits above the footer, then (height permitting) a blank row, then
+        // the footer.
+        let note = if tabbed {
+            note
+        } else {
+            note.filter(|lines| usize::from(inner.height) > body + lines.len())
+        };
+        let used = body + extra.min(note.as_ref().map_or(0, |lines| lines.len()));
         let blank = usize::from(inner.height) > used + 1;
         let width = usize::from(inner.width);
+        let bar = if tabbed {
+            let names: Vec<&str> = labels.iter().map(String::as_str).collect();
+            let hint = (!self.menu.in_sub_level()).then_some(TAB_HINT);
+            let segments = tab_line(&names, self.menu.active_tab(), width, hint, self.theme);
+            let mut x = inner.x;
+            for (text, style) in &segments {
+                let room = usize::from(inner.right().saturating_sub(x));
+                buf.set_stringn(x, inner.y, text, room, *style);
+                x += cells(text) as u16;
+            }
+            TAB_BAR
+        } else {
+            0
+        };
         for (offset, row) in rows.iter().enumerate() {
             let (text, style) = self.line(row, inner.width);
-            let y = inner.y + offset as u16;
+            let y = inner.y + (bar + offset) as u16;
             if y >= inner.bottom() {
                 break;
             }
@@ -299,7 +329,11 @@ impl Widget for MenuPopup<'_> {
             buf.set_stringn(inner.x, y, clip(&text, width), width, style);
         }
         for (offset, line) in note.iter().flatten().enumerate() {
-            let y = inner.y + (body + offset) as u16;
+            let first = if tabbed { body - NOTE_ROWS } else { body };
+            let y = inner.y + (first + offset) as u16;
+            if y >= inner.bottom() {
+                break;
+            }
             let style = Style::default().fg(self.theme.warning_orange);
             buf.set_stringn(inner.x, y, clip(&format!(" {line}"), width), width, style);
         }
@@ -327,7 +361,7 @@ mod tests {
     use crate::core::menu::MIN_WIDTH;
 
     /// The AI popup's height: its fixed body plus the chrome.
-    const POPUP_H: u16 = AI_BODY as u16 + CHROME;
+    const POPUP_H: u16 = MENU_BODY as u16 + CHROME;
     /// The least height that still shows the full popup (no blank row).
     const MIN_HEIGHT: u16 = POPUP_H - 1;
 
@@ -636,18 +670,6 @@ mod tests {
     }
 
     #[test]
-    fn the_update_note_gives_way_when_the_height_is_tight() {
-        // At the popup's own height the note has no room and is not drawn;
-        // the Updates row still says what is waiting.
-        for height in [POPUP_H, MIN_HEIGHT] {
-            let shown = text(&draw(62, height, &with_update()));
-            assert!(!shown.contains("run: cargo install"), "{shown}");
-            assert!(!shown.contains("update 0.16.0 available"), "{shown}");
-            assert!(shown.contains("0.16.0 available"), "{shown}");
-        }
-    }
-
-    #[test]
     fn the_update_note_is_not_drawn_over_a_picker() {
         let mut menu = picker_of("code", 0);
         menu.set_update(Some("0.16.0".into()));
@@ -840,7 +862,9 @@ mod tests {
     #[test]
     fn a_long_model_name_is_clipped_and_keeps_the_download_mark() {
         let long = "qwen2.5-coder:32b-instruct-q4_K_M";
-        let shown = text(&draw(62, POPUP_H, &with_ai(long)));
+        let mut menu = with_ai(long);
+        tab_key(&mut menu);
+        let shown = text(&draw(62, POPUP_H, &menu));
         assert!(shown.contains("· download required"), "{shown}");
         assert!(shown.contains("…"), "{shown}");
     }
@@ -966,30 +990,6 @@ mod tests {
         assert!(narrow[2].starts_with("Enlarge the terminal"), "{narrow:?}");
     }
 
-    // Review: AI_BODY is derived, not trusted. Every AI view fits it, so
-    // adding a row cannot silently resize the popup.
-    #[test]
-    fn every_ai_view_fits_the_fixed_body() {
-        let mut views = vec![
-            mixed(),
-            warned(),
-            fresh().with_ai(AiConfig::default(), None),
-        ];
-        for task in ["general", "code", "chat", "review", "summarize"] {
-            views.push(picker_of(task, 0));
-            let mut models = picker_of(task, 0);
-            press(&mut models, &[KeyCode::Enter]);
-            views.push(models);
-        }
-        views.push(picker_of("Set all tasks", 0));
-        for menu in &views {
-            let len = menu.rows(&Config::default()).len();
-            assert!(len <= AI_BODY, "{len} rows > {AI_BODY}");
-        }
-        let tallest = views.iter().map(|m| m.rows(&Config::default()).len()).max();
-        assert_eq!(tallest, Some(AI_BODY), "AI_BODY is as small as it can be");
-    }
-
     #[test]
     fn the_warning_never_panics_at_any_size() {
         let menu = warned();
@@ -1019,14 +1019,16 @@ mod tests {
     #[test]
     fn titles_are_bold_and_the_selected_bar_spans_the_inner_width() {
         let task = draw(62, POPUP_H, &mixed());
-        assert!(task[(2, 1)].modifier.contains(Modifier::BOLD));
         assert!(
-            task[(2, 8)].modifier.contains(Modifier::BOLD),
-            "the AI title"
+            task[(2, 1)].modifier.contains(Modifier::BOLD),
+            "the active tab"
         );
         assert!(!task[(2, 2)].modifier.contains(Modifier::BOLD));
         let picker = draw(62, POPUP_H, &picker_of("code", 0));
-        assert!(picker[(2, 1)].modifier.contains(Modifier::BOLD));
+        assert!(
+            picker[(2, 2)].modifier.contains(Modifier::BOLD),
+            "the title"
+        );
         for buf in [&task, &picker] {
             let bar: Vec<u16> = (0..POPUP_H)
                 .filter(|y| buf[(2, *y)].modifier.contains(Modifier::REVERSED))
@@ -1070,7 +1072,7 @@ mod tests {
             let mut menu = fresh().with_ai(saved, Some(detection(name)));
             goto(&mut menu, "general");
             press(&mut menu, &[KeyCode::Enter, KeyCode::Enter]);
-            lines(&draw(62, POPUP_H, &menu))[2].clone()
+            lines(&draw(62, POPUP_H, &menu))[3].clone()
         };
         assert_eq!(row(&fitting), format!("│ {fitting} ✓│"));
         let clipped = row(&long);
@@ -1242,6 +1244,211 @@ mod tests {
                 assert_eq!(cells(&l), usize::from(w), "{l}");
             }
         }
+    }
+
+    // Spec: Menu tab bar; Popup height is fixed.
+    fn tab_key(menu: &mut MenuState) {
+        press(menu, &[KeyCode::Tab]);
+    }
+
+    fn ai_tab() -> MenuState {
+        let mut menu = mixed();
+        tab_key(&mut menu);
+        menu
+    }
+
+    fn custom_view() -> MenuState {
+        let mut menu = picker_of("general", 1);
+        press(
+            &mut menu,
+            &[KeyCode::Enter, KeyCode::Char('k'), KeyCode::Enter],
+        );
+        menu
+    }
+
+    fn models_view() -> MenuState {
+        let mut menu = picker_of("general", 0);
+        press(&mut menu, &[KeyCode::Enter]);
+        menu
+    }
+
+    fn sub_levels() -> Vec<MenuState> {
+        vec![picker_of("code", 0), models_view(), custom_view(), warned()]
+    }
+
+    #[test]
+    fn the_bar_is_body_row_zero_with_the_hint_on_a_normal_terminal() {
+        for menu in [mixed(), ai_tab()] {
+            let l = lines(&draw(62, POPUP_H, &menu));
+            assert!(l[1].starts_with("│ Settings │ AI "), "{}", l[1]);
+            assert!(
+                l[1].ends_with("⇥ Tab │"),
+                "hint one column from the edge: {}",
+                l[1]
+            );
+        }
+    }
+
+    #[test]
+    fn the_bar_marks_the_active_tab_in_cyan_and_not_in_the_row_style() {
+        let theme = LazaroboxTheme::default();
+        let settings = draw(62, POPUP_H, &mixed());
+        assert_eq!(settings[(2, 1)].bg, theme.primary_cyan);
+        assert_eq!(settings[(2, 1)].fg, theme.bg_base);
+        assert!(settings[(2, 1)].modifier.contains(Modifier::BOLD));
+        assert!(!settings[(2, 1)].modifier.contains(Modifier::REVERSED));
+        assert_ne!(settings[(13, 1)].bg, theme.primary_cyan, "AI is idle");
+        let ai = draw(62, POPUP_H, &ai_tab());
+        assert_ne!(ai[(2, 1)].bg, theme.primary_cyan);
+        assert_eq!(ai[(13, 1)].bg, theme.primary_cyan, "AI is active");
+    }
+
+    #[test]
+    fn the_hint_is_absent_over_every_sub_level_and_the_bar_stays() {
+        for menu in sub_levels() {
+            let l = lines(&draw(62, POPUP_H, &menu));
+            assert!(l[1].starts_with("│ Settings │ AI "), "{}", l[1]);
+            assert!(!l[1].contains('⇥'), "{}", l[1]);
+        }
+    }
+
+    #[test]
+    fn no_section_titles_are_drawn_when_tabbed() {
+        let settings = lines(&draw(62, POPUP_H, &mixed()));
+        assert!(
+            settings[2].starts_with("│ Statusline position"),
+            "{}",
+            settings[2]
+        );
+        assert!(
+            !settings[2..].iter().any(|l| l.starts_with("│ AI")),
+            "{settings:?}"
+        );
+        let ai = lines(&draw(62, POPUP_H, &ai_tab()));
+        assert!(ai[2].starts_with("│ Set all tasks"), "{}", ai[2]);
+        assert!(ai[11].starts_with("│ Tools"), "{}", ai[11]);
+    }
+
+    #[test]
+    fn titles_are_still_drawn_for_a_single_tab() {
+        let shown = lines(&draw(51, 8, &fresh()));
+        assert!(shown[1].starts_with("│ Settings"), "{}", shown[1]);
+        assert!(!shown[1].contains("│ Settings │"), "no bar: {}", shown[1]);
+    }
+
+    #[test]
+    fn the_popup_is_sixteen_rows_on_both_tabs_and_in_every_sub_level() {
+        assert_eq!(POPUP_H, 16);
+        let mut views = vec![mixed(), ai_tab(), with_update()];
+        views.extend(sub_levels());
+        for menu in &views {
+            let l = lines(&draw(80, 24, menu));
+            let border: Vec<usize> = (0..l.len())
+                .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
+                .collect();
+            assert_eq!(border.len(), 2);
+            assert_eq!(border[1] - border[0] + 1, 16);
+        }
+    }
+
+    #[test]
+    fn the_update_note_sits_in_the_last_two_body_rows_of_settings_only() {
+        let l = lines(&draw(62, POPUP_H, &with_update()));
+        assert!(l[11].contains("update 0.16.0 available"), "{}", l[11]);
+        assert!(l[12].contains("run: cargo install"), "{}", l[12]);
+        assert_eq!(
+            l[13].trim_matches(|c| c == '│' || c == ' '),
+            "",
+            "blank row"
+        );
+        assert!(l[14].contains("s save"), "footer: {}", l[14]);
+        let mut menu = with_update();
+        tab_key(&mut menu);
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(!shown.contains("run: cargo install"), "{shown}");
+        for sub in sub_levels() {
+            let shown = text(&draw(62, POPUP_H, &sub.with_update(Some("0.16.0".into()))));
+            assert!(!shown.contains("run: cargo install"), "{shown}");
+        }
+    }
+
+    #[test]
+    fn the_update_note_stays_inside_the_body_at_the_smallest_heights() {
+        // The note is part of the fixed body: it never gives way, and the
+        // blank row is the only thing the short height drops.
+        for height in [POPUP_H, MIN_HEIGHT] {
+            let shown = text(&draw(62, height, &with_update()));
+            assert!(shown.contains("run: cargo install"), "{shown}");
+            assert!(shown.contains("update 0.16.0 available"), "{shown}");
+            assert!(shown.contains("s save"), "the footer: {shown}");
+        }
+    }
+
+    #[test]
+    fn narrow_and_short_terminals_fall_back_to_one_line() {
+        assert!(text(&draw(22, 20, &mixed())).contains("MENU"));
+        assert!(text(&draw(62, 14, &mixed())).contains("MENU"));
+        assert!(!text(&draw(24, 15, &mixed())).contains("MENU"));
+        assert!(text(&draw(24, 15, &mixed())).contains("Menu"));
+    }
+
+    #[test]
+    fn at_24_columns_the_star_drops_the_hint_and_the_plain_label_keeps_it() {
+        let starred = lines(&draw(24, 15, &with_update()));
+        assert!(
+            starred[1].starts_with("│ Settings* │ AI "),
+            "{}",
+            starred[1]
+        );
+        assert!(!starred[1].contains('⇥'), "{}", starred[1]);
+        let plain = lines(&draw(24, 15, &mixed()));
+        assert!(plain[1].contains("⇥ Tab"), "{}", plain[1]);
+    }
+
+    #[test]
+    fn the_no_ai_popup_keeps_its_size() {
+        let l = lines(&draw(60, 11, &fresh()));
+        let border: Vec<usize> = (0..l.len())
+            .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
+            .collect();
+        assert_eq!(border[1] - border[0] + 1, 9, "5 rows and the chrome");
+    }
+
+    #[test]
+    fn tabbed_views_never_panic_at_any_size() {
+        let mut views = vec![mixed(), ai_tab(), with_update()];
+        let mut ai_update = with_update();
+        tab_key(&mut ai_update);
+        views.push(ai_update);
+        views.extend(sub_levels());
+        let mut error = mixed();
+        error.set_error("config.toml: ai is not a table; fix it before saving".into());
+        views.push(error);
+        let mut error_ai = ai_tab();
+        error_ai.set_error("save failed: disk full".into());
+        views.push(error_ai);
+        for view in &views {
+            for w in 0..=70 {
+                for h in 0..=20 {
+                    draw(w, h, view);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_ai_tab() {
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &ai_tab())));
+    }
+
+    #[test]
+    fn snapshot_settings_tab_with_the_update_note() {
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &with_update())));
+    }
+
+    #[test]
+    fn snapshot_24_columns_with_the_starred_label() {
+        insta::assert_snapshot!(text(&draw(MIN_WIDTH, MIN_HEIGHT, &with_update())));
     }
 }
 

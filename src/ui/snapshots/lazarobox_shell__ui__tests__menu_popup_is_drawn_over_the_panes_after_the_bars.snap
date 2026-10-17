@@ -3,26 +3,26 @@ source: src/ui/mod.rs
 expression: "(0..24).map(|y|\nrow(&buf, y).trim_end().to_string()).collect::<Vec<_>>().join(\"\\n\")"
 ---
  1
-h┌ Menu ──────────────────────────────────────────────────────┐
- │ Settings                                                   │
+hi there
+
+
+ ┌ Menu ──────────────────────────────────────────────────────┐
+ │ Settings │ AI                                        ⇥ Tab │
  │ Statusline position                                 bottom │
  │ Tab bar position                                       top │
  │ Mouse                                                   on │
  │ Notify                                                 off │
  │ Sound                                                   on │
  │ Updates                                             0.15.3 │
- │ AI                                                         │
- │ Set all tasks                                    (not set) │
- │ general                                          (not set) │
- │ code                                             (default) │
- │ chat                                             (default) │
- │ review                                           (default) │
- │ summarize                                        (default) │
- │ Profile                                         programmer │
- │ Context                                                 on │
- │ Memory                                                 off │
- │ Tools                                                   on │
+ │                                                            │
+ │                                                            │
+ │                                                            │
+ │                                                            │
+ │                                                            │
  │                                                            │
  │ j/k move · h/l change · s save · Esc cancel                │
  └────────────────────────────────────────────────────────────┘
+
+
+
  ◐ MENU                                                   sh

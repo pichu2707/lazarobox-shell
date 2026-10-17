@@ -28,7 +28,7 @@ fn plain(code: KeyCode) -> KeyEvent {
 }
 
 fn value_of(menu: &MenuState, wanted: &str) -> Option<String> {
-    menu.rows(&Config::default())
+    menu.all_rows(&Config::default())
         .into_iter()
         .find_map(|row| match row {
             Row::Item {
