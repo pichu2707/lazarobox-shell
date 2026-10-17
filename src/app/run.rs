@@ -419,7 +419,9 @@ impl App {
     pub fn approval_prompt(&self, id: PaneId) -> Option<ApprovalPrompt> {
         let chat = self.panes.get(&id)?.chat_state()?;
         let armed = self.approval_armed(id);
-        match chat.approvals().pending()?.ask() {
+        let approval = chat.approvals().pending()?;
+        let why = approval.why().map(str::to_owned);
+        match approval.ask() {
             ApprovalAsk::Run { command } => {
                 let target = chat.run_target().and_then(|pane| self.pane_label(pane));
                 Some(ApprovalPrompt {
@@ -427,6 +429,7 @@ impl App {
                     command: command.clone(),
                     keys: RUN_KEYS,
                     armed,
+                    why,
                 })
             }
             // The path was resolved and made safe to show before it was asked.
@@ -435,6 +438,7 @@ impl App {
                 command: format!("read {path}"),
                 keys: READ_KEYS,
                 armed,
+                why: None,
             }),
             ApprovalAsk::External { .. } => None,
         }

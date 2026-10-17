@@ -5,9 +5,9 @@
 //! (ASCII letters and digits, Latin letters U+00C0..=U+024F without the
 //! multiplication and division signs, and ``. _ / @ % + : , = ~ -``; a `~`
 //! only leads a word) or a whole
-//! single-quoted `'...'` holding only those characters and the space, so a
-//! quoted word is inert even when the shell is inside an open quote or `$(`
-//! (a continuation prompt); words are separated by exactly one ASCII space.
+//! single-quoted `'...'` or double-quoted `"..."` word holding only those
+//! characters and the space, so a quoted word is inert even when the shell is
+//! inside an open quote or `$(` (a continuation prompt); words are separated by exactly one ASCII space.
 //! Anything else, shell metacharacters, controls, format characters, other
 //! whitespace and combining marks included, is a [`Fallback`] to the prompt.
 //!
@@ -27,7 +27,7 @@ pub const MAX_WORDS: usize = 8;
 
 /// Bit set in [`CLASS`] for a byte allowed in an unquoted word.
 const WORD: u8 = 1;
-/// Bit set in [`CLASS`] for a byte allowed inside single quotes.
+/// Bit set in [`CLASS`] for a byte allowed inside single or double quotes.
 const QUOTED: u8 = 2;
 
 /// Classifies the ASCII bytes. Non-ASCII bytes never index it: they start a
@@ -186,7 +186,12 @@ pub fn parse(text: &str) -> Result<SafeCommand<'_>, Fallback> {
             Some(b' ') => return Err(fallback(i..i + 1, "extra space")),
             _ => {}
         }
-        let quoted = bytes[i] == b'\'';
+        let quote = if matches!(bytes[i], b'\'' | b'"') {
+            bytes[i]
+        } else {
+            0
+        };
+        let quoted = quote != 0;
         if len == MAX_WORDS || (quoted && len == 0) {
             let why = if quoted {
                 "the command is quoted"
@@ -197,14 +202,14 @@ pub fn parse(text: &str) -> Result<SafeCommand<'_>, Fallback> {
         }
         i += usize::from(quoted);
         while let Some(&c) = bytes.get(i) {
-            if c == if quoted { b'\'' } else { b' ' } {
+            if c == if quoted { quote } else { b' ' } {
                 break;
             }
             i += step(text, i, quoted).map_err(|why| fallback(start..token_end(bytes, i), why))?;
         }
         words[len] = &text[start + usize::from(quoted)..i];
         let why = if quoted {
-            let closed = bytes.get(i) == Some(&b'\'');
+            let closed = bytes.get(i) == Some(&quote);
             i += 1;
             check_quoted(words[len], closed).or_else(|| {
                 let after = bytes.get(i).filter(|&&c| c != b' ');
@@ -279,7 +284,7 @@ fn check_word(word: &str) -> Option<&'static str> {
     }
 }
 
-/// Rules for the content of a single-quoted word; `closed` says the closing
+/// Rules for the content of a quoted word; `closed` says the closing
 /// quote was found.
 fn check_quoted(content: &str, closed: bool) -> Option<&'static str> {
     match content.as_bytes().first() {

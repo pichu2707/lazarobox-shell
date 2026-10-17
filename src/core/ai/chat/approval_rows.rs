@@ -23,6 +23,9 @@ const TAB: char = '→';
 pub enum Part {
     Head(String),
     Command(String),
+    /// Why a `run` command was not run directly. Advice only: it is drawn
+    /// when there is a spare row and never changes whether the command fits.
+    Why(String),
     Marker(String),
     Keys(String),
 }
@@ -45,6 +48,15 @@ fn command_rows(command: &str, width: usize) -> Vec<String> {
         .collect()
 }
 
+/// `text` cut to `width` columns with an ellipsis.
+fn clip(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
+    format!("{kept}…")
+}
+
 /// The rows when the whole command fits in `height` rows, else `None`.
 fn full_rows(prompt: &ApprovalPrompt, width: usize, height: usize) -> Option<Vec<Part>> {
     let rows = command_rows(&prompt.command, width.max(1));
@@ -55,8 +67,12 @@ fn full_rows(prompt: &ApprovalPrompt, width: usize, height: usize) -> Option<Vec
         2 => None,
         _ if rows.len() > (height - 2).min(MAX_COMMAND_ROWS) => None,
         _ => {
+            let spare = rows.len() < (height - 2).min(MAX_COMMAND_ROWS);
             let mut out = vec![head];
             out.extend(rows.into_iter().map(Part::Command));
+            if let Some(why) = prompt.why.as_deref().filter(|_| spare) {
+                out.push(Part::Why(clip(why, width)));
+            }
             let keys = if prompt.armed { prompt.keys } else { NOT_ARMED };
             out.push(Part::Keys(keys.to_owned()));
             Some(out)
@@ -80,7 +96,7 @@ pub fn parts(prompt: &ApprovalPrompt, width: usize, height: usize) -> Vec<Part> 
 
 /// The rows the whole prompt wants at `width`.
 pub fn wanted(prompt: &ApprovalPrompt, width: usize) -> usize {
-    full_rows(prompt, width, MAX_COMMAND_ROWS + 2).map_or(2, |rows| rows.len())
+    full_rows(prompt, width, MAX_COMMAND_ROWS + 3).map_or(2, |rows| rows.len())
 }
 
 /// Whether the prompt shows all of its text in a chat pane `width` x
@@ -104,6 +120,14 @@ mod tests {
             command: command.into(),
             keys: RUN_KEYS,
             armed: true,
+            why: None,
+        }
+    }
+
+    fn explained(command: &str) -> ApprovalPrompt {
+        ApprovalPrompt {
+            why: Some("shell metacharacter: `&&`".into()),
+            ..run(command)
         }
     }
 
@@ -113,6 +137,7 @@ mod tests {
             command: format!("read {path}"),
             keys: READ_KEYS,
             armed: true,
+            why: None,
         }
     }
 
@@ -221,5 +246,59 @@ mod tests {
                 }
             }
         }
+    }
+
+    // The reason sits between the command and the keys when there is room.
+    #[test]
+    fn the_reason_is_drawn_between_the_command_and_the_keys() {
+        let rows = parts(&explained("cd a && ls"), 60, 12);
+        assert_eq!(
+            rows,
+            [
+                Part::Head("run in pane 1".into()),
+                Part::Command("cd a && ls".into()),
+                Part::Why("shell metacharacter: `&&`".into()),
+                Part::Keys(RUN_KEYS.to_owned()),
+            ]
+        );
+        // The same prompt without a reason has one row less.
+        assert_eq!(parts(&run("cd a && ls"), 60, 12).len(), 3);
+        assert_eq!(wanted(&explained("cd a"), 60), wanted(&run("cd a"), 60) + 1);
+    }
+
+    // The reason is advice: it never takes the room the command needs, and
+    // it never changes whether the command fits.
+    #[test]
+    fn the_reason_never_changes_whether_the_command_fits() {
+        for command in ["ls", "a\nb\nc", &"x".repeat(90), "1\n2\n3\n4\n5\n6\n7"] {
+            for width in [10, 20, 40, 80] {
+                for height in 0..=14usize {
+                    assert_eq!(
+                        fits(&explained(command), width, height),
+                        fits(&run(command), width, height),
+                        "{command:?} {width}x{height}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_pane_with_no_spare_row_drops_the_reason_and_keeps_the_command() {
+        // head + command + keys = 3 rows: a pane of 4 gives the composer 3.
+        let rows = parts(&explained("ls"), 40, 3);
+        assert_eq!(rows.len(), 3);
+        assert!(!rows.iter().any(|r| matches!(r, Part::Why(_))), "{rows:?}");
+        assert!(rows.contains(&Part::Command("ls".into())));
+        // The full budget of command rows leaves no room for it either.
+        let six = (1..=6).map(|n| format!("echo {n}")).collect::<Vec<_>>();
+        let rows = parts(&explained(&six.join("\n")), 40, MAX_COMMAND_ROWS + 2);
+        assert!(!rows.iter().any(|r| matches!(r, Part::Why(_))), "{rows:?}");
+    }
+
+    #[test]
+    fn a_reason_wider_than_the_pane_is_cut_with_an_ellipsis() {
+        let rows = parts(&explained("ls"), 12, 8);
+        assert!(rows.contains(&Part::Why("shell metac…".into())), "{rows:?}");
     }
 }

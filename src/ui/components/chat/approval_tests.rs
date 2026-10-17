@@ -54,6 +54,7 @@ fn prompt(command: &str) -> ApprovalPrompt {
         command: command.into(),
         keys: RUN_KEYS,
         armed: true,
+        why: None,
     }
 }
 
@@ -65,6 +66,7 @@ fn read_prompt(path: &str) -> ApprovalPrompt {
         command: format!("read {path}"),
         keys: READ_KEYS,
         armed: true,
+        why: None,
     }
 }
 
@@ -134,6 +136,48 @@ fn the_pane_command_prompt_names_the_pane_the_command_and_the_keys() {
     assert!(shot.contains("no Enter"));
     assert!(shot.contains("n cancel"));
     assert!(shot.contains("p next pane"));
+}
+
+// In `run` mode a command that does not run says why, one line, in the
+// muted colour, between the command and the keys.
+#[test]
+fn a_prompt_that_fell_back_says_why_in_one_line() {
+    let chat = exchange(BLOCK);
+    let mut p = prompt("cd a && ls");
+    p.why = Some("shell metacharacter: `&&`".into());
+    let shot = draw(&chat, Some(&p), 60, 16);
+    insta::assert_snapshot!("approval_with_reason_60x16", shot);
+    let lines: Vec<&str> = shot.lines().collect();
+    let at = lines.iter().position(|l| l.contains("cd a && ls")).unwrap();
+    assert_eq!(lines[at + 1], "shell metacharacter: `&&`");
+    assert!(lines[at + 2].starts_with("y type it"), "{shot}");
+}
+
+#[test]
+fn the_reason_is_drawn_muted_not_as_the_command() {
+    let chat = exchange(BLOCK);
+    let mut p = prompt("cd a && ls");
+    p.why = Some("the pane has a half-typed line".into());
+    let (width, height) = (60, 16);
+    let area = Rect::new(0, 0, width, height);
+    let mut buf = Buffer::empty(area);
+    let theme = LazaroboxTheme::default();
+    ChatView::new(&chat, &theme)
+        .approval(Some(&p))
+        .render(area, &mut buf);
+    let row = |text: &str| {
+        (0..height)
+            .find(|&y| {
+                (0..width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .starts_with(text)
+            })
+            .unwrap()
+    };
+    let (command, why) = (row("cd a && ls"), row("the pane has"));
+    assert_eq!(buf[(0, command)].fg, theme.success_green);
+    assert_eq!(buf[(0, why)].fg, theme.text_muted);
 }
 
 #[test]

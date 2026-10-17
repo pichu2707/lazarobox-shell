@@ -232,16 +232,29 @@ fn the_tools_block_names_the_tools_by_purpose_and_the_pane_rule() {
         "list a directory",
         "read a file",
         "run a command in the user's shell pane",
-        "only types it",
-        "presses Enter",
-        "never see its output unless the user pastes it",
+        "only typed or typed and run",
+        "cd, pwd, ls, tree and mkdir",
+        "one command with plain or quoted paths",
+        "without &&, ;, |, $ or redirections",
+        "can run directly when the user allows it",
+        "Anything else waits for the user to review it and press Enter",
+        "do not see its output unless the user pastes it",
+        "one simple command per call",
         "instead of asking the user to run find, ls or cat",
-        "single line",
         "cannot change files",
     ] {
         assert!(text.contains(needle), "{needle}");
     }
     assert!(!text.contains("mcp__") && !text.contains("run_in_pane"));
+    // D18: the same words in every approval mode.
+    for mode in ["ask mode", "auto mode", "run mode", "`run`", "`auto`"] {
+        assert!(!text.contains(mode), "{mode}");
+    }
+    assert!(
+        text.lines().count() == 1 && text.len() < 900,
+        "{}",
+        text.len()
+    );
     assert!(text.chars().all(|c| c == '\n' || (' '..='~').contains(&c)));
 }
 

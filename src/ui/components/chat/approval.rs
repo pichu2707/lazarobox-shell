@@ -30,7 +30,9 @@ impl ChatView<'_> {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Part::Command(t) => (t, base.fg(self.theme.success_green)),
-                Part::Marker(t) | Part::Keys(t) => (t, base.fg(self.theme.text_muted)),
+                Part::Why(t) | Part::Marker(t) | Part::Keys(t) => {
+                    (t, base.fg(self.theme.text_muted))
+                }
             };
             buf.set_stringn(area.x, y, text, usize::from(area.width), style);
         }

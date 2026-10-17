@@ -7,7 +7,7 @@ use super::*;
 use crate::app::RunEvent;
 use crate::core::ai::{
     chat::{
-        approval::{MAX_AUTO_PER_TURN, MAX_RUN_FALLBACKS, NO_CWD},
+        approval::{FOCUSED, HALF_TYPED, MAX_AUTO_PER_TURN, MAX_RUN_FALLBACKS, NO_CWD, TOO_MANY},
         engine::{CallId, Decision, ToolStatus},
     },
     config::ApprovalMode,
@@ -117,7 +117,7 @@ fn a_second_call_to_the_same_pane_in_a_batch_prompts() {
 fn an_off_list_command_prompts_and_y_types_without_enter() {
     let (mut a, turn) = run_live();
     assert_eq!(announce(&mut a, turn, 1, run("git status")), vec![]);
-    assert_eq!(why(&a).as_deref(), Some("not a safe command"));
+    assert_eq!(why(&a).as_deref(), Some("not a safe command: `git`"));
     assert_eq!(slot(&a), None);
     assert_eq!(chat_of(&a).auto_typed(), 0);
     let effects = a.update(key('y'));
@@ -205,7 +205,7 @@ fn the_slot_counts_toward_the_cap_and_a_refusal_does_not_refund_it() {
     assert_eq!(chat_of(&a).auto_typed(), MAX_AUTO_PER_TURN, "no refund");
     result(&mut a, turn, 1, ToolStatus::Denied);
     assert_eq!(announce(&mut a, turn, 2, run("pwd")), vec![]);
-    assert_eq!(why(&a), None, "the cap is a limit, not a fallback");
+    assert_eq!(why(&a).as_deref(), Some(TOO_MANY), "a limit says so");
 }
 
 fn chat_mut(a: &mut App) -> &mut ChatState {
@@ -249,8 +249,18 @@ fn the_route_runs_again_after_the_check() {
     a.tab_mut().focus = PaneId::FIRST;
     assert_eq!(checked(&mut a, 1), vec![]);
     assert_eq!(pending(&a).map(|(ask, _)| ask), Some(run("pwd")));
-    assert_eq!(why(&a), None);
+    assert_eq!(why(&a).as_deref(), Some(FOCUSED));
     assert_eq!(slot(&a), None);
+}
+
+// The overlay is handed the reason line, with the offending token.
+#[test]
+fn the_prompt_of_a_fallback_carries_the_reason_line() {
+    let (mut a, turn) = run_live();
+    announce(&mut a, turn, 1, run("cd a && ls"));
+    let prompt = a.approval_prompt(id2()).unwrap();
+    assert_eq!(prompt.why.as_deref(), Some("shell metacharacter: `&&`"));
+    assert_eq!(prompt.command, "cd a && ls");
 }
 
 // S3.10: cleanup.
@@ -522,7 +532,7 @@ fn a_dirty_pane_prompts_until_enter_and_then_runs() {
     in_shell(&mut a, key('x'));
     assert_eq!(announce(&mut a, turn, 1, run("cd x")), vec![]);
     assert!(pending(&a).is_some());
-    assert_eq!((why(&a), slot(&a)), (None, None));
+    assert_eq!((why(&a).as_deref(), slot(&a)), (Some(HALF_TYPED), None));
     a.update(key('n'));
 
     in_shell(

@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use super::*;
 use crate::core::ai::chat::{
-    approval::{Approval, ApprovalAsk, AutoCtx, Origin, Route, counts_toward_pause, route},
+    approval::{
+        Approval, ApprovalAsk, AutoCtx, Origin, Route, counts_toward_pause, reason_line, route,
+    },
     engine::{CallId, Decision, ToolStatus, Tools, tools_for},
 };
 use crate::core::ai::{config::ApprovalMode, tools::exec::Fallback};
@@ -146,7 +148,7 @@ impl App {
                 Route::AutoRun(safe) => {
                     return self.check_run(id, (turn, call), target, safe.as_str());
                 }
-                Route::Prompt(fallback) => why = self.fallback_why(id, fallback),
+                Route::Prompt(fallback) => why = self.fallback_why(id, fallback, command),
             }
         }
         self.open_prompt(id, (turn, call), target, ask, why)
@@ -184,6 +186,7 @@ impl App {
         &mut self,
         id: PaneId,
         fallback: Option<Fallback>,
+        command: &str,
     ) -> Option<String> {
         let fallback = fallback?;
         if counts_toward_pause(&fallback)
@@ -191,7 +194,7 @@ impl App {
         {
             chat.note_run_fallback();
         }
-        Some(fallback.why.to_owned())
+        Some(reason_line(&fallback, command))
     }
 
     /// What chat `id` does with a model's `ask` for `target`: the mode and the
