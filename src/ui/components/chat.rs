@@ -11,13 +11,16 @@ use ratatui::{
 };
 
 use crate::{
-    core::ai::chat::{
-        ChatState,
-        approval::ApprovalPrompt,
-        composer::ComposerPlan,
-        guidance::guidance_rows,
-        transcript::{Line, LineKind},
-        wrap::wrap_words,
+    core::ai::{
+        chat::{
+            ChatState,
+            approval::ApprovalPrompt,
+            composer::ComposerPlan,
+            guidance::guidance_rows,
+            transcript::{Line, LineKind},
+            wrap::wrap_words,
+        },
+        config::ApprovalMode,
     },
     ui::theme::LazaroboxTheme,
 };
@@ -149,21 +152,30 @@ impl Widget for ChatView<'_> {
             return;
         }
         self.render_view(area, buf);
-        if self.chat.auto_badge() {
-            self.draw_auto_badge(area, buf);
+        if let Some(mode) = self.chat.mode_badge() {
+            self.draw_mode_badge(mode, area, buf);
         }
     }
 }
 
 impl ChatView<'_> {
-    /// ` AUTO ` over the top-right cells of the pane, `A` when it is narrower
-    /// than that: an exception marker, drawn in every view.
-    fn draw_auto_badge(&self, area: Rect, buf: &mut Buffer) {
+    /// ` AUTO ` (amber) or ` RUN ` (red) over the top-right cells of the
+    /// pane, `A` or `R` when it is narrower than that: an exception marker,
+    /// drawn in every view.
+    fn draw_mode_badge(&self, mode: ApprovalMode, area: Rect, buf: &mut Buffer) {
+        let (text, short, colour) = match mode {
+            ApprovalMode::Run => (" RUN ", "R", self.theme.error_red),
+            _ => (" AUTO ", "A", self.theme.warning_orange),
+        };
         let style = Style::default()
             .fg(self.theme.bg_base)
-            .bg(self.theme.error_red)
+            .bg(colour)
             .add_modifier(Modifier::BOLD);
-        let text = if area.width >= 6 { " AUTO " } else { "A" };
+        let text = if usize::from(area.width) >= text.len() {
+            text
+        } else {
+            short
+        };
         let width = u16::try_from(text.len()).unwrap_or(1);
         buf.set_stringn(
             area.right() - width,

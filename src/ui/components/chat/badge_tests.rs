@@ -1,10 +1,10 @@
-//! The `AUTO` badge of a chat in auto approval mode (spec chat-pane,
+//! The `AUTO` and `RUN` badges of a chat in auto or run approval mode (spec chat-pane,
 //! "Approval mode badge").
 
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     widgets::Widget,
 };
 
@@ -54,23 +54,28 @@ fn row(buf: &Buffer, y: u16) -> String {
     (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
 }
 
-fn badge_style() -> Style {
-    let theme = theme();
+fn badge_style(bg: Color) -> Style {
     Style::default()
-        .fg(theme.bg_base)
-        .bg(theme.error_red)
+        .fg(theme().bg_base)
+        .bg(bg)
         .add_modifier(Modifier::BOLD)
 }
 
-fn assert_badge(buf: &Buffer) {
+/// The badge `text` at the top right, bold, `bg_base` on `bg`.
+fn assert_badge_of(buf: &Buffer, text: &str, bg: Color) {
     let width = buf.area.width;
-    assert!(row(buf, 0).ends_with(" AUTO "), "{:?}", row(buf, 0));
-    for x in width - 6..width {
+    let len = u16::try_from(text.len()).unwrap();
+    assert!(row(buf, 0).ends_with(text), "{:?}", row(buf, 0));
+    for x in width - len..width {
         let cell = &buf[(x, 0)];
-        assert_eq!(cell.fg, badge_style().fg.unwrap(), "fg at {x}");
-        assert_eq!(cell.bg, badge_style().bg.unwrap(), "bg at {x}");
+        assert_eq!(cell.fg, badge_style(bg).fg.unwrap(), "fg at {x}");
+        assert_eq!(cell.bg, bg, "bg at {x}");
         assert!(cell.modifier.contains(Modifier::BOLD), "bold at {x}");
     }
+}
+
+fn assert_badge(buf: &Buffer) {
+    assert_badge_of(buf, " AUTO ", theme().warning_orange);
 }
 
 #[test]
@@ -94,8 +99,48 @@ fn the_badge_shows_in_the_list_and_editor_views_too() {
 fn below_six_columns_the_badge_is_one_letter() {
     let buf = draw(&chat_in(ApprovalMode::Auto), 5, 4);
     assert_eq!(buf[(4, 0)].symbol(), "A");
-    assert_eq!(buf[(4, 0)].bg, theme().error_red);
+    assert_eq!(buf[(4, 0)].bg, theme().warning_orange);
     assert!(!row(&buf, 0).contains("AUTO"));
+}
+
+#[test]
+fn run_draws_a_red_badge_in_every_view() {
+    assert_badge_of(
+        &draw(&chat_in(ApprovalMode::Run), 30, 6),
+        " RUN ",
+        theme().error_red,
+    );
+    let mut list = chat_in(ApprovalMode::Run);
+    list.open_list();
+    assert_badge_of(&draw(&list, 40, 8), " RUN ", theme().error_red);
+    let mut editor = chat_in(ApprovalMode::Run);
+    editor.open_note_editor().expect("an answer to save");
+    assert_badge_of(&draw(&editor, 40, 10), " RUN ", theme().error_red);
+}
+
+#[test]
+fn below_five_columns_the_run_badge_is_one_letter() {
+    let four = draw(&chat_in(ApprovalMode::Run), 4, 4);
+    assert_eq!(four[(3, 0)].symbol(), "R");
+    assert_eq!(four[(3, 0)].bg, theme().error_red);
+    assert!(!row(&four, 0).contains("RUN"));
+    // Five columns still fit the whole word.
+    let five = draw(&chat_in(ApprovalMode::Run), 5, 4);
+    assert_eq!(row(&five, 0), " RUN ");
+}
+
+#[test]
+fn the_badge_follows_the_mode_and_the_tools_flag() {
+    let mut chat = answered();
+    assert_eq!(chat.mode_badge(), None);
+    chat.set_approval_mode(ApprovalMode::Auto);
+    assert_eq!(chat.mode_badge(), None, "tools off");
+    chat.set_run_hint(true);
+    assert_eq!(chat.mode_badge(), Some(ApprovalMode::Auto));
+    chat.set_approval_mode(ApprovalMode::Run);
+    assert_eq!(chat.mode_badge(), Some(ApprovalMode::Run));
+    chat.set_approval_mode(ApprovalMode::Ask);
+    assert_eq!(chat.mode_badge(), None);
 }
 
 #[test]
@@ -107,6 +152,7 @@ fn ask_mode_and_tools_off_draw_no_marker() {
     for buf in [ask, off] {
         for y in 0..buf.area.height {
             assert!(!row(&buf, y).contains("AUTO"), "{:?}", row(&buf, y));
+            assert!((0..buf.area.width).all(|x| buf[(x, y)].bg != theme().warning_orange));
             assert!((0..buf.area.width).all(|x| buf[(x, y)].bg != theme().error_red));
         }
     }
@@ -114,10 +160,12 @@ fn ask_mode_and_tools_off_draw_no_marker() {
 
 #[test]
 fn tiny_areas_do_not_panic() {
-    let chat = chat_in(ApprovalMode::Auto);
-    for width in 1..=10 {
-        for height in 1..=2 {
-            draw(&chat, width, height);
+    for mode in [ApprovalMode::Auto, ApprovalMode::Run] {
+        let chat = chat_in(mode);
+        for width in 1..=10 {
+            for height in 1..=2 {
+                draw(&chat, width, height);
+            }
         }
     }
 }
@@ -130,4 +178,14 @@ fn the_badge_snapshot() {
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!("auto_badge_30x5", shot);
+}
+
+#[test]
+fn the_run_badge_snapshot() {
+    let buf = draw(&chat_in(ApprovalMode::Run), 30, 5);
+    let shot = (0..buf.area.height)
+        .map(|y| row(&buf, y).trim_end().to_owned())
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!("run_badge_30x5", shot);
 }
