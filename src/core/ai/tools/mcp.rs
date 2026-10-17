@@ -16,7 +16,10 @@
 //! | any other request            | request      | -32601                                                     |
 //! | any other notification       | notification | ignored                                                    |
 //!
-//! Errors, always with `id: null` when the line gave no usable id: -32700
+//! Errors echo the request `id` when the line is JSON and its `id` is a string
+//! or a number, even if the line is refused for another reason; they carry
+//! `id: null` only when no id can be known (bad JSON, a batch, an unusable
+//! id, a line over [`MAX_LINE_BYTES`]): -32700
 //! (not JSON), -32600 (not one request object, a batch, a duplicate JSON key,
 //! a line over [`MAX_LINE_BYTES`], an unusable id, a tool method before
 //! `initialize`), -32602 (bad parameters). A tool that is unknown or whose
@@ -52,18 +55,22 @@ const INVALID_PARAMS: i64 = -32602;
 pub struct RpcError {
     pub code: i64,
     pub message: String,
+    /// The id of the refused line when it had a usable one, else `Null`, so
+    /// the client waiting on it gets an answer.
+    pub id: Value,
 }
 
 impl RpcError {
-    fn new(code: i64, message: &str) -> Self {
+    fn new(code: i64, message: &str, id: &Value) -> Self {
         RpcError {
             code,
             message: message.to_owned(),
+            id: id.clone(),
         }
     }
 
-    fn invalid(message: &str) -> Self {
-        Self::new(INVALID_REQUEST, message)
+    fn invalid(message: &str, id: &Value) -> Self {
+        Self::new(INVALID_REQUEST, message, id)
     }
 }
 
@@ -101,27 +108,36 @@ impl Frame {
     /// unusable id are -32600. The line cap is the caller's, see
     /// [`Server::handle`].
     pub fn parse(line: &str) -> Result<Frame, RpcError> {
-        let value: Value =
-            serde_json::from_str(line).map_err(|_| RpcError::new(PARSE_ERROR, "parse error"))?;
+        let value: Value = serde_json::from_str(line)
+            .map_err(|_| RpcError::new(PARSE_ERROR, "parse error", &Value::Null))?;
+        // Echo an id the client can be waiting on, whatever else is wrong.
+        let hint = value
+            .get("id")
+            .filter(|id| is_id(id))
+            .cloned()
+            .unwrap_or(Value::Null);
         if has_duplicate_keys(line) {
-            return Err(RpcError::invalid("duplicate key"));
+            return Err(RpcError::invalid("duplicate key", &hint));
         }
         let Value::Object(mut object) = value else {
-            return Err(RpcError::invalid("expected one request object"));
+            return Err(RpcError::invalid("expected one request object", &hint));
         };
         if object.get("jsonrpc") != Some(&json!("2.0")) {
-            return Err(RpcError::invalid("expected jsonrpc 2.0"));
+            return Err(RpcError::invalid("expected jsonrpc 2.0", &hint));
         }
         let id = object.remove("id");
         if let Some(method) = object.remove("method") {
             let Value::String(method) = method else {
-                return Err(RpcError::invalid("method must be a string"));
+                return Err(RpcError::invalid("method must be a string", &hint));
             };
             let params = object.remove("params").unwrap_or(Value::Null);
             return match id {
                 None => Ok(Frame::Notification { method, params }),
                 Some(id) if is_id(&id) => Ok(Frame::Request { id, method, params }),
-                Some(_) => Err(RpcError::invalid("id must be a string or a number")),
+                Some(_) => Err(RpcError::invalid(
+                    "id must be a string or a number",
+                    &Value::Null,
+                )),
             };
         }
         let id = id.filter(|id| is_id(id) || id.is_null());
@@ -135,11 +151,11 @@ impl Frame {
                         code,
                         message: message.to_owned(),
                     }),
-                    _ => Err(RpcError::invalid("malformed error")),
+                    _ => Err(RpcError::invalid("malformed error", &hint)),
                 }
             }
             (Some(id), None, Some(result)) if is_id(&id) => Ok(Frame::Response { id, result }),
-            _ => Err(RpcError::invalid("not a request or a response")),
+            _ => Err(RpcError::invalid("not a request or a response", &hint)),
         }
     }
 
@@ -252,7 +268,7 @@ impl Server {
             return error_reply(Value::Null, INVALID_REQUEST, "line too long");
         }
         match Frame::parse(line) {
-            Err(error) => error_reply(Value::Null, error.code, &error.message),
+            Err(error) => error_reply(error.id, error.code, &error.message),
             Ok(Frame::Request { id, method, params }) => self.request(id, &method, &params),
             Ok(Frame::Notification { method, params }) => notification(&method, &params),
             // This server sends no requests, so it has nothing to match.
@@ -606,20 +622,37 @@ mod tests {
     #[test]
     fn invalid_requests_are_minus_32600() {
         let mut server = server();
+        // The id is echoed when the line has a usable one, else null.
         let cases = [
-            "[]".to_owned(),
-            line(json!([{"jsonrpc": "2.0", "id": 1, "method": "ping"}])),
-            "1".to_owned(),
-            line(json!({"id": 1, "method": "ping"})),
-            line(json!({"jsonrpc": "1.0", "id": 1, "method": "ping"})),
-            line(json!({"jsonrpc": "2.0", "id": 1})),
-            line(json!({"jsonrpc": "2.0", "id": 1, "method": 5})),
-            line(json!({"jsonrpc": "2.0", "id": {"a": 1}, "method": "ping"})),
+            ("[]".to_owned(), Value::Null),
+            (
+                line(json!([{"jsonrpc": "2.0", "id": 1, "method": "ping"}])),
+                Value::Null,
+            ),
+            ("1".to_owned(), Value::Null),
+            (line(json!({"id": 1, "method": "ping"})), json!(1)),
+            (
+                line(json!({"jsonrpc": "1.0", "id": 1, "method": "ping"})),
+                json!(1),
+            ),
+            (line(json!({"jsonrpc": "2.0", "id": "a"})), json!("a")),
+            (
+                line(json!({"jsonrpc": "2.0", "id": 1, "method": 5})),
+                json!(1),
+            ),
+            (
+                line(json!({"jsonrpc": "2.0", "id": {"a": 1}, "method": "ping"})),
+                Value::Null,
+            ),
+            (
+                line(json!({"jsonrpc": "2.0", "id": null, "method": "ping"})),
+                Value::Null,
+            ),
         ];
-        for text in cases {
+        for (text, id) in cases {
             let out = reply(server.handle(&text));
             assert_eq!(error_code(&out), -32600, "{text}");
-            assert_eq!(out["id"], Value::Null, "{text}");
+            assert_eq!(out["id"], id, "{text}");
         }
     }
 
@@ -637,8 +670,58 @@ mod tests {
         for text in cases {
             let out = reply(server.handle(text));
             assert_eq!(error_code(&out), -32600, "{text}");
-            assert_eq!(out["id"], Value::Null, "{text}");
+            assert_eq!(out["id"], 1, "{text}");
         }
+    }
+
+    // A client waiting on the id of a refused line must get its answer.
+    #[test]
+    fn a_refused_line_with_a_valid_id_echoes_it() {
+        let mut server = server();
+        for (text, id) in [
+            (
+                r#"{"jsonrpc":"2.0","id":7,"method":"ping","method":"ping"}"#,
+                json!(7),
+            ),
+            (r#"{"jsonrpc":"2.0","id":"r-1","method":3}"#, json!("r-1")),
+            (r#"{"jsonrpc":"1.0","id":7.5,"method":"ping"}"#, json!(7.5)),
+        ] {
+            let out = reply(server.handle(text));
+            assert_eq!(error_code(&out), -32600, "{text}");
+            assert_eq!(out["id"], id, "{text}");
+        }
+    }
+
+    // `p\u0061th` and `\u0070ath` both spell `path`; so does a plain one.
+    #[test]
+    fn differently_escaped_spellings_of_a_key_collide() {
+        for text in [
+            r#"{"p\u0061th":1,"path":2}"#,
+            r#"{"\u0070ath":1,"p\u0061th":2}"#,
+            r#"{"a":{"\u0061":1,"a":2}}"#,
+        ] {
+            assert!(has_duplicate_keys(text), "{text}");
+        }
+        assert!(!has_duplicate_keys(r#"{"p\u0061th":1,"pat\u0068s":2}"#));
+    }
+
+    // serde_json stops at its recursion limit: the scanner never sees these.
+    #[test]
+    fn deeply_nested_lines_are_a_parse_error_not_a_panic() {
+        let mut server = server();
+        let arrays = format!("{}{}", "[".repeat(300), "]".repeat(300));
+        let objects = format!("{}1{}", r#"{"a":"#.repeat(300), "}".repeat(300));
+        let params = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"ping","params":{}0{}}}"#,
+            "[".repeat(300),
+            "]".repeat(300)
+        );
+        for text in [arrays, objects, params] {
+            let out = reply(server.handle(&text));
+            assert_eq!(error_code(&out), -32700);
+            assert_eq!(out["id"], Value::Null);
+        }
+        reply(server.handle(&request(json!(2), "ping", json!(null))));
     }
 
     #[test]

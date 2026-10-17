@@ -125,7 +125,7 @@ Fallback split if over 400: 1b-i (state, keys, effects) and 1b-ii (bar and snaps
 - [x] 2c.4 REFACTOR: reuse the codec later for the client (4b) via a shared `Frame` type.
 - [x] 2c.5 Gate.
 - [x] 2c.6 Docs: protocol subset table in module docs.
-  - Done in 2c: duplicate JSON keys are rejected at the raw layer (`Frame::parse`, a hand-written scanner, any depth, after unescaping) with -32600 and `id: null`; a line over 1 MiB (`MAX_LINE_BYTES`) gets the same. The wire cap is a module constant, not a config `Limits` type (the design has none). Left for 2d: the shim and session must also cap the bytes they buffer before calling `handle`.
+  - Done in 2c: duplicate JSON keys are rejected at the raw layer (`Frame::parse`, a hand-written scanner, any depth, after unescaping) with -32600 (echoing the request id when usable, else `id: null`); a line over 1 MiB (`MAX_LINE_BYTES`) gets the same. The wire cap is a module constant, not a config `Limits` type (the design has none). Left for 2d: the shim and session must also cap the bytes they buffer before calling `handle`.
 
 ## PR6 / 2d: Session, shim, jail test (`src/runtime/mcp/{mod,session,shim}.rs`, `src/main.rs`, `tests/jail.rs`)
 
