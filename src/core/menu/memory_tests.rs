@@ -100,7 +100,7 @@ fn warned() -> MenuState {
 // Spec (config-menu): Sections and items are data, Descriptor integrity.
 #[test]
 fn the_memory_descriptor_is_well_formed_and_precedes_tools() {
-    let memory = &AI_SECTION.items[AI_SECTION.items.len() - 2];
+    let memory = &AI_SECTION.items[AI_SECTION.items.len() - 3];
     assert_eq!(memory.label, "Memory");
     let ItemKind::Memory(row) = &memory.kind else {
         panic!("not a memory row");
@@ -120,7 +120,8 @@ fn the_memory_descriptor_is_well_formed_and_precedes_tools() {
             "Profile",
             "Context",
             "Memory",
-            "Tools"
+            "Tools",
+            "Approval",
         ]
     );
 }
@@ -140,12 +141,15 @@ fn navigation_visits_memory_after_summarize_and_wraps() {
         "Context",
         "Memory",
         "Tools",
+        "Approval",
         "Set all tasks",
     ] {
         press(&mut menu, KeyCode::Char('j'));
         assert_eq!(selected_label(&menu), label);
     }
     press(&mut menu, KeyCode::Char('k'));
+    assert_eq!(selected_label(&menu), "Approval");
+    press(&mut menu, KeyCode::Up);
     assert_eq!(selected_label(&menu), "Tools");
     press(&mut menu, KeyCode::Up);
     assert_eq!(selected_label(&menu), "Memory");

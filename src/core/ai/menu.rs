@@ -3,7 +3,7 @@
 
 use super::{
     Detection,
-    config::{AiConfig, Assignment, NotifyMode, Profile, Task},
+    config::{AiConfig, ApprovalMode, Assignment, NotifyMode, Profile, Task},
     picker::{Outcome, PickRow, Picker, Target, task_label},
 };
 
@@ -144,6 +144,18 @@ impl AiMenu {
     pub fn changed_tools(&self) -> Option<bool> {
         (self.draft.tools_enabled() != self.original.tools_enabled())
             .then(|| self.draft.tools_enabled())
+    }
+
+    /// Flips the approval mode of the draft (`ask` and `auto` are the only
+    /// two, so both directions do the same).
+    pub fn flip_approval(&mut self) {
+        let next = self.draft.approval().flipped();
+        self.draft.set_approval(next);
+    }
+
+    /// The approval mode in the draft, when it differs from the open one.
+    pub fn changed_approval(&self) -> Option<ApprovalMode> {
+        (self.draft.approval() != self.original.approval()).then(|| self.draft.approval())
     }
 
     /// Replaces the detection. The draft is never touched.

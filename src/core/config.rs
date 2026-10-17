@@ -11,7 +11,10 @@ use std::{
 
 use toml::{Table, Value};
 
-use super::ai::{self, config::AiConfig};
+use super::ai::{
+    self,
+    config::{AiConfig, ApprovalMode},
+};
 
 /// Which edge of the screen a bar sits on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -85,6 +88,16 @@ impl ConfigEdit {
             table: TOOLS_TABLE,
             key: "enabled",
             value: Cow::Borrowed(if on { "true" } else { "false" }),
+        }
+    }
+
+    /// The `ai.tools.approval` edit: a string, `ask` or `auto`, written even
+    /// when it equals the default.
+    pub fn approval(mode: ApprovalMode) -> Self {
+        Self {
+            table: TOOLS_TABLE,
+            key: "approval",
+            value: Cow::Borrowed(mode.id()),
         }
     }
 

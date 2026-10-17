@@ -564,3 +564,40 @@ fn a_inside_a_group_toggles_nothing() {
     press(&mut a, "wa");
     assert_eq!(chat_of_focus(&a), ApprovalMode::Ask);
 }
+
+// Spec (agent-tools, config menu): saving `auto` from the menu is no decision
+// on a pending approval: it stays pending, nothing is typed or written, and
+// the open chat keeps its mode.
+#[test]
+fn saving_auto_from_the_menu_leaves_a_pending_approval_alone() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, run("cd x"));
+    assert_eq!(chat_of_focus(&a), ApprovalMode::Ask);
+    let before = pending(&a);
+    assert_eq!(before, Some((run("cd x"), Some((turn, CallId(1))))));
+
+    let mut effects = a.update(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char(' '),
+        KeyModifiers::CONTROL,
+    )));
+    effects.extend(a.update(key('m')));
+    assert!(a.menu().is_some(), "the menu opened over the chat");
+    goto_row(&mut a, "Approval");
+    effects.extend(a.update(key('l')));
+    effects.extend(a.update(key('s')));
+    effects.extend(a.update(AppEvent::ConfigSaved));
+
+    assert_eq!(
+        a.ai().approval(),
+        ApprovalMode::Auto,
+        "the save went through"
+    );
+    assert_eq!(pending(&a), before, "the approval is still pending");
+    assert_eq!(chat_of_focus(&a), ApprovalMode::Ask, "the chat keeps ask");
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::WritePty(..) | Effect::AutoType { .. })),
+        "{effects:?}"
+    );
+}
