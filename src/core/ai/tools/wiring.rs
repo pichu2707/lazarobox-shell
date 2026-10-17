@@ -181,6 +181,9 @@ pub fn codex(shim: &Path, wire: &McpWire) -> Option<CodexWiring> {
 
 /// The prefix of every tool name gemini shows for this server: its fully
 /// qualified name is `mcp_{server}_{tool}` (gemini 0.63.0 docs).
+///
+/// The real gate on which server a call came from is the policy rule (its
+/// exact `mcpName`); the decoder's prefix check is defence in depth.
 pub const GEMINI_TOOL_PREFIX: &str = "mcp_lazarobox_";
 
 /// Whether a path survives gemini's reading of `--policy` and `--admin-policy`
@@ -449,7 +452,13 @@ mod tests {
     fn a_gemini_policy_path_it_would_split_or_trim_gives_no_wiring() {
         // gemini splits `--admin-policy` on `,` and trims each part, so
         // `/home/u/a,b` would load `/home/u/a` as an admin-tier folder.
-        for bad in ["/home/u/a,b/p.toml", " /p.toml", "/p.toml ", "/p.toml\n", "\t/p"] {
+        for bad in [
+            "/home/u/a,b/p.toml",
+            " /p.toml",
+            "/p.toml ",
+            "/p.toml\n",
+            "\t/p",
+        ] {
             assert!(
                 gemini(Path::new("/s"), Path::new(bad), &wire()).is_none(),
                 "{bad:?}"

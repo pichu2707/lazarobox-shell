@@ -352,8 +352,9 @@ fn gemini_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation 
         Err(reason) => return Invocation::Refused(reason),
     };
     let mut args: Vec<String> = [
-        // The folder is our private empty one, and an untrusted folder makes
-        // the CLI drop out of `plan` mode and refuse to run headless.
+        // The folder is our private one (on a wired turn it holds
+        // `.gemini/settings.json`), and an untrusted folder makes the CLI
+        // drop out of `plan` mode and refuse to run headless.
         "--skip-trust",
         "-p",
         GEMINI_PROMPT,

@@ -1529,7 +1529,9 @@ async fn a_policy_file_whose_path_gemini_would_split_refuses_the_turn() {
     let events = run_job(&env, gemini_job(JailPolicy::Layered)).await;
     assert_eq!(
         events,
-        [StreamEvent::Error(ChatError::Failed(UNUSABLE_FILE_PATH.into()))]
+        [StreamEvent::Error(ChatError::Failed(
+            UNUSABLE_FILE_PATH.into()
+        ))]
     );
     assert!(!lab.rec.join("argv").exists(), "gemini never started");
 }
