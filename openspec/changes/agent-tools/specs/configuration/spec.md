@@ -38,7 +38,7 @@ The file MAY hold a table `[ai.tools]` with `enabled` (boolean, default `true`).
 - THEN `enabled` applies and no notice is produced
 
 ### Requirement: Approval mode key
-The table `[ai.tools]` MAY hold `approval`, the string `"ask"` or `"auto"` (default `"ask"`, compared exactly, lowercase). It is the approval mode each new chat pane starts with (see agent-tools, Chat approval mode); chat panes already open keep their own mode. Any other value or type falls back to `"ask"` for that key only and reports `ai.tools.approval: expected "ask" or "auto"`, after the `ai.tools.enabled` problem in the notice order. A non-table `ai.tools` uses the default with the existing `ai.tools: expected a table` problem only. The key is read at startup and when changed from the config menu.
+The table `[ai.tools]` MAY hold `approval`, the string `"ask"` or `"auto"` (default `"ask"`, compared exactly, lowercase). It is the approval mode a chat pane takes when it opens and at each conversation switch inside it (see agent-tools, Chat approval mode); the current conversation of an open pane keeps its mode. Any other value or type falls back to `"ask"` for that key only and reports `ai.tools.approval: expected "ask" or "auto"`, after the `ai.tools.enabled` problem in the notice order. A non-table `ai.tools` uses the default with the existing `ai.tools: expected a table` problem only. The key is read at startup and when changed from the config menu.
 
 #### Scenario: Default ask [auto]
 - GIVEN a file with no `approval` under `[ai.tools]`, and a file with no `[ai.tools]`

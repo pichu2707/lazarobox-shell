@@ -260,7 +260,7 @@ Tools MUST only return or open paths inside `$HOME` (absolute, or `~`-relative a
 - THEN a `find_dir` row appears, then a confirm `run in pane N (<cwd>)` with a `cd` command, and after `y` and Enter the pane is in that directory
 
 ### Requirement: Chat approval mode
-Every chat pane MUST have an approval mode, `ask` or `auto`, for tool calls made by the model. `ask` is the default and is the behaviour of every other requirement here. A chat pane MUST start with the mode of `[ai.tools] approval` (see configuration) as it was when the pane opened; the toggle (see modal-input) MUST change the mode of the focused chat pane only, and the mode MUST NOT be stored or sent to any engine. In `auto` a `run_in_pane` call MUST be typed into the default target pane (the last focused shell pane of the chat's tab, no cycling) without a prompt, and MUST NEVER be followed by Enter, `\r` or a newline outside a bracketed paste. `auto` MUST NOT cover any other ask: `read_file` on a cloud engine and every user MCP tool still need `y`, `find_dir` and `list_dir` stay free, and the run action of pane-commands still opens its confirm. Before typing, the same checks as accepting with `y` MUST run (validation, the pane exists, it is a shell pane of the chat's tab, it is not on the alternate screen, a multi-line or tab command needs bracketed paste), and the target pane's foreground process MUST be its shell; when that cannot be known the call is refused. A failed check MUST return `denied` with a short reason and draw the result row; nothing is written. The call MUST instead open the normal prompt, as in `ask`, when an `auto` command was already typed in this turn, when the target pane has the focus, or when the chat's tab is not the shown tab. A call that arrives while an approval is pending MUST be denied (`another approval is pending`), and switching to `auto` MUST NOT answer a pending approval. The call row MUST show the exact command, and the result row MUST say it was typed into pane N with no Enter. The registry, tool descriptions and requests MUST be the same in both modes. While `auto` is on and tools are on, the chat pane MUST show an `AUTO` marker in high contrast in every chat view, focused or not; `ask` shows no marker. Executing the command (typing plus Enter, or reading its output back) is NOT part of any mode.
+Every chat pane MUST have an approval mode, `ask` or `auto`, for tool calls made by the model. `ask` is the default and is the behaviour of every other requirement here. A chat pane MUST take the mode of `[ai.tools] approval` (see configuration), as it is at that moment, when the pane opens and whenever the user switches to or starts another conversation in that pane; the toggle (see modal-input) MUST change the mode of the focused chat pane only, for its current conversation, and the mode MUST NOT be stored or sent to any engine. In `auto` a `run_in_pane` call MUST be typed into the default target pane (the last focused shell pane of the chat's tab, no cycling) without a prompt, and MUST NEVER be followed by Enter, `\r` or a newline outside a bracketed paste. `auto` MUST NOT cover any other ask: `read_file` on a cloud engine and every user MCP tool still need `y`, `find_dir` and `list_dir` stay free, and the run action of pane-commands still opens its confirm. Before typing, the same checks as accepting with `y` MUST run (validation, the pane exists, it is a shell pane of the chat's tab, it is not on the alternate screen, a multi-line or tab command needs bracketed paste), and the target pane's foreground process MUST be its shell; when that cannot be known the call is refused. A failed check MUST return `denied` with a short reason and draw the result row; nothing is written. After an `auto` command is typed, its target pane MUST be marked line pending. The mark MUST clear only when the user sends Enter, Ctrl+C or Ctrl+U to that pane through lazarobox's input, or pastes text holding `\r` into it, when that pane closes, or when the typed call ends `denied`; the screen is never read, and the mark belongs to one pane only. The call MUST instead open the normal prompt, as in `ask` (never denied for these reasons), when its target pane is marked line pending, when 5 `auto` commands (a named constant) were already typed in this turn, when the target pane has the focus, or when the chat's tab is not the shown tab. A call that arrives while an approval is pending MUST be denied (`another approval is pending`), and switching to `auto` MUST NOT answer a pending approval. The call row MUST show the exact command, and the result row MUST say it was typed into pane N with no Enter. The registry, tool descriptions and requests MUST be the same in both modes. While `auto` is on and tools are on, the chat pane MUST show an `AUTO` marker in high contrast in every chat view, focused or not; `ask` shows no marker. Executing the command (typing plus Enter, or reading its output back) is NOT part of any mode.
 
 #### Scenario: Default is ask [auto]
 - GIVEN a file with no `approval` under `[ai.tools]`
@@ -268,7 +268,7 @@ Every chat pane MUST have an approval mode, `ask` or `auto`, for tool calls made
 - THEN the chat is in `ask` mode, a confirm opens and nothing is written until `y`
 
 #### Scenario: Auto types without y and without Enter [auto]
-- GIVEN a chat in `auto` mode, shell pane 2 idle at its prompt, focused elsewhere, in the shown tab
+- GIVEN a chat in `auto` mode, shell pane 2 idle at its prompt, not marked line pending, focused elsewhere, in the shown tab
 - WHEN the model calls `run_in_pane` with `cd ~/dev/curso-rust`
 - THEN no confirm opens, exactly one write reaches pane 2 with the command bytes and no `\r` or trailing `\n`, and the result is `sent`
 
@@ -292,6 +292,11 @@ Every chat pane MUST have an approval mode, `ask` or `auto`, for tool calls made
 - WHEN a new chat pane opens
 - THEN the new chat is `auto` and the open chat stays `ask`
 
+#### Scenario: Conversation switch resets the mode [auto]
+- GIVEN `approval = "ask"` in the config and a chat pane toggled to `auto`
+- WHEN the user opens another conversation from the list in that pane, and in another run starts a new conversation in it
+- THEN the pane is `ask` each time and the `AUTO` marker is gone
+
 #### Scenario: Bar shows AUTO [auto, TestBackend + insta]
 - GIVEN a chat in `auto` mode, unfocused, and another in `ask`
 - WHEN rendered
@@ -307,10 +312,30 @@ Every chat pane MUST have an approval mode, `ask` or `auto`, for tool calls made
 - WHEN the model calls `run_in_pane`
 - THEN the result is `denied` (`pane N is running a program`) and nothing is written
 
-#### Scenario: One auto command per turn [auto]
-- GIVEN a chat in `auto` mode
-- WHEN the model calls `run_in_pane` twice in one turn, also in one batch
-- THEN the first is typed and the second opens the normal confirm
+#### Scenario: Second call prompts while the line is pending [auto]
+- GIVEN a chat in `auto` mode that has typed `cd ~/dev` into pane 2, and the user has sent nothing to pane 2 since
+- WHEN the model calls `run_in_pane` with `ls` for pane 2, in the same turn, in a later turn, or in the same batch
+- THEN the normal confirm opens and nothing more is written until `y`
+
+#### Scenario: Second call is typed after Enter [auto]
+- GIVEN the same chat, and the user then pressed Enter in pane 2
+- WHEN the model calls `run_in_pane` with `ls`
+- THEN `ls` is typed into pane 2 without a prompt and pane 2 is marked line pending again
+
+#### Scenario: Ctrl+C or Ctrl+U clears the mark [auto]
+- GIVEN pane 2 marked line pending
+- WHEN the user sends Ctrl+C to pane 2, and in another run Ctrl+U, and in another run pastes text holding `\r`
+- THEN the mark is cleared each time and the next `auto` call to pane 2 is typed without a prompt; other keys such as Backspace leave the mark set
+
+#### Scenario: The mark is per pane [auto]
+- GIVEN pane 2 marked line pending and shell pane 3 not marked
+- WHEN the target is pane 3, and in another run pane 2 is closed
+- THEN the call to pane 3 is typed without a prompt, and closing pane 2 removes its mark
+
+#### Scenario: Sixth call in a turn prompts [auto]
+- GIVEN a chat in `auto` mode where the user presses Enter in the target pane after each typed command
+- WHEN the model calls `run_in_pane` six times in one turn
+- THEN the first five are typed without a prompt and the sixth opens the normal confirm; the count starts again at the next turn
 
 #### Scenario: Focused target or hidden tab asks [auto]
 - GIVEN a chat in `auto` mode whose target pane has the focus, and in another run a chat whose tab is not shown

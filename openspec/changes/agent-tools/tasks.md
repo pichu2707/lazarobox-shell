@@ -4,7 +4,7 @@
 
 | Field | Value |
 |-------|-------|
-| Estimated changed lines | ~5,930 total (tests and snapshots included), 17 child PRs of 250-450 lines each |
+| Estimated changed lines | ~5,970 total (tests and snapshots included), 17 child PRs of 250-450 lines each |
 | 400-line budget risk | High (total); Medium per PR; High for 1b, 2d, 2e, 2e-3 (fallback splits noted) |
 | Chained PRs recommended | Yes |
 | Suggested split | 1a → 1b → 2a → 2b → 2c → 2d → 2e → 2e-3 → 2f → 2g → 2h → 2i (deferred) → 3a → 3b → 4a → 4b → 4c |
@@ -42,7 +42,7 @@ Rules for every PR:
 | 2c | MCP JSON-RPC core (pure) | PR5 | ~350 | PR4 | 2a |
 | 2d | Session, token, sweep, shim, main dispatch, `tests/jail.rs` | PR6 | ~400 | PR5 | 2c |
 | 2e | Tool events, rows, `ToolHost`, locality routing, decisions, timers | PR7 | ~400 | PR6 | 2b, 2d |
-| 2e-3 | Chat approval mode (D18): config key, route, auto-type, foreground check, toggle `a`, badge, menu row | PR7b | ~380 | PR7 | 2e |
+| 2e-3 | Chat approval mode (D18): config key, route, auto-type, foreground check, toggle `a`, badge, menu row | PR7b | ~420 (split 2e-3a/2e-3b likely) | PR7 | 2e |
 | 2f | claude wiring, tmp files, `ShimGrant`, decoder allow-list | PR8 | ~380 | PR7 | 2e |
 | 2g | codex wiring | PR9 | ~250 | PR8 | 2f |
 | 2h | gemini wiring | PR10 | ~300 | PR9 | 2f |
@@ -162,18 +162,19 @@ Fallback split if over 400: 2e-1 (events, rows, ToolHost) and 2e-2 (approval wir
 Files: `src/core/ai/{config,menu}.rs`, `src/core/menu.rs`, `src/core/config_edit.rs`, `src/core/ai/chat/{approval,mod}.rs`, `src/core/prefix.rs`, `src/app.rs`, `src/app/chat.rs`, `src/runtime.rs`, `src/ui/components/chat.rs`. Fallback split if over 400: 2e-3a (config key, route, auto-type, foreground check, toggle, badge) and 2e-3b (menu row and persistence).
 
 - [ ] 2e-3.1 RED: `[ai.tools] approval`: default `ask` (no key, no table); `"auto"` parses; `"AUTO"`, `"yes"`, `true` fall back to `ask` with `ai.tools.approval: expected "ask" or "auto"`; notice order after `ai.tools.enabled`; non-table `ai.tools` reports only `ai.tools: expected a table`.
-- [ ] 2e-3.2 RED: pure `approval::route`: `AutoType` only for `(Run, Origin::Tool, Auto)` with `typed_this_turn == 0`, target not focused, tab shown; `Read`, `External`, `Origin::Block` and `Ask` always `Prompt`; a second call in the turn is `Prompt`.
-- [ ] 2e-3.3 RED: `ChatState.approval_mode` set from config at open; toggle flips only that chat; config change reaches only chats opened later; `auto_typed` reset at turn start; mode never in store commands or requests; requests byte-identical in `ask` and `auto`; tools off byte-identical.
-- [ ] 2e-3.4 RED: auto-type in the App harness: no confirm, one `Effect::AutoType{pane,bytes,turn,call}` to `last_shell`, bytes from the shared `typed_bytes` (same as `y`), no `\r`; rechecks (pane gone, other tab, alt screen `\e[?1049h`, multi-line with paste off, escape in command) give `ToolDecision Denied` with reason and a result row, nothing written; pending approval gives `another approval is pending`; toggling to `auto` leaves a pending confirm pending; focused target and hidden tab open the prompt; two calls in one batch: one typed, one prompt.
+- [ ] 2e-3.2 RED: pure `approval::route`: `AutoType` only for `(Run, Origin::Tool, Auto)` with `typed_this_turn < MAX_AUTO_PER_TURN` (5), `!line_pending`, target not focused, tab shown; `Read`, `External`, `Origin::Block` and `Ask` always `Prompt`; the 6th call in a turn is `Prompt`.
+- [ ] 2e-3.3 RED: `ChatState.approval_mode` set from config at open and reset to the live config value when the user opens another conversation from the list or starts a new one in the pane; toggle flips only that chat; config change reaches only later opens and switches; `auto_typed` reset at turn start; mode never in store commands or requests; requests byte-identical in `ask` and `auto`; tools off byte-identical.
+- [ ] 2e-3.4 RED: auto-type in the App harness: no confirm, one `Effect::AutoType{pane,bytes,turn,call}` to `last_shell`, bytes from the shared `typed_bytes` (same as `y`), no `\r`; rechecks (pane gone, other tab, alt screen `\e[?1049h`, multi-line with paste off, escape in command) give `ToolDecision Denied` with reason and a result row, nothing written; pending approval gives `another approval is pending`; toggling to `auto` leaves a pending confirm pending; focused target and hidden tab open the prompt; two calls to one pane in one batch: one typed, one prompt.
+- [ ] 2e-3.4b RED: `line_pending` per PTY pane: set synchronously with `Effect::AutoType`; a later auto call to that pane prompts (same turn, later turn, same batch); cleared by user key events Enter, Ctrl+C, Ctrl+U forwarded to that pane (also with an extended keyboard protocol on), by a paste holding `\r`, by closing the pane, and by a `denied` result of the marked call; Backspace and other keys leave it set; a mark on pane 2 never affects pane 3; Enter after each command lets 5 be typed and the 6th prompts.
 - [ ] 2e-3.5 RED: runtime foreground check: `tcgetpgrp` on the master equal to the shell's group writes and decides `Sent`; a child in the foreground (fake PTY running `sleep`), an error or a non-unix target decide `Denied("pane N is running a program")` and write nothing.
 - [ ] 2e-3.6 RED: prefix leaf `a` → `PrefixAction::ToggleApproval`: root only, unhinted, non-empty description, root hint unchanged (79 columns), action count 34; on a chat pane flips the mode and adds the system line, also with a pending approval; shell pane and tools off only notice; inside a group, COPY or RESIZE nothing.
 - [ ] 2e-3.7 RED: TestBackend + insta: ` AUTO ` badge (`bg_base` on `error_red`, bold) top-right in conversation, list and editor views, focused or not; `A` below 6 columns; no marker in `ask` (existing snapshots unchanged); no marker with tools off; 1x1 to 10x2 do not panic.
 - [ ] 2e-3.8 RED: menu `Approval` row after `Tools` (`ask`/`auto`, own `ItemKind`), cycle keys, Enter repeat ignored, footer, Esc reverts, no live effect on open chats or a pending approval; navigation wraps from `Approval`; body 19 rows, full popup at 24x22 and 80x24, fallback at 23x22 and 24x21; descriptor integrity.
 - [ ] 2e-3.9 RED: persistence of `ai.tools.approval`: created next to `enabled`, updated in place with comment, written explicitly when equal to the default, untouched when unchanged, `[ai.tools.approval]` collision refused with the footer, saved file parses back.
-- [ ] 2e-3.10 GREEN: implement `ApprovalMode`, `route`, `typed_bytes` (extracted from the 1b accept path, no behaviour change for `y`), `Effect::AutoType`, foreground check, toggle, badge, menu row, owned key.
+- [ ] 2e-3.10 GREEN: implement `ApprovalMode`, `route`, `MAX_AUTO_PER_TURN`, `line_pending` and its clear points in the key and paste paths, the reset on conversation switch, `typed_bytes` (extracted from the 1b accept path, no behaviour change for `y`), `Effect::AutoType`, foreground check, toggle, badge, menu row, owned key.
 - [ ] 2e-3.11 Gate.
-- [ ] 2e-3.12 Docs: README "Approval mode" (`Ctrl+Space a`, `[ai.tools] approval`, typed never run, one per turn, the residual risks of design D18); doc comments.
-- [ ] 2e-3.13 [manual] Kitty: `auto` types `cd` unexecuted in bash, zsh and fish; refused while `python3` runs in the target; `AUTO` visible on an unfocused chat; `Ctrl+Space a` reaches the app.
+- [ ] 2e-3.12 Docs: README "Approval mode" (`Ctrl+Space a`, `[ai.tools] approval`, typed never run, a prompt while a typed line is unsent, at most 5 per turn, the mode resets per conversation, the residual risks of design D18); doc comments.
+- [ ] 2e-3.13 [manual] Kitty: `auto` types `cd` unexecuted in bash, zsh and fish; a second command prompts until Enter or Ctrl+C in the pane, then types; refused while `python3` runs in the target; `AUTO` visible on an unfocused chat; `Ctrl+Space a` reaches the app.
 
 ## PR8 / 2f: claude wiring (`src/core/ai/tools/wiring.rs`, `src/core/ai/chat/{claude,adapters,engine}.rs`, `src/runtime/chat/cli.rs`, `src/core/ai/jail.rs`)
 

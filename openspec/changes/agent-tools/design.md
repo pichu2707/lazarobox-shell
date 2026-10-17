@@ -31,19 +31,21 @@ PR1 (run in pane) is the base of this UX. PR2 to PR4 plug their tool calls into 
 | D15 | **Tool rows** are a new variant `Entry::Tool(ToolRow)`. They are shown, never stored, never sent as history (like `Entry::Reasoning`). | Storing them in SQLite | The spec says tool messages belong to the current turn only. |
 | D16 | **User servers (PR4)** are declared as `[[ai.mcp.servers]]` in `config.toml` with `name`, `command`, `args`, `env` (variable NAMES only) and an optional `project = "/abs/root"`. A server with a project is active when the chat's origin git root equals that root, and the project entry wins on a name clash. The qualified name is `<server>__<tool>`, matching `[a-z0-9_-]{1,24}`. A server exposes at most 64 tools. Servers are spawned directly, not jailed, with a scrubbed env and `cwd=$HOME`. | Repository files `.lazarobox/mcp.toml` | Opening a repo must never start a process (mcp-servers spec). |
 | D17 | **Approval routing by engine locality** (user decision 2026-10-15). `EngineKind::locality()` is `Local` for the HTTP loopback adapter (ollama) and `Cloud` for every CLI adapter; it comes from the adapter kind, never from config or model names. `ToolHost::needs_approval(call, locality)`: `RunInPane` and `External` always; `ReadFile` only when `Cloud`; `FindDir` and `ListDir` never. A cloud `read_file` produces `ToolCall{approval: Some(ApprovalAsk::Read{path})}` and the overlay shows `read <sanitized path>`; the file is opened only after `y`. `n`, Esc, timeout, cancel and close are `Denied`. `ApprovalAsk` is `Run{command}`, `Read{path}` or `External{..}`. | Approving every read; approving none | Local reads never leave the machine; a cloud read sends file text to a provider. Directory names are low-risk and stay free. |
-| D18 | **Chat approval mode** (user decision 2026-10-17): `ApprovalMode { Ask, Auto }`, per chat pane, default from `[ai.tools] approval`. In `Auto` a model `run_in_pane` is TYPED into the target pane without a prompt and never followed by Enter; everything else keeps D17. `needs_approval` is unchanged; the mode is applied in the app by a pure `approval::route`. Toggle: PREFIX root leaf `a`. Indicator: a red `AUTO` badge on the chat pane, nothing in `Ask`. Menu: an `Approval` row after `Tools`. Flood limits: one auto-typed command per turn, none while an approval is pending, none when the target pane has the focus or the chat's tab is not shown. Details below. | Auto-execute (Enter plus output capture); mode inside `ToolHost`; a per-turn mode snapshot in `ChatRequest` | See "D18 detail". |
+| D18 | **Chat approval mode** (user decision 2026-10-17): `ApprovalMode { Ask, Auto }`, per chat pane, default from `[ai.tools] approval`. In `Auto` a model `run_in_pane` is TYPED into the target pane without a prompt and never followed by Enter; everything else keeps D17. `needs_approval` is unchanged; the mode is applied in the app by a pure `approval::route`. Toggle: PREFIX root leaf `a`. Indicator: a red `AUTO` badge on the chat pane, nothing in `Ask`. Menu: an `Approval` row after `Tools`. Flood limits: no auto-type while the target pane's line is pending (an earlier auto-typed command the user has not sent or cleared), at most `MAX_AUTO_PER_TURN` = 5 per turn, none while an approval is pending, none when the target pane has the focus or the chat's tab is not shown; each of these falls back to the prompt. Details below. | Auto-execute (Enter plus output capture); mode inside `ToolHost`; a per-turn mode snapshot in `ChatRequest` | See "D18 detail". |
 
 ## D18 detail: chat approval mode (ask or auto-type)
 
-**Type and home.** `ApprovalMode { Ask, Auto }` lives in `core::ai::config` next to `NotifyMode` (`id()`, `parse()`); `AiConfig` gains `approval: ApprovalMode` (default `Ask`). `ChatState` gains `approval_mode: ApprovalMode`, set from the config when the chat pane opens, and `auto_typed: u8`, reset when a turn starts. The mode belongs to the chat pane: it is never stored, never sent, survives conversation switches inside the pane, and a config change (menu save) reaches only chat panes opened afterwards.
+**Type and home.** `ApprovalMode { Ask, Auto }` lives in `core::ai::config` next to `NotifyMode` (`id()`, `parse()`); `AiConfig` gains `approval: ApprovalMode` (default `Ask`). `ChatState` gains `approval_mode: ApprovalMode` and `auto_typed: u8` (reset when a turn starts). The mode is set from the live config value when the chat pane opens AND whenever the user switches to or starts another conversation inside that pane (user decision 2026-10-17): a mode chosen with the toggle lasts for the current conversation only. It is never stored and never sent. A config change (menu save) does not touch the current conversation of an open pane; it applies at the next pane open or conversation switch. Each PTY pane state gains `line_pending: Option<CallId>` (see Flood limits).
 
 **Routing.** `ToolHost::needs_approval(call, locality)` (D17) stays pure and mode-agnostic: `run_in_pane` still produces `ToolCall{approval: Some(ApprovalAsk::Run{..})}`. The app applies the mode when that event arrives, through a pure function in `chat/approval.rs`:
 
 ```rust
 pub enum Route { Prompt, AutoType }
-pub struct AutoCtx { pub typed_this_turn: u8, pub target_focused: bool, pub tab_shown: bool }
-/// AutoType only for (Run, Origin::Tool, Auto) with typed_this_turn < 1,
-/// !target_focused and tab_shown. Read and External asks are always Prompt.
+pub const MAX_AUTO_PER_TURN: u8 = 5;
+pub struct AutoCtx { pub typed_this_turn: u8, pub line_pending: bool,
+                     pub target_focused: bool, pub tab_shown: bool }
+/// AutoType only for (Run, Origin::Tool, Auto) with typed_this_turn < MAX_AUTO_PER_TURN,
+/// !line_pending, !target_focused and tab_shown. Read and External asks are always Prompt.
 pub fn route(ask: &ApprovalAsk, origin: Origin, mode: ApprovalMode, ctx: AutoCtx) -> Route;
 ```
 
@@ -55,23 +57,33 @@ pub fn route(ask: &ApprovalAsk, origin: Origin, mode: ApprovalMode, ctx: AutoCtx
 
 A pending approval is never answered by the mode: toggling to `auto` leaves it pending, and a call that arrives while any approval is pending is denied `another approval is pending` as today (D1, 1a). The registry, tool descriptions and requests are identical in both modes, so the model is not told the mode and `tools off` stays byte-identical.
 
-**Auto-type path.** `Route::AutoType` runs the same checks as `y` (1b) on the default target (`Tab.last_shell`, no cycling): `validate`, pane exists, PTY of the chat's tab, not on the alternate screen, multi-line or tab needs bracketed paste, bytes from `encode_paste` or raw, no `\r`. One shared function, `App::typed_bytes(target, &command) -> Result<Vec<u8>, Refusal>`, serves `y` and auto so the checks cannot drift. On success the app emits `Effect::AutoType{pane, bytes, turn, call}` and increments `auto_typed`. The runtime, which owns the PTY master and the shell pid, checks at write time that the foreground process group (`tcgetpgrp` on the master) equals the shell's group; then it writes and decides `Sent`, else `Denied("pane N is running a program")`. Unknown (error, non-unix) is denied. Any refusal reaches the model as `denied` with the reason, and the host emits the `ToolResult` row. The call row always shows the exact command; the result row reads `typed into pane N — no Enter`.
+**Auto-type path.** `Route::AutoType` runs the same checks as `y` (1b) on the default target (`Tab.last_shell`, no cycling): `validate`, pane exists, PTY of the chat's tab, not on the alternate screen, multi-line or tab needs bracketed paste, bytes from `encode_paste` or raw, no `\r`. One shared function, `App::typed_bytes(target, &command) -> Result<Vec<u8>, Refusal>`, serves `y` and auto so the checks cannot drift. On success the app emits `Effect::AutoType{pane, bytes, turn, call}`, increments `auto_typed` and sets the target's `line_pending = Some(call)`, all synchronously. The runtime, which owns the PTY master and the shell pid, checks at write time that the foreground process group (`tcgetpgrp` on the master) equals the shell's group; then it writes and decides `Sent`, else `Denied("pane N is running a program")`. Unknown (error, non-unix) is denied. Any refusal reaches the model as `denied` with the reason, and the host emits the `ToolResult` row. The call row always shows the exact command; the result row reads `typed into pane N — no Enter`.
 
-**Falls back to the prompt (not a denial):** a second `run_in_pane` in the same turn; the target pane has the focus (the user may be typing in it); the chat's tab is not the shown tab (the user could not see the typing). The prompt then behaves exactly as in `ask`.
+**Falls back to the prompt (not a denial):** the target's line is pending; `MAX_AUTO_PER_TURN` commands were already typed in this turn; the target pane has the focus (the user may be typing in it); the chat's tab is not the shown tab (the user could not see the typing). The prompt then behaves exactly as in `ask`. The focus and tab fallbacks are confirmed by the user (2026-10-17).
 
-**Flood limits, justified.** One auto-typed command per turn: since Enter is never sent, a second command would be appended to the first on the same shell line (`cd x` + `ls` = `cd xls`), so the second must be seen in a prompt. Parallel calls (claude can batch) are covered because `auto_typed` is incremented synchronously before the effect. No auto-type while an approval is pending keeps one decision at a time per chat. No timer-based rate limit is needed with a cap of one.
+**Flood limits, justified (user decision 2026-10-17: several per turn, with a prompt in between).**
+- *Line pending, per pane.* Since Enter is never sent, a second command typed onto an unsent line would be appended to it (`cd x` + `ls` = `cd xls`). So after an auto-type the target pane is marked `line_pending`, and a later auto call to that pane prompts instead. The mark clears when the user sends to that pane through lazarobox's input path, which every user key to a pane already crosses: a key event Enter, Ctrl+C or Ctrl+U forwarded to the pane, or a paste whose text holds `\r`. The rule reads key events before encoding, so it also holds when the child enabled an extended keyboard protocol (Enter as `\e[13u`). The mark also clears when the pane closes, and when the `ToolResult` of the marked call is `denied` (the runtime refused the write). It is never shared across panes and the screen is never read. Known limit: a user who deletes the line with Backspace or edits it into something else leaves the mark set; the next call prompts, which is safe.
+- *Safety cap.* At most `MAX_AUTO_PER_TURN` = 5 auto-typed commands per turn; after that every call in the turn prompts. It bounds a model that loops on `run_in_pane` while the user keeps pressing Enter.
+- *Batches.* Parallel calls (claude can batch) are covered because `auto_typed` and `line_pending` are updated synchronously before the effect: the second call of a batch to the same pane prompts.
+- *One decision at a time.* No auto-type while an approval is pending in the chat. No timer-based rate limit is needed.
 
 **Key.** PREFIX root leaf `a` ("approval: ask/auto"), unhinted (the root hint is 79 columns). Free root letters were a, d, f, i, p, r, u, v, x, y, z; `a` is the mnemonic and is bound nowhere else (prefix.rs). It works on a focused chat pane in any chat view, also while an approval is pending (Ctrl+Space already passes through the overlay, 1b.3). It writes a system line `approval: auto (commands are typed, never run)` or `approval: ask`. On a shell pane, or with tools off, it shows a notice and changes nothing. No direct Ctrl+letter key (project rule).
 
-**Indicator.** `Auto` draws ` AUTO ` (bold, `bg_base` on `error_red`) over the top-right cells of the chat pane in every chat view, focused or not; below 6 columns it draws `A`. `Ask` draws nothing. Rationale: an exception marker, like the `[Z]` zoom marker; `ask` snapshots stay unchanged; a pane badge (not the statusline) because the statusline follows the focus while an unfocused chat can still type. Shown only while tools are on.
+**Indicator.** `Auto` draws ` AUTO ` (bold, `bg_base` on `error_red`) over the top-right cells of the chat pane in every chat view, focused or not; below 6 columns it draws `A`. `Ask` draws nothing. Rationale: an exception marker, like the `[Z]` zoom marker; `ask` snapshots stay unchanged; a pane badge (not the statusline) because the statusline follows the focus while an unfocused chat can still type. Shown only while tools are on. Pane badge only, nothing in the statusline: user decision 2026-10-17.
 
-**Menu row.** A cycle row `Approval` (`ask`, `auto`) after `Tools`, saving `ai.tools.approval`; no live effect, new chat panes only. Weighed: discoverability and parity with `Tools` versus one more row. The task list body grows from 18 to 19 rows; the full popup needs 22 rows (24 columns wide) and is 23 rows tall, so it still fits 80x24 (headroom drops from 3 rows to 2). The next AI row after this one needs a layout review.
+**Menu row.** A cycle row `Approval` (`ask`, `auto`) after `Tools`, saving `ai.tools.approval`; no live effect, new chat panes and the next conversation switch only. Weighed: discoverability and parity with `Tools` versus one more row. The task list body grows from 18 to 19 rows; the full popup needs 22 rows (24 columns wide) and is 23 rows tall, so it still fits 80x24 (headroom drops from 3 rows to 2). The next AI row after this one needs a layout review.
 
 **Threat-model addendum.** Auto-type removes the per-call `y`, not the human: the shell's Enter stays the last barrier against prompt injection, and nothing is ever executed by lazarobox. Residual risks, accepted and documented in the README:
-- A typed command lands after a half-typed line (D6); the one-per-turn cap and the focused-pane fallback reduce, not remove, it.
+- A typed command lands after a half-typed line (D6): the line-pending mark covers lines lazarobox typed, and the focused-pane fallback covers most user typing; a line the user typed and then left unfocused is not detected.
 - A program that acts on input without Enter (vi-mode normal state of zle/readline, a pager, a TUI not on the alternate screen): bracketed paste makes readline and zle insert the text literally; without it only single lines are typed.
 - A REPL, `ssh` or nested shell executes on newline: refused by the foreground check; multi-line text without bracketed paste is refused anyway. A program started between the check and the write (microseconds) is not covered.
 - A model can still type a destructive command that the user runs by reflex: the badge, the tool row with the exact command and the system line are the mitigations; `ask` stays the default.
+
+**Resolved decisions (user, 2026-10-17).**
+- Per-turn limit: several auto-typed commands per turn, with a prompt in between while a line is pending; safety cap `MAX_AUTO_PER_TURN` = 5.
+- Focused target pane or hidden tab: fall back to the prompt, never deny.
+- Conversation switch or new conversation inside a pane: the mode resets to the config value.
+- Indicator: pane badge only, no statusline marker.
 
 **Non-goal.** Auto-execute (typing plus Enter, and reading output back to the model) is out of scope; it would be a separate SDD after 1.0.
 
@@ -150,9 +162,9 @@ For the post-open race, `read_file` opens the file and then re-checks the real p
 | `src/core/ai/{config,menu}.rs`, `src/core/config_edit.rs` | Modify | 2a/4a | `[ai.tools] enabled`, `[[ai.mcp.servers]]` |
 | `src/runtime/mcp/client.rs` | Create | 4b | Client for user servers |
 | `src/core/ai/{config,menu}.rs`, `src/core/menu.rs`, `src/core/config_edit.rs` | Modify | 2e-3 | `ApprovalMode`, `[ai.tools] approval`, `Approval` row, owned key |
-| `src/core/ai/chat/{approval,mod}.rs` | Modify | 2e-3 | `Route`, `AutoCtx`, `route`; `ChatState.approval_mode`, `auto_typed` |
+| `src/core/ai/chat/{approval,mod}.rs` | Modify | 2e-3 | `Route`, `AutoCtx`, `route`, `MAX_AUTO_PER_TURN`; `ChatState.approval_mode`, `auto_typed`, reset on conversation switch |
 | `src/core/prefix.rs` | Modify | 2e-3 | `a` → `PrefixAction::ToggleApproval` |
-| `src/app.rs`, `src/app/chat.rs`, `src/runtime.rs` | Modify | 2e-3 | `typed_bytes` shared with `y`, `Effect::AutoType`, foreground check at write |
+| `src/app.rs`, `src/app/chat.rs`, `src/runtime.rs` | Modify | 2e-3 | `typed_bytes` shared with `y`, `Effect::AutoType`, `line_pending` per PTY pane (set on auto-type, cleared on user Enter/Ctrl+C/Ctrl+U/`\r` paste, close, denial), foreground check at write |
 | `src/ui/components/chat.rs` | Modify | 2e-3 | `AUTO` badge (insta snapshots) |
 | `tests/jail.rs` | Create | 2d | The real binary jailed: exec of the shim plus a connect, and `/usr/bin/curl` still denied (skipped without Landlock) |
 
@@ -188,7 +200,7 @@ The estimates include tests. Slice 1a targets the tracker; each following slice 
 | 2c | MCP JSON-RPC core | 350 |
 | 2d | Session, token, sweep, shim, main dispatch, `tests/jail.rs` | 400 |
 | 2e | Tool events, rows, ToolHost, decisions, timer suspension | 400 |
-| 2e-3 | Approval mode (D18): config key, menu row, route, auto-type, foreground check, toggle, badge | 380 |
+| 2e-3 | Approval mode (D18): config key, menu row, route, auto-type, foreground check, line-pending mark, toggle, badge | 420 (split 2e-3a/2e-3b likely) |
 | 2f | claude wiring, generalized tmp files, ShimGrant, decoder allow-list | 380 |
 | 2g / 2h / 2i | codex, gemini, opencode wiring (each gated by its manual check) | 250 / 300 / 250 |
 | 3a / 3b | Ollama tools body and decoder / the loop and the no-tools fallback | 350 / 300 |
@@ -253,5 +265,5 @@ All are resolved except the D18 verification item; the specs were edited to matc
 - [x] Injection config files live in the per-turn tmp dir (0700, jail-granted, wiped after the turn); the specs say so.
 - [x] Per-project MCP servers live only in the user's config, keyed by project root, never read from a repository (user decision; D16 and the mcp-servers spec agree).
 - [x] Read-tool approval follows D17 (user decision): `read_file` asks on cloud engines only.
-- [x] Chat approval mode follows D18 (user decision 2026-10-17): `ask` or `auto` (type, never Enter), `run_in_pane` only.
+- [x] Chat approval mode follows D18 (user decision 2026-10-17): `ask` or `auto` (type, never Enter), `run_in_pane` only; the four follow-up questions are resolved in "D18 detail".
 - [ ] D18 to verify in 2e-3: the runtime keeps the shell pid per PTY pane (needed for the foreground check); `tcgetpgrp` on the master fd reports the foreground group on Linux and macOS.
