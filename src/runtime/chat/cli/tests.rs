@@ -1738,6 +1738,7 @@ printf '%s\n' '{"type":"result","status":"success"}'
 
 /// The claude of a turn with tools: it also copies the config it was given.
 const MCP_CLAUDE: &str = r#"
+if [ -e "$TMPDIR/mcp.json" ]; then echo yes > "$REC/mcp_during"; fi
 for a; do
   case "$a" in
     --mcp-config=*)
@@ -1812,6 +1813,11 @@ async fn a_wired_claude_gets_the_config_the_flags_the_timeout_and_the_jail_grant
         "{config}"
     );
     assert_eq!(lab.recorded("mcp_mode").trim(), "600");
+    // The config existed while claude ran, and the token file is gone after.
+    assert_eq!(lab.recorded("mcp_during").trim(), "yes");
+    let config_path = PathBuf::from(args[n - 2].trim_start_matches("--mcp-config="));
+    assert!(!config_path.exists(), "mcp.json is wiped after the turn");
+    assert!(!config_path.parent().unwrap().exists(), "so is its folder");
     assert!(
         lab.recorded("env")
             .lines()
@@ -1885,6 +1891,35 @@ async fn a_jailed_claude_without_a_shim_program_stays_jailed_and_text_only() {
     );
 }
 
+/// A shim program that passes the trust check and that the jail still refuses
+/// to grant: it sits in `~/.ssh`, which no layout may open.
+fn shim_in_ssh(lab: &Lab) -> PathBuf {
+    let dir = lab.home.join(".ssh");
+    fs::create_dir_all(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    let shim = dir.join("lazarobox-shell");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    shim
+}
+
+#[test]
+fn the_jail_refuses_that_shim_and_only_that_shim() {
+    let lab = lab();
+    script(&lab.bin.join("claude"), &lab.rec, GOOD);
+    let shim = shim_in_ssh(&lab);
+    let socket = lab.rec.join("s.sock");
+    fs::write(&socket, "").unwrap();
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let dirs = Dirs::create(env.data.as_deref().unwrap()).unwrap();
+    let binary = lab.bin.join("claude");
+    let grant = Some((shim.as_path(), socket.as_path()));
+    let refusal = jail_plan(&env, Cli::Claude, &binary, &dirs, grant).unwrap_err();
+    assert_eq!(refusal, JailRefusal::RootTooBroad(shim.clone()));
+    // The same layout without the shim is fine: it is the only cause.
+    assert!(jail_plan(&env, Cli::Claude, &binary, &dirs, None).is_ok());
+}
+
 #[tokio::test]
 async fn a_shim_the_jail_refuses_retries_the_jail_without_it() {
     let lab = lab();
@@ -1893,8 +1928,8 @@ async fn a_shim_the_jail_refuses_retries_the_jail_without_it() {
         &lab.rec,
         &format!("{MCP_CLAUDE}{GOOD}"),
     );
-    // /tmp is a place the jail never grants.
-    let env = with_shim(&lab, lab.env(), "/tmp/lazarobox-shell");
+    let shim = shim_in_ssh(&lab);
+    let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
     let events = run_job(&env, claude_job(&lab, true)).await;
     assert_eq!(
         events[0],
@@ -1902,12 +1937,24 @@ async fn a_shim_the_jail_refuses_retries_the_jail_without_it() {
         "{events:?}"
     );
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    // The retry ran: through the jail helper, with no flag of the tools, no
+    // grant for the shim or the socket, and no config file on disk.
     assert_eq!(lab.args(), ["-p", "--strict-mcp-config"]);
     let helper = lab.recorded("helper_args");
+    assert!(!helper.is_empty(), "still through the jail helper");
     assert!(
-        !helper.contains("/tmp/lazarobox-shell") && !helper.contains("s.sock"),
+        !helper.contains(shim.to_str().unwrap()) && !helper.contains("s.sock"),
         "{helper:?}"
     );
+    assert_eq!(lab.recorded("mcp_copy"), "", "no --mcp-config was given");
+    assert_eq!(
+        lab.recorded("mcp_during"),
+        "",
+        "no config file while it ran"
+    );
+    assert!(!lab.recorded("env").contains("MCP_TOOL_TIMEOUT"));
+    let leftovers = fs::read_dir(lab.data.join("cli-tmp")).unwrap().count();
+    assert_eq!(leftovers, 0, "the turn's folder is wiped");
 }
 
 /// A shim program the trust check refuses (it sits in a folder others can
@@ -2035,6 +2082,35 @@ async fn a_turn_the_plan_refuses_ends_its_session_too() {
     let events = run_job(&env, job).await;
     assert!(matches!(events.last(), Some(StreamEvent::Error(_))));
     assert_eq!(count.load(Ordering::SeqCst), 1);
+}
+
+/// A claude that starts one of lazarobox's own tools, then answers.
+const OWN_TOOL: &str = r#"
+cat > /dev/null
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t","name":"mcp__lazarobox__find_dir","input":{}}},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"hi"}'
+"#;
+
+#[tokio::test]
+async fn only_a_wired_turn_lets_claude_use_our_tools() {
+    let lab = lab();
+    script(&lab.bin.join("claude"), &lab.rec, OWN_TOOL);
+    let shim = lab.bin.join("shim");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    let wired = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    let events = run_job(&wired, claude_job(&lab, true)).await;
+    assert_eq!(
+        events.last(),
+        Some(&StreamEvent::Done(Finish::Stop)),
+        "{events:?}"
+    );
+    // The same stream in a turn that fell back to text: nothing was offered.
+    let mut bare = lab.env();
+    bare.shim = Some(shim);
+    let events = run_job(&bare, claude_job(&lab, true)).await;
+    assert_eq!(failure(&events), "claude tried to use a tool", "{events:?}");
 }
 
 #[tokio::test]
