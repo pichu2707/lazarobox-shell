@@ -90,22 +90,22 @@ Files: `src/core/ai/chat/approval.rs`, `src/app/auto_run.rs` (new), `src/app/run
 
 Interim (until S4a): the host answers `Decision::Ran(N)` at once with "output not read back". This is the only releasable wording before the answer channel lands.
 
-- [ ] S3.1 RED: `route` matrix with `Route<'a> { Prompt(Option<Fallback>), AutoType, AutoRun(SafeCommand) }`: each `AutoCtx` bit (`dirty`, `executing`, `cwd_known`, `paused`, plus existing focus/hidden/cap) forces `Prompt`; `Auto` and `Ask` never produce `AutoRun`; grammar fallback gives `Prompt(Some(fallback))`.
-- [ ] S3.2 RED: fallback pause: `run_fallbacks` counts consecutive grammar/policy fallbacks; at `MAX_RUN_FALLBACKS = 3` every later call in the turn prompts with `auto-run paused for this turn`; limit fallbacks do not count; reset at turn start and after each run.
-- [ ] S3.3 RED: app test `tool_run.rs`: `AutoRun` reserves a per-target `RunSlot{phase: Checking}`, counts toward `auto_typed` with no refund on fallback, emits `Effect::CheckRun`; a second call to the same pane in a batch prompts.
-- [ ] S3.4 RED: app test: `RunEvent::Checked` re-runs `route`; if it passes, emits `Effect::AutoRun` whose bytes end in `\r` exactly once (`frame_bytes` plus `\r`, same alt-screen and paste checks as `typed_bytes`); `Refused{reason}` and `NotRun{reason}` open the prompt with that reason.
-- [ ] S3.5 RED: app test: `y` on a prompt and the `auto` path never emit `\r` (distinct Effect variant, structurally impossible); an off-list command in `run` prompts and `y` types without Enter.
-- [ ] S3.6 RED: dirty guard: `user_dirty` set by every forwarded key, paste or wheel write; cleared only by Enter and Ctrl+C; Ctrl+U does NOT clear it but still clears `line_pending`; a dirty pane prompts.
-- [ ] S3.6b RED: locale gate: a command with non-ASCII bytes runs only when the pane's locale (`LC_ALL`, then `LC_CTYPE`, then `LANG` of the spawned shell's env) names UTF-8; otherwise `route` returns the prompt with a reason (`cd música` under `LANG=C` prompts, under `en_US.UTF-8` runs; ASCII commands are unaffected).
-- [ ] S3.7 RED: macOS path: `cwd_known == false` always prompts with `the pane's directory cannot be read on this system`.
-- [ ] S3.8 RED: runtime `run_check::check` on tempdir fixtures: re-parses the same bytes, builds `load_roots`, calls `resolve_exec` per target; 2 s timeout gives `Refused`; the answer carries `cwd` and `cd_target`.
-- [ ] S3.9 RED: runtime with `FakePty`: write step requires `readlink == cwd` AND foreground is the shell; mismatch or busy gives `NotRun` and nothing is written; `take` happens before the write; one write only.
-- [ ] S3.10 RED: cleanup: turn finish/cancel drops slots of that `(chat, turn)`; pane close and chat close clear slots; `executing` is released in every case.
-- [ ] S3.11 RED: host interim: `Decision::Ran(N)` is answered at once with a result that says the output was not read back.
-- [ ] S3.12 GREEN: `AutoCtx` bits, `Route::AutoRun`, `RunSlot`, `Effect::CheckRun` / `Effect::AutoRun`, `AppEvent::Run` plus `run_rx` arm, `frame_bytes` split, `user_dirty`, `run_check.rs`, `run_if_idle`, pub(crate) `load_roots`, host interim answer.
-- [ ] S3.13 REFACTOR: single choke point `route`; no mode in `Call`, `ChatRequest`, `StreamEvent` or `Effect`; re-run the S1.7 audit.
-- [ ] S3.14 Docs: doc comments for the one-write invariant, the cwd TOCTOU residual and `Ctrl+U` rationale.
-- [ ] S3.15 Gate. Measure; expect ~340. Fallback split if over 400: S3a (route, slot, CheckRun, run_check) and S3b (AutoRun write, runtime guards, dirty flag).
+- [x] S3.1 RED: `route` matrix with `Route<'a> { Prompt(Option<Fallback>), AutoType, AutoRun(SafeCommand) }`: each `AutoCtx` bit (`dirty`, `executing`, `cwd_known`, `paused`, plus existing focus/hidden/cap) forces `Prompt`; `Auto` and `Ask` never produce `AutoRun`; grammar fallback gives `Prompt(Some(fallback))`.
+- [x] S3.2 RED: fallback pause: `run_fallbacks` counts consecutive grammar/policy fallbacks; at `MAX_RUN_FALLBACKS = 3` every later call in the turn prompts with `auto-run paused for this turn`; limit fallbacks do not count; reset at turn start and after each run.
+- [x] S3.3 RED: app test `tool_run.rs`: `AutoRun` reserves a per-target `RunSlot{phase: Checking}`, counts toward `auto_typed` with no refund on fallback, emits `Effect::CheckRun`; a second call to the same pane in a batch prompts.
+- [x] S3.4 RED: app test: `RunEvent::Checked` re-runs `route`; if it passes, emits `Effect::AutoRun` whose bytes end in `\r` exactly once (`frame_bytes` plus `\r`, same alt-screen and paste checks as `typed_bytes`); `Refused{reason}` and `NotRun{reason}` open the prompt with that reason.
+- [x] S3.5 RED: app test: `y` on a prompt and the `auto` path never emit `\r` (distinct Effect variant, structurally impossible); an off-list command in `run` prompts and `y` types without Enter.
+- [x] S3.6 RED: dirty guard: `user_dirty` set by every forwarded key, paste or wheel write; cleared only by Enter and Ctrl+C; Ctrl+U does NOT clear it but still clears `line_pending`; a dirty pane prompts.
+- [x] S3.6b RED: locale gate: a command with non-ASCII bytes runs only when the pane's locale (`LC_ALL`, then `LC_CTYPE`, then `LANG` of the spawned shell's env) names UTF-8; otherwise `route` returns the prompt with a reason (`cd música` under `LANG=C` prompts, under `en_US.UTF-8` runs; ASCII commands are unaffected).
+- [x] S3.7 RED: macOS path: `cwd_known == false` always prompts with `the pane's directory cannot be read on this system`.
+- [x] S3.8 RED: runtime `run_check::check` on tempdir fixtures: re-parses the same bytes, builds `load_roots`, calls `resolve_exec` per target; 2 s timeout gives `Refused`; the answer carries `cwd` and `cd_target`.
+- [x] S3.9 RED: runtime with `FakePty`: write step requires `readlink == cwd` AND foreground is the shell; mismatch or busy gives `NotRun` and nothing is written; `take` happens before the write; one write only.
+- [x] S3.10 RED: cleanup: turn finish/cancel drops slots of that `(chat, turn)`; pane close and chat close clear slots; `executing` is released in every case.
+- [x] S3.11 RED: host interim: `Decision::Ran(N)` is answered at once with a result that says the output was not read back.
+- [x] S3.12 GREEN: `AutoCtx` bits, `Route::AutoRun`, `RunSlot`, `Effect::CheckRun` / `Effect::AutoRun`, `AppEvent::Run` plus `run_rx` arm, `frame_bytes` split, `user_dirty`, `run_check.rs`, `run_if_idle`, pub(crate) `load_roots`, host interim answer.
+- [x] S3.13 REFACTOR: single choke point `route`; no mode in `Call`, `ChatRequest`, `StreamEvent` or `Effect`; re-run the S1.7 audit.
+- [x] S3.14 Docs: doc comments for the one-write invariant, the cwd TOCTOU residual and `Ctrl+U` rationale.
+- [x] S3.15 Gate. Measure; expect ~340. Fallback split if over 400: S3a (route, slot, CheckRun, run_check) and S3b (AutoRun write, runtime guards, dirty flag).
 - [ ] S3.M1 [manual] M1: real-shell checks in bash, zsh and fish, with a chat in `run`: (a) "take me to <dir>" runs `cd` with no `y` and no Enter; (b) `ls` and `mkdir -p` run; (c) half-typed line: type `rm -rf ` in the pane, then ask for a `cd`; it MUST prompt and not run; (d) Ctrl+U on the half-typed line does not re-enable runs until Enter or Ctrl+C; (e) a REPL (python, node) in the foreground: a command prompts and nothing is typed into it; (f) `cd ~/.ssh`, `ls *`, `cd x; rm y` never run. Record results in the PR.
 
 ## S4a: Settle machine, answer channel, cwd result (~290 non-test lines)
@@ -117,7 +117,7 @@ Files: `src/core/ai/tools/settle.rs` (new), `src/core/ai/tools/engine.rs` (`Answ
 - [ ] S4a.3 RED: `Waits` stores `oneshot::Sender<Answer>`; `park`, `finish`, `end_turn`, `end_pane` and drop cleanup also cover running calls; `Decision` stays `Copy` and `From<Decision> for Answer`.
 - [ ] S4a.4 RED: tick probe: the runtime emits `RunEvent::Probe{foreground, cwd}` only for panes where `App::run_probes()` yields a Running slot; none when idle (no new thread or timer).
 - [ ] S4a.5 RED: host wording table, every row starting with `<cmd>: `: Settled (`Ran in pane N. cwd: <p>. Exit status is not known.` plus `(no output)`), cd mismatch (`The shell is in <actual>, not <target> ...`), TimedOut (`still running after 10 s`), Lost (`its output is not available`), FullScreen, UserTyped; rows and the `pane N: <cmd> → <cwd>` system line for `cd` only.
-- [ ] S4a.6 RED: pane close during a run emits `RunDone(PaneGone)`; `executing` released; `CwdSource::{Proc, Osc7}` labelled, and OSC 7 is never used for the policy.
+- [ ] S4a.6 RED: pane close during a run emits `RunDone(PaneGone)`; `executing` released; `CwdSource::{Proc, Osc7}` labelled, and OSC 7 is never used for the policy. Note (S3 review, S6): until S4a-2 the slot is freed by the call's `ToolResult` (the interim host answers `Ran` at once), so `executing` is released at `Ran`; the S4a-2 wiring must hold the slot until settle, and a pane closed mid-run must deny the call (`the pane is gone`, as S3 does for a check or write in flight).
 - [ ] S4a.7 GREEN: implement `settle.rs`, `Answer`, `RunReport`, `park`/`finish`, tick probe, `Effect::RunDone`, host wording; remove `Decision::Ran` and the S3 interim answer.
 - [ ] S4a.8 REFACTOR: confirm no `ApprovalMode` under `src/runtime/` (S1.7 audit); no duplicated cleanup paths.
 - [ ] S4a.9 Docs: doc comments on `Settle` rules and `RunReport`.
