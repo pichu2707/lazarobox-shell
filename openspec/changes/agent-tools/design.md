@@ -243,6 +243,7 @@ No data migration. `[ai.tools]` is on by default. Every CLI is text-only until i
 - `CliEnv.helper` is `/proc/self/exe`.
 - `Job.tmp_file` is a single `Option` with `&'static` content.
 - The codex and gemini decoders fail closed on any tool event.
+- The claude decoder fails closed too, in two modes (2f review). A wired turn (tools on, MCP session present) reads content blocks with a strict allow-list: `text`, `thinking`, `redacted_thinking` and a `tool_use` named `mcp__lazarobox__` plus at least one character; any other block type ends the turn as foreign. A text-only turn (tools off or not wired) refuses any block type that contains `tool` or ends in `_use` (ASCII case-insensitive) and any `tool_use` at all, ours included, and tolerates other new block types. This is a deliberate hardening that is new for text-only chats. Blocks are read in `content_block_start`, `message_start.message.content`, `assistant.message.content` and `content_block_delta`; usage counters such as `message.usage.server_tool_use` are not blocks.
 - The CLI idle limit is 300 s, and the total is 15 min.
 - The only serialization dependency is `serde_json` (no serde derive). MSRV is 1.88, edition 2024.
 - `CREDENTIAL_DIRS` is private.

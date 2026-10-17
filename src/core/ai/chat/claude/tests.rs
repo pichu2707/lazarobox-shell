@@ -18,7 +18,10 @@ fn done() -> StreamEvent {
 
 /// Feeds `chunks` in order, then ends the stream.
 fn run(chunks: &[&[u8]]) -> Vec<StreamEvent> {
-    let mut decoder = ClaudeDecoder::new();
+    run_as(ClaudeDecoder::new(), chunks)
+}
+
+fn run_as(mut decoder: ClaudeDecoder, chunks: &[&[u8]]) -> Vec<StreamEvent> {
     let mut events: Vec<StreamEvent> = chunks.iter().flat_map(|c| decoder.feed(c)).collect();
     events.extend(decoder.finish());
     events
@@ -334,18 +337,66 @@ fn refused() -> Vec<StreamEvent> {
     vec![StreamEvent::Error(ChatError::Failed(TOOL_REFUSED.into()))]
 }
 
+/// Both decoders: the tolerant one (no tools offered) and the strict one.
+type Make = fn() -> ClaudeDecoder;
+
+fn modes() -> [(&'static str, Make); 2] {
+    [
+        ("text-only", ClaudeDecoder::new),
+        ("wired", ClaudeDecoder::wired),
+    ]
+}
+
+fn whole_as(make: Make, text: &str) -> Vec<StreamEvent> {
+    run_as(make(), &[text.as_bytes()])
+}
+
+fn message_start_line(block: &str) -> String {
+    format!(
+        "{{\"type\":\"stream_event\",\"event\":{{\"type\":\"message_start\",\"message\":{{\"role\":\"assistant\",\"content\":[{block}],\"usage\":{{\"server_tool_use\":{{\"web_search_requests\":0}}}}}}}},\"parent_tool_use_id\":null}}\n"
+    )
+}
+
+fn delta_line(delta: &str) -> String {
+    format!(
+        "{{\"type\":\"stream_event\",\"event\":{{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{delta}}},\"parent_tool_use_id\":null}}\n"
+    )
+}
+
+/// Every place a content block can show up.
+fn lines_with(block: &str) -> [String; 3] {
+    [
+        start_line(block),
+        assistant_line(block),
+        message_start_line(block),
+    ]
+}
+
 #[test]
-fn a_lazarobox_tool_use_is_allowed_and_adds_no_event_of_its_own() {
+fn a_lazarobox_tool_use_is_allowed_only_in_a_wired_turn_and_adds_no_event() {
     for name in ["mcp__lazarobox__find_dir", "mcp__lazarobox__run_in_pane"] {
-        for line in [start_line(&tool_use(name)), assistant_line(&tool_use(name))] {
+        for line in lines_with(&tool_use(name)) {
             let stream = format!("{}{}{}", text_line("a"), line, result_line("a", ""));
-            assert_eq!(whole(&stream), [delta("a"), done()], "{name}");
+            assert_eq!(
+                whole_as(ClaudeDecoder::wired, &stream),
+                [delta("a"), done()],
+                "{name}"
+            );
+            // No tools were offered, so even our own is foreign.
+            assert_eq!(
+                whole_as(ClaudeDecoder::new, &stream),
+                [delta("a")]
+                    .into_iter()
+                    .chain(refused())
+                    .collect::<Vec<_>>(),
+                "{name}"
+            );
         }
     }
 }
 
 #[test]
-fn any_other_tool_use_fails_closed_and_ends_the_stream() {
+fn any_other_tool_use_fails_closed_in_both_modes_and_ends_the_stream() {
     let names = [
         "Bash",
         "Read",
@@ -353,32 +404,138 @@ fn any_other_tool_use_fails_closed_and_ends_the_stream() {
         "mcp__lazarobox",
         "mcp__lazarobox_evil__x",
         "lazarobox__find_dir",
+        // The bare prefix names no tool.
+        "mcp__lazarobox__",
         "",
     ];
-    for name in names {
-        for line in [start_line(&tool_use(name)), assistant_line(&tool_use(name))] {
-            let stream = format!("{}{}{}", text_line("a"), line, result_line("late", ""));
+    for (mode, make) in modes() {
+        for name in names {
+            for line in lines_with(&tool_use(name)) {
+                let stream = format!("{}{}{}", text_line("a"), line, result_line("late", ""));
+                assert_eq!(
+                    whole_as(make, &stream),
+                    [delta("a")]
+                        .into_iter()
+                        .chain(refused())
+                        .collect::<Vec<_>>(),
+                    "{mode} {name:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_server_side_tool_or_a_tool_use_without_a_name_fails_closed_in_both_modes() {
+    for (mode, make) in modes() {
+        for block in [
+            "{\"type\":\"server_tool_use\",\"id\":\"s\",\"name\":\"web_search\",\"input\":{}}",
+            "{\"type\":\"server_tool_use\",\"id\":\"s\",\"name\":\"mcp__lazarobox__find_dir\",\"input\":{}}",
+            "{\"type\":\"tool_use\",\"id\":\"s\"}",
+            "{\"type\":\"tool_use\",\"name\":7}",
+        ] {
+            for line in lines_with(block) {
+                assert_eq!(whole_as(make, &line), refused(), "{mode} {block}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_block_type_in_another_case_or_a_computer_use_block_is_refused_in_both_modes() {
+    for (mode, make) in modes() {
+        for block in [
+            "{\"type\":\"Tool_Use\",\"id\":\"s\",\"name\":\"mcp__lazarobox__find_dir\",\"input\":{}}",
+            "{\"type\":\"TOOL_USE\",\"name\":\"Bash\"}",
+            "{\"type\":\"computer_use\",\"id\":\"s\"}",
+            "{\"type\":\"mcp_tool_result\",\"id\":\"s\"}",
+        ] {
+            for line in lines_with(block) {
+                assert_eq!(whole_as(make, &line), refused(), "{mode} {block}");
+            }
+        }
+    }
+}
+
+#[test]
+fn an_unknown_benign_block_type_ends_a_wired_turn_but_not_a_text_only_one() {
+    let block = "{\"type\":\"citation_block\",\"x\":1}";
+    for line in lines_with(block) {
+        let stream = format!("{}{}{}", text_line("a"), line, result_line("a", ""));
+        assert_eq!(
+            whole_as(ClaudeDecoder::new, &stream),
+            [delta("a"), done()],
+            "tolerant: {line}"
+        );
+        assert_eq!(
+            whole_as(ClaudeDecoder::wired, &stream)
+                .into_iter()
+                .skip(1)
+                .collect::<Vec<_>>(),
+            refused(),
+            "strict: {line}"
+        );
+    }
+}
+
+#[test]
+fn the_blocks_of_a_plain_answer_pass_in_both_modes() {
+    for (mode, make) in modes() {
+        for block in [
+            "{\"type\":\"text\",\"text\":\"x\"}",
+            "{\"type\":\"thinking\",\"thinking\":\"\"}",
+            "{\"type\":\"redacted_thinking\",\"data\":\"x\"}",
+        ] {
+            for line in lines_with(block) {
+                let stream = format!("{line}{}", result_line("a", ""));
+                assert_eq!(
+                    whole_as(make, &stream),
+                    [delta("a"), done()],
+                    "{mode} {block}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_tool_block_in_a_delta_is_refused_in_both_modes() {
+    for (mode, make) in modes() {
+        for delta in [
+            "{\"type\":\"tool_use_delta\"}",
+            "{\"type\":\"server_tool_use\"}",
+            "{\"type\":\"x\",\"content_block\":{\"type\":\"tool_use\",\"name\":\"Bash\"}}",
+        ] {
             assert_eq!(
-                whole(&stream),
-                [delta("a")]
-                    .into_iter()
-                    .chain(refused())
-                    .collect::<Vec<_>>(),
-                "{name:?}"
+                whole_as(make, &delta_line(delta)),
+                refused(),
+                "{mode} {delta}"
             );
         }
     }
 }
 
 #[test]
-fn a_server_side_tool_or_a_tool_use_without_a_name_fails_closed() {
-    for block in [
-        "{\"type\":\"server_tool_use\",\"id\":\"s\",\"name\":\"web_search\",\"input\":{}}",
-        "{\"type\":\"server_tool_use\",\"id\":\"s\",\"name\":\"mcp__lazarobox__find_dir\",\"input\":{}}",
-        "{\"type\":\"tool_use\",\"id\":\"s\"}",
-        "{\"type\":\"tool_use\",\"name\":7}",
-    ] {
-        assert_eq!(whole(&start_line(block)), refused(), "{block}");
+fn the_deltas_of_a_tool_call_and_the_usage_counters_are_not_tool_blocks() {
+    // `server_tool_use` inside `message.usage` is a counter, not a block.
+    for (mode, make) in modes() {
+        let stream = format!(
+            "{}{}{}",
+            message_start_line("{\"type\":\"text\",\"text\":\"\"}"),
+            delta_line("{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}"),
+            result_line("a", "")
+        );
+        assert_eq!(whole_as(make, &stream), [delta("a"), done()], "{mode}");
+    }
+}
+
+#[test]
+fn every_fixture_decodes_the_same_in_both_modes() {
+    for fixture in [PLAIN, SONNET, MODEL_ERROR, REFUSAL] {
+        assert_eq!(
+            whole_as(ClaudeDecoder::wired, fixture),
+            whole_as(ClaudeDecoder::new, fixture)
+        );
     }
 }
 
@@ -388,7 +545,9 @@ fn a_subagent_tool_use_is_judged_like_any_other() {
         "\"parent_tool_use_id\":null",
         "\"parent_tool_use_id\":\"toolu_x\"",
     );
-    assert_eq!(whole(&line), refused());
+    for (mode, make) in modes() {
+        assert_eq!(whole_as(make, &line), refused(), "{mode}");
+    }
 }
 
 #[test]

@@ -84,10 +84,14 @@ pub type Runner =
 /// A decoder that has seen no byte yet. Every turn builds its own: a decoder
 /// keeps a partial line and an `ended` flag, and neither may leak into the
 /// next turn of the pane.
-pub fn fresh_decoder(wire: Wire) -> Box<dyn StreamDecoder + Send> {
+///
+/// `wired` is true for a CLI turn that got the tool server; only claude's
+/// decoder reads it.
+pub fn fresh_decoder(wire: Wire, wired: bool) -> Box<dyn StreamDecoder + Send> {
     match wire {
         Wire::Ndjson => Box::new(NdjsonSplitter::server()),
         Wire::Sse => Box::new(SseParser::server()),
+        Wire::ClaudeStreamJson if wired => Box::new(ClaudeDecoder::wired()),
         Wire::ClaudeStreamJson => Box::new(ClaudeDecoder::new()),
         Wire::CodexJsonl => Box::new(CodexDecoder::new()),
         Wire::GeminiStreamJson => Box::new(GeminiDecoder::new()),
@@ -102,7 +106,7 @@ pub async fn http_turn(
     body: Vec<u8>,
     tx: mpsc::Sender<StreamEvent>,
 ) {
-    let mut decoder = fresh_decoder(wire);
+    let mut decoder = fresh_decoder(wire, false);
     post_stream("127.0.0.1", port, path, &body, &mut *decoder, &tx).await;
 }
 

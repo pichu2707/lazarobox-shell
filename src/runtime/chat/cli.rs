@@ -622,6 +622,9 @@ struct Plan {
     notice: Option<String>,
     /// The variables the child gets before the scrub.
     vars: Vec<(OsString, OsString)>,
+    /// The engine gets the tool server: the config, the flags and the jail
+    /// grant are all in.
+    wired: bool,
 }
 
 /// The CLI's argv: the job's own, then the flag and path of each of the job's
@@ -740,6 +743,7 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
                             vars: vars(attempt.as_ref()),
                             dirs,
                             notice,
+                            wired: attempt.is_some(),
                         });
                     }
                     Err(why) => result = Some(why),
@@ -764,6 +768,7 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
         argv,
         vars: vars(None),
         dirs,
+        wired: false,
         notice: tools_off(Some(format!(
             "{} runs without the jail here: {reason}",
             job.binary
@@ -937,7 +942,7 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
     let pid = pid.expect("a group exists only for a known pid");
     let mut stdout = stdout;
 
-    let mut decoder = fresh_decoder(job.wire);
+    let mut decoder = fresh_decoder(job.wire, plan.wired);
     let mut stdin_task = std::pin::pin!(write_stdin(stdin, &job.stdin).fuse());
     let mut stderr_task = std::pin::pin!(read_stderr(stderr).fuse());
     let mut stderr_tail = None;
