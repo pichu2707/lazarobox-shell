@@ -112,8 +112,8 @@ Interim (until S4a): the host answers `Decision::Ran(N)` at once with "output no
 
 Files: `src/core/ai/tools/settle.rs` (new), `src/core/ai/tools/engine.rs` (`Answer`, `RunReport`; `Decision::Ran` removed), `approver.rs` (`park`, `finish`), `src/runtime/tools/host.rs`, `src/runtime.rs` (probe on tick), `src/app/auto_run.rs`. Spec: pane-execution (settle, result contract), terminal-session.
 
-- [ ] S4a.1 RED: `Settle::step` tables with an injected `Instant`: silent `mkdir` (progress via generation or cursor), `cd` settles through the cwd signal, slow output keeps waiting, quiet under 250 ms waits, `foreground == None` waits (fail closed), `foreground == Some(false)` waits, timeout at 10 s gives `TimedOut`, `alt_screen` gives `FullScreen`, `user_key` gives `UserTyped`, generation change gives settled with `lines_comparable() == false`.
-- [ ] S4a.2 RED: rule order: alt screen and user key win over timeout; timeout wins over settle conditions.
+- [x] S4a.1 RED: `Settle::step` tables with an injected `Instant`: silent `mkdir` (progress via generation or cursor), `cd` settles through the cwd signal, slow output keeps waiting, quiet under 250 ms waits, `foreground == None` waits (fail closed), `foreground == Some(false)` waits, timeout at 10 s gives `TimedOut`, `alt_screen` gives `FullScreen`, `user_key` gives `UserTyped`, generation change gives settled with `lines_comparable() == false`. (done pre-S3: `settle.rs`, with `End::Unconfirmed` for an unknown foreground at the timeout)
+- [x] S4a.2 RED: rule order: alt screen and user key win over timeout; timeout wins over settle conditions.
 - [ ] S4a.3 RED: `Waits` stores `oneshot::Sender<Answer>`; `park`, `finish`, `end_turn`, `end_pane` and drop cleanup also cover running calls; `Decision` stays `Copy` and `From<Decision> for Answer`.
 - [ ] S4a.4 RED: tick probe: the runtime emits `RunEvent::Probe{foreground, cwd}` only for panes where `App::run_probes()` yields a Running slot; none when idle (no new thread or timer).
 - [ ] S4a.5 RED: host wording table, every row starting with `<cmd>: `: Settled (`Ran in pane N. cwd: <p>. Exit status is not known.` plus `(no output)`), cd mismatch (`The shell is in <actual>, not <target> ...`), TimedOut (`still running after 10 s`), Lost (`its output is not available`), FullScreen, UserTyped; rows and the `pane N: <cmd> → <cwd>` system line for `cd` only.
@@ -122,6 +122,7 @@ Files: `src/core/ai/tools/settle.rs` (new), `src/core/ai/tools/engine.rs` (`Answ
 - [ ] S4a.8 REFACTOR: confirm no `ApprovalMode` under `src/runtime/` (S1.7 audit); no duplicated cleanup paths.
 - [ ] S4a.9 Docs: doc comments on `Settle` rules and `RunReport`.
 - [ ] S4a.10 Gate. Measure; expect ~290. Fallback split if over 400: S4a-i (settle and tests) and S4a-ii (Answer channel and host).
+- [x] S4a.P1 (pre-S3) pure `report.rs`: `RunReport`, `cwd_result` (Proc first, labelled Osc7 fallback), `words()` (single-line, redacted, capped paths; honest cd mismatch; Osc7 reported as unverified). Part of S4a.5; the host arm is in the next commit.
 
 ## S4b: Screen capture (~160 non-test lines)
 
