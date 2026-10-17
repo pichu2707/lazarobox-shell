@@ -210,8 +210,8 @@ const TYPED_TEXT: &str = "The command was typed into the user's pane. Enter was 
 /// The result of a command the app ran in the pane: the words of the report,
 /// with the output cleaned, redacted and wrapped here, off the UI thread.
 ///
-/// The fourth element is the system line of a `cd` (`pane N: <cmd> → <cwd>`),
-/// which the app emits once the run effects are wired (S4a.W3).
+/// The fourth element is the system line of a `cd` (`pane N: <cmd> → <cwd>`);
+/// the app adds that line itself when the run ends (`report::system_line`).
 fn ran(call: &Call, report: &RunReport) -> (Outcome, ToolStatus, String, Option<String>) {
     let command = match call {
         Call::RunInPane { command } => command.as_str(),
@@ -292,6 +292,16 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             };
             let decision = match answer {
                 Answer::Decided(decision) => decision,
+                // Only a run is ever given a report.
+                Answer::Ran(_) if !matches!(call, Call::RunInPane { .. }) => {
+                    let (outcome, status, summary) = ended(
+                        ToolStatus::Denied,
+                        format!("denied: {NOT_COMMAND}"),
+                        NOT_COMMAND,
+                    );
+                    owed.answer(status, &summary);
+                    return outcome;
+                }
                 Answer::Ran(report) => {
                     let (outcome, status, summary, _system) = ran(&call, &report);
                     owed.answer(status, &summary);
@@ -311,19 +321,9 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     TYPED_TEXT.to_owned(),
                     &format!("typed into pane {number} \u{2014} no Enter"),
                 ),
-                (Decision::Ran(number), Call::RunInPane { .. }) => ended(
-                    ToolStatus::Ok,
-                    format!("Ran in pane {number}. Its output was not read back."),
-                    &format!("ran in pane {number} \u{2014} output not read back"),
-                ),
                 (Decision::Sent, Call::RunInPane { .. }) => {
                     ended(ToolStatus::Ok, TYPED_TEXT.to_owned(), "typed, no Enter")
                 }
-                (Decision::Ran(_), _) => ended(
-                    ToolStatus::Denied,
-                    format!("denied: {NOT_COMMAND}"),
-                    NOT_COMMAND,
-                ),
                 (Decision::Sent | Decision::Typed(_), call) => {
                     let env = ToolEnv {
                         home: host.home.clone(),

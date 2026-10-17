@@ -56,6 +56,8 @@ pub struct Settle {
     last: Instant,
     typed: bool,
     generation: u32,
+    /// Whether `anchor.line` is the cursor's line at the write.
+    anchored: bool,
 }
 
 impl Settle {
@@ -68,7 +70,16 @@ impl Settle {
             last: written,
             typed: false,
             generation,
+            anchored: true,
         }
+    }
+
+    /// The cursor was hidden at the write, so `anchor.line` is a placeholder:
+    /// the first probe that sees a cursor line becomes the anchor, and a run
+    /// that never sees one cannot confirm it finished.
+    pub fn unanchored(mut self) -> Self {
+        self.anchored = false;
+        self
     }
 
     /// The pane printed something at `now`. Within a tick the app calls this
@@ -92,13 +103,17 @@ impl Settle {
     ///
     /// 1. The alternate screen is `FullScreen`; a user key is `UserTyped`.
     /// 2. 10 s since the write is `TimedOut` (`Unconfirmed` when the foreground
-    ///    is unknown), even when the rest holds.
+    ///    is unknown or no cursor line was ever seen), even when the rest holds.
     /// 3. `Settled` needs ALL of: the foreground is the shell (`None` waits,
     ///    which fails closed); 250 ms of quiet; and progress, meaning the
     ///    cursor moved to a later line, the real cwd changed, or the line
     ///    generation changed (then the lines are not comparable).
     pub fn step(&mut self, probe: &Probe) -> Option<End> {
         self.generation = probe.generation;
+        if let (false, Some(line)) = (self.anchored, probe.cursor_line) {
+            self.anchor.line = line;
+            self.anchored = true;
+        }
         if probe.alt_screen {
             return Some(End::FullScreen);
         }
@@ -107,7 +122,7 @@ impl Settle {
         }
         let since = |from: Instant| probe.now.saturating_duration_since(from);
         if since(self.written) >= TIMEOUT {
-            return Some(if probe.foreground.is_none() {
+            return Some(if probe.foreground.is_none() || !self.anchored {
                 End::Unconfirmed
             } else {
                 End::TimedOut
@@ -299,5 +314,40 @@ mod tests {
         let mut p = r.probe(0);
         p.now = r.t0.checked_sub(MS(5)).unwrap();
         assert_eq!(r.step(&p), None);
+    }
+
+    // A cursor hidden at the write gives no line to move past: the first
+    // visible one is the anchor, and only a later line is progress.
+    #[test]
+    fn an_unanchored_run_anchors_on_the_first_visible_cursor() {
+        let mut r = run();
+        r.settle = Settle::new(r.settle.anchor.clone(), r.t0).unanchored();
+        let mut p = r.probe(300);
+        p.cursor_line = None;
+        assert_eq!(r.step(&p), None, "hidden: nothing to compare");
+        let mut p = r.probe(400);
+        p.cursor_line = Some(9);
+        assert_eq!(r.step(&p), None, "this line is the anchor, not progress");
+        let mut p = r.probe(800);
+        p.cursor_line = Some(10);
+        assert_eq!(r.step(&p), Some(End::Settled));
+    }
+
+    #[test]
+    fn a_run_that_never_showed_a_cursor_cannot_confirm_it_finished() {
+        let mut r = run();
+        r.settle = Settle::new(r.settle.anchor.clone(), r.t0).unanchored();
+        let mut p = r.probe(10_000);
+        p.cursor_line = None;
+        assert_eq!(r.step(&p), Some(End::Unconfirmed));
+        // Anchored late, the plain timeout rules apply again.
+        let mut r2 = run();
+        r2.settle = Settle::new(r2.settle.anchor.clone(), r2.t0).unanchored();
+        let mut p = r2.probe(100);
+        p.cursor_line = Some(5);
+        r2.step(&p);
+        let mut p = r2.probe(10_000);
+        p.cursor_line = Some(5);
+        assert_eq!(r2.step(&p), Some(End::TimedOut));
     }
 }

@@ -236,6 +236,9 @@ impl App {
                     pty.line_pending = Some(approval.call().map_or(BLOCK_LINE, |(_, call)| call));
                 }
                 effects.push(Effect::WritePty(target, bytes));
+                // A run being settled in this pane is no longer the only thing
+                // in it.
+                self.note_typed(target);
                 Decision::Sent
             }
             Err(refused) => {

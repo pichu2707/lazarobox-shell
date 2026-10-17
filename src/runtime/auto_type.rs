@@ -17,6 +17,8 @@ pub const GONE: &str = crate::app::PANE_GONE;
 pub const MOVED: &str = "the pane's directory changed since the check";
 /// Why a run was not written: its bytes break the one-Enter invariant.
 pub const MALFORMED: &str = "the run was not one command and one Enter";
+/// Why a run was not written: the call is over, or its chat is gone.
+pub const OVER: &str = crate::app::CALL_OVER;
 /// Why a run was not written: a program owns the terminal.
 pub const BUSY: &str = "the pane is running a program";
 
@@ -43,13 +45,14 @@ pub fn type_if_idle(
 /// Only if the shell's real directory still is `checked` and the shell owns
 /// the terminal (unknown counts as failing); otherwise nothing is written and
 /// the reason comes back. The answer is claimed BEFORE the write, so a call
-/// that is over gets no bytes. The symlink-swap residual: see `app::auto_run`.
+/// that is over gets no bytes, and handed to `park` AFTER it: the run is not
+/// the answer, its report is. The symlink-swap residual: see `app::auto_run`.
 pub fn run_if_idle(
     pane: Option<&mut Box<dyn PtyHandle>>,
-    number: usize,
     checked: &Path,
     bytes: Vec<u8>,
     claim: impl FnOnce() -> Option<oneshot::Sender<Answer>>,
+    park: impl FnOnce(oneshot::Sender<Answer>),
 ) -> Result<(), &'static str> {
     let Some(pane) = pane else {
         return Err(GONE);
@@ -66,10 +69,11 @@ pub fn run_if_idle(
     if pane.shell_in_foreground() != Some(true) {
         return Err(BUSY);
     }
-    if let Some(answer) = claim() {
-        pane.write(bytes);
-        let _ = answer.send(Decision::Ran(number).into());
-    }
+    // Nothing owes an answer: nothing is written, and the app is told so its
+    // slot is dropped and it never waits for a run that did not happen.
+    let wait = claim().ok_or(OVER)?;
+    pane.write(bytes);
+    park(wait);
     Ok(())
 }
 
@@ -148,20 +152,31 @@ mod tests {
         (rx, claim)
     }
 
+    // The answer is claimed before the write and parked after it, so the
+    // call's turn and chat cleanup cover the running command.
     #[test]
-    fn a_run_claims_the_answer_then_writes_once_and_answers_ran() {
+    fn a_run_claims_the_answer_writes_once_and_parks_it() {
         let (mut pane, log) = run_pty(Some("/home/u/dev"), Some(true));
-        let (mut rx, claim) = claim_of(&log);
+        let (rx, claim) = claim_of(&log);
+        let mut parked = None;
         let done = run_if_idle(
             Some(&mut pane),
-            3,
             Path::new("/home/u/dev"),
             b"cd x\r".to_vec(),
             claim,
+            |wait| {
+                assert_eq!(
+                    log.lock().unwrap().writes.len(),
+                    1,
+                    "parked after the write"
+                );
+                parked = Some(wait);
+            },
         );
         assert_eq!(done, Ok(()));
         assert_eq!(log.lock().unwrap().writes, vec![b"cd x\r".to_vec()]);
-        assert_eq!(rx.try_recv(), Ok(Decision::Ran(3).into()));
+        assert!(parked.is_some(), "the sender is kept, not answered");
+        drop(rx);
     }
 
     #[test]
@@ -177,10 +192,10 @@ mod tests {
             let claim = || -> Option<tokio::sync::oneshot::Sender<Answer>> { panic!("claimed") };
             let done = run_if_idle(
                 Some(&mut pane),
-                2,
                 Path::new("/home/u/dev"),
                 b"ls\r".to_vec(),
                 claim,
+                |_| panic!("parked"),
             );
             assert_eq!(done, Err(want), "{cwd:?} {foreground:?}");
             assert!(
@@ -206,10 +221,10 @@ mod tests {
             let claim = || -> Option<tokio::sync::oneshot::Sender<Answer>> { panic!("claimed") };
             let done = run_if_idle(
                 Some(&mut pane),
-                1,
                 Path::new("/home/u"),
                 bad.to_vec(),
                 claim,
+                |_| panic!("parked"),
             );
             assert_eq!(done, Err(MALFORMED), "{bad:?}");
             assert!(log.lock().unwrap().writes.is_empty(), "{bad:?}");
@@ -220,18 +235,18 @@ mod tests {
     fn a_pane_that_is_gone_and_a_call_that_is_over_write_nothing() {
         let claim = || -> Option<tokio::sync::oneshot::Sender<Answer>> { None };
         assert_eq!(
-            run_if_idle(None, 1, Path::new("/"), b"ls\r".to_vec(), claim),
+            run_if_idle(None, Path::new("/"), b"ls\r".to_vec(), claim, |_| ()),
             Err(GONE)
         );
         let (mut pane, log) = run_pty(Some("/home/u"), Some(true));
         let over = run_if_idle(
             Some(&mut pane),
-            1,
             Path::new("/home/u"),
             b"ls\r".to_vec(),
             claim,
+            |_| panic!("parked"),
         );
-        assert_eq!(over, Ok(()), "nothing owed, nothing to ask");
+        assert_eq!(over, Err(OVER), "nothing owed: the app must be told");
         assert!(log.lock().unwrap().writes.is_empty());
     }
 }

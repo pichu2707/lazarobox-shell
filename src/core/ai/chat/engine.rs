@@ -136,9 +136,6 @@ pub enum Decision {
     /// `Sent` for a command typed without a prompt (design D18) into the pane
     /// the user knows as number `.0`; the result row names it.
     Typed(usize),
-    /// A command was typed and run (Enter) in pane number `.0` (design D21).
-    /// Interim: the output is not read back yet.
-    Ran(usize),
     /// Nothing was typed: pane number `.0` has a program in the foreground
     /// (or the runtime cannot tell). Carries the number so the reason can name
     /// the pane; the host words it as `pane N is running a program`.

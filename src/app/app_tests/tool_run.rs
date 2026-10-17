@@ -16,7 +16,7 @@ use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
 
 /// `live()` with the chat in `run` mode: shell pane 1 (unfocused, its cwd
 /// known), the focused chat is pane 2.
-fn run_live() -> (App, u64) {
+pub(super) fn run_live() -> (App, u64) {
     let (mut a, turn) = live();
     a.panes
         .get_mut(&id2())
@@ -40,11 +40,11 @@ fn check(turn: u64, call: u64, command: &str) -> Effect {
     }
 }
 
-fn chat_of(a: &App) -> &ChatState {
+pub(super) fn chat_of(a: &App) -> &ChatState {
     super::run_pane::chat(a, id2())
 }
 
-fn slot(a: &App) -> Option<(PaneId, u64, CallId, String)> {
+pub(super) fn slot(a: &App) -> Option<(PaneId, u64, CallId, String)> {
     let pty = a.panes.get(&PaneId::FIRST).and_then(PaneState::pty)?;
     let slot = pty.run.as_ref()?;
     Some((slot.chat, slot.turn, slot.call, slot.command.clone()))
@@ -55,7 +55,7 @@ fn why(a: &App) -> Option<String> {
     approval.why().map(str::to_owned)
 }
 
-fn checked(a: &mut App, call: u64) -> Vec<Effect> {
+pub(super) fn checked(a: &mut App, call: u64) -> Vec<Effect> {
     a.update(AppEvent::Run(
         PaneId::FIRST,
         RunEvent::Checked {
@@ -298,7 +298,6 @@ fn auto_run(turn: u64, call: u64, bytes: &[u8]) -> Effect {
         chat: id2(),
         target: PaneId::FIRST,
         bytes: bytes.to_vec(),
-        number: 1,
         turn,
         call: CallId(call),
         cwd: LAUNCH.into(),
@@ -413,7 +412,7 @@ fn a_finished_run_clears_the_fallbacks_that_came_before() {
 }
 
 // S3.6: the dirty guard.
-fn in_shell(a: &mut App, event: AppEvent) -> Vec<Effect> {
+pub(super) fn in_shell(a: &mut App, event: AppEvent) -> Vec<Effect> {
     a.tab_mut().focus = PaneId::FIRST;
     let effects = a.update(event);
     a.tab_mut().focus = id2();
@@ -690,7 +689,7 @@ fn a_modified_enter_or_ctrl_c_does_not_clear_dirty() {
 const GONE: &str = "the pane is gone";
 
 #[test]
-fn closing_the_target_during_the_check_or_the_run_denies_the_call() {
+fn closing_the_target_during_the_check_denies_the_call_and_during_the_run_reports_it() {
     for written in [false, true] {
         let (mut a, turn) = run_live();
         announce(&mut a, turn, 1, run("pwd"));
@@ -698,8 +697,10 @@ fn closing_the_target_during_the_check_or_the_run_denies_the_call() {
             assert!(matches!(checked(&mut a, 1)[..], [Effect::AutoRun { .. }]));
         }
         let effects = a.remove_pane(PaneId::FIRST);
-        assert!(
+        // A run being settled is ended by its report (see `tool_run_settle`).
+        assert_eq!(
             effects.contains(&decision(turn, 1, Decision::Denied(GONE))),
+            !written,
             "written {written}: {effects:?}"
         );
         assert_eq!(checked(&mut a, 1), vec![], "late answers are ignored");

@@ -325,6 +325,7 @@ impl App {
             }
             pty.user_dirty = !ends_line;
         }
+        self.note_typed(self.tab().focus);
     }
 
     /// Marks pane `id` dirty: the user's paste, wheel or prefix literal

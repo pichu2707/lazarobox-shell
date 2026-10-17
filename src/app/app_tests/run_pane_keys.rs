@@ -448,7 +448,7 @@ fn keys_go_to_an_overlay_that_is_open_and_never_answer_the_hidden_confirm() {
 
 // The outcome line ------------------------------------------------------------
 
-fn system_lines(a: &App) -> Vec<String> {
+pub(super) fn system_lines(a: &App) -> Vec<String> {
     chat(a, id2())
         .entries()
         .iter()

@@ -671,6 +671,25 @@ async fn run_loop(
                 }
             }
             _ = tick.tick() => {
+                // `select!` picks a ready branch at random, so output that is
+                // queued could lose to this tick and be probed around: while
+                // a written run settles, the queued pty output is fed first
+                // (within the budget; the rest is fed before the next probe
+                // of a later tick, and a settle needs 250 ms of quiet anyway).
+                if !app.run_probes().is_empty() {
+                    for _ in 0..EVENT_BUDGET {
+                        let Ok((id, event)) = rx.try_recv() else { break };
+                        if step(&mut app, AppEvent::Pty(id, event), panes) {
+                            return Ok(());
+                        }
+                    }
+                }
+                // Only while a written run settles: an idle app reads nothing.
+                for event in panes.probes(&app.run_probes()) {
+                    if step(&mut app, event, panes) {
+                        return Ok(());
+                    }
+                }
                 if app.take_dirty() {
                     terminal.draw(|frame| ui::render(frame, &app, &theme))?;
                 }
@@ -1017,26 +1036,47 @@ impl Panes {
                         let _ = answer.send(decision.into());
                     }
                 }
-                // The write and the answer are one step, as for `AutoType`, but
+                // The claim and the write are one step, as for `AutoType`, but
                 // the pane must also still be in the directory that was
-                // checked. A refusal writes nothing and claims nothing; the app
-                // is told, and asks the user.
+                // checked. The answer is not sent: the claimed wait is parked
+                // after the write, so a cancel or a closed chat also ends the
+                // running call, and `RunDone` finishes it. A refusal writes
+                // nothing and claims nothing; the app is told, and asks the
+                // user.
                 Effect::AutoRun {
                     chat,
                     target,
                     bytes,
-                    number,
                     turn,
                     call,
                     cwd,
                 } => {
+                    let chats = self.chats.as_ref();
                     let claim = || {
-                        let wait = self.chats.as_ref()?.take(chat, turn, call);
+                        let wait = chats?.take(chat, turn, call);
                         wait.filter(|answer| !answer.is_closed())
                     };
+                    let park = |wait| {
+                        if let Some(chats) = chats {
+                            chats.park(chat, turn, call, wait);
+                        }
+                    };
                     let pane = self.handles.get_mut(&target);
-                    if let Err(reason) = auto_type::run_if_idle(pane, number, &cwd, bytes, claim) {
+                    if let Err(reason) = auto_type::run_if_idle(pane, &cwd, bytes, claim, park) {
                         feedback.push(AppEvent::Run(target, RunEvent::NotRun { call, reason }));
+                    }
+                }
+                // The run settled: the parked call ends with its report. A
+                // call that is gone (the turn or the chat ended) is not
+                // answered.
+                Effect::RunDone {
+                    chat,
+                    turn,
+                    call,
+                    report,
+                } => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        chats.finish(chat, turn, call, report);
                     }
                 }
                 // The pane's real directory is read here (the kernel resolves the
@@ -1128,6 +1168,20 @@ impl Panes {
             handle.kill();
             drop(handle);
         }));
+    }
+
+    /// One reading of each pane in `ids`, whose run is being settled (design
+    /// D22): the foreground check and the directory are one syscall and one
+    /// link read, with no thread or timer of their own. A pane that is gone
+    /// yields none.
+    fn probes(&self, ids: &[PaneId]) -> Vec<AppEvent> {
+        (ids.iter())
+            .filter_map(|id| Some((*id, self.handles.get(id)?)))
+            .map(|(id, handle)| {
+                let (foreground, cwd) = (handle.shell_in_foreground(), handle.cwd());
+                AppEvent::Run(id, RunEvent::Probe { foreground, cwd })
+            })
+            .collect()
     }
 
     /// The working directory of every child whose lookup succeeds.
@@ -3532,11 +3586,21 @@ mod tests {
 
     /// A call of chat 9 turn 1 that waits for its answer, as a model's does.
     fn waiting(panes: &Panes, call: u64) -> futures::future::BoxFuture<'static, Decision> {
-        use crate::core::ai::chat::{
-            approval::ApprovalAsk,
-            engine::{Answer, CallId},
-        };
+        use crate::core::ai::chat::engine::Answer;
         use futures::FutureExt;
+        waiting_answer(panes, call)
+            .map(|answer| match answer {
+                Answer::Decided(decision) => decision,
+                Answer::Ran(_) => unreachable!("no run is parked here"),
+            })
+            .boxed()
+    }
+
+    fn waiting_answer(
+        panes: &Panes,
+        call: u64,
+    ) -> futures::future::BoxFuture<'static, crate::core::ai::chat::engine::Answer> {
+        use crate::core::ai::chat::{approval::ApprovalAsk, engine::CallId};
         let ask = ApprovalAsk::Read {
             path: String::new(),
         };
@@ -3544,11 +3608,6 @@ mod tests {
         waits
             .approver(id(9), 1, tools::Pending::new())
             .ask(CallId(call), &ask)
-            .map(|answer| match answer {
-                Answer::Decided(decision) => decision,
-                Answer::Ran(_) => unreachable!("no run is parked here"),
-            })
-            .boxed()
     }
 
     fn auto_type_effect(target: u32, call: u64) -> Effect {
@@ -3696,7 +3755,6 @@ mod tests {
             chat: id(9),
             target: id(target),
             bytes: format!("cmd{target}\r").into_bytes(),
-            number: target as usize,
             turn: 1,
             call: crate::core::ai::chat::engine::CallId(call),
             cwd: cwd.into(),
@@ -3727,7 +3785,7 @@ mod tests {
             };
             logs.push(pty.log.clone());
             panes.handles.insert(id(n), Box::new(pty));
-            waits.push(waiting(&panes, n.into()));
+            waits.push(waiting_answer(&panes, n.into()));
         }
         let effects = (1..=4)
             .map(|n| auto_run_effect(n, n.into(), "/srv/a"))
@@ -3754,10 +3812,10 @@ mod tests {
                 not_run(4, 4, auto_type::MOVED),
             ]
         );
-        assert_eq!(waits.remove(0).await, Decision::Ran(1));
-        // The others still wait for the user: their answers were not claimed.
+        // The write is not the answer: the claimed wait is parked again, so
+        // the report of the run can finish it (see `a_run_done_*`).
         let waits_map = panes.chats.as_ref().unwrap().waits();
-        for call in 2..=4 {
+        for call in 1..=4 {
             assert!(
                 waits_map.take(id(9), 1, CallId(call)).is_some(),
                 "call {call}"
@@ -3780,8 +3838,133 @@ mod tests {
         panes.chats.as_ref().unwrap().waits().end_turn(id(9), 1);
         let (_, feedback) = panes.apply(vec![auto_run_effect(1, 1, "/srv/a")]);
         assert!(log.lock().unwrap().writes.is_empty());
-        assert_eq!(feedback, Vec::new());
+        // The app drops its slot instead of probing a run that never was.
+        assert_eq!(
+            feedback,
+            vec![AppEvent::Run(
+                id(1),
+                crate::app::RunEvent::NotRun {
+                    call: crate::core::ai::chat::engine::CallId(1),
+                    reason: crate::app::CALL_OVER,
+                }
+            )]
+        );
         assert!(matches!(ended.await, Decision::Denied(_)));
+    }
+
+    // No chat runtime at all: the same.
+    #[test]
+    fn an_auto_run_without_chats_writes_nothing_and_tells_the_app() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let pty = FakePty {
+            foreground: Some(true),
+            cwd: Some("/srv/a".into()),
+            ..FakePty::default()
+        };
+        let log = pty.log.clone();
+        panes.handles.insert(id(1), Box::new(pty));
+        let (_, feedback) = panes.apply(vec![auto_run_effect(1, 1, "/srv/a")]);
+        assert!(log.lock().unwrap().writes.is_empty());
+        assert!(matches!(
+            feedback[..],
+            [AppEvent::Run(_, crate::app::RunEvent::NotRun { .. })]
+        ));
+    }
+
+    fn run_report() -> Box<crate::core::ai::tools::report::RunReport> {
+        use crate::core::ai::tools::{report::RunReport, settle::End};
+        Box::new(RunReport {
+            number: 1,
+            end: End::Settled,
+            cwd: None,
+            cd_target: None,
+            output: None,
+        })
+    }
+
+    fn run_done(call: u64) -> Effect {
+        Effect::RunDone {
+            chat: id(9),
+            turn: 1,
+            call: crate::core::ai::chat::engine::CallId(call),
+            report: run_report(),
+        }
+    }
+
+    // Design D22: the write parks the claimed wait; the report finishes it,
+    // once. A second report finds nothing and answers nothing.
+    #[tokio::test]
+    async fn a_written_run_stays_parked_until_its_report_finishes_it_once() {
+        use crate::core::ai::chat::engine::Answer;
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let pty = FakePty {
+            foreground: Some(true),
+            cwd: Some("/srv/a".into()),
+            ..FakePty::default()
+        };
+        panes.handles.insert(id(1), Box::new(pty));
+        let mut wait = waiting_answer(&panes, 1);
+        panes.apply(vec![auto_run_effect(1, 1, "/srv/a")]);
+        assert!(
+            futures::poll!(&mut wait).is_pending(),
+            "the write is not the answer"
+        );
+        panes.apply(vec![run_done(1), run_done(1)]);
+        assert_eq!(wait.await, Answer::Ran(run_report()));
+    }
+
+    // The turn ended while the run settled: the report finds no wait.
+    #[tokio::test]
+    async fn a_report_for_a_run_whose_turn_ended_answers_nothing() {
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let pty = FakePty {
+            foreground: Some(true),
+            cwd: Some("/srv/a".into()),
+            ..FakePty::default()
+        };
+        panes.handles.insert(id(1), Box::new(pty));
+        let wait = waiting(&panes, 1);
+        panes.apply(vec![auto_run_effect(1, 1, "/srv/a")]);
+        panes.chats.as_ref().unwrap().waits().end_turn(id(9), 1);
+        panes.apply(vec![run_done(1)]);
+        assert!(matches!(wait.await, Decision::Denied(_)));
+    }
+
+    // Design D22: one probe per named pane, read from the pane's handle; a
+    // pane that is gone yields none, and none named yields none.
+    #[test]
+    fn a_probe_reads_the_foreground_and_cwd_of_the_named_panes_only() {
+        use crate::app::RunEvent;
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        for (n, foreground, cwd) in [(1, Some(true), Some("/srv/a")), (2, None, None)] {
+            let pty = FakePty {
+                foreground,
+                cwd: cwd.map(Into::into),
+                ..FakePty::default()
+            };
+            panes.handles.insert(id(n), Box::new(pty));
+        }
+        assert_eq!(panes.probes(&[]), Vec::new());
+        assert_eq!(
+            panes.probes(&[id(1), id(3)]),
+            vec![AppEvent::Run(
+                id(1),
+                RunEvent::Probe {
+                    foreground: Some(true),
+                    cwd: Some("/srv/a".into()),
+                }
+            )]
+        );
+        assert_eq!(
+            panes.probes(&[id(2)]),
+            vec![AppEvent::Run(
+                id(2),
+                RunEvent::Probe {
+                    foreground: None,
+                    cwd: None,
+                }
+            )]
+        );
     }
 
     #[tokio::test]
