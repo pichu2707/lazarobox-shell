@@ -146,10 +146,9 @@ impl AiMenu {
             .then(|| self.draft.tools_enabled())
     }
 
-    /// Flips the approval mode of the draft (`ask` and `auto` are the only
-    /// two, so both directions do the same).
-    pub fn flip_approval(&mut self) {
-        let next = self.draft.approval().flipped();
+    /// Cycles the approval mode of the draft.
+    pub fn cycle_approval(&mut self, forward: bool) {
+        let next = self.draft.approval().cycled(forward);
         self.draft.set_approval(next);
     }
 
