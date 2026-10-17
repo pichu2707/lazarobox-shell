@@ -123,7 +123,7 @@ No `.snap.new` or `.pending-snap` file is left in the tree.
 
 - [ ] 5.1 [manual] Open the menu in a real terminal (Kitty or similar): `Ctrl+Space m` opens on Settings row 0; Tab and Shift+Tab switch tabs, the cursor is kept per tab, and `j`/`k` wrap inside a tab.
 - [ ] 5.2 [manual] Repeat the Tab / Shift+Tab check inside tmux and inside zellij; they may encode BackTab differently (`ESC [ Z` versus CSI-u). Record which encodings arrive and confirm both `BackTab` and `Tab+SHIFT` work. Also check narrow widths (shrink to 24 and 22 columns: bar, then hint dropped, then fallback) and `Settings*` with an update pending (bar label and the note on Settings only).
-- [ ] 5.3 Docs: update the `config-menu` main spec only at archive time, not here. Note the result of 5.2 in the PR description.
+- [x] 5.3 Docs: update the `config-menu` main spec only at archive time, not here. Note the result of 5.2 in the PR description. (Done for this change: the README paragraph on tabs shipped with unit 3, and the main spec is left for archive. The 5.2 result still has to go in the PR description once the user has run 5.1 and 5.2.)
 
 ## Follow-ups (outside this change)
 
