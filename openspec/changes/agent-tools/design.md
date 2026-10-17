@@ -254,10 +254,8 @@ No data migration. `[ai.tools]` is on by default. Every CLI is text-only until i
 
 **Unverified (must pass the manual check before the engine joins `MCP_VERIFIED`)**
 - claude:
-  - whether `--tools ""` or `--safe-mode` hides MCP tools;
-  - the server-level `--allowedTools mcp__lazarobox` syntax;
-  - `MCP_TOOL_TIMEOUT` and its default;
-  - the shape of an MCP `tool_use` in stream-json.
+  - `MCP_TOOL_TIMEOUT` and its default.
+  - Verified on claude 2.1.302 (2f-fix): `--tools ""` does not hide MCP tools, but `--safe-mode` does, so a wired turn uses `--setting-sources=` instead of it; the server-level `--allowedTools=mcp__lazarobox` works; an MCP `tool_use` is `assistant.message.content[]` with `type` `tool_use` and `name` `mcp__lazarobox__<tool>`.
 - codex:
   - whether `-c mcp_servers.*` applies under `--ignore-user-config`;
   - the `env_vars`, `tool_timeout_sec` and `startup_timeout_sec` keys and their defaults;
