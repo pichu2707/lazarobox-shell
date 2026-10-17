@@ -6,6 +6,8 @@ pub mod exec;
 pub mod label;
 pub mod mcp;
 pub mod paths;
+pub mod report;
+pub mod settle;
 pub mod summary;
 pub mod wiring;
 
