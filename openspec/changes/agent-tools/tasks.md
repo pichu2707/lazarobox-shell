@@ -133,19 +133,21 @@ Fallback split if over 400: 2d-1 (session, token, sweep) and 2d-2 (shim, main di
 
 - [x] 2d.1 RED: session socket `<runtime>/lazarobox/s-<pid>-<pane>.sock`, dir 0700 (fallback `<data>/run`), socket 0600; wrong/missing token closed unserved; constant-time compare; `peer_cred` UID check; token bound to its chat (A's token on B rejected); token never in argv or logs.
 - [x] 2d.2 RED: cleanup on chat close, stale sockets swept at start (alive_by_comm), removal at exit; session calls a `Dispatch` trait (fake in tests).
-- [ ] 2d.3 RED: shim relay generic over `Read`/`Write` via `UnixStream::pair`: handshake `{"lazarobox":1,"token"}` then line copy, 1 MiB cap, malformed lines survive, shim opens no user file, starts no process; `LAZAROBOX` set does not block it.
-- [ ] 2d.4 RED: `main.rs` dispatches `__mcp-serve` right after `__jail-exec`, before install-desktop and the nesting guard.
-- [ ] 2d.5 RED: `tests/jail.rs` (skipped when `probe()` is Unavailable): jailed helper with the shim granted executes the shim and connects; `/usr/bin/curl` execve and `~/.ssh` read still EACCES.
-- [ ] 2d.6 GREEN: implement listener, hub, shim, dispatch.
-- [ ] 2d.7 Gate.
-- [ ] 2d.8 Docs: doc comments on the transport and trust model.
+- [x] 2d.3 RED: shim relay generic over `Read`/`Write` via `UnixStream::pair`: handshake `{"lazarobox":1,"token"}` then line copy, 1 MiB cap, malformed lines survive, shim opens no user file, starts no process; `LAZAROBOX` set does not block it.
+- [x] 2d.4 RED: `main.rs` dispatches `__mcp-serve` right after `__jail-exec`, before install-desktop and the nesting guard.
+- [x] 2d.5 RED: `tests/jail.rs` (skipped when `probe()` is Unavailable): jailed helper with the shim granted executes the shim and connects; `/usr/bin/curl` execve and `~/.ssh` read still EACCES.
+- [x] 2d.6 GREEN: implement listener, hub, shim, dispatch.
+- [x] 2d.7 Gate.
+- [x] 2d.8 Docs: doc comments on the transport and trust model.
 - [ ] 2d.9 [manual] Landlock on the real kernel: a pathname-socket connect works under the granted rights and `add_rule` accepts the socket inode. If it fails, record it; jailed engines stay text-only (do not widen the jail).
 - [ ] 2d.10 [manual] M-base check: start a session by hand, drive the shim with a scripted client for `initialize`, `tools/list`, `find_dir`; confirm the 0700/0600 modes.
 
   - Split chosen: 2d-1 = session side (`src/runtime/mcp/{mod,session}.rs`), 2d-2 = the rest.
     - Done in 2d-1: 2d.1, 2d.2 (listener, hub, `Dispatch` trait with a fake in tests, token, sweep with `alive_by_comm`, `peer_cred` check), the session half of 2d.6, the gate (2d.7) for this slice, and the module docs for the session transport and trust model (the session half of 2d.8). Handshake format the session accepts: first line `{"lazarobox":1,"token":"<32 hex>"}`, answered by `{"ok":true}`; then MCP lines.
     - Policy: a line is read into at most `MAX_LINE_BYTES + 2` bytes before any `&str` exists; an oversize line gets the `id: null` -32600 error, is skipped to its newline, and the connection keeps serving. The handshake line is capped at 512 bytes and has a 2 s timeout; failing either closes silently. Limits per session: 8 unauthenticated connections (extra ones dropped at once), 4 authenticated (extra ones closed after a valid handshake); per connection 32 calls in flight (-32000 echoing the id), a duplicate in-flight id is -32600; a panicking dispatch answers an `isError` result; `close` sets a flag so nothing dispatches after it.
-    - Left for 2d-2: 2d.3, 2d.4, 2d.5, the shim part of 2d.6, the shim half of 2d.8 and 2d.7 for the full PR, 2d.9, 2d.10. The shim must send exactly the handshake above and then the lines it relays, each at most 1 MiB.
+    - Done in 2d-2: 2d.3 to 2d.8 (`src/runtime/mcp/shim.rs`, the `__mcp-serve` arm in `src/main.rs`, `tests/mcp_shim.rs`, `tests/jail.rs`). Left for the user: 2d.9, 2d.10.
+    - Shim contract: `lazarobox-shell __mcp-serve <socket>`; the socket path is argv (not a secret), the token is read from the env var `LAZAROBOX_MCP_TOKEN` (the engine's MCP config forwards it by name, D9). The shim is sync (two std threads), generic over `Read`/`Write` for stdin/stdout, and caps each line at 1 MiB before buffering: an oversized client line is answered `id: null` -32600 on stdout, not forwarded; malformed lines pass through untouched. Handshake reply must be exactly an object with `ok: true` within 5 s and at most 512 bytes. Refusal (EOF, other reply, oversize reply) exits 1 with `lazarobox mcp: the lazarobox session refused the connection`; silence exits 1 (`did not answer in time`); unusable command or missing token exits 2; no message carries the token. Either direction ending (stdin EOF, session closed) ends the shim with 0. The token env var is not removed after reading: the shim spawns nothing and opens no file, so nothing inherits it, and it stays in `/proc/<pid>/environ` regardless.
+    - Jail test (`tests/jail.rs`, skipped without Landlock): the app binary jailed with rx on itself + its loader and an `rw_file` on the socket only (no folder) runs `__mcp-serve` with `LAZAROBOX=1`, connects to a real `Hub` session and gets an `initialize` result. `curl`/`ssh` execve and a `~/.ssh` listing still get EACCES under the same grant. On the dev machine (Landlock ABI 7) it passes without widening the jail; pathname unix-socket connect is not gated by Landlock before ABI 9, so the socket rule is not what makes it connect (2d.9 stays manual for the real-kernel check).
 
 ## PR7 / 2e: Events, rows, ToolHost, decisions (`src/core/ai/chat/{engine,mod}.rs`, `src/runtime/tools/mod.rs`, `src/runtime/chat.rs`, `src/app.rs`, `src/app/run.rs`, `src/ui/components/chat.rs`)
 

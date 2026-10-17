@@ -7,16 +7,27 @@
 use std::{
     ffi::OsString,
     fs,
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
+    sync::Arc,
 };
 
+use futures::{FutureExt, future::BoxFuture};
+
 use lazarobox_shell::{
-    core::ai::{
-        chat::engine::ChatError,
-        jail::{ELF_HEAD_BYTES, JailArgs, JailSpec, JailSupport, elf_loader, exit_error},
+    core::{
+        ai::{
+            chat::engine::ChatError,
+            jail::{ELF_HEAD_BYTES, JailArgs, JailSpec, JailSupport, elf_loader, exit_error},
+            tools::{Call, registry},
+        },
+        layout::PaneIds,
     },
-    runtime::jail::probe,
+    runtime::{
+        jail::probe,
+        mcp::{Dispatch, Hub, Outcome, shim},
+    },
 };
 
 fn jail_available() -> bool {
@@ -413,4 +424,112 @@ fn the_granted_loader_cannot_run_a_program_whose_folder_is_not_readable() {
     wide.push(PathBuf::from("/usr"));
     let out = through_loader(wide);
     assert!(out.status.success(), "{}", stderr(&out));
+}
+
+/// Answers every tool call with "done".
+struct Done;
+
+impl Dispatch for Done {
+    fn call(&self, _call: Call) -> BoxFuture<'static, Outcome> {
+        async {
+            Outcome {
+                text: "done".into(),
+                is_error: false,
+            }
+        }
+        .boxed()
+    }
+}
+
+#[test]
+fn the_shim_runs_jailed_with_only_its_binary_and_the_socket_and_connects() {
+    if !jail_available() {
+        return;
+    }
+    let abi = probe_abi();
+    eprintln!("note: Landlock ABI {abi} on this kernel");
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut hub = rt.block_on(async { Hub::new(&[dir.path().join("run")]).unwrap() });
+    let pane = PaneIds::default().alloc();
+    let started = rt
+        .block_on(async { hub.open(pane, registry(&[]), Arc::new(Done)) })
+        .unwrap();
+    let socket = started.socket.clone();
+
+    // The shim is the app's own binary, granted rx plus its loader (what
+    // `job` does), and the socket file. No folder, no other program.
+    let bin = env!("CARGO_BIN_EXE_lazarobox-shell");
+    let granted = |s: &mut JailSpec| s.rw_files.push(socket.clone());
+    let argv = [shim::SUBCOMMAND, socket.to_str().unwrap()];
+    let mut child = Command::new(bin)
+        .args(job(bin, &argv, granted).render())
+        .env("LC_ALL", "C")
+        // An engine launched from a lazarobox pane carries this marker.
+        .env("LAZAROBOX", "1")
+        .env(shim::TOKEN_ENV, started.token.reveal())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the helper starts");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    stdin
+        .write_all(
+            b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"t\",\"version\":\"1\"}}}\n",
+        )
+        .unwrap();
+    let mut reply = String::new();
+    stdout.read_line(&mut reply).unwrap();
+    drop(stdin);
+    let status = child.wait().unwrap();
+    let mut err = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut err).unwrap();
+    assert!(
+        reply.contains("\"result\""),
+        "reply {reply:?}, stderr {err}"
+    );
+    assert!(status.success(), "{status:?}: {err}");
+    assert!(!err.contains(started.token.reveal()));
+    rt.block_on(async { hub.close(pane) });
+}
+
+#[test]
+fn the_jail_that_runs_the_shim_still_denies_curl_and_the_ssh_dir() {
+    if !jail_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("s.sock");
+    fs::write(&socket, "").unwrap();
+    let shim_grant = |s: &mut JailSpec| s.rw_files.push(socket.clone());
+
+    // `env` stands in for the engine: with the shim's rights in force it must
+    // still be unable to start `curl` or read `~/.ssh`.
+    let mut tried = 0;
+    for target in ["/usr/bin/curl", "/usr/bin/ssh"] {
+        if !Path::new(target).exists() {
+            eprintln!("note: {target} is not installed here, its EACCES check is skipped");
+            continue;
+        }
+        tried += 1;
+        let out = run(&job("/usr/bin/env", &[target, "--version"], shim_grant));
+        assert!(!out.status.success(), "{target} ran");
+        assert!(denied(&out), "{target}: {}", stderr(&out));
+    }
+    assert!(tried >= 1, "neither curl nor ssh is installed to check");
+
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        let ssh = home.join(".ssh");
+        if ssh.is_dir() {
+            let out = run(&job("/bin/ls", &[ssh.to_str().unwrap()], shim_grant));
+            assert!(!out.status.success(), "{}", stdout(&out));
+            assert!(denied(&out), "{}", stderr(&out));
+        } else {
+            eprintln!("note: no ~/.ssh here, its EACCES check is skipped");
+        }
+    }
 }
