@@ -469,6 +469,7 @@ fn jail_plan(
         lib_dirs: existing_dirs(&named),
         data_files: existing_files(&homebrew_openssl_files(&named)),
         helpers: Vec::new(),
+        shim: None,
         cwd: dirs.cwd.clone(),
         tmp: dirs.tmp.clone(),
     };

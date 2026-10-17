@@ -27,6 +27,7 @@ fn layout(cli: Cli, binary: &str, interpreter: Option<&str>) -> CliLayout {
         lib_dirs: Vec::new(),
         data_files: Vec::new(),
         helpers: Vec::new(),
+        shim: None,
         cwd: p("/run/user/1000/lazarobox/cli-cwd"),
         tmp: p("/run/user/1000/lazarobox/cli-tmp/1-1"),
     }
@@ -1335,4 +1336,82 @@ fn paths_in_a_refusal_are_abbreviated_and_sanitized() {
     );
     let broad = JailRefusal::RootTooBroad(p("/home/u")).hint(home());
     assert!(broad.starts_with("~ is too broad"), "{broad}");
+}
+
+fn grant(binary: &str, loader: Option<&str>) -> ShimGrant {
+    ShimGrant {
+        binary: p(binary),
+        loader: loader.map(p),
+        socket: p("/run/user/1000/lazarobox/s-1-1.sock"),
+    }
+}
+
+fn shimmed(shim: ShimGrant) -> JailSpec {
+    let mut layout = native_claude();
+    layout.loaders = paths(&["/lib64/ld-linux-x86-64.so.2"]);
+    layout.shim = Some(shim);
+    jail_spec(&layout).unwrap()
+}
+
+fn plain() -> JailSpec {
+    let mut layout = native_claude();
+    layout.loaders = paths(&["/lib64/ld-linux-x86-64.so.2"]);
+    jail_spec(&layout).unwrap()
+}
+
+#[test]
+fn the_shim_grant_adds_the_binary_the_loader_and_the_socket_file_and_nothing_else() {
+    let with = shimmed(grant("/opt/lb/bin/lazarobox", Some("/lib/ld-musl.so.1")));
+    let without = plain();
+    let mut expected = without.clone();
+    expected
+        .rx
+        .extend(paths(&["/opt/lb/bin/lazarobox", "/lib/ld-musl.so.1"]));
+    expected
+        .rw_files
+        .push(p("/run/user/1000/lazarobox/s-1-1.sock"));
+    assert_eq!(with, expected);
+    // Files, not folders: the socket's folder gets no rule.
+    assert!(!every_path(&with).contains(&Path::new("/run/user/1000/lazarobox")));
+}
+
+#[test]
+fn the_shim_loader_is_added_only_when_it_differs_from_the_clis() {
+    let with = shimmed(grant(
+        "/opt/lb/bin/lazarobox",
+        Some("/lib64/ld-linux-x86-64.so.2"),
+    ));
+    let loader = p("/lib64/ld-linux-x86-64.so.2");
+    assert_eq!(with.rx.iter().filter(|x| **x == loader).count(), 1);
+    let none = shimmed(grant("/opt/lb/bin/lazarobox", None));
+    assert_eq!(none.rx.len(), plain().rx.len() + 1);
+}
+
+#[test]
+fn a_shim_grant_must_be_canonical_and_never_a_broad_place() {
+    let mut layout = native_claude();
+    layout.shim = Some(grant("/opt/lb/../lazarobox", None));
+    assert!(matches!(
+        jail_spec(&layout),
+        Err(SpecError::NotCanonical(_))
+    ));
+    layout.shim = Some(grant("/tmp/lazarobox", None));
+    assert!(matches!(
+        jail_spec(&layout),
+        Err(SpecError::RootTooBroad(_))
+    ));
+    layout.shim = Some(grant("/opt/lb/bin/lazarobox", Some("/tmp/ld.so")));
+    assert!(matches!(
+        jail_spec(&layout),
+        Err(SpecError::RootTooBroad(_))
+    ));
+    let mut layout = native_claude();
+    layout.shim = Some(ShimGrant {
+        socket: p("relative.sock"),
+        ..grant("/opt/lb/bin/lazarobox", None)
+    });
+    assert!(matches!(
+        jail_spec(&layout),
+        Err(SpecError::NotCanonical(_))
+    ));
 }
