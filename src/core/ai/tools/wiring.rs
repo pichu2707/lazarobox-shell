@@ -48,7 +48,7 @@ pub struct McpWire {
 }
 
 /// What claude gets for one turn with tools.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ClaudeWiring {
     /// The content of the config file (it holds the token: write it 0600).
     pub config: String,
@@ -56,6 +56,17 @@ pub struct ClaudeWiring {
     /// variadic in claude, so a separate value would swallow what follows.
     pub args: Vec<String>,
     pub env: Vec<(&'static str, &'static str)>,
+}
+
+impl fmt::Debug for ClaudeWiring {
+    /// The config holds the token, so it never prints.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClaudeWiring")
+            .field("config", &"(..)")
+            .field("args", &self.args)
+            .field("env", &self.env)
+            .finish()
+    }
 }
 
 /// The wiring for claude: the stdio server entry (the token goes only in its
@@ -126,6 +137,15 @@ mod tests {
                 .any(|(k, v)| k.contains(&token) || v.contains(&token))
         );
         assert!(!format!("{:?}", wire()).contains(&token), "Debug hides it");
+    }
+
+    #[test]
+    fn the_claude_wiring_never_prints_its_config() {
+        let w = wiring();
+        let token = wire().token.reveal().to_owned();
+        let text = format!("{w:?}");
+        assert!(!text.contains(&token), "{text}");
+        assert!(text.contains("--allowedTools=mcp__lazarobox"), "{text}");
     }
 
     #[test]
