@@ -220,6 +220,7 @@ struct Process {
     jail: JailPolicy,
     tmp_files: Vec<TmpFile>,
     mcp: Option<McpWire>,
+    tools: Option<Box<ToolsText>>,
 }
 
 fn process(invocation: Invocation) -> Process {
@@ -232,6 +233,7 @@ fn process(invocation: Invocation) -> Process {
         jail,
         tmp_files,
         mcp,
+        tools,
     }) = invocation
     else {
         panic!("a process invocation expected: {invocation:?}");
@@ -245,6 +247,7 @@ fn process(invocation: Invocation) -> Process {
         jail,
         tmp_files,
         mcp,
+        tools,
     }
 }
 
@@ -960,5 +963,84 @@ fn a_verified_gemini_without_a_session_stays_text_only() {
     assert_eq!(
         Adapter::Gemini.build_with(&on, &["gemini"]),
         Adapter::Gemini.build(&off)
+    );
+}
+
+fn chat_system() -> String {
+    use crate::core::ai::config::{Profile, Task};
+    prompts::builtin(Profile::Programmer, Task::Chat)
+        .trim_end()
+        .to_owned()
+}
+
+fn wired_request(engine: &str) -> ChatRequest {
+    let (_, mut on) = tools_on(engine, true);
+    on.system = chat_system();
+    on.model = None;
+    on
+}
+
+#[test]
+fn a_wired_cli_job_keeps_the_text_prompt_and_carries_the_tools_one_apart() {
+    for engine in ["claude", "codex", "gemini"] {
+        let on = wired_request(engine);
+        let mut off = on.clone();
+        off.tools = Tools::Off;
+        let adapter = adapter_for(engine).unwrap();
+        let wired = process(adapter.build_with(&on, &[engine]));
+        let text = process(adapter.build(&off));
+        // The job itself is the text-only one, byte for byte.
+        assert_eq!(wired.args, text.args, "{engine}");
+        assert_eq!(wired.stdin, text.stdin, "{engine}");
+        assert!(wired.stdin.contains("no access to files") || engine == "claude");
+        let tools = wired.tools.expect(engine);
+        assert_eq!(tools.args.len(), wired.args.len(), "{engine}");
+        let with = prompts::with_tools(&chat_system());
+        let hit = if engine == "claude" {
+            tools.args.contains(&with)
+        } else {
+            String::from_utf8(tools.stdin.clone())
+                .unwrap()
+                .starts_with(&format!("Instructions:\n{with}\n\n"))
+        };
+        assert!(hit, "{engine}");
+        assert!(!with.contains("no access to files"));
+        // Nothing else differs: the conversation and the other flags.
+        let differing: Vec<_> = tools
+            .args
+            .iter()
+            .zip(&wired.args)
+            .filter(|(a, b)| a != b)
+            .collect();
+        assert_eq!(differing.len(), usize::from(engine == "claude"), "{engine}");
+    }
+}
+
+#[test]
+fn a_job_without_a_wire_has_no_tools_text_and_a_server_engine_is_untouched() {
+    for engine in ["claude", "codex", "gemini"] {
+        let (_, no_session) = tools_on(engine, false);
+        assert!(
+            process(
+                adapter_for(engine)
+                    .unwrap()
+                    .build_with(&no_session, &[engine])
+            )
+            .tools
+            .is_none(),
+            "{engine}"
+        );
+        // An engine that is not verified yet.
+        let (_, on) = tools_on(engine, true);
+        assert!(
+            process(adapter_for(engine).unwrap().build(&on))
+                .tools
+                .is_none()
+        );
+    }
+    let (off, on) = tools_on("ollama", true);
+    assert_eq!(
+        Adapter::Ollama.build_with(&on, &["ollama"]),
+        Adapter::Ollama.build(&off)
     );
 }

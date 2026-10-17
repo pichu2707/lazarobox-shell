@@ -481,66 +481,80 @@ fn chat_prompt() -> String {
         .to_owned()
 }
 
-// A turn that has a session tells the model about its tools; the text that
-// says it has none is gone.
+/// What the runner got for a turn sent to `chats` with `req`.
+async fn sent(
+    chats: &mut Chats,
+    rx: &mut mpsc::Receiver<Tagged>,
+    seen: &Arc<Mutex<Vec<ChatRequest>>>,
+    req: ChatRequest,
+) -> ChatRequest {
+    let before = seen.lock().unwrap().len();
+    chats.send(pane(1), 1, req);
+    next(rx).await;
+    seen.lock().unwrap()[before].clone()
+}
+
+// The tools prompt is not decided here. A session only means the engine MAY be
+// wired: `plan` can still fall back to text (no jail, no shim, a refused
+// layout), so the adapter hands the runtime both texts and `plan` picks the
+// wired one (see the `real_turn` tests in `cli/tests.rs`). Whatever happens
+// here, the system prompt of the request is the one the app built.
 #[tokio::test]
-async fn a_turn_with_a_session_says_it_has_tools() {
+async fn the_chats_never_rewrite_the_system_prompt() {
     let lab = lab();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let (mut chats, mut rx) = tooled(&lab, capturing(seen.clone()));
     let mut req = with_tools(&lab);
     req.system = chat_prompt();
-    chats.send(pane(1), 1, req);
-    next(&mut rx).await;
-    let system = seen.lock().unwrap()[0].system.clone();
-    assert_eq!(
-        system,
-        crate::core::ai::chat::prompts::with_tools(&chat_prompt())
+    let got = sent(&mut chats, &mut rx, &seen, req.clone()).await;
+    assert!(
+        matches!(got.tools, Tools::On { mcp: Some(_), .. }),
+        "a session"
     );
-    assert!(!system.contains("no access to files"), "{system}");
-    assert!(system.contains("run a command in the user's shell pane"));
-}
+    assert_eq!(got.system, chat_prompt());
 
-// Without tools the prompt is the one the app built, byte for byte; so it is
-// when tools were asked for but no session could be opened.
-#[tokio::test]
-async fn a_turn_without_a_session_keeps_its_prompt_byte_for_byte() {
-    let lab = lab();
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let (mut chats, mut rx) = tooled(&lab, capturing(seen.clone()));
+    // Tools off.
     let mut off = request("");
     off.system = chat_prompt();
-    chats.send(pane(1), 1, off);
-    next(&mut rx).await;
-    assert_eq!(seen.lock().unwrap()[0].system, chat_prompt());
-    // No tooling at all: the same.
+    let got = sent(&mut chats, &mut rx, &seen, off).await;
+    assert_eq!(got.tools, Tools::Off);
+    assert_eq!(got.system, chat_prompt());
+
+    // Tools on for a server engine: its adapter builds an HTTP request and never
+    // reads the wire.
+    let mut server = req.clone();
+    server.engine = "ollama".into();
+    let got = sent(&mut chats, &mut rx, &seen, server).await;
+    assert_eq!(got.system, chat_prompt());
+
+    // No tooling at all.
     let seen = Arc::new(Mutex::new(Vec::new()));
     let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
     let mut bare = Chats::new(capturing(seen.clone()), tx);
-    let mut req = with_tools(&lab);
-    req.system = chat_prompt();
-    bare.send(pane(2), 1, req);
-    next(&mut rx).await;
-    assert_eq!(seen.lock().unwrap()[0].system, chat_prompt());
+    let got = sent(&mut bare, &mut rx, &seen, req.clone()).await;
+    assert!(matches!(got.tools, Tools::On { mcp: None, .. }));
+    assert_eq!(got.system, chat_prompt());
 }
 
-// Keyed on the session, not on the engine: codex and gemini turns get it too.
+// The hub cannot open (its folder cannot be made): no session, no wire, and the
+// prompt untouched.
 #[tokio::test]
-async fn every_cli_engine_with_a_session_gets_the_tools_prompt() {
-    for engine in ["claude", "codex", "gemini"] {
-        let lab = lab();
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let (mut chats, mut rx) = tooled(&lab, capturing(seen.clone()));
-        let mut req = with_tools(&lab);
-        req.engine = engine.into();
-        req.system = chat_prompt();
-        chats.send(pane(1), 1, req);
-        next(&mut rx).await;
-        let system = seen.lock().unwrap()[0].system.clone();
-        assert!(
-            system.contains("run a command in the user's shell pane"),
-            "{engine}"
-        );
-        assert!(!system.contains("no access to files"), "{engine}");
-    }
+async fn a_hub_that_cannot_open_leaves_the_turn_text_with_its_prompt() {
+    let lab = lab();
+    let blocker = lab.dir.path().join("file");
+    std::fs::write(&blocker, "").unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
+    let mut chats = Chats::new(capturing(seen.clone()), tx)
+        .with_tools(lab.host.clone(), vec![blocker.join("run")]);
+    let mut req = with_tools(&lab);
+    req.system = chat_prompt();
+    let got = sent(&mut chats, &mut rx, &seen, req).await;
+    assert!(chats.session(pane(1)).is_none());
+    assert!(
+        matches!(got.tools, Tools::On { mcp: None, .. }),
+        "{:?}",
+        got.tools
+    );
+    assert_eq!(got.system, chat_prompt());
 }

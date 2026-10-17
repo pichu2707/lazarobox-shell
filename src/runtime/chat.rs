@@ -38,7 +38,6 @@ use crate::core::{
             codex::CodexDecoder,
             engine::{CallId, ChatError, ChatRequest, Decision, StreamEvent, Tools, locality},
             gemini::GeminiDecoder,
-            prompts,
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
         sanitize::{StreamSanitizer, Utf8Stream, clean},
@@ -555,8 +554,6 @@ impl Chats {
                 token: Secret::new(started.token.reveal()),
                 unwire: started.end.clone(),
             }));
-            // The model must not be told it has no tools when it has them.
-            request.system = prompts::with_tools(&request.system);
         }
         let task = tokio::spawn(run_turn(
             self.runner.clone(),

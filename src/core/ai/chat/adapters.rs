@@ -4,7 +4,10 @@
 
 use serde_json::{Value, json};
 
-use super::engine::{ChatMessage, ChatRequest, MCP_VERIFIED, Role, Tools};
+use super::{
+    engine::{ChatMessage, ChatRequest, MCP_VERIFIED, Role, Tools},
+    prompts,
+};
 use crate::core::ai::{
     CATALOG, Kind,
     jail::{Cli, JailPolicy},
@@ -68,6 +71,19 @@ pub struct Job {
     /// runtime turns it into the engine's config and flags; if that fails the
     /// turn runs as text.
     pub mcp: Option<McpWire>,
+    /// What the turn sends instead of `args` and `stdin` when it really runs
+    /// wired: the same with the tools prompt. Only `Some` with `mcp`; the
+    /// runtime takes it on the attempt that carries the wiring and on no other,
+    /// so a text-only turn never hears about tools it does not have.
+    pub tools: Option<Box<ToolsText>>,
+}
+
+/// The argv and stdin of a wired turn: those of the text-only job, with the
+/// tools prompt as the system prompt. `args` has the length of `Job::args`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ToolsText {
+    pub args: Vec<String>,
+    pub stdin: Vec<u8>,
 }
 
 /// A small fixed file a CLI is told to read. The content is a constant of the
@@ -133,6 +149,26 @@ impl Adapter {
     /// manual check given (D12). An engine outside `verified` gets exactly the
     /// invocation of a request without tools.
     pub fn build_with(self, request: &ChatRequest, verified: &[&str]) -> Invocation {
+        let built = self.build_text(request, verified);
+        let Invocation::Process(mut job) = built else {
+            return built;
+        };
+        if job.mcp.is_some() {
+            // The same job once more with the tools prompt, to keep what
+            // each engine does with its system prompt in one place.
+            let mut with_tools = request.clone();
+            with_tools.system = prompts::with_tools(&request.system);
+            if let Invocation::Process(other) = self.build_text(&with_tools, verified) {
+                job.tools = Some(Box::new(ToolsText {
+                    args: other.args,
+                    stdin: other.stdin,
+                }));
+            }
+        }
+        Invocation::Process(job)
+    }
+
+    fn build_text(self, request: &ChatRequest, verified: &[&str]) -> Invocation {
         match self {
             Adapter::Ollama => Invocation::Http {
                 wire: Wire::Ndjson,
@@ -246,6 +282,7 @@ fn claude_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation 
         jail: JailPolicy::Layered,
         tmp_files: Vec::new(),
         mcp,
+        tools: None,
     })
 }
 
@@ -320,6 +357,7 @@ fn codex_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation {
         jail: JailPolicy::Required,
         tmp_files: Vec::new(),
         mcp,
+        tools: None,
     })
 }
 
@@ -383,6 +421,7 @@ fn gemini_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation 
             content: GEMINI_POLICY,
         }],
         mcp,
+        tools: None,
     })
 }
 

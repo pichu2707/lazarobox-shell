@@ -161,6 +161,7 @@ fn job(policy: JailPolicy) -> Job {
         jail: policy,
         tmp_files: Vec::new(),
         mcp: None,
+        tools: None,
     }
 }
 
@@ -623,6 +624,7 @@ fn codex_job(args: &[&str]) -> Job {
         jail: JailPolicy::Required,
         tmp_files: Vec::new(),
         mcp: None,
+        tools: None,
     }
 }
 
@@ -1486,6 +1488,7 @@ fn gemini_job(jail: JailPolicy) -> Job {
             content: POLICY,
         }],
         mcp: None,
+        tools: None,
     }
 }
 
@@ -1786,6 +1789,7 @@ fn claude_job(lab: &Lab, wired: bool) -> Job {
             token: Secret::new(TOKEN),
             unwire: Unwire::none(),
         }),
+        tools: None,
     }
 }
 
@@ -2255,6 +2259,7 @@ if [ -e "$TMPDIR/mcp.json" ]; then echo yes > "$REC/mcp_during"; fi
 fn wired_codex_job(lab: &Lab) -> Job {
     Job {
         mcp: claude_job(lab, true).mcp,
+        tools: None,
         ..codex_job(&["exec", "-"])
     }
 }
@@ -2491,6 +2496,7 @@ fn wired_gemini_job(lab: &Lab) -> Job {
             content: POLICY,
         }],
         mcp: claude_job(lab, true).mcp,
+        tools: None,
     }
 }
 
@@ -2662,4 +2668,149 @@ async fn only_a_wired_turn_lets_gemini_use_our_tools() {
     let events = run_job(&bare, job).await;
     assert_eq!(failure(&events), "gemini tried to use a tool", "{events:?}");
     assert_eq!(count.load(Ordering::SeqCst), 1, "its session ended");
+}
+
+// The tools prompt reaches an engine only on the attempt that is wired. These
+// tests build the job with the real adapters and run it through `plan`.
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Setup {
+    /// A trusted shim the jail grants: the turn is wired.
+    Wired,
+    /// A trusted shim the jail refuses: the retry runs as text.
+    RefusedShim,
+    /// No shim program at all.
+    NoShim,
+    /// No jail (only for claude, whose policy is `Layered`).
+    NoJail,
+}
+
+fn chat_system() -> String {
+    use crate::core::ai::config::{Profile, Task};
+    crate::core::ai::chat::prompts::builtin(Profile::Programmer, Task::Chat)
+        .trim_end()
+        .to_owned()
+}
+
+/// Runs a turn of `engine` built by its real adapter and returns what the fake
+/// CLI saw: its argv and its stdin.
+async fn real_turn(engine: &str, setup: Setup) -> (Vec<String>, String) {
+    use crate::core::ai::chat::adapters::adapter_for;
+    let lab = lab();
+    let body = match engine {
+        "claude" => format!("{MCP_CLAUDE}{GOOD}"),
+        "codex" => format!("{MCP_CODEX}{CODEX_ANSWER}"),
+        _ => format!("printf '%s\\0' \"$@\" > \"$REC/args\"\ncat > \"$REC/stdin\"\n{GEMINI_END}"),
+    };
+    script(&lab.bin.join(engine), &lab.rec, &body);
+    let shim = match setup {
+        Setup::RefusedShim => shim_in_ssh(&lab),
+        _ => trusted_shim(&lab),
+    };
+    let mut env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
+    match setup {
+        Setup::NoShim => env.shim = None,
+        Setup::NoJail => {
+            env.jail = JailSupport::Unavailable(JailOff::NotProbed);
+        }
+        _ => {}
+    }
+    let mut request = request();
+    request.engine = engine.into();
+    request.model = None;
+    request.system = chat_system();
+    request.messages = vec![ChatMessage {
+        role: Role::User,
+        content: "hi".into(),
+    }];
+    request.tools = Tools::On {
+        origin: None,
+        mcp: claude_job(&lab, true).mcp.map(Box::new),
+    };
+    let crate::core::ai::chat::adapters::Invocation::Process(job) =
+        adapter_for(engine).unwrap().build_with(&request, &[engine])
+    else {
+        panic!("a process expected");
+    };
+    let _ = run_job(&env, job).await;
+    (lab.args(), lab.recorded("stdin"))
+}
+
+const NO_ACCESS: &str = "no access to files, a shell or the terminal";
+const HAS_TOOLS: &str = "run a command in the user's shell pane";
+
+fn system_after(args: &[String], flag: &str) -> String {
+    let at = args.iter().position(|a| a == flag).expect(flag);
+    args[at + 1].clone()
+}
+
+#[tokio::test]
+async fn the_real_wired_claude_argv_swaps_only_safe_mode_and_carries_the_tools_prompt() {
+    let (args, _) = real_turn("claude", Setup::Wired).await;
+    assert!(!args.contains(&"--safe-mode".to_owned()), "{args:?}");
+    for kept in [
+        "--disable-slash-commands",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--system-prompt",
+    ] {
+        assert!(args.contains(&kept.to_owned()), "{kept}: {args:?}");
+    }
+    let tools = args.iter().position(|a| a == "--tools").unwrap();
+    // The recorder drops empty arguments: the empty list leaves the next flag.
+    assert_eq!(
+        args[tools + 1],
+        "--strict-mcp-config",
+        "--tools stays empty"
+    );
+    assert_eq!(args.last().unwrap(), "--setting-sources=");
+    assert_eq!(
+        args.iter().filter(|a| *a == "--setting-sources=").count(),
+        1
+    );
+    let system = system_after(&args, "--system-prompt");
+    assert!(
+        system.contains(HAS_TOOLS) && !system.contains(NO_ACCESS),
+        "{system}"
+    );
+}
+
+#[tokio::test]
+async fn a_claude_turn_that_ends_up_text_only_keeps_safe_mode_and_its_prompt() {
+    for setup in [Setup::RefusedShim, Setup::NoShim, Setup::NoJail] {
+        let (args, stdin) = real_turn("claude", setup).await;
+        assert!(
+            args.contains(&"--safe-mode".to_owned()),
+            "{setup:?}: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a.starts_with("--setting-sources")),
+            "{setup:?}: {args:?}"
+        );
+        assert_eq!(
+            system_after(&args, "--system-prompt"),
+            chat_system(),
+            "{setup:?}"
+        );
+        assert!(!stdin.contains(HAS_TOOLS), "{setup:?}");
+    }
+}
+
+#[tokio::test]
+async fn codex_and_gemini_get_the_tools_prompt_only_when_wired() {
+    for engine in ["codex", "gemini"] {
+        let (_, stdin) = real_turn(engine, Setup::Wired).await;
+        assert!(
+            stdin.contains(HAS_TOOLS) && !stdin.contains(NO_ACCESS),
+            "{engine}: {stdin}"
+        );
+        for setup in [Setup::RefusedShim, Setup::NoShim] {
+            let (_, stdin) = real_turn(engine, setup).await;
+            assert!(
+                stdin.starts_with(&format!("Instructions:\n{}\n\n", chat_system())),
+                "{engine} {setup:?}: {stdin}"
+            );
+            assert!(!stdin.contains(HAS_TOOLS), "{engine} {setup:?}");
+        }
+    }
 }

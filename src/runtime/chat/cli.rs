@@ -832,10 +832,17 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
             for attempt in tries {
                 let mut full = argv.clone();
                 if let Some(w) = &attempt {
+                    // The tools prompt, on this attempt only.
+                    if let Some(text) = &job.tools {
+                        let len = text.args.len().min(full.len());
+                        full.splice(..len, text.args.iter().map(OsString::from));
+                    }
                     // Once, from the front: the system prompt that follows the
                     // fixed flags could itself read like one of them.
                     for flag in &w.drops {
-                        if let Some(at) = full.iter().position(|a| a == flag) {
+                        let at = full.iter().position(|a| a == flag);
+                        debug_assert!(at.is_some(), "{flag} is not in the argv");
+                        if let Some(at) = at {
                             full.remove(at);
                         }
                     }
@@ -903,6 +910,7 @@ pub(crate) async fn run_listing(
         jail: JailPolicy::Required,
         tmp_files: Vec::new(),
         mcp: None,
+        tools: None,
     };
     let plan = match plan(env, &job) {
         Ok(plan) => plan,
@@ -1066,7 +1074,12 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
     let mut stdout = stdout;
 
     let mut decoder = fresh_decoder(job.wire, plan.wired);
-    let mut stdin_task = std::pin::pin!(write_stdin(stdin, &job.stdin).fuse());
+    // The tools prompt is in the stdin of a wired attempt only.
+    let text = match (&job.tools, plan.wired) {
+        (Some(tools), true) => &tools.stdin,
+        _ => &job.stdin,
+    };
+    let mut stdin_task = std::pin::pin!(write_stdin(stdin, text).fuse());
     let mut stderr_task = std::pin::pin!(read_stderr(stderr).fuse());
     let mut stderr_tail = None;
     let relayed = {

@@ -262,3 +262,8 @@ fn the_workspace_block_after_the_sentence_is_kept() {
     let got = with_tools(&system);
     assert!(got.ends_with("Workspace facts: cwd /home/u"), "{got}");
 }
+
+#[test]
+fn an_empty_prompt_becomes_the_block_alone() {
+    assert_eq!(with_tools(""), TOOLS.trim_end());
+}

@@ -98,6 +98,9 @@ const TOOLS: &str = include_str!("prompts/tools.md");
 /// this: any other keeps its prompt byte for byte.
 pub fn with_tools(system: &str) -> String {
     let block = TOOLS.trim_end();
+    if system.trim().is_empty() {
+        return block.to_owned();
+    }
     if system.contains(NO_TOOLS) {
         return system.replacen(NO_TOOLS, block, 1);
     }
