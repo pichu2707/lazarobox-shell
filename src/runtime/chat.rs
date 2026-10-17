@@ -23,7 +23,7 @@ pub(crate) use cli::{
     alive_by_comm, ensure_private_dir, jail_note, read_comm, run_listing, trusted_real_path,
 };
 
-use super::loopback::post_stream;
+use super::{loopback::post_stream, tools::ToolHost};
 use crate::core::{
     ai::{
         chat::{
@@ -291,15 +291,22 @@ pub(crate) fn adapter_runner_at(port: Option<u16>) -> Runner {
         CliEnv::from_env(crate::core::ai::jail::JailSupport::Unavailable(
             crate::core::ai::jail::JailOff::NotProbed,
         )),
+        None,
     )
 }
 
 /// The runner over an explicit machine: the port of server engines (when
-/// overridden) and the environment CLI engines run in.
-pub fn runner_with(port: Option<u16>, cli: CliEnv) -> Runner {
+/// overridden), the environment CLI engines run in and the host that runs the
+/// tool calls of a turn. A turn that offers tools builds its
+/// [`Dispatch`](crate::runtime::mcp::Dispatch) from the host with
+/// `ToolHost::dispatch`; a turn that does not (every turn today) never
+/// touches it, so the requests stay as they were without tools.
+pub fn runner_with(port: Option<u16>, cli: CliEnv, tools: Option<Arc<ToolHost>>) -> Runner {
     Arc::new(move |request, tx| {
         let cli = cli.clone();
+        let tools = tools.clone();
         Box::pin(async move {
+            let _tools = tools;
             let Some(adapter) = adapter_for(&request.engine) else {
                 let _ = tx
                     .send(StreamEvent::Error(ChatError::Failed(NO_ADAPTER.into())))

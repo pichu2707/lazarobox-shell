@@ -131,6 +131,25 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// The path a read ask shows: `input` resolved against `origin` and `home` by
+/// text alone, the same way [`resolve`] does before it checks the disk. `None`
+/// when the result would not read the same once it is sanitized for display
+/// (too long, control, bidi or zero-width characters, a secret-looking run,
+/// not UTF-8): the user must never approve a path that differs from the one
+/// that is opened, so such a call is refused instead of asked.
+pub fn display_target(home: &Path, origin: &Path, input: &str) -> Option<String> {
+    let expanded = expand_tilde(home, input)?;
+    let full = if expanded.is_absolute() {
+        expanded
+    } else {
+        origin.join(expanded)
+    };
+    let text = normalize(&full).to_str()?.to_owned();
+    let plain = crate::core::ai::tools::summary::clip(&text) == text;
+    let secret = crate::core::ai::memory::redact::redact(&text).hits > 0;
+    (plain && !secret).then_some(text)
+}
+
 /// Expands a leading `~` or `~/` to `home`. `~user` is not supported and
 /// gives `None`.
 fn expand_tilde(home: &Path, input: &str) -> Option<PathBuf> {
@@ -317,6 +336,51 @@ pub fn resolve(roots: &SecretRoots, origin: &Path, input: &str) -> PathVerdict {
     match full.canonicalize() {
         Ok(real) if roots.judge_real(&real) => PathVerdict::Allowed(real),
         _ => PathVerdict::Refused,
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    const HOME: &str = "/home/u";
+    const ORIGIN: &str = "/home/u/dev/app";
+
+    fn shown(input: &str) -> Option<String> {
+        display_target(Path::new(HOME), Path::new(ORIGIN), input)
+    }
+
+    #[test]
+    fn a_relative_path_is_shown_resolved_against_the_origin() {
+        assert_eq!(
+            shown("src/lib.rs").as_deref(),
+            Some("/home/u/dev/app/src/lib.rs")
+        );
+        assert_eq!(shown("../x/./y").as_deref(), Some("/home/u/dev/x/y"));
+    }
+
+    #[test]
+    fn tilde_and_absolute_paths_are_shown_expanded() {
+        assert_eq!(shown("~/a.txt").as_deref(), Some("/home/u/a.txt"));
+        assert_eq!(shown("~").as_deref(), Some("/home/u"));
+        assert_eq!(shown("/home/u/b").as_deref(), Some("/home/u/b"));
+    }
+
+    #[test]
+    fn a_path_that_display_would_change_is_not_shown() {
+        let long = format!("~/{}", "a".repeat(300));
+        for input in [
+            long.as_str(),
+            "~/a\u{202e}txt.exe",
+            "~/a\u{200b}b",
+            "~/line\nbreak",
+            "~/tab\there",
+            "~/esc\u{1b}[31mx",
+            "~/sk-abcdefghijklmnopqrstuvwxyz0123456789ABCD",
+            "~user/x",
+        ] {
+            assert_eq!(shown(input), None, "{input:?}");
+        }
     }
 }
 

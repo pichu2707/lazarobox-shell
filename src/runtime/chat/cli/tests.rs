@@ -201,7 +201,7 @@ async fn run(env: CliEnv, req: ChatRequest) -> Vec<StreamEvent> {
 /// One turn through the real runner, up to the final event.
 async fn run_all(env: CliEnv, req: ChatRequest) -> Vec<StreamEvent> {
     let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
-    let mut chats = Chats::new(runner_with(None, env), tx);
+    let mut chats = Chats::new(runner_with(None, env, None), tx);
     chats.send(PaneId::for_test(1), 1, req);
     let mut events = Vec::new();
     loop {
@@ -851,7 +851,7 @@ async fn cancelling_a_turn_kills_the_whole_group_within_a_second() {
     let lab = lab();
     lab.claude("cat > /dev/null\nsleep 300 &\necho $! > \"$REC/child\"\necho $$ > \"$REC/leader\"\nprintf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\"}'\nwait");
     let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
-    let mut chats = Chats::new(runner_with(None, lab.env()), tx);
+    let mut chats = Chats::new(runner_with(None, lab.env(), None), tx);
     chats.send(PaneId::for_test(1), 1, request());
     // The CLI is up once it has recorded both pids.
     let up = Instant::now() + Duration::from_secs(10);

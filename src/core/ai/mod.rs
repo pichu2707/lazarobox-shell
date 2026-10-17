@@ -34,6 +34,12 @@ impl Kind {
     /// Where the engine's adapter sends what a tool returns: a loopback
     /// server keeps it on the machine, a CLI hands it to its provider. Comes
     /// from the kind alone, so no model name can change it.
+    ///
+    /// Known limit: this is the engine kind, not the route. The Ollama URL is
+    /// hard-coded to loopback today, but an Ollama `*-cloud` model goes
+    /// through the local daemon to ollama.com and still counts as `Local`.
+    /// Accepted. If a host or URL setting is ever added, `Local` must mean
+    /// "loopback AND not forwarding".
     pub fn locality(self) -> tools::Locality {
         match self {
             Kind::Server { .. } => tools::Locality::Local,

@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod audit;
 pub mod fs;
+pub mod host;
 pub mod open;
 
 use std::{
@@ -16,6 +17,7 @@ use std::{
 
 use crate::core::ai::tools::{Call, label};
 pub use fs::{Failure, Limits, ToolEnv};
+pub use host::{Approver, ToolHost, TurnScope, Unwired};
 
 /// A random nonce for one result, `None` when the system gives no randomness
 /// (the call then fails closed rather than use a guessable delimiter).

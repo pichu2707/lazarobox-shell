@@ -343,7 +343,7 @@ pub async fn run() -> io::Result<()> {
             );
         }))
         .with_chats(Chats::new(
-            chat::runner_with(None, cli_env.clone()),
+            chat::runner_with(None, cli_env.clone(), Some(tools::ToolHost::from_env())),
             chat_tx,
         ))
         .with_store(chat_store::spawn_at(store_path, store_tx));
