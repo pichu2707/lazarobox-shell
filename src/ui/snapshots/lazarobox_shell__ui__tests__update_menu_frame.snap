@@ -2,28 +2,28 @@
 source: src/ui/mod.rs
 expression: frame
 ---
- 1       ┌ Menu ──────────────────────────────────────────────────────┐
-         │ Settings                                                   │
+ 1
+
+
+
+         ┌ Menu ──────────────────────────────────────────────────────┐
+         │ Settings* │ AI                                       ⇥ Tab │
          │ Statusline position                                 bottom │
          │ Tab bar position                                       top │
          │ Mouse                                                   on │
          │ Notify                                                 off │
          │ Sound                                                   on │
          │ * Updates                                 0.16.0 available │
-         │ AI                                                         │
-         │ Set all tasks                                    (not set) │
-         │ general                                          (not set) │
-         │ code                                             (default) │
-         │ chat                                             (default) │
-         │ review                                           (default) │
-         │ summarize                                        (default) │
-         │ Profile                                         programmer │
-         │ Context                                                 on │
-         │ Memory                                                 off │
-         │ Tools                                                   on │
+         │                                                            │
+         │                                                            │
+         │                                                            │
          │ update 0.16.0 available —                                  │
          │ run: cargo install lazarobox-shell --locked                │
          │                                                            │
          │ j/k move · h/l change · s save · Esc cancel                │
          └────────────────────────────────────────────────────────────┘
+
+
+
+
  ◐ MENU                                                   sh · update 0.16.0

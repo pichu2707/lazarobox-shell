@@ -3,17 +3,11 @@ source: src/ui/components/menu.rs
 expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &picker))"
 ---
 ┌ Menu ────────────────┐
+│ Settings │ AI        │
 │ Engine for code      │
 │ (default · use gener…│
 │  available · 8 models│
 │ … available · 2.1.0 ●│
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
-│                      │
 │                      │
 │                      │
 │                      │

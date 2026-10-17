@@ -1,0 +1,19 @@
+---
+source: src/ui/components/menu.rs
+expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &with_update()))"
+---
+┌ Menu ────────────────┐
+│ Settings* │ AI       │
+│ Statusline position  │
+│ Tab bar position  t… │
+│ Mouse             on │
+│ Notify           off │
+│ Sound             on │
+│ * Updates  0.16.0 a… │
+│                      │
+│                      │
+│                      │
+│ update 0.16.0 availa…│
+│ run: cargo install l…│
+│ j/k move · h/l chang…│
+└──────────────────────┘

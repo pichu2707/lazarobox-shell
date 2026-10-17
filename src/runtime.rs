@@ -1267,14 +1267,18 @@ mod tests {
         ] {
             step(&mut app, event, &mut panes);
         }
-        let rows = app.menu().unwrap().rows(&Config::default());
-        let general = match &rows[9] {
-            crate::core::menu::Row::Item { label, value, .. } => {
-                assert_eq!(*label, "general");
-                value.as_deref().unwrap().to_owned()
-            }
-            other => panic!("not an item: {other:?}"),
-        };
+        let rows = app.menu().unwrap().all_rows(&Config::default());
+        let general = rows
+            .iter()
+            .find_map(|row| match row {
+                crate::core::menu::Row::Item {
+                    label: "general",
+                    value,
+                    ..
+                } => value.as_deref().map(str::to_owned),
+                _ => None,
+            })
+            .expect("the general row");
         assert_eq!(general, "ollama › llama3:8b", "nothing is marked yet");
     }
 

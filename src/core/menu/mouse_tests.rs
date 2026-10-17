@@ -19,13 +19,7 @@ fn config(mouse: bool) -> Config {
 }
 
 fn select_mouse(menu: &mut MenuState) {
-    for _ in 0..13 {
-        if selected_label(menu) == "Mouse" {
-            return;
-        }
-        press(menu, 'j');
-    }
-    panic!("the cursor never reaches the Mouse row");
+    menu.goto("Mouse");
 }
 
 // Spec: Descriptor integrity (Mouse has the key path `mouse`).

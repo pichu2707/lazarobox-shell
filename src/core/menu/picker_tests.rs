@@ -15,9 +15,7 @@ pub(super) fn send(menu: &mut MenuState, event: KeyEvent) -> MenuCommand {
 
 /// Moves the selection to the task row `label` and presses Enter.
 pub(super) fn open(menu: &mut MenuState, label: &str) {
-    while selected_label(menu) != label {
-        press(menu, 'j');
-    }
+    menu.goto(label);
     assert_eq!(send(menu, key(KeyCode::Enter)), MenuCommand::None);
 }
 

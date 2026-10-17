@@ -1,0 +1,20 @@
+---
+source: src/ui/components/menu.rs
+expression: "text(&draw(62, POPUP_H, &ai_tab()))"
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ AI                                        ⇥ Tab │
+│ Set all tasks                                      (mixed) │
+│ general                                 ollama › model1:7b │
+│ code                                         claude › opus │
+│ chat                                             (default) │
+│ review                                           (default) │
+│ summarize                                        (default) │
+│ Profile                                         programmer │
+│ Context                                                 on │
+│ Memory                                                 off │
+│ Tools                                                   on │
+│                                                            │
+│                                                            │
+│ j/k move · Enter pick · r refresh · s save · Esc cancel    │
+└────────────────────────────────────────────────────────────┘

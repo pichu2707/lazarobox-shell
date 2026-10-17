@@ -1,0 +1,20 @@
+---
+source: src/ui/components/menu.rs
+expression: "text(&draw(62, POPUP_H, &with_update()))"
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings* │ AI                                       ⇥ Tab │
+│ Statusline position                                 bottom │
+│ Tab bar position                                       top │
+│ Mouse                                                   on │
+│ Notify                                                 off │
+│ Sound                                                   on │
+│ * Updates                                 0.16.0 available │
+│                                                            │
+│                                                            │
+│                                                            │
+│ update 0.16.0 available —                                  │
+│ run: cargo install lazarobox-shell --locked                │
+│                                                            │
+│ j/k move · h/l change · s save · Esc cancel                │
+└────────────────────────────────────────────────────────────┘

@@ -14,9 +14,7 @@ fn open_with(tools: bool) -> MenuState {
 
 fn on_tools(tools: bool) -> MenuState {
     let mut m = open_with(tools);
-    while selected_label(&m) != "Tools" {
-        press(&mut m, 'j');
-    }
+    m.goto("Tools");
     m
 }
 
@@ -26,7 +24,7 @@ fn send(menu: &mut MenuState, code: KeyCode, repeat: bool) -> MenuCommand {
 }
 
 fn value_of(menu: &MenuState, wanted: &str) -> Option<String> {
-    menu.rows(&Config::default())
+    menu.all_rows(&Config::default())
         .into_iter()
         .find_map(|row| match row {
             Row::Item {
@@ -62,20 +60,19 @@ fn the_tools_row_follows_memory_and_is_found_by_kind() {
 }
 
 #[test]
-fn the_popup_body_grows_with_the_row() {
-    let settings: usize = SECTIONS.iter().map(|s| s.items.len()).sum();
-    assert_eq!(
-        AI_BODY,
-        SECTIONS.len() + 1 + settings + AI_SECTION.items.len()
-    );
+fn the_ai_tab_holds_ten_rows() {
     assert_eq!(AI_SECTION.items.len(), 10);
 }
 
 #[test]
-fn navigation_goes_memory_tools_then_wraps_to_the_first_row() {
+fn navigation_goes_memory_tools_then_wraps_to_the_first_ai_row() {
     let mut m = on_tools(true);
     press(&mut m, 'j');
-    assert_eq!(selected_label(&m), "Statusline position");
+    assert_eq!(
+        selected_label(&m),
+        "Set all tasks",
+        "wraps inside the AI tab"
+    );
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Tools");
     press(&mut m, 'k');
@@ -153,9 +150,7 @@ fn the_edit_is_the_tools_key_alone_and_only_when_changed() {
 fn the_tools_edit_comes_last_after_notify_and_sound() {
     let mut m = on_tools(true);
     press(&mut m, 'l');
-    while selected_label(&m) != "Notify" {
-        press(&mut m, 'j');
-    }
+    m.goto("Notify");
     press(&mut m, 'l');
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Sound");

@@ -10,9 +10,7 @@ fn s_saves_from_the_settings_the_task_list_and_both_picker_levels() {
     let mut m = menu(None, None, Some(machine()));
     assert_eq!(selected_label(&m), "Statusline position");
     assert_eq!(send(&mut m, ch('s')), MenuCommand::Save, "settings row");
-    while selected_label(&m) != "code" {
-        press(&mut m, 'j');
-    }
+    m.goto("code");
     assert_eq!(send(&mut m, ch('s')), MenuCommand::Save, "task row");
     send(&mut m, key(KeyCode::Enter));
     assert_eq!(send(&mut m, ch('s')), MenuCommand::Save, "level 1");
@@ -43,9 +41,7 @@ fn only_a_plain_press_of_s_saves() {
 
 fn on_task_row(label: &str) -> MenuState {
     let mut m = menu(None, None, Some(machine()));
-    while selected_label(&m) != label {
-        press(&mut m, 'j');
-    }
+    m.goto(label);
     m
 }
 
