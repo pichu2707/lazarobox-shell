@@ -7,6 +7,8 @@
 //! and `y` does nothing until the pane is enlarged; `n`, Esc and Ctrl+C still
 //! deny.
 
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
 use super::{ChatState, approval::ApprovalPrompt, wrap::wrap_ranges};
 
 /// The most rows of the command drawn.
@@ -48,13 +50,25 @@ fn command_rows(command: &str, width: usize) -> Vec<String> {
         .collect()
 }
 
-/// `text` cut to `width` columns with an ellipsis.
+/// `text` cut to `width` display columns with an ellipsis.
 fn clip(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
+    if text.width() <= width {
         return text.to_owned();
     }
-    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
-    format!("{kept}…")
+    if width == 0 {
+        return String::new();
+    }
+    let mut used = 0;
+    let mut kept = String::new();
+    for c in text.chars() {
+        used += c.width().unwrap_or(0);
+        if used + 1 > width {
+            break;
+        }
+        kept.push(c);
+    }
+    kept.push('…');
+    kept
 }
 
 /// The rows when the whole command fits in `height` rows, else `None`.
@@ -242,6 +256,48 @@ mod tests {
                         fits(&p, width, height),
                         whole,
                         "{command:?} {width}x{height}"
+                    );
+                }
+            }
+        }
+    }
+
+    // The reason is cut by display columns, so wide characters get the ellipsis.
+    #[test]
+    fn a_wide_reason_is_clipped_to_the_columns() {
+        use unicode_width::UnicodeWidthStr;
+        for (text, width, want) in [
+            ("abcdef", 6, "abcdef"),
+            ("abcdefg", 6, "abcde…"),
+            ("日本語日本語", 12, "日本語日本語"),
+            ("日本語日本語", 6, "日本…"),
+            ("日本語日本語", 5, "日本…"),
+            ("日本語日本語", 4, "日…"),
+            ("aあ", 2, "a…"),
+            ("abc", 0, ""),
+        ] {
+            let got = clip(text, width);
+            assert_eq!(got, want, "{text:?} {width}");
+            assert!(got.width() <= width, "{text:?} {width}");
+        }
+    }
+
+    // `fits` is the same with or without a reason, for every command length.
+    #[test]
+    fn fits_does_not_depend_on_the_reason_for_one_to_seven_rows() {
+        for rows in 1..=7usize {
+            let command = (1..=rows)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            for width in [10, 20, 80] {
+                for height in 0..=14usize {
+                    let plain = run(&command);
+                    let why = explained(&command);
+                    assert_eq!(
+                        fits(&plain, width, height),
+                        fits(&why, width, height),
+                        "{rows} rows {width}x{height}"
                     );
                 }
             }

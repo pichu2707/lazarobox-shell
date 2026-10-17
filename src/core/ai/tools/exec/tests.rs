@@ -548,3 +548,38 @@ fn real_shells_split_accepted_commands_like_the_grammar() {
         }
     }
 }
+
+// The reason is the condition that fired, not the shape of the token.
+#[test]
+fn a_quoted_ninth_word_is_too_many_words_and_a_quoted_verb_is_quoted() {
+    assert_eq!(why("ls a b c d e f g \"h\""), "too many words");
+    assert_eq!(why("ls a b c d e f g 'h i'"), "too many words");
+    assert_eq!(why("ls a b c d e f g h"), "too many words");
+    assert_eq!(why("\"ls\" a"), "the command is quoted");
+}
+
+// The token an error names covers the whole quoted word.
+#[test]
+fn the_token_of_a_quoted_word_runs_to_its_closing_quote() {
+    let token = |text: &str| {
+        let at = parse(text).unwrap_err().at;
+        text[at].to_owned()
+    };
+    assert_eq!(token("\"ls\" a"), "\"ls\"");
+    assert_eq!(
+        token("ls a b c d e f g \"Mis Documentos\""),
+        "\"Mis Documentos\""
+    );
+    assert_eq!(token("ls \"Mis $Documentos\" x"), "\"Mis $Documentos\"");
+    assert_eq!(token("ls 'a b!' x"), "'a b!'");
+    assert_eq!(token("ls \"open word"), "\"open word");
+    assert_eq!(token("ls a$b c"), "a$b");
+    // Non-ASCII starts and interiors cut on character boundaries.
+    assert_eq!(token("ls é$ x"), "é$");
+    assert_eq!(token("ls \"é$\" x"), "\"é$\"");
+    assert_eq!(token("ls \"é ñ"), "\"é ñ");
+    assert_eq!(token("ls 'aé'x y"), "'aé'x");
+    // Text after the closing quote belongs to the token.
+    assert_eq!(token("ls \"a\"b c"), "\"a\"b");
+    assert_eq!(token("ls \"a\"b"), "\"a\"b");
+}

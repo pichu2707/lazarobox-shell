@@ -193,10 +193,10 @@ pub fn parse(text: &str) -> Result<SafeCommand<'_>, Fallback> {
         };
         let quoted = quote != 0;
         if len == MAX_WORDS || (quoted && len == 0) {
-            let why = if quoted {
-                "the command is quoted"
-            } else {
+            let why = if len == MAX_WORDS {
                 "too many words"
+            } else {
+                "the command is quoted"
             };
             return Err(fallback(i..token_end(bytes, i), why));
         }
@@ -205,7 +205,8 @@ pub fn parse(text: &str) -> Result<SafeCommand<'_>, Fallback> {
             if c == if quoted { quote } else { b' ' } {
                 break;
             }
-            i += step(text, i, quoted).map_err(|why| fallback(start..token_end(bytes, i), why))?;
+            i += step(text, i, quoted)
+                .map_err(|why| fallback(start..token_end(bytes, start), why))?;
         }
         words[len] = &text[start + usize::from(quoted)..i];
         let why = if quoted {
@@ -219,7 +220,12 @@ pub fn parse(text: &str) -> Result<SafeCommand<'_>, Fallback> {
             check_word(words[len])
         };
         if let Some(why) = why {
-            return Err(fallback(start..i.min(bytes.len()), why));
+            let end = if quoted {
+                token_end(bytes, start)
+            } else {
+                i.min(bytes.len())
+            };
+            return Err(fallback(start..end, why));
         }
         len += 1;
         if i >= bytes.len() {
@@ -233,13 +239,23 @@ fn fallback(at: Range<usize>, why: &'static str) -> Fallback {
     Fallback { at, why }
 }
 
-/// The end of the token that starts at or contains `from`: the next ASCII
-/// space, or the end of the text.
+/// The end of the token that starts at `from`: a quoted word through its
+/// closing quote and any text stuck to it, else up to the next ASCII space,
+/// or the end of the text.
 fn token_end(bytes: &[u8], from: usize) -> usize {
-    bytes[from..]
+    let quote = bytes[from];
+    let skip = usize::from(matches!(quote, b'\'' | b'"'));
+    let mut at = from + skip;
+    if skip == 1 {
+        match bytes[at..].iter().position(|&b| b == quote) {
+            Some(n) => at += n + 1,
+            None => return bytes.len(),
+        }
+    }
+    bytes[at..]
         .iter()
         .position(|&b| b == b' ')
-        .map_or(bytes.len(), |n| from + n)
+        .map_or(bytes.len(), |n| at + n)
 }
 
 /// The byte length of the character at `i` if it may be part of a word.
