@@ -118,7 +118,7 @@ const BUILT_INS: [(&str, &str, &str, Access); 4] = [
     (
         "run_in_pane",
         "command",
-        "Type a shell command into the user's pane. The result says whether it was only typed or typed and run. A single cd, pwd, ls, tree or mkdir with plain or quoted paths (no &&, ;, |, $ or redirections) can run directly when the user allows it; anything else waits for the user to approve it and press Enter. Prefer one simple command per call.",
+        "Type a shell command into the user's pane. The result says whether it was only typed or typed and run, and carries the output of a command that ran, which may be \"not available\". A single cd, pwd, ls, tree or mkdir with plain or quoted paths (no &&, ;, |, $ or redirections) can run directly when the user allows it; anything else waits for the user to approve it and press Enter. Prefer one simple command per call. You cannot change files yourself. Only mkdir can run directly; any other change needs a command the user reviews and runs.",
         Access::Write,
     ),
 ];
@@ -256,16 +256,18 @@ mod tests {
         let run = tools.iter().find(|t| t.name == "run_in_pane").unwrap();
         for needle in [
             "only typed or typed and run",
+            "carries the output of a command that ran, which may be \"not available\"",
             "cd, pwd, ls, tree or mkdir",
             "plain or quoted paths",
             "no &&, ;, |, $ or redirections",
             "can run directly when the user allows it",
             "anything else waits for the user to approve it and press Enter",
             "one simple command per call",
+            "You cannot change files yourself. Only mkdir can run directly; any other change needs a command the user reviews and runs.",
         ] {
             assert!(run.description.contains(needle), "{needle}");
         }
-        assert!(run.description.len() < 400, "{}", run.description.len());
+        assert!(run.description.len() < 640, "{}", run.description.len());
         assert!(run.description.is_ascii());
     }
 

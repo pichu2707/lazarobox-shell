@@ -134,6 +134,15 @@ pub fn counts_toward_pause(fallback: &Fallback) -> bool {
 /// The longest token the reason line names.
 const MAX_TOKEN_CHARS: usize = 24;
 
+/// Whether a character is drawn as `?`: everything but printable ASCII and
+/// the Latin letters the grammar accepts. This covers controls, format and
+/// invisible characters, combining marks and other scripts.
+fn hidden(c: char) -> bool {
+    !(c.is_ascii_graphic()
+        || c == ' '
+        || ('\u{c0}'..='\u{24f}').contains(&c) && c != '\u{d7}' && c != '\u{f7}')
+}
+
 /// The one line the prompt shows for a fallback: the reason and, when it
 /// has a span inside `command`, the token it names in backticks. Control
 /// characters are drawn as `?` and a long token is cut.
@@ -145,7 +154,7 @@ pub fn reason_line(fallback: &Fallback, command: &str) -> String {
         return fallback.why.to_owned();
     };
     let mut shown: String = (token.chars().take(MAX_TOKEN_CHARS))
-        .map(|c| if c.is_control() { '?' } else { c })
+        .map(|c| if hidden(c) { '?' } else { c })
         .collect();
     if token.chars().nth(MAX_TOKEN_CHARS).is_some() {
         shown.push('…');
@@ -770,6 +779,24 @@ mod tests {
         assert!(line(&long).chars().count() < 60, "{}", line(&long));
         let ctl = Fallback { at: 0..3, why: "w" };
         assert_eq!(reason_line(&ctl, "a\u{1b}b"), "w: `a?b`");
+        // Latin letters stay readable.
+        let latin = Fallback {
+            at: 0..10,
+            why: "w",
+        };
+        assert_eq!(reason_line(&latin, "ñandú_é"), "w: `ñandú_é`");
+        // So are the characters that reorder or hide text.
+        let marks = [
+            '\u{202e}', '\u{200b}', '\u{2066}', '\u{00a0}', '\u{3164}', '\u{0301}',
+        ];
+        for c in marks.into_iter().chain(['я', '日', '😀']) {
+            let text = format!("a{c}b");
+            let hidden = Fallback {
+                at: 0..text.len(),
+                why: "w",
+            };
+            assert_eq!(reason_line(&hidden, &text), "w: `a?b`", "{c:?}");
+        }
     }
 
     // Reasons of the pause: the ones that are not the model's doing do not count.

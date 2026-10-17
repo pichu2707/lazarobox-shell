@@ -238,7 +238,8 @@ fn the_tools_block_names_the_tools_by_purpose_and_the_pane_rule() {
         "without &&, ;, |, $ or redirections",
         "can run directly when the user allows it",
         "Anything else waits for the user to review it and press Enter",
-        "do not see its output unless the user pastes it",
+        "carries the output of a command that ran, which may be \"not available\"",
+        "You cannot change files yourself. Only mkdir can run directly; any other change needs a command the user reviews and runs.",
         "one simple command per call",
         "instead of asking the user to run find, ls or cat",
         "cannot change files",
@@ -246,6 +247,9 @@ fn the_tools_block_names_the_tools_by_purpose_and_the_pane_rule() {
         assert!(text.contains(needle), "{needle}");
     }
     assert!(!text.contains("mcp__") && !text.contains("run_in_pane"));
+    // After S4b the output of a command that ran comes back.
+    assert!(!text.contains("unless the user pastes"));
+    assert!(!text.contains("except through those commands"));
     // D18: the same words in every approval mode.
     for mode in ["ask mode", "auto mode", "run mode", "`run`", "`auto`"] {
         assert!(!text.contains(mode), "{mode}");

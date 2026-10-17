@@ -161,7 +161,7 @@ Con `check = false` lazarobox no hace ninguna petición, no lee la caché y no m
 
 Con `Ctrl+Espacio` y `m` se abre el menú; la pestaña **AI** (`Tab`) muestra el motor general (**Set all tasks**) y una fila por tarea. `Enter` sobre una fila de tarea abre su selector de dos niveles (motor y modelo); `Esc` vuelve un nivel. La fila `custom…` permite escribir o pegar el nombre de un modelo. `r` sobre una fila de tarea o dentro del selector vuelve a detectar los motores.
 
-Tras las filas de tarea, la pestaña **AI** tiene las filas **Profile**, **Context**, **Memory**, **Tools** y **Approval** (la última). **Approval** alterna con `h`/`l` (o las flechas) entre `ask`, `auto` y `run`, el modo de aprobación de los comandos que pide un modelo (`ai.tools.approval`; `run` todavía se comporta como `auto`, su ejecución llega en una versión posterior); `s` lo guarda en `[ai.tools]` de `config.toml`, `Esc` lo descarta. El cambio no actúa sobre un chat abierto ni sobre una aprobación pendiente: solo llega a los paneles de chat que abras después y al siguiente cambio de conversación.
+Tras las filas de tarea, la pestaña **AI** tiene las filas **Profile**, **Context**, **Memory**, **Tools** y **Approval** (la última). **Approval** alterna con `h`/`l` (o las flechas) entre `ask`, `auto` y `run`, el modo de aprobación de los comandos que pide un modelo (`ai.tools.approval`); `s` lo guarda en `[ai.tools]` de `config.toml`, `Esc` lo descarta. El cambio no actúa sobre un chat abierto ni sobre una aprobación pendiente: solo llega a los paneles de chat que abras después y al siguiente cambio de conversación.
 
 `s` guarda la elección en la tabla `[ai]` de `config.toml` (y la de cada tarea en `[ai.tasks.*]`); `Esc` en el nivel superior la descarta. `Enter` nunca guarda ni cierra el menú. Mientras la elección difiera de la guardada, el pie del menú muestra `unsaved changes · s to save · Esc discards`.
 
@@ -282,7 +282,7 @@ approval = "ask"
 
 #### Approval mode
 
-By default every command a model asks to run needs your `y` (`approval = "ask"`). In **auto** mode a model's `run_in_pane` is typed into the target pane without a prompt, and **lazarobox still never presses Enter**: the line waits in your shell, and you run it (or clear it) yourself. Reads and everything else keep their usual approval.
+By default every command a model asks to run needs your `y` (`approval = "ask"`). In **auto** mode a model's `run_in_pane` is typed into the target pane without a prompt, and **lazarobox still never presses Enter** (salvo en `run`, ver más abajo): the line waits in your shell, and you run it (or clear it) yourself. Reads and everything else keep their usual approval.
 
 - Cycle `ask`, `auto` and `run` for the focused chat with `Ctrl+Space`, then `a` (it also works while an approval is waiting, which stays waiting). A system line in the chat says which mode is on.
 - A chat in auto mode wears an amber ` AUTO ` badge, and one in run mode a red ` RUN ` badge, at the top right of its pane, focused or not. Nothing is drawn in `ask` mode, or with tools off.
@@ -300,6 +300,41 @@ Residual risks (design D18), so you can decide if auto is for you:
 - The foreground check cannot see a shell builtin that reads your input (`read`, `select`): the shell is still the foreground process, so the text is typed into what the builtin is waiting for.
 - The foreground check happens just before the write; a program started in those microseconds is not covered.
 - A model can still type a destructive command that you then run by reflex. The badge, the tool row with the exact command and the system line are the mitigations, and `ask` stays the default.
+
+#### Modo `run`
+
+En modo **run** lazarobox hace lo que `auto` no hace: para un comando de una lista corta y segura escribe el comando **y pulsa Enter**, espera a que termine y devuelve su salida al modelo. Cualquier otro comando sigue el camino normal: aparece la confirmación y `y` solo lo escribe, sin Enter. Es opt-in (`approval = "run"` o el ciclo `Ctrl+Space`, `a`) y `ask` sigue siendo el valor por defecto.
+
+**Lista segura.** Un único comando, con palabras separadas por un solo espacio, de entre `cd`, `pwd`, `ls`, `tree` y `mkdir`:
+
+- `cd` (como mucho una ruta), `pwd` (ninguna), `ls` (flags `l a h t r 1`, hasta 4 rutas), `tree` (`-d`, `-a`, `-L <n>`, una ruta) y `mkdir` (`-p`, de 1 a 4 rutas, siempre dentro de `$HOME`).
+- Las palabras solo admiten letras latinas (también acentuadas), dígitos y `. _ / @ % + : , = ~ -`; el espacio solo va dentro de comillas. Cualquier otra cosa pregunta, por ejemplo cirílico, CJK, emoji, `*` o `;`.
+- Las rutas pueden ir sin comillas o entre comillas simples o dobles (`ls -la "Mis Documentos"`): una palabra entera entre comillas, sin `$`, comilla invertida, `\`, `!` ni otras comillas. El verbo nunca va entre comillas.
+- **Toda** ruta debe resolverse dentro de `$HOME` (`ls` y `cd` sin ruta usan el directorio actual del panel, que también debe estarlo); lo que quede fuera, o en una carpeta de secretos, pregunta y la confirmación dice por qué.
+- No entran `&&`, `;`, `|`, `$`, redirecciones, globs ni opciones largas. Las rutas pasan la misma política que las herramientas de lectura, comprobada sobre el directorio real del panel.
+- Además, el panel debe estar libre: sin comando en ejecución, sin línea a medias, sin el foco, en la pestaña visible y con el locale en UTF-8. Si no, se usa la confirmación normal. Cada turno admite como máximo 5 comandos automáticos, y tres rechazos seguidos por gramática o ruta pausan el modo `run` hasta el final del turno; el contador vuelve a cero cuando un comando se ejecuta y en cada turno nuevo, y los motivos del estado del panel (ocupado, foco, línea a medias…) no cuentan.
+
+**Por qué pide confirmación.** La confirmación de un comando que no corrió directamente muestra una línea con el motivo y el trozo que lo causó, por ejemplo ``shell metacharacter: `&&` ``, ``not a safe command: `git` `` o `a command is still running in the pane`. Los caracteres de control, de formato (bidi, espacio de ancho cero) e invisibles se dibujan como `?`. La línea solo aparece si la confirmación tiene una fila libre; el comando completo siempre se muestra.
+
+**Salida que ve el modelo.** El modelo recibe el texto que quedó en pantalla tras el comando, no un flujo de la shell:
+
+- Máximo 8 KiB y 200 filas: se conservan el principio y el final y se marca el recorte. Pasa por la misma limpieza y redacción de secretos que las herramientas de lectura.
+- Un `cd` informa además del directorio nuevo. Un comando que no termina en 10 s devuelve `still running` con lo visible hasta entonces. El resultado nunca incluye el código de salida.
+- Si la shell reescribe lo escrito (por ejemplo las abreviaturas de **fish**), no se reconoce el eco del comando y el resultado es `output not available`.
+- Si tu prompt ocupa varias líneas, las superiores pueden colarse en la salida que recibe el modelo (se redactan, pero no se detectan).
+- Un programa a pantalla completa, que escribas en el panel mientras corre, o un panel que se cierra, tampoco devuelven salida.
+
+**Privacidad.** En `run` la salida del panel **se envía al modelo**, también con motores en la nube (claude, codex, gemini): puede incluir nombres de archivos, rutas y lo que imprima el comando. En `ask` y `auto` el modelo no recibe nada de la salida ni del directorio. Si algo no debe salir de tu máquina, no uses `run` con esa conversación.
+
+Riesgos residuales (diseño D20/D21 de `auto-execute`), que se suman a los de `auto`:
+
+- Hooks de `cd` (`chpwd`, direnv, un prompt que ejecuta `git status`) corren en tu shell al cambiar de directorio. `CDPATH` y `cdable_vars` pueden mandar `cd nombre` a otro sitio.
+- Entre la comprobación de la ruta y la escritura hay una ventana en la que un enlace simbólico puede cambiarse (TOCTOU). Se comprueba de nuevo justo antes de escribir, pero no se elimina.
+- Continuación del prompt (PS2): si dejaste abierta una comilla, un `$(`, un heredoc o un bucle, o una línea que acaba en `\`, `&&`, `|`, `do` o `then`, el comando del modelo puede unirse a lo tuyo. Las palabras entre comillas son texto inerte y lazarobox rechaza texto con comillas sin cerrar, pero el caso en que lo cierras tú no se detecta hasta tener marcas de prompt (OSC 133).
+- Una línea de prompt que se cuele en la salida, como se dijo arriba.
+- `tree -a` lista nombres de archivos ocultos, también de secretos dentro del subárbol (solo los nombres, nunca su contenido).
+- El locale se lee del entorno de lazarobox; un archivo rc que lo cambie después no se ve.
+- Todo lo que dice `auto` sobre líneas a medias, `read`/`select` y programas que reaccionan sin Enter sigue valiendo.
 
 ### Motores CLI: claude, codex y gemini
 
