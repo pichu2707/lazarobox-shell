@@ -33,9 +33,32 @@ The file MAY hold a table `[ai.tools]` with `enabled` (boolean, default `true`).
 - THEN the notice starts with `config (2 problems): ` and both keys use their defaults
 
 #### Scenario: Unknown keys ignored [auto]
-- GIVEN `[ai.tools]` with `mode = "ask"` next to `enabled = true`
+- GIVEN `[ai.tools]` with `mode = "fast"` next to `enabled = true`
 - WHEN it is parsed
 - THEN `enabled` applies and no notice is produced
+
+### Requirement: Approval mode key
+The table `[ai.tools]` MAY hold `approval`, the string `"ask"` or `"auto"` (default `"ask"`, compared exactly, lowercase). It is the approval mode each new chat pane starts with (see agent-tools, Chat approval mode); chat panes already open keep their own mode. Any other value or type falls back to `"ask"` for that key only and reports `ai.tools.approval: expected "ask" or "auto"`, after the `ai.tools.enabled` problem in the notice order. A non-table `ai.tools` uses the default with the existing `ai.tools: expected a table` problem only. The key is read at startup and when changed from the config menu.
+
+#### Scenario: Default ask [auto]
+- GIVEN a file with no `approval` under `[ai.tools]`, and a file with no `[ai.tools]`
+- WHEN each is parsed
+- THEN the approval mode is `ask` and no notice is produced
+
+#### Scenario: Auto [auto]
+- GIVEN `[ai.tools]` with `approval = "auto"`
+- WHEN it is parsed
+- THEN the approval mode is `auto` and no notice is produced
+
+#### Scenario: Bad value [auto]
+- GIVEN `approval = "AUTO"`, `approval = "yes"` and `approval = true` in separate files
+- WHEN the app starts
+- THEN the mode is `ask` each time and the notice is `config: ai.tools.approval: expected "ask" or "auto"`
+
+#### Scenario: Notice order [auto]
+- GIVEN `enabled = 1` and `approval = 2` under `[ai.tools]`
+- WHEN the app starts
+- THEN the notice is `config (2 problems): ai.tools.enabled: expected a boolean`, tools are on and the mode is `ask`
 
 ### Requirement: MCP server lists
 The file MAY hold an array of tables `[[ai.mcp.servers]]`, the global list of user MCP servers (see mcp-servers). Each entry has `name` (non-empty string of letters, digits, `-` and `_`, up to 32 characters, unique in the list), `command` (non-empty string, run directly without a shell), `args` (array of strings, default empty), `env` (array of environment variable NAMES to pass from lazarobox's own environment, default empty; values are never in the file) and `enabled` (boolean, default `true`). Per-project extras MUST be declared in this same user file, keyed by project root, in a shape pinned by design; no other file is ever read for servers. An invalid entry MUST be skipped as a whole and reported, the other entries kept: `ai.mcp.servers[N].name: expected a name of letters, digits, - and _`, `ai.mcp.servers[N].command: expected a non-empty string`, `ai.mcp.servers[N].args: expected an array of strings`, `ai.mcp.servers[N].env: expected an array of variable names`, `ai.mcp.servers[N].enabled: expected a boolean` (only `enabled` falls back alone), `ai.mcp.servers[N].name: duplicate name` (the later entry is skipped), `ai.mcp.servers: expected an array of tables` and `ai.mcp: expected a table`. Unknown keys inside an entry MUST be ignored. There are no `Authorization`, token or secret keys in the schema. The list is read once at startup (no hot reload). The menu has no row for it in this change: it is edited by hand.

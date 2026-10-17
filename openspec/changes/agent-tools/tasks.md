@@ -4,10 +4,10 @@
 
 | Field | Value |
 |-------|-------|
-| Estimated changed lines | ~5,550 total (tests and snapshots included), 16 child PRs of 250-450 lines each |
-| 400-line budget risk | High (total); Medium per PR; High for 1b, 2d, 2e (fallback splits noted) |
+| Estimated changed lines | ~5,930 total (tests and snapshots included), 17 child PRs of 250-450 lines each |
+| 400-line budget risk | High (total); Medium per PR; High for 1b, 2d, 2e, 2e-3 (fallback splits noted) |
 | Chained PRs recommended | Yes |
-| Suggested split | 1a → 1b → 2a → 2b → 2c → 2d → 2e → 2f → 2g → 2h → 2i (deferred) → 3a → 3b → 4a → 4b → 4c |
+| Suggested split | 1a → 1b → 2a → 2b → 2c → 2d → 2e → 2e-3 → 2f → 2g → 2h → 2i (deferred) → 3a → 3b → 4a → 4b → 4c |
 | Delivery strategy | auto-chain |
 | Chain strategy | feature-branch-chain (tracker `feat/agent-tools`, from v0.14.0) |
 
@@ -42,6 +42,7 @@ Rules for every PR:
 | 2c | MCP JSON-RPC core (pure) | PR5 | ~350 | PR4 | 2a |
 | 2d | Session, token, sweep, shim, main dispatch, `tests/jail.rs` | PR6 | ~400 | PR5 | 2c |
 | 2e | Tool events, rows, `ToolHost`, locality routing, decisions, timers | PR7 | ~400 | PR6 | 2b, 2d |
+| 2e-3 | Chat approval mode (D18): config key, route, auto-type, foreground check, toggle `a`, badge, menu row | PR7b | ~380 | PR7 | 2e |
 | 2f | claude wiring, tmp files, `ShimGrant`, decoder allow-list | PR8 | ~380 | PR7 | 2e |
 | 2g | codex wiring | PR9 | ~250 | PR8 | 2f |
 | 2h | gemini wiring | PR10 | ~300 | PR9 | 2f |
@@ -156,6 +157,24 @@ Fallback split if over 400: 2e-1 (events, rows, ToolHost) and 2e-2 (approval wir
 - [ ] 2e.8 Gate.
 - [ ] 2e.9 Docs: doc comments; design D17 cross-reference.
 
+### 2e-3: Chat approval mode (design D18; own PR after 2e, base = the 2e branch; 2f then targets the 2e-3 branch)
+
+Files: `src/core/ai/{config,menu}.rs`, `src/core/menu.rs`, `src/core/config_edit.rs`, `src/core/ai/chat/{approval,mod}.rs`, `src/core/prefix.rs`, `src/app.rs`, `src/app/chat.rs`, `src/runtime.rs`, `src/ui/components/chat.rs`. Fallback split if over 400: 2e-3a (config key, route, auto-type, foreground check, toggle, badge) and 2e-3b (menu row and persistence).
+
+- [ ] 2e-3.1 RED: `[ai.tools] approval`: default `ask` (no key, no table); `"auto"` parses; `"AUTO"`, `"yes"`, `true` fall back to `ask` with `ai.tools.approval: expected "ask" or "auto"`; notice order after `ai.tools.enabled`; non-table `ai.tools` reports only `ai.tools: expected a table`.
+- [ ] 2e-3.2 RED: pure `approval::route`: `AutoType` only for `(Run, Origin::Tool, Auto)` with `typed_this_turn == 0`, target not focused, tab shown; `Read`, `External`, `Origin::Block` and `Ask` always `Prompt`; a second call in the turn is `Prompt`.
+- [ ] 2e-3.3 RED: `ChatState.approval_mode` set from config at open; toggle flips only that chat; config change reaches only chats opened later; `auto_typed` reset at turn start; mode never in store commands or requests; requests byte-identical in `ask` and `auto`; tools off byte-identical.
+- [ ] 2e-3.4 RED: auto-type in the App harness: no confirm, one `Effect::AutoType{pane,bytes,turn,call}` to `last_shell`, bytes from the shared `typed_bytes` (same as `y`), no `\r`; rechecks (pane gone, other tab, alt screen `\e[?1049h`, multi-line with paste off, escape in command) give `ToolDecision Denied` with reason and a result row, nothing written; pending approval gives `another approval is pending`; toggling to `auto` leaves a pending confirm pending; focused target and hidden tab open the prompt; two calls in one batch: one typed, one prompt.
+- [ ] 2e-3.5 RED: runtime foreground check: `tcgetpgrp` on the master equal to the shell's group writes and decides `Sent`; a child in the foreground (fake PTY running `sleep`), an error or a non-unix target decide `Denied("pane N is running a program")` and write nothing.
+- [ ] 2e-3.6 RED: prefix leaf `a` → `PrefixAction::ToggleApproval`: root only, unhinted, non-empty description, root hint unchanged (79 columns), action count 34; on a chat pane flips the mode and adds the system line, also with a pending approval; shell pane and tools off only notice; inside a group, COPY or RESIZE nothing.
+- [ ] 2e-3.7 RED: TestBackend + insta: ` AUTO ` badge (`bg_base` on `error_red`, bold) top-right in conversation, list and editor views, focused or not; `A` below 6 columns; no marker in `ask` (existing snapshots unchanged); no marker with tools off; 1x1 to 10x2 do not panic.
+- [ ] 2e-3.8 RED: menu `Approval` row after `Tools` (`ask`/`auto`, own `ItemKind`), cycle keys, Enter repeat ignored, footer, Esc reverts, no live effect on open chats or a pending approval; navigation wraps from `Approval`; body 19 rows, full popup at 24x22 and 80x24, fallback at 23x22 and 24x21; descriptor integrity.
+- [ ] 2e-3.9 RED: persistence of `ai.tools.approval`: created next to `enabled`, updated in place with comment, written explicitly when equal to the default, untouched when unchanged, `[ai.tools.approval]` collision refused with the footer, saved file parses back.
+- [ ] 2e-3.10 GREEN: implement `ApprovalMode`, `route`, `typed_bytes` (extracted from the 1b accept path, no behaviour change for `y`), `Effect::AutoType`, foreground check, toggle, badge, menu row, owned key.
+- [ ] 2e-3.11 Gate.
+- [ ] 2e-3.12 Docs: README "Approval mode" (`Ctrl+Space a`, `[ai.tools] approval`, typed never run, one per turn, the residual risks of design D18); doc comments.
+- [ ] 2e-3.13 [manual] Kitty: `auto` types `cd` unexecuted in bash, zsh and fish; refused while `python3` runs in the target; `AUTO` visible on an unfocused chat; `Ctrl+Space a` reaches the app.
+
 ## PR8 / 2f: claude wiring (`src/core/ai/tools/wiring.rs`, `src/core/ai/chat/{claude,adapters,engine}.rs`, `src/runtime/chat/cli.rs`, `src/core/ai/jail.rs`)
 
 - [ ] 2f.1 RED: `Job.tmp_files: Vec` generalizes `tmp_file`; files 0600 in the per-turn tmp dir (0700), wiped after the turn.
@@ -254,6 +273,7 @@ Conditional on the opencode adapter, which is parked. Not part of this change's 
 | 2c | PR4 | pure protocol subset | gate | revert; pure code |
 | 2d | PR5 | M-base: socket, shim, dispatch, jail test | gate; 2d.9, 2d.10 manual | revert; no engine launches the shim |
 | 2e | PR6 | M-host: events, rows, approvals, timers | gate | revert; tools stay Off in requests |
+| 2e-3 | PR7 | approval mode live, default `ask` | gate; 2e-3.13 manual | revert; or `approval = "ask"` (the default) |
 | 2f | PR7 | claude wiring, gated | gate; 2f.9 to 2f.11 manual | drop the `MCP_VERIFIED` entry: claude is text-only |
 | 2g | PR8 | codex wiring, gated | gate; 2g.6 to 2g.8 manual | drop the entry |
 | 2h | PR9 | gemini wiring, gated | gate; 2h.6 to 2h.8 manual | drop the entry |
@@ -265,4 +285,4 @@ Conditional on the opencode adapter, which is parked. Not part of this change's 
 
 ## Coverage: spec capability to slice
 
-- pane-commands: 1a, 1b. agent-tools: 2a, 2b, 2e, 3b. lazarobox-mcp-server: 2c, 2d, 2e, 2f to 2h. chat-engines: 2e to 2h, 3a, 3b. chat-pane: 1b, 2e. modal-input: 1b. terminal-session: 1b (pane state queries), 4b (shutdown with MCP processes). configuration, config-persistence, config-menu: 1b (gate), 2a, 4a. mcp-servers: 4a to 4c.
+- pane-commands: 1a, 1b, 2e-3 (auto-type exception). agent-tools: 2a, 2b, 2e, 2e-3 (Chat approval mode), 3b. lazarobox-mcp-server: 2c, 2d, 2e, 2e-3 (auto round trip), 2f to 2h. chat-engines: 2e to 2h, 3a, 3b. chat-pane: 1b, 2e (the `AUTO` badge is specified in agent-tools, built in 2e-3). modal-input: 1b, 2e-3 (leaf `a`). terminal-session: 1b (pane state queries), 4b (shutdown with MCP processes). configuration, config-persistence, config-menu: 1b (gate), 2a, 2e-3 (`ai.tools.approval`, `Approval` row), 4a. mcp-servers: 4a to 4c.

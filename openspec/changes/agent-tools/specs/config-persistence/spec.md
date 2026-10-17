@@ -1,6 +1,6 @@
 # Delta for Config Persistence
 
-All existing requirements stay as they are. The owned-keys list of "Owned keys only" is extended by `ai.tools.enabled` (below), and `ai.mcp.*` is explicitly NOT owned. Tags as in the main spec.
+All existing requirements stay as they are. The owned-keys list of "Owned keys only" is extended by `ai.tools.enabled` and `ai.tools.approval` (below), and `ai.mcp.*` is explicitly NOT owned. Tags as in the main spec.
 
 ## ADDED Requirements
 
@@ -41,6 +41,34 @@ The save MUST also own `ai.tools.enabled`. It is written only when its draft dif
 - GIVEN any save result with a tools draft
 - WHEN it is parsed by `Config::parse`
 - THEN tools equal the draft and no notice is produced
+
+### Requirement: Approval mode key is owned
+The save MUST also own `ai.tools.approval`, with the same rules as `ai.tools.enabled`: written only when its draft differs from the value captured at open, as the TOML string `"ask"` or `"auto"`, explicitly even when it equals the default, in place when the key exists (comments and neighbours untouched), created under an implicit `[ai.tools]` table otherwise, and a value of the wrong type replaced. The save MUST be refused (file unchanged, menu open, draft intact) with `config.toml: ai.tools is not a table; fix it before saving` when `ai.tools` holds a non-table value, and `config.toml: ai.tools.approval is a table; fix it before saving` when `approval` holds a table or an array of tables; these checks apply only when the approval draft differs from the value at open.
+
+#### Scenario: Created next to enabled [auto]
+- GIVEN `[ai.tools]\nenabled = true\n` and the approval draft changed to `auto`
+- WHEN the save succeeds
+- THEN `enabled = true` is byte-identical and the table gains `approval = "auto"`
+
+#### Scenario: Updated in place [auto]
+- GIVEN `approval = "auto"  # mine` and the draft changed to `ask`
+- WHEN the save succeeds
+- THEN only the value changes: `approval = "ask"  # mine`
+
+#### Scenario: Untouched when unchanged [auto]
+- GIVEN the approval draft equals the open value and only a position changed
+- WHEN the save succeeds
+- THEN no `approval` key is added and an existing one is byte-identical
+
+#### Scenario: Collision [auto]
+- GIVEN `[ai.tools.approval]` and a changed approval draft
+- WHEN `s` is pressed
+- THEN the file is byte-identical and the footer is `config.toml: ai.tools.approval is a table; fix it before saving`
+
+#### Scenario: Saved file parses back [auto]
+- GIVEN any save result with an approval draft
+- WHEN it is parsed by `Config::parse`
+- THEN the approval mode equals the draft and no notice is produced
 
 ### Requirement: MCP server lists are never written
 The save MUST NEVER add, change, reorder or remove any `ai.mcp.*` key, the global `[[ai.mcp.servers]]` entries and the per-project extras included: they are edited by hand. Every byte of them, including arrays of tables, comments, unknown keys and invalid entries, MUST be preserved by every save, and a collision or an error inside them MUST NOT block the save of other keys. No secret is ever written, and no environment value is ever written.

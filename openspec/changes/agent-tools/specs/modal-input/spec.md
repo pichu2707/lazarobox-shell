@@ -27,6 +27,29 @@ The root of the prefix table MUST gain a leaf for the run-in-pane action of pane
 - WHEN the binding letter is pressed
 - THEN no confirm opens
 
+### Requirement: Approval mode binding
+The root of the prefix table MUST gain a leaf on the letter `a` that toggles the approval mode (`ask` or `auto`) of the focused chat pane (see agent-tools, Chat approval mode), with a non-empty description, left out of the root key hint like `e`. No direct Ctrl+letter key is added. On a focused chat pane in any chat view it MUST flip the mode and add a system line naming the new mode, also while an approval is pending (which stays pending). On a shell pane, and with tools off, it MUST only show a notice and change nothing. It MUST NEVER write to a PTY.
+
+#### Scenario: Leaf in the table [auto]
+- GIVEN the prefix table
+- WHEN it is validated
+- THEN `a` exists only at the root with a non-empty description, no duplicate key exists and the root hint is unchanged and at most 80 columns
+
+#### Scenario: Toggles the focused chat [auto]
+- GIVEN PREFIX on a chat pane in `ask`
+- WHEN `a` is pressed, then PREFIX and `a` again
+- THEN the mode is `auto`, then `ask`, mode is TERMINAL and no effect writes to a PTY
+
+#### Scenario: Shell pane and tools off [auto]
+- GIVEN PREFIX on a shell pane, and in another run tools off on a chat pane
+- WHEN `a` is pressed
+- THEN only a notice appears and no mode changes
+
+#### Scenario: Inside a group [auto]
+- GIVEN group `w` pending, or COPY, or RESIZE
+- WHEN `a` is pressed
+- THEN no mode changes
+
 ### Requirement: Approval keys
 While a chat pane has a pending approval (pane command or tool call) and is focused in TERMINAL, keys MUST act as follows and every other key MUST be swallowed (no composer edit, no WritePty, no Quit):
 
