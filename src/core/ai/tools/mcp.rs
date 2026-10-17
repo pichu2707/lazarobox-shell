@@ -241,7 +241,7 @@ pub fn tool_result(id: &Value, text: &str, is_error: bool) -> Value {
 }
 
 /// Short and content-free: it goes back to a model.
-fn refusal_text(error: ToolError) -> &'static str {
+pub fn refusal_text(error: ToolError) -> &'static str {
     match error {
         ToolError::UnknownTool => "unknown tool",
         ToolError::NotAnObject => "arguments must be an object",
