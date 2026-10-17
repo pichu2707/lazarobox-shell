@@ -523,3 +523,24 @@ async fn a_turn_without_a_session_keeps_its_prompt_byte_for_byte() {
     next(&mut rx).await;
     assert_eq!(seen.lock().unwrap()[0].system, chat_prompt());
 }
+
+// Keyed on the session, not on the engine: codex and gemini turns get it too.
+#[tokio::test]
+async fn every_cli_engine_with_a_session_gets_the_tools_prompt() {
+    for engine in ["claude", "codex", "gemini"] {
+        let lab = lab();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (mut chats, mut rx) = tooled(&lab, capturing(seen.clone()));
+        let mut req = with_tools(&lab);
+        req.engine = engine.into();
+        req.system = chat_prompt();
+        chats.send(pane(1), 1, req);
+        next(&mut rx).await;
+        let system = seen.lock().unwrap()[0].system.clone();
+        assert!(
+            system.contains("run a command in the user's shell pane"),
+            "{engine}"
+        );
+        assert!(!system.contains("no access to files"), "{engine}");
+    }
+}
