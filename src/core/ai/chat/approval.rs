@@ -104,8 +104,37 @@ pub enum Route<'a> {
 /// The most commands one turn may type or run without a prompt.
 pub const MAX_AUTO_PER_TURN: u8 = 5;
 
+/// The consecutive grammar or policy fallbacks after which `run` pauses for
+/// the rest of the turn.
+pub const MAX_RUN_FALLBACKS: u8 = 3;
+
 /// Why a `run` prompt names no offending token.
 pub const NO_CWD: &str = "the pane's directory cannot be read on this system";
+/// Why a path check refuses a command: the one refusal that counts toward the pause.
+pub const NOT_ALLOWED: &str = "a path in the command is not allowed to run directly";
+pub const PAUSED: &str = "auto-run paused for this turn";
+pub const NON_UTF8: &str = "the pane's locale is not UTF-8";
+
+/// Whether a fallback is the model's doing: the reasons of the pane and of
+/// the pause itself never count toward the pause.
+pub fn counts_toward_pause(fallback: &Fallback) -> bool {
+    !matches!(fallback.why, NO_CWD | PAUSED | NON_UTF8)
+}
+
+/// Whether the locale of a shell names UTF-8: `LC_ALL`, else `LC_CTYPE`, else
+/// `LANG`, the first one that is set and not empty. Unset is not UTF-8. This
+/// is lazarobox's own environment, which the shells inherit: an rc file that
+/// changes the locale or sets readline's `convert-meta` is not seen (residual).
+pub fn names_utf8(lc_all: Option<&str>, lc_ctype: Option<&str>, lang: Option<&str>) -> bool {
+    [lc_all, lc_ctype, lang]
+        .into_iter()
+        .flatten()
+        .find(|value| !value.is_empty())
+        .is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value.contains("utf-8") || value.contains("utf8")
+        })
+}
 
 /// What the app knows when a call arrives, beyond the call itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -122,12 +151,20 @@ pub struct AutoCtx {
     pub executing: bool,
     /// The shell's real directory can be read (never on macOS).
     pub cwd_known: bool,
+    /// Too many fallbacks this turn: `run` prompts until the next one.
+    pub paused: bool,
+    /// The user has typed into the target pane since its last Enter or
+    /// Ctrl+C: the line may hold text the run would join.
+    pub dirty: bool,
+    /// The pane's locale names UTF-8, so bytes >= 0x80 mean what they say.
+    pub utf8: bool,
 }
 
 /// `AutoType` only for a model `run_in_pane` in `auto` mode, and `AutoRun`
 /// only in `run` mode for a command the grammar accepts, with fewer than
 /// [`MAX_AUTO_PER_TURN`] typed or run this turn, no pending line or run in the
-/// target, the target not focused, its directory known and the tab shown.
+/// target, the target not focused or dirty, its directory known, the tab
+/// shown, the run not paused and the locale UTF-8 for a non-ASCII command.
 /// Every other case, a read, an external call or a command the user started,
 /// prompts. `auto` and `ask` never produce `AutoRun`.
 pub fn route<'a>(
@@ -140,7 +177,8 @@ pub fn route<'a>(
         && !ctx.line_pending
         && !ctx.target_focused
         && ctx.tab_shown
-        && !ctx.executing;
+        && !ctx.executing
+        && !ctx.dirty;
     match (ask, origin, mode) {
         (ApprovalAsk::Run { .. }, Origin::Tool, ApprovalMode::Auto) if free => Route::AutoType,
         (ApprovalAsk::Run { command }, Origin::Tool, ApprovalMode::Run) => {
@@ -150,14 +188,20 @@ pub fn route<'a>(
     }
 }
 
-/// The `run` half of [`route`]: the reason of the pane first, then the
-/// grammar, then the limits.
+/// The `run` half of [`route`]: the reasons of the pane and the pause first,
+/// then the grammar, then the limits.
 fn route_run(command: &str, ctx: AutoCtx, free: bool) -> Route<'_> {
     let because = |why| Route::Prompt(Some(Fallback { at: 0..0, why }));
     if !ctx.cwd_known {
         return because(NO_CWD);
     }
+    if ctx.paused {
+        return because(PAUSED);
+    }
     match exec::parse(command) {
+        // A non-UTF-8 locale or readline's `convert-meta` could read the
+        // bytes as something else than what was checked.
+        Ok(safe) if !ctx.utf8 && !safe.as_str().is_ascii() => because(NON_UTF8),
         Ok(safe) if free => Route::AutoRun(safe),
         Ok(_) => Route::Prompt(None),
         Err(fallback) => Route::Prompt(Some(fallback)),
@@ -337,6 +381,9 @@ mod tests {
         tab_shown: true,
         executing: false,
         cwd_known: true,
+        paused: false,
+        dirty: false,
+        utf8: true,
     };
 
     fn run_ask() -> ApprovalAsk {
@@ -484,6 +531,14 @@ mod tests {
                 cwd_known: false,
                 ..FREE
             },
+            AutoCtx {
+                paused: true,
+                ..FREE
+            },
+            AutoCtx {
+                dirty: true,
+                ..FREE
+            },
         ];
         let ask = ask_of("pwd");
         for ctx in blocked {
@@ -493,16 +548,24 @@ mod tests {
     }
 
     #[test]
-    fn the_unreadable_cwd_names_its_reason() {
+    fn the_unreadable_cwd_and_the_pause_name_their_reason() {
         let ask = ask_of("pwd");
         let blind = AutoCtx {
             cwd_known: false,
             ..FREE
         };
-        let got = route(&ask, Origin::Tool, ApprovalMode::Run, blind);
+        let paused = AutoCtx {
+            paused: true,
+            ..FREE
+        };
+        let route_in = |ctx| route(&ask, Origin::Tool, ApprovalMode::Run, ctx);
         assert_eq!(
-            why(&got),
+            why(&route_in(blind)),
             Some("the pane's directory cannot be read on this system")
+        );
+        assert_eq!(
+            why(&route_in(paused)),
+            Some("auto-run paused for this turn")
         );
     }
 
@@ -519,6 +582,45 @@ mod tests {
         assert_eq!(why(&got), Some("not a safe command"));
     }
 
+    // Spec (pane-execution, S3.6b): bytes >= 0x80 need a UTF-8 locale.
+    #[test]
+    fn a_non_ascii_command_runs_only_under_a_utf8_locale() {
+        let accented = ask_of("cd m\u{fa}sica");
+        let ascii = ask_of("cd music");
+        let c = AutoCtx {
+            utf8: false,
+            ..FREE
+        };
+        let got = route(&accented, Origin::Tool, ApprovalMode::Run, c);
+        assert_eq!(why(&got), Some("the pane's locale is not UTF-8"));
+        let got = route(&accented, Origin::Tool, ApprovalMode::Run, FREE);
+        assert_eq!(runs(&got), Some("cd m\u{fa}sica"));
+        let got = route(&ascii, Origin::Tool, ApprovalMode::Run, c);
+        assert_eq!(runs(&got), Some("cd music"));
+    }
+
+    #[test]
+    fn the_locale_names_utf8_by_the_first_variable_that_is_set() {
+        let table = [
+            ((None, None, None), false),
+            ((None, None, Some("C")), false),
+            ((None, None, Some("en_US.UTF-8")), true),
+            ((None, None, Some("es_ES.utf8")), true),
+            ((None, Some("C.UTF-8"), Some("C")), true),
+            ((Some("C"), Some("C.UTF-8"), Some("en_US.UTF-8")), false),
+            ((Some(""), None, Some("en_US.UTF-8")), true),
+            ((Some("en_US.UTF-8"), None, Some("C")), true),
+            ((None, None, Some("en_US.ISO-8859-1")), false),
+        ];
+        for ((all, ctype, lang), want) in table {
+            assert_eq!(
+                names_utf8(all, ctype, lang),
+                want,
+                "{all:?} {ctype:?} {lang:?}"
+            );
+        }
+    }
+
     #[test]
     fn only_a_model_run_can_run() {
         let read = ApprovalAsk::Read { path: "~/a".into() };
@@ -529,6 +631,36 @@ mod tests {
         ] {
             let route = route(&ask, origin, ApprovalMode::Run, FREE);
             assert_eq!(route, Route::Prompt(None), "{ask:?} {origin:?}");
+        }
+    }
+
+    // Reasons of the pause: the ones that are not the model's doing do not count.
+    #[test]
+    fn only_a_grammar_or_policy_fallback_counts_toward_the_pause() {
+        let counted = |command: &str| {
+            let ask = ask_of(command);
+            let got = route(&ask, Origin::Tool, ApprovalMode::Run, FREE);
+            matches!(&got, Route::Prompt(Some(f)) if counts_toward_pause(f))
+        };
+        assert!(counted("ls *"));
+        assert!(counted("git status"));
+        for ctx in [
+            AutoCtx {
+                paused: true,
+                ..FREE
+            },
+            AutoCtx {
+                cwd_known: false,
+                ..FREE
+            },
+            AutoCtx {
+                utf8: false,
+                ..FREE
+            },
+        ] {
+            let ask = ask_of("cd m\u{fa}sica");
+            let got = route(&ask, Origin::Tool, ApprovalMode::Run, ctx);
+            assert!(matches!(&got, Route::Prompt(Some(f)) if !counts_toward_pause(f)));
         }
     }
 

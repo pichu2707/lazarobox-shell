@@ -404,6 +404,26 @@ fn the_auto_typed_count_resets_when_a_turn_starts() {
     assert_eq!(state.auto_typed(), 0);
 }
 
+// Spec (pane-execution, run routing): the refusal pause.
+#[test]
+fn the_run_pauses_after_three_fallbacks_and_a_turn_or_a_run_clears_it() {
+    let mut state = chat();
+    assert!(!state.run_paused());
+    for _ in 0..approval::MAX_RUN_FALLBACKS - 1 {
+        state.note_run_fallback();
+    }
+    assert!(!state.run_paused());
+    state.note_run_fallback();
+    assert!(state.run_paused());
+    state.clear_run_fallbacks();
+    assert!(!state.run_paused());
+    for _ in 0..approval::MAX_RUN_FALLBACKS {
+        state.note_run_fallback();
+    }
+    sent(&mut state, "hello");
+    assert!(!state.run_paused(), "a new turn starts clean");
+}
+
 // The mode is not part of what leaves the chat: same request, same store commands.
 #[test]
 fn the_mode_changes_neither_the_request_nor_the_stored_messages() {

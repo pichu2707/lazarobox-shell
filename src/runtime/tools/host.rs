@@ -150,6 +150,8 @@ impl Dispatch for TurnDispatch {
 
 /// What a result row says when the call was dropped before its answer.
 const CANCELLED: &str = "cancelled";
+/// A run answered a call that is not a command: nothing ran.
+const NOT_COMMAND: &str = "that call is not a command";
 
 /// The one `ToolResult` a call owes the chat, with the channel slot for it
 /// already reserved. The slot is taken before the `ToolCall` is announced, so
@@ -281,9 +283,19 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     TYPED_TEXT.to_owned(),
                     &format!("typed into pane {number} \u{2014} no Enter"),
                 ),
+                (Decision::Ran(number), Call::RunInPane { .. }) => ended(
+                    ToolStatus::Ok,
+                    format!("Ran in pane {number}. Its output was not read back."),
+                    &format!("ran in pane {number} \u{2014} output not read back"),
+                ),
                 (Decision::Sent, Call::RunInPane { .. }) => {
                     ended(ToolStatus::Ok, TYPED_TEXT.to_owned(), "typed, no Enter")
                 }
+                (Decision::Ran(_), _) => ended(
+                    ToolStatus::Denied,
+                    format!("denied: {NOT_COMMAND}"),
+                    NOT_COMMAND,
+                ),
                 (Decision::Sent | Decision::Typed(_), call) => {
                     let env = ToolEnv {
                         home: host.home.clone(),
