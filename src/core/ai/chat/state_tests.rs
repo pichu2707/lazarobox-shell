@@ -385,3 +385,33 @@ fn a_notice_does_not_start_the_answer_or_end_the_turn() {
     assert_eq!(state.phase(), Phase::Waiting { slow: false });
     assert_eq!(texts(&state).len(), 1, "only the user message");
 }
+
+// Spec (chat-pane, approval mode): the mode lives in the chat, the count per turn.
+#[test]
+fn a_chat_starts_in_ask_mode_with_nothing_typed() {
+    let state = chat();
+    assert_eq!(state.approval_mode(), ApprovalMode::Ask);
+    assert_eq!(state.auto_typed(), 0);
+}
+
+#[test]
+fn the_auto_typed_count_resets_when_a_turn_starts() {
+    let mut state = chat();
+    state.note_auto_typed();
+    state.note_auto_typed();
+    assert_eq!(state.auto_typed(), 2);
+    sent(&mut state, "hello");
+    assert_eq!(state.auto_typed(), 0);
+}
+
+// The mode is not part of what leaves the chat: same request, same store commands.
+#[test]
+fn the_mode_changes_neither_the_request_nor_the_stored_messages() {
+    let mut ask = chat();
+    let mut auto = chat();
+    auto.set_approval_mode(ApprovalMode::Auto);
+    let (_, ask_request) = sent(&mut ask, "hello");
+    let (_, auto_request) = sent(&mut auto, "hello");
+    assert_eq!(ask_request, auto_request);
+    assert_eq!(ask.outbox, auto.outbox);
+}

@@ -7202,6 +7202,9 @@ mod app_tests {
     /// Tool calls that need the user, answered through the same overlay.
     mod tool_approval;
 
+    /// The chat approval mode: where it comes from, when it resets.
+    mod tool_auto;
+
     /// The keys, rechecks and lifecycle of the run-in-pane confirm.
     mod run_pane_keys;
 
