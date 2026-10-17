@@ -1,42 +1,69 @@
 # Delta for Config Menu
 
-Tags as in the main spec. The new `Tools` row is appended after `Notify`, and the `Approval` row (design D18) after `Tools`. Every other requirement of the main spec that enumerates the row order or the popup size (Sections and items are data, Navigation, Tiny terminals, AI task list, Picker viewport) MUST be read with the extension in "Tools row"; sdd-archive MUST update those lists and numbers when merging.
+Tags as in the main spec (`openspec/specs/config-menu/spec.md`, tabbed menu: tabs `Settings` and `AI`, `MENU_BODY` 12, popup 16 rows, minimum 24x15). `Tools` and `Approval` are rows of the AI tab, after `Memory`, in that order: `Approval` is the 11th and last AI row. They edit the AI draft, so they are shown only when the AI section is attached. The popup does not change size: the AI tab at 11 rows (plus the bar, 12) equals `MENU_BODY`, and the picker (title plus a 10-row viewport) stays the binding view. The MODIFIED blocks below carry the changed requirements of the main spec under its own headings; sdd-archive MUST merge them over the main spec.
 
 ## MODIFIED Requirements
 
-### Requirement: Notify row
-The AI section MUST contain a static row `Notify` after `Memory` and before `Tools` (order: Set all tasks, general, code, chat, review, summarize, Profile, Context, Memory, Notify, Tools, Approval). It is found by `ItemKind::Notify`, never by position, and the popup body height (`AI_BODY`) grows with it automatically. It reads `off` or `on` from the AI draft; `h`, `l`, arrows, Space and Enter toggle the draft (an Enter key repeat is ignored like on `Context`), with no relayout and no other effect; the footer is the settings hint. Only a changed value is an edit (`ai.notify`, `true`/`false`), placed after the memory edits.
-(Previously: the AI section MUST end with the `Notify` row)
+### Requirement: Sections and items are data
+Sections, items and tabs MUST come from static descriptor tables; adding a section, a tab or a setting MUST NOT require changing the popup drawing or navigation code. Each setting item MUST declare its label and its `config.toml` key path where one exists, and either an ordered list of allowed values (static item) or a task kind (assignment item, whose value is an `engine › model` chosen in the picker). The tabs are `Settings` and `AI`, in that order (see Menu tabs). The `Settings` tab MUST show exactly six rows, in order: `Statusline position` (`statusline.position`: top, bottom), `Tab bar position` (`tabbar.position`: top, bottom), `Mouse` (`mouse`: on, off; written as the booleans `true` and `false`), `Notify` (four modes: auto, desktop, bell, off), `Sound` (off, on) and `Updates` (the running version, or the newer one when known). `Notify` and `Sound` edit the AI draft, so they MUST NOT be shown (and MUST NOT be selectable) when the AI section is not attached. The `AI` tab MUST show the assignment rows, in order: `Set all tasks` (aggregate over the five tasks, no single key path), `general` (`ai`), `code` (`ai.tasks.code`), `chat` (`ai.tasks.chat`), `review` (`ai.tasks.review`) and `summarize` (`ai.tasks.summarize`), followed by the static rows `Profile` (`ai.profile`: analyst, programmer), `Context` (`ai.context`: off, on), `Memory` (`ai.memory.enabled`: off, on), `Tools` (`ai.tools.enabled`: off, on) and `Approval` (`ai.tools.approval`: ask, auto), which is the last AI row (the 11th).
+(Previously: the static rows ended with `Tools`, the last AI row)
 
-#### Scenario: Row order and navigation [auto]
-- GIVEN the menu with the AI section
-- WHEN navigating down from Memory
-- THEN the selection reaches Notify and then Tools; going up from Notify returns to Memory
+#### Scenario: Descriptor integrity [auto]
+- GIVEN the descriptor tables
+- WHEN they are validated
+- THEN every section has a non-empty title, every item a non-empty label, every static item with a key path has at least two allowed values, `Mouse` has the key path `mouse` and the values `on`, `off`, the five task rows have the task ids of ai-task-models and a key path, `Set all tasks` has no single key path, `Profile`, `Context`, `Memory`, `Tools` and `Approval` have their key paths and values above, every tab lists only rows that exist, and there are no duplicate key paths
 
-#### Scenario: Reads on or off [auto]
-- GIVEN drafts with notify `false` and `true`
-- WHEN the rows are built
-- THEN the value is `off` and `on`; without the AI section there is no row
+#### Scenario: AI rows end with Approval [auto, TestBackend + insta]
+- GIVEN the AI tab active
+- WHEN rendered
+- THEN the rows read `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, `Profile`, `Context`, `Memory`, `Tools`, `Approval` in that order, and no `Engine`, `Model`, `Status`, `Notify` or `Sound` row exists there
 
-#### Scenario: Toggle and edit [auto]
-- GIVEN the selection on Notify
-- WHEN any cycle key is pressed
-- THEN the draft flips, `MenuCommand::None` is returned and the edit list holds `ai.notify` only while the draft differs from the open value
+### Requirement: Navigation
+`j`, `k`, Down and Up MUST move the selection between the selectable rows of the ACTIVE tab only, in display order, and MUST wrap around at the ends of that tab (from its last row to its first and back); they MUST NOT cross to another tab, because Tab and Shift+Tab are the only way across tabs. No row is skipped (picker disabled rows are different, see Task picker). Repeat events MUST be handled like Press. The `Settings` tab order is `Statusline position`, `Tab bar position`, `Mouse`, `Notify`, `Sound`, `Updates`. The `AI` tab order is `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, `Profile`, `Context`, `Memory`, `Tools`, `Approval`.
+(Previously: the AI tab order ended with `Tools`)
 
-#### Scenario: Snapshots [auto]
-- GIVEN the AI menu snapshots
-- WHEN regenerated
-- THEN the only difference against the pre-Notify snapshots is the extra `Notify` row and the `Tools` and `Approval` rows of this change
+#### Scenario: Wrap within AI [auto]
+- GIVEN the AI tab active with `Approval` selected
+- WHEN `j` is pressed, then `k`
+- THEN `Set all tasks` is selected, then `Approval`, and the active tab is still `AI`
+
+#### Scenario: Task rows in order [auto]
+- GIVEN the AI tab active with `Set all tasks` selected
+- WHEN `j` is pressed eleven times
+- THEN the selection visits `general`, `code`, `chat`, `review`, `summarize`, `Profile`, `Context`, `Memory`, `Tools`, `Approval` in that order and the eleventh press wraps to `Set all tasks`
+
+### Requirement: AI task list
+The AI tab MUST show, as its rows (with no section title row while the tab bar is shown), exactly six task rows in this order: `Set all tasks`, `general`, `code`, `chat`, `review`, `summarize`, and then the static rows `Profile`, `Context`, `Memory`, `Tools` and `Approval`. Each task row shows its label and its value (see ai-task-models): `<engine> › <model>`, `(default)` for an unassigned non-general task, `(not set)` for an unset `general` or an unset aggregate, `(mixed)` for the aggregate when the tasks differ, and the marks `· download required` and `(not detected)` as defined there. The `Profile` row shows the profile id; `Context`, `Memory` and `Tools` show `off` or `on`; `Approval` shows `ask` or `auto`. The number of AI rows MUST never change because of a detection result. The popup MUST show every row of the active tab without clipping on a normal terminal, MUST keep the same size between both tabs and the picker, and the minimum terminal size below which only the one-line fallback is drawn (see Tiny terminals) MUST follow the popup; the exact dimensions are a design decision.
+(Previously: the static rows ended with `Tools`)
+
+#### Scenario: Task rows rendered [auto, TestBackend + insta]
+- GIVEN general is `claude` / `sonnet`, code is `ollama` / `llama3:8b` (ollama available with that model), the other tasks unassigned, the profile `analyst`, and the AI tab active
+- WHEN the menu is rendered on a normal terminal
+- THEN the rows are visible: `Set all tasks` `(mixed)`, `general` `claude › sonnet`, `code` `ollama › llama3:8b`, `chat` `(default)`, `review` `(default)`, `summarize` `(default)`, `Profile` `analyst`, the `Context`, `Memory` and `Tools` rows with their `off` or `on` value and the `Approval` row with `ask` or `auto`
+
+#### Scenario: Nothing assigned [auto, TestBackend + insta]
+- GIVEN no task is assigned and the AI tab active
+- WHEN the menu is rendered
+- THEN `Set all tasks` reads `(not set)`, `general` reads `(not set)`, the other four read `(default)`, `Profile` reads `programmer` (the default profile), `Context`, `Memory` and `Tools` read their defaults and `Approval` reads `ask`
+
+### Requirement: Popup height is fixed
+The popup body height MUST be the maximum over every view: each tab's rows, the picker (title plus its viewport) and the privacy warning. The popup height MUST be that body plus the chrome and MUST NOT change when switching tabs or entering or leaving a picker, the custom field or the warning. The tab bar row is part of the body. The body (`MENU_BODY`) is 12 rows: a 1-row bar plus 11 rows for the tallest view (`VIEW_BODY`: the picker's title plus its 10-row viewport). The chrome stays 4 rows, so the popup is 16 rows. The privacy warning needs 10 rows, the AI tab 11 (with `Tools` and `Approval`), the Settings tab 9 (six rows, one gap, the two-line note) and the custom entry 2; the picker and the AI tab are both at the binding 11, so the two rows of this change fit with no size change and the minimum stays 24 columns by 15 rows. The single-tab (no-AI) layout keeps its previous size.
+(Previously: the AI tab needed 10 rows and Approval was foreseen as a fit without a size change)
+
+#### Scenario: Same height across views [auto, TestBackend + insta]
+- GIVEN a normal terminal
+- WHEN the Settings tab, the AI tab (with `Approval`), a picker level 1 and 2, the custom field and the warning are rendered
+- THEN the popup border spans 16 rows in all of them
 
 ## ADDED Requirements
 
 ### Requirement: Tools row
-The AI section MUST hold a static row `Tools` after `Notify`, followed only by `Approval` (see Approval row) (key path `ai.tools.enabled`, values `off`, `on`; it reads `on` by default). It is found by its own `ItemKind`, never by position. `h`, `l`, Left, Right, Space and Enter toggle the draft (an Enter repeat is ignored, like on `Notify`); the footer is the Settings-row hint `j/k move · h/l change · s save · Esc cancel`; detection cues and `r` do not apply. Changing the draft MUST have no live effect: no relayout, no ResizePty or WritePty, no change to a stream, a pending approval or a running tool, and it applies from the next turn after a successful save. Esc at the top level restores the draft; `s` saves `ai.tools.enabled` through config-persistence only when it differs. The row order becomes `... Memory, Notify, Tools, Approval`; Navigation wraps from `Approval` to `Statusline position`; `AI_BODY` grows by one row (it is derived from the descriptor tables; the resulting size is pinned in Approval row); the descriptor integrity rules extend to the new row (`Tools` has key path `ai.tools.enabled`, values `off`, `on`, no duplicate key path).
+The AI tab MUST hold a static row `Tools` after `Memory` and before `Approval` (key path `ai.tools.enabled`, values `off`, `on`; it reads `on` by default). It is found by its own `ItemKind`, never by position. `h`, `l`, Left, Right, Space and Enter toggle the draft (an Enter repeat is ignored, like on `Context`); the footer is the Settings-row hint `j/k move · h/l change · s save · Esc cancel`; detection cues and `r` do not apply. Changing the draft MUST have no live effect: no relayout, no ResizePty or WritePty, no change to a stream, a pending approval or a running tool, and it applies from the next turn after a successful save. Esc at the top level restores the draft; `s` saves `ai.tools.enabled` through config-persistence only when it differs. The row order is `... Memory, Tools, Approval` (see Sections and items are data); Navigation wraps inside the AI tab; the popup does not change size (see Popup height is fixed); the descriptor integrity rules extend to the row (`Tools` has key path `ai.tools.enabled`, values `off`, `on`, no duplicate key path).
 
 #### Scenario: Navigation reaches Tools and wraps [auto]
-- GIVEN `Memory` selected
+- GIVEN the AI tab active with `Memory` selected
 - WHEN `j` is pressed three times
-- THEN `Tools`, then `Approval`, then `Statusline position` is selected; and from the first row `k` selects `Approval`
+- THEN `Tools`, then `Approval`, then `Set all tasks` is selected, the active tab is still `AI`, and from `Set all tasks` `k` selects `Approval`
 
 #### Scenario: Toggle [auto]
 - GIVEN `Tools` selected with the draft `on`
@@ -74,8 +101,8 @@ The AI section MUST hold a static row `Tools` after `Notify`, followed only by `
 - THEN the menu closes, the file holds `enabled = false` under `[ai.tools]` and tools are off
 
 #### Scenario: Popup size and fallback [auto, TestBackend + insta]
-- GIVEN a terminal at exactly the new minimum, and one column or one row less
-- WHEN the task list and the picker are rendered
+- GIVEN a terminal at exactly the minimum (24 columns by 15 rows), and one column or one row less
+- WHEN the AI tab and the picker are rendered
 - THEN the first shows the full popup (clipped, no panic) and the second shows the one-line fallback
 
 #### Scenario: Descriptor integrity [auto]
@@ -89,32 +116,37 @@ The AI section MUST hold a static row `Tools` after `Notify`, followed only by `
 - THEN no tool row, no run hint and no confirm ever appears, and turning it on again restores them
 
 ### Requirement: Approval row
-The AI section MUST end with a static row `Approval` after `Tools` (key path `ai.tools.approval`, values `ask`, `auto`; it reads `ask` by default). It is found by its own `ItemKind`, never by position. `h`, `l`, Left, Right, Space and Enter cycle the draft (an Enter repeat is ignored); the footer is the Settings-row hint `j/k move · h/l change · s save · Esc cancel`; detection cues and `r` do not apply. Changing the draft MUST have no live effect: no relayout, no ResizePty or WritePty, no change to the mode of any open chat pane, a pending approval or a running tool; after a successful save it applies to chat panes opened afterwards and at the next conversation switch inside an open pane. Esc at the top level restores the draft; `s` saves `ai.tools.approval` through config-persistence only when it differs. The row is shown whatever the `Tools` draft. With it the task list body is 19 rows (two section titles, six Settings rows, eleven AI rows), the full popup needs 24 columns by `AI_BODY + 3` = 22 rows and is 23 rows tall, so it still fits 80x24; the descriptor integrity rules extend to the new row.
+The AI tab MUST end with a static row `Approval` after `Tools` (key path `ai.tools.approval`, values `ask`, `auto`; it reads `ask` by default). It is found by its own `ItemKind`, never by position. `h`, `l`, Left, Right, Space and Enter cycle the draft (an Enter repeat is ignored); the footer is the Settings-row hint `j/k move · h/l change · s save · Esc cancel`; detection cues and `r` do not apply. Changing the draft MUST have no live effect: no relayout, no ResizePty or WritePty, no change to the mode of any open chat pane, a pending approval or a running tool; after a successful save it applies to chat panes opened afterwards and at the next conversation switch inside an open pane. Esc at the top level restores the draft; `s` saves `ai.tools.approval` through config-persistence only when it differs, and the value is written explicitly even when it equals the default. The row is shown whatever the `Tools` draft. With it the AI tab has 11 rows and the popup keeps its 16 rows and its 24x15 minimum (see Popup height is fixed); the descriptor integrity rules extend to the row.
 
 #### Scenario: Cycle [auto]
 - GIVEN `Approval` selected with the draft `ask`
 - WHEN `l` is pressed, then `l` again
 - THEN the draft is `auto`, then `ask`, no save is requested and no file is touched
 
+#### Scenario: Enter repeat ignored [auto]
+- GIVEN `Approval` selected
+- WHEN a Repeat event for Enter arrives
+- THEN the draft is unchanged
+
 #### Scenario: No effect on open chats [auto]
-- GIVEN an open chat in `ask` with a pending approval and the menu open on `Approval`
+- GIVEN an open chat in `ask` and the menu open on `Approval`
 - WHEN the draft is cycled to `auto` and saved
-- THEN the open chat is still `ask` with its approval pending, no WritePty is emitted, and a chat pane opened afterwards is `auto`
+- THEN the open chat is still `ask`, no WritePty is emitted, and a chat pane opened afterwards is `auto`
 
 #### Scenario: Esc reverts [auto]
 - GIVEN the draft changed to `auto`
 - WHEN Esc is pressed on the task list
-- THEN the mode default is `ask` and no file is read or written
+- THEN the saved mode is still `ask` and no file is read or written
 
 #### Scenario: Footer [auto, TestBackend + insta]
 - GIVEN `Approval` selected
 - WHEN rendered
 - THEN the footer reads `j/k move · h/l change · s save · Esc cancel` and the value reads `ask`
 
-#### Scenario: Popup size and fallback [auto, TestBackend + insta]
-- GIVEN terminals of 80x24, of 24x22, and of 23x22 and 24x21
-- WHEN the task list is rendered
-- THEN the first two show the full popup (the 24x22 one without the blank row) and the last two show the one-line fallback
+#### Scenario: Popup size is unchanged [auto, TestBackend + insta]
+- GIVEN the AI tab with `Approval`, a terminal of 80x24 and one of exactly 24x15
+- WHEN rendered
+- THEN both show the full popup of 16 rows (the 24x15 one clipped, without panic), and one column or one row less shows the one-line fallback
 
 #### Scenario: Descriptor integrity [auto]
 - GIVEN the descriptor table
