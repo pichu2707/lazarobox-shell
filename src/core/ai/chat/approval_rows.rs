@@ -13,6 +13,8 @@ use super::{ChatState, approval::ApprovalPrompt, wrap::wrap_ranges};
 pub const MAX_COMMAND_ROWS: usize = 6;
 /// What the prompt says when it cannot show the whole text.
 pub const TOO_SMALL: &str = "pane too small to show it all: enlarge it or press n";
+/// The keys line while the prompt does not answer yet.
+pub const NOT_ARMED: &str = "…";
 /// How a tab is drawn.
 const TAB: char = '→';
 
@@ -55,7 +57,8 @@ fn full_rows(prompt: &ApprovalPrompt, width: usize, height: usize) -> Option<Vec
         _ => {
             let mut out = vec![head];
             out.extend(rows.into_iter().map(Part::Command));
-            out.push(Part::Keys(prompt.keys.to_owned()));
+            let keys = if prompt.armed { prompt.keys } else { NOT_ARMED };
+            out.push(Part::Keys(keys.to_owned()));
             Some(out)
         }
     }
@@ -100,6 +103,7 @@ mod tests {
             target: "run in pane 1".into(),
             command: command.into(),
             keys: RUN_KEYS,
+            armed: true,
         }
     }
 
@@ -108,7 +112,23 @@ mod tests {
             target: "send a file's text to the engine".into(),
             command: format!("read {path}"),
             keys: READ_KEYS,
+            armed: true,
         }
+    }
+
+    #[test]
+    fn a_prompt_that_is_not_armed_shows_dots_instead_of_the_keys() {
+        let mut p = run("ls");
+        p.armed = false;
+        assert_eq!(
+            parts(&p, 40, 8).last(),
+            Some(&Part::Keys(NOT_ARMED.to_owned()))
+        );
+        p.armed = true;
+        assert_eq!(
+            parts(&p, 40, 8).last(),
+            Some(&Part::Keys(RUN_KEYS.to_owned()))
+        );
     }
 
     #[test]

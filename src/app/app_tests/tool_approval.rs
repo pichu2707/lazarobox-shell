@@ -29,13 +29,21 @@ fn read(path: &str) -> ApprovalAsk {
 
 /// A shell (pane 1), a focused chat (pane 2) and a turn in flight.
 fn live() -> (App, u64) {
-    let mut a = one_shell_and_a_chat("hello");
+    NOW_MS.with(|n| n.set(0));
+    let mut a = one_shell_and_a_chat("hello").with_clock(mock_now);
     a.update(key('q'));
     let turn = enter_turn(&mut a);
     (a, turn)
 }
 
+/// The ask arrives and the prompt's delay passes (see `guard` for the delay).
 fn announce(a: &mut App, turn: u64, call: u64, ask: ApprovalAsk) -> Vec<Effect> {
+    let effects = announce_now(a, turn, call, ask);
+    NOW_MS.with(|n| n.set(n.get() + 1_000));
+    effects
+}
+
+fn announce_now(a: &mut App, turn: u64, call: u64, ask: ApprovalAsk) -> Vec<Effect> {
     a.update(AppEvent::Chat(
         id2(),
         turn,
@@ -447,7 +455,10 @@ fn a_chat_whose_tab_has_no_shell_denies_a_run() {
 
 /// Like `live` for an app whose engine offers tools.
 fn live_with_session() -> (App, u64) {
-    let mut a = one_shell_and_a_chat("hello").with_tool_engines(&["ollama"]);
+    NOW_MS.with(|n| n.set(0));
+    let mut a = one_shell_and_a_chat("hello")
+        .with_clock(mock_now)
+        .with_tool_engines(&["ollama"]);
     a.update(key('q'));
     let turn = enter_turn(&mut a);
     (a, turn)
@@ -541,6 +552,7 @@ async fn what_the_model_is_told_follows_what_happened_to_the_pane() {
             command: "cd x".into(),
         }));
         a.update(AppEvent::Chat(id2(), turn, rx.recv().await.unwrap()));
+        NOW_MS.with(|n| n.set(1_000));
         let effects = a.update(key('y'));
         let wrote = effects.iter().any(|e| matches!(e, Effect::WritePty(..)));
         for effect in effects {
@@ -695,4 +707,99 @@ fn turning_tools_on_or_a_chat_without_a_session_ends_nothing() {
     let (mut b, _) = live();
     b.ai.set_tools_enabled(false);
     assert_eq!(b.sync_tools(), vec![]);
+}
+
+// -- a key typed before the prompt appeared cannot answer it -------------------
+
+mod guard {
+    use super::*;
+    use crate::app::tool::ARM_DELAY;
+
+    fn ms(d: std::time::Duration) -> u64 {
+        u64::try_from(d.as_millis()).unwrap()
+    }
+
+    /// `live` with the injected clock at t = 0; the ask arrives at t = 0.
+    fn asked(ask: ApprovalAsk) -> (App, u64) {
+        NOW_MS.with(|n| n.set(0));
+        let mut a = one_shell_and_a_chat("hello").with_clock(mock_now);
+        a.update(key('q'));
+        let turn = enter_turn(&mut a);
+        announce_now(&mut a, turn, 1, ask);
+        (a, turn)
+    }
+
+    #[test]
+    fn keys_that_answer_do_nothing_until_the_prompt_is_armed() {
+        for answer in [key('y'), key('n'), plain(KeyCode::Esc)] {
+            let (mut a, _) = asked(run("cd x"));
+            assert_eq!(at(&mut a, 0, answer.clone()), vec![]);
+            assert_eq!(at(&mut a, ms(ARM_DELAY) - 1, answer), vec![]);
+            assert!(pending(&a).is_some(), "still waiting");
+        }
+    }
+
+    #[test]
+    fn a_y_after_the_delay_approves() {
+        let (mut a, turn) = asked(run("cd x"));
+        assert_eq!(at(&mut a, 10, key('y')), vec![]);
+        assert_eq!(
+            at(&mut a, ms(ARM_DELAY), key('y')),
+            vec![
+                Effect::WritePty(PaneId::FIRST, b"cd x".to_vec()),
+                decision(turn, 1, Decision::Sent)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_read_is_guarded_the_same_way() {
+        let (mut a, turn) = asked(read("/home/u/a.txt"));
+        assert_eq!(at(&mut a, 5, key('y')), vec![]);
+        assert_eq!(
+            at(&mut a, ms(ARM_DELAY), key('y')),
+            vec![decision(turn, 1, Decision::Sent)]
+        );
+    }
+
+    #[test]
+    fn ctrl_c_cancels_at_once() {
+        let (mut a, turn) = asked(run("cd x"));
+        let effects = at(&mut a, 0, super::super::chat_live::ctrl('c'));
+        assert_eq!(
+            effects,
+            vec![
+                decision(turn, 1, Decision::Denied("cancelled")),
+                Effect::ChatCancel(id2())
+            ]
+        );
+    }
+
+    #[test]
+    fn the_keys_line_is_dots_until_armed() {
+        let (a, _) = asked(run("cd x"));
+        assert!(!a.approval_prompt(id2()).unwrap().armed);
+        NOW_MS.with(|n| n.set(ms(ARM_DELAY)));
+        assert!(a.approval_prompt(id2()).unwrap().armed);
+    }
+
+    // The confirm the user opens with `Prefix e` is theirs: no delay.
+    #[test]
+    fn the_users_own_confirm_answers_at_once() {
+        NOW_MS.with(|n| n.set(0));
+        let mut a = one_shell_and_a_chat(super::super::run_pane::BLOCK).with_clock(mock_now);
+        at(
+            &mut a,
+            0,
+            AppEvent::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL)),
+        );
+        at(&mut a, 0, key('e'));
+        assert!(pending(&a).is_some());
+        assert!(a.approval_prompt(id2()).unwrap().armed);
+        let effects = at(&mut a, 0, key('y'));
+        assert!(
+            matches!(effects.as_slice(), [Effect::WritePty(..)]),
+            "{effects:?}"
+        );
+    }
 }

@@ -302,6 +302,8 @@ pub struct ChatState {
     /// The turn last sent offered tools, so the runtime may hold a tool
     /// session for this chat until the app ends it.
     tool_session: bool,
+    /// When the keys start to answer the approval the model opened.
+    armed_at: Option<Instant>,
 }
 
 impl ChatState {
@@ -339,7 +341,18 @@ impl ChatState {
             run_target: None,
             run_hint: false,
             tool_session: false,
+            armed_at: None,
         }
+    }
+
+    /// When the keys start to answer the approval the model opened; `None`
+    /// when no such approval is waiting.
+    pub fn armed_at(&self) -> Option<Instant> {
+        self.armed_at
+    }
+
+    pub fn set_armed_at(&mut self, at: Option<Instant>) {
+        self.armed_at = at;
     }
 
     /// Whether the runtime may hold a tool session for this chat.

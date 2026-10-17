@@ -6,9 +6,11 @@
 //! `on_tool_ask` is the single place an ask enters the app. It always opens
 //! the overlay today; the chat approval mode (D18) will route there first.
 
+use std::time::Duration;
+
 use super::*;
 use crate::core::ai::chat::{
-    approval::{Approval, ApprovalAsk},
+    approval::{Approval, ApprovalAsk, Origin},
     engine::{CallId, Decision, Tools, tools_for},
 };
 
@@ -16,6 +18,9 @@ use crate::core::ai::chat::{
 /// other reason to give. Short, and it goes back to the model.
 pub(super) const DECLINED: &str = "the user declined";
 pub(super) const CANCELLED: &str = "cancelled";
+/// How long a prompt the model opened ignores `y`, `n` and Esc, so a key the
+/// user was already typing cannot answer it.
+pub(super) const ARM_DELAY: Duration = Duration::from_millis(400);
 const TOOLS_OFF: &str = "tools are off";
 const TURN_OVER: &str = "the turn is over";
 const NO_SHELL: &str = "there is no shell pane in this tab";
@@ -117,12 +122,14 @@ impl App {
             ApprovalAsk::Read { .. } => None,
             ApprovalAsk::External { .. } => return Self::deny(id, turn, call, NO_USER_TOOLS),
         };
+        let armed_at = (self.clock)() + ARM_DELAY;
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Self::deny(id, turn, call, CHAT_GONE);
         };
         match chat.approvals_mut().request_call(ask, turn, call) {
             Ok(_) => {
                 chat.set_run_target(target);
+                chat.set_armed_at(Some(armed_at));
                 self.dirty = true;
                 Vec::new()
             }
@@ -180,6 +187,18 @@ impl App {
             effects.push(Effect::EndToolSession(id));
         }
         effects
+    }
+
+    /// Whether the keys answer the prompt of chat `id`.
+    pub(super) fn approval_armed(&self, id: PaneId) -> bool {
+        let Some(chat) = self.panes.get(&id).and_then(PaneState::chat_state) else {
+            return true;
+        };
+        let model_opened = chat
+            .approvals()
+            .pending()
+            .is_some_and(|approval| approval.origin() == Origin::Tool);
+        !model_opened || chat.armed_at().is_none_or(|at| (self.clock)() >= at)
     }
 
     /// The tab that holds pane `id`.

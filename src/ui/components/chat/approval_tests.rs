@@ -53,6 +53,7 @@ fn prompt(command: &str) -> ApprovalPrompt {
         target: "run in pane 2 (~/dev)".into(),
         command: command.into(),
         keys: RUN_KEYS,
+        armed: true,
     }
 }
 
@@ -63,6 +64,7 @@ fn read_prompt(path: &str) -> ApprovalPrompt {
         target: "send a file's text to the engine".into(),
         command: format!("read {path}"),
         keys: READ_KEYS,
+        armed: true,
     }
 }
 

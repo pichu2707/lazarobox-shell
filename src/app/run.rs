@@ -111,6 +111,15 @@ impl App {
         if repeat {
             return Vec::new();
         }
+        // A prompt the model just opened takes no answer yet: the key may have
+        // been typed for the composer. Ctrl+C always works.
+        let answers = matches!(
+            (key.code, key.modifiers),
+            (KeyCode::Char('y' | 'n') | KeyCode::Esc, KeyModifiers::NONE)
+        );
+        if answers && !self.approval_armed(id) {
+            return Vec::new();
+        }
         match (key.code, key.modifiers) {
             (KeyCode::Char('y'), KeyModifiers::NONE) => self.approve(id),
             (KeyCode::Char('n') | KeyCode::Esc, KeyModifiers::NONE) => self.decline(id, DECLINED),
@@ -374,6 +383,7 @@ impl App {
     /// pane by its number in the tab and its cwd, and the exact command.
     pub fn approval_prompt(&self, id: PaneId) -> Option<ApprovalPrompt> {
         let chat = self.panes.get(&id)?.chat_state()?;
+        let armed = self.approval_armed(id);
         match chat.approvals().pending()?.ask() {
             ApprovalAsk::Run { command } => {
                 let target = chat.run_target().and_then(|pane| self.pane_label(pane));
@@ -381,6 +391,7 @@ impl App {
                     target: target.unwrap_or_else(|| "target pane is gone".to_owned()),
                     command: command.clone(),
                     keys: RUN_KEYS,
+                    armed,
                 })
             }
             // The path was resolved and made safe to show before it was asked.
@@ -388,6 +399,7 @@ impl App {
                 target: "send a file's text to the engine".to_owned(),
                 command: format!("read {path}"),
                 keys: READ_KEYS,
+                armed,
             }),
             ApprovalAsk::External { .. } => None,
         }
