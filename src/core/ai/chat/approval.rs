@@ -8,7 +8,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::core::ai::tools::{Call, Locality, command::Refusal, summary::clip};
+use crate::core::ai::tools::{Call, Locality, command::Refusal};
 
 /// Ids come from one counter for the whole process, so an `Approvals` that is
 /// rebuilt (a chat reopened, a state replaced) never hands out an id an older
@@ -66,15 +66,16 @@ pub enum ApprovalAsk {
 /// directory tools never ask. The mode of the chat (ask or auto-type, D18) is
 /// not an input: the app applies it to the ask this returns.
 ///
-/// The path of a read ask is shown as a summary (sanitized, capped); the host
-/// opens the file from the call, never from the ask.
+/// The path of a read ask is shown as it is: the caller passes the target
+/// resolved by `tools::paths::display_target`, which exists only when display
+/// sanitizing would not change it. The host opens the file from the call.
 pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
     match call {
         Call::RunInPane { command } => Some(ApprovalAsk::Run {
             command: command.clone(),
         }),
         Call::ReadFile { path } if locality == Locality::Cloud => {
-            Some(ApprovalAsk::Read { path: clip(path) })
+            Some(ApprovalAsk::Read { path: path.clone() })
         }
         Call::ReadFile { .. } | Call::FindDir { .. } | Call::ListDir { .. } => None,
     }
@@ -217,18 +218,6 @@ mod tests {
                 path: "~/a.txt".into()
             })
         );
-    }
-
-    #[test]
-    fn the_path_of_a_read_ask_is_sanitized_and_capped_for_display() {
-        let read = Call::ReadFile {
-            path: format!("~/a\u{1b}[31m\n{}", "b".repeat(500)),
-        };
-        let Some(ApprovalAsk::Read { path }) = ask_for(&read, Locality::Cloud) else {
-            panic!("a cloud read asks");
-        };
-        assert!(!path.contains('\u{1b}') && !path.contains('\n'));
-        assert!(path.chars().count() <= crate::core::ai::tools::summary::SUMMARY_CAP);
     }
 
     fn run(command: &str) -> ApprovalAsk {

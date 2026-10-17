@@ -19,7 +19,9 @@
 //! stdin ends) the connection stops reading but lets the calls in flight
 //! finish and their replies flush, for at most [`DRAIN_GRACE`]; then it
 //! aborts what is left. A client that hung up for good (both directions) and
-//! `Hub::close` end the wait at once.
+//! `Hub::close` end the wait at once. Nothing is read during the drain, so a
+//! `notifications/cancelled` sent after EOF is not seen: that call keeps
+//! running until it finishes or the grace ends. Accepted.
 //!
 //! Limits, per session: [`MAX_PENDING`] connections may wait for their
 //! handshake (a newcomer beyond that is dropped at once, so silent clients

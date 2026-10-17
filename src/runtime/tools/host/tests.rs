@@ -171,7 +171,7 @@ async fn a_cloud_read_asks_first_and_is_denied_without_an_approver() {
     assert_eq!(
         ask,
         Some(ApprovalAsk::Read {
-            path: "~/note.txt".into()
+            path: home.join("note.txt").to_str().unwrap().into()
         })
     );
     assert_eq!(status, ToolStatus::Denied);
@@ -378,4 +378,148 @@ async fn a_free_tool_runs_end_to_end_from_the_mcp_session_through_the_host() {
     let reply = line(&mut reader).await;
     assert_eq!(reply["result"]["isError"], true);
     assert_eq!(pair(&events(&mut rx)).2, ToolStatus::Denied);
+}
+
+// -- review follow-up --
+
+/// A channel of `room` slots with `fill` junk events already queued.
+fn tight(room: usize, fill: usize) -> (mpsc::Sender<StreamEvent>, mpsc::Receiver<StreamEvent>) {
+    let (tx, rx) = mpsc::channel(room);
+    for _ in 0..fill {
+        tx.try_send(StreamEvent::Slow).unwrap();
+    }
+    (tx, rx)
+}
+
+fn counts(events: &[StreamEvent]) -> (usize, usize) {
+    let calls = events
+        .iter()
+        .filter(|e| matches!(e, StreamEvent::ToolCall { .. }))
+        .count();
+    let results = events
+        .iter()
+        .filter(|e| matches!(e, StreamEvent::ToolResult { .. }))
+        .count();
+    (calls, results)
+}
+
+#[tokio::test]
+async fn a_cancelled_call_still_delivers_its_result_when_the_channel_is_full() {
+    let (_dir, home, host) = fixture();
+    let (tx, mut rx) = tight(4, 0);
+    let mut scope = TurnScope::new(tx.clone(), Locality::Cloud, home.clone());
+    scope.approver = Arc::new(Waiting);
+    // The call is announced and waits; then the reader falls behind.
+    let mut call = host.dispatch(scope).call(run_cmd("ls"));
+    assert!(futures::poll!(&mut call).is_pending());
+    while tx.try_send(StreamEvent::Slow).is_ok() {}
+    // Cancelled now: the result must not need a free slot.
+    drop(call);
+    let seen = events(&mut rx);
+    assert_eq!(counts(&seen), (1, 1), "{seen:?}");
+}
+
+#[tokio::test]
+async fn a_call_dropped_while_it_answers_on_a_tight_channel_is_never_unpaired() {
+    let (_dir, home, host) = fixture();
+    let (tx, mut rx) = tight(3, 2);
+    let scope = TurnScope::new(tx, Locality::Cloud, home);
+    // Whether the drop comes before or after the announcement, a call that
+    // was announced has its result.
+    let _ = host.dispatch(scope).call(run_cmd("ls")).now_or_never();
+    let seen = events(&mut rx);
+    let (calls, results) = counts(&seen);
+    assert_eq!(calls, results, "{seen:?}");
+}
+
+/// Registers its decision slot at once; the test fills it.
+struct Latched {
+    slot: Mutex<Option<tokio::sync::oneshot::Sender<Decision>>>,
+}
+
+impl Approver for Latched {
+    fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Decision> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *self.slot.lock().unwrap() = Some(tx);
+        async move { rx.await.unwrap_or(Decision::Denied("gone")) }.boxed()
+    }
+}
+
+#[tokio::test]
+async fn the_approval_is_registered_before_the_call_is_announced() {
+    let (_dir, home, host) = fixture();
+    // No room to announce: the call parks before its ToolCall is delivered.
+    let (tx, mut rx) = tight(2, 2);
+    let approver = Arc::new(Latched {
+        slot: Mutex::new(None),
+    });
+    let mut scope = TurnScope::new(tx, Locality::Cloud, home);
+    scope.approver = approver.clone();
+    let mut call = host.dispatch(scope).call(run_cmd("ls"));
+    assert!(futures::poll!(&mut call).is_pending());
+    assert!(
+        approver.slot.lock().unwrap().is_some(),
+        "the approver must be asked before the announcement can be seen"
+    );
+    // Once the reader drains, the decision may arrive the instant the
+    // ToolCall is seen, and it is not lost.
+    let mut drained = events(&mut rx);
+    assert!(futures::poll!(&mut call).is_pending());
+    while !drained
+        .iter()
+        .any(|e| matches!(e, StreamEvent::ToolCall { .. }))
+    {
+        drained.extend(events(&mut rx));
+        tokio::task::yield_now().await;
+        let _ = futures::poll!(&mut call);
+    }
+    approver
+        .slot
+        .lock()
+        .unwrap()
+        .take()
+        .unwrap()
+        .send(Decision::Sent)
+        .unwrap();
+    let out = timeout(Duration::from_secs(5), call).await.expect("hung");
+    assert!(!out.is_error, "{out:?}");
+}
+
+#[tokio::test]
+async fn a_cloud_read_of_a_path_that_cannot_be_shown_safely_is_refused_unasked() {
+    let (_dir, home, host) = fixture();
+    for path in [
+        format!("~/{}", "a".repeat(300)),
+        "~/a\u{202e}txt".to_owned(),
+        "~/a\u{200b}b".to_owned(),
+        "~/sk-abcdefghijklmnopqrstuvwxyz0123456789ABCD".to_owned(),
+        "~/two\nlines".to_owned(),
+    ] {
+        let (mut scope, mut rx) = scope(Locality::Cloud, &home);
+        let approver = Scripted::new(Decision::Sent);
+        scope.approver = approver.clone();
+        let out = host.dispatch(scope).call(read(&path)).await;
+        assert!(out.is_error);
+        assert_eq!(out.text, "path cannot be shown safely");
+        assert!(approver.asked.lock().unwrap().is_empty(), "{path:?}");
+        let seen = events(&mut rx);
+        let (_, ask, status, summary) = pair(&seen);
+        assert_eq!((ask, status), (None, ToolStatus::Error));
+        assert!(!summary.contains("aaaa"));
+    }
+}
+
+#[tokio::test]
+async fn a_relative_cloud_read_asks_with_the_path_resolved_against_the_origin() {
+    let (_dir, home, host) = fixture();
+    let (mut scope, mut rx) = scope(Locality::Cloud, &home);
+    let approver = Scripted::new(Decision::Sent);
+    scope.approver = approver.clone();
+    host.dispatch(scope).call(read("note.txt")).await;
+    let want = home.join("note.txt").to_str().unwrap().to_owned();
+    assert_eq!(
+        *approver.asked.lock().unwrap(),
+        [ApprovalAsk::Read { path: want }]
+    );
+    let _ = events(&mut rx);
 }

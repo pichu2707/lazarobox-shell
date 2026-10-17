@@ -19,7 +19,7 @@
 
 use std::{
     ffi::OsString,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -36,7 +36,7 @@ use crate::{
             approval::{ApprovalAsk, ask_for},
             engine::{CallId, Decision, StreamEvent, ToolStatus},
         },
-        tools::{Call, Locality, command, summary::clip},
+        tools::{Call, Locality, command, paths::display_target, summary::clip},
     },
     runtime::mcp::{Dispatch, Outcome},
 };
@@ -48,6 +48,11 @@ pub const NOT_APPROVED: &str = "the user did not approve it";
 /// Where a call that needs the user's answer waits for it. The future is
 /// dropped when the call is cancelled or its chat closes; a timer never
 /// answers `Sent`.
+///
+/// `ask` MUST register the wait synchronously, before it returns the future:
+/// the host asks before it announces the `ToolCall`, and a decision may be
+/// delivered the instant the announcement is seen. A wait registered only
+/// when the future is first polled could miss it.
 pub trait Approver: Send + Sync {
     fn ask(&self, id: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Decision>;
 }
@@ -145,37 +150,37 @@ impl Dispatch for TurnDispatch {
 /// What a result row says when the call was dropped before its answer.
 const CANCELLED: &str = "cancelled";
 
-/// The one `ToolResult` a call owes the chat. Dropping it unanswered (the
-/// call was cancelled, or its chat closed) sends `denied` without waiting, so
-/// a `ToolCall` is never left without its result.
+/// The one `ToolResult` a call owes the chat, with the channel slot for it
+/// already reserved. The slot is taken before the `ToolCall` is announced, so
+/// handing the result over never waits and never fails for lack of room: not
+/// when the call finishes, and not when it is dropped (cancelled, or its chat
+/// closed), which sends `denied` from the drop. A `ToolCall` is never left
+/// without its result.
 struct Owed {
     id: CallId,
-    events: mpsc::Sender<StreamEvent>,
-    answered: bool,
+    slot: Option<mpsc::OwnedPermit<StreamEvent>>,
 }
 
 impl Owed {
-    async fn answer(mut self, status: ToolStatus, summary: &str) {
-        self.answered = true;
-        let result = StreamEvent::ToolResult {
-            id: self.id,
-            status,
-            summary: summary.to_owned(),
-        };
+    fn answer(mut self, status: ToolStatus, summary: &str) {
+        self.send(status, summary.to_owned());
+    }
+
+    fn send(&mut self, status: ToolStatus, summary: String) {
         // A closed channel means the turn is gone: nobody is left to tell.
-        let _ = self.events.send(result).await;
+        if let Some(slot) = self.slot.take() {
+            slot.send(StreamEvent::ToolResult {
+                id: self.id,
+                status,
+                summary,
+            });
+        }
     }
 }
 
 impl Drop for Owed {
     fn drop(&mut self) {
-        if !self.answered {
-            let _ = self.events.try_send(StreamEvent::ToolResult {
-                id: self.id,
-                status: ToolStatus::Denied,
-                summary: CANCELLED.to_owned(),
-            });
-        }
+        self.send(ToolStatus::Denied, CANCELLED.to_owned());
     }
 }
 
@@ -186,10 +191,14 @@ fn ended(status: ToolStatus, text: String, summary: &str) -> (Outcome, ToolStatu
     (Outcome { text, is_error }, status, clip(summary))
 }
 
+/// What a call is told when the path it reads cannot be shown to the user
+/// exactly as it would be opened.
+const UNSHOWABLE: &str = "path cannot be shown safely";
+
 async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outcome {
     let id = CallId(host.next.fetch_add(1, Ordering::Relaxed));
     // The command is the sanitizer's, so the ask shows what would be typed.
-    let checked = match &call {
+    let mut checked = match &call {
         Call::RunInPane { command } => command::validate(command)
             .map(|valid| Call::RunInPane {
                 command: valid.as_str().to_owned(),
@@ -197,33 +206,54 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             .map_err(|refusal| refusal.reason()),
         other => Ok(other.clone()),
     };
-    let ask = checked
-        .as_ref()
-        .ok()
-        .and_then(|call| ask_for(call, scope.locality));
+    let mut ask = None;
+    if let Ok(valid) = &checked {
+        match (valid, scope.locality) {
+            // A cloud read asks with the path as it will be opened: resolved,
+            // and only when the display shows it unchanged.
+            (Call::ReadFile { path }, Locality::Cloud) => {
+                let home = host.home.as_deref().map(Path::new);
+                match home.and_then(|home| display_target(home, &scope.origin, path)) {
+                    Some(shown) => ask = ask_for(&Call::ReadFile { path: shown }, Locality::Cloud),
+                    None => checked = Err(UNSHOWABLE),
+                }
+            }
+            (valid, locality) => ask = ask_for(valid, locality),
+        }
+    }
+    // Asked before the announcement: `Approver::ask` registers the wait at
+    // once, so an answer that comes the instant the `ToolCall` is seen (D18
+    // auto-type) finds it.
+    let pending = ask.as_ref().map(|ask| scope.approver.ask(id, ask));
+    let gone = || Outcome {
+        text: CANCELLED.to_owned(),
+        is_error: true,
+    };
+    // The slot for the result comes first: waiting for it happens before
+    // anything is announced.
+    let Ok(slot) = scope.events.clone().reserve_owned().await else {
+        return gone();
+    };
     let announce = StreamEvent::ToolCall {
         id,
         name: call.name().to_owned(),
         summary: clip(call.argument()),
-        approval: ask.clone().map(Box::new),
+        approval: ask.map(Box::new),
     };
     if scope.events.send(announce).await.is_err() {
-        return Outcome {
-            text: CANCELLED.to_owned(),
-            is_error: true,
-        };
+        return gone();
     }
+    // Only an announced call owes a result.
     let owed = Owed {
         id,
-        events: scope.events.clone(),
-        answered: false,
+        slot: Some(slot),
     };
 
     let (outcome, status, summary) = match checked {
         Err(reason) => ended(ToolStatus::Error, reason.to_owned(), reason),
         Ok(call) => {
-            let decision = match &ask {
-                Some(ask) => scope.approver.ask(id, ask).await,
+            let decision = match pending {
+                Some(pending) => pending.await,
                 None => Decision::Sent,
             };
             match (decision, call) {
@@ -258,7 +288,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             }
         }
     };
-    owed.answer(status, &summary).await;
+    owed.answer(status, &summary);
     outcome
 }
 
