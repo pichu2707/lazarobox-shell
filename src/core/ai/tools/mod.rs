@@ -3,6 +3,7 @@
 
 pub mod command;
 pub mod label;
+pub mod mcp;
 pub mod paths;
 
 use serde_json::{Value, json};
@@ -131,8 +132,9 @@ pub const MAX_ARG_BYTES: usize = 4096;
 /// [`MAX_ARG_BYTES`] long.
 ///
 /// Duplicate JSON keys cannot be seen here: `serde_json::Value` has already
-/// collapsed them to the last one. They MUST be rejected at the raw wire layer
-/// (slices 2b and 2e), before the arguments become a `Value`.
+/// collapsed them to the last one. They are rejected at the raw wire layer by
+/// [`mcp::Frame::parse`] (slice 2c) on the MCP path; any other entry point
+/// (slice 2e) MUST do the same before the arguments become a `Value`.
 pub fn parse_call(name: &str, args: &Value) -> Result<Call, ToolError> {
     let (_, arg, ..) = BUILT_INS
         .iter()
