@@ -25,9 +25,8 @@
 //!   server or a missing one does not. Unlike claude's, the text-only mode
 //!   stays an allowlist too (every unknown kind ends the turn), because the
 //!   shell is the tool a missed flag would leave open. The turn then ends with
-//!   an error and the runtime stops the process. An
-//!   allowlist, so nothing unknown runs unseen; the jail is what actually
-//!   stops the tool.
+//!   an error and the runtime stops the process. The allowlist means nothing
+//!   unknown runs unseen; the jail is what actually stops the tool.
 //! - a failure that says the model is not supported for the login gets a hint
 //!   to pick another model.
 //! - everything else, including any line that does not start with `{`, is
