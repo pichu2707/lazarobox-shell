@@ -5,8 +5,11 @@
 //! The model catalogs behind these rows are informational and possibly
 //! stale (see `catalog`); nothing here downloads a model.
 
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
 use super::catalog::{cli_models, curated, same_model};
 use super::config::{AiConfig, Assignment, Task};
+use super::parse::sanitize;
 use super::sanitize::is_format;
 use super::{CATALOG, Detection, Kind, Status, status_text};
 
@@ -45,6 +48,13 @@ pub enum PickKey {
     /// A non-selectable explanation row (`no models detected`,
     /// `engine not detected`).
     Info,
+    /// Row `row` of a wrapped note that can be copied but never chosen. Every
+    /// row of the note carries its whole, sanitized text; `row` keeps the
+    /// keys distinct, so a cursor on one row stays there after a refresh.
+    Note {
+        row: usize,
+        text: String,
+    },
 }
 
 /// The mark drawn after a row label.
@@ -57,6 +67,9 @@ pub enum Mark {
     DownloadRequired,
     /// No detection result yet (`checking…`).
     Checking,
+    /// A CLI model the account's own list does not contain. A warning only:
+    /// the list may be stale, so the row stays selectable.
+    NotInList,
     /// An engine status text, such as `available · 2 models`.
     Status(String),
 }
@@ -154,6 +167,18 @@ pub fn engine_rows(
     rows
 }
 
+/// The `(label, value)` models the account lists for a CLI engine; empty
+/// when the engine is not detected or has no listing.
+fn account_models<'a>(engine: &str, detection: Option<&'a Detection>) -> &'a [(String, String)] {
+    detection
+        .and_then(|d| {
+            d.engines
+                .iter()
+                .find(|s| s.id == engine && s.status == Status::Available)
+        })
+        .map_or(&[], |s| s.model_labels.as_slice())
+}
+
 /// The Models level of a picker for `engine`.
 pub fn model_rows(
     engine: &str,
@@ -201,17 +226,58 @@ pub fn model_rows(
         .any(|e| e.id == engine && matches!(e.kind, Kind::Cli));
 
     if is_cli {
-        let catalog = cli_models(engine);
+        // The static entries, then the models the account lists (codex).
+        let mut catalog: Vec<(String, String)> = cli_models(engine)
+            .iter()
+            .map(|(label, value)| ((*label).to_owned(), (*value).to_owned()))
+            .collect();
+        let account = account_models(engine, detection);
+        for (label, value) in account {
+            if !catalog.iter().any(|(_, v)| v == value) {
+                catalog.push((label.clone(), value.clone()));
+            }
+        }
         let mut rows: Vec<PickRow> = catalog
             .iter()
             .map(|(label, value)| labeled(label, value, Mark::Plain, true))
             .collect();
+        // Only a non-empty account list can say a model is missing from it.
+        let missing_mark = if account.is_empty() {
+            Mark::Plain
+        } else {
+            Mark::NotInList
+        };
         rows.extend(
             assigned
                 .iter()
                 .filter(|m| !catalog.iter().any(|(_, value)| value == *m))
-                .map(|m| row(m, Mark::Plain, true)),
+                .map(|m| row(m, missing_mark.clone(), true)),
         );
+        // Why the account's list is missing, as a line that cannot be picked.
+        let why = detection.and_then(|d| {
+            d.engines
+                .iter()
+                .find(|s| s.id == engine && s.status == Status::Available)
+                .and_then(|s| s.diagnostics.models.as_deref())
+        });
+        if let Some(why) = why {
+            let full = format!("model list unavailable: {}", sanitize(why));
+            rows.extend(
+                wrap_note(&full)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(row, line)| PickRow {
+                        key: PickKey::Note {
+                            row,
+                            text: full.clone(),
+                        },
+                        label: line,
+                        mark: Mark::Plain,
+                        enabled: false,
+                        current: false,
+                    }),
+            );
+        }
         rows.push(PickRow {
             key: PickKey::Custom,
             label: "custom…".to_owned(),
@@ -272,6 +338,68 @@ pub fn model_rows(
     rows
 }
 
+/// Cells a wrapped note row may use: the AI popup is 62 wide, 60 inside, and
+/// a row has a leading space.
+pub const NOTE_WIDTH: usize = 58;
+
+/// Most rows a note takes; a longer text is clipped on the last one.
+pub const NOTE_ROWS: usize = 4;
+
+/// `text` wrapped on spaces to [`NOTE_WIDTH`], a word longer than a row
+/// broken, and at most [`NOTE_ROWS`] rows, the last one ending in `…` when
+/// text was left out. The full text stays available to copy.
+pub fn wrap_note(text: &str) -> Vec<String> {
+    let width = |s: &str| UnicodeWidthStr::width(s);
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        // A word wider than a row is cut at the last character that fits.
+        let mut rest = word;
+        while width(rest) > NOTE_WIDTH {
+            let cut = fit_chars(rest, NOTE_WIDTH);
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+            }
+            lines.push(rest[..cut].to_owned());
+            rest = &rest[cut..];
+        }
+        if !line.is_empty() && width(&line) + 1 + width(rest) > NOTE_WIDTH {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(rest);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    if lines.len() > NOTE_ROWS {
+        lines.truncate(NOTE_ROWS);
+        let last = &lines[NOTE_ROWS - 1];
+        let cut = fit_chars(last, NOTE_WIDTH - 1);
+        lines[NOTE_ROWS - 1] = format!("{}…", last[..cut].trim_end());
+    }
+    lines
+}
+
+/// Byte length of the longest prefix of `s` within `room` display cells, at
+/// least one character so a wide one cannot stall the caller.
+fn fit_chars(s: &str, room: usize) -> usize {
+    let mut used = 0;
+    for (at, c) in s.char_indices() {
+        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > room && at > 0 {
+            return at;
+        }
+        used += w;
+    }
+    s.len()
+}
+
+/// The warning for a CLI model the account's own list does not contain.
+pub const NOT_IN_LIST: &str = "not in your account's list";
+
 /// The label of a task row with its detection marks. An assigned engine
 /// that is not available gets ` (not detected)` and no model mark; a model
 /// of an available server that is not detected gets ` · download required`.
@@ -303,12 +431,31 @@ pub fn task_label(config: &AiConfig, task: Task, detection: Option<&Detection>) 
     let is_server = CATALOG
         .iter()
         .any(|e| e.id == id && matches!(e.kind, Kind::Server { .. }));
+    let account = state.model_labels.as_slice();
     match model {
+        Some(model)
+            if !account.is_empty()
+                && model != "default"
+                && !account.iter().any(|(_, value)| value == model) =>
+        {
+            format!("{plain} · {NOT_IN_LIST}")
+        }
         Some(model) if is_server && !state.models.iter().any(|m| same_model(id, m, model)) => {
             format!("{plain} · download required")
         }
         _ => plain,
     }
+}
+
+/// Why an available CLI engine runs without the jail, sanitized.
+fn jail_reason(detection: Option<&Detection>, id: &str) -> Option<String> {
+    detection?
+        .engines
+        .iter()
+        .find(|s| s.id == id && s.status == Status::Available)
+        .and_then(|s| s.diagnostics.jail.as_deref())
+        .map(sanitize)
+        .filter(|why| !why.is_empty())
 }
 
 /// Rows visible at once in the picker body.
@@ -352,6 +499,9 @@ pub enum Outcome {
     Close,
     /// Run a new detection.
     Refresh,
+    /// Put this text on the clipboard. The picker and the draft stay as they
+    /// are.
+    Copy(String),
 }
 
 /// The picker state: where it is and where the cursor is. Rows are never
@@ -430,6 +580,11 @@ impl Picker {
     /// Choose the row under the cursor.
     pub fn enter(&mut self, draft: &AiConfig, detection: Option<&Detection>) -> Outcome {
         let rows = self.rows(draft, detection);
+        if let Some(PickKey::Note { text, .. }) = rows.get(self.cursor).map(|r| &r.key)
+            && !matches!(self.level, Level::Custom { .. })
+        {
+            return Outcome::Copy(text.clone());
+        }
         match self.level.clone() {
             Level::Engines => {
                 let Some(row) = rows.get(self.cursor).filter(|r| r.enabled) else {
@@ -473,6 +628,23 @@ impl Picker {
                 }),
                 None => Outcome::Stay,
             },
+        }
+    }
+
+    /// `y`: copy what the row under the cursor explains. A note row gives its
+    /// whole text; an engine row gives its no-jail reason, if it has one.
+    /// Anything else, and the custom field, copies nothing.
+    pub fn copy(&self, draft: &AiConfig, detection: Option<&Detection>) -> Outcome {
+        if matches!(self.level, Level::Custom { .. }) {
+            return Outcome::Stay;
+        }
+        let rows = self.rows(draft, detection);
+        match rows.get(self.cursor).map(|r| &r.key) {
+            Some(PickKey::Note { text, .. }) => Outcome::Copy(text.clone()),
+            Some(PickKey::Engine(id)) if matches!(self.level, Level::Engines) => {
+                jail_reason(detection, id).map_or(Outcome::Stay, Outcome::Copy)
+            }
+            _ => Outcome::Stay,
         }
     }
 
@@ -606,6 +778,8 @@ mod custom_tests;
 #[cfg(test)]
 mod machine_tests;
 #[cfg(test)]
+mod note_tests;
+#[cfg(test)]
 mod rekey_tests;
 #[cfg(test)]
 mod viewport_tests;
@@ -621,6 +795,8 @@ mod tests {
             status,
             models: models.iter().map(|m| m.to_string()).collect(),
             version: None,
+            model_labels: Vec::new(),
+            diagnostics: Default::default(),
         }
     }
 
@@ -737,6 +913,179 @@ mod tests {
         assert_eq!(label(Task::Chat), "claude › not-in-any-catalog");
         assert_eq!(label(Task::Review), "ollama");
         assert_eq!(label(Task::Summarize), "vllm (not detected)");
+    }
+
+    // --- codex account list ----------------------------------------------
+
+    const NOT_IN_LIST: &str = "not in your account's list";
+
+    fn codex_with(models: &[(&str, &str)]) -> Detection {
+        let mut codex = state("codex", Status::Available, &[]);
+        codex.model_labels = models
+            .iter()
+            .map(|(l, v)| (l.to_string(), v.to_string()))
+            .collect();
+        detection(vec![codex])
+    }
+
+    fn pick(label: &str, value: &str, mark: Mark, current: bool) -> PickRow {
+        row(PickKey::Model(value.to_owned()), label, mark, true, current)
+    }
+
+    fn custom_row() -> PickRow {
+        row(PickKey::Custom, "custom…", Mark::Plain, true, false)
+    }
+
+    #[test]
+    fn codex_rows_are_default_then_the_account_models_then_custom() {
+        let d = codex_with(&[("GPT-6.1-Sol", "gpt-6.1-sol"), ("GPT-6-Luna", "gpt-6-luna")]);
+        assert_eq!(
+            model_rows(
+                "codex",
+                Target::Task(Task::Code),
+                &AiConfig::default(),
+                Some(&d)
+            ),
+            [
+                pick("default (CLI picks)", "default", Mark::Plain, false),
+                pick("GPT-6.1-Sol", "gpt-6.1-sol", Mark::Plain, false),
+                pick("GPT-6-Luna", "gpt-6-luna", Mark::Plain, false),
+                custom_row(),
+            ]
+        );
+    }
+
+    fn codex_failed(why: &str) -> Detection {
+        let mut codex = state("codex", Status::Available, &["default"]);
+        codex.diagnostics.models = Some(why.to_owned());
+        detection(vec![codex])
+    }
+
+    #[test]
+    fn a_failed_codex_listing_adds_a_note_row_that_cannot_be_picked() {
+        let d = codex_failed("codex exited 1: not logged in");
+        assert_eq!(
+            model_rows(
+                "codex",
+                Target::Task(Task::Code),
+                &AiConfig::default(),
+                Some(&d)
+            ),
+            [
+                pick("default (CLI picks)", "default", Mark::Plain, false),
+                row(
+                    PickKey::Note {
+                        row: 0,
+                        text: "model list unavailable: codex exited 1: not logged in".to_owned()
+                    },
+                    "model list unavailable: codex exited 1: not logged in",
+                    Mark::Plain,
+                    false,
+                    false
+                ),
+                custom_row(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_good_listing_has_no_note_row() {
+        let d = codex_with(&[("GPT-6.1-Sol", "gpt-6.1-sol")]);
+        let rows = model_rows("codex", Target::All, &AiConfig::default(), Some(&d));
+        assert!(rows.iter().all(|r| !matches!(r.key, PickKey::Note { .. })));
+    }
+
+    #[test]
+    fn a_listing_note_is_one_clean_line() {
+        let d = codex_failed("a\u{1b}[31mb\nc\u{202e}d");
+        let rows = model_rows("codex", Target::All, &AiConfig::default(), Some(&d));
+        let note = rows
+            .iter()
+            .find(|r| matches!(r.key, PickKey::Note { .. }))
+            .unwrap();
+        assert_eq!(note.label, "model list unavailable: abcd");
+    }
+
+    #[test]
+    fn a_listed_codex_model_is_current_by_its_slug() {
+        let d = codex_with(&[("GPT-6.1-Sol", "gpt-6.1-sol")]);
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Code, "codex", Some("gpt-6.1-sol"));
+        assert_eq!(
+            model_rows("codex", Target::Task(Task::Code), &draft, Some(&d)),
+            [
+                pick("default (CLI picks)", "default", Mark::Plain, false),
+                pick("GPT-6.1-Sol", "gpt-6.1-sol", Mark::Plain, true),
+                custom_row(),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_assigned_codex_model_missing_from_the_list_is_warned_but_selectable() {
+        let d = codex_with(&[("GPT-6.1-Sol", "gpt-6.1-sol")]);
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Code, "codex", Some("gpt-5.4"));
+        assert_eq!(
+            model_rows("codex", Target::Task(Task::Code), &draft, Some(&d)),
+            [
+                pick("default (CLI picks)", "default", Mark::Plain, false),
+                pick("GPT-6.1-Sol", "gpt-6.1-sol", Mark::Plain, false),
+                pick("gpt-5.4", "gpt-5.4", Mark::NotInList, true),
+                custom_row(),
+            ]
+        );
+    }
+
+    #[test]
+    fn no_warning_when_the_codex_list_is_empty_or_the_model_is_default() {
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Code, "codex", Some("gpt-5.4"));
+        assign(&mut draft, Task::Chat, "codex", Some("default"));
+        for d in [codex_with(&[]), detection(vec![])] {
+            let rows = model_rows("codex", Target::Task(Task::Code), &draft, Some(&d));
+            assert!(rows.iter().all(|r| r.mark == Mark::Plain), "{rows:?}");
+        }
+        let mut only_default = AiConfig::default();
+        assign(&mut only_default, Task::Chat, "codex", Some("default"));
+        let d = codex_with(&[("GPT-6.1-Sol", "gpt-6.1-sol")]);
+        let rows = model_rows("codex", Target::Task(Task::Chat), &only_default, Some(&d));
+        assert!(!rows.iter().any(|r| r.mark == Mark::NotInList));
+    }
+
+    #[test]
+    fn other_cli_engines_never_get_the_account_warning() {
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Code, "claude", Some("whatever"));
+        let d = detection(vec![state("claude", Status::Available, &[])]);
+        let rows = model_rows("claude", Target::Task(Task::Code), &draft, Some(&d));
+        assert!(rows.iter().all(|r| r.mark == Mark::Plain));
+    }
+
+    #[test]
+    fn the_task_label_warns_for_a_codex_model_outside_the_account_list() {
+        let d = codex_with(&[("GPT-6.1-Sol", "gpt-6.1-sol")]);
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Code, "codex", Some("gpt-5.4"));
+        assign(&mut draft, Task::Chat, "codex", Some("gpt-6.1-sol"));
+        assign(&mut draft, Task::Review, "codex", Some("default"));
+        assert_eq!(
+            task_label(&draft, Task::Code, Some(&d)),
+            format!("codex › gpt-5.4 · {NOT_IN_LIST}")
+        );
+        assert_eq!(
+            task_label(&draft, Task::Chat, Some(&d)),
+            "codex › gpt-6.1-sol"
+        );
+        assert_eq!(
+            task_label(&draft, Task::Review, Some(&d)),
+            "codex › default"
+        );
+        let none = codex_with(&[]);
+        assert_eq!(
+            task_label(&draft, Task::Code, Some(&none)),
+            "codex › gpt-5.4"
+        );
     }
 
     // --- model_rows ------------------------------------------------------
@@ -897,7 +1246,7 @@ mod tests {
         );
         assert_eq!(
             model_rows("codex", Target::Task(Task::Code), &draft, Some(&d)),
-            [model("default", Mark::Plain, true, false), custom]
+            [labeled("default (CLI picks)", "default"), custom]
         );
     }
 
@@ -969,7 +1318,7 @@ mod tests {
         assert_eq!(
             model_rows("codex", Target::Task(Task::Code), &draft, Some(&d)),
             [
-                model("default", Mark::Plain, true, false),
+                pick("default (CLI picks)", "default", Mark::Plain, false),
                 model("gem-exp", Mark::Plain, true, true),
                 row(PickKey::Custom, "custom…", Mark::Plain, true, false),
             ]
@@ -1017,7 +1366,7 @@ mod tests {
                     false
                 ),
                 engine("ollama", "available · 2 models", false),
-                engine("claude", "available", false),
+                engine("claude", "available · version unknown", false),
                 engine("codex", "(not detected)", true),
             ]
         );
@@ -1068,7 +1417,7 @@ mod tests {
                     true,
                     true
                 ),
-                engine("claude", "available", false),
+                engine("claude", "available · version unknown", false),
                 engine("vllm", "(not detected)", false),
             ]
         );

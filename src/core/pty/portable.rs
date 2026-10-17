@@ -176,8 +176,12 @@ pub fn spawn_portable(spec: &SpawnSpec, sink: PtySink) -> io::Result<Box<dyn Pty
         .map_err(io::Error::other)?;
 
     let mut cmd = CommandBuilder::new(&spec.program);
+    cmd.args(&spec.args);
     cmd.cwd(&spec.cwd);
     for (key, value) in &spec.env {
+        cmd.env(key, value);
+    }
+    for (key, value) in &spec.env_os {
         cmd.env(key, value);
     }
     let child = pair.slave.spawn_command(cmd).map_err(io::Error::other)?;
@@ -195,11 +199,14 @@ pub fn spawn_portable(spec: &SpawnSpec, sink: PtySink) -> io::Result<Box<dyn Pty
     // Dropped when the reader is done, which tells the waiter it may report.
     let (eof_tx, eof_rx) = mpsc::channel::<()>();
     let reader_events = Arc::clone(&events);
+    let report_status = spec.report_status;
     thread::spawn(move || {
         let _eof = eof_tx;
         let events = Arc::clone(&reader_events);
         let mut sink: PtySink = Box::new(move |event| events.send(event));
-        if pump(&mut reader, &mut sink) {
+        // A pane that reports the exit status leaves `Exited` to the waiter,
+        // which sends the status first; the reader would win the race.
+        if pump(&mut reader, &mut sink) && !report_status {
             reader_events.exited();
         }
     });
@@ -221,10 +228,15 @@ pub fn spawn_portable(spec: &SpawnSpec, sink: PtySink) -> io::Result<Box<dyn Pty
     let (reaped_tx, reaped) = mpsc::channel::<()>();
     thread::spawn(move || {
         let mut child = child;
-        let _ = child.wait();
+        let status = child.wait();
         let _ = reaped_tx.send(());
         // Let the reader flush what the child wrote before it died.
         let _ = eof_rx.recv_timeout(DRAIN_GRACE);
+        // After the output, before `Exited`: the app writes its final line
+        // below what the child printed.
+        if let (true, Ok(status)) = (report_status, status) {
+            events.send(PtyEvent::Status(status.exit_code()));
+        }
         events.exited();
     });
 
@@ -313,6 +325,61 @@ mod tests {
         pty.resize(size(30, 100)).unwrap();
         pty.write(b"stty size\n".to_vec());
         assert!(wait_for(&rx, "30 100").contains("30 100"));
+    }
+
+    /// Runs `/bin/sh -c script` with the exit status reported; returns the
+    /// events seen until `Exited`.
+    fn run_script(script: &str, report: bool) -> Vec<PtyEvent> {
+        let (tx, rx) = mpsc::channel();
+        let mut spec = SpawnSpec::new(Some("/bin/sh"), "/".into(), size(24, 80));
+        spec.args = vec!["-c".into(), script.into()];
+        spec.report_status = report;
+        let sink: PtySink = Box::new(move |event| tx.send(event).is_ok());
+        let _pty = spawn_portable(&spec, sink).expect("spawn");
+        let deadline = Instant::now() + TIMEOUT;
+        let mut events = Vec::new();
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(PtyEvent::Exited) => {
+                    events.push(PtyEvent::Exited);
+                    break;
+                }
+                Ok(event) => events.push(event),
+                Err(_) => {}
+            }
+        }
+        events
+    }
+
+    // The program and its arguments run directly, with no shell parsing the
+    // arguments of a pane that is not a shell.
+    #[test]
+    fn a_program_runs_with_its_arguments() {
+        let events = run_script("echo ARGS-OK", false);
+        let out: String = events
+            .iter()
+            .filter_map(|e| match e {
+                PtyEvent::Output(b) => Some(String::from_utf8_lossy(b).into_owned()),
+                _ => None,
+            })
+            .collect();
+        assert!(out.contains("ARGS-OK"), "{out:?}");
+    }
+
+    #[test]
+    fn the_exit_status_is_reported_before_exited_when_asked() {
+        for (script, code) in [("exit 0", 0), ("exit 3", 3)] {
+            let events = run_script(script, true);
+            let n = events.len();
+            assert_eq!(events[n - 1], PtyEvent::Exited, "{script}");
+            assert_eq!(events[n - 2], PtyEvent::Status(code), "{script}");
+        }
+    }
+
+    #[test]
+    fn no_status_is_reported_unless_asked() {
+        let events = run_script("exit 3", false);
+        assert!(!events.iter().any(|e| matches!(e, PtyEvent::Status(_))));
     }
 
     // Spec: shell exits -> Exited event.

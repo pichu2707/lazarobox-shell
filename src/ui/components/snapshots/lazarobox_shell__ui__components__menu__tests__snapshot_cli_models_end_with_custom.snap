@@ -20,5 +20,7 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 │                                                            │
 │                                                            │
 │                                                            │
+│                                                            │
+│                                                            │
 │ j/k move · Enter choose · r refresh · Esc back · s save    │
 └────────────────────────────────────────────────────────────┘

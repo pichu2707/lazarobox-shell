@@ -1,6 +1,6 @@
 ---
 source: src/ui/mod.rs
-expression: "(0..22).map(|y|\nrow(&buf, y).trim_end().to_string()).collect::<Vec<_>>().join(\"\\n\")"
+expression: "(0..24).map(|y|\nrow(&buf, y).trim_end().to_string()).collect::<Vec<_>>().join(\"\\n\")"
 ---
  1
 h┌ Menu ──────────────────────────────────────────────────────┐
@@ -8,6 +8,9 @@ h┌ Menu ───────────────────────�
  │ Statusline position                                 bottom │
  │ Tab bar position                                       top │
  │ Mouse                                                   on │
+ │ Notify                                                 off │
+ │ Sound                                                   on │
+ │ Updates                                             0.15.3 │
  │ AI                                                         │
  │ Set all tasks                                    (not set) │
  │ general                                          (not set) │
@@ -18,7 +21,6 @@ h┌ Menu ───────────────────────�
  │ Profile                                         programmer │
  │ Context                                                 on │
  │ Memory                                                 off │
- │ Notify                                                 off │
  │ Tools                                                   on │
  │                                                            │
  │ j/k move · h/l change · s save · Esc cancel                │

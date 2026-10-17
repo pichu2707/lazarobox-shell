@@ -59,9 +59,7 @@ fn both_picker_levels_and_the_custom_field_have_their_hint() {
     press(&mut m, 'j');
     send(&mut m, key(KeyCode::Enter));
     assert_eq!(hint(&m), PICKER, "level 2");
-    while cursor_label(&m) != "custom…" {
-        press(&mut m, 'j');
-    }
+    goto(&mut m, "custom…");
     send(&mut m, key(KeyCode::Enter));
     assert_eq!(hint(&m), CUSTOM);
     send(&mut m, key(KeyCode::Esc));
@@ -224,4 +222,119 @@ fn a_server_before_the_first_result_reads_checking() {
     send(&mut m, key(KeyCode::Enter));
     assert_eq!(cursor_label(&m), "old:7b");
     assert_eq!(hint(&m), not_selectable("checking…"));
+}
+
+fn codex_listing_found() -> Detection {
+    let mut codex = engine("codex", Status::Available, &["default"], None);
+    codex.model_labels = vec![("GPT-6.1-Sol".to_owned(), "gpt-6.1-sol".to_owned())];
+    super::ai_tests::detection(&[codex])
+}
+
+// Spec: a codex model outside the account's list is warned, not blocked.
+#[test]
+fn the_cursor_on_a_codex_model_outside_the_account_list_shows_the_warning() {
+    let mut m = assigned(
+        &[(Task::Code, "codex", "gpt-5.4")],
+        Some(codex_listing_found()),
+    );
+    engine_at_level_two(&mut m, "codex");
+    while cursor_label(&m) != "gpt-5.4" {
+        press(&mut m, 'j');
+    }
+    assert_eq!(
+        hint(&m),
+        "not in your account's list · kept as typed, the list may be stale"
+    );
+    while cursor_label(&m) != "GPT-6.1-Sol" {
+        press(&mut m, 'k');
+    }
+    assert_eq!(hint(&m), PICKER);
+}
+
+#[test]
+fn no_warning_hint_when_the_codex_listing_failed() {
+    let found =
+        super::ai_tests::detection(&[engine("codex", Status::Available, &["default"], None)]);
+    let mut m = assigned(&[(Task::Code, "codex", "gpt-5.4")], Some(found));
+    engine_at_level_two(&mut m, "codex");
+    while cursor_label(&m) != "gpt-5.4" {
+        press(&mut m, 'j');
+    }
+    assert_eq!(hint(&m), PICKER);
+}
+
+// Spec: unsaved changes are visible while the draft differs from the saved config.
+#[test]
+fn an_edited_draft_shows_the_unsaved_hint() {
+    let mut m = assigned(
+        &[(Task::Code, "codex", "default")],
+        Some(codex_listing_found()),
+    );
+    assert_eq!(hint(&m), SETTINGS);
+    engine_at_level_two(&mut m, "codex");
+    assert_eq!(hint(&m), PICKER, "nothing changed yet");
+    press(&mut m, 'j');
+    send(&mut m, key(KeyCode::Enter));
+    let unsaved = hint(&m);
+    assert!(
+        unsaved.starts_with("unsaved changes · s to save · "),
+        "{unsaved}"
+    );
+    assert!(unsaved.contains("Esc"), "{unsaved}");
+}
+
+/// Moves the cursor to the row called `label`, or fails after one lap.
+fn goto(m: &mut MenuState, label: &str) {
+    for _ in 0..64 {
+        if cursor_label(m) == label {
+            return;
+        }
+        press(m, 'j');
+    }
+    panic!("no row {label}");
+}
+
+// Spec: precedence. The unsaved hint is deliberately lower than an error, the
+// disabled-row text, the not-in-list warning and the custom field hint: those
+// say something about the row under the cursor, the unsaved hint is general.
+#[test]
+fn higher_priority_footers_mask_the_unsaved_hint() {
+    let mut m = assigned(
+        &[(Task::Code, "codex", "default")],
+        Some(codex_listing_found()),
+    );
+    engine_at_level_two(&mut m, "codex");
+    press(&mut m, 'j');
+    send(&mut m, key(KeyCode::Enter));
+    assert!(hint(&m).starts_with("unsaved changes"), "draft is dirty");
+
+    // The custom field.
+    open(&mut m, "code");
+    send(&mut m, key(KeyCode::Enter));
+    while cursor_label(&m) != "custom…" {
+        press(&mut m, 'j');
+    }
+    send(&mut m, key(KeyCode::Enter));
+    assert_eq!(hint(&m), CUSTOM);
+    send(&mut m, key(KeyCode::Esc));
+
+    // The not-in-list warning wins over the dirty draft too.
+    let mut warned = assigned(
+        &[(Task::Code, "codex", "gpt-5.4")],
+        Some(codex_listing_found()),
+    );
+    open(&mut warned, "chat");
+    goto(&mut warned, "codex");
+    send(&mut warned, key(KeyCode::Enter));
+    press(&mut warned, 'j');
+    send(&mut warned, key(KeyCode::Enter));
+    assert!(hint(&warned).starts_with("unsaved changes"));
+    open(&mut warned, "code");
+    send(&mut warned, key(KeyCode::Enter));
+    goto(&mut warned, "gpt-5.4");
+    assert!(hint(&warned).starts_with("not in your account's list"));
+
+    // An error.
+    m.set_error("save failed: disk full".to_owned());
+    assert_eq!(m.footer(), Footer::Error("save failed: disk full"));
 }

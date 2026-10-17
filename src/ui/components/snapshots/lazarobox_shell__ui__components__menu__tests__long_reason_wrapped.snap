@@ -1,0 +1,26 @@
+---
+source: src/ui/components/menu.rs
+expression: shown
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Model for general (codex)                                  │
+│ default (CLI picks)                                        │
+│ model list unavailable: jail: no node found to run the CLI │
+│ script; install it next to the CLI or on PATH (looked in   │
+│ /usr/local/bin)                                            │
+│ custom…                                                    │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│ j/k move · Enter choose · r refresh · Esc back · s save    │
+└────────────────────────────────────────────────────────────┘

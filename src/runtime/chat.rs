@@ -19,6 +19,7 @@ use futures::{
 use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
 
 mod cli;
+pub(crate) use cli::{jail_note, run_listing, trusted_real_path};
 
 use super::loopback::post_stream;
 use crate::core::{
@@ -32,7 +33,6 @@ use crate::core::{
             gemini::GeminiDecoder,
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
-        jail::JailSupport,
         sanitize::{StreamSanitizer, Utf8Stream, clean},
     },
     layout::PaneId,
@@ -256,20 +256,15 @@ impl Default for Pipe {
     }
 }
 
-/// The runner of the real engines: picks the adapter of the request's engine
-/// and runs what it builds. An engine without an adapter fails the turn at
-/// once, without connecting anywhere.
-pub fn adapter_runner(jail: JailSupport) -> Runner {
-    runner_with(None, CliEnv::from_env(jail))
-}
-
-/// `adapter_runner` with the port of server engines overridden, so tests can
+/// A runner with the port of server engines overridden, so tests can
 /// talk to a fake server on an ephemeral port. The host stays `127.0.0.1`.
 #[cfg(test)]
 pub(crate) fn adapter_runner_at(port: Option<u16>) -> Runner {
     runner_with(
         port,
-        CliEnv::from_env(JailSupport::Unavailable("not used by a server test")),
+        CliEnv::from_env(crate::core::ai::jail::JailSupport::Unavailable(
+            crate::core::ai::jail::JailOff::NotProbed,
+        )),
     )
 }
 

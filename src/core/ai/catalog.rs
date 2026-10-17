@@ -41,7 +41,10 @@ pub fn cli_models(engine: &str) -> &'static [(&'static str, &'static str)] {
             ("Flash 3.5", "gemini-3.5-flash"),
             ("Flash Lite 3.5", "gemini-3.5-flash-lite"),
         ],
-        "codex" | "opencode" => &[("default", "default")],
+        // codex's own list comes from the account at detection time and is
+        // appended by the picker; only `default` is static.
+        "codex" => &[("default (CLI picks)", "default")],
+        "opencode" => &[("default", "default")],
         _ => &[],
     }
 }
@@ -134,9 +137,8 @@ mod tests {
                 ("Flash Lite 3.5", "gemini-3.5-flash-lite"),
             ]
         );
-        for id in ["codex", "opencode"] {
-            assert_eq!(cli_models(id), [("default", "default")], "{id}");
-        }
+        assert_eq!(cli_models("codex"), [("default (CLI picks)", "default")]);
+        assert_eq!(cli_models("opencode"), [("default", "default")]);
         for id in ["ollama", "lmstudio", "llamacpp", "vllm", "nope"] {
             assert_eq!(cli_models(id), &[] as &[(&str, &str)], "{id}");
         }

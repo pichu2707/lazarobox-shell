@@ -20,5 +20,7 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 │                                                            │
 │                                                            │
 │                                                            │
+│                                                            │
+│                                                            │
 │ type a model · Enter ok · Ctrl+U clear · Esc back          │
 └────────────────────────────────────────────────────────────┘

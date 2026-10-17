@@ -9,6 +9,11 @@ impl PaneId {
     /// The first id handed out.
     pub const FIRST: PaneId = PaneId(1);
 
+    /// The id as a number, for a label ("pane 3"). Never reused.
+    pub fn number(self) -> u32 {
+        self.0
+    }
+
     /// An arbitrary id, for tests that need ids without building a layout.
     #[cfg(test)]
     pub const fn for_test(n: u32) -> PaneId {

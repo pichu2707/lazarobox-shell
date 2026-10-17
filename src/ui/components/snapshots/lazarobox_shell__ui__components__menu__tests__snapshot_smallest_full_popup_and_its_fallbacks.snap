@@ -7,6 +7,9 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &task))"
 │ Statusline position  │
 │ Tab bar position  t… │
 │ Mouse             on │
+│ Notify           off │
+│ Sound             on │
+│ Updates       0.15.3 │
 │ AI                   │
 │ Set all tasks  (mix… │
 │ general  ollama › m… │
@@ -17,7 +20,6 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &task))"
 │ Profile   programmer │
 │ Context           on │
 │ Memory           off │
-│ Notify           off │
 │ Tools             on │
 │ j/k move · h/l chang…│
 └──────────────────────┘

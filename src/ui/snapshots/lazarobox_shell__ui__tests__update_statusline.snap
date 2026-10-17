@@ -1,0 +1,5 @@
+---
+source: src/ui/mod.rs
+expression: line.trim_end()
+---
+ ◐ TERMINAL                                               sh · update 0.16.0

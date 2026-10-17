@@ -62,14 +62,14 @@ fn the_profile_row_follows_the_task_rows() {
         .filter(|i| matches!(i.kind, ItemKind::Profile))
         .count();
     assert_eq!(kinds, 1);
-    assert_eq!(AI_SECTION.items.len(), 11);
+    assert_eq!(AI_SECTION.items.len(), 10);
 }
 
 // Spec (config-menu): Task rows in order, Wrap.
 #[test]
 fn profile_sits_between_summarize_and_context_in_navigation() {
     let mut m = menu(None, None, Some(machine()));
-    for _ in 0..9 {
+    for _ in 0..12 {
         press(&mut m, 'j');
     }
     assert_eq!(selected_label(&m), "Profile", "after summarize");

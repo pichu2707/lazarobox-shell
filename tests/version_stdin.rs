@@ -50,7 +50,7 @@ async fn version_closes_stdin() {
     fs::write(&script, body).unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
     let guard = StdinPipe::install();
-    let answer = version(&script).await;
+    let answer = version(&script, std::ffi::OsStr::new("/usr/bin:/bin")).await;
     drop(guard);
     assert_eq!(answer, Some(b"null\n".to_vec()));
 }

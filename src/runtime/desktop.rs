@@ -161,7 +161,7 @@ fn write_atomically(dir: &Path, target: &Path, contents: &str) -> std::io::Resul
 /// Resolves `cmd` to an absolute executable: an absolute path is checked as
 /// is, a bare name is searched in the absolute entries of `path`. Anything
 /// else (a relative path) does not resolve.
-fn which(cmd: &str, path: Option<&OsStr>) -> Option<PathBuf> {
+pub(crate) fn which(cmd: &str, path: Option<&OsStr>) -> Option<PathBuf> {
     if cmd.contains('/') {
         let p = PathBuf::from(cmd);
         return (p.is_absolute() && is_executable(&p)).then_some(p);

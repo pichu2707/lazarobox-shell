@@ -177,6 +177,8 @@ fn first_answer_streaming() -> App {
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],
             version: None,
+            model_labels: Vec::new(),
+            diagnostics: Default::default(),
         }],
     }));
     press(&mut a, "c");
@@ -673,6 +675,8 @@ fn detected() -> AppEvent {
             status: Status::Available,
             models: vec!["llama3:8b".to_owned()],
             version: None,
+            model_labels: Vec::new(),
+            diagnostics: Default::default(),
         }],
     })
 }

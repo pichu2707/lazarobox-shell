@@ -10,7 +10,7 @@ use ratatui::{
 use super::tab_bar::{cells, clip};
 use crate::{
     core::{
-        ai::picker::Mark,
+        ai::picker::{Mark, NOT_IN_LIST},
         config::Config,
         menu::{AI_BODY, CHROME, Footer, MenuState, Row, fits_size},
     },
@@ -113,11 +113,24 @@ impl MenuPopup<'_> {
                 enabled,
                 current,
             } => {
-                let tail = match (mark_text(mark), current) {
+                // A long mark (an engine status with a reason) gives way to
+                // the label, but never below half of the row, and the `●`
+                // of the current row stays. A very narrow popup keeps the
+                // old rule: the label gives way and the mark stays whole.
+                let dot = if *current { " ●" } else { "" };
+                let mark = mark_text(mark);
+                let mark_cap = width
+                    .saturating_sub(cells(label) + 1 + cells(dot) + 1)
+                    .max(width / 2);
+                let mark = if width >= CLIP_MARK_FROM && cells(mark) > mark_cap {
+                    clip(mark, mark_cap)
+                } else {
+                    mark.to_owned()
+                };
+                let tail = match (mark.as_str(), current) {
                     ("", false) => String::new(),
-                    ("", true) => " ●".to_owned(),
-                    (mark, false) => format!(" {mark}"),
-                    (mark, true) => format!(" {mark} ●"),
+                    ("", true) => dot.to_owned(),
+                    (mark, _) => format!(" {mark}{dot}"),
                 };
                 let room = width.saturating_sub(cells(&tail) + 1);
                 let label = if cells(label) > room {
@@ -158,9 +171,13 @@ fn mark_text(mark: &Mark) -> &str {
         Mark::Downloaded => "✓",
         Mark::DownloadRequired => "download required",
         Mark::Checking => "checking…",
+        Mark::NotInList => NOT_IN_LIST,
         Mark::Status(text) => text,
     }
 }
+
+/// The row width from which a long picker mark is clipped to keep its label.
+const CLIP_MARK_FROM: usize = 40;
 
 /// Suffix of a task-row value that must survive clipping.
 const REQUIRED_MARK: &str = " · download required";
@@ -200,7 +217,10 @@ impl Widget for MenuPopup<'_> {
         } else {
             WANT_WIDTH
         };
-        let want_height = body as u16 + CHROME;
+        // The update note is extra: it never makes the popup fall back.
+        let note = self.menu.update_note();
+        let note_rows = note.as_ref().map_or(0, |lines| lines.len());
+        let want_height = (body + note_rows) as u16 + CHROME;
         let popup = popup_area(area, want_width, want_height);
         Clear.render(popup, buf);
         let accent = Style::default().fg(self.theme.info_blue);
@@ -213,8 +233,11 @@ impl Widget for MenuPopup<'_> {
         let inner = block.inner(popup);
         block.render(popup, buf);
 
-        // Body rows, then (height permitting) a blank row, then the footer.
-        let blank = usize::from(inner.height) > body + 1;
+        // Body rows, the update note when all of it fits above the footer,
+        // then (height permitting) a blank row, then the footer.
+        let note = note.filter(|lines| usize::from(inner.height) > body + lines.len());
+        let used = body + note.as_ref().map_or(0, |lines| lines.len());
+        let blank = usize::from(inner.height) > used + 1;
         let width = usize::from(inner.width);
         for (offset, row) in rows.iter().enumerate() {
             let (text, style) = self.line(row, inner.width);
@@ -225,7 +248,12 @@ impl Widget for MenuPopup<'_> {
             buf.set_style(Rect::new(inner.x, y, inner.width, 1), style);
             buf.set_stringn(inner.x, y, clip(&text, width), width, style);
         }
-        let footer_y = inner.y + body as u16 + u16::from(blank);
+        for (offset, line) in note.iter().flatten().enumerate() {
+            let y = inner.y + (body + offset) as u16;
+            let style = Style::default().fg(self.theme.warning_orange);
+            buf.set_stringn(inner.x, y, clip(&format!(" {line}"), width), width, style);
+        }
+        let footer_y = inner.y + used as u16 + u16::from(blank);
         if footer_y < inner.bottom() {
             let (text, style) = match self.menu.footer() {
                 Footer::Error(error) => {
@@ -287,6 +315,7 @@ mod tests {
 
     #[test]
     fn the_full_popup_needs_exactly_24_by_7() {
+        // Four body rows: the popup is 24 wide and rows + 3 high.
         assert!(fits(r(24, 7), 4));
         assert!(!fits(r(23, 7), 4));
         assert!(!fits(r(24, 6), 4));
@@ -333,7 +362,7 @@ mod tests {
     // Spec: the blank row is dropped first on a short height.
     #[test]
     fn snapshot_short_height_drops_the_blank_row() {
-        insta::assert_snapshot!(text(&draw(51, 7, &fresh())));
+        insta::assert_snapshot!(text(&draw(51, 8, &fresh())));
     }
 
     #[test]
@@ -384,11 +413,11 @@ mod tests {
     }
 
     #[test]
-    fn exactly_24_by_7_shows_the_full_popup() {
-        let buf = draw(24, 7, &fresh());
+    fn exactly_24_by_8_shows_the_full_popup() {
+        let buf = draw(24, 8, &fresh());
         assert!(text(&buf).contains("Settings"));
         assert!(!text(&buf).contains("MENU"));
-        let below = draw(23, 7, &fresh());
+        let below = draw(23, 8, &fresh());
         assert!(!text(&below).contains("Settings"));
         assert!(text(&below).contains("MENU"));
     }
@@ -437,6 +466,8 @@ mod tests {
                         Vec::new()
                     },
                     version: None,
+                    model_labels: Vec::new(),
+                    diagnostics: Default::default(),
                 })
                 .collect(),
         }
@@ -503,6 +534,8 @@ mod tests {
                         Vec::new()
                     },
                     version: (e.id == "claude").then(|| "2.1.0".to_owned()),
+                    model_labels: Vec::new(),
+                    diagnostics: Default::default(),
                 })
                 .collect(),
         }
@@ -550,6 +583,34 @@ mod tests {
         press(&mut menu, &[KeyCode::Enter]);
         press(&mut menu, &vec![KeyCode::Char('j'); downs]);
         menu
+    }
+
+    fn with_update() -> MenuState {
+        mixed().with_update(Some("0.16.0".into()))
+    }
+
+    #[test]
+    fn snapshot_update_note_under_the_task_list() {
+        insta::assert_snapshot!(text(&draw(62, POPUP_H + 2, &with_update())));
+    }
+
+    #[test]
+    fn the_update_note_gives_way_when_the_height_is_tight() {
+        // At the popup's own height the note has no room and is not drawn;
+        // the Updates row still says what is waiting.
+        for height in [POPUP_H, MIN_HEIGHT] {
+            let shown = text(&draw(62, height, &with_update()));
+            assert!(!shown.contains("run: cargo install"), "{shown}");
+            assert!(!shown.contains("update 0.16.0 available"), "{shown}");
+            assert!(shown.contains("0.16.0 available"), "{shown}");
+        }
+    }
+
+    #[test]
+    fn the_update_note_is_not_drawn_over_a_picker() {
+        let mut menu = picker_of("code", 0);
+        menu.set_update(Some("0.16.0".into()));
+        assert!(!text(&draw(62, POPUP_H + 2, &menu)).contains("update"));
     }
 
     #[test]
@@ -667,7 +728,7 @@ mod tests {
     #[test]
     fn the_ai_popup_is_62_wide_and_body_plus_chrome_high_in_both_views() {
         for menu in [mixed(), picker_of("code", 0), warned()] {
-            let l = lines(&draw(80, 20, &menu));
+            let l = lines(&draw(80, POPUP_H + 4, &menu));
             let border: Vec<usize> = (0..l.len())
                 .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
                 .collect();
@@ -918,7 +979,10 @@ mod tests {
     fn titles_are_bold_and_the_selected_bar_spans_the_inner_width() {
         let task = draw(62, POPUP_H, &mixed());
         assert!(task[(2, 1)].modifier.contains(Modifier::BOLD));
-        assert!(task[(2, 5)].modifier.contains(Modifier::BOLD));
+        assert!(
+            task[(2, 8)].modifier.contains(Modifier::BOLD),
+            "the AI title"
+        );
         assert!(!task[(2, 2)].modifier.contains(Modifier::BOLD));
         let picker = draw(62, POPUP_H, &picker_of("code", 0));
         assert!(picker[(2, 1)].modifier.contains(Modifier::BOLD));
@@ -955,6 +1019,8 @@ mod tests {
                         Vec::new()
                     },
                     version: None,
+                    model_labels: Vec::new(),
+                    diagnostics: Default::default(),
                 })
                 .collect(),
         };
@@ -969,5 +1035,171 @@ mod tests {
         let clipped = row(&long);
         assert!(clipped.contains("…"), "{clipped}");
         assert!(clipped.ends_with("✓│"), "{clipped}");
+    }
+
+    /// A machine where only codex is installed and its model list failed.
+    fn codex_without_list(why: &str) -> Detection {
+        codex_degraded(Some(why), None)
+    }
+
+    /// Only codex is installed; `models` and `jail` are the reasons it is
+    /// degraded.
+    fn codex_degraded(models: Option<&str>, jail: Option<&str>) -> Detection {
+        Detection {
+            engines: CATALOG
+                .iter()
+                .map(|e| EngineState {
+                    id: e.id,
+                    status: if e.id == "codex" {
+                        Status::Available
+                    } else {
+                        Status::NotInstalled
+                    },
+                    models: if e.id == "codex" {
+                        vec!["default".to_owned()]
+                    } else {
+                        Vec::new()
+                    },
+                    version: (e.id == "codex").then(|| "codex-cli 0.130.0".to_owned()),
+                    model_labels: Vec::new(),
+                    diagnostics: crate::core::ai::Diagnostics {
+                        models: models.filter(|_| e.id == "codex").map(str::to_owned),
+                        jail: jail.filter(|_| e.id == "codex").map(str::to_owned),
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    fn codex_models_level(detection: Detection) -> MenuState {
+        let saved = AiConfig::general(Some("codex"), None);
+        let mut menu = fresh().with_ai(saved, Some(detection));
+        goto(&mut menu, "general");
+        press(&mut menu, &[KeyCode::Enter, KeyCode::Enter]);
+        menu
+    }
+
+    #[test]
+    fn snapshot_codex_models_say_why_the_list_is_missing() {
+        let menu = codex_models_level(codex_without_list("codex exited 1: not logged in"));
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(
+            shown.contains("model list unavailable: codex exited 1: not logged in"),
+            "{shown}"
+        );
+        insta::assert_snapshot!(shown);
+    }
+
+    fn codex_engines_level(detection: Detection) -> MenuState {
+        let saved = AiConfig::general(Some("codex"), None);
+        let mut menu = fresh().with_ai(saved, Some(detection));
+        goto(&mut menu, "general");
+        press(&mut menu, &[KeyCode::Enter]);
+        menu
+    }
+
+    #[test]
+    fn snapshot_engine_row_says_why_codex_has_no_jail() {
+        let menu = codex_engines_level(codex_degraded(None, Some("Landlock ABI 2, needs 3+")));
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(shown.contains("no jail: Landlock"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    #[test]
+    fn a_long_engine_status_is_clipped_but_keeps_its_label() {
+        let why = "a-very-long-folder-name-that-cannot-fit-at-all-in-the-row too broad";
+        let menu = codex_engines_level(codex_degraded(None, Some(why)));
+        let buf = draw(62, POPUP_H, &menu);
+        let row = lines(&buf)
+            .into_iter()
+            .find(|l| l.contains("codex"))
+            .unwrap();
+        assert!(
+            row.starts_with("│ codex available · no jail: a-very-long"),
+            "{row}"
+        );
+        assert!(row.contains('…') && row.ends_with("●│"), "{row}");
+        assert_eq!(cells(&row), 62);
+    }
+
+    #[test]
+    fn every_short_jail_reason_survives_whole_at_62_columns() {
+        use crate::core::ai::jail::{JailOff, JailRefusal, Untrusted};
+        let home = Some(std::path::Path::new("/home/u"));
+        let long = std::path::PathBuf::from("/very/long/folder/structure/that/goes/on/lib");
+        let reasons = [
+            JailRefusal::Unsupported(JailOff::NoLandlock(12)),
+            JailRefusal::Unsupported(JailOff::NoLandlock(0)),
+            JailRefusal::Unsupported(JailOff::NotLinux),
+            JailRefusal::NoHome,
+            JailRefusal::HomeMissing("/h".into()),
+            JailRefusal::NoInterpreter("node".into()),
+            JailRefusal::InterpreterMissing(long.clone()),
+            JailRefusal::UntrustedInterpreter {
+                path: "/n".into(),
+                why: Untrusted::Scratch,
+            },
+            JailRefusal::BadLoader(long.clone()),
+            JailRefusal::RootTooBroad(long.clone()),
+            JailRefusal::Unreadable(long.clone()),
+            JailRefusal::NotCanonical(long),
+        ];
+        for refusal in reasons {
+            let why = refusal.short(home);
+            let menu = codex_engines_level(codex_degraded(None, Some(&why)));
+            let row = lines(&draw(62, POPUP_H, &menu))
+                .into_iter()
+                .find(|l| l.contains("codex"))
+                .unwrap();
+            assert!(row.contains(&format!("no jail: {why} ●")), "{why}: {row}");
+        }
+    }
+
+    const LONG_WHY: &str = "jail: no node found to run the CLI script; install it next to the CLI or on PATH (looked in /usr/local/bin)";
+
+    #[test]
+    fn snapshot_a_long_listing_reason_wraps_across_rows_and_the_cursor_can_copy_it() {
+        let mut menu = codex_models_level(codex_without_list(LONG_WHY));
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(shown.contains("/usr/local/bin)"), "{shown}");
+        assert!(shown.contains("no node found to run the CLI"), "{shown}");
+        insta::assert_snapshot!("long_reason_wrapped", shown);
+        // On the note the footer says how to copy it.
+        press(&mut menu, &[KeyCode::Down, KeyCode::Down]);
+        let on_note = text(&draw(62, POPUP_H, &menu));
+        assert!(
+            on_note.contains("Enter or y copies the full reason"),
+            "{on_note}"
+        );
+        insta::assert_snapshot!("long_reason_cursor_on_note", on_note);
+    }
+
+    #[test]
+    fn a_huge_listing_reason_is_bounded_to_four_rows_with_the_last_clipped() {
+        let why = format!("codex exited 1: {}", "word ".repeat(100));
+        let menu = codex_models_level(codex_without_list(&why));
+        let buf = draw(62, POPUP_H, &menu);
+        let rows = lines(&buf);
+        let first = rows
+            .iter()
+            .position(|l| l.contains("model list unavailable"))
+            .unwrap();
+        assert!(rows[first + 3].contains('…'), "{rows:#?}");
+        assert!(!rows[first + 4].contains("word"), "{rows:#?}");
+        for l in &rows[first..first + 4] {
+            assert_eq!(cells(l), 62);
+        }
+    }
+
+    #[test]
+    fn a_narrow_popup_still_clips_the_note_rows_as_a_last_resort() {
+        let menu = codex_models_level(codex_without_list(LONG_WHY));
+        for w in [30, 40, 50] {
+            let buf = draw(w, POPUP_H, &menu);
+            for l in lines(&buf) {
+                assert_eq!(cells(&l), usize::from(w), "{l}");
+            }
+        }
     }
 }

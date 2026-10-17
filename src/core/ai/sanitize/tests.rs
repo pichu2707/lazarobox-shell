@@ -243,3 +243,180 @@ fn random_bytes_cut_at_random_points_never_leak_a_control() {
         assert!(!whole.chars().any(bad), "{bytes:?} gave {whole:?}");
     }
 }
+
+// ---- redact_tokens ----
+
+#[test]
+fn long_runs_and_key_prefixes_are_replaced() {
+    assert_eq!(redact_tokens("id aaaaaaaaaaaaaaaaaaa1 end"), "id … end");
+    assert_eq!(
+        redact_tokens("id aaaaaaaaaaaaaaaaaa1 end"),
+        "id aaaaaaaaaaaaaaaaaa1 end"
+    );
+    assert_eq!(redact_tokens("bad key sk-abc123 here"), "bad key … here");
+    assert_eq!(redact_tokens("session sess-AbC_9 gone"), "session … gone");
+    assert_eq!(redact_tokens("x_Y-0123456789_abcdefghij!"), "…!");
+}
+
+#[test]
+fn a_bearer_credential_is_replaced_whatever_it_looks_like() {
+    assert_eq!(
+        redact_tokens("Authorization: Bearer abc.def+ghi/jkl=="),
+        "Authorization: Bearer …"
+    );
+    assert_eq!(redact_tokens("bearer   s3cr3t then"), "bearer   … then");
+    assert_eq!(redact_tokens("a Bearer"), "a Bearer");
+}
+
+#[test]
+fn ordinary_error_text_is_untouched() {
+    for text in [
+        "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account",
+        "codex exited 1: not logged in: run codex login",
+        "task-runner failed: ask-me-later",
+        "",
+    ] {
+        assert_eq!(redact_tokens(text), text);
+    }
+}
+
+#[test]
+fn bearer_and_basic_are_matched_in_any_case_through_quotes_and_punctuation() {
+    for (input, want) in [
+        ("BEARER abc123", "BEARER …"),
+        ("Basic dXNlcjpwYXNz", "Basic …"),
+        ("basic dXNlcjpwYXNz", "basic …"),
+        ("Bearer: abc123 end", "Bearer: … end"),
+        (
+            r#"{"Authorization":"Bearer abc123"}"#,
+            r#"{"Authorization":"Bearer …"#,
+        ),
+        (r#""Bearer" "abc123""#, r#""Bearer" …"#),
+        ("auth,Basic Zm9v;", "auth,Basic …"),
+    ] {
+        assert_eq!(redact_tokens(input), want, "{input}");
+    }
+}
+
+#[test]
+fn url_userinfo_is_replaced() {
+    assert_eq!(
+        redact_tokens("clone https://user:pass@example.com/repo.git failed"),
+        "clone https://…@example.com/repo.git failed"
+    );
+    assert_eq!(
+        redact_tokens("proxy http://tok@10.0.0.1:8080"),
+        "proxy http://…@10.0.0.1:8080"
+    );
+    assert_eq!(
+        redact_tokens("see https://example.com/a@b and mail@x.org"),
+        "see https://example.com/a@b and mail@x.org"
+    );
+}
+
+#[test]
+fn known_token_prefixes_are_secrets_from_eight_characters() {
+    for token in [
+        "ghp_abcd1234",
+        "gho_abcd1234",
+        "ghs_abcd1234",
+        "github_pat_11AAAA",
+        "glpat-abcd12",
+        "xoxb-1234",
+        "AKIAIOSFODNN7",
+        "eyJhbGciOi",
+    ] {
+        assert_eq!(
+            redact_tokens(&format!("key {token} end")),
+            "key … end",
+            "{token}"
+        );
+    }
+    // Too short to be one, or only alike by accident.
+    for text in [
+        "key ghp_ab end",
+        "xox is a word",
+        "AKIA",
+        "eyJ",
+        "my glpat-1 note",
+    ] {
+        assert_eq!(redact_tokens(text), text);
+    }
+}
+
+#[test]
+fn base64_with_its_marks_is_a_secret_from_twenty_characters() {
+    assert_eq!(
+        redact_tokens("data dGhpcyBpcyBhIHNlY3JldA+Zm9v end"),
+        "data … end"
+    );
+    assert_eq!(
+        redact_tokens("pad dGhpcyBpcyBhIHNlY3JldA== end"),
+        "pad … end"
+    );
+    assert_eq!(
+        redact_tokens("blob QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0NTY3ODkwYWJjZGVm/wxyz end"),
+        "blob … end"
+    );
+    // Paths and short or plain text stay.
+    for text in [
+        "open /usr/local/lib/python3/site-packages/x failed",
+        "a+b=c is fine",
+        "short dGhpcy+Zm9v=",
+        "src/Foo2/barBaz/quxQuux",
+    ] {
+        assert_eq!(redact_tokens(text), text);
+    }
+}
+
+#[test]
+fn error_codes_made_of_lower_case_and_underscores_survive() {
+    for text in [
+        "authentication_error",
+        "context_length_exceeded",
+        "invalid_request_error: insufficient_quota",
+        "rate_limit_exceeded_for_this_organization",
+    ] {
+        assert_eq!(redact_tokens(text), text);
+    }
+}
+
+#[test]
+fn a_long_run_with_digits_or_upper_case_is_still_a_secret() {
+    for run in [
+        "authentication_error_1234",
+        "Authentication_Error_Exceeded",
+        "context-length-exceeded-for",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaa1",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    ] {
+        assert_eq!(redact_tokens(&format!("e {run} x")), "e … x", "{run}");
+    }
+    // The prefix rules do not depend on the shape of the rest.
+    assert_eq!(redact_tokens("k sk-authentication_error x"), "k … x");
+    assert_eq!(redact_tokens("k ghp_abcdefgh x"), "k … x");
+}
+
+#[test]
+fn a_plain_word_after_a_scheme_is_kept() {
+    for text in [
+        "Basic usage is documented",
+        "Bearer token is invalid",
+        "basic auth failed",
+        "the Bearer is missing",
+    ] {
+        assert_eq!(redact_tokens(text), text);
+    }
+    // 8 or more characters, or a digit, `.`, `=`, `+`, `/` or `-`, is a credential.
+    for (text, want) in [
+        ("Bearer abcdefgh x", "Bearer … x"),
+        ("Bearer abc.de x", "Bearer … x"),
+        ("Basic ab=c x", "Basic … x"),
+        ("Basic a+b x", "Basic … x"),
+        ("Basic a/b x", "Basic … x"),
+        ("Bearer a-b x", "Bearer … x"),
+        ("Bearer ab1 x", "Bearer … x"),
+    ] {
+        assert_eq!(redact_tokens(text), want, "{text}");
+    }
+}

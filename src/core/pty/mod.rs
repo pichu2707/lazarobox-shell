@@ -14,10 +14,19 @@ const FALLBACK_SHELL: &str = "/bin/sh";
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SpawnSpec {
     pub program: PathBuf,
+    /// Arguments of `program`, passed as they are (no shell parses them).
+    /// Empty for a shell.
+    pub args: Vec<String>,
     pub cwd: PathBuf,
     /// Variables set on top of the inherited environment.
     pub env: Vec<(String, String)>,
+    /// Variables that are not necessarily text (a `PATH` with raw bytes),
+    /// set after `env`.
+    pub env_os: Vec<(std::ffi::OsString, std::ffi::OsString)>,
     pub size: PaneSize,
+    /// Ask the adapter for a [`PtyEvent::Status`] before `Exited`. Off for
+    /// shells: only a pane that runs one job cares how it ended.
+    pub report_status: bool,
 }
 
 impl SpawnSpec {
@@ -29,7 +38,9 @@ impl SpawnSpec {
             .into();
         Self {
             program,
+            args: Vec::new(),
             cwd,
+            env_os: Vec::new(),
             env: vec![
                 ("TERM".into(), "xterm-256color".into()),
                 ("COLORTERM".into(), "truecolor".into()),
@@ -39,6 +50,7 @@ impl SpawnSpec {
                 ),
             ],
             size,
+            report_status: false,
         }
     }
 }
@@ -47,6 +59,9 @@ impl SpawnSpec {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum PtyEvent {
     Output(Vec<u8>),
+    /// How the child ended (its exit code), sent just before `Exited` and
+    /// only for a spec with `report_status`.
+    Status(u32),
     Exited,
 }
 
