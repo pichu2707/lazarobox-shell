@@ -21,7 +21,7 @@ use tokio::{
 use super::*;
 use crate::core::ai::chat::{
     ANSWER_CAP, ChatState, Entry, REASONING_CAP, SendOutcome,
-    engine::{Availability, ChatMessage, Finish, Role},
+    engine::{Availability, ChatMessage, Finish, Role, Tools},
 };
 
 const QWEN3: &str = include_str!("../../../tests/fixtures/ollama/qwen3-thinking.ndjson");
@@ -37,6 +37,7 @@ fn request(model: &str) -> ChatRequest {
         model: Some(model.into()),
         system: "be brief".into(),
         memory: None,
+        tools: Tools::Off,
         messages: vec![
             ChatMessage {
                 role: Role::User,

@@ -22,6 +22,7 @@ use std::{
 
 pub mod ai_detect;
 pub mod anim;
+mod auto_type;
 pub mod bounded_read;
 pub mod chat;
 pub mod chat_store;
@@ -31,9 +32,12 @@ pub mod engram;
 pub mod jail;
 pub mod login_path;
 pub mod loopback;
+pub mod mcp;
 pub mod notify;
 pub mod proc;
 pub mod prompts;
+mod run_check;
+pub mod tools;
 pub mod update;
 pub mod workspace;
 
@@ -61,11 +65,12 @@ use tokio::{
 };
 
 use crate::{
-    app::{App, AppEvent, Effect},
+    app::{App, AppEvent, Effect, RunEvent},
     core::{
         ai::{
             Detection,
             chat::{
+                approval,
                 notify::{bell_after_failed_desktop, rings_at_once},
                 prompts::Resolved,
                 store::StoreReply,
@@ -101,6 +106,8 @@ const MEMORY_QUIT_BOUND: Duration = Duration::from_secs(1);
 const MEMORY_CHANNEL: usize = 64;
 /// Longest a quit waits for the store thread to write what is queued.
 const STORE_JOIN_BOUND: Duration = Duration::from_secs(2);
+/// Capacity of the channel from the path checks of runs to the event loop.
+const RUN_CHANNEL: usize = 16;
 /// Capacity of the channel from the store thread to the event loop.
 const STORE_CHANNEL: usize = 64;
 /// Longest the app waits for a prompt job before it uses the built-in prompt.
@@ -207,6 +214,11 @@ pub async fn run() -> io::Result<()> {
         .with_jail(jail)
         .with_hostname(local_hostname().as_deref())
         .with_dir_check(|dir| dir.is_dir())
+        .with_utf8_locale(approval::names_utf8(
+            env::var("LC_ALL").ok().as_deref(),
+            env::var("LC_CTYPE").ok().as_deref(),
+            env::var("LANG").ok().as_deref(),
+        ))
         .with_session_ids(engram::worker::new_session_id)
         .with_token_check(token_in_env)
         .with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
@@ -264,6 +276,7 @@ pub async fn run() -> io::Result<()> {
     app = app
         .with_update(announced)
         .with_install_env(Some(update::install_env(&cli_env.path)));
+    let (run_tx, run_rx) = mpsc::channel(RUN_CHANNEL);
     let (store_tx, store_rx) = mpsc::channel(STORE_CHANNEL);
     let (prompt_tx, prompt_rx) = mpsc::channel(PROMPT_CHANNEL);
     let config_dir = config_path
@@ -274,6 +287,11 @@ pub async fn run() -> io::Result<()> {
         env::var_os("XDG_DATA_HOME").as_deref(),
         env::var_os("HOME").as_deref(),
     );
+    let store_dir = store_path
+        .as_deref()
+        .and_then(Path::parent)
+        .map(Path::to_owned);
+    let tool_host = tools::ToolHost::from_env();
     // What the machine offers for notifications (display, bus, notify-send,
     // sound players), probed once now in the background: a slow lookup never
     // delays a send, it just fills the slot later. The `t` test refreshes it.
@@ -281,6 +299,7 @@ pub async fn run() -> io::Result<()> {
     notify::probe_in_background(&plan, notify::Session::current, cli_env.path.clone());
     let mut panes = Panes::new(tx, Box::new(spawn_portable))
         .with_memory(memory)
+        .with_run_checks(run_check::Checker::new(run_check::process_env(), run_tx))
         .with_config_path(config_path)
         .with_detector(Box::new(move |force| {
             spawn_detection(
@@ -340,10 +359,21 @@ pub async fn run() -> io::Result<()> {
                 prompt_tx.clone(),
             );
         }))
-        .with_chats(Chats::new(
-            chat::runner_with(None, cli_env.clone()),
-            chat_tx,
-        ))
+        .with_chats(
+            Chats::new(
+                chat::runner_with(None, cli_env.clone(), Some(tool_host.clone())),
+                chat_tx,
+            )
+            // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
+            // `<data>/run`. Without a private folder every turn runs as text.
+            .with_tools(
+                tool_host,
+                mcp::candidate_dirs(
+                    env::var_os("XDG_RUNTIME_DIR").as_deref(),
+                    store_dir.as_deref(),
+                ),
+            ),
+        )
         .with_store(chat_store::spawn_at(store_path, store_tx));
     let inbox = Inbox {
         pty: rx,
@@ -353,6 +383,7 @@ pub async fn run() -> io::Result<()> {
         store: store_rx,
         prompt: prompt_rx,
         update: update_rx,
+        run: run_rx,
         notified: notified_rx,
     };
     // The first pane is spawned before the UI starts: a failure is fatal.
@@ -472,6 +503,8 @@ struct Inbox {
     store: mpsc::Receiver<StoreReply>,
     prompt: mpsc::Receiver<(PaneId, Resolved)>,
     update: mpsc::Receiver<Option<String>>,
+    /// What the path checks of runs found.
+    run: mpsc::Receiver<(PaneId, RunEvent)>,
     /// What the notification test did.
     notified: mpsc::Receiver<String>,
 }
@@ -516,6 +549,7 @@ async fn run_loop(
         store: mut store_rx,
         prompt: mut prompt_rx,
         update: mut update_rx,
+        run: mut run_rx,
         notified: mut notified_rx,
     } = inbox;
     let theme = LazaroboxTheme::default();
@@ -607,6 +641,13 @@ async fn run_loop(
                     return Ok(());
                 }
             }
+            // `panes` keeps the sender of the checks for the whole loop, so
+            // this never reads a closed channel.
+            Some((pane, event)) = run_rx.recv() => {
+                if step(&mut app, AppEvent::Run(pane, event), panes) {
+                    return Ok(());
+                }
+            }
             Some(report) = notified_rx.recv() => {
                 if step(&mut app, AppEvent::NotifyTested(report), panes) {
                     return Ok(());
@@ -630,6 +671,25 @@ async fn run_loop(
                 }
             }
             _ = tick.tick() => {
+                // `select!` picks a ready branch at random, so output that is
+                // queued could lose to this tick and be probed around: while
+                // a written run settles, the queued pty output is fed first
+                // (within the budget; the rest is fed before the next probe
+                // of a later tick, and a settle needs 250 ms of quiet anyway).
+                if !app.run_probes().is_empty() {
+                    for _ in 0..EVENT_BUDGET {
+                        let Ok((id, event)) = rx.try_recv() else { break };
+                        if step(&mut app, AppEvent::Pty(id, event), panes) {
+                            return Ok(());
+                        }
+                    }
+                }
+                // Only while a written run settles: an idle app reads nothing.
+                for event in panes.probes(&app.run_probes()) {
+                    if step(&mut app, event, panes) {
+                        return Ok(());
+                    }
+                }
                 if app.take_dirty() {
                     terminal.draw(|frame| ui::render(frame, &app, &theme))?;
                 }
@@ -756,6 +816,8 @@ struct Panes {
     prepare: Box<PrepareFn>,
     /// The chat turns. `None` ignores the chat effects (unit tests).
     chats: Option<Chats>,
+    /// Starts the path checks of runs. `None` refuses every run (unit tests).
+    run_checks: Option<run_check::Checker>,
     /// The engram memory worker; off unless the config activates it.
     memory: Memory,
     /// The chat history thread. `None` ignores the store effects (unit tests).
@@ -779,6 +841,7 @@ impl Panes {
             detect: Box::new(|_| {}),
             prepare: Box::new(|_, _, _, _| {}),
             chats: None,
+            run_checks: None,
             memory: Memory::off(),
             store: None,
         }
@@ -817,6 +880,12 @@ impl Panes {
     /// Sets the task that runs chat turns.
     fn with_chats(mut self, chats: Chats) -> Self {
         self.chats = Some(chats);
+        self
+    }
+
+    /// Sets what checks the runs of `Effect::CheckRun`.
+    fn with_run_checks(mut self, checker: run_check::Checker) -> Self {
+        self.run_checks = Some(checker);
         self
     }
 
@@ -932,6 +1001,112 @@ impl Panes {
                         chats.cancel(pane);
                     }
                 }
+                // Both return at once; the answer lands on a waiting call, or
+                // on nothing when the call is over.
+                Effect::ToolDecision {
+                    pane,
+                    turn,
+                    call,
+                    decision,
+                } => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        chats.decide(pane, turn, call, decision);
+                    }
+                }
+                // The write and the answer are one step: the answer is claimed
+                // first (a call that is over is owed none, so nothing is
+                // typed), and `Sent` is only said after the bytes were handed
+                // to a pane at its prompt.
+                Effect::AutoType {
+                    chat,
+                    target,
+                    bytes,
+                    number,
+                    turn,
+                    call,
+                } => {
+                    let answer = self
+                        .chats
+                        .as_ref()
+                        .and_then(|chats| chats.take(chat, turn, call))
+                        .filter(|answer| !answer.is_closed());
+                    if let Some(answer) = answer {
+                        let decision =
+                            auto_type::type_if_idle(self.handles.get_mut(&target), number, bytes);
+                        let _ = answer.send(decision.into());
+                    }
+                }
+                // The claim and the write are one step, as for `AutoType`, but
+                // the pane must also still be in the directory that was
+                // checked. The answer is not sent: the claimed wait is parked
+                // after the write, so a cancel or a closed chat also ends the
+                // running call, and `RunDone` finishes it. A refusal writes
+                // nothing and claims nothing; the app is told, and asks the
+                // user.
+                Effect::AutoRun {
+                    chat,
+                    target,
+                    bytes,
+                    turn,
+                    call,
+                    cwd,
+                } => {
+                    let chats = self.chats.as_ref();
+                    let claim = || {
+                        let wait = chats?.take(chat, turn, call);
+                        wait.filter(|answer| !answer.is_closed())
+                    };
+                    let park = |wait| {
+                        if let Some(chats) = chats {
+                            chats.park(chat, turn, call, wait);
+                        }
+                    };
+                    let pane = self.handles.get_mut(&target);
+                    if let Err(reason) = auto_type::run_if_idle(pane, &cwd, bytes, claim, park) {
+                        feedback.push(AppEvent::Run(target, RunEvent::NotRun { call, reason }));
+                    }
+                }
+                // The run settled: the parked call ends with its report. A
+                // call that is gone (the turn or the chat ended) is not
+                // answered.
+                Effect::RunDone {
+                    chat,
+                    turn,
+                    call,
+                    report,
+                } => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        chats.finish(chat, turn, call, report);
+                    }
+                }
+                // The pane's real directory is read here (the kernel resolves the
+                // link, no disk is touched); the paths are checked on the
+                // blocking pool and the answer comes back on the run channel.
+                // Without a directory or a checker the run is refused, which
+                // opens the prompt.
+                Effect::CheckRun {
+                    target,
+                    call,
+                    command,
+                    ..
+                } => {
+                    let cwd = self.handles.get(&target).and_then(|pty| pty.cwd());
+                    match (cwd, self.run_checks.as_ref()) {
+                        (Some(cwd), Some(checks)) => checks.start(target, call, cwd, command),
+                        _ => feedback.push(AppEvent::Run(
+                            target,
+                            RunEvent::Refused {
+                                call,
+                                reason: approval::NO_CWD,
+                            },
+                        )),
+                    }
+                }
+                Effect::EndToolSession(pane) => {
+                    if let Some(chats) = self.chats.as_mut() {
+                        chats.end_session(pane);
+                    }
+                }
                 // Returns at once: the worker owns the queue and the timeouts.
                 Effect::Memory(cmd) => self.memory.send(cmd),
                 // Returns at once: the thread owns the database, and a slow
@@ -993,6 +1168,20 @@ impl Panes {
             handle.kill();
             drop(handle);
         }));
+    }
+
+    /// One reading of each pane in `ids`, whose run is being settled (design
+    /// D22): the foreground check and the directory are one syscall and one
+    /// link read, with no thread or timer of their own. A pane that is gone
+    /// yields none.
+    fn probes(&self, ids: &[PaneId]) -> Vec<AppEvent> {
+        (ids.iter())
+            .filter_map(|id| Some((*id, self.handles.get(id)?)))
+            .map(|(id, handle)| {
+                let (foreground, cwd) = (handle.shell_in_foreground(), handle.cwd());
+                AppEvent::Run(id, RunEvent::Probe { foreground, cwd })
+            })
+            .collect()
     }
 
     /// The working directory of every child whose lookup succeeds.
@@ -1147,19 +1336,25 @@ fn restore() {
 
 /// Whether a panic on this thread should tear the terminal down. A panic
 /// inside a chat adapter poll is caught by its turn task and becomes an
-/// `Interrupted` turn: the app keeps running, so the terminal must stay intact.
+/// `Interrupted` turn, and one inside an MCP tool dispatch becomes an error
+/// result: the app keeps running, so the terminal must stay intact.
 fn should_restore() -> bool {
     // The store thread catches its own panics and reports them as replies.
     let on_store_thread = thread::current().name() == Some(chat_store::worker::THREAD_NAME);
     // The prompt job catches its panic and falls back to the built-in prompt.
     let on_prepare_thread = thread::current().name() == Some(prompts::THREAD_NAME);
     // The notification probe catches its own panic and reports it as failed.
-    !chat::in_adapter_poll() && !on_store_thread && !on_prepare_thread && !notify::in_probe()
+    // An MCP dispatch panic is caught by its session and answered as an error.
+    !chat::in_adapter_poll()
+        && !on_store_thread
+        && !on_prepare_thread
+        && !notify::in_probe()
+        && !mcp::in_dispatch()
 }
 
 /// Restores the cursor, bracketed paste, focus reporting and mouse capture before the previous hook (which
 /// `ratatui::init` set up to leave raw mode and the alternate screen) runs.
-/// Panics inside a chat adapter are caught elsewhere and skip all of it,
+/// Panics inside a chat adapter or an MCP dispatch are caught elsewhere and skip all of it,
 /// including the previous hook's output, which would scribble over the TUI.
 fn install_panic_hook() {
     let previous = panic::take_hook();
@@ -1226,14 +1421,18 @@ mod tests {
         ] {
             step(&mut app, event, &mut panes);
         }
-        let rows = app.menu().unwrap().rows(&Config::default());
-        let general = match &rows[9] {
-            crate::core::menu::Row::Item { label, value, .. } => {
-                assert_eq!(*label, "general");
-                value.as_deref().unwrap().to_owned()
-            }
-            other => panic!("not an item: {other:?}"),
-        };
+        let rows = app.menu().unwrap().all_rows(&Config::default());
+        let general = rows
+            .iter()
+            .find_map(|row| match row {
+                crate::core::menu::Row::Item {
+                    label: "general",
+                    value,
+                    ..
+                } => value.as_deref().map(str::to_owned),
+                _ => None,
+            })
+            .expect("the general row");
         assert_eq!(general, "ollama › llama3:8b", "nothing is marked yet");
     }
 
@@ -2152,13 +2351,14 @@ mod tests {
     // Without a chat task (unit tests) the chat effects touch no pane.
     #[test]
     fn chat_effects_are_ignored_without_a_chat_task() {
-        use crate::core::ai::chat::engine::ChatRequest;
+        use crate::core::ai::chat::engine::{ChatRequest, Tools};
         let (mut panes, _rx, rec) = fake_panes(None);
         let request = ChatRequest {
             engine: "ollama".into(),
             model: Some("llama3:8b".into()),
             system: String::new(),
             memory: None,
+            tools: Tools::Off,
             messages: Vec::new(),
         };
         let effects = vec![
@@ -3191,7 +3391,7 @@ mod tests {
 
     // --- Chat effects ---
 
-    use crate::core::ai::chat::engine::{ChatRequest, StreamEvent};
+    use crate::core::ai::chat::engine::{ChatRequest, Decision, StreamEvent, Tools};
 
     fn chat_request() -> ChatRequest {
         ChatRequest {
@@ -3199,6 +3399,7 @@ mod tests {
             model: Some("llama3:8b".into()),
             system: String::new(),
             memory: None,
+            tools: Tools::Off,
             messages: Vec::new(),
         }
     }
@@ -3340,6 +3541,432 @@ mod tests {
         );
     }
 
+    // The tool effects reach the chats: a turn with tools gets a session, a
+    // decision for a call that is not waiting is dropped, and ending the
+    // session closes it. None of them touches a PTY.
+    #[tokio::test]
+    async fn tool_effects_reach_the_chats_and_never_a_pty() {
+        use crate::core::ai::chat::engine::{CallId, Decision};
+        let dir = tempfile::tempdir().unwrap();
+        let host = tools::ToolHost::new(None, None, None, tools::Limits::default());
+        let (panes, _pty_rx, rec) = fake_panes(None);
+        let (tx, _rx) = mpsc::channel(chat::APP_CHANNEL);
+        let runner: chat::Runner = Arc::new(|_request, _tx| Box::pin(std::future::pending()));
+        let mut panes =
+            panes.with_chats(Chats::new(runner, tx).with_tools(host, vec![dir.path().join("run")]));
+        spawn_two(&mut panes);
+        let mut request = chat_request();
+        request.engine = "claude".into();
+        request.tools = Tools::On {
+            origin: None,
+            mcp: None,
+        };
+        panes.apply(vec![Effect::ChatSend {
+            pane: id(1),
+            turn: 1,
+            request,
+        }]);
+        let session = |panes: &Panes| panes.chats.as_ref().unwrap().session(id(1)).is_some();
+        assert!(session(&panes), "a turn with tools has a session");
+        panes.apply(vec![Effect::ToolDecision {
+            pane: id(1),
+            turn: 1,
+            call: CallId(99),
+            decision: Decision::Sent,
+        }]);
+        assert!(session(&panes), "a stale decision changes nothing");
+        panes.apply(vec![Effect::EndToolSession(id(1))]);
+        assert!(!session(&panes));
+        let rec = rec.borrow();
+        for log in &rec.logs {
+            let log = log.lock().unwrap();
+            assert!(log.writes.is_empty() && log.resizes.is_empty() && log.kills == 0);
+        }
+    }
+
+    /// A call of chat 9 turn 1 that waits for its answer, as a model's does.
+    fn waiting(panes: &Panes, call: u64) -> futures::future::BoxFuture<'static, Decision> {
+        use crate::core::ai::chat::engine::Answer;
+        use futures::FutureExt;
+        waiting_answer(panes, call)
+            .map(|answer| match answer {
+                Answer::Decided(decision) => decision,
+                Answer::Ran(_) => unreachable!("no run is parked here"),
+            })
+            .boxed()
+    }
+
+    fn waiting_answer(
+        panes: &Panes,
+        call: u64,
+    ) -> futures::future::BoxFuture<'static, crate::core::ai::chat::engine::Answer> {
+        use crate::core::ai::chat::{approval::ApprovalAsk, engine::CallId};
+        let ask = ApprovalAsk::Read {
+            path: String::new(),
+        };
+        let waits = panes.chats.as_ref().unwrap().waits();
+        waits
+            .approver(id(9), 1, tools::Pending::new())
+            .ask(CallId(call), &ask)
+    }
+
+    fn auto_type_effect(target: u32, call: u64) -> Effect {
+        Effect::AutoType {
+            chat: id(9),
+            target: id(target),
+            bytes: format!("cmd{target}").into_bytes(),
+            number: target as usize,
+            turn: 1,
+            call: crate::core::ai::chat::engine::CallId(call),
+        }
+    }
+
+    // The effect writes to the target, not to the chat, and only at a prompt.
+    #[tokio::test]
+    async fn an_auto_type_writes_only_to_a_pane_whose_shell_is_in_the_foreground() {
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let mut logs = Vec::new();
+        let mut waits = Vec::new();
+        for (n, foreground) in [(1, Some(true)), (2, Some(false)), (3, None)] {
+            let pty = FakePty {
+                foreground,
+                ..FakePty::default()
+            };
+            logs.push(pty.log.clone());
+            panes.handles.insert(id(n), Box::new(pty));
+            waits.push(waiting(&panes, n.into()));
+        }
+        waits.push(waiting(&panes, 4));
+        panes.apply((1..=4).map(|n| auto_type_effect(n, n.into())).collect());
+        assert_eq!(logs[0].lock().unwrap().writes, vec![b"cmd1".to_vec()]);
+        assert!(logs[1].lock().unwrap().writes.is_empty());
+        assert!(logs[2].lock().unwrap().writes.is_empty());
+        let mut answers = Vec::new();
+        for wait in waits {
+            answers.push(wait.await);
+        }
+        assert_eq!(answers[0], Decision::Typed(1));
+        assert_eq!(answers[1], Decision::Busy(2), "a child in the foreground");
+        assert_eq!(answers[2], Decision::Busy(3), "an unknown foreground");
+        assert!(matches!(answers[3], Decision::Denied(_)), "no such pane");
+    }
+
+    // One answer per call, and bytes only when that answer is `Sent`: when
+    // the wait is gone before the effect runs, nothing is typed.
+    #[tokio::test]
+    async fn an_auto_type_whose_call_is_over_writes_nothing() {
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let pty = FakePty {
+            foreground: Some(true),
+            ..FakePty::default()
+        };
+        let log = pty.log.clone();
+        panes.handles.insert(id(1), Box::new(pty));
+        let ended = waiting(&panes, 1);
+        let dropped = waiting(&panes, 2);
+        panes.chats.as_ref().unwrap().waits().end_turn(id(9), 1);
+        drop(dropped);
+        panes.apply(vec![auto_type_effect(1, 1), auto_type_effect(1, 2)]);
+        assert!(log.lock().unwrap().writes.is_empty(), "no wait, no bytes");
+        assert!(matches!(ended.await, Decision::Denied(_)));
+    }
+
+    fn check_effect(target: u32, call: u64, command: &str) -> Effect {
+        Effect::CheckRun {
+            chat: id(9),
+            target: id(target),
+            turn: 1,
+            call: crate::core::ai::chat::engine::CallId(call),
+            command: command.to_owned(),
+        }
+    }
+
+    // S3.8: the cwd is read from the pane, the paths are checked off the loop
+    // and the answer comes back on the run channel.
+    #[tokio::test]
+    async fn a_check_run_reads_the_pane_cwd_and_answers_on_the_run_channel() {
+        use crate::app::RunEvent;
+        use crate::core::ai::chat::engine::CallId;
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap().join("home");
+        std::fs::create_dir_all(home.join("dev")).unwrap();
+        let env = run_check::process_env();
+        let env = crate::runtime::tools::ToolEnv {
+            home: Some(home.clone().into()),
+            ..env
+        };
+        let (tx, mut rx) = mpsc::channel(4);
+        let (panes, _rx, _rec) = fake_panes(None);
+        let mut panes = panes.with_run_checks(run_check::Checker::new(env, tx));
+        let pty = FakePty {
+            cwd: Some(home.join("dev")),
+            ..FakePty::default()
+        };
+        panes.handles.insert(id(1), Box::new(pty));
+        let (_, feedback) = panes.apply(vec![check_effect(1, 7, "ls")]);
+        assert_eq!(feedback, Vec::new(), "the answer is not synchronous");
+        assert_eq!(
+            rx.recv().await,
+            Some((
+                id(1),
+                RunEvent::Checked {
+                    call: CallId(7),
+                    cwd: home.join("dev"),
+                    cd_target: None,
+                }
+            ))
+        );
+    }
+
+    // No cwd to check against, or nothing to check with: the prompt, at once.
+    #[test]
+    fn a_check_run_that_cannot_read_the_cwd_is_refused_at_once() {
+        use crate::app::RunEvent;
+        use crate::core::ai::chat::engine::CallId;
+        let refused = |pane, call| {
+            AppEvent::Run(
+                id(pane),
+                RunEvent::Refused {
+                    call: CallId(call),
+                    reason: approval::NO_CWD,
+                },
+            )
+        };
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        panes.handles.insert(id(1), Box::new(FakePty::default()));
+        let (_, feedback) = panes.apply(vec![check_effect(1, 7, "ls")]);
+        assert_eq!(feedback, vec![refused(1, 7)], "no checker");
+
+        let (tx, _rx) = mpsc::channel(1);
+        let (panes, _rx, _rec) = fake_panes(None);
+        let mut panes =
+            panes.with_run_checks(run_check::Checker::new(run_check::process_env(), tx));
+        panes.handles.insert(id(1), Box::new(FakePty::default()));
+        let (_, feedback) = panes.apply(vec![check_effect(1, 8, "ls"), check_effect(2, 9, "ls")]);
+        assert_eq!(
+            feedback,
+            vec![refused(1, 8), refused(2, 9)],
+            "an unreadable cwd, and a pane that is gone"
+        );
+    }
+
+    fn auto_run_effect(target: u32, call: u64, cwd: &str) -> Effect {
+        Effect::AutoRun {
+            chat: id(9),
+            target: id(target),
+            bytes: format!("cmd{target}\r").into_bytes(),
+            turn: 1,
+            call: crate::core::ai::chat::engine::CallId(call),
+            cwd: cwd.into(),
+        }
+    }
+
+    // The write step: the pane must still be where the check was done and the
+    // shell must own the terminal; otherwise nothing is written, the answer is
+    // not claimed, and the app is told so it can ask the user.
+    #[tokio::test]
+    async fn an_auto_run_writes_only_where_it_was_checked_and_at_a_prompt() {
+        use crate::app::RunEvent;
+        use crate::core::ai::chat::engine::CallId;
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let mut logs = Vec::new();
+        let mut waits = Vec::new();
+        let panes_under_test = [
+            (1, Some("/srv/a"), Some(true)),
+            (2, Some("/srv/other"), Some(true)),
+            (3, Some("/srv/a"), Some(false)),
+            (4, None, Some(true)),
+        ];
+        for (n, cwd, foreground) in panes_under_test {
+            let pty = FakePty {
+                foreground,
+                cwd: cwd.map(Into::into),
+                ..FakePty::default()
+            };
+            logs.push(pty.log.clone());
+            panes.handles.insert(id(n), Box::new(pty));
+            waits.push(waiting_answer(&panes, n.into()));
+        }
+        let effects = (1..=4)
+            .map(|n| auto_run_effect(n, n.into(), "/srv/a"))
+            .collect();
+        let (_, feedback) = panes.apply(effects);
+        assert_eq!(logs[0].lock().unwrap().writes, vec![b"cmd1\r".to_vec()]);
+        for log in &logs[1..] {
+            assert!(log.lock().unwrap().writes.is_empty());
+        }
+        let not_run = |pane, call, reason| {
+            AppEvent::Run(
+                id(pane),
+                RunEvent::NotRun {
+                    call: CallId(call),
+                    reason,
+                },
+            )
+        };
+        assert_eq!(
+            feedback,
+            vec![
+                not_run(2, 2, auto_type::MOVED),
+                not_run(3, 3, auto_type::BUSY),
+                not_run(4, 4, auto_type::MOVED),
+            ]
+        );
+        // The write is not the answer: the claimed wait is parked again, so
+        // the report of the run can finish it (see `a_run_done_*`).
+        let waits_map = panes.chats.as_ref().unwrap().waits();
+        for call in 1..=4 {
+            assert!(
+                waits_map.take(id(9), 1, CallId(call)).is_some(),
+                "call {call}"
+            );
+        }
+    }
+
+    // Only one write per run: a call that is over is owed no bytes.
+    #[tokio::test]
+    async fn an_auto_run_whose_call_is_over_writes_nothing() {
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let pty = FakePty {
+            foreground: Some(true),
+            cwd: Some("/srv/a".into()),
+            ..FakePty::default()
+        };
+        let log = pty.log.clone();
+        panes.handles.insert(id(1), Box::new(pty));
+        let ended = waiting(&panes, 1);
+        panes.chats.as_ref().unwrap().waits().end_turn(id(9), 1);
+        let (_, feedback) = panes.apply(vec![auto_run_effect(1, 1, "/srv/a")]);
+        assert!(log.lock().unwrap().writes.is_empty());
+        // The app drops its slot instead of probing a run that never was.
+        assert_eq!(
+            feedback,
+            vec![AppEvent::Run(
+                id(1),
+                crate::app::RunEvent::NotRun {
+                    call: crate::core::ai::chat::engine::CallId(1),
+                    reason: crate::app::CALL_OVER,
+                }
+            )]
+        );
+        assert!(matches!(ended.await, Decision::Denied(_)));
+    }
+
+    // No chat runtime at all: the same.
+    #[test]
+    fn an_auto_run_without_chats_writes_nothing_and_tells_the_app() {
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        let pty = FakePty {
+            foreground: Some(true),
+            cwd: Some("/srv/a".into()),
+            ..FakePty::default()
+        };
+        let log = pty.log.clone();
+        panes.handles.insert(id(1), Box::new(pty));
+        let (_, feedback) = panes.apply(vec![auto_run_effect(1, 1, "/srv/a")]);
+        assert!(log.lock().unwrap().writes.is_empty());
+        assert!(matches!(
+            feedback[..],
+            [AppEvent::Run(_, crate::app::RunEvent::NotRun { .. })]
+        ));
+    }
+
+    fn run_report() -> Box<crate::core::ai::tools::report::RunReport> {
+        use crate::core::ai::tools::{report::RunReport, settle::End};
+        Box::new(RunReport {
+            number: 1,
+            end: End::Settled,
+            cwd: None,
+            cd_target: None,
+            output: None,
+        })
+    }
+
+    fn run_done(call: u64) -> Effect {
+        Effect::RunDone {
+            chat: id(9),
+            turn: 1,
+            call: crate::core::ai::chat::engine::CallId(call),
+            report: run_report(),
+        }
+    }
+
+    // Design D22: the write parks the claimed wait; the report finishes it,
+    // once. A second report finds nothing and answers nothing.
+    #[tokio::test]
+    async fn a_written_run_stays_parked_until_its_report_finishes_it_once() {
+        use crate::core::ai::chat::engine::Answer;
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let pty = FakePty {
+            foreground: Some(true),
+            cwd: Some("/srv/a".into()),
+            ..FakePty::default()
+        };
+        panes.handles.insert(id(1), Box::new(pty));
+        let mut wait = waiting_answer(&panes, 1);
+        panes.apply(vec![auto_run_effect(1, 1, "/srv/a")]);
+        assert!(
+            futures::poll!(&mut wait).is_pending(),
+            "the write is not the answer"
+        );
+        panes.apply(vec![run_done(1), run_done(1)]);
+        assert_eq!(wait.await, Answer::Ran(run_report()));
+    }
+
+    // The turn ended while the run settled: the report finds no wait.
+    #[tokio::test]
+    async fn a_report_for_a_run_whose_turn_ended_answers_nothing() {
+        let (mut panes, _rx) = panes_with_chats(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let pty = FakePty {
+            foreground: Some(true),
+            cwd: Some("/srv/a".into()),
+            ..FakePty::default()
+        };
+        panes.handles.insert(id(1), Box::new(pty));
+        let wait = waiting(&panes, 1);
+        panes.apply(vec![auto_run_effect(1, 1, "/srv/a")]);
+        panes.chats.as_ref().unwrap().waits().end_turn(id(9), 1);
+        panes.apply(vec![run_done(1)]);
+        assert!(matches!(wait.await, Decision::Denied(_)));
+    }
+
+    // Design D22: one probe per named pane, read from the pane's handle; a
+    // pane that is gone yields none, and none named yields none.
+    #[test]
+    fn a_probe_reads_the_foreground_and_cwd_of_the_named_panes_only() {
+        use crate::app::RunEvent;
+        let (mut panes, _rx, _rec) = fake_panes(None);
+        for (n, foreground, cwd) in [(1, Some(true), Some("/srv/a")), (2, None, None)] {
+            let pty = FakePty {
+                foreground,
+                cwd: cwd.map(Into::into),
+                ..FakePty::default()
+            };
+            panes.handles.insert(id(n), Box::new(pty));
+        }
+        assert_eq!(panes.probes(&[]), Vec::new());
+        assert_eq!(
+            panes.probes(&[id(1), id(3)]),
+            vec![AppEvent::Run(
+                id(1),
+                RunEvent::Probe {
+                    foreground: Some(true),
+                    cwd: Some("/srv/a".into()),
+                }
+            )]
+        );
+        assert_eq!(
+            panes.probes(&[id(2)]),
+            vec![AppEvent::Run(
+                id(2),
+                RunEvent::Probe {
+                    foreground: None,
+                    cwd: None,
+                }
+            )]
+        );
+    }
+
     #[tokio::test]
     async fn a_panic_hook_restores_the_terminal_except_inside_a_chat_adapter() {
         assert!(
@@ -3351,6 +3978,14 @@ mod tests {
             !inside,
             "inside an adapter poll the panic is caught: leave the TUI alone"
         );
+        assert!(should_restore(), "and it is back to normal afterwards");
+    }
+
+    #[tokio::test]
+    async fn a_panic_hook_leaves_the_terminal_alone_inside_an_mcp_dispatch() {
+        assert!(should_restore());
+        let inside = mcp::scoped(async { should_restore() }).await;
+        assert!(!inside, "a dispatch panic is caught and answered");
         assert!(should_restore(), "and it is back to normal afterwards");
     }
 

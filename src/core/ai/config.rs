@@ -124,6 +124,51 @@ impl NotifyMode {
     }
 }
 
+/// What a model's `run_in_pane` does in a chat (`[ai.tools] approval`, design
+/// D18 and D19). Only the user switches it: the model can never reach it, so
+/// no tool call, request or runtime event carries a mode.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ApprovalMode {
+    /// The user confirms each command with `y`. The default.
+    #[default]
+    Ask,
+    /// The command is typed into the pane without a prompt, never followed
+    /// by Enter.
+    Auto,
+    /// A short list of navigation commands runs at once and its output goes
+    /// to the model; every other command asks. Routes like `Auto` until the
+    /// run guards land.
+    Run,
+}
+
+/// The exact problem of an unreadable `ai.tools.approval`.
+pub const APPROVAL_PROBLEM: &str = "ai.tools.approval: expected \"ask\", \"auto\" or \"run\"";
+
+impl ApprovalMode {
+    pub const ALL: [Self; 3] = [Self::Ask, Self::Auto, Self::Run];
+
+    /// The lowercase id: the value of `[ai.tools] approval`.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Auto => "auto",
+            Self::Run => "run",
+        }
+    }
+
+    /// The mode of an id; case-sensitive, no trimming.
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.id() == id)
+    }
+
+    /// The next mode, wrapping.
+    pub fn cycled(self, forward: bool) -> Self {
+        let len = Self::ALL.len();
+        let step = if forward { 1 } else { len - 1 };
+        Self::ALL[(self as usize + step) % len]
+    }
+}
+
 /// An engine id plus a model name; either may be unset.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Assignment {
@@ -179,6 +224,8 @@ pub struct AiConfig {
     context: bool,
     notify: NotifyMode,
     notify_sound: bool,
+    tools: bool,
+    approval: ApprovalMode,
     pub memory: MemoryConfig,
 }
 
@@ -190,6 +237,8 @@ impl Default for AiConfig {
             context: true,
             notify: NotifyMode::Off,
             notify_sound: true,
+            tools: true,
+            approval: ApprovalMode::Ask,
             memory: MemoryConfig::default(),
         }
     }
@@ -239,6 +288,26 @@ impl AiConfig {
 
     pub fn set_notify_sound(&mut self, sound: bool) {
         self.notify_sound = sound;
+    }
+
+    /// Whether the chat may act in the user's panes (`[ai.tools] enabled`).
+    /// On by default: nothing is written without the user's `y` anyway.
+    pub fn tools_enabled(&self) -> bool {
+        self.tools
+    }
+
+    pub fn set_tools_enabled(&mut self, on: bool) {
+        self.tools = on;
+    }
+
+    /// What a model's `run_in_pane` does in a chat opened now
+    /// (`[ai.tools] approval`).
+    pub fn approval(&self) -> ApprovalMode {
+        self.approval
+    }
+
+    pub fn set_approval(&mut self, mode: ApprovalMode) {
+        self.approval = mode;
     }
 
     /// The effective assignment of a task and whether it was inherited from
@@ -376,7 +445,7 @@ fn read_notify_sound(section: &Table, problems: &mut Vec<String>) -> bool {
     }
 }
 
-/// Reads `[ai]` (the general task, the profile and the context and notify flags) and `[ai.tasks.<id>]`
+/// Reads `[ai]` (the general task, the profile and the context flag and the notify settings) and `[ai.tasks.<id>]`
 /// (the others). Each key falls back to unset on its own; `general` and
 /// unknown names under `ai.tasks` are ignored.
 fn read_tasks(table: &Table, problems: &mut Vec<String>) -> AiConfig {
@@ -424,8 +493,56 @@ pub fn read_with_port_env(
     port_env: Option<&str>,
 ) -> AiConfig {
     let mut config = read_tasks(table, problems);
+    config.tools = read_tools(table, problems);
+    config.approval = read_approval(table, problems);
     config.memory = read_memory(table, problems, port_env);
     config
+}
+
+/// Reads `[ai.tools] enabled`: a missing table or key is `true`; a value of
+/// the wrong type falls back to `true` with a problem. Unknown keys are
+/// ignored. The menu row (`Tools`) edits the same key.
+fn read_tools(table: &Table, problems: &mut Vec<String>) -> bool {
+    let Some(ai) = table.get("ai").and_then(Value::as_table) else {
+        return true;
+    };
+    let section = match ai.get("tools") {
+        None => return true,
+        Some(Value::Table(section)) => section,
+        Some(_) => {
+            problems.push("ai.tools: expected a table".to_owned());
+            return true;
+        }
+    };
+    match section.get("enabled") {
+        None => true,
+        Some(Value::Boolean(on)) => *on,
+        Some(_) => {
+            problems.push("ai.tools.enabled: expected a boolean".to_owned());
+            true
+        }
+    }
+}
+
+/// Reads `[ai.tools] approval`. A missing table or key is `ask`; a value that
+/// is not exactly `"ask"`, `"auto"` or `"run"` falls back to `ask` with a problem. A
+/// table that is not a table was already reported by `read_tools`.
+fn read_approval(table: &Table, problems: &mut Vec<String>) -> ApprovalMode {
+    let section = table
+        .get("ai")
+        .and_then(Value::as_table)
+        .and_then(|ai| ai.get("tools"))
+        .and_then(Value::as_table);
+    match section.and_then(|section| section.get("approval")) {
+        None => ApprovalMode::Ask,
+        Some(Value::String(id)) if ApprovalMode::from_id(id).is_some() => {
+            ApprovalMode::from_id(id).unwrap_or_default()
+        }
+        Some(_) => {
+            problems.push(APPROVAL_PROBLEM.to_owned());
+            ApprovalMode::Ask
+        }
+    }
 }
 
 /// A valid port in the text of `ENGRAM_PORT`: an integer from 1 to 65535.
@@ -1136,6 +1253,154 @@ mod tests {
                 vec!["ai.notify_sound: expected a boolean".to_owned()],
                 "{value}"
             );
+        }
+    }
+
+    // Spec (configuration): `[ai.tools] enabled`, default and parse.
+    #[test]
+    fn tools_default_to_enabled() {
+        assert!(AiConfig::default().tools_enabled());
+        for text in ["", "[ai]\n", "[ai.tools]\n", "[ai.tools]\nother = 1\n"] {
+            let (config, problems) = read_text(text);
+            assert!(config.tools_enabled(), "{text:?}");
+            assert!(problems.is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_boolean_tools_flag_is_read_without_a_problem() {
+        for (value, want) in [("true", true), ("false", false)] {
+            let (config, problems) = read_text(&format!("[ai.tools]\nenabled = {value}\n"));
+            assert_eq!(config.tools_enabled(), want, "{value}");
+            assert!(problems.is_empty(), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_bad_tools_value_falls_back_to_enabled_with_the_exact_problem() {
+        for value in ["1", "\"no\"", "[]"] {
+            let (config, problems) = read_text(&format!("[ai.tools]\nenabled = {value}\n"));
+            assert!(config.tools_enabled(), "{value}");
+            assert_eq!(
+                problems,
+                vec!["ai.tools.enabled: expected a boolean".to_owned()],
+                "{value}"
+            );
+        }
+        let (config, problems) = read_text("[ai]\ntools = 3\n");
+        assert!(config.tools_enabled());
+        assert_eq!(problems, vec!["ai.tools: expected a table".to_owned()]);
+    }
+
+    #[test]
+    fn the_tools_problem_follows_the_task_ones() {
+        let (_, problems) = read_text("[ai]\nnotify = 1\n[ai.tools]\nenabled = 1\n");
+        assert_eq!(
+            problems,
+            vec![
+                NOTIFY_PROBLEM.to_owned(),
+                "ai.tools.enabled: expected a boolean".to_owned(),
+            ]
+        );
+    }
+
+    // Spec (configuration): `[ai.tools] approval`, default and parse (D18).
+    #[test]
+    fn approval_defaults_to_ask() {
+        assert_eq!(AiConfig::default().approval(), ApprovalMode::Ask);
+        for text in [
+            "",
+            "[ai]\n",
+            "[ai.tools]\n",
+            "[ai.tools]\nenabled = false\n",
+        ] {
+            let (config, problems) = read_text(text);
+            assert_eq!(config.approval(), ApprovalMode::Ask, "{text:?}");
+            assert!(problems.is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn approval_reads_its_three_ids() {
+        for (id, want) in [
+            ("ask", ApprovalMode::Ask),
+            ("auto", ApprovalMode::Auto),
+            ("run", ApprovalMode::Run),
+        ] {
+            let (config, problems) = read_text(&format!("[ai.tools]\napproval = \"{id}\"\n"));
+            assert_eq!(config.approval(), want, "{id}");
+            assert!(problems.is_empty(), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_bad_approval_falls_back_to_ask_with_the_exact_problem() {
+        for value in [
+            "\"AUTO\"",
+            "\"RUN\"",
+            "\"Run\"",
+            "\"yes\"",
+            "true",
+            "1",
+            "\" auto\"",
+        ] {
+            let (config, problems) = read_text(&format!("[ai.tools]\napproval = {value}\n"));
+            assert_eq!(config.approval(), ApprovalMode::Ask, "{value}");
+            assert_eq!(problems, vec![APPROVAL_PROBLEM.to_owned()], "{value}");
+        }
+    }
+
+    #[test]
+    fn the_approval_problem_follows_the_enabled_one() {
+        let (_, problems) = read_text("[ai.tools]\napproval = 1\nenabled = 1\n");
+        assert_eq!(
+            problems,
+            vec![
+                "ai.tools.enabled: expected a boolean".to_owned(),
+                APPROVAL_PROBLEM.to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_non_table_tools_reports_only_the_table_problem() {
+        let (config, problems) = read_text("[ai]\ntools = \"auto\"\n");
+        assert_eq!(config.approval(), ApprovalMode::Ask);
+        assert_eq!(problems, vec!["ai.tools: expected a table".to_owned()]);
+    }
+
+    #[test]
+    fn the_approval_problem_names_all_three_values() {
+        assert_eq!(
+            APPROVAL_PROBLEM,
+            "ai.tools.approval: expected \"ask\", \"auto\" or \"run\""
+        );
+    }
+
+    #[test]
+    fn the_approval_mode_names_itself_and_round_trips() {
+        assert_eq!(
+            ApprovalMode::ALL,
+            [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run]
+        );
+        for mode in ApprovalMode::ALL {
+            assert_eq!(ApprovalMode::from_id(mode.id()), Some(mode));
+        }
+        assert_eq!(ApprovalMode::from_id("Auto"), None);
+        assert_eq!(ApprovalMode::from_id("RUN"), None);
+        assert_eq!(ApprovalMode::from_id(" run"), None);
+    }
+
+    #[test]
+    fn the_approval_mode_cycles_ask_auto_run_both_ways() {
+        let mut mode = ApprovalMode::Ask;
+        for want in [ApprovalMode::Auto, ApprovalMode::Run, ApprovalMode::Ask] {
+            mode = mode.cycled(true);
+            assert_eq!(mode, want);
+        }
+        for want in [ApprovalMode::Run, ApprovalMode::Auto, ApprovalMode::Ask] {
+            mode = mode.cycled(false);
+            assert_eq!(mode, want);
         }
     }
 

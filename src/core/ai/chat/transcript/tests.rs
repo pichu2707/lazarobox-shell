@@ -46,6 +46,9 @@ fn rows(lines: &[Line]) -> Vec<String> {
                 LineKind::Mark => 'M',
                 LineKind::Reasoning => 'R',
                 LineKind::ReasoningHead => 'H',
+                LineKind::Hint => 'T',
+                LineKind::Tool => 'L',
+                LineKind::ToolAlert => 'X',
                 LineKind::Blank => '_',
             };
             format!("{k}|{}", l.text)

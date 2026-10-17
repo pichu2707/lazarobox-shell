@@ -94,6 +94,13 @@ impl PtyHandle for PortableHandle {
         self.pid
     }
 
+    fn shell_in_foreground(&self) -> Option<bool> {
+        // tcgetpgrp on the master: the group the terminal's input goes to.
+        let leader = self.master.process_group_leader()?;
+        let shell = libc::pid_t::try_from(self.pid?).ok()?;
+        Some(leader == shell)
+    }
+
     fn kill(&mut self) {
         if self.killed {
             return;
@@ -380,6 +387,22 @@ mod tests {
     fn no_status_is_reported_unless_asked() {
         let events = run_script("exit 3", false);
         assert!(!events.iter().any(|e| matches!(e, PtyEvent::Status(_))));
+    }
+
+    // Spec (agent-tools, auto-type): the foreground check reads the real
+    // process group of the PTY.
+    #[test]
+    fn a_shell_at_its_prompt_owns_the_foreground_and_a_child_does_not() {
+        let (mut pty, rx) = spawn("/bin/sh", size(24, 80));
+        pty.write(b"echo READY\n".to_vec());
+        wait_for(&rx, "READY");
+        assert_eq!(pty.shell_in_foreground(), Some(true));
+        pty.write(b"sleep 30\n".to_vec());
+        let deadline = Instant::now() + TIMEOUT;
+        while pty.shell_in_foreground() == Some(true) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(pty.shell_in_foreground(), Some(false));
     }
 
     // Spec: shell exits -> Exited event.

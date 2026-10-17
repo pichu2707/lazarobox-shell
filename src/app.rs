@@ -12,7 +12,7 @@ use crate::core::{
         chat::{
             ChatState, Follow, Phase,
             copy::ChatCopy,
-            engine::{ChatRequest, StreamEvent},
+            engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, StreamEvent},
             notify::{Ended, body, plays_sound, should_notify},
             prompts::Resolved,
             store::{StoreCmd, StoreReply},
@@ -23,6 +23,7 @@ use crate::core::{
             offer::ServerOffer,
             port::{MemCmd, MemReply, Reason},
         },
+        tools::report::RunReport,
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{
@@ -41,15 +42,22 @@ use crate::core::{
     update::{InstallEnv, UpdateAction},
 };
 
+mod auto_run;
 mod chat;
 mod chat_copy;
 mod context;
 mod history;
 mod notes;
 mod offer;
+mod run;
 mod scroll;
 mod summary;
 mod tags;
+mod tool;
+
+use auto_run::RunSlot;
+pub use auto_run::{CALL_OVER, PANE_GONE, RunEvent};
+use tool::ToolEvent;
 
 /// Rows of history kept by the emulator.
 const SCROLLBACK_LINES: usize = 10_000;
@@ -168,6 +176,8 @@ pub enum AppEvent {
     /// `MEMORY_WAIT` are given up. The runtime sends it only while
     /// `memory_waiting` holds.
     MemoryTick,
+    /// What the runtime found out about a run in pane `.0` (design D21).
+    Run(PaneId, RunEvent),
     /// The terminal window gained (`true`) or lost (`false`) the focus, as
     /// the terminal reports it. A terminal that does not report it never
     /// sends this, and the window counts as focused.
@@ -214,6 +224,65 @@ pub enum Effect {
     /// Stop a pane's turn without blocking the loop: the socket is closed or
     /// the CLI's process group is killed.
     ChatCancel(PaneId),
+    /// The user's answer to the tool call `call` of turn `turn` of chat `pane`
+    /// (the approval overlay, or a check that failed on `y`). A call that
+    /// ended meanwhile ignores it.
+    ToolDecision {
+        pane: PaneId,
+        turn: u64,
+        call: CallId,
+        decision: Decision,
+    },
+    /// Chat `chat` has a model's command for the shell pane `target` typed
+    /// without a prompt (design D18): the runtime writes `bytes` only when
+    /// the shell owns the terminal, and answers the call of turn `turn`
+    /// `Sent` or `Denied` itself. Never followed by Enter.
+    AutoType {
+        chat: PaneId,
+        target: PaneId,
+        bytes: Vec<u8>,
+        /// The number of `target` in its tab, as the user sees it; the
+        /// answers and the result row name the pane by it.
+        number: usize,
+        turn: u64,
+        call: CallId,
+    },
+    /// A run that passed its check (design D21): the runtime writes `bytes`,
+    /// which end in the one `\r`, in ONE write, only if the pane's real
+    /// directory still is `cwd` and the shell owns the terminal. It claims the
+    /// answer first and parks it after the write; `RunDone` finishes it.
+    /// Otherwise it sends `RunEvent::NotRun`. The only effect with an Enter:
+    /// `y` and `auto` cannot carry one.
+    AutoRun {
+        chat: PaneId,
+        target: PaneId,
+        bytes: Vec<u8>,
+        turn: u64,
+        call: CallId,
+        cwd: PathBuf,
+    },
+    /// The run of call `call` ended (design D22): the runtime finishes the
+    /// parked call with `report`. Emitted once per written run.
+    RunDone {
+        chat: PaneId,
+        turn: u64,
+        call: CallId,
+        report: Box<RunReport>,
+    },
+    /// Chat `chat` routed a model's safe command for the shell pane `target`
+    /// to a run (design D21): the runtime reads the pane's real directory,
+    /// checks the paths of `command` off the UI thread and answers with one
+    /// `AppEvent::Run`. Nothing is written.
+    CheckRun {
+        chat: PaneId,
+        target: PaneId,
+        turn: u64,
+        call: CallId,
+        command: String,
+    },
+    /// Close the tool session of chat `pane`: its socket goes and every call
+    /// it holds is denied. Emitted with `ChatCancel` for a chat that had one.
+    EndToolSession(PaneId),
     /// Ask the memory worker for something. Returns at once: the answer comes
     /// back as one `AppEvent::Memory`, or never when memory is not active.
     Memory(MemCmd),
@@ -326,6 +395,18 @@ struct PtyPane {
     proc_cwd: Option<PathBuf>,
     /// Set when the pane runs `cargo install` for an update, not a shell.
     update: Option<UpdateRun>,
+    /// The auto-typed command of a chat that sits unsent on this pane's line
+    /// (design D18): a later auto call to this pane prompts instead.
+    line_pending: Option<CallId>,
+    /// The run routed to this pane that is still in flight (design D21); its
+    /// presence is the pane's `executing` mark.
+    run: Option<RunSlot>,
+    /// The user wrote to this pane since its last Enter or Ctrl+C: its line
+    /// may hold text a run would join (design D21).
+    user_dirty: bool,
+    /// The last key forwarded here was Tab, BackTab or an arrow: a completion
+    /// menu may be open, and the next Enter then only accepts an entry.
+    after_menu: bool,
 }
 
 /// The install an update pane runs.
@@ -395,6 +476,10 @@ impl PaneState {
                 emu: Pane::new(size, SCROLLBACK_LINES).with_host(host),
                 proc_cwd: None,
                 update: None,
+                line_pending: None,
+                run: None,
+                user_dirty: false,
+                after_menu: false,
             })),
             size,
         }
@@ -451,6 +536,9 @@ struct Tab {
     focus: PaneId,
     /// The focused pane fills the whole body; the others keep running hidden.
     zoom: bool,
+    /// The last shell pane that had the focus in this tab: where a command
+    /// from a chat is typed unless the user cycles to another.
+    last_shell: Option<PaneId>,
 }
 
 impl Tab {
@@ -511,6 +599,12 @@ pub struct App {
     /// reasoning toggle): a terminal without key event types delivers a held
     /// key as Presses.
     held_chat_key: Option<HeldExit>,
+    /// The engines whose requests carry tools (`MCP_VERIFIED`).
+    tool_engines: &'static [&'static str],
+    /// Whether the shells' locale names UTF-8 (injected); a non-ASCII run needs it.
+    utf8_locale: bool,
+    /// Whether `/proc/<pid>/cwd` exists; without it no run is routed.
+    cwd_readable: bool,
     /// Monotonic clock, injected so `update` stays deterministic.
     clock: fn() -> Instant,
     /// A fresh engram session id, injected so the core does no IO: the
@@ -582,6 +676,7 @@ impl App {
                 tree: Node::Leaf(first),
                 focus: first,
                 zoom: false,
+                last_shell: None,
             }],
             active: 0,
             term: (cols, rows),
@@ -603,6 +698,9 @@ impl App {
             shell: None,
             held_exit: None,
             held_chat_key: None,
+            tool_engines: MCP_VERIFIED,
+            utf8_locale: false,
+            cwd_readable: cfg!(target_os = "linux"),
             clock: Instant::now,
             session_id: || None,
             token_check: || false,
@@ -622,6 +720,13 @@ impl App {
             no_server: None,
             history: false,
         }
+    }
+
+    /// Test-only: the engines whose requests carry tools.
+    #[cfg(test)]
+    fn with_tool_engines(mut self, engines: &'static [&'static str]) -> Self {
+        self.tool_engines = engines;
+        self
     }
 
     /// Starts with the AI choice saved in `config.toml`.
@@ -723,6 +828,11 @@ impl App {
     /// Turns the chat history on: the list, saving, resume and delete.
     pub fn with_chat_history(mut self) -> Self {
         self.history = true;
+        self
+    }
+
+    pub fn with_utf8_locale(mut self, utf8: bool) -> Self {
+        self.utf8_locale = utf8;
         self
     }
 
@@ -1029,6 +1139,11 @@ impl App {
         let Some(cwd) = self.focused_state().effective_cwd() else {
             return String::new();
         };
+        self.home_label(cwd)
+    }
+
+    /// `cwd` as text, with `$HOME` shown as `~`.
+    fn home_label(&self, cwd: &Path) -> String {
         let home = self.home.as_deref().filter(|home| home.parent().is_some());
         match home.and_then(|home| cwd.strip_prefix(home).ok()) {
             Some(rest) if rest.as_os_str().is_empty() => "~".into(),
@@ -1263,6 +1378,7 @@ impl App {
             AppEvent::Pty(id, event) if self.is_shell(id) => self.on_pty(id, event),
             AppEvent::Cwd(id, cwd) if self.is_shell(id) => self.on_cwd(id, cwd),
             AppEvent::Pty(..) | AppEvent::Cwd(..) => Vec::new(),
+            AppEvent::Run(id, event) => self.on_run(id, event),
             AppEvent::SpawnFailed(id, _) if self.update_run(id).is_some() => {
                 self.update_ended(id, UpdateEnded::NotStarted);
                 Vec::new()
@@ -1462,7 +1578,9 @@ impl App {
         }
         self.input = InputMode::Terminal;
         // The forced tab bar goes away with the menu, whatever the outcome.
-        self.apply_config()
+        let mut effects = self.apply_config();
+        effects.extend(self.sync_tools());
+        effects
     }
 
     /// Brings the host mouse capture in line with `config.mouse`: one effect
@@ -1576,6 +1694,7 @@ impl App {
         let Some(bytes) = encode_key(key, pty.emu.modes()) else {
             return Vec::new();
         };
+        self.note_user_key(&key);
         self.return_to_live();
         vec![Effect::WritePty(self.tab().focus, bytes)]
     }
@@ -1614,6 +1733,8 @@ impl App {
                 | PrefixAction::SaveNote
                 | PrefixAction::ToggleMemory
                 | PrefixAction::Summarize
+                | PrefixAction::RunInPane
+                | PrefixAction::ToggleApproval
                 | PrefixAction::EditTags,
             ) => InputMode::Terminal,
             Step::Run(
@@ -1628,10 +1749,16 @@ impl App {
             // The literal is a byte for a child; a chat has none, so it swallows it.
             Step::Run(PrefixAction::SendPrefixLiteral) if self.focused_pty().is_some() => {
                 self.return_to_live();
+                self.mark_dirty(self.tab().focus);
+                self.note_typed(self.tab().focus);
                 vec![Effect::WritePty(self.tab().focus, vec![PREFIX_LITERAL])]
             }
             Step::Run(PrefixAction::OpenMenu) => self.open_menu(),
             Step::Run(PrefixAction::OpenChat) => self.open_chat_pane(),
+            // They would replace the conversation and hide a waiting confirm.
+            Step::Run(
+                PrefixAction::EditTags | PrefixAction::SaveNote | PrefixAction::Summarize,
+            ) if self.refuse_over_approval() => Vec::new(),
             Step::Run(PrefixAction::SaveNote) if self.focused_is_chat() => {
                 let id = self.tab().focus;
                 self.chat_note_key(id)
@@ -1663,6 +1790,8 @@ impl App {
                 self.notice = Some(MEMORY_CHAT_ONLY.to_string());
                 Vec::new()
             }
+            Step::Run(PrefixAction::RunInPane) => self.run_in_pane(),
+            Step::Run(PrefixAction::ToggleApproval) => self.toggle_approval(),
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
             Step::Run(PrefixAction::SplitBelow) => self.split(Axis::Y),
             Step::Run(PrefixAction::Focus(dir)) => self.move_focus(dir),
@@ -1731,6 +1860,7 @@ impl App {
             tree: Node::Leaf(id),
             focus: id,
             zoom: false,
+            last_shell: None,
         });
         self.activate(self.tabs.len() - 1);
         self.refresh_screen();
@@ -1777,10 +1907,12 @@ impl App {
     fn drop_tab(&mut self, index: usize) -> Vec<Effect> {
         let leaves = self.tabs.remove(index).tree.leaves();
         let mut effects = self.end_effects(&leaves);
+        effects.extend(self.deny_closing_runs(&leaves));
         for id in leaves {
             self.panes.remove(&id);
             self.drop_parked_send(id);
             self.drop_note_choices(id);
+            self.drop_run_slots(|slot| slot.chat == id);
         }
         if index == self.active {
             self.active = index.min(self.tabs.len() - 1);
@@ -1887,6 +2019,12 @@ impl App {
         if next == left {
             return;
         }
+        // The last shell the user was in is where a chat types its commands.
+        for pane in [left, next] {
+            if self.is_shell(pane) {
+                self.tabs[t].last_shell = Some(pane);
+            }
+        }
         if let Some(pty) = self.panes.get_mut(&left).and_then(PaneState::pty_mut) {
             pty.emu.set_scrollback(0);
         }
@@ -1910,6 +2048,7 @@ impl App {
             StreamEvent::Done(_) => Ended::Done,
             _ => Ended::Error,
         };
+        let tool = ToolEvent::of(&event);
         let follow = chat.apply(turn, event);
         let finished = live && chat.phase() == Phase::Idle;
         self.dirty |= live;
@@ -1917,8 +2056,9 @@ impl App {
         let mut effects = self.store_effects(id);
         if follow == Follow::CancelEngine {
             // The state ended the turn itself (answer cap): stop the engine.
-            effects.push(Effect::ChatCancel(id));
+            effects.extend(self.cancel_chat(id));
         }
+        effects.extend(self.on_tool_event(id, turn, (live, finished), tool));
         // A turn ends once: later events of it are dropped above, so a pane
         // rings at most once per answer.
         let focus = self.tab().focus;
@@ -1961,9 +2101,11 @@ impl App {
             Removal::WasLast => self.drop_tab(t),
             Removal::Removed => {
                 let mut ends = self.end_effects(&[id]);
+                ends.extend(self.deny_closing_runs(&[id]));
                 self.panes.remove(&id);
                 self.drop_parked_send(id);
                 self.drop_note_choices(id);
+                self.drop_run_slots(|slot| slot.chat == id);
                 self.tabs[t].zoom = false;
                 if id == self.tabs[t].focus {
                     let tiling = tile(&self.tabs[t].tree, body);
@@ -2062,7 +2204,7 @@ impl App {
                 let id = self.tab().focus;
                 let stop = self.stop_effect(id);
                 let mut effects = self.remove_pane(id);
-                effects.push(stop);
+                effects.extend(stop);
                 effects
             }
         }
@@ -2074,7 +2216,7 @@ impl App {
             return self.quit_effects();
         }
         let stops: Vec<_> = (self.tab().tree.leaves().into_iter())
-            .map(|id| self.stop_effect(id))
+            .flat_map(|id| self.stop_effect(id))
             .collect();
         let mut effects = self.drop_tab(self.active);
         effects.extend(stops);
@@ -2084,12 +2226,14 @@ impl App {
     /// What ends the work behind pane `id` when it closes: a shell's child is
     /// terminated, a chat's turn is cancelled. A chat has no child, so it
     /// never gets `ClosePane`.
-    fn stop_effect(&self, id: PaneId) -> Effect {
+    fn stop_effect(&self, id: PaneId) -> Vec<Effect> {
         if self.is_shell(id) {
-            Effect::ClosePane(id)
-        } else {
-            Effect::ChatCancel(id)
+            return vec![Effect::ClosePane(id)];
         }
+        let session = (self.panes.get(&id))
+            .and_then(PaneState::chat_state)
+            .is_some_and(ChatState::tool_session);
+        Self::stop_chat(id, session)
     }
 
     fn on_copy_key(&mut self, mut state: CopyState, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
@@ -2178,7 +2322,18 @@ impl App {
                 let Some(pty) = self.focused_pty() else {
                     return Vec::new();
                 };
-                let bytes = encode_paste(text, pty.emu.modes());
+                let modes = pty.emu.modes();
+                let bytes = encode_paste(text, modes);
+                // Inside a bracketed paste a newline executes nothing; without
+                // it, a newline becomes `\r` and runs the line.
+                if !modes.bracketed_paste
+                    && text.contains(['\r', '\n'])
+                    && let Some(pty) = self.focused_state_mut().pty_mut()
+                {
+                    pty.line_pending = None;
+                }
+                self.mark_dirty(self.tab().focus);
+                self.note_typed(self.tab().focus);
                 self.return_to_live();
                 vec![Effect::WritePty(self.tab().focus, bytes)]
             }
@@ -2265,6 +2420,7 @@ impl App {
             PtyEvent::Output(bytes) => {
                 // Panes of hidden tabs are not on screen: feed them, don't redraw.
                 self.dirty |= self.tab().tree.leaves().contains(&id);
+                let now = (self.clock)();
                 let mut cwd_changed = false;
                 let reply = self
                     .panes
@@ -2273,7 +2429,12 @@ impl App {
                         let before = state.effective_cwd().map(Path::to_path_buf);
                         let reply = state
                             .pty_mut()
-                            .map(|pty| pty.emu.feed(&bytes))
+                            .map(|pty| {
+                                if let Some(slot) = pty.run.as_mut() {
+                                    slot.output(now);
+                                }
+                                pty.emu.feed(&bytes)
+                            })
                             .unwrap_or_default();
                         cwd_changed = state.effective_cwd() != before.as_deref();
                         reply
@@ -2391,6 +2552,32 @@ mod app_tests {
 
     fn esc() -> AppEvent {
         AppEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+    }
+
+    /// Moves the open menu's cursor onto the row labelled `label` with the
+    /// keys a user would press: `j` through the current tab, then `Tab`
+    /// into the next one. Bounded: it panics with `no row {label}` instead
+    /// of looping forever when the row does not exist.
+    fn goto_row(a: &mut App, label: &str) {
+        for _ in 0..=crate::core::menu::TAB_COUNT {
+            for _ in 0..=32 {
+                let on_label = a.menu().unwrap().rows(&a.config).iter().any(|row| {
+                    matches!(
+                        row,
+                        crate::core::menu::Row::Item { label: l, selected: true, .. } if *l == label
+                    )
+                });
+                if on_label {
+                    return;
+                }
+                a.update(key('j'));
+            }
+            a.update(AppEvent::Key(KeyEvent::new(
+                KeyCode::Tab,
+                KeyModifiers::NONE,
+            )));
+        }
+        panic!("no row {label}");
     }
 
     fn in_prefix() -> App {
@@ -4103,8 +4290,17 @@ mod app_tests {
         PaneSize { rows, cols }
     }
 
+    /// An app with no tool engine: the tests that offer tools opt in with
+    /// `with_tool_engines`, so none depends on which engines are verified.
     fn launched(cols: u16, rows: u16) -> App {
-        App::new(cols, rows).with_env(Some("/bin/zsh"), None, LAUNCH.into())
+        App::new(cols, rows)
+            .with_env(Some("/bin/zsh"), None, LAUNCH.into())
+            .with_tool_engines(&[])
+    }
+
+    #[test]
+    fn a_new_app_offers_tools_to_the_verified_engines() {
+        assert_eq!(App::new(80, 25).tool_engines, MCP_VERIFIED);
     }
 
     fn spec(cwd: &str, size: PaneSize) -> SpawnSpec {
@@ -5700,7 +5896,7 @@ mod app_tests {
         open_menu(&mut a);
         let rows = a.menu().unwrap().rows(&a.config);
         assert!(matches!(
-            &rows[1],
+            &rows[0],
             Row::Item {
                 selected: true,
                 value: Some(v),
@@ -5708,12 +5904,47 @@ mod app_tests {
             } if v == "bottom"
         ));
         assert!(matches!(
-            &rows[2],
+            &rows[1],
             Row::Item {
                 selected: false,
                 value: Some(v),
                 ..
             } if v == "top"
+        ));
+    }
+
+    // Spec: Open and close. A reopened menu starts on Settings, row 0, with
+    // the tab and the per-tab cursors forgotten.
+    #[test]
+    fn reopening_starts_on_the_settings_tab_whatever_tab_was_left() {
+        let mut a = menu_app();
+        a.update(code(KeyCode::Tab));
+        a.update(key('j'));
+        a.update(key('j'));
+        assert_eq!(a.menu().unwrap().active_tab(), 1);
+        a.update(esc());
+        open_menu(&mut a);
+        let menu = a.menu().unwrap();
+        assert_eq!(menu.active_tab(), 0);
+        let rows = menu.rows(&a.config);
+        assert!(matches!(
+            &rows[0],
+            Row::Item {
+                label: "Statusline position",
+                selected: true,
+                ..
+            }
+        ));
+        // The AI tab starts on its first row too: the old cursor is gone.
+        a.update(code(KeyCode::Tab));
+        let rows = a.menu().unwrap().rows(&a.config);
+        assert!(matches!(
+            &rows[0],
+            Row::Item {
+                label: "Set all tasks",
+                selected: true,
+                ..
+            }
         ));
     }
 
@@ -6358,9 +6589,7 @@ mod app_tests {
         let mut a = ai_app();
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
-        for _ in 0..7 {
-            a.update(key('j'));
-        }
+        goto_row(&mut a, "general");
         let before = a.menu().cloned();
         let upper = AppEvent::Key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT));
         assert_eq!(a.update(upper), Vec::<Effect>::new(), "uppercase");
@@ -6382,9 +6611,7 @@ mod app_tests {
         let mut a = ai_app();
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
-        for _ in 0..8 {
-            a.update(key('j'));
-        }
+        goto_row(&mut a, "code");
         let enter = || code(KeyCode::Enter);
         let quiet = |a: &mut App, event: AppEvent| {
             assert_eq!(a.update(event.clone()), Vec::<Effect>::new(), "{event:?}");
@@ -6440,9 +6667,7 @@ mod app_tests {
     /// Opens the picker of `Set all tasks` on `none` and chooses it: the
     /// general assignment goes from `ollama` to unset.
     fn clear_all(a: &mut App) {
-        for _ in 0..6 {
-            a.update(key('j'));
-        }
+        goto_row(a, "Set all tasks");
         a.update(code(KeyCode::Enter));
         a.update(key('k'));
         a.update(code(KeyCode::Enter));
@@ -6554,19 +6779,15 @@ mod app_tests {
         assert!(!menu.ai_draft().memory.enabled);
     }
 
-    /// Moves the menu selection to the `Context` row (before `Memory`, the
-    /// last one).
+    /// Moves the menu selection to the `Context` row (before `Memory` and
+    /// `Tools`, the last one).
     fn to_context_row(a: &mut App) {
-        for _ in 0..2 {
-            a.update(key('k'));
-        }
+        goto_row(a, "Context");
     }
 
     /// Moves the menu selection to the `Profile` row (before `Context`).
     fn to_profile_row(a: &mut App) {
-        for _ in 0..3 {
-            a.update(key('k'));
-        }
+        goto_row(a, "Profile");
     }
 
     /// Moves the menu selection to the `Notify` row (right after `Mouse`).
@@ -6576,11 +6797,10 @@ mod app_tests {
         }
     }
 
-    /// Moves the menu selection to the `Memory` row (the last one).
+    /// Moves the menu selection to the `Memory` row (before `Tools`, the last
+    /// one).
     fn to_memory_row(a: &mut App) {
-        for _ in 0..1 {
-            a.update(key('k'));
-        }
+        goto_row(a, "Memory");
     }
 
     // Spec (config-menu): Profile row. Cycling is silent, `s` saves only the
@@ -6745,6 +6965,81 @@ mod app_tests {
         a.update(AppEvent::NotifyTested("late".to_owned()));
     }
 
+    // Spec (agent-tools, config menu): `s` saves only `ai.tools.enabled` and
+    // the saved value becomes the app's flag; Esc keeps the saved one.
+    #[test]
+    fn the_tools_row_saves_only_its_key_and_updates_the_app() {
+        let mut a = ai_app();
+        assert!(a.ai().tools_enabled());
+        open_menu(&mut a);
+        goto_row(&mut a, "Tools");
+        assert_eq!(a.update(key('l')), Vec::<Effect>::new(), "no ResizePty");
+        assert!(!a.menu().unwrap().ai_draft().tools_enabled());
+        assert!(a.ai().tools_enabled(), "not saved yet");
+        let edit = ConfigEdit {
+            table: "ai.tools",
+            key: "enabled",
+            value: "false".into(),
+        };
+        assert_eq!(a.update(key('s')), vec![Effect::SaveConfig(vec![edit])]);
+        a.update(AppEvent::ConfigSaved);
+        assert!(a.menu().is_none());
+        assert!(!a.ai().tools_enabled());
+        open_menu(&mut a);
+        goto_row(&mut a, "Tools");
+        a.update(key('l'));
+        a.update(esc());
+        assert!(!a.ai().tools_enabled(), "Esc keeps the saved value");
+    }
+
+    // Spec (agent-tools, config menu): `s` saves only `ai.tools.approval`, the
+    // saved value becomes the app's mode and Esc keeps the saved one.
+    #[test]
+    fn the_approval_row_saves_only_its_key_and_updates_the_app() {
+        use crate::core::ai::config::ApprovalMode;
+        let mut a = ai_app();
+        assert_eq!(a.ai().approval(), ApprovalMode::Ask);
+        open_menu(&mut a);
+        goto_row(&mut a, "Approval");
+        assert_eq!(a.update(key('l')), Vec::<Effect>::new(), "no ResizePty");
+        assert_eq!(a.menu().unwrap().ai_draft().approval(), ApprovalMode::Auto);
+        assert_eq!(a.ai().approval(), ApprovalMode::Ask, "not saved yet");
+        let edit = ConfigEdit {
+            table: "ai.tools",
+            key: "approval",
+            value: "auto".into(),
+        };
+        assert_eq!(a.update(key('s')), vec![Effect::SaveConfig(vec![edit])]);
+        a.update(AppEvent::ConfigSaved);
+        assert!(a.menu().is_none());
+        assert_eq!(a.ai().approval(), ApprovalMode::Auto);
+        open_menu(&mut a);
+        goto_row(&mut a, "Approval");
+        a.update(key('l'));
+        a.update(esc());
+        assert_eq!(a.ai().approval(), ApprovalMode::Auto, "Esc keeps the saved");
+    }
+
+    // Spec (agent-tools, config menu): the saved mode reaches later opens, not
+    // a chat that is already open.
+    #[test]
+    fn a_saved_approval_does_not_touch_an_open_chat() {
+        use crate::core::ai::config::ApprovalMode;
+        let mut a = launched(80, 25).with_ai(ai_of("ollama", "qwen2:7b"));
+        press(&mut a, "c");
+        let mode = |a: &mut App| a.focused_state_mut().chat_mut().unwrap().approval_mode();
+        assert_eq!(mode(&mut a), ApprovalMode::Ask);
+        open_menu(&mut a);
+        goto_row(&mut a, "Approval");
+        a.update(key('l'));
+        a.update(key('s'));
+        a.update(AppEvent::ConfigSaved);
+        assert_eq!(a.ai().approval(), ApprovalMode::Auto);
+        assert_eq!(mode(&mut a), ApprovalMode::Ask, "the open chat keeps ask");
+        press(&mut a, "c");
+        assert_eq!(mode(&mut a), ApprovalMode::Auto, "a later open takes it");
+    }
+
     // Spec (Context toggle): Esc restores the flag captured at open.
     #[test]
     fn esc_reverts_the_context_draft() {
@@ -6781,9 +7076,7 @@ mod app_tests {
         open_menu(&mut a);
         a.update(AppEvent::EnginesDetected(machine()));
         clear_all(&mut a);
-        for _ in 0..2 {
-            a.update(key('j'));
-        }
+        goto_row(&mut a, "code");
         a.update(code(KeyCode::Enter));
         a.update(key('j'));
         a.update(key('j'));
@@ -6807,9 +7100,7 @@ mod app_tests {
 
     /// Selection on the first AI task row.
     fn to_task_row(a: &mut App) {
-        for _ in 0..8 {
-            a.update(key('j'));
-        }
+        goto_row(a, "code");
     }
 
     /// The picker of the first task, on the engine two rows down, at level 2.
@@ -7038,9 +7329,7 @@ mod app_tests {
         a.update(AppEvent::EnginesDetected(machine()));
         assert_eq!(a.menu().unwrap().ai_draft(), saved, "refreshed");
         // Change an unrelated setting: the save carries no [ai] key.
-        for _ in 0..7 {
-            a.update(key('k'));
-        }
+        goto_row(&mut a, "Tab bar position");
         a.update(key('l'));
         let effects = a.update(key('s'));
         let Some(Effect::SaveConfig(edits)) = effects.first() else {
@@ -7070,6 +7359,22 @@ mod app_tests {
 
     /// The live chat pane (ai-chat C8).
     mod chat_live;
+
+    /// Run in pane: the confirm that types a chat's shell block.
+    mod run_pane;
+
+    /// Tool calls that need the user, answered through the same overlay.
+    mod tool_approval;
+
+    /// The chat approval mode: where it comes from, when it resets.
+    mod tool_auto;
+
+    /// The `run` mode: routing, the check round trip and its cleanup.
+    mod tool_run;
+    mod tool_run_settle;
+
+    /// The keys, rechecks and lifecycle of the run-in-pane confirm.
+    mod run_pane_keys;
 
     /// COPY on a chat pane (pane-scroll S1).
     mod chat_copy;

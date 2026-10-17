@@ -6,6 +6,7 @@ use std::{
     collections::HashMap,
     future::Future,
     panic::AssertUnwindSafe,
+    path::PathBuf,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -19,21 +20,35 @@ use futures::{
 use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
 
 mod cli;
-pub(crate) use cli::{jail_note, run_listing, trusted_real_path};
+pub(crate) use cli::{
+    alive_by_comm, ensure_private_dir, jail_note, read_comm, run_listing, trusted_real_path,
+};
 
-use super::loopback::post_stream;
+use super::{
+    loopback::{Timeouts, post_stream},
+    mcp::{Dispatch, Hub, Started},
+    tools::{Pending, ToolHost, TurnScope, Waits, pending::TURN},
+};
 use crate::core::{
     ai::{
         chat::{
             ANSWER_CAP, REASONING_CAP,
-            adapters::{Invocation, Wire, adapter_for},
+            adapters::{Adapter, Invocation, Wire, adapter_for},
             claude::ClaudeDecoder,
             codex::CodexDecoder,
-            engine::{ChatError, ChatRequest, StreamEvent},
+            engine::{
+                Answer, CallId, ChatError, ChatRequest, Decision, StreamEvent, Tools, locality,
+            },
             gemini::GeminiDecoder,
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
         sanitize::{StreamSanitizer, Utf8Stream, clean},
+        tools::{
+            registry,
+            report::RunReport,
+            summary::clip,
+            wiring::{McpWire, Secret},
+        },
     },
     layout::PaneId,
 };
@@ -72,12 +87,18 @@ pub type Runner =
 /// A decoder that has seen no byte yet. Every turn builds its own: a decoder
 /// keeps a partial line and an `ended` flag, and neither may leak into the
 /// next turn of the pane.
-pub fn fresh_decoder(wire: Wire) -> Box<dyn StreamDecoder + Send> {
+///
+/// `wired` is true for a CLI turn that got the tool server; only claude's
+/// decoder reads it.
+pub fn fresh_decoder(wire: Wire, wired: bool) -> Box<dyn StreamDecoder + Send> {
     match wire {
         Wire::Ndjson => Box::new(NdjsonSplitter::server()),
         Wire::Sse => Box::new(SseParser::server()),
+        Wire::ClaudeStreamJson if wired => Box::new(ClaudeDecoder::wired()),
         Wire::ClaudeStreamJson => Box::new(ClaudeDecoder::new()),
+        Wire::CodexJsonl if wired => Box::new(CodexDecoder::wired()),
         Wire::CodexJsonl => Box::new(CodexDecoder::new()),
+        Wire::GeminiStreamJson if wired => Box::new(GeminiDecoder::wired()),
         Wire::GeminiStreamJson => Box::new(GeminiDecoder::new()),
     }
 }
@@ -90,7 +111,7 @@ pub async fn http_turn(
     body: Vec<u8>,
     tx: mpsc::Sender<StreamEvent>,
 ) {
-    let mut decoder = fresh_decoder(wire);
+    let mut decoder = fresh_decoder(wire, false);
     post_stream("127.0.0.1", port, path, &body, &mut *decoder, &tx).await;
 }
 
@@ -159,6 +180,29 @@ impl Pipe {
                     vec![StreamEvent::Notice(line)]
                 }
             }
+            // Made by the host that ran the call, never decoded from text.
+            // The texts still pass the output sanitizer: a path or a command
+            // in them is data.
+            StreamEvent::ToolCall {
+                id,
+                name,
+                summary,
+                approval,
+            } => vec![StreamEvent::ToolCall {
+                id,
+                name: clip(&name),
+                summary: clip(&summary),
+                approval,
+            }],
+            StreamEvent::ToolResult {
+                id,
+                status,
+                summary,
+            } => vec![StreamEvent::ToolResult {
+                id,
+                status,
+                summary: clip(&summary),
+            }],
             StreamEvent::Delta(text) => self.bytes(text.as_bytes()),
             StreamEvent::ThinkingDelta(text) => self.reasoning(&text),
             StreamEvent::Done(finish) => self.end(StreamEvent::Done(finish)),
@@ -265,15 +309,22 @@ pub(crate) fn adapter_runner_at(port: Option<u16>) -> Runner {
         CliEnv::from_env(crate::core::ai::jail::JailSupport::Unavailable(
             crate::core::ai::jail::JailOff::NotProbed,
         )),
+        None,
     )
 }
 
 /// The runner over an explicit machine: the port of server engines (when
-/// overridden) and the environment CLI engines run in.
-pub fn runner_with(port: Option<u16>, cli: CliEnv) -> Runner {
+/// overridden), the environment CLI engines run in and the host for the direct
+/// tool loop of a server engine (unused: that loop runs on the dispatch of the
+/// turn). The tool session of a turn is not made here but by [`Chats::send`],
+/// which knows the pane and turn; a turn without `Tools::On` never touches
+/// either, so its requests stay as they were without tools.
+pub fn runner_with(port: Option<u16>, cli: CliEnv, tools: Option<Arc<ToolHost>>) -> Runner {
     Arc::new(move |request, tx| {
         let cli = cli.clone();
+        let tools = tools.clone();
         Box::pin(async move {
+            let _tools = tools;
             let Some(adapter) = adapter_for(&request.engine) else {
                 let _ = tx
                     .send(StreamEvent::Error(ChatError::Failed(NO_ADAPTER.into())))
@@ -286,7 +337,17 @@ pub fn runner_with(port: Option<u16>, cli: CliEnv) -> Runner {
                     port: catalog_port,
                     path,
                     body,
-                } => http_turn(wire, port.unwrap_or(catalog_port), path, body, tx).await,
+                } => {
+                    let port = port.unwrap_or(catalog_port);
+                    // Only a turn that offers tools has a dispatch to loop on.
+                    match (adapter, &request.tools, ollama::current()) {
+                        (Adapter::Ollama, Tools::On { .. }, Some(dispatch)) => {
+                            ollama::tool_turn(&request, port, dispatch, &Timeouts::SERVER, &tx)
+                                .await
+                        }
+                        _ => http_turn(wire, port, path, body, tx).await,
+                    }
+                }
                 Invocation::Process(job) => cli::process_turn(&cli, job, &tx).await,
                 Invocation::Refused(reason) => {
                     let _ = tx
@@ -353,23 +414,53 @@ impl<F: Future> Future for Scoped<F> {
     }
 }
 
+/// Denies the calls of a turn that still wait for the user when the turn's
+/// task ends, however it ends: finished, failed, timed out (the 15-minute
+/// total) or aborted by a cancel or a newer turn. A timer never approves.
+struct EndTurn {
+    waits: Arc<Waits>,
+    pane: PaneId,
+    turn: u64,
+}
+
+impl Drop for EndTurn {
+    fn drop(&mut self) {
+        self.waits.end_turn(self.pane, self.turn);
+    }
+}
+
 /// One turn: runs the adapter, filters its events and forwards them tagged.
 /// The adapter future lives in this task, so dropping the task drops it.
+/// `events` is the turn's channel (the sender the adapter gets is a clone, and
+/// a tool session may hold others); `pending` is set when the turn offers
+/// tools, so the adapter's timers can see the calls that wait for the user.
 async fn run_turn(
     runner: Runner,
     app: mpsc::Sender<Tagged>,
-    pane: PaneId,
-    turn: u64,
+    turn: Turn,
     request: ChatRequest,
+    channel: (mpsc::Sender<StreamEvent>, mpsc::Receiver<StreamEvent>),
+    pending: Option<Pending>,
+    dispatch: Option<Arc<dyn Dispatch>>,
 ) {
-    let (tx, mut rx) = mpsc::channel(TURN_CHANNEL);
+    let Turn { pane, turn, waits } = turn;
+    let _end = EndTurn { waits, pane, turn };
+    let (tx, mut rx) = channel;
     // A panicking adapter must still end the turn: its sender is dropped and
     // the pane hears `Interrupted` instead of waiting forever.
     // The call itself sits inside the guarded future: a runner that panics
     // before it returns its future is caught the same way.
-    let run = AssertUnwindSafe(scoped(async move { runner(request, tx).await }))
-        .catch_unwind()
-        .fuse();
+    let adapter = async move { runner(request, tx).await };
+    // A server engine runs its tool loop in the adapter, on this dispatch.
+    let adapter: BoxFuture<'static, ()> = match dispatch {
+        Some(dispatch) => Box::pin(ollama::DISPATCH.scope(dispatch, adapter)),
+        None => Box::pin(adapter),
+    };
+    let adapter: BoxFuture<'static, ()> = match pending {
+        Some(pending) => Box::pin(TURN.scope(pending, adapter)),
+        None => Box::pin(adapter),
+    };
+    let run = AssertUnwindSafe(scoped(adapter)).catch_unwind().fuse();
     tokio::pin!(run);
     let mut running = true;
     let mut pipe = Pipe::new();
@@ -402,13 +493,40 @@ async fn run_turn(
     }
 }
 
+/// Which turn a task runs, and where its calls wait for the user.
+struct Turn {
+    pane: PaneId,
+    turn: u64,
+    waits: Arc<Waits>,
+}
+
+/// What a chat needs to offer tools: the host that runs the calls and the hub
+/// of per-chat sockets a CLI engine reaches them through. The hub is made when
+/// the first turn with tools starts, so an app that never offers tools never
+/// touches the folder.
+struct Tooling {
+    host: Arc<ToolHost>,
+    /// The folders to try for the sockets, best first.
+    dirs: Vec<PathBuf>,
+    hub: Option<Hub>,
+    /// The session of each pane that has one, for the wiring of its engine.
+    started: HashMap<PaneId, Started>,
+}
+
 /// The running turns, by pane. Each turn is one task that owns its adapter
 /// future: aborting the task drops the future, which closes the socket or
 /// kills the process group, so a cancel needs no cooperation from the adapter.
+///
+/// A turn whose request has `Tools::On` also gets a tool session (when tooling
+/// is set): a socket and a dispatch bound to the turn's event channel. The
+/// calls of that session that need the user wait in `waits`, keyed by (pane,
+/// turn, call); [`Chats::decide`] answers them.
 pub struct Chats {
     runner: Runner,
     tx: mpsc::Sender<Tagged>,
     turns: HashMap<PaneId, JoinHandle<()>>,
+    waits: Arc<Waits>,
+    tooling: Option<Tooling>,
 }
 
 impl Chats {
@@ -417,23 +535,169 @@ impl Chats {
             runner,
             tx,
             turns: HashMap::new(),
+            waits: Waits::new(),
+            tooling: None,
         }
     }
 
+    /// Lets turns that ask for tools run them through `host`, with session
+    /// sockets in the first of `dirs` that is a private folder of ours.
+    pub fn with_tools(mut self, host: Arc<ToolHost>, dirs: Vec<PathBuf>) -> Self {
+        self.tooling = Some(Tooling {
+            host,
+            dirs,
+            hub: None,
+            started: HashMap::new(),
+        });
+        self
+    }
+
     /// Starts turn `turn` of `pane`, replacing any turn it still had.
-    pub fn send(&mut self, pane: PaneId, turn: u64, request: ChatRequest) {
+    pub fn send(&mut self, pane: PaneId, turn: u64, mut request: ChatRequest) {
         self.turns.retain(|_, task| !task.is_finished());
         if let Some(old) = self.turns.remove(&pane) {
             old.abort();
         }
+        // At once, not when the aborted task is dropped: an answer for the
+        // old turn must find nothing from here on.
+        self.waits.end_pane(pane);
+        let channel = mpsc::channel(TURN_CHANNEL);
+        let (pending, dispatch) = match self.open_session(pane, turn, &request, &channel.0) {
+            Some((pending, dispatch)) => (Some(pending), dispatch),
+            None => (None, None),
+        };
+        // Tell the engine's adapter which session is this turn's. Without a
+        // session the request keeps `mcp: None` and the turn runs as text.
+        if let (Tools::On { mcp, .. }, Some(started), Some(_)) =
+            (&mut request.tools, self.session(pane), &pending)
+        {
+            *mcp = Some(Box::new(McpWire {
+                socket: started.socket.clone(),
+                token: Secret::new(started.token.reveal()),
+                unwire: started.end.clone(),
+            }));
+        }
         let task = tokio::spawn(run_turn(
             self.runner.clone(),
             self.tx.clone(),
-            pane,
-            turn,
+            Turn {
+                pane,
+                turn,
+                waits: self.waits.clone(),
+            },
             request,
+            channel,
+            pending,
+            dispatch,
         ));
         self.turns.insert(pane, task);
+    }
+
+    /// The session of this turn, if it offers tools: any earlier session of
+    /// the pane is replaced (its token stops working), or closed when this
+    /// turn has no tools. `None` when the turn runs without a session.
+    ///
+    /// A server engine (Ollama) gets no socket: its dispatch comes back for
+    /// the turn's tool loop, which reaches the same host and approvals.
+    fn open_session(
+        &mut self,
+        pane: PaneId,
+        turn: u64,
+        request: &ChatRequest,
+        events: &mpsc::Sender<StreamEvent>,
+    ) -> Option<(Pending, Option<Arc<dyn Dispatch>>)> {
+        let tooling = self.tooling.as_mut()?;
+        tooling.started.remove(&pane);
+        let (Tools::On { origin, .. }, Some(locality)) =
+            (&request.tools, locality(&request.engine))
+        else {
+            if let Some(hub) = tooling.hub.as_mut() {
+                hub.close(pane);
+            }
+            return None;
+        };
+        let pending = Pending::new();
+        let scope = TurnScope {
+            events: events.clone(),
+            locality,
+            // A chat of unknown origin reads relative paths against `/`,
+            // which the path policy then refuses: the ask shows `/name`.
+            origin: origin.clone().unwrap_or_else(|| PathBuf::from("/")),
+            approver: self.waits.approver(pane, turn, pending.clone()),
+        };
+        let dispatch = tooling.host.dispatch(scope);
+        if adapter_for(&request.engine) == Some(Adapter::Ollama) {
+            // The pane may have had a CLI session: it must not stay open.
+            if let Some(hub) = tooling.hub.as_mut() {
+                hub.close(pane);
+            }
+            return Some((pending, Some(dispatch)));
+        }
+        if tooling.hub.is_none() {
+            tooling.hub = Hub::new(&tooling.dirs).ok();
+        }
+        let hub = tooling.hub.as_mut()?;
+        // No session means no tools for this turn: it runs as text.
+        let started = hub.open(pane, registry(&[]), dispatch).ok()?;
+        tooling.started.insert(pane, started);
+        Some((pending, None))
+    }
+
+    /// The user's answer to a call that waits: the app's `ToolDecision`.
+    /// `false` when no call waits under that (pane, turn, call), say because
+    /// it ended meanwhile; the answer is then dropped.
+    pub fn decide(&self, pane: PaneId, turn: u64, call: CallId, decision: Decision) -> bool {
+        self.waits.decide(pane, turn, call, decision)
+    }
+
+    /// Claims the answer of a call that waits (see [`Waits::take`]).
+    pub fn take(
+        &self,
+        pane: PaneId,
+        turn: u64,
+        call: CallId,
+    ) -> Option<tokio::sync::oneshot::Sender<Answer>> {
+        self.waits.take(pane, turn, call)
+    }
+
+    /// Puts a claimed wait back once its command was written (see
+    /// [`Waits::park`]).
+    pub fn park(
+        &self,
+        pane: PaneId,
+        turn: u64,
+        call: CallId,
+        wait: tokio::sync::oneshot::Sender<Answer>,
+    ) -> bool {
+        self.waits.park(pane, turn, call, wait)
+    }
+
+    /// Ends a parked call with the report of its run (see [`Waits::finish`]).
+    pub fn finish(&self, pane: PaneId, turn: u64, call: CallId, report: Box<RunReport>) -> bool {
+        self.waits.finish(pane, turn, call, report)
+    }
+
+    /// The waits, so a test can register one without a model turn.
+    #[cfg(test)]
+    pub fn waits(&self) -> &Arc<Waits> {
+        &self.waits
+    }
+
+    /// Ends the tool session of `pane`: its socket goes and every call it
+    /// holds, answered or not, is denied.
+    pub fn end_session(&mut self, pane: PaneId) {
+        self.waits.end_pane(pane);
+        if let Some(tooling) = self.tooling.as_mut() {
+            if let Some(hub) = tooling.hub.as_mut() {
+                hub.close(pane);
+            }
+            tooling.started.remove(&pane);
+        }
+    }
+
+    /// The session of `pane`, while it has one.
+    pub fn session(&self, pane: PaneId) -> Option<&Started> {
+        self.tooling.as_ref()?.started.get(&pane)
     }
 
     /// Stops the turn of `pane`, if any. Returns at once.
@@ -441,6 +705,7 @@ impl Chats {
         if let Some(task) = self.turns.remove(&pane) {
             task.abort();
         }
+        self.waits.end_pane(pane);
     }
 
     /// Stops every turn and waits, up to `bound`, until each adapter has been
@@ -456,5 +721,10 @@ impl Chats {
 
 #[cfg(test)]
 mod adapter_tests;
+mod ollama;
+#[cfg(test)]
+mod ollama_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tools_tests;

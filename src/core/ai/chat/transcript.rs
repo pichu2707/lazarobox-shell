@@ -5,8 +5,9 @@ use std::{cell::RefCell, sync::Arc};
 
 use super::{
     ChatState, Entry, ReasoningState,
-    engine::Role,
+    engine::{Role, ToolStatus},
     wrap::{expand_tabs, text_width, wrap_ranges, wrap_words},
+    yank,
 };
 
 /// What a transcript line is, which decides its style.
@@ -25,6 +26,13 @@ pub enum LineKind {
     Reasoning,
     /// `▸ reasoning (N.Ns)` / `▾ reasoning (N.Ns)`.
     ReasoningHead,
+    /// A tool call row, and the result row of one that went well.
+    Tool,
+    /// The result row of a tool call that failed or was denied.
+    ToolAlert,
+    /// The line under the last shell block that names the run binding. It is
+    /// drawn, never stored, yanked or sent.
+    Hint,
     Blank,
 }
 
@@ -35,10 +43,15 @@ pub struct Line {
     pub text: String,
 }
 
+/// The hint under the last shell block of the last answer (tools on).
+pub const RUN_HINT: &str = "Ctrl+Space e  run in pane";
+
 /// The gutter in front of every reasoning row.
 pub const GUTTER: &str = "┊ ";
 /// In front of the first row of a user message.
 pub const USER_PREFIX: &str = "› ";
+/// In front of the first row of a tool call.
+pub const TOOL_PREFIX: &str = "» ";
 /// In front of a system line.
 pub const SYSTEM_PREFIX: &str = "• ";
 
@@ -53,9 +66,18 @@ pub fn layout(chat: &ChatState, width: usize) -> (Vec<Line>, Vec<usize>) {
     let mut out: Vec<Line> = Vec::new();
     let mut starts: Vec<usize> = Vec::new();
     let mut after_reasoning = false;
-    for entry in chat.entries() {
+    // The hint goes under the block the run action would offer: the last
+    // message, when it holds a runnable shell block.
+    let hinted = (chat.run_hint() && yank::last_shell_block(chat).is_some())
+        .then(|| {
+            chat.entries()
+                .iter()
+                .rposition(|e| matches!(e, Entry::Message(_)))
+        })
+        .flatten();
+    for (index, entry) in chat.entries().iter().enumerate() {
         let mut rows = Vec::new();
-        entry_rows(entry, width, &mut rows);
+        entry_rows(entry, width, hinted == Some(index), &mut rows);
         if rows.is_empty() {
             starts.push(out.len());
             continue;
@@ -87,7 +109,7 @@ fn blank() -> Line {
 }
 
 /// The rows of one entry.
-fn entry_rows(entry: &Entry, width: usize, out: &mut Vec<Line>) {
+fn entry_rows(entry: &Entry, width: usize, hint: bool, out: &mut Vec<Line>) {
     match entry {
         Entry::System(text) => {
             push_wrapped(out, LineKind::System, SYSTEM_PREFIX, "  ", text, width);
@@ -96,7 +118,7 @@ fn entry_rows(entry: &Entry, width: usize, out: &mut Vec<Line>) {
             push_wrapped(out, LineKind::User, USER_PREFIX, "  ", &msg.text, width);
         }
         Entry::Message(msg) => {
-            assistant_rows(&msg.text, width, out);
+            assistant_rows(&msg.text, width, hint, out);
             if msg.status.is_partial() {
                 let mark = format!("({})", msg.status.as_str());
                 push_wrapped(out, LineKind::Mark, "", "", &mark, width);
@@ -106,6 +128,29 @@ fn entry_rows(entry: &Entry, width: usize, out: &mut Vec<Line>) {
             push_wrapped(out, LineKind::ReasoningHead, "", "", &line.head(), width);
             if line.expanded() {
                 push_wrapped(out, LineKind::Reasoning, GUTTER, GUTTER, line.text(), width);
+            }
+        }
+        Entry::Tool(row) => {
+            let call = format!("{} {}", row.name(), row.summary());
+            push_wrapped(
+                out,
+                LineKind::Tool,
+                TOOL_PREFIX,
+                "  ",
+                call.trim_end(),
+                width,
+            );
+            if let Some((status, summary)) = row.result() {
+                let kind = match status {
+                    ToolStatus::Ok => LineKind::Tool,
+                    ToolStatus::Error | ToolStatus::Denied => LineKind::ToolAlert,
+                };
+                let text = if summary.is_empty() {
+                    status.as_str().to_owned()
+                } else {
+                    format!("{}: {summary}", status.as_str())
+                };
+                push_wrapped(out, kind, "  ", "    ", &text, width);
             }
         }
         Entry::Reasoning(block) => {
@@ -137,8 +182,9 @@ fn entry_rows(entry: &Entry, width: usize, out: &mut Vec<Line>) {
 /// An answer: plain text with fenced blocks drawn as code. An unclosed fence
 /// makes the rest of the message code. The fence lines are code too, shown as
 /// they are.
-fn assistant_rows(text: &str, width: usize, out: &mut Vec<Line>) {
+pub(super) fn assistant_rows(text: &str, width: usize, hint: bool, out: &mut Vec<Line>) {
     let mut in_code = false;
+    let mut after_block = None;
     for line in text.split('\n') {
         let fence = is_fence(line, in_code);
         let kind = if fence || in_code {
@@ -150,13 +196,22 @@ fn assistant_rows(text: &str, width: usize, out: &mut Vec<Line>) {
             in_code = !in_code;
         }
         push_wrapped(out, kind, "", "", line, width);
+        if fence && !in_code {
+            after_block = Some(out.len());
+        }
+    }
+    // The hint goes under the last block that closed.
+    if hint && let Some(at) = after_block {
+        let mut rows = Vec::new();
+        push_wrapped(&mut rows, LineKind::Hint, "", "", RUN_HINT, width);
+        out.splice(at..at, rows);
     }
 }
 
 /// Whether `line` is a fence. One that closes a block is any line starting
 /// with three backticks. One that opens a block must have no backtick after
 /// its opening run (CommonMark), so inline code like ```a``` is prose.
-fn is_fence(line: &str, in_code: bool) -> bool {
+pub(super) fn is_fence(line: &str, in_code: bool) -> bool {
     let Some(rest) = line.trim_start().strip_prefix("```") else {
         return false;
     };

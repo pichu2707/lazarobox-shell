@@ -3,14 +3,7 @@ source: src/ui/components/menu.rs
 expression: "text(&draw(62, POPUP_H, &menu))"
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings                                                   │
-│ Statusline position                                 bottom │
-│ Tab bar position                                       top │
-│ Mouse                                                   on │
-│ Notify                                                 off │
-│ Sound                                                   on │
-│ Updates                                             0.15.3 │
-│ AI                                                         │
+│ Settings │ AI                                        ⇥ Tab │
 │ Set all tasks                           ollama › model1:7b │
 │ general                                 ollama › model1:7b │
 │ code                                             (default) │
@@ -20,6 +13,8 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 │ Profile                                            analyst │
 │ Context                                                 on │
 │ Memory                                                 off │
+│ Tools                                                   on │
+│ Approval                                               ask │
 │                                                            │
 │ j/k move · h/l change · s save · Esc cancel                │
 └────────────────────────────────────────────────────────────┘

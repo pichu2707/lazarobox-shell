@@ -4,6 +4,8 @@
 //! turn in flight and the cwd the pane was opened from.
 
 pub mod adapters;
+pub mod approval;
+pub mod approval_rows;
 pub mod claude;
 pub mod cli;
 pub mod codex;
@@ -24,6 +26,7 @@ pub mod streams;
 pub mod summary;
 pub mod tag_editor;
 pub mod tags;
+pub mod tool;
 pub mod transcript;
 pub mod workspace;
 pub mod wrap;
@@ -34,10 +37,13 @@ use std::{
     time::Instant,
 };
 
-use crate::core::ai::config::Profile;
+use crate::core::{
+    ai::config::{ApprovalMode, Profile},
+    layout::PaneId,
+};
 use composer::Composer;
 use engine::{
-    Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, build_context,
+    Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools, build_context,
     history_chars,
 };
 use prompts::Resolved;
@@ -134,6 +140,9 @@ pub enum Entry {
     /// The memory the conversation was given, first in the transcript: shown,
     /// never stored, never sent as history.
     Memory(memory::MemoryLine),
+    /// A tool call and its result: shown, never stored, never sent as
+    /// history.
+    Tool(tool::ToolRow),
 }
 
 /// The most reasoning text kept per turn, in bytes. Past it the rest is
@@ -286,6 +295,25 @@ pub struct ChatState {
     /// The profile changed while the first system prompt was still being
     /// prepared: that answer is dropped and the prompt prepared again.
     reprepare_prompt: bool,
+    /// The approval waiting for the user, if any (see `approval`).
+    approvals: approval::Approvals,
+    /// The shell pane a pending run-in-pane command will be typed into.
+    /// Meaningful only while a `Run` approval is pending.
+    run_target: Option<PaneId>,
+    /// Draw the `run in pane` hint under the last shell block (tools are on).
+    run_hint: bool,
+    /// The turn last sent offered tools, so the runtime may hold a tool
+    /// session for this chat until the app ends it.
+    tool_session: bool,
+    /// When the keys start to answer the approval the model opened.
+    armed_at: Option<Instant>,
+    /// What a model's `run_in_pane` does in this chat (D18). Never stored and
+    /// never sent.
+    approval_mode: ApprovalMode,
+    /// Commands typed or run without a prompt in the turn in flight.
+    auto_typed: u8,
+    /// Consecutive grammar or policy fallbacks of `run` (D23).
+    run_fallbacks: u8,
 }
 
 impl ChatState {
@@ -319,6 +347,121 @@ impl ChatState {
             request_engine: String::new(),
             closing: false,
             reprepare_prompt: false,
+            approvals: approval::Approvals::default(),
+            run_target: None,
+            run_hint: false,
+            tool_session: false,
+            armed_at: None,
+            approval_mode: ApprovalMode::default(),
+            auto_typed: 0,
+            run_fallbacks: 0,
+        }
+    }
+
+    /// What a model's `run_in_pane` does in this chat.
+    pub fn approval_mode(&self) -> ApprovalMode {
+        self.approval_mode
+    }
+
+    pub fn set_approval_mode(&mut self, mode: ApprovalMode) {
+        self.approval_mode = mode;
+    }
+
+    /// The mode the pane's badge names: `auto` or `run`, and only while the
+    /// tools are on (the run hint is that flag). `ask` wears none. The badge
+    /// is drawn by the view and never stored or sent to the model.
+    pub fn mode_badge(&self) -> Option<ApprovalMode> {
+        match self.approval_mode {
+            ApprovalMode::Ask => None,
+            mode => self.run_hint.then_some(mode),
+        }
+    }
+
+    /// Commands typed without a prompt in the turn in flight.
+    pub fn auto_typed(&self) -> u8 {
+        self.auto_typed
+    }
+
+    /// One more command was typed without a prompt in this turn.
+    pub fn note_auto_typed(&mut self) {
+        self.auto_typed = self.auto_typed.saturating_add(1);
+    }
+
+    /// Whether `run` is paused for the rest of the turn (D23).
+    pub fn run_paused(&self) -> bool {
+        self.run_fallbacks >= approval::MAX_RUN_FALLBACKS
+    }
+
+    /// One more consecutive fallback of `run`.
+    pub fn note_run_fallback(&mut self) {
+        self.run_fallbacks = self.run_fallbacks.saturating_add(1);
+    }
+
+    /// A run was written: the fallbacks before it no longer count.
+    pub fn clear_run_fallbacks(&mut self) {
+        self.run_fallbacks = 0;
+    }
+
+    /// When the keys start to answer the approval the model opened; `None`
+    /// when no such approval is waiting.
+    pub fn armed_at(&self) -> Option<Instant> {
+        self.armed_at
+    }
+
+    pub fn set_armed_at(&mut self, at: Option<Instant>) {
+        self.armed_at = at;
+    }
+
+    /// Whether the runtime may hold a tool session for this chat.
+    pub fn tool_session(&self) -> bool {
+        self.tool_session
+    }
+
+    pub fn set_tool_session(&mut self, on: bool) {
+        self.tool_session = on;
+    }
+
+    /// Reads and clears the flag: the caller ends the session once.
+    pub fn take_tool_session(&mut self) -> bool {
+        std::mem::take(&mut self.tool_session)
+    }
+
+    /// Adds a transient system line: shown in the transcript, never stored
+    /// and never sent to the model (like every `Entry::System`).
+    pub fn push_system_line(&mut self, line: String) {
+        self.entries.push(Entry::System(line));
+        self.generation += 1;
+    }
+
+    /// The pending approval of this chat.
+    pub fn approvals(&self) -> &approval::Approvals {
+        &self.approvals
+    }
+
+    pub fn approvals_mut(&mut self) -> &mut approval::Approvals {
+        &mut self.approvals
+    }
+
+    /// The shell pane a pending run-in-pane command is aimed at.
+    pub fn run_target(&self) -> Option<PaneId> {
+        self.run_target
+    }
+
+    pub fn set_run_target(&mut self, target: Option<PaneId>) {
+        self.run_target = target;
+    }
+
+    /// Whether the hint under the last shell block is drawn.
+    pub fn run_hint(&self) -> bool {
+        self.run_hint
+    }
+
+    /// Turns the hint on or off with the tools. Rebuilds the transcript rows
+    /// only when the flag changes.
+    pub fn set_run_hint(&mut self, on: bool) {
+        if self.run_hint != on {
+            self.run_hint = on;
+            self.generation += 1;
         }
     }
 
@@ -396,7 +539,7 @@ impl ChatState {
     pub fn messages(&self) -> impl Iterator<Item = &Msg> {
         self.entries.iter().filter_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) => None,
+            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) | Entry::Tool(_) => None,
         })
     }
 
@@ -602,6 +745,8 @@ impl ChatState {
         let oldest = sendable[history.len() - context.messages.len()];
         self.place_marker(oldest, context.omitted);
         self.turn += 1;
+        self.auto_typed = 0;
+        self.run_fallbacks = 0;
         self.phase = Phase::Waiting { slow: false };
         self.started = Some(now);
         self.request_model = model.clone().unwrap_or_default();
@@ -615,6 +760,7 @@ impl ChatState {
                 model: model.clone(),
                 system: system.to_owned(),
                 memory,
+                tools: Tools::Off,
                 messages: context.messages,
             },
         }
@@ -678,6 +824,20 @@ impl ChatState {
                 Follow::Nothing
             }
             StreamEvent::Delta(text) => self.push_delta(&text, now),
+            StreamEvent::ToolCall {
+                id, name, summary, ..
+            } => {
+                self.tool_call(id, name, summary);
+                Follow::Nothing
+            }
+            StreamEvent::ToolResult {
+                id,
+                status,
+                summary,
+            } => {
+                self.tool_result(id, status, summary);
+                Follow::Nothing
+            }
             StreamEvent::ThinkingDelta(text) => {
                 if self.push_thinking(&text, now) {
                     self.generation += 1;
@@ -808,7 +968,7 @@ impl ChatState {
         }
         self.entries.iter_mut().rev().find_map(|e| match e {
             Entry::Message(m) => Some(m),
-            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) => None,
+            Entry::System(_) | Entry::Reasoning(_) | Entry::Memory(_) | Entry::Tool(_) => None,
         })
     }
 
@@ -816,6 +976,7 @@ impl ChatState {
     /// optional system line is added.
     fn finish(&mut self, status: MsgStatus, line: Option<String>, now: Instant) {
         self.collapse_reasoning(now);
+        self.settle_tool_rows();
         // Only the answer text is saved: reasoning is not a message, and a
         // turn that never answered leaves no assistant message to save.
         let answer = self.answer_mut().map(|answer| {
@@ -882,5 +1043,7 @@ mod stream_tests;
 mod summary_tests;
 #[cfg(test)]
 mod tag_editor_tests;
+#[cfg(test)]
+mod tool_tests;
 #[cfg(test)]
 mod wait_tests;

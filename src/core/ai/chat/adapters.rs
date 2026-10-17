@@ -4,10 +4,14 @@
 
 use serde_json::{Value, json};
 
-use super::engine::{ChatMessage, ChatRequest, Role};
+use super::{
+    engine::{ChatMessage, ChatRequest, MCP_VERIFIED, Role, Tools},
+    prompts,
+};
 use crate::core::ai::{
     CATALOG, Kind,
     jail::{Cli, JailPolicy},
+    tools::{registry, wiring::McpWire},
 };
 
 /// The wire format of a local server's reply.
@@ -60,9 +64,26 @@ pub struct Job {
     pub args: Vec<String>,
     pub stdin: Vec<u8>,
     pub jail: JailPolicy,
-    /// A file the runtime writes into the turn's private temp folder, and
-    /// names to the CLI with a flag appended after `args`.
-    pub tmp_file: Option<TmpFile>,
+    /// Files the runtime writes into the turn's private temp folder, each
+    /// named to the CLI with its flag, appended after `args` in this order.
+    pub tmp_files: Vec<TmpFile>,
+    /// The tool session the CLI connects to (tools on, engine verified). The
+    /// runtime turns it into the engine's config and flags; if that fails the
+    /// turn runs as text.
+    pub mcp: Option<McpWire>,
+    /// What the turn sends instead of `args` and `stdin` when it really runs
+    /// wired: the same with the tools prompt. Only `Some` with `mcp`; the
+    /// runtime takes it on the attempt that carries the wiring and on no other,
+    /// so a text-only turn never hears about tools it does not have.
+    pub tools: Option<Box<ToolsText>>,
+}
+
+/// The argv and stdin of a wired turn: those of the text-only job, with the
+/// tools prompt as the system prompt. `args` has the length of `Job::args`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ToolsText {
+    pub args: Vec<String>,
+    pub stdin: Vec<u8>,
 }
 
 /// A small fixed file a CLI is told to read. The content is a constant of the
@@ -121,6 +142,33 @@ impl Adapter {
     /// option (a reasoning model streams its `thinking` without it, see the
     /// recorded fixtures) and no earlier reasoning.
     pub fn build(self, request: &ChatRequest) -> Invocation {
+        self.build_with(request, MCP_VERIFIED)
+    }
+
+    /// [`build`](Self::build) with the engines whose tool wiring passed its
+    /// manual check given (D12). An engine outside `verified` gets exactly the
+    /// invocation of a request without tools.
+    pub fn build_with(self, request: &ChatRequest, verified: &[&str]) -> Invocation {
+        let built = self.build_text(request, verified);
+        let Invocation::Process(mut job) = built else {
+            return built;
+        };
+        if job.mcp.is_some() {
+            // The same job once more with the tools prompt, to keep what
+            // each engine does with its system prompt in one place.
+            let mut with_tools = request.clone();
+            with_tools.system = prompts::with_tools(&request.system);
+            if let Invocation::Process(other) = self.build_text(&with_tools, verified) {
+                job.tools = Some(Box::new(ToolsText {
+                    args: other.args,
+                    stdin: other.stdin,
+                }));
+            }
+        }
+        Invocation::Process(job)
+    }
+
+    fn build_text(self, request: &ChatRequest, verified: &[&str]) -> Invocation {
         match self {
             Adapter::Ollama => Invocation::Http {
                 wire: Wire::Ndjson,
@@ -128,9 +176,9 @@ impl Adapter {
                 path: "/api/chat",
                 body: ollama_body(request),
             },
-            Adapter::Claude => claude_invocation(request),
-            Adapter::Codex => codex_invocation(request),
-            Adapter::Gemini => gemini_invocation(request),
+            Adapter::Claude => claude_invocation(request, wire_for(request, verified)),
+            Adapter::Codex => codex_invocation(request, wire_for(request, verified)),
+            Adapter::Gemini => gemini_invocation(request, wire_for(request, verified)),
         }
     }
 }
@@ -146,10 +194,46 @@ pub fn system_text(request: &ChatRequest) -> String {
     }
 }
 
+/// One tool the model called and what it got back, to replay in a follow-up.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ToolExchange {
+    pub name: String,
+    /// The call `id` the server sent, echoed as `tool_call_id`. Left out
+    /// when absent, so older servers see the same bytes.
+    pub id: Option<String>,
+    /// The `function.index` the server sent.
+    pub index: Option<u64>,
+    /// The arguments object the model sent.
+    pub arguments: Value,
+    /// The tool's result text, already sanitized and capped by the host.
+    pub result: String,
+}
+
+/// One round of a tool loop: what the assistant said, then the tools it
+/// called. Rounds live for one turn only; they are never kept in history.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ToolRound {
+    /// The reasoning of a thinking model, echoed on the assistant message.
+    pub thinking: Option<String>,
+    pub text: String,
+    pub exchanges: Vec<ToolExchange>,
+}
+
+/// The request `Adapter::build` returns: never with tools, whatever
+/// `request.tools` says. The tool loop (slice 3b) builds its own bodies with
+/// [`ollama_round_body`], so a build without the loop is byte-identical.
 fn ollama_body(request: &ChatRequest) -> Vec<u8> {
+    ollama_round_body(request, &[], false)
+}
+
+/// The request after `rounds` of tool calls. `tools` says whether to offer the
+/// registry (the loop passes `false` for the retry on a model that rejects
+/// tools). Each round adds the assistant message with its `tool_calls`, then
+/// one `role: "tool"` message per call carrying `tool_name`.
+pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: bool) -> Vec<u8> {
     let system = system_text(request);
     let system = (!system.is_empty()).then(|| json!({"role": "system", "content": system}));
-    let messages: Vec<Value> = system
+    let mut messages: Vec<Value> = system
         .into_iter()
         .chain(request.messages.iter().map(|m| {
             let role = match m.role {
@@ -159,11 +243,51 @@ fn ollama_body(request: &ChatRequest) -> Vec<u8> {
             json!({"role": role, "content": m.content})
         }))
         .collect();
-    let body = json!({
+    for round in rounds {
+        let calls: Vec<Value> = round
+            .exchanges
+            .iter()
+            .map(|x| {
+                let mut function = json!({"name": x.name, "arguments": x.arguments});
+                if let Some(index) = x.index {
+                    function["index"] = index.into();
+                }
+                let mut call = json!({"function": function});
+                if let Some(id) = &x.id {
+                    call["id"] = json!(id);
+                }
+                call
+            })
+            .collect();
+        let mut assistant =
+            json!({"role": "assistant", "content": round.text, "tool_calls": calls});
+        if let Some(thinking) = &round.thinking {
+            assistant["thinking"] = json!(thinking);
+        }
+        messages.push(assistant);
+        messages.extend(round.exchanges.iter().map(|x| {
+            let mut message = json!({"role": "tool", "content": x.result, "tool_name": x.name});
+            if let Some(id) = &x.id {
+                message["tool_call_id"] = json!(id);
+            }
+            message
+        }));
+    }
+    let mut body = json!({
         "model": request.model.as_deref().unwrap_or(""),
         "messages": messages,
         "stream": true,
     });
+    if tools {
+        body["tools"] = registry(&[])
+            .into_iter()
+            .map(|t| {
+                json!({"type": "function", "function": {
+                    "name": t.name, "description": t.description, "parameters": t.schema,
+                }})
+            })
+            .collect();
+    }
     serde_json::to_vec(&body).expect("a JSON value always serializes")
 }
 
@@ -183,11 +307,22 @@ fn cli_model(model: Option<&str>) -> Result<Option<&str>, &'static str> {
     }
 }
 
+/// The session of this turn, when the request has tools on and its engine is
+/// verified.
+fn wire_for(request: &ChatRequest, verified: &[&str]) -> Option<McpWire> {
+    match &request.tools {
+        Tools::On { mcp, .. } if verified.contains(&request.engine.as_str()) => {
+            mcp.as_deref().cloned()
+        }
+        _ => None,
+    }
+}
+
 /// The claude run: the pinned argv (text only, no tools, nothing from the
 /// user's setup), the profile prompt as the system prompt, and the memory block
 /// and the history on stdin. argv is visible in `ps`, so only the prompt goes
 /// there.
-fn claude_invocation(request: &ChatRequest) -> Invocation {
+fn claude_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation {
     let model = match cli_model(request.model.as_deref()) {
         Ok(model) => model,
         Err(reason) => return Invocation::Refused(reason),
@@ -221,7 +356,9 @@ fn claude_invocation(request: &ChatRequest) -> Invocation {
         args,
         stdin: cli_stdin(request).into_bytes(),
         jail: JailPolicy::Layered,
-        tmp_file: None,
+        tmp_files: Vec::new(),
+        mcp,
+        tools: None,
     })
 }
 
@@ -253,7 +390,7 @@ const CODEX_DISABLED: [&str; 14] = [
 /// flag, and argv is visible in `ps`, so nothing but fixed flags and the model
 /// goes there. The child starts in the private empty folder, which is also
 /// codex's working root, so no `-C` is passed.
-fn codex_invocation(request: &ChatRequest) -> Invocation {
+fn codex_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation {
     let model = match cli_model(request.model.as_deref()) {
         Ok(model) => model,
         Err(reason) => return Invocation::Refused(reason),
@@ -294,7 +431,9 @@ fn codex_invocation(request: &ChatRequest) -> Invocation {
         args,
         stdin: instructed_stdin(request).into_bytes(),
         jail: JailPolicy::Required,
-        tmp_file: None,
+        tmp_files: Vec::new(),
+        mcp,
+        tools: None,
     })
 }
 
@@ -317,15 +456,19 @@ const GEMINI_POLICY: &str = "[[rule]]\ntoolName = \"*\"\ndecision = \"deny\"\npr
 /// tool), and on stdin the profile prompt in an `Instructions:` block, then the
 /// memory block and the history. gemini has no system-prompt flag, and argv is
 /// visible in `ps`, so nothing but fixed flags and the model goes there. The
-/// runtime appends `--policy <file>` after these flags.
-fn gemini_invocation(request: &ChatRequest) -> Invocation {
+/// runtime appends `--policy <file>` after these flags, and for a turn with
+/// tools it adds its own (`--allowed-mcp-server-names=lazarobox`, an admin
+/// policy that allows the server) and runs gemini in a work folder that holds
+/// the workspace settings.
+fn gemini_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation {
     let model = match cli_model(request.model.as_deref()) {
         Ok(model) => model,
         Err(reason) => return Invocation::Refused(reason),
     };
     let mut args: Vec<String> = [
-        // The folder is our private empty one, and an untrusted folder makes
-        // the CLI drop out of `plan` mode and refuse to run headless.
+        // The folder is our private one (on a wired turn it holds
+        // `.gemini/settings.json`), and an untrusted folder makes the CLI
+        // drop out of `plan` mode and refuse to run headless.
         "--skip-trust",
         "-p",
         GEMINI_PROMPT,
@@ -348,11 +491,13 @@ fn gemini_invocation(request: &ChatRequest) -> Invocation {
         args,
         stdin: instructed_stdin(request).into_bytes(),
         jail: JailPolicy::Required,
-        tmp_file: Some(TmpFile {
+        tmp_files: vec![TmpFile {
             flag: "--policy",
             name: "gemini-policy.toml",
             content: GEMINI_POLICY,
-        }),
+        }],
+        mcp,
+        tools: None,
     })
 }
 

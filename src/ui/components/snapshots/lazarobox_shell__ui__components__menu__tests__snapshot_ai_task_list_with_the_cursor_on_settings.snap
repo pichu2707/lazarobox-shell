@@ -3,23 +3,18 @@ source: src/ui/components/menu.rs
 expression: "text(&draw(62, POPUP_H, &mixed()))"
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
-│ Settings                                                   │
+│ Settings │ AI                                        ⇥ Tab │
 │ Statusline position                                 bottom │
 │ Tab bar position                                       top │
 │ Mouse                                                   on │
 │ Notify                                                 off │
 │ Sound                                                   on │
 │ Updates                                             0.15.3 │
-│ AI                                                         │
-│ Set all tasks                                      (mixed) │
-│ general                                 ollama › model1:7b │
-│ code                                         claude › opus │
-│ chat                                             (default) │
-│ review                                           (default) │
-│ summarize                                        (default) │
-│ Profile                                         programmer │
-│ Context                                                 on │
-│ Memory                                                 off │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
 │                                                            │
 │ j/k move · h/l change · s save · Esc cancel                │
 └────────────────────────────────────────────────────────────┘

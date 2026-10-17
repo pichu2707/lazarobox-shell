@@ -75,6 +75,20 @@ pub trait PtyHandle: Send {
     fn write(&mut self, bytes: Vec<u8>);
     fn resize(&mut self, size: PaneSize) -> io::Result<()>;
     fn pid(&self) -> Option<u32>;
+    /// Whether the shell itself, and not a program it started, owns the
+    /// terminal now: the foreground process group of the PTY is the shell's.
+    /// `None` when that cannot be told (an error, a target without process
+    /// groups); the caller treats it as "not at the prompt".
+    fn shell_in_foreground(&self) -> Option<bool> {
+        None
+    }
+    /// The shell's real working directory, read from `/proc/<pid>/cwd` (the
+    /// kernel resolves the link without touching the disk). `None` when it
+    /// cannot be read: no pid, a platform without `/proc`, a process that is
+    /// gone.
+    fn cwd(&self) -> Option<PathBuf> {
+        std::fs::read_link(format!("/proc/{}/cwd", self.pid()?)).ok()
+    }
     /// Terminates the child. Idempotent; implementations also call it on drop.
     fn kill(&mut self);
 }

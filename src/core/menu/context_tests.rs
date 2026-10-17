@@ -15,9 +15,7 @@ fn open_with(context: bool) -> MenuState {
 
 fn on_context(context: bool) -> MenuState {
     let mut m = open_with(context);
-    while selected_label(&m) != "Context" {
-        press(&mut m, 'j');
-    }
+    m.goto("Context");
     m
 }
 
@@ -27,7 +25,7 @@ fn send(menu: &mut MenuState, code: KeyCode, repeat: bool) -> MenuCommand {
 }
 
 fn value_of(menu: &MenuState, wanted: &str) -> Option<String> {
-    menu.rows(&Config::default())
+    menu.all_rows(&Config::default())
         .into_iter()
         .find_map(|row| match row {
             Row::Item {
@@ -62,24 +60,36 @@ fn the_context_row_follows_profile_and_precedes_memory() {
             "summarize",
             "Profile",
             "Context",
-            "Memory"
+            "Memory",
+            "Tools",
+            "Approval",
         ]
     );
-    let context = &AI_SECTION.items[AI_SECTION.items.len() - 2];
+    let context = &AI_SECTION.items[AI_SECTION.items.len() - 4];
     assert!(matches!(context.kind, ItemKind::Context));
 }
 
 #[test]
 fn context_sits_between_profile_and_memory_and_navigation_wraps_through_them() {
     let mut m = open_with(true);
-    for _ in 0..13 {
-        press(&mut m, 'j');
-    }
+    m.goto("Context");
     assert_eq!(selected_label(&m), "Context");
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Memory");
     press(&mut m, 'j');
-    assert_eq!(selected_label(&m), "Statusline position");
+    assert_eq!(selected_label(&m), "Tools");
+    press(&mut m, 'j');
+    assert_eq!(selected_label(&m), "Approval");
+    press(&mut m, 'j');
+    assert_eq!(
+        selected_label(&m),
+        "Set all tasks",
+        "wraps inside the AI tab"
+    );
+    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "Approval");
+    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "Tools");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Memory");
     press(&mut m, 'k');

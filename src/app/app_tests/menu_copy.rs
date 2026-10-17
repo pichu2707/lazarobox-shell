@@ -5,7 +5,7 @@ use super::*;
 use crate::core::{
     ai::{CATALOG, Detection, Diagnostics, EngineState, Status, config::AiConfig},
     copy::osc52,
-    menu::{Footer, Row},
+    menu::Footer,
 };
 
 const WHY: &str =
@@ -48,22 +48,7 @@ fn picker_app(d: Detection) -> App {
     a.menu =
         Some(MenuState::open(&a.config).with_ai(AiConfig::general(Some("codex"), None), Some(d)));
     a.input = InputMode::Menu;
-    for _ in 0..30 {
-        let on_general = a.menu().unwrap().rows(&a.config).iter().any(|r| {
-            matches!(
-                r,
-                Row::Item {
-                    label: "general",
-                    selected: true,
-                    ..
-                }
-            )
-        });
-        if on_general {
-            break;
-        }
-        a.update(key('j'));
-    }
+    goto_row(&mut a, "general");
     a.update(enter());
     a
 }

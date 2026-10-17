@@ -3,6 +3,7 @@ source: src/ui/components/menu.rs
 expression: shown
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ AI                                              │
 │ Model for general (ollama) 18/18                           │
 │ llama3.2:3b download required                              │
 │ llama3.1:8b download required                              │
@@ -14,12 +15,6 @@ expression: shown
 │ deepseek-r1:8b download required                           │
 │ phi4:14b download required                                 │
 │ gpt-oss:20b download required                              │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
 │                                                            │
 │ download required · not selectable                         │
 └────────────────────────────────────────────────────────────┘

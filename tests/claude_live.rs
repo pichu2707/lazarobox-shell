@@ -23,7 +23,7 @@ use std::{
 use lazarobox_shell::{
     core::{
         ai::{
-            chat::engine::{ChatMessage, ChatRequest, Role, StreamEvent},
+            chat::engine::{ChatMessage, ChatRequest, Role, StreamEvent, Tools},
             jail::{JailOff, JailSupport},
         },
         layout::PaneId,
@@ -65,12 +65,13 @@ fn siblings(dir: &Path, prefix: &str) -> Vec<String> {
 
 async fn turn(env: CliEnv, text: &str) -> Vec<StreamEvent> {
     let (tx, mut rx) = tokio::sync::mpsc::channel(256);
-    let mut chats = Chats::new(runner_with(None, env), tx);
+    let mut chats = Chats::new(runner_with(None, env, None), tx);
     let request = ChatRequest {
         engine: "claude".into(),
         model: None,
         system: "Be brief.".into(),
         memory: None,
+        tools: Tools::Off,
         messages: vec![ChatMessage {
             role: Role::User,
             content: text.into(),

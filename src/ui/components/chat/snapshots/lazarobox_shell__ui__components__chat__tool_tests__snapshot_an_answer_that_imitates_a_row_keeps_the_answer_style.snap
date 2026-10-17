@@ -1,0 +1,8 @@
+---
+source: src/ui/components/chat/tool_tests.rs
+expression: text(&buf)
+---
+› where is the course?
+
+» find_dir curso-rust
+  ok: 1 result

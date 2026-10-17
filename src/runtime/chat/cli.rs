@@ -46,10 +46,11 @@ use crate::{
         },
         jail::{
             Cli, CliLayout, ELF_HEAD_BYTES, Interpreter, JailArgs, JailOff, JailPolicy,
-            JailRefusal, JailSpec, JailSupport, Launch, Untrusted, elf_interp_at, interp_path,
-            jail_spec_with, launch, parse_shebang,
+            JailRefusal, JailSpec, JailSupport, Launch, ShimGrant, Untrusted, elf_interp_at,
+            interp_path, jail_spec_with, launch, parse_shebang,
             rpath::{homebrew_openssl_files, search_dirs},
         },
+        tools::wiring,
     },
     runtime::{
         ai_detect::{self, find_on_path, wait_exit_unreaped},
@@ -67,6 +68,10 @@ const READ_SIZE: usize = 16 * 1024;
 pub const EXIT_GRACE: Duration = Duration::from_secs(2);
 
 pub const CANNOT_PREPARE: &str = "cannot prepare the private working directory";
+
+/// A file the CLI is told about by path sits where its flag would be split.
+pub const UNUSABLE_FILE_PATH: &str =
+    "the data folder path has a comma or edge whitespace, which the CLI would read as two paths";
 
 /// Everything a CLI turn needs from the machine. Built once at startup; the
 /// tests build their own.
@@ -87,18 +92,27 @@ pub struct CliEnv {
     /// `$CODEX_HOME`, when it is an absolute path: codex keeps its login and
     /// state there instead of in `~/.codex`.
     pub codex_home: Option<PathBuf>,
+    /// This program's canonical executable, resolved once at startup (inside a
+    /// jailed CLI `/proc/self/exe` is node): what an engine runs as its MCP
+    /// shim. `None` turns the tools off.
+    pub shim: Option<PathBuf>,
     /// Variables set for the child before the scrub runs. Empty in the app;
     /// the tests use it to give the child something to scrub, because the
     /// test process cannot change its own environment safely.
     pub(crate) inject: Vec<(OsString, OsString)>,
 }
 
+/// The variable that makes gemini trust its working folder; only a wired
+/// gemini turn sets it, so one inherited from the user's shell is dropped.
+const GEMINI_TRUST_ENV: &str = "GEMINI_CLI_TRUST_WORKSPACE";
+
 /// Variables the child never inherits: the agents it could be talked into
 /// using (ssh, gpg, askpass helpers) and the state of an outer Claude Code
 /// session, which would make the CLI think it runs inside one. Settings
 /// (`ANTHROPIC_*`, proxy, certificates, XDG, `HOME`, `PATH`, the D-Bus
 /// address a keyring login needs) are kept.
-const SCRUBBED: [&str; 8] = [
+const SCRUBBED: [&str; 9] = [
+    GEMINI_TRUST_ENV,
     "SSH_AUTH_SOCK",
     "SSH_AGENT_PID",
     "SSH_ASKPASS",
@@ -132,6 +146,10 @@ impl CliEnv {
             codex_home: std::env::var_os("CODEX_HOME")
                 .map(PathBuf::from)
                 .filter(|p| p.is_absolute()),
+            shim: std::env::current_exe()
+                .and_then(fs::canonicalize)
+                .ok()
+                .filter(|p| p.is_absolute()),
             inject: Vec::new(),
         }
     }
@@ -156,7 +174,7 @@ impl CliEnv {
 
 /// A private folder: created 0700, or an existing real folder of ours made
 /// 0700. A symlink, a file or a foreign owner is refused.
-fn ensure_private_dir(path: &Path) -> io::Result<()> {
+pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(meta) => {
             // SAFETY: geteuid has no preconditions and cannot fail.
@@ -187,7 +205,7 @@ impl Drop for TmpDir {
 }
 
 /// The `comm` of a process (`self` or a pid), if readable.
-fn read_comm(who: &str) -> Option<String> {
+pub(crate) fn read_comm(who: &str) -> Option<String> {
     fs::read_to_string(format!("/proc/{who}/comm")).ok()
 }
 
@@ -202,7 +220,11 @@ fn is_lazarobox(pid: u32) -> bool {
     })
 }
 
-fn alive_by_comm(pid: u32, own: Option<&str>, read: &dyn Fn(u32) -> Option<String>) -> bool {
+pub(crate) fn alive_by_comm(
+    pid: u32,
+    own: Option<&str>,
+    read: &dyn Fn(u32) -> Option<String>,
+) -> bool {
     pid == std::process::id() || own.is_some_and(|own| read(pid).as_deref() == Some(own))
 }
 
@@ -423,6 +445,7 @@ fn jail_plan(
     cli: Cli,
     binary: &Path,
     dirs: &Dirs,
+    shim: Option<(&Path, &Path)>,
 ) -> Result<(CliLayout, JailSpec), JailRefusal> {
     let home_dir = env.home.as_deref().ok_or(JailRefusal::NoHome)?;
     let home = resolve(home_dir).ok_or_else(|| JailRefusal::HomeMissing(home_dir.to_path_buf()))?;
@@ -455,6 +478,27 @@ fn jail_plan(
     // OpenSSL files a Homebrew build reads, are read-only rules. Nothing else
     // of an install is opened.
     let named = elf_search_dirs(interpreter.as_deref().unwrap_or(&bin));
+    let shim = shim
+        .map(|(exe, socket)| -> Result<ShimGrant, JailRefusal> {
+            // The shim and its loader run inside the jail with whatever the
+            // CLI is allowed, so they pass the check an interpreter does.
+            let untrusted = |(path, why)| JailRefusal::UntrustedInterpreter { path, why };
+            interpreter_trust(exe).map_err(untrusted)?;
+            let loader = read_loader(exe)
+                .map(|l| resolve(&l).ok_or(JailRefusal::BadLoader(l)))
+                .transpose()?;
+            if let Some(loader) = &loader {
+                interpreter_trust(loader).map_err(untrusted)?;
+            }
+            let socket =
+                resolve(socket).ok_or_else(|| JailRefusal::Unreadable(socket.to_path_buf()))?;
+            Ok(ShimGrant {
+                binary: exe.to_path_buf(),
+                loader,
+                socket,
+            })
+        })
+        .transpose()?;
     let layout = CliLayout {
         cli,
         home,
@@ -465,6 +509,7 @@ fn jail_plan(
         lib_dirs: existing_dirs(&named),
         data_files: existing_files(&homebrew_openssl_files(&named)),
         helpers: Vec::new(),
+        shim,
         cwd: dirs.cwd.clone(),
         tmp: dirs.tmp.clone(),
     };
@@ -482,7 +527,7 @@ pub(crate) fn jail_note(env: &CliEnv, cli: Cli, binary: &Path) -> Option<String>
         return Some(JailRefusal::Unsupported(off).short(home));
     }
     let dirs = Dirs::create(env.data.as_deref()?).ok()?;
-    let refusal = jail_plan(env, cli, binary, &dirs).err()?;
+    let refusal = jail_plan(env, cli, binary, &dirs, None).err()?;
     Some(refusal.short(home))
 }
 
@@ -494,8 +539,10 @@ fn jailed(
     args: &[OsString],
     binary: &Path,
     dirs: &Dirs,
+    shim: Option<&Wired>,
 ) -> Result<(PathBuf, Vec<OsString>), JailRefusal> {
-    let (layout, spec) = jail_plan(env, job.cli, binary, dirs)?;
+    let grant = env.shim.as_deref().zip(shim.map(|w| w.socket.as_path()));
+    let (layout, spec) = jail_plan(env, job.cli, binary, dirs, grant)?;
     let bin = layout.binary.clone();
     // A script starts through its interpreter, which is granted by exact
     // path. Left to the kernel, `#!/usr/bin/env node` would run `env`, which
@@ -536,6 +583,13 @@ fn command(
     for name in SCRUBBED {
         command.env_remove(name);
     }
+    // The wired turn's own value is set after the scrub, so it wins.
+    command.envs(
+        inject
+            .iter()
+            .filter(|(k, _)| k == GEMINI_TRUST_ENV)
+            .map(|(k, v)| (k, v)),
+    );
     // The jail ignores a relative `$CODEX_HOME`, so the child must not use it.
     let codex_home = inject
         .iter()
@@ -558,12 +612,12 @@ fn command(
 async fn spawn(
     program: &Path,
     argv: &[OsString],
-    dirs: &Dirs,
+    (cwd, tmp): (&Path, &Path),
     inject: &[(OsString, OsString)],
 ) -> io::Result<tokio::process::Child> {
     let mut attempt = 0;
     loop {
-        match command(program, argv.to_vec(), (&dirs.cwd, &dirs.tmp), inject).spawn() {
+        match command(program, argv.to_vec(), (cwd, tmp), inject).spawn() {
             Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 4 => {
                 attempt += 1;
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -589,25 +643,148 @@ struct Plan {
     /// Said to the user before the turn starts, when the CLI runs without the
     /// jail it would normally have.
     notice: Option<String>,
+    /// The variables the child gets before the scrub.
+    vars: Vec<(OsString, OsString)>,
+    /// The engine gets the tool server: the config, the flags and the jail
+    /// grant are all in.
+    wired: bool,
+    /// The working folder when it is not the shared empty one.
+    cwd: Option<PathBuf>,
 }
 
-/// The CLI's argv: the job's own, then the flag and path of the job's file
-/// when it has one. The file is written into the turn's private temp folder
+impl Plan {
+    /// The working folder and the `TMPDIR` the child starts with.
+    fn folders(&self) -> (&Path, &Path) {
+        let cwd = self.cwd.as_deref().unwrap_or(&self.dirs.cwd);
+        (cwd, &self.dirs.tmp)
+    }
+}
+
+/// The CLI's argv: the job's own, then the flag and path of each of the job's
+/// files, in order. Each file is written into the turn's private temp folder
 /// (0600, new), which the jail lets the CLI read and which is wiped after the
 /// turn.
 fn full_args(job: &Job, dirs: &Dirs) -> io::Result<Vec<OsString>> {
     let mut argv: Vec<OsString> = job.args.iter().map(OsString::from).collect();
-    if let Some(file) = &job.tmp_file {
+    for file in &job.tmp_files {
         let path = dirs.tmp.join(file.name);
-        fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)?
-            .write_all(file.content.as_bytes())?;
+        // gemini splits a path flag on `,` and trims each part, so it would
+        // load another path: refuse the turn instead.
+        if !path.to_str().is_some_and(wiring::policy_flag_safe) {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        write_private(&path, file.content.as_bytes())?;
         argv.extend([OsString::from(file.flag), path.into_os_string()]);
     }
     Ok(argv)
+}
+
+/// A new file, 0600, in the turn's private folder.
+fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?
+        .write_all(bytes)
+}
+
+/// What the MCP tools add to a turn: flags, variables and the socket the jail
+/// must let the engine reach.
+struct Wired {
+    args: Vec<OsString>,
+    /// Flags of the text-only argv this wiring replaces (first match each).
+    drops: Vec<&'static str>,
+    vars: Vec<(OsString, OsString)>,
+    socket: PathBuf,
+    /// Where the engine runs instead of the shared empty folder, when its
+    /// config is read from the working folder (gemini).
+    cwd: Option<PathBuf>,
+}
+
+/// The files and folders `wire_mcp` may have made in the turn's folder. The
+/// token is in some of them, so a turn that does not use them removes them
+/// (the folder is wiped after the turn anyway).
+fn unwrite_mcp(dirs: &Dirs) {
+    let _ = fs::remove_file(dirs.tmp.join("mcp.json"));
+    let _ = fs::remove_file(dirs.tmp.join(GEMINI_POLICY_FILE));
+    let _ = fs::remove_dir_all(dirs.tmp.join(GEMINI_WORK_DIR));
+}
+
+/// The private working folder of a wired gemini, in the turn's folder: its
+/// `.gemini/settings.json` is the workspace config gemini reads.
+const GEMINI_WORK_DIR: &str = "work";
+const GEMINI_POLICY_FILE: &str = "gemini-mcp-policy.toml";
+
+/// Writes gemini's workspace settings (0600, in 0700 folders) and the policy
+/// that allows our server; the working folder is the one to run in.
+fn write_gemini(
+    shim: &Path,
+    dirs: &Dirs,
+    wire: &wiring::McpWire,
+) -> Option<(Vec<String>, PathBuf)> {
+    let work = dirs.tmp.join(GEMINI_WORK_DIR);
+    let policy = dirs.tmp.join(GEMINI_POLICY_FILE);
+    let wiring = wiring::gemini(shim, &policy, wire)?;
+    let config = work.join(".gemini");
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&config)
+        .ok()?;
+    write_private(&config.join("settings.json"), wiring.settings.as_bytes()).ok()?;
+    write_private(&policy, wiring.policy.as_bytes()).ok()?;
+    Some((wiring.args, work))
+}
+
+/// What the engine is told about the tools, and writes the config file where
+/// the engine takes one (claude's holds the token: 0600, in the turn folder
+/// that is wiped). `None` when the job has no wire, there is no shim program,
+/// the engine has no wiring, or the file cannot be written: the turn then
+/// runs as text.
+fn wire_mcp(env: &CliEnv, job: &Job, dirs: &Dirs) -> Option<Wired> {
+    let wire = job.mcp.as_ref()?;
+    let shim = env.shim.as_deref()?;
+    let mut cwd = None;
+    let (args, drops, vars) = match job.cli {
+        Cli::Claude => {
+            let path = dirs.tmp.join("mcp.json");
+            let wiring = wiring::claude(shim, &path, wire)?;
+            write_private(&path, wiring.config.as_bytes()).ok()?;
+            let vars = wiring.env.into_iter().map(|(k, v)| (k.into(), v.into()));
+            (wiring.args, wiring.drops, vars.collect())
+        }
+        // The token is only in codex's environment: `env_vars` names it, so
+        // codex hands it on to the shim.
+        Cli::Codex => {
+            let wiring = wiring::codex(shim, wire)?;
+            let vars = wiring
+                .env
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.reveal().into()));
+            (wiring.args, Vec::new(), vars.collect())
+        }
+        // gemini reads the workspace settings of its working folder; the token
+        // is in that file only (0600), and in none of its argv or env. The
+        // folder is trusted by env var: `--skip-trust` sets it only after the
+        // workspace settings were read as untrusted, which drops `mcpServers`.
+        Cli::Gemini => {
+            let Some((args, work)) = write_gemini(shim, dirs, wire) else {
+                unwrite_mcp(dirs);
+                return None;
+            };
+            cwd = Some(work);
+            let trust = vec![(GEMINI_TRUST_ENV.into(), "true".into())];
+            (args, Vec::new(), trust)
+        }
+    };
+    Some(Wired {
+        args: args.into_iter().map(OsString::from).collect(),
+        drops,
+        vars,
+        socket: wire.socket.clone(),
+        cwd,
+    })
 }
 
 /// Decides how the CLI starts. `Err` is the final event of a turn that never
@@ -631,34 +808,102 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
         .as_deref()
         .and_then(|data| Dirs::create(data).ok())
         .ok_or_else(|| StreamEvent::Error(ChatError::Failed(CANNOT_PREPARE.into())))?;
-    let argv = full_args(job, &dirs)
-        .map_err(|_| StreamEvent::Error(ChatError::Failed(CANNOT_PREPARE.into())))?;
+    let argv = full_args(job, &dirs).map_err(|e| {
+        let text = match e.kind() {
+            io::ErrorKind::InvalidInput => UNUSABLE_FILE_PATH,
+            _ => CANNOT_PREPARE,
+        };
+        StreamEvent::Error(ChatError::Failed(text.into()))
+    })?;
+    // The tools are wired only for a jailed run: a bare CLI would reach the
+    // shim without the jail that confines what it can do.
+    let mut wired = (how == Launch::Jailed)
+        .then(|| wire_mcp(env, job, &dirs))
+        .flatten();
+    let vars = |wired: Option<&Wired>| {
+        let mut vars = env.child_vars();
+        vars.extend(wired.into_iter().flat_map(|w| w.vars.iter().cloned()));
+        vars
+    };
+    // What the user is told when the job asked for tools and the turn has none.
+    let tools_off = |notice: Option<String>| {
+        let off = "tools are off for this turn: they could not be set up";
+        match (job.mcp.is_some(), notice) {
+            (false, notice) => notice,
+            (true, None) => Some(off.to_owned()),
+            (true, Some(notice)) => Some(format!("{notice}; {off}")),
+        }
+    };
     let reason = match (how, env.jail) {
-        (Launch::Jailed, _) => match jailed(env, job, &argv, &binary, &dirs) {
-            Ok((program, argv)) => {
-                return Ok(Plan {
-                    program,
-                    argv,
-                    dirs,
-                    notice: None,
-                });
+        (Launch::Jailed, _) => {
+            let mut result = None;
+            // With the tools first; if the jail refuses that layout (say the
+            // shim program sits in a place it never grants), again without
+            // them. The jail is never widened to fit the tools.
+            let tries = match wired.take() {
+                Some(w) => vec![Some(w), None],
+                None => vec![None],
+            };
+            for attempt in tries {
+                let mut full = argv.clone();
+                if let Some(w) = &attempt {
+                    // The tools prompt, on this attempt only.
+                    if let Some(text) = &job.tools {
+                        let len = text.args.len().min(full.len());
+                        full.splice(..len, text.args.iter().map(OsString::from));
+                    }
+                    // Once, from the front: the system prompt that follows the
+                    // fixed flags could itself read like one of them.
+                    for flag in &w.drops {
+                        let at = full.iter().position(|a| a == flag);
+                        debug_assert!(at.is_some(), "{flag} is not in the argv");
+                        if let Some(at) = at {
+                            full.remove(at);
+                        }
+                    }
+                    full.extend(w.args.iter().cloned());
+                }
+                match jailed(env, job, &full, &binary, &dirs, attempt.as_ref()) {
+                    Ok((program, argv)) => {
+                        let notice = tools_off(None).filter(|_| attempt.is_none());
+                        return Ok(Plan {
+                            program,
+                            argv,
+                            vars: vars(attempt.as_ref()),
+                            dirs,
+                            notice,
+                            wired: attempt.is_some(),
+                            cwd: attempt.and_then(|w| w.cwd),
+                        });
+                    }
+                    Err(why) => result = Some(why),
+                }
+                // The config holds the token: it does not stay for a turn that
+                // was not told about it.
+                unwrite_mcp(&dirs);
             }
+            let why = result.expect("both attempts ran");
             // Layered: the flags alone are text-only, so a layout the jail
             // refuses runs bare. Required: no jail, no process.
-            Err(why) if job.jail == JailPolicy::Required => return Err(refused(&why)),
-            Err(why) => why.hint(home),
-        },
+            if job.jail == JailPolicy::Required {
+                return Err(refused(&why));
+            }
+            why.hint(home)
+        }
         (_, JailSupport::Unavailable(off)) => off.text(),
         (_, JailSupport::Available { .. }) => "the jail is off".to_owned(),
     };
     Ok(Plan {
         program: binary,
         argv,
+        vars: vars(None),
         dirs,
-        notice: Some(format!(
+        wired: false,
+        cwd: None,
+        notice: tools_off(Some(format!(
             "{} runs without the jail here: {reason}",
             job.binary
-        )),
+        ))),
     })
 }
 
@@ -678,7 +923,9 @@ pub(crate) async fn run_listing(
         args: vec!["debug".to_owned(), "models".to_owned()],
         stdin: Vec::new(),
         jail: JailPolicy::Required,
-        tmp_file: None,
+        tmp_files: Vec::new(),
+        mcp: None,
+        tools: None,
     };
     let plan = match plan(env, &job) {
         Ok(plan) => plan,
@@ -794,20 +1041,34 @@ async fn settle(
     })
 }
 
+/// Tells the session of a turn that asked for tools that its engine runs as
+/// text after all: nothing will connect, so the socket and token go now.
+fn unwire(job: &Job) {
+    if let Some(wire) = &job.mcp {
+        wire.unwire.call();
+    }
+}
+
 /// Runs one CLI turn and sends its events to `tx`. Exactly one `Done` or
 /// `Error` ends it, unless it is cancelled: dropping the future (or the
 /// receiver) kills the process group and sends nothing more.
 pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>) {
     let mut plan = match plan(env, &job) {
         Ok(plan) => plan,
-        Err(event) => return send(tx, event).await,
+        Err(event) => {
+            unwire(&job);
+            return send(tx, event).await;
+        }
     };
+    if !plan.wired {
+        unwire(&job);
+    }
     if let Some(line) = plan.notice.take() {
         send(tx, StreamEvent::Notice(line)).await;
     }
     // Declared in this order so the group guard drops before the child, and
     // the private folders last.
-    let mut child = match spawn(&plan.program, &plan.argv, &plan.dirs, &env.child_vars()).await {
+    let mut child = match spawn(&plan.program, &plan.argv, plan.folders(), &plan.vars).await {
         Ok(child) => child,
         Err(e) => {
             let text = format!("could not start {}: {}", job.binary, e.kind());
@@ -827,8 +1088,13 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
     let pid = pid.expect("a group exists only for a known pid");
     let mut stdout = stdout;
 
-    let mut decoder = fresh_decoder(job.wire);
-    let mut stdin_task = std::pin::pin!(write_stdin(stdin, &job.stdin).fuse());
+    let mut decoder = fresh_decoder(job.wire, plan.wired);
+    // The tools prompt is in the stdin of a wired attempt only.
+    let text = match (&job.tools, plan.wired) {
+        (Some(tools), true) => &tools.stdin,
+        _ => &job.stdin,
+    };
+    let mut stdin_task = std::pin::pin!(write_stdin(stdin, text).fuse());
     let mut stderr_task = std::pin::pin!(read_stderr(stderr).fuse());
     let mut stderr_tail = None;
     let relayed = {
@@ -884,7 +1150,13 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
             .await
             .unwrap_or_default(),
     };
+    // The token of this turn's session is shown nowhere, not even if the CLI
+    // echoes its config on stderr.
     let stderr = String::from_utf8_lossy(&tail);
+    let stderr = match job.mcp.as_ref().map(|wire| wire.token.reveal()) {
+        Some(token) if !token.is_empty() => stderr.replace(token, "(..)"),
+        _ => stderr.into_owned(),
+    };
     let last = verdict(job.binary, ended.last, ended.answered, exit, &stderr);
     send(tx, last).await;
 }

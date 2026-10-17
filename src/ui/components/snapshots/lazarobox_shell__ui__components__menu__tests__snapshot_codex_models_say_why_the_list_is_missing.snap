@@ -3,16 +3,11 @@ source: src/ui/components/menu.rs
 expression: shown
 ---
 ┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ AI                                              │
 │ Model for general (codex)                                  │
 │ default (CLI picks)                                        │
 │ model list unavailable: codex exited 1: not logged in      │
 │ custom…                                                    │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
-│                                                            │
 │                                                            │
 │                                                            │
 │                                                            │

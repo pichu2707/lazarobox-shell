@@ -87,7 +87,10 @@ impl App {
             return Vec::new();
         };
         match route_wheel(facts, dir, col, row, mouse.modifiers) {
-            WheelAction::Write(bytes) => vec![Effect::WritePty(id, bytes)],
+            WheelAction::Write(bytes) => {
+                self.mark_dirty(id);
+                vec![Effect::WritePty(id, bytes)]
+            }
             WheelAction::Scrollback(dir) => {
                 self.scroll_shell_view(id, dir);
                 Vec::new()

@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::core::ai::config::MemoryConfig;
-use crate::core::menu::{AI_BODY, CHROME, MIN_WIDTH};
+use crate::core::menu::{CHROME, MENU_BODY, MIN_WIDTH};
 
 const ACKED: MemoryConfig = MemoryConfig {
     enabled: false,
@@ -59,18 +59,12 @@ fn selected_label(menu: &MenuState) -> &'static str {
 }
 
 fn goto_memory(menu: &mut MenuState) {
-    for _ in 0..20 {
-        if selected_label(menu) == "Memory" {
-            return;
-        }
-        press(menu, KeyCode::Char('k'));
-    }
-    panic!("no Memory row");
+    menu.goto("Memory");
 }
 
 /// The value shown on the `Memory` row.
 fn shown_value(menu: &MenuState) -> String {
-    menu.rows(&Config::default())
+    menu.all_rows(&Config::default())
         .iter()
         .find_map(|row| match row {
             Row::Item {
@@ -105,8 +99,8 @@ fn warned() -> MenuState {
 
 // Spec (config-menu): Sections and items are data, Descriptor integrity.
 #[test]
-fn the_memory_descriptor_is_well_formed_and_closes_the_section() {
-    let memory = &AI_SECTION.items[AI_SECTION.items.len() - 1];
+fn the_memory_descriptor_is_well_formed_and_precedes_tools() {
+    let memory = &AI_SECTION.items[AI_SECTION.items.len() - 3];
     assert_eq!(memory.label, "Memory");
     let ItemKind::Memory(row) = &memory.kind else {
         panic!("not a memory row");
@@ -125,7 +119,9 @@ fn the_memory_descriptor_is_well_formed_and_closes_the_section() {
             "summarize",
             "Profile",
             "Context",
-            "Memory"
+            "Memory",
+            "Tools",
+            "Approval",
         ]
     );
 }
@@ -134,13 +130,8 @@ fn the_memory_descriptor_is_well_formed_and_closes_the_section() {
 #[test]
 fn navigation_visits_memory_after_summarize_and_wraps() {
     let mut menu = fresh();
+    menu.goto("Set all tasks");
     for label in [
-        "Tab bar position",
-        "Mouse",
-        "Notify",
-        "Sound",
-        "Updates",
-        "Set all tasks",
         "general",
         "code",
         "chat",
@@ -149,12 +140,18 @@ fn navigation_visits_memory_after_summarize_and_wraps() {
         "Profile",
         "Context",
         "Memory",
-        "Statusline position",
+        "Tools",
+        "Approval",
+        "Set all tasks",
     ] {
         press(&mut menu, KeyCode::Char('j'));
         assert_eq!(selected_label(&menu), label);
     }
     press(&mut menu, KeyCode::Char('k'));
+    assert_eq!(selected_label(&menu), "Approval");
+    press(&mut menu, KeyCode::Up);
+    assert_eq!(selected_label(&menu), "Tools");
+    press(&mut menu, KeyCode::Up);
     assert_eq!(selected_label(&menu), "Memory");
     press(&mut menu, KeyCode::Up);
     assert_eq!(selected_label(&menu), "Context");
@@ -245,7 +242,7 @@ fn turning_on_without_the_acknowledgement_opens_the_warning() {
 }
 
 fn shown_value_or_none(menu: &MenuState) -> Option<String> {
-    menu.rows(&Config::default())
+    menu.all_rows(&Config::default())
         .iter()
         .find_map(|row| match row {
             Row::Item {
@@ -512,7 +509,7 @@ fn y_does_not_accept_when_the_popup_does_not_fit() {
 #[test]
 fn y_accepts_at_the_smallest_size_that_fits() {
     let mut menu = warned();
-    menu.set_term(MIN_WIDTH, AI_BODY as u16 + CHROME - 1);
+    menu.set_term(MIN_WIDTH, MENU_BODY as u16 + CHROME - 1);
     assert!(menu.fits_warning());
     press(&mut menu, KeyCode::Char('y'));
     assert_eq!(shown_value(&menu), "on");

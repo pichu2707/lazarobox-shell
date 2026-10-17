@@ -2,8 +2,9 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::core::ai::{
-    chat::engine::{ChatMessage, ChatRequest, Role},
+    chat::engine::{ChatMessage, ChatRequest, Role, Tools},
     jail::{Cli, JailPolicy},
+    tools::wiring::{McpWire, Secret, Unwire},
 };
 
 fn message(role: Role, content: &str) -> ChatMessage {
@@ -19,6 +20,7 @@ fn request(system: &str) -> ChatRequest {
         model: Some("llama3:8b".into()),
         system: system.into(),
         memory: None,
+        tools: Tools::Off,
         messages: vec![
             message(Role::User, "hi"),
             message(Role::Assistant, "hello"),
@@ -216,7 +218,9 @@ struct Process {
     args: Vec<String>,
     stdin: String,
     jail: JailPolicy,
-    tmp_file: Option<TmpFile>,
+    tmp_files: Vec<TmpFile>,
+    mcp: Option<McpWire>,
+    tools: Option<Box<ToolsText>>,
 }
 
 fn process(invocation: Invocation) -> Process {
@@ -227,7 +231,9 @@ fn process(invocation: Invocation) -> Process {
         args,
         stdin,
         jail,
-        tmp_file,
+        tmp_files,
+        mcp,
+        tools,
     }) = invocation
     else {
         panic!("a process invocation expected: {invocation:?}");
@@ -239,7 +245,9 @@ fn process(invocation: Invocation) -> Process {
         args,
         stdin: String::from_utf8(stdin).expect("stdin is text"),
         jail,
-        tmp_file,
+        tmp_files,
+        mcp,
+        tools,
     }
 }
 
@@ -732,7 +740,8 @@ fn gemini_has_no_extension_and_no_mcp_server() {
 #[test]
 fn every_gemini_tool_is_denied_by_a_policy_file_the_runtime_writes() {
     let p = process(Adapter::Gemini.build(&gemini_request(None)));
-    let file = p.tmp_file.expect("a policy file");
+    assert_eq!(p.tmp_files.len(), 1);
+    let file = p.tmp_files.into_iter().next().expect("a policy file");
     assert_eq!(file.flag, "--policy");
     assert_eq!(file.name, "gemini-policy.toml");
     // One rule: every tool, denied, above every other rule.
@@ -751,7 +760,7 @@ fn the_other_clis_write_no_file() {
     for (engine, build) in [("claude", Adapter::Claude), ("codex", Adapter::Codex)] {
         let mut req = request("be brief");
         req.engine = engine.into();
-        assert_eq!(process(build.build(&req)).tmp_file, None, "{engine}");
+        assert!(process(build.build(&req)).tmp_files.is_empty(), "{engine}");
     }
 }
 
@@ -812,4 +821,410 @@ fn a_gemini_message_cannot_forge_a_turn_boundary() {
         .filter(|l| *l == "User:" || *l == "Assistant:")
         .collect();
     assert_eq!(labels, ["User:", "Assistant:", "User:"]);
+}
+
+// Spec (agent-tools): with tools off every request is byte-identical. While an
+// engine is outside the verified set (an empty one here, through `build_with`)
+// a turn that offers tools builds the same invocation: argv, stdin, env and
+// body.
+#[test]
+fn the_tools_flag_changes_no_invocation() {
+    for engine in ["ollama", "claude", "codex", "gemini"] {
+        let mut off = request("be brief");
+        off.engine = engine.into();
+        let mut on = off.clone();
+        on.tools = Tools::On {
+            origin: Some("/home/u/dev".into()),
+            mcp: None,
+        };
+        let adapter = adapter_for(engine).unwrap();
+        assert_eq!(
+            adapter.build_with(&off, &[]),
+            adapter.build_with(&on, &[]),
+            "{engine}"
+        );
+    }
+}
+
+fn tools_on(engine: &str, session: bool) -> (ChatRequest, ChatRequest) {
+    let mut off = request("be brief");
+    off.engine = engine.into();
+    let mut on = off.clone();
+    on.tools = Tools::On {
+        origin: Some("/home/u/dev".into()),
+        mcp: session.then(|| {
+            Box::new(McpWire {
+                socket: "/run/user/1000/lazarobox/s-1-1.sock".into(),
+                token: Secret::new("0123456789abcdef0123456789abcdef"),
+                unwire: Unwire::none(),
+            })
+        }),
+    };
+    (off, on)
+}
+
+#[test]
+fn an_engine_outside_the_verified_set_is_byte_identical_with_tools_on() {
+    for engine in ["ollama", "claude", "codex", "gemini"] {
+        let (off, on) = tools_on(engine, true);
+        let adapter = adapter_for(engine).unwrap();
+        // Nothing verified, and another engine verified: the same bytes.
+        for verified in [&[][..], &["codex"][..], &["gemini"][..]]
+            .into_iter()
+            .filter(|v| !v.contains(&engine))
+        {
+            assert_eq!(
+                adapter.build_with(&on, verified),
+                adapter.build(&off),
+                "{engine} {verified:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_verified_claude_with_a_session_carries_the_wire_and_nothing_else_changes() {
+    let (off, on) = tools_on("claude", true);
+    let with = process(Adapter::Claude.build_with(&on, &["claude"]));
+    let without = process(Adapter::Claude.build(&off));
+    assert!(with.mcp.is_some());
+    assert_eq!(
+        with.mcp,
+        match &on.tools {
+            Tools::On { mcp, .. } => mcp.as_deref().cloned(),
+            Tools::Off => unreachable!(),
+        }
+    );
+    assert_eq!(
+        (with.args, with.stdin, with.tmp_files),
+        (without.args, without.stdin, without.tmp_files)
+    );
+}
+
+#[test]
+fn a_verified_claude_without_a_session_stays_text_only() {
+    let (off, on) = tools_on("claude", false);
+    assert_eq!(
+        Adapter::Claude.build_with(&on, &["claude"]),
+        Adapter::Claude.build(&off)
+    );
+}
+
+#[test]
+fn a_verified_codex_with_a_session_carries_the_wire_and_nothing_else_changes() {
+    let (off, on) = tools_on("codex", true);
+    let with = process(Adapter::Codex.build_with(&on, &["codex"]));
+    let without = process(Adapter::Codex.build(&off));
+    assert!(with.mcp.is_some());
+    assert_eq!(
+        with.mcp,
+        match &on.tools {
+            Tools::On { mcp, .. } => mcp.as_deref().cloned(),
+            Tools::Off => unreachable!(),
+        }
+    );
+    // The argv is the pinned one: the runtime appends the `-c` overrides, the
+    // token is not in any of it.
+    assert_eq!(
+        (with.args, with.stdin, with.tmp_files, with.jail),
+        (without.args, without.stdin, without.tmp_files, without.jail)
+    );
+}
+
+#[test]
+fn a_verified_codex_without_a_session_stays_text_only() {
+    let (off, on) = tools_on("codex", false);
+    assert_eq!(
+        Adapter::Codex.build_with(&on, &["codex"]),
+        Adapter::Codex.build(&off)
+    );
+}
+
+#[test]
+fn a_verified_gemini_with_a_session_carries_the_wire_and_nothing_else_changes() {
+    let (off, on) = tools_on("gemini", true);
+    let with = process(Adapter::Gemini.build_with(&on, &["gemini"]));
+    let without = process(Adapter::Gemini.build(&off));
+    assert_eq!(
+        with.mcp,
+        match &on.tools {
+            Tools::On { mcp, .. } => mcp.as_deref().cloned(),
+            Tools::Off => unreachable!(),
+        }
+    );
+    assert!(with.mcp.is_some());
+    // The pinned argv and its own deny-all policy are what the runtime adds
+    // to, and what a turn that falls back to text runs with.
+    assert_eq!(
+        (with.args, with.stdin, with.tmp_files, with.jail),
+        (without.args, without.stdin, without.tmp_files, without.jail)
+    );
+}
+
+#[test]
+fn a_verified_gemini_without_a_session_stays_text_only() {
+    let (off, on) = tools_on("gemini", false);
+    assert_eq!(
+        Adapter::Gemini.build_with(&on, &["gemini"]),
+        Adapter::Gemini.build(&off)
+    );
+}
+
+// The real verified set is live: `build` itself wires the three CLIs and
+// leaves Ollama's body to the runtime's tool loop.
+#[test]
+fn the_real_build_wires_claude_codex_and_gemini_with_a_session() {
+    for engine in ["claude", "codex", "gemini"] {
+        let (off, on) = tools_on(engine, true);
+        let adapter = adapter_for(engine).unwrap();
+        assert_eq!(
+            adapter.build(&on),
+            adapter.build_with(&on, &[engine]),
+            "{engine}"
+        );
+        let wired = process(adapter.build(&on));
+        assert!(wired.mcp.is_some(), "{engine}");
+        assert!(wired.tools.is_some(), "{engine}");
+        let text = process(adapter.build(&off));
+        assert!(text.mcp.is_none() && text.tools.is_none(), "{engine}");
+    }
+}
+
+#[test]
+fn the_real_build_without_a_session_stays_text_only_for_every_engine() {
+    for engine in ["ollama", "claude", "codex", "gemini"] {
+        let (off, on) = tools_on(engine, false);
+        let adapter = adapter_for(engine).unwrap();
+        assert_eq!(adapter.build(&on), adapter.build(&off), "{engine}");
+    }
+}
+
+fn chat_system() -> String {
+    use crate::core::ai::config::{Profile, Task};
+    prompts::builtin(Profile::Programmer, Task::Chat)
+        .trim_end()
+        .to_owned()
+}
+
+fn wired_request(engine: &str) -> ChatRequest {
+    let (_, mut on) = tools_on(engine, true);
+    on.system = chat_system();
+    on.model = None;
+    on
+}
+
+#[test]
+fn a_wired_cli_job_keeps_the_text_prompt_and_carries_the_tools_one_apart() {
+    for engine in ["claude", "codex", "gemini"] {
+        let on = wired_request(engine);
+        let mut off = on.clone();
+        off.tools = Tools::Off;
+        let adapter = adapter_for(engine).unwrap();
+        let wired = process(adapter.build_with(&on, &[engine]));
+        let text = process(adapter.build(&off));
+        // The job itself is the text-only one, byte for byte.
+        assert_eq!(wired.args, text.args, "{engine}");
+        assert_eq!(wired.stdin, text.stdin, "{engine}");
+        assert!(wired.stdin.contains("no access to files") || engine == "claude");
+        let tools = wired.tools.expect(engine);
+        assert_eq!(tools.args.len(), wired.args.len(), "{engine}");
+        let with = prompts::with_tools(&chat_system());
+        let hit = if engine == "claude" {
+            tools.args.contains(&with)
+        } else {
+            String::from_utf8(tools.stdin.clone())
+                .unwrap()
+                .starts_with(&format!("Instructions:\n{with}\n\n"))
+        };
+        assert!(hit, "{engine}");
+        assert!(!with.contains("no access to files"));
+        // Nothing else differs: the conversation and the other flags.
+        let differing: Vec<_> = tools
+            .args
+            .iter()
+            .zip(&wired.args)
+            .filter(|(a, b)| a != b)
+            .collect();
+        assert_eq!(differing.len(), usize::from(engine == "claude"), "{engine}");
+    }
+}
+
+#[test]
+fn a_job_without_a_wire_has_no_tools_text_and_a_server_engine_is_untouched() {
+    for engine in ["claude", "codex", "gemini"] {
+        let (_, no_session) = tools_on(engine, false);
+        assert!(
+            process(
+                adapter_for(engine)
+                    .unwrap()
+                    .build_with(&no_session, &[engine])
+            )
+            .tools
+            .is_none(),
+            "{engine}"
+        );
+        // An engine that is not verified.
+        let (_, on) = tools_on(engine, true);
+        assert!(
+            process(adapter_for(engine).unwrap().build_with(&on, &[]))
+                .tools
+                .is_none()
+        );
+    }
+    let (off, on) = tools_on("ollama", true);
+    assert_eq!(
+        Adapter::Ollama.build_with(&on, &["ollama"]),
+        Adapter::Ollama.build(&off)
+    );
+}
+
+fn body_of(bytes: Vec<u8>) -> Value {
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[test]
+fn tools_off_leaves_the_ollama_body_exactly_as_before() {
+    let off = request("be brief");
+    let before = br#"{"messages":[{"content":"be brief","role":"system"},{"content":"hi","role":"user"},{"content":"hello","role":"assistant"},{"content":"and now?","role":"user"}],"model":"llama3:8b","stream":true}"#;
+    assert_eq!(ollama_body(&off), before.to_vec());
+    assert_eq!(ollama_round_body(&off, &[], false), before.to_vec());
+}
+
+#[test]
+fn tools_on_adds_the_registry_as_function_tools() {
+    let body = body_of(ollama_round_body(&request("be brief"), &[], true));
+    let tools = body["tools"].as_array().unwrap();
+    let names: Vec<&str> = tools
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["find_dir", "list_dir", "read_file", "run_in_pane"]);
+    assert_eq!(tools[0]["type"], "function");
+    assert_eq!(
+        tools[0]["function"]["parameters"],
+        json!({
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+            "additionalProperties": false,
+        })
+    );
+    assert!(tools[0]["function"]["description"].as_str().unwrap().len() > 10);
+    assert_eq!(body["stream"], true);
+    assert_eq!(body["messages"].as_array().unwrap().len(), 4);
+}
+
+#[test]
+fn a_follow_up_carries_the_assistant_tool_calls_and_the_tool_results() {
+    let rounds = [ToolRound {
+        thinking: None,
+        text: "Looking.".into(),
+        exchanges: vec![
+            ToolExchange {
+                id: None,
+                index: None,
+                name: "find_dir".into(),
+                arguments: json!({"query": "curso"}),
+                result: "/home/u/curso-rust".into(),
+            },
+            ToolExchange {
+                id: None,
+                index: None,
+                name: "list_dir".into(),
+                arguments: json!({"path": "/home/u"}),
+                result: "a\nb".into(),
+            },
+        ],
+    }];
+    let body = body_of(ollama_round_body(&request(""), &rounds, true));
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3 + 1 + 2);
+    assert_eq!(
+        messages[3],
+        json!({
+            "role": "assistant",
+            "content": "Looking.",
+            "tool_calls": [
+                {"function": {"name": "find_dir", "arguments": {"query": "curso"}}},
+                {"function": {"name": "list_dir", "arguments": {"path": "/home/u"}}},
+            ],
+        })
+    );
+    assert_eq!(
+        messages[4],
+        json!({"role": "tool", "content": "/home/u/curso-rust", "tool_name": "find_dir"})
+    );
+    assert_eq!(messages[5]["tool_name"], "list_dir");
+    assert!(body["tools"].is_array());
+}
+
+#[test]
+fn a_follow_up_without_tools_still_sends_the_tool_messages_but_no_tools_key() {
+    let rounds = [ToolRound {
+        thinking: None,
+        text: String::new(),
+        exchanges: vec![ToolExchange {
+            id: None,
+            index: None,
+            name: "read_file".into(),
+            arguments: json!({"path": "/x"}),
+            result: "text".into(),
+        }],
+    }];
+    let body = body_of(ollama_round_body(&request(""), &rounds, false));
+    assert!(body.get("tools").is_none());
+    assert_eq!(body["messages"].as_array().unwrap().len(), 5);
+}
+
+#[test]
+fn thinking_is_echoed_on_the_assistant_message_only_when_present() {
+    let round = |thinking: Option<&str>| ToolRound {
+        thinking: thinking.map(Into::into),
+        text: "t".into(),
+        exchanges: vec![ToolExchange {
+            id: None,
+            index: None,
+            name: "find_dir".into(),
+            arguments: json!({"query": "a"}),
+            result: "r".into(),
+        }],
+    };
+    let with = body_of(ollama_round_body(&request(""), &[round(Some("hm"))], false));
+    assert_eq!(with["messages"][3]["thinking"], "hm");
+    let without = body_of(ollama_round_body(&request(""), &[round(None)], false));
+    assert!(without["messages"][3].get("thinking").is_none());
+}
+
+#[test]
+fn ids_and_indexes_are_echoed_when_present_and_absent_otherwise() {
+    let round = |id: Option<&str>, index: Option<u64>| ToolRound {
+        thinking: None,
+        text: String::new(),
+        exchanges: vec![ToolExchange {
+            id: id.map(Into::into),
+            index,
+            name: "find_dir".into(),
+            arguments: json!({"query": "a"}),
+            result: "r".into(),
+        }],
+    };
+    let with = body_of(ollama_round_body(
+        &request(""),
+        &[round(Some("c1"), Some(2))],
+        false,
+    ));
+    assert_eq!(
+        with["messages"][3]["tool_calls"][0],
+        json!({"id": "c1", "function": {"index": 2, "name": "find_dir", "arguments": {"query": "a"}}})
+    );
+    assert_eq!(
+        with["messages"][4],
+        json!({"role": "tool", "content": "r", "tool_name": "find_dir", "tool_call_id": "c1"})
+    );
+    let without = body_of(ollama_round_body(&request(""), &[round(None, None)], false));
+    assert_eq!(
+        without["messages"][3]["tool_calls"][0],
+        json!({"function": {"name": "find_dir", "arguments": {"query": "a"}}})
+    );
+    assert!(without["messages"][4].get("tool_call_id").is_none());
 }

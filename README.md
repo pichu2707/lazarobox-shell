@@ -113,7 +113,7 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 
 ## ⚙️ Menú: sección Settings
 
-`Ctrl+Espacio` y `m` abre el menú. Su sección **Settings** tiene, en este orden:
+`Ctrl+Espacio` y `m` abre el menú. Con la sección de IA, el menú se divide en pestañas, **Settings** y **AI**, que se cambian con `Tab` y `Shift+Tab`; `j`/`k` se mueven y dan la vuelta dentro de la pestaña activa, y cada pestaña recuerda su fila. Al abrir el menú siempre empieza en **Settings**. El aviso de actualización solo se muestra en esa pestaña, y su etiqueta lleva un `*` mientras haya una actualización pendiente. Dentro de un selector, del campo `custom…` o de la advertencia de privacidad, `Tab` no hace nada. Su sección **Settings** tiene, en este orden:
 
 | Fila | Qué hace | Clave en `config.toml` |
 | ---- | -------- | ---------------------- |
@@ -159,7 +159,9 @@ Con `check = false` lazarobox no hace ninguna petición, no lee la caché y no m
 
 ## 🤖 Menú de IA
 
-Con `Ctrl+Espacio` y `m` se abre el menú. Su sección **AI** muestra el motor general (**Set all tasks**) y una fila por tarea. `Enter` sobre una fila de tarea abre su selector de dos niveles (motor y modelo); `Esc` vuelve un nivel. La fila `custom…` permite escribir o pegar el nombre de un modelo. `r` sobre una fila de tarea o dentro del selector vuelve a detectar los motores.
+Con `Ctrl+Espacio` y `m` se abre el menú; la pestaña **AI** (`Tab`) muestra el motor general (**Set all tasks**) y una fila por tarea. `Enter` sobre una fila de tarea abre su selector de dos niveles (motor y modelo); `Esc` vuelve un nivel. La fila `custom…` permite escribir o pegar el nombre de un modelo. `r` sobre una fila de tarea o dentro del selector vuelve a detectar los motores.
+
+Tras las filas de tarea, la pestaña **AI** tiene las filas **Profile**, **Context**, **Memory**, **Tools** y **Approval** (la última). **Approval** alterna con `h`/`l` (o las flechas) entre `ask`, `auto` y `run`, el modo de aprobación de los comandos que pide un modelo (`ai.tools.approval`); `s` lo guarda en `[ai.tools]` de `config.toml`, `Esc` lo descarta. El cambio no actúa sobre un chat abierto ni sobre una aprobación pendiente: solo llega a los paneles de chat que abras después y al siguiente cambio de conversación.
 
 `s` guarda la elección en la tabla `[ai]` de `config.toml` (y la de cada tarea en `[ai.tasks.*]`); `Esc` en el nivel superior la descarta. `Enter` nunca guarda ni cierra el menú. Mientras la elección difiera de la guardada, el pie del menú muestra `unsaved changes · s to save · Esc discards`.
 
@@ -249,6 +251,91 @@ Límites de esta versión:
 - Los motores `lmstudio`, `llamacpp`, `vllm` y `opencode` se detectan, pero aún no tienen adaptador de chat.
 - Las etiquetas extra de una conversación vuelven en orden alfabético al reabrirla.
 
+### Run a command from the chat
+
+When the last answer of a chat ends with a shell code block (` ```bash `, `sh`, `shell` or `zsh`), a hint under the block names the binding: `Ctrl+Space`, then `e`. It works with every engine, because it reads the block of the answer and needs nothing from the model.
+
+`e` opens a confirmation over the composer: `run in pane N (<cwd>)`, the exact command and the keys. The target is the shell pane of the current tab that you used last; a chat or a pane of another tab is never a target.
+
+| Key       | Action                                                                 |
+| :-------- | :--------------------------------------------------------------------- |
+| `y`       | Types the command into the target pane. **It never presses Enter.**   |
+| `n` / `Esc` | Declines. Nothing is written.                                        |
+| `p`       | Moves the target to the next shell pane of the tab (with wrap).        |
+| `Ctrl+C`  | Cancels the answer in progress and declines.                           |
+
+Every other key is swallowed while the confirmation is open, and a held key or a paste never answers it. You review the typed line in your own shell and run it yourself with Enter. A multi-line command is sent as one bracketed paste, so the shell shows it as an editable buffer; if the shell did not ask for bracketed paste, a multi-line command is refused. A pane that runs a full-screen app (an editor, a pager) is refused, and the command is checked again when you press `y`: control characters and escape sequences make it be refused, never cleaned.
+
+There is no "always allow". To turn the feature off, set `enabled = false` in `[ai.tools]` of `config.toml`, or flip the **Tools** row of the AI menu (on by default); the hint and the binding then disappear. The menu writes only `ai.tools.enabled` and `ai.tools.approval`; it never touches `[ai.mcp.*]`.
+
+**Which paths the read tools refuse.** Anything outside `$HOME`, `~/.ssh`, `~/.gnupg`, the credential folders of other CLIs (and `~/.password-store`), `~/.config/gh`, `~/.config/gcloud`, the keyrings in `~/.local/share/keyrings`, lazarobox's own folders `~/.config/lazarobox` (its `config.toml` holds MCP env tokens) and `~/.local/share/lazarobox` (chat history, engram, update cache), and, at any depth, `.env`, `.env.*`, `.envrc`, `.netrc`, `.git-credentials`, `.pgpass`, `.npmrc` and the shell or REPL histories (`.bash_history`, `.zsh_history`, `.zhistory`, fish's `fish_history`, `.python_history`, `.node_repl_history`, `.psql_history`, `.mysql_history`, `.sqlite_history`). `.envrc` and `.npmrc` are denied at any depth on purpose, because a project file may hold a token. The list is best effort, not complete: a secret in a file with another name is not detected, and folders moved with `GH_CONFIG_DIR` are not followed. lazarobox's own config and data folders are passed to the policy by the tool runtime, so they follow `XDG_CONFIG_HOME` and `XDG_DATA_HOME`. The roots are read once per call, so a secret folder created while a call runs is not covered by that call.
+
+**Names left out.** `list_dir` and `find_dir` leave out any name, or any joined path in `find_dir`, that the secret redaction would change (`sk-...` keys, `Bearer ...`, `token=...` and the like), so a listing never shows half a key and a query cannot probe for one. A harmless name can match too (`sk-learn-extras`). When anything was left out the result ends with `[some names omitted: they look like secrets]`, whatever the query was.
+
+Links do not get around it: the path is judged as requested and as resolved, and the REAL folder behind a secret folder is refused too, so with `~/.ssh -> ~/dotfiles/ssh` neither `~/.ssh/id` nor `~/dotfiles/ssh/id` nor a second link such as `~/foo -> ~/dotfiles/ssh` is readable. A link directly in `$HOME` that is named like an excluded file (`.env`, `.netrc`, a history file...) protects its target the same way. Known limit: such a link deeper than `$HOME`, whose target has an ordinary name, is only caught by its requested name; hard links are not detected yet (planned for the tool runtime). A `$HOME` that resolves to `/` or to a system folder (`/home`, `/Users`, `/usr`, `/var`, `/etc`, `/opt`, `/tmp`, `/bin`, `/lib`, `/proc`, `/sys`, `/dev`, `/run`, `/mnt`, `/media`, `/srv`, `/sbin`, `/boot`, `/lib64`, `/private`, `/System`, `/Library`, in any letter case) is refused, and so is every call when `$HOME` or a secret folder cannot be read. `/root` is a valid home. Each argument is limited to 4096 bytes.
+
+```toml
+[ai.tools]
+enabled = true
+approval = "ask"
+```
+
+#### Approval mode
+
+By default every command a model asks to run needs your `y` (`approval = "ask"`). In **auto** mode a model's `run_in_pane` is typed into the target pane without a prompt, and **lazarobox still never presses Enter** (salvo en `run`, ver más abajo): the line waits in your shell, and you run it (or clear it) yourself. Reads and everything else keep their usual approval.
+
+- Cycle `ask`, `auto` and `run` for the focused chat with `Ctrl+Space`, then `a` (it also works while an approval is waiting, which stays waiting). A system line in the chat says which mode is on.
+- A chat in auto mode wears an amber ` AUTO ` badge, and one in run mode a red ` RUN ` badge, at the top right of its pane, focused or not. Nothing is drawn in `ask` mode, or with tools off.
+- `approval = "ask"`, `"auto"` or `"run"` in `[ai.tools]` sets the mode a chat starts with; anything else falls back to `ask` with a notice at startup. The mode of a chat lasts for its conversation: opening another conversation from the list, or starting a new one, goes back to the configured value. The toggle never writes the file, and a changed `config.toml` only reaches panes and conversations opened afterwards.
+- The **Approval** row of the AI menu (the last row of the AI tab, after **Tools**) cycles `ask`, `auto` and `run` with `h`/`l` and `s` writes `approval` in `[ai.tools]`, even when it equals the default. It has no live effect: an open chat and a pending approval keep their mode, and the saved value reaches panes opened afterwards and the next conversation switch, like an edit of the file.
+- The command is typed through the same checks as `y`: it must pass the command validator, the pane must be a shell of the chat's tab outside a full-screen app, and a multi-line command needs bracketed paste. A check that fails gives the model a `denied` result with the reason and writes nothing. The call row in the chat always shows the exact command.
+- The command is only typed when the shell itself is in the foreground of the pane; if a program runs there (`python3`, `ssh`, a nested shell), or the foreground cannot be read, the call is denied (`pane N is running a program`). The pane of an update (`cargo install`) is never a target.
+- It falls back to the normal prompt, never to a denial, when: the target pane has the focus (you may be typing in it); the chat's tab is not the one shown, or is zoomed onto another pane (you could not see the typing); a previous auto-typed command still sits unsent on that pane; or five commands were already typed in this turn. The unsent mark clears when you press Enter, `Ctrl+C` or `Ctrl+U` in that pane, paste text with a newline into it while the shell has bracketed paste off (inside bracketed paste a newline runs nothing), or close it. A command you typed with `y` marks its pane the same way. Backspace and other keys leave it set, so after you edit the line the next command still asks.
+- An approval already waiting is never answered by the mode, and a call that arrives while one waits is denied (`another approval is pending`).
+
+Residual risks (design D18), so you can decide if auto is for you:
+
+- A typed command lands after a line you left half-typed in an unfocused pane: the typed text is appended to it, and lazarobox only knows about lines it typed itself.
+- A program that acts on input without Enter (vi mode of readline or zle in normal state, a pager, a TUI outside the alternate screen) can react to the typed text. Bracketed paste makes readline and zle insert it literally; without it only single lines are typed.
+- The foreground check cannot see a shell builtin that reads your input (`read`, `select`): the shell is still the foreground process, so the text is typed into what the builtin is waiting for.
+- The foreground check happens just before the write; a program started in those microseconds is not covered.
+- A model can still type a destructive command that you then run by reflex. The badge, the tool row with the exact command and the system line are the mitigations, and `ask` stays the default.
+
+#### Modo `run`
+
+En modo **run** lazarobox hace lo que `auto` no hace: para un comando de una lista corta y segura escribe el comando **y pulsa Enter**, espera a que termine y devuelve su salida al modelo. Cualquier otro comando sigue el camino normal: aparece la confirmación y `y` solo lo escribe, sin Enter. Es opt-in (`approval = "run"` o el ciclo `Ctrl+Space`, `a`) y `ask` sigue siendo el valor por defecto.
+
+**Lista segura.** Un único comando, con palabras separadas por un solo espacio, de entre `cd`, `pwd`, `ls`, `tree` y `mkdir`:
+
+- `cd` (como mucho una ruta), `pwd` (ninguna), `ls` (flags `l a h t r 1`, hasta 4 rutas), `tree` (`-d`, `-L <n>`, una ruta; sin `-a`, para no listar nombres de archivos ocultos) y `mkdir` (`-p`, de 1 a 4 rutas).
+- Las palabras solo admiten letras latinas (también acentuadas), dígitos y `. _ / @ % + : , = ~ -`; el espacio solo va dentro de comillas. Cualquier otra cosa pregunta, por ejemplo cirílico, CJK, emoji, `*` o `;`.
+- Las rutas pueden ir sin comillas o entre comillas simples o dobles (`ls -la "Mis Documentos"`): una palabra entera entre comillas, sin `$`, comilla invertida, `\`, `!` ni otras comillas. El verbo nunca va entre comillas.
+- Solo las rutas de `mkdir` y `tree` deben resolverse dentro de `$HOME`. Con todos los verbos salvo `cd` se comprueba siempre el directorio actual del panel; para `tree` debe estar dentro de `$HOME` aunque se le dé una ruta. `cd` y `ls` pueden ir a cualquier sitio (`cd /tmp`, `ls /etc`), salvo las carpetas de secretos (`~/.ssh`, `~/.gnupg`, credenciales…), también si se llega a ellas por un enlace simbólico. Lo que no cumpla esto, o no exista, pregunta y la confirmación dice por qué.
+- No entran `&&`, `;`, `|`, `$`, redirecciones, globs ni opciones largas. Las rutas pasan la misma política que las herramientas de lectura, comprobada sobre el directorio real del panel.
+- Además, el panel debe estar libre: sin comando en ejecución, sin línea a medias, sin el foco, en la pestaña visible y con el locale en UTF-8. Si no, se usa la confirmación normal. Cada turno admite como máximo 5 comandos automáticos, y tres rechazos seguidos por gramática o ruta pausan el modo `run` hasta el final del turno; el contador vuelve a cero cuando un comando se ejecuta y en cada turno nuevo, y los motivos del estado del panel (ocupado, foco, línea a medias…) no cuentan.
+
+**Por qué pide confirmación.** La confirmación de un comando que no corrió directamente muestra una línea con el motivo y el trozo que lo causó, por ejemplo ``shell metacharacter: `&&` ``, ``not a safe command: `git` `` o `a command is still running in the pane`. Los caracteres de control, de formato (bidi, espacio de ancho cero) e invisibles se dibujan como `?`. La línea solo aparece si la confirmación tiene una fila libre; el comando completo siempre se muestra.
+
+**Salida que ve el modelo.** El modelo recibe el texto que quedó en pantalla tras el comando, no un flujo de la shell:
+
+- Máximo 8 KiB y 200 filas: se conservan el principio y el final y se marca el recorte. Pasa por la misma limpieza y redacción de secretos que las herramientas de lectura.
+- Un `cd` informa además del directorio nuevo. Un comando que no termina en 10 s devuelve `still running` con lo visible hasta entonces. El resultado nunca incluye el código de salida.
+- Si la shell reescribe lo escrito (por ejemplo las abreviaturas de **fish**), no se reconoce el eco del comando y el resultado es `output not available`.
+- Si tu prompt ocupa varias líneas, las superiores pueden colarse en la salida que recibe el modelo (se redactan, pero no se detectan).
+- Un programa a pantalla completa, que escribas en el panel mientras corre, o un panel que se cierra, tampoco devuelven salida.
+
+**Privacidad.** En `run` la salida del panel **se envía al modelo**, también con motores en la nube (claude, codex, gemini): puede incluir nombres de archivos, rutas y lo que imprima el comando. En `ask` y `auto` el modelo no recibe nada de la salida ni del directorio. Si algo no debe salir de tu máquina, no uses `run` con esa conversación.
+
+Riesgos residuales (diseño D20/D21 de `auto-execute`), que se suman a los de `auto`:
+
+- Hooks de `cd` (`chpwd`, direnv, un prompt que ejecuta `git status`) corren en tu shell al cambiar de directorio. `CDPATH` y `cdable_vars` pueden mandar `cd nombre` a otro sitio.
+- Entre la comprobación de la ruta y la escritura hay una ventana en la que un enlace simbólico puede cambiarse (TOCTOU). Se comprueba de nuevo justo antes de escribir, pero no se elimina.
+- Continuación del prompt (PS2): si dejaste abierta una comilla, un `$(`, un heredoc o un bucle, o una línea que acaba en `\`, `&&`, `|`, `do` o `then`, el comando del modelo puede unirse a lo tuyo. Las palabras entre comillas son texto inerte y lazarobox rechaza texto con comillas sin cerrar, pero el caso en que lo cierras tú no se detecta hasta tener marcas de prompt (OSC 133).
+- Una línea de prompt que se cuele en la salida, como se dijo arriba.
+- Fuera de `$HOME`, `cd` y `ls` exponen solo nombres y los metadatos de `ls -l` (incluidos los destinos de enlaces simbólicos), nunca el contenido de los archivos. Los montajes bind no se detectan.
+- El locale se lee del entorno de lazarobox; un archivo rc que lo cambie después no se ve.
+- Todo lo que dice `auto` sobre líneas a medias, `read`/`select` y programas que reaccionan sin Enter sigue valiendo.
+
 ### Motores CLI: claude, codex y gemini
 
 El chat puede hablar con los CLIs **claude**, **codex** y **gemini** que ya tengas instalados y con la sesión iniciada (`claude`, `codex login`, `gemini`). lazarobox no pide ni guarda claves de API: arranca el CLI, le pasa la conversación por la entrada estándar y lee su respuesta. Se eligen como cualquier otro motor, en el menú de IA o en `[ai.tasks.chat]`.
@@ -282,6 +369,39 @@ El directorio de trabajo del CLI es una carpeta vacía y privada, el entorno se 
 - **Comprobación pendiente:** la línea base de llamadas al sistema con `strace` (M12/M14) no se ha tomado porque `strace` no estaba instalado. En su lugar se midió qué programas arranca cada turno (solo node y el CLI nativo) y que el turno funciona con la jaula completa.
 
 **claude.** Usa `--tools ""`, sin servidores MCP, sin comandos con barra y sin guardar sesión (`--no-session-persistence`). El prompt del perfil sustituye al prompt integrado del CLI.
+
+**Herramientas con claude (Tools with claude).** **Activas** desde que el usuario pasó la comprobación manual el 2026-10-17: claude figura en `MCP_VERIFIED` (la lista de motores cuya comprobación manual pasó). Con `[ai.tools] enabled` activo, cada turno hace esto.
+
+Comprobado con un claude 2.1.302 real y un servidor MCP de prueba: `--tools ""` no oculta las herramientas MCP, `--allowedTools=mcp__lazarobox` las permite y el `tool_use` llega como `assistant.message.content[]` con `name` `mcp__lazarobox__<herramienta>`. El usuario comprobó a mano el efecto de `MCP_TOOL_TIMEOUT` y la llamada completa dentro de lazarobox el 2026-10-17.
+
+- lazarobox abre un socket Unix privado por chat (carpeta 0700, socket 0600) y escribe en la carpeta temporal privada del turno un `mcp.json` (0600) que lanza `lazarobox __mcp-serve <socket>` como servidor MCP `lazarobox`. El token de la sesión va **solo** en la sección `env` de ese archivo, nunca en los argumentos (`ps` los muestra) ni en el entorno de claude; la carpeta se borra al acabar el turno.
+- claude recibe `--mcp-config=<mcp.json>` y `--allowedTools=mcp__lazarobox` (con `=`: ambas opciones aceptan varios valores y, sin él, se tragarían lo que venga detrás), mantiene `--tools ""` y `--strict-mcp-config` (ningún otro servidor, ninguna herramienta propia) y `MCP_TOOL_TIMEOUT=900000` (15 min, para que esperar tu `y` no corte la llamada).
+- Un turno con herramientas cambia además `--safe-mode` por `--setting-sources=` (vacío): `--safe-mode` desactiva también los servidores MCP, así que con él claude no vería las herramientas. Con `--setting-sources=` no se leen tus ajustes de usuario, de proyecto ni locales, ni habilidades, _hooks_ o comandos, y se carga solo nuestro servidor; los ajustes gestionados o de empresa (_managed_) podrían seguir aplicándose. Los turnos de solo texto, y el reintento sin herramientas, mantienen `--safe-mode`.
+- El _prompt_ de sistema cambia **solo en un turno que de verdad corre con las herramientas conectadas**: en vez de decir que no tienes acceso a nada, cuenta que hay herramientas (buscar un directorio, listar, leer un archivo y escribir un comando en el panel de shell, que solo se teclea: tú lo revisas y pulsas Enter) y que sigue sin poder cambiar archivos. Si el turno cae a solo texto (sin jaula, sin _shim_, jaula que rechaza la disposición), el _prompt_ es el de siempre. Lo mismo vale para codex y gemini.
+- La jaula concede lo mínimo para el _shim_: ejecutar el binario de lazarobox (su ruta canónica, no `/proc/self/exe`, que dentro del CLI es node), su cargador ELF solo si el del CLI no lo cubre, y leer y escribir **el archivo** del socket. No se concede ninguna carpeta, y `ssh`, `curl` o `~/.ssh` siguen bloqueados. El binario y su cargador pasan antes la misma comprobación de confianza que un intérprete (ni el archivo ni su carpeta escribibles por grupo u otros, y fuera de `/tmp`); si no la pasan, el turno sigue como texto.
+- Solo cuenta lo que ejecuta lazarobox: con herramientas, el decodificador de claude acepta solo bloques `text`, `thinking`, `redacted_thinking` y `tool_use` llamados `mcp__lazarobox__*` (las filas del chat las pone lazarobox, no se leen de la salida del CLI); cualquier otro tipo de bloque termina el turno con `claude tried to use a tool`. En un chat de solo texto rechaza además cualquier bloque cuyo tipo contenga `tool` o acabe en `_use` (y toda herramienta, también las nuestras, porque no se ofreció ninguna), y tolera tipos de bloque nuevos e inocuos.
+- Si algo del cableado falla (no se puede resolver el binario, escribir el archivo, o la jaula rechaza esa disposición), o claude corre sin jaula, **el turno sigue como solo texto** y el chat lo avisa en cada turno que cae a texto: `tools are off for this turn: they could not be set up`. Ese turno cierra también su socket y su token en el acto. La jaula nunca se ensancha para que las herramientas quepan.
+
+**Herramientas con codex (Tools with codex).** **Activas** desde que el usuario pasó la comprobación manual el 2026-10-17: codex figura en `MCP_VERIFIED` (la lista de motores cuya comprobación manual pasó). Con `[ai.tools] enabled` activo, cada turno hace esto.
+
+Comprobado a mano por el usuario con un codex real el 2026-10-17 (2g.6 y 2g.7): los `-c mcp_servers.*` bajo `--ignore-user-config`, las claves `env_vars`, `tool_timeout_sec` y `startup_timeout_sec`, la aprobación de una llamada MCP en `exec` y el elemento `mcp_tool_call`.
+
+- codex recibe el servidor por argumentos `-c mcp_servers.lazarobox.*` (valores TOML): `command` (el binario de lazarobox), `args = ["__mcp-serve", "<socket>"]`, `env_vars = ["LAZAROBOX_MCP_TOKEN"]`, `tool_timeout_sec = 900` (15 min, para que esperar tu `y` no corte la llamada) y `startup_timeout_sec = 20`. No se escribe ningún archivo de configuración.
+- El token de la sesión va **solo** en el entorno del propio proceso de codex (`env_vars` solo nombra la variable y codex la pasa al _shim_); nunca en los argumentos (`ps` los muestra), nunca en la salida de depuración de lazarobox y, si el CLI lo repite por stderr, se sustituye por `(..)` antes de mostrar el motivo del fallo. Los argumentos solo llevan rutas, que no son secretos.
+- Se mantienen `--ignore-user-config`, el sandbox de solo lectura y las funciones desactivadas (shell y parches siguen apagados). La jaula concede lo mismo que con claude: ejecutar el binario de lazarobox, su cargador si hace falta y leer y escribir **el archivo** del socket, tras la misma comprobación de confianza.
+- Solo cuenta lo que ejecuta lazarobox: con herramientas, el decodificador de codex acepta además de `agent_message`, `reasoning`, `error` y `todo_list` un `mcp_tool_call` cuyo `server` sea exactamente `lazarobox`; otro servidor, uno ausente o cualquier otro tipo de elemento termina el turno con `codex tried to use a tool`. En un chat de solo texto no se acepta ninguna herramienta, tampoco la nuestra (el decodificador de codex sigue siendo una lista de tipos permitidos también ahí, a diferencia del de claude).
+- Si algo del cableado falla, o codex corre sin jaula, **el turno sigue como solo texto** y el chat lo avisa: `tools are off for this turn: they could not be set up`; ese turno cierra su socket y su token en el acto.
+
+**Herramientas con gemini (Tools with gemini).** **Activas** desde que el usuario pasó la comprobación manual el 2026-10-17: gemini figura en `MCP_VERIFIED` (la lista de motores cuya comprobación manual pasó). Con `[ai.tools] enabled` activo, cada turno hace esto.
+
+Comprobado a mano por el usuario con un gemini real el 2026-10-17 (2h.6 y 2h.7): que gemini lee los ajustes del espacio de trabajo con `--skip-trust` en la carpeta del turno, que la política de administrador gana a la regla que lo deniega todo, el significado de `trust` y `timeout`, y el nombre que gemini da a la herramienta (`mcp_lazarobox_<herramienta>`).
+
+- gemini corre en `<carpeta del turno>/work`, no en la carpeta vacía compartida. Ahí se escribe `.gemini/settings.json` con `mcpServers.lazarobox` (`command`, `args = ["__mcp-serve", "<socket>"]`, `env`, `timeout = 900000` —15 min, para que esperar tu `y` no corte la llamada— y `trust = true`, porque quien te pregunta es lazarobox). Archivo 0600 en carpetas 0700, y todo se borra al terminar el turno.
+- gemini solo lee los ajustes del espacio de trabajo si la carpeta es de confianza, y `--skip-trust` llega tarde: por eso un turno con herramientas arranca gemini con `GEMINI_CLI_TRUST_WORKSPACE=true` en el entorno (solo en esos turnos). Tus propios servidores (`~/.gemini/settings.json`) se cargan estén o no en una carpeta de confianza; `--allowed-mcp-server-names=lazarobox` es lo que los deja fuera. Con la carpeta de confianza, el `trust = true` del servidor sí se aplica y gemini no pide su propia confirmación para las herramientas de lazarobox (es lo previsto: pregunta lazarobox). Confiar también habilita más cosas (variables de un `.env` hacia arriba, `GEMINI.md` de carpetas superiores, hooks y skills del proyecto): los ajustes generados las apagan con `advanced.ignoreLocalEnv`, `context.memoryBoundaryMarkers = []`, `hooksConfig.enabled = false` y `skills.enabled = false` (gemini 0.63.0). No hay ajuste para un `.gemini/.env` de una carpeta superior, que gemini lee siempre en una carpeta de confianza; las políticas del espacio de trabajo están desactivadas en el propio gemini 0.63.0. La regla de la política lleva `toolName = "*"` además de `mcpName`: sin él, gemini descarta el archivo por inválido.
+- Se añaden `--allowed-mcp-server-names=lazarobox` y `--admin-policy=<archivo>` en la forma con `=`, porque ambas opciones aceptan varios valores y un valor suelto se tragaría lo que viniera después. La política (`mcpName = "lazarobox"`, `allow`) va en el nivel de administrador, que según la tabla de niveles de gemini está por encima de la regla de usuario que lo deniega todo (prioridad 999, que dentro de un mismo archivo no se puede superar). Se mantienen `-e none`, `--approval-mode plan` y esa regla: cualquier otra herramienta sigue denegada.
+- El token de la sesión va **solo** en el `env` de ese `settings.json`; nunca en los argumentos (`ps` los muestra), nunca en la salida de depuración de lazarobox y, si el CLI lo repite por stderr, se sustituye por `(..)` antes de mostrar el motivo del fallo. La jaula concede lo mismo que con claude y codex: ejecutar el binario de lazarobox, su cargador si hace falta y leer y escribir **el archivo** del socket, tras la misma comprobación de confianza.
+- Solo cuenta lo que ejecuta lazarobox: con herramientas, el decodificador de gemini acepta un `tool_use` solo si su `tool_name` es `mcp_lazarobox_<herramienta>`. Así la `read_file` propia de gemini (sin prefijo) no se confunde con la nuestra; cualquier otra herramienta, o un nombre ausente o que no sea texto, termina el turno con `gemini tried to use a tool`. En un chat de solo texto no se acepta ninguna, tampoco la nuestra.
+- Si algo del cableado falla (no se puede escribir el archivo, la jaula rechaza esa disposición, el binario no es de confianza), o gemini corre sin jaula, **el turno sigue como solo texto**, en la carpeta vacía de siempre y con los argumentos de siempre, y el chat lo avisa: `tools are off for this turn: they could not be set up`; ese turno cierra su socket y su token en el acto y borra el `work`.
 
 **codex.** La lista de modelos sale de **tu cuenta**: al detectar los motores, lazarobox ejecuta una vez `codex debug models` (con un límite de 4 s, sin entrada estándar, con el entorno depurado y en la carpeta privada de lazarobox), dentro de la misma jaula que usa el chat de codex, de modo que solo puede escribir en la carpeta de estado de codex (`$CODEX_HOME` o `~/.codex`). Igual que al usar codex, ese comando puede actualizar el catálogo desde OpenAI con tu sesión y renovar la caché de codex (`models_cache.json`). Sin la jaula no se ejecuta y solo aparece `default`. El resultado se guarda en memoria y se renueva como máximo cada 10 minutos (al arrancar y al abrir el menú se reutiliza); la tecla `r` del menú lo vuelve a pedir siempre. Si una renovación falla, se conserva la lista anterior mientras tenga menos de 10 minutos. El selector muestra `default (CLI picks)` y, a continuación, los modelos que tu cuenta lista, con su nombre visible; lo que se guarda en `config.toml` es siempre el identificador (por ejemplo `gpt-6.1-sol`). Con un codex antiguo, sin ese subcomando, o si el comando falla, solo aparece `default`. Un modelo asignado o escrito en `custom…` que no esté en la lista de tu cuenta se marca `not in your account's list`; es solo un aviso y no bloquea la elección, porque la lista puede estar desactualizada. Elige un modelo que **tu cuenta admita**. Con una cuenta de ChatGPT, solo algunos modelos funcionan: el modelo por defecto de codex (por ejemplo `gpt-5.5`) puede fallar con `The '<modelo>' model is not supported when using Codex with a ChatGPT account`. Pon el nombre en `[ai.tasks.chat] model = "..."` o en la fila `custom…` del selector. codex usa `$CODEX_HOME` si está definido. Se lanza sin guardar sesión (`--ephemeral`), con el sandbox de solo lectura y con todas sus herramientas desactivadas.
 
@@ -322,6 +442,18 @@ Every message below says why a CLI cannot be used. None of them changes what the
 | `model list unavailable: unexpected output format` / `the list is empty` | codex answered but not with a model catalog (a newer or older codex), or with no listed model. |
 | `model list unavailable: jail: <reason>` | The listing runs in the same jail as the chat, so the jail rows above apply. |
 | `claude runs without the jail here: <reason>` | claude is allowed to run with only its text-only flags; the reason is any row above. |
+
+### Tools with Ollama
+
+Ollama no tiene un CLI que ejecute herramientas, así que lazarobox ejecuta el bucle él mismo sobre `/api/chat`: envía las herramientas en el campo `tools`, ejecuta las llamadas del modelo con el mismo registro, las mismas aprobaciones y el mismo modo (`ask`, `auto`, `run`) que los CLIs, y devuelve los resultados en una nueva petición del mismo turno. En la conversación se ven las mismas filas de herramienta que con cualquier otro motor.
+
+- Como Ollama es local, `find_dir`, `list_dir` y `read_file` se ejecutan sin preguntar; `run_in_pane` siempre espera tu `y` y nunca pulsa Enter.
+- Un turno hace como máximo 8 peticiones. Si el modelo sigue pidiendo herramientas, el turno termina con una línea de sistema y se conserva la respuesta parcial.
+- Si el modelo no admite herramientas (el servidor responde con un 400 a la petición con `tools`), se repite una sola vez sin ellas (solo si aún no hubo ninguna ronda; después, un 400 es un error normal) y la respuesta llega como texto normal. El motor y el modelo asignados no cambian.
+- Los mensajes de herramienta viven solo en ese turno: no se guardan ni se envían en turnos posteriores. Los límites de tiempo, la sanitización y el tope de la respuesta son los de cualquier turno.
+- Solo hay herramientas si **Tools** está activado en el menú de IA (`[ai.tools] enabled`). Si lo desactivas a mitad de un turno, solo se deniegan las llamadas que piden aprobación, igual que con los CLIs.
+- **Estado:** las herramientas con Ollama están activas: el usuario las comprobó con un modelo real el 2026-10-17 y `ollama` figura en `MCP_VERIFIED`.
+- El límite de tiempo total del turno (15 minutos) incluye el tiempo que pasas decidiendo una aprobación.
 
 ### Historial de conversaciones
 

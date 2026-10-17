@@ -1,0 +1,9 @@
+---
+source: src/ui/components/chat/tool_tests.rs
+expression: "text(&draw(&chat, 40, 7))"
+---
+› where is the course?
+
+» read_file ~/notes.txt
+
+waiting for the model…

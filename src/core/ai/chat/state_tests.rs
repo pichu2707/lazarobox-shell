@@ -49,7 +49,7 @@ pub(super) fn systems(state: &ChatState) -> Vec<&str> {
         .iter()
         .filter_map(|e| match e {
             Entry::System(s) => Some(s.as_str()),
-            Entry::Message(_) | Entry::Reasoning(_) | Entry::Memory(_) => None,
+            Entry::Message(_) | Entry::Reasoning(_) | Entry::Memory(_) | Entry::Tool(_) => None,
         })
         .collect()
 }
@@ -384,4 +384,54 @@ fn a_notice_does_not_start_the_answer_or_end_the_turn() {
     state.apply(turn, StreamEvent::Notice("x".into()));
     assert_eq!(state.phase(), Phase::Waiting { slow: false });
     assert_eq!(texts(&state).len(), 1, "only the user message");
+}
+
+// Spec (chat-pane, approval mode): the mode lives in the chat, the count per turn.
+#[test]
+fn a_chat_starts_in_ask_mode_with_nothing_typed() {
+    let state = chat();
+    assert_eq!(state.approval_mode(), ApprovalMode::Ask);
+    assert_eq!(state.auto_typed(), 0);
+}
+
+#[test]
+fn the_auto_typed_count_resets_when_a_turn_starts() {
+    let mut state = chat();
+    state.note_auto_typed();
+    state.note_auto_typed();
+    assert_eq!(state.auto_typed(), 2);
+    sent(&mut state, "hello");
+    assert_eq!(state.auto_typed(), 0);
+}
+
+// Spec (pane-execution, run routing): the refusal pause.
+#[test]
+fn the_run_pauses_after_three_fallbacks_and_a_turn_or_a_run_clears_it() {
+    let mut state = chat();
+    assert!(!state.run_paused());
+    for _ in 0..approval::MAX_RUN_FALLBACKS - 1 {
+        state.note_run_fallback();
+    }
+    assert!(!state.run_paused());
+    state.note_run_fallback();
+    assert!(state.run_paused());
+    state.clear_run_fallbacks();
+    assert!(!state.run_paused());
+    for _ in 0..approval::MAX_RUN_FALLBACKS {
+        state.note_run_fallback();
+    }
+    sent(&mut state, "hello");
+    assert!(!state.run_paused(), "a new turn starts clean");
+}
+
+// The mode is not part of what leaves the chat: same request, same store commands.
+#[test]
+fn the_mode_changes_neither_the_request_nor_the_stored_messages() {
+    let mut ask = chat();
+    let mut auto = chat();
+    auto.set_approval_mode(ApprovalMode::Auto);
+    let (_, ask_request) = sent(&mut ask, "hello");
+    let (_, auto_request) = sent(&mut auto, "hello");
+    assert_eq!(ask_request, auto_request);
+    assert_eq!(ask.outbox, auto.outbox);
 }

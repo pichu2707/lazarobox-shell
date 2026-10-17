@@ -12,6 +12,12 @@ fn main() -> std::io::Result<()> {
         let rest: Vec<OsString> = args.collect();
         std::process::exit(lazarobox_shell::runtime::jail::exec_main(&rest));
     }
+    // The MCP shim of a chat engine: a plain relay, before the nesting guard
+    // (it runs inside a lazarobox pane) and before anything touches the TTY.
+    if first.as_deref() == Some(OsStr::new(lazarobox_shell::runtime::mcp::shim::SUBCOMMAND)) {
+        let rest: Vec<OsString> = args.collect();
+        std::process::exit(lazarobox_shell::runtime::mcp::shim::main(&rest));
+    }
     if first.as_deref() == Some(OsStr::new(lazarobox_shell::core::desktop::SUBCOMMAND)) {
         let rest: Vec<OsString> = args.collect();
         std::process::exit(lazarobox_shell::runtime::desktop::main(&rest));

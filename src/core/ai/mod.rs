@@ -14,6 +14,7 @@ pub mod menu;
 pub mod parse;
 pub mod picker;
 pub mod sanitize;
+pub mod tools;
 
 /// How an engine is detected.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -27,6 +28,24 @@ pub enum Kind {
     },
     /// An agent CLI found on PATH.
     Cli,
+}
+
+impl Kind {
+    /// Where the engine's adapter sends what a tool returns: a loopback
+    /// server keeps it on the machine, a CLI hands it to its provider. Comes
+    /// from the kind alone, so no model name can change it.
+    ///
+    /// Known limit: this is the engine kind, not the route. The Ollama URL is
+    /// hard-coded to loopback today, but an Ollama `*-cloud` model goes
+    /// through the local daemon to ollama.com and still counts as `Local`.
+    /// Accepted. If a host or URL setting is ever added, `Local` must mean
+    /// "loopback AND not forwarding".
+    pub fn locality(self) -> tools::Locality {
+        match self {
+            Kind::Server { .. } => tools::Locality::Local,
+            Kind::Cli => tools::Locality::Cloud,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -270,6 +289,34 @@ pub fn status_text(detection: Option<&Detection>, id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::ai::tools::Locality;
+
+    // Spec (agent-tools, locality): from the adapter kind, whatever the model.
+    #[test]
+    fn a_loopback_server_is_local_and_every_cli_is_cloud() {
+        for engine in CATALOG {
+            let want = match engine.kind {
+                Kind::Server { .. } => Locality::Local,
+                Kind::Cli => Locality::Cloud,
+            };
+            assert_eq!(engine.kind.locality(), want, "{}", engine.id);
+        }
+        let ids = |l: Locality| -> Vec<&str> {
+            CATALOG
+                .iter()
+                .filter(|e| e.kind.locality() == l)
+                .map(|e| e.id)
+                .collect()
+        };
+        assert_eq!(
+            ids(Locality::Local),
+            ["ollama", "lmstudio", "llamacpp", "vllm"]
+        );
+        assert_eq!(
+            ids(Locality::Cloud),
+            ["claude", "codex", "gemini", "opencode"]
+        );
+    }
 
     #[test]
     fn catalog_has_the_eight_engines_in_order() {

@@ -3,7 +3,7 @@
 
 use super::{
     Detection,
-    config::{AiConfig, Assignment, NotifyMode, Profile, Task},
+    config::{AiConfig, ApprovalMode, Assignment, NotifyMode, Profile, Task},
     picker::{Outcome, PickRow, Picker, Target, task_label},
 };
 
@@ -132,6 +132,29 @@ impl AiMenu {
     /// The notify mode in the draft, when it differs from the open one.
     pub fn changed_notify(&self) -> Option<NotifyMode> {
         (self.draft.notify() != self.original.notify()).then(|| self.draft.notify())
+    }
+
+    /// Flips the agent tools flag of the draft.
+    pub fn toggle_tools(&mut self) {
+        let next = !self.draft.tools_enabled();
+        self.draft.set_tools_enabled(next);
+    }
+
+    /// The tools flag in the draft, when it differs from the open one.
+    pub fn changed_tools(&self) -> Option<bool> {
+        (self.draft.tools_enabled() != self.original.tools_enabled())
+            .then(|| self.draft.tools_enabled())
+    }
+
+    /// Cycles the approval mode of the draft.
+    pub fn cycle_approval(&mut self, forward: bool) {
+        let next = self.draft.approval().cycled(forward);
+        self.draft.set_approval(next);
+    }
+
+    /// The approval mode in the draft, when it differs from the open one.
+    pub fn changed_approval(&self) -> Option<ApprovalMode> {
+        (self.draft.approval() != self.original.approval()).then(|| self.draft.approval())
     }
 
     /// Replaces the detection. The draft is never touched.

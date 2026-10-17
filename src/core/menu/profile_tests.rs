@@ -15,9 +15,7 @@ fn open_with(profile: Profile, found: Option<Detection>) -> MenuState {
 
 fn on_profile(profile: Profile, found: Option<Detection>) -> MenuState {
     let mut m = open_with(profile, found);
-    while selected_label(&m) != "Profile" {
-        press(&mut m, 'j');
-    }
+    m.goto("Profile");
     m
 }
 
@@ -30,7 +28,7 @@ fn plain(code: KeyCode) -> KeyEvent {
 }
 
 fn value_of(menu: &MenuState, wanted: &str) -> Option<String> {
-    menu.rows(&Config::default())
+    menu.all_rows(&Config::default())
         .into_iter()
         .find_map(|row| match row {
             Row::Item {
@@ -62,16 +60,15 @@ fn the_profile_row_follows_the_task_rows() {
         .filter(|i| matches!(i.kind, ItemKind::Profile))
         .count();
     assert_eq!(kinds, 1);
-    assert_eq!(AI_SECTION.items.len(), 9);
+    assert_eq!(AI_SECTION.items.len(), 11);
 }
 
 // Spec (config-menu): Task rows in order, Wrap.
 #[test]
 fn profile_sits_between_summarize_and_context_in_navigation() {
     let mut m = menu(None, None, Some(machine()));
-    for _ in 0..12 {
-        press(&mut m, 'j');
-    }
+    m.goto("summarize");
+    press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Profile", "after summarize");
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Context", "then Context");

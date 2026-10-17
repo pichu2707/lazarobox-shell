@@ -206,3 +206,81 @@ fn notices_hold_no_control_characters() {
         }
     }
 }
+
+// Spec (agent-tools): a turn with tools stops telling the model it has none.
+#[test]
+fn the_tools_block_replaces_the_no_access_sentence_in_every_profile() {
+    for profile in Profile::ALL {
+        let chat = builtin(profile, Task::Chat);
+        let got = with_tools(chat);
+        assert!(!got.contains(CHAT_LIMITS), "{profile:?}");
+        assert!(!got.contains("You are a text assistant."), "{profile:?}");
+        assert!(got.contains(TOOLS.trim_end()), "{profile:?}");
+        // Everything else of the prompt stays, in its place.
+        assert!(got.contains(REPLY_IN_USER_LANGUAGE), "{profile:?}");
+        assert!(got.contains("workspace facts"), "{profile:?}");
+        assert!(got.starts_with(chat.lines().next().unwrap()), "{profile:?}");
+        assert_eq!(got.matches(TOOLS.trim_end()).count(), 1, "{profile:?}");
+    }
+}
+
+#[test]
+fn the_tools_block_names_the_tools_by_purpose_and_the_pane_rule() {
+    let text = TOOLS;
+    for needle in [
+        "find a directory",
+        "list a directory",
+        "read a file",
+        "run a command in the user's shell pane",
+        "only typed or typed and run",
+        "cd, pwd, ls, tree and mkdir",
+        "one command with plain or quoted paths",
+        "without &&, ;, |, $ or redirections",
+        "can run directly when the user allows it",
+        "Anything else waits for the user to review it and press Enter",
+        "carries the output of a command that ran, which may be \"not available\"",
+        "You cannot change files yourself. Only mkdir can run directly; any other change needs a command the user reviews and runs.",
+        "one simple command per call",
+        "instead of asking the user to run find, ls or cat",
+        "cannot change files",
+    ] {
+        assert!(text.contains(needle), "{needle}");
+    }
+    assert!(!text.contains("mcp__") && !text.contains("run_in_pane"));
+    // After S4b the output of a command that ran comes back.
+    assert!(!text.contains("unless the user pastes"));
+    assert!(!text.contains("except through those commands"));
+    // D18: the same words in every approval mode.
+    for mode in ["ask mode", "auto mode", "run mode", "`run`", "`auto`"] {
+        assert!(!text.contains(mode), "{mode}");
+    }
+    assert!(
+        text.lines().count() == 1 && text.len() < 900,
+        "{}",
+        text.len()
+    );
+    assert!(text.chars().all(|c| c == '\n' || (' '..='~').contains(&c)));
+}
+
+// A user's override file need not have the sentence: the block is appended.
+#[test]
+fn a_prompt_without_the_sentence_gets_the_block_as_a_last_bullet() {
+    let got = with_tools("My own prompt.\n\nWorkspace: x\n");
+    assert_eq!(
+        got,
+        format!("My own prompt.\n\nWorkspace: x\n\n- {}", TOOLS.trim_end())
+    );
+}
+
+#[test]
+fn the_workspace_block_after_the_sentence_is_kept() {
+    let chat = builtin(Profile::Programmer, Task::Chat).trim_end();
+    let system = format!("{chat}\n\nWorkspace facts: cwd /home/u");
+    let got = with_tools(&system);
+    assert!(got.ends_with("Workspace facts: cwd /home/u"), "{got}");
+}
+
+#[test]
+fn an_empty_prompt_becomes_the_block_alone() {
+    assert_eq!(with_tools(""), TOOLS.trim_end());
+}

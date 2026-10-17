@@ -15,9 +15,7 @@ fn open_with(notify: NotifyMode) -> MenuState {
 
 fn on_notify(notify: NotifyMode) -> MenuState {
     let mut m = open_with(notify);
-    while selected_label(&m) != "Notify" {
-        press(&mut m, 'j');
-    }
+    m.goto("Notify");
     m
 }
 
@@ -74,14 +72,8 @@ fn the_notify_rows_follow_mouse_in_settings_and_leave_the_ai_section() {
 }
 
 #[test]
-fn the_popup_body_grows_with_the_row() {
-    // The settings titles and rows + the AI title + the AI rows.
-    let settings: usize = SECTIONS.iter().map(|s| s.items.len()).sum();
-    assert_eq!(
-        AI_BODY,
-        SECTIONS.len() + 1 + settings + AI_SECTION.items.len()
-    );
-    assert_eq!(AI_SECTION.items.len(), 9);
+fn the_tabs_hold_six_settings_rows_and_eleven_ai_rows() {
+    assert_eq!(AI_SECTION.items.len(), 11);
     assert_eq!(SECTIONS[0].items.len(), 6);
 }
 
@@ -188,9 +180,7 @@ fn the_edit_is_the_notify_key_alone_and_only_when_changed() {
 fn the_notify_edit_comes_after_the_context_and_memory_edits() {
     let mut m = on_notify(NotifyMode::Off);
     press(&mut m, 'l');
-    while selected_label(&m) != "Context" {
-        press(&mut m, 'j');
-    }
+    m.goto("Context");
     press(&mut m, 'l');
     let edits = m.edits(&Config::default());
     assert_eq!(edits.len(), 2);
@@ -203,9 +193,7 @@ fn on_sound(sound: bool) -> MenuState {
     let mut ai = AiConfig::default();
     ai.set_notify_sound(sound);
     let mut m = MenuState::open(&Config::default()).with_ai(ai, Some(machine()));
-    while selected_label(&m) != "Sound" {
-        press(&mut m, 'j');
-    }
+    m.goto("Sound");
     m
 }
 
@@ -262,9 +250,7 @@ fn t_on_the_notify_row_tests_the_draft_mode_without_saving() {
 #[test]
 fn t_carries_the_sound_flag_and_works_from_the_sound_row_too() {
     let mut m = on_notify(NotifyMode::Desktop);
-    while selected_label(&m) != "Sound" {
-        press(&mut m, 'j');
-    }
+    m.goto("Sound");
     press(&mut m, 'l');
     assert_eq!(
         send(&mut m, KeyCode::Char('t'), false),
@@ -283,9 +269,7 @@ fn t_elsewhere_or_on_repeat_does_nothing() {
     assert_ne!(selected_label(&m), "Notify");
     assert_eq!(send(&mut m, KeyCode::Char('t'), false), MenuCommand::None);
     // Nor on the Updates row, which sits right after Sound.
-    while selected_label(&m) != "Updates" {
-        press(&mut m, 'j');
-    }
+    m.goto("Updates");
     assert_eq!(send(&mut m, KeyCode::Char('t'), false), MenuCommand::None);
 }
 

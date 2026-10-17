@@ -42,9 +42,16 @@ pub enum ItemKind {
     /// The memory opt-in row: a static `off`/`on` item over the AI draft.
     /// Turning it on without the acknowledgement opens the privacy warning.
     Memory(MemoryRow),
-    /// The chat bell flag (`ai.notify`): an on/off row that lives in the AI
-    /// draft, like [`ItemKind::Context`].
+    /// The chat notify mode (`ai.notify`): a Settings row that cycles
+    /// auto, desktop, bell and off.
     Notify,
+    /// The agent tools flag (`ai.tools.enabled`): an on/off row that lives in
+    /// the AI draft, like [`ItemKind::Notify`].
+    Tools,
+    /// The approval mode of the model's commands (`ai.tools.approval`): an
+    /// `ask`/`auto`/`run` row over the AI draft. It only reaches later chat opens
+    /// and conversation switches, never an open chat or a pending approval.
+    Approval,
     /// The notification sound flag (`ai.notify_sound`): an on/off row over
     /// the AI draft.
     NotifySound,
@@ -150,8 +157,8 @@ pub static SECTIONS: &[Section] = &[Section {
 
 /// The AI section, attached only by [`MenuState::with_ai`]. The labels of
 /// the task rows are the task ids; their key path is `Task::table`. The
-/// static rows follow the tasks: `Profile`, `Context` and `Memory`, in that
-/// order. `Notify` and `Sound` live in the Settings section.
+/// static rows follow the tasks: `Profile`, `Context`, `Memory`, `Tools` and
+/// `Approval`, in that order. `Notify` and `Sound` live in the Settings section.
 pub static AI_SECTION: Section = Section {
     title: "AI",
     items: &[
@@ -195,8 +202,48 @@ pub static AI_SECTION: Section = Section {
                 values: &["off", "on"],
             }),
         },
+        Item {
+            label: "Tools",
+            kind: ItemKind::Tools,
+        },
+        Item {
+            label: "Approval",
+            kind: ItemKind::Approval,
+        },
     ],
 };
+
+/// A group of sections shown under one label of the tab bar. Sections are
+/// not titled when the menu is tabbed: the bar names them.
+pub struct Tab {
+    pub label: &'static str,
+    pub sections: &'static [Section],
+    /// The tab only exists when the menu has the AI section.
+    pub needs_ai: bool,
+    /// The update note and the `*` of the update live on this tab.
+    pub note: bool,
+}
+
+/// Number of entries of [`TABS`].
+pub const TAB_COUNT: usize = 2;
+
+/// The tabs of the menu, in bar order: Settings first, then AI. A new tab is
+/// one entry here plus a bump of [`TAB_COUNT`]; the compiler enforces the
+/// pair.
+pub static TABS: [Tab; TAB_COUNT] = [
+    Tab {
+        label: "Settings",
+        sections: SECTIONS,
+        needs_ai: false,
+        note: true,
+    },
+    Tab {
+        label: "AI",
+        sections: std::slice::from_ref(&AI_SECTION),
+        needs_ai: true,
+        note: false,
+    },
+];
 
 /// The selectable settings, in table order.
 fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
@@ -210,6 +257,8 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
             | ItemKind::Context
             | ItemKind::Memory(_)
             | ItemKind::Notify
+            | ItemKind::Tools
+            | ItemKind::Approval
             | ItemKind::NotifySound
             | ItemKind::Updates => None,
         })
@@ -217,29 +266,51 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
 
 /// Rows around the popup body: two borders, the blank row and the footer.
 pub const CHROME: u16 = 4;
-/// With the AI section the body is fixed: the popup never jumps between the
-/// task list, the picker (a title and `VIEW` rows) and the privacy warning.
-/// The task list is the tallest view: a title row per section, then every
-/// settings row and every AI row. Derived from the descriptor tables, so
-/// adding a row grows the popup instead of overflowing it; a test keeps this
-/// equal to the tallest AI view.
-pub const AI_BODY: usize = ai_body();
+/// The tab bar takes one row at the top of the body when the menu is tabbed.
+pub const TAB_BAR: usize = 1;
+/// Lines of the update note (see [`MenuState::update_note`]).
+pub const NOTE_ROWS: usize = 2;
+/// The privacy warning: a title, the facts, a blank row and the prompt.
+const WARNING_ROWS: usize = WARNING_TEXT.len() + 3;
+/// The body under the tab bar is fixed: the popup never jumps between the
+/// tabs, the picker (a title and `VIEW` rows), the custom field and the
+/// privacy warning. It is the maximum over every view, so adding a row grows
+/// the popup instead of overflowing it. The picker is the binding term (11
+/// rows); a test keeps this equal to the tallest view.
+pub const VIEW_BODY: usize = view_body();
+/// The whole body of the tabbed popup: the bar and the tallest view.
+pub const MENU_BODY: usize = TAB_BAR + VIEW_BODY;
 
-/// Rows of the task list: the section titles (those of `SECTIONS` and `AI`)
-/// plus every item.
-const fn ai_body() -> usize {
-    let mut rows = SECTIONS.len() + 1 + AI_SECTION.items.len();
-    let mut i = 0;
-    while i < SECTIONS.len() {
-        rows += SECTIONS[i].items.len();
-        i += 1;
+/// The tallest view, from the descriptor tables.
+const fn view_body() -> usize {
+    // The picker (a title and its window), the warning, the custom field (a
+    // title and the field).
+    let mut rows = 1 + crate::core::ai::picker::VIEW;
+    if WARNING_ROWS > rows {
+        rows = WARNING_ROWS;
+    }
+    if 2 > rows {
+        rows = 2;
+    }
+    // A tab: its items, and the update note after a gap when it has one.
+    let mut tab = 0;
+    while tab < TABS.len() {
+        let mut items = 0;
+        let mut section = 0;
+        while section < TABS[tab].sections.len() {
+            items += TABS[tab].sections[section].items.len();
+            section += 1;
+        }
+        if TABS[tab].note {
+            items += 1 + NOTE_ROWS;
+        }
+        if items > rows {
+            rows = items;
+        }
+        tab += 1;
     }
     rows
 }
-const _: () = assert!(
-    crate::core::ai::picker::VIEW < AI_BODY,
-    "a picker must fit the fixed body"
-);
 /// Smallest width that still shows the full popup.
 pub const MIN_WIDTH: u16 = 24;
 
@@ -342,6 +413,8 @@ pub enum Row {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct MenuState {
     selected: Option<usize>,
+    tab: usize,
+    tab_cursor: [usize; TAB_COUNT],
     original: Config,
     error: Option<String>,
     /// What the last copy did, shown in the footer until the next press.
@@ -369,6 +442,8 @@ impl MenuState {
     pub fn open(original: &Config) -> Self {
         Self {
             selected: (SECTIONS.iter().any(|s| !s.items.is_empty())).then_some(0),
+            tab: 0,
+            tab_cursor: [0; TAB_COUNT],
             original: *original,
             error: None,
             test_report: None,
@@ -423,13 +498,14 @@ impl MenuState {
         self.update = update;
     }
 
-    /// The two lines of the update note, shown under the task list. Plain
-    /// text: it is not a row, takes no key and runs nothing. Hidden over the
-    /// warning and the pickers, which have their own full-height views.
-    pub fn update_note(&self) -> Option<[String; 2]> {
+    /// The lines of the update note, shown on the tab that has the note
+    /// (Settings). Plain text: it is not a row, takes no key and runs
+    /// nothing. Hidden on the other tabs and over the warning and the
+    /// pickers, which have their own full-height views.
+    pub fn update_note(&self) -> Option<[String; NOTE_ROWS]> {
         let latest = self.update.as_deref()?;
-        let in_picker = self.ai.as_ref().is_some_and(|ai| ai.picker().is_some());
-        (!self.in_warning() && !in_picker).then(|| crate::core::update::menu_lines(latest))
+        let on_note_tab = self.tabs().nth(self.tab).is_some_and(|tab| tab.note);
+        (on_note_tab && !self.in_sub_level()).then(|| crate::core::update::menu_lines(latest))
     }
 
     /// The terminal size, given by the app before each key so the menu knows
@@ -441,9 +517,8 @@ impl MenuState {
     /// Whether the privacy warning is readable in full: the popup fits the
     /// terminal. An unknown size counts as fitting.
     pub fn fits_warning(&self) -> bool {
-        let body = AI_BODY.max(Self::warning_rows().len());
         self.term
-            .is_none_or(|(cols, rows)| fits_size(cols, rows, body))
+            .is_none_or(|(cols, rows)| fits_size(cols, rows, MENU_BODY))
     }
 
     /// Adds the AI section, editing a draft of `ai` against `engines`.
@@ -473,32 +548,62 @@ impl MenuState {
             .unwrap_or_default()
     }
 
+    /// The tabs this menu shows, in table order. The AI tab needs the AI
+    /// section.
+    pub fn tabs(&self) -> impl Iterator<Item = &'static Tab> + use<> {
+        let has_ai = self.ai.is_some();
+        TABS.iter().filter(move |tab| has_ai || !tab.needs_ai)
+    }
+
+    /// The labels of the tab bar. The tab with the update note wears a `*`
+    /// while an update waits, like the `* Updates` row.
+    pub fn tab_labels(&self) -> Vec<String> {
+        let waiting = self.update.is_some() && self.installed.is_none();
+        self.tabs()
+            .map(|tab| {
+                if tab.note && waiting {
+                    format!("{}*", tab.label)
+                } else {
+                    tab.label.to_owned()
+                }
+            })
+            .collect()
+    }
+
+    /// The index of the active tab among [`MenuState::tabs`].
+    pub fn active_tab(&self) -> usize {
+        self.tab
+    }
+
+    /// Whether the menu is in a view that replaces the rows: the privacy
+    /// warning, a picker level or the custom field. The tab keys are inert
+    /// there.
+    pub fn in_sub_level(&self) -> bool {
+        self.in_warning() || self.ai.as_ref().is_some_and(|ai| ai.picker().is_some())
+    }
+
     /// Whether the menu has an AI section.
     pub fn has_ai(&self) -> bool {
         self.ai.is_some()
     }
 
-    /// The Settings rows this menu shows, in table order. The chat bell rows
-    /// edit the AI draft, so a menu without an AI section has none of them.
-    fn settings(&self) -> impl Iterator<Item = &'static Item> + use<> {
+    /// The rows of the active tab, in table order. The chat bell rows edit
+    /// the AI draft, so a menu without an AI section has none of them.
+    fn tab_items(&self) -> impl Iterator<Item = &'static Item> + use<> {
         let has_ai = self.ai.is_some();
-        SECTIONS
-            .iter()
+        self.tabs()
+            .nth(self.tab)
+            .into_iter()
+            .flat_map(|tab| tab.sections.iter())
             .flat_map(|section| section.items.iter())
             .filter(move |item| has_ai || !item.kind.needs_ai())
     }
 
-    /// The descriptor kind under the selection. Rows are found by kind, never
-    /// by a position in a table, so a row can be added there without
-    /// touching the key handling.
+    /// The descriptor kind under the selection, in the active tab. Rows are
+    /// found by kind, never by a position in a table, so a row can be added
+    /// there without touching the key handling.
     fn selected_kind(&self) -> Option<&'static ItemKind> {
-        let index = self.selected?;
-        let settings = self.settings().count();
-        match index.checked_sub(settings) {
-            None => self.settings().nth(index).map(|item| &item.kind),
-            Some(n) if self.ai.is_some() => AI_SECTION.items.get(n).map(|item| &item.kind),
-            Some(_) => None,
-        }
+        self.tab_items().nth(self.selected?).map(|item| &item.kind)
     }
 
     /// Whether the selection is on an AI task row (the ones with a picker).
@@ -507,7 +612,7 @@ impl MenuState {
     }
 
     /// Whether the selection is on a row of the AI draft that is not a
-    /// task: `Profile`, `Context`, `Memory` or `Notify`.
+    /// task: `Profile`, `Context`, `Memory`, `Notify`, `Tools` or `Approval`.
     fn on_draft_row(&self) -> bool {
         matches!(
             self.selected_kind(),
@@ -516,6 +621,8 @@ impl MenuState {
                     | ItemKind::Context
                     | ItemKind::Memory(_)
                     | ItemKind::Notify
+                    | ItemKind::Tools
+                    | ItemKind::Approval
                     | ItemKind::NotifySound
             )
         )
@@ -570,14 +677,9 @@ impl MenuState {
         MenuCommand::None
     }
 
-    /// Selectable rows: the settings, then every AI row.
+    /// Selectable rows: those of the active tab.
     fn selectable(&self) -> usize {
-        self.settings().count()
-            + if self.ai.is_some() {
-                AI_SECTION.items.len()
-            } else {
-                0
-            }
+        self.tab_items().count()
     }
 
     /// The picker view: a title and the window of rows around the cursor.
@@ -627,6 +729,8 @@ impl MenuState {
             | ItemKind::Context
             | ItemKind::Memory(_)
             | ItemKind::Notify
+            | ItemKind::Tools
+            | ItemKind::Approval
             | ItemKind::NotifySound
             | ItemKind::Updates => None,
         }
@@ -657,9 +761,17 @@ impl MenuState {
         }
         let mut rows = Vec::new();
         let mut index = 0;
-        let ai_section = self.ai.as_ref().map(|_| &AI_SECTION);
-        for section in SECTIONS.iter().chain(ai_section) {
-            rows.push(Row::Title(Cow::Borrowed(section.title)));
+        // With tabs the bar names the section; a title only stays when the
+        // menu has a single tab (no bar is drawn then).
+        let titled = self.tabs().count() == 1;
+        let sections = self
+            .tabs()
+            .nth(self.tab)
+            .map_or(&[][..], |tab| tab.sections);
+        for section in sections {
+            if titled {
+                rows.push(Row::Title(Cow::Borrowed(section.title)));
+            }
             for item in section
                 .items
                 .iter()
@@ -731,6 +843,35 @@ impl MenuState {
                         index += 1;
                         row
                     }
+                    ItemKind::Tools => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self.ai.as_ref().map(|ai| {
+                                Cow::Borrowed(if ai.draft().tools_enabled() {
+                                    "on"
+                                } else {
+                                    "off"
+                                })
+                            }),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Approval => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self
+                                .ai
+                                .as_ref()
+                                .map(|ai| Cow::Borrowed(ai.draft().approval().id())),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
                     ItemKind::Notify => {
                         let row = Row::Item {
                             label: item.label,
@@ -794,6 +935,9 @@ impl MenuState {
             return MenuCommand::None;
         }
         match key.code {
+            KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => self.step_tab(false),
+            KeyCode::Tab => self.step_tab(true),
+            KeyCode::BackTab => self.step_tab(false),
             KeyCode::Char('j') | KeyCode::Down => self.step_selection(true),
             KeyCode::Char('k') | KeyCode::Up => self.step_selection(false),
             KeyCode::Char('l' | ' ') | KeyCode::Right => self.cycle(true, config),
@@ -885,6 +1029,27 @@ impl MenuState {
         MenuCommand::None
     }
 
+    /// Moves to the next (or previous) tab, wrapping. Each tab remembers its
+    /// own cursor; the active tab's lives in `selected`, so it is saved on
+    /// the way out and loaded on the way in. A single tab does nothing.
+    fn step_tab(&mut self, forward: bool) -> MenuCommand {
+        let count = self.tabs().count();
+        if count < 2 {
+            return MenuCommand::None;
+        }
+        if let Some(selected) = self.selected {
+            self.tab_cursor[self.tab] = selected;
+        }
+        self.tab = if forward {
+            (self.tab + 1) % count
+        } else {
+            (self.tab + count - 1) % count
+        };
+        let rows = self.selectable();
+        self.selected = (rows > 0).then(|| self.tab_cursor[self.tab].min(rows - 1));
+        MenuCommand::None
+    }
+
     fn step_selection(&mut self, forward: bool) -> MenuCommand {
         let count = self.selectable();
         debug_assert!(
@@ -913,6 +1078,8 @@ impl MenuState {
                 match kind {
                     Some(ItemKind::Profile) => ai.cycle_profile(forward),
                     Some(ItemKind::Memory(_)) => ai.toggle_memory(),
+                    Some(ItemKind::Tools) => ai.toggle_tools(),
+                    Some(ItemKind::Approval) => ai.cycle_approval(forward),
                     Some(ItemKind::Notify) => ai.cycle_notify(forward),
                     Some(ItemKind::NotifySound) => ai.toggle_notify_sound(),
                     _ => ai.toggle_context(),
@@ -1009,6 +1176,16 @@ impl MenuState {
                 key: "notify_sound",
                 value: Cow::Borrowed(if on { "true" } else { "false" }),
             });
+        let tools = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::changed_tools)
+            .map(ConfigEdit::tools_flag);
+        let approval = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::changed_approval)
+            .map(ConfigEdit::approval);
         settings
             .chain(tasks)
             .chain(profile)
@@ -1016,6 +1193,8 @@ impl MenuState {
             .chain(memory)
             .chain(notify)
             .chain(sound)
+            .chain(tools)
+            .chain(approval)
             .collect()
     }
 
@@ -1137,6 +1316,60 @@ impl MenuState {
 
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    /// Test helper: moves the cursor onto the row labelled `label` with the
+    /// keys a user would press, and panics with `no row {label}` when no
+    /// row has it. Bounded: it never presses more keys than there are
+    /// rows of a tab times the number of tabs, so a missing label fails
+    /// instead of hanging. It presses `j` through the current tab, then `Tab`,
+    /// across every visible tab.
+    #[cfg(test)]
+    pub fn goto(&mut self, label: &str) {
+        let mut config = Config::default();
+        let down = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+        let next_tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        for _ in 0..self.tabs().count() {
+            for _ in 0..=self.selectable() {
+                if self.selected_label(&config) == Some(label) {
+                    return;
+                }
+                self.on_key(&down, false, &mut config);
+            }
+            self.on_key(&next_tab, false, &mut config);
+        }
+        panic!("no row {label}");
+    }
+
+    /// Test helper: the rows of every visible tab, in table order. A lookup
+    /// by label does not need the tab to be the active one; each tab shows
+    /// its own remembered cursor.
+    #[cfg(test)]
+    pub fn all_rows(&self, config: &Config) -> Vec<Row> {
+        let mut menu = self.clone();
+        while menu.tab != 0 {
+            menu.step_tab(false);
+        }
+        let mut rows = Vec::new();
+        for _ in 0..menu.tabs().count() {
+            rows.extend(menu.rows(config));
+            menu.step_tab(true);
+        }
+        rows
+    }
+
+    /// Test helper: the label of the selected row, without the `* ` the
+    /// Updates row wears while an update waits.
+    #[cfg(test)]
+    fn selected_label(&self, config: &Config) -> Option<&'static str> {
+        self.rows(config).into_iter().find_map(|row| match row {
+            Row::Item {
+                label,
+                selected: true,
+                ..
+            } => Some(label.strip_prefix("* ").unwrap_or(label)),
+            _ => None,
+        })
     }
 }
 
@@ -1399,6 +1632,18 @@ mod tests {
 
 #[cfg(test)]
 mod ai_tests;
+
+#[cfg(test)]
+mod goto_tests;
+
+#[cfg(test)]
+mod tabs_tests;
+
+#[cfg(test)]
+mod tools_tests;
+
+#[cfg(test)]
+mod approval_tests;
 
 #[cfg(test)]
 mod copy_tests;

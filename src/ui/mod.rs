@@ -57,7 +57,10 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
             PaneView::Pty(pane) => pane,
             PaneView::Chat(chat) => {
                 let guidance = app.chat_guidance(id);
-                let chat_view = ChatView::new(chat, theme).guidance(guidance.as_deref());
+                let approval = app.approval_prompt(id);
+                let chat_view = ChatView::new(chat, theme)
+                    .guidance(guidance.as_deref())
+                    .approval(approval.as_ref());
                 // The composer owns the real cursor of a focused chat; MENU
                 // hides it like it hides a shell's.
                 // Chat COPY scrolls the transcript and edits nothing: no cursor.
@@ -839,14 +842,14 @@ mod tests {
     // Spec: tabs: Bar forced with one tab (render); the popup is drawn last.
     #[test]
     fn menu_popup_is_drawn_over_the_panes_after_the_bars() {
-        // 23 rows: the popup with its AI section is 20 rows high.
-        let app = menu_app(64, 23);
-        let (buf, _) = draw_at(&app, 64, 23);
+        // 24 rows: the popup with its AI section is 16 rows high, centred.
+        let app = menu_app(64, 24);
+        let (buf, _) = draw_at(&app, 64, 24);
         assert!(row(&buf, 0).contains(" 1 "), "{:?}", row(&buf, 0));
-        assert!(row(&buf, 1).contains(" Menu "), "{:?}", row(&buf, 1));
-        assert!(row(&buf, 22).contains("MENU"), "{:?}", row(&buf, 22));
+        assert!(row(&buf, 4).contains(" Menu "), "{:?}", row(&buf, 4));
+        assert!(row(&buf, 23).contains("MENU"), "{:?}", row(&buf, 23));
         insta::assert_snapshot!(
-            (0..23)
+            (0..24)
                 .map(|y| row(&buf, y).trim_end().to_string())
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -855,15 +858,15 @@ mod tests {
 
     #[test]
     fn a_known_update_marks_the_statusline_and_the_menu_note_fits_a_real_frame() {
-        let mut app = App::new(80, 24).with_update(Some("0.16.0".into()));
+        let mut app = App::new(80, 25).with_update(Some("0.16.0".into()));
         let line = status(&app);
         assert!(line.contains("update 0.16.0"), "{line:?}");
         insta::assert_snapshot!("update_statusline", line.trim_end());
 
         press(&mut app, ' ', KeyModifiers::CONTROL);
         press(&mut app, 'm', KeyModifiers::NONE);
-        let (buf, _) = draw_at(&app, 80, 24);
-        let frame = (0..24)
+        let (buf, _) = draw_at(&app, 80, 25);
+        let frame = (0..25)
             .map(|y| row(&buf, y).trim_end().to_string())
             .collect::<Vec<_>>()
             .join("\n");
