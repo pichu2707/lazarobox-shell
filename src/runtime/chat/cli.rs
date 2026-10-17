@@ -596,12 +596,12 @@ fn command(
 async fn spawn(
     program: &Path,
     argv: &[OsString],
-    dirs: &Dirs,
+    (cwd, tmp): (&Path, &Path),
     inject: &[(OsString, OsString)],
 ) -> io::Result<tokio::process::Child> {
     let mut attempt = 0;
     loop {
-        match command(program, argv.to_vec(), (&dirs.cwd, &dirs.tmp), inject).spawn() {
+        match command(program, argv.to_vec(), (cwd, tmp), inject).spawn() {
             Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 4 => {
                 attempt += 1;
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -632,6 +632,16 @@ struct Plan {
     /// The engine gets the tool server: the config, the flags and the jail
     /// grant are all in.
     wired: bool,
+    /// The working folder when it is not the shared empty one.
+    cwd: Option<PathBuf>,
+}
+
+impl Plan {
+    /// The working folder and the `TMPDIR` the child starts with.
+    fn folders(&self) -> (&Path, &Path) {
+        let cwd = self.cwd.as_deref().unwrap_or(&self.dirs.cwd);
+        (cwd, &self.dirs.tmp)
+    }
 }
 
 /// The CLI's argv: the job's own, then the flag and path of each of the job's
@@ -664,6 +674,44 @@ struct Wired {
     args: Vec<OsString>,
     vars: Vec<(OsString, OsString)>,
     socket: PathBuf,
+    /// Where the engine runs instead of the shared empty folder, when its
+    /// config is read from the working folder (gemini).
+    cwd: Option<PathBuf>,
+}
+
+/// The files and folders `wire_mcp` may have made in the turn's folder. The
+/// token is in some of them, so a turn that does not use them removes them
+/// (the folder is wiped after the turn anyway).
+fn unwrite_mcp(dirs: &Dirs) {
+    let _ = fs::remove_file(dirs.tmp.join("mcp.json"));
+    let _ = fs::remove_file(dirs.tmp.join(GEMINI_POLICY_FILE));
+    let _ = fs::remove_dir_all(dirs.tmp.join(GEMINI_WORK_DIR));
+}
+
+/// The private working folder of a wired gemini, in the turn's folder: its
+/// `.gemini/settings.json` is the workspace config gemini reads.
+const GEMINI_WORK_DIR: &str = "work";
+const GEMINI_POLICY_FILE: &str = "gemini-mcp-policy.toml";
+
+/// Writes gemini's workspace settings (0600, in 0700 folders) and the policy
+/// that allows our server; the working folder is the one to run in.
+fn write_gemini(
+    shim: &Path,
+    dirs: &Dirs,
+    wire: &wiring::McpWire,
+) -> Option<(Vec<String>, PathBuf)> {
+    let work = dirs.tmp.join(GEMINI_WORK_DIR);
+    let policy = dirs.tmp.join(GEMINI_POLICY_FILE);
+    let wiring = wiring::gemini(shim, &policy, wire)?;
+    let config = work.join(".gemini");
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&config)
+        .ok()?;
+    write_private(&config.join("settings.json"), wiring.settings.as_bytes()).ok()?;
+    write_private(&policy, wiring.policy.as_bytes()).ok()?;
+    Some((wiring.args, work))
 }
 
 /// What the engine is told about the tools, and writes the config file where
@@ -674,6 +722,7 @@ struct Wired {
 fn wire_mcp(env: &CliEnv, job: &Job, dirs: &Dirs) -> Option<Wired> {
     let wire = job.mcp.as_ref()?;
     let shim = env.shim.as_deref()?;
+    let mut cwd = None;
     let (args, vars) = match job.cli {
         Cli::Claude => {
             let path = dirs.tmp.join("mcp.json");
@@ -692,12 +741,22 @@ fn wire_mcp(env: &CliEnv, job: &Job, dirs: &Dirs) -> Option<Wired> {
                 .map(|(k, v)| (k.into(), v.reveal().into()));
             (wiring.args, vars.collect())
         }
-        _ => return None,
+        // gemini reads the workspace settings of its working folder; the token
+        // is in that file only (0600), and in none of its argv or env.
+        Cli::Gemini => {
+            let Some((args, work)) = write_gemini(shim, dirs, wire) else {
+                unwrite_mcp(dirs);
+                return None;
+            };
+            cwd = Some(work);
+            (args, Vec::new())
+        }
     };
     Some(Wired {
         args: args.into_iter().map(OsString::from).collect(),
         vars,
         socket: wire.socket.clone(),
+        cwd,
     })
 }
 
@@ -766,13 +825,14 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
                             dirs,
                             notice,
                             wired: attempt.is_some(),
+                            cwd: attempt.and_then(|w| w.cwd),
                         });
                     }
                     Err(why) => result = Some(why),
                 }
                 // The config holds the token: it does not stay for a turn that
                 // was not told about it.
-                let _ = fs::remove_file(dirs.tmp.join("mcp.json"));
+                unwrite_mcp(&dirs);
             }
             let why = result.expect("both attempts ran");
             // Layered: the flags alone are text-only, so a layout the jail
@@ -791,6 +851,7 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
         vars: vars(None),
         dirs,
         wired: false,
+        cwd: None,
         notice: tools_off(Some(format!(
             "{} runs without the jail here: {reason}",
             job.binary
@@ -958,7 +1019,7 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
     }
     // Declared in this order so the group guard drops before the child, and
     // the private folders last.
-    let mut child = match spawn(&plan.program, &plan.argv, &plan.dirs, &plan.vars).await {
+    let mut child = match spawn(&plan.program, &plan.argv, plan.folders(), &plan.vars).await {
         Ok(child) => child,
         Err(e) => {
             let text = format!("could not start {}: {}", job.binary, e.kind());
