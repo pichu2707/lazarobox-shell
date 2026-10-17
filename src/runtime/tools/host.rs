@@ -57,10 +57,11 @@ pub trait Approver: Send + Sync {
     fn ask(&self, id: CallId, ask: &ApprovalAsk) -> BoxFuture<'static, Decision>;
 }
 
-/// The approver of a turn that has none: it denies every call. Slice 2e-2
-/// replaces it with the one that waits for the chat's approval overlay (and,
-/// in `auto` mode, for the app to type the command, D18); the host does not
-/// change, because the mode is applied by the app when the `ToolCall` arrives.
+/// The approver of a turn that has none: it denies every call. A turn that
+/// offers tools gets [`Waits::approver`](super::Waits::approver) instead, which
+/// waits for the answer the chat's approval overlay reports (and, in `auto`
+/// mode, for the app to type the command, D18); the host does not change,
+/// because the mode is applied by the app when the `ToolCall` arrives.
 pub struct Unwired;
 
 impl Approver for Unwired {

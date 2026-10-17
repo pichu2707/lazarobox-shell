@@ -1,11 +1,13 @@
 //! Runtime of the read tools: runs a validated call off the event loop and
 //! wraps what it returns as untrusted data.
 
+pub mod approver;
 #[cfg(test)]
 mod audit;
 pub mod fs;
 pub mod host;
 pub mod open;
+pub mod pending;
 
 use std::{
     sync::{
@@ -16,8 +18,10 @@ use std::{
 };
 
 use crate::core::ai::tools::{Call, label};
+pub use approver::Waits;
 pub use fs::{Failure, Limits, ToolEnv};
 pub use host::{Approver, ToolHost, TurnScope, Unwired};
+pub use pending::Pending;
 
 /// A random nonce for one result, `None` when the system gives no randomness
 /// (the call then fails closed rather than use a guessable delimiter).

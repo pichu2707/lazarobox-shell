@@ -89,6 +89,11 @@ impl ToolStatus {
 /// follows the write action: `Sent` also means "allowed" for a read.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Decision {
+    /// Allowed. For `run_in_pane` it means the command was typed: the app
+    /// answers it only once every accept-time check passed and the write was
+    /// handed to the pane, so the result row and the model's text may say so.
+    /// A check that fails (a full-screen app, a shell that cannot take a
+    /// multi-line paste) is a `Denied` with the reason instead.
     Sent,
     /// Why nothing was done; short, and it goes back to the model.
     Denied(&'static str),
