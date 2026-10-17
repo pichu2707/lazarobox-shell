@@ -1,6 +1,7 @@
 //! The app side of the MCP transport: one private unix socket per chat, behind
 //! a session token. A CLI engine reaches the tool registry through a stdio
-//! shim (slice 2d-2) that relays to the socket of its chat.
+//! shim ([`shim`], `lazarobox-shell __mcp-serve <socket>`) that relays to the
+//! socket of its chat.
 //!
 //! Trust model:
 //!
@@ -14,7 +15,8 @@
 //! - A session is one chat's. Its token only opens its own socket, and the
 //!   [`Dispatch`] it was opened with only knows that chat. Closing the chat
 //!   removes the socket, drops the live connections and every call in flight.
-//! - The token is handed to the engine through its environment, never argv.
+//! - The token is handed to the engine through its environment
+//!   ([`shim::TOKEN_ENV`]), never argv; the shim reads it from there.
 //!   Nothing in this module logs: it has no diagnostics that could carry it,
 //!   and [`Token`] prints as `Token(..)`.
 //! - After the handshake the lines are MCP (see `core::ai::tools::mcp`). The
@@ -22,6 +24,7 @@
 //!   see `session` for the policy.
 
 mod session;
+pub mod shim;
 
 use std::{
     cell::Cell,
