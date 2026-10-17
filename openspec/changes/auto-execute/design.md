@@ -114,7 +114,7 @@ A `cd` also writes the system line `pane N: <cmd> → <cwd>` (for example `pane 
 - A prompt line that leaks into the output when the trim heuristic misses it. It is redacted.
 - `tree -a` listing the names of secret files inside a subtree. Names only, no content.
 - Continuation prompts (PS2), C1. Enter clears `dirty`, but the shell may still be inside an open quote, `$(`, heredoc or loop. Closed by two measures: quoted words are inert (D20), and `validate` refuses model text with an unbalanced quote or a trailing backslash, so `y` and `auto` cannot open one. Accepted residual: a user-typed trailing `\` or an open construct the user later closes can merge a run's inert words into the user's command. OSC 133 prompt detection is the future fix.
-- Completion-menu Enter: mitigated by the `after_menu` rule of D21. A user-typed trailing `&&`, `||`, `|`, `do` or `then` lets a later run complete the user's own line: accepted until OSC 133.
+- Completion-menu Enter: mitigated by the `after_menu` rule of D21. A user-typed trailing `&&`, `||`, `|`, `do` or `then` lets a later run complete the user's own line: accepted until OSC 133. `validate` also refuses model text ending in `&&`, `||`, `|` or `\`, or holding an unescaped backtick, `$(` or `<<`.
 - Emulator query replies (DA1, DSR) written to the pane do not set `dirty`: fixed content, not attacker-chosen, and marking them would break `run` for prompts that query the terminal.
 - Locale (D21 e0): `names_utf8` reads lazarobox's own environment. An rc file that changes the locale or sets readline `convert-meta` after the shell starts is not seen.
 
