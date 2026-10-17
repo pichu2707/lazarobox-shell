@@ -60,9 +60,9 @@ pub struct Job {
     pub args: Vec<String>,
     pub stdin: Vec<u8>,
     pub jail: JailPolicy,
-    /// A file the runtime writes into the turn's private temp folder, and
-    /// names to the CLI with a flag appended after `args`.
-    pub tmp_file: Option<TmpFile>,
+    /// Files the runtime writes into the turn's private temp folder, each
+    /// named to the CLI with its flag, appended after `args` in this order.
+    pub tmp_files: Vec<TmpFile>,
 }
 
 /// A small fixed file a CLI is told to read. The content is a constant of the
@@ -221,7 +221,7 @@ fn claude_invocation(request: &ChatRequest) -> Invocation {
         args,
         stdin: cli_stdin(request).into_bytes(),
         jail: JailPolicy::Layered,
-        tmp_file: None,
+        tmp_files: Vec::new(),
     })
 }
 
@@ -294,7 +294,7 @@ fn codex_invocation(request: &ChatRequest) -> Invocation {
         args,
         stdin: instructed_stdin(request).into_bytes(),
         jail: JailPolicy::Required,
-        tmp_file: None,
+        tmp_files: Vec::new(),
     })
 }
 
@@ -348,11 +348,11 @@ fn gemini_invocation(request: &ChatRequest) -> Invocation {
         args,
         stdin: instructed_stdin(request).into_bytes(),
         jail: JailPolicy::Required,
-        tmp_file: Some(TmpFile {
+        tmp_files: vec![TmpFile {
             flag: "--policy",
             name: "gemini-policy.toml",
             content: GEMINI_POLICY,
-        }),
+        }],
     })
 }
 

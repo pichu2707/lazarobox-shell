@@ -595,13 +595,13 @@ struct Plan {
     notice: Option<String>,
 }
 
-/// The CLI's argv: the job's own, then the flag and path of the job's file
-/// when it has one. The file is written into the turn's private temp folder
+/// The CLI's argv: the job's own, then the flag and path of each of the job's
+/// files, in order. Each file is written into the turn's private temp folder
 /// (0600, new), which the jail lets the CLI read and which is wiped after the
 /// turn.
 fn full_args(job: &Job, dirs: &Dirs) -> io::Result<Vec<OsString>> {
     let mut argv: Vec<OsString> = job.args.iter().map(OsString::from).collect();
-    if let Some(file) = &job.tmp_file {
+    for file in &job.tmp_files {
         let path = dirs.tmp.join(file.name);
         fs::OpenOptions::new()
             .write(true)
@@ -682,7 +682,7 @@ pub(crate) async fn run_listing(
         args: vec!["debug".to_owned(), "models".to_owned()],
         stdin: Vec::new(),
         jail: JailPolicy::Required,
-        tmp_file: None,
+        tmp_files: Vec::new(),
     };
     let plan = match plan(env, &job) {
         Ok(plan) => plan,

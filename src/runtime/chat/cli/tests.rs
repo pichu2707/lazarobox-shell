@@ -156,7 +156,7 @@ fn job(policy: JailPolicy) -> Job {
         args: vec!["-p".into()],
         stdin: b"hi".to_vec(),
         jail: policy,
-        tmp_file: None,
+        tmp_files: Vec::new(),
     }
 }
 
@@ -606,7 +606,7 @@ fn codex_job(args: &[&str]) -> Job {
         args: args.iter().map(|a| (*a).to_owned()).collect(),
         stdin: b"hi".to_vec(),
         jail: JailPolicy::Required,
-        tmp_file: None,
+        tmp_files: Vec::new(),
     }
 }
 
@@ -1464,11 +1464,11 @@ fn gemini_job(jail: JailPolicy) -> Job {
         args: vec!["-p".into(), "x".into()],
         stdin: b"hi".to_vec(),
         jail,
-        tmp_file: Some(TmpFile {
+        tmp_files: vec![TmpFile {
             flag: "--policy",
             name: "gemini-policy.toml",
             content: POLICY,
-        }),
+        }],
     }
 }
 
@@ -1680,3 +1680,41 @@ async fn an_interpreter_without_a_search_path_gets_no_extra_rules() {
         "{ro:?}"
     );
 }
+
+#[tokio::test]
+async fn several_job_files_are_each_private_and_named_in_order() {
+    let lab = lab();
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_TWO);
+    let mut job = gemini_job(JailPolicy::Layered);
+    job.tmp_files.push(TmpFile {
+        flag: "--extra",
+        name: "extra.txt",
+        content: "more",
+    });
+    let events = run_job(&lab.env(), job).await;
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    let args = lab.args();
+    assert_eq!(args[..2], ["-p", "x"]);
+    assert_eq!(args[2], "--policy");
+    assert_eq!(args[4], "--extra");
+    assert_eq!(args.len(), 6, "{args:?}");
+    let (policy, extra) = (PathBuf::from(&args[3]), PathBuf::from(&args[5]));
+    assert_eq!(extra.file_name().unwrap(), "extra.txt");
+    assert_eq!(policy.parent(), extra.parent(), "one per-turn folder");
+    assert_eq!(lab.recorded("extra_copy"), "more");
+    assert_eq!(lab.recorded("extra_mode").trim(), "600");
+    assert_eq!(lab.recorded("dir_mode").trim(), "700");
+    assert!(!extra.exists() && !policy.exists(), "wiped after the turn");
+}
+
+const GEMINI_TWO: &str = r#"
+printf '%s\0' "$@" > "$REC/args"
+cat > "$REC/stdin"
+for last; do :; done
+cp "$last" "$REC/extra_copy"
+stat -c %a "$last" > "$REC/extra_mode"
+stat -c %a "$(dirname "$last")" > "$REC/dir_mode"
+printf '%s\n' '{"type":"init","session_id":"s","model":"m"}'
+printf '%s\n' '{"type":"message","role":"assistant","content":"ok","delta":true}'
+printf '%s\n' '{"type":"result","status":"success"}'
+"#;

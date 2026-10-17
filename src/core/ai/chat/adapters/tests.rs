@@ -217,7 +217,7 @@ struct Process {
     args: Vec<String>,
     stdin: String,
     jail: JailPolicy,
-    tmp_file: Option<TmpFile>,
+    tmp_files: Vec<TmpFile>,
 }
 
 fn process(invocation: Invocation) -> Process {
@@ -228,7 +228,7 @@ fn process(invocation: Invocation) -> Process {
         args,
         stdin,
         jail,
-        tmp_file,
+        tmp_files,
     }) = invocation
     else {
         panic!("a process invocation expected: {invocation:?}");
@@ -240,7 +240,7 @@ fn process(invocation: Invocation) -> Process {
         args,
         stdin: String::from_utf8(stdin).expect("stdin is text"),
         jail,
-        tmp_file,
+        tmp_files,
     }
 }
 
@@ -733,7 +733,8 @@ fn gemini_has_no_extension_and_no_mcp_server() {
 #[test]
 fn every_gemini_tool_is_denied_by_a_policy_file_the_runtime_writes() {
     let p = process(Adapter::Gemini.build(&gemini_request(None)));
-    let file = p.tmp_file.expect("a policy file");
+    assert_eq!(p.tmp_files.len(), 1);
+    let file = p.tmp_files.into_iter().next().expect("a policy file");
     assert_eq!(file.flag, "--policy");
     assert_eq!(file.name, "gemini-policy.toml");
     // One rule: every tool, denied, above every other rule.
@@ -752,7 +753,7 @@ fn the_other_clis_write_no_file() {
     for (engine, build) in [("claude", Adapter::Claude), ("codex", Adapter::Codex)] {
         let mut req = request("be brief");
         req.engine = engine.into();
-        assert_eq!(process(build.build(&req)).tmp_file, None, "{engine}");
+        assert!(process(build.build(&req)).tmp_files.is_empty(), "{engine}");
     }
 }
 
