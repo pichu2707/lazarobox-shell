@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::core::ai::{
-    chat::engine::{ChatMessage, ChatRequest, Role},
+    chat::engine::{ChatMessage, ChatRequest, Role, Tools},
     jail::{Cli, JailPolicy},
 };
 
@@ -19,6 +19,7 @@ fn request(system: &str) -> ChatRequest {
         model: Some("llama3:8b".into()),
         system: system.into(),
         memory: None,
+        tools: Tools::Off,
         messages: vec![
             message(Role::User, "hi"),
             message(Role::Assistant, "hello"),
@@ -812,4 +813,22 @@ fn a_gemini_message_cannot_forge_a_turn_boundary() {
         .filter(|l| *l == "User:" || *l == "Assistant:")
         .collect();
     assert_eq!(labels, ["User:", "Assistant:", "User:"]);
+}
+
+// Spec (agent-tools): with tools off every request is byte-identical. No
+// adapter reads `ChatRequest.tools` yet (the wiring of an engine lands with its
+// manual check), so a turn that offers tools builds the same invocation: argv,
+// stdin, env and body.
+#[test]
+fn the_tools_flag_changes_no_invocation() {
+    for engine in ["ollama", "claude", "codex", "gemini"] {
+        let mut off = request("be brief");
+        off.engine = engine.into();
+        let mut on = off.clone();
+        on.tools = Tools::On {
+            origin: Some("/home/u/dev".into()),
+        };
+        let adapter = adapter_for(engine).unwrap();
+        assert_eq!(adapter.build(&off), adapter.build(&on), "{engine}");
+    }
 }

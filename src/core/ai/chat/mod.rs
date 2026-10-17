@@ -39,7 +39,7 @@ use std::{
 use crate::core::{ai::config::Profile, layout::PaneId};
 use composer::Composer;
 use engine::{
-    Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, build_context,
+    Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools, build_context,
     history_chars,
 };
 use prompts::Resolved;
@@ -669,6 +669,7 @@ impl ChatState {
                 model: model.clone(),
                 system: system.to_owned(),
                 memory,
+                tools: Tools::Off,
                 messages: context.messages,
             },
         }

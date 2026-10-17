@@ -276,6 +276,11 @@ pub async fn run() -> io::Result<()> {
         env::var_os("XDG_DATA_HOME").as_deref(),
         env::var_os("HOME").as_deref(),
     );
+    let store_dir = store_path
+        .as_deref()
+        .and_then(Path::parent)
+        .map(Path::to_owned);
+    let tool_host = tools::ToolHost::from_env();
     // What the machine offers for notifications (display, bus, notify-send,
     // sound players), probed once now in the background: a slow lookup never
     // delays a send, it just fills the slot later. The `t` test refreshes it.
@@ -342,10 +347,21 @@ pub async fn run() -> io::Result<()> {
                 prompt_tx.clone(),
             );
         }))
-        .with_chats(Chats::new(
-            chat::runner_with(None, cli_env.clone(), Some(tools::ToolHost::from_env())),
-            chat_tx,
-        ))
+        .with_chats(
+            Chats::new(
+                chat::runner_with(None, cli_env.clone(), Some(tool_host.clone())),
+                chat_tx,
+            )
+            // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
+            // `<data>/run`. Without a private folder every turn runs as text.
+            .with_tools(
+                tool_host,
+                mcp::candidate_dirs(
+                    env::var_os("XDG_RUNTIME_DIR").as_deref(),
+                    store_dir.as_deref(),
+                ),
+            ),
+        )
         .with_store(chat_store::spawn_at(store_path, store_tx));
     let inbox = Inbox {
         pty: rx,
@@ -932,6 +948,23 @@ impl Panes {
                 Effect::ChatCancel(pane) => {
                     if let Some(chats) = self.chats.as_mut() {
                         chats.cancel(pane);
+                    }
+                }
+                // Both return at once; the answer lands on a waiting call, or
+                // on nothing when the call is over.
+                Effect::ToolDecision {
+                    pane,
+                    turn,
+                    call,
+                    decision,
+                } => {
+                    if let Some(chats) = self.chats.as_ref() {
+                        chats.decide(pane, turn, call, decision);
+                    }
+                }
+                Effect::EndToolSession(pane) => {
+                    if let Some(chats) = self.chats.as_mut() {
+                        chats.end_session(pane);
                     }
                 }
                 // Returns at once: the worker owns the queue and the timeouts.
@@ -2160,13 +2193,14 @@ mod tests {
     // Without a chat task (unit tests) the chat effects touch no pane.
     #[test]
     fn chat_effects_are_ignored_without_a_chat_task() {
-        use crate::core::ai::chat::engine::ChatRequest;
+        use crate::core::ai::chat::engine::{ChatRequest, Tools};
         let (mut panes, _rx, rec) = fake_panes(None);
         let request = ChatRequest {
             engine: "ollama".into(),
             model: Some("llama3:8b".into()),
             system: String::new(),
             memory: None,
+            tools: Tools::Off,
             messages: Vec::new(),
         };
         let effects = vec![
@@ -3199,7 +3233,7 @@ mod tests {
 
     // --- Chat effects ---
 
-    use crate::core::ai::chat::engine::{ChatRequest, StreamEvent};
+    use crate::core::ai::chat::engine::{ChatRequest, StreamEvent, Tools};
 
     fn chat_request() -> ChatRequest {
         ChatRequest {
@@ -3207,6 +3241,7 @@ mod tests {
             model: Some("llama3:8b".into()),
             system: String::new(),
             memory: None,
+            tools: Tools::Off,
             messages: Vec::new(),
         }
     }
@@ -3346,6 +3381,46 @@ mod tests {
             1,
             "and a detection run is not held back by it"
         );
+    }
+
+    // The tool effects reach the chats: a turn with tools gets a session, a
+    // decision for a call that is not waiting is dropped, and ending the
+    // session closes it. None of them touches a PTY.
+    #[tokio::test]
+    async fn tool_effects_reach_the_chats_and_never_a_pty() {
+        use crate::core::ai::chat::engine::{CallId, Decision};
+        let dir = tempfile::tempdir().unwrap();
+        let host = tools::ToolHost::new(None, None, None, tools::Limits::default());
+        let (panes, _pty_rx, rec) = fake_panes(None);
+        let (tx, _rx) = mpsc::channel(chat::APP_CHANNEL);
+        let runner: chat::Runner = Arc::new(|_request, _tx| Box::pin(std::future::pending()));
+        let mut panes =
+            panes.with_chats(Chats::new(runner, tx).with_tools(host, vec![dir.path().join("run")]));
+        spawn_two(&mut panes);
+        let mut request = chat_request();
+        request.engine = "claude".into();
+        request.tools = Tools::On { origin: None };
+        panes.apply(vec![Effect::ChatSend {
+            pane: id(1),
+            turn: 1,
+            request,
+        }]);
+        let session = |panes: &Panes| panes.chats.as_ref().unwrap().session(id(1)).is_some();
+        assert!(session(&panes), "a turn with tools has a session");
+        panes.apply(vec![Effect::ToolDecision {
+            pane: id(1),
+            turn: 1,
+            call: CallId(99),
+            decision: Decision::Sent,
+        }]);
+        assert!(session(&panes), "a stale decision changes nothing");
+        panes.apply(vec![Effect::EndToolSession(id(1))]);
+        assert!(!session(&panes));
+        let rec = rec.borrow();
+        for log in &rec.logs {
+            let log = log.lock().unwrap();
+            assert!(log.writes.is_empty() && log.resizes.is_empty() && log.kills == 0);
+        }
     }
 
     #[tokio::test]

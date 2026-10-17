@@ -16,7 +16,7 @@ use super::{
     ChatState, Entry, Follow, Phase,
     composer::Composer,
     engine::{
-        Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, build_context,
+        Availability, ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools, build_context,
         history_chars,
     },
     note::REDACTED_AGAIN as NOTE_REDACTED_AGAIN,
@@ -277,6 +277,7 @@ impl ChatState {
                 model: model.clone(),
                 system: SUMMARY_PROMPT.trim_end().to_owned(),
                 memory: None,
+                tools: Tools::Off,
                 messages,
             },
         ))

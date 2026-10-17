@@ -8,7 +8,7 @@ use std::{net::SocketAddr, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
-    sync::mpsc,
+    sync::{mpsc, watch},
     time::{Instant, sleep_until, timeout, timeout_at},
 };
 
@@ -20,6 +20,7 @@ use crate::core::ai::{
     http::{Body, Framing, Head, Step, parse_head},
     sanitize::clean,
 };
+use crate::runtime::tools::pending;
 
 /// Size of one read from the socket.
 const READ_SIZE: usize = 16 * 1024;
@@ -171,6 +172,29 @@ async fn fail(tx: &mpsc::Sender<StreamEvent>, message: &str) {
         .await;
 }
 
+/// Whether tool calls of this turn wait for the user (see
+/// `runtime::tools::pending`). The first-byte and idle limits and the `Slow`
+/// hints do not run meanwhile: the engine is silent because the user is
+/// deciding. The total limit never looks at it.
+struct Hold(Option<watch::Receiver<usize>>);
+
+impl Hold {
+    fn paused(&self) -> bool {
+        self.0.as_ref().is_some_and(|rx| *rx.borrow() > 0)
+    }
+
+    /// Completes when the count changes; never when there is no count.
+    async fn changed(&mut self) {
+        if let Some(rx) = self.0.as_mut()
+            && rx.changed().await.is_ok()
+        {
+            return;
+        }
+        // No count, or its turn is gone: nothing can change.
+        std::future::pending().await
+    }
+}
+
 /// Where the clock stands for one reply.
 pub(crate) struct Wait<'a> {
     timeouts: &'a Timeouts,
@@ -178,6 +202,7 @@ pub(crate) struct Wait<'a> {
     /// A byte of the reply has arrived.
     started: bool,
     slow_sent: bool,
+    hold: Hold,
 }
 
 impl<'a> Wait<'a> {
@@ -188,6 +213,7 @@ impl<'a> Wait<'a> {
             start: Instant::now(),
             started: false,
             slow_sent: false,
+            hold: Hold(pending::current().map(|p| p.watch())),
         }
     }
 
@@ -210,37 +236,58 @@ impl<'a> Wait<'a> {
         buf: &mut [u8],
         tx: &mpsc::Sender<StreamEvent>,
     ) -> Result<usize, Stop> {
+        let mut hold = Hold(self.hold.0.clone());
         let read = if self.started {
-            let give_up = Instant::now() + self.timeouts.idle;
-            let quiet_at = self.timeouts.quiet.map(|quiet| Instant::now() + quiet);
+            let mut give_up = Instant::now() + self.timeouts.idle;
+            let mut quiet_at = self.timeouts.quiet.map(|quiet| Instant::now() + quiet);
             let mut hinted = self.slow_sent;
             loop {
+                let paused = hold.paused();
                 tokio::select! {
                     read = stream.read(buf) => break read,
-                    _ = sleep_until(quiet_at.unwrap_or(give_up)), if !hinted && quiet_at.is_some() => {
+                    _ = sleep_until(quiet_at.unwrap_or(give_up)), if !paused && !hinted && quiet_at.is_some() => {
                         hinted = true;
                         self.slow_sent = true;
                         if self.hint(tx).is_err() {
                             return Err(Stop::Cancelled);
                         }
                     }
-                    _ = sleep_until(give_up) => return Err(Stop::Failed(STALLED)),
+                    _ = sleep_until(give_up), if !paused => return Err(Stop::Failed(STALLED)),
+                    // The limits start over once no call waits.
+                    _ = hold.changed() => if !hold.paused() {
+                        give_up = Instant::now() + self.timeouts.idle;
+                        quiet_at = self.timeouts.quiet.map(|quiet| Instant::now() + quiet);
+                    },
                     _ = tx.closed() => return Err(Stop::Cancelled),
                 }
             }
         } else {
-            let slow_at = self.start + self.timeouts.slow;
-            let give_up = self.start + self.timeouts.first_byte;
+            let mut slow_at = self.start + self.timeouts.slow;
+            let mut give_up = self.start + self.timeouts.first_byte;
+            let mut paused_at = hold.paused().then(Instant::now);
             loop {
                 tokio::select! {
                     read = stream.read(buf) => break read,
-                    _ = sleep_until(slow_at), if !self.slow_sent => {
+                    _ = sleep_until(slow_at), if paused_at.is_none() && !self.slow_sent => {
                         self.slow_sent = true;
                         if self.hint(tx).is_err() {
                             return Err(Stop::Cancelled);
                         }
                     }
-                    _ = sleep_until(give_up) => return Err(Stop::Failed(NO_ANSWER)),
+                    _ = sleep_until(give_up), if paused_at.is_none() => {
+                        return Err(Stop::Failed(NO_ANSWER));
+                    }
+                    // The time spent waiting for the user is not counted.
+                    _ = hold.changed() => match (paused_at, hold.paused()) {
+                        (None, true) => paused_at = Some(Instant::now()),
+                        (Some(since), false) => {
+                            self.start += since.elapsed();
+                            slow_at = self.start + self.timeouts.slow;
+                            give_up = self.start + self.timeouts.first_byte;
+                            paused_at = None;
+                        }
+                        _ => {}
+                    },
                     _ = tx.closed() => return Err(Stop::Cancelled),
                 }
             }
@@ -266,12 +313,7 @@ async fn relay<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut wait = Wait {
-        timeouts,
-        start: Instant::now(),
-        started: false,
-        slow_sent: false,
-    };
+    let mut wait = Wait::new(timeouts);
     let mut buf = vec![0u8; READ_SIZE];
     // The request goes out under the first-byte limit too: a server that never
     // reads it is as silent as one that never answers.
@@ -706,6 +748,8 @@ where
     }
 }
 
+#[cfg(test)]
+mod pending_tests;
 #[cfg(test)]
 mod request_tests;
 #[cfg(test)]

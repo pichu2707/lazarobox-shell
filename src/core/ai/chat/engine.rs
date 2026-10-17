@@ -2,6 +2,8 @@
 //! sends and what a stream may say back, and whether an engine can be used.
 //! Pure data and functions, no IO.
 
+use std::path::PathBuf;
+
 use super::{adapters::adapter_for, approval::ApprovalAsk};
 use crate::core::ai::{
     CATALOG, Detection, Kind, Status,
@@ -37,6 +39,38 @@ pub struct ChatRequest {
     /// first on stdin (CLIs, never argv).
     pub memory: Option<String>,
     pub messages: Vec<ChatMessage>,
+    /// Whether the turn offers the engine tools. Off unless the app asked for
+    /// them for an engine that passed its check ([`tools_for`]). No adapter
+    /// reads it yet: only the runtime does, to open the turn's tool session,
+    /// so the bytes an engine receives do not depend on it.
+    pub tools: Tools,
+}
+
+/// Whether a turn offers tools.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub enum Tools {
+    #[default]
+    Off,
+    On {
+        /// The cwd the chat was opened from: what a relative path is read
+        /// against.
+        origin: Option<PathBuf>,
+    },
+}
+
+/// The CLIs whose manual MCP check passed (D12). None yet: an engine joins in
+/// the commit that follows its check, and until then its requests carry
+/// `Tools::Off` and stay byte-identical to a build without tools.
+pub const MCP_VERIFIED: &[&str] = &[];
+
+/// The tools of a turn on `engine`: on only when the user has tools enabled
+/// and the engine is in `verified`.
+pub fn tools_for(engine: &str, enabled: bool, origin: Option<PathBuf>, verified: &[&str]) -> Tools {
+    if enabled && verified.contains(&engine) {
+        Tools::On { origin }
+    } else {
+        Tools::Off
+    }
 }
 
 /// Why a stream finished normally.
@@ -89,6 +123,11 @@ impl ToolStatus {
 /// follows the write action: `Sent` also means "allowed" for a read.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Decision {
+    /// Allowed. For `run_in_pane` it means the command was typed: the app
+    /// answers it only once every accept-time check passed and the write was
+    /// handed to the pane, so the result row and the model's text may say so.
+    /// A check that fails (a full-screen app, a shell that cannot take a
+    /// multi-line paste) is a `Denied` with the reason instead.
     Sent,
     /// Why nothing was done; short, and it goes back to the model.
     Denied(&'static str),
@@ -308,3 +347,5 @@ pub fn build_context(history: &[ChatMessage], max_chars: usize) -> Context {
 mod availability_tests;
 #[cfg(test)]
 mod history_tests;
+#[cfg(test)]
+mod tools_tests;
