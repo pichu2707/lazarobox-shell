@@ -13,12 +13,10 @@ baseline.
 ## [0.16.0] - 2026-10-17
 
 Agent tools: the chat can now ask lazarobox to look at the user's files and to
-use the user's terminal panes. The whole tool layer ships in this release, but
-the engine wiring is still switched off: no engine is listed in
-`MCP_VERIFIED` yet, so every engine (claude, codex, gemini and Ollama) keeps
-answering with text only until its manual verification passes. What is usable
-today is the `Ctrl+Space`, `e` command run from a shell block, the approval
-modes and the menu rows.
+use the user's terminal panes. Tools are active on claude, codex, gemini and
+Ollama, and each engine was verified manually before this release. They are on
+by default and can be turned off with `[ai.tools] enabled = false` or the
+**Tools** row of the AI menu.
 
 ### Added
 
@@ -57,7 +55,7 @@ modes and the menu rows.
   together with one socket, and it sends its token only to a private socket
   owned by the user. A tool session lives for one turn and ends at once when a
   turn falls back to text.
-- Per-engine wiring, behind the `MCP_VERIFIED` gate: claude (a per-turn MCP
+- Per-engine wiring, active and verified on each engine: claude (a per-turn MCP
   config, `--allowedTools=mcp__lazarobox`, an empty `--setting-sources`),
   codex (the server through `-c` overrides and its own environment) and
   gemini (a per-turn work folder with an admin policy). Each decoder lets
@@ -110,8 +108,8 @@ modes and the menu rows.
   most 8 requests per turn; past that the turn ends with a system line and
   keeps the partial answer. A model that does not support tools (a 400 on the
   request with `tools`) is retried once without them, before any round. Tool
-  messages live only inside their turn. Like the CLI engines, this is gated
-  off until verified with a real model.
+  messages live only inside their turn. The loop is active and verified with
+  a real model.
 
 ### Changed
 
