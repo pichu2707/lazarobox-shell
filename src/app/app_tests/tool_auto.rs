@@ -387,3 +387,88 @@ fn five_commands_a_turn_with_enter_between_and_the_sixth_prompts() {
     assert_eq!(auto_typed(&a), 5);
     assert!(prompts(&mut a, turn, 6));
 }
+
+// 2e-3.6: Prefix a ------------------------------------------------------------
+
+fn lines(a: &App) -> Vec<String> {
+    use crate::core::ai::chat::Entry;
+    run_pane::chat(a, id2())
+        .entries()
+        .iter()
+        .filter_map(|e| match e {
+            Entry::System(line) => Some(line.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn prefix_a_flips_the_mode_of_the_focused_chat_and_says_so() {
+    let (mut a, _) = live();
+    assert_eq!(press(&mut a, "a"), vec![]);
+    assert_eq!(chat_of_focus(&a), ApprovalMode::Auto);
+    assert!(
+        lines(&a).contains(&"approval: auto (commands are typed, never run)".to_owned()),
+        "{:?}",
+        lines(&a)
+    );
+    press(&mut a, "a");
+    assert_eq!(chat_of_focus(&a), ApprovalMode::Ask);
+    assert_eq!(lines(&a).last().map(String::as_str), Some("approval: ask"));
+}
+
+// The toggle flips only the focused chat.
+#[test]
+fn the_toggle_leaves_the_other_chats_alone() {
+    let (mut a, _) = live();
+    press(&mut a, "c");
+    let second = a.focused();
+    assert_ne!(second, id2());
+    press(&mut a, "a");
+    assert_eq!(
+        run_pane::chat(&a, second).approval_mode(),
+        ApprovalMode::Auto
+    );
+    assert_eq!(run_pane::chat(&a, id2()).approval_mode(), ApprovalMode::Ask);
+}
+
+// A pending approval is never answered by the mode.
+#[test]
+fn toggling_to_auto_leaves_a_pending_confirm_pending() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, run("cd x"));
+    assert_eq!(press(&mut a, "a"), vec![]);
+    assert_eq!(chat_of_focus(&a), ApprovalMode::Auto);
+    assert_eq!(pending(&a), Some((run("cd x"), Some((turn, CallId(1))))));
+}
+
+#[test]
+fn a_shell_pane_or_tools_off_only_shows_a_notice() {
+    let mut a = launched(80, 25).with_ai(chat_live::ollama());
+    assert_eq!(press(&mut a, "a"), vec![]);
+    assert!(
+        a.notice().is_some_and(|n| n.contains("chat")),
+        "{:?}",
+        a.notice()
+    );
+
+    let mut ai = chat_live::ollama();
+    ai.set_tools_enabled(false);
+    let mut a = launched(80, 25).with_ai(ai);
+    press(&mut a, "c");
+    assert_eq!(press(&mut a, "a"), vec![]);
+    assert!(
+        a.notice().is_some_and(|n| n.contains("Tools")),
+        "{:?}",
+        a.notice()
+    );
+    assert_eq!(chat_of_focus(&a), ApprovalMode::Ask);
+    assert!(lines(&a).is_empty() || !lines(&a).iter().any(|l| l.starts_with("approval")));
+}
+
+#[test]
+fn a_inside_a_group_toggles_nothing() {
+    let (mut a, _) = live();
+    press(&mut a, "wa");
+    assert_eq!(chat_of_focus(&a), ApprovalMode::Ask);
+}

@@ -14,6 +14,7 @@ use crate::core::ai::chat::{
     approval::{Approval, ApprovalAsk, AutoCtx, Origin, Route, route},
     engine::{CallId, Decision, ToolStatus, Tools, tools_for},
 };
+use crate::core::ai::config::ApprovalMode;
 
 /// Why a call is denied without the user being asked, or when a refusal has no
 /// other reason to give. Short, and it goes back to the model.
@@ -23,6 +24,8 @@ pub(super) const CANCELLED: &str = "cancelled";
 /// user was already typing cannot answer it.
 pub(super) const ARM_DELAY: Duration = Duration::from_millis(400);
 const TOOLS_OFF: &str = "tools are off";
+const APPROVAL_CHAT_ONLY: &str = "The approval mode is for chat panes; open one with Ctrl+Space c";
+const APPROVAL_TOOLS_OFF: &str = "Tools are off: there is no approval mode to change";
 const TURN_OVER: &str = "the turn is over";
 const NO_SHELL: &str = "there is no shell pane in this tab";
 const NO_USER_TOOLS: &str = "user tools are not available";
@@ -196,6 +199,31 @@ impl App {
             turn,
             call,
         }]
+    }
+
+    /// `Prefix a`: flips the focused chat between `ask` and `auto`.
+    /// Works in any chat view and with an approval pending (which it leaves
+    /// alone); a shell pane, or tools off, only gets a notice.
+    pub(super) fn toggle_approval(&mut self) -> Vec<Effect> {
+        if !self.focused_is_chat() {
+            self.notice = Some(APPROVAL_CHAT_ONLY.to_owned());
+            return Vec::new();
+        }
+        if !self.ai.tools_enabled() {
+            self.notice = Some(APPROVAL_TOOLS_OFF.to_owned());
+            return Vec::new();
+        }
+        let Some(chat) = self.focused_state_mut().chat_mut() else {
+            return Vec::new();
+        };
+        let mode = chat.approval_mode().flipped();
+        chat.set_approval_mode(mode);
+        chat.push_system_line(match mode {
+            ApprovalMode::Auto => "approval: auto (commands are typed, never run)".to_owned(),
+            ApprovalMode::Ask => "approval: ask".to_owned(),
+        });
+        self.dirty = true;
+        Vec::new()
     }
 
     /// Clears the line-pending mark of every shell pane whose marked call

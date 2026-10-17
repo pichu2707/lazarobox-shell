@@ -1668,6 +1668,7 @@ impl App {
                 | PrefixAction::ToggleMemory
                 | PrefixAction::Summarize
                 | PrefixAction::RunInPane
+                | PrefixAction::ToggleApproval
                 | PrefixAction::EditTags,
             ) => InputMode::Terminal,
             Step::Run(
@@ -1722,6 +1723,7 @@ impl App {
                 Vec::new()
             }
             Step::Run(PrefixAction::RunInPane) => self.run_in_pane(),
+            Step::Run(PrefixAction::ToggleApproval) => self.toggle_approval(),
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
             Step::Run(PrefixAction::SplitBelow) => self.split(Axis::Y),
             Step::Run(PrefixAction::Focus(dir)) => self.move_focus(dir),
