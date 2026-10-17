@@ -2174,14 +2174,13 @@ fn final_process(plan: &Plan) -> (PathBuf, Vec<String>, Vec<(String, String)>) {
     )
 }
 
-// Spec (agent-tools): while an engine is outside `MCP_VERIFIED` (all of them
-// today), a turn with tools on starts exactly the process of a turn without:
-// the same program, argv (jail helper arguments included), variables, notice
-// and stdin, with the real `MCP_VERIFIED`.
+// Spec (agent-tools): while an engine is outside the verified set (an empty
+// one here, through `build_with`), a turn with tools on starts exactly the
+// process of a turn without: the same program, argv (jail helper arguments
+// included), variables, notice and stdin.
 #[test]
 fn while_dormant_no_engine_starts_a_different_process_with_tools_on() {
     use crate::core::ai::chat::adapters::{Invocation, adapter_for};
-    assert!(crate::core::ai::chat::engine::MCP_VERIFIED.is_empty());
     let lab = lab();
     for name in ["claude", "codex", "gemini"] {
         script(&lab.bin.join(name), &lab.rec, GOOD);
@@ -2215,7 +2214,7 @@ fn while_dormant_no_engine_starts_a_different_process_with_tools_on() {
             };
             let adapter = adapter_for(engine).unwrap();
             let (Invocation::Process(off), Invocation::Process(on)) =
-                (adapter.build(&off), adapter.build(&on))
+                (adapter.build_with(&off, &[]), adapter.build_with(&on, &[]))
             else {
                 panic!("{engine} is a CLI engine");
             };

@@ -62,10 +62,11 @@ pub enum Tools {
     },
 }
 
-/// The CLIs whose manual MCP check passed (D12). None yet: an engine joins in
-/// the commit that follows its check, and until then its requests carry
-/// `Tools::Off` and stay byte-identical to a build without tools.
-pub const MCP_VERIFIED: &[&str] = &[];
+/// The CLIs whose manual MCP check passed (D12). An engine joins in the commit
+/// that follows its check; one outside the set carries `Tools::Off` and stays
+/// byte-identical to a build without tools. The check passed for all four on
+/// 2026-10-17.
+pub const MCP_VERIFIED: &[&str] = &["claude", "codex", "gemini", "ollama"];
 
 /// The tools of a turn on `engine`: on only when the user has tools enabled
 /// and the engine is in `verified`.

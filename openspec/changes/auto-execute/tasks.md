@@ -66,7 +66,7 @@ Files: `src/core/ai/config.rs`, `src/core/ai/menu.rs`, `src/core/menu*.rs`, `src
 - [x] S1.10 Snapshots: regenerate chat badge and menu snapshots by the manual insta procedure; review each `.snap.new`.
 - [x] S1.11 Docs: doc comments on `ApprovalMode` (model can never switch it) and `mode_badge`.
 - [x] S1.12 Gate. Measure non-test lines; expect ~150. Measured: 77 added non-test lines, gate green (4592 lib tests).
-- [ ] S1.M [manual] M2: narrow-width badge check in a real terminal: shrink the chat pane and confirm ` RUN ` becomes `R` and ` AUTO ` becomes `A` without wrapping or overlapping the title.
+- [x] S1.M [manual] M2: narrow-width badge check in a real terminal: shrink the chat pane and confirm ` RUN ` becomes `R` and ` AUTO ` becomes `A` without wrapping or overlapping the title. Verified by the user on 2026-10-17 with all four engines (claude, codex, gemini, ollama).
 
 ## S2: Grammar and path policy, pure (~300 non-test lines)
 
@@ -106,7 +106,7 @@ Interim (until S4a): the host answers `Decision::Ran(N)` at once with "output no
 - [x] S3.13 REFACTOR: single choke point `route`; no mode in `Call`, `ChatRequest`, `StreamEvent` or `Effect`; re-run the S1.7 audit.
 - [x] S3.14 Docs: doc comments for the one-write invariant, the cwd TOCTOU residual and `Ctrl+U` rationale.
 - [x] S3.15 Gate. Measure; expect ~340. Fallback split if over 400: S3a (route, slot, CheckRun, run_check) and S3b (AutoRun write, runtime guards, dirty flag).
-- [ ] S3.M1 [manual] M1: real-shell checks in bash, zsh and fish, with a chat in `run`: (a) "take me to <dir>" runs `cd` with no `y` and no Enter; (b) `ls` and `mkdir -p` run; (c) half-typed line: type `rm -rf ` in the pane, then ask for a `cd`; it MUST prompt and not run; (d) Ctrl+U on the half-typed line does not re-enable runs until Enter or Ctrl+C; (e) a REPL (python, node) in the foreground: a command prompts and nothing is typed into it; (f) `cd ~/.ssh`, `ls *`, `cd x; rm y` never run. Record results in the PR.
+- [x] S3.M1 [manual] M1: real-shell checks in bash, zsh and fish, with a chat in `run`: (a) "take me to <dir>" runs `cd` with no `y` and no Enter; (b) `ls` and `mkdir -p` run; (c) half-typed line: type `rm -rf ` in the pane, then ask for a `cd`; it MUST prompt and not run; (d) Ctrl+U on the half-typed line does not re-enable runs until Enter or Ctrl+C; (e) a REPL (python, node) in the foreground: a command prompts and nothing is typed into it; (f) `cd ~/.ssh`, `ls *`, `cd x; rm y` never run. Record results in the PR. Verified by the user on 2026-10-17 with all four engines (claude, codex, gemini, ollama).
 
 ## S4a: Settle machine, answer channel, cwd result (~290 non-test lines)
 
@@ -140,7 +140,7 @@ Files: `src/core/ai/tools/capture.rs` (new), `src/app/auto_run.rs`, `src/runtime
 - [x] S4b.6 REFACTOR: reuse existing `clean`/`redact` helpers from the read tools; no second redaction table. Done: no new table; `clean`/`redact`/`wrap` stay in `words`.
 - [x] S4b.7 Docs: doc comments on capture heuristics and the residual prompt-leak threat. Done: module docs name the heuristics and the residual prompt-leak threat.
 - [x] S4b.8 Gate. Measure; expect ~160. Measured: ~215 non-test lines (capture.rs 191, auto_run.rs 16, settle.rs 7, mod.rs 1); gate green.
-- [ ] S4b.M1 [manual] repeat M1 (a)-(c) with bash, zsh and fish, now checking the model receives bounded output for `ls -la` and `tree`, and a decorated two-line prompt does not leak into the output.
+- [x] S4b.M1 [manual] repeat M1 (a)-(c) with bash, zsh and fish, now checking the model receives bounded output for `ls -la` and `tree`, and a decorated two-line prompt does not leak into the output. Verified by the user on 2026-10-17 with all four engines (claude, codex, gemini, ollama).
 
 ## S5a: Make `run` work with models other than claude (found in the manual test)
 
@@ -161,7 +161,7 @@ Blocked until the 2f-fix PR (tools.md prompt) is merged. Files: `src/core/ai/too
 - [x] S5.5 Docs: README `run` mode, safe list, output capture limits (a shell that rewrites the typed command, such as fish abbreviations, gives `output not available`; a multi-line prompt's upper rows can reach the model as output), residual threats (cd hooks, symlink swap TOCTOU, PS2 continuation, prompt-line leak, `tree -a` names) and privacy note that pane output goes to the model in `run`, cloud engines included. Done: README `Modo run` section in Spanish.
 - [x] S5.6 Docs: edit `agent-tools/design.md`: line 9 gains the `run` exception, remove the line 91 non-goal, D18 threat-model sentence becomes "nothing outside the D20 allow-list"; apply the spec deltas to the agent-tools capability. Done: `agent-tools/design.md` edited (run exception on line 9, non-goal removed, D18 sentence) and the `auto-execute` agent-tools delta applied to `agent-tools/specs/agent-tools/spec.md`; the other capability deltas merge at archive.
 - [x] S5.7 Gate. Measure; expect ~80 code lines. Done: code lines measured per commit in the apply-progress; gate green (4820 lib tests).
-- [ ] S5.M1 [manual] final M1 pass in bash, zsh and fish (cd, ls, mkdir, half-typed line, Ctrl+U, REPL in the foreground) and M2 (narrow-width badge) on the merged tracker before the 0.16.0 release.
+- [x] S5.M1 [manual] final M1 pass in bash, zsh and fish (cd, ls, mkdir, half-typed line, Ctrl+U, REPL in the foreground) and M2 (narrow-width badge) on the merged tracker before the 0.16.0 release. Verified by the user on 2026-10-17 with all four engines (claude, codex, gemini, ollama).
 
 ## Cross-change notes
 
