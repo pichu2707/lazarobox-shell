@@ -188,7 +188,7 @@ pub fn execute_with(
 
 /// The secret roots for one call. HOME unset, empty or relative refuses, and
 /// so does a root that cannot be read; there is no fallback to `/`.
-fn load_roots(env: &ToolEnv) -> Result<SecretRoots, Failure> {
+pub(crate) fn load_roots(env: &ToolEnv) -> Result<SecretRoots, Failure> {
     let home = env
         .home
         .as_ref()

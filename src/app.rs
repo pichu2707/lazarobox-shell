@@ -41,6 +41,7 @@ use crate::core::{
     update::{InstallEnv, UpdateAction},
 };
 
+mod auto_run;
 mod chat;
 mod chat_copy;
 mod context;
@@ -53,6 +54,8 @@ mod summary;
 mod tags;
 mod tool;
 
+pub use auto_run::RunEvent;
+use auto_run::RunSlot;
 use tool::ToolEvent;
 
 /// Rows of history kept by the emulator.
@@ -172,6 +175,8 @@ pub enum AppEvent {
     /// `MEMORY_WAIT` are given up. The runtime sends it only while
     /// `memory_waiting` holds.
     MemoryTick,
+    /// What the runtime found out about a run in pane `.0` (design D21).
+    Run(PaneId, RunEvent),
     /// The terminal window gained (`true`) or lost (`false`) the focus, as
     /// the terminal reports it. A terminal that does not report it never
     /// sends this, and the window counts as focused.
@@ -240,6 +245,17 @@ pub enum Effect {
         number: usize,
         turn: u64,
         call: CallId,
+    },
+    /// Chat `chat` routed a model's safe command for the shell pane `target`
+    /// to a run (design D21): the runtime reads the pane's real directory,
+    /// checks the paths of `command` off the UI thread and answers with one
+    /// `AppEvent::Run`. Nothing is written.
+    CheckRun {
+        chat: PaneId,
+        target: PaneId,
+        turn: u64,
+        call: CallId,
+        command: String,
     },
     /// Close the tool session of chat `pane`: its socket goes and every call
     /// it holds is denied. Emitted with `ChatCancel` for a chat that had one.
@@ -359,6 +375,9 @@ struct PtyPane {
     /// The auto-typed command of a chat that sits unsent on this pane's line
     /// (design D18): a later auto call to this pane prompts instead.
     line_pending: Option<CallId>,
+    /// The run routed to this pane that is still in flight (design D21); its
+    /// presence is the pane's `executing` mark.
+    run: Option<RunSlot>,
 }
 
 /// The install an update pane runs.
@@ -429,6 +448,7 @@ impl PaneState {
                 proc_cwd: None,
                 update: None,
                 line_pending: None,
+                run: None,
             })),
             size,
         }
@@ -1316,6 +1336,7 @@ impl App {
             AppEvent::Pty(id, event) if self.is_shell(id) => self.on_pty(id, event),
             AppEvent::Cwd(id, cwd) if self.is_shell(id) => self.on_cwd(id, cwd),
             AppEvent::Pty(..) | AppEvent::Cwd(..) => Vec::new(),
+            AppEvent::Run(id, event) => self.on_run(id, event),
             AppEvent::SpawnFailed(id, _) if self.update_run(id).is_some() => {
                 self.update_ended(id, UpdateEnded::NotStarted);
                 Vec::new()
@@ -1846,6 +1867,7 @@ impl App {
             self.panes.remove(&id);
             self.drop_parked_send(id);
             self.drop_note_choices(id);
+            self.drop_run_slots(|slot| slot.chat == id);
         }
         if index == self.active {
             self.active = index.min(self.tabs.len() - 1);
@@ -2037,6 +2059,7 @@ impl App {
                 self.panes.remove(&id);
                 self.drop_parked_send(id);
                 self.drop_note_choices(id);
+                self.drop_run_slots(|slot| slot.chat == id);
                 self.tabs[t].zoom = false;
                 if id == self.tabs[t].focus {
                     let tiling = tile(&self.tabs[t].tree, body);
@@ -7282,6 +7305,9 @@ mod app_tests {
 
     /// The chat approval mode: where it comes from, when it resets.
     mod tool_auto;
+
+    /// The `run` mode: routing, the check round trip and its cleanup.
+    mod tool_run;
 
     /// The keys, rechecks and lifecycle of the run-in-pane confirm.
     mod run_pane_keys;

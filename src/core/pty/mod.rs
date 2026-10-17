@@ -82,6 +82,13 @@ pub trait PtyHandle: Send {
     fn shell_in_foreground(&self) -> Option<bool> {
         None
     }
+    /// The shell's real working directory, read from `/proc/<pid>/cwd` (the
+    /// kernel resolves the link without touching the disk). `None` when it
+    /// cannot be read: no pid, a platform without `/proc`, a process that is
+    /// gone.
+    fn cwd(&self) -> Option<PathBuf> {
+        std::fs::read_link(format!("/proc/{}/cwd", self.pid()?)).ok()
+    }
     /// Terminates the child. Idempotent; implementations also call it on drop.
     fn kill(&mut self);
 }

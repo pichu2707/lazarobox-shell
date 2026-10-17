@@ -11,7 +11,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::core::ai::{
     chat::engine::CallId,
     config::ApprovalMode,
-    tools::{Call, Locality, command::Refusal},
+    tools::{
+        Call, Locality,
+        command::Refusal,
+        exec::{self, Fallback, SafeCommand},
+    },
 };
 
 /// Ids come from one counter for the whole process, so an `Approvals` that is
@@ -85,22 +89,28 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
     }
 }
 
-/// What the app does with a model's ask (D18).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Route {
-    /// Open the approval overlay, as in `ask` mode.
-    Prompt,
+/// What the app does with a model's ask (D18, D21).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Route<'a> {
+    /// Open the approval overlay, as in `ask` mode. In `run` mode, `Some`
+    /// says why the command is not run directly.
+    Prompt(Option<Fallback>),
     /// Type the command into the target pane without a prompt, no Enter.
     AutoType,
+    /// Check the command, then type it and press Enter (`run` mode only).
+    AutoRun(SafeCommand<'a>),
 }
 
-/// The most commands one turn may type without a prompt.
+/// The most commands one turn may type or run without a prompt.
 pub const MAX_AUTO_PER_TURN: u8 = 5;
+
+/// Why a `run` prompt names no offending token.
+pub const NO_CWD: &str = "the pane's directory cannot be read on this system";
 
 /// What the app knows when a call arrives, beyond the call itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct AutoCtx {
-    /// Commands already typed without a prompt in this turn.
+    /// Commands already typed or run without a prompt in this turn.
     pub typed_this_turn: u8,
     /// An earlier auto-typed command in the target pane is still unsent.
     pub line_pending: bool,
@@ -108,24 +118,49 @@ pub struct AutoCtx {
     pub target_focused: bool,
     /// The chat's tab is the shown one: the user can see the typing.
     pub tab_shown: bool,
+    /// A run is in flight in the target pane.
+    pub executing: bool,
+    /// The shell's real directory can be read (never on macOS).
+    pub cwd_known: bool,
 }
 
-/// `AutoType` only for a model `run_in_pane` in `auto` mode, with fewer than
-/// [`MAX_AUTO_PER_TURN`] typed this turn, no pending line in the target, the
-/// target not focused and the tab shown. Every other case, a read, an
-/// external call or a command the user started, prompts.
-pub fn route(ask: &ApprovalAsk, origin: Origin, mode: ApprovalMode, ctx: AutoCtx) -> Route {
+/// `AutoType` only for a model `run_in_pane` in `auto` mode, and `AutoRun`
+/// only in `run` mode for a command the grammar accepts, with fewer than
+/// [`MAX_AUTO_PER_TURN`] typed or run this turn, no pending line or run in the
+/// target, the target not focused, its directory known and the tab shown.
+/// Every other case, a read, an external call or a command the user started,
+/// prompts. `auto` and `ask` never produce `AutoRun`.
+pub fn route<'a>(
+    ask: &'a ApprovalAsk,
+    origin: Origin,
+    mode: ApprovalMode,
+    ctx: AutoCtx,
+) -> Route<'a> {
     let free = ctx.typed_this_turn < MAX_AUTO_PER_TURN
         && !ctx.line_pending
         && !ctx.target_focused
-        && ctx.tab_shown;
+        && ctx.tab_shown
+        && !ctx.executing;
     match (ask, origin, mode) {
-        // `run` types like `auto` until its guards exist: it never presses
-        // Enter yet.
-        (ApprovalAsk::Run { .. }, Origin::Tool, ApprovalMode::Auto | ApprovalMode::Run) if free => {
-            Route::AutoType
+        (ApprovalAsk::Run { .. }, Origin::Tool, ApprovalMode::Auto) if free => Route::AutoType,
+        (ApprovalAsk::Run { command }, Origin::Tool, ApprovalMode::Run) => {
+            route_run(command, ctx, free)
         }
-        _ => Route::Prompt,
+        _ => Route::Prompt(None),
+    }
+}
+
+/// The `run` half of [`route`]: the reason of the pane first, then the
+/// grammar, then the limits.
+fn route_run(command: &str, ctx: AutoCtx, free: bool) -> Route<'_> {
+    let because = |why| Route::Prompt(Some(Fallback { at: 0..0, why }));
+    if !ctx.cwd_known {
+        return because(NO_CWD);
+    }
+    match exec::parse(command) {
+        Ok(safe) if free => Route::AutoRun(safe),
+        Ok(_) => Route::Prompt(None),
+        Err(fallback) => Route::Prompt(Some(fallback)),
     }
 }
 
@@ -147,6 +182,8 @@ pub struct Approval {
     /// The tool call this approval answers: its turn and call id. `None` for
     /// an action the user started.
     call: Option<(u64, CallId)>,
+    /// Why a command was not run directly, as the prompt will say it.
+    why: Option<String>,
 }
 
 impl Approval {
@@ -167,6 +204,11 @@ impl Approval {
     /// The turn and call of the tool call that waits for this approval.
     pub fn call(&self) -> Option<(u64, CallId)> {
         self.call
+    }
+
+    /// Why a `run` command was not run directly, if it was meant to be.
+    pub fn why(&self) -> Option<&str> {
+        self.why.as_deref()
     }
 }
 
@@ -222,19 +264,21 @@ impl Approvals {
     /// Ask the user and return the id of the new approval. Refused with
     /// [`ANOTHER_PENDING`] when one is pending; the first stays pending.
     pub fn request(&mut self, ask: ApprovalAsk, origin: Origin) -> Result<u64, Refusal> {
-        self.open(ask, origin, None)
+        self.open(ask, origin, None, None)
     }
 
     /// Like [`request`](Self::request) for the tool call `call` of turn
     /// `turn`: the origin is [`Origin::Tool`], and the answer is reported
-    /// under that turn and call.
+    /// under that turn and call. `why` says why a `run` command was not run
+    /// directly.
     pub fn request_call(
         &mut self,
         ask: ApprovalAsk,
         turn: u64,
         call: CallId,
+        why: Option<String>,
     ) -> Result<u64, Refusal> {
-        self.open(ask, Origin::Tool, Some((turn, call)))
+        self.open(ask, Origin::Tool, Some((turn, call)), why)
     }
 
     fn open(
@@ -242,6 +286,7 @@ impl Approvals {
         ask: ApprovalAsk,
         origin: Origin,
         call: Option<(u64, CallId)>,
+        why: Option<String>,
     ) -> Result<u64, Refusal> {
         if self.pending.is_some() {
             return Err(Refusal::new(ANOTHER_PENDING));
@@ -252,6 +297,7 @@ impl Approvals {
             ask,
             origin,
             call,
+            why,
         });
         Ok(id)
     }
@@ -289,18 +335,40 @@ mod tests {
         line_pending: false,
         target_focused: false,
         tab_shown: true,
+        executing: false,
+        cwd_known: true,
     };
 
     fn run_ask() -> ApprovalAsk {
+        ask_of("cd x")
+    }
+
+    fn ask_of(command: &str) -> ApprovalAsk {
         ApprovalAsk::Run {
-            command: "cd x".into(),
+            command: command.into(),
+        }
+    }
+
+    /// The command a route would run, if it runs one.
+    fn runs<'a>(route: &Route<'a>) -> Option<&'a str> {
+        match route {
+            Route::AutoRun(safe) => Some(safe.as_str()),
+            _ => None,
+        }
+    }
+
+    fn why(route: &Route<'_>) -> Option<&'static str> {
+        match route {
+            Route::Prompt(Some(fallback)) => Some(fallback.why),
+            _ => None,
         }
     }
 
     // Spec (chat-pane, approval mode): D18 routing.
     #[test]
     fn a_model_run_in_auto_mode_is_typed_when_nothing_blocks_it() {
-        let route = route(&run_ask(), Origin::Tool, ApprovalMode::Auto, FREE);
+        let ask = run_ask();
+        let route = route(&ask, Origin::Tool, ApprovalMode::Auto, FREE);
         assert_eq!(route, Route::AutoType);
     }
 
@@ -314,17 +382,17 @@ mod tests {
         };
         assert_eq!(
             route(&run_ask(), Origin::Tool, ApprovalMode::Ask, FREE),
-            Route::Prompt
+            Route::Prompt(None)
         );
         for ask in [&read, &external] {
             assert_eq!(
                 route(ask, Origin::Tool, ApprovalMode::Auto, FREE),
-                Route::Prompt
+                Route::Prompt(None)
             );
         }
         assert_eq!(
             route(&run_ask(), Origin::Block, ApprovalMode::Auto, FREE),
-            Route::Prompt
+            Route::Prompt(None)
         );
     }
 
@@ -351,7 +419,7 @@ mod tests {
         for ctx in blocked {
             assert_eq!(
                 route(&run_ask(), Origin::Tool, ApprovalMode::Auto, ctx),
-                Route::Prompt,
+                Route::Prompt(None),
                 "{ctx:?}"
             );
         }
@@ -370,14 +438,28 @@ mod tests {
         );
     }
 
-    // Until the run guards exist, `run` routes exactly like `auto`: it types
-    // and never presses Enter.
+    // Spec (pane-execution, run routing): the matrix of S3.1.
     #[test]
-    fn run_routes_like_auto_for_every_ask_origin_and_context() {
-        let read = ApprovalAsk::Read { path: "~/a".into() };
-        let asks = [run_ask(), read];
-        let ctxs = [
-            FREE,
+    fn run_mode_runs_a_parsed_command_when_nothing_blocks_it() {
+        let ask = ask_of("cd ~/dev");
+        let route = route(&ask, Origin::Tool, ApprovalMode::Run, FREE);
+        assert_eq!(runs(&route), Some("cd ~/dev"));
+    }
+
+    #[test]
+    fn auto_and_ask_never_produce_a_run() {
+        for ask in ["cd x", "ls", "pwd", "mkdir -p a"] {
+            for mode in [ApprovalMode::Auto, ApprovalMode::Ask] {
+                let ask = ask_of(ask);
+                let route = route(&ask, Origin::Tool, mode, FREE);
+                assert!(runs(&route).is_none(), "{mode:?} {ask:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_context_bit_turns_a_run_into_the_prompt() {
+        let blocked = [
             AutoCtx {
                 line_pending: true,
                 ..FREE
@@ -394,22 +476,60 @@ mod tests {
                 typed_this_turn: MAX_AUTO_PER_TURN,
                 ..FREE
             },
+            AutoCtx {
+                executing: true,
+                ..FREE
+            },
+            AutoCtx {
+                cwd_known: false,
+                ..FREE
+            },
         ];
-        for ask in &asks {
-            for origin in [Origin::Tool, Origin::Block] {
-                for ctx in ctxs {
-                    assert_eq!(
-                        route(ask, origin, ApprovalMode::Run, ctx),
-                        route(ask, origin, ApprovalMode::Auto, ctx),
-                        "{ask:?} {origin:?} {ctx:?}"
-                    );
-                }
-            }
+        let ask = ask_of("pwd");
+        for ctx in blocked {
+            let route = route(&ask, Origin::Tool, ApprovalMode::Run, ctx);
+            assert!(matches!(route, Route::Prompt(_)), "{ctx:?}");
         }
+    }
+
+    #[test]
+    fn the_unreadable_cwd_names_its_reason() {
+        let ask = ask_of("pwd");
+        let blind = AutoCtx {
+            cwd_known: false,
+            ..FREE
+        };
+        let got = route(&ask, Origin::Tool, ApprovalMode::Run, blind);
         assert_eq!(
-            route(&run_ask(), Origin::Tool, ApprovalMode::Run, FREE),
-            Route::AutoType
+            why(&got),
+            Some("the pane's directory cannot be read on this system")
         );
+    }
+
+    #[test]
+    fn a_command_off_the_grammar_prompts_with_the_offending_token() {
+        let ask = ask_of("ls *");
+        let got = route(&ask, Origin::Tool, ApprovalMode::Run, FREE);
+        let Route::Prompt(Some(fallback)) = got else {
+            panic!("{got:?}")
+        };
+        assert_eq!((fallback.at, fallback.why), (3..4, "shell metacharacter"));
+        let ask = ask_of("git status");
+        let got = route(&ask, Origin::Tool, ApprovalMode::Run, FREE);
+        assert_eq!(why(&got), Some("not a safe command"));
+    }
+
+    #[test]
+    fn only_a_model_run_can_run() {
+        let read = ApprovalAsk::Read { path: "~/a".into() };
+        for (ask, origin) in [
+            (run_ask(), Origin::Block),
+            (read.clone(), Origin::Tool),
+            (read, Origin::Block),
+        ] {
+            let route = route(&ask, origin, ApprovalMode::Run, FREE);
+            assert_eq!(route, Route::Prompt(None), "{ask:?} {origin:?}");
+        }
     }
 
     // Spec (agent-tools, approval by locality): D17 table.
@@ -461,12 +581,21 @@ mod tests {
     #[test]
     fn a_tool_request_names_its_turn_and_call() {
         let mut a = Approvals::default();
-        a.request_call(run("ls"), 4, CallId(9)).unwrap();
+        a.request_call(run("ls"), 4, CallId(9), None).unwrap();
         let p = a.pending().unwrap();
         assert_eq!((p.origin(), p.call()), (Origin::Tool, Some((4, CallId(9)))));
-        let err = a.request_call(run("pwd"), 4, CallId(10)).unwrap_err();
+        assert_eq!(p.why(), None);
+        let err = a.request_call(run("pwd"), 4, CallId(10), None).unwrap_err();
         assert_eq!(err.reason(), ANOTHER_PENDING);
         assert_eq!(a.pending().unwrap().call(), Some((4, CallId(9))));
+    }
+
+    #[test]
+    fn a_tool_request_keeps_why_it_was_not_run_directly() {
+        let mut a = Approvals::default();
+        let why = Some("shell metacharacter".to_owned());
+        a.request_call(run("ls *"), 4, CallId(9), why).unwrap();
+        assert_eq!(a.pending().unwrap().why(), Some("shell metacharacter"));
     }
 
     #[test]
