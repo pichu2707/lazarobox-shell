@@ -471,9 +471,16 @@ fn jail_plan(
     let named = elf_search_dirs(interpreter.as_deref().unwrap_or(&bin));
     let shim = shim
         .map(|(exe, socket)| -> Result<ShimGrant, JailRefusal> {
+            // The shim and its loader run inside the jail with whatever the
+            // CLI is allowed, so they pass the check an interpreter does.
+            let untrusted = |(path, why)| JailRefusal::UntrustedInterpreter { path, why };
+            interpreter_trust(exe).map_err(untrusted)?;
             let loader = read_loader(exe)
                 .map(|l| resolve(&l).ok_or(JailRefusal::BadLoader(l)))
                 .transpose()?;
+            if let Some(loader) = &loader {
+                interpreter_trust(loader).map_err(untrusted)?;
+            }
             let socket =
                 resolve(socket).ok_or_else(|| JailRefusal::Unreadable(socket.to_path_buf()))?;
             Ok(ShimGrant {

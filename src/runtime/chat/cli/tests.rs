@@ -1774,6 +1774,8 @@ async fn a_wired_claude_gets_the_config_the_flags_the_timeout_and_the_jail_grant
     );
     let shim = lab.bin.join("shim");
     fs::write(&shim, "").unwrap();
+    // The shim must pass the trust check, whatever the developer's umask.
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
     let env = with_shim(&lab, lab.env(), shim.to_str().unwrap());
     let events = run_job(&env, claude_job(&lab, true)).await;
     assert_eq!(
@@ -1893,6 +1895,74 @@ async fn a_shim_the_jail_refuses_retries_the_jail_without_it() {
         !helper.contains("/tmp/lazarobox-shell") && !helper.contains("s.sock"),
         "{helper:?}"
     );
+}
+
+/// A shim program the trust check refuses (it sits in a folder others can
+/// write) is retried without it, like an interpreter: text with the notice.
+async fn assert_untrusted_shim_falls_back(lab: &Lab, shim: &Path) {
+    script(
+        &lab.bin.join("claude"),
+        &lab.rec,
+        &format!("{MCP_CLAUDE}{GOOD}"),
+    );
+    let env = with_shim(lab, lab.env(), shim.to_str().unwrap());
+    let events = run_job(&env, claude_job(lab, true)).await;
+    assert_eq!(
+        events[0],
+        StreamEvent::Notice(OFF_NOTICE.into()),
+        "{events:?}"
+    );
+    assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
+    assert_eq!(lab.args(), ["-p", "--strict-mcp-config"]);
+    let helper = lab.recorded("helper_args");
+    assert!(
+        !helper.is_empty() && !helper.contains(shim.to_str().unwrap()),
+        "{helper:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_shim_in_a_folder_others_can_write_is_not_granted() {
+    let lab = lab();
+    let dir = lab.bin.join("shimdir");
+    fs::create_dir(&dir).unwrap();
+    let shim = dir.join("lazarobox-shell");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o775)).unwrap();
+    assert_untrusted_shim_falls_back(&lab, &shim).await;
+}
+
+#[tokio::test]
+async fn a_shim_that_others_can_write_is_not_granted() {
+    let lab = lab();
+    let shim = lab.bin.join("shim");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o666)).unwrap();
+    assert_untrusted_shim_falls_back(&lab, &shim).await;
+}
+
+#[tokio::test]
+async fn a_shim_whose_loader_others_can_write_is_not_granted() {
+    let lab = lab();
+    let dir = lab.bin.join("loaderdir");
+    fs::create_dir(&dir).unwrap();
+    let loader = dir.join("ld.so");
+    fs::write(&loader, "").unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o775)).unwrap();
+    // A minimal ELF64 whose PT_INTERP names the loader.
+    let name = format!("{}\0", loader.display());
+    let mut img = vec![0u8; 512];
+    img[..6].copy_from_slice(b"\x7fELF\x02\x01");
+    img[0x20..0x28].copy_from_slice(&64u64.to_le_bytes());
+    img[0x36..0x38].copy_from_slice(&56u16.to_le_bytes());
+    img[0x38..0x3a].copy_from_slice(&1u16.to_le_bytes());
+    img[64..68].copy_from_slice(&3u32.to_le_bytes());
+    img[72..80].copy_from_slice(&300u64.to_le_bytes());
+    img[96..104].copy_from_slice(&(name.len() as u64).to_le_bytes());
+    img[300..300 + name.len()].copy_from_slice(name.as_bytes());
+    let shim = lab.bin.join("shim");
+    fs::write(&shim, img).unwrap();
+    assert_untrusted_shim_falls_back(&lab, &shim).await;
 }
 
 #[tokio::test]
