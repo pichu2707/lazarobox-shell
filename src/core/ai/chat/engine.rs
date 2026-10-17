@@ -2,12 +2,13 @@
 //! sends and what a stream may say back, and whether an engine can be used.
 //! Pure data and functions, no IO.
 
-use super::adapters::adapter_for;
+use super::{adapters::adapter_for, approval::ApprovalAsk};
 use crate::core::ai::{
     CATALOG, Detection, Kind, Status,
     config::{AiConfig, Task},
     jail::JailSupport,
     status_text,
+    tools::Locality,
 };
 
 /// Who wrote a message.
@@ -59,6 +60,49 @@ pub enum ChatError {
     Jail(String),
 }
 
+/// Identifies one tool call within a turn. The host that runs the call hands
+/// them out, so a `ToolResult` can only name a call the host announced.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct CallId(pub u64);
+
+/// How a tool call ended.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ToolStatus {
+    Ok,
+    Error,
+    /// Not run: refused or not approved. A timer never approves.
+    Denied,
+}
+
+impl ToolStatus {
+    /// The word a result row shows.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Error => "error",
+            Self::Denied => "denied",
+        }
+    }
+}
+
+/// The user's answer to an approval, as the host receives it. The wording
+/// follows the write action: `Sent` also means "allowed" for a read.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Decision {
+    Sent,
+    /// Why nothing was done; short, and it goes back to the model.
+    Denied(&'static str),
+}
+
+/// Whether the adapter of `engine` keeps what a tool returns on this machine.
+/// `None` for an engine that is not in the catalog.
+pub fn locality(engine: &str) -> Option<Locality> {
+    CATALOG
+        .iter()
+        .find(|e| e.id == engine)
+        .map(|e| e.kind.locality())
+}
+
 /// What an adapter task reports about one turn.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum StreamEvent {
@@ -70,6 +114,22 @@ pub enum StreamEvent {
     Notice(String),
     /// A piece of the engine's reasoning, kept apart from the answer.
     ThinkingDelta(String),
+    /// A tool call the host is about to run. Produced by the host that
+    /// executes it, never decoded from answer text. `approval` is set when the
+    /// call waits for the user. It is boxed so the event stays small: every
+    /// adapter result carries one.
+    ToolCall {
+        id: CallId,
+        name: String,
+        summary: String,
+        approval: Option<Box<ApprovalAsk>>,
+    },
+    /// The end of the call `id`, exactly one per `ToolCall`.
+    ToolResult {
+        id: CallId,
+        status: ToolStatus,
+        summary: String,
+    },
     Done(Finish),
     Error(ChatError),
 }

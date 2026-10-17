@@ -100,6 +100,7 @@ fn the_first_answer_text_collapses_the_block_once_with_the_seconds() {
             Entry::Reasoning(_) => "Reasoning".to_owned(),
             Entry::System(_) => "System".to_owned(),
             Entry::Memory(_) => "Memory".to_owned(),
+            Entry::Tool(_) => "Tool".to_owned(),
         })
         .collect();
     assert_eq!(kinds, ["User", "Reasoning", "Assistant"]);

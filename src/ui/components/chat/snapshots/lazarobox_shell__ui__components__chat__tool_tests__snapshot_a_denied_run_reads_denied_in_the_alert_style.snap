@@ -1,0 +1,10 @@
+---
+source: src/ui/components/chat/tool_tests.rs
+expression: text(&buf)
+---
+› where is the course?
+
+» run_in_pane rm -rf ~
+  denied: not approved
+
+waiting for the model…

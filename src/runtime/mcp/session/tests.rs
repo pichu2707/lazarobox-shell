@@ -95,6 +95,44 @@ impl Dispatch for Hang {
     }
 }
 
+/// Answers `late` once the test says so; says when a call starts and when it
+/// is dropped.
+struct Gated {
+    hang: Hang,
+    release: Arc<tokio::sync::Notify>,
+}
+
+fn gated() -> (Arc<Gated>, Probe, Arc<tokio::sync::Notify>) {
+    let (hang, probe) = hang();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let hang = Arc::into_inner(hang).unwrap();
+    (
+        Arc::new(Gated {
+            hang,
+            release: release.clone(),
+        }),
+        probe,
+        release,
+    )
+}
+
+impl Dispatch for Gated {
+    fn call(&self, _: Call) -> BoxFuture<'static, Outcome> {
+        let _ = self.hang.called.send(());
+        let guard = SignalOnDrop(self.hang.dropped.clone());
+        let release = self.release.clone();
+        async move {
+            let _guard = guard;
+            release.notified().await;
+            Outcome {
+                text: "late".into(),
+                is_error: false,
+            }
+        }
+        .boxed()
+    }
+}
+
 /// Panics before it returns a future, or inside it.
 struct Panics {
     in_future: bool,
@@ -396,6 +434,7 @@ async fn a_client_cancel_drops_the_call_and_the_session_keeps_serving() {
 async fn a_client_that_hangs_up_drops_its_pending_call() {
     let tmp = tempfile::tempdir().unwrap();
     let mut hub = hub(tmp.path());
+    hub.drain = Duration::from_secs(60);
     let (fake, mut probe) = hang();
     let s = open(&mut hub, 1, fake);
     let mut c = ready(&s).await;
@@ -607,6 +646,7 @@ async fn nothing_is_dispatched_once_the_session_is_marked_closed() {
         fake.clone(),
         unsafe { libc::geteuid() },
         Duration::from_secs(5),
+        DRAIN_GRACE,
     );
     let closed = conn.closed.clone();
     let permit = conn.pending.clone().try_acquire_owned().unwrap();
@@ -649,4 +689,89 @@ async fn a_panicking_dispatch_answers_an_error_result_and_the_session_survives()
         send(&mut c, r#"{"jsonrpc":"2.0","id":9,"method":"ping"}"#).await;
         assert_eq!(recv(&mut c).await.unwrap()["id"], 9);
     }
+}
+
+const CALL_5: &str = r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"find_dir","arguments":{"query":"x"}}}"#;
+
+/// Half-closes the client's write side, as the shim does when its stdin ends.
+async fn half_close(client: &mut Client) {
+    client.1.shutdown().await.unwrap();
+}
+
+impl Probe {
+    /// Asserts the call is not dropped for a while. A negative check has to
+    /// wait; the window only matters for the case where the session is wrong.
+    async fn stays_alive(&mut self) {
+        let waited = timeout(Duration::from_millis(100), self.dropped.recv()).await;
+        assert!(waited.is_err(), "the call was dropped too early");
+    }
+}
+
+#[tokio::test]
+async fn a_half_closed_client_still_gets_the_reply_of_a_call_in_flight() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = hub(tmp.path());
+    let (fake, mut probe, release) = gated();
+    let s = open(&mut hub, 1, fake);
+    let mut c = ready(&s).await;
+    send(&mut c, CALL_5).await;
+    probe.called().await;
+    half_close(&mut c).await;
+    probe.stays_alive().await;
+    release.notify_one();
+    let got = recv(&mut c).await.unwrap();
+    assert_eq!(got["id"], 5);
+    assert_eq!(got["result"]["content"][0]["text"], "late");
+    // With every reply flushed the session ends the connection.
+    assert_eq!(recv(&mut c).await, None);
+    assert!(probe.dropped.try_recv().is_ok());
+}
+
+#[tokio::test]
+async fn a_call_still_pending_when_the_grace_ends_is_aborted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = hub(tmp.path());
+    hub.drain = Duration::from_millis(400);
+    let (fake, mut probe, _release) = gated();
+    let s = open(&mut hub, 1, fake);
+    let mut c = ready(&s).await;
+    send(&mut c, CALL_5).await;
+    probe.called().await;
+    half_close(&mut c).await;
+    probe.stays_alive().await;
+    probe.dropped().await;
+    assert_eq!(recv(&mut c).await, None);
+}
+
+#[tokio::test]
+async fn closing_the_chat_aborts_a_draining_call_at_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = hub(tmp.path());
+    hub.drain = Duration::from_secs(60);
+    let (fake, mut probe, _release) = gated();
+    let s = open(&mut hub, 1, fake);
+    let mut c = ready(&s).await;
+    send(&mut c, CALL_5).await;
+    probe.called().await;
+    half_close(&mut c).await;
+    probe.stays_alive().await;
+    hub.close(pane(1));
+    probe.dropped().await;
+    assert_eq!(recv(&mut c).await, None);
+}
+
+#[tokio::test]
+async fn a_full_hangup_during_the_drain_drops_the_call_without_waiting_for_the_grace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = hub(tmp.path());
+    hub.drain = Duration::from_secs(60);
+    let (fake, mut probe, _release) = gated();
+    let s = open(&mut hub, 1, fake);
+    let mut c = ready(&s).await;
+    send(&mut c, CALL_5).await;
+    probe.called().await;
+    half_close(&mut c).await;
+    probe.stays_alive().await;
+    drop(c);
+    probe.dropped().await;
 }
