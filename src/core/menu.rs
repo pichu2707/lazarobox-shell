@@ -49,7 +49,7 @@ pub enum ItemKind {
     /// the AI draft, like [`ItemKind::Notify`].
     Tools,
     /// The approval mode of the model's commands (`ai.tools.approval`): an
-    /// `ask`/`auto` row over the AI draft. It only reaches later chat opens
+    /// `ask`/`auto`/`run` row over the AI draft. It only reaches later chat opens
     /// and conversation switches, never an open chat or a pending approval.
     Approval,
     /// The notification sound flag (`ai.notify_sound`): an on/off row over

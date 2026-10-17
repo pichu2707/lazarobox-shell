@@ -85,7 +85,7 @@ fn navigation_goes_tools_approval_then_wraps_to_the_first_ai_row() {
 }
 
 #[test]
-fn the_row_reads_ask_or_auto_and_needs_the_ai_section() {
+fn the_row_reads_ask_auto_or_run_and_needs_the_ai_section() {
     assert_eq!(
         value_of(&open_with(ApprovalMode::Ask), "Approval").as_deref(),
         Some("ask")

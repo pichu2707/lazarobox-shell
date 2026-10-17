@@ -165,7 +165,9 @@ impl ChatView<'_> {
     fn draw_mode_badge(&self, mode: ApprovalMode, area: Rect, buf: &mut Buffer) {
         let (text, short, colour) = match mode {
             ApprovalMode::Run => (" RUN ", "R", self.theme.error_red),
-            _ => (" AUTO ", "A", self.theme.warning_orange),
+            ApprovalMode::Auto => (" AUTO ", "A", self.theme.warning_orange),
+            // `mode_badge` never yields `ask`.
+            ApprovalMode::Ask => return,
         };
         let style = Style::default()
             .fg(self.theme.bg_base)
