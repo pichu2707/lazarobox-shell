@@ -14,7 +14,11 @@
 //!   on a model asked to think), so nothing is shown as thinking.
 //! - a `tool_use` means the policy that removes every tool did not hold: the
 //!   turn ends with an error (the runtime then stops the process). The jail is
-//!   what actually stops the tool. `tool_result` is ignored.
+//!   what actually stops the tool. `tool_result` is ignored. The one exception
+//!   is a wired turn (the lazarobox MCP server is on): a `tool_use` named
+//!   `mcp_lazarobox_<tool>` passes, whatever else is refused. The qualified
+//!   name is what tells our `read_file` from gemini's own built-in one; a
+//!   text-only turn allows no tool, ours included.
 //! - an `error` event is a non-fatal warning and is skipped. Any other kind of
 //!   event ends the turn with an error: an allowlist, so a newer gemini that
 //!   adds a kind (a thought, a tool of a new sort) fails closed.
@@ -27,6 +31,7 @@ use super::stream::{
     CLI_LINE_CAP, Lines, StreamDecoder, TooLong, emit, error_message, finish_with, malformed,
     too_long,
 };
+use crate::core::ai::tools::wiring::GEMINI_TOOL_PREFIX;
 
 /// The failure of a turn in which gemini started a tool.
 pub const TOOL_REFUSED: &str = "gemini tried to use a tool";
@@ -41,6 +46,9 @@ pub const UNKNOWN_EVENT: &str =
 pub struct GeminiDecoder {
     lines: Lines,
     ended: bool,
+    /// The turn has the lazarobox tools wired in: its `tool_use` events (and
+    /// only those) are allowed.
+    wired: bool,
 }
 
 impl GeminiDecoder {
@@ -48,11 +56,20 @@ impl GeminiDecoder {
         Self {
             lines: Lines::new(CLI_LINE_CAP),
             ended: false,
+            wired: false,
+        }
+    }
+
+    /// For a turn whose gemini got the lazarobox MCP server.
+    pub fn wired() -> Self {
+        Self {
+            wired: true,
+            ..Self::new()
         }
     }
 
     /// Events of one line.
-    fn line(line: &[u8]) -> Vec<StreamEvent> {
+    fn line(&self, line: &[u8]) -> Vec<StreamEvent> {
         // Only a line that starts like a JSON object is an event. Anything
         // else (a warning a wrapper or runtime prints on stdout) is noise.
         if line.trim_ascii_start().first() != Some(&b'{') {
@@ -63,6 +80,7 @@ impl GeminiDecoder {
         };
         match value["type"].as_str() {
             Some("message") => Self::message(&value),
+            Some("tool_use") if self.wired && is_ours(&value) => vec![],
             Some("tool_use") => vec![StreamEvent::Error(ChatError::Failed(TOOL_REFUSED.into()))],
             Some("result") => vec![Self::result(&value)],
             // Known and harmless: the start of the session, the result of a
@@ -98,11 +116,21 @@ impl GeminiDecoder {
             if self.ended {
                 break;
             }
-            let events = line.map_or_else(|TooLong| vec![too_long()], |l| Self::line(&l));
+            let events = line.map_or_else(|TooLong| vec![too_long()], |l| self.line(&l));
             emit(&mut self.ended, &mut out, events);
         }
         out
     }
+}
+
+/// Whether a `tool_use` is one of lazarobox's tools. gemini names an MCP tool
+/// `mcp_{server}_{tool}`, so gemini's own `read_file` never matches ours; a
+/// name that is missing, not text or not exactly that shape does not either.
+fn is_ours(value: &Value) -> bool {
+    value["tool_name"]
+        .as_str()
+        .and_then(|name| name.strip_prefix(GEMINI_TOOL_PREFIX))
+        .is_some_and(|tool| !tool.is_empty())
 }
 
 /// The CLI wraps the API's text as `[API Error: <text>]` and may add its own

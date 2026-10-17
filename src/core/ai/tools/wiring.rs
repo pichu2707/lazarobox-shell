@@ -179,6 +179,65 @@ pub fn codex(shim: &Path, wire: &McpWire) -> Option<CodexWiring> {
     })
 }
 
+/// The prefix of every tool name gemini shows for this server: its fully
+/// qualified name is `mcp_{server}_{tool}` (gemini 0.63.0 docs).
+pub const GEMINI_TOOL_PREFIX: &str = "mcp_lazarobox_";
+
+/// What gemini gets for one turn with tools.
+#[derive(Clone, PartialEq, Eq)]
+pub struct GeminiWiring {
+    /// The workspace `settings.json` (it holds the token: write it 0600).
+    pub settings: String,
+    /// The policy file that lets the server's tools through (admin tier).
+    pub policy: String,
+    /// Appended to the argv, in the `--flag=value` form: both flags are
+    /// variadic in gemini, so a separate value would swallow what follows.
+    pub args: Vec<String>,
+}
+
+impl fmt::Debug for GeminiWiring {
+    /// The settings hold the token, so they never print.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GeminiWiring")
+            .field("settings", &"(..)")
+            .field("policy", &self.policy)
+            .field("args", &self.args)
+            .finish()
+    }
+}
+
+/// How long gemini waits for one MCP call, in ms: a call may wait for the
+/// user's `y` (D13).
+const GEMINI_TOOL_TIMEOUT_MS: u32 = 900_000;
+
+/// The wiring for gemini: the workspace `settings.json` with the stdio server
+/// entry (the token goes only in its `env`, never argv; `trust` skips gemini's
+/// own confirmation, because the host asks the user), the flag that allows
+/// the server, and an admin-tier policy rule that allows its tools. The
+/// text-only policy (a deny-all at 999 of the user tier) stays loaded; the
+/// admin tier outranks it by gemini's tier table, which a priority inside one
+/// file never could (0 to 999). `None` when a path is not UTF-8.
+pub fn gemini(shim: &Path, policy: &Path, wire: &McpWire) -> Option<GeminiWiring> {
+    let doc = json!({"mcpServers": {SERVER: {
+        "command": shim.to_str()?,
+        "args": [SUBCOMMAND, wire.socket.to_str()?],
+        "env": {TOKEN_ENV: wire.token.reveal()},
+        "timeout": GEMINI_TOOL_TIMEOUT_MS,
+        "trust": true,
+    }}});
+    Some(GeminiWiring {
+        settings: serde_json::to_string_pretty(&doc).ok()?,
+        policy: format!(
+            "[[rule]]\nmcpName = {}\ndecision = \"allow\"\npriority = 999\n",
+            toml_string(SERVER)
+        ),
+        args: vec![
+            format!("--allowed-mcp-server-names={SERVER}"),
+            format!("--admin-policy={}", policy.to_str()?),
+        ],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +361,72 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         let odd = Path::new(std::ffi::OsStr::from_bytes(b"/a/\xff"));
         assert!(codex(odd, &wire()).is_none());
+    }
+
+    fn gemini_wiring() -> GeminiWiring {
+        gemini(
+            Path::new("/opt/lb/bin/lazarobox-shell"),
+            Path::new("/data/lazarobox/cli-tmp/42-7/gemini-mcp-policy.toml"),
+            &wire(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_gemini_wiring_snapshot() {
+        let w = gemini_wiring();
+        let text = format!(
+            "argv: {}\nsettings.json:\n{}\npolicy:\n{}",
+            w.args.join(" "),
+            w.settings,
+            w.policy
+        );
+        insta::assert_snapshot!("gemini_wiring", text);
+    }
+
+    #[test]
+    fn the_gemini_token_is_only_in_the_settings_env_entry() {
+        let w = gemini_wiring();
+        let token = wire().token.reveal().to_owned();
+        let doc: serde_json::Value = serde_json::from_str(&w.settings).unwrap();
+        let server = &doc["mcpServers"][SERVER];
+        assert_eq!(server["env"][TOKEN_ENV], token);
+        assert_eq!(server["args"][0], SUBCOMMAND);
+        assert_eq!(server["timeout"], 900_000);
+        assert_eq!(server["trust"], true);
+        assert!(!w.args.iter().any(|a| a.contains(&token)), "{:?}", w.args);
+        assert!(!w.policy.contains(&token));
+        assert!(!format!("{w:?}").contains(&token), "Debug hides it");
+    }
+
+    #[test]
+    fn the_gemini_flags_use_the_equals_form_so_nothing_after_them_is_swallowed() {
+        let w = gemini_wiring();
+        assert_eq!(w.args.len(), 2);
+        for arg in &w.args {
+            assert!(arg.starts_with("--") && arg.contains('='), "{arg}");
+        }
+        assert!(
+            w.args
+                .contains(&"--allowed-mcp-server-names=lazarobox".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_gemini_policy_is_valid_toml_allowing_only_our_server() {
+        let parsed: toml::Value = toml::from_str(&gemini_wiring().policy).unwrap();
+        let rules = parsed["rule"].as_array().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0]["mcpName"].as_str(), Some("lazarobox"));
+        assert_eq!(rules[0]["decision"].as_str(), Some("allow"));
+        assert!(rules[0].get("toolName").is_none(), "no tool wildcard");
+    }
+
+    #[test]
+    fn a_gemini_path_that_is_not_utf8_gives_no_wiring() {
+        use std::os::unix::ffi::OsStrExt;
+        let odd = Path::new(std::ffi::OsStr::from_bytes(b"/a/\xff"));
+        assert!(gemini(odd, Path::new("/p"), &wire()).is_none());
+        assert!(gemini(Path::new("/s"), odd, &wire()).is_none());
     }
 }
