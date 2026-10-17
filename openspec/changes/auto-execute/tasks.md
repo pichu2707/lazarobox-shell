@@ -167,3 +167,12 @@ Blocked until the 2f-fix PR (tools.md prompt) is merged. Files: `src/core/ai/too
 
 - write-tools W5 depends on S1 (the mode type); its `create_dir` runs directly in `run` only after S3 is merged.
 - Rollback: each slice reverts alone on the tracker. Reverting S3 to S4b returns to "type, never Enter" with no data change; older builds read `approval = "run"` as a bad value and fall back to `ask`.
+
+## S5b: `cd` and `ls` outside `$HOME`, `tree` and `mkdir` confined (~15 non-test lines)
+
+User decision 2026-10-17: `cd /tmp` and `ls /etc` run directly; `mkdir` and `tree` stay inside `$HOME`; sensitive folders stay refused.
+
+- [x] S5b.1 RED/GREEN: new `Want::Home` (existing, inside HOME) used by `tree` for its paths and its implicit cwd; `cd`, `ls`, `pwd` keep `Existing`, `mkdir` keeps `New`. `resolve_exec` tests: `Home` refuses outside, missing, `~/.ssh` and a link into it; a link outside HOME pointing to `~/.ssh` is refused for `Existing`. `run_check::check` tests agree per verb (`ls`, `ls -la`, `cd` outside run; `tree`, `mkdir` outside, and `tree` with a cwd outside HOME, fall back with `NOT_ALLOWED`). `targets` table updated. Grammar unchanged.
+- [x] S5b.2 Docs: README `Modo run`, design D20, pane-execution spec updated.
+- [x] S5b.3 Gate: fmt, clippy `-D warnings`, 4847 lib tests green.
+- [x] S5b.4 Review fixes: `tree -a` removed from the grammar (it listed names under secret roots to the model); runtime tests for `tree -L`, `tree ../..`, links inside HOME and `/proc/self/root` paths into `~/.ssh`; README wording of the cwd rule and residuals.

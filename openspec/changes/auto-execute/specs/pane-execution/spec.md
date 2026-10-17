@@ -90,7 +90,8 @@ A runnable command MUST be a single line of at most 8 words and at most 4096 byt
 | `cd ~/dev/curso-ñandú` | runs | accented letters in a path |
 | `ls 日本語`, `cd ש`, `cd a` + U+0345, `cd Ⅷ`, `cd ②`, `cd ²` | prompt | not a Latin letter (other script, mark, numeral, superscript) |
 | `ls a=~/x`, `ls a:~/y` | prompt | `~` not at the start of a word |
-| `tree` / `tree -a` | runs | `-L` is optional |
+| `tree` | runs | `-L` is optional |
+| `tree -a`, `tree -aL 2` | prompt | `-a` would list names under secret folders |
 | `cd mu` + U+202E + `sica` | prompt | bidi control (Cf) |
 | `cd a` + U+200B + `b` | prompt | zero-width space (Cf) |
 | `cd a` + U+200D + `b`, `ls` + U+FEFF | prompt | ZWJ, byte order mark (Cf) |
@@ -144,13 +145,13 @@ Each safe-list command MUST accept only its own flags; any other flag, any long 
 | `cd` | none | zero or one path argument |
 | `pwd` | none | no arguments |
 | `ls` | `-l -a -h -1 -t -r` | zero to 4 paths; never `-R` |
-| `tree` | `-d -a`, and optionally `-L <n>` | `-L` is optional; when given it needs a separate word of 1 or 2 digits; zero or one path; never `-o` |
+| `tree` | `-d`, and optionally `-L <n>` | `-L` is optional; when given it needs a separate word of 1 or 2 digits; zero or one path; never `-o` |
 | `mkdir` | `-p` | 1 to 4 paths; never `-m` |
 
 Any word starting with `-` is treated as a flag. `tree` without `-L` runs directly, bounded only by the output cap and the timeout.
 
 #### Scenario: Allowed flags run [auto]
-- GIVEN `ls -la`, `ls -1t -r src`, `tree`, `tree -a`, `tree -L 2 -d`, `mkdir -p a/b` and `pwd`
+- GIVEN `ls -la`, `ls -1t -r src`, `tree`, `tree -d`, `tree -L 2 -d`, `mkdir -p a/b` and `pwd`
 - WHEN the grammar and flags are checked
 - THEN each is runnable
 
@@ -160,7 +161,7 @@ Any word starting with `-` is treated as a flag. `tree` without `-L` runs direct
 - THEN each takes the prompt route and nothing is written
 
 ### Requirement: Path policy against the real cwd
-Every path argument MUST be resolved against the shell's real current directory, read from the operating system at write time (never from the chat's origin cwd, and never from OSC 7, which any program can print), with `~`, `.` and `..` resolved (so `cd ..` is allowed, not refused) and symlinks followed, and checked with the path policy of agent-tools (secret and credential directories and files) both lexically and on the real path. `cd` and `mkdir` MUST NEVER target or enter a secret or credential directory; `ls` and `tree` MUST NOT list one. `cd`, `ls` and `tree` MUST NOT be limited to `$HOME`: paths outside it are allowed unless they fall under a secret root. For `mkdir`, whose target does not exist yet, the policy MUST be applied to the deepest existing ancestor (canonicalized) plus the remaining names, and every `mkdir` target MUST be inside `$HOME`. For every verb except `cd`, the shell's cwd itself MUST pass the policy too, because `ls` and `tree` without arguments, `pwd` and a relative `mkdir` act on it. A path that cannot be resolved for `cd`, `ls` or `tree`, a secret-root list that cannot be loaded, any case where the real cwd cannot be read (macOS always), and a check that takes more than 2 s, MUST take the prompt route. The disk is never touched on the UI loop. The cwd MUST be compared again at write time against the checked cwd, and a mismatch MUST win (prompt). Known residual risk: a shell with `$CDPATH` or `cdable_vars` may resolve a bare relative `cd name` somewhere other than the checked directory; the command is not rewritten (checked bytes == written bytes), so this is accepted and documented.
+Every path argument MUST be resolved against the shell's real current directory, read from the operating system at write time (never from the chat's origin cwd, and never from OSC 7, which any program can print), with `~`, `.` and `..` resolved (so `cd ..` is allowed, not refused) and symlinks followed, and checked with the path policy of agent-tools (secret and credential directories and files) both lexically and on the real path. `cd` and `mkdir` MUST NEVER target or enter a secret or credential directory; `ls` and `tree` MUST NOT list one. `cd` and `ls` MUST NOT be limited to `$HOME`: paths outside it are allowed unless they fall under a secret root (a link that resolves into a secret root is refused). `tree`, including its implicit cwd, MUST stay inside `$HOME` (S5b). For `mkdir`, whose target does not exist yet, the policy MUST be applied to the deepest existing ancestor (canonicalized) plus the remaining names, and every `mkdir` target MUST be inside `$HOME`. For every verb except `cd`, the shell's cwd itself MUST pass the policy too, because `ls` and `tree` without arguments, `pwd` and a relative `mkdir` act on it. A path that cannot be resolved for `cd`, `ls` or `tree`, a secret-root list that cannot be loaded, any case where the real cwd cannot be read (macOS always), and a check that takes more than 2 s, MUST take the prompt route. The disk is never touched on the UI loop. The cwd MUST be compared again at write time against the checked cwd, and a mismatch MUST win (prompt). Known residual risk: a shell with `$CDPATH` or `cdable_vars` may resolve a bare relative `cd name` somewhere other than the checked directory; the command is not rewritten (checked bytes == written bytes), so this is accepted and documented.
 
 #### Scenario: Secret directories never run [auto]
 - GIVEN a chat in `run` and cwd `/home/u`

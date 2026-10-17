@@ -364,8 +364,10 @@ fn home_rest<'a>(roots: &SecretRoots, requested: &'a Path) -> Option<&'a Path> {
 /// What a path handed to [`resolve_exec`] is for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Want {
-    /// It must exist (`cd`, `ls`, `tree`, `pwd`).
+    /// It must exist (`cd`, `ls`, `pwd`); outside HOME is fine.
     Existing,
+    /// It must exist and be inside HOME (`tree`, which reads names below).
+    Home,
     /// It will be created (`mkdir`): it must be inside HOME.
     New,
 }
@@ -373,7 +375,8 @@ pub enum Want {
 /// The path policy of the safe commands that may run unprompted. Like
 /// [`resolve`] it judges the requested and the real path, but paths outside
 /// HOME are allowed for [`Want::Existing`] unless they are (under) a secret
-/// root. A [`Want::New`] path is judged by its deepest existing ancestor,
+/// root. A [`Want::Home`] path gets the read rules plus "inside HOME". A
+/// [`Want::New`] path is judged by its deepest existing ancestor,
 /// canonicalized, plus the names that do not exist yet, and must be inside
 /// HOME. A dangling link is refused. `cwd` must be the shell's real directory.
 pub fn resolve_exec(roots: &SecretRoots, cwd: &Path, input: &str, want: Want) -> PathVerdict {
@@ -386,7 +389,7 @@ pub fn resolve_exec(roots: &SecretRoots, cwd: &Path, input: &str, want: Want) ->
         None => want == Want::Existing && !roots.under_root(&requested),
     };
     let real = match want {
-        Want::Existing => full.canonicalize().ok(),
+        Want::Existing | Want::Home => full.canonicalize().ok(),
         Want::New => canonical_new(&full),
     };
     match real {
@@ -1242,6 +1245,40 @@ mod exec_tests {
         assert!(ok(&f, "project", "out/data", Want::Existing));
         assert!(!ok(&f, "project", "/srv/missing-for-sure", Want::Existing));
         assert!(!ok(&f, "project", "nope", Want::Existing));
+    }
+
+    #[test]
+    fn home_is_existing_but_never_outside_home() {
+        let f = fixture();
+        let data = f.outside.join("data");
+        assert!(!ok(&f, "project", data.to_str().unwrap(), Want::Home));
+        assert!(!ok(&f, "project", "out/data", Want::Home));
+        assert!(!ok(&f, "project", "/nope-for-sure", Want::Home));
+        assert!(!ok(&f, "project", "nope", Want::Home));
+        assert!(!ok(&f, "project", "~/.ssh", Want::Home));
+        assert!(!ok(&f, "project", "s", Want::Home));
+        assert_eq!(
+            exec(&f, "project", "src", Want::Home),
+            PathVerdict::Allowed(f.home.join("project/src"))
+        );
+        assert!(ok(&f, "project", "~", Want::Home));
+        // A cwd outside HOME is outside HOME for the verbs that act on it.
+        assert_eq!(
+            resolve_exec(&f.roots, &data, ".", Want::Home),
+            PathVerdict::Refused
+        );
+    }
+
+    #[test]
+    fn a_link_outside_home_into_a_secret_root_is_refused_for_existing() {
+        let f = fixture();
+        let link = f.outside.join("to-ssh");
+        symlink(f.home.join(".ssh"), &link).unwrap();
+        let (cwd, link) = (f.home.join("project"), link.to_str().unwrap());
+        for input in [link, &format!("{link}/id")] {
+            let verdict = resolve_exec(&f.roots, &cwd, input, Want::Existing);
+            assert_eq!(verdict, PathVerdict::Refused, "{input}");
+        }
     }
 
     #[test]
