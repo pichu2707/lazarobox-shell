@@ -16,8 +16,8 @@ pub const TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Anchor {
     pub line: usize,
-    /// The cursor column at the write. Kept for S4b: capture uses it to tell
-    /// the command echo from the output on the anchor line. Not read here.
+    /// The cursor column at the write. Capture does not need it: the echo
+    /// ends on the first row that does not wrap.
     pub col: u16,
     pub generation: u32,
     pub cwd: PathBuf,
@@ -80,6 +80,12 @@ impl Settle {
     pub fn unanchored(mut self) -> Self {
         self.anchored = false;
         self
+    }
+
+    /// What the pane looked like at the write, once it is known: `None` while
+    /// the cursor was hidden at the write and no probe has seen a line yet.
+    pub fn anchor(&self) -> Option<&Anchor> {
+        self.anchored.then_some(&self.anchor)
     }
 
     /// The pane printed something at `now`. Within a tick the app calls this
@@ -177,6 +183,21 @@ mod tests {
         fn step(&mut self, probe: &Probe) -> Option<End> {
             self.settle.step(probe)
         }
+    }
+
+    #[test]
+    fn the_anchor_is_known_only_once_a_cursor_line_was_seen() {
+        let r = run();
+        assert_eq!(r.settle.anchor().map(|a| a.line), Some(5));
+        let mut hidden = Run {
+            t0: r.t0,
+            settle: Settle::new(r.settle.anchor().unwrap().clone(), r.t0).unanchored(),
+        };
+        assert_eq!(hidden.settle.anchor(), None);
+        let mut p = hidden.probe(10);
+        p.cursor_line = Some(9);
+        hidden.step(&p);
+        assert_eq!(hidden.settle.anchor().map(|a| a.line), Some(9));
     }
 
     #[test]

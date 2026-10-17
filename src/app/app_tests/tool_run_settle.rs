@@ -10,7 +10,7 @@ use crate::app::RunEvent;
 use crate::core::ai::{
     chat::engine::{CallId, Finish},
     tools::{
-        report::{CwdSource, RunReport},
+        report::{CwdSource, RunReport, words},
         settle::End,
     },
 };
@@ -147,7 +147,7 @@ fn a_prompt_that_did_not_move_keeps_waiting_until_the_timeout() {
         assert_eq!(
             probe(&mut a, foreground, Some(LAUNCH)),
             vec![done(turn, report(end))],
-            "{end:?}"
+            "{end:?}: no echo of the command on the screen, so no output"
         );
     }
 }
@@ -466,4 +466,107 @@ fn a_write_step_with_no_call_to_answer_denies_and_drops_the_slot() {
             .all(|e| matches!(e, Effect::ToolDecision { turn: t, .. } if *t == turn)),
         "no prompt: {effects:?}"
     );
+}
+
+// S4b: the screen text of a settled run goes back to the model.
+
+const NONCE: &str = "0123456789abcdef";
+
+/// A chat in `run` mode whose shell shows a prompt, and `command` written.
+fn at_prompt(command: &str) -> (App, u64) {
+    let (mut a, turn) = run_live();
+    shell_output(&mut a, b"$ ");
+    announce(&mut a, turn, 1, run(command));
+    assert!(matches!(checked(&mut a, 1)[..], [Effect::AutoRun { .. }]));
+    (a, turn)
+}
+
+fn report_of(effects: &[Effect]) -> RunReport {
+    match effects {
+        [Effect::RunDone { report, .. }] => (**report).clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_settled_run_reports_the_lines_it_printed() {
+    let (mut a, _) = at_prompt("ls");
+    let t0 = now();
+    at(t0 + 10);
+    shell_output(&mut a, b"ls\r\nfile one\r\nfile two\r\n$ ");
+    let got = report_of(&probe_at(&mut a, 300, t0));
+    assert_eq!(got.end, End::Settled);
+    assert_eq!(got.output.as_deref(), Some("file one\nfile two"));
+}
+
+#[test]
+fn a_silent_run_reports_an_empty_output() {
+    let (mut a, _) = at_prompt("mkdir x");
+    let t0 = now();
+    at(t0 + 10);
+    shell_output(&mut a, b"mkdir x\r\n$ ");
+    let got = report_of(&probe_at(&mut a, 300, t0));
+    assert_eq!(got.output.as_deref(), Some(""));
+}
+
+#[test]
+fn the_model_text_wraps_the_output_and_redacts_a_secret_in_it() {
+    let (mut a, _) = at_prompt("ls");
+    let t0 = now();
+    at(t0 + 10);
+    shell_output(&mut a, b"ls\r\nkey sk-abcDEF1234567890abcdef\r\nok\r\n$ ");
+    let got = report_of(&probe_at(&mut a, 300, t0));
+    let text = words("ls", &got, Some(NONCE)).text;
+    assert!(!text.contains("sk-abcDEF"), "{text}");
+    assert!(text.contains("key [REDACTED]\nok"), "{text}");
+    assert!(text.contains(&format!("<untrusted-tool-output id=\"{NONCE}\">")));
+}
+
+#[test]
+fn a_resize_during_the_run_leaves_its_output_unavailable() {
+    let (mut a, _) = at_prompt("ls");
+    let t0 = now();
+    at(t0 + 10);
+    shell_output(&mut a, b"ls\r\nx\r\n$ ");
+    let pty = a
+        .panes
+        .get_mut(&SHELL)
+        .and_then(PaneState::pty_mut)
+        .unwrap();
+    pty.emu
+        .resize(crate::core::pane::PaneSize { rows: 20, cols: 70 });
+    let got = report_of(&probe_at(&mut a, 300, t0));
+    assert_eq!(got.output, None);
+    assert!(
+        words("ls", &got, Some(NONCE))
+            .text
+            .contains("not available")
+    );
+}
+
+#[test]
+fn a_run_that_timed_out_reports_the_output_so_far() {
+    let (mut a, _) = at_prompt("ls");
+    let t0 = now();
+    at(t0 + 10);
+    shell_output(&mut a, b"ls\r\nfirst\r\npart");
+    at(t0 + 10_000);
+    let got = report_of(&probe(&mut a, Some(false), Some(LAUNCH)));
+    assert_eq!(got.end, End::TimedOut);
+    assert_eq!(got.output.as_deref(), Some("first\npart"));
+}
+
+#[test]
+fn a_full_screen_program_a_typing_user_and_a_closed_pane_carry_no_output() {
+    for end in [End::FullScreen, End::UserTyped] {
+        let (mut a, _) = at_prompt("ls");
+        let t0 = now();
+        shell_output(&mut a, b"ls\r\nx\r\n");
+        if end == End::FullScreen {
+            shell_output(&mut a, b"\x1b[?1049h");
+        } else {
+            in_shell(&mut a, key('x'));
+        }
+        assert_eq!(report_of(&probe_at(&mut a, 50, t0)).output, None, "{end:?}");
+    }
 }

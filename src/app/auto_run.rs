@@ -16,6 +16,7 @@ use super::*;
 use crate::core::ai::{
     chat::approval::{ApprovalAsk, NOT_ALLOWED, Route},
     tools::{
+        capture::capture,
         report::{cwd_result, system_line},
         settle::{Anchor, End, Probe, Settle},
     },
@@ -306,7 +307,9 @@ impl App {
     /// The run in `target` ended: its slot is freed (the `executing` mark with
     /// it), and the report goes out once. The real cwd comes first; the one
     /// the shell announced (OSC 7) is a labelled fallback. A `cd` leaves its
-    /// system line. Output is not read back yet, so it is `None`.
+    /// system line. The output is read from the screen when the run settled,
+    /// or timed out or could not be confirmed (the output so far); a
+    /// full-screen program, a typing user and a closed pane carry none.
     fn end_run(&mut self, target: PaneId, end: End, real_cwd: Option<PathBuf>) -> Vec<Effect> {
         let number = self.pane_number(target);
         let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) else {
@@ -323,12 +326,21 @@ impl App {
         else {
             return Vec::new();
         };
+        let output = match end {
+            End::Settled | End::TimedOut | End::Unconfirmed => {
+                // A run that never timed out has its prompt on the cursor line.
+                let prompt_below = end != End::TimedOut;
+                (run.settle.anchor())
+                    .and_then(|anchor| capture(&mut pty.emu, anchor, &command, prompt_below))
+            }
+            End::FullScreen | End::UserTyped | End::PaneGone => None,
+        };
         let report = RunReport {
             number: number.unwrap_or(run.number),
             end,
             cwd: cwd_result(real_cwd, osc7),
             cd_target: run.cd_target,
-            output: None,
+            output,
         };
         if let Some(chat) = self.panes.get_mut(&chat).and_then(PaneState::chat_mut) {
             chat.clear_run_fallbacks();
