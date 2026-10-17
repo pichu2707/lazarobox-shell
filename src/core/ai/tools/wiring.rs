@@ -183,6 +183,14 @@ pub fn codex(shim: &Path, wire: &McpWire) -> Option<CodexWiring> {
 /// qualified name is `mcp_{server}_{tool}` (gemini 0.63.0 docs).
 pub const GEMINI_TOOL_PREFIX: &str = "mcp_lazarobox_";
 
+/// Whether a path survives gemini's reading of `--policy` and `--admin-policy`
+/// values, which it splits on `,` and trims per part: a comma or edge
+/// whitespace would make it load a different path (`/home/u/a,b` loads
+/// `/home/u/a`).
+pub fn policy_flag_safe(path: &str) -> bool {
+    !path.contains(',') && path.trim() == path
+}
+
 /// What gemini gets for one turn with tools.
 #[derive(Clone, PartialEq, Eq)]
 pub struct GeminiWiring {
@@ -216,11 +224,18 @@ const GEMINI_TOOL_TIMEOUT_MS: u32 = 900_000;
 /// the server, and an admin-tier policy rule that allows its tools. The
 /// text-only policy (a deny-all at 999 of the user tier) stays loaded; the
 /// admin tier outranks it by gemini's tier table, which a priority inside one
-/// file never could (0 to 999). `None` when a path is not UTF-8.
+/// file never could (0 to 999). `None` when a path is not UTF-8, when the
+/// policy path would be split or trimmed by gemini (see [`policy_flag_safe`]),
+/// or when the shim or socket path holds a `$` (gemini expands `$VAR` in the
+/// strings of its settings).
 pub fn gemini(shim: &Path, policy: &Path, wire: &McpWire) -> Option<GeminiWiring> {
+    let (shim, socket) = (shim.to_str()?, wire.socket.to_str()?);
+    if !policy_flag_safe(policy.to_str()?) || shim.contains('$') || socket.contains('$') {
+        return None;
+    }
     let doc = json!({"mcpServers": {SERVER: {
-        "command": shim.to_str()?,
-        "args": [SUBCOMMAND, wire.socket.to_str()?],
+        "command": shim,
+        "args": [SUBCOMMAND, socket],
         "env": {TOKEN_ENV: wire.token.reveal()},
         "timeout": GEMINI_TOOL_TIMEOUT_MS,
         "trust": true,
@@ -428,5 +443,27 @@ mod tests {
         let odd = Path::new(std::ffi::OsStr::from_bytes(b"/a/\xff"));
         assert!(gemini(odd, Path::new("/p"), &wire()).is_none());
         assert!(gemini(Path::new("/s"), odd, &wire()).is_none());
+    }
+
+    #[test]
+    fn a_gemini_policy_path_it_would_split_or_trim_gives_no_wiring() {
+        // gemini splits `--admin-policy` on `,` and trims each part, so
+        // `/home/u/a,b` would load `/home/u/a` as an admin-tier folder.
+        for bad in ["/home/u/a,b/p.toml", " /p.toml", "/p.toml ", "/p.toml\n", "\t/p"] {
+            assert!(
+                gemini(Path::new("/s"), Path::new(bad), &wire()).is_none(),
+                "{bad:?}"
+            );
+        }
+        assert!(gemini(Path::new("/s"), Path::new("/a b/p.toml"), &wire()).is_some());
+    }
+
+    #[test]
+    fn a_gemini_shim_or_socket_path_with_a_dollar_gives_no_wiring() {
+        // gemini expands `$VAR` in the strings of settings.json.
+        assert!(gemini(Path::new("/o/$HOME/lb"), Path::new("/p"), &wire()).is_none());
+        let mut w = wire();
+        w.socket = PathBuf::from("/run/${X}/s.sock");
+        assert!(gemini(Path::new("/s"), Path::new("/p"), &w).is_none());
     }
 }

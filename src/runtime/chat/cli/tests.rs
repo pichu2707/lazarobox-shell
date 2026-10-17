@@ -1520,6 +1520,21 @@ async fn a_job_file_is_written_private_to_the_turn_folder_and_named_last() {
 }
 
 #[tokio::test]
+async fn a_policy_file_whose_path_gemini_would_split_refuses_the_turn() {
+    // gemini splits `--policy` on `,`: `<data>,x/..` would load `<data>`.
+    let lab = lab();
+    script(&lab.bin.join("gemini"), &lab.rec, GEMINI_ANSWER);
+    let mut env = lab.env();
+    env.data = Some(lab.data.with_file_name("data,x"));
+    let events = run_job(&env, gemini_job(JailPolicy::Layered)).await;
+    assert_eq!(
+        events,
+        [StreamEvent::Error(ChatError::Failed(UNUSABLE_FILE_PATH.into()))]
+    );
+    assert!(!lab.rec.join("argv").exists(), "gemini never started");
+}
+
+#[tokio::test]
 async fn a_jailed_job_file_is_inside_the_folder_the_jail_lets_the_cli_write() {
     let lab = lab();
     script(&lab.bin.join("gemini"), &lab.rec, GEMINI_ANSWER);

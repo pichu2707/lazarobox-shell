@@ -69,6 +69,10 @@ pub const EXIT_GRACE: Duration = Duration::from_secs(2);
 
 pub const CANNOT_PREPARE: &str = "cannot prepare the private working directory";
 
+/// A file the CLI is told about by path sits where its flag would be split.
+pub const UNUSABLE_FILE_PATH: &str =
+    "the data folder path has a comma or edge whitespace, which the CLI would read as two paths";
+
 /// Everything a CLI turn needs from the machine. Built once at startup; the
 /// tests build their own.
 #[derive(Clone, Debug)]
@@ -652,6 +656,11 @@ fn full_args(job: &Job, dirs: &Dirs) -> io::Result<Vec<OsString>> {
     let mut argv: Vec<OsString> = job.args.iter().map(OsString::from).collect();
     for file in &job.tmp_files {
         let path = dirs.tmp.join(file.name);
+        // gemini splits a path flag on `,` and trims each part, so it would
+        // load another path: refuse the turn instead.
+        if !path.to_str().is_some_and(wiring::policy_flag_safe) {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
         write_private(&path, file.content.as_bytes())?;
         argv.extend([OsString::from(file.flag), path.into_os_string()]);
     }
@@ -781,8 +790,13 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
         .as_deref()
         .and_then(|data| Dirs::create(data).ok())
         .ok_or_else(|| StreamEvent::Error(ChatError::Failed(CANNOT_PREPARE.into())))?;
-    let argv = full_args(job, &dirs)
-        .map_err(|_| StreamEvent::Error(ChatError::Failed(CANNOT_PREPARE.into())))?;
+    let argv = full_args(job, &dirs).map_err(|e| {
+        let text = match e.kind() {
+            io::ErrorKind::InvalidInput => UNUSABLE_FILE_PATH,
+            _ => CANNOT_PREPARE,
+        };
+        StreamEvent::Error(ChatError::Failed(text.into()))
+    })?;
     // The tools are wired only for a jailed run: a bare CLI would reach the
     // shim without the jail that confines what it can do.
     let mut wired = (how == Launch::Jailed)
