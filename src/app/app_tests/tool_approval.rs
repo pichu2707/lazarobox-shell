@@ -662,3 +662,37 @@ fn a_model_command_over_the_row_budget_is_never_typed() {
     assert_eq!(a.notice(), Some(TOO_SMALL));
     assert!(pending(&a).is_some());
 }
+
+// Turning tools off mid-turn stops the tools at once: the session closes, so
+// free tools stop too, not only the call that waits.
+#[test]
+fn turning_tools_off_ends_the_tool_session_once() {
+    let (mut a, _turn) = live_with_session();
+    a.ai.set_tools_enabled(false);
+    assert_eq!(a.sync_tools(), vec![Effect::EndToolSession(id2())]);
+    assert!(!chat(&a, id2()).tool_session());
+    assert_eq!(a.sync_tools(), vec![], "nothing left to end");
+}
+
+#[test]
+fn turning_tools_off_ends_the_session_after_denying_the_waiting_call() {
+    let (mut a, turn) = live_with_session();
+    announce(&mut a, turn, 1, run("cd x"));
+    a.ai.set_tools_enabled(false);
+    assert_eq!(
+        a.sync_tools(),
+        vec![
+            decision(turn, 1, Decision::Denied("tools are off")),
+            Effect::EndToolSession(id2())
+        ]
+    );
+}
+
+#[test]
+fn turning_tools_on_or_a_chat_without_a_session_ends_nothing() {
+    let (mut a, _) = live_with_session();
+    assert_eq!(a.sync_tools(), vec![]);
+    let (mut b, _) = live();
+    b.ai.set_tools_enabled(false);
+    assert_eq!(b.sync_tools(), vec![]);
+}

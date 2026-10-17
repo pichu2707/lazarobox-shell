@@ -61,6 +61,11 @@ impl App {
                     Decision::Denied(TOOLS_OFF_REASON),
                 ));
             }
+            // The session goes too, so free tools stop at once and the socket
+            // closes; the turn itself keeps running as text.
+            if !on && chat.take_tool_session() {
+                effects.push(Effect::EndToolSession(id));
+            }
         }
         self.dirty = true;
         effects
