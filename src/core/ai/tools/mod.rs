@@ -117,7 +117,7 @@ const BUILT_INS: [(&str, &str, &str, Access); 4] = [
     (
         "run_in_pane",
         "command",
-        "Type a shell command into the user's pane. The user must approve it and press Enter themselves.",
+        "Type a shell command into the user's pane. The result says whether it was only typed or typed and run. A single cd, pwd, ls, tree or mkdir with plain or quoted paths (no &&, ;, |, $ or redirections) can run directly when the user allows it; anything else waits for the user to approve it and press Enter. Prefer one simple command per call.",
         Access::Write,
     ),
 ];
@@ -245,6 +245,27 @@ mod tests {
             assert_eq!(tool.schema["type"], "object", "{}", tool.name);
             assert_eq!(tool.schema["additionalProperties"], false, "{}", tool.name);
         }
+    }
+
+    // The model reads this before it reads the prompt: what runs directly, and
+    // that the result says what happened. The same text in every mode (D18).
+    #[test]
+    fn run_in_pane_says_what_runs_directly_and_what_waits() {
+        let tools = registry(&[]);
+        let run = tools.iter().find(|t| t.name == "run_in_pane").unwrap();
+        for needle in [
+            "only typed or typed and run",
+            "cd, pwd, ls, tree or mkdir",
+            "plain or quoted paths",
+            "no &&, ;, |, $ or redirections",
+            "can run directly when the user allows it",
+            "anything else waits for the user to approve it and press Enter",
+            "one simple command per call",
+        ] {
+            assert!(run.description.contains(needle), "{needle}");
+        }
+        assert!(run.description.len() < 400, "{}", run.description.len());
+        assert!(run.description.is_ascii());
     }
 
     #[test]

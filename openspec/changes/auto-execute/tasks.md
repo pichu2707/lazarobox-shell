@@ -142,6 +142,14 @@ Files: `src/core/ai/tools/capture.rs` (new), `src/app/auto_run.rs`, `src/runtime
 - [ ] S4b.8 Gate. Measure; expect ~160.
 - [ ] S4b.M1 [manual] repeat M1 (a)-(c) with bash, zsh and fish, now checking the model receives bounded output for `ls -la` and `tree`, and a decorated two-line prompt does not leak into the output.
 
+## S5a: Make `run` work with models other than claude (found in the manual test)
+
+Codex quoted a path with double quotes and fell back to `y` with no visible reason. Three fixes, three commits.
+
+- [x] S5a.1 RED/GREEN: the grammar accepts a whole double-quoted word with the single-quote rules (table rows, refused `$` backtick `\` `!` `"`, text after the quote, quoted verb, dangerous-byte list, PS2 inertness, real-shell test); spec and design D20 updated.
+- [x] S5a.2 RED/GREEN: the approval prompt shows one reason line (`reason_line`: `Fallback.why` plus the token) when it has a spare row; the busy pane gets named reasons (running, half-typed line, focus, tab hidden, too many); `fits()` is unchanged by the line; snapshot.
+- [x] S5a.3 RED/GREEN: the `run_in_pane` description and `tools.md` say what runs directly (cd, pwd, ls, tree, mkdir; one command; plain or quoted paths; no `&&` `;` `|` `$` or redirections), that the result says typed or run, and to prefer one simple command per call; neutral across modes (D18).
+
 ## S5: Description, snapshots, README and privacy, deltas to agent-tools (~80 non-test lines plus docs)
 
 Blocked until the 2f-fix PR (tools.md prompt) is merged. Files: `src/core/ai/tools/mod.rs:117`, wiring snapshots, approval prompt `why`, `README.md`, `openspec/changes/agent-tools/design.md` and spec deltas. Spec: agent-tools, pane-commands.
