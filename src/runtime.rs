@@ -31,6 +31,7 @@ pub mod engram;
 pub mod jail;
 pub mod login_path;
 pub mod loopback;
+pub mod mcp;
 pub mod notify;
 pub mod proc;
 pub mod prompts;

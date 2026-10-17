@@ -156,7 +156,7 @@ impl CliEnv {
 
 /// A private folder: created 0700, or an existing real folder of ours made
 /// 0700. A symlink, a file or a foreign owner is refused.
-fn ensure_private_dir(path: &Path) -> io::Result<()> {
+pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(meta) => {
             // SAFETY: geteuid has no preconditions and cannot fail.
@@ -187,7 +187,7 @@ impl Drop for TmpDir {
 }
 
 /// The `comm` of a process (`self` or a pid), if readable.
-fn read_comm(who: &str) -> Option<String> {
+pub(crate) fn read_comm(who: &str) -> Option<String> {
     fs::read_to_string(format!("/proc/{who}/comm")).ok()
 }
 
@@ -202,7 +202,11 @@ fn is_lazarobox(pid: u32) -> bool {
     })
 }
 
-fn alive_by_comm(pid: u32, own: Option<&str>, read: &dyn Fn(u32) -> Option<String>) -> bool {
+pub(crate) fn alive_by_comm(
+    pid: u32,
+    own: Option<&str>,
+    read: &dyn Fn(u32) -> Option<String>,
+) -> bool {
     pid == std::process::id() || own.is_some_and(|own| read(pid).as_deref() == Some(own))
 }
 
