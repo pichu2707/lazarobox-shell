@@ -273,13 +273,15 @@ Conditional on the opencode adapter, which is parked. Not part of this change's 
 
 ## PR12 / 3b: Ollama loop and fallback (`src/runtime/chat.rs`, `src/core/ai/chat/adapters.rs`)
 
-- [ ] 3b.1 RED: fake Ollama: one round (`find_dir` then text) gives one ToolCall/ToolResult pair; round cap 8 ends with a system line and idle; cancel in the loop closes the socket and sends no further request.
-- [ ] 3b.2 RED: model rejecting `tools` (any 400 on a request with tools) retries once without `tools`, streams text, assignment unchanged; local `read_file` runs free; `run_in_pane` waits then continues with `sent` or `denied`.
-- [ ] 3b.3 RED: tool messages not kept: next turn's history holds only user and assistant texts; timeouts, sanitizer and answer cap apply.
-- [ ] 3b.4 GREEN: implement the bounded loop.
-- [ ] 3b.5 Gate.
-- [ ] 3b.6 Docs: README "Tools with Ollama".
+- [x] 3b.1 RED: fake Ollama: one round (`find_dir` then text) gives one ToolCall/ToolResult pair; round cap 8 ends with a system line and idle; cancel in the loop closes the socket and sends no further request.
+- [x] 3b.2 RED: model rejecting `tools` (any 400 on a request with tools) retries once without `tools`, streams text, assignment unchanged; local `read_file` runs free; `run_in_pane` waits then continues with `sent` or `denied`.
+- [x] 3b.3 RED: tool messages not kept: next turn's history holds only user and assistant texts; timeouts, sanitizer and answer cap apply.
+- [x] 3b.4 GREEN: implement the bounded loop.
+- [x] 3b.5 Gate.
+- [x] 3b.6 Docs: README "Tools with Ollama".
 - [ ] 3b.7 [manual] (user) live Ollama with a tool-capable model: find `curso-rust`, confirm, `cd` typed; record the error text for a model without tools and the `tool_name` field behavior; engine and model unchanged.
+
+> As built in 3b (`src/runtime/chat/ollama.rs`): `Chats::open_session` builds the turn's `ToolHost` dispatch for Ollama too (same `Waits` approver, `Pending`, ledger and approval mode) but opens no MCP socket; the dispatch rides to the adapter as the task-local `ollama::DISPATCH`, and `runner_with` runs `ollama::tool_turn` when the engine is Ollama, `Tools::On` and a dispatch exists, otherwise the old plain `http_turn` (a turn without tools is byte-identical). A turn is at most `MAX_ROUNDS` = 8 requests; the calls of the 8th reply are not run (no request would follow), and the turn ends with `Notice(CAP_NOTICE)` then `Done(Stop)`. Each round streams through an inner channel that holds back `Done`/`Error`; a text 400 (`HTTP 400...`) on a request with tools and before any round retries once without `tools`, with the original system prompt, and the calls of that reply are ignored (the failed request produced no event); relay buffers are capped at `ANSWER_CAP`/`REASONING_CAP`, the echoed tool results at `RESULTS_CAP` (256 KiB, then `DROPPED`), a panicking call answers `FAILED`, and a newline parts the text of two rounds; the Ollama branch of `open_session` closes the pane's previous hub session. The system prompt of the requests gets `prompts::with_tools`. A call the registry refuses (or the 17th+ of a reply) still gets a tool message (`mcp::refusal_text`, now `pub`). The total limit wraps all rounds. Activation gate: no new constant; `tools_for` already requires the engine in `MCP_VERIFIED`, so the activation PR adds `"ollama"` there after 3b.7. Known limit: `Notice` lines are deduplicated per transcript, so a second cap hit in the same conversation shows no second line.
 
 ## PR13 / 4a: User MCP server config (`src/core/ai/{config,tools/servers}.rs`, `src/core/config_edit.rs`)
 
