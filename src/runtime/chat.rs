@@ -6,6 +6,7 @@ use std::{
     collections::HashMap,
     future::Future,
     panic::AssertUnwindSafe,
+    path::PathBuf,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -23,7 +24,11 @@ pub(crate) use cli::{
     alive_by_comm, ensure_private_dir, jail_note, read_comm, run_listing, trusted_real_path,
 };
 
-use super::{loopback::post_stream, tools::ToolHost};
+use super::{
+    loopback::post_stream,
+    mcp::{Hub, Started},
+    tools::{Pending, ToolHost, TurnScope, Waits, pending::TURN},
+};
 use crate::core::{
     ai::{
         chat::{
@@ -31,12 +36,12 @@ use crate::core::{
             adapters::{Invocation, Wire, adapter_for},
             claude::ClaudeDecoder,
             codex::CodexDecoder,
-            engine::{ChatError, ChatRequest, StreamEvent},
+            engine::{CallId, ChatError, ChatRequest, Decision, StreamEvent, Tools, locality},
             gemini::GeminiDecoder,
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
         sanitize::{StreamSanitizer, Utf8Stream, clean},
-        tools::summary::clip,
+        tools::{registry, summary::clip},
     },
     layout::PaneId,
 };
@@ -386,23 +391,47 @@ impl<F: Future> Future for Scoped<F> {
     }
 }
 
+/// Denies the calls of a turn that still wait for the user when the turn's
+/// task ends, however it ends: finished, failed, timed out (the 15-minute
+/// total) or aborted by a cancel or a newer turn. A timer never approves.
+struct EndTurn {
+    waits: Arc<Waits>,
+    pane: PaneId,
+    turn: u64,
+}
+
+impl Drop for EndTurn {
+    fn drop(&mut self) {
+        self.waits.end_turn(self.pane, self.turn);
+    }
+}
+
 /// One turn: runs the adapter, filters its events and forwards them tagged.
 /// The adapter future lives in this task, so dropping the task drops it.
+/// `events` is the turn's channel (the sender the adapter gets is a clone, and
+/// a tool session may hold others); `pending` is set when the turn offers
+/// tools, so the adapter's timers can see the calls that wait for the user.
 async fn run_turn(
     runner: Runner,
     app: mpsc::Sender<Tagged>,
-    pane: PaneId,
-    turn: u64,
+    turn: Turn,
     request: ChatRequest,
+    channel: (mpsc::Sender<StreamEvent>, mpsc::Receiver<StreamEvent>),
+    pending: Option<Pending>,
 ) {
-    let (tx, mut rx) = mpsc::channel(TURN_CHANNEL);
+    let Turn { pane, turn, waits } = turn;
+    let _end = EndTurn { waits, pane, turn };
+    let (tx, mut rx) = channel;
     // A panicking adapter must still end the turn: its sender is dropped and
     // the pane hears `Interrupted` instead of waiting forever.
     // The call itself sits inside the guarded future: a runner that panics
     // before it returns its future is caught the same way.
-    let run = AssertUnwindSafe(scoped(async move { runner(request, tx).await }))
-        .catch_unwind()
-        .fuse();
+    let adapter = async move { runner(request, tx).await };
+    let adapter: BoxFuture<'static, ()> = match pending {
+        Some(pending) => Box::pin(TURN.scope(pending, adapter)),
+        None => Box::pin(adapter),
+    };
+    let run = AssertUnwindSafe(scoped(adapter)).catch_unwind().fuse();
     tokio::pin!(run);
     let mut running = true;
     let mut pipe = Pipe::new();
@@ -435,13 +464,40 @@ async fn run_turn(
     }
 }
 
+/// Which turn a task runs, and where its calls wait for the user.
+struct Turn {
+    pane: PaneId,
+    turn: u64,
+    waits: Arc<Waits>,
+}
+
+/// What a chat needs to offer tools: the host that runs the calls and the hub
+/// of per-chat sockets a CLI engine reaches them through. The hub is made when
+/// the first turn with tools starts, so an app that never offers tools never
+/// touches the folder.
+struct Tooling {
+    host: Arc<ToolHost>,
+    /// The folders to try for the sockets, best first.
+    dirs: Vec<PathBuf>,
+    hub: Option<Hub>,
+    /// The session of each pane that has one, for the wiring of its engine.
+    started: HashMap<PaneId, Started>,
+}
+
 /// The running turns, by pane. Each turn is one task that owns its adapter
 /// future: aborting the task drops the future, which closes the socket or
 /// kills the process group, so a cancel needs no cooperation from the adapter.
+///
+/// A turn whose request has `Tools::On` also gets a tool session (when tooling
+/// is set): a socket and a dispatch bound to the turn's event channel. The
+/// calls of that session that need the user wait in `waits`, keyed by (pane,
+/// turn, call); [`Chats::decide`] answers them.
 pub struct Chats {
     runner: Runner,
     tx: mpsc::Sender<Tagged>,
     turns: HashMap<PaneId, JoinHandle<()>>,
+    waits: Arc<Waits>,
+    tooling: Option<Tooling>,
 }
 
 impl Chats {
@@ -450,7 +506,21 @@ impl Chats {
             runner,
             tx,
             turns: HashMap::new(),
+            waits: Waits::new(),
+            tooling: None,
         }
+    }
+
+    /// Lets turns that ask for tools run them through `host`, with session
+    /// sockets in the first of `dirs` that is a private folder of ours.
+    pub fn with_tools(mut self, host: Arc<ToolHost>, dirs: Vec<PathBuf>) -> Self {
+        self.tooling = Some(Tooling {
+            host,
+            dirs,
+            hub: None,
+            started: HashMap::new(),
+        });
+        self
     }
 
     /// Starts turn `turn` of `pane`, replacing any turn it still had.
@@ -459,14 +529,87 @@ impl Chats {
         if let Some(old) = self.turns.remove(&pane) {
             old.abort();
         }
+        // At once, not when the aborted task is dropped: an answer for the
+        // old turn must find nothing from here on.
+        self.waits.end_pane(pane);
+        let channel = mpsc::channel(TURN_CHANNEL);
+        let pending = self.open_session(pane, turn, &request, &channel.0);
         let task = tokio::spawn(run_turn(
             self.runner.clone(),
             self.tx.clone(),
-            pane,
-            turn,
+            Turn {
+                pane,
+                turn,
+                waits: self.waits.clone(),
+            },
             request,
+            channel,
+            pending,
         ));
         self.turns.insert(pane, task);
+    }
+
+    /// The session of this turn, if it offers tools: any earlier session of
+    /// the pane is replaced (its token stops working), or closed when this
+    /// turn has no tools. `None` when the turn runs without a session.
+    fn open_session(
+        &mut self,
+        pane: PaneId,
+        turn: u64,
+        request: &ChatRequest,
+        events: &mpsc::Sender<StreamEvent>,
+    ) -> Option<Pending> {
+        let tooling = self.tooling.as_mut()?;
+        tooling.started.remove(&pane);
+        let (Tools::On { origin }, Some(locality)) = (&request.tools, locality(&request.engine))
+        else {
+            if let Some(hub) = tooling.hub.as_mut() {
+                hub.close(pane);
+            }
+            return None;
+        };
+        if tooling.hub.is_none() {
+            tooling.hub = Hub::new(&tooling.dirs).ok();
+        }
+        let hub = tooling.hub.as_mut()?;
+        let pending = Pending::new();
+        let scope = TurnScope {
+            events: events.clone(),
+            locality,
+            // A chat of unknown origin reads relative paths against `/`,
+            // which the path policy then refuses: the ask shows `/name`.
+            origin: origin.clone().unwrap_or_else(|| PathBuf::from("/")),
+            approver: self.waits.approver(pane, turn, pending.clone()),
+        };
+        let dispatch = tooling.host.dispatch(scope);
+        // No session means no tools for this turn: it runs as text.
+        let started = hub.open(pane, registry(&[]), dispatch).ok()?;
+        tooling.started.insert(pane, started);
+        Some(pending)
+    }
+
+    /// The user's answer to a call that waits: the app's `ToolDecision`.
+    /// `false` when no call waits under that (pane, turn, call), say because
+    /// it ended meanwhile; the answer is then dropped.
+    pub fn decide(&self, pane: PaneId, turn: u64, call: CallId, decision: Decision) -> bool {
+        self.waits.decide(pane, turn, call, decision)
+    }
+
+    /// Ends the tool session of `pane`: its socket goes and every call it
+    /// holds, answered or not, is denied.
+    pub fn end_session(&mut self, pane: PaneId) {
+        self.waits.end_pane(pane);
+        if let Some(tooling) = self.tooling.as_mut() {
+            if let Some(hub) = tooling.hub.as_mut() {
+                hub.close(pane);
+            }
+            tooling.started.remove(&pane);
+        }
+    }
+
+    /// The session of `pane`, while it has one.
+    pub fn session(&self, pane: PaneId) -> Option<&Started> {
+        self.tooling.as_ref()?.started.get(&pane)
     }
 
     /// Stops the turn of `pane`, if any. Returns at once.
@@ -474,6 +617,7 @@ impl Chats {
         if let Some(task) = self.turns.remove(&pane) {
             task.abort();
         }
+        self.waits.end_pane(pane);
     }
 
     /// Stops every turn and waits, up to `bound`, until each adapter has been
@@ -491,3 +635,5 @@ impl Chats {
 mod adapter_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tools_tests;

@@ -22,7 +22,7 @@ use super::*;
 use crate::{
     core::ai::chat::{
         ANSWER_CAP, ChatState, Follow, MsgStatus, REASONING_CAP,
-        engine::{Availability, ChatError, Finish},
+        engine::{Availability, ChatError, Finish, Tools},
     },
     runtime::proc::GroupKill,
 };
@@ -39,16 +39,17 @@ fn failed(text: &str) -> StreamEvent {
     StreamEvent::Error(ChatError::Failed(text.into()))
 }
 
-fn done() -> StreamEvent {
+pub(super) fn done() -> StreamEvent {
     StreamEvent::Done(Finish::Stop)
 }
 
-fn request(system: &str) -> ChatRequest {
+pub(super) fn request(system: &str) -> ChatRequest {
     ChatRequest {
         engine: "ollama".into(),
         model: Some("llama3:8b".into()),
         system: system.into(),
         memory: None,
+        tools: Tools::Off,
         messages: Vec::new(),
     }
 }
@@ -345,7 +346,7 @@ fn exactly_the_cap_then_done_is_a_complete_answer() {
 // The task -------------------------------------------------------------------
 
 /// A runner that sends `events` in order and ends.
-fn scripted(events: Vec<StreamEvent>) -> Runner {
+pub(super) fn scripted(events: Vec<StreamEvent>) -> Runner {
     Arc::new(move |_request, tx| {
         let events = events.clone();
         Box::pin(async move {

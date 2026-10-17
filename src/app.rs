@@ -12,7 +12,7 @@ use crate::core::{
         chat::{
             ChatState, Follow, Phase,
             copy::ChatCopy,
-            engine::{ChatRequest, StreamEvent},
+            engine::{CallId, ChatRequest, Decision, StreamEvent},
             notify::{Ended, body, plays_sound, should_notify},
             prompts::Resolved,
             store::{StoreCmd, StoreReply},
@@ -215,6 +215,18 @@ pub enum Effect {
     /// Stop a pane's turn without blocking the loop: the socket is closed or
     /// the CLI's process group is killed.
     ChatCancel(PaneId),
+    /// The user's answer to the tool call `call` of turn `turn` of chat `pane`
+    /// (the approval overlay, or a check that failed on `y`). A call that
+    /// ended meanwhile ignores it.
+    ToolDecision {
+        pane: PaneId,
+        turn: u64,
+        call: CallId,
+        decision: Decision,
+    },
+    /// Close the tool session of chat `pane`: its socket goes and every call
+    /// it holds is denied. Emitted with `ChatCancel` for a chat that had one.
+    EndToolSession(PaneId),
     /// Ask the memory worker for something. Returns at once: the answer comes
     /// back as one `AppEvent::Memory`, or never when memory is not active.
     Memory(MemCmd),

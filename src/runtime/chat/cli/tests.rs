@@ -19,7 +19,7 @@ use crate::{
         ai::{
             chat::{
                 adapters::{Job, TmpFile, Wire},
-                engine::{ChatError, ChatMessage, ChatRequest, Finish, Role, StreamEvent},
+                engine::{ChatError, ChatMessage, ChatRequest, Finish, Role, StreamEvent, Tools},
             },
             jail::{Backend, Cli, JailPolicy, JailSupport},
         },
@@ -140,6 +140,7 @@ fn request() -> ChatRequest {
         model: Some("sonnet".into()),
         system: "be brief".into(),
         memory: None,
+        tools: Tools::Off,
         messages: vec![ChatMessage {
             role: Role::User,
             content: "hi".into(),

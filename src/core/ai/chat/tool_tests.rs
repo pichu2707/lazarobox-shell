@@ -283,6 +283,7 @@ fn the_locality_of_an_engine_comes_from_its_adapter_kind() {
         model: Some(model.into()),
         system: SYSTEM.into(),
         memory: None,
+        tools: Tools::Off,
         messages: Vec::new(),
     };
     for (req, want) in [

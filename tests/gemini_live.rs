@@ -33,7 +33,7 @@ use std::{
 use lazarobox_shell::{
     core::{
         ai::{
-            chat::engine::{ChatMessage, ChatRequest, Role, StreamEvent},
+            chat::engine::{ChatMessage, ChatRequest, Role, StreamEvent, Tools},
             jail::JailSupport,
         },
         layout::PaneId,
@@ -79,6 +79,7 @@ async fn turn(env: CliEnv, model: Option<String>, text: &str) -> Vec<StreamEvent
         model,
         system: "Be brief.".into(),
         memory: None,
+        tools: Tools::Off,
         messages: vec![ChatMessage {
             role: Role::User,
             content: text.into(),

@@ -233,7 +233,7 @@ fn notices_survive_the_block() {
 fn the_ollama_body_holds_the_block_when_on_and_not_when_off() {
     use crate::core::ai::chat::{
         adapters::{Adapter, Invocation},
-        engine::{ChatMessage, ChatRequest, Role},
+        engine::{ChatMessage, ChatRequest, Role, Tools},
     };
     let d = dir();
     let repo = repo_with_branch(d.path(), "feat/x");
@@ -253,6 +253,7 @@ fn the_ollama_body_holds_the_block_when_on_and_not_when_off() {
             model: Some("m".into()),
             system,
             memory: None,
+            tools: Tools::Off,
             messages: vec![ChatMessage {
                 role: Role::User,
                 content: "hi".into(),
