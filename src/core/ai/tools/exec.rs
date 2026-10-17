@@ -94,7 +94,7 @@ const SPECS: [Spec; 5] = [
     spec("cd", Verb::Cd, b"", false, 0..2),
     spec("pwd", Verb::Pwd, b"", false, 0..1),
     spec("ls", Verb::Ls, b"lahtr1", false, 0..5),
-    spec("tree", Verb::Tree, b"da", true, 0..2),
+    spec("tree", Verb::Tree, b"d", true, 0..2),
     spec("mkdir", Verb::Mkdir, b"p", false, 1..5),
 ];
 
@@ -149,13 +149,14 @@ impl<'a> Iterator for Targets<'a> {
             match (cmd.verb, cmd.len) {
                 (Verb::Cd, 1) => return Some(("~", Want::Existing)),
                 (Verb::Cd, _) => {}
+                (Verb::Tree, _) => return Some((".", Want::Home)),
                 _ => return Some((".", Want::Existing)),
             }
         }
-        let want = if cmd.verb == Verb::Mkdir {
-            Want::New
-        } else {
-            Want::Existing
+        let want = match cmd.verb {
+            Verb::Mkdir => Want::New,
+            Verb::Tree => Want::Home,
+            _ => Want::Existing,
         };
         while self.at < cmd.len {
             let word = cmd.words[self.at];

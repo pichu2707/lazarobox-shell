@@ -24,7 +24,6 @@ fn the_accept_table_runs() {
         "ls -1thr a b",
         "ls a b c d",
         "tree",
-        "tree -a",
         "tree -d -L 2 src",
         "tree -L 2 -d",
         "mkdir -p a/b",
@@ -134,7 +133,7 @@ fn every_flag_table_row() {
         "ls -la",
         "ls -1t -r src",
         "tree -L 12",
-        "tree -d -a",
+        "tree -d",
         "mkdir -p a b c d",
         "pwd",
     ] {
@@ -146,6 +145,10 @@ fn every_flag_table_row() {
         "ls --all",
         "ls -- -x",
         "ls -",
+        "tree -a",
+        "tree -aL 2",
+        "tree -d -a",
+        "tree -a -L 2 src",
         "tree -o out.txt",
         "tree -L",
         "tree -L x",
@@ -171,7 +174,7 @@ fn every_flag_table_row() {
 fn the_word_and_byte_limits() {
     assert!(runs("ls a b c d"));
     assert!(!runs("ls a b c d e f g h"));
-    assert!(!runs("tree -a -d -a -d -a -d -a -d"));
+    assert!(!runs("tree -d -d -d -d -d -d -d -d"));
     let long = format!("cd {}", "a".repeat(MAX_COMMAND_BYTES));
     assert_eq!(why(&long), "command too long");
     let edge = format!("cd {}", "a".repeat(MAX_COMMAND_BYTES - 3));
@@ -224,7 +227,7 @@ fn targets(text: &str) -> Vec<(&str, Want)> {
 
 #[test]
 fn targets_per_verb() {
-    use Want::{Existing, New};
+    use Want::{Existing, Home, New};
     assert_eq!(targets("cd"), [("~", Existing)]);
     assert_eq!(targets("cd ~/x"), [("~/x", Existing)]);
     assert_eq!(targets("cd 'a b'"), [("a b", Existing)]);
@@ -247,11 +250,9 @@ fn targets_per_verb() {
         targets("ls -la a /srv"),
         [(".", Existing), ("a", Existing), ("/srv", Existing)]
     );
-    assert_eq!(targets("tree"), [(".", Existing)]);
-    assert_eq!(
-        targets("tree -d -L 2 src"),
-        [(".", Existing), ("src", Existing)]
-    );
+    assert_eq!(targets("tree"), [(".", Home)]);
+    assert_eq!(targets("tree -d -L 2 src"), [(".", Home), ("src", Home)]);
+    assert_eq!(targets("tree /etc"), [(".", Home), ("/etc", Home)]);
     assert_eq!(targets("mkdir -p a/b"), [(".", Existing), ("a/b", New)]);
 }
 

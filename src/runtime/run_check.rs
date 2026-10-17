@@ -184,6 +184,105 @@ mod tests {
     }
 
     #[test]
+    fn ls_and_cd_go_outside_home_but_tree_and_mkdir_do_not() {
+        let f = fixture();
+        let srv = f.home.parent().unwrap().join("srv");
+        let abs = |verb: &str, rest: &str| format!("{verb} {}{rest}", srv.display());
+        for command in [abs("ls", ""), abs("ls -la", "/data"), abs("cd", "/data")] {
+            assert!(
+                matches!(run(&f, "dev", &command), RunEvent::Checked { .. }),
+                "{command}"
+            );
+        }
+        for command in [abs("tree", ""), abs("tree -d", "/data"), abs("mkdir", "/x")] {
+            assert_eq!(
+                reason(&run(&f, "dev", &command)),
+                Some(NOT_ALLOWED),
+                "{command}"
+            );
+        }
+        // Inside HOME the confined verbs still run; the cwd counts for tree.
+        assert!(matches!(
+            run(&f, "dev", "tree app"),
+            RunEvent::Checked { .. }
+        ));
+        let outside_cwd = check(&env(Some(&f.home)), CallId(4), srv.clone(), "tree");
+        assert_eq!(reason(&outside_cwd), Some(NOT_ALLOWED));
+        let ls_there = check(&env(Some(&f.home)), CallId(4), srv, "ls");
+        assert!(matches!(ls_there, RunEvent::Checked { .. }));
+    }
+
+    #[test]
+    fn a_link_outside_home_into_a_secret_folder_is_refused_for_ls_and_cd() {
+        let f = fixture();
+        let link = f.home.parent().unwrap().join("srv/to-ssh");
+        std::os::unix::fs::symlink(f.home.join(".ssh"), &link).unwrap();
+        for verb in ["ls", "ls -la", "cd", "tree"] {
+            let command = format!("{verb} {}", link.display());
+            assert_eq!(
+                reason(&run(&f, "dev", &command)),
+                Some(NOT_ALLOWED),
+                "{command}"
+            );
+        }
+        assert_eq!(reason(&run(&f, "dev", "ls ~/.ssh")), Some(NOT_ALLOWED));
+    }
+
+    #[test]
+    fn tree_with_a_depth_stays_inside_home_and_dot_dot_cannot_leave_it() {
+        let f = fixture();
+        let srv = f.home.parent().unwrap().join("srv/data");
+        assert!(matches!(
+            run(&f, "dev", "tree -L 2 app"),
+            RunEvent::Checked { .. }
+        ));
+        let outside = format!("tree -L 2 {}", srv.display());
+        assert_eq!(reason(&run(&f, "dev", &outside)), Some(NOT_ALLOWED));
+        // `../..` from dev/ is the folder that holds HOME: outside it.
+        assert_eq!(reason(&run(&f, "dev", "tree ../..")), Some(NOT_ALLOWED));
+        assert!(matches!(
+            run(&f, "dev", "tree .."),
+            RunEvent::Checked { .. }
+        ));
+    }
+
+    #[test]
+    fn a_link_inside_home_to_the_outside_is_listed_by_ls_and_cd_not_by_tree() {
+        let f = fixture();
+        let target = f.home.parent().unwrap().join("srv/data");
+        std::os::unix::fs::symlink(&target, f.home.join("dev/out")).unwrap();
+        for command in ["ls out", "cd out"] {
+            assert!(
+                matches!(run(&f, "dev", command), RunEvent::Checked { .. }),
+                "{command}"
+            );
+        }
+        assert_eq!(reason(&run(&f, "dev", "tree out")), Some(NOT_ALLOWED));
+    }
+
+    // `/proc/self` is lazarobox's own process, not the pane's shell. That is
+    // conservative: the shell's own cwd is checked separately.
+    #[test]
+    fn a_proc_root_path_into_a_secret_folder_is_refused() {
+        if !Path::new("/proc/self/root").exists() {
+            return;
+        }
+        let f = fixture();
+        let secret = format!("/proc/self/root{}/.ssh", f.home.display());
+        for verb in ["ls", "cd", "ls -la"] {
+            let command = format!("{verb} {secret}");
+            assert_eq!(
+                reason(&run(&f, "dev", &command)),
+                Some(NOT_ALLOWED),
+                "{command}"
+            );
+        }
+        // The same prefix on an ordinary folder still resolves and runs.
+        let plain = format!("ls /proc/self/root{}/dev", f.home.display());
+        assert!(matches!(run(&f, "dev", &plain), RunEvent::Checked { .. }));
+    }
+
+    #[test]
     fn mkdir_outside_home_and_a_missing_directory_are_refused() {
         let f = fixture();
         assert!(reason(&run(&f, "dev", "mkdir ../../srv/x")).is_some());
