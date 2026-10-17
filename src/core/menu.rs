@@ -157,8 +157,8 @@ pub static SECTIONS: &[Section] = &[Section {
 
 /// The AI section, attached only by [`MenuState::with_ai`]. The labels of
 /// the task rows are the task ids; their key path is `Task::table`. The
-/// static rows follow the tasks: `Profile`, `Context`, `Memory` and `Tools`, in
-/// that order. `Notify` and `Sound` live in the Settings section.
+/// static rows follow the tasks: `Profile`, `Context`, `Memory`, `Tools` and
+/// `Approval`, in that order. `Notify` and `Sound` live in the Settings section.
 pub static AI_SECTION: Section = Section {
     title: "AI",
     items: &[

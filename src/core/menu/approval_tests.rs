@@ -179,3 +179,15 @@ fn the_approval_edit_comes_right_after_the_tools_edit() {
     assert_eq!(edits[0].key, "enabled");
     assert_eq!(edits[1], approval_edit("auto"));
 }
+
+// Accepted behaviour (design D18): a bad file value falls back to `ask`, the
+// menu opens on `ask` and offers no edit, so the bad value stays in the file
+// until `auto` is saved. `Tools` behaves the same way.
+#[test]
+fn a_bad_file_value_opens_on_ask_with_no_edit() {
+    let (config, ai, _) =
+        Config::load_with_ai(Ok("[ai.tools]\napproval = \"AUTO\"\n".into()), None);
+    let m = MenuState::open(&config).with_ai(ai, Some(machine()));
+    assert_eq!(value_of(&m, "Approval").as_deref(), Some("ask"));
+    assert_eq!(m.edits(&config), vec![]);
+}
