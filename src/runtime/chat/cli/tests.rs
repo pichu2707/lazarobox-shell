@@ -22,7 +22,7 @@ use crate::{
                 adapters::{Job, TmpFile, Wire},
                 engine::{ChatError, ChatMessage, ChatRequest, Finish, Role, StreamEvent, Tools},
             },
-            jail::{Backend, Cli, JailPolicy, JailSupport},
+            jail::{Backend, Cli, JailOff, JailPolicy, JailSupport},
             tools::wiring::{McpWire, Secret, Unwire},
         },
         layout::PaneId,
@@ -2111,6 +2111,77 @@ async fn only_a_wired_turn_lets_claude_use_our_tools() {
     bare.shim = Some(shim);
     let events = run_job(&bare, claude_job(&lab, true)).await;
     assert_eq!(failure(&events), "claude tried to use a tool", "{events:?}");
+}
+
+/// The final process of a plan, with the turn's own private folder (which is
+/// different every time) named `<tmp>`.
+fn final_process(plan: &Plan) -> (PathBuf, Vec<String>, Vec<(String, String)>) {
+    let tmp = plan.dirs.tmp.display().to_string();
+    let text = |s: &OsString| s.to_string_lossy().replace(&tmp, "<tmp>");
+    (
+        plan.program.clone(),
+        plan.argv.iter().map(text).collect(),
+        plan.vars.iter().map(|(k, v)| (text(k), text(v))).collect(),
+    )
+}
+
+// Spec (agent-tools): while an engine is outside `MCP_VERIFIED` (all of them
+// today), a turn with tools on starts exactly the process of a turn without:
+// the same program, argv (jail helper arguments included), variables, notice
+// and stdin, with the real `MCP_VERIFIED`.
+#[test]
+fn while_dormant_no_engine_starts_a_different_process_with_tools_on() {
+    use crate::core::ai::chat::adapters::{Invocation, adapter_for};
+    assert!(crate::core::ai::chat::engine::MCP_VERIFIED.is_empty());
+    let lab = lab();
+    for name in ["claude", "codex", "gemini"] {
+        script(&lab.bin.join(name), &lab.rec, GOOD);
+    }
+    let shim = lab.bin.join("shim");
+    fs::write(&shim, "").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    let socket = lab.rec.join("s.sock");
+    fs::write(&socket, "").unwrap();
+    let wire = Box::new(McpWire {
+        socket,
+        token: Secret::new(TOKEN),
+        unwire: Unwire::none(),
+    });
+    for (jail, shim) in [
+        (JailSupport::Unavailable(JailOff::NotProbed), None),
+        (jail_on(), Some(shim)),
+    ] {
+        let jail_off = matches!(jail, JailSupport::Unavailable(_));
+        let mut env = lab.env();
+        env.jail = jail;
+        env.helper = lab.helper(PASS);
+        env.shim = shim;
+        for engine in ["claude", "codex", "gemini"] {
+            let mut off = request();
+            off.engine = engine.into();
+            let mut on = off.clone();
+            on.tools = Tools::On {
+                origin: Some(lab.home.clone()),
+                mcp: Some(wire.clone()),
+            };
+            let adapter = adapter_for(engine).unwrap();
+            let (Invocation::Process(off), Invocation::Process(on)) =
+                (adapter.build(&off), adapter.build(&on))
+            else {
+                panic!("{engine} is a CLI engine");
+            };
+            assert_eq!(on.mcp, None, "{engine}");
+            assert_eq!(on, off, "{engine}");
+            // A refusal (a required jail that is off) is part of the process
+            // too: it must be the same.
+            let render = |planned: Result<Plan, StreamEvent>| {
+                planned.map(|p| (final_process(&p), p.notice.clone(), p.wired))
+            };
+            let (off, on) = (render(plan(&env, &off)), render(plan(&env, &on)));
+            assert_eq!(on, off, "{engine}");
+            assert!(on.is_ok_and(|(_, _, wired)| !wired) || jail_off, "{engine}");
+        }
+    }
 }
 
 #[tokio::test]
