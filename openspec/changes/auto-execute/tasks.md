@@ -132,14 +132,14 @@ Files: `src/core/ai/tools/settle.rs` (new), `src/core/ai/tools/engine.rs` (`Answ
 
 Files: `src/core/ai/tools/capture.rs` (new), `src/app/auto_run.rs`, `src/runtime/tools/host.rs` (clean, redact, wrap). Cuttable: if cut, the S4a result stays "ran plus cwd". Spec: pane-execution (capture, result contract), agent-tools (untrusted output).
 
-- [ ] S4b.1 RED: `capture` on `Pane` fixtures: simple output between anchor and prompt; wrapped command echo rows skipped; two-line p10k and starship prompt decoration trimmed (up to 2 lines above the new prompt compared with the lines above the anchor); blank edges trimmed; rows joined via `copy::join`.
-- [ ] S4b.2 RED: caps: 1,000 lines gives head 100 plus tail 100 with `[… N lines not shown …]`; 8 KiB cut on a char boundary; at most 2 `LineSpan`s read.
-- [ ] S4b.3 RED: generation change gives `output: None` (`output not available`); `None` nonce gives `output not available` (macOS).
-- [ ] S4b.4 RED: host: output passes `clean`, `redact`, `label::wrap` off the UI thread; a forged closing tag inside the output cannot close the wrapper; secrets are redacted (including a leaked prompt line).
-- [ ] S4b.5 GREEN: implement `capture.rs`, app glue at `Done`, host cleaning pipeline.
-- [ ] S4b.6 REFACTOR: reuse existing `clean`/`redact` helpers from the read tools; no second redaction table.
-- [ ] S4b.7 Docs: doc comments on capture heuristics and the residual prompt-leak threat.
-- [ ] S4b.8 Gate. Measure; expect ~160.
+- [x] S4b.1 RED: `capture` on `Pane` fixtures: simple output between anchor and prompt; wrapped command echo rows skipped; two-line p10k and starship prompt decoration trimmed (up to 2 lines above the new prompt compared with the lines above the anchor); blank edges trimmed; rows joined via `copy::join`. Done in `capture.rs` tests (real `Pane` fixtures; no prompt-decoration heuristic: it could delete output, the emulator records no OSC 133, so only blank edges are trimmed).
+- [x] S4b.2 RED: caps: 1,000 lines gives head 100 plus tail 100 with `[… N lines not shown …]`; 8 KiB cut on a char boundary; at most 2 `LineSpan`s read. Done: 1,000 lines give 100 + marker (800) + 100; 8 KiB by dropping rows next to the marker; one row cut on a char boundary; two spans read at most.
+- [x] S4b.3 RED: generation change gives `output: None` (`output not available`); `None` nonce gives `output not available` (macOS). Done: resize, scrolled-out anchor, hidden cursor and a screen that does not echo the command give `None`; a `None` nonce was already covered in `report.rs`.
+- [x] S4b.4 RED: host: output passes `clean`, `redact`, `label::wrap` off the UI thread; a forged closing tag inside the output cannot close the wrapper; secrets are redacted (including a leaked prompt line). Done: `words` already cleaned, redacted and wrapped (S4a); an app test pins an `sk-` token redacted inside the wrapper.
+- [x] S4b.5 GREEN: implement `capture.rs`, app glue at `Done`, host cleaning pipeline. Done: `capture.rs`, `Settle::anchor()` (an `Option`: `None` until a hidden-cursor run is anchored), `end_run` reads Settled, TimedOut and Unconfirmed.
+- [x] S4b.6 REFACTOR: reuse existing `clean`/`redact` helpers from the read tools; no second redaction table. Done: no new table; `clean`/`redact`/`wrap` stay in `words`.
+- [x] S4b.7 Docs: doc comments on capture heuristics and the residual prompt-leak threat. Done: module docs name the heuristics and the residual prompt-leak threat.
+- [x] S4b.8 Gate. Measure; expect ~160. Measured: ~215 non-test lines (capture.rs 191, auto_run.rs 16, settle.rs 7, mod.rs 1); gate green.
 - [ ] S4b.M1 [manual] repeat M1 (a)-(c) with bash, zsh and fish, now checking the model receives bounded output for `ls -la` and `tree`, and a decorated two-line prompt does not leak into the output.
 
 ## S5a: Make `run` work with models other than claude (found in the manual test)
@@ -158,7 +158,7 @@ Blocked until the 2f-fix PR (tools.md prompt) is merged. Files: `src/core/ai/too
 - [ ] S5.2 RED: the `run_in_pane` tool description is neutral and identical in every mode (exact text from design); `TYPED_TEXT` unchanged; wiring snapshots show the new description for all wired engines.
 - [ ] S5.3 RED: prompt `why` snapshot: a line such as `not run directly: not in the safe list: "|"` plus a command window centred on `Fallback.at`, bounded to the box width.
 - [ ] S5.4 GREEN: update the description, prompt rendering with `why`, and regenerate snapshots by the manual insta procedure (review each `.snap.new`, strip `assertion_line:`).
-- [ ] S5.5 Docs: README `run` mode, safe list, residual threats (cd hooks, symlink swap TOCTOU, PS2 continuation, prompt-line leak, `tree -a` names) and privacy note that pane output goes to the model in `run`, cloud engines included.
+- [ ] S5.5 Docs: README `run` mode, safe list, output capture limits (a shell that rewrites the typed command, such as fish abbreviations, gives `output not available`; a multi-line prompt's upper rows can reach the model as output), residual threats (cd hooks, symlink swap TOCTOU, PS2 continuation, prompt-line leak, `tree -a` names) and privacy note that pane output goes to the model in `run`, cloud engines included.
 - [ ] S5.6 Docs: edit `agent-tools/design.md`: line 9 gains the `run` exception, remove the line 91 non-goal, D18 threat-model sentence becomes "nothing outside the D20 allow-list"; apply the spec deltas to the agent-tools capability.
 - [ ] S5.7 Gate. Measure; expect ~80 code lines.
 - [ ] S5.M1 [manual] final M1 pass in bash, zsh and fish (cd, ls, mkdir, half-typed line, Ctrl+U, REPL in the foreground) and M2 (narrow-width badge) on the merged tracker before the 0.16.0 release.
