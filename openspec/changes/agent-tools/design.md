@@ -282,4 +282,4 @@ All are resolved except the D18 verification item; the specs were edited to matc
 - [x] Per-project MCP servers live only in the user's config, keyed by project root, never read from a repository (user decision; D16 and the mcp-servers spec agree).
 - [x] Read-tool approval follows D17 (user decision): `read_file` asks on cloud engines only.
 - [x] Chat approval mode follows D18 (user decision 2026-10-17): `ask` or `auto` (type, never Enter), `run_in_pane` only; the four follow-up questions are resolved in "D18 detail".
-- [ ] D18 to verify in 2e-3: the runtime keeps the shell pid per PTY pane (needed for the foreground check); `tcgetpgrp` on the master fd reports the foreground group on Linux and macOS.
+- [x] D18 verified in 2e-3a: the PTY handle keeps the shell pid (`PtyHandle::pid`); `tcgetpgrp` on the master (portable-pty `process_group_leader`) reports the foreground group on Linux (test with a real `/bin/sh` and `sleep`); macOS is covered by the same libc call but not run here. Unknown is denied.
