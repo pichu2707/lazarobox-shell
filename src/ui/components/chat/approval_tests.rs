@@ -5,9 +5,13 @@ use std::time::{Duration, Instant};
 
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
-use super::*;
+use super::{
+    approval::{Part, parts},
+    *,
+};
 use crate::core::ai::chat::{
     Entry, SendOutcome,
+    approval::{READ_KEYS, RUN_KEYS},
     engine::{Availability, Finish, StreamEvent},
     transcript::Scroll,
     yank,
@@ -48,7 +52,46 @@ fn prompt(command: &str) -> ApprovalPrompt {
     ApprovalPrompt {
         target: "run in pane 2 (~/dev)".into(),
         command: command.into(),
+        keys: RUN_KEYS,
     }
+}
+
+// A read prompt names what the file is for, shows `read <path>` in full and
+// has its own keys (there is no pane to pick).
+fn read_prompt(path: &str) -> ApprovalPrompt {
+    ApprovalPrompt {
+        target: "send a file's text to the engine".into(),
+        command: format!("read {path}"),
+        keys: READ_KEYS,
+    }
+}
+
+#[test]
+fn a_read_prompt_shows_the_path_in_full_and_the_read_keys() {
+    let path = "/home/u/dev/curso-rust/notes/very/deep/file.txt";
+    let rows = parts(&read_prompt(path), 30, 12);
+    let joined: String = rows
+        .iter()
+        .filter_map(|p| match p {
+            Part::Command(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(joined, format!("read {path}"));
+    assert_eq!(rows.last(), Some(&Part::Keys(READ_KEYS.to_owned())));
+    assert!(!READ_KEYS.contains("pane") && RUN_KEYS.contains("p next pane"));
+}
+
+#[test]
+fn a_read_prompt_is_drawn_at_the_composer() {
+    let chat = exchange("hello");
+    let shown = draw(&chat, Some(&read_prompt("/home/u/note.txt")), 60, 12);
+    assert!(
+        shown.contains("send a file's text to the engine"),
+        "{shown}"
+    );
+    assert!(shown.contains("read /home/u/note.txt"), "{shown}");
+    assert!(shown.contains("y read it · n deny"), "{shown}");
 }
 
 fn draw(chat: &ChatState, approval: Option<&ApprovalPrompt>, width: u16, height: u16) -> String {

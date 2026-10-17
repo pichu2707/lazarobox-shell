@@ -312,8 +312,9 @@ impl App {
             return Vec::new();
         };
         match chat.send(text, availability, &system) {
-            SendOutcome::Sent { turn, request } => {
+            SendOutcome::Sent { turn, mut request } => {
                 chat.composer_mut().clear();
+                self.offer_tools(id, &mut request);
                 self.hide_server_offer(id);
                 // The conversation is saved before the engine starts.
                 let mut effects = self.store_effects(id);
@@ -378,7 +379,7 @@ impl App {
         // The partial answer is saved as cancelled.
         let mut effects = self.store_effects(id);
         if follow == Follow::CancelEngine {
-            effects.push(Effect::ChatCancel(id));
+            effects.extend(self.cancel_chat(id));
         }
         effects
     }

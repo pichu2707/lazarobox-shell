@@ -13,7 +13,6 @@ use crate::core::ai::chat::{approval::ApprovalPrompt, wrap::wrap_ranges};
 
 /// The most rows of the command drawn, the clip marker included.
 const MAX_COMMAND_ROWS: usize = 6;
-const KEYS: &str = "y type it (no Enter) · n cancel · p next pane";
 /// How a tab is drawn.
 const TAB: char = '→';
 
@@ -66,7 +65,7 @@ pub(super) fn parts(prompt: &ApprovalPrompt, width: usize, height: usize) -> Vec
                 out.extend(rows.into_iter().take(room - 1).map(Part::Command));
                 out.push(marker(lines));
             }
-            out.push(Part::Keys(KEYS.to_owned()));
+            out.push(Part::Keys(prompt.keys.to_owned()));
             out
         }
     }
