@@ -199,15 +199,19 @@ Files: `src/core/ai/{config,menu}.rs`, `src/core/menu.rs`, `src/core/config_edit
 
 ## PR8 / 2f: claude wiring (`src/core/ai/tools/wiring.rs`, `src/core/ai/chat/{claude,adapters,engine}.rs`, `src/runtime/chat/cli.rs`, `src/core/ai/jail.rs`)
 
-- [ ] 2f.1 RED: `Job.tmp_files: Vec` generalizes `tmp_file`; files 0600 in the per-turn tmp dir (0700), wiped after the turn.
-- [ ] 2f.2 RED: insta snapshot of claude argv/env/mcp.json with tools on: `--mcp-config`, `--strict-mcp-config`, `--tools ""`, `--allowedTools mcp__lazarobox`, `MCP_TOOL_TIMEOUT=900000`; token only in the config env entry, never argv.
-- [ ] 2f.3 RED: engine not in `MCP_VERIFIED`: argv, stdin and env byte-identical to tools off.
-- [ ] 2f.4 RED: `ShimGrant`: jail differs by the shim binary (rx), the socket file rule, and the loader only when it differs from the CLI's; canonical exe, not `/proc/self/exe`.
-- [ ] 2f.5 RED: decoder allow-lists only `mcp__lazarobox__*` tool events; any other tool event still fails closed.
-- [ ] 2f.6 GREEN: implement; fallback to text-only on any wiring failure.
-- [ ] 2f.7 Gate.
-- [ ] 2f.8 Docs: README "Tools with claude".
+> As built: `Job.tmp_files: Vec<TmpFile>` (static files) plus `Job.mcp: Option<McpWire>` (the session; the runtime renders the config with the token, so the token never sits in a `Debug`-printable `TmpFile`). `Tools::On` gained `mcp: Option<McpWire>`, set by `Chats::send` from the turn's session and read by `Adapter::build_with(request, verified)` (`build` passes `MCP_VERIFIED`, still empty: claude is dormant). `CliEnv.shim` is the canonical executable resolved once at startup. The tools are wired only for a jailed run; a jail that refuses the shim layout is retried without it, never widened. The claude decoder fails closed on every `tool_use` that is not `mcp__lazarobox__*` in any mode. `CREDENTIAL_DIRS` did not need to become `pub(crate)`. The jail integration test (`tests/jail.rs`) keeps its own `with_shim_grant` helper.
+
+- [x] 2f.1 RED: `Job.tmp_files: Vec` generalizes `tmp_file`; files 0600 in the per-turn tmp dir (0700), wiped after the turn.
+- [x] 2f.2 RED: insta snapshot of claude argv/env/mcp.json with tools on: `--mcp-config`, `--strict-mcp-config`, `--tools ""`, `--allowedTools mcp__lazarobox`, `MCP_TOOL_TIMEOUT=900000`; token only in the config env entry, never argv.
+- [x] 2f.3 RED: engine not in `MCP_VERIFIED`: argv, stdin and env byte-identical to tools off.
+- [x] 2f.4 RED: `ShimGrant`: jail differs by the shim binary (rx), the socket file rule, and the loader only when it differs from the CLI's; canonical exe, not `/proc/self/exe`.
+- [x] 2f.5 RED: decoder allow-lists only `mcp__lazarobox__*` tool events; any other tool event still fails closed.
+- [x] 2f.6 GREEN: implement; fallback to text-only on any wiring failure.
+- [x] 2f.7 Gate.
+- [x] 2f.8 Docs: README "Tools with claude".
 - [ ] 2f.9 [manual] (user) `claude --help` and `claude mcp --help`: confirm `--mcp-config`, `--strict-mcp-config`, `--allowedTools` and the server-level `mcp__lazarobox` syntax; whether `--tools ""` hides MCP tools; the default and effect of `MCP_TOOL_TIMEOUT`.
+  - Partially verified by the orchestrator on claude 2.1.302 (`claude --help`): `--mcp-config <configs...>` ("Load MCP servers from JSON files or strings (space-separated)") and `--strict-mcp-config` ("Only use MCP servers from --mcp-config, ignoring all other MCP configurations") exist; `--tools <tools...>` ("Specify the list of available tools from the built-in set. Use \"\" to disable all tools") names the BUILT-IN set only; `--allowedTools, --allowed-tools <tools...>` is a comma- or space-separated list of tool names, the server-level `mcp__lazarobox` syntax is not shown in the help; `MCP_TOOL_TIMEOUT` is not in the help. Still open for the user: the `mcp__lazarobox` server-level syntax, whether `--tools ""` also hides MCP tools, and `MCP_TOOL_TIMEOUT` (default and effect). All three are checked by the real call of 2f.10 and by `claude mcp --help`.
+  - `--mcp-config` and `--allowedTools` are variadic: the wiring passes them as `--flag=value` (one argv element each), so they cannot swallow a following value; `wiring::tests::variadic_flags_use_the_equals_form_so_nothing_after_them_is_swallowed` pins it. The prompt is on stdin, so no positional follows anyway. That claude accepts the `=` form for these two flags is part of the 2f.10 real call.
 - [ ] 2f.10 [manual] (user) one real call: ask claude to find `curso-rust`; expect a `find_dir` row, then `run_in_pane` prompt, `y` types `cd` with no Enter; ask it to create a file and run `ls`: neither happens; `read_file` asks first. Record the stream-json `tool_use` shape.
 - [ ] 2f.11 GREEN after 2f.9 and 2f.10 pass: add claude to `MCP_VERIFIED`. If either fails, claude stays outside and the failure is recorded in the PR.
 
