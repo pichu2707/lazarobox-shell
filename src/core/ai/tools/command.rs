@@ -41,7 +41,7 @@ impl Refusal {
 /// controls, the tag block, the braille blank and the half-width filler, the
 /// shorthand-format and musical invisibles, the object replacement character,
 /// and every non-ASCII whitespace (no-break space, ideographic space, ...).
-fn is_invisible(c: char) -> bool {
+pub(super) fn is_invisible(c: char) -> bool {
     (c.is_whitespace() && !c.is_ascii())
         || matches!(
             c,

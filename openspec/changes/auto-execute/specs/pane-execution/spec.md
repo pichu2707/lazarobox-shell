@@ -72,7 +72,7 @@ In `run` mode a `run_in_pane` call MUST be written and executed without a prompt
 - THEN the mode is still `ask`, no tool exists that changes it, and the request holds no approval mode
 
 ### Requirement: Command grammar
-A runnable command MUST be a single line of at most 8 words and at most 4096 bytes matching a strict whitelist grammar with no shell expansion: a first word from the safe list, then zero or more words separated by exactly one ASCII space (no leading, trailing or doubled space). An unquoted word MUST consist only of Unicode letters and digits (the Rust `char::is_alphanumeric` class, so `música` and `año-2026` are accepted) and the ASCII punctuation `. _ / @ % + : , = ~ -`; it MUST NOT start with `=`, `+` or `%`, and `~` is accepted only as `~` or `~/...` (`~user` is refused). A word MAY instead be a single-quoted word `'...'` whose content is printable (Unicode alphanumerics, ASCII printable characters and spaces) with no `'` and no `\`, and which does not start with `~` or `-`. The grammar MUST refuse: the shell metacharacters `; & | < > ( ) { } $ \` \ ! * ? [ ] #` (including the backtick); double quotes; newlines, `\r` and tabs; every control character (C0, C1, DEL); every Unicode format character (category Cf: bidi controls, ZWSP, ZWNJ, ZWJ, U+FEFF); any whitespace other than the single ASCII space between words (NBSP and U+2028 included); any other non-ASCII character that is not a letter or digit (so combining marks of a decomposed accent and non-ASCII punctuation are refused); env assignments (`NAME=value` as a first word); a first word starting with `=` or `~`; a word that is `-` or `--`; and globs. Anything the grammar refuses MUST take the prompt route. The decision MUST be pure: it depends only on the command text, never on the environment.
+A runnable command MUST be a single line of at most 8 words and at most 4096 bytes matching a strict whitelist grammar with no shell expansion: a first word from the safe list, then zero or more words separated by exactly one ASCII space (no leading, trailing or doubled space). An unquoted word MUST consist only of ASCII letters and digits, Latin letters (U+00C0 to U+024F except U+00D7 and U+00F7, so `música` and `año-2026` are accepted) and the ASCII punctuation `. _ / @ % + : , = ~ -`; it MUST NOT start with `=`, `+` or `%`, and `~` is accepted only as the first character of a word, as `~` or `~/...` (`~user`, `a=~/x` and `a:~/y` are refused). A word MAY instead be a single-quoted word `'...'` whose content is printable (those Latin letters, ASCII printable characters and spaces) with no `'` and no `\`, and which does not start with `~` or `-`. The grammar MUST refuse: the shell metacharacters `; & | < > ( ) { } $ \` \ ! * ? [ ] #` (including the backtick); double quotes; newlines, `\r` and tabs; every control character (C0, C1, DEL); every Unicode format character (category Cf: bidi controls, ZWSP, ZWNJ, ZWJ, U+FEFF); any whitespace other than the single ASCII space between words (NBSP and U+2028 included); any other non-ASCII character that is not one of those Latin letters (so combining marks of a decomposed accent, other scripts, roman numerals, circled digits, superscripts and non-ASCII punctuation are refused); env assignments (`NAME=value` as a first word); a first word starting with `=` or `~`; a word that is `-` or `--`; and globs. Anything the grammar refuses MUST take the prompt route. The decision MUST be pure: it depends only on the command text, never on the environment.
 
 | Command | Result | Why |
 |---|---|---|
@@ -81,9 +81,11 @@ A runnable command MUST be a single line of at most 8 words and at most 4096 byt
 | `ls -la src` | runs | flags in list |
 | `mkdir -p a/b` | runs | `-p` in list |
 | `mkdir 'my dir'` | runs | single quotes, printable content |
-| `cd música` | runs | Unicode letters are allowed |
-| `mkdir año-2026` | runs | Unicode letter plus ASCII punctuation and digits |
+| `cd música` | runs | Latin letters are allowed |
+| `mkdir año-2026` | runs | Latin letter plus ASCII punctuation and digits |
 | `cd ~/dev/curso-ñandú` | runs | accented letters in a path |
+| `ls 日本語`, `cd ש`, `cd a` + U+0345, `cd Ⅷ`, `cd ②`, `cd ²` | prompt | not a Latin letter (other script, mark, numeral, superscript) |
+| `ls a=~/x`, `ls a:~/y` | prompt | `~` not at the start of a word |
 | `tree` / `tree -a` | runs | `-L` is optional |
 | `cd mu` + U+202E + `sica` | prompt | bidi control (Cf) |
 | `cd a` + U+200B + `b` | prompt | zero-width space (Cf) |
@@ -115,8 +117,8 @@ A runnable command MUST be a single line of at most 8 words and at most 4096 byt
 - WHEN the grammar decides on each
 - THEN each is refused and routes to the prompt
 
-#### Scenario: Unicode letters and digits are accepted [auto]
-- GIVEN `cd música`, `mkdir año-2026`, `ls 日本語` and `cd ~/dev/curso-ñandú`
+#### Scenario: Latin letters are accepted [auto]
+- GIVEN `cd música`, `mkdir año-2026`, `cd øåæłőž` and `cd ~/dev/curso-ñandú`
 - WHEN the grammar decides
 - THEN each is accepted and the text is unchanged byte for byte
 
@@ -154,7 +156,7 @@ Any word starting with `-` is treated as a flag. `tree` without `-L` runs direct
 - THEN each takes the prompt route and nothing is written
 
 ### Requirement: Path policy against the real cwd
-Every path argument MUST be resolved against the shell's real current directory, read from the operating system at write time (never from the chat's origin cwd, and never from OSC 7, which any program can print), with `~`, `.` and `..` resolved (so `cd ..` is allowed, not refused) and symlinks followed, and checked with the path policy of agent-tools (secret and credential directories and files) both lexically and on the real path. `cd` and `mkdir` MUST NEVER target or enter a secret or credential directory; `ls` and `tree` MUST NOT list one. `cd`, `ls` and `tree` MUST NOT be limited to `$HOME`: paths outside it are allowed unless they fall under a secret root. For `mkdir`, whose target does not exist yet, the policy MUST be applied to the deepest existing ancestor (canonicalized) plus the remaining names, and every `mkdir` target MUST be inside `$HOME`. For every verb except `cd`, the shell's cwd itself MUST pass the policy too, because `ls` and `tree` without arguments, `pwd` and a relative `mkdir` act on it. A path that cannot be resolved for `cd`, `ls` or `tree`, a secret-root list that cannot be loaded, any case where the real cwd cannot be read (macOS always), and a check that takes more than 2 s, MUST take the prompt route. The disk is never touched on the UI loop. The cwd MUST be compared again at write time against the checked cwd, and a mismatch MUST win (prompt).
+Every path argument MUST be resolved against the shell's real current directory, read from the operating system at write time (never from the chat's origin cwd, and never from OSC 7, which any program can print), with `~`, `.` and `..` resolved (so `cd ..` is allowed, not refused) and symlinks followed, and checked with the path policy of agent-tools (secret and credential directories and files) both lexically and on the real path. `cd` and `mkdir` MUST NEVER target or enter a secret or credential directory; `ls` and `tree` MUST NOT list one. `cd`, `ls` and `tree` MUST NOT be limited to `$HOME`: paths outside it are allowed unless they fall under a secret root. For `mkdir`, whose target does not exist yet, the policy MUST be applied to the deepest existing ancestor (canonicalized) plus the remaining names, and every `mkdir` target MUST be inside `$HOME`. For every verb except `cd`, the shell's cwd itself MUST pass the policy too, because `ls` and `tree` without arguments, `pwd` and a relative `mkdir` act on it. A path that cannot be resolved for `cd`, `ls` or `tree`, a secret-root list that cannot be loaded, any case where the real cwd cannot be read (macOS always), and a check that takes more than 2 s, MUST take the prompt route. The disk is never touched on the UI loop. The cwd MUST be compared again at write time against the checked cwd, and a mismatch MUST win (prompt). Known residual risk: a shell with `$CDPATH` or `cdable_vars` may resolve a bare relative `cd name` somewhere other than the checked directory; the command is not rewritten (checked bytes == written bytes), so this is accepted and documented.
 
 #### Scenario: Secret directories never run [auto]
 - GIVEN a chat in `run` and cwd `/home/u`
