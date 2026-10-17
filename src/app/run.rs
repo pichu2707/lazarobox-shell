@@ -12,7 +12,7 @@ use crate::core::ai::{
             RUN_KEYS, Reply, run_sent_line,
         },
         approval_rows::fits,
-        engine::Decision,
+        engine::{CallId, Decision},
         yank,
     },
     sanitize,
@@ -32,11 +32,14 @@ const ALREADY_OPEN: &str = "A confirm is already open: answer it first";
 const TOOLS_OFF_REASON: &str = "tools are off";
 const PROMPT_TOO_SMALL: &str = "Pane too small to show it all: enlarge it or press n";
 
+/// The mark of a line typed from a block (`Prefix e`): no tool call made it.
+const BLOCK_LINE: CallId = CallId(u64::MAX);
+
 /// A command that was not typed: what the user sees, and why, in the short
 /// words that go back to the model when a tool call asked for it.
-struct Refused {
+pub(super) struct Refused {
     notice: String,
-    reason: &'static str,
+    pub(super) reason: &'static str,
 }
 
 impl App {
@@ -217,11 +220,16 @@ impl App {
             return Vec::new();
         };
         let mut effects = Vec::new();
-        let decision = match self.type_command(target, command) {
+        let decision = match self.typed_bytes(target, command) {
             Ok(bytes) => {
                 let number = self.pane_number(target).unwrap_or(0);
                 if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
                     chat.push_system_line(run_sent_line(number));
+                }
+                // Enter is never sent: the line stays unsent, and an auto
+                // call must not land on it.
+                if let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) {
+                    pty.line_pending = Some(approval.call().map_or(BLOCK_LINE, |(_, call)| call));
                 }
                 effects.push(Effect::WritePty(target, bytes));
                 Decision::Sent
@@ -237,7 +245,11 @@ impl App {
 
     /// The accept-time checks of a command bound for `target`, and the bytes
     /// to write when they pass. Shared by every way a command gets typed.
-    fn type_command(&mut self, target: PaneId, command: &str) -> Result<Vec<u8>, Refused> {
+    pub(super) fn typed_bytes(
+        &mut self,
+        target: PaneId,
+        command: &str,
+    ) -> Result<Vec<u8>, Refused> {
         let command = validate(command).map_err(|refusal| Refused {
             notice: format!("Command refused: {}", refusal.reason()),
             reason: "the command was refused",
@@ -298,7 +310,7 @@ impl App {
     }
 
     /// The 1-based number of `pane` in the active tab.
-    fn pane_number(&self, pane: PaneId) -> Option<usize> {
+    pub(super) fn pane_number(&self, pane: PaneId) -> Option<usize> {
         Some(self.tab().tree.leaves().iter().position(|p| *p == pane)? + 1)
     }
 
@@ -355,11 +367,17 @@ impl App {
         self.shell_panes_in(self.tab())
     }
 
+    /// Whether `pane` runs the `cargo install` of an update: a PTY, but its
+    /// stdin is cargo's, never a place for a command.
+    fn is_update(&self, pane: PaneId) -> bool {
+        (self.panes.get(&pane).and_then(PaneState::pty)).is_some_and(|pty| pty.update.is_some())
+    }
+
     fn shell_panes_in(&self, tab: &Tab) -> Vec<PaneId> {
         tab.tree
             .leaves()
             .into_iter()
-            .filter(|pane| self.is_shell(*pane))
+            .filter(|pane| self.is_shell(*pane) && !self.is_update(*pane))
             .collect()
     }
 

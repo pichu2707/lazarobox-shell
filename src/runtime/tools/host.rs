@@ -196,6 +196,10 @@ fn ended(status: ToolStatus, text: String, summary: &str) -> (Outcome, ToolStatu
 /// exactly as it would be opened.
 const UNSHOWABLE: &str = "path cannot be shown safely";
 
+/// What the model is told when its command was typed.
+const TYPED_TEXT: &str = "The command was typed into the user's pane. Enter was not pressed: \
+                          the user runs it themselves.";
+
 async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outcome {
     let id = CallId(host.next.fetch_add(1, Ordering::Relaxed));
     // The command is the sanitizer's, so the ask shows what would be typed.
@@ -268,14 +272,19 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 (Decision::Denied(reason), _) => {
                     ended(ToolStatus::Denied, format!("denied: {reason}"), reason)
                 }
-                (Decision::Sent, Call::RunInPane { .. }) => ended(
+                (Decision::Busy(number), _) => {
+                    let reason = format!("pane {number} is running a program");
+                    ended(ToolStatus::Denied, format!("denied: {reason}"), &reason)
+                }
+                (Decision::Typed(number), Call::RunInPane { .. }) => ended(
                     ToolStatus::Ok,
-                    "The command was typed into the user's pane. Enter was not pressed: \
-                     the user runs it themselves."
-                        .to_owned(),
-                    "typed, no Enter",
+                    TYPED_TEXT.to_owned(),
+                    &format!("typed into pane {number} \u{2014} no Enter"),
                 ),
-                (Decision::Sent, call) => {
+                (Decision::Sent, Call::RunInPane { .. }) => {
+                    ended(ToolStatus::Ok, TYPED_TEXT.to_owned(), "typed, no Enter")
+                }
+                (Decision::Sent | Decision::Typed(_), call) => {
                     let env = ToolEnv {
                         home: host.home.clone(),
                         xdg_config_home: host.xdg_config_home.clone(),

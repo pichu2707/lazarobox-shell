@@ -235,6 +235,9 @@ pub enum Effect {
         chat: PaneId,
         target: PaneId,
         bytes: Vec<u8>,
+        /// The number of `target` in its tab, as the user sees it; the
+        /// answers and the result row name the pane by it.
+        number: usize,
         turn: u64,
         call: CallId,
     },
@@ -353,6 +356,9 @@ struct PtyPane {
     proc_cwd: Option<PathBuf>,
     /// Set when the pane runs `cargo install` for an update, not a shell.
     update: Option<UpdateRun>,
+    /// The auto-typed command of a chat that sits unsent on this pane's line
+    /// (design D18): a later auto call to this pane prompts instead.
+    line_pending: Option<CallId>,
 }
 
 /// The install an update pane runs.
@@ -422,6 +428,7 @@ impl PaneState {
                 emu: Pane::new(size, SCROLLBACK_LINES).with_host(host),
                 proc_cwd: None,
                 update: None,
+                line_pending: None,
             })),
             size,
         }
@@ -1624,6 +1631,7 @@ impl App {
         let Some(bytes) = encode_key(key, pty.emu.modes()) else {
             return Vec::new();
         };
+        self.note_user_key(&key);
         self.return_to_live();
         vec![Effect::WritePty(self.tab().focus, bytes)]
     }
@@ -1663,6 +1671,7 @@ impl App {
                 | PrefixAction::ToggleMemory
                 | PrefixAction::Summarize
                 | PrefixAction::RunInPane
+                | PrefixAction::ToggleApproval
                 | PrefixAction::EditTags,
             ) => InputMode::Terminal,
             Step::Run(
@@ -1717,6 +1726,7 @@ impl App {
                 Vec::new()
             }
             Step::Run(PrefixAction::RunInPane) => self.run_in_pane(),
+            Step::Run(PrefixAction::ToggleApproval) => self.toggle_approval(),
             Step::Run(PrefixAction::SplitRight) => self.split(Axis::X),
             Step::Run(PrefixAction::SplitBelow) => self.split(Axis::Y),
             Step::Run(PrefixAction::Focus(dir)) => self.move_focus(dir),
@@ -2243,7 +2253,16 @@ impl App {
                 let Some(pty) = self.focused_pty() else {
                     return Vec::new();
                 };
-                let bytes = encode_paste(text, pty.emu.modes());
+                let modes = pty.emu.modes();
+                let bytes = encode_paste(text, modes);
+                // Inside a bracketed paste a newline executes nothing; without
+                // it, a newline becomes `\r` and runs the line.
+                if !modes.bracketed_paste
+                    && text.contains(['\r', '\n'])
+                    && let Some(pty) = self.focused_state_mut().pty_mut()
+                {
+                    pty.line_pending = None;
+                }
                 self.return_to_live();
                 vec![Effect::WritePty(self.tab().focus, bytes)]
             }

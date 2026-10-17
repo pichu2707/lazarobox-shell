@@ -275,7 +275,28 @@ Links do not get around it: the path is judged as requested and as resolved, and
 ```toml
 [ai.tools]
 enabled = true
+approval = "ask"
 ```
+
+#### Approval mode
+
+By default every command a model asks to run needs your `y` (`approval = "ask"`). In **auto** mode a model's `run_in_pane` is typed into the target pane without a prompt, and **lazarobox still never presses Enter**: the line waits in your shell, and you run it (or clear it) yourself. Reads and everything else keep their usual approval.
+
+- Toggle it for the focused chat with `Ctrl+Space`, then `a` (it also works while an approval is waiting, which stays waiting). A system line in the chat says which mode is on.
+- A chat in auto mode wears a red ` AUTO ` badge at the top right of its pane, focused or not. Nothing is drawn in `ask` mode, or with tools off.
+- `approval = "ask"` or `"auto"` in `[ai.tools]` sets the mode a chat starts with; anything else falls back to `ask` with a notice at startup. The mode of a chat lasts for its conversation: opening another conversation from the list, or starting a new one, goes back to the configured value. The toggle never writes the file, and a changed `config.toml` only reaches panes and conversations opened afterwards.
+- The command is typed through the same checks as `y`: it must pass the command validator, the pane must be a shell of the chat's tab outside a full-screen app, and a multi-line command needs bracketed paste. A check that fails gives the model a `denied` result with the reason and writes nothing. The call row in the chat always shows the exact command.
+- The command is only typed when the shell itself is in the foreground of the pane; if a program runs there (`python3`, `ssh`, a nested shell), or the foreground cannot be read, the call is denied (`pane N is running a program`). The pane of an update (`cargo install`) is never a target.
+- It falls back to the normal prompt, never to a denial, when: the target pane has the focus (you may be typing in it); the chat's tab is not the one shown, or is zoomed onto another pane (you could not see the typing); a previous auto-typed command still sits unsent on that pane; or five commands were already typed in this turn. The unsent mark clears when you press Enter, `Ctrl+C` or `Ctrl+U` in that pane, paste text with a newline into it while the shell has bracketed paste off (inside bracketed paste a newline runs nothing), or close it. A command you typed with `y` marks its pane the same way. Backspace and other keys leave it set, so after you edit the line the next command still asks.
+- An approval already waiting is never answered by the mode, and a call that arrives while one waits is denied (`another approval is pending`).
+
+Residual risks (design D18), so you can decide if auto is for you:
+
+- A typed command lands after a line you left half-typed in an unfocused pane: the typed text is appended to it, and lazarobox only knows about lines it typed itself.
+- A program that acts on input without Enter (vi mode of readline or zle in normal state, a pager, a TUI outside the alternate screen) can react to the typed text. Bracketed paste makes readline and zle insert it literally; without it only single lines are typed.
+- The foreground check cannot see a shell builtin that reads your input (`read`, `select`): the shell is still the foreground process, so the text is typed into what the builtin is waiting for.
+- The foreground check happens just before the write; a program started in those microseconds is not covered.
+- A model can still type a destructive command that you then run by reflex. The badge, the tool row with the exact command and the system line are the mitigations, and `ask` stays the default.
 
 ### Motores CLI: claude, codex y gemini
 

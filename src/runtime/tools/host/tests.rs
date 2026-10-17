@@ -248,6 +248,39 @@ async fn a_sent_run_says_that_enter_is_the_users() {
     assert_eq!(pair(&events(&mut rx)).2, ToolStatus::Ok);
 }
 
+// Spec (agent-tools, auto-type): the rows name the pane.
+#[tokio::test]
+async fn an_auto_typed_run_names_the_pane_in_its_result_row() {
+    let (_dir, home, host) = fixture();
+    let (mut scope, mut rx) = scope(Locality::Cloud, &home);
+    scope.approver = Scripted::new(Decision::Typed(3));
+    let out = host.dispatch(scope).call(run_cmd("cd dev")).await;
+    assert!(!out.is_error && out.text.contains("Enter"), "{out:?}");
+    let (_, _, status, summary) = pair(&events(&mut rx));
+    assert_eq!(
+        (status, summary.as_str()),
+        (ToolStatus::Ok, "typed into pane 3 \u{2014} no Enter")
+    );
+}
+
+#[tokio::test]
+async fn a_busy_pane_is_denied_by_its_number() {
+    let (_dir, home, host) = fixture();
+    let (mut scope, mut rx) = scope(Locality::Cloud, &home);
+    scope.approver = Scripted::new(Decision::Busy(2));
+    let out = host.dispatch(scope).call(run_cmd("cd dev")).await;
+    assert!(out.is_error);
+    assert!(
+        out.text.contains("denied: pane 2 is running a program"),
+        "{out:?}"
+    );
+    let (_, _, status, summary) = pair(&events(&mut rx));
+    assert_eq!(
+        (status, summary.as_str()),
+        (ToolStatus::Denied, "pane 2 is running a program")
+    );
+}
+
 #[tokio::test]
 async fn a_command_the_sanitizer_refuses_is_an_error_and_never_asked() {
     let (_dir, home, host) = fixture();

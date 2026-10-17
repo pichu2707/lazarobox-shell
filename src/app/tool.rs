@@ -4,15 +4,17 @@
 //! pane, turn and id.
 //!
 //! `on_tool_ask` is the single place an ask enters the app. It always opens
-//! the overlay today; the chat approval mode (D18) will route there first.
+//! the overlay, unless the chat is in `auto` mode and `approval::route` says
+//! the command can be typed at once (D18).
 
 use std::time::Duration;
 
 use super::*;
 use crate::core::ai::chat::{
-    approval::{Approval, ApprovalAsk, Origin},
-    engine::{CallId, Decision, Tools, tools_for},
+    approval::{Approval, ApprovalAsk, AutoCtx, Origin, Route, route},
+    engine::{CallId, Decision, ToolStatus, Tools, tools_for},
 };
+use crate::core::ai::config::ApprovalMode;
 
 /// Why a call is denied without the user being asked, or when a refusal has no
 /// other reason to give. Short, and it goes back to the model.
@@ -22,6 +24,8 @@ pub(super) const CANCELLED: &str = "cancelled";
 /// user was already typing cannot answer it.
 pub(super) const ARM_DELAY: Duration = Duration::from_millis(400);
 const TOOLS_OFF: &str = "tools are off";
+const APPROVAL_CHAT_ONLY: &str = "The approval mode is for chat panes; open one with Ctrl+Space c";
+const APPROVAL_TOOLS_OFF: &str = "Tools are off: there is no approval mode to change";
 const TURN_OVER: &str = "the turn is over";
 const NO_SHELL: &str = "there is no shell pane in this tab";
 const NO_USER_TOOLS: &str = "user tools are not available";
@@ -32,7 +36,7 @@ pub(super) enum ToolEvent {
     /// The call is announced and needs the user.
     Ask(CallId, ApprovalAsk),
     /// The call ended: whatever waited for it is stale.
-    Over(CallId),
+    Over(CallId, ToolStatus),
 }
 
 impl ToolEvent {
@@ -43,7 +47,7 @@ impl ToolEvent {
                 approval: Some(ask),
                 ..
             } => Some(Self::Ask(*id, (**ask).clone())),
-            StreamEvent::ToolResult { id, .. } => Some(Self::Over(*id)),
+            StreamEvent::ToolResult { id, status, .. } => Some(Self::Over(*id, *status)),
             _ => None,
         }
     }
@@ -86,8 +90,12 @@ impl App {
             self.withdraw_tool_approval(id, |(t, _)| t == turn);
         }
         match event {
-            Some(ToolEvent::Over(call)) => {
+            Some(ToolEvent::Over(call, status)) => {
                 self.withdraw_tool_approval(id, |key| key == (turn, call));
+                // A refused write left nothing on the line.
+                if status == ToolStatus::Denied {
+                    self.clear_line_pending(|marked| marked == call);
+                }
                 Vec::new()
             }
             Some(ToolEvent::Ask(call, ask)) if live => self.on_tool_ask(id, turn, call, ask),
@@ -122,6 +130,11 @@ impl App {
             ApprovalAsk::Read { .. } => None,
             ApprovalAsk::External { .. } => return Self::deny(id, turn, call, NO_USER_TOOLS),
         };
+        if let (ApprovalAsk::Run { command }, Some(target)) = (&ask, target)
+            && self.auto_route(id, target, &ask) == Route::AutoType
+        {
+            return self.auto_type(id, (turn, call), target, command);
+        }
         let armed_at = (self.clock)() + ARM_DELAY;
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Self::deny(id, turn, call, CHAT_GONE);
@@ -134,6 +147,108 @@ impl App {
                 Vec::new()
             }
             Err(refusal) => Self::deny(id, turn, call, refusal.reason()),
+        }
+    }
+
+    /// What chat `id` does with a model's `ask` for `target`: the mode and the
+    /// flood limits decide (see `approval::route`). A pending approval is not
+    /// the mode's to answer, so it prompts, and the request is then refused.
+    fn auto_route(&self, id: PaneId, target: PaneId, ask: &ApprovalAsk) -> Route {
+        let Some(chat) = self.panes.get(&id).and_then(PaneState::chat_state) else {
+            return Route::Prompt;
+        };
+        if chat.approvals().pending().is_some() {
+            return Route::Prompt;
+        }
+        let ctx = AutoCtx {
+            typed_this_turn: chat.auto_typed(),
+            line_pending: (self.panes.get(&target).and_then(PaneState::pty))
+                .is_some_and(|pty| pty.line_pending.is_some()),
+            target_focused: self.tab().focus == target,
+            // A zoomed tab draws only the focused pane, never the target.
+            tab_shown: !self.tab().zoom && self.tab().tree.leaves().contains(&id),
+        };
+        route(ask, Origin::Tool, chat.approval_mode(), ctx)
+    }
+
+    /// Types a model's command into `target` without a prompt: the same
+    /// checks as `y`, then one `Effect::AutoType` and the marks that stop the
+    /// next command from landing on this line, all before the runtime acts.
+    /// A check that fails denies the call with its reason.
+    fn auto_type(
+        &mut self,
+        id: PaneId,
+        (turn, call): (u64, CallId),
+        target: PaneId,
+        command: &str,
+    ) -> Vec<Effect> {
+        let bytes = match self.typed_bytes(target, command) {
+            Ok(bytes) => bytes,
+            Err(refused) => return Self::deny(id, turn, call, refused.reason),
+        };
+        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+            chat.note_auto_typed();
+        }
+        if let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) {
+            pty.line_pending = Some(call);
+        }
+        self.dirty = true;
+        vec![Effect::AutoType {
+            chat: id,
+            target,
+            bytes,
+            number: self.pane_number(target).unwrap_or(0),
+            turn,
+            call,
+        }]
+    }
+
+    /// `Prefix a`: flips the focused chat between `ask` and `auto`.
+    /// Works in any chat view and with an approval pending (which it leaves
+    /// alone); a shell pane, or tools off, only gets a notice.
+    pub(super) fn toggle_approval(&mut self) -> Vec<Effect> {
+        if !self.focused_is_chat() {
+            self.notice = Some(APPROVAL_CHAT_ONLY.to_owned());
+            return Vec::new();
+        }
+        if !self.ai.tools_enabled() {
+            self.notice = Some(APPROVAL_TOOLS_OFF.to_owned());
+            return Vec::new();
+        }
+        let Some(chat) = self.focused_state_mut().chat_mut() else {
+            return Vec::new();
+        };
+        let mode = chat.approval_mode().flipped();
+        chat.set_approval_mode(mode);
+        chat.push_system_line(match mode {
+            ApprovalMode::Auto => "approval: auto (commands are typed, never run)".to_owned(),
+            ApprovalMode::Ask => "approval: ask".to_owned(),
+        });
+        self.dirty = true;
+        Vec::new()
+    }
+
+    /// Clears the line-pending mark of every shell pane whose marked call
+    /// `stale` names.
+    fn clear_line_pending(&mut self, stale: impl Fn(CallId) -> bool) {
+        for pty in self.panes.values_mut().filter_map(PaneState::pty_mut) {
+            if pty.line_pending.is_some_and(&stale) {
+                pty.line_pending = None;
+            }
+        }
+    }
+
+    /// The user is about to send to the focused pane: Enter, Ctrl+C or Ctrl+U
+    /// ends the line an auto-typed command was waiting on. Read from the key
+    /// event, so a child's keyboard protocol does not matter.
+    pub(super) fn note_user_key(&mut self, key: &KeyEvent) {
+        let sends = match key.code {
+            KeyCode::Enter => true,
+            KeyCode::Char('c' | 'u') => key.modifiers.contains(KeyModifiers::CONTROL),
+            _ => false,
+        };
+        if sends && let Some(pty) = self.focused_state_mut().pty_mut() {
+            pty.line_pending = None;
         }
     }
 

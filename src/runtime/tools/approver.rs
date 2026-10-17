@@ -72,6 +72,14 @@ impl Waits {
         }
     }
 
+    /// Claims the answer of the call that waits under the key: nobody else
+    /// can answer it now. `None` when nothing waits (the turn ended, the call
+    /// was cancelled or answered). An effect that must happen only if the call
+    /// is still owed an answer takes the wait first and sends on the result.
+    pub fn take(&self, pane: PaneId, turn: u64, call: CallId) -> Option<oneshot::Sender<Decision>> {
+        self.map().remove(&(pane, turn, call))
+    }
+
     /// Denies every call of `pane`: its chat closed.
     pub fn end_pane(&self, pane: PaneId) {
         self.map().retain(|(p, _, _), _| *p != pane);
@@ -178,6 +186,34 @@ mod tests {
         }
         assert!((&mut wait).now_or_never().is_none(), "still waiting");
         assert!(waits.decide(pane(1), 2, CallId(5), Decision::Sent));
+    }
+
+    // The claim comes before an effect: whoever takes the wait owns the one
+    // answer, and nobody else can answer it.
+    #[tokio::test]
+    async fn taking_a_wait_leaves_the_one_answer_to_the_taker() {
+        let waits = Waits::new();
+        let wait = waits
+            .approver(pane(1), 1, Pending::new())
+            .ask(CallId(1), &ASK);
+        let sender = waits.take(pane(1), 1, CallId(1)).expect("it waits");
+        assert!(waits.take(pane(1), 1, CallId(1)).is_none(), "taken once");
+        assert!(!waits.decide(pane(1), 1, CallId(1), Decision::Sent));
+        assert!(sender.send(Decision::Sent).is_ok());
+        assert_eq!(wait.await, Decision::Sent);
+        assert_eq!(waits.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn nothing_can_be_taken_from_a_wait_that_ended() {
+        let waits = Waits::new();
+        let approver = waits.approver(pane(1), 1, Pending::new());
+        let (ended, dropped) = (approver.ask(CallId(1), &ASK), approver.ask(CallId(2), &ASK));
+        waits.end_turn(pane(1), 1);
+        assert!(waits.take(pane(1), 1, CallId(1)).is_none());
+        drop(dropped);
+        assert!(waits.take(pane(1), 1, CallId(2)).is_none());
+        assert_eq!(ended.await, Decision::Denied(ENDED));
     }
 
     #[tokio::test]

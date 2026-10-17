@@ -364,6 +364,12 @@ impl ChatState {
         self.approval_mode = mode;
     }
 
+    /// Whether the pane wears the `AUTO` badge: auto mode, and only while the
+    /// tools are on (the run hint is that flag).
+    pub fn auto_badge(&self) -> bool {
+        self.run_hint && self.approval_mode == ApprovalMode::Auto
+    }
+
     /// Commands typed without a prompt in the turn in flight.
     pub fn auto_typed(&self) -> u8 {
         self.auto_typed

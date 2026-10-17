@@ -3,23 +3,26 @@
 
 use crate::core::{ai::chat::engine::Decision, pty::PtyHandle};
 
-/// Why nothing was typed into a pane that is busy or cannot be inspected.
-pub const BUSY: &str = "the pane is running a program";
 /// Why nothing was typed into a pane that no longer exists.
 pub const GONE: &str = "the pane is gone";
 
-/// Writes `bytes` to `pane` when its shell is in the foreground and answers
-/// `Sent`; otherwise writes nothing and answers `Denied`. An unknown
-/// foreground (an error, a target without process groups) is a denial.
-pub fn type_if_idle(pane: Option<&mut Box<dyn PtyHandle>>, bytes: Vec<u8>) -> Decision {
+/// Writes `bytes` to `pane` (which the user knows as number `number`) when its
+/// shell is in the foreground and answers `Typed`; otherwise writes nothing
+/// and answers `Busy` (or `Denied` for a pane that is gone). An unknown
+/// foreground (an error, a target without process groups) is `Busy`.
+pub fn type_if_idle(
+    pane: Option<&mut Box<dyn PtyHandle>>,
+    number: usize,
+    bytes: Vec<u8>,
+) -> Decision {
     let Some(pane) = pane else {
         return Decision::Denied(GONE);
     };
     if pane.shell_in_foreground() != Some(true) {
-        return Decision::Denied(BUSY);
+        return Decision::Busy(number);
     }
     pane.write(bytes);
-    Decision::Sent
+    Decision::Typed(number)
 }
 
 #[cfg(test)]
@@ -41,8 +44,8 @@ mod tests {
     #[test]
     fn the_shell_in_the_foreground_gets_the_bytes_and_the_call_is_sent() {
         let (mut pane, log) = pty(Some(true));
-        let decision = type_if_idle(Some(&mut pane), b"cd x".to_vec());
-        assert_eq!(decision, Decision::Sent);
+        let decision = type_if_idle(Some(&mut pane), 3, b"cd x".to_vec());
+        assert_eq!(decision, Decision::Typed(3));
         assert_eq!(log.lock().unwrap().writes, vec![b"cd x".to_vec()]);
     }
 
@@ -50,14 +53,17 @@ mod tests {
     fn a_child_in_the_foreground_or_an_unknown_one_is_denied_and_nothing_is_written() {
         for foreground in [Some(false), None] {
             let (mut pane, log) = pty(foreground);
-            let decision = type_if_idle(Some(&mut pane), b"cd x".to_vec());
-            assert_eq!(decision, Decision::Denied(BUSY), "{foreground:?}");
+            let decision = type_if_idle(Some(&mut pane), 2, b"cd x".to_vec());
+            assert_eq!(decision, Decision::Busy(2), "{foreground:?}");
             assert!(log.lock().unwrap().writes.is_empty(), "{foreground:?}");
         }
     }
 
     #[test]
     fn a_pane_that_is_gone_is_denied() {
-        assert_eq!(type_if_idle(None, b"cd x".to_vec()), Decision::Denied(GONE));
+        assert_eq!(
+            type_if_idle(None, 1, b"cd x".to_vec()),
+            Decision::Denied(GONE)
+        );
     }
 }
