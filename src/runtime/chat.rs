@@ -301,11 +301,11 @@ pub(crate) fn adapter_runner_at(port: Option<u16>) -> Runner {
 }
 
 /// The runner over an explicit machine: the port of server engines (when
-/// overridden), the environment CLI engines run in and the host that runs the
-/// tool calls of a turn. A turn that offers tools builds its
-/// [`Dispatch`](crate::runtime::mcp::Dispatch) from the host with
-/// `ToolHost::dispatch`; a turn that does not (every turn today) never
-/// touches it, so the requests stay as they were without tools.
+/// overridden), the environment CLI engines run in and the host for the direct
+/// tool loop of a server engine (not used yet). The tool session of a CLI turn
+/// is not made here but by [`Chats::send`], which knows the pane and turn; a
+/// turn without `Tools::On` never touches either, so its requests stay as they
+/// were without tools.
 pub fn runner_with(port: Option<u16>, cli: CliEnv, tools: Option<Arc<ToolHost>>) -> Runner {
     Arc::new(move |request, tx| {
         let cli = cli.clone();

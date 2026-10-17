@@ -298,6 +298,9 @@ pub struct ChatState {
     run_target: Option<PaneId>,
     /// Draw the `run in pane` hint under the last shell block (tools are on).
     run_hint: bool,
+    /// The turn last sent offered tools, so the runtime may hold a tool
+    /// session for this chat until the app ends it.
+    tool_session: bool,
 }
 
 impl ChatState {
@@ -334,7 +337,22 @@ impl ChatState {
             approvals: approval::Approvals::default(),
             run_target: None,
             run_hint: false,
+            tool_session: false,
         }
+    }
+
+    /// Whether the runtime may hold a tool session for this chat.
+    pub fn tool_session(&self) -> bool {
+        self.tool_session
+    }
+
+    pub fn set_tool_session(&mut self, on: bool) {
+        self.tool_session = on;
+    }
+
+    /// Reads and clears the flag: the caller ends the session once.
+    pub fn take_tool_session(&mut self) -> bool {
+        std::mem::take(&mut self.tool_session)
     }
 
     /// Adds a transient system line: shown in the transcript, never stored

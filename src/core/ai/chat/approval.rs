@@ -8,7 +8,10 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::core::ai::tools::{Call, Locality, command::Refusal};
+use crate::core::ai::{
+    chat::engine::CallId,
+    tools::{Call, Locality, command::Refusal},
+};
 
 /// Ids come from one counter for the whole process, so an `Approvals` that is
 /// rebuilt (a chat reopened, a state replaced) never hands out an id an older
@@ -96,6 +99,9 @@ pub struct Approval {
     id: u64,
     ask: ApprovalAsk,
     origin: Origin,
+    /// The tool call this approval answers: its turn and call id. `None` for
+    /// an action the user started.
+    call: Option<(u64, CallId)>,
 }
 
 impl Approval {
@@ -111,6 +117,11 @@ impl Approval {
 
     pub fn origin(&self) -> Origin {
         self.origin
+    }
+
+    /// The turn and call of the tool call that waits for this approval.
+    pub fn call(&self) -> Option<(u64, CallId)> {
+        self.call
     }
 }
 
@@ -135,9 +146,17 @@ pub enum Press {
 pub struct ApprovalPrompt {
     /// Where it goes: `run in pane 2 (~/dev)`.
     pub target: String,
-    /// The exact command, as it will be written.
+    /// The exact action, as it will be done: the command to type, or
+    /// `read <path>`.
     pub command: String,
+    /// The keys line.
+    pub keys: &'static str,
 }
+
+/// The keys of a run prompt.
+pub const RUN_KEYS: &str = "y type it (no Enter) · n cancel · p next pane";
+/// The keys of a read prompt.
+pub const READ_KEYS: &str = "y read it · n deny";
 
 /// The pending approval of a chat, if any.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -154,11 +173,37 @@ impl Approvals {
     /// Ask the user and return the id of the new approval. Refused with
     /// [`ANOTHER_PENDING`] when one is pending; the first stays pending.
     pub fn request(&mut self, ask: ApprovalAsk, origin: Origin) -> Result<u64, Refusal> {
+        self.open(ask, origin, None)
+    }
+
+    /// Like [`request`](Self::request) for the tool call `call` of turn
+    /// `turn`: the origin is [`Origin::Tool`], and the answer is reported
+    /// under that turn and call.
+    pub fn request_call(
+        &mut self,
+        ask: ApprovalAsk,
+        turn: u64,
+        call: CallId,
+    ) -> Result<u64, Refusal> {
+        self.open(ask, Origin::Tool, Some((turn, call)))
+    }
+
+    fn open(
+        &mut self,
+        ask: ApprovalAsk,
+        origin: Origin,
+        call: Option<(u64, CallId)>,
+    ) -> Result<u64, Refusal> {
         if self.pending.is_some() {
             return Err(Refusal::new(ANOTHER_PENDING));
         }
         let id = next_id();
-        self.pending = Some(Approval { id, ask, origin });
+        self.pending = Some(Approval {
+            id,
+            ask,
+            origin,
+            call,
+        });
         Ok(id)
     }
 
@@ -234,6 +279,24 @@ mod tests {
         let p = a.pending().unwrap();
         assert_eq!(p.ask(), &run("ls"));
         assert_eq!(p.origin(), Origin::Block);
+    }
+
+    #[test]
+    fn a_tool_request_names_its_turn_and_call() {
+        let mut a = Approvals::default();
+        a.request_call(run("ls"), 4, CallId(9)).unwrap();
+        let p = a.pending().unwrap();
+        assert_eq!((p.origin(), p.call()), (Origin::Tool, Some((4, CallId(9)))));
+        let err = a.request_call(run("pwd"), 4, CallId(10)).unwrap_err();
+        assert_eq!(err.reason(), ANOTHER_PENDING);
+        assert_eq!(a.pending().unwrap().call(), Some((4, CallId(9))));
+    }
+
+    #[test]
+    fn a_user_request_names_no_call() {
+        let mut a = Approvals::default();
+        a.request(run("ls"), Origin::Block).unwrap();
+        assert_eq!(a.pending().unwrap().call(), None);
     }
 
     #[test]

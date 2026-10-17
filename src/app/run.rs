@@ -1,13 +1,17 @@
 //! Run in pane: the confirm that types a command of a chat into a shell pane.
 //! The confirm only types; lazarobox never sends Enter.
 
-use super::*;
+use super::{
+    tool::{CANCELLED, DECLINED},
+    *,
+};
 use crate::core::ai::{
     chat::{
         approval::{
-            Approval, ApprovalAsk, ApprovalPrompt, Origin, Press, RUN_CANCELLED, Reply,
-            run_sent_line,
+            Approval, ApprovalAsk, ApprovalPrompt, Origin, Press, READ_KEYS, RUN_CANCELLED,
+            RUN_KEYS, Reply, run_sent_line,
         },
+        engine::Decision,
         yank,
     },
     sanitize,
@@ -24,6 +28,14 @@ const TARGET_GONE: &str = "That pane is gone: press p to pick another";
 const NO_PASTE_MODE: &str = "The shell cannot take a multi-line command safely";
 const ANSWER_FIRST: &str = "Answer the pending confirm first";
 const ALREADY_OPEN: &str = "A confirm is already open: answer it first";
+const TOOLS_OFF_REASON: &str = "tools are off";
+
+/// A command that was not typed: what the user sees, and why, in the short
+/// words that go back to the model when a tool call asked for it.
+struct Refused {
+    notice: String,
+    reason: &'static str,
+}
 
 impl App {
     /// Brings the chats in line with `[ai.tools]`: tools off ends every
@@ -31,15 +43,25 @@ impl App {
     /// blocks; tools on shows it again.
     pub(super) fn sync_tools(&mut self) -> Vec<Effect> {
         let on = self.ai.tools_enabled();
-        for chat in self.panes.values_mut().filter_map(PaneState::chat_mut) {
+        let mut effects = Vec::new();
+        for (&id, state) in &mut self.panes {
+            let Some(chat) = state.chat_mut() else {
+                continue;
+            };
             chat.set_run_hint(on);
-            if !on && let Some(id) = chat.approvals().pending().map(Approval::id) {
-                chat.approvals_mut().withdraw(id);
+            if !on && let Some(approval) = chat.approvals().pending().cloned() {
+                chat.approvals_mut().withdraw(approval.id());
                 chat.set_run_target(None);
+                // A tool call that waited for it is told, so it ends now.
+                effects.extend(Self::answer(
+                    id,
+                    &approval,
+                    Decision::Denied(TOOLS_OFF_REASON),
+                ));
             }
         }
         self.dirty = true;
-        Vec::new()
+        effects
     }
 
     /// Whether chat `id` has an approval waiting for an answer.
@@ -83,18 +105,16 @@ impl App {
             return Vec::new();
         }
         match (key.code, key.modifiers) {
-            (KeyCode::Char('y'), KeyModifiers::NONE) => self.approve_run(id),
-            (KeyCode::Char('n') | KeyCode::Esc, KeyModifiers::NONE) => {
-                self.close_approval(id, Reply::Decline);
-                Vec::new()
-            }
+            (KeyCode::Char('y'), KeyModifiers::NONE) => self.approve(id),
+            (KeyCode::Char('n') | KeyCode::Esc, KeyModifiers::NONE) => self.decline(id, DECLINED),
             (KeyCode::Char('p'), KeyModifiers::NONE) => {
                 self.cycle_run_target(id);
                 Vec::new()
             }
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                self.close_approval(id, Reply::Decline);
-                self.chat_cancel_key(id)
+                let mut effects = self.decline(id, CANCELLED);
+                effects.extend(self.chat_cancel_key(id));
+                effects
             }
             _ => Vec::new(),
         }
@@ -108,16 +128,44 @@ impl App {
             .approvals_mut()
             .answer(approval_id, reply, Press::Press)?;
         chat.set_run_target(None);
-        if reply == Reply::Decline {
+        // A tool call has its own result row; only the user's own action
+        // leaves a line behind.
+        if reply == Reply::Decline && approval.call().is_none() {
             chat.push_system_line(RUN_CANCELLED.to_owned());
         }
         Some(approval)
     }
 
-    /// `y`: types the command into the target pane. The target is rechecked
-    /// now, not when the confirm opened: it must still be a shell pane of
-    /// this tab and not run a full-screen app, and the paste framing follows
-    /// its present state. One accept is one write; nothing ever sends Enter.
+    /// `n`, Esc and Ctrl+C: ends the approval and, for a tool call, tells it
+    /// why nothing was done.
+    fn decline(&mut self, id: PaneId, reason: &'static str) -> Vec<Effect> {
+        self.close_approval(id, Reply::Decline)
+            .and_then(|approval| Self::answer(id, &approval, Decision::Denied(reason)))
+            .into_iter()
+            .collect()
+    }
+
+    /// `y`: a run types the command; a read (or another tool) is allowed.
+    fn approve(&mut self, id: PaneId) -> Vec<Effect> {
+        let is_run = (self.panes.get(&id))
+            .and_then(PaneState::chat_state)
+            .and_then(|chat| chat.approvals().pending())
+            .is_some_and(|approval| matches!(approval.ask(), ApprovalAsk::Run { .. }));
+        if is_run {
+            return self.approve_run(id);
+        }
+        self.close_approval(id, Reply::Approve)
+            .and_then(|approval| Self::answer(id, &approval, Decision::Sent))
+            .into_iter()
+            .collect()
+    }
+
+    /// `y` on a run: types the command into the target pane. The target is
+    /// rechecked now, not when the confirm opened: it must still be a shell
+    /// pane of this tab and not run a full-screen app, and the paste framing
+    /// follows its present state. One accept is one write; nothing ever sends
+    /// Enter. A tool call is answered `Sent` only when the command was written;
+    /// a check that fails answers it `Denied` with the reason.
     fn approve_run(&mut self, id: PaneId) -> Vec<Effect> {
         let Some(target) = self
             .panes
@@ -136,36 +184,59 @@ impl App {
         let ApprovalAsk::Run { command } = approval.ask() else {
             return Vec::new();
         };
-        let command = match validate(command) {
-            Ok(command) => command,
-            Err(refusal) => {
-                self.notice = Some(format!("Command refused: {}", refusal.reason()));
-                return Vec::new();
+        let mut effects = Vec::new();
+        let decision = match self.type_command(target, command) {
+            Ok(bytes) => {
+                let number = self.pane_number(target).unwrap_or(0);
+                if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
+                    chat.push_system_line(run_sent_line(number));
+                }
+                effects.push(Effect::WritePty(target, bytes));
+                Decision::Sent
+            }
+            Err(refused) => {
+                self.notice = Some(refused.notice);
+                Decision::Denied(refused.reason)
             }
         };
+        effects.extend(Self::answer(id, &approval, decision));
+        effects
+    }
+
+    /// The accept-time checks of a command bound for `target`, and the bytes
+    /// to write when they pass. Shared by every way a command gets typed.
+    fn type_command(&mut self, target: PaneId, command: &str) -> Result<Vec<u8>, Refused> {
+        let command = validate(command).map_err(|refusal| Refused {
+            notice: format!("Command refused: {}", refusal.reason()),
+            reason: "the command was refused",
+        })?;
         let number = self.pane_number(target).unwrap_or(0);
         let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) else {
-            return Vec::new();
+            return Err(Refused {
+                notice: TARGET_GONE.to_owned(),
+                reason: "the pane is gone",
+            });
         };
         if pty.emu.mouse_facts().alt_screen {
-            self.notice = Some(format!("Pane {number} runs a full-screen app"));
-            return Vec::new();
+            return Err(Refused {
+                notice: format!("Pane {number} runs a full-screen app"),
+                reason: "the pane runs a full-screen app",
+            });
         }
         let text = command.as_str();
         let modes = pty.emu.modes();
         let bytes = if modes.bracketed_paste {
             encode_paste(text, modes)
         } else if text.contains(['\n', '\t']) {
-            self.notice = Some(NO_PASTE_MODE.to_owned());
-            return Vec::new();
+            return Err(Refused {
+                notice: NO_PASTE_MODE.to_owned(),
+                reason: "the shell cannot take a multi-line command safely",
+            });
         } else {
             text.as_bytes().to_vec()
         };
         pty.emu.set_scrollback(0);
-        if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
-            chat.push_system_line(run_sent_line(number));
-        }
-        vec![Effect::WritePty(target, bytes)]
+        Ok(bytes)
     }
 
     /// `p`: the next shell pane of the tab becomes the target, with wrap.
@@ -174,6 +245,13 @@ impl App {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return;
         };
+        // Only a command has a target pane to pick.
+        if !matches!(
+            chat.approvals().pending().map(Approval::ask),
+            Some(ApprovalAsk::Run { .. })
+        ) {
+            return;
+        }
         let next = match chat
             .run_target()
             .and_then(|t| shells.iter().position(|p| *p == t))
@@ -242,8 +320,11 @@ impl App {
 
     /// The shell panes of the active tab, in layout order.
     fn shell_panes(&self) -> Vec<PaneId> {
-        self.tab()
-            .tree
+        self.shell_panes_in(self.tab())
+    }
+
+    fn shell_panes_in(&self, tab: &Tab) -> Vec<PaneId> {
+        tab.tree
             .leaves()
             .into_iter()
             .filter(|pane| self.is_shell(*pane))
@@ -254,9 +335,14 @@ impl App {
     /// the focus in this tab, else the first shell of the tab. A chat or a
     /// pane of another tab is never chosen.
     fn default_run_target(&self) -> Option<PaneId> {
-        let shells = self.shell_panes();
-        self.tab()
-            .last_shell
+        self.default_run_target_in(self.tab())
+    }
+
+    /// `default_run_target` for any tab: a chat that is not on screen types
+    /// into the shells of its own tab.
+    pub(super) fn default_run_target_in(&self, tab: &Tab) -> Option<PaneId> {
+        let shells = self.shell_panes_in(tab);
+        tab.last_shell
             .filter(|pane| shells.contains(pane))
             .or_else(|| shells.first().copied())
     }
@@ -265,14 +351,23 @@ impl App {
     /// pane by its number in the tab and its cwd, and the exact command.
     pub fn approval_prompt(&self, id: PaneId) -> Option<ApprovalPrompt> {
         let chat = self.panes.get(&id)?.chat_state()?;
-        let ApprovalAsk::Run { command } = chat.approvals().pending()?.ask() else {
-            return None;
-        };
-        let target = chat.run_target().and_then(|pane| self.pane_label(pane));
-        Some(ApprovalPrompt {
-            target: target.unwrap_or_else(|| "target pane is gone".to_owned()),
-            command: command.clone(),
-        })
+        match chat.approvals().pending()?.ask() {
+            ApprovalAsk::Run { command } => {
+                let target = chat.run_target().and_then(|pane| self.pane_label(pane));
+                Some(ApprovalPrompt {
+                    target: target.unwrap_or_else(|| "target pane is gone".to_owned()),
+                    command: command.clone(),
+                    keys: RUN_KEYS,
+                })
+            }
+            // The path was resolved and made safe to show before it was asked.
+            ApprovalAsk::Read { path } => Some(ApprovalPrompt {
+                target: "send a file's text to the engine".to_owned(),
+                command: format!("read {path}"),
+                keys: READ_KEYS,
+            }),
+            ApprovalAsk::External { .. } => None,
+        }
     }
 
     /// `run in pane N (<cwd>)` for a shell pane of the active tab; `None`

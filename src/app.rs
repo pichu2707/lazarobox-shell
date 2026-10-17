@@ -12,7 +12,7 @@ use crate::core::{
         chat::{
             ChatState, Follow, Phase,
             copy::ChatCopy,
-            engine::{CallId, ChatRequest, Decision, StreamEvent},
+            engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, StreamEvent},
             notify::{Ended, body, plays_sound, should_notify},
             prompts::Resolved,
             store::{StoreCmd, StoreReply},
@@ -51,6 +51,9 @@ mod run;
 mod scroll;
 mod summary;
 mod tags;
+mod tool;
+
+use tool::ToolEvent;
 
 /// Rows of history kept by the emulator.
 const SCROLLBACK_LINES: usize = 10_000;
@@ -527,6 +530,8 @@ pub struct App {
     /// reasoning toggle): a terminal without key event types delivers a held
     /// key as Presses.
     held_chat_key: Option<HeldExit>,
+    /// The engines whose requests carry tools (`MCP_VERIFIED`).
+    tool_engines: &'static [&'static str],
     /// Monotonic clock, injected so `update` stays deterministic.
     clock: fn() -> Instant,
     /// A fresh engram session id, injected so the core does no IO: the
@@ -620,6 +625,7 @@ impl App {
             shell: None,
             held_exit: None,
             held_chat_key: None,
+            tool_engines: MCP_VERIFIED,
             clock: Instant::now,
             session_id: || None,
             token_check: || false,
@@ -639,6 +645,13 @@ impl App {
             no_server: None,
             history: false,
         }
+    }
+
+    /// Test-only: the engines whose requests carry tools.
+    #[cfg(test)]
+    fn with_tool_engines(mut self, engines: &'static [&'static str]) -> Self {
+        self.tool_engines = engines;
+        self
     }
 
     /// Starts with the AI choice saved in `config.toml`.
@@ -1947,6 +1960,7 @@ impl App {
             StreamEvent::Done(_) => Ended::Done,
             _ => Ended::Error,
         };
+        let tool = ToolEvent::of(&event);
         let follow = chat.apply(turn, event);
         let finished = live && chat.phase() == Phase::Idle;
         self.dirty |= live;
@@ -1954,8 +1968,9 @@ impl App {
         let mut effects = self.store_effects(id);
         if follow == Follow::CancelEngine {
             // The state ended the turn itself (answer cap): stop the engine.
-            effects.push(Effect::ChatCancel(id));
+            effects.extend(self.cancel_chat(id));
         }
+        effects.extend(self.on_tool_event(id, turn, (live, finished), tool));
         // A turn ends once: later events of it are dropped above, so a pane
         // rings at most once per answer.
         let focus = self.tab().focus;
@@ -2099,7 +2114,7 @@ impl App {
                 let id = self.tab().focus;
                 let stop = self.stop_effect(id);
                 let mut effects = self.remove_pane(id);
-                effects.push(stop);
+                effects.extend(stop);
                 effects
             }
         }
@@ -2111,7 +2126,7 @@ impl App {
             return self.quit_effects();
         }
         let stops: Vec<_> = (self.tab().tree.leaves().into_iter())
-            .map(|id| self.stop_effect(id))
+            .flat_map(|id| self.stop_effect(id))
             .collect();
         let mut effects = self.drop_tab(self.active);
         effects.extend(stops);
@@ -2121,12 +2136,14 @@ impl App {
     /// What ends the work behind pane `id` when it closes: a shell's child is
     /// terminated, a chat's turn is cancelled. A chat has no child, so it
     /// never gets `ClosePane`.
-    fn stop_effect(&self, id: PaneId) -> Effect {
+    fn stop_effect(&self, id: PaneId) -> Vec<Effect> {
         if self.is_shell(id) {
-            Effect::ClosePane(id)
-        } else {
-            Effect::ChatCancel(id)
+            return vec![Effect::ClosePane(id)];
         }
+        let session = (self.panes.get(&id))
+            .and_then(PaneState::chat_state)
+            .is_some_and(ChatState::tool_session);
+        Self::stop_chat(id, session)
     }
 
     fn on_copy_key(&mut self, mut state: CopyState, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
@@ -7138,6 +7155,9 @@ mod app_tests {
 
     /// Run in pane: the confirm that types a chat's shell block.
     mod run_pane;
+
+    /// Tool calls that need the user, answered through the same overlay.
+    mod tool_approval;
 
     /// The keys, rechecks and lifecycle of the run-in-pane confirm.
     mod run_pane_keys;
