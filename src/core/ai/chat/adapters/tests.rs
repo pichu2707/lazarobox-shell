@@ -904,13 +904,40 @@ fn a_verified_claude_without_a_session_stays_text_only() {
 }
 
 #[test]
-fn only_the_claude_adapter_carries_a_wire_yet() {
-    for (engine, adapter) in [("codex", Adapter::Codex), ("gemini", Adapter::Gemini)] {
-        let (off, on) = tools_on(engine, true);
-        assert_eq!(
-            adapter.build_with(&on, &[engine]),
-            adapter.build(&off),
-            "{engine}"
-        );
-    }
+fn only_claude_and_codex_carry_a_wire_yet() {
+    let (off, on) = tools_on("gemini", true);
+    assert_eq!(
+        Adapter::Gemini.build_with(&on, &["gemini"]),
+        Adapter::Gemini.build(&off)
+    );
+}
+
+#[test]
+fn a_verified_codex_with_a_session_carries_the_wire_and_nothing_else_changes() {
+    let (off, on) = tools_on("codex", true);
+    let with = process(Adapter::Codex.build_with(&on, &["codex"]));
+    let without = process(Adapter::Codex.build(&off));
+    assert!(with.mcp.is_some());
+    assert_eq!(
+        with.mcp,
+        match &on.tools {
+            Tools::On { mcp, .. } => mcp.as_deref().cloned(),
+            Tools::Off => unreachable!(),
+        }
+    );
+    // The argv is the pinned one: the runtime appends the `-c` overrides, the
+    // token is not in any of it.
+    assert_eq!(
+        (with.args, with.stdin, with.tmp_files, with.jail),
+        (without.args, without.stdin, without.tmp_files, without.jail)
+    );
+}
+
+#[test]
+fn a_verified_codex_without_a_session_stays_text_only() {
+    let (off, on) = tools_on("codex", false);
+    assert_eq!(
+        Adapter::Codex.build_with(&on, &["codex"]),
+        Adapter::Codex.build(&off)
+    );
 }

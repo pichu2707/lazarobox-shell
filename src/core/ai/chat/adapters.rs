@@ -141,7 +141,7 @@ impl Adapter {
                 body: ollama_body(request),
             },
             Adapter::Claude => claude_invocation(request, wire_for(request, verified)),
-            Adapter::Codex => codex_invocation(request),
+            Adapter::Codex => codex_invocation(request, wire_for(request, verified)),
             Adapter::Gemini => gemini_invocation(request),
         }
     }
@@ -277,7 +277,7 @@ const CODEX_DISABLED: [&str; 14] = [
 /// flag, and argv is visible in `ps`, so nothing but fixed flags and the model
 /// goes there. The child starts in the private empty folder, which is also
 /// codex's working root, so no `-C` is passed.
-fn codex_invocation(request: &ChatRequest) -> Invocation {
+fn codex_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation {
     let model = match cli_model(request.model.as_deref()) {
         Ok(model) => model,
         Err(reason) => return Invocation::Refused(reason),
@@ -319,7 +319,7 @@ fn codex_invocation(request: &ChatRequest) -> Invocation {
         stdin: instructed_stdin(request).into_bytes(),
         jail: JailPolicy::Required,
         tmp_files: Vec::new(),
-        mcp: None,
+        mcp,
     })
 }
 

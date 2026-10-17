@@ -93,6 +93,7 @@ pub fn fresh_decoder(wire: Wire, wired: bool) -> Box<dyn StreamDecoder + Send> {
         Wire::Sse => Box::new(SseParser::server()),
         Wire::ClaudeStreamJson if wired => Box::new(ClaudeDecoder::wired()),
         Wire::ClaudeStreamJson => Box::new(ClaudeDecoder::new()),
+        Wire::CodexJsonl if wired => Box::new(CodexDecoder::wired()),
         Wire::CodexJsonl => Box::new(CodexDecoder::new()),
         Wire::GeminiStreamJson => Box::new(GeminiDecoder::new()),
     }
