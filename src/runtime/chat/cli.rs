@@ -1006,7 +1006,13 @@ pub async fn process_turn(env: &CliEnv, job: Job, tx: &mpsc::Sender<StreamEvent>
             .await
             .unwrap_or_default(),
     };
+    // The token of this turn's session is shown nowhere, not even if the CLI
+    // echoes its config on stderr.
     let stderr = String::from_utf8_lossy(&tail);
+    let stderr = match job.mcp.as_ref().map(|wire| wire.token.reveal()) {
+        Some(token) if !token.is_empty() => stderr.replace(token, "(..)"),
+        _ => stderr.into_owned(),
+    };
     let last = verdict(job.binary, ended.last, ended.answered, exit, &stderr);
     send(tx, last).await;
 }

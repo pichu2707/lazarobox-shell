@@ -455,6 +455,17 @@ async fn a_failing_cli_shows_the_last_stderr_line_sanitized() {
 }
 
 #[tokio::test]
+async fn the_turns_token_is_not_shown_from_the_stderr_tail() {
+    // A short token, which the generic token filter would let through.
+    let lab = lab();
+    lab.claude("cat > /dev/null\necho 'cannot reach hunter2 now' >&2\nexit 1");
+    let mut job = claude_job(&lab, true);
+    job.mcp.as_mut().unwrap().token = Secret::new("hunter2");
+    let events = run_job(&lab.env(), job).await;
+    assert_eq!(failure(&events), "cannot reach (..) now", "{events:?}");
+}
+
+#[tokio::test]
 async fn a_huge_stderr_does_not_block_and_only_its_tail_counts() {
     let lab = lab();
     lab.claude("cat > /dev/null\nhead -c 300000 /dev/zero | tr '\\0' x >&2\necho >&2\necho the end >&2\nexit 1");
