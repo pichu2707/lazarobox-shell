@@ -265,11 +265,11 @@ Conditional on the opencode adapter, which is parked. Not part of this change's 
 
 ## PR11 / 3a: Ollama tools body and decoder (`src/core/ai/chat/{adapters,stream}.rs`)
 
-- [ ] 3a.1 RED: `ollama_body` adds the registry's `tools` only with tools on; off is byte-identical; follow-up body carries the tool messages with `tool_name`.
-- [ ] 3a.2 RED: `OllamaToolDecoder` extracts `tool_calls` from NDJSON lines (split across chunks, several calls, bad args become an error result); no other behavior change in `ndjson_line`.
-- [ ] 3a.3 GREEN: implement.
-- [ ] 3a.4 Gate.
-- [ ] 3a.5 Docs: doc comments.
+- [x] 3a.1 RED: `ollama_body` adds the registry's `tools` only with tools on; off is byte-identical; follow-up body carries the tool messages with `tool_name`.
+- [x] 3a.2 RED: `OllamaToolDecoder` extracts `tool_calls` from NDJSON lines (split across chunks, several calls, bad args become an error result); no other behavior change in `ndjson_line`.
+- [x] 3a.3 GREEN: implement.
+- [x] 3a.4 Gate.
+- [x] 3a.5 Docs: doc comments.
 
 ## PR12 / 3b: Ollama loop and fallback (`src/runtime/chat.rs`, `src/core/ai/chat/adapters.rs`)
 

@@ -419,3 +419,235 @@ fn a_thinking_field_that_is_not_a_string_is_ignored() {
         [delta("Hi"), StreamEvent::Error(ChatError::Interrupted)]
     );
 }
+
+fn tool_run(chunks: &[&[u8]]) -> (Vec<StreamEvent>, Vec<ToolRequest>) {
+    let mut decoder = OllamaToolDecoder::server();
+    let events = run(&mut decoder, chunks);
+    (events, decoder.take_calls())
+}
+
+const CALL: &str = r#"{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"find_dir","arguments":{"query":"curso"}}}]},"done":false}"#;
+const DONE: &str = r#"{"message":{"content":""},"done":true,"done_reason":"stop"}"#;
+
+fn invalid(error: ToolError) -> Result<Call, CallError> {
+    Err(CallError::Invalid(error))
+}
+
+#[test]
+fn a_tool_call_line_yields_one_validated_call_and_no_text() {
+    let input = format!("{CALL}\n{DONE}\n");
+    let (events, calls) = tool_run(&[input.as_bytes()]);
+    assert_eq!(events, [StreamEvent::Done(Finish::Stop)]);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].name, "find_dir");
+    assert_eq!(calls[0].arguments, serde_json::json!({"query": "curso"}));
+    assert_eq!(
+        calls[0].call,
+        Ok(Call::FindDir {
+            query: "curso".into()
+        })
+    );
+    assert_eq!((&calls[0].id, calls[0].index), (&None, None));
+}
+
+#[test]
+fn a_call_split_across_chunks_is_still_found() {
+    let input = format!("{CALL}\n{DONE}\n");
+    let (a, b) = input.as_bytes().split_at(60);
+    let (_, calls) = tool_run(&[a, b]);
+    assert_eq!(calls.len(), 1);
+}
+
+#[test]
+fn several_calls_keep_their_order_and_text_still_streams() {
+    let text = r#"{"message":{"content":"Hi"},"done":false}"#;
+    let two = r#"{"message":{"content":"","tool_calls":[{"function":{"name":"list_dir","arguments":{"path":"/a"}}},{"function":{"name":"read_file","arguments":{"path":"/b"}}}]},"done":false}"#;
+    let input = format!("{text}\n{two}\n{DONE}\n");
+    let (events, calls) = tool_run(&[input.as_bytes()]);
+    assert_eq!(events, [delta("Hi"), StreamEvent::Done(Finish::Stop)]);
+    let names: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["list_dir", "read_file"]);
+}
+
+#[test]
+fn take_calls_drains() {
+    let input = format!("{CALL}\n{DONE}\n");
+    let mut decoder = OllamaToolDecoder::server();
+    decoder.feed(input.as_bytes());
+    assert_eq!(decoder.take_calls().len(), 1);
+    assert!(decoder.take_calls().is_empty());
+}
+
+fn one_line(calls: &str) -> String {
+    format!(r#"{{"message":{{"tool_calls":[{calls}]}},"done":false}}"#)
+}
+
+#[test]
+fn bad_arguments_become_an_error_for_that_call_only() {
+    let line = one_line(
+        r#"{"function":{"name":"find_dir","arguments":"{not json"}},
+        {"function":{"name":"find_dir","arguments":[1]}},
+        {"function":{"name":"find_dir","arguments":{"query":5}}},
+        {"function":{"name":"nope","arguments":{}}},
+        {"function":{"name":"find_dir"}},
+        {"function":{"name":"find_dir","arguments":"{\"query\":\"ok\"}"}}"#,
+    )
+    .replace('\n', "");
+    let input = format!("{line}\n{DONE}\n");
+    let (_, calls) = tool_run(&[input.as_bytes()]);
+    let results: Vec<_> = calls.iter().map(|c| c.call.clone()).collect();
+    assert_eq!(
+        results,
+        [
+            invalid(ToolError::NotAnObject),
+            invalid(ToolError::NotAnObject),
+            invalid(ToolError::WrongType),
+            invalid(ToolError::UnknownTool),
+            invalid(ToolError::NotAnObject),
+            Ok(Call::FindDir { query: "ok".into() }),
+        ]
+    );
+    assert!(calls[0].arguments.is_object());
+}
+
+#[test]
+fn odd_argument_shapes_are_refused_without_a_panic() {
+    let huge = "x".repeat(100_000);
+    for args in ["null", "[[1,[2]]]", &format!("\"{huge}\""), "\"[]\""] {
+        let line = one_line(&format!(
+            r#"{{"function":{{"name":"find_dir","arguments":{args}}}}}"#
+        ));
+        let input = format!("{line}\n{DONE}\n");
+        let (_, calls) = tool_run(&[input.as_bytes()]);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].call, invalid(ToolError::NotAnObject), "{args:.20}");
+        assert_eq!(calls[0].arguments, serde_json::json!({}));
+    }
+}
+
+#[test]
+fn a_refused_call_echoes_a_short_name_and_empty_arguments() {
+    let long = "n".repeat(400_000);
+    let line = one_line(&format!(
+        r#"{{"function":{{"name":"{long}","arguments":{{"q":"{long}"}}}}}},{{"function":{{"arguments":{{}}}}}}"#
+    ));
+    let input = format!("{line}\n{DONE}\n");
+    let (_, calls) = tool_run(&[input.as_bytes()]);
+    assert_eq!(calls[0].name.chars().count(), MAX_NAME_ECHO);
+    assert_eq!(calls[0].arguments, serde_json::json!({}));
+    assert_eq!(calls[0].call, invalid(ToolError::UnknownTool));
+    assert_eq!(calls[1].name, "unknown");
+}
+
+#[test]
+fn the_call_cap_is_total_and_the_excess_is_one_error() {
+    let one = r#"{"function":{"name":"find_dir","arguments":{"query":"a"}}}"#;
+    let line = one_line(&[one; 10].join(","));
+    let input = format!("{line}\n{line}\n{line}\n{DONE}\n");
+    let (_, calls) = tool_run(&[input.as_bytes()]);
+    assert_eq!(calls.len(), MAX_CALLS + 1);
+    assert!(calls[..MAX_CALLS].iter().all(|c| c.call.is_ok()));
+    let last = calls.last().unwrap();
+    assert_eq!(last.call, Err(CallError::TooMany));
+    assert_eq!(last.arguments, serde_json::json!({}));
+}
+
+#[test]
+fn ids_and_indexes_are_kept_when_present() {
+    let line = one_line(
+        r#"{"id":"call_1","function":{"index":3,"name":"find_dir","arguments":{"query":"a"}}},
+        {"function":{"name":"find_dir","arguments":{"query":"b"}}}"#,
+    )
+    .replace('\n', "");
+    let input = format!("{line}\n{DONE}\n");
+    let (_, calls) = tool_run(&[input.as_bytes()]);
+    assert_eq!(
+        (calls[0].id.as_deref(), calls[0].index),
+        (Some("call_1"), Some(3))
+    );
+    assert_eq!((&calls[1].id, calls[1].index), (&None, None));
+}
+
+#[test]
+fn text_streaming_is_unchanged_by_the_decoder() {
+    let input: &[&[u8]] = &[
+        b"{\"message\":{\"thinking\":\"hm\"},\"done\":false}\n{\"message\":{\"content\":\"Hi\"},\"done\":false}\n",
+        b"{\"message\":{\"content\":\"\"},\"done\":true,\"done_reason\":\"length\"}\n",
+    ];
+    let (events, calls) = tool_run(input);
+    assert!(calls.is_empty());
+    assert_eq!(events, ndjson(input));
+}
+
+#[test]
+fn byte_by_byte_chunks_match_the_plain_splitter() {
+    let input = format!("{CALL}\n{{\"message\":{{\"content\":\"é\"}},\"done\":false}}\nbad\n");
+    let bytes: Vec<&[u8]> = input.as_bytes().chunks(1).collect();
+    let (events, _) = tool_run(&bytes);
+    assert_eq!(events, ndjson(&bytes));
+    let (whole, _) = tool_run(&[input.as_bytes()]);
+    assert_eq!(whole, events);
+}
+
+#[test]
+fn an_error_line_is_still_reported_and_drops_the_calls() {
+    let input = format!("{CALL}\n{{\"error\":\"model does not support tools\"}}\n");
+    let (events, calls) = tool_run(&[input.as_bytes()]);
+    assert_eq!(events, [failed("model does not support tools")]);
+    assert!(calls.is_empty());
+}
+
+#[test]
+fn calls_are_only_released_after_a_clean_end() {
+    // Truncated: no done line.
+    let input = format!("{CALL}\n");
+    let (events, calls) = tool_run(&[input.as_bytes()]);
+    assert_eq!(events, [StreamEvent::Error(ChatError::Interrupted)]);
+    assert!(calls.is_empty());
+    // A partial last line.
+    let (_, calls) = tool_run(&[CALL.as_bytes()]);
+    assert!(calls.is_empty());
+}
+
+#[test]
+fn a_partial_last_line_at_eof_is_decoded_by_finish() {
+    let tail = format!("{CALL}\n{}", DONE);
+    let (events, calls) = tool_run(&[tail.as_bytes()]);
+    assert_eq!(events, [StreamEvent::Done(Finish::Stop)]);
+    assert_eq!(calls.len(), 1);
+}
+
+#[test]
+fn a_call_after_done_is_ignored() {
+    let input = format!("{DONE}\n{CALL}\n");
+    let (events, calls) = tool_run(&[input.as_bytes()]);
+    assert_eq!(events, [StreamEvent::Done(Finish::Stop)]);
+    assert!(calls.is_empty());
+}
+
+#[test]
+fn an_over_long_line_is_reported_and_drops_the_calls() {
+    let mut decoder = OllamaToolDecoder::new(64);
+    let input = format!("{CALL}\n");
+    let events = run(&mut decoder, &[input.as_bytes()]);
+    assert_eq!(events, [failed(TOO_LONG)]);
+    assert!(decoder.take_calls().is_empty());
+}
+
+#[test]
+fn invalid_utf8_gives_the_same_events_and_calls_from_one_parse() {
+    let mut line = CALL.as_bytes().to_vec();
+    let at = line.windows(5).position(|w| w == b"curso").unwrap();
+    line.splice(at..at + 5, *b"cu\xFFso");
+    line.push(b'\n');
+    line.extend_from_slice(DONE.as_bytes());
+    line.push(b'\n');
+    let (events, calls) = tool_run(&[&line]);
+    assert_eq!(events, ndjson(&[&line]));
+    assert_eq!(
+        calls[0].call,
+        Ok(Call::FindDir {
+            query: "cu\u{FFFD}so".into()
+        })
+    );
+}

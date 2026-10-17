@@ -1044,3 +1044,154 @@ fn a_job_without_a_wire_has_no_tools_text_and_a_server_engine_is_untouched() {
         Adapter::Ollama.build(&off)
     );
 }
+
+fn body_of(bytes: Vec<u8>) -> Value {
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[test]
+fn tools_off_leaves_the_ollama_body_exactly_as_before() {
+    let off = request("be brief");
+    let before = br#"{"messages":[{"content":"be brief","role":"system"},{"content":"hi","role":"user"},{"content":"hello","role":"assistant"},{"content":"and now?","role":"user"}],"model":"llama3:8b","stream":true}"#;
+    assert_eq!(ollama_body(&off), before.to_vec());
+    assert_eq!(ollama_round_body(&off, &[], false), before.to_vec());
+}
+
+#[test]
+fn tools_on_adds_the_registry_as_function_tools() {
+    let body = body_of(ollama_round_body(&request("be brief"), &[], true));
+    let tools = body["tools"].as_array().unwrap();
+    let names: Vec<&str> = tools
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["find_dir", "list_dir", "read_file", "run_in_pane"]);
+    assert_eq!(tools[0]["type"], "function");
+    assert_eq!(
+        tools[0]["function"]["parameters"],
+        json!({
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+            "additionalProperties": false,
+        })
+    );
+    assert!(tools[0]["function"]["description"].as_str().unwrap().len() > 10);
+    assert_eq!(body["stream"], true);
+    assert_eq!(body["messages"].as_array().unwrap().len(), 4);
+}
+
+#[test]
+fn a_follow_up_carries_the_assistant_tool_calls_and_the_tool_results() {
+    let rounds = [ToolRound {
+        thinking: None,
+        text: "Looking.".into(),
+        exchanges: vec![
+            ToolExchange {
+                id: None,
+                index: None,
+                name: "find_dir".into(),
+                arguments: json!({"query": "curso"}),
+                result: "/home/u/curso-rust".into(),
+            },
+            ToolExchange {
+                id: None,
+                index: None,
+                name: "list_dir".into(),
+                arguments: json!({"path": "/home/u"}),
+                result: "a\nb".into(),
+            },
+        ],
+    }];
+    let body = body_of(ollama_round_body(&request(""), &rounds, true));
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3 + 1 + 2);
+    assert_eq!(
+        messages[3],
+        json!({
+            "role": "assistant",
+            "content": "Looking.",
+            "tool_calls": [
+                {"function": {"name": "find_dir", "arguments": {"query": "curso"}}},
+                {"function": {"name": "list_dir", "arguments": {"path": "/home/u"}}},
+            ],
+        })
+    );
+    assert_eq!(
+        messages[4],
+        json!({"role": "tool", "content": "/home/u/curso-rust", "tool_name": "find_dir"})
+    );
+    assert_eq!(messages[5]["tool_name"], "list_dir");
+    assert!(body["tools"].is_array());
+}
+
+#[test]
+fn a_follow_up_without_tools_still_sends_the_tool_messages_but_no_tools_key() {
+    let rounds = [ToolRound {
+        thinking: None,
+        text: String::new(),
+        exchanges: vec![ToolExchange {
+            id: None,
+            index: None,
+            name: "read_file".into(),
+            arguments: json!({"path": "/x"}),
+            result: "text".into(),
+        }],
+    }];
+    let body = body_of(ollama_round_body(&request(""), &rounds, false));
+    assert!(body.get("tools").is_none());
+    assert_eq!(body["messages"].as_array().unwrap().len(), 5);
+}
+
+#[test]
+fn thinking_is_echoed_on_the_assistant_message_only_when_present() {
+    let round = |thinking: Option<&str>| ToolRound {
+        thinking: thinking.map(Into::into),
+        text: "t".into(),
+        exchanges: vec![ToolExchange {
+            id: None,
+            index: None,
+            name: "find_dir".into(),
+            arguments: json!({"query": "a"}),
+            result: "r".into(),
+        }],
+    };
+    let with = body_of(ollama_round_body(&request(""), &[round(Some("hm"))], false));
+    assert_eq!(with["messages"][3]["thinking"], "hm");
+    let without = body_of(ollama_round_body(&request(""), &[round(None)], false));
+    assert!(without["messages"][3].get("thinking").is_none());
+}
+
+#[test]
+fn ids_and_indexes_are_echoed_when_present_and_absent_otherwise() {
+    let round = |id: Option<&str>, index: Option<u64>| ToolRound {
+        thinking: None,
+        text: String::new(),
+        exchanges: vec![ToolExchange {
+            id: id.map(Into::into),
+            index,
+            name: "find_dir".into(),
+            arguments: json!({"query": "a"}),
+            result: "r".into(),
+        }],
+    };
+    let with = body_of(ollama_round_body(
+        &request(""),
+        &[round(Some("c1"), Some(2))],
+        false,
+    ));
+    assert_eq!(
+        with["messages"][3]["tool_calls"][0],
+        json!({"id": "c1", "function": {"index": 2, "name": "find_dir", "arguments": {"query": "a"}}})
+    );
+    assert_eq!(
+        with["messages"][4],
+        json!({"role": "tool", "content": "r", "tool_name": "find_dir", "tool_call_id": "c1"})
+    );
+    let without = body_of(ollama_round_body(&request(""), &[round(None, None)], false));
+    assert_eq!(
+        without["messages"][3]["tool_calls"][0],
+        json!({"function": {"name": "find_dir", "arguments": {"query": "a"}}})
+    );
+    assert!(without["messages"][4].get("tool_call_id").is_none());
+}
