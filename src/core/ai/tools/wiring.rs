@@ -244,13 +244,24 @@ pub fn gemini(shim: &Path, policy: &Path, wire: &McpWire) -> Option<GeminiWiring
     if !policy_flag_safe(policy.to_str()?) || shim.contains('$') || socket.contains('$') {
         return None;
     }
-    let doc = json!({"mcpServers": {SERVER: {
-        "command": shim,
-        "args": [SUBCOMMAND, socket],
-        "env": {TOKEN_ENV: wire.token.reveal()},
-        "timeout": GEMINI_TOOL_TIMEOUT_MS,
-        "trust": true,
-    }}});
+    // The folder is trusted (the turn sets the env var), which would also
+    // load what sits above it: this switches off what a setting can (gemini
+    // 0.63.0 schema). Workspace policies are off in that build; a
+    // `.gemini/.env` above the folder has no setting.
+    let doc = json!({
+        "mcpServers": {SERVER: {
+            "command": shim,
+            "args": [SUBCOMMAND, socket],
+            "env": {TOKEN_ENV: wire.token.reveal()},
+            "timeout": GEMINI_TOOL_TIMEOUT_MS,
+            "trust": true,
+        }},
+        "advanced": {"ignoreLocalEnv": true},
+        // An empty list stops the GEMINI.md walk upwards from the folder.
+        "context": {"memoryBoundaryMarkers": []},
+        "hooksConfig": {"enabled": false},
+        "skills": {"enabled": false},
+    });
     Some(GeminiWiring {
         settings: serde_json::to_string_pretty(&doc).ok()?,
         policy: format!(
@@ -434,6 +445,17 @@ mod tests {
         assert!(!w.args.iter().any(|a| a.contains(&token)), "{:?}", w.args);
         assert!(!w.policy.contains(&token));
         assert!(!format!("{w:?}").contains(&token), "Debug hides it");
+    }
+
+    #[test]
+    fn the_gemini_settings_switch_off_what_a_trusted_folder_would_load() {
+        let doc: serde_json::Value = serde_json::from_str(&gemini_wiring().settings).unwrap();
+        // `.env` files above the folder, the GEMINI.md walk upwards, hooks and
+        // skills (all keys of the gemini 0.63.0 settings schema).
+        assert_eq!(doc["advanced"]["ignoreLocalEnv"], true);
+        assert_eq!(doc["context"]["memoryBoundaryMarkers"], json!([]));
+        assert_eq!(doc["hooksConfig"]["enabled"], false);
+        assert_eq!(doc["skills"]["enabled"], false);
     }
 
     #[test]

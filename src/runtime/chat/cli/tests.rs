@@ -409,6 +409,26 @@ fn the_command_drops_the_agent_variables_and_sets_the_private_ones() {
     );
 }
 
+#[test]
+fn the_inherited_gemini_trust_variable_is_dropped_but_a_wired_turns_own_wins() {
+    let envs_of = |inject: &[(OsString, OsString)]| {
+        let command = command(
+            Path::new("/bin/true"),
+            Vec::new(),
+            (Path::new("/data/cli-cwd"), Path::new("/data/cli-tmp/1-1")),
+            inject,
+        );
+        command
+            .as_std()
+            .get_envs()
+            .find(|(k, _)| *k == "GEMINI_CLI_TRUST_WORKSPACE")
+            .map(|(_, v)| v.map(OsString::from))
+    };
+    assert_eq!(envs_of(&[]), Some(None), "removed, so not inherited");
+    let wired = [("GEMINI_CLI_TRUST_WORKSPACE".into(), "true".into())];
+    assert_eq!(envs_of(&wired), Some(Some("true".into())));
+}
+
 #[tokio::test]
 async fn the_cli_sees_neither_agents_nor_outer_claude_state_but_keeps_its_settings() {
     let lab = lab();
@@ -2571,8 +2591,8 @@ async fn a_wired_gemini_runs_in_a_private_work_folder_with_the_settings_and_the_
         "{}",
         lab.recorded("env")
     );
-    // Trusting the folder lets gemini read the user's servers: the allow-list
-    // is what keeps them out.
+    // The user's own servers (`~/.gemini/settings.json`) load whether or not
+    // the folder is trusted: the allow-list is what keeps them out.
     assert!(
         args.iter()
             .any(|a| a == "--allowed-mcp-server-names=lazarobox"),
