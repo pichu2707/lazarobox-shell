@@ -148,6 +148,35 @@ impl Widget for ChatView<'_> {
         if area.is_empty() {
             return;
         }
+        self.render_view(area, buf);
+        if self.chat.auto_badge() {
+            self.draw_auto_badge(area, buf);
+        }
+    }
+}
+
+impl ChatView<'_> {
+    /// ` AUTO ` over the top-right cells of the pane, `A` when it is narrower
+    /// than that: an exception marker, drawn in every view.
+    fn draw_auto_badge(&self, area: Rect, buf: &mut Buffer) {
+        let style = Style::default()
+            .fg(self.theme.bg_base)
+            .bg(self.theme.error_red)
+            .add_modifier(Modifier::BOLD);
+        let text = if area.width >= 6 { " AUTO " } else { "A" };
+        let width = u16::try_from(text.len()).unwrap_or(1);
+        buf.set_stringn(
+            area.right() - width,
+            area.y,
+            text,
+            usize::from(width),
+            style,
+        );
+    }
+
+    /// The pane without the badge: the view that is open, or the
+    /// conversation.
+    fn render_view(&self, area: Rect, buf: &mut Buffer) {
         if let Some(editor) = self.chat.tag_editor() {
             self.render_tags(editor, area, buf);
             return;
@@ -228,6 +257,8 @@ fn fill(buf: &mut Buffer, rect: Rect, style: Style) {
 mod approval;
 #[cfg(test)]
 mod approval_tests;
+#[cfg(test)]
+mod badge_tests;
 #[cfg(test)]
 mod guidance_tests;
 mod list;
