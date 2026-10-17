@@ -5,10 +5,13 @@
 //! see them in order. Error text is sanitized and capped here, because it is
 //! built from one whole line.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::engine::{ChatError, Finish, StreamEvent};
-use crate::core::ai::sanitize::clean;
+use crate::core::ai::{
+    sanitize::clean,
+    tools::{Call, ToolError, parse_call},
+};
 
 /// Line cap for server decoders, in bytes.
 pub const SERVER_LINE_CAP: usize = 1 << 20;
@@ -170,14 +173,20 @@ fn thinking(text: Option<&str>) -> Option<StreamEvent> {
 
 /// Events of one Ollama line.
 fn ndjson_line(line: &[u8]) -> Vec<StreamEvent> {
+    ndjson_decode(line).0
+}
+
+/// Events of one Ollama line, and the line's JSON when it parsed and is not
+/// an error. One parse feeds both, so events and tool calls cannot disagree.
+fn ndjson_decode(line: &[u8]) -> (Vec<StreamEvent>, Option<Value>) {
     if line.iter().all(u8::is_ascii_whitespace) {
-        return vec![];
+        return (vec![], None);
     }
     let Ok(value) = serde_json::from_str::<Value>(&String::from_utf8_lossy(line)) else {
-        return vec![malformed()];
+        return (vec![malformed()], None);
     };
     if let Some(error) = server_error(&value) {
-        return vec![error];
+        return (vec![error], None);
     }
     // Reasoning first: Ollama sends `thinking` next to an empty `content`, and
     // a line holding both reads in that order.
@@ -191,7 +200,7 @@ fn ndjson_line(line: &[u8]) -> Vec<StreamEvent> {
             value["done_reason"].as_str(),
         )));
     }
-    events
+    (events, Some(value))
 }
 
 /// Events of one SSE `data` payload.
@@ -258,6 +267,177 @@ impl StreamDecoder for NdjsonSplitter {
                 .rest()
                 .map_or_else(|TooLong| vec![too_long()], |l| ndjson_line(&l));
             emit(&mut self.ended, &mut out, events);
+        }
+        finish_with(&mut self.ended, out)
+    }
+}
+
+/// The most tool calls kept from one reply, over all its lines. One more
+/// request may follow: the error that stands for the rest.
+pub const MAX_CALLS: usize = 16;
+/// The longest tool name or call id echoed back, in characters.
+pub const MAX_NAME_ECHO: usize = 64;
+
+/// Why a call was refused.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CallError {
+    Invalid(ToolError),
+    /// The reply held more than [`MAX_CALLS`] calls; this one stands for all
+    /// the extra ones.
+    TooMany,
+}
+
+/// One tool call a model asked for, as the server sent it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ToolRequest {
+    /// At most [`MAX_NAME_ECHO`] characters; `unknown` when empty.
+    pub name: String,
+    /// The `id` the server sent, to echo as `tool_call_id`.
+    pub id: Option<String>,
+    /// The `function.index` the server sent.
+    pub index: Option<u64>,
+    /// The arguments to echo back in the follow-up. `{}` for any refused
+    /// call, so a huge argument never travels back.
+    pub arguments: Value,
+    /// The validated call, or why it was refused. A refused call still gets a
+    /// tool message, so the model sees the error.
+    pub call: Result<Call, CallError>,
+}
+
+fn echo(text: &str) -> String {
+    text.chars().take(MAX_NAME_ECHO).collect()
+}
+
+fn refused(error: CallError) -> ToolRequest {
+    ToolRequest {
+        name: "unknown".into(),
+        id: None,
+        index: None,
+        arguments: json!({}),
+        call: Err(error),
+    }
+}
+
+/// One entry of `message.tool_calls[]`. `arguments` is an object on current
+/// servers; a JSON string is also accepted, and anything else (or bad JSON)
+/// is refused for that call alone.
+fn tool_call(entry: &Value) -> ToolRequest {
+    let function = &entry["function"];
+    let name = function["name"].as_str().unwrap_or("");
+    let raw = match &function["arguments"] {
+        Value::String(text) => serde_json::from_str(text).unwrap_or(Value::Null),
+        other => other.clone(),
+    };
+    let call = parse_call(name, &raw).map_err(CallError::Invalid);
+    let arguments = if call.is_ok() { raw } else { json!({}) };
+    ToolRequest {
+        name: if name.is_empty() {
+            "unknown".into()
+        } else {
+            echo(name)
+        },
+        id: entry["id"].as_str().map(echo),
+        index: function["index"].as_u64(),
+        arguments,
+        call,
+    }
+}
+
+/// [`NdjsonSplitter`] that also collects the tool calls of the reply. Text,
+/// thinking, errors and the end of the stream decode exactly as before: the
+/// calls ride beside the events.
+///
+/// [`Self::take_calls`] releases them only after a clean end: a `done` line
+/// with no error before it. A truncated or failed stream yields none, so a
+/// half-read reply never runs a tool.
+pub struct OllamaToolDecoder {
+    lines: Lines,
+    ended: bool,
+    clean: bool,
+    overflowed: bool,
+    calls: Vec<ToolRequest>,
+}
+
+impl OllamaToolDecoder {
+    pub fn new(line_cap: usize) -> Self {
+        Self {
+            lines: Lines::new(line_cap),
+            ended: false,
+            clean: false,
+            overflowed: false,
+            calls: Vec::new(),
+        }
+    }
+
+    pub fn server() -> Self {
+        Self::new(SERVER_LINE_CAP)
+    }
+
+    /// The calls of the reply, in order, after a clean end; the decoder
+    /// forgets them. Empty before the end, after an error and after a
+    /// truncated stream.
+    pub fn take_calls(&mut self) -> Vec<ToolRequest> {
+        if self.clean {
+            std::mem::take(&mut self.calls)
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn collect(&mut self, value: &Value) {
+        let Some(list) = value["message"]["tool_calls"].as_array() else {
+            return;
+        };
+        let room = MAX_CALLS.saturating_sub(self.calls.len());
+        self.calls.extend(list.iter().take(room).map(tool_call));
+        if list.len() > room && !self.overflowed {
+            self.overflowed = true;
+            self.calls.push(refused(CallError::TooMany));
+        }
+    }
+
+    fn line(&mut self, line: Result<Vec<u8>, TooLong>) -> Vec<StreamEvent> {
+        let (events, value) =
+            line.map_or_else(|TooLong| (vec![too_long()], None), |l| ndjson_decode(&l));
+        if let Some(value) = value {
+            self.collect(&value);
+        }
+        for event in &events {
+            match event {
+                StreamEvent::Done(_) => self.clean = true,
+                StreamEvent::Error(_) => self.clean = false,
+                _ => {}
+            }
+        }
+        events
+    }
+}
+
+impl StreamDecoder for OllamaToolDecoder {
+    fn feed(&mut self, bytes: &[u8]) -> Vec<StreamEvent> {
+        let mut out = Vec::new();
+        if self.ended {
+            return out;
+        }
+        for line in self.lines.feed(bytes) {
+            let events = self.line(line);
+            emit(&mut self.ended, &mut out, events);
+            if self.ended {
+                break;
+            }
+        }
+        out
+    }
+
+    fn finish(&mut self) -> Vec<StreamEvent> {
+        let mut out = Vec::new();
+        if !self.ended {
+            let rest = self.lines.rest();
+            let events = self.line(rest);
+            emit(&mut self.ended, &mut out, events);
+        }
+        if !self.ended {
+            self.clean = false;
         }
         finish_with(&mut self.ended, out)
     }

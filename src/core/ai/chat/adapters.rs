@@ -11,7 +11,7 @@ use super::{
 use crate::core::ai::{
     CATALOG, Kind,
     jail::{Cli, JailPolicy},
-    tools::wiring::McpWire,
+    tools::{registry, wiring::McpWire},
 };
 
 /// The wire format of a local server's reply.
@@ -194,10 +194,46 @@ pub fn system_text(request: &ChatRequest) -> String {
     }
 }
 
+/// One tool the model called and what it got back, to replay in a follow-up.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ToolExchange {
+    pub name: String,
+    /// The call `id` the server sent, echoed as `tool_call_id`. Left out
+    /// when absent, so older servers see the same bytes.
+    pub id: Option<String>,
+    /// The `function.index` the server sent.
+    pub index: Option<u64>,
+    /// The arguments object the model sent.
+    pub arguments: Value,
+    /// The tool's result text, already sanitized and capped by the host.
+    pub result: String,
+}
+
+/// One round of a tool loop: what the assistant said, then the tools it
+/// called. Rounds live for one turn only; they are never kept in history.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ToolRound {
+    /// The reasoning of a thinking model, echoed on the assistant message.
+    pub thinking: Option<String>,
+    pub text: String,
+    pub exchanges: Vec<ToolExchange>,
+}
+
+/// The request `Adapter::build` returns: never with tools, whatever
+/// `request.tools` says. The tool loop (slice 3b) builds its own bodies with
+/// [`ollama_round_body`], so a build without the loop is byte-identical.
 fn ollama_body(request: &ChatRequest) -> Vec<u8> {
+    ollama_round_body(request, &[], false)
+}
+
+/// The request after `rounds` of tool calls. `tools` says whether to offer the
+/// registry (the loop passes `false` for the retry on a model that rejects
+/// tools). Each round adds the assistant message with its `tool_calls`, then
+/// one `role: "tool"` message per call carrying `tool_name`.
+pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: bool) -> Vec<u8> {
     let system = system_text(request);
     let system = (!system.is_empty()).then(|| json!({"role": "system", "content": system}));
-    let messages: Vec<Value> = system
+    let mut messages: Vec<Value> = system
         .into_iter()
         .chain(request.messages.iter().map(|m| {
             let role = match m.role {
@@ -207,11 +243,51 @@ fn ollama_body(request: &ChatRequest) -> Vec<u8> {
             json!({"role": role, "content": m.content})
         }))
         .collect();
-    let body = json!({
+    for round in rounds {
+        let calls: Vec<Value> = round
+            .exchanges
+            .iter()
+            .map(|x| {
+                let mut function = json!({"name": x.name, "arguments": x.arguments});
+                if let Some(index) = x.index {
+                    function["index"] = index.into();
+                }
+                let mut call = json!({"function": function});
+                if let Some(id) = &x.id {
+                    call["id"] = json!(id);
+                }
+                call
+            })
+            .collect();
+        let mut assistant =
+            json!({"role": "assistant", "content": round.text, "tool_calls": calls});
+        if let Some(thinking) = &round.thinking {
+            assistant["thinking"] = json!(thinking);
+        }
+        messages.push(assistant);
+        messages.extend(round.exchanges.iter().map(|x| {
+            let mut message = json!({"role": "tool", "content": x.result, "tool_name": x.name});
+            if let Some(id) = &x.id {
+                message["tool_call_id"] = json!(id);
+            }
+            message
+        }));
+    }
+    let mut body = json!({
         "model": request.model.as_deref().unwrap_or(""),
         "messages": messages,
         "stream": true,
     });
+    if tools {
+        body["tools"] = registry(&[])
+            .into_iter()
+            .map(|t| {
+                json!({"type": "function", "function": {
+                    "name": t.name, "description": t.description, "parameters": t.schema,
+                }})
+            })
+            .collect();
+    }
     serde_json::to_vec(&body).expect("a JSON value always serializes")
 }
 
