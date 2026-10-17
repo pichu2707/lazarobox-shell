@@ -12,7 +12,7 @@ use crate::core::ai::{
             RUN_KEYS, Reply, run_sent_line,
         },
         approval_rows::fits,
-        engine::Decision,
+        engine::{CallId, Decision},
         yank,
     },
     sanitize,
@@ -31,6 +31,9 @@ const ANSWER_FIRST: &str = "Answer the pending confirm first";
 const ALREADY_OPEN: &str = "A confirm is already open: answer it first";
 const TOOLS_OFF_REASON: &str = "tools are off";
 const PROMPT_TOO_SMALL: &str = "Pane too small to show it all: enlarge it or press n";
+
+/// The mark of a line typed from a block (`Prefix e`): no tool call made it.
+const BLOCK_LINE: CallId = CallId(u64::MAX);
 
 /// A command that was not typed: what the user sees, and why, in the short
 /// words that go back to the model when a tool call asked for it.
@@ -222,6 +225,11 @@ impl App {
                 let number = self.pane_number(target).unwrap_or(0);
                 if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
                     chat.push_system_line(run_sent_line(number));
+                }
+                // Enter is never sent: the line stays unsent, and an auto
+                // call must not land on it.
+                if let Some(pty) = self.panes.get_mut(&target).and_then(PaneState::pty_mut) {
+                    pty.line_pending = Some(approval.call().map_or(BLOCK_LINE, |(_, call)| call));
                 }
                 effects.push(Effect::WritePty(target, bytes));
                 Decision::Sent

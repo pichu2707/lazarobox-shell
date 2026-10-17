@@ -369,6 +369,30 @@ fn a_bracketed_paste_never_clears_the_mark() {
     assert!(prompts(&mut a, turn, 2));
 }
 
+// A line typed with `y` is as unsent as an auto-typed one: the next auto call
+// would land on it (`cd x` + `ls` = `cd xls`).
+#[test]
+fn a_line_typed_with_y_marks_the_pane_so_an_auto_call_prompts() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, run("cd x"));
+    let effects = a.update(key('y'));
+    assert!(matches!(effects.first(), Some(Effect::WritePty(..))));
+    set_mode(&mut a, ApprovalMode::Auto);
+    assert!(prompts(&mut a, turn, 2));
+}
+
+#[test]
+fn enter_in_the_shell_clears_the_mark_of_a_line_typed_with_y() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, run("cd x"));
+    a.update(key('y'));
+    set_mode(&mut a, ApprovalMode::Auto);
+    user_in_the_shell(&mut a);
+    a.update(chat_live::plain(KeyCode::Enter));
+    a.tab_mut().focus = id2();
+    assert!(!prompts(&mut a, turn, 2));
+}
+
 #[test]
 fn a_denied_result_of_the_marked_call_clears_the_mark() {
     let (mut a, turn) = marked();
