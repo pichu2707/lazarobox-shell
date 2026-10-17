@@ -470,3 +470,56 @@ async fn a_turn_without_tools_gets_no_wire_and_no_session() {
     assert!(chats.session(pane(1)).is_none());
     assert_eq!(seen.lock().unwrap()[0].tools, Tools::Off);
 }
+
+fn chat_prompt() -> String {
+    use crate::core::ai::{
+        chat::prompts::builtin,
+        config::{Profile, Task},
+    };
+    builtin(Profile::Programmer, Task::Chat)
+        .trim_end()
+        .to_owned()
+}
+
+// A turn that has a session tells the model about its tools; the text that
+// says it has none is gone.
+#[tokio::test]
+async fn a_turn_with_a_session_says_it_has_tools() {
+    let lab = lab();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (mut chats, mut rx) = tooled(&lab, capturing(seen.clone()));
+    let mut req = with_tools(&lab);
+    req.system = chat_prompt();
+    chats.send(pane(1), 1, req);
+    next(&mut rx).await;
+    let system = seen.lock().unwrap()[0].system.clone();
+    assert_eq!(
+        system,
+        crate::core::ai::chat::prompts::with_tools(&chat_prompt())
+    );
+    assert!(!system.contains("no access to files"), "{system}");
+    assert!(system.contains("run a command in the user's shell pane"));
+}
+
+// Without tools the prompt is the one the app built, byte for byte; so it is
+// when tools were asked for but no session could be opened.
+#[tokio::test]
+async fn a_turn_without_a_session_keeps_its_prompt_byte_for_byte() {
+    let lab = lab();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (mut chats, mut rx) = tooled(&lab, capturing(seen.clone()));
+    let mut off = request("");
+    off.system = chat_prompt();
+    chats.send(pane(1), 1, off);
+    next(&mut rx).await;
+    assert_eq!(seen.lock().unwrap()[0].system, chat_prompt());
+    // No tooling at all: the same.
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
+    let mut bare = Chats::new(capturing(seen.clone()), tx);
+    let mut req = with_tools(&lab);
+    req.system = chat_prompt();
+    bare.send(pane(2), 1, req);
+    next(&mut rx).await;
+    assert_eq!(seen.lock().unwrap()[0].system, chat_prompt());
+}

@@ -85,6 +85,25 @@ pub fn resolve_prompt(
     }
 }
 
+/// The sentence of the built-in chat prompts that says the model has no tools.
+const NO_TOOLS: &str = "You are a text assistant. You have no access to files, a shell or the terminal: you cannot read, run or change anything. When something depends on what is on the user's machine, ask them to paste it.";
+
+/// What a turn with tools says about them instead of [`NO_TOOLS`]. Names the
+/// tools by purpose, not by the name an engine gives them.
+const TOOLS: &str = include_str!("prompts/tools.md");
+
+/// `system` for a turn that offers tools: the built-in "no access" sentence
+/// becomes the tools block. A prompt without that sentence (the user's own
+/// file) gets the block as a last bullet instead. Only a turn with tools calls
+/// this: any other keeps its prompt byte for byte.
+pub fn with_tools(system: &str) -> String {
+    let block = TOOLS.trim_end();
+    if system.contains(NO_TOOLS) {
+        return system.replacen(NO_TOOLS, block, 1);
+    }
+    format!("{}\n\n- {block}", system.trim_end())
+}
+
 /// The system line for a skipped override file.
 fn notice(profile: Profile, task: Task, reason: Reason) -> String {
     let why = match reason {
