@@ -574,3 +574,91 @@ async fn what_the_model_is_told_follows_what_happened_to_the_pane() {
         }
     }
 }
+
+// -- the prompt must show everything `y` would approve ------------------------
+
+const TOO_SMALL: &str = "Pane too small to show it all: enlarge it or press n";
+
+fn resize(a: &mut App, cols: u16, rows: u16) {
+    a.update(AppEvent::Resize { cols, rows });
+}
+
+/// About 190 characters: six rows in the chat pane at 80 columns split in two,
+/// so the prompt needs eight rows and a short pane cannot show it.
+fn long_path() -> String {
+    format!("/home/u/{}", "d".repeat(180))
+}
+
+#[test]
+fn y_is_ignored_when_the_path_cannot_be_shown_in_full_and_n_still_denies() {
+    for deny in [key('n'), plain(KeyCode::Esc), super::chat_live::ctrl('c')] {
+        let (mut a, turn) = live();
+        // More than six rows of text: no pane is tall enough.
+        announce(&mut a, turn, 1, read(&format!("/{}", "d".repeat(500))));
+        assert_eq!(a.update(key('y')), vec![], "y approves nothing");
+        assert_eq!(a.notice(), Some(TOO_SMALL));
+        assert!(pending(&a).is_some(), "the prompt stays");
+        let effects = a.update(deny);
+        assert!(
+            matches!(
+                effects.first(),
+                Some(Effect::ToolDecision {
+                    decision: Decision::Denied(_),
+                    ..
+                })
+            ),
+            "{effects:?}"
+        );
+        assert_eq!(pending(&a), None);
+    }
+}
+
+#[test]
+fn a_short_pane_ignores_y_and_enlarging_it_enables_y_again() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, read(&long_path()));
+    resize(&mut a, 80, 8);
+    assert_eq!(a.update(key('y')), vec![]);
+    assert!(pending(&a).is_some());
+    resize(&mut a, 80, 30);
+    assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+}
+
+#[test]
+fn a_narrow_pane_with_a_path_of_100_characters_needs_height_for_it() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, read(&format!("/{}", "d".repeat(99))));
+    resize(&mut a, 40, 6);
+    assert_eq!(a.update(key('y')), vec![]);
+    resize(&mut a, 40, 25);
+    assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+}
+
+#[test]
+fn a_very_short_pane_never_approves() {
+    for rows in [3, 4, 5] {
+        let (mut a, turn) = live();
+        announce(&mut a, turn, 1, run("echo a\necho b\necho c"));
+        resize(&mut a, 80, rows);
+        let effects = a.update(key('y'));
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::WritePty(..))),
+            "{rows}: {effects:?}"
+        );
+        assert!(pending(&a).is_some(), "{rows}");
+    }
+}
+
+#[test]
+fn a_model_command_over_the_row_budget_is_never_typed() {
+    let (mut a, turn) = live();
+    let command = (1..=8)
+        .map(|n| format!("echo {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    announce(&mut a, turn, 1, run(&command));
+    shell_output(&mut a, b"\x1b[?2004h");
+    assert_eq!(a.update(key('y')), vec![]);
+    assert_eq!(a.notice(), Some(TOO_SMALL));
+    assert!(pending(&a).is_some());
+}

@@ -516,3 +516,35 @@ fn the_outcome_line_is_never_stored_or_sent_and_does_not_hide_the_block() {
     press(&mut c, "e");
     assert!(pending_id(&c, id2()).is_some());
 }
+
+// The same rule for the confirm the user opens with `Prefix e`: y types only
+// what the prompt shows in full.
+#[test]
+fn y_does_nothing_for_a_command_the_prompt_cannot_show_in_full() {
+    let command = (1..=8)
+        .map(|n| format!("echo {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut a = opened(&format!("```bash\n{command}\n```"));
+    shell_output(&mut a, PaneId::FIRST, b"\x1b[?2004h");
+    let effects = a.update(key('y'));
+    assert!(writes(&effects).is_empty(), "{effects:?}");
+    assert_eq!(
+        a.notice(),
+        Some("Pane too small to show it all: enlarge it or press n")
+    );
+    assert!(pending_id(&a, id2()).is_some(), "the confirm stays");
+    a.update(key('n'));
+    assert_eq!(pending_id(&a, id2()), None);
+}
+
+#[test]
+fn enlarging_the_pane_lets_y_type_the_command_shown_in_full() {
+    let block = "```bash\necho 1\necho 2\necho 3\necho 4\n```";
+    let mut a = opened(block);
+    shell_output(&mut a, PaneId::FIRST, b"\x1b[?2004h");
+    a.update(AppEvent::Resize { cols: 80, rows: 7 });
+    assert!(writes(&a.update(key('y'))).is_empty());
+    a.update(AppEvent::Resize { cols: 80, rows: 30 });
+    assert_eq!(writes(&a.update(key('y'))).len(), 1);
+}

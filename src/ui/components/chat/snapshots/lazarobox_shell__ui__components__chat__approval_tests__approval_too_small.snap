@@ -10,11 +10,11 @@ cd ~/dev/curso-rust
 ```
 
 
+
+
+
+
+
+
 run in pane 2 (~/dev)
-echo line1
-echo line2
-echo line3
-echo line4
-echo line5
-… clipped: 20 lines in all
-y type it (no Enter) · n cancel · p next pane
+pane too small to show it all: enlarge it or press n

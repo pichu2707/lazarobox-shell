@@ -5,6 +5,7 @@
 
 pub mod adapters;
 pub mod approval;
+pub mod approval_rows;
 pub mod claude;
 pub mod cli;
 pub mod codex;
