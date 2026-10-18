@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 0.8.0 is the first version published to crates.io. 0.7.0 is an unpublished
 baseline.
 
-## [Unreleased]
+## [0.16.1] - 2026-10-18
 
 ### Fixed
 
@@ -33,8 +33,9 @@ baseline.
   folder name). Without Rust, the note says to install it first (rustup.rs).
   Enter on **Updates** closes the menu, as Esc does, so focus lands on the
   update tab. The update tab starts by saying that it can take a few minutes
-  and that lazarobox must stay open, ends with `Updated to X.Y.Z. Restart lazarobox to use it.`, and a
-  failure says what happened and gives the command to run by hand.
+  and that lazarobox must stay open, and ends with
+  `Updated to X.Y.Z. Restart lazarobox to use it.` A failure says what
+  happened and gives the command to run by hand.
 - README: short install (with the link to rustup) and update instructions.
 
 ## [0.16.0] - 2026-10-17
