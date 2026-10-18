@@ -204,9 +204,49 @@ impl Drop for TmpDir {
     }
 }
 
-/// The `comm` of a process (`self` or a pid), if readable.
+/// The `comm` of a process (`self` or a pid), if readable. Linux reads
+/// `/proc`; elsewhere (macOS has none) `ps` answers, so the sweeps of a crashed
+/// run's leftovers work there too. The two spellings differ (a short name, a
+/// full path) but a run only ever compares the same source with itself.
 pub(crate) fn read_comm(who: &str) -> Option<String> {
-    fs::read_to_string(format!("/proc/{who}/comm")).ok()
+    #[cfg(target_os = "linux")]
+    {
+        fs::read_to_string(format!("/proc/{who}/comm")).ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let pid = match who {
+            "self" => std::process::id(),
+            who => who.parse().ok()?,
+        };
+        if !is_pid(pid) {
+            return None;
+        }
+        comm_from_ps(
+            std::process::Command::new("ps")
+                .args(["-o", "comm=", "-p", &pid.to_string()])
+                .output(),
+        )
+    }
+}
+
+/// Whether `pid` can be a process id: positive and within `pid_t`. A larger
+/// number is never asked of `ps`, which would reject it with an error.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn is_pid(pid: u32) -> bool {
+    (1..=i32::MAX as u32).contains(&pid)
+}
+
+/// The text of `ps -o comm= -p PID`. `None` when the process is not there
+/// (status 1, no output) and when `ps` cannot say: it cannot run, ends any
+/// other way, or prints nothing. Our own `comm` as `None` makes the sweeps
+/// sweep nothing; another pid's `None` reads as "not one of ours".
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn comm_from_ps(out: io::Result<std::process::Output>) -> Option<String> {
+    let out = out.ok().filter(|out| out.status.code() == Some(0))?;
+    let text = String::from_utf8(out.stdout).ok()?;
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_owned())
 }
 
 /// Whether `pid` is a live process of this program (same `comm` as ours). A

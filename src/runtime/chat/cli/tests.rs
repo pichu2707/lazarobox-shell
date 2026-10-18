@@ -950,6 +950,43 @@ fn the_sweep_removes_turn_dirs_of_dead_processes_only() {
     assert!(left("400-4"), "only folders are removed");
 }
 
+/// Outside Linux there is no `/proc`: `ps -o comm= -p PID` answers instead. A
+/// process that is not there is `ps` exiting 1 with nothing on stdout; anything
+/// else (it cannot run, an odd status, no text) has no `comm` either, which
+/// makes the sweeps sweep nothing when it is our own.
+#[test]
+fn the_comm_of_a_process_is_read_from_ps_outside_linux() {
+    use std::os::unix::process::ExitStatusExt;
+    let out = |code: i32, stdout: &str| {
+        Ok(std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        })
+    };
+    assert_eq!(
+        comm_from_ps(out(0, "/opt/bin/lazarobox-shell\n")),
+        Some("/opt/bin/lazarobox-shell".to_owned())
+    );
+    assert_eq!(comm_from_ps(out(1, "")), None, "no such process");
+    assert_eq!(comm_from_ps(out(0, "\n")), None, "no text");
+    assert_eq!(comm_from_ps(out(2, "x\n")), None, "an odd status");
+    assert_eq!(
+        comm_from_ps(Err(io::Error::from(io::ErrorKind::NotFound))),
+        None,
+        "ps cannot run"
+    );
+}
+
+/// A pid that cannot exist is never asked of `ps`.
+#[test]
+fn a_number_that_cannot_be_a_pid_has_no_comm() {
+    assert!(!is_pid(u32::MAX - 1));
+    assert!(!is_pid(0));
+    assert!(is_pid(1));
+    assert!(is_pid(i32::MAX as u32));
+}
+
 #[test]
 fn liveness_means_a_live_process_of_ours_not_just_any_pid() {
     let me = std::process::id();

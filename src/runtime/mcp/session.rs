@@ -35,9 +35,10 @@
 //! checks it before every dispatch, so nothing dispatches after `close`
 //! returns even though the abort itself lands a moment later.
 //!
-//! Sweep caveat: liveness is judged by `/proc/<pid>/comm` (`alive_by_comm`),
-//! so an instance in another PID namespace that shares the folder looks dead
-//! and loses its sockets. The same limit as the chat CLI's own sweep.
+//! Sweep caveat: liveness is judged by the process `comm` (`alive_by_comm`:
+//! `/proc/<pid>/comm`, or `ps` where there is no `/proc`), so an instance in
+//! another PID namespace that shares the folder looks dead and loses its
+//! sockets. The same limit as the chat CLI's own sweep.
 
 use std::{collections::HashMap, fs, io, os::unix::fs::PermissionsExt, path::Path, path::PathBuf};
 use std::{
