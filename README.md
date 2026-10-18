@@ -544,6 +544,18 @@ La barra de estado muestra `mem: ready`, `mem: checking` o `mem: unavailable`.
 
 Límites: la memoria se envía con la conversación a los adaptadores de Ollama, claude, codex y gemini (en los tres CLIs, **al proveedor**).
 
+### Publicar una versión (mantenedores)
+
+Las versiones se publican subiendo la etiqueta `vX.Y.Z`, una vez actualizados `version` en `Cargo.toml` y la sección correspondiente de `CHANGELOG.md`:
+
+```bash
+git tag vX.Y.Z && git push origin vX.Y.Z
+```
+
+El workflow `.github/workflows/release.yml` comprueba que la etiqueta coincida con `Cargo.toml`, ejecuta fmt, clippy y los tests, publica en crates.io y crea la GitHub Release con las notas de esa versión del `CHANGELOG.md`. Se puede relanzar sin riesgo: si la versión ya está en crates.io o la release ya existe, ese paso se omite o se actualiza.
+
+La publicación usa Trusted Publishing (OIDC), así que no hay ningún token guardado en el repositorio. Configuración única en crates.io: en la página del crate, **Settings → Trusted Publishing**, añade un repositorio de GitHub con `pichu2707/lazarobox-shell` como repositorio, `release.yml` como workflow y sin entorno (environment).
+
 ---
 
 ## 📁 Arquitectura del Workspace en Rust
