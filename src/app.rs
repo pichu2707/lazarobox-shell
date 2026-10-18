@@ -39,7 +39,7 @@ use crate::core::{
     pane::{CursorKind, CursorShape, Pane, PaneSize},
     prefix::{self, Binding, Group, PREFIX_KEY, PREFIX_TREE, PrefixAction, Step},
     pty::{PtyEvent, SpawnSpec},
-    update::{InstallEnv, UpdateAction},
+    update::{Fallback, InstallEnv, UpdateAction},
 };
 
 mod auto_run;
@@ -1267,8 +1267,12 @@ impl App {
         match action {
             UpdateAction::UpToDate => Vec::new(),
             UpdateAction::ShowCommand => {
+                let why = self
+                    .install_env
+                    .as_ref()
+                    .map_or(Fallback::NotCargoInstall, InstallEnv::fallback);
                 if let Some(menu) = self.menu.as_mut() {
-                    menu.show_update_command();
+                    menu.show_update_command(why);
                 }
                 Vec::new()
             }

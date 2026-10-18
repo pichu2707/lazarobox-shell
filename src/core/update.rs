@@ -222,6 +222,37 @@ pub fn install_args(root: &str) -> Vec<String> {
         .to_vec()
 }
 
+/// Whether `exe` is a file under the cargo bin dir `bin`.
+fn under(exe: &Path, bin: &Path) -> bool {
+    // `starts_with` is textual: a `..` could climb out of the dir.
+    exe.is_absolute()
+        && exe.starts_with(bin)
+        && !exe.components().any(|c| c == Component::ParentDir)
+}
+
+/// Why Enter only shows the command, for the footer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Fallback {
+    /// The running binary is not under the cargo bin dir (or is unknown).
+    NotCargoInstall,
+    /// It is, but there is no `cargo` to run.
+    NoCargo,
+    /// It is, and a `cargo` was found but is not trusted.
+    UntrustedCargo,
+}
+
+impl Fallback {
+    /// The footer on the Updates row: the action first, then the reason. One
+    /// line that fits the popup (51 columns), as the command is in the note.
+    pub fn footer(self) -> &'static str {
+        match self {
+            Fallback::NotCargoInstall => "Enter copies the command \u{b7} not a cargo install",
+            Fallback::NoCargo => "Enter copies the command \u{b7} no cargo found",
+            Fallback::UntrustedCargo => "Enter copies the command \u{b7} cargo not trusted",
+        }
+    }
+}
+
 /// Decides what Enter does. Pure: the caller gives the running binary
 /// (`exe`), the cargo bin dir (both canonical, see [`cargo_bin_dir`]) and the
 /// `cargo` it found and trusts. The install is only run for a binary under
@@ -236,12 +267,6 @@ pub fn plan(
 ) -> UpdateAction {
     let Some(latest) = latest else {
         return UpdateAction::UpToDate;
-    };
-    let under = |exe: &Path, bin: &Path| {
-        // `starts_with` is textual: a `..` could climb out of the dir.
-        exe.is_absolute()
-            && exe.starts_with(bin)
-            && !exe.components().any(|c| c == Component::ParentDir)
     };
     let root = match (exe, bin_dir) {
         (Some(exe), Some(bin)) if under(exe, bin) => bin.parent(),
@@ -269,11 +294,26 @@ pub struct InstallEnv {
     /// The `cargo` to run, trusted, as found (the rustup proxy dispatches on
     /// the name it is started under, so it is not resolved).
     pub cargo: Option<PathBuf>,
+    /// A `cargo` was found but is not trusted (so `cargo` is `None`).
+    pub cargo_refused: bool,
     /// The login `PATH`, given to cargo so it finds `rustc` and the linker.
     pub path: OsString,
 }
 
 impl InstallEnv {
+    /// Why [`plan`] gives [`UpdateAction::ShowCommand`] for this machine.
+    pub fn fallback(&self) -> Fallback {
+        let cargo_install = match (&self.exe, &self.bin_dir) {
+            (Some(exe), Some(bin)) => under(exe, bin),
+            _ => false,
+        };
+        match (cargo_install, &self.cargo) {
+            (false, _) | (true, Some(_)) => Fallback::NotCargoInstall,
+            (true, None) if self.cargo_refused => Fallback::UntrustedCargo,
+            (true, None) => Fallback::NoCargo,
+        }
+    }
+
     /// [`plan`] for this machine.
     pub fn plan(&self, latest: Option<&str>) -> UpdateAction {
         plan(
@@ -755,6 +795,30 @@ mod tests {
         assert_eq!(
             plan(Some("0.16.0"), Some(exe), bin(), None),
             UpdateAction::ShowCommand
+        );
+    }
+
+    #[test]
+    fn the_fallback_names_the_first_thing_that_stopped_the_install() {
+        let env = |exe: &str, cargo: Option<&str>, refused: bool| InstallEnv {
+            exe: Some(exe.into()),
+            bin_dir: Some("/home/ana/.cargo/bin".into()),
+            cargo: cargo.map(Into::into),
+            cargo_refused: refused,
+            path: OsString::new(),
+        };
+        let mine = "/home/ana/.cargo/bin/lazarobox";
+        // Not under the cargo bin dir: cargo does not matter.
+        assert_eq!(
+            env("/usr/bin/lazarobox", None, true).fallback(),
+            Fallback::NotCargoInstall
+        );
+        assert_eq!(env(mine, None, true).fallback(), Fallback::UntrustedCargo);
+        assert_eq!(env(mine, None, false).fallback(), Fallback::NoCargo);
+        assert_eq!(
+            InstallEnv::default().fallback(),
+            Fallback::NotCargoInstall,
+            "an unknown binary"
         );
     }
 

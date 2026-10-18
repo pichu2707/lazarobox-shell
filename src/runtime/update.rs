@@ -319,9 +319,11 @@ pub fn install_env(path: &OsStr) -> update::InstallEnv {
 /// so a link to the binary or to the cargo dir compares by where it points;
 /// one that does not exist stays as given. The `cargo` is the one beside the
 /// running binary, else the first on `path`, and only if lazarobox may run it
-/// on its own account (the rule the AI CLIs follow: not under `/tmp`, not
-/// writable by group or others, nor its folder). It is kept as found, not
-/// resolved: the rustup proxy dispatches on the name it is started under.
+/// on its own account (not under `/tmp`, not writable by others, nor any
+/// folder above it; the group may write when the user owns it, as under umask
+/// 002). It is kept as found, not resolved: the rustup proxy dispatches on the
+/// name it is started under. A cargo that was found but refused sets
+/// `cargo_refused`, so the menu can say why nothing ran.
 pub fn install_env_from(
     exe: Option<PathBuf>,
     cargo_home: Option<PathBuf>,
@@ -334,13 +336,16 @@ pub fn install_env_from(
     let beside = bin_dir
         .as_deref()
         .and_then(|dir| which("cargo", Some(dir.as_os_str())));
-    let cargo = beside
-        .or_else(|| which("cargo", Some(path)))
-        .filter(|candidate| crate::runtime::chat::trusted_real_path(candidate).is_some());
+    let found = beside.or_else(|| which("cargo", Some(path)));
+    let cargo = found
+        .clone()
+        .filter(|candidate| crate::runtime::chat::trusted_cargo_path(candidate).is_some());
+    let cargo_refused = found.is_some() && cargo.is_none();
     update::InstallEnv {
         exe: exe.map(real),
         bin_dir,
         cargo,
+        cargo_refused,
         path: path.to_owned(),
     }
 }

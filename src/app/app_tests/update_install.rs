@@ -4,7 +4,7 @@
 use std::{ffi::OsString, path::PathBuf};
 
 use super::*;
-use crate::core::update::{INSTALL_COMMAND, InstallEnv};
+use crate::core::update::{Fallback, INSTALL_COMMAND, InstallEnv};
 
 const CARGO: &str = "/home/ana/.cargo/bin/cargo";
 
@@ -13,6 +13,7 @@ fn cargo_env() -> InstallEnv {
         exe: Some("/home/ana/.cargo/bin/lazarobox".into()),
         bin_dir: Some("/home/ana/.cargo/bin".into()),
         cargo: Some(CARGO.into()),
+        cargo_refused: false,
         path: OsString::from("/home/ana/.cargo/bin:/usr/bin"),
     }
 }
@@ -132,7 +133,7 @@ fn a_binary_outside_cargo_only_shows_the_command_and_copies_it() {
     for code in [KeyCode::Enter, KeyCode::Char('y')] {
         let mut a = on_updates(Some("0.15.4"), Some(distro_env()));
         assert!(a.update(enter()).is_empty(), "nothing runs");
-        assert!(footer(&a).starts_with(INSTALL_COMMAND), "{}", footer(&a));
+        assert_eq!(footer(&a), Fallback::NotCargoInstall.footer());
         let copy = a.update(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
         let sequence = crate::core::copy::osc52(INSTALL_COMMAND).unwrap();
         assert_eq!(copy, vec![Effect::SetClipboard(sequence)], "{code:?}");
@@ -147,14 +148,29 @@ fn without_cargo_on_the_path_the_command_is_shown_not_run() {
     };
     let mut a = on_updates(Some("0.15.4"), Some(env));
     assert!(a.update(enter()).is_empty());
-    assert!(footer(&a).starts_with(INSTALL_COMMAND));
+    assert_eq!(footer(&a), Fallback::NoCargo.footer());
+    assert!(footer(&a).contains("no cargo found"), "{}", footer(&a));
+}
+
+#[test]
+fn a_refused_cargo_says_so_instead_of_looking_like_nothing_happened() {
+    let env = InstallEnv {
+        cargo: None,
+        cargo_refused: true,
+        ..cargo_env()
+    };
+    let mut a = on_updates(Some("0.15.4"), Some(env));
+    assert!(a.update(enter()).is_empty(), "nothing runs");
+    assert_eq!(footer(&a), Fallback::UntrustedCargo.footer());
+    assert!(footer(&a).starts_with("Enter copies"), "{}", footer(&a));
+    assert!(footer(&a).contains("not trusted"), "{}", footer(&a));
 }
 
 #[test]
 fn without_an_environment_the_command_is_shown_not_run() {
     let mut a = on_updates(Some("0.15.4"), None);
     assert!(a.update(enter()).is_empty());
-    assert!(footer(&a).starts_with(INSTALL_COMMAND));
+    assert_eq!(footer(&a), Fallback::NotCargoInstall.footer());
 }
 
 #[test]

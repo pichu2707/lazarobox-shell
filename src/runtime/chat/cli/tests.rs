@@ -1318,6 +1318,46 @@ fn an_interpreter_in_a_group_or_world_writable_folder_is_not_trusted() {
 }
 
 #[test]
+fn the_jail_keeps_refusing_a_group_writable_folder_that_cargo_accepts() {
+    let lab = lab();
+    let base = lab.bin.parent().unwrap().to_owned();
+    let file = exe_in(&base.join("g"), "fakecargo", 0o775);
+    // The jail's rule is untouched: group write counts as writable...
+    assert!(interpreter_trust(&file).is_err());
+    assert!(trusted_real_path(&file).is_none());
+    // ...while the update install accepts the user's own 0775 folder.
+    assert_eq!(
+        trusted_cargo_path(&file),
+        Some(fs::canonicalize(&file).unwrap())
+    );
+    // Either way, a folder anyone can write is out.
+    let open = exe_in(&base.join("o"), "fakecargo", 0o777);
+    assert_eq!(trusted_cargo_path(&open), None);
+}
+
+#[test]
+fn the_cargo_rule_trusts_group_write_only_for_the_user_or_root() {
+    // (mode, owned by the user or root) -> trusted
+    for (mode, ours, trusted) in [
+        (0o755, true, true),
+        (0o775, true, true),
+        (0o775, false, false),
+        (0o755, false, true),
+        (0o757, true, false),
+        (0o777, true, false),
+        (0o772, false, false),
+    ] {
+        assert_eq!(
+            Rule::OwnGroup.open(mode, ours),
+            !trusted,
+            "{mode:o} ours={ours}"
+        );
+    }
+    assert!(Rule::Jail.open(0o775, true));
+    assert!(!Rule::Jail.open(0o755, false));
+}
+
+#[test]
 fn an_untrusted_sibling_falls_back_to_a_trusted_interpreter_on_path_or_nothing() {
     let lab = lab();
     let base = lab.bin.parent().unwrap().to_owned();

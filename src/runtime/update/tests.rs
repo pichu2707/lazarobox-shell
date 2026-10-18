@@ -973,6 +973,48 @@ mod install_env {
     }
 
     #[test]
+    fn a_rustup_cargo_in_a_group_writable_home_is_trusted() {
+        // Debian's umask 002 gives `~/.cargo` and `~/.cargo/bin` mode 0775;
+        // `cargo` is a link to the 0755 `rustup`. The files are the user's.
+        let (_dir, root) = lab();
+        let home = root.join("cargo-home");
+        let bin = home.join("bin");
+        executable(&bin.join("lazarobox"));
+        executable(&bin.join("rustup"));
+        std::os::unix::fs::symlink(bin.join("rustup"), bin.join("cargo")).unwrap();
+        for dir in [&home, &bin] {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o775)).unwrap();
+        }
+        let env = env_for(&root, Some(&home), OsStr::new(""));
+        assert_eq!(env.cargo, Some(bin.join("cargo")));
+        assert!(!env.cargo_refused);
+        assert!(matches!(
+            env.plan(Some("0.16.0")),
+            update::UpdateAction::CargoInstall { ref program, .. } if *program == bin.join("cargo")
+        ));
+    }
+
+    #[test]
+    fn a_cargo_under_a_folder_others_can_write_is_refused_and_flagged() {
+        // The relaxation is for the group bit only, and it covers every
+        // folder above the file, not just its own.
+        let (_dir, root) = lab();
+        let home = root.join("cargo-home");
+        let bin = home.join("bin");
+        executable(&bin.join("lazarobox"));
+        executable(&bin.join("cargo"));
+        for (dir, mode) in [(&bin, 0o777), (&home, 0o757)] {
+            fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::set_permissions(dir, fs::Permissions::from_mode(mode)).unwrap();
+            let env = env_for(&root, Some(&home), OsStr::new(""));
+            assert_eq!(env.cargo, None, "{mode:o}");
+            assert!(env.cargo_refused, "{mode:o}");
+            assert_eq!(env.plan(Some("0.16.0")), update::UpdateAction::ShowCommand);
+        }
+    }
+
+    #[test]
     fn a_cargo_in_a_folder_others_can_write_is_not_trusted() {
         let (_dir, root) = lab();
         executable(&root.join("cargo-home/bin/lazarobox"));
