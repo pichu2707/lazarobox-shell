@@ -5,7 +5,8 @@
 //!
 //! `on_tool_ask` is the single place an ask enters the app. It always opens
 //! the overlay, unless `approval::route` says the command can be typed at once
-//! (`auto`, D18) or run after a check (`run`, D21).
+//! (`auto`, D18) or run after a check (`run`, D21). Only a `run` is ever
+//! routed: a read and a user tool always wait for `y`.
 
 use std::time::Duration;
 
@@ -30,7 +31,6 @@ const APPROVAL_CHAT_ONLY: &str = "The approval mode is for chat panes; open one 
 const APPROVAL_TOOLS_OFF: &str = "Tools are off: there is no approval mode to change";
 const TURN_OVER: &str = "the turn is over";
 const NO_SHELL: &str = "there is no shell pane in this tab";
-const NO_USER_TOOLS: &str = "user tools are not available";
 const CHAT_GONE: &str = "the chat is gone";
 
 /// What a tool event says about a call that may wait for the user.
@@ -117,7 +117,7 @@ impl App {
 
     /// A tool call needs the user: opens the approval overlay for it, or
     /// denies it at once (tools off, another approval pending, nowhere to type
-    /// a command, a kind of call that has no prompt yet).
+    /// a command).
     pub(super) fn on_tool_ask(
         &mut self,
         id: PaneId,
@@ -138,8 +138,9 @@ impl App {
                 }
                 target
             }
-            ApprovalAsk::Read { .. } => None,
-            ApprovalAsk::External { .. } => return Self::deny(id, turn, call, NO_USER_TOOLS),
+            // A user tool is never routed by the approval mode (D18): only a
+            // `run` can be typed or run by itself. It always opens the prompt.
+            ApprovalAsk::Read { .. } | ApprovalAsk::External { .. } => None,
         };
         let mut why = None;
         if let (ApprovalAsk::Run { command }, Some(target)) = (&ask, target) {

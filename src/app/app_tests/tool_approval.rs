@@ -378,23 +378,65 @@ fn turning_tools_off_denies_the_call_that_waits() {
     assert_eq!(pending(&a), None);
 }
 
+fn external(server: &str, tool: &str, args: &str) -> ApprovalAsk {
+    ApprovalAsk::External {
+        server: server.into(),
+        tool: tool.into(),
+        args: args.into(),
+    }
+}
+
 #[test]
-fn a_user_tool_ask_is_denied_until_it_is_supported() {
+fn a_user_tool_ask_shows_the_server_the_tool_and_the_arguments() {
     let (mut a, turn) = live();
-    let ask = ApprovalAsk::External {
-        server: "s".into(),
-        tool: "t".into(),
-        args: "{}".into(),
-    };
     assert_eq!(
-        announce(&mut a, turn, 1, ask),
-        vec![decision(
-            turn,
-            1,
-            Decision::Denied("user tools are not available")
-        )]
+        announce(&mut a, turn, 1, external("fs", "write", "path=~/x")),
+        Vec::new()
     );
-    assert_eq!(pending(&a), None);
+    let prompt = a.approval_prompt(id2()).unwrap();
+    assert!(prompt.target.contains("fs"), "{prompt:?}");
+    assert_eq!(prompt.command, "fs write path=~/x");
+    assert!(prompt.keys.contains("y call it"), "{prompt:?}");
+    // A second server and tool give a different prompt.
+    let (mut b, turn) = live();
+    announce(&mut b, turn, 1, external("docs", "search", "q=cats"));
+    assert_eq!(
+        b.approval_prompt(id2()).unwrap().command,
+        "docs search q=cats"
+    );
+}
+
+#[test]
+fn y_on_a_user_tool_answers_sent_and_n_denies_without_a_pty() {
+    let (mut a, turn) = live();
+    announce(&mut a, turn, 1, external("fs", "write", "{}"));
+    assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+    announce(&mut a, turn, 2, external("fs", "write", "{}"));
+    assert_eq!(
+        a.update(key('n')),
+        vec![decision(turn, 2, Decision::Denied("the user declined"))]
+    );
+}
+
+// D18: the approval mode is for `run_in_pane` only; a user tool never types
+// or approves by itself.
+#[test]
+fn a_user_tool_asks_for_y_even_in_auto_mode() {
+    let (mut a, turn) = live();
+    super::tool_run::chat_mut(&mut a)
+        .set_approval_mode(crate::core::ai::config::ApprovalMode::Auto);
+    assert_eq!(
+        announce(&mut a, turn, 1, external("fs", "write", "{}")),
+        Vec::new()
+    );
+    assert_eq!(
+        pending(&a).map(|(ask, _)| ask),
+        Some(external("fs", "write", "{}"))
+    );
+    assert_eq!(
+        a.update(super::chat_live::ctrl('c')).first(),
+        Some(&decision(turn, 1, Decision::Denied("cancelled")))
+    );
 }
 
 // The chat's own tab decides the target, not the tab on screen.

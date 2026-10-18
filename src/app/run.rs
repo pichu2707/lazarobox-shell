@@ -8,8 +8,8 @@ use super::{
 use crate::core::ai::{
     chat::{
         approval::{
-            Approval, ApprovalAsk, ApprovalPrompt, Origin, Press, READ_KEYS, RUN_CANCELLED,
-            RUN_KEYS, Reply, run_sent_line,
+            Approval, ApprovalAsk, ApprovalPrompt, EXTERNAL_KEYS, Origin, Press, READ_KEYS,
+            RUN_CANCELLED, RUN_KEYS, Reply, run_sent_line,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -440,7 +440,15 @@ impl App {
                 armed,
                 why: None,
             }),
-            ApprovalAsk::External { .. } => None,
+            // Server, tool and arguments are sanitized and capped when the ask
+            // is made; `y` approves exactly this.
+            ApprovalAsk::External { server, tool, args } => Some(ApprovalPrompt {
+                target: format!("call a tool of the MCP server {server}"),
+                command: format!("{server} {tool} {args}"),
+                keys: EXTERNAL_KEYS,
+                armed,
+                why: None,
+            }),
         }
     }
 

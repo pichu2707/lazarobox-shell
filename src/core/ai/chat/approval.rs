@@ -403,8 +403,8 @@ pub enum Press {
 pub struct ApprovalPrompt {
     /// Where it goes: `run in pane 2 (~/dev)`.
     pub target: String,
-    /// The exact action, as it will be done: the command to type, or
-    /// `read <path>`.
+    /// The exact action, as it will be done: the command to type,
+    /// `read <path>`, or `<server> <tool> <arguments>`.
     pub command: String,
     /// The keys line.
     pub keys: &'static str,
@@ -420,6 +420,8 @@ pub struct ApprovalPrompt {
 pub const RUN_KEYS: &str = "y type it (no Enter) · n cancel · p next pane";
 /// The keys of a read prompt.
 pub const READ_KEYS: &str = "y read it · n deny";
+/// The keys of a user tool prompt: no `p`, it has no target pane.
+pub const EXTERNAL_KEYS: &str = "y call it · n deny";
 
 /// The pending approval of a chat, if any.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]

@@ -208,7 +208,7 @@ fn the_slot_counts_toward_the_cap_and_a_refusal_does_not_refund_it() {
     assert_eq!(why(&a).as_deref(), Some(TOO_MANY), "a limit says so");
 }
 
-fn chat_mut(a: &mut App) -> &mut ChatState {
+pub(super) fn chat_mut(a: &mut App) -> &mut ChatState {
     a.panes
         .get_mut(&id2())
         .and_then(PaneState::chat_mut)
