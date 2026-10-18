@@ -1,6 +1,8 @@
 //! The `[ai]` and `[ai.tasks.*]` sections of `config.toml`: the saved engine
 //! and model id of each AI task.
 
+use std::path::PathBuf;
+
 use toml::{Table, Value};
 
 /// The fixed set of AI tasks, in display order.
@@ -214,6 +216,23 @@ impl MemoryConfig {
     }
 }
 
+/// One user MCP server from `[[ai.mcp.servers]]` (design D16). `env` holds
+/// variable NAMES only: the values come from lazarobox's own environment when
+/// a later slice starts the server. `project` is the absolute git root the
+/// entry is limited to; `None` is a global server.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct McpServer {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: Vec<String>,
+    pub project: Option<PathBuf>,
+    pub enabled: bool,
+}
+
+/// The longest server name, in characters.
+const MCP_NAME_MAX: usize = 32;
+
 /// The saved AI choice of every task. `None` means unset (a missing key or
 /// `""`). The profile, the context flag and the memory table ride along:
 /// they live under `[ai]` too.
@@ -226,6 +245,7 @@ pub struct AiConfig {
     notify_sound: bool,
     tools: bool,
     approval: ApprovalMode,
+    mcp_servers: Vec<McpServer>,
     pub memory: MemoryConfig,
 }
 
@@ -239,6 +259,7 @@ impl Default for AiConfig {
             notify_sound: true,
             tools: true,
             approval: ApprovalMode::Ask,
+            mcp_servers: Vec::new(),
             memory: MemoryConfig::default(),
         }
     }
@@ -304,6 +325,12 @@ impl AiConfig {
     /// (`[ai.tools] approval`).
     pub fn approval(&self) -> ApprovalMode {
         self.approval
+    }
+
+    /// The user MCP servers as declared, global and per-project, in file
+    /// order. Read once at startup; the menu never writes them.
+    pub fn mcp_servers(&self) -> &[McpServer] {
+        &self.mcp_servers
     }
 
     pub fn set_approval(&mut self, mode: ApprovalMode) {
@@ -495,6 +522,7 @@ pub fn read_with_port_env(
     let mut config = read_tasks(table, problems);
     config.tools = read_tools(table, problems);
     config.approval = read_approval(table, problems);
+    config.mcp_servers = read_mcp_servers(table, problems);
     config.memory = read_memory(table, problems, port_env);
     config
 }
@@ -542,6 +570,154 @@ fn read_approval(table: &Table, problems: &mut Vec<String>) -> ApprovalMode {
             problems.push(APPROVAL_PROBLEM.to_owned());
             ApprovalMode::Ask
         }
+    }
+}
+
+/// Reads `[[ai.mcp.servers]]`. An invalid entry is skipped whole and each of
+/// its problems is reported; the others are kept. A wrong `enabled` falls
+/// back to `true` on its own. A name is unique per scope (the global list, or
+/// one project root), so a project entry may reuse a global name: it wins at
+/// resolution.
+fn read_mcp_servers(table: &Table, problems: &mut Vec<String>) -> Vec<McpServer> {
+    let Some(ai) = table.get("ai").and_then(Value::as_table) else {
+        return Vec::new();
+    };
+    let mcp = match ai.get("mcp") {
+        None => return Vec::new(),
+        Some(Value::Table(mcp)) => mcp,
+        Some(_) => {
+            problems.push("ai.mcp: expected a table".to_owned());
+            return Vec::new();
+        }
+    };
+    let entries = match mcp.get("servers") {
+        None => return Vec::new(),
+        Some(Value::Array(entries)) => entries,
+        Some(_) => {
+            problems.push("ai.mcp.servers: expected an array of tables".to_owned());
+            return Vec::new();
+        }
+    };
+    let mut servers: Vec<McpServer> = Vec::new();
+    let mut shape_reported = false;
+    for (index, entry) in entries.iter().enumerate() {
+        let Value::Table(entry) = entry else {
+            if !shape_reported {
+                problems.push("ai.mcp.servers: expected an array of tables".to_owned());
+                shape_reported = true;
+            }
+            continue;
+        };
+        let Some(server) = read_mcp_entry(entry, &format!("ai.mcp.servers[{index}]"), problems)
+        else {
+            continue;
+        };
+        if servers
+            .iter()
+            .any(|kept| kept.name == server.name && kept.project == server.project)
+        {
+            problems.push(format!("ai.mcp.servers[{index}].name: duplicate name"));
+            continue;
+        }
+        servers.push(server);
+    }
+    servers
+}
+
+/// One entry, or `None` after reporting every field problem it has.
+fn read_mcp_entry(entry: &Table, path: &str, problems: &mut Vec<String>) -> Option<McpServer> {
+    let mut valid = true;
+    let name = match entry.get("name") {
+        Some(Value::String(name)) if valid_mcp_name(name) => name.clone(),
+        _ => {
+            valid = false;
+            problems.push(format!(
+                "{path}.name: expected a name of letters, digits, - and _"
+            ));
+            String::new()
+        }
+    };
+    let command = match entry.get("command") {
+        Some(Value::String(command)) if !command.trim().is_empty() => command.clone(),
+        _ => {
+            valid = false;
+            problems.push(format!("{path}.command: expected a non-empty string"));
+            String::new()
+        }
+    };
+    let args = match string_list(entry.get("args"), |_| true) {
+        Some(args) => args,
+        None => {
+            valid = false;
+            problems.push(format!("{path}.args: expected an array of strings"));
+            Vec::new()
+        }
+    };
+    // A variable NAME only: `NAME=value` and anything else that is not an
+    // identifier is refused, so a secret pasted here is never kept or echoed.
+    let env = match string_list(entry.get("env"), valid_env_name) {
+        Some(env) => env,
+        None => {
+            valid = false;
+            problems.push(format!("{path}.env: expected an array of variable names"));
+            Vec::new()
+        }
+    };
+    let enabled = match entry.get("enabled") {
+        None => true,
+        Some(Value::Boolean(on)) => *on,
+        Some(_) => {
+            problems.push(format!("{path}.enabled: expected a boolean"));
+            true
+        }
+    };
+    // An unreadable project must skip the entry: reading it as global would
+    // widen where the server runs.
+    let project = match entry.get("project") {
+        None => None,
+        Some(Value::String(root)) if PathBuf::from(root).is_absolute() => Some(PathBuf::from(root)),
+        Some(_) => {
+            valid = false;
+            problems.push(format!("{path}.project: expected an absolute path"));
+            None
+        }
+    };
+    valid.then_some(McpServer {
+        name,
+        command,
+        args,
+        env,
+        project,
+        enabled,
+    })
+}
+
+fn valid_mcp_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().count() <= MCP_NAME_MAX
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn valid_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// An optional array whose elements are all strings accepted by `keep`.
+/// Absent is empty; any other shape is `None`.
+fn string_list(value: Option<&Value>, keep: fn(&str) -> bool) -> Option<Vec<String>> {
+    match value {
+        None => Some(Vec::new()),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| item.as_str().filter(|text| keep(text)).map(str::to_owned))
+            .collect(),
+        Some(_) => None,
     }
 }
 
@@ -1440,6 +1616,203 @@ mod tests {
                 NOTIFY_PROBLEM.to_owned(),
                 "ai.tasks.code.engine: expected a string".to_owned(),
             ]
+        );
+    }
+
+    // Spec (configuration, MCP server lists): the `[[ai.mcp.servers]]` parse.
+    fn mcp_of(text: &str) -> (Vec<McpServer>, Vec<String>) {
+        let (config, problems) = read_text(text);
+        (config.mcp_servers().to_vec(), problems)
+    }
+
+    fn server(name: &str, command: &str) -> McpServer {
+        McpServer {
+            name: name.to_owned(),
+            command: command.to_owned(),
+            args: Vec::new(),
+            env: Vec::new(),
+            project: None,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn no_mcp_table_gives_no_servers_and_no_notice() {
+        assert_eq!(mcp_of(""), (Vec::new(), Vec::new()));
+        assert_eq!(mcp_of("[ai]\nnotify = true\n").0, Vec::new());
+    }
+
+    #[test]
+    fn an_entry_is_read_with_its_args_env_and_project() {
+        let text = "[[ai.mcp.servers]]\nname = \"fs\"\ncommand = \"mcp-fs\"\n\
+            args = [\"--root\", \"/home/u/dev\"]\nenv = [\"GITHUB_TOKEN\"]\n\n\
+            [[ai.mcp.servers]]\nname = \"docs\"\ncommand = \"mcp-docs\"\n\
+            project = \"/home/u/p\"\nenabled = false\ntimeout = 5\n";
+        let (servers, problems) = mcp_of(text);
+        assert_eq!(problems, Vec::<String>::new());
+        let mut fs = server("fs", "mcp-fs");
+        fs.args = vec!["--root".into(), "/home/u/dev".into()];
+        fs.env = vec!["GITHUB_TOKEN".into()];
+        let mut docs = server("docs", "mcp-docs");
+        docs.project = Some("/home/u/p".into());
+        docs.enabled = false;
+        assert_eq!(servers, vec![fs, docs]);
+    }
+
+    #[test]
+    fn an_invalid_entry_is_skipped_whole_and_the_others_are_kept() {
+        let text = "[[ai.mcp.servers]]\nname = \"a\"\ncommand = 5\n\n\
+            [[ai.mcp.servers]]\nname = \"b\"\ncommand = \"mcp-b\"\n";
+        let (servers, problems) = mcp_of(text);
+        assert_eq!(servers, vec![server("b", "mcp-b")]);
+        assert_eq!(
+            problems,
+            vec!["ai.mcp.servers[0].command: expected a non-empty string".to_owned()]
+        );
+    }
+
+    #[test]
+    fn each_field_has_its_own_exact_problem() {
+        let cases = [
+            (
+                "name = \"a b\"\ncommand = \"x\"",
+                "name: expected a name of letters, digits, - and _",
+            ),
+            (
+                "name = \"\"\ncommand = \"x\"",
+                "name: expected a name of letters, digits, - and _",
+            ),
+            (
+                "command = \"x\"",
+                "name: expected a name of letters, digits, - and _",
+            ),
+            (
+                "name = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\ncommand = \"x\"",
+                "name: expected a name of letters, digits, - and _",
+            ),
+            (
+                "name = \"a\"\ncommand = \"  \"",
+                "command: expected a non-empty string",
+            ),
+            (
+                "name = \"a\"\ncommand = \"x\"\nargs = \"--x\"",
+                "args: expected an array of strings",
+            ),
+            (
+                "name = \"a\"\ncommand = \"x\"\nargs = [1]",
+                "args: expected an array of strings",
+            ),
+            (
+                "name = \"a\"\ncommand = \"x\"\nenv = [1]",
+                "env: expected an array of variable names",
+            ),
+            (
+                "name = \"a\"\ncommand = \"x\"\nproject = \"rel/p\"",
+                "project: expected an absolute path",
+            ),
+            (
+                "name = \"a\"\ncommand = \"x\"\nproject = 3",
+                "project: expected an absolute path",
+            ),
+        ];
+        for (body, want) in cases {
+            let (servers, problems) = mcp_of(&format!("[[ai.mcp.servers]]\n{body}\n"));
+            assert_eq!(servers, Vec::new(), "{body}");
+            assert_eq!(
+                problems,
+                vec![format!("ai.mcp.servers[0].{want}")],
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_secret_value_in_env_is_refused_and_never_echoed() {
+        for env in [
+            "{ GITHUB_TOKEN = \"abc\" }",
+            "[\"GITHUB_TOKEN=abc\"]",
+            "[\"a b\"]",
+            "[\"\"]",
+        ] {
+            let text = format!("[[ai.mcp.servers]]\nname = \"a\"\ncommand = \"x\"\nenv = {env}\n");
+            let (servers, problems) = mcp_of(&text);
+            assert_eq!(servers, Vec::new(), "{env}");
+            assert_eq!(
+                problems,
+                vec!["ai.mcp.servers[0].env: expected an array of variable names".to_owned()],
+                "{env}"
+            );
+            assert!(!problems.concat().contains("abc"), "{env}");
+        }
+    }
+
+    #[test]
+    fn a_wrong_enabled_falls_back_alone_and_keeps_the_entry() {
+        let text = "[[ai.mcp.servers]]\nname = \"a\"\ncommand = \"x\"\nenabled = \"no\"\n";
+        let (servers, problems) = mcp_of(text);
+        assert_eq!(servers, vec![server("a", "x")]);
+        assert_eq!(
+            problems,
+            vec!["ai.mcp.servers[0].enabled: expected a boolean".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_duplicate_name_skips_the_later_entry_but_a_project_may_reuse_a_global_name() {
+        let text = "[[ai.mcp.servers]]\nname = \"fs\"\ncommand = \"one\"\n\n\
+            [[ai.mcp.servers]]\nname = \"fs\"\ncommand = \"two\"\n";
+        let (servers, problems) = mcp_of(text);
+        assert_eq!(servers, vec![server("fs", "one")]);
+        assert_eq!(
+            problems,
+            vec!["ai.mcp.servers[1].name: duplicate name".to_owned()]
+        );
+        let text = format!(
+            "{text}\n[[ai.mcp.servers]]\nname = \"fs\"\ncommand = \"three\"\nproject = \"/p\"\n"
+        );
+        let (servers, problems) = mcp_of(&text);
+        assert_eq!(servers.len(), 2);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+    }
+
+    #[test]
+    fn wrong_container_types_are_one_problem_each() {
+        assert_eq!(
+            mcp_of("[ai]\nmcp = 3\n"),
+            (Vec::new(), vec!["ai.mcp: expected a table".to_owned()])
+        );
+        assert_eq!(
+            mcp_of("[ai.mcp]\nservers = 3\n"),
+            (
+                Vec::new(),
+                vec!["ai.mcp.servers: expected an array of tables".to_owned()]
+            )
+        );
+        assert_eq!(
+            mcp_of("[ai.mcp]\nservers = [1]\n"),
+            (
+                Vec::new(),
+                vec!["ai.mcp.servers: expected an array of tables".to_owned()]
+            )
+        );
+    }
+
+    #[test]
+    fn mcp_problems_follow_the_tools_problems_in_the_notice_order() {
+        let text = "[ai.tools]\nenabled = 1\napproval = 2\n\n\
+            [[ai.mcp.servers]]\nname = \"a\"\ncommand = 5\n";
+        assert_eq!(
+            read_text(text).1,
+            vec![
+                "ai.tools.enabled: expected a boolean".to_owned(),
+                APPROVAL_PROBLEM.to_owned(),
+                "ai.mcp.servers[0].command: expected a non-empty string".to_owned(),
+            ]
+        );
+        let (_, _, notice) = crate::core::config::Config::load_with_ai(Ok(text.to_owned()), None);
+        assert_eq!(
+            notice.as_deref(),
+            Some("config (3 problems): ai.tools.enabled: expected a boolean")
         );
     }
 }
