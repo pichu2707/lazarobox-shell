@@ -1453,6 +1453,7 @@ mod tests {
     }
 
     // Spec: OSC 7 accepts this machine's hostname, so the lookup must work.
+    #[cfg(target_os = "linux")]
     #[test]
     fn local_hostname_matches_the_kernel_hostname() {
         let expected = std::fs::read_to_string("/proc/sys/kernel/hostname")

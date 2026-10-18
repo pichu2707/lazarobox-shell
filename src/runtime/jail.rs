@@ -46,7 +46,9 @@ pub fn exec_main(args: &[OsString]) -> i32 {
 /// Why the helper did not run the program.
 enum Failure {
     NotEnforced(String),
-    /// The jail is in place but the program could not be executed.
+    /// The jail is in place but the program could not be executed. Only the
+    /// Linux jail builds it.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Exec(String, std::io::Error),
 }
 

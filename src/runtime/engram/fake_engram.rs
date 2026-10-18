@@ -1,6 +1,9 @@
 //! A fake engram server for tests: a real loopback listener that replays the
 //! recorded 3.4.0 responses by route and records every request it gets.
 
+// What only the Linux-only tests use is dead code elsewhere.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use std::sync::{Arc, Mutex};
 
 use tokio::{
@@ -206,6 +209,8 @@ mod tests {
         out
     }
 
+    // Needs `getrandom(2)` for the session id, Linux only.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_conversation_sends_the_right_requests() {
         let (fake, link, mut rx) = start(happy()).await;

@@ -83,6 +83,8 @@ pub async fn run(call: Call, env: ToolEnv, limits: Limits) -> Result<String, Fai
 
 #[cfg(test)]
 mod tests {
+    // `Duration` serves the Linux-only tests.
+    #![cfg_attr(not(target_os = "linux"), allow(unused_imports))]
     use super::*;
     use std::{
         sync::{
@@ -113,6 +115,8 @@ mod tests {
         (dir, home)
     }
 
+    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_result_is_wrapped_with_a_fresh_nonce_per_call() {
         let (_dir, home) = home();
@@ -148,6 +152,8 @@ mod tests {
         );
     }
 
+    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_call_that_hangs_past_its_time_bound_ends_as_timed_out() {
         let (_dir, home) = home();
@@ -176,6 +182,8 @@ mod tests {
         assert!(flag.load(Ordering::Relaxed));
     }
 
+    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_file_named_like_the_wrapper_tag_cannot_close_the_block() {
         let (_dir, home) = home();
@@ -197,6 +205,8 @@ mod tests {
         }
     }
 
+    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+    #[cfg(target_os = "linux")]
     #[tokio::test(flavor = "current_thread")]
     async fn the_event_loop_keeps_running_while_a_slow_find_dir_works() {
         let (_dir, home) = home();

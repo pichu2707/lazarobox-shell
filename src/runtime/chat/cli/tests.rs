@@ -1633,7 +1633,7 @@ printf '%s\0' "$@" > "$REC/args"
 cat > "$REC/stdin"
 for last; do :; done
 cp "$last" "$REC/policy_copy"
-stat -c %a "$last" > "$REC/policy_mode"
+{ stat -c %a "$last" 2>/dev/null || stat -f %Lp "$last"; } > "$REC/policy_mode"
 printf '%s\n' '{"type":"init","session_id":"s","model":"m"}'
 printf '%s\n' '{"type":"message","role":"assistant","content":"ok","delta":true}'
 printf '%s\n' '{"type":"result","status":"success"}'
@@ -1916,8 +1916,8 @@ printf '%s\0' "$@" > "$REC/args"
 cat > "$REC/stdin"
 for last; do :; done
 cp "$last" "$REC/extra_copy"
-stat -c %a "$last" > "$REC/extra_mode"
-stat -c %a "$(dirname "$last")" > "$REC/dir_mode"
+{ stat -c %a "$last" 2>/dev/null || stat -f %Lp "$last"; } > "$REC/extra_mode"
+{ stat -c %a "$(dirname "$last")" 2>/dev/null || stat -f %Lp "$(dirname "$last")"; } > "$REC/dir_mode"
 printf '%s\n' '{"type":"init","session_id":"s","model":"m"}'
 printf '%s\n' '{"type":"message","role":"assistant","content":"ok","delta":true}'
 printf '%s\n' '{"type":"result","status":"success"}'
@@ -1930,7 +1930,7 @@ for a; do
   case "$a" in
     --mcp-config=*)
       cp "${a#--mcp-config=}" "$REC/mcp_copy"
-      stat -c %a "${a#--mcp-config=}" > "$REC/mcp_mode"
+      { stat -c %a "${a#--mcp-config=}" 2>/dev/null || stat -f %Lp "${a#--mcp-config=}"; } > "$REC/mcp_mode"
       ;;
   esac
 done
@@ -2606,15 +2606,15 @@ cat > /dev/null
 if [ -e "$TMPDIR/work" ]; then echo yes > "$REC/work_during"; fi
 if [ -e .gemini/settings.json ]; then
   cp .gemini/settings.json "$REC/settings_copy"
-  stat -c %a .gemini/settings.json > "$REC/settings_mode"
-  stat -c %a .gemini > "$REC/dotgemini_mode"
-  stat -c %a . > "$REC/work_mode"
+  { stat -c %a .gemini/settings.json 2>/dev/null || stat -f %Lp .gemini/settings.json; } > "$REC/settings_mode"
+  { stat -c %a .gemini 2>/dev/null || stat -f %Lp .gemini; } > "$REC/dotgemini_mode"
+  { stat -c %a . 2>/dev/null || stat -f %Lp .; } > "$REC/work_mode"
 fi
 for a; do
   case "$a" in
     --admin-policy=*)
       cp "${a#--admin-policy=}" "$REC/policy_copy"
-      stat -c %a "${a#--admin-policy=}" > "$REC/policy_mode"
+      { stat -c %a "${a#--admin-policy=}" 2>/dev/null || stat -f %Lp "${a#--admin-policy=}"; } > "$REC/policy_mode"
       ;;
   esac
 done

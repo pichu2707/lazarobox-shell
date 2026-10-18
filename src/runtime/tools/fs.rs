@@ -504,7 +504,10 @@ fn find_dir(
     Ok(out)
 }
 
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+// `cfg(test)` stays on its own line: the audit drops exactly that attribute.
 #[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::symlink};

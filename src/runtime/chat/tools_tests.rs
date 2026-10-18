@@ -2,6 +2,9 @@
 //! are answered by (pane, turn, call). Real unix sockets and the real clock,
 //! every wait bounded; nothing sleeps.
 
+// What only the Linux-only tests use is dead code elsewhere.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use std::{path::PathBuf, sync::Mutex, time::Duration};
 
 use serde_json::{Value, json};
@@ -153,6 +156,8 @@ fn note(lab: &Lab) -> Option<ApprovalAsk> {
 
 // A cloud read: the app hears the ask under its pane and turn, the answer
 // reaches the call, and only then the file is read.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_call_waits_for_the_answer_of_its_pane_and_turn() {
     let lab = lab();
@@ -208,6 +213,8 @@ async fn a_denied_call_never_opens_the_file() {
 }
 
 // Two chats: closing one ends only its calls.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn closing_one_chat_ends_only_its_own_calls() {
     let lab = lab();

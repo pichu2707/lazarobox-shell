@@ -1,6 +1,9 @@
 //! Worker tests: a scripted `Transport` on tokio's paused clock, replaying the
 //! recorded engram 3.4.0 responses.
 
+// What only the Linux-only tests use is dead code elsewhere.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
@@ -348,6 +351,8 @@ async fn the_first_ready_probe_is_announced_once() {
     assert!(rig.quiet(), "no second health announcement");
 }
 
+// Needs `getrandom(2)` for the session id, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test(start_paused = true)]
 async fn a_session_is_registered_once_then_notes_are_saved() {
     let mut rig = up();
@@ -381,6 +386,8 @@ async fn a_session_is_registered_once_then_notes_are_saved() {
     );
 }
 
+// Needs `getrandom(2)` for the session id, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test(start_paused = true)]
 async fn an_already_ended_session_counts_as_registered() {
     let mut rig = up();
@@ -416,6 +423,8 @@ async fn a_failed_registration_is_a_short_save_failure() {
     assert_eq!(rig.fake.count("POST /observations"), 0);
 }
 
+// Needs `getrandom(2)` for the session id, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test(start_paused = true)]
 async fn a_changed_instance_clears_the_caches_and_registers_again() {
     let mut rig = up();
@@ -437,6 +446,8 @@ async fn a_changed_instance_clears_the_caches_and_registers_again() {
     assert_eq!(rig.fake.count("POST /sessions"), 2, "registered again");
 }
 
+// Needs `getrandom(2)` for the session id, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test(start_paused = true)]
 async fn the_same_instance_after_an_outage_keeps_the_caches() {
     let mut rig = up();
@@ -779,6 +790,8 @@ async fn a_full_queue_refuses_a_save_by_its_own_token() {
 
 // ---- timeouts per call class ----
 
+// Needs `getrandom(2)` for the session id, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test(start_paused = true)]
 async fn each_call_class_has_its_own_limit() {
     let mut rig = up();
@@ -820,6 +833,8 @@ async fn a_silent_health_probe_gives_up_at_300_ms() {
     assert_eq!(Instant::now() - start, Duration::from_millis(300));
 }
 
+// Needs `getrandom(2)` for the session id, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test(start_paused = true)]
 async fn a_silent_read_gives_up_at_800_ms_and_a_silent_write_at_2_s() {
     let mut rig = up();
@@ -847,6 +862,8 @@ async fn a_silent_read_gives_up_at_800_ms_and_a_silent_write_at_2_s() {
 
 // ---- panics ----
 
+// Needs `getrandom(2)` for the session id, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test(start_paused = true)]
 async fn a_panic_while_saving_answers_that_save_by_its_token() {
     let mut rig = up();
@@ -890,6 +907,8 @@ fn directory_sent(rig: &Rig, nth: usize) -> serde_json::Value {
 }
 
 // W1: the session record carries the real cwd of the chat, never a guess.
+// Needs `getrandom(2)` for the session id, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test(start_paused = true)]
 async fn a_session_registers_with_the_cwd_of_the_chat() {
     let mut rig = up();
@@ -903,6 +922,8 @@ async fn a_session_registers_with_the_cwd_of_the_chat() {
     );
 }
 
+// Needs `getrandom(2)` for the session id, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test(start_paused = true)]
 async fn the_cwd_is_sent_even_after_the_project_cache_was_cleared() {
     let mut rig = up();
@@ -919,6 +940,8 @@ async fn the_cwd_is_sent_even_after_the_project_cache_was_cleared() {
 }
 
 // W2: a save that finds its session gone registers it again and retries once.
+// Needs `getrandom(2)` for the session id, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test(start_paused = true)]
 async fn a_save_into_a_session_the_server_lost_registers_again_and_retries_once() {
     let mut rig = up();
@@ -935,6 +958,8 @@ async fn a_save_into_a_session_the_server_lost_registers_again_and_retries_once(
     assert_eq!(directory_sent(&rig, 1), CWD);
 }
 
+// Needs `getrandom(2)` for the session id, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test(start_paused = true)]
 async fn a_second_session_not_found_is_a_save_failure_not_a_loop() {
     let mut rig = up();
@@ -963,6 +988,8 @@ async fn a_second_session_not_found_is_a_save_failure_not_a_loop() {
     assert_eq!(rig.fake.count("POST /observations"), 3, "one retry only");
 }
 
+// Needs `getrandom(2)` for the session id, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test(start_paused = true)]
 async fn another_404_is_not_taken_for_a_lost_session() {
     let mut rig = up();
@@ -1054,6 +1081,8 @@ async fn a_200_context_that_cannot_be_read_is_no_memory_and_stays_healthy() {
 }
 
 // S2: a panic keeps the registered sessions, so their End still goes out.
+// Needs `getrandom(2)` for the session id, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test(start_paused = true)]
 async fn an_end_still_goes_out_after_a_panic() {
     let mut rig = up();
@@ -1073,6 +1102,8 @@ async fn an_end_still_goes_out_after_a_panic() {
 }
 
 // S2: but a new instance after a panic still clears the sessions.
+// Needs `getrandom(2)` for the session id, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test(start_paused = true)]
 async fn a_new_instance_after_a_panic_still_clears_the_sessions() {
     let mut rig = up();
@@ -1089,6 +1120,8 @@ async fn a_new_instance_after_a_panic_still_clears_the_sessions() {
 
 // ---- 5.3 shutdown ----
 
+// Needs `getrandom(2)` for the session id, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test(start_paused = true)]
 async fn quit_flushes_a_pending_end() {
     let mut rig = up();
@@ -1104,6 +1137,8 @@ async fn quit_flushes_a_pending_end() {
     assert_eq!(rig.fake.count(&format!("POST /sessions/{session}/end")), 1);
 }
 
+// Needs `getrandom(2)` for the session id, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test(start_paused = true)]
 async fn an_end_is_sent_once_and_only_for_a_registered_session() {
     let mut rig = up();
@@ -1177,6 +1212,8 @@ async fn an_end_without_a_cwd_still_needs_a_registered_session() {
     assert_eq!(rig.fake.count("POST /sessions"), 0);
 }
 
+// Needs `getrandom(2)` for the session id, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test(start_paused = true)]
 async fn quit_against_a_server_that_never_answers_is_bounded_by_one_second() {
     let mut rig = up();
