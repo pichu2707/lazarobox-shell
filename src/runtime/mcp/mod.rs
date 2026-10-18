@@ -24,6 +24,7 @@
 //!   see `session` for the policy.
 
 pub mod client;
+pub mod external;
 mod session;
 pub mod shim;
 
