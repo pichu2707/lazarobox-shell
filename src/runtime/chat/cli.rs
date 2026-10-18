@@ -441,15 +441,27 @@ pub(crate) fn own_group_is_private() -> bool {
 
 /// Whether the interpreter at `path` may run a CLI inside the jail. Its
 /// canonical path must not be under a scratch folder (`/tmp`, `/var/tmp`, where
-/// anyone can plant a program) and neither its folder nor the file may be
-/// writable by group or others (they could swap it).
+/// anyone can plant a program, and their `/private` spellings on macOS) and
+/// neither its folder nor the file may be writable by group or others (they
+/// could swap it).
 fn interpreter_trust(path: &Path) -> Result<PathBuf, (PathBuf, Untrusted)> {
     trust(path, Rule::Jail)
 }
 
+/// The scratch folders, by their real names. macOS keeps `/tmp` and `/var/tmp`
+/// as links into `/private`, so a canonical path there starts with `/private`,
+/// and its `$TMPDIR` lives under `/private/var/folders`.
+const SCRATCH: [&str; 5] = [
+    "/tmp",
+    "/var/tmp",
+    "/private/tmp",
+    "/private/var/tmp",
+    "/private/var/folders",
+];
+
 /// Whether a path is under a scratch folder.
 fn in_scratch(path: &Path) -> bool {
-    path.starts_with("/tmp") || path.starts_with("/var/tmp")
+    SCRATCH.iter().any(|scratch| path.starts_with(scratch))
 }
 
 /// [`interpreter_trust`] under `rule`. The jail checks the file and its

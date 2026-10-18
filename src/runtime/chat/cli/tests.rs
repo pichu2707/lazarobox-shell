@@ -1294,6 +1294,32 @@ fn an_interpreter_in_a_tmp_folder_is_never_trusted() {
     }
 }
 
+/// macOS keeps `/tmp` and `/var/tmp` as links into `/private`, and `$TMPDIR` is
+/// under `/var/folders`; a canonical path never starts with the link names.
+/// The rule is pure, so it is checked here with the macOS spellings on any OS.
+#[test]
+fn the_scratch_folders_of_macos_count_as_scratch_by_their_real_names() {
+    for scratch in [
+        "/tmp/x/node",
+        "/var/tmp/x/node",
+        "/private/tmp/x/node",
+        "/private/var/tmp/x/node",
+        "/private/var/folders/zz/abc123/T/x/node",
+    ] {
+        assert!(in_scratch(Path::new(scratch)), "{scratch}");
+    }
+    for fine in [
+        "/usr/local/bin/node",
+        "/opt/homebrew/bin/node",
+        "/private/etc/node",
+        "/private/var/db/node",
+        "/private/tmpfoo/node",
+        "/tmpfoo/node",
+    ] {
+        assert!(!in_scratch(Path::new(fine)), "{fine}");
+    }
+}
+
 #[test]
 fn an_interpreter_in_a_group_or_world_writable_folder_is_not_trusted() {
     let lab = lab();
