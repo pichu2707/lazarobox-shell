@@ -420,3 +420,17 @@ fn a_plain_word_after_a_scheme_is_kept() {
         assert_eq!(redact_tokens(text), want, "{text}");
     }
 }
+
+#[test]
+fn a_long_option_name_is_still_redacted() {
+    // The redactor takes a long run for a token even when it is shaped like an
+    // option name: it must not be loosened to keep one (#180), because the
+    // same shape holds secrets such as `--xoxb-1234567890-abcdef`.
+    assert_eq!(redact_tokens("--permission-prompts"), "…");
+    assert_eq!(
+        redact_tokens("unknown --permission-prompts x"),
+        "unknown … x"
+    );
+    assert_eq!(redact_tokens("--jbswy3dpehpk3pxp234567"), "…");
+    assert_eq!(redact_tokens("--password-hunter2-correct-horse"), "…");
+}
