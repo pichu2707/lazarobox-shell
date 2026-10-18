@@ -2619,11 +2619,13 @@ mod tests {
             .map(|n| add_slow(&mut panes, n, Duration::from_millis(2000)))
             .collect();
         let started = Instant::now();
-        panes.shutdown(Duration::from_secs(5));
+        // The shutdown bound sits above the serial total, so it cannot hide a
+        // serial regression by cutting it short.
+        panes.shutdown(Duration::from_secs(10));
         let elapsed = started.elapsed();
         // Sequential kills would take at least 3 x 2000 ms = 6000 ms; parallel
-        // ones take about 2000 ms, which leaves 3 s of slack for a slow runner.
-        assert!(elapsed < Duration::from_millis(5000), "serial: {elapsed:?}");
+        // ones take about 2000 ms, which leaves 2.5 s of slack for a slow runner.
+        assert!(elapsed < Duration::from_millis(4500), "serial: {elapsed:?}");
         for (log, _gate) in &held {
             assert_eq!(log.lock().unwrap().kills, 1);
         }

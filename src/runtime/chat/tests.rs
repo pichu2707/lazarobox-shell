@@ -830,7 +830,7 @@ async fn cancel_closes_the_socket() {
     let started = Instant::now();
     chats.cancel(pane(1));
     assert!(
-        started.elapsed() < Duration::from_secs(1),
+        started.elapsed() < Duration::from_millis(500),
         "cancel returns at once"
     );
     timeout(Duration::from_secs(10), server.closed.notified())
@@ -958,7 +958,7 @@ async fn cancel_kills_and_reaps_a_group_that_ignores_sigterm() {
     chats.cancel(pane(1));
     // `cancel` only signals: it must not wait for the group to die.
     assert!(
-        at.elapsed() < Duration::from_secs(1),
+        at.elapsed() < Duration::from_millis(500),
         "cancel returns at once"
     );
     assert!(

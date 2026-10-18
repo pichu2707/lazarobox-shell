@@ -124,15 +124,73 @@ pub(crate) fn process_state(pid: libc::pid_t) -> Option<char> {
     {
         let out = std::process::Command::new("ps")
             .args(["-o", "stat=", "-p", &pid.to_string()])
-            .output()
-            .ok()?;
-        String::from_utf8_lossy(&out.stdout).trim().chars().next()
+            .output();
+        ps_state(out)
+    }
+}
+
+/// Reads the outcome of `ps -o stat= -p PID`, failing closed: only "ps ran
+/// and found no such pid" (exit status 1, empty output, as on macOS/BSD)
+/// counts as gone. A `ps` that cannot run, or ends any other way, panics so
+/// that `wait_gone` and `is_gone` can never pass vacuously.
+#[cfg(test)]
+fn ps_state(out: std::io::Result<std::process::Output>) -> Option<char> {
+    let out = out.unwrap_or_else(|e| panic!("`ps` could not run: {e}"));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let state = stdout.trim().chars().next();
+    match (out.status.code(), state) {
+        (Some(1), None) => None,
+        (Some(0), Some(c)) => Some(c),
+        _ => panic!(
+            "`ps` ended unexpectedly: {:?}, stdout {stdout:?}, stderr {:?}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        ),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+
+    fn ps_output(code: i32, stdout: &str) -> std::io::Result<Output> {
+        Ok(Output {
+            status: ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn ps_state_reads_the_state_letter() {
+        assert_eq!(ps_state(ps_output(0, "S+\n")), Some('S'));
+        assert_eq!(ps_state(ps_output(0, "Z\n")), Some('Z'));
+    }
+
+    #[test]
+    fn ps_state_treats_status_1_with_no_output_as_gone() {
+        assert_eq!(ps_state(ps_output(1, "")), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "could not run")]
+    fn ps_state_panics_when_ps_cannot_spawn() {
+        let _ = ps_state(Err(std::io::Error::from(std::io::ErrorKind::NotFound)));
+    }
+
+    #[test]
+    #[should_panic(expected = "ended unexpectedly")]
+    fn ps_state_panics_on_an_unexpected_exit_status() {
+        let _ = ps_state(ps_output(2, ""));
+    }
+
+    #[test]
+    #[should_panic(expected = "ended unexpectedly")]
+    fn ps_state_panics_on_status_1_with_output() {
+        let _ = ps_state(ps_output(1, "garbage"));
+    }
 
     fn own_group() -> libc::pid_t {
         // SAFETY: getpgrp has no preconditions and cannot fail.

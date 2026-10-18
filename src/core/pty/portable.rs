@@ -433,7 +433,7 @@ mod tests {
                 exited += 1;
             }
         }
-        let settled = Instant::now() + Duration::from_millis(500);
+        let settled = Instant::now() + Duration::from_secs(1);
         while Instant::now() < settled {
             if let Ok(PtyEvent::Exited) = rx.recv_timeout(Duration::from_millis(50)) {
                 exited += 1;
