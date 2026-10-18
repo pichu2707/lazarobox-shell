@@ -58,7 +58,7 @@ async fn world(
     let (tx, rx) = mpsc::channel(32);
     let mut scope = TurnScope::new(tx, Locality::Local, lab.home.clone());
     scope.approver = approver;
-    scope.external = Some(set.clone());
+    assert!(scope.external.set(set.clone()).is_ok());
     let host = ToolHost::new(Some(lab.home.clone().into()), None, None, Limits::default());
     (host.dispatch(scope), rx, set)
 }

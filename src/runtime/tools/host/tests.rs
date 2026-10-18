@@ -472,7 +472,12 @@ async fn a_free_tool_runs_end_to_end_from_the_mcp_session_through_the_host() {
     let mut hub = Hub::new(&[dir.path().join("run")]).unwrap();
     let (scope, mut rx) = scope(Locality::Cloud, &home);
     let started = hub
-        .open(PaneId::for_test(1), registry(&[]), host.dispatch(scope))
+        .open(
+            PaneId::for_test(1),
+            registry(&[]),
+            host.dispatch(scope),
+            Default::default(),
+        )
         .unwrap();
     let (mut reader, mut writer) = client(&started.socket, started.token.reveal()).await;
     let init = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#;
