@@ -228,8 +228,10 @@ pub fn parse_call(name: &str, args: &Value) -> Result<Call, ToolError> {
     }
 }
 
-/// The most a user tool's arguments may take, as compact JSON, in bytes.
-pub const MAX_EXTERNAL_ARGS: usize = 16 * 1024;
+/// The most a user tool's arguments may take, as compact JSON, in bytes. Low
+/// on purpose: every call asks the user, and what the prompt cannot show is
+/// what the user cannot judge.
+pub const MAX_EXTERNAL_ARGS: usize = 4 * 1024;
 
 /// [`parse_call`] that also knows the tools of the user servers of the turn.
 /// A built-in name is always the built-in. Any other name must be in
@@ -553,6 +555,24 @@ mod tests {
         );
     }
 
+    // Case and look-alike variants are other names: only the lookup decides.
+    #[test]
+    fn case_and_unicode_variants_of_a_qualified_name_are_unknown() {
+        let q = qualified();
+        for name in [
+            "FS__WRITE",
+            "Fs__write",
+            "fs\u{ff3f}\u{ff3f}write",
+            "fs__write ",
+        ] {
+            assert_eq!(
+                parse_call_with(name, &json!({}), &q),
+                Err(ToolError::UnknownTool),
+                "{name:?}"
+            );
+        }
+    }
+
     #[test]
     fn external_arguments_must_be_an_object_within_the_cap() {
         let q = qualified();
@@ -571,6 +591,7 @@ mod tests {
             parse_call_with("fs__write", &at(MAX_EXTERNAL_ARGS - base + 1), &q),
             Err(ToolError::TooLong)
         );
+        assert_eq!(MAX_EXTERNAL_ARGS, 4096);
     }
 
     #[test]

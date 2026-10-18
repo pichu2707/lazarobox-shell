@@ -109,7 +109,7 @@ impl Dropped {
 /// The tools of every resolved server under their qualified names.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Qualified {
-    pub tools: Vec<QualifiedTool>,
+    pub(crate) tools: Vec<QualifiedTool>,
     pub dropped: Vec<Dropped>,
 }
 

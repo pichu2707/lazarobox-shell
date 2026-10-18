@@ -1061,6 +1061,21 @@ mod tests {
         assert!(out.ends_with(FIND_MARKER), "{out}");
     }
 
+    // A user tool runs on its own server, never through the read path.
+    #[test]
+    fn a_user_tool_is_not_a_read_tool() {
+        let f = fixture();
+        let call = Call::External {
+            name: "fs__write".into(),
+            server: "fs".into(),
+            tool: "write".into(),
+            args: serde_json::json!({}),
+        };
+        let cancel = AtomicBool::new(false);
+        let out = execute_with(&call, &env(&f.home), &Limits::default(), &cancel);
+        assert_eq!(out, Err(Failure::NotReadTool));
+    }
+
     #[test]
     fn a_cancelled_find_dir_stops_at_once_and_says_it_was_bounded() {
         let f = fixture();

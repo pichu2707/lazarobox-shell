@@ -858,6 +858,19 @@ mod tests {
     }
 
     #[test]
+    fn a_name_outside_a_non_empty_lookup_is_an_error_result() {
+        let mut server = with_external();
+        for name in ["fs__other", "FS__WRITE", "write"] {
+            let out = reply(server.handle(&request(
+                json!(8),
+                "tools/call",
+                json!({"name": name, "arguments": {}}),
+            )));
+            assert_eq!(out["result"]["isError"], true, "{name}");
+        }
+    }
+
+    #[test]
     fn a_session_without_externals_still_refuses_a_qualified_name() {
         let mut server = initialized("2025-06-18");
         let out = reply(server.handle(&request(
