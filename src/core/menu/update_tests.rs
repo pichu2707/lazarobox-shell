@@ -2,6 +2,7 @@
 
 use super::ai_tests::machine;
 use super::*;
+use crate::core::update::Fallback;
 
 fn menu() -> MenuState {
     MenuState::open(&Config::default()).with_ai(AiConfig::default(), Some(machine()))
@@ -21,7 +22,7 @@ fn a_known_update_gives_the_two_note_lines() {
         .unwrap();
     assert_eq!(
         note.join(" "),
-        "update 0.16.0 available \u{2014} run: cargo install lazarobox-shell --locked"
+        "lazarobox 0.16.0 is available. Go to Updates and press Enter."
     );
 }
 
@@ -195,10 +196,10 @@ fn y_on_the_row_does_not_update_before_the_command_is_shown() {
 fn once_shown_enter_and_y_copy_the_command() {
     for code in [KeyCode::Enter, KeyCode::Char('y')] {
         let mut m = on_updates(Some("0.15.4"));
-        m.show_update_command();
+        m.show_update_command(Fallback::NotCargoInstall);
         assert_eq!(
             footer_text(&m),
-            "cargo install lazarobox-shell --locked · Enter or y copies · Esc cancel"
+            "Enter or y copies it \u{b7} installed another way"
         );
         assert_eq!(
             press_key(&mut m, code),
@@ -214,9 +215,46 @@ fn once_shown_enter_and_y_copy_the_command() {
 }
 
 #[test]
+fn the_shown_command_says_why_it_was_not_run_on_one_line() {
+    let cases = [
+        (Fallback::NotCargoInstall, "installed another way"),
+        (Fallback::NoCargo, "Rust is not installed"),
+        (Fallback::UntrustedCargo, "Rust folder is too open"),
+        (Fallback::UnusablePath, "folder name is unusual"),
+    ];
+    for (why, reason) in cases {
+        let mut m = on_updates(Some("0.15.4"));
+        m.show_update_command(why);
+        let text = footer_text(&m);
+        // The action first, the reason after it.
+        assert_eq!(text, format!("Enter or y copies it \u{b7} {reason}"));
+        // The popup is 51 columns with its borders and a leading space.
+        assert!(text.chars().count() <= 48, "{text}");
+        // Two lines above the footer say it cannot update itself (or, without
+        // Rust, to install it first), and give the command to copy.
+        let note = m.update_note().unwrap();
+        let first = if why == Fallback::NoCargo {
+            "Install Rust first (rustup.rs), then run:"
+        } else {
+            "lazarobox cannot update itself here. Run:"
+        };
+        assert_eq!(note[0], first, "{why:?}");
+        assert_eq!(note[1], "cargo install lazarobox-shell --locked");
+    }
+    // Any key hides the explanation and brings the usual note back.
+    let mut m = on_updates(Some("0.15.4"));
+    m.show_update_command(Fallback::NoCargo);
+    press_key(&mut m, KeyCode::Char('k'));
+    assert_eq!(
+        m.update_note().unwrap().join(" "),
+        "lazarobox 0.15.4 is available. Go to Updates and press Enter."
+    );
+}
+
+#[test]
 fn moving_away_hides_the_shown_command() {
     let mut m = on_updates(Some("0.15.4"));
-    m.show_update_command();
+    m.show_update_command(Fallback::NotCargoInstall);
     press_key(&mut m, KeyCode::Char('k'));
     press_key(&mut m, KeyCode::Char('j'));
     assert!(footer_text(&m).starts_with("Enter updates"));
@@ -234,7 +272,7 @@ fn after_an_install_the_row_reads_installed_until_restart() {
     );
     assert_eq!(press_key(&mut m, KeyCode::Enter), MenuCommand::None);
     assert!(
-        footer_text(&m).starts_with("0.15.4 installed"),
+        footer_text(&m).starts_with("Updated to 0.15.4"),
         "{}",
         footer_text(&m)
     );

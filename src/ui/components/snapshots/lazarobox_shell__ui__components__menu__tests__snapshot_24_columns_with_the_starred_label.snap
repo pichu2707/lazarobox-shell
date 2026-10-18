@@ -13,7 +13,7 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &with_update()))"
 │                      │
 │                      │
 │                      │
-│ update 0.16.0 availa…│
-│ run: cargo install l…│
+│ lazarobox 0.16.0 is …│
+│ Go to Updates and pr…│
 │ j/k move · h/l chang…│
 └──────────────────────┘

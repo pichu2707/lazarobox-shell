@@ -20,8 +20,11 @@ use futures::{
 use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
 
 mod cli;
+#[cfg(test)]
+pub(crate) use cli::own_group_is_private;
 pub(crate) use cli::{
-    alive_by_comm, ensure_private_dir, jail_note, read_comm, run_listing, trusted_real_path,
+    alive_by_comm, ensure_private_dir, jail_note, read_comm, run_listing, trusted_cargo_path,
+    trusted_real_path,
 };
 
 use super::{

@@ -870,11 +870,8 @@ mod tests {
             .map(|y| row(&buf, y).trim_end().to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(frame.contains("update 0.16.0 available"), "{frame}");
-        assert!(
-            frame.contains("run: cargo install lazarobox-shell --locked"),
-            "{frame}"
-        );
+        assert!(frame.contains("lazarobox 0.16.0 is available."), "{frame}");
+        assert!(frame.contains("Go to Updates and press Enter."), "{frame}");
         insta::assert_snapshot!("update_menu_frame", frame);
     }
 

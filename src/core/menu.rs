@@ -432,7 +432,7 @@ pub struct MenuState {
     /// The version this binary is, for the Updates row.
     current: String,
     /// The install command is on the footer, ready to copy.
-    command_shown: bool,
+    command_shown: Option<crate::core::update::Fallback>,
     /// The version an install in this run put on disk; the running binary is
     /// still the old one, so the row says so until the restart.
     installed: Option<String>,
@@ -453,7 +453,7 @@ impl MenuState {
             term: None,
             update: None,
             current: RUNNING_VERSION.to_owned(),
-            command_shown: false,
+            command_shown: None,
             installed: None,
         }
     }
@@ -469,9 +469,10 @@ impl MenuState {
         self.installed = installed;
     }
 
-    /// Puts the install command on the footer: Enter or `y` copies it.
-    pub fn show_update_command(&mut self) {
-        self.command_shown = true;
+    /// Puts the install command on the footer: Enter or `y` copies it. `why`
+    /// is the reason the install did not run.
+    pub fn show_update_command(&mut self, why: crate::core::update::Fallback) {
+        self.command_shown = Some(why);
     }
 
     /// Whether the selection is on the Updates row.
@@ -505,7 +506,10 @@ impl MenuState {
     pub fn update_note(&self) -> Option<[String; NOTE_ROWS]> {
         let latest = self.update.as_deref()?;
         let on_note_tab = self.tabs().nth(self.tab).is_some_and(|tab| tab.note);
-        (on_note_tab && !self.in_sub_level()).then(|| crate::core::update::menu_lines(latest))
+        (on_note_tab && !self.in_sub_level()).then(|| match self.command_shown {
+            Some(why) => crate::core::update::fallback_lines(why),
+            None => crate::core::update::menu_lines(latest),
+        })
     }
 
     /// The terminal size, given by the app before each key so the menu knows
@@ -918,11 +922,11 @@ impl MenuState {
             self.test_report = None;
             // Enter and `y` on the row copy the shown command; any other
             // press hides it.
-            let copies = self.command_shown
+            let copies = self.command_shown.is_some()
                 && self.on_updates_row()
                 && matches!(key.code, KeyCode::Enter | KeyCode::Char('y'));
             if !copies {
-                self.command_shown = false;
+                self.command_shown = None;
             }
         }
         if self.in_warning() {
@@ -945,7 +949,7 @@ impl MenuState {
             KeyCode::Char('s') if !repeat => MenuCommand::Save,
             KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
             KeyCode::Char('t') if !repeat && self.on_notify_row() => self.test_notify(),
-            KeyCode::Enter | KeyCode::Char('y') if !repeat && self.command_shown => {
+            KeyCode::Enter | KeyCode::Char('y') if !repeat && self.command_shown.is_some() => {
                 MenuCommand::Copy(crate::core::update::INSTALL_COMMAND.to_owned())
             }
             KeyCode::Enter if self.on_updates_row() => {
@@ -1283,14 +1287,11 @@ impl MenuState {
 
     /// The footer on the Updates row.
     fn updates_hint(&self) -> String {
-        if self.command_shown {
-            return format!(
-                "{} · Enter or y copies · Esc cancel",
-                crate::core::update::INSTALL_COMMAND
-            );
+        if let Some(why) = self.command_shown {
+            return why.footer().to_owned();
         }
         match (&self.installed, &self.update) {
-            (Some(done), _) => format!("{done} installed · restart lazarobox to use it"),
+            (Some(done), _) => format!("Updated to {done} · restart lazarobox to use it"),
             (None, Some(_)) => "Enter updates · j/k move · s save · Esc cancel".to_owned(),
             (None, None) => "up to date · j/k move · s save · Esc cancel".to_owned(),
         }

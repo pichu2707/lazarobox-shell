@@ -39,7 +39,7 @@ use crate::core::{
     pane::{CursorKind, CursorShape, Pane, PaneSize},
     prefix::{self, Binding, Group, PREFIX_KEY, PREFIX_TREE, PrefixAction, Step},
     pty::{PtyEvent, SpawnSpec},
-    update::{InstallEnv, UpdateAction},
+    update::{Fallback, InstallEnv, UpdateAction},
 };
 
 mod auto_run;
@@ -572,6 +572,10 @@ pub struct App {
     update: Option<String>,
     /// How this binary was installed, for Enter on the Updates row.
     install_env: Option<InstallEnv>,
+    /// Whether the `cargo` found at start-up may still be run. Asked again at
+    /// Enter, as the folders above it can change while lazarobox is open.
+    /// Injected so the core does no IO; it refuses until the runtime says.
+    cargo_check: fn(&Path) -> bool,
     /// The version an install in this run put on disk. The running binary is
     /// still the old one until the restart.
     installed: Option<String>,
@@ -685,6 +689,7 @@ impl App {
             notice: None,
             update: None,
             install_env: None,
+            cargo_check: |_| false,
             installed: None,
             dirty: true,
             screen,
@@ -863,6 +868,12 @@ impl App {
     /// What the runtime found out about the install, for the Updates row.
     pub fn with_install_env(mut self, env: Option<InstallEnv>) -> Self {
         self.install_env = env;
+        self
+    }
+
+    /// Injects the check that a `cargo` may be run, repeated at Enter.
+    pub fn with_cargo_check(mut self, cargo_check: fn(&Path) -> bool) -> Self {
+        self.cargo_check = cargo_check;
         self
     }
 
@@ -1256,7 +1267,7 @@ impl App {
         };
         if self.update_running() {
             if let Some(menu) = self.menu.as_mut() {
-                menu.set_copied("update already running in its own tab".to_owned());
+                menu.set_copied("An update is already running in its own tab".to_owned());
             }
             return Vec::new();
         }
@@ -1264,11 +1275,25 @@ impl App {
             Some(env) => env.plan(Some(&latest)),
             None => UpdateAction::ShowCommand,
         };
+        // The cargo was trusted at start-up; check it again right before it
+        // runs. One that no longer passes is shown as refused.
+        let refused = matches!(&action,
+            UpdateAction::CargoInstall { program, .. } if !(self.cargo_check)(program));
         match action {
             UpdateAction::UpToDate => Vec::new(),
-            UpdateAction::ShowCommand => {
+            UpdateAction::CargoInstall { .. } if refused => {
                 if let Some(menu) = self.menu.as_mut() {
-                    menu.show_update_command();
+                    menu.show_update_command(Fallback::UntrustedCargo);
+                }
+                Vec::new()
+            }
+            UpdateAction::ShowCommand => {
+                let why = self
+                    .install_env
+                    .as_ref()
+                    .map_or(Fallback::NotCargoInstall, InstallEnv::fallback);
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.show_update_command(why);
                 }
                 Vec::new()
             }
@@ -1282,15 +1307,17 @@ impl App {
                     .as_ref()
                     .map(|env| env.path.clone())
                     .unwrap_or_default();
-                if let Some(menu) = self.menu.as_mut() {
-                    menu.set_copied(format!("installing {version} in a new tab"));
-                }
-                self.new_tab_with(NewPane::Update {
+                let mut effects = self.new_tab_with(NewPane::Update {
                     program,
                     root,
                     version,
                     path,
-                })
+                });
+                // Leave the menu so focus lands on the update tab, whose first
+                // lines say what is happening. Closed as Esc closes it: a
+                // draft that was not saved is discarded, never saved here.
+                effects.extend(self.close_menu(Outcome::Reverted));
+                effects
             }
         }
     }
@@ -1307,14 +1334,8 @@ impl App {
                 crate::core::update::installed_text(&version),
             ),
             UpdateEnded::Code(code) => (RunState::Failed, crate::core::update::failed_text(code)),
-            UpdateEnded::NotStarted => (
-                RunState::Failed,
-                crate::core::update::NOT_STARTED_TEXT.to_owned(),
-            ),
-            UpdateEnded::NoStatus => (
-                RunState::Failed,
-                crate::core::update::NO_STATUS_TEXT.to_owned(),
-            ),
+            UpdateEnded::NotStarted => (RunState::Failed, crate::core::update::not_started_text()),
+            UpdateEnded::NoStatus => (RunState::Failed, crate::core::update::no_status_text()),
         };
         if let Some(pty) = self.panes.get_mut(&id).and_then(PaneState::pty_mut) {
             pty.emu.feed(format!("\r\n{text}\r\n").as_bytes());
@@ -1983,7 +2004,9 @@ impl App {
                     // anything cargo prints.
                     let args = crate::core::update::install_args(root.to_str().unwrap_or_default());
                     let line = crate::core::update::running_text(&program, &args);
-                    pty.emu.feed(format!("{line}\r\n").as_bytes());
+                    let plain = crate::core::update::started_text(&version);
+                    pty.emu
+                        .feed(format!("{plain}\r\n\r\n{line}\r\n").as_bytes());
                     pty.update = Some(UpdateRun {
                         version,
                         state: RunState::Running,

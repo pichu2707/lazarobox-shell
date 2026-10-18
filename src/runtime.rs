@@ -275,7 +275,8 @@ pub async fn run() -> io::Result<()> {
     );
     app = app
         .with_update(announced)
-        .with_install_env(Some(update::install_env(&cli_env.path)));
+        .with_install_env(Some(update::install_env(&cli_env.path)))
+        .with_cargo_check(|cargo| chat::trusted_cargo_path(cargo).is_some());
     let (run_tx, run_rx) = mpsc::channel(RUN_CHANNEL);
     let (store_tx, store_rx) = mpsc::channel(STORE_CHANNEL);
     let (prompt_tx, prompt_rx) = mpsc::channel(PROMPT_CHANNEL);

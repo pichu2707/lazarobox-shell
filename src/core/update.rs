@@ -222,6 +222,41 @@ pub fn install_args(root: &str) -> Vec<String> {
         .to_vec()
 }
 
+/// Whether `exe` is a file under the cargo bin dir `bin`.
+fn under(exe: &Path, bin: &Path) -> bool {
+    // `starts_with` is textual: a `..` could climb out of the dir.
+    exe.is_absolute()
+        && exe.starts_with(bin)
+        && !exe.components().any(|c| c == Component::ParentDir)
+}
+
+/// Why Enter only shows the command, for the footer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Fallback {
+    /// The running binary is not under the cargo bin dir (or is unknown).
+    NotCargoInstall,
+    /// It is, but there is no `cargo` to run.
+    NoCargo,
+    /// It is, and a `cargo` was found but is not trusted.
+    UntrustedCargo,
+    /// It is, and a `cargo` is trusted, but the install folder's name is not
+    /// text, so it cannot be given to cargo.
+    UnusablePath,
+}
+
+impl Fallback {
+    /// The footer on the Updates row: the action first, then the reason. One
+    /// line of 48 characters at most, so it fits the popup (51 columns).
+    pub fn footer(self) -> &'static str {
+        match self {
+            Fallback::NotCargoInstall => "Enter or y copies it \u{b7} installed another way",
+            Fallback::NoCargo => "Enter or y copies it \u{b7} Rust is not installed",
+            Fallback::UntrustedCargo => "Enter or y copies it \u{b7} Rust folder is too open",
+            Fallback::UnusablePath => "Enter or y copies it \u{b7} folder name is unusual",
+        }
+    }
+}
+
 /// Decides what Enter does. Pure: the caller gives the running binary
 /// (`exe`), the cargo bin dir (both canonical, see [`cargo_bin_dir`]) and the
 /// `cargo` it found and trusts. The install is only run for a binary under
@@ -236,12 +271,6 @@ pub fn plan(
 ) -> UpdateAction {
     let Some(latest) = latest else {
         return UpdateAction::UpToDate;
-    };
-    let under = |exe: &Path, bin: &Path| {
-        // `starts_with` is textual: a `..` could climb out of the dir.
-        exe.is_absolute()
-            && exe.starts_with(bin)
-            && !exe.components().any(|c| c == Component::ParentDir)
     };
     let root = match (exe, bin_dir) {
         (Some(exe), Some(bin)) if under(exe, bin) => bin.parent(),
@@ -269,11 +298,29 @@ pub struct InstallEnv {
     /// The `cargo` to run, trusted, as found (the rustup proxy dispatches on
     /// the name it is started under, so it is not resolved).
     pub cargo: Option<PathBuf>,
+    /// A `cargo` was found but is not trusted (so `cargo` is `None`).
+    pub cargo_refused: bool,
     /// The login `PATH`, given to cargo so it finds `rustc` and the linker.
     pub path: OsString,
 }
 
 impl InstallEnv {
+    /// Why [`plan`] gives [`UpdateAction::ShowCommand`] for this machine.
+    pub fn fallback(&self) -> Fallback {
+        let cargo_install = match (&self.exe, &self.bin_dir) {
+            (Some(exe), Some(bin)) => under(exe, bin),
+            _ => false,
+        };
+        match (cargo_install, &self.cargo) {
+            (false, _) => Fallback::NotCargoInstall,
+            // A trusted cargo under the cargo dir only fails to plan when the
+            // install root is not text (see `plan`).
+            (true, Some(_)) => Fallback::UnusablePath,
+            (true, None) if self.cargo_refused => Fallback::UntrustedCargo,
+            (true, None) => Fallback::NoCargo,
+        }
+    }
+
     /// [`plan`] for this machine.
     pub fn plan(&self, latest: Option<&str>) -> UpdateAction {
         plan(
@@ -285,9 +332,17 @@ impl InstallEnv {
     }
 }
 
+/// The first line of the update pane, in plain words: what started, that it
+/// takes a while, and that lazarobox must stay open.
+pub fn started_text(version: &str) -> String {
+    format!(
+        "Updating lazarobox to {version}. It compiles on your machine and can take a few minutes. Keep lazarobox open until it says it is done."
+    )
+}
+
 /// The final line of a successful install.
 pub fn installed_text(version: &str) -> String {
-    format!("lazarobox {version} installed: restart lazarobox to use it")
+    format!("Updated to {version}. Restart lazarobox to use it.")
 }
 
 /// The Updates row value once an install worked, until the restart.
@@ -295,11 +350,20 @@ pub fn installed_value(version: &str) -> String {
     format!("{version} installed: restart")
 }
 
+/// A failure line: what happened, then the command to run by hand.
+fn failure(what: &str) -> String {
+    format!("The update {what}. To update, run in a terminal: {INSTALL_COMMAND}")
+}
+
 /// The final line when cargo could not even be started.
-pub const NOT_STARTED_TEXT: &str = "update failed (cannot start cargo)";
+pub fn not_started_text() -> String {
+    failure("could not start")
+}
 
 /// The final line when the child ended without an exit status.
-pub const NO_STATUS_TEXT: &str = "update failed (no exit status)";
+pub fn no_status_text() -> String {
+    failure("stopped unexpectedly")
+}
 
 /// The first line of the pane: what is about to run, written by lazarobox.
 /// Control characters in a path are shown as `?`.
@@ -314,7 +378,7 @@ pub fn running_text(program: &Path, args: &[String]) -> String {
 
 /// The final line of a failed install.
 pub fn failed_text(code: u32) -> String {
-    format!("update failed (exit {code})")
+    failure(&format!("did not finish (error {code})"))
 }
 
 /// What to show for `cache` when running `current`: the version to announce.
@@ -328,13 +392,23 @@ pub fn status_mark(latest: &str) -> String {
     format!("update {latest}")
 }
 
-/// The menu note, in the two lines the popup has room for. Joined by a space
-/// they read `update <ver> available — run: cargo install lazarobox-shell --locked`.
+/// The menu note, in the two lines the popup has room for.
 pub fn menu_lines(latest: &str) -> [String; 2] {
     [
-        format!("update {latest} available \u{2014}"),
-        format!("run: {INSTALL_COMMAND}"),
+        format!("lazarobox {latest} is available."),
+        "Go to Updates and press Enter.".to_owned(),
     ]
+}
+
+/// The menu note once Enter could not start the install: it cannot update
+/// itself here, and the command to copy. Without Rust the command alone will
+/// not work, so the first line says to install it first.
+pub fn fallback_lines(why: Fallback) -> [String; 2] {
+    let first = match why {
+        Fallback::NoCargo => "Install Rust first (rustup.rs), then run:",
+        _ => "lazarobox cannot update itself here. Run:",
+    };
+    [first.to_owned(), INSTALL_COMMAND.to_owned()]
 }
 
 #[cfg(test)]
@@ -759,6 +833,102 @@ mod tests {
     }
 
     #[test]
+    fn the_fallback_footers_are_plain_and_fit_the_popup() {
+        for (why, text) in [
+            (
+                Fallback::NotCargoInstall,
+                "Enter or y copies it \u{b7} installed another way",
+            ),
+            (
+                Fallback::NoCargo,
+                "Enter or y copies it \u{b7} Rust is not installed",
+            ),
+            (
+                Fallback::UntrustedCargo,
+                "Enter or y copies it \u{b7} Rust folder is too open",
+            ),
+            (
+                Fallback::UnusablePath,
+                "Enter or y copies it \u{b7} folder name is unusual",
+            ),
+        ] {
+            assert_eq!(why.footer(), text);
+            assert!(text.chars().count() <= 48, "{text}");
+        }
+    }
+
+    #[test]
+    fn the_note_tells_a_user_without_rust_to_install_it_first() {
+        let none = fallback_lines(Fallback::NoCargo);
+        assert_eq!(none[0], "Install Rust first (rustup.rs), then run:");
+        assert_eq!(none[1], INSTALL_COMMAND);
+        for why in [
+            Fallback::NotCargoInstall,
+            Fallback::UntrustedCargo,
+            Fallback::UnusablePath,
+        ] {
+            let lines = fallback_lines(why);
+            assert_eq!(
+                lines[0], "lazarobox cannot update itself here. Run:",
+                "{why:?}"
+            );
+            assert_eq!(lines[1], INSTALL_COMMAND, "{why:?}");
+        }
+        // The popup is 51 columns with its borders and a leading space.
+        for why in [
+            Fallback::NotCargoInstall,
+            Fallback::NoCargo,
+            Fallback::UntrustedCargo,
+            Fallback::UnusablePath,
+        ] {
+            for line in fallback_lines(why) {
+                assert!(line.chars().count() <= 48, "{line}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_fallback_names_the_first_thing_that_stopped_the_install() {
+        let env = |exe: &str, cargo: Option<&str>, refused: bool| InstallEnv {
+            exe: Some(exe.into()),
+            bin_dir: Some("/home/ana/.cargo/bin".into()),
+            cargo: cargo.map(Into::into),
+            cargo_refused: refused,
+            path: OsString::new(),
+        };
+        let mine = "/home/ana/.cargo/bin/lazarobox";
+        // Not under the cargo bin dir: cargo does not matter.
+        assert_eq!(
+            env("/usr/bin/lazarobox", None, true).fallback(),
+            Fallback::NotCargoInstall
+        );
+        assert_eq!(env(mine, None, true).fallback(), Fallback::UntrustedCargo);
+        assert_eq!(env(mine, None, false).fallback(), Fallback::NoCargo);
+        assert_eq!(
+            InstallEnv::default().fallback(),
+            Fallback::NotCargoInstall,
+            "an unknown binary"
+        );
+    }
+
+    #[test]
+    fn a_trusted_cargo_that_cannot_run_for_a_folder_name_is_not_called_not_cargo() {
+        use std::os::unix::ffi::OsStringExt;
+        // The root goes to cargo as text; a name that is not UTF-8 is not run,
+        // although the binary is under the cargo dir and a cargo is trusted.
+        let bin = PathBuf::from(OsString::from_vec(b"/home/an\xff/.cargo/bin".to_vec()));
+        let env = InstallEnv {
+            exe: Some(bin.join("lazarobox")),
+            bin_dir: Some(bin),
+            cargo: Some("/home/ana/.cargo/bin/cargo".into()),
+            cargo_refused: false,
+            path: OsString::new(),
+        };
+        assert_eq!(env.plan(Some("0.16.0")), UpdateAction::ShowCommand);
+        assert_eq!(env.fallback(), Fallback::UnusablePath);
+    }
+
+    #[test]
     fn a_dotdot_path_does_not_pass_for_the_bin_dir() {
         let exe = Path::new("/home/ana/.cargo/bin/../../evil/lazarobox");
         assert_eq!(
@@ -810,14 +980,23 @@ mod tests {
     }
 
     #[test]
-    fn the_install_texts_are_fixed() {
+    fn the_install_texts_are_plain_and_say_what_to_do_next() {
+        assert_eq!(
+            started_text("0.16.0"),
+            "Updating lazarobox to 0.16.0. It compiles on your machine and can take a few minutes. Keep lazarobox open until it says it is done."
+        );
         assert_eq!(
             installed_text("0.16.0"),
-            "lazarobox 0.16.0 installed: restart lazarobox to use it"
+            "Updated to 0.16.0. Restart lazarobox to use it."
         );
         assert_eq!(installed_value("0.16.0"), "0.16.0 installed: restart");
-        assert_eq!(failed_text(101), "update failed (exit 101)");
-        assert_eq!(NO_STATUS_TEXT, "update failed (no exit status)");
+        // Every failure says what happened, then the command to run by hand.
+        let by_hand = "run in a terminal: cargo install lazarobox-shell --locked";
+        for text in [failed_text(101), not_started_text(), no_status_text()] {
+            assert!(text.starts_with("The update "), "{text}");
+            assert!(text.ends_with(by_hand), "{text}");
+        }
+        assert!(failed_text(101).contains("(error 101)"));
     }
 
     #[test]
@@ -825,7 +1004,11 @@ mod tests {
         assert_eq!(status_mark("0.16.0"), "update 0.16.0");
         assert_eq!(
             menu_lines("0.16.0").join(" "),
-            "update 0.16.0 available \u{2014} run: cargo install lazarobox-shell --locked"
+            "lazarobox 0.16.0 is available. Go to Updates and press Enter."
+        );
+        assert_eq!(
+            fallback_lines(Fallback::NotCargoInstall).join(" "),
+            "lazarobox cannot update itself here. Run: cargo install lazarobox-shell --locked"
         );
     }
 }

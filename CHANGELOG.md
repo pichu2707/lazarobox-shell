@@ -10,6 +10,33 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- Enter on **Updates** did nothing visible when `~/.cargo` and `~/.cargo/bin`
+  are group-writable (mode 0775, the default with umask 002 on Debian and
+  Parrot). The update install refused that `cargo` with the strict rule meant
+  for the AI CLIs and fell back to a footer that was cut off. The install now
+  accepts a `cargo` whose folders are group-writable only when the folder is
+  yours and your group is private to you (named like your user, with no other
+  member). A shared group (`users`, `staff`) and root-owned folders that the
+  group can write are refused, and so is anything others can write or anything
+  under `/tmp`. The folders that hold the link to `cargo` (such as
+  `~/.cargo/bin`) are checked too, and the check runs again when you press
+  Enter. The AI CLI jail keeps its strict rule.
+
+### Changed
+
+- The update texts are in plain words. The menu note says which version is
+  available and to go to **Updates**; when lazarobox cannot update itself it
+  says so, shows the command to copy and the reason on the footer (installed
+  another way, Rust is not installed, Rust folder is too open, or an unusual
+  folder name). Without Rust, the note says to install it first (rustup.rs).
+  Enter on **Updates** closes the menu, as Esc does, so focus lands on the
+  update tab. The update tab starts by saying that it can take a few minutes
+  and that lazarobox must stay open, ends with `Updated to X.Y.Z. Restart lazarobox to use it.`, and a
+  failure says what happened and gives the command to run by hand.
+- README: short install (with the link to rustup) and update instructions.
+
 ## [0.16.0] - 2026-10-17
 
 Agent tools: the chat can now ask lazarobox to look at the user's files and to

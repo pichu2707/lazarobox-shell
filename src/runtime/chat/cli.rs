@@ -302,40 +302,227 @@ fn read_head(path: &Path, max: usize) -> Option<Vec<u8>> {
     Some(head)
 }
 
+/// Who must not be able to write a file or folder for it to be trusted.
+#[derive(Clone, Copy)]
+enum Rule {
+    /// Neither group nor others: the AI CLI jail.
+    Jail,
+    /// Not others. The group may write only when the file is the user's, in
+    /// the user's own group, and that group is private to the user. The
+    /// update install: Debian's umask 002 makes `~/.cargo` 0775 with a
+    /// private group, and the cargo behind it is the user's own. A shared
+    /// group (`users`, `staff`) lets its other members swap the file, and a
+    /// root-owned folder with group write is open to whoever is in its group.
+    OwnGroup,
+}
+
+/// What is known about the owner of a file or folder, for [`Rule::open`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Owner {
+    /// The file belongs to the user running lazarobox (not root, not another).
+    user_is_me: bool,
+    /// The file's group is the user's own (effective) group.
+    group_is_mine: bool,
+    /// That group is private to the user, see [`private_group`].
+    group_private: bool,
+}
+
+impl Owner {
+    /// Group write is harmless: only the user can be in the group.
+    fn group_is_just_me(self) -> bool {
+        self.user_is_me && self.group_is_mine && self.group_private
+    }
+}
+
+impl Rule {
+    /// Whether a file or folder of `mode` is writable under this rule.
+    fn open(self, mode: u32, owner: Owner) -> bool {
+        match self {
+            Rule::Jail => mode & 0o022 != 0,
+            Rule::OwnGroup => mode & 0o002 != 0 || (mode & 0o020 != 0 && !owner.group_is_just_me()),
+        }
+    }
+}
+
+/// Whether `group` is private to `user`: the user-private-group convention,
+/// a group named like the user with no member but the user.
+fn private_group(user: &str, group: &str, members: &[&str]) -> bool {
+    !user.is_empty() && group == user && members.iter().all(|member| *member == user)
+}
+
+/// The name of the user `uid`, `None` when the lookup fails.
+fn user_name(uid: libc::uid_t) -> Option<String> {
+    let mut buf = vec![0u8; 1024];
+    loop {
+        // SAFETY: an all-zero `passwd` is a valid out-parameter.
+        let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut found: *mut libc::passwd = std::ptr::null_mut();
+        // SAFETY: `entry`, `buf` and `found` outlive the call, and the length
+        // given is the buffer's own.
+        let rc = unsafe {
+            libc::getpwuid_r(
+                uid,
+                &mut entry,
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                &mut found,
+            )
+        };
+        if rc == libc::ERANGE && buf.len() < LOOKUP_LIMIT {
+            buf.resize(buf.len() * 2, 0);
+            continue;
+        }
+        if rc != 0 || found.is_null() || entry.pw_name.is_null() {
+            return None;
+        }
+        // SAFETY: on success `pw_name` is a NUL-terminated string in `buf`.
+        let name = unsafe { std::ffi::CStr::from_ptr(entry.pw_name) };
+        return name.to_str().ok().map(str::to_owned);
+    }
+}
+
+/// The name and the explicit members of the group `gid`, `None` when the
+/// lookup fails.
+fn group_entry(gid: libc::gid_t) -> Option<(String, Vec<String>)> {
+    let mut buf = vec![0u8; 1024];
+    loop {
+        // SAFETY: an all-zero `group` is a valid out-parameter.
+        let mut entry: libc::group = unsafe { std::mem::zeroed() };
+        let mut found: *mut libc::group = std::ptr::null_mut();
+        // SAFETY: as for `getpwuid_r` above.
+        let rc = unsafe {
+            libc::getgrgid_r(
+                gid,
+                &mut entry,
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                &mut found,
+            )
+        };
+        if rc == libc::ERANGE && buf.len() < LOOKUP_LIMIT {
+            buf.resize(buf.len() * 2, 0);
+            continue;
+        }
+        if rc != 0 || found.is_null() || entry.gr_name.is_null() {
+            return None;
+        }
+        // SAFETY: on success `gr_name` is a NUL-terminated string in `buf`.
+        let name = unsafe { std::ffi::CStr::from_ptr(entry.gr_name) }
+            .to_str()
+            .ok()?
+            .to_owned();
+        let mut members = Vec::new();
+        let mut at = entry.gr_mem;
+        // SAFETY: `gr_mem` is a NULL-terminated array of C strings in `buf`
+        // (or null, which is no members).
+        while !at.is_null() && unsafe { !(*at).is_null() } {
+            let member = unsafe { std::ffi::CStr::from_ptr(*at) };
+            members.push(member.to_str().ok()?.to_owned());
+            at = unsafe { at.add(1) };
+        }
+        return Some((name, members));
+    }
+}
+
+/// The largest buffer a name lookup may grow to before it counts as failed.
+const LOOKUP_LIMIT: usize = 1 << 20;
+
+/// Whether the user's own (effective) group is private to them. Any lookup
+/// that fails says no: the group-write allowance fails closed.
+pub(crate) fn own_group_is_private() -> bool {
+    // SAFETY: `geteuid` and `getegid` have no arguments and cannot fail.
+    let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+    let (Some(user), Some((group, members))) = (user_name(uid), group_entry(gid)) else {
+        return false;
+    };
+    let members: Vec<&str> = members.iter().map(String::as_str).collect();
+    private_group(&user, &group, &members)
+}
+
 /// Whether the interpreter at `path` may run a CLI inside the jail. Its
 /// canonical path must not be under a scratch folder (`/tmp`, `/var/tmp`, where
 /// anyone can plant a program) and neither its folder nor the file may be
 /// writable by group or others (they could swap it).
 fn interpreter_trust(path: &Path) -> Result<PathBuf, (PathBuf, Untrusted)> {
+    trust(path, Rule::Jail)
+}
+
+/// Whether a path is under a scratch folder.
+fn in_scratch(path: &Path) -> bool {
+    path.starts_with("/tmp") || path.starts_with("/var/tmp")
+}
+
+/// [`interpreter_trust`] under `rule`. The jail checks the file and its
+/// folder; [`Rule::OwnGroup`] also checks every folder above, and the folders
+/// that hold the link `path` itself when it is a link (a `cargo` that is a
+/// link to `rustup`: whoever can write the link's folder can swap the link).
+fn trust(path: &Path, rule: Rule) -> Result<PathBuf, (PathBuf, Untrusted)> {
     let Some(real) = resolve(path) else {
         return Err((path.to_path_buf(), Untrusted::Unresolvable));
     };
-    if real.starts_with("/tmp") || real.starts_with("/var/tmp") {
+    if in_scratch(&real) {
         return Err((real, Untrusted::Scratch));
     }
+    let group_private = matches!(rule, Rule::OwnGroup) && own_group_is_private();
     // A file or folder that cannot be read counts as writable, as before.
-    let closed = |p: &Path| match fs::metadata(p) {
-        Ok(meta) if meta.permissions().mode() & 0o022 == 0 => Ok(()),
-        Ok(meta) => Err(Untrusted::Writable {
-            path: p.to_path_buf(),
-            // SAFETY: `geteuid` has no arguments and cannot fail.
-            yours: meta.uid() == unsafe { libc::geteuid() },
-        }),
-        Err(_) => Err(Untrusted::Writable {
-            path: p.to_path_buf(),
-            yours: false,
-        }),
+    let closed = |p: &Path| {
+        // SAFETY: `geteuid` and `getegid` have no arguments and cannot fail.
+        let (me, my_group) = unsafe { (libc::geteuid(), libc::getegid()) };
+        match fs::metadata(p) {
+            Ok(meta)
+                if !rule.open(
+                    meta.permissions().mode(),
+                    Owner {
+                        user_is_me: meta.uid() == me,
+                        group_is_mine: meta.gid() == my_group,
+                        group_private,
+                    },
+                ) =>
+            {
+                Ok(())
+            }
+            Ok(meta) => Err(Untrusted::Writable {
+                path: p.to_path_buf(),
+                yours: meta.uid() == me,
+            }),
+            Err(_) => Err(Untrusted::Writable {
+                path: p.to_path_buf(),
+                yours: false,
+            }),
+        }
     };
     if let Err(why) = closed(&real) {
         return Err((real, why));
     }
-    match real.parent() {
-        Some(dir) => match closed(dir) {
-            Ok(()) => Ok(real),
-            Err(why) => Err((real, why)),
-        },
-        None => Err((real, Untrusted::Unresolvable)),
+    let dirs = match rule {
+        Rule::Jail => 1,
+        Rule::OwnGroup => usize::MAX,
+    };
+    let mut seen = 0;
+    for dir in real.ancestors().skip(1).take(dirs) {
+        if let Err(why) = closed(dir) {
+            return Err((real, why));
+        }
+        seen += 1;
     }
+    if seen == 0 {
+        return Err((real, Untrusted::Unresolvable));
+    }
+    if matches!(rule, Rule::OwnGroup) {
+        let holder = path.parent().and_then(|dir| fs::canonicalize(dir).ok());
+        let Some(holder) = holder else {
+            return Err((real, Untrusted::Unresolvable));
+        };
+        if in_scratch(&holder) {
+            return Err((real, Untrusted::Scratch));
+        }
+        for dir in holder.ancestors() {
+            if let Err(why) = closed(dir) {
+                return Err((real, why));
+            }
+        }
+    }
+    Ok(real)
 }
 
 /// The real path of the program at `path` when lazarobox may run it on its
@@ -343,6 +530,12 @@ fn interpreter_trust(path: &Path) -> Result<PathBuf, (PathBuf, Untrusted)> {
 /// what was checked is what runs.
 pub(crate) fn trusted_real_path(path: &Path) -> Option<PathBuf> {
     interpreter_trust(path).ok()
+}
+
+/// [`trusted_real_path`] for the `cargo` of the update install: the user's own
+/// group may write to it and to the folders above (see [`Rule::OwnGroup`]).
+pub(crate) fn trusted_cargo_path(path: &Path) -> Option<PathBuf> {
+    trust(path, Rule::OwnGroup).ok()
 }
 
 /// The interpreter a script asks for by bare name (`#!/usr/bin/env node`): the

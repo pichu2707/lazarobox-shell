@@ -1318,6 +1318,156 @@ fn an_interpreter_in_a_group_or_world_writable_folder_is_not_trusted() {
 }
 
 #[test]
+fn the_jail_keeps_refusing_a_group_writable_folder_that_cargo_accepts() {
+    let lab = lab();
+    let base = lab.bin.parent().unwrap().to_owned();
+    let file = exe_in(&base.join("g"), "fakecargo", 0o775);
+    // The jail's rule is untouched: group write counts as writable...
+    assert!(interpreter_trust(&file).is_err());
+    assert!(trusted_real_path(&file).is_none());
+    // ...while the update install accepts the user's own 0775 folder, but only
+    // when the user's group is private to them. The files of this test get the
+    // user's own group, so the answer follows the same fact the code reads.
+    let expected = own_group_is_private().then(|| fs::canonicalize(&file).unwrap());
+    if expected.is_none() {
+        eprintln!("this user's group is not private: group write must be refused");
+    }
+    assert_eq!(trusted_cargo_path(&file), expected);
+    // Either way, a folder anyone can write is out.
+    let open = exe_in(&base.join("o"), "fakecargo", 0o777);
+    assert_eq!(trusted_cargo_path(&open), None);
+}
+
+/// The facts about a file's owner for [`Rule::open`].
+fn owner(user_is_me: bool, group_is_mine: bool, group_private: bool) -> Owner {
+    Owner {
+        user_is_me,
+        group_is_mine,
+        group_private,
+    }
+}
+
+#[test]
+fn the_cargo_rule_trusts_group_write_only_for_a_private_group_of_the_user() {
+    let mine = owner(true, true, true);
+    let shared = owner(true, true, false);
+    let foreign_gid = owner(true, false, true);
+    let root_private = owner(false, true, true);
+    let root_shared = owner(false, false, false);
+    let other_user = owner(false, true, true);
+    // (mode, owner, trusted)
+    for (mode, who, trusted) in [
+        // The user's own private group: group write is fine.
+        (0o755, mine, true),
+        (0o775, mine, true),
+        (0o2775, mine, true),
+        // Never other write, whoever owns it.
+        (0o757, mine, false),
+        (0o777, mine, false),
+        (0o772, mine, false),
+        (0o002, mine, false),
+        // A shared group (`users`, `staff`) is not private.
+        (0o775, shared, false),
+        (0o755, shared, true),
+        (0o757, shared, false),
+        // A group that is not the user's own.
+        (0o775, foreign_gid, false),
+        (0o755, foreign_gid, true),
+        // Root-owned: group write is out, even with a "private" group.
+        (0o775, root_private, false),
+        (0o2775, root_shared, false),
+        (0o755, root_private, true),
+        (0o755, root_shared, true),
+        (0o777, root_shared, false),
+        // Another user's file: group write is out, plain 0755 is as before.
+        (0o775, other_user, false),
+        (0o755, other_user, true),
+    ] {
+        assert_eq!(Rule::OwnGroup.open(mode, who), !trusted, "{mode:o} {who:?}");
+    }
+    // The jail ignores who owns what: group or other write is always open.
+    for who in [mine, shared, foreign_gid, root_private, root_shared] {
+        assert!(Rule::Jail.open(0o775, who), "{who:?}");
+        assert!(Rule::Jail.open(0o757, who), "{who:?}");
+        assert!(!Rule::Jail.open(0o755, who), "{who:?}");
+    }
+}
+
+#[test]
+fn a_group_is_private_only_when_it_is_the_users_own_and_has_no_one_else() {
+    // (user, group name, members) -> private
+    for (user, group, members, private) in [
+        ("ana", "ana", &[][..], true),
+        ("ana", "ana", &["ana"][..], true),
+        ("ana", "ana", &["ana", "bob"][..], false),
+        ("ana", "ana", &["bob"][..], false),
+        ("ana", "users", &[][..], false),
+        ("ana", "staff", &["ana"][..], false),
+        ("ana", "bob", &[][..], false),
+        ("", "", &[][..], false),
+    ] {
+        assert_eq!(
+            private_group(user, group, members),
+            private,
+            "{user} {group} {members:?}"
+        );
+    }
+}
+
+#[test]
+fn a_cargo_link_in_a_trusted_folder_pointing_into_tmp_is_refused() {
+    let lab = lab();
+    let base = lab.bin.parent().unwrap().to_owned();
+    let planted = tempfile::tempdir_in("/tmp").unwrap();
+    let target = exe_in(&planted.path().join("bin"), "cargo", 0o755);
+    let bin = base.join("linkbin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    let link = bin.join("cargo");
+    symlink(&target, &link).unwrap();
+    assert_eq!(trusted_cargo_path(&link), None);
+}
+
+#[test]
+fn the_folder_that_holds_a_cargo_link_is_checked_too() {
+    let lab = lab();
+    let base = lab.bin.parent().unwrap().to_owned();
+    // A tight target, far from the link's folder.
+    let target = exe_in(&base.join("real"), "rustup", 0o755);
+    for (mode, trusted) in [(0o755, true), (0o757, false), (0o777, false)] {
+        let bin = base.join(format!("holder{mode:o}"));
+        fs::create_dir_all(&bin).unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(mode)).unwrap();
+        let link = bin.join("cargo");
+        symlink(&target, &link).unwrap();
+        assert_eq!(trusted_cargo_path(&link).is_some(), trusted, "{mode:o}");
+    }
+    // Its own ancestors count as well, not only its own folder.
+    let outer = base.join("outer");
+    let bin = outer.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    symlink(&target, bin.join("cargo")).unwrap();
+    fs::set_permissions(&outer, fs::Permissions::from_mode(0o777)).unwrap();
+    assert_eq!(trusted_cargo_path(&bin.join("cargo")), None);
+}
+
+#[test]
+fn a_group_writable_folder_above_the_parent_passes_for_a_private_group() {
+    // `~` 0775 with `~/.cargo/bin` 0755: every folder above counts, and
+    // group write is fine only while the group is private.
+    let lab = lab();
+    let base = lab.bin.parent().unwrap().to_owned();
+    let file = exe_in(&base.join("home/.cargo/bin"), "cargo", 0o755);
+    fs::set_permissions(base.join("home"), fs::Permissions::from_mode(0o775)).unwrap();
+    let expected = own_group_is_private().then(|| fs::canonicalize(&file).unwrap());
+    assert_eq!(trusted_cargo_path(&file), expected);
+    // The same folder open to others is refused whatever the group is.
+    fs::set_permissions(base.join("home"), fs::Permissions::from_mode(0o777)).unwrap();
+    assert_eq!(trusted_cargo_path(&file), None);
+}
+
+#[test]
 fn an_untrusted_sibling_falls_back_to_a_trusted_interpreter_on_path_or_nothing() {
     let lab = lab();
     let base = lab.bin.parent().unwrap().to_owned();
