@@ -627,6 +627,7 @@ impl Chats {
             // which the path policy then refuses: the ask shows `/name`.
             origin: origin.clone().unwrap_or_else(|| PathBuf::from("/")),
             approver: self.waits.approver(pane, turn, pending.clone()),
+            external: None,
         };
         let dispatch = tooling.host.dispatch(scope);
         if adapter_for(&request.engine) == Some(Adapter::Ollama) {
