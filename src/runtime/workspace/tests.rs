@@ -385,3 +385,17 @@ fn the_module_never_starts_a_process() {
     assert!(!code.contains("Command"), "no process is spawned");
     assert!(!code.contains("process::"), "no process API is used");
 }
+
+// Spec (mcp-servers): project servers apply to the chat's origin git root.
+#[test]
+fn the_origin_root_is_the_repository_root_above_the_cwd() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = repo(tmp.path(), "app", "ref: refs/heads/main\n");
+    let nested = dir.join("src/core");
+    fs::create_dir_all(&nested).unwrap();
+    assert_eq!(origin_root(&nested), Some(dir.clone()));
+    assert_eq!(origin_root(&dir), Some(dir));
+    let plain = tmp.path().join("plain");
+    fs::create_dir_all(&plain).unwrap();
+    assert_eq!(origin_root(&plain), None);
+}

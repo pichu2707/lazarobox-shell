@@ -72,6 +72,13 @@ pub fn project_tag(cwd: &Path) -> Option<String> {
     clean_tag(&name_of(&dir))
 }
 
+/// The git root of a chat's origin `cwd`: the directory that holds `.git`,
+/// found by the same walk as the workspace block. `None` outside a
+/// repository. User MCP servers declared for a project apply to this root only.
+pub fn origin_root(cwd: &Path) -> Option<PathBuf> {
+    find_repo(cwd).map(|repo| repo.root)
+}
+
 /// A repository found above the cwd.
 struct Repo {
     /// The directory that holds `.git`.

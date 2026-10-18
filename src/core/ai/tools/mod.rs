@@ -8,6 +8,7 @@ pub mod label;
 pub mod mcp;
 pub mod paths;
 pub mod report;
+pub mod servers;
 pub mod settle;
 pub mod summary;
 pub mod wiring;
@@ -133,11 +134,11 @@ fn one_string(arg: &str) -> Value {
     })
 }
 
-/// The tools offered to every engine: the built-ins, then the external ones
-/// whose name does not shadow a built-in. Dropping a colliding external tool
-/// is temporary: slice 4a exposes it under its server-qualified name and
-/// removes duplicates among externals. An external tool is never `Read`:
-/// it runs code the user did not write here.
+/// The tools offered to every engine: the built-ins, then the external ones,
+/// each name once and none shadowing a built-in. The names are expected to be
+/// server-qualified already (see `servers::qualify`); a raw colliding name is
+/// dropped here as a last defence. An external tool is never `Read`: it runs
+/// code the user did not write here.
 pub fn registry(external: &[ExternalTool]) -> Vec<ToolSpec> {
     let built_in = BUILT_INS
         .iter()
@@ -147,9 +148,15 @@ pub fn registry(external: &[ExternalTool]) -> Vec<ToolSpec> {
             schema: one_string(arg),
             access: *access,
         });
+    let mut seen: Vec<&str> = Vec::new();
     let external = external
         .iter()
         .filter(|tool| !BUILT_INS.iter().any(|(name, ..)| *name == tool.name))
+        .filter(|tool| {
+            let fresh = !seen.contains(&tool.name.as_str());
+            seen.push(&tool.name);
+            fresh
+        })
         .map(|tool| ToolSpec {
             name: tool.name.clone(),
             description: tool.description.clone(),
