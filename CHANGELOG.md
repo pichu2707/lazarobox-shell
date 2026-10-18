@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 0.8.0 is the first version published to crates.io. 0.7.0 is an unpublished
 baseline.
 
-## [Unreleased]
+## [0.16.2] - 2026-10-18
 
 ### Fixed
 
@@ -19,8 +19,8 @@ baseline.
   said "Updated to X". Now cargo installs exactly that version or fails,
   instead of installing a different one. A version that is not plain
   `major.minor.patch` is never passed to cargo and the command to run by hand
-  is shown instead. The command shown for copying
-  is unchanged: it asks for the newest version.
+  is shown instead. The command shown for copying is unchanged: it asks for
+  the newest version.
 
 ## [0.16.1] - 2026-10-18
 
