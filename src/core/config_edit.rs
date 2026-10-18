@@ -1451,4 +1451,31 @@ other = 1
             })
         );
     }
+
+    // Spec (config-persistence): MCP server lists are never written.
+    #[test]
+    fn every_save_keeps_the_mcp_servers_byte_for_byte_whatever_they_hold() {
+        let mcp = "# my servers\n[[ai.mcp.servers]]\nname = \"docs\" # first\ncommand = \"/usr/bin/docs-mcp\"\nenv = [\"TOKEN\"]\nproject = \"/home/u/p\"\nfuture = 1\n\n\
+            # broken one\n[[ai.mcp.servers]]\nname = 5\ncommand = { x = 1 }\n\n\
+            [[ai.mcp.servers]]\nname = \"b\"\ncommand = \"b\"\n";
+        let existing = format!("[statusline]\nposition = \"top\"\n\n{mcp}");
+        let edits = [
+            ConfigEdit::tools_flag(false),
+            ConfigEdit::approval(crate::core::ai::config::ApprovalMode::Auto),
+            edit("statusline", "bottom"),
+        ];
+        let out = apply_edit(Some(&existing), &edits).unwrap();
+        assert!(out.contains(mcp), "{out:?}");
+        assert!(
+            out.contains("enabled = false") && out.contains("approval = \"auto\""),
+            "{out:?}"
+        );
+        // A file with no ai.mcp gains none.
+        let out = apply_edit(Some("[ai]\nnotify = true\n"), &edits).unwrap();
+        assert!(!out.contains("mcp"), "{out:?}");
+        // Container of the wrong type is not touched either.
+        let odd = "[ai]\nmcp = 3\n";
+        let out = apply_edit(Some(odd), &edits).unwrap();
+        assert!(out.contains("mcp = 3"), "{out:?}");
+    }
 }
