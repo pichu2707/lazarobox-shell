@@ -46,8 +46,8 @@ use crate::{
         },
         jail::{
             Cli, CliLayout, ELF_HEAD_BYTES, Interpreter, JailArgs, JailOff, JailPolicy,
-            JailRefusal, JailSpec, JailSupport, Launch, ShimGrant, Untrusted, elf_interp_at,
-            interp_path, is_scratch, jail_spec_with, launch, parse_shebang,
+            JailRefusal, JailSpec, JailSupport, Launch, Os, ShimGrant, Untrusted, elf_interp_at,
+            interp_path, is_scratch, jail_policy, jail_spec_with, launch, parse_shebang,
             rpath::{homebrew_openssl_files, search_dirs},
         },
         tools::wiring,
@@ -101,6 +101,10 @@ pub struct CliEnv {
     /// test process cannot change its own environment safely.
     pub(crate) inject: Vec<(OsString, OsString)>,
 }
+
+/// Why an exempt CLI (claude on macOS) runs without the jail.
+const EXEMPT_REASON: &str =
+    "claude keeps its macOS Keychain login, so it never runs jailed on macOS";
 
 /// The variable that makes gemini trust its working folder; only a wired
 /// gemini turn sets it, so one inherited from the user's shell is dropped.
@@ -812,6 +816,14 @@ fn jail_plan(
 /// the system cannot jail, or its layout is refused. `None` when it can be
 /// jailed (or cannot be told). Nothing is started.
 pub(crate) fn jail_note(env: &CliEnv, cli: Cli, binary: &Path) -> Option<String> {
+    jail_note_on(Os::CURRENT, env, cli, binary)
+}
+
+/// [`jail_note`] for a given system.
+fn jail_note_on(os: Os, env: &CliEnv, cli: Cli, binary: &Path) -> Option<String> {
+    if jail_policy(cli, os) == JailPolicy::Exempt {
+        return Some("not jailed on macOS".to_owned());
+    }
     let home = env.home.as_deref();
     if let JailSupport::Unavailable(off) = env.jail {
         return Some(match cli {
@@ -1137,6 +1149,7 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
         }
     };
     let reason = match (how, env.jail) {
+        _ if job.jail == JailPolicy::Exempt => EXEMPT_REASON.to_owned(),
         (Launch::Jailed, _) => {
             let mut result = None;
             // With the tools first; if the jail refuses that layout (say the

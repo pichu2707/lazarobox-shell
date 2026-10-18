@@ -22,7 +22,7 @@ use crate::{
                 adapters::{Job, TmpFile, Wire},
                 engine::{ChatError, ChatMessage, ChatRequest, Finish, Role, StreamEvent, Tools},
             },
-            jail::{Backend, Cli, JailOff, JailPolicy, JailSupport},
+            jail::{Backend, Cli, JailOff, JailPolicy, JailSupport, Os, SeatbeltFault},
             tools::wiring::{McpWire, Secret, Unwire},
         },
         layout::PaneId,
@@ -3159,6 +3159,55 @@ fn claude_on_another_system_keeps_the_neutral_notice() {
     let text = format!("{:?}", planned.notice);
     assert!(text.contains(OTHER_OS), "{text}");
     assert!(!text.contains("use claude"), "{text}");
+}
+
+const EXEMPT_NOTICE: &str = "claude runs without the jail here: claude keeps its macOS Keychain \
+login, so it never runs jailed on macOS";
+
+#[test]
+fn an_exempt_claude_runs_bare_with_its_own_notice_and_no_tools_whatever_the_probe_said() {
+    let lab = lab();
+    lab.claude("");
+    let available = JailSupport::Available {
+        backend: Backend::Seatbelt,
+        abi: 0,
+    };
+    let broken = JailSupport::Unavailable(JailOff::NoSeatbelt(SeatbeltFault::Leaked));
+    for support in [available, broken] {
+        let mut env = lab.env();
+        env.jail = support;
+        env.shim = Some(PathBuf::from("/nonexistent/shim"));
+        let job = job(JailPolicy::Exempt);
+        assert!(!runs_jailed(&env, &job), "{support:?}");
+        let planned = plan(&env, &job).ok().unwrap();
+        assert_eq!(
+            planned.notice.as_deref(),
+            Some(EXEMPT_NOTICE),
+            "{support:?}"
+        );
+        assert!(!planned.wired, "{support:?}");
+        assert_ne!(planned.program, env.helper, "{support:?}");
+    }
+}
+
+#[test]
+fn the_jail_note_of_claude_on_macos_says_it_is_not_jailed_there() {
+    let mut env = lab().env();
+    env.jail = JailSupport::Unavailable(JailOff::NoSeatbelt(SeatbeltFault::NotEnabled));
+    let bin = Path::new("/bin/true");
+    assert_eq!(
+        jail_note_on(Os::Macos, &env, Cli::Claude, bin).as_deref(),
+        Some("not jailed on macOS")
+    );
+    // codex and gemini keep their own note; claude elsewhere keeps its own.
+    assert_eq!(
+        jail_note_on(Os::Macos, &env, Cli::Codex, bin).as_deref(),
+        Some("jail unavailable · use claude")
+    );
+    assert_eq!(
+        jail_note_on(Os::Linux, &env, Cli::Claude, bin).as_deref(),
+        Some("jail unavailable")
+    );
 }
 
 #[test]

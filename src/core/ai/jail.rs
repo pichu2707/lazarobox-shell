@@ -179,6 +179,37 @@ pub enum JailPolicy {
     Required,
     /// claude: its flags alone are text-only, the jail is a second layer.
     Layered,
+    /// claude on macOS: it keeps its Keychain login, so it never runs jailed.
+    Exempt,
+}
+
+/// The system a policy is chosen for. Passed in, so the choice is testable
+/// on any system.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Os {
+    Linux,
+    Macos,
+    Other,
+}
+
+impl Os {
+    /// The system this program was built for.
+    pub const CURRENT: Self = if cfg!(target_os = "linux") {
+        Self::Linux
+    } else if cfg!(target_os = "macos") {
+        Self::Macos
+    } else {
+        Self::Other
+    };
+}
+
+/// What `cli` does without a jail on `os`.
+pub fn jail_policy(cli: Cli, os: Os) -> JailPolicy {
+    match (cli, os) {
+        (Cli::Claude, Os::Macos) => JailPolicy::Exempt,
+        (Cli::Claude, _) => JailPolicy::Layered,
+        (Cli::Codex | Cli::Gemini, _) => JailPolicy::Required,
+    }
 }
 
 /// How a turn starts a CLI.
@@ -191,6 +222,7 @@ pub enum Launch {
 
 pub fn launch(policy: JailPolicy, support: JailSupport) -> Launch {
     match (policy, support.is_available()) {
+        (JailPolicy::Exempt, _) => Launch::Bare,
         (_, true) => Launch::Jailed,
         (JailPolicy::Layered, false) => Launch::Bare,
         (JailPolicy::Required, false) => Launch::Refuse,
