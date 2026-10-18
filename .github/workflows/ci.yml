@@ -56,6 +56,57 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+      # The macOS jail is not turned on yet. These two steps prove, on the
+      # real runners, that `/usr/bin/sandbox-exec` exists and that the argv
+      # shape the jail will use (`-p`, `-D KEY=VALUE`, `--`) really confines.
+      # A failure prints the exit code, stderr and `sw_vers`.
+      - name: Seatbelt smoke (raw sandbox-exec)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          sandbox_exec=/usr/bin/sandbox-exec
+          # Seatbelt matches real paths: /var/folders is /private/var/folders.
+          dir="$(cd "$(mktemp -d)" && pwd -P)"
+          mkdir "$dir/rw" "$dir/denied"
+          profile='(version 1)(deny default)(allow file-read*)(allow file-map-executable)(allow sysctl-read)(allow process-exec (literal (param "EXE")))(allow file-write* (subpath (param "RW")))'
+
+          diagnose() {
+            echo "::error::Seatbelt smoke failed: $1 (exit code $2)"
+            echo "--- stderr ---"; cat "$dir/err"
+            echo "--- stdout ---"; cat "$dir/out"
+            echo "--- sw_vers ---"; sw_vers
+            ls -l "$sandbox_exec" || true
+            exit 1
+          }
+
+          # run <label> <program> <arg>: leaves the exit code in $rc.
+          run() {
+            label=$1; shift
+            rc=0
+            "$sandbox_exec" -p "$profile" -D EXE=/usr/bin/touch -D "RW=$dir/rw" -- "$@" \
+              >"$dir/out" 2>"$dir/err" || rc=$?
+          }
+
+          [ -x "$sandbox_exec" ] || { echo "::error::$sandbox_exec is missing"; sw_vers; exit 1; }
+
+          run "positive control: write inside the granted folder" /usr/bin/touch "$dir/rw/ok"
+          { [ "$rc" -eq 0 ] && [ -e "$dir/rw/ok" ]; } || diagnose "$label" "$rc"
+
+          run "negative control: write outside the granted folder" /usr/bin/touch "$dir/denied/no"
+          { [ "$rc" -ne 0 ] && [ ! -e "$dir/denied/no" ]; } || diagnose "$label" "$rc"
+
+          run "negative control: exec of a program that is not granted" /bin/echo leaked
+          { [ "$rc" -ne 0 ] && [ ! -s "$dir/out" ]; } || diagnose "$label" "$rc"
+
+          echo "sandbox-exec works with -p, -D and --: ok"
+          sw_vers
+
+      - name: Seatbelt probe (macOS)
+        if: runner.os == 'macOS'
+        env:
+          LAZAROBOX_REQUIRE_JAIL: "1"
+        run: cargo test --locked --test jail_macos -- --nocapture
+
   # `rust-version` in Cargo.toml is 1.88 (edition 2024): the oldest compiler
   # the crate promises to build with, which the pinned toolchain above cannot
   # prove on its own.
