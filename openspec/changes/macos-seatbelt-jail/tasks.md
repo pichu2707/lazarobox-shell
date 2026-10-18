@@ -41,13 +41,13 @@ Gate for every slice (Linux locally and CI on all 3 runners): `cargo fmt --all -
 ## Slice 1a: probe + CI (PR 1)
 
 Files: `jail.rs`, `jail/tests.rs`, runtime entry (`runtime::run`), `.github/workflows/ci.yml`, `CHANGELOG.md`.
-- [ ] 1a.1 RED: tests for `seatbelt_support(enabled, probed)` (disabled gives `NoSeatbelt(NotEnabled)`, Missing/Refused/Leaked/Timeout/Setup map to faults) and texts "the macOS jail is unavailable: {fault}", "jail unavailable".
-- [ ] 1a.2 GREEN: add `Backend::Seatbelt`, `SeatbeltFault`, `JailOff::NoSeatbelt`, `seatbelt_support`, `SEATBELT_ENABLED=false`; texts.
-- [ ] 1a.3 RED: probe tests (cfg macOS): control ok, negative control denied, exec-denied `/bin/echo`, missing binary, 5 s timeout, temp dir cleanup.
-- [ ] 1a.4 GREEN: probe in `jail.rs` (absolute `/usr/bin/sandbox-exec`, env_clear, 0700 dir with Drop guard, constant S1 profile, `-D` and `--`); run via `spawn_blocking` in `runtime::run`; gate returns NotEnabled before spawning.
-- [ ] 1a.5 CI: `ci.yml` step on macos-14 and macos-15-intel runs the probe test with `LAZAROBOX_REQUIRE_JAIL=1` and a raw `/usr/bin/sandbox-exec -p ... -D K=V -- /usr/bin/true` smoke (positive and negative control).
+- [x] 1a.1 RED: tests for `seatbelt_support(enabled, probed)` (disabled gives `NoSeatbelt(NotEnabled)`, Missing/Refused/Leaked/Timeout/Setup map to faults) and texts "the macOS jail is unavailable: {fault}", "jail unavailable".
+- [x] 1a.2 GREEN: add `Backend::Seatbelt`, `SeatbeltFault`, `JailOff::NoSeatbelt`, `seatbelt_support`, `SEATBELT_ENABLED=false`; texts.
+- [x] 1a.3 RED: probe tests (cfg macOS): control ok, negative control denied, exec-denied `/bin/echo`, missing binary, 5 s timeout, temp dir cleanup.
+- [x] 1a.4 GREEN: probe in `jail.rs` (absolute `/usr/bin/sandbox-exec`, env_clear, 0700 dir with Drop guard, constant S1 profile, `-D` and `--`); run via `spawn_blocking` in `runtime::run`; gate returns NotEnabled before spawning.
+- [x] 1a.5 CI: `ci.yml` step on macos-14 and macos-15-intel runs the probe test with `LAZAROBOX_REQUIRE_JAIL=1` and a raw `/usr/bin/sandbox-exec -p ... -D K=V -- /usr/bin/true` smoke (positive and negative control).
 - [ ] 1a.6 STOP CHECKPOINT (MANUAL REVIEW): if the CI smoke fails on either runner (capability or argv shape), STOP and report to the orchestrator before 1b.
-- [ ] 1a.7 CHANGELOG entry (Unreleased: internal probe, no behavior change).
+- [x] 1a.7 CHANGELOG entry (Unreleased: internal probe, no behavior change).
 Done: gates green on 3 runners, smoke proves sandbox-exec and `-D`/`--` shape, behavior unchanged.
 
 ## Slice 1b: claude exemption + helper path (PR 2)
