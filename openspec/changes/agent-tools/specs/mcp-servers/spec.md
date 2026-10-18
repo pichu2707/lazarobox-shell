@@ -9,7 +9,7 @@ Terms: "user server" = an MCP server declared by the user. "Global list" = serve
 ## Requirements
 
 ### Requirement: Where servers are declared
-Global servers MUST come from the user's `config.toml`. Per-project extras MUST also be declared in the user's own config directory, associated with a project root, and MUST NOT be read from inside any repository or from the working directory: cloning or opening a repository MUST NOT be able to add a server or start a process. For a chat, the active list is the global list plus the project list of the chat's origin project root (the git root of the origin cwd, else none); when a name exists in both, the project entry wins. The exact config shape is pinned by design (see configuration).
+Global servers MUST come from the user's `config.toml`. Per-project extras MUST also be declared in the user's own config directory, associated with a project root, and MUST NOT be read from inside any repository or from the working directory: cloning or opening a repository MUST NOT be able to add a server or start a process. For a chat, the active list is the global list plus the project list of the chat's origin project root (the git root of the origin cwd, else none); when a name exists in both, the project entry wins, and a project entry with `enabled = false` removes the same-named global server for that project's chats (a project entry can only remove a server this way, never add one). The exact config shape is pinned by design (see configuration).
 
 #### Scenario: Global plus project [auto]
 - GIVEN global servers `a` and `b` and a project list for `/p` with `c`
@@ -25,6 +25,11 @@ Global servers MUST come from the user's `config.toml`. Per-project extras MUST 
 - GIVEN global `a` and project `a` with another command
 - WHEN servers are resolved
 - THEN the project entry is used
+
+#### Scenario: Project entry disables a global server [auto]
+- GIVEN global `a` and a project entry `a` with `enabled = false` for `/p`
+- WHEN servers are resolved for a chat under `/p`, and for one under `/q`
+- THEN `a` is not active for `/p` and is active for `/q`
 
 #### Scenario: Repository file is never read [auto]
 - GIVEN a repository holding `.lazarobox/mcp.toml` (or any similar file) that declares a server

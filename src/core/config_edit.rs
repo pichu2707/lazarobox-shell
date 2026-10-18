@@ -1451,4 +1451,80 @@ other = 1
             })
         );
     }
+
+    // Spec (config-persistence): MCP server lists are never written.
+    #[test]
+    fn every_save_keeps_the_mcp_servers_byte_for_byte_whatever_they_hold() {
+        let mcp = "# my servers\n[[ai.mcp.servers]]\nname = \"docs\" # first\ncommand = \"/usr/bin/docs-mcp\"\nenv = [\"TOKEN\"]\nproject = \"/home/u/p\"\nfuture = 1\n\n\
+            # broken one\n[[ai.mcp.servers]]\nname = 5\ncommand = { x = 1 }\n\n\
+            [[ai.mcp.servers]]\nname = \"b\"\ncommand = \"b\"\n";
+        let existing = format!("[statusline]\nposition = \"top\"\n\n{mcp}");
+        let edits = [
+            ConfigEdit::tools_flag(false),
+            ConfigEdit::approval(crate::core::ai::config::ApprovalMode::Auto),
+            edit("statusline", "bottom"),
+        ];
+        let out = apply_edit(Some(&existing), &edits).unwrap();
+        assert!(out.contains(mcp), "{out:?}");
+        assert!(
+            out.contains("enabled = false") && out.contains("approval = \"auto\""),
+            "{out:?}"
+        );
+        // A file with no ai.mcp gains none.
+        let out = apply_edit(Some("[ai]\nnotify = true\n"), &edits).unwrap();
+        assert!(!out.contains("mcp"), "{out:?}");
+        // Container of the wrong type is not touched either.
+        let odd = "[ai]\nmcp = 3\n";
+        let out = apply_edit(Some(odd), &edits).unwrap();
+        assert!(out.contains("mcp = 3"), "{out:?}");
+    }
+
+    // W2: the saved text re-parses to the same servers and the new keys, and
+    // the server block keeps its bytes and its place after the edits.
+    #[test]
+    fn a_save_reparses_with_the_new_keys_and_the_servers_untouched() {
+        let mcp = "# my servers\n[[ai.mcp.servers]]\nname = \"docs\" # first\ncommand = \"/usr/bin/docs-mcp\"\nenv = [\"TOKEN\"]\nproject = \"/home/u/p\"\n\n\
+            # broken one\n[[ai.mcp.servers]]\nname = 5\n\n\
+            [[ai.mcp.servers]]\nname = \"b\"\ncommand = \"b\"\n";
+        let layouts = [
+            format!("[statusline]\nposition = \"top\"\n\n{mcp}"),
+            format!("[ai]\nnotify = true\n\n{mcp}"),
+            format!("[ai]\nnotify = true\n\n[ai.tools]\nenabled = true\n\n{mcp}"),
+        ];
+        let edits = [
+            ConfigEdit::tools_flag(false),
+            ConfigEdit::approval(crate::core::ai::config::ApprovalMode::Auto),
+        ];
+        for existing in layouts {
+            let out = apply_edit(Some(&existing), &edits).unwrap();
+            let (_, before, _) = Config::load_with_ai(Ok(existing.clone()), None);
+            let (_, after, _) = Config::load_with_ai(Ok(out.clone()), None);
+            assert!(!after.tools_enabled(), "{out:?}");
+            assert_eq!(
+                after.approval(),
+                crate::core::ai::config::ApprovalMode::Auto,
+                "{out:?}"
+            );
+            assert_eq!(after.mcp_servers(), before.mcp_servers(), "{out:?}");
+            assert_eq!(
+                after.mcp_servers().len(),
+                2,
+                "the broken entry stays skipped"
+            );
+            let at = out.find("# my servers").unwrap();
+            // Where the table is new it is appended after the servers, so the
+            // block keeps its offset; an existing table is edited above them.
+            let start = existing.find("# my servers").unwrap();
+            if existing.contains("[ai.tools]") {
+                assert_eq!(&out[at..], mcp, "{out:?}");
+            } else {
+                assert_eq!(at, start, "{out:?}");
+                assert_eq!(&out[at..at + mcp.len()], mcp, "{out:?}");
+                assert_eq!(
+                    &out[at + mcp.len()..],
+                    "\n[ai.tools]\nenabled = false\napproval = \"auto\"\n"
+                );
+            }
+        }
+    }
 }
