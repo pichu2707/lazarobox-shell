@@ -10,6 +10,14 @@ baseline.
 
 ## [Unreleased]
 
+### Internal
+
+- The macOS jail groundwork: a startup probe that checks, with three controls,
+  that `/usr/bin/sandbox-exec` really confines a program, and the fault types
+  that map its result. The jail stays off (`SEATBELT_ENABLED` is `false`), so
+  nothing changes for users: codex and gemini are still refused on macOS. CI
+  now runs a raw `sandbox-exec` smoke test on both macOS runners.
+
 ### Changed
 
 - The AI engines menu now marks a detected engine that has no chat adapter
