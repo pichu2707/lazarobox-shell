@@ -1383,15 +1383,17 @@ fn an_interpreter_in_a_tmp_folder_is_never_trusted() {
         let dir = tempfile::tempdir_in(base).unwrap();
         let file = exe_in(&dir.path().join("bin"), "fakenode", 0o755);
         let path = dir.path().join("bin").into_os_string();
+        // The refusal names the real path: on macOS `/tmp` is a link into
+        // `/private`, so it differs from the spelling the test created.
+        let real = fs::canonicalize(&file).unwrap();
         assert_eq!(
             interpreter_for(&dir.path().join("bin/codex"), "fakenode", &path),
             Err(JailRefusal::UntrustedInterpreter {
-                path: file.clone(),
+                path: real.clone(),
                 why: Untrusted::Scratch
             }),
             "{base}"
         );
-        let real = fs::canonicalize(&file).unwrap();
         assert_eq!(
             interpreter_trust(&file),
             Err((real, Untrusted::Scratch)),
