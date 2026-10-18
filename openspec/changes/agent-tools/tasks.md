@@ -308,7 +308,7 @@ Split: this PR ships the client over a generic transport (4b.1, client part of 4
 Split (approved, three PRs to main, one after another, each after the previous merge):
 
 - 4c-a pure core: `Call::External`, `parse_call_with` (lookup by `Qualified`, never a split on `__`), `ask_for` External (sanitized, capped), `Tools::On.external`, registry and Ollama body with externals, Ollama decoder and mcp `Server` routing. No live behaviour: the app still denies External (`NO_USER_TOOLS`) and nothing passes externals. Done in this PR; the RED tests of 4c.1 and 4c.2 that are pure are in it.
-- 4c-b runtime host: `ExternalSet` (start, list, qualify, call by `raw_of`, shutdown) and the `ToolHost` External branch (only after `y`, D14 wrap and cap, denied/timeout/cancel), against fake servers. Not wired.
+- 4c-b runtime host: `ExternalSet` (start, list, qualify, call by `raw_of`, shutdown) and the `ToolHost` External branch (only after `y`, D14 wrap and cap, denied/timeout/cancel), against fake servers. Not wired. DONE (feat/agent-tools-4c-host).
 - 4c-c live wiring and README: pre-turn start and list with `mcp: started`, `unavailable` and `Dropped::notice` notices, canonicalized `resolve` (symlink test), hub registry with externals, the app prompt (always `y`, even in `auto`), shutdown on close and quit, README "Tus propios servidores MCP".
 
 Interpretation: spawn and `tools/list` happen at the start of a turn with tools on (announced); no `tools/call` before `y`; nothing spawns with tools off, on config load or on repo open.
