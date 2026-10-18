@@ -1188,8 +1188,9 @@ mod tests {
             JailRefusal::Unreadable(long.clone()),
             JailRefusal::NotCanonical(long),
         ];
-        for refusal in reasons {
-            let why = refusal.short(home);
+        let mut whys: Vec<String> = reasons.iter().map(|r| r.short(home)).collect();
+        whys.push(JailOff::NotLinux.short_required());
+        for why in whys {
             let menu = codex_engines_level(codex_degraded(None, Some(&why)));
             let row = lines(&draw(62, POPUP_H, &menu))
                 .into_iter()

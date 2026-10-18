@@ -361,7 +361,7 @@ El directorio de trabajo del CLI es una carpeta vacía y privada, el entorno se 
 
 - **codex y gemini** exigen la jaula. Sin ella (otro sistema operativo, un núcleo sin Landlock o una instalación que la jaula rechaza) no se lanza ningún proceso y el panel indica `<motor>: not available on this system yet: <motivo>`. Una instalación que la jaula rechaza no se detecta en el panel: se ve al enviar, como el error `the CLI did not start: its jail could not be enforced: <motivo>`, y en la lista de motores del menú como `no jail: <motivo>`.
 - **claude** funciona también sin la jaula: en ese caso el panel avisa una vez con `claude runs without the jail here: <motivo>`. En ese modo solo lo protegen las opciones de solo texto.
-- Fuera de Linux no hay jaula por ahora.
+- Fuera de Linux no hay jaula por ahora. En macOS el chat funciona con claude (sin la jaula, protegido solo por sus opciones de solo texto) y con Ollama, mientras que codex y gemini requieren Linux por el momento. En ese caso el mensaje de codex y gemini lo indica: `the CLI jail needs Linux; on this system use claude or Ollama for chat`.
 
 **Riesgos que quedan (léelos):**
 
@@ -430,7 +430,7 @@ Every message below says why a CLI cannot be used. None of them changes what the
 | --- | --- |
 | `<cli>: not available on this system yet: Landlock ABI 3+ needed (Linux 6.2); this kernel has ABI 2` | codex and gemini need the jail and the kernel is too old. Upgrade to Linux 6.2 or newer. |
 | `<cli>: not available on this system yet: Landlock is unavailable or blocked (kernel, container or seccomp)` | The kernel has no Landlock, or something (a container runtime, a seccomp filter, the LSM list) blocks it. |
-| `<cli>: not available on this system yet: the CLI jail needs Linux` | Other operating systems have no jail yet. |
+| `<cli>: not available on this system yet: the CLI jail needs Linux; on this system use claude or Ollama for chat` | Other operating systems have no jail yet, so codex and gemini do not run there. Use claude (it runs without the jail, with only its text-only flags) or Ollama. |
 | `the CLI did not start: its jail could not be enforced: <reason>` | The jail refused this install or the helper could not apply it. The reason is one of the next rows, or the helper's own line. Nothing was started. |
 | `... <path> is writable by group or others, so <node> is not trusted; run: chmod go-w -- '<path>'` | The `node` that runs a script-based CLI (or its folder) can be swapped by other users, so it is not trusted. Run the command, which names the real path that failed. If the folder is not yours (for example `/usr/local/bin`) the message says its owner must fix it (sudo) instead. |
 | `... <path> is under a scratch folder; install the interpreter elsewhere` | The interpreter lives under `/tmp` or `/var/tmp`. Install `node` outside of them. |
@@ -438,7 +438,7 @@ Every message below says why a CLI cannot be used. None of them changes what the
 | `... <path> (from the script's #! line) does not exist; reinstall the CLI` | The script names a fixed interpreter path that is gone (a removed node version). Reinstalling the CLI rewrites it. |
 | `... <path> is too broad for the jail; keep the CLI and its state in folders of their own` | The CLI, its loader or its state folder (`$CODEX_HOME`, `~/.codex`, ...) is a broad place such as `/usr/local` or `$HOME`. Install the CLI in its own folder. |
 | `... cannot read <path>`, `... the program loader <path> is not a regular file`, `... $HOME is not set or not an absolute path`, `... $HOME (<path>) does not exist` | The CLI file, its loader or `$HOME` could not be resolved. Check that they exist. |
-| `available · no jail: <short reason>` | In the engine list of the menu (the version gives way to the reason when the row is narrow). The CLI is installed but would not run jailed here (`Landlock ABI 2, needs 3+`, `needs Linux`, `<folder> too broad`, `interpreter not trusted`, `no node`, ...). The chat shows the full sentence, and codex and gemini will not start. Press `y` on the row to copy the full reason. |
+| `available · no jail: <short reason>` | In the engine list of the menu (the version gives way to the reason when the row is narrow). The CLI is installed but would not run jailed here (`Landlock ABI 2, needs 3+`, `needs Linux · use claude` (codex and gemini; claude shows `needs Linux`), `<folder> too broad`, `interpreter not trusted`, `no node`, ...). The chat shows the full sentence, and codex and gemini will not start. Press `y` on the row to copy the full reason. |
 | `the CLI did not start: its jail could not be enforced` (no reason) | The jail helper failed for a reason outside the fixed set it reports, so none is shown. Update lazarobox and try again; if it persists, report it. |
 | `available · version unknown` | The CLI was found, but `<cli> --version` failed, timed out or printed nothing readable. It may still work; try running it in a terminal. |
 | `model list unavailable: codex exited <n>: <last stderr line>` | In the model picker. `codex debug models` failed (an old codex without the subcommand, not logged in, ...). Run `codex login` or update codex, then press `r` in the menu. Only `default` and `custom...` are offered meanwhile. The note wraps over up to four rows; on it, Enter or `y` copies the full reason. |

@@ -3132,3 +3132,50 @@ async fn codex_and_gemini_get_the_tools_prompt_only_when_wired() {
         }
     }
 }
+
+const OTHER_OS: &str = "the CLI jail needs Linux";
+const OTHER_OS_HINT: &str = "; on this system use claude or Ollama for chat";
+
+#[test]
+fn a_refused_codex_turn_on_another_system_says_to_use_claude_or_ollama() {
+    let mut env = lab().env();
+    env.jail = JailSupport::Unavailable(JailOff::NotLinux);
+    let planned = plan(&env, &codex_job(&[]));
+    assert_eq!(
+        planned.err(),
+        Some(StreamEvent::Error(ChatError::Jail(format!(
+            "{OTHER_OS}{OTHER_OS_HINT}"
+        ))))
+    );
+}
+
+#[test]
+fn claude_on_another_system_keeps_the_neutral_notice() {
+    let lab = lab();
+    lab.claude("");
+    let mut env = lab.env();
+    env.jail = JailSupport::Unavailable(JailOff::NotLinux);
+    let planned = plan(&env, &job(JailPolicy::Layered)).ok().unwrap();
+    let text = format!("{:?}", planned.notice);
+    assert!(text.contains(OTHER_OS), "{text}");
+    assert!(!text.contains("use claude"), "{text}");
+}
+
+#[test]
+fn the_jail_note_of_another_system_points_codex_and_gemini_to_claude_only() {
+    let mut env = lab().env();
+    env.jail = JailSupport::Unavailable(JailOff::NotLinux);
+    let bin = Path::new("/bin/true");
+    assert_eq!(
+        jail_note(&env, Cli::Codex, bin).as_deref(),
+        Some("needs Linux · use claude")
+    );
+    assert_eq!(
+        jail_note(&env, Cli::Gemini, bin).as_deref(),
+        Some("needs Linux · use claude")
+    );
+    assert_eq!(
+        jail_note(&env, Cli::Claude, bin).as_deref(),
+        Some("needs Linux")
+    );
+}

@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 0.8.0 is the first version published to crates.io. 0.7.0 is an unpublished
 baseline.
 
+## [Unreleased]
+
+### Changed
+
+- On systems without the jail (macOS), codex and gemini now say what to do
+  instead. The menu row and the model list read `needs Linux · use claude`;
+  the chat and the engine guidance read `the CLI jail needs Linux; on this
+  system use claude or Ollama for chat`. claude keeps the neutral text, since
+  it runs without the jail there (#180).
+
 ## [0.17.0] - 2026-10-18
 
 ### Added

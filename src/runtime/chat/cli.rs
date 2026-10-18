@@ -814,7 +814,10 @@ fn jail_plan(
 pub(crate) fn jail_note(env: &CliEnv, cli: Cli, binary: &Path) -> Option<String> {
     let home = env.home.as_deref();
     if let JailSupport::Unavailable(off) = env.jail {
-        return Some(JailRefusal::Unsupported(off).short(home));
+        return Some(match cli {
+            Cli::Claude => JailRefusal::Unsupported(off).short(home),
+            Cli::Codex | Cli::Gemini => off.short_required(),
+        });
     }
     let dirs = Dirs::create(env.data.as_deref()?).ok()?;
     let refusal = jail_plan(env, cli, binary, &dirs, None).err()?;
@@ -1095,7 +1098,8 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
         let JailSupport::Unavailable(off) = env.jail else {
             return Err(refused(&JailRefusal::Unsupported(JailOff::NotProbed)));
         };
-        return Err(refused(&JailRefusal::Unsupported(off)));
+        // Refused for lacking the jail: say what to use instead.
+        return Err(StreamEvent::Error(ChatError::Jail(off.text_required())));
     }
     let Some(binary) = find_on_path(job.binary, &env.path) else {
         let text = format!("{} was not found on PATH", job.binary);

@@ -75,6 +75,26 @@ impl JailOff {
             Self::NotProbed => "not probed".to_owned(),
         }
     }
+
+    /// [`Self::text`] for a CLI that does not run without the jail (codex,
+    /// gemini).
+    pub fn text_required(self) -> String {
+        match self {
+            Self::NotLinux => format!(
+                "{}; on this system use claude or Ollama for chat",
+                self.text()
+            ),
+            _ => self.text(),
+        }
+    }
+
+    /// [`Self::short`] for a CLI that does not run without the jail.
+    pub fn short_required(self) -> String {
+        match self {
+            Self::NotLinux => "needs Linux · use claude".to_owned(),
+            _ => self.short(),
+        }
+    }
 }
 
 impl JailSupport {
