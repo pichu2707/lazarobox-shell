@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use super::engine::{ChatError, Finish, StreamEvent};
 use crate::core::ai::{
     sanitize::clean,
-    tools::{Call, ToolError, parse_call},
+    tools::{Call, ToolError, parse_call_with, servers::Qualified},
 };
 
 /// Line cap for server decoders, in bytes.
@@ -321,14 +321,14 @@ fn refused(error: CallError) -> ToolRequest {
 /// One entry of `message.tool_calls[]`. `arguments` is an object on current
 /// servers; a JSON string is also accepted, and anything else (or bad JSON)
 /// is refused for that call alone.
-fn tool_call(entry: &Value) -> ToolRequest {
+fn tool_call(entry: &Value, external: &Qualified) -> ToolRequest {
     let function = &entry["function"];
     let name = function["name"].as_str().unwrap_or("");
     let raw = match &function["arguments"] {
         Value::String(text) => serde_json::from_str(text).unwrap_or(Value::Null),
         other => other.clone(),
     };
-    let call = parse_call(name, &raw).map_err(CallError::Invalid);
+    let call = parse_call_with(name, &raw, external).map_err(CallError::Invalid);
     let arguments = if call.is_ok() { raw } else { json!({}) };
     ToolRequest {
         name: if name.is_empty() {
@@ -356,6 +356,8 @@ pub struct OllamaToolDecoder {
     clean: bool,
     overflowed: bool,
     calls: Vec<ToolRequest>,
+    /// The user-server tools of the turn, which a call may name.
+    external: Qualified,
 }
 
 impl OllamaToolDecoder {
@@ -366,11 +368,20 @@ impl OllamaToolDecoder {
             clean: false,
             overflowed: false,
             calls: Vec::new(),
+            external: Qualified::default(),
         }
     }
 
     pub fn server() -> Self {
         Self::new(SERVER_LINE_CAP)
+    }
+
+    /// A server decoder that also accepts the qualified names of `external`.
+    pub fn server_with(external: Qualified) -> Self {
+        Self {
+            external,
+            ..Self::server()
+        }
     }
 
     /// The calls of the reply, in order, after a clean end; the decoder
@@ -389,7 +400,8 @@ impl OllamaToolDecoder {
             return;
         };
         let room = MAX_CALLS.saturating_sub(self.calls.len());
-        self.calls.extend(list.iter().take(room).map(tool_call));
+        self.calls
+            .extend(list.iter().take(room).map(|e| tool_call(e, &self.external)));
         if list.len() > room && !self.overflowed {
             self.overflowed = true;
             self.calls.push(refused(CallError::TooMany));

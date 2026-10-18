@@ -2491,6 +2491,7 @@ fn while_dormant_no_engine_starts_a_different_process_with_tools_on() {
             let mut on = off.clone();
             on.tools = Tools::On {
                 origin: Some(lab.home.clone()),
+                external: Default::default(),
                 mcp: Some(wire.clone()),
             };
             let adapter = adapter_for(engine).unwrap();
@@ -3041,6 +3042,7 @@ async fn real_turn(engine: &str, setup: Setup) -> (Vec<String>, String) {
     }];
     request.tools = Tools::On {
         origin: None,
+        external: Default::default(),
         mcp: claude_job(&lab, true).mcp.map(Box::new),
     };
     let crate::core::ai::chat::adapters::Invocation::Process(job) =

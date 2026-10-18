@@ -10,7 +10,7 @@ use crate::core::ai::{
     config::{AiConfig, Task},
     jail::JailSupport,
     status_text,
-    tools::{Locality, report::RunReport, wiring::McpWire},
+    tools::{Locality, report::RunReport, servers::Qualified, wiring::McpWire},
 };
 
 /// Who wrote a message.
@@ -59,6 +59,10 @@ pub enum Tools {
         /// has opened the turn's socket. The app never sets it. Boxed so the
         /// request stays small (`SendOutcome` carries one).
         mcp: Option<Box<McpWire>>,
+        /// The tools of the user MCP servers of this chat, qualified. Empty
+        /// until the runtime has started the servers for the turn.
+        /// Boxed like `mcp`, so the request stays small.
+        external: Box<Qualified>,
     },
 }
 
@@ -72,7 +76,11 @@ pub const MCP_VERIFIED: &[&str] = &["claude", "codex", "gemini", "ollama"];
 /// and the engine is in `verified`.
 pub fn tools_for(engine: &str, enabled: bool, origin: Option<PathBuf>, verified: &[&str]) -> Tools {
     if enabled && verified.contains(&engine) {
-        Tools::On { origin, mcp: None }
+        Tools::On {
+            origin,
+            mcp: None,
+            external: Box::default(),
+        }
     } else {
         Tools::Off
     }

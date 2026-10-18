@@ -835,6 +835,7 @@ fn the_tools_flag_changes_no_invocation() {
         let mut on = off.clone();
         on.tools = Tools::On {
             origin: Some("/home/u/dev".into()),
+            external: Default::default(),
             mcp: None,
         };
         let adapter = adapter_for(engine).unwrap();
@@ -852,6 +853,7 @@ fn tools_on(engine: &str, session: bool) -> (ChatRequest, ChatRequest) {
     let mut on = off.clone();
     on.tools = Tools::On {
         origin: Some("/home/u/dev".into()),
+        external: Default::default(),
         mcp: session.then(|| {
             Box::new(McpWire {
                 socket: "/run/user/1000/lazarobox/s-1-1.sock".into(),
@@ -1227,4 +1229,42 @@ fn ids_and_indexes_are_echoed_when_present_and_absent_otherwise() {
         json!({"function": {"name": "find_dir", "arguments": {"query": "a"}}})
     );
     assert!(without["messages"][4].get("tool_call_id").is_none());
+}
+
+// 4c: the Ollama body offers the externals of the turn, qualified, after the built-ins.
+#[test]
+fn the_ollama_body_offers_the_external_tools_after_the_built_ins() {
+    use crate::core::ai::tools::{ExternalTool, servers::qualify};
+    let tool = ExternalTool {
+        name: "run_in_pane".into(),
+        description: "d".into(),
+        schema: json!({"type": "object"}),
+    };
+    let mut req = request("");
+    req.tools = Tools::On {
+        origin: None,
+        mcp: None,
+        external: Box::new(qualify(&[("fs", &[tool])])),
+    };
+    let names = |body: Value| -> Vec<String> {
+        body["tools"]
+            .as_array()
+            .map(|t| {
+                t.iter()
+                    .map(|t| t["function"]["name"].as_str().unwrap().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        names(body_of(ollama_round_body(&req, &[], true))),
+        [
+            "find_dir",
+            "list_dir",
+            "read_file",
+            "run_in_pane",
+            "fs__run_in_pane"
+        ]
+    );
+    assert!(names(body_of(ollama_round_body(&req, &[], false))).is_empty());
 }

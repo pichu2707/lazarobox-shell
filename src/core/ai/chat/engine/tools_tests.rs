@@ -12,7 +12,8 @@ fn the_four_engines_are_verified() {
             tools_for(engine, true, origin(), MCP_VERIFIED),
             Tools::On {
                 origin: origin(),
-                mcp: None
+                mcp: None,
+                external: Default::default(),
             },
             "{engine}"
         );
@@ -37,7 +38,8 @@ fn a_verified_engine_with_tools_enabled_gets_them_with_the_origin() {
         tools_for("claude", true, origin(), &["claude"]),
         Tools::On {
             origin: origin(),
-            mcp: None
+            mcp: None,
+            external: Default::default(),
         }
     );
 }

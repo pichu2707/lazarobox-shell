@@ -182,7 +182,8 @@ pub fn execute_with(
         Call::ReadFile { path } => read_file(&roots, env, path, limits),
         Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits),
         Call::FindDir { query } => find_dir(&roots, &budget, query, limits),
-        Call::RunInPane { .. } => Err(Failure::NotReadTool),
+        // A user tool runs on its own server, never here.
+        Call::RunInPane { .. } | Call::External { .. } => Err(Failure::NotReadTool),
     }
 }
 

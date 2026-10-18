@@ -32,7 +32,7 @@
 
 #[cfg(test)]
 use super::registry;
-use super::{Call, ToolError, ToolSpec, parse_call};
+use super::{Call, ToolError, ToolSpec, parse_call_with, servers::Qualified};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
@@ -210,6 +210,7 @@ pub enum Action {
 /// The server side of one session.
 pub struct Server {
     tools: Vec<ToolSpec>,
+    external: Qualified,
     initialized: bool,
 }
 
@@ -254,10 +255,17 @@ pub fn refusal_text(error: ToolError) -> &'static str {
 
 impl Server {
     /// A server that offers `tools`, normally [`registry`] of the session.
-    /// Tools of user servers are not callable here until slice 4a.
+    /// No user tool is callable on it.
     pub fn new(tools: Vec<ToolSpec>) -> Self {
+        Self::with_external(tools, Qualified::default())
+    }
+
+    /// A server that offers `tools` and routes the qualified names in
+    /// `external` (the same tools, as listed in `tools`) to user-server calls.
+    pub fn with_external(tools: Vec<ToolSpec>, external: Qualified) -> Self {
         Server {
             tools,
+            external,
             initialized: false,
         }
     }
@@ -297,7 +305,7 @@ impl Server {
                     .collect();
                 result_reply(id, json!({ "tools": tools }))
             }
-            "tools/call" => call(id, params),
+            "tools/call" => call(id, params, &self.external),
             _ => error_reply(id, METHOD_NOT_FOUND, "method not found"),
         }
     }
@@ -335,13 +343,13 @@ fn notification(method: &str, params: &Value) -> Action {
     }
 }
 
-fn call(id: Value, params: &Value) -> Action {
+fn call(id: Value, params: &Value, external: &Qualified) -> Action {
     let Some(name) = params.get("name").and_then(Value::as_str) else {
         return error_reply(id, INVALID_PARAMS, "name must be a string");
     };
     let empty = json!({});
     let arguments = params.get("arguments").unwrap_or(&empty);
-    match parse_call(name, arguments) {
+    match parse_call_with(name, arguments, external) {
         Ok(call) => Action::Call { id, call },
         Err(error) => Action::Reply(tool_result(&id, refusal_text(error), true)),
     }
@@ -401,6 +409,7 @@ fn has_duplicate_keys(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::ai::tools::ExternalTool;
     use serde_json::json;
 
     fn server() -> Server {
@@ -803,5 +812,59 @@ mod tests {
             assert!(!text.contains('\n'));
             assert_eq!(Frame::parse(&text), Ok(frame));
         }
+    }
+
+    fn with_external() -> Server {
+        let q = crate::core::ai::tools::servers::qualify(&[(
+            "fs",
+            &[ExternalTool {
+                name: "write".into(),
+                description: "d".into(),
+                schema: json!({"type": "object"}),
+            }],
+        )]);
+        let mut server = Server::with_external(registry(&q.external()), q);
+        reply(server.handle(&request(
+            json!(0),
+            "initialize",
+            json!({"protocolVersion": "2025-06-18", "capabilities": {}}),
+        )));
+        server
+    }
+
+    // 4c: a qualified tool becomes an external call by the lookup.
+    #[test]
+    fn tools_call_routes_a_qualified_name_to_an_external_call() {
+        let mut server = with_external();
+        let action = server.handle(&request(
+            json!(5),
+            "tools/call",
+            json!({"name": "fs__write", "arguments": {"path": "~/x"}}),
+        ));
+        assert_eq!(
+            action,
+            Action::Call {
+                id: json!(5),
+                call: Call::External {
+                    name: "fs__write".into(),
+                    server: "fs".into(),
+                    tool: "write".into(),
+                    args: json!({"path": "~/x"}),
+                }
+            }
+        );
+        let listed = reply(server.handle(&request(json!(6), "tools/list", json!({}))));
+        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn a_session_without_externals_still_refuses_a_qualified_name() {
+        let mut server = initialized("2025-06-18");
+        let out = reply(server.handle(&request(
+            json!(7),
+            "tools/call",
+            json!({"name": "fs__write", "arguments": {}}),
+        )));
+        assert_eq!(out["result"]["isError"], true);
     }
 }

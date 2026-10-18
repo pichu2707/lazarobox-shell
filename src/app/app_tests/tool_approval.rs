@@ -484,6 +484,7 @@ fn a_turn_of_a_verified_engine_carries_tools_and_the_origin() {
         request.tools,
         Tools::On {
             origin: chat(&a, id2()).origin_cwd().map(Path::to_path_buf),
+            external: Default::default(),
             mcp: None,
         }
     );

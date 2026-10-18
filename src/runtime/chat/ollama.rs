@@ -19,11 +19,11 @@ use crate::{
         chat::{
             ANSWER_CAP, REASONING_CAP,
             adapters::{ToolExchange, ToolRound, ollama_round_body},
-            engine::{ChatError, ChatRequest, Finish, StreamEvent},
+            engine::{ChatError, ChatRequest, Finish, StreamEvent, Tools},
             prompts,
             stream::{CallError, OllamaToolDecoder, ToolRequest},
         },
-        tools::mcp::refusal_text,
+        tools::{mcp::refusal_text, servers::Qualified},
     },
     runtime::{
         loopback::{TOO_LONG, Timeouts, post_stream_with},
@@ -87,6 +87,10 @@ async fn rounds(
 ) {
     // The retry without tools must not describe tools: it keeps the original.
     let plain = request;
+    let external = match &request.tools {
+        Tools::On { external, .. } => (**external).clone(),
+        Tools::Off => Qualified::default(),
+    };
     let mut tooled = request.clone();
     tooled.system = prompts::with_tools(&plain.system);
     let mut used = 0;
@@ -101,7 +105,7 @@ async fn rounds(
         } else {
             ollama_round_body(plain, &history, false)
         };
-        let reply = round(timeouts, port, &body, gap, tx).await;
+        let reply = round(timeouts, port, &body, gap, &external, tx).await;
         let finish = match reply.end {
             Some(Ok(finish)) => finish,
             // A model that rejects `tools` is asked again as plain text,
@@ -191,10 +195,11 @@ async fn round(
     port: u16,
     body: &[u8],
     gap: bool,
+    external: &Qualified,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> Reply {
     let (inner, mut events) = mpsc::channel(TURN_CHANNEL);
-    let mut decoder = OllamaToolDecoder::server();
+    let mut decoder = OllamaToolDecoder::server_with(external.clone());
     let post = async {
         post_stream_with(
             timeouts,

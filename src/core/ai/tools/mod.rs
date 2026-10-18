@@ -13,6 +13,8 @@ pub mod settle;
 pub mod summary;
 pub mod wiring;
 
+use std::borrow::Cow;
+
 use serde_json::{Value, json};
 
 /// Whether a tool only reads or can change the user's session.
@@ -56,16 +58,35 @@ pub struct ExternalTool {
 /// A validated tool call.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Call {
-    FindDir { query: String },
-    ListDir { path: String },
-    ReadFile { path: String },
-    RunInPane { command: String },
+    FindDir {
+        query: String,
+    },
+    ListDir {
+        path: String,
+    },
+    ReadFile {
+        path: String,
+    },
+    RunInPane {
+        command: String,
+    },
+    /// A tool of a user MCP server. It is always a write tool: every call
+    /// needs the user's `y`. `name` is the qualified name the model used;
+    /// `server` and `tool` come from the lookup (`servers::Qualified`), never
+    /// from splitting `name`.
+    External {
+        name: String,
+        server: String,
+        tool: String,
+        args: Value,
+    },
 }
 
 impl Call {
-    /// The tool's name, as the registry offers it.
-    pub fn name(&self) -> &'static str {
+    /// The tool's name, as the registry offers it (qualified for a user tool).
+    pub fn name(&self) -> &str {
         match self {
+            Call::External { name, .. } => name,
             Call::FindDir { .. } => "find_dir",
             Call::ListDir { .. } => "list_dir",
             Call::ReadFile { .. } => "read_file",
@@ -73,12 +94,14 @@ impl Call {
         }
     }
 
-    /// The one argument of the call: a query, a path or a command.
-    pub fn argument(&self) -> &str {
+    /// The argument of the call: a query, a path or a command; a user tool
+    /// has its arguments as compact JSON.
+    pub fn argument(&self) -> Cow<'_, str> {
         match self {
-            Call::FindDir { query } => query,
-            Call::ListDir { path } | Call::ReadFile { path } => path,
-            Call::RunInPane { command } => command,
+            Call::FindDir { query } => Cow::Borrowed(query),
+            Call::ListDir { path } | Call::ReadFile { path } => Cow::Borrowed(path),
+            Call::RunInPane { command } => Cow::Borrowed(command),
+            Call::External { args, .. } => Cow::Owned(args.to_string()),
         }
     }
 }
@@ -205,6 +228,37 @@ pub fn parse_call(name: &str, args: &Value) -> Result<Call, ToolError> {
     }
 }
 
+/// The most a user tool's arguments may take, as compact JSON, in bytes.
+pub const MAX_EXTERNAL_ARGS: usize = 16 * 1024;
+
+/// [`parse_call`] that also knows the tools of the user servers of the turn.
+/// A built-in name is always the built-in. Any other name must be in
+/// `external` (a lookup, never a split on `__`); its arguments must be an
+/// object of at most [`MAX_EXTERNAL_ARGS`] bytes. The server validates their
+/// shape: the call is a write that needs the user's `y` first.
+pub fn parse_call_with(
+    name: &str,
+    args: &Value,
+    external: &servers::Qualified,
+) -> Result<Call, ToolError> {
+    if BUILT_INS.iter().any(|(known, ..)| *known == name) {
+        return parse_call(name, args);
+    }
+    let (server, tool) = external.raw_of(name).ok_or(ToolError::UnknownTool)?;
+    if !args.is_object() {
+        return Err(ToolError::NotAnObject);
+    }
+    if args.to_string().len() > MAX_EXTERNAL_ARGS {
+        return Err(ToolError::TooLong);
+    }
+    Ok(Call::External {
+        name: name.to_owned(),
+        server: server.to_owned(),
+        tool: tool.to_owned(),
+        args: args.clone(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,7 +273,7 @@ mod tests {
             ("run_in_pane", "ls"),
         ] {
             let call = parse_call(name, &json!({ registry_arg(name): arg })).unwrap();
-            assert_eq!((call.name(), call.argument()), (name, arg));
+            assert_eq!((call.name(), &*call.argument()), (name, arg));
         }
     }
 
@@ -433,5 +487,101 @@ mod tests {
                 "{name} over the limit"
             );
         }
+    }
+
+    fn qualified() -> servers::Qualified {
+        let tool = |name: &str| ExternalTool {
+            name: name.to_owned(),
+            description: "d".to_owned(),
+            schema: json!({"type": "object"}),
+        };
+        servers::qualify(&[(
+            "fs",
+            &[tool("write"), tool("read_file"), tool("deep__tool")],
+        )])
+    }
+
+    // 4c: a qualified name becomes an external call by the lookup, with the
+    // raw tool name and the server the lookup holds.
+    #[test]
+    fn an_external_call_is_routed_by_the_lookup() {
+        let q = qualified();
+        let args = json!({"path": "~/x", "n": 2});
+        for (name, tool) in [
+            ("fs__write", "write"),
+            ("fs__read_file", "read_file"),
+            ("fs__deep__tool", "deep__tool"),
+        ] {
+            let call = parse_call_with(name, &args, &q).unwrap();
+            assert_eq!(
+                call,
+                Call::External {
+                    name: name.to_owned(),
+                    server: "fs".to_owned(),
+                    tool: tool.to_owned(),
+                    args: args.clone(),
+                }
+            );
+            assert_eq!(call.name(), name);
+        }
+    }
+
+    // Never by splitting on `__`: a name the lookup does not hold is unknown.
+    #[test]
+    fn a_name_outside_the_lookup_is_unknown_even_if_it_looks_qualified() {
+        let q = qualified();
+        for name in ["fs__deep", "git__log", "write", "fs__"] {
+            assert_eq!(
+                parse_call_with(name, &json!({}), &q),
+                Err(ToolError::UnknownTool),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_built_in_name_is_always_the_built_in() {
+        let mut q = qualified();
+        q.tools[0].tool.name = "read_file".to_owned();
+        assert_eq!(
+            parse_call_with("read_file", &json!({"path": "a"}), &q),
+            Ok(Call::ReadFile { path: "a".into() })
+        );
+        assert_eq!(
+            parse_call_with("read_file", &json!({"x": 1}), &q),
+            Err(ToolError::MissingArgument)
+        );
+    }
+
+    #[test]
+    fn external_arguments_must_be_an_object_within_the_cap() {
+        let q = qualified();
+        assert_eq!(
+            parse_call_with("fs__write", &json!([1]), &q),
+            Err(ToolError::NotAnObject)
+        );
+        assert!(matches!(
+            parse_call_with("fs__write", &json!(null), &q),
+            Err(ToolError::NotAnObject)
+        ));
+        let at = |len: usize| json!({"k": "a".repeat(len)});
+        let base = at(0).to_string().len();
+        assert!(parse_call_with("fs__write", &at(MAX_EXTERNAL_ARGS - base), &q).is_ok());
+        assert_eq!(
+            parse_call_with("fs__write", &at(MAX_EXTERNAL_ARGS - base + 1), &q),
+            Err(ToolError::TooLong)
+        );
+    }
+
+    #[test]
+    fn an_external_call_shows_its_arguments_as_one_line_of_json() {
+        let call = parse_call_with("fs__write", &json!({"a": 1}), &qualified()).unwrap();
+        assert_eq!(call.argument(), r#"{"a":1}"#);
+        assert_eq!(
+            parse_call("read_file", &json!({"path": "p"}))
+                .unwrap()
+                .argument(),
+            "p"
+        );
     }
 }

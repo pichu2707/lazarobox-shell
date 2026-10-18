@@ -219,6 +219,7 @@ fn ask(lab: &Lab, tools: bool) -> ChatRequest {
     if tools {
         req.tools = Tools::On {
             origin: Some(lab.home.clone()),
+            external: Default::default(),
             mcp: None,
         };
     }
@@ -592,6 +593,7 @@ async fn tool_messages_are_not_part_of_the_next_turns_history() {
     };
     request.tools = Tools::On {
         origin: Some(lab.home.clone()),
+        external: Default::default(),
         mcp: None,
     };
     lab.chats.send(pane(1), turn, request);

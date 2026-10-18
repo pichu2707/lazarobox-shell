@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::core::ai::{
     chat::engine::CallId,
     config::ApprovalMode,
+    sanitize::clean,
     tools::{
         Call, Locality,
         command::Refusal,
@@ -85,8 +86,44 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         Call::ReadFile { path } if locality == Locality::Cloud => {
             Some(ApprovalAsk::Read { path: path.clone() })
         }
+        // A user tool always asks, on any engine and in any approval mode:
+        // lazarobox cannot know what it does, and a read-only hint is ignored.
+        Call::External {
+            server, tool, args, ..
+        } => Some(ApprovalAsk::External {
+            server: shown_name(server),
+            tool: shown_name(tool),
+            args: shown_args(&args.to_string()),
+        }),
         Call::ReadFile { .. } | Call::FindDir { .. } | Call::ListDir { .. } => None,
     }
+}
+
+/// The most characters of a user tool's arguments an ask shows.
+pub const EXTERNAL_ARGS_SHOWN: usize = 1024;
+
+/// The longest server or tool name an ask shows, in characters.
+const SHOWN_NAME: usize = 64;
+
+/// A name from a server, as one sanitized line.
+fn shown_name(name: &str) -> String {
+    clean(name)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .take(SHOWN_NAME)
+        .collect()
+}
+
+/// The arguments as one sanitized line of at most [`EXTERNAL_ARGS_SHOWN`]
+/// characters; a cut ends with ` (truncated)`, so it is never silent.
+fn shown_args(json: &str) -> String {
+    let flat = clean(json).split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= EXTERNAL_ARGS_SHOWN {
+        return flat;
+    }
+    let mut cut: String = flat.chars().take(EXTERNAL_ARGS_SHOWN).collect();
+    cut.push_str(" (truncated)");
+    cut
 }
 
 /// What the app does with a model's ask (D18, D21).
@@ -1019,5 +1056,74 @@ mod tests {
         fresh.request(run("B"), Origin::Block).unwrap();
         assert_eq!(fresh.answer(stale, Reply::Approve, Press::Press), None);
         assert!(fresh.pending().is_some());
+    }
+
+    fn external_call(args: serde_json::Value) -> Call {
+        Call::External {
+            name: "fs__write".into(),
+            server: "fs".into(),
+            tool: "write".into(),
+            args,
+        }
+    }
+
+    // 4c: a user tool always asks, on either locality, whatever it claims.
+    #[test]
+    fn an_external_call_always_asks_with_server_tool_and_arguments() {
+        for locality in [Locality::Local, Locality::Cloud] {
+            assert_eq!(
+                ask_for(&external_call(serde_json::json!({"path": "~/x"})), locality),
+                Some(ApprovalAsk::External {
+                    server: "fs".into(),
+                    tool: "write".into(),
+                    args: r#"{"path":"~/x"}"#.into(),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn the_shown_arguments_are_sanitized_and_capped_with_a_visible_cut() {
+        let hostile = serde_json::json!({"k": "a\u{1b}[31mb\u{202e}c"});
+        let Some(ApprovalAsk::External { args, .. }) =
+            ask_for(&external_call(hostile), Locality::Cloud)
+        else {
+            panic!("an external call asks");
+        };
+        assert!(
+            !args.chars().any(|c| c.is_control() || c == '\u{202e}'),
+            "{args:?}"
+        );
+        let long = serde_json::json!({"k": "x".repeat(EXTERNAL_ARGS_SHOWN * 2)});
+        let Some(ApprovalAsk::External { args, .. }) =
+            ask_for(&external_call(long), Locality::Cloud)
+        else {
+            panic!("an external call asks");
+        };
+        assert!(
+            args.chars().count() <= EXTERNAL_ARGS_SHOWN + 40,
+            "{}",
+            args.len()
+        );
+        assert!(args.ends_with(" (truncated)"), "{args}");
+    }
+
+    #[test]
+    fn hostile_server_and_tool_names_are_sanitized_in_the_ask() {
+        let call = Call::External {
+            name: "s__t".into(),
+            server: "s\u{1b}[2J".into(),
+            tool: "t\u{202e}x".into(),
+            args: serde_json::json!({}),
+        };
+        let Some(ApprovalAsk::External { server, tool, .. }) = ask_for(&call, Locality::Local)
+        else {
+            panic!("an external call asks");
+        };
+        assert!(
+            !format!("{server}{tool}")
+                .chars()
+                .any(|c| c.is_control() || c == '\u{202e}')
+        );
     }
 }
