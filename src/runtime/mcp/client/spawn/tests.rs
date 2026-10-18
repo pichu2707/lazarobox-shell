@@ -61,6 +61,10 @@ fn host_env(name: &str) -> Option<OsString> {
         "LC_ALL" => "C",
         "TMPDIR" => "/tmp",
         "NAMED" => "named-value",
+        "LD_PRELOAD" => "/tmp/evil.so",
+        "LD_LIBRARY_PATH" => "/tmp/evil",
+        "LD_AUDIT" => "/tmp/evil.so",
+        "DYLD_INSERT_LIBRARIES" => "/tmp/evil.dylib",
         "UNNAMED" => "unnamed-value",
         "LAZAROBOX_MCP_TOKEN" => "0123456789abcdef",
         _ => return None,
@@ -227,8 +231,10 @@ async fn a_server_that_never_answers_is_killed_and_reported() {
         "echo $$ > \"$1.tmp\" && mv \"$1.tmp\" \"$1\"; sleep 300",
         &[pid.to_str().unwrap()],
     );
+    // Long enough for the shell to record its pid before the timer ends, on a
+    // slow runner too; a pass still waits out the whole of it.
     let quick = Timeouts {
-        handshake: Duration::from_millis(300),
+        handshake: Duration::from_secs(3),
         call: Duration::from_secs(5),
     };
     let reason = McpClient::start(&server, &lab.home, host_env, quick)
@@ -238,6 +244,51 @@ async fn a_server_that_never_answers_is_killed_and_reported() {
     assert!(reason.starts_with("timed out"), "{reason}");
     let pid: libc::pid_t = appears(&pid).await.trim().parse().unwrap();
     assert!(wait_gone(pid).await, "the silent server is killed");
+}
+
+#[tokio::test]
+async fn naming_home_or_path_changes_neither() {
+    let lab = lab();
+    let out = lab.file("env");
+    let mut server = sh(
+        "env > \"$1.tmp\" && mv \"$1.tmp\" \"$1\"; cat",
+        &[out.to_str().unwrap()],
+    );
+    server.env = vec!["HOME".to_owned(), "PATH".to_owned()];
+    let client = McpClient::spawn(&server, &lab.home, host_env).expect("spawns");
+    let text = appears(&out).await;
+    drop(client);
+    assert!(
+        text.lines()
+            .any(|l| l == format!("HOME={}", lab.home.display()))
+    );
+    assert!(!text.contains("/not/the/home"), "{text}");
+    assert!(text.lines().any(|l| l == "PATH=/usr/bin:/bin"), "{text}");
+    assert_eq!(text.lines().filter(|l| l.starts_with("HOME=")).count(), 1);
+}
+
+#[tokio::test]
+async fn loader_injection_names_are_never_passed() {
+    let lab = lab();
+    let out = lab.file("env");
+    let mut server = sh(
+        "env > \"$1.tmp\" && mv \"$1.tmp\" \"$1\"; cat",
+        &[out.to_str().unwrap()],
+    );
+    server.env = [
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "LD_AUDIT",
+        "DYLD_INSERT_LIBRARIES",
+        "NAMED",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let client = McpClient::spawn(&server, &lab.home, host_env).expect("spawns");
+    let text = appears(&out).await;
+    drop(client);
+    assert!(text.lines().any(|l| l == "NAMED=named-value"), "{text}");
+    assert!(!text.contains("LD_") && !text.contains("evil"), "{text}");
 }
 
 /// A server that answers `initialize`, then reads until its stdin closes.

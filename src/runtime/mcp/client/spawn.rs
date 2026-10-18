@@ -10,6 +10,15 @@
 //!   ([`BASE_ENV`]), then ONLY the variables the config names. The session
 //!   token ([`TOKEN_ENV`]) is never passed, even if the config names it, and
 //!   neither is anything else the user did not list.
+//! - A config entry must not be able to inject code into the server's dynamic
+//!   loader: `LD_*` and `DYLD_*` names are silently dropped, whatever the
+//!   config says. `HOME` is the resolved home and is not overridable either.
+//! - A relative `command` is looked up on the CHILD's scrubbed `PATH`, and one
+//!   containing a `/` resolves against `home`, because the working directory
+//!   is applied first.
+//! - The group kill does not reach a descendant that daemonizes (`setsid` or
+//!   `setpgid`): it leaves the group and outlives the server. That is the
+//!   limit of a process-group guard, and the server is trusted not to do it.
 //! - It starts in `$HOME`, not in the repository, so a project cannot make a
 //!   server read it by accident, and in its own process group so that stopping
 //!   it takes its grandchildren too.
@@ -24,7 +33,7 @@ use super::{McpClient, Timeouts};
 use crate::{
     core::ai::{config::McpServer, sanitize::clean},
     runtime::{
-        ai_detect::{STDERR_GRACE, finish_stderr, read_tail, stderr_note},
+        ai_detect::{finish_stderr, read_tail, stderr_note},
         mcp::shim::TOKEN_ENV,
         proc::GroupKill,
     },
@@ -33,6 +42,10 @@ use crate::{
 /// The variables every server gets from the host, when the host has them.
 /// `HOME` is not looked up: it is the directory the server starts in.
 const BASE_ENV: [&str; 5] = ["PATH", "USER", "LANG", "LC_ALL", "TMPDIR"];
+
+/// How long a failed start waits for the tail of stderr: longer than the
+/// probes' grace so a slow runner still reports why, and still bounded.
+const START_GRACE: Duration = Duration::from_secs(1);
 
 /// How long stopping a server may take.
 const SHUTDOWN: Duration = Duration::from_secs(3);
@@ -48,8 +61,14 @@ pub(super) struct Process {
     stderr: Option<JoinHandle<Vec<u8>>>,
 }
 
-/// The environment of a server: the base, `HOME`, then the names in `named`
-/// that the host has. [`TOKEN_ENV`] is never passed.
+/// Whether `name` would load code into the server's dynamic loader.
+fn is_loader_var(name: &str) -> bool {
+    name.starts_with("LD_") || name.starts_with("DYLD_")
+}
+
+/// The environment of a server: the base, then the names in `named` that the
+/// host has, then `HOME`. [`TOKEN_ENV`], `HOME` and loader variables named in
+/// the config are never taken from it.
 fn child_env(
     named: &[String],
     home: &Path,
@@ -62,7 +81,7 @@ fn child_env(
             named
                 .iter()
                 .map(String::as_str)
-                .filter(|name| *name != TOKEN_ENV),
+                .filter(|name| *name != TOKEN_ENV && *name != "HOME" && !is_loader_var(name)),
         )
         .filter_map(|name| Some((OsString::from(name), lookup(name)?)))
         .collect();
@@ -70,9 +89,20 @@ fn child_env(
     env
 }
 
+impl Drop for Process {
+    fn drop(&mut self) {
+        // Fields drop after this, `group` first. A descendant that left the
+        // group may still hold the pipe: the reader must not wait for it.
+        if let Some(task) = &self.stderr {
+            task.abort();
+        }
+    }
+}
+
 impl McpClient {
     /// Starts the server and connects to its pipes; the handshake is not done.
-    /// The error is the one reason, already safe to show.
+    /// The error is the one reason, already safe to show. Must be called
+    /// inside a tokio runtime (it spawns the stderr reader).
     pub fn spawn(
         server: &McpServer,
         home: &Path,
@@ -110,7 +140,8 @@ impl McpClient {
 
     /// [`McpClient::spawn`] and the handshake. A server that cannot be started,
     /// dies or does not answer is ONE reason: what went wrong, and the last
-    /// line it said on stderr (sanitized and capped). It is stopped then.
+    /// line it said on stderr (sanitized and capped). It is stopped then. Must
+    /// be called inside a tokio runtime.
     pub async fn start(
         server: &McpServer,
         home: &Path,
@@ -126,7 +157,7 @@ impl McpClient {
         let stderr = client.process.as_mut().and_then(|p| p.stderr.take());
         client.shutdown().await;
         let said = match stderr {
-            Some(task) => finish_stderr(task, STDERR_GRACE).await,
+            Some(task) => finish_stderr(task, START_GRACE).await,
             None => None,
         };
         Err(match said.and_then(|bytes| stderr_note(&bytes)) {

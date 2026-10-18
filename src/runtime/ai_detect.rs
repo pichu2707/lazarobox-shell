@@ -154,7 +154,7 @@ const STDERR_KEEP: usize = 16 * 1024;
 pub(crate) const NOTE_CAP: usize = 200;
 
 /// How long the stderr reader is waited for once the group is dead.
-pub(crate) const STDERR_GRACE: Duration = Duration::from_millis(200);
+const STDERR_GRACE: Duration = Duration::from_millis(200);
 
 /// Reads stderr to its end, keeping the last [`STDERR_KEEP`] bytes.
 pub(crate) async fn read_tail(mut pipe: tokio::process::ChildStderr) -> Vec<u8> {
