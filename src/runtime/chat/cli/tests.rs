@@ -3161,6 +3161,51 @@ fn claude_on_another_system_keeps_the_neutral_notice() {
     assert!(!text.contains("use claude"), "{text}");
 }
 
+#[test]
+fn linux_keeps_proc_self_exe_as_the_helper_whatever_current_exe_says() {
+    let on = JailSupport::Available {
+        backend: Backend::Landlock,
+        abi: 6,
+    };
+    let gone = Err(io::Error::from(io::ErrorKind::NotFound));
+    let (helper, jail) = helper_for(Os::Linux, on, gone);
+    assert_eq!(helper, Path::new("/proc/self/exe"));
+    assert_eq!(jail, on);
+    let (helper, _) = helper_for(Os::Linux, on, Ok(PathBuf::from("/opt/lazarobox")));
+    assert_eq!(helper, Path::new("/proc/self/exe"));
+}
+
+#[test]
+fn elsewhere_the_helper_is_the_resolved_current_exe() {
+    let on = JailSupport::Available {
+        backend: Backend::Seatbelt,
+        abi: 0,
+    };
+    let exe = PathBuf::from("/opt/homebrew/Cellar/lazarobox/1.0/bin/lazarobox");
+    for os in [Os::Macos, Os::Other] {
+        assert_eq!(helper_for(os, on, Ok(exe.clone())), (exe.clone(), on));
+    }
+}
+
+#[test]
+fn a_current_exe_that_cannot_be_resolved_makes_the_jail_unavailable_never_bare() {
+    let gone = || Err(io::Error::from(io::ErrorKind::NotFound));
+    let on = JailSupport::Available {
+        backend: Backend::Seatbelt,
+        abi: 0,
+    };
+    let (_, jail) = helper_for(Os::Macos, on, gone());
+    assert_eq!(
+        jail,
+        JailSupport::Unavailable(JailOff::NoSeatbelt(SeatbeltFault::NoHelper))
+    );
+    // An already unavailable jail keeps its own reason.
+    let off = JailSupport::Unavailable(JailOff::NoSeatbelt(SeatbeltFault::Leaked));
+    assert_eq!(helper_for(Os::Macos, off, gone()).1, off);
+    // And the launch for codex is a refusal, not a bare run.
+    assert_eq!(launch(JailPolicy::Required, jail), Launch::Refuse);
+}
+
 const EXEMPT_NOTICE: &str = "claude runs without the jail here: claude keeps its macOS Keychain \
 login, so it never runs jailed on macOS";
 

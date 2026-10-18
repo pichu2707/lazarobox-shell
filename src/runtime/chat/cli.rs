@@ -46,8 +46,9 @@ use crate::{
         },
         jail::{
             Cli, CliLayout, ELF_HEAD_BYTES, Interpreter, JailArgs, JailOff, JailPolicy,
-            JailRefusal, JailSpec, JailSupport, Launch, Os, ShimGrant, Untrusted, elf_interp_at,
-            interp_path, is_scratch, jail_policy, jail_spec_with, launch, parse_shebang,
+            JailRefusal, JailSpec, JailSupport, Launch, Os, SeatbeltFault, ShimGrant, Untrusted,
+            elf_interp_at, interp_path, is_scratch, jail_policy, jail_spec_with, launch,
+            parse_shebang,
             rpath::{homebrew_openssl_files, search_dirs},
         },
         tools::wiring,
@@ -102,6 +103,27 @@ pub struct CliEnv {
     pub(crate) inject: Vec<(OsString, OsString)>,
 }
 
+/// The program that applies the jail, and the jail support to use with it.
+/// Linux re-execs `/proc/self/exe` (it survives an upgrade of the binary on
+/// disk). Elsewhere there is no such path: the resolved `current_exe` is
+/// used, and when it cannot be resolved there is no helper, so an available
+/// jail becomes unavailable (a required CLI is refused, never run bare).
+fn helper_for(os: Os, jail: JailSupport, exe: io::Result<PathBuf>) -> (PathBuf, JailSupport) {
+    match (os, exe) {
+        (Os::Linux, _) => (PathBuf::from("/proc/self/exe"), jail),
+        (_, Ok(exe)) => (exe, jail),
+        (_, Err(_)) => {
+            let jail = match jail {
+                JailSupport::Available { .. } => {
+                    JailSupport::Unavailable(JailOff::NoSeatbelt(SeatbeltFault::NoHelper))
+                }
+                off @ JailSupport::Unavailable(_) => off,
+            };
+            (PathBuf::new(), jail)
+        }
+    }
+}
+
 /// Why an exempt CLI (claude on macOS) runs without the jail.
 const EXEMPT_REASON: &str =
     "claude keeps its macOS Keychain login, so it never runs jailed on macOS";
@@ -139,12 +161,17 @@ impl CliEnv {
             std::env::var_os("HOME").as_deref(),
         )
         .and_then(|db| db.parent().map(Path::to_path_buf));
+        let (helper, jail) = helper_for(
+            Os::CURRENT,
+            jail,
+            std::env::current_exe().and_then(fs::canonicalize),
+        );
         Self {
             path: std::env::var_os("PATH").unwrap_or_default(),
             home,
             data,
             jail,
-            helper: PathBuf::from("/proc/self/exe"),
+            helper,
             timeouts: Timeouts::CLI,
             grace: EXIT_GRACE,
             codex_home: std::env::var_os("CODEX_HOME")
