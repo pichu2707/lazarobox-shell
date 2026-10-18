@@ -85,7 +85,11 @@ pub struct CliEnv {
     /// `<data home>/lazarobox`, where the private folders live.
     pub data: Option<PathBuf>,
     pub jail: JailSupport,
-    /// The program that applies the jail and execs the CLI.
+    /// The program that applies the jail and execs the CLI. On Linux it is
+    /// `/proc/self/exe`. Elsewhere it is a snapshot of this program's
+    /// canonical path taken at startup: a binary replaced at that path after
+    /// start is the one that runs (it takes write access as the same user),
+    /// and a deleted one makes the spawn fail, which is never a bare run.
     pub helper: PathBuf,
     pub timeouts: Timeouts,
     /// See [`EXIT_GRACE`].
@@ -108,11 +112,17 @@ pub struct CliEnv {
 /// disk). Elsewhere there is no such path: the resolved `current_exe` is
 /// used, and when it cannot be resolved there is no helper, so an available
 /// jail becomes unavailable (a required CLI is refused, never run bare).
-fn helper_for(os: Os, jail: JailSupport, exe: io::Result<PathBuf>) -> (PathBuf, JailSupport) {
-    match (os, exe) {
-        (Os::Linux, _) => (PathBuf::from("/proc/self/exe"), jail),
-        (_, Ok(exe)) => (exe, jail),
-        (_, Err(_)) => {
+fn helper_for(
+    os: Os,
+    jail: JailSupport,
+    exe: impl FnOnce() -> io::Result<PathBuf>,
+) -> (PathBuf, JailSupport) {
+    if os == Os::Linux {
+        return (PathBuf::from("/proc/self/exe"), jail);
+    }
+    match exe() {
+        Ok(exe) => (exe, jail),
+        Err(_) => {
             let jail = match jail {
                 JailSupport::Available { .. } => {
                     JailSupport::Unavailable(JailOff::NoSeatbelt(SeatbeltFault::NoHelper))
@@ -161,11 +171,9 @@ impl CliEnv {
             std::env::var_os("HOME").as_deref(),
         )
         .and_then(|db| db.parent().map(Path::to_path_buf));
-        let (helper, jail) = helper_for(
-            Os::CURRENT,
-            jail,
-            std::env::current_exe().and_then(fs::canonicalize),
-        );
+        let (helper, jail) = helper_for(Os::CURRENT, jail, || {
+            std::env::current_exe().and_then(fs::canonicalize)
+        });
         Self {
             path: std::env::var_os("PATH").unwrap_or_default(),
             home,
@@ -849,7 +857,7 @@ pub(crate) fn jail_note(env: &CliEnv, cli: Cli, binary: &Path) -> Option<String>
 /// [`jail_note`] for a given system.
 fn jail_note_on(os: Os, env: &CliEnv, cli: Cli, binary: &Path) -> Option<String> {
     if jail_policy(cli, os) == JailPolicy::Exempt {
-        return Some("not jailed on macOS".to_owned());
+        return Some("uses macOS Keychain".to_owned());
     }
     let home = env.home.as_deref();
     if let JailSupport::Unavailable(off) = env.jail {

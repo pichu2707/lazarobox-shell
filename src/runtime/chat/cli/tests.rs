@@ -3167,12 +3167,18 @@ fn linux_keeps_proc_self_exe_as_the_helper_whatever_current_exe_says() {
         backend: Backend::Landlock,
         abi: 6,
     };
-    let gone = Err(io::Error::from(io::ErrorKind::NotFound));
+    let gone = || Err(io::Error::from(io::ErrorKind::NotFound));
     let (helper, jail) = helper_for(Os::Linux, on, gone);
     assert_eq!(helper, Path::new("/proc/self/exe"));
     assert_eq!(jail, on);
-    let (helper, _) = helper_for(Os::Linux, on, Ok(PathBuf::from("/opt/lazarobox")));
+    let (helper, _) = helper_for(Os::Linux, on, || Ok(PathBuf::from("/opt/lazarobox")));
     assert_eq!(helper, Path::new("/proc/self/exe"));
+}
+
+#[test]
+fn linux_never_resolves_current_exe() {
+    let on = JailSupport::Unavailable(JailOff::NotProbed);
+    let _ = helper_for(Os::Linux, on, || panic!("resolved on Linux"));
 }
 
 #[test]
@@ -3183,7 +3189,7 @@ fn elsewhere_the_helper_is_the_resolved_current_exe() {
     };
     let exe = PathBuf::from("/opt/homebrew/Cellar/lazarobox/1.0/bin/lazarobox");
     for os in [Os::Macos, Os::Other] {
-        assert_eq!(helper_for(os, on, Ok(exe.clone())), (exe.clone(), on));
+        assert_eq!(helper_for(os, on, || Ok(exe.clone())), (exe.clone(), on));
     }
 }
 
@@ -3194,14 +3200,14 @@ fn a_current_exe_that_cannot_be_resolved_makes_the_jail_unavailable_never_bare()
         backend: Backend::Seatbelt,
         abi: 0,
     };
-    let (_, jail) = helper_for(Os::Macos, on, gone());
+    let (_, jail) = helper_for(Os::Macos, on, gone);
     assert_eq!(
         jail,
         JailSupport::Unavailable(JailOff::NoSeatbelt(SeatbeltFault::NoHelper))
     );
     // An already unavailable jail keeps its own reason.
     let off = JailSupport::Unavailable(JailOff::NoSeatbelt(SeatbeltFault::Leaked));
-    assert_eq!(helper_for(Os::Macos, off, gone()).1, off);
+    assert_eq!(helper_for(Os::Macos, off, gone).1, off);
     // And the launch for codex is a refusal, not a bare run.
     assert_eq!(launch(JailPolicy::Required, jail), Launch::Refuse);
 }
@@ -3242,7 +3248,7 @@ fn the_jail_note_of_claude_on_macos_says_it_is_not_jailed_there() {
     let bin = Path::new("/bin/true");
     assert_eq!(
         jail_note_on(Os::Macos, &env, Cli::Claude, bin).as_deref(),
-        Some("not jailed on macOS")
+        Some("uses macOS Keychain")
     );
     // codex and gemini keep their own note; claude elsewhere keeps its own.
     assert_eq!(

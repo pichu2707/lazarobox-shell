@@ -1190,6 +1190,8 @@ mod tests {
         ];
         let mut whys: Vec<String> = reasons.iter().map(|r| r.short(home)).collect();
         whys.push(JailOff::NotLinux.short_required());
+        // claude on macOS (see `jail_note_on`).
+        whys.push("uses macOS Keychain".to_owned());
         for why in whys {
             let menu = codex_engines_level(codex_degraded(None, Some(&why)));
             let row = lines(&draw(62, POPUP_H, &menu))

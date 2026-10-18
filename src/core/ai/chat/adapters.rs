@@ -469,7 +469,7 @@ fn codex_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation {
         cli: Cli::Codex,
         args,
         stdin: instructed_stdin(request).into_bytes(),
-        jail: JailPolicy::Required,
+        jail: jail_policy(Cli::Codex, Os::CURRENT),
         tmp_files: Vec::new(),
         mcp,
         tools: None,
@@ -529,7 +529,7 @@ fn gemini_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation 
         cli: Cli::Gemini,
         args,
         stdin: instructed_stdin(request).into_bytes(),
-        jail: JailPolicy::Required,
+        jail: jail_policy(Cli::Gemini, Os::CURRENT),
         tmp_files: vec![TmpFile {
             flag: "--policy",
             name: "gemini-policy.toml",
