@@ -311,7 +311,7 @@ async fn accept(listener: UnixListener, conn: Conn) {
 
 /// One line off the wire.
 #[derive(Debug, PartialEq)]
-enum Line {
+pub(super) enum Line {
     Text(String),
     /// Longer than the cap; already skipped to its newline.
     Oversize,
@@ -323,7 +323,10 @@ enum Line {
 /// Reads one line of at most `max` bytes (newline excluded). Buffers at most
 /// `max + 2` bytes whatever the peer sends. An unterminated tail at EOF is
 /// dropped: nobody is left to answer it.
-async fn read_line<R: AsyncBufRead + Unpin>(reader: &mut R, max: usize) -> io::Result<Line> {
+pub(super) async fn read_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max: usize,
+) -> io::Result<Line> {
     let mut buf = Vec::new();
     let read = (&mut *reader)
         .take(max as u64 + 2)
