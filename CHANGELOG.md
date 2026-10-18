@@ -14,10 +14,8 @@ baseline.
 
 Agent tools: the chat can now ask lazarobox to look at the user's files and to
 use the user's terminal panes. Tools are active on claude, codex, gemini and
-Ollama, and each engine was verified manually before this release. `[ai.tools]
-enabled` defaults to on, so tools are switched on for existing users when they
-upgrade, with no change to their `config.toml`. They can be turned off with
-the **Tools** row of the AI menu or with `[ai.tools] enabled = false`.
+Ollama, and each engine was verified manually before this release. They are on
+by default, also for existing users who upgrade (see **Changed**).
 
 ### Added
 
