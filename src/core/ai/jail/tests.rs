@@ -106,6 +106,28 @@ fn policy_decides_how_a_cli_starts() {
 }
 
 #[test]
+fn only_claude_on_macos_is_exempt_from_the_jail() {
+    assert_eq!(jail_policy(Cli::Claude, Os::Macos), JailPolicy::Exempt);
+    assert_eq!(jail_policy(Cli::Claude, Os::Linux), JailPolicy::Layered);
+    assert_eq!(jail_policy(Cli::Claude, Os::Other), JailPolicy::Layered);
+    for os in [Os::Linux, Os::Macos, Os::Other] {
+        assert_eq!(jail_policy(Cli::Codex, os), JailPolicy::Required);
+        assert_eq!(jail_policy(Cli::Gemini, os), JailPolicy::Required);
+    }
+}
+
+#[test]
+fn an_exempt_cli_starts_bare_whatever_the_system_can_do() {
+    let on = JailSupport::Available {
+        backend: Backend::Seatbelt,
+        abi: 0,
+    };
+    let off = JailSupport::Unavailable(JailOff::NoSeatbelt(SeatbeltFault::Leaked));
+    assert_eq!(launch(JailPolicy::Exempt, on), Launch::Bare);
+    assert_eq!(launch(JailPolicy::Exempt, off), Launch::Bare);
+}
+
+#[test]
 fn helper_exit_125_with_its_marker_is_a_jail_error() {
     let said = format!("noise\n{NOT_ENFORCED_MARKER}: ABI 2 is below the required 6\n");
     let reason = "ABI 2 is below the required 6".to_owned();

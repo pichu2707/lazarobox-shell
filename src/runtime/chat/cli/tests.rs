@@ -22,7 +22,7 @@ use crate::{
                 adapters::{Job, TmpFile, Wire},
                 engine::{ChatError, ChatMessage, ChatRequest, Finish, Role, StreamEvent, Tools},
             },
-            jail::{Backend, Cli, JailOff, JailPolicy, JailSupport},
+            jail::{Backend, Cli, JailOff, JailPolicy, JailSupport, Os, SeatbeltFault},
             tools::wiring::{McpWire, Secret, Unwire},
         },
         layout::PaneId,
@@ -221,6 +221,13 @@ async fn run_all(env: CliEnv, req: ChatRequest) -> Vec<StreamEvent> {
             return events;
         }
     }
+}
+
+/// A turn of a claude whose policy is the Linux one (layered), through the
+/// real jail and notice flow. The adapter would make it exempt on macOS, and
+/// these tests are about the flow, not about the table.
+async fn run_layered(env: CliEnv) -> Vec<StreamEvent> {
+    run_job(&env, job(JailPolicy::Layered)).await
 }
 
 /// The reason of the one jail error `events` hold.
@@ -766,7 +773,11 @@ async fn the_helper_refusing_with_its_marker_is_a_jail_error() {
     let mut env = lab.env();
     env.jail = jail_on();
     env.helper = helper;
-    let events = run(env, request()).await;
+    let events = run_layered(env).await;
+    let events: Vec<_> = events
+        .into_iter()
+        .filter(|e| !matches!(e, StreamEvent::Notice(_)))
+        .collect();
     assert_eq!(jail_reason(&events), "ABI 2 is below the required 3");
     assert!(!lab.rec.join("args").exists(), "the CLI never ran");
 }
@@ -1083,7 +1094,7 @@ fn notices(events: &[StreamEvent]) -> Vec<&str> {
 async fn running_bare_because_there_is_no_jail_is_announced_first() {
     let lab = lab();
     lab.claude(GOOD);
-    let events = run_all(lab.env(), request()).await;
+    let events = run_layered(lab.env()).await;
     assert_eq!(
         events[0],
         StreamEvent::Notice("claude runs without the jail here: the jail was not probed".into())
@@ -1100,7 +1111,7 @@ async fn running_bare_because_the_layout_was_refused_is_announced_too() {
     let mut env = lab.env();
     env.jail = jail_on();
     env.helper = lab.helper("exit 99");
-    let events = run_all(env, request()).await;
+    let events = run_layered(env).await;
     assert_eq!(
         notices(&events),
         [
@@ -1118,7 +1129,7 @@ async fn a_jailed_turn_and_a_refused_one_announce_nothing() {
     let mut env = lab.env();
     env.jail = jail_on();
     env.helper = lab.helper("while [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"");
-    let events = run_all(env, request()).await;
+    let events = run_layered(env).await;
     assert!(notices(&events).is_empty(), "{events:?}");
     let events = run_job(&lab.env(), job(JailPolicy::Required)).await;
     assert_eq!(jail_reason(&events), "the jail was not probed");
@@ -3045,11 +3056,14 @@ async fn real_turn(engine: &str, setup: Setup) -> (Vec<String>, String) {
         external: Default::default(),
         mcp: claude_job(&lab, true).mcp.map(Box::new),
     };
-    let crate::core::ai::chat::adapters::Invocation::Process(job) =
+    let crate::core::ai::chat::adapters::Invocation::Process(mut job) =
         adapter_for(engine).unwrap().build_with(&request, &[engine])
     else {
         panic!("a process expected");
     };
+    // These turns are about the Linux flow: claude is jailed (layered) there,
+    // while on macOS it is exempt and never wired.
+    job.jail = jail_policy(job.cli, Os::Linux);
     let _ = run_job(&env, job).await;
     (lab.args(), lab.recorded("stdin"))
 }
@@ -3162,20 +3176,120 @@ fn claude_on_another_system_keeps_the_neutral_notice() {
 }
 
 #[test]
+fn linux_keeps_proc_self_exe_as_the_helper_whatever_current_exe_says() {
+    let on = JailSupport::Available {
+        backend: Backend::Landlock,
+        abi: 6,
+    };
+    let gone = || Err(io::Error::from(io::ErrorKind::NotFound));
+    let (helper, jail) = helper_for(Os::Linux, on, gone);
+    assert_eq!(helper, Path::new("/proc/self/exe"));
+    assert_eq!(jail, on);
+    let (helper, _) = helper_for(Os::Linux, on, || Ok(PathBuf::from("/opt/lazarobox")));
+    assert_eq!(helper, Path::new("/proc/self/exe"));
+}
+
+#[test]
+fn linux_never_resolves_current_exe() {
+    let on = JailSupport::Unavailable(JailOff::NotProbed);
+    let _ = helper_for(Os::Linux, on, || panic!("resolved on Linux"));
+}
+
+#[test]
+fn elsewhere_the_helper_is_the_resolved_current_exe() {
+    let on = JailSupport::Available {
+        backend: Backend::Seatbelt,
+        abi: 0,
+    };
+    let exe = PathBuf::from("/opt/homebrew/Cellar/lazarobox/1.0/bin/lazarobox");
+    for os in [Os::Macos, Os::Other] {
+        assert_eq!(helper_for(os, on, || Ok(exe.clone())), (exe.clone(), on));
+    }
+}
+
+#[test]
+fn a_current_exe_that_cannot_be_resolved_makes_the_jail_unavailable_never_bare() {
+    let gone = || Err(io::Error::from(io::ErrorKind::NotFound));
+    let on = JailSupport::Available {
+        backend: Backend::Seatbelt,
+        abi: 0,
+    };
+    let (_, jail) = helper_for(Os::Macos, on, gone);
+    assert_eq!(
+        jail,
+        JailSupport::Unavailable(JailOff::NoSeatbelt(SeatbeltFault::NoHelper))
+    );
+    // An already unavailable jail keeps its own reason.
+    let off = JailSupport::Unavailable(JailOff::NoSeatbelt(SeatbeltFault::Leaked));
+    assert_eq!(helper_for(Os::Macos, off, gone).1, off);
+    // And the launch for codex is a refusal, not a bare run.
+    assert_eq!(launch(JailPolicy::Required, jail), Launch::Refuse);
+}
+
+const EXEMPT_NOTICE: &str = "claude runs without the jail here: claude keeps its macOS Keychain \
+login, so it never runs jailed on macOS";
+
+#[test]
+fn an_exempt_claude_runs_bare_with_its_own_notice_and_no_tools_whatever_the_probe_said() {
+    let lab = lab();
+    lab.claude("");
+    let available = JailSupport::Available {
+        backend: Backend::Seatbelt,
+        abi: 0,
+    };
+    let broken = JailSupport::Unavailable(JailOff::NoSeatbelt(SeatbeltFault::Leaked));
+    for support in [available, broken] {
+        let mut env = lab.env();
+        env.jail = support;
+        env.shim = Some(PathBuf::from("/nonexistent/shim"));
+        let job = job(JailPolicy::Exempt);
+        assert!(!runs_jailed(&env, &job), "{support:?}");
+        let planned = plan(&env, &job).ok().unwrap();
+        assert_eq!(
+            planned.notice.as_deref(),
+            Some(EXEMPT_NOTICE),
+            "{support:?}"
+        );
+        assert!(!planned.wired, "{support:?}");
+        assert_ne!(planned.program, env.helper, "{support:?}");
+    }
+}
+
+#[test]
+fn the_jail_note_of_claude_on_macos_says_it_is_not_jailed_there() {
+    let mut env = lab().env();
+    env.jail = JailSupport::Unavailable(JailOff::NoSeatbelt(SeatbeltFault::NotEnabled));
+    let bin = Path::new("/bin/true");
+    assert_eq!(
+        jail_note_on(Os::Macos, &env, Cli::Claude, bin).as_deref(),
+        Some("uses macOS Keychain")
+    );
+    // codex and gemini keep their own note; claude elsewhere keeps its own.
+    assert_eq!(
+        jail_note_on(Os::Macos, &env, Cli::Codex, bin).as_deref(),
+        Some("jail unavailable · use claude")
+    );
+    assert_eq!(
+        jail_note_on(Os::Linux, &env, Cli::Claude, bin).as_deref(),
+        Some("jail unavailable")
+    );
+}
+
+#[test]
 fn the_jail_note_of_another_system_points_codex_and_gemini_to_claude_only() {
     let mut env = lab().env();
     env.jail = JailSupport::Unavailable(JailOff::NotLinux);
     let bin = Path::new("/bin/true");
     assert_eq!(
-        jail_note(&env, Cli::Codex, bin).as_deref(),
+        jail_note_on(Os::Linux, &env, Cli::Codex, bin).as_deref(),
         Some("needs Linux · use claude")
     );
     assert_eq!(
-        jail_note(&env, Cli::Gemini, bin).as_deref(),
+        jail_note_on(Os::Linux, &env, Cli::Gemini, bin).as_deref(),
         Some("needs Linux · use claude")
     );
     assert_eq!(
-        jail_note(&env, Cli::Claude, bin).as_deref(),
+        jail_note_on(Os::Linux, &env, Cli::Claude, bin).as_deref(),
         Some("needs Linux")
     );
 }

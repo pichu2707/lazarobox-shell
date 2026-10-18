@@ -1274,6 +1274,15 @@ mod tests {
         fake_codex(lab, "echo '{\"models\":[]}'");
     }
 
+    /// claude's note: on macOS it is never jailed, whatever the probe said.
+    fn claude_note(elsewhere: Option<String>) -> Option<String> {
+        if crate::core::ai::jail::Os::CURRENT == crate::core::ai::jail::Os::Macos {
+            Some("uses macOS Keychain".to_owned())
+        } else {
+            elsewhere
+        }
+    }
+
     async fn jail_notes(env: &CliEnv, lab: &Lab) -> Vec<(&'static str, Option<String>)> {
         let targets = cli_targets(&["claude", "codex", "gemini", "opencode"]);
         write_script(&lab.bin, "opencode", "echo oc 1", 0o755);
@@ -1301,7 +1310,7 @@ mod tests {
         assert_eq!(
             jail_notes(&env, &lab).await,
             [
-                ("claude", note.clone()),
+                ("claude", claude_note(note.clone())),
                 ("codex", note.clone()),
                 ("gemini", note),
                 ("opencode", None)
@@ -1320,7 +1329,7 @@ mod tests {
         assert_eq!(
             notes,
             [
-                ("claude", None),
+                ("claude", claude_note(None)),
                 ("codex", Some("~ too broad".to_owned())),
                 ("gemini", None),
                 ("opencode", None)
@@ -1335,7 +1344,14 @@ mod tests {
         fake_jailed_clis(&lab);
         let env = env_of(&lab, true);
         let notes = jail_notes(&env, &lab).await;
-        assert!(notes.iter().all(|(_, note)| note.is_none()), "{notes:?}");
+        for (id, note) in &notes {
+            let expected = if *id == "claude" {
+                claude_note(None)
+            } else {
+                None
+            };
+            assert_eq!(note, &expected, "{notes:?}");
+        }
     }
 
     #[tokio::test]

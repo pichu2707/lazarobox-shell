@@ -282,7 +282,19 @@ fn claude_runs_the_cli_layered_with_the_claude_stream_decoder() {
     assert_eq!(p.binary, "claude");
     assert_eq!(p.cli, Cli::Claude);
     assert_eq!(p.wire, Wire::ClaudeStreamJson);
-    assert_eq!(p.jail, JailPolicy::Layered);
+    // The table decides: layered on Linux, exempt on macOS.
+    assert_eq!(p.jail, jail_policy(Cli::Claude, Os::CURRENT));
+    assert_eq!(jail_policy(Cli::Claude, Os::Linux), JailPolicy::Layered);
+}
+
+#[test]
+fn every_adapter_carries_the_policy_the_table_gives_its_cli() {
+    let claude = process(Adapter::Claude.build(&claude_request(Some("sonnet"))));
+    let codex = process(Adapter::Codex.build(&codex_request(Some("gpt-5"))));
+    let gemini = process(Adapter::Gemini.build(&gemini_request(Some("gemini-2.5-pro"))));
+    for job in [claude, codex, gemini] {
+        assert_eq!(job.jail, jail_policy(job.cli, Os::CURRENT), "{:?}", job.cli);
+    }
 }
 
 #[test]

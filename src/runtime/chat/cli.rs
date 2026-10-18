@@ -46,8 +46,9 @@ use crate::{
         },
         jail::{
             Cli, CliLayout, ELF_HEAD_BYTES, Interpreter, JailArgs, JailOff, JailPolicy,
-            JailRefusal, JailSpec, JailSupport, Launch, ShimGrant, Untrusted, elf_interp_at,
-            interp_path, is_scratch, jail_spec_with, launch, parse_shebang,
+            JailRefusal, JailSpec, JailSupport, Launch, Os, SeatbeltFault, ShimGrant, Untrusted,
+            elf_interp_at, interp_path, is_scratch, jail_policy, jail_spec_with, launch,
+            parse_shebang,
             rpath::{homebrew_openssl_files, search_dirs},
         },
         tools::wiring,
@@ -84,7 +85,11 @@ pub struct CliEnv {
     /// `<data home>/lazarobox`, where the private folders live.
     pub data: Option<PathBuf>,
     pub jail: JailSupport,
-    /// The program that applies the jail and execs the CLI.
+    /// The program that applies the jail and execs the CLI. On Linux it is
+    /// `/proc/self/exe`. Elsewhere it is a snapshot of this program's
+    /// canonical path taken at startup: a binary replaced at that path after
+    /// start is the one that runs (it takes write access as the same user),
+    /// and a deleted one makes the spawn fail, which is never a bare run.
     pub helper: PathBuf,
     pub timeouts: Timeouts,
     /// See [`EXIT_GRACE`].
@@ -101,6 +106,37 @@ pub struct CliEnv {
     /// test process cannot change its own environment safely.
     pub(crate) inject: Vec<(OsString, OsString)>,
 }
+
+/// The program that applies the jail, and the jail support to use with it.
+/// Linux re-execs `/proc/self/exe` (it survives an upgrade of the binary on
+/// disk). Elsewhere there is no such path: the resolved `current_exe` is
+/// used, and when it cannot be resolved there is no helper, so an available
+/// jail becomes unavailable (a required CLI is refused, never run bare).
+fn helper_for(
+    os: Os,
+    jail: JailSupport,
+    exe: impl FnOnce() -> io::Result<PathBuf>,
+) -> (PathBuf, JailSupport) {
+    if os == Os::Linux {
+        return (PathBuf::from("/proc/self/exe"), jail);
+    }
+    match exe() {
+        Ok(exe) => (exe, jail),
+        Err(_) => {
+            let jail = match jail {
+                JailSupport::Available { .. } => {
+                    JailSupport::Unavailable(JailOff::NoSeatbelt(SeatbeltFault::NoHelper))
+                }
+                off @ JailSupport::Unavailable(_) => off,
+            };
+            (PathBuf::new(), jail)
+        }
+    }
+}
+
+/// Why an exempt CLI (claude on macOS) runs without the jail.
+const EXEMPT_REASON: &str =
+    "claude keeps its macOS Keychain login, so it never runs jailed on macOS";
 
 /// The variable that makes gemini trust its working folder; only a wired
 /// gemini turn sets it, so one inherited from the user's shell is dropped.
@@ -135,12 +171,15 @@ impl CliEnv {
             std::env::var_os("HOME").as_deref(),
         )
         .and_then(|db| db.parent().map(Path::to_path_buf));
+        let (helper, jail) = helper_for(Os::CURRENT, jail, || {
+            std::env::current_exe().and_then(fs::canonicalize)
+        });
         Self {
             path: std::env::var_os("PATH").unwrap_or_default(),
             home,
             data,
             jail,
-            helper: PathBuf::from("/proc/self/exe"),
+            helper,
             timeouts: Timeouts::CLI,
             grace: EXIT_GRACE,
             codex_home: std::env::var_os("CODEX_HOME")
@@ -812,6 +851,14 @@ fn jail_plan(
 /// the system cannot jail, or its layout is refused. `None` when it can be
 /// jailed (or cannot be told). Nothing is started.
 pub(crate) fn jail_note(env: &CliEnv, cli: Cli, binary: &Path) -> Option<String> {
+    jail_note_on(Os::CURRENT, env, cli, binary)
+}
+
+/// [`jail_note`] for a given system.
+fn jail_note_on(os: Os, env: &CliEnv, cli: Cli, binary: &Path) -> Option<String> {
+    if jail_policy(cli, os) == JailPolicy::Exempt {
+        return Some("uses macOS Keychain".to_owned());
+    }
     let home = env.home.as_deref();
     if let JailSupport::Unavailable(off) = env.jail {
         return Some(match cli {
@@ -1137,6 +1184,7 @@ fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {
         }
     };
     let reason = match (how, env.jail) {
+        _ if job.jail == JailPolicy::Exempt => EXEMPT_REASON.to_owned(),
         (Launch::Jailed, _) => {
             let mut result = None;
             // With the tools first; if the jail refuses that layout (say the

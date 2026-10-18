@@ -10,7 +10,7 @@ use super::{
 };
 use crate::core::ai::{
     CATALOG, Kind,
-    jail::{Cli, JailPolicy},
+    jail::{Cli, JailPolicy, Os, jail_policy},
     parse,
     tools::{registry, wiring::McpWire},
 };
@@ -394,7 +394,7 @@ fn claude_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation 
         cli: Cli::Claude,
         args,
         stdin: cli_stdin(request).into_bytes(),
-        jail: JailPolicy::Layered,
+        jail: jail_policy(Cli::Claude, Os::CURRENT),
         tmp_files: Vec::new(),
         mcp,
         tools: None,
@@ -469,7 +469,7 @@ fn codex_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation {
         cli: Cli::Codex,
         args,
         stdin: instructed_stdin(request).into_bytes(),
-        jail: JailPolicy::Required,
+        jail: jail_policy(Cli::Codex, Os::CURRENT),
         tmp_files: Vec::new(),
         mcp,
         tools: None,
@@ -529,7 +529,7 @@ fn gemini_invocation(request: &ChatRequest, mcp: Option<McpWire>) -> Invocation 
         cli: Cli::Gemini,
         args,
         stdin: instructed_stdin(request).into_bytes(),
-        jail: JailPolicy::Required,
+        jail: jail_policy(Cli::Gemini, Os::CURRENT),
         tmp_files: vec![TmpFile {
             flag: "--policy",
             name: "gemini-policy.toml",
