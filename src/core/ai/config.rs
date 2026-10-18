@@ -220,7 +220,7 @@ impl MemoryConfig {
 /// variable NAMES only: the values come from lazarobox's own environment when
 /// a later slice starts the server. `project` is the absolute git root the
 /// entry is limited to; `None` is a global server.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct McpServer {
     pub name: String,
     pub command: String,
@@ -230,8 +230,25 @@ pub struct McpServer {
     pub enabled: bool,
 }
 
-/// The longest server name, in characters.
-const MCP_NAME_MAX: usize = 32;
+/// Prints the name, the project, the flag and the counts, never the command,
+/// the arguments or the variable names: a `{:?}` of the config cannot leak them.
+impl std::fmt::Debug for McpServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpServer")
+            .field("name", &self.name)
+            .field("project", &self.project)
+            .field("enabled", &self.enabled)
+            .field("args", &self.args.len())
+            .field("env", &self.env.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// The longest server name, in characters. It is also a part of a qualified
+/// tool name, which is capped at the same length.
+const MCP_NAME_MAX: usize = 24;
+/// The longest environment variable name, in bytes.
+const MCP_ENV_NAME_MAX: usize = 64;
 
 /// The saved AI choice of every task. `None` means unset (a missing key or
 /// `""`). The profile, the context flag and the memory table ride along:
@@ -632,7 +649,7 @@ fn read_mcp_entry(entry: &Table, path: &str, problems: &mut Vec<String>) -> Opti
         _ => {
             valid = false;
             problems.push(format!(
-                "{path}.name: expected a name of letters, digits, - and _"
+                "{path}.name: expected a name of lowercase letters, digits and - (1 to 24 characters)"
             ));
             String::new()
         }
@@ -697,10 +714,13 @@ fn valid_mcp_name(name: &str) -> bool {
         && name.chars().count() <= MCP_NAME_MAX
         && name
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 fn valid_env_name(name: &str) -> bool {
+    if name.len() > MCP_ENV_NAME_MAX {
+        return false;
+    }
     let mut chars = name.chars();
     chars
         .next()
@@ -1676,19 +1696,27 @@ mod tests {
         let cases = [
             (
                 "name = \"a b\"\ncommand = \"x\"",
-                "name: expected a name of letters, digits, - and _",
+                "name: expected a name of lowercase letters, digits and - (1 to 24 characters)",
             ),
             (
                 "name = \"\"\ncommand = \"x\"",
-                "name: expected a name of letters, digits, - and _",
+                "name: expected a name of lowercase letters, digits and - (1 to 24 characters)",
             ),
             (
                 "command = \"x\"",
-                "name: expected a name of letters, digits, - and _",
+                "name: expected a name of lowercase letters, digits and - (1 to 24 characters)",
             ),
             (
-                "name = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\ncommand = \"x\"",
-                "name: expected a name of letters, digits, - and _",
+                "name = \"Fs\"\ncommand = \"x\"",
+                "name: expected a name of lowercase letters, digits and - (1 to 24 characters)",
+            ),
+            (
+                "name = \"a_b\"\ncommand = \"x\"",
+                "name: expected a name of lowercase letters, digits and - (1 to 24 characters)",
+            ),
+            (
+                "name = \"aaaaaaaaaaaaaaaaaaaaaaaaa\"\ncommand = \"x\"",
+                "name: expected a name of lowercase letters, digits and - (1 to 24 characters)",
             ),
             (
                 "name = \"a\"\ncommand = \"  \"",
@@ -1729,6 +1757,10 @@ mod tests {
     #[test]
     fn a_secret_value_in_env_is_refused_and_never_echoed() {
         for env in [
+            "[\"\u{ff27}\u{ff29}\u{ff34}\"]",
+            "[\"\u{410}BC\"]",
+            "[\"A\u{200b}B\"]",
+            "[\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"]",
             "{ GITHUB_TOKEN = \"abc\" }",
             "[\"GITHUB_TOKEN=abc\"]",
             "[\"a b\"]",
@@ -1814,5 +1846,32 @@ mod tests {
             notice.as_deref(),
             Some("config (3 problems): ai.tools.enabled: expected a boolean")
         );
+    }
+
+    #[test]
+    fn a_name_of_24_characters_and_a_variable_of_64_bytes_are_the_limits() {
+        let name = format!("{}-9", "a".repeat(22));
+        let var = "V".repeat(64);
+        let text =
+            format!("[[ai.mcp.servers]]\nname = \"{name}\"\ncommand = \"x\"\nenv = [\"{var}\"]\n");
+        let (servers, problems) = mcp_of(&text);
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(servers[0].name, name);
+        assert_eq!(servers[0].env, vec![var]);
+    }
+
+    #[test]
+    fn debug_never_prints_the_command_args_or_env() {
+        let mut one = server("fs", "/secret/bin/mcp");
+        one.args = vec!["--token=hunter2".into()];
+        one.env = vec!["GITHUB_TOKEN".into(), "OTHER".into()];
+        one.project = Some("/home/u/p".into());
+        let text = format!("{one:?}");
+        for hidden in ["secret", "hunter2", "GITHUB_TOKEN", "OTHER"] {
+            assert!(!text.contains(hidden), "{text}");
+        }
+        for shown in ["fs", "/home/u/p", "enabled: true", "args: 1", "env: 2"] {
+            assert!(text.contains(shown), "{text}");
+        }
     }
 }
