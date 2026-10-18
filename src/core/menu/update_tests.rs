@@ -199,7 +199,7 @@ fn once_shown_enter_and_y_copy_the_command() {
         m.show_update_command(Fallback::NotCargoInstall);
         assert_eq!(
             footer_text(&m),
-            "Enter or y copies it \u{b7} not installed with cargo"
+            "Enter or y copies it \u{b7} installed another way"
         );
         assert_eq!(
             press_key(&mut m, code),
@@ -217,9 +217,10 @@ fn once_shown_enter_and_y_copy_the_command() {
 #[test]
 fn the_shown_command_says_why_it_was_not_run_on_one_line() {
     let cases = [
-        (Fallback::NotCargoInstall, "not installed with cargo"),
-        (Fallback::NoCargo, "cargo is not installed"),
-        (Fallback::UntrustedCargo, "cargo folder not safe"),
+        (Fallback::NotCargoInstall, "installed another way"),
+        (Fallback::NoCargo, "Rust is not installed"),
+        (Fallback::UntrustedCargo, "Rust folder is too open"),
+        (Fallback::UnusablePath, "folder name is unusual"),
     ];
     for (why, reason) in cases {
         let mut m = on_updates(Some("0.15.4"));
@@ -229,10 +230,15 @@ fn the_shown_command_says_why_it_was_not_run_on_one_line() {
         assert_eq!(text, format!("Enter or y copies it \u{b7} {reason}"));
         // The popup is 51 columns with its borders and a leading space.
         assert!(text.chars().count() <= 48, "{text}");
-        // Two lines above the footer say it cannot update itself, and give
-        // the command to copy.
+        // Two lines above the footer say it cannot update itself (or, without
+        // Rust, to install it first), and give the command to copy.
         let note = m.update_note().unwrap();
-        assert_eq!(note[0], "lazarobox cannot update itself here. Run:");
+        let first = if why == Fallback::NoCargo {
+            "Install Rust first (rustup.rs), then run:"
+        } else {
+            "lazarobox cannot update itself here. Run:"
+        };
+        assert_eq!(note[0], first, "{why:?}");
         assert_eq!(note[1], "cargo install lazarobox-shell --locked");
     }
     // Any key hides the explanation and brings the usual note back.

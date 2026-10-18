@@ -507,7 +507,7 @@ impl MenuState {
         let latest = self.update.as_deref()?;
         let on_note_tab = self.tabs().nth(self.tab).is_some_and(|tab| tab.note);
         (on_note_tab && !self.in_sub_level()).then(|| match self.command_shown {
-            Some(_) => crate::core::update::fallback_lines(),
+            Some(why) => crate::core::update::fallback_lines(why),
             None => crate::core::update::menu_lines(latest),
         })
     }

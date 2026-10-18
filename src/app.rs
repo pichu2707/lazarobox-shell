@@ -1307,17 +1307,17 @@ impl App {
                     .as_ref()
                     .map(|env| env.path.clone())
                     .unwrap_or_default();
-                if let Some(menu) = self.menu.as_mut() {
-                    menu.set_copied(format!(
-                        "Updating to {version} in the new tab \u{b7} Esc to watch"
-                    ));
-                }
-                self.new_tab_with(NewPane::Update {
+                let mut effects = self.new_tab_with(NewPane::Update {
                     program,
                     root,
                     version,
                     path,
-                })
+                });
+                // Leave the menu so focus lands on the update tab, whose first
+                // lines say what is happening. Closed as Esc closes it: a
+                // draft that was not saved is discarded, never saved here.
+                effects.extend(self.close_menu(Outcome::Reverted));
+                effects
             }
         }
     }

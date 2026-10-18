@@ -1392,7 +1392,22 @@ mod tests {
         assert_eq!(body(&l[12]), "cargo install lazarobox-shell --locked");
         assert_eq!(
             body(&l[14]),
-            "Enter or y copies it \u{b7} cargo folder not safe"
+            "Enter or y copies it \u{b7} Rust folder is too open"
+        );
+    }
+
+    #[test]
+    fn the_no_rust_explanation_fits_the_popup_without_clipping() {
+        let mut menu = with_update();
+        menu.goto("Updates");
+        menu.show_update_command(crate::core::update::Fallback::NoCargo);
+        let l = lines(&draw(80, POPUP_H, &menu));
+        let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
+        assert_eq!(body(&l[11]), "Install Rust first (rustup.rs), then run:");
+        assert_eq!(body(&l[12]), "cargo install lazarobox-shell --locked");
+        assert_eq!(
+            body(&l[14]),
+            "Enter or y copies it \u{b7} Rust is not installed"
         );
     }
 

@@ -42,12 +42,17 @@ fn on_updates(update: Option<&str>, env: Option<InstallEnv>) -> App {
         .with_cargo_check(|_| true);
     a.sync_mouse();
     press(&mut a, "tn");
+    to_updates_row(&mut a);
+    a
+}
+
+/// Opens the menu and moves to the Updates row.
+fn to_updates_row(a: &mut App) {
     a.update(ctrl_space());
     a.update(key('m'));
     for _ in 0..5 {
         a.update(key('j'));
     }
-    a
 }
 
 fn spawned(effects: &[Effect]) -> Vec<(&PaneId, &SpawnSpec)> {
@@ -128,7 +133,53 @@ fn a_cargo_install_runs_cargo_directly_in_a_new_visible_tab() {
     assert_eq!(spec.cwd, PathBuf::from("/"), "never the user's cwd");
     assert_eq!(a.tabs.len(), tabs + 1);
     assert_eq!(a.tab().focus, *id, "the new tab is the one on screen");
-    assert_eq!(a.input(), InputMode::Menu, "the menu draft is kept");
+}
+
+#[test]
+fn enter_closes_the_menu_and_lands_on_the_update_pane() {
+    let (a, id) = started();
+    assert!(a.menu().is_none(), "the menu is closed");
+    assert_eq!(a.input(), InputMode::Terminal, "keys go to the pane");
+    assert_eq!(a.tab().focus, id, "the focused pane is the update pane");
+    assert!(
+        a.panes[&id].pty().is_some_and(|pty| pty.update.is_some()),
+        "and it is the update pane"
+    );
+}
+
+#[test]
+fn closing_for_the_install_treats_an_unsaved_draft_as_esc_does() {
+    // Esc at the top level discards what was not saved. Closing for the
+    // install must neither keep it nor save it behind the user's back.
+    let fresh = || {
+        let mut a = launched(80, 25)
+            .with_update(Some("0.15.4".to_owned()))
+            .with_install_env(Some(cargo_env()))
+            .with_cargo_check(|_| true);
+        press(&mut a, "tn");
+        a.update(ctrl_space());
+        a.update(key('m'));
+        a
+    };
+    let mut esc_app = fresh();
+    let original = *esc_app.config();
+    esc_app.update(key('l'));
+    assert_ne!(*esc_app.config(), original, "the draft really changed");
+    esc_app.update(esc());
+    let mut enter_app = fresh();
+    enter_app.update(key('l'));
+    assert_ne!(*enter_app.config(), original);
+    for _ in 0..5 {
+        enter_app.update(key('j'));
+    }
+    let effects = enter_app.update(enter());
+    assert_eq!(spawned(&effects).len(), 1, "{effects:?}");
+    assert_eq!(*enter_app.config(), *esc_app.config(), "same as Esc");
+    assert_eq!(*enter_app.config(), original, "and nothing was saved");
+    assert!(
+        !effects.iter().any(|e| matches!(e, Effect::SaveConfig(..))),
+        "{effects:?}"
+    );
 }
 
 #[test]
@@ -143,10 +194,6 @@ fn starting_tells_the_user_where_it_runs_how_long_and_not_to_close() {
     assert!(
         text.contains("running /home/ana/.cargo/bin/cargo"),
         "{text}"
-    );
-    assert_eq!(
-        footer(&a),
-        "Updating to 0.15.4 in the new tab \u{b7} Esc to watch"
     );
 }
 
@@ -165,6 +212,7 @@ fn a_failure_names_the_command_to_run_by_hand_in_the_pane() {
 #[test]
 fn a_second_enter_while_it_runs_starts_nothing() {
     let (mut a, _) = started();
+    to_updates_row(&mut a);
     let effects = a.update(enter());
     assert!(spawned(&effects).is_empty(), "{effects:?}");
     assert!(
@@ -195,11 +243,14 @@ fn without_cargo_on_the_path_the_command_is_shown_not_run() {
     let mut a = on_updates(Some("0.15.4"), Some(env));
     assert!(a.update(enter()).is_empty());
     assert_eq!(footer(&a), Fallback::NoCargo.footer());
-    assert!(
-        footer(&a).contains("cargo is not installed"),
-        "{}",
-        footer(&a)
+    assert_eq!(
+        footer(&a),
+        "Enter or y copies it \u{b7} Rust is not installed"
     );
+    // The command alone will not work without Rust: the note says so.
+    let note = a.menu().unwrap().update_note().unwrap();
+    assert_eq!(note[0], "Install Rust first (rustup.rs), then run:");
+    assert_eq!(note[1], INSTALL_COMMAND);
 }
 
 #[test]
@@ -217,7 +268,7 @@ fn a_refused_cargo_says_so_instead_of_looking_like_nothing_happened() {
         "{}",
         footer(&a)
     );
-    assert!(footer(&a).contains("not safe"), "{}", footer(&a));
+    assert!(footer(&a).contains("too open"), "{}", footer(&a));
 }
 
 #[test]
@@ -265,6 +316,7 @@ fn exit_zero_closes_the_pane_and_announces_the_install() {
     a.update(AppEvent::Pty(id, PtyEvent::Exited));
     assert_eq!(a.tabs.len(), tabs - 1, "the tab closes with its pane");
     assert!(!a.panes.contains_key(&id));
+    to_updates_row(&mut a);
     let rows = a.menu().unwrap().rows(&a.config);
     assert!(
         rows.iter().any(|r| matches!(r,
@@ -287,7 +339,6 @@ fn a_menu_opened_after_the_install_says_installed() {
     let (mut a, id) = started();
     a.update(AppEvent::Pty(id, PtyEvent::Status(0)));
     a.update(AppEvent::Pty(id, PtyEvent::Exited));
-    a.update(esc());
     a.update(ctrl_space());
     a.update(key('m'));
     let rows = a.menu().unwrap().rows(&a.config);
@@ -319,6 +370,7 @@ fn a_failed_pane_can_be_started_again_after_it_is_closed() {
     let (mut a, id) = started();
     a.update(AppEvent::Pty(id, PtyEvent::Status(1)));
     a.update(AppEvent::Pty(id, PtyEvent::Exited));
+    to_updates_row(&mut a);
     let effects = a.update(enter());
     assert_eq!(
         spawned(&effects).len(),

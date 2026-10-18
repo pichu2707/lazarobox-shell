@@ -239,16 +239,20 @@ pub enum Fallback {
     NoCargo,
     /// It is, and a `cargo` was found but is not trusted.
     UntrustedCargo,
+    /// It is, and a `cargo` is trusted, but the install folder's name is not
+    /// text, so it cannot be given to cargo.
+    UnusablePath,
 }
 
 impl Fallback {
     /// The footer on the Updates row: the action first, then the reason. One
-    /// line that fits the popup (51 columns), as the command is in the note.
+    /// line of 48 characters at most, so it fits the popup (51 columns).
     pub fn footer(self) -> &'static str {
         match self {
-            Fallback::NotCargoInstall => "Enter or y copies it \u{b7} not installed with cargo",
-            Fallback::NoCargo => "Enter or y copies it \u{b7} cargo is not installed",
-            Fallback::UntrustedCargo => "Enter or y copies it \u{b7} cargo folder not safe",
+            Fallback::NotCargoInstall => "Enter or y copies it \u{b7} installed another way",
+            Fallback::NoCargo => "Enter or y copies it \u{b7} Rust is not installed",
+            Fallback::UntrustedCargo => "Enter or y copies it \u{b7} Rust folder is too open",
+            Fallback::UnusablePath => "Enter or y copies it \u{b7} folder name is unusual",
         }
     }
 }
@@ -308,7 +312,10 @@ impl InstallEnv {
             _ => false,
         };
         match (cargo_install, &self.cargo) {
-            (false, _) | (true, Some(_)) => Fallback::NotCargoInstall,
+            (false, _) => Fallback::NotCargoInstall,
+            // A trusted cargo under the cargo dir only fails to plan when the
+            // install root is not text (see `plan`).
+            (true, Some(_)) => Fallback::UnusablePath,
             (true, None) if self.cargo_refused => Fallback::UntrustedCargo,
             (true, None) => Fallback::NoCargo,
         }
@@ -394,12 +401,14 @@ pub fn menu_lines(latest: &str) -> [String; 2] {
 }
 
 /// The menu note once Enter could not start the install: it cannot update
-/// itself here, and the command to copy.
-pub fn fallback_lines() -> [String; 2] {
-    [
-        "lazarobox cannot update itself here. Run:".to_owned(),
-        INSTALL_COMMAND.to_owned(),
-    ]
+/// itself here, and the command to copy. Without Rust the command alone will
+/// not work, so the first line says to install it first.
+pub fn fallback_lines(why: Fallback) -> [String; 2] {
+    let first = match why {
+        Fallback::NoCargo => "Install Rust first (rustup.rs), then run:",
+        _ => "lazarobox cannot update itself here. Run:",
+    };
+    [first.to_owned(), INSTALL_COMMAND.to_owned()]
 }
 
 #[cfg(test)]
@@ -828,19 +837,53 @@ mod tests {
         for (why, text) in [
             (
                 Fallback::NotCargoInstall,
-                "Enter or y copies it \u{b7} not installed with cargo",
+                "Enter or y copies it \u{b7} installed another way",
             ),
             (
                 Fallback::NoCargo,
-                "Enter or y copies it \u{b7} cargo is not installed",
+                "Enter or y copies it \u{b7} Rust is not installed",
             ),
             (
                 Fallback::UntrustedCargo,
-                "Enter or y copies it \u{b7} cargo folder not safe",
+                "Enter or y copies it \u{b7} Rust folder is too open",
+            ),
+            (
+                Fallback::UnusablePath,
+                "Enter or y copies it \u{b7} folder name is unusual",
             ),
         ] {
             assert_eq!(why.footer(), text);
             assert!(text.chars().count() <= 48, "{text}");
+        }
+    }
+
+    #[test]
+    fn the_note_tells_a_user_without_rust_to_install_it_first() {
+        let none = fallback_lines(Fallback::NoCargo);
+        assert_eq!(none[0], "Install Rust first (rustup.rs), then run:");
+        assert_eq!(none[1], INSTALL_COMMAND);
+        for why in [
+            Fallback::NotCargoInstall,
+            Fallback::UntrustedCargo,
+            Fallback::UnusablePath,
+        ] {
+            let lines = fallback_lines(why);
+            assert_eq!(
+                lines[0], "lazarobox cannot update itself here. Run:",
+                "{why:?}"
+            );
+            assert_eq!(lines[1], INSTALL_COMMAND, "{why:?}");
+        }
+        // The popup is 51 columns with its borders and a leading space.
+        for why in [
+            Fallback::NotCargoInstall,
+            Fallback::NoCargo,
+            Fallback::UntrustedCargo,
+            Fallback::UnusablePath,
+        ] {
+            for line in fallback_lines(why) {
+                assert!(line.chars().count() <= 48, "{line}");
+            }
         }
     }
 
@@ -866,6 +909,23 @@ mod tests {
             Fallback::NotCargoInstall,
             "an unknown binary"
         );
+    }
+
+    #[test]
+    fn a_trusted_cargo_that_cannot_run_for_a_folder_name_is_not_called_not_cargo() {
+        use std::os::unix::ffi::OsStringExt;
+        // The root goes to cargo as text; a name that is not UTF-8 is not run,
+        // although the binary is under the cargo dir and a cargo is trusted.
+        let bin = PathBuf::from(OsString::from_vec(b"/home/an\xff/.cargo/bin".to_vec()));
+        let env = InstallEnv {
+            exe: Some(bin.join("lazarobox")),
+            bin_dir: Some(bin),
+            cargo: Some("/home/ana/.cargo/bin/cargo".into()),
+            cargo_refused: false,
+            path: OsString::new(),
+        };
+        assert_eq!(env.plan(Some("0.16.0")), UpdateAction::ShowCommand);
+        assert_eq!(env.fallback(), Fallback::UnusablePath);
     }
 
     #[test]
@@ -947,7 +1007,7 @@ mod tests {
             "lazarobox 0.16.0 is available. Go to Updates and press Enter."
         );
         assert_eq!(
-            fallback_lines().join(" "),
+            fallback_lines(Fallback::NotCargoInstall).join(" "),
             "lazarobox cannot update itself here. Run: cargo install lazarobox-shell --locked"
         );
     }

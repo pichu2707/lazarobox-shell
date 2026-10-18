@@ -28,10 +28,12 @@ baseline.
 
 - The update texts are in plain words. The menu note says which version is
   available and to go to **Updates**; when lazarobox cannot update itself it
-  says so, shows the command to copy and the reason on the footer (not
-  installed with cargo, no cargo, or an unsafe cargo folder). The update tab
-  starts by saying that it can take a few minutes and that lazarobox must stay
-  open, ends with `Updated to X.Y.Z. Restart lazarobox to use it.`, and a
+  says so, shows the command to copy and the reason on the footer (installed
+  another way, Rust is not installed, Rust folder is too open, or an unusual
+  folder name). Without Rust, the note says to install it first (rustup.rs).
+  Enter on **Updates** closes the menu, as Esc does, so focus lands on the
+  update tab. The update tab starts by saying that it can take a few minutes
+  and that lazarobox must stay open, ends with `Updated to X.Y.Z. Restart lazarobox to use it.`, and a
   failure says what happened and gives the command to run by hand.
 - README: short install (with the link to rustup) and update instructions.
 
