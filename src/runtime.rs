@@ -2615,13 +2615,14 @@ mod tests {
     fn shutdown_kills_every_child_in_parallel() {
         let (mut panes, _rx, _rec) = fake_panes(None);
         let held: Vec<_> = (1..=3)
-            .map(|n| add_slow(&mut panes, n, Duration::from_millis(400)))
+            .map(|n| add_slow(&mut panes, n, Duration::from_millis(2000)))
             .collect();
         let started = Instant::now();
         panes.shutdown(Duration::from_secs(5));
         let elapsed = started.elapsed();
-        // Sequential kills would take at least 3 x 400 ms = 1200 ms.
-        assert!(elapsed < Duration::from_millis(1000), "serial: {elapsed:?}");
+        // Sequential kills would take at least 3 x 2000 ms = 6000 ms; parallel
+        // ones take about 2000 ms, which leaves 3 s of slack for a slow runner.
+        assert!(elapsed < Duration::from_millis(5000), "serial: {elapsed:?}");
         for (log, _gate) in &held {
             assert_eq!(log.lock().unwrap().kills, 1);
         }
@@ -2635,7 +2636,8 @@ mod tests {
         panes.shutdown(Duration::from_millis(150));
         let elapsed = started.elapsed();
         assert!(elapsed >= Duration::from_millis(150), "early: {elapsed:?}");
-        assert!(elapsed < Duration::from_secs(2), "unbounded: {elapsed:?}");
+        // The slow kill blocks for 30 s; any bound well below that proves it.
+        assert!(elapsed < Duration::from_secs(10), "unbounded: {elapsed:?}");
         assert_eq!(log.lock().unwrap().kills, 0);
         drop(gate);
     }

@@ -111,6 +111,25 @@ impl Drop for GroupKill {
     }
 }
 
+/// The state letter of a process (`Z` for a zombie), `None` once it is gone.
+/// Linux reads `/proc`; elsewhere `ps` answers the same question.
+#[cfg(test)]
+pub(crate) fn process_state(pid: libc::pid_t) -> Option<char> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        stat.rsplit(')').next()?.trim().chars().next()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout).trim().chars().next()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

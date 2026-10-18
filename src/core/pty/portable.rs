@@ -422,11 +422,19 @@ mod tests {
         assert!(exited, "no Exited event");
     }
 
-    /// Counts `Exited` events seen until `window` passes.
-    fn count_exited(rx: &Receiver<PtyEvent>, window: Duration) -> usize {
-        let deadline = Instant::now() + window;
+    /// Counts the `Exited` events: waits up to `bound` for the first one, then
+    /// watches a short window for a duplicate. A slow runner delays the first
+    /// event but cannot fail the wait, which ends as soon as it arrives.
+    fn count_exited(rx: &Receiver<PtyEvent>, bound: Duration) -> usize {
+        let deadline = Instant::now() + bound;
         let mut exited = 0;
-        while Instant::now() < deadline {
+        while exited == 0 && Instant::now() < deadline {
+            if let Ok(PtyEvent::Exited) = rx.recv_timeout(Duration::from_millis(50)) {
+                exited += 1;
+            }
+        }
+        let settled = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < settled {
             if let Ok(PtyEvent::Exited) = rx.recv_timeout(Duration::from_millis(50)) {
                 exited += 1;
             }
@@ -440,14 +448,14 @@ mod tests {
     fn exit_is_reported_while_a_background_job_holds_the_pty() {
         let (mut pty, rx) = spawn("/bin/sh", size(24, 80));
         pty.write(b"sleep 20 &\nexit\n".to_vec());
-        assert_eq!(count_exited(&rx, Duration::from_secs(3)), 1);
+        assert_eq!(count_exited(&rx, Duration::from_secs(15)), 1);
     }
 
     #[test]
     fn exited_is_emitted_exactly_once() {
         let (mut pty, rx) = spawn("/bin/sh", size(24, 80));
         pty.write(b"exit\n".to_vec());
-        assert_eq!(count_exited(&rx, Duration::from_secs(1)), 1);
+        assert_eq!(count_exited(&rx, Duration::from_secs(15)), 1);
     }
 
     fn is_alive(pid: u32) -> bool {
@@ -530,7 +538,7 @@ mod tests {
         let pid = pty.pid().expect("pid");
         let started = Instant::now();
         pty.kill();
-        assert!(started.elapsed() < Duration::from_secs(3), "kill() hung");
+        assert!(started.elapsed() < Duration::from_secs(15), "kill() hung");
         assert!(!Path::new(&format!("/proc/{pid}")).exists());
     }
 

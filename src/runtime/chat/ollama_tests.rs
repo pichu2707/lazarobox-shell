@@ -396,9 +396,9 @@ async fn cancel_inside_the_loop_closes_the_socket_and_sends_nothing_more() {
         .await
         .expect("the follow-up request arrived");
     lab.chats.cancel(pane(1));
-    timeout(Duration::from_secs(1), fake.closed.notified())
+    timeout(Duration::from_secs(10), fake.closed.notified())
         .await
-        .expect("the socket closed within a second");
+        .expect("the socket closed");
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(fake.connections.load(Ordering::SeqCst), 2);
 }

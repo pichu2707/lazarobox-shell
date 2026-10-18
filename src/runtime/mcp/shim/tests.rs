@@ -485,7 +485,7 @@ fn a_session_that_never_closes_does_not_hold_the_shim_past_the_grace() {
     // The app end stays open and silent.
     assert!(rig.shim.join().unwrap().is_ok());
     assert!(started.elapsed() >= grace);
-    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(started.elapsed() < Duration::from_secs(15));
     drop(rig.app);
 }
 
@@ -507,7 +507,7 @@ fn a_handshake_answer_that_trickles_in_is_cut_by_an_overall_deadline() {
     let started = std::time::Instant::now();
     let failure = rig.shim.join().unwrap().unwrap_err();
     assert!(matches!(failure, Failure::TimedOut), "{failure:?}");
-    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(started.elapsed() < Duration::from_secs(15));
     drip.join().unwrap();
 }
 

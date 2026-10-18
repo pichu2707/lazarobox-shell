@@ -100,7 +100,8 @@ fn a_fifo_returns_without_blocking() {
     assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
     let started = Instant::now();
     assert_eq!(read_override(&path), Override::Skipped(Reason::NotRegular));
-    assert!(started.elapsed() < Duration::from_secs(2));
+    // Blocking on the FIFO would hang for good; the bound only has to be finite.
+    assert!(started.elapsed() < Duration::from_secs(10));
 }
 
 // Spec: Huge special file.
