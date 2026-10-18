@@ -15,6 +15,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
   check:
@@ -36,8 +37,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # `rust-version` in Cargo.toml is 1.88 (edition 2024); stable is newer.
-      - uses: dtolnay/rust-toolchain@stable
+      # The toolchain is pinned so that a new Rust release cannot break CI
+      # without a code change; bumping it is a deliberate PR. The MSRV
+      # (`rust-version` in Cargo.toml) is checked by the `msrv` job below.
+      - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: clippy, rustfmt
 
@@ -52,3 +55,20 @@ jobs:
 
       - name: Test
         run: cargo test --locked
+
+  # `rust-version` in Cargo.toml is 1.88 (edition 2024): the oldest compiler
+  # the crate promises to build with, which the pinned toolchain above cannot
+  # prove on its own.
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --locked --all-targets
