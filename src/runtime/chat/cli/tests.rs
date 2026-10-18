@@ -1130,6 +1130,10 @@ fn no_loader_for_a_script_a_missing_file_or_a_string_past_the_end() {
     assert_eq!(read_loader(&cut), None, "a cut string is not trusted");
 }
 
+// Linux only: the loader is the `PT_INTERP` of an ELF file, and a macOS binary
+// is Mach-O, which has none (`read_loader` gives `None`; the jail that needs the
+// loader is not offered there, so the chat runs unjailed with a notice).
+#[cfg(target_os = "linux")]
 #[test]
 fn the_loader_of_a_real_dynamic_binary_is_read() {
     // The test binary itself is a dynamic executable.

@@ -36,6 +36,8 @@ pub mod mcp;
 pub mod notify;
 pub mod proc;
 pub mod prompts;
+#[cfg(test)]
+pub(crate) mod refused_port;
 mod run_check;
 pub mod tools;
 pub mod update;
@@ -4238,9 +4240,8 @@ mod tests {
         }
 
         // Active: nothing is read before the first command, one read at start.
-        let socket = tokio::net::TcpSocket::new_v4().unwrap();
-        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-        let port = socket.local_addr().unwrap().port();
+        let refused = refused_port::RefusedPort::new();
+        let port = refused.port();
         let config = MemoryConfig {
             enabled: true,
             acknowledged: true,
