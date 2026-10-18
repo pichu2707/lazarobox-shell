@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-10-18
+
 ### Changed
 
 - On systems without the jail (macOS), codex and gemini now say what to do
@@ -808,7 +810,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.1...HEAD
+[0.17.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.16.2...v0.17.0
 [0.16.2]: https://github.com/pichu2707/lazarobox-shell/compare/v0.16.1...v0.16.2
 [0.16.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.16.0...v0.16.1
