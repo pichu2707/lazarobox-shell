@@ -297,10 +297,10 @@ Conditional on the opencode adapter, which is parked. Not part of this change's 
 Split: this PR ships the client over a generic transport (4b.1, client part of 4b.3). Spawn and env (4b.2), the rest of 4b.3, the lifecycle and shutdown, 4b.4 and 4b.5 go to the next PR.
 
 - [x] 4b.1 RED: client handshake (client part done over a generic transport with an in-process fake server; review fixes C1, W1 to W5, S1 to S3 included), `tools/list` (max 64 tools, qualified names, built-ins never shadowed), `tools/call`, timeouts and cancel against a fake server process.
-- [ ] 4b.2 RED: spawn direct, not jailed, scrubbed env (named variables only), `cwd=$HOME`; nothing spawns on config load or repo open; a dying server gives an error result.
-- [ ] 4b.3 GREEN: implement reusing the 2c codec. (Client part done: codec, handshake, list, call, one deadline for write and wait, cancel. Spawn, env, stderr note and shutdown are pending.)
-- [ ] 4b.4 Gate.
-- [ ] 4b.5 Docs: doc comments on the trust model.
+- [x] 4b.2 RED: spawn direct, not jailed, scrubbed env (named variables only), `cwd=$HOME`; nothing spawns on config load or repo open; a dying server gives an error result.
+- [x] 4b.3 GREEN: implement reusing the 2c codec. (Client part: codec, handshake, list, call, one deadline for write and wait, cancel. Part 2: `client/spawn.rs` with spawn, env, stderr note, start and shutdown.)
+- [x] 4b.4 Gate.
+- [x] 4b.5 Docs: doc comments on the trust model.
 
 ## PR15 / 4c: Re-exposure and approval (`src/core/ai/tools/mod.rs`, `src/runtime/tools/mod.rs`, `src/ui/components/chat.rs`, `README.md`)
 

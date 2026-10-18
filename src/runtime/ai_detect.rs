@@ -157,7 +157,7 @@ pub(crate) const NOTE_CAP: usize = 200;
 const STDERR_GRACE: Duration = Duration::from_millis(200);
 
 /// Reads stderr to its end, keeping the last [`STDERR_KEEP`] bytes.
-async fn read_tail(mut pipe: tokio::process::ChildStderr) -> Vec<u8> {
+pub(crate) async fn read_tail(mut pipe: tokio::process::ChildStderr) -> Vec<u8> {
     let mut tail = Vec::new();
     let mut buf = [0u8; 4096];
     while let Ok(n) = pipe.read(&mut buf).await {
@@ -191,7 +191,7 @@ async fn stderr_said(
 
 /// What the stderr reader read, waiting at most `wait` for it; a reader that
 /// is still running after that is aborted, not left behind.
-async fn finish_stderr(
+pub(crate) async fn finish_stderr(
     mut task: tokio::task::JoinHandle<Vec<u8>>,
     wait: Duration,
 ) -> Option<Vec<u8>> {
