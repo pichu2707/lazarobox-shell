@@ -16,9 +16,10 @@ baseline.
   (`cargo install lazarobox-shell --locked --version <version> --root <root>`).
   It used to install whatever was newest on crates.io, so when that was the
   version already installed cargo did nothing, exited 0 and lazarobox still
-  said "Updated to X". Now the install is that version or a clear failure. A
-  version that is not plain `major.minor.patch` is never passed to cargo and
-  the command to run by hand is shown instead. The command shown for copying
+  said "Updated to X". Now cargo installs exactly that version or fails,
+  instead of installing a different one. A version that is not plain
+  `major.minor.patch` is never passed to cargo and the command to run by hand
+  is shown instead. The command shown for copying
   is unchanged: it asks for the newest version.
 
 ## [0.16.1] - 2026-10-18

@@ -431,6 +431,30 @@ fn a_path_that_is_not_utf8_reaches_cargo_unchanged() {
 }
 
 #[test]
+fn a_version_that_is_not_plain_semver_spawns_nothing_and_shows_the_command() {
+    for bad in ["0.16.2 --git x", "", "1.2", "-v"] {
+        let mut a = on_updates(Some(bad), Some(cargo_env()));
+        let tabs = a.tabs.len();
+        let effects = a.update(enter());
+        assert!(spawned(&effects).is_empty(), "{bad:?}: {effects:?}");
+        assert_eq!(a.tabs.len(), tabs, "{bad:?}");
+    }
+}
+
+#[test]
+fn the_spawn_and_the_first_line_show_the_same_argv() {
+    let mut a = on_updates(Some("0.15.4"), Some(cargo_env()));
+    let effects = a.update(enter());
+    let (id, spec) = spawned(&effects)[0];
+    let shown = flat(&a, *id);
+    assert!(
+        shown.contains(&format!("running {CARGO} {}", spec.args.join(" "))),
+        "{shown}"
+    );
+    assert_ne!(spec.args, ["install"], "never a bare install");
+}
+
+#[test]
 fn the_pane_then_names_what_runs() {
     let (a, id) = started();
     // The lines are longer than the pane is wide, so they wrap.

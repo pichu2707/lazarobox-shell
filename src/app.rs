@@ -451,13 +451,15 @@ pub enum PaneView<'a> {
 /// The kind of pane a split or a new tab creates.
 enum NewPane {
     Shell,
-    /// `cargo install lazarobox-shell --locked --version <version>`, run
-    /// directly (no shell).
+    /// `cargo install lazarobox-shell --locked --version <version> --root
+    /// <root>`, run directly (no shell).
     Update {
         program: PathBuf,
-        /// The install root, passed as `--root`.
-        root: PathBuf,
-        /// The announced version, passed as `--version`.
+        /// The whole argv of `program`, built once by
+        /// [`crate::core::update::install_args`]: what the pane shows is what
+        /// runs.
+        args: Vec<String>,
+        /// The announced version, for the final line.
         version: String,
         path: std::ffi::OsString,
     },
@@ -1304,6 +1306,17 @@ impl App {
                 root,
                 version,
             } => {
+                // Built once: the pane shows and spawns this same argv. `plan`
+                // already checked the version, so `None` is not expected; if
+                // it happens, nothing runs and the command is shown.
+                let Some(args) =
+                    crate::core::update::install_args(root.to_str().unwrap_or_default(), &version)
+                else {
+                    if let Some(menu) = self.menu.as_mut() {
+                        menu.show_update_command(Fallback::UnusablePath);
+                    }
+                    return Vec::new();
+                };
                 let path = self
                     .install_env
                     .as_ref()
@@ -1311,7 +1324,7 @@ impl App {
                     .unwrap_or_default();
                 let mut effects = self.new_tab_with(NewPane::Update {
                     program,
-                    root,
+                    args,
                     version,
                     path,
                 });
@@ -1904,9 +1917,9 @@ impl App {
         match kind {
             NewPane::Update {
                 program,
-                root,
-                version,
+                args,
                 path,
+                ..
             } => {
                 // Home, else the root: never the cwd of a pane, where a
                 // `rust-toolchain` or `.cargo/config` of a project would
@@ -1915,12 +1928,7 @@ impl App {
                 let cwd = home.unwrap_or(Path::new("/")).to_path_buf();
                 let mut spec = SpawnSpec::new(None, cwd, size);
                 spec.program = program.clone();
-                // `plan` only gives a version that passes; if one got here
-                // anyway, a bare `cargo install` is refused by cargo, so it
-                // can never claim an install that did not happen.
-                spec.args =
-                    crate::core::update::install_args(root.to_str().unwrap_or_default(), version)
-                        .unwrap_or_else(|| vec!["install".to_owned()]);
+                spec.args = args.clone();
                 spec.report_status = true;
                 spec.env_os.push(("PATH".into(), path.clone()));
                 spec
@@ -2001,7 +2009,7 @@ impl App {
             NewPane::Shell => PaneState::new(size, self.hostname.as_deref()),
             NewPane::Update {
                 program,
-                root,
+                args,
                 version,
                 ..
             } => {
@@ -2009,11 +2017,6 @@ impl App {
                 if let Some(pty) = state.pty_mut() {
                     // What is about to run, in lazarobox's own words, before
                     // anything cargo prints.
-                    let args = crate::core::update::install_args(
-                        root.to_str().unwrap_or_default(),
-                        &version,
-                    )
-                    .unwrap_or_default();
                     let line = crate::core::update::running_text(&program, &args);
                     let plain = crate::core::update::started_text(&version);
                     pty.emu

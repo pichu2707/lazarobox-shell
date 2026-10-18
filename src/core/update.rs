@@ -344,7 +344,9 @@ impl InstallEnv {
         match (cargo_install, &self.cargo) {
             (false, _) => Fallback::NotCargoInstall,
             // A trusted cargo under the cargo dir only fails to plan when the
-            // install root is not text (see `plan`).
+            // install root is not text, or when the version is not plain
+            // `major.minor.patch` (see `plan`); the latter cannot happen
+            // today, because `announced` gives `core_text()`.
             (true, Some(_)) => Fallback::UnusablePath,
             (true, None) if self.cargo_refused => Fallback::UntrustedCargo,
             (true, None) => Fallback::NoCargo,
@@ -1013,6 +1015,11 @@ mod tests {
             "0.16.2\n",
             "01.2.3",
             " 0.16.2",
+            "0.16.2 ",
+            "\u{661}.\u{662}.\u{663}",
+            "1.2.3.4",
+            "99999999999999999999.0.0",
+            "0.16.2-",
         ] {
             assert_eq!(install_args("/r", bad), None, "{bad:?}");
             assert_eq!(
