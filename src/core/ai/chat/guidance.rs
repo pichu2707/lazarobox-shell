@@ -120,6 +120,22 @@ mod tests {
     }
 
     #[test]
+    fn no_jail_on_another_system_points_codex_to_claude_or_ollama() {
+        use crate::core::ai::jail::JailOff;
+        assert_eq!(
+            guidance(&Availability::NoJail {
+                engine: s("codex"),
+                reason: JailOff::NotLinux.text_required(),
+            })
+            .as_deref(),
+            Some(
+                "codex: not available on this system yet: the CLI jail needs Linux; \
+                 on this system use claude or Ollama for chat"
+            )
+        );
+    }
+
+    #[test]
     fn gated_off_names_the_engine() {
         let text = guidance(&Availability::GatedOff { engine: s("codex") }).unwrap();
         assert!(

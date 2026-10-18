@@ -75,9 +75,7 @@ impl JailOff {
             Self::NotProbed => "not probed".to_owned(),
         }
     }
-}
 
-impl JailOff {
     /// [`Self::text`] for a CLI that does not run without the jail (codex,
     /// gemini).
     pub fn text_required(self) -> String {
