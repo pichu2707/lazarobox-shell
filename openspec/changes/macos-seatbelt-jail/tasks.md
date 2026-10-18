@@ -46,17 +46,17 @@ Files: `jail.rs`, `jail/tests.rs`, runtime entry (`runtime::run`), `.github/work
 - [x] 1a.3 RED: probe tests (cfg macOS): control ok, negative control denied, exec-denied `/bin/echo`, missing binary, 5 s timeout, temp dir cleanup.
 - [x] 1a.4 GREEN: probe in `jail.rs` (absolute `/usr/bin/sandbox-exec`, env_clear, 0700 dir with Drop guard, constant S1 profile, `-D` and `--`); run via `spawn_blocking` in `runtime::run`; gate returns NotEnabled before spawning.
 - [x] 1a.5 CI: `ci.yml` step on macos-14 and macos-15-intel runs the probe test with `LAZAROBOX_REQUIRE_JAIL=1` and a raw `/usr/bin/sandbox-exec -p ... -D K=V -- /usr/bin/true` smoke (positive and negative control).
-- [ ] 1a.6 STOP CHECKPOINT (MANUAL REVIEW): if the CI smoke fails on either runner (capability or argv shape), STOP and report to the orchestrator before 1b.
+- [x] 1a.6 STOP CHECKPOINT (MANUAL REVIEW): if the CI smoke fails on either runner (capability or argv shape), STOP and report to the orchestrator before 1b. Passed in PR #265 CI run 39162360922 on macOS 14.8.9 arm64 and 15.7.9 Intel.
 - [x] 1a.7 CHANGELOG entry (Unreleased: internal probe, no behavior change).
 Done: gates green on 3 runners, smoke proves sandbox-exec and `-D`/`--` shape, behavior unchanged.
 
 ## Slice 1b: claude exemption + helper path (PR 2)
 
 Files: `jail.rs`, `jail/tests.rs`, adapters and the `CliEnv` site (grep `CliEnv`), `CHANGELOG.md`.
-- [ ] 1b.1 RED: `jail_policy(cli, os)` table (Claude+Macos Exempt, Claude+other Layered, rest Required); `launch(Exempt,_)=Bare`; Exempt notice and `jail_note` "not jailed on macOS"; claude text-only flags.
-- [ ] 1b.2 GREEN: `Os`, `JailPolicy::Exempt`, `jail_policy`, `launch`, notice copy.
-- [ ] 1b.3 RED: `CliEnv.helper` = canonicalized `current_exe` on non-Linux; failure gives `NoSeatbelt(NoHelper)`; Linux unchanged.
-- [ ] 1b.4 GREEN: wire helper path; CHANGELOG.
+- [x] 1b.1 RED: `jail_policy(cli, os)` table (Claude+Macos Exempt, Claude+other Layered, rest Required); `launch(Exempt,_)=Bare`; Exempt notice and `jail_note` "not jailed on macOS"; claude text-only flags.
+- [x] 1b.2 GREEN: `Os`, `JailPolicy::Exempt`, `jail_policy`, `launch`, notice copy.
+- [x] 1b.3 RED: `CliEnv.helper` = canonicalized `current_exe` on non-Linux; failure gives `NoSeatbelt(NoHelper)`; Linux unchanged.
+- [x] 1b.4 GREEN: wire helper path; CHANGELOG.
 Done: claude bare on macOS regardless of probe, Linux tests untouched, gates green.
 
 ## Slice 2a: spec split (PR 3)
