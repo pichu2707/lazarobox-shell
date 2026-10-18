@@ -309,15 +309,15 @@ Split (approved, three PRs to main, one after another, each after the previous m
 
 - 4c-a pure core: `Call::External`, `parse_call_with` (lookup by `Qualified`, never a split on `__`), `ask_for` External (sanitized, capped), `Tools::On.external`, registry and Ollama body with externals, Ollama decoder and mcp `Server` routing. No live behaviour: the app still denies External (`NO_USER_TOOLS`) and nothing passes externals. Done in this PR; the RED tests of 4c.1 and 4c.2 that are pure are in it.
 - 4c-b runtime host: `ExternalSet` (start, list, qualify, call by `raw_of`, shutdown) and the `ToolHost` External branch (only after `y`, D14 wrap and cap, denied/timeout/cancel), against fake servers. Not wired. DONE (feat/agent-tools-4c-host).
-- 4c-c live wiring and README: pre-turn start and list with `mcp: started`, `unavailable` and `Dropped::notice` notices, canonicalized `resolve` (symlink test), hub registry with externals, the app prompt (always `y`, even in `auto`), shutdown on close and quit, README "Tus propios servidores MCP".
+- 4c-c live wiring and README: pre-turn start and list with `mcp: started`, `unavailable` and `Dropped::notice` notices, canonicalized `resolve` (symlink test), hub registry with externals, the app prompt (always `y`, even in `auto`), shutdown on close and quit, README "Tus propios servidores MCP". DONE (feat/agent-tools-4c-wire). Lifecycle: the servers belong to the CHAT (started by its first turn with tools on, reused by later turns, stopped on close, on a turn without tools and at quit); `TurnScope.external` and the hub session read a late-filled `Slot`, because the session opens before the async start. W2 (`notifications/cancelled`) stays not reachable: `Chats::cancel` aborts the turn task, so the call is dropped and abandoned.
 
 Interpretation: spawn and `tools/list` happen at the start of a turn with tools on (announced); no `tools/call` before `y`; nothing spawns with tools off, on config load or on repo open.
 
-- [ ] 4c.1 RED: user tools are always write tools; every call needs `y` (prompt shows server, tool, arguments); the server is not contacted before `y`; results wrapped untrusted; declined/timeout/cancel give `denied`. (4c-a: the always-asks and the sanitized, capped prompt text, pure part only; the rest in 4c-b and 4c-c.)
-- [ ] 4c.2 RED: user tools appear in the registry for MCP and Ollama only when resolved; tools off hides them. (4c-a: registry, mcp `Server` and Ollama body and decoder take externals; the resolution is in 4c-c.)
-- [ ] 4c.3 GREEN: implement.
-- [ ] 4c.4 Gate.
-- [ ] 4c.5 Docs: README "Your own MCP servers".
+- [x] 4c.1 RED: user tools are always write tools; every call needs `y` (prompt shows server, tool, arguments); the server is not contacted before `y`; results wrapped untrusted; declined/timeout/cancel give `denied`. (4c-a: the always-asks and the sanitized, capped prompt text, pure part only; the rest in 4c-b and 4c-c.)
+- [x] 4c.2 RED: user tools appear in the registry for MCP and Ollama only when resolved; tools off hides them. (4c-a: registry, mcp `Server` and Ollama body and decoder take externals; the resolution is in 4c-c.)
+- [x] 4c.3 GREEN: implement.
+- [x] 4c.4 Gate.
+- [x] 4c.5 Docs: README "Tus propios servidores MCP".
 - [ ] 4c.6 [manual] (user) declare a real server in the user config; its tool asks every time; a repo-local file is ignored.
 - [ ] 4c.7 [manual] Final pass per engine on a real machine: `Whole flow per engine` (find then go there) for each verified engine and Ollama; unverified engines still text-only; record drift before archive.
 
