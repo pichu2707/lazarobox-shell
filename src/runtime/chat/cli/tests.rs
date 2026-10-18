@@ -950,31 +950,92 @@ fn the_sweep_removes_turn_dirs_of_dead_processes_only() {
     assert!(left("400-4"), "only folders are removed");
 }
 
-/// Outside Linux there is no `/proc`: `ps -o comm= -p PID` answers instead. A
-/// process that is not there is `ps` exiting 1 with nothing on stdout; anything
-/// else (it cannot run, an odd status, no text) has no `comm` either, which
-/// makes the sweeps sweep nothing when it is our own.
+/// Outside Linux there is no `/proc`: `/bin/ps -o comm= -p PID` answers
+/// instead. Only `ps` exiting 1 with nothing on stdout says the process is
+/// gone. Every other failure (it cannot run, an odd status, no text, bytes that
+/// are not UTF-8) says nothing, and nothing said must never read as gone.
 #[test]
 fn the_comm_of_a_process_is_read_from_ps_outside_linux() {
     use std::os::unix::process::ExitStatusExt;
-    let out = |code: i32, stdout: &str| {
+    let out = |code: i32, stdout: &[u8]| {
         Ok(std::process::Output {
             status: std::process::ExitStatus::from_raw(code << 8),
-            stdout: stdout.as_bytes().to_vec(),
+            stdout: stdout.to_vec(),
             stderr: Vec::new(),
         })
     };
     assert_eq!(
-        comm_from_ps(out(0, "/opt/bin/lazarobox-shell\n")),
-        Some("/opt/bin/lazarobox-shell".to_owned())
+        comm_from_ps(out(0, b"/opt/bin/lazarobox-shell\n")),
+        Comm::Is("/opt/bin/lazarobox-shell".to_owned())
     );
-    assert_eq!(comm_from_ps(out(1, "")), None, "no such process");
-    assert_eq!(comm_from_ps(out(0, "\n")), None, "no text");
-    assert_eq!(comm_from_ps(out(2, "x\n")), None, "an odd status");
+    assert_eq!(comm_from_ps(out(1, b"")), Comm::Gone, "no such process");
+    assert_eq!(comm_from_ps(out(1, b"\n")), Comm::Gone);
     assert_eq!(
-        comm_from_ps(Err(io::Error::from(io::ErrorKind::NotFound))),
-        None,
-        "ps cannot run"
+        comm_from_ps(out(1, b"x\n")),
+        Comm::Unknown,
+        "status 1 with text"
+    );
+    assert_eq!(comm_from_ps(out(0, b"\n")), Comm::Unknown, "no text");
+    assert_eq!(comm_from_ps(out(2, b"")), Comm::Unknown, "an odd status");
+    assert_eq!(
+        comm_from_ps(out(0, b"\xff\xfe\n")),
+        Comm::Unknown,
+        "not UTF-8"
+    );
+    assert_eq!(
+        comm_from_ps(Err(io::Error::from(io::ErrorKind::WouldBlock))),
+        Comm::Unknown,
+        "ps cannot run (fork EAGAIN)"
+    );
+}
+
+/// A process we cannot check is kept: the sweep deletes only what is surely
+/// the leftover of a dead run.
+#[test]
+fn an_entry_whose_owner_cannot_be_checked_is_kept() {
+    let own = Some("lazarobox-shell");
+    assert!(
+        alive_by_comm(4242, own, &|_| Comm::Unknown),
+        "unknown is alive"
+    );
+    assert!(!alive_by_comm(4242, own, &|_| Comm::Gone), "gone is dead");
+    assert!(
+        alive_by_comm(4242, own, &|_| Comm::Is("lazarobox-shell".to_owned())),
+        "ours"
+    );
+}
+
+/// macOS prints the full path of the executable and Linux the short name of
+/// at most 15 bytes. Programs are told apart by file name, cut like Linux
+/// cuts it, so two installs of one program (or a dev build beside an installed
+/// copy) are the same program and a different binary is not.
+#[test]
+fn programs_are_compared_by_file_name_cut_to_15_bytes() {
+    let is = |comm: &str| Comm::Is(comm.to_owned());
+    let own = Some("/Users/a/.cargo/bin/lazarobox-shell");
+    assert!(alive_by_comm(7, own, &|_| is(
+        "/Users/a/src/target/debug/lazarobox-shell"
+    )));
+    assert!(
+        alive_by_comm(7, own, &|_| is("lazarobox-shell\n")),
+        "the Linux spelling"
+    );
+    assert!(
+        !alive_by_comm(7, own, &|_| is("/usr/bin/zsh")),
+        "another binary"
+    );
+    assert!(
+        !alive_by_comm(7, own, &|_| is("/Users/a/bin/lazarobox")),
+        "a prefix is not it"
+    );
+    let long = Some("/x/lazarobox-shell-extra");
+    assert!(
+        alive_by_comm(7, long, &|_| is("lazarobox-shell")),
+        "cut like Linux"
+    );
+    assert!(
+        !alive_by_comm(7, Some("/"), &|_| is("/")),
+        "no name to compare"
     );
 }
 
@@ -1074,11 +1135,15 @@ fn without_our_own_comm_nothing_is_swept_and_our_own_pid_is_always_alive() {
         fs::create_dir_all(dir).unwrap();
     }
     // /proc/self/comm unreadable: the sweep cannot tell anyone apart.
-    sweep_with(&scratch, None, &|_| None);
+    sweep_with(&scratch, None, &|_| Comm::Gone);
     assert!(dead.exists() && mine.exists(), "no sweep at all");
     // Readable for everyone but unreadable for our own pid: still alive.
     sweep_with(&scratch, Some("lazarobox"), &|pid| {
-        (pid != me).then(|| "other".to_owned())
+        if pid == me {
+            Comm::Unknown
+        } else {
+            Comm::Is("other".to_owned())
+        }
     });
     assert!(!dead.exists(), "a foreign pid is swept");
     assert!(mine.exists(), "our own pid is never swept");

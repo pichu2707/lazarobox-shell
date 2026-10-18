@@ -41,6 +41,7 @@ impl RefusedPort {
         self.port
     }
 }
+
 #[cfg(test)]
 mod tests {
     use std::{net::TcpStream, time::Duration};

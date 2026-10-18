@@ -204,29 +204,62 @@ impl Drop for TmpDir {
     }
 }
 
-/// The `comm` of a process (`self` or a pid), if readable. Linux reads
-/// `/proc`; elsewhere (macOS has none) `ps` answers, so the sweeps of a crashed
-/// run's leftovers work there too. The two spellings differ (a short name, a
-/// full path) but a run only ever compares the same source with itself.
-pub(crate) fn read_comm(who: &str) -> Option<String> {
+/// What is known of a process by its `comm`.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Comm {
+    /// Surely not there.
+    Gone,
+    /// There, with this `comm`.
+    Is(String),
+    /// It could not be checked (a failing `ps`, an unreadable file). Never
+    /// read as gone: the sweeps keep what they cannot check.
+    Unknown,
+}
+
+/// The `comm` of a process (`self` or a pid). Linux reads `/proc`; elsewhere
+/// (macOS has none) `/bin/ps` answers, so the sweeps of a crashed run's
+/// leftovers work there too. The two spellings differ (a short name, a full
+/// path); [`alive_by_comm`] compares them by file name.
+pub(crate) fn read_comm(who: &str) -> Comm {
     #[cfg(target_os = "linux")]
     {
-        fs::read_to_string(format!("/proc/{who}/comm")).ok()
+        match fs::read_to_string(format!("/proc/{who}/comm")) {
+            Ok(comm) => Comm::Is(comm),
+            // No such pid, or it ended while it was read.
+            Err(e)
+                if e.kind() == io::ErrorKind::NotFound || e.raw_os_error() == Some(libc::ESRCH) =>
+            {
+                Comm::Gone
+            }
+            Err(_) => Comm::Unknown,
+        }
     }
     #[cfg(not(target_os = "linux"))]
     {
         let pid = match who {
             "self" => std::process::id(),
-            who => who.parse().ok()?,
+            who => match who.parse() {
+                Ok(pid) => pid,
+                Err(_) => return Comm::Unknown,
+            },
         };
         if !is_pid(pid) {
-            return None;
+            return Comm::Gone;
         }
         comm_from_ps(
-            std::process::Command::new("ps")
+            std::process::Command::new("/bin/ps")
                 .args(["-o", "comm=", "-p", &pid.to_string()])
                 .output(),
         )
+    }
+}
+
+/// Our own `comm`, when it can be read. Without it nobody can be told apart,
+/// so the sweeps sweep nothing.
+pub(crate) fn own_comm() -> Option<String> {
+    match read_comm("self") {
+        Comm::Is(comm) => Some(comm),
+        Comm::Gone | Comm::Unknown => None,
     }
 }
 
@@ -237,40 +270,63 @@ fn is_pid(pid: u32) -> bool {
     (1..=i32::MAX as u32).contains(&pid)
 }
 
-/// The text of `ps -o comm= -p PID`. `None` when the process is not there
-/// (status 1, no output) and when `ps` cannot say: it cannot run, ends any
-/// other way, or prints nothing. Our own `comm` as `None` makes the sweeps
-/// sweep nothing; another pid's `None` reads as "not one of ours".
+/// The outcome of `ps -o comm= -p PID`. Only `ps` ending with status 1 and
+/// nothing on stdout says the process is [gone](Comm::Gone); a `ps` that cannot
+/// run, ends any other way, or prints nothing or bytes that are not text says
+/// nothing, which is [unknown](Comm::Unknown), never gone.
 #[cfg_attr(target_os = "linux", allow(dead_code))]
-fn comm_from_ps(out: io::Result<std::process::Output>) -> Option<String> {
-    let out = out.ok().filter(|out| out.status.code() == Some(0))?;
-    let text = String::from_utf8(out.stdout).ok()?;
+fn comm_from_ps(out: io::Result<std::process::Output>) -> Comm {
+    let Ok(out) = out else {
+        return Comm::Unknown;
+    };
+    let Ok(text) = String::from_utf8(out.stdout) else {
+        return Comm::Unknown;
+    };
     let text = text.trim();
-    (!text.is_empty()).then(|| text.to_owned())
+    match (out.status.code(), text.is_empty()) {
+        (Some(0), false) => Comm::Is(text.to_owned()),
+        (Some(1), true) => Comm::Gone,
+        _ => Comm::Unknown,
+    }
+}
+
+/// A `comm` as it is compared: its file name, cut to the 15 bytes Linux keeps
+/// in `/proc/<pid>/comm` (macOS prints the whole path). `None` without a name.
+fn comm_name(comm: &str) -> Option<&str> {
+    let name = Path::new(comm.trim()).file_name()?.to_str()?;
+    let mut end = name.len().min(15);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(&name[..end])
 }
 
 /// Whether `pid` is a live process of this program (same `comm` as ours). A
 /// recycled pid that now belongs to something else counts as dead. Our own pid
-/// is always alive. (An instance in another PID namespace that shares the data
-/// folder looks dead from here.)
+/// is always alive, and so is one that cannot be checked. (An instance in
+/// another PID namespace that shares the data folder looks dead from here.)
 #[cfg(test)]
 fn is_lazarobox(pid: u32) -> bool {
-    alive_by_comm(pid, read_comm("self").as_deref(), &|p| {
-        read_comm(&p.to_string())
-    })
+    alive_by_comm(pid, own_comm().as_deref(), &|p| read_comm(&p.to_string()))
 }
 
-pub(crate) fn alive_by_comm(
-    pid: u32,
-    own: Option<&str>,
-    read: &dyn Fn(u32) -> Option<String>,
-) -> bool {
-    pid == std::process::id() || own.is_some_and(|own| read(pid).as_deref() == Some(own))
+pub(crate) fn alive_by_comm(pid: u32, own: Option<&str>, read: &dyn Fn(u32) -> Comm) -> bool {
+    if pid == std::process::id() {
+        return true;
+    }
+    let Some(own) = own.and_then(comm_name) else {
+        return false;
+    };
+    match read(pid) {
+        Comm::Gone => false,
+        Comm::Unknown => true,
+        Comm::Is(comm) => comm_name(&comm) == Some(own),
+    }
 }
 
 /// [`sweep_stale`] given our own `comm` and a way to read others'. Without our
 /// own `comm` nobody can be told apart, so nothing is swept.
-fn sweep_with(scratch: &Path, own: Option<&str>, read: &dyn Fn(u32) -> Option<String>) {
+fn sweep_with(scratch: &Path, own: Option<&str>, read: &dyn Fn(u32) -> Comm) {
     if own.is_some() {
         sweep_stale(scratch, &|pid| alive_by_comm(pid, own, read));
     }
@@ -313,7 +369,7 @@ impl Dirs {
         let scratch = data.join("cli-tmp");
         ensure_private_dir(&cwd)?;
         ensure_private_dir(&scratch)?;
-        sweep_with(&scratch, read_comm("self").as_deref(), &|p| {
+        sweep_with(&scratch, own_comm().as_deref(), &|p| {
             read_comm(&p.to_string())
         });
         let own = scratch.join(format!(
