@@ -294,9 +294,11 @@ Conditional on the opencode adapter, which is parked. Not part of this change's 
 
 ## PR14 / 4b: MCP client (`src/runtime/mcp/client.rs`)
 
-- [x] 4b.1 RED: client handshake (done over a generic transport with an in-process fake server, commit 1aaff55), `tools/list` (max 64 tools, qualified names, built-ins never shadowed), `tools/call`, timeouts and cancel against a fake server process.
+Split: this PR ships the client over a generic transport (4b.1, client part of 4b.3). Spawn and env (4b.2), the rest of 4b.3, the lifecycle and shutdown, 4b.4 and 4b.5 go to the next PR.
+
+- [x] 4b.1 RED: client handshake (client part done over a generic transport with an in-process fake server; review fixes C1, W1 to W5, S1 to S3 included), `tools/list` (max 64 tools, qualified names, built-ins never shadowed), `tools/call`, timeouts and cancel against a fake server process.
 - [ ] 4b.2 RED: spawn direct, not jailed, scrubbed env (named variables only), `cwd=$HOME`; nothing spawns on config load or repo open; a dying server gives an error result.
-- [ ] 4b.3 GREEN: implement reusing the 2c codec. (Codec, handshake, list, call, timeouts, cancel: done in 1aaff55. Spawn, env, stderr note, shutdown: pending.)
+- [ ] 4b.3 GREEN: implement reusing the 2c codec. (Client part done: codec, handshake, list, call, one deadline for write and wait, cancel. Spawn, env, stderr note and shutdown are pending.)
 - [ ] 4b.4 Gate.
 - [ ] 4b.5 Docs: doc comments on the trust model.
 

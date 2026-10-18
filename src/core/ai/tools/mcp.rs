@@ -43,7 +43,7 @@ pub const MAX_LINE_BYTES: usize = 1 << 20;
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// Revisions echoed back when the client asks for them.
-const OLDER_VERSIONS: [&str; 2] = ["2025-03-26", "2024-11-05"];
+pub const OLDER_VERSIONS: [&str; 2] = ["2025-03-26", "2024-11-05"];
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
