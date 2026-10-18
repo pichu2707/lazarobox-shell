@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Print the body of one version's section from CHANGELOG.md: the lines after
-# `## [X.Y.Z] - date` up to (not including) the next `## [` heading.
+# `## [X.Y.Z] - date` up to (not including) the next `## [` heading or the
+# link-reference footer (`[X.Y.Z]: url`).
 # Usage: changelog-section.sh <version> [changelog]
 # Exits 1 when the version has no section or its body is empty.
 set -euo pipefail
@@ -10,7 +11,7 @@ changelog="${2:-CHANGELOG.md}"
 
 notes="$(awk -v ver="$version" '
   index($0, "## [" ver "]") == 1 { found = 1; next }
-  found && index($0, "## [") == 1 { exit }
+  found && (index($0, "## [") == 1 || $0 ~ /^\[[^]]+\]: /) { exit }
   found { print }
 ' "$changelog")"
 
