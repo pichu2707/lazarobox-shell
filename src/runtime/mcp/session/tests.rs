@@ -17,7 +17,13 @@ use tokio::{
 use super::*;
 use crate::{
     core::ai::tools::{Call, mcp::MAX_LINE_BYTES, registry},
-    runtime::mcp::Outcome,
+    runtime::mcp::{
+        Outcome,
+        external::{
+            ExternalSet, Slot,
+            fake::{host_env, lab, timeouts},
+        },
+    },
 };
 
 /// Answers every call with "done" and remembers it.
@@ -205,7 +211,8 @@ async fn ready(started: &Started) -> Client {
 }
 
 fn open(hub: &mut Hub, n: u32, dispatch: Arc<dyn Dispatch>) -> Started {
-    hub.open(pane(n), tools(), dispatch).unwrap()
+    hub.open(pane(n), tools(), dispatch, Slot::default())
+        .unwrap()
 }
 
 fn mode(path: &Path) -> u32 {
@@ -681,6 +688,7 @@ async fn nothing_is_dispatched_once_the_session_is_marked_closed() {
         token,
         tools(),
         fake.clone(),
+        Slot::default(),
         unsafe { libc::geteuid() },
         Duration::from_secs(5),
         DRAIN_GRACE,
@@ -811,4 +819,57 @@ async fn a_full_hangup_during_the_drain_drops_the_call_without_waiting_for_the_g
     probe.stays_alive().await;
     drop(c);
     probe.dropped().await;
+}
+
+/// The names a client gets for `tools/list`.
+async fn listed(client: &mut Client) -> Vec<String> {
+    send(client, r#"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#).await;
+    let reply = recv(client).await.unwrap();
+    reply["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+// The set is started after the session is open (the turn starts it), so the
+// slot is read when a connection is served, not when the session opens.
+#[tokio::test]
+async fn a_session_offers_the_tools_of_the_set_its_slot_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let lab = lab();
+    let servers = [lab.server("fs", "search", "found")];
+    let refs: Vec<&crate::core::ai::config::McpServer> = servers.iter().collect();
+    let set = Arc::new(
+        ExternalSet::start(
+            &refs,
+            &lab.home,
+            host_env,
+            timeouts(Duration::from_secs(10)),
+        )
+        .await,
+    );
+    let mut hub = hub(dir.path());
+    let slot = Slot::default();
+    let started = hub
+        .open(pane(1), tools(), Arc::new(Fake::default()), slot.clone())
+        .unwrap();
+    assert!(slot.set(set.clone()).is_ok());
+    let mut c = ready(&started).await;
+    let names = listed(&mut c).await;
+    assert!(names.contains(&"fs__search".to_owned()), "{names:?}");
+    assert!(names.contains(&"read_file".to_owned()), "{names:?}");
+    set.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_empty_slot_leaves_only_the_built_in_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut hub = hub(dir.path());
+    let started = open(&mut hub, 1, Arc::new(Fake::default()));
+    let mut c = ready(&started).await;
+    let names = listed(&mut c).await;
+    assert!(names.contains(&"read_file".to_owned()), "{names:?}");
+    assert!(names.iter().all(|n| !n.contains("__")), "{names:?}");
 }

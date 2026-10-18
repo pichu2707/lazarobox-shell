@@ -43,7 +43,10 @@ use crate::{
             summary::clip,
         },
     },
-    runtime::mcp::{Dispatch, Outcome, external::ExternalSet},
+    runtime::mcp::{
+        Dispatch, Outcome,
+        external::{ExternalSet, Slot},
+    },
 };
 
 /// What the model is told when a call needs the user and no approver is
@@ -84,9 +87,9 @@ pub struct TurnScope {
     /// The chat's origin directory, against which a relative path is read.
     pub origin: PathBuf,
     pub approver: Arc<dyn Approver>,
-    /// The user's MCP servers this turn may call. `None` until a turn starts
-    /// them: a server tool is then refused even after `y`.
-    pub external: Option<Arc<ExternalSet>>,
+    /// The user's MCP servers this turn may call. Empty until the turn has
+    /// started them: a server tool is then refused even after `y`.
+    pub external: Slot,
 }
 
 impl TurnScope {
@@ -97,7 +100,7 @@ impl TurnScope {
             locality,
             origin,
             approver: Arc::new(Unwired),
-            external: None,
+            external: Slot::default(),
         }
     }
 }
@@ -241,9 +244,11 @@ async fn call_external(
     let Some(nonce) = nonce else {
         return ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER);
     };
-    // No turn cancel reaches here: a cancelled turn drops this future, which
-    // drops the request in flight (its late answer is skipped by id). Sending
-    // `notifications/cancelled` is left to 4c-c, which owns the turn.
+    // No turn cancel reaches here, and none can without changing how a turn
+    // ends: `Chats::cancel` aborts the turn's task at once, which drops this
+    // future and with it the request in flight (its late answer is skipped by
+    // id). The server is not sent `notifications/cancelled`; a call that was
+    // running is simply abandoned, and the chat is idle.
     let outcome = set.call(name, args, std::future::pending()).await;
     let status = if outcome.is_error {
         ToolStatus::Error
@@ -360,6 +365,13 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     let reason = format!("pane {number} is running a program");
                     ended(ToolStatus::Denied, format!("denied: {reason}"), &reason)
                 }
+                // `Typed` answers a run in a pane. A user tool is only ever
+                // sent (after `y`) or denied, never routed by another answer.
+                (Decision::Typed(_), Call::External { .. }) => ended(
+                    ToolStatus::Denied,
+                    format!("denied: {NOT_COMMAND}"),
+                    NOT_COMMAND,
+                ),
                 (Decision::Typed(number), Call::RunInPane { .. }) => ended(
                     ToolStatus::Ok,
                     TYPED_TEXT.to_owned(),
@@ -377,7 +389,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                         tool,
                         args,
                     },
-                ) => match &scope.external {
+                ) => match scope.external.get() {
                     // What the user approved must be what is routed.
                     Some(set) if set.qualified().raw_of(&name) == Some((&server, &tool)) => {
                         call_external(set, &name, args, super::new_nonce()).await

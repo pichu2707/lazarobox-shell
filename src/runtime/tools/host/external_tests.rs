@@ -58,7 +58,7 @@ async fn world(
     let (tx, rx) = mpsc::channel(32);
     let mut scope = TurnScope::new(tx, Locality::Local, lab.home.clone());
     scope.approver = approver;
-    scope.external = Some(set.clone());
+    assert!(scope.external.set(set.clone()).is_ok());
     let host = ToolHost::new(Some(lab.home.clone().into()), None, None, Limits::default());
     (host.dispatch(scope), rx, set)
 }
@@ -119,6 +119,19 @@ async fn a_decline_sends_nothing() {
     .await;
     let out = dispatch.call(call()).await;
     assert!(out.is_error && out.text.contains("declined"), "{out:?}");
+    let (_, _, status, _) = pair(&events(&mut rx));
+    assert_eq!(status, ToolStatus::Denied);
+    assert_eq!(lab.received("fake"), "");
+}
+
+// A `Typed` answer is for a run in a pane; it never reaches a server.
+#[tokio::test]
+async fn a_typed_answer_is_denied_and_sends_nothing() {
+    let lab = lab();
+    let (dispatch, mut rx, _set) =
+        world(&lab, "0", "x", WAIT, Scripted::new(Decision::Typed(1))).await;
+    let out = dispatch.call(call()).await;
+    assert!(out.is_error, "{out:?}");
     let (_, _, status, _) = pair(&events(&mut rx));
     assert_eq!(status, ToolStatus::Denied);
     assert_eq!(lab.received("fake"), "");

@@ -61,12 +61,13 @@ use tokio::{
     time::timeout,
 };
 
-use super::{Dispatch, Outcome, Token, guarded_call};
+use super::{Dispatch, Outcome, Token, external::Slot, guarded_call};
 use crate::{
     core::{
         ai::tools::{
             ToolSpec,
             mcp::{Action, Frame, MAX_LINE_BYTES, Server, tool_result},
+            registry,
             wiring::Unwire,
         },
         layout::PaneId,
@@ -161,11 +162,15 @@ impl Hub {
 
     /// Starts the session of `pane`, retiring any earlier one (its token stops
     /// working). `dispatch` is where this chat's calls go.
+    ///
+    /// `external` is where the turn puts its user servers once they run: each
+    /// connection offers (and routes) their tools besides `tools`.
     pub fn open(
         &mut self,
         pane: PaneId,
         tools: Vec<ToolSpec>,
         dispatch: Arc<dyn Dispatch>,
+        external: Slot,
     ) -> io::Result<Started> {
         self.close(pane);
         let token = Token::generate()?;
@@ -183,6 +188,7 @@ impl Hub {
             token.clone(),
             tools,
             dispatch,
+            external,
             self.uid,
             self.handshake,
             self.drain,
@@ -239,6 +245,7 @@ struct Conn {
     token: Arc<Token>,
     tools: Vec<ToolSpec>,
     dispatch: Arc<dyn Dispatch>,
+    external: Slot,
     uid: u32,
     handshake: Duration,
     drain: Duration,
@@ -252,6 +259,7 @@ impl Conn {
         token: Token,
         tools: Vec<ToolSpec>,
         dispatch: Arc<dyn Dispatch>,
+        external: Slot,
         uid: u32,
         handshake: Duration,
         drain: Duration,
@@ -260,6 +268,7 @@ impl Conn {
             token: Arc::new(token),
             tools,
             dispatch,
+            external,
             uid,
             handshake,
             drain,
@@ -439,7 +448,19 @@ async fn serve(stream: UnixStream, conn: Conn, pending: OwnedSemaphorePermit) {
             }
         }
     });
-    let mut server = Server::new(conn.tools);
+    // The user servers of the turn, if they are up by now.
+    let external = conn
+        .external
+        .get()
+        .map(|set| set.qualified().clone())
+        .unwrap_or_default();
+    let mut tools = conn.tools;
+    tools.extend(
+        registry(&external.external())
+            .into_iter()
+            .filter(|tool| external.raw_of(&tool.name).is_some()),
+    );
+    let mut server = Server::with_external(tools, external);
     let mut in_flight: HashMap<String, AbortHandle> = HashMap::new();
     let mut drain = false;
     loop {

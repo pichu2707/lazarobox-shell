@@ -1077,6 +1077,14 @@ fn wire_mcp(env: &CliEnv, job: &Job, dirs: &Dirs) -> Option<Wired> {
     })
 }
 
+/// Whether the tools of `job` will be wired: the CLI will run jailed, and
+/// there is a shim program to wire. A bare CLI would reach the shim without
+/// the jail, so it gets no tools (see `plan`). A jailed layout the jail refuses
+/// later still falls back to text only; that rare case is accepted.
+pub(super) fn runs_jailed(env: &CliEnv, job: &Job) -> bool {
+    launch(job.jail, env.jail) == Launch::Jailed && env.shim.is_some()
+}
+
 /// Decides how the CLI starts. `Err` is the final event of a turn that never
 /// spawns anything.
 fn plan(env: &CliEnv, job: &Job) -> Result<Plan, StreamEvent> {

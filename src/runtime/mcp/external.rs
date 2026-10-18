@@ -13,7 +13,12 @@
 //!   out; the others keep working. A server runs one request at a time.
 //! - [`ExternalSet::shutdown`] stops every server and its process group.
 
-use std::{ffi::OsString, future::Future, path::Path};
+use std::{
+    ffi::OsString,
+    future::Future,
+    path::Path,
+    sync::{Arc, OnceLock},
+};
 
 use futures::{StreamExt, future::join_all, stream};
 use serde_json::Value;
@@ -26,7 +31,10 @@ use super::{
 use crate::core::ai::{
     config::McpServer,
     sanitize::clean,
-    tools::servers::{Qualified, qualify},
+    tools::{
+        ExternalTool,
+        servers::{Qualified, qualify},
+    },
 };
 
 /// What the model is told when a name reaches no running server.
@@ -39,6 +47,11 @@ const START_AT_ONCE: usize = 8;
 /// How long [`ExternalSet::shutdown`] waits for a call in flight to let go of
 /// its server; after that the drop of the set kills it.
 const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Where a turn's set is put once it is started. A turn opens its session (the
+/// tool socket, the host's scope) before its servers are up, so the session
+/// reads the set from here when a call or a `tools/list` arrives.
+pub type Slot = Arc<OnceLock<Arc<ExternalSet>>>;
 
 /// The running servers and the tools they offer.
 pub struct ExternalSet {
@@ -55,7 +68,7 @@ async fn connect(
     home: &Path,
     lookup: &impl Fn(&str) -> Option<OsString>,
     timeouts: Timeouts,
-) -> Result<(McpClient, Vec<crate::core::ai::tools::ExternalTool>), String> {
+) -> Result<(McpClient, Vec<ExternalTool>), String> {
     let mut client = McpClient::start(server, home, lookup, timeouts).await?;
     match client.list_tools().await {
         Ok(tools) => Ok((client, tools)),
@@ -64,6 +77,19 @@ async fn connect(
             Err(error.reason())
         }
     }
+}
+
+/// [`connect`] under the name the chat shows.
+async fn start_one(
+    server: &McpServer,
+    home: &Path,
+    lookup: &impl Fn(&str) -> Option<OsString>,
+    timeouts: Timeouts,
+) -> (String, Result<(McpClient, Vec<ExternalTool>), String>) {
+    (
+        clean(&server.name),
+        connect(server, home, lookup, timeouts).await,
+    )
 }
 
 impl ExternalSet {
@@ -75,15 +101,13 @@ impl ExternalSet {
         timeouts: Timeouts,
     ) -> Self {
         // In order, at most `START_AT_ONCE` at a time.
-        let started: Vec<_> = stream::iter(servers.iter().map(|server| async {
-            (
-                clean(&server.name),
-                connect(server, home, &lookup, timeouts).await,
-            )
-        }))
-        .buffered(START_AT_ONCE)
-        .collect()
-        .await;
+        // The futures are built first: a `StreamExt::map` closure over borrows
+        // makes the future fail the `Send` check of a spawned turn.
+        let starts: Vec<_> = servers
+            .iter()
+            .map(|server| start_one(server, home, &lookup, timeouts))
+            .collect();
+        let started: Vec<_> = stream::iter(starts).buffered(START_AT_ONCE).collect().await;
         let mut clients = Vec::new();
         let mut listed = Vec::new();
         let mut unavailable = Vec::new();
@@ -93,7 +117,7 @@ impl ExternalSet {
                     listed.push((name.clone(), tools));
                     clients.push((name, Mutex::new(Some(client))));
                 }
-                Err(reason) => unavailable.push(format!("mcp: {name}: {reason}")),
+                Err(reason) => unavailable.push(format!("mcp: {name} unavailable: {reason}")),
             }
         }
         let pairs: Vec<(&str, &[_])> = listed
@@ -110,6 +134,16 @@ impl ExternalSet {
     /// The tools offered, under their qualified names.
     pub fn qualified(&self) -> &Qualified {
         &self.qualified
+    }
+
+    /// What the chat is told when the servers are up: one `mcp: started <name>`
+    /// per server that runs, then the notices.
+    pub fn announcements(&self) -> Vec<String> {
+        let started = self
+            .clients
+            .iter()
+            .map(|(name, _)| format!("mcp: started {name}"));
+        started.chain(self.notices()).collect()
     }
 
     /// One line per server that is missing and per tool that was dropped.

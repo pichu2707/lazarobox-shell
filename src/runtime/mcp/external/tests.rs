@@ -59,7 +59,10 @@ async fn a_server_that_cannot_start_is_one_notice_and_the_others_still_work() {
     let set = ExternalSet::start(&refs, &lab.home, host_env, timeouts(LONG)).await;
     let notices = set.notices();
     assert_eq!(notices.len(), 1, "{notices:?}");
-    assert!(notices[0].starts_with("mcp: broken:"), "{notices:?}");
+    assert!(
+        notices[0].starts_with("mcp: broken unavailable: "),
+        "{notices:?}"
+    );
     let out = set.call("fine__ping", json!({}), never()).await;
     assert_eq!(out.text, "pong");
     let missing = set.call("broken__x", json!({}), never()).await;
@@ -151,5 +154,23 @@ async fn more_servers_than_the_start_cap_all_come_up_in_order() {
     let want: Vec<String> = (0..12).map(|n| format!("s{n}__t")).collect();
     assert_eq!(names, want);
     assert_eq!(set.call("s11__t", json!({}), never()).await.text, "from 11");
+    set.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_chat_is_told_which_servers_started_and_which_did_not() {
+    let lab = lab();
+    let mut broken = lab.server("broken", "x", "never");
+    broken.command = "/nonexistent/lazarobox-fake".to_owned();
+    let servers = [broken, lab.server("fine", "ping", "pong")];
+    let refs: Vec<&McpServer> = servers.iter().collect();
+    let set = ExternalSet::start(&refs, &lab.home, host_env, timeouts(LONG)).await;
+    let lines = set.announcements();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[0], "mcp: started fine");
+    assert!(
+        lines[1].starts_with("mcp: broken unavailable: "),
+        "{lines:?}"
+    );
     set.shutdown().await;
 }

@@ -91,6 +91,11 @@ struct Repo {
     head_file: Option<PathBuf>,
 }
 
+/// The git root at or above `cwd`: the directory that holds `.git`.
+pub fn git_root(cwd: &Path) -> Option<PathBuf> {
+    find_repo(cwd).map(|repo| repo.root)
+}
+
 /// The nearest repository at or above `cwd`, within `WALK_LIMIT` levels.
 fn find_repo(cwd: &Path) -> Option<Repo> {
     cwd.ancestors().take(WALK_LIMIT).find_map(inspect)

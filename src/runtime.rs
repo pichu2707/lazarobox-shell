@@ -295,6 +295,7 @@ pub async fn run() -> io::Result<()> {
         .and_then(Path::parent)
         .map(Path::to_owned);
     let tool_host = tools::ToolHost::from_env();
+    let servers_home = env::var_os("HOME").map(PathBuf::from);
     // What the machine offers for notifications (display, bus, notify-send,
     // sound players), probed once now in the background: a slow lookup never
     // delays a send, it just fills the slot later. The `t` test refreshes it.
@@ -375,6 +376,15 @@ pub async fn run() -> io::Result<()> {
                     env::var_os("XDG_RUNTIME_DIR").as_deref(),
                     store_dir.as_deref(),
                 ),
+            )
+            // The user's servers, started only by a turn with tools on. They
+            // need a home to run in: without `$HOME` none is started.
+            .with_servers(
+                servers_home
+                    .as_ref()
+                    .map_or_else(Vec::new, |_| app.ai().mcp_servers().to_vec()),
+                servers_home.clone().unwrap_or_default(),
+                chat::wires_for(cli_env.clone()),
             ),
         )
         .with_store(chat_store::spawn_at(store_path, store_tx));
