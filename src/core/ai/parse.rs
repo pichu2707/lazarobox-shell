@@ -143,7 +143,8 @@ pub fn parse_version(stdout: &[u8]) -> Option<String> {
 /// `(major, minor, patch)` of the first token of a version line that reads
 /// like `x.y.z` (`2.1.302 (Claude Code)`, `codex-cli 0.130.0`, `v1.2.3`,
 /// `2.1.259-beta.1`). `None` when no token does: the caller decides what an
-/// unreadable version means. The tuple compares numerically, field by field.
+/// unreadable version means. A pre-release counts as its base version
+/// (`2.1.259-beta.1` is `2.1.259`). The tuple compares numerically, field by field.
 pub fn version_triplet(line: &str) -> Option<(u32, u32, u32)> {
     line.split_whitespace().find_map(|token| {
         let mut parts = token.trim_start_matches('v').splitn(3, '.');

@@ -1269,13 +1269,13 @@ fn the_ollama_body_offers_the_external_tools_after_the_built_ins() {
     assert!(names(body_of(ollama_round_body(&req, &[], false))).is_empty());
 }
 
-/// Every flag the claude argv passes, with the first claude release that
-/// knows it. Adding a flag to `claude_invocation` without a row here fails
-/// `every_claude_flag_is_pinned_to_a_minimum_version`; adding one newer than
-/// `CLAUDE_MIN_VERSION` fails `the_claude_minimum_is_the_newest_flag`.
+/// Every flag a claude turn passes, with the first claude release that knows
+/// it. Adding a flag to `claude_invocation` or to the tools wiring without a
+/// row here fails `every_claude_flag_is_pinned_to_a_minimum_version`; adding
+/// one newer than `CLAUDE_MIN_VERSION` fails `the_claude_minimum_is_the_newest_flag`.
 /// `--permission-prompts none` is the newest (2.1.259); `--safe-mode` is
-/// 2.1.169; the others predate both (1.0.0 stands for "older than 2.1.169",
-/// not for a measured release).
+/// 2.1.169. 1.0.0 means older than any release we gate on; the value is
+/// irrelevant as long as it is below the newest row.
 const CLAUDE_FLAG_MINIMUMS: &[(&str, (u32, u32, u32))] = &[
     ("-p", (1, 0, 0)),
     ("--output-format", (1, 0, 0)),
@@ -1289,27 +1289,58 @@ const CLAUDE_FLAG_MINIMUMS: &[(&str, (u32, u32, u32))] = &[
     ("--no-session-persistence", (1, 0, 0)),
     ("--system-prompt", (1, 0, 0)),
     ("--model", (1, 0, 0)),
+    // The tools wiring (`tools::wiring::claude`).
+    ("--mcp-config", (1, 0, 0)),
+    ("--allowedTools", (1, 0, 0)),
+    ("--setting-sources", (1, 0, 0)),
 ];
 
-/// The flags of a claude argv: what starts with `-`, before the system
-/// prompt value, plus the model flag without its value.
+/// The flags of an argv: every `-`-prefixed argument, without its `=value`.
+/// The value that follows `--system-prompt` (the prompt text) and
+/// `--permission-prompts` is skipped by construction, so text never counts.
 fn claude_flags(args: &[String]) -> Vec<String> {
-    let prompt_at = args
-        .iter()
-        .position(|a| a == "--system-prompt")
-        .expect("the argv names the system prompt flag");
-    args.iter()
-        .enumerate()
-        .filter(|(i, a)| a.starts_with('-') && (*i <= prompt_at || a.starts_with("--model=")))
-        .map(|(_, a)| a.split('=').next().unwrap_or(a).to_owned())
-        .collect()
+    let mut flags = Vec::new();
+    let mut skip = false;
+    for arg in args {
+        if std::mem::take(&mut skip) {
+            continue;
+        }
+        if arg.starts_with('-') {
+            flags.push(arg.split('=').next().unwrap_or(arg).to_owned());
+            skip = arg == "--system-prompt" || arg == "--permission-prompts";
+        }
+    }
+    flags
+}
+
+/// The flags of a text-only turn, of a turn built with a tools session (its
+/// tools prompt argv) and of the wiring the runtime adds to it.
+fn all_claude_flags() -> Vec<String> {
+    let mut flags =
+        claude_flags(&process(Adapter::Claude.build(&claude_request(Some("sonnet")))).args);
+    let (_, on) = tools_on("claude", true);
+    let p = process(Adapter::Claude.build_with(&on, &["claude"]));
+    flags.extend(claude_flags(&p.args));
+    flags.extend(claude_flags(&p.tools.expect("a tools argv").args));
+    let wire = McpWire {
+        socket: "/run/user/1000/lazarobox/s-1-1.sock".into(),
+        token: Secret::new("0123456789abcdef0123456789abcdef"),
+        unwire: Unwire::none(),
+    };
+    let wiring = crate::core::ai::tools::wiring::claude(
+        std::path::Path::new("/usr/bin/lazarobox"),
+        std::path::Path::new("/tmp/mcp.json"),
+        &wire,
+    )
+    .expect("utf-8 paths");
+    flags.extend(claude_flags(&wiring.args));
+    flags
 }
 
 #[test]
 fn every_claude_flag_is_pinned_to_a_minimum_version() {
-    let p = process(Adapter::Claude.build(&claude_request(Some("sonnet"))));
-    let flags = claude_flags(&p.args);
-    assert!(flags.len() >= 12, "the argv carries its flags: {flags:?}");
+    let flags = all_claude_flags();
+    assert!(flags.len() >= 15, "the argv carries its flags: {flags:?}");
     for flag in &flags {
         assert!(
             CLAUDE_FLAG_MINIMUMS.iter().any(|(f, _)| f == flag),
@@ -1319,9 +1350,25 @@ fn every_claude_flag_is_pinned_to_a_minimum_version() {
     for (flag, _) in CLAUDE_FLAG_MINIMUMS {
         assert!(
             flags.iter().any(|f| f == flag),
-            "{flag} is in the table but the argv no longer passes it"
+            "{flag} is in the table but no turn passes it any more"
         );
     }
+}
+
+#[test]
+fn the_flag_scan_never_reads_prompt_text_as_a_flag() {
+    let args = strings(&[
+        "-p",
+        "--system-prompt",
+        "--evil",
+        "--model=x",
+        "--permission-prompts",
+        "-none",
+    ]);
+    assert_eq!(
+        claude_flags(&args),
+        ["-p", "--system-prompt", "--model", "--permission-prompts"]
+    );
 }
 
 #[test]

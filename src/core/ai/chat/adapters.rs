@@ -344,7 +344,9 @@ pub fn claude_min_version_text() -> String {
 /// The `x.y.z` of the detected claude `version` line when it is known and
 /// below [`CLAUDE_MIN_VERSION`]. A missing or unreadable version is `None`: it
 /// fails open, because a failed `--version` probe must not lock a user with a
-/// working claude out of the chat.
+/// working claude out of the chat. Failing open is also safe: an old claude
+/// rejects the unknown flag before it does anything, so it can never run with
+/// weaker flags; fail-open can only reproduce the original error.
 pub fn claude_old_version(version: Option<&str>) -> Option<String> {
     let found = version.and_then(parse::version_triplet)?;
     (found < CLAUDE_MIN_VERSION).then(|| format!("{}.{}.{}", found.0, found.1, found.2))

@@ -33,7 +33,8 @@ pub fn guidance(availability: &Availability) -> Option<String> {
         Availability::Outdated { engine, version } => format!(
             "{engine} {version} is too old for lazarobox (it needs {} or newer); \
              update it: claude update, brew upgrade claude-code, or \
-             npm i -g @anthropic-ai/claude-code@latest",
+             npm i -g @anthropic-ai/claude-code@latest; then refresh from the menu \
+             (Ctrl+Space m, then r)",
             adapters::claude_min_version_text()
         ),
         Availability::NoModel { engine } => {
@@ -188,7 +189,8 @@ mod tests {
             text,
             "claude 2.1.200 is too old for lazarobox (it needs 2.1.259 or newer); \
              update it: claude update, brew upgrade claude-code, or \
-             npm i -g @anthropic-ai/claude-code@latest"
+             npm i -g @anthropic-ai/claude-code@latest; then refresh from the menu \
+             (Ctrl+Space m, then r)"
         );
     }
 }
