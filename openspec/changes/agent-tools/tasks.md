@@ -305,8 +305,16 @@ Split: this PR ships the client over a generic transport (4b.1, client part of 4
 ## PR15 / 4c: Re-exposure and approval (`src/core/ai/tools/mod.rs`, `src/runtime/tools/mod.rs`, `src/ui/components/chat.rs`, `README.md`)
 
 - Note (4a review, carried by 4b): when 4c wires `servers::resolve`, canonicalize BOTH the entry `project` path and the chat's origin root there, not inside the pure `resolve`. A symlinked `project` never matches: that fails closed when adding a server but fails OPEN when a disabled project entry is meant to remove a global one. Also in 4c: route calls with `Qualified::raw_of` and show `Dropped::notice` (4b tests both against fake servers; no production caller yet).
-- [ ] 4c.1 RED: user tools are always write tools; every call needs `y` (prompt shows server, tool, arguments); the server is not contacted before `y`; results wrapped untrusted; declined/timeout/cancel give `denied`.
-- [ ] 4c.2 RED: user tools appear in the registry for MCP and Ollama only when resolved; tools off hides them.
+Split (approved, three PRs to main, one after another, each after the previous merge):
+
+- 4c-a pure core: `Call::External`, `parse_call_with` (lookup by `Qualified`, never a split on `__`), `ask_for` External (sanitized, capped), `Tools::On.external`, registry and Ollama body with externals, Ollama decoder and mcp `Server` routing. No live behaviour: the app still denies External (`NO_USER_TOOLS`) and nothing passes externals. Done in this PR; the RED tests of 4c.1 and 4c.2 that are pure are in it.
+- 4c-b runtime host: `ExternalSet` (start, list, qualify, call by `raw_of`, shutdown) and the `ToolHost` External branch (only after `y`, D14 wrap and cap, denied/timeout/cancel), against fake servers. Not wired.
+- 4c-c live wiring and README: pre-turn start and list with `mcp: started`, `unavailable` and `Dropped::notice` notices, canonicalized `resolve` (symlink test), hub registry with externals, the app prompt (always `y`, even in `auto`), shutdown on close and quit, README "Tus propios servidores MCP".
+
+Interpretation: spawn and `tools/list` happen at the start of a turn with tools on (announced); no `tools/call` before `y`; nothing spawns with tools off, on config load or on repo open.
+
+- [ ] 4c.1 RED: user tools are always write tools; every call needs `y` (prompt shows server, tool, arguments); the server is not contacted before `y`; results wrapped untrusted; declined/timeout/cancel give `denied`. (4c-a: the always-asks and the sanitized, capped prompt text, pure part only; the rest in 4c-b and 4c-c.)
+- [ ] 4c.2 RED: user tools appear in the registry for MCP and Ollama only when resolved; tools off hides them. (4c-a: registry, mcp `Server` and Ollama body and decoder take externals; the resolution is in 4c-c.)
 - [ ] 4c.3 GREEN: implement.
 - [ ] 4c.4 Gate.
 - [ ] 4c.5 Docs: README "Your own MCP servers".

@@ -651,3 +651,37 @@ fn invalid_utf8_gives_the_same_events_and_calls_from_one_parse() {
         })
     );
 }
+
+// 4c: the Ollama decoder routes a qualified name through the lookup.
+#[test]
+fn a_qualified_call_is_routed_by_the_lookup_and_a_stranger_is_refused() {
+    use crate::core::ai::tools::{ExternalTool, servers::qualify};
+    let tool = ExternalTool {
+        name: "write".into(),
+        description: "d".into(),
+        schema: serde_json::json!({"type": "object"}),
+    };
+    let lookup = qualify(&[("fs", &[tool])]);
+    let call = |name: &str| {
+        format!(
+            r#"{{"message":{{"content":"","tool_calls":[{{"function":{{"name":"{name}","arguments":{{"p":1}}}}}}]}},"done":false}}"#
+        )
+    };
+    let input = format!("{}\n{}\n{DONE}\n", call("fs__write"), call("fs__other"));
+    let mut decoder = OllamaToolDecoder::server_with(lookup);
+    run(&mut decoder, &[input.as_bytes()]);
+    let calls = decoder.take_calls();
+    assert_eq!(
+        calls[0].call,
+        Ok(Call::External {
+            name: "fs__write".into(),
+            server: "fs".into(),
+            tool: "write".into(),
+            args: serde_json::json!({"p": 1}),
+        })
+    );
+    assert_eq!(calls[1].call, invalid(ToolError::UnknownTool));
+    // Without a lookup the same name stays unknown.
+    let (_, plain) = tool_run(&[format!("{}\n{DONE}\n", call("fs__write")).as_bytes()]);
+    assert_eq!(plain[0].call, invalid(ToolError::UnknownTool));
+}

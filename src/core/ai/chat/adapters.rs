@@ -279,7 +279,11 @@ pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
         "stream": true,
     });
     if tools {
-        body["tools"] = registry(&[])
+        let external = match &request.tools {
+            Tools::On { external, .. } => external.external(),
+            Tools::Off => Vec::new(),
+        };
+        body["tools"] = registry(&external)
             .into_iter()
             .map(|t| {
                 json!({"type": "function", "function": {

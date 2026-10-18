@@ -3567,6 +3567,7 @@ mod tests {
         request.engine = "claude".into();
         request.tools = Tools::On {
             origin: None,
+            external: Default::default(),
             mcp: None,
         };
         panes.apply(vec![Effect::ChatSend {

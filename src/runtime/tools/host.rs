@@ -271,7 +271,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     let announce = StreamEvent::ToolCall {
         id,
         name: call.name().to_owned(),
-        summary: clip(call.argument()),
+        summary: clip(&call.argument()),
         approval: ask.map(Box::new),
     };
     if scope.events.send(announce).await.is_err() {

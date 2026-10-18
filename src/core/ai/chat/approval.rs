@@ -8,9 +8,12 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use serde_json::Value;
+
 use crate::core::ai::{
     chat::engine::CallId,
     config::ApprovalMode,
+    sanitize::clean,
     tools::{
         Call, Locality,
         command::Refusal,
@@ -85,8 +88,79 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         Call::ReadFile { path } if locality == Locality::Cloud => {
             Some(ApprovalAsk::Read { path: path.clone() })
         }
+        // A user tool always asks, on any engine and in any approval mode:
+        // lazarobox cannot know what it does, and a read-only hint is ignored.
+        Call::External {
+            server, tool, args, ..
+        } => Some(ApprovalAsk::External {
+            server: shown_name(server),
+            tool: shown_name(tool),
+            args: shown_args(args),
+        }),
         Call::ReadFile { .. } | Call::FindDir { .. } | Call::ListDir { .. } => None,
     }
+}
+
+/// The most characters of a user tool's argument values an ask shows, shared
+/// fairly between the keys.
+pub const EXTERNAL_ARGS_SHOWN: usize = 1024;
+
+/// The fewest characters of one value an ask shows, however many keys.
+const MIN_VALUE_SHOWN: usize = 16;
+
+/// The longest server, tool or key name an ask shows, in characters.
+const SHOWN_NAME: usize = 64;
+
+/// One sanitized line: every run of whitespace is one space. Cut at `cap`
+/// characters, with an ellipsis. Returns the text and how many characters
+/// were left out.
+///
+/// What is shown goes through `clean` (control and escape sequences removed,
+/// secrets redacted) and whitespace flattening, so it can differ from the
+/// exact bytes that are sent on `y`.
+fn flat(text: &str, cap: usize) -> (String, usize) {
+    let line = clean(text).split_whitespace().collect::<Vec<_>>().join(" ");
+    let total = line.chars().count();
+    if total <= cap {
+        return (line, 0);
+    }
+    let mut cut: String = line.chars().take(cap).collect();
+    cut.push('\u{2026}');
+    (cut, total - cap)
+}
+
+/// A name from a server, as one sanitized line, cut with an ellipsis.
+fn shown_name(name: &str) -> String {
+    flat(name, SHOWN_NAME).0
+}
+
+/// The arguments as `key: value` pairs. Every top-level key is listed, and
+/// each value has its own cap, so a key cannot be pushed out of view by long
+/// values before it (the map sorts keys, and a model chooses their names). A
+/// cut says how much is hidden: the characters of the values, out of all of
+/// them.
+fn shown_args(args: &Value) -> String {
+    let pairs: Vec<(String, String)> = match args {
+        Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| (k.clone(), v.to_string()))
+            .collect(),
+        other => vec![(String::new(), other.to_string())],
+    };
+    let cap = (EXTERNAL_ARGS_SHOWN / pairs.len().max(1)).max(MIN_VALUE_SHOWN);
+    let (mut hidden, mut total) = (0, 0);
+    let mut parts = Vec::with_capacity(pairs.len());
+    for (key, value) in &pairs {
+        let (shown, cut) = flat(value, cap);
+        hidden += cut;
+        total += shown.chars().count().saturating_sub(usize::from(cut > 0)) + cut;
+        parts.push(format!("{}: {shown}", shown_name(key)));
+    }
+    let mut out = parts.join(", ");
+    if hidden > 0 {
+        out.push_str(&format!(" (truncated: {hidden} of {total} chars hidden)"));
+    }
+    out
 }
 
 /// What the app does with a model's ask (D18, D21).
@@ -1019,5 +1093,145 @@ mod tests {
         fresh.request(run("B"), Origin::Block).unwrap();
         assert_eq!(fresh.answer(stale, Reply::Approve, Press::Press), None);
         assert!(fresh.pending().is_some());
+    }
+
+    fn external_call(args: serde_json::Value) -> Call {
+        Call::External {
+            name: "fs__write".into(),
+            server: "fs".into(),
+            tool: "write".into(),
+            args,
+        }
+    }
+
+    // 4c: a user tool always asks, on either locality, whatever it claims.
+    #[test]
+    fn an_external_call_always_asks_with_server_tool_and_arguments() {
+        for locality in [Locality::Local, Locality::Cloud] {
+            assert_eq!(
+                ask_for(&external_call(serde_json::json!({"path": "~/x"})), locality),
+                Some(ApprovalAsk::External {
+                    server: "fs".into(),
+                    tool: "write".into(),
+                    args: r#"path: "~/x""#.into(),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn the_shown_arguments_are_sanitized_and_capped_with_a_visible_cut() {
+        let hostile = serde_json::json!({"k": "a\u{1b}[31mb\u{202e}c"});
+        let Some(ApprovalAsk::External { args, .. }) =
+            ask_for(&external_call(hostile), Locality::Cloud)
+        else {
+            panic!("an external call asks");
+        };
+        assert!(
+            !args.chars().any(|c| c.is_control() || c == '\u{202e}'),
+            "{args:?}"
+        );
+        let long = serde_json::json!({"k": "x".repeat(EXTERNAL_ARGS_SHOWN * 2)});
+        let Some(ApprovalAsk::External { args, .. }) =
+            ask_for(&external_call(long), Locality::Cloud)
+        else {
+            panic!("an external call asks");
+        };
+        // 2 quotes plus the text: the hidden count is exact.
+        let total = EXTERNAL_ARGS_SHOWN * 2 + 2;
+        let hidden = total - EXTERNAL_ARGS_SHOWN;
+        assert!(
+            args.ends_with(&format!(" (truncated: {hidden} of {total} chars hidden)")),
+            "{args}"
+        );
+        assert!(
+            args.chars().count() < EXTERNAL_ARGS_SHOWN + 80,
+            "{}",
+            args.len()
+        );
+    }
+
+    fn shown(args: serde_json::Value) -> String {
+        match ask_for(&external_call(args), Locality::Cloud) {
+            Some(ApprovalAsk::External { args, .. }) => args,
+            other => panic!("an external call asks: {other:?}"),
+        }
+    }
+
+    // W1: the map sorts keys, so a key sorted last must not fall past the cut.
+    #[test]
+    fn a_dangerous_key_sorted_last_stays_visible_behind_long_padding() {
+        let args = serde_json::json!({
+            "a_pad": "x".repeat(1500),
+            "b_pad": "y".repeat(1500),
+            "zz_cmd": "rm -rf ~",
+        });
+        let text = shown(args);
+        assert!(text.contains(r#"zz_cmd: "rm -rf ~""#), "{text}");
+        assert!(
+            text.contains("a_pad: ") && text.contains("b_pad: "),
+            "{text}"
+        );
+        assert!(text.contains("chars hidden)"), "{text}");
+    }
+
+    #[test]
+    fn every_key_is_listed_even_when_all_values_are_cut() {
+        let mut map = serde_json::Map::new();
+        for n in 0..8 {
+            map.insert(format!("key{n}"), serde_json::json!("v".repeat(400)));
+        }
+        let text = shown(serde_json::Value::Object(map));
+        for n in 0..8 {
+            assert!(text.contains(&format!("key{n}: ")), "{text}");
+        }
+        assert!(text.chars().count() < 1024 + 8 * 24 + 80, "{}", text.len());
+    }
+
+    #[test]
+    fn nothing_is_cut_when_it_all_fits() {
+        let text = shown(serde_json::json!({"a": 1, "b": "two"}));
+        assert_eq!(text, r#"a: 1, b: "two""#);
+    }
+
+    // W2: a name that is cut says so, and words stay apart.
+    #[test]
+    fn a_long_name_is_cut_with_an_ellipsis_and_words_keep_a_space() {
+        let call = Call::External {
+            name: "s__t".into(),
+            server: format!("{}\n\t  {}", "a".repeat(10), "b".repeat(100)),
+            tool: "two   words".into(),
+            args: serde_json::json!({}),
+        };
+        let Some(ApprovalAsk::External { server, tool, .. }) = ask_for(&call, Locality::Local)
+        else {
+            panic!("an external call asks");
+        };
+        assert_eq!(tool, "two words");
+        assert!(
+            server.starts_with(&format!("{} {}", "a".repeat(10), "b")),
+            "{server}"
+        );
+        assert!(server.ends_with('\u{2026}'), "{server}");
+        assert_eq!(server.chars().count(), 64 + 1);
+    }
+
+    #[test]
+    fn hostile_server_and_tool_names_are_sanitized_in_the_ask() {
+        let call = Call::External {
+            name: "s__t".into(),
+            server: "s\u{1b}[2J".into(),
+            tool: "t\u{202e}x".into(),
+            args: serde_json::json!({}),
+        };
+        let Some(ApprovalAsk::External { server, tool, .. }) = ask_for(&call, Locality::Local)
+        else {
+            panic!("an external call asks");
+        };
+        assert!(
+            !format!("{server}{tool}")
+                .chars()
+                .any(|c| c.is_control() || c == '\u{202e}')
+        );
     }
 }
