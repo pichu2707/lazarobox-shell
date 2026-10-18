@@ -18,6 +18,17 @@ baseline.
   system use claude or Ollama for chat`. claude keeps the neutral text, since
   it runs without the jail there (#180).
 
+### Fixed
+
+- A claude (or codex, or gemini) older than lazarobox needs no longer ends a
+  turn with a bare `error: unknown option '...'` (#180). When the last line
+  the CLI wrote is that error, the chat now says the CLI is too old and how to
+  update it. The option is named only when it is one of the flags lazarobox
+  itself passes (`claude does not know the option --permission-prompts: this
+  claude is older than lazarobox needs; update it (claude update) and try
+  again`); for any other word the message does not repeat it. The secret
+  redactor is unchanged. No flag is dropped: the text-only options stay on.
+
 ## [0.17.0] - 2026-10-18
 
 ### Added
