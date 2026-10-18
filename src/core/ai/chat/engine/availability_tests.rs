@@ -144,7 +144,7 @@ fn codex_and_gemini_need_a_jail() {
             availability_with(&c, Some(&d), NO_JAIL, &[], &|_| true),
             Availability::NoJail {
                 engine: id.into(),
-                reason: JailOff::NotLinux.text(),
+                reason: JailOff::NotLinux.text_required(),
             }
         );
         assert_eq!(
@@ -195,7 +195,7 @@ fn codex_is_ready_with_a_jail_and_no_jail_otherwise() {
         availability(&c, Some(&d), NO_JAIL),
         Availability::NoJail {
             engine: "codex".into(),
-            reason: "the CLI jail needs Linux".into()
+            reason: "the CLI jail needs Linux; on this system use claude or Ollama for chat".into()
         }
     );
 }
@@ -212,7 +212,7 @@ fn gemini_is_ready_with_a_jail_and_no_jail_otherwise() {
         availability(&c, Some(&d), NO_JAIL),
         Availability::NoJail {
             engine: "gemini".into(),
-            reason: "the CLI jail needs Linux".into()
+            reason: "the CLI jail needs Linux; on this system use claude or Ollama for chat".into()
         }
     );
 }

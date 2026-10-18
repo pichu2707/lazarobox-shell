@@ -1146,6 +1146,34 @@ fn a_kernel_without_the_abi_says_what_to_upgrade_to() {
     assert_eq!(other_os.short(home()), "needs Linux");
 }
 
+#[test]
+fn a_cli_that_needs_the_jail_is_told_what_to_use_instead_on_other_systems() {
+    assert_eq!(
+        JailOff::NotLinux.text_required(),
+        "the CLI jail needs Linux; on this system use claude or Ollama for chat"
+    );
+    assert_eq!(
+        JailOff::NotLinux.short_required(),
+        "needs Linux · use claude"
+    );
+    // The neutral texts stay as they are: claude runs bare and the helper
+    // emits the plain sentence.
+    assert_eq!(JailOff::NotLinux.text(), "the CLI jail needs Linux");
+    assert_eq!(JailOff::NotLinux.short(), "needs Linux");
+}
+
+#[test]
+fn only_the_other_system_reason_carries_the_hint() {
+    for off in [
+        JailOff::NoLandlock(0),
+        JailOff::NoLandlock(2),
+        JailOff::NotProbed,
+    ] {
+        assert_eq!(off.text_required(), off.text());
+        assert_eq!(off.short_required(), off.short());
+    }
+}
+
 const NODE_BIN: &str = "/home/u/.nvm/versions/node/v24/bin";
 
 #[test]

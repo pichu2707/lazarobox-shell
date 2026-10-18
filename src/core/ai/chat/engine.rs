@@ -293,7 +293,7 @@ pub fn availability_with(
     {
         return Availability::NoJail {
             engine,
-            reason: off.text(),
+            reason: off.text_required(),
         };
     }
     if gated_off.contains(&engine.as_str()) {
