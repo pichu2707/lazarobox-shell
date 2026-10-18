@@ -1,7 +1,10 @@
 //! Enter on the Updates row: a cargo install runs in a new tab, anything else
 //! shows the command to copy.
 
-use std::{ffi::OsString, path::PathBuf};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 use super::*;
 use crate::core::update::{
@@ -35,7 +38,8 @@ fn enter() -> AppEvent {
 fn on_updates(update: Option<&str>, env: Option<InstallEnv>) -> App {
     let mut a = launched(80, 25)
         .with_update(update.map(str::to_owned))
-        .with_install_env(env);
+        .with_install_env(env)
+        .with_cargo_check(|_| true);
     a.sync_mouse();
     press(&mut a, "tn");
     a.update(ctrl_space());
@@ -214,6 +218,24 @@ fn a_refused_cargo_says_so_instead_of_looking_like_nothing_happened() {
         footer(&a)
     );
     assert!(footer(&a).contains("not safe"), "{}", footer(&a));
+}
+
+#[test]
+fn a_cargo_that_stopped_being_trusted_since_start_up_is_refused_at_enter() {
+    // Start-up found and trusted the cargo; by Enter it no longer passes (a
+    // folder above it was opened up). The check runs again, on that path.
+    let mut a = on_updates(Some("0.15.4"), Some(cargo_env())).with_cargo_check(|path| {
+        assert_eq!(path, Path::new(CARGO), "the path that was found is checked");
+        false
+    });
+    let tabs = a.tabs.len();
+    let effects = a.update(enter());
+    assert!(spawned(&effects).is_empty(), "nothing runs: {effects:?}");
+    assert_eq!(a.tabs.len(), tabs, "no tab opens");
+    assert_eq!(footer(&a), Fallback::UntrustedCargo.footer());
+    // Still trusted: the same app runs it, so the refusal is the check's.
+    let mut b = on_updates(Some("0.15.4"), Some(cargo_env())).with_cargo_check(|_| true);
+    assert_eq!(spawned(&b.update(enter())).len(), 1);
 }
 
 #[test]

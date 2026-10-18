@@ -320,9 +320,10 @@ pub fn install_env(path: &OsStr) -> update::InstallEnv {
 /// one that does not exist stays as given. The `cargo` is the one beside the
 /// running binary, else the first on `path`, and only if lazarobox may run it
 /// on its own account (not under `/tmp`, not writable by others, nor any
-/// folder above it; the group may write when the user owns it, as under umask
-/// 002). It is kept as found, not resolved: the rustup proxy dispatches on the
-/// name it is started under. A cargo that was found but refused sets
+/// folder above it, nor the folders that hold a link to it; the group may write
+/// only when the user owns it and the group is private to the user, as under
+/// umask 002). It is kept as found, not resolved: the rustup proxy dispatches
+/// on the name it is started under. A cargo that was found but refused sets
 /// `cargo_refused`, so the menu can say why nothing ran.
 pub fn install_env_from(
     exe: Option<PathBuf>,

@@ -986,12 +986,53 @@ mod install_env {
             fs::set_permissions(dir, fs::Permissions::from_mode(0o775)).unwrap();
         }
         let env = env_for(&root, Some(&home), OsStr::new(""));
+        if !crate::runtime::chat::own_group_is_private() {
+            // Group write is trusted only for a group private to the user:
+            // without one the same layout is refused, and says so.
+            eprintln!("this user's group is not private: the layout is refused");
+            assert_eq!(env.cargo, None);
+            assert!(env.cargo_refused);
+            assert_eq!(env.fallback(), update::Fallback::UntrustedCargo);
+            return;
+        }
         assert_eq!(env.cargo, Some(bin.join("cargo")));
         assert!(!env.cargo_refused);
         assert!(matches!(
             env.plan(Some("0.16.0")),
             update::UpdateAction::CargoInstall { ref program, .. } if *program == bin.join("cargo")
         ));
+    }
+
+    #[test]
+    fn a_refused_cargo_gives_the_untrusted_fallback_end_to_end() {
+        let (_dir, root) = lab();
+        let bin = root.join("cargo-home/bin");
+        executable(&bin.join("lazarobox"));
+        executable(&bin.join("cargo"));
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o777)).unwrap();
+        let env = env_for(&root, Some(&root.join("cargo-home")), OsStr::new(""));
+        assert_eq!(env.cargo, None);
+        assert_eq!(env.plan(Some("0.16.0")), update::UpdateAction::ShowCommand);
+        assert_eq!(env.fallback(), update::Fallback::UntrustedCargo);
+        // The same layout, closed, runs: the fallback is the refusal's.
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let env = env_for(&root, Some(&root.join("cargo-home")), OsStr::new(""));
+        assert_eq!(env.cargo, Some(bin.join("cargo")));
+        assert!(!env.cargo_refused);
+    }
+
+    #[test]
+    fn a_cargo_link_into_tmp_is_refused_even_from_a_trusted_folder() {
+        let (_dir, root) = lab();
+        let bin = root.join("cargo-home/bin");
+        executable(&bin.join("lazarobox"));
+        let planted = tempfile::tempdir_in("/tmp").unwrap();
+        executable(&planted.path().join("cargo"));
+        std::os::unix::fs::symlink(planted.path().join("cargo"), bin.join("cargo")).unwrap();
+        let env = env_for(&root, Some(&root.join("cargo-home")), OsStr::new(""));
+        assert_eq!(env.cargo, None);
+        assert!(env.cargo_refused);
+        assert_eq!(env.fallback(), update::Fallback::UntrustedCargo);
     }
 
     #[test]

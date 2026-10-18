@@ -16,9 +16,13 @@ baseline.
   are group-writable (mode 0775, the default with umask 002 on Debian and
   Parrot). The update install refused that `cargo` with the strict rule meant
   for the AI CLIs and fell back to a footer that was cut off. The install now
-  accepts a `cargo` whose folders are only group-writable when you or root own
-  them; anything others can write, or anything under `/tmp`, is still refused.
-  The AI CLI jail keeps its strict rule.
+  accepts a `cargo` whose folders are group-writable only when the folder is
+  yours and your group is private to you (named like your user, with no other
+  member). A shared group (`users`, `staff`) and root-owned folders that the
+  group can write are refused, and so is anything others can write or anything
+  under `/tmp`. The folders that hold the link to `cargo` (such as
+  `~/.cargo/bin`) are checked too, and the check runs again when you press
+  Enter. The AI CLI jail keeps its strict rule.
 
 ### Changed
 

@@ -572,6 +572,10 @@ pub struct App {
     update: Option<String>,
     /// How this binary was installed, for Enter on the Updates row.
     install_env: Option<InstallEnv>,
+    /// Whether the `cargo` found at start-up may still be run. Asked again at
+    /// Enter, as the folders above it can change while lazarobox is open.
+    /// Injected so the core does no IO; it refuses until the runtime says.
+    cargo_check: fn(&Path) -> bool,
     /// The version an install in this run put on disk. The running binary is
     /// still the old one until the restart.
     installed: Option<String>,
@@ -685,6 +689,7 @@ impl App {
             notice: None,
             update: None,
             install_env: None,
+            cargo_check: |_| false,
             installed: None,
             dirty: true,
             screen,
@@ -863,6 +868,12 @@ impl App {
     /// What the runtime found out about the install, for the Updates row.
     pub fn with_install_env(mut self, env: Option<InstallEnv>) -> Self {
         self.install_env = env;
+        self
+    }
+
+    /// Injects the check that a `cargo` may be run, repeated at Enter.
+    pub fn with_cargo_check(mut self, cargo_check: fn(&Path) -> bool) -> Self {
+        self.cargo_check = cargo_check;
         self
     }
 
@@ -1264,8 +1275,18 @@ impl App {
             Some(env) => env.plan(Some(&latest)),
             None => UpdateAction::ShowCommand,
         };
+        // The cargo was trusted at start-up; check it again right before it
+        // runs. One that no longer passes is shown as refused.
+        let refused = matches!(&action,
+            UpdateAction::CargoInstall { program, .. } if !(self.cargo_check)(program));
         match action {
             UpdateAction::UpToDate => Vec::new(),
+            UpdateAction::CargoInstall { .. } if refused => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.show_update_command(Fallback::UntrustedCargo);
+                }
+                Vec::new()
+            }
             UpdateAction::ShowCommand => {
                 let why = self
                     .install_env
