@@ -116,10 +116,13 @@ fn a_cargo_install_runs_cargo_directly_in_a_new_visible_tab() {
             "install",
             "lazarobox-shell",
             "--locked",
+            "--version",
+            "0.15.4",
             "--root",
             "/home/ana/.cargo"
         ],
-        "the root is named, so CARGO_INSTALL_ROOT cannot redirect the install"
+        "the announced version is exact and the root is named, so neither a newer \
+         release nor CARGO_INSTALL_ROOT can change what is installed"
     );
     assert!(spec.report_status);
     assert!(
@@ -434,7 +437,7 @@ fn the_pane_then_names_what_runs() {
     let text = flat(&a, id);
     assert!(
         text.contains(
-            "running /home/ana/.cargo/bin/cargo install lazarobox-shell --locked --root /home/ana/.cargo"
+            "running /home/ana/.cargo/bin/cargo install lazarobox-shell --locked --version 0.15.4 --root /home/ana/.cargo"
         ),
         "{text}"
     );

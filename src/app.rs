@@ -451,11 +451,13 @@ pub enum PaneView<'a> {
 /// The kind of pane a split or a new tab creates.
 enum NewPane {
     Shell,
-    /// `cargo install lazarobox-shell --locked`, run directly (no shell).
+    /// `cargo install lazarobox-shell --locked --version <version>`, run
+    /// directly (no shell).
     Update {
         program: PathBuf,
         /// The install root, passed as `--root`.
         root: PathBuf,
+        /// The announced version, passed as `--version`.
         version: String,
         path: std::ffi::OsString,
     },
@@ -1903,8 +1905,8 @@ impl App {
             NewPane::Update {
                 program,
                 root,
+                version,
                 path,
-                ..
             } => {
                 // Home, else the root: never the cwd of a pane, where a
                 // `rust-toolchain` or `.cargo/config` of a project would
@@ -1913,7 +1915,12 @@ impl App {
                 let cwd = home.unwrap_or(Path::new("/")).to_path_buf();
                 let mut spec = SpawnSpec::new(None, cwd, size);
                 spec.program = program.clone();
-                spec.args = crate::core::update::install_args(root.to_str().unwrap_or_default());
+                // `plan` only gives a version that passes; if one got here
+                // anyway, a bare `cargo install` is refused by cargo, so it
+                // can never claim an install that did not happen.
+                spec.args =
+                    crate::core::update::install_args(root.to_str().unwrap_or_default(), version)
+                        .unwrap_or_else(|| vec!["install".to_owned()]);
                 spec.report_status = true;
                 spec.env_os.push(("PATH".into(), path.clone()));
                 spec
@@ -2002,7 +2009,11 @@ impl App {
                 if let Some(pty) = state.pty_mut() {
                     // What is about to run, in lazarobox's own words, before
                     // anything cargo prints.
-                    let args = crate::core::update::install_args(root.to_str().unwrap_or_default());
+                    let args = crate::core::update::install_args(
+                        root.to_str().unwrap_or_default(),
+                        &version,
+                    )
+                    .unwrap_or_default();
                     let line = crate::core::update::running_text(&program, &args);
                     let plain = crate::core::update::started_text(&version);
                     pty.emu

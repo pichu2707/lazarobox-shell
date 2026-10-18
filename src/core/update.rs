@@ -195,13 +195,15 @@ pub enum UpdateAction {
     UpToDate,
     /// Not a cargo install (or no cargo to run): show the command to copy.
     ShowCommand,
-    /// Run `program install lazarobox-shell --locked` in a new pane.
+    /// Run `program install lazarobox-shell --locked --version <version>` in a
+    /// new pane.
     CargoInstall {
         /// The trusted `cargo`, as an absolute path.
         program: PathBuf,
         /// The install root: the parent of the cargo bin dir.
         root: PathBuf,
-        /// The version being installed, for the final line.
+        /// The version being installed: plain `major.minor.patch` (see
+        /// [`install_args`]), also shown in the final line.
         version: String,
     },
 }
@@ -213,13 +215,36 @@ pub fn cargo_bin_dir(cargo_home: Option<&Path>, home: Option<&Path>) -> Option<P
     Some(base.join("bin"))
 }
 
-/// The arguments of `cargo` for [`INSTALL_COMMAND`], plus `--root`: cargo
+/// `version` when it is plain `major.minor.patch` text, so it can be given to
+/// cargo as one argument: no sign, no space, no pre-release, no operator.
+fn plain_version(version: &str) -> Option<&str> {
+    let parsed = Version::parse(version).filter(Version::is_stable)?;
+    (parsed.core_text() == version).then_some(version)
+}
+
+/// The arguments of `cargo` for [`INSTALL_COMMAND`], plus `--version`: cargo
+/// installs exactly `version` (a bare `major.minor.patch` is not a caret
+/// requirement), never a newer release than the one announced, and fails
+/// instead of reporting an install that did not happen. Also `--root`: cargo
 /// then installs over the running binary even when `CARGO_INSTALL_ROOT` or
-/// `install.root` point somewhere else.
-pub fn install_args(root: &str) -> Vec<String> {
-    ["install", "lazarobox-shell", "--locked", "--root", root]
+/// `install.root` point somewhere else. `None` when `version` is not plain
+/// `major.minor.patch`: it comes from the network and a cache file, and must
+/// not become another cargo argument.
+pub fn install_args(root: &str, version: &str) -> Option<Vec<String>> {
+    let version = plain_version(version)?;
+    Some(
+        [
+            "install",
+            "lazarobox-shell",
+            "--locked",
+            "--version",
+            version,
+            "--root",
+            root,
+        ]
         .map(str::to_owned)
-        .to_vec()
+        .to_vec(),
+    )
 }
 
 /// Whether `exe` is a file under the cargo bin dir `bin`.
@@ -276,9 +301,14 @@ pub fn plan(
         (Some(exe), Some(bin)) if under(exe, bin) => bin.parent(),
         _ => None,
     };
-    // The root goes to cargo as text; one that is not UTF-8 is not run.
-    match (cargo, root.filter(|r| r.to_str().is_some())) {
-        (Some(program), Some(root)) => UpdateAction::CargoInstall {
+    // The root goes to cargo as text; one that is not UTF-8 is not run. Nor
+    // is a version that cannot be given to cargo as exactly one argument.
+    match (
+        cargo,
+        root.filter(|r| r.to_str().is_some()),
+        plain_version(latest),
+    ) {
+        (Some(program), Some(root), Some(_)) => UpdateAction::CargoInstall {
             program: program.to_path_buf(),
             root: root.to_path_buf(),
             version: latest.to_owned(),
@@ -949,31 +979,61 @@ mod tests {
     }
 
     #[test]
-    fn the_install_always_names_its_root() {
+    fn the_install_always_names_its_root_and_the_exact_version() {
         assert_eq!(
-            install_args("/home/ana/.cargo"),
+            install_args("/home/ana/.cargo", "0.16.2").unwrap(),
             [
                 "install",
                 "lazarobox-shell",
                 "--locked",
+                "--version",
+                "0.16.2",
                 "--root",
                 "/home/ana/.cargo"
             ]
         );
-        // The shown command is the same one without the root.
-        assert!(install_args("/r")[..3].join(" ").starts_with("install"));
-        assert_eq!(
-            INSTALL_COMMAND,
-            format!("cargo {}", install_args("/r")[..3].join(" "))
-        );
+        // The shown command asks for the newest version, so it has no
+        // `--version`; the install does, and has the root as well.
+        let args = install_args("/r", "0.16.2").unwrap();
+        assert_eq!(INSTALL_COMMAND, format!("cargo {}", args[..3].join(" ")));
+    }
+
+    #[test]
+    fn a_version_that_is_not_plain_semver_is_never_given_to_cargo() {
+        for bad in [
+            "0.16.2 --git x",
+            "",
+            "1.2",
+            "-v",
+            "--git",
+            "0.16.2-pre",
+            "0.16.2+x",
+            "^0.16.2",
+            "=0.16.2",
+            "0.16.2\n",
+            "01.2.3",
+            " 0.16.2",
+        ] {
+            assert_eq!(install_args("/r", bad), None, "{bad:?}");
+            assert_eq!(
+                plan(
+                    Some(bad),
+                    Some(Path::new("/home/ana/.cargo/bin/lazarobox")),
+                    bin(),
+                    cargo_path()
+                ),
+                UpdateAction::ShowCommand,
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]
     fn the_first_line_names_what_runs_and_hides_control_characters() {
-        let args = install_args("/home/ana/.cargo");
+        let args = install_args("/home/ana/.cargo", "0.16.2").unwrap();
         assert_eq!(
             running_text(Path::new("/home/ana/.cargo/bin/cargo"), &args),
-            "running /home/ana/.cargo/bin/cargo install lazarobox-shell --locked --root /home/ana/.cargo"
+            "running /home/ana/.cargo/bin/cargo install lazarobox-shell --locked --version 0.16.2 --root /home/ana/.cargo"
         );
         let hostile = running_text(Path::new("/x/\u{1b}[2Jcargo"), &args);
         assert!(!hostile.contains('\u{1b}'), "{hostile:?}");
