@@ -1260,6 +1260,33 @@ mod tests {
         assert!(!row.contains("update needed"), "{row}");
     }
 
+    #[test]
+    fn a_detected_only_engine_row_says_so_whole_at_62_columns() {
+        let long = "1.19.0-a-very-long-build-string-that-would-not-fit-in-the-row";
+        let det = Detection {
+            engines: CATALOG
+                .iter()
+                .map(|e| EngineState {
+                    id: e.id,
+                    status: Status::Available,
+                    models: vec!["m".to_owned()],
+                    version: Some(long.to_owned()),
+                    model_labels: Vec::new(),
+                    diagnostics: Default::default(),
+                })
+                .collect(),
+        };
+        let mut menu = fresh().with_ai(AiConfig::general(Some("claude"), None), Some(det));
+        goto(&mut menu, "general");
+        press(&mut menu, &[KeyCode::Enter]);
+        let all = lines(&draw(62, POPUP_H + 6, &menu));
+        let row = all.iter().find(|l| l.contains("opencode")).unwrap();
+        assert!(row.contains("opencode detected · not in chat yet"), "{row}");
+        assert_eq!(cells(row), 62, "{row}");
+        let claude = all.iter().find(|l| l.contains("claude")).unwrap();
+        assert!(!claude.contains("not in chat"), "{claude}");
+    }
+
     const LONG_WHY: &str = "jail: no node found to run the CLI script; install it next to the CLI or on PATH (looked in /usr/local/bin)";
 
     #[test]

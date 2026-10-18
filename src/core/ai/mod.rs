@@ -254,6 +254,9 @@ fn server_state(
     }
 }
 
+/// The row text of a detected engine that has no chat adapter yet.
+const DETECTED_ONLY: &str = "detected · not in chat yet";
+
 /// Display text of an engine: `detecting…` before the first result,
 /// `not detected` for an id outside the catalog, `unknown` when the run
 /// produced nothing for it.
@@ -270,6 +273,11 @@ pub fn status_text(detection: Option<&Detection>, id: &str) -> String {
     match (state.status, engine.kind) {
         (Status::NotRunning, _) => "not running".to_string(),
         (Status::NotInstalled, _) => "not installed".to_string(),
+        // Detected, but chat refuses it: say so instead of reading as usable.
+        // Asked of the adapter table, so the note goes away with the adapter.
+        (Status::Available, _) if chat::adapters::adapter_for(id).is_none() => {
+            DETECTED_ONLY.to_string()
+        }
         (Status::Available, Kind::Server { .. }) => match state.models.len() {
             1 => "available · 1 model".to_string(),
             n => format!("available · {n} models"),
@@ -700,8 +708,8 @@ mod tests {
             ],
         };
         assert_eq!(text(&d, "ollama"), "available · 2 models");
-        assert_eq!(text(&d, "lmstudio"), "available · 1 model");
-        assert_eq!(text(&d, "llamacpp"), "available · 0 models");
+        assert_eq!(text(&d, "lmstudio"), "detected · not in chat yet");
+        assert_eq!(text(&d, "llamacpp"), "detected · not in chat yet");
         assert_eq!(text(&d, "vllm"), "not running");
         assert_eq!(text(&d, "claude"), "available · version unknown");
         assert_eq!(text(&d, "codex"), "available · 0.5.0");
@@ -756,6 +764,45 @@ mod tests {
         assert_eq!(status_text(None, "ollama"), "detecting…");
         assert_eq!(text(&Detection::default(), "ollama"), "unknown");
         assert_eq!(text(&reduce(&[]), "mystery"), "not detected");
+    }
+
+    #[test]
+    fn a_detected_engine_without_a_chat_adapter_says_it_is_detected_only() {
+        let d = Detection {
+            engines: CATALOG
+                .iter()
+                .map(|e| EngineState {
+                    models: vec!["m".to_owned()],
+                    version: Some("1.19.0".to_owned()),
+                    ..bare(e.id, Status::Available)
+                })
+                .collect(),
+        };
+        let (mut with, mut without) = (0, 0);
+        for e in CATALOG {
+            let row = status_text(Some(&d), e.id);
+            if chat::adapters::adapter_for(e.id).is_some() {
+                with += 1;
+                assert!(!row.contains("not in chat"), "{}: {row}", e.id);
+            } else {
+                without += 1;
+                assert_eq!(row, "detected · not in chat yet", "{}", e.id);
+            }
+        }
+        // Both branches ran: the loop is not vacuous.
+        assert!(with > 0 && without > 0);
+    }
+
+    #[test]
+    fn an_engine_without_an_adapter_that_is_not_detected_keeps_its_plain_status() {
+        let d = Detection {
+            engines: vec![
+                bare("opencode", Status::NotInstalled),
+                bare("vllm", Status::NotRunning),
+            ],
+        };
+        assert_eq!(text(&d, "opencode"), "not installed");
+        assert_eq!(text(&d, "vllm"), "not running");
     }
 
     #[test]
