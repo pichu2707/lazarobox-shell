@@ -11,8 +11,10 @@
 //!   routing (`servers::qualify` maps them), descriptions are sanitized and
 //!   capped, a schema over its cap is replaced, and a line over
 //!   [`MAX_LINE_BYTES`] is skipped without being buffered.
-//! - A server never gets more than the user named: see `child_env` for the
-//!   scrubbed environment. It never sees the session token or socket path.
+//! - A server never gets more than the user named: see `spawn` for the
+//!   scrubbed environment, the `$HOME` working directory and the process
+//!   group that [`McpClient::shutdown`] and a drop both kill. It never sees
+//!   the session token or socket path.
 //! - The wire is the 2c codec ([`Frame`]) in the other direction. Requests are
 //!   strictly one at a time: a stale answer of a cancelled request is skipped
 //!   by its id. A hung-up or dying server ends the call with an error result,
@@ -23,6 +25,8 @@
 //!   then on and never writes again.
 
 use std::{future::Future, time::Duration};
+
+mod spawn;
 
 use serde_json::{Value, json};
 use tokio::{
@@ -106,6 +110,9 @@ impl ClientError {
 /// front: the rest does not parse and is skipped as well.) Dropping one
 /// mid-write is not: see `unsafe_stream`.
 pub struct McpClient {
+    /// The process behind the pipes, when this client started it. First, so it
+    /// drops (and kills the group) before the pipes close.
+    process: Option<spawn::Process>,
     reader: BufReader<Box<dyn AsyncRead + Send + Unpin>>,
     writer: Box<dyn AsyncWrite + Send + Unpin>,
     next_id: u64,
@@ -132,6 +139,7 @@ impl McpClient {
         timeouts: Timeouts,
     ) -> Self {
         McpClient {
+            process: None,
             reader: BufReader::new(Box::new(reader)),
             writer: Box::new(writer),
             next_id: 1,
