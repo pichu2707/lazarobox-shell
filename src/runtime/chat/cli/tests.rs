@@ -223,6 +223,13 @@ async fn run_all(env: CliEnv, req: ChatRequest) -> Vec<StreamEvent> {
     }
 }
 
+/// A turn of a claude whose policy is the Linux one (layered), through the
+/// real jail and notice flow. The adapter would make it exempt on macOS, and
+/// these tests are about the flow, not about the table.
+async fn run_layered(env: CliEnv) -> Vec<StreamEvent> {
+    run_job(&env, job(JailPolicy::Layered)).await
+}
+
 /// The reason of the one jail error `events` hold.
 fn jail_reason(events: &[StreamEvent]) -> String {
     match events {
@@ -766,7 +773,11 @@ async fn the_helper_refusing_with_its_marker_is_a_jail_error() {
     let mut env = lab.env();
     env.jail = jail_on();
     env.helper = helper;
-    let events = run(env, request()).await;
+    let events = run_layered(env).await;
+    let events: Vec<_> = events
+        .into_iter()
+        .filter(|e| !matches!(e, StreamEvent::Notice(_)))
+        .collect();
     assert_eq!(jail_reason(&events), "ABI 2 is below the required 3");
     assert!(!lab.rec.join("args").exists(), "the CLI never ran");
 }
@@ -1083,7 +1094,7 @@ fn notices(events: &[StreamEvent]) -> Vec<&str> {
 async fn running_bare_because_there_is_no_jail_is_announced_first() {
     let lab = lab();
     lab.claude(GOOD);
-    let events = run_all(lab.env(), request()).await;
+    let events = run_layered(lab.env()).await;
     assert_eq!(
         events[0],
         StreamEvent::Notice("claude runs without the jail here: the jail was not probed".into())
@@ -1100,7 +1111,7 @@ async fn running_bare_because_the_layout_was_refused_is_announced_too() {
     let mut env = lab.env();
     env.jail = jail_on();
     env.helper = lab.helper("exit 99");
-    let events = run_all(env, request()).await;
+    let events = run_layered(env).await;
     assert_eq!(
         notices(&events),
         [
@@ -1118,7 +1129,7 @@ async fn a_jailed_turn_and_a_refused_one_announce_nothing() {
     let mut env = lab.env();
     env.jail = jail_on();
     env.helper = lab.helper("while [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"");
-    let events = run_all(env, request()).await;
+    let events = run_layered(env).await;
     assert!(notices(&events).is_empty(), "{events:?}");
     let events = run_job(&lab.env(), job(JailPolicy::Required)).await;
     assert_eq!(jail_reason(&events), "the jail was not probed");
@@ -3045,11 +3056,14 @@ async fn real_turn(engine: &str, setup: Setup) -> (Vec<String>, String) {
         external: Default::default(),
         mcp: claude_job(&lab, true).mcp.map(Box::new),
     };
-    let crate::core::ai::chat::adapters::Invocation::Process(job) =
+    let crate::core::ai::chat::adapters::Invocation::Process(mut job) =
         adapter_for(engine).unwrap().build_with(&request, &[engine])
     else {
         panic!("a process expected");
     };
+    // These turns are about the Linux flow: claude is jailed (layered) there,
+    // while on macOS it is exempt and never wired.
+    job.jail = jail_policy(job.cli, Os::Linux);
     let _ = run_job(&env, job).await;
     (lab.args(), lab.recorded("stdin"))
 }
@@ -3267,15 +3281,15 @@ fn the_jail_note_of_another_system_points_codex_and_gemini_to_claude_only() {
     env.jail = JailSupport::Unavailable(JailOff::NotLinux);
     let bin = Path::new("/bin/true");
     assert_eq!(
-        jail_note(&env, Cli::Codex, bin).as_deref(),
+        jail_note_on(Os::Linux, &env, Cli::Codex, bin).as_deref(),
         Some("needs Linux · use claude")
     );
     assert_eq!(
-        jail_note(&env, Cli::Gemini, bin).as_deref(),
+        jail_note_on(Os::Linux, &env, Cli::Gemini, bin).as_deref(),
         Some("needs Linux · use claude")
     );
     assert_eq!(
-        jail_note(&env, Cli::Claude, bin).as_deref(),
+        jail_note_on(Os::Linux, &env, Cli::Claude, bin).as_deref(),
         Some("needs Linux")
     );
 }

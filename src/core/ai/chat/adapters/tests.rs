@@ -282,7 +282,9 @@ fn claude_runs_the_cli_layered_with_the_claude_stream_decoder() {
     assert_eq!(p.binary, "claude");
     assert_eq!(p.cli, Cli::Claude);
     assert_eq!(p.wire, Wire::ClaudeStreamJson);
-    assert_eq!(p.jail, JailPolicy::Layered);
+    // The table decides: layered on Linux, exempt on macOS.
+    assert_eq!(p.jail, jail_policy(Cli::Claude, Os::CURRENT));
+    assert_eq!(jail_policy(Cli::Claude, Os::Linux), JailPolicy::Layered);
 }
 
 #[test]

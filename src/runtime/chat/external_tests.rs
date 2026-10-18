@@ -424,7 +424,11 @@ fn tools_are_wired_for_ollama_and_for_a_jailed_cli_only() {
     let mut env = CliEnv::from_env(jail(true));
     env.shim = Some("/usr/bin/lazarobox-shell".into());
     assert!(wires_tools(&env, &turn_on("ollama")));
-    assert!(wires_tools(&env, &turn_on("claude")));
+    // claude is exempt on macOS: bare there, so never wired.
+    assert_eq!(
+        wires_tools(&env, &turn_on("claude")),
+        crate::core::ai::jail::Os::CURRENT != crate::core::ai::jail::Os::Macos
+    );
     assert!(wires_tools(&env, &turn_on("codex")));
     assert!(wires_tools(&env, &turn_on("gemini")));
     let mut no_shim = env.clone();
