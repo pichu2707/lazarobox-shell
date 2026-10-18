@@ -228,25 +228,34 @@ fn ran(call: &Call, report: &RunReport) -> (Outcome, ToolStatus, String, Option<
     (outcome, status, summary, words.system)
 }
 
-/// What a server returned, as the row and the model see it: wrapped as
-/// untrusted data under a fresh nonce (D14), which also caps it. No nonce
-/// means no wrapper, so the text is withheld rather than sent bare.
-fn external(outcome: Outcome) -> (Outcome, ToolStatus, String) {
+/// Runs an approved server tool and returns what the model and the row see:
+/// the result wrapped as untrusted data under `nonce` (D14), which also caps
+/// it. The nonce is needed BEFORE the call: with none there is no wrapper, and
+/// a tool must not run for a result that would be withheld.
+async fn call_external(
+    set: &ExternalSet,
+    name: &str,
+    args: serde_json::Value,
+    nonce: Option<String>,
+) -> (Outcome, ToolStatus, String) {
+    let Some(nonce) = nonce else {
+        return ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER);
+    };
+    // No turn cancel reaches here: a cancelled turn drops this future, which
+    // drops the request in flight (its late answer is skipped by id). Sending
+    // `notifications/cancelled` is left to 4c-c, which owns the turn.
+    let outcome = set.call(name, args, std::future::pending()).await;
     let status = if outcome.is_error {
         ToolStatus::Error
     } else {
         ToolStatus::Ok
     };
-    let Some(nonce) = super::new_nonce() else {
-        return ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER);
-    };
-    let summary = format!("{} bytes", outcome.text.len());
-    let text = label::wrap(&nonce, &outcome.text);
     let summary = if outcome.is_error {
         clip(&outcome.text)
     } else {
-        summary
+        format!("{} bytes", outcome.text.len())
     };
+    let text = label::wrap(&nonce, &outcome.text);
     (
         Outcome {
             text,
@@ -360,12 +369,20 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     ended(ToolStatus::Ok, TYPED_TEXT.to_owned(), "typed, no Enter")
                 }
                 // Only after `y`: nothing is sent to the server before it.
-                (Decision::Sent, Call::External { name, args, .. }) => match &scope.external {
-                    Some(set) => {
-                        let outcome = set.call(&name, args, std::future::pending()).await;
-                        external(outcome)
+                (
+                    Decision::Sent,
+                    Call::External {
+                        name,
+                        server,
+                        tool,
+                        args,
+                    },
+                ) => match &scope.external {
+                    // What the user approved must be what is routed.
+                    Some(set) if set.qualified().raw_of(&name) == Some((&server, &tool)) => {
+                        call_external(set, &name, args, super::new_nonce()).await
                     }
-                    None => ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER),
+                    _ => ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER),
                 },
                 (Decision::Sent | Decision::Typed(_), call) => {
                     let env = ToolEnv {

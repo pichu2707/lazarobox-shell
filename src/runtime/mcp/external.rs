@@ -15,9 +15,9 @@
 
 use std::{ffi::OsString, future::Future, path::Path};
 
-use futures::future::join_all;
+use futures::{StreamExt, future::join_all, stream};
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, time::timeout};
 
 use super::{
     Outcome,
@@ -32,9 +32,18 @@ use crate::core::ai::{
 /// What the model is told when a name reaches no running server.
 const NOT_AVAILABLE: &str = "mcp error: that tool is not available";
 
+/// Most servers started at once. The config does not cap the count, and each
+/// start spawns a process and waits out a handshake.
+const START_AT_ONCE: usize = 8;
+
+/// How long [`ExternalSet::shutdown`] waits for a call in flight to let go of
+/// its server; after that the drop of the set kills it.
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(4);
+
 /// The running servers and the tools they offer.
 pub struct ExternalSet {
-    clients: Vec<(String, Mutex<McpClient>)>,
+    /// `None` once stopped.
+    clients: Vec<(String, Mutex<Option<McpClient>>)>,
     qualified: Qualified,
     /// Why a server is missing, one line each.
     unavailable: Vec<String>,
@@ -65,12 +74,15 @@ impl ExternalSet {
         lookup: impl Fn(&str) -> Option<OsString>,
         timeouts: Timeouts,
     ) -> Self {
-        let started = join_all(servers.iter().map(|server| async {
+        // In order, at most `START_AT_ONCE` at a time.
+        let started: Vec<_> = stream::iter(servers.iter().map(|server| async {
             (
                 clean(&server.name),
                 connect(server, home, &lookup, timeouts).await,
             )
         }))
+        .buffered(START_AT_ONCE)
+        .collect()
         .await;
         let mut clients = Vec::new();
         let mut listed = Vec::new();
@@ -79,7 +91,7 @@ impl ExternalSet {
             match result {
                 Ok((client, tools)) => {
                     listed.push((name.clone(), tools));
-                    clients.push((name, Mutex::new(client)));
+                    clients.push((name, Mutex::new(Some(client))));
                 }
                 Err(reason) => unavailable.push(format!("mcp: {name}: {reason}")),
             }
@@ -127,7 +139,7 @@ impl ExternalSet {
         };
         let mut cancel = std::pin::pin!(cancel);
         // A server answers one request at a time: a second call waits.
-        let mut client = tokio::select! {
+        let mut guard = tokio::select! {
             guard = client.lock() => guard,
             () = &mut cancel => {
                 return Outcome {
@@ -136,16 +148,29 @@ impl ExternalSet {
                 };
             }
         };
-        client.call(raw, arguments, &mut cancel).await
+        match guard.as_mut() {
+            Some(client) => client.call(raw, arguments, &mut cancel).await,
+            None => Outcome {
+                text: NOT_AVAILABLE.to_owned(),
+                is_error: true,
+            },
+        }
     }
 
-    /// Stops every server.
-    pub async fn shutdown(self) {
-        join_all(
-            self.clients
-                .into_iter()
-                .map(|(_, client)| client.into_inner().shutdown()),
-        )
+    /// Stops every server and its process group. Works through an `Arc`; a
+    /// call after it is refused. A server whose call is still in flight is
+    /// waited for at most [`STOP_WAIT`]; one that is missed (or a set that is
+    /// just dropped) is killed when it drops, by `Process`'s `Drop` and
+    /// `kill_on_drop`.
+    pub async fn shutdown(&self) {
+        join_all(self.clients.iter().map(|(_, slot)| async {
+            let Ok(mut guard) = timeout(STOP_WAIT, slot.lock()).await else {
+                return;
+            };
+            if let Some(client) = guard.take() {
+                client.shutdown().await;
+            }
+        }))
         .await;
     }
 }

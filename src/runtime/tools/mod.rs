@@ -24,18 +24,15 @@ pub use host::{Approver, ToolHost, TurnScope, Unwired};
 pub use pending::Pending;
 
 /// A random nonce for one result, `None` when the system gives no randomness
-/// (the call then fails closed rather than use a guessable delimiter).
-#[cfg(target_os = "linux")]
+/// (the call then fails closed rather than use a guessable delimiter). Read
+/// from `/dev/urandom`, which Linux and macOS both have.
 fn new_nonce() -> Option<String> {
+    use std::io::Read;
     let mut bytes = [0u8; 8];
-    // SAFETY: `bytes` is valid for 8 writes; flags 0 blocks until seeded.
-    let got = unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0) };
-    (got == bytes.len() as isize).then(|| label::nonce_from(bytes))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn new_nonce() -> Option<String> {
-    None
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .ok()?;
+    Some(label::nonce_from(bytes))
 }
 
 /// Sets the flag when dropped, so a walk whose caller went away stops.
@@ -93,6 +90,14 @@ mod tests {
         },
         time::Duration,
     };
+
+    // Every platform gets a real nonce, and each call a different one.
+    #[test]
+    fn a_nonce_exists_on_every_platform_and_differs_per_call() {
+        let (a, b) = (new_nonce().unwrap(), new_nonce().unwrap());
+        assert_eq!((a.len(), b.len()), (16, 16));
+        assert_ne!(a, b);
+    }
 
     fn env(home: &std::path::Path) -> ToolEnv {
         ToolEnv {

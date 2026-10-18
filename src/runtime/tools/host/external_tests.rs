@@ -1,6 +1,4 @@
 //! The External branch of the host: a server tool runs only after `y`.
-// What only the Linux-only tests use is dead code elsewhere.
-#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
 use std::time::Duration;
 
@@ -67,7 +65,6 @@ async fn world(
 
 // Spec (agent-tools): `y` runs the call, and what the server says comes back
 // as untrusted data under a fresh nonce.
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn y_sends_the_call_and_the_result_comes_back_wrapped() {
     let lab = lab();
@@ -94,7 +91,6 @@ async fn y_sends_the_call_and_the_result_comes_back_wrapped() {
 }
 
 // Spec: a result over the cap is cut.
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_result_over_the_cap_is_cut() {
     let lab = lab();
@@ -143,8 +139,6 @@ async fn a_withdrawn_wait_sends_nothing() {
 }
 
 // Spec: a server that stops answering ends the call with an error, never a hang.
-// Linux only: without a nonce (other systems) the text is withheld.
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_server_that_hangs_ends_with_a_timeout_error() {
     let lab = lab();
@@ -174,4 +168,43 @@ async fn a_turn_without_a_set_refuses_the_call_after_y() {
     assert!(out.is_error, "{out:?}");
     let (_, _, status, _) = pair(&events(&mut rx));
     assert_eq!(status, ToolStatus::Error);
+}
+
+// No nonce means no wrapper: the call is refused BEFORE the server is
+// contacted, so a tool never runs for a result that would be withheld.
+#[tokio::test]
+async fn without_a_nonce_the_server_is_not_contacted() {
+    let lab = lab();
+    let (_dispatch, _rx, set) = world(&lab, "0", "x", WAIT, Scripted::new(Decision::Sent)).await;
+    let (out, status, _) = call_external(&set, "fake__echo", json!({}), None).await;
+    assert!(out.is_error && status == ToolStatus::Error, "{out:?}");
+    assert_eq!(lab.received("fake"), "");
+    let (out, status, _) = call_external(
+        &set,
+        "fake__echo",
+        json!({}),
+        Some("0011223344556677".into()),
+    )
+    .await;
+    assert!(!out.is_error && status == ToolStatus::Ok, "{out:?}");
+    assert!(out.text.contains("id=\"0011223344556677\""), "{}", out.text);
+}
+
+// The prompt the user approved names a server and a tool; the call routes by
+// the qualified name. If the two disagree nothing is sent.
+#[tokio::test]
+async fn a_call_whose_target_differs_from_its_prompt_is_not_sent() {
+    let lab = lab();
+    let (dispatch, mut rx, _set) = world(&lab, "0", "x", WAIT, Scripted::new(Decision::Sent)).await;
+    let lie = Call::External {
+        name: "fake__echo".into(),
+        server: "other".into(),
+        tool: "echo".into(),
+        args: json!({}),
+    };
+    let out = dispatch.call(lie).await;
+    assert!(out.is_error, "{out:?}");
+    let (_, _, status, _) = pair(&events(&mut rx));
+    assert_eq!(status, ToolStatus::Error);
+    assert_eq!(lab.received("fake"), "");
 }

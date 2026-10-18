@@ -122,10 +122,34 @@ async fn shutdown_stops_every_server() {
         })
         .collect();
     assert!(pids.iter().all(|p| !gone(*p)), "both run");
+    // Through an `Arc`, as the host holds it; a call after it is refused.
+    let set = std::sync::Arc::new(set);
     set.shutdown().await;
+    let after = set.call("one__a", json!({}), never()).await;
+    assert!(after.is_error, "{after:?}");
     let end = Instant::now() + LONG;
     while !pids.iter().all(|p| gone(*p)) && Instant::now() < end {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(pids.iter().all(|p| gone(*p)), "both are stopped");
+}
+
+#[tokio::test]
+async fn more_servers_than_the_start_cap_all_come_up_in_order() {
+    let lab = lab();
+    let servers: Vec<McpServer> = (0..12)
+        .map(|n| lab.server(&format!("s{n}"), "t", &format!("from {n}")))
+        .collect();
+    let refs: Vec<&McpServer> = servers.iter().collect();
+    let set = ExternalSet::start(&refs, &lab.home, host_env, timeouts(LONG)).await;
+    let names: Vec<String> = set
+        .qualified()
+        .external()
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
+    let want: Vec<String> = (0..12).map(|n| format!("s{n}__t")).collect();
+    assert_eq!(names, want);
+    assert_eq!(set.call("s11__t", json!({}), never()).await.text, "from 11");
+    set.shutdown().await;
 }
