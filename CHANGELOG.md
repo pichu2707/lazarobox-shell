@@ -17,6 +17,10 @@ baseline.
   that map its result. The jail stays off (`SEATBELT_ENABLED` is `false`), so
   nothing changes for users: codex and gemini are still refused on macOS. CI
   now runs a raw `sandbox-exec` smoke test on both macOS runners.
+- More macOS jail groundwork: claude is exempt from the jail on macOS (it
+  keeps its Keychain login and stays text-only, as today), and outside Linux
+  the jail helper is the resolved path of this program. Nothing changes for
+  users yet.
 
 ### Changed
 
