@@ -11,6 +11,9 @@ use std::path::{Path, PathBuf};
 
 use crate::core::ai::jail::{JailSupport, NOT_ENFORCED_EXIT, NOT_ENFORCED_MARKER};
 
+#[cfg(any(target_os = "macos", test))]
+mod seatbelt;
+
 /// Exit status of a program the helper could not execute (shell convention).
 const EXEC_FAILED: i32 = 127;
 
@@ -18,6 +21,16 @@ const EXEC_FAILED: i32 = 127;
 /// system can jail a CLI, and with which ABI.
 pub fn probe() -> JailSupport {
     imp::probe()
+}
+
+/// The macOS probe on its own, without the [`SEATBELT_ENABLED`] gate: whether
+/// `/usr/bin/sandbox-exec` confines a program. CI uses it to prove the
+/// binary works on a runner before the jail is turned on.
+///
+/// [`SEATBELT_ENABLED`]: crate::core::ai::jail::SEATBELT_ENABLED
+#[cfg(target_os = "macos")]
+pub fn seatbelt_probe() -> Result<(), crate::core::ai::jail::SeatbeltFault> {
+    seatbelt::probe()
 }
 
 /// The canonicalizer `jail_spec_with` needs: the real target of a path, or
@@ -198,8 +211,24 @@ mod imp {
     use std::ffi::OsString;
 
     use super::Failure;
-    use crate::core::ai::jail::{JailOff, JailSupport};
+    #[cfg(not(target_os = "macos"))]
+    use crate::core::ai::jail::JailOff;
+    use crate::core::ai::jail::JailSupport;
+    #[cfg(target_os = "macos")]
+    use crate::core::ai::jail::{SEATBELT_ENABLED, seatbelt_support};
 
+    #[cfg(target_os = "macos")]
+    pub fn probe() -> JailSupport {
+        // The gate answers before anything is spawned.
+        let probed = if SEATBELT_ENABLED {
+            super::seatbelt::probe()
+        } else {
+            Ok(())
+        };
+        seatbelt_support(SEATBELT_ENABLED, probed)
+    }
+
+    #[cfg(not(target_os = "macos"))]
     pub fn probe() -> JailSupport {
         JailSupport::Unavailable(JailOff::NotLinux)
     }

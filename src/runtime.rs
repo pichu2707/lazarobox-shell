@@ -197,6 +197,8 @@ impl Drop for QuitGuard {
 
 /// Runs the terminal pane until the child exits or the user quits.
 pub async fn run() -> io::Result<()> {
+    // Probed off the async threads: macOS spawns `sandbox-exec` for it.
+    let jail_probe = tokio::task::spawn_blocking(jail::probe);
     // Asked first so the shell runs while the rest of the start-up goes on.
     let login_path = tokio::spawn(login_path::resolve(
         env::var_os("PATH").unwrap_or_default(),
@@ -210,8 +212,13 @@ pub async fn run() -> io::Result<()> {
     let config_path = config_path(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"));
     // Read once, here: the config parser itself never touches the environment.
     let engram_port = env::var("ENGRAM_PORT").ok();
-    // Probed once: whether the CLI engines can be confined (Landlock).
-    let jail = jail::probe();
+    // Probed once: whether the CLI engines can be confined (Landlock or
+    // Seatbelt). A probe that panicked counts as not probed.
+    let jail = jail_probe
+        .await
+        .unwrap_or(crate::core::ai::jail::JailSupport::Unavailable(
+            crate::core::ai::jail::JailOff::NotProbed,
+        ));
     let mut app = app_from_config(cols, rows, config_path.as_deref(), engram_port.as_deref())
         .with_jail(jail)
         .with_hostname(local_hostname().as_deref())
