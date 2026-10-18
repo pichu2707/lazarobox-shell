@@ -476,11 +476,11 @@ command = "mcp-docs"
 project = "/home/u/dev/mi-proyecto"
 ```
 
-- `name` (letras, dígitos, `-` y `_`, hasta 32 caracteres, único) y `command` (sin shell; cada elemento de `args` es un argumento aparte) son obligatorios. `enabled = false` desactiva la entrada.
-- `env` lista solo NOMBRES de variables de tu entorno, nunca valores: una entrada como `"TOKEN=abc"` o una tabla se rechaza y el valor no aparece en ningún aviso.
-- `project` limita el servidor a un proyecto: se aplica solo a los chats cuya raíz git de origen coincide exactamente con esa ruta absoluta, y si el nombre ya existe en la lista global gana la entrada del proyecto. Solo se lee tu configuración de usuario: un archivo `.lazarobox/mcp.toml` de un repositorio se ignora siempre, de modo que abrir un repositorio nunca puede añadir un servidor.
+- `name` (letras minúsculas, dígitos y `-`, de 1 a 24 caracteres, único en su ámbito: la lista global o un proyecto) y `command` (sin shell; cada elemento de `args` es un argumento aparte) son obligatorios. `enabled = false` desactiva la entrada.
+- `env` lista solo NOMBRES de variables de tu entorno (hasta 64 bytes), nunca valores: una entrada como `"TOKEN=abc"` o una tabla se rechaza y el valor no aparece en ningún aviso.
+- `project` limita el servidor a un proyecto: se aplica solo a los chats cuya raíz git de origen coincide exactamente con esa ruta absoluta, y si el nombre ya existe en la lista global gana la entrada del proyecto; con `enabled = false` esa entrada desactiva el servidor global del mismo nombre solo para ese proyecto (nunca añade uno). Solo se lee tu configuración de usuario: un archivo `.lazarobox/mcp.toml` de un repositorio se ignora siempre, de modo que abrir un repositorio nunca puede añadir un servidor.
 - Una entrada inválida se omite entera y se avisa al arrancar (`config: ai.mcp.servers[0].command: expected a non-empty string`); las demás se mantienen. La lista se lee una vez al arrancar.
-- Los nombres de las herramientas de un servidor llevarán el prefijo `<servidor>__<herramienta>` (cada parte en `[a-z0-9_-]`, hasta 24 caracteres) para no chocar nunca con las herramientas propias.
+- Los nombres de las herramientas de un servidor llevarán el prefijo `<servidor>__<herramienta>` (cada parte en `[a-z0-9_-]`, hasta 24 caracteres) para no chocar nunca con las herramientas propias. Si dos herramientas darían el mismo nombre, se conserva la primera y se avisa con una línea que nombra el servidor y los dos nombres originales.
 
 ### Historial de conversaciones
 
