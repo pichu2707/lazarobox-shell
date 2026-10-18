@@ -10,6 +10,13 @@ baseline.
 
 ## [Unreleased]
 
+### Changed
+
+- The AI engines menu now marks a detected engine that has no chat adapter
+  (lmstudio, llamacpp, vllm, opencode) as `detected · not in chat yet`
+  instead of `available · <version>`, so it no longer reads as usable. The
+  note comes from the adapter table, so it disappears when an adapter lands.
+
 ## [0.17.1] - 2026-10-18
 
 ### Changed
