@@ -617,7 +617,7 @@ mod tests {
                     } else {
                         Vec::new()
                     },
-                    version: (e.id == "claude").then(|| "2.1.0".to_owned()),
+                    version: (e.id == "claude").then(|| "2.1.302".to_owned()),
                     model_labels: Vec::new(),
                     diagnostics: Default::default(),
                 })
@@ -1198,6 +1198,66 @@ mod tests {
                 .unwrap();
             assert!(row.contains(&format!("no jail: {why} ●")), "{why}: {row}");
         }
+    }
+
+    /// Only claude is installed, at `version`.
+    fn claude_at(version: &str) -> Detection {
+        Detection {
+            engines: CATALOG
+                .iter()
+                .map(|e| EngineState {
+                    id: e.id,
+                    status: if e.id == "claude" {
+                        Status::Available
+                    } else {
+                        Status::NotInstalled
+                    },
+                    models: if e.id == "claude" {
+                        vec!["default".to_owned()]
+                    } else {
+                        Vec::new()
+                    },
+                    version: (e.id == "claude").then(|| version.to_owned()),
+                    model_labels: Vec::new(),
+                    diagnostics: Default::default(),
+                })
+                .collect(),
+        }
+    }
+
+    fn claude_row(version: &str) -> String {
+        let saved = AiConfig::general(Some("claude"), None);
+        let mut menu = fresh().with_ai(saved, Some(claude_at(version)));
+        goto(&mut menu, "general");
+        press(&mut menu, &[KeyCode::Enter]);
+        let buf = draw(62, POPUP_H, &menu);
+        let row = lines(&buf)
+            .into_iter()
+            .find(|l| l.contains("claude"))
+            .unwrap();
+        assert_eq!(cells(&row), 62, "{row}");
+        row
+    }
+
+    #[test]
+    fn an_outdated_claude_row_says_update_needed_whole_at_62_columns() {
+        for version in ["2.1.100 (Claude Code)", "1.0.0", "2.1.258 (Claude Code)"] {
+            let row = claude_row(version);
+            assert!(
+                row.contains("claude available · update needed: 2.1.259+ ●"),
+                "{version}: {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_current_claude_row_keeps_showing_its_version() {
+        let row = claude_row("2.1.302 (Claude Code)");
+        assert!(
+            row.contains("claude available · 2.1.302 (Claude Code)"),
+            "{row}"
+        );
+        assert!(!row.contains("update needed"), "{row}");
     }
 
     const LONG_WHY: &str = "jail: no node found to run the CLI script; install it next to the CLI or on PATH (looked in /usr/local/bin)";

@@ -346,6 +346,8 @@ El chat puede hablar con los CLIs **claude**, **codex** y **gemini** que ya teng
 
 Versiones comprobadas: claude 2.1.299, codex-cli 0.142.5 y gemini 0.63.0. Otras versiones pueden fallar (ver «Si un CLI cambia»).
 
+**claude necesita la versión 2.1.259 o posterior**, porque las opciones de solo texto que usa lazarobox (`--permission-prompts none` entre ellas) no existen en versiones anteriores. Con una versión menor, lazarobox no lanza claude: el menú marca la fila con `update needed: 2.1.259+` y el chat muestra cómo actualizar (`claude update`, `brew upgrade claude-code` o `npm i -g @anthropic-ai/claude-code@latest`). Si no se puede leer la versión, claude se lanza igualmente. Nunca se quitan opciones de solo texto para que quepa un claude antiguo.
+
 **Solo texto.** El chat es de texto: el CLI se lanza con opciones fijas que le quitan las herramientas, de modo que no ejecuta comandos, no edita archivos ni usa servidores MCP. Pedirle «crea un archivo» no crea nada. Es la primera capa; la segunda es la jaula.
 
 **La jaula (Landlock, solo Linux).** Cada turno de un CLI se ejecuta dentro de una jaula del núcleo (Landlock, ABI 3 o superior; lazarobox se relanza a sí mismo para aplicarla antes de arrancar el CLI). La jaula **bloquea**:
@@ -447,6 +449,7 @@ Every message below says why a CLI cannot be used. None of them changes what the
 | `model list unavailable: jail: <reason>` | The listing runs in the same jail as the chat, so the jail rows above apply. |
 | `claude runs without the jail here: <reason>` | claude is allowed to run with only its text-only flags; the reason is any row above. |
 | `<cli> does not know the option <flag>: this <cli> is older than lazarobox needs; update it ... and try again` / `this <cli> is older than lazarobox needs: it rejected an option; ...` | The installed CLI is too old to know an option lazarobox passes. The flag is named only when it is one lazarobox itself passes; any other word is not repeated. Update the CLI the way it was installed (`claude update`, `npm i -g @anthropic-ai/claude-code`, `brew upgrade`, ...). lazarobox never drops the option: it is part of what keeps the CLI text-only. |
+| `claude <version> is too old for lazarobox (it needs 2.1.259 or newer); update it: claude update, brew upgrade claude-code, or npm i -g @anthropic-ai/claude-code@latest` | The detected claude predates `--permission-prompts none` (2.1.259), so its turn is refused before anything starts. Update claude. In the engine list of the menu the row reads `available · update needed: 2.1.259+`. An unreadable version never blocks. |
 
 ### Tools with Ollama
 

@@ -45,7 +45,7 @@ pub(super) fn machine() -> Detection {
             None,
         ),
         engine("lmstudio", Status::NotRunning, &[], None),
-        engine("claude", Status::Available, &["default"], Some("2.1.0")),
+        engine("claude", Status::Available, &["default"], Some("2.1.302")),
         engine("codex", Status::Available, &["default"], Some("0.5.0")),
     ])
 }

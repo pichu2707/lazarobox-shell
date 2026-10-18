@@ -324,3 +324,59 @@ fn only_ollama_claude_codex_and_gemini_have_an_adapter_so_far() {
     without.sort_unstable();
     assert_eq!(without, ["llamacpp", "lmstudio", "opencode", "vllm"]);
 }
+
+fn claude_at(version: Option<&str>) -> Detection {
+    let mut claude = state("claude", Status::Available, &[]);
+    claude.version = version.map(str::to_owned);
+    detected(vec![claude])
+}
+
+#[test]
+fn a_claude_below_the_minimum_is_outdated_and_never_ready() {
+    let c = cfg(Task::Chat, Some("claude"), Some("sonnet"));
+    for jail in [JAIL, NO_JAIL] {
+        assert_eq!(
+            availability(&c, Some(&claude_at(Some("2.1.258 (Claude Code)"))), jail),
+            Availability::Outdated {
+                engine: "claude".into(),
+                version: "2.1.258".into(),
+            }
+        );
+    }
+}
+
+#[test]
+fn a_claude_at_the_minimum_or_newer_is_ready() {
+    let c = cfg(Task::Chat, Some("claude"), Some("sonnet"));
+    for line in ["2.1.259 (Claude Code)", "2.1.302 (Claude Code)"] {
+        assert_eq!(
+            availability(&c, Some(&claude_at(Some(line))), JAIL),
+            ready("claude", Some("sonnet")),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn a_claude_with_no_known_version_fails_open_and_is_ready() {
+    let c = cfg(Task::Chat, Some("claude"), Some("sonnet"));
+    for version in [None, Some("version unknown"), Some("2.1")] {
+        assert_eq!(
+            availability(&c, Some(&claude_at(version)), JAIL),
+            ready("claude", Some("sonnet")),
+            "{version:?}"
+        );
+    }
+}
+
+// The gate is claude's alone: another CLI's version number means something else.
+#[test]
+fn an_old_looking_version_of_another_cli_is_not_gated() {
+    let c = cfg(Task::Chat, Some("codex"), Some("default"));
+    let mut codex = state("codex", Status::Available, &[]);
+    codex.version = Some("codex-cli 0.1.0".into());
+    assert_eq!(
+        availability(&c, Some(&detected(vec![codex])), JAIL),
+        ready("codex", Some("default"))
+    );
+}
