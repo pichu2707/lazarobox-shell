@@ -225,11 +225,11 @@ exit 1
 
     #[test]
     fn a_binary_that_refuses_the_test_program_is_refused() {
+        // A fake of our own: `false` lives in `/usr/bin` on macOS, `/bin` elsewhere.
+        let bin = tempfile::tempdir().unwrap();
+        let fake = script(bin.path(), "sandbox-exec", "#!/bin/sh\nexit 1\n");
         let root = tempfile::tempdir().unwrap();
-        assert_eq!(
-            probe_in(Path::new("/bin/false"), root.path()),
-            Err(SeatbeltFault::Refused)
-        );
+        assert_eq!(probe_in(&fake, root.path()), Err(SeatbeltFault::Refused));
         assert!(is_empty(root.path()));
     }
 
