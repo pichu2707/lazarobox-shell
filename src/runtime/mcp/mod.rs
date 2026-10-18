@@ -23,6 +23,7 @@
 //!   session caps the bytes it buffers per line before it builds a string:
 //!   see `session` for the policy.
 
+pub mod client;
 mod session;
 pub mod shim;
 
