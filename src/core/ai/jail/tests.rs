@@ -1174,6 +1174,87 @@ fn only_the_other_system_reason_carries_the_hint() {
     }
 }
 
+const FAULTS: [(SeatbeltFault, &str); 7] = [
+    (SeatbeltFault::Missing, "/usr/bin/sandbox-exec is missing"),
+    (
+        SeatbeltFault::Refused,
+        "sandbox-exec refused a test program",
+    ),
+    (
+        SeatbeltFault::Leaked,
+        "the sandbox did not block a test action",
+    ),
+    (SeatbeltFault::Timeout, "the sandbox check timed out"),
+    (
+        SeatbeltFault::Setup,
+        "the sandbox check could not prepare its folder",
+    ),
+    (
+        SeatbeltFault::NoHelper,
+        "this program's path cannot be resolved",
+    ),
+    (
+        SeatbeltFault::NotEnabled,
+        "it is not enabled in this version",
+    ),
+];
+
+#[test]
+fn a_disabled_seatbelt_is_off_whatever_the_probe_said() {
+    for probed in [Ok(()), Err(SeatbeltFault::Leaked)] {
+        assert_eq!(
+            seatbelt_support(false, probed),
+            JailSupport::Unavailable(JailOff::NoSeatbelt(SeatbeltFault::NotEnabled))
+        );
+    }
+}
+
+#[test]
+fn an_enabled_seatbelt_maps_the_probe_result() {
+    assert_eq!(
+        seatbelt_support(true, Ok(())),
+        JailSupport::Available {
+            backend: Backend::Seatbelt,
+            abi: 0
+        }
+    );
+    for (fault, _) in FAULTS {
+        assert_eq!(
+            seatbelt_support(true, Err(fault)),
+            JailSupport::Unavailable(JailOff::NoSeatbelt(fault))
+        );
+    }
+}
+
+#[test]
+fn the_macos_jail_texts_name_the_fault() {
+    for (fault, said) in FAULTS {
+        let off = JailOff::NoSeatbelt(fault);
+        assert_eq!(off.text(), format!("the macOS jail is unavailable: {said}"));
+        assert_eq!(off.short(), "jail unavailable");
+        assert_eq!(off.short_required(), "jail unavailable · use claude");
+        assert_eq!(
+            off.text_required(),
+            format!(
+                "the macOS jail is unavailable: {said}; \
+                 on this system use claude or Ollama for chat"
+            )
+        );
+    }
+}
+
+#[test]
+fn every_macos_jail_text_is_a_safe_helper_reason() {
+    for (fault, _) in FAULTS {
+        let text = JailOff::NoSeatbelt(fault).text();
+        assert_eq!(known_helper_reason(&text), Some(text.clone()));
+    }
+    assert_eq!(
+        known_helper_reason("the macOS jail is unavailable: /Users/x/secret"),
+        None
+    );
+}
+
 const NODE_BIN: &str = "/home/u/.nvm/versions/node/v24/bin";
 
 #[test]

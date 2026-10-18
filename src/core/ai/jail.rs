@@ -32,6 +32,46 @@ pub const SHEBANG_BYTES: usize = 256;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Backend {
     Landlock,
+    /// macOS `sandbox-exec`. It has no versioned ABI, so `abi` is 0.
+    Seatbelt,
+}
+
+/// Whether the macOS jail is wired into the product. While `false` the probe
+/// answers [`SeatbeltFault::NotEnabled`] without spawning anything, so codex
+/// and gemini stay refused on macOS.
+pub const SEATBELT_ENABLED: bool = false;
+
+/// Why the macOS jail cannot be used.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SeatbeltFault {
+    /// `/usr/bin/sandbox-exec` is not there.
+    Missing,
+    /// It refused a harmless test program.
+    Refused,
+    /// It let a forbidden test action through.
+    Leaked,
+    /// A test program did not finish in time.
+    Timeout,
+    /// The probe's scratch folder could not be made.
+    Setup,
+    /// The path of this program cannot be resolved for the helper.
+    NoHelper,
+    /// The jail is not turned on in this version.
+    NotEnabled,
+}
+
+impl SeatbeltFault {
+    fn text(self) -> &'static str {
+        match self {
+            Self::Missing => "/usr/bin/sandbox-exec is missing",
+            Self::Refused => "sandbox-exec refused a test program",
+            Self::Leaked => "the sandbox did not block a test action",
+            Self::Timeout => "the sandbox check timed out",
+            Self::Setup => "the sandbox check could not prepare its folder",
+            Self::NoHelper => "this program's path cannot be resolved",
+            Self::NotEnabled => "it is not enabled in this version",
+        }
+    }
 }
 
 /// Whether this system can jail a CLI.
@@ -46,6 +86,8 @@ pub enum JailSupport {
 pub enum JailOff {
     /// The kernel has no Landlock (`0`) or an ABI below [`MIN_ABI`].
     NoLandlock(u32),
+    /// macOS has `sandbox-exec`, but the jail cannot be used.
+    NoSeatbelt(SeatbeltFault),
     NotLinux,
     /// Nothing probed the system yet (tests, the first frame).
     NotProbed,
@@ -61,6 +103,7 @@ impl JailOff {
             Self::NoLandlock(abi) => {
                 format!("Landlock ABI {MIN_ABI}+ needed (Linux 6.2); this kernel has ABI {abi}")
             }
+            Self::NoSeatbelt(fault) => format!("the macOS jail is unavailable: {}", fault.text()),
             Self::NotLinux => "the CLI jail needs Linux".to_owned(),
             Self::NotProbed => "the jail was not probed".to_owned(),
         }
@@ -71,6 +114,7 @@ impl JailOff {
         match self {
             Self::NoLandlock(0) => "no Landlock".to_owned(),
             Self::NoLandlock(abi) => format!("Landlock ABI {abi}, needs {MIN_ABI}+"),
+            Self::NoSeatbelt(_) => "jail unavailable".to_owned(),
             Self::NotLinux => "needs Linux".to_owned(),
             Self::NotProbed => "not probed".to_owned(),
         }
@@ -80,7 +124,7 @@ impl JailOff {
     /// gemini).
     pub fn text_required(self) -> String {
         match self {
-            Self::NotLinux => format!(
+            Self::NotLinux | Self::NoSeatbelt(_) => format!(
                 "{}; on this system use claude or Ollama for chat",
                 self.text()
             ),
@@ -92,6 +136,7 @@ impl JailOff {
     pub fn short_required(self) -> String {
         match self {
             Self::NotLinux => "needs Linux · use claude".to_owned(),
+            Self::NoSeatbelt(_) => "jail unavailable · use claude".to_owned(),
             _ => self.short(),
         }
     }
@@ -111,6 +156,19 @@ pub fn support_from_abi(abi: u32) -> JailSupport {
             backend: Backend::Landlock,
             abi,
         },
+    }
+}
+
+/// Maps what the macOS probe found. `enabled` is [`SEATBELT_ENABLED`]; while
+/// it is off the probe result does not matter.
+pub fn seatbelt_support(enabled: bool, probed: Result<(), SeatbeltFault>) -> JailSupport {
+    match (enabled, probed) {
+        (false, _) => JailSupport::Unavailable(JailOff::NoSeatbelt(SeatbeltFault::NotEnabled)),
+        (true, Ok(())) => JailSupport::Available {
+            backend: Backend::Seatbelt,
+            abi: 0,
+        },
+        (true, Err(fault)) => JailSupport::Unavailable(JailOff::NoSeatbelt(fault)),
     }
 }
 
@@ -155,8 +213,19 @@ fn known_helper_reason(said: &str) -> Option<String> {
     if let Some(abi) = said.strip_prefix(abi_prefix.as_str()).and_then(number) {
         return Some(JailOff::NoLandlock(abi).text());
     }
+    let macos = [
+        SeatbeltFault::Missing,
+        SeatbeltFault::Refused,
+        SeatbeltFault::Leaked,
+        SeatbeltFault::Timeout,
+        SeatbeltFault::Setup,
+        SeatbeltFault::NoHelper,
+        SeatbeltFault::NotEnabled,
+    ]
+    .map(JailOff::NoSeatbelt);
     [JailOff::NoLandlock(0), JailOff::NotLinux]
         .into_iter()
+        .chain(macos)
         .map(JailOff::text)
         .find(|text| text == said)
 }
