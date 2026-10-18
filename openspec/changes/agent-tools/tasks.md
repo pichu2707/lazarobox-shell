@@ -294,14 +294,15 @@ Conditional on the opencode adapter, which is parked. Not part of this change's 
 
 ## PR14 / 4b: MCP client (`src/runtime/mcp/client.rs`)
 
-- [ ] 4b.1 RED: client handshake, `tools/list` (max 64 tools, qualified names, built-ins never shadowed), `tools/call`, timeouts and cancel against a fake server process.
+- [x] 4b.1 RED: client handshake (done over a generic transport with an in-process fake server, commit 1aaff55), `tools/list` (max 64 tools, qualified names, built-ins never shadowed), `tools/call`, timeouts and cancel against a fake server process.
 - [ ] 4b.2 RED: spawn direct, not jailed, scrubbed env (named variables only), `cwd=$HOME`; nothing spawns on config load or repo open; a dying server gives an error result.
-- [ ] 4b.3 GREEN: implement reusing the 2c codec.
+- [ ] 4b.3 GREEN: implement reusing the 2c codec. (Codec, handshake, list, call, timeouts, cancel: done in 1aaff55. Spawn, env, stderr note, shutdown: pending.)
 - [ ] 4b.4 Gate.
 - [ ] 4b.5 Docs: doc comments on the trust model.
 
 ## PR15 / 4c: Re-exposure and approval (`src/core/ai/tools/mod.rs`, `src/runtime/tools/mod.rs`, `src/ui/components/chat.rs`, `README.md`)
 
+- Note (4a review, carried by 4b): when 4c wires `servers::resolve`, canonicalize BOTH the entry `project` path and the chat's origin root there, not inside the pure `resolve`. A symlinked `project` never matches: that fails closed when adding a server but fails OPEN when a disabled project entry is meant to remove a global one. Also in 4c: route calls with `Qualified::raw_of` and show `Dropped::notice` (4b tests both against fake servers; no production caller yet).
 - [ ] 4c.1 RED: user tools are always write tools; every call needs `y` (prompt shows server, tool, arguments); the server is not contacted before `y`; results wrapped untrusted; declined/timeout/cancel give `denied`.
 - [ ] 4c.2 RED: user tools appear in the registry for MCP and Ollama only when resolved; tools off hides them.
 - [ ] 4c.3 GREEN: implement.
