@@ -533,3 +533,33 @@ fn a_timeout_that_cannot_be_set_on_a_closed_peer_is_not_a_failure() {
         assert!(timeout_set(Err(Error::from(kind))).is_err(), "{kind:?}");
     }
 }
+
+/// A read timeout that cannot be set is only let through when the read that
+/// follows cannot block. `EINVAL` on a live socket (a timeout we could not
+/// set) must never lead to a read without a bound.
+#[test]
+fn a_read_timeout_that_cannot_be_set_is_let_through_only_for_a_read_that_cannot_block() {
+    use std::io::{Error, ErrorKind};
+    let invalid = || Err(Error::from(ErrorKind::InvalidInput));
+    assert!(bounded(Ok(()), || panic!("not asked when the timeout is set")).is_ok());
+    assert!(bounded(invalid(), || true).is_ok(), "the peer is gone");
+    assert!(
+        matches!(bounded(invalid(), || false), Err(Failure::TimedOut)),
+        "a live socket with no timeout"
+    );
+    let other = bounded(Err(Error::from(ErrorKind::PermissionDenied)), || true);
+    assert!(matches!(other, Err(Failure::Connect(_))), "{other:?}");
+}
+
+#[test]
+fn a_read_cannot_block_on_a_socket_with_data_or_a_closed_peer_but_can_on_a_quiet_one() {
+    let (ours, mut theirs) = UnixStream::pair().unwrap();
+    assert!(!read_cannot_block(&ours), "quiet and alive");
+    theirs.write_all(b"x").unwrap();
+    assert!(read_cannot_block(&ours), "a byte is waiting");
+    let mut one = [0u8; 1];
+    (&ours).read_exact(&mut one).unwrap();
+    assert!(!read_cannot_block(&ours), "drained and alive");
+    drop(theirs);
+    assert!(read_cannot_block(&ours), "the peer closed");
+}
