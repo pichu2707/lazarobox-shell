@@ -8,6 +8,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 0.8.0 is the first version published to crates.io. 0.7.0 is an unpublished
 baseline.
 
+## [0.17.0] - 2026-10-18
+
+### Added
+
+- **Your own MCP servers in the chat.** Declare them in the user config as
+  `[[ai.mcp.servers]]` (`name`, `command`, `args`, `env`, optional `project`
+  and `enabled`). Global entries apply everywhere; a `project` entry applies
+  only to that git root, compared as a real (canonical) path, and an entry
+  with `enabled = false` turns a global server off for that project. A
+  repo-local file is never read.
+  - A server starts only for a chat turn with tools on, and only for an
+    engine that will get the tools: Ollama, or a CLI that runs jailed. Each
+    start is announced (`mcp: started <name>`); a server that fails gives one
+    notice and the others keep working. Servers stop when the chat closes, on
+    a turn with tools off and on quit.
+  - **Every call asks `y`, even in Chat approval mode `auto`.** The prompt
+    shows the server, the tool and every argument key, and says how much of a
+    long value is hidden. Arguments are capped at 4 KiB.
+  - Results come back wrapped as untrusted data and capped. Tool names are
+    qualified as `<server>__<tool>`; built-in tools are never shadowed and
+    colliding names are reported.
+  - `env` lists variable names only; values are refused. Servers run with a
+    scrubbed environment, `HOME` as their working directory, no shell, and
+    never receive the session token or `LD_*`/`DYLD_*` variables.
+- Releases are published by a GitHub workflow when a `vX.Y.Z` tag is pushed:
+  it checks the version and CHANGELOG, runs the tests, publishes to crates.io
+  through Trusted Publishing and creates the GitHub Release.
+
+### Fixed
+
+- macOS: the chat's read tools (`read_file`, `list_dir`, `find_dir`) always
+  failed, because the random delimiter that wraps a tool result was only
+  generated on Linux. It is now read from `/dev/urandom` on every system.
+- macOS: the `/private/tmp` and `/private/var/folders` scratch folders are
+  now treated as untrusted like `/tmp`, process names are read with `ps`
+  where there is no `/proc`, and the MCP shim handshake is always bounded.
+- CI runs the tests on Linux and on macOS (arm64 and Intel), with a pinned
+  toolchain and an MSRV check.
+
 ## [0.16.2] - 2026-10-18
 
 ### Fixed
@@ -740,7 +779,10 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.16.2...v0.17.0
+[0.16.2]: https://github.com/pichu2707/lazarobox-shell/compare/v0.16.1...v0.16.2
+[0.16.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.4...v0.16.0
 [0.15.4]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.3...v0.15.4
 [0.15.3]: https://github.com/pichu2707/lazarobox-shell/compare/v0.15.2...v0.15.3
