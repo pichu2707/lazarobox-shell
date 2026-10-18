@@ -430,24 +430,32 @@ async fn a_stalled_handshake_times_out() {
     assert_eq!(bounded(client.handshake()).await, Err(ClientError::Timeout));
 }
 
-#[tokio::test]
-async fn a_stalled_initialized_notice_times_out() {
-    // The initialize request fits the pipe, the notice after it does not.
+/// W5.1 and S-a: `initialize` and the notice after it share ONE deadline.
+/// The fake reads `initialize` (so the stall is the notice's, not the
+/// request's), answers after 150 ms of a 200 ms limit, then never reads again.
+#[tokio::test(start_paused = true)]
+async fn the_initialized_notice_shares_the_handshake_deadline() {
     let (mut client, mut fake) = pair_with(
         Timeouts {
             handshake: Duration::from_millis(200),
             call: WAIT,
         },
-        160,
+        16,
     );
-    let answer = format!(
-        r#"{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"{PROTOCOL_VERSION}"}}}}"#
-    );
-    let (done, ()) = tokio::join!(
-        bounded(client.handshake()),
-        fake.send_raw(answer.as_bytes())
-    );
+    let serve = async {
+        let (id, _) = fake.request("initialize").await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        fake.reply(id, json!({"protocolVersion": PROTOCOL_VERSION}))
+            .await;
+    };
+    let started = tokio::time::Instant::now();
+    let (done, ()) = tokio::join!(client.handshake(), serve);
     assert_eq!(done, Err(ClientError::Timeout));
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_millis(200) && took < Duration::from_millis(260),
+        "one 200 ms deadline, not two: {took:?}"
+    );
 }
 
 #[tokio::test]
@@ -659,4 +667,38 @@ async fn an_older_supported_revision_is_accepted() {
     let (mut client, mut fake) = pair(timeouts());
     let (done, _) = tokio::join!(client.handshake(), fake.handshake_with("2024-11-05"));
     assert_eq!(done, Ok(()));
+}
+
+// W1.1: schema text is stripped of terminal and format characters, never of
+// long identifiers, and a collision after stripping drops the schema.
+
+#[tokio::test]
+async fn long_identifiers_in_a_schema_survive_unchanged() {
+    let key = "workspaceRootDirectoryPath";
+    let other = "another-very-long-kebab-case-key";
+    let schema = schema_of(json!({
+        "type": "object",
+        "properties": {key: {"type": "string", "pattern": "^[A-Za-z0-9]{24,}$"}, other: {"const": key}},
+        "required": [key, other],
+    }))
+    .await;
+    assert_eq!(schema["properties"][key]["pattern"], "^[A-Za-z0-9]{24,}$");
+    assert_eq!(schema["properties"][other]["const"], key);
+    assert_eq!(schema["required"], json!([key, other]));
+}
+
+#[tokio::test]
+async fn keys_that_collide_after_stripping_replace_the_schema() {
+    let schema = schema_of(json!({
+        "type": "object",
+        "properties": {"path": {"type": "string"}, "pa\u{1b}[2Jth": {"type": "number"}},
+    }))
+    .await;
+    assert_eq!(schema, json!({"type": "object"}));
+}
+
+#[tokio::test]
+async fn schema_strings_keep_newlines_and_tabs() {
+    let schema = schema_of(json!({"type": "object", "title": "a\n\tb"})).await;
+    assert_eq!(schema["title"], "a\n\tb");
 }

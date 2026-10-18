@@ -27,7 +27,7 @@ use std::{future::Future, time::Duration};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
-    time::timeout,
+    time::{Instant, timeout},
 };
 
 use super::{
@@ -149,6 +149,8 @@ impl McpClient {
             "clientInfo": {"name": "lazarobox", "version": env!("CARGO_PKG_VERSION")},
         });
         let limit = self.timeouts.handshake;
+        // One deadline for `initialize` and the notice after it.
+        let deadline = Instant::now() + limit;
         let result = self
             .request("initialize", params, limit, std::future::pending())
             .await?;
@@ -161,7 +163,8 @@ impl McpClient {
             method: "notifications/initialized".to_owned(),
             params: Value::Null,
         };
-        self.send_within(notice, limit).await
+        let left = deadline.saturating_duration_since(Instant::now());
+        self.send_within(notice, left).await
     }
 
     /// The tools of the server, as it names them: at most [`MAX_TOOLS`], an
@@ -285,6 +288,10 @@ impl McpClient {
     /// no id; a request of the server gets `ping` answered and everything else
     /// refused. A reply to OUR id that is too large, not text or malformed
     /// fails at once: waiting for a better one would only wait out the timer.
+    /// A line that is not JSON at all names no id, so it is skipped and the
+    /// call waits until its timeout. After a plain cancel, a late oversize
+    /// line (a stale answer) fails the NEXT request once, because it cannot be
+    /// told from an oversize answer to that one.
     async fn answer(&mut self, id: &Value) -> Result<Value, ClientError> {
         loop {
             let line = match read_line(&mut self.reader, MAX_LINE_BYTES).await {
@@ -344,8 +351,11 @@ fn read_tool(entry: &Value) -> Option<ExternalTool> {
     })
 }
 
-/// `value` with every string, keys included, cleaned. `None` when it nests
-/// deeper than [`SCHEMA_DEPTH`].
+/// `value` with every string, keys included, stripped of escapes, control and
+/// format characters by `clean` (which keeps `\n` and `\t` and redacts
+/// nothing, so long identifiers survive). `None` when it nests deeper than
+/// [`SCHEMA_DEPTH`] or two keys of one object become the same after cleaning:
+/// a schema that lost a property must not be offered.
 fn clean_value(value: &Value, depth: usize) -> Option<Value> {
     if depth > SCHEMA_DEPTH {
         return None;
@@ -358,11 +368,16 @@ fn clean_value(value: &Value, depth: usize) -> Option<Value> {
                 .map(|item| clean_value(item, depth + 1))
                 .collect::<Option<_>>()?,
         ),
-        Value::Object(map) => Value::Object(
-            map.iter()
-                .map(|(key, item)| Some((clean(key), clean_value(item, depth + 1)?)))
-                .collect::<Option<_>>()?,
-        ),
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (key, item) in map {
+                let item = clean_value(item, depth + 1)?;
+                if out.insert(clean(key), item).is_some() {
+                    return None;
+                }
+            }
+            Value::Object(out)
+        }
         other => other.clone(),
     })
 }
