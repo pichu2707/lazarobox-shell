@@ -520,3 +520,16 @@ fn the_preflight_passes_for_a_private_dir_and_its_socket() {
     std::os::unix::fs::symlink(bait.path(), &link).unwrap();
     assert!(matches!(preflight(&link), Err(Failure::Untrusted)));
 }
+
+/// macOS answers `EINVAL` to `setsockopt` on a unix socket whose peer has
+/// already closed. The session may close right after its `ok`, so that error is
+/// the peer being gone, not a failure: the next read says so by itself.
+#[test]
+fn a_timeout_that_cannot_be_set_on_a_closed_peer_is_not_a_failure() {
+    use std::io::{Error, ErrorKind};
+    assert!(timeout_set(Ok(())).is_ok());
+    assert!(timeout_set(Err(Error::from(ErrorKind::InvalidInput))).is_ok());
+    for kind in [ErrorKind::PermissionDenied, ErrorKind::NotFound] {
+        assert!(timeout_set(Err(Error::from(kind))).is_err(), "{kind:?}");
+    }
+}
