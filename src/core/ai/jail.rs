@@ -187,7 +187,7 @@ pub enum JailRefusal {
 /// Why an interpreter is not trusted.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Untrusted {
-    /// It lives under a scratch folder (`/tmp`, `/var/tmp`).
+    /// It lives under a scratch folder (see [`SCRATCH`]).
     Scratch,
     /// The file or folder at `path` (the real one that failed the check) is
     /// writable by group or others; `yours` says the user owns it.
@@ -535,13 +535,31 @@ impl Cli {
     }
 }
 
+/// The scratch folders, by every name a path can carry. macOS keeps `/tmp` and
+/// `/var/tmp` as links into `/private` and its `$TMPDIR` lives under
+/// `/private/var/folders`, so a canonical path there starts with `/private`.
+/// `/var/folders` is the same place by its link name, listed in case a path
+/// is ever compared before it is resolved.
+pub(crate) const SCRATCH: [&str; 6] = [
+    "/tmp",
+    "/var/tmp",
+    "/private/tmp",
+    "/private/var/tmp",
+    "/private/var/folders",
+    "/var/folders",
+];
+
+/// Whether a path is under a scratch folder.
+pub(crate) fn is_scratch(path: &Path) -> bool {
+    SCRATCH.iter().any(|scratch| path.starts_with(scratch))
+}
+
 /// Whether granting `path` to `cli` would open far more than its own files:
 /// `$HOME` or one of its parents, `/tmp`, `~/.ssh`, `~/.gnupg`, another
 /// tool's credential folder, a shared data folder of `$HOME` or a system or
 /// mount folder.
 fn too_broad(path: &Path, homes: &[&Path], cli: Cli) -> bool {
-    path.starts_with("/tmp")
-        || path.starts_with("/var/tmp")
+    is_scratch(path)
         || BROAD.iter().any(|b| path == Path::new(b))
         || homes.iter().any(|home| too_broad_for_home(path, home, cli))
 }

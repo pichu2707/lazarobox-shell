@@ -47,7 +47,7 @@ use crate::{
         jail::{
             Cli, CliLayout, ELF_HEAD_BYTES, Interpreter, JailArgs, JailOff, JailPolicy,
             JailRefusal, JailSpec, JailSupport, Launch, ShimGrant, Untrusted, elf_interp_at,
-            interp_path, jail_spec_with, launch, parse_shebang,
+            interp_path, is_scratch, jail_spec_with, launch, parse_shebang,
             rpath::{homebrew_openssl_files, search_dirs},
         },
         tools::wiring,
@@ -488,20 +488,9 @@ fn interpreter_trust(path: &Path) -> Result<PathBuf, (PathBuf, Untrusted)> {
     trust(path, Rule::Jail)
 }
 
-/// The scratch folders, by their real names. macOS keeps `/tmp` and `/var/tmp`
-/// as links into `/private`, so a canonical path there starts with `/private`,
-/// and its `$TMPDIR` lives under `/private/var/folders`.
-const SCRATCH: [&str; 5] = [
-    "/tmp",
-    "/var/tmp",
-    "/private/tmp",
-    "/private/var/tmp",
-    "/private/var/folders",
-];
-
 /// Whether a path is under a scratch folder.
 fn in_scratch(path: &Path) -> bool {
-    SCRATCH.iter().any(|scratch| path.starts_with(scratch))
+    is_scratch(path)
 }
 
 /// [`interpreter_trust`] under `rule`. The jail checks the file and its
