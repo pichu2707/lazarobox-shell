@@ -534,6 +534,29 @@ struct Tooling {
     started: HashMap<PaneId, Started>,
 }
 
+/// Whether a turn's engine will get its tools wired (see [`wires_tools`]).
+pub type Wires = Arc<dyn Fn(&ChatRequest) -> bool + Send + Sync>;
+
+/// Whether the tools of `request` reach its engine: a server engine (Ollama)
+/// runs them in-process; a CLI only when it will run jailed. The user's
+/// servers are started only for such a turn: for a bare CLI the wiring is
+/// dropped, so a server would run, and be announced, for nothing.
+pub fn wires_tools(cli: &CliEnv, request: &ChatRequest) -> bool {
+    match adapter_for(&request.engine) {
+        Some(Adapter::Ollama) => true,
+        Some(adapter) => match adapter.build(request) {
+            Invocation::Process(job) => cli::runs_jailed(cli, &job),
+            Invocation::Http { .. } | Invocation::Refused(_) => false,
+        },
+        None => false,
+    }
+}
+
+/// [`wires_tools`] over the machine `cli`.
+pub fn wires_for(cli: CliEnv) -> Wires {
+    Arc::new(move |request| wires_tools(&cli, request))
+}
+
 /// A turn's tool session: what its adapter timers see, the dispatch of a
 /// server engine (Ollama), and where its user servers will be put.
 type Opened = (Pending, Option<Arc<dyn Dispatch>>, Slot);
@@ -574,8 +597,8 @@ impl Chats {
     /// The user's MCP servers (`[[ai.mcp.servers]]`, read once at startup),
     /// started with `home` as their working directory. Only a turn with tools
     /// on starts them.
-    pub fn with_servers(mut self, servers: Vec<McpServer>, home: PathBuf) -> Self {
-        self.externals = Externals::new(servers, home);
+    pub fn with_servers(mut self, servers: Vec<McpServer>, home: PathBuf, wires: Wires) -> Self {
+        self.externals = Externals::new(servers, home, wires);
         self
     }
 
@@ -607,9 +630,11 @@ impl Chats {
         let channel = mpsc::channel(TURN_CHANNEL);
         let (pending, dispatch, external) =
             match self.open_session(pane, turn, &request, &channel.0) {
-                Some((pending, dispatch, slot)) => {
-                    (Some(pending), dispatch, self.externals.start_for(slot))
-                }
+                Some((pending, dispatch, slot)) => (
+                    Some(pending),
+                    dispatch,
+                    self.externals.start_for(slot, &request),
+                ),
                 None => (None, None, None),
             };
         // Tell the engine's adapter which session is this turn's. Without a

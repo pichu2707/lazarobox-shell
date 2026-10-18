@@ -384,6 +384,7 @@ pub async fn run() -> io::Result<()> {
                     .as_ref()
                     .map_or_else(Vec::new, |_| app.ai().mcp_servers().to_vec()),
                 servers_home.clone().unwrap_or_default(),
+                chat::wires_for(cli_env.clone()),
             ),
         )
         .with_store(chat_store::spawn_at(store_path, store_tx));

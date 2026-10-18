@@ -365,6 +365,13 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     let reason = format!("pane {number} is running a program");
                     ended(ToolStatus::Denied, format!("denied: {reason}"), &reason)
                 }
+                // `Typed` answers a run in a pane. A user tool is only ever
+                // sent (after `y`) or denied, never routed by another answer.
+                (Decision::Typed(_), Call::External { .. }) => ended(
+                    ToolStatus::Denied,
+                    format!("denied: {NOT_COMMAND}"),
+                    NOT_COMMAND,
+                ),
                 (Decision::Typed(number), Call::RunInPane { .. }) => ended(
                     ToolStatus::Ok,
                     TYPED_TEXT.to_owned(),
