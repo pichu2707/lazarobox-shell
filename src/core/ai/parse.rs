@@ -140,6 +140,24 @@ pub fn parse_version(stdout: &[u8]) -> Option<String> {
         })
 }
 
+/// `(major, minor, patch)` of the first token of a version line that reads
+/// like `x.y.z` (`2.1.302 (Claude Code)`, `codex-cli 0.130.0`, `v1.2.3`,
+/// `2.1.259-beta.1`). `None` when no token does: the caller decides what an
+/// unreadable version means. A pre-release counts as its base version
+/// (`2.1.259-beta.1` is `2.1.259`). The tuple compares numerically, field by field.
+pub fn version_triplet(line: &str) -> Option<(u32, u32, u32)> {
+    line.split_whitespace().find_map(|token| {
+        let mut parts = token.trim_start_matches('v').splitn(3, '.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts.next()?;
+        let digits = patch
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(patch.len());
+        Some((major, minor, patch[..digits].parse().ok()?))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,5 +507,27 @@ mod tests {
         assert_eq!(ollama_tags(body.as_bytes()), strs(&["ok"]));
         let openai = "{\"data\":[{\"id\":\"\\u001b]0;t\\u0007\"},{\"id\":\"m\"}]}";
         assert_eq!(openai_models(openai.as_bytes(), None), strs(&["m"]));
+    }
+
+    #[test]
+    fn version_triplet_reads_the_numbers_of_a_version_line() {
+        assert_eq!(version_triplet("2.1.302 (Claude Code)"), Some((2, 1, 302)));
+        assert_eq!(version_triplet("codex-cli 0.130.0"), Some((0, 130, 0)));
+        assert_eq!(version_triplet("v1.2.3"), Some((1, 2, 3)));
+        assert_eq!(version_triplet("2.1.259-beta.1"), Some((2, 1, 259)));
+    }
+
+    #[test]
+    fn version_triplet_compares_numerically_not_as_text() {
+        assert!(version_triplet("2.1.1000") > version_triplet("2.1.259"));
+        assert!(version_triplet("2.10.0") > version_triplet("2.9.9"));
+        assert!(version_triplet("2.1.9") < version_triplet("2.1.10"));
+    }
+
+    #[test]
+    fn version_triplet_is_none_for_what_is_not_a_version() {
+        for line in ["", "version unknown", "claude", "2.1", "a.b.c", "1.2.x"] {
+            assert_eq!(version_triplet(line), None, "{line:?}");
+        }
     }
 }

@@ -28,6 +28,14 @@ baseline.
   claude is older than lazarobox needs; update it (claude update) and try
   again`); for any other word the message does not repeat it. The secret
   redactor is unchanged. No flag is dropped: the text-only options stay on.
+- **claude older than 2.1.259 no longer fails with `unknown option`** (#180).
+  The text-only argv needs `--permission-prompts none`, added in claude
+  2.1.259. The chat now refuses a turn with a detected claude below that
+  version, with the message `claude <version> is too old for lazarobox (it
+  needs 2.1.259 or newer); update it: ...; then refresh from the menu
+  (Ctrl+Space m, then r)`, and the engine row in the menu
+  reads `update needed: 2.1.259+`. A version that cannot be read does not
+  block. The text-only flags are never dropped to fit an old claude.
 
 ## [0.17.0] - 2026-10-18
 

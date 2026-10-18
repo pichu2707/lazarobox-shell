@@ -278,6 +278,12 @@ pub fn status_text(detection: Option<&Detection>, id: &str) -> String {
             let version = state.version.as_deref().unwrap_or("version unknown");
             // The reason replaces the version: a narrow row clips the tail,
             // and the reason matters more than the version.
+            if id == "claude" && chat::adapters::claude_too_old(state.version.as_deref()) {
+                return format!(
+                    "available · update needed: {}+",
+                    chat::adapters::claude_min_version_text()
+                );
+            }
             match &state.diagnostics.jail {
                 Some(why) => format!("available · no jail: {why}"),
                 None => format!("available · {version}"),
@@ -750,5 +756,39 @@ mod tests {
         assert_eq!(status_text(None, "ollama"), "detecting…");
         assert_eq!(text(&Detection::default(), "ollama"), "unknown");
         assert_eq!(text(&reduce(&[]), "mystery"), "not detected");
+    }
+
+    #[test]
+    fn an_outdated_claude_row_says_an_update_is_needed() {
+        let mk = |id, version: Option<&str>| EngineState {
+            id,
+            status: Status::Available,
+            models: vec!["default".to_owned()],
+            version: version.map(str::to_owned),
+            model_labels: Vec::new(),
+            diagnostics: Diagnostics::default(),
+        };
+        let d = Detection {
+            engines: vec![
+                mk("claude", Some("2.1.200 (Claude Code)")),
+                mk("codex", Some("codex-cli 0.1.0")),
+            ],
+        };
+        assert_eq!(
+            status_text(Some(&d), "claude"),
+            "available · update needed: 2.1.259+"
+        );
+        // Only claude is gated.
+        assert_eq!(
+            status_text(Some(&d), "codex"),
+            "available · codex-cli 0.1.0"
+        );
+        for version in [Some("2.1.259 (Claude Code)"), None, Some("weird")] {
+            let d = Detection {
+                engines: vec![mk("claude", version)],
+            };
+            let want = format!("available · {}", version.unwrap_or("version unknown"));
+            assert_eq!(status_text(Some(&d), "claude"), want, "{version:?}");
+        }
     }
 }

@@ -1,6 +1,6 @@
 //! The text a chat pane shows when its engine cannot be used yet.
 
-use super::{engine::Availability, wrap::wrap_words};
+use super::{adapters, engine::Availability, wrap::wrap_words};
 
 /// The rows `text` takes above the composer in a transcript area `width`
 /// wide and `height` high: its wrapped lines, never more than the area has.
@@ -30,6 +30,13 @@ pub fn guidance(availability: &Availability) -> Option<String> {
             format!("{engine}: not available on this system yet: {reason}")
         }
         Availability::GatedOff { engine } => format!("{engine}: gated off"),
+        Availability::Outdated { engine, version } => format!(
+            "{engine} {version} is too old for lazarobox (it needs {} or newer); \
+             update it: claude update, brew upgrade claude-code, or \
+             npm i -g @anthropic-ai/claude-code@latest; then refresh from the menu \
+             (Ctrl+Space m, then r)",
+            adapters::claude_min_version_text()
+        ),
         Availability::NoModel { engine } => {
             format!("{engine}: no model chosen: pick one in the menu (Ctrl+Space m)")
         }
@@ -168,6 +175,22 @@ mod tests {
                 && text.contains("old:7b")
                 && text.contains("download required"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn outdated_names_the_version_the_minimum_and_how_to_update() {
+        let text = guidance(&Availability::Outdated {
+            engine: s("claude"),
+            version: s("2.1.200"),
+        })
+        .unwrap();
+        assert_eq!(
+            text,
+            "claude 2.1.200 is too old for lazarobox (it needs 2.1.259 or newer); \
+             update it: claude update, brew upgrade claude-code, or \
+             npm i -g @anthropic-ai/claude-code@latest; then refresh from the menu \
+             (Ctrl+Space m, then r)"
         );
     }
 }

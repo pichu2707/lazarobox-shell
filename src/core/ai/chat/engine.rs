@@ -4,7 +4,10 @@
 
 use std::path::PathBuf;
 
-use super::{adapters::adapter_for, approval::ApprovalAsk};
+use super::{
+    adapters::{self, adapter_for},
+    approval::ApprovalAsk,
+};
 use crate::core::ai::{
     CATALOG, Detection, Kind, Status,
     config::{AiConfig, Task},
@@ -234,6 +237,12 @@ pub enum Availability {
     GatedOff {
         engine: String,
     },
+    /// The CLI is older than the argv chat runs it with needs (claude today):
+    /// the turn never starts. `version` is the detected `x.y.z`.
+    Outdated {
+        engine: String,
+        version: String,
+    },
     NoModel {
         engine: String,
     },
@@ -288,6 +297,11 @@ pub fn availability_with(
         let status = status_text(Some(detection), &engine);
         return Availability::Undetected { engine, status };
     };
+    if engine == "claude"
+        && let Some(version) = adapters::claude_old_version(state.version.as_deref())
+    {
+        return Availability::Outdated { engine, version };
+    }
     if let JailSupport::Unavailable(off) = jail
         && JAIL_REQUIRED.contains(&engine.as_str())
     {

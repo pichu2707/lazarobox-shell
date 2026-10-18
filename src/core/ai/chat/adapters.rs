@@ -11,6 +11,7 @@ use super::{
 use crate::core::ai::{
     CATALOG, Kind,
     jail::{Cli, JailPolicy},
+    parse,
     tools::{registry, wiring::McpWire},
 };
 
@@ -320,6 +321,40 @@ fn wire_for(request: &ChatRequest, verified: &[&str]) -> Option<McpWire> {
         }
         _ => None,
     }
+}
+
+/// The oldest claude the pinned argv of [`claude_invocation`] runs on. The
+/// newest flag in it sets the number: `--permission-prompts none` arrived in
+/// 2.1.259 (changelog: "Added `--permission-prompts none` for unattended
+/// headless hosts"). An older claude exits with `error: unknown option`.
+///
+/// We NEVER drop or weaken the text-only flags (`--permission-prompts none`,
+/// `--safe-mode`, `--tools ""`, `--strict-mcp-config`) to fit an old claude:
+/// a turn that cannot run text-only does not run. The fix for an old claude is
+/// to gate it (see [`claude_too_old`]), not to degrade the argv. The adapter
+/// tests pin every flag to a version, so a new flag must raise this number.
+pub const CLAUDE_MIN_VERSION: (u32, u32, u32) = (2, 1, 259);
+
+/// [`CLAUDE_MIN_VERSION`] as text, `2.1.259`.
+pub fn claude_min_version_text() -> String {
+    let (major, minor, patch) = CLAUDE_MIN_VERSION;
+    format!("{major}.{minor}.{patch}")
+}
+
+/// The `x.y.z` of the detected claude `version` line when it is known and
+/// below [`CLAUDE_MIN_VERSION`]. A missing or unreadable version is `None`: it
+/// fails open, because a failed `--version` probe must not lock a user with a
+/// working claude out of the chat. Failing open is also safe: an old claude
+/// rejects the unknown flag before it does anything, so it can never run with
+/// weaker flags; fail-open can only reproduce the original error.
+pub fn claude_old_version(version: Option<&str>) -> Option<String> {
+    let found = version.and_then(parse::version_triplet)?;
+    (found < CLAUDE_MIN_VERSION).then(|| format!("{}.{}.{}", found.0, found.1, found.2))
+}
+
+/// Whether [`claude_old_version`] found a version below the minimum.
+pub fn claude_too_old(version: Option<&str>) -> bool {
+    claude_old_version(version).is_some()
 }
 
 /// The claude run: the pinned argv (text only, no tools, nothing from the

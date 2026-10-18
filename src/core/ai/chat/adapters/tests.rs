@@ -1268,3 +1268,144 @@ fn the_ollama_body_offers_the_external_tools_after_the_built_ins() {
     );
     assert!(names(body_of(ollama_round_body(&req, &[], false))).is_empty());
 }
+
+/// Every flag a claude turn passes, with the first claude release that knows
+/// it. Adding a flag to `claude_invocation` or to the tools wiring without a
+/// row here fails `every_claude_flag_is_pinned_to_a_minimum_version`; adding
+/// one newer than `CLAUDE_MIN_VERSION` fails `the_claude_minimum_is_the_newest_flag`.
+/// `--permission-prompts none` is the newest (2.1.259); `--safe-mode` is
+/// 2.1.169. 1.0.0 means older than any release we gate on; the value is
+/// irrelevant as long as it is below the newest row.
+const CLAUDE_FLAG_MINIMUMS: &[(&str, (u32, u32, u32))] = &[
+    ("-p", (1, 0, 0)),
+    ("--output-format", (1, 0, 0)),
+    ("--verbose", (1, 0, 0)),
+    ("--include-partial-messages", (1, 0, 0)),
+    ("--tools", (1, 0, 0)),
+    ("--strict-mcp-config", (1, 0, 0)),
+    ("--safe-mode", (2, 1, 169)),
+    ("--disable-slash-commands", (1, 0, 0)),
+    ("--permission-prompts", (2, 1, 259)),
+    ("--no-session-persistence", (1, 0, 0)),
+    ("--system-prompt", (1, 0, 0)),
+    ("--model", (1, 0, 0)),
+    // The tools wiring (`tools::wiring::claude`).
+    ("--mcp-config", (1, 0, 0)),
+    ("--allowedTools", (1, 0, 0)),
+    ("--setting-sources", (1, 0, 0)),
+];
+
+/// The flags of an argv: every `-`-prefixed argument, without its `=value`.
+/// The value that follows `--system-prompt` (the prompt text) and
+/// `--permission-prompts` is skipped by construction, so text never counts.
+fn claude_flags(args: &[String]) -> Vec<String> {
+    let mut flags = Vec::new();
+    let mut skip = false;
+    for arg in args {
+        if std::mem::take(&mut skip) {
+            continue;
+        }
+        if arg.starts_with('-') {
+            flags.push(arg.split('=').next().unwrap_or(arg).to_owned());
+            skip = arg == "--system-prompt" || arg == "--permission-prompts";
+        }
+    }
+    flags
+}
+
+/// The flags of a text-only turn, of a turn built with a tools session (its
+/// tools prompt argv) and of the wiring the runtime adds to it.
+fn all_claude_flags() -> Vec<String> {
+    let mut flags =
+        claude_flags(&process(Adapter::Claude.build(&claude_request(Some("sonnet")))).args);
+    let (_, on) = tools_on("claude", true);
+    let p = process(Adapter::Claude.build_with(&on, &["claude"]));
+    flags.extend(claude_flags(&p.args));
+    flags.extend(claude_flags(&p.tools.expect("a tools argv").args));
+    let wire = McpWire {
+        socket: "/run/user/1000/lazarobox/s-1-1.sock".into(),
+        token: Secret::new("0123456789abcdef0123456789abcdef"),
+        unwire: Unwire::none(),
+    };
+    let wiring = crate::core::ai::tools::wiring::claude(
+        std::path::Path::new("/usr/bin/lazarobox"),
+        std::path::Path::new("/tmp/mcp.json"),
+        &wire,
+    )
+    .expect("utf-8 paths");
+    flags.extend(claude_flags(&wiring.args));
+    flags
+}
+
+#[test]
+fn every_claude_flag_is_pinned_to_a_minimum_version() {
+    let flags = all_claude_flags();
+    assert!(flags.len() >= 15, "the argv carries its flags: {flags:?}");
+    for flag in &flags {
+        assert!(
+            CLAUDE_FLAG_MINIMUMS.iter().any(|(f, _)| f == flag),
+            "{flag} has no row in CLAUDE_FLAG_MINIMUMS: pin the claude release that added it"
+        );
+    }
+    for (flag, _) in CLAUDE_FLAG_MINIMUMS {
+        assert!(
+            flags.iter().any(|f| f == flag),
+            "{flag} is in the table but no turn passes it any more"
+        );
+    }
+}
+
+#[test]
+fn the_flag_scan_never_reads_prompt_text_as_a_flag() {
+    let args = strings(&[
+        "-p",
+        "--system-prompt",
+        "--evil",
+        "--model=x",
+        "--permission-prompts",
+        "-none",
+    ]);
+    assert_eq!(
+        claude_flags(&args),
+        ["-p", "--system-prompt", "--model", "--permission-prompts"]
+    );
+}
+
+#[test]
+fn the_claude_minimum_is_the_newest_flag() {
+    let newest = CLAUDE_FLAG_MINIMUMS
+        .iter()
+        .map(|(_, v)| *v)
+        .max()
+        .expect("a table");
+    assert_eq!(CLAUDE_MIN_VERSION, newest);
+    assert_eq!(CLAUDE_MIN_VERSION, (2, 1, 259));
+}
+
+#[test]
+fn a_claude_below_the_minimum_is_too_old() {
+    for line in ["2.1.258 (Claude Code)", "2.0.999 (Claude Code)", "1.9.9999"] {
+        assert!(claude_too_old(Some(line)), "{line}");
+    }
+}
+
+#[test]
+fn a_claude_at_or_above_the_minimum_is_not_too_old() {
+    for line in [
+        "2.1.259 (Claude Code)",
+        "2.1.302 (Claude Code)",
+        "2.2.0 (Claude Code)",
+        "3.0.0",
+    ] {
+        assert!(!claude_too_old(Some(line)), "{line}");
+    }
+}
+
+// A probe that failed or printed something else must not lock the user out.
+#[test]
+fn an_unknown_or_unparseable_claude_version_fails_open() {
+    assert!(!claude_too_old(None));
+    for line in ["", "version unknown", "claude", "2.1", "banana 1.x.y"] {
+        assert!(!claude_too_old(Some(line)), "{line:?}");
+    }
+}
