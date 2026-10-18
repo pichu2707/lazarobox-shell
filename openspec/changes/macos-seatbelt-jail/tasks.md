@@ -97,6 +97,7 @@ Done: green on macos-14 and macos-15-intel with `LAZAROBOX_REQUIRE_JAIL=1`.
 Files: `jail.rs`, adapters, `jail/tests.rs`, `README.md`, `docs/` (checklist), `CHANGELOG.md`.
 - [ ] 4.1 RED: with Available probe, codex and gemini jailed on macOS; failure refuses; `NotLinux` becomes `NoBackend` "needs Linux or macOS"; codex model listing jailed, keeps `default`; chat-pane guidance and exit 71 jail error.
 - [ ] 4.2 GREEN: `SEATBELT_ENABLED=true`, copy per spec (ai-engine-detection, chat-pane).
+- [ ] 4.2b When the gate flips, bound the probe: the worst case is 3 x 5 s at startup. Give it one total deadline, or run it lazily on the first codex or gemini use.
 - [ ] 4.3 Docs: README macOS 14+ support, gemini "not yet verified on a real Mac", claude never jailed on macOS.
 - [ ] 4.4 MANUAL (#180 tester, codex only) checklist doc: `which codex node`; how codex was installed (npm, brew cask); run a codex turn; run a read-tool turn; what a refusal looks like; collect `log stream --predicate 'sender == "Sandbox"'` output during the turn.
 - [ ] 4.5 CHANGELOG (Added: macOS jail, codex/gemini on macOS).

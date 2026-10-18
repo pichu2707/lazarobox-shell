@@ -5,7 +5,6 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::io::Read;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -59,21 +58,16 @@ impl Drop for Scratch {
     }
 }
 
-/// What a finished test program did.
-struct Ran {
-    success: bool,
-    stdout: Vec<u8>,
-}
-
 /// Runs `sandbox-exec -p PROFILE -D EXE=.. -D RW=.. -- program arg`, with a
-/// scrubbed environment, no stdin and no stderr.
+/// scrubbed environment and no stdio, so nothing a test program leaves
+/// running can hold the probe up. Whether it exited 0 is all it reports.
 fn run(
     sandbox_exec: &Path,
     rw: &Path,
     program: &str,
     arg: &Path,
     timeout: Duration,
-) -> Result<Ran, SeatbeltFault> {
+) -> Result<bool, SeatbeltFault> {
     let mut exe = OsString::from("EXE=");
     exe.push(TOUCH);
     let mut rw_param = OsString::from("RW=");
@@ -88,10 +82,13 @@ fn run(
         .args(["--", program])
         .arg(arg)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|_| SeatbeltFault::Refused)?;
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => SeatbeltFault::Missing,
+            _ => SeatbeltFault::Setup,
+        })?;
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -104,14 +101,7 @@ fn run(
             }
         }
     };
-    let mut stdout = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_end(&mut stdout);
-    }
-    Ok(Ran {
-        success: status.success(),
-        stdout,
-    })
+    Ok(status.success())
 }
 
 /// Three controls through `sandbox_exec`: a write inside the granted folder
@@ -129,15 +119,15 @@ pub fn probe_with(
     let (ok, no) = (rw.join("ok"), denied.join("no"));
 
     let allowed = run(sandbox_exec, &rw, TOUCH, &ok, timeout)?;
-    if !allowed.success || !ok.exists() {
+    if !allowed || !ok.exists() {
         return Err(SeatbeltFault::Refused);
     }
     let write = run(sandbox_exec, &rw, TOUCH, &no, timeout)?;
-    if write.success || no.exists() {
+    if write || no.exists() {
         return Err(SeatbeltFault::Leaked);
     }
     let exec = run(sandbox_exec, &rw, ECHO, Path::new("x"), timeout)?;
-    if exec.success || !exec.stdout.is_empty() {
+    if exec {
         return Err(SeatbeltFault::Leaked);
     }
     Ok(())
@@ -185,11 +175,28 @@ exit 1
 
     const SLOW: &str = "#!/bin/sh\nexec sleep 30\n";
 
+    /// Writes an executable script. A parallel test may fork while the file
+    /// is still open for writing, which makes the first exec fail with
+    /// ETXTBSY; so the script is started once here, retrying, before the
+    /// probe (whose spawn must stay fail-closed) ever sees it.
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
         fs::write(&path, body).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-        path
+        for _ in 0..500 {
+            match std::process::Command::new(&path).spawn() {
+                Ok(mut child) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return path;
+                }
+                Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("cannot start the fake sandbox-exec: {e}"),
+            }
+        }
+        panic!("the fake sandbox-exec stayed busy");
     }
 
     fn probe_in(sandbox_exec: &Path, root: &Path) -> Result<(), SeatbeltFault> {
@@ -265,5 +272,16 @@ exit 1
         let fake = script(tools.path(), "sandbox-exec", ENFORCING);
         let nowhere = tools.path().join("no/such/root");
         assert_eq!(probe_in(&fake, &nowhere), Err(SeatbeltFault::Setup));
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_started_is_a_setup_fault_not_a_refusal() {
+        let tools = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let plain = tools.path().join("sandbox-exec");
+        fs::write(&plain, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&plain, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(probe_in(&plain, root.path()), Err(SeatbeltFault::Setup));
+        assert!(is_empty(root.path()));
     }
 }
