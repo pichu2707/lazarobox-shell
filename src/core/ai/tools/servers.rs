@@ -7,29 +7,36 @@ use std::path::Path;
 
 use super::ExternalTool;
 use crate::core::ai::config::McpServer;
+use crate::core::ai::sanitize::clean;
 
 /// The longest server or tool part of a qualified name, in characters.
 pub const MAX_PART: usize = 24;
 
 /// The servers a chat opened under `origin_root` (the git root of its origin
-/// cwd, `None` outside a repository) uses: the enabled global ones, plus the
-/// enabled ones declared for exactly that root. A project entry replaces a
-/// global one of the same name.
+/// cwd, `None` outside a repository) uses: the enabled global ones, then the
+/// entries declared for exactly that root, which decide for that root. An
+/// enabled project entry replaces a global one of the same name (or is added);
+/// a disabled one removes it. A project entry can never add a server by being
+/// disabled.
 pub fn resolve<'a>(servers: &'a [McpServer], origin_root: Option<&Path>) -> Vec<&'a McpServer> {
     let mut active: Vec<&McpServer> = servers
         .iter()
         .filter(|s| s.enabled && s.project.is_none())
         .collect();
     let local = servers.iter().filter(|s| {
-        s.enabled
-            && s.project
-                .as_deref()
-                .is_some_and(|root| Some(root) == origin_root)
+        s.project
+            .as_deref()
+            .is_some_and(|root| Some(root) == origin_root)
     });
     for server in local {
-        match active.iter().position(|kept| kept.name == server.name) {
-            Some(at) => active[at] = server,
-            None => active.push(server),
+        let at = active.iter().position(|kept| kept.name == server.name);
+        match (at, server.enabled) {
+            (Some(at), true) => active[at] = server,
+            (None, true) => active.push(server),
+            (Some(at), false) => {
+                active.remove(at);
+            }
+            (None, false) => {}
         }
     }
     active
@@ -55,19 +62,100 @@ pub fn qualified_name(server: &str, tool: &str) -> Option<String> {
     Some(format!("{}__{}", clean_part(server)?, clean_part(tool)?))
 }
 
-/// The tools of `server` under their qualified names. A tool whose name
-/// cannot be qualified is dropped, and of tools that qualify to the same name
-/// the first is kept.
-pub fn qualify(server: &str, tools: &[ExternalTool]) -> Vec<ExternalTool> {
-    let mut out: Vec<ExternalTool> = Vec::new();
-    for tool in tools {
-        let Some(name) = qualified_name(server, &tool.name) else {
-            continue;
-        };
-        if out.iter().all(|kept| kept.name != name) {
-            out.push(ExternalTool {
-                name,
-                ..tool.clone()
+/// A server tool under its qualified name, with what routing needs. 4b finds
+/// the server and the raw name by looking the qualified name up (`raw_of`),
+/// never by splitting it on `__`: a raw name may hold that itself.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct QualifiedTool {
+    pub server: String,
+    pub raw: String,
+    /// The tool as the registry lists it (its `name` is the qualified one).
+    pub tool: ExternalTool,
+}
+
+/// A tool left out of the registry.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Dropped {
+    pub server: String,
+    pub raw: String,
+    /// The `(server, raw name)` of the tool that kept the name, or `None` when
+    /// the name cannot be qualified at all.
+    pub kept: Option<(String, String)>,
+}
+
+/// The longest raw name shown in a notice, in characters.
+const NOTICE_NAME_MAX: usize = 64;
+
+fn shown(raw: &str) -> String {
+    clean(raw).chars().take(NOTICE_NAME_MAX).collect()
+}
+
+impl Dropped {
+    /// The one-line chat notice. Names come from a server, so they are
+    /// sanitized and capped.
+    pub fn notice(&self) -> String {
+        let (server, raw) = (shown(&self.server), shown(&self.raw));
+        match &self.kept {
+            Some((kept_server, kept_raw)) => format!(
+                "mcp: {server}: {raw} dropped, same name as {}/{}",
+                shown(kept_server),
+                shown(kept_raw)
+            ),
+            None => format!("mcp: {server}: {raw} dropped, no usable name"),
+        }
+    }
+}
+
+/// The tools of every resolved server under their qualified names.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Qualified {
+    pub tools: Vec<QualifiedTool>,
+    pub dropped: Vec<Dropped>,
+}
+
+impl Qualified {
+    /// The tools in the form the registry takes.
+    pub fn external(&self) -> Vec<ExternalTool> {
+        self.tools.iter().map(|t| t.tool.clone()).collect()
+    }
+
+    /// The server and raw tool name behind a qualified name.
+    pub fn raw_of(&self, qualified: &str) -> Option<(&str, &str)> {
+        self.tools
+            .iter()
+            .find(|t| t.tool.name == qualified)
+            .map(|t| (t.server.as_str(), t.raw.as_str()))
+    }
+}
+
+/// Qualifies the tools of each `(server, tools)` pair. Collisions are checked
+/// across all of them: the first tool keeps a qualified name and a later one
+/// is dropped and reported, as is a tool whose name cannot be qualified.
+pub fn qualify(servers: &[(&str, &[ExternalTool])]) -> Qualified {
+    let mut out = Qualified::default();
+    for (server, tools) in servers {
+        for tool in *tools {
+            let dropped = |kept| Dropped {
+                server: (*server).to_owned(),
+                raw: tool.name.clone(),
+                kept,
+            };
+            let Some(name) = qualified_name(server, &tool.name) else {
+                out.dropped.push(dropped(None));
+                continue;
+            };
+            if let Some(first) = out.tools.iter().find(|t| t.tool.name == name) {
+                let kept = Some((first.server.clone(), first.raw.clone()));
+                out.dropped.push(dropped(kept));
+                continue;
+            }
+            out.tools.push(QualifiedTool {
+                server: (*server).to_owned(),
+                raw: tool.name.clone(),
+                tool: ExternalTool {
+                    name,
+                    ..tool.clone()
+                },
             });
         }
     }
@@ -144,13 +232,30 @@ mod tests {
         assert_eq!(active(&list, Some("/q")), [("a", "global")]);
     }
 
-    // Spec: enabled false.
+    // Spec: enabled false; design D16: a project entry decides for its root.
     #[test]
-    fn a_disabled_entry_is_not_active_and_a_disabled_project_entry_does_not_win() {
+    fn a_disabled_entry_is_not_active() {
+        let mut off = server("a", "ga", None);
+        off.enabled = false;
+        let list = vec![off, server("b", "gb", None)];
+        assert_eq!(active(&list, None), [("b", "gb")]);
+    }
+
+    #[test]
+    fn a_disabled_project_entry_removes_the_global_one_of_that_name_for_its_root_only() {
         let mut off = server("a", "project", Some("/p"));
         off.enabled = false;
         let list = vec![server("a", "global", None), off, server("b", "gb", None)];
-        assert_eq!(active(&list, Some("/p")), [("a", "global"), ("b", "gb")]);
+        assert_eq!(active(&list, Some("/p")), [("b", "gb")]);
+        assert_eq!(active(&list, Some("/q")), [("a", "global"), ("b", "gb")]);
+        assert_eq!(active(&list, None), [("a", "global"), ("b", "gb")]);
+    }
+
+    #[test]
+    fn a_disabled_project_entry_never_adds_a_server() {
+        let mut off = server("only", "project", Some("/p"));
+        off.enabled = false;
+        assert_eq!(active(&[off], Some("/p")), []);
     }
 
     // Spec: qualified name `<server>__<tool>`, each part `[a-z0-9_-]{1,24}`.
@@ -179,58 +284,106 @@ mod tests {
         assert_eq!(qualified_name("", "t"), None);
     }
 
+    fn ext(name: &str, description: &str) -> ExternalTool {
+        ExternalTool {
+            name: name.to_owned(),
+            description: description.to_owned(),
+            schema: json!({"type": "object"}),
+        }
+    }
+
+    fn names(q: &Qualified) -> Vec<&str> {
+        q.tools.iter().map(|t| t.tool.name.as_str()).collect()
+    }
+
     // Spec (4a.2): a colliding external tool is qualified, never dropped.
     #[test]
     fn a_tool_named_like_a_built_in_is_exposed_under_its_qualified_name() {
-        let ext = |name: &str| ExternalTool {
-            name: name.to_owned(),
-            description: "d".to_owned(),
-            schema: json!({"type": "object"}),
-        };
-        let qualified = qualify("fs", &[ext("run_in_pane"), ext("read_file"), ext("search")]);
-        let names: Vec<_> = qualified.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, ["fs__run_in_pane", "fs__read_file", "fs__search"]);
-        let tools = registry(&qualified);
+        let tools = [
+            ext("run_in_pane", "d"),
+            ext("read_file", "d"),
+            ext("search", "d"),
+        ];
+        let q = qualify(&[("fs", &tools)]);
+        assert_eq!(
+            names(&q),
+            ["fs__run_in_pane", "fs__read_file", "fs__search"]
+        );
+        assert_eq!(q.dropped, Vec::new());
+        let listed = registry(&q.external());
         let built_in = registry(&[]);
-        assert_eq!(&tools[..4], &built_in[..], "the built-ins are unchanged");
-        assert_eq!(tools.len(), 7);
+        assert_eq!(&listed[..4], &built_in[..], "the built-ins are unchanged");
+        assert_eq!(listed.len(), 7);
     }
 
-    // Spec (4a.2): same-named externals are deduplicated here.
+    // 4b routes by lookup, never by splitting on `__`.
     #[test]
-    fn tools_that_qualify_to_the_same_name_keep_the_first() {
-        let ext = |name: &str, description: &str| ExternalTool {
-            name: name.to_owned(),
-            description: description.to_owned(),
-            schema: json!({}),
-        };
-        let qualified = qualify(
-            "fs",
-            &[
-                ext("Search", "first"),
-                ext("search", "second"),
-                ext("", "none"),
-                ext("list", "l"),
-            ],
+    fn the_raw_name_and_server_are_kept_for_routing() {
+        let tools = [ext("a.b", "one"), ext("deep__tool", "two")];
+        let q = qualify(&[("fs", &tools), ("git", &[ext("log", "l")])]);
+        assert_eq!(q.raw_of("fs__a_b"), Some(("fs", "a.b")));
+        assert_eq!(q.raw_of("fs__deep__tool"), Some(("fs", "deep__tool")));
+        assert_eq!(q.raw_of("git__log"), Some(("git", "log")));
+        assert_eq!(q.raw_of("fs__deep"), None, "no splitting on the separator");
+        assert_eq!(q.raw_of("read_file"), None);
+    }
+
+    // W1: tools of one server that qualify to the same name.
+    #[test]
+    fn same_server_collisions_keep_the_first_and_report_the_dropped_one() {
+        let tools = [
+            ext("a.b", "first"),
+            ext("a_b", "second"),
+            ext("Search", "s1"),
+            ext("search", "s2"),
+        ];
+        let q = qualify(&[("fs", &tools)]);
+        assert_eq!(names(&q), ["fs__a_b", "fs__search"]);
+        assert_eq!(q.tools[0].tool.description, "first");
+        let got: Vec<_> = q.dropped.iter().map(Dropped::notice).collect();
+        assert_eq!(
+            got,
+            [
+                "mcp: fs: a_b dropped, same name as fs/a.b",
+                "mcp: fs: search dropped, same name as fs/Search",
+            ]
         );
-        let got: Vec<_> = qualified
-            .iter()
-            .map(|t| (t.name.as_str(), t.description.as_str()))
-            .collect();
-        assert_eq!(got, [("fs__search", "first"), ("fs__list", "l")]);
-        assert_eq!(qualify("", &[ext("x", "d")]), Vec::new());
+    }
+
+    // W1: collisions are global across the resolved servers.
+    #[test]
+    fn a_collision_across_servers_is_detected_too() {
+        let q = qualify(&[("a", &[ext("t", "x")]), ("A", &[ext("T", "y")])]);
+        assert_eq!(names(&q), ["a__t"]);
+        assert_eq!(q.dropped[0].notice(), "mcp: A: T dropped, same name as a/t");
+    }
+
+    #[test]
+    fn a_tool_without_a_usable_name_is_dropped_with_a_notice() {
+        let q = qualify(&[("fs", &[ext("", "none"), ext("ok", "o")])]);
+        assert_eq!(names(&q), ["fs__ok"]);
+        assert_eq!(q.dropped[0].notice(), "mcp: fs:  dropped, no usable name");
+    }
+
+    #[test]
+    fn a_notice_is_sanitized_and_capped() {
+        let hostile = format!("t\u{1b}[31m{}", "x".repeat(100));
+        let notice = Dropped {
+            server: "fs".to_owned(),
+            raw: hostile.clone(),
+            kept: Some(("fs".to_owned(), hostile)),
+        }
+        .notice();
+        assert!(!notice.contains('\u{1b}'), "{notice:?}");
+        assert!(notice.chars().count() < 200, "{notice:?}");
     }
 
     // Spec (agent-tools): a duplicate in the registry never reaches a model.
     #[test]
     fn the_registry_lists_a_qualified_name_once() {
-        let ext = |description: &str| ExternalTool {
-            name: "fs__search".to_owned(),
-            description: description.to_owned(),
-            schema: json!({}),
-        };
-        let tools = registry(&[ext("first"), ext("second")]);
-        assert_eq!(tools.len(), 5);
-        assert_eq!(tools[4].description, "first");
+        let tools = [ext("fs__search", "first"), ext("fs__search", "second")];
+        let listed = registry(&tools);
+        assert_eq!(listed.len(), 5);
+        assert_eq!(listed[4].description, "first");
     }
 }
