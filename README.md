@@ -459,6 +459,29 @@ Ollama no tiene un CLI que ejecute herramientas, así que lazarobox ejecuta el b
 - **Estado:** las herramientas con Ollama están activas: el usuario las comprobó con un modelo real el 2026-10-17 y `ollama` figura en `MCP_VERIFIED`.
 - El límite de tiempo total del turno (15 minutos) incluye el tiempo que pasas decidiendo una aprobación.
 
+### Servidores MCP propios (`[[ai.mcp.servers]]`)
+
+Puedes declarar tus propios servidores MCP en el `config.toml` de tu usuario. Por ahora lazarobox solo lee y valida esta configuración: todavía no lanza ningún servidor ni expone sus herramientas (llegarán en un cambio posterior). Se edita a mano; el menú nunca escribe `ai.mcp.*` y cada guardado conserva esos bytes tal cual, con sus comentarios y sus entradas inválidas.
+
+```toml
+[[ai.mcp.servers]]
+name = "fs"
+command = "mcp-fs"
+args = ["--root", "/home/u/dev"]
+env = ["GITHUB_TOKEN"]
+
+[[ai.mcp.servers]]
+name = "docs"
+command = "mcp-docs"
+project = "/home/u/dev/mi-proyecto"
+```
+
+- `name` (letras, dígitos, `-` y `_`, hasta 32 caracteres, único) y `command` (sin shell; cada elemento de `args` es un argumento aparte) son obligatorios. `enabled = false` desactiva la entrada.
+- `env` lista solo NOMBRES de variables de tu entorno, nunca valores: una entrada como `"TOKEN=abc"` o una tabla se rechaza y el valor no aparece en ningún aviso.
+- `project` limita el servidor a un proyecto: se aplica solo a los chats cuya raíz git de origen coincide exactamente con esa ruta absoluta, y si el nombre ya existe en la lista global gana la entrada del proyecto. Solo se lee tu configuración de usuario: un archivo `.lazarobox/mcp.toml` de un repositorio se ignora siempre, de modo que abrir un repositorio nunca puede añadir un servidor.
+- Una entrada inválida se omite entera y se avisa al arrancar (`config: ai.mcp.servers[0].command: expected a non-empty string`); las demás se mantienen. La lista se lee una vez al arrancar.
+- Los nombres de las herramientas de un servidor llevarán el prefijo `<servidor>__<herramienta>` (cada parte en `[a-z0-9_-]`, hasta 24 caracteres) para no chocar nunca con las herramientas propias.
+
 ### Historial de conversaciones
 
 Los mensajes se guardan en `chat.db` a medida que conversas. Una respuesta que se interrumpe tras haber recibido texto (por un error o una cancelación) también se guarda, marcada como parcial. `Ctrl+Espacio` y `c` abre la **lista de conversaciones** del proyecto actual (el repositorio git), de la más reciente a la más antigua, con el formato `fecha · perfil · primer mensaje`.
