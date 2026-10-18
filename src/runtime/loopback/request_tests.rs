@@ -587,7 +587,11 @@ async fn a_refused_connection_is_connect() {
     );
 }
 
-#[tokio::test(start_paused = true)]
+// Real clock for the same reason as the trickle test below: on a paused clock
+// a connect that macOS completes a moment late lets the clock jump to the
+// 200 ms connect limit. The window is wide enough for a slow runner and still
+// tells each total limit apart from the next.
+#[tokio::test]
 async fn a_silent_server_times_out_at_each_total_limit() {
     let (port, _) = serve(None).await;
     for (limits, ms) in [
@@ -595,10 +599,21 @@ async fn a_silent_server_times_out_at_each_total_limit() {
         (Limits::READ, 800),
         (Limits::WRITE, 2000),
     ] {
+        let total = Duration::from_millis(ms);
         let start = Instant::now();
-        let got = request(port, Method::Get, "/health", None, None, limits).await;
+        let got = tokio::time::timeout(
+            total + Duration::from_secs(5),
+            request(port, Method::Get, "/health", None, None, limits),
+        )
+        .await
+        .expect("the total limit ends a silent reply");
+        let elapsed = start.elapsed();
         assert_eq!(got, Err(CallError::Timeout));
-        assert_eq!(start.elapsed(), Duration::from_millis(ms));
+        assert!(elapsed >= total, "{ms} ms: {elapsed:?}");
+        assert!(
+            elapsed < total + Duration::from_secs(2),
+            "{ms} ms: {elapsed:?}"
+        );
     }
 }
 
