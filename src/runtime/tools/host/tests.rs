@@ -35,18 +35,18 @@ fn scope(locality: Locality, home: &Path) -> (TurnScope, mpsc::Receiver<StreamEv
     (TurnScope::new(tx, locality, home.to_path_buf()), rx)
 }
 
-fn events(rx: &mut mpsc::Receiver<StreamEvent>) -> Vec<StreamEvent> {
+pub(super) fn events(rx: &mut mpsc::Receiver<StreamEvent>) -> Vec<StreamEvent> {
     std::iter::from_fn(|| rx.try_recv().ok()).collect()
 }
 
 /// Answers every ask the same way and remembers what it was asked.
-struct Scripted {
+pub(super) struct Scripted {
     answer: Decision,
     asked: Mutex<Vec<ApprovalAsk>>,
 }
 
 impl Scripted {
-    fn new(answer: Decision) -> Arc<Self> {
+    pub(super) fn new(answer: Decision) -> Arc<Self> {
         Arc::new(Self {
             answer,
             asked: Mutex::new(Vec::new()),
@@ -63,7 +63,7 @@ impl Approver for Scripted {
 }
 
 /// Never answers: the user is still thinking.
-struct Waiting;
+pub(super) struct Waiting;
 
 impl Approver for Waiting {
     fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
@@ -88,7 +88,7 @@ fn read(path: &str) -> Call {
 }
 
 /// The ids and statuses of `events`, checking they come as call, result.
-fn pair(events: &[StreamEvent]) -> (CallId, Option<ApprovalAsk>, ToolStatus, String) {
+pub(super) fn pair(events: &[StreamEvent]) -> (CallId, Option<ApprovalAsk>, ToolStatus, String) {
     let [
         StreamEvent::ToolCall {
             id,

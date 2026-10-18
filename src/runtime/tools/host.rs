@@ -37,13 +37,13 @@ use crate::{
             engine::{Answer, CallId, Decision, StreamEvent, ToolStatus},
         },
         tools::{
-            Call, Locality, command,
+            Call, Locality, command, label,
             paths::display_target,
             report::{self, RunReport},
             summary::clip,
         },
     },
-    runtime::mcp::{Dispatch, Outcome},
+    runtime::mcp::{Dispatch, Outcome, external::ExternalSet},
 };
 
 /// What the model is told when a call needs the user and no approver is
@@ -84,6 +84,9 @@ pub struct TurnScope {
     /// The chat's origin directory, against which a relative path is read.
     pub origin: PathBuf,
     pub approver: Arc<dyn Approver>,
+    /// The user's MCP servers this turn may call. `None` until a turn starts
+    /// them: a server tool is then refused even after `y`.
+    pub external: Option<Arc<ExternalSet>>,
 }
 
 impl TurnScope {
@@ -94,6 +97,7 @@ impl TurnScope {
             locality,
             origin,
             approver: Arc::new(Unwired),
+            external: None,
         }
     }
 }
@@ -157,6 +161,8 @@ impl Dispatch for TurnDispatch {
 const CANCELLED: &str = "cancelled";
 /// A run answered a call that is not a command: nothing ran.
 const NOT_COMMAND: &str = "that call is not a command";
+/// A server tool was approved but the turn has no running server for it.
+const NO_SERVER: &str = "that tool is not available";
 
 /// The one `ToolResult` a call owes the chat, with the channel slot for it
 /// already reserved. The slot is taken before the `ToolCall` is announced, so
@@ -220,6 +226,35 @@ fn ran(call: &Call, report: &RunReport) -> (Outcome, ToolStatus, String, Option<
     let words = report::words(command, report, super::new_nonce().as_deref());
     let (outcome, status, summary) = ended(ToolStatus::Ok, words.text, &words.row);
     (outcome, status, summary, words.system)
+}
+
+/// What a server returned, as the row and the model see it: wrapped as
+/// untrusted data under a fresh nonce (D14), which also caps it. No nonce
+/// means no wrapper, so the text is withheld rather than sent bare.
+fn external(outcome: Outcome) -> (Outcome, ToolStatus, String) {
+    let status = if outcome.is_error {
+        ToolStatus::Error
+    } else {
+        ToolStatus::Ok
+    };
+    let Some(nonce) = super::new_nonce() else {
+        return ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER);
+    };
+    let summary = format!("{} bytes", outcome.text.len());
+    let text = label::wrap(&nonce, &outcome.text);
+    let summary = if outcome.is_error {
+        clip(&outcome.text)
+    } else {
+        summary
+    };
+    (
+        Outcome {
+            text,
+            is_error: outcome.is_error,
+        },
+        status,
+        summary,
+    )
 }
 
 async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outcome {
@@ -324,6 +359,14 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 (Decision::Sent, Call::RunInPane { .. }) => {
                     ended(ToolStatus::Ok, TYPED_TEXT.to_owned(), "typed, no Enter")
                 }
+                // Only after `y`: nothing is sent to the server before it.
+                (Decision::Sent, Call::External { name, args, .. }) => match &scope.external {
+                    Some(set) => {
+                        let outcome = set.call(&name, args, std::future::pending()).await;
+                        external(outcome)
+                    }
+                    None => ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER),
+                },
                 (Decision::Sent | Decision::Typed(_), call) => {
                     let env = ToolEnv {
                         home: host.home.clone(),
@@ -349,5 +392,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     outcome
 }
 
+#[cfg(test)]
+mod external_tests;
 #[cfg(test)]
 mod tests;
