@@ -36,6 +36,8 @@ pub mod mcp;
 pub mod notify;
 pub mod proc;
 pub mod prompts;
+#[cfg(test)]
+pub(crate) mod refused_port;
 mod run_check;
 pub mod tools;
 pub mod update;
@@ -1453,6 +1455,7 @@ mod tests {
     }
 
     // Spec: OSC 7 accepts this machine's hostname, so the lookup must work.
+    #[cfg(target_os = "linux")]
     #[test]
     fn local_hostname_matches_the_kernel_hostname() {
         let expected = std::fs::read_to_string("/proc/sys/kernel/hostname")
@@ -2615,13 +2618,16 @@ mod tests {
     fn shutdown_kills_every_child_in_parallel() {
         let (mut panes, _rx, _rec) = fake_panes(None);
         let held: Vec<_> = (1..=3)
-            .map(|n| add_slow(&mut panes, n, Duration::from_millis(400)))
+            .map(|n| add_slow(&mut panes, n, Duration::from_millis(2000)))
             .collect();
         let started = Instant::now();
-        panes.shutdown(Duration::from_secs(5));
+        // The shutdown bound sits above the serial total, so it cannot hide a
+        // serial regression by cutting it short.
+        panes.shutdown(Duration::from_secs(10));
         let elapsed = started.elapsed();
-        // Sequential kills would take at least 3 x 400 ms = 1200 ms.
-        assert!(elapsed < Duration::from_millis(1000), "serial: {elapsed:?}");
+        // Sequential kills would take at least 3 x 2000 ms = 6000 ms; parallel
+        // ones take about 2000 ms, which leaves 2.5 s of slack for a slow runner.
+        assert!(elapsed < Duration::from_millis(4500), "serial: {elapsed:?}");
         for (log, _gate) in &held {
             assert_eq!(log.lock().unwrap().kills, 1);
         }
@@ -2635,7 +2641,8 @@ mod tests {
         panes.shutdown(Duration::from_millis(150));
         let elapsed = started.elapsed();
         assert!(elapsed >= Duration::from_millis(150), "early: {elapsed:?}");
-        assert!(elapsed < Duration::from_secs(2), "unbounded: {elapsed:?}");
+        // The slow kill blocks for 30 s; any bound well below that proves it.
+        assert!(elapsed < Duration::from_secs(10), "unbounded: {elapsed:?}");
         assert_eq!(log.lock().unwrap().kills, 0);
         drop(gate);
     }
@@ -4233,9 +4240,8 @@ mod tests {
         }
 
         // Active: nothing is read before the first command, one read at start.
-        let socket = tokio::net::TcpSocket::new_v4().unwrap();
-        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-        let port = socket.local_addr().unwrap().port();
+        let refused = refused_port::RefusedPort::new();
+        let port = refused.port();
         let config = MemoryConfig {
             enabled: true,
             acknowledged: true,

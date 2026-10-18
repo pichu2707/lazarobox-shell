@@ -674,7 +674,7 @@ fn shutdown_gives_up_at_its_bound() {
     let (tx, _rx) = mpsc::channel(1);
     let handle = spawn(
         || {
-            std::thread::sleep(Duration::from_secs(3));
+            std::thread::sleep(Duration::from_secs(30));
             Err(StoreError::NoPath)
         },
         tx,
@@ -682,7 +682,8 @@ fn shutdown_gives_up_at_its_bound() {
     handle.send(create(user("q"), vec![]));
     let started = Instant::now();
     handle.shutdown(Duration::from_millis(150));
-    assert!(started.elapsed() < Duration::from_secs(1));
+    // The stuck opener sleeps 30 s; giving up well before that is the point.
+    assert!(started.elapsed() < Duration::from_secs(10));
 }
 
 fn long(c: &str, n: usize) -> String {

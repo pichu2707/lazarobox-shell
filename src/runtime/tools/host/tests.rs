@@ -1,3 +1,6 @@
+// What only the Linux-only tests use is dead code elsewhere.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use std::{path::Path, sync::Mutex, time::Duration};
 
 use serde_json::{Value, json};
@@ -112,6 +115,8 @@ fn pair(events: &[StreamEvent]) -> (CallId, Option<ApprovalAsk>, ToolStatus, Str
 }
 
 // Spec (agent-tools, tool events): a call, then exactly one result.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_free_call_announces_runs_and_reports_once() {
     let (_dir, home, host) = fixture();
@@ -133,6 +138,8 @@ async fn a_free_call_announces_runs_and_reports_once() {
     );
 }
 
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn directory_tools_are_free_on_a_cloud_engine_and_a_local_read_too() {
     let (_dir, home, host) = fixture();
@@ -149,6 +156,8 @@ async fn directory_tools_are_free_on_a_cloud_engine_and_a_local_read_too() {
     }
 }
 
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_local_read_returns_the_wrapped_text() {
     let (_dir, home, host) = fixture();
@@ -177,6 +186,8 @@ async fn a_cloud_read_asks_first_and_is_denied_without_an_approver() {
     assert_eq!(status, ToolStatus::Denied);
 }
 
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_cloud_read_runs_only_after_the_answer_is_sent() {
     let (_dir, home, host) = fixture();
@@ -316,6 +327,8 @@ async fn a_ran_answer_to_a_call_that_is_not_a_command_is_denied() {
 
 // Spec (pane-execution, result contract): a run that settled is worded from
 // its report, and the output goes through clean, redact and the nonce wrapper.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_ran_answer_becomes_the_wrapped_result_and_a_ran_row() {
     use crate::core::ai::tools::{report::CwdSource, settle::End};
@@ -451,6 +464,8 @@ async fn line(reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>) -> Value 
     serde_json::from_str(&text).unwrap()
 }
 
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_free_tool_runs_end_to_end_from_the_mcp_session_through_the_host() {
     let (dir, home, host) = fixture();
@@ -701,6 +716,8 @@ mod answered {
     // Spec (agent-tools): a cloud read shows `read <path>` and the file is not
     // opened until `y`. The text changes after the ask: the answer reads the
     // file as it is when `y` comes, not as it was when the prompt opened.
+    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_cloud_read_opens_the_file_only_after_y() {
         let (turn, mut rx, scope) = turn();
@@ -760,6 +777,8 @@ mod answered {
     }
 
     // A local read is free: the approver is never involved.
+    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_local_read_runs_free_and_waits_for_nobody() {
         let (turn, mut rx, mut scope) = turn();
@@ -773,6 +792,8 @@ mod answered {
 
     // Free tools run around a pending one: the user's thinking does not hold
     // up the model's other calls.
+    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn free_tools_run_around_a_pending_approval() {
         let (turn, mut rx, scope) = turn();
@@ -840,6 +861,8 @@ mod answered {
 
     // Spec (agent-tools): text inside a file is data. It comes back wrapped,
     // and what it says does not make the host do anything.
+    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn an_injection_in_file_text_comes_back_wrapped_and_triggers_nothing() {
         let (turn, mut rx, scope) = turn();

@@ -4,6 +4,8 @@
 
 # 🚀 LAZAROBOX SHELL (`lazarobox-shell`)
 
+[![CI](https://github.com/pichu2707/lazarobox-shell/actions/workflows/ci.yml/badge.svg)](https://github.com/pichu2707/lazarobox-shell/actions/workflows/ci.yml)
+
 > AI-powered, domain-agnostic TUI workspace for Developers, SEO/CRO Analysts, and Industrial Automation Engineers. Built in **Rust**.
 
 ---

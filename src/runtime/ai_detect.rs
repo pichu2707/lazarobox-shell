@@ -622,7 +622,8 @@ mod tests {
         let (tx, _rx) = mpsc::channel(1);
         let started = std::time::Instant::now();
         spawn_detection_of(tx, std::future::pending());
-        assert!(started.elapsed() < Duration::from_millis(100));
+        // A blocking spawn would never come back (the future is `pending`).
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -721,13 +722,12 @@ mod tests {
 
     #[tokio::test]
     async fn http_get_fails_fast_on_a_closed_port() {
-        // A bound socket that never listens holds the port until the end of
-        // the test, so a parallel test cannot take it: the connect is refused.
-        let held = tokio::net::TcpSocket::new_v4().unwrap();
-        held.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-        let port = held.local_addr().unwrap().port();
-        let answer =
-            tokio::time::timeout(Duration::from_millis(400), http_get(port, "/api/tags")).await;
+        let refused = crate::runtime::refused_port::RefusedPort::new();
+        let answer = tokio::time::timeout(
+            Duration::from_millis(400),
+            http_get(refused.port(), "/api/tags"),
+        )
+        .await;
         assert_eq!(answer, Ok(None));
     }
 
@@ -1111,7 +1111,13 @@ mod tests {
             Vec::new()
         });
         assert_eq!(finish_stderr(task, Duration::from_millis(50)).await, None);
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // The abort lands on the runtime's next turn: poll for it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !dropped.load(std::sync::atomic::Ordering::SeqCst)
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert!(
             dropped.load(std::sync::atomic::Ordering::SeqCst),
             "aborted, not detached"
@@ -1203,13 +1209,14 @@ mod tests {
         let marker = lab.rec.join("grandchild-survived");
         fake_codex(
             &lab,
-            &format!("(sleep 1; echo x > {}) &\nsleep 30", marker.display()),
+            &format!("(sleep 2; echo x > {}) &\nsleep 30", marker.display()),
         );
         let started = std::time::Instant::now();
         let got = listing(&env_of(&lab, true), Duration::from_millis(300), LISTING_CAP).await;
         assert_eq!(got, Err("timed out after 300 ms".to_owned()));
-        assert!(started.elapsed() < Duration::from_secs(3));
-        tokio::time::sleep(Duration::from_millis(1300)).await;
+        assert!(started.elapsed() < Duration::from_secs(15));
+        // The grandchild would write at 2 s if the kill had missed it.
+        tokio::time::sleep(Duration::from_millis(2300)).await;
         assert!(!marker.exists());
     }
 
@@ -1560,13 +1567,11 @@ mod tests {
 
     /// Dead for our purposes: gone, or a zombie waiting for a reaper.
     fn is_dead(pid: &str) -> bool {
-        match fs::read_to_string(format!("/proc/{pid}/stat")) {
-            Err(_) => true,
-            Ok(stat) => stat
-                .rsplit(')')
-                .next()
-                .is_some_and(|r| r.trim_start().starts_with('Z')),
-        }
+        let state = pid
+            .parse()
+            .ok()
+            .and_then(crate::runtime::proc::process_state);
+        matches!(state, None | Some('Z'))
     }
 
     async fn dead_within(pid: &str, window: Duration) -> bool {

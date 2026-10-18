@@ -528,6 +528,8 @@ mod tests {
         );
     }
 
+    // macOS file systems refuse a name that is not valid UTF-8.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn find_treats_a_path_that_is_not_utf8_as_missing() {
         use std::os::unix::ffi::OsStrExt;
@@ -548,6 +550,8 @@ mod tests {
         let record = rig.recorded().await;
         assert_eq!(lines_of(&record, "argc"), ["2"]);
         assert_eq!(lines_of(&record, "arg"), ["serve", "8123"]);
+        // The script reads it from `/proc`, which macOS has not.
+        #[cfg(target_os = "linux")]
         assert_eq!(lines_of(&record, "stdin"), ["/dev/null"]);
         assert!(
             lines_of(&record, "ENGRAM_PORT").is_empty(),
@@ -609,6 +613,8 @@ mod tests {
         assert_eq!(args, ["serve", "8123"]);
     }
 
+    // Reads the session id from `/proc/<pid>/stat`.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn the_child_is_its_own_session_leader() {
         let rig = rig();

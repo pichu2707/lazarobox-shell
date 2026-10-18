@@ -298,6 +298,60 @@ fn read_line<R: BufRead>(reader: &mut R, max: usize) -> io::Result<Line> {
     }
 }
 
+/// The outcome of a `set_*_timeout` call on the session's socket. macOS
+/// answers `EINVAL` when the peer has already closed (the session may hang up
+/// right after its `ok`); a read on such a socket cannot block, it returns what
+/// is buffered or the end, so that error is not a failure.
+fn timeout_set(set: io::Result<()>) -> io::Result<()> {
+    match set {
+        Err(e) if e.kind() == io::ErrorKind::InvalidInput => Ok(()),
+        other => other,
+    }
+}
+
+/// The outcome of setting the read timeout before a read of the handshake.
+/// macOS answers `EINVAL` when the peer has already closed, and also when a
+/// timeout cannot be set for another reason. Only the first is harmless: a read
+/// that cannot block is then safe without a timeout. `cannot_block` says
+/// whether it is (asked only after `EINVAL`); if not, the socket is alive and
+/// the read would be unbounded, so the handshake ends as timed out.
+fn bounded(set: io::Result<()>, cannot_block: impl FnOnce() -> bool) -> Result<(), Failure> {
+    match set {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::InvalidInput => {
+            if cannot_block() {
+                Ok(())
+            } else {
+                Err(Failure::TimedOut)
+            }
+        }
+        Err(e) => Err(Failure::Connect(e)),
+    }
+}
+
+/// Whether a read on `sock` would return at once: a byte is waiting, the peer
+/// closed, or the socket is in error. Looks without consuming and without
+/// blocking; false only for a live, quiet socket (`EAGAIN`).
+fn read_cannot_block(sock: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut byte = 0u8;
+    // SAFETY: `byte` is valid for a write of one byte, and `MSG_PEEK` leaves
+    // the data in the queue; `MSG_DONTWAIT` makes the call non-blocking.
+    let rc = unsafe {
+        libc::recv(
+            sock.as_raw_fd(),
+            (&raw mut byte).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    rc >= 0
+        || !matches!(
+            io::Error::last_os_error().kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+        )
+}
+
 /// Sends the handshake and waits for `{"ok":true}`. `wait` bounds the whole
 /// exchange, not each read: a peer that trickles bytes still runs out of time.
 fn handshake(
@@ -316,7 +370,7 @@ fn handshake(
     writer
         .write_all(line.as_bytes())
         .map_err(|_| Failure::Refused)?;
-    sock.set_write_timeout(None).map_err(Failure::Connect)?;
+    timeout_set(sock.set_write_timeout(None)).map_err(Failure::Connect)?;
 
     // Not `read_line`: an answer past the cap is refused on the spot, not
     // skipped to its newline (which a wedged peer would never send).
@@ -326,8 +380,9 @@ fn handshake(
         if left.is_zero() {
             return Err(Failure::TimedOut);
         }
-        sock.set_read_timeout(Some(left))
-            .map_err(Failure::Connect)?;
+        bounded(sock.set_read_timeout(Some(left)), || {
+            read_cannot_block(sock)
+        })?;
         let chunk = match reader.fill_buf() {
             Ok([]) => return Err(Failure::Refused),
             Ok(chunk) => chunk,
@@ -357,7 +412,7 @@ fn handshake(
     if answer.len() > REPLY_MAX + 1 {
         return Err(Failure::Refused);
     }
-    sock.set_read_timeout(None).map_err(Failure::Connect)?;
+    timeout_set(sock.set_read_timeout(None)).map_err(Failure::Connect)?;
     match serde_json::from_slice::<Value>(&answer) {
         Ok(Value::Object(reply)) if reply.get("ok") == Some(&Value::Bool(true)) => Ok(()),
         _ => Err(Failure::Refused),

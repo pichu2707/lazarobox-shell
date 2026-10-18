@@ -1,6 +1,9 @@
 //! A fake engram server for tests: a real loopback listener that replays the
 //! recorded 3.4.0 responses by route and records every request it gets.
 
+// What only the Linux-only tests use is dead code elsewhere.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use std::sync::{Arc, Mutex};
 
 use tokio::{
@@ -206,6 +209,8 @@ mod tests {
         out
     }
 
+    // Needs `getrandom(2)` for the session id, Linux only.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_conversation_sends_the_right_requests() {
         let (fake, link, mut rx) = start(happy()).await;
@@ -320,11 +325,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_refused_port_is_not_running_and_leaks_nothing() {
-        // Bound but never listening: a connect is refused, and the port cannot
-        // be taken by another test in between.
-        let socket = tokio::net::TcpSocket::new_v4().unwrap();
-        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-        let port = socket.local_addr().unwrap().port();
+        let refused = crate::runtime::refused_port::RefusedPort::new();
+        let port = refused.port();
         let (tx, mut rx) = mpsc::channel(8);
         let link = spawn(Loopback::new(port, Some(TOKEN.into())), port, tx);
         link.send(MemCmd::Save {

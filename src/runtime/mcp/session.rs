@@ -35,9 +35,11 @@
 //! checks it before every dispatch, so nothing dispatches after `close`
 //! returns even though the abort itself lands a moment later.
 //!
-//! Sweep caveat: liveness is judged by `/proc/<pid>/comm` (`alive_by_comm`),
-//! so an instance in another PID namespace that shares the folder looks dead
-//! and loses its sockets. The same limit as the chat CLI's own sweep.
+//! Sweep caveat: liveness is judged by the process `comm` (`alive_by_comm`:
+//! `/proc/<pid>/comm`, or `/bin/ps` where there is no `/proc`; compared by file
+//! name, and a process that cannot be checked is kept), so an instance in
+//! another PID namespace that shares the folder looks dead and loses its
+//! sockets. The same limit as the chat CLI's own sweep.
 
 use std::{collections::HashMap, fs, io, os::unix::fs::PermissionsExt, path::Path, path::PathBuf};
 use std::{
@@ -69,7 +71,7 @@ use crate::{
         },
         layout::PaneId,
     },
-    runtime::chat::{alive_by_comm, ensure_private_dir, read_comm},
+    runtime::chat::{alive_by_comm, ensure_private_dir, own_comm, read_comm},
 };
 
 #[cfg(test)]
@@ -141,7 +143,7 @@ impl Hub {
             .ok_or_else(|| io::Error::other("no private folder for the sockets"))?
             .clone();
         // Without our own `comm` nobody can be told apart: sweep nothing.
-        let own = read_comm("self");
+        let own = own_comm();
         if own.is_some() {
             sweep(&dir, &|pid| {
                 alive_by_comm(pid, own.as_deref(), &|p| read_comm(&p.to_string()))

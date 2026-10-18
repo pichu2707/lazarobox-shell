@@ -239,16 +239,13 @@ fn failure(events: &[StreamEvent]) -> String {
 }
 
 fn gone(pid: libc::pid_t) -> bool {
-    match fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Err(_) => true,
-        Ok(stat) => stat
-            .rsplit(')')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .starts_with('Z'),
-    }
+    matches!(crate::runtime::proc::process_state(pid), None | Some('Z'))
 }
+
+/// How long a process may take to die after its group was signalled. Polling
+/// returns as soon as it is gone, so a generous bound costs nothing on a pass
+/// and keeps a loaded CI runner from failing the tests.
+const GONE: Duration = Duration::from_secs(20);
 
 async fn wait_gone(pid: libc::pid_t, bound: Duration) -> bool {
     let end = Instant::now() + bound;
@@ -827,8 +824,8 @@ async fn no_first_byte_in_time_fails_and_kills_the_group() {
     env.timeouts.first_byte = Duration::from_millis(400);
     let events = run(env, request()).await;
     assert_eq!(failure(&events), "no answer from the engine");
-    assert!(wait_gone(pid_of(&lab, "leader"), Duration::from_secs(2)).await);
-    assert!(wait_gone(pid_of(&lab, "child"), Duration::from_secs(2)).await);
+    assert!(wait_gone(pid_of(&lab, "leader"), GONE).await);
+    assert!(wait_gone(pid_of(&lab, "child"), GONE).await);
 }
 
 #[tokio::test]
@@ -886,7 +883,7 @@ async fn a_slow_start_sends_one_slow_event_first() {
 }
 
 #[tokio::test]
-async fn cancelling_a_turn_kills_the_whole_group_within_a_second() {
+async fn cancelling_a_turn_kills_the_whole_group() {
     let lab = lab();
     lab.claude("cat > /dev/null\nsleep 300 &\necho $! > \"$REC/child\"\necho $$ > \"$REC/leader\"\nprintf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\"}'\nwait");
     let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
@@ -902,8 +899,8 @@ async fn cancelling_a_turn_kills_the_whole_group_within_a_second() {
     let (leader, child) = (pid_of(&lab, "leader"), pid_of(&lab, "child"));
     assert!(!gone(leader) && !gone(child));
     chats.cancel(PaneId::for_test(1));
-    assert!(wait_gone(leader, Duration::from_secs(1)).await, "leader");
-    assert!(wait_gone(child, Duration::from_secs(1)).await, "grandchild");
+    assert!(wait_gone(leader, GONE).await, "leader");
+    assert!(wait_gone(child, GONE).await, "grandchild");
     while let Ok((_, _, event)) = rx.try_recv() {
         assert!(matches!(event, StreamEvent::Notice(_)), "{event:?}");
     }
@@ -919,7 +916,7 @@ async fn a_cli_that_lingers_after_its_result_is_stopped_and_the_answer_stands() 
     env.grace = Duration::from_millis(300);
     let events = run(env, request()).await;
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
-    assert!(wait_gone(pid_of(&lab, "child"), Duration::from_secs(2)).await);
+    assert!(wait_gone(pid_of(&lab, "child"), GONE).await);
 }
 
 #[tokio::test]
@@ -930,7 +927,7 @@ async fn background_children_of_a_cli_that_exits_normally_are_killed() {
     ));
     let events = run(lab.env(), request()).await;
     assert_eq!(events.last(), Some(&StreamEvent::Done(Finish::Stop)));
-    assert!(wait_gone(pid_of(&lab, "child"), Duration::from_secs(2)).await);
+    assert!(wait_gone(pid_of(&lab, "child"), GONE).await);
 }
 
 #[test]
@@ -951,6 +948,104 @@ fn the_sweep_removes_turn_dirs_of_dead_processes_only() {
         "unknown names are left alone"
     );
     assert!(left("400-4"), "only folders are removed");
+}
+
+/// Outside Linux there is no `/proc`: `/bin/ps -o comm= -p PID` answers
+/// instead. Only `ps` exiting 1 with nothing on stdout says the process is
+/// gone. Every other failure (it cannot run, an odd status, no text, bytes that
+/// are not UTF-8) says nothing, and nothing said must never read as gone.
+#[test]
+fn the_comm_of_a_process_is_read_from_ps_outside_linux() {
+    use std::os::unix::process::ExitStatusExt;
+    let out = |code: i32, stdout: &[u8]| {
+        Ok(std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+        })
+    };
+    assert_eq!(
+        comm_from_ps(out(0, b"/opt/bin/lazarobox-shell\n")),
+        Comm::Is("/opt/bin/lazarobox-shell".to_owned())
+    );
+    assert_eq!(comm_from_ps(out(1, b"")), Comm::Gone, "no such process");
+    assert_eq!(comm_from_ps(out(1, b"\n")), Comm::Gone);
+    assert_eq!(
+        comm_from_ps(out(1, b"x\n")),
+        Comm::Unknown,
+        "status 1 with text"
+    );
+    assert_eq!(comm_from_ps(out(0, b"\n")), Comm::Unknown, "no text");
+    assert_eq!(comm_from_ps(out(2, b"")), Comm::Unknown, "an odd status");
+    assert_eq!(
+        comm_from_ps(out(0, b"\xff\xfe\n")),
+        Comm::Unknown,
+        "not UTF-8"
+    );
+    assert_eq!(
+        comm_from_ps(Err(io::Error::from(io::ErrorKind::WouldBlock))),
+        Comm::Unknown,
+        "ps cannot run (fork EAGAIN)"
+    );
+}
+
+/// A process we cannot check is kept: the sweep deletes only what is surely
+/// the leftover of a dead run.
+#[test]
+fn an_entry_whose_owner_cannot_be_checked_is_kept() {
+    let own = Some("lazarobox-shell");
+    assert!(
+        alive_by_comm(4242, own, &|_| Comm::Unknown),
+        "unknown is alive"
+    );
+    assert!(!alive_by_comm(4242, own, &|_| Comm::Gone), "gone is dead");
+    assert!(
+        alive_by_comm(4242, own, &|_| Comm::Is("lazarobox-shell".to_owned())),
+        "ours"
+    );
+}
+
+/// macOS prints the full path of the executable and Linux the short name of
+/// at most 15 bytes. Programs are told apart by file name, cut like Linux
+/// cuts it, so two installs of one program (or a dev build beside an installed
+/// copy) are the same program and a different binary is not.
+#[test]
+fn programs_are_compared_by_file_name_cut_to_15_bytes() {
+    let is = |comm: &str| Comm::Is(comm.to_owned());
+    let own = Some("/Users/a/.cargo/bin/lazarobox-shell");
+    assert!(alive_by_comm(7, own, &|_| is(
+        "/Users/a/src/target/debug/lazarobox-shell"
+    )));
+    assert!(
+        alive_by_comm(7, own, &|_| is("lazarobox-shell\n")),
+        "the Linux spelling"
+    );
+    assert!(
+        !alive_by_comm(7, own, &|_| is("/usr/bin/zsh")),
+        "another binary"
+    );
+    assert!(
+        !alive_by_comm(7, own, &|_| is("/Users/a/bin/lazarobox")),
+        "a prefix is not it"
+    );
+    let long = Some("/x/lazarobox-shell-extra");
+    assert!(
+        alive_by_comm(7, long, &|_| is("lazarobox-shell")),
+        "cut like Linux"
+    );
+    assert!(
+        !alive_by_comm(7, Some("/"), &|_| is("/")),
+        "no name to compare"
+    );
+}
+
+/// A pid that cannot exist is never asked of `ps`.
+#[test]
+fn a_number_that_cannot_be_a_pid_has_no_comm() {
+    assert!(!is_pid(u32::MAX - 1));
+    assert!(!is_pid(0));
+    assert!(is_pid(1));
+    assert!(is_pid(i32::MAX as u32));
 }
 
 #[test]
@@ -1040,11 +1135,15 @@ fn without_our_own_comm_nothing_is_swept_and_our_own_pid_is_always_alive() {
         fs::create_dir_all(dir).unwrap();
     }
     // /proc/self/comm unreadable: the sweep cannot tell anyone apart.
-    sweep_with(&scratch, None, &|_| None);
+    sweep_with(&scratch, None, &|_| Comm::Gone);
     assert!(dead.exists() && mine.exists(), "no sweep at all");
     // Readable for everyone but unreadable for our own pid: still alive.
     sweep_with(&scratch, Some("lazarobox"), &|pid| {
-        (pid != me).then(|| "other".to_owned())
+        if pid == me {
+            Comm::Unknown
+        } else {
+            Comm::Is("other".to_owned())
+        }
     });
     assert!(!dead.exists(), "a foreign pid is swept");
     assert!(mine.exists(), "our own pid is never swept");
@@ -1096,6 +1195,10 @@ fn no_loader_for_a_script_a_missing_file_or_a_string_past_the_end() {
     assert_eq!(read_loader(&cut), None, "a cut string is not trusted");
 }
 
+// Linux only: the loader is the `PT_INTERP` of an ELF file, and a macOS binary
+// is Mach-O, which has none (`read_loader` gives `None`; the jail that needs the
+// loader is not offered there, so the chat runs unjailed with a notice).
+#[cfg(target_os = "linux")]
 #[test]
 fn the_loader_of_a_real_dynamic_binary_is_read() {
     // The test binary itself is a dynamic executable.
@@ -1196,7 +1299,7 @@ async fn a_tool_call_ends_the_codex_turn_and_stops_the_process() {
             "codex tried to use a tool".into()
         ))]
     );
-    assert!(wait_gone(pid_of(&lab, "leader"), Duration::from_secs(4)).await);
+    assert!(wait_gone(pid_of(&lab, "leader"), GONE).await);
 }
 
 #[tokio::test]
@@ -1237,8 +1340,8 @@ async fn a_decoder_error_kills_the_group_at_once_without_the_exit_grace() {
             ),
             "{events:?}"
         );
-        assert!(wait_gone(pid_of(&lab, "leader"), Duration::from_secs(2)).await);
-        assert!(wait_gone(pid_of(&lab, "child"), Duration::from_secs(2)).await);
+        assert!(wait_gone(pid_of(&lab, "leader"), GONE).await);
+        assert!(wait_gone(pid_of(&lab, "child"), GONE).await);
     }
 }
 
@@ -1280,20 +1383,48 @@ fn an_interpreter_in_a_tmp_folder_is_never_trusted() {
         let dir = tempfile::tempdir_in(base).unwrap();
         let file = exe_in(&dir.path().join("bin"), "fakenode", 0o755);
         let path = dir.path().join("bin").into_os_string();
+        // The refusal names the real path: on macOS `/tmp` is a link into
+        // `/private`, so it differs from the spelling the test created.
+        let real = fs::canonicalize(&file).unwrap();
         assert_eq!(
             interpreter_for(&dir.path().join("bin/codex"), "fakenode", &path),
             Err(JailRefusal::UntrustedInterpreter {
-                path: file.clone(),
+                path: real.clone(),
                 why: Untrusted::Scratch
             }),
             "{base}"
         );
-        let real = fs::canonicalize(&file).unwrap();
         assert_eq!(
             interpreter_trust(&file),
             Err((real, Untrusted::Scratch)),
             "{base}"
         );
+    }
+}
+
+/// macOS keeps `/tmp` and `/var/tmp` as links into `/private`, and `$TMPDIR` is
+/// under `/var/folders`; a canonical path never starts with the link names.
+/// The rule is pure, so it is checked here with the macOS spellings on any OS.
+#[test]
+fn the_scratch_folders_of_macos_count_as_scratch_by_their_real_names() {
+    for scratch in [
+        "/tmp/x/node",
+        "/var/tmp/x/node",
+        "/private/tmp/x/node",
+        "/private/var/tmp/x/node",
+        "/private/var/folders/zz/abc123/T/x/node",
+    ] {
+        assert!(in_scratch(Path::new(scratch)), "{scratch}");
+    }
+    for fine in [
+        "/usr/local/bin/node",
+        "/opt/homebrew/bin/node",
+        "/private/etc/node",
+        "/private/var/db/node",
+        "/private/tmpfoo/node",
+        "/tmpfoo/node",
+    ] {
+        assert!(!in_scratch(Path::new(fine)), "{fine}");
     }
 }
 
@@ -1636,7 +1767,7 @@ printf '%s\0' "$@" > "$REC/args"
 cat > "$REC/stdin"
 for last; do :; done
 cp "$last" "$REC/policy_copy"
-stat -c %a "$last" > "$REC/policy_mode"
+{ stat -c %a "$last" 2>/dev/null || stat -f %Lp "$last"; } > "$REC/policy_mode"
 printf '%s\n' '{"type":"init","session_id":"s","model":"m"}'
 printf '%s\n' '{"type":"message","role":"assistant","content":"ok","delta":true}'
 printf '%s\n' '{"type":"result","status":"success"}'
@@ -1919,8 +2050,8 @@ printf '%s\0' "$@" > "$REC/args"
 cat > "$REC/stdin"
 for last; do :; done
 cp "$last" "$REC/extra_copy"
-stat -c %a "$last" > "$REC/extra_mode"
-stat -c %a "$(dirname "$last")" > "$REC/dir_mode"
+{ stat -c %a "$last" 2>/dev/null || stat -f %Lp "$last"; } > "$REC/extra_mode"
+{ stat -c %a "$(dirname "$last")" 2>/dev/null || stat -f %Lp "$(dirname "$last")"; } > "$REC/dir_mode"
 printf '%s\n' '{"type":"init","session_id":"s","model":"m"}'
 printf '%s\n' '{"type":"message","role":"assistant","content":"ok","delta":true}'
 printf '%s\n' '{"type":"result","status":"success"}'
@@ -1933,7 +2064,7 @@ for a; do
   case "$a" in
     --mcp-config=*)
       cp "${a#--mcp-config=}" "$REC/mcp_copy"
-      stat -c %a "${a#--mcp-config=}" > "$REC/mcp_mode"
+      { stat -c %a "${a#--mcp-config=}" 2>/dev/null || stat -f %Lp "${a#--mcp-config=}"; } > "$REC/mcp_mode"
       ;;
   esac
 done
@@ -2609,15 +2740,15 @@ cat > /dev/null
 if [ -e "$TMPDIR/work" ]; then echo yes > "$REC/work_during"; fi
 if [ -e .gemini/settings.json ]; then
   cp .gemini/settings.json "$REC/settings_copy"
-  stat -c %a .gemini/settings.json > "$REC/settings_mode"
-  stat -c %a .gemini > "$REC/dotgemini_mode"
-  stat -c %a . > "$REC/work_mode"
+  { stat -c %a .gemini/settings.json 2>/dev/null || stat -f %Lp .gemini/settings.json; } > "$REC/settings_mode"
+  { stat -c %a .gemini 2>/dev/null || stat -f %Lp .gemini; } > "$REC/dotgemini_mode"
+  { stat -c %a . 2>/dev/null || stat -f %Lp .; } > "$REC/work_mode"
 fi
 for a; do
   case "$a" in
     --admin-policy=*)
       cp "${a#--admin-policy=}" "$REC/policy_copy"
-      stat -c %a "${a#--admin-policy=}" > "$REC/policy_mode"
+      { stat -c %a "${a#--admin-policy=}" 2>/dev/null || stat -f %Lp "${a#--admin-policy=}"; } > "$REC/policy_mode"
       ;;
   esac
 done

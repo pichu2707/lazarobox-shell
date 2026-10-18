@@ -2,6 +2,9 @@
 //! real clock, every wait bounded. The n-th connection gets the n-th step (the
 //! last one repeats), and the bodies the loop sent are recorded.
 
+// What only the Linux-only tests use is dead code elsewhere.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use std::{
     path::PathBuf,
     sync::{
@@ -259,6 +262,8 @@ fn tool_calls(events: &[StreamEvent]) -> usize {
 
 // One round ------------------------------------------------------------------
 
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn one_round_gives_one_call_and_result_and_the_second_request_carries_them() {
     let fake = fake(vec![
@@ -396,9 +401,9 @@ async fn cancel_inside_the_loop_closes_the_socket_and_sends_nothing_more() {
         .await
         .expect("the follow-up request arrived");
     lab.chats.cancel(pane(1));
-    timeout(Duration::from_secs(1), fake.closed.notified())
+    timeout(Duration::from_secs(10), fake.closed.notified())
         .await
-        .expect("the socket closed within a second");
+        .expect("the socket closed");
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(fake.connections.load(Ordering::SeqCst), 2);
 }
@@ -489,6 +494,8 @@ async fn the_retry_is_made_once_and_only_for_a_400() {
 
 // Approvals --------------------------------------------------------------------
 
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_local_read_runs_without_asking() {
     let fake = fake(vec![
@@ -787,6 +794,8 @@ async fn the_echoed_reasoning_and_text_are_capped() {
     assert_eq!(assistant["content"].as_str().unwrap().len(), ANSWER_CAP);
 }
 
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn tool_results_stop_being_echoed_past_the_cumulative_cap() {
     // A read result is cut at 32 KiB: two reads per reply reach the cap sooner.

@@ -580,15 +580,18 @@ async fn a_failed_write_with_no_reply_is_invalid() {
 
 #[tokio::test]
 async fn a_refused_connection_is_connect() {
-    // A bound socket that never listens holds the port until the end of the
-    // test, so a parallel test cannot take it: the connect is refused.
-    let held = tokio::net::TcpSocket::new_v4().unwrap();
-    held.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-    let port = held.local_addr().unwrap().port();
-    assert_eq!(get(port, "/health").await, Err(CallError::Connect));
+    let refused = crate::runtime::refused_port::RefusedPort::new();
+    assert_eq!(
+        get(refused.port(), "/health").await,
+        Err(CallError::Connect)
+    );
 }
 
-#[tokio::test(start_paused = true)]
+// Real clock for the same reason as the trickle test below: on a paused clock
+// a connect that macOS completes a moment late lets the clock jump to the
+// 200 ms connect limit. The window is wide enough for a slow runner and still
+// tells each total limit apart from the next.
+#[tokio::test]
 async fn a_silent_server_times_out_at_each_total_limit() {
     let (port, _) = serve(None).await;
     for (limits, ms) in [
@@ -596,14 +599,30 @@ async fn a_silent_server_times_out_at_each_total_limit() {
         (Limits::READ, 800),
         (Limits::WRITE, 2000),
     ] {
+        let total = Duration::from_millis(ms);
         let start = Instant::now();
-        let got = request(port, Method::Get, "/health", None, None, limits).await;
+        let got = tokio::time::timeout(
+            total + Duration::from_secs(5),
+            request(port, Method::Get, "/health", None, None, limits),
+        )
+        .await
+        .expect("the total limit ends a silent reply");
+        let elapsed = start.elapsed();
         assert_eq!(got, Err(CallError::Timeout));
-        assert_eq!(start.elapsed(), Duration::from_millis(ms));
+        assert!(elapsed >= total, "{ms} ms: {elapsed:?}");
+        assert!(
+            elapsed < total + Duration::from_secs(2),
+            "{ms} ms: {elapsed:?}"
+        );
     }
 }
 
-#[tokio::test(start_paused = true)]
+// Real clock on purpose: on a paused clock the runtime goes idle while the
+// connect is still in flight (macOS completes it a moment later than Linux),
+// the clock jumps past the 200 ms connect limit and the request times out
+// there, not at the total limit under test. A bound keeps a regression from
+// hanging: a total limit that the trickle kept resetting would never end.
+#[tokio::test]
 async fn a_server_that_trickles_past_the_total_limit_times_out() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -621,7 +640,16 @@ async fn a_server_that_trickles_past_the_total_limit_times_out() {
         }
     });
     let start = Instant::now();
-    let got = request(port, Method::Get, "/health", None, None, Limits::READ).await;
+    let got = tokio::time::timeout(
+        Duration::from_secs(5),
+        request(port, Method::Get, "/health", None, None, Limits::READ),
+    )
+    .await
+    .expect("the total limit ends a trickling reply");
     assert_eq!(got, Err(CallError::Timeout));
-    assert_eq!(start.elapsed(), Duration::from_millis(800));
+    assert!(
+        start.elapsed() >= Limits::READ.total,
+        "{:?}",
+        start.elapsed()
+    );
 }

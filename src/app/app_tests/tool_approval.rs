@@ -31,6 +31,9 @@ pub(super) fn read(path: &str) -> ApprovalAsk {
 pub(super) fn live() -> (App, u64) {
     NOW_MS.with(|n| n.set(0));
     let mut a = one_shell_and_a_chat("hello").with_clock(mock_now);
+    // The tests model a platform that tells the pane's cwd (`/proc`); the
+    // default is false elsewhere, so macOS would route no run at all.
+    a.cwd_readable = true;
     a.update(key('q'));
     let turn = enter_turn(&mut a);
     (a, turn)
@@ -459,6 +462,7 @@ fn live_with_session() -> (App, u64) {
     let mut a = one_shell_and_a_chat("hello")
         .with_clock(mock_now)
         .with_tool_engines(&["ollama"]);
+    a.cwd_readable = true;
     a.update(key('q'));
     let turn = enter_turn(&mut a);
     (a, turn)

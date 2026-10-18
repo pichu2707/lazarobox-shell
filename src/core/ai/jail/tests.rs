@@ -406,6 +406,38 @@ fn repeated_paths_are_listed_once() {
     assert_eq!(count, 1);
 }
 
+/// macOS keeps `/tmp` and `/var/tmp` as links into `/private`, and `$TMPDIR` is
+/// under `/var/folders` (really `/private/var/folders`). One list serves the
+/// interpreter trust rule and the broad-folder rule, so a grant of any spelling
+/// is refused; the paths are macOS ones, checked here on any OS.
+#[test]
+fn every_spelling_of_a_scratch_folder_is_scratch_and_too_broad_to_grant() {
+    for scratch in [
+        "/tmp/x",
+        "/var/tmp/x",
+        "/private/tmp/x",
+        "/private/var/tmp/x",
+        "/private/var/folders/zz/abc/T/x",
+        "/var/folders/zz/abc/T/x",
+    ] {
+        assert!(is_scratch(Path::new(scratch)), "{scratch}");
+        let binary = format!("{scratch}/codex");
+        let err = jail_spec(&layout(Cli::Codex, &binary, None)).unwrap_err();
+        assert!(
+            matches!(err, SpecError::RootTooBroad(_)),
+            "{binary}: {err:?}"
+        );
+    }
+    for fine in [
+        "/private/etc/x",
+        "/private/var/db/x",
+        "/private/tmpfoo/x",
+        "/tmpfoo/x",
+    ] {
+        assert!(!is_scratch(Path::new(fine)), "{fine}");
+    }
+}
+
 #[test]
 fn a_package_root_that_would_open_a_broad_dir_is_refused() {
     for binary in [
