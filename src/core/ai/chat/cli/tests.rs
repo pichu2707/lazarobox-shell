@@ -192,3 +192,212 @@ fn hidden_characters_cannot_split_a_key_out_of_the_redaction() {
         );
     }
 }
+
+// ---- a CLI too old for an option we pass (#180) ----
+
+fn shown(name: &str, last: Option<StreamEvent>, stderr: &str) -> String {
+    let StreamEvent::Error(ChatError::Failed(text)) = verdict(name, last, false, exit(1), stderr)
+    else {
+        panic!("a failure was expected for {stderr:?}");
+    };
+    text
+}
+
+const NAMED: &str = "claude does not know the option --permission-prompts: this claude is older \
+                     than lazarobox needs; update it (claude update) and try again";
+const GENERIC_CLAUDE: &str = "this claude is older than lazarobox needs: it rejected an option; \
+                              update it (claude update) and try again";
+
+#[test]
+fn one_of_our_own_flags_is_named_when_the_cli_does_not_know_it() {
+    for stderr in [
+        "error: unknown option '--permission-prompts'\n",
+        "  error: unknown option '--permission-prompts'  \n",
+        "error: unknown option \"--permission-prompts\"\n",
+        "warming up\n\nerror: unknown option '--permission-prompts'\n\n",
+        "error: unknown option '--permission-prompts'\n(Did you mean --permission-mode?)\n",
+        "error: unknown option '--permission-prompts'\n\n  (Did you mean --permission-mode?)\n\n",
+    ] {
+        assert_eq!(shown("claude", None, stderr), NAMED, "{stderr:?}");
+    }
+    // A failing exit after a Done event reads the same.
+    assert_eq!(
+        verdict(
+            "claude",
+            done(),
+            true,
+            exit(1),
+            "error: unknown option '--safe-mode'\n"
+        ),
+        failed(
+            "claude does not know the option --safe-mode: this claude is older than lazarobox \
+             needs; update it (claude update) and try again"
+        )
+    );
+    assert_eq!(
+        shown("codex", None, "error: unknown option '--ignore-rules'\n"),
+        "codex does not know the option --ignore-rules: this codex is older than lazarobox \
+         needs; update it and try again"
+    );
+}
+
+#[test]
+fn an_option_that_is_not_ours_is_never_echoed() {
+    let long = format!("--{}", "a".repeat(4096));
+    // Slack-shaped words are assembled here so no token-like literal sits in
+    // the source (GitHub push protection flags one).
+    let slack = ["xo", "xb"].concat();
+    for option in [
+        "--sk-abcdefghijklmnop".to_owned(),
+        "--0123456789abcdef0123456789abcdef".to_owned(),
+        format!("-{slack}-1234-5678-abcdefghijklmnopqrstuv"),
+        format!("--{slack}-1234567890-abcdefghijklmnop"),
+        "--jbswy3dpehpk3pxp".to_owned(),
+        "--password-hunter2-correct-horse".to_owned(),
+        "--model=sk-abcdefghijklmnop".to_owned(),
+        "--permission-prompts=none".to_owned(),
+        "--Permission-Prompts".to_owned(),
+        "--permission-prompt".to_owned(),
+        long,
+    ] {
+        let stderr = format!("error: unknown option '{option}'\n(Did you mean --model?)\n");
+        let text = shown("claude", None, &stderr);
+        assert_eq!(text, GENERIC_CLAUDE, "{option:.40}");
+        assert!(
+            !text.contains(option.trim_start_matches('-')),
+            "{option:.40}"
+        );
+    }
+    // Another CLI's flag is not claude's.
+    assert_eq!(
+        shown("claude", None, "error: unknown option '--ephemeral'\n"),
+        GENERIC_CLAUDE
+    );
+    assert_eq!(
+        shown(
+            "codex",
+            None,
+            "error: unknown option '--sk-abcdefghijklmnop'\n"
+        ),
+        "this codex is older than lazarobox needs: it rejected an option; update it and try again"
+    );
+}
+
+#[test]
+fn a_different_final_error_wins_over_an_earlier_unknown_option_line() {
+    for stderr in [
+        "error: unknown option '--permission-prompts'\nconnection refused\n",
+        "error: unknown option '--permission-prompts'\nconnection refused\n(Did you mean --x?)\n",
+        "error: unknown option '--permission-prompts'\n(Did you mean --x?)\nconnection refused\n",
+    ] {
+        let text = shown("claude", None, stderr);
+        assert!(!text.contains("older than"), "{text}");
+        assert!(!text.contains("--permission-prompts"), "{text}");
+    }
+    assert_eq!(
+        shown(
+            "claude",
+            None,
+            "error: unknown option '--permission-prompts'\nconnection refused\n"
+        ),
+        "connection refused"
+    );
+}
+
+#[test]
+fn prose_that_mentions_an_unknown_option_is_not_mapped() {
+    for stderr in [
+        "Unknown option in config file\n",
+        "warning: unknown option '--permission-prompts' ignored\n",
+        "error: unknown option '--permission-prompts' in settings.json\n",
+        "Error: unknown option --permission-prompts\n",
+        "unknown option '--permission-prompts'\n",
+        "error: unknown option '--permission-prompts\n",
+        "error: unknown option ''--permission-prompts''\n",
+    ] {
+        let text = shown("claude", None, stderr);
+        assert!(!text.contains("older than"), "{stderr:?} -> {text}");
+    }
+    assert_eq!(
+        shown("claude", None, "Unknown option in config file\n"),
+        "Unknown option in config file"
+    );
+}
+
+#[test]
+fn a_secret_in_the_option_slot_never_reaches_the_screen() {
+    let stderr = "error: unknown option '--token=sk-abcdefghijklmnop'\n";
+    assert_eq!(shown("claude", None, stderr), GENERIC_CLAUDE);
+    // Hidden characters cannot make the line look like one of ours.
+    let stderr = "error: unknown option '--permission\u{200b}-prompts'\n";
+    assert_eq!(shown("claude", None, stderr), GENERIC_CLAUDE);
+}
+
+#[test]
+fn other_failures_keep_the_plain_stderr_line() {
+    assert_eq!(
+        shown("claude", None, "error: unknown command 'x'\n"),
+        "error: unknown command 'x'"
+    );
+}
+
+// ---- the list of our own flags cannot drift from the argv builders ----
+
+fn flags_of<'a>(args: impl IntoIterator<Item = &'a String>) -> std::collections::BTreeSet<String> {
+    args.into_iter()
+        .filter(|a| a.starts_with('-') && a.len() > 1)
+        .map(|a| a.split('=').next().unwrap_or(a).to_owned())
+        .collect()
+}
+
+#[test]
+fn the_known_flags_are_exactly_what_the_argv_builders_pass() {
+    use crate::core::ai::chat::adapters::{Invocation, adapter_for};
+    use crate::core::ai::chat::engine::{ChatMessage, ChatRequest, Role, Tools};
+    use crate::core::ai::tools::wiring::{McpWire, Secret, Unwire, claude, gemini};
+    use std::path::Path;
+
+    let wire = || McpWire {
+        socket: "/run/user/1000/lazarobox/s-1-1.sock".into(),
+        token: Secret::new("0123456789abcdef0123456789abcdef"),
+        unwire: Unwire::none(),
+    };
+    for engine in ["claude", "codex", "gemini"] {
+        let request = ChatRequest {
+            engine: engine.into(),
+            model: Some("some-model".into()),
+            system: "be brief".into(),
+            memory: None,
+            tools: Tools::Off,
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: "hi".into(),
+            }],
+        };
+        let Invocation::Process(job) = adapter_for(engine).unwrap().build(&request) else {
+            panic!("{engine}: a process was expected");
+        };
+        let mut emitted = flags_of(&job.args);
+        emitted.extend(job.tmp_files.iter().map(|f| f.flag.to_owned()));
+        // What the runtime adds to a turn with tools on.
+        let shim = Path::new("/usr/bin/lazarobox");
+        let extra = match engine {
+            "claude" => claude(shim, Path::new("/tmp/mcp.json"), &wire()).map(|w| w.args),
+            "gemini" => gemini(shim, Path::new("/tmp/p.toml"), &wire()).map(|w| w.args),
+            _ => None,
+        };
+        emitted.extend(flags_of(extra.iter().flatten()));
+        let known: std::collections::BTreeSet<String> = known_flags(engine)
+            .iter()
+            .map(|f| (*f).to_owned())
+            .collect();
+        assert_eq!(known, emitted, "{engine}");
+        for flag in known_flags(engine) {
+            assert!(
+                flag.starts_with('-') && !flag.chars().any(|c| c.is_control() || c == ' '),
+                "{flag:?}"
+            );
+        }
+    }
+    assert!(known_flags("unknown-cli").is_empty());
+}

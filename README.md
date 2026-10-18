@@ -446,6 +446,7 @@ Every message below says why a CLI cannot be used. None of them changes what the
 | `model list unavailable: unexpected output format` / `the list is empty` | codex answered but not with a model catalog (a newer or older codex), or with no listed model. |
 | `model list unavailable: jail: <reason>` | The listing runs in the same jail as the chat, so the jail rows above apply. |
 | `claude runs without the jail here: <reason>` | claude is allowed to run with only its text-only flags; the reason is any row above. |
+| `<cli> does not know the option <flag>: this <cli> is older than lazarobox needs; update it ... and try again` / `this <cli> is older than lazarobox needs: it rejected an option; ...` | The installed CLI is too old to know an option lazarobox passes. The flag is named only when it is one lazarobox itself passes; any other word is not repeated. Update the CLI the way it was installed (`claude update`, `npm i -g @anthropic-ai/claude-code`, `brew upgrade`, ...). lazarobox never drops the option: it is part of what keeps the CLI text-only. |
 
 ### Tools with Ollama
 
