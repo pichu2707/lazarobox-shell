@@ -506,7 +506,10 @@ impl MenuState {
     pub fn update_note(&self) -> Option<[String; NOTE_ROWS]> {
         let latest = self.update.as_deref()?;
         let on_note_tab = self.tabs().nth(self.tab).is_some_and(|tab| tab.note);
-        (on_note_tab && !self.in_sub_level()).then(|| crate::core::update::menu_lines(latest))
+        (on_note_tab && !self.in_sub_level()).then(|| match self.command_shown {
+            Some(_) => crate::core::update::fallback_lines(),
+            None => crate::core::update::menu_lines(latest),
+        })
     }
 
     /// The terminal size, given by the app before each key so the menu knows
@@ -1288,7 +1291,7 @@ impl MenuState {
             return why.footer().to_owned();
         }
         match (&self.installed, &self.update) {
-            (Some(done), _) => format!("{done} installed · restart lazarobox to use it"),
+            (Some(done), _) => format!("Updated to {done} · restart lazarobox to use it"),
             (None, Some(_)) => "Enter updates · j/k move · s save · Esc cancel".to_owned(),
             (None, None) => "up to date · j/k move · s save · Esc cancel".to_owned(),
         }

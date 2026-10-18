@@ -22,7 +22,7 @@ fn a_known_update_gives_the_two_note_lines() {
         .unwrap();
     assert_eq!(
         note.join(" "),
-        "update 0.16.0 available \u{2014} run: cargo install lazarobox-shell --locked"
+        "lazarobox 0.16.0 is available. Go to Updates and press Enter."
     );
 }
 
@@ -199,7 +199,7 @@ fn once_shown_enter_and_y_copy_the_command() {
         m.show_update_command(Fallback::NotCargoInstall);
         assert_eq!(
             footer_text(&m),
-            "Enter copies the command \u{b7} not a cargo install"
+            "Enter or y copies it \u{b7} not installed with cargo"
         );
         assert_eq!(
             press_key(&mut m, code),
@@ -217,19 +217,32 @@ fn once_shown_enter_and_y_copy_the_command() {
 #[test]
 fn the_shown_command_says_why_it_was_not_run_on_one_line() {
     let cases = [
-        (Fallback::NotCargoInstall, "not a cargo install"),
-        (Fallback::NoCargo, "no cargo found"),
-        (Fallback::UntrustedCargo, "cargo not trusted"),
+        (Fallback::NotCargoInstall, "not installed with cargo"),
+        (Fallback::NoCargo, "cargo is not installed"),
+        (Fallback::UntrustedCargo, "cargo folder not safe"),
     ];
     for (why, reason) in cases {
         let mut m = on_updates(Some("0.15.4"));
         m.show_update_command(why);
         let text = footer_text(&m);
         // The action first, the reason after it.
-        assert_eq!(text, format!("Enter copies the command \u{b7} {reason}"));
+        assert_eq!(text, format!("Enter or y copies it \u{b7} {reason}"));
         // The popup is 51 columns with its borders and a leading space.
         assert!(text.chars().count() <= 48, "{text}");
+        // Two lines above the footer say it cannot update itself, and give
+        // the command to copy.
+        let note = m.update_note().unwrap();
+        assert_eq!(note[0], "lazarobox cannot update itself here. Run:");
+        assert_eq!(note[1], "cargo install lazarobox-shell --locked");
     }
+    // Any key hides the explanation and brings the usual note back.
+    let mut m = on_updates(Some("0.15.4"));
+    m.show_update_command(Fallback::NoCargo);
+    press_key(&mut m, KeyCode::Char('k'));
+    assert_eq!(
+        m.update_note().unwrap().join(" "),
+        "lazarobox 0.15.4 is available. Go to Updates and press Enter."
+    );
 }
 
 #[test]
@@ -253,7 +266,7 @@ fn after_an_install_the_row_reads_installed_until_restart() {
     );
     assert_eq!(press_key(&mut m, KeyCode::Enter), MenuCommand::None);
     assert!(
-        footer_text(&m).starts_with("0.15.4 installed"),
+        footer_text(&m).starts_with("Updated to 0.15.4"),
         "{}",
         footer_text(&m)
     );

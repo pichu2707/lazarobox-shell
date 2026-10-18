@@ -17,8 +17,8 @@ expression: frame
          │                                                            │
          │                                                            │
          │                                                            │
-         │ update 0.16.0 available —                                  │
-         │ run: cargo install lazarobox-shell --locked                │
+         │ lazarobox 0.16.0 is available.                             │
+         │ Go to Updates and press Enter.                             │
          │                                                            │
          │ j/k move · h/l change · s save · Esc cancel                │
          └────────────────────────────────────────────────────────────┘

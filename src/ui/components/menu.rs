@@ -1354,8 +1354,16 @@ mod tests {
     #[test]
     fn the_update_note_sits_in_the_last_two_body_rows_of_settings_only() {
         let l = lines(&draw(62, POPUP_H, &with_update()));
-        assert!(l[11].contains("update 0.16.0 available"), "{}", l[11]);
-        assert!(l[12].contains("run: cargo install"), "{}", l[12]);
+        assert!(
+            l[11].contains("lazarobox 0.16.0 is available."),
+            "{}",
+            l[11]
+        );
+        assert!(
+            l[12].contains("Go to Updates and press Enter."),
+            "{}",
+            l[12]
+        );
         assert_eq!(
             l[13].trim_matches(|c| c == '│' || c == ' '),
             "",
@@ -1365,11 +1373,27 @@ mod tests {
         let mut menu = with_update();
         tab_key(&mut menu);
         let shown = text(&draw(62, POPUP_H, &menu));
-        assert!(!shown.contains("run: cargo install"), "{shown}");
+        assert!(!shown.contains("Go to Updates and press Enter."), "{shown}");
         for sub in sub_levels() {
             let shown = text(&draw(62, POPUP_H, &sub.with_update(Some("0.16.0".into()))));
-            assert!(!shown.contains("run: cargo install"), "{shown}");
+            assert!(!shown.contains("Go to Updates and press Enter."), "{shown}");
         }
+    }
+
+    #[test]
+    fn the_fallback_explanation_fits_the_popup_without_clipping() {
+        // At 80 columns the popup is 51 wide: nothing may be cut.
+        let mut menu = with_update();
+        menu.goto("Updates");
+        menu.show_update_command(crate::core::update::Fallback::UntrustedCargo);
+        let l = lines(&draw(80, POPUP_H, &menu));
+        let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
+        assert_eq!(body(&l[11]), "lazarobox cannot update itself here. Run:");
+        assert_eq!(body(&l[12]), "cargo install lazarobox-shell --locked");
+        assert_eq!(
+            body(&l[14]),
+            "Enter or y copies it \u{b7} cargo folder not safe"
+        );
     }
 
     #[test]
@@ -1378,8 +1402,8 @@ mod tests {
         // blank row is the only thing the short height drops.
         for height in [POPUP_H, MIN_HEIGHT] {
             let shown = text(&draw(62, height, &with_update()));
-            assert!(shown.contains("run: cargo install"), "{shown}");
-            assert!(shown.contains("update 0.16.0 available"), "{shown}");
+            assert!(shown.contains("Go to Updates and press Enter."), "{shown}");
+            assert!(shown.contains("lazarobox 0.16.0 is available."), "{shown}");
             assert!(shown.contains("s save"), "the footer: {shown}");
         }
     }

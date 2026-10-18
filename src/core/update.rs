@@ -246,9 +246,9 @@ impl Fallback {
     /// line that fits the popup (51 columns), as the command is in the note.
     pub fn footer(self) -> &'static str {
         match self {
-            Fallback::NotCargoInstall => "Enter copies the command \u{b7} not a cargo install",
-            Fallback::NoCargo => "Enter copies the command \u{b7} no cargo found",
-            Fallback::UntrustedCargo => "Enter copies the command \u{b7} cargo not trusted",
+            Fallback::NotCargoInstall => "Enter or y copies it \u{b7} not installed with cargo",
+            Fallback::NoCargo => "Enter or y copies it \u{b7} cargo is not installed",
+            Fallback::UntrustedCargo => "Enter or y copies it \u{b7} cargo folder not safe",
         }
     }
 }
@@ -325,9 +325,17 @@ impl InstallEnv {
     }
 }
 
+/// The first line of the update pane, in plain words: what started, that it
+/// takes a while, and that lazarobox must stay open.
+pub fn started_text(version: &str) -> String {
+    format!(
+        "Updating lazarobox to {version}. It compiles on your machine and can take a few minutes. Keep lazarobox open until it says it is done."
+    )
+}
+
 /// The final line of a successful install.
 pub fn installed_text(version: &str) -> String {
-    format!("lazarobox {version} installed: restart lazarobox to use it")
+    format!("Updated to {version}. Restart lazarobox to use it.")
 }
 
 /// The Updates row value once an install worked, until the restart.
@@ -335,11 +343,20 @@ pub fn installed_value(version: &str) -> String {
     format!("{version} installed: restart")
 }
 
+/// A failure line: what happened, then the command to run by hand.
+fn failure(what: &str) -> String {
+    format!("The update {what}. To update, run in a terminal: {INSTALL_COMMAND}")
+}
+
 /// The final line when cargo could not even be started.
-pub const NOT_STARTED_TEXT: &str = "update failed (cannot start cargo)";
+pub fn not_started_text() -> String {
+    failure("could not start")
+}
 
 /// The final line when the child ended without an exit status.
-pub const NO_STATUS_TEXT: &str = "update failed (no exit status)";
+pub fn no_status_text() -> String {
+    failure("stopped unexpectedly")
+}
 
 /// The first line of the pane: what is about to run, written by lazarobox.
 /// Control characters in a path are shown as `?`.
@@ -354,7 +371,7 @@ pub fn running_text(program: &Path, args: &[String]) -> String {
 
 /// The final line of a failed install.
 pub fn failed_text(code: u32) -> String {
-    format!("update failed (exit {code})")
+    failure(&format!("did not finish (error {code})"))
 }
 
 /// What to show for `cache` when running `current`: the version to announce.
@@ -368,12 +385,20 @@ pub fn status_mark(latest: &str) -> String {
     format!("update {latest}")
 }
 
-/// The menu note, in the two lines the popup has room for. Joined by a space
-/// they read `update <ver> available — run: cargo install lazarobox-shell --locked`.
+/// The menu note, in the two lines the popup has room for.
 pub fn menu_lines(latest: &str) -> [String; 2] {
     [
-        format!("update {latest} available \u{2014}"),
-        format!("run: {INSTALL_COMMAND}"),
+        format!("lazarobox {latest} is available."),
+        "Go to Updates and press Enter.".to_owned(),
+    ]
+}
+
+/// The menu note once Enter could not start the install: it cannot update
+/// itself here, and the command to copy.
+pub fn fallback_lines() -> [String; 2] {
+    [
+        "lazarobox cannot update itself here. Run:".to_owned(),
+        INSTALL_COMMAND.to_owned(),
     ]
 }
 
@@ -799,6 +824,27 @@ mod tests {
     }
 
     #[test]
+    fn the_fallback_footers_are_plain_and_fit_the_popup() {
+        for (why, text) in [
+            (
+                Fallback::NotCargoInstall,
+                "Enter or y copies it \u{b7} not installed with cargo",
+            ),
+            (
+                Fallback::NoCargo,
+                "Enter or y copies it \u{b7} cargo is not installed",
+            ),
+            (
+                Fallback::UntrustedCargo,
+                "Enter or y copies it \u{b7} cargo folder not safe",
+            ),
+        ] {
+            assert_eq!(why.footer(), text);
+            assert!(text.chars().count() <= 48, "{text}");
+        }
+    }
+
+    #[test]
     fn the_fallback_names_the_first_thing_that_stopped_the_install() {
         let env = |exe: &str, cargo: Option<&str>, refused: bool| InstallEnv {
             exe: Some(exe.into()),
@@ -874,14 +920,23 @@ mod tests {
     }
 
     #[test]
-    fn the_install_texts_are_fixed() {
+    fn the_install_texts_are_plain_and_say_what_to_do_next() {
+        assert_eq!(
+            started_text("0.16.0"),
+            "Updating lazarobox to 0.16.0. It compiles on your machine and can take a few minutes. Keep lazarobox open until it says it is done."
+        );
         assert_eq!(
             installed_text("0.16.0"),
-            "lazarobox 0.16.0 installed: restart lazarobox to use it"
+            "Updated to 0.16.0. Restart lazarobox to use it."
         );
         assert_eq!(installed_value("0.16.0"), "0.16.0 installed: restart");
-        assert_eq!(failed_text(101), "update failed (exit 101)");
-        assert_eq!(NO_STATUS_TEXT, "update failed (no exit status)");
+        // Every failure says what happened, then the command to run by hand.
+        let by_hand = "run in a terminal: cargo install lazarobox-shell --locked";
+        for text in [failed_text(101), not_started_text(), no_status_text()] {
+            assert!(text.starts_with("The update "), "{text}");
+            assert!(text.ends_with(by_hand), "{text}");
+        }
+        assert!(failed_text(101).contains("(error 101)"));
     }
 
     #[test]
@@ -889,7 +944,11 @@ mod tests {
         assert_eq!(status_mark("0.16.0"), "update 0.16.0");
         assert_eq!(
             menu_lines("0.16.0").join(" "),
-            "update 0.16.0 available \u{2014} run: cargo install lazarobox-shell --locked"
+            "lazarobox 0.16.0 is available. Go to Updates and press Enter."
+        );
+        assert_eq!(
+            fallback_lines().join(" "),
+            "lazarobox cannot update itself here. Run: cargo install lazarobox-shell --locked"
         );
     }
 }

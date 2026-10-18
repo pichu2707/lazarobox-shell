@@ -1256,7 +1256,7 @@ impl App {
         };
         if self.update_running() {
             if let Some(menu) = self.menu.as_mut() {
-                menu.set_copied("update already running in its own tab".to_owned());
+                menu.set_copied("An update is already running in its own tab".to_owned());
             }
             return Vec::new();
         }
@@ -1287,7 +1287,9 @@ impl App {
                     .map(|env| env.path.clone())
                     .unwrap_or_default();
                 if let Some(menu) = self.menu.as_mut() {
-                    menu.set_copied(format!("installing {version} in a new tab"));
+                    menu.set_copied(format!(
+                        "Updating to {version} in the new tab \u{b7} Esc to watch"
+                    ));
                 }
                 self.new_tab_with(NewPane::Update {
                     program,
@@ -1311,14 +1313,8 @@ impl App {
                 crate::core::update::installed_text(&version),
             ),
             UpdateEnded::Code(code) => (RunState::Failed, crate::core::update::failed_text(code)),
-            UpdateEnded::NotStarted => (
-                RunState::Failed,
-                crate::core::update::NOT_STARTED_TEXT.to_owned(),
-            ),
-            UpdateEnded::NoStatus => (
-                RunState::Failed,
-                crate::core::update::NO_STATUS_TEXT.to_owned(),
-            ),
+            UpdateEnded::NotStarted => (RunState::Failed, crate::core::update::not_started_text()),
+            UpdateEnded::NoStatus => (RunState::Failed, crate::core::update::no_status_text()),
         };
         if let Some(pty) = self.panes.get_mut(&id).and_then(PaneState::pty_mut) {
             pty.emu.feed(format!("\r\n{text}\r\n").as_bytes());
@@ -1987,7 +1983,9 @@ impl App {
                     // anything cargo prints.
                     let args = crate::core::update::install_args(root.to_str().unwrap_or_default());
                     let line = crate::core::update::running_text(&program, &args);
-                    pty.emu.feed(format!("{line}\r\n").as_bytes());
+                    let plain = crate::core::update::started_text(&version);
+                    pty.emu
+                        .feed(format!("{plain}\r\n\r\n{line}\r\n").as_bytes());
                     pty.update = Some(UpdateRun {
                         version,
                         state: RunState::Running,

@@ -4,7 +4,9 @@
 use std::{ffi::OsString, path::PathBuf};
 
 use super::*;
-use crate::core::update::{Fallback, INSTALL_COMMAND, InstallEnv};
+use crate::core::update::{
+    Fallback, INSTALL_COMMAND, InstallEnv, failed_text, no_status_text, not_started_text,
+};
 
 const CARGO: &str = "/home/ana/.cargo/bin/cargo";
 
@@ -69,6 +71,11 @@ fn pane_text(a: &App, id: PaneId) -> String {
         .join("\n")
 }
 
+/// The pane's text with the terminal's hard wrapping removed.
+fn flat(a: &App, id: PaneId) -> String {
+    pane_text(a, id).replace('\n', "")
+}
+
 fn footer(a: &App) -> String {
     match a.menu().unwrap().footer() {
         crate::core::menu::Footer::Hint(t) => t.into_owned(),
@@ -121,11 +128,46 @@ fn a_cargo_install_runs_cargo_directly_in_a_new_visible_tab() {
 }
 
 #[test]
+fn starting_tells_the_user_where_it_runs_how_long_and_not_to_close() {
+    let (a, id) = started();
+    assert_eq!(a.tab().focus, id, "the new tab is on screen");
+    let text = flat(&a, id);
+    assert!(text.contains("Updating lazarobox to 0.15.4."), "{text}");
+    assert!(text.contains("a few minutes"), "{text}");
+    assert!(text.contains("Keep lazarobox open"), "{text}");
+    // The technical line still follows, for whoever wants it.
+    assert!(
+        text.contains("running /home/ana/.cargo/bin/cargo"),
+        "{text}"
+    );
+    assert_eq!(
+        footer(&a),
+        "Updating to 0.15.4 in the new tab \u{b7} Esc to watch"
+    );
+}
+
+#[test]
+fn a_failure_names_the_command_to_run_by_hand_in_the_pane() {
+    let (mut a, id) = started();
+    a.update(AppEvent::Pty(id, PtyEvent::Status(101)));
+    let text = flat(&a, id)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(text.contains("The update did not finish"), "{text}");
+    assert!(text.contains(INSTALL_COMMAND), "{text}");
+}
+
+#[test]
 fn a_second_enter_while_it_runs_starts_nothing() {
     let (mut a, _) = started();
     let effects = a.update(enter());
     assert!(spawned(&effects).is_empty(), "{effects:?}");
-    assert!(footer(&a).contains("already running"), "{}", footer(&a));
+    assert!(
+        footer(&a).starts_with("An update is already running"),
+        "{}",
+        footer(&a)
+    );
 }
 
 #[test]
@@ -149,7 +191,11 @@ fn without_cargo_on_the_path_the_command_is_shown_not_run() {
     let mut a = on_updates(Some("0.15.4"), Some(env));
     assert!(a.update(enter()).is_empty());
     assert_eq!(footer(&a), Fallback::NoCargo.footer());
-    assert!(footer(&a).contains("no cargo found"), "{}", footer(&a));
+    assert!(
+        footer(&a).contains("cargo is not installed"),
+        "{}",
+        footer(&a)
+    );
 }
 
 #[test]
@@ -162,8 +208,12 @@ fn a_refused_cargo_says_so_instead_of_looking_like_nothing_happened() {
     let mut a = on_updates(Some("0.15.4"), Some(env));
     assert!(a.update(enter()).is_empty(), "nothing runs");
     assert_eq!(footer(&a), Fallback::UntrustedCargo.footer());
-    assert!(footer(&a).starts_with("Enter copies"), "{}", footer(&a));
-    assert!(footer(&a).contains("not trusted"), "{}", footer(&a));
+    assert!(
+        footer(&a).starts_with("Enter or y copies"),
+        "{}",
+        footer(&a)
+    );
+    assert!(footer(&a).contains("not safe"), "{}", footer(&a));
 }
 
 #[test]
@@ -187,7 +237,7 @@ fn exit_zero_closes_the_pane_and_announces_the_install() {
     a.update(AppEvent::Pty(id, PtyEvent::Status(0)));
     assert_eq!(
         a.notice(),
-        Some("lazarobox 0.15.4 installed: restart lazarobox to use it")
+        Some("Updated to 0.15.4. Restart lazarobox to use it.")
     );
     assert_eq!(a.status_update(), None, "nothing left to announce");
     a.update(AppEvent::Pty(id, PtyEvent::Exited));
@@ -232,13 +282,13 @@ fn a_failure_keeps_the_pane_open_with_the_final_line() {
         PtyEvent::Output(b"error: could not compile\r\n".to_vec()),
     ));
     a.update(AppEvent::Pty(id, PtyEvent::Status(101)));
-    assert_eq!(a.notice(), Some("update failed (exit 101)"));
+    assert_eq!(a.notice(), Some(failed_text(101).as_str()));
     let effects = a.update(AppEvent::Pty(id, PtyEvent::Exited));
     assert!(effects.is_empty(), "{effects:?}");
     assert_eq!(a.tabs.len(), tabs, "the pane stays");
-    let text = pane_text(&a, id);
+    let text = flat(&a, id);
     assert!(text.contains("error: could not compile"), "{text}");
-    assert!(text.contains("update failed (exit 101)"), "{text}");
+    assert!(text.contains(&failed_text(101)), "{text}");
     assert_eq!(a.status_update(), Some("0.15.4"), "still not installed");
 }
 
@@ -261,12 +311,9 @@ fn a_spawn_error_keeps_the_pane_open_with_a_failure_line() {
     let tabs = a.tabs.len();
     a.update(AppEvent::SpawnFailed(id, "no such file".into()));
     assert_eq!(a.tabs.len(), tabs, "the pane stays");
-    let text = pane_text(&a, id);
-    assert!(
-        text.contains("update failed (cannot start cargo)"),
-        "{text}"
-    );
-    assert_eq!(a.notice(), Some("update failed (cannot start cargo)"));
+    let text = flat(&a, id);
+    assert!(text.contains(&not_started_text()), "{text}");
+    assert_eq!(a.notice(), Some(not_started_text().as_str()));
 }
 
 #[test]
@@ -280,7 +327,7 @@ fn a_success_in_the_only_pane_never_quits_the_app() {
     let effects = a.update(AppEvent::Pty(id, PtyEvent::Exited));
     assert!(!effects.contains(&Effect::Quit), "{effects:?}");
     assert!(a.panes.contains_key(&id), "the finished pane stays");
-    assert!(pane_text(&a, id).contains("lazarobox 0.15.4 installed: restart lazarobox to use it"));
+    assert!(flat(&a, id).contains("Updated to 0.15.4. Restart lazarobox to use it."));
 }
 
 #[test]
@@ -307,12 +354,12 @@ fn a_path_that_is_not_utf8_reaches_cargo_unchanged() {
 }
 
 #[test]
-fn the_pane_starts_with_the_line_naming_what_runs() {
+fn the_pane_then_names_what_runs() {
     let (a, id) = started();
-    // The line is longer than the pane is wide, so it wraps.
-    let text = pane_text(&a, id).replace('\n', "");
+    // The lines are longer than the pane is wide, so they wrap.
+    let text = flat(&a, id);
     assert!(
-        text.starts_with(
+        text.contains(
             "running /home/ana/.cargo/bin/cargo install lazarobox-shell --locked --root /home/ana/.cargo"
         ),
         "{text}"
@@ -326,7 +373,7 @@ fn a_child_that_ends_without_a_status_is_a_failure_and_the_pane_stays() {
     let effects = a.update(AppEvent::Pty(id, PtyEvent::Exited));
     assert!(effects.is_empty(), "{effects:?}");
     assert_eq!(a.tabs.len(), tabs, "the pane stays");
-    assert!(pane_text(&a, id).contains("update failed (no exit status)"));
-    assert_eq!(a.notice(), Some("update failed (no exit status)"));
+    assert!(flat(&a, id).contains("The update stopped unexpectedly"));
+    assert_eq!(a.notice(), Some(no_status_text().as_str()));
     assert_eq!(a.status_update(), Some("0.15.4"), "still not installed");
 }
