@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-10-19
+
 ### Internal
 
 - The macOS jail groundwork: a startup probe that checks, with three controls,
@@ -843,7 +845,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.1...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.2...HEAD
+[0.17.2]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.16.2...v0.17.0
 [0.16.2]: https://github.com/pichu2707/lazarobox-shell/compare/v0.16.1...v0.16.2
