@@ -3154,13 +3154,13 @@ async fn codex_and_gemini_get_the_tools_prompt_only_when_wired() {
     }
 }
 
-const OTHER_OS: &str = "the CLI jail needs Linux";
+const OTHER_OS: &str = "the CLI jail needs Linux or macOS";
 const OTHER_OS_HINT: &str = "; on this system use claude or Ollama for chat";
 
 #[test]
 fn a_refused_codex_turn_on_another_system_says_to_use_claude_or_ollama() {
     let mut env = lab().env();
-    env.jail = JailSupport::Unavailable(JailOff::NotLinux);
+    env.jail = JailSupport::Unavailable(JailOff::NoBackend);
     let planned = plan(&env, &codex_job(&[]));
     assert_eq!(
         planned.err(),
@@ -3175,7 +3175,7 @@ fn claude_on_another_system_keeps_the_neutral_notice() {
     let lab = lab();
     lab.claude("");
     let mut env = lab.env();
-    env.jail = JailSupport::Unavailable(JailOff::NotLinux);
+    env.jail = JailSupport::Unavailable(JailOff::NoBackend);
     let planned = plan(&env, &job(JailPolicy::Layered)).ok().unwrap();
     let text = format!("{:?}", planned.notice);
     assert!(text.contains(OTHER_OS), "{text}");
@@ -3285,19 +3285,19 @@ fn the_jail_note_of_claude_on_macos_says_it_is_not_jailed_there() {
 #[test]
 fn the_jail_note_of_another_system_points_codex_and_gemini_to_claude_only() {
     let mut env = lab().env();
-    env.jail = JailSupport::Unavailable(JailOff::NotLinux);
+    env.jail = JailSupport::Unavailable(JailOff::NoBackend);
     let bin = Path::new("/bin/true");
     assert_eq!(
         jail_note_on(Os::Linux, &env, Cli::Codex, bin).as_deref(),
-        Some("needs Linux · use claude")
+        Some("Linux/macOS only · use claude")
     );
     assert_eq!(
         jail_note_on(Os::Linux, &env, Cli::Gemini, bin).as_deref(),
-        Some("needs Linux · use claude")
+        Some("Linux/macOS only · use claude")
     );
     assert_eq!(
         jail_note_on(Os::Linux, &env, Cli::Claude, bin).as_deref(),
-        Some("needs Linux")
+        Some("needs Linux or macOS")
     );
 }
 

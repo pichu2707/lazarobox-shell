@@ -39,8 +39,9 @@ pub enum Backend {
 
 /// Whether the macOS jail is wired into the product. While `false` the probe
 /// answers [`SeatbeltFault::NotEnabled`] without spawning anything, so codex
-/// and gemini stay refused on macOS.
-pub const SEATBELT_ENABLED: bool = false;
+/// and gemini stay refused on macOS. It is the switch to turn the macOS jail
+/// off again.
+pub const SEATBELT_ENABLED: bool = true;
 
 /// Why the macOS jail cannot be used.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -89,7 +90,8 @@ pub enum JailOff {
     NoLandlock(u32),
     /// macOS has `sandbox-exec`, but the jail cannot be used.
     NoSeatbelt(SeatbeltFault),
-    NotLinux,
+    /// Neither Linux nor macOS: no jail can be built here.
+    NoBackend,
     /// Nothing probed the system yet (tests, the first frame).
     NotProbed,
 }
@@ -105,7 +107,7 @@ impl JailOff {
                 format!("Landlock ABI {MIN_ABI}+ needed (Linux 6.2); this kernel has ABI {abi}")
             }
             Self::NoSeatbelt(fault) => format!("the macOS jail is unavailable: {}", fault.text()),
-            Self::NotLinux => "the CLI jail needs Linux".to_owned(),
+            Self::NoBackend => "the CLI jail needs Linux or macOS".to_owned(),
             Self::NotProbed => "the jail was not probed".to_owned(),
         }
     }
@@ -116,7 +118,7 @@ impl JailOff {
             Self::NoLandlock(0) => "no Landlock".to_owned(),
             Self::NoLandlock(abi) => format!("Landlock ABI {abi}, needs {MIN_ABI}+"),
             Self::NoSeatbelt(_) => "jail unavailable".to_owned(),
-            Self::NotLinux => "needs Linux".to_owned(),
+            Self::NoBackend => "needs Linux or macOS".to_owned(),
             Self::NotProbed => "not probed".to_owned(),
         }
     }
@@ -125,7 +127,7 @@ impl JailOff {
     /// gemini).
     pub fn text_required(self) -> String {
         match self {
-            Self::NotLinux | Self::NoSeatbelt(_) => format!(
+            Self::NoBackend | Self::NoSeatbelt(_) => format!(
                 "{}; on this system use claude or Ollama for chat",
                 self.text()
             ),
@@ -136,7 +138,7 @@ impl JailOff {
     /// [`Self::short`] for a CLI that does not run without the jail.
     pub fn short_required(self) -> String {
         match self {
-            Self::NotLinux => "needs Linux · use claude".to_owned(),
+            Self::NoBackend => "Linux/macOS only · use claude".to_owned(),
             Self::NoSeatbelt(_) => "jail unavailable · use claude".to_owned(),
             _ => self.short(),
         }
@@ -287,7 +289,7 @@ fn known_helper_reason(said: &str) -> Option<String> {
         SeatbeltFault::NotEnabled,
     ]
     .map(JailOff::NoSeatbelt);
-    [JailOff::NoLandlock(0), JailOff::NotLinux]
+    [JailOff::NoLandlock(0), JailOff::NoBackend]
         .into_iter()
         .chain(macos)
         .map(JailOff::text)

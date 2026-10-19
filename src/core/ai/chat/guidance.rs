@@ -132,11 +132,28 @@ mod tests {
         assert_eq!(
             guidance(&Availability::NoJail {
                 engine: s("codex"),
-                reason: JailOff::NotLinux.text_required(),
+                reason: JailOff::NoBackend.text_required(),
             })
             .as_deref(),
             Some(
-                "codex: not available on this system yet: the CLI jail needs Linux; \
+                "codex: not available on this system yet: the CLI jail needs Linux or macOS; \
+                 on this system use claude or Ollama for chat"
+            )
+        );
+    }
+
+    #[test]
+    fn no_jail_on_macos_names_the_sandbox_not_linux() {
+        use crate::core::ai::jail::{JailOff, SeatbeltFault};
+        assert_eq!(
+            guidance(&Availability::NoJail {
+                engine: s("gemini"),
+                reason: JailOff::NoSeatbelt(SeatbeltFault::Leaked).text_required(),
+            })
+            .as_deref(),
+            Some(
+                "gemini: not available on this system yet: the macOS jail is unavailable: \
+                 the sandbox did not block a test action; \
                  on this system use claude or Ollama for chat"
             )
         );

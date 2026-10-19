@@ -900,6 +900,48 @@ mod tests {
         assert!(!lab.rec.join("helper_args").exists());
     }
 
+    fn seatbelt_env(lab: &Lab) -> CliEnv {
+        let mut env = env_of(lab, true);
+        env.jail = JailSupport::Available {
+            backend: Backend::Seatbelt,
+            abi: 0,
+        };
+        env
+    }
+
+    #[tokio::test]
+    async fn listing_runs_through_the_helper_when_the_backend_is_seatbelt() {
+        let lab = lab();
+        fake_codex(&lab, "echo '{\"models\":[]}'");
+        assert_eq!(
+            codex_listing(&seatbelt_env(&lab)).await,
+            Ok(b"{\"models\":[]}\n".to_vec())
+        );
+        let args = helper_args(&lab);
+        assert_eq!(args[0], "__jail-exec");
+        assert_eq!(&args[args.len() - 2..], ["debug", "models"]);
+    }
+
+    #[tokio::test]
+    async fn a_listing_that_ends_in_exit_71_is_an_error_and_codex_never_runs_bare() {
+        let lab = lab();
+        fake_codex(&lab, "echo 'sandbox-exec: bad profile' >&2\nexit 71");
+        let env = seatbelt_env(&lab);
+        let got = codex_listing(&env).await;
+        assert_eq!(
+            got,
+            Err("jail: the macOS sandbox could not be applied".to_owned())
+        );
+        // Without a jail nothing starts at all.
+        let mut off = seatbelt_env(&lab);
+        off.jail = JailSupport::Unavailable(JailOff::NoSeatbelt(
+            crate::core::ai::jail::SeatbeltFault::Refused,
+        ));
+        std::fs::remove_file(lab.rec.join("helper_args")).unwrap();
+        assert!(codex_listing(&off).await.is_err());
+        assert!(!lab.rec.join("helper_args").exists());
+    }
+
     #[tokio::test]
     async fn listing_fails_soft_for_an_old_codex_without_the_subcommand() {
         let lab = lab();

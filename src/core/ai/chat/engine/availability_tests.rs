@@ -9,7 +9,7 @@ const JAIL: JailSupport = JailSupport::Available {
     backend: Backend::Landlock,
     abi: 6,
 };
-const NO_JAIL: JailSupport = JailSupport::Unavailable(JailOff::NotLinux);
+const NO_JAIL: JailSupport = JailSupport::Unavailable(JailOff::NoBackend);
 
 fn cfg(task: Task, engine: Option<&str>, model: Option<&str>) -> AiConfig {
     let mut cfg = AiConfig::default();
@@ -144,7 +144,7 @@ fn codex_and_gemini_need_a_jail() {
             availability_with(&c, Some(&d), NO_JAIL, &[], &|_| true),
             Availability::NoJail {
                 engine: id.into(),
-                reason: JailOff::NotLinux.text_required(),
+                reason: JailOff::NoBackend.text_required(),
             }
         );
         assert_eq!(
@@ -195,7 +195,9 @@ fn codex_is_ready_with_a_jail_and_no_jail_otherwise() {
         availability(&c, Some(&d), NO_JAIL),
         Availability::NoJail {
             engine: "codex".into(),
-            reason: "the CLI jail needs Linux; on this system use claude or Ollama for chat".into()
+            reason:
+                "the CLI jail needs Linux or macOS; on this system use claude or Ollama for chat"
+                    .into()
         }
     );
 }
@@ -212,7 +214,9 @@ fn gemini_is_ready_with_a_jail_and_no_jail_otherwise() {
         availability(&c, Some(&d), NO_JAIL),
         Availability::NoJail {
             engine: "gemini".into(),
-            reason: "the CLI jail needs Linux; on this system use claude or Ollama for chat".into()
+            reason:
+                "the CLI jail needs Linux or macOS; on this system use claude or Ollama for chat"
+                    .into()
         }
     );
 }

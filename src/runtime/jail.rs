@@ -243,7 +243,7 @@ mod imp {
 
     #[cfg(not(target_os = "macos"))]
     pub fn probe() -> JailSupport {
-        JailSupport::Unavailable(JailOff::NotLinux)
+        JailSupport::Unavailable(JailOff::NoBackend)
     }
 
     /// Replaces this process with `/usr/bin/sandbox-exec`, which applies the
@@ -262,7 +262,9 @@ mod imp {
 
     #[cfg(not(target_os = "macos"))]
     pub fn exec(_args: &[OsString]) -> Result<Infallible, Failure> {
-        Err(Failure::NotEnforced("the CLI jail needs Linux".to_owned()))
+        Err(Failure::NotEnforced(
+            "the CLI jail needs Linux or macOS".to_owned(),
+        ))
     }
 }
 

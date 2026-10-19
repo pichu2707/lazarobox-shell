@@ -1238,7 +1238,7 @@ fn the_helper_reason_is_one_of_the_fixed_texts_it_emits() {
         "ABI 2 is below the required 6",
         "Landlock ABI 3+ needed (Linux 6.2); this kernel has ABI 2",
         "Landlock is unavailable or blocked (kernel, container or seccomp)",
-        "the CLI jail needs Linux",
+        "the CLI jail needs Linux or macOS",
     ] {
         assert_eq!(jail_reason(&line(why)).as_deref(), Some(why), "{why}");
     }
@@ -1274,25 +1274,28 @@ fn a_kernel_without_the_abi_says_what_to_upgrade_to() {
         "Landlock is unavailable or blocked (kernel, container or seccomp)"
     );
     assert_eq!(none.short(home()), "no Landlock");
-    let other_os = JailRefusal::Unsupported(JailOff::NotLinux);
-    assert_eq!(other_os.hint(home()), "the CLI jail needs Linux");
-    assert_eq!(other_os.short(home()), "needs Linux");
+    let other_os = JailRefusal::Unsupported(JailOff::NoBackend);
+    assert_eq!(other_os.hint(home()), "the CLI jail needs Linux or macOS");
+    assert_eq!(other_os.short(home()), "needs Linux or macOS");
 }
 
 #[test]
 fn a_cli_that_needs_the_jail_is_told_what_to_use_instead_on_other_systems() {
     assert_eq!(
-        JailOff::NotLinux.text_required(),
-        "the CLI jail needs Linux; on this system use claude or Ollama for chat"
+        JailOff::NoBackend.text_required(),
+        "the CLI jail needs Linux or macOS; on this system use claude or Ollama for chat"
     );
     assert_eq!(
-        JailOff::NotLinux.short_required(),
-        "needs Linux · use claude"
+        JailOff::NoBackend.short_required(),
+        "Linux/macOS only · use claude"
     );
     // The neutral texts stay as they are: claude runs bare and the helper
     // emits the plain sentence.
-    assert_eq!(JailOff::NotLinux.text(), "the CLI jail needs Linux");
-    assert_eq!(JailOff::NotLinux.short(), "needs Linux");
+    assert_eq!(
+        JailOff::NoBackend.text(),
+        "the CLI jail needs Linux or macOS"
+    );
+    assert_eq!(JailOff::NoBackend.short(), "needs Linux or macOS");
 }
 
 #[test]
@@ -2073,4 +2076,46 @@ fn an_overlap_refusal_names_the_program_and_never_the_writable_folder() {
         "{}",
         err.hint(home)
     );
+}
+
+#[test]
+fn the_macos_jail_is_on() {
+    const { assert!(SEATBELT_ENABLED) };
+}
+
+/// What the product does on macOS for a probe result, end to end.
+fn macos_launch(cli: Cli, probed: Result<(), SeatbeltFault>) -> Launch {
+    launch(
+        jail_policy(cli, Os::Macos),
+        seatbelt_support(SEATBELT_ENABLED, probed),
+    )
+}
+
+#[test]
+fn with_a_passing_probe_codex_and_gemini_run_jailed_on_macos_and_claude_bare() {
+    assert_eq!(macos_launch(Cli::Codex, Ok(())), Launch::Jailed);
+    assert_eq!(macos_launch(Cli::Gemini, Ok(())), Launch::Jailed);
+    assert_eq!(macos_launch(Cli::Claude, Ok(())), Launch::Bare);
+}
+
+#[test]
+fn a_failed_probe_refuses_codex_and_gemini_on_macos_never_bare() {
+    for (fault, _) in FAULTS {
+        assert_eq!(macos_launch(Cli::Codex, Err(fault)), Launch::Refuse);
+        assert_eq!(macos_launch(Cli::Gemini, Err(fault)), Launch::Refuse);
+        assert_eq!(macos_launch(Cli::Claude, Err(fault)), Launch::Bare);
+    }
+}
+
+#[test]
+fn a_seatbelt_refusal_names_the_sandbox_and_never_says_needs_linux() {
+    let off = JailOff::NoSeatbelt(SeatbeltFault::Refused);
+    let text = off.text_required();
+    assert_eq!(
+        text,
+        "the macOS jail is unavailable: sandbox-exec refused a test program; \
+         on this system use claude or Ollama for chat"
+    );
+    assert!(!text.contains("needs Linux"), "{text}");
+    assert_eq!(off.short_required(), "jail unavailable · use claude");
 }
