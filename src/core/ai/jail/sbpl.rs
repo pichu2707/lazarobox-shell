@@ -159,7 +159,7 @@ pub fn render(spec: &JailSpec) -> Result<Profile, SbplError> {
 /// The arguments for `sandbox-exec`, before `--` and the program: `-p`, the
 /// text, then one `-D` and one `KEY=path` element per parameter. Path bytes
 /// pass through raw. `sandbox-exec` splits a `-D` on its first `=`, so a value
-/// holding `=` is assumed safe; slice 3b proves it, or `render` must reject it.
+/// holding `=` is safe (proved on macOS 14 and 15 by `tests/jail_macos.rs`).
 pub fn sandbox_args(profile: &Profile) -> Vec<OsString> {
     let mut args = vec![OsString::from("-p"), OsString::from(&profile.text)];
     for (key, path) in &profile.params {

@@ -166,6 +166,18 @@ fn sandbox_exec_exit_71_with_its_prefix_on_the_first_line_is_a_jail_error() {
 }
 
 #[test]
+fn sandbox_exec_exit_65_for_a_profile_syntax_error_is_a_jail_error() {
+    // Measured on macOS 14 and 15: a profile that does not compile exits 65.
+    let said = "sandbox-exec: syntax error: expecting ')'\n";
+    let reason = "the macOS sandbox could not be applied".to_owned();
+    assert_eq!(exit_error(Some(65), said), Some(ChatError::Jail(reason)));
+    // The same first-line rule as 71.
+    assert_eq!(exit_error(Some(65), ""), None);
+    assert_eq!(exit_error(Some(65), "noise\nsandbox-exec: x\n"), None);
+    assert_eq!(exit_error(Some(65), "input: sandbox-exec: x\n"), None);
+}
+
+#[test]
 fn an_exit_71_that_is_not_sandbox_exec_is_not_a_jail_error() {
     // Wrong status, even with the prefix.
     assert_eq!(exit_error(Some(70), "sandbox-exec: x\n"), None);

@@ -64,7 +64,7 @@ Injection safety:
 - The value never passes through the SBPL parser: `sandbox_init_with_parameters` binds it. So `"`, `)` and newline are inert.
 - NUL is rejected explicitly.
 - A path above 1024 bytes (`PATH_MAX`) is rejected, and so is a spec with more than 256 params. The worst case is then about 30 KB of profile, far below `ARG_MAX` (1 MiB).
-- `=` inside a value relies on sandbox-exec splitting at the first `=`. S3b proves this; if it fails, `render` rejects `=` and the run fails closed.
+- `=` inside a value relies on sandbox-exec splitting at the first `=`. Proved by 3b on macOS 14 and 15 (a `k=v=w` folder is granted, `k` is not), so `render` accepts `=`.
 
 The skeleton, in this order:
 
@@ -209,9 +209,9 @@ No data migration. S1 through S3 are inert in the product because of the gate. R
 ## Risks and Open Questions (retired by)
 
 - [ ] Whether runners run sandbox-exec, and whether the `--` / `-D` argv shape works: **1a CI**.
-- [ ] Seatbelt symlink resolution (Homebrew `opt` links, `/etc`): **3b** plus the tester.
-- [ ] `=` in a `-D` value, and the exit codes for a compile error or a denied exec: **3b**.
-- [ ] Mach/sysctl completeness (DNS, TLS, configd): **3b** node test, then the S4 tester with `log stream --predicate 'sender=="Sandbox"'`.
+- [ ] Seatbelt symlink resolution (Homebrew `opt` links, `/etc`): **3b** node and shim pass on real Homebrew links; the tester still covers `/etc`.
+- [x] `=` in a `-D` value, and the exit codes for a compile error or a denied exec: **3b**. `=` is safe; a denied exec is 71; a compile error is 65 (added to `exit_error`).
+- [ ] Mach/sysctl completeness (DNS, TLS, configd): **3b** node start passes (Homebrew node also needs `etc/openssl@3/openssl.cnf` as an `ro_files` literal, a slice 4 spec item); DNS and TLS still open for the S4 tester with `log stream --predicate 'sender=="Sandbox"'`.
 - [ ] codex/gemini Keychain use: the tester; the gemini README note.
 - ACCEPTED RISK (user, 2b review): `(remote ip "*:*")` reaches 127.0.0.1, the LAN and the cloud metadata IP. SBPL cannot express "public addresses only" and the CLIs need the internet. Slice 4 docs (4.3) must say so in the README.
 - [ ] The unix-socket tightening (decision 7) and the Homebrew `var/` exclusion are refinements of D3/D5 and need user confirmation.

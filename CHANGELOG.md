@@ -12,6 +12,13 @@ baseline.
 
 ### Internal
 
+- Integration tests run fake CLIs through the real macOS jail helper and
+  `sandbox-exec` on the macOS CI runners: reads, writes and execs outside the
+  granted folders, unix sockets and `bind` are denied, and `/dev/tcp`, the
+  environment, odd paths (`=`, quotes, newlines), nested vendor scripts, node
+  and an npm-style `#!/usr/bin/env node` shim work. A profile that fails to
+  compile (status 65) is now shown as a jail error too. The macOS jail is
+  still off, so nothing changes for users.
 - The macOS jail helper now builds the `/usr/bin/sandbox-exec` command from
   the rendered profile and replaces itself with it, leaving the environment
   untouched, and the startup probe checks the real profile instead of a
