@@ -3300,3 +3300,24 @@ fn the_jail_note_of_another_system_points_codex_and_gemini_to_claude_only() {
         Some("needs Linux")
     );
 }
+
+#[test]
+fn macos_adds_env_and_the_homebrew_openssl_config_to_the_layout() {
+    let head = b"#!/usr/bin/env node\n";
+    let node = Path::new("/opt/homebrew/Cellar/node/26.8.1/bin/node");
+    let (helpers, files) = os_grants(Os::Macos, head, Some(node));
+    assert_eq!(helpers, vec![PathBuf::from("/usr/bin/env")]);
+    assert_eq!(
+        files,
+        vec![PathBuf::from("/opt/homebrew/etc/openssl@3/openssl.cnf")]
+    );
+    // A native CLI has neither.
+    assert_eq!(os_grants(Os::Macos, b"\xcf\xfa", None), (vec![], vec![]));
+}
+
+#[test]
+fn linux_gets_no_os_grants() {
+    let head = b"#!/usr/bin/env node\n";
+    let node = Path::new("/opt/homebrew/Cellar/node/26.8.1/bin/node");
+    assert_eq!(os_grants(Os::Linux, head, Some(node)), (vec![], vec![]));
+}

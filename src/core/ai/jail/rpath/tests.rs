@@ -265,3 +265,66 @@ fn a_load_segment_that_would_overflow_maps_nothing() {
     assert_eq!(file_offset(&loads, 0x1001), Some(u64::MAX - 1));
     assert_eq!(file_offset(&loads, 0x1008), None);
 }
+
+#[test]
+fn an_env_shebang_needs_env_on_macos() {
+    for head in [
+        &b"#!/usr/bin/env node\nconsole.log(1)\n"[..],
+        b"#!/usr/bin/env -S node --no-warnings\n",
+        b"#!/usr/bin/env node",
+    ] {
+        assert_eq!(
+            shebang_env(Os::Macos, head),
+            Some(p("/usr/bin/env")),
+            "{}",
+            String::from_utf8_lossy(head)
+        );
+    }
+}
+
+#[test]
+fn only_an_env_shebang_on_macos_needs_env() {
+    let head = b"#!/usr/bin/env node\n";
+    assert_eq!(shebang_env(Os::Linux, head), None);
+    assert_eq!(shebang_env(Os::Other, head), None);
+    for head in [
+        &b"#!/bin/sh\necho\n"[..],
+        b"#!/opt/node/bin/node\n",
+        b"\x7fELF\x02\x01\x01",
+        b"#!env node\n",
+        b"",
+    ] {
+        assert_eq!(shebang_env(Os::Macos, head), None);
+    }
+}
+
+#[test]
+fn a_homebrew_node_gets_its_openssl_config_on_macos() {
+    assert_eq!(
+        macos_openssl_files(Os::Macos, &p("/opt/homebrew/Cellar/node/26.8.1/bin/node")),
+        paths(&["/opt/homebrew/etc/openssl@3/openssl.cnf"])
+    );
+    assert_eq!(
+        macos_openssl_files(Os::Macos, &p("/usr/local/Cellar/node@22/22.1.0/bin/node")),
+        paths(&["/usr/local/etc/openssl@3/openssl.cnf"])
+    );
+}
+
+#[test]
+fn no_other_node_gets_an_openssl_config() {
+    let homebrew = p("/opt/homebrew/Cellar/node/26.8.1/bin/node");
+    assert!(macos_openssl_files(Os::Linux, &homebrew).is_empty());
+    assert!(macos_openssl_files(Os::Other, &homebrew).is_empty());
+    for node in [
+        "/Users/u/.nvm/versions/node/v24/bin/node",
+        "/Users/u/opt/homebrew/Cellar/node/26/bin/node",
+        "/opt/homebrew/bin/node",
+        "/opt/homebrew/Cellar/node",
+        "/usr/local/bin/node",
+    ] {
+        assert!(
+            macos_openssl_files(Os::Macos, &p(node)).is_empty(),
+            "{node}"
+        );
+    }
+}
