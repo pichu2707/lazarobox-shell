@@ -78,10 +78,10 @@ Done: pure, Linux-testable, goldens pinned, gates green. Flag: over 400 lines, s
 ## Slice 3a: macOS exec + exit-71 (PR 5)
 
 Files: `jail.rs`, helper exec module (`__jail-exec`), `jail/tests.rs`, `CHANGELOG.md`.
-- [ ] 3a.1 RED: `exit_error`: status 71 plus first stderr line starting `sandbox-exec: ` gives `ChatError::Jail("the macOS sandbox could not be applied")`; stderr never echoed; forged marker only misclassifies safe.
-- [ ] 3a.2 GREEN: exit-71 rule; `parse_args` (`--min-abi` gives NotEnforced), missing sandbox-exec gives NotEnforced 125.
-- [ ] 3a.3 RED/GREEN: helper renders and execs `sandbox-exec -p <text> -D ... -- prog argv`, env untouched; probe now uses the real renderer.
-- [ ] 3a.4 CHANGELOG.
+- [x] 3a.1 RED: `exit_error`: status 71 plus first stderr line starting `sandbox-exec: ` gives `ChatError::Jail("the macOS sandbox could not be applied")`; stderr never echoed; forged marker only misclassifies safe.
+- [x] 3a.2 GREEN: exit-71 rule; `parse_args` (`--min-abi` gives NotEnforced), missing sandbox-exec gives NotEnforced 125.
+- [x] 3a.3 RED/GREEN: helper renders and execs `sandbox-exec -p <text> -D ... -- prog argv`, env untouched; probe now uses the real renderer.
+- [x] 3a.4 CHANGELOG.
 Done: compiles on all runners, Linux imp untouched, gate still off, gates green.
 
 ## Slice 3b: macOS integration tests (PR 6)
