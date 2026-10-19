@@ -775,6 +775,76 @@ fn a_missing_state_dir_keeps_its_nominal_path_for_the_existence_filter() {
 }
 
 #[test]
+fn a_resolver_config_linked_out_of_etc_is_granted_as_its_exact_target() {
+    // WSL links resolv.conf into /mnt/wsl, systemd-resolved into /run.
+    // Landlock checks the target, so `/etc` alone leaves DNS unreadable.
+    for target in [
+        "/mnt/wsl/resolv.conf",
+        "/run/systemd/resolve/stub-resolv.conf",
+    ] {
+        let links: &'static [(&str, &str)] = Box::leak(Box::new([("/etc/resolv.conf", target)]));
+        for l in [native_claude(), nvm_codex(), brew_gemini()] {
+            let spec = jail_spec_with(&l, &resolver(links)).unwrap();
+            assert!(spec.ro_files.contains(&p(target)), "{:?}: {target}", l.cli);
+            let folder = p(target).parent().unwrap().to_path_buf();
+            for dir in [p("/mnt"), p("/run"), folder] {
+                assert!(!spec.ro.contains(&dir), "{dir:?} must not be granted");
+            }
+            for other in [&spec.rx, &spec.rw, &spec.rw_files] {
+                assert!(!other.contains(&p(target)), "{target} must be read-only");
+            }
+        }
+    }
+}
+
+#[test]
+fn hosts_nsswitch_and_localtime_linked_out_of_etc_are_granted_too() {
+    let links: &'static [(&str, &str)] = &[
+        ("/etc/hosts", "/mnt/wsl/hosts"),
+        ("/etc/nsswitch.conf", "/run/nss/nsswitch.conf"),
+        ("/etc/localtime", "/run/tz/localtime"),
+    ];
+    let spec = jail_spec_with(&native_claude(), &resolver(links)).unwrap();
+    for (_, target) in links {
+        assert!(spec.ro_files.contains(&p(target)), "{target}");
+    }
+}
+
+#[test]
+fn system_files_already_under_a_readable_folder_add_no_rule() {
+    // A regular /etc/resolv.conf, and a localtime that links into
+    // /usr/share/zoneinfo, are covered by the system folders.
+    let links: &'static [(&str, &str)] = &[("/etc/localtime", "/usr/share/zoneinfo/Europe/Madrid")];
+    let plain = jail_spec_with(&native_claude(), &|_| None).unwrap();
+    for spec in [
+        jail_spec(&native_claude()).unwrap(),
+        jail_spec_with(&native_claude(), &resolver(links)).unwrap(),
+    ] {
+        assert_eq!(spec.ro_files, plain.ro_files);
+        assert_eq!(spec.ro, plain.ro);
+    }
+}
+
+#[test]
+fn a_system_file_that_links_to_a_private_place_is_not_granted() {
+    for target in [
+        "/home/u/.ssh/id_ed25519",
+        "/home/u/.aws/credentials",
+        "/tmp/resolv.conf",
+    ] {
+        let links: &'static [(&str, &str)] = Box::leak(Box::new([("/etc/resolv.conf", target)]));
+        for l in [native_claude(), nvm_codex(), brew_gemini()] {
+            let spec = jail_spec_with(&l, &resolver(links)).unwrap();
+            assert!(
+                !every_path(&spec).contains(&Path::new(target)),
+                "{:?}: {target}",
+                l.cli
+            );
+        }
+    }
+}
+
+#[test]
 fn codex_home_must_be_a_dedicated_dir() {
     for state in [
         "/home/u/.config",

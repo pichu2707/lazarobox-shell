@@ -31,6 +31,11 @@ baseline.
 
 ### Fixed
 
+- The chat no longer fails with `EAI_AGAIN` (or hangs) on WSL2 and on systems
+  where `/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf` or
+  `/etc/localtime` link outside `/etc` (WSL's `/mnt/wsl/resolv.conf`,
+  systemd-resolved). The Linux jail now grants the exact target of each link
+  read-only, never its folder, for claude, codex and gemini (#267).
 - Memory now offers to start engram on WSL2 with `networkingMode=mirrored`
   instead of saying `memory unavailable: engram did not answer`. There a
   connect to a closed loopback port outside WSL's ephemeral range is dropped
