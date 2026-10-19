@@ -736,7 +736,7 @@ fn resolver(links: &'static [(&'static str, &'static str)]) -> impl Fn(&Path) ->
 fn a_state_dir_that_resolves_to_home_or_ssh_is_refused() {
     for target in ["/home/u", "/home/u/.ssh", "/home/u/.gnupg", "/"] {
         let links: &'static [(&str, &str)] = Box::leak(Box::new([("/home/u/.claude", target)]));
-        let err = jail_spec_with(&native_claude(), &resolver(links)).unwrap_err();
+        let err = jail_spec_linux(&native_claude(), &resolver(links)).unwrap_err();
         assert_eq!(err, SpecError::RootTooBroad(p(target)), "{target}");
     }
 }
@@ -745,7 +745,7 @@ fn a_state_dir_that_resolves_to_home_or_ssh_is_refused() {
 fn a_state_dir_that_resolves_elsewhere_is_granted_by_its_target() {
     let links: &'static [(&str, &str)] =
         Box::leak(Box::new([("/home/u/.gemini", "/data/gemini-state")]));
-    let spec = jail_spec_with(&brew_gemini(), &resolver(links)).unwrap();
+    let spec = jail_spec_linux(&brew_gemini(), &resolver(links)).unwrap();
     assert!(spec.rw.contains(&p("/data/gemini-state")));
     assert!(!spec.rw.contains(&p("/home/u/.gemini")));
 }
@@ -756,20 +756,20 @@ fn the_claude_config_file_is_resolved_and_checked_too() {
         "/home/u/.claude.json",
         "/home/u/.ssh/authorized_keys",
     )]));
-    let err = jail_spec_with(&native_claude(), &resolver(links)).unwrap_err();
+    let err = jail_spec_linux(&native_claude(), &resolver(links)).unwrap_err();
     assert_eq!(
         err,
         SpecError::RootTooBroad(p("/home/u/.ssh/authorized_keys"))
     );
     let links: &'static [(&str, &str)] =
         Box::leak(Box::new([("/home/u/.claude.json", "/data/claude.json")]));
-    let spec = jail_spec_with(&native_claude(), &resolver(links)).unwrap();
+    let spec = jail_spec_linux(&native_claude(), &resolver(links)).unwrap();
     assert!(spec.rw_files.contains(&p("/data/claude.json")));
 }
 
 #[test]
 fn a_missing_state_dir_keeps_its_nominal_path_for_the_existence_filter() {
-    let spec = jail_spec_with(&native_claude(), &|_| None).unwrap();
+    let spec = jail_spec_linux(&native_claude(), &|_| None).unwrap();
     assert!(spec.rw.contains(&p("/home/u/.claude")));
     assert!(spec.rw_files.contains(&p("/home/u/.claude.json")));
 }
@@ -784,7 +784,7 @@ fn a_resolver_config_linked_out_of_etc_is_granted_as_its_exact_target() {
     ] {
         let links: &'static [(&str, &str)] = Box::leak(Box::new([("/etc/resolv.conf", target)]));
         for l in [native_claude(), nvm_codex(), brew_gemini()] {
-            let spec = jail_spec_with(&l, &resolver(links)).unwrap();
+            let spec = jail_spec_linux(&l, &resolver(links)).unwrap();
             assert!(spec.ro_files.contains(&p(target)), "{:?}: {target}", l.cli);
             let folder = p(target).parent().unwrap().to_path_buf();
             for dir in [p("/mnt"), p("/run"), folder] {
@@ -804,7 +804,7 @@ fn hosts_nsswitch_and_localtime_linked_out_of_etc_are_granted_too() {
         ("/etc/nsswitch.conf", "/run/nss/nsswitch.conf"),
         ("/etc/localtime", "/run/tz/localtime"),
     ];
-    let spec = jail_spec_with(&native_claude(), &resolver(links)).unwrap();
+    let spec = jail_spec_linux(&native_claude(), &resolver(links)).unwrap();
     for (_, target) in links {
         assert!(spec.ro_files.contains(&p(target)), "{target}");
     }
@@ -815,10 +815,10 @@ fn system_files_already_under_a_readable_folder_add_no_rule() {
     // A regular /etc/resolv.conf, and a localtime that links into
     // /usr/share/zoneinfo, are covered by the system folders.
     let links: &'static [(&str, &str)] = &[("/etc/localtime", "/usr/share/zoneinfo/Europe/Madrid")];
-    let plain = jail_spec_with(&native_claude(), &|_| None).unwrap();
+    let plain = jail_spec_linux(&native_claude(), &|_| None).unwrap();
     for spec in [
         jail_spec(&native_claude()).unwrap(),
-        jail_spec_with(&native_claude(), &resolver(links)).unwrap(),
+        jail_spec_linux(&native_claude(), &resolver(links)).unwrap(),
     ] {
         assert_eq!(spec.ro_files, plain.ro_files);
         assert_eq!(spec.ro, plain.ro);
@@ -834,7 +834,7 @@ fn a_system_file_that_links_to_a_private_place_is_not_granted() {
     ] {
         let links: &'static [(&str, &str)] = Box::leak(Box::new([("/etc/resolv.conf", target)]));
         for l in [native_claude(), nvm_codex(), brew_gemini()] {
-            let spec = jail_spec_with(&l, &resolver(links)).unwrap();
+            let spec = jail_spec_linux(&l, &resolver(links)).unwrap();
             assert!(
                 !every_path(&spec).contains(&Path::new(target)),
                 "{:?}: {target}",
@@ -909,7 +909,7 @@ fn a_home_that_is_a_symlink_is_checked_under_both_spellings() {
         ("/home/u", "/var/home/u"),
         ("/home/u/.claude", "/var/home/u"),
     ];
-    let err = jail_spec_with(&native_claude(), &resolver(links)).unwrap_err();
+    let err = jail_spec_linux(&native_claude(), &resolver(links)).unwrap_err();
     assert_eq!(err, SpecError::RootTooBroad(p("/var/home/u")));
 
     for (sensitive, target) in [
@@ -922,7 +922,7 @@ fn a_home_that_is_a_symlink_is_checked_under_both_spellings() {
             ("/home/u", "/var/home/u"),
             ("/home/u/.claude", sensitive),
         ]));
-        let err = jail_spec_with(&native_claude(), &resolver(leaked)).unwrap_err();
+        let err = jail_spec_linux(&native_claude(), &resolver(leaked)).unwrap_err();
         assert_eq!(err, SpecError::RootTooBroad(p(target)), "{sensitive}");
     }
 
@@ -931,7 +931,7 @@ fn a_home_that_is_a_symlink_is_checked_under_both_spellings() {
         ("/home/u", "/var/home/u"),
         ("/home/u/.claude", "/var/home/u/.claude"),
     ];
-    let spec = jail_spec_with(&native_claude(), &resolver(fine)).unwrap();
+    let spec = jail_spec_linux(&native_claude(), &resolver(fine)).unwrap();
     assert!(spec.rw.contains(&p("/var/home/u/.claude")));
 }
 
@@ -972,12 +972,12 @@ fn a_cli_may_only_have_its_own_state_folder_from_that_list() {
         |from: &'static str, target: &'static str| -> &'static [(&'static str, &'static str)] {
             Box::leak(Box::new([(from, target)]))
         };
-    let err = jail_spec_with(
+    let err = jail_spec_linux(
         &native_claude(),
         &resolver(to("/home/u/.claude", "/home/u/.aws")),
     );
     assert_eq!(err.unwrap_err(), SpecError::RootTooBroad(p("/home/u/.aws")));
-    let err = jail_spec_with(
+    let err = jail_spec_linux(
         &brew_gemini(),
         &resolver(to("/home/u/.gemini", "/home/u/.claude")),
     );
@@ -985,7 +985,7 @@ fn a_cli_may_only_have_its_own_state_folder_from_that_list() {
         err.unwrap_err(),
         SpecError::RootTooBroad(p("/home/u/.claude"))
     );
-    let err = jail_spec_with(
+    let err = jail_spec_linux(
         &nvm_codex(),
         &resolver(to("/home/u/.codex", "/home/u/.gemini")),
     );
@@ -1647,4 +1647,183 @@ fn a_shim_grant_must_be_canonical_and_never_a_broad_place() {
         jail_spec(&layout),
         Err(SpecError::NotCanonical(_))
     ));
+}
+
+// ---- spec split by system ----
+
+/// A layout that touches every branch of the spec: interpreter, loader,
+/// library folders (one covered by the system rules, one not), data files and
+/// a shim.
+fn busy_codex() -> CliLayout {
+    let mut l = nvm_codex();
+    l.loaders = vec![p("/opt/lb/lib/ld-linux-x86-64.so.2")];
+    l.lib_dirs = vec![p("/usr/lib/x86_64-linux-gnu"), p("/opt/lb/lib")];
+    l.data_files = vec![p("/opt/lb/share/ca.pem")];
+    l.helpers = vec![p("/opt/lb/bin/rg")];
+    l.shim = Some(ShimGrant {
+        binary: p("/opt/lb/bin/lazarobox"),
+        loader: None,
+        socket: p("/run/user/1000/lazarobox/shim.sock"),
+    });
+    l
+}
+
+const ETC_RESOLV_LINK: &[(&str, &str)] =
+    &[("/etc/resolv.conf", "/run/systemd/resolve/stub-resolv.conf")];
+
+#[test]
+fn the_linux_spec_is_the_one_it_always_was() {
+    let spec = jail_spec_for(Os::Linux, &busy_codex(), &resolver(ETC_RESOLV_LINK)).unwrap();
+    assert_eq!(
+        spec,
+        JailSpec {
+            rx: paths(&[
+                "/home/u/.nvm/versions/node/v24.16.0/bin/node",
+                "/opt/lb/lib/ld-linux-x86-64.so.2",
+                "/home/u/.nvm/versions/node/v24.16.0/lib/node_modules/@openai/codex",
+                "/opt/lb/bin/rg",
+                "/opt/lb/bin/lazarobox",
+            ]),
+            ro: paths(&[
+                "/usr/lib",
+                "/usr/share",
+                "/lib",
+                "/lib64",
+                "/etc",
+                "/proc/self",
+                "/sys/fs/cgroup",
+                "/run/user/1000/lazarobox/cli-cwd",
+                "/opt/lb/lib",
+            ]),
+            rw: paths(&["/home/u/.codex", "/run/user/1000/lazarobox/cli-tmp/1-1",]),
+            ro_files: paths(&[
+                "/proc/cpuinfo",
+                "/proc/meminfo",
+                "/proc/stat",
+                "/dev/urandom",
+                "/dev/random",
+                "/run/systemd/resolve/stub-resolv.conf",
+                "/opt/lb/share/ca.pem",
+            ]),
+            rw_files: paths(&["/dev/null", "/run/user/1000/lazarobox/shim.sock"]),
+        }
+    );
+}
+
+#[test]
+fn the_default_spec_is_the_one_for_this_system() {
+    let l = busy_codex();
+    let r = resolver(ETC_RESOLV_LINK);
+    assert_eq!(
+        jail_spec_with(&l, &r).unwrap(),
+        jail_spec_for(Os::CURRENT, &l, &r).unwrap()
+    );
+}
+
+#[test]
+fn the_macos_spec_names_no_linux_only_path() {
+    let mut l = busy_codex();
+    l.cwd = p("/opt/lb/run/cwd");
+    l.tmp = p("/opt/lb/run/tmp");
+    if let Some(shim) = &mut l.shim {
+        shim.socket = p("/opt/lb/run/shim.sock");
+    }
+    let spec = jail_spec_for(Os::Macos, &l, &resolver(ETC_RESOLV_LINK)).unwrap();
+    // The one deliberate exception: a library folder of the CLI's own
+    // interpreter is granted wherever it is, and macOS has no Linux system
+    // rule that covers it.
+    let own_lib = p("/usr/lib/x86_64-linux-gnu");
+    assert!(spec.ro.contains(&own_lib));
+    for path in every_path(&spec).into_iter().filter(|x| *x != own_lib) {
+        for linux in [
+            "/proc",
+            "/sys",
+            "/lib",
+            "/lib64",
+            "/etc",
+            "/usr/lib",
+            "/usr/share",
+            "/run",
+        ] {
+            assert!(!path.starts_with(linux), "{path:?} is Linux only");
+        }
+    }
+    // `/dev` files are shared.
+    assert!(spec.ro_files.contains(&p("/dev/urandom")));
+    assert!(spec.ro_files.contains(&p("/dev/random")));
+    assert!(spec.rw_files.contains(&p("/dev/null")));
+    // The CLI's own grants are the same.
+    assert!(spec.rw.contains(&p("/home/u/.codex")));
+    assert!(spec.ro.contains(&p("/opt/lb/lib")));
+}
+
+#[test]
+fn every_system_but_macos_gets_the_linux_sets() {
+    let linux = jail_spec_for(Os::Linux, &busy_codex(), &resolver(ETC_RESOLV_LINK)).unwrap();
+    let other = jail_spec_for(Os::Other, &busy_codex(), &resolver(ETC_RESOLV_LINK)).unwrap();
+    assert_eq!(other, linux);
+}
+
+#[test]
+fn the_dev_files_are_shared_by_every_system() {
+    for os in [Os::Linux, Os::Macos, Os::Other] {
+        let spec = jail_spec_for(os, &nvm_codex(), &|path| Some(path.to_path_buf())).unwrap();
+        assert!(spec.ro_files.contains(&p("/dev/urandom")), "{os:?}");
+        assert!(spec.ro_files.contains(&p("/dev/random")), "{os:?}");
+        assert!(spec.rw_files.contains(&p("/dev/null")), "{os:?}");
+    }
+}
+
+#[test]
+fn macos_system_and_package_folders_are_too_broad_on_macos_only() {
+    let broad = [
+        "/System",
+        "/Library",
+        "/Applications",
+        "/Users",
+        "/Volumes",
+        "/private",
+        "/private/var",
+        "/private/etc",
+        "/opt/homebrew",
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/opt/homebrew/lib",
+        "/opt/homebrew/Cellar",
+        "/opt/homebrew/opt",
+        "/opt/homebrew/share",
+        "/opt/homebrew/etc",
+        "/opt/homebrew/include",
+        "/opt/homebrew/Caskroom",
+        "/opt/homebrew/Frameworks",
+        "/opt/homebrew/var",
+        "/usr/local/Cellar",
+        "/usr/local/opt",
+        "/usr/local/lib",
+        "/usr/local/share",
+        "/usr/local/etc",
+        "/usr/local/include",
+        "/usr/local/Homebrew",
+        "/usr/local/Frameworks",
+        "/usr/local/var",
+    ];
+    for dir in broad {
+        let mut l = nvm_codex();
+        l.lib_dirs = vec![p(dir)];
+        // A broad library folder is dropped, not granted.
+        let on_mac = jail_spec_for(Os::Macos, &l, &|path| Some(path.to_path_buf())).unwrap();
+        assert!(!on_mac.ro.contains(&p(dir)), "{dir} granted on macOS");
+        let mut l = nvm_codex();
+        l.binary = p(&format!("{dir}/codex"));
+        l.interpreter = None;
+        let err = jail_spec_for(Os::Macos, &l, &|path| Some(path.to_path_buf()));
+        assert_eq!(err.unwrap_err(), SpecError::RootTooBroad(p(dir)), "{dir}");
+    }
+    // Linux keeps its list: a folder of another system is not refused there.
+    for dir in broad {
+        let mut l = nvm_codex();
+        l.lib_dirs = vec![p(dir)];
+        let on_linux = jail_spec_for(Os::Linux, &l, &|path| Some(path.to_path_buf())).unwrap();
+        assert!(on_linux.ro.contains(&p(dir)), "{dir} refused on Linux");
+    }
 }

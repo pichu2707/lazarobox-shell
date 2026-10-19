@@ -594,6 +594,7 @@ pub fn package_root(binary: &Path) -> Option<PathBuf> {
 }
 
 /// Folders that are never a package or a state dir, whatever the layout says.
+/// Checked on every system.
 const BROAD: &[&str] = &[
     "/",
     "/usr",
@@ -621,6 +622,67 @@ const BROAD: &[&str] = &[
     "/usr/libexec",
     "/var/lib",
 ];
+
+/// The macOS folders that are never a package or a state dir, on top of
+/// [`BROAD`]: the system, the apps, every user's home and Homebrew's prefix
+/// and its package folders. Checked on macOS only.
+const BROAD_MACOS: &[&str] = &[
+    "/System",
+    "/Library",
+    "/Applications",
+    "/Users",
+    "/Volumes",
+    "/private",
+    "/private/var",
+    "/private/etc",
+    "/opt/homebrew",
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/opt/homebrew/lib",
+    "/opt/homebrew/Cellar",
+    "/opt/homebrew/opt",
+    "/opt/homebrew/share",
+    "/opt/homebrew/etc",
+    "/opt/homebrew/include",
+    "/opt/homebrew/Caskroom",
+    "/opt/homebrew/Frameworks",
+    "/opt/homebrew/var",
+    "/usr/local/Cellar",
+    "/usr/local/opt",
+    "/usr/local/lib",
+    "/usr/local/share",
+    "/usr/local/etc",
+    "/usr/local/include",
+    "/usr/local/Homebrew",
+    "/usr/local/Frameworks",
+    "/usr/local/var",
+];
+
+/// Every system but macOS: the folders that hold libraries and data, and the
+/// system state a CLI reads. Libraries and data only. The folders that hold programs
+/// (`/usr/bin`, `/usr/sbin`, `/bin`) stay unreadable: Landlock does not gate
+/// `mmap(PROT_EXEC)`, so the ELF loader that some CLI needs to start could
+/// otherwise run `ld.so /usr/bin/curl`. `/bin` is a link to `/usr/bin` on
+/// most systems, which is why it is not listed. `/lib` and `/lib64` are
+/// libraries (and links to `/usr/lib`).
+const LINUX_RO: [&str; 7] = [
+    "/usr/lib",
+    "/usr/share",
+    "/lib",
+    "/lib64",
+    "/etc",
+    "/proc/self",
+    "/sys/fs/cgroup",
+];
+
+/// Every system but macOS: `/proc` files that runtimes read for the CPU and memory count.
+const LINUX_RO_FILES: [&str; 3] = ["/proc/cpuinfo", "/proc/meminfo", "/proc/stat"];
+
+/// Device files every system gives a jailed CLI: randomness, read-only.
+const DEV_RO_FILES: [&str; 2] = ["/dev/urandom", "/dev/random"];
+
+/// The device file every system gives a jailed CLI to write to.
+const DEV_RW_FILE: &str = "/dev/null";
 
 /// Files under `/etc` that name resolution and TLS clocks need, and that a
 /// distribution may link to another place.
@@ -688,9 +750,10 @@ pub(crate) fn is_scratch(path: &Path) -> bool {
 /// `$HOME` or one of its parents, `/tmp`, `~/.ssh`, `~/.gnupg`, another
 /// tool's credential folder, a shared data folder of `$HOME` or a system or
 /// mount folder.
-fn too_broad(path: &Path, homes: &[&Path], cli: Cli) -> bool {
+fn too_broad(path: &Path, homes: &[&Path], cli: Cli, os: Os) -> bool {
+    let macos: &[&str] = if os == Os::Macos { BROAD_MACOS } else { &[] };
     is_scratch(path)
-        || BROAD.iter().any(|b| path == Path::new(b))
+        || BROAD.iter().chain(macos).any(|b| path == Path::new(b))
         || homes.iter().any(|home| too_broad_for_home(path, home, cli))
 }
 
@@ -790,7 +853,16 @@ fn push_unique(list: &mut Vec<PathBuf>, path: PathBuf) {
 /// real canonicalizer so a symlinked state dir cannot reach a broad folder.
 #[cfg(test)]
 pub(crate) fn jail_spec(layout: &CliLayout) -> Result<JailSpec, SpecError> {
-    jail_spec_with(layout, &|path| Some(path.to_path_buf()))
+    jail_spec_linux(layout, &|path| Some(path.to_path_buf()))
+}
+
+/// The Linux rules, whatever system the tests run on.
+#[cfg(test)]
+pub(crate) fn jail_spec_linux(
+    layout: &CliLayout,
+    resolve: &dyn Fn(&Path) -> Option<PathBuf>,
+) -> Result<JailSpec, SpecError> {
+    jail_spec_for(Os::Linux, layout, resolve)
 }
 
 /// Builds the rules for one CLI. Pure: nothing is checked on disk, so the
@@ -801,6 +873,18 @@ pub(crate) fn jail_spec(layout: &CliLayout) -> Result<JailSpec, SpecError> {
 /// path that does not exist) maps them to their targets and the broad-folder
 /// check runs on the result.
 pub fn jail_spec_with(
+    layout: &CliLayout,
+    resolve: &dyn Fn(&Path) -> Option<PathBuf>,
+) -> Result<JailSpec, SpecError> {
+    jail_spec_for(Os::CURRENT, layout, resolve)
+}
+
+/// [`jail_spec_with`] for a given system. The CLI's own grants are the same
+/// everywhere; the system folders differ. On macOS the spec names none of the
+/// Linux paths (the system folders come from the profile's fixed block
+/// instead); every other system gets the Linux sets.
+pub fn jail_spec_for(
+    os: Os,
     layout: &CliLayout,
     resolve: &dyn Fn(&Path) -> Option<PathBuf>,
 ) -> Result<JailSpec, SpecError> {
@@ -826,7 +910,7 @@ pub fn jail_spec_with(
     let homes = [layout.home.as_path(), real_home.as_path()];
     let root = package_root(&layout.binary)
         .ok_or_else(|| SpecError::RootTooBroad(layout.binary.clone()))?;
-    if too_broad(&root, &homes, layout.cli) {
+    if too_broad(&root, &homes, layout.cli, os) {
         return Err(SpecError::RootTooBroad(root));
     }
     // A loader or helper is one exact file: never a broad place.
@@ -840,7 +924,7 @@ pub fn jail_spec_with(
                 .iter()
                 .flat_map(|s| [&s.binary].into_iter().chain(s.loader.as_ref())),
         )
-        .find(|p| too_broad(p, &homes, layout.cli))
+        .find(|p| too_broad(p, &homes, layout.cli, os))
     {
         return Err(SpecError::RootTooBroad(bad.clone()));
     }
@@ -862,7 +946,7 @@ pub fn jail_spec_with(
     let state = resolved(state);
     let state_file = state_file.map(resolved);
     for path in [Some(&state), state_file.as_ref()].into_iter().flatten() {
-        if too_broad(path, &homes, layout.cli) {
+        if too_broad(path, &homes, layout.cli, os) {
             return Err(SpecError::RootTooBroad(path.clone()));
         }
     }
@@ -877,22 +961,8 @@ pub fn jail_spec_with(
     {
         push_unique(&mut spec.rx, path.clone());
     }
-    // Libraries and data only. The folders that hold programs (`/usr/bin`,
-    // `/usr/sbin`, `/bin`) stay unreadable: Landlock does not gate
-    // `mmap(PROT_EXEC)`, so the ELF loader that some CLI needs to start could
-    // otherwise run `ld.so /usr/bin/curl`. `/bin` is a link to `/usr/bin` on
-    // most systems, which is why it is not listed. `/lib` and `/lib64` are
-    // libraries (and links to `/usr/lib`).
-    for dir in [
-        "/usr/lib",
-        "/usr/share",
-        "/lib",
-        "/lib64",
-        "/etc",
-        "/proc/self",
-        "/sys/fs/cgroup",
-    ] {
-        spec.ro.push(PathBuf::from(dir));
+    if os != Os::Macos {
+        spec.ro.extend(LINUX_RO.map(PathBuf::from));
     }
     push_unique(&mut spec.ro, layout.cwd.clone());
     // The interpreter's own library folders, read-only. A folder the system
@@ -901,41 +971,38 @@ pub fn jail_spec_with(
     let system = spec.ro.clone();
     for dir in &layout.lib_dirs {
         let covered = system.iter().any(|s| dir.starts_with(s));
-        if !covered && !too_broad(dir, &homes, layout.cli) {
+        if !covered && !too_broad(dir, &homes, layout.cli, os) {
             push_unique(&mut spec.ro, dir.clone());
         }
     }
     push_unique(&mut spec.rw, state);
     push_unique(&mut spec.rw, layout.tmp.clone());
-    for file in [
-        "/proc/cpuinfo",
-        "/proc/meminfo",
-        "/proc/stat",
-        "/dev/urandom",
-        "/dev/random",
-    ] {
-        spec.ro_files.push(PathBuf::from(file));
+    if os != Os::Macos {
+        spec.ro_files.extend(LINUX_RO_FILES.map(PathBuf::from));
     }
+    spec.ro_files.extend(DEV_RO_FILES.map(PathBuf::from));
     // System files that are often links out of `/etc`: WSL's resolv.conf is
     // `/mnt/wsl/resolv.conf`, systemd-resolved's lives under `/run`. Landlock
     // checks the target, so `/etc` alone does not cover them and DNS fails
     // with EAI_AGAIN. Grant the exact target file, never its folder.
     let readable = spec.ro.clone();
-    for file in ETC_LINKS {
+    // macOS reads `/private/etc` from the profile's fixed block instead.
+    let etc_links: &[&str] = if os == Os::Macos { &[] } else { &ETC_LINKS };
+    for file in etc_links {
         let Some(real) = resolve(Path::new(file)) else {
             continue;
         };
         let covered = readable.iter().any(|dir| real.starts_with(dir));
-        if !covered && is_canonical_form(&real) && !too_broad(&real, &homes, layout.cli) {
+        if !covered && is_canonical_form(&real) && !too_broad(&real, &homes, layout.cli, os) {
             push_unique(&mut spec.ro_files, real);
         }
     }
     for file in &layout.data_files {
-        if !too_broad(file, &homes, layout.cli) {
+        if !too_broad(file, &homes, layout.cli, os) {
             push_unique(&mut spec.ro_files, file.clone());
         }
     }
-    spec.rw_files.push(PathBuf::from("/dev/null"));
+    spec.rw_files.push(PathBuf::from(DEV_RW_FILE));
     spec.rw_files.extend(state_file);
     if let Some(shim) = &layout.shim {
         push_unique(&mut spec.rx, shim.binary.clone());

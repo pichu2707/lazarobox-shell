@@ -10,6 +10,13 @@ baseline.
 
 ## [Unreleased]
 
+### Internal
+
+- The jail rules are now built per system (`jail_spec_for`): the Linux rules are
+  unchanged, and the macOS rules name no Linux-only path and add the macOS
+  system and Homebrew folders to the list that is never granted. The macOS jail
+  is still off, so nothing changes for users.
+
 ## [0.17.2] - 2026-10-19
 
 ### Internal

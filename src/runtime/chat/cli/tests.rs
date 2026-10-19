@@ -1972,7 +1972,14 @@ async fn the_library_folders_in_the_interpreters_elf_are_granted_read_only() {
         !ro.iter().any(|d| d.contains("missing")),
         "a folder that does not exist gets no rule: {ro:?}"
     );
-    assert_eq!(ro.iter().filter(|d| *d == "/usr/lib").count(), 1, "{ro:?}");
+    // `/usr/lib` is a Linux system folder: macOS gets its libraries from the
+    // profile's fixed block.
+    let usr_lib = usize::from(Os::CURRENT != Os::Macos);
+    assert_eq!(
+        ro.iter().filter(|d| *d == "/usr/lib").count(),
+        usr_lib,
+        "{ro:?}"
+    );
     let rx = helper_rules(&lab, "--rx");
     assert!(
         !rx.iter()
