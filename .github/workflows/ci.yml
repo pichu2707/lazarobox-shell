@@ -112,7 +112,7 @@ jobs:
         if: failure() && runner.os == 'macOS'
         shell: bash
         run: |
-          log show --last 5m --style compact --predicate 'sender == "Sandbox"' | tail -100 || true
+          log show --last 5m --style compact --predicate 'sender == "Sandbox"' | tail -300 || true
 
   # `rust-version` in Cargo.toml is 1.88 (edition 2024): the oldest compiler
   # the crate promises to build with, which the pinned toolchain above cannot
