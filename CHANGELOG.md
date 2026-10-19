@@ -29,6 +29,15 @@ baseline.
   instead of `available · <version>`, so it no longer reads as usable. The
   note comes from the adapter table, so it disappears when an adapter lands.
 
+### Fixed
+
+- Memory now offers to start engram on WSL2 with `networkingMode=mirrored`
+  instead of saying `memory unavailable: engram did not answer`. There a
+  connect to a closed loopback port outside WSL's ephemeral range is dropped
+  instead of refused, so a timed-out connect now checks whether anything holds
+  the port: a free port means engram is not running; a held one is still a
+  server that did not answer, so a second server is never offered.
+
 ## [0.17.1] - 2026-10-18
 
 ### Changed
