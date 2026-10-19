@@ -622,6 +622,15 @@ const BROAD: &[&str] = &[
     "/var/lib",
 ];
 
+/// Files under `/etc` that name resolution and TLS clocks need, and that a
+/// distribution may link to another place.
+const ETC_LINKS: [&str; 4] = [
+    "/etc/resolv.conf",
+    "/etc/hosts",
+    "/etc/nsswitch.conf",
+    "/etc/localtime",
+];
+
 /// Folders under `$HOME` that hold many programs' data: a CLI's state must be
 /// a dedicated folder inside them, never one of them.
 const SHARED_IN_HOME: &[&str] = &[
@@ -906,6 +915,20 @@ pub fn jail_spec_with(
         "/dev/random",
     ] {
         spec.ro_files.push(PathBuf::from(file));
+    }
+    // System files that are often links out of `/etc`: WSL's resolv.conf is
+    // `/mnt/wsl/resolv.conf`, systemd-resolved's lives under `/run`. Landlock
+    // checks the target, so `/etc` alone does not cover them and DNS fails
+    // with EAI_AGAIN. Grant the exact target file, never its folder.
+    let readable = spec.ro.clone();
+    for file in ETC_LINKS {
+        let Some(real) = resolve(Path::new(file)) else {
+            continue;
+        };
+        let covered = readable.iter().any(|dir| real.starts_with(dir));
+        if !covered && is_canonical_form(&real) && !too_broad(&real, &homes, layout.cli) {
+            push_unique(&mut spec.ro_files, real);
+        }
     }
     for file in &layout.data_files {
         if !too_broad(file, &homes, layout.cli) {
