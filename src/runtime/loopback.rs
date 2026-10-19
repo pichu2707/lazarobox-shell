@@ -505,7 +505,8 @@ pub struct Reply {
 /// Why a request produced no reply.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CallError {
-    /// Nothing accepted the connection.
+    /// Nothing listens on the port: the connect was refused, or it timed out
+    /// while no socket held the port.
     Connect,
     /// A time limit ran out.
     Timeout,
@@ -536,6 +537,16 @@ impl Limits {
             total: Duration::from_millis(total_ms),
         }
     }
+}
+
+/// Whether nothing holds `addr`. Some firewalls (WSL's mirrored networking)
+/// drop a connect to a closed loopback port instead of refusing it, so a
+/// connect that timed out may still mean nothing runs there. A bind without
+/// `SO_REUSEADDR` succeeds only when no socket holds the port; the socket
+/// never listens and is closed at once. Any doubt counts as held, so a server
+/// that hangs is never taken for one that is not running.
+fn port_is_free(addr: SocketAddr) -> bool {
+    tokio::net::TcpSocket::new_v4().is_ok_and(|socket| socket.bind(addr).is_ok())
 }
 
 pub async fn request(
@@ -587,6 +598,7 @@ pub(crate) async fn request_to(
     let stream = match timeout(limits.connect, TcpStream::connect(addr)).await {
         Ok(Ok(stream)) => stream,
         Ok(Err(_)) => return Err(CallError::Connect),
+        Err(_) if port_is_free(addr) => return Err(CallError::Connect),
         Err(_) => return Err(CallError::Timeout),
     };
     let verb = match method {

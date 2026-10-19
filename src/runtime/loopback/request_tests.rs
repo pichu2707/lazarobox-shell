@@ -587,6 +587,83 @@ async fn a_refused_connection_is_connect() {
     );
 }
 
+// WSL's mirrored networking drops a connect to a closed loopback port instead
+// of refusing it, so a timed-out connect is told apart by whether anything
+// holds the port. Elsewhere the connect is refused at once: same answer.
+#[tokio::test]
+async fn a_closed_port_is_connect_whether_refused_or_dropped() {
+    let port = untouched_free_port();
+    assert_eq!(get(port, "/health").await, Err(CallError::Connect));
+}
+
+/// A port that no socket holds, found without binding it on Linux: on WSL a
+/// bind makes the port Linux's for a while and later connects to it are
+/// refused instead of dropped, which would hide the case under test. The start
+/// is random so an earlier run's port is not picked again, and below WSL's
+/// ephemeral range, which it also refuses.
+fn untouched_free_port() -> u16 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+    let start = 20_000 + (nanos % 20_000) as u16;
+    let free = |port: &u16| {
+        if cfg!(target_os = "linux") {
+            !["/proc/net/tcp", "/proc/net/tcp6"]
+                .iter()
+                .filter_map(|table| std::fs::read_to_string(table).ok())
+                .any(|table| table.contains(&format!(":{port:04X} ")))
+        } else {
+            std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok()
+        }
+    };
+    (start..start + 100).find(free).expect("a free port")
+}
+
+#[test]
+fn a_port_nothing_holds_is_free() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    assert!(port_is_free(addr));
+}
+
+#[test]
+fn a_port_with_a_listener_or_a_bound_socket_is_not_free() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    assert!(!port_is_free(listener.local_addr().unwrap()));
+    // A socket that is bound and never listens holds the port on every
+    // system (`RefusedPort` closes its socket outside Linux).
+    let bound = tokio::net::TcpSocket::new_v4().unwrap();
+    bound.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    assert!(!port_is_free(SocketAddr::from((
+        [127, 0, 0, 1],
+        bound.local_addr().unwrap().port()
+    ))));
+}
+
+// A server whose accept queue is full drops new connects, so the connect
+// times out while the port is held: that is a server that did not answer,
+// never one that is not running. Linux only: it drops the SYN of a full
+// queue, which is what makes the connect hang.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_connect_that_times_out_on_a_held_port_stays_a_timeout() {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let listener = socket.listen(0).unwrap();
+    let addr = listener.local_addr().unwrap();
+    // Fill the queue; the listener never accepts.
+    let mut queued = Vec::new();
+    while let Ok(Ok(stream)) =
+        tokio::time::timeout(Duration::from_millis(100), TcpStream::connect(addr)).await
+    {
+        queued.push(stream);
+        assert!(queued.len() < 64, "the accept queue never filled");
+    }
+    assert_eq!(get(addr.port(), "/health").await, Err(CallError::Timeout));
+}
+
 // Real clock for the same reason as the trickle test below: on a paused clock
 // a connect that macOS completes a moment late lets the clock jump to the
 // 200 ms connect limit. The window is wide enough for a slow runner and still

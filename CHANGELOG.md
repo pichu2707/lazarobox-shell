@@ -36,6 +36,12 @@ baseline.
   `/etc/localtime` link outside `/etc` (WSL's `/mnt/wsl/resolv.conf`,
   systemd-resolved). The Linux jail now grants the exact target of each link
   read-only, never its folder, for claude, codex and gemini (#267).
+- Memory now offers to start engram on WSL2 with `networkingMode=mirrored`
+  instead of saying `memory unavailable: engram did not answer`. There a
+  connect to a closed loopback port outside WSL's ephemeral range is dropped
+  instead of refused, so a timed-out connect now checks whether anything holds
+  the port: a free port means engram is not running; a held one is still a
+  server that did not answer, so a second server is never offered.
 
 ## [0.17.1] - 2026-10-18
 

@@ -611,8 +611,8 @@ fn unavailable(pane: PaneId, reason: Reason) -> MemReply {
     }
 }
 
-/// Only a refused connection means nothing runs there; any other failure is a
-/// server that did not answer.
+/// Only `Connect` means nothing runs there (a refused connect, or one dropped
+/// while the port is free); any other failure is a server that did not answer.
 fn reason_of(error: CallError) -> Reason {
     match error {
         CallError::Connect => Reason::NotRunning,
