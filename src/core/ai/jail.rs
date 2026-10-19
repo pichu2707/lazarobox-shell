@@ -298,6 +298,11 @@ fn known_helper_reason(said: &str) -> Option<String> {
 /// profile or apply it, or the sandbox denied the exec of the program.
 pub const SANDBOX_EXEC_EXIT: i32 = 71;
 
+/// `sandbox-exec`'s status for a profile that does not compile (`EX_DATAERR`),
+/// measured on macOS 14 and 15. The helper's own profile always compiles, so
+/// this is a safety net for a renderer bug.
+pub const SANDBOX_EXEC_SYNTAX_EXIT: i32 = 65;
+
 /// What `sandbox-exec` starts its first stderr line with when it fails.
 pub const SANDBOX_EXEC_PREFIX: &str = "sandbox-exec: ";
 
@@ -308,11 +313,11 @@ const SANDBOX_EXEC_REASON: &str = "the macOS sandbox could not be applied";
 /// - Status 125 AND a stderr line starting with [`NOT_ENFORCED_MARKER`]. It
 ///   carries the helper's reason only when it is one of the fixed texts the
 ///   helper emits; any other text gives an empty reason (the generic message).
-/// - Status 71 AND the FIRST stderr line starting with [`SANDBOX_EXEC_PREFIX`]
+/// - Status 71 (or 65, a profile syntax error) AND the FIRST stderr line starting with [`SANDBOX_EXEC_PREFIX`]
 ///   (macOS): `sandbox-exec` refused the profile. The reason is fixed. A CLI
 ///   that forges this can only be misread as a jail error, never as a bare run.
 pub fn exit_error(code: Option<i32>, stderr: &str) -> Option<ChatError> {
-    if code == Some(SANDBOX_EXEC_EXIT) {
+    if code == Some(SANDBOX_EXEC_EXIT) || code == Some(SANDBOX_EXEC_SYNTAX_EXIT) {
         let first = stderr.lines().next()?;
         return first
             .starts_with(SANDBOX_EXEC_PREFIX)
