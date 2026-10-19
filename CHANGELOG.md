@@ -29,6 +29,14 @@ baseline.
   instead of `available · <version>`, so it no longer reads as usable. The
   note comes from the adapter table, so it disappears when an adapter lands.
 
+### Fixed
+
+- The chat no longer fails with `EAI_AGAIN` (or hangs) on WSL2 and on systems
+  where `/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf` or
+  `/etc/localtime` link outside `/etc` (WSL's `/mnt/wsl/resolv.conf`,
+  systemd-resolved). The Linux jail now grants the exact target of each link
+  read-only, never its folder, for claude, codex and gemini (#267).
+
 ## [0.17.1] - 2026-10-18
 
 ### Changed
