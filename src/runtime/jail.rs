@@ -13,6 +13,8 @@ use crate::core::ai::jail::{JailSupport, NOT_ENFORCED_EXIT, NOT_ENFORCED_MARKER}
 
 #[cfg(any(target_os = "macos", test))]
 mod seatbelt;
+#[cfg(target_os = "macos")]
+pub use seatbelt::Diag;
 
 /// Exit status of a program the helper could not execute (shell convention).
 const EXEC_FAILED: i32 = 127;
@@ -31,6 +33,13 @@ pub fn probe() -> JailSupport {
 #[cfg(target_os = "macos")]
 pub fn seatbelt_probe() -> Result<(), crate::core::ai::jail::SeatbeltFault> {
     seatbelt::probe()
+}
+
+/// [`seatbelt_probe`] and, on failure, which control failed and what
+/// `sandbox-exec` said first. For test and CI output only.
+#[cfg(target_os = "macos")]
+pub fn seatbelt_probe_diagnosed() -> Result<(), (crate::core::ai::jail::SeatbeltFault, Diag)> {
+    seatbelt::probe_diagnosed()
 }
 
 /// The canonicalizer `jail_spec_with` needs: the real target of a path, or
@@ -57,10 +66,12 @@ pub fn exec_main(args: &[OsString]) -> i32 {
 }
 
 /// Why the helper did not run the program.
+#[derive(Debug)]
 enum Failure {
     NotEnforced(String),
     /// The jail is in place but the program could not be executed. Only the
-    /// Linux jail builds it.
+    /// Linux jail builds it: on macOS a failed exec of `sandbox-exec` means no
+    /// jail, so it is a `NotEnforced`.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Exec(String, std::io::Error),
 }
@@ -209,6 +220,8 @@ mod imp {
 mod imp {
     use std::convert::Infallible;
     use std::ffi::OsString;
+    #[cfg(target_os = "macos")]
+    use std::path::Path;
 
     use super::Failure;
     #[cfg(not(target_os = "macos"))]
@@ -233,6 +246,21 @@ mod imp {
         JailSupport::Unavailable(JailOff::NotLinux)
     }
 
+    /// Replaces this process with `/usr/bin/sandbox-exec`, which applies the
+    /// profile and runs the program. All the logic is in the pure
+    /// `seatbelt::command`; only the `exec` call is macOS-specific.
+    #[cfg(target_os = "macos")]
+    pub fn exec(args: &[OsString]) -> Result<Infallible, Failure> {
+        use std::os::unix::process::CommandExt;
+
+        use super::seatbelt::{SANDBOX_EXEC, command, not_started};
+
+        // `exec` only returns on failure; then no sandbox is in place.
+        let _error = command(Path::new(SANDBOX_EXEC), args)?.exec();
+        Err(not_started())
+    }
+
+    #[cfg(not(target_os = "macos"))]
     pub fn exec(_args: &[OsString]) -> Result<Infallible, Failure> {
         Err(Failure::NotEnforced("the CLI jail needs Linux".to_owned()))
     }

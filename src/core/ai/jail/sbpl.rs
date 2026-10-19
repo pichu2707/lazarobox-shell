@@ -61,6 +61,7 @@ const HEAD: &str = r#"(version 1)
   (require-all (subpath "/usr/local") (require-not (subpath "/usr/local/var")) (require-not (subpath "/usr/local/etc"))))
 (allow file-read* (subpath "/usr/share") (subpath "/private/etc") (subpath "/private/var/db/timezone"))
 (allow file-read* (literal "/private/var/run/resolv.conf"))
+(allow file-read* (literal "/"))
 "#;
 
 /// Network, mach services and sysctls. Outbound is IP only, plus the DNS
@@ -83,7 +84,7 @@ const TAIL: &str = r#"(allow network-outbound (remote ip "*:*"))
   (sysctl-name "hw.machine") (sysctl-name "hw.model") (sysctl-name "hw.nperflevels")
   (sysctl-name "kern.ostype") (sysctl-name "kern.osrelease") (sysctl-name "kern.osversion")
   (sysctl-name "kern.osproductversion") (sysctl-name "kern.version") (sysctl-name "kern.hostname")
-  (sysctl-name "kern.boottime") (sysctl-name "kern.argmax") (sysctl-name "kern.maxfilesperproc")
+  (sysctl-name "kern.boottime") (sysctl-name "kern.bootargs") (sysctl-name "kern.argmax") (sysctl-name "kern.maxfilesperproc")
   (sysctl-name "kern.usrstack64") (sysctl-name "kern.secure_kernel") (sysctl-name "vm.loadavg")
   (sysctl-name "sysctl.proc_cputype") (sysctl-name "sysctl.proc_translated")
   (sysctl-name "security.mac.lockdown_mode_state"))

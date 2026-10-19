@@ -12,6 +12,12 @@ baseline.
 
 ### Internal
 
+- The macOS jail helper now builds the `/usr/bin/sandbox-exec` command from
+  the rendered profile and replaces itself with it, leaving the environment
+  untouched, and the startup probe checks the real profile instead of a
+  constant one. A `sandbox-exec` failure (status 71 and its own first stderr
+  line) is shown as a fixed jail error and its stderr is never echoed. The
+  macOS jail is still off, so nothing changes for users.
 - The macOS jail profile renderer (`sbpl::render`): it turns the jail rules into
   a Seatbelt profile text and a list of `-D` values. Paths only ever travel as
   values, never inside the text. The fixed rules read `resolv.conf` at its

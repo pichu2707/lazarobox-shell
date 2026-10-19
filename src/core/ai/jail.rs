@@ -230,6 +230,30 @@ pub fn launch(policy: JailPolicy, support: JailSupport) -> Launch {
     }
 }
 
+/// The fixed texts `parse_args` fails with. The helper prints them after the
+/// marker, so they are on the [`known_helper_reason`] whitelist.
+const ARG_NO_SEPARATOR: &str = "missing `--`";
+const ARG_NO_VALUE: &str = "a flag without a value";
+const ARG_BAD_ABI: &str = "--min-abi is not a number";
+const ARG_UNKNOWN_FLAG: &str = "unknown flag";
+const ARG_RELATIVE_RULE: &str = "rule paths must be absolute";
+const ARG_NO_PROGRAM: &str = "no program after `--`";
+const ARG_RELATIVE_PROGRAM: &str = "the program must be an absolute path";
+const ARG_REASONS: [&str; 7] = [
+    ARG_NO_SEPARATOR,
+    ARG_NO_VALUE,
+    ARG_BAD_ABI,
+    ARG_UNKNOWN_FLAG,
+    ARG_RELATIVE_RULE,
+    ARG_NO_PROGRAM,
+    ARG_RELATIVE_PROGRAM,
+];
+
+/// The macOS helper's other fixed texts (`runtime::jail::seatbelt`).
+pub const MIN_ABI_REASON: &str = "--min-abi is Linux only";
+pub const PROFILE_REASON: &str = "the macOS profile could not be built";
+pub const EXEC_FAILED_REASON: &str = "/usr/bin/sandbox-exec could not be started";
+
 /// The reasons the helper can print that are safe to show, as the user will
 /// read them. The helper builds them from numbers and fixed text; everything
 /// else it might print (library errors, argument errors) can echo paths or
@@ -245,6 +269,13 @@ fn known_helper_reason(said: &str) -> Option<String> {
     let abi_prefix = format!("Landlock ABI {MIN_ABI}+ needed (Linux 6.2); this kernel has ABI ");
     if let Some(abi) = said.strip_prefix(abi_prefix.as_str()).and_then(number) {
         return Some(JailOff::NoLandlock(abi).text());
+    }
+    if let Some(fixed) = [MIN_ABI_REASON, PROFILE_REASON, EXEC_FAILED_REASON]
+        .into_iter()
+        .chain(ARG_REASONS)
+        .find(|text| *text == said)
+    {
+        return Some(fixed.to_owned());
     }
     let macos = [
         SeatbeltFault::Missing,
@@ -263,11 +294,30 @@ fn known_helper_reason(said: &str) -> Option<String> {
         .find(|text| text == said)
 }
 
-/// The jail error a finished helper stands for, if any: the status is 125 AND
-/// a stderr line starts with [`NOT_ENFORCED_MARKER`]. It carries the helper's
-/// reason only when it is one of the fixed texts the helper emits; any other
-/// text gives an empty reason (the generic message).
+/// `sandbox-exec`'s own failure status (`EX_OSERR`): it could not compile the
+/// profile or apply it, or the sandbox denied the exec of the program.
+pub const SANDBOX_EXEC_EXIT: i32 = 71;
+
+/// What `sandbox-exec` starts its first stderr line with when it fails.
+pub const SANDBOX_EXEC_PREFIX: &str = "sandbox-exec: ";
+
+/// The fixed reason for a `sandbox-exec` failure. Its stderr is never echoed.
+const SANDBOX_EXEC_REASON: &str = "the macOS sandbox could not be applied";
+
+/// The jail error a finished helper stands for, if any. Two cases:
+/// - Status 125 AND a stderr line starting with [`NOT_ENFORCED_MARKER`]. It
+///   carries the helper's reason only when it is one of the fixed texts the
+///   helper emits; any other text gives an empty reason (the generic message).
+/// - Status 71 AND the FIRST stderr line starting with [`SANDBOX_EXEC_PREFIX`]
+///   (macOS): `sandbox-exec` refused the profile. The reason is fixed. A CLI
+///   that forges this can only be misread as a jail error, never as a bare run.
 pub fn exit_error(code: Option<i32>, stderr: &str) -> Option<ChatError> {
+    if code == Some(SANDBOX_EXEC_EXIT) {
+        let first = stderr.lines().next()?;
+        return first
+            .starts_with(SANDBOX_EXEC_PREFIX)
+            .then(|| ChatError::Jail(SANDBOX_EXEC_REASON.to_owned()));
+    }
     let marked = stderr
         .lines()
         .find(|line| line.starts_with(NOT_ENFORCED_MARKER))?;
@@ -1078,14 +1128,14 @@ pub fn parse_args(args: &[OsString]) -> Result<JailArgs, ArgError> {
     let mut min_abi = None;
     let mut it = args.iter();
     loop {
-        let flag = it.next().ok_or(ArgError("missing `--`"))?;
+        let flag = it.next().ok_or(ArgError(ARG_NO_SEPARATOR))?;
         if flag == "--" {
             break;
         }
-        let value = it.next().ok_or(ArgError("a flag without a value"))?;
+        let value = it.next().ok_or(ArgError(ARG_NO_VALUE))?;
         if flag == "--min-abi" {
             let abi = value.to_str().and_then(|v| v.parse().ok());
-            min_abi = Some(abi.ok_or(ArgError("--min-abi is not a number"))?);
+            min_abi = Some(abi.ok_or(ArgError(ARG_BAD_ABI))?);
             continue;
         }
         let list = match flag.to_str() {
@@ -1094,17 +1144,17 @@ pub fn parse_args(args: &[OsString]) -> Result<JailArgs, ArgError> {
             Some("--rw") => &mut spec.rw,
             Some("--ro-file") => &mut spec.ro_files,
             Some("--rw-file") => &mut spec.rw_files,
-            _ => return Err(ArgError("unknown flag")),
+            _ => return Err(ArgError(ARG_UNKNOWN_FLAG)),
         };
         let path = PathBuf::from(value);
         if !path.is_absolute() {
-            return Err(ArgError("rule paths must be absolute"));
+            return Err(ArgError(ARG_RELATIVE_RULE));
         }
         list.push(path);
     }
-    let program = PathBuf::from(it.next().ok_or(ArgError("no program after `--`"))?);
+    let program = PathBuf::from(it.next().ok_or(ArgError(ARG_NO_PROGRAM))?);
     if !program.is_absolute() {
-        return Err(ArgError("the program must be an absolute path"));
+        return Err(ArgError(ARG_RELATIVE_PROGRAM));
     }
     Ok(JailArgs {
         min_abi,

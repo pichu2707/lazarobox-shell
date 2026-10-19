@@ -247,6 +247,8 @@ impl RunFailure {
             Self::TooLarge => format!("output over {cap} bytes"),
             Self::Io => format!("could not read the output of {name}"),
             Self::Exit { code, stderr } => {
+                // Only the last stderr line is kept: sandbox-exec writes one line, and a
+                // forged marker can only misclassify toward a jail error (the safe side).
                 if let Some(said) = stderr
                     && let Some(ChatError::Jail(reason)) = exit_error(*code, said)
                 {
