@@ -69,10 +69,10 @@ Done: Linux spec unchanged (regression test), gates green.
 ## Slice 2b: renderer (PR 4)
 
 Files: `jail/sbpl.rs` (new), `jail/sbpl/tests.rs` (new), `jail.rs` (mod), `CHANGELOG.md`.
-- [ ] 2b.1 RED: golden test of full profile text for fixed `JailSpec`; keys RX_n RO_n RW_n ROF_n RWF_n; ordered params.
-- [ ] 2b.2 RED: injection tests (quote, paren, semicolon, newline leave text byte-identical); errors Nul, Relative, TooLong >1024, TooMany >256.
-- [ ] 2b.3 RED: Homebrew `var` excluded via `require-not`; network block (remote ip `*:*`, mDNSResponder, `network-outbound` on `rw_files` literals only); no `import "system.sb"`; no bind or inbound.
-- [ ] 2b.4 GREEN: `render`, `sandbox_args`, `Profile`, `SbplError`, system/mach/sysctl blocks per design; CHANGELOG.
+- [x] 2b.1 RED: golden test of full profile text for fixed `JailSpec`; keys RX_n RO_n RW_n ROF_n RWF_n; ordered params.
+- [x] 2b.2 RED: injection tests (quote, paren, semicolon, newline leave text byte-identical); errors Nul, Relative, TooLong >1024, TooMany >256.
+- [x] 2b.3 RED: Homebrew `var` excluded via `require-not`; network block (remote ip `*:*`, mDNSResponder, `network-outbound` on `rw_files` literals only); no `import "system.sb"`; no bind or inbound.
+- [x] 2b.4 GREEN: `render`, `sandbox_args`, `Profile`, `SbplError`, system/mach/sysctl blocks per design; CHANGELOG.
 Done: pure, Linux-testable, goldens pinned, gates green. Flag: over 400 lines, split.
 
 ## Slice 3a: macOS exec + exit-71 (PR 5)
@@ -89,6 +89,7 @@ Done: compiles on all runners, Linux imp untouched, gate still off, gates green.
 Files: `tests/jail_macos.rs` (cfg macOS), `CHANGELOG.md`.
 - [ ] 3b.1 RED/GREEN: bash-builtin fake CLIs: read allow, write deny outside rw, exec deny beyond rx, `/dev/tcp` connect ok, `nc` bind denied, other unix socket denied.
 - [ ] 3b.2 RED/GREEN: bad profile (pin compile-error and denied-exec codes), nested sandbox, special-character path, `=` in values (reject if it fails), nested vendor exec, env passthrough, node start.
+- [ ] 3b.4 scenario: an npm-style shim with #!/usr/bin/env node shebang starts under the profile (process-exec on /usr/bin/env, or put it in rx; check whether process-exec-interpreter is needed).
 - [ ] 3b.3 Fixes found by CI go back to `sbpl.rs`; CHANGELOG.
 Done: green on macos-14 and macos-15-intel with `LAZAROBOX_REQUIRE_JAIL=1`.
 
@@ -96,10 +97,11 @@ Done: green on macos-14 and macos-15-intel with `LAZAROBOX_REQUIRE_JAIL=1`.
 
 Files: `jail.rs`, adapters, `jail/tests.rs`, `README.md`, `docs/` (checklist), `CHANGELOG.md`.
 - [ ] 4.0 macOS home deny-list: add ~/Library, ~/Library/Keychains, ~/Library/Application Support (and other macOS credential/shared dirs) to CREDENTIAL_DIRS/SHARED_IN_HOME for Os::Macos before the gate flips (found in 2a review).
+- [ ] 4.0b spec layer: assert spec.rw and spec.rx are disjoint in jail_spec_for (Seatbelt rules union, so overlap means write+exec), with a test.
 - [ ] 4.1 RED: with Available probe, codex and gemini jailed on macOS; failure refuses; `NotLinux` becomes `NoBackend` "needs Linux or macOS"; codex model listing jailed, keeps `default`; chat-pane guidance and exit 71 jail error.
 - [ ] 4.2 GREEN: `SEATBELT_ENABLED=true`, copy per spec (ai-engine-detection, chat-pane).
 - [ ] 4.2b When the gate flips, bound the probe: the worst case is 3 x 5 s at startup. Give it one total deadline, or run it lazily on the first codex or gemini use.
-- [ ] 4.3 Docs: README macOS 14+ support, gemini "not yet verified on a real Mac", claude never jailed on macOS.
+- [ ] 4.3 Docs: README macOS 14+ support, gemini "not yet verified on a real Mac", claude never jailed on macOS; state that the jailed CLI can reach loopback, the LAN and the metadata IP (accepted risk, see design).
 - [ ] 4.4 MANUAL (#180 tester, codex only) checklist doc: `which codex node`; how codex was installed (npm, brew cask); run a codex turn; run a read-tool turn; what a refusal looks like; collect `log stream --predicate 'sender == "Sandbox"'` output during the turn.
 - [ ] 4.5 CHANGELOG (Added: macOS jail, codex/gemini on macOS).
 - [ ] 4.6 MANUAL: send checklist to the #180 tester and record the result.
