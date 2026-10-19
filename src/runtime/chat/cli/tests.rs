@@ -705,9 +705,17 @@ async fn an_env_shebang_script_is_started_through_its_interpreter_not_through_en
         granted("--rx", &interp),
         "the interpreter, one file: {args:?}"
     );
+    // `env` is granted as one exact file on macOS only (Seatbelt refuses the
+    // start of an `#!/usr/bin/env` script without it); Linux never grants it.
+    let env_rx = args
+        .windows(2)
+        .any(|w| w[0] == "--rx" && w[1] == "/usr/bin/env");
+    assert_eq!(env_rx, Os::CURRENT == Os::Macos, "{args:?}");
     assert!(
-        !args.iter().any(|a| a.ends_with("/usr/bin/env")),
-        "env is never granted: {args:?}"
+        !args
+            .iter()
+            .any(|a| a.ends_with("/usr/bin/env") && *a != "/usr/bin/env"),
+        "only the exact file: {args:?}"
     );
 }
 
