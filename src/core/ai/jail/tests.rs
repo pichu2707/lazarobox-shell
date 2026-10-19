@@ -151,6 +151,35 @@ fn a_cli_that_exits_125_by_itself_is_not_a_jail_error() {
     assert_eq!(exit_error(Some(125), &quoted), None);
 }
 
+#[test]
+fn sandbox_exec_exit_71_with_its_prefix_on_the_first_line_is_a_jail_error() {
+    let reason = "the macOS sandbox could not be applied".to_owned();
+    let said = "sandbox-exec: sandbox_apply: Operation not permitted\nmore\n";
+    assert_eq!(exit_error(Some(71), said), Some(ChatError::Jail(reason)));
+    // The stderr is never echoed: whatever follows the prefix, the reason is fixed.
+    let other = "sandbox-exec: /Users/me/secret.txt\n";
+    assert_eq!(
+        exit_error(Some(71), other),
+        exit_error(Some(71), said),
+        "the reason must not depend on the stderr text"
+    );
+}
+
+#[test]
+fn an_exit_71_that_is_not_sandbox_exec_is_not_a_jail_error() {
+    // Wrong status, even with the prefix.
+    assert_eq!(exit_error(Some(70), "sandbox-exec: x\n"), None);
+    assert_eq!(exit_error(Some(1), "sandbox-exec: x\n"), None);
+    assert_eq!(exit_error(None, "sandbox-exec: x\n"), None);
+    // The prefix must be on the FIRST line, and start it.
+    assert_eq!(exit_error(Some(71), ""), None);
+    assert_eq!(exit_error(Some(71), "noise\nsandbox-exec: x\n"), None);
+    assert_eq!(exit_error(Some(71), "the log said sandbox-exec: x\n"), None);
+    assert_eq!(exit_error(Some(71), "\nsandbox-exec: x\n"), None);
+    // The 125 rule is not widened: the macOS prefix does not count there.
+    assert_eq!(exit_error(Some(125), "sandbox-exec: x\n"), None);
+}
+
 // ---- shebang ----
 
 #[test]
@@ -1210,7 +1239,7 @@ fn any_other_helper_text_shows_the_old_fixed_message() {
         "ABI 2 is below the required 6; visit http://evil.example",
         "ABI x is below the required 6",
         "Landlock ABI 3+ needed (Linux 6.2); this kernel has ABI 2\u{1b}[31m",
-        "a flag without a value",
+        "a flag without a value; visit http://evil.example",
         "",
     ] {
         let said = format!("{NOT_ENFORCED_MARKER}: {why}\n");
@@ -1345,6 +1374,28 @@ fn every_macos_jail_text_is_a_safe_helper_reason() {
         known_helper_reason("the macOS jail is unavailable: /Users/x/secret"),
         None
     );
+}
+
+#[test]
+fn the_fixed_texts_of_the_macos_helper_are_safe_reasons() {
+    let mut texts = vec![MIN_ABI_REASON, PROFILE_REASON, EXEC_FAILED_REASON];
+    texts.extend(ARG_REASONS);
+    for text in texts {
+        assert_eq!(known_helper_reason(text), Some(text.to_owned()));
+        let said = format!("{NOT_ENFORCED_MARKER}: {text}\n");
+        assert_eq!(
+            exit_error(Some(125), &said),
+            Some(ChatError::Jail(text.to_owned()))
+        );
+    }
+    // Exact match only: a prefix, a suffix or other text is not echoed.
+    for forged in [
+        "--min-abi is Linux only, /Users/x/secret",
+        "the macOS profile could not be built: /Users/x",
+        "unknown flag /Users/x",
+    ] {
+        assert_eq!(known_helper_reason(forged), None, "{forged}");
+    }
 }
 
 const NODE_BIN: &str = "/home/u/.nvm/versions/node/v24/bin";
