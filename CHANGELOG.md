@@ -10,6 +10,24 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- The macOS jail: codex and gemini now run on macOS inside a Seatbelt jail
+  (`/usr/bin/sandbox-exec`), after a startup check that proves it restricts
+  (one 5 s deadline for the whole check). If the check fails they are refused,
+  never run without the jail. claude is never jailed on macOS, to keep its
+  Keychain login. macOS 14 or later is supported; gemini is not yet verified on
+  a real Mac. The jail never grants `~/Library` or the credential folders in it,
+  refuses a layout where a program sits inside a writable folder, and a jailed
+  CLI can still reach loopback, the LAN and the metadata address (accepted
+  risk). A step-by-step check for macOS testers is in
+  `docs/macos-tester-checklist.md`.
+
+### Changed
+
+- The refusal on systems with neither Linux nor macOS now reads `the CLI jail
+  needs Linux or macOS`.
+
 ### Internal
 
 - Integration tests run fake CLIs through the real macOS jail helper and
