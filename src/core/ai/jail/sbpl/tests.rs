@@ -42,6 +42,7 @@ const GOLDEN: &str = r#"(version 1)
   (require-all (subpath "/usr/local") (require-not (subpath "/usr/local/var")) (require-not (subpath "/usr/local/etc"))))
 (allow file-read* (subpath "/usr/share") (subpath "/private/etc") (subpath "/private/var/db/timezone"))
 (allow file-read* (literal "/private/var/run/resolv.conf"))
+(allow file-read* (literal "/"))
 (allow file-read* file-map-executable process-exec (subpath (param "RX_0")))
 (allow file-read* file-map-executable (subpath (param "RO_0")))
 (allow file-read* file-write* (subpath (param "RW_0")))
@@ -65,7 +66,7 @@ const GOLDEN: &str = r#"(version 1)
   (sysctl-name "hw.machine") (sysctl-name "hw.model") (sysctl-name "hw.nperflevels")
   (sysctl-name "kern.ostype") (sysctl-name "kern.osrelease") (sysctl-name "kern.osversion")
   (sysctl-name "kern.osproductversion") (sysctl-name "kern.version") (sysctl-name "kern.hostname")
-  (sysctl-name "kern.boottime") (sysctl-name "kern.argmax") (sysctl-name "kern.maxfilesperproc")
+  (sysctl-name "kern.boottime") (sysctl-name "kern.bootargs") (sysctl-name "kern.argmax") (sysctl-name "kern.maxfilesperproc")
   (sysctl-name "kern.usrstack64") (sysctl-name "kern.secure_kernel") (sysctl-name "vm.loadavg")
   (sysctl-name "sysctl.proc_cputype") (sysctl-name "sysctl.proc_translated")
   (sysctl-name "security.mac.lockdown_mode_state"))
@@ -363,6 +364,16 @@ fn only_process_exec_class_is_rx() {
     let text = render(&one_each()).unwrap().text;
     assert_eq!(text.matches("process-exec").count(), 1);
     assert!(text.contains("process-exec (subpath (param \"RX_0\"))"));
+}
+
+#[test]
+fn the_root_folder_itself_is_readable_but_nothing_below_it_by_that_rule() {
+    // dyld reads `/` when a program starts (seen on the macOS runners); a
+    // literal opens the directory and no entry under it.
+    let text = render(&JailSpec::default()).unwrap().text;
+    assert!(text.contains("(allow file-read* (literal \"/\"))\n"));
+    assert!(!text.contains("(subpath \"/\")"));
+    assert!(text.contains("(sysctl-name \"kern.bootargs\")"));
 }
 
 #[test]

@@ -82,6 +82,7 @@ The skeleton, in this order:
   (require-all (subpath "/usr/local") (require-not (subpath "/usr/local/var")) (require-not (subpath "/usr/local/etc"))))
 (allow file-read* (subpath "/usr/share") (subpath "/private/etc") (subpath "/private/var/db/timezone"))
 (allow file-read* (literal "/private/var/run/resolv.conf"))
+(allow file-read* (literal "/"))
 ;; one line per entry, in spec order:
 (allow file-read* file-map-executable process-exec (subpath (param "RX_0")))
 (allow file-read* file-map-executable (subpath (param "RO_0")))
@@ -106,7 +107,7 @@ The skeleton, in this order:
   (sysctl-name "hw.machine") (sysctl-name "hw.model") (sysctl-name "hw.nperflevels")
   (sysctl-name "kern.ostype") (sysctl-name "kern.osrelease") (sysctl-name "kern.osversion")
   (sysctl-name "kern.osproductversion") (sysctl-name "kern.version") (sysctl-name "kern.hostname")
-  (sysctl-name "kern.boottime") (sysctl-name "kern.argmax") (sysctl-name "kern.maxfilesperproc")
+  (sysctl-name "kern.boottime") (sysctl-name "kern.bootargs") (sysctl-name "kern.argmax") (sysctl-name "kern.maxfilesperproc")
   (sysctl-name "kern.usrstack64") (sysctl-name "kern.secure_kernel") (sysctl-name "vm.loadavg")
   (sysctl-name "sysctl.proc_cputype") (sysctl-name "sysctl.proc_translated")
   (sysctl-name "security.mac.lockdown_mode_state"))
@@ -123,6 +124,8 @@ Why each system entry is there:
 | `/private/var/db/timezone` | the localtime target |
 | `/usr/share` | zoneinfo, ICU, terminfo |
 | Homebrew prefixes, minus `var/` and `etc/` | node and dylibs. `var/` holds service data (databases, logs); `etc/` holds user config (a service's settings and secrets). Exact files a CLI needs, such as `etc/openssl@3/cert.pem`, enter through `ro_files` literals |
+| `/` (the literal only) | dyld reads the root directory when any program starts: the macOS runners showed `deny file-read-data /` killing `touch`. A literal lists the top-level folder names and nothing below them |
+| `kern.bootargs` | dyld reads it at start; the same runner log showed it denied |
 | `/private/var/run/resolv.conf` | the target of `/etc/resolv.conf` on macOS; Apple's system profile grants it. One literal, not the `run/` folder |
 
 Rejected entries:
