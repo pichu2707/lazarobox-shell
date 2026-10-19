@@ -87,10 +87,10 @@ Done: compiles on all runners, Linux imp untouched, gate still off, gates green.
 ## Slice 3b: macOS integration tests (PR 6)
 
 Files: `tests/jail_macos.rs` (cfg macOS), `CHANGELOG.md`.
-- [ ] 3b.1 RED/GREEN: bash-builtin fake CLIs: read allow, write deny outside rw, exec deny beyond rx, `/dev/tcp` connect ok, `nc` bind denied, other unix socket denied.
-- [ ] 3b.2 RED/GREEN: bad profile (pin compile-error and denied-exec codes), nested sandbox, special-character path, `=` in values (reject if it fails), nested vendor exec, env passthrough, node start.
-- [ ] 3b.4 scenario: an npm-style shim with #!/usr/bin/env node shebang starts under the profile (process-exec on /usr/bin/env, or put it in rx; check whether process-exec-interpreter is needed).
-- [ ] 3b.3 Fixes found by CI go back to `sbpl.rs`; CHANGELOG.
+- [x] 3b.1 RED/GREEN: bash-builtin fake CLIs: read allow, write deny outside rw, exec deny beyond rx, `/dev/tcp` connect ok, `nc` bind denied, other unix socket denied.
+- [x] 3b.2 RED/GREEN: bad profile (pin compile-error and denied-exec codes), nested sandbox, special-character path, `=` in values (reject if it fails), nested vendor exec, env passthrough, node start.
+- [x] 3b.4 scenario: an npm-style shim with #!/usr/bin/env node shebang starts under the profile (process-exec on /usr/bin/env, or put it in rx; check whether process-exec-interpreter is needed).
+- [x] 3b.3 Fixes found by CI go back to `sbpl.rs`; CHANGELOG.
 Done: green on macos-14 and macos-15-intel with `LAZAROBOX_REQUIRE_JAIL=1`.
 
 ## Slice 4: enable + docs (PR 7)
