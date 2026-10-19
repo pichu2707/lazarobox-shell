@@ -16,7 +16,8 @@ use std::{
     net::TcpListener,
     os::unix::{fs::PermissionsExt, net::UnixListener},
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::{Child, Command, Output, Stdio},
+    sync::OnceLock,
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -51,16 +52,19 @@ fn sandbox_exec_confines_the_probe_programs() {
 }
 
 /// Whether the scenarios can run here: the probe passes, or this run is not
-/// required to have a jail.
+/// required to have a jail. The probe runs once per test binary.
 fn jail_available() -> bool {
-    match seatbelt_probe_diagnosed() {
+    static PROBE: OnceLock<Result<(), String>> = OnceLock::new();
+    match PROBE.get_or_init(|| {
+        seatbelt_probe_diagnosed().map_err(|(fault, detail)| format!("{fault:?}, {detail:?}"))
+    }) {
         Ok(()) => true,
-        Err((fault, detail)) => {
+        Err(why) => {
             assert!(
                 !required(),
-                "LAZAROBOX_REQUIRE_JAIL=1 but this system cannot jail ({fault:?}, {detail:?})"
+                "LAZAROBOX_REQUIRE_JAIL=1 but this system cannot jail ({why})"
             );
-            eprintln!("skipped: no Seatbelt jail on this system ({fault:?})");
+            eprintln!("skipped: no Seatbelt jail on this system ({why})");
             false
         }
     }
@@ -151,9 +155,10 @@ fn report(out: &Output) -> String {
     )
 }
 
+/// The EPERM a Seatbelt denial returns. "Permission denied" (EACCES, mode
+/// bits) is deliberately not accepted: it would pass without any sandbox.
 fn denied(out: &Output) -> bool {
-    let text = stderr(out);
-    text.contains("Operation not permitted") || text.contains("Permission denied")
+    stderr(out).contains("Operation not permitted")
 }
 
 /// Status 71 plus the `sandbox-exec: ` first line: what the app turns into a
@@ -236,6 +241,13 @@ fn node_ro_files() -> Vec<PathBuf> {
 
 fn node_or_skip() -> Option<(PathBuf, PathBuf)> {
     let found = node();
+    if let Some((node, _)) = &found {
+        eprintln!(
+            "node under test: {} (ro_files {:?})",
+            node.display(),
+            node_ro_files()
+        );
+    }
     if found.is_none() {
         assert!(!required(), "LAZAROBOX_REQUIRE_JAIL=1 but there is no node");
         eprintln!("skipped: no node on PATH");
@@ -297,7 +309,12 @@ fn an_exec_beyond_rx_is_denied_and_one_inside_it_runs() {
     let text = stdout(&out);
     assert!(text.contains("granted=0"), "{}", report(&out));
     assert!(!text.contains("other=0"), "{}", report(&out));
-    assert!(denied(&out), "{}", report(&out));
+    let first = stderr(&out).lines().next().unwrap_or_default().to_owned();
+    assert!(
+        first.contains("Operation not permitted"),
+        "{}",
+        report(&out)
+    );
     assert!(!w.rw.join("pwned").exists(), "touch ran: {}", report(&out));
 }
 
@@ -313,34 +330,76 @@ fn a_tcp_connect_goes_through_dev_tcp() {
     assert!(accepted.join().unwrap(), "{}", report(&out));
 }
 
+/// A loopback port nothing listens on: bound and released just now.
+fn fresh_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// Kills the child and everything it started (its own process group).
+fn kill_group(child: &mut Child) {
+    // SAFETY: `kill` only sends a signal; the group id is the child's pid,
+    // because the child was spawned with `process_group(0)`.
+    unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+    let _ = child.wait();
+}
+
 #[test]
 fn nc_cannot_bind_a_port() {
+    use std::os::unix::process::CommandExt;
+
     if !jail_available() {
         return;
     }
     let nc = canon("/usr/bin/nc");
-    // A port nothing listens on, learned by binding and releasing it.
-    let free = TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+
+    // Control 1: the same nc, under the same profile, does connect.
     let (live, accepted) = tcp_listener(Duration::from_secs(10));
-    // The control: the same nc, under the same profile, does connect.
-    let control = r#"/usr/bin/nc -z 127.0.0.1 "$1"; echo "connect=$?""#;
-    let out = run(&bash_job(control, &[Path::new(&live.to_string())], |s| {
+    let connect = r#"/usr/bin/nc -z 127.0.0.1 "$1"; echo "connect=$?""#;
+    let out = run(&bash_job(connect, &[Path::new(&live.to_string())], |s| {
         s.rx.push(nc.clone())
     }));
     assert!(stdout(&out).contains("connect=0"), "{}", report(&out));
     assert!(accepted.join().unwrap(), "{}", report(&out));
 
-    // Listening would block: poll the child and kill it if it stays up.
+    // Control 2: WITHOUT a sandbox, this nc does listen on a fresh port.
+    let open = fresh_port();
+    let mut bare = Command::new("/usr/bin/nc")
+        .args(["-l", "127.0.0.1", &open.to_string()])
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // A refused connect only means nc is not up yet: retry until the limit.
+    let started = Instant::now();
+    let listening = loop {
+        if std::net::TcpStream::connect(("127.0.0.1", open)).is_ok() {
+            break true;
+        }
+        if started.elapsed() > Duration::from_secs(10) {
+            break false;
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    kill_group(&mut bare);
+    assert!(listening, "an unsandboxed nc -l did not listen");
+
+    // The jailed bind, on another fresh port. A child that stays up means the
+    // bind was allowed; the whole process group is killed then, so no nc keeps
+    // the pipes open.
+    let denied_port = fresh_port();
     let job = bash_job(
         r#"/usr/bin/nc -l 127.0.0.1 "$1" < /dev/null; echo "listen=$?""#,
-        &[Path::new(&free.to_string())],
+        &[Path::new(&denied_port.to_string())],
         |s| s.rx.push(nc.clone()),
     );
     let mut child = helper(&job.render())
+        .process_group(0)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -351,11 +410,18 @@ fn nc_cannot_bind_a_port() {
         })
     });
     if ended.is_none() {
-        let _ = child.kill();
+        kill_group(&mut child);
     }
     let out = child.wait_with_output().unwrap();
     assert!(ended.is_some(), "nc kept listening: {}", report(&out));
-    assert!(!stdout(&out).contains("listen=0"), "{}", report(&out));
+    assert!(denied(&out), "{}", report(&out));
+    let text = stdout(&out);
+    let code = text.lines().find_map(|l| l.strip_prefix("listen="));
+    assert!(
+        code.is_some_and(|c| c != "0"),
+        "nc did not report a failure: {}",
+        report(&out)
+    );
 }
 
 #[test]
@@ -455,7 +521,24 @@ fn a_nested_sandbox_is_refused_as_a_jail_error() {
         s.rx.push(canon("/usr/bin/touch"));
     }));
     assert!(!w.rw.join("ran").exists(), "touch ran: {}", report(&out));
+    assert!(stderr(&out).contains("sandbox_apply"), "{}", report(&out));
     assert_jail_error(&out);
+}
+
+/// A job that may write in `granted` only: a write there works, and one into
+/// `prefix` (a path that merely starts like it) is denied.
+fn assert_granted_exactly(w: &World, granted: &Path, prefix: &Path) {
+    fs::create_dir(granted).unwrap();
+    fs::create_dir(prefix).unwrap();
+    let script = r#"echo in > "$1/f"; echo "granted=$?"
+echo out > "$2/f"; echo "prefix=$?""#;
+    let out = run(&bash_job(script, &[granted, prefix], |s| {
+        s.rw.push(granted.to_path_buf())
+    }));
+    assert!(stdout(&out).contains("granted=0"), "{}", report(&out));
+    assert!(stdout(&out).contains("prefix=1"), "{}", report(&out));
+    assert!(granted.join("f").exists() && !prefix.join("f").exists());
+    assert!(!w.outside.join("f").exists());
 }
 
 /// A rw folder named with every character that matters to the profile text
@@ -466,18 +549,7 @@ fn a_path_with_special_characters_is_granted_exactly() {
         return;
     }
     let w = world();
-    let odd = w.root.join("a=b \"q\") (x\nz");
-    let prefix = w.root.join("a");
-    fs::create_dir(&odd).unwrap();
-    fs::create_dir(&prefix).unwrap();
-    let script = r#"echo in > "$1/f"; echo "odd=$?"
-echo out > "$2/f"; echo "prefix=$?""#;
-    let out = run(&bash_job(script, &[&odd, &prefix], |s| {
-        s.rw.push(odd.clone())
-    }));
-    assert!(stdout(&out).contains("odd=0"), "{}", report(&out));
-    assert!(stdout(&out).contains("prefix=1"), "{}", report(&out));
-    assert!(odd.join("f").exists() && !prefix.join("f").exists());
+    assert_granted_exactly(&w, &w.root.join("a=b \"q\") (x\nz"), &w.root.join("a"));
 }
 
 /// `sandbox-exec` must split a `-D` at the first `=` only.
@@ -487,21 +559,11 @@ fn an_equals_sign_in_a_value_is_kept() {
         return;
     }
     let w = world();
-    let eq = w.root.join("k=v=w");
-    let prefix = w.root.join("k");
-    fs::create_dir(&eq).unwrap();
-    fs::create_dir(&prefix).unwrap();
-    let script = r#"echo in > "$1/f"; echo "eq=$?"
-echo out > "$2/f"; echo "prefix=$?""#;
-    let out = run(&bash_job(script, &[&eq, &prefix], |s| {
-        s.rw.push(eq.clone())
-    }));
-    assert!(stdout(&out).contains("eq=0"), "{}", report(&out));
-    assert!(stdout(&out).contains("prefix=1"), "{}", report(&out));
+    assert_granted_exactly(&w, &w.root.join("k=v=w"), &w.root.join("k"));
 }
 
 /// Writes an executable script with the given first line.
-fn script(path: &Path, text: &str) {
+fn write_executable(path: &Path, text: &str) {
     fs::write(path, text).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
@@ -514,7 +576,7 @@ fn a_vendor_script_inside_an_rx_root_runs() {
     let w = world();
     let vendor = w.root.join("pkg/vendor");
     fs::create_dir_all(&vendor).unwrap();
-    script(&vendor.join("tool"), "#!/bin/bash\necho vendor-ran\n");
+    write_executable(&vendor.join("tool"), "#!/bin/bash\necho vendor-ran\n");
     let root = w.root.join("pkg");
     let out = run(&bash_job(r#""$1/vendor/tool""#, &[&root], |s| {
         s.rx.push(root.clone())
@@ -565,7 +627,7 @@ fn run_shim(with_env_in_rx: bool) -> Option<(Output, World)> {
     let (node, node_dir) = node_or_skip()?;
     let w = world();
     let shim = w.root.join("cli");
-    script(&shim, "#!/usr/bin/env node\nconsole.log('shim-ok');\n");
+    write_executable(&shim, "#!/usr/bin/env node\nconsole.log('shim-ok');\n");
     let mut spec = JailSpec {
         rx: vec![shim.clone(), node],
         ro_files: node_ro_files(),

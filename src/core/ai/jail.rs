@@ -313,9 +313,10 @@ const SANDBOX_EXEC_REASON: &str = "the macOS sandbox could not be applied";
 /// - Status 125 AND a stderr line starting with [`NOT_ENFORCED_MARKER`]. It
 ///   carries the helper's reason only when it is one of the fixed texts the
 ///   helper emits; any other text gives an empty reason (the generic message).
-/// - Status 71 (or 65, a profile syntax error) AND the FIRST stderr line starting with [`SANDBOX_EXEC_PREFIX`]
-///   (macOS): `sandbox-exec` refused the profile. The reason is fixed. A CLI
-///   that forges this can only be misread as a jail error, never as a bare run.
+/// - Status 71 (or 65, a profile syntax error) AND the FIRST stderr line
+///   starting with [`SANDBOX_EXEC_PREFIX`] (macOS): `sandbox-exec` refused the
+///   profile. The reason is fixed. A CLI that forges this can only be misread
+///   as a jail error, never as a bare run.
 pub fn exit_error(code: Option<i32>, stderr: &str) -> Option<ChatError> {
     if code == Some(SANDBOX_EXEC_EXIT) || code == Some(SANDBOX_EXEC_SYNTAX_EXIT) {
         let first = stderr.lines().next()?;
