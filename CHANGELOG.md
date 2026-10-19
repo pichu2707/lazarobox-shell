@@ -12,6 +12,11 @@ baseline.
 
 ### Internal
 
+- The macOS jail profile renderer (`sbpl::render`): it turns the jail rules into
+  a Seatbelt profile text and a list of `-D` values. Paths only ever travel as
+  values, never inside the text. The fixed rules read `resolv.conf` at its
+  macOS target and keep Homebrew `etc/` closed, like `var/`. Nothing calls it yet and the macOS jail is
+  still off, so nothing changes for users.
 - The jail rules are now built per system (`jail_spec_for`): the Linux rules are
   unchanged, and the macOS rules name no Linux-only path and add the macOS
   system and Homebrew folders to the list that is never granted. The macOS jail

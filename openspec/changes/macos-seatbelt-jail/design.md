@@ -78,9 +78,10 @@ The skeleton, in this order:
 (allow file-read* file-map-executable
   (subpath "/usr/lib") (subpath "/System/Library")
   (subpath "/System/Volumes/Preboot/Cryptexes")
-  (require-all (subpath "/opt/homebrew") (require-not (subpath "/opt/homebrew/var")))
-  (require-all (subpath "/usr/local") (require-not (subpath "/usr/local/var"))))
+  (require-all (subpath "/opt/homebrew") (require-not (subpath "/opt/homebrew/var")) (require-not (subpath "/opt/homebrew/etc")))
+  (require-all (subpath "/usr/local") (require-not (subpath "/usr/local/var")) (require-not (subpath "/usr/local/etc"))))
 (allow file-read* (subpath "/usr/share") (subpath "/private/etc") (subpath "/private/var/db/timezone"))
+(allow file-read* (literal "/private/var/run/resolv.conf"))
 ;; one line per entry, in spec order:
 (allow file-read* file-map-executable process-exec (subpath (param "RX_0")))
 (allow file-read* file-map-executable (subpath (param "RO_0")))
@@ -121,7 +122,8 @@ Why each system entry is there:
 | `/private/etc` | hosts, resolv.conf, `ssl/cert.pem`, localtime (the `/etc` equivalent on Linux) |
 | `/private/var/db/timezone` | the localtime target |
 | `/usr/share` | zoneinfo, ICU, terminfo |
-| Homebrew prefixes, minus `var/` | node, dylibs, the openssl config. `var/` holds service data (databases, logs) |
+| Homebrew prefixes, minus `var/` and `etc/` | node and dylibs. `var/` holds service data (databases, logs); `etc/` holds user config (a service's settings and secrets). Exact files a CLI needs, such as `etc/openssl@3/cert.pem`, enter through `ro_files` literals |
+| `/private/var/run/resolv.conf` | the target of `/etc/resolv.conf` on macOS; Apple's system profile grants it. One literal, not the `run/` folder |
 
 Rejected entries:
 - `/Library/Preferences`: system network preferences.
@@ -208,6 +210,7 @@ No data migration. S1 through S3 are inert in the product because of the gate. R
 - [ ] `=` in a `-D` value, and the exit codes for a compile error or a denied exec: **3b**.
 - [ ] Mach/sysctl completeness (DNS, TLS, configd): **3b** node test, then the S4 tester with `log stream --predicate 'sender=="Sandbox"'`.
 - [ ] codex/gemini Keychain use: the tester; the gemini README note.
+- ACCEPTED RISK (user, 2b review): `(remote ip "*:*")` reaches 127.0.0.1, the LAN and the cloud metadata IP. SBPL cannot express "public addresses only" and the CLIs need the internet. Slice 4 docs (4.3) must say so in the README.
 - [ ] The unix-socket tightening (decision 7) and the Homebrew `var/` exclusion are refinements of D3/D5 and need user confirmation.
 - [ ] A `current_exe` path that vanishes after `brew upgrade` plus cleanup: an error, not a leak; accepted.
 - [ ] The MSRV job checks Linux only. Keep the macOS code within 1.88; optionally add `cargo check --target aarch64-apple-darwin` to the msrv job.

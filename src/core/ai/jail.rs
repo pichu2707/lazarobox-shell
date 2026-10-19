@@ -10,6 +10,7 @@ use crate::core::ai::chat::engine::ChatError;
 use crate::core::ai::parse::sanitize as one_line;
 
 pub mod rpath;
+pub mod sbpl;
 
 /// Landlock ABI 3 (Linux 6.2) is the first with TRUNCATE; below it a jail
 /// would leave a hole, so it counts as no jail.
