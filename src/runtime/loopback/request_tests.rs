@@ -632,10 +632,13 @@ fn a_port_nothing_holds_is_free() {
 fn a_port_with_a_listener_or_a_bound_socket_is_not_free() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     assert!(!port_is_free(listener.local_addr().unwrap()));
-    let refused = crate::runtime::refused_port::RefusedPort::new();
+    // A socket that is bound and never listens holds the port on every
+    // system (`RefusedPort` closes its socket outside Linux).
+    let bound = tokio::net::TcpSocket::new_v4().unwrap();
+    bound.bind("127.0.0.1:0".parse().unwrap()).unwrap();
     assert!(!port_is_free(SocketAddr::from((
         [127, 0, 0, 1],
-        refused.port()
+        bound.local_addr().unwrap().port()
     ))));
 }
 
