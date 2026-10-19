@@ -2119,3 +2119,15 @@ fn a_seatbelt_refusal_names_the_sandbox_and_never_says_needs_linux() {
     assert!(!text.contains("needs Linux"), "{text}");
     assert_eq!(off.short_required(), "jail unavailable · use claude");
 }
+
+#[test]
+fn the_private_tmp_of_the_turn_is_writable_on_macos_wherever_it_lives() {
+    // Canonical macOS temp folders are under `/private/var/folders`; the
+    // turn's `TMPDIR` is granted as it is, and nothing else of `/private` is.
+    let mut l = nvm_codex();
+    l.tmp = p("/private/var/folders/ab/cd/T/lazarobox/cli-tmp/1-1");
+    let spec = jail_spec_for(Os::Macos, &l, &identity).unwrap();
+    assert!(spec.rw.contains(&l.tmp));
+    assert!(!spec.rw.iter().any(|w| *w == p("/private")));
+    assert!(spec.ro.contains(&l.cwd));
+}
