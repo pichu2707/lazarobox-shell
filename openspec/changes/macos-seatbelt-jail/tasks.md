@@ -62,8 +62,8 @@ Done: claude bare on macOS regardless of probe, Linux tests untouched, gates gre
 ## Slice 2a: spec split (PR 3)
 
 Files: `jail.rs` (or spec module), `jail/tests.rs`, `CHANGELOG.md`.
-- [ ] 2a.1 RED: `jail_spec_for(Os::Linux, ..)` equals current spec byte-for-byte; macOS spec has no Linux-only paths; shared `/dev/urandom`, `/dev/random`, `/dev/null`; BROAD gains /System /Library /Applications /Users /Volumes /private /private/var /private/etc /opt/homebrew(+bin,sbin,lib,Cellar,opt) /usr/local/{Cellar,opt}.
-- [ ] 2a.2 GREEN: `jail_spec_with = jail_spec_for(Os::CURRENT, ..)`; split constants; CHANGELOG.
+- [x] 2a.1 RED: `jail_spec_for(Os::Linux, ..)` equals current spec byte-for-byte; macOS spec has no Linux-only paths; shared `/dev/urandom`, `/dev/random`, `/dev/null`; BROAD gains /System /Library /Applications /Users /Volumes /private /private/var /private/etc /opt/homebrew(+bin,sbin,lib,Cellar,opt) /usr/local/{Cellar,opt}.
+- [x] 2a.2 GREEN: `jail_spec_with = jail_spec_for(Os::CURRENT, ..)`; split constants; CHANGELOG.
 Done: Linux spec unchanged (regression test), gates green.
 
 ## Slice 2b: renderer (PR 4)
@@ -95,6 +95,7 @@ Done: green on macos-14 and macos-15-intel with `LAZAROBOX_REQUIRE_JAIL=1`.
 ## Slice 4: enable + docs (PR 7)
 
 Files: `jail.rs`, adapters, `jail/tests.rs`, `README.md`, `docs/` (checklist), `CHANGELOG.md`.
+- [ ] 4.0 macOS home deny-list: add ~/Library, ~/Library/Keychains, ~/Library/Application Support (and other macOS credential/shared dirs) to CREDENTIAL_DIRS/SHARED_IN_HOME for Os::Macos before the gate flips (found in 2a review).
 - [ ] 4.1 RED: with Available probe, codex and gemini jailed on macOS; failure refuses; `NotLinux` becomes `NoBackend` "needs Linux or macOS"; codex model listing jailed, keeps `default`; chat-pane guidance and exit 71 jail error.
 - [ ] 4.2 GREEN: `SEATBELT_ENABLED=true`, copy per spec (ai-engine-detection, chat-pane).
 - [ ] 4.2b When the gate flips, bound the probe: the worst case is 3 x 5 s at startup. Give it one total deadline, or run it lazily on the first codex or gemini use.

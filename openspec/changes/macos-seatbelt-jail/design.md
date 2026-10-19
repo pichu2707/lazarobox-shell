@@ -47,7 +47,7 @@ The Exempt notice in `plan()` reads: "claude runs without the jail here: claude 
 - **Linux only:** ro `/usr/lib /usr/share /lib /lib64 /etc /proc/self /sys/fs/cgroup`, and ro_files `/proc/{cpuinfo,meminfo,stat}`.
 - **Shared:** ro_files `/dev/urandom /dev/random`, and rw_files `/dev/null`.
 - **macOS:** nothing more in the spec.
-- **`BROAD`** gains the macOS folders that must never be a package root: `/System /Library /Applications /Users /Volumes /private /private/var /private/etc /opt/homebrew /opt/homebrew/{bin,sbin,lib,Cellar,opt} /usr/local/{Cellar,opt}`. Without them, a binary sitting directly in `/opt/homebrew/bin` would grant exec on all of Homebrew, curl included.
+- **`BROAD`** gains the macOS folders that must never be a package root: `/System /Library /Applications /Users /Volumes /private /private/var /private/etc /opt/homebrew /opt/homebrew/{bin,sbin,lib,Cellar,opt,share,etc,include,Caskroom,Frameworks,var} /usr/local/{Cellar,opt,lib,share,etc,include,Homebrew,Frameworks,var}`. As built (2a), these live in a separate `BROAD_MACOS`, checked only when `os == Macos`, so the Linux list is untouched. Without them, a binary sitting directly in `/opt/homebrew/bin` would grant exec on all of Homebrew, curl included.
 
 ## SBPL renderer (S2): `src/core/ai/jail/sbpl.rs`
 
