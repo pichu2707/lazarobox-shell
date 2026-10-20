@@ -372,6 +372,7 @@ El directorio de trabajo del CLI es una carpeta vacía y privada, el entorno se 
 
 - Las lecturas de sistema (`/usr/lib`, `/System/Library`, `/private/etc`, los prefijos de Homebrew…) se conceden en solo lectura, porque dyld las necesita. El `$HOME` sigue cerrado salvo la carpeta de estado del propio CLI y la carpeta temporal privada del turno.
 - **Lista de carpetas del `$HOME` que nunca se conceden** (además de `~/.ssh`, `~/.gnupg` y las carpetas de otros CLIs): `~/Library` y, dentro, `Keychains`, `Application Support`, `Caches`, `Preferences`, `Cookies`, `Mail`, `Messages`, `Safari`, `Containers`, `Group Containers`, `Mobile Documents`, `Accounts` y `Calendars`. Una instalación del CLI dentro de una de las carpetas de credenciales se rechaza; dentro de `Application Support/<algo>` se acepta (por ejemplo `fnm`).
+- **Qué abre la jaula para TLS:** la búsqueda mach de `com.apple.SecurityServer` (el demonio de confianza y llavero). codex la necesita para verificar los certificados TLS a través de Security.framework; sin ella no llega a `api.openai.com`. Solo da acceso al servicio mach: los ficheros del llavero (`~/Library/Keychains`) siguen denegados.
 - Una disposición donde un programa ejecutable cae dentro de una carpeta escribible (o al revés) se rechaza, porque Seatbelt suma las reglas y el CLI podría ejecutar lo que escribe.
 - Un CLI de scripts con `#!/usr/bin/env node` recibe además el permiso de ejecutar `/usr/bin/env`, y un `node` de Homebrew puede leer su `openssl.cnf`.
 

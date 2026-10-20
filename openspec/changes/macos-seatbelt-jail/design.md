@@ -95,6 +95,7 @@ The skeleton, in this order:
 (allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo")
   (global-name "com.apple.system.notification_center") (global-name "com.apple.logd")
   (global-name "com.apple.dnssd.service") (global-name "com.apple.trustd.agent")
+  (global-name "com.apple.SecurityServer")
   (global-name "com.apple.SystemConfiguration.configd")
   (global-name "com.apple.SystemConfiguration.DNSConfiguration"))
 (allow ipc-posix-shm-read-data (ipc-posix-name "apple.shm.notification_center"))
@@ -128,14 +129,15 @@ Why each system entry is there:
 | `kern.bootargs` | dyld reads it at start; the same runner log showed it denied |
 | `/private/var/run/resolv.conf` | the target of `/etc/resolv.conf` on macOS; Apple's system profile grants it. One literal, not the `run/` folder |
 
+`com.apple.SecurityServer` was first left out as "the Keychain door" and is now granted. codex's TLS verification (rustls platform verifier) goes through Security.framework, which looks that service up; denied, `wss://api.openai.com` fails with `invalid peer certificate: UnknownIssuer` and codex retries forever (issue #180). CI runs 39467174392, 39468400826 and 39469781534 on macos-14 and macos-15-intel proved it necessary (removing only it fails) and sufficient (adding only it reaches the server's 401). OpenAI's own codex Seatbelt profile grants the same service "for TLS certificate information". It opens a mach lookup only: the keychain files under `~/Library/Keychains` stay denied.
+
 Rejected entries:
 - `/Library/Preferences`: system network preferences.
 - `/dev/dtracehelper`: its denial is harmless noise.
 
-The mach services cover libinfo (getpwuid, getaddrinfo), notify, the log, DNS (dnssd plus DNSConfiguration plus the mDNSResponder socket), TLS trust (trustd), and configd. configd is there because reqwest's system-proxy lookup is known to panic when `SCDynamicStore` is unavailable.
+The mach services cover libinfo (getpwuid, getaddrinfo), notify, the log, DNS (dnssd plus DNSConfiguration plus the mDNSResponder socket), TLS trust (trustd and SecurityServer), and configd. configd is there because reqwest's system-proxy lookup is known to panic when `SCDynamicStore` is unavailable.
 
 Deliberately NOT granted:
-- `com.apple.SecurityServer`: the Keychain door.
 - `cfprefsd`/`user-preference-read`.
 - `kern.proc.*`, `net.*`, `iokit-open`.
 
