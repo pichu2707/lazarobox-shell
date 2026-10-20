@@ -784,14 +784,24 @@ pub(crate) const CREDENTIAL_DIRS: &[&str] = &[
 ];
 
 /// [`SHARED_IN_HOME`] on macOS: `~/Library` and the folders in it that hold
-/// many apps' data. Only these folders themselves are refused; a package below
-/// them is not (fnm keeps its node versions in `Application Support/fnm`).
+/// many apps' data. Only these folders themselves are refused here; anything
+/// below `~/Library` is refused by [`LIBRARY_MACOS`] unless it is allowed.
 const SHARED_IN_HOME_MACOS: &[&str] = &[
     "Library",
     "Library/Application Support",
     "Library/Caches",
     "Library/Preferences",
 ];
+
+/// The folder under `$HOME` where macOS keeps every app's data. Nothing at or
+/// under it is granted, except [`LIBRARY_ALLOWED_MACOS`].
+const LIBRARY_MACOS: &str = "Library";
+
+/// The only places at or under `~/Library` that may be granted, relative to
+/// `$HOME`: package locations of tools that install there (fnm keeps its node
+/// versions in `Application Support/fnm`). Everything else (Chrome, 1Password,
+/// `Developer`, `Preferences`...) holds another app's data.
+const LIBRARY_ALLOWED_MACOS: &[&str] = &["Library/Application Support/fnm"];
 
 /// [`CREDENTIAL_DIRS`] on macOS: the Keychain and the folders of the user's
 /// accounts, mail, messages, browsing and app containers. Nothing in or below
@@ -870,6 +880,17 @@ fn too_broad_for_home(path: &Path, home: &Path, cli: Cli, os: Os) -> bool {
             .iter()
             .chain(shared)
             .any(|d| path == home.join(d))
+        || (os == Os::Macos && in_library_not_allowed(path, home))
+}
+
+/// Whether `path` is at or under `~/Library` and not at or under an allowed
+/// place. The credential folders are checked apart, so they stay refused even
+/// if an allowed place ever overlapped one.
+fn in_library_not_allowed(path: &Path, home: &Path) -> bool {
+    path.starts_with(home.join(LIBRARY_MACOS))
+        && !LIBRARY_ALLOWED_MACOS
+            .iter()
+            .any(|allowed| path.starts_with(home.join(allowed)))
 }
 
 /// Why a layout cannot be jailed.

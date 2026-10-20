@@ -1918,6 +1918,9 @@ const MAC_CREDENTIALS: [&str; 10] = [
     "Library/Calendars",
 ];
 
+/// The only places under `~/Library` that may be granted.
+const MAC_LIBRARY_ALLOWED: [&str; 1] = ["Library/Application Support/fnm"];
+
 fn identity(path: &Path) -> Option<PathBuf> {
     Some(path.to_path_buf())
 }
@@ -1968,6 +1971,78 @@ fn a_folder_below_a_shared_macos_library_folder_can_be_a_package() {
         "{HOME}/Library/Application Support/fnm/node-versions/v24/installation/bin/node"
     )));
     assert!(jail_spec_for(Os::Macos, &l, &identity).is_ok());
+}
+
+/// Places under `~/Library` that hold other apps' data and are not credential
+/// folders by name: the whole of `~/Library` is refused except an allowlist.
+const MAC_LIBRARY_OTHER: [&str; 6] = [
+    "Library/Application Support/Google/Chrome",
+    "Library/Application Support/1Password",
+    "Library/Preferences/x",
+    "Library/Developer",
+    "Library/Caches/com.example.app",
+    "Library/Application Support/fnmx",
+];
+
+#[test]
+fn everything_else_under_the_macos_library_is_refused() {
+    for dir in MAC_LIBRARY_OTHER {
+        let full = format!("{HOME}/{dir}");
+        // As a state dir (rw) and as a package root (ro), requested path.
+        let mut l = nvm_codex();
+        l.codex_home = Some(p(&full));
+        let err = jail_spec_for(Os::Macos, &l, &identity);
+        assert_eq!(err.unwrap_err(), SpecError::RootTooBroad(p(&full)), "{dir}");
+        let mut l = nvm_codex();
+        l.binary = p(&format!("{full}/codex"));
+        l.interpreter = None;
+        let err = jail_spec_for(Os::Macos, &l, &identity);
+        assert_eq!(err.unwrap_err(), SpecError::RootTooBroad(p(&full)), "{dir}");
+        // A deeper path is refused too.
+        let below = format!("{full}/inner");
+        let mut l = nvm_codex();
+        l.lib_dirs = vec![p(&below)];
+        let spec = jail_spec_for(Os::Macos, &l, &identity).unwrap();
+        assert!(!spec.ro.contains(&p(&below)), "{dir} granted");
+    }
+}
+
+#[test]
+fn a_library_path_is_refused_as_resolved_too() {
+    // A link outside `~/Library` that resolves into it.
+    let target = format!("{HOME}/Library/Application Support/Google/Chrome");
+    let resolve = |path: &Path| {
+        if path == Path::new("/home/u/chrome-link") {
+            Some(p(&target))
+        } else {
+            identity(path)
+        }
+    };
+    let mut l = nvm_codex();
+    l.codex_home = Some(p("/home/u/chrome-link"));
+    let err = jail_spec_for(Os::Macos, &l, &resolve).unwrap_err();
+    assert!(matches!(err, SpecError::RootTooBroad(_)), "{err:?}");
+}
+
+#[test]
+fn only_the_allowlisted_library_packages_are_accepted_on_macos() {
+    for dir in MAC_LIBRARY_ALLOWED {
+        let mut l = nvm_codex();
+        l.lib_dirs = vec![p(&format!("{HOME}/{dir}/x"))];
+        let spec = jail_spec_for(Os::Macos, &l, &identity).unwrap();
+        assert!(spec.ro.contains(&p(&format!("{HOME}/{dir}/x"))), "{dir}");
+    }
+}
+
+#[test]
+fn the_other_library_places_are_not_refused_on_linux() {
+    for dir in MAC_LIBRARY_OTHER {
+        let full = format!("{HOME}/{dir}");
+        let mut l = nvm_codex();
+        l.codex_home = Some(p(&full));
+        let spec = jail_spec_for(Os::Linux, &l, &identity).unwrap();
+        assert!(spec.rw.contains(&p(&full)), "{dir} refused on Linux");
+    }
 }
 
 #[test]

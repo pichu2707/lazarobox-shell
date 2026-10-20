@@ -17,10 +17,13 @@ baseline.
   (one 5 s deadline for the whole check). If the check fails they are refused,
   never run without the jail. claude is never jailed on macOS, to keep its
   Keychain login. macOS 14 or later is supported; gemini is not yet verified on
-  a real Mac. The jail never grants `~/Library` or the credential folders in it,
-  refuses a layout where a program sits inside a writable folder, and a jailed
-  CLI can still reach loopback, the LAN and the metadata address (accepted
-  risk). A step-by-step check for macOS testers is in
+  a real Mac. The jail never grants anything at or under `~/Library` (as
+  requested or as resolved), except `~/Library/Application Support/fnm`, and
+  the credential folders in it stay refused. It opens one mach lookup,
+  `com.apple.SecurityServer`, which codex needs to verify TLS certificates (the
+  keychain files stay denied). It refuses a layout where a program sits inside
+  a writable folder, and a jailed CLI can still reach loopback, the LAN and the
+  metadata address (accepted risk). A step-by-step check for macOS testers is in
   `docs/macos-tester-checklist.md`.
 
 ### Changed

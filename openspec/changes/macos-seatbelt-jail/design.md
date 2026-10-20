@@ -131,6 +131,8 @@ Why each system entry is there:
 
 `com.apple.SecurityServer` was first left out as "the Keychain door" and is now granted. codex's TLS verification (rustls platform verifier) goes through Security.framework, which looks that service up; denied, `wss://api.openai.com` fails with `invalid peer certificate: UnknownIssuer` and codex retries forever (issue #180). CI runs 39467174392, 39468400826 and 39469781534 on macos-14 and macos-15-intel proved it necessary (removing only it fails) and sufficient (adding only it reaches the server's 401). OpenAI's own codex Seatbelt profile grants the same service "for TLS certificate information". It opens a mach lookup only: the keychain files under `~/Library/Keychains` stay denied.
 
+Home deny-list on macOS: everything at or under `~/Library` is refused (state dir, package root, library folder), as requested and as resolved, except the allowlist `Library/Application Support/fnm` (fnm's node versions). The credential folders (`Keychains`, `Cookies`, `Mail`...) are a separate, earlier-independent check, so they stay refused even if an allowed prefix ever overlapped one. Linux is unchanged.
+
 Rejected entries:
 - `/Library/Preferences`: system network preferences.
 - `/dev/dtracehelper`: its denial is harmless noise.
