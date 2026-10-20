@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-20
+
 ### Added
 
 - The macOS jail: codex and gemini now run on macOS inside a Seatbelt jail
@@ -37,29 +39,25 @@ baseline.
 
 - The real codex test of the macOS jail runs in its own non-blocking CI job
   and judges only the server's 401 as success; an answer such as 403, 429,
-  `unsupported_country` or a Cloudflare challenge is an annotated skip.
+  `unsupported_country` is an annotated skip.
 - Integration tests run fake CLIs through the real macOS jail helper and
   `sandbox-exec` on the macOS CI runners: reads, writes and execs outside the
   granted folders, unix sockets and `bind` are denied, and `/dev/tcp`, the
   environment, odd paths (`=`, quotes, newlines), nested vendor scripts, node
   and an npm-style `#!/usr/bin/env node` shim work. A profile that fails to
-  compile (status 65) is now shown as a jail error too. The macOS jail is
-  still off, so nothing changes for users.
+  compile (status 65) is now shown as a jail error too.
 - The macOS jail helper now builds the `/usr/bin/sandbox-exec` command from
   the rendered profile and replaces itself with it, leaving the environment
   untouched, and the startup probe checks the real profile instead of a
   constant one. A `sandbox-exec` failure (status 71 and its own first stderr
-  line) is shown as a fixed jail error and its stderr is never echoed. The
-  macOS jail is still off, so nothing changes for users.
+  line) is shown as a fixed jail error and its stderr is never echoed.
 - The macOS jail profile renderer (`sbpl::render`): it turns the jail rules into
   a Seatbelt profile text and a list of `-D` values. Paths only ever travel as
   values, never inside the text. The fixed rules read `resolv.conf` at its
-  macOS target and keep Homebrew `etc/` closed, like `var/`. Nothing calls it yet and the macOS jail is
-  still off, so nothing changes for users.
+  macOS target and keep Homebrew `etc/` closed, like `var/`.
 - The jail rules are now built per system (`jail_spec_for`): the Linux rules are
   unchanged, and the macOS rules name no Linux-only path and add the macOS
-  system and Homebrew folders to the list that is never granted. The macOS jail
-  is still off, so nothing changes for users.
+  system and Homebrew folders to the list that is never granted.
 
 ## [0.17.2] - 2026-10-19
 
@@ -896,7 +894,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.2...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.2...v0.18.0
 [0.17.2]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.16.2...v0.17.0
