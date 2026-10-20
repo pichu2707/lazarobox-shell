@@ -21,7 +21,7 @@ use crate::core::ai::jail::{
 #[cfg(target_os = "macos")]
 pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
-/// How long one test program may run before the probe gives up.
+/// How long the whole probe (three test programs) may take before it gives up.
 #[cfg(target_os = "macos")]
 pub const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -224,8 +224,12 @@ pub fn probe_diagnosed_with(
     let spec = probe_spec(&rw, Path::new(TOUCH)).ok_or(bare(SeatbeltFault::Setup))?;
     let profile = sbpl::render(&spec).map_err(|_| bare(SeatbeltFault::Setup))?;
     let profile = sbpl::sandbox_args(&profile);
+    // One deadline for the three programs, so a slow system waits `timeout`
+    // at most, not three times as long.
+    let deadline = Instant::now() + timeout;
     let go = |program: &str, arg: &Path| {
-        run(sandbox_exec, &profile, program, arg, &err_file, timeout).map_err(bare)
+        let left = deadline.saturating_duration_since(Instant::now());
+        run(sandbox_exec, &profile, program, arg, &err_file, left).map_err(bare)
     };
 
     let allowed = go(TOUCH, &ok)?;
@@ -382,6 +386,32 @@ exit 1
         assert_eq!(got, Err(SeatbeltFault::Timeout));
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(is_empty(root.path()));
+    }
+
+    #[test]
+    fn the_deadline_is_one_for_the_whole_probe_not_one_per_program() {
+        let tools = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        // Three programs of 0.4 s each: every one is inside 1 s, all are not.
+        let slow = ENFORCING.replacen("\n", "\nsleep 0.4\n", 1);
+        let fake = script(tools.path(), "sandbox-exec", &slow);
+        let started = Instant::now();
+        let got = probe_with(&fake, root.path(), Duration::from_secs(1));
+        assert_eq!(got, Err(SeatbeltFault::Timeout));
+        assert!(started.elapsed() < Duration::from_millis(1800));
+        assert!(is_empty(root.path()));
+    }
+
+    #[test]
+    fn a_probe_that_finishes_inside_the_deadline_still_passes() {
+        let tools = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let slow = ENFORCING.replacen("\n", "\nsleep 0.1\n", 1);
+        let fake = script(tools.path(), "sandbox-exec", &slow);
+        assert_eq!(
+            probe_with(&fake, root.path(), Duration::from_secs(5)),
+            Ok(())
+        );
     }
 
     #[test]

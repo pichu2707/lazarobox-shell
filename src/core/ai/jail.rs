@@ -39,8 +39,9 @@ pub enum Backend {
 
 /// Whether the macOS jail is wired into the product. While `false` the probe
 /// answers [`SeatbeltFault::NotEnabled`] without spawning anything, so codex
-/// and gemini stay refused on macOS.
-pub const SEATBELT_ENABLED: bool = false;
+/// and gemini stay refused on macOS. It is the switch to turn the macOS jail
+/// off again.
+pub const SEATBELT_ENABLED: bool = true;
 
 /// Why the macOS jail cannot be used.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -89,7 +90,8 @@ pub enum JailOff {
     NoLandlock(u32),
     /// macOS has `sandbox-exec`, but the jail cannot be used.
     NoSeatbelt(SeatbeltFault),
-    NotLinux,
+    /// Neither Linux nor macOS: no jail can be built here.
+    NoBackend,
     /// Nothing probed the system yet (tests, the first frame).
     NotProbed,
 }
@@ -105,7 +107,7 @@ impl JailOff {
                 format!("Landlock ABI {MIN_ABI}+ needed (Linux 6.2); this kernel has ABI {abi}")
             }
             Self::NoSeatbelt(fault) => format!("the macOS jail is unavailable: {}", fault.text()),
-            Self::NotLinux => "the CLI jail needs Linux".to_owned(),
+            Self::NoBackend => "the CLI jail needs Linux or macOS".to_owned(),
             Self::NotProbed => "the jail was not probed".to_owned(),
         }
     }
@@ -116,7 +118,7 @@ impl JailOff {
             Self::NoLandlock(0) => "no Landlock".to_owned(),
             Self::NoLandlock(abi) => format!("Landlock ABI {abi}, needs {MIN_ABI}+"),
             Self::NoSeatbelt(_) => "jail unavailable".to_owned(),
-            Self::NotLinux => "needs Linux".to_owned(),
+            Self::NoBackend => "needs Linux or macOS".to_owned(),
             Self::NotProbed => "not probed".to_owned(),
         }
     }
@@ -125,7 +127,7 @@ impl JailOff {
     /// gemini).
     pub fn text_required(self) -> String {
         match self {
-            Self::NotLinux | Self::NoSeatbelt(_) => format!(
+            Self::NoBackend | Self::NoSeatbelt(_) => format!(
                 "{}; on this system use claude or Ollama for chat",
                 self.text()
             ),
@@ -136,7 +138,7 @@ impl JailOff {
     /// [`Self::short`] for a CLI that does not run without the jail.
     pub fn short_required(self) -> String {
         match self {
-            Self::NotLinux => "needs Linux · use claude".to_owned(),
+            Self::NoBackend => "Linux/macOS only · use claude".to_owned(),
             Self::NoSeatbelt(_) => "jail unavailable · use claude".to_owned(),
             _ => self.short(),
         }
@@ -287,7 +289,7 @@ fn known_helper_reason(said: &str) -> Option<String> {
         SeatbeltFault::NotEnabled,
     ]
     .map(JailOff::NoSeatbelt);
-    [JailOff::NoLandlock(0), JailOff::NotLinux]
+    [JailOff::NoLandlock(0), JailOff::NoBackend]
         .into_iter()
         .chain(macos)
         .map(JailOff::text)
@@ -360,6 +362,8 @@ pub enum JailRefusal {
     RootTooBroad(PathBuf),
     /// A path that is not canonical.
     NotCanonical(PathBuf),
+    /// A program path the CLI could also write (or the other way round).
+    Overlap(PathBuf),
 }
 
 /// Why an interpreter is not trusted.
@@ -379,6 +383,7 @@ impl From<SpecError> for JailRefusal {
         match error {
             SpecError::RootTooBroad(path) => Self::RootTooBroad(path),
             SpecError::NotCanonical(path) => Self::NotCanonical(path),
+            SpecError::Overlap { rx, .. } => Self::Overlap(rx),
         }
     }
 }
@@ -490,6 +495,10 @@ impl JailRefusal {
                 at(path)
             ),
             Self::NotCanonical(path) => format!("{} is not a canonical path", at(path)),
+            Self::Overlap(path) => format!(
+                "{} would be both run and written by the jail; keep the CLI and its state in separate folders",
+                at(path)
+            ),
         }
     }
 
@@ -506,6 +515,7 @@ impl JailRefusal {
             Self::UntrustedInterpreter { .. } => "interpreter not trusted".to_owned(),
             Self::RootTooBroad(path) => format!("{} too broad", brief(path, home)),
             Self::NotCanonical(path) => format!("{} not canonical", brief(path, home)),
+            Self::Overlap(path) => format!("{} is run and written", brief(path, home)),
         }
     }
 }
@@ -773,6 +783,42 @@ pub(crate) const CREDENTIAL_DIRS: &[&str] = &[
     ".password-store",
 ];
 
+/// [`SHARED_IN_HOME`] on macOS: `~/Library` and the folders in it that hold
+/// many apps' data. Only these folders themselves are refused here; anything
+/// below `~/Library` is refused by [`LIBRARY_MACOS`] unless it is allowed.
+const SHARED_IN_HOME_MACOS: &[&str] = &[
+    "Library",
+    "Library/Application Support",
+    "Library/Caches",
+    "Library/Preferences",
+];
+
+/// The folder under `$HOME` where macOS keeps every app's data. Nothing at or
+/// under it is granted, except [`LIBRARY_ALLOWED_MACOS`].
+const LIBRARY_MACOS: &str = "Library";
+
+/// The only places at or under `~/Library` that may be granted, relative to
+/// `$HOME`: package locations of tools that install there (fnm keeps its node
+/// versions in `Application Support/fnm`). Everything else (Chrome, 1Password,
+/// `Developer`, `Preferences`...) holds another app's data.
+const LIBRARY_ALLOWED_MACOS: &[&str] = &["Library/Application Support/fnm"];
+
+/// [`CREDENTIAL_DIRS`] on macOS: the Keychain and the folders of the user's
+/// accounts, mail, messages, browsing and app containers. Nothing in or below
+/// them is ever granted.
+const CREDENTIAL_DIRS_MACOS: &[&str] = &[
+    "Library/Keychains",
+    "Library/Cookies",
+    "Library/Mail",
+    "Library/Messages",
+    "Library/Safari",
+    "Library/Containers",
+    "Library/Group Containers",
+    "Library/Mobile Documents",
+    "Library/Accounts",
+    "Library/Calendars",
+];
+
 impl Cli {
     /// The folder under `$HOME` that is this CLI's own by default.
     fn own_dir(self) -> &'static str {
@@ -811,18 +857,40 @@ fn too_broad(path: &Path, homes: &[&Path], cli: Cli, os: Os) -> bool {
     let macos: &[&str] = if os == Os::Macos { BROAD_MACOS } else { &[] };
     is_scratch(path)
         || BROAD.iter().chain(macos).any(|b| path == Path::new(b))
-        || homes.iter().any(|home| too_broad_for_home(path, home, cli))
+        || homes
+            .iter()
+            .any(|home| too_broad_for_home(path, home, cli, os))
 }
 
-fn too_broad_for_home(path: &Path, home: &Path, cli: Cli) -> bool {
+fn too_broad_for_home(path: &Path, home: &Path, cli: Cli, os: Os) -> bool {
+    let (credentials, shared): (&[&str], &[&str]) = if os == Os::Macos {
+        (CREDENTIAL_DIRS_MACOS, SHARED_IN_HOME_MACOS)
+    } else {
+        (&[], &[])
+    };
     home.starts_with(path)
         || path.starts_with(home.join(".ssh"))
         || path.starts_with(home.join(".gnupg"))
         || CREDENTIAL_DIRS
             .iter()
+            .chain(credentials)
             .filter(|d| **d != cli.own_dir())
             .any(|d| path.starts_with(home.join(d)))
-        || SHARED_IN_HOME.iter().any(|d| path == home.join(d))
+        || SHARED_IN_HOME
+            .iter()
+            .chain(shared)
+            .any(|d| path == home.join(d))
+        || (os == Os::Macos && in_library_not_allowed(path, home))
+}
+
+/// Whether `path` is at or under `~/Library` and not at or under an allowed
+/// place. The credential folders are checked apart, so they stay refused even
+/// if an allowed place ever overlapped one.
+fn in_library_not_allowed(path: &Path, home: &Path) -> bool {
+    path.starts_with(home.join(LIBRARY_MACOS))
+        && !LIBRARY_ALLOWED_MACOS
+            .iter()
+            .any(|allowed| path.starts_with(home.join(allowed)))
 }
 
 /// Why a layout cannot be jailed.
@@ -833,6 +901,9 @@ pub enum SpecError {
     /// A path that is not absolute or holds a `.` or `..` segment. `jail_spec`
     /// takes canonical paths: a lexical check on `a/../b` would be fooled.
     NotCanonical(PathBuf),
+    /// A path that can be executed is equal to, under or over one that can be
+    /// written. Seatbelt unions its rules, so the CLI could run what it wrote.
+    Overlap { rx: PathBuf, rw: PathBuf },
 }
 
 fn is_canonical_form(path: &Path) -> bool {
@@ -1068,7 +1139,23 @@ pub fn jail_spec_for(
         }
         push_unique(&mut spec.rw_files, shim.socket.clone());
     }
+    if os == Os::Macos
+        && let Some((rx, rw)) = writable_executable(&spec)
+    {
+        return Err(SpecError::Overlap { rx, rw });
+    }
     Ok(spec)
+}
+
+/// The first execute path that is equal to, under or over a writable one.
+fn writable_executable(spec: &JailSpec) -> Option<(PathBuf, PathBuf)> {
+    spec.rx.iter().find_map(|rx| {
+        spec.rw
+            .iter()
+            .chain(&spec.rw_files)
+            .find(|rw| rx.starts_with(rw) || rw.starts_with(rx))
+            .map(|rw| (rx.clone(), rw.clone()))
+    })
 }
 
 impl JailSpec {

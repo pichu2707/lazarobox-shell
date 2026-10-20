@@ -1238,7 +1238,7 @@ fn the_helper_reason_is_one_of_the_fixed_texts_it_emits() {
         "ABI 2 is below the required 6",
         "Landlock ABI 3+ needed (Linux 6.2); this kernel has ABI 2",
         "Landlock is unavailable or blocked (kernel, container or seccomp)",
-        "the CLI jail needs Linux",
+        "the CLI jail needs Linux or macOS",
     ] {
         assert_eq!(jail_reason(&line(why)).as_deref(), Some(why), "{why}");
     }
@@ -1274,25 +1274,28 @@ fn a_kernel_without_the_abi_says_what_to_upgrade_to() {
         "Landlock is unavailable or blocked (kernel, container or seccomp)"
     );
     assert_eq!(none.short(home()), "no Landlock");
-    let other_os = JailRefusal::Unsupported(JailOff::NotLinux);
-    assert_eq!(other_os.hint(home()), "the CLI jail needs Linux");
-    assert_eq!(other_os.short(home()), "needs Linux");
+    let other_os = JailRefusal::Unsupported(JailOff::NoBackend);
+    assert_eq!(other_os.hint(home()), "the CLI jail needs Linux or macOS");
+    assert_eq!(other_os.short(home()), "needs Linux or macOS");
 }
 
 #[test]
 fn a_cli_that_needs_the_jail_is_told_what_to_use_instead_on_other_systems() {
     assert_eq!(
-        JailOff::NotLinux.text_required(),
-        "the CLI jail needs Linux; on this system use claude or Ollama for chat"
+        JailOff::NoBackend.text_required(),
+        "the CLI jail needs Linux or macOS; on this system use claude or Ollama for chat"
     );
     assert_eq!(
-        JailOff::NotLinux.short_required(),
-        "needs Linux · use claude"
+        JailOff::NoBackend.short_required(),
+        "Linux/macOS only · use claude"
     );
     // The neutral texts stay as they are: claude runs bare and the helper
     // emits the plain sentence.
-    assert_eq!(JailOff::NotLinux.text(), "the CLI jail needs Linux");
-    assert_eq!(JailOff::NotLinux.short(), "needs Linux");
+    assert_eq!(
+        JailOff::NoBackend.text(),
+        "the CLI jail needs Linux or macOS"
+    );
+    assert_eq!(JailOff::NoBackend.short(), "needs Linux or macOS");
 }
 
 #[test]
@@ -1889,4 +1892,317 @@ fn macos_system_and_package_folders_are_too_broad_on_macos_only() {
         let on_linux = jail_spec_for(Os::Linux, &l, &|path| Some(path.to_path_buf())).unwrap();
         assert!(on_linux.ro.contains(&p(dir)), "{dir} refused on Linux");
     }
+}
+
+/// Home folders of macOS that hold other apps' data. Equal to one of these is
+/// refused; a folder below one is a different matter (see the next list).
+const MAC_SHARED: [&str; 4] = [
+    "Library",
+    "Library/Application Support",
+    "Library/Caches",
+    "Library/Preferences",
+];
+
+/// Home folders of macOS that hold credentials or personal data: nothing in or
+/// below them is ever granted.
+const MAC_CREDENTIALS: [&str; 10] = [
+    "Library/Keychains",
+    "Library/Cookies",
+    "Library/Mail",
+    "Library/Messages",
+    "Library/Safari",
+    "Library/Containers",
+    "Library/Group Containers",
+    "Library/Mobile Documents",
+    "Library/Accounts",
+    "Library/Calendars",
+];
+
+/// The only places under `~/Library` that may be granted.
+const MAC_LIBRARY_ALLOWED: [&str; 1] = ["Library/Application Support/fnm"];
+
+fn identity(path: &Path) -> Option<PathBuf> {
+    Some(path.to_path_buf())
+}
+
+#[test]
+fn the_macos_library_folders_are_too_broad_for_a_package_or_a_state_dir() {
+    for dir in MAC_SHARED.iter().chain(&MAC_CREDENTIALS) {
+        let full = format!("{HOME}/{dir}");
+        let mut l = nvm_codex();
+        l.binary = p(&format!("{full}/codex"));
+        l.interpreter = None;
+        let err = jail_spec_for(Os::Macos, &l, &identity);
+        assert_eq!(err.unwrap_err(), SpecError::RootTooBroad(p(&full)), "{dir}");
+        let mut l = nvm_codex();
+        l.codex_home = Some(p(&full));
+        let err = jail_spec_for(Os::Macos, &l, &identity);
+        assert_eq!(err.unwrap_err(), SpecError::RootTooBroad(p(&full)), "{dir}");
+    }
+}
+
+#[test]
+fn nothing_below_a_macos_credential_folder_is_granted() {
+    for dir in MAC_CREDENTIALS {
+        let below = format!("{HOME}/{dir}/inner");
+        let mut l = nvm_codex();
+        l.codex_home = Some(p(&below));
+        let err = jail_spec_for(Os::Macos, &l, &identity);
+        assert_eq!(
+            err.unwrap_err(),
+            SpecError::RootTooBroad(p(&below)),
+            "{dir}"
+        );
+        let mut l = nvm_codex();
+        l.lib_dirs = vec![p(&below)];
+        let spec = jail_spec_for(Os::Macos, &l, &identity).unwrap();
+        assert!(!spec.ro.contains(&p(&below)), "{dir} granted");
+    }
+}
+
+#[test]
+fn a_folder_below_a_shared_macos_library_folder_can_be_a_package() {
+    // fnm keeps its node versions in `~/Library/Application Support/fnm`.
+    let mut l = nvm_codex();
+    l.binary = p(&format!(
+        "{HOME}/Library/Application Support/fnm/node-versions/v24/installation/lib/node_modules/@openai/codex/bin/codex.js"
+    ));
+    l.interpreter = Some(p(&format!(
+        "{HOME}/Library/Application Support/fnm/node-versions/v24/installation/bin/node"
+    )));
+    assert!(jail_spec_for(Os::Macos, &l, &identity).is_ok());
+}
+
+/// Places under `~/Library` that hold other apps' data and are not credential
+/// folders by name: the whole of `~/Library` is refused except an allowlist.
+const MAC_LIBRARY_OTHER: [&str; 6] = [
+    "Library/Application Support/Google/Chrome",
+    "Library/Application Support/1Password",
+    "Library/Preferences/x",
+    "Library/Developer",
+    "Library/Caches/com.example.app",
+    "Library/Application Support/fnmx",
+];
+
+#[test]
+fn everything_else_under_the_macos_library_is_refused() {
+    for dir in MAC_LIBRARY_OTHER {
+        let full = format!("{HOME}/{dir}");
+        // As a state dir (rw) and as a package root (ro), requested path.
+        let mut l = nvm_codex();
+        l.codex_home = Some(p(&full));
+        let err = jail_spec_for(Os::Macos, &l, &identity);
+        assert_eq!(err.unwrap_err(), SpecError::RootTooBroad(p(&full)), "{dir}");
+        let mut l = nvm_codex();
+        l.binary = p(&format!("{full}/codex"));
+        l.interpreter = None;
+        let err = jail_spec_for(Os::Macos, &l, &identity);
+        assert_eq!(err.unwrap_err(), SpecError::RootTooBroad(p(&full)), "{dir}");
+        // A deeper path is refused too.
+        let below = format!("{full}/inner");
+        let mut l = nvm_codex();
+        l.lib_dirs = vec![p(&below)];
+        let spec = jail_spec_for(Os::Macos, &l, &identity).unwrap();
+        assert!(!spec.ro.contains(&p(&below)), "{dir} granted");
+    }
+}
+
+#[test]
+fn a_library_path_is_refused_as_resolved_too() {
+    // A link outside `~/Library` that resolves into it.
+    let target = format!("{HOME}/Library/Application Support/Google/Chrome");
+    let resolve = |path: &Path| {
+        if path == Path::new("/home/u/chrome-link") {
+            Some(p(&target))
+        } else {
+            identity(path)
+        }
+    };
+    let mut l = nvm_codex();
+    l.codex_home = Some(p("/home/u/chrome-link"));
+    let err = jail_spec_for(Os::Macos, &l, &resolve).unwrap_err();
+    assert!(matches!(err, SpecError::RootTooBroad(_)), "{err:?}");
+}
+
+#[test]
+fn only_the_allowlisted_library_packages_are_accepted_on_macos() {
+    for dir in MAC_LIBRARY_ALLOWED {
+        let mut l = nvm_codex();
+        l.lib_dirs = vec![p(&format!("{HOME}/{dir}/x"))];
+        let spec = jail_spec_for(Os::Macos, &l, &identity).unwrap();
+        assert!(spec.ro.contains(&p(&format!("{HOME}/{dir}/x"))), "{dir}");
+    }
+}
+
+#[test]
+fn the_other_library_places_are_not_refused_on_linux() {
+    for dir in MAC_LIBRARY_OTHER {
+        let full = format!("{HOME}/{dir}");
+        let mut l = nvm_codex();
+        l.codex_home = Some(p(&full));
+        let spec = jail_spec_for(Os::Linux, &l, &identity).unwrap();
+        assert!(spec.rw.contains(&p(&full)), "{dir} refused on Linux");
+    }
+}
+
+#[test]
+fn the_macos_library_folders_are_not_refused_on_linux() {
+    for dir in MAC_SHARED.iter().chain(&MAC_CREDENTIALS) {
+        let full = format!("{HOME}/{dir}");
+        let mut l = nvm_codex();
+        l.codex_home = Some(p(&full));
+        let spec = jail_spec_for(Os::Linux, &l, &identity).unwrap();
+        assert!(spec.rw.contains(&p(&full)), "{dir} refused on Linux");
+        let mut l = nvm_codex();
+        l.lib_dirs = vec![p(&full)];
+        let spec = jail_spec_for(Os::Other, &l, &identity).unwrap();
+        assert!(spec.ro.contains(&p(&full)), "{dir} refused on Other");
+    }
+}
+
+#[test]
+fn the_codex_and_gemini_state_dirs_are_still_granted_on_macos() {
+    let spec = jail_spec_for(Os::Macos, &nvm_codex(), &identity).unwrap();
+    assert!(spec.rw.contains(&p("/home/u/.codex")));
+    let spec = jail_spec_for(Os::Macos, &brew_gemini(), &identity).unwrap();
+    assert!(spec.rw.contains(&p("/home/u/.gemini")));
+}
+
+fn overlaps(spec: &JailSpec) -> bool {
+    spec.rx.iter().any(|x| {
+        spec.rw
+            .iter()
+            .chain(&spec.rw_files)
+            .any(|w| x.starts_with(w) || w.starts_with(x))
+    })
+}
+
+#[test]
+fn a_package_inside_the_state_dir_is_refused_on_macos() {
+    // Seatbelt unions the rules: execute under a writable folder is write+exec.
+    let l = layout(Cli::Codex, "/home/u/.codex/versions/1/codex", None);
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+}
+
+#[test]
+fn a_state_dir_inside_the_package_is_refused_on_macos() {
+    let mut l = nvm_codex();
+    l.codex_home = Some(p(
+        "/home/u/.nvm/versions/node/v24.16.0/lib/node_modules/@openai/codex/state",
+    ));
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+}
+
+#[test]
+fn a_private_tmp_under_a_program_is_refused_on_macos() {
+    let mut l = busy_codex();
+    l.tmp = p("/opt/lb/bin/rg/tmp");
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+}
+
+#[test]
+fn a_socket_file_inside_a_program_folder_is_refused_on_macos() {
+    let mut l = nvm_codex();
+    l.shim = Some(ShimGrant {
+        binary: p("/opt/lb/bin/lazarobox"),
+        loader: None,
+        socket: p("/home/u/.nvm/versions/node/v24.16.0/lib/node_modules/@openai/codex/s.sock"),
+    });
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+}
+
+#[test]
+fn the_usual_layouts_have_disjoint_rx_and_rw_on_every_system() {
+    for os in [Os::Linux, Os::Macos, Os::Other] {
+        for l in [nvm_codex(), busy_codex(), native_claude(), brew_gemini()] {
+            let spec = jail_spec_for(os, &l, &identity).unwrap();
+            assert!(!overlaps(&spec), "{os:?} {:?}", l.cli);
+        }
+    }
+}
+
+#[test]
+fn the_overlap_check_does_not_change_linux() {
+    // The same layouts that macOS refuses still build on the other systems.
+    let l = layout(Cli::Codex, "/home/u/.codex/versions/1/codex", None);
+    for os in [Os::Linux, Os::Other] {
+        assert!(jail_spec_for(os, &l, &identity).is_ok(), "{os:?}");
+    }
+}
+
+#[test]
+fn an_overlap_refusal_names_the_program_and_never_the_writable_folder() {
+    let err = JailRefusal::from(SpecError::Overlap {
+        rx: p("/home/u/.codex/versions/1/codex"),
+        rw: p("/home/u/.codex"),
+    });
+    assert_eq!(
+        err,
+        JailRefusal::Overlap(p("/home/u/.codex/versions/1/codex"))
+    );
+    let home = Some(Path::new(HOME));
+    assert_eq!(err.short(home), "…/codex is run and written");
+    assert!(
+        err.hint(home).contains("separate folders"),
+        "{}",
+        err.hint(home)
+    );
+}
+
+#[test]
+fn the_macos_jail_is_on() {
+    const { assert!(SEATBELT_ENABLED) };
+}
+
+/// What the product does on macOS for a probe result, end to end.
+fn macos_launch(cli: Cli, probed: Result<(), SeatbeltFault>) -> Launch {
+    launch(
+        jail_policy(cli, Os::Macos),
+        seatbelt_support(SEATBELT_ENABLED, probed),
+    )
+}
+
+#[test]
+fn with_a_passing_probe_codex_and_gemini_run_jailed_on_macos_and_claude_bare() {
+    assert_eq!(macos_launch(Cli::Codex, Ok(())), Launch::Jailed);
+    assert_eq!(macos_launch(Cli::Gemini, Ok(())), Launch::Jailed);
+    assert_eq!(macos_launch(Cli::Claude, Ok(())), Launch::Bare);
+}
+
+#[test]
+fn a_failed_probe_refuses_codex_and_gemini_on_macos_never_bare() {
+    for (fault, _) in FAULTS {
+        assert_eq!(macos_launch(Cli::Codex, Err(fault)), Launch::Refuse);
+        assert_eq!(macos_launch(Cli::Gemini, Err(fault)), Launch::Refuse);
+        assert_eq!(macos_launch(Cli::Claude, Err(fault)), Launch::Bare);
+    }
+}
+
+#[test]
+fn a_seatbelt_refusal_names_the_sandbox_and_never_says_needs_linux() {
+    let off = JailOff::NoSeatbelt(SeatbeltFault::Refused);
+    let text = off.text_required();
+    assert_eq!(
+        text,
+        "the macOS jail is unavailable: sandbox-exec refused a test program; \
+         on this system use claude or Ollama for chat"
+    );
+    assert!(!text.contains("needs Linux"), "{text}");
+    assert_eq!(off.short_required(), "jail unavailable · use claude");
+}
+
+#[test]
+fn the_private_tmp_of_the_turn_is_writable_on_macos_wherever_it_lives() {
+    // Canonical macOS temp folders are under `/private/var/folders`; the
+    // turn's `TMPDIR` is granted as it is, and nothing else of `/private` is.
+    let mut l = nvm_codex();
+    l.tmp = p("/private/var/folders/ab/cd/T/lazarobox/cli-tmp/1-1");
+    let spec = jail_spec_for(Os::Macos, &l, &identity).unwrap();
+    assert!(spec.rw.contains(&l.tmp));
+    assert!(!spec.rw.iter().any(|w| *w == p("/private")));
+    assert!(spec.ro.contains(&l.cwd));
 }

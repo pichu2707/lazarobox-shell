@@ -1174,7 +1174,7 @@ mod tests {
         let reasons = [
             JailRefusal::Unsupported(JailOff::NoLandlock(12)),
             JailRefusal::Unsupported(JailOff::NoLandlock(0)),
-            JailRefusal::Unsupported(JailOff::NotLinux),
+            JailRefusal::Unsupported(JailOff::NoBackend),
             JailRefusal::NoHome,
             JailRefusal::HomeMissing("/h".into()),
             JailRefusal::NoInterpreter("node".into()),
@@ -1189,7 +1189,7 @@ mod tests {
             JailRefusal::NotCanonical(long),
         ];
         let mut whys: Vec<String> = reasons.iter().map(|r| r.short(home)).collect();
-        whys.push(JailOff::NotLinux.short_required());
+        whys.push(JailOff::NoBackend.short_required());
         // claude on macOS (see `jail_note_on`).
         whys.push("uses macOS Keychain".to_owned());
         for why in whys {

@@ -95,6 +95,7 @@ The skeleton, in this order:
 (allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo")
   (global-name "com.apple.system.notification_center") (global-name "com.apple.logd")
   (global-name "com.apple.dnssd.service") (global-name "com.apple.trustd.agent")
+  (global-name "com.apple.SecurityServer")
   (global-name "com.apple.SystemConfiguration.configd")
   (global-name "com.apple.SystemConfiguration.DNSConfiguration"))
 (allow ipc-posix-shm-read-data (ipc-posix-name "apple.shm.notification_center"))
@@ -128,14 +129,17 @@ Why each system entry is there:
 | `kern.bootargs` | dyld reads it at start; the same runner log showed it denied |
 | `/private/var/run/resolv.conf` | the target of `/etc/resolv.conf` on macOS; Apple's system profile grants it. One literal, not the `run/` folder |
 
+`com.apple.SecurityServer` was first left out as "the Keychain door" and is now granted. codex's TLS verification (rustls platform verifier) goes through Security.framework, which looks that service up; denied, `wss://api.openai.com` fails with `invalid peer certificate: UnknownIssuer` and codex retries forever (issue #180). CI runs 39467174392, 39468400826 and 39469781534 on macos-14 and macos-15-intel proved it necessary (removing only it fails) and sufficient (adding only it reaches the server's 401). OpenAI's own codex Seatbelt profile grants the same service "for TLS certificate information". The lookup reaches securityd, which reads keychains outside the sandbox and can serve keychain ITEMS over that port, subject to its own ACLs and prompts. The profile still denies the keychain FILES under `~/Library/Keychains`, but not the service. Accepted risk, listed with the outbound-network one.
+
+Home deny-list on macOS: everything at or under `~/Library` is refused (state dir, package root, library folder), as requested and as resolved, except the allowlist `Library/Application Support/fnm` (fnm's node versions). The credential folders (`Keychains`, `Cookies`, `Mail`...) are checked independently, so they stay refused regardless of the allowlist. Linux is unchanged.
+
 Rejected entries:
 - `/Library/Preferences`: system network preferences.
 - `/dev/dtracehelper`: its denial is harmless noise.
 
-The mach services cover libinfo (getpwuid, getaddrinfo), notify, the log, DNS (dnssd plus DNSConfiguration plus the mDNSResponder socket), TLS trust (trustd), and configd. configd is there because reqwest's system-proxy lookup is known to panic when `SCDynamicStore` is unavailable.
+The mach services cover libinfo (getpwuid, getaddrinfo), notify, the log, DNS (dnssd plus DNSConfiguration plus the mDNSResponder socket), TLS trust (trustd and SecurityServer), and configd. configd is there because reqwest's system-proxy lookup is known to panic when `SCDynamicStore` is unavailable.
 
 Deliberately NOT granted:
-- `com.apple.SecurityServer`: the Keychain door.
 - `cfprefsd`/`user-preference-read`.
 - `kern.proc.*`, `net.*`, `iokit-open`.
 
@@ -213,6 +217,7 @@ No data migration. S1 through S3 are inert in the product because of the gate. R
 - [x] `=` in a `-D` value, and the exit codes for a compile error or a denied exec: **3b**. `=` is safe; a denied exec is 71; a compile error is 65 (added to `exit_error`).
 - [ ] Mach/sysctl completeness (DNS, TLS, configd): **3b** node start passes (Homebrew node also needs `etc/openssl@3/openssl.cnf` as an `ro_files` literal, a slice 4 spec item); DNS and TLS still open for the S4 tester with `log stream --predicate 'sender=="Sandbox"'`.
 - [ ] codex/gemini Keychain use: the tester; the gemini README note.
+- ACCEPTED RISK (user, slice 4 review): `com.apple.SecurityServer` is reachable, so a jailed CLI may obtain keychain items from securityd (its ACLs and prompts still apply). Keychain files stay denied.
 - ACCEPTED RISK (user, 2b review): `(remote ip "*:*")` reaches 127.0.0.1, the LAN and the cloud metadata IP. SBPL cannot express "public addresses only" and the CLIs need the internet. Slice 4 docs (4.3) must say so in the README.
 - [ ] The unix-socket tightening (decision 7) and the Homebrew `var/` exclusion are refinements of D3/D5 and need user confirmation.
 - [ ] A `current_exe` path that vanishes after `brew upgrade` plus cleanup: an error, not a leak; accepted.

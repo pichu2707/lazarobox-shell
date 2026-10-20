@@ -10,8 +10,34 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- The macOS jail: codex and gemini now run on macOS inside a Seatbelt jail
+  (`/usr/bin/sandbox-exec`), after a startup check that proves it restricts
+  (one 5 s deadline for the whole check). If the check fails they are refused,
+  never run without the jail. claude is never jailed on macOS, to keep its
+  Keychain login. macOS 14 or later is supported; gemini is not yet verified on
+  a real Mac. The jail never grants anything at or under `~/Library` (as
+  requested or as resolved), except `~/Library/Application Support/fnm`, and
+  the credential folders in it stay refused. It opens one mach lookup,
+  `com.apple.SecurityServer`, which codex needs to verify TLS certificates. The
+  lookup reaches securityd, which reads keychains outside the sandbox and can
+  serve keychain items over that port subject to its own ACLs and prompts; the
+  keychain files stay denied by the profile (accepted risk). It refuses a layout where a program sits inside
+  a writable folder, and a jailed CLI can still reach loopback, the LAN and the
+  metadata address (accepted risk). A step-by-step check for macOS testers is in
+  `docs/macos-tester-checklist.md`.
+
+### Changed
+
+- The refusal on systems with neither Linux nor macOS now reads `the CLI jail
+  needs Linux or macOS`.
+
 ### Internal
 
+- The real codex test of the macOS jail runs in its own non-blocking CI job
+  and judges only the server's 401 as success; an answer such as 403, 429,
+  `unsupported_country` or a Cloudflare challenge is an annotated skip.
 - Integration tests run fake CLIs through the real macOS jail helper and
   `sandbox-exec` on the macOS CI runners: reads, writes and execs outside the
   granted folders, unix sockets and `bind` are denied, and `/dev/tcp`, the

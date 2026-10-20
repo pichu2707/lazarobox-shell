@@ -96,13 +96,18 @@ Done: green on macos-14 and macos-15-intel with `LAZAROBOX_REQUIRE_JAIL=1`.
 ## Slice 4: enable + docs (PR 7)
 
 Files: `jail.rs`, adapters, `jail/tests.rs`, `README.md`, `docs/` (checklist), `CHANGELOG.md`.
-- [ ] 4.0 macOS home deny-list: add ~/Library, ~/Library/Keychains, ~/Library/Application Support (and other macOS credential/shared dirs) to CREDENTIAL_DIRS/SHARED_IN_HOME for Os::Macos before the gate flips (found in 2a review).
-- [ ] 4.0b spec layer: assert spec.rw and spec.rx are disjoint in jail_spec_for (Seatbelt rules union, so overlap means write+exec), with a test.
-- [ ] 4.1 RED: with Available probe, codex and gemini jailed on macOS; failure refuses; `NotLinux` becomes `NoBackend` "needs Linux or macOS"; codex model listing jailed, keeps `default`; chat-pane guidance and exit 71 jail error.
-- [ ] 4.2 GREEN: `SEATBELT_ENABLED=true`, copy per spec (ai-engine-detection, chat-pane).
-- [ ] 4.2b When the gate flips, bound the probe: the worst case is 3 x 5 s at startup. Give it one total deadline, or run it lazily on the first codex or gemini use.
-- [ ] 4.3 Docs: README macOS 14+ support, gemini "not yet verified on a real Mac", claude never jailed on macOS; state that the jailed CLI can reach loopback, the LAN and the metadata IP (accepted risk, see design).
-- [ ] 4.4 MANUAL (#180 tester, codex only) checklist doc: `which codex node`; how codex was installed (npm, brew cask); run a codex turn; run a read-tool turn; what a refusal looks like; collect `log stream --predicate 'sender == "Sandbox"'` output during the turn.
-- [ ] 4.5 CHANGELOG (Added: macOS jail, codex/gemini on macOS).
+- [x] 4.0 macOS home deny-list: add ~/Library, ~/Library/Keychains, ~/Library/Application Support (and other macOS credential/shared dirs) to CREDENTIAL_DIRS/SHARED_IN_HOME for Os::Macos before the gate flips (found in 2a review).
+- [x] 4.0b spec layer: assert spec.rw and spec.rx are disjoint in jail_spec_for (Seatbelt rules union, so overlap means write+exec), with a test.
+- [x] 4.1 RED: with Available probe, codex and gemini jailed on macOS; failure refuses; `NotLinux` becomes `NoBackend` "needs Linux or macOS"; codex model listing jailed, keeps `default`; chat-pane guidance and exit 71 jail error.
+- [x] 4.2 GREEN: `SEATBELT_ENABLED=true`, copy per spec (ai-engine-detection, chat-pane).
+- [x] 4.2b When the gate flips, bound the probe: the worst case is 3 x 5 s at startup. Give it one total deadline, or run it lazily on the first codex or gemini use.
+- [x] 4.3 Docs: README macOS 14+ support, gemini "not yet verified on a real Mac", claude never jailed on macOS; state that the jailed CLI can reach loopback, the LAN and the metadata IP (accepted risk, see design).
+- [x] 4.4 MANUAL (#180 tester, codex only) checklist doc: `which codex node`; how codex was installed (npm, brew cask); run a codex turn; run a read-tool turn; what a refusal looks like; collect `log stream --predicate 'sender == "Sandbox"'` output during the turn.
+- [x] 4.5 CHANGELOG (Added: macOS jail, codex/gemini on macOS).
+- [x] 4.7 SecurityServer: `(global-name "com.apple.SecurityServer")` added to the mach-lookup list (RED: golden and render test; proven necessary and sufficient by CI runs 39467174392, 39468400826, 39469781534); design and README updated.
+- [x] 4.8 macOS `~/Library` rule: everything at or under it is refused (requested and resolved) except the allowlist `Library/Application Support/fnm`; credential dirs stay a separate check. Tests: Chrome, 1Password, Preferences, Developer refused; fnm accepted; Linux unchanged. README and CHANGELOG updated.
+- [x] 4.9 Real-codex test precision: AUTH = `401 unauthorized` / `incorrect api key` only, BROKEN = exact failure markers, 403 / 429 / `unsupported_country` is an annotated skip (rules in tests/support/codex_outcome.rs, unit tested on Linux in tests/codex_outcome.rs).
+- [x] 4.10 CI: the real-codex step moved to its own non-blocking job `real-cli-macos` (continue-on-error, both macOS runners).
+- [x] 4.11 Review-fix round: the test judge (`judge` in tests/support/codex_outcome.rs) never accepts Auth/External from the non-error dump; EXTERNAL drops bare `cloudflare` / `just a moment`; non-blocking CI job prints an `::error` annotation on failure; SecurityServer docs state the securityd/keychain-items accepted risk; tester checklist asks about keychain prompts.
 - [ ] 4.6 MANUAL: send checklist to the #180 tester and record the result.
 Done: gates green, checklist and README merged; tester feedback is post-merge.

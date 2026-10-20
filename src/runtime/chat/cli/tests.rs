@@ -705,9 +705,17 @@ async fn an_env_shebang_script_is_started_through_its_interpreter_not_through_en
         granted("--rx", &interp),
         "the interpreter, one file: {args:?}"
     );
+    // `env` is granted as one exact file on macOS only (Seatbelt refuses the
+    // start of an `#!/usr/bin/env` script without it); Linux never grants it.
+    let env_rx = args
+        .windows(2)
+        .any(|w| w[0] == "--rx" && w[1] == "/usr/bin/env");
+    assert_eq!(env_rx, Os::CURRENT == Os::Macos, "{args:?}");
     assert!(
-        !args.iter().any(|a| a.ends_with("/usr/bin/env")),
-        "env is never granted: {args:?}"
+        !args
+            .iter()
+            .any(|a| a.ends_with("/usr/bin/env") && *a != "/usr/bin/env"),
+        "only the exact file: {args:?}"
     );
 }
 
@@ -3154,13 +3162,13 @@ async fn codex_and_gemini_get_the_tools_prompt_only_when_wired() {
     }
 }
 
-const OTHER_OS: &str = "the CLI jail needs Linux";
+const OTHER_OS: &str = "the CLI jail needs Linux or macOS";
 const OTHER_OS_HINT: &str = "; on this system use claude or Ollama for chat";
 
 #[test]
 fn a_refused_codex_turn_on_another_system_says_to_use_claude_or_ollama() {
     let mut env = lab().env();
-    env.jail = JailSupport::Unavailable(JailOff::NotLinux);
+    env.jail = JailSupport::Unavailable(JailOff::NoBackend);
     let planned = plan(&env, &codex_job(&[]));
     assert_eq!(
         planned.err(),
@@ -3175,7 +3183,7 @@ fn claude_on_another_system_keeps_the_neutral_notice() {
     let lab = lab();
     lab.claude("");
     let mut env = lab.env();
-    env.jail = JailSupport::Unavailable(JailOff::NotLinux);
+    env.jail = JailSupport::Unavailable(JailOff::NoBackend);
     let planned = plan(&env, &job(JailPolicy::Layered)).ok().unwrap();
     let text = format!("{:?}", planned.notice);
     assert!(text.contains(OTHER_OS), "{text}");
@@ -3285,18 +3293,39 @@ fn the_jail_note_of_claude_on_macos_says_it_is_not_jailed_there() {
 #[test]
 fn the_jail_note_of_another_system_points_codex_and_gemini_to_claude_only() {
     let mut env = lab().env();
-    env.jail = JailSupport::Unavailable(JailOff::NotLinux);
+    env.jail = JailSupport::Unavailable(JailOff::NoBackend);
     let bin = Path::new("/bin/true");
     assert_eq!(
         jail_note_on(Os::Linux, &env, Cli::Codex, bin).as_deref(),
-        Some("needs Linux · use claude")
+        Some("Linux/macOS only · use claude")
     );
     assert_eq!(
         jail_note_on(Os::Linux, &env, Cli::Gemini, bin).as_deref(),
-        Some("needs Linux · use claude")
+        Some("Linux/macOS only · use claude")
     );
     assert_eq!(
         jail_note_on(Os::Linux, &env, Cli::Claude, bin).as_deref(),
-        Some("needs Linux")
+        Some("needs Linux or macOS")
     );
+}
+
+#[test]
+fn macos_adds_env_and_the_homebrew_openssl_config_to_the_layout() {
+    let head = b"#!/usr/bin/env node\n";
+    let node = Path::new("/opt/homebrew/Cellar/node/26.8.1/bin/node");
+    let (helpers, files) = os_grants(Os::Macos, head, Some(node));
+    assert_eq!(helpers, vec![PathBuf::from("/usr/bin/env")]);
+    assert_eq!(
+        files,
+        vec![PathBuf::from("/opt/homebrew/etc/openssl@3/openssl.cnf")]
+    );
+    // A native CLI has neither.
+    assert_eq!(os_grants(Os::Macos, b"\xcf\xfa", None), (vec![], vec![]));
+}
+
+#[test]
+fn linux_gets_no_os_grants() {
+    let head = b"#!/usr/bin/env node\n";
+    let node = Path::new("/opt/homebrew/Cellar/node/26.8.1/bin/node");
+    assert_eq!(os_grants(Os::Linux, head, Some(node)), (vec![], vec![]));
 }

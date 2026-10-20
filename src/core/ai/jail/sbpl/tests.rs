@@ -54,6 +54,7 @@ const GOLDEN: &str = r#"(version 1)
 (allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo")
   (global-name "com.apple.system.notification_center") (global-name "com.apple.logd")
   (global-name "com.apple.dnssd.service") (global-name "com.apple.trustd.agent")
+  (global-name "com.apple.SecurityServer")
   (global-name "com.apple.SystemConfiguration.configd")
   (global-name "com.apple.SystemConfiguration.DNSConfiguration"))
 (allow ipc-posix-shm-read-data (ipc-posix-name "apple.shm.notification_center"))
@@ -349,11 +350,15 @@ fn network_outbound_is_never_granted_on_a_folder_or_read_only_class() {
 }
 
 #[test]
-fn the_system_profile_import_and_the_keychain_door_are_absent() {
+fn the_system_profile_import_is_absent_and_only_the_security_server_lookup_is_open() {
     let text = render(&one_each()).unwrap().text;
     assert!(!text.contains("import"));
     assert!(!text.contains("system.sb"));
-    assert!(!text.contains("SecurityServer"));
+    // Needed for TLS verification through Security.framework: a mach lookup
+    // only, no keychain file is readable.
+    assert!(text.contains("(global-name \"com.apple.SecurityServer\")"));
+    assert_eq!(text.matches("SecurityServer").count(), 1);
+    assert!(!text.contains("Keychains"));
     assert!(!text.contains("user-preference-read"));
     assert!(!text.contains("cfprefsd"));
     assert!(!text.contains("allow default"));

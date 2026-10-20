@@ -10,7 +10,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use super::{le_u16, le_u32, le_u64};
+use super::{Os, le_u16, le_u32, le_u64};
 
 /// The longest search path read.
 pub const RPATH_MAX: usize = 16 * 1024;
@@ -166,6 +166,43 @@ pub fn homebrew_openssl_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// The `env` program a script's first line runs, when macOS must be allowed to
+/// execute it: `#!/usr/bin/env node` starts `env` before it finds `node`, and
+/// `sandbox-exec` refuses the whole start without it. Only on macOS: Linux
+/// starts the interpreter itself. The exact file, never its folder.
+pub fn shebang_env(os: Os, head: &[u8]) -> Option<PathBuf> {
+    if os != Os::Macos {
+        return None;
+    }
+    let rest = head.get(..head.len().min(super::SHEBANG_BYTES))?;
+    let rest = rest.strip_prefix(b"#!")?;
+    let line = rest.split(|b| *b == b'\n').next()?;
+    let program = Path::new(std::str::from_utf8(line).ok()?.split_whitespace().next()?);
+    (program == Path::new("/usr/bin/env")).then(|| program.to_path_buf())
+}
+
+/// The OpenSSL config a Homebrew `node` reads when it starts on macOS. Its
+/// binary is Mach-O, so there is no ELF search path to read it from: the
+/// Cellar location of the interpreter says which prefix it belongs to. Without
+/// the file node stops at startup.
+pub fn macos_openssl_files(os: Os, interpreter: &Path) -> Vec<PathBuf> {
+    if os != Os::Macos {
+        return Vec::new();
+    }
+    ["/opt/homebrew", "/usr/local"]
+        .into_iter()
+        .map(Path::new)
+        // `<prefix>/Cellar/<formula>/<version>/<file...>`: a program inside an
+        // install, not the Cellar or a formula folder.
+        .filter(|prefix| {
+            interpreter
+                .strip_prefix(prefix.join("Cellar"))
+                .is_ok_and(|rest| rest.components().count() >= 3)
+        })
+        .map(|prefix| prefix.join("etc/openssl@3/openssl.cnf"))
+        .collect()
 }
 
 /// `<prefix>/etc/openssl@N` for a folder shaped `<prefix>/opt/openssl@N/lib`.

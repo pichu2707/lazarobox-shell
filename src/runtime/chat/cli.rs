@@ -49,7 +49,7 @@ use crate::{
             JailRefusal, JailSpec, JailSupport, Launch, Os, SeatbeltFault, ShimGrant, Untrusted,
             elf_interp_at, interp_path, is_scratch, jail_policy, jail_spec_with, launch,
             parse_shebang,
-            rpath::{homebrew_openssl_files, search_dirs},
+            rpath::{homebrew_openssl_files, macos_openssl_files, search_dirs, shebang_env},
         },
         tools::wiring,
     },
@@ -766,6 +766,15 @@ fn existing_files(files: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
+/// What macOS needs on top of the layout: the `env` a `#!/usr/bin/env node`
+/// script starts, and the OpenSSL config of a Homebrew `node`. Candidates
+/// only; the caller keeps the ones that exist. Linux gets neither.
+fn os_grants(os: Os, head: &[u8], interpreter: Option<&Path>) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let helpers = shebang_env(os, head).into_iter().collect();
+    let files = interpreter.map_or_else(Vec::new, |node| macos_openssl_files(os, node));
+    (helpers, files)
+}
+
 /// The layout of the CLI at `binary`, and the spec the jail would enforce for
 /// it, or why the layout cannot be jailed (a path the rules refuse, a CLI
 /// that cannot be resolved).
@@ -807,6 +816,13 @@ fn jail_plan(
     // OpenSSL files a Homebrew build reads, are read-only rules. Nothing else
     // of an install is opened.
     let named = elf_search_dirs(interpreter.as_deref().unwrap_or(&bin));
+    let (os_helpers, os_files) = os_grants(Os::CURRENT, &head, interpreter.as_deref());
+    let mut data_files = existing_files(&homebrew_openssl_files(&named));
+    for file in existing_files(&os_files) {
+        if !data_files.contains(&file) {
+            data_files.push(file);
+        }
+    }
     let shim = shim
         .map(|(exe, socket)| -> Result<ShimGrant, JailRefusal> {
             // The shim and its loader run inside the jail with whatever the
@@ -836,8 +852,8 @@ fn jail_plan(
         interpreter,
         loaders,
         lib_dirs: existing_dirs(&named),
-        data_files: existing_files(&homebrew_openssl_files(&named)),
-        helpers: Vec::new(),
+        data_files,
+        helpers: existing_files(&os_helpers),
         shim,
         cwd: dirs.cwd.clone(),
         tmp: dirs.tmp.clone(),
