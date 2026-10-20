@@ -114,6 +114,12 @@ jobs:
         run: |
           log show --last 5m --style compact --predicate 'sender == "Sandbox"' | tail -300 || true
 
+      - name: Flag the failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "::error title=Real codex through the jail::This job is non-blocking (continue-on-error), so the check can look green while this step failed. Read the job log: the jail may be breaking codex."
+
   # A real codex, jailed the way a chat turn jails it, must reach OpenAI and
   # get the server's 401 back (no real key is used). It depends on npm and
   # api.openai.com from a datacenter IP, so it is a separate job that never
