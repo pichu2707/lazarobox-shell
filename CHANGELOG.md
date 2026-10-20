@@ -33,6 +33,9 @@ baseline.
 
 ### Internal
 
+- The real codex test of the macOS jail runs in its own non-blocking CI job
+  and judges only the server's 401 as success; an answer such as 403, 429,
+  `unsupported_country` or a Cloudflare challenge is an annotated skip.
 - Integration tests run fake CLIs through the real macOS jail helper and
   `sandbox-exec` on the macOS CI runners: reads, writes and execs outside the
   granted folders, unix sockets and `bind` are denied, and `/dev/tcp`, the

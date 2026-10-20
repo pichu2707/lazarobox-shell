@@ -104,5 +104,9 @@ Files: `jail.rs`, adapters, `jail/tests.rs`, `README.md`, `docs/` (checklist), `
 - [x] 4.3 Docs: README macOS 14+ support, gemini "not yet verified on a real Mac", claude never jailed on macOS; state that the jailed CLI can reach loopback, the LAN and the metadata IP (accepted risk, see design).
 - [x] 4.4 MANUAL (#180 tester, codex only) checklist doc: `which codex node`; how codex was installed (npm, brew cask); run a codex turn; run a read-tool turn; what a refusal looks like; collect `log stream --predicate 'sender == "Sandbox"'` output during the turn.
 - [x] 4.5 CHANGELOG (Added: macOS jail, codex/gemini on macOS).
+- [x] 4.7 SecurityServer: `(global-name "com.apple.SecurityServer")` added to the mach-lookup list (RED: golden and render test; proven necessary and sufficient by CI runs 39467174392, 39468400826, 39469781534); design and README updated.
+- [x] 4.8 macOS `~/Library` rule: everything at or under it is refused (requested and resolved) except the allowlist `Library/Application Support/fnm`; credential dirs stay a separate check. Tests: Chrome, 1Password, Preferences, Developer refused; fnm accepted; Linux unchanged. README and CHANGELOG updated.
+- [x] 4.9 Real-codex test precision: AUTH = `401 unauthorized` / `incorrect api key` only, BROKEN = exact failure markers, 403 / 429 / `unsupported_country` / Cloudflare is an annotated skip (rules in tests/support/codex_outcome.rs, unit tested on Linux in tests/codex_outcome.rs).
+- [x] 4.10 CI: the real-codex step moved to its own non-blocking job `real-cli-macos` (continue-on-error, both macOS runners).
 - [ ] 4.6 MANUAL: send checklist to the #180 tester and record the result.
 Done: gates green, checklist and README merged; tester feedback is post-merge.
