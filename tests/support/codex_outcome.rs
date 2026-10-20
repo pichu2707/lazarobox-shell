@@ -8,8 +8,8 @@ pub enum Outcome {
     Auth,
     /// The jail seems to break codex; holds the markers found.
     Broken(Vec<&'static str>),
-    /// An answer of a service outside this repo (geo block, rate limit, a
-    /// Cloudflare challenge): says nothing about the jail. Holds the marker.
+    /// An answer of a service outside this repo (geo block, rate limit):
+    /// says nothing about the jail. Holds the marker.
     External(&'static str),
     /// Anything else.
     Other,
@@ -34,14 +34,12 @@ pub const BROKEN: [&str; 9] = [
 ];
 
 /// Answers of services outside the jail that make the run inconclusive.
-pub const EXTERNAL: [&str; 7] = [
+pub const EXTERNAL: [&str; 5] = [
     "status 403",
     "403 forbidden",
     "status 429",
     "429 too many",
     "unsupported_country",
-    "cloudflare",
-    "just a moment",
 ];
 
 /// Classifies an error text. A broken marker wins, so a 401 that comes with a
@@ -58,5 +56,43 @@ pub fn classify(text: &str) -> Outcome {
     match EXTERNAL.into_iter().find(|p| lower.contains(p)) {
         Some(marker) => Outcome::External(marker),
         None => Outcome::Other,
+    }
+}
+
+/// What the test does with a finished turn.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// The server refused the made-up key: the jail lets codex through.
+    Pass,
+    /// An outside answer says nothing about the jail: skip. Holds the marker.
+    External(&'static str),
+    /// The test fails; holds the message.
+    Fail(String),
+}
+
+/// Judges a turn. Only the error events can pass or skip it: a bogus key must
+/// produce an error event, and wording elsewhere in the dump (the agent's own
+/// text, say) proves nothing. With no error event the dump is read only to name
+/// a broken jail in the failure.
+pub fn judge(errors: &str, dump: &str) -> Verdict {
+    if errors.is_empty() {
+        return match classify(dump) {
+            Outcome::Broken(markers) => Verdict::Fail(format!(
+                "no error event, and the jail seems to break codex ({markers:?}):\n{dump}"
+            )),
+            _ => Verdict::Fail(format!(
+                "no error event: a made-up key must produce one:\n{dump}"
+            )),
+        };
+    }
+    match classify(errors) {
+        Outcome::Auth => Verdict::Pass,
+        Outcome::External(marker) => Verdict::External(marker),
+        Outcome::Broken(markers) => Verdict::Fail(format!(
+            "the jail seems to break codex ({markers:?}):\n{dump}"
+        )),
+        Outcome::Other => Verdict::Fail(format!(
+            "expected the server's 401 for the made-up key:\n{dump}"
+        )),
     }
 }

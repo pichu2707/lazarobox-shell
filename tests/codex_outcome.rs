@@ -4,7 +4,7 @@
 #[path = "support/codex_outcome.rs"]
 mod codex_outcome;
 
-use codex_outcome::{Outcome, classify};
+use codex_outcome::{Outcome, Verdict, classify, judge};
 
 /// The error text codex 0.153.4 produced through the jail on the CI runners.
 const REAL_401: &str = "unexpected status 401 Unauthorized: Incorrect API key provided: sk-laz*****-key. You can find your API key at https://platform.openai.com/account/api-keys., url: https://api.openai.com/v1/responses";
@@ -73,11 +73,76 @@ fn an_external_service_answer_is_a_skip() {
         "unexpected status 403 Forbidden: <html>Just a moment...</html>",
         "unexpected status 429 Too Many Requests: rate limited",
         "{\"error\":{\"code\":\"unsupported_country_region_territory\"}}",
-        "Attention Required! | Cloudflare",
     ] {
         assert!(
             matches!(classify(text), Outcome::External(_)),
             "{text} should be External"
         );
     }
+}
+
+#[test]
+fn a_cloudflare_mention_without_a_403_or_429_is_not_external() {
+    for text in [
+        "Attention Required! | Cloudflare",
+        "Just a moment...",
+        "served by cloudflare",
+    ] {
+        assert_eq!(classify(text), Outcome::Other, "{text}");
+    }
+}
+
+#[test]
+fn a_401_in_the_error_events_passes() {
+    assert_eq!(judge(REAL_401, "whole dump"), Verdict::Pass);
+}
+
+#[test]
+fn a_401_only_in_the_non_error_dump_fails() {
+    let verdict = judge("", &format!("agent said: {REAL_401}"));
+    assert!(matches!(verdict, Verdict::Fail(_)), "{verdict:?}");
+}
+
+#[test]
+fn an_external_answer_only_in_the_non_error_dump_fails() {
+    let verdict = judge("", "unexpected status 403 Forbidden");
+    assert!(matches!(verdict, Verdict::Fail(_)), "{verdict:?}");
+}
+
+#[test]
+fn no_error_events_and_a_broken_marker_in_the_dump_fails_naming_it() {
+    match judge("", "retrying: invalid peer certificate: UnknownIssuer") {
+        Verdict::Fail(message) => {
+            assert!(message.contains("unknownissuer"), "{message}");
+            assert!(message.contains("invalid peer certificate"), "{message}");
+        }
+        other => panic!("expected Fail, got {other:?}"),
+    }
+}
+
+#[test]
+fn no_error_events_and_a_clean_dump_fails() {
+    assert!(matches!(judge("", "all quiet"), Verdict::Fail(_)));
+}
+
+#[test]
+fn an_external_answer_in_the_error_events_is_a_skip() {
+    assert_eq!(
+        judge("unexpected status 429 Too Many Requests", "dump"),
+        Verdict::External("status 429")
+    );
+}
+
+#[test]
+fn a_broken_marker_in_the_error_events_fails() {
+    let text = format!("{REAL_401} Connection refused");
+    match judge(&text, "dump") {
+        Verdict::Fail(message) => assert!(message.contains("connection refused"), "{message}"),
+        other => panic!("expected Fail, got {other:?}"),
+    }
+}
+
+#[test]
+fn error_events_without_a_known_answer_fail() {
+    assert!(matches!(judge("something odd", "dump"), Verdict::Fail(_)));
 }

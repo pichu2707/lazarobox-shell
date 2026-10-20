@@ -41,7 +41,7 @@ use tokio::{sync::mpsc, time::timeout};
 #[path = "support/codex_outcome.rs"]
 mod codex_outcome;
 
-use codex_outcome::{Outcome, classify};
+use codex_outcome::{Verdict, judge};
 
 /// The key codex sees: not a credential, only a way to make it call the API.
 const BOGUS_KEY: &str = "sk-lazarobox-smoke-not-a-real-key";
@@ -198,24 +198,15 @@ fn a_real_codex_reaches_openai_through_the_jail() {
     }
 
     assert!(finished, "the turn did not end in 120 s:\n{shown}");
-    // Judge the error events; with none, the whole dump (still checked for a
-    // broken jail, and for a 401 that came another way).
-    let errors = error_text(&events);
-    let judged = if errors.is_empty() { &shown } else { &errors };
-    match classify(judged) {
-        Outcome::Auth => {}
-        Outcome::External(marker) => {
+    match judge(&error_text(&events), &shown) {
+        Verdict::Pass => {}
+        Verdict::External(marker) => {
             println!(
                 "::warning::real codex test skipped: OpenAI answered with `{marker}` (outside this repo's control)"
             );
             return;
         }
-        Outcome::Broken(markers) => {
-            panic!("the jail seems to break codex ({markers:?}):\n{shown}")
-        }
-        Outcome::Other => {
-            panic!("expected the server's 401 for the made-up key:\n{shown}")
-        }
+        Verdict::Fail(message) => panic!("{message}"),
     }
     println!("RESULT: codex reached OpenAI through the jail and was refused for authentication");
 }
