@@ -1,8 +1,10 @@
 //! macOS only: a REAL codex, started the way a chat turn starts it (the codex
 //! adapter, the macOS jail rules and the `__jail-exec` helper), must reach
 //! OpenAI from inside the Seatbelt jail. There is no login, so the honest
-//! outcome is an authentication failure from the server. A TLS, DNS or sandbox
-//! error would mean the jail breaks codex.
+//! outcome is the server's 401 for the made-up key. A TLS, DNS or sandbox
+//! error would mean the jail breaks codex. An answer of a service outside this
+//! repo (403, 429, `unsupported_country`, a Cloudflare challenge) is an
+//! annotated skip, not a failure, even with `LAZAROBOX_REQUIRE_JAIL=1`.
 //!
 //! This is its own test binary because it sets `HOME` for the whole process
 //! (the child inherits the environment), and `set_var` is only sound while no
@@ -26,7 +28,7 @@ use std::{
 
 use lazarobox_shell::{
     core::ai::{
-        chat::engine::{ChatMessage, ChatRequest, Role, StreamEvent, Tools},
+        chat::engine::{ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools},
         jail::JailSupport,
     },
     runtime::{
@@ -36,33 +38,13 @@ use lazarobox_shell::{
 };
 use tokio::{sync::mpsc, time::timeout};
 
+#[path = "support/codex_outcome.rs"]
+mod codex_outcome;
+
+use codex_outcome::{Outcome, classify};
+
 /// The key codex sees: not a credential, only a way to make it call the API.
 const BOGUS_KEY: &str = "sk-lazarobox-smoke-not-a-real-key";
-
-/// What an authentication failure looks like, from the server or from codex.
-const AUTH: [&str; 8] = [
-    "401",
-    "unauthorized",
-    "incorrect api key",
-    "invalid api key",
-    "not logged in",
-    "login",
-    "authentication",
-    "api key",
-];
-
-/// What a broken jail looks like.
-const BROKEN: [&str; 9] = [
-    "operation not permitted",
-    "sandbox_apply",
-    "sandbox-exec",
-    "certificate",
-    "tls",
-    "dns",
-    "resolve",
-    "error sending request",
-    "could not be applied",
-];
 
 fn required() -> bool {
     std::env::var_os("LAZAROBOX_REQUIRE_JAIL").is_some_and(|v| v == "1")
@@ -89,6 +71,19 @@ fn watch_sandbox(log: &Path) -> Option<Child> {
         .stderr(Stdio::null())
         .spawn()
         .ok()
+}
+
+/// The text of the turn's error events: where codex reports what the server
+/// said. Empty when the turn had none.
+fn error_text(events: &[StreamEvent]) -> String {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Error(ChatError::Failed(m) | ChatError::Jail(m)) => Some(m.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn describe(events: &[StreamEvent]) -> String {
@@ -203,15 +198,24 @@ fn a_real_codex_reaches_openai_through_the_jail() {
     }
 
     assert!(finished, "the turn did not end in 120 s:\n{shown}");
-    let lower = shown.to_lowercase();
-    let broken: Vec<_> = BROKEN.iter().filter(|p| lower.contains(*p)).collect();
-    assert!(
-        broken.is_empty(),
-        "the jail seems to break codex ({broken:?}):\n{shown}"
-    );
-    assert!(
-        AUTH.iter().any(|p| lower.contains(p)),
-        "expected an authentication failure from OpenAI:\n{shown}"
-    );
+    // Judge the error events; with none, the whole dump (still checked for a
+    // broken jail, and for a 401 that came another way).
+    let errors = error_text(&events);
+    let judged = if errors.is_empty() { &shown } else { &errors };
+    match classify(judged) {
+        Outcome::Auth => {}
+        Outcome::External(marker) => {
+            println!(
+                "::warning::real codex test skipped: OpenAI answered with `{marker}` (outside this repo's control)"
+            );
+            return;
+        }
+        Outcome::Broken(markers) => {
+            panic!("the jail seems to break codex ({markers:?}):\n{shown}")
+        }
+        Outcome::Other => {
+            panic!("expected the server's 401 for the made-up key:\n{shown}")
+        }
+    }
     println!("RESULT: codex reached OpenAI through the jail and was refused for authentication");
 }
