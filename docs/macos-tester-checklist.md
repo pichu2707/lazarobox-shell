@@ -66,6 +66,7 @@ If the turn failed, the lines with `deny` name what the jail blocked.
 - [ ] Did the codex turn answer? (yes / no) Same for the read-tool turn.
 - [ ] The exact refusal or error text, if any (step 4).
 - [ ] `~/sandbox-log.txt`: only the `deny` lines are enough. Remove anything private first.
+- [ ] During the codex turn, did any keychain access prompt or dialog appear? (yes / no)
 - [ ] Anything odd: slow start, a pop-up from macOS, a login prompt.
 
 Do not paste tokens, `auth.json` or your home folder listing.
