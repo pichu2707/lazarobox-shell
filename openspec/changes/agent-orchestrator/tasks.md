@@ -47,10 +47,10 @@ Decision (user, 2026-10-21): S1e is split into S1e-1 (app/core wiring) and S1e-2
 - [x] 1a.4 GREEN `core/config_edit.rs`, `runtime/config_write.rs`: own the new keys and the effect that writes `notice_accepted`.
 - [x] 1a.5 RED `core/menu.rs` + `core/ai/menu.rs` tests (TestBackend + insta): six task rows plus `Orchestrator` gate row toggling on/off; picker first entry; only orchestrate changes; popup size stable; Set all excludes Orchestrate; Ollama marked "not recommended" on that row only; Orchestrate falls back to General. Spec: config-menu / Task rows rendered, Orchestrator row is the global gate, Picker first entry, Only orchestrate changes, Popup size is stable, Fallback threshold follows the popup, Marks on rows; ai-task-models / Orchestrate falls back, Ollama marked not recommended, Other tasks unmarked, Set all leaves the orchestrator alone.
 - [x] 1a.6 GREEN `core/menu.rs`, `core/ai/menu.rs`: rows, gate toggle, picker, marks, Set all exclusion.
-- [ ] 1a.7 RED `core/ai/chat/availability_tests.rs`: availability per task, no fallback engine, server model must be detected, empty server model, CLI model not validated, effective assignment, worker kind uses its own row, Summarize row used. Spec: chat-engines / Availability per task, No fallback engine; ai-task-models / Effective assignment used, Fallback to general, Server model must be detected, Empty server model, CLI model not validated, Assignment never changed, Worker kind uses its own row, Summarize row is now used.
-- [ ] 1a.8 GREEN `core/ai/chat/engine.rs`: `availability_for(task, ...)` replaces the hard-wired `Task::Chat` (:281); keep a Chat wrapper so call sites compile.
+- [x] 1a.7 RED `core/ai/chat/availability_tests.rs`: availability per task, no fallback engine, server model must be detected, empty server model, CLI model not validated, effective assignment, worker kind uses its own row, Summarize row used. Spec: chat-engines / Availability per task, No fallback engine; ai-task-models / Effective assignment used, Fallback to general, Server model must be detected, Empty server model, CLI model not validated, Assignment never changed, Worker kind uses its own row, Summarize row is now used.
+- [x] 1a.8 GREEN `core/ai/chat/engine.rs`: `availability_for(task, ...)` replaces the hard-wired `Task::Chat` (:281); keep a Chat wrapper so call sites compile.
 - [x] 1a.9 Off-path characterization: snapshot proves chat with gate off is unchanged vs 0.18.0 (first written, passes before changes). Spec: agent-orchestrator / Disabled offers no tools.
-- [ ] 1a.10 REFACTOR + gates.
+- [x] 1a.10 REFACTOR + gates.
 
 ## S1b: pure core (PR 2, ~420 lines, risk Medium)
 
