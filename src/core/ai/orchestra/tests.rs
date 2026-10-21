@@ -1,7 +1,14 @@
+use std::time::{Duration, Instant};
+
 use serde_json::json;
 
+use super::run::{
+    CancelOutcome, CollectError, Refusal, Roster, Run, RunState, UserChoice, WorkerEvent,
+};
 use super::tools::{MAX_PROMPT_BYTES, OrchCall, OrchError, WAIT_MAX_SECS, parse, specs};
-use super::{Toolset, WorkerId};
+use super::worker::{ErrorClass, WorkerStatus};
+use super::{RunId, Toolset, WorkerId};
+use crate::core::ai::chat::engine::Availability;
 use crate::core::ai::config::Task;
 
 #[test]
@@ -109,4 +116,210 @@ fn the_registry_is_exactly_the_four_tools_and_workers_are_read_only() {
     for task in Task::SET_ALL {
         assert_eq!(Toolset::for_kind(task), Toolset::ReadOnly);
     }
+}
+
+fn ready(engine: &str, model: &str) -> Availability {
+    Availability::Ready {
+        engine: engine.to_owned(),
+        model: Some(model.to_owned()),
+    }
+}
+
+fn roster(review: Availability) -> Roster {
+    Roster::new(vec![
+        (Task::Code, ready("claude", "opus")),
+        (Task::Review, review),
+    ])
+}
+
+fn run() -> Run {
+    Run::new(
+        RunId(1),
+        roster(ready("codex", "default")),
+        Duration::from_secs(600),
+    )
+}
+
+fn failed(class: ErrorClass, text: &str) -> WorkerEvent {
+    WorkerEvent::Failed {
+        class,
+        text: text.to_owned(),
+    }
+}
+
+#[test]
+fn a_worker_runs_on_the_assignment_of_its_kind_and_extras_queue() {
+    let (t0, mut run) = (Instant::now(), run());
+    let one = run.spawn(t0, Task::Review, "p1").unwrap();
+    let two = run.spawn(t0, Task::Code, "p2").unwrap();
+    let spec = run.spec(one).unwrap();
+    assert_eq!(
+        (spec.engine.as_str(), spec.model.as_deref()),
+        ("codex", Some("default"))
+    );
+    assert_eq!(spec.toolset, Toolset::ReadOnly);
+    assert_eq!(run.status(one), Some(WorkerStatus::Running));
+    assert_eq!(run.status(two), Some(WorkerStatus::Queued));
+
+    let t1 = t0 + Duration::from_secs(7);
+    run.on_event(
+        t1,
+        one,
+        WorkerEvent::Done {
+            text: "ok".to_owned(),
+        },
+    );
+    assert_eq!(run.status(one), Some(WorkerStatus::Done));
+    assert_eq!(run.result(one).unwrap().elapsed, Duration::from_secs(7));
+    assert_eq!(run.status(two), Some(WorkerStatus::Running));
+}
+
+#[test]
+fn a_menu_change_after_spawn_does_not_reach_a_started_worker() {
+    let (t0, mut run) = (Instant::now(), run());
+    let id = run.spawn(t0, Task::Review, "p").unwrap();
+    run.set_roster(roster(ready("claude", "sonnet")));
+    run.on_event(
+        t0,
+        id,
+        WorkerEvent::Done {
+            text: String::new(),
+        },
+    );
+    let result = run.result(id).unwrap();
+    assert_eq!(
+        (result.engine.as_str(), result.model.as_deref()),
+        ("codex", Some("default"))
+    );
+}
+
+#[test]
+fn an_unavailable_engine_is_refused_and_halts_the_run_with_no_fallback() {
+    let no_jail = Availability::NoJail {
+        engine: "gemini".to_owned(),
+        reason: "no jail here".to_owned(),
+    };
+    let (t0, mut run) = (
+        Instant::now(),
+        Run::new(RunId(1), roster(no_jail), Duration::from_secs(600)),
+    );
+    let id = run.spawn(t0, Task::Review, "p").unwrap();
+    assert_eq!(run.status(id), Some(WorkerStatus::Refused));
+    let Some(RunState::Halted {
+        worker,
+        class,
+        text,
+    }) = Some(run.state().clone())
+    else {
+        panic!("not halted");
+    };
+    assert_eq!((worker, class), (id, ErrorClass::Other));
+    assert!(text.contains("no jail here"), "{text}");
+    assert_eq!(run.spawn(t0, Task::Code, "q"), Err(Refusal::Paused));
+}
+
+#[test]
+fn a_failure_pauses_the_orchestrator_until_the_user_decides() {
+    let (t0, mut run) = (Instant::now(), run());
+    let id = run.spawn(t0, Task::Review, "p").unwrap();
+    run.on_event(
+        t0,
+        id,
+        failed(ErrorClass::Conflict, "409 conflict: session busy"),
+    );
+    assert_eq!(
+        run.state(),
+        &RunState::Halted {
+            worker: id,
+            class: ErrorClass::Conflict,
+            text: "409 conflict: session busy".to_owned()
+        }
+    );
+    assert_eq!(
+        run.wait_report(&[id, WorkerId(9)]),
+        [(id, "awaiting_user"), (WorkerId(9), "awaiting_user")]
+    );
+    assert_eq!(run.spawn(t0, Task::Code, "q"), Err(Refusal::Paused));
+}
+
+#[test]
+fn the_deadline_times_the_worker_out_and_halts_the_run() {
+    let (t0, mut run) = (Instant::now(), run());
+    let id = run.spawn(t0, Task::Review, "p").unwrap();
+    assert!(run.on_tick(t0 + Duration::from_secs(599)).is_empty());
+    assert_eq!(run.on_tick(t0 + Duration::from_secs(600)), [id]);
+    assert_eq!(run.status(id), Some(WorkerStatus::TimedOut));
+    assert!(matches!(
+        run.state(),
+        RunState::Halted {
+            class: ErrorClass::Timeout,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn retry_relaunches_the_same_spec_and_relaunch_takes_the_new_roster() {
+    let (t0, mut run) = (Instant::now(), run());
+    let id = run.spawn(t0, Task::Review, "p").unwrap();
+    let spec = run.spec(id).unwrap().clone();
+    run.on_event(t0, id, failed(ErrorClass::RateLimit, "429"));
+    assert_eq!(run.decide(t0, UserChoice::Retry), Ok(vec![]));
+    assert_eq!(
+        (run.state(), run.status(id), run.spec(id)),
+        (&RunState::Open, Some(WorkerStatus::Running), Some(&spec))
+    );
+
+    run.on_event(t0, id, failed(ErrorClass::RateLimit, "429"));
+    run.decide(t0, UserChoice::Relaunch(roster(ready("claude", "sonnet"))))
+        .unwrap();
+    let spec = run.spec(id).unwrap();
+    assert_eq!(
+        (spec.engine.as_str(), spec.prompt.as_str()),
+        ("claude", "p")
+    );
+    assert_eq!(run.status(id), Some(WorkerStatus::Running));
+
+    run.on_event(t0, id, failed(ErrorClass::Other, "x"));
+    let gone = Availability::Undetected {
+        engine: "codex".to_owned(),
+        status: "not installed".to_owned(),
+    };
+    run.decide(t0, UserChoice::Relaunch(roster(gone))).unwrap();
+    assert_eq!(run.status(id), Some(WorkerStatus::Refused));
+    assert!(matches!(run.state(), RunState::Halted { .. }));
+}
+
+#[test]
+fn cancel_ends_the_run_and_collect_waits_for_a_finished_worker() {
+    let (t0, mut run) = (Instant::now(), run());
+    let one = run.spawn(t0, Task::Review, "p").unwrap();
+    let two = run.spawn(t0, Task::Code, "q").unwrap();
+    assert_eq!(run.collect(one), Err(CollectError::NotFinished));
+    assert_eq!(run.cancel(t0, WorkerId(9)), CancelOutcome::Unknown);
+    run.on_event(t0, one, failed(ErrorClass::Other, "x"));
+    assert_eq!(run.decide(t0, UserChoice::Cancel), Ok(vec![]));
+    assert_eq!(run.state(), &RunState::Cancelled);
+    assert_eq!(run.status(two), Some(WorkerStatus::Cancelled));
+    assert_eq!(run.spawn(t0, Task::Code, "r"), Err(Refusal::Ended));
+    assert!(run.decide(t0, UserChoice::Retry).is_err());
+}
+
+#[test]
+fn cancelling_one_worker_frees_the_slot_and_a_finished_one_stays_as_it_was() {
+    let (t0, mut run) = (Instant::now(), run());
+    let one = run.spawn(t0, Task::Review, "p").unwrap();
+    let two = run.spawn(t0, Task::Code, "q").unwrap();
+    assert_eq!(run.cancel(t0, one), CancelOutcome::Cancelled);
+    assert_eq!(run.status(two), Some(WorkerStatus::Running));
+    run.on_event(
+        t0,
+        two,
+        WorkerEvent::Done {
+            text: "ok".to_owned(),
+        },
+    );
+    assert_eq!(run.cancel(t0, two), CancelOutcome::AlreadyEnded);
+    assert_eq!(run.status(two), Some(WorkerStatus::Done));
+    assert_eq!(run.collect(two), Ok("ok"));
 }

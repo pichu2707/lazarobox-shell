@@ -2,7 +2,9 @@
 //! orchestration tool calls and the read scope. No IO beyond the path checks
 //! of `scope`; time comes in as explicit `Instant`s.
 
+pub mod run;
 pub mod tools;
+pub mod worker;
 
 use super::config::Task;
 
