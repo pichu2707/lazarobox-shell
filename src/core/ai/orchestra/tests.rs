@@ -5,11 +5,13 @@ use serde_json::json;
 use super::run::{
     CancelOutcome, CollectError, Refusal, Roster, Run, RunState, UserChoice, WorkerEvent,
 };
+use super::scope::ReadScope;
 use super::tools::{MAX_PROMPT_BYTES, OrchCall, OrchError, WAIT_MAX_SECS, parse, specs};
 use super::worker::{ErrorClass, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
 use crate::core::ai::chat::engine::Availability;
 use crate::core::ai::config::Task;
+use crate::core::ai::tools::paths::SecretRoots;
 
 #[test]
 fn spawn_accepts_the_five_worker_kinds() {
@@ -403,4 +405,120 @@ fn an_enormous_deadline_never_expires_and_does_not_panic() {
     );
     run.spawn(t0, Task::Review, "p").unwrap();
     assert!(run.on_tick(t0 + Duration::from_secs(3600)).is_empty());
+}
+
+/// A temp `$HOME` with a project, a secret, links and an outside folder.
+struct Home {
+    _dir: tempfile::TempDir,
+    home: std::path::PathBuf,
+    secrets: SecretRoots,
+}
+
+fn home() -> Home {
+    use std::fs;
+    use std::os::unix::fs::symlink;
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().canonicalize().unwrap().join("home");
+    for sub in ["app/src", "other", ".ssh", ".aws", "scratchy"] {
+        fs::create_dir_all(home.join(sub)).unwrap();
+    }
+    for file in ["app/src/a.rs", "app/.env", ".ssh/id", "other/y"] {
+        fs::write(home.join(file), "x").unwrap();
+    }
+    symlink(home.join(".ssh/id"), home.join("app/link")).unwrap();
+    symlink(home.join("other/y"), home.join("app/x")).unwrap();
+    symlink("../..", home.join("app/up")).unwrap();
+    symlink(home.join("app/src/a.rs"), home.join("other/in")).unwrap();
+    let secrets = SecretRoots::load(&home, &[]).unwrap();
+    Home {
+        _dir: dir,
+        home,
+        secrets,
+    }
+}
+
+fn no_scratch(_: &std::path::Path) -> bool {
+    false
+}
+
+fn scope_of(h: &Home, inputs: &[&str]) -> (ReadScope, Vec<String>) {
+    ReadScope::new(RunId(1), &h.secrets, &h.home, inputs, &no_scratch)
+}
+
+fn allows(h: &Home, scope: &ReadScope, input: &str) -> bool {
+    scope.allows(&run(), &h.secrets, &h.home, input)
+}
+
+#[test]
+fn a_read_inside_the_scope_is_allowed_by_text_and_by_real_path() {
+    let h = home();
+    let (scope, dropped) = scope_of(&h, &["app"]);
+    assert!(dropped.is_empty());
+    for input in ["app/src/a.rs", "~/app/src/a.rs", "app/src/../src/a.rs"] {
+        assert!(allows(&h, &scope, input), "{input}");
+    }
+    assert!(!allows(&h, &scope, "other/y"));
+    assert!(!allows(&h, &scope, "app/src/missing.rs"));
+}
+
+#[test]
+fn the_deny_list_wins_inside_the_scope() {
+    let h = home();
+    let (scope, _) = scope_of(&h, &["app"]);
+    assert!(allows(&h, &scope, "app/src/a.rs"));
+    assert!(!allows(&h, &scope, "app/.env"));
+    assert!(!allows(&h, &scope, "app/link"));
+}
+
+#[test]
+fn dot_dot_and_symlink_escapes_are_outside_the_scope() {
+    let h = home();
+    let (scope, _) = scope_of(&h, &["app"]);
+    // `app/x` is inside by text but resolves to `other/y`.
+    assert!(!allows(&h, &scope, "app/x"));
+    // Folded by text, the target leaves the root.
+    assert!(!allows(&h, &scope, "app/../other/y"));
+    // A link that climbs out of the root.
+    assert!(!allows(&h, &scope, "app/up/other/y"));
+    // Resolves into the root, but the requested path is outside it.
+    assert!(!allows(&h, &scope, "other/in"));
+}
+
+#[test]
+fn roots_that_are_excluded_or_too_broad_are_dropped_and_named() {
+    let h = home();
+    let scratch = |path: &std::path::Path| path.ends_with("scratchy");
+    let (scope, dropped) = ReadScope::new(
+        RunId(1),
+        &h.secrets,
+        &h.home,
+        &["~/.aws", "~", "scratchy", "/", "missing", "app"],
+        &scratch,
+    );
+    assert_eq!(dropped, ["~/.aws", "~", "scratchy", "/", "missing"]);
+    assert!(allows(&h, &scope, "app/src/a.rs"));
+    assert!(!allows(&h, &scope, "other/y"));
+    assert!(!allows(&h, &scope, "scratchy"));
+}
+
+#[test]
+fn the_scope_expires_with_its_run_and_grants_nothing_to_another() {
+    let h = home();
+    let (scope, _) = scope_of(&h, &["app"]);
+    let t0 = Instant::now();
+    let mut live = run();
+    assert!(scope.allows(&live, &h.secrets, &h.home, "app/src/a.rs"));
+    let id = live.spawn(t0, Task::Review, "p").unwrap();
+    live.on_event(t0, id, failed(ErrorClass::Other, "x"));
+    live.decide(t0, UserChoice::Cancel).unwrap();
+    assert!(!scope.allows(&live, &h.secrets, &h.home, "app/src/a.rs"));
+    let next = Run::new(RunId(2), roster(ready("codex", "default")), Duration::MAX);
+    assert!(!scope.allows(&next, &h.secrets, &h.home, "app/src/a.rs"));
+}
+
+#[test]
+fn a_denied_scope_grants_nothing() {
+    let h = home();
+    let scope = ReadScope::denied(RunId(1));
+    assert!(!allows(&h, &scope, "app/src/a.rs"));
 }
