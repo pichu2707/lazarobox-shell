@@ -336,6 +336,7 @@ fn done() -> WorkerEvent {
 fn a_second_failure_while_halted_surfaces_after_the_first_is_decided() {
     let (t0, mut run) = (Instant::now(), run());
     let one = run.spawn(t0, Task::Review, "p").unwrap();
+    let mid = run.spawn(t0, Task::Review, "m").unwrap();
     let no_engine = Availability::Unassigned;
     run.set_roster(roster(no_engine));
     let two = run.spawn(t0, Task::Review, "q").unwrap();
@@ -354,7 +355,14 @@ fn a_second_failure_while_halted_surfaces_after_the_first_is_decided() {
         }
     );
     assert_eq!(run.decide(t0, UserChoice::Retry), Ok(vec![]));
+    // The final promote follows queue order: `mid`, `two`, then `one`.
     assert_eq!(run.state(), &RunState::Open);
+    assert_eq!(run.status(mid), Some(WorkerStatus::Running));
+    run.on_event(t0, mid, done());
+    assert_eq!(run.status(two), Some(WorkerStatus::Running));
+    assert_eq!(run.status(one), Some(WorkerStatus::Queued));
+    run.on_event(t0, two, done());
+    assert_eq!(run.status(one), Some(WorkerStatus::Running));
 }
 
 #[test]
@@ -596,4 +604,78 @@ fn collect_wrapped_keeps_the_collect_errors() {
         run.collect_wrapped(NONCE, WorkerId(9)),
         Err(CollectError::Unknown)
     );
+}
+
+/// One worker running, `three` refused so the run is halted, then `one`
+/// fails while halted: `pending` holds `one`.
+fn halted_with_a_pending_failure() -> (Instant, Run, WorkerId, WorkerId) {
+    let (t0, mut run) = (Instant::now(), run());
+    let one = run.spawn(t0, Task::Review, "p").unwrap();
+    run.set_roster(roster(Availability::Unassigned));
+    let refused = run.spawn(t0, Task::Review, "q").unwrap();
+    run.on_event(t0, one, failed(ErrorClass::RateLimit, "429"));
+    (t0, run, one, refused)
+}
+
+#[test]
+fn cancelling_a_halted_run_with_a_pending_failure_ends_it_and_keeps_the_failures() {
+    let (t0, mut run, one, refused) = halted_with_a_pending_failure();
+    run.set_roster(roster(ready("codex", "default")));
+    run.decide(t0, UserChoice::Retry).unwrap();
+    // `refused` is queued now and `one` is the pending failure.
+    let queued = refused;
+    assert_eq!(run.status(queued), Some(WorkerStatus::Queued));
+    assert_eq!(run.decide(t0, UserChoice::Cancel), Ok(vec![]));
+    assert_eq!(run.state(), &RunState::Cancelled);
+    assert_eq!(run.status(queued), Some(WorkerStatus::Cancelled));
+    assert_eq!(run.status(one), Some(WorkerStatus::Failed));
+    assert!(run.decide(t0, UserChoice::Retry).is_err());
+}
+
+#[test]
+fn a_refused_retry_goes_to_pending_behind_the_older_failure() {
+    let (t0, mut run, one, refused) = halted_with_a_pending_failure();
+    // The roster still has no engine: the retry is refused again.
+    assert_eq!(run.decide(t0, UserChoice::Retry), Ok(vec![]));
+    assert_eq!(run.status(refused), Some(WorkerStatus::Refused));
+    assert!(matches!(run.state(), RunState::Halted { worker, .. } if *worker == one));
+    assert_eq!(run.decide(t0, UserChoice::Retry), Ok(vec![]));
+    assert_eq!(
+        run.state(),
+        &RunState::Halted {
+            worker: refused,
+            class: ErrorClass::Other,
+            text: "no engine assigned to review".to_owned()
+        }
+    );
+}
+
+#[test]
+fn relaunch_with_a_pending_failure_halts_again_on_it_and_requeues_behind_it() {
+    let (t0, mut run, one, refused) = halted_with_a_pending_failure();
+    run.decide(t0, UserChoice::Relaunch(roster(ready("claude", "opus"))))
+        .unwrap();
+    assert_eq!(run.spec(refused).unwrap().engine, "claude");
+    assert_eq!(run.status(refused), Some(WorkerStatus::Queued));
+    assert!(matches!(run.state(), RunState::Halted { worker, .. } if *worker == one));
+    run.decide(t0, UserChoice::Retry).unwrap();
+    assert_eq!(run.state(), &RunState::Open);
+    assert_eq!(run.status(refused), Some(WorkerStatus::Running));
+    assert_eq!(run.status(one), Some(WorkerStatus::Queued));
+}
+
+#[test]
+fn a_refused_retry_reports_zero_elapsed_time() {
+    let (t0, mut run) = (Instant::now(), run());
+    let id = run.spawn(t0, Task::Review, "p").unwrap();
+    let later = t0 + Duration::from_secs(5);
+    run.on_event(later, id, failed(ErrorClass::Other, "x"));
+    assert_eq!(run.result(id).unwrap().elapsed, Duration::from_secs(5));
+    run.decide(
+        later,
+        UserChoice::Relaunch(roster(Availability::Unassigned)),
+    )
+    .unwrap();
+    assert_eq!(run.status(id), Some(WorkerStatus::Refused));
+    assert_eq!(run.result(id).unwrap().elapsed, Duration::ZERO);
 }

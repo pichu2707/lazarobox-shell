@@ -173,6 +173,8 @@ impl Run {
 
     /// A worker waits at the back of the queue; a refusal ends it at once.
     fn enqueue(&mut self, now: Instant, id: WorkerId, refusal: Option<String>) {
+        // A new attempt starts the clock over, so a refusal reports no time.
+        self.slots[index(id)].started = None;
         if let Some(reason) = refusal {
             return self.end(
                 now,
@@ -184,7 +186,7 @@ impl Run {
         }
         let slot = &mut self.slots[index(id)];
         slot.result = None;
-        (slot.status, slot.started) = (WorkerStatus::Queued, None);
+        slot.status = WorkerStatus::Queued;
         self.queue.push_back(id);
     }
 

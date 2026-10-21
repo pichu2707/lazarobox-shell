@@ -121,7 +121,7 @@ Design notes grounded in the code: `paths::resolve(roots: &SecretRoots, origin, 
 - [x] 1b.6 GREEN `core/ai/orchestra/scope.rs` reusing `core/ai/tools/paths.rs` (`resolve`, `SecretRoots`), with the injectable scratch predicate; production default uses the existing scratch list.
 - [x] 1b.7 RED+GREEN `collect` cap 32 KiB and wrapper via `label::wrap(nonce, ...)` (nonce is a parameter; no runtime dependency), control sequences removed, wrapper unforgeable. Spec: agent-orchestrator / Collect caps text, Wrapper cannot be forged, Control sequences removed; agent-tools / Wrapped.
 - [ ] 1b.8 REFACTOR + gates (`cargo test`, `cargo clippy --all-targets`, `cargo fmt --check`). The `core/ai/mod.rs` wiring is already done in S1b; only re-export `ReadScope` here if needed.
-- [ ] 1b.9 Follow-ups from the S1b re-review (098fce2), RED first: (a) extend `a_second_failure_while_halted_...` to assert the final promote follows queue order; (b) test `cancel_run` with a non-empty `pending`; (c) test a Refused worker's retry landing in `pending`; (d) test `Relaunch` with a pending failure; (e) reset `slot.started = None` before the refusal branch in `enqueue`, so a refused retry reports zero elapsed time.
+- [x] 1b.9 Follow-ups from the S1b re-review (098fce2), RED first: (a) extend `a_second_failure_while_halted_...` to assert the final promote follows queue order; (b) test `cancel_run` with a non-empty `pending`; (c) test a Refused worker's retry landing in `pending`; (d) test `Relaunch` with a pending failure; (e) reset `slot.started = None` before the refusal branch in `enqueue`, so a refused retry reports zero elapsed time.
 
 ## S1c: host and hub seams (2 chained PRs: S1c-1 = PR 4, S1c-2 = PR 5; ~650 lines re-estimated in total)
 
