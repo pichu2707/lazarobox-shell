@@ -66,24 +66,37 @@ impl ReadScope {
         }
     }
 
-    /// Whether a read of `input` needs no ask: `run` is the run of this scope
-    /// and still going, and one root holds both the requested path and the
-    /// real path, which the deny-lists must also allow.
-    pub fn allows(&self, run: &Run, secrets: &SecretRoots, origin: &Path, input: &str) -> bool {
+    /// The real path of a read of `input` that needs no ask: `run` is the run
+    /// of this scope and still going, and one root holds both the requested
+    /// path and the real path, which the deny-lists must also allow. `None`
+    /// means the read is out of scope and must be asked.
+    ///
+    /// The caller MUST open exactly the returned path, with no-follow
+    /// semantics (`open_beneath` / `O_NOFOLLOW`), and re-judge the real path
+    /// of the opened descriptor; resolving `input` again reopens a race.
+    pub fn allows(
+        &self,
+        run: &Run,
+        secrets: &SecretRoots,
+        origin: &Path,
+        input: &str,
+    ) -> Option<PathBuf> {
         let live = matches!(run.state(), RunState::Open | RunState::Halted { .. });
         if run.id() != self.run || !live {
-            return false;
+            return None;
         }
         let (Some(text), PathVerdict::Allowed(real)) = (
             display_target(secrets.home(), origin, input),
             resolve(secrets, origin, input),
         ) else {
-            return false;
+            return None;
         };
         let text = Path::new(&text);
-        self.roots
+        let inside = self
+            .roots
             .iter()
-            .any(|root| text.starts_with(&root.text) && real.starts_with(&root.real))
+            .any(|root| text.starts_with(&root.text) && real.starts_with(&root.real));
+        inside.then_some(real)
     }
 }
 

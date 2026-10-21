@@ -281,9 +281,17 @@ impl Run {
     }
 
     /// [`collect`](Self::collect) as the orchestrator receives it: cleaned,
-    /// capped and wrapped as untrusted data under `nonce`.
-    pub fn collect_wrapped(&self, nonce: &str, id: WorkerId) -> Result<String, CollectError> {
-        self.collect(id).map(|text| label::wrap(nonce, text))
+    /// capped and wrapped as untrusted data under a nonce derived from
+    /// `nonce_bytes`. The bytes MUST come from the OS CSPRNG on every call and
+    /// never be reused or shown to the worker, or its text could forge the
+    /// closing tag.
+    pub fn collect_wrapped(
+        &self,
+        nonce_bytes: [u8; 8],
+        id: WorkerId,
+    ) -> Result<String, CollectError> {
+        let nonce = label::nonce_from(nonce_bytes);
+        self.collect(id).map(|text| label::wrap(&nonce, text))
     }
 
     /// Cancels one worker. Its slot goes to the next queued worker.
