@@ -13,10 +13,24 @@ pub enum Task {
     Chat,
     Review,
     Summarize,
+    /// The orchestrator role. Appended last so the slot indices of the five
+    /// original tasks hold.
+    Orchestrate,
 }
 
 impl Task {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
+        Self::General,
+        Self::Code,
+        Self::Chat,
+        Self::Review,
+        Self::Summarize,
+        Self::Orchestrate,
+    ];
+
+    /// The five tasks `Set all tasks` and its aggregate cover: `Orchestrate`
+    /// is a role with its own row, never part of the sweep.
+    pub const SET_ALL: [Self; 5] = [
         Self::General,
         Self::Code,
         Self::Chat,
@@ -32,6 +46,7 @@ impl Task {
             Self::Chat => "chat",
             Self::Review => "review",
             Self::Summarize => "summarize",
+            Self::Orchestrate => "orchestrate",
         }
     }
 
@@ -44,6 +59,7 @@ impl Task {
             Self::Chat => "ai.tasks.chat",
             Self::Review => "ai.tasks.review",
             Self::Summarize => "ai.tasks.summarize",
+            Self::Orchestrate => "ai.tasks.orchestrate",
         }
     }
 }
@@ -216,6 +232,32 @@ impl MemoryConfig {
     }
 }
 
+/// The default worker deadline, in seconds.
+pub const DEFAULT_WORKER_TIMEOUT_SECS: u32 = 600;
+/// The valid range of `worker_timeout_secs`.
+const WORKER_TIMEOUT_RANGE: std::ops::RangeInclusive<i64> = 30..=3600;
+
+/// The `[ai.orchestrator]` table. `enabled` is the global gate (the menu row
+/// `Orchestrator`); each chat pane still opts in on its own. Both flags are
+/// menu-owned; the timeout is only ever hand-edited, so a save never touches it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct OrchestratorConfig {
+    pub enabled: bool,
+    /// The one-time provider notice was accepted.
+    pub notice_accepted: bool,
+    pub worker_timeout_secs: u32,
+}
+
+impl Default for OrchestratorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            notice_accepted: false,
+            worker_timeout_secs: DEFAULT_WORKER_TIMEOUT_SECS,
+        }
+    }
+}
+
 /// One user MCP server from `[[ai.mcp.servers]]` (design D16). `env` holds
 /// variable NAMES only: the values come from lazarobox's own environment when
 /// a later slice starts the server. `project` is the absolute git root the
@@ -255,7 +297,7 @@ const MCP_ENV_NAME_MAX: usize = 64;
 /// they live under `[ai]` too.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct AiConfig {
-    slots: [Assignment; 5],
+    slots: [Assignment; 6],
     profile: Profile,
     context: bool,
     notify: NotifyMode,
@@ -264,6 +306,7 @@ pub struct AiConfig {
     approval: ApprovalMode,
     mcp_servers: Vec<McpServer>,
     pub memory: MemoryConfig,
+    pub orchestrator: OrchestratorConfig,
 }
 
 impl Default for AiConfig {
@@ -278,6 +321,7 @@ impl Default for AiConfig {
             approval: ApprovalMode::Ask,
             mcp_servers: Vec::new(),
             memory: MemoryConfig::default(),
+            orchestrator: OrchestratorConfig::default(),
         }
     }
 }
@@ -389,7 +433,10 @@ impl AiConfig {
     /// The `Set all tasks` value: the shared effective label or `(mixed)`.
     pub fn aggregate(&self) -> String {
         let first = self.effective_label(Task::General);
-        if Task::ALL.iter().all(|t| self.effective_label(*t) == first) {
+        if Task::SET_ALL
+            .iter()
+            .all(|t| self.effective_label(*t) == first)
+        {
             first
         } else {
             "(mixed)".to_owned()
@@ -541,7 +588,42 @@ pub fn read_with_port_env(
     config.approval = read_approval(table, problems);
     config.mcp_servers = read_mcp_servers(table, problems);
     config.memory = read_memory(table, problems, port_env);
+    config.orchestrator = read_orchestrator(table, problems);
     config
+}
+
+/// Reads `[ai.orchestrator]`. Each key falls back to its default on its own
+/// with a problem; unknown keys are ignored.
+fn read_orchestrator(table: &Table, problems: &mut Vec<String>) -> OrchestratorConfig {
+    let mut orch = OrchestratorConfig::default();
+    let section = match table.get("ai").and_then(Value::as_table) {
+        None => return orch,
+        Some(ai) => match ai.get("orchestrator") {
+            None => return orch,
+            Some(Value::Table(section)) => section,
+            Some(_) => {
+                problems.push("ai.orchestrator: expected a table".to_owned());
+                return orch;
+            }
+        },
+    };
+    let mut flag = |name: &str, slot: &mut bool| match section.get(name) {
+        None => {}
+        Some(Value::Boolean(on)) => *slot = *on,
+        Some(_) => problems.push(format!("ai.orchestrator.{name}: expected a boolean")),
+    };
+    flag("enabled", &mut orch.enabled);
+    flag("notice_accepted", &mut orch.notice_accepted);
+    match section.get("worker_timeout_secs") {
+        None => {}
+        Some(Value::Integer(n)) if WORKER_TIMEOUT_RANGE.contains(n) => {
+            orch.worker_timeout_secs = *n as u32;
+        }
+        Some(_) => problems.push(
+            "ai.orchestrator.worker_timeout_secs: expected an integer from 30 to 3600".to_owned(),
+        ),
+    }
+    orch
 }
 
 /// Reads `[ai.tools] enabled`: a missing table or key is `true`; a value of
@@ -847,7 +929,17 @@ mod tests {
     #[test]
     fn the_task_set_is_fixed_ordered_and_unique() {
         let ids: Vec<&str> = Task::ALL.iter().map(|t| t.id()).collect();
-        assert_eq!(ids, ["general", "code", "chat", "review", "summarize"]);
+        assert_eq!(
+            ids,
+            [
+                "general",
+                "code",
+                "chat",
+                "review",
+                "summarize",
+                "orchestrate"
+            ]
+        );
         let tables: Vec<&str> = Task::ALL.iter().map(|t| t.table()).collect();
         assert_eq!(
             tables,
@@ -856,7 +948,8 @@ mod tests {
                 "ai.tasks.code",
                 "ai.tasks.chat",
                 "ai.tasks.review",
-                "ai.tasks.summarize"
+                "ai.tasks.summarize",
+                "ai.tasks.orchestrate"
             ]
         );
     }
@@ -1873,5 +1966,113 @@ mod tests {
         for shown in ["fs", "/home/u/p", "enabled: true", "args: 1", "env: 2"] {
             assert!(text.contains(shown), "{text}");
         }
+    }
+
+    // Spec (ai-task-models): Task set integrity; Set all covers five tasks.
+    #[test]
+    fn orchestrate_is_the_sixth_task_and_set_all_stays_at_five() {
+        assert_eq!(Task::Orchestrate as usize, 5);
+        assert_eq!(Task::Orchestrate.table(), "ai.tasks.orchestrate");
+        assert_eq!(Task::SET_ALL, Task::ALL[..5]);
+    }
+
+    // Spec (configuration): Slot parsed, Absent means unassigned.
+    #[test]
+    fn the_orchestrate_slot_is_parsed_and_absent_means_unassigned() {
+        let (config, problems) =
+            read_text("[ai.tasks.orchestrate]\nengine = \"claude\"\nmodel = \"opus\"\n");
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(config.get(Task::Orchestrate), &asg("claude", "opus"),);
+        assert_eq!(config.get(Task::Code), &Assignment::default());
+        let (config, _) = read_text("[ai]\nengine = \"codex\"\nmodel = \"default\"\n");
+        assert_eq!(config.get(Task::Orchestrate), &Assignment::default());
+        assert_eq!(
+            config.resolve(Task::Orchestrate),
+            (asg("codex", "default"), true)
+        );
+        assert_eq!(config.label(Task::Orchestrate), "(default)");
+    }
+
+    // Spec (ai-task-models): the aggregate ignores `orchestrate`.
+    #[test]
+    fn the_aggregate_ignores_orchestrate() {
+        let config = cfg(&[
+            (Task::General, Some("claude"), Some("opus")),
+            (Task::Orchestrate, Some("codex"), Some("default")),
+        ]);
+        assert_eq!(config.aggregate(), "claude › opus");
+    }
+
+    // Spec (configuration): Defaults.
+    #[test]
+    fn the_orchestrator_defaults() {
+        for text in ["", "[ai]\n", "[ai.orchestrator]\n"] {
+            let (config, problems) = read_text(text);
+            assert_eq!(
+                config.orchestrator,
+                OrchestratorConfig::default(),
+                "{text:?}"
+            );
+            assert_eq!(problems, Vec::<String>::new(), "{text:?}");
+        }
+        let defaults = OrchestratorConfig::default();
+        assert!(!defaults.enabled);
+        assert!(!defaults.notice_accepted);
+        assert_eq!(defaults.worker_timeout_secs, 600);
+    }
+
+    #[test]
+    fn the_orchestrator_keys_are_read() {
+        let (config, problems) = read_text(
+            "[ai.orchestrator]\nenabled = true\nnotice_accepted = true\nworker_timeout_secs = 30\n",
+        );
+        assert_eq!(problems, Vec::<String>::new());
+        assert_eq!(
+            config.orchestrator,
+            OrchestratorConfig {
+                enabled: true,
+                notice_accepted: true,
+                worker_timeout_secs: 30,
+            }
+        );
+        let (config, _) = read_text("[ai.orchestrator]\nworker_timeout_secs = 3600\n");
+        assert_eq!(config.orchestrator.worker_timeout_secs, 3600);
+    }
+
+    // Spec (configuration): Bad value falls back, other keys stay.
+    #[test]
+    fn a_bad_orchestrator_value_falls_back_on_its_own() {
+        for bad in ["29", "3601", "0", "-5", "\"600\"", "true", "1.5"] {
+            let text = format!("[ai.orchestrator]\nenabled = true\nworker_timeout_secs = {bad}\n");
+            let (config, problems) = read_text(&text);
+            assert!(config.orchestrator.enabled, "{bad}");
+            assert_eq!(config.orchestrator.worker_timeout_secs, 600, "{bad}");
+            assert_eq!(
+                problems,
+                ["ai.orchestrator.worker_timeout_secs: expected an integer from 30 to 3600"],
+                "{bad}"
+            );
+        }
+        let (config, problems) =
+            read_text("[ai.orchestrator]\nenabled = \"yes\"\nnotice_accepted = 1\n");
+        assert_eq!(config.orchestrator, OrchestratorConfig::default());
+        assert_eq!(
+            problems,
+            [
+                "ai.orchestrator.enabled: expected a boolean",
+                "ai.orchestrator.notice_accepted: expected a boolean"
+            ]
+        );
+        let (config, problems) = read_text("[ai]\norchestrator = 3\n");
+        assert_eq!(config.orchestrator, OrchestratorConfig::default());
+        assert_eq!(problems, ["ai.orchestrator: expected a table"]);
+    }
+
+    // Spec (configuration): Older build ignores keys; unknown keys ignored.
+    #[test]
+    fn unknown_orchestrator_keys_are_ignored() {
+        let (config, problems) = read_text("[ai.orchestrator]\nmax_parallel = 3\nfuture = 1\n");
+        assert_eq!(config.orchestrator, OrchestratorConfig::default());
+        assert_eq!(problems, Vec::<String>::new());
     }
 }

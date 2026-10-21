@@ -49,6 +49,8 @@ pub fn builtin(profile: Profile, task: Task) -> &'static str {
         (Profile::Programmer, Task::Summarize) => {
             include_str!("prompts/programmer/summarize.md")
         }
+        // Placeholder until the orchestrate prompts land with the run manager.
+        (profile, Task::Orchestrate) => builtin(profile, Task::Chat),
     }
 }
 

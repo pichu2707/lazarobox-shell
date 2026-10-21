@@ -27,7 +27,7 @@ fn set_all_writes_all_five_tasks() {
     draft.set(Task::Code, assigned("ollama", "llama3:8b"));
     draft.set(Task::Chat, assigned("codex", "default"));
     Target::All.apply(&mut draft, assigned("claude", "sonnet"));
-    for task in Task::ALL {
+    for task in Task::SET_ALL {
         assert_eq!(draft.get(task), &assigned("claude", "sonnet"));
     }
     assert_eq!(draft.aggregate(), "claude › sonnet");
@@ -37,7 +37,7 @@ fn set_all_writes_all_five_tasks() {
 fn set_all_none_clears_all_five() {
     let mut draft = all_assigned("claude", "opus");
     Target::All.apply(&mut draft, Assignment::default());
-    for task in Task::ALL {
+    for task in Task::SET_ALL {
         assert_eq!(draft.get(task), &Assignment::default());
     }
     assert_eq!(draft.label(Task::General), "(not set)");
@@ -75,7 +75,7 @@ fn a_full_walk_through_the_picker_assigns_set_all() {
         panic!("expected a commit");
     };
     p.target.apply(&mut draft, a);
-    for task in Task::ALL {
+    for task in Task::SET_ALL {
         assert_eq!(draft.get(task), &assigned("claude", "sonnet"));
     }
 }
@@ -116,4 +116,34 @@ fn an_info_row_is_inert() {
     let before = p.clone();
     assert_eq!(p.enter(&draft, Some(&d)), Outcome::Stay);
     assert_eq!(p, before);
+}
+
+// Spec (ai-task-models): Set all leaves the orchestrator alone.
+#[test]
+fn set_all_leaves_orchestrate_alone() {
+    let mut draft = AiConfig::default();
+    draft.set(Task::Orchestrate, assigned("claude", "opus"));
+    Target::All.apply(&mut draft, assigned("codex", "default"));
+    for task in Task::SET_ALL {
+        assert_eq!(draft.get(task), &assigned("codex", "default"));
+    }
+    assert_eq!(draft.get(Task::Orchestrate), &assigned("claude", "opus"));
+    assert_eq!(draft.aggregate(), "codex › default");
+    // Clearing the five does not clear the orchestrator either.
+    Target::All.apply(&mut draft, Assignment::default());
+    assert_eq!(draft.get(Task::Orchestrate), &assigned("claude", "opus"));
+}
+
+// The shared-assignment mark of Set all ignores the orchestrator row.
+#[test]
+fn set_all_marks_ignore_the_orchestrator_row() {
+    let d = det(&[]);
+    let mut draft = all_assigned("claude", "opus");
+    draft.set(Task::Orchestrate, assigned("codex", "default"));
+    let rows = engine_rows(Target::All, &draft, Some(&d));
+    let claude = rows
+        .iter()
+        .find(|r| r.key == PickKey::Engine("claude".to_owned()))
+        .expect("claude row");
+    assert!(claude.current);
 }

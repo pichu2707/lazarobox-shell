@@ -16,7 +16,8 @@ use super::{CATALOG, Detection, Kind, Status, status_text};
 /// What a picker is assigning to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Target {
-    /// `Set all tasks`: the choice is written to all five tasks.
+    /// `Set all tasks`: the choice is written to the five tasks of
+    /// [`Task::SET_ALL`], never to `orchestrate`.
     All,
     Task(Task),
 }
@@ -28,7 +29,7 @@ impl Target {
         match self {
             Self::Task(task) => draft.set(task, assignment),
             Self::All => {
-                for task in Task::ALL {
+                for task in Task::SET_ALL {
                     draft.set(task, assignment.clone());
                 }
             }
@@ -90,8 +91,8 @@ fn current_assignment(target: Target, draft: &AiConfig) -> Option<Assignment> {
     match target {
         Target::Task(task) => Some(draft.get(task).clone()),
         Target::All => {
-            let first = draft.resolve(Task::ALL[0]).0;
-            Task::ALL
+            let first = draft.resolve(Task::SET_ALL[0]).0;
+            Task::SET_ALL
                 .iter()
                 .all(|t| draft.resolve(*t).0 == first)
                 .then_some(first)

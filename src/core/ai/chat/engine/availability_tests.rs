@@ -384,3 +384,58 @@ fn an_old_looking_version_of_another_cli_is_not_gated() {
         ready("codex", Some("default"))
     );
 }
+
+// Characterization (agent-orchestrator / Disabled offers no tools): with the
+// orchestrator gate at its default (off), the chat resolution is what 0.18.0
+// gave. Written before `availability_for` and unchanged by it.
+#[test]
+fn chat_availability_with_the_gate_off_matches_0_18_0() {
+    let rows: [(&str, AiConfig, Option<Detection>, JailSupport); 7] = [
+        ("nothing assigned", AiConfig::default(), None, JAIL),
+        (
+            "general fallback",
+            cfg(Task::General, Some("claude"), Some("sonnet")),
+            Some(detected(vec![state("claude", Status::Available, &[])])),
+            JAIL,
+        ),
+        (
+            "server model listed",
+            cfg(Task::Chat, Some("ollama"), Some("llama3:8b")),
+            Some(detected(vec![state(
+                "ollama",
+                Status::Available,
+                &["llama3:8b"],
+            )])),
+            JAIL,
+        ),
+        (
+            "server model missing",
+            cfg(Task::Chat, Some("ollama"), Some("llama3:8b")),
+            Some(detected(vec![state("ollama", Status::Available, &["m2"])])),
+            JAIL,
+        ),
+        (
+            "no jail",
+            cfg(Task::Chat, Some("gemini"), Some("default")),
+            Some(detected(vec![state("gemini", Status::Available, &[])])),
+            NO_JAIL,
+        ),
+        (
+            "engine down",
+            cfg(Task::Chat, Some("ollama"), Some("llama3:8b")),
+            Some(detected(vec![state("ollama", Status::NotRunning, &[])])),
+            JAIL,
+        ),
+        (
+            "still checking",
+            cfg(Task::Chat, Some("claude"), None),
+            None,
+            JAIL,
+        ),
+    ];
+    let shown: Vec<String> = rows
+        .iter()
+        .map(|(name, c, d, jail)| format!("{name}: {:?}", availability(c, d.as_ref(), *jail)))
+        .collect();
+    insta::assert_snapshot!("chat_availability_gate_off", shown.join("\n"));
+}
