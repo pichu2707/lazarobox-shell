@@ -9,6 +9,7 @@ use super::{RunId, Toolset, WorkerId};
 use crate::core::ai::chat::engine::Availability;
 use crate::core::ai::chat::guidance::guidance;
 use crate::core::ai::config::Task;
+use crate::core::ai::tools::label;
 
 /// Workers running at once. S3 makes it a setting.
 const MAX_RUNNING: usize = 1;
@@ -275,6 +276,12 @@ impl Run {
             WorkerStatus::Done => Ok(&result.text),
             status => Err(CollectError::Ended(status)),
         }
+    }
+
+    /// [`collect`](Self::collect) as the orchestrator receives it: cleaned,
+    /// capped and wrapped as untrusted data under `nonce`.
+    pub fn collect_wrapped(&self, nonce: &str, id: WorkerId) -> Result<String, CollectError> {
+        self.collect(id).map(|text| label::wrap(nonce, text))
     }
 
     /// Cancels one worker. Its slot goes to the next queued worker.
