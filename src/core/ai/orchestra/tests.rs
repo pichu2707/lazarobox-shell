@@ -423,9 +423,12 @@ struct Home {
 }
 
 fn home() -> Home {
+    home_in(tempfile::tempdir().unwrap())
+}
+
+fn home_in(dir: tempfile::TempDir) -> Home {
     use std::fs;
     use std::os::unix::fs::symlink;
-    let dir = tempfile::tempdir().unwrap();
     let home = dir.path().canonicalize().unwrap().join("home");
     for sub in ["app/src", "other", ".ssh", ".aws", "scratchy"] {
         fs::create_dir_all(home.join(sub)).unwrap();
@@ -533,8 +536,12 @@ fn a_denied_scope_grants_nothing() {
 
 #[test]
 fn the_production_scope_drops_the_scratch_folders_of_the_jail() {
-    // The fixture HOME lives under the temp dir, a scratch folder.
-    let h = home();
+    // Built under `/tmp` (a scratch folder of the jail) whatever `TMPDIR` says.
+    let Ok(dir) = tempfile::Builder::new().tempdir_in("/tmp") else {
+        eprintln!("skipped: /tmp is not writable");
+        return;
+    };
+    let h = home_in(dir);
     let (scope, dropped) = ReadScope::for_run(RunId(1), &h.secrets, &h.home, &["app"]);
     assert_eq!(dropped, ["app"]);
     assert!(!allows(&h, &scope, "app/src/a.rs"));
