@@ -153,6 +153,11 @@ S1d-1 bases on the S1c-2 branch. Task order inside S1c-2 is 1c.3 then 1c.4; S1c-
 - [ ] 1c.3 RED `runtime/tools/host.rs` tests: out-of-set call refused in `execute`; `Call::Orchestra` without handle = `UnknownTool`; read inside `ReadScope` skips the ask only when both paths inside; orchestrator never approves; label travels with the ask; closed session denies; wait bound held. Spec: agent-tools / Inside runs, outside asks; agent-orchestrator / Orchestrator cannot approve, Outside read asks with a label, Never silently decided; lazarobox-mcp-server / Bound held, Label travels, Closed session denies.
 - [ ] 1c.4 GREEN `runtime/tools/host.rs`: `TurnScope{orchestra: Option<OrchHandle>, read_scope, toolset}`, execute filter, ask label. REFACTOR + gates (S1c-2 closes here).
 
+#### Obligations from the S1b-2 security review (S1c-2)
+
+- [ ] The read opens exactly the path returned by `ReadScope::allows` with open_beneath/O_NOFOLLOW semantics and re-judges the opened fd's real path (`SecretRoots::judge_real` + `starts_with(root.real)`); the `SecretRoots` snapshot is built per call; consider an ask when `nlink > 1`.
+- [ ] A denied or expired scope makes the host ASK, never silently allow or refuse.
+
 ## S1d: RunManager (3 chained PRs: S1d-1 = PR 6, S1d-2 = PR 7, S1d-3 = PR 8; ~1,200 lines re-estimated in total)
 
 | Field | Value |
@@ -188,6 +193,12 @@ S1e-1a bases on the S1d-3 branch.
 - [ ] 1d.3b RED `runtime/orchestra/tests.rs`, control path: cancel kills the process; halt then retry relaunches same spec; worker read outside scope reaches the approver; Ctrl+C cancels all; shutdown. Spec: agent-orchestrator / Retry relaunches the same spec, Ctrl+C cancels all.
 - [ ] 1d.4b GREEN `runtime/orchestra.rs`: `RunManager::{decide, cancel, shutdown}`.
 - [ ] 1d.5 GREEN `runtime/chat.rs` (`with_orchestra`, `cancel`/`shutdown` forward), `runtime.rs` wiring. REFACTOR + gates (S1d-3 closes here).
+
+#### Obligations from the S1b-2 security review (S1d-2, S1d-3)
+
+- [ ] (S1d-2) Nonce bytes per call from the OS CSPRNG; never reused or shown to the worker.
+- [ ] (S1d-2) RunIds are allocated monotonically and never reused across restarts; a resumed run re-asks the scope.
+- [ ] (S1d-3) Worker error text (failed/timed-out) is wrapped with `label::wrap` too, not only Done text.
 
 ## S1e-1: app/core wiring (3 chained PRs: S1e-1a = PR 9, S1e-1b = PR 10, S1e-1c = PR 11; ~900 lines re-estimated in total)
 
@@ -227,6 +238,11 @@ S1e-2 bases on the S1e-1c branch.
 - [ ] 1e1.7 RED failure state tests: `OrchestraEvent::Halted` stores raw error; r retry, c/Esc/Ctrl+C cancel drive `RunManager::decide`/`cancel`; alert persists until answered; `Entry::Worker` rows follow status and stay out of history. Spec: agent-orchestrator / Row follows the status, Not in history, Error shown as it came; chat-pane / Alert persists; modal-input / Retry key, Cancel keys, Ctrl+C.
 - [ ] 1e1.8 GREEN `core/ai/chat/mod.rs` (`Entry::Worker`), `app/orchestra.rs` event handling. REFACTOR + gates.
 
+#### Obligations from the S1b-2 security review (S1e-1b)
+
+- [ ] Scope roots come only from the user's prompt, never from model/worker text; `dropped` entries are sanitized (`clean`/`clip`) before display.
+- [ ] (suggestion) Consider refusing or flagging roots that are ancestors of secret roots or credential parents (~/.config, ~/.local, ~/Library, ~/.mozilla), per `jail::too_broad`.
+
 ## S1e-2: UI, snapshots, prompts (PR 12, ~600 lines re-estimated, `size:exception: approved`)
 
 | Field | Value |
@@ -251,6 +267,8 @@ Base: S1e-1c branch. Tasks 1e2.1-1e2.4. Label the PR `size:exception`. Closes S1
 - [ ] 2.3 RED+GREEN detached picker, `RunOverrides`, relaunch, later workers use override, (note from the S1b re-review: today `Relaunch` re-resolves only the halted worker, and already-queued workers keep their spawn-time spec; the override must reach them too), override marker, dropped at run end, abandoned picker, unavailable override engine, never persisted. Spec: config-menu / Change model opens level 2 .. Esc creates no override; config-persistence / A failure picker choice is never persisted; agent-orchestrator / Change provider relaunches .. Picker abandoned; modal-input / Change keys.
 
 ### S3: multiple workers (3 PRs, ~1,100, risk High, decision: Yes) depends on S1
+
+- [ ] (S1b-2 security review) `ReadScope` is per run; the spec says per worker. Revisit before S3 parallel workers.
 - [ ] 3.1 `SessionKey` generalization: `Waits`, `Tagged`, `Approvals` (labelled FIFO) in `runtime/tools/approver.rs`, `runtime/chat.rs`, `core/ai/chat/approval.rs`, `app.rs`, `app/tool.rs`. Spec: agent-tools / Cross-session call refused, FIFO order; lazarobox-mcp-server / Own socket per worker.
 - [ ] 3.2 `max_parallel`, `max_workers`, `run_timeout_mins`; failure with siblings; cancel one/all (pin keys, design open item). Spec: agent-orchestrator / Parallel limit, Worker cap, Wall clock, Isolated sessions, Siblings finish, Cancel after failure, Queue of two workers, Cancel denies pending asks; modal-input / Cancel the selected worker; chat-pane / Queue count.
 
