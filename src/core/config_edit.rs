@@ -45,6 +45,10 @@ pub fn apply_edit(existing: Option<&str>, edits: &[ConfigEdit]) -> Result<String
         None => DocumentMut::new(),
     };
     for edit in edits {
+        if edit.is_removal() {
+            remove_key(&mut doc, edit);
+            continue;
+        }
         if edit.table.is_empty() {
             set_root_key(&mut doc, edit)?;
             continue;
@@ -105,6 +109,33 @@ fn set_key(table: &mut dyn TableLike, edit: &ConfigEdit) -> Result<(), EditError
         }
     }
     Ok(())
+}
+
+/// Deletes `edit.key` from its table; a table left empty goes too. A missing
+/// table or key is left alone: a removal never creates anything.
+fn remove_key(doc: &mut DocumentMut, edit: &ConfigEdit) {
+    fn table_at<'a>(root: &'a mut dyn TableLike, path: &str) -> Option<&'a mut dyn TableLike> {
+        path.split('.')
+            .try_fold(root, |table, name| table.get_mut(name)?.as_table_like_mut())
+    }
+    if let Some(table) = table_at(doc.as_table_mut(), edit.table) {
+        table.remove(edit.key);
+    }
+    let (parent, leaf) = edit.table.rsplit_once('.').unwrap_or(("", edit.table));
+    let root: &mut dyn TableLike = doc.as_table_mut();
+    let parent = if parent.is_empty() {
+        Some(root)
+    } else {
+        table_at(root, parent)
+    };
+    if let Some(parent) = parent
+        && parent
+            .get(leaf)
+            .and_then(Item::as_table_like)
+            .is_some_and(|table| table.is_empty())
+    {
+        parent.remove(leaf);
+    }
 }
 
 /// Writes a root key (`edit.table == ""`). `toml_edit` prints the root's
@@ -1526,5 +1557,85 @@ other = 1
                 );
             }
         }
+    }
+
+    // Spec (config-persistence): the orchestrate slot and the orchestrator keys.
+    fn orchestrate_edits(engine: &'static str, model: &'static str) -> [ConfigEdit; 2] {
+        let table = crate::core::ai::config::Task::Orchestrate.table();
+        let owned = |key, value: &'static str| ConfigEdit {
+            table,
+            key,
+            value: std::borrow::Cow::Borrowed(value),
+        };
+        [owned("engine", engine), owned("model", model)]
+    }
+
+    // Spec: Save the slot.
+    #[test]
+    fn the_orchestrate_slot_is_saved_in_its_own_table_and_reads_back() {
+        use crate::core::ai::config::{Assignment, Task};
+        let existing = "# mine\n[ai]\nengine = \"x\"  # keep\nunknown = 1\n";
+        let out = apply_edit(Some(existing), &orchestrate_edits("claude", "opus")).unwrap();
+        assert_eq!(
+            out,
+            format!("{existing}\n[ai.tasks.orchestrate]\nengine = \"claude\"\nmodel = \"opus\"\n")
+        );
+        let (_, ai, notice) = Config::load_with_ai(Ok(out), None);
+        assert_eq!(notice, None);
+        assert_eq!(
+            ai.get(Task::Orchestrate),
+            &Assignment {
+                engine: Some("claude".into()),
+                model: Some("opus".into())
+            }
+        );
+    }
+
+    // Spec: Clearing removes the keys.
+    #[test]
+    fn clearing_the_orchestrate_slot_removes_its_keys_and_leaves_the_rest() {
+        let rest = "# mine\n[ai]\nengine = \"x\"\n\n[ai.tasks.code]\nengine = \"codex\"\n";
+        let with_slot =
+            format!("{rest}\n[ai.tasks.orchestrate]\nengine = \"claude\"\nmodel = \"opus\"\n");
+        let out = apply_edit(Some(&with_slot), &orchestrate_edits("", "")).unwrap();
+        assert_eq!(out.trim_end(), rest.trim_end());
+        // Nothing to remove: no table is created and the text is untouched.
+        let out = apply_edit(Some(rest), &orchestrate_edits("", "")).unwrap();
+        assert_eq!(out, rest);
+        // Another key of the table survives; a half-cleared slot keeps the rest.
+        let kept = "[ai.tasks.orchestrate]\nengine = \"claude\"\nmodel = \"opus\"\nextra = 1\n";
+        let out = apply_edit(Some(kept), &orchestrate_edits("", "")).unwrap();
+        assert_eq!(out, "[ai.tasks.orchestrate]\nextra = 1\n");
+    }
+
+    #[test]
+    fn the_other_tasks_still_write_empty_strings_when_cleared() {
+        let out = apply_edit(None, &code_edits("", "")).unwrap();
+        assert_eq!(out, "[ai.tasks.code]\nengine = \"\"\nmodel = \"\"\n");
+    }
+
+    // Spec: Notice acceptance saved, with no other change pending.
+    #[test]
+    fn the_orchestrator_flags_are_written_as_booleans() {
+        let flags = [
+            ConfigEdit::orchestrator_flag("enabled", true),
+            ConfigEdit::orchestrator_flag("notice_accepted", true),
+        ];
+        let out = apply_edit(None, &flags).unwrap();
+        assert_eq!(
+            out,
+            "[ai.orchestrator]\nenabled = true\nnotice_accepted = true\n"
+        );
+        let (_, ai, notice) = Config::load_with_ai(Ok(out), None);
+        assert_eq!(notice, None);
+        assert!(ai.orchestrator.enabled && ai.orchestrator.notice_accepted);
+        // Alone, in place; the hand-edited timeout is never touched.
+        let existing = "[ai.orchestrator]\nworker_timeout_secs = 90  # mine\n";
+        let out = apply_edit(
+            Some(existing),
+            &[ConfigEdit::orchestrator_flag("notice_accepted", true)],
+        )
+        .unwrap();
+        assert_eq!(out, format!("{existing}notice_accepted = true\n"));
     }
 }
