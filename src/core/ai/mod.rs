@@ -11,6 +11,7 @@ pub mod http;
 pub mod jail;
 pub mod memory;
 pub mod menu;
+pub mod orchestra;
 pub mod parse;
 pub mod picker;
 pub mod sanitize;
