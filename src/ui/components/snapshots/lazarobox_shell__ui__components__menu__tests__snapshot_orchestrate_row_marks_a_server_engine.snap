@@ -1,0 +1,22 @@
+---
+source: src/ui/components/menu.rs
+expression: "text(&draw(62, POPUP_H, &orchestrating(\"llama3:8b\")))"
+---
+┌ Menu ──────────────────────────────────────────────────────┐
+│ Settings │ AI                                        ⇥ Tab │
+│ Set all tasks                                claude › opus │
+│ general                       claude (not detected) › opus │
+│ code                                             (default) │
+│ chat                                             (default) │
+│ review                                           (default) │
+│ summarize                                        (default) │
+│ orchestrate           ollama › llama3:8b · not recommended │
+│ Profile                                         programmer │
+│ Context                                                 on │
+│ Memory                                                 off │
+│ Tools                                                   on │
+│ Approval                                               ask │
+│ Orchestrator                                           off │
+│                                                            │
+│ j/k move · Enter pick · r refresh · s save · Esc cancel    │
+└────────────────────────────────────────────────────────────┘

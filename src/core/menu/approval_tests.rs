@@ -45,15 +45,15 @@ fn approval_edit(value: &'static str) -> ConfigEdit {
     }
 }
 
-// Spec (agent-tools, config menu): the row is the last of the AI tab, right
-// after Tools, and is found by its kind.
+// Spec (agent-tools, config menu): the row is right after Tools, ahead of
+// the `Orchestrator` gate, and is found by its kind.
 #[test]
 fn the_approval_row_follows_tools_and_is_found_by_kind() {
     let items = AI_SECTION.items;
-    let last = items.last().unwrap();
-    assert_eq!(last.label, "Approval");
-    assert!(matches!(last.kind, ItemKind::Approval));
-    assert_eq!(items[items.len() - 2].label, "Tools");
+    let row = &items[items.len() - 2];
+    assert_eq!(row.label, "Approval");
+    assert!(matches!(row.kind, ItemKind::Approval));
+    assert_eq!(items[items.len() - 3].label, "Tools");
     let count = items
         .iter()
         .filter(|i| matches!(i.kind, ItemKind::Approval))
@@ -62,19 +62,23 @@ fn the_approval_row_follows_tools_and_is_found_by_kind() {
 }
 
 #[test]
-fn the_ai_tab_holds_eleven_rows() {
-    assert_eq!(AI_SECTION.items.len(), 11);
+fn the_ai_tab_holds_thirteen_rows() {
+    assert_eq!(AI_SECTION.items.len(), 13);
 }
 
 #[test]
-fn navigation_goes_tools_approval_then_wraps_to_the_first_ai_row() {
+fn navigation_goes_tools_approval_gate_then_wraps_to_the_first_ai_row() {
     let mut m = on_approval(ApprovalMode::Ask);
+    press(&mut m, 'j');
+    assert_eq!(selected_label(&m), "Orchestrator");
     press(&mut m, 'j');
     assert_eq!(
         selected_label(&m),
         "Set all tasks",
         "wraps inside the AI tab"
     );
+    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "Orchestrator");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Approval");
     press(&mut m, 'k');

@@ -110,7 +110,7 @@ pub(super) fn selected_label(menu: &MenuState) -> &'static str {
     labels[0]
 }
 
-const ORDER: [&str; 17] = [
+const ORDER: [&str; 19] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
@@ -123,11 +123,13 @@ const ORDER: [&str; 17] = [
     "chat",
     "review",
     "summarize",
+    "orchestrate",
     "Profile",
     "Context",
     "Memory",
     "Tools",
     "Approval",
+    "Orchestrator",
 ];
 
 // Spec: Descriptor integrity, Sections and items are data.
@@ -137,7 +139,7 @@ fn the_ai_descriptors_are_well_formed() {
     let labels: Vec<_> = AI_SECTION.items.iter().map(|i| i.label).collect();
     assert_eq!(labels, ORDER[6..]);
     let mut paths: Vec<&str> = Vec::new();
-    for (item, task) in AI_SECTION.items[1..6].iter().zip(Task::ALL) {
+    for (item, task) in AI_SECTION.items[1..7].iter().zip(Task::ALL) {
         match item.kind {
             ItemKind::Assign(Some(t)) => {
                 assert_eq!(t, task);
@@ -162,7 +164,8 @@ fn the_ai_descriptors_are_well_formed() {
             "ai.tasks.code",
             "ai.tasks.chat",
             "ai.tasks.review",
-            "ai.tasks.summarize"
+            "ai.tasks.summarize",
+            "ai.tasks.orchestrate"
         ]
     );
 }
@@ -311,11 +314,13 @@ fn the_ai_section_lists_the_task_rows_and_the_static_rows_with_their_values() {
             "chat=(default)",
             "review=(default)",
             "summarize=(default)",
+            "orchestrate=(default)",
             "Profile=programmer",
             "Context=on",
             "Memory=off",
             "Tools=on",
             "Approval=ask",
+            "Orchestrator=off",
         ]
     );
     assert_eq!(

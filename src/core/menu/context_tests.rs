@@ -58,14 +58,16 @@ fn the_context_row_follows_profile_and_precedes_memory() {
             "chat",
             "review",
             "summarize",
+            "orchestrate",
             "Profile",
             "Context",
             "Memory",
             "Tools",
             "Approval",
+            "Orchestrator",
         ]
     );
-    let context = &AI_SECTION.items[AI_SECTION.items.len() - 4];
+    let context = &AI_SECTION.items[AI_SECTION.items.len() - 5];
     assert!(matches!(context.kind, ItemKind::Context));
 }
 
@@ -81,11 +83,15 @@ fn context_sits_between_profile_and_memory_and_navigation_wraps_through_them() {
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Approval");
     press(&mut m, 'j');
+    assert_eq!(selected_label(&m), "Orchestrator");
+    press(&mut m, 'j');
     assert_eq!(
         selected_label(&m),
         "Set all tasks",
         "wraps inside the AI tab"
     );
+    press(&mut m, 'k');
+    assert_eq!(selected_label(&m), "Orchestrator");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Approval");
     press(&mut m, 'k');

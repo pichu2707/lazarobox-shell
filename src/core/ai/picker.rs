@@ -147,7 +147,11 @@ pub fn engine_rows(
     };
     for engine in CATALOG {
         if is_available(detection, engine.id) {
-            push(engine.id, Mark::Status(status_text(detection, engine.id)));
+            let mut text = status_text(detection, engine.id);
+            if matches!(target, Target::Task(task) if not_recommended(task, engine.id)) {
+                text = format!("{text} · {NOT_RECOMMENDED}");
+            }
+            push(engine.id, Mark::Status(text));
         }
     }
     let mut listed: Vec<&str> = Vec::new();
@@ -398,6 +402,9 @@ fn fit_chars(s: &str, room: usize) -> usize {
     s.len()
 }
 
+/// The mark of a server engine on the `orchestrate` row.
+pub const NOT_RECOMMENDED: &str = "not recommended";
+
 /// The warning for a CLI model the account's own list does not contain.
 pub const NOT_IN_LIST: &str = "not in your account's list";
 
@@ -407,6 +414,24 @@ pub const NOT_IN_LIST: &str = "not in your account's list";
 /// CLI assignments never get a model mark, and nothing is marked before the
 /// first detection result.
 pub fn task_label(config: &AiConfig, task: Task, detection: Option<&Detection>) -> String {
+    let label = detected_label(config, task, detection);
+    match config.get(task).engine.as_deref() {
+        Some(id) if not_recommended(task, id) => format!("{label} · {NOT_RECOMMENDED}"),
+        _ => label,
+    }
+}
+
+/// The mark of an engine a task cannot lean on: small local models cannot
+/// orchestrate, so a server engine on `orchestrate` is marked. Only a
+/// warning: the row stays selectable and the assignment is never changed.
+fn not_recommended(task: Task, engine: &str) -> bool {
+    task == Task::Orchestrate
+        && CATALOG
+            .iter()
+            .any(|e| e.id == engine && matches!(e.kind, Kind::Server { .. }))
+}
+
+fn detected_label(config: &AiConfig, task: Task, detection: Option<&Detection>) -> String {
     let detection = known(detection);
     let plain = config.label(task);
     let (
