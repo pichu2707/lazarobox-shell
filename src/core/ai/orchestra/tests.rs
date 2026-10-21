@@ -323,3 +323,84 @@ fn cancelling_one_worker_frees_the_slot_and_a_finished_one_stays_as_it_was() {
     assert_eq!(run.status(two), Some(WorkerStatus::Done));
     assert_eq!(run.collect(two), Ok("ok"));
 }
+
+fn done() -> WorkerEvent {
+    WorkerEvent::Done {
+        text: "ok".to_owned(),
+    }
+}
+
+#[test]
+fn a_second_failure_while_halted_surfaces_after_the_first_is_decided() {
+    let (t0, mut run) = (Instant::now(), run());
+    let one = run.spawn(t0, Task::Review, "p").unwrap();
+    let no_engine = Availability::Unassigned;
+    run.set_roster(roster(no_engine));
+    let two = run.spawn(t0, Task::Review, "q").unwrap();
+    assert_eq!(run.status(two), Some(WorkerStatus::Refused));
+    assert!(matches!(run.state(), RunState::Halted { worker, .. } if *worker == two));
+
+    run.on_event(t0, one, failed(ErrorClass::RateLimit, "429 from one"));
+    run.set_roster(roster(ready("codex", "default")));
+    assert_eq!(run.decide(t0, UserChoice::Retry), Ok(vec![]));
+    assert_eq!(
+        run.state(),
+        &RunState::Halted {
+            worker: one,
+            class: ErrorClass::RateLimit,
+            text: "429 from one".to_owned()
+        }
+    );
+    assert_eq!(run.decide(t0, UserChoice::Retry), Ok(vec![]));
+    assert_eq!(run.state(), &RunState::Open);
+}
+
+#[test]
+fn queued_workers_start_in_spawn_order_and_a_retried_one_goes_to_the_back() {
+    let (t0, mut run) = (Instant::now(), run());
+    let one = run.spawn(t0, Task::Review, "1").unwrap();
+    let two = run.spawn(t0, Task::Review, "2").unwrap();
+    let three = run.spawn(t0, Task::Review, "3").unwrap();
+    run.on_event(t0, one, failed(ErrorClass::Other, "x"));
+    // Nothing starts while halted.
+    assert_eq!(run.status(two), Some(WorkerStatus::Queued));
+    run.decide(t0, UserChoice::Retry).unwrap();
+    assert_eq!(run.status(two), Some(WorkerStatus::Running));
+    assert_eq!(run.status(one), Some(WorkerStatus::Queued));
+    assert_eq!(run.status(three), Some(WorkerStatus::Queued));
+    run.on_event(t0, two, done());
+    assert_eq!(run.status(three), Some(WorkerStatus::Running));
+    assert_eq!(run.status(one), Some(WorkerStatus::Queued));
+    run.on_event(t0, three, done());
+    assert_eq!(run.status(one), Some(WorkerStatus::Running));
+}
+
+#[test]
+fn collect_hands_over_only_a_done_worker() {
+    let (t0, mut run) = (Instant::now(), run());
+    let one = run.spawn(t0, Task::Review, "1").unwrap();
+    let two = run.spawn(t0, Task::Review, "2").unwrap();
+    run.on_event(t0, one, failed(ErrorClass::Other, "x"));
+    assert_eq!(
+        run.collect(one),
+        Err(CollectError::Ended(WorkerStatus::Failed))
+    );
+    assert_eq!(run.cancel(t0, two), CancelOutcome::Cancelled);
+    assert_eq!(
+        run.collect(two),
+        Err(CollectError::Ended(WorkerStatus::Cancelled))
+    );
+    run.decide(t0, UserChoice::Retry).unwrap();
+    run.on_event(t0, one, done());
+    assert_eq!(run.collect(one), Ok("ok"));
+}
+
+#[test]
+fn an_enormous_deadline_never_expires_and_does_not_panic() {
+    let (t0, mut run) = (
+        Instant::now(),
+        Run::new(RunId(1), roster(ready("codex", "default")), Duration::MAX),
+    );
+    run.spawn(t0, Task::Review, "p").unwrap();
+    assert!(run.on_tick(t0 + Duration::from_secs(3600)).is_empty());
+}

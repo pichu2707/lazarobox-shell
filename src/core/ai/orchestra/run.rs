@@ -1,6 +1,7 @@
 //! The run: its workers, limits and the failure pause. Pure; time comes in as
 //! explicit `Instant`s and nothing here starts a process.
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use super::worker::{ErrorClass, WorkerResult, WorkerSpec, WorkerStatus};
@@ -63,6 +64,8 @@ pub enum Refusal {
 pub enum CollectError {
     Unknown,
     NotFinished,
+    /// The worker ended without a result to hand over.
+    Ended(WorkerStatus),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -99,6 +102,11 @@ pub struct Run {
     deadline: Duration,
     /// Worker `n` is `slots[n - 1]`.
     slots: Vec<Slot>,
+    /// Queued workers, in the order they started waiting.
+    queue: VecDeque<WorkerId>,
+    /// Failures that ended while the run was already halted, in order. Each
+    /// halts the run in turn once the one before is decided.
+    pending: VecDeque<WorkerId>,
 }
 
 impl Run {
@@ -109,6 +117,8 @@ impl Run {
             roster,
             deadline,
             slots: Vec::new(),
+            queue: VecDeque::new(),
+            pending: VecDeque::new(),
         }
     }
 
@@ -155,13 +165,13 @@ impl Run {
             result: None,
         });
         let id = WorkerId(self.slots.len() as u32);
-        self.launch(now, id, refusal);
+        self.enqueue(now, id, refusal);
+        self.promote(now);
         Ok(id)
     }
 
-    /// A worker is `Running` when it has a slot, else `Queued`; a refusal
-    /// ends it at once.
-    fn launch(&mut self, now: Instant, id: WorkerId, refusal: Option<String>) {
+    /// A worker waits at the back of the queue; a refusal ends it at once.
+    fn enqueue(&mut self, now: Instant, id: WorkerId, refusal: Option<String>) {
         if let Some(reason) = refusal {
             return self.end(
                 now,
@@ -171,14 +181,22 @@ impl Run {
                 Some((ErrorClass::Other, reason)),
             );
         }
-        let free = self.count(WorkerStatus::Running) < MAX_RUNNING;
         let slot = &mut self.slots[index(id)];
         slot.result = None;
-        (slot.status, slot.started) = if free {
-            (WorkerStatus::Running, Some(now))
-        } else {
-            (WorkerStatus::Queued, None)
-        };
+        (slot.status, slot.started) = (WorkerStatus::Queued, None);
+        self.queue.push_back(id);
+    }
+
+    /// Starts queued workers, oldest first, while the run is open and a slot
+    /// is free.
+    fn promote(&mut self, now: Instant) {
+        while self.state == RunState::Open && self.count(WorkerStatus::Running) < MAX_RUNNING {
+            let Some(next) = self.queue.pop_front() else {
+                return;
+            };
+            let slot = &mut self.slots[index(next)];
+            (slot.status, slot.started) = (WorkerStatus::Running, Some(now));
+        }
     }
 
     fn resolve(&self, task: Task, prompt: &str) -> (WorkerSpec, Option<String>) {
@@ -220,8 +238,11 @@ impl Run {
     /// the runtime kills their processes.
     pub fn on_tick(&mut self, now: Instant) -> Vec<WorkerId> {
         let late: Vec<_> = self.ids(WorkerStatus::Running, |slot| {
-            slot.started
-                .is_some_and(|at| now >= at + slot.spec.deadline)
+            // An overflowing deadline never expires.
+            slot.started.is_some_and(|at| {
+                at.checked_add(slot.spec.deadline)
+                    .is_some_and(|end| now >= end)
+            })
         });
         for id in &late {
             let error = (ErrorClass::Timeout, "deadline passed".to_owned());
@@ -250,7 +271,10 @@ impl Run {
     pub fn collect(&self, id: WorkerId) -> Result<&str, CollectError> {
         let slot = self.slot(id).ok_or(CollectError::Unknown)?;
         let result = slot.result.as_ref().ok_or(CollectError::NotFinished)?;
-        Ok(&result.text)
+        match result.status {
+            WorkerStatus::Done => Ok(&result.text),
+            status => Err(CollectError::Ended(status)),
+        }
     }
 
     /// Cancels one worker. Its slot goes to the next queued worker.
@@ -279,7 +303,6 @@ impl Run {
                 true
             }
         };
-        self.state = RunState::Open;
         let slot = &self.slots[index(worker)];
         // A refused worker has no engine to reuse: it is resolved again.
         let refusal = if reresolve || slot.status == WorkerStatus::Refused {
@@ -289,13 +312,37 @@ impl Run {
         } else {
             None
         };
-        self.launch(now, worker, refusal);
+        // The run stays halted while the worker is queued again, so a refusal
+        // lands in `pending` like any other late failure.
+        self.enqueue(now, worker, refusal);
+        self.reopen(now);
         Ok(Vec::new())
+    }
+
+    /// After a decision: halts again on the oldest unresolved failure, else
+    /// opens the run and hands out the free slots.
+    fn reopen(&mut self, now: Instant) {
+        if let Some(next) = self.pending.pop_front() {
+            let (class, text) = self.slots[index(next)]
+                .result
+                .as_ref()
+                .and_then(|result| result.error.clone())
+                .unwrap_or((ErrorClass::Other, String::new()));
+            self.state = RunState::Halted {
+                worker: next,
+                class,
+                text,
+            };
+        } else {
+            self.state = RunState::Open;
+            self.promote(now);
+        }
     }
 
     fn cancel_run(&mut self, now: Instant) -> Vec<WorkerId> {
         let running = self.ids(WorkerStatus::Running, |_| true);
         self.state = RunState::Cancelled;
+        self.pending.clear();
         for id in running
             .iter()
             .chain(&self.ids(WorkerStatus::Queued, |_| true))
@@ -305,8 +352,9 @@ impl Run {
         running
     }
 
-    /// Ends a worker. An error halts an open run (the first one wins and the
-    /// siblings carry on); otherwise an open run hands the free slot on.
+    /// Ends a worker. An error halts an open run (the siblings carry on) or,
+    /// when already halted, waits its turn in `pending`; otherwise an open
+    /// run hands the free slot on.
     fn end(
         &mut self,
         now: Instant,
@@ -327,17 +375,17 @@ impl Run {
             engine: slot.spec.engine.clone(),
             model: slot.spec.model.clone(),
         });
-        if self.state != RunState::Open {
-            return;
-        }
-        if let Some((class, text)) = error {
-            self.state = RunState::Halted {
-                worker: id,
-                class,
-                text,
-            };
-        } else if let Some(next) = self.ids(WorkerStatus::Queued, |_| true).first() {
-            self.launch(now, *next, None);
+        self.queue.retain(|queued| *queued != id);
+        match (&self.state, error) {
+            (RunState::Open, Some((class, text))) => {
+                self.state = RunState::Halted {
+                    worker: id,
+                    class,
+                    text,
+                };
+            }
+            (RunState::Halted { .. }, Some(_)) => self.pending.push_back(id),
+            _ => self.promote(now),
         }
     }
 
