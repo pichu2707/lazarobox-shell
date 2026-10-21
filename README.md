@@ -12,7 +12,7 @@
 
 ## 📸 Overview & Vision
 
-**`lazarobox-shell`** es un espacio de trabajo unificado (_Workspace_) de terminal (TUI) ultrarrápido, modular e independiente escrita en **Rust**. Actúa como una interfaz centralizada para orquestación de modelos de Inteligencia Artificial (locales y en la nube), monitorización de métricas en tiempo real y ejecución de herramientas de automatización.
+**`lazarobox-shell`** es un espacio de trabajo unificado (_Workspace_) de terminal (TUI) ultrarrápido, modular e independiente escrita en **Rust**. Actúa como una interfaz centralizada para conversación con modelos de Inteligencia Artificial (locales y a través de CLIs), panes de terminal y ejecución de herramientas de automatización bajo aprobación del usuario.
 
 Aunque nace optimizada para flujos de trabajo en **Desarrollo de Software, SEO, CRO y Analítica Digital**, su núcleo está diseñado para ser **completamente agnóstico al dominio**, permitiendo escalar hacia sectores como **Automatización Industrial, IoT, Logística y Telemetría SCADA/PLC**.
 
@@ -21,11 +21,9 @@ Aunque nace optimizada para flujos de trabajo en **Desarrollo de Software, SEO, 
 ## ✨ Principios de Diseño
 
 - **⚡ Rendimiento e Integridad Cero-Latencia:** Desarrollada 100% en Rust utilizando `tokio` para asincronía y `ratatui` + `crossterm` para un renderizado TUI rápido y ligero.
-- **🎯 Arquitectura Centrada en Proyectos (360°):** La información se organiza por unidades de negocio o proyectos en una vista consolidada que integra métricas de desarrollo, analítica, SEO, conversión y automatización.
-- **🤖 IA Multimodelo Agnóstica (`llm-router`):** Conmutación en caliente entre modelos locales (`Ollama`, `llama.cpp`, `vLLM`) y APIs en la nube (`Anthropic Claude`, `Google Gemini`, `OpenAI`).
-- **📊 Visualización Rica & Soporte Multimedia:** Gráficos vectoriales TUI (Line/Bar charts) y soporte nativo de renderizado de imágenes reales directamente en la terminal mediante los protocolos **Kitty Graphics Protocol** y **Sixel**.
-- **🔐 Autenticación y Seguridad Cero Fricción:** Almacenamiento seguro de tokens en el Keyring nativo del sistema operativo (GNOME Keyring, macOS Keychain, Windows Credential Manager) o cifrado AES-256 local, con flujos OAuth2 efímeros para Google y Microsoft.
-- **🧩 Extensibilidad vía MCP (Model Context Protocol):** Conexión de herramientas y scripts externos en Rust/Python mediante el protocolo estándar MCP.
+- **🎯 Arquitectura Centrada en Proyectos:** Cada pestaña agrupa los panes de terminal y el chat de un proyecto. Planificado: dashboards básicos en el shell y lectura de datos, con la analítica como objetivo.
+- **🤖 IA Multimotor:** Chat con los CLIs `claude`, `codex` y `gemini` y con `Ollama` por HTTP local. Otros motores (`llama.cpp`, `vLLM`, la API de OpenAI) aún no tienen adaptador de chat.
+- **🧩 Extensibilidad vía MCP (Model Context Protocol):** lazarobox usa los servidores MCP que configures y expone sus propias herramientas a los CLIs.
 
 ---
 
@@ -599,46 +597,43 @@ La publicación usa Trusted Publishing (OIDC), así que no hay ningún token gua
 lazarobox-shell/
 ├── Cargo.toml
 ├── README.md
-├── docs/
-│   └── ARCHITECTURE.md
-├── config/
-│   └── default_theme.toml
+├── CHANGELOG.md
+├── docs/                         # Recursos y checklists
+├── tests/                        # Tests de integración (jail, shim MCP, CLIs)
 └── src/
-    ├── main.rs                   # Entrypoint & CLI arguments parser
-    ├── app.rs                    # Central Application State & Event Loop
+    ├── main.rs                   # Entrypoint y argumentos de la CLI
+    ├── lib.rs
+    ├── app.rs                    # Estado central de la aplicación
+    ├── app/                      # Chat, historial, notas, etiquetas, tools y actualizaciones
     │
-    ├── ui/                       # CAPA DE INTERFAZ TUI (Ratatui)
-    │   ├── mod.rs
-    │   ├── layout.rs             # Modulos de pantallas, splits y modales
-    │   ├── components/
-    │   │   ├── tabs.rs           # Barra superior de pestañas/proyectos
-    │   │   ├── statusline.rs     # Barra de estado inferior
-    │   │   ├── chat_panel.rs     # Interfaz de chat streaming con la IA
-    │   │   └── widgets/
-    │   │       ├── metrics.rs    # KPI cards & Sparklines
-    │   │       ├── charts.rs     # BarCharts & Line Charts (TUI Vectorial)
-    │   │       └── image_view.rs # Renderizador Kitty / Sixel
-    │   └── theme.rs              # Definición de la paleta lazarobox
+    ├── core/                     # NÚCLEO PURO (sin IO)
+    │   ├── ai/                   # Dominio del chat de IA
+    │   │   ├── chat/             # Motores (claude, codex, gemini), streams, transcript, tools
+    │   │   ├── memory/           # Memoria del proyecto (engram)
+    │   │   └── tools/            # Herramientas que los motores pueden pedir
+    │   ├── config.rs             # Configuración global
+    │   ├── layout.rs             # Identidad y geometría de panes
+    │   ├── pane.rs               # Pane de terminal (emulador vt100)
+    │   ├── pty/                  # Puerto PTY
+    │   ├── menu.rs               # Menú
+    │   └── update.rs             # Avisos de actualización
     │
-    ├── core/                     # NÚCLEO Y LÓGICA DE NEGOCIO
-    │   ├── mod.rs
-    │   ├── project.rs            # Gestor de contexto de proyecto (project.toml)
-    │   └── config.rs             # Lector/Escritor de la configuración global
+    ├── runtime/                  # EFECTOS: IO, procesos y red
+    │   ├── chat/                 # Adaptadores: CLIs externos y Ollama
+    │   ├── chat_store/           # Persistencia del historial
+    │   ├── engram/               # Cliente de memoria engram
+    │   ├── mcp/                  # Servidores MCP propios y externos
+    │   ├── tools/                # Ejecución de tools y aprobación
+    │   ├── jail/                 # Confinamiento de los CLIs
+    │   ├── loopback/             # Cliente HTTP local
+    │   └── ai_detect.rs          # Detección de motores
     │
-    ├── llm/                      # ENRUTADOR Y PROVEEDORES DE IA
-    │   ├── mod.rs
-    │   ├── router.rs             # Trait LlmProvider y enrutado dinámico
-    │   ├── providers/
-    │   │   ├── ollama.rs         # Cliente API local Ollama
-    │   │   ├── anthropic.rs      # Cliente API Claude
-    │   │   ├── gemini.rs         # Cliente API Google Gemini
-    │   │   └── openai.rs         # Cliente compatible con OpenAI
-    │   └── mcp/                  # CLIENTE MODEL CONTEXT PROTOCOL
-    │       ├── mod.rs
-    │       └── client.rs         # Descubrimiento y ejecución de herramientas MCP
-    │
-    └── auth/                     # SISTEMA DE SEGURIDAD Y AUTENTICACIÓN
-        ├── mod.rs
-        ├── keyring.rs            # Integración con Keyring nativo del SO / AES Vault
-        └── oauth.rs              # Servidor efímero PKCE para Google/Microsoft
+    └── ui/                       # CAPA DE INTERFAZ TUI (Ratatui)
+        ├── components/
+        │   ├── tab_bar.rs        # Barra superior de pestañas
+        │   ├── statusline.rs     # Barra de estado inferior
+        │   ├── chat.rs           # Panel de chat con streaming
+        │   ├── terminal_view.rs  # Vista de los panes de terminal
+        │   └── menu.rs           # Menú emergente
+        └── theme.rs              # Paleta lazarobox
 ```
