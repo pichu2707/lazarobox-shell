@@ -522,3 +522,12 @@ fn a_denied_scope_grants_nothing() {
     let scope = ReadScope::denied(RunId(1));
     assert!(!allows(&h, &scope, "app/src/a.rs"));
 }
+
+#[test]
+fn the_production_scope_drops_the_scratch_folders_of_the_jail() {
+    // The fixture HOME lives under the temp dir, a scratch folder.
+    let h = home();
+    let (scope, dropped) = ReadScope::for_run(RunId(1), &h.secrets, &h.home, &["app"]);
+    assert_eq!(dropped, ["app"]);
+    assert!(!allows(&h, &scope, "app/src/a.rs"));
+}

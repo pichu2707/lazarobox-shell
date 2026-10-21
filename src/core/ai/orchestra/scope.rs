@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use super::RunId;
 use super::run::{Run, RunState};
+use crate::core::ai::jail;
 use crate::core::ai::tools::paths::{PathVerdict, SecretRoots, display_target, resolve};
 
 /// Decides whether a resolved root is a broad scratch folder.
@@ -45,6 +46,16 @@ impl ReadScope {
             }
         }
         (Self { run, roots }, dropped)
+    }
+
+    /// [`new`](Self::new) with the scratch folders of the jail.
+    pub fn for_run(
+        run: RunId,
+        secrets: &SecretRoots,
+        origin: &Path,
+        inputs: &[&str],
+    ) -> (Self, Vec<String>) {
+        Self::new(run, secrets, origin, inputs, &jail::is_scratch)
     }
 
     /// The scope after the user denies: it grants nothing.
