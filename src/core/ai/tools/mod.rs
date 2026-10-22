@@ -60,6 +60,13 @@ pub struct ExternalTool {
     pub schema: Value,
 }
 
+/// A window of a file, 1-based: `max` lines from line `start`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Lines {
+    pub start: u32,
+    pub max: u32,
+}
+
 /// A validated tool call.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Call {
@@ -71,6 +78,8 @@ pub enum Call {
     },
     ReadFile {
         path: String,
+        /// The window to read; `None` reads from the start, as in 0.18.0.
+        lines: Option<Lines>,
     },
     RunInPane {
         command: String,
@@ -104,7 +113,7 @@ impl Call {
     pub fn argument(&self) -> Cow<'_, str> {
         match self {
             Call::FindDir { query } => Cow::Borrowed(query),
-            Call::ListDir { path } | Call::ReadFile { path } => Cow::Borrowed(path),
+            Call::ListDir { path } | Call::ReadFile { path, .. } => Cow::Borrowed(path),
             Call::RunInPane { command } => Cow::Borrowed(command),
             Call::External { args, .. } => Cow::Owned(args.to_string()),
         }
@@ -225,7 +234,10 @@ pub fn parse_call(name: &str, args: &Value) -> Result<Call, ToolError> {
     match name {
         "find_dir" => Ok(Call::FindDir { query: text }),
         "list_dir" => Ok(Call::ListDir { path: text }),
-        "read_file" => Ok(Call::ReadFile { path: text }),
+        "read_file" => Ok(Call::ReadFile {
+            path: text,
+            lines: None,
+        }),
         "run_in_pane" => Ok(Call::RunInPane { command: text }),
         // Unreachable: the name was found in `BUILT_INS` above and every
         // built-in has an arm. Kept so a new built-in cannot become a
@@ -403,6 +415,7 @@ mod tests {
                 json!({"path": "a.rs"}),
                 Call::ReadFile {
                     path: "a.rs".into(),
+                    lines: None,
                 },
             ),
             (
@@ -553,7 +566,10 @@ mod tests {
         q.tools[0].tool.name = "read_file".to_owned();
         assert_eq!(
             parse_call_with("read_file", &json!({"path": "a"}), &q),
-            Ok(Call::ReadFile { path: "a".into() })
+            Ok(Call::ReadFile {
+                path: "a".into(),
+                lines: None
+            })
         );
         assert_eq!(
             parse_call_with("read_file", &json!({"x": 1}), &q),
@@ -610,5 +626,20 @@ mod tests {
                 .argument(),
             "p"
         );
+    }
+
+    // P0a.4: the call carries an optional line window, `None` until a
+    // Search-gated argument fills it.
+    #[test]
+    fn read_file_parses_with_no_line_window() {
+        assert_eq!(
+            parse_call("read_file", &json!({"path": "a.rs"})),
+            Ok(Call::ReadFile {
+                path: "a.rs".into(),
+                lines: None
+            })
+        );
+        let window = Lines { start: 3, max: 10 };
+        assert_eq!((window.start, window.max), (3, 10));
     }
 }

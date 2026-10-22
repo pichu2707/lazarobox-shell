@@ -179,7 +179,7 @@ pub fn execute_with(
         entry_delay: limits.entry_delay,
     };
     match call {
-        Call::ReadFile { path } => read_file(&roots, env, path, limits),
+        Call::ReadFile { path, .. } => read_file(&roots, env, path, limits),
         Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits),
         Call::FindDir { query } => find_dir(&roots, &budget, query, limits),
         // A user tool runs on its own server, never here.
@@ -543,7 +543,10 @@ mod tests {
 
     fn read(env: &ToolEnv, path: &str) -> Result<String, Failure> {
         execute(
-            &Call::ReadFile { path: path.into() },
+            &Call::ReadFile {
+                path: path.into(),
+                lines: None,
+            },
             env,
             &Limits::default(),
         )
@@ -575,9 +578,11 @@ mod tests {
             for call in [
                 Call::ReadFile {
                     path: "~/dev/app/main.rs".into(),
+                    lines: None,
                 },
                 Call::ReadFile {
                     path: "/etc/hostname".into(),
+                    lines: None,
                 },
                 Call::ListDir { path: "~".into() },
                 Call::FindDir {
@@ -693,6 +698,7 @@ mod tests {
         let out = execute(
             &Call::ReadFile {
                 path: "~/big".into(),
+                lines: None,
             },
             &env(&f.home),
             &limits,
@@ -703,6 +709,7 @@ mod tests {
         let out = execute(
             &Call::ReadFile {
                 path: "~/exact".into(),
+                lines: None,
             },
             &env(&f.home),
             &limits,
@@ -763,6 +770,7 @@ mod tests {
         let out = execute(
             &Call::ReadFile {
                 path: "~/conf".into(),
+                lines: None,
             },
             &env(&f.home),
             &limits,
@@ -794,6 +802,7 @@ mod tests {
         let out = execute(
             &Call::ReadFile {
                 path: "~/conf".into(),
+                lines: None,
             },
             &env(&f.home),
             &limits,
@@ -816,6 +825,7 @@ mod tests {
         let out = execute(
             &Call::ReadFile {
                 path: "~/blob".into(),
+                lines: None,
             },
             &env(&f.home),
             &limits,

@@ -84,7 +84,10 @@ fn run_cmd(command: &str) -> Call {
 }
 
 fn read(path: &str) -> Call {
-    Call::ReadFile { path: path.into() }
+    Call::ReadFile {
+        path: path.into(),
+        lines: None,
+    }
 }
 
 /// The ids and statuses of `events`, checking they come as call, result.

@@ -127,6 +127,7 @@ mod tests {
         let (_dir, home) = home();
         let call = Call::ReadFile {
             path: "~/note.txt".into(),
+            lines: None,
         };
         let a = run(call.clone(), env(&home), Limits::default())
             .await
@@ -143,6 +144,7 @@ mod tests {
         let (_dir, home) = home();
         let read = Call::ReadFile {
             path: "~/missing".into(),
+            lines: None,
         };
         assert_eq!(
             run(read, env(&home), Limits::default()).await,

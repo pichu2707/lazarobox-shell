@@ -525,7 +525,8 @@ mod tests {
             Action::Call {
                 id: json!(3),
                 call: Call::ReadFile {
-                    path: "a.rs".into()
+                    path: "a.rs".into(),
+                    lines: None
                 }
             }
         );
