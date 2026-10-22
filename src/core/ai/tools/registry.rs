@@ -160,7 +160,15 @@ fn typed(kind: &ArgKind, value: &Value) -> Result<ArgValue, ToolError> {
     let wrong = ToolError::WrongType;
     Ok(match kind {
         ArgKind::Str { .. } => ArgValue::Str(value.as_str().ok_or(wrong)?.to_owned()),
-        ArgKind::Int { min, max } => ArgValue::Int(value.as_i64().ok_or(wrong)?.clamp(*min, *max)),
+        ArgKind::Int { min, max } => {
+            // A u64 past i64::MAX is only a big number: it clamps to `max`.
+            let n = match (value.as_i64(), value.as_u64()) {
+                (Some(n), _) => n,
+                (None, Some(_)) => i64::MAX,
+                (None, None) => return Err(wrong),
+            };
+            ArgValue::Int(n.clamp(*min, *max))
+        }
         ArgKind::Bool => ArgValue::Bool(value.as_bool().ok_or(wrong)?),
         ArgKind::StrList { .. } => {
             let items = value.as_array().ok_or(wrong)?;
@@ -300,6 +308,17 @@ mod tests {
             parse(json!({"path": "a", "timeout_secs": 1.5}), true),
             Err(ToolError::WrongType)
         );
+    }
+
+    // "Clamped, never refused for size": a u64 past i64::MAX is just big.
+    #[test]
+    fn integers_past_i64_are_clamped_and_floats_are_refused() {
+        let args = |n: Value| json!({"path": "a", "timeout_secs": n});
+        let got = parse(args(json!(u64::MAX)), true).unwrap();
+        assert_eq!(got.get("timeout_secs"), Some(&ArgValue::Int(600)));
+        let got = parse(args(json!(i64::MIN)), true).unwrap();
+        assert_eq!(got.get("timeout_secs"), Some(&ArgValue::Int(1)));
+        assert_eq!(parse(args(json!(5.0)), true), Err(ToolError::WrongType));
     }
 
     // Spec: a gated argument exists only while its family is on.

@@ -261,6 +261,8 @@ pub fn parse_call_with(
     args: &Value,
     external: &servers::Qualified,
 ) -> Result<Call, ToolError> {
+    // Any built-in name, offered or not, is the built-in and never an
+    // external tool; `parse_call` then refuses one whose family is off.
     if BUILT_INS.iter().any(|def| def.name == name) {
         return parse_call(name, args);
     }
@@ -639,7 +641,5 @@ mod tests {
                 lines: None
             })
         );
-        let window = Lines { start: 3, max: 10 };
-        assert_eq!((window.start, window.max), (3, 10));
     }
 }
