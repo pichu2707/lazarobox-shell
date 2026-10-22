@@ -143,10 +143,10 @@ S1d-1 bases on the S1c-2 branch. Task order inside S1c-2 is 1c.3 then 1c.4; S1c-
 
 ### S1c-1 (PR 4, ~340 lines, base: S1b-2 branch): tasks 1c.1, 1c.2, 1c.5, 1c.6
 
-- [ ] 1c.1 RED `core/ai/tools/mod.rs` tests: `registry_for(Toolset)`: Orchestrator lists spawn_agent/wait/collect/cancel (no `run_in_pane`), ReadOnly lists find_dir/list_dir/read_file only, default registry byte-identical. Spec: agent-tools / Role toolsets; agent-orchestrator / No run_in_pane, Read-only subset; lazarobox-mcp-server / Out-of-role call.
-- [ ] 1c.2 GREEN `core/ai/tools/mod.rs`: `registry_for`, `Call::Orchestra(OrchCall)`.
-- [ ] 1c.5 RED `runtime/mcp/session.rs` tests: `Hub<K: HubKey>` with `PaneId` and `WorkerKey{run,worker}`; socket `s-{pid}-w{run}-{n}.sock`; `sweep` knows the form. Spec: lazarobox-mcp-server / Own socket per worker (S3 behavior; S1 delivers the key form only).
-- [ ] 1c.6 GREEN `runtime/mcp/session.rs`: generic Hub key, sweep. REFACTOR + gates (S1c-1 closes here).
+- [x] 1c.1 RED `core/ai/tools/mod.rs` tests: `registry_for(Toolset)`: Orchestrator lists spawn_agent/wait/collect/cancel (no `run_in_pane`), ReadOnly lists find_dir/list_dir/read_file only, default registry byte-identical. Spec: agent-tools / Role toolsets; agent-orchestrator / No run_in_pane, Read-only subset; lazarobox-mcp-server / Out-of-role call.
+- [x] 1c.2 GREEN `core/ai/tools/mod.rs`: `registry_for`, `Call::Orchestra(OrchCall)`.
+- [x] 1c.5 RED `runtime/mcp/session.rs` tests: `Hub<K: HubKey>` with `PaneId` and `WorkerKey{run,worker}`; socket `s-{pid}-w{run}-{n}.sock`; `sweep` knows the form. Spec: lazarobox-mcp-server / Own socket per worker (S3 behavior; S1 delivers the key form only).
+- [x] 1c.6 GREEN `runtime/mcp/session.rs`: generic Hub key, sweep. REFACTOR + gates (S1c-1 closes here).
 
 ### S1c-2 (PR 5, ~330 lines, base: S1c-1 branch): tasks 1c.3, 1c.4
 
@@ -157,6 +157,7 @@ S1d-1 bases on the S1c-2 branch. Task order inside S1c-2 is 1c.3 then 1c.4; S1c-
 
 - [ ] The read opens exactly the path returned by `ReadScope::allows` with open_beneath/O_NOFOLLOW semantics and re-judges the opened fd's real path (`SecretRoots::judge_real` + `starts_with(root.real)`); the `SecretRoots` snapshot is built per call; consider an ask when `nlink > 1`.
 - [ ] A denied or expired scope makes the host ASK, never silently allow or refuse.
+- [ ] The ask label MUST clip `OrchCall::argument()` (a spawn prompt can be up to 16 KiB) before it is shown.
 
 ## S1d: RunManager (3 chained PRs: S1d-1 = PR 6, S1d-2 = PR 7, S1d-3 = PR 8; ~1,200 lines re-estimated in total)
 
@@ -187,6 +188,11 @@ S1e-1a bases on the S1d-3 branch.
 
 - [ ] 1d.3a RED `runtime/orchestra/tests.rs` (fake `Runner`, `tokio::time::pause`, temp HOME, real Hub), spawn path: spawn -> Done/Failed/TimedOut/Refused; worker same jail as chat; API keys survive scrub; no tool leak to workers; log hygiene (no content in logs). Spec: chat-engines / Same jail as chat, API keys survive the scrub; agent-orchestrator / Unusable orchestrator engine, Log hygiene.
 - [ ] 1d.4a GREEN `runtime/orchestra.rs`: `RunManager::{start, call}` (spawn/wait/collect); worker turn via `runner_with` + `Pipe`; events on their own channel `(PaneId, OrchestraEvent)`. REFACTOR + gates (S1d-2 closes here).
+
+#### Obligations from the S1c-1 review (S1d-2)
+
+- [ ] The worker-open path MUST pass `toolset.families()` to `Hub::open`, never `FamilySet::LEGACY`. Add a test (or a `debug_assert!`) that `Family::Pane` is absent from every worker and orchestrator session.
+- Note: user MCP tools can no longer reach a worker by construction; `HubKey::allows_external` (false for `WorkerKey`) makes `Hub::open` ignore the caller's `Slot`. Keep the worker path passing `Slot::default()` anyway.
 
 ### S1d-3 (PR 8, ~480 lines, base: S1d-2 branch): tasks 1d.3b, 1d.4b, 1d.5
 

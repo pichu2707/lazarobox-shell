@@ -182,8 +182,11 @@ pub fn execute_with(
         Call::ReadFile { path, .. } => read_file(&roots, env, path, limits),
         Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits),
         Call::FindDir { query } => find_dir(&roots, &budget, query, limits),
-        // A user tool runs on its own server, never here.
-        Call::RunInPane { .. } | Call::External { .. } => Err(Failure::NotReadTool),
+        // A user tool runs on its own server and an orchestration call goes
+        // to the run manager: neither runs here.
+        Call::RunInPane { .. } | Call::External { .. } | Call::Orchestra(_) => {
+            Err(Failure::NotReadTool)
+        }
     }
 }
 
