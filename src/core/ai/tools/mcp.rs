@@ -359,7 +359,7 @@ fn call(id: Value, params: &Value, external: &Qualified) -> Action {
 /// unescaping (`"path"` is `"path"`). `serde_json::Value` keeps only the
 /// last duplicate, so this reads the raw text. It expects text that already
 /// parsed as JSON and checks nothing else.
-fn has_duplicate_keys(line: &str) -> bool {
+pub fn has_duplicate_keys(line: &str) -> bool {
     // One entry per open container: `Some` for an object (the keys seen so
     // far), `None` for an array.
     let mut open: Vec<Option<HashSet<String>>> = Vec::new();

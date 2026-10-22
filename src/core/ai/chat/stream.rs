@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use super::engine::{ChatError, Finish, StreamEvent};
 use crate::core::ai::{
     sanitize::clean,
-    tools::{Call, ToolError, parse_call_with, servers::Qualified},
+    tools::{Call, ToolError, mcp::has_duplicate_keys, parse_call_with, servers::Qualified},
 };
 
 /// Line cap for server decoders, in bytes.
@@ -325,6 +325,9 @@ fn tool_call(entry: &Value, external: &Qualified) -> ToolRequest {
     let function = &entry["function"];
     let name = function["name"].as_str().unwrap_or("");
     let raw = match &function["arguments"] {
+        // A repeated key would collapse to the last one in a `Value`, so the
+        // raw text is checked first and refused like bad JSON.
+        Value::String(text) if has_duplicate_keys(text) => Value::Null,
         Value::String(text) => serde_json::from_str(text).unwrap_or(Value::Null),
         other => other.clone(),
     };
