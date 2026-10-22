@@ -2386,6 +2386,7 @@ mod tests {
         use crate::core::ai::chat::engine::{ChatRequest, Tools};
         let (mut panes, _rx, rec) = fake_panes(None);
         let request = ChatRequest {
+            families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             engine: "ollama".into(),
             model: Some("llama3:8b".into()),
             system: String::new(),
@@ -3431,6 +3432,7 @@ mod tests {
 
     fn chat_request() -> ChatRequest {
         ChatRequest {
+            families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             engine: "ollama".into(),
             model: Some("llama3:8b".into()),
             system: String::new(),

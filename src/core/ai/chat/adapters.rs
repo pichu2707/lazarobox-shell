@@ -12,7 +12,7 @@ use crate::core::ai::{
     CATALOG, Kind,
     jail::{Cli, JailPolicy, Os, jail_policy},
     parse,
-    tools::{registry, wiring::McpWire},
+    tools::{registry_with, wiring::McpWire},
 };
 
 /// The wire format of a local server's reply.
@@ -313,7 +313,7 @@ pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
             Tools::On { external, .. } => external.external(),
             Tools::Off => Vec::new(),
         };
-        body["tools"] = registry(&external)
+        body["tools"] = registry_with(&external, request.families)
             .into_iter()
             .map(|t| {
                 json!({"type": "function", "function": {

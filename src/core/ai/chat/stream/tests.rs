@@ -707,6 +707,52 @@ fn a_qualified_call_is_routed_by_the_lookup_and_a_stranger_is_refused() {
     assert_eq!(plain[0].call, invalid(ToolError::UnknownTool));
 }
 
+// P0b.2: a built-in that was not offered is refused like an unknown name,
+// whatever the model writes.
+#[test]
+fn a_call_outside_the_offered_families_is_refused_as_unknown() {
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    let call = |name: &str, args: &str| {
+        format!(
+            r#"{{"message":{{"content":"","tool_calls":[{{"function":{{"name":"{name}","arguments":{args}}}}}]}},"done":false}}"#
+        )
+    };
+    let input = format!(
+        "{}\n{}\n{}\n{DONE}\n",
+        call("run_in_pane", r#"{"command":"ls"}"#),
+        call("find_dir", r#"{"query":"a"}"#),
+        call("nope", "{}"),
+    );
+    let calls = |set: FamilySet| {
+        let mut decoder = OllamaToolDecoder::server().with_families(set);
+        run(&mut decoder, &[input.as_bytes()]);
+        decoder
+            .take_calls()
+            .into_iter()
+            .map(|c| c.call)
+            .collect::<Vec<_>>()
+    };
+    let read_only = calls(FamilySet::EMPTY.with(Family::Read));
+    assert_eq!(read_only[0], invalid(ToolError::UnknownTool));
+    assert_eq!(read_only[1], Ok(Call::FindDir { query: "a".into() }));
+    assert_eq!(
+        read_only[2], read_only[0],
+        "same refusal as an unknown name"
+    );
+    // The default decoder keeps the 0.18.0 set, so the same call runs.
+    let default = {
+        let mut decoder = OllamaToolDecoder::server();
+        run(&mut decoder, &[input.as_bytes()]);
+        decoder.take_calls().remove(0).call
+    };
+    assert_eq!(
+        default,
+        Ok(Call::RunInPane {
+            command: "ls".into()
+        })
+    );
+}
+
 // A key repeated in string arguments would collapse to the last one in
 // `serde_json::Value`; the raw text is checked first (P0a.5).
 #[test]

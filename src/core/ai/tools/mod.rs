@@ -20,7 +20,7 @@ use std::borrow::Cow;
 
 use serde_json::Value;
 
-use registry::{ArgDef, ArgKind, ArgValue, Family, ToolDef, legacy, parse_args, schema};
+use registry::{ArgDef, ArgKind, ArgValue, Family, FamilySet, ToolDef, parse_args, schema};
 
 /// Whether a tool only reads or can change the user's session.
 ///
@@ -174,19 +174,26 @@ const BUILT_INS: [ToolDef; 4] = [
     },
 ];
 
-/// The tools offered to every engine: the built-ins, then the external ones,
-/// each name once and none shadowing a built-in. The names are expected to be
+/// The tools offered at [`FamilySet::LEGACY`], the 0.18.0 set: see
+/// [`registry_with`].
+pub fn registry(external: &[ExternalTool]) -> Vec<ToolSpec> {
+    registry_with(external, FamilySet::LEGACY)
+}
+
+/// The tools offered to an engine: the built-ins whose family is in `set`,
+/// then the external ones (which belong to no family: pass `&[]` to drop
+/// them), each name once and none shadowing a built-in. The names are expected to be
 /// server-qualified already (see `servers::qualify`); a raw colliding name is
 /// dropped here as a last defence. An external tool is never `Read`: it runs
 /// code the user did not write here.
-pub fn registry(external: &[ExternalTool]) -> Vec<ToolSpec> {
+pub fn registry_with(external: &[ExternalTool], set: FamilySet) -> Vec<ToolSpec> {
     let built_in = BUILT_INS
         .iter()
-        .filter(|def| legacy(def.family))
+        .filter(|def| set.contains(def.family))
         .map(|def| ToolSpec {
             name: def.name.to_owned(),
             description: def.description.to_owned(),
-            schema: schema(def, legacy),
+            schema: schema(def, set),
             access: def.access,
         });
     let mut seen: Vec<&str> = Vec::new();
@@ -221,12 +228,18 @@ pub const MAX_ARG_BYTES: usize = 4096;
 /// [`mcp::Frame::parse`] (slice 2c) on the MCP path; any other entry point
 /// (slice 2e) MUST do the same before the arguments become a `Value`.
 pub fn parse_call(name: &str, args: &Value) -> Result<Call, ToolError> {
+    parse_built_in(name, args, FamilySet::LEGACY)
+}
+
+/// A built-in call by name. One whose family is not in `set` is an unknown
+/// tool, the same refusal as a name that does not exist.
+fn parse_built_in(name: &str, args: &Value, set: FamilySet) -> Result<Call, ToolError> {
     let def = BUILT_INS
         .iter()
-        .filter(|def| legacy(def.family))
+        .filter(|def| set.contains(def.family))
         .find(|def| def.name == name)
         .ok_or(ToolError::UnknownTool)?;
-    let parsed = parse_args(def.args, args, legacy)?;
+    let parsed = parse_args(def.args, args, set)?;
     let Some(ArgValue::Str(text)) = def.args.first().and_then(|arg| parsed.get(arg.name)) else {
         return Err(ToolError::MissingArgument);
     };
@@ -261,10 +274,21 @@ pub fn parse_call_with(
     args: &Value,
     external: &servers::Qualified,
 ) -> Result<Call, ToolError> {
+    parse_call_in(name, args, external, FamilySet::LEGACY)
+}
+
+/// [`parse_call_with`] gated by `set`: a built-in outside the set is refused
+/// as an unknown tool, so a model cannot call what was not offered.
+pub fn parse_call_in(
+    name: &str,
+    args: &Value,
+    external: &servers::Qualified,
+    set: FamilySet,
+) -> Result<Call, ToolError> {
     // Any built-in name, offered or not, is the built-in and never an
-    // external tool; `parse_call` then refuses one whose family is off.
+    // external tool; `parse_built_in` then refuses one whose family is off.
     if BUILT_INS.iter().any(|def| def.name == name) {
-        return parse_call(name, args);
+        return parse_built_in(name, args, set);
     }
     let (server, tool) = external.raw_of(name).ok_or(ToolError::UnknownTool)?;
     if !args.is_object() {
@@ -640,6 +664,98 @@ mod tests {
                 path: "a.rs".into(),
                 lines: None
             })
+        );
+    }
+
+    fn only(family: Family) -> FamilySet {
+        FamilySet::EMPTY.with(family)
+    }
+
+    // P0b.1: the offered list is a filter over families, in table order.
+    #[test]
+    fn registry_with_offers_only_the_tools_of_the_set() {
+        assert_eq!(
+            names(&registry_with(&[], only(Family::Read))),
+            ["find_dir", "list_dir", "read_file"]
+        );
+        assert_eq!(
+            names(&registry_with(&[], only(Family::Pane))),
+            ["run_in_pane"]
+        );
+        assert!(registry_with(&[], FamilySet::EMPTY).is_empty());
+        assert_eq!(registry_with(&[], FamilySet::LEGACY), registry(&[]));
+    }
+
+    // External tools do not belong to a family: the set neither adds nor
+    // drops them; the caller passes `&[]` to drop them.
+    #[test]
+    fn external_tools_survive_an_empty_set() {
+        let ext = ExternalTool {
+            name: "fs__write".to_owned(),
+            description: "d".to_owned(),
+            schema: json!({"type": "object"}),
+        };
+        assert_eq!(
+            names(&registry_with(&[ext], FamilySet::EMPTY)),
+            ["fs__write"]
+        );
+    }
+
+    // P0b.1 / design D3: a built-in outside the set is refused with exactly
+    // what an unknown name gets, so the model cannot call what was not
+    // offered, and a name cannot reveal which families exist.
+    #[test]
+    fn a_built_in_outside_the_set_is_an_unknown_tool() {
+        let q = qualified();
+        let args = json!({"command": "ls"});
+        let unknown = parse_call_in("nope", &args, &q, FamilySet::LEGACY);
+        assert_eq!(unknown, Err(ToolError::UnknownTool));
+        assert_eq!(
+            parse_call_in("run_in_pane", &args, &q, only(Family::Read)),
+            unknown
+        );
+        assert_eq!(
+            parse_call_in("read_file", &json!({"path": "a"}), &q, only(Family::Pane)),
+            unknown
+        );
+        // In the set, the same call parses.
+        assert_eq!(
+            parse_call_in("run_in_pane", &args, &q, only(Family::Pane)),
+            Ok(Call::RunInPane {
+                command: "ls".into()
+            })
+        );
+    }
+
+    // A built-in name is never an external tool, even with an empty set.
+    #[test]
+    fn a_built_in_name_never_falls_through_to_an_external_tool() {
+        let q = qualified();
+        assert_eq!(
+            parse_call_in("read_file", &json!({"path": "a"}), &q, FamilySet::EMPTY),
+            Err(ToolError::UnknownTool)
+        );
+        // An external name still routes under an empty set.
+        assert!(parse_call_in("fs__write", &json!({}), &q, FamilySet::EMPTY).is_ok());
+    }
+
+    // The old entry points mean LEGACY.
+    #[test]
+    fn the_old_entry_points_delegate_at_legacy() {
+        let q = qualified();
+        let args = json!({"path": "a"});
+        assert_eq!(
+            parse_call_with("read_file", &args, &q),
+            parse_call_in("read_file", &args, &q, FamilySet::LEGACY)
+        );
+        assert_eq!(
+            parse_call("run_in_pane", &json!({"command": "ls"})),
+            parse_call_in(
+                "run_in_pane",
+                &json!({"command": "ls"}),
+                &q,
+                FamilySet::LEGACY
+            )
         );
     }
 }

@@ -13,7 +13,9 @@ use crate::core::ai::{
     config::{AiConfig, Task},
     jail::JailSupport,
     status_text,
-    tools::{Locality, report::RunReport, servers::Qualified, wiring::McpWire},
+    tools::{
+        Locality, registry::FamilySet, report::RunReport, servers::Qualified, wiring::McpWire,
+    },
 };
 
 /// Who wrote a message.
@@ -47,6 +49,9 @@ pub struct ChatRequest {
     /// reads it yet: only the runtime does, to open the turn's tool session,
     /// so the bytes an engine receives do not depend on it.
     pub tools: Tools,
+    /// Which tool families the turn offers, and so which built-in names a call
+    /// may use. [`FamilySet::LEGACY`] until a toggle turns more on.
+    pub families: FamilySet,
 }
 
 /// Whether a turn offers tools.
