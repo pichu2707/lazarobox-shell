@@ -21,6 +21,13 @@ baseline.
   use the same format but are not yet verified against a real one. The menu no longer marks them
   `detected · not in chat yet`; only opencode still has no chat adapter.
 
+### Changed
+
+- The engine picker no longer lets you choose an engine that chat has no
+  adapter for (today only opencode). Its row still reads `detected · not in
+  chat yet`, dimmed, and Enter does nothing on it; before, you could assign it
+  and chat then refused it.
+
 ## [0.18.0] - 2026-10-20
 
 ### Added
