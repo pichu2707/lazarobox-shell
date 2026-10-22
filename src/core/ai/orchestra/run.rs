@@ -9,6 +9,7 @@ use super::{RunId, Toolset, WorkerId};
 use crate::core::ai::chat::engine::Availability;
 use crate::core::ai::chat::guidance::guidance;
 use crate::core::ai::config::Task;
+use crate::core::ai::tools::label;
 
 /// Workers running at once. S3 makes it a setting.
 const MAX_RUNNING: usize = 1;
@@ -172,6 +173,8 @@ impl Run {
 
     /// A worker waits at the back of the queue; a refusal ends it at once.
     fn enqueue(&mut self, now: Instant, id: WorkerId, refusal: Option<String>) {
+        // A new attempt starts the clock over, so a refusal reports no time.
+        self.slots[index(id)].started = None;
         if let Some(reason) = refusal {
             return self.end(
                 now,
@@ -183,7 +186,7 @@ impl Run {
         }
         let slot = &mut self.slots[index(id)];
         slot.result = None;
-        (slot.status, slot.started) = (WorkerStatus::Queued, None);
+        slot.status = WorkerStatus::Queued;
         self.queue.push_back(id);
     }
 
@@ -275,6 +278,20 @@ impl Run {
             WorkerStatus::Done => Ok(&result.text),
             status => Err(CollectError::Ended(status)),
         }
+    }
+
+    /// [`collect`](Self::collect) as the orchestrator receives it: cleaned,
+    /// capped and wrapped as untrusted data under a nonce derived from
+    /// `nonce_bytes`. The bytes MUST come from the OS CSPRNG on every call and
+    /// never be reused or shown to the worker, or its text could forge the
+    /// closing tag.
+    pub fn collect_wrapped(
+        &self,
+        nonce_bytes: [u8; 8],
+        id: WorkerId,
+    ) -> Result<String, CollectError> {
+        let nonce = label::nonce_from(nonce_bytes);
+        self.collect(id).map(|text| label::wrap(&nonce, text))
     }
 
     /// Cancels one worker. Its slot goes to the next queued worker.
