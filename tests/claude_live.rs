@@ -72,6 +72,7 @@ async fn turn(env: CliEnv, text: &str) -> Vec<StreamEvent> {
         system: "Be brief.".into(),
         memory: None,
         tools: Tools::Off,
+        families: lazarobox_shell::core::ai::tools::registry::FamilySet::LEGACY,
         messages: vec![ChatMessage {
             role: Role::User,
             content: text.into(),

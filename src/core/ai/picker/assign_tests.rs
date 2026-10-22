@@ -104,10 +104,11 @@ fn every_key_on_a_disabled_row_has_no_effect() {
 fn an_info_row_is_inert() {
     let d = det(&[]);
     let draft = AiConfig::default();
-    // lmstudio is not running, so its level shows only "engine not detected".
+    // vllm was not detected at all, so its level shows only "engine not
+    // detected".
     let mut p = Picker::open(Target::Task(Task::Code), &draft, Some(&d));
     p.level = Level::Models {
-        engine: "lmstudio".to_owned(),
+        engine: "vllm".to_owned(),
     };
     let rows = p.rows(&draft, Some(&d));
     assert_eq!(rows.len(), 1);

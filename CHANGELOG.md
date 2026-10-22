@@ -10,6 +10,37 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- A server engine can live on another port: `[ai.servers.<id>] port = N` in
+  `config.toml` (for `ollama`, `lmstudio`, `llamacpp` and `vllm`). Detection
+  and chat both use it, always on `127.0.0.1`; without it the usual port is
+  used. A port that is not an integer from 1 to 65535 is ignored with a startup
+  notice. The menu never writes the table and keeps it on save. It is read at
+  startup.
+- An installed server that is not running (its binary is on PATH, but nothing
+  answers on its port) is now listed in the engine picker as `not running`.
+  Choosing it shows where lazarobox looks and how to start it, for example
+  `llamacpp not running on 127.0.0.1:39080 · start it, then press r:
+  llama-server --port 39080 -m <model.gguf>`; Enter or `y` copies it.
+  lazarobox never starts the server.
+
+- Chat with LM Studio, llama.cpp (`llama-server`) and vLLM. They talk to their
+  server's `/v1/chat/completions` on `127.0.0.1` and their usual port (1234,
+  8080 and 8000), stream the answer over Server-Sent Events and send no
+  credentials, like Ollama. The body holds the model, the messages and the
+  stream flag only: no reasoning is shown and no tools are offered. llama.cpp
+  is tested against a reply recorded from a real server; LM Studio and vLLM
+  use the same format but are not yet verified against a real one. The menu no longer marks them
+  `detected · not in chat yet`; only opencode still has no chat adapter.
+
+### Changed
+
+- The engine picker no longer lets you choose an engine that chat has no
+  adapter for (today only opencode). Its row still reads `detected · not in
+  chat yet`, dimmed, and Enter does nothing on it; before, you could assign it
+  and chat then refused it.
+
 ## [0.18.0] - 2026-10-20
 
 ### Added

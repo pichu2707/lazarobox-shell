@@ -23,7 +23,7 @@ use crate::{
             prompts,
             stream::{CallError, OllamaToolDecoder, ToolRequest},
         },
-        tools::{mcp::refusal_text, servers::Qualified},
+        tools::{mcp::refusal_text, registry::FamilySet, servers::Qualified},
     },
     runtime::{
         loopback::{TOO_LONG, Timeouts, post_stream_with},
@@ -105,7 +105,7 @@ async fn rounds(
         } else {
             ollama_round_body(plain, &history, false)
         };
-        let reply = round(timeouts, port, &body, gap, &external, tx).await;
+        let reply = round(timeouts, port, &body, gap, &external, request.families, tx).await;
         let finish = match reply.end {
             Some(Ok(finish)) => finish,
             // A model that rejects `tools` is asked again as plain text,
@@ -196,10 +196,11 @@ async fn round(
     body: &[u8],
     gap: bool,
     external: &Qualified,
+    families: FamilySet,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> Reply {
     let (inner, mut events) = mpsc::channel(TURN_CHANNEL);
-    let mut decoder = OllamaToolDecoder::server_with(external.clone());
+    let mut decoder = OllamaToolDecoder::server_with(external.clone()).with_families(families);
     let post = async {
         post_stream_with(
             timeouts,

@@ -89,5 +89,6 @@ fn reanchor_without_a_previous_key_only_clamps() {
     let mut p = Picker::open(Target::Task(Task::Code), &draft, Some(&d));
     p.cursor = 40;
     p.reanchor(None, &draft, Some(&d));
-    assert_eq!(p.cursor(), 2);
+    // none, ollama, claude, then lmstudio (installed, not running).
+    assert_eq!(p.cursor(), 3);
 }

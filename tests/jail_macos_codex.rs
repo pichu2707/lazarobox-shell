@@ -30,6 +30,7 @@ use lazarobox_shell::{
     core::ai::{
         chat::engine::{ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools},
         jail::JailSupport,
+        tools::registry::FamilySet,
     },
     runtime::{
         chat::{CliEnv, runner_with},
@@ -155,6 +156,7 @@ fn a_real_codex_reaches_openai_through_the_jail() {
             content: "hi".into(),
         }],
         tools: Tools::Off,
+        families: FamilySet::LEGACY,
     };
     let events = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

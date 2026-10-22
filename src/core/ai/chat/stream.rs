@@ -10,7 +10,10 @@ use serde_json::{Value, json};
 use super::engine::{ChatError, Finish, StreamEvent};
 use crate::core::ai::{
     sanitize::clean,
-    tools::{Call, ToolError, parse_call_with, servers::Qualified},
+    tools::{
+        Call, ToolError, mcp::has_duplicate_keys, parse_call_in, registry::FamilySet,
+        servers::Qualified,
+    },
 };
 
 /// Line cap for server decoders, in bytes.
@@ -321,14 +324,20 @@ fn refused(error: CallError) -> ToolRequest {
 /// One entry of `message.tool_calls[]`. `arguments` is an object on current
 /// servers; a JSON string is also accepted, and anything else (or bad JSON)
 /// is refused for that call alone.
-fn tool_call(entry: &Value, external: &Qualified) -> ToolRequest {
+fn tool_call(entry: &Value, external: &Qualified, families: FamilySet) -> ToolRequest {
     let function = &entry["function"];
     let name = function["name"].as_str().unwrap_or("");
     let raw = match &function["arguments"] {
-        Value::String(text) => serde_json::from_str(text).unwrap_or(Value::Null),
+        // A repeated key would collapse to the last one in a `Value`, so the
+        // raw text is checked, but only once it parsed (the scanner expects
+        // JSON). Both failures are refused like bad JSON.
+        Value::String(text) => match serde_json::from_str(text) {
+            Ok(value) if !has_duplicate_keys(text) => value,
+            _ => Value::Null,
+        },
         other => other.clone(),
     };
-    let call = parse_call_with(name, &raw, external).map_err(CallError::Invalid);
+    let call = parse_call_in(name, &raw, external, families).map_err(CallError::Invalid);
     let arguments = if call.is_ok() { raw } else { json!({}) };
     ToolRequest {
         name: if name.is_empty() {
@@ -358,6 +367,8 @@ pub struct OllamaToolDecoder {
     calls: Vec<ToolRequest>,
     /// The user-server tools of the turn, which a call may name.
     external: Qualified,
+    /// The built-ins a call may name: what the request offered.
+    families: FamilySet,
 }
 
 impl OllamaToolDecoder {
@@ -369,6 +380,7 @@ impl OllamaToolDecoder {
             overflowed: false,
             calls: Vec::new(),
             external: Qualified::default(),
+            families: FamilySet::LEGACY,
         }
     }
 
@@ -382,6 +394,13 @@ impl OllamaToolDecoder {
             external,
             ..Self::server()
         }
+    }
+
+    /// This decoder with the built-ins of `families` callable (the default is
+    /// [`FamilySet::LEGACY`]). A built-in outside it is an unknown tool.
+    pub fn with_families(mut self, families: FamilySet) -> Self {
+        self.families = families;
+        self
     }
 
     /// The calls of the reply, in order, after a clean end; the decoder
@@ -400,8 +419,11 @@ impl OllamaToolDecoder {
             return;
         };
         let room = MAX_CALLS.saturating_sub(self.calls.len());
-        self.calls
-            .extend(list.iter().take(room).map(|e| tool_call(e, &self.external)));
+        self.calls.extend(
+            list.iter()
+                .take(room)
+                .map(|e| tool_call(e, &self.external, self.families)),
+        );
         if list.len() > room && !self.overflowed {
             self.overflowed = true;
             self.calls.push(refused(CallError::TooMany));

@@ -8,7 +8,7 @@ expression: "text(&draw(62, POPUP_H, &picker_of(\"code\", 0)))"
 │ (default · use general)                                    │
 │ ollama available · 8 models                                │
 │ claude available · 2.1.302 ●                               │
-│                                                            │
+│ lmstudio not running                                       │
 │                                                            │
 │                                                            │
 │                                                            │
