@@ -11,12 +11,19 @@ use super::config::Task;
 use super::tools::registry::{Family, FamilySet};
 
 /// One orchestrated job.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct RunId(pub u64);
 
 /// One worker of a run, numbered from 1.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct WorkerId(pub u32);
+
+/// A worker of a run: the key of its tool session.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct WorkerKey {
+    pub run: RunId,
+    pub worker: WorkerId,
+}
 
 /// The tools a session is offered.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

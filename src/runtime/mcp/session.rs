@@ -41,7 +41,10 @@
 //! another PID namespace that shares the folder looks dead and loses its
 //! sockets. The same limit as the chat CLI's own sweep.
 
-use std::{collections::HashMap, fs, io, os::unix::fs::PermissionsExt, path::Path, path::PathBuf};
+use std::{
+    collections::HashMap, fs, hash::Hash, io, os::unix::fs::PermissionsExt, path::Path,
+    path::PathBuf,
+};
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
@@ -64,6 +67,7 @@ use tokio::{
 use super::{Dispatch, Outcome, Token, external::Slot, guarded_call};
 use crate::{
     core::{
+        ai::orchestra::WorkerKey,
         ai::tools::{
             ToolSpec,
             mcp::{Action, Frame, MAX_LINE_BYTES, Server, tool_result},
@@ -126,20 +130,40 @@ struct Live {
     closed: Arc<AtomicBool>,
 }
 
-/// The sessions of this run, one per chat pane. Needs a tokio runtime.
-pub struct Hub {
+/// What names one session of a hub: a chat pane, or a worker of a run.
+pub trait HubKey: Copy + Eq + Hash {
+    /// The socket's name between `s-{pid}-` and `.sock`: digits for a pane,
+    /// `w{run}-{n}` for a worker. [`sweep`] knows exactly these two forms.
+    fn socket_tail(&self) -> String;
+}
+
+impl HubKey for PaneId {
+    fn socket_tail(&self) -> String {
+        self.number().to_string()
+    }
+}
+
+impl HubKey for WorkerKey {
+    fn socket_tail(&self) -> String {
+        format!("w{}-{}", self.run.0, self.worker.0)
+    }
+}
+
+/// The sessions of this run, one per key (a chat pane by default). Needs a
+/// tokio runtime.
+pub struct Hub<K: HubKey = PaneId> {
     dir: PathBuf,
-    sessions: HashMap<PaneId, Live>,
+    sessions: HashMap<K, Live>,
     handshake: Duration,
     drain: Duration,
     /// The only UID whose connections are served.
     uid: u32,
 }
 
-impl Hub {
+impl<K: HubKey> Hub<K> {
     /// Uses the first of `dirs` that is (or can be made) a private folder of
     /// ours, and sweeps the sockets of dead runs out of it.
-    pub fn new(dirs: &[PathBuf]) -> io::Result<Hub> {
+    pub fn new(dirs: &[PathBuf]) -> io::Result<Hub<K>> {
         let dir = dirs
             .iter()
             .find(|dir| ensure_private_dir(dir).is_ok())
@@ -162,7 +186,7 @@ impl Hub {
         })
     }
 
-    /// Starts the session of `pane`, retiring any earlier one (its token stops
+    /// Starts the session of `key`, retiring any earlier one (its token stops
     /// working). `dispatch` is where this chat's calls go.
     ///
     /// `external` is where the turn puts its user servers once they run: each
@@ -172,16 +196,18 @@ impl Hub {
     /// set gates the parse, so what is listed and what is accepted agree.
     pub fn open(
         &mut self,
-        pane: PaneId,
+        key: K,
         dispatch: Arc<dyn Dispatch>,
         external: Slot,
         families: FamilySet,
     ) -> io::Result<Started> {
-        self.close(pane);
+        self.close(key);
         let token = Token::generate()?;
-        let socket = self
-            .dir
-            .join(format!("s-{}-{}.sock", std::process::id(), pane.number()));
+        let socket = self.dir.join(format!(
+            "s-{}-{}.sock",
+            std::process::id(),
+            key.socket_tail()
+        ));
         let _ = fs::remove_file(&socket);
         let listener = UnixListener::bind(&socket)?;
         // The folder is ours and 0700, so nobody could connect in between.
@@ -215,7 +241,7 @@ impl Hub {
             })
         };
         self.sessions.insert(
-            pane,
+            key,
             Live {
                 socket: socket.clone(),
                 task,
@@ -225,10 +251,10 @@ impl Hub {
         Ok(Started { socket, token, end })
     }
 
-    /// Ends the session of `pane`: its socket goes, live connections and calls
-    /// in flight are dropped. Nothing happens for a pane without one.
-    pub fn close(&mut self, pane: PaneId) {
-        if let Some(live) = self.sessions.remove(&pane) {
+    /// Ends the session of `key`: its socket goes, live connections and calls
+    /// in flight are dropped. Nothing happens for a key without one.
+    pub fn close(&mut self, key: K) {
+        if let Some(live) = self.sessions.remove(&key) {
             live.closed.store(true, Ordering::SeqCst);
             live.task.abort();
             let _ = fs::remove_file(&live.socket);
@@ -236,12 +262,12 @@ impl Hub {
     }
 }
 
-impl Drop for Hub {
+impl<K: HubKey> Drop for Hub<K> {
     /// At exit: no socket stays behind.
     fn drop(&mut self) {
-        let panes: Vec<PaneId> = self.sessions.keys().copied().collect();
-        for pane in panes {
-            self.close(pane);
+        let keys: Vec<K> = self.sessions.keys().copied().collect();
+        for key in keys {
+            self.close(key);
         }
     }
 }
@@ -288,8 +314,9 @@ impl Conn {
     }
 }
 
-/// Removes `s-<pid>-<pane>.sock` files whose pid `alive` rejects. Anything
-/// else in the folder stays.
+/// Removes `s-<pid>-<tail>.sock` files whose pid `alive` rejects, where
+/// `<tail>` is a pane number or `w<run>-<n>` (see [`HubKey`]). Anything else
+/// in the folder stays.
 fn sweep(dir: &Path, alive: &dyn Fn(u32) -> bool) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -300,11 +327,22 @@ fn sweep(dir: &Path, alive: &dyn Fn(u32) -> bool) {
             .to_str()
             .and_then(|n| n.strip_prefix("s-")?.strip_suffix(".sock"))
             .and_then(|n| n.split_once('-'))
-            .filter(|(_, pane)| !pane.is_empty() && pane.bytes().all(|b| b.is_ascii_digit()))
+            .filter(|(_, tail)| is_socket_tail(tail))
             .and_then(|(pid, _)| pid.parse::<u32>().ok());
         if pid.is_some_and(|pid| !alive(pid)) {
             let _ = fs::remove_file(entry.path());
         }
+    }
+}
+
+/// A pane number, or `w<run>-<n>` of a worker: digits only, none empty.
+fn is_socket_tail(tail: &str) -> bool {
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    match tail.strip_prefix('w') {
+        Some(worker) => worker
+            .split_once('-')
+            .is_some_and(|(run, n)| digits(run) && digits(n)),
+        None => digits(tail),
     }
 }
 
