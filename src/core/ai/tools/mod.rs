@@ -4,9 +4,12 @@
 pub mod capture;
 pub mod command;
 pub mod exec;
+#[cfg(test)]
+mod golden;
 pub mod label;
 pub mod mcp;
 pub mod paths;
+pub mod registry;
 pub mod report;
 pub mod servers;
 pub mod settle;
@@ -15,7 +18,9 @@ pub mod wiring;
 
 use std::borrow::Cow;
 
-use serde_json::{Value, json};
+use serde_json::Value;
+
+use registry::{ArgDef, ArgKind, ArgValue, Family, ToolDef, legacy, parse_args, schema};
 
 /// Whether a tool only reads or can change the user's session.
 ///
@@ -55,6 +60,13 @@ pub struct ExternalTool {
     pub schema: Value,
 }
 
+/// A window of a file, 1-based: `max` lines from line `start`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Lines {
+    pub start: u32,
+    pub max: u32,
+}
+
 /// A validated tool call.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Call {
@@ -66,6 +78,8 @@ pub enum Call {
     },
     ReadFile {
         path: String,
+        /// The window to read; `None` reads from the start, as in 0.18.0.
+        lines: Option<Lines>,
     },
     RunInPane {
         command: String,
@@ -99,7 +113,7 @@ impl Call {
     pub fn argument(&self) -> Cow<'_, str> {
         match self {
             Call::FindDir { query } => Cow::Borrowed(query),
-            Call::ListDir { path } | Call::ReadFile { path } => Cow::Borrowed(path),
+            Call::ListDir { path } | Call::ReadFile { path, .. } => Cow::Borrowed(path),
             Call::RunInPane { command } => Cow::Borrowed(command),
             Call::External { args, .. } => Cow::Owned(args.to_string()),
         }
@@ -117,45 +131,48 @@ pub enum ToolError {
     TooLong,
 }
 
-/// The built-ins in offer order: name, argument, description, access.
-/// `Access::Read` is only a classification, not an approval rule: see
-/// [`Access`].
-const BUILT_INS: [(&str, &str, &str, Access); 4] = [
-    (
-        "find_dir",
-        "query",
-        "Find directories under the user's home whose name contains the query. Names that look like secrets are left out and the result says so.",
-        Access::Read,
-    ),
-    (
-        "list_dir",
-        "path",
-        "List the entries of a directory under the user's home. Names that look like secrets are left out and the result says so.",
-        Access::Read,
-    ),
-    (
-        "read_file",
-        "path",
-        "Read a text file under the user's home.",
-        Access::Read,
-    ),
-    (
-        "run_in_pane",
-        "command",
-        "Type a shell command into the user's pane. The result says whether it was only typed or typed and run, and carries the output of a command that ran, which may be \"not available\". A single cd, pwd, ls, tree or mkdir with plain or quoted paths (no &&, ;, |, $ or redirections) can run directly when the user allows it; anything else waits for the user to approve it and press Enter. Prefer one simple command per call. You cannot change files yourself. Only mkdir can run directly; any other change needs a command the user reviews and runs.",
-        Access::Write,
-    ),
-];
-
-/// The schema of a tool with exactly one required string argument.
-fn one_string(arg: &str) -> Value {
-    json!({
-        "type": "object",
-        "properties": { arg: { "type": "string" } },
-        "required": [arg],
-        "additionalProperties": false,
-    })
+/// The one required string argument of the 0.18.0 tools.
+const fn text(name: &'static str) -> ArgDef {
+    ArgDef {
+        name,
+        kind: ArgKind::Str { max: MAX_ARG_BYTES },
+        required: true,
+        gate: None,
+    }
 }
+
+/// The built-ins in offer order. `Access::Read` is only a classification,
+/// not an approval rule: see [`Access`].
+const BUILT_INS: [ToolDef; 4] = [
+    ToolDef {
+        name: "find_dir",
+        description: "Find directories under the user's home whose name contains the query. Names that look like secrets are left out and the result says so.",
+        access: Access::Read,
+        family: Family::Read,
+        args: &[text("query")],
+    },
+    ToolDef {
+        name: "list_dir",
+        description: "List the entries of a directory under the user's home. Names that look like secrets are left out and the result says so.",
+        access: Access::Read,
+        family: Family::Read,
+        args: &[text("path")],
+    },
+    ToolDef {
+        name: "read_file",
+        description: "Read a text file under the user's home.",
+        access: Access::Read,
+        family: Family::Read,
+        args: &[text("path")],
+    },
+    ToolDef {
+        name: "run_in_pane",
+        description: "Type a shell command into the user's pane. The result says whether it was only typed or typed and run, and carries the output of a command that ran, which may be \"not available\". A single cd, pwd, ls, tree or mkdir with plain or quoted paths (no &&, ;, |, $ or redirections) can run directly when the user allows it; anything else waits for the user to approve it and press Enter. Prefer one simple command per call. You cannot change files yourself. Only mkdir can run directly; any other change needs a command the user reviews and runs.",
+        access: Access::Write,
+        family: Family::Pane,
+        args: &[text("command")],
+    },
+];
 
 /// The tools offered to every engine: the built-ins, then the external ones,
 /// each name once and none shadowing a built-in. The names are expected to be
@@ -165,16 +182,17 @@ fn one_string(arg: &str) -> Value {
 pub fn registry(external: &[ExternalTool]) -> Vec<ToolSpec> {
     let built_in = BUILT_INS
         .iter()
-        .map(|(name, arg, description, access)| ToolSpec {
-            name: (*name).to_owned(),
-            description: (*description).to_owned(),
-            schema: one_string(arg),
-            access: *access,
+        .filter(|def| legacy(def.family))
+        .map(|def| ToolSpec {
+            name: def.name.to_owned(),
+            description: def.description.to_owned(),
+            schema: schema(def, legacy),
+            access: def.access,
         });
     let mut seen: Vec<&str> = Vec::new();
     let external = external
         .iter()
-        .filter(|tool| !BUILT_INS.iter().any(|(name, ..)| *name == tool.name))
+        .filter(|tool| !BUILT_INS.iter().any(|def| def.name == tool.name))
         .filter(|tool| {
             let fresh = !seen.contains(&tool.name.as_str());
             seen.push(&tool.name);
@@ -203,23 +221,23 @@ pub const MAX_ARG_BYTES: usize = 4096;
 /// [`mcp::Frame::parse`] (slice 2c) on the MCP path; any other entry point
 /// (slice 2e) MUST do the same before the arguments become a `Value`.
 pub fn parse_call(name: &str, args: &Value) -> Result<Call, ToolError> {
-    let (_, arg, ..) = BUILT_INS
+    let def = BUILT_INS
         .iter()
-        .find(|(known, ..)| *known == name)
+        .filter(|def| legacy(def.family))
+        .find(|def| def.name == name)
         .ok_or(ToolError::UnknownTool)?;
-    let object = args.as_object().ok_or(ToolError::NotAnObject)?;
-    let value = object.get(*arg).ok_or(ToolError::MissingArgument)?;
-    let text = value.as_str().ok_or(ToolError::WrongType)?.to_owned();
-    if object.len() > 1 {
-        return Err(ToolError::ExtraArgument);
-    }
-    if text.len() > MAX_ARG_BYTES {
-        return Err(ToolError::TooLong);
-    }
+    let parsed = parse_args(def.args, args, legacy)?;
+    let Some(ArgValue::Str(text)) = def.args.first().and_then(|arg| parsed.get(arg.name)) else {
+        return Err(ToolError::MissingArgument);
+    };
+    let text = text.clone();
     match name {
         "find_dir" => Ok(Call::FindDir { query: text }),
         "list_dir" => Ok(Call::ListDir { path: text }),
-        "read_file" => Ok(Call::ReadFile { path: text }),
+        "read_file" => Ok(Call::ReadFile {
+            path: text,
+            lines: None,
+        }),
         "run_in_pane" => Ok(Call::RunInPane { command: text }),
         // Unreachable: the name was found in `BUILT_INS` above and every
         // built-in has an arm. Kept so a new built-in cannot become a
@@ -243,7 +261,9 @@ pub fn parse_call_with(
     args: &Value,
     external: &servers::Qualified,
 ) -> Result<Call, ToolError> {
-    if BUILT_INS.iter().any(|(known, ..)| *known == name) {
+    // Any built-in name, offered or not, is the built-in and never an
+    // external tool; `parse_call` then refuses one whose family is off.
+    if BUILT_INS.iter().any(|def| def.name == name) {
         return parse_call(name, args);
     }
     let (server, tool) = external.raw_of(name).ok_or(ToolError::UnknownTool)?;
@@ -397,6 +417,7 @@ mod tests {
                 json!({"path": "a.rs"}),
                 Call::ReadFile {
                     path: "a.rs".into(),
+                    lines: None,
                 },
             ),
             (
@@ -547,7 +568,10 @@ mod tests {
         q.tools[0].tool.name = "read_file".to_owned();
         assert_eq!(
             parse_call_with("read_file", &json!({"path": "a"}), &q),
-            Ok(Call::ReadFile { path: "a".into() })
+            Ok(Call::ReadFile {
+                path: "a".into(),
+                lines: None
+            })
         );
         assert_eq!(
             parse_call_with("read_file", &json!({"x": 1}), &q),
@@ -603,6 +627,19 @@ mod tests {
                 .unwrap()
                 .argument(),
             "p"
+        );
+    }
+
+    // P0a.4: the call carries an optional line window, `None` until a
+    // Search-gated argument fills it.
+    #[test]
+    fn read_file_parses_with_no_line_window() {
+        assert_eq!(
+            parse_call("read_file", &json!({"path": "a.rs"})),
+            Ok(Call::ReadFile {
+                path: "a.rs".into(),
+                lines: None
+            })
         );
     }
 }

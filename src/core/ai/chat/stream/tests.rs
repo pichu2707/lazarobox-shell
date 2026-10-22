@@ -706,3 +706,47 @@ fn a_qualified_call_is_routed_by_the_lookup_and_a_stranger_is_refused() {
     let (_, plain) = tool_run(&[format!("{}\n{DONE}\n", call("fs__write")).as_bytes()]);
     assert_eq!(plain[0].call, invalid(ToolError::UnknownTool));
 }
+
+// A key repeated in string arguments would collapse to the last one in
+// `serde_json::Value`; the raw text is checked first (P0a.5).
+#[test]
+fn string_arguments_with_a_repeated_key_are_refused() {
+    let line = one_line(
+        r#"{"function":{"name":"find_dir","arguments":"{\"query\":\"a\",\"query\":\"b\"}"}},
+        {"function":{"name":"find_dir","arguments":"{\"query\":\"a\",\"que\\u0072y\":\"b\"}"}},
+        {"function":{"name":"find_dir","arguments":"{\"query\":\"a\"}"}}"#,
+    )
+    .replace('\n', "");
+    let input = format!("{line}\n{DONE}\n");
+    let (_, calls) = tool_run(&[input.as_bytes()]);
+    let results: Vec<_> = calls.iter().map(|c| c.call.clone()).collect();
+    assert_eq!(
+        results,
+        [
+            invalid(ToolError::NotAnObject),
+            invalid(ToolError::NotAnObject),
+            Ok(Call::FindDir { query: "a".into() }),
+        ]
+    );
+}
+
+// Raw model text that is not JSON must be refused like any bad JSON, never
+// reach the duplicate-key scanner (it would index past the end).
+#[test]
+fn truncated_string_arguments_are_refused_without_a_panic() {
+    // The inner text: `{"query`, `{"query\`, `"` and `{"query":"x`.
+    for args in [
+        r#""{\"query""#,
+        r#""{\"query\\""#,
+        r#""\"""#,
+        r#""{\"query\":\"x""#,
+    ] {
+        let line = one_line(&format!(
+            r#"{{"function":{{"name":"find_dir","arguments":{args}}}}}"#
+        ));
+        let input = format!("{line}\n{DONE}\n");
+        let (_, calls) = tool_run(&[input.as_bytes()]);
+        assert_eq!(calls.len(), 1, "{args}");
+        assert_eq!(calls[0].call, invalid(ToolError::NotAnObject), "{args}");
+    }
+}
