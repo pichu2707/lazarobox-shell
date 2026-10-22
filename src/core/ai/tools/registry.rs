@@ -2,7 +2,7 @@
 //! per argument. The schema and the parse both read it, so they cannot
 //! drift apart. Pure: no IO.
 
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 use super::{Access, ToolError};
 
@@ -78,6 +78,43 @@ impl Parsed {
             .iter()
             .find(|(known, _)| *known == name)
             .map(|(_, v)| v)
+    }
+}
+
+/// The families of the 0.18.0 tools, the only ones offered until a toggle
+/// exists.
+pub fn legacy(family: Family) -> bool {
+    matches!(family, Family::Read | Family::Pane)
+}
+
+/// The JSON schema of a tool, from its table: the arguments whose family is
+/// on, `additionalProperties: false`.
+pub fn schema(def: &ToolDef, on: impl Fn(Family) -> bool) -> Value {
+    let live = def.args.iter().filter(|arg| arg.gate.is_none_or(&on));
+    let mut properties = Map::new();
+    let mut required = Vec::new();
+    for arg in live {
+        properties.insert(arg.name.to_owned(), kind_schema(&arg.kind));
+        if arg.required {
+            required.push(Value::from(arg.name));
+        }
+    }
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false,
+    })
+}
+
+fn kind_schema(kind: &ArgKind) -> Value {
+    match kind {
+        ArgKind::Str { .. } => json!({ "type": "string" }),
+        ArgKind::Int { min, max } => json!({ "type": "integer", "minimum": min, "maximum": max }),
+        ArgKind::Bool => json!({ "type": "boolean" }),
+        ArgKind::StrList { items, .. } => {
+            json!({ "type": "array", "items": { "type": "string" }, "maxItems": items })
+        }
     }
 }
 
@@ -271,5 +308,45 @@ mod tests {
         let args = json!({"path": "a", "timeout_secs": 5});
         assert!(parse(args.clone(), true).is_ok());
         assert_eq!(parse(args, false), Err(ToolError::ExtraArgument));
+    }
+
+    fn def() -> ToolDef {
+        ToolDef {
+            name: "demo",
+            description: "d",
+            access: Access::Read,
+            family: Family::Read,
+            args: ARGS,
+        }
+    }
+
+    // The schema is the table: the same ArgDefs the parse reads.
+    #[test]
+    fn the_schema_is_built_from_the_table() {
+        let on = |family| family != Family::Exec;
+        assert_eq!(
+            schema(&def(), on),
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "all": {"type": "boolean"},
+                    "paths": {"type": "array", "items": {"type": "string"}, "maxItems": 2},
+                },
+                "required": ["path"],
+                "additionalProperties": false,
+            })
+        );
+    }
+
+    #[test]
+    fn a_gated_argument_appears_in_the_schema_only_when_its_family_is_on() {
+        let with = schema(&def(), |_| true);
+        assert_eq!(
+            with["properties"]["timeout_secs"],
+            json!({"type": "integer", "minimum": 1, "maximum": 600})
+        );
+        let without = schema(&def(), |family| family != Family::Exec);
+        assert!(without["properties"].get("timeout_secs").is_none());
     }
 }
