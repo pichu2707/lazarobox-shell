@@ -306,6 +306,18 @@ pub async fn run() -> io::Result<()> {
     // Read once, like the memory port: detection and chat both use these, so
     // an engine is chatted with where it was detected. A change needs a restart.
     let server_ports = app.ai().servers().clone();
+    // The llama-server lazarobox starts itself, when `managed = true`: only a
+    // llamacpp turn starts it, on llamacpp's port, and quitting stops it.
+    let managed = app.ai().managed().map(|server| {
+        Arc::new(chat::Managed::new(
+            server.model.clone(),
+            server_ports
+                .port("llamacpp")
+                .expect("llamacpp is a catalog server"),
+            engram::serve::state_dir(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"))
+                .map(|dir| dir.join("llama-server.log")),
+        ))
+    });
     // What the machine offers for notifications (display, bus, notify-send,
     // sound players), probed once now in the background: a slow lookup never
     // delays a send, it just fills the slot later. The `t` test refreshes it.
@@ -379,13 +391,15 @@ pub async fn run() -> io::Result<()> {
         }))
         .with_chats(
             Chats::new(
-                chat::runner_with_ports(
+                chat::runner_managed(
                     server_ports.clone(),
+                    managed.clone(),
                     cli_env.clone(),
                     Some(tool_host.clone()),
                 ),
                 chat_tx,
             )
+            .with_managed(managed)
             // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
             // `<data>/run`. Without a private folder every turn runs as text.
             .with_tools(

@@ -293,6 +293,24 @@ pub fn availability_with(
     let Some(detection) = detection else {
         return Availability::Checking;
     };
+    // A llama-server that lazarobox starts itself only needs its binary: the
+    // turn starts it. It ignores the model name, so none is looked up.
+    if engine == "llamacpp"
+        && let Some(server) = cfg.managed()
+        && detection
+            .engines
+            .iter()
+            .any(|s| s.id == engine && matches!(s.status, Status::Available | Status::NotRunning))
+    {
+        let model = assignment
+            .model
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| server.model.display().to_string());
+        return Availability::Ready {
+            engine,
+            model: Some(model),
+        };
+    }
     let available = detection
         .engines
         .iter()

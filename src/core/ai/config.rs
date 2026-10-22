@@ -379,6 +379,12 @@ impl AiConfig {
     }
 
     #[cfg(test)]
+    pub fn with_managed(mut self, managed: ManagedServer) -> Self {
+        self.managed = Some(managed);
+        self
+    }
+
+    #[cfg(test)]
     pub fn with_servers(mut self, servers: ServerPorts) -> Self {
         self.servers = servers;
         self
