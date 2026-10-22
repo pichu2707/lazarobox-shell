@@ -69,6 +69,7 @@ use crate::{
             mcp::{Action, Frame, MAX_LINE_BYTES, Server, tool_result},
             registry,
             registry::FamilySet,
+            registry_with,
             wiring::Unwire,
         },
         layout::PaneId,
@@ -165,13 +166,13 @@ impl Hub {
     /// working). `dispatch` is where this chat's calls go.
     ///
     /// `external` is where the turn puts its user servers once they run: each
-    /// connection offers (and routes) their tools besides `tools`.
+    /// connection offers (and routes) their tools besides the built-ins.
     ///
-    /// `families` gates the parse: `tools` should list the same built-ins.
+    /// The built-ins offered are `registry_with(&[], families)` and the same
+    /// set gates the parse, so what is listed and what is accepted agree.
     pub fn open(
         &mut self,
         pane: PaneId,
-        tools: Vec<ToolSpec>,
         dispatch: Arc<dyn Dispatch>,
         external: Slot,
         families: FamilySet,
@@ -190,7 +191,7 @@ impl Hub {
         }
         let mut conn = Conn::new(
             token.clone(),
-            tools,
+            registry_with(&[], families),
             dispatch,
             external,
             self.uid,

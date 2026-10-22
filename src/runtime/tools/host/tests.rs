@@ -13,10 +13,7 @@ use tokio::{
 
 use super::*;
 use crate::{
-    core::{
-        ai::{chat::approval::ApprovalAsk, tools::registry},
-        layout::PaneId,
-    },
+    core::{ai::chat::approval::ApprovalAsk, layout::PaneId},
     runtime::mcp::Hub,
 };
 
@@ -477,7 +474,6 @@ async fn a_free_tool_runs_end_to_end_from_the_mcp_session_through_the_host() {
     let started = hub
         .open(
             PaneId::for_test(1),
-            registry(&[]),
             host.dispatch(scope),
             Default::default(),
             crate::core::ai::tools::registry::FamilySet::LEGACY,

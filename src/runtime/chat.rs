@@ -51,7 +51,6 @@ use crate::core::{
         config::McpServer,
         sanitize::{StreamSanitizer, Utf8Stream, clean},
         tools::{
-            registry_with,
             report::RunReport,
             summary::clip,
             wiring::{McpWire, Secret},
@@ -733,13 +732,7 @@ impl Chats {
         let hub = tooling.hub.as_mut()?;
         // No session means no tools for this turn: it runs as text.
         let started = hub
-            .open(
-                pane,
-                registry_with(&[], request.families),
-                dispatch,
-                slot.clone(),
-                request.families,
-            )
+            .open(pane, dispatch, slot.clone(), request.families)
             .ok()?;
         tooling.started.insert(pane, started);
         Some((pending, None, slot))

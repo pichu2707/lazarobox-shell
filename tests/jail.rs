@@ -22,7 +22,7 @@ use lazarobox_shell::{
         ai::{
             chat::engine::ChatError,
             jail::{ELF_HEAD_BYTES, JailArgs, JailSpec, JailSupport, elf_loader, exit_error},
-            tools::{Call, registry},
+            tools::Call,
         },
         layout::PaneIds,
     },
@@ -485,7 +485,6 @@ fn the_shim_runs_jailed_with_only_its_binary_and_the_socket_and_connects() {
         .block_on(async {
             hub.open(
                 pane,
-                registry(&[]),
                 Arc::new(Done),
                 Default::default(),
                 lazarobox_shell::core::ai::tools::registry::FamilySet::LEGACY,
