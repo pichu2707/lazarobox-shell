@@ -9,6 +9,7 @@ mod golden;
 pub mod label;
 pub mod mcp;
 pub mod paths;
+pub mod registry;
 pub mod report;
 pub mod servers;
 pub mod settle;
