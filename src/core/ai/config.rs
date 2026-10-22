@@ -359,6 +359,12 @@ impl AiConfig {
         &self.servers
     }
 
+    #[cfg(test)]
+    pub fn with_servers(mut self, servers: ServerPorts) -> Self {
+        self.servers = servers;
+        self
+    }
+
     pub fn set_approval(&mut self, mode: ApprovalMode) {
         self.approval = mode;
     }

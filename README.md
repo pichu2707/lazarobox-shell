@@ -182,6 +182,8 @@ port = 39080
 
 Valen `ollama`, `lmstudio`, `llamacpp` y `vllm`; un puerto fuera de 1–65535 o que no sea un número se ignora con un aviso al arrancar y se usa el habitual. El menú no edita esta tabla y la conserva al guardar. El cambio se aplica al reiniciar lazarobox.
 
+Un servidor instalado (su binario está en el `PATH`) que no responde aparece en el selector como `not running`. Al elegirlo, el menú dice en qué puerto lo busca y cómo arrancarlo, por ejemplo `llamacpp not running on 127.0.0.1:39080 · start it, then press r: llama-server --port 39080 -m <model.gguf>`. Enter o `y` copia esa línea; arranca el servidor, pulsa `r` y aparecen sus modelos. lazarobox nunca arranca el servidor por ti.
+
 Límites de esta fase:
 
 - No se admiten endpoints personalizados: el host es siempre `127.0.0.1`.

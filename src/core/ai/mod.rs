@@ -95,6 +95,21 @@ pub const CATALOG: &[Engine] = &[
     cli("opencode"),
 ];
 
+/// How to start the server engine `id` by hand so that it listens on
+/// `127.0.0.1:port`; `None` for an engine that is not a server. Shown, never
+/// run: lazarobox does not start servers. `<model…>` is for the user to fill.
+pub fn start_command(id: &str, port: u16) -> Option<String> {
+    let command = match id {
+        "ollama" if port == 11434 => "ollama serve".to_owned(),
+        "ollama" => format!("OLLAMA_HOST=127.0.0.1:{port} ollama serve"),
+        "lmstudio" => format!("lms server start --port {port}"),
+        "llamacpp" => format!("llama-server --port {port} -m <model.gguf>"),
+        "vllm" => format!("vllm serve <model> --host 127.0.0.1 --port {port}"),
+        _ => return None,
+    };
+    Some(command)
+}
+
 /// The loopback ports of the server engines: each catalog port, unless
 /// `[ai.servers.<id>] port` replaced it. Detection and chat read the same
 /// value, so an engine is used where it was detected. The host is always
@@ -384,6 +399,31 @@ mod tests {
             }
         }
         assert_eq!(ServerPorts::default().catalog(), CATALOG);
+    }
+
+    #[test]
+    fn each_server_has_a_loopback_start_command_on_its_port() {
+        assert_eq!(
+            start_command("ollama", 11434).as_deref(),
+            Some("ollama serve")
+        );
+        assert_eq!(
+            start_command("ollama", 11500).as_deref(),
+            Some("OLLAMA_HOST=127.0.0.1:11500 ollama serve")
+        );
+        assert_eq!(
+            start_command("lmstudio", 1234).as_deref(),
+            Some("lms server start --port 1234")
+        );
+        assert_eq!(
+            start_command("llamacpp", 39080).as_deref(),
+            Some("llama-server --port 39080 -m <model.gguf>")
+        );
+        assert_eq!(
+            start_command("vllm", 8000).as_deref(),
+            Some("vllm serve <model> --host 127.0.0.1 --port 8000")
+        );
+        assert_eq!(start_command("claude", 1), None);
     }
 
     #[test]

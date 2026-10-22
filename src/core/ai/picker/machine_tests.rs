@@ -246,3 +246,27 @@ fn enter_on_an_engine_without_a_chat_adapter_stays_on_the_engines_level() {
     assert_eq!(p.level, Level::Engines);
     assert_eq!(p.cursor, index_of(&rows, engine_key("opencode")));
 }
+
+#[test]
+fn a_server_that_is_not_running_opens_its_level_and_enter_copies_the_start_note() {
+    let d = Detection {
+        engines: vec![state("vllm", Status::NotRunning, &[])],
+    };
+    let draft = AiConfig::default();
+    let mut p = Picker::open(Target::Task(Task::Chat), &draft, Some(&d));
+    let rows = p.rows(&draft, Some(&d));
+    p.cursor = index_of(&rows, engine_key("vllm"));
+    assert_eq!(p.enter(&draft, Some(&d)), Outcome::Stay);
+    assert_eq!(
+        p.level,
+        Level::Models {
+            engine: "vllm".to_owned()
+        }
+    );
+    let rows = p.rows(&draft, Some(&d));
+    p.cursor = 0;
+    let text = "vllm not running on 127.0.0.1:8000 · start it, then press r: \
+                vllm serve <model> --host 127.0.0.1 --port 8000";
+    assert!(matches!(&rows[0].key, PickKey::Note { text: t, .. } if t == text));
+    assert_eq!(p.enter(&draft, Some(&d)), Outcome::Copy(text.to_owned()));
+}
