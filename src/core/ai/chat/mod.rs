@@ -756,6 +756,7 @@ impl ChatState {
         SendOutcome::Sent {
             turn: self.turn,
             request: ChatRequest {
+                families: crate::core::ai::tools::registry::FamilySet::LEGACY,
                 engine: engine.clone(),
                 model: model.clone(),
                 system: system.to_owned(),

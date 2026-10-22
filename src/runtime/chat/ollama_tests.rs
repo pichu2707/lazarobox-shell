@@ -368,6 +368,35 @@ async fn a_call_the_registry_refuses_still_gets_a_tool_message() {
     assert_eq!(tool["content"], "unknown tool");
 }
 
+// P0b.2: the set the request offered also gates the parse. A model that names
+// a tool it was not offered gets the unknown-tool message and nothing runs.
+#[tokio::test]
+async fn a_tool_outside_the_offered_families_is_refused_and_not_run() {
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    let fake = fake(vec![
+        calls("run_in_pane", json!({"command": "ls"})),
+        text("ok"),
+    ])
+    .await;
+    let mut lab = lab(fake.port);
+    let mut req = ask(&lab, true);
+    req.families = FamilySet::EMPTY.with(Family::Read);
+    lab.chats.send(pane(1), 1, req);
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(tool_calls(&events), 0, "{events:?}");
+    let bodies = fake.bodies();
+    let offered: Vec<&str> = bodies[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(offered, ["find_dir", "list_dir", "read_file"]);
+    let tool = bodies[1]["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(tool["role"], "tool");
+    assert_eq!(tool["content"], "unknown tool");
+}
+
 // The cap ----------------------------------------------------------------------
 
 #[tokio::test]

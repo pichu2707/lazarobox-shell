@@ -85,7 +85,7 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
         Call::RunInPane { command } => Some(ApprovalAsk::Run {
             command: command.clone(),
         }),
-        Call::ReadFile { path } if locality == Locality::Cloud => {
+        Call::ReadFile { path, .. } if locality == Locality::Cloud => {
             Some(ApprovalAsk::Read { path: path.clone() })
         }
         // A user tool always asks, on any engine and in any approval mode:
@@ -912,6 +912,7 @@ mod tests {
         let list = Call::ListDir { path: "~".into() };
         let read = Call::ReadFile {
             path: "~/a.txt".into(),
+            lines: None,
         };
         let run = Call::RunInPane {
             command: "cd x".into(),

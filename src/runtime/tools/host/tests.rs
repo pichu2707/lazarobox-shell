@@ -13,10 +13,7 @@ use tokio::{
 
 use super::*;
 use crate::{
-    core::{
-        ai::{chat::approval::ApprovalAsk, tools::registry},
-        layout::PaneId,
-    },
+    core::{ai::chat::approval::ApprovalAsk, layout::PaneId},
     runtime::mcp::Hub,
 };
 
@@ -84,7 +81,10 @@ fn run_cmd(command: &str) -> Call {
 }
 
 fn read(path: &str) -> Call {
-    Call::ReadFile { path: path.into() }
+    Call::ReadFile {
+        path: path.into(),
+        lines: None,
+    }
 }
 
 /// The ids and statuses of `events`, checking they come as call, result.
@@ -474,9 +474,9 @@ async fn a_free_tool_runs_end_to_end_from_the_mcp_session_through_the_host() {
     let started = hub
         .open(
             PaneId::for_test(1),
-            registry(&[]),
             host.dispatch(scope),
             Default::default(),
+            crate::core::ai::tools::registry::FamilySet::LEGACY,
         )
         .unwrap();
     let (mut reader, mut writer) = client(&started.socket, started.token.reveal()).await;

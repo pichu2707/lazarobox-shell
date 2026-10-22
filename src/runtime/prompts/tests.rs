@@ -250,6 +250,7 @@ fn the_ollama_body_holds_the_block_when_on_and_not_when_off() {
         )
         .text;
         let request = ChatRequest {
+            families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             engine: "ollama".into(),
             model: Some("m".into()),
             system,
