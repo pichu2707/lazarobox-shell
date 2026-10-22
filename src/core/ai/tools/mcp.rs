@@ -32,7 +32,7 @@
 
 #[cfg(test)]
 use super::registry;
-use super::{Call, ToolError, ToolSpec, parse_call_with, servers::Qualified};
+use super::{Call, ToolError, ToolSpec, parse_call_in, registry::FamilySet, servers::Qualified};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
@@ -211,6 +211,8 @@ pub enum Action {
 pub struct Server {
     tools: Vec<ToolSpec>,
     external: Qualified,
+    /// The built-ins a call may name; `tools` should list the same ones.
+    families: FamilySet,
     initialized: bool,
 }
 
@@ -266,8 +268,16 @@ impl Server {
         Server {
             tools,
             external,
+            families: FamilySet::LEGACY,
             initialized: false,
         }
+    }
+
+    /// This server with the built-ins of `families` callable (the default is
+    /// [`FamilySet::LEGACY`]). A built-in outside it is an unknown tool.
+    pub fn with_families(mut self, families: FamilySet) -> Self {
+        self.families = families;
+        self
     }
 
     /// Serves one line (no newline). Never panics and never ends the session.
@@ -305,7 +315,7 @@ impl Server {
                     .collect();
                 result_reply(id, json!({ "tools": tools }))
             }
-            "tools/call" => call(id, params, &self.external),
+            "tools/call" => call(id, params, &self.external, self.families),
             _ => error_reply(id, METHOD_NOT_FOUND, "method not found"),
         }
     }
@@ -343,13 +353,13 @@ fn notification(method: &str, params: &Value) -> Action {
     }
 }
 
-fn call(id: Value, params: &Value, external: &Qualified) -> Action {
+fn call(id: Value, params: &Value, external: &Qualified, families: FamilySet) -> Action {
     let Some(name) = params.get("name").and_then(Value::as_str) else {
         return error_reply(id, INVALID_PARAMS, "name must be a string");
     };
     let empty = json!({});
     let arguments = params.get("arguments").unwrap_or(&empty);
-    match parse_call_with(name, arguments, external) {
+    match parse_call_in(name, arguments, external, families) {
         Ok(call) => Action::Call { id, call },
         Err(error) => Action::Reply(tool_result(&id, refusal_text(error), true)),
     }
@@ -517,6 +527,46 @@ mod tests {
             assert_eq!(got["description"], spec.description.as_str());
             assert_eq!(got["inputSchema"], spec.schema);
         }
+    }
+
+    // P0b.2: the server refuses a built-in that is outside its set with the
+    // text of an unknown name, even if the client names it by hand.
+    #[test]
+    fn tools_call_refuses_a_tool_outside_the_family_set() {
+        use crate::core::ai::tools::{
+            registry::{Family, FamilySet},
+            registry_with,
+        };
+        let read_only = FamilySet::EMPTY.with(Family::Read);
+        let mut server = Server::new(registry_with(&[], read_only)).with_families(read_only);
+        let init = request(
+            json!(0),
+            "initialize",
+            json!({"protocolVersion": "2025-06-18", "capabilities": {}}),
+        );
+        reply(server.handle(&init));
+        let mut call = |name: &str, args: Value| {
+            server.handle(&request(
+                json!(2),
+                "tools/call",
+                json!({"name": name, "arguments": args}),
+            ))
+        };
+        let hidden = reply(call("run_in_pane", json!({"command": "ls"})));
+        assert_eq!(hidden["result"]["isError"], true);
+        assert_eq!(hidden["result"]["content"][0]["text"], "unknown tool");
+        assert_eq!(hidden, reply(call("nope", json!({"command": "ls"}))));
+        // A tool of the set still reaches the host.
+        assert_eq!(
+            call("read_file", json!({"path": "a.rs"})),
+            Action::Call {
+                id: json!(2),
+                call: Call::ReadFile {
+                    path: "a.rs".into(),
+                    lines: None
+                }
+            }
+        );
     }
 
     #[test]

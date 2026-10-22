@@ -16,6 +16,7 @@ fn message(role: Role, content: &str) -> ChatMessage {
 
 fn request(system: &str) -> ChatRequest {
     ChatRequest {
+        families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         engine: "ollama".into(),
         model: Some("llama3:8b".into()),
         system: system.into(),
@@ -1338,6 +1339,39 @@ fn the_ollama_body_offers_the_external_tools_after_the_built_ins() {
         ]
     );
     assert!(names(body_of(ollama_round_body(&req, &[], false))).is_empty());
+}
+
+// P0b.2: the offered list follows `ChatRequest::families`; the default is the
+// 0.18.0 set, and an empty set offers no built-in at all.
+#[test]
+fn ollama_offers_only_the_families_of_the_request() {
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    let names = |families: FamilySet| -> Vec<String> {
+        let mut req = request("");
+        req.families = families;
+        req.tools = Tools::On {
+            origin: None,
+            mcp: None,
+            external: Box::default(),
+        };
+        body_of(ollama_round_body(&req, &[], true))["tools"]
+            .as_array()
+            .map(|t| {
+                t.iter()
+                    .map(|t| t["function"]["name"].as_str().unwrap().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        names(FamilySet::LEGACY),
+        ["find_dir", "list_dir", "read_file", "run_in_pane"]
+    );
+    assert_eq!(
+        names(FamilySet::EMPTY.with(Family::Read)),
+        ["find_dir", "list_dir", "read_file"]
+    );
+    assert!(names(FamilySet::EMPTY).is_empty());
 }
 
 /// Every flag a claude turn passes, with the first claude release that knows

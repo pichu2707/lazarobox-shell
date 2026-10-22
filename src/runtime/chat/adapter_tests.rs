@@ -34,6 +34,7 @@ fn pane(n: u32) -> PaneId {
 
 fn request(model: &str) -> ChatRequest {
     ChatRequest {
+        families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         engine: "ollama".into(),
         model: Some(model.into()),
         system: "be brief".into(),
