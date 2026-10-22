@@ -19,6 +19,26 @@ pub enum Family {
     Pane,
 }
 
+/// Which families are on: a bitset, one bit per [`Family`]. The single gate
+/// for what is offered and what a call may name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FamilySet(u8);
+
+impl FamilySet {
+    pub const EMPTY: FamilySet = FamilySet(0);
+    /// The 0.18.0 tools, the only ones offered until a toggle is on.
+    pub const LEGACY: FamilySet = FamilySet::EMPTY.with(Family::Read).with(Family::Pane);
+
+    /// This set plus `family`.
+    pub const fn with(self, family: Family) -> FamilySet {
+        FamilySet(self.0 | 1 << family as u8)
+    }
+
+    pub const fn contains(self, family: Family) -> bool {
+        self.0 & (1 << family as u8) != 0
+    }
+}
+
 /// The type of one argument and the limits the parse enforces.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ArgKind {
@@ -81,16 +101,13 @@ impl Parsed {
     }
 }
 
-/// The families of the 0.18.0 tools, the only ones offered until a toggle
-/// exists.
-pub fn legacy(family: Family) -> bool {
-    matches!(family, Family::Read | Family::Pane)
-}
-
 /// The JSON schema of a tool, from its table: the arguments whose family is
-/// on, `additionalProperties: false`.
-pub fn schema(def: &ToolDef, on: impl Fn(Family) -> bool) -> Value {
-    let live = def.args.iter().filter(|arg| arg.gate.is_none_or(&on));
+/// in `set`, `additionalProperties: false`.
+pub fn schema(def: &ToolDef, set: FamilySet) -> Value {
+    let live = def
+        .args
+        .iter()
+        .filter(|arg| arg.gate.is_none_or(|family| set.contains(family)));
     let mut properties = Map::new();
     let mut required = Vec::new();
     for arg in live {
@@ -119,16 +136,15 @@ fn kind_schema(kind: &ArgKind) -> Value {
 }
 
 /// Reads `args` against `defs`, in the 0.18.0 order: not an object, then per
-/// argument (missing, wrong type), then an extra key, then too long. `on`
-/// says whether a family is offered; a gated argument of a family that is off
+/// argument (missing, wrong type), then an extra key, then too long. `set`
+/// says which families are offered; a gated argument of a family that is off
 /// is an extra key.
-pub fn parse_args(
-    defs: &[ArgDef],
-    args: &Value,
-    on: impl Fn(Family) -> bool,
-) -> Result<Parsed, ToolError> {
+pub fn parse_args(defs: &[ArgDef], args: &Value, set: FamilySet) -> Result<Parsed, ToolError> {
     let object = args.as_object().ok_or(ToolError::NotAnObject)?;
-    let live: Vec<&ArgDef> = defs.iter().filter(|def| def.gate.is_none_or(&on)).collect();
+    let live: Vec<&ArgDef> = defs
+        .iter()
+        .filter(|def| def.gate.is_none_or(|family| set.contains(family)))
+        .collect();
     let mut parsed = Vec::new();
     for def in &live {
         match object.get(def.name) {
@@ -223,8 +239,16 @@ mod tests {
         },
     ];
 
+    fn set(exec: bool) -> FamilySet {
+        if exec {
+            FamilySet::LEGACY.with(Family::Exec)
+        } else {
+            FamilySet::LEGACY
+        }
+    }
+
     fn parse(args: Value, exec: bool) -> Result<Parsed, ToolError> {
-        parse_args(ARGS, &args, |family| family != Family::Exec || exec)
+        parse_args(ARGS, &args, set(exec))
     }
 
     // Spec (agent-tools, argument parse order): unknown -> not an object ->
@@ -342,9 +366,8 @@ mod tests {
     // The schema is the table: the same ArgDefs the parse reads.
     #[test]
     fn the_schema_is_built_from_the_table() {
-        let on = |family| family != Family::Exec;
         assert_eq!(
-            schema(&def(), on),
+            schema(&def(), set(false)),
             json!({
                 "type": "object",
                 "properties": {
@@ -360,12 +383,59 @@ mod tests {
 
     #[test]
     fn a_gated_argument_appears_in_the_schema_only_when_its_family_is_on() {
-        let with = schema(&def(), |_| true);
+        let with = schema(&def(), set(true));
         assert_eq!(
             with["properties"]["timeout_secs"],
             json!({"type": "integer", "minimum": 1, "maximum": 600})
         );
-        let without = schema(&def(), |family| family != Family::Exec);
+        let without = schema(&def(), set(false));
         assert!(without["properties"].get("timeout_secs").is_none());
+    }
+
+    const EVERY_FAMILY: [Family; 7] = [
+        Family::Read,
+        Family::Search,
+        Family::Write,
+        Family::Exec,
+        Family::Git,
+        Family::GitWrite,
+        Family::Pane,
+    ];
+
+    // Spec (agent-tools, tool families): one bit per family, so the two git
+    // toggles and the rest never alias each other.
+    #[test]
+    fn each_family_is_its_own_bit() {
+        for family in EVERY_FAMILY {
+            let only = FamilySet::EMPTY.with(family);
+            for other in EVERY_FAMILY {
+                assert_eq!(
+                    only.contains(other),
+                    other == family,
+                    "{family:?}/{other:?}"
+                );
+            }
+            assert!(!FamilySet::EMPTY.contains(family), "{family:?}");
+        }
+    }
+
+    // Spec: off equals 0.18.0, so the default set is exactly Read and Pane.
+    #[test]
+    fn legacy_is_read_and_pane_only() {
+        for family in EVERY_FAMILY {
+            let want = matches!(family, Family::Read | Family::Pane);
+            assert_eq!(FamilySet::LEGACY.contains(family), want, "{family:?}");
+        }
+    }
+
+    #[test]
+    fn with_adds_a_family_and_is_idempotent() {
+        let grown = FamilySet::LEGACY.with(Family::Git);
+        assert!(grown.contains(Family::Git) && grown.contains(Family::Read));
+        assert!(
+            !FamilySet::LEGACY.contains(Family::Git),
+            "the original is Copy"
+        );
+        assert_eq!(grown.with(Family::Git), grown);
     }
 }
