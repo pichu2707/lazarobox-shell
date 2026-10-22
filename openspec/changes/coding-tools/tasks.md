@@ -80,11 +80,11 @@ Blocked-slice rule: the BLOCKED rows cannot start until agent-orchestrator S1c-2
 ### P0a: registry and golden (PR 1, ~450, base `main`)
 Spec: agent-tools "Tool registry", "Multi-argument arguments", "Argument length", "Off equals 0.18.0".
 
-- [ ] P0a.1 RED/GREEN-on-old-code (characterization): capture the 0.18.0 `tools/list` bytes and the parse-error texts of the 4 tools as golden fixtures; the test passes on the UNREFACTORED code and is committed FIRST in its own commit. Files: `tests/` or `core/ai/tools/tests`, fixture file. ~90.
-- [ ] P0a.2 RED: `ArgDef` table tests: fixed parse order (unknown -> not an object -> per-arg missing/wrong type -> extra key -> too long), int clamping (`timeout_secs` 900 -> 600), gated arg accepted only when its family is on. GREEN: `registry.rs` with `ToolDef`, `ArgDef`, `ArgKind`, `Family` (incl. `GitWrite`). ~200. Dep: P0a.1.
-- [ ] P0a.3 RED: golden still green via the new table for the 4 existing tools (byte-identical). GREEN: migrate `tools/mod.rs` tuples to `ToolDef`, keep `ToolSpec`, `registry()`, `parse_call()`, `parse_call_with()`, `Call::name()`, `Call::argument()` signatures. REFACTOR. ~120. Dep: P0a.2.
-- [ ] P0a.4 RED: `Call::ReadFile{path, lines: Option<Lines>}` parses with `lines: None`. GREEN: change `host.rs:293` to read the new field (no behaviour change). ~40. Dep: P0a.3.
-- [ ] P0a.5 RED: raw duplicate-JSON-key check test (open question 3, Ollama `stream.rs:328`); GREEN: add the check. Include only if it fits in the PR; otherwise move to P0b. ~40.
+- [x] P0a.1 RED/GREEN-on-old-code (characterization): capture the 0.18.0 `tools/list` bytes and the parse-error texts of the 4 tools as golden fixtures; the test passes on the UNREFACTORED code and is committed FIRST in its own commit. Files: `tests/` or `core/ai/tools/tests`, fixture file. ~90.
+- [x] P0a.2 RED: `ArgDef` table tests: fixed parse order (unknown -> not an object -> per-arg missing/wrong type -> extra key -> too long), int clamping (`timeout_secs` 900 -> 600), gated arg accepted only when its family is on. GREEN: `registry.rs` with `ToolDef`, `ArgDef`, `ArgKind`, `Family` (incl. `GitWrite`). ~200. Dep: P0a.1.
+- [x] P0a.3 RED: golden still green via the new table for the 4 existing tools (byte-identical). GREEN: migrate `tools/mod.rs` tuples to `ToolDef`, keep `ToolSpec`, `registry()`, `parse_call()`, `parse_call_with()`, `Call::name()`, `Call::argument()` signatures. REFACTOR. ~120. Dep: P0a.2.
+- [x] P0a.4 RED: `Call::ReadFile{path, lines: Option<Lines>}` parses with `lines: None`. GREEN: change `host.rs:293` to read the new field (no behaviour change). ~40. Dep: P0a.3.
+- [x] P0a.5 RED: raw duplicate-JSON-key check test (open question 3, Ollama `stream.rs:328`); GREEN: add the check. Include only if it fits in the PR; otherwise move to P0b. ~40.
 
 ### P0b: FamilySet plumbing at LEGACY (PR 2, ~350, base `main`)
 Spec: agent-tools "Tool families", "Off equals 0.18.0"; lazarobox-mcp-server "Tools served".
