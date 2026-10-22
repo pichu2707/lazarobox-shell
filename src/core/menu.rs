@@ -1246,7 +1246,16 @@ impl MenuState {
             return Footer::Hint(Cow::Borrowed(HINT_ENGINE_REASON));
         }
         if let Some(row) = cursor.as_ref().filter(|r| !r.enabled) {
-            let reason = disabled_reason(row);
+            // The saved models of a stopped server are disabled only because
+            // it is not running; its note says how to start it.
+            let stopped = match picker.map(|p| &p.level) {
+                Some(Level::Models { engine }) => ai.is_some_and(|ai| ai.is_not_running(engine)),
+                _ => false,
+            };
+            let reason = match row.key {
+                PickKey::Model(_) if stopped => "not running",
+                _ => disabled_reason(row),
+            };
             return Footer::Hint(Cow::Owned(format!("{reason} · not selectable")));
         }
         // A warning, not a block: the account list may be stale.
