@@ -189,7 +189,7 @@ fn an_empty_server_reads_no_models_detected() {
 // Spec: Footer on a disabled row (engine not detected).
 #[test]
 fn an_engine_that_is_gone_reads_engine_not_detected_on_both_rows() {
-    let found = only(&[engine("ollama", Status::NotRunning, &[], None)]);
+    let found = only(&[engine("ollama", Status::NotInstalled, &[], None)]);
     let mut m = assigned(&[(Task::Code, "ollama", "old:7b")], found);
     open(&mut m, "code");
     while cursor_label(&m) != "ollama" {

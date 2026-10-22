@@ -12,7 +12,7 @@ use super::chat::adapters::adapter_for;
 use super::config::{AiConfig, Assignment, Task};
 use super::parse::sanitize;
 use super::sanitize::is_format;
-use super::{CATALOG, Detection, Kind, Status, status_text};
+use super::{CATALOG, Detection, Engine, Kind, Status, start_command, status_text};
 
 /// What a picker is assigning to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -107,18 +107,25 @@ fn known(detection: Option<&Detection>) -> Option<&Detection> {
 }
 
 fn is_available(detection: Option<&Detection>, id: &str) -> bool {
-    detection.is_some_and(|d| {
-        d.engines
-            .iter()
-            .any(|s| s.id == id && s.status == Status::Available)
-    })
+    has_status(detection, id, Status::Available)
+}
+
+fn has_status(detection: Option<&Detection>, id: &str, status: Status) -> bool {
+    detection.is_some_and(|d| d.engines.iter().any(|s| s.id == id && s.status == status))
+}
+
+/// A server engine whose binary is on PATH but that did not answer on its
+/// port: listed, so that choosing it says how to start it.
+fn is_stopped_server(detection: Option<&Detection>, engine: &Engine) -> bool {
+    matches!(engine.kind, Kind::Server { .. })
+        && has_status(detection, engine.id, Status::NotRunning)
 }
 
 /// The Engines level of a picker: the unassign entry, the available
 /// engines in catalog order (an engine chat has no adapter for is listed
-/// but not selectable, since chat would refuse it), then every engine
-/// assigned anywhere in the draft that is not available (selectable, so it
-/// can be kept or reopened).
+/// but not selectable, since chat would refuse it), the installed servers
+/// that are not running, then every other engine assigned anywhere in the
+/// draft that is not available (selectable, so it can be kept or reopened).
 pub fn engine_rows(
     target: Target,
     draft: &AiConfig,
@@ -157,6 +164,16 @@ pub fn engine_rows(
         }
     }
     let mut listed: Vec<&str> = Vec::new();
+    for engine in CATALOG {
+        if is_stopped_server(detection, engine) {
+            listed.push(engine.id);
+            push(
+                engine.id,
+                Mark::Status(status_text(detection, engine.id)),
+                adapter_for(engine.id).is_some(),
+            );
+        }
+    }
     for task in Task::ALL {
         let Some(id) = draft.get(task).engine.as_deref() else {
             continue;
@@ -269,21 +286,7 @@ pub fn model_rows(
         });
         if let Some(why) = why {
             let full = format!("model list unavailable: {}", sanitize(why));
-            rows.extend(
-                wrap_note(&full)
-                    .into_iter()
-                    .enumerate()
-                    .map(|(row, line)| PickRow {
-                        key: PickKey::Note {
-                            row,
-                            text: full.clone(),
-                        },
-                        label: line,
-                        mark: Mark::Plain,
-                        enabled: false,
-                        current: false,
-                    }),
-            );
+            rows.extend(note_rows(&full));
         }
         rows.push(PickRow {
             key: PickKey::Custom,
@@ -320,7 +323,21 @@ pub fn model_rows(
             .iter()
             .map(|m| row(m, Mark::Plain, false))
             .collect();
-        rows.push(info("engine not detected", Mark::Plain));
+        let start = CATALOG
+            .iter()
+            .find(|e| e.id == engine)
+            .filter(|e| is_stopped_server(Some(detection), e))
+            .and_then(|_| {
+                let port = draft.servers().port(engine)?;
+                let command = start_command(engine, port)?;
+                Some(format!(
+                    "{engine} not running on 127.0.0.1:{port} · start it, then press r: {command}"
+                ))
+            });
+        match start {
+            Some(full) => rows.extend(note_rows(&full)),
+            None => rows.push(info("engine not detected", Mark::Plain)),
+        }
         return rows;
     };
 
@@ -343,6 +360,24 @@ pub fn model_rows(
         rows.push(info("no models detected", Mark::Plain));
     }
     rows
+}
+
+/// The rows of a note: `text` wrapped, each row carrying the whole text to
+/// copy. Never selectable.
+fn note_rows(text: &str) -> impl Iterator<Item = PickRow> + '_ {
+    wrap_note(text)
+        .into_iter()
+        .enumerate()
+        .map(move |(row, line)| PickRow {
+            key: PickKey::Note {
+                row,
+                text: text.to_owned(),
+            },
+            label: line,
+            mark: Mark::Plain,
+            enabled: false,
+            current: false,
+        })
 }
 
 /// Cells a wrapped note row may use: the AI popup is 62 wide, 60 inside, and
@@ -1169,7 +1204,7 @@ mod tests {
         let mut draft = AiConfig::default();
         assign(&mut draft, Task::Code, "ollama", Some("llama3:8b"));
         assign(&mut draft, Task::Chat, "ollama", Some("qwen3:8b"));
-        let d = detection(vec![state("ollama", Status::NotRunning, &[])]);
+        let d = detection(vec![state("ollama", Status::NotInstalled, &[])]);
         assert_eq!(
             model_rows("ollama", Target::Task(Task::Code), &draft, Some(&d)),
             [
@@ -1374,9 +1409,75 @@ mod tests {
                 ),
                 engine("ollama", "available · 2 models", false),
                 engine("claude", "available · version unknown", false),
+                engine("lmstudio", "not running", false),
                 engine("codex", "(not detected)", true),
             ]
         );
+    }
+
+    #[test]
+    fn installed_servers_that_are_not_running_are_listed_after_the_available_engines() {
+        let draft = AiConfig::default();
+        let d = detection(vec![
+            state("ollama", Status::NotRunning, &[]),
+            state("lmstudio", Status::NotInstalled, &[]),
+            state("llamacpp", Status::NotRunning, &[]),
+            state("claude", Status::Available, &[]),
+            state("codex", Status::NotRunning, &[]),
+        ]);
+        assert_eq!(
+            compact(&engine_rows(Target::Task(Task::Chat), &draft, Some(&d))[1..]),
+            [
+                (
+                    "claude".to_owned(),
+                    Mark::Status("available · version unknown".to_owned()),
+                    true
+                ),
+                (
+                    "ollama".to_owned(),
+                    Mark::Status("not running".to_owned()),
+                    true
+                ),
+                (
+                    "llamacpp".to_owned(),
+                    Mark::Status("not running".to_owned()),
+                    true
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_server_that_is_not_running_says_where_it_is_looked_for_and_how_to_start_it() {
+        let ports = crate::core::ai::ServerPorts::default().with("llamacpp", 39080);
+        let mut draft = AiConfig::default().with_servers(ports);
+        assign(&mut draft, Task::Chat, "llamacpp", Some("qwen"));
+        let d = detection(vec![state("llamacpp", Status::NotRunning, &[])]);
+        let text = "llamacpp not running on 127.0.0.1:39080 · start it, then press r: \
+                    llama-server --port 39080 -m <model.gguf>";
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+        let mut want = vec![model("qwen", Mark::Plain, false, true)];
+        want.extend(
+            wrap_note(text)
+                .into_iter()
+                .enumerate()
+                .map(|(row, line)| PickRow {
+                    key: PickKey::Note {
+                        row,
+                        text: text.to_owned(),
+                    },
+                    label: line,
+                    mark: Mark::Plain,
+                    enabled: false,
+                    current: false,
+                }),
+        );
+        assert_eq!(rows, want);
+        // A server that is not installed keeps the plain line.
+        let d = detection(vec![state("llamacpp", Status::NotInstalled, &[])]);
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+        assert_eq!(rows.last().unwrap().key, PickKey::Info);
+        assert_eq!(rows.last().unwrap().label, "engine not detected");
     }
 
     #[test]
@@ -1450,7 +1551,7 @@ mod tests {
                     true
                 ),
                 engine("claude", "available · version unknown", false),
-                engine("vllm", "(not detected)", false),
+                engine("vllm", "not running", false),
             ]
         );
     }

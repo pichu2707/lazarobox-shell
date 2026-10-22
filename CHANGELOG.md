@@ -18,6 +18,12 @@ baseline.
   used. A port that is not an integer from 1 to 65535 is ignored with a startup
   notice. The menu never writes the table and keeps it on save. It is read at
   startup.
+- An installed server that is not running (its binary is on PATH, but nothing
+  answers on its port) is now listed in the engine picker as `not running`.
+  Choosing it shows where lazarobox looks and how to start it, for example
+  `llamacpp not running on 127.0.0.1:39080 · start it, then press r:
+  llama-server --port 39080 -m <model.gguf>`; Enter or `y` copies it.
+  lazarobox never starts the server.
 
 - Chat with LM Studio, llama.cpp (`llama-server`) and vLLM. They talk to their
   server's `/v1/chat/completions` on `127.0.0.1` and their usual port (1234,
