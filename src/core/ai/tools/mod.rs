@@ -4,6 +4,8 @@
 pub mod capture;
 pub mod command;
 pub mod exec;
+#[cfg(test)]
+mod golden;
 pub mod label;
 pub mod mcp;
 pub mod paths;
