@@ -24,7 +24,7 @@ use futures::future::join_all;
 
 use super::{chat::CliEnv, proc::GroupKill};
 use crate::core::ai::{
-    CATALOG, Detection, Engine, Kind, Probe,
+    Detection, Engine, Kind, Probe, ServerPorts,
     chat::{cli::last_line, engine::ChatError},
     http::{MAX_BODY, parse_response},
     jail::{Cli, NOT_ENFORCED_MARKER, exit_error},
@@ -511,11 +511,17 @@ pub async fn detect_in(targets: &[Target], path: &OsStr, lister: Option<Lister<'
     reduce(&probes)
 }
 
-/// Detection over the real catalog and the `PATH` of `env`, the one the chat
-/// turns run with, so what is detected is what can be started.
-pub async fn detect_all(env: &CliEnv, cache: &ListingCache, force: bool) -> Detection {
+/// Detection over the real catalog, each server on its port in `ports`, and
+/// the `PATH` of `env`, the one the chat turns run with, so what is detected
+/// is what can be started.
+pub async fn detect_all(
+    env: &CliEnv,
+    cache: &ListingCache,
+    force: bool,
+    ports: &ServerPorts,
+) -> Detection {
     let lister = Lister { env, cache, force };
-    detect_in(CATALOG, &env.path, Some(lister)).await
+    detect_in(&ports.catalog(), &env.path, Some(lister)).await
 }
 
 /// Runs `fut` off the caller and sends exactly one `Detection` to `tx`: the
@@ -538,8 +544,12 @@ pub fn spawn_detection(
     env: CliEnv,
     cache: Arc<ListingCache>,
     force: bool,
+    ports: ServerPorts,
 ) {
-    spawn_detection_of(tx, async move { detect_all(&env, &cache, force).await });
+    spawn_detection_of(
+        tx,
+        async move { detect_all(&env, &cache, force, &ports).await },
+    );
 }
 
 /// Why the jailed CLI `id`, found at `file`, would run without its jail.
@@ -1417,9 +1427,33 @@ mod tests {
         let lab = lab();
         write_script(&lab.bin, "claude", "echo claude 9.9.9", 0o755);
         let env = env_of(&lab, false);
-        let d = detect_all(&env, &real_cache(), false).await;
+        let d = detect_all(&env, &real_cache(), false, &ServerPorts::default()).await;
         let claude = d.engines.iter().find(|e| e.id == "claude").unwrap();
         assert_eq!(claude.version.as_deref(), Some("claude 9.9.9"));
+    }
+
+    #[tokio::test]
+    async fn detect_all_probes_a_server_on_its_configured_port() {
+        let body = r#"{"data":[{"id":"m","owned_by":"llamacpp"}]}"#;
+        let reply = format!(
+            "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let (port, requests) = fake_server(Some(reply.into_bytes())).await;
+        let lab = lab();
+        let env = env_of(&lab, false);
+        let ports = ServerPorts::default().with("llamacpp", port);
+        let d = detect_all(&env, &real_cache(), false, &ports).await;
+        let llamacpp = d.engines.iter().find(|e| e.id == "llamacpp").unwrap();
+        assert_eq!(llamacpp.status, Status::Available);
+        assert_eq!(llamacpp.models, ["m"]);
+        let seen = requests.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(
+            seen[0].starts_with(b"GET /v1/models HTTP/1."),
+            "{:?}",
+            String::from_utf8_lossy(&seen[0])
+        );
     }
 
     #[tokio::test]

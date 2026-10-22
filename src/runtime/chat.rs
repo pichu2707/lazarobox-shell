@@ -36,6 +36,7 @@ use super::{
 };
 use crate::core::{
     ai::{
+        ServerPorts,
         chat::{
             ANSWER_CAP, REASONING_CAP,
             adapters::{Adapter, Invocation, Wire, adapter_for},
@@ -310,8 +311,14 @@ impl Default for Pipe {
 /// talk to a fake server on an ephemeral port. The host stays `127.0.0.1`.
 #[cfg(test)]
 pub(crate) fn adapter_runner_at(port: Option<u16>) -> Runner {
-    runner_with(
-        port,
+    adapter_runner_with(port.map_or_else(ServerPorts::default, ServerPorts::every))
+}
+
+/// [`adapter_runner_at`] with one port per server engine.
+#[cfg(test)]
+pub(crate) fn adapter_runner_with(ports: ServerPorts) -> Runner {
+    runner_with_ports(
+        ports,
         CliEnv::from_env(crate::core::ai::jail::JailSupport::Unavailable(
             crate::core::ai::jail::JailOff::NotProbed,
         )),
@@ -326,9 +333,21 @@ pub(crate) fn adapter_runner_at(port: Option<u16>) -> Runner {
 /// which knows the pane and turn; a turn without `Tools::On` never touches
 /// either, so its requests stay as they were without tools.
 pub fn runner_with(port: Option<u16>, cli: CliEnv, tools: Option<Arc<ToolHost>>) -> Runner {
+    runner_with_ports(
+        port.map_or_else(ServerPorts::default, ServerPorts::every),
+        cli,
+        tools,
+    )
+}
+
+/// [`runner_with`] with the port of each server engine given: a turn goes to
+/// the port its engine was detected on (`[ai.servers.<id>] port`, else the
+/// catalog port).
+pub fn runner_with_ports(ports: ServerPorts, cli: CliEnv, tools: Option<Arc<ToolHost>>) -> Runner {
     Arc::new(move |request, tx| {
         let cli = cli.clone();
         let tools = tools.clone();
+        let port = ports.port(&request.engine);
         Box::pin(async move {
             let _tools = tools;
             let Some(adapter) = adapter_for(&request.engine) else {
