@@ -97,7 +97,11 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
             tool: shown_name(tool),
             args: shown_args(args),
         }),
-        Call::ReadFile { .. } | Call::FindDir { .. } | Call::ListDir { .. } => None,
+        // An orchestration call touches nothing of the user's: it never asks.
+        Call::ReadFile { .. }
+        | Call::FindDir { .. }
+        | Call::ListDir { .. }
+        | Call::Orchestra(_) => None,
     }
 }
 

@@ -6,12 +6,13 @@ use super::run::{
     CancelOutcome, CollectError, Refusal, Roster, Run, RunState, UserChoice, WorkerEvent,
 };
 use super::scope::ReadScope;
-use super::tools::{MAX_PROMPT_BYTES, OrchCall, OrchError, WAIT_MAX_SECS, parse, specs};
+use super::tools::{MAX_PROMPT_BYTES, OrchCall, OrchError, WAIT_MAX_SECS, parse};
 use super::worker::{ErrorClass, WorkerStatus};
 use super::{RunId, Toolset, WorkerId};
 use crate::core::ai::chat::engine::Availability;
 use crate::core::ai::config::Task;
 use crate::core::ai::tools::paths::SecretRoots;
+use crate::core::ai::tools::registry_for;
 
 #[test]
 fn spawn_accepts_the_five_worker_kinds() {
@@ -113,7 +114,11 @@ fn wait_collect_and_cancel_validate_their_ids() {
 
 #[test]
 fn the_registry_is_exactly_the_four_tools_and_workers_are_read_only() {
-    let names: Vec<_> = specs().into_iter().map(|spec| spec.name).collect();
+    let names: Vec<_> = registry_for(Toolset::Orchestrator)
+        .into_iter()
+        .map(|spec| spec.name)
+        .filter(|name| !matches!(name.as_str(), "find_dir" | "list_dir" | "read_file"))
+        .collect();
     assert_eq!(names, ["spawn_agent", "wait", "collect", "cancel"]);
     for task in Task::SET_ALL {
         assert_eq!(Toolset::for_kind(task), Toolset::ReadOnly);
@@ -705,4 +710,17 @@ fn a_refused_retry_reports_zero_elapsed_time() {
     .unwrap();
     assert_eq!(run.status(id), Some(WorkerStatus::Refused));
     assert_eq!(run.result(id).unwrap().elapsed, Duration::ZERO);
+}
+
+#[test]
+fn each_toolset_maps_to_its_families() {
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    let read = FamilySet::EMPTY.with(Family::Read);
+    assert_eq!(Toolset::ReadOnly.families(), read);
+    // Nothing beyond the reads until the write tools exist.
+    assert_eq!(Toolset::Code.families(), read);
+    let orchestrator = Toolset::Orchestrator.families();
+    assert_eq!(orchestrator, read.with(Family::Orchestra));
+    assert!(!orchestrator.contains(Family::Pane));
+    assert!(!read.contains(Family::Orchestra));
 }
