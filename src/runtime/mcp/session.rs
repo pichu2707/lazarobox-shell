@@ -68,6 +68,8 @@ use crate::{
             ToolSpec,
             mcp::{Action, Frame, MAX_LINE_BYTES, Server, tool_result},
             registry,
+            registry::FamilySet,
+            registry_with,
             wiring::Unwire,
         },
         layout::PaneId,
@@ -164,13 +166,16 @@ impl Hub {
     /// working). `dispatch` is where this chat's calls go.
     ///
     /// `external` is where the turn puts its user servers once they run: each
-    /// connection offers (and routes) their tools besides `tools`.
+    /// connection offers (and routes) their tools besides the built-ins.
+    ///
+    /// The built-ins offered are `registry_with(&[], families)` and the same
+    /// set gates the parse, so what is listed and what is accepted agree.
     pub fn open(
         &mut self,
         pane: PaneId,
-        tools: Vec<ToolSpec>,
         dispatch: Arc<dyn Dispatch>,
         external: Slot,
+        families: FamilySet,
     ) -> io::Result<Started> {
         self.close(pane);
         let token = Token::generate()?;
@@ -184,15 +189,17 @@ impl Hub {
             let _ = fs::remove_file(&socket);
             return Err(e);
         }
-        let conn = Conn::new(
+        let mut conn = Conn::new(
             token.clone(),
-            tools,
+            registry_with(&[], families),
             dispatch,
             external,
             self.uid,
             self.handshake,
             self.drain,
         );
+        // Not a `Conn::new` argument: it has seven already.
+        conn.families = families;
         let closed = conn.closed.clone();
         let task = tokio::spawn(accept(listener, conn));
         // The same steps as `close`, from a handle: the flag first, so it is
@@ -246,6 +253,7 @@ struct Conn {
     tools: Vec<ToolSpec>,
     dispatch: Arc<dyn Dispatch>,
     external: Slot,
+    families: FamilySet,
     uid: u32,
     handshake: Duration,
     drain: Duration,
@@ -269,6 +277,7 @@ impl Conn {
             tools,
             dispatch,
             external,
+            families: FamilySet::LEGACY,
             uid,
             handshake,
             drain,
@@ -460,7 +469,7 @@ async fn serve(stream: UnixStream, conn: Conn, pending: OwnedSemaphorePermit) {
             .into_iter()
             .filter(|tool| external.raw_of(&tool.name).is_some()),
     );
-    let mut server = Server::with_external(tools, external);
+    let mut server = Server::with_external(tools, external).with_families(conn.families);
     let mut in_flight: HashMap<String, AbortHandle> = HashMap::new();
     let mut drain = false;
     loop {

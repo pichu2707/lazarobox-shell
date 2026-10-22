@@ -67,6 +67,7 @@ fn enter_on_a_task_row_opens_level_one_on_the_first_entry() {
             pick("ollama", status("available · 2 models"), false, false),
             pick("claude", status("available · 2.1.302"), false, false),
             pick("codex", status("available · 0.5.0"), false, false),
+            pick("lmstudio", status("not running"), false, false),
         ]
     );
 }

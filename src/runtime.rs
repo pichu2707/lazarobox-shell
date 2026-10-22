@@ -303,6 +303,9 @@ pub async fn run() -> io::Result<()> {
         .map(Path::to_owned);
     let tool_host = tools::ToolHost::from_env();
     let servers_home = env::var_os("HOME").map(PathBuf::from);
+    // Read once, like the memory port: detection and chat both use these, so
+    // an engine is chatted with where it was detected. A change needs a restart.
+    let server_ports = app.ai().servers().clone();
     // What the machine offers for notifications (display, bus, notify-send,
     // sound players), probed once now in the background: a slow lookup never
     // delays a send, it just fills the slot later. The `t` test refreshes it.
@@ -312,13 +315,17 @@ pub async fn run() -> io::Result<()> {
         .with_memory(memory)
         .with_run_checks(run_check::Checker::new(run_check::process_env(), run_tx))
         .with_config_path(config_path)
-        .with_detector(Box::new(move |force| {
-            spawn_detection(
-                ai_tx.clone(),
-                detect_env.clone(),
-                Arc::clone(&listing_cache),
-                force,
-            );
+        .with_detector(Box::new({
+            let server_ports = server_ports.clone();
+            move |force| {
+                spawn_detection(
+                    ai_tx.clone(),
+                    detect_env.clone(),
+                    Arc::clone(&listing_cache),
+                    force,
+                    server_ports.clone(),
+                );
+            }
         }))
         .with_desktop(Box::new({
             let path = cli_env.path.clone();
@@ -372,7 +379,11 @@ pub async fn run() -> io::Result<()> {
         }))
         .with_chats(
             Chats::new(
-                chat::runner_with(None, cli_env.clone(), Some(tool_host.clone())),
+                chat::runner_with_ports(
+                    server_ports.clone(),
+                    cli_env.clone(),
+                    Some(tool_host.clone()),
+                ),
                 chat_tx,
             )
             // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
@@ -2375,6 +2386,7 @@ mod tests {
         use crate::core::ai::chat::engine::{ChatRequest, Tools};
         let (mut panes, _rx, rec) = fake_panes(None);
         let request = ChatRequest {
+            families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             engine: "ollama".into(),
             model: Some("llama3:8b".into()),
             system: String::new(),
@@ -3420,6 +3432,7 @@ mod tests {
 
     fn chat_request() -> ChatRequest {
         ChatRequest {
+            families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             engine: "ollama".into(),
             model: Some("llama3:8b".into()),
             system: String::new(),

@@ -2,7 +2,7 @@
 //! every task, shown against what the last detection found. No IO.
 
 use super::{
-    Detection,
+    Detection, Status,
     config::{AiConfig, ApprovalMode, Assignment, NotifyMode, Profile, Task},
     picker::{Outcome, PickRow, Picker, Target, task_label},
 };
@@ -216,6 +216,15 @@ impl AiMenu {
     /// at all, so it counts as none, as in the picker rows.
     pub fn has_result(&self) -> bool {
         self.engines.as_ref().is_some_and(|d| !d.engines.is_empty())
+    }
+
+    /// Whether the detected engine `id` is installed but not answering.
+    pub fn is_not_running(&self, id: &str) -> bool {
+        self.engines.as_ref().is_some_and(|d| {
+            d.engines
+                .iter()
+                .any(|s| s.id == id && s.status == Status::NotRunning)
+        })
     }
 
     /// The row under the cursor of the open picker.
