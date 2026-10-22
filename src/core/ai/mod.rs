@@ -95,6 +95,68 @@ pub const CATALOG: &[Engine] = &[
     cli("opencode"),
 ];
 
+/// The loopback ports of the server engines: each catalog port, unless
+/// `[ai.servers.<id>] port` replaced it. Detection and chat read the same
+/// value, so an engine is used where it was detected. The host is always
+/// `127.0.0.1`.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct ServerPorts(Vec<(&'static str, u16)>);
+
+impl ServerPorts {
+    /// `port` for the server engine `id`; an id that is not a catalog server
+    /// is ignored.
+    pub fn with(mut self, id: &str, port: u16) -> Self {
+        let server = CATALOG
+            .iter()
+            .find(|e| e.id == id && matches!(e.kind, Kind::Server { .. }));
+        if let Some(engine) = server {
+            self.0.retain(|(other, _)| *other != engine.id);
+            self.0.push((engine.id, port));
+        }
+        self
+    }
+
+    /// The same `port` for every server engine.
+    pub fn every(port: u16) -> Self {
+        CATALOG
+            .iter()
+            .filter(|e| matches!(e.kind, Kind::Server { .. }))
+            .fold(Self::default(), |ports, e| ports.with(e.id, port))
+    }
+
+    /// The port of the server engine `id`; `None` for any other id.
+    pub fn port(&self, id: &str) -> Option<u16> {
+        let catalog = CATALOG.iter().find_map(|e| match e.kind {
+            Kind::Server { port, .. } if e.id == id => Some(port),
+            _ => None,
+        })?;
+        Some(
+            self.0
+                .iter()
+                .find_map(|(other, port)| (*other == id).then_some(*port))
+                .unwrap_or(catalog),
+        )
+    }
+
+    /// The catalog with these ports in place of the catalog ones.
+    pub fn catalog(&self) -> Vec<Engine> {
+        CATALOG
+            .iter()
+            .map(|e| match e.kind {
+                Kind::Server { path, owner, .. } => Engine {
+                    kind: Kind::Server {
+                        port: self.port(e.id).expect("a catalog server has a port"),
+                        path,
+                        owner,
+                    },
+                    ..*e
+                },
+                Kind::Cli => *e,
+            })
+            .collect()
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status {
     Available,
@@ -302,6 +364,35 @@ pub fn status_text(detection: Option<&Detection>, id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn server_ports_replace_only_the_overridden_catalog_ports() {
+        let ports = ServerPorts::default().with("llamacpp", 39080);
+        let catalog = ports.catalog();
+        assert_eq!(catalog.len(), CATALOG.len());
+        for (got, base) in catalog.iter().zip(CATALOG) {
+            match (got.id, got.kind, base.kind) {
+                (
+                    "llamacpp",
+                    Kind::Server { port, path, owner },
+                    Kind::Server {
+                        path: p, owner: o, ..
+                    },
+                ) => {
+                    assert_eq!((port, path, owner), (39080, p, o));
+                }
+                _ => assert_eq!(got, base),
+            }
+        }
+        assert_eq!(ServerPorts::default().catalog(), CATALOG);
+    }
+
+    #[test]
+    fn a_port_override_for_an_engine_that_is_not_a_server_is_ignored() {
+        let ports = ServerPorts::default().with("claude", 9).with("nope", 9);
+        assert_eq!(ports, ServerPorts::default());
+        assert_eq!(ports.port("claude"), None);
+    }
+
     use super::*;
     use crate::core::ai::tools::Locality;
 

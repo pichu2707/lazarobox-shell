@@ -169,13 +169,22 @@ Tras las filas de tarea, la pestaña **AI** tiene las filas **Profile**, **Conte
 
 El catálogo de modelos de Ollama es solo informativo y puede estar desactualizado. Los modelos del catálogo que no están instalados aparecen como `download required` y no se pueden elegir: **no se descarga nada**. Para usar uno, instálalo tú (`ollama pull <modelo>`) y pulsa `r`.
 
-Se detectan estos motores: `ollama`, `lmstudio`, `llamacpp` y `vllm` (servidores locales) y los CLIs `claude`, `codex`, `gemini` y `opencode`. Los servidores se consultan en sus puertos habituales y los CLIs se buscan en el `PATH`. El menú marca como `detected · not in chat yet` los motores detectados que aún no tienen adaptador de chat (hoy solo `opencode`), y no deja elegirlos.
+Se detectan estos motores: `ollama`, `lmstudio`, `llamacpp` y `vllm` (servidores locales) y los CLIs `claude`, `codex`, `gemini` y `opencode`. Los servidores se consultan en su puerto habitual (o en el que fijes en `[ai.servers]`, ver abajo) y los CLIs se buscan en el `PATH`. El menú marca como `detected · not in chat yet` los motores detectados que aún no tienen adaptador de chat (hoy solo `opencode`), y no deja elegirlos.
 
 La detección es de solo lectura y solo usa `127.0.0.1`: no se envían credenciales ni datos de tus paneles, y no se ejecuta nada salvo `--version` de los CLIs encontrados.
 
+Si un servidor escucha en otro puerto (por ejemplo, porque el suyo está ocupado), indícalo en `config.toml`. La detección y el chat usan ese mismo puerto, siempre en `127.0.0.1`:
+
+```toml
+[ai.servers.llamacpp]
+port = 39080
+```
+
+Valen `ollama`, `lmstudio`, `llamacpp` y `vllm`; un puerto fuera de 1–65535 o que no sea un número se ignora con un aviso al arrancar y se usa el habitual. El menú no edita esta tabla y la conserva al guardar. El cambio se aplica al reiniciar lazarobox.
+
 Límites de esta fase:
 
-- No se admiten endpoints ni puertos personalizados.
+- No se admiten endpoints personalizados: el host es siempre `127.0.0.1`.
 - Los alias de shell no se detectan: el binario debe estar en el `PATH`.
 - Al arrancar desde un lanzador de escritorio o rofi, el `PATH` suele ser mínimo. lazarobox pregunta una vez a tu shell de login (`$SHELL -l -i -c`; `/bin/sh` si `$SHELL` no está definido) y pone sus carpetas al principio del `PATH`, seguidas de las del proceso que falten, tanto para detectar los CLIs como para lanzarlos en el chat: así se elige el mismo ejecutable que en tu terminal, y una copia antigua en `/usr/local/bin` no tapa la tuya. La shell arranca con el `PATH` del proceso más `/usr/local/bin:/usr/bin:/bin`, para que tus archivos rc (`brew shellenv`, nvm) encuentren `tr`, `readlink` y demás. Si `$SHELL` falla, se prueba una vez `/bin/bash -l -c` (salvo que `$SHELL` ya sea bash; lee los archivos de login pero no `~/.bashrc`); entre las dos consultas comparten un límite total de unos 3 s. Si ambas fallan o tardan demasiado, se usa el `PATH` del proceso tal cual. El entorno del proceso no se modifica. La consulta ejecuta tus archivos rc interactivos al arrancar, así que cualquier demonio que lancen (por ejemplo `ssh-agent`, o un autoarranque de tmux o zellij) también se inicia en ese momento.
 
@@ -243,7 +252,7 @@ Si la tarea `chat` no tiene motor propio, usa el motor general (`[ai]`). El pane
 
 **Privacidad:**
 
-- Con **Ollama**, **LM Studio**, **llama.cpp** y **vLLM** todo es local: el chat solo habla con `127.0.0.1` en el puerto habitual de cada servidor (11434, 1234, 8080 y 8000) y no envía credenciales (la memoria opcional de engram tiene su propia sección más abajo).
+- Con **Ollama**, **LM Studio**, **llama.cpp** y **vLLM** todo es local: el chat solo habla con `127.0.0.1` en el puerto habitual de cada servidor (11434, 1234, 8080 y 8000, o el de `[ai.servers]`) y no envía credenciales (la memoria opcional de engram tiene su propia sección más abajo).
 - Con **claude, codex y gemini** la conversación (tus mensajes, el prompt del perfil y, si la activas, la memoria del proyecto) **se envía al proveedor** del CLI, con tu cuenta y bajo sus condiciones. lazarobox no lee ni copia tus credenciales.
 - Las conversaciones se guardan en un `chat.db` **sin cifrar**, texto plano con permisos `0600`, en `$XDG_DATA_HOME/lazarobox/chat.db` (por defecto `~/.local/share/lazarobox/chat.db`). Para borrarlas todas, cierra lazarobox y elimina ese archivo (y los auxiliares `chat.db-journal` si existen). Una conversación se borra por separado desde la lista (`d`, luego `y`).
 - El razonamiento del modelo se muestra en el panel pero **nunca** se guarda en `chat.db` (ver «Historial de conversaciones»).

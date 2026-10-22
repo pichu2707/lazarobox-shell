@@ -414,6 +414,32 @@ async fn an_openai_compatible_turn_posts_the_pinned_request_and_streams_the_answ
 }
 
 #[tokio::test]
+async fn a_turn_goes_to_the_configured_port_of_its_engine() {
+    let llamacpp = Recorder::start(reply(LLAMACPP)).await;
+    let ollama = Recorder::start(reply("{\"done\":true}\n")).await;
+    let ports = ServerPorts::default()
+        .with("llamacpp", llamacpp.port)
+        .with("ollama", ollama.port);
+    let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
+    let mut chats = Chats::new(adapter_runner_with(ports), tx);
+    let mut req = request("qwen2.5");
+    req.engine = "llamacpp".into();
+    chats.send(pane(1), 1, req);
+    loop {
+        let (_, _, event) = timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("an event within 10 s")
+            .expect("the channel is open");
+        if matches!(event, StreamEvent::Done(_) | StreamEvent::Error(_)) {
+            assert_eq!(event, StreamEvent::Done(Finish::Stop));
+            break;
+        }
+    }
+    assert_eq!(llamacpp.connections.load(Ordering::SeqCst), 1);
+    assert_eq!(ollama.connections.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn an_engine_without_an_adapter_fails_the_turn_and_connects_nowhere() {
     let server = Recorder::start(reply("{\"done\":true}\n")).await;
     let mut req = request("m");

@@ -12,6 +12,13 @@ baseline.
 
 ### Added
 
+- A server engine can live on another port: `[ai.servers.<id>] port = N` in
+  `config.toml` (for `ollama`, `lmstudio`, `llamacpp` and `vllm`). Detection
+  and chat both use it, always on `127.0.0.1`; without it the usual port is
+  used. A port that is not an integer from 1 to 65535 is ignored with a startup
+  notice. The menu never writes the table and keeps it on save. It is read at
+  startup.
+
 - Chat with LM Studio, llama.cpp (`llama-server`) and vLLM. They talk to their
   server's `/v1/chat/completions` on `127.0.0.1` and their usual port (1234,
   8080 and 8000), stream the answer over Server-Sent Events and send no
