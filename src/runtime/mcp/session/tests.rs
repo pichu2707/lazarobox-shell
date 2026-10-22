@@ -164,6 +164,10 @@ fn hub(dir: &Path) -> Hub {
     Hub::new(&[dir.join("run")]).unwrap()
 }
 
+fn hub_in(dir: &Path) -> Hub {
+    hub(dir)
+}
+
 fn pane(n: u32) -> PaneId {
     PaneId::for_test(n)
 }
@@ -1122,4 +1126,54 @@ fn the_sweep_knows_the_worker_socket_form() {
     for name in kept {
         assert!(tmp.path().join(name).exists(), "{name} should stay");
     }
+}
+
+// A worker never lists or routes a user server's tool, even when the caller
+// hands the hub a populated slot: the key type decides, not the caller.
+#[tokio::test]
+async fn a_worker_session_ignores_a_populated_external_slot() {
+    let dir = tempfile::tempdir().unwrap();
+    let lab = lab();
+    let servers = [lab.server("fs", "search", "found")];
+    let refs: Vec<&crate::core::ai::config::McpServer> = servers.iter().collect();
+    let set = Arc::new(
+        ExternalSet::start(
+            &refs,
+            &lab.home,
+            host_env,
+            timeouts(Duration::from_secs(10)),
+        )
+        .await,
+    );
+    let slot = Slot::default();
+    assert!(slot.set(set.clone()).is_ok());
+    let fake = Arc::new(Fake::default());
+    let mut hub = worker_hub(dir.path());
+    let s = hub
+        .open(
+            worker(1, 1),
+            fake.clone(),
+            slot.clone(),
+            Toolset::ReadOnly.families(),
+        )
+        .unwrap();
+    let mut c = ready(&s).await;
+    assert_eq!(listed(&mut c).await, ["find_dir", "list_dir", "read_file"]);
+    send(
+        &mut c,
+        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"fs__search","arguments":{}}}"#,
+    )
+    .await;
+    let got = recv(&mut c).await.unwrap();
+    assert_eq!(got["result"]["content"][0]["text"], "unknown tool");
+    assert_eq!(got["result"]["isError"], true);
+    assert!(fake.0.lock().unwrap().is_empty());
+    // The same slot on a pane hub still serves the external tool.
+    let mut panes = hub_in(dir.path());
+    let p = panes
+        .open(pane(1), Arc::new(Fake::default()), slot, FamilySet::LEGACY)
+        .unwrap();
+    let mut c = ready(&p).await;
+    assert!(listed(&mut c).await.contains(&"fs__search".to_owned()));
+    set.shutdown().await;
 }

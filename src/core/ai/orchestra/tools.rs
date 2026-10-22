@@ -164,9 +164,12 @@ fn only_id(object: &Map<String, Value>) -> Result<WorkerId, OrchError> {
 
 fn worker_id(value: &Value) -> Result<WorkerId, OrchError> {
     let id = value.as_u64().ok_or(OrchError::WrongType)?;
+    // Workers are numbered from 1.
     u32::try_from(id)
+        .ok()
+        .filter(|id| *id > 0)
         .map(WorkerId)
-        .map_err(|_| OrchError::WrongType)
+        .ok_or(OrchError::WrongType)
 }
 
 fn text<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a str, OrchError> {

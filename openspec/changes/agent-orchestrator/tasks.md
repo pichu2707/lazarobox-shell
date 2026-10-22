@@ -157,6 +157,7 @@ S1d-1 bases on the S1c-2 branch. Task order inside S1c-2 is 1c.3 then 1c.4; S1c-
 
 - [ ] The read opens exactly the path returned by `ReadScope::allows` with open_beneath/O_NOFOLLOW semantics and re-judges the opened fd's real path (`SecretRoots::judge_real` + `starts_with(root.real)`); the `SecretRoots` snapshot is built per call; consider an ask when `nlink > 1`.
 - [ ] A denied or expired scope makes the host ASK, never silently allow or refuse.
+- [ ] The ask label MUST clip `OrchCall::argument()` (a spawn prompt can be up to 16 KiB) before it is shown.
 
 ## S1d: RunManager (3 chained PRs: S1d-1 = PR 6, S1d-2 = PR 7, S1d-3 = PR 8; ~1,200 lines re-estimated in total)
 
@@ -187,6 +188,11 @@ S1e-1a bases on the S1d-3 branch.
 
 - [ ] 1d.3a RED `runtime/orchestra/tests.rs` (fake `Runner`, `tokio::time::pause`, temp HOME, real Hub), spawn path: spawn -> Done/Failed/TimedOut/Refused; worker same jail as chat; API keys survive scrub; no tool leak to workers; log hygiene (no content in logs). Spec: chat-engines / Same jail as chat, API keys survive the scrub; agent-orchestrator / Unusable orchestrator engine, Log hygiene.
 - [ ] 1d.4a GREEN `runtime/orchestra.rs`: `RunManager::{start, call}` (spawn/wait/collect); worker turn via `runner_with` + `Pipe`; events on their own channel `(PaneId, OrchestraEvent)`. REFACTOR + gates (S1d-2 closes here).
+
+#### Obligations from the S1c-1 review (S1d-2)
+
+- [ ] The worker-open path MUST pass `toolset.families()` to `Hub::open`, never `FamilySet::LEGACY`. Add a test (or a `debug_assert!`) that `Family::Pane` is absent from every worker and orchestrator session.
+- Note: user MCP tools can no longer reach a worker by construction; `HubKey::allows_external` (false for `WorkerKey`) makes `Hub::open` ignore the caller's `Slot`. Keep the worker path passing `Slot::default()` anyway.
 
 ### S1d-3 (PR 8, ~480 lines, base: S1d-2 branch): tasks 1d.3b, 1d.4b, 1d.5
 

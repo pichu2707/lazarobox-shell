@@ -150,6 +150,10 @@ const fn text(name: &'static str) -> ArgDef {
     }
 }
 
+/// The longest `spawn_agent` kind accepted, in bytes: room for every task id
+/// (a test pins it).
+const KIND_MAX_BYTES: usize = 16;
+
 /// A worker id: a positive integer.
 const fn id(name: &'static str, required: bool) -> ArgDef {
     ArgDef {
@@ -204,7 +208,9 @@ const BUILT_INS: [ToolDef; 8] = [
         args: &[
             ArgDef {
                 name: "kind",
-                kind: ArgKind::Str { max: 16 },
+                kind: ArgKind::Str {
+                    max: KIND_MAX_BYTES,
+                },
                 required: true,
                 gate: None,
             },
@@ -946,6 +952,12 @@ mod tests {
     // The spawn description must name every kind the parse accepts, since the
     // schema does not enumerate them.
     #[test]
+    fn the_kind_cap_fits_the_longest_kind() {
+        let longest = Task::SET_ALL.iter().map(|t| t.id().len()).max().unwrap();
+        assert!(KIND_MAX_BYTES >= longest, "{KIND_MAX_BYTES} < {longest}");
+    }
+
+    #[test]
     fn spawn_agent_says_which_kinds_it_takes() {
         let tools = registry_for(Toolset::Orchestrator);
         let spawn = tools.iter().find(|t| t.name == "spawn_agent").unwrap();
@@ -1068,6 +1080,8 @@ mod tests {
             ("wait", json!({"ids": [1], "timeout": -1}), WrongType),
             ("wait", json!({"ids": [4294967296u64]}), WrongType),
             ("collect", json!({}), MissingArgument),
+            ("collect", json!({"id": 0}), WrongType),
+            ("cancel", json!({"id": 0}), WrongType),
             ("cancel", json!({"id": 1.5}), WrongType),
             ("cancel", json!({"id": 1, "x": 1}), ExtraArgument),
         ] {

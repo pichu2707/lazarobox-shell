@@ -135,17 +135,30 @@ pub trait HubKey: Copy + Eq + Hash {
     /// The socket's name between `s-{pid}-` and `.sock`: digits for a pane,
     /// `w{run}-{n}` for a worker. [`sweep`] knows exactly these two forms.
     fn socket_tail(&self) -> String;
+
+    /// Whether the session may list and route the tools of the user's MCP
+    /// servers. Only a chat pane may: a worker never does, whatever slot the
+    /// caller of [`Hub::open`] passes.
+    fn allows_external(&self) -> bool;
 }
 
 impl HubKey for PaneId {
     fn socket_tail(&self) -> String {
         self.number().to_string()
     }
+
+    fn allows_external(&self) -> bool {
+        true
+    }
 }
 
 impl HubKey for WorkerKey {
     fn socket_tail(&self) -> String {
         format!("w{}-{}", self.run.0, self.worker.0)
+    }
+
+    fn allows_external(&self) -> bool {
+        false
     }
 }
 
@@ -194,6 +207,8 @@ impl<K: HubKey> Hub<K> {
     ///
     /// The built-ins offered are `registry_with(&[], families)` and the same
     /// set gates the parse, so what is listed and what is accepted agree.
+    /// A key that does not [`allow external`](HubKey::allows_external) tools
+    /// gets an empty slot whatever `external` holds.
     pub fn open(
         &mut self,
         key: K,
@@ -202,6 +217,11 @@ impl<K: HubKey> Hub<K> {
         families: FamilySet,
     ) -> io::Result<Started> {
         self.close(key);
+        let external = if key.allows_external() {
+            external
+        } else {
+            Slot::default()
+        };
         let token = Token::generate()?;
         let socket = self.dir.join(format!(
             "s-{}-{}.sock",
