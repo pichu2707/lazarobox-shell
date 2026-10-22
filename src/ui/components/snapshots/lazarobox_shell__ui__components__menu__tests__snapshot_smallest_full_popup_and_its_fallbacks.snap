@@ -15,5 +15,7 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &task))"
 │                      │
 │                      │
 │                      │
+│                      │
+│                      │
 │ j/k move · h/l chang…│
 └──────────────────────┘

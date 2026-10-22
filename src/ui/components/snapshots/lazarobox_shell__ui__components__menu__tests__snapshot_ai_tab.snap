@@ -10,11 +10,13 @@ expression: "text(&draw(62, POPUP_H, &ai_tab()))"
 │ chat                                             (default) │
 │ review                                           (default) │
 │ summarize                                        (default) │
+│ orchestrate                                      (default) │
 │ Profile                                         programmer │
 │ Context                                                 on │
 │ Memory                                                 off │
 │ Tools                                                   on │
 │ Approval                                               ask │
+│ Orchestrator                                           off │
 │                                                            │
 │ j/k move · Enter pick · r refresh · s save · Esc cancel    │
 └────────────────────────────────────────────────────────────┘

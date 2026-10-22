@@ -15,5 +15,7 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &picker))"
 │                      │
 │                      │
 │                      │
+│                      │
+│                      │
 │ j/k move · Enter cho…│
 └──────────────────────┘

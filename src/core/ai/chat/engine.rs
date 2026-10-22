@@ -264,7 +264,19 @@ pub fn availability(
     detection: Option<&Detection>,
     jail: JailSupport,
 ) -> Availability {
-    availability_with(cfg, detection, jail, GATED_OFF, &has_adapter)
+    availability_for(Task::Chat, cfg, detection, jail)
+}
+
+/// Resolves the engine of any task through its effective assignment (its
+/// own, else `general`). Same rules as chat, and still pure: an unusable
+/// engine is reported, never replaced by another.
+pub fn availability_for(
+    task: Task,
+    cfg: &AiConfig,
+    detection: Option<&Detection>,
+    jail: JailSupport,
+) -> Availability {
+    availability_for_with(task, cfg, detection, jail, GATED_OFF, &has_adapter)
 }
 
 /// The CLIs whose manual check failed. None yet: the checks run in C13-C15.
@@ -283,7 +295,19 @@ pub fn availability_with(
     gated_off: &[&str],
     adapter_exists: &dyn Fn(&str) -> bool,
 ) -> Availability {
-    let (assignment, _) = cfg.resolve(Task::Chat);
+    availability_for_with(Task::Chat, cfg, detection, jail, gated_off, adapter_exists)
+}
+
+/// `availability_for` with the explicit gate list and adapter test.
+pub fn availability_for_with(
+    task: Task,
+    cfg: &AiConfig,
+    detection: Option<&Detection>,
+    jail: JailSupport,
+    gated_off: &[&str],
+    adapter_exists: &dyn Fn(&str) -> bool,
+) -> Availability {
+    let (assignment, _) = cfg.resolve(task);
     let Some(engine) = assignment.engine else {
         return Availability::Unassigned;
     };

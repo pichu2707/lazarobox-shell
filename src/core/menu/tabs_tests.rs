@@ -15,18 +15,20 @@ const SETTINGS: [&str; 6] = [
     "Updates",
 ];
 
-const AI: [&str; 11] = [
+const AI: [&str; 13] = [
     "Set all tasks",
     "general",
     "code",
     "chat",
     "review",
     "summarize",
+    "orchestrate",
     "Profile",
     "Context",
     "Memory",
     "Tools",
     "Approval",
+    "Orchestrator",
 ];
 
 fn with_mods(m: &mut MenuState, code: KeyCode, mods: KeyModifiers, repeat: bool) -> MenuCommand {
@@ -201,7 +203,7 @@ fn j_and_k_wrap_inside_the_ai_tab() {
     assert_eq!(selected_label(&m), "Set all tasks", "wraps, no crossing");
     assert_eq!(m.active_tab(), 1);
     press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Approval");
+    assert_eq!(selected_label(&m), "Orchestrator");
     assert_eq!(m.active_tab(), 1);
 }
 
@@ -427,17 +429,15 @@ fn view_body_is_the_tallest_view_and_no_view_exceeds_it() {
         Some(VIEW_BODY),
         "{heights:?}"
     );
-    assert_eq!(
-        VIEW_BODY,
-        1 + crate::core::ai::picker::VIEW,
-        "the picker binds"
-    );
+    // The AI tab (one row per item) is taller than the picker (a title and
+    // its window, 1 + `picker::VIEW`), so it binds.
+    assert_eq!(VIEW_BODY, AI_SECTION.items.len(), "the AI tab binds");
 }
 
 #[test]
 fn the_menu_body_is_the_bar_plus_the_tallest_view() {
     assert_eq!(MENU_BODY, TAB_BAR + VIEW_BODY);
-    assert_eq!(MENU_BODY, 12);
+    assert_eq!(MENU_BODY, 14);
 }
 
 #[test]
@@ -447,13 +447,13 @@ fn the_warning_has_warning_rows_lines() {
 }
 
 #[test]
-fn the_warning_fits_from_24_by_15() {
+fn the_warning_fits_from_24_by_17() {
     let mut m = warned();
-    m.set_term(MIN_WIDTH, 15);
+    m.set_term(MIN_WIDTH, 17);
     assert!(m.fits_warning());
-    m.set_term(MIN_WIDTH, 14);
+    m.set_term(MIN_WIDTH, 16);
     assert!(!m.fits_warning());
-    m.set_term(MIN_WIDTH - 1, 15);
+    m.set_term(MIN_WIDTH - 1, 17);
     assert!(!m.fits_warning());
 }
 

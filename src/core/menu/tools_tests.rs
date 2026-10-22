@@ -49,10 +49,10 @@ fn tools_edit(value: &'static str) -> ConfigEdit {
 #[test]
 fn the_tools_row_follows_memory_and_is_found_by_kind() {
     let items = AI_SECTION.items;
-    let tools = &items[items.len() - 2];
+    let tools = &items[items.len() - 3];
     assert_eq!(tools.label, "Tools");
     assert!(matches!(tools.kind, ItemKind::Tools));
-    assert_eq!(items[items.len() - 3].label, "Memory");
+    assert_eq!(items[items.len() - 4].label, "Memory");
     let count = items
         .iter()
         .filter(|i| matches!(i.kind, ItemKind::Tools))

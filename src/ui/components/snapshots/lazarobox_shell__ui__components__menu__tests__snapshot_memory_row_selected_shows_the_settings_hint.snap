@@ -10,11 +10,13 @@ expression: shown
 │ chat                                             (default) │
 │ review                                           (default) │
 │ summarize                                        (default) │
+│ orchestrate                                      (default) │
 │ Profile                                         programmer │
 │ Context                                                 on │
 │ Memory                                                 off │
 │ Tools                                                   on │
 │ Approval                                               ask │
+│ Orchestrator                                           off │
 │                                                            │
 │ j/k move · h/l change · s save · Esc cancel                │
 └────────────────────────────────────────────────────────────┘

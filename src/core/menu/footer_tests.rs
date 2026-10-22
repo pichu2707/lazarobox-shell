@@ -39,6 +39,7 @@ fn every_task_row_shows_the_task_hint() {
         "chat",
         "review",
         "summarize",
+        "orchestrate",
     ] {
         assert_eq!(selected_label(&m), label);
         assert_eq!(hint(&m), TASK, "{label}");

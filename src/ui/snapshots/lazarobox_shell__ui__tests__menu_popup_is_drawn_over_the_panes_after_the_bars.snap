@@ -5,7 +5,6 @@ expression: "(0..24).map(|y|\nrow(&buf, y).trim_end().to_string()).collect::<Vec
  1
 hi there
 
-
  ┌ Menu ──────────────────────────────────────────────────────┐
  │ Settings │ AI                                        ⇥ Tab │
  │ Statusline position                                 bottom │
@@ -20,9 +19,10 @@ hi there
  │                                                            │
  │                                                            │
  │                                                            │
+ │                                                            │
+ │                                                            │
  │ j/k move · h/l change · s save · Esc cancel                │
  └────────────────────────────────────────────────────────────┘
-
 
 
  ◐ MENU                                                   sh

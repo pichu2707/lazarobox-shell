@@ -13,7 +13,7 @@ use toml::{Table, Value};
 
 use super::ai::{
     self,
-    config::{AiConfig, ApprovalMode},
+    config::{AiConfig, ApprovalMode, Task},
 };
 
 /// Which edge of the screen a bar sits on.
@@ -101,20 +101,42 @@ impl ConfigEdit {
         }
     }
 
+    /// An edit of an owned orchestrator flag (`ai.orchestrator.enabled` or
+    /// `.notice_accepted`). `worker_timeout_secs` is owned but never edited.
+    pub fn orchestrator_flag(key: &'static str, on: bool) -> Self {
+        Self {
+            table: ORCHESTRATOR_TABLE,
+            key,
+            value: Cow::Borrowed(if on { "true" } else { "false" }),
+        }
+    }
+
+    /// Whether the edit deletes its key instead of writing it: a cleared
+    /// `orchestrate` slot is absent from the file, not a pair of empty
+    /// strings.
+    pub fn is_removal(&self) -> bool {
+        self.table == Task::Orchestrate.table() && self.value.is_empty()
+    }
+
     /// Whether the key is a TOML boolean (written as `true` / `false`, not
     /// as a string): the root `mouse`, the memory flags, `ai.context`,
-    /// `ai.notify_sound` and `ai.tools.enabled`. Every other owned key
+    /// `ai.notify_sound`, `ai.tools.enabled` and the orchestrator flags. Every other owned key
     /// holds a string; `ai.memory.port` is owned but never edited.
     pub fn is_flag(&self) -> bool {
         (self.table.is_empty() && self.key == "mouse")
             || (self.table == MEMORY_TABLE && matches!(self.key, "enabled" | "acknowledged"))
             || (self.table == "ai" && matches!(self.key, "context" | "notify_sound"))
             || (self.table == TOOLS_TABLE && self.key == "enabled")
+            || (self.table == ORCHESTRATOR_TABLE
+                && matches!(self.key, "enabled" | "notice_accepted"))
     }
 }
 
 /// The dotted table of the memory keys.
 pub const MEMORY_TABLE: &str = "ai.memory";
+
+/// The dotted table of the orchestrator keys.
+pub const ORCHESTRATOR_TABLE: &str = "ai.orchestrator";
 
 /// The dotted table of the agent tools keys.
 pub const TOOLS_TABLE: &str = "ai.tools";

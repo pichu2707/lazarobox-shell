@@ -181,21 +181,25 @@ fn mark_text(mark: &Mark) -> &str {
 /// The row width from which a long picker mark is clipped to keep its label.
 const CLIP_MARK_FROM: usize = 40;
 
-/// Suffix of a task-row value that must survive clipping.
+/// Suffixes of a task-row value that must survive clipping, outermost last.
 const REQUIRED_MARK: &str = " · download required";
+const NOT_RECOMMENDED_MARK: &str = " · not recommended";
 
-/// `value` within `room` cells: a long model name is clipped, its
-/// ` · download required` mark is kept whole.
+/// `value` within `room` cells: a long model name is clipped, its trailing
+/// ` · download required` and ` · not recommended` marks are kept whole.
 fn fit(value: &str, room: usize) -> String {
     if cells(value) <= room {
         return value.to_owned();
     }
-    match value.strip_suffix(REQUIRED_MARK) {
-        Some(head) if room > cells(REQUIRED_MARK) => {
-            format!("{}{REQUIRED_MARK}", clip(head, room - cells(REQUIRED_MARK)))
-        }
-        _ => clip(value, room),
+    let mut head = value;
+    for mark in [NOT_RECOMMENDED_MARK, REQUIRED_MARK] {
+        head = head.strip_suffix(mark).unwrap_or(head);
     }
+    let marks = &value[head.len()..];
+    if marks.is_empty() || room <= cells(marks) {
+        return clip(value, room);
+    }
+    format!("{}{marks}", clip(head, room - cells(marks)))
 }
 
 /// The tab bar of the menu as styled segments for `width` inner cells: each
@@ -869,6 +873,37 @@ mod tests {
         assert!(shown.contains("…"), "{shown}");
     }
 
+    fn orchestrating(model: &str) -> MenuState {
+        let mut saved = AiConfig::general(Some("claude"), Some("opus"));
+        saved.set(
+            Task::Orchestrate,
+            Assignment {
+                engine: Some("ollama".to_owned()),
+                model: Some(model.to_owned()),
+            },
+        );
+        let mut menu = fresh().with_ai(saved, Some(machine()));
+        tab_key(&mut menu);
+        menu
+    }
+
+    // Spec (ai-task-models): Ollama marked not recommended on its row only.
+    #[test]
+    fn snapshot_orchestrate_row_marks_a_server_engine() {
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &orchestrating("llama3:8b"))));
+    }
+
+    #[test]
+    fn a_long_orchestrate_model_is_clipped_and_keeps_both_marks() {
+        let long = "qwen2.5-coder:32b-instruct-q4_K_M";
+        let shown = text(&draw(62, POPUP_H, &orchestrating(long)));
+        assert!(
+            shown.contains("· download required · not recommended"),
+            "{shown}"
+        );
+        assert!(shown.contains("…"), "{shown}");
+    }
+
     // The widget draws MenuState::footer(): `s` saves, Esc cancels.
     #[test]
     fn the_footer_is_the_menu_footer_not_the_old_hint() {
@@ -1416,7 +1451,7 @@ mod tests {
         );
         let ai = lines(&draw(62, POPUP_H, &ai_tab()));
         assert!(ai[2].starts_with("│ Set all tasks"), "{}", ai[2]);
-        assert!(ai[11].starts_with("│ Tools"), "{}", ai[11]);
+        assert!(ai[12].starts_with("│ Tools"), "{}", ai[12]);
     }
 
     #[test]
@@ -1427,8 +1462,8 @@ mod tests {
     }
 
     #[test]
-    fn the_popup_is_sixteen_rows_on_both_tabs_and_in_every_sub_level() {
-        assert_eq!(POPUP_H, 16);
+    fn the_popup_is_eighteen_rows_on_both_tabs_and_in_every_sub_level() {
+        assert_eq!(POPUP_H, 18);
         let mut views = vec![mixed(), ai_tab(), with_update()];
         views.extend(sub_levels());
         for menu in &views {
@@ -1437,7 +1472,7 @@ mod tests {
                 .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
                 .collect();
             assert_eq!(border.len(), 2);
-            assert_eq!(border[1] - border[0] + 1, 16);
+            assert_eq!(border[1] - border[0] + 1, 18);
         }
     }
 
@@ -1445,21 +1480,21 @@ mod tests {
     fn the_update_note_sits_in_the_last_two_body_rows_of_settings_only() {
         let l = lines(&draw(62, POPUP_H, &with_update()));
         assert!(
-            l[11].contains("lazarobox 0.16.0 is available."),
+            l[13].contains("lazarobox 0.16.0 is available."),
             "{}",
-            l[11]
+            l[13]
         );
         assert!(
-            l[12].contains("Go to Updates and press Enter."),
+            l[14].contains("Go to Updates and press Enter."),
             "{}",
-            l[12]
+            l[14]
         );
         assert_eq!(
-            l[13].trim_matches(|c| c == '│' || c == ' '),
+            l[15].trim_matches(|c| c == '│' || c == ' '),
             "",
             "blank row"
         );
-        assert!(l[14].contains("s save"), "footer: {}", l[14]);
+        assert!(l[16].contains("s save"), "footer: {}", l[16]);
         let mut menu = with_update();
         tab_key(&mut menu);
         let shown = text(&draw(62, POPUP_H, &menu));
@@ -1478,10 +1513,10 @@ mod tests {
         menu.show_update_command(crate::core::update::Fallback::UntrustedCargo);
         let l = lines(&draw(80, POPUP_H, &menu));
         let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
-        assert_eq!(body(&l[11]), "lazarobox cannot update itself here. Run:");
-        assert_eq!(body(&l[12]), "cargo install lazarobox-shell --locked");
+        assert_eq!(body(&l[13]), "lazarobox cannot update itself here. Run:");
+        assert_eq!(body(&l[14]), "cargo install lazarobox-shell --locked");
         assert_eq!(
-            body(&l[14]),
+            body(&l[16]),
             "Enter or y copies it \u{b7} Rust folder is too open"
         );
     }
@@ -1493,10 +1528,10 @@ mod tests {
         menu.show_update_command(crate::core::update::Fallback::NoCargo);
         let l = lines(&draw(80, POPUP_H, &menu));
         let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
-        assert_eq!(body(&l[11]), "Install Rust first (rustup.rs), then run:");
-        assert_eq!(body(&l[12]), "cargo install lazarobox-shell --locked");
+        assert_eq!(body(&l[13]), "Install Rust first (rustup.rs), then run:");
+        assert_eq!(body(&l[14]), "cargo install lazarobox-shell --locked");
         assert_eq!(
-            body(&l[14]),
+            body(&l[16]),
             "Enter or y copies it \u{b7} Rust is not installed"
         );
     }
@@ -1516,21 +1551,21 @@ mod tests {
     #[test]
     fn narrow_and_short_terminals_fall_back_to_one_line() {
         assert!(text(&draw(22, 20, &mixed())).contains("MENU"));
-        assert!(text(&draw(62, 14, &mixed())).contains("MENU"));
-        assert!(!text(&draw(24, 15, &mixed())).contains("MENU"));
-        assert!(text(&draw(24, 15, &mixed())).contains("Menu"));
+        assert!(text(&draw(62, 16, &mixed())).contains("MENU"));
+        assert!(!text(&draw(24, 17, &mixed())).contains("MENU"));
+        assert!(text(&draw(24, 17, &mixed())).contains("Menu"));
     }
 
     #[test]
     fn at_24_columns_the_star_drops_the_hint_and_the_plain_label_keeps_it() {
-        let starred = lines(&draw(24, 15, &with_update()));
+        let starred = lines(&draw(24, 17, &with_update()));
         assert!(
             starred[1].starts_with("│ Settings* │ AI "),
             "{}",
             starred[1]
         );
         assert!(!starred[1].contains('⇥'), "{}", starred[1]);
-        let plain = lines(&draw(24, 15, &mixed()));
+        let plain = lines(&draw(24, 17, &mixed()));
         assert!(plain[1].contains("⇥ Tab"), "{}", plain[1]);
     }
 

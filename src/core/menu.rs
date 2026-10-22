@@ -55,6 +55,9 @@ pub enum ItemKind {
     /// The notification sound flag (`ai.notify_sound`): an on/off row over
     /// the AI draft.
     NotifySound,
+    /// The orchestrator gate (`ai.orchestrator.enabled`): an on/off row over
+    /// the AI draft. Each chat pane still opts in on its own.
+    Orchestrator,
     /// The running version, and the newer one when the update check found it.
     /// Not a setting: `[updates] check` stays config-only. `h`/`l` do nothing
     /// here; Enter acts only when an update is available.
@@ -157,8 +160,8 @@ pub static SECTIONS: &[Section] = &[Section {
 
 /// The AI section, attached only by [`MenuState::with_ai`]. The labels of
 /// the task rows are the task ids; their key path is `Task::table`. The
-/// static rows follow the tasks: `Profile`, `Context`, `Memory`, `Tools` and
-/// `Approval`, in that order. `Notify` and `Sound` live in the Settings section.
+/// static rows follow the tasks: `Profile`, `Context`, `Memory`, `Tools`,
+/// `Approval` and the `Orchestrator` gate, in that order. `Notify` and `Sound` live in the Settings section.
 pub static AI_SECTION: Section = Section {
     title: "AI",
     items: &[
@@ -187,6 +190,10 @@ pub static AI_SECTION: Section = Section {
             kind: ItemKind::Assign(Some(Task::Summarize)),
         },
         Item {
+            label: "orchestrate",
+            kind: ItemKind::Assign(Some(Task::Orchestrate)),
+        },
+        Item {
             label: "Profile",
             kind: ItemKind::Profile,
         },
@@ -209,6 +216,10 @@ pub static AI_SECTION: Section = Section {
         Item {
             label: "Approval",
             kind: ItemKind::Approval,
+        },
+        Item {
+            label: "Orchestrator",
+            kind: ItemKind::Orchestrator,
         },
     ],
 };
@@ -260,6 +271,7 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
             | ItemKind::Tools
             | ItemKind::Approval
             | ItemKind::NotifySound
+            | ItemKind::Orchestrator
             | ItemKind::Updates => None,
         })
 }
@@ -630,6 +642,7 @@ impl MenuState {
                     | ItemKind::Tools
                     | ItemKind::Approval
                     | ItemKind::NotifySound
+                    | ItemKind::Orchestrator
             )
         )
     }
@@ -738,6 +751,7 @@ impl MenuState {
             | ItemKind::Tools
             | ItemKind::Approval
             | ItemKind::NotifySound
+            | ItemKind::Orchestrator
             | ItemKind::Updates => None,
         }
     }
@@ -872,6 +886,22 @@ impl MenuState {
                                 .ai
                                 .as_ref()
                                 .map(|ai| Cow::Borrowed(ai.draft().approval().id())),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Orchestrator => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self.ai.as_ref().map(|ai| {
+                                Cow::Borrowed(if ai.draft().orchestrator.enabled {
+                                    "on"
+                                } else {
+                                    "off"
+                                })
+                            }),
                             selected: self.selected == Some(index),
                             enabled: true,
                         };
@@ -1088,6 +1118,7 @@ impl MenuState {
                     Some(ItemKind::Approval) => ai.cycle_approval(forward),
                     Some(ItemKind::Notify) => ai.cycle_notify(forward),
                     Some(ItemKind::NotifySound) => ai.toggle_notify_sound(),
+                    Some(ItemKind::Orchestrator) => ai.toggle_orchestrator(),
                     _ => ai.toggle_context(),
                 }
             }
@@ -1192,6 +1223,11 @@ impl MenuState {
             .as_ref()
             .and_then(AiMenu::changed_approval)
             .map(ConfigEdit::approval);
+        let orchestrator = self.ai.iter().flat_map(|ai| {
+            ai.changed_orchestrator()
+                .into_iter()
+                .map(|(key, on)| ConfigEdit::orchestrator_flag(key, on))
+        });
         settings
             .chain(tasks)
             .chain(profile)
@@ -1201,6 +1237,7 @@ impl MenuState {
             .chain(sound)
             .chain(tools)
             .chain(approval)
+            .chain(orchestrator)
             .collect()
     }
 
@@ -1699,3 +1736,6 @@ mod context_tests;
 mod mouse_tests;
 #[cfg(test)]
 mod update_tests;
+
+#[cfg(test)]
+mod orchestrator_tests;
