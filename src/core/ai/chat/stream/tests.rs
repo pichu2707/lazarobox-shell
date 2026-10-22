@@ -729,3 +729,24 @@ fn string_arguments_with_a_repeated_key_are_refused() {
         ]
     );
 }
+
+// Raw model text that is not JSON must be refused like any bad JSON, never
+// reach the duplicate-key scanner (it would index past the end).
+#[test]
+fn truncated_string_arguments_are_refused_without_a_panic() {
+    // The inner text: `{"query`, `{"query\`, `"` and `{"query":"x`.
+    for args in [
+        r#""{\"query""#,
+        r#""{\"query\\""#,
+        r#""\"""#,
+        r#""{\"query\":\"x""#,
+    ] {
+        let line = one_line(&format!(
+            r#"{{"function":{{"name":"find_dir","arguments":{args}}}}}"#
+        ));
+        let input = format!("{line}\n{DONE}\n");
+        let (_, calls) = tool_run(&[input.as_bytes()]);
+        assert_eq!(calls.len(), 1, "{args}");
+        assert_eq!(calls[0].call, invalid(ToolError::NotAnObject), "{args}");
+    }
+}

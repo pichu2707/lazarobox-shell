@@ -326,9 +326,12 @@ fn tool_call(entry: &Value, external: &Qualified) -> ToolRequest {
     let name = function["name"].as_str().unwrap_or("");
     let raw = match &function["arguments"] {
         // A repeated key would collapse to the last one in a `Value`, so the
-        // raw text is checked first and refused like bad JSON.
-        Value::String(text) if has_duplicate_keys(text) => Value::Null,
-        Value::String(text) => serde_json::from_str(text).unwrap_or(Value::Null),
+        // raw text is checked, but only once it parsed (the scanner expects
+        // JSON). Both failures are refused like bad JSON.
+        Value::String(text) => match serde_json::from_str(text) {
+            Ok(value) if !has_duplicate_keys(text) => value,
+            _ => Value::Null,
+        },
         other => other.clone(),
     };
     let call = parse_call_with(name, &raw, external).map_err(CallError::Invalid);

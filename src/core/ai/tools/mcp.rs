@@ -385,9 +385,16 @@ pub fn has_duplicate_keys(line: &str) -> bool {
             b'"' => {
                 let start = i;
                 i += 1;
-                while bytes[i] != b'"' {
-                    // A backslash escapes the next byte, a quote included.
-                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                // A backslash escapes the next byte, a quote included. Text
+                // that ends inside a string is not JSON: nothing to flag.
+                while let Some(&byte) = bytes.get(i) {
+                    if byte == b'"' {
+                        break;
+                    }
+                    i += if byte == b'\\' { 2 } else { 1 };
+                }
+                if i >= bytes.len() {
+                    return false;
                 }
                 if key_next {
                     let key: String = serde_json::from_str(&line[start..=i]).unwrap_or_default();
@@ -880,5 +887,21 @@ mod tests {
             json!({"name": "fs__write", "arguments": {}}),
         )));
         assert_eq!(out["result"]["isError"], true);
+    }
+
+    // Malformed text is never a duplicate and never a panic (it is not JSON).
+    #[test]
+    fn the_scanner_survives_truncated_strings() {
+        for text in [r#"{"a"#, "{\"a\\", "\"", r#"{"a":"x"#, r#"{"a":1,"a"#, ""] {
+            assert!(!has_duplicate_keys(text), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_nested_repeat_is_flagged_but_sibling_objects_are_not() {
+        assert!(has_duplicate_keys(r#"{"x":{"k":1,"k":2}}"#));
+        assert!(has_duplicate_keys(r#"[{"k":1},{"a":{"k":1,"k":2}}]"#));
+        assert!(!has_duplicate_keys(r#"[{"k":1},{"k":2}]"#));
+        assert!(!has_duplicate_keys(r#"{"a":{"k":1},"b":{"k":2}}"#));
     }
 }
