@@ -29,6 +29,7 @@ fn tools_list_bytes() -> String {
 
 fn parse_error_table() -> String {
     let long = "a".repeat(super::MAX_ARG_BYTES + 1);
+    let wide = "é".repeat(super::MAX_ARG_BYTES / 2 + 1); // 4098 bytes, 2049 chars
     let cases: Vec<(&str, Value)> = vec![
         ("bash", json!({"path": "a"})),
         ("read_file", json!(null)),
@@ -43,6 +44,16 @@ fn parse_error_table() -> String {
         ("list_dir", json!({"path": ["a"]})),
         ("run_in_pane", json!({"command": "ls", "enter": true})),
         ("run_in_pane", json!({"command": long})),
+        // Error order: wrong type before extra key, extra key before length.
+        ("read_file", json!({"path": 1, "x": 1})),
+        ("read_file", json!({"path": long, "x": 1})),
+        // The cap is in bytes, not chars; the limit itself is accepted.
+        ("read_file", json!({"path": wide})),
+        ("read_file", json!({"path": ""})),
+        (
+            "read_file",
+            json!({"path": "a".repeat(super::MAX_ARG_BYTES)}),
+        ),
     ];
     let mut out = String::new();
     for (name, args) in cases {
