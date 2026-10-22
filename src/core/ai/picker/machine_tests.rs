@@ -229,3 +229,20 @@ fn refresh_is_requested_at_both_lists_but_typed_in_custom() {
     p.enter(&draft, Some(&d));
     assert_eq!(p.refresh(), Outcome::Stay);
 }
+
+#[test]
+fn enter_on_an_engine_without_a_chat_adapter_stays_on_the_engines_level() {
+    let d = Detection {
+        engines: vec![
+            state("ollama", Status::Available, &["a"]),
+            state("opencode", Status::Available, &[]),
+        ],
+    };
+    let draft = AiConfig::default();
+    let mut p = Picker::open(Target::Task(Task::Chat), &draft, Some(&d));
+    let rows = p.rows(&draft, Some(&d));
+    p.cursor = index_of(&rows, engine_key("opencode"));
+    assert_eq!(p.enter(&draft, Some(&d)), Outcome::Stay);
+    assert_eq!(p.level, Level::Engines);
+    assert_eq!(p.cursor, index_of(&rows, engine_key("opencode")));
+}

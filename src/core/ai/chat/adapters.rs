@@ -28,10 +28,14 @@ pub enum Wire {
     GeminiStreamJson,
 }
 
-/// The engines that can chat. More arrive with their adapters.
+/// The engines that can chat. opencode has no adapter yet.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Adapter {
     Ollama,
+    /// The OpenAI-compatible servers: `/v1/chat/completions` over SSE.
+    Lmstudio,
+    Llamacpp,
+    Vllm,
     Claude,
     Codex,
     Gemini,
@@ -102,6 +106,9 @@ pub struct TmpFile {
 pub fn adapter_for(id: &str) -> Option<Adapter> {
     match id {
         "ollama" => Some(Adapter::Ollama),
+        "lmstudio" => Some(Adapter::Lmstudio),
+        "llamacpp" => Some(Adapter::Llamacpp),
+        "vllm" => Some(Adapter::Vllm),
         "claude" => Some(Adapter::Claude),
         "codex" => Some(Adapter::Codex),
         "gemini" => Some(Adapter::Gemini),
@@ -134,7 +141,13 @@ impl Adapter {
     /// stdin flips its own answer when it arrives.
     pub fn carries_memory(self) -> bool {
         match self {
-            Adapter::Ollama | Adapter::Claude | Adapter::Codex | Adapter::Gemini => true,
+            Adapter::Ollama
+            | Adapter::Lmstudio
+            | Adapter::Llamacpp
+            | Adapter::Vllm
+            | Adapter::Claude
+            | Adapter::Codex
+            | Adapter::Gemini => true,
         }
     }
 
@@ -177,10 +190,26 @@ impl Adapter {
                 path: "/api/chat",
                 body: ollama_body(request),
             },
+            Adapter::Lmstudio => openai_invocation(request, "lmstudio"),
+            Adapter::Llamacpp => openai_invocation(request, "llamacpp"),
+            Adapter::Vllm => openai_invocation(request, "vllm"),
             Adapter::Claude => claude_invocation(request, wire_for(request, verified)),
             Adapter::Codex => codex_invocation(request, wire_for(request, verified)),
             Adapter::Gemini => gemini_invocation(request, wire_for(request, verified)),
         }
+    }
+}
+
+/// One chat-completions turn of the OpenAI-compatible server `id` on its
+/// catalog port. The body is the one a tool-less Ollama turn sends (model,
+/// messages, stream flag, nothing else); the recorded llama.cpp server
+/// streams no reasoning field, so none is asked for or read.
+fn openai_invocation(request: &ChatRequest, id: &str) -> Invocation {
+    Invocation::Http {
+        wire: Wire::Sse,
+        port: catalog_port(id),
+        path: "/v1/chat/completions",
+        body: ollama_body(request),
     }
 }
 

@@ -340,6 +340,27 @@ fn thinking(text: &str) -> StreamEvent {
 const QWEN3: &str = include_str!("../../../../../tests/fixtures/ollama/qwen3-thinking.ndjson");
 /// A non-reasoning model (llama3.2:3b) recorded the same way.
 const LLAMA: &str = include_str!("../../../../../tests/fixtures/ollama/llama3.2-plain.ndjson");
+/// Events recorded from a real llama.cpp server (llama-server b11815,
+/// qwen2.5-0.5b-instruct q4_k_m), de-chunked, the model path made neutral: a
+/// role-only first delta with `content: null`, the text deltas, a
+/// `finish_reason` with an empty delta, then `[DONE]`. No reasoning field.
+const LLAMACPP: &str = include_str!("../../../../../tests/fixtures/llamacpp/qwen2.5-plain.sse");
+
+#[test]
+fn a_recorded_llamacpp_reply_gives_text_then_one_final_at_every_split_point() {
+    let want = [
+        delta("Hi"),
+        delta(" there"),
+        delta("."),
+        StreamEvent::Done(Finish::Stop),
+    ];
+    same_at_every_split(LLAMACPP, &want, sse);
+    assert!(
+        !sse(&[LLAMACPP.as_bytes()])
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ThinkingDelta(_)))
+    );
+}
 
 #[test]
 fn a_recorded_reasoning_model_gives_thinking_then_text_then_final() {

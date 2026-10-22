@@ -10,6 +10,24 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Chat with LM Studio, llama.cpp (`llama-server`) and vLLM. They talk to their
+  server's `/v1/chat/completions` on `127.0.0.1` and their usual port (1234,
+  8080 and 8000), stream the answer over Server-Sent Events and send no
+  credentials, like Ollama. The body holds the model, the messages and the
+  stream flag only: no reasoning is shown and no tools are offered. llama.cpp
+  is tested against a reply recorded from a real server; LM Studio and vLLM
+  use the same format but are not yet verified against a real one. The menu no longer marks them
+  `detected · not in chat yet`; only opencode still has no chat adapter.
+
+### Changed
+
+- The engine picker no longer lets you choose an engine that chat has no
+  adapter for (today only opencode). Its row still reads `detected · not in
+  chat yet`, dimmed, and Enter does nothing on it; before, you could assign it
+  and chat then refused it.
+
 ## [0.18.0] - 2026-10-20
 
 ### Added

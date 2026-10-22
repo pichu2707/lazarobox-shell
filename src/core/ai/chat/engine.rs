@@ -339,7 +339,7 @@ fn same_model(a: &str, b: &str) -> bool {
 }
 
 /// Whether an adapter exists for the engine. Only the engines whose adapter
-/// has landed (ollama, claude) can chat; the others are unsupported.
+/// has landed can chat; the others (opencode) are unsupported.
 pub fn has_adapter(id: &str) -> bool {
     adapter_for(id).is_some()
 }

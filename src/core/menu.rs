@@ -374,6 +374,8 @@ fn disabled_reason(row: &PickRow) -> &str {
         Mark::Checking => "checking…",
         _ if row.key == PickKey::Info => &row.label,
         _ if matches!(row.key, PickKey::Note { .. }) => &row.label,
+        // An engine row is disabled only when chat has no adapter for it.
+        Mark::Status(ref status) if matches!(row.key, PickKey::Engine(_)) => status,
         _ => "engine not detected",
     }
 }

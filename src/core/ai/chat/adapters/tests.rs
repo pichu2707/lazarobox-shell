@@ -43,14 +43,67 @@ fn http(invocation: Invocation) -> (Wire, u16, &'static str, Value) {
 }
 
 #[test]
-fn only_ollama_claude_codex_and_gemini_have_an_adapter_so_far() {
+fn every_catalog_engine_but_opencode_has_an_adapter() {
     assert_eq!(adapter_for("ollama"), Some(Adapter::Ollama));
+    assert_eq!(adapter_for("lmstudio"), Some(Adapter::Lmstudio));
+    assert_eq!(adapter_for("llamacpp"), Some(Adapter::Llamacpp));
+    assert_eq!(adapter_for("vllm"), Some(Adapter::Vllm));
     assert_eq!(adapter_for("claude"), Some(Adapter::Claude));
     assert_eq!(adapter_for("codex"), Some(Adapter::Codex));
     assert_eq!(adapter_for("gemini"), Some(Adapter::Gemini));
-    for id in ["opencode", "lmstudio", "llamacpp", "vllm", "nope"] {
+    for id in ["opencode", "nope"] {
         assert_eq!(adapter_for(id), None, "{id}");
     }
+}
+
+#[test]
+fn openai_compatible_servers_post_sse_chat_to_their_catalog_port() {
+    for (adapter, port) in [
+        (Adapter::Lmstudio, 1234),
+        (Adapter::Llamacpp, 8080),
+        (Adapter::Vllm, 8000),
+    ] {
+        let (wire, got, path, _) = http(adapter.build(&request("be brief")));
+        assert_eq!(
+            (wire, got, path),
+            (Wire::Sse, port, "/v1/chat/completions"),
+            "{adapter:?}"
+        );
+    }
+}
+
+#[test]
+fn an_openai_compatible_body_holds_the_model_the_messages_and_the_stream_flag_only() {
+    let mut req = request("be brief");
+    req.model = Some("/models/qwen2.5-0.5b-instruct-q4_k_m.gguf".into());
+    for adapter in [Adapter::Lmstudio, Adapter::Llamacpp, Adapter::Vllm] {
+        let (_, _, _, body) = http(adapter.build(&req));
+        assert_eq!(
+            body,
+            json!({
+                "model": "/models/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+                "stream": true,
+                "messages": [
+                    {"role": "system", "content": "be brief"},
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "hello"},
+                    {"role": "user", "content": "and now?"},
+                ],
+            }),
+            "{adapter:?}"
+        );
+    }
+}
+
+#[test]
+fn an_openai_compatible_body_carries_the_memory_after_the_system_prompt() {
+    let mut req = request("be brief");
+    req.memory = Some("notes".into());
+    let (_, _, _, body) = http(Adapter::Llamacpp.build(&req));
+    assert_eq!(
+        body["messages"][0],
+        json!({"role": "system", "content": "be brief\n\nnotes"})
+    );
 }
 
 #[test]
@@ -147,16 +200,20 @@ fn without_a_block_the_system_message_is_the_prompt_alone() {
 }
 
 #[test]
-fn only_ollama_claude_codex_and_gemini_carry_the_memory_block_so_far() {
+fn every_adapter_carries_the_memory_block() {
     assert!(Adapter::Ollama.carries_memory());
     assert!(carries_memory("ollama"));
+    for id in ["lmstudio", "llamacpp", "vllm"] {
+        assert!(adapter_for(id).unwrap().carries_memory(), "{id}");
+        assert!(carries_memory(id), "{id}");
+    }
     assert!(Adapter::Claude.carries_memory());
     assert!(carries_memory("claude"));
     assert!(Adapter::Codex.carries_memory());
     assert!(carries_memory("codex"));
     assert!(Adapter::Gemini.carries_memory());
     assert!(carries_memory("gemini"));
-    for id in ["opencode", "lmstudio", "nope"] {
+    for id in ["opencode", "nope"] {
         assert!(!carries_memory(id), "{id}");
     }
 }
@@ -841,7 +898,9 @@ fn a_gemini_message_cannot_forge_a_turn_boundary() {
 // body.
 #[test]
 fn the_tools_flag_changes_no_invocation() {
-    for engine in ["ollama", "claude", "codex", "gemini"] {
+    for engine in [
+        "ollama", "lmstudio", "llamacpp", "vllm", "claude", "codex", "gemini",
+    ] {
         let mut off = request("be brief");
         off.engine = engine.into();
         let mut on = off.clone();

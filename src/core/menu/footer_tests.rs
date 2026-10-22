@@ -330,3 +330,20 @@ fn higher_priority_footers_mask_the_unsaved_hint() {
     m.set_error("save failed: disk full".to_owned());
     assert_eq!(m.footer(), Footer::Error("save failed: disk full"));
 }
+
+// Spec: Engines without a chat adapter are not selectable (footer).
+#[test]
+fn a_detected_engine_without_a_chat_adapter_reads_its_status_as_the_reason() {
+    let found = only(&[
+        engine("ollama", Status::Available, &["llama3:8b"], None),
+        engine("opencode", Status::Available, &[], Some("1.19.0")),
+    ]);
+    let mut m = menu(None, None, found);
+    open(&mut m, "code");
+    while cursor_label(&m) != "opencode" {
+        press(&mut m, 'j');
+    }
+    assert_eq!(hint(&m), not_selectable("detected · not in chat yet"));
+    send(&mut m, key(KeyCode::Enter));
+    assert_eq!(cursor_label(&m), "opencode", "Enter does nothing");
+}

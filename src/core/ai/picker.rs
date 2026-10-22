@@ -8,6 +8,7 @@
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::catalog::{cli_models, curated, same_model};
+use super::chat::adapters::adapter_for;
 use super::config::{AiConfig, Assignment, Task};
 use super::parse::sanitize;
 use super::sanitize::is_format;
@@ -114,8 +115,10 @@ fn is_available(detection: Option<&Detection>, id: &str) -> bool {
 }
 
 /// The Engines level of a picker: the unassign entry, the available
-/// engines in catalog order, then every engine assigned anywhere in the
-/// draft that is not available (selectable, so it can be kept or reopened).
+/// engines in catalog order (an engine chat has no adapter for is listed
+/// but not selectable, since chat would refuse it), then every engine
+/// assigned anywhere in the draft that is not available (selectable, so it
+/// can be kept or reopened).
 pub fn engine_rows(
     target: Target,
     draft: &AiConfig,
@@ -135,18 +138,22 @@ pub fn engine_rows(
         enabled: true,
         current: current.as_ref().is_some_and(|a| a.engine.is_none()),
     }];
-    let mut push = |id: &str, mark: Mark| {
+    let mut push = |id: &str, mark: Mark, enabled: bool| {
         rows.push(PickRow {
             key: PickKey::Engine(id.to_owned()),
             label: id.to_owned(),
             mark,
-            enabled: true,
+            enabled,
             current: current_engine == Some(id),
         });
     };
     for engine in CATALOG {
         if is_available(detection, engine.id) {
-            push(engine.id, Mark::Status(status_text(detection, engine.id)));
+            push(
+                engine.id,
+                Mark::Status(status_text(detection, engine.id)),
+                adapter_for(engine.id).is_some(),
+            );
         }
     }
     let mut listed: Vec<&str> = Vec::new();
@@ -162,7 +169,7 @@ pub fn engine_rows(
             None => Mark::Checking,
             Some(_) => Mark::Status("(not detected)".to_owned()),
         };
-        push(id, mark);
+        push(id, mark, true);
     }
     rows
 }
@@ -1368,6 +1375,31 @@ mod tests {
                 engine("ollama", "available · 2 models", false),
                 engine("claude", "available · version unknown", false),
                 engine("codex", "(not detected)", true),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_detected_engine_without_a_chat_adapter_is_listed_but_not_selectable() {
+        let draft = AiConfig::default();
+        let d = detection(vec![
+            state("llamacpp", Status::Available, &["m"]),
+            state("opencode", Status::Available, &[]),
+        ]);
+        let rows = engine_rows(Target::Task(Task::Code), &draft, Some(&d));
+        assert_eq!(
+            compact(&rows[1..]),
+            [
+                (
+                    "llamacpp".to_owned(),
+                    Mark::Status("available · 1 model".to_owned()),
+                    true
+                ),
+                (
+                    "opencode".to_owned(),
+                    Mark::Status("detected · not in chat yet".to_owned()),
+                    false
+                ),
             ]
         );
     }

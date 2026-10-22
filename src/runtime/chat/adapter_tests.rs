@@ -25,6 +25,7 @@ use crate::core::ai::chat::{
 };
 
 const QWEN3: &str = include_str!("../../../tests/fixtures/ollama/qwen3-thinking.ndjson");
+const LLAMACPP: &str = include_str!("../../../tests/fixtures/llamacpp/qwen2.5-plain.sse");
 const OK_HEAD: &str = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n";
 
 fn pane(n: u32) -> PaneId {
@@ -377,10 +378,46 @@ async fn the_answer_cap_ends_the_turn_with_an_error() {
 }
 
 #[tokio::test]
+async fn an_openai_compatible_turn_posts_the_pinned_request_and_streams_the_answer() {
+    for engine in ["lmstudio", "llamacpp", "vllm"] {
+        let server = Recorder::start(reply(LLAMACPP)).await;
+        let mut req = request("qwen2.5");
+        req.engine = engine.into();
+        let events = run(server.port, req).await;
+        assert_eq!(
+            events,
+            [
+                StreamEvent::Delta("Hi".into()),
+                StreamEvent::Delta(" there".into()),
+                StreamEvent::Delta(".".into()),
+                StreamEvent::Done(Finish::Stop)
+            ],
+            "{engine}"
+        );
+        let (head, json) = server.request(0);
+        let head = head.to_lowercase();
+        assert!(
+            head.starts_with("post /v1/chat/completions http/1.1\r\n"),
+            "{engine}: {head}"
+        );
+        assert!(head.contains("host: 127.0.0.1:"), "{engine}: {head}");
+        for forbidden in ["authorization", "cookie", "proxy-"] {
+            assert!(!head.contains(forbidden), "{engine}: {forbidden} in {head}");
+        }
+        assert_eq!(json["model"], "qwen2.5", "{engine}");
+        assert_eq!(json["stream"], true, "{engine}");
+        assert_eq!(json["messages"].as_array().unwrap().len(), 4, "{engine}");
+        assert_eq!(json.as_object().unwrap().len(), 3, "{engine}");
+        assert_eq!(server.connections.load(Ordering::SeqCst), 1, "{engine}");
+        assert_eq!(server.requests.lock().unwrap().len(), 1, "{engine}");
+    }
+}
+
+#[tokio::test]
 async fn an_engine_without_an_adapter_fails_the_turn_and_connects_nowhere() {
     let server = Recorder::start(reply("{\"done\":true}\n")).await;
     let mut req = request("m");
-    req.engine = "lmstudio".into();
+    req.engine = "opencode".into();
     assert_eq!(run(server.port, req).await, [failed(NO_ADAPTER)]);
     assert_eq!(server.connections.load(Ordering::SeqCst), 0);
 }

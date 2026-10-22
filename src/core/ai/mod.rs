@@ -708,8 +708,8 @@ mod tests {
             ],
         };
         assert_eq!(text(&d, "ollama"), "available · 2 models");
-        assert_eq!(text(&d, "lmstudio"), "detected · not in chat yet");
-        assert_eq!(text(&d, "llamacpp"), "detected · not in chat yet");
+        assert_eq!(text(&d, "lmstudio"), "available · 1 model");
+        assert_eq!(text(&d, "llamacpp"), "available · 0 models");
         assert_eq!(text(&d, "vllm"), "not running");
         assert_eq!(text(&d, "claude"), "available · version unknown");
         assert_eq!(text(&d, "codex"), "available · 0.5.0");
