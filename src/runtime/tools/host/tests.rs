@@ -480,6 +480,7 @@ async fn a_free_tool_runs_end_to_end_from_the_mcp_session_through_the_host() {
             registry(&[]),
             host.dispatch(scope),
             Default::default(),
+            crate::core::ai::tools::registry::FamilySet::LEGACY,
         )
         .unwrap();
     let (mut reader, mut writer) = client(&started.socket, started.token.reveal()).await;

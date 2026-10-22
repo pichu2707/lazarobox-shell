@@ -189,6 +189,48 @@ async fn a_call_waits_for_the_answer_of_its_pane_and_turn() {
     assert_eq!(next_result(&mut rx).await, (pane(1), 7, id, ToolStatus::Ok));
 }
 
+// P0b.3: `ChatRequest::families` reaches the turn's session, for what it lists
+// and for what it accepts. The default request still lists the four.
+#[tokio::test]
+async fn the_request_families_decide_what_the_session_lists_and_accepts() {
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    let lab = lab();
+    let (mut chats, _rx) = tooled(&lab, idle());
+    let tools = |reply: Value| -> Vec<String> {
+        reply["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+
+    chats.send(pane(1), 1, with_tools(&lab));
+    let mut client = Client::open(&chats, pane(1)).await;
+    client.send(&list).await;
+    assert_eq!(
+        tools(client.reply().await.unwrap()),
+        ["find_dir", "list_dir", "read_file", "run_in_pane"]
+    );
+
+    let mut read_only = with_tools(&lab);
+    read_only.families = FamilySet::EMPTY.with(Family::Read);
+    chats.send(pane(2), 1, read_only);
+    let mut client = Client::open(&chats, pane(2)).await;
+    client.send(&list).await;
+    assert_eq!(
+        tools(client.reply().await.unwrap()),
+        ["find_dir", "list_dir", "read_file"]
+    );
+    client
+        .call(2, "run_in_pane", json!({"command": "ls"}))
+        .await;
+    let refused = client.reply().await.unwrap();
+    assert_eq!(refused["result"]["isError"], true);
+    assert_eq!(refused["result"]["content"][0]["text"], "unknown tool");
+}
+
 #[tokio::test]
 async fn a_denied_call_never_opens_the_file() {
     let lab = lab();
