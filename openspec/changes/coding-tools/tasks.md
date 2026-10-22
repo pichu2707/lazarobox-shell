@@ -89,9 +89,9 @@ Spec: agent-tools "Tool registry", "Multi-argument arguments", "Argument length"
 ### P0b: FamilySet plumbing at LEGACY (PR 2, ~350, base `main`)
 Spec: agent-tools "Tool families", "Off equals 0.18.0"; lazarobox-mcp-server "Tools served".
 
-- [ ] P0b.1 RED: `FamilySet` bitset (Copy), `LEGACY` = {Read, Pane}, `registry_with(external, set)`, `parse_call_in(name, args, ext, set)`; a built-in outside the set returns `UnknownTool` with the same text as an unknown name. GREEN in `registry.rs`. `registry()`/`parse_call_with()` delegate at LEGACY. ~130. Dep: P0a.
-- [ ] P0b.2 RED: `ChatRequest.families` default LEGACY; Ollama stream, MCP server and `adapters.rs:287` gate parse by the set (a hand-called unoffered tool is refused). GREEN: plumbing in `mcp.rs`, `chat/stream.rs`, `chat/adapters.rs`. ~130. Dep: P0b.1.
-- [ ] P0b.3 RED: `runtime/mcp/session.rs` and `runtime/chat.rs:716` pass the set; the golden `tools/list` stays green with all toggles off. GREEN + REFACTOR. Minimum diff in these two files (rebase points). ~90. Dep: P0b.2.
+- [x] P0b.1 RED: `FamilySet` bitset (Copy), `LEGACY` = {Read, Pane}, `registry_with(external, set)`, `parse_call_in(name, args, ext, set)`; a built-in outside the set returns `UnknownTool` with the same text as an unknown name. GREEN in `registry.rs`. `registry()`/`parse_call_with()` delegate at LEGACY. ~130. Dep: P0a.
+- [x] P0b.2 RED: `ChatRequest.families` default LEGACY; Ollama stream, MCP server and `adapters.rs:287` gate parse by the set (a hand-called unoffered tool is refused). GREEN: plumbing in `mcp.rs`, `chat/stream.rs`, `chat/adapters.rs`. ~130. Dep: P0b.1.
+- [x] P0b.3 RED: `runtime/mcp/session.rs` and `runtime/chat.rs:716` pass the set; the golden `tools/list` stays green with all toggles off. GREEN + REFACTOR. Minimum diff in these two files (rebase points). ~90. Dep: P0b.2.
 
 ## Phase T (toggles, first tracker PR)
 
@@ -103,6 +103,7 @@ Spec: configuration "Family toggle keys"; config-persistence "Family toggle keys
 - [ ] T.3 RED: `FamilySet` from config; app passes it into `ChatRequest.families`; all off equals LEGACY. GREEN: `core/ai/config.rs` + app. ~90. Dep: T.1, P0b.
 - [ ] T.4 RED: `max_rounds(set)` is 24 when Search/Write/Exec/Git/GitWrite is on, else 8. GREEN: `runtime/chat/ollama.rs`. ~50.
 - [ ] T.5 RED: 5 menu rows (names, order, toggle keys); update the ~10 menu test files and ~24 insta snapshots (budget this). GREEN: `core/menu/*`. ~110. Dep: T.3. The Exec row also shows the "needs Linux sandbox" reason when no jail (D18) if the jail check is already available; otherwise add it in X-d2.
+- [ ] T.6 RED: with an EMPTY set and no external tools, `ollama_round_body` (`chat/adapters.rs` ~316) omits the `tools` key instead of sending `"tools": []`. GREEN: skip the key when the registry is empty. ~20. This came from the P0b review: an EMPTY set cannot happen until the toggles exist.
 
 ## Phase M1: search (0.19)
 
