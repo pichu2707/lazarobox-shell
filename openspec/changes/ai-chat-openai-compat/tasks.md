@@ -15,3 +15,4 @@ Moved from `openspec/changes/ai-chat/tasks.md`, section "PR14 / C12". Task text 
 - 14.1: recorded fixture `tests/fixtures/llamacpp/qwen2.5-plain.sse` (llama-server b11815, qwen2.5-0.5b-instruct q4_k_m, de-chunked, model path made neutral). No lmstudio or vLLM capture yet; they share the OpenAI SSE format and the same tests.
 - 14.2: no reasoning exposed in the captured llama.cpp fixture (non-reasoning model), so no reasoning task was added and the body is unchanged.
 - llama-server ignores the requested model name and streamed 200 for an unknown model, empty `messages` and an unknown role; no SSE `error` object was observed, so that path is covered by the synthetic decoder tests only.
+- The picker change (engines without an adapter listed but disabled, footer reason) is specified in `specs/config-menu/spec.md`.
