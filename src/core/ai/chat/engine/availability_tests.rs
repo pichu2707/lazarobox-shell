@@ -170,7 +170,7 @@ fn the_no_jail_reason_names_the_kernel_abi() {
 
 #[test]
 fn engines_without_an_adapter_are_unsupported_whatever_the_jail() {
-    for id in ["lmstudio", "llamacpp", "vllm", "opencode"] {
+    for id in ["opencode"] {
         let c = cfg(Task::Chat, Some(id), Some("default"));
         let d = detected(vec![state(id, Status::Available, &["default"])]);
         for jail in [NO_JAIL, JAIL] {
@@ -319,14 +319,14 @@ fn it_never_switches_engine() {
 }
 
 #[test]
-fn only_ollama_claude_codex_and_gemini_have_an_adapter_so_far() {
+fn only_opencode_has_no_adapter() {
     let mut without: Vec<_> = CATALOG
         .iter()
         .filter(|e| !has_adapter(e.id))
         .map(|e| e.id)
         .collect();
     without.sort_unstable();
-    assert_eq!(without, ["llamacpp", "lmstudio", "opencode", "vllm"]);
+    assert_eq!(without, ["opencode"]);
 }
 
 fn claude_at(version: Option<&str>) -> Detection {

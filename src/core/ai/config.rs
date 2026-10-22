@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 use toml::{Table, Value};
 
+use super::{CATALOG, Kind, ServerPorts};
+
 /// The fixed set of AI tasks, in display order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Task {
@@ -305,6 +307,7 @@ pub struct AiConfig {
     tools: bool,
     approval: ApprovalMode,
     mcp_servers: Vec<McpServer>,
+    servers: ServerPorts,
     pub memory: MemoryConfig,
     pub orchestrator: OrchestratorConfig,
 }
@@ -320,6 +323,7 @@ impl Default for AiConfig {
             tools: true,
             approval: ApprovalMode::Ask,
             mcp_servers: Vec::new(),
+            servers: ServerPorts::default(),
             memory: MemoryConfig::default(),
             orchestrator: OrchestratorConfig::default(),
         }
@@ -392,6 +396,17 @@ impl AiConfig {
     /// order. Read once at startup; the menu never writes them.
     pub fn mcp_servers(&self) -> &[McpServer] {
         &self.mcp_servers
+    }
+
+    /// The loopback port of each server engine (`[ai.servers.<id>] port`).
+    pub fn servers(&self) -> &ServerPorts {
+        &self.servers
+    }
+
+    #[cfg(test)]
+    pub fn with_servers(mut self, servers: ServerPorts) -> Self {
+        self.servers = servers;
+        self
     }
 
     pub fn set_approval(&mut self, mode: ApprovalMode) {
@@ -587,6 +602,7 @@ pub fn read_with_port_env(
     config.tools = read_tools(table, problems);
     config.approval = read_approval(table, problems);
     config.mcp_servers = read_mcp_servers(table, problems);
+    config.servers = read_servers(table, problems);
     config.memory = read_memory(table, problems, port_env);
     config.orchestrator = read_orchestrator(table, problems);
     config
@@ -823,6 +839,48 @@ fn string_list(value: Option<&Value>, keep: fn(&str) -> bool) -> Option<Vec<Stri
     }
 }
 
+/// Reads `[ai.servers.<id>] port` for the server engines. A wrong port falls
+/// back to the catalog port on its own, with a problem. Unknown ids and keys
+/// are ignored, like unknown names under `ai.tasks`. Never edited by the menu.
+fn read_servers(table: &Table, problems: &mut Vec<String>) -> ServerPorts {
+    let mut ports = ServerPorts::default();
+    let section = match table.get("ai").and_then(Value::as_table) {
+        None => return ports,
+        Some(ai) => match ai.get("servers") {
+            None => return ports,
+            Some(Value::Table(section)) => section,
+            Some(_) => {
+                problems.push("ai.servers: expected a table".to_owned());
+                return ports;
+            }
+        },
+    };
+    for engine in CATALOG {
+        if !matches!(engine.kind, Kind::Server { .. }) {
+            continue;
+        }
+        let id = engine.id;
+        let server = match section.get(id) {
+            None => continue,
+            Some(Value::Table(server)) => server,
+            Some(_) => {
+                problems.push(format!("ai.servers.{id}: expected a table"));
+                continue;
+            }
+        };
+        match server.get("port") {
+            None => {}
+            Some(Value::Integer(n)) if (1..=65535).contains(n) => {
+                ports = ports.with(id, *n as u16);
+            }
+            Some(_) => problems.push(format!(
+                "ai.servers.{id}.port: expected an integer from 1 to 65535"
+            )),
+        }
+    }
+    ports
+}
+
 /// A valid port in the text of `ENGRAM_PORT`: an integer from 1 to 65535.
 fn env_port(text: Option<&str>) -> Option<u16> {
     text?.trim().parse::<u16>().ok().filter(|port| *port != 0)
@@ -873,6 +931,89 @@ mod tests {
         let mut problems = Vec::new();
         let ai = read_with_port_env(&table, &mut problems, None);
         (ai, problems)
+    }
+
+    fn ports_of(text: &str) -> (Vec<Option<u16>>, Vec<String>) {
+        let (ai, problems) = read_text(text);
+        let ports = ["ollama", "lmstudio", "llamacpp", "vllm", "claude", "nope"]
+            .iter()
+            .map(|id| ai.servers().port(id))
+            .collect();
+        (ports, problems)
+    }
+
+    // Spec: Server ports default to the catalog.
+    #[test]
+    fn server_ports_default_to_the_catalog_ports() {
+        let want = vec![Some(11434), Some(1234), Some(8080), Some(8000), None, None];
+        assert_eq!(ports_of(""), (want.clone(), vec![]));
+        assert_eq!(ports_of("[ai]\n"), (want.clone(), vec![]));
+        assert_eq!(ports_of("[ai.servers]\n"), (want, vec![]));
+    }
+
+    // Spec: Server ports are read.
+    #[test]
+    fn a_server_port_overrides_its_catalog_port_only() {
+        let text = "[ai.servers.llamacpp]\nport = 39080\n\n[ai.servers.ollama]\nport = 11500\n";
+        assert_eq!(
+            ports_of(text),
+            (
+                vec![Some(11500), Some(1234), Some(39080), Some(8000), None, None],
+                vec![]
+            )
+        );
+    }
+
+    // Spec: Unknown servers and keys are ignored.
+    #[test]
+    fn unknown_servers_and_keys_are_ignored() {
+        let text = "[ai.servers.claude]\nport = 9\n\n[ai.servers.nope]\nport = 9\n\n[ai.servers.vllm]\nport = 8001\nhost = \"0.0.0.0\"\n";
+        assert_eq!(
+            ports_of(text),
+            (
+                vec![Some(11434), Some(1234), Some(8080), Some(8001), None, None],
+                vec![]
+            )
+        );
+    }
+
+    // Spec: A wrong server value falls back alone.
+    #[test]
+    fn a_wrong_server_value_falls_back_alone_with_its_problem() {
+        let defaults = vec![Some(11434), Some(1234), Some(8080), Some(8000), None, None];
+        for (text, problem) in [
+            ("[ai]\nservers = 1\n", "ai.servers: expected a table"),
+            (
+                "[ai.servers]\nllamacpp = 39080\n",
+                "ai.servers.llamacpp: expected a table",
+            ),
+            (
+                "[ai.servers.llamacpp]\nport = 0\n",
+                "ai.servers.llamacpp.port: expected an integer from 1 to 65535",
+            ),
+            (
+                "[ai.servers.llamacpp]\nport = 70000\n",
+                "ai.servers.llamacpp.port: expected an integer from 1 to 65535",
+            ),
+            (
+                "[ai.servers.llamacpp]\nport = \"39080\"\n",
+                "ai.servers.llamacpp.port: expected an integer from 1 to 65535",
+            ),
+        ] {
+            assert_eq!(
+                ports_of(text),
+                (defaults.clone(), vec![problem.to_owned()]),
+                "{text}"
+            );
+        }
+        let mixed = "[ai.servers.lmstudio]\nport = -1\n\n[ai.servers.vllm]\nport = 8001\n";
+        assert_eq!(
+            ports_of(mixed),
+            (
+                vec![Some(11434), Some(1234), Some(8080), Some(8001), None, None],
+                vec!["ai.servers.lmstudio.port: expected an integer from 1 to 65535".to_owned()]
+            )
+        );
     }
 
     fn memory_of(text: &str, env: Option<&str>) -> (MemoryConfig, Vec<String>) {

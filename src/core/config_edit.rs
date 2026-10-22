@@ -1510,6 +1510,23 @@ other = 1
         assert!(out.contains("mcp = 3"), "{out:?}");
     }
 
+    // The server ports are never edited by the menu: every save keeps them
+    // byte for byte and never adds the table.
+    #[test]
+    fn every_save_keeps_the_server_ports_byte_for_byte_and_never_adds_them() {
+        let servers = "# local servers\n[ai.servers.llamacpp]\nport = 39080 # apache has 8080\n\n[ai.servers.vllm]\nport = \"bad\"\n";
+        let existing = format!("[ai]\nengine = \"ollama\"\n\n{servers}");
+        let edits = [
+            ConfigEdit::tools_flag(false),
+            ConfigEdit::approval(crate::core::ai::config::ApprovalMode::Auto),
+            edit("statusline", "bottom"),
+        ];
+        let out = apply_edit(Some(&existing), &edits).unwrap();
+        assert!(out.contains(servers), "{out:?}");
+        let out = apply_edit(Some("[ai]\nnotify = true\n"), &edits).unwrap();
+        assert!(!out.contains("servers"), "{out:?}");
+    }
+
     // W2: the saved text re-parses to the same servers and the new keys, and
     // the server block keeps its bytes and its place after the edits.
     #[test]

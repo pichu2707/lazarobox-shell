@@ -16,7 +16,13 @@ use tokio::{
 
 use super::*;
 use crate::{
-    core::ai::tools::{Call, mcp::MAX_LINE_BYTES, registry},
+    core::ai::tools::{
+        Call,
+        mcp::MAX_LINE_BYTES,
+        registry,
+        registry::{Family, FamilySet},
+        registry_with,
+    },
     runtime::mcp::{
         Outcome,
         external::{
@@ -211,7 +217,7 @@ async fn ready(started: &Started) -> Client {
 }
 
 fn open(hub: &mut Hub, n: u32, dispatch: Arc<dyn Dispatch>) -> Started {
-    hub.open(pane(n), tools(), dispatch, Slot::default())
+    hub.open(pane(n), dispatch, Slot::default(), FamilySet::LEGACY)
         .unwrap()
 }
 
@@ -310,6 +316,72 @@ async fn a_call_reaches_the_dispatch_of_its_chat_and_the_result_comes_back() {
         }]
     );
     assert!(other.0.lock().unwrap().is_empty());
+}
+
+// P0b.3: the set a session opens with is the one that gates its parse, so a
+// client that names a tool it was not offered gets the unknown-tool text and
+// the dispatch never sees a call.
+#[tokio::test]
+async fn a_tool_outside_the_sessions_families_is_refused_before_the_dispatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = hub(tmp.path());
+    let fake = Arc::new(Fake::default());
+    let read_only = FamilySet::EMPTY.with(Family::Read);
+    let s = hub
+        .open(pane(1), fake.clone(), Slot::default(), read_only)
+        .unwrap();
+    let mut c = ready(&s).await;
+    assert_eq!(listed(&mut c).await, ["find_dir", "list_dir", "read_file"]);
+    send(
+        &mut c,
+        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"run_in_pane","arguments":{"command":"ls"}}}"#,
+    )
+    .await;
+    let got = recv(&mut c).await.unwrap();
+    assert_eq!(got["result"]["content"][0]["text"], "unknown tool");
+    assert_eq!(got["result"]["isError"], true);
+    // An offered tool still reaches the dispatch.
+    send(
+        &mut c,
+        r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"find_dir","arguments":{"query":"x"}}}"#,
+    )
+    .await;
+    assert_eq!(recv(&mut c).await.unwrap()["result"]["isError"], false);
+    assert_eq!(
+        *fake.0.lock().unwrap(),
+        [Call::FindDir { query: "x".into() }],
+        "run_in_pane never reached the dispatch"
+    );
+}
+
+// The session derives its offered list from its set, so the two cannot
+// disagree: an empty set offers nothing and accepts nothing.
+#[tokio::test]
+async fn the_session_lists_exactly_the_built_ins_of_its_set() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut hub = hub(tmp.path());
+    let fake = Arc::new(Fake::default());
+    let s = hub
+        .open(pane(1), fake.clone(), Slot::default(), FamilySet::EMPTY)
+        .unwrap();
+    let mut c = ready(&s).await;
+    assert!(listed(&mut c).await.is_empty());
+    send(
+        &mut c,
+        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"find_dir","arguments":{"query":"x"}}}"#,
+    )
+    .await;
+    let got = recv(&mut c).await.unwrap();
+    assert_eq!(got["result"]["content"][0]["text"], "unknown tool");
+    assert!(fake.0.lock().unwrap().is_empty());
+    // The LEGACY session lists what `registry_with` says, in its order.
+    let legacy = open(&mut hub, 2, fake);
+    let mut c = ready(&legacy).await;
+    let want: Vec<String> = registry_with(&[], FamilySet::LEGACY)
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
+    assert_eq!(listed(&mut c).await, want);
 }
 
 #[tokio::test]
@@ -853,7 +925,12 @@ async fn a_session_offers_the_tools_of_the_set_its_slot_holds() {
     let mut hub = hub(dir.path());
     let slot = Slot::default();
     let started = hub
-        .open(pane(1), tools(), Arc::new(Fake::default()), slot.clone())
+        .open(
+            pane(1),
+            Arc::new(Fake::default()),
+            slot.clone(),
+            FamilySet::LEGACY,
+        )
         .unwrap();
     assert!(slot.set(set.clone()).is_ok());
     let mut c = ready(&started).await;
