@@ -10,6 +10,15 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- The model picker of a stopped llama-server lists the `.gguf` models found
+  on the machine (the llama.cpp models folder, llama.cpp's cache and the
+  Hugging Face cache), marked `lazarobox starts it`. Choosing one and saving
+  writes `managed = true` and that `model` under `[ai.servers.llamacpp]`,
+  keeping the other keys, and starts llama-server at once, with no restart.
+  The statusline says when it is ready or why it did not start.
+
 ### Fixed
 
 - macOS: the jail's check that no program folder is also writable ignores
