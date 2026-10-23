@@ -254,8 +254,6 @@ fn an_option_that_is_not_ours_is_never_echoed() {
         format!("--{slack}-1234567890-abcdefghijklmnop"),
         "--jbswy3dpehpk3pxp".to_owned(),
         "--password-hunter2-correct-horse".to_owned(),
-        "--model=sk-abcdefghijklmnop".to_owned(),
-        "--permission-prompts=none".to_owned(),
         "--Permission-Prompts".to_owned(),
         "--permission-prompt".to_owned(),
         long,
@@ -281,6 +279,73 @@ fn an_option_that_is_not_ours_is_never_echoed() {
         ),
         "this codex is older than lazarobox needs: it rejected an option; update it and try again"
     );
+}
+
+// commander reports an unknown `--opt=value` as the whole token: the part
+// before `=` is compared, and only our constant is shown, never the value.
+#[test]
+fn an_equals_style_flag_of_ours_is_named_without_its_value() {
+    for (name, option, flag, value) in [
+        (
+            "claude",
+            "--model=sk-abcdefghijklmnop",
+            "--model",
+            "sk-abcdefghijklmnop",
+        ),
+        (
+            "claude",
+            "--mcp-config=/home/u/.x/mcp.json",
+            "--mcp-config",
+            "mcp.json",
+        ),
+        (
+            "claude",
+            "--allowedTools=mcp__lazarobox",
+            "--allowedTools",
+            "mcp__lazarobox",
+        ),
+        (
+            "claude",
+            "--setting-sources=",
+            "--setting-sources",
+            "--setting-sources=",
+        ),
+        (
+            "claude",
+            "--permission-prompts=none",
+            "--permission-prompts",
+            "=none",
+        ),
+        ("codex", "--model=gpt-5.5", "--model", "gpt-5.5"),
+        ("gemini", "--model=gemini-3-pro", "--model", "gemini-3-pro"),
+    ] {
+        let stderr = format!("error: unknown option '{option}'\n(Did you mean --model?)\n");
+        let text = shown(name, None, &stderr);
+        let how = if name == "claude" {
+            "update it (claude update)"
+        } else {
+            "update it"
+        };
+        assert_eq!(
+            text,
+            format!(
+                "{name} does not know the option {flag}: this {name} is older than lazarobox \
+                 needs; {how} and try again"
+            ),
+            "{option}"
+        );
+        assert!(!text.contains(value), "{option}: {text}");
+    }
+    // A flag of another CLI, or none of ours, before `=` stays generic.
+    for option in [
+        "--ephemeral=1",
+        "--token=sk-abcdefghijklmnop",
+        "--=model",
+        "--model-x=1",
+    ] {
+        let stderr = format!("error: unknown option '{option}'\n");
+        assert_eq!(shown("claude", None, &stderr), GENERIC_CLAUDE, "{option}");
+    }
 }
 
 #[test]

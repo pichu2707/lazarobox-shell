@@ -10,6 +10,13 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- The outdated-CLI message names our flag also when the CLI rejects it with
+  its value (`--model=<name>`, `--mcp-config=`, `--allowedTools=`,
+  `--setting-sources=`): it says `--model`, never the value, instead of the
+  generic `it rejected an option`.
+
 ## [0.20.0] - 2026-10-23
 
 ### Added
