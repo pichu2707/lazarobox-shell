@@ -16,6 +16,9 @@ baseline.
   letter case too. A codex under `~/.codex/...` with `CODEX_HOME=~/.CODEX`
   (the same folder on the default file system) was accepted; now it is
   refused like `~/.codex`.
+- With `[ai.servers.llamacpp] managed = true`, the model picker offers the
+  configured model while llama-server is not running (marked
+  `lazarobox starts it`), instead of the note that says to start it by hand.
 
 ## [0.21.0] - 2026-10-23
 
