@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-23
+
 ### Changed
 
 - CI and release workflows: `actions/checkout` v4 to v7.0.1 (Node 24, no more
@@ -28,7 +30,6 @@ baseline.
   does. A state dir or package root spelled `~/library/keychains`,
   `~/LIBRARY/Caches`, `~/.SSH` or `/system` was granted before; now it is
   refused like `~/Library/Keychains`. Linux still matches case.
-
 - The outdated-CLI message names our flag also when the CLI rejects it with
   its value (`--model=<name>`, `--mcp-config=`, `--allowedTools=`,
   `--setting-sources=`): it says `--model`, never the value, instead of the
@@ -974,7 +975,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.2...v0.18.0
