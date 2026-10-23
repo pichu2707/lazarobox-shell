@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-23
+
 ### Added
 
 - The model picker of a stopped llama-server lists the `.gguf` models found
@@ -994,7 +996,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.18.0...v0.19.0
