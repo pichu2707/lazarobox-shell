@@ -2310,3 +2310,41 @@ fn linux_keeps_matching_with_letter_case() {
     let err = jail_spec_for(Os::Linux, &l, &identity);
     assert_eq!(err.unwrap_err(), SpecError::RootTooBroad(p("/home/u/.ssh")));
 }
+
+// APFS ignores letter case: `~/.CODEX` is the folder that holds `~/.codex/...`.
+#[test]
+fn the_overlap_check_ignores_letter_case_on_macos() {
+    let mut l = layout(Cli::Codex, "/home/u/.codex/versions/1/codex", None);
+    l.codex_home = Some(p("/home/u/.CODEX"));
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert_eq!(
+        err,
+        SpecError::Overlap {
+            rx: p("/home/u/.codex/versions/1"),
+            rw: p("/home/u/.CODEX"),
+        }
+    );
+    let mut l = nvm_codex();
+    l.codex_home = Some(p(
+        "/home/u/.NVM/versions/node/v24.16.0/lib/node_modules/@OpenAI/codex/state",
+    ));
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+    let mut l = nvm_codex();
+    l.shim = Some(ShimGrant {
+        binary: p("/opt/lb/bin/lazarobox"),
+        loader: None,
+        socket: p("/home/u/.nvm/VERSIONS/node/v24.16.0/lib/node_modules/@openai/codex/s.sock"),
+    });
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+}
+
+#[test]
+fn linux_keeps_case_variants_apart_in_the_overlap_check() {
+    let mut l = layout(Cli::Codex, "/home/u/.codex/versions/1/codex", None);
+    l.codex_home = Some(p("/home/u/.CODEX"));
+    for os in [Os::Linux, Os::Other] {
+        assert!(jail_spec_for(os, &l, &identity).is_ok(), "{os:?}");
+    }
+}
