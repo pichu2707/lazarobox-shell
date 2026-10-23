@@ -589,6 +589,8 @@ pub struct App {
     input: InputMode,
     /// Shown in the statusline path segment until the next key press.
     notice: Option<String>,
+    /// The `config.toml` a menu save writes, named in its notice.
+    config_path: Option<PathBuf>,
     /// The newer released version, when the update check knows one.
     update: Option<String>,
     /// How this binary was installed, for Enter on the Updates row.
@@ -708,6 +710,7 @@ impl App {
             ids,
             input: InputMode::default(),
             notice: None,
+            config_path: None,
             update: None,
             install_env: None,
             cargo_check: |_| false,
@@ -877,6 +880,12 @@ impl App {
         self.refresh_screen();
         // Nothing runs yet, so there is no PTY to tell about the new size.
         self.relayout();
+        self
+    }
+
+    /// The `config.toml` menu saves write to.
+    pub fn with_config_path(mut self, config_path: Option<PathBuf>) -> Self {
+        self.config_path = config_path;
         self
     }
 
@@ -1445,6 +1454,12 @@ impl App {
             // Results of a save are stale when the menu is gone.
             AppEvent::ConfigSaved if self.menu.is_some() => {
                 self.dirty = true;
+                // Where the file is, so the user can find it; a notice from
+                // the save itself (the managed start) replaces it.
+                self.notice = self
+                    .config_path
+                    .as_deref()
+                    .map(|path| format!("saved to {}", self.home_label(path)));
                 self.close_menu(Outcome::Saved)
             }
             AppEvent::ConfigSaveFailed(message) => {
@@ -7492,6 +7507,9 @@ mod app_tests {
 
     /// A save that turns the managed llama-server on (llamacpp-pick-model S4).
     mod managed_start;
+
+    /// A menu save names the file it wrote.
+    mod save_notice;
 
     /// Save as note (engram-memory M7b).
     mod chat_notes;

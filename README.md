@@ -93,6 +93,10 @@ Para una terminal desconocida se usa `<cmd> -e <lazarobox-shell>` y el comando l
 
 Cada panel de shell define `LAZAROBOX=<pid>` (el pid de la instancia que lo abrió), igual que tmux hace con `$TMUX`, y los programas lanzados desde un panel la heredan. Si ejecutas `lazarobox-shell` dentro de un panel, no arranca: imprime `lazarobox-shell is already running in this terminal; use --force to nest anyway` y sale con código 1, antes de tocar la terminal. Para anidar a propósito usa `lazarobox-shell --force`; ten en cuenta que ambas instancias compartirán la misma tecla de prefijo.
 
+### Dónde está la configuración (`config.toml`)
+
+Toda la configuración vive en un solo fichero: `~/.config/lazarobox/config.toml` (o `$XDG_CONFIG_HOME/lazarobox/config.toml` si tienes esa variable). No existe hasta que guardas algo desde el menú (`Ctrl+Espacio m`, `s`); sin él se usan los valores por defecto. Al guardar, la barra de estado dice dónde lo escribió, por ejemplo `saved to ~/.config/lazarobox/config.toml`. El menú solo cambia las claves que edita y conserva el resto del fichero, comentarios incluidos, así que puedes editarlo también a mano; lo que cambies a mano se lee al arrancar lazarobox.
+
 ---
 
 ## 📋 Modo COPY
