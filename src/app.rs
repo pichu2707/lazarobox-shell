@@ -1631,14 +1631,13 @@ impl App {
     /// The only way out of MENU. `Reverted` restores the config captured at
     /// open; `Saved` keeps the draft.
     fn close_menu(&mut self, outcome: Outcome) -> Vec<Effect> {
-        let mut start = None;
+        let mut saved_over = None;
         if let Some(menu) = self.menu.take() {
             match outcome {
                 Outcome::Reverted => self.config = menu.original(),
                 Outcome::Saved => {
-                    let before = self.ai.managed().cloned();
+                    saved_over = Some(self.ai.managed().cloned());
                     self.ai = menu.ai_draft();
-                    start = self.start_managed(before.as_ref());
                 }
             }
             if !self.ai.memory.active() {
@@ -1651,7 +1650,10 @@ impl App {
         // The forced tab bar goes away with the menu, whatever the outcome.
         let mut effects = self.apply_config();
         effects.extend(self.sync_tools());
-        effects.extend(start);
+        // Last, so its notice is the one shown.
+        if let Some(before) = saved_over {
+            effects.extend(self.start_managed(before.as_ref()));
+        }
         effects
     }
 

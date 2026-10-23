@@ -4,7 +4,8 @@
 //! Trust model:
 //!
 //! - Nothing starts on config load or on detection. Only a chat turn whose
-//!   engine is llamacpp starts it, at most one at a time.
+//!   engine is llamacpp, or a menu save that turns it on, starts it, at most
+//!   one at a time.
 //! - The program is `llama-server`, looked up in the login `PATH` lazarobox
 //!   gives its tools (absolute entries only, never the current folder) and run
 //!   by that absolute path with that `PATH`, one argv element per argument:

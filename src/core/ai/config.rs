@@ -1,7 +1,7 @@
 //! The `[ai]` and `[ai.tasks.*]` sections of `config.toml`: the saved engine
 //! and model id of each AI task.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use toml::{Table, Value};
 
@@ -386,6 +386,26 @@ impl AiConfig {
             self.servers = self.servers.clone().with("llamacpp", MANAGED_PORT);
         }
         self.managed = Some(ManagedServer { model });
+    }
+
+    /// The managed llama-server and the ports of `other`, as they were before
+    /// [`AiConfig::manage`].
+    pub fn keep_servers_of(&mut self, other: &AiConfig) {
+        self.managed = other.managed.clone();
+        self.servers = other.servers.clone();
+    }
+
+    /// Whether a task, its own or through general, uses the managed
+    /// llama-server's model.
+    pub fn uses_managed(&self) -> bool {
+        let Some(server) = &self.managed else {
+            return false;
+        };
+        Task::ALL.into_iter().any(|task| {
+            let (a, _) = self.resolve(task);
+            a.engine.as_deref() == Some("llamacpp")
+                && a.model.as_deref().map(Path::new) == Some(server.model.as_path())
+        })
     }
 
     #[cfg(test)]

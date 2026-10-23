@@ -17,18 +17,30 @@ fn stopped_llamacpp(models: &[&str]) -> Option<Detection> {
     Some(d)
 }
 
-/// Opens the chat task, goes to llamacpp and presses Enter on its first model.
-fn choose_first_model(m: &mut MenuState) {
-    open(m, "chat");
+/// Opens `task`, goes to `engine` and presses Enter on its first model.
+fn choose(m: &mut MenuState, task: &str, engine: &str) {
+    open(m, task);
     for _ in 0..20 {
-        if cursor_label(m) == "llamacpp" {
+        if cursor_label(m) == engine {
             break;
         }
         press(m, 'j');
     }
-    assert_eq!(cursor_label(m), "llamacpp");
+    assert_eq!(cursor_label(m), engine);
     send(m, key(KeyCode::Enter));
     send(m, key(KeyCode::Enter));
+}
+
+/// Opens the chat task, goes to llamacpp and presses Enter on its first model.
+fn choose_first_model(m: &mut MenuState) {
+    choose(m, "chat", "llamacpp");
+}
+
+fn server_edits(m: &MenuState) -> Vec<ConfigEdit> {
+    m.edits(&Config::default())
+        .into_iter()
+        .filter(|e| e.table == "ai.servers.llamacpp")
+        .collect()
 }
 
 fn server_edit(key: &'static str, value: &str) -> ConfigEdit {
@@ -110,4 +122,30 @@ fn choosing_the_model_already_managed_writes_no_server_keys() {
             .iter()
             .all(|e| e.table != "ai.servers.llamacpp"),
     );
+}
+
+// Verifier blocker 1: a local model the user then replaced is not saved.
+#[test]
+fn a_local_model_replaced_before_saving_leaves_the_server_alone() {
+    let mut d = detection(&[
+        engine("llamacpp", Status::NotRunning, &[], None),
+        engine("ollama", Status::Available, &["llama3:8b"], None),
+    ]);
+    d.local_models = vec![PathBuf::from("/m/a.gguf")];
+    let mut m = menu(None, None, Some(d));
+    choose(&mut m, "chat", "llamacpp");
+    choose(&mut m, "chat", "ollama");
+    assert_eq!(m.ai_draft().label(Task::Chat), "ollama › llama3:8b");
+    assert_eq!(m.ai_draft().managed(), None);
+    assert_eq!(m.ai_draft().servers().port("llamacpp"), Some(8080));
+    assert_eq!(server_edits(&m), vec![]);
+}
+
+// Verifier blocker 1: it is not saved either when general, which the task
+// inherits, still points at it.
+#[test]
+fn a_local_model_inherited_through_general_stays_managed() {
+    let mut m = menu(None, None, stopped_llamacpp(&["/m/a.gguf"]));
+    choose(&mut m, "general", "llamacpp");
+    assert_eq!(server_edits(&m).len(), 2);
 }

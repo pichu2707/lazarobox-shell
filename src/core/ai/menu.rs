@@ -261,10 +261,14 @@ impl AiMenu {
         let outcome = act(picker, &self.draft, self.engines.as_ref());
         match &outcome {
             Outcome::Commit(assignment) => {
-                if let Some(model) = self.local_model(assignment) {
-                    self.draft.manage(model);
-                }
+                let local = self.local_model(assignment);
                 target.apply(&mut self.draft, assignment.clone());
+                if let Some(model) = local {
+                    self.draft.manage(model);
+                } else if self.changed_managed().is_some() && !self.draft.uses_managed() {
+                    // A local model picked earlier that no task uses any more.
+                    self.draft.keep_servers_of(&self.original);
+                }
                 self.picker = None;
             }
             Outcome::Close => self.picker = None,
