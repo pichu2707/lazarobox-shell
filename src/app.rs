@@ -214,6 +214,9 @@ pub enum Effect {
     /// Like `DetectEngines`, but the codex model listing is read again even
     /// when a recent one is cached (the menu's `r`).
     RedetectEngines,
+    /// Ask crates.io for the latest version now, whatever the cache says (the
+    /// Updates row's `r`); the runtime answers with one `UpdateChecked`.
+    CheckUpdate,
     /// Start one chat turn for a pane. Events of the turn come back tagged
     /// with `turn`.
     ChatSend {
@@ -1654,6 +1657,7 @@ impl App {
             }
             MenuCommand::Copy(text) => self.copy_from_menu(&text),
             MenuCommand::Update => self.on_update_command(),
+            MenuCommand::CheckUpdate => vec![Effect::CheckUpdate],
             MenuCommand::TestNotify { mode, sound } => self.test_notify(mode, sound),
             MenuCommand::None => Vec::new(),
         }

@@ -10,6 +10,12 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- `r` on the menu's Updates row checks crates.io now, ignoring the cache and
+  the 24-hour limit. The row reads `checking…` until the answer comes. It does
+  nothing with `[updates] check = false` or after an install in this run.
+
 ## [0.19.0] - 2026-10-23
 
 ### Added

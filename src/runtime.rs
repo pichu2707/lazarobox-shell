@@ -271,12 +271,31 @@ pub async fn run() -> io::Result<()> {
     // Off (`[updates] check = false`) nothing is read, asked or shown.
     let (update_tx, update_rx) = mpsc::channel(1);
     let (notified_tx, notified_rx) = mpsc::channel(4);
+    let update_cache = update::cache_path(
+        env::var_os("XDG_DATA_HOME").as_deref(),
+        env::var_os("HOME").as_deref(),
+    );
+    // The menu's `r` asks again on the same channel (the menu only offers it
+    // with the check on).
+    let check_update = {
+        let (cache, tx, path) = (
+            update_cache.clone(),
+            update_tx.clone(),
+            cli_env.path.clone(),
+        );
+        move || {
+            update::check_now(
+                cache.clone(),
+                update::now_secs(),
+                env!("CARGO_PKG_VERSION"),
+                update::CurlFetcher::crates_io(path.clone()),
+                tx.clone(),
+            );
+        }
+    };
     let announced = update::begin(
         app.config().update_check,
-        update::cache_path(
-            env::var_os("XDG_DATA_HOME").as_deref(),
-            env::var_os("HOME").as_deref(),
-        ),
+        update_cache,
         update::now_secs(),
         env!("CARGO_PKG_VERSION"),
         update::CurlFetcher::crates_io(cli_env.path.clone()),
@@ -328,6 +347,7 @@ pub async fn run() -> io::Result<()> {
         .with_memory(memory)
         .with_run_checks(run_check::Checker::new(run_check::process_env(), run_tx))
         .with_config_path(config_path)
+        .with_update_checker(Box::new(check_update))
         .with_detector(Box::new({
             let server_ports = server_ports.clone();
             move |force| {
@@ -855,6 +875,9 @@ struct Panes {
     /// Starts one AI engine detection; the answer arrives on the AI channel.
     /// A no-op unless `with_detector` installs the production one.
     detect: Box<dyn FnMut(bool)>,
+    /// Starts one update check now; the answer arrives on the update
+    /// channel. A no-op unless `with_update_checker` installs the real one.
+    check_update: Box<dyn FnMut()>,
     /// Starts the preparation of a conversation's system prompt: pane,
     /// profile, origin cwd and the context flag. The answer arrives on the
     /// prompt channel. A no-op unless `with_preparer` installs the
@@ -885,6 +908,7 @@ impl Panes {
             sound_send: Box::new(|| {}),
             test_send: Box::new(|_, _, _| {}),
             detect: Box::new(|_| {}),
+            check_update: Box::new(|| {}),
             prepare: Box::new(|_, _, _, _| {}),
             chats: None,
             run_checks: None,
@@ -974,6 +998,12 @@ impl Panes {
         self
     }
 
+    /// Sets what `Effect::CheckUpdate` runs.
+    fn with_update_checker(mut self, check: Box<dyn FnMut()>) -> Self {
+        self.check_update = check;
+        self
+    }
+
     /// Sets what `Effect::PreparePrompt` runs.
     fn with_preparer(mut self, prepare: Box<PrepareFn>) -> Self {
         self.prepare = prepare;
@@ -1031,6 +1061,8 @@ impl Panes {
                 // Returns at once: the probes run on their own tasks.
                 Effect::DetectEngines => (self.detect)(false),
                 Effect::RedetectEngines => (self.detect)(true),
+                // Returns at once: the request runs on its own thread.
+                Effect::CheckUpdate => (self.check_update)(),
                 // Both return at once: the turn runs on its own task, and a
                 // cancel only aborts it (the adapter's drop does the killing).
                 Effect::ChatSend {
@@ -2344,6 +2376,19 @@ mod tests {
         let seen = Rc::clone(&calls);
         let mut panes = panes.with_detector(Box::new(move |_| *seen.borrow_mut() += 1));
         let (outcome, feedback) = panes.apply(vec![Effect::DetectEngines]);
+        assert_eq!(
+            (outcome, feedback, *calls.borrow()),
+            (Outcome::Continue, Vec::new(), 1)
+        );
+    }
+
+    #[test]
+    fn check_update_calls_the_injected_checker_once() {
+        let (panes, _rx, _rec) = fake_panes(None);
+        let calls = Rc::new(RefCell::new(0));
+        let seen = Rc::clone(&calls);
+        let mut panes = panes.with_update_checker(Box::new(move || *seen.borrow_mut() += 1));
+        let (outcome, feedback) = panes.apply(vec![Effect::CheckUpdate]);
         assert_eq!(
             (outcome, feedback, *calls.borrow()),
             (Outcome::Continue, Vec::new(), 1)
