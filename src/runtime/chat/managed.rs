@@ -14,6 +14,10 @@
 //! - It runs in its own process group, so stopping it takes its children too.
 //!   Quitting lazarobox stops it ([`Managed::shutdown`]); dropping it kills the
 //!   group as a backstop, so a cancelled start leaves nothing running.
+//! - On Linux the kernel kills it when lazarobox dies without quitting (a
+//!   crash, SIGKILL): it is started with a parent-death signal. That signal
+//!   follows the thread that started it, which is a runtime worker that lives
+//!   as long as lazarobox. macOS has no such signal.
 //! - Its output goes to a log file in lazarobox's state folder, emptied on
 //!   each start and never followed through a symlink. A failed start shows its
 //!   last line, sanitized.
@@ -175,6 +179,24 @@ impl Managed {
             .stderr(stderr)
             .kill_on_drop(true)
             .process_group(0);
+        #[cfg(target_os = "linux")]
+        {
+            let parent = std::process::id() as libc::pid_t;
+            // SAFETY: the closure runs in the child between fork and exec and
+            // only makes async-signal-safe calls (prctl, getppid).
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    // We died before the signal was set: it will never come.
+                    if libc::getppid() != parent {
+                        return Err(io::Error::other("lazarobox is gone"));
+                    }
+                    Ok(())
+                });
+            }
+        }
         let child = command
             .spawn()
             .map_err(|_| "could not start llama-server: is it on the PATH?".to_owned())?;

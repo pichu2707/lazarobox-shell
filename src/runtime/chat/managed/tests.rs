@@ -214,3 +214,39 @@ async fn a_missing_program_says_it_is_not_on_the_path() {
         Err("could not start llama-server: is it on the PATH?".into())
     );
 }
+
+// Spec: The managed llama-server never outlives lazarobox. The kernel's
+// parent-death signal fires when the thread that started it ends, which a
+// thread of its own shows without killing the test process.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_server_dies_with_the_thread_that_started_it() {
+    let lab = Lab::new();
+    let pid_file = lab.dir.path().join("pid");
+    let body = format!("echo $$ > '{}'\nexec sleep 30", pid_file.display());
+    let managed = Arc::new(lab.managed(&body, answers_once(&lab.record()), WAIT));
+    let starter = Arc::clone(&managed);
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert_eq!(runtime.block_on(starter.ensure()), Ok(()));
+    })
+    .join()
+    .unwrap();
+    let pid: libc::pid_t = fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // Killed but not reaped (its parent is this process) reads as a zombie.
+    let dead = || matches!(process_state(pid), None | Some('Z'));
+    for _ in 0..100 {
+        if dead() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(dead(), "the server outlived the thread that started it");
+}
