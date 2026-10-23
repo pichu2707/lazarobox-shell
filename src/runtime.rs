@@ -586,6 +586,7 @@ fn app_from_config(
         .with_ai(ai)
         .with_chat_history()
         .with_notice(notice)
+        .with_config_path(config_path.map(Path::to_owned))
 }
 
 /// Reads the config once at startup; a missing file is silent defaults.
