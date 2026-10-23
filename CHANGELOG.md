@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-23
+
 ### Added
 
 - lazarobox can manage llama.cpp: with `managed = true` and `model = "<absolute
@@ -940,7 +942,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.2...v0.18.0
 [0.17.2]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.0...v0.17.1
