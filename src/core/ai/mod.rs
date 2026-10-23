@@ -140,6 +140,11 @@ impl ServerPorts {
             .fold(Self::default(), |ports, e| ports.with(e.id, port))
     }
 
+    /// Whether `id` has its own port here, not the catalog's.
+    pub fn is_set(&self, id: &str) -> bool {
+        self.0.iter().any(|(other, _)| *other == id)
+    }
+
     /// The port of the server engine `id`; `None` for any other id.
     pub fn port(&self, id: &str) -> Option<u16> {
         let catalog = CATALOG.iter().find_map(|e| match e.kind {

@@ -103,15 +103,20 @@ impl ConfigEdit {
 
     /// Whether the key is a TOML boolean (written as `true` / `false`, not
     /// as a string): the root `mouse`, the memory flags, `ai.context`,
-    /// `ai.notify_sound` and `ai.tools.enabled`. Every other owned key
-    /// holds a string; `ai.memory.port` is owned but never edited.
+    /// `ai.notify_sound`, `ai.tools.enabled` and `ai.servers.llamacpp.managed`.
+    /// Every other owned key holds a string; `ai.memory.port` is owned but
+    /// never edited.
     pub fn is_flag(&self) -> bool {
         (self.table.is_empty() && self.key == "mouse")
             || (self.table == MEMORY_TABLE && matches!(self.key, "enabled" | "acknowledged"))
             || (self.table == "ai" && matches!(self.key, "context" | "notify_sound"))
             || (self.table == TOOLS_TABLE && self.key == "enabled")
+            || (self.table == LLAMACPP_TABLE && self.key == "managed")
     }
 }
+
+/// The dotted table of the llama-server lazarobox manages.
+pub const LLAMACPP_TABLE: &str = "ai.servers.llamacpp";
 
 /// The dotted table of the memory keys.
 pub const MEMORY_TABLE: &str = "ai.memory";

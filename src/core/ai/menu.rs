@@ -1,9 +1,11 @@
 //! Pure model of the AI section of the config menu: the draft assignment of
 //! every task, shown against what the last detection found. No IO.
 
+use std::path::PathBuf;
+
 use super::{
     Detection, Status,
-    config::{AiConfig, ApprovalMode, Assignment, NotifyMode, Profile, Task},
+    config::{AiConfig, ApprovalMode, Assignment, ManagedServer, NotifyMode, Profile, Task},
     picker::{Outcome, PickRow, Picker, Target, task_label},
 };
 
@@ -140,6 +142,32 @@ impl AiMenu {
         self.draft.set_tools_enabled(next);
     }
 
+    /// The model file of `assignment` when it is one lazarobox starts a
+    /// stopped llama-server with: the managed one or a file found on the
+    /// machine. `None` for anything a running server or a CLI serves.
+    fn local_model(&self, assignment: &Assignment) -> Option<PathBuf> {
+        if assignment.engine.as_deref() != Some("llamacpp") {
+            return None;
+        }
+        let model = PathBuf::from(assignment.model.as_deref()?);
+        let detection = self.engines.as_ref()?;
+        let stopped = detection
+            .engines
+            .iter()
+            .any(|s| s.id == "llamacpp" && s.status == Status::NotRunning);
+        let known = self.draft.managed().is_some_and(|s| s.model == model)
+            || detection.local_models.contains(&model);
+        (stopped && known).then_some(model)
+    }
+
+    /// The managed llama-server of the draft, when the menu turned it on or
+    /// changed its model.
+    pub fn changed_managed(&self) -> Option<&ManagedServer> {
+        (self.draft.managed() != self.original.managed())
+            .then(|| self.draft.managed())
+            .flatten()
+    }
+
     /// The tools flag in the draft, when it differs from the open one.
     pub fn changed_tools(&self) -> Option<bool> {
         (self.draft.tools_enabled() != self.original.tools_enabled())
@@ -233,6 +261,9 @@ impl AiMenu {
         let outcome = act(picker, &self.draft, self.engines.as_ref());
         match &outcome {
             Outcome::Commit(assignment) => {
+                if let Some(model) = self.local_model(assignment) {
+                    self.draft.manage(model);
+                }
                 target.apply(&mut self.draft, assignment.clone());
                 self.picker = None;
             }
