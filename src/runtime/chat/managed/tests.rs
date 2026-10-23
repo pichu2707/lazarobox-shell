@@ -102,6 +102,22 @@ async fn the_first_ensure_starts_the_server_once_and_later_ones_reuse_it() {
     managed.shutdown().await;
 }
 
+// Spec S4 (llamacpp-pick-model): a server replaced by another model stops
+// and never starts again, not even for a turn that still holds it.
+#[tokio::test]
+async fn a_retired_server_stops_and_refuses_to_start_again() {
+    let lab = Lab::new();
+    let managed = lab.managed("exec sleep 30", answers_once(&lab.record()), WAIT);
+    assert_eq!(managed.ensure().await, Ok(()));
+    let pid = managed.pid().await.expect("it runs");
+    managed.retire().await;
+    assert_eq!(managed.pid().await, None);
+    assert!(gone(pid));
+    assert_eq!(managed.ensure().await, Err(REPLACED.to_owned()));
+    assert_eq!(managed.pid().await, None);
+    assert_eq!(lab.starts().len(), 1);
+}
+
 // Spec: Quitting stops the managed llama-server.
 #[tokio::test]
 async fn shutdown_stops_the_server_and_its_children() {

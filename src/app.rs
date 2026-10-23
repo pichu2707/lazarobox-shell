@@ -17,7 +17,8 @@ use crate::core::{
             prompts::Resolved,
             store::{StoreCmd, StoreReply},
         },
-        config::{AiConfig, NotifyMode, Profile, Task},
+        config::{AiConfig, ManagedServer, NotifyMode, Profile, Task},
+        gguf,
         jail::{JailOff, JailSupport},
         memory::{
             offer::ServerOffer,
@@ -69,6 +70,9 @@ const SCROLLBACK_LINES: usize = 10_000;
 const HELD_EXIT_WINDOW: Duration = Duration::from_millis(500);
 
 /// Shown when `Prefix n` (save a note) is pressed on a pane that is not a chat.
+/// The notice once the llama-server a menu save turned on answers.
+const MANAGED_READY: &str = "llama-server is ready";
+
 const NOTE_CHAT_ONLY: &str = "Save as note is for chat panes; open one with Ctrl+Space c";
 /// Notice of the summary key on a pane that is not a chat.
 const SUMMARY_CHAT_ONLY: &str = "The summary is for chat panes; open one with Ctrl+Space c";
@@ -184,6 +188,9 @@ pub enum AppEvent {
     WindowFocus(bool),
     /// What the notification test did (a footer line), from the runtime.
     NotifyTested(String),
+    /// How the start of the llama-server a menu save turned on went: the
+    /// error is the one reason, already safe to show.
+    ManagedStarted(Result<(), String>),
 }
 
 /// How the menu closed.
@@ -318,6 +325,13 @@ pub enum Effect {
     NotifyTest {
         mode: NotifyMode,
         sound: bool,
+    },
+    /// Start lazarobox's own llama-server with `model` on `port`, replacing
+    /// the one it managed. Emitted when a menu save turns it on or changes its
+    /// model; the runtime answers with `AppEvent::ManagedStarted`.
+    StartManaged {
+        model: PathBuf,
+        port: u16,
     },
     /// Turn the host terminal's mouse capture on (`true`) or off. Emitted
     /// only when the wanted state differs from the one last asked for.
@@ -1476,6 +1490,19 @@ impl App {
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
             AppEvent::MemoryTick => self.on_memory_tick(),
+            AppEvent::ManagedStarted(started) => {
+                self.dirty = true;
+                match started {
+                    Ok(()) => {
+                        self.notice = Some(MANAGED_READY.to_owned());
+                        vec![Effect::RedetectEngines]
+                    }
+                    Err(reason) => {
+                        self.notice = Some(reason);
+                        Vec::new()
+                    }
+                }
+            }
             AppEvent::NotifyTested(report) => {
                 if let Some(menu) = self.menu.as_mut() {
                     menu.set_test_report(report);
@@ -1604,10 +1631,15 @@ impl App {
     /// The only way out of MENU. `Reverted` restores the config captured at
     /// open; `Saved` keeps the draft.
     fn close_menu(&mut self, outcome: Outcome) -> Vec<Effect> {
+        let mut start = None;
         if let Some(menu) = self.menu.take() {
             match outcome {
                 Outcome::Reverted => self.config = menu.original(),
-                Outcome::Saved => self.ai = menu.ai_draft(),
+                Outcome::Saved => {
+                    let before = self.ai.managed().cloned();
+                    self.ai = menu.ai_draft();
+                    start = self.start_managed(before.as_ref());
+                }
             }
             if !self.ai.memory.active() {
                 self.memory_turned_off();
@@ -1619,7 +1651,23 @@ impl App {
         // The forced tab bar goes away with the menu, whatever the outcome.
         let mut effects = self.apply_config();
         effects.extend(self.sync_tools());
+        effects.extend(start);
         effects
+    }
+
+    /// The start of the managed llama-server when the saved config turned it
+    /// on or changed its model since `before`, with its notice.
+    fn start_managed(&mut self, before: Option<&ManagedServer>) -> Option<Effect> {
+        let server = self.ai.managed().filter(|now| Some(*now) != before)?;
+        let port = self.ai.servers().port("llamacpp")?;
+        self.notice = Some(format!(
+            "starting llama-server with {}…",
+            gguf::label(&server.model)
+        ));
+        Some(Effect::StartManaged {
+            model: server.model.clone(),
+            port,
+        })
     }
 
     /// Brings the host mouse capture in line with `config.mouse`: one effect
@@ -7439,6 +7487,9 @@ mod app_tests {
 
     /// Memory in a chat view (engram-memory M6).
     mod chat_memory;
+
+    /// A save that turns the managed llama-server on (llamacpp-pick-model S4).
+    mod managed_start;
 
     /// Save as note (engram-memory M7b).
     mod chat_notes;

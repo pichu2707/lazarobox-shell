@@ -31,7 +31,10 @@ use std::{
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -51,6 +54,9 @@ const START_POLL: Duration = Duration::from_millis(250);
 const SHUTDOWN: Duration = Duration::from_secs(3);
 /// How much of the log's end is read for the failure line.
 const TAIL: usize = 4096;
+
+/// Why a turn that still holds a replaced server does not start it.
+pub const REPLACED: &str = "llama-server was switched to another model; send again";
 
 /// The status of `GET /v1/models` on a port, `None` when nothing answers. A
 /// seam so the start logic is tested without a real server.
@@ -78,6 +84,8 @@ pub struct Managed {
     probe: Probe,
     wait: Duration,
     running: Mutex<Option<Process>>,
+    /// Replaced by another model: it never starts again.
+    retired: AtomicBool,
 }
 
 impl Managed {
@@ -114,13 +122,24 @@ impl Managed {
             probe,
             wait,
             running: Mutex::new(None),
+            retired: AtomicBool::new(false),
         }
+    }
+
+    /// The port it runs on.
+    pub fn port(&self) -> u16 {
+        self.port
     }
 
     /// Ok once the server we started answers; it is started first when it is
     /// not running. The error is the one reason, already safe to show.
     pub async fn ensure(&self) -> Result<(), String> {
         let mut running = self.running.lock().await;
+        // Read under the lock: `retire` sets it before taking the lock, so a
+        // start that got the lock first is the one it stops.
+        if self.retired.load(Ordering::SeqCst) {
+            return Err(REPLACED.to_owned());
+        }
         if let Some(process) = running.as_mut() {
             match process.child.try_wait() {
                 // Ours and still running.
@@ -230,6 +249,12 @@ impl Managed {
             Some(line) => format!("{what}: {line}"),
             None => what.to_owned(),
         }
+    }
+
+    /// Stops it for good, once another model replaced it.
+    pub async fn retire(&self) {
+        self.retired.store(true, Ordering::SeqCst);
+        self.shutdown().await;
     }
 
     /// Stops the server we started, whole group, in at most 3 s.

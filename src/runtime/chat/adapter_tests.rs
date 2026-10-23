@@ -522,8 +522,8 @@ async fn run_managed(
     req: ChatRequest,
 ) -> (Vec<StreamEvent>, Chats) {
     let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
-    let mut chats =
-        Chats::new(adapter_runner_managed(ports, managed.clone()), tx).with_managed(Some(managed));
+    let live = LiveServers::new(ports, Some(managed));
+    let mut chats = Chats::new(adapter_runner_live(live.clone()), tx).with_live(live);
     chats.send(pane(1), 1, req);
     let mut events = Vec::new();
     loop {
@@ -583,6 +583,48 @@ async fn a_llamacpp_turn_starts_the_managed_server_and_quitting_stops_it() {
     let pid = managed.pid().await.expect("the server runs");
     chats.shutdown(Duration::from_secs(5)).await;
     assert_eq!(managed.pid().await, None);
+    assert!(crate::runtime::proc::process_state(pid as libc::pid_t).is_none());
+}
+
+// Spec S4 (llamacpp-pick-model): a server the menu turned on after startup
+// is the one the next llamacpp turn starts and talks to, and quitting stops it.
+#[tokio::test]
+async fn a_turn_uses_the_managed_server_turned_on_while_running() {
+    let llamacpp = Recorder::start(reply(LLAMACPP)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (program, started) = (dir.path().join("llama-server"), dir.path().join("started"));
+    std::fs::write(
+        &program,
+        format!("#!/bin/sh\ntouch '{}'\nexec sleep 30\n", started.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &program,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    // Unmanaged at startup, on a port where nothing listens.
+    let live = LiveServers::new(ServerPorts::default().with("llamacpp", 9), None);
+    let (tx, mut rx) = mpsc::channel(APP_CHANNEL);
+    let mut chats = Chats::new(adapter_runner_live(live.clone()), tx).with_live(live.clone());
+    let managed = managed_at(&program, llamacpp.port, started);
+    assert!(live.manage(Arc::clone(&managed)).is_none());
+    let mut req = request("qwen2.5");
+    req.engine = "llamacpp".into();
+    chats.send(pane(1), 1, req);
+    let last = loop {
+        let (_, _, event) = timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("an event within 10 s")
+            .expect("the channel is open");
+        if matches!(event, StreamEvent::Done(_) | StreamEvent::Error(_)) {
+            break event;
+        }
+    };
+    assert_eq!(last, StreamEvent::Done(Finish::Stop));
+    assert_eq!(llamacpp.connections.load(Ordering::SeqCst), 1);
+    let pid = managed.pid().await.expect("the server runs");
+    chats.shutdown(Duration::from_secs(5)).await;
     assert!(crate::runtime::proc::process_state(pid as libc::pid_t).is_none());
 }
 
