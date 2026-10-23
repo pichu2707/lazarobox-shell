@@ -871,7 +871,10 @@ mod tests {
     }
 
     fn detection(states: Vec<EngineState>) -> Detection {
-        Detection { engines: states }
+        Detection {
+            engines: states,
+            ..Default::default()
+        }
     }
 
     fn assign(config: &mut AiConfig, task: Task, engine: &str, model: Option<&str>) {

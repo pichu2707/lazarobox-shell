@@ -6460,6 +6460,7 @@ mod app_tests {
                     diagnostics: Default::default(),
                 })
                 .collect(),
+            ..Default::default()
         }
     }
 
@@ -6599,6 +6600,7 @@ mod app_tests {
                     }
                 })
                 .collect(),
+            ..Default::default()
         }
     }
 

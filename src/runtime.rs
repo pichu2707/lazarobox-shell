@@ -29,6 +29,7 @@ pub mod chat_store;
 mod config_write;
 pub mod desktop;
 pub mod engram;
+pub mod gguf;
 pub mod jail;
 pub mod login_path;
 pub mod loopback;
@@ -350,6 +351,7 @@ pub async fn run() -> io::Result<()> {
         .with_update_checker(Box::new(check_update))
         .with_detector(Box::new({
             let server_ports = server_ports.clone();
+            let model_dirs = model_dirs();
             move |force| {
                 spawn_detection(
                     ai_tx.clone(),
@@ -357,6 +359,7 @@ pub async fn run() -> io::Result<()> {
                     Arc::clone(&listing_cache),
                     force,
                     server_ports.clone(),
+                    Arc::clone(&model_dirs),
                 );
             }
         }))
@@ -485,6 +488,22 @@ pub async fn run() -> io::Result<()> {
         .await;
     panes.shutdown(QUIT_KILL_BOUND.saturating_sub(started.elapsed()));
     result
+}
+
+/// The folders the local llama.cpp models are looked for in, from this
+/// process's environment.
+fn model_dirs() -> Arc<[PathBuf]> {
+    let var = |name: &str| env::var_os(name).map(PathBuf::from);
+    let found = crate::core::ai::gguf::model_dirs(&crate::core::ai::gguf::DirsEnv {
+        home: var("HOME"),
+        xdg_data_home: var("XDG_DATA_HOME"),
+        xdg_cache_home: var("XDG_CACHE_HOME"),
+        llama_cache: var("LLAMA_CACHE"),
+        hf_hub_cache: var("HF_HUB_CACHE"),
+        hf_home: var("HF_HOME"),
+        macos: cfg!(target_os = "macos"),
+    });
+    found.into()
 }
 
 /// Whether `ENGRAM_HTTP_TOKEN` is set and not empty: all the app learns of
@@ -2592,6 +2611,7 @@ mod tests {
                 model_labels: Vec::new(),
                 diagnostics: Default::default(),
             }],
+            ..Default::default()
         };
         let quit = step(
             &mut app,
@@ -3120,6 +3140,7 @@ mod tests {
                 model_labels: Vec::new(),
                 diagnostics: Default::default(),
             }],
+            ..Default::default()
         }));
         app
     }

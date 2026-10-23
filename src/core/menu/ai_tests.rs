@@ -33,6 +33,7 @@ pub(super) fn detection(found: &[EngineState]) -> Detection {
                     .unwrap_or_else(|| engine(e.id, Status::NotInstalled, &[], None))
             })
             .collect(),
+        ..Default::default()
     }
 }
 

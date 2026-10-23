@@ -180,6 +180,7 @@ fn first_answer_streaming() -> App {
             model_labels: Vec::new(),
             diagnostics: Default::default(),
         }],
+        ..Default::default()
     }));
     press(&mut a, "c");
     a.update(AppEvent::PromptReady(
@@ -251,7 +252,10 @@ fn memory_not_ready_shows_why_and_sends_no_request() {
 #[test]
 fn an_engine_that_is_not_ready_says_cannot_summarize() {
     let mut a = ready_chat();
-    a.update(AppEvent::EnginesDetected(Detection { engines: vec![] }));
+    a.update(AppEvent::EnginesDetected(Detection {
+        engines: vec![],
+        ..Default::default()
+    }));
     assert_eq!(press(&mut a, "s"), vec![]);
     let notice = a.notice().expect("a notice");
     assert!(notice.starts_with("Cannot summarize: "), "{notice}");
@@ -678,6 +682,7 @@ fn detected() -> AppEvent {
             model_labels: Vec::new(),
             diagnostics: Default::default(),
         }],
+        ..Default::default()
     })
 }
 
