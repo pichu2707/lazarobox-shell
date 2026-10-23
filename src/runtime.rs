@@ -1374,9 +1374,13 @@ fn enter_modes<W: Write>(out: &mut W) -> io::Result<()> {
 }
 
 fn restore() {
-    // Best effort: there is nowhere left to report a failure.
+    // Best effort: there is nowhere left to report a failure. Not
+    // `ratatui::restore`, which reports one with `eprintln!`: once the
+    // terminal is gone (its tab was closed) that write fails and panics, the
+    // panic hook restores again and panics inside the panic, and the process
+    // aborts before the quit stops the chat servers it started.
     let _ = restore_to(&mut stdout());
-    ratatui::restore();
+    let _ = ratatui::try_restore();
 }
 
 /// Whether a panic on this thread should tear the terminal down. A panic
