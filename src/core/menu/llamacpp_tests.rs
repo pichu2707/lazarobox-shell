@@ -149,3 +149,47 @@ fn a_local_model_inherited_through_general_stays_managed() {
     choose(&mut m, "general", "llamacpp");
     assert_eq!(server_edits(&m).len(), 2);
 }
+
+// Verifier blocker 2 (user: "Pasan al nuevo"): llama-server loads one model,
+// so a second local pick moves every task on a local model to it.
+#[test]
+fn a_second_local_model_moves_the_tasks_on_the_first_one_to_it() {
+    let mut m = menu(None, None, stopped_llamacpp(&["/m/a.gguf", "/m/b.gguf"]));
+    choose(&mut m, "chat", "llamacpp");
+    open(&mut m, "code");
+    for _ in 0..20 {
+        if cursor_label(&m) == "llamacpp" {
+            break;
+        }
+        press(&mut m, 'j');
+    }
+    send(&mut m, key(KeyCode::Enter));
+    press(&mut m, 'j');
+    assert_eq!(cursor_label(&m), "b.gguf");
+    send(&mut m, key(KeyCode::Enter));
+    let draft = m.ai_draft();
+    assert_eq!(draft.label(Task::Code), "llamacpp › /m/b.gguf");
+    assert_eq!(draft.label(Task::Chat), "llamacpp › /m/b.gguf");
+    assert_eq!(
+        draft.managed(),
+        Some(&ManagedServer {
+            model: PathBuf::from("/m/b.gguf")
+        })
+    );
+}
+
+// Only tasks on a model lazarobox starts move: a name of the user's own stays.
+#[test]
+fn a_task_on_a_name_of_its_own_keeps_it() {
+    let mut ai = AiConfig::general(None, None);
+    ai.set(
+        Task::Review,
+        crate::core::ai::config::Assignment {
+            engine: Some("llamacpp".into()),
+            model: Some("qwen".into()),
+        },
+    );
+    let mut m = MenuState::open(&Config::default()).with_ai(ai, stopped_llamacpp(&["/m/a.gguf"]));
+    choose(&mut m, "chat", "llamacpp");
+    assert_eq!(m.ai_draft().label(Task::Review), "llamacpp › qwen");
+}

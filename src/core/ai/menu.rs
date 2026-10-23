@@ -1,7 +1,7 @@
 //! Pure model of the AI section of the config menu: the draft assignment of
 //! every task, shown against what the last detection found. No IO.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::{
     Detection, Status,
@@ -160,6 +160,38 @@ impl AiMenu {
         (stopped && known).then_some(model)
     }
 
+    /// Moves every task whose own model is one lazarobox starts to `model`:
+    /// llama-server loads only one, so the rows say what answers.
+    fn follow(&mut self, model: &Path) {
+        let starts = |path: &Path| {
+            self.draft.managed().is_some_and(|s| s.model == path)
+                || self
+                    .engines
+                    .as_ref()
+                    .is_some_and(|d| d.local_models.iter().any(|m| m == path))
+        };
+        let moved: Vec<Task> = Task::ALL
+            .into_iter()
+            .filter(|&task| {
+                let own = self.draft.get(task);
+                own.engine.as_deref() == Some("llamacpp")
+                    && own
+                        .model
+                        .as_deref()
+                        .is_some_and(|m| Path::new(m) != model && starts(Path::new(m)))
+            })
+            .collect();
+        for task in moved {
+            self.draft.set(
+                task,
+                Assignment {
+                    engine: Some("llamacpp".to_owned()),
+                    model: Some(model.to_string_lossy().into_owned()),
+                },
+            );
+        }
+    }
+
     /// The managed llama-server of the draft, when the menu turned it on or
     /// changed its model.
     pub fn changed_managed(&self) -> Option<&ManagedServer> {
@@ -264,6 +296,7 @@ impl AiMenu {
                 let local = self.local_model(assignment);
                 target.apply(&mut self.draft, assignment.clone());
                 if let Some(model) = local {
+                    self.follow(&model);
                     self.draft.manage(model);
                 } else if self.changed_managed().is_some() && !self.draft.uses_managed() {
                     // A local model picked earlier that no task uses any more.
