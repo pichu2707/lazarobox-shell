@@ -18,8 +18,16 @@ baseline.
   commit SHA with its version in a comment, and no checkout keeps the git
   token on the runner (`persist-credentials: false`). `rust-cache` v2.9.3,
   `crates-io-auth-action` v1.0.6.
+- macOS: the startup check of the jail may take 10 s in total instead of 5 s,
+  so a slow first `sandbox-exec` on a loaded Mac no longer turns codex and
+  gemini off for the session.
 
 ### Fixed
+
+- macOS: the jail's refusals ignore letter case, like the default file system
+  does. A state dir or package root spelled `~/library/keychains`,
+  `~/LIBRARY/Caches`, `~/.SSH` or `/system` was granted before; now it is
+  refused like `~/Library/Keychains`. Linux still matches case.
 
 - The outdated-CLI message names our flag also when the CLI rejects it with
   its value (`--model=<name>`, `--mcp-config=`, `--allowedTools=`,
