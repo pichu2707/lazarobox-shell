@@ -85,7 +85,8 @@ pub struct Denial {
 }
 
 /// The denial in one line of `log stream --style compact`, also in a
-/// `N duplicate reports for ...` line. `None` for any other line.
+/// `N duplicate reports for ...` line. An operation without a target (such as
+/// `process-fork`) has an empty target. `None` for any other line.
 pub fn parse(line: &str) -> Option<Denial> {
     let (_, rest) = line.split_once("Sandbox: ")?;
     let (process, rest) = rest.split_once('(')?;
@@ -94,7 +95,11 @@ pub fn parse(line: &str) -> Option<Denial> {
         return None;
     }
     let (_, rest) = rest.split_once(") ")?;
-    let (operation, target) = rest.trim_end().split_once(' ')?;
+    let rest = rest.trim_end();
+    let (operation, target) = rest.split_once(' ').unwrap_or((rest, ""));
+    if operation.is_empty() {
+        return None;
+    }
     Some(Denial {
         process: process.to_owned(),
         operation: operation.to_owned(),
@@ -146,7 +151,9 @@ pub fn unexpected(log: &str) -> Vec<String> {
         let known = KNOWN
             .iter()
             .any(|(operation, known)| *operation == denial.operation && *known == target);
-        let line = format!("{} {} {target}", denial.process, denial.operation);
+        let line = format!("{} {} {target}", denial.process, denial.operation)
+            .trim_end()
+            .to_owned();
         if !known && !found.contains(&line) {
             found.push(line);
         }

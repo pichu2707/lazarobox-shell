@@ -149,3 +149,17 @@ fn another_program_run_by_codex_is_unexpected() {
                Sandbox: codex(1) deny(1) process-exec* /usr/bin/git\n";
     assert_eq!(unexpected(log).len(), 2, "{:?}", unexpected(log));
 }
+
+#[test]
+fn a_denial_without_a_target_is_still_a_denial() {
+    let line = "Sandbox: codex(1) deny(1) process-fork";
+    assert_eq!(
+        parse(line),
+        Some(Denial {
+            process: "codex".into(),
+            operation: "process-fork".into(),
+            target: String::new(),
+        })
+    );
+    assert_eq!(unexpected(line), vec!["codex process-fork".to_owned()]);
+}
