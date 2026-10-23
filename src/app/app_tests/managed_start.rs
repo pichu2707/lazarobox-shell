@@ -97,3 +97,35 @@ fn a_failed_start_says_why_and_detects_nothing() {
     assert_eq!(effects, vec![]);
     assert_eq!(a.notice(), Some(reason));
 }
+
+// Found by the independent verifier.
+
+#[test]
+fn a_cancelled_menu_starts_nothing_and_keeps_the_ai_config() {
+    let mut a = launched(80, 25);
+    a.menu = Some(MenuState::open(&a.config).with_ai(managing("/m/q.gguf"), a.engines.clone()));
+    a.input = InputMode::Menu;
+    let effects = a.close_menu(super::super::Outcome::Reverted);
+    assert_eq!(starts(&effects), Vec::<&Effect>::new());
+    assert_eq!(a.ai.managed(), None);
+    assert_eq!(a.notice(), None);
+}
+
+#[test]
+fn a_failed_save_starts_nothing() {
+    let mut a = launched(80, 25);
+    a.menu = Some(MenuState::open(&a.config).with_ai(managing("/m/q.gguf"), a.engines.clone()));
+    a.input = InputMode::Menu;
+    let effects = a.update(AppEvent::ConfigSaveFailed("save failed: disk full".into()));
+    assert_eq!(starts(&effects), Vec::<&Effect>::new());
+    assert_eq!(a.ai.managed(), None);
+}
+
+#[test]
+fn a_failed_start_after_ready_does_not_redetect() {
+    let mut a = launched(80, 25);
+    let effects = a.update(AppEvent::ManagedStarted(Err(
+        crate::runtime::chat::managed::REPLACED.to_owned(),
+    )));
+    assert_eq!(effects, vec![]);
+}

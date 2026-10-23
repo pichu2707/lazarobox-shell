@@ -310,3 +310,114 @@ fn a_server_dies_with_the_thread_that_started_it() {
     }
     assert!(dead(), "the server outlived the thread that started it");
 }
+
+// Races found by the independent verifier (llamacpp-pick-model S4).
+
+fn read_pid(path: &Path) -> Option<u32> {
+    fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+async fn wait_for_pid(path: &Path) -> u32 {
+    for _ in 0..100 {
+        if let Some(pid) = read_pid(path) {
+            return pid;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the fake never started");
+}
+
+// A turn's start that holds the lock while retire comes in: the server it
+// started is the one retire stops, and nothing starts afterwards.
+#[tokio::test]
+async fn retire_during_an_in_flight_start_leaves_nothing_running() {
+    let lab = Lab::new();
+    let pidfile = lab.dir.path().join("pid");
+    let ready = lab.dir.path().join("ready");
+    let body = format!(
+        "echo $$ > '{}'\nsleep 1\ntouch '{}'\nexec sleep 30",
+        pidfile.display(),
+        ready.display()
+    );
+    let managed = Arc::new(lab.managed(&body, answers_once(&ready), WAIT));
+    let starting = tokio::spawn({
+        let managed = Arc::clone(&managed);
+        async move { managed.ensure().await }
+    });
+    let pid = wait_for_pid(&pidfile).await;
+    managed.retire().await;
+    let _ = starting.await.unwrap();
+    assert_eq!(managed.pid().await, None);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(dead(pid), "the in-flight server was left running");
+    assert_eq!(managed.ensure().await, Err(REPLACED.to_owned()));
+    assert_eq!(lab.starts().len(), 1);
+}
+
+// Quit while the start a save asked for is in flight: the bounded shutdown
+// cannot take the lock, the runtime then drops the task; nothing survives.
+#[tokio::test]
+async fn quit_while_a_start_is_in_flight_leaves_nothing_running() {
+    let lab = Lab::new();
+    let pidfile = lab.dir.path().join("pid");
+    let ready = lab.dir.path().join("never");
+    let body = format!("echo $$ > '{}'\nexec sleep 30", pidfile.display());
+    let managed = Arc::new(lab.managed(&body, answers_once(&ready), Duration::from_secs(60)));
+    let live = super::super::LiveServers::default();
+    assert!(live.manage(Arc::clone(&managed)).is_none());
+    let start = tokio::spawn({
+        let managed = Arc::clone(&managed);
+        async move { managed.ensure().await }
+    });
+    let pid = wait_for_pid(&pidfile).await;
+    // Chats::shutdown does this, bounded.
+    let current = live.managed().unwrap();
+    let _ = tokio::time::timeout(Duration::from_millis(300), current.shutdown()).await;
+    // The runtime drop cancels the in-flight task.
+    start.abort();
+    let _ = start.await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(dead(pid), "an in-flight start survived the quit");
+}
+
+// Quit right after a save swapped the server but before the replacing task
+// retired the old one: dropping that task (runtime drop) still stops it.
+#[tokio::test]
+async fn quit_before_the_old_server_is_retired_leaves_nothing_running() {
+    let lab = Lab::new();
+    let pidfile = lab.dir.path().join("pid");
+    let ready = lab.dir.path().join("ready");
+    let body = format!(
+        "echo $$ > '{}'\ntouch '{}'\nexec sleep 30",
+        pidfile.display(),
+        ready.display()
+    );
+    let old = Arc::new(lab.managed(&body, answers_once(&ready), WAIT));
+    assert_eq!(old.ensure().await, Ok(()));
+    let pid = old.pid().await.unwrap();
+    let live = super::super::LiveServers::new(Default::default(), Some(Arc::clone(&old)));
+    drop(old);
+    let lab2 = Lab::new();
+    let new = Arc::new(lab2.managed("exec sleep 30", answers(None), WAIT));
+    let replaced = live.manage(Arc::clone(&new)).unwrap();
+    // The task the manager spawns, never polled before the quit.
+    let task = tokio::spawn(async move {
+        replaced.retire().await;
+        let _ = new.ensure().await;
+    });
+    task.abort();
+    let _ = task.await;
+    let _ = tokio::time::timeout(
+        Duration::from_millis(300),
+        live.managed().unwrap().shutdown(),
+    )
+    .await;
+    drop(live);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(dead(pid), "the replaced server was left running untracked");
+}
+
+/// Gone or a zombie waiting to be reaped: either way no longer running.
+fn dead(pid: u32) -> bool {
+    matches!(process_state(pid as libc::pid_t), None | Some('Z'))
+}

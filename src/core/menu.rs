@@ -1729,6 +1729,9 @@ mod reanchor_tests;
 mod llamacpp_tests;
 
 #[cfg(test)]
+mod llamacpp_probe_tests;
+
+#[cfg(test)]
 mod save_tests;
 
 #[cfg(test)]
