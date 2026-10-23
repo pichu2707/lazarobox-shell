@@ -852,45 +852,60 @@ pub(crate) fn is_scratch(path: &Path) -> bool {
 /// Whether granting `path` to `cli` would open far more than its own files:
 /// `$HOME` or one of its parents, `/tmp`, `~/.ssh`, `~/.gnupg`, another
 /// tool's credential folder, a shared data folder of `$HOME` or a system or
-/// mount folder.
+/// mount folder. On macOS the letter case does not count, as on its default
+/// file system: `~/library/keychains` is the keychain folder.
 fn too_broad(path: &Path, homes: &[&Path], cli: Cli, os: Os) -> bool {
     let macos: &[&str] = if os == Os::Macos { BROAD_MACOS } else { &[] };
+    let path = &fold(path, os);
     is_scratch(path)
-        || BROAD.iter().chain(macos).any(|b| path == Path::new(b))
+        || BROAD
+            .iter()
+            .chain(macos)
+            .any(|b| *path == fold(Path::new(b), os))
         || homes
             .iter()
-            .any(|home| too_broad_for_home(path, home, cli, os))
+            .any(|home| too_broad_for_home(path, &fold(home, os), cli, os))
 }
 
+/// `path` in lower case on macOS, where the file system ignores letter case;
+/// unchanged elsewhere. Both sides of a comparison go through it.
+fn fold(path: &Path, os: Os) -> PathBuf {
+    match os {
+        Os::Macos => PathBuf::from(path.to_string_lossy().to_lowercase()),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// `path` and `home` are already [`fold`]ed.
 fn too_broad_for_home(path: &Path, home: &Path, cli: Cli, os: Os) -> bool {
     let (credentials, shared): (&[&str], &[&str]) = if os == Os::Macos {
         (CREDENTIAL_DIRS_MACOS, SHARED_IN_HOME_MACOS)
     } else {
         (&[], &[])
     };
+    let at = |dir: &str| fold(&home.join(dir), os);
     home.starts_with(path)
-        || path.starts_with(home.join(".ssh"))
-        || path.starts_with(home.join(".gnupg"))
+        || path.starts_with(at(".ssh"))
+        || path.starts_with(at(".gnupg"))
         || CREDENTIAL_DIRS
             .iter()
             .chain(credentials)
             .filter(|d| **d != cli.own_dir())
-            .any(|d| path.starts_with(home.join(d)))
-        || SHARED_IN_HOME
-            .iter()
-            .chain(shared)
-            .any(|d| path == home.join(d))
+            .any(|d| path.starts_with(at(d)))
+        || SHARED_IN_HOME.iter().chain(shared).any(|d| path == at(d))
         || (os == Os::Macos && in_library_not_allowed(path, home))
 }
 
 /// Whether `path` is at or under `~/Library` and not at or under an allowed
-/// place. The credential folders are checked apart, so they stay refused even
-/// if an allowed place ever overlapped one.
+/// place, without letter case (`path` and `home` are [`fold`]ed). The
+/// credential folders are checked apart, so they stay refused even if an
+/// allowed place ever overlapped one.
 fn in_library_not_allowed(path: &Path, home: &Path) -> bool {
-    path.starts_with(home.join(LIBRARY_MACOS))
+    let at = |dir: &str| fold(&home.join(dir), Os::Macos);
+    path.starts_with(at(LIBRARY_MACOS))
         && !LIBRARY_ALLOWED_MACOS
             .iter()
-            .any(|allowed| path.starts_with(home.join(allowed)))
+            .any(|allowed| path.starts_with(at(allowed)))
 }
 
 /// Why a layout cannot be jailed.
