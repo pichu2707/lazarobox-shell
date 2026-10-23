@@ -10,6 +10,15 @@ baseline.
 
 ## [Unreleased]
 
+### Changed
+
+- CI and release workflows: `actions/checkout` v4 to v7.0.1 (Node 24, no more
+  Node 20 deprecation warning; it refuses fork checkouts under
+  `pull_request_target` and `workflow_run`). Every action is pinned to a
+  commit SHA with its version in a comment, and no checkout keeps the git
+  token on the runner (`persist-credentials: false`). `rust-cache` v2.9.3,
+  `crates-io-auth-action` v1.0.6.
+
 ### Fixed
 
 - The outdated-CLI message names our flag also when the CLI rejects it with
