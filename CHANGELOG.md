@@ -10,6 +10,13 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- macOS: the jail's check that no program folder is also writable ignores
+  letter case too. A codex under `~/.codex/...` with `CODEX_HOME=~/.CODEX`
+  (the same folder on the default file system) was accepted; now it is
+  refused like `~/.codex`.
+
 ## [0.21.0] - 2026-10-23
 
 ### Changed

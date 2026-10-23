@@ -1155,20 +1155,25 @@ pub fn jail_spec_for(
         push_unique(&mut spec.rw_files, shim.socket.clone());
     }
     if os == Os::Macos
-        && let Some((rx, rw)) = writable_executable(&spec)
+        && let Some((rx, rw)) = writable_executable(&spec, os)
     {
         return Err(SpecError::Overlap { rx, rw });
     }
     Ok(spec)
 }
 
-/// The first execute path that is equal to, under or over a writable one.
-fn writable_executable(spec: &JailSpec) -> Option<(PathBuf, PathBuf)> {
+/// The first execute path that is equal to, under or over a writable one,
+/// without letter case on macOS (see [`fold`]).
+fn writable_executable(spec: &JailSpec, os: Os) -> Option<(PathBuf, PathBuf)> {
     spec.rx.iter().find_map(|rx| {
+        let x = fold(rx, os);
         spec.rw
             .iter()
             .chain(&spec.rw_files)
-            .find(|rw| rx.starts_with(rw) || rw.starts_with(rx))
+            .find(|rw| {
+                let w = fold(rw, os);
+                x.starts_with(&w) || w.starts_with(&x)
+            })
             .map(|rw| (rx.clone(), rw.clone()))
     })
 }
