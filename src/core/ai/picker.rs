@@ -5,6 +5,8 @@
 //! The model catalogs behind these rows are informational and possibly
 //! stale (see `catalog`); nothing here downloads a model.
 
+use std::path::Path;
+
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::catalog::{cli_models, curated, same_model};
@@ -12,7 +14,7 @@ use super::chat::adapters::adapter_for;
 use super::config::{AiConfig, Assignment, Task};
 use super::parse::sanitize;
 use super::sanitize::is_format;
-use super::{CATALOG, Detection, Engine, Kind, Status, start_command, status_text};
+use super::{CATALOG, Detection, Engine, Kind, Status, gguf, start_command, status_text};
 
 /// What a picker is assigning to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -114,8 +116,30 @@ fn has_status(detection: Option<&Detection>, id: &str, status: Status) -> bool {
     detection.is_some_and(|d| d.engines.iter().any(|s| s.id == id && s.status == status))
 }
 
-/// The mark of the model a managed llama-server loads while it is stopped.
+/// The mark of a model a stopped llama-server can be started with.
 pub const MANAGED_MARK: &str = "lazarobox starts it";
+
+/// The models lazarobox can start a stopped llama-server with: `managed`
+/// first, then the files found on the machine, each once. Only paths that are
+/// text, since the choice is saved as a string. Empty for any other engine or
+/// state.
+fn local_files(engine: &str, managed: Option<&Path>, detection: &Detection) -> Vec<String> {
+    if engine != "llamacpp" || !has_status(Some(detection), engine, Status::NotRunning) {
+        return Vec::new();
+    }
+    let mut files: Vec<String> = Vec::new();
+    for path in managed
+        .into_iter()
+        .chain(detection.local_models.iter().map(|p| p.as_path()))
+    {
+        if let Some(text) = path.to_str()
+            && !files.iter().any(|f| f == text)
+        {
+            files.push(text.to_owned());
+        }
+    }
+    files
+}
 
 /// A server engine whose binary is on PATH but that did not answer on its
 /// port: listed, so that choosing it says how to start it.
@@ -322,28 +346,24 @@ pub fn model_rows(
         .iter()
         .find(|s| s.id == engine && s.status == Status::Available);
     let Some(state) = state else {
-        // A stopped llama-server that lazarobox starts itself: its model is
-        // chosen like any other, and every name works (llama-server ignores it).
-        if engine == "llamacpp"
-            && let Some(server) = draft.managed()
-            && has_status(Some(detection), engine, Status::NotRunning)
-        {
-            let path = server.model.display().to_string();
-            let file = server
-                .model
-                .file_name()
-                .map_or(path.clone(), |f| f.to_string_lossy().into_owned());
-            let mut rows = vec![labeled(
-                &file,
-                &path,
-                Mark::Status(MANAGED_MARK.to_owned()),
-                true,
-            )];
+        // A stopped llama-server: lazarobox starts it with the model chosen
+        // here, the managed one first, then the files found on the machine.
+        // Managed, every saved name works too (llama-server ignores it).
+        let managed = draft.managed().map(|s| s.model.as_path());
+        let files = local_files(engine, managed, detection);
+        if !files.is_empty() {
+            let mut rows: Vec<PickRow> = files
+                .iter()
+                .map(|path| {
+                    let label = gguf::label(Path::new(path));
+                    labeled(&label, path, Mark::Status(MANAGED_MARK.to_owned()), true)
+                })
+                .collect();
             rows.extend(
                 assigned
                     .iter()
-                    .filter(|m| !same_model(engine, m, &path))
-                    .map(|m| row(m, Mark::Plain, true)),
+                    .filter(|m| !files.iter().any(|f| same_model(engine, m, f)))
+                    .map(|m| row(m, Mark::Plain, managed.is_some())),
             );
             return rows;
         }
@@ -871,7 +891,10 @@ mod tests {
     }
 
     fn detection(states: Vec<EngineState>) -> Detection {
-        Detection { engines: states }
+        Detection {
+            engines: states,
+            ..Default::default()
+        }
     }
 
     fn assign(config: &mut AiConfig, task: Task, engine: &str, model: Option<&str>) {
@@ -1526,6 +1549,95 @@ mod tests {
         let rows = model_rows("vllm", Target::Task(Task::Chat), &draft, Some(&d));
         assert!(
             rows.iter().any(|r| matches!(r.key, PickKey::Note { .. })),
+            "{rows:?}"
+        );
+    }
+
+    fn stopped_llamacpp_with(models: &[&str]) -> Detection {
+        Detection {
+            engines: vec![state("llamacpp", Status::NotRunning, &[])],
+            local_models: models.iter().map(std::path::PathBuf::from).collect(),
+        }
+    }
+
+    fn local(path: &str, current: bool) -> PickRow {
+        PickRow {
+            key: PickKey::Model(path.to_owned()),
+            label: crate::core::ai::gguf::label(std::path::Path::new(path)),
+            mark: Mark::Status(MANAGED_MARK.to_owned()),
+            enabled: true,
+            current,
+        }
+    }
+
+    // Spec S2: a stopped llama-server lists the models found on the machine;
+    // choosing one is what makes lazarobox start it.
+    #[test]
+    fn a_stopped_llama_server_offers_the_local_models() {
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Chat, "llamacpp", Some("qwen"));
+        let d = stopped_llamacpp_with(&["/m/a.gguf", "/h/b.gguf"]);
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+        assert_eq!(
+            rows,
+            vec![
+                local("/m/a.gguf", false),
+                local("/h/b.gguf", false),
+                // Unmanaged, a saved name still needs a running server.
+                model("qwen", Mark::Plain, false, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_managed_model_comes_first_and_is_listed_once() {
+        let mut draft = managed_draft("/m/b.gguf");
+        assign(&mut draft, Task::Chat, "llamacpp", Some("/m/b.gguf"));
+        let d = stopped_llamacpp_with(&["/m/a.gguf", "/m/b.gguf"]);
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+        assert_eq!(
+            rows,
+            vec![local("/m/b.gguf", true), local("/m/a.gguf", false)]
+        );
+    }
+
+    #[test]
+    fn a_local_model_whose_path_is_not_text_is_left_out() {
+        use std::os::unix::ffi::OsStrExt;
+        let mut d = stopped_llamacpp_with(&["/m/a.gguf"]);
+        d.local_models
+            .push(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
+                b"/m/\xff.gguf",
+            )));
+        let rows = model_rows(
+            "llamacpp",
+            Target::Task(Task::Chat),
+            &AiConfig::default(),
+            Some(&d),
+        );
+        assert_eq!(rows, vec![local("/m/a.gguf", false)]);
+    }
+
+    #[test]
+    fn a_running_llama_server_lists_its_own_models_not_the_files() {
+        let d = Detection {
+            engines: vec![state("llamacpp", Status::Available, &["served"])],
+            local_models: vec![std::path::PathBuf::from("/m/a.gguf")],
+        };
+        let rows = model_rows(
+            "llamacpp",
+            Target::Task(Task::Chat),
+            &AiConfig::default(),
+            Some(&d),
+        );
+        assert!(
+            rows.iter()
+                .all(|r| r.key != PickKey::Model("/m/a.gguf".to_owned())),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.key == PickKey::Model("served".to_owned())),
             "{rows:?}"
         );
     }

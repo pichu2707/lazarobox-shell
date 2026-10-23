@@ -1,7 +1,7 @@
 //! The `[ai]` and `[ai.tasks.*]` sections of `config.toml`: the saved engine
 //! and model id of each AI task.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use toml::{Table, Value};
 
@@ -376,6 +376,36 @@ impl AiConfig {
     /// The llama-server lazarobox starts itself, when it is turned on.
     pub fn managed(&self) -> Option<&ManagedServer> {
         self.managed.as_ref()
+    }
+
+    /// Turns lazarobox's own llama-server on with `model`, as `managed = true`
+    /// and `model` in the config would: llamacpp moves to [`MANAGED_PORT`]
+    /// unless it already has a port of its own.
+    pub fn manage(&mut self, model: PathBuf) {
+        if self.managed.is_none() && !self.servers.is_set("llamacpp") {
+            self.servers = self.servers.clone().with("llamacpp", MANAGED_PORT);
+        }
+        self.managed = Some(ManagedServer { model });
+    }
+
+    /// The managed llama-server and the ports of `other`, as they were before
+    /// [`AiConfig::manage`].
+    pub fn keep_servers_of(&mut self, other: &AiConfig) {
+        self.managed = other.managed.clone();
+        self.servers = other.servers.clone();
+    }
+
+    /// Whether a task, its own or through general, uses the managed
+    /// llama-server's model.
+    pub fn uses_managed(&self) -> bool {
+        let Some(server) = &self.managed else {
+            return false;
+        };
+        Task::ALL.into_iter().any(|task| {
+            let (a, _) = self.resolve(task);
+            a.engine.as_deref() == Some("llamacpp")
+                && a.model.as_deref().map(Path::new) == Some(server.model.as_path())
+        })
     }
 
     #[cfg(test)]
@@ -786,7 +816,8 @@ fn string_list(value: Option<&Value>, keep: fn(&str) -> bool) -> Option<Vec<Stri
 /// `model` for llamacpp. A wrong port falls back on its own, with a problem:
 /// to the catalog port, or to [`MANAGED_PORT`] for a managed llama-server. A
 /// wrong `managed` or `model` leaves it unmanaged. Unknown ids and keys are
-/// ignored, like unknown names under `ai.tasks`. Never edited by the menu.
+/// ignored, like unknown names under `ai.tasks`. The menu writes only
+/// `managed` and `model` of llamacpp, when a local model is chosen.
 fn read_servers(table: &Table, problems: &mut Vec<String>) -> (ServerPorts, Option<ManagedServer>) {
     let mut ports = ServerPorts::default();
     let mut managed = None;
@@ -1045,6 +1076,29 @@ mod tests {
             managed_of(&with_port),
             (managed("/m/q.gguf"), Some(39080), vec![])
         );
+    }
+
+    // Spec S3: choosing a local model turns the managed server on, on the
+    // managed port unless the config names one.
+    #[test]
+    fn managing_a_model_takes_the_managed_port_like_the_config_does() {
+        let mut config = read_text("").0;
+        config.manage(PathBuf::from("/m/q.gguf"));
+        assert_eq!(config.managed(), managed("/m/q.gguf").as_ref());
+        assert_eq!(config.servers().port("llamacpp"), Some(MANAGED_PORT));
+        let mut config = read_text("[ai.servers.llamacpp]\nport = 39080\n").0;
+        config.manage(PathBuf::from("/m/q.gguf"));
+        assert_eq!(config.servers().port("llamacpp"), Some(39080));
+        // Another model of a server already managed keeps its port.
+        let mut config = read_text(
+            "[ai.servers.llamacpp]\nmanaged = true\nmodel = \"/m/a.gguf\"\nport = 39090\n",
+        )
+        .0;
+        config.manage(PathBuf::from("/m/b.gguf"));
+        assert_eq!(config.managed(), managed("/m/b.gguf").as_ref());
+        assert_eq!(config.servers().port("llamacpp"), Some(39090));
+        // The other servers never move.
+        assert_eq!(config.servers().port("vllm"), Some(8000));
     }
 
     // Spec: A managed llama-server is opt-in (other servers).

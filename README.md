@@ -182,7 +182,7 @@ Si un servidor escucha en otro puerto (por ejemplo, porque el suyo está ocupado
 port = 39080
 ```
 
-Valen `ollama`, `lmstudio`, `llamacpp` y `vllm`; un puerto fuera de 1–65535 o que no sea un número se ignora con un aviso al arrancar y se usa el habitual. El menú no edita esta tabla y la conserva al guardar. El cambio se aplica al reiniciar lazarobox.
+Valen `ollama`, `lmstudio`, `llamacpp` y `vllm`; un puerto fuera de 1–65535 o que no sea un número se ignora con un aviso al arrancar y se usa el habitual. El menú solo escribe `managed` y `model` de llamacpp (abajo) y conserva el resto de la tabla al guardar. Un `port` cambiado a mano se aplica al reiniciar lazarobox.
 
 Un servidor instalado (su binario está en el `PATH`) que no responde aparece en el selector como `not running`. Al elegirlo, el menú dice en qué puerto lo busca y cómo arrancarlo, por ejemplo `llamacpp not running on 127.0.0.1:39080 · start it, then press r: llama-server --port 39080 -m <model.gguf>`. Enter o `y` copia esa línea; arranca el servidor, pulsa `r` y aparecen sus modelos. lazarobox no arranca el servidor por ti, salvo el de llama.cpp si se lo pides (abajo).
 
@@ -194,8 +194,16 @@ managed = true
 model = "/ruta/al/modelo.gguf"
 ```
 
+**Desde el menú, sin editar nada.** Con `llama-server` instalado pero sin responder, el selector de modelos de llamacpp lista, marcados `lazarobox starts it`, los `.gguf` que encuentra en:
+
+- `~/.local/share/llama.cpp/models` (o `$XDG_DATA_HOME/llama.cpp/models`);
+- la caché de llama.cpp: `$LLAMA_CACHE`, o `~/.cache/llama.cpp` (en macOS también `~/Library/Caches/llama.cpp`);
+- la caché de Hugging Face: `$HF_HUB_CACHE`, `$HF_HOME/hub` o `~/.cache/huggingface/hub`.
+
+Al elegir uno y guardar, el menú escribe `managed = true` y ese `model` y lazarobox arranca `llama-server` en ese momento, sin reiniciar: la barra de estado dice `starting llama-server with <archivo>…` y luego `llama-server is ready` o por qué no arrancó. De un modelo dividido (`-00001-of-00003.gguf`) solo aparece la primera parte, que carga las demás; los proyectores de visión (`mmproj`) no aparecen. Sin ningún `.gguf` sigue la nota para arrancarlo a mano. `llama-server` carga un solo modelo: elegir otro para cualquier tarea pasa a él las tareas que usaban el anterior, y al guardar se para el servidor anterior y arranca el nuevo. Si cambias de idea y ninguna tarea se queda con el modelo, no se guarda ni se arranca nada.
+
 - En el selector de modelos, el `model` configurado aparece como `lazarobox starts it` aunque el servidor no esté en marcha, y se puede elegir.
-- Arrancar lazarobox no lanza nada. El primer mensaje del chat con llamacpp arranca `llama-server --host 127.0.0.1 --port 39281 -m <modelo>` y espera a que responda (hasta 90 s mientras carga el modelo); los siguientes mensajes reutilizan el mismo servidor.
+- Arrancar lazarobox no lanza nada. El primer mensaje del chat con llamacpp (o guardar el menú tras elegir un modelo, arriba) arranca `llama-server --host 127.0.0.1 --port 39281 -m <modelo>` y espera a que responda (hasta 90 s mientras carga el modelo); los siguientes mensajes reutilizan el mismo servidor.
 - Usa el puerto 39281, poco habitual a propósito; `port` lo cambia.
 - Se para al salir de lazarobox, también si cierras la pestaña de la terminal. En Linux, además, muere con lazarobox si este se cae; en macOS un cierre forzado puede dejarlo en marcha.
 - Si algo ya responde en ese puerto, lazarobox no arranca nada y el chat lo dice: nunca toma como suyo un servidor que no lanzó.

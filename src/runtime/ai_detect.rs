@@ -24,7 +24,7 @@ use futures::future::join_all;
 
 use super::{chat::CliEnv, proc::GroupKill};
 use crate::core::ai::{
-    Detection, Engine, Kind, Probe, ServerPorts,
+    Detection, Engine, Kind, Probe, ServerPorts, Status,
     chat::{cli::last_line, engine::ChatError},
     http::{MAX_BODY, parse_response},
     jail::{Cli, NOT_ENFORCED_MARKER, exit_error},
@@ -519,9 +519,28 @@ pub async fn detect_all(
     cache: &ListingCache,
     force: bool,
     ports: &ServerPorts,
+    model_dirs: &[PathBuf],
 ) -> Detection {
     let lister = Lister { env, cache, force };
-    detect_in(&ports.catalog(), &env.path, Some(lister)).await
+    let mut detection = detect_in(&ports.catalog(), &env.path, Some(lister)).await;
+    detection.local_models = local_models(&detection, model_dirs).await;
+    detection
+}
+
+/// The llama.cpp model files in `dirs`, looked for only when llama-server is
+/// installed: without it there is nothing to load them with.
+async fn local_models(detection: &Detection, dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let installed = detection
+        .engines
+        .iter()
+        .any(|s| s.id == "llamacpp" && s.status != Status::NotInstalled);
+    if !installed || dirs.is_empty() {
+        return Vec::new();
+    }
+    let dirs = dirs.to_vec();
+    tokio::task::spawn_blocking(move || super::gguf::find(&dirs))
+        .await
+        .unwrap_or_default()
 }
 
 /// Runs `fut` off the caller and sends exactly one `Detection` to `tx`: the
@@ -545,11 +564,11 @@ pub fn spawn_detection(
     cache: Arc<ListingCache>,
     force: bool,
     ports: ServerPorts,
+    model_dirs: Arc<[PathBuf]>,
 ) {
-    spawn_detection_of(
-        tx,
-        async move { detect_all(&env, &cache, force, &ports).await },
-    );
+    spawn_detection_of(tx, async move {
+        detect_all(&env, &cache, force, &ports, &model_dirs).await
+    });
 }
 
 /// Why the jailed CLI `id`, found at `file`, would run without its jail.
@@ -614,6 +633,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(1);
         let one = Detection {
             engines: vec![state("codex", Status::Available, &["default"], None)],
+            ..Default::default()
         };
         let sent = one.clone();
         spawn_detection_of(tx, async move { sent });
@@ -1427,7 +1447,7 @@ mod tests {
         let lab = lab();
         write_script(&lab.bin, "claude", "echo claude 9.9.9", 0o755);
         let env = env_of(&lab, false);
-        let d = detect_all(&env, &real_cache(), false, &ServerPorts::default()).await;
+        let d = detect_all(&env, &real_cache(), false, &ServerPorts::default(), &[]).await;
         let claude = d.engines.iter().find(|e| e.id == "claude").unwrap();
         assert_eq!(claude.version.as_deref(), Some("claude 9.9.9"));
     }
@@ -1443,7 +1463,7 @@ mod tests {
         let lab = lab();
         let env = env_of(&lab, false);
         let ports = ServerPorts::default().with("llamacpp", port);
-        let d = detect_all(&env, &real_cache(), false, &ports).await;
+        let d = detect_all(&env, &real_cache(), false, &ports, &[]).await;
         let llamacpp = d.engines.iter().find(|e| e.id == "llamacpp").unwrap();
         assert_eq!(llamacpp.status, Status::Available);
         assert_eq!(llamacpp.models, ["m"]);
@@ -1454,6 +1474,25 @@ mod tests {
             "{:?}",
             String::from_utf8_lossy(&seen[0])
         );
+    }
+
+    // Spec S2: the local models are listed only when llama-server is there.
+    #[tokio::test]
+    async fn an_installed_llama_server_brings_the_local_models() {
+        let (port, _) = fake_server(None).await;
+        let ports = ServerPorts::default().with("llamacpp", port);
+        let models = tempfile::tempdir().unwrap();
+        fs::write(models.path().join("qwen.gguf"), b"GGUF").unwrap();
+        let dirs = [models.path().to_path_buf()];
+        let lab = lab();
+        let env = env_of(&lab, false);
+        let d = detect_all(&env, &real_cache(), false, &ports, &dirs).await;
+        assert_eq!(d.local_models, Vec::<PathBuf>::new(), "no llama-server");
+        write_script(&lab.bin, "llama-server", "exit 0", 0o755);
+        let d = detect_all(&env, &real_cache(), false, &ports, &dirs).await;
+        let llamacpp = d.engines.iter().find(|e| e.id == "llamacpp").unwrap();
+        assert_eq!(llamacpp.status, Status::NotRunning);
+        assert_eq!(d.local_models, [models.path().join("qwen.gguf")]);
     }
 
     #[tokio::test]
@@ -1967,6 +2006,7 @@ mod tests {
                 state("gemini", Status::Available, &["default"], None),
                 state("opencode", Status::NotInstalled, &[], None),
             ],
+            ..Default::default()
         }
     }
 

@@ -35,7 +35,10 @@ fn state(id: &'static str, status: Status, models: &[&str]) -> EngineState {
 }
 
 fn detected(states: Vec<EngineState>) -> Detection {
-    Detection { engines: states }
+    Detection {
+        engines: states,
+        ..Default::default()
+    }
 }
 
 fn ready(engine: &str, model: Option<&str>) -> Availability {

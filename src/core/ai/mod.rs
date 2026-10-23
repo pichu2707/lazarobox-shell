@@ -7,6 +7,7 @@ use std::path::PathBuf;
 pub mod catalog;
 pub mod chat;
 pub mod config;
+pub mod gguf;
 pub mod http;
 pub mod jail;
 pub mod memory;
@@ -139,6 +140,11 @@ impl ServerPorts {
             .fold(Self::default(), |ports, e| ports.with(e.id, port))
     }
 
+    /// Whether `id` has its own port here, not the catalog's.
+    pub fn is_set(&self, id: &str) -> bool {
+        self.0.iter().any(|(other, _)| *other == id)
+    }
+
     /// The port of the server engine `id`; `None` for any other id.
     pub fn port(&self, id: &str) -> Option<u16> {
         let catalog = CATALOG.iter().find_map(|e| match e.kind {
@@ -207,6 +213,9 @@ pub struct Diagnostics {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Detection {
     pub engines: Vec<EngineState>,
+    /// The llama.cpp model files found on this machine, sorted by file name;
+    /// looked for only when `llama-server` is installed.
+    pub local_models: Vec<std::path::PathBuf>,
 }
 
 /// Raw facts gathered by the runtime for one engine.
@@ -257,7 +266,10 @@ pub fn reduce(probes: &[Probe]) -> Detection {
             }
         })
         .collect();
-    Detection { engines }
+    Detection {
+        engines,
+        ..Default::default()
+    }
 }
 
 /// What the menu says when the listing's output is not a model catalog.
@@ -837,6 +849,7 @@ mod tests {
                 mk("codex", Status::Available, models(1), Some("0.5.0")),
                 mk("gemini", Status::NotInstalled, vec![], None),
             ],
+            ..Default::default()
         };
         assert_eq!(text(&d, "ollama"), "available · 2 models");
         assert_eq!(text(&d, "lmstudio"), "available · 1 model");
@@ -853,6 +866,7 @@ mod tests {
         codex.diagnostics.jail = Some("Landlock ABI 2, needs 3+".to_owned());
         let d = Detection {
             engines: vec![codex],
+            ..Default::default()
         };
         assert_eq!(
             text(&d, "codex"),
@@ -862,6 +876,7 @@ mod tests {
         unknown.diagnostics.jail = Some("~/.nvm too broad".to_owned());
         let d = Detection {
             engines: vec![unknown],
+            ..Default::default()
         };
         assert_eq!(text(&d, "gemini"), "available · no jail: ~/.nvm too broad");
     }
@@ -908,6 +923,7 @@ mod tests {
                     ..bare(e.id, Status::Available)
                 })
                 .collect(),
+            ..Default::default()
         };
         let (mut with, mut without) = (0, 0);
         for e in CATALOG {
@@ -931,6 +947,7 @@ mod tests {
                 bare("opencode", Status::NotInstalled),
                 bare("vllm", Status::NotRunning),
             ],
+            ..Default::default()
         };
         assert_eq!(text(&d, "opencode"), "not installed");
         assert_eq!(text(&d, "vllm"), "not running");
@@ -951,6 +968,7 @@ mod tests {
                 mk("claude", Some("2.1.200 (Claude Code)")),
                 mk("codex", Some("codex-cli 0.1.0")),
             ],
+            ..Default::default()
         };
         assert_eq!(
             status_text(Some(&d), "claude"),
@@ -964,6 +982,7 @@ mod tests {
         for version in [Some("2.1.259 (Claude Code)"), None, Some("weird")] {
             let d = Detection {
                 engines: vec![mk("claude", version)],
+                ..Default::default()
             };
             let want = format!("available · {}", version.unwrap_or("version unknown"));
             assert_eq!(status_text(Some(&d), "claude"), want, "{version:?}");

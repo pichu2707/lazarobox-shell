@@ -39,6 +39,7 @@ fn codex(models: Option<&str>, jail: Option<&str>) -> Detection {
                 },
             })
             .collect(),
+        ..Default::default()
     }
 }
 

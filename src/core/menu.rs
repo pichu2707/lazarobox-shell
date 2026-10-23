@@ -13,7 +13,7 @@ use super::{
         menu::AiMenu,
         picker::{Level, Mark, NOT_IN_LIST, Outcome, PickKey, PickRow, Picker, Target},
     },
-    config::{BarPosition, Config, ConfigEdit, MEMORY_TABLE},
+    config::{BarPosition, Config, ConfigEdit, LLAMACPP_TABLE, MEMORY_TABLE},
 };
 
 /// A setting that cycles through an ordered list of values. The value string
@@ -1218,6 +1218,25 @@ impl MenuState {
             .as_ref()
             .and_then(AiMenu::changed_approval)
             .map(ConfigEdit::approval);
+        let managed = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::changed_managed)
+            .into_iter()
+            .flat_map(|server| {
+                [
+                    ConfigEdit {
+                        table: LLAMACPP_TABLE,
+                        key: "managed",
+                        value: Cow::Borrowed("true"),
+                    },
+                    ConfigEdit {
+                        table: LLAMACPP_TABLE,
+                        key: "model",
+                        value: Cow::Owned(server.model.to_string_lossy().into_owned()),
+                    },
+                ]
+            });
         settings
             .chain(tasks)
             .chain(profile)
@@ -1227,6 +1246,7 @@ impl MenuState {
             .chain(sound)
             .chain(tools)
             .chain(approval)
+            .chain(managed)
             .collect()
     }
 
@@ -1704,6 +1724,12 @@ mod custom_flow_tests;
 
 #[cfg(test)]
 mod reanchor_tests;
+
+#[cfg(test)]
+mod llamacpp_tests;
+
+#[cfg(test)]
+mod llamacpp_probe_tests;
 
 #[cfg(test)]
 mod save_tests;
