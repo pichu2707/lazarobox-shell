@@ -114,6 +114,9 @@ fn has_status(detection: Option<&Detection>, id: &str, status: Status) -> bool {
     detection.is_some_and(|d| d.engines.iter().any(|s| s.id == id && s.status == status))
 }
 
+/// The mark of the model a managed llama-server loads while it is stopped.
+pub const MANAGED_MARK: &str = "lazarobox starts it";
+
 /// A server engine whose binary is on PATH but that did not answer on its
 /// port: listed, so that choosing it says how to start it.
 fn is_stopped_server(detection: Option<&Detection>, engine: &Engine) -> bool {
@@ -319,6 +322,31 @@ pub fn model_rows(
         .iter()
         .find(|s| s.id == engine && s.status == Status::Available);
     let Some(state) = state else {
+        // A stopped llama-server that lazarobox starts itself: its model is
+        // chosen like any other, and every name works (llama-server ignores it).
+        if engine == "llamacpp"
+            && let Some(server) = draft.managed()
+            && has_status(Some(detection), engine, Status::NotRunning)
+        {
+            let path = server.model.display().to_string();
+            let file = server
+                .model
+                .file_name()
+                .map_or(path.clone(), |f| f.to_string_lossy().into_owned());
+            let mut rows = vec![labeled(
+                &file,
+                &path,
+                Mark::Status(MANAGED_MARK.to_owned()),
+                true,
+            )];
+            rows.extend(
+                assigned
+                    .iter()
+                    .filter(|m| !same_model(engine, m, &path))
+                    .map(|m| row(m, Mark::Plain, true)),
+            );
+            return rows;
+        }
         let mut rows: Vec<PickRow> = assigned
             .iter()
             .map(|m| row(m, Mark::Plain, false))
@@ -1444,6 +1472,61 @@ mod tests {
                     true
                 ),
             ]
+        );
+    }
+
+    fn managed_draft(model: &str) -> AiConfig {
+        AiConfig::default().with_managed(crate::core::ai::config::ManagedServer {
+            model: std::path::PathBuf::from(model),
+        })
+    }
+
+    // Spec (managed llama-server): lazarobox starts it, so a stopped server is
+    // no reason to send the user off to start it by hand.
+    #[test]
+    fn a_managed_llama_server_that_is_not_running_offers_its_model() {
+        let mut draft = managed_draft("/m/qwen.gguf");
+        assign(&mut draft, Task::Chat, "llamacpp", Some("old"));
+        let d = detection(vec![state("llamacpp", Status::NotRunning, &[])]);
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+        assert_eq!(
+            rows,
+            vec![
+                PickRow {
+                    key: PickKey::Model("/m/qwen.gguf".to_owned()),
+                    label: "qwen.gguf".to_owned(),
+                    mark: Mark::Status(MANAGED_MARK.to_owned()),
+                    enabled: true,
+                    current: false,
+                },
+                model("old", Mark::Plain, true, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_managed_model_is_current_when_it_is_assigned() {
+        let mut draft = managed_draft("/m/qwen.gguf");
+        assign(&mut draft, Task::Chat, "llamacpp", Some("/m/qwen.gguf"));
+        let d = detection(vec![state("llamacpp", Status::NotRunning, &[])]);
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(rows[0].current && rows[0].enabled);
+    }
+
+    #[test]
+    fn an_unmanaged_or_absent_llama_server_keeps_its_rows() {
+        // Not installed: nothing to start, managed or not.
+        let draft = managed_draft("/m/qwen.gguf");
+        let d = detection(vec![state("llamacpp", Status::NotInstalled, &[])]);
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+        assert_eq!(rows, vec![info("engine not detected")]);
+        // Another stopped server is not managed by lazarobox.
+        let d = detection(vec![state("vllm", Status::NotRunning, &[])]);
+        let rows = model_rows("vllm", Target::Task(Task::Chat), &draft, Some(&d));
+        assert!(
+            rows.iter().any(|r| matches!(r.key, PickKey::Note { .. })),
+            "{rows:?}"
         );
     }
 
