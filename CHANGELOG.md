@@ -12,8 +12,8 @@ baseline.
 
 ### Added
 
-- lazarobox can manage llama.cpp: with `managed = true` and `model = "<path to
-  a .gguf>"` under `[ai.servers.llamacpp]`, the first llamacpp chat turn starts
+- lazarobox can manage llama.cpp: with `managed = true` and `model = "<absolute
+  path to a .gguf>"` under `[ai.servers.llamacpp]`, the first llamacpp chat turn starts
   `llama-server --host 127.0.0.1 --port 39281 -m <model>` and waits until it
   answers; later turns reuse it, and quitting lazarobox stops it (on Linux it
   also dies if lazarobox crashes). Nothing starts on launch or on detection.

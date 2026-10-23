@@ -824,10 +824,12 @@ fn read_servers(table: &Table, problems: &mut Vec<String>) -> (ServerPorts, Opti
                 None
             }
         };
+        // Only llamacpp's own port defaults to the managed one.
+        let mut fallback = None;
         if id == "llamacpp" {
             managed = read_managed(server, problems);
+            fallback = managed.as_ref().map(|_| MANAGED_PORT);
         }
-        let fallback = managed.as_ref().map(|_| MANAGED_PORT);
         if let Some(port) = port.or(fallback) {
             ports = ports.with(id, port);
         }
@@ -1051,6 +1053,28 @@ mod tests {
         let text = "[ai.servers.vllm]\nmanaged = true\nmodel = \"m\"\n";
         assert_eq!(managed_of(text), (None, Some(8080), vec![]));
         assert_eq!(ports_of(text).0[3], Some(8000));
+    }
+
+    // Spec: A managed llama-server has its own port (only llamacpp's).
+    #[test]
+    fn a_managed_llama_server_never_moves_another_server() {
+        let managed = "[ai.servers.llamacpp]\nmanaged = true\nmodel = \"/m/q.gguf\"\n\n";
+        for (vllm, problems) in [
+            ("[ai.servers.vllm]\n# port = 8001\n", vec![]),
+            ("[ai.servers.vllm]\nmodel = \"x\"\n", vec![]),
+            (
+                "[ai.servers.vllm]\nport = \"8001\"\n",
+                vec!["ai.servers.vllm.port: expected an integer from 1 to 65535".to_owned()],
+            ),
+        ] {
+            let text = format!("{managed}{vllm}");
+            let (ports, got) = ports_of(&text);
+            assert_eq!(
+                (ports[2], ports[3], got),
+                (Some(MANAGED_PORT), Some(8000), problems),
+                "{text}"
+            );
+        }
     }
 
     // Spec: A wrong managed value turns it off with its problem.

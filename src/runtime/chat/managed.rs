@@ -5,9 +5,11 @@
 //!
 //! - Nothing starts on config load or on detection. Only a chat turn whose
 //!   engine is llamacpp starts it, at most one at a time.
-//! - The program is `llama-server` from the `PATH`, run directly with one argv
-//!   element per argument: `--host 127.0.0.1 --port <port> -m <model>`. No
-//!   shell parses the model path.
+//! - The program is `llama-server`, looked up in the login `PATH` lazarobox
+//!   gives its tools (absolute entries only, never the current folder) and run
+//!   by that absolute path with that `PATH`, one argv element per argument:
+//!   `--host 127.0.0.1 --port <port> -m <model>`. No shell parses the model
+//!   path.
 //! - Before a start, the port must be silent. A server that already answers
 //!   there was not started by us and is never treated as ours: the turn fails
 //!   and nothing is started.
@@ -26,7 +28,7 @@ use std::{
     ffi::OsString,
     fs::{self, OpenOptions},
     io,
-    os::unix::fs::OpenOptionsExt,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -37,7 +39,7 @@ use futures::future::BoxFuture;
 use tokio::{process::Command, sync::Mutex, time::sleep};
 
 use crate::runtime::{
-    ai_detect::{http_get, stderr_note},
+    ai_detect::{find_on_path, http_get, stderr_note},
     proc::GroupKill,
 };
 
@@ -69,6 +71,7 @@ struct Process {
 
 pub struct Managed {
     program: OsString,
+    path: OsString,
     model: PathBuf,
     port: u16,
     log: Option<PathBuf>,
@@ -78,10 +81,12 @@ pub struct Managed {
 }
 
 impl Managed {
-    /// The server lazarobox starts on `port` with `model`, writing to `log`.
-    pub fn new(model: PathBuf, port: u16, log: Option<PathBuf>) -> Self {
+    /// The server lazarobox starts on `port` with `model`, writing to `log`,
+    /// found on `path`.
+    pub fn new(path: OsString, model: PathBuf, port: u16, log: Option<PathBuf>) -> Self {
         Self::with(
             OsString::from("llama-server"),
+            path,
             model,
             port,
             log,
@@ -93,6 +98,7 @@ impl Managed {
     /// [`Managed::new`] with the program, the probe and the start wait given.
     pub(crate) fn with(
         program: OsString,
+        path: OsString,
         model: PathBuf,
         port: u16,
         log: Option<PathBuf>,
@@ -101,6 +107,7 @@ impl Managed {
     ) -> Self {
         Self {
             program,
+            path,
             model,
             port,
             log,
@@ -159,6 +166,12 @@ impl Managed {
     }
 
     fn spawn(&self) -> Result<Process, String> {
+        const MISSING: &str = "could not start llama-server: is it on the PATH?";
+        let program = self
+            .program
+            .to_str()
+            .and_then(|name| find_on_path(name, &self.path))
+            .ok_or_else(|| MISSING.to_owned())?;
         let (stdout, stderr) = match self.log.as_deref().map(open_log) {
             Some(Ok(file)) => match file.try_clone() {
                 Ok(copy) => (Stdio::from(file), Stdio::from(copy)),
@@ -166,8 +179,9 @@ impl Managed {
             },
             _ => (Stdio::null(), Stdio::null()),
         };
-        let mut command = Command::new(&self.program);
+        let mut command = Command::new(program);
         command
+            .env("PATH", &self.path)
             .arg("--host")
             .arg("127.0.0.1")
             .arg("--port")
@@ -191,15 +205,14 @@ impl Managed {
                     }
                     // We died before the signal was set: it will never come.
                     if libc::getppid() != parent {
-                        return Err(io::Error::other("lazarobox is gone"));
+                        // A raw error: allocating here is not safe.
+                        return Err(io::Error::from_raw_os_error(libc::ESRCH));
                     }
                     Ok(())
                 });
             }
         }
-        let child = command
-            .spawn()
-            .map_err(|_| "could not start llama-server: is it on the PATH?".to_owned())?;
+        let child = command.spawn().map_err(|_| MISSING.to_owned())?;
         let group = child
             .id()
             .and_then(|pid| GroupKill::new(pid.try_into().ok()?));
@@ -250,18 +263,22 @@ async fn stop(mut process: Process) {
     let _ = tokio::time::timeout(SHUTDOWN, kill).await;
 }
 
-/// The log, emptied, private to the user and never through a symlink.
+/// The log, emptied, private to the user and never through a symlink. `mode`
+/// only applies to a new file, so one left by an earlier start is made private
+/// through its open handle.
 fn open_log(path: &Path) -> io::Result<fs::File> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    OpenOptions::new()
+    let file = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
+        .open(path)?;
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    Ok(file)
 }
 
 /// The end of the log, read without following a symlink.

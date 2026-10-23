@@ -539,15 +539,16 @@ async fn run_managed(
     }
 }
 
-/// A managed llama-server whose program is `program`, with a probe that
-/// answers 200 once `ready` exists.
+/// A managed llama-server whose program is `program` (its folder is the
+/// `PATH`), with a probe that answers 200 once `ready` exists.
 fn managed_at(program: &std::path::Path, port: u16, ready: std::path::PathBuf) -> Arc<Managed> {
     let probe: managed::Probe = Arc::new(move |_| {
         let up = ready.exists();
         Box::pin(async move { up.then_some(200) })
     });
     Arc::new(Managed::with(
-        program.as_os_str().to_owned(),
+        program.file_name().unwrap().to_owned(),
+        format!("{}:/usr/bin:/bin", program.parent().unwrap().display()).into(),
         "/m/q.gguf".into(),
         port,
         None,

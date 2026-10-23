@@ -30,8 +30,16 @@ impl Lab {
         self.dir.path().join("state/llama-server.log")
     }
 
+    /// The `PATH` the server is looked up in: the lab's folder, which the test
+    /// process's own `PATH` never holds, then the system tools the fakes use.
+    fn path(&self) -> OsString {
+        let mut path = self.dir.path().as_os_str().to_owned();
+        path.push(":/usr/bin:/bin");
+        path
+    }
+
     /// The fake: it records `$@` as one line, then runs `body`.
-    fn program(&self, body: &str) -> OsString {
+    fn program(&self, body: &str) {
         let path = self.dir.path().join("llama-server");
         let text = format!(
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n{body}\n",
@@ -39,12 +47,13 @@ impl Lab {
         );
         fs::write(&path, text).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-        path.into_os_string()
     }
 
     fn managed(&self, body: &str, probe: Probe, wait: Duration) -> Managed {
+        self.program(body);
         Managed::with(
-            self.program(body),
+            OsString::from("llama-server"),
+            self.path(),
             PathBuf::from("/m/q.gguf"),
             39281,
             Some(self.log()),
@@ -154,6 +163,21 @@ async fn a_server_that_exits_says_so_with_the_last_line_of_its_log() {
     assert_eq!(mode & 0o777, 0o600);
 }
 
+// Spec: The log is private to the user, also one left by an earlier start.
+#[tokio::test]
+async fn an_existing_log_is_made_private_and_emptied() {
+    let lab = Lab::new();
+    fs::create_dir_all(lab.log().parent().unwrap()).unwrap();
+    fs::write(lab.log(), "old run\n").unwrap();
+    fs::set_permissions(lab.log(), fs::Permissions::from_mode(0o644)).unwrap();
+    let managed = lab.managed("exec sleep 30", answers_once(&lab.record()), WAIT);
+    assert_eq!(managed.ensure().await, Ok(()));
+    let mode = fs::metadata(lab.log()).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+    assert_eq!(fs::read_to_string(lab.log()).unwrap(), "");
+    managed.shutdown().await;
+}
+
 // Spec: A failed start says why (no answer).
 #[tokio::test]
 async fn a_server_that_never_answers_is_stopped_after_the_wait() {
@@ -202,7 +226,8 @@ async fn a_server_that_ended_is_started_again_by_the_next_ensure() {
 async fn a_missing_program_says_it_is_not_on_the_path() {
     let lab = Lab::new();
     let managed = Managed::with(
-        lab.dir.path().join("nope").into_os_string(),
+        OsString::from("llama-server"),
+        lab.path(),
         PathBuf::from("/m/q.gguf"),
         39281,
         None,
@@ -213,6 +238,25 @@ async fn a_missing_program_says_it_is_not_on_the_path() {
         managed.ensure().await,
         Err("could not start llama-server: is it on the PATH?".into())
     );
+}
+
+// Spec: llama-server is found on the PATH lazarobox gives its tools (the login
+// PATH), not on the one it was started with, and keeps it.
+#[tokio::test]
+async fn the_server_is_found_on_the_given_path_and_runs_with_it() {
+    let lab = Lab::new();
+    let seen = lab.dir.path().join("seen");
+    let body = format!(
+        "printf '%s' \"$PATH\" > '{}'\nexec sleep 30",
+        seen.display()
+    );
+    let managed = lab.managed(&body, answers_once(&seen), WAIT);
+    assert_eq!(managed.ensure().await, Ok(()));
+    assert_eq!(
+        fs::read_to_string(&seen).unwrap(),
+        lab.path().to_str().unwrap()
+    );
+    managed.shutdown().await;
 }
 
 // Spec: The managed llama-server never outlives lazarobox. The kernel's

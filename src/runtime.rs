@@ -310,6 +310,7 @@ pub async fn run() -> io::Result<()> {
     // llamacpp turn starts it, on llamacpp's port, and quitting stops it.
     let managed = app.ai().managed().map(|server| {
         Arc::new(chat::Managed::new(
+            cli_env.path.clone(),
             server.model.clone(),
             server_ports
                 .port("llamacpp")
