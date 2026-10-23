@@ -12,6 +12,15 @@ baseline.
 
 ### Added
 
+- lazarobox can manage llama.cpp: with `managed = true` and `model = "<absolute
+  path to a .gguf>"` under `[ai.servers.llamacpp]`, the first llamacpp chat turn starts
+  `llama-server --host 127.0.0.1 --port 39281 -m <model>` and waits until it
+  answers; later turns reuse it, and quitting lazarobox stops it (on Linux it
+  also dies if lazarobox crashes). Nothing starts on launch or on detection.
+  The port is 39281 unless `port` is set. If something already answers there,
+  nothing starts and the chat says so. The server's output goes to
+  `llama-server.log` in lazarobox's state folder, and a failed start shows its
+  last line. Wrong values are ignored with a startup notice.
 - A server engine can live on another port: `[ai.servers.<id>] port = N` in
   `config.toml` (for `ollama`, `lmstudio`, `llamacpp` and `vllm`). Detection
   and chat both use it, always on `127.0.0.1`; without it the usual port is
@@ -23,7 +32,7 @@ baseline.
   Choosing it shows where lazarobox looks and how to start it, for example
   `llamacpp not running on 127.0.0.1:39080 · start it, then press r:
   llama-server --port 39080 -m <model.gguf>`; Enter or `y` copies it.
-  lazarobox never starts the server.
+  lazarobox does not start the server, unless it manages llama.cpp (below).
 
 - Chat with LM Studio, llama.cpp (`llama-server`) and vLLM. They talk to their
   server's `/v1/chat/completions` on `127.0.0.1` and their usual port (1234,
@@ -40,6 +49,12 @@ baseline.
   adapter for (today only opencode). Its row still reads `detected · not in
   chat yet`, dimmed, and Enter does nothing on it; before, you could assign it
   and chat then refused it.
+
+### Fixed
+
+- Closing the terminal tab that runs lazarobox no longer leaves the servers it
+  started running (MCP servers, CLI chats and the managed llama-server).
+  Restoring the dead terminal made lazarobox abort before its quit cleanup.
 
 ## [0.18.0] - 2026-10-20
 

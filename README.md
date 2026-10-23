@@ -182,7 +182,24 @@ port = 39080
 
 Valen `ollama`, `lmstudio`, `llamacpp` y `vllm`; un puerto fuera de 1–65535 o que no sea un número se ignora con un aviso al arrancar y se usa el habitual. El menú no edita esta tabla y la conserva al guardar. El cambio se aplica al reiniciar lazarobox.
 
-Un servidor instalado (su binario está en el `PATH`) que no responde aparece en el selector como `not running`. Al elegirlo, el menú dice en qué puerto lo busca y cómo arrancarlo, por ejemplo `llamacpp not running on 127.0.0.1:39080 · start it, then press r: llama-server --port 39080 -m <model.gguf>`. Enter o `y` copia esa línea; arranca el servidor, pulsa `r` y aparecen sus modelos. lazarobox nunca arranca el servidor por ti.
+Un servidor instalado (su binario está en el `PATH`) que no responde aparece en el selector como `not running`. Al elegirlo, el menú dice en qué puerto lo busca y cómo arrancarlo, por ejemplo `llamacpp not running on 127.0.0.1:39080 · start it, then press r: llama-server --port 39080 -m <model.gguf>`. Enter o `y` copia esa línea; arranca el servidor, pulsa `r` y aparecen sus modelos. lazarobox no arranca el servidor por ti, salvo el de llama.cpp si se lo pides (abajo).
+
+**llama.cpp gestionado por lazarobox.** Si no quieres tener una pestaña abierta con `llama-server`, lazarobox puede arrancarlo y pararlo por ti:
+
+```toml
+[ai.servers.llamacpp]
+managed = true
+model = "/ruta/al/modelo.gguf"
+```
+
+- Arrancar lazarobox no lanza nada. El primer mensaje del chat con llamacpp arranca `llama-server --host 127.0.0.1 --port 39281 -m <modelo>` y espera a que responda (hasta 90 s mientras carga el modelo); los siguientes mensajes reutilizan el mismo servidor.
+- Usa el puerto 39281, poco habitual a propósito; `port` lo cambia.
+- Se para al salir de lazarobox, también si cierras la pestaña de la terminal. En Linux, además, muere con lazarobox si este se cae; en macOS un cierre forzado puede dejarlo en marcha.
+- Si algo ya responde en ese puerto, lazarobox no arranca nada y el chat lo dice: nunca toma como suyo un servidor que no lanzó.
+- Su salida queda en `~/.local/state/lazarobox/llama-server.log` (o `$XDG_STATE_HOME/lazarobox`), que se vacía en cada arranque. Si no arranca, el chat muestra su última línea.
+- `model` debe ser una ruta absoluta: `~` no se expande y una ruta relativa se leería desde la carpeta en que arrancaste lazarobox.
+- `llama-server` se busca en el `PATH` de login que ya usa lazarobox (nunca en el directorio actual), así que funciona también si abres lazarobox desde el lanzador del escritorio. El nombre del modelo en la tarea del chat da igual (llama-server lo ignora); sin modelo asignado se envía la ruta.
+- Un valor incorrecto de `managed` o `model` se ignora con un aviso al arrancar, y el servidor no se gestiona.
 
 Límites de esta fase:
 
