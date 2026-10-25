@@ -51,19 +51,19 @@ Tracker = `feat/coding-tools`. Rule: PR1 of the chain targets the tracker; each 
 | 19 | X-c3 runner (spawn core, `GroupKill`, env scrub) | ~450 | X-c2 branch | Ready |
 | 20 | G-a git argv + porcelain parse (pure) | ~350 | X-c3 branch | Ready |
 | 21 | G-b git runtime (git jail, preflight) | ~350 | G-a branch | Ready |
-| 22 | W-f host staging tools | ~450 | G-b branch | BLOCKED by S1c-2 on main |
-| 23 | W-g runtime chat: discard on close, orphan effects | ~400 | W-f branch | BLOCKED by S1c-2 |
-| 24 | W-h badge, Ctrl+G, quit notice | ~450 | W-g branch | BLOCKED by S1c-2 |
+| 22 | W-f host staging tools | ~450 | G-b branch | Ready (spike a seam first) |
+| 23 | W-g runtime chat: discard on close, orphan effects | ~400 | W-f branch | Ready (spike a seam first) |
+| 24 | W-h badge, Ctrl+G, quit notice | ~450 | W-g branch | Ready (spike a seam first) |
 | 25 | M5-a docs for search + write (0.19/0.20) | ~300 | W-h branch | Ready after #24 |
-| 26 | X-d1 host `run_command`, `RunGate`, refusals | ~450 | M5-a branch | BLOCKED by S1c-2 |
-| 27 | X-d2 Exec ask, notice, app wiring | ~400 | X-d1 branch | BLOCKED by S1c-2 |
-| 28 | G-c host git read verbs + GitDiff ask | ~300 | X-d2 branch | BLOCKED by S1c-2 |
-| 29 | G-d git add/commit + CommitReview | ~450 | G-c branch | BLOCKED by S1c-2 |
+| 26 | X-d1 host `run_command`, `RunGate`, refusals | ~450 | M5-a branch | Ready (spike a seam first) |
+| 27 | X-d2 Exec ask, notice, app wiring | ~400 | X-d1 branch | Ready (spike a seam first) |
+| 28 | G-c host git read verbs + GitDiff ask | ~300 | X-d2 branch | Ready (spike a seam first) |
+| 29 | G-d git add/commit + CommitReview | ~450 | G-c branch | Ready (spike a seam first) |
 | 30 | M5-b docs for run + git, threat model, CHANGELOG | ~300 | G-d branch | Ready after #29 |
 
 Likely `size:exception`: W-e4 (high), then T, P0a, W-e2, X-c3, G-d, X-c1, W-f, W-h, X-d1 (medium; decide with real numbers). Every other PR is expected between 300 and 450 and should be split further if a work-unit commit crosses 300.
 
-Blocked-slice rule: the BLOCKED rows cannot start until agent-orchestrator S1c-2 (PR 5 of its chain) is on `main` together with the S1 tracker (user decision, S1c-2 is not merged early). They sit at the end of the chain so everything above can proceed now. All 7 BLOCKED PRs edit `runtime/tools/host.rs` (execute path), which S1c-2 changes (`TurnScope`, execute filter, scope check, ask label).
+Host-slice rule (updated 2026-10-25, user decision): the former BLOCKED rows (W-f..h, X-d1/2, G-c/d) are NO LONGER blocked by agent-orchestrator S1c-2. coding-tools may land in `runtime/tools/host.rs` first; the orchestrator chain then rebases on it. Each of those slices still starts with a spike for a seam that avoids `host.rs` (as M1c.0 did); an edit to `host.rs` is allowed only when no such seam exists, and it must stay tiny and be reported as a rebase point against S1c-2 (`TurnScope`, execute filter, scope check, ask label).
 
 ### Rebase points against agent-orchestrator
 
@@ -73,7 +73,7 @@ Blocked-slice rule: the BLOCKED rows cannot start until agent-orchestrator S1c-2
 | P0b vs S1c-1 | `runtime/mcp/session.rs` (generic `Hub<K: HubKey>`) | S1c-1 rebases onto P0b | P0b only adds a `FamilySet` argument at LEGACY; keep the diff in session.rs to the minimum. |
 | P0b vs S1d-x | `runtime/chat.rs:716`, `chat/adapters.rs:287` (`Chats::with_orchestra`) | S1d-3 rebases | Same, minimum diff. |
 | T vs S1a/S1e | `core/menu/*`, `app/*` (ORCH row, Ctrl+O) | whoever lands second | T adds 5 rows: re-count the menu row tests and snapshots after the S1 tracker merges. |
-| W-f..h, X-d, G-c/d | `host.rs`, `runtime/chat.rs` | coding-tools chain | Rebase the whole remaining chain on main once S1c-2 and S1 tracker are merged. |
+| W-f..h, X-d, G-c/d | `host.rs`, `runtime/chat.rs` | agent-orchestrator S1c-2 and later | coding-tools lands first (user decision 2026-10-25); the orchestrator chain rebases on it. Keep each `host.rs` edit tiny. |
 
 ## Phase P0 (direct to main)
 
@@ -174,19 +174,19 @@ Spec: chat-pane "Batch review view"; code-write "Batch review and coverage gate"
 - [ ] We4.3 RED: the other asks keep `ARM_DELAY` 400 ms. REFACTOR. ~130.
 - Cut line if it passes 500: put We4.3 and the snapshots in a follow-up commit and ask for the exception before opening the PR.
 
-### W-f: host staging tools (PR 22, ~450, BLOCKED by S1c-2)
+### W-f: host staging tools (PR 22, ~450, host.rs slice: spike a seam first)
 Spec: code-write "create_dir and write_file staging", "edit_file staging", "Propose batch and size cap", "Nothing writes without approval"; lazarobox-mcp-server "Coding tools run in the app".
 - [ ] Wf.1 RED: `Call::{CreateDir, WriteFile, EditFile, ProposeBatch}` parse (family Write gate). ~100.
 - [ ] Wf.2 RED: `host.rs` stages without ask or disk touch; `ToolEnv` carries `StagedView`; `propose_batch` seals and asks. ~220.
 - [ ] Wf.3 RED: all-toggles-off golden stays green; a Write tool call with Write off is `UnknownTool`. ~130. Host re-checks the family as defense in depth.
 
-### W-g: runtime chat lifecycle (PR 23, ~400, BLOCKED by S1c-2)
+### W-g: runtime chat lifecycle (PR 23, ~400, host.rs slice: spike a seam first)
 Spec: code-write "Orphan, close and quit", "Apply"; chat-pane "Closing discards a batch".
 - [ ] Wg.1 RED: closing a pane calls `Stages.discard(key)` with a notice. ~130.
 - [ ] Wg.2 RED: turn cancelled or CLI timeout leaves Proposed-orphan; unproposed batch at turn end is Staging-orphan; `Effect::BatchReview/Apply/Discard` routed via Chats. ~170.
 - [ ] Wg.3 RED: the model learns of a user-side apply/discard through a system line on its next turn. ~100.
 
-### W-h: badge, Ctrl+G, quit notice (PR 24, ~450, BLOCKED by S1c-2)
+### W-h: badge, Ctrl+G, quit notice (PR 24, ~450, host.rs slice: spike a seam first)
 Spec: chat-pane "Staged batch indicator"; code-write "Orphan, close and quit".
 - [ ] Wh.1 RED: pane badge for staged/orphan batches (`ui/components/chat.rs`, insta). ~200.
 - [ ] Wh.2 RED: Ctrl+G opens the orphan review; check against the chat key table for conflicts (with Ctrl+O from S1e-1a). ~120.
@@ -226,13 +226,13 @@ Spec: command-runner "Process rules".
 - [ ] Xc3.2 RED: timeout, cancel-by-drop, group kill of grandchildren, normal exit `kill_and_reap` then 500 ms drain. ~140.
 - [ ] Xc3.3 RED: env scrub and private TMPDIR removed after run, ring truncation integration. ~90.
 
-### X-d1: host `run_command` (PR 26, ~450, BLOCKED by S1c-2)
+### X-d1: host `run_command` (PR 26, ~450, host.rs slice: spike a seam first)
 Spec: command-runner "Refusals before start", "Process rules"; agent-tools "Approval model".
 - [ ] Xd1.1 RED: refused with no jail ("commands need the Linux sandbox (Landlock ABI 3+)"); refused while the key has a staged/proposed batch ("propose them first"). ~150.
 - [ ] Xd1.2 RED: `RunGate`: 1 per `StageKey` ("a command is already running in this chat") and global `Semaphore(2)` with a 60 s wait cap, taken after `y`, before spawn. ~170.
 - [ ] Xd1.3 RED: `host.rs` wiring, Exec family gate, golden stays green. ~130.
 
-### X-d2: Exec ask and notice (PR 27, ~400, BLOCKED by S1c-2)
+### X-d2: Exec ask and notice (PR 27, ~400, host.rs slice: spike a seam first)
 - [ ] Xd2.1 RED: `ApprovalAsk::Exec` prompts every command in every mode; the exfiltration notice about `.env`; tier-B warnings shown. ~200.
 - [ ] Xd2.2 RED: app/menu row shows the "no jail" reason; global-wait shown on the row. ~200 (menu snapshots).
 
@@ -247,11 +247,11 @@ Spec: git-tools "Verb boundary", "Hardened execution", "Read verbs".
 - [ ] Gb.1 RED: git `JailSpec` (run spec without caches, ro `~/.gitconfig` and XDG git files, rw on `--absolute-git-dir` and `--git-common-dir` via a jailed read-only `rev-parse` preflight; linked worktrees). GREEN: `runtime/tools/git.rs`. ~200. Dep: X-c3.
 - [ ] Gb.2 RED (temp repo, skipped without git): a planted `core.fsmonitor`/`diff.external` must NOT create its marker file; env `GIT_CONFIG_NOSYSTEM`, `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`. ~150.
 
-### G-c: host git read verbs (PR 28, ~300, BLOCKED by S1c-2)
+### G-c: host git read verbs (PR 28, ~300, host.rs slice: spike a seam first)
 - [ ] Gc.1 RED: `git_status`/`git_log` no ask; `git_diff` prompts on Cloud, free on Local; refused while a batch is staged. ~150.
 - [ ] Gc.2 RED: `ApprovalAsk::GitDiff`, host wiring, Git family gate. ~150.
 
-### G-d: add and commit (PR 29, ~450, BLOCKED by S1c-2)
+### G-d: add and commit (PR 29, ~450, host.rs slice: spike a seam first)
 Spec: git-tools "add", "commit", "Two toggles".
 - [ ] Gd.1 RED: `git_add` refuses secret names; one-line overlay (paths + diffstat) or the review view when it does not fit; GitWrite gate. ~170.
 - [ ] Gd.2 RED: `git_commit`: `CommitReview` (message, full `--cached` diff, notice "signing disabled for this commit"), `-c commit.gpgsign=false`, no AI trailer, refused when the index holds a secret path, hooks run in the jail. ~200.
@@ -274,7 +274,7 @@ Spec: git-tools "add", "commit", "Two toggles".
 P0a -> P0b -> (tracker rebase on main) -> T -> M1-a -> M1-b -> M1-c
  -> W-a -> W-b -> W-c -> W-d -> W-e1 -> W-e2 -> W-e3 -> W-e4
  -> X-a -> X-b -> X-c1 -> X-c2 -> X-c3 -> G-a -> G-b
- -> [S1c-2 + S1 tracker on main] -> W-f -> W-g -> W-h -> M5-a
+ -> W-f -> W-g -> W-h -> M5-a
  -> X-d1 -> X-d2 -> G-c -> G-d -> M5-b -> Z.1..Z.3
 ```
 
@@ -283,7 +283,7 @@ The chain is linear (feature-branch-chain). Pure cores are independent by file, 
 ## Risks
 
 - Real sizes: 20 of 30 PRs are at or above 400; per-commit measurement is the only reliable stop.
-- 7 PRs are blocked on S1c-2 reaching main with the S1 tracker; if that slips, M2/M3/M4 cannot ship any user-visible behaviour (they stay dark).
+- 7 PRs edit `host.rs` and `runtime/chat.rs`, which S1c-2 also changes. They are no longer blocked (user decision 2026-10-25); the cost moves to the orchestrator chain, which rebases on them.
 - `host.rs`, `runtime/chat.rs`, `session.rs`, menu files are shared with the orchestrator chain: expect repeated rebases.
 - A 30-branch linear chain amplifies a rebase on any early change (review fixes in P0 or T ripple through all).
 
