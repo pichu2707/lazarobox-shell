@@ -7,7 +7,10 @@
 
 use std::collections::{HashMap, hash_map::Entry};
 
-use super::apply::{self, ApplyResult, Disk, WriteOps};
+use super::{
+    apply::{self, ApplyResult, Disk, WriteOps},
+    staged::StagedView,
+};
 use crate::core::ai::tools::{
     paths::SecretRoots,
     stage::{Batch, BatchId, Outcome, StageError, StageKey, State},
@@ -42,6 +45,14 @@ impl Stages {
 
     pub fn batch(&self, key: StageKey) -> Option<&Batch> {
         self.batches.get(&key)
+    }
+
+    /// A snapshot of what `key` has staged, for the read tools. Empty when the
+    /// key has no batch.
+    pub fn view(&self, key: StageKey) -> StagedView {
+        self.batches
+            .get(&key)
+            .map_or_else(StagedView::default, StagedView::from_batch)
     }
 
     /// Closes staging for `key` and hands its batch to the user.
@@ -324,5 +335,18 @@ mod tests {
         assert!(stages.discard_key(key(1)));
         assert!(stages.batch(key(1)).is_none());
         assert_eq!(stages.discard(id), Err(StageError::Stale));
+    }
+
+    #[test]
+    fn the_view_of_a_key_shows_its_live_batch_and_nothing_once_it_is_gone() {
+        let mut stages = Stages::default();
+        let id = put(&mut stages, key(1), "a.txt");
+        put(&mut stages, key(2), "b.txt");
+        let path = target("a.txt").real;
+        assert_eq!(stages.view(key(1)).text(&path), Some("x\n"));
+        assert_eq!(stages.view(key(2)).text(&path), None);
+        assert_eq!(stages.view(key(3)).text(&path), None);
+        stages.discard(id).unwrap();
+        assert_eq!(stages.view(key(1)).text(&path), None);
     }
 }

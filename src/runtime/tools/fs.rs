@@ -37,7 +37,10 @@ use crate::{
     },
     runtime::{
         chat_store::resolve_path,
-        tools::open::{fd_path, open_beneath},
+        tools::{
+            open::{fd_path, open_beneath},
+            staged::{MARKER, StagedView, plain},
+        },
     },
 };
 
@@ -196,19 +199,34 @@ pub fn execute_with(
     limits: &Limits,
     cancel: &AtomicBool,
 ) -> Result<String, Failure> {
+    execute_over(call, env, limits, cancel, None)
+}
+
+/// [`execute_with`] that also shows the staged changes in `view` (marked as
+/// pending). With `None` it is exactly [`execute_with`]. With a view, text
+/// that comes from the disk can no longer forge the marker.
+pub fn execute_over(
+    call: &Call,
+    env: &ToolEnv,
+    limits: &Limits,
+    cancel: &AtomicBool,
+    view: Option<&StagedView>,
+) -> Result<String, Failure> {
     let roots = load_roots(env)?;
     let budget = Budget::new(limits, cancel);
     match call {
-        Call::ReadFile { path, lines } => read_file(&roots, env, path, *lines, limits),
-        Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits),
-        Call::FindDir { query } => find_dir(&roots, &budget, query, limits),
+        Call::ReadFile { path, lines } => read_file(&roots, env, path, *lines, limits, view),
+        Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits, view),
+        Call::FindDir { query } => {
+            find_dir(&roots, &budget, query, limits).map(|out| plain(view, out))
+        }
         // Whether `grep` may run is decided before this, by `ask_for`; `glob`
         // names files only and needs no approval.
         Call::Glob { pattern, dir } => {
-            super::search::glob(pattern, dir.as_deref(), env, limits, cancel)
+            super::search::glob_over(pattern, dir.as_deref(), env, limits, cancel, view)
         }
         Call::Grep { pattern, dir } => {
-            super::search::grep(pattern, dir.as_deref(), env, limits, cancel)
+            super::search::grep_over(pattern, dir.as_deref(), env, limits, cancel, view)
         }
         // A user tool runs on its own server, never here.
         Call::RunInPane { .. } | Call::External { .. } => Err(Failure::NotReadTool),
@@ -265,7 +283,17 @@ fn read_file(
     path: &str,
     window: Option<Lines>,
     limits: &Limits,
+    view: Option<&StagedView>,
 ) -> Result<String, Failure> {
+    // A staged text goes through the same cut, clean and redaction as a file.
+    if let Some(text) = view.and_then(|v| v.file(roots, &env.origin, path)) {
+        let bytes = text.as_bytes().to_vec();
+        let body = match window {
+            Some(window) => window_text(bytes, window, limits),
+            None => head_text(bytes, limits),
+        }?;
+        return Ok(format!("{MARKER}\n{body}"));
+    }
     let PathVerdict::Allowed(real) = resolve(roots, &env.origin, path) else {
         return Err(Failure::Refused);
     };
@@ -288,6 +316,7 @@ fn read_file(
         Some(window) => read_window(file, window, limits),
         None => read_head(file, limits),
     }
+    .map(|out| plain(view, out))
 }
 
 /// The start of an opened file, as far as the read cap allows.
@@ -299,6 +328,12 @@ fn read_head(file: std::fs::File, limits: &Limits) -> Result<String, Failure> {
     file.take(window as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| Failure::Unreadable)?;
+    head_text(bytes, limits)
+}
+
+/// The start of `bytes` (a file, or a staged text) as far as the cap allows.
+fn head_text(mut bytes: Vec<u8>, limits: &Limits) -> Result<String, Failure> {
+    let window = limits.read_bytes + REDACT_MARGIN;
     if bytes.contains(&0) {
         return Err(Failure::NotText);
     }
@@ -363,6 +398,11 @@ fn read_window(file: std::fs::File, window: Lines, limits: &Limits) -> Result<St
     file.take(PAGE_SCAN as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| Failure::Unreadable)?;
+    window_text(bytes, window, limits)
+}
+
+/// [`read_window`] over the bytes themselves.
+fn window_text(mut bytes: Vec<u8>, window: Lines, limits: &Limits) -> Result<String, Failure> {
     if bytes.contains(&0) {
         return Err(Failure::NotText);
     }
@@ -486,14 +526,24 @@ fn list_dir(
     env: &ToolEnv,
     path: &str,
     limits: &Limits,
+    view: Option<&StagedView>,
 ) -> Result<String, Failure> {
-    let PathVerdict::Allowed(real) = resolve(roots, &env.origin, path) else {
-        return Err(Failure::Refused);
+    // A folder only the batch makes (no disk yet) has no real path to resolve.
+    let virtual_dir = view.and_then(|v| v.dir(roots, &env.origin, path));
+    let (real, fd) = match (resolve(roots, &env.origin, path), virtual_dir) {
+        (PathVerdict::Allowed(real), _) => {
+            let fd = open_checked(roots, &real, true)?;
+            (real, Some(fd))
+        }
+        (_, Some(real)) => (real, None),
+        _ => return Err(Failure::Refused),
     };
-    let fd = open_checked(roots, &real, true)?;
-    let (found, scan_cut) = entries(&fd, limits.visited, budget)?;
+    let (found, scan_cut) = match &fd {
+        Some(fd) => entries(fd, limits.visited, budget)?,
+        None => (Vec::new(), false),
+    };
     let mut omitted = false;
-    let mut shown: Vec<(String, char)> = found
+    let mut shown: Vec<(String, char, bool)> = found
         .iter()
         .filter(|(name, kind)| visible(roots, budget, &real, name, *kind))
         .filter(|(name, _)| {
@@ -511,15 +561,27 @@ fn list_dir(
             } else {
                 '?'
             };
-            (one_line(name), tag)
+            (plain(view, one_line(name)), tag, false)
         })
         .collect();
+    // Names the batch adds. One already on disk keeps its row: only its
+    // content is staged.
+    for (name, is_dir) in view.map(|v| v.children(&real)).unwrap_or_default() {
+        let known = found.iter().any(|(n, _)| *n == name);
+        if known || !roots.judge_real(&real.join(&name)) || redaction_changes(&name) {
+            continue;
+        }
+        shown.push((one_line(&name), if is_dir { 'd' } else { 'f' }, true));
+    }
     shown.sort();
     let cut = scan_cut || shown.len() > limits.list_entries;
     shown.truncate(limits.list_entries);
     let mut lines: Vec<String> = shown
         .into_iter()
-        .map(|(name, tag)| format!("{tag} {name}"))
+        .map(|(name, tag, pending)| match pending {
+            true => format!("{tag} {name} {MARKER}"),
+            false => format!("{tag} {name}"),
+        })
         .collect();
     if lines.is_empty() && !cut && !omitted {
         lines.push("(empty)".into());

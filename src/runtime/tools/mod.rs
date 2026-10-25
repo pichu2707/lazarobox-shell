@@ -11,6 +11,7 @@ pub mod open;
 pub mod pending;
 pub mod search;
 pub mod stage;
+pub mod staged;
 pub mod write;
 
 use std::{
