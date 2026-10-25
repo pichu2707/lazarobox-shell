@@ -56,6 +56,8 @@ pub struct ReviewDoc {
     files: usize,
     added: usize,
     removed: usize,
+    /// A diff left rows out: the user cannot see the whole batch.
+    truncated: bool,
 }
 
 impl fmt::Debug for ReviewDoc {
@@ -86,6 +88,7 @@ impl ReviewDoc {
             files: batch.entries().len(),
             added: 0,
             removed: 0,
+            truncated: false,
         };
         let mut body = Vec::new();
         for staged in batch.entries() {
@@ -122,6 +125,7 @@ impl ReviewDoc {
             push(out, LineKind::Warning, WARN_COARSE.to_owned());
         }
         if d.truncated {
+            self.truncated = true;
             push(out, LineKind::Warning, WARN_TRUNCATED.to_owned());
         }
         for h in &d.hunks {
@@ -148,6 +152,13 @@ impl ReviewDoc {
         &self.lines
     }
 
+    /// Whether the batch can be approved at all. A batch with a truncated
+    /// diff (rows the user would never see) or with no entry is not: it can
+    /// only be rejected.
+    pub fn reviewable(&self) -> bool {
+        !self.truncated && self.files > 0
+    }
+
     /// Entries of the batch, folders included.
     pub fn files(&self) -> usize {
         self.files
@@ -165,7 +176,7 @@ impl ReviewDoc {
 
 const WARN_BUILD: &str = "warning: build file: it can run code when the project is built";
 const WARN_COARSE: &str = "warning: coarse diff: the whole file is shown as replaced";
-const WARN_TRUNCATED: &str = "warning: truncated: rows were left out; the totals are exact";
+const WARN_TRUNCATED: &str = "warning: too large to review: reject it and ask for smaller changes";
 
 /// How long `y` stays disabled after the view opens. Other asks keep 400 ms.
 pub const ARM_DELAY: Duration = Duration::from_millis(800);
@@ -223,6 +234,8 @@ pub fn layout(doc: &ReviewDoc, width: usize) -> Layout {
 #[derive(Clone, Debug)]
 pub struct Coverage {
     seen: Vec<bool>,
+    /// [`ReviewDoc::reviewable`] of the doc; `y` never arms when false.
+    reviewable: bool,
     /// Rows shown at `width`, per row of that layout.
     shown: Vec<bool>,
     width: Option<usize>,
@@ -234,6 +247,7 @@ impl Coverage {
     pub fn new(doc: &ReviewDoc, opened: Instant) -> Coverage {
         Coverage {
             seen: vec![false; doc.lines.len()],
+            reviewable: doc.reviewable(),
             shown: Vec::new(),
             width: None,
             opened,
@@ -269,11 +283,11 @@ impl Coverage {
         self.seen.iter().filter(|s| !**s).count()
     }
 
-    /// Whether `y` may approve at `now`: every line seen and [`ARM_DELAY`]
-    /// elapsed since the view opened. `now` comes from the caller's clock; a
+    /// Whether `y` may approve at `now`: the doc is reviewable, every line
+    /// seen and [`ARM_DELAY`] elapsed since the view opened. `now` comes from the caller's clock; a
     /// clock that went back does not arm.
     pub fn can_approve(&self, now: Instant) -> bool {
-        self.remaining() == 0 && now.saturating_duration_since(self.opened) >= ARM_DELAY
+        self.reviewable && self.remaining() == 0 && now.saturating_duration_since(self.opened) >= ARM_DELAY
     }
 }
 
@@ -425,8 +439,40 @@ mod tests {
         let doc = ReviewDoc::build(&b);
         let w = texts(&doc, LineKind::Warning);
         assert_eq!(w.len(), 1);
-        assert!(w[0].contains("truncated"), "{}", w[0]);
+        assert!(w[0].contains("too large to review"), "{}", w[0]);
         assert_eq!(doc.added(), 2100);
+        assert!(!doc.reviewable());
+    }
+
+    #[test]
+    fn a_truncated_diff_is_never_approvable_whatever_was_seen() {
+        let mut b = batch();
+        let big: String = (0..2100).map(|i| format!("l{i}\n")).collect();
+        b.stage_file(&target("a.txt", false), &big, Existing::Absent)
+            .unwrap();
+        let doc = ReviewDoc::build(&b);
+        let l = layout(&doc, 40);
+        let t0 = start();
+        let mut c = Coverage::new(&doc, t0);
+        c.show(&l, 0..l.rows().len());
+        assert_eq!(c.remaining(), 0, "every visible row was shown");
+        assert!(!c.can_approve(t0 + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn an_empty_batch_is_not_reviewable_nor_approvable() {
+        let doc = ReviewDoc::build(&batch());
+        assert!(!doc.reviewable());
+        let l = layout(&doc, 40);
+        let t0 = start();
+        let mut c = Coverage::new(&doc, t0);
+        c.show(&l, 0..l.rows().len());
+        assert!(!c.can_approve(t0 + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn a_normal_batch_is_reviewable() {
+        assert!(doc_of(&["a"]).reviewable());
     }
 
     #[test]
