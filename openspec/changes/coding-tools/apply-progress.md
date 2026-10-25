@@ -404,3 +404,44 @@ About 435 production lines inserted (`stage.rs` 114 before tests, `staged.rs` 13
 - `plain`/`plain_str` no longer take the view: defang is unconditional (see design.md). RED: `left: "fn (pending; not on disk)" right: "fn (pending, not on disk)"` for None vs Some(empty). The tautological `execute` vs `None` comparison is dropped.
 - `list_dir` sets `omitted` when a staged-only name is hidden (excluded, outside the judge, or secret-like). RED: listing ended `f notes.txt\nd src` with no omitted marker.
 - `search.rs`: `shown` loses its unused view parameter.
+
+## Batch: slice W-e4 (review view, PR 14, branch feat/coding-tools-we4, base feat/coding-tools-we3)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| We4.1 `ApprovalAsk::Batch`, `BatchReview`, `ReviewView` state, `app/review.rs` keys and gate | done | feat(chat): ask the user to review a write batch, with y gated by coverage and n or Esc rejecting it |
+| We4.2 full-pane view `ui/components/review.rs`, warnings, seen counter, countdown | done | feat(ui): draw the batch review over the chat pane with warnings, a seen counter and the arm countdown |
+| We4.3 two named delays (`ASK_ARM_DELAY` 400 ms, `review::ARM_DELAY` 800 ms) | done | refactor(chat): name the two approval delays, 400 ms for every ask and 800 ms for a batch review |
+| Unreviewable batch decision | done | in We4.1 (answer `TOO_LARGE`, `y` never arms) and We4.2 (view offers `n discard` only) |
+| Wd-review obligation (review-only invariant) | done | test `a_secret_in_the_base_or_the_new_text_reaches_nothing_but_the_renderer` in We4.1 |
+
+## TDD cycle evidence (W-e4)
+
+| Task | RED (seen failing) | GREEN | Triangulation | REFACTOR |
+|------|--------------------|-------|---------------|----------|
+| We4.1 | `ReviewView` tests: `E0432 unresolved import BatchReview`, `E0433 cannot find type Move/ReviewView` (23 errors). Batch ask: `E0599 no variant Batch for ApprovalAsk`, `no method review/set_review for Approvals` (12 errors). App: `E0004 non-exhaustive patterns ApprovalAsk::Batch(_) not covered` in `run.rs` and `tool.rs`. Behavioural RED in the view: `left: 13 right: 0` (jumping to the end does NOT see the skipped rows, so my first expectation was wrong and the gate right; tests now page through) | 12 of 12 view, 4 of 4 core, 11 of 11 app | jump vs paging, step/page/top/bottom clamps, resize keeps seen, 0/1/2-row panes see nothing, truncated batch never arms, empty batch, held `y`, held arrow still scrolls, all three approval modes, Esc and `n`, Ctrl+C, ToolResult withdraws the view | `Approvals` owns the view so answer/withdraw/new request drop it with no extra cleanup site |
+| We4.2 | `E0599 no method named now for ChatView`, then 10 snapshots missing (insta `.snap.new`) | 15 of 15 | fresh, countdown, ready, scrolled, build file, coarse, too large, wrapped (`¦`), 1 and 2 rows, bidi/ESC shown as `<U+XXXX>`, the secret is shown to the user, countdown at 0/50/300/700 ms, sizes 0..=25 x {0,1,2,3,10,24,80} never panic or overdraw | `fill` in `chat.rs` made `pub(super)` |
+| We4.3 | `E0425 cannot find value ASK_ARM_DELAY`; with `arm_delay` faked to 400 for all: `a_batch_waits_the_longer_review_delay` and `n_and_esc_wait_for_the_review_delay_too` FAILED | 12 delay tests | non-batch asks (Run, Read, Search, External) answer at 400 ms, batch at 800 ms for `y`, `n` and Esc | `app/tool.rs::ARM_DELAY` removed; `open_prompt` uses `ask.arm_delay()` |
+
+Mutations (tests that passed at once): `can_approve` replaced by `true` in `approve_batch` failed 4 tests; an `AutoType` arm for `Batch` in `route` failed 2; `CHROME` 2 to 1 failed 5; a `ReviewView` `Debug` that printed rows failed the secret test; `div_ceil(100)` to `/ 100` failed the countdown test (after adding the 50 ms case).
+
+## Deviations / notes (W-e4)
+
+- `BatchReview` is `{ doc: ReviewDoc }` in `core/ai/chat/review.rs` with `new`, `doc`, `counts()` ("2 files, +3 -1") and the const `TOO_LARGE`. It carries no `BatchId`: W-f/W-g add it when `propose_batch` builds the ask (the pure core cannot name the runtime store).
+- `ReviewView` (`core/ai/chat/review_view.rs`, new, pure): `Arc<BatchReview>` + `Coverage` + `Layout` + `top`. It lives in `Approvals` next to the pending approval, so every way an approval ends drops it. Manual `PartialEq` (same Arc, same top, same open time) and a counts-only `Debug`.
+- Coverage is fed by the rows on screen: `fit(size)` runs on open, on every scroll key, on a pane resize (`App::refit_review` in the rewrap loop) and again in `y`. A jump to Home/End does not count the rows it skips; the user has to page through. The pane has `CHROME = 2` rows (counter on top, keys at the bottom); with fewer than 3 rows no body is shown, nothing is seen and `y` stays locked, while `n` still works (1 row shows the keys only, 2 rows the counter and the keys).
+- Keys (`app/review.rs`): Up/k, Down/j, PgUp, PgDn, Home, End scroll (a held key repeats); `y` needs `can_approve(now)` and a Press; `n`/Esc reject; Ctrl+C denies with `cancelled` and cancels the turn; everything else is swallowed. `on_approval_key` hands off to `on_review_key` first when a view exists.
+- Delays: `ASK_ARM_DELAY` (400 ms) and `review::ARM_DELAY` (800 ms) are named; `ApprovalAsk::arm_delay()` picks one and `open_prompt` sets `armed_at` from it. A batch therefore ignores `n` and Esc for 800 ms as well as `y` (a stray key cannot discard a batch the user has not seen). `Coverage::can_approve` keeps its own 800 ms check as a second guard.
+- Answer to the model: `Decision::Sent` on `y`; `Denied(DECLINED)` on `n`/Esc; `Denied(TOO_LARGE)` ("the batch was too large to review: split the change into smaller batches") when the doc is not reviewable. `Decision::Denied` holds a `&'static str`, so no row text can reach it. The transcript gets `batch rejected: 1 file, +5 -0` (counts only). Apply result and paths are W-e2/W-f/W-g.
+- UI: `ChatView::render_view` draws the review after the tag editor, list, note editor and summary draft (the same order in which `has_approval` hands the keys over), and `cursor()` returns `None`. `ChatView::now(Instant)` carries the clock (`ui/mod.rs` passes `app.now()`); without it the view uses `Instant::now()`. The overlay prompt (`approval_prompt`) is `None` for a batch.
+- Header: `1 file, +30 -0 · seen 12/33 · 21 remaining · y locked`, then `y in 0.4s`, then `y ready`; a batch that is not reviewable shows the "too large to review" warning and the keys line `n discard · ...` only. Keys line: `y locked` / `y approve`. Build file, coarse diff and truncated warnings are the doc's own `Warning` rows.
+- `cargo-insta` is not installed here: snapshots were written with `INSTA_UPDATE=always cargo test` and reviewed by eye; no `.snap.new` left.
+- No macOS-only file mentions `ApprovalAsk`; `host.rs` untouched.
+
+## Size (W-e4)
+
+Production, counted as added lines outside test files and `#[cfg(test)]` modules: We4.1 about 380, We4.2 about 140, We4.3 about 24; total 542 (490 without blank lines). That is over the 500 cut line (under 700): We4.3 is already its own last commit, and a `size:exception` or a split is needed before opening the PR. Tests and 10 snapshots are not counted.
+
+## Checks (W-e4)
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5710 lib tests green), `cargo +1.88 check --all-targets`, no pending `.snap.new`.
