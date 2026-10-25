@@ -3,6 +3,8 @@
 
 use regex::{Regex, RegexBuilder};
 
+/// The longest pattern accepted, in bytes.
+pub const MAX_PATTERN_BYTES: usize = 512;
 /// The most matches a result lists.
 pub const MAX_MATCHES: usize = 100;
 /// Said when there were more matches than [`MAX_MATCHES`].

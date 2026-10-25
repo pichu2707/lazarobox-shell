@@ -183,7 +183,10 @@ pub fn execute_with(
         Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits),
         Call::FindDir { query } => find_dir(&roots, &budget, query, limits),
         // A user tool runs on its own server, never here.
-        Call::RunInPane { .. } | Call::External { .. } => Err(Failure::NotReadTool),
+        // `glob` runs here once the search slice wires it (M1-c).
+        Call::Glob { .. } | Call::RunInPane { .. } | Call::External { .. } => {
+            Err(Failure::NotReadTool)
+        }
     }
 }
 

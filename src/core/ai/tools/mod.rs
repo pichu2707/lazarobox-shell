@@ -82,6 +82,11 @@ pub enum Call {
         /// The window to read; `None` reads from the start, as in 0.18.0.
         lines: Option<Lines>,
     },
+    /// `dir` is the optional sub-directory to search, as the model wrote it.
+    Glob {
+        pattern: String,
+        dir: Option<String>,
+    },
     RunInPane {
         command: String,
     },
@@ -105,6 +110,7 @@ impl Call {
             Call::FindDir { .. } => "find_dir",
             Call::ListDir { .. } => "list_dir",
             Call::ReadFile { .. } => "read_file",
+            Call::Glob { .. } => "glob",
             Call::RunInPane { .. } => "run_in_pane",
         }
     }
@@ -115,6 +121,7 @@ impl Call {
         match self {
             Call::FindDir { query } => Cow::Borrowed(query),
             Call::ListDir { path } | Call::ReadFile { path, .. } => Cow::Borrowed(path),
+            Call::Glob { pattern, .. } => Cow::Borrowed(pattern),
             Call::RunInPane { command } => Cow::Borrowed(command),
             Call::External { args, .. } => Cow::Owned(args.to_string()),
         }
@@ -144,7 +151,7 @@ const fn text(name: &'static str) -> ArgDef {
 
 /// The built-ins in offer order. `Access::Read` is only a classification,
 /// not an approval rule: see [`Access`].
-const BUILT_INS: [ToolDef; 4] = [
+const BUILT_INS: [ToolDef; 5] = [
     ToolDef {
         name: "find_dir",
         description: "Find directories under the user's home whose name contains the query. Names that look like secrets are left out and the result says so.",
@@ -165,6 +172,28 @@ const BUILT_INS: [ToolDef; 4] = [
         access: Access::Read,
         family: Family::Read,
         args: &[text("path")],
+    },
+    ToolDef {
+        name: "glob",
+        description: "List the files under the chat's root whose root-relative path matches a glob pattern (`*`, `**`, `?`, `[a-z]`). Names only, never content. Names that look like secrets are left out and the result says so.",
+        access: Access::Read,
+        family: Family::Search,
+        args: &[
+            ArgDef {
+                name: "pattern",
+                kind: ArgKind::Str {
+                    max: glob::MAX_PATTERN_BYTES,
+                },
+                required: true,
+                gate: None,
+            },
+            ArgDef {
+                name: "path",
+                kind: ArgKind::Str { max: MAX_ARG_BYTES },
+                required: false,
+                gate: None,
+            },
+        ],
     },
     ToolDef {
         name: "run_in_pane",
@@ -251,6 +280,13 @@ fn parse_built_in(name: &str, args: &Value, set: FamilySet) -> Result<Call, Tool
         "read_file" => Ok(Call::ReadFile {
             path: text,
             lines: None,
+        }),
+        "glob" => Ok(Call::Glob {
+            pattern: text,
+            dir: match parsed.get("path") {
+                Some(ArgValue::Str(dir)) => Some(dir.clone()),
+                _ => None,
+            },
         }),
         "run_in_pane" => Ok(Call::RunInPane { command: text }),
         // Unreachable: the name was found in `BUILT_INS` above and every
@@ -757,6 +793,88 @@ mod tests {
                 &q,
                 FamilySet::LEGACY
             )
+        );
+    }
+
+    fn search_set() -> FamilySet {
+        FamilySet::LEGACY.with(Family::Search)
+    }
+
+    fn parse_glob(args: Value, set: FamilySet) -> Result<Call, ToolError> {
+        parse_call_in("glob", &args, &servers::Qualified::default(), set)
+    }
+
+    // Spec (code-search, Family and toggle): glob exists only with Search on.
+    #[test]
+    fn glob_is_offered_and_parsed_only_with_search_on() {
+        assert!(!names(&registry(&[])).contains(&"glob"));
+        let on = registry_with(&[], search_set());
+        assert_eq!(
+            names(&on),
+            ["find_dir", "list_dir", "read_file", "glob", "run_in_pane"]
+        );
+        let glob = on.iter().find(|t| t.name == "glob").unwrap();
+        assert_eq!(glob.access, Access::Read);
+        assert_eq!(
+            glob.schema,
+            json!({
+                "type": "object",
+                "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}},
+                "required": ["pattern"],
+                "additionalProperties": false,
+            })
+        );
+        let args = json!({"pattern": "**/*.rs"});
+        assert_eq!(
+            parse_glob(args.clone(), FamilySet::LEGACY),
+            Err(ToolError::UnknownTool)
+        );
+        assert_eq!(parse_call("glob", &args), Err(ToolError::UnknownTool));
+        assert_eq!(
+            parse_glob(args, search_set()),
+            Ok(Call::Glob {
+                pattern: "**/*.rs".into(),
+                dir: None
+            })
+        );
+    }
+
+    #[test]
+    fn glob_takes_an_optional_sub_directory() {
+        let call = parse_glob(json!({"pattern": "*.rs", "path": "src"}), search_set()).unwrap();
+        assert_eq!(
+            call,
+            Call::Glob {
+                pattern: "*.rs".into(),
+                dir: Some("src".into())
+            }
+        );
+        assert_eq!((call.name(), &*call.argument()), ("glob", "*.rs"));
+    }
+
+    // Spec (agent-tools): the shared parse order and caps apply to glob too.
+    #[test]
+    fn glob_arguments_are_validated_through_the_table() {
+        let bad = |args: Value| parse_glob(args, search_set());
+        assert_eq!(bad(json!({})), Err(ToolError::MissingArgument));
+        assert_eq!(bad(json!({"pattern": 5})), Err(ToolError::WrongType));
+        assert_eq!(
+            bad(json!({"pattern": "a", "path": 5})),
+            Err(ToolError::WrongType)
+        );
+        assert_eq!(
+            bad(json!({"pattern": "a", "mode": 1})),
+            Err(ToolError::ExtraArgument)
+        );
+        assert_eq!(bad(json!(["a"])), Err(ToolError::NotAnObject));
+        assert_eq!(
+            bad(json!({"pattern": "a".repeat(glob::MAX_PATTERN_BYTES + 1)})),
+            Err(ToolError::TooLong)
+        );
+        assert!(bad(json!({"pattern": "a".repeat(glob::MAX_PATTERN_BYTES)})).is_ok());
+        assert_eq!(
+            bad(json!({"pattern": "a", "path": "p".repeat(MAX_ARG_BYTES + 1)})),
+            Err(ToolError::TooLong)
         );
     }
 }

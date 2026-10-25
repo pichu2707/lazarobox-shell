@@ -97,7 +97,10 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
             tool: shown_name(tool),
             args: shown_args(args),
         }),
-        Call::ReadFile { .. } | Call::FindDir { .. } | Call::ListDir { .. } => None,
+        // `glob` returns names only and, like the directory tools, never asks.
+        Call::ReadFile { .. } | Call::FindDir { .. } | Call::ListDir { .. } | Call::Glob { .. } => {
+            None
+        }
     }
 }
 
@@ -920,6 +923,12 @@ mod tests {
         for locality in [Locality::Local, Locality::Cloud] {
             assert_eq!(ask_for(&find, locality), None);
             assert_eq!(ask_for(&list, locality), None);
+            // Spec (agent-tools): glob runs without approval on every engine.
+            let glob = Call::Glob {
+                pattern: "**/*.rs".into(),
+                dir: None,
+            };
+            assert_eq!(ask_for(&glob, locality), None);
             assert_eq!(
                 ask_for(&run, locality),
                 Some(ApprovalAsk::Run {

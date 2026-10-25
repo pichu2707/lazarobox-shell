@@ -110,7 +110,7 @@ Spec: configuration "Family toggle keys"; config-persistence "Family toggle keys
 ### M1-a: glob core (PR 4, ~400)
 Spec: code-search "glob", "Family and toggle".
 - [x] M1a.1 RED: glob -> anchored regex table (`*`, `**`, `?`, classes, anchoring, bad patterns). GREEN: `tools/glob.rs`, `Cargo.toml` (+regex). ~200.
-- [ ] M1a.2 RED: `Call::Glob` args parse (ArgDef, caps, family gate Search). GREEN: `registry.rs`/`mod.rs`. ~100. Dep: M1a.1, P0b.
+- [x] M1a.2 RED: `Call::Glob` args parse (ArgDef, caps, family gate Search). GREEN: `registry.rs`/`mod.rs`. ~100. Dep: M1a.1, P0b.
 - [ ] M1a.3 RED: result ordering, 100-match cap, truncation text. GREEN. ~100.
 
 ### M1-b: grep, paging, `.git/config` deny (PR 5, ~450)
