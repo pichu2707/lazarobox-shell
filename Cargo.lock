@@ -754,6 +754,7 @@ dependencies = [
  "regex",
  "rusqlite",
  "serde_json",
+ "similar",
  "tempfile",
  "tokio",
  "toml",
