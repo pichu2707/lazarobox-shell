@@ -27,8 +27,10 @@ use crate::{
             memory::redact::redact,
             sanitize::clean,
             tools::{
-                Call,
-                paths::{PathVerdict, REFUSED, SecretRoots, is_excluded_name, resolve},
+                Call, Lines,
+                paths::{
+                    PathVerdict, REFUSED, SecretRoots, is_excluded_name, is_git_config, resolve,
+                },
             },
         },
         config::config_path,
@@ -95,6 +97,8 @@ pub enum Failure {
     TimedOut,
     EmptyQuery,
     NotReadTool,
+    /// A `grep` pattern that is too long or not a valid expression.
+    BadPattern,
 }
 
 impl Failure {
@@ -107,6 +111,7 @@ impl Failure {
             Failure::TimedOut => "timed out",
             Failure::EmptyQuery => "the query is empty",
             Failure::NotReadTool => "not a read tool",
+            Failure::BadPattern => "the pattern is not a valid expression",
         }
     }
 }
@@ -114,6 +119,13 @@ impl Failure {
 /// Returned when the read window holds one run of text with no whitespace to
 /// cut at (minified JSON, base64): showing any of it could show half a secret.
 pub const NO_CUT_MARKER: &str = "[not shown: no safe cut point in the read window]";
+
+/// Said after a `read_file` window when lines follow it; the line number of
+/// the next window completes it.
+pub const MORE_MARKER_PREFIX: &str = "[more lines follow: next start_line";
+
+/// Bytes of a file a window read looks at, to find its lines.
+const PAGE_SCAN: usize = 1024 * 1024;
 
 /// Bytes read past the cap so redaction sees a whole secret.
 const REDACT_MARGIN: usize = 1024;
@@ -132,19 +144,32 @@ pub const FIND_MARKER: &str = "[truncated: the search was bounded]";
 /// Appended when `read_file` cut the text at the cap.
 pub const READ_MARKER: &str = "[truncated: the file is larger than the read cap]";
 
+/// Said after a `read_file` window that reaches the end of the scanned head
+/// of a file larger than the scan limit: more text exists, but not reachable.
+pub const SCAN_MARKER: &str = "[truncated: the rest of the file is past the scan limit]";
+
 /// When a walk must stop: its wall-time deadline or the caller's cancel flag.
 /// Checked per entry and before each `canonicalize`, so a cancelled or late
 /// call stops touching the disk. A syscall already blocked (a hung open on a
 /// dead mount) cannot be interrupted and can still pin one blocking thread.
-struct Budget<'a> {
+pub(super) struct Budget<'a> {
     deadline: Instant,
     cancel: &'a AtomicBool,
     #[cfg(test)]
     entry_delay: Duration,
 }
 
-impl Budget<'_> {
-    fn spent(&self) -> bool {
+impl<'a> Budget<'a> {
+    pub(super) fn new(limits: &Limits, cancel: &'a AtomicBool) -> Self {
+        Budget {
+            deadline: Instant::now() + limits.time,
+            cancel,
+            #[cfg(test)]
+            entry_delay: limits.entry_delay,
+        }
+    }
+
+    pub(super) fn spent(&self) -> bool {
         self.cancel.load(Ordering::Relaxed) || Instant::now() >= self.deadline
     }
 }
@@ -172,16 +197,19 @@ pub fn execute_with(
     cancel: &AtomicBool,
 ) -> Result<String, Failure> {
     let roots = load_roots(env)?;
-    let budget = Budget {
-        deadline: Instant::now() + limits.time,
-        cancel,
-        #[cfg(test)]
-        entry_delay: limits.entry_delay,
-    };
+    let budget = Budget::new(limits, cancel);
     match call {
-        Call::ReadFile { path, .. } => read_file(&roots, env, path, limits),
+        Call::ReadFile { path, lines } => read_file(&roots, env, path, *lines, limits),
         Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits),
         Call::FindDir { query } => find_dir(&roots, &budget, query, limits),
+        // Whether `grep` may run is decided before this, by `ask_for`; `glob`
+        // names files only and needs no approval.
+        Call::Glob { pattern, dir } => {
+            super::search::glob(pattern, dir.as_deref(), env, limits, cancel)
+        }
+        Call::Grep { pattern, dir } => {
+            super::search::grep(pattern, dir.as_deref(), env, limits, cancel)
+        }
         // A user tool runs on its own server, never here.
         Call::RunInPane { .. } | Call::External { .. } => Err(Failure::NotReadTool),
     }
@@ -235,11 +263,16 @@ fn read_file(
     roots: &SecretRoots,
     env: &ToolEnv,
     path: &str,
+    window: Option<Lines>,
     limits: &Limits,
 ) -> Result<String, Failure> {
     let PathVerdict::Allowed(real) = resolve(roots, &env.origin, path) else {
         return Err(Failure::Refused);
     };
+    // Judged on the real path, so a link to it is refused too.
+    if is_git_config(&real) {
+        return Err(Failure::Refused);
+    }
     let file = std::fs::File::from(open_checked(roots, &real, false)?);
     let meta = file.metadata().map_err(|_| Failure::Unreadable)?;
     // A directory, FIFO, socket or device: refused like any hidden path.
@@ -251,6 +284,14 @@ fn read_file(
     if meta.nlink() > 1 {
         return Err(Failure::Refused);
     }
+    match window {
+        Some(window) => read_window(file, window, limits),
+        None => read_head(file, limits),
+    }
+}
+
+/// The start of an opened file, as far as the read cap allows.
+fn read_head(file: std::fs::File, limits: &Limits) -> Result<String, Failure> {
     // Read a margin past the cap: a secret that straddles the cap must be
     // redacted whole, and only then is the text cut.
     let window = limits.read_bytes + REDACT_MARGIN;
@@ -263,17 +304,7 @@ fn read_file(
     }
     let more = bytes.len() > window;
     bytes.truncate(window);
-    let text = match String::from_utf8(bytes) {
-        Ok(text) => text,
-        // A character split by the window is the only decoding error allowed.
-        Err(error) if more && error.utf8_error().error_len().is_none() => {
-            let valid = error.utf8_error().valid_up_to();
-            let mut bytes = error.into_bytes();
-            bytes.truncate(valid);
-            String::from_utf8(bytes).map_err(|_| Failure::NotText)?
-        }
-        Err(_) => return Err(Failure::NotText),
-    };
+    let text = decode(bytes, more)?;
     // Clean first: a zero-width or control character inside a token would
     // otherwise hide it from the redaction.
     let mut out = redact(&clean(&text)).text;
@@ -287,14 +318,7 @@ fn read_file(
             return Ok(NO_CUT_MARKER.to_owned());
         }
     }
-    let cut = more || out.len() > limits.read_bytes;
-    if out.len() > limits.read_bytes {
-        let mut end = limits.read_bytes;
-        while !out.is_char_boundary(end) {
-            end -= 1;
-        }
-        out.truncate(end);
-    }
+    let cut = cap(&mut out, limits.read_bytes) || more;
     if cut {
         out.push('\n');
         out.push_str(READ_MARKER);
@@ -302,10 +326,97 @@ fn read_file(
     Ok(out)
 }
 
+/// UTF-8 text from `bytes`. When the read was cut (`more`), a character split
+/// by the cut is the only decoding error allowed.
+fn decode(bytes: Vec<u8>, more: bool) -> Result<String, Failure> {
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(text),
+        Err(error) if more && error.utf8_error().error_len().is_none() => {
+            let valid = error.utf8_error().valid_up_to();
+            let mut bytes = error.into_bytes();
+            bytes.truncate(valid);
+            String::from_utf8(bytes).map_err(|_| Failure::NotText)
+        }
+        Err(_) => Err(Failure::NotText),
+    }
+}
+
+/// Cuts `out` to at most `max` bytes on a character boundary. Whether it cut.
+fn cap(out: &mut String, max: usize) -> bool {
+    if out.len() <= max {
+        return false;
+    }
+    let mut end = max;
+    while !out.is_char_boundary(end) {
+        end -= 1;
+    }
+    out.truncate(end);
+    true
+}
+
+/// `window.max` lines from line `window.start` of an opened file. The head
+/// of the file (up to [`PAGE_SCAN`]) is cleaned and redacted as a whole
+/// BEFORE it is cut into lines, so a secret that spans lines is seen whole.
+/// Line numbers count the lines of that cleaned text.
+fn read_window(file: std::fs::File, window: Lines, limits: &Limits) -> Result<String, Failure> {
+    let mut bytes = Vec::new();
+    file.take(PAGE_SCAN as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| Failure::Unreadable)?;
+    if bytes.contains(&0) {
+        return Err(Failure::NotText);
+    }
+    let scan_cut = bytes.len() > PAGE_SCAN;
+    bytes.truncate(PAGE_SCAN);
+    let text = redact(&clean(&decode(bytes, scan_cut)?)).text;
+    let mut lines: Vec<&str> = text.split_inclusive('\n').collect();
+    // A scan that stopped mid-line holds a partial last line: never show it.
+    if scan_cut && lines.last().is_some_and(|line| !line.ends_with('\n')) {
+        lines.pop();
+    }
+    let from = (window.start as usize).saturating_sub(1);
+    if from >= lines.len() {
+        return Ok(if scan_cut {
+            "[empty window: the file is larger than the scan limit]".to_owned()
+        } else {
+            format!("[empty window: the file has {} lines]", lines.len())
+        });
+    }
+    let mut end = lines.len().min(from.saturating_add(window.max as usize));
+    // Cut at the last whole line that fits the read cap, so the next window
+    // can start right after it.
+    let mut size = 0usize;
+    let fits = lines[from..end]
+        .iter()
+        .take_while(|line| {
+            size += line.len();
+            size <= limits.read_bytes
+        })
+        .count();
+    let mut out;
+    if fits == 0 {
+        // One line alone is over the cap: cut it, there is no whole line to end on.
+        out = lines[from].to_owned();
+        cap(&mut out, limits.read_bytes);
+        out.push('\n');
+        out.push_str(READ_MARKER);
+        return Ok(out);
+    }
+    end = from + fits;
+    out = lines[from..end].concat();
+    if end < lines.len() {
+        out.push_str(&format!("{MORE_MARKER_PREFIX} {}]", end + 1));
+    } else if scan_cut {
+        // What follows lies past the scan: a next start_line could not read it.
+        out.push_str(SCAN_MARKER);
+    }
+    Ok(out)
+}
+
 /// The entries of an open directory, at most `max` of them, and whether more
 /// were left. Read through `/proc/self/fd`, so it is the opened directory and
 /// not a path that is listed. A symlink is reported as such, never followed.
-fn entries(
+pub(super) fn entries(
     fd: &OwnedFd,
     max: usize,
     budget: &Budget,
@@ -330,7 +441,13 @@ fn entries(
 
 /// Whether `dir/name` may be shown. A link is judged by where it leads, and a
 /// dangling one is hidden.
-fn visible(roots: &SecretRoots, budget: &Budget, dir: &Path, name: &OsStr, kind: FileType) -> bool {
+pub(super) fn visible(
+    roots: &SecretRoots,
+    budget: &Budget,
+    dir: &Path,
+    name: &OsStr,
+    kind: FileType,
+) -> bool {
     if is_excluded_name(&name.to_string_lossy()) {
         return false;
     }
@@ -349,14 +466,14 @@ fn visible(roots: &SecretRoots, budget: &Budget, dir: &Path, name: &OsStr, kind:
 /// listed nor matched, and a folder with one is not entered. Showing it as
 /// `[REDACTED]`, or matching a query against the raw name, would tell the
 /// model which prefixes of a key exist.
-fn redaction_changes(name: &OsStr) -> bool {
+pub(super) fn redaction_changes(name: &OsStr) -> bool {
     let line = one_line(name);
     redact(&line).text != line
 }
 
 /// A name that fits on one line: escapes and bidi marks are gone, and so is
 /// every remaining control character.
-fn one_line(name: &OsStr) -> String {
+pub(super) fn one_line(name: &OsStr) -> String {
     clean(&name.to_string_lossy())
         .chars()
         .map(|c| if c.is_control() { '?' } else { c })
@@ -727,6 +844,139 @@ mod tests {
         assert!(out.contains("name = x"));
     }
 
+    fn numbered(count: usize) -> String {
+        (1..=count).map(|n| format!("line {n}\n")).collect()
+    }
+
+    fn page(env: &ToolEnv, path: &str, start: u32, max: u32, limits: &Limits) -> String {
+        let call = Call::ReadFile {
+            path: path.into(),
+            lines: Some(Lines { start, max }),
+        };
+        execute(&call, env, limits).unwrap()
+    }
+
+    // Spec (code-search, read_file paging): Window.
+    #[test]
+    fn a_window_returns_the_requested_lines_and_says_more_follow() {
+        let f = fixture();
+        fs::write(f.home.join("long"), numbered(500)).unwrap();
+        let out = page(&env(&f.home), "~/long", 100, 20, &Limits::default());
+        let want: String = (100..120).map(|n| format!("line {n}\n")).collect();
+        assert_eq!(out, format!("{want}{MORE_MARKER_PREFIX} 120]"));
+        // The last window has nothing after it: no marker.
+        let tail = page(&env(&f.home), "~/long", 491, 20, &Limits::default());
+        let want: String = (491..=500).map(|n| format!("line {n}\n")).collect();
+        assert_eq!(tail, want);
+    }
+
+    // Spec (code-search, read_file paging): Past the end.
+    #[test]
+    fn a_start_past_the_end_is_an_empty_window_with_a_note() {
+        let f = fixture();
+        fs::write(f.home.join("ten"), numbered(10)).unwrap();
+        let out = page(&env(&f.home), "~/ten", 50, 20, &Limits::default());
+        assert_eq!(out, "[empty window: the file has 10 lines]");
+        // One past the last line is also empty; the last line is not.
+        let edge = page(&env(&f.home), "~/ten", 11, 5, &Limits::default());
+        assert_eq!(edge, "[empty window: the file has 10 lines]");
+        assert_eq!(
+            page(&env(&f.home), "~/ten", 10, 5, &Limits::default()),
+            "line 10\n"
+        );
+    }
+
+    // Spec (code-search, read_file paging): Window.
+    #[test]
+    fn a_window_ending_at_the_scan_limit_does_not_offer_an_unreadable_start() {
+        let f = fixture();
+        let mut text = String::new();
+        while text.len() < PAGE_SCAN + 100 {
+            text.push_str("0123456789\n");
+        }
+        fs::write(f.home.join("huge"), &text).unwrap();
+        let lines_scanned = PAGE_SCAN / 11;
+        let out = page(
+            &env(&f.home),
+            "~/huge",
+            lines_scanned as u32 - 1,
+            100,
+            &Limits::default(),
+        );
+        assert!(out.ends_with(SCAN_MARKER), "{out:?}");
+        assert!(!out.contains(MORE_MARKER_PREFIX), "{out:?}");
+    }
+
+    #[test]
+    fn a_window_is_redacted_and_bounded_by_the_read_cap() {
+        let f = fixture();
+        fs::write(
+            f.home.join("conf"),
+            "a\nkey = sk-abcDEF1234567890\nname = x\n",
+        )
+        .unwrap();
+        let out = page(&env(&f.home), "~/conf", 2, 2, &Limits::default());
+        assert!(!out.contains("sk-abcDEF1234567890"), "{out}");
+        assert!(out.contains("name = x"), "{out}");
+        fs::write(f.home.join("wide"), numbered(500)).unwrap();
+        let limits = Limits {
+            read_bytes: 20,
+            ..Limits::default()
+        };
+        let out = page(&env(&f.home), "~/wide", 1, 100, &limits);
+        // Cut at a whole line, and the next window starts right after it.
+        assert_eq!(out, format!("line 1\nline 2\n{MORE_MARKER_PREFIX} 3]"));
+        let next = page(&env(&f.home), "~/wide", 3, 100, &limits);
+        assert_eq!(next, format!("line 3\nline 4\n{MORE_MARKER_PREFIX} 5]"));
+        // A single line over the cap has no whole-line cut: the cap marker stays.
+        fs::write(f.home.join("one"), format!("{}\nnext\n", "w".repeat(50))).unwrap();
+        let out = page(&env(&f.home), "~/one", 1, 5, &limits);
+        assert_eq!(out, format!("{}\n{READ_MARKER}", "w".repeat(20)));
+    }
+
+    #[test]
+    fn a_paged_read_still_refuses_binary_and_secret_files() {
+        let f = fixture();
+        fs::write(f.home.join("bin"), b"a\0b\n").unwrap();
+        let call = |path: &str| Call::ReadFile {
+            path: path.into(),
+            lines: Some(Lines { start: 1, max: 5 }),
+        };
+        let run = |path: &str| execute(&call(path), &env(&f.home), &Limits::default());
+        assert_eq!(run("~/bin"), Err(Failure::NotText));
+        assert_eq!(run("~/.ssh/id"), Err(Failure::Refused));
+    }
+
+    // Spec (code-write, Deny rules): reads of `.git/config` are refused.
+    #[test]
+    fn git_config_files_are_refused_with_the_standard_text() {
+        let f = fixture();
+        let git = f.home.join("dev/app/.git");
+        fs::create_dir_all(git.join("modules/sub")).unwrap();
+        for file in ["config", "config.worktree", "modules/sub/config"] {
+            fs::write(git.join(file), "[remote]\nurl = https://x\n").unwrap();
+        }
+        fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::create_dir_all(f.home.join("dev/app/src")).unwrap();
+        fs::write(f.home.join("dev/app/src/config"), "ok\n").unwrap();
+        symlink(git.join("config"), f.home.join("dev/app/alias")).unwrap();
+        let e = env(&f.home);
+        for path in [
+            "~/dev/app/.git/config",
+            "~/dev/app/.git/config.worktree",
+            "~/dev/app/.git/modules/sub/config",
+            "~/dev/app/alias",
+        ] {
+            let err = read(&e, path).unwrap_err();
+            assert_eq!((err, err.message()), (Failure::Refused, REFUSED), "{path}");
+        }
+        assert_eq!(
+            read(&e, "~/dev/app/.git/HEAD").unwrap(),
+            "ref: refs/heads/main\n"
+        );
+        assert_eq!(read(&e, "~/dev/app/src/config").unwrap(), "ok\n");
+    }
+
     #[test]
     fn a_hard_link_to_a_secret_is_refused() {
         let f = fixture();
@@ -1084,6 +1334,33 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let out = execute_with(&call, &env(&f.home), &Limits::default(), &cancel);
         assert_eq!(out, Err(Failure::NotReadTool));
+    }
+
+    // Spec (agent-tools, approval model): `execute_with` never asks; asking is
+    // the host's job (`ask_for`), so a Local grep, which has no ask, runs here.
+    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn grep_and_glob_are_dispatched_through_execute_with() {
+        let f = fixture();
+        let cancel = AtomicBool::new(false);
+        let run = |call: Call| execute_with(&call, &env(&f.home), &Limits::default(), &cancel);
+        let grep = |pattern: &str, dir: Option<&str>| Call::Grep {
+            pattern: pattern.into(),
+            dir: dir.map(Into::into),
+        };
+        let out = run(grep("fn main", None)).unwrap();
+        assert!(out.starts_with("dev/app/main.rs:1:fn main() {}"), "{out}");
+        assert_eq!(
+            run(grep("fn main", Some("dev"))).unwrap(),
+            "dev/app/main.rs:1:fn main() {}"
+        );
+        let glob = Call::Glob {
+            pattern: "**/*.rs".into(),
+            dir: None,
+        };
+        assert_eq!(run(glob).unwrap(), "dev/app/main.rs");
+        assert_eq!(run(grep("(", None)), Err(Failure::BadPattern));
     }
 
     #[test]

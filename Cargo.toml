@@ -37,6 +37,8 @@ futures = "0.3"
 
 # Serialization & Config
 serde_json = "1.0"
+# Linear-time engine behind the glob translation (and grep, later)
+regex = "1"
 toml = "0.8"
 toml_edit = "0.22"
 

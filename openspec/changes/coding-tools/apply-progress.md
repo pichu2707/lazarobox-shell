@@ -40,3 +40,101 @@ Mode: Strict TDD. Runner: `cargo test`. Delivery: ask-on-risk, feature-branch-ch
 ## Checks
 
 `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (all green), `cargo +1.88 check --all-targets`.
+
+## Batch 2: slice M1-a (glob core, PR 4, branch feat/coding-tools-m1a, base feat/coding-tools-t)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| M1a.1 glob -> anchored regex | done | feat(tools): translate a glob pattern into an anchored regex |
+| M1a.2 `Call::Glob` args through the ArgDef table, Search gate | done | feat(tools): parse the glob call through the registry under the Search family |
+| M1a.3 ordering, 100-match cap, truncation text | done | feat(tools): render glob results sorted and capped |
+
+## TDD cycle evidence (M1-a)
+
+| Task | RED | GREEN | Triangulation | REFACTOR |
+|------|-----|-------|---------------|----------|
+| M1a.1 | 7 of 8 `glob::tests` failed against a stubbed `translate` | `Glob::new`, `translate`, class parser | `**` shapes, `*`/`?`/classes, anchoring, escapes, 8 refusal kinds | none needed |
+| M1a.2 | `Call::Glob` and `MAX_PATTERN_BYTES` did not exist (compile failure) | `Call::Glob`, `glob` `ToolDef` (pattern 512 B, optional path), `parse_built_in` arm | offered/parsed only with Search, parse order, caps, no-approval in `ask_for` | none needed |
+| M1a.3 | `render` did not exist (compile failure) | `render` | sorted, dedup, exact 100 vs 101, cap keeps smallest names, bounded walk, both markers | none needed |
+
+## Deviations / notes (M1-a)
+
+- `regex` was only a transitive dependency; added `regex = "1"` as the design says (no new crate in Cargo.lock beyond the direct edge).
+- M1a.1 implementation was first written before its tests; RED was then proven by stubbing `translate` and running the table. Noted honestly.
+- Pattern rules beyond the task text: `{}` and `\` are refused (`Unsupported`) so a model gets a clear error instead of silent no-match; `..` segments, NUL, leading `/` are refused; a leading `./` is dropped; `]` first in a class is literal; classes never match `/`.
+- Two exhaustive matches needed an arm for the new `Call::Glob`: `approval::ask_for` (never asks, per spec) and `fs::execute` (returns `NotReadTool` until M1-c wires it). `host.rs` untouched.
+- Not here (M1-b/c): the walk, skip list, secret omission marker (`OMITTED_MARKER` stays in the runtime), sub-directory resolution, staged view marker.
+- Risk: between this PR and M1-c, a Search-on chat offers `glob` but `fs::execute` refuses it. The chain merges as 0.19, so only intermediate branches are affected.
+
+## Checks (M1-a)
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (all green), `cargo +1.88 check --all-targets`.
+
+## Batch 3: slice M1-b (grep, paging, `.git/config` deny, PR 5, branch feat/coding-tools-m1b, base feat/coding-tools-m1a)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| M1b.1 `read_file{start_line,max_lines}` under Search, paging in `fs.rs` | done | feat(tools): page read_file by line window under the Search family |
+| M1b.2 refuse reads of `config` / `config.worktree` under `.git` | done | feat(tools): refuse reads of a git config file |
+| M1b.3 `Call::Grep`, `ToolDef grep`, `search::grep` over the budgeted walk | done | feat(tools): grep the root with a budgeted walk, redacted and capped |
+
+## TDD cycle evidence (M1-b)
+
+| Task | RED | GREEN | Triangulation | REFACTOR |
+|------|-----|-------|---------------|----------|
+| M1b.1 | `READ_MAX_LINES` missing (compile failure) for the schema/parse tests; fs window tests failed to compile (`MORE_MARKER_PREFIX`) | `ArgDef`s gated by Search, `window()`, `read_window`, `decode`, `cap` | schema off vs on, defaults, clamps, wrong type; window, last window (no marker), past end, edge line 11, redaction, read-cap cut, binary and secret still refused | `read_head`/`decode`/`cap` extracted from the old `read_file` body; the no-window tests stayed green |
+| M1b.2 | fs test read `.git/config` successfully (`unwrap_err` on Ok) | `paths::is_git_config`, checked on the real path in `read_file` | config, config.worktree, nested modules, symlink alias, vs HEAD, `src/config`, `.github/config`, `config.bak`, `config/x`, case | none needed |
+| M1b.3 | `Call::Grep` missing; `search::grep` and its consts missing (22 compile errors) | `Call::Grep`, `grep` ToolDef, `search::grep`, `Failure::BadPattern`, `Budget::new` | matches+lines, sub-dir and escapes, 100 vs exactly 100, 20 KiB, long line, bad/long/look-around pattern, secrets/binary/non-UTF-8/skip dirs, 1 MiB edge, redaction without oracle, links, pathological, cancel, HOME unset | `Budget::new` shared with `execute_with` |
+
+## Deviations / notes (M1-b)
+
+- `Lines` and `Call::ReadFile.lines` already existed from P0; M1-b only fills them. Defaults: `start_line` 1, `max_lines` 2000 (`READ_MAX_LINES`, also the clamp). A window is also bounded by the 64 KiB read cap (cut text ends with `READ_MARKER`, which then replaces the "more lines" marker).
+- Paging scans at most 1 MiB (`PAGE_SCAN`), cleans and redacts that text as a whole BEFORE cutting lines (a multi-line secret is seen whole), so line numbers count lines of the cleaned text. Past the scan limit: an "empty window ... larger than the scan limit" note.
+- `.git/config` deny is `paths::is_git_config`, applied on the real path in `read_file` only (symlink aliases are refused). It is not in `judge_rest`, so `list_dir` and the exec tools are unchanged.
+- grep matches the pattern against the cleaned+redacted text (no oracle on secrets), skips symlinks (never followed), skips `target node_modules .git dist build .venv __pycache__` dirs, secret names (adds `OMITTED_MARKER`), non-regular and hard-linked files, files over 1 MiB, binaries and non-UTF-8. Lines are cut to 200 chars. Walk depth, visited and time reuse `Limits`. `Failure::BadPattern` is new.
+- Pattern cap 512 B is enforced twice: in the registry (`TooLong`) and in `search::grep`. Compiled size limit 256 KiB; the `regex` crate gives the linear-time guarantee.
+- `fs::execute` still returns `NotReadTool` for `Call::Grep` and `Call::Glob`; `search::grep` is called by tests only. `approval::ask_for` returns `None` for `Call::Grep` as a placeholder. The spec rule (ask on Cloud, free on Local, via `ApprovalAsk::Search`) is M1c.1, which MUST replace that arm. Nothing dispatches grep before then, so no unasked Cloud read is possible. `host.rs` untouched.
+- `glob` dir param and `grep` dir param share semantics (relative to the root; must stay inside it); the glob walk itself is still M1-c and can reuse `search`'s walk.
+- Review risk: `search::grep` walk is BFS per directory with `entries()`; the staged-view marker is not here (W-e3).
+- `cargo test` showed one flaky failure under full-suite load (`shutdown_leaves_no_orphan_grandchild`), green alone and on rerun; unrelated.
+
+## Checks (M1-b)
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (all green), `cargo +1.88 check --all-targets`. macOS-only files (`tests/jail_macos*.rs`, `runtime/jail*`) do not touch `Call`, `ToolEnv` or `tools::fs::Failure`.
+
+## Batch 4: slice M1-c (search wiring and approval, PR 6, branch feat/coding-tools-m1c, base feat/coding-tools-m1b)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| M1c.0 spike: dispatch seam outside `host.rs` | done, `host.rs` NOT touched | (this docs commit) |
+| M1c.1 `ApprovalAsk::Search`: asks on Cloud, free on Local, `Prompt` in every mode | done | feat(approval): ask before a cloud grep sends file text to the engine |
+| M1c.2 execute glob/grep, prompt label, `Call::argument` with the folder | done | feat(tools): run glob and grep through the read-tool dispatch |
+| M1c.3 end to end, Search off equals 0.18.0, Search on adds the tools | done | test(tools): run glob and grep end to end through the session, Search off and on |
+
+## Spike result (M1c.0)
+
+`host.rs` is NOT touched and there is NO new rebase point against agent-orchestrator S1c-2. `host.rs` already has a generic arm `(valid, locality) => ask = ask_for(valid, locality)` and executes through `tools::run` -> `fs::execute_with`. So the grep ask lives in `approval::ask_for` and the dispatch arms for `Call::Glob/Grep` live in `fs::execute_with`. The TurnScope/execute filter that S1c-2 changes are untouched.
+
+## TDD cycle evidence (M1-c)
+
+| Task | RED (seen failing) | GREEN | Triangulation | REFACTOR |
+|------|--------------------|-------|---------------|----------|
+| M1c.1 | `no variant named Search found for enum ApprovalAsk` (3 compile errors: approval.rs tests `grep_asks_on_cloud_with_pattern_and_path_and_runs_free_on_local`, `a_search_ask_prompts_in_every_mode`, and app test `a_search_ask_shows_the_pattern_and_the_path`) | `ApprovalAsk::Search`, `SEARCH_KEYS`, `ask_for` arm, prompt arm in `app/run.rs`, `app/tool.rs` arm | Cloud vs Local, dir None vs Some, sanitized one-line label, 3 modes x 2 origins, y/n in auto mode | none needed |
+| M1c.2 | `cannot find function glob` (3 compile errors in `search::tests`); `call.argument()` test failed: left `("glob", "*.rs")` right `("glob", "*.rs in src")` | `search::glob`, shared `walk` extracted from `grep`, `fs::execute_with` arms, `argument()` with the folder | `**`/`*`/`src/*`, dir narrowing, escape, skip list at start (incl. mixed case), secrets marker, links, `../` pattern, budget, cancel, 101 cap, HOME unset; host: cloud sent/denied/unasked, local free, glob free on both | `walk` is shared by `grep` and `glob` (the 22 existing grep tests stayed green) |
+| M1c.3 | with the dispatch arms temporarily reverted to `NotReadTool`, `with_search_on_glob_and_grep_run_end_to_end_and_a_cloud_grep_asks` failed: `{"result":{"content":[{"text":"not a read tool"...}],"isError":true}}` | (wired in M1c.2) | `with_search_off_glob_and_grep_are_neither_listed_nor_run` is a regression guard: green by design, the 0.18.0 golden (`golden.rs`) stays green | none needed |
+
+The placeholder test `grep_is_not_executable_until_its_approval_is_wired` (fs.rs) is replaced by `grep_and_glob_are_dispatched_through_execute_with` (a Local grep, which has no ask, runs) plus host tests `a_cloud_grep_runs_only_after_the_answer_is_sent` and `a_cloud_grep_nobody_approves_is_denied_and_reads_nothing` (a Cloud grep asks first and opens nothing without `y`).
+
+## Deviations / notes (M1-c)
+
+- Ask label: `ApprovalAsk::Search { pattern, dir }`, both through `flat` (clean, one line, 512 chars); `dir` is `.` when the call names none (the spec says "root"). Prompt text: `search <pattern> in <dir>`.
+- `Call::argument()` for glob/grep now returns `pattern in dir` when a folder is given (feeds the ToolCall summary); unchanged without one.
+- glob matches the root-relative path of FILES only; `dir` only narrows the walk start. Output paths are root-relative. A bad glob pattern maps to `Failure::BadPattern` ("the pattern is not a valid expression"); the finer `GlobError` text is not carried.
+- `grep`'s inline walk became `search::walk` (shared with `glob`); behavior of grep unchanged. `walk` loads the secret roots again after `execute_with` already did (one extra cheap load per call).
+- Staged-view marker (`pending, not on disk`): NOT added, no consumer until W-e3 (`StagedView`); deferred there.
+- `glob` stays unasked on every engine, as before.
+- macOS-only files (`tests/jail_macos*.rs`, `runtime/jail*`) do not match on `ApprovalAsk`, `Call` or `Failure`.
+
+## Checks (M1-c)
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5429 lib tests green), `cargo +1.88 check --all-targets`.
