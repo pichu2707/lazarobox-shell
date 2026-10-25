@@ -144,6 +144,10 @@ pub const FIND_MARKER: &str = "[truncated: the search was bounded]";
 /// Appended when `read_file` cut the text at the cap.
 pub const READ_MARKER: &str = "[truncated: the file is larger than the read cap]";
 
+/// Said after a `read_file` window that reaches the end of the scanned head
+/// of a file larger than the scan limit: more text exists, but not reachable.
+pub const SCAN_MARKER: &str = "[truncated: the rest of the file is past the scan limit]";
+
 /// When a walk must stop: its wall-time deadline or the caller's cancel flag.
 /// Checked per entry and before each `canonicalize`, so a cancelled or late
 /// call stops touching the disk. A syscall already blocked (a hung open on a
@@ -373,13 +377,33 @@ fn read_window(file: std::fs::File, window: Lines, limits: &Limits) -> Result<St
             format!("[empty window: the file has {} lines]", lines.len())
         });
     }
-    let end = lines.len().min(from.saturating_add(window.max as usize));
-    let mut out = lines[from..end].concat();
-    if cap(&mut out, limits.read_bytes) {
+    let mut end = lines.len().min(from.saturating_add(window.max as usize));
+    // Cut at the last whole line that fits the read cap, so the next window
+    // can start right after it.
+    let mut size = 0usize;
+    let fits = lines[from..end]
+        .iter()
+        .take_while(|line| {
+            size += line.len();
+            size <= limits.read_bytes
+        })
+        .count();
+    let mut out;
+    if fits == 0 {
+        // One line alone is over the cap: cut it, there is no whole line to end on.
+        out = lines[from].to_owned();
+        cap(&mut out, limits.read_bytes);
         out.push('\n');
         out.push_str(READ_MARKER);
-    } else if end < lines.len() || scan_cut {
+        return Ok(out);
+    }
+    end = from + fits;
+    out = lines[from..end].concat();
+    if end < lines.len() {
         out.push_str(&format!("{MORE_MARKER_PREFIX} {}]", end + 1));
+    } else if scan_cut {
+        // What follows lies past the scan: a next start_line could not read it.
+        out.push_str(SCAN_MARKER);
     }
     Ok(out)
 }
@@ -857,6 +881,27 @@ mod tests {
         );
     }
 
+    // Spec (code-search, read_file paging): Window.
+    #[test]
+    fn a_window_ending_at_the_scan_limit_does_not_offer_an_unreadable_start() {
+        let f = fixture();
+        let mut text = String::new();
+        while text.len() < PAGE_SCAN + 100 {
+            text.push_str("0123456789\n");
+        }
+        fs::write(f.home.join("huge"), &text).unwrap();
+        let lines_scanned = PAGE_SCAN / 11;
+        let out = page(
+            &env(&f.home),
+            "~/huge",
+            lines_scanned as u32 - 1,
+            100,
+            &Limits::default(),
+        );
+        assert!(out.ends_with(SCAN_MARKER), "{out:?}");
+        assert!(!out.contains(MORE_MARKER_PREFIX), "{out:?}");
+    }
+
     #[test]
     fn a_window_is_redacted_and_bounded_by_the_read_cap() {
         let f = fixture();
@@ -874,7 +919,14 @@ mod tests {
             ..Limits::default()
         };
         let out = page(&env(&f.home), "~/wide", 1, 100, &limits);
-        assert_eq!(out, format!("line 1\nline 2\nline 3\n{READ_MARKER}"));
+        // Cut at a whole line, and the next window starts right after it.
+        assert_eq!(out, format!("line 1\nline 2\n{MORE_MARKER_PREFIX} 3]"));
+        let next = page(&env(&f.home), "~/wide", 3, 100, &limits);
+        assert_eq!(next, format!("line 3\nline 4\n{MORE_MARKER_PREFIX} 5]"));
+        // A single line over the cap has no whole-line cut: the cap marker stays.
+        fs::write(f.home.join("one"), format!("{}\nnext\n", "w".repeat(50))).unwrap();
+        let out = page(&env(&f.home), "~/one", 1, 5, &limits);
+        assert_eq!(out, format!("{}\n{READ_MARKER}", "w".repeat(20)));
     }
 
     #[test]
@@ -1273,6 +1325,20 @@ mod tests {
             server: "fs".into(),
             tool: "write".into(),
             args: serde_json::json!({}),
+        };
+        let cancel = AtomicBool::new(false);
+        let out = execute_with(&call, &env(&f.home), &Limits::default(), &cancel);
+        assert_eq!(out, Err(Failure::NotReadTool));
+    }
+
+    // Guard for the placeholder `grep` approval: until M1-c wires the ask on a
+    // cloud engine, `grep` must stay unexecutable. Wiring it makes this fail.
+    #[test]
+    fn grep_is_not_executable_until_its_approval_is_wired() {
+        let f = fixture();
+        let call = Call::Grep {
+            pattern: "x".into(),
+            dir: None,
         };
         let cancel = AtomicBool::new(false);
         let out = execute_with(&call, &env(&f.home), &Limits::default(), &cancel);
