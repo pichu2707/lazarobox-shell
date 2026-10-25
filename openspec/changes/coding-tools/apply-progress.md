@@ -280,3 +280,36 @@ About 305 production lines (edit.rs 120, diff.rs 175, stage.rs +10, mod.rs +2, C
 ## Checks (W-d)
 
 `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5553 lib tests green), `cargo +1.88 check --all-targets`.
+
+## Batch 9: slice W-e1 (ReviewDoc and coverage core, PR 11, branch feat/coding-tools-we1, base feat/coding-tools-wd)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| We1.1 `ReviewDoc` (`core/ai/chat/review.rs`) + review-only obligation | done | feat(chat): build the review document of a staged batch with escaped rows and warnings |
+| We1.2 `layout`, `Coverage`, 800 ms gate | done | feat(chat): lay out the review once and gate approval on full coverage and an 800 ms delay |
+
+## TDD cycle evidence (W-e1)
+
+| Task | RED (seen failing) | GREEN | Triangulation | REFACTOR |
+|------|--------------------|-------|---------------|----------|
+| We1.1 | `error[E0425]: cannot find type LineKind / ReviewDoc in this scope`, `E0433` on both (31 compile errors) | 25 of 26 at once; one failed because my test staged an invisible char in NEW text, which `check_new` refuses (test fixed to use `edit_file` over a disk text with U+202E / ESC) | create, overwrite (context/removed/added), dir, escapes in context and removed rows, build-file warning vs plain file, coarse (via `diff_within(.., ZERO)`), truncated (2100 rows, totals exact), no-newline note, tab expansion. Review-only: autoref probe (self-tested) shows no `Display`, `ToString`, `Into<String>` on `ReviewDoc`/`DocLine`; `Debug` prints counts and never a row. Mutations: `display_text` -> `raw_text` failed the escape test; build warning off failed the warning test; a temporary `impl Display for ReviewDoc` failed `a_review_has_no_path_into_a_string` | none needed |
+| We1.2 | `error[E0425]: cannot find function layout / type Layout / value ARM_DELAY`, `E0433 cannot find type Coverage` (23 compile errors) | 41 of 41 after fixing one test (an invisible char in new text again) | wrap at width, rejoin of rows equals the line, CJK width 2, `<U+200B>` counted as 8 columns, width 0 progresses, line seen only when ALL rows shown (accumulates across calls), clamped range, resize keeps seen lines, half-seen rows dropped on resize, gate (unseen blocks, 799 ms no, 800 ms yes, clock going back no). Mutations: `>= ARM_DELAY` -> `>` failed the gate test; coverage check removed failed it; `all` -> `any` failed 2; removing the width check passed at first (the row-count check hid it), so a test with two widths of equal row count (62 x's at 30 and 31) was added and then failed under the mutation | none needed |
+
+## Deviations / notes (W-e1)
+
+- API: `ReviewDoc::{build(&Batch), build_with(&Batch, diff_fn), lines, files, added, removed}`; `DocLine{kind: LineKind, text}` where `LineKind = Summary | File | Warning | Hunk | Context | Added | Removed | Note`; the text of a diff row is the sign (` `, `+`, `-`) plus `Line::display_text()`, with tabs expanded to spaces (`wrap::expand_tabs`) so columns are measurable. `layout(&ReviewDoc, width) -> Layout{rows() -> [Row{line, text}]}`; `Coverage::{new(&doc, opened: Instant), show(&layout, rows: Range<usize>), total, remaining, can_approve(now: Instant)}`; `ARM_DELAY = 800 ms`.
+- Clock: the core takes `opened` and `now` as `Instant` parameters, so it has no clock of its own; We4 passes the app's injected `(self.clock)()`. A test needs no sleep. `now` before `opened` does not arm (`saturating_duration_since`).
+- Coverage unit is the LOGICAL line (summary, file header, warning, hunk header, each row, note), so the gate counter reads "N lines remaining". Seen lines survive a resize; rows shown at another width are dropped, so a line half shown at one width is not seen at another (a stricter reading of "all its wrapped rows were shown").
+- Wrapping reuses `chat/wrap.rs::wrap_ranges` (grapheme clusters, `unicode-width`), a hard wrap by display width. A `<U+XXXX>` escape can break across two rows; each row stays within the width.
+- Only change outside the new file: `diff.rs` gets a public `escape(&str)` (the body of `Line::display_text`, now shared) so paths are escaped with the same rule. No behaviour change there.
+- Warnings: build file (`WriteTarget::build_file`), coarse diff, truncated diff. The `no newline at end of file` is a `Note` row, not a warning. Warning texts are new: `warning: build file: it can run code when the project is built`, `warning: coarse diff: the whole file is shown as replaced`, `warning: truncated: rows were left out; the totals are exact`.
+- Review-only obligation: `ReviewDoc` and `DocLine` have no `Display`, `Serialize`, `Into<String>`; `Debug` is hand-written (counts only); `DocLine` has no `Debug`. `Diff` itself keeps its `Display` (W-d) and is never stored in the doc. The model-facing answer (`denied` / apply result / `propose_batch` result) belongs to W-f and W-e4; the obligation was recorded in W-e4 in tasks.md next to the existing one in W-f. Nothing in this slice builds a model-facing summary.
+- Not here: rendering (We4), apply (We2), `Stages` (We3). host.rs untouched, nothing wired; no macOS-only file touched (the shared `diff.rs` change is a refactor).
+
+## Size (W-e1)
+
+About 300 production lines (`review.rs` before `mod tests`: 287, `diff.rs` about +17, `mod.rs` +1) and about 410 test lines. `git diff --stat feat/coding-tools-wd...HEAD`: 3 files, +712/-11 before docs.
+
+## Checks (W-e1)
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5591 lib tests green), `cargo +1.88 check --all-targets`.

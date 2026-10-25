@@ -161,9 +161,9 @@ Spec: code-write "edit_file staging", "Batch review and coverage gate".
 
 ### W-e1: ReviewDoc and coverage core (PR 11, ~400)
 Spec: code-write "Batch review and coverage gate"; chat-pane "Batch review view".
-- [ ] We1.1 RED: `ReviewDoc` (headers, warnings, hunk lines), invisible chars in context lines shown as `<U+XXXX>`. GREEN: `core/ai/chat/review.rs`. ~170.
-- [ ] We1.2 RED: single `layout(doc, width)`; a logical line is seen only when all its wrapped rows were shown; coverage after resize; `y` enabled only when all seen AND 800 ms elapsed. GREEN (pure, injectable clock). ~230.
-- Obligation from the Wd review: diff rows (`Diff`, `Line`, and the `base` of `edit_file`) may hold secrets from a file the model never saw. They are shown ONLY to the user in the review view and NEVER go into a tool result or anything sent to the model. The review slice MUST honour this and have a test for it. Render rows through `Line::display_text()` only; `raw_text()` is disk-exact and not for rendering.
+- [x] We1.1 RED: `ReviewDoc` (headers, warnings, hunk lines), invisible chars in context lines shown as `<U+XXXX>`. GREEN: `core/ai/chat/review.rs`. ~170.
+- [x] We1.2 RED: single `layout(doc, width)`; a logical line is seen only when all its wrapped rows were shown; coverage after resize; `y` enabled only when all seen AND 800 ms elapsed. GREEN (pure, injectable clock). ~230.
+- [x] Obligation from the Wd review (honoured in `chat/review.rs`: no `Display`/`Serialize`/`Into<String>` on `ReviewDoc`, `Debug` prints counts, tests pin it): diff rows (`Diff`, `Line`, and the `base` of `edit_file`) may hold secrets from a file the model never saw. They are shown ONLY to the user in the review view and NEVER go into a tool result or anything sent to the model. The review slice MUST honour this and have a test for it. Render rows through `Line::display_text()` only; `raw_text()` is disk-exact and not for rendering.
 
 ### W-e2: apply (PR 12, ~450)
 Spec: code-write "Apply" (preflight, drift, rollback, partial).
@@ -185,7 +185,7 @@ Spec: chat-pane "Batch review view"; code-write "Batch review and coverage gate"
 - [ ] We4.2 RED (TestBackend + insta, fake clock): full-pane view with warnings, gate counter. GREEN: `ui/components/review.rs`. ~250 plus snapshots.
 - [ ] We4.3 RED: the other asks keep `ARM_DELAY` 400 ms. REFACTOR. ~130.
 - Cut line if it passes 500: put We4.3 and the snapshots in a follow-up commit and ask for the exception before opening the PR.
-- Obligation from the Wd review: diff rows (`Diff`, `Line`, and the `base` of `edit_file`) may hold secrets from a file the model never saw. They are shown ONLY to the user in the review view and NEVER go into a tool result or anything sent to the model. The review view MUST honour this and have a test for it. Render rows through `Line::display_text()` only; `raw_text()` is disk-exact and not for rendering.
+- Obligation from the Wd review: diff rows (`Diff`, `Line`, and the `base` of `edit_file`) may hold secrets from a file the model never saw. They are shown ONLY to the user in the review view and NEVER go into a tool result or anything sent to the model. The review view MUST honour this and have a test for it. Render rows through `Line::display_text()` only; `raw_text()` is disk-exact and not for rendering. W-e1 gave `ReviewDoc` no `Display`/`Serialize`/`Into<String>` (and a counts-only `Debug`); the view MUST NOT add one, and the answer sent back to the model (`denied` or the apply result) carries counts and paths only, built from `ReviewDoc::files/added/removed`, never from `lines()`.
 
 ### W-f: host staging tools (PR 22, ~450, host.rs slice: spike a seam first)
 Spec: code-write "create_dir and write_file staging", "edit_file staging", "Propose batch and size cap", "Nothing writes without approval"; lazarobox-mcp-server "Coding tools run in the app".
