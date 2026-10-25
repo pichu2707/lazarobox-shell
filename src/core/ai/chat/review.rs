@@ -16,9 +16,11 @@
 
 use std::fmt;
 use std::ops::Range;
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::core::ai::chat::wrap::{expand_tabs, wrap_ranges};
+use crate::core::ai::chat::wrap::{clusters, expand_tabs, row_end, text_width};
 use crate::core::ai::tools::diff::{self, Diff, Kind, escape};
 use crate::core::ai::tools::stage::{Batch, Entry};
 
@@ -45,13 +47,24 @@ pub enum LineKind {
 #[derive(Clone, PartialEq, Eq)]
 pub struct DocLine {
     pub kind: LineKind,
-    pub text: String,
+    text: String,
+}
+
+impl DocLine {
+    /// The text of the line, FOR THE REVIEW RENDERER ONLY. It may hold text
+    /// the model never saw: never send it to the model, a log or a tool result.
+    #[allow(dead_code)] // used by the review view (We4.2)
+    pub(crate) fn text_for_review_renderer_only(&self) -> &str {
+        &self.text
+    }
 }
 
 /// The whole batch as lines. Built once; the layout and the coverage count
 /// work on its lines.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ReviewDoc {
+    /// Identifies the doc, so a [`Layout`] is only used with its own doc.
+    id: u64,
     lines: Vec<DocLine>,
     files: usize,
     added: usize,
@@ -72,6 +85,8 @@ impl fmt::Debug for ReviewDoc {
     }
 }
 
+static NEXT_DOC: AtomicU64 = AtomicU64::new(0);
+
 const NO_NEWLINE: &str = "\\ No newline at end of file";
 
 impl ReviewDoc {
@@ -84,6 +99,7 @@ impl ReviewDoc {
     /// a coarse diff.
     pub fn build_with(batch: &Batch, diff: impl Fn(Option<&str>, &str) -> Diff) -> ReviewDoc {
         let mut doc = ReviewDoc {
+            id: NEXT_DOC.fetch_add(1, Ordering::Relaxed),
             lines: Vec::new(),
             files: batch.entries().len(),
             added: 0,
@@ -92,7 +108,7 @@ impl ReviewDoc {
         };
         let mut body = Vec::new();
         for staged in batch.entries() {
-            let path = escape(&staged.target.real.to_string_lossy()).into_owned();
+            let path = path_text(&staged.target.real);
             let diff = match &staged.entry {
                 Entry::Dir => {
                     push(&mut body, LineKind::File, format!("create dir {path}"));
@@ -148,7 +164,10 @@ impl ReviewDoc {
         }
     }
 
-    pub fn lines(&self) -> &[DocLine] {
+    /// The lines, FOR THE REVIEW RENDERER AND THE LAYOUT ONLY (`pub(crate)`:
+    /// the text must not leave the crate's review path).
+    #[allow(dead_code)] // used by the review view (We4.2)
+    pub(crate) fn lines(&self) -> &[DocLine] {
         &self.lines
     }
 
@@ -181,18 +200,46 @@ const WARN_TRUNCATED: &str = "warning: too large to review: reject it and ask fo
 /// How long `y` stays disabled after the view opens. Other asks keep 400 ms.
 pub const ARM_DELAY: Duration = Duration::from_millis(800);
 
+/// Marks every row of a logical line after the first, in the sign column of
+/// a diff row. No header, warning or sign starts with it, so wrapped model
+/// text cannot pass for one, with or without colour.
+pub const CONT: &str = "¦";
+
 /// One drawn row: a slice of one logical line.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Row {
     /// Index of the logical line in [`ReviewDoc::lines`].
     pub line: usize,
-    pub text: String,
+    /// The [`LineKind`] of the logical line, for every row of it.
+    pub kind: LineKind,
+    /// Whether this is the first row of its line; the others start with
+    /// [`CONT`].
+    pub first: bool,
+    text: String,
+    /// Display columns of `text`.
+    cols: usize,
+}
+
+impl Row {
+    /// The text of the row, FOR THE REVIEW RENDERER ONLY. It may hold text the
+    /// model never saw: never send it to the model, a log or a tool result.
+    #[allow(dead_code)] // used by the review view (We4.2)
+    pub(crate) fn text_for_review_renderer_only(&self) -> &str {
+        &self.text
+    }
+
+    /// Whether the row fits a pane `width` columns wide. The renderer draws a
+    /// row only if it does; coverage never counts a row that does not.
+    pub fn fits(&self, width: usize) -> bool {
+        self.cols <= width
+    }
 }
 
 /// The rows of a doc at one width. The renderer and the coverage gate both
 /// take their rows from here: there is no other wrap function.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Layout {
+    doc: u64,
     width: usize,
     rows: Vec<Row>,
     /// Per logical line, its rows as a range of `rows`.
@@ -200,29 +247,65 @@ pub struct Layout {
 }
 
 impl Layout {
-    pub fn rows(&self) -> &[Row] {
+    /// The rows, FOR THE REVIEW RENDERER ONLY.
+    #[allow(dead_code)] // used by the review view (We4.2)
+    pub(crate) fn rows(&self) -> &[Row] {
         &self.rows
+    }
+
+    /// The width the rows were laid out for (never 0).
+    pub fn width(&self) -> usize {
+        self.width
     }
 }
 
 /// Wraps every line of `doc` to `width` display columns (wide and CJK
-/// characters count two, as the terminal draws them). Every line has at least
-/// one row.
+/// characters count two, as the terminal draws them; `width` is at least 1).
+/// Every line has at least one row. Rows after the first start with [`CONT`],
+/// so they have one column less for the text. A row can still be wider than
+/// the width (one wide cluster, or the marker beside it); see [`Row::fits`].
 pub fn layout(doc: &ReviewDoc, width: usize) -> Layout {
+    let width = width.max(1);
+    let tail = (width - 1).max(1);
     let mut rows = Vec::new();
     let mut spans = Vec::with_capacity(doc.lines.len());
     for (line, l) in doc.lines.iter().enumerate() {
         let chars: Vec<char> = l.text.chars().collect();
+        let cl = clusters(&chars);
         let first = rows.len();
-        for r in wrap_ranges(&chars, width) {
+        let mut at = 0;
+        loop {
+            let first_row = rows.len() == first;
+            let end = row_end(&cl, at, if first_row { width } else { tail });
+            let body: String = match (cl.get(at), end.checked_sub(1).and_then(|e| cl.get(e))) {
+                (Some(a), Some(z)) => chars[a.chars.start..z.chars.end].iter().collect(),
+                _ => String::new(),
+            };
+            let text = if first_row {
+                body
+            } else {
+                format!("{CONT}{body}")
+            };
             rows.push(Row {
                 line,
-                text: chars[r].iter().collect(),
+                kind: l.kind,
+                first: first_row,
+                cols: text_width(&text),
+                text,
             });
+            at = end;
+            if at >= cl.len() {
+                break;
+            }
         }
         spans.push(first..rows.len());
     }
-    Layout { width, rows, spans }
+    Layout {
+        doc: doc.id,
+        width,
+        rows,
+        spans,
+    }
 }
 
 /// What the user has seen, per logical line, and the gate on `y`.
@@ -233,6 +316,8 @@ pub fn layout(doc: &ReviewDoc, width: usize) -> Layout {
 /// width is not seen at another).
 #[derive(Clone, Debug)]
 pub struct Coverage {
+    /// The doc this coverage belongs to.
+    doc: u64,
     seen: Vec<bool>,
     /// [`ReviewDoc::reviewable`] of the doc; `y` never arms when false.
     reviewable: bool,
@@ -246,6 +331,7 @@ impl Coverage {
     /// `opened` is when the view opened; `y` arms [`ARM_DELAY`] after it.
     pub fn new(doc: &ReviewDoc, opened: Instant) -> Coverage {
         Coverage {
+            doc: doc.id,
             seen: vec![false; doc.lines.len()],
             reviewable: doc.reviewable(),
             shown: Vec::new(),
@@ -255,14 +341,24 @@ impl Coverage {
     }
 
     /// Marks the rows `rows` of `layout` as shown (clamped to the layout).
+    /// A layout of another doc is ignored, and so is a row wider than the
+    /// layout (the pane cannot draw it whole).
     pub fn show(&mut self, layout: &Layout, rows: Range<usize>) {
+        if layout.doc != self.doc {
+            return;
+        }
         if self.width != Some(layout.width) || self.shown.len() != layout.rows.len() {
             self.width = Some(layout.width);
             self.shown = vec![false; layout.rows.len()];
         }
         let end = rows.end.min(layout.rows.len());
         let start = rows.start.min(end);
-        self.shown[start..end].fill(true);
+        for (shown, row) in self.shown[start..end]
+            .iter_mut()
+            .zip(&layout.rows[start..end])
+        {
+            *shown |= row.fits(layout.width);
+        }
         let (Some(first), Some(last)) = (layout.rows.get(start), end.checked_sub(1)) else {
             return;
         };
@@ -287,8 +383,42 @@ impl Coverage {
     /// seen and [`ARM_DELAY`] elapsed since the view opened. `now` comes from the caller's clock; a
     /// clock that went back does not arm.
     pub fn can_approve(&self, now: Instant) -> bool {
-        self.reviewable && self.remaining() == 0 && now.saturating_duration_since(self.opened) >= ARM_DELAY
+        self.reviewable
+            && self.remaining() == 0
+            && now.saturating_duration_since(self.opened) >= ARM_DELAY
     }
+}
+
+/// A path as safe text: the escape of the text, and each byte that is not
+/// UTF-8 as `<0xNN>`, so two different paths never look the same.
+fn path_text(path: &Path) -> String {
+    if let Some(s) = path.to_str() {
+        return escape(s).into_owned();
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let mut rest = path.as_os_str().as_bytes();
+        let mut out = String::new();
+        while !rest.is_empty() {
+            let (good, bad, after) = match std::str::from_utf8(rest) {
+                Ok(_) => (rest.len(), 0, rest.len()),
+                Err(e) => {
+                    let good = e.valid_up_to();
+                    let bad = e.error_len().unwrap_or(rest.len() - good);
+                    (good, bad, good + bad)
+                }
+            };
+            out.push_str(&escape(&String::from_utf8_lossy(&rest[..good])));
+            for b in &rest[good..good + bad] {
+                out.push_str(&format!("<0x{b:02X}>"));
+            }
+            rest = &rest[after..];
+        }
+        out
+    }
+    #[cfg(not(unix))]
+    escape(&path.to_string_lossy()).into_owned()
 }
 
 /// Pushes a line with its tabs expanded, so every column is measurable.
@@ -527,6 +657,15 @@ mod tests {
         assert!(!implements!(ReviewDoc, Into<String>));
         assert!(!implements!(DocLine, std::fmt::Display));
         assert!(!implements!(DocLine, Into<String>));
+        assert!(!implements!(Row, std::fmt::Display));
+        assert!(!implements!(Row, Into<String>));
+        assert!(!implements!(ReviewDoc, AsRef<str>));
+        assert!(!implements!(DocLine, AsRef<str>));
+        assert!(!implements!(Row, AsRef<str>));
+        assert!(!implements!(DocLine, std::ops::Deref<Target = str>));
+        assert!(!implements!(Row, std::ops::Deref<Target = str>));
+        // `Serialize` is not probed: `serde` is not a direct dependency, so
+        // nobody can derive or implement it here without adding one.
     }
 
     #[test]
@@ -572,11 +711,11 @@ mod tests {
         let l = layout(&doc_of(&["abcdefgh", "ab"]), 5);
         let rows = row_texts(&l);
         assert!(
-            rows.contains(&"+abcd") && rows.contains(&"efgh"),
+            rows.contains(&"+abcd") && rows.contains(&"¦efgh"),
             "{rows:?}"
         );
         assert!(rows.contains(&"+ab"), "{rows:?}");
-        let long = l.rows().iter().filter(|r| r.text == "efgh").count();
+        let long = l.rows().iter().filter(|r| r.text == "¦efgh").count();
         assert_eq!(long, 1);
     }
 
@@ -589,7 +728,7 @@ mod tests {
                 .rows()
                 .iter()
                 .filter(|r| r.line == i)
-                .map(|r| r.text.as_str())
+                .map(|r| r.text.strip_prefix(CONT).unwrap_or(&r.text))
                 .collect();
             assert_eq!(joined, line.text);
         }
@@ -599,7 +738,7 @@ mod tests {
     fn wide_characters_count_two_columns() {
         let l = layout(&doc_of(&["日本語"]), 5);
         let rows = row_texts(&l);
-        assert!(rows.contains(&"+日本") && rows.contains(&"語"), "{rows:?}");
+        assert!(rows.contains(&"+日本") && rows.contains(&"¦語"), "{rows:?}");
     }
 
     #[test]
@@ -615,14 +754,106 @@ mod tests {
             .collect::<Vec<_>>();
         // `-a<U+200B>b` is 11 columns: the escape is eight, not one.
         assert!(rows.contains(&"-a<U+200".to_owned()), "{rows:?}");
-        assert!(rows.contains(&"B>b".to_owned()), "{rows:?}");
+        assert!(rows.contains(&"¦B>b".to_owned()), "{rows:?}");
     }
 
     #[test]
     fn a_zero_width_still_makes_progress() {
         let l = layout(&doc_of(&["ab"]), 0);
         let rows = row_texts(&l);
-        assert!(rows.windows(3).any(|w| w == ["+", "a", "b"]), "{rows:?}");
+        assert!(rows.windows(3).any(|w| w == ["+", "¦a", "¦b"]), "{rows:?}");
+    }
+
+    #[test]
+    fn a_continuation_row_cannot_pass_for_a_header_or_a_warning() {
+        let hostile = format!(
+            "{}warning: build file{}create /etc/passwd",
+            "x".repeat(4),
+            "y".repeat(3)
+        );
+        let doc = doc_of(&[hostile.as_str()]);
+        let l = layout(&doc, 5);
+        let at = doc
+            .lines()
+            .iter()
+            .position(|d| d.text.starts_with("+xxxx"))
+            .unwrap();
+        let rows: Vec<&Row> = l.rows().iter().filter(|r| r.line == at).collect();
+        assert!(rows.len() > 3);
+        assert!(rows[0].first && rows[0].text == "+xxxx");
+        for r in &rows[1..] {
+            assert!(!r.first, "{:?}", r.text);
+            assert_eq!(r.kind, LineKind::Added);
+            assert!(r.text.starts_with(CONT), "{:?}", r.text);
+        }
+        for r in l.rows().iter().filter(|r| !r.first) {
+            assert!(!r.text.starts_with("warning:") && !r.text.starts_with("create "));
+        }
+    }
+
+    #[test]
+    fn every_first_row_is_marked_first_with_its_line_kind() {
+        let doc = doc_of(&["a"]);
+        let l = layout(&doc, 80);
+        for r in l.rows() {
+            assert!(r.first);
+            assert_eq!(r.kind, doc.lines()[r.line].kind);
+        }
+    }
+
+    #[test]
+    fn the_layout_keeps_the_clamped_width() {
+        assert_eq!(layout(&doc_of(&["a"]), 0).width(), 1);
+        assert_eq!(layout(&doc_of(&["a"]), 7).width(), 7);
+    }
+
+    #[test]
+    fn a_row_wider_than_the_pane_is_never_counted_as_seen() {
+        let doc = doc_of(&["日"]);
+        let l = layout(&doc, 2);
+        let wide = l.rows().iter().position(|r| r.text.contains('日')).unwrap();
+        assert!(!l.rows()[wide].fits(2) && l.rows()[wide].fits(3));
+        let mut c = Coverage::new(&doc, start());
+        c.show(&l, 0..l.rows().len());
+        assert_eq!(c.remaining(), 1, "only the wide line is unseen");
+        let l = layout(&doc, 4);
+        c.show(&l, 0..l.rows().len());
+        assert_eq!(c.remaining(), 0);
+    }
+
+    #[test]
+    fn a_layout_of_another_doc_is_ignored_and_never_panics() {
+        let big = layout(&doc_of(&["a", "b", "c", "d", "e", "f"]), 20);
+        let small = doc_of(&["a"]);
+        let mut c = Coverage::new(&small, start());
+        let before = c.remaining();
+        c.show(&big, 0..big.rows().len());
+        assert_eq!(c.remaining(), before);
+        // Same line count, other doc: also ignored.
+        let twin = doc_of(&["z"]);
+        let other = layout(&twin, 20);
+        c.show(&other, 0..other.rows().len());
+        assert_eq!(c.remaining(), before);
+    }
+
+    #[test]
+    fn two_different_invalid_paths_render_differently() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        let render = |bytes: Vec<u8>| {
+            let mut b = batch();
+            let t = WriteTarget {
+                real: PathBuf::from(OsString::from_vec(bytes)),
+                build_file: false,
+            };
+            b.stage_file(&t, "x\n", Existing::Absent).unwrap();
+            texts(&ReviewDoc::build(&b), LineKind::File)[0].to_owned()
+        };
+        let a = render(b"/p/a\xff.txt".to_vec());
+        let b = render(b"/p/a\xfe.txt".to_vec());
+        assert_eq!(a, "create /p/a<0xFF>.txt");
+        assert_ne!(a, b);
+        assert_eq!(render(b"/p/\xe2\x82".to_vec()), "create /p/<0xE2><0x82>");
     }
 
     fn start() -> Instant {
@@ -636,9 +867,9 @@ mod tests {
         let row = l.rows().iter().position(|r| r.text == "+abc").unwrap();
         let mut c = Coverage::new(&doc, start());
         let before = c.remaining();
-        c.show(&l, row..row + 2);
-        assert_eq!(c.remaining(), before, "two of three rows is not enough");
-        c.show(&l, row + 1..row + 3);
+        c.show(&l, row..row + 3);
+        assert_eq!(c.remaining(), before, "three of four rows is not enough");
+        c.show(&l, row + 1..row + 4);
         assert_eq!(c.remaining(), before - 1);
     }
 
