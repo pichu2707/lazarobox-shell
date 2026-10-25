@@ -8,6 +8,7 @@ pub mod fs;
 pub mod host;
 pub mod open;
 pub mod pending;
+pub mod search;
 
 use std::{
     sync::{

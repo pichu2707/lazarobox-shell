@@ -87,6 +87,11 @@ pub enum Call {
         pattern: String,
         dir: Option<String>,
     },
+    /// `dir` is the optional sub-directory to search, as the model wrote it.
+    Grep {
+        pattern: String,
+        dir: Option<String>,
+    },
     RunInPane {
         command: String,
     },
@@ -111,6 +116,7 @@ impl Call {
             Call::ListDir { .. } => "list_dir",
             Call::ReadFile { .. } => "read_file",
             Call::Glob { .. } => "glob",
+            Call::Grep { .. } => "grep",
             Call::RunInPane { .. } => "run_in_pane",
         }
     }
@@ -121,7 +127,7 @@ impl Call {
         match self {
             Call::FindDir { query } => Cow::Borrowed(query),
             Call::ListDir { path } | Call::ReadFile { path, .. } => Cow::Borrowed(path),
-            Call::Glob { pattern, .. } => Cow::Borrowed(pattern),
+            Call::Glob { pattern, .. } | Call::Grep { pattern, .. } => Cow::Borrowed(pattern),
             Call::RunInPane { command } => Cow::Borrowed(command),
             Call::External { args, .. } => Cow::Owned(args.to_string()),
         }
@@ -154,7 +160,7 @@ pub const READ_MAX_LINES: i64 = 2000;
 
 /// The built-ins in offer order. `Access::Read` is only a classification,
 /// not an approval rule: see [`Access`].
-const BUILT_INS: [ToolDef; 5] = [
+const BUILT_INS: [ToolDef; 6] = [
     ToolDef {
         name: "find_dir",
         description: "Find directories under the user's home whose name contains the query. Names that look like secrets are left out and the result says so.",
@@ -199,6 +205,28 @@ const BUILT_INS: [ToolDef; 5] = [
     ToolDef {
         name: "glob",
         description: "List the files under the chat's root whose root-relative path matches a glob pattern (`*`, `**`, `?`, `[a-z]`). Names only, never content. Names that look like secrets are left out and the result says so.",
+        access: Access::Read,
+        family: Family::Search,
+        args: &[
+            ArgDef {
+                name: "pattern",
+                kind: ArgKind::Str {
+                    max: glob::MAX_PATTERN_BYTES,
+                },
+                required: true,
+                gate: None,
+            },
+            ArgDef {
+                name: "path",
+                kind: ArgKind::Str { max: MAX_ARG_BYTES },
+                required: false,
+                gate: None,
+            },
+        ],
+    },
+    ToolDef {
+        name: "grep",
+        description: "Search the text of the files under the chat's root for a regular expression (linear-time engine, no look-around or backreferences). Returns `path:line:text` for at most 100 matches. Binary files, large files and names that look like secrets are skipped, and secrets in the text are hidden.",
         access: Access::Read,
         family: Family::Search,
         args: &[
@@ -305,6 +333,13 @@ fn parse_built_in(name: &str, args: &Value, set: FamilySet) -> Result<Call, Tool
             lines: window(&parsed),
         }),
         "glob" => Ok(Call::Glob {
+            pattern: text,
+            dir: match parsed.get("path") {
+                Some(ArgValue::Str(dir)) => Some(dir.clone()),
+                _ => None,
+            },
+        }),
+        "grep" => Ok(Call::Grep {
             pattern: text,
             dir: match parsed.get("path") {
                 Some(ArgValue::Str(dir)) => Some(dir.clone()),
@@ -847,7 +882,14 @@ mod tests {
         let on = registry_with(&[], search_set());
         assert_eq!(
             names(&on),
-            ["find_dir", "list_dir", "read_file", "glob", "run_in_pane"]
+            [
+                "find_dir",
+                "list_dir",
+                "read_file",
+                "glob",
+                "grep",
+                "run_in_pane"
+            ]
         );
         let glob = on.iter().find(|t| t.name == "glob").unwrap();
         assert_eq!(glob.access, Access::Read);
@@ -967,6 +1009,52 @@ mod tests {
         assert_eq!(
             parse_read(json!({"path": "a", "start_line": "1"}), search_set()),
             Err(ToolError::WrongType)
+        );
+    }
+
+    // Spec (code-search, grep): same family gate, a 512-byte pattern, and an
+    // optional sub-directory.
+    #[test]
+    fn grep_is_offered_and_parsed_only_with_search_on() {
+        assert!(!names(&registry(&[])).contains(&"grep"));
+        let on = registry_with(&[], search_set());
+        let grep = on.iter().find(|t| t.name == "grep").unwrap();
+        assert_eq!(grep.access, Access::Read);
+        assert_eq!(
+            grep.schema,
+            json!({
+                "type": "object",
+                "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}},
+                "required": ["pattern"],
+                "additionalProperties": false,
+            })
+        );
+        let parse =
+            |args: Value, set| parse_call_in("grep", &args, &servers::Qualified::default(), set);
+        let args = json!({"pattern": "fn main", "path": "src"});
+        assert_eq!(
+            parse(args.clone(), FamilySet::LEGACY),
+            Err(ToolError::UnknownTool)
+        );
+        let call = parse(args, search_set()).unwrap();
+        assert_eq!(
+            call,
+            Call::Grep {
+                pattern: "fn main".into(),
+                dir: Some("src".into())
+            }
+        );
+        assert_eq!((call.name(), &*call.argument()), ("grep", "fn main"));
+        assert_eq!(
+            parse(
+                json!({"pattern": "a".repeat(glob::MAX_PATTERN_BYTES + 1)}),
+                search_set()
+            ),
+            Err(ToolError::TooLong)
+        );
+        assert_eq!(
+            parse(json!({}), search_set()),
+            Err(ToolError::MissingArgument)
         );
     }
 

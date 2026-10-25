@@ -98,9 +98,14 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
             args: shown_args(args),
         }),
         // `glob` returns names only and, like the directory tools, never asks.
-        Call::ReadFile { .. } | Call::FindDir { .. } | Call::ListDir { .. } | Call::Glob { .. } => {
-            None
-        }
+        // `grep` returns file text and asks on a cloud engine; that ask
+        // (`ApprovalAsk::Search`) arrives with the wiring slice (M1-c), and
+        // nothing dispatches `grep` before then.
+        Call::ReadFile { .. }
+        | Call::FindDir { .. }
+        | Call::ListDir { .. }
+        | Call::Glob { .. }
+        | Call::Grep { .. } => None,
     }
 }
 

@@ -97,6 +97,8 @@ pub enum Failure {
     TimedOut,
     EmptyQuery,
     NotReadTool,
+    /// A `grep` pattern that is too long or not a valid expression.
+    BadPattern,
 }
 
 impl Failure {
@@ -109,6 +111,7 @@ impl Failure {
             Failure::TimedOut => "timed out",
             Failure::EmptyQuery => "the query is empty",
             Failure::NotReadTool => "not a read tool",
+            Failure::BadPattern => "the pattern is not a valid expression",
         }
     }
 }
@@ -145,15 +148,24 @@ pub const READ_MARKER: &str = "[truncated: the file is larger than the read cap]
 /// Checked per entry and before each `canonicalize`, so a cancelled or late
 /// call stops touching the disk. A syscall already blocked (a hung open on a
 /// dead mount) cannot be interrupted and can still pin one blocking thread.
-struct Budget<'a> {
+pub(super) struct Budget<'a> {
     deadline: Instant,
     cancel: &'a AtomicBool,
     #[cfg(test)]
     entry_delay: Duration,
 }
 
-impl Budget<'_> {
-    fn spent(&self) -> bool {
+impl<'a> Budget<'a> {
+    pub(super) fn new(limits: &Limits, cancel: &'a AtomicBool) -> Self {
+        Budget {
+            deadline: Instant::now() + limits.time,
+            cancel,
+            #[cfg(test)]
+            entry_delay: limits.entry_delay,
+        }
+    }
+
+    pub(super) fn spent(&self) -> bool {
         self.cancel.load(Ordering::Relaxed) || Instant::now() >= self.deadline
     }
 }
@@ -181,19 +193,14 @@ pub fn execute_with(
     cancel: &AtomicBool,
 ) -> Result<String, Failure> {
     let roots = load_roots(env)?;
-    let budget = Budget {
-        deadline: Instant::now() + limits.time,
-        cancel,
-        #[cfg(test)]
-        entry_delay: limits.entry_delay,
-    };
+    let budget = Budget::new(limits, cancel);
     match call {
         Call::ReadFile { path, lines } => read_file(&roots, env, path, *lines, limits),
         Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits),
         Call::FindDir { query } => find_dir(&roots, &budget, query, limits),
         // A user tool runs on its own server, never here.
-        // `glob` runs here once the search slice wires it (M1-c).
-        Call::Glob { .. } | Call::RunInPane { .. } | Call::External { .. } => {
+        // `glob` and `grep` run here once the search slice wires them (M1-c).
+        Call::Glob { .. } | Call::Grep { .. } | Call::RunInPane { .. } | Call::External { .. } => {
             Err(Failure::NotReadTool)
         }
     }
@@ -380,7 +387,7 @@ fn read_window(file: std::fs::File, window: Lines, limits: &Limits) -> Result<St
 /// The entries of an open directory, at most `max` of them, and whether more
 /// were left. Read through `/proc/self/fd`, so it is the opened directory and
 /// not a path that is listed. A symlink is reported as such, never followed.
-fn entries(
+pub(super) fn entries(
     fd: &OwnedFd,
     max: usize,
     budget: &Budget,
@@ -405,7 +412,13 @@ fn entries(
 
 /// Whether `dir/name` may be shown. A link is judged by where it leads, and a
 /// dangling one is hidden.
-fn visible(roots: &SecretRoots, budget: &Budget, dir: &Path, name: &OsStr, kind: FileType) -> bool {
+pub(super) fn visible(
+    roots: &SecretRoots,
+    budget: &Budget,
+    dir: &Path,
+    name: &OsStr,
+    kind: FileType,
+) -> bool {
     if is_excluded_name(&name.to_string_lossy()) {
         return false;
     }
@@ -424,14 +437,14 @@ fn visible(roots: &SecretRoots, budget: &Budget, dir: &Path, name: &OsStr, kind:
 /// listed nor matched, and a folder with one is not entered. Showing it as
 /// `[REDACTED]`, or matching a query against the raw name, would tell the
 /// model which prefixes of a key exist.
-fn redaction_changes(name: &OsStr) -> bool {
+pub(super) fn redaction_changes(name: &OsStr) -> bool {
     let line = one_line(name);
     redact(&line).text != line
 }
 
 /// A name that fits on one line: escapes and bidi marks are gone, and so is
 /// every remaining control character.
-fn one_line(name: &OsStr) -> String {
+pub(super) fn one_line(name: &OsStr) -> String {
     clean(&name.to_string_lossy())
         .chars()
         .map(|c| if c.is_control() { '?' } else { c })
