@@ -102,10 +102,14 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
             tool: shown_name(tool),
             args: shown_args(args),
         }),
-        Call::Grep { pattern, dir } if locality == Locality::Cloud => Some(ApprovalAsk::Search {
-            pattern: flat(pattern, SEARCH_SHOWN).0,
-            dir: flat(dir.as_deref().unwrap_or("."), SEARCH_SHOWN).0,
-        }),
+        Call::Grep { pattern, dir } if locality == Locality::Cloud => {
+            let dir = flat(dir.as_deref().unwrap_or("."), SEARCH_SHOWN).0;
+            Some(ApprovalAsk::Search {
+                pattern: flat(pattern, SEARCH_SHOWN).0,
+                // A blank folder is the root, as no folder is.
+                dir: if dir.is_empty() { ".".into() } else { dir },
+            })
+        }
         // `glob` returns names only and, like the directory tools, never asks.
         Call::ReadFile { .. }
         | Call::FindDir { .. }
@@ -1002,6 +1006,18 @@ mod tests {
             panic!("a cloud grep must ask");
         };
         assert_eq!((pattern.as_str(), dir.as_str()), ("ab c", "x y"));
+    }
+
+    // An empty folder is the root, as `None` is: the label never shows nothing.
+    #[test]
+    fn an_empty_search_folder_is_shown_as_the_root() {
+        for dir in [None, Some(""), Some("  ")] {
+            let call = Call::Grep {
+                pattern: "x".into(),
+                dir: dir.map(Into::into),
+            };
+            assert_eq!(ask_for(&call, Locality::Cloud), Some(search_ask("x", ".")));
+        }
     }
 
     // Spec (agent-tools): no auto approval; a search ask is `Prompt` in every mode.
