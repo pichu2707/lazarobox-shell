@@ -33,6 +33,8 @@ pub enum StageKey {
 
 /// A batch of one key at one generation. A newer batch of the same key has a
 /// higher generation, so an answer meant for an older one cannot hit it.
+/// That holds only if the owner (the `Stages` store) hands out generations
+/// from a monotonic counter that is never reused (`u64`, `checked_add`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct BatchId {
     pub key: StageKey,
@@ -58,7 +60,8 @@ pub enum Outcome {
 /// A live batch whose turn is gone, so nobody is waiting on it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Orphan {
-    /// Never proposed: the user may only discard it.
+    /// Never proposed: [`Batch::review_orphan`] proposes it, then the user
+    /// may apply or discard it.
     Staging,
     /// Proposed but never answered: the user may review and apply it.
     Proposed,
@@ -122,6 +125,10 @@ pub enum StageError {
     Full,
     /// The batch passes a cap at propose time.
     TooLarge,
+    /// A path would be a file and a folder in one batch.
+    TreeConflict,
+    /// The batch is not an orphan, so there is nothing to review.
+    NotOrphan,
 }
 
 impl fmt::Display for StageError {
@@ -141,6 +148,8 @@ impl fmt::Display for StageError {
             StageError::TooLarge => {
                 "batch is over 50 entries or 1 MiB: split it into smaller batches"
             }
+            StageError::TreeConflict => "a path is staged as a file and as a folder",
+            StageError::NotOrphan => "the batch is not an orphan",
         })
     }
 }
@@ -154,6 +163,9 @@ pub struct Batch {
 }
 
 impl Batch {
+    /// The owner MUST give each new batch of a key a generation never used
+    /// before for that key (a monotonic `u64` counter, `checked_add`); the
+    /// batch cannot check it.
     pub fn new(id: BatchId) -> Batch {
         Batch {
             id,
@@ -198,6 +210,13 @@ impl Batch {
             Existing::Present { size, .. } if size > READ_CAP as u64 => {
                 return Err(StageError::UseEditFile);
             }
+            // A read that is not the whole file as measured (truncated or
+            // inconsistent) cannot be shown as the base. With `size` within
+            // the cap this also bounds the slice by [`READ_CAP`]. Refused as
+            // `UseEditFile`: `edit_file` reads the file again by itself.
+            Existing::Present { size, bytes } if bytes.len() as u64 != size => {
+                return Err(StageError::UseEditFile);
+            }
             Existing::Present { bytes, .. } => {
                 let disk = check_existing(bytes).map_err(StageError::Content)?;
                 if redact(&clean(disk)).text != disk {
@@ -216,8 +235,23 @@ impl Batch {
     }
 
     /// Adds an entry, or replaces the earlier one for the same path in place.
+    /// Entries key on `WriteTarget.real`, which `resolve_write` builds
+    /// canonical (it refuses a path that differs from its canonical form), so
+    /// two spellings of one target are one key. No case folding is done: on
+    /// macOS `resolve_write` refuses writes, so it never reaches this.
     fn put(&mut self, target: &WriteTarget, entry: Entry) -> Result<(), StageError> {
         self.open()?;
+        // One path cannot be a file and a folder in the same batch: a file
+        // with an entry below it, or an entry below a staged file.
+        let clash = self.entries.iter().any(|s| {
+            let (old, new) = (&s.target.real, &target.real);
+            (old != new)
+                && ((new.starts_with(old) && matches!(s.entry, Entry::File { .. }))
+                    || (old.starts_with(new) && matches!(entry, Entry::File { .. })))
+        });
+        if clash {
+            return Err(StageError::TreeConflict);
+        }
         let slot = self
             .entries
             .iter()
@@ -282,13 +316,30 @@ impl Batch {
         Ok(())
     }
 
+    /// Hands an orphan to the user for review. The spec ("Orphan, close and
+    /// quit": "review and apply it, or discard it") covers every batch left
+    /// staged by a cancelled turn, so a `Staging` orphan is proposed here and
+    /// then resolved as any proposed batch; a `Proposed` orphan returns its
+    /// id again. A batch that is not an orphan is refused.
+    pub fn review_orphan(&mut self, turn_live: bool) -> Result<BatchId, StageError> {
+        match self.orphan(turn_live) {
+            Some(Orphan::Staging) => self.propose(),
+            Some(Orphan::Proposed) => Ok(self.id),
+            None => Err(StageError::NotOrphan),
+        }
+    }
+
     /// Drops the batch whatever its state: a pane close or an app quit.
+    /// An answered batch (`Applied` or `Discarded`) keeps its state.
     pub fn discard(&mut self) {
-        self.state = State::Discarded;
+        if matches!(self.state, State::Staging | State::Proposed) {
+            self.state = State::Discarded;
+        }
     }
 
     /// Whether the batch is an orphan: still alive, with entries, and no live
-    /// turn behind it.
+    /// turn behind it. An empty batch is never one, whatever the turn: there
+    /// is nothing to review, so the answer is `None`.
     pub fn orphan(&self, turn_live: bool) -> Option<Orphan> {
         if turn_live || self.entries.is_empty() {
             return None;
@@ -767,5 +818,175 @@ mod tests {
                 base: None
             }
         );
+    }
+
+    #[test]
+    fn a_read_that_does_not_match_its_size_is_refused() {
+        let mut b = batch(1);
+        let truncated = Existing::Present {
+            size: 10,
+            bytes: b"short",
+        };
+        assert_eq!(
+            b.stage_file(&target("a.txt"), "new\n", truncated),
+            Err(StageError::UseEditFile)
+        );
+        let long = "a".repeat(100);
+        let oversized = Existing::Present {
+            size: 10,
+            bytes: long.as_bytes(),
+        };
+        assert_eq!(
+            b.stage_file(&target("b.txt"), "new\n", oversized),
+            Err(StageError::UseEditFile)
+        );
+        let over_cap = "a".repeat(READ_CAP + 1);
+        let past_cap = Existing::Present {
+            size: READ_CAP as u64,
+            bytes: over_cap.as_bytes(),
+        };
+        assert_eq!(
+            b.stage_file(&target("c.txt"), "new\n", past_cap),
+            Err(StageError::UseEditFile)
+        );
+        assert!(b.entries().is_empty());
+    }
+
+    #[test]
+    fn a_base_with_a_nul_or_bad_utf8_is_refused_even_when_its_size_matches() {
+        let mut b = batch(1);
+        for bytes in [&b"a\0b"[..], &[0xff, 0xfe][..]] {
+            let disk = Existing::Present {
+                size: bytes.len() as u64,
+                bytes,
+            };
+            assert!(matches!(
+                b.stage_file(&target("a.txt"), "new\n", disk),
+                Err(StageError::Content(_))
+            ));
+        }
+        assert!(b.entries().is_empty());
+    }
+
+    #[test]
+    fn discard_leaves_a_terminal_state_as_it_is() {
+        for outcome in [Outcome::Applied, Outcome::Discarded] {
+            let mut b = batch(1);
+            b.stage_dir(&target("d")).unwrap();
+            let id = b.propose().unwrap();
+            b.resolve(id, outcome).unwrap();
+            let state = b.state();
+            b.discard();
+            assert_eq!(b.state(), state);
+        }
+    }
+
+    #[test]
+    fn proposing_again_after_an_answer_is_closed() {
+        for outcome in [Outcome::Applied, Outcome::Discarded] {
+            let mut b = batch(1);
+            b.stage_dir(&target("d")).unwrap();
+            let id = b.propose().unwrap();
+            b.resolve(id, outcome).unwrap();
+            assert_eq!(b.propose(), Err(StageError::Closed));
+        }
+    }
+
+    #[test]
+    fn resolving_after_a_discard_or_an_answer_is_not_proposed() {
+        let id = BatchId {
+            key: key(),
+            generation: 1,
+        };
+        let mut b = batch(1);
+        b.stage_dir(&target("d")).unwrap();
+        b.propose().unwrap();
+        b.discard();
+        assert_eq!(
+            b.resolve(id, Outcome::Applied),
+            Err(StageError::NotProposed)
+        );
+        assert_eq!(b.state(), State::Discarded);
+        let mut b = batch(1);
+        b.stage_dir(&target("d")).unwrap();
+        b.propose().unwrap();
+        b.resolve(id, Outcome::Applied).unwrap();
+        assert_eq!(
+            b.resolve(id, Outcome::Discarded),
+            Err(StageError::NotProposed)
+        );
+        assert_eq!(b.state(), State::Applied);
+    }
+
+    #[test]
+    fn two_spellings_of_one_target_replace_one_entry() {
+        let mut b = batch(1);
+        let one = target("src/a.rs");
+        let two = WriteTarget {
+            real: PathBuf::from("/home/u/proj/src/a.rs"),
+            build_file: false,
+        };
+        b.stage_file(&one, "one\n", Existing::Absent).unwrap();
+        b.stage_file(&two, "two\n", Existing::Absent).unwrap();
+        assert_eq!(b.entries().len(), 1);
+    }
+
+    #[test]
+    fn a_path_staged_as_a_file_and_as_a_folder_is_refused_in_both_orders() {
+        let mut b = batch(1);
+        b.stage_file(&target("src"), "x\n", Existing::Absent)
+            .unwrap();
+        assert_eq!(
+            b.stage_dir(&target("src/util")),
+            Err(StageError::TreeConflict)
+        );
+        assert_eq!(
+            b.stage_file(&target("src/a.rs"), "x\n", Existing::Absent),
+            Err(StageError::TreeConflict)
+        );
+        assert_eq!(b.entries().len(), 1);
+        let mut b = batch(1);
+        b.stage_file(&target("src/a.rs"), "x\n", Existing::Absent)
+            .unwrap();
+        b.stage_dir(&target("other/deep")).unwrap();
+        assert_eq!(
+            b.stage_file(&target("src"), "x\n", Existing::Absent),
+            Err(StageError::TreeConflict)
+        );
+        assert_eq!(b.entries().len(), 2);
+        // A folder with files below it, and a sibling with a shared prefix, are fine.
+        b.stage_dir(&target("lib")).unwrap();
+        b.stage_file(&target("lib/a.rs"), "x\n", Existing::Absent)
+            .unwrap();
+        b.stage_file(&target("src2"), "x\n", Existing::Absent)
+            .unwrap();
+        assert_eq!(
+            StageError::TreeConflict.to_string(),
+            "a path is staged as a file and as a folder"
+        );
+    }
+
+    #[test]
+    fn a_staging_orphan_can_be_proposed_for_review() {
+        let mut b = batch(4);
+        b.stage_dir(&target("d")).unwrap();
+        assert_eq!(b.review_orphan(true), Err(StageError::NotOrphan));
+        assert_eq!(b.state(), State::Staging);
+        let id = b.review_orphan(false).unwrap();
+        assert_eq!(b.state(), State::Proposed);
+        assert_eq!(b.review_orphan(false), Ok(id));
+        b.resolve(id, Outcome::Applied).unwrap();
+        assert_eq!(b.review_orphan(false), Err(StageError::NotOrphan));
+        assert_eq!(batch(1).review_orphan(false), Err(StageError::NotOrphan));
+    }
+
+    #[test]
+    fn an_empty_batch_is_never_an_orphan_whatever_the_turn() {
+        for state in [State::Staging, State::Proposed] {
+            let mut b = batch(1);
+            b.state = state;
+            assert_eq!(b.orphan(true), None);
+            assert_eq!(b.orphan(false), None);
+        }
     }
 }
