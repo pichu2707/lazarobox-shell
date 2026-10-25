@@ -34,7 +34,7 @@ Tracker = `feat/coding-tools`. Rule: PR1 of the chain targets the tracker; each 
 | 2 | P0b FamilySet plumbing at LEGACY | ~350 | `main` (branch off P0a until P0a merges, then retarget) | Ready |
 | 3 | T toggles + `max_rounds` | ~450 | `feat/coding-tools` (tracker, rebased on main) | Ready |
 | 4 | M1-a glob core | ~400 | T branch | Ready |
-| 5 | M1-b grep + paging + `.git/config` deny | ~450 | M1-a branch | Ready |
+| 5 | M1-b grep + paging + `.git/config` deny | ~450 | M1-a branch | Done |
 | 6 | M1-c search wiring + approval | ~350 | M1-b branch | Ready (see decision 4) |
 | 7 | W-a content rules + `resolve_write` | ~350 | M1-c branch | Ready |
 | 8 | W-b write primitives (`open.rs`) | ~350 | W-a branch | Ready |
@@ -115,9 +115,9 @@ Spec: code-search "glob", "Family and toggle".
 
 ### M1-b: grep, paging, `.git/config` deny (PR 5, ~450)
 Spec: code-search "grep", "read_file paging"; code-write "Deny rules" (read side).
-- [ ] M1b.1 RED: `read_file{start_line, max_lines}` gated under Search; schema byte-identical with Search off (golden). GREEN: `fs.rs` paging. ~150. Dep: M1a.
-- [ ] M1b.2 RED: reads of a file named `config` or `config.worktree` under `.git` are refused with `path not available`. GREEN: `fs.rs`/`paths.rs`. ~80.
-- [ ] M1b.3 RED: grep over the budgeted walker (100 matches or 20 KiB, secret lists skipped, binary skipped, redacted). GREEN: `runtime/tools/search.rs`. ~220.
+- [x] M1b.1 RED: `read_file{start_line, max_lines}` gated under Search; schema byte-identical with Search off (golden). GREEN: `fs.rs` paging. ~150. Dep: M1a.
+- [x] M1b.2 RED: reads of a file named `config` or `config.worktree` under `.git` are refused with `path not available`. GREEN: `fs.rs`/`paths.rs`. ~80.
+- [x] M1b.3 RED: grep over the budgeted walker (100 matches or 20 KiB, secret lists skipped, binary skipped, redacted). GREEN: `runtime/tools/search.rs`. ~220.
 
 ### M1-c: wiring and approval (PR 6, ~350)
 Spec: code-search "Family and toggle", "Staged view"(marker only, content comes in W-e3); agent-tools "Approval model".
