@@ -239,6 +239,16 @@ async fn a_cloud_grep_runs_only_after_the_answer_is_sent() {
             "{out:?}"
         );
         assert_eq!(out.is_error, !searched);
+        if searched {
+            assert!(
+                out.text.starts_with("<untrusted-tool-output id=\""),
+                "{out:?}"
+            );
+        } else {
+            // The result is the bare denial: no wrapped tool output at all,
+            // so the walk did not run before or despite the answer.
+            assert_eq!(out.text, "denied: declined");
+        }
         assert_eq!(
             *approver.asked.lock().unwrap(),
             vec![ApprovalAsk::Search {
@@ -259,19 +269,26 @@ async fn a_cloud_grep_runs_only_after_the_answer_is_sent() {
 }
 
 // Without an approver nobody answers: the Cloud grep is denied and nothing is read.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_cloud_grep_nobody_approves_is_denied_and_reads_nothing() {
     let (_dir, home, host) = fixture();
     let (scope, mut rx) = scope(Locality::Cloud, &home);
-    let out = host.dispatch(scope).call(grep("hello", Some("dev"))).await;
+    // The match is in the root: it would be found if the walk ran.
+    let out = host.dispatch(scope).call(grep("hello from", None)).await;
     assert!(out.is_error);
-    assert!(!out.text.contains("hello from"), "{}", out.text);
+    assert!(
+        !out.text.contains("note.txt") && !out.text.contains("untrusted-tool-output"),
+        "{}",
+        out.text
+    );
     let (_, ask, status, _) = pair(&events(&mut rx));
     assert_eq!(
         ask,
         Some(ApprovalAsk::Search {
-            pattern: "hello".into(),
-            dir: "dev".into()
+            pattern: "hello from".into(),
+            dir: ".".into()
         })
     );
     assert_eq!(status, ToolStatus::Denied);
@@ -715,6 +732,7 @@ async fn with_search_off_glob_and_grep_are_neither_listed_nor_run() {
 async fn with_search_on_glob_and_grep_run_end_to_end_and_a_cloud_grep_asks() {
     use crate::core::ai::tools::registry::{Family, FamilySet};
     let (dir, home, host) = fixture();
+    std::fs::write(home.join("dev/curso-rust/inner.txt"), "hello from inner").unwrap();
     let (mut scope, mut rx) = scope(Locality::Cloud, &home);
     let approver = Scripted::new(Decision::Sent);
     scope.approver = approver.clone();
@@ -744,17 +762,18 @@ async fn with_search_on_glob_and_grep_run_end_to_end_and_a_cloud_grep_asks() {
         &mut c,
         3,
         "tools/call",
-        json!({"name": "grep", "arguments": {"pattern": "hello from", "path": "."}}),
+        json!({"name": "grep", "arguments": {"pattern": "hello from", "path": "dev/curso-rust"}}),
     )
     .await;
     assert_eq!(grepped["result"]["isError"], false, "{grepped}");
     let text = grepped["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("note.txt:1:hello from the note"), "{text}");
+    assert!(text.contains("inner.txt:1:hello from inner"), "{text}");
+    assert!(!text.contains("note.txt"), "{text}");
     assert_eq!(
         *approver.asked.lock().unwrap(),
         vec![ApprovalAsk::Search {
             pattern: "hello from".into(),
-            dir: ".".into()
+            dir: "dev/curso-rust".into()
         }]
     );
     assert_eq!(pair(&events(&mut rx)).2, ToolStatus::Ok);
