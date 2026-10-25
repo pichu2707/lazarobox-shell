@@ -193,6 +193,41 @@ impl ReviewDoc {
     }
 }
 
+/// The batch a [`ApprovalAsk::Batch`](super::approval::ApprovalAsk) asks the
+/// user about: its review doc, shared by the ask and the view.
+///
+/// Same invariant as the doc: no `Display`, no `Serialize`, and `Debug` is
+/// counts only. What the model is told comes from [`BatchReview::counts`] and
+/// [`TOO_LARGE`], never from the lines.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BatchReview {
+    doc: ReviewDoc,
+}
+
+impl BatchReview {
+    pub fn new(doc: ReviewDoc) -> Self {
+        Self { doc }
+    }
+
+    pub fn doc(&self) -> &ReviewDoc {
+        &self.doc
+    }
+
+    /// `2 files, +3 -1`: counts only, safe to show and to send.
+    pub fn counts(&self) -> String {
+        let s = if self.doc.files == 1 { "" } else { "s" };
+        format!(
+            "{} file{s}, +{} -{}",
+            self.doc.files, self.doc.added, self.doc.removed
+        )
+    }
+}
+
+/// The answer to the model for a batch the user could not review: nothing was
+/// written, and the change must be proposed in smaller batches.
+pub const TOO_LARGE: &str =
+    "the batch was too large to review: split the change into smaller batches";
+
 const WARN_BUILD: &str = "warning: build file: it can run code when the project is built";
 const WARN_COARSE: &str = "warning: coarse diff: the whole file is shown as replaced";
 const WARN_TRUNCATED: &str = "warning: too large to review: reject it and ask for smaller changes";

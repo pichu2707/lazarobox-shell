@@ -145,7 +145,8 @@ impl App {
             // `run` can be typed or run by itself. It always opens the prompt.
             ApprovalAsk::Read { .. }
             | ApprovalAsk::Search { .. }
-            | ApprovalAsk::External { .. } => None,
+            | ApprovalAsk::External { .. }
+            | ApprovalAsk::Batch(_) => None,
         };
         let mut why = None;
         if let (ApprovalAsk::Run { command }, Some(target)) = (&ask, target) {
@@ -172,6 +173,10 @@ impl App {
         why: Option<String>,
     ) -> Vec<Effect> {
         let armed_at = (self.clock)() + ARM_DELAY;
+        let batch = match &ask {
+            ApprovalAsk::Batch(review) => Some(review.clone()),
+            _ => None,
+        };
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Self::deny(id, turn, call, CHAT_GONE);
         };
@@ -179,6 +184,9 @@ impl App {
             Ok(_) => {
                 chat.set_run_target(target);
                 chat.set_armed_at(Some(armed_at));
+                if let Some(review) = batch {
+                    self.open_review(id, review);
+                }
                 self.dirty = true;
                 Vec::new()
             }

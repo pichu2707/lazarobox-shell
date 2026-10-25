@@ -6,12 +6,13 @@
 //! module holds no IO and does not know which key means what: the caller
 //! maps keys to a [`Reply`].
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 
 use crate::core::ai::{
-    chat::engine::CallId,
+    chat::{engine::CallId, review::BatchReview, review_view::ReviewView},
     config::ApprovalMode,
     sanitize::clean,
     tools::{
@@ -73,6 +74,9 @@ pub enum ApprovalAsk {
         tool: String,
         args: String,
     },
+    /// Write a proposed batch of files. The user reads it in the review view;
+    /// it is never routed by the approval mode, so no mode approves it.
+    Batch(Arc<BatchReview>),
 }
 
 /// Which calls wait for the user's answer before they run (D17).
@@ -450,6 +454,9 @@ pub const EXTERNAL_KEYS: &str = "y call it · n deny";
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Approvals {
     pending: Option<Approval>,
+    /// The review view of a pending [`ApprovalAsk::Batch`]. It goes with the
+    /// approval, however that ends.
+    review: Option<ReviewView>,
 }
 
 impl Approvals {
@@ -489,6 +496,7 @@ impl Approvals {
             return Err(Refusal::new(ANOTHER_PENDING));
         }
         let id = next_id();
+        self.review = None;
         self.pending = Some(Approval {
             id,
             ask,
@@ -509,6 +517,7 @@ impl Approvals {
         if self.pending.as_ref()?.id != id {
             return None;
         }
+        self.review = None;
         self.pending.take().map(|approval| (approval, reply))
     }
 
@@ -519,7 +528,31 @@ impl Approvals {
         if self.pending.as_ref()?.id != id {
             return None;
         }
+        self.review = None;
         self.pending.take()
+    }
+
+    /// The review view of the pending batch, if it is one.
+    pub fn review(&self) -> Option<&ReviewView> {
+        self.review.as_ref()
+    }
+
+    pub fn review_mut(&mut self) -> Option<&mut ReviewView> {
+        self.review.as_mut()
+    }
+
+    /// The pane is `size` now: the rows on screen count as seen.
+    pub fn fit_review(&mut self, size: (usize, usize)) {
+        if let Some(view) = self.review.as_mut() {
+            view.fit(size);
+        }
+    }
+
+    /// Attaches the view to the pending approval.
+    pub fn set_review(&mut self, view: ReviewView) {
+        if self.pending.is_some() {
+            self.review = Some(view);
+        }
     }
 }
 

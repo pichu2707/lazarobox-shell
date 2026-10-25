@@ -50,6 +50,7 @@ mod context;
 mod history;
 mod notes;
 mod offer;
+mod review;
 mod run;
 mod scroll;
 mod summary;
@@ -2257,6 +2258,7 @@ impl App {
             if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
                 chat.rewrap(usize::from(old_cols), usize::from(cols), rows);
             }
+            self.refit_review(id);
         }
         self.sync_copy();
         effects
@@ -7458,6 +7460,9 @@ mod app_tests {
 
     /// Tool calls that need the user, answered through the same overlay.
     mod tool_approval;
+
+    /// The review view of a proposed write batch.
+    mod batch_review;
 
     /// The chat approval mode: where it comes from, when it resets.
     mod tool_auto;

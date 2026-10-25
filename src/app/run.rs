@@ -115,6 +115,9 @@ impl App {
         key: KeyEvent,
         repeat: bool,
     ) -> Vec<Effect> {
+        if self.batch_pending(id) {
+            return self.on_review_key(id, key, repeat);
+        }
         if repeat {
             return Vec::new();
         }
@@ -144,7 +147,7 @@ impl App {
     }
 
     /// Ends the pending approval of chat `id` with `reply`, writing nothing.
-    fn close_approval(&mut self, id: PaneId, reply: Reply) -> Option<Approval> {
+    pub(super) fn close_approval(&mut self, id: PaneId, reply: Reply) -> Option<Approval> {
         let chat = self.panes.get_mut(&id)?.chat_mut()?;
         let approval_id = chat.approvals().pending()?.id();
         let (approval, _) = chat
@@ -161,7 +164,7 @@ impl App {
 
     /// `n`, Esc and Ctrl+C: ends the approval and, for a tool call, tells it
     /// why nothing was done.
-    fn decline(&mut self, id: PaneId, reason: &'static str) -> Vec<Effect> {
+    pub(super) fn decline(&mut self, id: PaneId, reason: &'static str) -> Vec<Effect> {
         self.close_approval(id, Reply::Decline)
             .and_then(|approval| Self::answer(id, &approval, Decision::Denied(reason)))
             .into_iter()
@@ -448,6 +451,8 @@ impl App {
                 armed,
                 why: None,
             }),
+            // The review view draws a batch; it has no overlay.
+            ApprovalAsk::Batch(_) => None,
             // Server, tool and arguments are sanitized and capped when the ask
             // is made; `y` approves exactly this.
             ApprovalAsk::External { server, tool, args } => Some(ApprovalPrompt {

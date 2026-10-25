@@ -5,6 +5,8 @@
 
 pub mod adapters;
 pub mod approval;
+#[cfg(test)]
+mod approval_batch_tests;
 pub mod approval_rows;
 pub mod claude;
 pub mod cli;
@@ -21,6 +23,7 @@ pub mod note;
 pub mod notify;
 pub mod prompts;
 pub mod review;
+pub mod review_view;
 pub mod store;
 pub mod stream;
 pub mod streams;
