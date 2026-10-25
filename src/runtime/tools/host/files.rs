@@ -11,7 +11,7 @@
 use std::{
     fmt::Display,
     path::Path,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError},
 };
 
 use super::{Decision, NOT_APPROVED, Outcome, ToolHost, ToolStatus, TurnScope, ended};
@@ -30,7 +30,7 @@ use crate::{
         ToolEnv,
         fs::load_roots,
         run_over,
-        stage::{StageFailed, Stages, disk_bytes},
+        stage::{StageFailed, Stages, Unreadable, disk_bytes},
         staged::StagedView,
     },
 };
@@ -49,7 +49,21 @@ pub(super) struct Sealed {
 
 impl Drop for Sealed {
     fn drop(&mut self) {
-        let _ = lock(&self.stages).discard(self.id);
+        // A drop may run on an async worker, which must not wait for the
+        // store while an apply holds it: then the discard waits on the
+        // blocking pool instead.
+        let id = self.id;
+        match self.stages.try_lock() {
+            Ok(mut stages) => drop(stages.discard(id)),
+            Err(TryLockError::Poisoned(held)) => drop(held.into_inner().discard(id)),
+            Err(TryLockError::WouldBlock) => {
+                let stages = self.stages.clone();
+                match tokio::runtime::Handle::try_current() {
+                    Ok(runtime) => drop(runtime.spawn_blocking(move || lock(&stages).discard(id))),
+                    Err(_) => drop(lock(&stages).discard(id)),
+                }
+            }
+        }
     }
 }
 
@@ -70,14 +84,27 @@ pub(super) fn gate(scope: &TurnScope, call: &Call) -> Result<(), &'static str> {
 /// Seals the batch of the chat and builds the ask for it. An empty batch, a
 /// batch over the caps or one already waiting is an error, and a refused
 /// proposal leaves the batch as it was.
-pub(super) fn seal(
+///
+/// The store lock is taken on the blocking pool, not on the async worker: an
+/// apply can hold it while it writes.
+pub(super) async fn seal(
     host: &ToolHost,
     scope: &TurnScope,
 ) -> Result<(Sealed, Arc<BatchReview>), String> {
     let key = scope
         .stage_key
         .ok_or(refusal_text(ToolError::UnknownTool))?;
-    let mut stages = lock(&host.stages);
+    let stages = host.stages.clone();
+    tokio::task::spawn_blocking(move || seal_in(stages, key))
+        .await
+        .unwrap_or_else(|_| Err(COULD_NOT.to_owned()))
+}
+
+fn seal_in(
+    shared: Arc<Mutex<Stages>>,
+    key: StageKey,
+) -> Result<(Sealed, Arc<BatchReview>), String> {
+    let mut stages = lock(&shared);
     let id = stages
         .batch(key)
         .map(|batch| batch.id())
@@ -86,12 +113,12 @@ pub(super) fn seal(
     let batch = stages.batch(key).ok_or(StageError::Stale.to_string())?;
     let review = Arc::new(BatchReview::new(ReviewDoc::build(batch)));
     let reviewable = review.doc().reviewable();
-    let stages = host.stages.clone();
+    drop(stages);
     Ok((
         Sealed {
             id,
             reviewable,
-            stages,
+            stages: shared,
         },
         review,
     ))
@@ -115,10 +142,20 @@ pub(super) async fn run(
         };
     }
     // The view whenever the family is on, so the marker cannot be forged.
-    let view = scope
+    let view = match scope
         .stage_key
         .filter(|_| scope.families.contains(Family::Write))
-        .map(|key| lock(&host.stages).view(key));
+    {
+        None => None,
+        Some(key) => {
+            let stages = host.stages.clone();
+            let taken = tokio::task::spawn_blocking(move || lock(&stages).view(key)).await;
+            match taken {
+                Ok(view) => Some(view),
+                Err(_) => return ended(ToolStatus::Error, COULD_NOT.to_owned(), COULD_NOT),
+            }
+        }
+    };
     read(call, env, host, view).await
 }
 
@@ -144,11 +181,15 @@ async fn read(
 
 /// What the disk holds at `real`, for staging. A folder the batch makes holds
 /// nothing yet. Every refusal is the one refusal text.
+///
+/// `probed` is the disk read, made before the lock was taken. A folder the
+/// batch makes wins over it. If the batch changed since the read, the apply
+/// preflight catches the drift.
 fn on_disk(
     stages: &Stages,
     key: StageKey,
-    roots: &SecretRoots,
     real: &Path,
+    probed: Result<Option<Vec<u8>>, Unreadable>,
 ) -> Result<Option<Vec<u8>>, String> {
     let made = |batch: &crate::core::ai::tools::stage::Batch| {
         batch.entries().iter().any(|s| {
@@ -158,7 +199,7 @@ fn on_disk(
     if stages.batch(key).is_some_and(made) {
         return Ok(None);
     }
-    disk_bytes(roots, real).map_err(|_| REFUSED.to_owned())
+    probed.map_err(|_| REFUSED.to_owned())
 }
 
 fn failed<E: Display>(why: StageFailed<E>) -> String {
@@ -175,6 +216,17 @@ fn stage(
     env: &ToolEnv,
     call: &Call,
 ) -> Result<String, String> {
+    stage_with_probe(stages, key, env, call, disk_bytes)
+}
+
+/// [`stage`] with the disk read given, so a test can watch when it happens.
+pub(super) fn stage_with_probe(
+    stages: &Mutex<Stages>,
+    key: StageKey,
+    env: &ToolEnv,
+    call: &Call,
+    probe: impl FnOnce(&SecretRoots, &Path) -> Result<Option<Vec<u8>>, Unreadable>,
+) -> Result<String, String> {
     let refused = || REFUSED.to_owned();
     let roots = load_roots(env).map_err(|_| refused())?;
     let path = match call {
@@ -184,8 +236,10 @@ fn stage(
         _ => return Err(refusal_text(ToolError::UnknownTool).to_owned()),
     };
     let target = resolve_write(&roots, &env.origin, path).ok_or_else(refused)?;
+    // The disk is read before the lock is taken: the lock covers memory only.
+    let probed = probe(&roots, &target.real);
     let mut stages = lock(stages);
-    let disk = on_disk(&stages, key, &roots, &target.real)?;
+    let disk = on_disk(&stages, key, &target.real, probed)?;
     let existing = match &disk {
         None => Existing::Absent,
         Some(bytes) => Existing::Present {
@@ -230,11 +284,8 @@ pub(super) async fn answered(
     };
     // Held to the end: any way out of here closes the batch (see `Sealed`).
     let (id, reviewable) = (sealed.id, sealed.reviewable);
-    let denied = |reason: &str| {
-        // A batch that is gone already is not an error here.
-        let _ = lock(&host.stages).discard(id);
-        ended(ToolStatus::Denied, format!("denied: {reason}"), reason)
-    };
+    // `sealed` discards the batch when it goes out of scope.
+    let denied = |reason: &str| ended(ToolStatus::Denied, format!("denied: {reason}"), reason);
     match decision {
         Decision::Sent if reviewable => {}
         Decision::Sent => return denied(TOO_LARGE),
@@ -260,8 +311,7 @@ pub(super) async fn answered(
     let status = if result.applied() {
         ToolStatus::Ok
     } else {
-        // Nothing was written, or the user must look: the batch is closed.
-        let _ = lock(&host.stages).discard(id);
+        // Nothing was written, or the user must look: `sealed` closes the batch.
         ToolStatus::Error
     };
     let first = text.lines().next().unwrap_or_default().to_owned();

@@ -408,6 +408,60 @@ async fn a_call_that_cannot_announce_does_not_leave_its_batch_sealed() {
     assert!(!live.call(write("b.txt", "again")).await.is_error);
 }
 
+// The disk is read before the lock is taken: staging never holds the mutex of
+// every chat's batches across a read.
+#[cfg(target_os = "linux")]
+#[test]
+fn staging_reads_the_disk_before_it_takes_the_lock() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "foo").unwrap();
+    let env = w.host.env(&w.proj);
+    for call in [
+        write("a.txt", "x"),
+        edit("b.txt", "foo", "bar"),
+        folder("d"),
+    ] {
+        let probed = std::cell::Cell::new(None);
+        let text = files::stage_with_probe(&w.host.stages, key(), &env, &call, |roots, real| {
+            probed.set(Some(w.host.stages.try_lock().is_ok()));
+            crate::runtime::tools::stage::disk_bytes(roots, real)
+        })
+        .unwrap();
+        assert_eq!(probed.get(), Some(true), "{call:?}: the lock was held");
+        assert!(text.starts_with("staged "), "{text}");
+    }
+    assert_eq!(w.staged(), 3);
+}
+
+// An async worker never waits for the mutex: while an apply holds it, a call
+// that needs it parks on the blocking pool and the worker keeps serving tasks.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_busy_store_does_not_block_the_async_worker() {
+    for call in [Call::ProposeBatch, read("a.txt")] {
+        let w = world();
+        let (d, _rx) = w.turn(Script::new(Decision::Denied("no")));
+        assert!(!d.call(write("a.txt", "hello")).await.is_error);
+        let held = w.host.stages.lock().unwrap();
+        let waiting = tokio::spawn({
+            let d = d.clone();
+            async move { d.call(call).await }
+        });
+        // Plain sleeps: with the worker blocked the timers would not fire.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        tokio::spawn({
+            let ran = ran.clone();
+            async move { ran.store(true, std::sync::atomic::Ordering::SeqCst) }
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let alive = ran.load(std::sync::atomic::Ordering::SeqCst);
+        drop(held);
+        assert!(alive, "the worker is blocked on the store lock");
+        waiting.await.unwrap();
+    }
+}
+
 // Spec (code-write, Propose batch; design D6/unreviewable): a batch whose diff
 // is truncated is sealed, the user can only reject it, and `Sent` never
 // applies it.

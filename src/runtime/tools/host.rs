@@ -330,7 +330,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 }
             }
             // A batch is sealed before the ask: the user reviews what was sealed.
-            (Call::ProposeBatch, _) => match files::seal(&host, &scope) {
+            (Call::ProposeBatch, _) => match files::seal(&host, &scope).await {
                 Ok((batch, review)) => {
                     ask = Some(ApprovalAsk::Batch(review));
                     sealed = Some(batch);
