@@ -395,3 +395,12 @@ About 435 production lines inserted (`stage.rs` 114 before tests, `staged.rs` 13
 ## Checks (W-e3)
 
 `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo +1.88 check --all-targets` green. `cargo check --target aarch64-apple-darwin` could not run here (the C compiler for sqlite fails for arm64 on this host); no macOS-only file uses the changed items.
+
+## W-e3 review fixes
+
+- Lookup: `StagedView::locate` resolves with the new `paths::real_target` (`canonical_new` of the origin-joined path, no `..` folded by text) after the same `display_target` text gate. Fixes a symlinked origin, a read through a symlinked folder, and `link/../x`. RED: 4 assertion failures (symlinked origin, symlinked folder, `lnk/../x.txt` showed staged root text instead of disk `src/x.txt`).
+- `Stages::seal(id: BatchId)` is generation-checked via `current(id)` (RED: `E0308 mismatched types` on `seal(old)`/`seal(new)`).
+- `Stages::stage_with(key, f) -> Result<T, StageFailed>` removes the batch again when this very call made it and `f` failed; an existing batch stays (RED: `E0599 no method stage_with`, `E0433 StageFailed`).
+- `plain`/`plain_str` no longer take the view: defang is unconditional (see design.md). RED: `left: "fn (pending; not on disk)" right: "fn (pending, not on disk)"` for None vs Some(empty). The tautological `execute` vs `None` comparison is dropped.
+- `list_dir` sets `omitted` when a staged-only name is hidden (excluded, outside the judge, or secret-like). RED: listing ended `f notes.txt\nd src` with no omitted marker.
+- `search.rs`: `shown` loses its unused view parameter.

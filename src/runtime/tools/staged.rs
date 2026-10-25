@@ -13,7 +13,7 @@ use std::{
 };
 
 use crate::core::ai::tools::{
-    paths::{SecretRoots, display_target, is_git_config},
+    paths::{SecretRoots, display_target, is_git_config, real_target},
     stage::{Batch, Entry, State},
 };
 
@@ -21,14 +21,14 @@ use crate::core::ai::tools::{
 pub const MARKER: &str = "(pending, not on disk)";
 /// The words of [`MARKER`] without its parentheses.
 const WORDS: &str = "pending, not on disk";
-/// What disk-sourced text shows instead of [`WORDS`] while a view is in use,
-/// so a file or a name cannot pass for staged state.
+/// What disk-sourced text shows instead of [`WORDS`], so a file or a name
+/// cannot pass for staged state.
 const DEFANGED: &str = "pending; not on disk";
 
-/// `text` with the marker words defanged when a view is in use. Without a
-/// view the text is returned as it is.
-pub fn plain(view: Option<&StagedView>, text: String) -> String {
-    if view.is_some() && text.contains(WORDS) {
+/// `text` with the marker words defanged. Always, view or not, so a missing
+/// view can never make the marker forgeable.
+pub fn plain(text: String) -> String {
+    if text.contains(WORDS) {
         text.replace(WORDS, DEFANGED)
     } else {
         text
@@ -36,8 +36,8 @@ pub fn plain(view: Option<&StagedView>, text: String) -> String {
 }
 
 /// The same for a borrowed text.
-pub fn plain_str<'a>(view: Option<&StagedView>, text: &'a str) -> Cow<'a, str> {
-    if view.is_some() && text.contains(WORDS) {
+pub fn plain_str(text: &str) -> Cow<'_, str> {
+    if text.contains(WORDS) {
         Cow::Owned(text.replace(WORDS, DEFANGED))
     } else {
         Cow::Borrowed(text)
@@ -68,11 +68,13 @@ impl StagedView {
         view
     }
 
-    /// The path `input` names by text alone (the file may not exist), when
-    /// the read rules allow it: under HOME, no secret name or root.
+    /// The real path `input` names (the file may not exist), when the read
+    /// rules allow it: under HOME, no secret name or root. Staged keys are
+    /// real paths, so the lookup resolves links the way a disk read does.
     fn locate(roots: &SecretRoots, origin: &Path, input: &str) -> Option<PathBuf> {
-        let text = display_target(roots.home(), origin, input)?;
-        let path = PathBuf::from(text);
+        // The same text gate as a disk ask: nothing the review could not show.
+        display_target(roots.home(), origin, input)?;
+        let path = real_target(roots, origin, input)?;
         roots.judge_real(&path).then_some(path)
     }
 
@@ -145,7 +147,7 @@ mod tests {
         stage::{Batch, BatchId, Existing, StageKey},
     };
     use crate::core::layout::PaneId;
-    use crate::runtime::tools::fs::{Failure, Limits, ToolEnv, execute, execute_over};
+    use crate::runtime::tools::fs::{Failure, Limits, ToolEnv, execute_over};
     use std::{fs, path::PathBuf, sync::atomic::AtomicBool};
 
     const MARK: &str = "(pending, not on disk)";
@@ -463,11 +465,43 @@ mod tests {
             ]
         };
         for (call, again) in calls().into_iter().zip(calls()) {
-            let plain = execute(&call, &f.env, &Limits::default()).unwrap();
-            assert!(!plain.is_empty());
-            assert_eq!(f.run(call, Some(&empty)).unwrap(), plain);
-            assert_eq!(f.run(again, None).unwrap(), plain);
-            assert!(!plain.contains(MARK));
+            let none = f.run(call, None).unwrap();
+            assert!(!none.is_empty());
+            assert_eq!(f.run(again, Some(&empty)).unwrap(), none);
+            assert!(!none.contains(MARK));
+        }
+    }
+
+    // A missing view must not make the marker forgeable: the disk text and
+    // names are defanged with or without a view, and both agree.
+    #[test]
+    fn the_marker_words_are_defanged_with_no_view_and_with_an_empty_one() {
+        let f = fixture();
+        fs::write(f.root.join("forged.rs"), format!("fn {MARK}\n")).unwrap();
+        fs::write(f.root.join(format!("name {MARK}.rs")), "fn x() {}\n").unwrap();
+        let empty = f.view();
+        let calls = || {
+            [
+                Call::ReadFile {
+                    path: "forged.rs".into(),
+                    lines: None,
+                },
+                Call::ListDir { path: ".".into() },
+                Call::Glob {
+                    pattern: "*.rs".into(),
+                    dir: None,
+                },
+                Call::Grep {
+                    pattern: "fn".into(),
+                    dir: None,
+                },
+            ]
+        };
+        for (call, again) in calls().into_iter().zip(calls()) {
+            let none = f.run(call, None).unwrap();
+            assert_eq!(f.run(again, Some(&empty)).unwrap(), none);
+            assert!(!none.contains(MARK), "{none}");
+            assert!(none.contains("pending; not on disk"), "{none}");
         }
     }
 
@@ -482,5 +516,93 @@ mod tests {
             f.glob("*.rs", &f.view()),
             format!("a.rs {MARK}\nb.rs {MARK}")
         );
+    }
+
+    /// Makes `link` below the root point at `target`.
+    fn link(f: &Fixture, link: &str, target: &Path) {
+        std::os::unix::fs::symlink(target, f.root.join(link)).unwrap();
+    }
+
+    // Spec (code-search, Staged view): the lookup is by the real path, like a
+    // disk read, because the staged keys are real paths.
+    #[test]
+    fn a_symlinked_origin_still_finds_the_staged_edit_and_the_staged_create() {
+        let mut f = fixture();
+        f.edit("src/old.rs", "fn new() {}\n");
+        f.create("src/made.rs", "fn made() {}\n");
+        let alias = f.root.parent().unwrap().join("alias");
+        std::os::unix::fs::symlink(&f.root, &alias).unwrap();
+        f.env.origin = alias;
+        let view = f.view();
+        assert_eq!(
+            f.read("src/old.rs", &view).unwrap(),
+            format!("{MARK}\nfn new() {{}}\n")
+        );
+        assert_eq!(
+            f.read("src/made.rs", &view).unwrap(),
+            format!("{MARK}\nfn made() {{}}\n")
+        );
+        assert_eq!(
+            f.list("src", &view).unwrap(),
+            format!("f made.rs {MARK}\nf old.rs")
+        );
+    }
+
+    #[test]
+    fn a_read_through_a_symlinked_folder_finds_the_staged_edit() {
+        let mut f = fixture();
+        f.edit("src/old.rs", "fn new() {}\n");
+        link(&f, "lnk", &f.root.join("src"));
+        let view = f.view();
+        assert_eq!(
+            f.read("lnk/old.rs", &view).unwrap(),
+            format!("{MARK}\nfn new() {{}}\n")
+        );
+    }
+
+    #[test]
+    fn a_dot_dot_after_a_link_is_not_folded_by_text() {
+        let mut f = fixture();
+        fs::create_dir_all(f.root.join("src/deep")).unwrap();
+        fs::write(f.root.join("src/x.txt"), "disk src\n").unwrap();
+        fs::write(f.root.join("x.txt"), "disk root\n").unwrap();
+        link(&f, "lnk", &f.root.join("src/deep"));
+        f.edit("x.txt", "staged root\n");
+        let view = f.view();
+        // On disk `lnk/../x.txt` is `src/x.txt`, not `x.txt`.
+        let disk = f.run(
+            Call::ReadFile {
+                path: "lnk/../x.txt".into(),
+                lines: None,
+            },
+            None,
+        );
+        assert_eq!(disk.unwrap(), "disk src\n");
+        assert_eq!(f.read("lnk/../x.txt", &view).unwrap(), "disk src\n");
+        f.edit("src/x.txt", "staged src\n");
+        let view = f.view();
+        assert_eq!(
+            f.read("lnk/../x.txt", &view).unwrap(),
+            format!("{MARK}\nstaged src\n")
+        );
+    }
+
+    #[test]
+    fn a_staged_name_hidden_from_a_listing_is_said_to_be_omitted() {
+        let mut f = fixture();
+        f.create(".env", "A=1\n");
+        f.create("sk-abcDEF1234567890.rs", "fn staged() {}\n");
+        let view = f.view();
+        let listed = f.list(".", &view).unwrap();
+        assert!(!listed.contains("sk-abcDEF") && !listed.contains(".env"));
+        assert!(
+            listed.ends_with(crate::runtime::tools::fs::OMITTED_MARKER),
+            "{listed}"
+        );
+        // A visible staged name alone says nothing.
+        let mut g = fixture();
+        g.create("ok.rs", "fn a() {}\n");
+        let listed = g.list(".", &g.view()).unwrap();
+        assert!(!listed.contains("omitted"), "{listed}");
     }
 }

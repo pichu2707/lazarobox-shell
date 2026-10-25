@@ -20,6 +20,13 @@ use crate::core::ai::tools::{
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Exhausted;
 
+/// Why [`Stages::stage_with`] did not stage.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StageFailed {
+    Exhausted,
+    Batch(StageError),
+}
+
 /// The live batches, by key.
 #[derive(Debug, Default)]
 pub struct Stages {
@@ -33,12 +40,33 @@ impl Stages {
     /// The batch of `key` open for staging, or a new one when the key has none.
     /// A proposed batch is returned as it is: the batch itself refuses staging.
     pub fn stage(&mut self, key: StageKey) -> Result<&mut Batch, Exhausted> {
+        self.open(key).map(|(batch, _)| batch)
+    }
+
+    /// Runs `staging` on the batch of `key`. When it fails and this call made
+    /// the batch, the empty batch is removed again; a batch that was already
+    /// there stays as it was.
+    pub fn stage_with<T>(
+        &mut self,
+        key: StageKey,
+        staging: impl FnOnce(&mut Batch) -> Result<T, StageError>,
+    ) -> Result<T, StageFailed> {
+        let (batch, created) = self.open(key).map_err(|_| StageFailed::Exhausted)?;
+        let result = staging(batch);
+        if result.is_err() && created {
+            self.batches.remove(&key);
+        }
+        result.map_err(StageFailed::Batch)
+    }
+
+    /// The batch of `key` and whether this call made it.
+    fn open(&mut self, key: StageKey) -> Result<(&mut Batch, bool), Exhausted> {
         match self.batches.entry(key) {
-            Entry::Occupied(slot) => Ok(slot.into_mut()),
+            Entry::Occupied(slot) => Ok((slot.into_mut(), false)),
             Entry::Vacant(slot) => {
                 let generation = self.next;
                 self.next = generation.checked_add(1).ok_or(Exhausted)?;
-                Ok(slot.insert(Batch::new(BatchId { key, generation })))
+                Ok((slot.insert(Batch::new(BatchId { key, generation })), true))
             }
         }
     }
@@ -55,12 +83,10 @@ impl Stages {
             .map_or_else(StagedView::default, StagedView::from_batch)
     }
 
-    /// Closes staging for `key` and hands its batch to the user.
-    pub fn seal(&mut self, key: StageKey) -> Result<BatchId, StageError> {
-        self.batches
-            .get_mut(&key)
-            .ok_or(StageError::Empty)?
-            .propose()
+    /// Closes staging for the batch `id` and hands it to the user. A stale
+    /// id, from a gone batch of the same key, is refused.
+    pub fn seal(&mut self, id: BatchId) -> Result<BatchId, StageError> {
+        self.current(id)?.propose()
     }
 
     /// Applies the proposed batch `id` to the disk below `roots`.
@@ -208,11 +234,15 @@ mod tests {
     #[test]
     fn seal_proposes_the_batch_and_an_empty_one_is_refused() {
         let mut stages = Stages::default();
-        assert_eq!(stages.seal(key(1)), Err(StageError::Empty));
-        stages.stage(key(1)).unwrap();
-        assert_eq!(stages.seal(key(1)), Err(StageError::Empty));
+        let gone = BatchId {
+            key: key(1),
+            generation: 0,
+        };
+        assert_eq!(stages.seal(gone), Err(StageError::Stale));
+        let empty = stages.stage(key(1)).unwrap().id();
+        assert_eq!(stages.seal(empty), Err(StageError::Empty));
         let id = put(&mut stages, key(1), "a.txt");
-        assert_eq!(stages.seal(key(1)), Ok(id));
+        assert_eq!(stages.seal(id), Ok(id));
         assert_eq!(stages.batch(key(1)).unwrap().state(), State::Proposed);
         let batch = stages.stage(key(1)).unwrap();
         let again = batch.stage_file(&target("b.txt"), "y\n", Existing::Absent);
@@ -223,7 +253,7 @@ mod tests {
     fn apply_writes_the_proposed_batch_once_and_closes_it() {
         let mut stages = Stages::default();
         let id = put(&mut stages, key(1), "a.txt");
-        stages.seal(key(1)).unwrap();
+        stages.seal(id).unwrap();
         let disk = Rec::default();
         let result = stages.apply_with(id, &disk).unwrap();
         assert!(matches!(result, ApplyResult::Applied(ref c) if c.len() == 1));
@@ -251,7 +281,7 @@ mod tests {
     fn a_drifted_apply_leaves_the_batch_proposed_so_the_user_can_discard_it() {
         let mut stages = Stages::default();
         let id = put(&mut stages, key(1), "a.txt");
-        stages.seal(key(1)).unwrap();
+        stages.seal(id).unwrap();
         let disk = Rec {
             drift: true,
             ..Rec::default()
@@ -271,7 +301,7 @@ mod tests {
         assert_eq!(stages.discard(staging), Ok(()));
         assert!(stages.batch(key(1)).is_none());
         let proposed = put(&mut stages, key(1), "a.txt");
-        stages.seal(key(1)).unwrap();
+        stages.seal(proposed).unwrap();
         assert_eq!(stages.discard(proposed), Ok(()));
         assert!(stages.batch(key(1)).is_none());
         assert_eq!(stages.discard(proposed), Err(StageError::Stale));
@@ -283,10 +313,10 @@ mod tests {
     fn an_old_batch_id_is_refused_by_the_new_batch_of_the_same_key() {
         let mut stages = Stages::default();
         let old = put(&mut stages, key(1), "a.txt");
-        stages.seal(key(1)).unwrap();
+        stages.seal(old).unwrap();
         stages.discard(old).unwrap();
         let new = put(&mut stages, key(1), "b.txt");
-        stages.seal(key(1)).unwrap();
+        stages.seal(new).unwrap();
         assert_eq!(old.key, new.key);
         assert!(new.generation > old.generation);
         let disk = Rec::default();
@@ -304,7 +334,7 @@ mod tests {
         let mut seen = Vec::new();
         for n in 0..3 {
             let id = put(&mut stages, key(n % 2), "a.txt");
-            stages.seal(key(n % 2)).unwrap();
+            stages.seal(id).unwrap();
             stages.apply_with(id, &Rec::default()).unwrap();
             seen.push(id.generation);
         }
@@ -348,5 +378,37 @@ mod tests {
         assert_eq!(stages.view(key(3)).text(&path), None);
         stages.discard(id).unwrap();
         assert_eq!(stages.view(key(1)).text(&path), None);
+    }
+
+    // Review fix: seal is checked against the generation, like apply.
+    #[test]
+    fn an_old_id_cannot_seal_the_newer_staging_batch_of_the_same_key() {
+        let mut stages = Stages::default();
+        let old = put(&mut stages, key(1), "a.txt");
+        stages.discard(old).unwrap();
+        let new = put(&mut stages, key(1), "b.txt");
+        assert_eq!(stages.seal(old), Err(StageError::Stale));
+        assert_eq!(stages.batch(key(1)).unwrap().state(), State::Staging);
+        assert_eq!(stages.seal(new), Ok(new));
+    }
+
+    // Review fix: a batch the failed call just made does not stay behind.
+    #[test]
+    fn a_failed_first_staging_leaves_no_empty_batch_but_an_old_batch_stays() {
+        let mut stages = Stages::default();
+        let failed = stages.stage_with(key(1), |_| Err::<(), _>(StageError::FileTooLarge));
+        assert_eq!(failed, Err(StageFailed::Batch(StageError::FileTooLarge)));
+        assert!(stages.batch(key(1)).is_none());
+        put(&mut stages, key(2), "a.txt");
+        let failed = stages.stage_with(key(2), |_| Err::<(), _>(StageError::FileTooLarge));
+        assert_eq!(failed, Err(StageFailed::Batch(StageError::FileTooLarge)));
+        assert_eq!(stages.batch(key(2)).unwrap().entries().len(), 1);
+        // An empty batch that was already there is not this call's to remove.
+        stages.stage(key(3)).unwrap();
+        let _ = stages.stage_with(key(3), |_| Err::<(), _>(StageError::FileTooLarge));
+        assert!(stages.batch(key(3)).is_some());
+        // A success keeps its batch.
+        assert_eq!(stages.stage_with(key(4), |_| Ok(7)), Ok(7));
+        assert!(stages.batch(key(4)).is_some());
     }
 }

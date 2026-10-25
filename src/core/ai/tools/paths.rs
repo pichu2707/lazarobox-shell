@@ -406,6 +406,13 @@ pub fn resolve(roots: &SecretRoots, origin: &Path, input: &str) -> PathVerdict {
     }
 }
 
+/// The real path `input` names, whether or not it exists: the path a read
+/// resolves, with the deepest existing ancestor canonicalized (no `..` is
+/// folded by text first) and the missing names appended. Not judged.
+pub fn real_target(roots: &SecretRoots, origin: &Path, input: &str) -> Option<PathBuf> {
+    canonical_new(&locate(roots, origin, input)?)
+}
+
 /// `input` with `~` expanded and a relative path joined to `origin`. `None`
 /// for a relative `origin` (`canonicalize` would depend on the process cwd)
 /// or an unsupported `~user`.

@@ -96,9 +96,9 @@ pub fn grep_over(
         |roots, path, rel, staged| {
             let text = match staged {
                 Some(text) => prepared(text),
-                None => read_text(roots, path).map(|text| plain(view, text)),
+                None => read_text(roots, path).map(plain),
             };
-            text.is_none_or(|text| found.scan(&shown(view, rel, staged), &text, &re))
+            text.is_none_or(|text| found.scan(&shown(rel, staged), &text, &re))
         },
     )?;
     Ok(found.render(walked.omitted, walked.bounded))
@@ -130,7 +130,7 @@ pub fn glob_over(
     // The walk may collect one name past the cap, so `render` can say it cut.
     let walked = walk(dir, env, limits, cancel, view, |_, _, rel, staged| {
         if matcher.is_match(rel) {
-            paths.push(shown(view, rel, staged));
+            paths.push(shown(rel, staged));
         }
         paths.len() <= MAX_MATCHES
     })?;
@@ -144,10 +144,10 @@ pub fn glob_over(
 
 /// The path as the result shows it: marked when its text is staged, and with
 /// the marker words defanged otherwise.
-fn shown(view: Option<&StagedView>, rel: &str, staged: Option<&str>) -> String {
+fn shown(rel: &str, staged: Option<&str>) -> String {
     match staged {
         Some(_) => format!("{rel} {MARKER}"),
-        None => plain_str(view, rel).into_owned(),
+        None => plain_str(rel).into_owned(),
     }
 }
 

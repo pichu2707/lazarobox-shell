@@ -217,9 +217,7 @@ pub fn execute_over(
     match call {
         Call::ReadFile { path, lines } => read_file(&roots, env, path, *lines, limits, view),
         Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits, view),
-        Call::FindDir { query } => {
-            find_dir(&roots, &budget, query, limits).map(|out| plain(view, out))
-        }
+        Call::FindDir { query } => find_dir(&roots, &budget, query, limits).map(plain),
         // Whether `grep` may run is decided before this, by `ask_for`; `glob`
         // names files only and needs no approval.
         Call::Glob { pattern, dir } => {
@@ -316,7 +314,7 @@ fn read_file(
         Some(window) => read_window(file, window, limits),
         None => read_head(file, limits),
     }
-    .map(|out| plain(view, out))
+    .map(plain)
 }
 
 /// The start of an opened file, as far as the read cap allows.
@@ -561,14 +559,21 @@ fn list_dir(
             } else {
                 '?'
             };
-            (plain(view, one_line(name)), tag, false)
+            (plain(one_line(name)), tag, false)
         })
         .collect();
     // Names the batch adds. One already on disk keeps its row: only its
     // content is staged.
     for (name, is_dir) in view.map(|v| v.children(&real)).unwrap_or_default() {
         let known = found.iter().any(|(n, _)| *n == name);
-        if known || !roots.judge_real(&real.join(&name)) || redaction_changes(&name) {
+        if known {
+            continue;
+        }
+        let hidden = is_excluded_name(&name.to_string_lossy())
+            || !roots.judge_real(&real.join(&name))
+            || redaction_changes(&name);
+        if hidden {
+            omitted = true;
             continue;
         }
         shown.push((one_line(&name), if is_dir { 'd' } else { 'f' }, true));
