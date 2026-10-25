@@ -138,3 +138,40 @@ The placeholder test `grep_is_not_executable_until_its_approval_is_wired` (fs.rs
 ## Checks (M1-c)
 
 `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5429 lib tests green), `cargo +1.88 check --all-targets`.
+
+## Batch 5: slice W-a (content rules and `resolve_write`, PR 7, branch feat/coding-tools-wa, base feat/coding-tools-m1c)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Wa.1 content refusal table, existing-file check | done | feat(tools): refuse hostile content before it is staged for a write |
+| (refactor) shared exact-label rule `paths::plain_relative` | done | refactor(tools): share the exact-label path rule between search and write |
+| Wa.2 `resolve_write`, deny rules, tier-B `build_file` | done | feat(tools): resolve a write target only where the review can show it exactly |
+| plan change: host.rs slices no longer blocked by S1c-2 | done | docs(openspec): lift the S1c-2 block on the host.rs slices of coding-tools |
+
+## TDD cycle evidence (W-a)
+
+| Task | RED (seen failing) | GREEN | Triangulation | REFACTOR |
+|------|--------------------|-------|---------------|----------|
+| Wa.1 | `error[E0425]: cannot find function check_existing in this scope` (29 compile errors in `content::tests`) | `ContentError`, `check_new`, `check_existing`, `is_hidden` (reuses `sanitize::is_format` + U+FFF9..FFFB, U+180E) | every C0 code, DEL + whole C1, CR alone, 29 listed invisible code points, neighbours that stay allowed, Latin-1/NUL/CR existing files, other controls allowed in an existing file. One test failed at runtime first: `a_refusal_names_its_kind_without_echoing_the_character` (message held a real newline from `\n` in the text; fixed to "LF line endings") | none needed |
+| refactor | approval tests: the 22 `search::` tests stayed green before and after; 2 new `plain_relative` tests | `paths::plain_relative`, `shown_dir` = `plain_relative` + `root.join` | plain/dots, 11 label-changing inputs | the move itself |
+| Wa.2 | `cannot find function resolve_write` / `cannot find type WriteTarget` (3 compile errors) | `WriteTarget{real, build_file}`, `resolve_write`, `is_build_file`, `WRITE_DENIED_DIRS`, `BUILD_FILES` | 11 tests: below-root resolution incl. missing folders, no creation, 11 refused roots, 10 escapes, 4 inside-links, 16 label-changing inputs, `.git`/`node_modules` at depth and case + look-alikes, 12 secret names, root inside `.ssh`, one `None` for every refusal, 18 build files vs 11 ordinary. One runtime RED: `ghp_0123456789abcdef...` was accepted (`clean` does not redact; `display_target` adds `redact` separately) -> `redact(input).hits > 0` refuses | none needed |
+
+## Deviations / notes (W-a)
+
+- The label rule lives once, in `paths::plain_relative` (extracted from `search::shown_dir`, behaviour unchanged). `resolve_write` is STRICTER than reads: the input must also equal its canonical text (`./a`, `a//b`, `a/`, `.` refused), any symlink anywhere on the way is refused even if it stays inside the root, and a secret-looking run in the path is refused (the read ask does it through `display_target`).
+- `resolve_write(roots, origin, input) -> Option<WriteTarget>`: `None` is the single refusal (`REFUSED` text). `WriteTarget.real` is the origin's real path joined to the input; `build_file` is the tier-B flag (the warning text belongs to the review, W-e1).
+- Root rules: absolute, canonical, a directory, strictly inside HOME (`SecretRoots` already refuses HOME = system folder), not itself under a secret root. A `/usr`, `/home`, `/`, parent-of-HOME or outside-HOME origin all refuse through "strictly inside HOME".
+- Content: `is_hidden` = `sanitize::is_format` (a superset of the design list: it also covers U+2028/2029 and U+206A..206F) + U+180E + U+FFF9..FFFB. Refused kinds: `Control`, `CarriageReturn`, `Invisible`, `NotText`. Messages never echo the character.
+- An existing file may hold other controls (the review shows `<U+XXXX>`, W-e1); only non-UTF-8, NUL and CR block an edit/overwrite.
+- `check_new` takes `&str`, so "invalid UTF-8 in written content" cannot occur there; it is covered by `check_existing`.
+- Not here (later slices): size caps (Wc.2), the unredacted-overwrite rule (Wc.3), the `.git/config` read deny (already in M1-b).
+- The docs commit lifts the BLOCKED status of W-f..h, X-d1/2, G-c/d in tasks.md and keeps the "spike a seam first" rule. `design.md` still says (lines 155 and 175) that these slices wait for S1c-2; it was not edited.
+- macOS-only files (`src/runtime/jail*`, `tests/jail_macos*.rs`, `core/ai/jail.rs`) do not touch the new items.
+
+## Size (W-a)
+
+About 173 production lines (content.rs 71, paths.rs 108, search.rs -7, mod.rs 1) and about 400 test lines; `git diff --stat feat/coding-tools-m1c...HEAD -- src`: +575/-18.
+
+## Checks (W-a)
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5455 lib tests green), `cargo +1.88 check --all-targets`.
