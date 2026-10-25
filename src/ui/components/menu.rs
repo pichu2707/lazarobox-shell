@@ -12,7 +12,9 @@ use crate::{
     core::{
         ai::picker::{Mark, NOT_IN_LIST},
         config::Config,
-        menu::{CHROME, Footer, MENU_BODY, MenuState, NOTE_ROWS, Row, TAB_BAR, fits_size},
+        menu::{
+            CAUTION_ROWS, CHROME, Footer, MENU_BODY, MenuState, NOTE_ROWS, Row, TAB_BAR, fits_size,
+        },
     },
     ui::theme::LazaroboxTheme,
 };
@@ -336,6 +338,13 @@ impl Widget for MenuPopup<'_> {
             }
             let style = Style::default().fg(self.theme.warning_orange);
             buf.set_stringn(inner.x, y, clip(&format!(" {line}"), width), width, style);
+        }
+        if tabbed && let Some(line) = self.menu.caution() {
+            let y = inner.y + (body - CAUTION_ROWS) as u16;
+            if y < inner.bottom() {
+                let style = Style::default().fg(self.theme.warning_orange);
+                buf.set_stringn(inner.x, y, clip(&format!(" {line}"), width), width, style);
+            }
         }
         let footer_y = inner.y + used as u16 + u16::from(blank);
         if footer_y < inner.bottom() {
@@ -1425,6 +1434,37 @@ mod tests {
         assert!(ai[11].starts_with("│ Tools"), "{}", ai[11]);
     }
 
+    // Spec (config-menu): the caution line of a family that can change files
+    // or run code shows under the rows; the popup keeps its size.
+    #[test]
+    fn snapshot_exec_row_selected_shows_the_caution() {
+        let mut menu = ai_tab();
+        goto(&mut menu, "Exec");
+        insta::assert_snapshot!(text(&draw(62, POPUP_H, &menu)));
+    }
+
+    #[test]
+    fn the_caution_shows_only_on_the_risky_family_rows_and_keeps_the_size() {
+        let caution = "Can change files or run code";
+        let mut sizes = Vec::new();
+        for (label, shown) in [
+            ("Search", false),
+            ("Write", true),
+            ("Exec", true),
+            ("Git", false),
+            ("Git write", true),
+            ("Tools", false),
+        ] {
+            let mut menu = ai_tab();
+            goto(&mut menu, label);
+            let l = lines(&draw(62, POPUP_H, &menu));
+            assert_eq!(l.iter().any(|row| row.contains(caution)), shown, "{label}");
+            sizes.push(l.len());
+        }
+        sizes.dedup();
+        assert_eq!(sizes.len(), 1, "the popup does not change size");
+    }
+
     #[test]
     fn titles_are_still_drawn_for_a_single_tab() {
         let shown = lines(&draw(51, 8, &fresh()));
@@ -1433,8 +1473,8 @@ mod tests {
     }
 
     #[test]
-    fn the_popup_is_sixteen_rows_on_both_tabs_and_in_every_sub_level() {
-        assert_eq!(POPUP_H, 16);
+    fn the_popup_is_twenty_two_rows_on_both_tabs_and_in_every_sub_level() {
+        assert_eq!(POPUP_H, 22);
         let mut views = vec![mixed(), ai_tab(), with_update()];
         views.extend(sub_levels());
         for menu in &views {
@@ -1443,7 +1483,7 @@ mod tests {
                 .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
                 .collect();
             assert_eq!(border.len(), 2);
-            assert_eq!(border[1] - border[0] + 1, 16);
+            assert_eq!(border[1] - border[0] + 1, 22);
         }
     }
 
@@ -1451,21 +1491,21 @@ mod tests {
     fn the_update_note_sits_in_the_last_two_body_rows_of_settings_only() {
         let l = lines(&draw(62, POPUP_H, &with_update()));
         assert!(
-            l[11].contains("lazarobox 0.16.0 is available."),
+            l[17].contains("lazarobox 0.16.0 is available."),
             "{}",
-            l[11]
+            l[17]
         );
         assert!(
-            l[12].contains("Go to Updates and press Enter."),
+            l[18].contains("Go to Updates and press Enter."),
             "{}",
-            l[12]
+            l[18]
         );
         assert_eq!(
-            l[13].trim_matches(|c| c == '│' || c == ' '),
+            l[19].trim_matches(|c| c == '│' || c == ' '),
             "",
             "blank row"
         );
-        assert!(l[14].contains("s save"), "footer: {}", l[14]);
+        assert!(l[20].contains("s save"), "footer: {}", l[20]);
         let mut menu = with_update();
         tab_key(&mut menu);
         let shown = text(&draw(62, POPUP_H, &menu));
@@ -1484,10 +1524,10 @@ mod tests {
         menu.show_update_command(crate::core::update::Fallback::UntrustedCargo);
         let l = lines(&draw(80, POPUP_H, &menu));
         let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
-        assert_eq!(body(&l[11]), "lazarobox cannot update itself here. Run:");
-        assert_eq!(body(&l[12]), "cargo install lazarobox-shell --locked");
+        assert_eq!(body(&l[17]), "lazarobox cannot update itself here. Run:");
+        assert_eq!(body(&l[18]), "cargo install lazarobox-shell --locked");
         assert_eq!(
-            body(&l[14]),
+            body(&l[20]),
             "Enter or y copies it \u{b7} Rust folder is too open"
         );
     }
@@ -1499,10 +1539,10 @@ mod tests {
         menu.show_update_command(crate::core::update::Fallback::NoCargo);
         let l = lines(&draw(80, POPUP_H, &menu));
         let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
-        assert_eq!(body(&l[11]), "Install Rust first (rustup.rs), then run:");
-        assert_eq!(body(&l[12]), "cargo install lazarobox-shell --locked");
+        assert_eq!(body(&l[17]), "Install Rust first (rustup.rs), then run:");
+        assert_eq!(body(&l[18]), "cargo install lazarobox-shell --locked");
         assert_eq!(
-            body(&l[14]),
+            body(&l[20]),
             "Enter or y copies it \u{b7} Rust is not installed"
         );
     }
@@ -1523,20 +1563,21 @@ mod tests {
     fn narrow_and_short_terminals_fall_back_to_one_line() {
         assert!(text(&draw(22, 20, &mixed())).contains("MENU"));
         assert!(text(&draw(62, 14, &mixed())).contains("MENU"));
-        assert!(!text(&draw(24, 15, &mixed())).contains("MENU"));
-        assert!(text(&draw(24, 15, &mixed())).contains("Menu"));
+        assert!(text(&draw(24, MIN_HEIGHT - 1, &mixed())).contains("MENU"));
+        assert!(!text(&draw(24, MIN_HEIGHT, &mixed())).contains("MENU"));
+        assert!(text(&draw(24, MIN_HEIGHT, &mixed())).contains("Menu"));
     }
 
     #[test]
     fn at_24_columns_the_star_drops_the_hint_and_the_plain_label_keeps_it() {
-        let starred = lines(&draw(24, 15, &with_update()));
+        let starred = lines(&draw(24, MIN_HEIGHT, &with_update()));
         assert!(
             starred[1].starts_with("│ Settings* │ AI "),
             "{}",
             starred[1]
         );
         assert!(!starred[1].contains('⇥'), "{}", starred[1]);
-        let plain = lines(&draw(24, 15, &mixed()));
+        let plain = lines(&draw(24, MIN_HEIGHT, &mixed()));
         assert!(plain[1].contains("⇥ Tab"), "{}", plain[1]);
     }
 

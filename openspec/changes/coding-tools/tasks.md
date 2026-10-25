@@ -102,7 +102,7 @@ Spec: configuration "Family toggle keys"; config-persistence "Family toggle keys
 - [x] T.2 RED: `config_edit.rs` writes/keeps only the owned keys without touching others. GREEN. ~100. Dep: T.1.
 - [x] T.3 RED: `FamilySet` from config; app passes it into `ChatRequest.families`; all off equals LEGACY. GREEN: `core/ai/config.rs` + app. ~90. Dep: T.1, P0b.
 - [x] T.4 RED: `max_rounds(set)` is 24 when Search/Write/Exec/Git/GitWrite is on, else 8. GREEN: `runtime/chat/ollama.rs`. ~50.
-- [ ] T.5 RED: 5 menu rows (names, order, toggle keys); update the ~10 menu test files and ~24 insta snapshots (budget this). GREEN: `core/menu/*`. ~110. Dep: T.3. The Exec row also shows the "needs Linux sandbox" reason when no jail (D18) if the jail check is already available; otherwise add it in X-d2.
+- [x] T.5 RED: 5 menu rows (names, order, toggle keys); update the ~10 menu test files and ~24 insta snapshots (budget this). GREEN: `core/menu/*`. ~110. Dep: T.3. The Exec row also shows the "needs Linux sandbox" reason when no jail (D18) if the jail check is already available; otherwise add it in X-d2.
 - [ ] T.6 RED: with an EMPTY set and no external tools, `ollama_round_body` (`chat/adapters.rs` ~316) omits the `tools` key instead of sending `"tools": []`. GREEN: skip the key when the registry is empty. ~20. This came from the P0b review: an EMPTY set cannot happen until the toggles exist.
 
 ## Phase M1: search (0.19)
