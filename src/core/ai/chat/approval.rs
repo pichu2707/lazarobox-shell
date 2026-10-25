@@ -137,11 +137,17 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
             })
         }
         // `glob` returns names only and, like the directory tools, never asks.
+        // Staging touches no disk and asks nothing: the host builds the batch
+        // ask itself when `propose_batch` seals the batch.
         Call::ReadFile { .. }
         | Call::FindDir { .. }
         | Call::ListDir { .. }
         | Call::Glob { .. }
-        | Call::Grep { .. } => None,
+        | Call::Grep { .. }
+        | Call::CreateDir { .. }
+        | Call::WriteFile { .. }
+        | Call::EditFile { .. }
+        | Call::ProposeBatch => None,
     }
 }
 
