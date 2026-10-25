@@ -78,6 +78,26 @@ impl Glob {
     }
 }
 
+/// The text a `glob` call returns for the root-relative `paths` it found:
+/// sorted, once each, at most [`MAX_MATCHES`], one per line. `bounded` says
+/// the walk hit its budget; each cap that was hit adds its marker.
+pub fn render(mut paths: Vec<String>, bounded: bool) -> String {
+    paths.sort_unstable();
+    paths.dedup();
+    let capped = paths.len() > MAX_MATCHES;
+    paths.truncate(MAX_MATCHES);
+    if paths.is_empty() {
+        paths.push(NO_MATCH.to_owned());
+    }
+    if capped {
+        paths.push(CAP_MARKER.to_owned());
+    }
+    if bounded {
+        paths.push(BOUND_MARKER.to_owned());
+    }
+    paths.join("\n")
+}
+
 fn translate(pattern: &str) -> Result<String, GlobError> {
     let segments: Vec<&str> = pattern.split('/').collect();
     let last = segments.len() - 1;
@@ -267,5 +287,72 @@ mod tests {
             let _ = Glob::new(&pattern);
         }
         assert!(Glob::new(&"[a-z]".repeat(100)).is_ok());
+    }
+
+    fn names(count: usize) -> Vec<String> {
+        (0..count).map(|n| format!("f{n:03}.rs")).collect()
+    }
+
+    // Spec (code-search, glob): names only, in a stable order.
+    #[test]
+    fn matches_are_sorted_and_listed_one_per_line() {
+        let got = render(
+            vec!["src/b.rs".into(), "README.md".into(), "src/a.rs".into()],
+            false,
+        );
+        assert_eq!(got, "README.md\nsrc/a.rs\nsrc/b.rs");
+    }
+
+    #[test]
+    fn a_path_found_twice_is_listed_once() {
+        let got = render(vec!["a.rs".into(), "a.rs".into()], false);
+        assert_eq!(got, "a.rs");
+    }
+
+    #[test]
+    fn no_match_says_so() {
+        assert_eq!(render(Vec::new(), false), NO_MATCH);
+        assert_eq!(
+            render(Vec::new(), true),
+            format!("{NO_MATCH}\n{BOUND_MARKER}")
+        );
+    }
+
+    // Spec: at most 100 matches, and a result that hits a cap says so.
+    #[test]
+    fn the_hundredth_match_fits_and_the_next_one_is_cut_with_a_marker() {
+        let exact = render(names(MAX_MATCHES), false);
+        assert_eq!(exact.lines().count(), MAX_MATCHES);
+        assert!(!exact.contains("truncated"), "{exact}");
+
+        let over = render(names(MAX_MATCHES + 1), false);
+        let lines: Vec<&str> = over.lines().collect();
+        assert_eq!(lines.len(), MAX_MATCHES + 1);
+        assert_eq!(lines[MAX_MATCHES], CAP_MARKER);
+        assert_eq!(lines[MAX_MATCHES - 1], "f099.rs");
+    }
+
+    // The cap keeps the smallest names, whatever order the walk found them.
+    #[test]
+    fn the_cap_keeps_the_first_names_in_sorted_order() {
+        let mut found = names(MAX_MATCHES + 5);
+        found.reverse();
+        let got = render(found, false);
+        assert!(got.starts_with("f000.rs\n"));
+        assert!(!got.contains("f100.rs"));
+    }
+
+    // Spec: a budget stop is reported even when few matches were found.
+    #[test]
+    fn a_bounded_walk_is_reported() {
+        assert_eq!(
+            render(vec!["a.rs".into()], true),
+            format!("a.rs\n{BOUND_MARKER}")
+        );
+        let both = render(names(MAX_MATCHES + 1), true);
+        assert!(
+            both.ends_with(&format!("{CAP_MARKER}\n{BOUND_MARKER}")),
+            "{both}"
+        );
     }
 }
