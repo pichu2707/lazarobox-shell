@@ -9,7 +9,7 @@ use std::{
     collections::VecDeque,
     io::Read,
     os::unix::fs::MetadataExt,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::atomic::AtomicBool,
 };
 
@@ -24,7 +24,9 @@ use crate::core::ai::{
     sanitize::clean,
     tools::{
         glob::{BOUND_MARKER, Glob, MAX_MATCHES, MAX_PATTERN_BYTES, NO_MATCH, render},
-        paths::{PathVerdict, SecretRoots, is_excluded_name, is_git_config, resolve},
+        paths::{
+            PathVerdict, SecretRoots, is_excluded_name, is_git_config, plain_relative, resolve,
+        },
     },
 };
 
@@ -103,23 +105,10 @@ pub fn glob(
 }
 
 /// `dir` joined to `root` by text alone, when it is a plain root-relative
-/// path that the approval label shows exactly as it is searched. `None` for an
-/// empty, absolute or `~` path, any `..`, and any text the label would change
-/// (controls, zero-width or bidi characters, runs of whitespace).
+/// path that the approval label shows exactly as it is searched (see
+/// [`plain_relative`]).
 fn shown_dir(root: &Path, dir: &str) -> Option<PathBuf> {
-    let label = clean(dir).split_whitespace().collect::<Vec<_>>().join(" ");
-    if dir.is_empty() || dir.starts_with('~') || label != dir {
-        return None;
-    }
-    let mut out = root.to_path_buf();
-    for part in Path::new(dir).components() {
-        match part {
-            Component::CurDir => {}
-            Component::Normal(name) => out.push(name),
-            _ => return None,
-        }
-    }
-    Some(out)
+    plain_relative(dir).map(|rel| root.join(rel))
 }
 
 /// What a [`walk`] left out.

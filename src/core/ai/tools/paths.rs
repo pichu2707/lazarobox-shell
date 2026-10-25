@@ -166,6 +166,30 @@ pub fn display_target(home: &Path, origin: &Path, input: &str) -> Option<String>
     (plain && !secret).then_some(text)
 }
 
+/// The root-relative path `input` names by text alone, when the approval label
+/// shows it exactly as it is used. `None` for an empty, absolute or `~` path,
+/// any `..`, and any text the label would change (controls, zero-width or bidi
+/// characters, runs of whitespace, a secret-looking run). A `.` part is
+/// dropped, so `.` gives an empty path.
+pub fn plain_relative(input: &str) -> Option<PathBuf> {
+    let label = crate::core::ai::sanitize::clean(input)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if input.is_empty() || input.starts_with('~') || label != input {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    for part in Path::new(input).components() {
+        match part {
+            Component::CurDir => {}
+            Component::Normal(name) => out.push(name),
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
 /// Expands a leading `~` or `~/` to `home`. `~user` is not supported and
 /// gives `None`.
 fn expand_tilde(home: &Path, input: &str) -> Option<PathBuf> {
@@ -502,6 +526,32 @@ mod tests {
             "/h/p/.git/config/x",
         ] {
             assert!(!is_git_config(Path::new(no)), "{no}");
+        }
+    }
+
+    #[test]
+    fn a_plain_relative_path_keeps_its_parts_and_drops_dots() {
+        assert_eq!(plain_relative("src/a.rs"), Some(PathBuf::from("src/a.rs")));
+        assert_eq!(plain_relative("./src/./a"), Some(PathBuf::from("src/a")));
+        assert_eq!(plain_relative("."), Some(PathBuf::new()));
+    }
+
+    #[test]
+    fn a_path_the_label_would_change_is_not_plain() {
+        for bad in [
+            "",
+            "~",
+            "~/x",
+            "/etc/x",
+            "../x",
+            "a/../b",
+            "a\nb",
+            "a  b",
+            "a\u{200b}b",
+            "a\u{202e}b",
+            "a\u{1b}[0mb",
+        ] {
+            assert_eq!(plain_relative(bad), None, "{bad:?}");
         }
     }
 
