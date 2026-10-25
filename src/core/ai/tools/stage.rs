@@ -8,6 +8,9 @@
 
 use std::fmt;
 
+use crate::core::ai::memory::redact::redact;
+use crate::core::ai::sanitize::clean;
+use crate::core::ai::tools::content::{ContentError, check_existing, check_new};
 use crate::core::ai::tools::paths::WriteTarget;
 use crate::core::layout::PaneId;
 
@@ -17,6 +20,9 @@ pub const MAX_ENTRIES: usize = 50;
 pub const MAX_BYTES: usize = 1024 * 1024;
 /// The text of one `write_file` call, in bytes.
 pub const WRITE_FILE_MAX: usize = 32 * 1024;
+
+/// The largest existing file `write_file` may overwrite: the read cap.
+pub const READ_CAP: usize = 64 * 1024;
 
 /// Whose batch it is. One batch per key; the enum is meant to grow (worker
 /// keys come with the orchestrator).
@@ -62,7 +68,23 @@ pub enum Orphan {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Entry {
     Dir,
-    File { text: String },
+    /// `base` is the text on disk for an overwrite, `None` for a create.
+    File {
+        text: String,
+        base: Option<String>,
+    },
+}
+
+/// What the caller found at a file's path on disk.
+#[derive(Clone, Copy, Debug)]
+pub enum Existing<'a> {
+    Absent,
+    /// A file of `size` bytes. `bytes` is read only when `size` is within
+    /// [`READ_CAP`], so a huge file is judged by its size alone.
+    Present {
+        size: u64,
+        bytes: &'a [u8],
+    },
 }
 
 impl Entry {
@@ -70,7 +92,7 @@ impl Entry {
     fn bytes(&self) -> usize {
         match self {
             Entry::Dir => 0,
-            Entry::File { text } => text.len(),
+            Entry::File { text, .. } => text.len(),
         }
     }
 }
@@ -92,6 +114,10 @@ pub enum StageError {
     Stale,
     NotProposed,
     FileTooLarge,
+    /// The file on disk cannot be overwritten as shown: the model must edit it.
+    UseEditFile,
+    /// The text was refused by the content rules.
+    Content(ContentError),
     /// Staging this would pass a batch cap.
     Full,
     /// The batch passes a cap at propose time.
@@ -108,6 +134,8 @@ impl fmt::Display for StageError {
             StageError::Closed => "the batch is closed: nothing can be staged in it",
             StageError::Stale => "that batch is no longer the current one",
             StageError::NotProposed => "the batch was not proposed",
+            StageError::UseEditFile => "use edit_file",
+            StageError::Content(why) => return why.fmt(f),
             StageError::FileTooLarge => "write_file content is over 32 KiB",
             StageError::Full => "batch is full: propose it, then stage the rest",
             StageError::TooLarge => {
@@ -151,12 +179,40 @@ impl Batch {
         self.put(target, Entry::Dir)
     }
 
-    /// Stages a file with its whole new text.
-    pub fn stage_file(&mut self, target: &WriteTarget, text: &str) -> Result<(), StageError> {
+    /// Stages a file with its whole new text. `existing` is what the caller
+    /// found on disk. An overwrite is allowed only when the file is within
+    /// [`READ_CAP`] and redaction leaves its text as it is, so what the review
+    /// shows is what is on disk; otherwise the model must use `edit_file`.
+    pub fn stage_file(
+        &mut self,
+        target: &WriteTarget,
+        text: &str,
+        existing: Existing<'_>,
+    ) -> Result<(), StageError> {
         if text.len() > WRITE_FILE_MAX {
             return Err(StageError::FileTooLarge);
         }
-        self.put(target, Entry::File { text: text.into() })
+        check_new(text).map_err(StageError::Content)?;
+        let base = match existing {
+            Existing::Absent => None,
+            Existing::Present { size, .. } if size > READ_CAP as u64 => {
+                return Err(StageError::UseEditFile);
+            }
+            Existing::Present { bytes, .. } => {
+                let disk = check_existing(bytes).map_err(StageError::Content)?;
+                if redact(&clean(disk)).text != disk {
+                    return Err(StageError::UseEditFile);
+                }
+                Some(disk.to_owned())
+            }
+        };
+        self.put(
+            target,
+            Entry::File {
+                text: text.into(),
+                base,
+            },
+        )
     }
 
     /// Adds an entry, or replaces the earlier one for the same path in place.
@@ -273,7 +329,7 @@ mod tests {
     fn a_new_batch_stages_and_lists_entries_in_order() {
         let mut b = batch(1);
         b.stage_dir(&target("src/util")).unwrap();
-        b.stage_file(&target("src/main.rs"), "fn main() {}\n")
+        b.stage_file(&target("src/main.rs"), "fn main() {}\n", Existing::Absent)
             .unwrap();
         assert_eq!(b.state(), State::Staging);
         let paths: Vec<_> = b.entries().iter().map(|s| s.target.real.clone()).collect();
@@ -288,7 +344,8 @@ mod tests {
         assert_eq!(
             b.entries()[1].entry,
             Entry::File {
-                text: "fn main() {}\n".into()
+                text: "fn main() {}\n".into(),
+                base: None
             }
         );
     }
@@ -296,14 +353,18 @@ mod tests {
     #[test]
     fn restaging_a_path_replaces_the_earlier_entry() {
         let mut b = batch(1);
-        b.stage_file(&target("a.txt"), "one\n").unwrap();
-        b.stage_file(&target("b.txt"), "b\n").unwrap();
-        b.stage_file(&target("a.txt"), "two\n").unwrap();
+        b.stage_file(&target("a.txt"), "one\n", Existing::Absent)
+            .unwrap();
+        b.stage_file(&target("b.txt"), "b\n", Existing::Absent)
+            .unwrap();
+        b.stage_file(&target("a.txt"), "two\n", Existing::Absent)
+            .unwrap();
         assert_eq!(b.entries().len(), 2);
         assert_eq!(
             b.entries()[0].entry,
             Entry::File {
-                text: "two\n".into()
+                text: "two\n".into(),
+                base: None
             }
         );
     }
@@ -312,7 +373,7 @@ mod tests {
     fn restaging_a_dir_path_as_a_file_replaces_it() {
         let mut b = batch(1);
         b.stage_dir(&target("x")).unwrap();
-        b.stage_file(&target("x"), "t\n").unwrap();
+        b.stage_file(&target("x"), "t\n", Existing::Absent).unwrap();
         assert_eq!(b.entries().len(), 1);
         assert!(matches!(b.entries()[0].entry, Entry::File { .. }));
     }
@@ -346,7 +407,10 @@ mod tests {
         b.stage_dir(&target("d")).unwrap();
         b.propose().unwrap();
         assert_eq!(b.stage_dir(&target("e")), Err(StageError::Proposed));
-        assert_eq!(b.stage_file(&target("f"), "x\n"), Err(StageError::Proposed));
+        assert_eq!(
+            b.stage_file(&target("f"), "x\n", Existing::Absent),
+            Err(StageError::Proposed)
+        );
         assert_eq!(b.entries().len(), 1);
         assert_eq!(b.propose(), Err(StageError::Proposed));
     }
@@ -442,10 +506,11 @@ mod tests {
     fn write_file_content_is_capped_at_32_kib() {
         let mut b = batch(1);
         let at_cap = "a".repeat(WRITE_FILE_MAX);
-        b.stage_file(&target("ok.txt"), &at_cap).unwrap();
+        b.stage_file(&target("ok.txt"), &at_cap, Existing::Absent)
+            .unwrap();
         let over = "a".repeat(WRITE_FILE_MAX + 1);
         assert_eq!(
-            b.stage_file(&target("big.txt"), &over),
+            b.stage_file(&target("big.txt"), &over, Existing::Absent),
             Err(StageError::FileTooLarge)
         );
         assert_eq!(b.entries().len(), 1);
@@ -459,11 +524,14 @@ mod tests {
     fn the_fifty_first_entry_is_refused_with_the_full_message() {
         let mut b = batch(1);
         for n in 0..MAX_ENTRIES {
-            b.stage_file(&numbered(n), "x\n").unwrap();
+            b.stage_file(&numbered(n), "x\n", Existing::Absent).unwrap();
         }
         assert_eq!(b.entries().len(), 50);
         assert_eq!(b.stage_dir(&target("extra")), Err(StageError::Full));
-        assert_eq!(b.stage_file(&numbered(50), "x\n"), Err(StageError::Full));
+        assert_eq!(
+            b.stage_file(&numbered(50), "x\n", Existing::Absent),
+            Err(StageError::Full)
+        );
         assert_eq!(b.entries().len(), 50);
         assert_eq!(
             StageError::Full.to_string(),
@@ -475,9 +543,9 @@ mod tests {
     fn restaging_an_existing_path_at_fifty_entries_is_allowed() {
         let mut b = batch(1);
         for n in 0..MAX_ENTRIES {
-            b.stage_file(&numbered(n), "x\n").unwrap();
+            b.stage_file(&numbered(n), "x\n", Existing::Absent).unwrap();
         }
-        b.stage_file(&numbered(7), "y\n").unwrap();
+        b.stage_file(&numbered(7), "y\n", Existing::Absent).unwrap();
         assert_eq!(b.entries().len(), 50);
     }
 
@@ -486,10 +554,13 @@ mod tests {
         let mut b = batch(1);
         let full = "a".repeat(WRITE_FILE_MAX);
         for n in 0..32 {
-            b.stage_file(&numbered(n), &full).unwrap();
+            b.stage_file(&numbered(n), &full, Existing::Absent).unwrap();
         }
         assert_eq!(b.bytes(), MAX_BYTES);
-        assert_eq!(b.stage_file(&numbered(32), "x"), Err(StageError::Full));
+        assert_eq!(
+            b.stage_file(&numbered(32), "x", Existing::Absent),
+            Err(StageError::Full)
+        );
         assert_eq!(b.entries().len(), 32);
         assert_eq!(b.bytes(), MAX_BYTES);
     }
@@ -499,12 +570,14 @@ mod tests {
         let mut b = batch(1);
         let full = "a".repeat(WRITE_FILE_MAX);
         for n in 0..32 {
-            b.stage_file(&numbered(n), &full).unwrap();
+            b.stage_file(&numbered(n), &full, Existing::Absent).unwrap();
         }
-        b.stage_file(&numbered(0), "tiny\n").unwrap();
+        b.stage_file(&numbered(0), "tiny\n", Existing::Absent)
+            .unwrap();
         assert_eq!(b.bytes(), MAX_BYTES - WRITE_FILE_MAX + 5);
         let rest = "a".repeat(WRITE_FILE_MAX - 5);
-        b.stage_file(&numbered(32), &rest).unwrap();
+        b.stage_file(&numbered(32), &rest, Existing::Absent)
+            .unwrap();
         assert_eq!(b.entries().len(), 33);
         assert_eq!(b.bytes(), MAX_BYTES);
     }
@@ -524,12 +597,18 @@ mod tests {
             for n in 0..32 {
                 b.entries.push(Staged {
                     target: numbered(n),
-                    entry: Entry::File { text: text.clone() },
+                    entry: Entry::File {
+                        text: text.clone(),
+                        base: None,
+                    },
                 });
             }
             b.entries.push(Staged {
                 target: numbered(32),
-                entry: Entry::File { text: "x".into() },
+                entry: Entry::File {
+                    text: "x".into(),
+                    base: None,
+                },
             });
         };
         for fill in [&over_entries as &dyn Fn(&mut Batch), &over_bytes] {
@@ -551,7 +630,7 @@ mod tests {
         let mut b = batch(1);
         let full = "a".repeat(WRITE_FILE_MAX);
         for n in 0..32 {
-            b.stage_file(&numbered(n), &full).unwrap();
+            b.stage_file(&numbered(n), &full, Existing::Absent).unwrap();
         }
         for n in 32..MAX_ENTRIES {
             b.stage_dir(&numbered(n)).unwrap();
@@ -559,5 +638,134 @@ mod tests {
         assert_eq!(b.entries().len(), 50);
         assert_eq!(b.bytes(), MAX_BYTES);
         assert!(b.propose().is_ok());
+    }
+
+    const KEY_LINE: &str = "token = ghp_0123456789abcdefghijklmnopqrstuvwxyz01\n";
+
+    fn present(text: &str) -> Existing<'_> {
+        Existing::Present {
+            size: text.len() as u64,
+            bytes: text.as_bytes(),
+        }
+    }
+
+    #[test]
+    fn overwriting_an_unredacted_file_stages_it_with_its_base() {
+        let mut b = batch(1);
+        let disk = "old line\n".repeat(200);
+        b.stage_file(&target("a.txt"), "new\n", present(&disk))
+            .unwrap();
+        assert_eq!(
+            b.entries()[0].entry,
+            Entry::File {
+                text: "new\n".into(),
+                base: Some(disk.clone())
+            }
+        );
+        assert!(disk.len() > 1024);
+    }
+
+    #[test]
+    fn overwriting_a_file_whose_text_redaction_changes_is_refused() {
+        let mut b = batch(1);
+        let disk = format!("keep\n{KEY_LINE}");
+        assert_ne!(redact(&clean(&disk)).text, disk);
+        assert_eq!(
+            b.stage_file(&target("a.txt"), "new\n", present(&disk)),
+            Err(StageError::UseEditFile)
+        );
+        assert!(b.entries().is_empty());
+        assert_eq!(StageError::UseEditFile.to_string(), "use edit_file");
+    }
+
+    #[test]
+    fn overwriting_a_file_over_the_read_cap_is_refused() {
+        let mut b = batch(1);
+        let at_cap = "a".repeat(READ_CAP);
+        b.stage_file(&target("ok.txt"), "new\n", present(&at_cap))
+            .unwrap();
+        let over = "a".repeat(READ_CAP + 1);
+        assert_eq!(
+            b.stage_file(&target("big.txt"), "new\n", present(&over)),
+            Err(StageError::UseEditFile)
+        );
+        // A huge file is judged by its size alone, its bytes are not needed.
+        let huge = Existing::Present {
+            size: 2 * 1024 * 1024,
+            bytes: b"",
+        };
+        assert_eq!(
+            b.stage_file(&target("huge.txt"), "new\n", huge),
+            Err(StageError::UseEditFile)
+        );
+        assert_eq!(b.entries().len(), 1);
+    }
+
+    #[test]
+    fn an_existing_file_that_clean_would_rewrite_is_refused() {
+        let mut b = batch(1);
+        for disk in ["esc \u{1b}[31mred\n", "bidi \u{202e}text\n", "bell \u{7}\n"] {
+            assert_eq!(
+                b.stage_file(&target("a.txt"), "new\n", present(disk)),
+                Err(StageError::UseEditFile),
+                "{disk:?}"
+            );
+        }
+        assert!(b.entries().is_empty());
+    }
+
+    #[test]
+    fn an_existing_file_that_is_not_plain_text_keeps_its_content_refusal() {
+        let mut b = batch(1);
+        let crlf = Existing::Present {
+            size: 4,
+            bytes: b"a\r\nb",
+        };
+        assert_eq!(
+            b.stage_file(&target("a.txt"), "new\n", crlf),
+            Err(StageError::Content(ContentError::CarriageReturn))
+        );
+        let binary = Existing::Present {
+            size: 3,
+            bytes: &[0xff, 0x00, 0x01],
+        };
+        assert_eq!(
+            b.stage_file(&target("b.bin"), "new\n", binary),
+            Err(StageError::Content(ContentError::NotText))
+        );
+        assert!(b.entries().is_empty());
+    }
+
+    #[test]
+    fn the_new_text_goes_through_the_content_rules_for_a_create_and_an_overwrite() {
+        let mut b = batch(1);
+        assert_eq!(
+            b.stage_file(&target("a.txt"), "\u{feff}bom\n", Existing::Absent),
+            Err(StageError::Content(ContentError::Invisible))
+        );
+        assert_eq!(
+            b.stage_file(&target("b.txt"), "tab\u{7}\n", present("old\n")),
+            Err(StageError::Content(ContentError::Control))
+        );
+        assert!(b.entries().is_empty());
+    }
+
+    #[test]
+    fn a_refused_overwrite_leaves_the_earlier_staged_entry_alone() {
+        let mut b = batch(1);
+        b.stage_file(&target("a.txt"), "first\n", Existing::Absent)
+            .unwrap();
+        let disk = KEY_LINE.to_string();
+        assert_eq!(
+            b.stage_file(&target("a.txt"), "second\n", present(&disk)),
+            Err(StageError::UseEditFile)
+        );
+        assert_eq!(
+            b.entries()[0].entry,
+            Entry::File {
+                text: "first\n".into(),
+                base: None
+            }
+        );
     }
 }
