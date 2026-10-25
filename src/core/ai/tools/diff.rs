@@ -57,19 +57,25 @@ impl Line {
     /// The text made safe to show: every control, C1, bidi and format
     /// character becomes a visible `<U+XXXX>`; a tab stays.
     pub fn display_text(&self) -> Cow<'_, str> {
-        if !self.text.chars().any(unsafe_char) {
-            return Cow::Borrowed(&self.text);
-        }
-        let mut out = String::with_capacity(self.text.len() + 16);
-        for c in self.text.chars() {
-            if unsafe_char(c) {
-                out.push_str(&format!("<U+{:04X}>", c as u32));
-            } else {
-                out.push(c);
-            }
-        }
-        Cow::Owned(out)
+        escape(&self.text)
     }
+}
+
+/// `text` made safe to show, as [`Line::display_text`] does: also for the
+/// paths a review shows.
+pub fn escape(text: &str) -> Cow<'_, str> {
+    if !text.chars().any(unsafe_char) {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len() + 16);
+    for c in text.chars() {
+        if unsafe_char(c) {
+            out.push_str(&format!("<U+{:04X}>", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    Cow::Owned(out)
 }
 
 /// Whether a character must not reach a terminal as it is: a control (C0,

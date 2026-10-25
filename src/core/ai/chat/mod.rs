@@ -20,6 +20,7 @@ pub mod memory;
 pub mod note;
 pub mod notify;
 pub mod prompts;
+pub mod review;
 pub mod store;
 pub mod stream;
 pub mod streams;
