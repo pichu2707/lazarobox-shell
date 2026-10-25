@@ -109,6 +109,7 @@ const WRITE_LIBC_ALLOWED: &[&str] = &[
     "O_EXCL",
     "O_NOFOLLOW",
     "O_CLOEXEC",
+    "AT_REMOVEDIR",
     "EEXIST",
     "EINTR",
     "c_uint",

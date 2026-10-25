@@ -172,20 +172,63 @@ mod linux {
     ) -> Result<(), WriteError> {
         let (dir, name) = open_parent(roots, real)?;
         let old = open_in(roots, &dir, &name, real)?.ok_or(WriteError::Missing)?;
-        let mut current = Vec::new();
-        (&old)
-            .take(expected.len() as u64 + 1)
-            .read_to_end(&mut current)
-            .map_err(io_error)?;
-        if current != expected {
-            return Err(WriteError::Drifted);
-        }
+        holds(&old, expected)?;
         let mode = old.metadata().map_err(io_error)?.mode() & 0o777;
         let mut temp = stage(&dir, bytes, mode, Some(mode))?;
         same_folder(&dir, real)?;
         rename(&dir, &mut temp, &name, false)?;
         sync_dir(&dir);
         Ok(())
+    }
+
+    /// Removes the file `real`, but only while it still holds `expected`: the
+    /// undo of a create must not delete a file someone else put there.
+    pub fn delete_file(
+        roots: &SecretRoots,
+        real: &Path,
+        expected: &[u8],
+    ) -> Result<(), WriteError> {
+        let (dir, name) = open_parent(roots, real)?;
+        let old = open_in(roots, &dir, &name, real)?.ok_or(WriteError::Missing)?;
+        holds(&old, expected)?;
+        same_folder(&dir, real)?;
+        unlink(&dir, &name, 0)?;
+        sync_dir(&dir);
+        Ok(())
+    }
+
+    /// Removes the empty folder `real`. A link, a file or a folder with
+    /// content is left alone (`unlinkat` with `AT_REMOVEDIR` never follows).
+    pub fn delete_dir(roots: &SecretRoots, real: &Path) -> Result<(), WriteError> {
+        let (dir, name) = open_parent(roots, real)?;
+        unlink(&dir, &name, libc::AT_REMOVEDIR)?;
+        sync_dir(&dir);
+        Ok(())
+    }
+
+    /// `unlinkat` relative to `dir`; the name is not followed.
+    fn unlink(dir: &OwnedFd, name: &CString, flags: i32) -> Result<(), WriteError> {
+        // SAFETY: `name` is NUL-terminated and `dir` is an open descriptor.
+        if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), flags) } == 0 {
+            return Ok(());
+        }
+        Err(match io::Error::last_os_error().kind() {
+            io::ErrorKind::NotFound => WriteError::Missing,
+            _ => WriteError::Io,
+        })
+    }
+
+    /// [`WriteError::Drifted`] unless the opened file holds exactly `expected`.
+    fn holds(file: &File, expected: &[u8]) -> Result<(), WriteError> {
+        let mut current = Vec::new();
+        file.take(expected.len() as u64 + 1)
+            .read_to_end(&mut current)
+            .map_err(io_error)?;
+        if current == expected {
+            Ok(())
+        } else {
+            Err(WriteError::Drifted)
+        }
     }
 
     /// Refuses when the folder behind `dir` is no longer the parent of `real`
@@ -650,6 +693,67 @@ mod linux {
             ));
         }
 
+        // We2.2: the undo primitives
+
+        #[test]
+        fn delete_file_removes_only_a_file_that_still_holds_what_was_written() {
+            let f = fx();
+            let real = f.home.join("proj/a.txt");
+            std::fs::write(&real, "ours").unwrap();
+            // Someone else replaced it: it stays.
+            assert_eq!(
+                delete_file(&f.roots, &real, b"other").unwrap_err(),
+                WriteError::Drifted
+            );
+            assert_eq!(std::fs::read_to_string(&real).unwrap(), "ours");
+            delete_file(&f.roots, &real, b"ours").unwrap();
+            assert!(!real.exists());
+            assert_eq!(
+                delete_file(&f.roots, &real, b"ours").unwrap_err(),
+                WriteError::Missing
+            );
+        }
+
+        #[test]
+        fn delete_file_refuses_a_link_a_hard_link_a_folder_and_a_denied_path() {
+            let f = fx();
+            std::fs::write(f.home.join("proj/real.txt"), "x").unwrap();
+            symlink(f.home.join("proj/real.txt"), f.home.join("proj/link")).unwrap();
+            std::fs::write(f.home.join("proj/h"), "x").unwrap();
+            std::fs::hard_link(f.home.join("proj/h"), f.home.join("elsewhere/h2")).unwrap();
+            for name in ["link", "h", "src"] {
+                let got = delete_file(&f.roots, &f.home.join("proj").join(name), b"x");
+                assert_eq!(got.unwrap_err(), WriteError::Refused, "{name}");
+            }
+            assert!(f.home.join("proj/real.txt").exists());
+            assert!(f.home.join("proj/h").exists());
+            let outside = delete_file(&f.roots, Path::new("/etc/hostname"), b"x");
+            assert_eq!(outside.unwrap_err(), WriteError::Refused);
+        }
+
+        #[test]
+        fn delete_dir_removes_an_empty_folder_and_nothing_else() {
+            let f = fx();
+            std::fs::create_dir(f.home.join("proj/empty")).unwrap();
+            std::fs::create_dir(f.home.join("proj/full")).unwrap();
+            std::fs::write(f.home.join("proj/full/a"), "x").unwrap();
+            symlink(f.home.join("elsewhere"), f.home.join("proj/link")).unwrap();
+            delete_dir(&f.roots, &f.home.join("proj/empty")).unwrap();
+            assert!(!f.home.join("proj/empty").exists());
+            for name in ["full", "link"] {
+                let got = delete_dir(&f.roots, &f.home.join("proj").join(name));
+                assert!(got.is_err(), "{name}");
+            }
+            assert!(f.home.join("proj/full/a").exists());
+            assert!(f.home.join("elsewhere").is_dir());
+            assert_eq!(
+                delete_dir(&f.roots, &f.home.join("proj/empty")).unwrap_err(),
+                WriteError::Missing
+            );
+            let outside = delete_dir(&f.roots, Path::new("/etc"));
+            assert_eq!(outside.unwrap_err(), WriteError::Refused);
+        }
+
         #[test]
         fn temp_names_are_unpredictable_and_short() {
             let first = temp_name().unwrap();
@@ -699,6 +803,20 @@ mod other {
         _expected: &[u8],
         _bytes: &[u8],
     ) -> Result<(), WriteError> {
+        Err(WriteError::Unsupported)
+    }
+
+    /// Always fails: see [`open_target`].
+    pub fn delete_file(
+        _roots: &SecretRoots,
+        _real: &Path,
+        _expected: &[u8],
+    ) -> Result<(), WriteError> {
+        Err(WriteError::Unsupported)
+    }
+
+    /// Always fails: see [`open_target`].
+    pub fn delete_dir(_roots: &SecretRoots, _real: &Path) -> Result<(), WriteError> {
         Err(WriteError::Unsupported)
     }
 
