@@ -520,3 +520,20 @@ About 455 production lines (core `tools/mod.rs` 105, `host/files.rs` 248, `host.
 ## Checks (W-f)
 
 `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5753 lib tests green), `cargo +1.88 check --all-targets`, no `.snap.new`. No macOS-only file mentions `Call`, `ApprovalAsk`, `ToolEnv` or `TurnScope`.
+
+## W-f review fixes
+
+Strict TDD. Commits after the W-f slice: `test(mcp)` route family, `fix(tools)` Debug and descriptions, `test(tools)` secret coverage, `fix(tools)` drop guard, `fix(tools)` disk before lock.
+
+| Fix | RED | Fix made |
+|-----|-----|----------|
+| 1 Drop guard | `a_call_dropped_while_its_batch_waits_frees_the_pane` and `a_call_that_cannot_announce_does_not_leave_its_batch_sealed`: `assertion left == right failed, left: 1, right: 0` (the sealed batch stayed in the store) | `Sealed` is an RAII guard (`Arc<Mutex<Stages>>` + `BatchId`); its Drop calls `Stages::discard(id)`. It lives to the end of `answered`, so every exit (denied, applied, error, cancel) closes the batch; the discard is generation-checked, so a stale guard is harmless. The explicit discards in `answered` were removed as redundant. The `send(announce)` failure shares the guard path with the `reserve_owned` one. W-g still owns pane-close / orphan handling. |
+| 2 Lock and IO | `staging_reads_the_disk_before_it_takes_the_lock`: `the lock was held, left: Some(false) right: Some(true)`; `a_busy_store_does_not_block_the_async_worker`: `the worker is blocked on the store lock` | `stage_with_probe` reads the disk first (`probe` seam), then locks for memory only; the `made` folder check wins over the probe result. `seal` and the staged `view` take the lock inside `spawn_blocking`; the guard Drop uses `try_lock` and falls back to the blocking pool when an apply holds the store. Apply already took the lock inside its closure. |
+| 3 Secret test | passed at once; mutation: appending the content to the `write_file` result failed `a_secret_reaches_no_other_model_facing_output` (reverted) | New test covers `write_file` content, staged `read_file`/`grep` (redacted), edit NoMatch/Ambiguous, Drifted, every `ApplyResult::summary()`, "waiting for review" and the events. The old test's `seen.len() >= 6` became explicit asserts per output. A plain word the model wrote itself (`hunter2`) is not redacted in the staged view: only recognizable tokens are. |
+| 4 Debug | `debug_of_a_content_call_never_shows_the_text`: the derived Debug printed `content: "sk-ant-..."` | Manual `Debug for Call`: path and `content_len` / `old_len` / `new_len` only. |
+| 5 MCP route | passed at once; mutation: `tools/call` forced to the Write family failed it (`expected a reply, got Call`), reverted | `a_route_without_the_write_family_lists_and_routes_no_write_tool`. |
+| 6 Descriptions | `staging_tools_say_when_they_are_refused` | `create_dir`, `write_file`, `edit_file` say "Staging is refused while a batch waits for review."; `create_dir` also names the refused cases. The 0.18.0 golden is LEGACY-only: no update needed. |
+
+The `edit_file` NoMatch / Ambiguous messages were not touched (pending product decision).
+
+Checks: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5761 lib tests), `cargo +1.88 check --all-targets` green; no `.snap.new`.
