@@ -8,11 +8,16 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::core::ai::{
-    chat::{engine::CallId, review::BatchReview, review_view::ReviewView},
+    chat::{
+        engine::CallId,
+        review::{self, BatchReview},
+        review_view::ReviewView,
+    },
     config::ApprovalMode,
     sanitize::clean,
     tools::{
@@ -38,6 +43,11 @@ fn next_id() -> u64 {
         })
         .unwrap_or(u64::MAX)
 }
+
+/// How long a prompt the model opened ignores `y`, `n` and Esc, so a key the
+/// user was already typing cannot answer it. The review of a batch waits
+/// longer; see [`ApprovalAsk::arm_delay`].
+pub const ASK_ARM_DELAY: Duration = Duration::from_millis(400);
 
 /// The reason given to a request made while another is pending.
 pub const ANOTHER_PENDING: &str = "another approval is pending";
@@ -77,6 +87,18 @@ pub enum ApprovalAsk {
     /// Write a proposed batch of files. The user reads it in the review view;
     /// it is never routed by the approval mode, so no mode approves it.
     Batch(Arc<BatchReview>),
+}
+
+impl ApprovalAsk {
+    /// How long after it opens the keys start to answer this ask: the review
+    /// of a batch waits longer than any other ask, because the user has to
+    /// read it first.
+    pub fn arm_delay(&self) -> Duration {
+        match self {
+            Self::Batch(_) => review::ARM_DELAY,
+            _ => ASK_ARM_DELAY,
+        }
+    }
 }
 
 /// Which calls wait for the user's answer before they run (D17).

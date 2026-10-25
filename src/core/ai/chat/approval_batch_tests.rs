@@ -1,10 +1,10 @@
 //! The batch ask: routing, the view it carries and what never leaves it.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::approval::*;
 use super::engine::CallId;
-use super::review::TOO_LARGE;
+use super::review::{self, TOO_LARGE};
 use super::review_view::{
     ReviewView,
     testing::{edit_of, numbered},
@@ -127,4 +127,37 @@ fn a_secret_in_the_base_or_the_new_text_reaches_nothing_but_the_renderer() {
         }
     }
     assert_eq!(review.counts(), "1 file, +1 -1");
+}
+
+fn others() -> Vec<ApprovalAsk> {
+    vec![
+        ApprovalAsk::Run {
+            command: "ls".into(),
+        },
+        ApprovalAsk::Read { path: "~/a".into() },
+        ApprovalAsk::Search {
+            pattern: "x".into(),
+            dir: ".".into(),
+        },
+        ApprovalAsk::External {
+            server: "s".into(),
+            tool: "t".into(),
+            args: "{}".into(),
+        },
+    ]
+}
+
+#[test]
+fn every_ask_but_a_batch_keeps_the_short_delay() {
+    assert_eq!(ASK_ARM_DELAY, Duration::from_millis(400));
+    for ask in others() {
+        assert_eq!(ask.arm_delay(), ASK_ARM_DELAY, "{ask:?}");
+    }
+}
+
+#[test]
+fn a_batch_waits_the_longer_review_delay() {
+    assert_eq!(batch().arm_delay(), Duration::from_millis(800));
+    assert_eq!(batch().arm_delay(), review::ARM_DELAY);
+    assert!(batch().arm_delay() > ASK_ARM_DELAY);
 }

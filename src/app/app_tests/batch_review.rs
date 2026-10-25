@@ -208,3 +208,43 @@ fn a_resize_keeps_what_was_seen_and_counts_the_new_screen() {
     a.update(AppEvent::Resize { cols: 50, rows: 12 });
     assert_eq!(review(&a).remaining(), 0, "no line is lost");
 }
+
+#[test]
+fn n_and_esc_wait_for_the_review_delay_too() {
+    for rejecting in [key('n'), plain(KeyCode::Esc)] {
+        let (mut a, turn) = asked(5);
+        let wait = ms(ARM_DELAY);
+        assert_eq!(at(&mut a, wait - 1, rejecting.clone()), vec![]);
+        assert!(pending(&a).is_some());
+        assert_eq!(
+            at(&mut a, wait, rejecting),
+            vec![decision(turn, 1, Decision::Denied(DECLINED))]
+        );
+    }
+}
+
+#[test]
+fn the_other_asks_answer_after_the_short_delay() {
+    use crate::core::ai::chat::approval::ASK_ARM_DELAY;
+    let asks = [
+        ApprovalAsk::Search {
+            pattern: "x".into(),
+            dir: ".".into(),
+        },
+        ApprovalAsk::External {
+            server: "s".into(),
+            tool: "t".into(),
+            args: "{}".into(),
+        },
+    ];
+    for ask in asks {
+        let (mut a, turn) = live();
+        announce_now(&mut a, turn, 1, ask);
+        let wait = ms(ASK_ARM_DELAY);
+        assert_eq!(at(&mut a, wait - 1, key('y')), vec![]);
+        assert_eq!(
+            at(&mut a, wait, key('y')),
+            vec![decision(turn, 1, Decision::Sent)]
+        );
+    }
+}
