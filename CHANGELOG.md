@@ -10,6 +10,45 @@ baseline.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-25
+
+### Added
+
+- `[ai.tools]` gains five family toggles, all `false` by default: `search`,
+  `write`, `exec`, `git` and `git_write`. The AI tab of the menu shows them
+  as rows (Search, Write, Exec, Git, Git write) with a caution line for
+  Write, Exec and Git write; saving writes only those keys and keeps the
+  rest of `config.toml`. A family is offered only while `[ai.tools] enabled`
+  is on and the chat's engine is verified for tools. With every toggle off,
+  the tools offered to the engine are the same as in 0.22.0.
+- With `search = true`, chats get two tools:
+  - `glob` lists the files of the project that match a pattern (`*`, `?`,
+    `**`, `[...]`), sorted and capped at 100. It never asks for approval,
+    like `list_dir`.
+  - `grep` searches file contents with a regular expression, capped at 100
+    matches or 20 KiB, 200 characters per line. On a cloud engine it asks
+    first (`search <pattern> in <folder>`), in every approval mode; on a
+    local engine it runs freely.
+  - Both skip symlinks, `.git`, `node_modules`, `target` and other build
+    folders, binary files and secret files (their names are left out and
+    the result says so). `grep` matches against the redacted text, so a
+    pattern cannot probe a secret. A folder the ask could not show exactly
+    (a symlink, `~`, an absolute path, `..`, hidden characters) is refused.
+  - `read_file` takes `start_line` and `max_lines` to read a window of a
+    long file, and says where the next window starts.
+- Ollama allows 24 tool rounds per turn when any of these families is on
+  (8 otherwise).
+
+### Changed
+
+- The menu popup is 22 rows tall (was 16); the full popup needs a terminal
+  of at least 21 rows, a smaller one shows the one-line `MENU` fallback.
+
+### Security
+
+- `read_file` refuses a git `config` or `config.worktree` file under any
+  `.git` folder, which can hold remote URLs with credentials.
+
 ## [0.22.0] - 2026-10-23
 
 ### Added
@@ -996,7 +1035,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.19.0...v0.20.0
