@@ -2206,3 +2206,145 @@ fn the_private_tmp_of_the_turn_is_writable_on_macos_wherever_it_lives() {
     assert!(!spec.rw.iter().any(|w| *w == p("/private")));
     assert!(spec.ro.contains(&l.cwd));
 }
+
+/// `dir` with every letter in upper case, and with every letter in lower case.
+fn other_cases(dir: &str) -> [String; 2] {
+    [dir.to_uppercase(), dir.to_lowercase()]
+}
+
+// APFS is case-insensitive by default: `~/library/keychains` is the keychain.
+#[test]
+fn the_macos_home_deny_list_is_matched_without_letter_case() {
+    for dir in MAC_SHARED
+        .iter()
+        .chain(&MAC_CREDENTIALS)
+        .chain(&MAC_LIBRARY_OTHER)
+    {
+        for spelled in other_cases(dir) {
+            let full = format!("{HOME}/{spelled}");
+            let mut l = nvm_codex();
+            l.codex_home = Some(p(&full));
+            let err = jail_spec_for(Os::Macos, &l, &identity);
+            assert_eq!(
+                err.unwrap_err(),
+                SpecError::RootTooBroad(p(&full)),
+                "{spelled}"
+            );
+            let mut l = nvm_codex();
+            l.binary = p(&format!("{full}/codex"));
+            l.interpreter = None;
+            let err = jail_spec_for(Os::Macos, &l, &identity);
+            assert_eq!(
+                err.unwrap_err(),
+                SpecError::RootTooBroad(p(&full)),
+                "{spelled}"
+            );
+        }
+    }
+    for dir in MAC_CREDENTIALS {
+        for spelled in other_cases(dir) {
+            let below = format!("{HOME}/{spelled}/inner");
+            let mut l = nvm_codex();
+            l.lib_dirs = vec![p(&below)];
+            let spec = jail_spec_for(Os::Macos, &l, &identity).unwrap();
+            assert!(!spec.ro.contains(&p(&below)), "{spelled} granted");
+        }
+    }
+}
+
+#[test]
+fn the_other_home_and_system_checks_ignore_letter_case_on_macos() {
+    for state in [
+        "/HOME/U",
+        "/home/U/.SSH",
+        "/home/u/.GnuPG/x",
+        "/home/u/.Config",
+        "/TMP/codex",
+    ] {
+        let mut l = nvm_codex();
+        l.codex_home = Some(p(state));
+        let err = jail_spec_for(Os::Macos, &l, &identity);
+        assert_eq!(
+            err.unwrap_err(),
+            SpecError::RootTooBroad(p(state)),
+            "{state}"
+        );
+    }
+    for root in ["/LIBRARY", "/system", "/opt/HomeBrew/cellar"] {
+        let mut l = nvm_codex();
+        l.binary = p(&format!("{root}/codex"));
+        l.interpreter = None;
+        let err = jail_spec_for(Os::Macos, &l, &identity);
+        assert_eq!(err.unwrap_err(), SpecError::RootTooBroad(p(root)), "{root}");
+    }
+}
+
+#[test]
+fn the_library_allowlist_matches_without_letter_case_too() {
+    for dir in MAC_LIBRARY_ALLOWED {
+        for spelled in other_cases(dir) {
+            let inner = p(&format!("{HOME}/{spelled}/x"));
+            let mut l = nvm_codex();
+            l.lib_dirs = vec![inner.clone()];
+            let spec = jail_spec_for(Os::Macos, &l, &identity).unwrap();
+            assert!(spec.ro.contains(&inner), "{spelled}");
+        }
+    }
+}
+
+// Linux file systems are case-sensitive: `~/.SSH` is not `~/.ssh` there.
+#[test]
+fn linux_keeps_matching_with_letter_case() {
+    for state in [
+        "/home/u/.SSH",
+        "/home/u/.Config",
+        "/home/u/library/keychains",
+    ] {
+        let mut l = nvm_codex();
+        l.codex_home = Some(p(state));
+        let spec = jail_spec_for(Os::Linux, &l, &identity).unwrap();
+        assert!(spec.rw.contains(&p(state)), "{state} refused on Linux");
+    }
+    let mut l = nvm_codex();
+    l.codex_home = Some(p("/home/u/.ssh"));
+    let err = jail_spec_for(Os::Linux, &l, &identity);
+    assert_eq!(err.unwrap_err(), SpecError::RootTooBroad(p("/home/u/.ssh")));
+}
+
+// APFS ignores letter case: `~/.CODEX` is the folder that holds `~/.codex/...`.
+#[test]
+fn the_overlap_check_ignores_letter_case_on_macos() {
+    let mut l = layout(Cli::Codex, "/home/u/.codex/versions/1/codex", None);
+    l.codex_home = Some(p("/home/u/.CODEX"));
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert_eq!(
+        err,
+        SpecError::Overlap {
+            rx: p("/home/u/.codex/versions/1"),
+            rw: p("/home/u/.CODEX"),
+        }
+    );
+    let mut l = nvm_codex();
+    l.codex_home = Some(p(
+        "/home/u/.NVM/versions/node/v24.16.0/lib/node_modules/@OpenAI/codex/state",
+    ));
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+    let mut l = nvm_codex();
+    l.shim = Some(ShimGrant {
+        binary: p("/opt/lb/bin/lazarobox"),
+        loader: None,
+        socket: p("/home/u/.nvm/VERSIONS/node/v24.16.0/lib/node_modules/@openai/codex/s.sock"),
+    });
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+}
+
+#[test]
+fn linux_keeps_case_variants_apart_in_the_overlap_check() {
+    let mut l = layout(Cli::Codex, "/home/u/.codex/versions/1/codex", None);
+    l.codex_home = Some(p("/home/u/.CODEX"));
+    for os in [Os::Linux, Os::Other] {
+        assert!(jail_spec_for(os, &l, &identity).is_ok(), "{os:?}");
+    }
+}

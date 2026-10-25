@@ -340,6 +340,27 @@ fn thinking(text: &str) -> StreamEvent {
 const QWEN3: &str = include_str!("../../../../../tests/fixtures/ollama/qwen3-thinking.ndjson");
 /// A non-reasoning model (llama3.2:3b) recorded the same way.
 const LLAMA: &str = include_str!("../../../../../tests/fixtures/ollama/llama3.2-plain.ndjson");
+/// Events recorded from a real llama.cpp server (llama-server b11815,
+/// qwen2.5-0.5b-instruct q4_k_m), de-chunked, the model path made neutral: a
+/// role-only first delta with `content: null`, the text deltas, a
+/// `finish_reason` with an empty delta, then `[DONE]`. No reasoning field.
+const LLAMACPP: &str = include_str!("../../../../../tests/fixtures/llamacpp/qwen2.5-plain.sse");
+
+#[test]
+fn a_recorded_llamacpp_reply_gives_text_then_one_final_at_every_split_point() {
+    let want = [
+        delta("Hi"),
+        delta(" there"),
+        delta("."),
+        StreamEvent::Done(Finish::Stop),
+    ];
+    same_at_every_split(LLAMACPP, &want, sse);
+    assert!(
+        !sse(&[LLAMACPP.as_bytes()])
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ThinkingDelta(_)))
+    );
+}
 
 #[test]
 fn a_recorded_reasoning_model_gives_thinking_then_text_then_final() {
@@ -684,4 +705,94 @@ fn a_qualified_call_is_routed_by_the_lookup_and_a_stranger_is_refused() {
     // Without a lookup the same name stays unknown.
     let (_, plain) = tool_run(&[format!("{}\n{DONE}\n", call("fs__write")).as_bytes()]);
     assert_eq!(plain[0].call, invalid(ToolError::UnknownTool));
+}
+
+// P0b.2: a built-in that was not offered is refused like an unknown name,
+// whatever the model writes.
+#[test]
+fn a_call_outside_the_offered_families_is_refused_as_unknown() {
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    let call = |name: &str, args: &str| {
+        format!(
+            r#"{{"message":{{"content":"","tool_calls":[{{"function":{{"name":"{name}","arguments":{args}}}}}]}},"done":false}}"#
+        )
+    };
+    let input = format!(
+        "{}\n{}\n{}\n{DONE}\n",
+        call("run_in_pane", r#"{"command":"ls"}"#),
+        call("find_dir", r#"{"query":"a"}"#),
+        call("nope", "{}"),
+    );
+    let calls = |set: FamilySet| {
+        let mut decoder = OllamaToolDecoder::server().with_families(set);
+        run(&mut decoder, &[input.as_bytes()]);
+        decoder
+            .take_calls()
+            .into_iter()
+            .map(|c| c.call)
+            .collect::<Vec<_>>()
+    };
+    let read_only = calls(FamilySet::EMPTY.with(Family::Read));
+    assert_eq!(read_only[0], invalid(ToolError::UnknownTool));
+    assert_eq!(read_only[1], Ok(Call::FindDir { query: "a".into() }));
+    assert_eq!(
+        read_only[2], read_only[0],
+        "same refusal as an unknown name"
+    );
+    // The default decoder keeps the 0.18.0 set, so the same call runs.
+    let default = {
+        let mut decoder = OllamaToolDecoder::server();
+        run(&mut decoder, &[input.as_bytes()]);
+        decoder.take_calls().remove(0).call
+    };
+    assert_eq!(
+        default,
+        Ok(Call::RunInPane {
+            command: "ls".into()
+        })
+    );
+}
+
+// A key repeated in string arguments would collapse to the last one in
+// `serde_json::Value`; the raw text is checked first (P0a.5).
+#[test]
+fn string_arguments_with_a_repeated_key_are_refused() {
+    let line = one_line(
+        r#"{"function":{"name":"find_dir","arguments":"{\"query\":\"a\",\"query\":\"b\"}"}},
+        {"function":{"name":"find_dir","arguments":"{\"query\":\"a\",\"que\\u0072y\":\"b\"}"}},
+        {"function":{"name":"find_dir","arguments":"{\"query\":\"a\"}"}}"#,
+    )
+    .replace('\n', "");
+    let input = format!("{line}\n{DONE}\n");
+    let (_, calls) = tool_run(&[input.as_bytes()]);
+    let results: Vec<_> = calls.iter().map(|c| c.call.clone()).collect();
+    assert_eq!(
+        results,
+        [
+            invalid(ToolError::NotAnObject),
+            invalid(ToolError::NotAnObject),
+            Ok(Call::FindDir { query: "a".into() }),
+        ]
+    );
+}
+
+// Raw model text that is not JSON must be refused like any bad JSON, never
+// reach the duplicate-key scanner (it would index past the end).
+#[test]
+fn truncated_string_arguments_are_refused_without_a_panic() {
+    // The inner text: `{"query`, `{"query\`, `"` and `{"query":"x`.
+    for args in [
+        r#""{\"query""#,
+        r#""{\"query\\""#,
+        r#""\"""#,
+        r#""{\"query\":\"x""#,
+    ] {
+        let line = one_line(&format!(
+            r#"{{"function":{{"name":"find_dir","arguments":{args}}}}}"#
+        ));
+        let input = format!("{line}\n{DONE}\n");
+        let (_, calls) = tool_run(&[input.as_bytes()]);
+        assert_eq!(calls.len(), 1, "{args}");
+        assert_eq!(calls[0].call, invalid(ToolError::NotAnObject), "{args}");
+    }
 }

@@ -29,6 +29,7 @@ pub mod chat_store;
 mod config_write;
 pub mod desktop;
 pub mod engram;
+pub mod gguf;
 pub mod jail;
 pub mod login_path;
 pub mod loopback;
@@ -271,12 +272,32 @@ pub async fn run() -> io::Result<()> {
     // Off (`[updates] check = false`) nothing is read, asked or shown.
     let (update_tx, update_rx) = mpsc::channel(1);
     let (notified_tx, notified_rx) = mpsc::channel(4);
+    let (managed_tx, managed_rx) = mpsc::channel(4);
+    let update_cache = update::cache_path(
+        env::var_os("XDG_DATA_HOME").as_deref(),
+        env::var_os("HOME").as_deref(),
+    );
+    // The menu's `r` asks again on the same channel (the menu only offers it
+    // with the check on).
+    let check_update = {
+        let (cache, tx, path) = (
+            update_cache.clone(),
+            update_tx.clone(),
+            cli_env.path.clone(),
+        );
+        move || {
+            update::check_now(
+                cache.clone(),
+                update::now_secs(),
+                env!("CARGO_PKG_VERSION"),
+                update::CurlFetcher::crates_io(path.clone()),
+                tx.clone(),
+            );
+        }
+    };
     let announced = update::begin(
         app.config().update_check,
-        update::cache_path(
-            env::var_os("XDG_DATA_HOME").as_deref(),
-            env::var_os("HOME").as_deref(),
-        ),
+        update_cache,
         update::now_secs(),
         env!("CARGO_PKG_VERSION"),
         update::CurlFetcher::crates_io(cli_env.path.clone()),
@@ -303,6 +324,25 @@ pub async fn run() -> io::Result<()> {
         .map(Path::to_owned);
     let tool_host = tools::ToolHost::from_env();
     let servers_home = env::var_os("HOME").map(PathBuf::from);
+    // Read at startup, like the memory port: detection and chat both use
+    // these, so an engine is chatted with where it was detected. Only a menu
+    // save that turns the managed llama-server on changes them while running.
+    let server_ports = app.ai().servers().clone();
+    let managed_log = engram::serve::state_dir(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"))
+        .map(|dir| dir.join("llama-server.log"));
+    // The llama-server lazarobox starts itself, when `managed = true`: only a
+    // llamacpp turn starts it, on llamacpp's port, and quitting stops it.
+    let managed = app.ai().managed().map(|server| {
+        Arc::new(chat::Managed::new(
+            cli_env.path.clone(),
+            server.model.clone(),
+            server_ports
+                .port("llamacpp")
+                .expect("llamacpp is a catalog server"),
+            managed_log.clone(),
+        ))
+    });
+    let live = chat::LiveServers::new(server_ports, managed);
     // What the machine offers for notifications (display, bus, notify-send,
     // sound players), probed once now in the background: a slow lookup never
     // delays a send, it just fills the slot later. The `t` test refreshes it.
@@ -312,13 +352,42 @@ pub async fn run() -> io::Result<()> {
         .with_memory(memory)
         .with_run_checks(run_check::Checker::new(run_check::process_env(), run_tx))
         .with_config_path(config_path)
-        .with_detector(Box::new(move |force| {
-            spawn_detection(
-                ai_tx.clone(),
-                detect_env.clone(),
-                Arc::clone(&listing_cache),
-                force,
-            );
+        .with_update_checker(Box::new(check_update))
+        .with_detector(Box::new({
+            let live = live.clone();
+            let model_dirs = model_dirs();
+            move |force| {
+                spawn_detection(
+                    ai_tx.clone(),
+                    detect_env.clone(),
+                    Arc::clone(&listing_cache),
+                    force,
+                    live.ports(),
+                    Arc::clone(&model_dirs),
+                );
+            }
+        }))
+        // A save that turns the managed llama-server on: the next turns and
+        // detections use it at once; the one it replaces stops for good.
+        .with_manager(Box::new({
+            let live = live.clone();
+            let path = cli_env.path.clone();
+            move |model, port| {
+                let server = Arc::new(chat::Managed::new(
+                    path.clone(),
+                    model,
+                    port,
+                    managed_log.clone(),
+                ));
+                let old = live.manage(Arc::clone(&server));
+                let tx = managed_tx.clone();
+                tokio::spawn(async move {
+                    if let Some(old) = old {
+                        old.retire().await;
+                    }
+                    let _ = tx.send(server.ensure().await).await;
+                });
+            }
         }))
         .with_desktop(Box::new({
             let path = cli_env.path.clone();
@@ -372,9 +441,10 @@ pub async fn run() -> io::Result<()> {
         }))
         .with_chats(
             Chats::new(
-                chat::runner_with(None, cli_env.clone(), Some(tool_host.clone())),
+                chat::runner_live(live.clone(), cli_env.clone(), Some(tool_host.clone())),
                 chat_tx,
             )
+            .with_live(live)
             // The sockets of tool sessions: `$XDG_RUNTIME_DIR/lazarobox`, else
             // `<data>/run`. Without a private folder every turn runs as text.
             .with_tools(
@@ -405,6 +475,7 @@ pub async fn run() -> io::Result<()> {
         update: update_rx,
         run: run_rx,
         notified: notified_rx,
+        managed: managed_rx,
     };
     // The first pane is spawned before the UI starts: a failure is fatal.
     panes.spawn_pane(id, &spec)?;
@@ -439,6 +510,22 @@ pub async fn run() -> io::Result<()> {
         .await;
     panes.shutdown(QUIT_KILL_BOUND.saturating_sub(started.elapsed()));
     result
+}
+
+/// The folders the local llama.cpp models are looked for in, from this
+/// process's environment.
+fn model_dirs() -> Arc<[PathBuf]> {
+    let var = |name: &str| env::var_os(name).map(PathBuf::from);
+    let found = crate::core::ai::gguf::model_dirs(&crate::core::ai::gguf::DirsEnv {
+        home: var("HOME"),
+        xdg_data_home: var("XDG_DATA_HOME"),
+        xdg_cache_home: var("XDG_CACHE_HOME"),
+        llama_cache: var("LLAMA_CACHE"),
+        hf_hub_cache: var("HF_HUB_CACHE"),
+        hf_home: var("HF_HOME"),
+        macos: cfg!(target_os = "macos"),
+    });
+    found.into()
 }
 
 /// Whether `ENGRAM_HTTP_TOKEN` is set and not empty: all the app learns of
@@ -527,6 +614,8 @@ struct Inbox {
     run: mpsc::Receiver<(PaneId, RunEvent)>,
     /// What the notification test did.
     notified: mpsc::Receiver<String>,
+    /// How the start of a llama-server the menu turned on went.
+    managed: mpsc::Receiver<Result<(), String>>,
 }
 
 async fn event_loop(
@@ -571,6 +660,7 @@ async fn run_loop(
         update: mut update_rx,
         run: mut run_rx,
         notified: mut notified_rx,
+        managed: mut managed_rx,
     } = inbox;
     let theme = LazaroboxTheme::default();
     let mut events = EventStream::new();
@@ -673,6 +763,11 @@ async fn run_loop(
                     return Ok(());
                 }
             }
+            Some(started) = managed_rx.recv() => {
+                if step(&mut app, AppEvent::ManagedStarted(started), panes) {
+                    return Ok(());
+                }
+            }
             // Same exit path as Quit: the caller restores and kills the children.
             () = shutdown.requested() => return Ok(()),
             _ = cwd_poll.tick() => {
@@ -726,6 +821,9 @@ type DesktopSendFn = dyn FnMut(String, Option<Arc<AtomicBool>>);
 
 /// Starts the notification test: mode, sound flag, fallback flag.
 type TestSendFn = dyn FnMut(NotifyMode, bool, Option<Arc<AtomicBool>>);
+
+/// Starts the managed llama-server with a model on a port.
+type ManageFn = dyn FnMut(PathBuf, u16);
 
 /// Starts a prompt preparation: pane, profile, origin cwd, context flag.
 type PrepareFn = dyn FnMut(PaneId, Profile, Option<PathBuf>, bool);
@@ -826,9 +924,15 @@ struct Panes {
     /// Starts the test action in the background: mode, sound, and the
     /// fallback flag for `desktop`. The report comes back on its channel.
     test_send: Box<TestSendFn>,
+    /// Starts the managed llama-server the menu turned on; the outcome comes
+    /// back on its channel. A no-op unless `with_manager` installs one.
+    manage: Box<ManageFn>,
     /// Starts one AI engine detection; the answer arrives on the AI channel.
     /// A no-op unless `with_detector` installs the production one.
     detect: Box<dyn FnMut(bool)>,
+    /// Starts one update check now; the answer arrives on the update
+    /// channel. A no-op unless `with_update_checker` installs the real one.
+    check_update: Box<dyn FnMut()>,
     /// Starts the preparation of a conversation's system prompt: pane,
     /// profile, origin cwd and the context flag. The answer arrives on the
     /// prompt channel. A no-op unless `with_preparer` installs the
@@ -858,7 +962,9 @@ impl Panes {
             desktop_send: Box::new(|_, _| {}),
             sound_send: Box::new(|| {}),
             test_send: Box::new(|_, _, _| {}),
+            manage: Box::new(|_, _| {}),
             detect: Box::new(|_| {}),
+            check_update: Box::new(|| {}),
             prepare: Box::new(|_, _, _, _| {}),
             chats: None,
             run_checks: None,
@@ -942,9 +1048,21 @@ impl Panes {
         self
     }
 
+    /// Sets what starts the managed llama-server the menu turns on.
+    fn with_manager(mut self, manage: Box<ManageFn>) -> Self {
+        self.manage = manage;
+        self
+    }
+
     /// Sets what `Effect::DetectEngines` runs.
     fn with_detector(mut self, detect: Box<dyn FnMut(bool)>) -> Self {
         self.detect = detect;
+        self
+    }
+
+    /// Sets what `Effect::CheckUpdate` runs.
+    fn with_update_checker(mut self, check: Box<dyn FnMut()>) -> Self {
+        self.check_update = check;
         self
     }
 
@@ -1005,6 +1123,8 @@ impl Panes {
                 // Returns at once: the probes run on their own tasks.
                 Effect::DetectEngines => (self.detect)(false),
                 Effect::RedetectEngines => (self.detect)(true),
+                // Returns at once: the request runs on its own thread.
+                Effect::CheckUpdate => (self.check_update)(),
                 // Both return at once: the turn runs on its own task, and a
                 // cancel only aborts it (the adapter's drop does the killing).
                 Effect::ChatSend {
@@ -1159,6 +1279,8 @@ impl Panes {
                 }
                 // The key press that asks for it: the bell now (when the mode
                 // has one), the rest in the background with a report.
+                // Returns at once: the start runs on its own task.
+                Effect::StartManaged { model, port } => (self.manage)(model, port),
                 Effect::NotifyTest { mode, sound } => {
                     self.bell |= rings_at_once(mode);
                     let fallback =
@@ -1349,9 +1471,13 @@ fn enter_modes<W: Write>(out: &mut W) -> io::Result<()> {
 }
 
 fn restore() {
-    // Best effort: there is nowhere left to report a failure.
+    // Best effort: there is nowhere left to report a failure. Not
+    // `ratatui::restore`, which reports one with `eprintln!`: once the
+    // terminal is gone (its tab was closed) that write fails and panics, the
+    // panic hook restores again and panics inside the panic, and the process
+    // aborts before the quit stops the chat servers it started.
     let _ = restore_to(&mut stdout());
-    ratatui::restore();
+    let _ = ratatui::try_restore();
 }
 
 /// Whether a panic on this thread should tear the terminal down. A panic
@@ -2321,6 +2447,19 @@ mod tests {
     }
 
     #[test]
+    fn check_update_calls_the_injected_checker_once() {
+        let (panes, _rx, _rec) = fake_panes(None);
+        let calls = Rc::new(RefCell::new(0));
+        let seen = Rc::clone(&calls);
+        let mut panes = panes.with_update_checker(Box::new(move || *seen.borrow_mut() += 1));
+        let (outcome, feedback) = panes.apply(vec![Effect::CheckUpdate]);
+        assert_eq!(
+            (outcome, feedback, *calls.borrow()),
+            (Outcome::Continue, Vec::new(), 1)
+        );
+    }
+
+    #[test]
     fn only_a_redetect_tells_the_detector_to_force() {
         let (panes, _rx, _rec) = fake_panes(None);
         let calls = Rc::new(RefCell::new(Vec::new()));
@@ -2375,6 +2514,7 @@ mod tests {
         use crate::core::ai::chat::engine::{ChatRequest, Tools};
         let (mut panes, _rx, rec) = fake_panes(None);
         let request = ChatRequest {
+            families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             engine: "ollama".into(),
             model: Some("llama3:8b".into()),
             system: String::new(),
@@ -2516,6 +2656,7 @@ mod tests {
                 model_labels: Vec::new(),
                 diagnostics: Default::default(),
             }],
+            ..Default::default()
         };
         let quit = step(
             &mut app,
@@ -3044,6 +3185,7 @@ mod tests {
                 model_labels: Vec::new(),
                 diagnostics: Default::default(),
             }],
+            ..Default::default()
         }));
         app
     }
@@ -3420,6 +3562,7 @@ mod tests {
 
     fn chat_request() -> ChatRequest {
         ChatRequest {
+            families: crate::core::ai::tools::registry::FamilySet::LEGACY,
             engine: "ollama".into(),
             model: Some("llama3:8b".into()),
             system: String::new(),

@@ -31,6 +31,7 @@ fn the_cursor_follows_its_row_to_a_new_position() {
             state("ollama", Status::NotRunning, &[]),
             state("claude", Status::Available, &[]),
         ],
+        ..Default::default()
     };
     p.reanchor(before, &draft, Some(&d2));
     assert_eq!(p.cursor(), 1);
@@ -57,7 +58,10 @@ fn a_removed_row_clamps_the_cursor() {
     let draft = AiConfig::default();
     let mut p = picker_on(&draft, &d1, engine_key("claude"));
     let before = p.key(&draft, Some(&d1));
-    let d2 = Detection { engines: vec![] };
+    let d2 = Detection {
+        engines: vec![],
+        ..Default::default()
+    };
     p.reanchor(before, &draft, Some(&d2));
     assert_eq!(p.rows(&draft, Some(&d2)).len(), 1);
     assert_eq!(p.cursor(), 0);
@@ -89,5 +93,6 @@ fn reanchor_without_a_previous_key_only_clamps() {
     let mut p = Picker::open(Target::Task(Task::Code), &draft, Some(&d));
     p.cursor = 40;
     p.reanchor(None, &draft, Some(&d));
-    assert_eq!(p.cursor(), 2);
+    // none, ollama, claude, then lmstudio (installed, not running).
+    assert_eq!(p.cursor(), 3);
 }

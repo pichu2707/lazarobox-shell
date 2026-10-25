@@ -478,3 +478,13 @@ fn a_child_that_ends_without_a_status_is_a_failure_and_the_pane_stays() {
     assert_eq!(a.notice(), Some(no_status_text().as_str()));
     assert_eq!(a.status_update(), Some("0.15.4"), "still not installed");
 }
+
+// Spec: r on the Updates row checks crates.io now.
+#[test]
+fn r_on_the_updates_row_asks_the_runtime_for_a_check() {
+    let mut a = on_updates(None, None);
+    assert_eq!(a.update(key('r')), vec![Effect::CheckUpdate]);
+    a.update(AppEvent::UpdateChecked(Some("0.16.0".into())));
+    assert_eq!(a.status_update(), Some("0.16.0"));
+    assert!(a.menu().unwrap().update_note().is_some());
+}

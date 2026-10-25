@@ -69,6 +69,7 @@ pub(super) fn detection() -> Detection {
             model_labels: Vec::new(),
             diagnostics: Default::default(),
         }],
+        ..Default::default()
     }
 }
 

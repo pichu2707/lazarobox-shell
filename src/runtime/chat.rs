@@ -21,12 +21,17 @@ use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
 
 mod cli;
 mod external;
+pub mod live;
+pub mod managed;
+
 #[cfg(test)]
 pub(crate) use cli::own_group_is_private;
 pub(crate) use cli::{
     alive_by_comm, ensure_private_dir, jail_note, own_comm, read_comm, run_listing,
     trusted_cargo_path, trusted_real_path,
 };
+pub use live::LiveServers;
+pub use managed::Managed;
 
 use self::external::{Externals, Start};
 use super::{
@@ -36,6 +41,7 @@ use super::{
 };
 use crate::core::{
     ai::{
+        ServerPorts,
         chat::{
             ANSWER_CAP, REASONING_CAP,
             adapters::{Adapter, Invocation, Wire, adapter_for},
@@ -50,7 +56,6 @@ use crate::core::{
         config::McpServer,
         sanitize::{StreamSanitizer, Utf8Stream, clean},
         tools::{
-            registry,
             report::RunReport,
             summary::clip,
             wiring::{McpWire, Secret},
@@ -310,8 +315,26 @@ impl Default for Pipe {
 /// talk to a fake server on an ephemeral port. The host stays `127.0.0.1`.
 #[cfg(test)]
 pub(crate) fn adapter_runner_at(port: Option<u16>) -> Runner {
-    runner_with(
-        port,
+    adapter_runner_with(port.map_or_else(ServerPorts::default, ServerPorts::every))
+}
+
+/// [`adapter_runner_with`] with the live server state its turns read.
+#[cfg(test)]
+pub(crate) fn adapter_runner_live(live: LiveServers) -> Runner {
+    runner_live(
+        live,
+        CliEnv::from_env(crate::core::ai::jail::JailSupport::Unavailable(
+            crate::core::ai::jail::JailOff::NotProbed,
+        )),
+        None,
+    )
+}
+
+/// [`adapter_runner_at`] with one port per server engine.
+#[cfg(test)]
+pub(crate) fn adapter_runner_with(ports: ServerPorts) -> Runner {
+    runner_with_ports(
+        ports,
         CliEnv::from_env(crate::core::ai::jail::JailSupport::Unavailable(
             crate::core::ai::jail::JailOff::NotProbed,
         )),
@@ -326,11 +349,47 @@ pub(crate) fn adapter_runner_at(port: Option<u16>) -> Runner {
 /// which knows the pane and turn; a turn without `Tools::On` never touches
 /// either, so its requests stay as they were without tools.
 pub fn runner_with(port: Option<u16>, cli: CliEnv, tools: Option<Arc<ToolHost>>) -> Runner {
+    runner_with_ports(
+        port.map_or_else(ServerPorts::default, ServerPorts::every),
+        cli,
+        tools,
+    )
+}
+
+/// [`runner_with`] with the port of each server engine given: a turn goes to
+/// the port its engine was detected on (`[ai.servers.<id>] port`, else the
+/// catalog port).
+pub fn runner_with_ports(ports: ServerPorts, cli: CliEnv, tools: Option<Arc<ToolHost>>) -> Runner {
+    runner_managed(ports, None, cli, tools)
+}
+
+/// [`runner_with_ports`] with the llama-server lazarobox manages, if any: a
+/// llamacpp turn starts it first, and fails with its reason when it cannot.
+pub fn runner_managed(
+    ports: ServerPorts,
+    managed: Option<Arc<Managed>>,
+    cli: CliEnv,
+    tools: Option<Arc<ToolHost>>,
+) -> Runner {
+    runner_live(LiveServers::new(ports, managed), cli, tools)
+}
+
+/// [`runner_managed`] reading the ports and the managed llama-server when
+/// each turn starts, so a server the menu turns on is used at once.
+pub fn runner_live(live: LiveServers, cli: CliEnv, tools: Option<Arc<ToolHost>>) -> Runner {
     Arc::new(move |request, tx| {
         let cli = cli.clone();
         let tools = tools.clone();
+        let port = live.ports().port(&request.engine);
+        let managed = live.managed().filter(|_| request.engine == "llamacpp");
         Box::pin(async move {
             let _tools = tools;
+            if let Some(managed) = managed
+                && let Err(reason) = managed.ensure().await
+            {
+                let _ = tx.send(StreamEvent::Error(ChatError::Failed(reason))).await;
+                return;
+            }
             let Some(adapter) = adapter_for(&request.engine) else {
                 let _ = tx
                     .send(StreamEvent::Error(ChatError::Failed(NO_ADAPTER.into())))
@@ -579,6 +638,8 @@ pub struct Chats {
     externals: Externals,
     /// The servers of chats that closed, being stopped.
     retiring: Vec<JoinHandle<()>>,
+    /// The llama-server lazarobox started for llamacpp turns, stopped on quit.
+    live: LiveServers,
 }
 
 impl Chats {
@@ -591,7 +652,15 @@ impl Chats {
             tooling: None,
             externals: Externals::default(),
             retiring: Vec::new(),
+            live: LiveServers::default(),
         }
+    }
+
+    /// The live server state the runner's turns read: quitting stops the
+    /// llama-server it manages then.
+    pub fn with_live(mut self, live: LiveServers) -> Self {
+        self.live = live;
+        self
     }
 
     /// The user's MCP servers (`[[ai.mcp.servers]]`, read once at startup),
@@ -713,7 +782,9 @@ impl Chats {
         }
         let hub = tooling.hub.as_mut()?;
         // No session means no tools for this turn: it runs as text.
-        let started = hub.open(pane, registry(&[]), dispatch, slot.clone()).ok()?;
+        let started = hub
+            .open(pane, dispatch, slot.clone(), request.families)
+            .ok()?;
         tooling.started.insert(pane, started);
         Some((pending, None, slot))
     }
@@ -805,10 +876,15 @@ impl Chats {
         let sets = self.externals.drain();
         let stops = join_all(sets.iter().map(|set| set.shutdown()));
         let retiring = join_all(self.retiring.drain(..));
-        let _ = timeout(bound, async {
-            tokio::join!(join_all(tasks), stops, retiring)
-        })
-        .await;
+        let managed = self.live.managed();
+        // After the turns: an aborted start drops its server on its own.
+        let turns = async move {
+            join_all(tasks).await;
+            if let Some(managed) = managed {
+                managed.shutdown().await;
+            }
+        };
+        let _ = timeout(bound, async { tokio::join!(turns, stops, retiring) }).await;
     }
 }
 

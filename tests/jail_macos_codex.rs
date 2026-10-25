@@ -30,6 +30,7 @@ use lazarobox_shell::{
     core::ai::{
         chat::engine::{ChatError, ChatMessage, ChatRequest, Role, StreamEvent, Tools},
         jail::JailSupport,
+        tools::registry::FamilySet,
     },
     runtime::{
         chat::{CliEnv, runner_with},
@@ -40,8 +41,11 @@ use tokio::{sync::mpsc, time::timeout};
 
 #[path = "support/codex_outcome.rs"]
 mod codex_outcome;
+#[path = "support/sandbox_denials.rs"]
+mod sandbox_denials;
 
 use codex_outcome::{Verdict, judge};
+use sandbox_denials::unexpected;
 
 /// The key codex sees: not a credential, only a way to make it call the API.
 const BOGUS_KEY: &str = "sk-lazarobox-smoke-not-a-real-key";
@@ -56,8 +60,30 @@ fn on_path(name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// `log stream` of the sandbox, written to a file while the turn runs.
-fn watch_sandbox(log: &Path) -> Option<Child> {
+/// `log stream` of the sandbox, written to a file while the turn runs. Killed
+/// on drop, so a failing assert does not leave it running.
+struct Watcher(Child);
+
+impl Watcher {
+    /// Stops the stream and returns what it wrote.
+    fn finish(mut self, log: &Path) -> String {
+        self.stop();
+        fs::read_to_string(log).unwrap_or_default()
+    }
+
+    fn stop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn watch_sandbox(log: &Path) -> Option<Watcher> {
     let out = fs::File::create(log).ok()?;
     Command::new("/usr/bin/log")
         .args([
@@ -71,6 +97,7 @@ fn watch_sandbox(log: &Path) -> Option<Child> {
         .stderr(Stdio::null())
         .spawn()
         .ok()
+        .map(Watcher)
 }
 
 /// The text of the turn's error events: where codex reports what the server
@@ -141,7 +168,7 @@ fn a_real_codex_reaches_openai_through_the_jail() {
     assert_eq!(env.home.as_deref(), Some(home.as_path()));
 
     let log = home.join("sandbox.log");
-    let mut watcher = watch_sandbox(&log);
+    let watcher = watch_sandbox(&log);
     // `log stream` needs a moment to attach.
     std::thread::sleep(Duration::from_secs(3));
 
@@ -155,6 +182,7 @@ fn a_real_codex_reaches_openai_through_the_jail() {
             content: "hi".into(),
         }],
         tools: Tools::Off,
+        families: FamilySet::LEGACY,
     };
     let events = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -172,17 +200,14 @@ fn a_real_codex_reaches_openai_through_the_jail() {
         });
 
     std::thread::sleep(Duration::from_secs(2));
-    let denials = if let Some(child) = watcher.as_mut() {
-        let _ = child.kill();
-        let _ = child.wait();
-        fs::read_to_string(&log)
-            .unwrap_or_default()
+    let sandbox_log = watcher.map(|w| w.finish(&log));
+    let denials = match &sandbox_log {
+        Some(text) => text
             .lines()
             .filter(|l| l.contains("deny"))
             .map(str::to_owned)
-            .collect::<Vec<_>>()
-    } else {
-        vec!["(log stream could not be started)".to_owned()]
+            .collect::<Vec<_>>(),
+        None => vec!["(log stream could not be started)".to_owned()],
     };
     let (finished, events) = events;
     let shown = describe(&events);
@@ -198,7 +223,33 @@ fn a_real_codex_reaches_openai_through_the_jail() {
     }
 
     assert!(finished, "the turn did not end in 120 s:\n{shown}");
-    match judge(&error_text(&events), &shown) {
+    let verdict = judge(&error_text(&events), &shown);
+    if let Verdict::Fail(message) = &verdict {
+        panic!("{message}");
+    }
+    // The jail ran codex either way, so its denials count even when OpenAI's
+    // answer is outside this repo's control.
+    match &sandbox_log {
+        Some(text) => {
+            let new = unexpected(text);
+            assert!(
+                new.is_empty(),
+                "the jail denied codex something not on the known list \
+                 (tests/support/sandbox_denials.rs); check it, then add it there \
+                 if codex works without it:\n{}",
+                new.join("\n")
+            );
+        }
+        None => {
+            assert!(
+                !required(),
+                "LAZAROBOX_REQUIRE_JAIL=1 but `log stream` could not be started, \
+                 so the sandbox denials cannot be checked"
+            );
+            println!("::warning::sandbox denials not checked: `log stream` could not be started");
+        }
+    }
+    match verdict {
         Verdict::Pass => {}
         Verdict::External(marker) => {
             println!(
@@ -206,7 +257,7 @@ fn a_real_codex_reaches_openai_through_the_jail() {
             );
             return;
         }
-        Verdict::Fail(message) => panic!("{message}"),
+        Verdict::Fail(_) => unreachable!("a failure panicked above"),
     }
     println!("RESULT: codex reached OpenAI through the jail and was refused for authentication");
 }

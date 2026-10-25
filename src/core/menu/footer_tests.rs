@@ -189,7 +189,7 @@ fn an_empty_server_reads_no_models_detected() {
 // Spec: Footer on a disabled row (engine not detected).
 #[test]
 fn an_engine_that_is_gone_reads_engine_not_detected_on_both_rows() {
-    let found = only(&[engine("ollama", Status::NotRunning, &[], None)]);
+    let found = only(&[engine("ollama", Status::NotInstalled, &[], None)]);
     let mut m = assigned(&[(Task::Code, "ollama", "old:7b")], found);
     open(&mut m, "code");
     while cursor_label(&m) != "ollama" {
@@ -329,4 +329,35 @@ fn higher_priority_footers_mask_the_unsaved_hint() {
     // An error.
     m.set_error("save failed: disk full".to_owned());
     assert_eq!(m.footer(), Footer::Error("save failed: disk full"));
+}
+
+// Spec: Engines without a chat adapter are not selectable (footer).
+#[test]
+fn a_detected_engine_without_a_chat_adapter_reads_its_status_as_the_reason() {
+    let found = only(&[
+        engine("ollama", Status::Available, &["llama3:8b"], None),
+        engine("opencode", Status::Available, &[], Some("1.19.0")),
+    ]);
+    let mut m = menu(None, None, found);
+    open(&mut m, "code");
+    while cursor_label(&m) != "opencode" {
+        press(&mut m, 'j');
+    }
+    assert_eq!(hint(&m), not_selectable("detected · not in chat yet"));
+    send(&mut m, key(KeyCode::Enter));
+    assert_eq!(cursor_label(&m), "opencode", "Enter does nothing");
+}
+
+// Spec: Stopped servers in the picker (footer of the saved model).
+#[test]
+fn a_saved_model_of_a_stopped_server_reads_not_running() {
+    let found = only(&[engine("ollama", Status::NotRunning, &[], None)]);
+    let mut m = assigned(&[(Task::Code, "ollama", "old:7b")], found);
+    open(&mut m, "code");
+    while cursor_label(&m) != "ollama" {
+        press(&mut m, 'j');
+    }
+    send(&mut m, key(KeyCode::Enter));
+    assert_eq!(cursor_label(&m), "old:7b");
+    assert_eq!(hint(&m), not_selectable("not running"));
 }

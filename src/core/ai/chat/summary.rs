@@ -273,6 +273,7 @@ impl ChatState {
         Some((
             self.turn,
             ChatRequest {
+                families: crate::core::ai::tools::registry::FamilySet::LEGACY,
                 engine: engine.clone(),
                 model: model.clone(),
                 system: SUMMARY_PROMPT.trim_end().to_owned(),

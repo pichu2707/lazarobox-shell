@@ -1,9 +1,11 @@
 //! Pure model of the AI section of the config menu: the draft assignment of
 //! every task, shown against what the last detection found. No IO.
 
+use std::path::{Path, PathBuf};
+
 use super::{
-    Detection,
-    config::{AiConfig, ApprovalMode, Assignment, NotifyMode, Profile, Task},
+    Detection, Status,
+    config::{AiConfig, ApprovalMode, Assignment, ManagedServer, NotifyMode, Profile, Task},
     picker::{Outcome, PickRow, Picker, Target, task_label},
 };
 
@@ -140,6 +142,64 @@ impl AiMenu {
         self.draft.set_tools_enabled(next);
     }
 
+    /// The model file of `assignment` when it is one lazarobox starts a
+    /// stopped llama-server with: the managed one or a file found on the
+    /// machine. `None` for anything a running server or a CLI serves.
+    fn local_model(&self, assignment: &Assignment) -> Option<PathBuf> {
+        if assignment.engine.as_deref() != Some("llamacpp") {
+            return None;
+        }
+        let model = PathBuf::from(assignment.model.as_deref()?);
+        let detection = self.engines.as_ref()?;
+        let stopped = detection
+            .engines
+            .iter()
+            .any(|s| s.id == "llamacpp" && s.status == Status::NotRunning);
+        let known = self.draft.managed().is_some_and(|s| s.model == model)
+            || detection.local_models.contains(&model);
+        (stopped && known).then_some(model)
+    }
+
+    /// Moves every task whose own model is one lazarobox starts to `model`:
+    /// llama-server loads only one, so the rows say what answers.
+    fn follow(&mut self, model: &Path) {
+        let starts = |path: &Path| {
+            self.draft.managed().is_some_and(|s| s.model == path)
+                || self
+                    .engines
+                    .as_ref()
+                    .is_some_and(|d| d.local_models.iter().any(|m| m == path))
+        };
+        let moved: Vec<Task> = Task::ALL
+            .into_iter()
+            .filter(|&task| {
+                let own = self.draft.get(task);
+                own.engine.as_deref() == Some("llamacpp")
+                    && own
+                        .model
+                        .as_deref()
+                        .is_some_and(|m| Path::new(m) != model && starts(Path::new(m)))
+            })
+            .collect();
+        for task in moved {
+            self.draft.set(
+                task,
+                Assignment {
+                    engine: Some("llamacpp".to_owned()),
+                    model: Some(model.to_string_lossy().into_owned()),
+                },
+            );
+        }
+    }
+
+    /// The managed llama-server of the draft, when the menu turned it on or
+    /// changed its model.
+    pub fn changed_managed(&self) -> Option<&ManagedServer> {
+        (self.draft.managed() != self.original.managed())
+            .then(|| self.draft.managed())
+            .flatten()
+    }
+
     /// The tools flag in the draft, when it differs from the open one.
     pub fn changed_tools(&self) -> Option<bool> {
         (self.draft.tools_enabled() != self.original.tools_enabled())
@@ -192,6 +252,15 @@ impl AiMenu {
         self.engines.as_ref().is_some_and(|d| !d.engines.is_empty())
     }
 
+    /// Whether the detected engine `id` is installed but not answering.
+    pub fn is_not_running(&self, id: &str) -> bool {
+        self.engines.as_ref().is_some_and(|d| {
+            d.engines
+                .iter()
+                .any(|s| s.id == id && s.status == Status::NotRunning)
+        })
+    }
+
     /// The row under the cursor of the open picker.
     pub fn cursor_row(&self) -> Option<PickRow> {
         let picker = self.picker.as_ref()?;
@@ -224,7 +293,15 @@ impl AiMenu {
         let outcome = act(picker, &self.draft, self.engines.as_ref());
         match &outcome {
             Outcome::Commit(assignment) => {
+                let local = self.local_model(assignment);
                 target.apply(&mut self.draft, assignment.clone());
+                if let Some(model) = local {
+                    self.follow(&model);
+                    self.draft.manage(model);
+                } else if self.changed_managed().is_some() && !self.draft.uses_managed() {
+                    // A local model picked earlier that no task uses any more.
+                    self.draft.keep_servers_of(&self.original);
+                }
                 self.picker = None;
             }
             Outcome::Close => self.picker = None,

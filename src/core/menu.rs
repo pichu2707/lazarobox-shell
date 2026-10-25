@@ -13,7 +13,7 @@ use super::{
         menu::AiMenu,
         picker::{Level, Mark, NOT_IN_LIST, Outcome, PickKey, PickRow, Picker, Target},
     },
-    config::{BarPosition, Config, ConfigEdit, MEMORY_TABLE},
+    config::{BarPosition, Config, ConfigEdit, LLAMACPP_TABLE, MEMORY_TABLE},
 };
 
 /// A setting that cycles through an ordered list of values. The value string
@@ -337,6 +337,9 @@ pub enum MenuCommand {
     /// Enter on the Updates row with a newer version known: the app decides
     /// between installing it and showing the command.
     Update,
+    /// `r` on the Updates row: ask crates.io now, whatever the cache says.
+    /// The answer comes back as a late result of the check.
+    CheckUpdate,
     /// Fire one notification now, with the mode and sound flag shown in the
     /// menu (saved or not), ignoring the focus rule.
     TestNotify {
@@ -374,6 +377,8 @@ fn disabled_reason(row: &PickRow) -> &str {
         Mark::Checking => "checking…",
         _ if row.key == PickKey::Info => &row.label,
         _ if matches!(row.key, PickKey::Note { .. }) => &row.label,
+        // An engine row is disabled only when chat has no adapter for it.
+        Mark::Status(ref status) if matches!(row.key, PickKey::Engine(_)) => status,
         _ => "engine not detected",
     }
 }
@@ -429,6 +434,8 @@ pub struct MenuState {
     term: Option<(u16, u16)>,
     /// The newer version the update check found. Only ever shown as text.
     update: Option<String>,
+    /// A check asked with `r` is in flight (the `checking…` cue).
+    checking_update: bool,
     /// The version this binary is, for the Updates row.
     current: String,
     /// The install command is on the footer, ready to copy.
@@ -452,6 +459,7 @@ impl MenuState {
             checking: false,
             term: None,
             update: None,
+            checking_update: false,
             current: RUNNING_VERSION.to_owned(),
             command_shown: None,
             installed: None,
@@ -494,9 +502,26 @@ impl MenuState {
         self
     }
 
-    /// A late result of the update check, while the menu is open.
+    /// A late result of the update check, while the menu is open. It also
+    /// ends a check asked with `r`.
     pub fn set_update(&mut self, update: Option<String>) {
         self.update = update;
+        self.checking_update = false;
+    }
+
+    /// Whether `r` may ask for a check: update checks are on and nothing was
+    /// installed in this run (the running binary is already the old one).
+    fn can_check_update(&self) -> bool {
+        self.original.update_check && self.installed.is_none()
+    }
+
+    /// `r` on the Updates row: one check at a time.
+    fn check_update(&mut self, repeat: bool) -> MenuCommand {
+        if repeat || self.checking_update || !self.can_check_update() {
+            return MenuCommand::None;
+        }
+        self.checking_update = true;
+        MenuCommand::CheckUpdate
     }
 
     /// The lines of the update note, shown on the tab that has the note
@@ -745,7 +770,9 @@ impl MenuState {
     fn updates_row(&self, selected: bool) -> Row {
         let (label, value) = match (&self.installed, &self.update) {
             (Some(done), _) => ("Updates", crate::core::update::installed_value(done)),
+            (None, Some(_)) if self.checking_update => ("* Updates", "checking…".to_owned()),
             (None, Some(latest)) => ("* Updates", format!("{latest} available")),
+            (None, None) if self.checking_update => ("Updates", "checking…".to_owned()),
             (None, None) => ("Updates", self.current.clone()),
         };
         Row::Item {
@@ -947,6 +974,7 @@ impl MenuState {
             KeyCode::Char('l' | ' ') | KeyCode::Right => self.cycle(true, config),
             KeyCode::Char('h') | KeyCode::Left => self.cycle(false, config),
             KeyCode::Char('s') if !repeat => MenuCommand::Save,
+            KeyCode::Char('r') if self.on_updates_row() => self.check_update(repeat),
             KeyCode::Char('r') if !repeat && self.on_ai_row() => MenuCommand::Refresh,
             KeyCode::Char('t') if !repeat && self.on_notify_row() => self.test_notify(),
             KeyCode::Enter | KeyCode::Char('y') if !repeat && self.command_shown.is_some() => {
@@ -1190,6 +1218,25 @@ impl MenuState {
             .as_ref()
             .and_then(AiMenu::changed_approval)
             .map(ConfigEdit::approval);
+        let managed = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::changed_managed)
+            .into_iter()
+            .flat_map(|server| {
+                [
+                    ConfigEdit {
+                        table: LLAMACPP_TABLE,
+                        key: "managed",
+                        value: Cow::Borrowed("true"),
+                    },
+                    ConfigEdit {
+                        table: LLAMACPP_TABLE,
+                        key: "model",
+                        value: Cow::Owned(server.model.to_string_lossy().into_owned()),
+                    },
+                ]
+            });
         settings
             .chain(tasks)
             .chain(profile)
@@ -1199,6 +1246,7 @@ impl MenuState {
             .chain(sound)
             .chain(tools)
             .chain(approval)
+            .chain(managed)
             .collect()
     }
 
@@ -1244,7 +1292,16 @@ impl MenuState {
             return Footer::Hint(Cow::Borrowed(HINT_ENGINE_REASON));
         }
         if let Some(row) = cursor.as_ref().filter(|r| !r.enabled) {
-            let reason = disabled_reason(row);
+            // The saved models of a stopped server are disabled only because
+            // it is not running; its note says how to start it.
+            let stopped = match picker.map(|p| &p.level) {
+                Some(Level::Models { engine }) => ai.is_some_and(|ai| ai.is_not_running(engine)),
+                _ => false,
+            };
+            let reason = match row.key {
+                PickKey::Model(_) if stopped => "not running",
+                _ => disabled_reason(row),
+            };
             return Footer::Hint(Cow::Owned(format!("{reason} · not selectable")));
         }
         // A warning, not a block: the account list may be stale.
@@ -1290,10 +1347,18 @@ impl MenuState {
         if let Some(why) = self.command_shown {
             return why.footer().to_owned();
         }
+        if self.checking_update {
+            return "checking crates.io… · j/k move · s save · Esc cancel".to_owned();
+        }
+        let check = if self.can_check_update() {
+            " · r check"
+        } else {
+            ""
+        };
         match (&self.installed, &self.update) {
             (Some(done), _) => format!("Updated to {done} · restart lazarobox to use it"),
-            (None, Some(_)) => "Enter updates · j/k move · s save · Esc cancel".to_owned(),
-            (None, None) => "up to date · j/k move · s save · Esc cancel".to_owned(),
+            (None, Some(_)) => format!("Enter updates{check} · j/k move · s save · Esc cancel"),
+            (None, None) => format!("up to date{check} · j/k move · s save · Esc cancel"),
         }
     }
 
@@ -1659,6 +1724,12 @@ mod custom_flow_tests;
 
 #[cfg(test)]
 mod reanchor_tests;
+
+#[cfg(test)]
+mod llamacpp_tests;
+
+#[cfg(test)]
+mod llamacpp_probe_tests;
 
 #[cfg(test)]
 mod save_tests;

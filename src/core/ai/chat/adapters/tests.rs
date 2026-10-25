@@ -16,6 +16,7 @@ fn message(role: Role, content: &str) -> ChatMessage {
 
 fn request(system: &str) -> ChatRequest {
     ChatRequest {
+        families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         engine: "ollama".into(),
         model: Some("llama3:8b".into()),
         system: system.into(),
@@ -43,14 +44,67 @@ fn http(invocation: Invocation) -> (Wire, u16, &'static str, Value) {
 }
 
 #[test]
-fn only_ollama_claude_codex_and_gemini_have_an_adapter_so_far() {
+fn every_catalog_engine_but_opencode_has_an_adapter() {
     assert_eq!(adapter_for("ollama"), Some(Adapter::Ollama));
+    assert_eq!(adapter_for("lmstudio"), Some(Adapter::Lmstudio));
+    assert_eq!(adapter_for("llamacpp"), Some(Adapter::Llamacpp));
+    assert_eq!(adapter_for("vllm"), Some(Adapter::Vllm));
     assert_eq!(adapter_for("claude"), Some(Adapter::Claude));
     assert_eq!(adapter_for("codex"), Some(Adapter::Codex));
     assert_eq!(adapter_for("gemini"), Some(Adapter::Gemini));
-    for id in ["opencode", "lmstudio", "llamacpp", "vllm", "nope"] {
+    for id in ["opencode", "nope"] {
         assert_eq!(adapter_for(id), None, "{id}");
     }
+}
+
+#[test]
+fn openai_compatible_servers_post_sse_chat_to_their_catalog_port() {
+    for (adapter, port) in [
+        (Adapter::Lmstudio, 1234),
+        (Adapter::Llamacpp, 8080),
+        (Adapter::Vllm, 8000),
+    ] {
+        let (wire, got, path, _) = http(adapter.build(&request("be brief")));
+        assert_eq!(
+            (wire, got, path),
+            (Wire::Sse, port, "/v1/chat/completions"),
+            "{adapter:?}"
+        );
+    }
+}
+
+#[test]
+fn an_openai_compatible_body_holds_the_model_the_messages_and_the_stream_flag_only() {
+    let mut req = request("be brief");
+    req.model = Some("/models/qwen2.5-0.5b-instruct-q4_k_m.gguf".into());
+    for adapter in [Adapter::Lmstudio, Adapter::Llamacpp, Adapter::Vllm] {
+        let (_, _, _, body) = http(adapter.build(&req));
+        assert_eq!(
+            body,
+            json!({
+                "model": "/models/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+                "stream": true,
+                "messages": [
+                    {"role": "system", "content": "be brief"},
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "hello"},
+                    {"role": "user", "content": "and now?"},
+                ],
+            }),
+            "{adapter:?}"
+        );
+    }
+}
+
+#[test]
+fn an_openai_compatible_body_carries_the_memory_after_the_system_prompt() {
+    let mut req = request("be brief");
+    req.memory = Some("notes".into());
+    let (_, _, _, body) = http(Adapter::Llamacpp.build(&req));
+    assert_eq!(
+        body["messages"][0],
+        json!({"role": "system", "content": "be brief\n\nnotes"})
+    );
 }
 
 #[test]
@@ -147,16 +201,20 @@ fn without_a_block_the_system_message_is_the_prompt_alone() {
 }
 
 #[test]
-fn only_ollama_claude_codex_and_gemini_carry_the_memory_block_so_far() {
+fn every_adapter_carries_the_memory_block() {
     assert!(Adapter::Ollama.carries_memory());
     assert!(carries_memory("ollama"));
+    for id in ["lmstudio", "llamacpp", "vllm"] {
+        assert!(adapter_for(id).unwrap().carries_memory(), "{id}");
+        assert!(carries_memory(id), "{id}");
+    }
     assert!(Adapter::Claude.carries_memory());
     assert!(carries_memory("claude"));
     assert!(Adapter::Codex.carries_memory());
     assert!(carries_memory("codex"));
     assert!(Adapter::Gemini.carries_memory());
     assert!(carries_memory("gemini"));
-    for id in ["opencode", "lmstudio", "nope"] {
+    for id in ["opencode", "nope"] {
         assert!(!carries_memory(id), "{id}");
     }
 }
@@ -841,7 +899,9 @@ fn a_gemini_message_cannot_forge_a_turn_boundary() {
 // body.
 #[test]
 fn the_tools_flag_changes_no_invocation() {
-    for engine in ["ollama", "claude", "codex", "gemini"] {
+    for engine in [
+        "ollama", "lmstudio", "llamacpp", "vllm", "claude", "codex", "gemini",
+    ] {
         let mut off = request("be brief");
         off.engine = engine.into();
         let mut on = off.clone();
@@ -1279,6 +1339,39 @@ fn the_ollama_body_offers_the_external_tools_after_the_built_ins() {
         ]
     );
     assert!(names(body_of(ollama_round_body(&req, &[], false))).is_empty());
+}
+
+// P0b.2: the offered list follows `ChatRequest::families`; the default is the
+// 0.18.0 set, and an empty set offers no built-in at all.
+#[test]
+fn ollama_offers_only_the_families_of_the_request() {
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    let names = |families: FamilySet| -> Vec<String> {
+        let mut req = request("");
+        req.families = families;
+        req.tools = Tools::On {
+            origin: None,
+            mcp: None,
+            external: Box::default(),
+        };
+        body_of(ollama_round_body(&req, &[], true))["tools"]
+            .as_array()
+            .map(|t| {
+                t.iter()
+                    .map(|t| t["function"]["name"].as_str().unwrap().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        names(FamilySet::LEGACY),
+        ["find_dir", "list_dir", "read_file", "run_in_pane"]
+    );
+    assert_eq!(
+        names(FamilySet::EMPTY.with(Family::Read)),
+        ["find_dir", "list_dir", "read_file"]
+    );
+    assert!(names(FamilySet::EMPTY).is_empty());
 }
 
 /// Every flag a claude turn passes, with the first claude release that knows

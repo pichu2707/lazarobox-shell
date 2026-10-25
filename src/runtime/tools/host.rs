@@ -287,10 +287,18 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
         match (valid, scope.locality) {
             // A cloud read asks with the path as it will be opened: resolved,
             // and only when the display shows it unchanged.
-            (Call::ReadFile { path }, Locality::Cloud) => {
+            (Call::ReadFile { path, lines }, Locality::Cloud) => {
                 let home = host.home.as_deref().map(Path::new);
                 match home.and_then(|home| display_target(home, &scope.origin, path)) {
-                    Some(shown) => ask = ask_for(&Call::ReadFile { path: shown }, Locality::Cloud),
+                    Some(shown) => {
+                        ask = ask_for(
+                            &Call::ReadFile {
+                                path: shown,
+                                lines: *lines,
+                            },
+                            Locality::Cloud,
+                        )
+                    }
                     None => checked = Err(UNSHOWABLE),
                 }
             }

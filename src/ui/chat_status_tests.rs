@@ -54,6 +54,7 @@ fn ready_detection() -> Detection {
             model_labels: Vec::new(),
             diagnostics: Default::default(),
         }],
+        ..Default::default()
     }
 }
 

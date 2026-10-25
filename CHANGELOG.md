@@ -10,6 +10,108 @@ baseline.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-23
+
+### Added
+
+- The model picker of a stopped llama-server lists the `.gguf` models found
+  on the machine (the llama.cpp models folder, llama.cpp's cache and the
+  Hugging Face cache), marked `lazarobox starts it`. Choosing one and saving
+  writes `managed = true` and that `model` under `[ai.servers.llamacpp]`,
+  keeping the other keys, and starts llama-server at once, with no restart.
+  The statusline says when it is ready or why it did not start.
+
+### Fixed
+
+- macOS: the jail's check that no program folder is also writable ignores
+  letter case too. A codex under `~/.codex/...` with `CODEX_HOME=~/.CODEX`
+  (the same folder on the default file system) was accepted; now it is
+  refused like `~/.codex`.
+- With `[ai.servers.llamacpp] managed = true`, the model picker offers the
+  configured model while llama-server is not running (marked
+  `lazarobox starts it`), instead of the note that says to start it by hand.
+
+## [0.21.0] - 2026-10-23
+
+### Changed
+
+- CI and release workflows: `actions/checkout` v4 to v7.0.1 (Node 24, no more
+  Node 20 deprecation warning; it refuses fork checkouts under
+  `pull_request_target` and `workflow_run`). Every action is pinned to a
+  commit SHA with its version in a comment, and no checkout keeps the git
+  token on the runner (`persist-credentials: false`). `rust-cache` v2.9.3,
+  `crates-io-auth-action` v1.0.6.
+- macOS: the startup check of the jail may take 10 s in total instead of 5 s,
+  so a slow first `sandbox-exec` on a loaded Mac no longer turns codex and
+  gemini off for the session.
+
+### Fixed
+
+- macOS: the jail's refusals ignore letter case, like the default file system
+  does. A state dir or package root spelled `~/library/keychains`,
+  `~/LIBRARY/Caches`, `~/.SSH` or `/system` was granted before; now it is
+  refused like `~/Library/Keychains`. Linux still matches case.
+- The outdated-CLI message names our flag also when the CLI rejects it with
+  its value (`--model=<name>`, `--mcp-config=`, `--allowedTools=`,
+  `--setting-sources=`): it says `--model`, never the value, instead of the
+  generic `it rejected an option`.
+
+## [0.20.0] - 2026-10-23
+
+### Added
+
+- `r` on the menu's Updates row checks crates.io now, ignoring the cache and
+  the 24-hour limit. The row reads `checking…` until the answer comes. It does
+  nothing with `[updates] check = false` or after an install in this run.
+
+## [0.19.0] - 2026-10-23
+
+### Added
+
+- lazarobox can manage llama.cpp: with `managed = true` and `model = "<absolute
+  path to a .gguf>"` under `[ai.servers.llamacpp]`, the first llamacpp chat turn starts
+  `llama-server --host 127.0.0.1 --port 39281 -m <model>` and waits until it
+  answers; later turns reuse it, and quitting lazarobox stops it (on Linux it
+  also dies if lazarobox crashes). Nothing starts on launch or on detection.
+  The port is 39281 unless `port` is set. If something already answers there,
+  nothing starts and the chat says so. The server's output goes to
+  `llama-server.log` in lazarobox's state folder, and a failed start shows its
+  last line. Wrong values are ignored with a startup notice.
+- A server engine can live on another port: `[ai.servers.<id>] port = N` in
+  `config.toml` (for `ollama`, `lmstudio`, `llamacpp` and `vllm`). Detection
+  and chat both use it, always on `127.0.0.1`; without it the usual port is
+  used. A port that is not an integer from 1 to 65535 is ignored with a startup
+  notice. The menu never writes the table and keeps it on save. It is read at
+  startup.
+- An installed server that is not running (its binary is on PATH, but nothing
+  answers on its port) is now listed in the engine picker as `not running`.
+  Choosing it shows where lazarobox looks and how to start it, for example
+  `llamacpp not running on 127.0.0.1:39080 · start it, then press r:
+  llama-server --port 39080 -m <model.gguf>`; Enter or `y` copies it.
+  lazarobox does not start the server, unless it manages llama.cpp (below).
+
+- Chat with LM Studio, llama.cpp (`llama-server`) and vLLM. They talk to their
+  server's `/v1/chat/completions` on `127.0.0.1` and their usual port (1234,
+  8080 and 8000), stream the answer over Server-Sent Events and send no
+  credentials, like Ollama. The body holds the model, the messages and the
+  stream flag only: no reasoning is shown and no tools are offered. llama.cpp
+  is tested against a reply recorded from a real server; LM Studio and vLLM
+  use the same format but are not yet verified against a real one. The menu no longer marks them
+  `detected · not in chat yet`; only opencode still has no chat adapter.
+
+### Changed
+
+- The engine picker no longer lets you choose an engine that chat has no
+  adapter for (today only opencode). Its row still reads `detected · not in
+  chat yet`, dimmed, and Enter does nothing on it; before, you could assign it
+  and chat then refused it.
+
+### Fixed
+
+- Closing the terminal tab that runs lazarobox no longer leaves the servers it
+  started running (MCP servers, CLI chats and the managed llama-server).
+  Restoring the dead terminal made lazarobox abort before its quit cleanup.
+
 ## [0.18.0] - 2026-10-20
 
 ### Added
@@ -894,7 +996,11 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.21.0...v0.22.0
+[0.21.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.20.0...v0.21.0
+[0.20.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.19.0...v0.20.0
+[0.19.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.2...v0.18.0
 [0.17.2]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.17.0...v0.17.1

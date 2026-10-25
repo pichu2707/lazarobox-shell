@@ -111,6 +111,7 @@ fn chat_app() -> App {
             model_labels: Vec::new(),
             diagnostics: Default::default(),
         }],
+        ..Default::default()
     }));
     prefixed(&mut app, "c");
     app.update(AppEvent::PromptReady(

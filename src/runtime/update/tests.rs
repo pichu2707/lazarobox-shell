@@ -1123,3 +1123,45 @@ mod install_env {
         );
     }
 }
+
+// --- the menu's `r`: check now ----------------------------------------------
+
+fn received(rx: &mut mpsc::Receiver<Option<String>>) -> Option<String> {
+    loop {
+        match rx.try_recv() {
+            Ok(v) => break v,
+            Err(mpsc::error::TryRecvError::Empty) => thread::sleep(Duration::from_millis(5)),
+            Err(e) => panic!("{e:?}"),
+        }
+    }
+}
+
+#[test]
+fn check_now_asks_even_when_the_cache_is_fresh() {
+    let (_dir, path) = cache_file();
+    write_cache(
+        &path,
+        &Cache {
+            checked_at: 1_000,
+            ok: true,
+            latest: None,
+            checked_by: None,
+        },
+    )
+    .unwrap();
+    let (fetcher, calls) = counting("0.16.0");
+    let (tx, mut rx) = mpsc::channel(1);
+    check_now(Some(path.clone()), 1_001, "0.15.1", fetcher, tx);
+    assert_eq!(received(&mut rx).as_deref(), Some("0.16.0"));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(stored(&path).checked_at, 1_001);
+}
+
+#[test]
+fn check_now_without_a_cache_location_answers_nothing_new_at_once() {
+    let (fetcher, calls) = counting("0.16.0");
+    let (tx, mut rx) = mpsc::channel(1);
+    check_now(None, 5_000, "0.15.1", fetcher, tx);
+    assert_eq!(received(&mut rx), None);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}

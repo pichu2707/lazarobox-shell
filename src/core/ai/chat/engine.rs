@@ -13,7 +13,9 @@ use crate::core::ai::{
     config::{AiConfig, Task},
     jail::JailSupport,
     status_text,
-    tools::{Locality, report::RunReport, servers::Qualified, wiring::McpWire},
+    tools::{
+        Locality, registry::FamilySet, report::RunReport, servers::Qualified, wiring::McpWire,
+    },
 };
 
 /// Who wrote a message.
@@ -47,6 +49,9 @@ pub struct ChatRequest {
     /// reads it yet: only the runtime does, to open the turn's tool session,
     /// so the bytes an engine receives do not depend on it.
     pub tools: Tools,
+    /// Which tool families the turn offers, and so which built-in names a call
+    /// may use. [`FamilySet::LEGACY`] until a toggle turns more on.
+    pub families: FamilySet,
 }
 
 /// Whether a turn offers tools.
@@ -288,6 +293,24 @@ pub fn availability_with(
     let Some(detection) = detection else {
         return Availability::Checking;
     };
+    // A llama-server that lazarobox starts itself only needs its binary: the
+    // turn starts it. It ignores the model name, so none is looked up.
+    if engine == "llamacpp"
+        && let Some(server) = cfg.managed()
+        && detection
+            .engines
+            .iter()
+            .any(|s| s.id == engine && matches!(s.status, Status::Available | Status::NotRunning))
+    {
+        let model = assignment
+            .model
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| server.model.display().to_string());
+        return Availability::Ready {
+            engine,
+            model: Some(model),
+        };
+    }
     let available = detection
         .engines
         .iter()
@@ -339,7 +362,7 @@ fn same_model(a: &str, b: &str) -> bool {
 }
 
 /// Whether an adapter exists for the engine. Only the engines whose adapter
-/// has landed (ollama, claude) can chat; the others are unsupported.
+/// has landed can chat; the others (opencode) are unsupported.
 pub fn has_adapter(id: &str) -> bool {
     adapter_for(id).is_some()
 }

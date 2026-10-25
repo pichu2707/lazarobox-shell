@@ -554,6 +554,7 @@ mod tests {
                     diagnostics: Default::default(),
                 })
                 .collect(),
+            ..Default::default()
         }
     }
 
@@ -622,6 +623,7 @@ mod tests {
                     diagnostics: Default::default(),
                 })
                 .collect(),
+            ..Default::default()
         }
     }
 
@@ -1066,6 +1068,7 @@ mod tests {
                     diagnostics: Default::default(),
                 })
                 .collect(),
+            ..Default::default()
         };
         let row = |name: &str| {
             let saved = AiConfig::general(Some("ollama"), None);
@@ -1111,6 +1114,7 @@ mod tests {
                     },
                 })
                 .collect(),
+            ..Default::default()
         }
     }
 
@@ -1224,6 +1228,7 @@ mod tests {
                     diagnostics: Default::default(),
                 })
                 .collect(),
+            ..Default::default()
         }
     }
 
@@ -1277,6 +1282,7 @@ mod tests {
                     diagnostics: Default::default(),
                 })
                 .collect(),
+            ..Default::default()
         };
         let mut menu = fresh().with_ai(AiConfig::general(Some("claude"), None), Some(det));
         goto(&mut menu, "general");

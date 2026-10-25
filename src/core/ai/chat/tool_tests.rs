@@ -279,6 +279,7 @@ fn the_locality_of_an_engine_comes_from_its_adapter_kind() {
     // The model name is not an input: a request for ollama with a cloud-like
     // model, or a CLI with a local-like one, keeps its engine's locality.
     let request = |engine: &str, model: &str| ChatRequest {
+        families: crate::core::ai::tools::registry::FamilySet::LEGACY,
         engine: engine.into(),
         model: Some(model.into()),
         system: SYSTEM.into(),

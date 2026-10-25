@@ -35,7 +35,10 @@ fn state(id: &'static str, status: Status, models: &[&str]) -> EngineState {
 }
 
 fn detected(states: Vec<EngineState>) -> Detection {
-    Detection { engines: states }
+    Detection {
+        engines: states,
+        ..Default::default()
+    }
 }
 
 fn ready(engine: &str, model: Option<&str>) -> Availability {
@@ -170,7 +173,7 @@ fn the_no_jail_reason_names_the_kernel_abi() {
 
 #[test]
 fn engines_without_an_adapter_are_unsupported_whatever_the_jail() {
-    for id in ["lmstudio", "llamacpp", "vllm", "opencode"] {
+    for id in ["opencode"] {
         let c = cfg(Task::Chat, Some(id), Some("default"));
         let d = detected(vec![state(id, Status::Available, &["default"])]);
         for jail in [NO_JAIL, JAIL] {
@@ -319,14 +322,14 @@ fn it_never_switches_engine() {
 }
 
 #[test]
-fn only_ollama_claude_codex_and_gemini_have_an_adapter_so_far() {
+fn only_opencode_has_no_adapter() {
     let mut without: Vec<_> = CATALOG
         .iter()
         .filter(|e| !has_adapter(e.id))
         .map(|e| e.id)
         .collect();
     without.sort_unstable();
-    assert_eq!(without, ["llamacpp", "lmstudio", "opencode", "vllm"]);
+    assert_eq!(without, ["opencode"]);
 }
 
 fn claude_at(version: Option<&str>) -> Detection {
@@ -383,4 +386,49 @@ fn an_old_looking_version_of_another_cli_is_not_gated() {
         availability(&c, Some(&detected(vec![codex])), JAIL),
         ready("codex", Some("default"))
     );
+}
+
+fn managed_cfg(model: Option<&str>) -> AiConfig {
+    cfg(Task::Chat, Some("llamacpp"), model).with_managed(crate::core::ai::config::ManagedServer {
+        model: "/m/q.gguf".into(),
+    })
+}
+
+// Spec: A managed llama-server starts on the first turn (chat gate).
+#[test]
+fn a_managed_llamacpp_that_is_installed_is_ready_running_or_not() {
+    for status in [Status::NotRunning, Status::Available] {
+        // A running llama-server lists its model by path, never by the
+        // assigned name: llama-server ignores the name anyway.
+        let d = detected(vec![state("llamacpp", status, &["/m/q.gguf"])]);
+        assert_eq!(
+            availability(&managed_cfg(Some("qwen2.5")), Some(&d), JAIL),
+            ready("llamacpp", Some("qwen2.5"))
+        );
+        assert_eq!(
+            availability(&managed_cfg(None), Some(&d), NO_JAIL),
+            ready("llamacpp", Some("/m/q.gguf"))
+        );
+    }
+}
+
+// Spec: A managed llama-server starts on the first turn (not installed).
+#[test]
+fn a_managed_llamacpp_that_is_not_installed_is_still_undetected() {
+    let d = detected(vec![state("llamacpp", Status::NotInstalled, &[])]);
+    assert!(matches!(
+        availability(&managed_cfg(Some("qwen2.5")), Some(&d), JAIL),
+        Availability::Undetected { .. }
+    ));
+}
+
+// Spec: A managed llama-server is opt-in (chat gate unchanged without it).
+#[test]
+fn an_unmanaged_llamacpp_that_is_not_running_is_undetected() {
+    let c = cfg(Task::Chat, Some("llamacpp"), Some("qwen2.5"));
+    let d = detected(vec![state("llamacpp", Status::NotRunning, &[])]);
+    assert!(matches!(
+        availability(&c, Some(&d), JAIL),
+        Availability::Undetected { .. }
+    ));
 }

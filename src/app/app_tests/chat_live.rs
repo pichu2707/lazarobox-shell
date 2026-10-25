@@ -78,6 +78,7 @@ pub(super) fn detection(models: &[&str]) -> Detection {
             model_labels: Vec::new(),
             diagnostics: Default::default(),
         }],
+        ..Default::default()
     }
 }
 
@@ -810,6 +811,7 @@ fn detection_with(status: Status, models: &[&str]) -> Detection {
             model_labels: Vec::new(),
             diagnostics: Default::default(),
         }],
+        ..Default::default()
     }
 }
 
@@ -907,6 +909,7 @@ fn a_cli_without_an_adapter_is_not_supported_in_chat_yet() {
             model_labels: Vec::new(),
             diagnostics: Default::default(),
         }],
+        ..Default::default()
     }));
     assert_eq!(
         guidance_of(&a).as_deref(),
@@ -926,6 +929,7 @@ fn cli_detected(id: &'static str) -> AppEvent {
             model_labels: Vec::new(),
             diagnostics: Default::default(),
         }],
+        ..Default::default()
     })
 }
 

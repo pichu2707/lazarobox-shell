@@ -5,13 +5,16 @@
 //! The model catalogs behind these rows are informational and possibly
 //! stale (see `catalog`); nothing here downloads a model.
 
+use std::path::Path;
+
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::catalog::{cli_models, curated, same_model};
+use super::chat::adapters::adapter_for;
 use super::config::{AiConfig, Assignment, Task};
 use super::parse::sanitize;
 use super::sanitize::is_format;
-use super::{CATALOG, Detection, Kind, Status, status_text};
+use super::{CATALOG, Detection, Engine, Kind, Status, gguf, start_command, status_text};
 
 /// What a picker is assigning to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -106,15 +109,49 @@ fn known(detection: Option<&Detection>) -> Option<&Detection> {
 }
 
 fn is_available(detection: Option<&Detection>, id: &str) -> bool {
-    detection.is_some_and(|d| {
-        d.engines
-            .iter()
-            .any(|s| s.id == id && s.status == Status::Available)
-    })
+    has_status(detection, id, Status::Available)
+}
+
+fn has_status(detection: Option<&Detection>, id: &str, status: Status) -> bool {
+    detection.is_some_and(|d| d.engines.iter().any(|s| s.id == id && s.status == status))
+}
+
+/// The mark of a model a stopped llama-server can be started with.
+pub const MANAGED_MARK: &str = "lazarobox starts it";
+
+/// The models lazarobox can start a stopped llama-server with: `managed`
+/// first, then the files found on the machine, each once. Only paths that are
+/// text, since the choice is saved as a string. Empty for any other engine or
+/// state.
+fn local_files(engine: &str, managed: Option<&Path>, detection: &Detection) -> Vec<String> {
+    if engine != "llamacpp" || !has_status(Some(detection), engine, Status::NotRunning) {
+        return Vec::new();
+    }
+    let mut files: Vec<String> = Vec::new();
+    for path in managed
+        .into_iter()
+        .chain(detection.local_models.iter().map(|p| p.as_path()))
+    {
+        if let Some(text) = path.to_str()
+            && !files.iter().any(|f| f == text)
+        {
+            files.push(text.to_owned());
+        }
+    }
+    files
+}
+
+/// A server engine whose binary is on PATH but that did not answer on its
+/// port: listed, so that choosing it says how to start it.
+fn is_stopped_server(detection: Option<&Detection>, engine: &Engine) -> bool {
+    matches!(engine.kind, Kind::Server { .. })
+        && has_status(detection, engine.id, Status::NotRunning)
 }
 
 /// The Engines level of a picker: the unassign entry, the available
-/// engines in catalog order, then every engine assigned anywhere in the
+/// engines in catalog order (an engine chat has no adapter for is listed
+/// but not selectable, since chat would refuse it), the installed servers
+/// that are not running, then every other engine assigned anywhere in the
 /// draft that is not available (selectable, so it can be kept or reopened).
 pub fn engine_rows(
     target: Target,
@@ -135,21 +172,35 @@ pub fn engine_rows(
         enabled: true,
         current: current.as_ref().is_some_and(|a| a.engine.is_none()),
     }];
-    let mut push = |id: &str, mark: Mark| {
+    let mut push = |id: &str, mark: Mark, enabled: bool| {
         rows.push(PickRow {
             key: PickKey::Engine(id.to_owned()),
             label: id.to_owned(),
             mark,
-            enabled: true,
+            enabled,
             current: current_engine == Some(id),
         });
     };
     for engine in CATALOG {
         if is_available(detection, engine.id) {
-            push(engine.id, Mark::Status(status_text(detection, engine.id)));
+            push(
+                engine.id,
+                Mark::Status(status_text(detection, engine.id)),
+                adapter_for(engine.id).is_some(),
+            );
         }
     }
     let mut listed: Vec<&str> = Vec::new();
+    for engine in CATALOG {
+        if is_stopped_server(detection, engine) {
+            listed.push(engine.id);
+            push(
+                engine.id,
+                Mark::Status(status_text(detection, engine.id)),
+                adapter_for(engine.id).is_some(),
+            );
+        }
+    }
     for task in Task::ALL {
         let Some(id) = draft.get(task).engine.as_deref() else {
             continue;
@@ -162,7 +213,7 @@ pub fn engine_rows(
             None => Mark::Checking,
             Some(_) => Mark::Status("(not detected)".to_owned()),
         };
-        push(id, mark);
+        push(id, mark, true);
     }
     rows
 }
@@ -262,21 +313,7 @@ pub fn model_rows(
         });
         if let Some(why) = why {
             let full = format!("model list unavailable: {}", sanitize(why));
-            rows.extend(
-                wrap_note(&full)
-                    .into_iter()
-                    .enumerate()
-                    .map(|(row, line)| PickRow {
-                        key: PickKey::Note {
-                            row,
-                            text: full.clone(),
-                        },
-                        label: line,
-                        mark: Mark::Plain,
-                        enabled: false,
-                        current: false,
-                    }),
-            );
+            rows.extend(note_rows(&full));
         }
         rows.push(PickRow {
             key: PickKey::Custom,
@@ -309,11 +346,46 @@ pub fn model_rows(
         .iter()
         .find(|s| s.id == engine && s.status == Status::Available);
     let Some(state) = state else {
+        // A stopped llama-server: lazarobox starts it with the model chosen
+        // here, the managed one first, then the files found on the machine.
+        // Managed, every saved name works too (llama-server ignores it).
+        let managed = draft.managed().map(|s| s.model.as_path());
+        let files = local_files(engine, managed, detection);
+        if !files.is_empty() {
+            let mut rows: Vec<PickRow> = files
+                .iter()
+                .map(|path| {
+                    let label = gguf::label(Path::new(path));
+                    labeled(&label, path, Mark::Status(MANAGED_MARK.to_owned()), true)
+                })
+                .collect();
+            rows.extend(
+                assigned
+                    .iter()
+                    .filter(|m| !files.iter().any(|f| same_model(engine, m, f)))
+                    .map(|m| row(m, Mark::Plain, managed.is_some())),
+            );
+            return rows;
+        }
         let mut rows: Vec<PickRow> = assigned
             .iter()
             .map(|m| row(m, Mark::Plain, false))
             .collect();
-        rows.push(info("engine not detected", Mark::Plain));
+        let start = CATALOG
+            .iter()
+            .find(|e| e.id == engine)
+            .filter(|e| is_stopped_server(Some(detection), e))
+            .and_then(|_| {
+                let port = draft.servers().port(engine)?;
+                let command = start_command(engine, port)?;
+                Some(format!(
+                    "{engine} not running on 127.0.0.1:{port} · start it, then press r: {command}"
+                ))
+            });
+        match start {
+            Some(full) => rows.extend(note_rows(&full)),
+            None => rows.push(info("engine not detected", Mark::Plain)),
+        }
         return rows;
     };
 
@@ -336,6 +408,24 @@ pub fn model_rows(
         rows.push(info("no models detected", Mark::Plain));
     }
     rows
+}
+
+/// The rows of a note: `text` wrapped, each row carrying the whole text to
+/// copy. Never selectable.
+fn note_rows(text: &str) -> impl Iterator<Item = PickRow> + '_ {
+    wrap_note(text)
+        .into_iter()
+        .enumerate()
+        .map(move |(row, line)| PickRow {
+            key: PickKey::Note {
+                row,
+                text: text.to_owned(),
+            },
+            label: line,
+            mark: Mark::Plain,
+            enabled: false,
+            current: false,
+        })
 }
 
 /// Cells a wrapped note row may use: the AI popup is 62 wide, 60 inside, and
@@ -801,7 +891,10 @@ mod tests {
     }
 
     fn detection(states: Vec<EngineState>) -> Detection {
-        Detection { engines: states }
+        Detection {
+            engines: states,
+            ..Default::default()
+        }
     }
 
     fn assign(config: &mut AiConfig, task: Task, engine: &str, model: Option<&str>) {
@@ -1162,7 +1255,7 @@ mod tests {
         let mut draft = AiConfig::default();
         assign(&mut draft, Task::Code, "ollama", Some("llama3:8b"));
         assign(&mut draft, Task::Chat, "ollama", Some("qwen3:8b"));
-        let d = detection(vec![state("ollama", Status::NotRunning, &[])]);
+        let d = detection(vec![state("ollama", Status::NotInstalled, &[])]);
         assert_eq!(
             model_rows("ollama", Target::Task(Task::Code), &draft, Some(&d)),
             [
@@ -1367,7 +1460,242 @@ mod tests {
                 ),
                 engine("ollama", "available · 2 models", false),
                 engine("claude", "available · version unknown", false),
+                engine("lmstudio", "not running", false),
                 engine("codex", "(not detected)", true),
+            ]
+        );
+    }
+
+    #[test]
+    fn installed_servers_that_are_not_running_are_listed_after_the_available_engines() {
+        let draft = AiConfig::default();
+        let d = detection(vec![
+            state("ollama", Status::NotRunning, &[]),
+            state("lmstudio", Status::NotInstalled, &[]),
+            state("llamacpp", Status::NotRunning, &[]),
+            state("claude", Status::Available, &[]),
+            state("codex", Status::NotRunning, &[]),
+        ]);
+        assert_eq!(
+            compact(&engine_rows(Target::Task(Task::Chat), &draft, Some(&d))[1..]),
+            [
+                (
+                    "claude".to_owned(),
+                    Mark::Status("available · version unknown".to_owned()),
+                    true
+                ),
+                (
+                    "ollama".to_owned(),
+                    Mark::Status("not running".to_owned()),
+                    true
+                ),
+                (
+                    "llamacpp".to_owned(),
+                    Mark::Status("not running".to_owned()),
+                    true
+                ),
+            ]
+        );
+    }
+
+    fn managed_draft(model: &str) -> AiConfig {
+        AiConfig::default().with_managed(crate::core::ai::config::ManagedServer {
+            model: std::path::PathBuf::from(model),
+        })
+    }
+
+    // Spec (managed llama-server): lazarobox starts it, so a stopped server is
+    // no reason to send the user off to start it by hand.
+    #[test]
+    fn a_managed_llama_server_that_is_not_running_offers_its_model() {
+        let mut draft = managed_draft("/m/qwen.gguf");
+        assign(&mut draft, Task::Chat, "llamacpp", Some("old"));
+        let d = detection(vec![state("llamacpp", Status::NotRunning, &[])]);
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+        assert_eq!(
+            rows,
+            vec![
+                PickRow {
+                    key: PickKey::Model("/m/qwen.gguf".to_owned()),
+                    label: "qwen.gguf".to_owned(),
+                    mark: Mark::Status(MANAGED_MARK.to_owned()),
+                    enabled: true,
+                    current: false,
+                },
+                model("old", Mark::Plain, true, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_managed_model_is_current_when_it_is_assigned() {
+        let mut draft = managed_draft("/m/qwen.gguf");
+        assign(&mut draft, Task::Chat, "llamacpp", Some("/m/qwen.gguf"));
+        let d = detection(vec![state("llamacpp", Status::NotRunning, &[])]);
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(rows[0].current && rows[0].enabled);
+    }
+
+    #[test]
+    fn an_unmanaged_or_absent_llama_server_keeps_its_rows() {
+        // Not installed: nothing to start, managed or not.
+        let draft = managed_draft("/m/qwen.gguf");
+        let d = detection(vec![state("llamacpp", Status::NotInstalled, &[])]);
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+        assert_eq!(rows, vec![info("engine not detected")]);
+        // Another stopped server is not managed by lazarobox.
+        let d = detection(vec![state("vllm", Status::NotRunning, &[])]);
+        let rows = model_rows("vllm", Target::Task(Task::Chat), &draft, Some(&d));
+        assert!(
+            rows.iter().any(|r| matches!(r.key, PickKey::Note { .. })),
+            "{rows:?}"
+        );
+    }
+
+    fn stopped_llamacpp_with(models: &[&str]) -> Detection {
+        Detection {
+            engines: vec![state("llamacpp", Status::NotRunning, &[])],
+            local_models: models.iter().map(std::path::PathBuf::from).collect(),
+        }
+    }
+
+    fn local(path: &str, current: bool) -> PickRow {
+        PickRow {
+            key: PickKey::Model(path.to_owned()),
+            label: crate::core::ai::gguf::label(std::path::Path::new(path)),
+            mark: Mark::Status(MANAGED_MARK.to_owned()),
+            enabled: true,
+            current,
+        }
+    }
+
+    // Spec S2: a stopped llama-server lists the models found on the machine;
+    // choosing one is what makes lazarobox start it.
+    #[test]
+    fn a_stopped_llama_server_offers_the_local_models() {
+        let mut draft = AiConfig::default();
+        assign(&mut draft, Task::Chat, "llamacpp", Some("qwen"));
+        let d = stopped_llamacpp_with(&["/m/a.gguf", "/h/b.gguf"]);
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+        assert_eq!(
+            rows,
+            vec![
+                local("/m/a.gguf", false),
+                local("/h/b.gguf", false),
+                // Unmanaged, a saved name still needs a running server.
+                model("qwen", Mark::Plain, false, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_managed_model_comes_first_and_is_listed_once() {
+        let mut draft = managed_draft("/m/b.gguf");
+        assign(&mut draft, Task::Chat, "llamacpp", Some("/m/b.gguf"));
+        let d = stopped_llamacpp_with(&["/m/a.gguf", "/m/b.gguf"]);
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+        assert_eq!(
+            rows,
+            vec![local("/m/b.gguf", true), local("/m/a.gguf", false)]
+        );
+    }
+
+    #[test]
+    fn a_local_model_whose_path_is_not_text_is_left_out() {
+        use std::os::unix::ffi::OsStrExt;
+        let mut d = stopped_llamacpp_with(&["/m/a.gguf"]);
+        d.local_models
+            .push(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
+                b"/m/\xff.gguf",
+            )));
+        let rows = model_rows(
+            "llamacpp",
+            Target::Task(Task::Chat),
+            &AiConfig::default(),
+            Some(&d),
+        );
+        assert_eq!(rows, vec![local("/m/a.gguf", false)]);
+    }
+
+    #[test]
+    fn a_running_llama_server_lists_its_own_models_not_the_files() {
+        let d = Detection {
+            engines: vec![state("llamacpp", Status::Available, &["served"])],
+            local_models: vec![std::path::PathBuf::from("/m/a.gguf")],
+        };
+        let rows = model_rows(
+            "llamacpp",
+            Target::Task(Task::Chat),
+            &AiConfig::default(),
+            Some(&d),
+        );
+        assert!(
+            rows.iter()
+                .all(|r| r.key != PickKey::Model("/m/a.gguf".to_owned())),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.key == PickKey::Model("served".to_owned())),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_server_that_is_not_running_says_where_it_is_looked_for_and_how_to_start_it() {
+        let ports = crate::core::ai::ServerPorts::default().with("llamacpp", 39080);
+        let mut draft = AiConfig::default().with_servers(ports);
+        assign(&mut draft, Task::Chat, "llamacpp", Some("qwen"));
+        let d = detection(vec![state("llamacpp", Status::NotRunning, &[])]);
+        let text = "llamacpp not running on 127.0.0.1:39080 · start it, then press r: \
+                    llama-server --port 39080 -m <model.gguf>";
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+        let mut want = vec![model("qwen", Mark::Plain, false, true)];
+        want.extend(
+            wrap_note(text)
+                .into_iter()
+                .enumerate()
+                .map(|(row, line)| PickRow {
+                    key: PickKey::Note {
+                        row,
+                        text: text.to_owned(),
+                    },
+                    label: line,
+                    mark: Mark::Plain,
+                    enabled: false,
+                    current: false,
+                }),
+        );
+        assert_eq!(rows, want);
+        // A server that is not installed keeps the plain line.
+        let d = detection(vec![state("llamacpp", Status::NotInstalled, &[])]);
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+        assert_eq!(rows.last().unwrap().key, PickKey::Info);
+        assert_eq!(rows.last().unwrap().label, "engine not detected");
+    }
+
+    #[test]
+    fn a_detected_engine_without_a_chat_adapter_is_listed_but_not_selectable() {
+        let draft = AiConfig::default();
+        let d = detection(vec![
+            state("llamacpp", Status::Available, &["m"]),
+            state("opencode", Status::Available, &[]),
+        ]);
+        let rows = engine_rows(Target::Task(Task::Code), &draft, Some(&d));
+        assert_eq!(
+            compact(&rows[1..]),
+            [
+                (
+                    "llamacpp".to_owned(),
+                    Mark::Status("available · 1 model".to_owned()),
+                    true
+                ),
+                (
+                    "opencode".to_owned(),
+                    Mark::Status("detected · not in chat yet".to_owned()),
+                    false
+                ),
             ]
         );
     }
@@ -1418,7 +1746,7 @@ mod tests {
                     true
                 ),
                 engine("claude", "available · version unknown", false),
-                engine("vllm", "(not detected)", false),
+                engine("vllm", "not running", false),
             ]
         );
     }

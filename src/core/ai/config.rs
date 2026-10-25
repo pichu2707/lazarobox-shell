@@ -1,9 +1,11 @@
 //! The `[ai]` and `[ai.tasks.*]` sections of `config.toml`: the saved engine
 //! and model id of each AI task.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use toml::{Table, Value};
+
+use super::{CATALOG, Kind, ServerPorts};
 
 /// The fixed set of AI tasks, in display order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -263,7 +265,21 @@ pub struct AiConfig {
     tools: bool,
     approval: ApprovalMode,
     mcp_servers: Vec<McpServer>,
+    servers: ServerPorts,
+    managed: Option<ManagedServer>,
     pub memory: MemoryConfig,
+}
+
+/// The port of a llama-server that lazarobox starts itself, unless
+/// `[ai.servers.llamacpp] port` says otherwise. Uncommon on purpose, so it
+/// does not meet another server's default.
+pub const MANAGED_PORT: u16 = 39281;
+
+/// A llama-server lazarobox starts itself (`[ai.servers.llamacpp]` with
+/// `managed = true`), with the model file it loads.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ManagedServer {
+    pub model: PathBuf,
 }
 
 impl Default for AiConfig {
@@ -277,6 +293,8 @@ impl Default for AiConfig {
             tools: true,
             approval: ApprovalMode::Ask,
             mcp_servers: Vec::new(),
+            servers: ServerPorts::default(),
+            managed: None,
             memory: MemoryConfig::default(),
         }
     }
@@ -348,6 +366,58 @@ impl AiConfig {
     /// order. Read once at startup; the menu never writes them.
     pub fn mcp_servers(&self) -> &[McpServer] {
         &self.mcp_servers
+    }
+
+    /// The loopback port of each server engine (`[ai.servers.<id>] port`).
+    pub fn servers(&self) -> &ServerPorts {
+        &self.servers
+    }
+
+    /// The llama-server lazarobox starts itself, when it is turned on.
+    pub fn managed(&self) -> Option<&ManagedServer> {
+        self.managed.as_ref()
+    }
+
+    /// Turns lazarobox's own llama-server on with `model`, as `managed = true`
+    /// and `model` in the config would: llamacpp moves to [`MANAGED_PORT`]
+    /// unless it already has a port of its own.
+    pub fn manage(&mut self, model: PathBuf) {
+        if self.managed.is_none() && !self.servers.is_set("llamacpp") {
+            self.servers = self.servers.clone().with("llamacpp", MANAGED_PORT);
+        }
+        self.managed = Some(ManagedServer { model });
+    }
+
+    /// The managed llama-server and the ports of `other`, as they were before
+    /// [`AiConfig::manage`].
+    pub fn keep_servers_of(&mut self, other: &AiConfig) {
+        self.managed = other.managed.clone();
+        self.servers = other.servers.clone();
+    }
+
+    /// Whether a task, its own or through general, uses the managed
+    /// llama-server's model.
+    pub fn uses_managed(&self) -> bool {
+        let Some(server) = &self.managed else {
+            return false;
+        };
+        Task::ALL.into_iter().any(|task| {
+            let (a, _) = self.resolve(task);
+            a.engine.as_deref() == Some("llamacpp")
+                && a.model.as_deref().map(Path::new) == Some(server.model.as_path())
+        })
+    }
+
+    #[cfg(test)]
+    pub fn with_managed(mut self, managed: ManagedServer) -> Self {
+        self.managed = Some(managed);
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_servers(mut self, servers: ServerPorts) -> Self {
+        self.servers = servers;
+        self
     }
 
     pub fn set_approval(&mut self, mode: ApprovalMode) {
@@ -540,6 +610,7 @@ pub fn read_with_port_env(
     config.tools = read_tools(table, problems);
     config.approval = read_approval(table, problems);
     config.mcp_servers = read_mcp_servers(table, problems);
+    (config.servers, config.managed) = read_servers(table, problems);
     config.memory = read_memory(table, problems, port_env);
     config
 }
@@ -741,6 +812,91 @@ fn string_list(value: Option<&Value>, keep: fn(&str) -> bool) -> Option<Vec<Stri
     }
 }
 
+/// Reads `[ai.servers.<id>] port` for the server engines, and `managed` and
+/// `model` for llamacpp. A wrong port falls back on its own, with a problem:
+/// to the catalog port, or to [`MANAGED_PORT`] for a managed llama-server. A
+/// wrong `managed` or `model` leaves it unmanaged. Unknown ids and keys are
+/// ignored, like unknown names under `ai.tasks`. The menu writes only
+/// `managed` and `model` of llamacpp, when a local model is chosen.
+fn read_servers(table: &Table, problems: &mut Vec<String>) -> (ServerPorts, Option<ManagedServer>) {
+    let mut ports = ServerPorts::default();
+    let mut managed = None;
+    let section = match table.get("ai").and_then(Value::as_table) {
+        None => return (ports, managed),
+        Some(ai) => match ai.get("servers") {
+            None => return (ports, managed),
+            Some(Value::Table(section)) => section,
+            Some(_) => {
+                problems.push("ai.servers: expected a table".to_owned());
+                return (ports, managed);
+            }
+        },
+    };
+    for engine in CATALOG {
+        if !matches!(engine.kind, Kind::Server { .. }) {
+            continue;
+        }
+        let id = engine.id;
+        let server = match section.get(id) {
+            None => continue,
+            Some(Value::Table(server)) => server,
+            Some(_) => {
+                problems.push(format!("ai.servers.{id}: expected a table"));
+                continue;
+            }
+        };
+        let port = match server.get("port") {
+            None => None,
+            Some(Value::Integer(n)) if (1..=65535).contains(n) => Some(*n as u16),
+            Some(_) => {
+                problems.push(format!(
+                    "ai.servers.{id}.port: expected an integer from 1 to 65535"
+                ));
+                None
+            }
+        };
+        // Only llamacpp's own port defaults to the managed one.
+        let mut fallback = None;
+        if id == "llamacpp" {
+            managed = read_managed(server, problems);
+            fallback = managed.as_ref().map(|_| MANAGED_PORT);
+        }
+        if let Some(port) = port.or(fallback) {
+            ports = ports.with(id, port);
+        }
+    }
+    (ports, managed)
+}
+
+/// `managed` and `model` of `[ai.servers.llamacpp]`: `Some` only with
+/// `managed = true` and a model path.
+fn read_managed(server: &Table, problems: &mut Vec<String>) -> Option<ManagedServer> {
+    let on = match server.get("managed") {
+        None => false,
+        Some(Value::Boolean(on)) => *on,
+        Some(_) => {
+            problems.push("ai.servers.llamacpp.managed: expected true or false".to_owned());
+            false
+        }
+    };
+    let model = match server.get("model") {
+        None => None,
+        Some(Value::String(model)) => (!model.is_empty()).then(|| PathBuf::from(model)),
+        Some(_) => {
+            problems.push("ai.servers.llamacpp.model: expected a path to a model file".to_owned());
+            return None;
+        }
+    };
+    match (on, model) {
+        (false, _) => None,
+        (true, Some(model)) => Some(ManagedServer { model }),
+        (true, None) => {
+            problems.push("ai.servers.llamacpp.model: required when managed = true".to_owned());
+            None
+        }
+    }
+}
+
 /// A valid port in the text of `ENGRAM_PORT`: an integer from 1 to 65535.
 fn env_port(text: Option<&str>) -> Option<u16> {
     text?.trim().parse::<u16>().ok().filter(|port| *port != 0)
@@ -791,6 +947,226 @@ mod tests {
         let mut problems = Vec::new();
         let ai = read_with_port_env(&table, &mut problems, None);
         (ai, problems)
+    }
+
+    fn ports_of(text: &str) -> (Vec<Option<u16>>, Vec<String>) {
+        let (ai, problems) = read_text(text);
+        let ports = ["ollama", "lmstudio", "llamacpp", "vllm", "claude", "nope"]
+            .iter()
+            .map(|id| ai.servers().port(id))
+            .collect();
+        (ports, problems)
+    }
+
+    // Spec: Server ports default to the catalog.
+    #[test]
+    fn server_ports_default_to_the_catalog_ports() {
+        let want = vec![Some(11434), Some(1234), Some(8080), Some(8000), None, None];
+        assert_eq!(ports_of(""), (want.clone(), vec![]));
+        assert_eq!(ports_of("[ai]\n"), (want.clone(), vec![]));
+        assert_eq!(ports_of("[ai.servers]\n"), (want, vec![]));
+    }
+
+    // Spec: Server ports are read.
+    #[test]
+    fn a_server_port_overrides_its_catalog_port_only() {
+        let text = "[ai.servers.llamacpp]\nport = 39080\n\n[ai.servers.ollama]\nport = 11500\n";
+        assert_eq!(
+            ports_of(text),
+            (
+                vec![Some(11500), Some(1234), Some(39080), Some(8000), None, None],
+                vec![]
+            )
+        );
+    }
+
+    // Spec: Unknown servers and keys are ignored.
+    #[test]
+    fn unknown_servers_and_keys_are_ignored() {
+        let text = "[ai.servers.claude]\nport = 9\n\n[ai.servers.nope]\nport = 9\n\n[ai.servers.vllm]\nport = 8001\nhost = \"0.0.0.0\"\n";
+        assert_eq!(
+            ports_of(text),
+            (
+                vec![Some(11434), Some(1234), Some(8080), Some(8001), None, None],
+                vec![]
+            )
+        );
+    }
+
+    // Spec: A wrong server value falls back alone.
+    #[test]
+    fn a_wrong_server_value_falls_back_alone_with_its_problem() {
+        let defaults = vec![Some(11434), Some(1234), Some(8080), Some(8000), None, None];
+        for (text, problem) in [
+            ("[ai]\nservers = 1\n", "ai.servers: expected a table"),
+            (
+                "[ai.servers]\nllamacpp = 39080\n",
+                "ai.servers.llamacpp: expected a table",
+            ),
+            (
+                "[ai.servers.llamacpp]\nport = 0\n",
+                "ai.servers.llamacpp.port: expected an integer from 1 to 65535",
+            ),
+            (
+                "[ai.servers.llamacpp]\nport = 70000\n",
+                "ai.servers.llamacpp.port: expected an integer from 1 to 65535",
+            ),
+            (
+                "[ai.servers.llamacpp]\nport = \"39080\"\n",
+                "ai.servers.llamacpp.port: expected an integer from 1 to 65535",
+            ),
+        ] {
+            assert_eq!(
+                ports_of(text),
+                (defaults.clone(), vec![problem.to_owned()]),
+                "{text}"
+            );
+        }
+        let mixed = "[ai.servers.lmstudio]\nport = -1\n\n[ai.servers.vllm]\nport = 8001\n";
+        assert_eq!(
+            ports_of(mixed),
+            (
+                vec![Some(11434), Some(1234), Some(8080), Some(8001), None, None],
+                vec!["ai.servers.lmstudio.port: expected an integer from 1 to 65535".to_owned()]
+            )
+        );
+    }
+
+    /// The managed llama-server, llamacpp's port and the problems of `text`.
+    fn managed_of(text: &str) -> (Option<ManagedServer>, Option<u16>, Vec<String>) {
+        let (ai, problems) = read_text(text);
+        (
+            ai.managed().cloned(),
+            ai.servers().port("llamacpp"),
+            problems,
+        )
+    }
+
+    fn managed(model: &str) -> Option<ManagedServer> {
+        Some(ManagedServer {
+            model: PathBuf::from(model),
+        })
+    }
+
+    // Spec: A managed llama-server is opt-in.
+    #[test]
+    fn no_llama_server_is_managed_unless_it_is_turned_on() {
+        for text in [
+            "",
+            "[ai.servers.llamacpp]\nport = 39080\n",
+            "[ai.servers.llamacpp]\nmodel = \"/m/q.gguf\"\n",
+            "[ai.servers.llamacpp]\nmanaged = false\nmodel = \"/m/q.gguf\"\n",
+        ] {
+            let port = if text.contains("39080") { 39080 } else { 8080 };
+            assert_eq!(managed_of(text), (None, Some(port), vec![]), "{text}");
+        }
+    }
+
+    // Spec: A managed llama-server has its own port.
+    #[test]
+    fn a_managed_llama_server_reads_its_model_and_takes_the_managed_port() {
+        let text = "[ai.servers.llamacpp]\nmanaged = true\nmodel = \"/m/q.gguf\"\n";
+        assert_eq!(
+            managed_of(text),
+            (managed("/m/q.gguf"), Some(MANAGED_PORT), vec![])
+        );
+        assert_eq!(MANAGED_PORT, 39281);
+        let with_port = format!("{text}port = 39080\n");
+        assert_eq!(
+            managed_of(&with_port),
+            (managed("/m/q.gguf"), Some(39080), vec![])
+        );
+    }
+
+    // Spec S3: choosing a local model turns the managed server on, on the
+    // managed port unless the config names one.
+    #[test]
+    fn managing_a_model_takes_the_managed_port_like_the_config_does() {
+        let mut config = read_text("").0;
+        config.manage(PathBuf::from("/m/q.gguf"));
+        assert_eq!(config.managed(), managed("/m/q.gguf").as_ref());
+        assert_eq!(config.servers().port("llamacpp"), Some(MANAGED_PORT));
+        let mut config = read_text("[ai.servers.llamacpp]\nport = 39080\n").0;
+        config.manage(PathBuf::from("/m/q.gguf"));
+        assert_eq!(config.servers().port("llamacpp"), Some(39080));
+        // Another model of a server already managed keeps its port.
+        let mut config = read_text(
+            "[ai.servers.llamacpp]\nmanaged = true\nmodel = \"/m/a.gguf\"\nport = 39090\n",
+        )
+        .0;
+        config.manage(PathBuf::from("/m/b.gguf"));
+        assert_eq!(config.managed(), managed("/m/b.gguf").as_ref());
+        assert_eq!(config.servers().port("llamacpp"), Some(39090));
+        // The other servers never move.
+        assert_eq!(config.servers().port("vllm"), Some(8000));
+    }
+
+    // Spec: A managed llama-server is opt-in (other servers).
+    #[test]
+    fn managed_under_another_server_is_ignored() {
+        let text = "[ai.servers.vllm]\nmanaged = true\nmodel = \"m\"\n";
+        assert_eq!(managed_of(text), (None, Some(8080), vec![]));
+        assert_eq!(ports_of(text).0[3], Some(8000));
+    }
+
+    // Spec: A managed llama-server has its own port (only llamacpp's).
+    #[test]
+    fn a_managed_llama_server_never_moves_another_server() {
+        let managed = "[ai.servers.llamacpp]\nmanaged = true\nmodel = \"/m/q.gguf\"\n\n";
+        for (vllm, problems) in [
+            ("[ai.servers.vllm]\n# port = 8001\n", vec![]),
+            ("[ai.servers.vllm]\nmodel = \"x\"\n", vec![]),
+            (
+                "[ai.servers.vllm]\nport = \"8001\"\n",
+                vec!["ai.servers.vllm.port: expected an integer from 1 to 65535".to_owned()],
+            ),
+        ] {
+            let text = format!("{managed}{vllm}");
+            let (ports, got) = ports_of(&text);
+            assert_eq!(
+                (ports[2], ports[3], got),
+                (Some(MANAGED_PORT), Some(8000), problems),
+                "{text}"
+            );
+        }
+    }
+
+    // Spec: A wrong managed value turns it off with its problem.
+    #[test]
+    fn a_wrong_managed_value_turns_it_off_with_its_problem() {
+        for (text, problem) in [
+            (
+                "[ai.servers.llamacpp]\nmanaged = \"yes\"\nmodel = \"/m/q.gguf\"\n",
+                "ai.servers.llamacpp.managed: expected true or false",
+            ),
+            (
+                "[ai.servers.llamacpp]\nmanaged = true\n",
+                "ai.servers.llamacpp.model: required when managed = true",
+            ),
+            (
+                "[ai.servers.llamacpp]\nmanaged = true\nmodel = \"\"\n",
+                "ai.servers.llamacpp.model: required when managed = true",
+            ),
+            (
+                "[ai.servers.llamacpp]\nmanaged = true\nmodel = 1\n",
+                "ai.servers.llamacpp.model: expected a path to a model file",
+            ),
+        ] {
+            assert_eq!(
+                managed_of(text),
+                (None, Some(8080), vec![problem.to_owned()]),
+                "{text}"
+            );
+        }
+        // A wrong model is a problem even while managed is off.
+        assert_eq!(
+            managed_of("[ai.servers.llamacpp]\nmodel = 1\n"),
+            (
+                None,
+                Some(8080),
+                vec!["ai.servers.llamacpp.model: expected a path to a model file".to_owned()]
+            )
+        );
     }
 
     fn memory_of(text: &str, env: Option<&str>) -> (MemoryConfig, Vec<String>) {
