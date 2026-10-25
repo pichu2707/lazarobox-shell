@@ -137,16 +137,16 @@ Spec: code-write "Deny rules", "Root policy", "Caps".
 
 ### W-b: write primitives (PR 8, ~350)
 Spec: code-write "Apply" (primitives), "Nothing writes without approval".
-- [ ] Wb.1 RED (tempfile, Linux): open parent with openat2 `RESOLVE_BENEATH|NO_SYMLINKS`; reject symlink swap, nlink>1, non-regular. GREEN: `runtime/tools/open.rs`. ~180.
-- [ ] Wb.2 RED: `mkdirat`, `O_EXCL` temp + fsync + `renameat2(NOREPLACE)` for create, `renameat` replace keeping base mode. GREEN. ~170.
+- [x] Wb.1 RED (tempfile, Linux): open parent with openat2 `RESOLVE_BENEATH|NO_SYMLINKS`; reject symlink swap, nlink>1, non-regular. GREEN: `runtime/tools/write.rs` (moved out of `open.rs`, see design D22). ~180.
+- [x] Wb.2 RED: `mkdirat`, `O_EXCL` temp + fsync + `renameat2(NOREPLACE)` for create, `renameat` replace keeping base mode. GREEN. ~170.
 
 Obligations from the W-a review (`resolve_write` is a check made earlier, not a lock):
-- Re-check at open time with `openat`/`O_NOFOLLOW` along the directory chain, or re-run `resolve_write` and compare the two real paths.
-- `fstat` the opened file and refuse `nlink > 1`.
-- Refuse a final symlink.
-- Re-run `judge_real` on the real path of the opened fd.
-- Decide on purpose whether `check_new` runs on the whole post-edit text or only on the new text, and test that choice.
-- Document the BOM asymmetry: `check_new` refuses a leading BOM, `check_existing` accepts it.
+- [x] Re-check at open time with `openat`/`O_NOFOLLOW` along the directory chain, or re-run `resolve_write` and compare the two real paths. (Done: `open_checked` on the parent, design D22.)
+- [x] `fstat` the opened file and refuse `nlink > 1`.
+- [x] Refuse a final symlink.
+- [x] Re-run `judge_real` on the real path of the opened fd.
+- [x] Decide on purpose whether `check_new` runs on the whole post-edit text or only on the new text, and test that choice. (Decided: only the new text, design D23. The primitives never inspect bytes, so the test belongs to Wd.1.)
+- [x] Document the BOM asymmetry: `check_new` refuses a leading BOM, `check_existing` accepts it. (Design D23.)
 
 ### W-c: stage state machine (PR 9, ~400)
 Spec: code-write "create_dir and write_file staging", "Propose batch and size cap", "Orphan, close and quit".
@@ -156,7 +156,7 @@ Spec: code-write "create_dir and write_file staging", "Propose batch and size ca
 
 ### W-d: edit and diff (PR 10, ~400)
 Spec: code-write "edit_file staging", "Batch review and coverage gate".
-- [ ] Wd.1 RED: `edit_file`: `old` non-empty and unique in staged-or-disk text, fields <= 16 KiB, file <= 1 MiB. GREEN: `tools/edit.rs`. ~170.
+- [ ] Wd.1 RED: `edit_file`: `old` non-empty and unique in staged-or-disk text, fields <= 16 KiB, file <= 1 MiB. GREEN: `tools/edit.rs`. ~170. Decision from W-b (design D23): `check_new` runs on the `new` text only, never on the whole result; add a test that an existing file holding a control character or a BOM can still be edited elsewhere, and that a `new` text with a BOM or a control is refused.
 - [ ] Wd.2 RED: diff with `similar` (Myers, 500 ms deadline, 3 context lines), create shows all added, `no newline at end of file`. GREEN: `tools/diff.rs`, `Cargo.toml`. ~230.
 
 ### W-e1: ReviewDoc and coverage core (PR 11, ~400)

@@ -175,3 +175,39 @@ About 173 production lines (content.rs 71, paths.rs 108, search.rs -7, mod.rs 1)
 ## Checks (W-a)
 
 `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5455 lib tests green), `cargo +1.88 check --all-targets`.
+
+## Batch 6: slice W-b (write primitives, PR 8, branch feat/coding-tools-wb, base feat/coding-tools-wa)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Wb.1 `open_target` (parent beneath HOME, final link, nlink, non-regular, `judge_real` on the fd path) | done | feat(tools): open a write target beneath HOME and refuse links, hard links and non-files |
+| Wb.2 `make_dir`, `create_file`, `replace_file` | done | feat(tools): write files and folders through a same-folder temp and an atomic rename |
+| W-a review obligations (6) + design D22/D23, W-d decision | done | docs(openspec): record the write primitive design and the check_new scope |
+
+## TDD cycle evidence (W-b)
+
+| Task | RED (seen failing) | GREEN | Triangulation | REFACTOR |
+|------|--------------------|-------|---------------|----------|
+| Wb.1 + Wb.2 (tests written together, 41 compile errors) | `error[E0425]: cannot find function open_target / make_dir / create_file / replace_file / temp_name in this scope` and `error[E0433]: cannot find type WriteError in this scope` (41 errors in `write::linux::write_tests`; the tests were first written in `open.rs`) | `WriteError`, `open_parent`, `open_in`, `open_target`, `make_dir`, `create_file`, `replace_file`, `Temp` drop guard, `temp_name` (getrandom), `stage`, `rename`, `sync_dir`; 14 write tests green at once | present file / absent; final link inside and dangling; folder swapped for a link after the check; hard link ok vs nlink 2; folder and FIFO; `.ssh` and outside HOME; make_dir new / exists / missing parent / symlinked parent; create bytes with BOM / empty / name taken (temp cleaned) / link in the way / dangling link target / missing parent; replace at two modes (0o750, 0o640) / hard link / link / absent; temp names differ | the rename guard first used an unsafe pointer cast; changed to `&mut Temp` before the first commit |
+
+Note: the RED was a compile failure only (the functions did not exist), then every test passed on the first GREEN run; no test needed a fix. The slice was committed as two work units by splitting the finished file (Wb.1 subset first, then the full file). The full-suite run then showed the audit failure, which led to the move to `write.rs` (the first cut had the code in `open.rs`).
+
+## Deviations / notes (W-b)
+
+- DEVIATION: the write primitives live in the new `runtime/tools/write.rs`, not `open.rs`. `audit.rs` (`the_tool_code_starts_no_process_opens_no_socket_and_creates_no_file`) bans `O_CREAT`, `O_WRONLY`, `write_all`, `set_permissions`, `libc::syscall` other than `SYS_openat2` and others from `fs.rs`, `open.rs` and `mod.rs`; it failed when the code was in `open.rs`. `open.rs` only widens four helpers (`flags`, `cstring`, `owned`, `open_raw`) to `pub(in crate::runtime::tools)`. A new audit test, `the_read_side_never_names_the_write_primitives`, keeps `fs.rs`, `open.rs` and `search.rs` from naming `tools::write`. The module reuses `open_checked` (openat2 + `fd_path == real` + `judge_real`) for the parent. The syscalls use `libc` like the read side (no new dependency); `renameat2` goes through `libc::syscall(SYS_renameat2)`, `getrandom` through `libc::getrandom`.
+- API (all take `&SecretRoots` and the already resolved real path): `open_target -> Result<Option<File>, WriteError>`, `make_dir`, `create_file(bytes)`, `replace_file(bytes)`. `WriteError = Refused | Exists | Missing | Unsupported | Io`. A missing parent folder is `Refused` (open_checked does not tell ENOENT apart).
+- `replace_file` restores the mode (`fchmod` to `mode & 0o7777`); owner and group are not restored. It renames over the name, so a late hard link or link is replaced, not written through. There is a small window between the open check and the rename where the name can change; the rename never writes through it, and the apply preflight (We2) compares bytes.
+- The parent folder is synced best effort (errors ignored): some filesystems refuse it.
+- A filesystem without `RENAME_NOREPLACE` makes `create_file` fail with `Io`; it never falls back to a replace.
+- `check_new` scope: decided in design D23 (new text only); the test belongs to Wd.1 (recorded in tasks.md). BOM asymmetry documented there.
+- Non-Linux: `write.rs` has the same signatures returning `Unsupported`; one test per platform arm.
+- macOS: `cargo check` and `clippy --all-targets --target aarch64-apple-darwin -D warnings` pass. The sqlite C build needs a macOS compiler, so it was run with `CC_aarch64_apple_darwin=true AR_aarch64_apple_darwin=true` (stub C compiler, check only).
+- No change to `host.rs`; no wiring.
+
+## Size (W-b)
+
+About 290 production lines and about 260 test lines (`write.rs` new, `open.rs` +4/-4, `audit.rs` test, `mod.rs` +1; see `git diff --stat feat/coding-tools-wa...HEAD -- src`), plus docs.
+
+## Checks (W-b)
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo +1.88 check --all-targets`, aarch64-apple-darwin check and clippy.
