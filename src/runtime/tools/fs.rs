@@ -28,7 +28,9 @@ use crate::{
             sanitize::clean,
             tools::{
                 Call, Lines,
-                paths::{PathVerdict, REFUSED, SecretRoots, is_excluded_name, resolve},
+                paths::{
+                    PathVerdict, REFUSED, SecretRoots, is_excluded_name, is_git_config, resolve,
+                },
             },
         },
         config::config_path,
@@ -251,6 +253,10 @@ fn read_file(
     let PathVerdict::Allowed(real) = resolve(roots, &env.origin, path) else {
         return Err(Failure::Refused);
     };
+    // Judged on the real path, so a link to it is refused too.
+    if is_git_config(&real) {
+        return Err(Failure::Refused);
+    }
     let file = std::fs::File::from(open_checked(roots, &real, false)?);
     let meta = file.metadata().map_err(|_| Failure::Unreadable)?;
     // A directory, FIFO, socket or device: refused like any hidden path.
@@ -869,6 +875,36 @@ mod tests {
         let run = |path: &str| execute(&call(path), &env(&f.home), &Limits::default());
         assert_eq!(run("~/bin"), Err(Failure::NotText));
         assert_eq!(run("~/.ssh/id"), Err(Failure::Refused));
+    }
+
+    // Spec (code-write, Deny rules): reads of `.git/config` are refused.
+    #[test]
+    fn git_config_files_are_refused_with_the_standard_text() {
+        let f = fixture();
+        let git = f.home.join("dev/app/.git");
+        fs::create_dir_all(git.join("modules/sub")).unwrap();
+        for file in ["config", "config.worktree", "modules/sub/config"] {
+            fs::write(git.join(file), "[remote]\nurl = https://x\n").unwrap();
+        }
+        fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::create_dir_all(f.home.join("dev/app/src")).unwrap();
+        fs::write(f.home.join("dev/app/src/config"), "ok\n").unwrap();
+        symlink(git.join("config"), f.home.join("dev/app/alias")).unwrap();
+        let e = env(&f.home);
+        for path in [
+            "~/dev/app/.git/config",
+            "~/dev/app/.git/config.worktree",
+            "~/dev/app/.git/modules/sub/config",
+            "~/dev/app/alias",
+        ] {
+            let err = read(&e, path).unwrap_err();
+            assert_eq!((err, err.message()), (Failure::Refused, REFUSED), "{path}");
+        }
+        assert_eq!(
+            read(&e, "~/dev/app/.git/HEAD").unwrap(),
+            "ref: refs/heads/main\n"
+        );
+        assert_eq!(read(&e, "~/dev/app/src/config").unwrap(), "ok\n");
     }
 
     #[test]
