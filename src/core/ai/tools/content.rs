@@ -34,10 +34,26 @@ impl fmt::Display for ContentError {
     }
 }
 
-/// Specials block characters that `is_format` does not list: the interlinear
-/// annotation marks U+FFF9..U+FFFB.
-fn is_hidden(c: char) -> bool {
-    is_format(c) || matches!(c, '\u{180e}' | '\u{fff9}'..='\u{fffb}')
+/// Characters that hide or blank out text and that `is_format` does not list:
+/// the interlinear annotation marks U+FFF9..U+FFFB, the Mongolian vowel
+/// separator, the Hangul fillers, the combining grapheme joiner, the variation
+/// selectors and the blank braille pattern. Shared with the path check, so a
+/// name and a text are held to the same rule.
+pub(crate) fn is_hidden(c: char) -> bool {
+    is_format(c)
+        || matches!(
+            c,
+            '\u{034f}'
+                | '\u{115f}'
+                | '\u{1160}'
+                | '\u{180e}'
+                | '\u{2800}'
+                | '\u{3164}'
+                | '\u{fe00}'..='\u{fe0f}'
+                | '\u{ffa0}'
+                | '\u{fff9}'..='\u{fffb}'
+                | '\u{e0100}'..='\u{e01ef}'
+        )
 }
 
 /// Whether `text` may be written as it is. It is never changed, and no final
@@ -146,16 +162,48 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_names_its_kind_without_echoing_the_character() {
-        for (err, word) in [
-            (ContentError::Control, "control"),
-            (ContentError::CarriageReturn, "line ending"),
-            (ContentError::Invisible, "invisible"),
-            (ContentError::NotText, "UTF-8"),
+    fn each_refusal_kind_has_its_own_fixed_message() {
+        // The kinds carry no payload, so the message cannot echo the character.
+        for (err, message) in [
+            (ContentError::Control, "content holds a control character"),
+            (
+                ContentError::CarriageReturn,
+                "content holds a carriage return; use LF line endings",
+            ),
+            (
+                ContentError::Invisible,
+                "content holds an invisible or bidi character",
+            ),
+            (
+                ContentError::NotText,
+                "the file is not UTF-8 text without NUL",
+            ),
         ] {
-            let text = err.to_string();
-            assert!(text.contains(word), "{text}");
-            assert!(text.chars().all(|c| !c.is_control()), "{text:?}");
+            assert_eq!(err.to_string(), message);
+        }
+    }
+
+    #[test]
+    fn filler_selector_and_blank_characters_are_hidden_too() {
+        let listed = [
+            0x034fu32, 0x115f, 0x1160, 0x2800, 0x3164, 0xfe00, 0xfe08, 0xfe0f, 0xffa0, 0xe0100,
+            0xe01ef,
+        ];
+        for code in listed {
+            let c = char::from_u32(code).unwrap();
+            assert!(is_hidden(c), "U+{code:04X}");
+            assert_eq!(
+                check_new(&format!("a{c}b")),
+                Err(ContentError::Invisible),
+                "U+{code:04X}"
+            );
+        }
+        for code in [
+            0x034eu32, 0x0350, 0x115e, 0x1161, 0x27ff, 0x2801, 0x3163, 0x3165, 0xfdff, 0xfe10,
+            0xff9f, 0xffa1, 0xe00ff, 0xe01f0,
+        ] {
+            let text = format!("a{}b", char::from_u32(code).unwrap());
+            assert_eq!(check_new(&text), Ok(()), "U+{code:04X}");
         }
     }
 
