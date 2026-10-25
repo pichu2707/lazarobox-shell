@@ -15,8 +15,10 @@
 //! a terminal: it shows as `<U+XXXX>`.
 
 use std::fmt;
+use std::ops::Range;
+use std::time::{Duration, Instant};
 
-use crate::core::ai::chat::wrap::expand_tabs;
+use crate::core::ai::chat::wrap::{expand_tabs, wrap_ranges};
 use crate::core::ai::tools::diff::{self, Diff, Kind, escape};
 use crate::core::ai::tools::stage::{Batch, Entry};
 
@@ -164,6 +166,116 @@ impl ReviewDoc {
 const WARN_BUILD: &str = "warning: build file: it can run code when the project is built";
 const WARN_COARSE: &str = "warning: coarse diff: the whole file is shown as replaced";
 const WARN_TRUNCATED: &str = "warning: truncated: rows were left out; the totals are exact";
+
+/// How long `y` stays disabled after the view opens. Other asks keep 400 ms.
+pub const ARM_DELAY: Duration = Duration::from_millis(800);
+
+/// One drawn row: a slice of one logical line.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Row {
+    /// Index of the logical line in [`ReviewDoc::lines`].
+    pub line: usize,
+    pub text: String,
+}
+
+/// The rows of a doc at one width. The renderer and the coverage gate both
+/// take their rows from here: there is no other wrap function.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Layout {
+    width: usize,
+    rows: Vec<Row>,
+    /// Per logical line, its rows as a range of `rows`.
+    spans: Vec<Range<usize>>,
+}
+
+impl Layout {
+    pub fn rows(&self) -> &[Row] {
+        &self.rows
+    }
+}
+
+/// Wraps every line of `doc` to `width` display columns (wide and CJK
+/// characters count two, as the terminal draws them). Every line has at least
+/// one row.
+pub fn layout(doc: &ReviewDoc, width: usize) -> Layout {
+    let mut rows = Vec::new();
+    let mut spans = Vec::with_capacity(doc.lines.len());
+    for (line, l) in doc.lines.iter().enumerate() {
+        let chars: Vec<char> = l.text.chars().collect();
+        let first = rows.len();
+        for r in wrap_ranges(&chars, width) {
+            rows.push(Row {
+                line,
+                text: chars[r].iter().collect(),
+            });
+        }
+        spans.push(first..rows.len());
+    }
+    Layout { width, rows, spans }
+}
+
+/// What the user has seen, per logical line, and the gate on `y`.
+///
+/// A line is seen once all its rows have been shown, not before, and it stays
+/// seen when the layout changes: the width changes the rows, never the lines.
+/// Rows shown at an old width do not carry over (a line half shown at one
+/// width is not seen at another).
+#[derive(Clone, Debug)]
+pub struct Coverage {
+    seen: Vec<bool>,
+    /// Rows shown at `width`, per row of that layout.
+    shown: Vec<bool>,
+    width: Option<usize>,
+    opened: Instant,
+}
+
+impl Coverage {
+    /// `opened` is when the view opened; `y` arms [`ARM_DELAY`] after it.
+    pub fn new(doc: &ReviewDoc, opened: Instant) -> Coverage {
+        Coverage {
+            seen: vec![false; doc.lines.len()],
+            shown: Vec::new(),
+            width: None,
+            opened,
+        }
+    }
+
+    /// Marks the rows `rows` of `layout` as shown (clamped to the layout).
+    pub fn show(&mut self, layout: &Layout, rows: Range<usize>) {
+        if self.width != Some(layout.width) || self.shown.len() != layout.rows.len() {
+            self.width = Some(layout.width);
+            self.shown = vec![false; layout.rows.len()];
+        }
+        let end = rows.end.min(layout.rows.len());
+        let start = rows.start.min(end);
+        self.shown[start..end].fill(true);
+        let (Some(first), Some(last)) = (layout.rows.get(start), end.checked_sub(1)) else {
+            return;
+        };
+        for line in first.line..=layout.rows[last].line {
+            let span = layout.spans[line].clone();
+            if self.shown[span].iter().all(|s| *s) {
+                self.seen[line] = true;
+            }
+        }
+    }
+
+    pub fn total(&self) -> usize {
+        self.seen.len()
+    }
+
+    /// Lines not seen yet.
+    pub fn remaining(&self) -> usize {
+        self.seen.iter().filter(|s| !**s).count()
+    }
+
+    /// Whether `y` may approve at `now`: every line seen and [`ARM_DELAY`]
+    /// elapsed since the view opened. `now` comes from the caller's clock; a
+    /// clock that went back does not arm.
+    pub fn can_approve(&self, now: Instant) -> bool {
+        self.remaining() == 0 && now.saturating_duration_since(self.opened) >= ARM_DELAY
+    }
+}
 
 /// Pushes a line with its tabs expanded, so every column is measurable.
 fn push(out: &mut Vec<DocLine>, kind: LineKind, text: String) {
@@ -389,5 +501,194 @@ mod tests {
             "{shown}"
         );
         assert!(shown.contains("files: 1"), "{shown}");
+    }
+
+    // --- layout and coverage ---
+
+    use std::time::Instant;
+
+    /// A doc of one created file whose rows are `rows`; its logical lines are
+    /// the summary, the file header, the hunk header and one per row.
+    fn doc_of(rows: &[&str]) -> ReviewDoc {
+        let mut b = batch();
+        let text: String = rows.iter().map(|r| format!("{r}\n")).collect();
+        b.stage_file(&target("a.txt", false), &text, Existing::Absent)
+            .unwrap();
+        ReviewDoc::build(&b)
+    }
+
+    fn row_texts(l: &Layout) -> Vec<&str> {
+        l.rows().iter().map(|r| r.text.as_str()).collect()
+    }
+
+    #[test]
+    fn a_long_line_wraps_and_a_short_one_stays_whole() {
+        let l = layout(&doc_of(&["abcdefgh", "ab"]), 5);
+        let rows = row_texts(&l);
+        assert!(
+            rows.contains(&"+abcd") && rows.contains(&"efgh"),
+            "{rows:?}"
+        );
+        assert!(rows.contains(&"+ab"), "{rows:?}");
+        let long = l.rows().iter().filter(|r| r.text == "efgh").count();
+        assert_eq!(long, 1);
+    }
+
+    #[test]
+    fn rows_of_one_line_rejoin_to_the_line() {
+        let doc = doc_of(&["the quick brown fox jumps"]);
+        let l = layout(&doc, 7);
+        for (i, line) in doc.lines().iter().enumerate() {
+            let joined: String = l
+                .rows()
+                .iter()
+                .filter(|r| r.line == i)
+                .map(|r| r.text.as_str())
+                .collect();
+            assert_eq!(joined, line.text);
+        }
+    }
+
+    #[test]
+    fn wide_characters_count_two_columns() {
+        let l = layout(&doc_of(&["日本語"]), 5);
+        let rows = row_texts(&l);
+        assert!(rows.contains(&"+日本") && rows.contains(&"語"), "{rows:?}");
+    }
+
+    #[test]
+    fn an_escape_counts_by_its_visible_width() {
+        let mut b = batch();
+        let on_disk = "a\u{200B}b\n";
+        b.edit_file(&target("a.txt", false), "a\u{200B}b", "z", disk(on_disk))
+            .unwrap();
+        let rows = layout(&ReviewDoc::build(&b), 8)
+            .rows()
+            .iter()
+            .map(|r| r.text.clone())
+            .collect::<Vec<_>>();
+        // `-a<U+200B>b` is 11 columns: the escape is eight, not one.
+        assert!(rows.contains(&"-a<U+200".to_owned()), "{rows:?}");
+        assert!(rows.contains(&"B>b".to_owned()), "{rows:?}");
+    }
+
+    #[test]
+    fn a_zero_width_still_makes_progress() {
+        let l = layout(&doc_of(&["ab"]), 0);
+        let rows = row_texts(&l);
+        assert!(rows.windows(3).any(|w| w == ["+", "a", "b"]), "{rows:?}");
+    }
+
+    fn start() -> Instant {
+        Instant::now()
+    }
+
+    #[test]
+    fn a_line_is_seen_only_when_all_its_rows_were_shown() {
+        let doc = doc_of(&["abcdefghij"]);
+        let l = layout(&doc, 4);
+        let row = l.rows().iter().position(|r| r.text == "+abc").unwrap();
+        let mut c = Coverage::new(&doc, start());
+        let before = c.remaining();
+        c.show(&l, row..row + 2);
+        assert_eq!(c.remaining(), before, "two of three rows is not enough");
+        c.show(&l, row + 1..row + 3);
+        assert_eq!(c.remaining(), before - 1);
+    }
+
+    #[test]
+    fn showing_every_row_sees_every_line() {
+        let doc = doc_of(&["a", "b", "c"]);
+        let l = layout(&doc, 20);
+        let mut c = Coverage::new(&doc, start());
+        assert_eq!(c.total(), doc.lines().len());
+        assert_eq!(c.remaining(), c.total());
+        c.show(&l, 0..l.rows().len());
+        assert_eq!((c.remaining(), c.total()), (0, doc.lines().len()));
+    }
+
+    #[test]
+    fn a_range_past_the_end_is_clamped() {
+        let doc = doc_of(&["a"]);
+        let l = layout(&doc, 20);
+        let mut c = Coverage::new(&doc, start());
+        c.show(&l, 0..1_000);
+        assert_eq!(c.remaining(), 0);
+    }
+
+    #[test]
+    fn coverage_survives_a_resize() {
+        let doc = doc_of(&["aaaaaaaaaaaa", "bbbbbbbbbbbb", "cc"]);
+        let wide = layout(&doc, 40);
+        let mut c = Coverage::new(&doc, start());
+        c.show(&wide, 0..wide.rows().len());
+        assert_eq!(c.remaining(), 0);
+        let narrow = layout(&doc, 5);
+        assert!(narrow.rows().len() > wide.rows().len());
+        c.show(&narrow, 0..0);
+        assert_eq!(c.remaining(), 0, "nothing seen is lost");
+    }
+
+    #[test]
+    fn a_resize_keeps_seen_lines_and_drops_half_seen_rows() {
+        let doc = doc_of(&["aaaaaaaaaaaa", "b"]);
+        let wide = layout(&doc, 40);
+        let mut c = Coverage::new(&doc, start());
+        let b = wide.rows().iter().position(|r| r.text == "+b").unwrap();
+        c.show(&wide, b..b + 1);
+        let seen = c.total() - c.remaining();
+        assert_eq!(seen, 1);
+        let narrow = layout(&doc, 5);
+        let a = narrow
+            .rows()
+            .iter()
+            .position(|r| r.text == "+aaaa")
+            .unwrap();
+        c.show(&narrow, a..a + 1);
+        assert_eq!(c.total() - c.remaining(), 1, "one row of three is not seen");
+        c.show(&narrow, a + 1..a + 3);
+        assert_eq!(c.total() - c.remaining(), 2);
+    }
+
+    #[test]
+    fn y_needs_every_line_seen_and_the_delay() {
+        let t0 = start();
+        let doc = doc_of(&["a", "b"]);
+        let l = layout(&doc, 20);
+        let mut c = Coverage::new(&doc, t0);
+        let ms = Duration::from_millis;
+        assert!(!c.can_approve(t0 + ms(5_000)), "unseen lines block y");
+        c.show(&l, 0..l.rows().len());
+        assert!(!c.can_approve(t0), "the delay blocks y");
+        assert!(!c.can_approve(t0 + ms(799)));
+        assert!(c.can_approve(t0 + ms(800)));
+        assert!(c.can_approve(t0 + ms(60_000)));
+        assert_eq!(ARM_DELAY, ms(800));
+    }
+
+    #[test]
+    fn a_clock_that_went_back_does_not_arm() {
+        let t0 = start() + Duration::from_secs(10);
+        let doc = doc_of(&["a"]);
+        let l = layout(&doc, 20);
+        let mut c = Coverage::new(&doc, t0);
+        c.show(&l, 0..l.rows().len());
+        assert!(!c.can_approve(t0 - Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn rows_shown_at_another_width_with_the_same_row_count_do_not_count() {
+        let long = "x".repeat(62);
+        let doc = doc_of(&[long.as_str()]);
+        let (w30, w31) = (layout(&doc, 30), layout(&doc, 31));
+        assert_eq!(w30.rows().len(), w31.rows().len());
+        let first = |l: &Layout| l.rows().iter().position(|r| r.line == 3).unwrap();
+        let mut c = Coverage::new(&doc, start());
+        let before = c.remaining();
+        c.show(&w30, first(&w30)..first(&w30) + 1);
+        c.show(&w31, first(&w31) + 1..first(&w31) + 3);
+        assert_eq!(c.remaining(), before, "the rows were of two layouts");
+        c.show(&w31, first(&w31)..first(&w31) + 1);
+        assert_eq!(c.remaining(), before - 1);
     }
 }
