@@ -69,6 +69,10 @@ const MAY_WRITE: &[&str] = &["write.rs"];
 /// `WriteOps`, and has no write API of its own.
 const MAY_CALL_WRITE: &[&str] = &["write.rs", "mod.rs", "audit.rs", "apply.rs"];
 
+/// The files that may name the `apply` module, the one entry to a disk write.
+/// Later wiring slices add the file that calls it.
+const MAY_CALL_APPLY: &[&str] = &["apply.rs", "mod.rs", "audit.rs"];
+
 /// The only `libc::` names the read side may use.
 const LIBC_ALLOWED: &[&str] = &[
     "openat",
@@ -460,6 +464,16 @@ pub fn scan(src: &str, allow: &Allow) -> Vec<String> {
 /// name beside a `::`, or anywhere inside a `use` item (a group, an alias).
 /// `write!`, `Write` and `.write(` are other things and do not match.
 pub fn write_refs(src: &str) -> Vec<String> {
+    module_refs(src, "write")
+}
+
+/// The same for the `apply` module: only the files in `MAY_CALL_APPLY` may
+/// name it. A method `.apply(` or a `fn apply` is another thing.
+pub fn apply_refs(src: &str) -> Vec<String> {
+    module_refs(src, "apply")
+}
+
+fn module_refs(src: &str, module: &str) -> Vec<String> {
     let t = non_test_tokens(src);
     let mut in_use = false;
     let mut found = Vec::new();
@@ -467,10 +481,10 @@ pub fn write_refs(src: &str) -> Vec<String> {
         match tok {
             Tok::Ident(name) if name == "use" => in_use = true,
             Tok::Punct(';') => in_use = false,
-            Tok::Ident(name) if name == "write" => {
+            Tok::Ident(name) if name == module => {
                 let beside = (k > 0 && t[k - 1] == Tok::Path) || t.get(k + 1) == Some(&Tok::Path);
                 if in_use || beside {
-                    found.push("a reference to the `write` module".to_string());
+                    found.push(format!("a reference to the `{module}` module"));
                 }
             }
             _ => {}
@@ -490,6 +504,9 @@ pub fn file_problems(rel: &str, src: &str) -> Vec<String> {
     let mut found = scan(src, allow);
     if !MAY_CALL_WRITE.contains(&rel) {
         found.extend(write_refs(src));
+    }
+    if !MAY_CALL_APPLY.contains(&rel) {
+        found.extend(apply_refs(src));
     }
     found
 }
@@ -597,6 +614,11 @@ mod tests {
             ("host.rs", "use crate::runtime::tools::{self, write};"),
             ("host.rs", "fn f() { super::write::make_dir(r, p) }"),
             ("fs.rs", "use crate::runtime::tools::write as w;"),
+            ("fs.rs", "use super::apply::{apply, Disk};"),
+            (
+                "fs.rs",
+                "fn f() { crate::runtime::tools::apply::apply(o, e) }",
+            ),
             (
                 "host/x.rs",
                 "fn f() { crate::runtime::tools::write::make_dir(r, p) }",
@@ -650,6 +672,13 @@ mod tests {
         ] {
             assert_eq!(write_refs(good), Vec::<String>::new(), "{good}");
         }
+        for good in [
+            "fn apply(o: &dyn Ops) {} fn f() { x.apply(y); let apply = 1; }",
+            "pub mod apply; type R = ApplyResult;",
+        ] {
+            assert_eq!(apply_refs(good), Vec::<String>::new(), "{good}");
+        }
+        assert!(!apply_refs("use a::{b, apply};").is_empty());
         assert!(!write_refs("use a::{b, write};").is_empty());
         assert!(!write_refs("fn f() { write::go() }").is_empty());
         assert_eq!(
