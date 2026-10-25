@@ -20,7 +20,14 @@ pub const FILE_MAX: usize = 1024 * 1024;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EditError {
     EmptyOld,
-    FieldTooLarge,
+    /// `old` is over [`FIELD_MAX`].
+    OldTooLarge,
+    /// `new` is over [`FIELD_MAX`].
+    NewTooLarge,
+    /// The existing file holds CR: edit_file does not handle CRLF.
+    FileHasCrlf,
+    /// The existing file is not UTF-8 text without NUL.
+    FileNotText,
     NoMatch,
     Ambiguous,
     FileTooLarge,
@@ -38,7 +45,12 @@ impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             EditError::EmptyOld => "old must not be empty",
-            EditError::FieldTooLarge => "old and new must each be at most 16 KiB",
+            EditError::OldTooLarge => "old is over 16 KiB",
+            EditError::NewTooLarge => "new is over 16 KiB",
+            EditError::FileHasCrlf => {
+                "the file uses CRLF line endings, which edit_file does not support"
+            }
+            EditError::FileNotText => "the file is not UTF-8 text",
             EditError::NoMatch => "old does not occur in the file",
             EditError::Ambiguous => {
                 "old occurs more than once: add context so that it occurs exactly once"
@@ -53,15 +65,23 @@ impl fmt::Display for EditError {
     }
 }
 
+fn check_fields(old: &str, new: &str) -> Result<(), EditError> {
+    if old.len() > FIELD_MAX {
+        return Err(EditError::OldTooLarge);
+    }
+    if new.len() > FIELD_MAX {
+        return Err(EditError::NewTooLarge);
+    }
+    Ok(())
+}
+
 /// Replaces the one occurrence of `old` in `current` by `new`. Occurrences
 /// may overlap: `aa` in `aaa` is two.
 pub fn apply_edit(current: &str, old: &str, new: &str) -> Result<String, EditError> {
     if old.is_empty() {
         return Err(EditError::EmptyOld);
     }
-    if old.len() > FIELD_MAX || new.len() > FIELD_MAX {
-        return Err(EditError::FieldTooLarge);
-    }
+    check_fields(old, new)?;
     let first = current.find(old).ok_or(EditError::NoMatch)?;
     // `old` is not empty, so its first char exists: a second match, even an
     // overlapping one, starts after that char.
@@ -81,6 +101,11 @@ impl Batch {
     /// path is staged (its `base` stays), otherwise the disk text in
     /// `existing`, which becomes the `base` so the review can diff against it
     /// and apply can tell when the file drifted. Nothing touches the disk.
+    ///
+    /// INVARIANT: the `base` is the user's own file text and may hold
+    /// secrets. It, and every diff row made from it, is shown ONLY to the
+    /// user in the review view, and NEVER goes into a tool result or
+    /// anything sent to the model.
     pub fn edit_file(
         &mut self,
         target: &WriteTarget,
@@ -92,15 +117,15 @@ impl Batch {
         if old.is_empty() {
             return Err(EditError::EmptyOld);
         }
-        if old.len() > FIELD_MAX || new.len() > FIELD_MAX {
-            return Err(EditError::FieldTooLarge);
-        }
+        check_fields(old, new)?;
         check_new(new).map_err(EditError::Content)?;
         let (text, base) = match self.staged(target) {
             Some(Entry::Dir) => return Err(EditError::IsFolder),
             Some(Entry::File { text, base }) => (apply_edit(text, old, new)?, base.clone()),
             None => match existing {
                 Existing::Absent => return Err(EditError::Missing),
+                // The 1 MiB rule is on the file being edited. The result may
+                // grow past it, bounded by the batch byte cap in `put`.
                 Existing::Present { size, .. } if size > FILE_MAX as u64 => {
                     return Err(EditError::FileTooLarge);
                 }
@@ -108,7 +133,11 @@ impl Batch {
                     return Err(EditError::Unreadable);
                 }
                 Existing::Present { bytes, .. } => {
-                    let disk = check_existing(bytes).map_err(EditError::Content)?;
+                    let disk = check_existing(bytes).map_err(|why| match why {
+                        ContentError::CarriageReturn => EditError::FileHasCrlf,
+                        ContentError::NotText => EditError::FileNotText,
+                        other => EditError::Content(other),
+                    })?;
                     (apply_edit(disk, old, new)?, Some(disk.to_owned()))
                 }
             },
@@ -256,11 +285,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             b.edit_file(&t, &over, "x", disk(&text)),
-            Err(EditError::FieldTooLarge)
+            Err(EditError::OldTooLarge)
         );
         assert_eq!(
             b.edit_file(&t, "start", &over, disk(&text)),
-            Err(EditError::FieldTooLarge)
+            Err(EditError::NewTooLarge)
         );
         b.edit_file(&t, "start", &at, disk(&text)).unwrap();
     }
@@ -312,11 +341,11 @@ mod tests {
         };
         assert_eq!(
             b.edit_file(&t, "c", "d", latin1),
-            Err(EditError::Content(ContentError::NotText))
+            Err(EditError::FileNotText)
         );
         assert_eq!(
             b.edit_file(&t, "a", "d", disk("a\r\nb")),
-            Err(EditError::Content(ContentError::CarriageReturn))
+            Err(EditError::FileHasCrlf)
         );
         assert!(b.entries().is_empty());
     }
@@ -377,6 +406,89 @@ mod tests {
             Err(EditError::Stage(StageError::Full))
         );
         assert_eq!(b.entries().len(), 1);
+    }
+
+    #[test]
+    fn crlf_and_non_utf8_get_their_own_messages() {
+        let mut b = batch();
+        let t = target("a");
+        let crlf = b.edit_file(&t, "a", "d", disk("a\r\nb")).unwrap_err();
+        assert!(crlf.to_string().contains("CRLF line endings"), "{crlf}");
+        assert!(crlf.to_string().contains("not support"), "{crlf}");
+        assert!(!crlf.to_string().contains("use LF"), "{crlf}");
+        let latin1 = Existing::Present {
+            size: 3,
+            bytes: &[0x63, 0xe9, 0x21],
+        };
+        let bad = b.edit_file(&t, "c", "d", latin1).unwrap_err();
+        assert!(bad.to_string().contains("not UTF-8 text"), "{bad}");
+        // A CR in the new text still tells the model to use LF.
+        let new_cr = b.edit_file(&t, "abc", "a\r", disk("abc")).unwrap_err();
+        assert!(new_cr.to_string().contains("LF"), "{new_cr}");
+    }
+
+    #[test]
+    fn the_too_large_message_names_the_field() {
+        let mut b = batch();
+        let over = "a".repeat(FIELD_MAX + 1);
+        let old = b
+            .edit_file(&target("a"), &over, "x", disk("a"))
+            .unwrap_err();
+        assert_eq!(old.to_string(), "old is over 16 KiB");
+        let new = b
+            .edit_file(&target("a"), "a", &over, disk("a"))
+            .unwrap_err();
+        assert_eq!(new.to_string(), "new is over 16 KiB");
+    }
+
+    #[test]
+    fn growth_past_the_batch_cap_is_full() {
+        let mut b = batch();
+        // 1 MiB file at the file cap: legal to edit, but not to grow.
+        let at = format!("x{}", "a".repeat(FILE_MAX - 1));
+        let grow = "b".repeat(FIELD_MAX);
+        assert_eq!(
+            b.edit_file(&target("big"), "x", &grow, disk(&at)),
+            Err(EditError::Stage(StageError::Full))
+        );
+        assert!(b.entries().is_empty());
+    }
+
+    #[test]
+    fn a_multi_byte_old_matches_once() {
+        let mut b = batch();
+        b.edit_file(&target("a"), "é", "e", disk("caf\u{e9} \u{1f600}!"))
+            .unwrap();
+        assert_eq!(file(&b, 0).0, "cafe \u{1f600}!");
+        b.edit_file(&target("b"), "\u{1f600}", "x", disk("a\u{1f600}b"))
+            .unwrap();
+        assert_eq!(file(&b, 1).0, "axb");
+    }
+
+    #[test]
+    fn overlapping_multi_byte_matches_are_ambiguous() {
+        assert_eq!(
+            apply_edit("\u{e9}\u{e9}\u{e9}", "\u{e9}\u{e9}", "x"),
+            Err(EditError::Ambiguous)
+        );
+        assert_eq!(
+            apply_edit("\u{1f600}\u{1f600}\u{1f600}", "\u{1f600}\u{1f600}", "x"),
+            Err(EditError::Ambiguous)
+        );
+        assert_eq!(
+            apply_edit("\u{e9}\u{e9}", "\u{e9}\u{e9}", "x").unwrap(),
+            "x"
+        );
+    }
+
+    #[test]
+    fn an_edit_after_a_write_keeps_the_disk_text_captured_by_the_write() {
+        let mut b = batch();
+        let t = target("a.txt");
+        b.stage_file(&t, "one two\n", disk("disk text\n")).unwrap();
+        b.edit_file(&t, "two", "2", disk("changed again\n"))
+            .unwrap();
+        assert_eq!(file(&b, 0), ("one 2\n", Some("disk text\n")));
     }
 
     #[test]
