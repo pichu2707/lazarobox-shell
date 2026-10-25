@@ -105,7 +105,7 @@ fn translate(pattern: &str) -> Result<String, GlobError> {
     for (at, segment) in segments.iter().enumerate() {
         if *segment == "**" {
             // Whole segments, none included; at the end, everything below.
-            out.push_str(if at == last { ".+" } else { "(?:[^/]+/)*" });
+            out.push_str(if at == last { "(?s:.+)" } else { "(?:[^/]+/)*" });
             continue;
         }
         segment_regex(segment, &mut out)?;
@@ -156,7 +156,7 @@ fn class_regex(chars: &[char], out: &mut String) -> Result<usize, GlobError> {
         if let (Some('-'), Some(&end)) = (chars.get(at), chars.get(at + 1))
             && end != ']'
         {
-            if bad(end) {
+            if bad(end) || end < c {
                 return Err(GlobError::BadClass);
             }
             items.push('-');
@@ -256,13 +256,7 @@ mod tests {
         assert_eq!(refused("*.{rs,toml}"), GlobError::Unsupported);
         assert_eq!(refused("a\\*"), GlobError::Unsupported);
         for bad in ["[abc", "[", "[!", "[]", "[z-a]", "[a/b]", "[a[b]", "[a-/]"] {
-            assert!(
-                matches!(
-                    Glob::new(bad),
-                    Err(GlobError::BadClass | GlobError::TooComplex)
-                ),
-                "{bad}"
-            );
+            assert!(matches!(Glob::new(bad), Err(GlobError::BadClass)), "{bad}");
         }
         // `..` is only a problem as a whole segment.
         assert!(Glob::new("a..b").is_ok());
@@ -272,20 +266,30 @@ mod tests {
         }
     }
 
-    // A reversed range is the one class the translation cannot judge alone.
     #[test]
-    fn a_reversed_range_does_not_compile() {
-        assert!(Glob::new("[z-a]").is_err());
+    fn a_reversed_range_is_a_bad_class() {
+        assert_eq!(Glob::new("[z-a]").unwrap_err(), GlobError::BadClass);
+        assert_eq!(Glob::new("[!z-a]").unwrap_err(), GlobError::BadClass);
+        assert!(Glob::new("[a-a]").is_ok());
+    }
+
+    // A trailing `**` is everything below, even a name with a newline.
+    #[test]
+    fn a_trailing_double_star_matches_a_newline_in_a_name() {
+        assert!(matches("src/**", "src/a\nb.rs"));
+        assert!(matches("src/**", "src/d/a\n"));
+        assert!(matches("src/*", "src/a\nb.rs"));
+        assert!(!matches("src/*", "src/a\n/b"));
     }
 
     #[test]
     fn a_pattern_that_compiles_too_large_is_refused() {
-        let heavy = "?".repeat(512);
-        let nested = format!("{}x", "**/".repeat(170));
-        // Either shape is fine as long as it never panics and never hangs.
-        for pattern in [heavy, nested] {
-            let _ = Glob::new(&pattern);
+        // Within MAX_PATTERN_BYTES, long runs of `*` or `?` pass the size limit.
+        for pattern in ["*".repeat(512), "?".repeat(512), "?*".repeat(256)] {
+            assert_eq!(Glob::new(&pattern).unwrap_err(), GlobError::TooComplex);
         }
+        // Nested `**/` stays under it.
+        assert!(Glob::new(&format!("{}x", "**/".repeat(170))).is_ok());
         assert!(Glob::new(&"[a-z]".repeat(100)).is_ok());
     }
 
