@@ -12,6 +12,7 @@
 
 use super::write::{self, WriteError};
 use crate::core::ai::tools::{
+    diff::{diff, escape},
     paths::SecretRoots,
     stage::{Entry, Staged},
 };
@@ -111,8 +112,61 @@ pub enum ApplyResult {
     Failed {
         path: PathBuf,
     },
+    /// A step failed and an undo failed too: `changed` is exactly what is left
+    /// changed on disk, in the order the undo met it.
+    Partial {
+        changed: Vec<PathBuf>,
+    },
     /// No safe write on this platform; nothing was written.
     Unsupported,
+}
+
+impl ApplyResult {
+    /// The text for the model: paths and counts, never file text or diff rows.
+    pub fn summary(&self) -> String {
+        let list = |paths: &[PathBuf]| -> String {
+            paths
+                .iter()
+                .map(|p| format!("\n{}", escape(&p.to_string_lossy())))
+                .collect()
+        };
+        match self {
+            ApplyResult::Applied(changes) => {
+                let mut out = format!("applied {} paths:", changes.len());
+                for c in changes {
+                    let kind = match c.kind {
+                        ChangeKind::Created => "created",
+                        ChangeKind::Edited => "edited",
+                        ChangeKind::DirCreated => "folder",
+                    };
+                    let path = escape(&c.path.to_string_lossy()).into_owned();
+                    out += &format!(
+                        "\n{kind} {path} (+{} -{}, {} bytes)",
+                        c.added, c.removed, c.bytes
+                    );
+                }
+                out
+            }
+            ApplyResult::Drifted(paths) => format!(
+                "refused: {} paths changed since the review, nothing was written:{}",
+                paths.len(),
+                list(paths)
+            ),
+            ApplyResult::Failed { path } => format!(
+                "failed at {}: every earlier change was undone",
+                escape(&path.to_string_lossy())
+            ),
+            ApplyResult::Partial { changed } => format!(
+                "partial: {} path{} still changed on disk, undo it by hand:{}",
+                changed.len(),
+                if changed.len() == 1 { " is" } else { "s are" },
+                list(changed)
+            ),
+            ApplyResult::Unsupported => {
+                "writes are not supported on this platform, nothing was written".into()
+            }
+        }
+    }
 }
 
 /// Applies the entries in order (folders by depth, then files), after the
@@ -126,18 +180,57 @@ pub fn apply(ops: &dyn WriteOps, entries: &[Staged]) -> ApplyResult {
     let mut done: Vec<&Staged> = Vec::new();
     for staged in ordered(entries) {
         if let Err(error) = run(ops, staged) {
-            for undone in done.iter().rev() {
-                let _ = undo(ops, undone);
-            }
+            let changed = rollback(ops, &done);
             let path = staged.target.real.clone();
             return match error {
+                _ if !changed.is_empty() => ApplyResult::Partial { changed },
                 WriteError::Drifted => ApplyResult::Drifted(vec![path]),
                 _ => ApplyResult::Failed { path },
             };
         }
         done.push(staged);
     }
-    ApplyResult::Applied(Vec::new())
+    ApplyResult::Applied(done.into_iter().map(change).collect())
+}
+
+/// Undoes the journal in reverse and goes on past a failure, so as much as
+/// possible is put back. Returns the paths whose undo failed: exactly what is
+/// left changed.
+fn rollback(ops: &dyn WriteOps, done: &[&Staged]) -> Vec<PathBuf> {
+    done.iter()
+        .rev()
+        .filter(|staged| undo(ops, staged).is_err())
+        .map(|staged| staged.target.real.clone())
+        .collect()
+}
+
+/// The record of one finished step.
+fn change(staged: &Staged) -> Change {
+    let path = staged.target.real.clone();
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    match &staged.entry {
+        Entry::Dir => Change {
+            path,
+            kind: ChangeKind::DirCreated,
+            bytes: 0,
+            added: 0,
+            removed: 0,
+        },
+        Entry::File { text, base } => {
+            let rows = diff(base.as_deref(), text);
+            Change {
+                path,
+                kind: if base.is_some() {
+                    ChangeKind::Edited
+                } else {
+                    ChangeKind::Created
+                },
+                bytes: text.len() as u64,
+                added: count(rows.added),
+                removed: count(rows.removed),
+            }
+        }
+    }
 }
 
 /// `Some(result)` when the batch must not start. Every target is read before
@@ -332,6 +425,9 @@ mod tests {
 
         fn delete_dir(&self, real: &Path) -> Result<(), WriteError> {
             self.tick(format!("rmdir {}", real.display()))?;
+            if self.files.borrow().keys().any(|f| f.starts_with(real)) {
+                return Err(WriteError::Io); // not empty
+            }
             self.dirs.borrow_mut().remove(real);
             Ok(())
         }
@@ -558,6 +654,152 @@ mod tests {
             ApplyResult::Drifted(paths(&["/h/p/b"]))
         );
         assert_eq!(fake.text("/h/p/a"), None);
+    }
+
+    // We2.3: Partial and Change records
+
+    #[test]
+    fn a_failing_undo_reports_partial_with_exactly_what_is_still_changed() {
+        // Fail the third write (call 2), then the restore of the first (call 4).
+        let fake = Fake::default().failing(&[2, 4]);
+        let batch = [
+            file("/h/p/a", "a", None),
+            file("/h/p/b", "b", None),
+            file("/h/p/c", "c", None),
+        ];
+        assert_eq!(
+            apply(&fake, &batch),
+            ApplyResult::Partial {
+                changed: paths(&["/h/p/a"])
+            }
+        );
+        // The undo went on past the failure: b is gone, a is left.
+        assert_eq!(fake.text("/h/p/a").as_deref(), Some("a"));
+        assert_eq!(fake.text("/h/p/b"), None);
+    }
+
+    #[test]
+    fn a_folder_whose_file_could_not_be_removed_is_left_changed_too() {
+        let fake = Fake::default().failing(&[2, 3]);
+        let batch = [
+            dir("/h/p/d"),
+            file("/h/p/d/a", "a", None),
+            file("/h/p/d/b", "b", None),
+        ];
+        // b fails (2), the undo of a fails (3), so the folder cannot go either.
+        assert_eq!(
+            apply(&fake, &batch),
+            ApplyResult::Partial {
+                changed: paths(&["/h/p/d/a", "/h/p/d"])
+            }
+        );
+    }
+
+    #[test]
+    fn an_undo_that_finds_a_replaced_file_leaves_it_and_says_so() {
+        let fake = Fake::default().failing(&[1]);
+        fake.error.set(Some(WriteError::Io));
+        let batch = [file("/h/p/a", "a", None), file("/h/p/b", "b", None)];
+        // Someone swaps a's content after we wrote it, before the undo.
+        struct Swap<'a>(&'a Fake);
+        impl WriteOps for Swap<'_> {
+            fn probe(&self, real: &Path) -> Result<Option<Vec<u8>>, WriteError> {
+                self.0.probe(real)
+            }
+            fn make_dir(&self, real: &Path) -> Result<(), WriteError> {
+                self.0.make_dir(real)
+            }
+            fn create_file(&self, real: &Path, bytes: &[u8]) -> Result<(), WriteError> {
+                self.0.create_file(real, bytes)
+            }
+            fn replace_file(&self, r: &Path, e: &[u8], b: &[u8]) -> Result<(), WriteError> {
+                self.0.replace_file(r, e, b)
+            }
+            fn delete_file(&self, real: &Path, expected: &[u8]) -> Result<(), WriteError> {
+                self.0
+                    .files
+                    .borrow_mut()
+                    .insert(real.to_path_buf(), b"theirs".to_vec());
+                self.0.delete_file(real, expected)
+            }
+            fn delete_dir(&self, real: &Path) -> Result<(), WriteError> {
+                self.0.delete_dir(real)
+            }
+        }
+        assert_eq!(
+            apply(&Swap(&fake), &batch),
+            ApplyResult::Partial {
+                changed: paths(&["/h/p/a"])
+            }
+        );
+        assert_eq!(fake.text("/h/p/a").as_deref(), Some("theirs"));
+    }
+
+    #[test]
+    fn success_returns_one_change_per_path_with_kind_bytes_and_line_counts() {
+        let fake = Fake::default().with_file("/h/p/e", "a\nb\n");
+        let batch = [
+            file("/h/p/n", "x\ny\n", None),
+            file("/h/p/e", "a\nc\nd\n", Some("a\nb\n")),
+            dir("/h/p/d"),
+        ];
+        let change = |path: &str, kind, bytes, added, removed| Change {
+            path: PathBuf::from(path),
+            kind,
+            bytes,
+            added,
+            removed,
+        };
+        assert_eq!(
+            apply(&fake, &batch),
+            ApplyResult::Applied(vec![
+                change("/h/p/d", ChangeKind::DirCreated, 0, 0, 0),
+                change("/h/p/n", ChangeKind::Created, 4, 2, 0),
+                change("/h/p/e", ChangeKind::Edited, 6, 2, 1),
+            ])
+        );
+    }
+
+    #[test]
+    fn what_goes_toward_the_model_names_paths_and_counts_and_never_text() {
+        let secret = "API_KEY=hunter2";
+        let fake = Fake::default().with_file("/h/p/e", secret);
+        let batch = [
+            file("/h/p/n", secret, None),
+            file("/h/p/e", "other", Some(secret)),
+        ];
+        let done = apply(&fake, &batch);
+        assert_eq!(
+            done.summary(),
+            "applied 2 paths:\ncreated /h/p/n (+1 -0, 15 bytes)\nedited /h/p/e (+1 -1, 5 bytes)"
+        );
+        let drifted = ApplyResult::Drifted(paths(&["/h/p/a", "/h/p/b"]));
+        assert_eq!(
+            drifted.summary(),
+            "refused: 2 paths changed since the review, nothing was written:\n/h/p/a\n/h/p/b"
+        );
+        let failed = ApplyResult::Failed {
+            path: PathBuf::from("/h/p/c"),
+        };
+        assert_eq!(
+            failed.summary(),
+            "failed at /h/p/c: every earlier change was undone"
+        );
+        let partial = ApplyResult::Partial {
+            changed: paths(&["/h/p/a"]),
+        };
+        assert_eq!(
+            partial.summary(),
+            "partial: 1 path is still changed on disk, undo it by hand:\n/h/p/a"
+        );
+        assert_eq!(
+            ApplyResult::Unsupported.summary(),
+            "writes are not supported on this platform, nothing was written"
+        );
+        for result in [&done, &drifted, &failed, &partial] {
+            assert!(!result.summary().contains("hunter2"));
+            assert!(!format!("{result:?}").contains("hunter2"));
+        }
     }
 
     // We2.1: the real disk
