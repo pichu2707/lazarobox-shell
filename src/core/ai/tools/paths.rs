@@ -77,11 +77,23 @@ fn is_env_template(name: &str) -> bool {
             .any(|ext| lower.ends_with(ext))
 }
 
+/// Whether a name is a temp file of the write primitives:
+/// `.lbx-<32 lowercase hex digits>.tmp`. A crash can leave one behind; it is
+/// hidden from every tool and refused as a read or write target.
+pub fn is_temp_name(name: &str) -> bool {
+    name.strip_prefix(".lbx-")
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+        .is_some_and(|hex| {
+            hex.len() == 32 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        })
+}
+
 /// Whether an entry name is excluded wherever it appears below `$HOME`. The
 /// walking tools skip such entries; the root folders are judged by position
 /// in [`check_path`].
 pub fn is_excluded_name(name: &str) -> bool {
     is_env_name(name)
+        || is_temp_name(name)
         || SECRET_FILES
             .iter()
             .any(|file| file.eq_ignore_ascii_case(name))
@@ -1135,6 +1147,27 @@ mod tests {
             }
         }
         assert!(is_excluded_name(".envrc"));
+    }
+
+    #[test]
+    fn a_leftover_write_temp_name_is_excluded_and_nothing_else_is() {
+        let temp = ".lbx-0123456789abcdef0123456789abcdef.tmp";
+        assert!(is_temp_name(temp) && is_excluded_name(temp));
+        for other in [
+            ".lbx-0123456789abcdef0123456789abcde.tmp",
+            ".lbx-0123456789ABCDEF0123456789abcdef.tmp",
+            ".lbx-0123456789abcdef0123456789abcdeg.tmp",
+            "lbx-0123456789abcdef0123456789abcdef.tmp",
+            ".lbx-0123456789abcdef0123456789abcdef.tmp2",
+            "a.tmp",
+        ] {
+            assert!(!is_temp_name(other), "{other}");
+        }
+        let f = fixture();
+        assert_eq!(
+            check_path(&f.home, &f.home.join("project").join(temp)),
+            PathVerdict::Refused
+        );
     }
 
     #[test]

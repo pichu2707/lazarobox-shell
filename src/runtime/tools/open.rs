@@ -91,7 +91,7 @@ mod linux {
 
     /// The open flags: read only, no controlling terminal, never blocking on a
     /// FIFO, and no link followed in the last component.
-    pub(in crate::runtime::tools) fn flags(dir: bool) -> i32 {
+    fn flags(dir: bool) -> i32 {
         let base =
             libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY;
         if dir { base | libc::O_DIRECTORY } else { base }
@@ -120,11 +120,17 @@ mod linux {
         }
     }
 
-    pub(in crate::runtime::tools) fn open_raw(
+    /// Opens the existing `name` of the folder `dirfd` for reading, with fixed
+    /// flags: never created, never written, no link in the last place. The
+    /// write module cannot choose flags, so it cannot open for writing here.
+    pub(in crate::runtime::tools) fn open_existing_at(
         dirfd: RawFd,
-        path: &CString,
-        flags: i32,
+        name: &CString,
     ) -> io::Result<OwnedFd> {
+        open_raw(dirfd, name, flags(false))
+    }
+
+    fn open_raw(dirfd: RawFd, path: &CString, flags: i32) -> io::Result<OwnedFd> {
         // SAFETY: `path` is a valid NUL-terminated string for the whole call.
         owned(unsafe { libc::openat(dirfd, path.as_ptr(), flags) })
     }

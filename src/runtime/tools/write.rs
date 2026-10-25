@@ -27,6 +27,8 @@ pub enum WriteError {
     Missing,
     /// No safe write on this platform.
     Unsupported,
+    /// A replace found other bytes than the ones the user reviewed.
+    Drifted,
     /// Anything else the system reported.
     Io,
 }
@@ -41,12 +43,12 @@ mod linux {
     use super::{SecretRoots, WriteError};
     use crate::runtime::tools::{
         fs::{Failure, open_checked},
-        open::{cstring, fd_path, flags, open_raw, owned},
+        open::{cstring, fd_path, open_existing_at, owned},
     };
     use std::{
         ffi::CString,
         fs::{File, Permissions},
-        io::{self, Write},
+        io::{self, Read, Write},
         os::{
             fd::{AsRawFd, OwnedFd, RawFd},
             unix::{
@@ -55,6 +57,8 @@ mod linux {
             },
         },
         path::Path,
+        sync::atomic::{AtomicU64, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
     };
 
     /// The parent folder of `real`, opened beneath HOME and judged on its own
@@ -89,9 +93,9 @@ mod linux {
         name: &CString,
         real: &Path,
     ) -> Result<Option<File>, WriteError> {
-        let fd = match open_raw(dir.as_raw_fd(), name, flags(false)) {
+        let fd = match open_existing_at(dir.as_raw_fd(), name) {
             Ok(fd) => fd,
-            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => return Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(_) => return Err(WriteError::Refused), // ELOOP: a link in the last place
         };
         match fd_path(&fd) {
@@ -135,24 +139,62 @@ mod linux {
     /// `renameat2(RENAME_NOREPLACE)` fails with [`WriteError::Exists`] when the
     /// name is taken, even by a dangling link.
     pub fn create_file(roots: &SecretRoots, real: &Path, bytes: &[u8]) -> Result<(), WriteError> {
+        create_file_with(roots, real, bytes, || {})
+    }
+
+    /// [`create_file`] with a seam that runs after the staging (for tests).
+    fn create_file_with(
+        roots: &SecretRoots,
+        real: &Path,
+        bytes: &[u8],
+        after_stage: impl FnOnce(),
+    ) -> Result<(), WriteError> {
         let (dir, name) = open_parent(roots, real)?;
         let mut temp = stage(&dir, bytes, 0o666, None)?;
+        after_stage();
+        same_folder(&dir, real)?;
         rename(&dir, &mut temp, &name, true)?;
         sync_dir(&dir);
         Ok(())
     }
 
-    /// Replaces the existing file `real` with `bytes`, keeping its mode. The
-    /// old file is unlinked from the name, never written, so another hard link
-    /// keeps the old bytes (and is refused before that anyway).
-    pub fn replace_file(roots: &SecretRoots, real: &Path, bytes: &[u8]) -> Result<(), WriteError> {
+    /// Replaces the existing file `real` with `bytes`, keeping its permission
+    /// bits (never setuid, setgid or sticky). `expected` is what the user
+    /// reviewed: the bytes read through the opened file must still be those,
+    /// or the answer is [`WriteError::Drifted`]. The old file is unlinked from
+    /// the name, never written, so another hard link keeps the old bytes (and
+    /// is refused before that anyway).
+    pub fn replace_file(
+        roots: &SecretRoots,
+        real: &Path,
+        expected: &[u8],
+        bytes: &[u8],
+    ) -> Result<(), WriteError> {
         let (dir, name) = open_parent(roots, real)?;
         let old = open_in(roots, &dir, &name, real)?.ok_or(WriteError::Missing)?;
-        let mode = old.metadata().map_err(io_error)?.mode() & 0o7777;
+        let mut current = Vec::new();
+        (&old)
+            .take(expected.len() as u64 + 1)
+            .read_to_end(&mut current)
+            .map_err(io_error)?;
+        if current != expected {
+            return Err(WriteError::Drifted);
+        }
+        let mode = old.metadata().map_err(io_error)?.mode() & 0o777;
         let mut temp = stage(&dir, bytes, mode, Some(mode))?;
+        same_folder(&dir, real)?;
         rename(&dir, &mut temp, &name, false)?;
         sync_dir(&dir);
         Ok(())
+    }
+
+    /// Refuses when the folder behind `dir` is no longer the parent of `real`
+    /// (it was moved or renamed after it was judged).
+    fn same_folder(dir: &OwnedFd, real: &Path) -> Result<(), WriteError> {
+        match fd_path(dir) {
+            Ok(now) if Some(now.as_path()) == real.parent() => Ok(()),
+            _ => Err(WriteError::Refused),
+        }
     }
 
     /// A temp file that is unlinked when dropped unless it was renamed away.
@@ -175,14 +217,52 @@ mod linux {
     /// `.lbx-<32 random hex digits>.tmp`: unpredictable, and short enough for
     /// any file name limit whatever the target is called.
     fn temp_name() -> io::Result<CString> {
-        let mut random = [0u8; 16];
-        // SAFETY: the buffer is valid for `len` bytes.
-        let got = unsafe { libc::getrandom(random.as_mut_ptr().cast(), random.len(), 0) };
-        if usize::try_from(got) != Ok(random.len()) {
-            return Err(io::Error::last_os_error());
-        }
+        temp_name_from(random_bytes(|buf| {
+            // SAFETY: the buffer is valid for `len` bytes. `GRND_NONBLOCK`
+            // keeps an uninitialised pool from blocking the call.
+            let got =
+                unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), libc::GRND_NONBLOCK) };
+            if usize::try_from(got) == Ok(buf.len()) {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        }))
+    }
+
+    fn temp_name_from(random: [u8; 16]) -> io::Result<CString> {
         let hex: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
         cstring(format!(".lbx-{hex}.tmp").as_bytes())
+    }
+
+    /// 16 bytes from `fill`, retried on EINTR. On any other error (EAGAIN: the
+    /// pool is not ready yet) a nonce stands in: the name only has to be
+    /// unique, and `O_EXCL` guarantees nothing is clobbered.
+    fn random_bytes(mut fill: impl FnMut(&mut [u8; 16]) -> io::Result<()>) -> [u8; 16] {
+        let mut random = [0u8; 16];
+        loop {
+            match fill(&mut random) {
+                Ok(()) => return random,
+                Err(error) if error.raw_os_error() == Some(libc::EINTR) => {}
+                Err(_) => return nonce(),
+            }
+        }
+    }
+
+    /// Time, process id and a counter: distinct for every call in a process.
+    fn nonce() -> [u8; 16] {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos() as u64);
+        // SAFETY: `getpid` takes no argument and cannot fail.
+        let pid = unsafe { libc::getpid() } as u32;
+        let count = COUNTER.fetch_add(1, Ordering::Relaxed) as u32;
+        let mut out = [0u8; 16];
+        out[..8].copy_from_slice(&nanos.to_le_bytes());
+        out[8..12].copy_from_slice(&pid.to_le_bytes());
+        out[12..].copy_from_slice(&count.to_le_bytes());
+        out
     }
 
     /// Writes `bytes` to a new `O_EXCL` temp file in `dir` and syncs it. On any
@@ -458,7 +538,7 @@ mod linux {
             for mode in [0o750, 0o640] {
                 std::fs::write(&path, "old").unwrap();
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
-                replace_file(&f.roots, &path, b"new").unwrap();
+                replace_file(&f.roots, &path, b"old", b"new").unwrap();
                 assert_eq!(std::fs::read(&path).unwrap(), b"new");
                 let meta = std::fs::metadata(&path).unwrap();
                 assert_eq!(meta.mode() & 0o7777, mode, "{mode:o}");
@@ -471,17 +551,103 @@ mod linux {
             let f = fx();
             std::fs::write(f.home.join("proj/a.txt"), "old").unwrap();
             std::fs::hard_link(f.home.join("proj/a.txt"), f.home.join("elsewhere/b")).unwrap();
-            let got = replace_file(&f.roots, &f.home.join("proj/a.txt"), b"new");
+            let got = replace_file(&f.roots, &f.home.join("proj/a.txt"), b"old", b"new");
             assert_eq!(got.unwrap_err(), WriteError::Refused);
             assert_eq!(std::fs::read(f.home.join("elsewhere/b")).unwrap(), b"old");
             std::fs::write(f.home.join("elsewhere/t"), "old").unwrap();
             symlink(f.home.join("elsewhere/t"), f.home.join("proj/l")).unwrap();
-            let got = replace_file(&f.roots, &f.home.join("proj/l"), b"new");
+            let got = replace_file(&f.roots, &f.home.join("proj/l"), b"old", b"new");
             assert_eq!(got.unwrap_err(), WriteError::Refused);
             assert_eq!(std::fs::read(f.home.join("elsewhere/t")).unwrap(), b"old");
-            let got = replace_file(&f.roots, &f.home.join("proj/none"), b"new");
+            let got = replace_file(&f.roots, &f.home.join("proj/none"), b"old", b"new");
             assert_eq!(got.unwrap_err(), WriteError::Missing);
             assert_eq!(names(&f.home.join("proj")), ["a.txt", "l", "src"]);
+        }
+
+        // Review fixes
+
+        #[test]
+        fn replace_refuses_a_file_that_changed_since_it_was_reviewed() {
+            let f = fx();
+            let path = f.home.join("proj/a.txt");
+            std::fs::write(&path, "reviewed").unwrap();
+            std::fs::write(&path, "changed meanwhile").unwrap();
+            let got = replace_file(&f.roots, &path, b"reviewed", b"new");
+            assert_eq!(got.unwrap_err(), WriteError::Drifted);
+            assert_eq!(std::fs::read(&path).unwrap(), b"changed meanwhile");
+            assert_eq!(names(&f.home.join("proj")), ["a.txt", "src"]);
+            // A longer file that starts with the reviewed bytes drifted too.
+            std::fs::write(&path, "reviewed and more").unwrap();
+            let got = replace_file(&f.roots, &path, b"reviewed", b"new");
+            assert_eq!(got.unwrap_err(), WriteError::Drifted);
+            assert_eq!(std::fs::read(&path).unwrap(), b"reviewed and more");
+        }
+
+        #[test]
+        fn replace_never_copies_setuid_setgid_or_sticky() {
+            let f = fx();
+            let path = f.home.join("proj/tool");
+            for (from, to) in [(0o4755, 0o755), (0o2750, 0o750), (0o1777, 0o777)] {
+                std::fs::write(&path, "old").unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(from)).unwrap();
+                replace_file(&f.roots, &path, b"old", b"new").unwrap();
+                let mode = std::fs::metadata(&path).unwrap().mode() & 0o7777;
+                assert_eq!(mode, to, "{from:o}");
+            }
+        }
+
+        #[test]
+        fn a_leftover_temp_is_not_a_target_and_does_not_break_the_next_create() {
+            let f = fx();
+            let temp = f
+                .home
+                .join("proj/.lbx-0123456789abcdef0123456789abcdef.tmp");
+            std::fs::write(&temp, "crashed").unwrap();
+            assert_eq!(
+                open_target(&f.roots, &temp).unwrap_err(),
+                WriteError::Refused
+            );
+            assert_eq!(
+                create_file(&f.roots, &temp, b"x").unwrap_err(),
+                WriteError::Refused
+            );
+            create_file(&f.roots, &f.home.join("proj/new.txt"), b"x").unwrap();
+            assert_eq!(std::fs::read(&temp).unwrap(), b"crashed");
+            assert_eq!(names(&f.home.join("proj")).len(), 3);
+        }
+
+        #[test]
+        fn a_moved_folder_is_refused_between_the_stage_and_the_rename() {
+            let f = fx();
+            let real = f.home.join("proj/src/new.rs");
+            let moved = f.home.join("proj/moved");
+            let got = create_file_with(&f.roots, &real, b"x", || {
+                std::fs::rename(f.home.join("proj/src"), &moved).unwrap();
+            });
+            assert_eq!(got.unwrap_err(), WriteError::Refused);
+            assert_eq!(names(&moved), Vec::<String>::new());
+            assert!(!f.home.join("proj/src").exists());
+        }
+
+        #[test]
+        fn a_missing_random_pool_or_a_signal_never_blocks_or_fails_the_name() {
+            let mut calls = 0;
+            let bytes = random_bytes(|buf| {
+                calls += 1;
+                if calls < 3 {
+                    return Err(io::Error::from_raw_os_error(libc::EINTR));
+                }
+                buf.fill(0xab);
+                Ok(())
+            });
+            assert_eq!((calls, bytes), (3, [0xab; 16]));
+            // The pool is not ready (EAGAIN): a nonce stands in, still unique.
+            let pool = || Err(io::Error::from_raw_os_error(libc::EAGAIN));
+            assert_ne!(random_bytes(|_| pool()), random_bytes(|_| pool()));
+            let name = temp_name_from(random_bytes(|_| pool())).unwrap();
+            assert!(crate::core::ai::tools::paths::is_temp_name(
+                name.to_str().unwrap()
+            ));
         }
 
         #[test]
@@ -530,6 +696,7 @@ mod other {
     pub fn replace_file(
         _roots: &SecretRoots,
         _real: &Path,
+        _expected: &[u8],
         _bytes: &[u8],
     ) -> Result<(), WriteError> {
         Err(WriteError::Unsupported)
@@ -553,7 +720,7 @@ mod other {
                 WriteError::Unsupported
             );
             assert_eq!(
-                replace_file(&roots, real, b"x").unwrap_err(),
+                replace_file(&roots, real, b"o", b"x").unwrap_err(),
                 WriteError::Unsupported
             );
         }

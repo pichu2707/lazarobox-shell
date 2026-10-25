@@ -1148,6 +1148,22 @@ mod tests {
     }
 
     #[test]
+    fn a_leftover_write_temp_is_not_listed_found_or_read() {
+        let f = fixture();
+        let dev = f.home.join("dev");
+        let temp = ".lbx-0123456789abcdef0123456789abcdef.tmp";
+        fs::write(dev.join(temp), "half written").unwrap();
+        fs::create_dir_all(dev.join("lbx-keep")).unwrap();
+        fs::create_dir_all(dev.join("lbx-up/.lbx-fedcba9876543210fedcba9876543210.tmp")).unwrap();
+        let e = env(&f.home);
+        let listed = list(&e, "~/dev", &Limits::default()).unwrap();
+        assert_eq!(listed, "d app\nd lbx-keep\nd lbx-up");
+        assert_eq!(read(&e, &format!("~/dev/{temp}")), Err(Failure::Refused));
+        let found = find(&e, "lbx", &Limits::default()).unwrap();
+        assert_eq!(found, "~/dev/lbx-keep\n~/dev/lbx-up");
+    }
+
+    #[test]
     fn list_dir_of_home_hides_the_secret_folders() {
         let f = fixture();
         fs::create_dir_all(f.home.join(".claude")).unwrap();

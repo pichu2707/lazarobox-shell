@@ -595,7 +595,20 @@ mod tests {
         )
     }
 
-    // Spec (code-search, glob): Matches under the root.
+    #[test]
+    fn a_leftover_write_temp_is_neither_searched_nor_globbed() {
+        let f = fixture();
+        let temp = ".lbx-0123456789abcdef0123456789abcdef.tmp";
+        fs::write(f.root.join("src").join(temp), "needle\n").unwrap();
+        fs::write(f.root.join("src/a.rs"), "needle\n").unwrap();
+        for out in [run(&f, "needle", None), find(&f, "**/*", None)] {
+            let out = out.unwrap();
+            assert!(out.starts_with("src/a.rs"), "{out}");
+            assert!(!out.contains(".lbx-"), "{out}");
+        }
+    }
+
+    // Spec (code-search, glob): Matches under the root.    // Spec (code-search, glob): Matches under the root.
     #[test]
     fn glob_lists_matching_files_relative_to_the_root_and_never_content() {
         let f = fixture();
