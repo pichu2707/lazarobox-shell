@@ -111,7 +111,7 @@ pub(super) fn selected_label(menu: &MenuState) -> &'static str {
     labels[0]
 }
 
-const ORDER: [&str; 17] = [
+const ORDER: [&str; 22] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
@@ -128,6 +128,11 @@ const ORDER: [&str; 17] = [
     "Context",
     "Memory",
     "Tools",
+    "Search",
+    "Write",
+    "Exec",
+    "Git",
+    "Git write",
     "Approval",
 ];
 
@@ -316,6 +321,11 @@ fn the_ai_section_lists_the_task_rows_and_the_static_rows_with_their_values() {
             "Context=on",
             "Memory=off",
             "Tools=on",
+            "Search=off",
+            "Write=off",
+            "Exec=off",
+            "Git=off",
+            "Git write=off",
             "Approval=ask",
         ]
     );

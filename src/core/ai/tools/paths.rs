@@ -88,6 +88,22 @@ fn starts_with_secret_root(names: &[std::borrow::Cow<'_, str>]) -> bool {
     })
 }
 
+/// Whether `real` is a git configuration file: `config` or `config.worktree`
+/// (ASCII case-insensitive) somewhere below a `.git` folder. It can hold a
+/// remote URL with a credential and hooks-like settings, so reads refuse it
+/// like a secret. Pure: it reads no file.
+pub fn is_git_config(real: &Path) -> bool {
+    let named = real.file_name().is_some_and(|name| {
+        let name = name.to_string_lossy();
+        name.eq_ignore_ascii_case("config") || name.eq_ignore_ascii_case("config.worktree")
+    });
+    named
+        && real.parent().is_some_and(|dir| {
+            dir.components()
+                .any(|c| c.as_os_str().eq_ignore_ascii_case(".git"))
+        })
+}
+
 /// Judges what follows `$HOME` in a path: refused when it holds a `.` or `..`
 /// part, starts with an excluded folder, or has an excluded name anywhere.
 fn judge_rest(rest: &Path) -> bool {
@@ -466,6 +482,28 @@ mod tests {
     use super::*;
     use std::fs;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn git_config_is_a_config_file_below_a_dot_git_folder() {
+        for yes in [
+            "/h/p/.git/config",
+            "/h/p/.git/config.worktree",
+            "/h/p/.git/modules/sub/config",
+            "/h/p/.GIT/CONFIG",
+        ] {
+            assert!(is_git_config(Path::new(yes)), "{yes}");
+        }
+        for no in [
+            "/h/p/config",
+            "/h/p/.git/HEAD",
+            "/h/p/.git",
+            "/h/p/.git/config.bak",
+            "/h/p/.github/config",
+            "/h/p/.git/config/x",
+        ] {
+            assert!(!is_git_config(Path::new(no)), "{no}");
+        }
+    }
 
     /// Loads the roots of `home` and resolves; an unusable HOME refuses.
     fn res(home: &Path, origin: &Path, input: &str) -> PathVerdict {

@@ -44,15 +44,15 @@ fn tools_edit(value: &'static str) -> ConfigEdit {
     }
 }
 
-// Spec (agent-tools, config menu): the row is right after Memory; Approval
-// follows it.
+// Spec (agent-tools, config menu): the row is right after Memory; the five
+// family rows and then Approval follow it.
 #[test]
 fn the_tools_row_follows_memory_and_is_found_by_kind() {
     let items = AI_SECTION.items;
-    let tools = &items[items.len() - 2];
+    let tools = &items[items.len() - 7];
     assert_eq!(tools.label, "Tools");
     assert!(matches!(tools.kind, ItemKind::Tools));
-    assert_eq!(items[items.len() - 3].label, "Memory");
+    assert_eq!(items[items.len() - 8].label, "Memory");
     let count = items
         .iter()
         .filter(|i| matches!(i.kind, ItemKind::Tools))
@@ -61,10 +61,10 @@ fn the_tools_row_follows_memory_and_is_found_by_kind() {
 }
 
 #[test]
-fn navigation_goes_memory_tools_approval() {
+fn navigation_goes_memory_tools_search() {
     let mut m = on_tools(true);
     press(&mut m, 'j');
-    assert_eq!(selected_label(&m), "Approval");
+    assert_eq!(selected_label(&m), "Search");
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Tools");
     press(&mut m, 'k');

@@ -3,10 +3,7 @@ source: src/ui/mod.rs
 expression: "(0..24).map(|y|\nrow(&buf, y).trim_end().to_string()).collect::<Vec<_>>().join(\"\\n\")"
 ---
  1
-hi there
-
-
- ┌ Menu ──────────────────────────────────────────────────────┐
+h┌ Menu ──────────────────────────────────────────────────────┐
  │ Settings │ AI                                        ⇥ Tab │
  │ Statusline position                                 bottom │
  │ Tab bar position                                       top │
@@ -20,9 +17,12 @@ hi there
  │                                                            │
  │                                                            │
  │                                                            │
+ │                                                            │
+ │                                                            │
+ │                                                            │
+ │                                                            │
+ │                                                            │
+ │                                                            │
  │ j/k move · h/l change · s save · Esc cancel                │
  └────────────────────────────────────────────────────────────┘
-
-
-
  ◐ MENU                                                   sh

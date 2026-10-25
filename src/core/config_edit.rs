@@ -1368,6 +1368,70 @@ other = 1
         );
     }
 
+    // Spec (config-persistence): the five family toggles are owned booleans,
+    // written only when changed and never next to anything else.
+    #[test]
+    fn a_family_toggle_is_written_as_a_boolean_and_reads_back() {
+        use crate::core::ai::config::ToolToggle;
+        let out = apply_edit(None, &[ConfigEdit::toggle(ToolToggle::Write, true)]).unwrap();
+        assert_eq!(out, "[ai.tools]\nwrite = true\n");
+        let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out), None);
+        assert!(ai.toggle(ToolToggle::Write));
+        assert!(!ai.toggle(ToolToggle::Exec));
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn a_family_toggle_keeps_comments_and_every_other_key() {
+        use crate::core::ai::config::ToolToggle;
+        let existing = "# mine\n[ai.tools]\nenabled = true # on\nwrite = false # careful\nfuture = 1\n\n[ai]\nnotify = true\n";
+        let out = apply_edit(
+            Some(existing),
+            &[ConfigEdit::toggle(ToolToggle::Write, true)],
+        )
+        .unwrap();
+        assert_eq!(out, existing.replace("write = false", "write = true"));
+        let out = apply_edit(
+            Some(existing),
+            &[ConfigEdit::toggle(ToolToggle::GitWrite, true)],
+        )
+        .unwrap();
+        assert!(out.contains("git_write = true"), "{out:?}");
+        assert!(out.contains("write = false # careful"), "{out:?}");
+        assert!(out.contains("future = 1"), "{out:?}");
+    }
+
+    #[test]
+    fn no_toggle_edit_adds_no_toggle_key() {
+        let out = apply_edit(Some("[ai.tools]\nenabled = true\n"), &tools_edit(false)).unwrap();
+        assert_eq!(out, "[ai.tools]\nenabled = false\n");
+    }
+
+    #[test]
+    fn every_toggle_saved_as_on_reads_back_on() {
+        use crate::core::ai::config::ToolToggle;
+        let edits = ToolToggle::ALL.map(|t| ConfigEdit::toggle(t, true));
+        let out = apply_edit(None, &edits).unwrap();
+        let (_, ai, notice) = crate::core::config::Config::load_with_ai(Ok(out), None);
+        assert!(ToolToggle::ALL.into_iter().all(|t| ai.toggle(t)));
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn a_toggle_that_holds_a_table_is_refused() {
+        use crate::core::ai::config::ToolToggle;
+        assert_eq!(
+            apply_edit(
+                Some("[ai.tools.exec]\nx = 1\n"),
+                &[ConfigEdit::toggle(ToolToggle::Exec, true)]
+            ),
+            Err(EditError::KeyIsTable {
+                table: "ai.tools",
+                key: "exec"
+            })
+        );
+    }
+
     // Spec (agent-tools, config-persistence): `ai.tools.approval` is an owned
     // string, written next to `enabled` and left untouched when unchanged.
     fn approval_edit(mode: crate::core::ai::config::ApprovalMode) -> [ConfigEdit; 1] {

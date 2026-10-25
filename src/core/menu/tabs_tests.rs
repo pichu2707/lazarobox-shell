@@ -15,7 +15,7 @@ const SETTINGS: [&str; 6] = [
     "Updates",
 ];
 
-const AI: [&str; 11] = [
+const AI: [&str; 16] = [
     "Set all tasks",
     "general",
     "code",
@@ -26,6 +26,11 @@ const AI: [&str; 11] = [
     "Context",
     "Memory",
     "Tools",
+    "Search",
+    "Write",
+    "Exec",
+    "Git",
+    "Git write",
     "Approval",
 ];
 
@@ -400,7 +405,7 @@ fn view_heights() -> Vec<usize> {
     let mut m = menu(None, None, Some(machine())).with_update(Some("9.9.9".into()));
     heights.push(m.rows(&cfg).len() + 1 + NOTE_ROWS);
     tab(&mut m);
-    heights.push(m.rows(&cfg).len());
+    heights.push(m.rows(&cfg).len() + CAUTION_ROWS);
     // The picker: engines and models of a long list.
     let mut p = menu(Some("ollama"), None, Some(big));
     open(&mut p, "code");
@@ -429,15 +434,15 @@ fn view_body_is_the_tallest_view_and_no_view_exceeds_it() {
     );
     assert_eq!(
         VIEW_BODY,
-        1 + crate::core::ai::picker::VIEW,
-        "the picker binds"
+        AI_SECTION.items.len() + CAUTION_ROWS,
+        "the AI tab and its caution row bind"
     );
 }
 
 #[test]
 fn the_menu_body_is_the_bar_plus_the_tallest_view() {
     assert_eq!(MENU_BODY, TAB_BAR + VIEW_BODY);
-    assert_eq!(MENU_BODY, 12);
+    assert_eq!(MENU_BODY, 18);
 }
 
 #[test]
@@ -447,13 +452,13 @@ fn the_warning_has_warning_rows_lines() {
 }
 
 #[test]
-fn the_warning_fits_from_24_by_15() {
+fn the_warning_fits_from_24_by_21() {
     let mut m = warned();
-    m.set_term(MIN_WIDTH, 15);
+    m.set_term(MIN_WIDTH, 21);
     assert!(m.fits_warning());
-    m.set_term(MIN_WIDTH, 14);
+    m.set_term(MIN_WIDTH, 20);
     assert!(!m.fits_warning());
-    m.set_term(MIN_WIDTH - 1, 15);
+    m.set_term(MIN_WIDTH - 1, 21);
     assert!(!m.fits_warning());
 }
 

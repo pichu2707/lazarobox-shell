@@ -34,7 +34,7 @@ Tracker = `feat/coding-tools`. Rule: PR1 of the chain targets the tracker; each 
 | 2 | P0b FamilySet plumbing at LEGACY | ~350 | `main` (branch off P0a until P0a merges, then retarget) | Ready |
 | 3 | T toggles + `max_rounds` | ~450 | `feat/coding-tools` (tracker, rebased on main) | Ready |
 | 4 | M1-a glob core | ~400 | T branch | Ready |
-| 5 | M1-b grep + paging + `.git/config` deny | ~450 | M1-a branch | Ready |
+| 5 | M1-b grep + paging + `.git/config` deny | ~450 | M1-a branch | Done |
 | 6 | M1-c search wiring + approval | ~350 | M1-b branch | Ready (see decision 4) |
 | 7 | W-a content rules + `resolve_write` | ~350 | M1-c branch | Ready |
 | 8 | W-b write primitives (`open.rs`) | ~350 | W-a branch | Ready |
@@ -98,33 +98,33 @@ Spec: agent-tools "Tool families", "Off equals 0.18.0"; lazarobox-mcp-server "To
 ### T: toggle plumbing (PR 3, ~450, base tracker)
 Spec: configuration "Family toggle keys"; config-persistence "Family toggle keys are owned"; config-menu "Family toggle rows"; chat-engines "Ollama round limit with coding tools".
 
-- [ ] T.1 RED: `[ai.tools]` booleans (search, write, exec, git, git_write) default false, older builds ignore them; unknown keys preserved. GREEN: `core/ai/config.rs`. ~100.
-- [ ] T.2 RED: `config_edit.rs` writes/keeps only the owned keys without touching others. GREEN. ~100. Dep: T.1.
-- [ ] T.3 RED: `FamilySet` from config; app passes it into `ChatRequest.families`; all off equals LEGACY. GREEN: `core/ai/config.rs` + app. ~90. Dep: T.1, P0b.
-- [ ] T.4 RED: `max_rounds(set)` is 24 when Search/Write/Exec/Git/GitWrite is on, else 8. GREEN: `runtime/chat/ollama.rs`. ~50.
-- [ ] T.5 RED: 5 menu rows (names, order, toggle keys); update the ~10 menu test files and ~24 insta snapshots (budget this). GREEN: `core/menu/*`. ~110. Dep: T.3. The Exec row also shows the "needs Linux sandbox" reason when no jail (D18) if the jail check is already available; otherwise add it in X-d2.
-- [ ] T.6 RED: with an EMPTY set and no external tools, `ollama_round_body` (`chat/adapters.rs` ~316) omits the `tools` key instead of sending `"tools": []`. GREEN: skip the key when the registry is empty. ~20. This came from the P0b review: an EMPTY set cannot happen until the toggles exist.
+- [x] T.1 RED: `[ai.tools]` booleans (search, write, exec, git, git_write) default false, older builds ignore them; unknown keys preserved. GREEN: `core/ai/config.rs`. ~100.
+- [x] T.2 RED: `config_edit.rs` writes/keeps only the owned keys without touching others. GREEN. ~100. Dep: T.1.
+- [x] T.3 RED: `FamilySet` from config; app passes it into `ChatRequest.families`; all off equals LEGACY. GREEN: `core/ai/config.rs` + app. ~90. Dep: T.1, P0b.
+- [x] T.4 RED: `max_rounds(set)` is 24 when Search/Write/Exec/Git/GitWrite is on, else 8. GREEN: `runtime/chat/ollama.rs`. ~50.
+- [x] T.5 RED: 5 menu rows (names, order, toggle keys); update the ~10 menu test files and ~24 insta snapshots (budget this). GREEN: `core/menu/*`. ~110. Dep: T.3. The Exec row also shows the "needs Linux sandbox" reason when no jail (D18) if the jail check is already available; otherwise add it in X-d2.
+- [x] T.6 RED: with an EMPTY set and no external tools, `ollama_round_body` (`chat/adapters.rs` ~316) omits the `tools` key instead of sending `"tools": []`. GREEN: skip the key when the registry is empty. ~20. This came from the P0b review: an EMPTY set cannot happen until the toggles exist.
 
 ## Phase M1: search (0.19)
 
 ### M1-a: glob core (PR 4, ~400)
 Spec: code-search "glob", "Family and toggle".
-- [ ] M1a.1 RED: glob -> anchored regex table (`*`, `**`, `?`, classes, anchoring, bad patterns). GREEN: `tools/glob.rs`, `Cargo.toml` (+regex). ~200.
-- [ ] M1a.2 RED: `Call::Glob` args parse (ArgDef, caps, family gate Search). GREEN: `registry.rs`/`mod.rs`. ~100. Dep: M1a.1, P0b.
-- [ ] M1a.3 RED: result ordering, 100-match cap, truncation text. GREEN. ~100.
+- [x] M1a.1 RED: glob -> anchored regex table (`*`, `**`, `?`, classes, anchoring, bad patterns). GREEN: `tools/glob.rs`, `Cargo.toml` (+regex). ~200.
+- [x] M1a.2 RED: `Call::Glob` args parse (ArgDef, caps, family gate Search). GREEN: `registry.rs`/`mod.rs`. ~100. Dep: M1a.1, P0b.
+- [x] M1a.3 RED: result ordering, 100-match cap, truncation text. GREEN. ~100.
 
 ### M1-b: grep, paging, `.git/config` deny (PR 5, ~450)
 Spec: code-search "grep", "read_file paging"; code-write "Deny rules" (read side).
-- [ ] M1b.1 RED: `read_file{start_line, max_lines}` gated under Search; schema byte-identical with Search off (golden). GREEN: `fs.rs` paging. ~150. Dep: M1a.
-- [ ] M1b.2 RED: reads of a file named `config` or `config.worktree` under `.git` are refused with `path not available`. GREEN: `fs.rs`/`paths.rs`. ~80.
-- [ ] M1b.3 RED: grep over the budgeted walker (100 matches or 20 KiB, secret lists skipped, binary skipped, redacted). GREEN: `runtime/tools/search.rs`. ~220.
+- [x] M1b.1 RED: `read_file{start_line, max_lines}` gated under Search; schema byte-identical with Search off (golden). GREEN: `fs.rs` paging. ~150. Dep: M1a.
+- [x] M1b.2 RED: reads of a file named `config` or `config.worktree` under `.git` are refused with `path not available`. GREEN: `fs.rs`/`paths.rs`. ~80.
+- [x] M1b.3 RED: grep over the budgeted walker (100 matches or 20 KiB, secret lists skipped, binary skipped, redacted). GREEN: `runtime/tools/search.rs`. ~220.
 
 ### M1-c: wiring and approval (PR 6, ~350)
 Spec: code-search "Family and toggle", "Staged view"(marker only, content comes in W-e3); agent-tools "Approval model".
-- [ ] M1c.0 SPIKE (no code): find the dispatch seam for `Call::Glob/Grep` that avoids `host.rs`; if impossible, record the one-arm edit as a rebase point (decision 4).
-- [ ] M1c.1 RED: `ApprovalAsk::Search`: prompts on Cloud, free on Local (same rule as `read_file`), `Prompt` in every mode (no AutoRun/AutoType). GREEN: `chat/approval.rs`. ~120.
-- [ ] M1c.2 RED: app renders the ask, executes glob/grep, returns results. GREEN: `app/tool.rs`, `app/run.rs`. ~150. Dep: M1c.1, M1b.
-- [ ] M1c.3 RED: end-to-end with Search off equals 0.18.0 (golden); Search on adds `glob`, `grep`. REFACTOR. ~80.
+- [x] M1c.0 SPIKE (no code): find the dispatch seam for `Call::Glob/Grep` that avoids `host.rs`; if impossible, record the one-arm edit as a rebase point (decision 4). RESULT: seam found, `host.rs` untouched, no new rebase point. The host already calls the generic `ask_for(call, locality)` and runs `tools::run` -> `fs::execute_with`; the dispatch arms live in `fs::execute_with` and the ask in `approval::ask_for`.
+- [x] M1c.1 RED: `ApprovalAsk::Search`: prompts on Cloud, free on Local (same rule as `read_file`), `Prompt` in every mode (no AutoRun/AutoType). GREEN: `chat/approval.rs`. ~120.
+- [x] M1c.2 RED: app renders the ask, executes glob/grep, returns results. GREEN: `app/tool.rs`, `app/run.rs`. ~150. Dep: M1c.1, M1b.
+- [x] M1c.3 RED: end-to-end with Search off equals 0.18.0 (golden); Search on adds `glob`, `grep`. REFACTOR. ~80.
 
 Release point 0.19: P0 + T + M1 (see decision 2).
 

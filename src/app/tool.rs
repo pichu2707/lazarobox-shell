@@ -17,7 +17,10 @@ use crate::core::ai::chat::{
     },
     engine::{CallId, Decision, ToolStatus, Tools, tools_for},
 };
-use crate::core::ai::{config::ApprovalMode, tools::exec::Fallback};
+use crate::core::ai::{
+    config::ApprovalMode,
+    tools::{exec::Fallback, registry::FamilySet},
+};
 
 /// Why a call is denied without the user being asked, or when a refusal has no
 /// other reason to give. Short, and it goes back to the model.
@@ -140,7 +143,9 @@ impl App {
             }
             // A user tool is never routed by the approval mode (D18): only a
             // `run` can be typed or run by itself. It always opens the prompt.
-            ApprovalAsk::Read { .. } | ApprovalAsk::External { .. } => None,
+            ApprovalAsk::Read { .. }
+            | ApprovalAsk::Search { .. }
+            | ApprovalAsk::External { .. } => None,
         };
         let mut why = None;
         if let (ApprovalAsk::Run { command }, Some(target)) = (&ask, target) {
@@ -358,8 +363,9 @@ impl App {
     }
 
     /// The request of a turn just sent from chat `id` gets the tools its
-    /// engine is verified for, and the chat remembers that it may hold a tool
-    /// session to end.
+    /// engine is verified for and, when it offers tools, the families of the
+    /// saved toggles, and the chat remembers that it may hold a tool session
+    /// to end.
     pub(super) fn offer_tools(&mut self, id: PaneId, request: &mut ChatRequest) {
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return;
@@ -370,6 +376,11 @@ impl App {
             chat.origin_cwd().map(Path::to_path_buf),
             self.tool_engines,
         );
+        request.families = if request.tools == Tools::Off {
+            FamilySet::LEGACY
+        } else {
+            self.ai.families()
+        };
         chat.set_tool_session(request.tools != Tools::Off);
     }
 

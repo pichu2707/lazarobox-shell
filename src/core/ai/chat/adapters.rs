@@ -313,7 +313,7 @@ pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
             Tools::On { external, .. } => external.external(),
             Tools::Off => Vec::new(),
         };
-        body["tools"] = registry_with(&external, request.families)
+        let offered: Vec<Value> = registry_with(&external, request.families)
             .into_iter()
             .map(|t| {
                 json!({"type": "function", "function": {
@@ -321,6 +321,11 @@ pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
                 }})
             })
             .collect();
+        // An empty list would read as "no tools" to some models and as an
+        // error to others: with nothing to offer the key is left out.
+        if !offered.is_empty() {
+            body["tools"] = Value::Array(offered);
+        }
     }
     serde_json::to_vec(&body).expect("a JSON value always serializes")
 }
