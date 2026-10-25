@@ -38,18 +38,42 @@ fn reviewing(review: Arc<BatchReview>, w: usize, h: usize) -> ChatState {
         .request_call(ask, 1, CallId(1), None)
         .unwrap();
     chat.approvals_mut()
-        .set_review(ReviewView::new(review, t0(), (w, h)));
+        .set_review(ReviewView::new(review, (w, h)));
     chat
 }
 
 fn page_to_the_end(chat: &mut ChatState, size: (usize, usize)) {
-    let view = chat.approvals_mut().review_mut().unwrap();
-    for _ in 0..view.total() {
-        view.scroll(Move::PageDown, size);
+    let (w, h) = (
+        u16::try_from(size.0).unwrap(),
+        u16::try_from(size.1).unwrap(),
+    );
+    draw(chat, at(0), w, h);
+    let total = chat.approvals().review().unwrap().total();
+    for _ in 0..total {
+        chat.approvals_mut()
+            .review_mut()
+            .unwrap()
+            .scroll(Move::PageDown, size);
+        draw(chat, at(0), w, h);
     }
 }
 
-fn draw(chat: &ChatState, now: Instant, w: u16, h: u16) -> TestBackend {
+/// Draws the chat as the event loop does: a frame, then the rows it showed
+/// count as seen, and another frame while the counter on screen is stale.
+fn draw(chat: &mut ChatState, now: Instant, w: u16, h: u16) -> TestBackend {
+    loop {
+        let shown = frame(chat, now, w, h);
+        let again = chat
+            .approvals_mut()
+            .review_mut()
+            .is_some_and(ReviewView::credit_drawn);
+        if !again {
+            return shown;
+        }
+    }
+}
+
+fn frame(chat: &ChatState, now: Instant, w: u16, h: u16) -> TestBackend {
     let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
     terminal
         .draw(|frame| {
@@ -82,8 +106,8 @@ fn flat(backend: &TestBackend) -> String {
 
 #[test]
 fn a_fresh_review_counts_what_remains_and_y_reads_as_locked() {
-    let chat = reviewing(numbered(30), 60, 14);
-    insta::assert_snapshot!("review_fresh_60x14", flat(&draw(&chat, at(0), 60, 14)));
+    let mut chat = reviewing(numbered(30), 60, 14);
+    insta::assert_snapshot!("review_fresh_60x14", flat(&draw(&mut chat, at(0), 60, 14)));
 }
 
 #[test]
@@ -92,7 +116,7 @@ fn everything_seen_but_the_delay_not_over_counts_down() {
     page_to_the_end(&mut chat, (60, 14));
     insta::assert_snapshot!(
         "review_countdown_60x14",
-        flat(&draw(&chat, at(400), 60, 14))
+        flat(&draw(&mut chat, at(400), 60, 14))
     );
 }
 
@@ -100,7 +124,7 @@ fn everything_seen_but_the_delay_not_over_counts_down() {
 fn everything_seen_and_the_delay_over_enables_y() {
     let mut chat = reviewing(numbered(30), 60, 14);
     page_to_the_end(&mut chat, (60, 14));
-    let shown = draw(&chat, at(800), 60, 14);
+    let shown = draw(&mut chat, at(800), 60, 14);
     assert!(rows(&shown)[0].contains("y ready"), "{:?}", rows(&shown));
     assert!(
         rows(&shown)[13].starts_with("y approve"),
@@ -120,7 +144,7 @@ fn the_countdown_follows_the_clock_it_is_given() {
         (300, "y in 0.5s"),
         (700, "y in 0.1s"),
     ] {
-        let first = rows(&draw(&chat, at(ms), 60, 14)).remove(0);
+        let first = rows(&draw(&mut chat, at(ms), 60, 14)).remove(0);
         assert!(first.contains(wanted), "{ms}: {first}");
     }
     assert!(ARM_DELAY.as_millis() == 800);
@@ -129,30 +153,37 @@ fn the_countdown_follows_the_clock_it_is_given() {
 #[test]
 fn a_scrolled_view_shows_the_rows_it_scrolled_to() {
     let mut chat = reviewing(numbered(30), 60, 14);
+    draw(&mut chat, at(0), 60, 14);
     let view = chat.approvals_mut().review_mut().unwrap();
     view.scroll(Move::PageDown, (60, 14));
-    insta::assert_snapshot!("review_scrolled_60x14", flat(&draw(&chat, at(0), 60, 14)));
+    insta::assert_snapshot!(
+        "review_scrolled_60x14",
+        flat(&draw(&mut chat, at(0), 60, 14))
+    );
 }
 
 #[test]
 fn a_build_file_carries_its_warning() {
-    let chat = reviewing(review_of(&[("Makefile", "all:\n\tcc x.c\n", true)]), 70, 12);
-    insta::assert_snapshot!("review_build_file_70x12", flat(&draw(&chat, at(0), 70, 12)));
+    let mut chat = reviewing(review_of(&[("Makefile", "all:\n\tcc x.c\n", true)]), 70, 12);
+    insta::assert_snapshot!(
+        "review_build_file_70x12",
+        flat(&draw(&mut chat, at(0), 70, 12))
+    );
 }
 
 #[test]
 fn a_coarse_diff_carries_its_warning() {
-    let chat = reviewing(coarse_of(), 70, 12);
-    let text = rows(&draw(&chat, at(0), 70, 12)).join("\n");
+    let mut chat = reviewing(coarse_of(), 70, 12);
+    let text = rows(&draw(&mut chat, at(0), 70, 12)).join("\n");
     assert!(text.contains("warning: coarse diff"), "{text}");
-    insta::assert_snapshot!("review_coarse_70x12", flat(&draw(&chat, at(0), 70, 12)));
+    insta::assert_snapshot!("review_coarse_70x12", flat(&draw(&mut chat, at(0), 70, 12)));
 }
 
 #[test]
 fn a_batch_too_large_offers_only_to_discard_and_says_why() {
     let mut chat = reviewing(numbered(2100), 70, 12);
     page_to_the_end(&mut chat, (70, 12));
-    let shown = draw(&chat, at(60_000), 70, 12);
+    let shown = draw(&mut chat, at(60_000), 70, 12);
     let r = rows(&shown);
     assert!(r[0].contains("too large to review"), "{r:?}");
     assert!(!r.iter().any(|l| l.contains("y approve")), "{r:?}");
@@ -162,8 +193,8 @@ fn a_batch_too_large_offers_only_to_discard_and_says_why() {
 
 #[test]
 fn an_empty_batch_is_the_same_view() {
-    let chat = reviewing(review_of(&[]), 70, 8);
-    let r = rows(&draw(&chat, at(60_000), 70, 8));
+    let mut chat = reviewing(review_of(&[]), 70, 8);
+    let r = rows(&draw(&mut chat, at(60_000), 70, 8));
     assert!(r[0].contains("too large to review"), "{r:?}");
     assert!(r[7].starts_with("n discard"), "{r:?}");
 }
@@ -171,13 +202,16 @@ fn an_empty_batch_is_the_same_view() {
 #[test]
 fn a_long_line_wraps_with_the_continuation_marker() {
     let long = "x".repeat(50);
-    let chat = reviewing(review_of(&[("a.txt", &format!("{long}\n"), false)]), 24, 10);
-    insta::assert_snapshot!("review_wrapped_24x10", flat(&draw(&chat, at(0), 24, 10)));
+    let mut chat = reviewing(review_of(&[("a.txt", &format!("{long}\n"), false)]), 24, 10);
+    insta::assert_snapshot!(
+        "review_wrapped_24x10",
+        flat(&draw(&mut chat, at(0), 24, 10))
+    );
 }
 
 #[test]
 fn hidden_characters_are_drawn_as_escapes_never_raw() {
-    let chat = reviewing(
+    let mut chat = reviewing(
         edit_of(
             "a.txt",
             "ok\nold\u{202E}y\n\u{1b}[31m\n",
@@ -187,7 +221,7 @@ fn hidden_characters_are_drawn_as_escapes_never_raw() {
         60,
         14,
     );
-    let shown = draw(&chat, at(0), 60, 14);
+    let shown = draw(&mut chat, at(0), 60, 14);
     let text = rows(&shown).join("\n");
     assert!(text.contains("-old<U+202E>y"), "{text}");
     assert!(
@@ -201,7 +235,7 @@ fn hidden_characters_are_drawn_as_escapes_never_raw() {
 fn the_secret_a_diff_holds_is_shown_to_the_user() {
     // The renderer is the one place the rows go: the user must see what
     // `y` would write and what it replaces.
-    let chat = reviewing(
+    let mut chat = reviewing(
         edit_of(
             "a.txt",
             "token=hunter2\nkeep\n",
@@ -211,7 +245,7 @@ fn the_secret_a_diff_holds_is_shown_to_the_user() {
         60,
         14,
     );
-    let text = rows(&draw(&chat, at(0), 60, 14)).join("\n");
+    let text = rows(&draw(&mut chat, at(0), 60, 14)).join("\n");
     assert!(
         text.contains("-token=hunter2") && text.contains("+token=next"),
         "{text}"
@@ -220,10 +254,10 @@ fn the_secret_a_diff_holds_is_shown_to_the_user() {
 
 #[test]
 fn a_small_pane_sheds_the_body_first_and_keeps_the_way_out() {
-    let chat = reviewing(numbered(5), 30, 2);
-    insta::assert_snapshot!("review_2_rows", flat(&draw(&chat, at(0), 30, 2)));
-    let chat = reviewing(numbered(5), 30, 1);
-    insta::assert_snapshot!("review_1_row", flat(&draw(&chat, at(0), 30, 1)));
+    let mut chat = reviewing(numbered(5), 30, 2);
+    insta::assert_snapshot!("review_2_rows", flat(&draw(&mut chat, at(0), 30, 2)));
+    let mut chat = reviewing(numbered(5), 30, 1);
+    insta::assert_snapshot!("review_1_row", flat(&draw(&mut chat, at(0), 30, 1)));
 }
 
 #[test]

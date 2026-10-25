@@ -79,6 +79,7 @@ pub fn render(
 ) {
     let base = Style::default().bg(theme.bg_base);
     fill(buf, area, base);
+    view.note_drawn(now, (usize::from(area.width), usize::from(area.height)));
     let width = usize::from(area.width);
     let put = |buf: &mut Buffer, row: u16, text: &str, style: Style| {
         buf.set_stringn(area.x, area.y + row, text, width, style);

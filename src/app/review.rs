@@ -36,11 +36,44 @@ impl App {
 
     /// Opens the view of `review` for the batch ask that was just requested.
     pub(super) fn open_review(&mut self, id: PaneId, review: Arc<BatchReview>) {
-        let (now, size) = ((self.clock)(), self.review_size(id));
+        let size = self.review_size(id);
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
             chat.approvals_mut()
-                .set_review(ReviewView::new(review, now, size));
+                .set_review(ReviewView::new(review, size));
         }
+    }
+
+    /// A frame was drawn: every review counts the rows that frame showed, and
+    /// the first frame starts its delay. A review in a hidden pane was not
+    /// drawn, so it counts nothing.
+    pub fn frame_drawn(&mut self) {
+        for state in self.panes.values_mut() {
+            let redraw = state
+                .chat_mut()
+                .and_then(|chat| chat.approvals_mut().review_mut())
+                .is_some_and(ReviewView::credit_drawn);
+            self.dirty |= redraw;
+        }
+    }
+
+    /// Asks for a frame while a countdown shows and once when it ends, so
+    /// `y in 0.1s` turns into `y ready` without any other event. The event
+    /// loop calls it on its own tick.
+    pub fn wake_review(&mut self) {
+        let now = (self.clock)();
+        for state in self.panes.values_mut() {
+            let wake = state
+                .chat_mut()
+                .and_then(|chat| chat.approvals_mut().review_mut())
+                .is_some_and(|view| view.wake(now));
+            self.dirty |= wake;
+        }
+    }
+
+    /// Whether `n` and Esc answer the batch of chat `id` now.
+    fn review_answerable(&mut self, id: PaneId) -> bool {
+        let now = (self.clock)();
+        self.review_mut(id).is_some_and(|view| view.answerable(now))
     }
 
     /// A key while a batch is under review. Scrolling keys (a held one
@@ -69,7 +102,7 @@ impl App {
             (key.code, key.modifiers),
             (KeyCode::Char('y' | 'n') | KeyCode::Esc, KeyModifiers::NONE)
         );
-        if repeat || (answers && !self.approval_armed(id)) {
+        if repeat || (answers && !self.review_answerable(id)) {
             return Vec::new();
         }
         match (key.code, key.modifiers) {

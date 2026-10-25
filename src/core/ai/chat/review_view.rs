@@ -6,6 +6,7 @@
 //! screen are the rows the coverage counts, so the counter the user reads is
 //! the gate `y` obeys.
 
+use std::cell::Cell;
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -35,7 +36,19 @@ pub struct ReviewView {
     layout: Layout,
     /// The first row on screen.
     top: usize,
-    opened: Instant,
+    /// What the last frame drew, until [`ReviewView::credit_drawn`] takes it.
+    drawn: Cell<Option<Drawn>>,
+    /// Whether the wake-up for the end of the delay was given.
+    woke: bool,
+}
+
+/// A frame of the view: when, how big the area was and the first row on it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Drawn {
+    at: Instant,
+    cols: usize,
+    rows: usize,
+    top: usize,
 }
 
 impl fmt::Debug for ReviewView {
@@ -53,25 +66,25 @@ impl PartialEq for ReviewView {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.review, &other.review)
             && self.top == other.top
-            && self.opened == other.opened
+            && self.coverage.started() == other.coverage.started()
     }
 }
 
 impl Eq for ReviewView {}
 
 impl ReviewView {
-    /// Opens the view of `review` at `opened`, in a pane of `size` (columns,
-    /// rows). The first screenful counts as seen.
-    pub fn new(review: Arc<BatchReview>, opened: Instant, size: (usize, usize)) -> Self {
-        let mut view = Self {
-            coverage: Coverage::new(review.doc(), opened),
+    /// Opens the view of `review` for a pane of `size` (columns, rows). No
+    /// row counts as seen and the delay does not run until a frame draws it
+    /// (see [`ReviewView::credit_drawn`]).
+    pub fn new(review: Arc<BatchReview>, size: (usize, usize)) -> Self {
+        Self {
+            coverage: Coverage::new(review.doc()),
             layout: layout(review.doc(), size.0),
             review,
             top: 0,
-            opened,
-        };
-        view.fit(size);
-        view
+            drawn: Cell::new(None),
+            woke: false,
+        }
     }
 
     /// The rows of the body in a pane `rows` high.
@@ -80,17 +93,61 @@ impl ReviewView {
     }
 
     /// The pane is `size` now: lays the rows out again if the width changed,
-    /// keeps `top` in range and counts the rows on screen as seen. What was
-    /// seen stays seen.
+    /// keeps `top` in range. It counts nothing as seen: only a drawn row is
+    /// (see [`ReviewView::credit_drawn`]). What was seen stays seen.
     pub fn fit(&mut self, (cols, rows): (usize, usize)) {
         if self.layout.width() != cols.max(1) {
             self.layout = layout(self.review.doc(), cols);
         }
         let body = Self::body_rows(rows);
         self.top = self.top.min(self.layout.rows().len().saturating_sub(body));
-        if body > 0 {
-            self.coverage.show(&self.layout, self.top..self.top + body);
+    }
+
+    /// FOR THE REVIEW RENDERER ONLY: this frame drew the body into an area of
+    /// `cols` x `rows` at `now`.
+    pub(crate) fn note_drawn(&self, now: Instant, (cols, rows): (usize, usize)) {
+        self.drawn.set(Some(Drawn {
+            at: now,
+            cols,
+            rows,
+            top: self.top,
+        }));
+    }
+
+    /// After a frame: the rows it drew count as seen and the first frame
+    /// starts the delay. A frame nobody drew, or of another width than the
+    /// layout, counts nothing. Returns whether another frame is needed: the
+    /// counter drawn in this one is out of date, or the layout had to follow
+    /// the area.
+    pub fn credit_drawn(&mut self) -> bool {
+        let Some(frame) = self.drawn.take() else {
+            return false;
+        };
+        if self.layout.width() != frame.cols.max(1) {
+            self.fit((frame.cols, frame.rows));
+            return true;
         }
+        self.coverage.start(frame.at);
+        let before = self.coverage.remaining();
+        let body = Self::body_rows(frame.rows);
+        if body > 0 {
+            self.coverage
+                .show(&self.layout, frame.top..frame.top + body);
+        }
+        self.coverage.remaining() != before
+    }
+
+    /// Whether the screen must be drawn again for the countdown: while it
+    /// runs, and once more when it ends, so `y in 0.1s` becomes `y ready` by
+    /// itself.
+    pub fn wake(&mut self, now: Instant) -> bool {
+        if self.coverage.started().is_none() {
+            return false;
+        }
+        if !self.arm_left(now).is_zero() {
+            return true;
+        }
+        !std::mem::replace(&mut self.woke, true)
     }
 
     pub fn scroll(&mut self, by: Move, size: (usize, usize)) {
@@ -143,9 +200,18 @@ impl ReviewView {
         self.coverage.can_approve(now)
     }
 
-    /// How long until the delay is over.
+    /// How long until the delay is over; all of it until the first frame.
     pub fn arm_left(&self, now: Instant) -> Duration {
-        ARM_DELAY.saturating_sub(now.saturating_duration_since(self.opened))
+        self.coverage.started().map_or(ARM_DELAY, |opened| {
+            ARM_DELAY.saturating_sub(now.saturating_duration_since(opened))
+        })
+    }
+
+    /// Whether `n` and Esc answer at `now`: a batch that can be reviewed
+    /// waits for the same delay as `y`; one that cannot (too large, empty)
+    /// has no other way out, so they answer at once.
+    pub fn answerable(&self, now: Instant) -> bool {
+        !self.reviewable() || (self.coverage.started().is_some() && self.arm_left(now).is_zero())
     }
 }
 
@@ -232,32 +298,77 @@ mod tests {
 
     const SIZE: (usize, usize) = (40, 12);
 
+    fn t0() -> Instant {
+        use std::sync::OnceLock;
+        static BASE: OnceLock<Instant> = OnceLock::new();
+        *BASE.get_or_init(Instant::now)
+    }
+
+    /// A frame at `at` that drew the view into an area of `size`.
+    fn draw(v: &mut ReviewView, at: Instant, size: (usize, usize)) -> bool {
+        v.note_drawn(at, size);
+        v.credit_drawn()
+    }
+
+    /// Scrolls and draws the frame, at t0.
+    fn go(v: &mut ReviewView, by: Move, size: (usize, usize)) {
+        v.scroll(by, size);
+        draw(v, t0(), size);
+    }
+
+    /// Opened and drawn once at t0.
     fn open(n: usize) -> (ReviewView, Instant) {
-        let t0 = Instant::now();
-        (ReviewView::new(numbered(n), t0, SIZE), t0)
+        let mut v = ReviewView::new(numbered(n), SIZE);
+        draw(&mut v, t0(), SIZE);
+        (v, t0())
     }
 
     #[test]
-    fn opening_counts_the_first_screenful_as_seen() {
-        let (v, _) = open(30);
+    fn opening_counts_nothing_and_the_first_frame_counts_the_first_screenful() {
+        let mut v = ReviewView::new(numbered(30), SIZE);
+        assert_eq!((v.total(), v.remaining()), (33, 33));
         // 12 rows less the counter row and the keys row.
         assert_eq!(ReviewView::body_rows(12), 10);
+        assert!(draw(&mut v, t0(), SIZE), "the counter on screen is stale");
         assert_eq!((v.total(), v.remaining()), (33, 23));
+        assert!(
+            !draw(&mut v, t0(), SIZE),
+            "a second frame shows nothing new"
+        );
         assert_eq!(v.visible(12).len(), 10);
+    }
+
+    #[test]
+    fn a_frame_is_credited_once() {
+        let mut v = ReviewView::new(numbered(30), SIZE);
+        v.note_drawn(t0(), SIZE);
+        v.scroll(Move::Bottom, SIZE);
+        // The scroll moved the top after the frame; the frame showed the old one.
+        v.credit_drawn();
+        assert_eq!(v.remaining(), 23);
+        v.credit_drawn();
+        assert_eq!(v.remaining(), 23, "nothing left to credit");
     }
 
     /// Pages down until the last row is on screen.
     fn read_all(v: &mut ReviewView) {
         for _ in 0..v.total() {
-            v.scroll(Move::PageDown, SIZE);
+            go(v, Move::PageDown, SIZE);
         }
     }
 
     #[test]
     fn jumping_to_the_end_does_not_count_the_rows_skipped() {
         let (mut v, _) = open(30);
-        v.scroll(Move::Bottom, SIZE);
+        go(&mut v, Move::Bottom, SIZE);
         assert_eq!(v.remaining(), 13);
+    }
+
+    #[test]
+    fn scrolling_without_a_frame_counts_nothing() {
+        let (mut v, _) = open(30);
+        v.scroll(Move::PageDown, SIZE);
+        assert_eq!(v.remaining(), 23);
     }
 
     #[test]
@@ -278,86 +389,131 @@ mod tests {
     #[test]
     fn a_step_moves_one_row_and_clamps_at_both_ends() {
         let (mut v, _) = open(30);
-        v.scroll(Move::Up, SIZE);
+        go(&mut v, Move::Up, SIZE);
         assert_eq!(v.top(), 0);
-        v.scroll(Move::Down, SIZE);
+        go(&mut v, Move::Down, SIZE);
         assert_eq!((v.top(), v.remaining()), (1, 22));
-        v.scroll(Move::Bottom, SIZE);
+        go(&mut v, Move::Bottom, SIZE);
         assert_eq!(v.top(), 33 - 10);
-        v.scroll(Move::Down, SIZE);
+        go(&mut v, Move::Down, SIZE);
         assert_eq!(v.top(), 33 - 10);
-        v.scroll(Move::Top, SIZE);
+        go(&mut v, Move::Top, SIZE);
         assert_eq!(v.top(), 0);
     }
 
     #[test]
     fn a_page_moves_by_the_body_height() {
         let (mut v, _) = open(30);
-        v.scroll(Move::PageDown, SIZE);
+        go(&mut v, Move::PageDown, SIZE);
         assert_eq!(v.top(), 10);
-        v.scroll(Move::PageUp, SIZE);
+        go(&mut v, Move::PageUp, SIZE);
         assert_eq!(v.top(), 0);
     }
 
     #[test]
-    fn a_resize_keeps_the_lines_already_seen() {
+    fn a_resize_keeps_the_lines_already_seen_and_counts_nothing_new() {
         let (mut v, _) = open(30);
         read_all(&mut v);
         assert_eq!(v.remaining(), 0);
         v.fit((20, 6));
         assert_eq!(v.remaining(), 0);
         assert!(v.top() <= 33 - ReviewView::body_rows(6));
+        let (mut fresh, _) = open(30);
+        fresh.fit((20, 6));
+        assert_eq!(fresh.remaining(), 23, "a resize shows no row by itself");
+    }
+
+    #[test]
+    fn a_frame_of_another_width_than_the_layout_counts_nothing_and_asks_for_another() {
+        let (mut v, _) = open(30);
+        assert!(draw(&mut v, t0(), (30, 12)), "the layout follows the area");
+        assert_eq!(v.remaining(), 23);
+        assert!(!draw(&mut v, t0(), (30, 12)), "the rows were seen already");
+        assert_eq!(v.remaining(), 23);
     }
 
     #[test]
     fn a_pane_with_no_room_for_a_body_sees_nothing() {
         for rows in [0, 1, 2] {
-            let t0 = Instant::now();
-            let mut v = ReviewView::new(numbered(2), t0, (40, rows));
+            let mut v = ReviewView::new(numbered(2), (40, rows));
+            draw(&mut v, t0(), (40, rows));
             v.scroll(Move::Bottom, (40, rows));
+            draw(&mut v, t0(), (40, rows));
             assert_eq!(v.remaining(), v.total(), "{rows} rows");
-            assert!(!v.can_approve(t0 + Duration::from_secs(60)));
+            assert!(!v.can_approve(t0() + Duration::from_secs(60)));
         }
     }
 
     #[test]
     fn a_batch_that_is_too_large_never_arms() {
-        let t0 = Instant::now();
-        let mut v = ReviewView::new(numbered(2100), t0, SIZE);
+        let mut v = ReviewView::new(numbered(2100), SIZE);
+        draw(&mut v, t0(), SIZE);
         assert!(!v.reviewable());
         let end = v.total();
         while v.remaining() > 0 && v.top() + ReviewView::body_rows(SIZE.1) < end {
-            v.scroll(Move::PageDown, SIZE);
+            go(&mut v, Move::PageDown, SIZE);
         }
         assert_eq!(v.remaining(), 0, "every row was shown");
-        assert!(!v.can_approve(t0 + Duration::from_secs(60)));
+        assert!(!v.can_approve(t0() + Duration::from_secs(60)));
     }
 
     #[test]
-    fn the_countdown_runs_from_the_opening_to_the_delay() {
-        let (v, t0) = open(1);
-        assert_eq!(v.arm_left(t0), ARM_DELAY);
+    fn the_countdown_runs_from_the_first_frame_to_the_delay() {
+        let mut v = ReviewView::new(numbered(1), SIZE);
+        let later = t0() + Duration::from_secs(5);
+        assert_eq!(v.arm_left(later), ARM_DELAY, "not drawn yet");
+        draw(&mut v, t0(), SIZE);
+        assert_eq!(v.arm_left(t0()), ARM_DELAY);
         assert_eq!(
-            v.arm_left(t0 + Duration::from_millis(300)),
+            v.arm_left(t0() + Duration::from_millis(300)),
             ARM_DELAY - Duration::from_millis(300)
         );
-        assert_eq!(v.arm_left(t0 + ARM_DELAY), Duration::ZERO);
-        assert_eq!(v.arm_left(t0 + Duration::from_secs(9)), Duration::ZERO);
+        assert_eq!(v.arm_left(t0() + ARM_DELAY), Duration::ZERO);
+        assert_eq!(v.arm_left(t0() + Duration::from_secs(9)), Duration::ZERO);
+    }
+
+    #[test]
+    fn only_the_first_frame_starts_the_delay() {
+        let mut v = ReviewView::new(numbered(1), SIZE);
+        draw(&mut v, t0(), SIZE);
+        draw(&mut v, t0() + Duration::from_millis(500), SIZE);
+        assert_eq!(v.arm_left(t0() + ARM_DELAY), Duration::ZERO);
+    }
+
+    #[test]
+    fn rejecting_waits_for_the_delay_unless_the_batch_cannot_be_reviewed() {
+        let mut v = ReviewView::new(numbered(5), SIZE);
+        assert!(!v.answerable(t0() + Duration::from_secs(60)), "not drawn");
+        draw(&mut v, t0(), SIZE);
+        assert!(!v.answerable(t0() + ARM_DELAY - Duration::from_millis(1)));
+        assert!(v.answerable(t0() + ARM_DELAY));
+        let big = ReviewView::new(numbered(2100), SIZE);
+        assert!(big.answerable(t0()), "its only exit");
+    }
+
+    #[test]
+    fn the_wake_runs_while_counting_down_and_once_when_it_ends() {
+        let mut v = ReviewView::new(numbered(1), SIZE);
+        assert!(!v.wake(t0()), "not drawn");
+        draw(&mut v, t0(), SIZE);
+        assert!(v.wake(t0() + Duration::from_millis(100)));
+        assert!(v.wake(t0() + ARM_DELAY - Duration::from_millis(1)));
+        assert!(v.wake(t0() + ARM_DELAY), "the frame that shows `y ready`");
+        assert!(!v.wake(t0() + ARM_DELAY + Duration::from_millis(16)));
     }
 
     #[test]
     fn a_view_of_another_batch_is_not_equal() {
         let a = numbered(3);
-        let t0 = Instant::now();
-        let v = ReviewView::new(a.clone(), t0, SIZE);
-        assert_eq!(v, ReviewView::new(a, t0, SIZE));
-        assert_ne!(v, ReviewView::new(numbered(3), t0, SIZE));
+        let v = ReviewView::new(a.clone(), SIZE);
+        assert_eq!(v, ReviewView::new(a, SIZE));
+        assert_ne!(v, ReviewView::new(numbered(3), SIZE));
     }
 
     #[test]
     fn a_build_file_batch_builds() {
         let r = review_of(&[("Makefile", "all:\n", true)]);
-        let v = ReviewView::new(r, Instant::now(), SIZE);
+        let v = ReviewView::new(r, SIZE);
         assert!(v.reviewable());
     }
 }

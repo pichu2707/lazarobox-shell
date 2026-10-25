@@ -805,8 +805,10 @@ async fn run_loop(
                         return Ok(());
                     }
                 }
+                app.wake_review();
                 if app.take_dirty() {
                     terminal.draw(|frame| ui::render(frame, &app, &theme))?;
+                    app.frame_drawn();
                 }
                 apply_cursor_style(out, app.cursor_shape(), &mut applied_cursor)?;
                 panes.stage_bell();

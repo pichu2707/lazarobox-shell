@@ -1,6 +1,6 @@
 //! The batch ask: routing, the view it carries and what never leaves it.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::approval::*;
 use super::engine::CallId;
@@ -31,7 +31,7 @@ fn view_of(ask: &ApprovalAsk) -> ReviewView {
     let ApprovalAsk::Batch(review) = ask else {
         panic!("a batch ask");
     };
-    ReviewView::new(review.clone(), Instant::now(), (40, 12))
+    ReviewView::new(review.clone(), (40, 12))
 }
 
 #[test]
@@ -98,7 +98,7 @@ fn a_secret_in_the_base_or_the_new_text_reaches_nothing_but_the_renderer() {
         "password = hunter2",
     );
     // The rows do hold the text: the test is not vacuous.
-    let view = ReviewView::new(review.clone(), Instant::now(), (80, 20));
+    let view = ReviewView::new(review.clone(), (80, 20));
     let shown: String = view
         .visible(20)
         .iter()

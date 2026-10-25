@@ -13,6 +13,8 @@ use crate::core::ai::chat::{
     review_view::{ReviewView, testing::numbered},
 };
 use crate::core::ai::config::ApprovalMode;
+use crate::ui::theme::LazaroboxTheme;
+use ratatui::{Terminal, backend::TestBackend};
 
 fn batch(n: usize) -> ApprovalAsk {
     ApprovalAsk::Batch(numbered(n))
@@ -26,20 +28,51 @@ fn ms(d: std::time::Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap()
 }
 
-/// A batch of `n` rows asked at t = 0.
-fn asked(n: usize) -> (App, u64) {
+/// Draws the app as the event loop does, then lets the review take the rows
+/// the frame showed.
+fn paint(a: &mut App) {
+    let theme = LazaroboxTheme::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 25)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::render(frame, a, &theme))
+        .unwrap();
+    a.frame_drawn();
+}
+
+fn paint_at(a: &mut App, t: u64) {
+    NOW_MS.with(|n| n.set(t));
+    paint(a);
+}
+
+/// An event at `t`, then the frame it causes.
+fn at_drawn(a: &mut App, t: u64, ev: AppEvent) -> Vec<Effect> {
+    let effects = at(a, t, ev);
+    paint(a);
+    effects
+}
+
+/// A batch of `n` rows asked at t = 0, not drawn yet.
+fn asked_unseen(n: usize) -> (App, u64) {
     let (mut a, turn) = live();
     announce_now(&mut a, turn, 1, batch(n));
     (a, turn)
 }
 
-/// Pages down at `t` until nothing is unseen or the end is on screen.
+/// A batch of `n` rows asked and drawn at t = 0.
+fn asked(n: usize) -> (App, u64) {
+    let (mut a, turn) = asked_unseen(n);
+    paint_at(&mut a, 0);
+    (a, turn)
+}
+
+/// Pages down at `t`, drawing each frame, until nothing is unseen or the end
+/// is on screen.
 fn read_all(a: &mut App, t: u64) {
     for _ in 0..500 {
         if review(a).remaining() == 0 {
             return;
         }
-        at(a, t, plain(KeyCode::PageDown));
+        at_drawn(a, t, plain(KeyCode::PageDown));
     }
 }
 
@@ -104,7 +137,7 @@ fn a_held_y_never_approves() {
 fn scrolling_keys_mark_rows_seen_and_other_keys_do_nothing() {
     let (mut a, _) = asked(100);
     let before = review(&a).remaining();
-    at(&mut a, 1, plain(KeyCode::Down));
+    at_drawn(&mut a, 1, plain(KeyCode::Down));
     assert_eq!((review(&a).top(), review(&a).remaining()), (1, before - 1));
     at(&mut a, 2, key('j'));
     assert_eq!(review(&a).top(), 2);
@@ -247,4 +280,104 @@ fn the_other_asks_answer_after_the_short_delay() {
             vec![decision(turn, 1, Decision::Sent)]
         );
     }
+}
+
+#[test]
+fn a_review_counts_nothing_as_seen_until_it_is_drawn() {
+    let (mut a, _) = asked_unseen(60);
+    let (total, now) = (review(&a).total(), review(&a).remaining());
+    assert_eq!(now, total, "opening is not drawing");
+    paint_at(&mut a, 0);
+    assert!(review(&a).remaining() < total);
+}
+
+#[test]
+fn a_resize_while_the_review_is_not_drawn_counts_nothing() {
+    let (mut a, _) = asked_unseen(60);
+    a.update(AppEvent::Resize { cols: 50, rows: 12 });
+    let v = review(&a);
+    assert_eq!(v.remaining(), v.total());
+}
+
+#[test]
+fn a_review_in_a_background_tab_counts_and_arms_only_once_it_is_shown() {
+    let (mut a, turn) = live();
+    press(&mut a, "tn");
+    announce_now(&mut a, turn, 1, batch(60));
+    paint_at(&mut a, 5_000);
+    let (total, left) = (review(&a).total(), review(&a).arm_left(mock_now()));
+    assert_eq!(review(&a).remaining(), total, "its pane was not drawn");
+    assert_eq!(left, ARM_DELAY);
+    press(&mut a, "gB");
+    paint_at(&mut a, 6_000);
+    assert!(review(&a).remaining() < total);
+    NOW_MS.with(|n| n.set(6_000 + ms(ARM_DELAY) - 1));
+    assert!(review(&a).arm_left(mock_now()) > std::time::Duration::ZERO);
+    NOW_MS.with(|n| n.set(6_000 + ms(ARM_DELAY)));
+    assert_eq!(review(&a).arm_left(mock_now()), std::time::Duration::ZERO);
+}
+
+#[test]
+fn the_delay_starts_at_the_first_draw_not_at_the_ask() {
+    let (mut a, turn) = asked_unseen(2);
+    paint_at(&mut a, 500);
+    read_all(&mut a, 500);
+    assert_eq!(review(&a).remaining(), 0);
+    assert_eq!(at(&mut a, ms(ARM_DELAY), key('y')), vec![], "ask + delay");
+    assert_eq!(at(&mut a, 500 + ms(ARM_DELAY) - 1, key('y')), vec![]);
+    assert_eq!(
+        at(&mut a, 500 + ms(ARM_DELAY), key('y')),
+        vec![decision(turn, 1, Decision::Sent)]
+    );
+}
+
+#[test]
+fn n_and_esc_wait_for_the_delay_from_the_first_draw_on_a_reviewable_batch() {
+    for rejecting in [key('n'), plain(KeyCode::Esc)] {
+        let (mut a, turn) = asked_unseen(5);
+        assert_eq!(at(&mut a, 60_000, rejecting.clone()), vec![], "not drawn");
+        paint_at(&mut a, 60_000);
+        assert_eq!(
+            at(&mut a, 60_000 + ms(ARM_DELAY) - 1, rejecting.clone()),
+            vec![]
+        );
+        assert_eq!(
+            at(&mut a, 60_000 + ms(ARM_DELAY), rejecting),
+            vec![decision(turn, 1, Decision::Denied(DECLINED))]
+        );
+    }
+}
+
+#[test]
+fn n_and_esc_are_immediate_on_a_batch_that_cannot_be_reviewed() {
+    for rejecting in [key('n'), plain(KeyCode::Esc)] {
+        let (mut a, turn) = asked_unseen(2100);
+        assert_eq!(
+            at(&mut a, 0, rejecting),
+            vec![decision(turn, 1, Decision::Denied(TOO_LARGE))]
+        );
+    }
+}
+
+#[test]
+fn the_screen_redraws_when_the_delay_ends() {
+    let (mut a, _) = asked(5);
+    NOW_MS.with(|n| n.set(100));
+    a.take_dirty();
+    a.wake_review();
+    assert!(a.take_dirty(), "the countdown runs");
+    NOW_MS.with(|n| n.set(ms(ARM_DELAY)));
+    a.wake_review();
+    assert!(a.take_dirty(), "one more frame for `y ready`");
+    a.wake_review();
+    assert!(!a.take_dirty(), "then it rests");
+}
+
+#[test]
+fn a_review_that_was_never_drawn_does_not_wake_the_screen() {
+    let (mut a, _) = asked_unseen(5);
+    a.take_dirty();
+    NOW_MS.with(|n| n.set(100));
+    a.wake_review();
+    assert!(!a.take_dirty());
 }
