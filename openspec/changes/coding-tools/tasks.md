@@ -140,6 +140,14 @@ Spec: code-write "Apply" (primitives), "Nothing writes without approval".
 - [ ] Wb.1 RED (tempfile, Linux): open parent with openat2 `RESOLVE_BENEATH|NO_SYMLINKS`; reject symlink swap, nlink>1, non-regular. GREEN: `runtime/tools/open.rs`. ~180.
 - [ ] Wb.2 RED: `mkdirat`, `O_EXCL` temp + fsync + `renameat2(NOREPLACE)` for create, `renameat` replace keeping base mode. GREEN. ~170.
 
+Obligations from the W-a review (`resolve_write` is a check made earlier, not a lock):
+- Re-check at open time with `openat`/`O_NOFOLLOW` along the directory chain, or re-run `resolve_write` and compare the two real paths.
+- `fstat` the opened file and refuse `nlink > 1`.
+- Refuse a final symlink.
+- Re-run `judge_real` on the real path of the opened fd.
+- Decide on purpose whether `check_new` runs on the whole post-edit text or only on the new text, and test that choice.
+- Document the BOM asymmetry: `check_new` refuses a leading BOM, `check_existing` accepts it.
+
 ### W-c: stage state machine (PR 9, ~400)
 Spec: code-write "create_dir and write_file staging", "Propose batch and size cap", "Orphan, close and quit".
 - [ ] Wc.1 RED: `Staging -> Proposed(gen) -> Applied|Discarded`; staging refused while Proposed; stale gen refused; Proposed-orphan vs Staging-orphan. GREEN: `tools/stage.rs` with `StageKey::Pane`, `BatchId`. ~200.
@@ -161,6 +169,8 @@ Spec: code-write "Apply" (preflight, drift, rollback, partial).
 - [ ] We2.1 RED: `WriteOps` trait + fault injector; preflight drift refuses the whole batch (`Drifted`). GREEN: `runtime/tools/apply.rs`. ~200. Dep: Wb.
 - [ ] We2.2 RED: journaled ordered apply (dirs by depth, then files), fault at step k rolls back in reverse. GREEN. ~150.
 - [ ] We2.3 RED: failing undo returns `Partial{changed}`; success returns `Vec<Change>` for S7. GREEN. ~100.
+
+Obligations from the W-a review (the same as W-b, applied where the write happens): re-check each target at apply time (`openat`/`O_NOFOLLOW` along the chain, or re-run `resolve_write` and compare), `fstat` and refuse `nlink > 1`, refuse a final symlink, re-run `judge_real` on the opened fd's real path, settle and test whether `check_new` sees the whole post-edit text or only the new text, and document the BOM asymmetry (`check_new` refuses a leading BOM, `check_existing` accepts it).
 
 ### W-e3: Stages store and StagedView (PR 13, ~350)
 Spec: code-search "Staged view"; code-write "Orphan, close and quit".
