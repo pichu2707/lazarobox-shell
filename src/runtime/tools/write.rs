@@ -709,7 +709,9 @@ mod other {
         #[test]
         fn every_write_primitive_refuses_cleanly() {
             let real = Path::new("/home/u/p/a");
-            let roots = SecretRoots::load(Path::new("/tmp"), &[]).unwrap();
+            // Not `/tmp`: it is a system folder, so `load` refuses it.
+            let home = tempfile::tempdir().unwrap();
+            let roots = SecretRoots::load(home.path(), &[]).unwrap();
             assert_eq!(
                 open_target(&roots, real).unwrap_err(),
                 WriteError::Unsupported
