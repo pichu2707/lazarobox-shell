@@ -21,7 +21,7 @@ use crate::core::ai::{
     sanitize::clean,
     tools::{
         glob::{BOUND_MARKER, MAX_MATCHES, MAX_PATTERN_BYTES, NO_MATCH},
-        paths::{PathVerdict, SecretRoots, is_excluded_name, resolve},
+        paths::{PathVerdict, SecretRoots, is_excluded_name, is_git_config, resolve},
     },
 };
 
@@ -43,6 +43,10 @@ const SKIPPED_DIRS: [&str; 7] = [
     ".venv",
     "__pycache__",
 ];
+/// Whether `name` is a folder the walk never enters (ASCII case-insensitive).
+fn skipped_dir(name: &str) -> bool {
+    SKIPPED_DIRS.iter().any(|d| d.eq_ignore_ascii_case(name))
+}
 /// Said when the matches hit the count or the size cap.
 pub const CAP_MARKER: &str = "[truncated: more matches than the cap of 100 or 20 KiB]";
 
@@ -72,6 +76,13 @@ pub fn grep(
     if !start.starts_with(&root) {
         return Err(Failure::Refused);
     }
+    // A walk may not start inside a skipped folder either (`path=".git"`).
+    if start.strip_prefix(&root).is_ok_and(|rel| {
+        rel.components()
+            .any(|c| skipped_dir(&c.as_os_str().to_string_lossy()))
+    }) {
+        return Err(Failure::Refused);
+    }
     let mut found = Found::default();
     let mut queue = VecDeque::from([(start, 0usize)]);
     let (mut visited, mut bounded, mut omitted) = (0usize, false, false);
@@ -99,7 +110,7 @@ pub fn grep(
                 continue;
             }
             let text_name = name.to_string_lossy();
-            if kind.is_dir() && SKIPPED_DIRS.contains(&&*text_name) {
+            if kind.is_dir() && skipped_dir(&text_name) {
                 continue;
             }
             if is_excluded_name(&text_name) || redaction_changes(&name) {
@@ -110,6 +121,10 @@ pub fn grep(
                 continue;
             }
             let path = folder.join(&name);
+            // Git settings can hold a credential: never read, wherever they sit.
+            if kind.is_file() && is_git_config(&path) {
+                continue;
+            }
             let rel = path.strip_prefix(&root).unwrap_or(&path).to_path_buf();
             if redaction_changes(rel.as_os_str()) {
                 omitted = true;
@@ -348,6 +363,45 @@ mod tests {
         fs::write(f.root.join("src/ok.rs"), "needle\n").unwrap();
         let out = run(&f, "needle", None).unwrap();
         assert_eq!(out, format!("src/ok.rs:1:needle\n{OMITTED_MARKER}"));
+    }
+
+    // Spec (code-search, grep) and (code-write, Deny rules): git settings.
+    #[test]
+    fn git_settings_are_never_read_even_through_the_start_folder() {
+        let f = fixture();
+        let secret = "url = https://host/x";
+        fs::write(f.root.join(".git/config"), secret).unwrap();
+        fs::create_dir_all(f.root.join(".git/modules/x")).unwrap();
+        fs::write(f.root.join(".git/modules/x/config"), secret).unwrap();
+        fs::create_dir_all(f.root.join(".GIT")).unwrap();
+        fs::write(f.root.join(".GIT/config"), secret).unwrap();
+        fs::create_dir_all(f.root.join("src/wt/.git/worktrees/w")).unwrap();
+        fs::write(
+            f.root.join("src/wt/.git/worktrees/w/config.worktree"),
+            secret,
+        )
+        .unwrap();
+        for start in [
+            ".git",
+            ".git/modules/x",
+            ".GIT",
+            "src/wt/.git",
+            "src/wt/.git/worktrees/w",
+        ] {
+            assert_eq!(
+                run(&f, "url", Some(start)),
+                Err(Failure::Refused),
+                "{start}"
+            );
+        }
+        // Walking from the root never reaches them either.
+        assert_eq!(run(&f, "url", None).unwrap(), NO_MATCH);
+        // A stray `config` outside a git folder is plain text.
+        fs::write(f.root.join("src/config"), secret).unwrap();
+        assert_eq!(
+            run(&f, "url", None).unwrap(),
+            format!("src/config:1:{secret}")
+        );
     }
 
     #[test]
