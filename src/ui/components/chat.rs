@@ -3,6 +3,8 @@
 //! Everything goes through styled cells of already sanitized text; model
 //! output never reaches the terminal as raw bytes.
 
+use std::time::Instant;
+
 use ratatui::{
     buffer::Buffer,
     layout::{Position, Rect},
@@ -10,6 +12,7 @@ use ratatui::{
     widgets::Widget,
 };
 
+use super::review;
 use crate::{
     core::ai::{
         chat::{
@@ -38,6 +41,7 @@ pub struct ChatView<'a> {
     theme: &'a LazaroboxTheme,
     guidance: Option<&'a str>,
     approval: Option<&'a ApprovalPrompt>,
+    now: Option<Instant>,
 }
 
 impl<'a> ChatView<'a> {
@@ -47,7 +51,14 @@ impl<'a> ChatView<'a> {
             theme,
             guidance: None,
             approval: None,
+            now: None,
         }
+    }
+
+    /// The clock the review view counts its delay by.
+    pub fn now(mut self, now: Instant) -> Self {
+        self.now = Some(now);
+        self
     }
 
     /// The pending run-in-pane confirm, drawn over the composer.
@@ -103,6 +114,9 @@ impl<'a> ChatView<'a> {
         }
         if let Some(draft) = self.chat.summary_draft() {
             return self.summary_cursor(draft, area);
+        }
+        if self.chat.approvals().review().is_some() {
+            return None;
         }
         let (layout, plan) = self.plan(area);
         let composer = layout.composer;
@@ -207,6 +221,11 @@ impl ChatView<'_> {
             self.render_summary(draft, area, buf);
             return;
         }
+        if let Some(view) = self.chat.approvals().review() {
+            let now = self.now.unwrap_or_else(Instant::now);
+            review::render(view, now, self.theme, area, buf);
+            return;
+        }
         let (layout, plan) = self.plan(area);
         fill(
             buf,
@@ -260,7 +279,7 @@ impl ChatView<'_> {
 }
 
 /// Blanks `rect` with `style`.
-fn fill(buf: &mut Buffer, rect: Rect, style: Style) {
+pub(super) fn fill(buf: &mut Buffer, rect: Rect, style: Style) {
     for y in rect.y..rect.y + rect.height {
         for x in rect.x..rect.x + rect.width {
             buf[(x, y)].set_symbol(" ").set_style(style);

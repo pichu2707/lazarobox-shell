@@ -1,0 +1,16 @@
+---
+source: src/ui/components/review_tests.rs
+expression: flat(&shown)
+---
+warning: too large to review: reject it and ask for smaller changes
++row 1990
++row 1991
++row 1992
++row 1993
++row 1994
++row 1995
++row 1996
++row 1997
++row 1998
++row 1999
+n discard · ↑↓ PgUp PgDn scroll

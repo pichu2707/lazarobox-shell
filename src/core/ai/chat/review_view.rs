@@ -108,7 +108,6 @@ impl ReviewView {
     }
 
     /// The rows on screen in a pane `rows` high, FOR THE REVIEW RENDERER ONLY.
-    #[allow(dead_code)] // used by the review view (We4.2)
     pub(crate) fn visible(&self, rows: usize) -> &[Row] {
         let all = self.layout.rows();
         let start = self.top.min(all.len());
@@ -197,6 +196,22 @@ pub(crate) mod testing {
         };
         b.edit_file(&target(path, false), old, new, disk).unwrap();
         review(&b)
+    }
+
+    /// An edit of `a.txt` that the diff could not minimise in time.
+    pub fn coarse_of() -> Arc<BatchReview> {
+        use crate::core::ai::tools::diff::{Diff, diff_within};
+        let mut b = batch();
+        let disk = Existing::Present {
+            size: 4,
+            bytes: b"old\n",
+        };
+        b.stage_file(&target("a.txt", false), "new\n", disk)
+            .unwrap();
+        let coarse = |base: Option<&str>, new: &str| -> Diff {
+            diff_within(base, new, std::time::Duration::ZERO)
+        };
+        Arc::new(BatchReview::new(ReviewDoc::build_with(&b, coarse)))
     }
 
     /// One new file of `n` lines: the doc has `n + 3` lines (a summary, the

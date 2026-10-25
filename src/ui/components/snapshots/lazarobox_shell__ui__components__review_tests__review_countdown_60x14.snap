@@ -1,0 +1,18 @@
+---
+source: src/ui/components/review_tests.rs
+expression: "flat(&draw(&chat, at(400), 60, 14))"
+---
+1 file, +30 -0 · seen 33/33 · y in 0.4s
++row 18
++row 19
++row 20
++row 21
++row 22
++row 23
++row 24
++row 25
++row 26
++row 27
++row 28
++row 29
+y locked · n reject · ↑↓ PgUp PgDn scroll

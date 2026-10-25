@@ -230,7 +230,8 @@ pub const TOO_LARGE: &str =
 
 const WARN_BUILD: &str = "warning: build file: it can run code when the project is built";
 const WARN_COARSE: &str = "warning: coarse diff: the whole file is shown as replaced";
-const WARN_TRUNCATED: &str = "warning: too large to review: reject it and ask for smaller changes";
+pub const WARN_TRUNCATED: &str =
+    "warning: too large to review: reject it and ask for smaller changes";
 
 /// How long `y` stays disabled after the view opens. Other asks keep 400 ms.
 pub const ARM_DELAY: Duration = Duration::from_millis(800);
@@ -258,7 +259,6 @@ pub struct Row {
 impl Row {
     /// The text of the row, FOR THE REVIEW RENDERER ONLY. It may hold text the
     /// model never saw: never send it to the model, a log or a tool result.
-    #[allow(dead_code)] // used by the review view (We4.2)
     pub(crate) fn text_for_review_renderer_only(&self) -> &str {
         &self.text
     }
@@ -283,7 +283,6 @@ pub struct Layout {
 
 impl Layout {
     /// The rows, FOR THE REVIEW RENDERER ONLY.
-    #[allow(dead_code)] // used by the review view (We4.2)
     pub(crate) fn rows(&self) -> &[Row] {
         &self.rows
     }

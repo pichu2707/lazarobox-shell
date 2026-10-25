@@ -59,6 +59,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
                 let guidance = app.chat_guidance(id);
                 let approval = app.approval_prompt(id);
                 let chat_view = ChatView::new(chat, theme)
+                    .now(app.now())
                     .guidance(guidance.as_deref())
                     .approval(approval.as_ref());
                 // The composer owns the real cursor of a focused chat; MENU

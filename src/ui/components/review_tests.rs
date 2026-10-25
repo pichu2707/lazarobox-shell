@@ -1,0 +1,255 @@
+//! The review view drawn over a chat pane (chat-pane: "Batch review view";
+//! code-write: "Batch review and coverage gate"). The clock is a fake one:
+//! the view takes `now` as an argument.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, layout::Rect, widgets::Widget};
+
+use super::chat::ChatView;
+use crate::core::ai::chat::{
+    ChatState,
+    approval::ApprovalAsk,
+    engine::CallId,
+    review::{ARM_DELAY, BatchReview},
+    review_view::{
+        Move, ReviewView,
+        testing::{coarse_of, edit_of, numbered, review_of},
+    },
+};
+use crate::ui::theme::LazaroboxTheme;
+
+fn t0() -> Instant {
+    use std::sync::OnceLock;
+    static BASE: OnceLock<Instant> = OnceLock::new();
+    *BASE.get_or_init(Instant::now)
+}
+
+fn at(ms: u64) -> Instant {
+    t0() + Duration::from_millis(ms)
+}
+
+/// A chat whose pending approval is `review`, open in a `w` x `h` pane.
+fn reviewing(review: Arc<BatchReview>, w: usize, h: usize) -> ChatState {
+    let mut chat = ChatState::new(None);
+    let ask = ApprovalAsk::Batch(review.clone());
+    chat.approvals_mut()
+        .request_call(ask, 1, CallId(1), None)
+        .unwrap();
+    chat.approvals_mut()
+        .set_review(ReviewView::new(review, t0(), (w, h)));
+    chat
+}
+
+fn page_to_the_end(chat: &mut ChatState, size: (usize, usize)) {
+    let view = chat.approvals_mut().review_mut().unwrap();
+    for _ in 0..view.total() {
+        view.scroll(Move::PageDown, size);
+    }
+}
+
+fn draw(chat: &ChatState, now: Instant, w: u16, h: u16) -> TestBackend {
+    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            frame.render_widget(
+                ChatView::new(chat, &LazaroboxTheme::default()).now(now),
+                area,
+            );
+        })
+        .unwrap();
+    terminal.backend().clone()
+}
+
+fn rows(backend: &TestBackend) -> Vec<String> {
+    let buf = backend.buffer();
+    (0..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect()
+}
+
+fn flat(backend: &TestBackend) -> String {
+    rows(backend).join("\n")
+}
+
+#[test]
+fn a_fresh_review_counts_what_remains_and_y_reads_as_locked() {
+    let chat = reviewing(numbered(30), 60, 14);
+    insta::assert_snapshot!("review_fresh_60x14", flat(&draw(&chat, at(0), 60, 14)));
+}
+
+#[test]
+fn everything_seen_but_the_delay_not_over_counts_down() {
+    let mut chat = reviewing(numbered(30), 60, 14);
+    page_to_the_end(&mut chat, (60, 14));
+    insta::assert_snapshot!(
+        "review_countdown_60x14",
+        flat(&draw(&chat, at(400), 60, 14))
+    );
+}
+
+#[test]
+fn everything_seen_and_the_delay_over_enables_y() {
+    let mut chat = reviewing(numbered(30), 60, 14);
+    page_to_the_end(&mut chat, (60, 14));
+    let shown = draw(&chat, at(800), 60, 14);
+    assert!(rows(&shown)[0].contains("y ready"), "{:?}", rows(&shown));
+    assert!(
+        rows(&shown)[13].starts_with("y approve"),
+        "{:?}",
+        rows(&shown)
+    );
+    insta::assert_snapshot!("review_ready_60x14", flat(&shown));
+}
+
+#[test]
+fn the_countdown_follows_the_clock_it_is_given() {
+    let mut chat = reviewing(numbered(3), 60, 14);
+    page_to_the_end(&mut chat, (60, 14));
+    for (ms, wanted) in [
+        (0, "y in 0.8s"),
+        (50, "y in 0.8s"),
+        (300, "y in 0.5s"),
+        (700, "y in 0.1s"),
+    ] {
+        let first = rows(&draw(&chat, at(ms), 60, 14)).remove(0);
+        assert!(first.contains(wanted), "{ms}: {first}");
+    }
+    assert!(ARM_DELAY.as_millis() == 800);
+}
+
+#[test]
+fn a_scrolled_view_shows_the_rows_it_scrolled_to() {
+    let mut chat = reviewing(numbered(30), 60, 14);
+    let view = chat.approvals_mut().review_mut().unwrap();
+    view.scroll(Move::PageDown, (60, 14));
+    insta::assert_snapshot!("review_scrolled_60x14", flat(&draw(&chat, at(0), 60, 14)));
+}
+
+#[test]
+fn a_build_file_carries_its_warning() {
+    let chat = reviewing(review_of(&[("Makefile", "all:\n\tcc x.c\n", true)]), 70, 12);
+    insta::assert_snapshot!("review_build_file_70x12", flat(&draw(&chat, at(0), 70, 12)));
+}
+
+#[test]
+fn a_coarse_diff_carries_its_warning() {
+    let chat = reviewing(coarse_of(), 70, 12);
+    let text = rows(&draw(&chat, at(0), 70, 12)).join("\n");
+    assert!(text.contains("warning: coarse diff"), "{text}");
+    insta::assert_snapshot!("review_coarse_70x12", flat(&draw(&chat, at(0), 70, 12)));
+}
+
+#[test]
+fn a_batch_too_large_offers_only_to_discard_and_says_why() {
+    let mut chat = reviewing(numbered(2100), 70, 12);
+    page_to_the_end(&mut chat, (70, 12));
+    let shown = draw(&chat, at(60_000), 70, 12);
+    let r = rows(&shown);
+    assert!(r[0].contains("too large to review"), "{r:?}");
+    assert!(!r.iter().any(|l| l.contains("y approve")), "{r:?}");
+    assert!(r[11].starts_with("n discard"), "{r:?}");
+    insta::assert_snapshot!("review_too_large_70x12", flat(&shown));
+}
+
+#[test]
+fn an_empty_batch_is_the_same_view() {
+    let chat = reviewing(review_of(&[]), 70, 8);
+    let r = rows(&draw(&chat, at(60_000), 70, 8));
+    assert!(r[0].contains("too large to review"), "{r:?}");
+    assert!(r[7].starts_with("n discard"), "{r:?}");
+}
+
+#[test]
+fn a_long_line_wraps_with_the_continuation_marker() {
+    let long = "x".repeat(50);
+    let chat = reviewing(review_of(&[("a.txt", &format!("{long}\n"), false)]), 24, 10);
+    insta::assert_snapshot!("review_wrapped_24x10", flat(&draw(&chat, at(0), 24, 10)));
+}
+
+#[test]
+fn hidden_characters_are_drawn_as_escapes_never_raw() {
+    let chat = reviewing(
+        edit_of(
+            "a.txt",
+            "ok\nold\u{202E}y\n\u{1b}[31m\n",
+            "old\u{202E}y",
+            "new",
+        ),
+        60,
+        14,
+    );
+    let shown = draw(&chat, at(0), 60, 14);
+    let text = rows(&shown).join("\n");
+    assert!(text.contains("-old<U+202E>y"), "{text}");
+    assert!(
+        !text.chars().any(|c| c.is_control() && c != '\n'),
+        "{text:?}"
+    );
+    assert!(!text.contains('\u{202E}') && !text.contains('\u{1b}'));
+}
+
+#[test]
+fn the_secret_a_diff_holds_is_shown_to_the_user() {
+    // The renderer is the one place the rows go: the user must see what
+    // `y` would write and what it replaces.
+    let chat = reviewing(
+        edit_of(
+            "a.txt",
+            "token=hunter2\nkeep\n",
+            "token=hunter2",
+            "token=next",
+        ),
+        60,
+        14,
+    );
+    let text = rows(&draw(&chat, at(0), 60, 14)).join("\n");
+    assert!(
+        text.contains("-token=hunter2") && text.contains("+token=next"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_small_pane_sheds_the_body_first_and_keeps_the_way_out() {
+    let chat = reviewing(numbered(5), 30, 2);
+    insta::assert_snapshot!("review_2_rows", flat(&draw(&chat, at(0), 30, 2)));
+    let chat = reviewing(numbered(5), 30, 1);
+    insta::assert_snapshot!("review_1_row", flat(&draw(&chat, at(0), 30, 1)));
+}
+
+#[test]
+fn no_size_draws_outside_its_area_or_panics() {
+    for review in [numbered(40), numbered(2100), review_of(&[])] {
+        for h in 0..=25u16 {
+            for w in [0u16, 1, 2, 3, 10, 24, 80] {
+                let mut chat = reviewing(review.clone(), usize::from(w), usize::from(h));
+                if h > 0 && w > 0 {
+                    page_to_the_end(&mut chat, (usize::from(w), usize::from(h)));
+                }
+                let area = Rect::new(0, 0, w, h);
+                let mut buf = Buffer::empty(area);
+                ChatView::new(&chat, &LazaroboxTheme::default())
+                    .now(at(0))
+                    .render(area, &mut buf);
+                let _ = ChatView::new(&chat, &LazaroboxTheme::default()).cursor(area);
+            }
+        }
+    }
+}
+
+#[test]
+fn the_review_takes_the_real_cursor() {
+    let chat = reviewing(numbered(5), 60, 14);
+    let theme = LazaroboxTheme::default();
+    let view = ChatView::new(&chat, &theme);
+    assert_eq!(view.cursor(Rect::new(0, 0, 60, 14)), None);
+}
