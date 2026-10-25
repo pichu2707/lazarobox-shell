@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use toml::{Table, Value};
 
-use super::tools::registry::Family;
+use super::tools::registry::{Family, FamilySet};
 use super::{CATALOG, Kind, ServerPorts};
 
 /// The fixed set of AI tasks, in display order.
@@ -416,6 +416,15 @@ impl AiConfig {
 
     pub fn set_toggle(&mut self, toggle: ToolToggle, on: bool) {
         self.toggles[toggle as usize] = on;
+    }
+
+    /// The families a chat opened now offers: the 0.18.0 set plus every
+    /// switched-on family. With the master switch off, only the 0.18.0 set.
+    pub fn families(&self) -> FamilySet {
+        ToolToggle::ALL
+            .into_iter()
+            .filter(|t| self.tools && self.toggle(*t))
+            .fold(FamilySet::LEGACY, |set, t| set.with(t.family()))
     }
 
     /// The user MCP servers as declared, global and per-project, in file
@@ -2079,6 +2088,30 @@ mod tests {
         config.set_toggle(ToolToggle::GitWrite, true);
         assert!(config.toggle(ToolToggle::GitWrite));
         assert!(!config.toggle(ToolToggle::Git));
+    }
+
+    #[test]
+    fn no_toggle_on_is_the_legacy_family_set() {
+        assert_eq!(AiConfig::default().families(), FamilySet::LEGACY);
+    }
+
+    #[test]
+    fn each_toggle_adds_exactly_its_family_to_the_legacy_set() {
+        for toggle in ToolToggle::ALL {
+            let mut config = AiConfig::default();
+            config.set_toggle(toggle, true);
+            let set = config.families();
+            assert_eq!(set, FamilySet::LEGACY.with(toggle.family()), "{toggle:?}");
+            assert!(set.contains(Family::Read) && set.contains(Family::Pane));
+        }
+    }
+
+    #[test]
+    fn the_master_switch_off_leaves_only_the_legacy_set() {
+        let (mut config, _) = read_text("[ai.tools]\nwrite = true\nexec = true\n");
+        assert!(config.families().contains(Family::Exec));
+        config.set_tools_enabled(false);
+        assert_eq!(config.families(), FamilySet::LEGACY);
     }
 
     #[test]
