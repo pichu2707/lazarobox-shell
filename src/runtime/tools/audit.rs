@@ -70,8 +70,9 @@ const MAY_WRITE: &[&str] = &["write.rs"];
 const MAY_CALL_WRITE: &[&str] = &["write.rs", "mod.rs", "audit.rs", "apply.rs"];
 
 /// The files that may name the `apply` module, the one entry to a disk write.
-/// Later wiring slices add the file that calls it.
-const MAY_CALL_APPLY: &[&str] = &["apply.rs", "mod.rs", "audit.rs"];
+/// `stage.rs` is the store that applies a proposed batch; later wiring slices
+/// add the file that calls the store.
+const MAY_CALL_APPLY: &[&str] = &["apply.rs", "mod.rs", "audit.rs", "stage.rs"];
 
 /// The only `libc::` names the read side may use.
 const LIBC_ALLOWED: &[&str] = &[
@@ -649,6 +650,29 @@ mod tests {
         let named = "use super::write::{self, WriteError};";
         assert_eq!(planted(&[("apply.rs", named)]), Vec::<String>::new());
         assert!(!planted(&[("host/apply.rs", named)]).is_empty());
+    }
+
+    #[test]
+    fn stage_may_name_the_apply_module_but_holds_no_write_api_and_not_the_write_module() {
+        let tools = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime/tools");
+        let src = std::fs::read_to_string(tools.join("stage.rs")).unwrap();
+        // It is on the list for a reason: it does reference `apply`.
+        assert!(!apply_refs(&src).is_empty());
+        assert_eq!(file_problems("stage.rs", &src), Vec::<String>::new());
+        // ...and it earns nothing else: every write token is still flagged,
+        // and so is the `write` module itself.
+        for bad in [
+            "fn f() { std::fs::write(p, b) }",
+            "fn f() { std::fs::remove_file(p) }",
+            "fn f() { libc::unlinkat(a, p, 0) }",
+            "fn f() { let _ = OpenOptions::new(); }",
+            "use super::write::create_file;",
+        ] {
+            assert!(!file_problems("stage.rs", bad).is_empty(), "{bad}");
+        }
+        let named = "use super::apply::{self, ApplyResult};";
+        assert_eq!(planted(&[("stage.rs", named)]), Vec::<String>::new());
+        assert!(!planted(&[("host/stage.rs", named)]).is_empty());
     }
 
     #[test]
