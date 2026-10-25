@@ -245,3 +245,38 @@ About 304 production lines (`stage.rs` lines before `mod tests`, with comments) 
 ## Checks (W-c)
 
 `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5516 lib tests green), `cargo +1.88 check --all-targets`.
+
+## Batch 8: slice W-d (edit and diff, PR 10, branch feat/coding-tools-wd, base feat/coding-tools-wc)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Wd.1 `edit_file` on `Batch` (`tools/edit.rs`) | done | feat(tools): stage an edit of one exact text against the staged or disk version of a file |
+| Wd.2 line diff (`tools/diff.rs`, `similar`) | done | feat(tools): diff a staged file against its disk text with a deadline and a coarse fallback |
+
+## TDD cycle evidence (W-d)
+
+| Task | RED (seen failing) | GREEN | Triangulation | REFACTOR |
+|------|--------------------|-------|---------------|----------|
+| Wd.1 | `error[E0599]: no method named edit_file found for struct Batch` (30), `E0433 cannot find type EditError` (19), `E0425 cannot find value FIELD_MAX / FILE_MAX / function apply_edit` (56 compile errors) | 17 tests; one failed first because of a test bug (a second call on a path already staged), fixed in the test | unique / none / many / overlapping (`aa` in `aaa`), empty old, chained edit keeps the disk base and ignores the disk text passed later, edit of a staged create (base None), missing file, staged folder, field cap 16 KiB at and over, file cap 1 MiB at and over and by size alone, short read, Latin-1 and CRLF disk, BOM and ESC on disk editable elsewhere, `new` with BOM / BEL / CR refused, Proposed state refused, batch cap leaves the batch unchanged. Mutations: removing `check_new(new)` failed `a_new_text_with_a_bom_or_a_control_is_refused`; a non-overlapping second-match search failed `overlapping_matches_count_as_many` | none |
+| Wd.2 | `error[E0425]: cannot find function diff / diff_within`, `cannot find type Diff / Kind` (20 compile errors) | 11 tests; two failed first because of test expectations (hunk start is the first context row; a context row before a changed last line), fixed in the tests | create all added, empty create, 3-line context, two hunks, identical texts, missing newline on removed / added / context rows and as `\ No newline at end of file`, coarse on deadline, coarse create equals the normal one, determinism, 20k lines inside the deadline. Mutations: no deadline fallback failed the coarse test; `missing_newline` forced false failed 2; context 1 instead of 3 failed the context test | none |
+
+## Deviations / notes (W-d)
+
+- `similar 2.7.0` was already in `Cargo.lock` through `insta` (dev-dependency), so no new crate is downloaded; it is now a normal dependency (`similar = "2"`, default features). MSRV check with `cargo +1.88 check --all-targets` passes. No other diff crate is a dependency.
+- API: `Batch::edit_file(target, old, new, existing) -> Result<(), EditError>` is an `impl Batch` block in `edit.rs`; `apply_edit(current, old, new)` is the pure replace. `stage.rs` only widens `put` and `open` to `pub(super)` and adds `staged(&self, target)`.
+- `Entry::File.base` invariant kept: an edit of an unstaged existing file stores the disk text as `base`; an edit of a staged path keeps the staged entry's `base` (so a create stays `None`, and a chained edit keeps the first disk text). The cap logic is not duplicated: `put` still enforces the entry and byte caps, and a failed `put` leaves the batch unchanged.
+- `old` uniqueness counts overlapping occurrences (`aa` in `aaa` is ambiguous).
+- Staged text wins: when the path is staged, the `existing` passed in is ignored (not even read for size). The caller still reads disk for an unstaged path; W-e2's drift check compares that `base` with the disk at apply time.
+- Spec/design give no error texts for `edit_file` beyond "refused with an error result"; the texts are new: `old must not be empty`, `old does not occur in the file`, `old occurs more than once: add context so that it occurs exactly once`, `old and new must each be at most 16 KiB`, `the file is over 1 MiB and cannot be edited`, `the file does not exist: use write_file to create it`.
+- Deadline decision (spec and design say only "Myers, 500 ms deadline"): `similar` gets the deadline, and if the run took `>= 500 ms` the minimal result is discarded for a coarse diff (all base lines removed, all new lines added, one hunk, `Diff::coarse = true`). Chosen over keeping `similar`'s own degraded output because that output is not specified and cannot be detected. A create never goes coarse. Purity: `diff` is a function of (base, new) except that the choice between minimal and coarse depends on machine speed; both are correct diffs. `diff_within(base, new, limit)` makes this testable (`Duration::ZERO`).
+- Hunk starts are 1-based; an empty side starts at the line before (unified-diff convention). `Display for Diff` renders the unified text with the `\ No newline at end of file` marker; We1's `ReviewDoc` can use the structured rows instead.
+- Redaction: `edit_file` does not require `redact(clean(base)) == base` (only `write_file` overwrite does, per spec); a secret in `base` would show in the review diff to the user, not to the model.
+- Coverage gate is W-e1. Files are I/O-free and live under `core/ai/tools/` (not audited). No change to `host.rs`; no wiring; no macOS-only file touched.
+
+## Size (W-d)
+
+About 305 production lines (edit.rs 120, diff.rs 175, stage.rs +10, mod.rs +2, Cargo.toml +3) and about 390 test lines; `git diff --stat feat/coding-tools-wc...HEAD`: +698/-2 before docs.
+
+## Checks (W-d)
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5553 lib tests green), `cargo +1.88 check --all-targets`.

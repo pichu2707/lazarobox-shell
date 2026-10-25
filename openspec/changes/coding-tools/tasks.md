@@ -39,7 +39,7 @@ Tracker = `feat/coding-tools`. Rule: PR1 of the chain targets the tracker; each 
 | 7 | W-a content rules + `resolve_write` | ~350 | M1-c branch | Ready |
 | 8 | W-b write primitives (`open.rs`) | ~350 | W-a branch | Ready |
 | 9 | W-c stage state machine | ~400 | W-b branch | Done (apply) |
-| 10 | W-d edit + diff | ~400 | W-c branch | Ready |
+| 10 | W-d edit + diff | ~400 | W-c branch | Done |
 | 11 | W-e1 ReviewDoc + layout + coverage core | ~400 | W-d branch | Ready |
 | 12 | W-e2 apply (journal, rollback, `WriteOps`) | ~450 | W-e1 branch | Ready |
 | 13 | W-e3 `Stages` store + `StagedView` | ~350 | W-e2 branch | Ready |
@@ -156,8 +156,8 @@ Spec: code-write "create_dir and write_file staging", "Propose batch and size ca
 
 ### W-d: edit and diff (PR 10, ~400)
 Spec: code-write "edit_file staging", "Batch review and coverage gate".
-- [ ] Wd.1 RED: `edit_file`: `old` non-empty and unique in staged-or-disk text, fields <= 16 KiB, file <= 1 MiB. GREEN: `tools/edit.rs`. ~170. Decision from W-b (design D23): `check_new` runs on the `new` text only, never on the whole result; add a test that an existing file holding a control character or a BOM can still be edited elsewhere, and that a `new` text with a BOM or a control is refused.
-- [ ] Wd.2 RED: diff with `similar` (Myers, 500 ms deadline, 3 context lines), create shows all added, `no newline at end of file`. GREEN: `tools/diff.rs`, `Cargo.toml`. ~230.
+- [x] Wd.1 RED: `edit_file`: `old` non-empty and unique in staged-or-disk text, fields <= 16 KiB, file <= 1 MiB. GREEN: `tools/edit.rs`. ~170. Decision from W-b (design D23): `check_new` runs on the `new` text only, never on the whole result; add a test that an existing file holding a control character or a BOM can still be edited elsewhere, and that a `new` text with a BOM or a control is refused.
+- [x] Wd.2 RED: diff with `similar` (Myers, 500 ms deadline, 3 context lines), create shows all added, `no newline at end of file`. GREEN: `tools/diff.rs`, `Cargo.toml`. ~230.
 
 ### W-e1: ReviewDoc and coverage core (PR 11, ~400)
 Spec: code-write "Batch review and coverage gate"; chat-pane "Batch review view".
