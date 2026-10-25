@@ -131,6 +131,11 @@ pub enum ApplyResult {
 }
 
 impl ApplyResult {
+    /// Whether the whole batch is on disk.
+    pub fn applied(&self) -> bool {
+        matches!(self, ApplyResult::Applied(_))
+    }
+
     /// The text for the model: paths and counts, never file text or diff rows.
     pub fn summary(&self) -> String {
         let list = |paths: &[PathBuf]| -> String {

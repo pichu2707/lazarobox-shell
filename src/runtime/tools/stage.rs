@@ -5,7 +5,10 @@
 //!
 //! Applying goes through [`apply`]; this file holds no write API.
 
-use std::collections::{HashMap, hash_map::Entry};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    path::Path,
+};
 
 use super::{
     apply::{self, ApplyResult, Disk, WriteOps},
@@ -22,9 +25,20 @@ pub struct Exhausted;
 
 /// Why [`Stages::stage_with`] did not stage.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum StageFailed {
+pub enum StageFailed<E = StageError> {
     Exhausted,
-    Batch(StageError),
+    Batch(E),
+}
+
+/// The disk read of a path could not be made or is not allowed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Unreadable;
+
+/// What the file `real` holds now, for staging: `None` when the name is free.
+/// The same checked read the apply preflight makes, so staging and apply judge
+/// a path alike. It reads and never writes.
+pub fn disk_bytes(roots: &SecretRoots, real: &Path) -> Result<Option<Vec<u8>>, Unreadable> {
+    Disk::new(roots).probe(real).map_err(|_| Unreadable)
 }
 
 /// The live batches, by key.
@@ -46,11 +60,11 @@ impl Stages {
     /// Runs `staging` on the batch of `key`. When it fails and this call made
     /// the batch, the empty batch is removed again; a batch that was already
     /// there stays as it was.
-    pub fn stage_with<T>(
+    pub fn stage_with<T, E>(
         &mut self,
         key: StageKey,
-        staging: impl FnOnce(&mut Batch) -> Result<T, StageError>,
-    ) -> Result<T, StageFailed> {
+        staging: impl FnOnce(&mut Batch) -> Result<T, E>,
+    ) -> Result<T, StageFailed<E>> {
         let (batch, created) = self.open(key).map_err(|_| StageFailed::Exhausted)?;
         let result = staging(batch);
         if result.is_err() && created {
@@ -408,7 +422,7 @@ mod tests {
         let _ = stages.stage_with(key(3), |_| Err::<(), _>(StageError::FileTooLarge));
         assert!(stages.batch(key(3)).is_some());
         // A success keeps its batch.
-        assert_eq!(stages.stage_with(key(4), |_| Ok(7)), Ok(7));
+        assert_eq!(stages.stage_with(key(4), |_| Ok::<_, StageError>(7)), Ok(7));
         assert!(stages.batch(key(4)).is_some());
     }
 }

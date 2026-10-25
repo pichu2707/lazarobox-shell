@@ -57,6 +57,7 @@ use crate::core::{
         sanitize::{StreamSanitizer, Utf8Stream, clean},
         tools::{
             report::RunReport,
+            stage::StageKey,
             summary::clip,
             wiring::{McpWire, Secret},
         },
@@ -768,6 +769,8 @@ impl Chats {
             approver: self.waits.approver(pane, turn, pending.clone()),
             // Filled by the turn's task once its servers run.
             external: slot.clone(),
+            families: request.families,
+            stage_key: Some(StageKey::Pane(pane)),
         };
         let dispatch = tooling.host.dispatch(scope);
         if adapter_for(&request.engine) == Some(Adapter::Ollama) {
