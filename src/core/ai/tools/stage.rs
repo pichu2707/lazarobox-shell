@@ -11,6 +11,13 @@ use std::fmt;
 use crate::core::ai::tools::paths::WriteTarget;
 use crate::core::layout::PaneId;
 
+/// Entries a batch may hold.
+pub const MAX_ENTRIES: usize = 50;
+/// New content a batch may hold, in bytes.
+pub const MAX_BYTES: usize = 1024 * 1024;
+/// The text of one `write_file` call, in bytes.
+pub const WRITE_FILE_MAX: usize = 32 * 1024;
+
 /// Whose batch it is. One batch per key; the enum is meant to grow (worker
 /// keys come with the orchestrator).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -58,6 +65,16 @@ pub enum Entry {
     File { text: String },
 }
 
+impl Entry {
+    /// The new content this entry carries.
+    fn bytes(&self) -> usize {
+        match self {
+            Entry::Dir => 0,
+            Entry::File { text } => text.len(),
+        }
+    }
+}
+
 /// One staged path.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Staged {
@@ -74,6 +91,11 @@ pub enum StageError {
     Closed,
     Stale,
     NotProposed,
+    FileTooLarge,
+    /// Staging this would pass a batch cap.
+    Full,
+    /// The batch passes a cap at propose time.
+    TooLarge,
 }
 
 impl fmt::Display for StageError {
@@ -86,6 +108,11 @@ impl fmt::Display for StageError {
             StageError::Closed => "the batch is closed: nothing can be staged in it",
             StageError::Stale => "that batch is no longer the current one",
             StageError::NotProposed => "the batch was not proposed",
+            StageError::FileTooLarge => "write_file content is over 32 KiB",
+            StageError::Full => "batch is full: propose it, then stage the rest",
+            StageError::TooLarge => {
+                "batch is over 50 entries or 1 MiB: split it into smaller batches"
+            }
         })
     }
 }
@@ -126,25 +153,38 @@ impl Batch {
 
     /// Stages a file with its whole new text.
     pub fn stage_file(&mut self, target: &WriteTarget, text: &str) -> Result<(), StageError> {
+        if text.len() > WRITE_FILE_MAX {
+            return Err(StageError::FileTooLarge);
+        }
         self.put(target, Entry::File { text: text.into() })
     }
 
     /// Adds an entry, or replaces the earlier one for the same path in place.
     fn put(&mut self, target: &WriteTarget, entry: Entry) -> Result<(), StageError> {
         self.open()?;
+        let slot = self
+            .entries
+            .iter()
+            .position(|s| s.target.real == target.real);
+        let replaced = slot.map_or(0, |i| self.entries[i].entry.bytes());
+        let entries = self.entries.len() + usize::from(slot.is_none());
+        if entries > MAX_ENTRIES || self.bytes() - replaced + entry.bytes() > MAX_BYTES {
+            return Err(StageError::Full);
+        }
         let staged = Staged {
             target: target.clone(),
             entry,
         };
-        match self
-            .entries
-            .iter_mut()
-            .find(|s| s.target.real == target.real)
-        {
-            Some(slot) => *slot = staged,
+        match slot {
+            Some(i) => self.entries[i] = staged,
             None => self.entries.push(staged),
         }
         Ok(())
+    }
+
+    /// The new content held, in bytes.
+    pub fn bytes(&self) -> usize {
+        self.entries.iter().map(|s| s.entry.bytes()).sum()
     }
 
     /// Whether staging is allowed in the current state.
@@ -162,6 +202,9 @@ impl Batch {
         self.open()?;
         if self.entries.is_empty() {
             return Err(StageError::Empty);
+        }
+        if self.entries.len() > MAX_ENTRIES || self.bytes() > MAX_BYTES {
+            return Err(StageError::TooLarge);
         }
         self.state = State::Proposed;
         Ok(self.id)
@@ -389,5 +432,132 @@ mod tests {
     #[test]
     fn an_empty_staging_batch_is_not_an_orphan() {
         assert_eq!(batch(1).orphan(false), None);
+    }
+
+    fn numbered(n: usize) -> WriteTarget {
+        target(&format!("f{n}.txt"))
+    }
+
+    #[test]
+    fn write_file_content_is_capped_at_32_kib() {
+        let mut b = batch(1);
+        let at_cap = "a".repeat(WRITE_FILE_MAX);
+        b.stage_file(&target("ok.txt"), &at_cap).unwrap();
+        let over = "a".repeat(WRITE_FILE_MAX + 1);
+        assert_eq!(
+            b.stage_file(&target("big.txt"), &over),
+            Err(StageError::FileTooLarge)
+        );
+        assert_eq!(b.entries().len(), 1);
+        assert_eq!(
+            StageError::FileTooLarge.to_string(),
+            "write_file content is over 32 KiB"
+        );
+    }
+
+    #[test]
+    fn the_fifty_first_entry_is_refused_with_the_full_message() {
+        let mut b = batch(1);
+        for n in 0..MAX_ENTRIES {
+            b.stage_file(&numbered(n), "x\n").unwrap();
+        }
+        assert_eq!(b.entries().len(), 50);
+        assert_eq!(b.stage_dir(&target("extra")), Err(StageError::Full));
+        assert_eq!(b.stage_file(&numbered(50), "x\n"), Err(StageError::Full));
+        assert_eq!(b.entries().len(), 50);
+        assert_eq!(
+            StageError::Full.to_string(),
+            "batch is full: propose it, then stage the rest"
+        );
+    }
+
+    #[test]
+    fn restaging_an_existing_path_at_fifty_entries_is_allowed() {
+        let mut b = batch(1);
+        for n in 0..MAX_ENTRIES {
+            b.stage_file(&numbered(n), "x\n").unwrap();
+        }
+        b.stage_file(&numbered(7), "y\n").unwrap();
+        assert_eq!(b.entries().len(), 50);
+    }
+
+    #[test]
+    fn the_total_new_content_is_capped_at_one_mib() {
+        let mut b = batch(1);
+        let full = "a".repeat(WRITE_FILE_MAX);
+        for n in 0..32 {
+            b.stage_file(&numbered(n), &full).unwrap();
+        }
+        assert_eq!(b.bytes(), MAX_BYTES);
+        assert_eq!(b.stage_file(&numbered(32), "x"), Err(StageError::Full));
+        assert_eq!(b.entries().len(), 32);
+        assert_eq!(b.bytes(), MAX_BYTES);
+    }
+
+    #[test]
+    fn a_restage_counts_the_replacement_not_the_old_text() {
+        let mut b = batch(1);
+        let full = "a".repeat(WRITE_FILE_MAX);
+        for n in 0..32 {
+            b.stage_file(&numbered(n), &full).unwrap();
+        }
+        b.stage_file(&numbered(0), "tiny\n").unwrap();
+        assert_eq!(b.bytes(), MAX_BYTES - WRITE_FILE_MAX + 5);
+        let rest = "a".repeat(WRITE_FILE_MAX - 5);
+        b.stage_file(&numbered(32), &rest).unwrap();
+        assert_eq!(b.entries().len(), 33);
+        assert_eq!(b.bytes(), MAX_BYTES);
+    }
+
+    #[test]
+    fn propose_rechecks_the_caps_and_leaves_the_batch_unchanged() {
+        let over_entries = |b: &mut Batch| {
+            for n in 0..=MAX_ENTRIES {
+                b.entries.push(Staged {
+                    target: numbered(n),
+                    entry: Entry::Dir,
+                });
+            }
+        };
+        let over_bytes = |b: &mut Batch| {
+            let text = "a".repeat(WRITE_FILE_MAX);
+            for n in 0..32 {
+                b.entries.push(Staged {
+                    target: numbered(n),
+                    entry: Entry::File { text: text.clone() },
+                });
+            }
+            b.entries.push(Staged {
+                target: numbered(32),
+                entry: Entry::File { text: "x".into() },
+            });
+        };
+        for fill in [&over_entries as &dyn Fn(&mut Batch), &over_bytes] {
+            let mut b = batch(1);
+            fill(&mut b);
+            let before = b.entries().to_vec();
+            assert_eq!(b.propose(), Err(StageError::TooLarge));
+            assert_eq!(b.state(), State::Staging);
+            assert_eq!(b.entries(), &before[..]);
+        }
+        assert_eq!(
+            StageError::TooLarge.to_string(),
+            "batch is over 50 entries or 1 MiB: split it into smaller batches"
+        );
+    }
+
+    #[test]
+    fn a_batch_exactly_at_the_caps_can_be_proposed() {
+        let mut b = batch(1);
+        let full = "a".repeat(WRITE_FILE_MAX);
+        for n in 0..32 {
+            b.stage_file(&numbered(n), &full).unwrap();
+        }
+        for n in 32..MAX_ENTRIES {
+            b.stage_dir(&numbered(n)).unwrap();
+        }
+        assert_eq!(b.entries().len(), 50);
+        assert_eq!(b.bytes(), MAX_BYTES);
+        assert!(b.propose().is_ok());
     }
 }
