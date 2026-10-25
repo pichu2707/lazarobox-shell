@@ -563,7 +563,8 @@ impl Approvals {
         self.review.as_mut()
     }
 
-    /// The pane is `size` now: the rows on screen count as seen.
+    /// The pane is `size` now: the rows are laid out again, none counts as
+    /// seen until a frame draws it.
     pub fn fit_review(&mut self, size: (usize, usize)) {
         if let Some(view) = self.review.as_mut() {
             view.fit(size);

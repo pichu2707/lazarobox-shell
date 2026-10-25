@@ -1,6 +1,6 @@
 ---
 source: src/ui/components/review_tests.rs
-expression: "flat(&draw(&chat, at(400), 60, 14))"
+expression: "flat(&draw(&mut chat, at(400), 60, 14))"
 ---
 1 file, +30 -0 · seen 33/33 · y in 0.4s
 +row 18
@@ -15,4 +15,4 @@ expression: "flat(&draw(&chat, at(400), 60, 14))"
 +row 27
 +row 28
 +row 29
-y locked · n reject · ↑↓ PgUp PgDn scroll
+n reject · y locked · ↑↓ PgUp PgDn scroll

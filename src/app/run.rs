@@ -185,6 +185,15 @@ impl App {
     /// when the prompt shows the whole path or command: a partly hidden text
     /// is never approved. The prompt stays, and `n` still denies.
     fn approve(&mut self, id: PaneId) -> Vec<Effect> {
+        let is_batch = (self.panes.get(&id))
+            .and_then(PaneState::chat_state)
+            .and_then(|chat| chat.approvals().pending())
+            .is_some_and(|approval| matches!(approval.ask(), ApprovalAsk::Batch(_)));
+        // Defence in depth: a batch is answered only by its review, behind the
+        // coverage gate.
+        if is_batch {
+            return Vec::new();
+        }
         if !self.prompt_fits(id) {
             self.notice = Some(PROMPT_TOO_SMALL.to_owned());
             return Vec::new();

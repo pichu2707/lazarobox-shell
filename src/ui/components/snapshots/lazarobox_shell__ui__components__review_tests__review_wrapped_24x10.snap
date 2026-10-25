@@ -1,6 +1,6 @@
 ---
 source: src/ui/components/review_tests.rs
-expression: "flat(&draw(&chat, at(0), 24, 10))"
+expression: "flat(&draw(&mut chat, at(0), 24, 10))"
 ---
 1 file, +1 -0 · seen 4/4
 1 file, +1 -0
@@ -11,4 +11,4 @@ create /home/u/proj/a.tx
 ¦xxxxxxxxxxxxxxxxxxxxxxx
 ¦xxxx
 
-y locked · n reject · ↑↓
+n reject · y locked · ↑↓

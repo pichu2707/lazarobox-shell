@@ -381,3 +381,181 @@ fn a_review_that_was_never_drawn_does_not_wake_the_screen() {
     a.wake_review();
     assert!(!a.take_dirty());
 }
+
+/// A review ready for `y`: drawn at 0, read to the end.
+fn ready() -> (App, u64) {
+    let (mut a, turn) = asked(30);
+    read_all(&mut a, 0);
+    assert_eq!(review(&a).remaining(), 0);
+    (a, turn)
+}
+
+#[test]
+fn a_generic_approve_never_answers_a_batch() {
+    // The state that must not exist: a batch ask without its review view.
+    let (mut a, turn) = live();
+    a.panes
+        .get_mut(&id2())
+        .and_then(PaneState::chat_mut)
+        .unwrap()
+        .approvals_mut()
+        .request_call(batch(5), turn, CallId(1), None)
+        .unwrap();
+    assert!(!a.batch_pending(id2()));
+    assert_eq!(at(&mut a, 60_000, key('y')), vec![]);
+    assert!(pending(&a).is_some(), "only the review answers a batch");
+}
+
+fn chat_mut(a: &mut App) -> &mut crate::core::ai::chat::ChatState {
+    a.panes
+        .get_mut(&id2())
+        .and_then(PaneState::chat_mut)
+        .unwrap()
+}
+
+fn mouse(kind: ratatui::crossterm::event::MouseEventKind, a: &App) -> AppEvent {
+    let rect = a
+        .tiling()
+        .panes
+        .iter()
+        .find(|(id, _)| *id == id2())
+        .map(|(_, rect)| *rect)
+        .unwrap();
+    AppEvent::Mouse(ratatui::crossterm::event::MouseEvent {
+        kind,
+        column: rect.x + rect.width / 2,
+        row: rect.y + rect.height / 2,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+#[test]
+fn the_wheel_scrolls_the_review_and_never_the_hidden_transcript() {
+    use crate::core::ai::chat::transcript::Scroll;
+    use ratatui::crossterm::event::MouseEventKind;
+    let (mut a, turn) = live();
+    for _ in 0..100 {
+        chat_mut(&mut a).push_system_line("filler".into());
+    }
+    chat_mut(&mut a).set_scroll(Scroll::Pinned(10));
+    announce_now(&mut a, turn, 1, batch(100));
+    paint_at(&mut a, 0);
+    a.config.mouse = true;
+    a.take_dirty();
+    let down = mouse(MouseEventKind::ScrollDown, &a);
+    assert_eq!(a.update(down), vec![]);
+    assert_eq!(review(&a).top(), 1);
+    assert!(a.take_dirty());
+    let up = mouse(MouseEventKind::ScrollUp, &a);
+    a.update(up.clone());
+    a.update(up);
+    assert_eq!(review(&a).top(), 0);
+    assert_eq!(chat(&a, id2()).scroll(), Scroll::Pinned(10), "untouched");
+}
+
+#[test]
+fn a_click_over_a_review_does_nothing() {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    let (mut a, _) = asked(100);
+    a.config.mouse = true;
+    a.take_dirty();
+    let before = (review(&a).top(), review(&a).remaining());
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+        MouseEventKind::Down(MouseButton::Right),
+        MouseEventKind::Drag(MouseButton::Left),
+    ] {
+        let event = mouse(kind, &a);
+        assert_eq!(a.update(event), vec![], "{kind:?}");
+    }
+    assert_eq!((review(&a).top(), review(&a).remaining()), before);
+    assert!(pending(&a).is_some());
+}
+
+#[test]
+fn a_release_event_does_nothing() {
+    use ratatui::crossterm::event::{KeyEvent, KeyEventKind};
+    let (mut a, _) = ready();
+    for code in [KeyCode::Char('y'), KeyCode::Char('n'), KeyCode::Esc] {
+        let release = AppEvent::Key(KeyEvent::new_with_kind(
+            code,
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        ));
+        assert_eq!(at(&mut a, 60_000, release), vec![], "{code:?}");
+    }
+    assert!(pending(&a).is_some());
+}
+
+#[test]
+fn a_review_in_an_unfocused_pane_takes_no_keys() {
+    let (mut a, turn) = ready();
+    press(&mut a, "h");
+    assert_ne!(a.focused(), id2());
+    for answer in [key('y'), key('n'), plain(KeyCode::Esc)] {
+        let effects = at(&mut a, 60_000, answer);
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, Effect::ToolDecision { .. })),
+            "{effects:?}"
+        );
+    }
+    assert!(pending(&a).is_some(), "still waiting for turn {turn}");
+}
+
+#[test]
+fn turning_tools_off_withdraws_the_review() {
+    let (mut a, turn) = asked(5);
+    a.ai.set_tools_enabled(false);
+    let effects = a.sync_tools();
+    assert!(
+        effects.contains(&decision(turn, 1, Decision::Denied("tools are off"))),
+        "{effects:?}"
+    );
+    assert_eq!(pending(&a), None);
+    assert!(chat(&a, id2()).approvals().review().is_none());
+}
+
+#[test]
+fn a_second_ask_while_a_review_is_pending_is_refused_and_the_review_stays() {
+    use crate::core::ai::chat::approval::ANOTHER_PENDING;
+    let (mut a, turn) = asked(5);
+    let (total, top) = (review(&a).total(), review(&a).top());
+    assert_eq!(
+        announce_now(&mut a, turn, 2, batch(7)),
+        vec![decision(turn, 2, Decision::Denied(ANOTHER_PENDING))]
+    );
+    assert_eq!(pending(&a).map(|p| p.1), Some(Some((turn, CallId(1)))));
+    assert_eq!((review(&a).total(), review(&a).top()), (total, top));
+}
+
+#[test]
+fn the_scroll_badge_does_not_cover_the_review_counter() {
+    use crate::core::ai::chat::transcript::Scroll;
+    let (mut a, turn) = live();
+    for _ in 0..100 {
+        chat_mut(&mut a).push_system_line("filler".into());
+    }
+    chat_mut(&mut a).set_scroll(Scroll::Pinned(0));
+    announce_now(&mut a, turn, 1, batch(5));
+    assert!(a.scrolled_by(id2()).is_some(), "the transcript is scrolled");
+    let theme = LazaroboxTheme::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 25)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::render(frame, &a, &theme))
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let rect = a
+        .tiling()
+        .panes
+        .iter()
+        .find(|(id, _)| *id == id2())
+        .map(|(_, rect)| *rect)
+        .unwrap();
+    let row: String = (rect.x..rect.x + rect.width)
+        .map(|x| buf[(x, rect.y)].symbol())
+        .collect();
+    assert!(row.contains("seen") && !row.contains("[+"), "{row:?}");
+}

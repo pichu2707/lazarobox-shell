@@ -70,8 +70,10 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
                     && !matches!(app.input(), InputMode::ChatCopy(_)))
                 .then(|| chat_view.cursor(area))
                 .flatten();
+                let review = chat_view.review_shown();
                 frame.render_widget(chat_view, area);
-                if let Some(offset) = app.scrolled_by(id) {
+                // The review hides the transcript the badge speaks of.
+                if !review && let Some(offset) = app.scrolled_by(id) {
                     frame.render_widget(ScrollBadge::new(offset, theme), area);
                 }
                 if let Some(position) = cursor {

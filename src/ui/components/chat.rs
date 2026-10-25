@@ -166,7 +166,10 @@ impl Widget for ChatView<'_> {
             return;
         }
         self.render_view(area, buf);
-        if let Some(mode) = self.chat.mode_badge() {
+        // The review keeps its counter row to itself, whatever the mode.
+        if let Some(mode) = self.chat.mode_badge()
+            && !self.review_shown()
+        {
             self.draw_mode_badge(mode, area, buf);
         }
     }
@@ -200,6 +203,16 @@ impl ChatView<'_> {
             usize::from(width),
             style,
         );
+    }
+
+    /// Whether the batch review is the view drawn: the tag editor, the list,
+    /// the note editor and the summary draft come before it.
+    pub fn review_shown(&self) -> bool {
+        self.chat.tag_editor().is_none()
+            && self.chat.list().is_none()
+            && self.chat.note_editor().is_none()
+            && self.chat.summary_draft().is_none()
+            && self.chat.approvals().review().is_some()
     }
 
     /// The pane without the badge: the view that is open, or the

@@ -127,7 +127,7 @@ fn everything_seen_and_the_delay_over_enables_y() {
     let shown = draw(&mut chat, at(800), 60, 14);
     assert!(rows(&shown)[0].contains("y ready"), "{:?}", rows(&shown));
     assert!(
-        rows(&shown)[13].starts_with("y approve"),
+        rows(&shown)[13].starts_with("n reject · y approve"),
         "{:?}",
         rows(&shown)
     );
@@ -286,4 +286,41 @@ fn the_review_takes_the_real_cursor() {
     let theme = LazaroboxTheme::default();
     let view = ChatView::new(&chat, &theme);
     assert_eq!(view.cursor(Rect::new(0, 0, 60, 14)), None);
+}
+
+#[test]
+fn the_keys_row_keeps_n_first_then_y_then_the_scroll_hints() {
+    for (w, ready, wanted) in [
+        (10u16, true, "n reject ·"),
+        (19, true, "n reject · y approv"),
+        (24, true, "n reject · y approve · ↑"),
+        (10, false, "n reject ·"),
+        (19, false, "n reject · y locked"),
+        (24, false, "n reject · y locked · ↑↓"),
+    ] {
+        let mut chat = reviewing(numbered(3), usize::from(w), 6);
+        if ready {
+            page_to_the_end(&mut chat, (usize::from(w), 6));
+        }
+        let now = if ready {
+            at(ARM_DELAY.as_millis() as u64)
+        } else {
+            at(0)
+        };
+        let last = rows(&draw(&mut chat, now, w, 6)).remove(5);
+        assert_eq!(last, wanted, "width {w}, ready {ready}");
+    }
+}
+
+#[test]
+fn the_mode_badge_does_not_cover_the_counter_in_auto_mode() {
+    use crate::core::ai::config::ApprovalMode;
+    let mut chat = reviewing(numbered(3), 36, 6);
+    chat.set_approval_mode(ApprovalMode::Auto);
+    chat.set_run_hint(true);
+    assert!(chat.mode_badge().is_some());
+    page_to_the_end(&mut chat, (36, 6));
+    let first = rows(&draw(&mut chat, at(ARM_DELAY.as_millis() as u64), 36, 6)).remove(0);
+    assert!(first.ends_with("y ready"), "{first:?}");
+    assert!(!first.contains("AUTO"), "{first:?}");
 }

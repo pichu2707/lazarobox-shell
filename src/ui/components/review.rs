@@ -23,8 +23,10 @@ use crate::{
     ui::theme::LazaroboxTheme,
 };
 
-const KEYS_READY: &str = "y approve · n reject · ↑↓ PgUp PgDn scroll";
-const KEYS_LOCKED: &str = "y locked · n reject · ↑↓ PgUp PgDn scroll";
+// The way out first: a narrow pane cuts the row from the right, so `n` is the
+// last key to go, then `y`, then the scroll hints.
+const KEYS_READY: &str = "n reject · y approve · ↑↓ PgUp PgDn scroll";
+const KEYS_LOCKED: &str = "n reject · y locked · ↑↓ PgUp PgDn scroll";
 const KEYS_DISCARD: &str = "n discard · ↑↓ PgUp PgDn scroll";
 
 /// `0.4s`, rounded up to a tenth.

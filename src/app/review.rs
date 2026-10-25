@@ -1,6 +1,7 @@
 //! The review view of a proposed write batch in the app: it opens with the
 //! `Batch` ask, `y` obeys the coverage gate, and `n` or Esc rejects the whole
-//! batch. The keys that scroll are the ones that make rows count as seen.
+//! batch. The keys that scroll bring rows on screen; a row counts as seen
+//! only once a frame has drawn it (`App::frame_drawn`).
 //!
 //! Nothing here reads the text of the batch: the answer to the model is a
 //! fixed reason and the system line holds counts only.
@@ -77,9 +78,10 @@ impl App {
     }
 
     /// A key while a batch is under review. Scrolling keys (a held one
-    /// repeats) mark the rows they bring on screen as seen; `y` approves only
-    /// when the whole batch was seen and the delay is over; `n` and Esc
-    /// reject; every other key is swallowed.
+    /// repeats) bring rows on screen; `y` approves only when the whole batch
+    /// was seen and the delay is over; `n` and Esc reject after the same
+    /// delay (at once when the batch cannot be reviewed); every other key is
+    /// swallowed.
     pub(super) fn on_review_key(&mut self, id: PaneId, key: KeyEvent, repeat: bool) -> Vec<Effect> {
         let size = self.review_size(id);
         let by = match (key.code, key.modifiers) {
@@ -92,10 +94,7 @@ impl App {
             _ => None,
         };
         if let Some(by) = by {
-            if let Some(view) = self.review_mut(id) {
-                view.scroll(by, size);
-                self.dirty = true;
-            }
+            self.scroll_review(id, by);
             return Vec::new();
         }
         let answers = matches!(
@@ -117,8 +116,17 @@ impl App {
         }
     }
 
-    /// The pane of chat `id` changed size: the rows on screen are counted at
-    /// the new size.
+    /// Scrolls the review of chat `id`; the rows count once a frame draws them.
+    pub(super) fn scroll_review(&mut self, id: PaneId, by: Move) {
+        let size = self.review_size(id);
+        if let Some(view) = self.review_mut(id) {
+            view.scroll(by, size);
+            self.dirty = true;
+        }
+    }
+
+    /// The pane of chat `id` changed size: the rows are laid out again; the
+    /// next frame counts what it shows.
     pub(super) fn refit_review(&mut self, id: PaneId) {
         let size = self.review_size(id);
         if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
