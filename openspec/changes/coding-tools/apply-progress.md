@@ -313,3 +313,44 @@ About 300 production lines (`review.rs` before `mod tests`: 287, `diff.rs` about
 ## Checks (W-e1)
 
 `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5591 lib tests green), `cargo +1.88 check --all-targets`.
+
+## Batch: slice W-e2 (apply, PR 12, branch feat/coding-tools-we2, base feat/coding-tools-we1)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| We2.1 `WriteOps`, `Disk`, preflight, `Drifted` | done | feat(tools): preflight every target of a reviewed batch and refuse the whole batch on drift |
+| We2.2 journal, ordered apply, reverse rollback, `delete_file`/`delete_dir` | done | feat(tools): journal an apply and undo it in reverse when a step fails |
+| We2.3 `Partial{changed}`, `Change` records, `summary()` | done | feat(tools): report a failed undo as partial and return a change record per applied path |
+| Obligations from the W-a review | done | docs commit (tasks + progress) |
+
+## TDD cycle evidence (W-e2)
+
+| Task | RED (seen failing) | GREEN | Triangulation | REFACTOR |
+|------|--------------------|-------|---------------|----------|
+| We2.1 | `E0405 cannot find trait WriteOps`, `E0425 cannot find function apply`, `E0433 cannot find type ApplyResult/WriteError` (30 compile errors). Audit: with `apply.rs` present but unlisted, `every_tool_file_...` failed with `apply.rs: a reference to the write module` | 7 of 7 | overwrite drift (3 entries, only the middle one drifts, nothing written), create onto a taken name (all drifted paths listed), vanished file, existing folder and refused target, clean batch, target below a batch folder (no probe), probe Io -> Failed / Unsupported. Real disk: clean batch, symlink target (nothing written through), hard link and changed file. Mutations: `bytes == base` -> `true` failed 3 tests. The real-disk symlink test passed at once and is NOT protected by a mutation of `open_target` -> `unwrap_or(None)` (a base mismatch also drifts); the symlink refusal itself is pinned in `write.rs` tests (Wb.1) | none needed |
+| We2.2 | write.rs: `E0425 cannot find function delete_file / delete_dir` (9 errors); apply: `E0407 method delete_dir/delete_file is not a member of trait WriteOps` | 14 of 14 after fixing my own test (fault index 3, not 4) | fault at step 3 of 3 (edit restored, create removed, undo order asserted), nested folders (shallowest first, undone deepest first), fault at step 0, race drift after the preflight -> `Drifted` after the undo, real disk with a read-only folder. write.rs: delete only while content equals, link, hard link, folder, denied path, empty vs full vs link folder. Mutations: undo iterated forward failed 3; undo removed failed 3 | `holds()` shared by `replace_file` and `delete_file` |
+| We2.3 | `E0599 no variant named Partial`, `no method named summary` (8 errors) | 20 of 20 | failing undo of the first file; folder left because its file stayed; undo finds a swapped file (`theirs`) and leaves it; `Change` for create/edit/folder with line counts; `summary()` for every variant with a secret never printed (also `Debug`). Mutations: `Partial` arm disabled failed 3; `Edited`/`Created` swapped failed 2; `removed` -> `added` failed 2 | none needed |
+
+## Deviations / notes (W-e2)
+
+- API (`runtime/tools/apply.rs`): `trait WriteOps {probe, make_dir, create_file, replace_file, delete_file, delete_dir}`, `Disk::new(&SecretRoots)`, `apply(&dyn WriteOps, &[Staged]) -> ApplyResult`, `ApplyResult::{Applied(Vec<Change>), Drifted(Vec<PathBuf>), Failed{path}, Partial{changed}, Unsupported}`, `ApplyResult::summary()`. W-e3 calls `apply(&Disk::new(roots), batch.entries())`.
+- Design deviations: `Failed{path}` instead of `Failed{rolled_back}` (a failed rollback is `Partial`, so the flag would always be true; the path says where it failed); added `Unsupported` (no platform support / `openat2` missing); `ChangeKind` is `Created | Edited | DirCreated` (a staged entry cannot tell `write_file`-over-existing from `edit_file`, so both are `Edited`, no `Overwritten`).
+- The journal is the list of finished entries; the undo is derived from the entry (folder -> `delete_dir`; create -> `delete_file(.., text)`; overwrite -> `replace_file(.., expected = text, bytes = base)`). The undo keeps going past a failure and `Partial.changed` lists the failed undos in the order met (reverse apply order). A folder whose file could not be removed is listed as well (it is not empty).
+- Preflight reads each target through `open_target` (the checked parent, `O_NOFOLLOW`, nlink 1, `judge_real` on the fd path). A target under a folder created by the same batch is not probed (absent by construction). A folder target must still be absent. `Refused`/`Drifted` from a probe = drift (lists every drifted path); `Io` = `Failed`; `Unsupported` = `Unsupported`. A race after the preflight (a step answers `Drifted`) rolls back and reports `Drifted([path])`.
+- Names: write.rs gets `delete_file(roots, real, expected)` and `delete_dir(roots, real)`, not `remove_*`: `remove_file`/`remove_dir` are `FS_WRITE` tokens and `apply.rs` must not contain one, not even as a trait method name. `delete_file` refuses (`Drifted`) when the content is no longer what we wrote, so an undo never deletes a file someone replaced (it is then reported in `Partial`). `delete_dir` is `unlinkat(AT_REMOVEDIR)`: never follows a link, fails on a non-empty folder. Off Linux both return `Unsupported` (darwin `cargo check --all-targets` green).
+- Review-only invariant: `ApplyResult`/`Change` hold paths and counts only; `summary()` is the only text for the model and has a test with a secret in the content.
+- Obligations from the W-a review: met by the write.rs primitives (re-open along the chain, nlink, final symlink, judge_real on the fd path); checked by real-disk tests in `apply.rs`. D23 (check_new on new text only, BOM asymmetry) needs nothing here: apply writes the staged bytes verbatim.
+- Not here: `Stages` store / `BatchId` wiring (We3), the review view and the answer wiring (We4), host tools (Wf). `host.rs` untouched.
+
+### Audit changes (exactly two)
+
+1. `MAY_CALL_WRITE` gets `"apply.rs"` (doc comment updated). New test `apply_may_name_the_write_module_but_never_a_write_api_itself`: the real `apply.rs` references `write` (so the entry is needed) and has no problem; planted write tokens in a file called `apply.rs` are still flagged; `host/apply.rs` earns nothing.
+2. `WRITE_LIBC_ALLOWED` gets `"AT_REMOVEDIR"` (`unlinkat` was already there).
+
+## Size (W-e2)
+
+About 380 production lines (`apply.rs` before tests 312, `write.rs` about +63, `audit.rs` +4 non-test, `mod.rs` +1) and about 700 test lines; `git diff --stat feat/coding-tools-we1...HEAD` before docs: 4 files, +1083/-10.
+
+## Checks (W-e2)
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5624 lib tests green), `cargo +1.88 check --all-targets`, `cargo check --all-targets --target aarch64-apple-darwin`.

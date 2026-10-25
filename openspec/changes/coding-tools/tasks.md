@@ -167,11 +167,17 @@ Spec: code-write "Batch review and coverage gate"; chat-pane "Batch review view"
 
 ### W-e2: apply (PR 12, ~450)
 Spec: code-write "Apply" (preflight, drift, rollback, partial).
-- [ ] We2.1 RED: `WriteOps` trait + fault injector; preflight drift refuses the whole batch (`Drifted`). GREEN: `runtime/tools/apply.rs`. ~200. Dep: Wb.
-- [ ] We2.2 RED: journaled ordered apply (dirs by depth, then files), fault at step k rolls back in reverse. GREEN. ~150.
-- [ ] We2.3 RED: failing undo returns `Partial{changed}`; success returns `Vec<Change>` for S7. GREEN. ~100.
+- [x] We2.1 RED: `WriteOps` trait + fault injector; preflight drift refuses the whole batch (`Drifted`). GREEN: `runtime/tools/apply.rs`. ~200. Dep: Wb.
+- [x] We2.2 RED: journaled ordered apply (dirs by depth, then files), fault at step k rolls back in reverse. GREEN. ~150.
+- [x] We2.3 RED: failing undo returns `Partial{changed}`; success returns `Vec<Change>` for S7. GREEN. ~100.
 
-Obligations from the W-a review (the same as W-b, applied where the write happens): re-check each target at apply time (`openat`/`O_NOFOLLOW` along the chain, or re-run `resolve_write` and compare), `fstat` and refuse `nlink > 1`, refuse a final symlink, re-run `judge_real` on the opened fd's real path, settle and test whether `check_new` sees the whole post-edit text or only the new text, and document the BOM asymmetry (`check_new` refuses a leading BOM, `check_existing` accepts it).
+Obligations from the W-a review (the same as W-b, applied where the write happens). All met by going through `write.rs` only; `apply.rs` opens, reads and writes nothing itself:
+- [x] Re-check each target at apply time along the chain: the preflight probes through `open_target` (`openat2` `RESOLVE_BENEATH|NO_SYMLINKS` parent, judged again) and every write re-opens the parent. A refused target is `Drifted`; tests on the real disk.
+- [x] `fstat` and refuse `nlink > 1`: inside `open_in` (shared by the probe and by `replace_file`/`delete_file`); a hard-linked target drifts (test).
+- [x] Refuse a final symlink: `O_NOFOLLOW` in `open_in`; a target that became a symlink is refused and nothing is written through it (test).
+- [x] Re-run `judge_real` on the opened fd's real path: `open_in` does it for the probe and for every write and undo.
+- [x] `check_new` scope settled in D23 (new text only); apply never inspects bytes. Not a W-e2 test: it belongs to Wd.1.
+- [x] BOM asymmetry documented in D23; apply writes the staged bytes as they are.
 
 ### W-e3: Stages store and StagedView (PR 13, ~350)
 Spec: code-search "Staged view"; code-write "Orphan, close and quit".
