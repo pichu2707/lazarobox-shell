@@ -538,7 +538,12 @@ fn a_turn_of_a_verified_engine_carries_tools_and_the_origin() {
 
 /// Sends one turn from a chat whose engine offers tools, with `ai`.
 fn families_of_a_turn(ai: AiConfig) -> FamilySet {
-    let mut a = launched(80, 25).with_ai(ai).with_tool_engines(&["ollama"]);
+    families_of_a_turn_on(ai, &["ollama"])
+}
+
+/// Sends one turn from a chat, with `ai` and the engines verified for tools.
+fn families_of_a_turn_on(ai: AiConfig, engines: &'static [&'static str]) -> FamilySet {
+    let mut a = launched(80, 25).with_ai(ai).with_tool_engines(engines);
     press(&mut a, "c");
     super::run_pane::answer(&mut a, id2(), "hi");
     a.update(key('q'));
@@ -561,6 +566,13 @@ fn a_turn_offers_the_families_of_the_toggles() {
             .with(Family::Search)
             .with(Family::GitWrite)
     );
+}
+
+#[test]
+fn a_turn_without_tools_offers_no_coding_family() {
+    let mut ai = ollama();
+    ai.set_toggle(ToolToggle::Exec, true);
+    assert_eq!(families_of_a_turn_on(ai, &[]), FamilySet::LEGACY);
 }
 
 #[test]
