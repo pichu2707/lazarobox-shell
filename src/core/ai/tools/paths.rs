@@ -1865,15 +1865,23 @@ mod write_tests {
             ".config/systemd/user",
             ".local/bin",
             ".config/fish",
-            ".CONFIG/x",
+            // Not `.CONFIG`: on a case-insensitive file system (macOS) that
+            // is the `.config` folder above, and its real path differs.
+            ".CACHE/x",
             "dotfiles",
-            "Dotfiles/zsh",
         ] {
             let root = root_in_home(&f, rel);
             let target = write(&f, &root, "init.lua").unwrap_or_else(|| panic!("{rel} refused"));
             assert!(target.build_file, "{rel}");
             assert_eq!(target.real, root.join("init.lua"), "{rel}");
         }
+        // The letter case of `dotfiles` does not matter. Its own fixture:
+        // on a case-insensitive file system it is the `dotfiles` folder above.
+        let g = fixture();
+        let root = root_in_home(&g, "Dotfiles/zsh");
+        let target = write(&g, &root, "init.lua").expect("Dotfiles/zsh refused");
+        assert!(target.build_file);
+        assert_eq!(target.real, root.join("init.lua"));
         // A root that is not in a dot folder or `dotfiles` is not flagged.
         for rel in ["dev/.config/app", "dotfiles2", "my.dotfiles"] {
             let root = root_in_home(&f, rel);
