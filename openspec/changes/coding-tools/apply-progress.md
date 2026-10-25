@@ -354,3 +354,44 @@ About 380 production lines (`apply.rs` before tests 312, `write.rs` about +63, `
 ## Checks (W-e2)
 
 `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5624 lib tests green), `cargo +1.88 check --all-targets`, `cargo check --all-targets --target aarch64-apple-darwin`.
+
+## Batch: slice W-e3 (Stages store and StagedView, PR 13, branch feat/coding-tools-we3, base feat/coding-tools-we2)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| We3.1 runtime `Stages` store (seal/apply/discard by `BatchId`, never-reused generation) | done | feat(tools): keep staged batches in a runtime store with generations that are never reused |
+| We3.2 `StagedView` overlay for `read_file`, `glob`, `grep`, `list_dir` | done | feat(tools): let the read tools see staged changes, marked as pending and under the same rules |
+| Obligation from the Wc review (generation) | done | in We3.1 |
+
+## TDD cycle evidence (W-e3)
+
+| Task | RED (seen failing) | GREEN | Triangulation | REFACTOR |
+|------|--------------------|-------|---------------|----------|
+| We3.1 | `E0425 cannot find type Stages/StageKey/BatchId`, `E0405 cannot find trait WriteOps`, `E0433 StageError/ApplyResult` (29 errors). Audit RED: with `stage.rs` present and unlisted, `every_tool_file_...` failed with 3x `stage.rs: a reference to the apply module` | 11 of 11 | one batch per key, two keys, seal (empty, then staging refused), apply once then stale, apply before seal, drifted apply stays proposed then discard, discard staging and proposed, old id refused by the new batch of the same key, generations grow across keys, counter at `u64::MAX` refuses, pane close. Mutation: counter not advanced (`checked_add(0)`) failed 3 tests (obligation, overflow, growth). The new audit test `stage_may_name_the_apply_module...` passed at once after the list entry; its body is the same `file_problems` that failed in the tree test | `Entry` API for get-or-create instead of contains+get |
+| We3.2 | `E0433/E0425 cannot find type StagedView` (8 errors), `unresolved import fs::execute_over` | 11 of 11 after fixing two of my own expectations (`id_rsa` is not an excluded name, use `.npmrc`; staged-only files come after the disk files in grep) | read of edit and create (disk untouched), window of staged text, redaction of staged text (read and grep), staged `.env`/`.git/config`/`.npmrc`/temp name/`target/` refused or hidden, glob+grep create and edit with marker, `dir` narrows, list_dir (existing folder, folder not on disk, staged folder, unknown folder refused), forged marker in content and in a name, empty view equals `None` equals plain execute for all 4 tools, snapshot. `Stages::view` test (RED: `no method named view`). Mutations: no `judge_real` in `locate` failed 1; no secret-name check in `staged_only` passed until I added the `sk-...` name test, then failed 1; no defang failed 1; no redaction in `prepared` failed 1; skipped-dir check removed failed 1; window ignored failed 1 | `head_text`/`window_text` extracted from `read_head`/`read_window` (bytes in, text out); `prepared` shared by `read_text` |
+
+## Deviations / notes (W-e3)
+
+- API: `Stages::{stage(key) -> Result<&mut Batch, Exhausted>, batch(key), view(key) -> StagedView, seal(key), apply(id, &SecretRoots), discard(id), discard_key(key) -> bool}`. `apply` is `apply_with(id, &Disk::new(roots))`; `apply_with(&dyn WriteOps)` stays private for the tests. One generation counter for ALL keys (`u64`, `checked_add`, starts at 0): it only grows, so a generation is never reused across keys either. `Exhausted` is its own type, so the pure `StageError` is untouched.
+- Closed batches leave the store: `Applied` and `Partial` (the batch can no longer be applied as reviewed) are removed; `Drifted`, `Invalid`, `Failed` and `Unsupported` leave it `Proposed` (nothing is on disk), so the user can still discard it. A repeated answer for a removed batch is `Stale`.
+- `discard_key` (pane close and quit) returns whether a batch WITH entries was dropped, so W-g knows whether to show the notice. Orphan review (`review_orphan`) is not wrapped here: W-g calls `batch.review_orphan` through `stage()`/`batch()` when it needs it.
+- `StagedView` lives in `runtime/tools/staged.rs`: owned `files: BTreeMap<PathBuf, String>` and `dirs`, built by `from_batch(&Batch)` (empty for a closed batch). It is a snapshot: later staging does not change it.
+- Seam (no `host.rs`, no `ToolEnv` change, whose 12 literals would all break): `fs::execute_over(call, env, limits, cancel, Option<&StagedView>)`; `execute_with` is now `execute_over(.., None)`. `search::{grep_over, glob_over}` the same, with `grep`/`glob` as thin wrappers. W-f passes the view of the key. `mod.rs::run` is unchanged.
+- Marker text (spec): `(pending, not on disk)`. read_file: first line, then the text. glob: `path (pending, not on disk)`. grep: `path (pending, not on disk):LINE:text`. list_dir: `f name (pending, not on disk)`, only for names NOT on disk (an edited file keeps its plain row; its content is the staged part and is marked in `read_file`/`grep`/`glob`).
+- Forgery: while a view is in use (even an empty one), the words `pending, not on disk` in disk text, file names and `find_dir` output become `pending; not on disk`. Without a view nothing changes (byte-identical to before; a test compares all four tools). W-f must pass a view whenever the write family is on, so the marker is unforgeable.
+- Same protections: a staged path is judged by the call's roots (`judge_real`: HOME, secret names and roots, `.lbx-*.tmp`), `is_git_config` refuses it, and for glob/grep also the skip-list folders, `redaction_changes` on names and path (left out and noted with the omitted marker). Staged text goes through `clean` + `redact`, with the same read window and cap as a file (`head_text`/`window_text`), and the 1 MiB search cap.
+- A staged-only file is visited after the disk walk (so grep order is disk files first, then staged-only ones; glob sorts anyway). A `dir` argument and the depth bound apply to them.
+- Known limits: the staged lookup is by lexical path (`display_target`), valid because `resolve_write` stages only canonical paths with no link on the way; the apply preflight is what detects later drift. `list_dir` on a staged-only folder lists only staged names.
+- Not here: host wiring and passing the view (W-f), orphan effects and quit notice (W-g, W-h). `host.rs` untouched. No macOS-only file touched (`jail*`, `tests/jail_macos*`).
+
+### Audit changes (exactly one)
+
+`MAY_CALL_APPLY` gets `"stage.rs"` (doc comment updated). New test `stage_may_name_the_apply_module_but_holds_no_write_api_and_not_the_write_module`: the real `stage.rs` references `apply` and has no problem; every write token and a `write` module reference planted in a file called `stage.rs` is still flagged; `host/stage.rs` earns nothing. `staged.rs` needs no entry.
+
+## Size (W-e3)
+
+About 435 production lines inserted (`stage.rs` 114 before tests, `staged.rs` 135, `fs.rs` about +70, `search.rs` about +110, `audit.rs` +4 non-test, `mod.rs` +2) and about 640 test lines. Over the ~350 target, under the 500 stop. `git diff --stat feat/coding-tools-we2...HEAD` before docs: 6 files, +1054/-30.
+
+## Checks (W-e3)
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo +1.88 check --all-targets` green. `cargo check --target aarch64-apple-darwin` could not run here (the C compiler for sqlite fails for arm64 on this host); no macOS-only file uses the changed items.

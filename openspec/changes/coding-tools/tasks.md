@@ -181,9 +181,9 @@ Obligations from the W-a review (the same as W-b, applied where the write happen
 
 ### W-e3: Stages store and StagedView (PR 13, ~350)
 Spec: code-search "Staged view"; code-write "Orphan, close and quit".
-- [ ] We3.1 RED: runtime `Stages` store keyed by `StageKey` (memory only, one batch per key), seal/apply/discard by `BatchId`. GREEN: `runtime/tools/stage.rs`. ~170. Dep: Wc, We2.
-- Obligation from the Wc review: the store MUST give each new batch of a key a monotonic, never-reused generation (`u64`, `checked_add`); `Batch` cannot check it, and a reused generation would let a stale answer hit a new batch.
-- [ ] We3.2 RED: `StagedView` snapshot overlay for `read_file`, `glob`, `grep`, `list_dir`, with the `(pending, not on disk)` marker. GREEN. ~180. Dep: M1.
+- [x] We3.1 RED: runtime `Stages` store keyed by `StageKey` (memory only, one batch per key), seal/apply/discard by `BatchId`. GREEN: `runtime/tools/stage.rs`. ~170. Dep: Wc, We2.
+- [x] Obligation from the Wc review: the store MUST give each new batch of a key a monotonic, never-reused generation (`u64`, `checked_add`); `Batch` cannot check it, and a reused generation would let a stale answer hit a new batch.
+- [x] We3.2 RED: `StagedView` snapshot overlay for `read_file`, `glob`, `grep`, `list_dir`, with the `(pending, not on disk)` marker. GREEN. ~180. Dep: M1.
 
 ### W-e4: review view (PR 14, ~600, likely size:exception)
 Spec: chat-pane "Batch review view"; code-write "Batch review and coverage gate".
