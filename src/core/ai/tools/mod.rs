@@ -15,6 +15,7 @@ pub mod registry;
 pub mod report;
 pub mod servers;
 pub mod settle;
+pub mod stage;
 pub mod summary;
 pub mod wiring;
 
