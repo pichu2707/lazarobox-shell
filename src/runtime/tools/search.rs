@@ -6,7 +6,10 @@
 //! raw text: a model must not learn by matching what a secret holds.
 
 use std::{
-    collections::VecDeque, io::Read, os::unix::fs::MetadataExt, path::Path,
+    collections::VecDeque,
+    io::Read,
+    os::unix::fs::MetadataExt,
+    path::{Component, Path, PathBuf},
     sync::atomic::AtomicBool,
 };
 
@@ -99,6 +102,26 @@ pub fn glob(
     Ok(out)
 }
 
+/// `dir` joined to `root` by text alone, when it is a plain root-relative
+/// path that the approval label shows exactly as it is searched. `None` for an
+/// empty, absolute or `~` path, any `..`, and any text the label would change
+/// (controls, zero-width or bidi characters, runs of whitespace).
+fn shown_dir(root: &Path, dir: &str) -> Option<PathBuf> {
+    let label = clean(dir).split_whitespace().collect::<Vec<_>>().join(" ");
+    if dir.is_empty() || dir.starts_with('~') || label != dir {
+        return None;
+    }
+    let mut out = root.to_path_buf();
+    for part in Path::new(dir).components() {
+        match part {
+            Component::CurDir => {}
+            Component::Normal(name) => out.push(name),
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
 /// What a [`walk`] left out.
 struct Walked {
     /// Names hidden because they look like secrets.
@@ -122,9 +145,17 @@ fn walk(
     let roots = load_roots(env)?;
     let budget = Budget::new(limits, cancel);
     let root = env.origin.canonicalize().map_err(|_| Failure::Refused)?;
-    let PathVerdict::Allowed(start) = resolve(&roots, &root, dir.unwrap_or(".")) else {
+    let dir = dir.unwrap_or(".");
+    let Some(shown) = shown_dir(&root, dir) else {
         return Err(Failure::Refused);
     };
+    let PathVerdict::Allowed(start) = resolve(&roots, &root, dir) else {
+        return Err(Failure::Refused);
+    };
+    // A link on the way would search a folder other than the one shown.
+    if start != shown {
+        return Err(Failure::Refused);
+    }
     // The sub-directory may not leave the root, by `..` or by a link.
     if !start.starts_with(&root) {
         return Err(Failure::Refused);
@@ -323,6 +354,61 @@ mod tests {
         );
         assert_eq!(run(&f, "^use", None).unwrap(), "src/a.rs:1:use x;");
         assert_eq!(run(&f, "nothing here", None).unwrap(), NO_MATCH);
+    }
+
+    /// Both search tools, run on `dir`, must give the same verdict.
+    fn both(f: &Fixture, dir: &str) -> [Result<String, Failure>; 2] {
+        let cancel = AtomicBool::new(false);
+        [
+            run(f, "fn main", Some(dir)),
+            glob("**/*.rs", Some(dir), &f.env, &Limits::default(), &cancel),
+        ]
+    }
+
+    // The ask names `dir` as the user reads it: a folder the label cannot
+    // show exactly is refused, so what is approved is what is searched.
+    #[test]
+    fn a_folder_the_ask_cannot_show_exactly_is_refused() {
+        let f = fixture();
+        fs::create_dir_all(f.root.join("private")).unwrap();
+        fs::write(
+            f.root.join("private/p.rs"),
+            "fn main secret
+",
+        )
+        .unwrap();
+        symlink(f.root.join("private"), f.root.join("docs")).unwrap();
+        fs::create_dir_all(f.root.join("a  b")).unwrap();
+        fs::create_dir_all(f.root.join("z\u{200b}w")).unwrap();
+        let inside = f.root.join("src").to_str().unwrap().to_owned();
+        for dir in [
+            "docs",
+            "docs/",
+            "",
+            "~/x",
+            "~",
+            inside.as_str(),
+            "a  b",
+            "z\u{200b}w",
+            "src/../src",
+            "src/\nx",
+        ] {
+            for out in both(&f, dir) {
+                assert!(matches!(out, Err(Failure::Refused)), "{dir:?}: {out:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_plain_root_relative_folder_still_works() {
+        let f = fixture();
+        fs::create_dir_all(f.root.join("src/sub")).unwrap();
+        fs::write(f.root.join("src/sub/a.rs"), "fn main() {}\n").unwrap();
+        for dir in ["src/sub", "./src/sub", "src/sub/", "src//sub", "."] {
+            let [grepped, globbed] = both(&f, dir);
+            assert!(grepped.unwrap().contains("a.rs:1:fn main"), "{dir}");
+            assert!(globbed.unwrap().contains("a.rs"), "{dir}");
+        }
     }
 
     #[test]
