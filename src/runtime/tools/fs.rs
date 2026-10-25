@@ -27,7 +27,7 @@ use crate::{
             memory::redact::redact,
             sanitize::clean,
             tools::{
-                Call,
+                Call, Lines,
                 paths::{PathVerdict, REFUSED, SecretRoots, is_excluded_name, resolve},
             },
         },
@@ -115,6 +115,13 @@ impl Failure {
 /// cut at (minified JSON, base64): showing any of it could show half a secret.
 pub const NO_CUT_MARKER: &str = "[not shown: no safe cut point in the read window]";
 
+/// Said after a `read_file` window when lines follow it; the line number of
+/// the next window completes it.
+pub const MORE_MARKER_PREFIX: &str = "[more lines follow: next start_line";
+
+/// Bytes of a file a window read looks at, to find its lines.
+const PAGE_SCAN: usize = 1024 * 1024;
+
 /// Bytes read past the cap so redaction sees a whole secret.
 const REDACT_MARGIN: usize = 1024;
 
@@ -179,7 +186,7 @@ pub fn execute_with(
         entry_delay: limits.entry_delay,
     };
     match call {
-        Call::ReadFile { path, .. } => read_file(&roots, env, path, limits),
+        Call::ReadFile { path, lines } => read_file(&roots, env, path, *lines, limits),
         Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits),
         Call::FindDir { query } => find_dir(&roots, &budget, query, limits),
         // A user tool runs on its own server, never here.
@@ -238,6 +245,7 @@ fn read_file(
     roots: &SecretRoots,
     env: &ToolEnv,
     path: &str,
+    window: Option<Lines>,
     limits: &Limits,
 ) -> Result<String, Failure> {
     let PathVerdict::Allowed(real) = resolve(roots, &env.origin, path) else {
@@ -254,6 +262,14 @@ fn read_file(
     if meta.nlink() > 1 {
         return Err(Failure::Refused);
     }
+    match window {
+        Some(window) => read_window(file, window, limits),
+        None => read_head(file, limits),
+    }
+}
+
+/// The start of an opened file, as far as the read cap allows.
+fn read_head(file: std::fs::File, limits: &Limits) -> Result<String, Failure> {
     // Read a margin past the cap: a secret that straddles the cap must be
     // redacted whole, and only then is the text cut.
     let window = limits.read_bytes + REDACT_MARGIN;
@@ -266,17 +282,7 @@ fn read_file(
     }
     let more = bytes.len() > window;
     bytes.truncate(window);
-    let text = match String::from_utf8(bytes) {
-        Ok(text) => text,
-        // A character split by the window is the only decoding error allowed.
-        Err(error) if more && error.utf8_error().error_len().is_none() => {
-            let valid = error.utf8_error().valid_up_to();
-            let mut bytes = error.into_bytes();
-            bytes.truncate(valid);
-            String::from_utf8(bytes).map_err(|_| Failure::NotText)?
-        }
-        Err(_) => return Err(Failure::NotText),
-    };
+    let text = decode(bytes, more)?;
     // Clean first: a zero-width or control character inside a token would
     // otherwise hide it from the redaction.
     let mut out = redact(&clean(&text)).text;
@@ -290,17 +296,77 @@ fn read_file(
             return Ok(NO_CUT_MARKER.to_owned());
         }
     }
-    let cut = more || out.len() > limits.read_bytes;
-    if out.len() > limits.read_bytes {
-        let mut end = limits.read_bytes;
-        while !out.is_char_boundary(end) {
-            end -= 1;
-        }
-        out.truncate(end);
-    }
+    let cut = cap(&mut out, limits.read_bytes) || more;
     if cut {
         out.push('\n');
         out.push_str(READ_MARKER);
+    }
+    Ok(out)
+}
+
+/// UTF-8 text from `bytes`. When the read was cut (`more`), a character split
+/// by the cut is the only decoding error allowed.
+fn decode(bytes: Vec<u8>, more: bool) -> Result<String, Failure> {
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(text),
+        Err(error) if more && error.utf8_error().error_len().is_none() => {
+            let valid = error.utf8_error().valid_up_to();
+            let mut bytes = error.into_bytes();
+            bytes.truncate(valid);
+            String::from_utf8(bytes).map_err(|_| Failure::NotText)
+        }
+        Err(_) => Err(Failure::NotText),
+    }
+}
+
+/// Cuts `out` to at most `max` bytes on a character boundary. Whether it cut.
+fn cap(out: &mut String, max: usize) -> bool {
+    if out.len() <= max {
+        return false;
+    }
+    let mut end = max;
+    while !out.is_char_boundary(end) {
+        end -= 1;
+    }
+    out.truncate(end);
+    true
+}
+
+/// `window.max` lines from line `window.start` of an opened file. The head
+/// of the file (up to [`PAGE_SCAN`]) is cleaned and redacted as a whole
+/// BEFORE it is cut into lines, so a secret that spans lines is seen whole.
+/// Line numbers count the lines of that cleaned text.
+fn read_window(file: std::fs::File, window: Lines, limits: &Limits) -> Result<String, Failure> {
+    let mut bytes = Vec::new();
+    file.take(PAGE_SCAN as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| Failure::Unreadable)?;
+    if bytes.contains(&0) {
+        return Err(Failure::NotText);
+    }
+    let scan_cut = bytes.len() > PAGE_SCAN;
+    bytes.truncate(PAGE_SCAN);
+    let text = redact(&clean(&decode(bytes, scan_cut)?)).text;
+    let mut lines: Vec<&str> = text.split_inclusive('\n').collect();
+    // A scan that stopped mid-line holds a partial last line: never show it.
+    if scan_cut && lines.last().is_some_and(|line| !line.ends_with('\n')) {
+        lines.pop();
+    }
+    let from = (window.start as usize).saturating_sub(1);
+    if from >= lines.len() {
+        return Ok(if scan_cut {
+            "[empty window: the file is larger than the scan limit]".to_owned()
+        } else {
+            format!("[empty window: the file has {} lines]", lines.len())
+        });
+    }
+    let end = lines.len().min(from.saturating_add(window.max as usize));
+    let mut out = lines[from..end].concat();
+    if cap(&mut out, limits.read_bytes) {
+        out.push('\n');
+        out.push_str(READ_MARKER);
+    } else if end < lines.len() || scan_cut {
+        out.push_str(&format!("{MORE_MARKER_PREFIX} {}]", end + 1));
     }
     Ok(out)
 }
@@ -728,6 +794,81 @@ mod tests {
         let out = read(&env(&f.home), "~/conf").unwrap();
         assert!(!out.contains("sk-abcDEF1234567890"), "{out}");
         assert!(out.contains("name = x"));
+    }
+
+    fn numbered(count: usize) -> String {
+        (1..=count).map(|n| format!("line {n}\n")).collect()
+    }
+
+    fn page(env: &ToolEnv, path: &str, start: u32, max: u32, limits: &Limits) -> String {
+        let call = Call::ReadFile {
+            path: path.into(),
+            lines: Some(Lines { start, max }),
+        };
+        execute(&call, env, limits).unwrap()
+    }
+
+    // Spec (code-search, read_file paging): Window.
+    #[test]
+    fn a_window_returns_the_requested_lines_and_says_more_follow() {
+        let f = fixture();
+        fs::write(f.home.join("long"), numbered(500)).unwrap();
+        let out = page(&env(&f.home), "~/long", 100, 20, &Limits::default());
+        let want: String = (100..120).map(|n| format!("line {n}\n")).collect();
+        assert_eq!(out, format!("{want}{MORE_MARKER_PREFIX} 120]"));
+        // The last window has nothing after it: no marker.
+        let tail = page(&env(&f.home), "~/long", 491, 20, &Limits::default());
+        let want: String = (491..=500).map(|n| format!("line {n}\n")).collect();
+        assert_eq!(tail, want);
+    }
+
+    // Spec (code-search, read_file paging): Past the end.
+    #[test]
+    fn a_start_past_the_end_is_an_empty_window_with_a_note() {
+        let f = fixture();
+        fs::write(f.home.join("ten"), numbered(10)).unwrap();
+        let out = page(&env(&f.home), "~/ten", 50, 20, &Limits::default());
+        assert_eq!(out, "[empty window: the file has 10 lines]");
+        // One past the last line is also empty; the last line is not.
+        let edge = page(&env(&f.home), "~/ten", 11, 5, &Limits::default());
+        assert_eq!(edge, "[empty window: the file has 10 lines]");
+        assert_eq!(
+            page(&env(&f.home), "~/ten", 10, 5, &Limits::default()),
+            "line 10\n"
+        );
+    }
+
+    #[test]
+    fn a_window_is_redacted_and_bounded_by_the_read_cap() {
+        let f = fixture();
+        fs::write(
+            f.home.join("conf"),
+            "a\nkey = sk-abcDEF1234567890\nname = x\n",
+        )
+        .unwrap();
+        let out = page(&env(&f.home), "~/conf", 2, 2, &Limits::default());
+        assert!(!out.contains("sk-abcDEF1234567890"), "{out}");
+        assert!(out.contains("name = x"), "{out}");
+        fs::write(f.home.join("wide"), numbered(500)).unwrap();
+        let limits = Limits {
+            read_bytes: 20,
+            ..Limits::default()
+        };
+        let out = page(&env(&f.home), "~/wide", 1, 100, &limits);
+        assert_eq!(out, format!("line 1\nline 2\nline 3\n{READ_MARKER}"));
+    }
+
+    #[test]
+    fn a_paged_read_still_refuses_binary_and_secret_files() {
+        let f = fixture();
+        fs::write(f.home.join("bin"), b"a\0b\n").unwrap();
+        let call = |path: &str| Call::ReadFile {
+            path: path.into(),
+            lines: Some(Lines { start: 1, max: 5 }),
+        };
+        let run = |path: &str| execute(&call(path), &env(&f.home), &Limits::default());
+        assert_eq!(run("~/bin"), Err(Failure::NotText));
+        assert_eq!(run("~/.ssh/id"), Err(Failure::Refused));
     }
 
     #[test]

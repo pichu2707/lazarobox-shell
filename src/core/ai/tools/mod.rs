@@ -149,6 +149,9 @@ const fn text(name: &'static str) -> ArgDef {
     }
 }
 
+/// The most lines one `read_file` window may ask for (and the default).
+pub const READ_MAX_LINES: i64 = 2000;
+
 /// The built-ins in offer order. `Access::Read` is only a classification,
 /// not an approval rule: see [`Access`].
 const BUILT_INS: [ToolDef; 5] = [
@@ -171,7 +174,27 @@ const BUILT_INS: [ToolDef; 5] = [
         description: "Read a text file under the user's home.",
         access: Access::Read,
         family: Family::Read,
-        args: &[text("path")],
+        args: &[
+            text("path"),
+            ArgDef {
+                name: "start_line",
+                kind: ArgKind::Int {
+                    min: 1,
+                    max: u32::MAX as i64,
+                },
+                required: false,
+                gate: Some(Family::Search),
+            },
+            ArgDef {
+                name: "max_lines",
+                kind: ArgKind::Int {
+                    min: 1,
+                    max: READ_MAX_LINES,
+                },
+                required: false,
+                gate: Some(Family::Search),
+            },
+        ],
     },
     ToolDef {
         name: "glob",
@@ -279,7 +302,7 @@ fn parse_built_in(name: &str, args: &Value, set: FamilySet) -> Result<Call, Tool
         "list_dir" => Ok(Call::ListDir { path: text }),
         "read_file" => Ok(Call::ReadFile {
             path: text,
-            lines: None,
+            lines: window(&parsed),
         }),
         "glob" => Ok(Call::Glob {
             pattern: text,
@@ -294,6 +317,19 @@ fn parse_built_in(name: &str, args: &Value, set: FamilySet) -> Result<Call, Tool
         // `run_in_pane` by falling through.
         _ => Err(ToolError::UnknownTool),
     }
+}
+
+/// The `start_line` / `max_lines` of a `read_file` call, if either was given.
+fn window(parsed: &registry::Parsed) -> Option<Lines> {
+    let int = |name| match parsed.get(name) {
+        Some(ArgValue::Int(n)) => Some(u32::try_from(*n).unwrap_or(u32::MAX)),
+        _ => None,
+    };
+    let (start, max) = (int("start_line"), int("max_lines"));
+    (start.is_some() || max.is_some()).then(|| Lines {
+        start: start.unwrap_or(1),
+        max: max.unwrap_or(READ_MAX_LINES as u32),
+    })
 }
 
 /// The most a user tool's arguments may take, as compact JSON, in bytes. Low
@@ -850,6 +886,88 @@ mod tests {
             }
         );
         assert_eq!((call.name(), &*call.argument()), ("glob", "*.rs"));
+    }
+
+    fn parse_read(args: Value, set: FamilySet) -> Result<Call, ToolError> {
+        parse_call_in("read_file", &args, &servers::Qualified::default(), set)
+    }
+
+    // Spec (code-search, read_file paging): the window arguments exist only
+    // with Search on, and the schema is untouched with it off.
+    #[test]
+    fn read_file_paging_arguments_exist_only_with_search_on() {
+        let schema_of = |set| {
+            let tools = registry_with(&[], set);
+            tools
+                .into_iter()
+                .find(|t| t.name == "read_file")
+                .unwrap()
+                .schema
+        };
+        assert_eq!(
+            schema_of(FamilySet::LEGACY),
+            json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+                "additionalProperties": false,
+            })
+        );
+        assert_eq!(
+            schema_of(search_set())["properties"],
+            json!({
+                "path": {"type": "string"},
+                "start_line": {"type": "integer", "minimum": 1, "maximum": u32::MAX},
+                "max_lines": {"type": "integer", "minimum": 1, "maximum": READ_MAX_LINES},
+            })
+        );
+        let args = json!({"path": "a", "start_line": 3});
+        assert_eq!(
+            parse_read(args.clone(), FamilySet::LEGACY),
+            Err(ToolError::ExtraArgument)
+        );
+        assert_eq!(
+            parse_call("read_file", &args),
+            Err(ToolError::ExtraArgument)
+        );
+    }
+
+    #[test]
+    fn read_file_window_defaults_and_clamps() {
+        let window = |args: Value| match parse_read(args, search_set()) {
+            Ok(Call::ReadFile { lines, .. }) => lines,
+            other => panic!("not a read: {other:?}"),
+        };
+        assert_eq!(window(json!({"path": "a"})), None);
+        assert_eq!(
+            window(json!({"path": "a", "start_line": 100, "max_lines": 20})),
+            Some(Lines {
+                start: 100,
+                max: 20
+            })
+        );
+        assert_eq!(
+            window(json!({"path": "a", "start_line": 7})),
+            Some(Lines {
+                start: 7,
+                max: READ_MAX_LINES as u32
+            })
+        );
+        assert_eq!(
+            window(json!({"path": "a", "max_lines": 5})),
+            Some(Lines { start: 1, max: 5 })
+        );
+        assert_eq!(
+            window(json!({"path": "a", "start_line": 0, "max_lines": 1_000_000})),
+            Some(Lines {
+                start: 1,
+                max: READ_MAX_LINES as u32
+            })
+        );
+        assert_eq!(
+            parse_read(json!({"path": "a", "start_line": "1"}), search_set()),
+            Err(ToolError::WrongType)
+        );
     }
 
     // Spec (agent-tools): the shared parse order and caps apply to glob too.
