@@ -91,7 +91,7 @@ mod linux {
 
     /// The open flags: read only, no controlling terminal, never blocking on a
     /// FIFO, and no link followed in the last component.
-    fn flags(dir: bool) -> i32 {
+    pub(in crate::runtime::tools) fn flags(dir: bool) -> i32 {
         let base =
             libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY;
         if dir { base | libc::O_DIRECTORY } else { base }
@@ -107,11 +107,11 @@ mod linux {
             .collect()
     }
 
-    fn cstring(bytes: &[u8]) -> io::Result<CString> {
+    pub(in crate::runtime::tools) fn cstring(bytes: &[u8]) -> io::Result<CString> {
         CString::new(bytes).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
     }
 
-    fn owned(fd: i32) -> io::Result<OwnedFd> {
+    pub(in crate::runtime::tools) fn owned(fd: i32) -> io::Result<OwnedFd> {
         if fd < 0 {
             Err(io::Error::last_os_error())
         } else {
@@ -120,7 +120,11 @@ mod linux {
         }
     }
 
-    fn open_raw(dirfd: RawFd, path: &CString, flags: i32) -> io::Result<OwnedFd> {
+    pub(in crate::runtime::tools) fn open_raw(
+        dirfd: RawFd,
+        path: &CString,
+        flags: i32,
+    ) -> io::Result<OwnedFd> {
         // SAFETY: `path` is a valid NUL-terminated string for the whole call.
         owned(unsafe { libc::openat(dirfd, path.as_ptr(), flags) })
     }

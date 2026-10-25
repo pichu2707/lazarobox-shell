@@ -398,6 +398,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_read_side_never_names_the_write_primitives() {
+        for (name, source) in [
+            ("fs.rs", include_str!("fs.rs")),
+            ("open.rs", include_str!("open.rs")),
+            ("search.rs", include_str!("search.rs")),
+        ] {
+            assert!(!source.contains("tools::write"), "{name}");
+            assert!(!source.contains("super::write"), "{name}");
+        }
+    }
+
     /// Every `.rs` file under `dir`, recursively.
     fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap() {

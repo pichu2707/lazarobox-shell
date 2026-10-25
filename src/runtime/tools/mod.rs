@@ -9,6 +9,7 @@ pub mod host;
 pub mod open;
 pub mod pending;
 pub mod search;
+pub mod write;
 
 use std::{
     sync::{
