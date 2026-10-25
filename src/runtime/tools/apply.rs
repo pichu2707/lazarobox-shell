@@ -108,12 +108,21 @@ pub enum ApplyResult {
     Applied(Vec<Change>),
     /// Some target is no longer as staged; nothing was written.
     Drifted(Vec<PathBuf>),
-    /// A step failed at `path`; whatever was done is undone.
-    Failed {
+    /// The batch contradicts itself at `path` (the same path twice, a file
+    /// that is also a folder of another entry); nothing was written.
+    Invalid {
         path: PathBuf,
     },
+    /// A step failed at `path`; whatever was done is undone. `undone` tells
+    /// whether any earlier step had to be, so `false` means nothing was written.
+    Failed {
+        path: PathBuf,
+        undone: bool,
+    },
     /// A step failed and an undo failed too: `changed` is exactly what is left
-    /// changed on disk, in the order the undo met it.
+    /// changed on disk, in the order the undo met it. It holds the paths this
+    /// batch changed and could not put back, and the paths someone else
+    /// replaced, which are left as they are.
     Partial {
         changed: Vec<PathBuf>,
     },
@@ -152,12 +161,21 @@ impl ApplyResult {
                 paths.len(),
                 list(paths)
             ),
-            ApplyResult::Failed { path } => format!(
-                "failed at {}: every earlier change was undone",
+            ApplyResult::Invalid { path } => format!(
+                "refused: the batch is inconsistent at {}, nothing was written",
                 escape(&path.to_string_lossy())
             ),
+            ApplyResult::Failed { path, undone } => format!(
+                "failed at {}: {}",
+                escape(&path.to_string_lossy()),
+                if *undone {
+                    "every earlier change was undone"
+                } else {
+                    "nothing was written"
+                }
+            ),
             ApplyResult::Partial { changed } => format!(
-                "partial: {} path{} still changed on disk, undo it by hand:{}",
+                "partial: {} path{} still changed on disk (by this batch, or by someone else and left as it is), check it by hand:{}",
                 changed.len(),
                 if changed.len() == 1 { " is" } else { "s are" },
                 list(changed)
@@ -184,13 +202,27 @@ pub fn apply(ops: &dyn WriteOps, entries: &[Staged]) -> ApplyResult {
             let path = staged.target.real.clone();
             return match error {
                 _ if !changed.is_empty() => ApplyResult::Partial { changed },
-                WriteError::Drifted => ApplyResult::Drifted(vec![path]),
-                _ => ApplyResult::Failed { path },
+                _ if raced(&error, &staged.entry) => ApplyResult::Drifted(vec![path]),
+                _ => ApplyResult::Failed {
+                    path,
+                    undone: !done.is_empty(),
+                },
             };
         }
         done.push(staged);
     }
     ApplyResult::Applied(done.into_iter().map(change).collect())
+}
+
+/// Whether a forward step failed because the disk is no longer as reviewed,
+/// the cases the preflight calls drift: other bytes, a taken name, a vanished
+/// file to edit, a target that turned into a link.
+fn raced(error: &WriteError, entry: &Entry) -> bool {
+    match error {
+        WriteError::Drifted | WriteError::Exists | WriteError::Refused => true,
+        WriteError::Missing => matches!(entry, Entry::File { base: Some(_), .. }),
+        WriteError::Unsupported | WriteError::NotEmpty | WriteError::Io => false,
+    }
 }
 
 /// Undoes the journal in reverse and goes on past a failure, so as much as
@@ -237,6 +269,9 @@ fn change(staged: &Staged) -> Change {
 /// any write. A target below a folder of the same batch is absent by
 /// construction and is not read.
 fn preflight(ops: &dyn WriteOps, entries: &[Staged]) -> Option<ApplyResult> {
+    if let Some(path) = contradiction(entries) {
+        return Some(ApplyResult::Invalid { path });
+    }
     let dirs: Vec<&Path> = entries
         .iter()
         .filter(|s| s.entry == Entry::Dir)
@@ -245,17 +280,42 @@ fn preflight(ops: &dyn WriteOps, entries: &[Staged]) -> Option<ApplyResult> {
     let mut drifted = Vec::new();
     for staged in entries {
         let real = staged.target.real.as_path();
-        if dirs.iter().any(|d| real.starts_with(d) && real != *d) {
+        let new_folder = dirs.iter().any(|d| real.starts_with(d) && real != *d);
+        // An edit below a folder this batch makes cannot have a reviewed base:
+        // it is probed, and found drifted.
+        if new_folder && matches!(staged.entry, Entry::File { base: None, .. } | Entry::Dir) {
             continue;
         }
         match ops.probe(real) {
             Ok(found) if still_as_staged(found.as_deref(), &staged.entry) => {}
             Ok(_) | Err(WriteError::Refused | WriteError::Drifted) => drifted.push(real.into()),
             Err(WriteError::Unsupported) => return Some(ApplyResult::Unsupported),
-            Err(_) => return Some(ApplyResult::Failed { path: real.into() }),
+            Err(_) => {
+                return Some(ApplyResult::Failed {
+                    path: real.into(),
+                    undone: false,
+                });
+            }
         }
     }
     (!drifted.is_empty()).then_some(ApplyResult::Drifted(drifted))
+}
+
+/// The first path the batch names twice, or names as a file and as the folder
+/// of another entry. No order of writes could make such a batch true.
+fn contradiction(entries: &[Staged]) -> Option<PathBuf> {
+    let reals = || entries.iter().map(|s| s.target.real.as_path());
+    for (i, staged) in entries.iter().enumerate() {
+        let real = staged.target.real.as_path();
+        if reals().skip(i + 1).any(|other| other == real) {
+            return Some(real.into());
+        }
+        let is_file = matches!(staged.entry, Entry::File { .. });
+        if is_file && reals().any(|other| other != real && other.starts_with(real)) {
+            return Some(real.into());
+        }
+    }
+    None
 }
 
 /// Whether what the disk holds is what the batch was staged against.
@@ -284,12 +344,18 @@ fn ordered(entries: &[Staged]) -> Vec<&Staged> {
 
 /// Puts back what one finished step changed. A created file is removed only
 /// while it holds what we wrote; an overwritten one is restored from its base
-/// only while it holds what we wrote.
+/// only while it holds what we wrote. A created file or folder that is already
+/// gone is the pre-batch state, so it is no failure; an edited file that is
+/// gone has lost its old text, so it is.
 fn undo(ops: &dyn WriteOps, staged: &Staged) -> Result<(), WriteError> {
     let real = staged.target.real.as_path();
+    let gone_is_fine = |done: Result<(), WriteError>| match done {
+        Err(WriteError::Missing) => Ok(()),
+        other => other,
+    };
     match &staged.entry {
-        Entry::Dir => ops.delete_dir(real),
-        Entry::File { text, base: None } => ops.delete_file(real, text.as_bytes()),
+        Entry::Dir => gone_is_fine(ops.delete_dir(real)),
+        Entry::File { text, base: None } => gone_is_fine(ops.delete_file(real, text.as_bytes())),
         Entry::File {
             text,
             base: Some(base),
@@ -406,8 +472,10 @@ mod tests {
         ) -> Result<(), WriteError> {
             self.tick(format!("replace {}", real.display()))?;
             let mut files = self.files.borrow_mut();
-            if files.get(real).map(Vec::as_slice) != Some(expected) {
-                return Err(WriteError::Drifted);
+            match files.get(real).map(Vec::as_slice) {
+                None => return Err(WriteError::Missing),
+                Some(found) if found != expected => return Err(WriteError::Drifted),
+                Some(_) => {}
             }
             files.insert(real.to_path_buf(), bytes.to_vec());
             Ok(())
@@ -416,8 +484,10 @@ mod tests {
         fn delete_file(&self, real: &Path, expected: &[u8]) -> Result<(), WriteError> {
             self.tick(format!("delete {}", real.display()))?;
             let mut files = self.files.borrow_mut();
-            if files.get(real).map(Vec::as_slice) != Some(expected) {
-                return Err(WriteError::Drifted);
+            match files.get(real).map(Vec::as_slice) {
+                None => return Err(WriteError::Missing),
+                Some(found) if found != expected => return Err(WriteError::Drifted),
+                Some(_) => {}
             }
             files.remove(real);
             Ok(())
@@ -425,11 +495,49 @@ mod tests {
 
         fn delete_dir(&self, real: &Path) -> Result<(), WriteError> {
             self.tick(format!("rmdir {}", real.display()))?;
+            if !self.dirs.borrow().contains(real) {
+                return Err(WriteError::Missing);
+            }
             if self.files.borrow().keys().any(|f| f.starts_with(real)) {
                 return Err(WriteError::Io); // not empty
             }
             self.dirs.borrow_mut().remove(real);
             Ok(())
+        }
+    }
+
+    /// A `Fake` that lets a test act on the disk just before an undo step
+    /// (a delete, or a replace) touches a path.
+    struct Hook<'a>(&'a Fake, &'a dyn Fn(&Fake, &Path));
+
+    impl WriteOps for Hook<'_> {
+        fn probe(&self, real: &Path) -> Result<Option<Vec<u8>>, WriteError> {
+            self.0.probe(real)
+        }
+        fn make_dir(&self, real: &Path) -> Result<(), WriteError> {
+            self.0.make_dir(real)
+        }
+        fn create_file(&self, real: &Path, bytes: &[u8]) -> Result<(), WriteError> {
+            self.0.create_file(real, bytes)
+        }
+        fn replace_file(&self, r: &Path, e: &[u8], b: &[u8]) -> Result<(), WriteError> {
+            (self.1)(self.0, r);
+            self.0.replace_file(r, e, b)
+        }
+        fn delete_file(&self, real: &Path, expected: &[u8]) -> Result<(), WriteError> {
+            (self.1)(self.0, real);
+            self.0.delete_file(real, expected)
+        }
+        fn delete_dir(&self, real: &Path) -> Result<(), WriteError> {
+            (self.1)(self.0, real);
+            self.0.delete_dir(real)
+        }
+    }
+
+    fn failed(path: &str, undone: bool) -> ApplyResult {
+        ApplyResult::Failed {
+            path: PathBuf::from(path),
+            undone,
         }
     }
 
@@ -558,12 +666,7 @@ mod tests {
             .borrow_mut()
             .insert(PathBuf::from("/h/p/a"), WriteError::Io);
         let batch = [file("/h/p/b", "x", None), file("/h/p/a", "x", None)];
-        assert_eq!(
-            apply(&fake, &batch),
-            ApplyResult::Failed {
-                path: PathBuf::from("/h/p/a")
-            }
-        );
+        assert_eq!(apply(&fake, &batch), failed("/h/p/a", false));
         assert_eq!(fake.log(), Vec::<String>::new());
         let fake = Fake::default();
         fake.probe_error
@@ -582,12 +685,7 @@ mod tests {
             file("/h/p/b", "new b", Some("old b")),
             file("/h/p/c", "new c", None),
         ];
-        assert_eq!(
-            apply(&fake, &batch),
-            ApplyResult::Failed {
-                path: PathBuf::from("/h/p/c")
-            }
-        );
+        assert_eq!(apply(&fake, &batch), failed("/h/p/c", true));
         assert_eq!(fake.text("/h/p/a"), None);
         assert_eq!(fake.text("/h/p/b").as_deref(), Some("old b"));
         assert_eq!(fake.text("/h/p/c"), None);
@@ -632,12 +730,7 @@ mod tests {
     fn a_fault_at_the_first_step_has_nothing_to_undo() {
         let fake = Fake::default().failing(&[0]);
         let batch = [file("/h/p/a", "a", None), file("/h/p/b", "b", None)];
-        assert_eq!(
-            apply(&fake, &batch),
-            ApplyResult::Failed {
-                path: PathBuf::from("/h/p/a")
-            }
-        );
+        assert_eq!(apply(&fake, &batch), failed("/h/p/a", false));
         assert_eq!(fake.log(), Vec::<String>::new());
     }
 
@@ -654,6 +747,152 @@ mod tests {
             ApplyResult::Drifted(paths(&["/h/p/b"]))
         );
         assert_eq!(fake.text("/h/p/a"), None);
+    }
+
+    // We2 review fixes
+
+    #[test]
+    fn an_undo_that_finds_a_created_file_or_folder_already_gone_is_a_clean_undo() {
+        // The disk already holds the pre-batch state: nothing is left changed.
+        let fake = Fake::default().failing(&[1]);
+        let gone = |fake: &Fake, real: &Path| {
+            fake.files.borrow_mut().remove(real);
+        };
+        let batch = [file("/h/p/a", "a", None), file("/h/p/b", "b", None)];
+        assert_eq!(apply(&Hook(&fake, &gone), &batch), failed("/h/p/b", true));
+
+        let fake = Fake::default().failing(&[1]);
+        let gone = |fake: &Fake, real: &Path| {
+            fake.dirs.borrow_mut().remove(real);
+        };
+        let batch = [dir("/h/p/x"), dir("/h/p/x/y")];
+        assert_eq!(apply(&Hook(&fake, &gone), &batch), failed("/h/p/x/y", true));
+    }
+
+    #[test]
+    fn an_undo_that_finds_an_edited_file_gone_is_partial_because_the_old_text_is_lost() {
+        let fake = Fake::default().with_file("/h/p/b", "old b").failing(&[1]);
+        let gone = |fake: &Fake, real: &Path| {
+            if fake.text("/h/p/b").as_deref() == Some("new b") {
+                fake.files.borrow_mut().remove(real);
+            }
+        };
+        let batch = [
+            file("/h/p/b", "new b", Some("old b")),
+            file("/h/p/c", "c", None),
+        ];
+        assert_eq!(
+            apply(&Hook(&fake, &gone), &batch),
+            ApplyResult::Partial {
+                changed: paths(&["/h/p/b"])
+            }
+        );
+    }
+
+    #[test]
+    fn a_forward_step_that_races_reports_drift_like_the_preflight_would() {
+        let drift = |batch: &[Staged], error, fake: Fake| {
+            fake.error.set(Some(error));
+            let got = apply(&fake, batch);
+            (got, fake)
+        };
+        // A create finds the name taken.
+        let batch = [file("/h/p/a", "a", None), file("/h/p/b", "b", None)];
+        let (got, fake) = drift(&batch, WriteError::Exists, Fake::default().failing(&[1]));
+        assert_eq!(got, ApplyResult::Drifted(paths(&["/h/p/b"])));
+        assert_eq!(fake.text("/h/p/a"), None);
+        // A make_dir finds the folder there.
+        let batch = [dir("/h/p/x"), dir("/h/p/x/y")];
+        let (got, fake) = drift(&batch, WriteError::Exists, Fake::default().failing(&[1]));
+        assert_eq!(got, ApplyResult::Drifted(paths(&["/h/p/x/y"])));
+        assert!(fake.dirs.borrow().is_empty());
+        // An edit finds no file.
+        let batch = [
+            file("/h/p/a", "a", None),
+            file("/h/p/b", "new", Some("old")),
+        ];
+        let start = Fake::default().with_file("/h/p/b", "old").failing(&[1]);
+        let (got, fake) = drift(&batch, WriteError::Missing, start);
+        assert_eq!(got, ApplyResult::Drifted(paths(&["/h/p/b"])));
+        assert_eq!(fake.text("/h/p/a"), None);
+        // A target swapped for a link is refused.
+        let start = Fake::default().with_file("/h/p/b", "old").failing(&[1]);
+        let (got, _) = drift(&batch, WriteError::Refused, start);
+        assert_eq!(got, ApplyResult::Drifted(paths(&["/h/p/b"])));
+    }
+
+    #[test]
+    fn a_forward_step_that_fails_for_any_other_reason_stays_failed() {
+        // `Missing` on a create means the parent is gone: not a reviewed state.
+        for error in [WriteError::Io, WriteError::Missing] {
+            let fake = Fake::default().failing(&[1]);
+            fake.error.set(Some(error));
+            let batch = [file("/h/p/a", "a", None), file("/h/p/b", "b", None)];
+            assert_eq!(apply(&fake, &batch), failed("/h/p/b", true), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn a_batch_that_names_a_path_twice_is_refused_before_any_write() {
+        let batch = [
+            file("/h/p/a", "one", None),
+            file("/h/p/b", "b", None),
+            file("/h/p/a", "two", None),
+        ];
+        let fake = Fake::default();
+        let got = apply(&fake, &batch);
+        assert_eq!(
+            got,
+            ApplyResult::Invalid {
+                path: "/h/p/a".into()
+            }
+        );
+        assert_eq!(fake.log(), Vec::<String>::new());
+        let got = apply(&fake, &[dir("/h/p/d"), dir("/h/p/d")]);
+        assert_eq!(
+            got,
+            ApplyResult::Invalid {
+                path: "/h/p/d".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_also_the_folder_of_another_entry_is_refused() {
+        let fake = Fake::default();
+        for batch in [
+            [file("/h/p/a", "x", None), file("/h/p/a/b", "y", None)],
+            [file("/h/p/a/b", "y", None), file("/h/p/a", "x", None)],
+            [file("/h/p/a", "x", None), dir("/h/p/a/d")],
+        ] {
+            let got = apply(&fake, &batch);
+            assert_eq!(
+                got,
+                ApplyResult::Invalid {
+                    path: "/h/p/a".into()
+                }
+            );
+        }
+        assert_eq!(fake.log(), Vec::<String>::new());
+        // A name that only shares a prefix is another path.
+        let batch = [file("/h/p/a", "x", None), file("/h/p/ab", "y", None)];
+        assert!(matches!(apply(&fake, &batch), ApplyResult::Applied(_)));
+    }
+
+    #[test]
+    fn an_edit_below_a_folder_made_by_the_same_batch_drifts() {
+        // The folder is new, so the file cannot hold a reviewed base.
+        let fake = Fake::default();
+        let batch = [
+            dir("/h/p/new"),
+            file("/h/p/new/a", "x", Some("old")),
+            file("/h/p/new/b", "y", None),
+        ];
+        assert_eq!(
+            apply(&fake, &batch),
+            ApplyResult::Drifted(paths(&["/h/p/new/a"]))
+        );
+        assert_eq!(fake.log(), Vec::<String>::new());
     }
 
     // We2.3: Partial and Change records
@@ -701,33 +940,13 @@ mod tests {
         fake.error.set(Some(WriteError::Io));
         let batch = [file("/h/p/a", "a", None), file("/h/p/b", "b", None)];
         // Someone swaps a's content after we wrote it, before the undo.
-        struct Swap<'a>(&'a Fake);
-        impl WriteOps for Swap<'_> {
-            fn probe(&self, real: &Path) -> Result<Option<Vec<u8>>, WriteError> {
-                self.0.probe(real)
-            }
-            fn make_dir(&self, real: &Path) -> Result<(), WriteError> {
-                self.0.make_dir(real)
-            }
-            fn create_file(&self, real: &Path, bytes: &[u8]) -> Result<(), WriteError> {
-                self.0.create_file(real, bytes)
-            }
-            fn replace_file(&self, r: &Path, e: &[u8], b: &[u8]) -> Result<(), WriteError> {
-                self.0.replace_file(r, e, b)
-            }
-            fn delete_file(&self, real: &Path, expected: &[u8]) -> Result<(), WriteError> {
-                self.0
-                    .files
-                    .borrow_mut()
-                    .insert(real.to_path_buf(), b"theirs".to_vec());
-                self.0.delete_file(real, expected)
-            }
-            fn delete_dir(&self, real: &Path) -> Result<(), WriteError> {
-                self.0.delete_dir(real)
-            }
-        }
+        let swap = |fake: &Fake, real: &Path| {
+            fake.files
+                .borrow_mut()
+                .insert(real.to_path_buf(), b"theirs".to_vec());
+        };
         assert_eq!(
-            apply(&Swap(&fake), &batch),
+            apply(&Hook(&fake, &swap), &batch),
             ApplyResult::Partial {
                 changed: paths(&["/h/p/a"])
             }
@@ -778,19 +997,28 @@ mod tests {
             drifted.summary(),
             "refused: 2 paths changed since the review, nothing was written:\n/h/p/a\n/h/p/b"
         );
-        let failed = ApplyResult::Failed {
-            path: PathBuf::from("/h/p/c"),
-        };
+        let failed = super::tests::failed("/h/p/c", true);
         assert_eq!(
             failed.summary(),
             "failed at /h/p/c: every earlier change was undone"
+        );
+        assert_eq!(
+            super::tests::failed("/h/p/c", false).summary(),
+            "failed at /h/p/c: nothing was written"
+        );
+        assert_eq!(
+            ApplyResult::Invalid {
+                path: PathBuf::from("/h/p/c")
+            }
+            .summary(),
+            "refused: the batch is inconsistent at /h/p/c, nothing was written"
         );
         let partial = ApplyResult::Partial {
             changed: paths(&["/h/p/a"]),
         };
         assert_eq!(
             partial.summary(),
-            "partial: 1 path is still changed on disk, undo it by hand:\n/h/p/a"
+            "partial: 1 path is still changed on disk (by this batch, or by someone else and left as it is), check it by hand:\n/h/p/a"
         );
         assert_eq!(
             ApplyResult::Unsupported.summary(),
@@ -884,48 +1112,92 @@ mod tests {
             );
         }
 
+        /// A step that cannot work whatever the user is: its parent folder
+        /// (`made/sub`) is not there, and nothing in the batch makes it.
+        fn broken_step(f: &Fx) -> Staged {
+            file(&at(f, "proj/made/sub/c.txt"), "c", None)
+        }
+
         #[test]
-        fn a_write_the_system_refuses_rolls_the_earlier_ones_back_on_the_real_disk() {
-            use std::os::unix::fs::PermissionsExt;
-            // SAFETY: `geteuid` takes no argument and cannot fail.
-            if unsafe { libc::geteuid() } == 0 {
-                return; // root writes into a read-only folder
-            }
+        fn a_write_that_cannot_be_made_rolls_the_earlier_ones_back_on_the_real_disk() {
             let f = fx();
-            std::fs::create_dir(f.home.join("proj/ro")).unwrap();
             std::fs::write(f.home.join("proj/old.txt"), "old").unwrap();
-            std::fs::set_permissions(
-                f.home.join("proj/ro"),
-                std::fs::Permissions::from_mode(0o555),
-            )
-            .unwrap();
             let batch = [
                 dir(&at(&f, "proj/made")),
-                file(&at(&f, "proj/made/a.txt"), "a", None),
                 file(&at(&f, "proj/old.txt"), "newer", Some("old")),
-                file(&at(&f, "proj/ro/b.txt"), "b", None),
+                file(&at(&f, "proj/made/a.txt"), "a", None),
+                broken_step(&f),
             ];
             let got = apply(&Disk::new(&f.roots), &batch);
-            std::fs::set_permissions(
-                f.home.join("proj/ro"),
-                std::fs::Permissions::from_mode(0o755),
-            )
-            .unwrap();
             assert_eq!(
                 got,
-                ApplyResult::Failed {
-                    path: f.home.join("proj/ro/b.txt")
-                }
+                ApplyResult::Drifted(vec![f.home.join("proj/made/sub/c.txt")])
             );
             assert!(!f.home.join("proj/made").exists());
             assert_eq!(
                 std::fs::read_to_string(f.home.join("proj/old.txt")).unwrap(),
                 "old"
             );
+        }
+
+        #[test]
+        fn an_edited_file_restored_by_the_undo_keeps_its_mode() {
+            use std::os::unix::fs::PermissionsExt;
+            let f = fx();
+            let old = f.home.join("proj/old.txt");
+            std::fs::write(&old, "old").unwrap();
+            std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o640)).unwrap();
+            let batch = [
+                dir(&at(&f, "proj/made")),
+                file(&at(&f, "proj/old.txt"), "newer", Some("old")),
+                broken_step(&f),
+            ];
+            let got = apply(&Disk::new(&f.roots), &batch);
+            assert!(matches!(got, ApplyResult::Drifted(_)), "{got:?}");
+            assert_eq!(std::fs::read_to_string(&old).unwrap(), "old");
+            let mode = std::fs::metadata(&old).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o640);
+        }
+
+        /// The real disk, with a hook run just before a folder is removed.
+        struct Plant<'a>(Disk<'a>, &'a dyn Fn(&Path));
+
+        impl WriteOps for Plant<'_> {
+            fn probe(&self, real: &Path) -> Result<Option<Vec<u8>>, WriteError> {
+                self.0.probe(real)
+            }
+            fn make_dir(&self, real: &Path) -> Result<(), WriteError> {
+                self.0.make_dir(real)
+            }
+            fn create_file(&self, real: &Path, bytes: &[u8]) -> Result<(), WriteError> {
+                self.0.create_file(real, bytes)
+            }
+            fn replace_file(&self, r: &Path, e: &[u8], b: &[u8]) -> Result<(), WriteError> {
+                self.0.replace_file(r, e, b)
+            }
+            fn delete_file(&self, real: &Path, expected: &[u8]) -> Result<(), WriteError> {
+                self.0.delete_file(real, expected)
+            }
+            fn delete_dir(&self, real: &Path) -> Result<(), WriteError> {
+                (self.1)(real);
+                self.0.delete_dir(real)
+            }
+        }
+
+        #[test]
+        fn a_folder_that_got_a_user_file_before_the_undo_is_partial_and_the_file_is_kept() {
+            let f = fx();
+            let batch = [dir(&at(&f, "proj/made")), broken_step(&f)];
+            let user = f.home.join("proj/made/user.txt");
+            let plant = |_: &Path| std::fs::write(&user, "theirs").unwrap();
+            let got = apply(&Plant(Disk::new(&f.roots), &plant), &batch);
             assert_eq!(
-                std::fs::read_dir(f.home.join("proj/ro")).unwrap().count(),
-                0
+                got,
+                ApplyResult::Partial {
+                    changed: vec![f.home.join("proj/made")]
+                }
             );
+            assert_eq!(std::fs::read_to_string(&user).unwrap(), "theirs");
         }
     }
 }

@@ -25,6 +25,8 @@ pub enum WriteError {
     Exists,
     /// A replace found no file.
     Missing,
+    /// A folder removal found the folder not empty.
+    NotEmpty,
     /// No safe write on this platform.
     Unsupported,
     /// A replace found other bytes than the ones the user reviewed.
@@ -214,6 +216,7 @@ mod linux {
         }
         Err(match io::Error::last_os_error().kind() {
             io::ErrorKind::NotFound => WriteError::Missing,
+            io::ErrorKind::DirectoryNotEmpty => WriteError::NotEmpty,
             _ => WriteError::Io,
         })
     }
@@ -740,10 +743,10 @@ mod linux {
             symlink(f.home.join("elsewhere"), f.home.join("proj/link")).unwrap();
             delete_dir(&f.roots, &f.home.join("proj/empty")).unwrap();
             assert!(!f.home.join("proj/empty").exists());
-            for name in ["full", "link"] {
-                let got = delete_dir(&f.roots, &f.home.join("proj").join(name));
-                assert!(got.is_err(), "{name}");
-            }
+            let full = delete_dir(&f.roots, &f.home.join("proj/full"));
+            assert_eq!(full.unwrap_err(), WriteError::NotEmpty);
+            let link = delete_dir(&f.roots, &f.home.join("proj/link"));
+            assert!(link.is_err());
             assert!(f.home.join("proj/full/a").exists());
             assert!(f.home.join("elsewhere").is_dir());
             assert_eq!(
