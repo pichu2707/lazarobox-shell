@@ -58,12 +58,21 @@ pub(crate) fn is_hidden(c: char) -> bool {
 
 /// Whether `text` may be written as it is. It is never changed, and no final
 /// newline is added or required.
+///
+/// One exception to the invisible rule: a variation selector U+FE00..FE0F
+/// directly after a visible character, as in `\u{2764}\u{fe0f}`, so ordinary
+/// emoji can be written. File names get no such exception.
 pub fn check_new(text: &str) -> Result<(), ContentError> {
+    let mut prev: Option<char> = None;
     for c in text.chars() {
+        let selector = ('\u{fe00}'..='\u{fe0f}').contains(&c);
+        let after_visible = prev.is_some_and(|p| !is_hidden(p) && !p.is_whitespace());
+        prev = Some(c);
         match c {
             '\r' => return Err(ContentError::CarriageReturn),
             '\t' | '\n' => {}
             c if c.is_control() => return Err(ContentError::Control),
+            _ if selector && after_visible => {}
             c if is_hidden(c) => return Err(ContentError::Invisible),
             _ => {}
         }
@@ -192,6 +201,10 @@ mod tests {
         for code in listed {
             let c = char::from_u32(code).unwrap();
             assert!(is_hidden(c), "U+{code:04X}");
+            // A selector after a visible character is the narrow exception.
+            if (0xfe00..=0xfe0f).contains(&code) {
+                continue;
+            }
             assert_eq!(
                 check_new(&format!("a{c}b")),
                 Err(ContentError::Invisible),
@@ -204,6 +217,28 @@ mod tests {
         ] {
             let text = format!("a{}b", char::from_u32(code).unwrap());
             assert_eq!(check_new(&text), Ok(()), "U+{code:04X}");
+        }
+    }
+
+    #[test]
+    fn a_variation_selector_after_a_visible_character_is_allowed() {
+        assert_eq!(check_new("I \u{2764}\u{fe0f} Rust\n"), Ok(()));
+        assert_eq!(check_new("\u{2714}\u{fe0e}"), Ok(()));
+        assert_eq!(check_new("a\u{fe00}b\u{fe0f}"), Ok(()));
+    }
+
+    #[test]
+    fn a_variation_selector_with_nothing_visible_before_it_is_refused() {
+        for text in [
+            "\u{fe0f}x",
+            "a\n\u{fe0f}",
+            "a\t\u{fe0f}",
+            "a \u{fe0f}",
+            "a\u{200b}\u{fe0f}",
+            "a\u{fe0f}\u{fe0f}",
+            "a\u{e0100}",
+        ] {
+            assert_eq!(check_new(text), Err(ContentError::Invisible), "{text:?}");
         }
     }
 
