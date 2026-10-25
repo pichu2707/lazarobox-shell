@@ -507,10 +507,20 @@ async fn a_secret_in_the_base_or_the_new_text_reaches_no_model_facing_string() {
         let w = world();
         std::fs::write(w.proj.join("s.txt"), format!("token = {KEY}\nport = 1\n")).unwrap();
         let (d, mut rx) = w.turn(Script::new(answer));
-        let mut seen = vec![d.call(edit("s.txt", "port = 1", NEW)).await.text];
-        seen.push(d.call(Call::ProposeBatch).await.text);
-        seen.extend(events(&mut rx).iter().map(|e| format!("{e:?}")));
-        assert!(seen.len() >= 6);
+        let staged = d.call(edit("s.txt", "port = 1", NEW)).await.text;
+        assert!(staged.starts_with("staged s.txt (batch: 1 of"), "{staged}");
+        let proposed = d.call(Call::ProposeBatch).await.text;
+        let expect = match answer {
+            Decision::Sent => "applied 1 paths:\nedited ",
+            Decision::Denied(reason) => &format!("denied: {reason}"),
+            _ => unreachable!(),
+        };
+        assert!(proposed.starts_with(expect), "{proposed}");
+        let rows: Vec<String> = events(&mut rx).iter().map(|e| format!("{e:?}")).collect();
+        // One ToolCall and one ToolResult for each of the two calls.
+        assert_eq!(rows.len(), 4, "{rows:?}");
+        let mut seen = vec![staged, proposed];
+        seen.extend(rows);
         for text in &seen {
             assert!(
                 !text.contains(KEY) && !text.contains("AAAAAAAAAAAAAAAA"),
@@ -518,6 +528,149 @@ async fn a_secret_in_the_base_or_the_new_text_reaches_no_model_facing_string() {
             );
             assert!(!text.contains(NEW), "{text}");
         }
+    }
+}
+
+// Review-only invariant, over every other output a secret could reach: the
+// text of a `write_file`, the staged view the read tools show, the edit
+// refusals, the apply summaries and the wait for review.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_secret_reaches_no_other_model_facing_output() {
+    use crate::runtime::tools::apply::ApplyResult;
+    const KEY: &str = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const NEW: &str = "hunter2";
+    let clean = |label: &str, text: &str| {
+        assert!(
+            !text.contains(KEY) && !text.contains("AAAAAAAAAAAAAAAA") && !text.contains(NEW),
+            "{label}: {text}"
+        );
+    };
+    // The view of the model's own staged text is redacted for a recognizable
+    // token; a plain word it wrote itself is its own text and stays.
+    let redacted = |label: &str, text: &str| {
+        assert!(text.contains("[REDACTED]"), "{label}: {text}");
+        assert!(
+            !text.contains(KEY) && !text.contains("AAAAAAAAAAAAAAAA"),
+            "{label}: {text}"
+        );
+    };
+    let w = world();
+    std::fs::write(w.proj.join("s.txt"), format!("a = {KEY}\na = {KEY}\n")).unwrap();
+    std::fs::write(w.proj.join("d.txt"), "before").unwrap();
+    let approver = Script::new(Decision::Sent);
+    let path = w.proj.join("d.txt");
+    *approver.first.lock().unwrap() = Some(Box::new(move || {
+        std::fs::write(path, format!("{KEY} {NEW}")).unwrap();
+    }));
+    let (d, mut rx) = w.turn(approver);
+
+    // write_file whose content holds a secret.
+    let wrote = d
+        .call(write("n.txt", &format!("key = {KEY}\npw = {NEW}\n")))
+        .await;
+    assert!(!wrote.is_error, "{wrote:?}");
+    assert!(
+        wrote
+            .text
+            .starts_with("staged n.txt (batch: 1 of 50 entries,"),
+        "{}",
+        wrote.text
+    );
+    clean("write_file", &wrote.text);
+
+    // The staged view and the disk file the read tools show are redacted.
+    let read_staged = d.call(read("n.txt")).await;
+    assert!(
+        read_staged.text.contains("(pending, not on disk)"),
+        "{}",
+        read_staged.text
+    );
+    assert!(read_staged.text.contains("key = "), "{}", read_staged.text);
+    redacted("read_file staged", &read_staged.text);
+    let grep = d
+        .call(Call::Grep {
+            pattern: "key".into(),
+            dir: None,
+        })
+        .await;
+    assert!(
+        grep.text.contains("n.txt (pending, not on disk):1:key = "),
+        "{}",
+        grep.text
+    );
+    redacted("grep staged", &grep.text);
+
+    // The edit refusals never quote old or new.
+    let missing = d.call(edit("s.txt", &format!("{KEY}-x"), NEW)).await;
+    assert!(
+        missing.is_error && missing.text.contains("does not occur"),
+        "{missing:?}"
+    );
+    clean("edit NoMatch", &missing.text);
+    let twice = d.call(edit("s.txt", KEY, NEW)).await;
+    assert!(
+        twice.is_error && twice.text.contains("more than once"),
+        "{twice:?}"
+    );
+    clean("edit Ambiguous", &twice.text);
+
+    // Drift: the disk text changed to a secret after the review.
+    assert!(!d.call(edit("d.txt", "before", "after")).await.is_error);
+    let drifted = d.call(Call::ProposeBatch).await;
+    assert!(
+        drifted.is_error && drifted.text.starts_with("refused: 1 paths changed"),
+        "{drifted:?}"
+    );
+    clean("Drifted", &drifted.text);
+    // Every apply summary is paths and counts, whatever the path is called.
+    let named = std::path::PathBuf::from("dir/s.txt");
+    for result in [
+        ApplyResult::Drifted(vec![named.clone()]),
+        ApplyResult::Failed {
+            path: named.clone(),
+            undone: true,
+        },
+        ApplyResult::Failed {
+            path: named.clone(),
+            undone: false,
+        },
+        ApplyResult::Invalid {
+            path: named.clone(),
+        },
+        ApplyResult::Partial {
+            changed: vec![named.clone()],
+        },
+        ApplyResult::Unsupported,
+    ] {
+        clean("summary", &result.summary());
+    }
+
+    // The wait for review: staging is refused with a fixed text.
+    let (waiting, _rx2) = w.turn(Arc::new(super::tests::Waiting));
+    assert!(!waiting.call(write("w.txt", "x")).await.is_error);
+    let pending = tokio::spawn({
+        let waiting = waiting.clone();
+        async move { waiting.call(Call::ProposeBatch).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let late = waiting.call(write("l.txt", &format!("{KEY} {NEW}"))).await;
+    assert!(
+        late.is_error && late.text.contains("waiting for review"),
+        "{late:?}"
+    );
+    clean("waiting for review", &late.text);
+    let late_edit = waiting.call(edit("s.txt", KEY, NEW)).await;
+    assert!(
+        late_edit.is_error && late_edit.text.contains("waiting for review"),
+        "{late_edit:?}"
+    );
+    clean("waiting for review (edit)", &late_edit.text);
+    pending.abort();
+
+    // And no event the chat gets carries it either.
+    for row in events(&mut rx) {
+        clean("event", &format!("{row:?}"));
     }
 }
 
