@@ -212,6 +212,124 @@ async fn a_cloud_read_runs_only_after_the_answer_is_sent() {
     }
 }
 
+fn grep(pattern: &str, dir: Option<&str>) -> Call {
+    Call::Grep {
+        pattern: pattern.into(),
+        dir: dir.map(Into::into),
+    }
+}
+
+// Spec (agent-tools, approval model): a cloud grep asks before it opens a
+// file, and the prompt names the pattern and the folder.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cloud_grep_runs_only_after_the_answer_is_sent() {
+    let (_dir, home, host) = fixture();
+    for (answer, searched) in [
+        (Decision::Sent, true),
+        (Decision::Denied("declined"), false),
+    ] {
+        let (mut scope, mut rx) = scope(Locality::Cloud, &home);
+        let approver = Scripted::new(answer);
+        scope.approver = approver.clone();
+        let out = host.dispatch(scope).call(grep("hello from", None)).await;
+        assert_eq!(
+            out.text.contains("note.txt:1:hello from"),
+            searched,
+            "{out:?}"
+        );
+        assert_eq!(out.is_error, !searched);
+        if searched {
+            assert!(
+                out.text.starts_with("<untrusted-tool-output id=\""),
+                "{out:?}"
+            );
+        } else {
+            // The result is the bare denial: no wrapped tool output at all,
+            // so the walk did not run before or despite the answer.
+            assert_eq!(out.text, "denied: declined");
+        }
+        assert_eq!(
+            *approver.asked.lock().unwrap(),
+            vec![ApprovalAsk::Search {
+                pattern: "hello from".into(),
+                dir: ".".into()
+            }]
+        );
+        let (_, _, status, _) = pair(&events(&mut rx));
+        assert_eq!(
+            status,
+            if searched {
+                ToolStatus::Ok
+            } else {
+                ToolStatus::Denied
+            }
+        );
+    }
+}
+
+// Without an approver nobody answers: the Cloud grep is denied and nothing is read.
+// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cloud_grep_nobody_approves_is_denied_and_reads_nothing() {
+    let (_dir, home, host) = fixture();
+    let (scope, mut rx) = scope(Locality::Cloud, &home);
+    // The match is in the root: it would be found if the walk ran.
+    let out = host.dispatch(scope).call(grep("hello from", None)).await;
+    assert!(out.is_error);
+    assert!(
+        !out.text.contains("note.txt") && !out.text.contains("untrusted-tool-output"),
+        "{}",
+        out.text
+    );
+    let (_, ask, status, _) = pair(&events(&mut rx));
+    assert_eq!(
+        ask,
+        Some(ApprovalAsk::Search {
+            pattern: "hello from".into(),
+            dir: ".".into()
+        })
+    );
+    assert_eq!(status, ToolStatus::Denied);
+}
+
+// Spec (agent-tools): a Local grep and a glob on any engine run free.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_local_grep_and_a_glob_on_any_engine_run_without_a_prompt() {
+    let (_dir, home, host) = fixture();
+    for (locality, call, expect) in [
+        (
+            Locality::Local,
+            grep("hello from", None),
+            "note.txt:1:hello from",
+        ),
+        (
+            Locality::Cloud,
+            Call::Glob {
+                pattern: "*.txt".into(),
+                dir: None,
+            },
+            "note.txt",
+        ),
+        (
+            Locality::Local,
+            Call::Glob {
+                pattern: "*.txt".into(),
+                dir: None,
+            },
+            "note.txt",
+        ),
+    ] {
+        let (scope, mut rx) = scope(locality, &home);
+        let out = host.dispatch(scope).call(call).await;
+        assert!(!out.is_error && out.text.contains(expect), "{out:?}");
+        let (_, ask, status, _) = pair(&events(&mut rx));
+        assert_eq!((ask, status), (None, ToolStatus::Ok));
+    }
+}
+
 // Spec (agent-tools, run_in_pane): the exact command is what is asked.
 #[tokio::test]
 async fn run_in_pane_always_asks_with_the_exact_command() {
@@ -510,6 +628,155 @@ async fn a_free_tool_runs_end_to_end_from_the_mcp_session_through_the_host() {
     let reply = line(&mut reader).await;
     assert_eq!(reply["result"]["isError"], true);
     assert_eq!(pair(&events(&mut rx)).2, ToolStatus::Denied);
+}
+
+/// One `tools/call` over an open session: the reply to it.
+async fn call_over(
+    (reader, writer): &mut (
+        BufReader<tokio::net::unix::OwnedReadHalf>,
+        tokio::net::unix::OwnedWriteHalf,
+    ),
+    id: u64,
+    method: &str,
+    params: Value,
+) -> Value {
+    let request = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+    writer
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+    line(reader).await
+}
+
+/// A session of `families` in front of the host, already initialized.
+async fn open_session(
+    dir: &Path,
+    host: &Arc<ToolHost>,
+    scope: TurnScope,
+    families: crate::core::ai::tools::registry::FamilySet,
+) -> (
+    Hub,
+    (
+        BufReader<tokio::net::unix::OwnedReadHalf>,
+        tokio::net::unix::OwnedWriteHalf,
+    ),
+) {
+    let mut hub = Hub::new(&[dir.join("run")]).unwrap();
+    let started = hub
+        .open(
+            PaneId::for_test(1),
+            host.dispatch(scope),
+            Default::default(),
+            families,
+        )
+        .unwrap();
+    let mut c = client(&started.socket, started.token.reveal()).await;
+    let init = call_over(
+        &mut c,
+        0,
+        "initialize",
+        json!({"protocolVersion": "2025-06-18"}),
+    )
+    .await;
+    assert!(init["result"].is_object());
+    (hub, c)
+}
+
+fn tool_names(list: &Value) -> Vec<&str> {
+    list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect()
+}
+
+// Spec (code-search, Family and toggle): with Search off the surface is the
+// 0.18.0 one and a call to `glob` or `grep` runs nothing.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn with_search_off_glob_and_grep_are_neither_listed_nor_run() {
+    use crate::core::ai::tools::registry::FamilySet;
+    let (dir, home, host) = fixture();
+    let (scope, mut rx) = scope(Locality::Local, &home);
+    let (_hub, mut c) = open_session(dir.path(), &host, scope, FamilySet::LEGACY).await;
+    let list = call_over(&mut c, 1, "tools/list", json!({})).await;
+    let names = tool_names(&list);
+    assert!(names.contains(&"read_file"), "{names:?}");
+    assert!(
+        !names.contains(&"glob") && !names.contains(&"grep"),
+        "{names:?}"
+    );
+    for (id, name, args) in [
+        (2, "grep", json!({"pattern": "hello"})),
+        (3, "glob", json!({"pattern": "*.txt"})),
+    ] {
+        let reply = call_over(
+            &mut c,
+            id,
+            "tools/call",
+            json!({"name": name, "arguments": args}),
+        )
+        .await;
+        assert_eq!(reply["result"]["isError"], true, "{reply}");
+        let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(!text.contains("note.txt"), "{text}");
+    }
+    assert!(events(&mut rx).is_empty());
+}
+
+// With Search on both tools are offered and run through the session: glob
+// free, grep after the user's `y` on a cloud engine.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn with_search_on_glob_and_grep_run_end_to_end_and_a_cloud_grep_asks() {
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    let (dir, home, host) = fixture();
+    std::fs::write(home.join("dev/curso-rust/inner.txt"), "hello from inner").unwrap();
+    let (mut scope, mut rx) = scope(Locality::Cloud, &home);
+    let approver = Scripted::new(Decision::Sent);
+    scope.approver = approver.clone();
+    let search = FamilySet::LEGACY.with(Family::Search);
+    let (_hub, mut c) = open_session(dir.path(), &host, scope, search).await;
+    let list = call_over(&mut c, 1, "tools/list", json!({})).await;
+    let names = tool_names(&list);
+    assert!(
+        names.contains(&"glob") && names.contains(&"grep"),
+        "{names:?}"
+    );
+
+    let globbed = call_over(
+        &mut c,
+        2,
+        "tools/call",
+        json!({"name": "glob", "arguments": {"pattern": "*.txt"}}),
+    )
+    .await;
+    assert_eq!(globbed["result"]["isError"], false, "{globbed}");
+    let text = globbed["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("note.txt"), "{text}");
+    assert!(approver.asked.lock().unwrap().is_empty());
+    assert_eq!(pair(&events(&mut rx)).2, ToolStatus::Ok);
+
+    let grepped = call_over(
+        &mut c,
+        3,
+        "tools/call",
+        json!({"name": "grep", "arguments": {"pattern": "hello from", "path": "dev/curso-rust"}}),
+    )
+    .await;
+    assert_eq!(grepped["result"]["isError"], false, "{grepped}");
+    let text = grepped["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("inner.txt:1:hello from inner"), "{text}");
+    assert!(!text.contains("note.txt"), "{text}");
+    assert_eq!(
+        *approver.asked.lock().unwrap(),
+        vec![ApprovalAsk::Search {
+            pattern: "hello from".into(),
+            dir: "dev/curso-rust".into()
+        }]
+    );
+    assert_eq!(pair(&events(&mut rx)).2, ToolStatus::Ok);
 }
 
 // -- review follow-up --

@@ -14,7 +14,13 @@ expression: "text(&draw(62, POPUP_H, &menu))"
 │ Context                                                off │
 │ Memory                                                 off │
 │ Tools                                                   on │
+│ Search                                                 off │
+│ Write                                                  off │
+│ Exec                                                   off │
+│ Git                                                    off │
+│ Git write                                              off │
 │ Approval                                               ask │
+│                                                            │
 │                                                            │
 │ j/k move · h/l change · s save · Esc cancel                │
 └────────────────────────────────────────────────────────────┘

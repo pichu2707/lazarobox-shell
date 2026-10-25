@@ -1374,6 +1374,25 @@ fn ollama_offers_only_the_families_of_the_request() {
     assert!(names(FamilySet::EMPTY).is_empty());
 }
 
+// T.6: with nothing to offer, the `tools` key is left out of the body rather
+// than sent as an empty list.
+#[test]
+fn an_empty_registry_leaves_the_tools_key_out_of_the_round_body() {
+    use crate::core::ai::tools::registry::FamilySet;
+    let body = |families: FamilySet| {
+        let mut req = request("");
+        req.families = families;
+        req.tools = Tools::On {
+            origin: None,
+            mcp: None,
+            external: Box::default(),
+        };
+        body_of(ollama_round_body(&req, &[], true))
+    };
+    assert!(body(FamilySet::EMPTY).get("tools").is_none());
+    assert!(body(FamilySet::LEGACY).get("tools").is_some());
+}
+
 /// Every flag a claude turn passes, with the first claude release that knows
 /// it. Adding a flag to `claude_invocation` or to the tools wiring without a
 /// row here fails `every_claude_flag_is_pinned_to_a_minimum_version`; adding

@@ -3,9 +3,6 @@ source: src/ui/mod.rs
 expression: frame
 ---
  1
-
-
-
          ┌ Menu ──────────────────────────────────────────────────────┐
          │ Settings* │ AI                                       ⇥ Tab │
          │ Statusline position                                 bottom │
@@ -17,13 +14,16 @@ expression: frame
          │                                                            │
          │                                                            │
          │                                                            │
+         │                                                            │
+         │                                                            │
+         │                                                            │
+         │                                                            │
+         │                                                            │
+         │                                                            │
          │ lazarobox 0.16.0 is available.                             │
          │ Go to Updates and press Enter.                             │
          │                                                            │
          │ j/k move · h/l change · s save · Esc cancel                │
          └────────────────────────────────────────────────────────────┘
-
-
-
 
  ◐ MENU                                                   sh · update 0.16.0

@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 
 use super::{
     Detection, Status,
-    config::{AiConfig, ApprovalMode, Assignment, ManagedServer, NotifyMode, Profile, Task},
+    config::{
+        AiConfig, ApprovalMode, Assignment, ManagedServer, NotifyMode, Profile, Task, ToolToggle,
+    },
     picker::{Outcome, PickRow, Picker, Target, task_label},
 };
 
@@ -198,6 +200,21 @@ impl AiMenu {
         (self.draft.managed() != self.original.managed())
             .then(|| self.draft.managed())
             .flatten()
+    }
+
+    /// Flips one family switch of the draft.
+    pub fn toggle_family(&mut self, toggle: ToolToggle) {
+        let next = !self.draft.toggle(toggle);
+        self.draft.set_toggle(toggle, next);
+    }
+
+    /// The family switches whose draft differs from the open one, in row
+    /// order, with the draft value.
+    pub fn changed_toggles(&self) -> impl Iterator<Item = (ToolToggle, bool)> + '_ {
+        ToolToggle::ALL
+            .into_iter()
+            .filter(|t| self.draft.toggle(*t) != self.original.toggle(*t))
+            .map(|t| (t, self.draft.toggle(t)))
     }
 
     /// The tools flag in the draft, when it differs from the open one.

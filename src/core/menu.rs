@@ -9,7 +9,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::{
     ai::{
         Detection,
-        config::{AiConfig, NotifyMode, Task},
+        config::{AiConfig, NotifyMode, Task, ToolToggle},
         menu::AiMenu,
         picker::{Level, Mark, NOT_IN_LIST, Outcome, PickKey, PickRow, Picker, Target},
     },
@@ -48,6 +48,9 @@ pub enum ItemKind {
     /// The agent tools flag (`ai.tools.enabled`): an on/off row that lives in
     /// the AI draft, like [`ItemKind::Notify`].
     Tools,
+    /// One coding-tools family switch (`ai.tools.<key>`): an on/off row over
+    /// the AI draft, found by its toggle and never by position.
+    Family(ToolToggle),
     /// The approval mode of the model's commands (`ai.tools.approval`): an
     /// `ask`/`auto`/`run` row over the AI draft. It only reaches later chat opens
     /// and conversation switches, never an open chat or a pending approval.
@@ -157,8 +160,8 @@ pub static SECTIONS: &[Section] = &[Section {
 
 /// The AI section, attached only by [`MenuState::with_ai`]. The labels of
 /// the task rows are the task ids; their key path is `Task::table`. The
-/// static rows follow the tasks: `Profile`, `Context`, `Memory`, `Tools` and
-/// `Approval`, in that order. `Notify` and `Sound` live in the Settings section.
+/// static rows follow the tasks: `Profile`, `Context`, `Memory`, `Tools`, the five
+/// family switches and `Approval`, in that order. `Notify` and `Sound` live in the Settings section.
 pub static AI_SECTION: Section = Section {
     title: "AI",
     items: &[
@@ -207,6 +210,26 @@ pub static AI_SECTION: Section = Section {
             kind: ItemKind::Tools,
         },
         Item {
+            label: "Search",
+            kind: ItemKind::Family(ToolToggle::Search),
+        },
+        Item {
+            label: "Write",
+            kind: ItemKind::Family(ToolToggle::Write),
+        },
+        Item {
+            label: "Exec",
+            kind: ItemKind::Family(ToolToggle::Exec),
+        },
+        Item {
+            label: "Git",
+            kind: ItemKind::Family(ToolToggle::Git),
+        },
+        Item {
+            label: "Git write",
+            kind: ItemKind::Family(ToolToggle::GitWrite),
+        },
+        Item {
             label: "Approval",
             kind: ItemKind::Approval,
         },
@@ -222,6 +245,8 @@ pub struct Tab {
     pub needs_ai: bool,
     /// The update note and the `*` of the update live on this tab.
     pub note: bool,
+    /// The tab reserves a row for the caution of the selected row.
+    pub caution: bool,
 }
 
 /// Number of entries of [`TABS`].
@@ -236,12 +261,14 @@ pub static TABS: [Tab; TAB_COUNT] = [
         sections: SECTIONS,
         needs_ai: false,
         note: true,
+        caution: false,
     },
     Tab {
         label: "AI",
         sections: std::slice::from_ref(&AI_SECTION),
         needs_ai: true,
         note: false,
+        caution: true,
     },
 ];
 
@@ -258,6 +285,7 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
             | ItemKind::Memory(_)
             | ItemKind::Notify
             | ItemKind::Tools
+            | ItemKind::Family(_)
             | ItemKind::Approval
             | ItemKind::NotifySound
             | ItemKind::Updates => None,
@@ -268,6 +296,11 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
 pub const CHROME: u16 = 4;
 /// The tab bar takes one row at the top of the body when the menu is tabbed.
 pub const TAB_BAR: usize = 1;
+/// The caution under the AI tab for a family that can change files or run code.
+const CAUTION: &str = "Can change files or run code";
+/// Lines of the caution, reserved at the foot of the AI tab so the popup
+/// does not change size when it appears.
+pub const CAUTION_ROWS: usize = 1;
 /// Lines of the update note (see [`MenuState::update_note`]).
 pub const NOTE_ROWS: usize = 2;
 /// The privacy warning: a title, the facts, a blank row and the prompt.
@@ -303,6 +336,9 @@ const fn view_body() -> usize {
         }
         if TABS[tab].note {
             items += 1 + NOTE_ROWS;
+        }
+        if TABS[tab].caution {
+            items += CAUTION_ROWS;
         }
         if items > rows {
             rows = items;
@@ -537,6 +573,20 @@ impl MenuState {
         })
     }
 
+    /// The one-line caution of the selected row, for the family switches that
+    /// can change files or run code. Plain text: it takes no key.
+    pub fn caution(&self) -> Option<&'static str> {
+        if self.in_sub_level() {
+            return None;
+        }
+        match self.selected_kind()? {
+            ItemKind::Family(ToolToggle::Write | ToolToggle::Exec | ToolToggle::GitWrite) => {
+                Some(CAUTION)
+            }
+            _ => None,
+        }
+    }
+
     /// The terminal size, given by the app before each key so the menu knows
     /// whether the popup (or only its one-line fallback) is on screen.
     pub fn set_term(&mut self, cols: u16, rows: u16) {
@@ -641,7 +691,8 @@ impl MenuState {
     }
 
     /// Whether the selection is on a row of the AI draft that is not a
-    /// task: `Profile`, `Context`, `Memory`, `Notify`, `Tools` or `Approval`.
+    /// task: `Profile`, `Context`, `Memory`, `Notify`, `Tools`, a family switch
+    /// or `Approval`.
     fn on_draft_row(&self) -> bool {
         matches!(
             self.selected_kind(),
@@ -651,6 +702,7 @@ impl MenuState {
                     | ItemKind::Memory(_)
                     | ItemKind::Notify
                     | ItemKind::Tools
+                    | ItemKind::Family(_)
                     | ItemKind::Approval
                     | ItemKind::NotifySound
             )
@@ -759,6 +811,7 @@ impl MenuState {
             | ItemKind::Memory(_)
             | ItemKind::Notify
             | ItemKind::Tools
+            | ItemKind::Family(_)
             | ItemKind::Approval
             | ItemKind::NotifySound
             | ItemKind::Updates => None,
@@ -879,6 +932,22 @@ impl MenuState {
                             label: item.label,
                             value: self.ai.as_ref().map(|ai| {
                                 Cow::Borrowed(if ai.draft().tools_enabled() {
+                                    "on"
+                                } else {
+                                    "off"
+                                })
+                            }),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::Family(toggle) => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self.ai.as_ref().map(|ai| {
+                                Cow::Borrowed(if ai.draft().toggle(*toggle) {
                                     "on"
                                 } else {
                                     "off"
@@ -1111,6 +1180,7 @@ impl MenuState {
                     Some(ItemKind::Profile) => ai.cycle_profile(forward),
                     Some(ItemKind::Memory(_)) => ai.toggle_memory(),
                     Some(ItemKind::Tools) => ai.toggle_tools(),
+                    Some(ItemKind::Family(toggle)) => ai.toggle_family(*toggle),
                     Some(ItemKind::Approval) => ai.cycle_approval(forward),
                     Some(ItemKind::Notify) => ai.cycle_notify(forward),
                     Some(ItemKind::NotifySound) => ai.toggle_notify_sound(),
@@ -1213,6 +1283,11 @@ impl MenuState {
             .as_ref()
             .and_then(AiMenu::changed_tools)
             .map(ConfigEdit::tools_flag);
+        let families = self
+            .ai
+            .iter()
+            .flat_map(AiMenu::changed_toggles)
+            .map(|(toggle, on)| ConfigEdit::toggle(toggle, on));
         let approval = self
             .ai
             .as_ref()
@@ -1245,6 +1320,7 @@ impl MenuState {
             .chain(notify)
             .chain(sound)
             .chain(tools)
+            .chain(families)
             .chain(approval)
             .chain(managed)
             .collect()
@@ -1707,6 +1783,9 @@ mod tabs_tests;
 
 #[cfg(test)]
 mod tools_tests;
+
+#[cfg(test)]
+mod family_tests;
 
 #[cfg(test)]
 mod approval_tests;

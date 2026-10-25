@@ -62,10 +62,15 @@ fn the_context_row_follows_profile_and_precedes_memory() {
             "Context",
             "Memory",
             "Tools",
+            "Search",
+            "Write",
+            "Exec",
+            "Git",
+            "Git write",
             "Approval",
         ]
     );
-    let context = &AI_SECTION.items[AI_SECTION.items.len() - 4];
+    let context = &AI_SECTION.items[AI_SECTION.items.len() - 9];
     assert!(matches!(context.kind, ItemKind::Context));
 }
 
@@ -78,8 +83,10 @@ fn context_sits_between_profile_and_memory_and_navigation_wraps_through_them() {
     assert_eq!(selected_label(&m), "Memory");
     press(&mut m, 'j');
     assert_eq!(selected_label(&m), "Tools");
-    press(&mut m, 'j');
-    assert_eq!(selected_label(&m), "Approval");
+    for label in ["Search", "Write", "Exec", "Git", "Git write", "Approval"] {
+        press(&mut m, 'j');
+        assert_eq!(selected_label(&m), label);
+    }
     press(&mut m, 'j');
     assert_eq!(
         selected_label(&m),
@@ -88,12 +95,19 @@ fn context_sits_between_profile_and_memory_and_navigation_wraps_through_them() {
     );
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Approval");
-    press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Tools");
-    press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Memory");
-    press(&mut m, 'k');
-    assert_eq!(selected_label(&m), "Context");
+    for label in [
+        "Git write",
+        "Git",
+        "Exec",
+        "Write",
+        "Search",
+        "Tools",
+        "Memory",
+        "Context",
+    ] {
+        press(&mut m, 'k');
+        assert_eq!(selected_label(&m), label);
+    }
     press(&mut m, 'k');
     assert_eq!(selected_label(&m), "Profile");
 }
