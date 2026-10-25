@@ -72,8 +72,9 @@ pub struct Lines {
     pub max: u32,
 }
 
-/// A validated tool call.
-#[derive(Clone, PartialEq, Eq, Debug)]
+/// A validated tool call. `Debug` is written by hand: it never prints the
+/// model's text of a write call, only its path and byte lengths.
+#[derive(Clone, PartialEq, Eq)]
 pub enum Call {
     FindDir {
         query: String,
@@ -128,6 +129,59 @@ pub enum Call {
         tool: String,
         args: Value,
     },
+}
+
+impl std::fmt::Debug for Call {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Call::FindDir { query } => f.debug_struct("FindDir").field("query", query).finish(),
+            Call::ListDir { path } => f.debug_struct("ListDir").field("path", path).finish(),
+            Call::ReadFile { path, lines } => f
+                .debug_struct("ReadFile")
+                .field("path", path)
+                .field("lines", lines)
+                .finish(),
+            Call::Glob { pattern, dir } => f
+                .debug_struct("Glob")
+                .field("pattern", pattern)
+                .field("dir", dir)
+                .finish(),
+            Call::Grep { pattern, dir } => f
+                .debug_struct("Grep")
+                .field("pattern", pattern)
+                .field("dir", dir)
+                .finish(),
+            Call::RunInPane { command } => f
+                .debug_struct("RunInPane")
+                .field("command", command)
+                .finish(),
+            Call::CreateDir { path } => f.debug_struct("CreateDir").field("path", path).finish(),
+            Call::WriteFile { path, content } => f
+                .debug_struct("WriteFile")
+                .field("path", path)
+                .field("content_len", &content.len())
+                .finish(),
+            Call::EditFile { path, old, new } => f
+                .debug_struct("EditFile")
+                .field("path", path)
+                .field("old_len", &old.len())
+                .field("new_len", &new.len())
+                .finish(),
+            Call::ProposeBatch => f.write_str("ProposeBatch"),
+            Call::External {
+                name,
+                server,
+                tool,
+                args,
+            } => f
+                .debug_struct("External")
+                .field("name", name)
+                .field("server", server)
+                .field("tool", tool)
+                .field("args", args)
+                .finish(),
+        }
+    }
 }
 
 impl Call {
@@ -312,21 +366,21 @@ const BUILT_INS: [ToolDef; 10] = [
     },
     ToolDef {
         name: "create_dir",
-        description: "Stage a new folder under the chat's root. Nothing is written until you call propose_batch and the user approves the whole batch.",
+        description: "Stage a new folder under the chat's root. A name that already exists, or a file under a folder that is neither on disk nor staged, is refused. Nothing is written until you call propose_batch and the user approves the whole batch. Staging is refused while a batch waits for review.",
         access: Access::Write,
         family: Family::Write,
         args: &[text("path")],
     },
     ToolDef {
         name: "write_file",
-        description: "Stage the whole text of a file under the chat's root (at most 32 KiB): a new file, or a small existing one that is replaced. Use edit_file for a large file or a change inside one. Nothing is written until you call propose_batch and the user approves the whole batch.",
+        description: "Stage the whole text of a file under the chat's root (at most 32 KiB): a new file, or a small existing one that is replaced. Use edit_file for a large file or a change inside one. Nothing is written until you call propose_batch and the user approves the whole batch. Staging is refused while a batch waits for review.",
         access: Access::Write,
         family: Family::Write,
         args: &[text("path"), field("content", stage::WRITE_FILE_MAX)],
     },
     ToolDef {
         name: "edit_file",
-        description: "Stage the replacement of one piece of text in a file under the chat's root. `old` must occur exactly once (in the staged version of the file when it has one). Nothing is written until you call propose_batch and the user approves the whole batch.",
+        description: "Stage the replacement of one piece of text in a file under the chat's root. `old` must occur exactly once (in the staged version of the file when it has one). Nothing is written until you call propose_batch and the user approves the whole batch. Staging is refused while a batch waits for review.",
         access: Access::Write,
         family: Family::Write,
         args: &[
@@ -1202,6 +1256,58 @@ mod tests {
 
     fn parse_write(name: &str, args: Value, set: FamilySet) -> Result<Call, ToolError> {
         parse_call_in(name, &args, &servers::Qualified::default(), set)
+    }
+
+    // The staging tools say they are refused while a batch awaits review;
+    // create_dir also says which names it refuses.
+    #[test]
+    fn staging_tools_say_when_they_are_refused() {
+        let on = registry_with(&[], write_set());
+        let text = |name: &str| {
+            on.iter()
+                .find(|t| t.name == name)
+                .unwrap()
+                .description
+                .clone()
+        };
+        for name in ["create_dir", "write_file", "edit_file"] {
+            assert!(
+                text(name).contains("while a batch waits for review"),
+                "{name}"
+            );
+        }
+        let dir = text("create_dir");
+        assert!(dir.contains("already exists"), "{dir}");
+        assert!(dir.contains("neither on disk nor staged"), "{dir}");
+    }
+
+    // A call prints its path and the byte counts of its text, never the text.
+    #[test]
+    fn debug_of_a_content_call_never_shows_the_text() {
+        let secret = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA";
+        let write = Call::WriteFile {
+            path: "a.txt".into(),
+            content: secret.into(),
+        };
+        let edit = Call::EditFile {
+            path: "b.txt".into(),
+            old: secret.into(),
+            new: "hunter2".into(),
+        };
+        let shown = format!("{write:?} {edit:?} {:?}", Some(&edit));
+        assert!(
+            !shown.contains("sk-ant") && !shown.contains("hunter2"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("a.txt") && shown.contains("b.txt"),
+            "{shown}"
+        );
+        assert!(shown.contains("content_len: 37"), "{shown}");
+        assert!(
+            shown.contains("old_len: 37") && shown.contains("new_len: 7"),
+            "{shown}"
+        );
     }
 
     // Spec (code-write, Family and toggle): the four write tools exist only
