@@ -121,10 +121,10 @@ Spec: code-search "grep", "read_file paging"; code-write "Deny rules" (read side
 
 ### M1-c: wiring and approval (PR 6, ~350)
 Spec: code-search "Family and toggle", "Staged view"(marker only, content comes in W-e3); agent-tools "Approval model".
-- [ ] M1c.0 SPIKE (no code): find the dispatch seam for `Call::Glob/Grep` that avoids `host.rs`; if impossible, record the one-arm edit as a rebase point (decision 4).
-- [ ] M1c.1 RED: `ApprovalAsk::Search`: prompts on Cloud, free on Local (same rule as `read_file`), `Prompt` in every mode (no AutoRun/AutoType). GREEN: `chat/approval.rs`. ~120.
-- [ ] M1c.2 RED: app renders the ask, executes glob/grep, returns results. GREEN: `app/tool.rs`, `app/run.rs`. ~150. Dep: M1c.1, M1b.
-- [ ] M1c.3 RED: end-to-end with Search off equals 0.18.0 (golden); Search on adds `glob`, `grep`. REFACTOR. ~80.
+- [x] M1c.0 SPIKE (no code): find the dispatch seam for `Call::Glob/Grep` that avoids `host.rs`; if impossible, record the one-arm edit as a rebase point (decision 4). RESULT: seam found, `host.rs` untouched, no new rebase point. The host already calls the generic `ask_for(call, locality)` and runs `tools::run` -> `fs::execute_with`; the dispatch arms live in `fs::execute_with` and the ask in `approval::ask_for`.
+- [x] M1c.1 RED: `ApprovalAsk::Search`: prompts on Cloud, free on Local (same rule as `read_file`), `Prompt` in every mode (no AutoRun/AutoType). GREEN: `chat/approval.rs`. ~120.
+- [x] M1c.2 RED: app renders the ask, executes glob/grep, returns results. GREEN: `app/tool.rs`, `app/run.rs`. ~150. Dep: M1c.1, M1b.
+- [x] M1c.3 RED: end-to-end with Search off equals 0.18.0 (golden); Search on adds `glob`, `grep`. REFACTOR. ~80.
 
 Release point 0.19: P0 + T + M1 (see decision 2).
 

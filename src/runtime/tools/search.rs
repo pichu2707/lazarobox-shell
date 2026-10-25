@@ -6,7 +6,10 @@
 //! raw text: a model must not learn by matching what a secret holds.
 
 use std::{
-    collections::VecDeque, io::Read, os::unix::fs::MetadataExt, path::Path,
+    collections::VecDeque,
+    io::Read,
+    os::unix::fs::MetadataExt,
+    path::{Component, Path, PathBuf},
     sync::atomic::AtomicBool,
 };
 
@@ -20,7 +23,7 @@ use crate::core::ai::{
     memory::redact::redact,
     sanitize::clean,
     tools::{
-        glob::{BOUND_MARKER, MAX_MATCHES, MAX_PATTERN_BYTES, NO_MATCH},
+        glob::{BOUND_MARKER, Glob, MAX_MATCHES, MAX_PATTERN_BYTES, NO_MATCH, render},
         paths::{PathVerdict, SecretRoots, is_excluded_name, is_git_config, resolve},
     },
 };
@@ -66,12 +69,93 @@ pub fn grep(
         .size_limit(SIZE_LIMIT)
         .build()
         .map_err(|_| Failure::BadPattern)?;
+    let mut found = Found::default();
+    let walked = walk(dir, env, limits, cancel, |roots, path, rel| {
+        read_text(roots, path).is_none_or(|text| found.scan(rel, &text, &re))
+    })?;
+    Ok(found.render(walked.omitted, walked.bounded))
+}
+
+/// Lists the files under the root (or its sub-directory `dir`) whose
+/// root-relative path matches the glob `pattern`: names only, never content.
+pub fn glob(
+    pattern: &str,
+    dir: Option<&str>,
+    env: &ToolEnv,
+    limits: &Limits,
+    cancel: &AtomicBool,
+) -> Result<String, Failure> {
+    let matcher = Glob::new(pattern).map_err(|_| Failure::BadPattern)?;
+    let mut paths = Vec::new();
+    // The walk may collect one name past the cap, so `render` can say it cut.
+    let walked = walk(dir, env, limits, cancel, |_, _, rel| {
+        if matcher.is_match(rel) {
+            paths.push(rel.to_owned());
+        }
+        paths.len() <= MAX_MATCHES
+    })?;
+    let mut out = render(paths, walked.bounded);
+    if walked.omitted {
+        out.push('\n');
+        out.push_str(OMITTED_MARKER);
+    }
+    Ok(out)
+}
+
+/// `dir` joined to `root` by text alone, when it is a plain root-relative
+/// path that the approval label shows exactly as it is searched. `None` for an
+/// empty, absolute or `~` path, any `..`, and any text the label would change
+/// (controls, zero-width or bidi characters, runs of whitespace).
+fn shown_dir(root: &Path, dir: &str) -> Option<PathBuf> {
+    let label = clean(dir).split_whitespace().collect::<Vec<_>>().join(" ");
+    if dir.is_empty() || dir.starts_with('~') || label != dir {
+        return None;
+    }
+    let mut out = root.to_path_buf();
+    for part in Path::new(dir).components() {
+        match part {
+            Component::CurDir => {}
+            Component::Normal(name) => out.push(name),
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// What a [`walk`] left out.
+struct Walked {
+    /// Names hidden because they look like secrets.
+    omitted: bool,
+    /// A budget (time, entries, depth) or a cancel stopped the walk.
+    bounded: bool,
+}
+
+/// The budgeted walk of both search tools: breadth first from `dir` (the
+/// root when `None`), never following a link, never entering a skipped
+/// folder, never showing a secret name or a git setting. `visit` gets the
+/// secret roots, the real path and the root-relative one-line path of each
+/// regular file; it returns `false` to stop.
+fn walk(
+    dir: Option<&str>,
+    env: &ToolEnv,
+    limits: &Limits,
+    cancel: &AtomicBool,
+    mut visit: impl FnMut(&SecretRoots, &Path, &str) -> bool,
+) -> Result<Walked, Failure> {
     let roots = load_roots(env)?;
     let budget = Budget::new(limits, cancel);
     let root = env.origin.canonicalize().map_err(|_| Failure::Refused)?;
-    let PathVerdict::Allowed(start) = resolve(&roots, &root, dir.unwrap_or(".")) else {
+    let dir = dir.unwrap_or(".");
+    let Some(shown) = shown_dir(&root, dir) else {
         return Err(Failure::Refused);
     };
+    let PathVerdict::Allowed(start) = resolve(&roots, &root, dir) else {
+        return Err(Failure::Refused);
+    };
+    // A link on the way would search a folder other than the one shown.
+    if start != shown {
+        return Err(Failure::Refused);
+    }
     // The sub-directory may not leave the root, by `..` or by a link.
     if !start.starts_with(&root) {
         return Err(Failure::Refused);
@@ -83,7 +167,6 @@ pub fn grep(
     }) {
         return Err(Failure::Refused);
     }
-    let mut found = Found::default();
     let mut queue = VecDeque::from([(start, 0usize)]);
     let (mut visited, mut bounded, mut omitted) = (0usize, false, false);
     'walk: while let Some((folder, level)) = queue.pop_front() {
@@ -136,14 +219,12 @@ pub fn grep(
                 } else {
                     queue.push_back((path, level + 1));
                 }
-            } else if let Some(text) = read_text(&roots, &path)
-                && !found.scan(&one_line(rel.as_os_str()), &text, &re)
-            {
+            } else if !visit(&roots, &path, &one_line(rel.as_os_str())) {
                 break 'walk;
             }
         }
     }
-    Ok(found.render(omitted, bounded))
+    Ok(Walked { omitted, bounded })
 }
 
 /// The cleaned and redacted text of a regular file of at most
@@ -273,6 +354,61 @@ mod tests {
         );
         assert_eq!(run(&f, "^use", None).unwrap(), "src/a.rs:1:use x;");
         assert_eq!(run(&f, "nothing here", None).unwrap(), NO_MATCH);
+    }
+
+    /// Both search tools, run on `dir`, must give the same verdict.
+    fn both(f: &Fixture, dir: &str) -> [Result<String, Failure>; 2] {
+        let cancel = AtomicBool::new(false);
+        [
+            run(f, "fn main", Some(dir)),
+            glob("**/*.rs", Some(dir), &f.env, &Limits::default(), &cancel),
+        ]
+    }
+
+    // The ask names `dir` as the user reads it: a folder the label cannot
+    // show exactly is refused, so what is approved is what is searched.
+    #[test]
+    fn a_folder_the_ask_cannot_show_exactly_is_refused() {
+        let f = fixture();
+        fs::create_dir_all(f.root.join("private")).unwrap();
+        fs::write(
+            f.root.join("private/p.rs"),
+            "fn main secret
+",
+        )
+        .unwrap();
+        symlink(f.root.join("private"), f.root.join("docs")).unwrap();
+        fs::create_dir_all(f.root.join("a  b")).unwrap();
+        fs::create_dir_all(f.root.join("z\u{200b}w")).unwrap();
+        let inside = f.root.join("src").to_str().unwrap().to_owned();
+        for dir in [
+            "docs",
+            "docs/",
+            "",
+            "~/x",
+            "~",
+            inside.as_str(),
+            "a  b",
+            "z\u{200b}w",
+            "src/../src",
+            "src/\nx",
+        ] {
+            for out in both(&f, dir) {
+                assert!(matches!(out, Err(Failure::Refused)), "{dir:?}: {out:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_plain_root_relative_folder_still_works() {
+        let f = fixture();
+        fs::create_dir_all(f.root.join("src/sub")).unwrap();
+        fs::write(f.root.join("src/sub/a.rs"), "fn main() {}\n").unwrap();
+        for dir in ["src/sub", "./src/sub", "src/sub/", "src//sub", "."] {
+            let [grepped, globbed] = both(&f, dir);
+            assert!(grepped.unwrap().contains("a.rs:1:fn main"), "{dir}");
+            assert!(globbed.unwrap().contains("a.rs"), "{dir}");
+        }
     }
 
     #[test]
@@ -458,6 +594,107 @@ mod tests {
         let cancel = AtomicBool::new(true);
         let out = grep("needle", None, &f.env, &Limits::default(), &cancel).unwrap();
         assert_eq!(out, format!("{NO_MATCH}\n{BOUND_MARKER}"));
+    }
+
+    fn find(f: &Fixture, pattern: &str, dir: Option<&str>) -> Result<String, Failure> {
+        glob(
+            pattern,
+            dir,
+            &f.env,
+            &Limits::default(),
+            &AtomicBool::new(false),
+        )
+    }
+
+    // Spec (code-search, glob): Matches under the root.
+    #[test]
+    fn glob_lists_matching_files_relative_to_the_root_and_never_content() {
+        let f = fixture();
+        fs::write(f.root.join("src/a.rs"), "fn a() {}\n").unwrap();
+        fs::write(f.root.join("src/b.rs"), "fn b() {}\n").unwrap();
+        fs::write(f.root.join("README.md"), "docs\n").unwrap();
+        assert_eq!(find(&f, "**/*.rs", None).unwrap(), "src/a.rs\nsrc/b.rs");
+        assert_eq!(find(&f, "*.md", None).unwrap(), "README.md");
+        assert_eq!(find(&f, "src/*.rs", None).unwrap(), "src/a.rs\nsrc/b.rs");
+        assert_eq!(find(&f, "**/*.py", None).unwrap(), NO_MATCH);
+    }
+
+    // The sub-directory narrows the walk; the pattern still sees root-relative paths.
+    #[test]
+    fn glob_dir_narrows_the_walk_and_cannot_leave_the_root() {
+        let f = fixture();
+        fs::write(f.root.join("src/a.rs"), "x\n").unwrap();
+        fs::write(f.root.join("top.rs"), "x\n").unwrap();
+        assert_eq!(find(&f, "**/*.rs", Some("src")).unwrap(), "src/a.rs");
+        assert_eq!(find(&f, "src/*.rs", Some("src")).unwrap(), "src/a.rs");
+        assert_eq!(find(&f, "*.rs", Some("src")).unwrap(), NO_MATCH);
+        for escape in ["..", "../outside", "/etc"] {
+            assert_eq!(find(&f, "**/*", Some(escape)), Err(Failure::Refused));
+        }
+    }
+
+    // Spec (code-search, glob): Skip list and secrets.
+    #[test]
+    fn glob_skips_the_skip_list_and_says_secrets_were_left_out() {
+        let f = fixture();
+        fs::write(f.root.join("target/x.rs"), "x\n").unwrap();
+        fs::write(f.root.join("node_modules/y.js"), "x\n").unwrap();
+        fs::write(f.root.join(".git/HEAD"), "x\n").unwrap();
+        fs::write(f.root.join(".env"), "k=1\n").unwrap();
+        fs::write(f.root.join("src/ok.rs"), "x\n").unwrap();
+        assert_eq!(
+            find(&f, "**/*", None).unwrap(),
+            format!("src/ok.rs\n{OMITTED_MARKER}")
+        );
+        assert_eq!(find(&f, "**/*", Some("target")), Err(Failure::Refused));
+        fs::create_dir_all(f.root.join("src/Node_Modules/deep")).unwrap();
+        assert_eq!(
+            find(&f, "**/*", Some("src/Node_Modules/deep")),
+            Err(Failure::Refused)
+        );
+    }
+
+    // Spec (code-search, glob): Root escape refused.
+    #[test]
+    fn glob_never_follows_links_or_takes_a_pattern_out_of_the_root() {
+        let f = fixture();
+        let home = f.root.parent().unwrap();
+        symlink(home.join("outside"), f.root.join("link")).unwrap();
+        symlink(home.join("outside/leak.txt"), f.root.join("leak.txt")).unwrap();
+        assert_eq!(find(&f, "**/*", None).unwrap(), NO_MATCH);
+        assert_eq!(find(&f, "../**/*", None), Err(Failure::BadPattern));
+        assert_eq!(find(&f, "", None), Err(Failure::BadPattern));
+    }
+
+    // Spec (code-search, glob): Budget is reported.
+    #[test]
+    fn glob_reports_a_walk_cut_by_the_budget_or_a_cap() {
+        let f = fixture();
+        for n in 0..8 {
+            fs::write(f.root.join(format!("f{n}.txt")), "x\n").unwrap();
+        }
+        let few = Limits {
+            visited: 3,
+            ..Limits::default()
+        };
+        let out = glob("*.txt", None, &f.env, &few, &AtomicBool::new(false)).unwrap();
+        assert!(out.ends_with(BOUND_MARKER), "{out}");
+        let cancel = AtomicBool::new(true);
+        let out = glob("*", None, &f.env, &Limits::default(), &cancel).unwrap();
+        assert_eq!(out, format!("{NO_MATCH}\n{BOUND_MARKER}"));
+        for n in 0..150 {
+            fs::write(f.root.join(format!("g{n:03}.log")), "x\n").unwrap();
+        }
+        let out = find(&f, "*.log", None).unwrap();
+        assert_eq!(out.lines().count(), 101, "{out}");
+        assert!(out.ends_with(crate::core::ai::tools::glob::CAP_MARKER));
+    }
+
+    #[test]
+    fn glob_with_home_unset_refuses() {
+        let mut f = fixture();
+        f.env.home = Some(OsString::new());
+        assert_eq!(find(&f, "*", None), Err(Failure::Refused));
     }
 
     #[test]

@@ -202,11 +202,16 @@ pub fn execute_with(
         Call::ReadFile { path, lines } => read_file(&roots, env, path, *lines, limits),
         Call::ListDir { path } => list_dir(&roots, &budget, env, path, limits),
         Call::FindDir { query } => find_dir(&roots, &budget, query, limits),
-        // A user tool runs on its own server, never here.
-        // `glob` and `grep` run here once the search slice wires them (M1-c).
-        Call::Glob { .. } | Call::Grep { .. } | Call::RunInPane { .. } | Call::External { .. } => {
-            Err(Failure::NotReadTool)
+        // Whether `grep` may run is decided before this, by `ask_for`; `glob`
+        // names files only and needs no approval.
+        Call::Glob { pattern, dir } => {
+            super::search::glob(pattern, dir.as_deref(), env, limits, cancel)
         }
+        Call::Grep { pattern, dir } => {
+            super::search::grep(pattern, dir.as_deref(), env, limits, cancel)
+        }
+        // A user tool runs on its own server, never here.
+        Call::RunInPane { .. } | Call::External { .. } => Err(Failure::NotReadTool),
     }
 }
 
@@ -1331,18 +1336,31 @@ mod tests {
         assert_eq!(out, Err(Failure::NotReadTool));
     }
 
-    // Guard for the placeholder `grep` approval: until M1-c wires the ask on a
-    // cloud engine, `grep` must stay unexecutable. Wiring it makes this fail.
+    // Spec (agent-tools, approval model): `execute_with` never asks; asking is
+    // the host's job (`ask_for`), so a Local grep, which has no ask, runs here.
+    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
-    fn grep_is_not_executable_until_its_approval_is_wired() {
+    fn grep_and_glob_are_dispatched_through_execute_with() {
         let f = fixture();
-        let call = Call::Grep {
-            pattern: "x".into(),
+        let cancel = AtomicBool::new(false);
+        let run = |call: Call| execute_with(&call, &env(&f.home), &Limits::default(), &cancel);
+        let grep = |pattern: &str, dir: Option<&str>| Call::Grep {
+            pattern: pattern.into(),
+            dir: dir.map(Into::into),
+        };
+        let out = run(grep("fn main", None)).unwrap();
+        assert!(out.starts_with("dev/app/main.rs:1:fn main() {}"), "{out}");
+        assert_eq!(
+            run(grep("fn main", Some("dev"))).unwrap(),
+            "dev/app/main.rs:1:fn main() {}"
+        );
+        let glob = Call::Glob {
+            pattern: "**/*.rs".into(),
             dir: None,
         };
-        let cancel = AtomicBool::new(false);
-        let out = execute_with(&call, &env(&f.home), &Limits::default(), &cancel);
-        assert_eq!(out, Err(Failure::NotReadTool));
+        assert_eq!(run(glob).unwrap(), "dev/app/main.rs");
+        assert_eq!(run(grep("(", None)), Err(Failure::BadPattern));
     }
 
     #[test]

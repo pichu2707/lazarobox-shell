@@ -9,7 +9,7 @@ use crate::core::ai::{
     chat::{
         approval::{
             Approval, ApprovalAsk, ApprovalPrompt, EXTERNAL_KEYS, Origin, Press, READ_KEYS,
-            RUN_CANCELLED, RUN_KEYS, Reply, run_sent_line,
+            RUN_CANCELLED, RUN_KEYS, Reply, SEARCH_KEYS, run_sent_line,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -437,6 +437,14 @@ impl App {
                 target: "send a file's text to the engine".to_owned(),
                 command: format!("read {path}"),
                 keys: READ_KEYS,
+                armed,
+                why: None,
+            }),
+            // The pattern and the folder were made one clean line when asked.
+            ApprovalAsk::Search { pattern, dir } => Some(ApprovalPrompt {
+                target: "send matching lines of your files to the engine".to_owned(),
+                command: format!("search {pattern} in {dir}"),
+                keys: SEARCH_KEYS,
                 armed,
                 why: None,
             }),

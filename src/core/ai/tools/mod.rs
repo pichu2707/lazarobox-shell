@@ -121,13 +121,17 @@ impl Call {
         }
     }
 
-    /// The argument of the call: a query, a path or a command; a user tool
+    /// The argument of the call: a query, a path or a command (a search adds the
+    /// folder it looks in); a user tool
     /// has its arguments as compact JSON.
     pub fn argument(&self) -> Cow<'_, str> {
         match self {
             Call::FindDir { query } => Cow::Borrowed(query),
             Call::ListDir { path } | Call::ReadFile { path, .. } => Cow::Borrowed(path),
-            Call::Glob { pattern, .. } | Call::Grep { pattern, .. } => Cow::Borrowed(pattern),
+            Call::Glob { pattern, dir } | Call::Grep { pattern, dir } => match dir {
+                Some(dir) => Cow::Owned(format!("{pattern} in {dir}")),
+                None => Cow::Borrowed(pattern),
+            },
             Call::RunInPane { command } => Cow::Borrowed(command),
             Call::External { args, .. } => Cow::Owned(args.to_string()),
         }
@@ -927,7 +931,9 @@ mod tests {
                 dir: Some("src".into())
             }
         );
-        assert_eq!((call.name(), &*call.argument()), ("glob", "*.rs"));
+        assert_eq!((call.name(), &*call.argument()), ("glob", "*.rs in src"));
+        let whole = parse_glob(json!({"pattern": "*.rs"}), search_set()).unwrap();
+        assert_eq!(whole.argument(), "*.rs");
     }
 
     fn parse_read(args: Value, set: FamilySet) -> Result<Call, ToolError> {
@@ -1044,7 +1050,9 @@ mod tests {
                 dir: Some("src".into())
             }
         );
-        assert_eq!((call.name(), &*call.argument()), ("grep", "fn main"));
+        assert_eq!((call.name(), &*call.argument()), ("grep", "fn main in src"));
+        let whole = parse(json!({"pattern": "fn main"}), search_set()).unwrap();
+        assert_eq!(whole.argument(), "fn main");
         assert_eq!(
             parse(
                 json!({"pattern": "a".repeat(glob::MAX_PATTERN_BYTES + 1)}),
