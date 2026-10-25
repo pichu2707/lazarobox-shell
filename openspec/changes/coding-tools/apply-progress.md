@@ -464,3 +464,59 @@ Passed at once, proved by mutation: Release (arm made to fall through: failed), 
 Deviation: the event-loop wiring (`app.wake_review()`, `app.frame_drawn()` in `runtime.rs`) has no test; both methods are tested through the App. Production total of the branch against `feat/coding-tools-we3`: about 720 added lines (650 without blanks), over 500: `size:exception` as agreed.
 
 Checks: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5734 lib), `cargo +1.88 check --all-targets`, no `.snap.new`.
+
+## Batch: slice W-f (host staging tools, PR 22, branch feat/coding-tools-wf, base feat/coding-tools-we4)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Wf.1 `Call::{CreateDir, WriteFile, EditFile, ProposeBatch}` parse, family Write | done | feat(tools): parse create_dir, write_file, edit_file and propose_batch behind the Write family |
+| Wf.2 host stages without ask or disk touch; read tools get the view; `propose_batch` seals, asks, applies on `Sent` | done | feat(tools): stage write calls in the host without a prompt and apply a sealed batch only after the user's y |
+| Wf.3 toggles-off golden; Write call with Write off is `unknown tool`; host re-check | done | test(tools): pin that a write tool with its toggle off is answered like an unknown name (the host re-check landed with Wf.2) |
+| Unreviewable batch | done | in Wf.2 |
+| Wd-review obligation (review-only invariant) | done | host test `a_secret_in_the_base_or_the_new_text_reaches_no_model_facing_string` |
+
+## Seam decision (W-f)
+
+`host.rs` could not be left untouched: the batch ask must be registered before the `ToolCall` is announced and the result must go through `Owed`, so `propose_batch` has to live in `execute`'s flow. The seam is the child module `runtime/tools/host/files.rs` (all logic, 248 lines) and `host.rs` gets hooks only: +50/-23 lines (net +27).
+
+- `TurnScope.families` (default LEGACY) and `TurnScope.stage_key` (default None); `ToolHost.stages: Arc<Mutex<Stages>>`; `ToolHost::env(origin)` replaces the inline `ToolEnv` build (so the final arm shrank by 18 lines); `checked` is `Result<Call, Cow<'static, str>>` because a seal error text is dynamic.
+- Four hooks in `execute`: `files::gate` (before the ask), `files::seal` (an arm before `ask_for`), `files::answered` (first arm of the decision match), `files::run` (the old final arm: read tools over the view, and the staging calls).
+- Rebase points against S1c-2 (`TurnScope`, execute filter, scope check, ask label): the two new `TurnScope` fields and their 2 lines in `TurnScope::new` and in `runtime/chat.rs:762`; the `checked` type; the `ProposeBatch` arm; the first decision arm; the replaced final arm.
+- No `ToolEnv` change (12 literals would break): `tools::run_over(call, env, limits, Option<StagedView>)` carries the view; `run` is `run_over(.., None)`.
+- No `BatchId` in the ask: the answer returns to the `execute` future that sealed the batch and holds the id; `Stages::apply(id, ..)` is generation-checked (`Stale` otherwise, tested). W-g needs an id route only for orphans, which have no live future.
+- The app side needs no change: `Effect::ToolDecision` already reaches the approver future through `Waits::decide`, and W-e4's review produces `Sent` / `Denied(reason)`.
+
+## TDD cycle evidence (W-f)
+
+| Task | RED (seen failing) | GREEN | Triangulation | REFACTOR |
+|------|--------------------|-------|---------------|----------|
+| Wf.1 | `E0599 no variant named CreateDir / EditFile / WriteFile`, `no variant or associated item ProposeBatch` (4 errors); then `E0004 non-exhaustive patterns` in `approval.rs` and `fs.rs` | 385 core tools tests (incl. the 0.18.0 golden) | offered/parsed only with Write on (4 tools x LEGACY/on), schema bytes, argument is the path never the text, missing/wrong type/extra/not object, caps at and over (32 KiB content, 16 KiB old and new), empty `old` parses, `propose_batch` takes no key | `field()` const helper next to `text()`; `parse_built_in` handles a tool with no first argument |
+| Wf.2 | `E0609 no field families / stage_key on TurnScope`, `no field stages on ToolHost` (6 errors) | 15 of 15 in `host/files_tests.rs`, 59 in `runtime::tools::host`; two RED-in-GREEN fixes of my own tests (defang is unconditional, so the family-off test stages under a key and reads with the family off; a file below a never-staged folder is refused, so the test stages the folder first) | staging asks nothing and the disk stays untouched, restage replaces, edits chain on the staged text, read/glob/grep see the pending batch and another pane does not, refusals (escape, `.env`, missing file, ambiguous edit, over the cap) stage nothing, empty propose, approved batch applied (counts and paths), reject and no approver (`Unwired`) discard, no staging while a batch waits, unreviewable batch (Sent and Denied(TOO_LARGE)), answer for a gone batch is `Stale`, drift closes the batch, family off is `unknown tool` x 4 calls x 2 sets and no key, secret test x 3 answers | `Stages::stage_with` generic over the error; `Stages` disk read wrapped as `disk_bytes` so `files.rs` names no `write`/`apply` module |
+| Wf.3 | the toggles-off host test and the golden test passed at once | n/a | MCP `tools/call` of the 4 write names with all toggles off is byte-identical to an unknown name; `tools/list` does not hold them | none |
+
+Mutations (tests that passed at once, all reverted): `gate` always `Ok` failed the family-off test; view passed whatever the family failed `with_the_family_off_the_read_tools_see_no_batch`; `Sent` ignoring `reviewable` failed the unreviewable test; no discard on deny failed 2; `made` (folder staged above) disabled failed 2; no discard after a drift failed the drift test; `{batch:?}` appended to the staging text failed the staging test and the secret test. Core: removing the family filter in `parse_built_in` failed the golden test.
+
+## Deviations / notes (W-f)
+
+- Result texts (counts and paths only): staging `staged <path> (batch: N of 50 entries, B of 1048576 bytes)`; apply = `ApplyResult::summary()`; reject `denied: <reason>`; unreviewable `denied: <TOO_LARGE>` (also when the answer is `Sent`: the host never applies an unreviewable batch); family off or no stage key `unknown tool`.
+- `ApplyResult::applied()` added (4 lines in `apply.rs`) so the host picks the status without naming the module. `stage::disk_bytes` and `Unreadable` added; `StageFailed<E = StageError>`.
+- Every denial and every non-applied apply result (`Drifted`, `Invalid`, `Failed`, `Unsupported`) discards the batch, so the model is never left with a `Proposed` batch it cannot stage into or propose again. This differs from W-e3's "stays Proposed so the user can discard it": that stays true for the store, but the host closes it because the user has answered and the model has been told. A `Partial` was already removed by the store.
+- `ANOTHER_PENDING` (the app denies the ask when another approval is pending) also discards the batch: the host cannot tell it from a rejection. Rare (calls of a turn are sequential); a later slice may keep the batch.
+- The batch is sealed BEFORE the ask. If the call is dropped before the answer (turn cancelled, CLI timeout, or the result slot cannot be reserved) it stays `Proposed`: that is the orphan W-g routes (`Effect::BatchReview/Apply/Discard`). Nothing here handles it.
+- `create_dir` on a name that exists (file or folder) is refused with the refusal text: apply would drift on it. A file below a folder that is neither on disk nor staged is refused too (the tool descriptions do not say so yet; the model learns from `path not available`). A folder staged earlier in the batch makes the names below it absent.
+- The disk read of staging is `Disk::probe` (`open_target`: checked parent, no link, nlink 1, `judge_real` on the fd path), capped at 2 MiB; `size` is the bytes read, which is enough because the batch thresholds (64 KiB, 1 MiB) are below the cap.
+- Staging and apply run in `spawn_blocking` under the `Stages` mutex (poison is ignored: the store holds plain data).
+- The result of a staging call is not wrapped as untrusted data: it holds only the model's own path and counts. Read results stay wrapped.
+- No app test of the whole chain `y` -> `Waits` -> host -> disk: the pieces are tested (W-e4 `Sent` on `y`, `Waits::decide`, host with a scripted approver).
+
+### Audit changes: none
+
+`host/files.rs` names neither the `write` nor the `apply` module and holds no write token (the `create_dir` identifier is avoided: `stage_dir`, `CreateDir`). `stage.rs` is already in `MAY_CALL_APPLY`. `audit.rs` untouched; `every_tool_file_...` passes with the new file.
+
+## Size (W-f)
+
+About 455 production lines (core `tools/mod.rs` 105, `host/files.rs` 248, `host.rs` +48, `stage.rs` +20, `approval.rs` +7, `fs.rs` +6, `apply.rs` +5, `runtime/tools/mod.rs` +13, `chat.rs` +3) and about 880 test lines (`files_tests.rs` 543, core tests, golden). Under the ~500 cut line.
+
+## Checks (W-f)
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5753 lib tests green), `cargo +1.88 check --all-targets`, no `.snap.new`. No macOS-only file mentions `Call`, `ApprovalAsk`, `ToolEnv` or `TurnScope`.

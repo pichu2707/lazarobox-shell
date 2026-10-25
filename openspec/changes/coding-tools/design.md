@@ -118,6 +118,17 @@ model ─ run_command/git_* ─→ refused if Stages[key] non-empty ─→ ask (
 pane close / app quit → Stages.discard(key) + notice
 ```
 
+### Host seam for the write family (W-f)
+
+`host.rs` gets only dispatch hooks (about 27 net lines); the logic is the child module `runtime/tools/host/files.rs`.
+
+- `TurnScope` gains `families: FamilySet` (default `LEGACY`) and `stage_key: Option<StageKey>` (default `None`); `ToolHost` owns `stages: Arc<Mutex<Stages>>`; `ToolHost::env(origin)` replaces the inline `ToolEnv` build. `runtime/chat.rs` fills the two scope fields (3 lines).
+- `execute` hooks: `files::gate` (second family check, same text as an unknown tool), `files::seal` before the ask (`ProposeBatch` builds `ApprovalAsk::Batch` itself; `ask_for` returns `None` for the four write calls), `files::answered` for the decision, `files::run` for every call that needs no answer (staging, and the read tools over `Stages::view(key)` whenever Write is on).
+- The `BatchId` is NOT put in the ask: the answer returns to the very `execute` future that sealed the batch and holds the id, and `Stages::apply(id, ..)` is generation-checked, so a stale answer is `Stale`. W-g needs an id-carrying route only for orphans (no live future).
+- `ToolEnv` is unchanged (12 literals); the view travels as an argument: `tools::run_over(call, env, limits, Option<StagedView>)`, `run` is `run_over(.., None)`.
+- Why a seam inside `host.rs` and not outside: the ask must be registered before the `ToolCall` is announced and the result must go through `Owed`, so `propose_batch` has to live in `execute`'s flow. `stage_with` became generic over the error (`edit_file` returns `EditError`) and `stage::disk_bytes` wraps `Disk::probe`, so `files.rs` names neither the `write` nor the `apply` module (no audit change).
+- A non-applied result (`Drifted`, `Invalid`, `Failed`, `Unsupported`) and every denial discard the batch, so the model can stage again.
+
 ## Interfaces / Contracts
 
 ```rust
