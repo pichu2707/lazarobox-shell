@@ -4,6 +4,7 @@
 pub mod capture;
 pub mod command;
 pub mod content;
+pub mod edit;
 pub mod exec;
 pub mod glob;
 #[cfg(test)]

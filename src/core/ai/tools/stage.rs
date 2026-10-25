@@ -239,7 +239,7 @@ impl Batch {
     /// canonical (it refuses a path that differs from its canonical form), so
     /// two spellings of one target are one key. No case folding is done: on
     /// macOS `resolve_write` refuses writes, so it never reaches this.
-    fn put(&mut self, target: &WriteTarget, entry: Entry) -> Result<(), StageError> {
+    pub(super) fn put(&mut self, target: &WriteTarget, entry: Entry) -> Result<(), StageError> {
         self.open()?;
         // One path cannot be a file and a folder in the same batch: a file
         // with an entry below it, or an entry below a staged file.
@@ -272,13 +272,21 @@ impl Batch {
         Ok(())
     }
 
+    /// The entry staged for a path, if any.
+    pub(super) fn staged(&self, target: &WriteTarget) -> Option<&Entry> {
+        self.entries
+            .iter()
+            .find(|s| s.target.real == target.real)
+            .map(|s| &s.entry)
+    }
+
     /// The new content held, in bytes.
     pub fn bytes(&self) -> usize {
         self.entries.iter().map(|s| s.entry.bytes()).sum()
     }
 
     /// Whether staging is allowed in the current state.
-    fn open(&self) -> Result<(), StageError> {
+    pub(super) fn open(&self) -> Result<(), StageError> {
         match self.state {
             State::Staging => Ok(()),
             State::Proposed => Err(StageError::Proposed),
