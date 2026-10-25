@@ -132,7 +132,7 @@ Release point 0.19: P0 + T + M1 (see decision 2).
 
 ### W-a: content rules and `resolve_write` (PR 7, ~350)
 Spec: code-write "Deny rules", "Root policy", "Caps".
-- [ ] Wa.1 RED: content refusal table (C0 except `\t`/`\n`, DEL, C1, `\r`, the fixed Unicode list including ZWJ); existing file must be UTF-8 with no CR/NUL; no newline added. GREEN: `tools/content.rs`. ~170.
+- [x] Wa.1 RED: content refusal table (C0 except `\t`/`\n`, DEL, C1, `\r`, the fixed Unicode list including ZWJ); existing file must be UTF-8 with no CR/NUL; no newline added. GREEN: `tools/content.rs`. ~170.
 - [ ] Wa.2 RED: `resolve_write`: root is HOME / ancestor of HOME / system dir / missing / outside HOME refused; `.git`/`node_modules` components and SECRET lists refused; one text `path not available`; tier-B warnings (Makefile, build.rs, Cargo.toml, `.cargo/config*`, package.json, pyproject.toml, setup.py, conftest.py, go.mod, `*.sh`, `.github/workflows/*`). GREEN: `tools/paths.rs`. ~180.
 
 ### W-b: write primitives (PR 8, ~350)
