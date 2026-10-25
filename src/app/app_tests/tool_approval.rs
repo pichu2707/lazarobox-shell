@@ -422,6 +422,47 @@ fn y_on_a_user_tool_answers_sent_and_n_denies_without_a_pty() {
     );
 }
 
+fn search(pattern: &str, dir: &str) -> ApprovalAsk {
+    ApprovalAsk::Search {
+        pattern: pattern.into(),
+        dir: dir.into(),
+    }
+}
+
+// Spec (code-search, grep): the prompt shows the pattern and where it looks.
+#[test]
+fn a_search_ask_shows_the_pattern_and_the_path() {
+    let (mut a, turn) = live();
+    assert_eq!(
+        announce(&mut a, turn, 1, search("fn main", ".")),
+        Vec::new()
+    );
+    let prompt = a.approval_prompt(id2()).unwrap();
+    assert_eq!(prompt.command, "search fn main in .");
+    assert!(prompt.keys.contains("y search"), "{prompt:?}");
+    let (mut b, turn) = live();
+    announce(&mut b, turn, 1, search("TODO", "src/core"));
+    assert_eq!(
+        b.approval_prompt(id2()).unwrap().command,
+        "search TODO in src/core"
+    );
+}
+
+#[test]
+fn y_on_a_search_answers_sent_and_n_denies_and_auto_mode_still_asks() {
+    let (mut a, turn) = live();
+    super::tool_run::chat_mut(&mut a)
+        .set_approval_mode(crate::core::ai::config::ApprovalMode::Auto);
+    assert_eq!(announce(&mut a, turn, 1, search("x", ".")), Vec::new());
+    assert_eq!(pending(&a).map(|(ask, _)| ask), Some(search("x", ".")));
+    assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+    announce(&mut a, turn, 2, search("y", "."));
+    assert_eq!(
+        a.update(key('n')),
+        vec![decision(turn, 2, Decision::Denied("the user declined"))]
+    );
+}
+
 // D18: the approval mode is for `run_in_pane` only; a user tool never types
 // or approves by itself.
 #[test]

@@ -63,6 +63,10 @@ pub enum ApprovalAsk {
     Run { command: String },
     /// Read `path` (sanitized for display) and send its text to the engine.
     Read { path: String },
+    /// Search the text of the files under `dir` (the root when `.`) for
+    /// `pattern`, and send the matching lines to the engine. Both are one
+    /// sanitized line.
+    Search { pattern: String, dir: String },
     /// Call a tool of a user-declared MCP server.
     External {
         server: String,
@@ -72,8 +76,9 @@ pub enum ApprovalAsk {
 }
 
 /// Which calls wait for the user's answer before they run (D17).
-/// `run_in_pane` always does. `read_file` does on a cloud engine, because the
-/// text it returns goes to the provider, and runs free on a local one. The
+/// `run_in_pane` always does. `read_file` and `grep` do on a cloud engine,
+/// because the text they return goes to the provider, and run free on a local
+/// one. The
 /// directory tools never ask. The mode of the chat (ask or auto-type, D18) is
 /// not an input: the app applies it to the ask this returns.
 ///
@@ -97,12 +102,25 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
             tool: shown_name(tool),
             args: shown_args(args),
         }),
-        // `glob` returns names only and, like the directory tools, never asks.
-        Call::ReadFile { .. } | Call::FindDir { .. } | Call::ListDir { .. } | Call::Glob { .. } => {
-            None
+        Call::Grep { pattern, dir } if locality == Locality::Cloud => {
+            let dir = flat(dir.as_deref().unwrap_or("."), SEARCH_SHOWN).0;
+            Some(ApprovalAsk::Search {
+                pattern: flat(pattern, SEARCH_SHOWN).0,
+                // A blank folder is the root, as no folder is.
+                dir: if dir.is_empty() { ".".into() } else { dir },
+            })
         }
+        // `glob` returns names only and, like the directory tools, never asks.
+        Call::ReadFile { .. }
+        | Call::FindDir { .. }
+        | Call::ListDir { .. }
+        | Call::Glob { .. }
+        | Call::Grep { .. } => None,
     }
 }
+
+/// The most characters of a search ask's pattern or folder that are shown.
+const SEARCH_SHOWN: usize = 512;
 
 /// The most characters of a user tool's argument values an ask shows, shared
 /// fairly between the keys.
@@ -423,6 +441,8 @@ pub struct ApprovalPrompt {
 pub const RUN_KEYS: &str = "y type it (no Enter) · n cancel · p next pane";
 /// The keys of a read prompt.
 pub const READ_KEYS: &str = "y read it · n deny";
+/// The keys of a search prompt.
+pub const SEARCH_KEYS: &str = "y search · n deny";
 /// The keys of a user tool prompt: no `p`, it has no target pane.
 pub const EXTERNAL_KEYS: &str = "y call it · n deny";
 
@@ -943,6 +963,72 @@ mod tests {
                 path: "~/a.txt".into()
             })
         );
+    }
+
+    fn search_ask(pattern: &str, dir: &str) -> ApprovalAsk {
+        ApprovalAsk::Search {
+            pattern: pattern.into(),
+            dir: dir.into(),
+        }
+    }
+
+    // Spec (agent-tools, approval model): grep asks on Cloud, runs free on Local.
+    #[test]
+    fn grep_asks_on_cloud_with_pattern_and_path_and_runs_free_on_local() {
+        let whole = Call::Grep {
+            pattern: "fn main".into(),
+            dir: None,
+        };
+        let narrowed = Call::Grep {
+            pattern: "TODO".into(),
+            dir: Some("src/core".into()),
+        };
+        assert_eq!(ask_for(&whole, Locality::Local), None);
+        assert_eq!(ask_for(&narrowed, Locality::Local), None);
+        assert_eq!(
+            ask_for(&whole, Locality::Cloud),
+            Some(search_ask("fn main", "."))
+        );
+        assert_eq!(
+            ask_for(&narrowed, Locality::Cloud),
+            Some(search_ask("TODO", "src/core"))
+        );
+    }
+
+    // The model chooses both strings: the label shows them as one clean line.
+    #[test]
+    fn a_search_ask_shows_clean_one_line_text() {
+        let call = Call::Grep {
+            pattern: "a\u{1b}[31mb\nc".into(),
+            dir: Some("x\ny".into()),
+        };
+        let Some(ApprovalAsk::Search { pattern, dir }) = ask_for(&call, Locality::Cloud) else {
+            panic!("a cloud grep must ask");
+        };
+        assert_eq!((pattern.as_str(), dir.as_str()), ("ab c", "x y"));
+    }
+
+    // An empty folder is the root, as `None` is: the label never shows nothing.
+    #[test]
+    fn an_empty_search_folder_is_shown_as_the_root() {
+        for dir in [None, Some(""), Some("  ")] {
+            let call = Call::Grep {
+                pattern: "x".into(),
+                dir: dir.map(Into::into),
+            };
+            assert_eq!(ask_for(&call, Locality::Cloud), Some(search_ask("x", ".")));
+        }
+    }
+
+    // Spec (agent-tools): no auto approval; a search ask is `Prompt` in every mode.
+    #[test]
+    fn a_search_ask_prompts_in_every_mode() {
+        let ask = search_ask("x", ".");
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            for origin in [Origin::Tool, Origin::Block] {
+                assert_eq!(route(&ask, origin, mode, FREE), Route::Prompt(None));
+            }
+        }
     }
 
     fn run(command: &str) -> ApprovalAsk {
