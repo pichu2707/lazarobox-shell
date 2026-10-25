@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use toml::{Table, Value};
 
+use super::tools::registry::Family;
 use super::{CATALOG, Kind, ServerPorts};
 
 /// The fixed set of AI tasks, in display order.
@@ -145,6 +146,49 @@ pub enum ApprovalMode {
     Run,
 }
 
+/// A coding-tools family switch: one boolean under `[ai.tools]`, off by
+/// default. `Read` and `Pane` have none: they are the 0.18.0 tools.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ToolToggle {
+    Search,
+    Write,
+    Exec,
+    Git,
+    GitWrite,
+}
+
+impl ToolToggle {
+    pub const ALL: [Self; 5] = [
+        Self::Search,
+        Self::Write,
+        Self::Exec,
+        Self::Git,
+        Self::GitWrite,
+    ];
+
+    /// The key under `[ai.tools]`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Search => "search",
+            Self::Write => "write",
+            Self::Exec => "exec",
+            Self::Git => "git",
+            Self::GitWrite => "git_write",
+        }
+    }
+
+    /// The family this switch turns on.
+    pub fn family(self) -> Family {
+        match self {
+            Self::Search => Family::Search,
+            Self::Write => Family::Write,
+            Self::Exec => Family::Exec,
+            Self::Git => Family::Git,
+            Self::GitWrite => Family::GitWrite,
+        }
+    }
+}
+
 /// The exact problem of an unreadable `ai.tools.approval`.
 pub const APPROVAL_PROBLEM: &str = "ai.tools.approval: expected \"ask\", \"auto\" or \"run\"";
 
@@ -264,6 +308,7 @@ pub struct AiConfig {
     notify_sound: bool,
     tools: bool,
     approval: ApprovalMode,
+    toggles: [bool; 5],
     mcp_servers: Vec<McpServer>,
     servers: ServerPorts,
     managed: Option<ManagedServer>,
@@ -292,6 +337,7 @@ impl Default for AiConfig {
             notify_sound: true,
             tools: true,
             approval: ApprovalMode::Ask,
+            toggles: [false; 5],
             mcp_servers: Vec::new(),
             servers: ServerPorts::default(),
             managed: None,
@@ -360,6 +406,16 @@ impl AiConfig {
     /// (`[ai.tools] approval`).
     pub fn approval(&self) -> ApprovalMode {
         self.approval
+    }
+
+    /// Whether a coding-tools family switch (`[ai.tools] <key>`) is on. Off
+    /// by default; a family is active only while the master switch is on too.
+    pub fn toggle(&self, toggle: ToolToggle) -> bool {
+        self.toggles[toggle as usize]
+    }
+
+    pub fn set_toggle(&mut self, toggle: ToolToggle, on: bool) {
+        self.toggles[toggle as usize] = on;
     }
 
     /// The user MCP servers as declared, global and per-project, in file
@@ -609,6 +665,7 @@ pub fn read_with_port_env(
     let mut config = read_tasks(table, problems);
     config.tools = read_tools(table, problems);
     config.approval = read_approval(table, problems);
+    config.toggles = read_toggles(table, problems);
     config.mcp_servers = read_mcp_servers(table, problems);
     (config.servers, config.managed) = read_servers(table, problems);
     config.memory = read_memory(table, problems, port_env);
@@ -659,6 +716,25 @@ fn read_approval(table: &Table, problems: &mut Vec<String>) -> ApprovalMode {
             ApprovalMode::Ask
         }
     }
+}
+
+/// Reads the five `[ai.tools]` family switches. A missing key is off; a
+/// value of the wrong type is off with a problem for that key only. A
+/// non-table `ai.tools` was already reported by `read_tools`.
+fn read_toggles(table: &Table, problems: &mut Vec<String>) -> [bool; 5] {
+    let section = table
+        .get("ai")
+        .and_then(Value::as_table)
+        .and_then(|ai| ai.get("tools"))
+        .and_then(Value::as_table);
+    ToolToggle::ALL.map(|toggle| match section.and_then(|s| s.get(toggle.key())) {
+        None => false,
+        Some(Value::Boolean(on)) => *on,
+        Some(_) => {
+            problems.push(format!("ai.tools.{}: expected a boolean", toggle.key()));
+            false
+        }
+    })
 }
 
 /// Reads `[[ai.mcp.servers]]`. An invalid entry is skipped whole and each of
@@ -1932,6 +2008,77 @@ mod tests {
                 APPROVAL_PROBLEM.to_owned(),
             ]
         );
+    }
+
+    // Spec (configuration): the five family toggles, default and parse.
+    #[test]
+    fn family_toggles_default_to_off_without_a_notice() {
+        for text in ["", "[ai]\n", "[ai.tools]\n", "[ai.tools]\nother = 1\n"] {
+            let (config, problems) = read_text(text);
+            for toggle in ToolToggle::ALL {
+                assert!(!config.toggle(toggle), "{text:?} {toggle:?}");
+            }
+            assert!(problems.is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn family_toggles_read_their_own_keys() {
+        let (config, problems) = read_text("[ai.tools]\nwrite = true\nexec = true\n");
+        let on: Vec<_> = ToolToggle::ALL
+            .into_iter()
+            .filter(|t| config.toggle(*t))
+            .collect();
+        assert_eq!(on, vec![ToolToggle::Write, ToolToggle::Exec]);
+        assert!(problems.is_empty());
+        let keys: Vec<_> = ToolToggle::ALL.into_iter().map(ToolToggle::key).collect();
+        assert_eq!(keys, ["search", "write", "exec", "git", "git_write"]);
+    }
+
+    #[test]
+    fn the_git_toggles_are_independent() {
+        let (config, _) = read_text("[ai.tools]\ngit = false\ngit_write = true\n");
+        assert!(!config.toggle(ToolToggle::Git));
+        assert!(config.toggle(ToolToggle::GitWrite));
+    }
+
+    #[test]
+    fn a_wrong_typed_toggle_falls_back_to_off_for_that_key_only() {
+        let (config, problems) = read_text("[ai.tools]\ngit = \"yes\"\nsearch = true\n");
+        assert!(!config.toggle(ToolToggle::Git));
+        assert!(config.toggle(ToolToggle::Search));
+        assert_eq!(
+            problems,
+            vec!["ai.tools.git: expected a boolean".to_owned()]
+        );
+    }
+
+    #[test]
+    fn the_toggle_problems_follow_the_approval_one() {
+        let (_, problems) = read_text("[ai.tools]\nexec = 1\napproval = 2\nenabled = 3\n");
+        assert_eq!(
+            problems,
+            vec![
+                "ai.tools.enabled: expected a boolean".to_owned(),
+                APPROVAL_PROBLEM.to_owned(),
+                "ai.tools.exec: expected a boolean".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_non_table_tools_reports_no_toggle_problem() {
+        let (config, problems) = read_text("[ai]\ntools = 3\n");
+        assert!(!config.toggle(ToolToggle::Write));
+        assert_eq!(problems, vec!["ai.tools: expected a table".to_owned()]);
+    }
+
+    #[test]
+    fn set_toggle_changes_one_toggle_only() {
+        let mut config = AiConfig::default();
+        config.set_toggle(ToolToggle::GitWrite, true);
+        assert!(config.toggle(ToolToggle::GitWrite));
+        assert!(!config.toggle(ToolToggle::Git));
     }
 
     #[test]

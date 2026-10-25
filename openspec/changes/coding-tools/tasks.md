@@ -98,7 +98,7 @@ Spec: agent-tools "Tool families", "Off equals 0.18.0"; lazarobox-mcp-server "To
 ### T: toggle plumbing (PR 3, ~450, base tracker)
 Spec: configuration "Family toggle keys"; config-persistence "Family toggle keys are owned"; config-menu "Family toggle rows"; chat-engines "Ollama round limit with coding tools".
 
-- [ ] T.1 RED: `[ai.tools]` booleans (search, write, exec, git, git_write) default false, older builds ignore them; unknown keys preserved. GREEN: `core/ai/config.rs`. ~100.
+- [x] T.1 RED: `[ai.tools]` booleans (search, write, exec, git, git_write) default false, older builds ignore them; unknown keys preserved. GREEN: `core/ai/config.rs`. ~100.
 - [ ] T.2 RED: `config_edit.rs` writes/keeps only the owned keys without touching others. GREEN. ~100. Dep: T.1.
 - [ ] T.3 RED: `FamilySet` from config; app passes it into `ChatRequest.families`; all off equals LEGACY. GREEN: `core/ai/config.rs` + app. ~90. Dep: T.1, P0b.
 - [ ] T.4 RED: `max_rounds(set)` is 24 when Search/Write/Exec/Git/GitWrite is on, else 8. GREEN: `runtime/chat/ollama.rs`. ~50.
