@@ -191,6 +191,7 @@ No data migration. New `[ai.tools]` booleans default to false, and older builds 
 - **Pathname UNIX sockets (D15):** accepted as a documented residual risk in v1. Seccomp hardening is follow-up work, not a v1 blocker.
 - **Git read verbs on a Cloud engine:** they need an explicit `y`, the same as `read_file`. On a Local engine they run without asking.
 - **Design adjustments 1-14** in the design hand-back are all accepted: toggles in slice T, the `GitWrite` family, the cap checked at stage time, `list_dir` sees staged content, the outside-HOME refusal, ZWJ/ZWNJ refused, flag-level denials, listening sockets and `/usr` rx in the toolchain jail, read-only `~/.gitconfig` for git only, commit refused on secret-listed index paths, the per-kind concurrency caps, `run_command` offered but refused without a jail, workers never leave orphans, and the review keys.
+- **`edit_file` on a Cloud engine asks like `read_file`** (it is a content oracle), once per file per turn (the turn's `allowed` set, filled by an allowed read or edit ask); Local never asks.
 - **The orphan review key** is Ctrl+G. W-h still checks it against the chat key table.
 - **The model is told** about a user-side apply or discard of an orphan on its next turn, through a system line in the request.
 - **Archive order:** `agent-tools` MUST be archived before `coding-tools`.

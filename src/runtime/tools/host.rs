@@ -19,6 +19,7 @@
 
 use std::{
     borrow::Cow,
+    collections::HashSet,
     ffi::OsString,
     path::{Path, PathBuf},
     sync::{
@@ -99,6 +100,9 @@ pub struct TurnScope {
     /// Whose batch the write tools fill, and whose staged changes the read
     /// tools show. `None` for a turn that cannot stage.
     pub stage_key: Option<StageKey>,
+    /// The paths (as shown) the user allowed a read or an edit of in this
+    /// turn: a later `edit_file` of one does not ask again.
+    pub allowed: Mutex<HashSet<String>>,
 }
 
 impl TurnScope {
@@ -112,6 +116,7 @@ impl TurnScope {
             external: Slot::default(),
             families: FamilySet::LEGACY,
             stage_key: None,
+            allowed: Mutex::default(),
         }
     }
 }
@@ -310,6 +315,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     };
     let mut ask = None;
     let mut sealed = None;
+    let mut approves = None;
     if let Ok(valid) = &checked {
         match (valid, scope.locality) {
             // A cloud read asks with the path as it will be opened: resolved,
@@ -318,6 +324,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 let home = host.home.as_deref().map(Path::new);
                 match home.and_then(|home| display_target(home, &scope.origin, path)) {
                     Some(shown) => {
+                        approves = Some(shown.clone());
                         ask = ask_for(
                             &Call::ReadFile {
                                 path: shown,
@@ -325,6 +332,21 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                             },
                             Locality::Cloud,
                         )
+                    }
+                    None => checked = Err(UNSHOWABLE.into()),
+                }
+            }
+            // An edit of a file asks like a read of it, once per file per turn.
+            (Call::EditFile { path, .. }, Locality::Cloud) => {
+                let home = host.home.as_deref().map(Path::new);
+                match home.and_then(|home| display_target(home, &scope.origin, path)) {
+                    Some(shown) => {
+                        if !files::lock_set(&scope.allowed).contains(&shown) {
+                            ask = Some(ApprovalAsk::Read {
+                                path: shown.clone(),
+                            });
+                        }
+                        approves = Some(shown);
                     }
                     None => checked = Err(UNSHOWABLE.into()),
                 }
@@ -383,7 +405,12 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 None => Decision::Sent.into(),
             };
             let decision = match answer {
-                Answer::Decided(decision) => decision,
+                Answer::Decided(decision) => {
+                    if let (Some(shown), Decision::Sent) = (approves, decision) {
+                        files::lock_set(&scope.allowed).insert(shown);
+                    }
+                    decision
+                }
                 // Only a run is ever given a report.
                 Answer::Ran(_) if !matches!(call, Call::RunInPane { .. }) => {
                     let (outcome, status, summary) = ended(

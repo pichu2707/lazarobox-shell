@@ -99,7 +99,7 @@ A write MUST be refused (with the refusal text) when the target is inside `.git/
 - THEN the batch holds one entry for `a.txt` with the latest content
 
 ### Requirement: edit_file staging
-`edit_file` MUST take a path, an exact `old` string and a `new` string. It MUST apply to the staged version when one exists, otherwise to the disk version. It MUST be refused with an error result when `old` is empty, matches zero times, or matches more than once. It MUST NOT touch the disk.
+`edit_file` MUST take a path, an exact `old` string and a `new` string. It MUST apply to the staged version when one exists, otherwise to the disk version. It MUST be refused with an error result when `old` is empty, matches zero times, or matches more than once. It MUST NOT touch the disk. Because its answers say whether a text occurs in a file, on a Cloud engine it MUST ask the user like `read_file`, once per file per turn.
 
 #### Scenario: Unique match [auto]
 - GIVEN `a.txt` holding `foo bar`
@@ -115,6 +115,12 @@ A write MUST be refused (with the refusal text) when the target is inside `.git/
 - GIVEN a staged edit of `a.txt`
 - WHEN a second `edit_file` targets text introduced by the first
 - THEN it matches the staged version
+
+#### Scenario: Cloud engine asks once per file [ask]
+- GIVEN a Cloud engine and `a.txt`, whose text the model has not been allowed to read
+- WHEN `edit_file` targets `a.txt`
+- THEN the user is asked as for `read_file` of `a.txt` (same prompt, same approval modes, never typed or run directly), and a denial stages nothing and returns the usual denied text
+- AND later edits of `a.txt` in the same turn do not ask again, nor do they after an allowed `read_file` of it; a new turn asks again; a Local engine never asks
 
 ### Requirement: Propose batch and size cap
 The model closes a batch by calling the propose tool. It MAY stage across several turns before calling it. The propose tool MUST refuse an empty batch and MUST refuse a batch over about 50 entries or 1 MiB of total staged content (whichever comes first), with a message that asks the model to split it. A refused proposal MUST leave the batch staged and unchanged. A proposed batch MUST NOT accept new staging until the user answers.

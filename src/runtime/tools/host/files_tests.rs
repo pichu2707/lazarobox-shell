@@ -462,6 +462,91 @@ async fn a_busy_store_does_not_block_the_async_worker() {
     }
 }
 
+impl World {
+    /// A turn of the pane on a cloud engine, with the write family on.
+    fn cloud(
+        &self,
+        approver: Arc<dyn Approver>,
+    ) -> (Arc<dyn Dispatch>, mpsc::Receiver<StreamEvent>) {
+        let (tx, rx) = mpsc::channel(32);
+        let mut scope = TurnScope::new(tx, Locality::Cloud, self.proj.clone());
+        scope.approver = approver;
+        scope.families = on();
+        scope.stage_key = Some(key());
+        (self.host.dispatch(scope), rx)
+    }
+}
+
+// Spec (code-write, edit_file staging): on a cloud engine an edit asks like a
+// read of the file, once per file per turn; a denial stages nothing; a read
+// the user already allowed counts; a new turn asks again; a local engine never
+// asks. The ask carries the path, never the text.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cloud_edit_asks_once_per_file_per_turn() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "foo bar").unwrap();
+    std::fs::write(w.proj.join("c.txt"), "one two").unwrap();
+    let asked = |a: &Script| a.asks().len();
+
+    // Local: never.
+    let local = Script::new(Decision::Sent);
+    let (d, _rx) = w.turn(local.clone());
+    assert!(!d.call(edit("b.txt", "foo", "SECRET-NEW")).await.is_error);
+    assert_eq!(asked(&local), 0);
+    w.host.stages.lock().unwrap().discard_key(key());
+
+    // Cloud: asks, with the path and no text, then not again for that file.
+    let approver = Script::new(Decision::Sent);
+    let (d, mut rx) = w.cloud(approver.clone());
+    let first = d.call(edit("b.txt", "foo", "SECRET-NEW")).await;
+    assert!(!first.is_error, "{first:?}");
+    let asks = approver.asks();
+    assert!(
+        matches!(asks.as_slice(), [ApprovalAsk::Read { path }] if path.ends_with("/b.txt")),
+        "{asks:?}"
+    );
+    assert!(!format!("{asks:?}").contains("SECRET"));
+    let (_, ask, status, _) = pair(&events(&mut rx));
+    assert!(matches!(ask, Some(ApprovalAsk::Read { .. })));
+    assert_eq!(status, ToolStatus::Ok);
+    assert!(!d.call(edit("b.txt", "bar", "baz")).await.is_error);
+    assert_eq!(asked(&approver), 1);
+    // Another file asks again.
+    assert!(!d.call(edit("c.txt", "one", "uno")).await.is_error);
+    assert_eq!(asked(&approver), 2);
+    w.host.stages.lock().unwrap().discard_key(key());
+
+    // A new turn asks again.
+    let next = Script::new(Decision::Sent);
+    let (d2, _rx2) = w.cloud(next.clone());
+    assert!(!d2.call(edit("b.txt", "foo", "x")).await.is_error);
+    assert_eq!(asked(&next), 1);
+    w.host.stages.lock().unwrap().discard_key(key());
+
+    // A read allowed first counts for the edit.
+    let both = Script::new(Decision::Sent);
+    let (d3, _rx3) = w.cloud(both.clone());
+    assert!(!d3.call(read("b.txt")).await.is_error);
+    assert!(!d3.call(edit("b.txt", "foo", "y")).await.is_error);
+    assert_eq!(asked(&both), 1);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_denied_cloud_edit_stages_nothing_and_a_denial_is_not_remembered() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "foo bar").unwrap();
+    let approver = Script::new(Decision::Denied("declined"));
+    let (d, _rx) = w.cloud(approver.clone());
+    for _ in 0..2 {
+        let out = d.call(edit("b.txt", "foo", "SECRET-NEW")).await;
+        assert!(out.is_error && out.text == "denied: declined", "{out:?}");
+    }
+    assert_eq!(approver.asks().len(), 2);
+    assert_eq!(w.staged(), 0);
+}
+
 // Spec (code-write, Propose batch; design D6/unreviewable): a batch whose diff
 // is truncated is sealed, the user can only reject it, and `Sent` never
 // applies it.

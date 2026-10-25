@@ -102,7 +102,7 @@ impl ApprovalAsk {
 }
 
 /// Which calls wait for the user's answer before they run (D17).
-/// `run_in_pane` always does. `read_file` and `grep` do on a cloud engine,
+/// `run_in_pane` always does. `read_file`, `grep` and `edit_file` do on a cloud engine,
 /// because the text they return goes to the provider, and run free on a local
 /// one. The
 /// directory tools never ask. The mode of the chat (ask or auto-type, D18) is
@@ -117,6 +117,11 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
             command: command.clone(),
         }),
         Call::ReadFile { path, .. } if locality == Locality::Cloud => {
+            Some(ApprovalAsk::Read { path: path.clone() })
+        }
+        // An edit answers whether a text occurs in the file, so on a cloud
+        // engine it asks like a read of that file (and routes like one).
+        Call::EditFile { path, .. } if locality == Locality::Cloud => {
             Some(ApprovalAsk::Read { path: path.clone() })
         }
         // A user tool always asks, on any engine and in any approval mode:
@@ -1025,6 +1030,36 @@ mod tests {
                 path: "~/a.txt".into()
             })
         );
+    }
+
+    // Spec (code-write, edit_file staging): on a cloud engine an edit asks
+    // like a read of the same file, because its answers say what the file
+    // holds; on a local one it never asks. It routes like a read in every mode.
+    #[test]
+    fn a_cloud_edit_asks_like_a_read_and_routes_like_one() {
+        let edit = Call::EditFile {
+            path: "~/a.txt".into(),
+            old: "SECRET-OLD".into(),
+            new: "SECRET-NEW".into(),
+        };
+        let read = Call::ReadFile {
+            path: "~/a.txt".into(),
+            lines: None,
+        };
+        assert_eq!(ask_for(&edit, Locality::Local), None);
+        let ask = ask_for(&edit, Locality::Cloud).expect("a cloud edit asks");
+        assert_eq!(ask, ask_for(&read, Locality::Cloud).unwrap());
+        assert!(!format!("{ask:?}").contains("SECRET"));
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            for origin in [Origin::Tool, Origin::Block] {
+                let read_ask = ask_for(&read, Locality::Cloud).unwrap();
+                assert_eq!(
+                    route(&ask, origin, mode, FREE),
+                    route(&read_ask, origin, mode, FREE),
+                    "{mode:?}"
+                );
+            }
+        }
     }
 
     fn search_ask(pattern: &str, dir: &str) -> ApprovalAsk {

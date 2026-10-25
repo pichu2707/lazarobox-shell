@@ -771,6 +771,7 @@ impl Chats {
             external: slot.clone(),
             families: request.families,
             stage_key: Some(StageKey::Pane(pane)),
+            allowed: Default::default(),
         };
         let dispatch = tooling.host.dispatch(scope);
         if adapter_for(&request.engine) == Some(Adapter::Ollama) {

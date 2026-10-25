@@ -71,6 +71,10 @@ pub(super) fn lock(stages: &Mutex<Stages>) -> MutexGuard<'_, Stages> {
     stages.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+pub(super) fn lock_set<T>(set: &Mutex<T>) -> MutexGuard<'_, T> {
+    set.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// The refusal of a write call the chat did not offer: the text of an unknown
 /// tool. The parse already refuses it; this is the second check.
 pub(super) fn gate(scope: &TurnScope, call: &Call) -> Result<(), &'static str> {
