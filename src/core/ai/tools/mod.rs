@@ -4,6 +4,7 @@
 pub mod capture;
 pub mod command;
 pub mod exec;
+pub mod glob;
 #[cfg(test)]
 mod golden;
 pub mod label;
