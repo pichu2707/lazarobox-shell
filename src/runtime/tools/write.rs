@@ -41,14 +41,18 @@ mod linux {
     use super::{SecretRoots, WriteError};
     use crate::runtime::tools::{
         fs::{Failure, open_checked},
-        open::{cstring, fd_path, flags, open_raw},
+        open::{cstring, fd_path, flags, open_raw, owned},
     };
     use std::{
         ffi::CString,
-        fs::File,
+        fs::{File, Permissions},
+        io::{self, Write},
         os::{
-            fd::{AsRawFd, OwnedFd},
-            unix::{ffi::OsStrExt, fs::MetadataExt},
+            fd::{AsRawFd, OwnedFd, RawFd},
+            unix::{
+                ffi::OsStrExt,
+                fs::{MetadataExt, PermissionsExt},
+            },
         },
         path::Path,
     };
@@ -111,11 +115,170 @@ mod linux {
         open_in(roots, &dir, &name, real)
     }
 
+    /// Makes the folder `real` (one level: its parent must exist) with the
+    /// default mode. The parent is opened with no symlink; `mkdirat` itself
+    /// never follows one.
+    pub fn make_dir(roots: &SecretRoots, real: &Path) -> Result<(), WriteError> {
+        let (dir, name) = open_parent(roots, real)?;
+        // SAFETY: `name` is NUL-terminated and `dir` is an open descriptor.
+        if unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), 0o777) } != 0 {
+            return Err(match io::Error::last_os_error().raw_os_error() {
+                Some(libc::EEXIST) => WriteError::Exists,
+                _ => WriteError::Io,
+            });
+        }
+        sync_dir(&dir);
+        Ok(())
+    }
+
+    /// Creates the file `real` with `bytes`. Never replaces: the final
+    /// `renameat2(RENAME_NOREPLACE)` fails with [`WriteError::Exists`] when the
+    /// name is taken, even by a dangling link.
+    pub fn create_file(roots: &SecretRoots, real: &Path, bytes: &[u8]) -> Result<(), WriteError> {
+        let (dir, name) = open_parent(roots, real)?;
+        let mut temp = stage(&dir, bytes, 0o666, None)?;
+        rename(&dir, &mut temp, &name, true)?;
+        sync_dir(&dir);
+        Ok(())
+    }
+
+    /// Replaces the existing file `real` with `bytes`, keeping its mode. The
+    /// old file is unlinked from the name, never written, so another hard link
+    /// keeps the old bytes (and is refused before that anyway).
+    pub fn replace_file(roots: &SecretRoots, real: &Path, bytes: &[u8]) -> Result<(), WriteError> {
+        let (dir, name) = open_parent(roots, real)?;
+        let old = open_in(roots, &dir, &name, real)?.ok_or(WriteError::Missing)?;
+        let mode = old.metadata().map_err(io_error)?.mode() & 0o7777;
+        let mut temp = stage(&dir, bytes, mode, Some(mode))?;
+        rename(&dir, &mut temp, &name, false)?;
+        sync_dir(&dir);
+        Ok(())
+    }
+
+    /// A temp file that is unlinked when dropped unless it was renamed away.
+    struct Temp {
+        dir: RawFd,
+        name: CString,
+        renamed: bool,
+    }
+
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            if !self.renamed {
+                // SAFETY: `dir` outlives the guard (it is declared first) and
+                // `name` is NUL-terminated. A failure leaves nothing to do.
+                unsafe { libc::unlinkat(self.dir, self.name.as_ptr(), 0) };
+            }
+        }
+    }
+
+    /// `.lbx-<32 random hex digits>.tmp`: unpredictable, and short enough for
+    /// any file name limit whatever the target is called.
+    fn temp_name() -> io::Result<CString> {
+        let mut random = [0u8; 16];
+        // SAFETY: the buffer is valid for `len` bytes.
+        let got = unsafe { libc::getrandom(random.as_mut_ptr().cast(), random.len(), 0) };
+        if usize::try_from(got) != Ok(random.len()) {
+            return Err(io::Error::last_os_error());
+        }
+        let hex: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        cstring(format!(".lbx-{hex}.tmp").as_bytes())
+    }
+
+    /// Writes `bytes` to a new `O_EXCL` temp file in `dir` and syncs it. On any
+    /// error the guard removes the file. `chmod` sets the exact mode (the open
+    /// mode is cut by the umask).
+    fn stage(
+        dir: &OwnedFd,
+        bytes: &[u8],
+        open_mode: u32,
+        chmod: Option<u32>,
+    ) -> Result<Temp, WriteError> {
+        let create = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW;
+        for _ in 0..4 {
+            let name = temp_name().map_err(io_error)?;
+            // SAFETY: `name` is NUL-terminated; the mode is a plain integer.
+            let fd = unsafe {
+                libc::openat(
+                    dir.as_raw_fd(),
+                    name.as_ptr(),
+                    create | libc::O_CLOEXEC,
+                    open_mode as libc::c_uint,
+                )
+            };
+            match owned(fd) {
+                Err(error) if error.raw_os_error() == Some(libc::EEXIST) => continue,
+                Err(_) => return Err(WriteError::Io),
+                Ok(fd) => {
+                    let temp = Temp {
+                        dir: dir.as_raw_fd(),
+                        name,
+                        renamed: false,
+                    };
+                    let mut file = File::from(fd);
+                    file.write_all(bytes).map_err(io_error)?;
+                    if let Some(mode) = chmod {
+                        file.set_permissions(Permissions::from_mode(mode))
+                            .map_err(io_error)?;
+                    }
+                    file.sync_all().map_err(io_error)?;
+                    return Ok(temp);
+                }
+            }
+        }
+        Err(WriteError::Io)
+    }
+
+    /// Moves the temp file onto `to` in the same folder. `noreplace` refuses a
+    /// taken name (`renameat2`); otherwise the name is replaced (`renameat`).
+    fn rename(
+        dir: &OwnedFd,
+        temp: &mut Temp,
+        to: &CString,
+        noreplace: bool,
+    ) -> Result<(), WriteError> {
+        let fd = dir.as_raw_fd();
+        // SAFETY: both names are NUL-terminated and `fd` is an open descriptor.
+        let done = unsafe {
+            if noreplace {
+                libc::syscall(
+                    libc::SYS_renameat2,
+                    fd,
+                    temp.name.as_ptr(),
+                    fd,
+                    to.as_ptr(),
+                    libc::RENAME_NOREPLACE,
+                )
+            } else {
+                libc::renameat(fd, temp.name.as_ptr(), fd, to.as_ptr()) as libc::c_long
+            }
+        };
+        if done == 0 {
+            // The temp name is gone: the guard has nothing to remove.
+            temp.renamed = true;
+            return Ok(());
+        }
+        Err(match io::Error::last_os_error().raw_os_error() {
+            Some(libc::EEXIST) if noreplace => WriteError::Exists,
+            _ => WriteError::Io,
+        })
+    }
+
+    /// Best effort: some filesystems cannot sync a folder.
+    fn sync_dir(dir: &OwnedFd) {
+        // SAFETY: `dir` is an open descriptor.
+        unsafe { libc::fsync(dir.as_raw_fd()) };
+    }
+
     #[cfg(test)]
     mod write_tests {
         use super::*;
         use crate::core::ai::tools::paths::SecretRoots;
-        use std::{io::Read, os::unix::fs::symlink, path::PathBuf};
+        use std::{
+            io::Read,
+            os::unix::fs::{MetadataExt, PermissionsExt, symlink},
+            path::PathBuf,
+        };
 
         struct Fx {
             _dir: tempfile::TempDir,
@@ -134,6 +297,15 @@ mod linux {
                 home,
                 roots,
             }
+        }
+
+        fn names(dir: &Path) -> Vec<String> {
+            let mut all: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            all.sort();
+            all
         }
 
         // Wb.1: opening a target
@@ -211,6 +383,121 @@ mod linux {
             let outside = open_target(&f.roots, Path::new("/etc/hostname"));
             assert_eq!(outside.unwrap_err(), WriteError::Refused);
         }
+
+        // Wb.2: the writes
+
+        #[test]
+        fn make_dir_creates_one_folder_and_refuses_an_existing_or_missing_parent() {
+            let f = fx();
+            make_dir(&f.roots, &f.home.join("proj/new")).unwrap();
+            assert!(f.home.join("proj/new").is_dir());
+            assert_eq!(
+                make_dir(&f.roots, &f.home.join("proj/new")).unwrap_err(),
+                WriteError::Exists
+            );
+            assert_eq!(
+                make_dir(&f.roots, &f.home.join("proj/a/b")).unwrap_err(),
+                WriteError::Refused
+            );
+        }
+
+        #[test]
+        fn make_dir_never_goes_through_a_symlinked_parent() {
+            let f = fx();
+            symlink(f.home.join("elsewhere"), f.home.join("proj/link")).unwrap();
+            let got = make_dir(&f.roots, &f.home.join("proj/link/new"));
+            assert_eq!(got.unwrap_err(), WriteError::Refused);
+            assert!(!f.home.join("elsewhere/new").exists());
+        }
+
+        #[test]
+        fn create_writes_the_bytes_and_leaves_no_temp_file() {
+            let f = fx();
+            let bytes = b"\xef\xbb\xbfno final newline";
+            create_file(&f.roots, &f.home.join("proj/src/new.rs"), bytes).unwrap();
+            assert_eq!(
+                std::fs::read(f.home.join("proj/src/new.rs")).unwrap(),
+                bytes
+            );
+            assert_eq!(names(&f.home.join("proj/src")), ["new.rs"]);
+            create_file(&f.roots, &f.home.join("proj/empty"), b"").unwrap();
+            assert_eq!(
+                std::fs::metadata(f.home.join("proj/empty")).unwrap().len(),
+                0
+            );
+        }
+
+        #[test]
+        fn create_never_replaces_an_existing_file_and_cleans_its_temp() {
+            let f = fx();
+            std::fs::write(f.home.join("proj/a.txt"), "mine").unwrap();
+            let got = create_file(&f.roots, &f.home.join("proj/a.txt"), b"theirs");
+            assert_eq!(got.unwrap_err(), WriteError::Exists);
+            assert_eq!(std::fs::read(f.home.join("proj/a.txt")).unwrap(), b"mine");
+            assert_eq!(names(&f.home.join("proj")), ["a.txt", "src"]);
+        }
+
+        #[test]
+        fn create_refuses_a_symlink_in_the_way_and_a_missing_parent() {
+            let f = fx();
+            symlink(f.home.join("elsewhere"), f.home.join("proj/link")).unwrap();
+            let got = create_file(&f.roots, &f.home.join("proj/link/x"), b"x");
+            assert_eq!(got.unwrap_err(), WriteError::Refused);
+            symlink(f.home.join("elsewhere/t"), f.home.join("proj/dangling")).unwrap();
+            let got = create_file(&f.roots, &f.home.join("proj/dangling"), b"x");
+            assert_eq!(got.unwrap_err(), WriteError::Exists);
+            assert!(!f.home.join("elsewhere/t").exists());
+            let got = create_file(&f.roots, &f.home.join("proj/no/dir/x"), b"x");
+            assert_eq!(got.unwrap_err(), WriteError::Refused);
+        }
+
+        #[test]
+        fn replace_swaps_the_content_keeps_the_mode_and_leaves_no_temp_file() {
+            let f = fx();
+            let path = f.home.join("proj/run.sh");
+            for mode in [0o750, 0o640] {
+                std::fs::write(&path, "old").unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+                replace_file(&f.roots, &path, b"new").unwrap();
+                assert_eq!(std::fs::read(&path).unwrap(), b"new");
+                let meta = std::fs::metadata(&path).unwrap();
+                assert_eq!(meta.mode() & 0o7777, mode, "{mode:o}");
+                assert_eq!(names(&f.home.join("proj")), ["run.sh", "src"]);
+            }
+        }
+
+        #[test]
+        fn replace_refuses_a_hard_link_a_symlink_and_an_absent_file() {
+            let f = fx();
+            std::fs::write(f.home.join("proj/a.txt"), "old").unwrap();
+            std::fs::hard_link(f.home.join("proj/a.txt"), f.home.join("elsewhere/b")).unwrap();
+            let got = replace_file(&f.roots, &f.home.join("proj/a.txt"), b"new");
+            assert_eq!(got.unwrap_err(), WriteError::Refused);
+            assert_eq!(std::fs::read(f.home.join("elsewhere/b")).unwrap(), b"old");
+            std::fs::write(f.home.join("elsewhere/t"), "old").unwrap();
+            symlink(f.home.join("elsewhere/t"), f.home.join("proj/l")).unwrap();
+            let got = replace_file(&f.roots, &f.home.join("proj/l"), b"new");
+            assert_eq!(got.unwrap_err(), WriteError::Refused);
+            assert_eq!(std::fs::read(f.home.join("elsewhere/t")).unwrap(), b"old");
+            let got = replace_file(&f.roots, &f.home.join("proj/none"), b"new");
+            assert_eq!(got.unwrap_err(), WriteError::Missing);
+            assert_eq!(names(&f.home.join("proj")), ["a.txt", "l", "src"]);
+        }
+
+        #[test]
+        fn temp_names_are_unpredictable_and_short() {
+            let first = temp_name().unwrap();
+            let second = temp_name().unwrap();
+            assert_ne!(first, second);
+            for name in [&first, &second] {
+                let text = name.to_str().unwrap();
+                assert!(
+                    text.starts_with(".lbx-") && text.ends_with(".tmp"),
+                    "{text}"
+                );
+                assert!(text.len() < 64, "{text}");
+            }
+        }
     }
 }
 
@@ -225,6 +512,29 @@ mod other {
         Err(WriteError::Unsupported)
     }
 
+    /// Always fails: see [`open_target`].
+    pub fn make_dir(_roots: &SecretRoots, _real: &Path) -> Result<(), WriteError> {
+        Err(WriteError::Unsupported)
+    }
+
+    /// Always fails: see [`open_target`].
+    pub fn create_file(
+        _roots: &SecretRoots,
+        _real: &Path,
+        _bytes: &[u8],
+    ) -> Result<(), WriteError> {
+        Err(WriteError::Unsupported)
+    }
+
+    /// Always fails: see [`open_target`].
+    pub fn replace_file(
+        _roots: &SecretRoots,
+        _real: &Path,
+        _bytes: &[u8],
+    ) -> Result<(), WriteError> {
+        Err(WriteError::Unsupported)
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -235,6 +545,15 @@ mod other {
             let roots = SecretRoots::load(Path::new("/tmp"), &[]).unwrap();
             assert_eq!(
                 open_target(&roots, real).unwrap_err(),
+                WriteError::Unsupported
+            );
+            assert_eq!(make_dir(&roots, real).unwrap_err(), WriteError::Unsupported);
+            assert_eq!(
+                create_file(&roots, real, b"x").unwrap_err(),
+                WriteError::Unsupported
+            );
+            assert_eq!(
+                replace_file(&roots, real, b"x").unwrap_err(),
                 WriteError::Unsupported
             );
         }
