@@ -371,6 +371,43 @@ async fn nothing_is_staged_while_a_batch_waits_for_the_user() {
     waiting.abort();
 }
 
+// Spec (code-write, Propose batch): a turn cancelled while the batch waits
+// for the user must not leave the pane's batch sealed for good.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_call_dropped_while_its_batch_waits_frees_the_pane() {
+    let w = world();
+    let (d, _rx) = w.turn(Arc::new(super::tests::Waiting));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    let mut propose = d.call(Call::ProposeBatch);
+    assert!(futures::poll!(&mut propose).is_pending());
+    let during = d.call(write("b.txt", "late")).await;
+    assert!(during.text.contains("waiting for review"), "{during:?}");
+    // The turn is cancelled: its future is dropped before any answer.
+    drop(propose);
+    assert_eq!(w.staged(), 0);
+    let again = d.call(write("b.txt", "again")).await;
+    assert!(!again.is_error, "{again:?}");
+    let sealed = futures::poll!(&mut d.call(Call::ProposeBatch));
+    assert!(sealed.is_pending(), "{sealed:?}");
+}
+
+// The same for a call whose channel is gone before it can announce: the batch
+// it sealed is not left behind.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_call_that_cannot_announce_does_not_leave_its_batch_sealed() {
+    let w = world();
+    let (live, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(!live.call(write("a.txt", "hello")).await.is_error);
+    let (closed, rx) = w.turn(Script::new(Decision::Sent));
+    drop(rx);
+    let out = closed.call(Call::ProposeBatch).await;
+    assert!(out.is_error && out.text == "cancelled", "{out:?}");
+    assert_eq!(w.staged(), 0);
+    assert!(!live.call(write("b.txt", "again")).await.is_error);
+}
+
 // Spec (code-write, Propose batch; design D6/unreviewable): a batch whose diff
 // is truncated is sealed, the user can only reject it, and `Sent` never
 // applies it.

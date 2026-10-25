@@ -36,10 +36,21 @@ use crate::{
 };
 
 /// What a sealed batch needs to be answered: its id, and whether the user can
-/// approve it at all.
+/// approve it at all. It is also the guard of the batch: when it is dropped
+/// the batch is discarded, so a call dropped before its answer (a cancelled or
+/// aborted turn, a closed channel) never leaves the pane's batch sealed. The
+/// discard is generation-checked: after an answer has closed the batch, or
+/// when a newer batch has taken its place, it finds nothing and does nothing.
 pub(super) struct Sealed {
     id: BatchId,
     reviewable: bool,
+    stages: Arc<Mutex<Stages>>,
+}
+
+impl Drop for Sealed {
+    fn drop(&mut self) {
+        let _ = lock(&self.stages).discard(self.id);
+    }
 }
 
 pub(super) fn lock(stages: &Mutex<Stages>) -> MutexGuard<'_, Stages> {
@@ -75,7 +86,15 @@ pub(super) fn seal(
     let batch = stages.batch(key).ok_or(StageError::Stale.to_string())?;
     let review = Arc::new(BatchReview::new(ReviewDoc::build(batch)));
     let reviewable = review.doc().reviewable();
-    Ok((Sealed { id, reviewable }, review))
+    let stages = host.stages.clone();
+    Ok((
+        Sealed {
+            id,
+            reviewable,
+            stages,
+        },
+        review,
+    ))
 }
 
 /// Runs a call the user does not have to answer: a staging call, or a read
@@ -206,9 +225,11 @@ pub(super) async fn answered(
     sealed: Option<Sealed>,
     decision: Decision,
 ) -> (Outcome, ToolStatus, String) {
-    let Some(Sealed { id, reviewable }) = sealed else {
+    let Some(sealed) = sealed else {
         return ended(ToolStatus::Error, COULD_NOT.to_owned(), COULD_NOT);
     };
+    // Held to the end: any way out of here closes the batch (see `Sealed`).
+    let (id, reviewable) = (sealed.id, sealed.reviewable);
     let denied = |reason: &str| {
         // A batch that is gone already is not an error here.
         let _ = lock(&host.stages).discard(id);
