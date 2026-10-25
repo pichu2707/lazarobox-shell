@@ -2,7 +2,7 @@
 //! so lazarobox does: it sends the registry in `tools`, executes the calls of
 //! each reply through the turn's [`Dispatch`] (the same host, approvals and
 //! events as the MCP session of a CLI engine) and sends the results back, up
-//! to [`MAX_ROUNDS`] requests per turn.
+//! to [`max_rounds`] requests per turn.
 //!
 //! Tool messages live in the request bodies of one turn only: the turn's
 //! events carry text and tool rows, so the history never sees them.
@@ -23,7 +23,11 @@ use crate::{
             prompts,
             stream::{CallError, OllamaToolDecoder, ToolRequest},
         },
-        tools::{mcp::refusal_text, registry::FamilySet, servers::Qualified},
+        tools::{
+            mcp::refusal_text,
+            registry::{Family, FamilySet},
+            servers::Qualified,
+        },
     },
     runtime::{
         loopback::{TOO_LONG, Timeouts, post_stream_with},
@@ -34,7 +38,26 @@ use crate::{
 /// Most requests of one turn. The calls of the last reply are not run: no
 /// request would follow to use their results.
 pub const MAX_ROUNDS: usize = 8;
-/// The system line of a turn that hit [`MAX_ROUNDS`].
+/// Most requests of a turn once a coding-tools family is on: a coding turn
+/// reads, searches and edits before it answers.
+pub const CODING_ROUNDS: usize = 24;
+/// The round limit of a turn offering `set`: [`CODING_ROUNDS`] when any coding
+/// family is on, else [`MAX_ROUNDS`].
+pub fn max_rounds(set: FamilySet) -> usize {
+    let coding = [
+        Family::Search,
+        Family::Write,
+        Family::Exec,
+        Family::Git,
+        Family::GitWrite,
+    ];
+    if coding.into_iter().any(|family| set.contains(family)) {
+        CODING_ROUNDS
+    } else {
+        MAX_ROUNDS
+    }
+}
+/// The system line of a turn that hit the round limit.
 pub const CAP_NOTICE: &str = "tool limit reached for this turn";
 /// What a reply with more calls than [`MAX_CALLS`](crate::core::ai::chat::stream::MAX_CALLS)
 /// is told about the extra ones.
@@ -99,7 +122,8 @@ async fn rounds(
     let mut history: Vec<ToolRound> = Vec::new();
     let mut offer = true;
     let mut requests = 0;
-    while requests < MAX_ROUNDS && !tx.is_closed() {
+    let limit = max_rounds(request.families);
+    while requests < limit && !tx.is_closed() {
         let body = if offer {
             ollama_round_body(&tooled, &history, true)
         } else {
@@ -130,7 +154,7 @@ async fn rounds(
             let _ = tx.send(StreamEvent::Done(finish)).await;
             return;
         }
-        if requests == MAX_ROUNDS {
+        if requests == limit {
             break;
         }
         let mut exchanges = Vec::new();

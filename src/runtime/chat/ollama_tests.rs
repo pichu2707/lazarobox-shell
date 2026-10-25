@@ -416,6 +416,40 @@ async fn the_round_cap_ends_the_turn_with_a_system_line_and_idle() {
     assert_eq!(events[n - 1], done());
 }
 
+// Spec (chat-engines): the cap is 8 rounds, and 24 once a coding family is on.
+#[test]
+fn the_round_limit_follows_the_coding_families() {
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    assert_eq!(ollama::max_rounds(FamilySet::LEGACY), 8);
+    assert_eq!(ollama::max_rounds(FamilySet::EMPTY), 8);
+    for family in [
+        Family::Search,
+        Family::Write,
+        Family::Exec,
+        Family::Git,
+        Family::GitWrite,
+    ] {
+        assert_eq!(
+            ollama::max_rounds(FamilySet::LEGACY.with(family)),
+            24,
+            "{family:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_coding_family_raises_the_round_cap_of_a_turn() {
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    let fake = fake(vec![calls("find_dir", json!({"query": "curso"}))]).await;
+    let mut lab = lab(fake.port);
+    let mut request = ask(&lab, true);
+    request.families = FamilySet::LEGACY.with(Family::Search);
+    lab.chats.send(pane(1), 1, request);
+    let events = finish(&mut lab.rx).await;
+    assert_eq!(fake.bodies().len(), 24);
+    assert_eq!(tool_calls(&events), 23);
+}
+
 // Cancel -----------------------------------------------------------------------
 
 #[tokio::test]
