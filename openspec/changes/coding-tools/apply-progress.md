@@ -211,3 +211,37 @@ About 290 production lines and about 260 test lines (`write.rs` new, `open.rs` +
 ## Checks (W-b)
 
 `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo +1.88 check --all-targets`, aarch64-apple-darwin check and clippy.
+
+## Batch 7: slice W-c (stage state machine, PR 9, branch feat/coding-tools-wc, base feat/coding-tools-wb)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Wc.1 `Batch` lifecycle, `StageKey::Pane`, `BatchId`, orphans | done | feat(tools): add the write batch state machine with orphans and stale answers |
+| Wc.2 caps at stage and propose, `write_file` 32 KiB | done | feat(tools): cap a write batch at 50 entries and 1 MiB when staging and when proposing |
+| Wc.3 overwrite only when `<= 64 KiB` and `redact(clean(text)) == text` | done | feat(tools): overwrite an existing file only when its text is what the review shows |
+
+## TDD cycle evidence (W-c)
+
+| Task | RED (seen failing) | GREEN | Triangulation | REFACTOR |
+|------|--------------------|-------|---------------|----------|
+| Wc.1 | `error[E0422]: cannot find struct ... BatchId`, `error[E0425]: cannot find type Batch / StageKey`, `cannot find type Entry / Orphan` (43 compile errors) | 12 tests green at once | create/restage/dir-as-file replace, empty propose, staging refused while Proposed, both answers close the batch, stale generation and foreign key, resolve before propose, discard from both states, orphan for both states and live turn | none needed. Mutation: `if false && id != self.id` made `a_stale_generation_is_refused_and_changes_nothing` fail |
+| Wc.2 | `error[E0425]: cannot find value MAX_ENTRIES / MAX_BYTES / WRITE_FILE_MAX`, `no method named bytes` (27 compile errors) | 19 green after fixing one test arithmetic mistake (my restage test overfilled the cap by 5 bytes) | 32 KiB at and over, entry 50 ok and 51 refused, restage at 50 ok, 1 MiB boundary, restage counts the replacement, propose recheck of both caps leaves the batch unchanged, exact caps propose ok. Mutation: propose recheck replaced by `if false` made `propose_rechecks_the_caps_and_leaves_the_batch_unchanged` fail | none |
+| Wc.3 | `cannot find type Existing`, `READ_CAP`, `StageError::Content`, `variant Entry::File has no field base` (79 compile errors, the 30 old `stage_file` calls too) | 26 green at once | clean 2 KiB+ overwrite keeps its base, API key refused, exactly 64 KiB ok / +1 refused / huge judged by size, ESC/bidi/BEL on disk refused, CRLF and non-UTF-8/NUL keep their content refusal, `check_new` on the new text for create and overwrite, refused overwrite keeps the earlier entry. Mutations: `size >= READ_CAP` and `clean(disk) != disk` (no redact) each made tests fail | none |
+
+## Deviations / notes (W-c)
+
+- `gen` is a reserved keyword in edition 2024, so `BatchId.generation` replaces the design's `gen`.
+- `stage.rs` is pure. `Batch` is one batch; the per-key store (`Stages`, one batch per key, generation counter) is We3.1. Nothing is wired, `host.rs` untouched.
+- API: `Batch::{new, id, state, entries, bytes, stage_dir, stage_file(target, text, Existing), propose, resolve(id, Outcome), discard, orphan(turn_live)}`. The caller reads the disk: `Existing::Absent | Present{size, bytes}` (bytes needed only when `size <= READ_CAP`). `Entry::File{text, base}` keeps the disk text of an overwrite for the diff and the rollback.
+- `stage_file` also runs `content::check_new` on the new text (design D23); a create and an overwrite both get it.
+- Caps: stage time counts the replacement (a restage of a staged path does not double count); `Full` = "batch is full: propose it, then stage the rest"; propose re-check = `TooLarge` ("batch is over 50 entries or 1 MiB: split it into smaller batches"). `write_file` over 32 KiB = `FileTooLarge`. Dirs count as entries, 0 bytes.
+- Orphan: `orphan(turn_live)` is `None` for an empty batch, a live turn, or a closed batch; otherwise `Staging` (discard only) or `Proposed` (review and apply).
+- Not here: the 1 MiB file cap and per-field caps of `edit_file` (W-d), the pending-view marker (We3.2), apply (We2).
+
+## Size (W-c)
+
+About 304 production lines (`stage.rs` lines before `mod tests`, with comments) plus 1 in `tools/mod.rs`; about 467 test lines. `git diff --stat feat/coding-tools-wb...HEAD`: 2 source files, +772 (before docs).
+
+## Checks (W-c)
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5516 lib tests green), `cargo +1.88 check --all-targets`.

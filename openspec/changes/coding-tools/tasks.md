@@ -38,7 +38,7 @@ Tracker = `feat/coding-tools`. Rule: PR1 of the chain targets the tracker; each 
 | 6 | M1-c search wiring + approval | ~350 | M1-b branch | Ready (see decision 4) |
 | 7 | W-a content rules + `resolve_write` | ~350 | M1-c branch | Ready |
 | 8 | W-b write primitives (`open.rs`) | ~350 | W-a branch | Ready |
-| 9 | W-c stage state machine | ~400 | W-b branch | Ready |
+| 9 | W-c stage state machine | ~400 | W-b branch | Done (apply) |
 | 10 | W-d edit + diff | ~400 | W-c branch | Ready |
 | 11 | W-e1 ReviewDoc + layout + coverage core | ~400 | W-d branch | Ready |
 | 12 | W-e2 apply (journal, rollback, `WriteOps`) | ~450 | W-e1 branch | Ready |
@@ -150,9 +150,9 @@ Obligations from the W-a review (`resolve_write` is a check made earlier, not a 
 
 ### W-c: stage state machine (PR 9, ~400)
 Spec: code-write "create_dir and write_file staging", "Propose batch and size cap", "Orphan, close and quit".
-- [ ] Wc.1 RED: `Staging -> Proposed(gen) -> Applied|Discarded`; staging refused while Proposed; stale gen refused; Proposed-orphan vs Staging-orphan. GREEN: `tools/stage.rs` with `StageKey::Pane`, `BatchId`. ~200.
-- [ ] Wc.2 RED: caps at stage time (50 entries, 1 MiB) with "batch is full: propose it, then stage the rest", and re-check at propose; `write_file` 32 KiB. GREEN. ~120.
-- [ ] Wc.3 RED: `write_file` on an existing file only when <= 64 KiB and `redact(clean(text)) == text`, else "use edit_file". GREEN. ~80.
+- [x] Wc.1 RED: `Staging -> Proposed(gen) -> Applied|Discarded`; staging refused while Proposed; stale gen refused; Proposed-orphan vs Staging-orphan. GREEN: `tools/stage.rs` with `StageKey::Pane`, `BatchId`. ~200.
+- [x] Wc.2 RED: caps at stage time (50 entries, 1 MiB) with "batch is full: propose it, then stage the rest", and re-check at propose; `write_file` 32 KiB. GREEN. ~120.
+- [x] Wc.3 RED: `write_file` on an existing file only when <= 64 KiB and `redact(clean(text)) == text`, else "use edit_file". GREEN. ~80.
 
 ### W-d: edit and diff (PR 10, ~400)
 Spec: code-write "edit_file staging", "Batch review and coverage gate".
