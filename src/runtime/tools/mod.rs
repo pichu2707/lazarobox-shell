@@ -1,6 +1,7 @@
 //! Runtime of the read tools: runs a validated call off the event loop and
 //! wraps what it returns as untrusted data.
 
+pub mod apply;
 pub mod approver;
 #[cfg(test)]
 mod audit;

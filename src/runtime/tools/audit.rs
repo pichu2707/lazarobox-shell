@@ -65,8 +65,9 @@ const BANNED_FS: &[&str] = &["write", "copy", "rename", "symlink", "truncate"];
 /// The files (relative to `src/runtime/tools/`) that may use `FS_WRITE` names.
 const MAY_WRITE: &[&str] = &["write.rs"];
 
-/// The files that may name the `write` module. Later slices add `apply.rs`.
-const MAY_CALL_WRITE: &[&str] = &["write.rs", "mod.rs", "audit.rs"];
+/// The files that may name the `write` module. `apply.rs` drives it through
+/// `WriteOps`, and has no write API of its own.
+const MAY_CALL_WRITE: &[&str] = &["write.rs", "mod.rs", "audit.rs", "apply.rs"];
 
 /// The only `libc::` names the read side may use.
 const LIBC_ALLOWED: &[&str] = &[
@@ -604,6 +605,27 @@ mod tests {
             assert!(!found.is_empty(), "{rel}: {src}");
             assert!(found.iter().all(|line| line.starts_with(rel)), "{found:?}");
         }
+    }
+
+    #[test]
+    fn apply_may_name_the_write_module_but_never_a_write_api_itself() {
+        let tools = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime/tools");
+        let src = std::fs::read_to_string(tools.join("apply.rs")).unwrap();
+        // It is on the list for a reason: it does reference `write`.
+        assert!(!write_refs(&src).is_empty());
+        assert_eq!(file_problems("apply.rs", &src), Vec::<String>::new());
+        // ...and it earns nothing else: every write token is still flagged.
+        for bad in [
+            "fn f() { std::fs::write(p, b) }",
+            "fn f() { std::fs::remove_file(p) }",
+            "fn f() { libc::unlinkat(a, p, 0) }",
+            "fn f() { let _ = OpenOptions::new(); }",
+        ] {
+            assert!(!file_problems("apply.rs", bad).is_empty(), "{bad}");
+        }
+        let named = "use super::write::{self, WriteError};";
+        assert_eq!(planted(&[("apply.rs", named)]), Vec::<String>::new());
+        assert!(!planted(&[("host/apply.rs", named)]).is_empty());
     }
 
     #[test]
