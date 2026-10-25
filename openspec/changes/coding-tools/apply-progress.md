@@ -445,3 +445,22 @@ Production, counted as added lines outside test files and `#[cfg(test)]` modules
 ## Checks (W-e4)
 
 `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5710 lib tests green), `cargo +1.88 check --all-targets`, no pending `.snap.new`.
+
+## W-e4 review fixes (feat/coding-tools-we4)
+
+Approved by the user: `size:exception` for this PR, and keeping `n`/Esc locked for 800 ms on a reviewable batch.
+
+- Coverage is render-driven. `fit()` only lays out and clamps `top`. The renderer calls `ReviewView::note_drawn(now, area)` (a `Cell`); after the frame the event loop calls `App::frame_drawn()`, which runs `credit_drawn()` and credits the rows of the area and `top` that were drawn. A review in a background tab, a hidden pane or under a list/note/tag/summary view is not drawn, so it credits nothing; a resize credits nothing. `credit_drawn` returns true while the counter on screen is stale, so one more frame follows. `Coverage` gained `start(at)`; its delay starts at the first draw (`Coverage::new(doc)` has no clock, `started_at` is the test constructor).
+- `n`/Esc: `ReviewView::answerable(now)` = unreviewable batch (their only exit, at once) or first draw + 800 ms. Spec scenarios added to chat-pane "Batch review view" and a line in code-write "Batch review and coverage gate".
+- Redraw: `ReviewView::wake(now)` / `App::wake_review()` mark the screen dirty during the countdown and once when it ends; the 16 ms `tick` branch of the event loop calls it before `take_dirty`.
+- Badges: the mode badge and the scroll badge are skipped while `ChatView::review_shown()`; they keep drawing in every other view.
+- Keys row: `n reject · y approve|locked · ↑↓ PgUp PgDn scroll` (cut from the right). 9 existing snapshots changed only in that row.
+- `approve()` refuses an `ApprovalAsk::Batch`; only `approve_batch` answers one. The wheel over a review scrolls the review (`Move::Up/Down`, `App::scroll_review`) and never the transcript; other mouse events do nothing.
+- Tests added: first-draw crediting, hidden resize, background tab, delay from first draw, wake, n/Esc both cases, generic approve, wheel, click, Release, unfocused pane, tools off, second ask, scroll badge, mode badge, keys row at 10/19/24 (view and app level). Existing review tests now draw (a `paint`/`draw` helper credits like the loop).
+
+RED seen: `left: 41 right: 63` (rows credited at open and on a resize while not drawn), `E0599 no method named frame_drawn / wake_review found for App`, `E0061 ReviewView::new takes 2 arguments but 3 were supplied` (the opening clock is gone), `left: [ToolDecision { .. decision: Sent }] right: []` (generic `y` approved a batch), `left: 0 right: 1` (wheel did not scroll the review), `"1 file, +5 -0 · seen 0/8 · 8 remai[+186]"` (scroll badge over the counter), `"1 file, +3 -0 · seen 6/6 · y r AUTO"` (mode badge over the tail), `left: "y approve" right: "n reject ·"` (keys row at 10).
+Passed at once, proved by mutation: Release (arm made to fall through: failed), click (non-wheel mapped to a wheel tick: failed), tools off (`self.review = None` removed in `withdraw`: failed), second ask (pending check removed: failed), unfocused pane (now also asserts the shell receives the `y`).
+
+Deviation: the event-loop wiring (`app.wake_review()`, `app.frame_drawn()` in `runtime.rs`) has no test; both methods are tested through the App. Production total of the branch against `feat/coding-tools-we3`: about 720 added lines (650 without blanks), over 500: `size:exception` as agreed.
+
+Checks: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5734 lib), `cargo +1.88 check --all-targets`, no `.snap.new`.
