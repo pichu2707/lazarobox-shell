@@ -613,6 +613,153 @@ async fn a_free_tool_runs_end_to_end_from_the_mcp_session_through_the_host() {
     assert_eq!(pair(&events(&mut rx)).2, ToolStatus::Denied);
 }
 
+/// One `tools/call` over an open session: the reply to it.
+async fn call_over(
+    (reader, writer): &mut (
+        BufReader<tokio::net::unix::OwnedReadHalf>,
+        tokio::net::unix::OwnedWriteHalf,
+    ),
+    id: u64,
+    method: &str,
+    params: Value,
+) -> Value {
+    let request = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+    writer
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+    line(reader).await
+}
+
+/// A session of `families` in front of the host, already initialized.
+async fn open_session(
+    dir: &Path,
+    host: &Arc<ToolHost>,
+    scope: TurnScope,
+    families: crate::core::ai::tools::registry::FamilySet,
+) -> (
+    Hub,
+    (
+        BufReader<tokio::net::unix::OwnedReadHalf>,
+        tokio::net::unix::OwnedWriteHalf,
+    ),
+) {
+    let mut hub = Hub::new(&[dir.join("run")]).unwrap();
+    let started = hub
+        .open(
+            PaneId::for_test(1),
+            host.dispatch(scope),
+            Default::default(),
+            families,
+        )
+        .unwrap();
+    let mut c = client(&started.socket, started.token.reveal()).await;
+    let init = call_over(
+        &mut c,
+        0,
+        "initialize",
+        json!({"protocolVersion": "2025-06-18"}),
+    )
+    .await;
+    assert!(init["result"].is_object());
+    (hub, c)
+}
+
+fn tool_names(list: &Value) -> Vec<&str> {
+    list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect()
+}
+
+// Spec (code-search, Family and toggle): with Search off the surface is the
+// 0.18.0 one and a call to `glob` or `grep` runs nothing.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn with_search_off_glob_and_grep_are_neither_listed_nor_run() {
+    use crate::core::ai::tools::registry::FamilySet;
+    let (dir, home, host) = fixture();
+    let (scope, mut rx) = scope(Locality::Local, &home);
+    let (_hub, mut c) = open_session(dir.path(), &host, scope, FamilySet::LEGACY).await;
+    let list = call_over(&mut c, 1, "tools/list", json!({})).await;
+    let names = tool_names(&list);
+    assert!(names.contains(&"read_file"), "{names:?}");
+    assert!(
+        !names.contains(&"glob") && !names.contains(&"grep"),
+        "{names:?}"
+    );
+    for (id, name, args) in [
+        (2, "grep", json!({"pattern": "hello"})),
+        (3, "glob", json!({"pattern": "*.txt"})),
+    ] {
+        let reply = call_over(
+            &mut c,
+            id,
+            "tools/call",
+            json!({"name": name, "arguments": args}),
+        )
+        .await;
+        assert_eq!(reply["result"]["isError"], true, "{reply}");
+        let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(!text.contains("note.txt"), "{text}");
+    }
+    assert!(events(&mut rx).is_empty());
+}
+
+// With Search on both tools are offered and run through the session: glob
+// free, grep after the user's `y` on a cloud engine.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn with_search_on_glob_and_grep_run_end_to_end_and_a_cloud_grep_asks() {
+    use crate::core::ai::tools::registry::{Family, FamilySet};
+    let (dir, home, host) = fixture();
+    let (mut scope, mut rx) = scope(Locality::Cloud, &home);
+    let approver = Scripted::new(Decision::Sent);
+    scope.approver = approver.clone();
+    let search = FamilySet::LEGACY.with(Family::Search);
+    let (_hub, mut c) = open_session(dir.path(), &host, scope, search).await;
+    let list = call_over(&mut c, 1, "tools/list", json!({})).await;
+    let names = tool_names(&list);
+    assert!(
+        names.contains(&"glob") && names.contains(&"grep"),
+        "{names:?}"
+    );
+
+    let globbed = call_over(
+        &mut c,
+        2,
+        "tools/call",
+        json!({"name": "glob", "arguments": {"pattern": "*.txt"}}),
+    )
+    .await;
+    assert_eq!(globbed["result"]["isError"], false, "{globbed}");
+    let text = globbed["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("note.txt"), "{text}");
+    assert!(approver.asked.lock().unwrap().is_empty());
+    assert_eq!(pair(&events(&mut rx)).2, ToolStatus::Ok);
+
+    let grepped = call_over(
+        &mut c,
+        3,
+        "tools/call",
+        json!({"name": "grep", "arguments": {"pattern": "hello from", "path": "."}}),
+    )
+    .await;
+    assert_eq!(grepped["result"]["isError"], false, "{grepped}");
+    let text = grepped["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("note.txt:1:hello from the note"), "{text}");
+    assert_eq!(
+        *approver.asked.lock().unwrap(),
+        vec![ApprovalAsk::Search {
+            pattern: "hello from".into(),
+            dir: ".".into()
+        }]
+    );
+    assert_eq!(pair(&events(&mut rx)).2, ToolStatus::Ok);
+}
+
 // -- review follow-up --
 
 /// A channel of `room` slots with `fill` junk events already queued.
