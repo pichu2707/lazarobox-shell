@@ -463,6 +463,10 @@ pub(super) enum Kind {
     File,
     Link,
     Other,
+    /// The type could not be told (macOS `DT_UNKNOWN` and a failed `fstatat`):
+    /// never shown, never entered.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Unknown,
 }
 
 impl Kind {
@@ -564,11 +568,12 @@ fn read_dir_fd(
                 if name == b"." || name == b".." {
                     continue;
                 }
-                // An unknown type is `Other`: the walkers skip it (fail closed).
                 let kind = match d_type {
                     libc::DT_DIR => Kind::Dir,
                     libc::DT_REG => Kind::File,
                     libc::DT_LNK => Kind::Link,
+                    // SAFETY: `self.0` is the open stream.
+                    libc::DT_UNKNOWN => kind_at(unsafe { libc::dirfd(self.0) }, name),
                     _ => Kind::Other,
                 };
                 return Some(Ok((OsStr::from_bytes(name).to_os_string(), kind)));
@@ -576,8 +581,9 @@ fn read_dir_fd(
         }
     }
 
-    // SAFETY: `dup` and `fdopendir` take no pointers; a failed `dup` is -1.
-    let copy = unsafe { libc::dup(fd.as_raw_fd()) };
+    // SAFETY: `fcntl` takes no pointer here; a failed duplicate is -1. The
+    // duplicate keeps close-on-exec, which a plain `dup` would drop.
+    let copy = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
     if copy < 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -595,6 +601,28 @@ fn read_dir_fd(
     Ok(Dir(dir))
 }
 
+/// The kind of `name` in the folder `dirfd`, from `fstatat` without following a
+/// link. Any failure is `Unknown`, which `visible` hides.
+#[cfg(any(target_os = "macos", test))]
+fn kind_at(dirfd: i32, name: &[u8]) -> Kind {
+    let Ok(name) = std::ffi::CString::new(name) else {
+        return Kind::Unknown;
+    };
+    // SAFETY: `stat` is plain data; `fstatat` fills it when it returns 0.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: `name` is NUL-terminated and `st` is a valid out pointer.
+    let rc = unsafe { libc::fstatat(dirfd, name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) };
+    if rc != 0 {
+        return Kind::Unknown;
+    }
+    match st.st_mode & libc::S_IFMT {
+        libc::S_IFDIR => Kind::Dir,
+        libc::S_IFREG => Kind::File,
+        libc::S_IFLNK => Kind::Link,
+        _ => Kind::Other,
+    }
+}
+
 /// Whether `dir/name` may be shown. A link is judged by where it leads, and a
 /// dangling one is hidden.
 pub(super) fn visible(
@@ -604,7 +632,7 @@ pub(super) fn visible(
     name: &OsStr,
     kind: Kind,
 ) -> bool {
-    if is_excluded_name(&name.to_string_lossy()) {
+    if kind == Kind::Unknown || is_excluded_name(&name.to_string_lossy()) {
         return false;
     }
     let full = dir.join(name);
@@ -1246,6 +1274,33 @@ mod tests {
         assert!(!out.contains("sk-"), "{out:?}");
         assert!(out.ends_with(READ_MARKER), "{out:?}");
         assert!(out.contains("[REDACTED]"), "{out:?}");
+    }
+
+    #[test]
+    fn an_entry_of_unknown_kind_is_never_visible() {
+        let f = fixture();
+        let roots = SecretRoots::load(&f.home, &[]).unwrap();
+        let cancel = AtomicBool::new(false);
+        let budget = Budget::new(&Limits::default(), &cancel);
+        let dir = f.home.join("dev/app");
+        let name = OsStr::new("main.rs");
+        assert!(visible(&roots, &budget, &dir, name, Kind::File));
+        assert!(visible(&roots, &budget, &dir, name, Kind::Other));
+        assert!(!visible(&roots, &budget, &dir, name, Kind::Unknown));
+    }
+
+    #[test]
+    fn kind_at_tells_dir_file_and_link_without_following_and_fails_closed() {
+        let f = fixture();
+        let dir = std::fs::File::open(f.home.join("dev/app")).unwrap();
+        symlink("main.rs", f.home.join("dev/app/ln")).unwrap();
+        let at = |name: &str| kind_at(dir.as_raw_fd(), name.as_bytes());
+        assert_eq!(at("main.rs"), Kind::File);
+        assert_eq!(at("ln"), Kind::Link);
+        assert_eq!(at("missing"), Kind::Unknown);
+        assert_eq!(at("bad\0name"), Kind::Unknown);
+        let parent = std::fs::File::open(f.home.join("dev")).unwrap();
+        assert_eq!(kind_at(parent.as_raw_fd(), b"app"), Kind::Dir);
     }
 
     #[test]
