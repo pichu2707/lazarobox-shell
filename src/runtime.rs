@@ -122,6 +122,10 @@ const STORE_CHANNEL: usize = 64;
 const PREPARE_BOUND: Duration = Duration::from_secs(2);
 /// Capacity of the channel from the prompt jobs to the event loop.
 const PROMPT_CHANNEL: usize = 16;
+
+/// Capacity of the Hugging Face channel: the replies, and a download's
+/// progress about every 250 ms (dropped while the loop is behind).
+const HUB_CHANNEL: usize = 16;
 /// How often `Panes::shutdown` checks whether the kills are done.
 const SHUTDOWN_POLL: Duration = Duration::from_millis(5);
 /// Most events one `drive` call processes (the first one plus its feedback).
@@ -282,6 +286,7 @@ pub async fn run() -> io::Result<()> {
     let (notified_tx, notified_rx) = mpsc::channel(4);
     let (managed_tx, managed_rx) = mpsc::channel(4);
     let (shared_tx, shared_rx) = mpsc::channel(1);
+    let (hub_tx, hub_rx) = mpsc::channel(HUB_CHANNEL);
     let update_cache = update::cache_path(
         env::var_os("XDG_DATA_HOME").as_deref(),
         env::var_os("HOME").as_deref(),
@@ -508,7 +513,15 @@ pub async fn run() -> io::Result<()> {
                 chat::wires_for(cli_env.clone()),
             ),
         )
-        .with_store(chat_store::spawn_at(store_path, store_tx));
+        .with_store(chat_store::spawn_at(store_path, store_tx))
+        // The picker's Hugging Face screens: curl from the same PATH as the
+        // update check, into the Hugging Face cache.
+        .with_hub(hf::Hub::new(
+            cli_env.path.clone(),
+            hub_dir(),
+            hf::env_token,
+            hub_tx,
+        ));
     let inbox = Inbox {
         pty: rx,
         ai: ai_rx,
@@ -521,6 +534,7 @@ pub async fn run() -> io::Result<()> {
         notified: notified_rx,
         managed: managed_rx,
         shared: shared_rx,
+        hub: hub_rx,
     };
     // The first pane is spawned before the UI starts: a failure is fatal.
     panes.spawn_pane(id, &spec)?;
@@ -594,6 +608,21 @@ fn model_dirs() -> Arc<[PathBuf]> {
         macos: cfg!(target_os = "macos"),
     });
     found.into()
+}
+
+/// The Hugging Face cache folder downloads go to, from this process's
+/// environment, as the model scan looks for it.
+fn hub_dir() -> Option<PathBuf> {
+    let var = |name: &str| env::var_os(name).map(PathBuf::from);
+    crate::core::ai::gguf::hub_dir(&crate::core::ai::gguf::DirsEnv {
+        home: var("HOME"),
+        xdg_data_home: var("XDG_DATA_HOME"),
+        xdg_cache_home: var("XDG_CACHE_HOME"),
+        llama_cache: var("LLAMA_CACHE"),
+        hf_hub_cache: var("HF_HUB_CACHE"),
+        hf_home: var("HF_HOME"),
+        macos: cfg!(target_os = "macos"),
+    })
 }
 
 /// Whether `ENGRAM_HTTP_TOKEN` is set and not empty: all the app learns of
@@ -686,6 +715,8 @@ struct Inbox {
     managed: mpsc::Receiver<Result<(), String>>,
     /// The llama-server lazarobox started is answering another lazarobox.
     shared: mpsc::Receiver<()>,
+    /// The Hub's replies and the progress and end of a download.
+    hub: mpsc::Receiver<AppEvent>,
 }
 
 async fn event_loop(
@@ -732,6 +763,7 @@ async fn run_loop(
         notified: mut notified_rx,
         managed: mut managed_rx,
         shared: mut shared_rx,
+        hub: mut hub_rx,
     } = inbox;
     let theme = LazaroboxTheme::default();
     let mut events = EventStream::new();
@@ -841,6 +873,12 @@ async fn run_loop(
             }
             Some(()) = shared_rx.recv() => {
                 if step(&mut app, AppEvent::ServerAnswersOthers, panes) {
+                    return Ok(());
+                }
+            }
+            // `panes` keeps the worker, and so a sender, for the whole loop.
+            Some(event) = hub_rx.recv() => {
+                if step(&mut app, event, panes) {
                     return Ok(());
                 }
             }
@@ -1037,6 +1075,9 @@ struct Panes {
     /// Names the jobs of `sessions`; [`jobs::running`] unless a test
     /// installs another one with `with_lister`.
     list_running: Box<ListFn>,
+    /// The Hugging Face requests and download. `None` ignores the hub
+    /// effects (unit tests).
+    hub: Option<hf::Hub>,
 }
 
 impl Panes {
@@ -1065,6 +1106,7 @@ impl Panes {
             store: None,
             sessions: Vec::new(),
             list_running: Box::new(jobs::running),
+            hub: None,
         }
     }
 
@@ -1191,6 +1233,12 @@ impl Panes {
     /// Sets what `Effect::DetectEngines` runs.
     fn with_detector(mut self, detect: Box<dyn FnMut(bool)>) -> Self {
         self.detect = detect;
+        self
+    }
+
+    /// Sets what runs the Hugging Face effects.
+    fn with_hub(mut self, hub: hf::Hub) -> Self {
+        self.hub = Some(hub);
         self
     }
 
@@ -1423,6 +1471,21 @@ impl Panes {
                 // Returns at once: the start runs on its own task.
                 Effect::StartManaged { model, port } => (self.manage)(model, port),
                 Effect::ManagedIdle(idle) => (self.set_idle)(idle),
+                Effect::HubAsk(ask) => {
+                    if let Some(hub) = &self.hub {
+                        hub.ask(ask);
+                    }
+                }
+                Effect::Download(job) => {
+                    if let Some(hub) = self.hub.as_mut() {
+                        hub.start(*job);
+                    }
+                }
+                Effect::CancelDownload => {
+                    if let Some(hub) = self.hub.as_mut() {
+                        hub.cancel();
+                    }
+                }
                 Effect::NotifyTest { mode, sound } => {
                     self.bell |= rings_at_once(mode);
                     let fallback =

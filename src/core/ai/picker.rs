@@ -14,7 +14,10 @@ use super::chat::adapters::adapter_for;
 use super::config::{AiConfig, Assignment, Task};
 use super::parse::sanitize;
 use super::sanitize::is_format;
-use super::{CATALOG, Detection, Engine, Kind, Status, gguf, start_command, status_text};
+use super::{CATALOG, Detection, Engine, Kind, Status, gguf, hf, start_command, status_text};
+
+mod hub;
+pub use hub::{Confirm, HF_ROW, HINT_CANCEL, Hub, QUERY_HINT, Running, Screen, shown};
 
 /// What a picker is assigning to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -58,6 +61,11 @@ pub enum PickKey {
         row: usize,
         text: String,
     },
+    /// The `download from Hugging Face…` entry of llamacpp.
+    HfDownload,
+    /// A repo or a choice of the Hugging Face screens, by its index in the
+    /// reply.
+    Hub(usize),
 }
 
 /// The mark drawn after a row label.
@@ -235,6 +243,33 @@ fn account_models<'a>(engine: &str, detection: Option<&'a Detection>) -> &'a [(S
 
 /// The Models level of a picker for `engine`.
 pub fn model_rows(
+    engine: &str,
+    target: Target,
+    draft: &AiConfig,
+    detection: Option<&Detection>,
+) -> Vec<PickRow> {
+    let mut rows = listed_models(engine, target, draft, detection);
+    // Last, whenever llama-server is installed, with or without models.
+    let installed = engine == "llamacpp"
+        && known(detection).is_some_and(|d| {
+            d.engines
+                .iter()
+                .any(|s| s.id == engine && s.status != Status::NotInstalled)
+        });
+    if installed {
+        rows.push(PickRow {
+            key: PickKey::HfDownload,
+            label: HF_ROW.to_owned(),
+            mark: Mark::Plain,
+            enabled: true,
+            current: false,
+        });
+    }
+    rows
+}
+
+/// The rows of [`model_rows`] before the Hugging Face entry.
+fn listed_models(
     engine: &str,
     target: Target,
     draft: &AiConfig,
@@ -579,8 +614,15 @@ fn accepts(c: char) -> bool {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Level {
     Engines,
-    Models { engine: String },
-    Custom { engine: String, text: String },
+    Models {
+        engine: String,
+    },
+    Custom {
+        engine: String,
+        text: String,
+    },
+    /// The Hugging Face screens, over llamacpp's model rows.
+    Hub(Hub),
 }
 
 /// What a picker action asks of the caller.
@@ -598,6 +640,12 @@ pub enum Outcome {
     /// Put this text on the clipboard. The picker and the draft stay as they
     /// are.
     Copy(String),
+    /// Send this request to the Hub; the picker waits for its reply.
+    Ask(hf::Ask),
+    /// Start this download (`y` on the Confirm screen).
+    Download(Box<hf::Job>),
+    /// Stop the download that runs.
+    CancelDownload,
 }
 
 /// The picker state: where it is and where the cursor is. Rows are never
@@ -608,6 +656,10 @@ pub struct Picker {
     pub level: Level,
     cursor: usize,
     offset: usize,
+    /// The download that runs, shown on llamacpp's entry row.
+    download: Option<Running>,
+    /// `cancel the download? (y/n)` waits for an answer.
+    cancel_prompt: bool,
 }
 
 impl Picker {
@@ -617,6 +669,8 @@ impl Picker {
             level: Level::Engines,
             cursor: 0,
             offset: 0,
+            download: None,
+            cancel_prompt: false,
         };
         picker.cursor = picker.entry_cursor(draft, detection);
         picker
@@ -636,8 +690,15 @@ impl Picker {
         match &self.level {
             Level::Engines => engine_rows(self.target, draft, detection),
             Level::Models { engine } | Level::Custom { engine, .. } => {
-                model_rows(engine, self.target, draft, detection)
+                let mut rows = model_rows(engine, self.target, draft, detection);
+                if let Some(download) = &self.download
+                    && let Some(row) = rows.iter_mut().find(|r| r.key == PickKey::HfDownload)
+                {
+                    row.label = download.label();
+                }
+                rows
             }
+            Level::Hub(hub) => hub.rows(),
         }
     }
 
@@ -714,9 +775,11 @@ impl Picker {
                         };
                         Outcome::Stay
                     }
+                    PickKey::HfDownload => self.open_hub(),
                     _ => Outcome::Stay,
                 }
             }
+            Level::Hub(_) => self.hub_enter(),
             Level::Custom { engine, text } => match validate_custom(&text) {
                 Some(model) => Outcome::Commit(Assignment {
                     engine: Some(engine),
@@ -731,7 +794,7 @@ impl Picker {
     /// whole text; an engine row gives its no-jail reason, if it has one.
     /// Anything else, and the custom field, copies nothing.
     pub fn copy(&self, draft: &AiConfig, detection: Option<&Detection>) -> Outcome {
-        if matches!(self.level, Level::Custom { .. }) {
+        if matches!(self.level, Level::Custom { .. } | Level::Hub(_)) {
             return Outcome::Stay;
         }
         let rows = self.rows(draft, detection);
@@ -770,6 +833,7 @@ impl Picker {
                 self.follow();
                 Outcome::Stay
             }
+            Level::Hub(_) => self.hub_back(draft, detection),
         }
     }
 
@@ -781,9 +845,12 @@ impl Picker {
         }
     }
 
-    /// Type one character into the custom buffer.
+    /// Type one character into the custom buffer, or the Hugging Face
+    /// search.
     pub fn type_char(&mut self, c: char) {
-        if let Level::Custom { text, .. } = &mut self.level
+        if matches!(self.level, Level::Hub(_)) {
+            self.hub_type(c);
+        } else if let Level::Custom { text, .. } = &mut self.level
             && accepts(c)
             && text.chars().count() < MAX_NAME
         {
@@ -796,6 +863,9 @@ impl Picker {
         if let Level::Custom { text, .. } = &mut self.level {
             text.pop();
         }
+        self.hub_edit(|text| {
+            text.pop();
+        });
     }
 
     /// Ctrl+U: empty the custom buffer.
@@ -803,6 +873,7 @@ impl Picker {
         if let Level::Custom { text, .. } = &mut self.level {
             text.clear();
         }
+        self.hub_edit(String::clear);
     }
 
     /// Paste into the custom buffer; ignored outside the field.
@@ -861,7 +932,7 @@ impl Picker {
     /// `r`: ask for a new detection, except where `r` is typed.
     pub fn refresh(&self) -> Outcome {
         match self.level {
-            Level::Custom { .. } => Outcome::Stay,
+            Level::Custom { .. } | Level::Hub(_) => Outcome::Stay,
             _ => Outcome::Refresh,
         }
     }
@@ -871,6 +942,8 @@ impl Picker {
 mod assign_tests;
 #[cfg(test)]
 mod custom_tests;
+#[cfg(test)]
+mod hub_tests;
 #[cfg(test)]
 mod machine_tests;
 #[cfg(test)]
@@ -1529,6 +1602,7 @@ mod tests {
                     current: false,
                 },
                 model("old", Mark::Plain, true, true),
+                hf_entry(),
             ]
         );
     }
@@ -1539,8 +1613,9 @@ mod tests {
         assign(&mut draft, Task::Chat, "llamacpp", Some("/m/qwen.gguf"));
         let d = detection(vec![state("llamacpp", Status::NotRunning, &[])]);
         let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
-        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows.len(), 2, "{rows:?}");
         assert!(rows[0].current && rows[0].enabled);
+        assert_eq!(rows[1], hf_entry());
     }
 
     #[test]
@@ -1564,6 +1639,11 @@ mod tests {
             engines: vec![state("llamacpp", Status::NotRunning, &[])],
             local_models: models.iter().map(std::path::PathBuf::from).collect(),
         }
+    }
+
+    /// The Hugging Face entry, last on llamacpp's model level.
+    fn hf_entry() -> PickRow {
+        row(PickKey::HfDownload, HF_ROW, Mark::Plain, true, false)
     }
 
     fn local(path: &str, current: bool) -> PickRow {
@@ -1591,6 +1671,7 @@ mod tests {
                 local("/h/b.gguf", false),
                 // Unmanaged, a saved name still needs a running server.
                 model("qwen", Mark::Plain, false, true),
+                hf_entry(),
             ]
         );
     }
@@ -1603,7 +1684,11 @@ mod tests {
         let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
         assert_eq!(
             rows,
-            vec![local("/m/b.gguf", true), local("/m/a.gguf", false)]
+            vec![
+                local("/m/b.gguf", true),
+                local("/m/a.gguf", false),
+                hf_entry()
+            ]
         );
     }
 
@@ -1621,7 +1706,11 @@ mod tests {
         let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
         assert_eq!(
             rows,
-            vec![local("/m/b.gguf", true), local("/m/a.gguf", false)]
+            vec![
+                local("/m/b.gguf", true),
+                local("/m/a.gguf", false),
+                hf_entry()
+            ]
         );
     }
 
@@ -1639,7 +1728,7 @@ mod tests {
             &AiConfig::default(),
             Some(&d),
         );
-        assert_eq!(rows, vec![local("/m/a.gguf", false)]);
+        assert_eq!(rows, vec![local("/m/a.gguf", false), hf_entry()]);
     }
 
     #[test]
@@ -1691,6 +1780,7 @@ mod tests {
                     current: false,
                 }),
         );
+        want.push(hf_entry());
         assert_eq!(rows, want);
         // A server that is not installed keeps the plain line.
         let d = detection(vec![state("llamacpp", Status::NotInstalled, &[])]);

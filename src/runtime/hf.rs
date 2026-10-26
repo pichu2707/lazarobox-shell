@@ -16,9 +16,14 @@ use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
 
 use super::proc::GroupKill;
+use tokio::sync::mpsc;
+
+use crate::app::AppEvent;
 use crate::core::ai::hf::{
-    self, HubFile, Job, RepoCache, RepoFiles, RepoHit, link_target, size_label, status_message,
+    self, Answer, Ask, HubFile, Job, Listing, RepoCache, RepoFiles, RepoHit, link_target,
+    status_message,
 };
+pub use crate::core::ai::hf::{End, space_check};
 use crate::core::ai::sanitize;
 
 /// What a missing curl reads as.
@@ -265,16 +270,6 @@ pub async fn repo_files(curl: &Curl, id: &str) -> Result<RepoFiles, String> {
     Ok(RepoFiles::new(repo, &files))
 }
 
-/// How a download ended.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum End {
-    /// The path llama-server is started with: the snapshot link of the
-    /// first file.
-    Done(PathBuf),
-    Cancelled,
-    Failed(String),
-}
-
 /// Downloads every file of `job` into the hub cache `hub`, calling
 /// `progress(done, total)` about every [`TICK`], until it ends or `cancel`
 /// fires (or its sender is dropped). A cancel keeps the partial file, so the
@@ -421,18 +416,6 @@ pub fn missing_bytes(hub: &Path, job: &Job) -> u64 {
         .sum()
 }
 
-/// Whether `need` bytes fit in `free`. An unknown free space never blocks.
-pub fn space_check(need: u64, free: Option<u64>) -> Result<(), String> {
-    match free {
-        Some(free) if free < need => Err(format!(
-            "not enough disk space: {} needed, {} free",
-            size_label(need),
-            size_label(free)
-        )),
-        _ => Ok(()),
-    }
-}
-
 /// The bytes free for this user on the filesystem of `path`, or of its
 /// nearest existing parent.
 pub fn free_space(path: &Path) -> Option<u64> {
@@ -449,5 +432,263 @@ pub fn free_space(path: &Path) -> Option<u64> {
     Some(u64::from(stat.f_bavail).saturating_mul(u64::from(stat.f_frsize)))
 }
 
+/// Most bytes of a token file read.
+const TOKEN_CAP: u64 = 4 * 1024;
+
+/// The Hugging Face token of this process's environment (see
+/// [`hf::token`]). Read at each request, never stored or shown.
+pub fn env_token() -> Option<String> {
+    let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    let env = hf::TokenEnv {
+        hf_token: std::env::var("HF_TOKEN").ok(),
+        hf_token_path: var("HF_TOKEN_PATH"),
+        hf_home: var("HF_HOME"),
+        xdg_cache_home: var("XDG_CACHE_HOME"),
+        home: var("HOME"),
+    };
+    hf::token(&env, read_token_file)
+}
+
+/// A token file, up to [`TOKEN_CAP`] bytes.
+fn read_token_file(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(TOKEN_CAP)
+        .read_to_string(&mut text)
+        .ok()?;
+    Some(text)
+}
+
+/// What the Files screen shows of `files`: where a download goes, the room
+/// there and what each choice still needs.
+fn listing(hub: Option<&Path>, files: RepoFiles) -> Listing {
+    let missing = files
+        .choices
+        .iter()
+        .map(|choice| match hub {
+            Some(hub) => missing_bytes(
+                hub,
+                &Job {
+                    id: files.repo.id.clone(),
+                    commit: files.repo.commit.clone(),
+                    choice: choice.clone(),
+                    license: files.license.clone(),
+                },
+            ),
+            None => choice.size,
+        })
+        .collect();
+    let free = hub.and_then(|hub| free_space(RepoCache::new(hub, &files.repo.id).dir()));
+    Listing {
+        hub: hub.map(Path::to_owned),
+        free,
+        missing,
+        files,
+    }
+}
+
+/// Runs the requests and the one download of the picker's Hugging Face
+/// screens in the background, and sends what they find to the event loop.
+pub struct Hub {
+    /// The `PATH` curl is looked up in.
+    path: OsString,
+    /// The hub cache folder; `None` when none could be found.
+    hub: Option<PathBuf>,
+    /// Reads the token at each request.
+    token: fn() -> Option<String>,
+    events: mpsc::Sender<AppEvent>,
+    /// The cancel of the running download, open while it runs.
+    cancel: Option<oneshot::Sender<()>>,
+}
+
+impl Hub {
+    pub fn new(
+        path: OsString,
+        hub: Option<PathBuf>,
+        token: fn() -> Option<String>,
+        events: mpsc::Sender<AppEvent>,
+    ) -> Self {
+        Hub {
+            path,
+            hub,
+            token,
+            events,
+            cancel: None,
+        }
+    }
+
+    /// What builds the curl of one request, off the event loop: the token
+    /// file is read there.
+    fn curl(&self) -> impl FnOnce() -> Curl + Send + 'static {
+        let (path, token) = (self.path.clone(), self.token);
+        move || Curl::hub(path, token())
+    }
+
+    /// Sends `ask` to the Hub; one `AppEvent::HubReply` answers it.
+    pub fn ask(&self, ask: Ask) {
+        let (curl, hub, events) = (self.curl(), self.hub.clone(), self.events.clone());
+        tokio::spawn(async move {
+            let curl = curl();
+            let answer = match &ask {
+                Ask::Search(text) => search(&curl, text).await.map(Answer::Repos),
+                Ask::Files(id) => repo_files(&curl, id)
+                    .await
+                    .map(|files| Answer::Files(Box::new(listing(hub.as_deref(), files)))),
+            };
+            let _ = events.send(AppEvent::HubReply(ask, answer)).await;
+        });
+    }
+
+    /// Starts downloading `job`, unless a download runs already. Its
+    /// progress comes as `AppEvent::DownloadProgress` (dropped when the loop
+    /// is behind) and its end as one `AppEvent::DownloadEnd`.
+    pub fn start(&mut self, job: Job) {
+        if self.cancel.as_ref().is_some_and(|tx| !tx.is_closed()) {
+            return;
+        }
+        let (cancel, cancelled) = oneshot::channel();
+        self.cancel = Some(cancel);
+        let (curl, hub, events) = (self.curl(), self.hub.clone(), self.events.clone());
+        tokio::spawn(async move {
+            let curl = curl();
+            let end = match hub {
+                Some(hub) => {
+                    let progress = |done, total| {
+                        let _ = events.try_send(AppEvent::DownloadProgress { done, total });
+                    };
+                    download(&curl, &hub, &job, progress, cancelled).await
+                }
+                None => End::Failed(hf::NO_HUB.to_owned()),
+            };
+            let _ = events.send(AppEvent::DownloadEnd(end)).await;
+        });
+    }
+
+    /// Stops the running download; its partial file stays for a resume.
+    pub fn cancel(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod hub_tests {
+    use std::path::PathBuf;
+
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::app::AppEvent;
+    use crate::core::ai::hf::{Ask, Choice, End, HubFile, License, NO_HUB};
+
+    fn job() -> Job {
+        Job {
+            id: "o/r".to_owned(),
+            commit: "c1".to_owned(),
+            choice: Choice {
+                quant: "Q4_K_M".to_owned(),
+                size: 4,
+                files: vec![HubFile {
+                    path: "a-Q4_K_M.gguf".to_owned(),
+                    size: 4,
+                    oid: "a".repeat(64),
+                }],
+            },
+            license: License {
+                id: "mit".to_owned(),
+                link: "https://huggingface.co/o/r".to_owned(),
+            },
+        }
+    }
+
+    fn no_token() -> Option<String> {
+        None
+    }
+
+    /// A worker whose curl can never be found.
+    fn worker(hub: Option<PathBuf>) -> (Hub, mpsc::Receiver<AppEvent>) {
+        let (tx, rx) = mpsc::channel(8);
+        (Hub::new(OsString::new(), hub, no_token, tx), rx)
+    }
+
+    #[tokio::test]
+    async fn a_request_without_curl_replies_with_its_message() {
+        let (hub, mut rx) = worker(None);
+        hub.ask(Ask::Search("qwen".to_owned()));
+        assert_eq!(
+            rx.recv().await,
+            Some(AppEvent::HubReply(
+                Ask::Search("qwen".to_owned()),
+                Err(NO_CURL.to_owned())
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_download_without_a_hub_folder_fails_clearly() {
+        let (mut hub, mut rx) = worker(None);
+        hub.start(job());
+        assert_eq!(
+            rx.recv().await,
+            Some(AppEvent::DownloadEnd(End::Failed(NO_HUB.to_owned())))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_download_is_refused_while_one_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut hub, mut rx) = worker(Some(dir.path().to_owned()));
+        // A download that has not ended keeps its cancel channel open.
+        let (running, held) = oneshot::channel::<()>();
+        hub.cancel = Some(running);
+        hub.start(job());
+        let second = tokio::time::timeout(Duration::from_millis(300), rx.recv()).await;
+        assert!(second.is_err(), "the second download ran: {second:?}");
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn cancel_without_a_download_does_nothing() {
+        let (mut hub, mut rx) = worker(None);
+        hub.cancel();
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn the_token_file_is_read_up_to_its_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("token");
+        std::fs::write(&path, "t".repeat(10_000)).unwrap();
+        assert_eq!(read_token_file(&path).map(|t| t.len()), Some(4096));
+        assert_eq!(read_token_file(&dir.path().join("none")), None);
+    }
+
+    #[test]
+    fn a_listing_counts_the_bytes_still_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let job = job();
+        let cache = RepoCache::new(dir.path(), &job.id);
+        std::fs::create_dir_all(cache.dir().join("blobs")).unwrap();
+        std::fs::write(cache.incomplete(&job.choice.files[0].oid), b"ab").unwrap();
+        let repo = crate::core::ai::hf::Repo {
+            id: job.id.clone(),
+            commit: job.commit.clone(),
+            license_id: None,
+            license_link: None,
+            files: Vec::new(),
+        };
+        let files = RepoFiles::new(repo, &job.choice.files);
+        let found = listing(Some(dir.path()), files.clone());
+        assert_eq!(found.missing, vec![2]);
+        assert_eq!(found.hub.as_deref(), Some(dir.path()));
+        assert!(found.free.is_some());
+        let nowhere = listing(None, files);
+        assert_eq!((nowhere.missing, nowhere.free), (vec![4], None));
+    }
+}

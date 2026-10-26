@@ -119,11 +119,13 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
     let thinking = pick_stream(&streams, focused)
         .map(|(stream, others)| ThinkingView::new(stream, others, app.anim_frame(), app.now()));
     let right = app.status_right();
+    let download = app.status_download();
     let plain = |path| {
         StatusLine::input(theme, app.input(), path, &right)
             .chat(app.focused_is_chat())
             .memory(app.status_memory())
             .update(app.status_update())
+            .download(download.as_deref())
             .thinking(thinking.clone())
             .zoomed(app.zoomed())
             .copy_position(app.scroll_position())

@@ -9,7 +9,8 @@ use super::{
         AiConfig, ApprovalMode, Assignment, ManagedServer, NotifyMode, Profile, Task, ToolToggle,
         cycled_idle,
     },
-    picker::{Outcome, PickRow, Picker, Target, task_label},
+    hf::{Answer, Ask},
+    picker::{Outcome, PickRow, Picker, Running, Target, task_label},
 };
 
 /// The AI draft, edited in the menu and written only on save.
@@ -21,6 +22,8 @@ pub struct AiMenu {
     picker: Option<Picker>,
     /// The privacy warning is shown over the menu.
     warning: bool,
+    /// The Hugging Face download that runs, for llamacpp's entry row.
+    download: Option<Running>,
 }
 
 impl AiMenu {
@@ -31,6 +34,7 @@ impl AiMenu {
             engines,
             picker: None,
             warning: false,
+            download: None,
         }
     }
 
@@ -264,7 +268,24 @@ impl AiMenu {
     }
 
     pub fn open_picker(&mut self, target: Target) {
-        self.picker = Some(Picker::open(target, &self.draft, self.engines.as_ref()));
+        let mut picker = Picker::open(target, &self.draft, self.engines.as_ref());
+        picker.set_download(self.download.clone());
+        self.picker = Some(picker);
+    }
+
+    /// The download that runs (`None` once it ended): an open picker shows it
+    /// at once.
+    pub fn set_download(&mut self, download: Option<Running>) {
+        if let Some(picker) = &mut self.picker {
+            picker.set_download(download.clone());
+        }
+        self.download = download;
+    }
+
+    /// A reply of the Hub, for the open picker if it still waits for it;
+    /// the message of a failed request it waited for.
+    pub fn hub_reply(&mut self, ask: &Ask, answer: Result<Answer, String>) -> Option<String> {
+        self.picker.as_mut()?.hub_reply(ask, answer)
     }
 
     pub fn picker(&self) -> Option<&Picker> {
@@ -338,7 +359,12 @@ impl AiMenu {
                 self.picker = None;
             }
             Outcome::Close => self.picker = None,
-            Outcome::Stay | Outcome::Refresh | Outcome::Copy(_) => {}
+            Outcome::Stay
+            | Outcome::Refresh
+            | Outcome::Copy(_)
+            | Outcome::Ask(_)
+            | Outcome::Download(_)
+            | Outcome::CancelDownload => {}
         }
         outcome
     }

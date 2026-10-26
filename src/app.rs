@@ -21,6 +21,7 @@ use crate::core::{
         },
         config::{AiConfig, ManagedServer, NotifyMode, Profile, Task},
         gguf,
+        hf::{Answer, Ask, End, Job},
         jail::{JailOff, JailSupport},
         memory::{
             offer::ServerOffer,
@@ -50,6 +51,7 @@ mod chat;
 mod chat_copy;
 mod context;
 mod history;
+mod hub;
 mod notes;
 mod offer;
 mod run;
@@ -199,6 +201,16 @@ pub enum AppEvent {
     /// How the start of the llama-server a menu save turned on went: the
     /// error is the one reason, already safe to show.
     ManagedStarted(Result<(), String>),
+    /// The Hub answered `Effect::HubAsk` (or the request failed, with its
+    /// message). It names the request it answers.
+    HubReply(Ask, Result<Answer, String>),
+    /// The bytes on disk of the running Hugging Face download, and its total.
+    DownloadProgress {
+        done: u64,
+        total: u64,
+    },
+    /// The running Hugging Face download ended.
+    DownloadEnd(End),
 }
 
 /// How the menu closed.
@@ -347,6 +359,15 @@ pub enum Effect {
     /// How long the managed llama-server may sit unused now (a menu save
     /// changed it); `None` never stops it.
     ManagedIdle(Option<Duration>),
+    /// Ask the Hub, from the picker's Hugging Face screens; the runtime
+    /// answers with one `AppEvent::HubReply`.
+    HubAsk(Ask),
+    /// Start this Hugging Face download. Emitted only while none runs; the
+    /// runtime reports `AppEvent::DownloadProgress` and one
+    /// `AppEvent::DownloadEnd`.
+    Download(Box<Job>),
+    /// Stop the running Hugging Face download; its partial file stays.
+    CancelDownload,
     /// Name the jobs still running in the panes, for the quit prompt; the
     /// runtime answers with one `AppEvent::StillRunning`, and with
     /// `AppEvent::ServerAnswersOthers` when its llama-server is answering
@@ -706,6 +727,8 @@ pub struct App {
     /// its messages are saved through `Effect::Store`. Off by default, so a
     /// build without a store thread behaves as a plain chat.
     history: bool,
+    /// The Hugging Face download that runs; one at a time.
+    download: Option<crate::core::ai::picker::Running>,
 }
 
 /// The key that left COPY and when it was last seen.
@@ -775,6 +798,7 @@ impl App {
             offer_pane: None,
             no_server: None,
             history: false,
+            download: None,
         }
     }
 
@@ -1577,6 +1601,9 @@ impl App {
                     }
                 }
             }
+            AppEvent::HubReply(ask, answer) => self.on_hub_reply(ask, answer),
+            AppEvent::DownloadProgress { done, total } => self.on_download_progress(done, total),
+            AppEvent::DownloadEnd(end) => self.on_download_end(end),
             AppEvent::NotifyTested(report) => {
                 if let Some(menu) = self.menu.as_mut() {
                     menu.set_test_report(report);
@@ -1685,7 +1712,8 @@ impl App {
             MenuState::open(&self.config)
                 .with_ai(self.ai.clone(), self.engines.clone())
                 .with_update(self.update.clone())
-                .with_installed(self.installed.clone()),
+                .with_installed(self.installed.clone())
+                .with_download(self.download.clone()),
         );
         self.input = InputMode::Menu;
         let mut effects = self.apply_config();
@@ -1788,6 +1816,9 @@ impl App {
             MenuCommand::Update => self.on_update_command(),
             MenuCommand::CheckUpdate => vec![Effect::CheckUpdate],
             MenuCommand::TestNotify { mode, sound } => self.test_notify(mode, sound),
+            MenuCommand::HubAsk(ask) => vec![Effect::HubAsk(ask)],
+            MenuCommand::Download(job) => self.start_download(job),
+            MenuCommand::CancelDownload => self.cancel_download(),
             MenuCommand::None => Vec::new(),
         }
     }
@@ -7737,6 +7768,9 @@ mod app_tests {
 
     /// Copying the reason behind a degraded engine from the AI picker.
     mod menu_copy;
+
+    /// A Hugging Face download from the llamacpp picker (config-menu).
+    mod hf_download;
 
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.
