@@ -552,3 +552,34 @@ User decision: `edit_file` is a content oracle, so on Cloud it asks like `read_f
 - Pinned by tests: an unshowable path is refused with zero asks and nothing staged; `b.txt`, `./b.txt`, `sub/../b.txt` and `~/proj/b.txt` share one ask; a read of `./b.txt` then an edit of `b.txt` asks once, while an edit then a read asks twice (a read does not consult `allowed`); a `Busy` answer is not remembered.
 - Fix: an empty `old` is refused in the host pre-check (text of `EditError::EmptyOld`) before the ask. RED: the ask was recorded for it. Missing/ambiguous `old` still asks (accepted, documented in the code-write spec together with the concurrent-edit and symlink behaviors).
 - `ask_for` doc comment reflowed.
+
+## W-g: runtime chat lifecycle (PR 23, feat/coding-tools-wg)
+
+Strict TDD. Commits: `feat(tools)` close discards, `feat(tools)` orphans and routing, `feat(tools)` model told.
+
+| Task | RED | GREEN |
+|------|-----|-------|
+| Wg.1 | `closing_a_chat_discards_its_batch_and_counts_the_entries` (compile: no `Chats::close_batch`, `discard_key` returned bool); app: close of a chat emits `BatchClose`, `AppEvent::Batch(Closed(n))` shows `discarded N staged entries` | `Stages::discard_key -> Option<usize>`; `host/orphan.rs` (`ToolHost::close_batch`); `Chats::close_batch`; `Effect::BatchClose` appended by `App::stop_effect` (close path only, so a cancel still leaves the orphan); `BatchEvent` + `closed_notice` in `core/ai/chat/review.rs`; `AppEvent::Batch` handled in `app/review.rs` |
+| Wg.2 | `a_call_dropped_while_its_batch_waits_leaves_a_proposed_orphan` (`left: 0, right: 1`: W-f's drop guard discarded on cancel); `an_ended_turn_keeps_its_batch_but_a_user_no_discards_it`; `an_unproposed_batch_is_sealed_when_the_user_reviews_it`; `an_orphan_is_reviewed_applied_or_discarded_through_the_chats` | `Sealed.keep`: set by `announced()` once the ask is on the channel, so a drop while it waits keeps the batch; `answered` keeps it on `Denied(ENDED)` (turn/pane ended with the ask open: CLI timeout, cancel) and discards on any user answer. `Stages::review` over core `Batch::review_orphan(turn_live)`; `ToolHost::{review,apply,discard}_batch`; `Chats::{review,apply,discard}_batch` (`turn_live` from the pane's running task); `Effect::BatchReview(pane)`, `BatchApply{pane,id}`, `BatchDiscard{pane,id}` executed in `runtime.rs` |
+| Wg.3 | `a_told_line_reaches_the_next_request_once_and_is_never_stored` (core); app `a_user_side_answer_to_an_orphan_is_told_to_the_model_on_its_next_turn`; `an_orphan_answer_never_tells_the_model_the_base_or_the_diff` (passed at once: counts only by construction) | `ChatState::tell` + `told: Vec<String>` appended to `request.system` after a blank line on the next real send (kept when a send is refused, not stored); `BatchEvent::Done { shown, told }` (told only when the batch is closed: applied/partial or discarded) |
+
+Mutation: `keep` forced false failed `an_ended_turn_keeps_its_batch...` (reverted).
+
+### Deviations / notes (W-g)
+
+- **W-f drop-guard semantics changed on purpose.** The guard still discards a batch whose call never announced (closed channel). After the announce a drop keeps the batch (Proposed-orphan). `a_call_dropped_while_its_batch_waits_frees_the_pane` was replaced by the orphan test. The spec says cancel and CLI timeout leave an orphan, so this is the spec's behavior.
+- A turn ended while the ask is open reaches `answered` as `Denied(ENDED)` when the call future survives (the MCP session task); it is treated as an orphan, not a user's no. Any other denial still discards.
+- "System line in the request" = the chat's system text of the next request, extended by the app-side `ChatState` (not `Chats`, which must never rewrite the system prompt: `the_chats_never_rewrite_the_system_prompt`). Applied results with `Drifted`/`Invalid`/`Failed` leave the batch proposed and tell the model nothing.
+- Review of an orphan is refused while a turn of the pane runs (`turn_live`), since the batch is then the model's.
+- The `Review` event is only carried to the app; the view that consumes it (Ctrl+G, badge) is W-h. The apply/discard effects take the orphan's `BatchId`, so a stale id is `that batch is no longer there`.
+- Apply by the user runs under the `Stages` lock on the runtime thread (one batch, at most 50 entries / 1 MiB). W-f's async path still uses `spawn_blocking`.
+- `host/orphan.rs` names neither the `write` nor the `apply` module (closedness read from the store, not from `ApplyResult`): no audit change.
+- Quit is not wired here (Wh.3).
+
+### Size (W-g)
+
+About 295 production lines (`host/orphan.rs` 84, `app.rs` ~28, `app/review.rs` ~22, `review.rs` ~26, `runtime.rs` ~27, `chat.rs` ~31, `stage.rs` ~25, `files.rs` ~25, `chat/mod.rs` ~16, `host.rs` 5) and about 450 test lines. Under budget.
+
+### Checks (W-g)
+
+`cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib` (5776), `cargo +1.88 check --all-targets` green; no `.snap.new`.
