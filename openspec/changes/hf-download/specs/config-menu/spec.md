@@ -64,3 +64,21 @@ While a download runs, the status bar MUST show `↓ <percent>%` after the other
 - GIVEN a download started from the picker
 - WHEN progress 10 %, 55 % and the end arrive
 - THEN the status bar reads `↓ 10%`, then `↓ 55%`, then `downloaded <file>`, and a redetect effect is emitted once
+
+### Requirement: Hugging Face account row
+The AI tab MUST end with a static row `Hugging Face`, after `Tools` (this modifies "AI rows end with Tools": Tools is now the last row before it). Its value is:
+- `not connected` when no token is found;
+- `<name>` once an account is known (from a connect in this session, or from a whoami check made when the row is opened);
+- `token set (HF_TOKEN)` while `HF_TOKEN` is set.
+
+Enter on the row opens a field with the hint `paste a Hugging Face token` that draws one `•` per character. Enter checks the token, with the footer `asking Hugging Face…`, and Esc goes back. On a known account, Enter offers instead `disconnect <name>? (y/n)`, which deletes the token file on `y`. The row writes no config edit.
+
+#### Scenario: Account row [auto]
+- GIVEN the AI tab
+- WHEN rendered with no token
+- THEN the last row reads `Hugging Face` with `not connected`, after `Tools`
+
+#### Scenario: The field hides the token [auto]
+- GIVEN the token field
+- WHEN `hf_abc` is pasted
+- THEN the field shows `••••••` and no rendered cell holds `hf_abc`

@@ -112,3 +112,34 @@ When it ends, the engines are detected again and the status bar reads `downloade
 - GIVEN a real machine with curl and llama-server
 - WHEN `Qwen/Qwen2.5-0.5B-Instruct-GGUF` `Q2_K` is downloaded from the picker, cancelled at about 30 %, started again and finished
 - THEN it resumes, `hf cache scan` (or `huggingface-cli scan-cache`) lists it, the picker lists the file, choosing it starts the managed llama-server, and a chat turn answers
+
+### Requirement: Connect a Hugging Face account
+From the menu (config-menu), a user MAY connect a Hugging Face account by pasting a token.
+- lazarobox checks the token with `GET https://huggingface.co/api/whoami-v2`, sent with the pasted token as in Token.
+- A 200 reply with a `name` connects the account. Any other result changes nothing and reads:
+  - 401: `Hugging Face did not accept the token`;
+  - anything else: the failure messages of Hub requests.
+- Once accepted, the token is written to the token file of the Token lookup (`$HF_TOKEN_PATH`, else `$HF_HOME/token`, else `huggingface/token` in the cache home), the same file `hf auth login` writes, with mode 0600. It goes through a temporary file in the same folder with mode 0600 and a rename; a missing folder is created with mode 0700.
+- Disconnecting deletes that file after a `y/n` confirmation.
+- While `HF_TOKEN` is set, the saved file is not the token in use, and the menu says so.
+- The pasted token is never shown (the field draws one `•` per character), logged, put in argv or kept in memory after the check.
+
+#### Scenario: Connect [auto, fake Hub]
+- GIVEN no token file and a whoami reply 200 `{"name":"ana"}`
+- WHEN the token `hf_abc` is pasted and Enter is pressed
+- THEN the token file holds `hf_abc` with mode 0600, the request carried it only on curl's stdin, and the menu shows `ana`
+
+#### Scenario: Rejected token [auto, fake Hub]
+- GIVEN a whoami reply 401
+- WHEN a token is pasted and Enter is pressed
+- THEN no file is written and the footer error reads `Hugging Face did not accept the token`
+
+#### Scenario: Disconnect [auto]
+- GIVEN a token file
+- WHEN disconnect is chosen and `y` is pressed
+- THEN the file is gone; with `n` it stays
+
+#### Scenario: Real login [manual]
+- GIVEN a real Hugging Face account
+- WHEN a token is pasted in the menu
+- THEN `hf auth whoami` shows the same account, and a gated repo the account may use downloads
