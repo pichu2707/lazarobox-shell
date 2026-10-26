@@ -502,7 +502,11 @@ fn quit_carries_the_summary_too() {
     press(&mut a, "q");
     assert_eq!(
         a.update(key('y')),
-        vec![end_summary("We chose Axum."), Effect::Quit]
+        vec![
+            end_summary("We chose Axum."),
+            Effect::BatchClose(id2()),
+            Effect::Quit
+        ]
     );
 }
 

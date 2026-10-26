@@ -796,11 +796,14 @@ mod orphan {
     // Spec (chat-pane, "Closing discards a batch"): quitting discards the
     // batch of every chat that holds one, and says how many entries.
     #[test]
-    fn quitting_closes_the_batch_of_each_chat_that_wears_a_badge_before_the_quit() {
+    fn quitting_closes_the_batch_of_each_chat_before_the_quit() {
         let (mut a, _) = live();
         a.update(ctrl('c'));
+        // A batch staged since the last poll has no badge yet; it goes too.
         let plain = a.quit_effects();
-        assert!(!plain.iter().any(|e| matches!(e, Effect::BatchClose(_))));
+        let close = plain.iter().position(|e| *e == Effect::BatchClose(id2()));
+        let quit = plain.iter().position(|e| *e == Effect::Quit);
+        assert!(close.is_some() && close < quit, "{plain:?}");
         for badge in [Badge::Staged(2), Badge::Orphan(1)] {
             a.sync_batches(&badges(Some(badge)));
             let effects = a.quit_effects();

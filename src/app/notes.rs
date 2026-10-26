@@ -434,15 +434,19 @@ impl App {
         effects
     }
 
-    /// Every open chat's `End`, the discard of each batch a chat holds (the
-    /// runtime counts the entries for the notice at exit), then the quit.
+    /// Every open chat's `End`, the discard of each chat's batch (the runtime
+    /// counts the entries for the notice at exit), then the quit. No badge is
+    /// asked for: one staged since the last poll has none yet, and the discard
+    /// of an absent or empty batch is a no-op.
     pub(super) fn quit_effects(&mut self) -> Vec<Effect> {
         let mut ids: Vec<PaneId> = self.panes.keys().copied().collect();
         ids.sort();
         let mut effects = self.end_effects(&ids);
         let holds = |id: &&PaneId| {
-            (self.panes.get(*id).and_then(PaneState::chat_state))
-                .is_some_and(|c| c.batch_badge().is_some())
+            self.panes
+                .get(*id)
+                .and_then(PaneState::chat_state)
+                .is_some()
         };
         effects.extend(ids.iter().filter(holds).map(|id| Effect::BatchClose(*id)));
         effects.push(Effect::Quit);

@@ -1098,7 +1098,10 @@ fn closing_the_pane_ends_the_session_with_the_note_titles() {
 fn quitting_ends_the_session_before_the_quit() {
     let mut a = wrote_two();
     press(&mut a, "q");
-    assert_eq!(a.update(key('y')), vec![end("Notes: A; B"), Effect::Quit]);
+    assert_eq!(
+        a.update(key('y')),
+        vec![end("Notes: A; B"), Effect::BatchClose(id2()), Effect::Quit]
+    );
 }
 
 #[test]
