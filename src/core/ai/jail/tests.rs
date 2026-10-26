@@ -1761,6 +1761,7 @@ fn the_linux_spec_is_the_one_it_always_was() {
     assert_eq!(
         spec,
         JailSpec {
+            rwx: Vec::new(),
             rx: paths(&[
                 "/home/u/.nvm/versions/node/v24.16.0/bin/node",
                 "/opt/lb/lib/ld-linux-x86-64.so.2",
@@ -2417,6 +2418,15 @@ fn a_layout_outside_the_state_dir_gets_no_exception() {
     }
 }
 
+fn with_rwx(root: &[&str]) -> JailSpec {
+    JailSpec {
+        rx: paths(&["/usr/bin"]),
+        rw: paths(&["/run/lb/tmp"]),
+        rwx: paths(root),
+        ..JailSpec::default()
+    }
+}
+
 #[test]
 fn a_binary_in_the_state_dir_outside_packages_is_still_refused_on_macos() {
     let mut l = layout(Cli::Codex, "/Users/u/.codex/bin/codex", None);
@@ -2576,4 +2586,62 @@ fn a_helper_under_packages_does_not_open_the_exception_for_a_program_elsewhere()
     l.helpers = vec![p("/Users/u/.codex/packages/x/rg")];
     let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
     assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+}
+
+#[test]
+fn one_rwx_root_passes_the_exec_check_on_linux() {
+    assert_eq!(with_rwx(&["/home/u/proj"]).check_exec(Os::Linux), Ok(()));
+    assert_eq!(with_rwx(&[]).check_exec(Os::Linux), Ok(()));
+}
+
+#[test]
+fn two_rwx_roots_are_refused() {
+    let spec = with_rwx(&["/home/u/a", "/home/u/b"]);
+    assert_eq!(spec.check_exec(Os::Linux), Err(ExecFault::ManyRwx(2)));
+}
+
+#[test]
+fn an_rwx_root_must_be_canonical_and_not_the_top() {
+    for bad in ["proj", "/home/u/../v", "/home/u/./p"] {
+        assert_eq!(
+            with_rwx(&[bad]).check_exec(Os::Linux),
+            Err(ExecFault::NotCanonical(p(bad))),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        with_rwx(&["/"]).check_exec(Os::Linux),
+        Err(ExecFault::TooBroad(p("/")))
+    );
+}
+
+#[test]
+fn rwx_is_refused_on_macos_until_seatbelt_runs_toolchains() {
+    let spec = with_rwx(&["/Users/u/proj"]);
+    assert_eq!(spec.check_exec(Os::Macos), Err(ExecFault::Macos));
+    assert_eq!(with_rwx(&[]).check_exec(Os::Macos), Ok(()));
+}
+
+#[test]
+fn execute_is_only_ever_in_rx_or_the_rwx_root() {
+    let spec = with_rwx(&["/home/u/proj"]);
+    assert_eq!(spec.exec_paths(), paths(&["/usr/bin", "/home/u/proj"]));
+    assert!(!spec.exec_paths().contains(&p("/run/lb/tmp")));
+}
+
+#[test]
+fn retain_existing_covers_the_rwx_root() {
+    let spec =
+        with_rwx(&["/home/u/proj"]).retain_existing(|path| path != Path::new("/home/u/proj"));
+    assert!(spec.rwx.is_empty());
+    assert_eq!(spec.rx, paths(&["/usr/bin"]));
+}
+
+#[test]
+fn a_cli_spec_never_carries_rwx() {
+    for os in [Os::Linux, Os::Macos, Os::Other] {
+        let spec = jail_spec_for(os, &nvm_codex(), &identity).unwrap();
+        assert!(spec.rwx.is_empty(), "{os:?}");
+        assert_eq!(spec.check_exec(os), Ok(()));
+    }
 }

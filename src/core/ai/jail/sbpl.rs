@@ -43,6 +43,9 @@ pub enum SbplError {
     Unnormalized(PathBuf),
     /// The spec holds more than [`MAX_PARAMS`] paths.
     TooMany(usize),
+    /// The spec has an `rwx` root. Seatbelt does not run toolchains yet, so
+    /// there is no profile for it and it fails closed.
+    Rwx,
 }
 
 /// The rules every jailed CLI gets, before its own paths: what a process needs
@@ -140,6 +143,9 @@ fn pinned_dirs(spec: &JailSpec) -> Vec<PathBuf> {
 /// `rw_files` match by `literal`. `rw_except` folders are denied writing after
 /// all the allows.
 pub fn render(spec: &JailSpec) -> Result<Profile, SbplError> {
+    if !spec.rwx.is_empty() {
+        return Err(SbplError::Rwx);
+    }
     let pinned = pinned_dirs(spec);
     let count = spec.rx.len()
         + spec.ro.len()

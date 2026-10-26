@@ -10,6 +10,7 @@ fn p(s: &str) -> PathBuf {
 fn spec(rx: &[&str], ro: &[&str], rw: &[&str], rof: &[&str], rwf: &[&str]) -> JailSpec {
     let list = |items: &[&str]| items.iter().map(|s| p(s)).collect();
     JailSpec {
+        rwx: Vec::new(),
         rx: list(rx),
         ro: list(ro),
         rw: list(rw),
@@ -551,4 +552,13 @@ fn pinned_folders_count_toward_the_param_limit_and_are_checked() {
 fn an_exception_outside_every_rw_folder_pins_nothing() {
     let profile = render(&excepted(&["/Users/u/h"], &["/Users/u/other/p"])).unwrap();
     assert!(!profile.text.contains("WXP_"));
+}
+
+#[test]
+fn an_rwx_root_is_refused_by_the_renderer() {
+    let mut spec = one_each();
+    spec.rwx = vec![p("/Users/u/proj")];
+    assert_eq!(render(&spec), Err(SbplError::Rwx));
+    spec.rwx.clear();
+    assert!(render(&spec).is_ok());
 }

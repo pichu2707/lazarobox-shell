@@ -984,6 +984,10 @@ pub struct ShimGrant {
 /// The paths a jailed CLI may use.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct JailSpec {
+    /// Read, write and execute: the one project root of a toolchain run
+    /// (`target/`, `node_modules/` and `.venv` live in it). Empty for every
+    /// CLI spec. Execute may appear only here and in `rx` (R29).
+    pub rwx: Vec<PathBuf>,
     /// Read and execute: single files, or the CLI's own package folder.
     pub rx: Vec<PathBuf>,
     pub ro: Vec<PathBuf>,
@@ -1234,11 +1238,53 @@ fn writable_executable(spec: &JailSpec, os: Os) -> Option<(PathBuf, PathBuf)> {
     })
 }
 
+/// Why a spec breaks the execute rule (R29: execute only in `rx` or in the
+/// single `rwx` root).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ExecFault {
+    /// More than one `rwx` root.
+    ManyRwx(usize),
+    /// The `rwx` root is not absolute or holds a `.` or `..` segment.
+    NotCanonical(PathBuf),
+    /// The `rwx` root is `/`, which would run and write the whole disk.
+    TooBroad(PathBuf),
+    /// Seatbelt does not render `rwx` yet: `run_command` is Linux only.
+    Macos,
+}
+
 impl JailSpec {
+    /// Every path the jailed program may execute from: `rx`, then the `rwx`
+    /// root. No other class carries the execute right.
+    pub fn exec_paths(&self) -> Vec<PathBuf> {
+        self.rx.iter().chain(&self.rwx).cloned().collect()
+    }
+
+    /// Checks the `rwx` class. A CLI spec has none and always passes. On macOS
+    /// an `rwx` root is refused until the Seatbelt renderer grants toolchains.
+    pub fn check_exec(&self, os: Os) -> Result<(), ExecFault> {
+        let Some(root) = self.rwx.first() else {
+            return Ok(());
+        };
+        if os == Os::Macos {
+            return Err(ExecFault::Macos);
+        }
+        if self.rwx.len() > 1 {
+            return Err(ExecFault::ManyRwx(self.rwx.len()));
+        }
+        if !is_canonical_form(root) {
+            return Err(ExecFault::NotCanonical(root.clone()));
+        }
+        if root.parent().is_none() {
+            return Err(ExecFault::TooBroad(root.clone()));
+        }
+        Ok(())
+    }
+
     /// Keeps only the paths for which `exists` is true: a missing folder gets
     /// no rule, and the CLI then reports its own login error.
     pub fn retain_existing(mut self, exists: impl Fn(&Path) -> bool) -> Self {
         for list in [
+            &mut self.rwx,
             &mut self.rx,
             &mut self.ro,
             &mut self.rw,
