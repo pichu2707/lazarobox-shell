@@ -44,6 +44,7 @@ pub mod tools;
 pub mod update;
 pub mod workspace;
 
+use crate::core::ai::chat::review::{BatchEvent, NO_ORPHAN, closed_notice};
 use ai_detect::spawn_detection;
 use chat::Chats;
 use chat_store::StoreHandle;
@@ -495,6 +496,9 @@ pub async fn run() -> io::Result<()> {
     // The user gets the prompt back first; the children are killed after.
     // `rx` went away with the loop, so readers stuck on a full channel stopped.
     restore();
+    if let Some(notice) = panes.quit_notice() {
+        let _ = writeln!(io::stderr(), "{notice}");
+    }
     // Quit order, and why:
     // 1. The loop already returned, so the final Cancel and Append effects of
     //    every open turn were applied (they must be emitted before the store
@@ -806,6 +810,12 @@ async fn run_loop(
                     }
                 }
                 app.wake_review();
+                // The panes wear the batches the store holds: a poll, because
+                // a model's staging has no event of its own.
+                // A busy store answers `None`: the badges stay as they were.
+                if let Some(badges) = panes.chats.as_ref().and_then(|c| c.batch_badges()) {
+                    app.sync_batches(&badges);
+                }
                 if app.take_dirty() {
                     terminal.draw(|frame| ui::render(frame, &app, &theme))?;
                     app.frame_drawn();
@@ -915,6 +925,9 @@ struct Panes {
     /// Raised by a desktop send that failed in `desktop` mode: the next
     /// flush rings the bell for that event.
     late_bell: Arc<AtomicBool>,
+    /// Staged entries the quit discarded, to tell the user once the terminal
+    /// is back (the pane that would show a notice is gone by then).
+    quit_lost: usize,
     /// Starts one desktop notification in the background: the body and, when
     /// an unavailable desktop or a failure must ring the bell, the flag to
     /// raise. The availability is probed there, off the UI thread. Does
@@ -961,6 +974,7 @@ impl Panes {
             host_out: Vec::new(),
             bell: false,
             late_bell: Arc::new(AtomicBool::new(false)),
+            quit_lost: 0,
             desktop_send: Box::new(|_, _| {}),
             sound_send: Box::new(|| {}),
             test_send: Box::new(|_, _, _| {}),
@@ -1092,6 +1106,7 @@ impl Panes {
     fn apply(&mut self, effects: Vec<Effect>) -> (Outcome, Vec<AppEvent>) {
         let mut outcome = Outcome::Continue;
         let mut feedback = Vec::new();
+        let mut lost_entries = 0;
         for effect in effects {
             match effect {
                 Effect::WritePty(id, bytes) => {
@@ -1249,6 +1264,44 @@ impl Panes {
                         chats.end_session(pane);
                     }
                 }
+                // One short hold of the store: the chat closed, so its batch
+                // goes, and the app hears how many entries were lost.
+                Effect::BatchClose(pane) => {
+                    let lost = self
+                        .chats
+                        .as_mut()
+                        .and_then(|chats| chats.close_batch(pane));
+                    lost_entries += lost.unwrap_or(0);
+                    feedback.extend(lost.map(|n| AppEvent::Batch(pane, BatchEvent::Closed(n))));
+                }
+                // The three answer the app with one event, or with none when
+                // the chat has nothing to show (no tooling, no orphan).
+                Effect::BatchReview(pane) => {
+                    let seen = self
+                        .chats
+                        .as_ref()
+                        .and_then(|chats| chats.review_batch(pane));
+                    // A stale badge (the batch is gone, or a turn took it back)
+                    // still gets its answer; the next poll clears the badge.
+                    let stale = seen.is_none() && self.chats.is_some();
+                    feedback.extend(seen.map(|event| AppEvent::Batch(pane, event)));
+                    if stale {
+                        let shown = NO_ORPHAN.to_owned();
+                        let told = None;
+                        feedback.push(AppEvent::Batch(pane, BatchEvent::Done { shown, told }));
+                    }
+                }
+                Effect::BatchApply { pane, id } => {
+                    let done = self.chats.as_ref().and_then(|chats| chats.apply_batch(id));
+                    feedback.extend(done.map(|event| AppEvent::Batch(pane, event)));
+                }
+                Effect::BatchDiscard { pane, id } => {
+                    let done = self
+                        .chats
+                        .as_ref()
+                        .and_then(|chats| chats.discard_batch(id));
+                    feedback.extend(done.map(|event| AppEvent::Batch(pane, event)));
+                }
                 // Returns at once: the worker owns the queue and the timeouts.
                 Effect::Memory(cmd) => self.memory.send(cmd),
                 // Returns at once: the thread owns the database, and a slow
@@ -1298,7 +1351,16 @@ impl Panes {
                 Effect::Quit => outcome = Outcome::Quit,
             }
         }
+        if outcome == Outcome::Quit {
+            self.quit_lost += lost_entries;
+        }
         (outcome, feedback)
+    }
+
+    /// What the quit discarded, for the line printed after the terminal is
+    /// restored; `None` when no batch was lost.
+    fn quit_notice(&self) -> Option<String> {
+        (self.quit_lost > 0).then(|| closed_notice(self.quit_lost))
     }
 
     /// Takes the child of `id` out of the registry and kills it on a detached
@@ -3748,6 +3810,12 @@ mod tests {
         assert!(session(&panes), "a stale decision changes nothing");
         panes.apply(vec![Effect::EndToolSession(id(1))]);
         assert!(!session(&panes));
+        // A close with no batch says nothing; the effect needs no live pane.
+        let (_, feedback) = panes.apply(vec![Effect::BatchClose(id(1))]);
+        assert!(feedback.is_empty(), "{feedback:?}");
+        // A review of a batch that is not there is answered, never silent.
+        let (_, feedback) = panes.apply(vec![Effect::BatchReview(id(1))]);
+        assert_eq!(feedback.len(), 1, "{feedback:?}");
         let rec = rec.borrow();
         for log in &rec.logs {
             let log = log.lock().unwrap();
@@ -4567,5 +4635,79 @@ mod tests {
         for (pane, turn, event) in late {
             assert_eq!(app.update(AppEvent::Chat(pane, turn, event)), vec![]);
         }
+    }
+
+    // A Ctrl+G on a badge gone stale (the batch is gone, or a turn took it
+    // back) is answered with a notice, never with silence.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_review_of_a_stale_badge_answers_with_a_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let host = tools::ToolHost::new(Some(home.into()), None, None, tools::Limits::default());
+        let (panes, _pty_rx, _rec) = fake_panes(None);
+        let (tx, _rx) = mpsc::channel(chat::APP_CHANNEL);
+        let runner: chat::Runner = Arc::new(|_request, _tx| Box::pin(std::future::pending()));
+        let chats = Chats::new(runner, tx).with_tools(host, vec![dir.path().join("run")]);
+        let mut panes = panes.with_chats(chats);
+        let (_, feedback) = panes.apply(vec![Effect::BatchReview(id(1))]);
+        let notice = BatchEvent::Done {
+            shown: crate::core::ai::chat::review::NO_ORPHAN.to_owned(),
+            told: None,
+        };
+        assert_eq!(feedback, vec![AppEvent::Batch(id(1), notice)]);
+    }
+
+    // Spec (chat-pane, "Closing discards a batch"): quitting discards the
+    // batches and the user is told how many entries went, after the terminal
+    // is back. A close in mid-session is told in the pane and not at exit.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn quitting_remembers_how_many_staged_entries_it_discarded() {
+        use crate::core::ai::tools::{
+            Locality,
+            registry::{Family, FamilySet},
+            stage::StageKey,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap().join("home");
+        let proj = home.join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let host = tools::ToolHost::new(Some(home.into()), None, None, tools::Limits::default());
+        let (panes, _pty_rx, _rec) = fake_panes(None);
+        let (tx, _rx) = mpsc::channel(chat::APP_CHANNEL);
+        let runner: chat::Runner = Arc::new(|_request, _tx| Box::pin(std::future::pending()));
+        let chats = Chats::new(runner, tx).with_tools(host.clone(), vec![dir.path().join("run")]);
+        let mut panes = panes.with_chats(chats);
+        for (pane, files) in [
+            (id(1), ["a.txt", "b.txt"].as_slice()),
+            (id(2), ["c.txt"].as_slice()),
+        ] {
+            let (events, rx) = mpsc::channel(64);
+            std::mem::forget(rx);
+            let mut scope = tools::TurnScope::new(events, Locality::Local, proj.clone());
+            scope.families = FamilySet::LEGACY.with(Family::Write);
+            scope.stage_key = Some(StageKey::Pane(pane));
+            let dispatch = host.dispatch(scope);
+            for path in files {
+                let call = crate::core::ai::tools::Call::WriteFile {
+                    path: (*path).into(),
+                    content: "x".into(),
+                };
+                assert!(!dispatch.call(call).await.is_error);
+            }
+        }
+        assert_eq!(panes.quit_notice(), None);
+        // A close that is not a quit says nothing at exit.
+        panes.apply(vec![Effect::BatchClose(id(2))]);
+        assert_eq!(panes.quit_notice(), None);
+        let (outcome, _) = panes.apply(vec![Effect::BatchClose(id(1)), Effect::Quit]);
+        assert_eq!(outcome, Outcome::Quit);
+        assert_eq!(
+            panes.quit_notice().as_deref(),
+            Some("discarded 2 staged entries")
+        );
+        assert!(!proj.join("a.txt").exists(), "a quit writes nothing");
     }
 }

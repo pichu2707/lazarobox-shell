@@ -28,6 +28,7 @@ use crate::{
     },
     runtime::tools::{
         ToolEnv,
+        approver::ENDED,
         fs::load_roots,
         run_over,
         stage::{StageFailed, Stages, Unreadable, disk_bytes},
@@ -37,18 +38,37 @@ use crate::{
 
 /// What a sealed batch needs to be answered: its id, and whether the user can
 /// approve it at all. It is also the guard of the batch: when it is dropped
-/// the batch is discarded, so a call dropped before its answer (a cancelled or
-/// aborted turn, a closed channel) never leaves the pane's batch sealed. The
+/// the batch is discarded, so a call that never got to ask (a closed channel)
+/// never leaves the pane's batch sealed. Once the ask is announced the batch
+/// is the user's: a call dropped while it waits (a cancelled turn, a CLI
+/// timeout) leaves a Proposed orphan for the user to review or discard. The
 /// discard is generation-checked: after an answer has closed the batch, or
 /// when a newer batch has taken its place, it finds nothing and does nothing.
 pub(super) struct Sealed {
     id: BatchId,
     reviewable: bool,
     stages: Arc<Mutex<Stages>>,
+    /// The ask is open: dropping now leaves the batch as an orphan.
+    keep: bool,
+}
+
+impl Sealed {
+    /// The ask was announced: the user may now be looking at the batch.
+    pub(super) fn announced(&mut self) {
+        self.keep = true;
+    }
+
+    /// The wait ended with an answer, not with a drop: nothing is left open.
+    pub(super) fn resumed(&mut self) {
+        self.keep = false;
+    }
 }
 
 impl Drop for Sealed {
     fn drop(&mut self) {
+        if self.keep {
+            return;
+        }
         // A drop may run on an async worker, which must not wait for the
         // store while an apply holds it: then the discard waits on the
         // blocking pool instead.
@@ -123,6 +143,7 @@ fn seal_in(
             id,
             reviewable,
             stages: shared,
+            keep: false,
         },
         review,
     ))
@@ -283,10 +304,12 @@ pub(super) async fn answered(
     sealed: Option<Sealed>,
     decision: Decision,
 ) -> (Outcome, ToolStatus, String) {
-    let Some(sealed) = sealed else {
+    let Some(mut sealed) = sealed else {
         return ended(ToolStatus::Error, COULD_NOT.to_owned(), COULD_NOT);
     };
-    // Held to the end: any way out of here closes the batch (see `Sealed`).
+    // Held to the end: any way out of here closes the batch (see `Sealed`),
+    // except an answer that is no user's: the turn ended with the ask open.
+    sealed.keep = matches!(decision, Decision::Denied(ENDED));
     let (id, reviewable) = (sealed.id, sealed.reviewable);
     // `sealed` discards the batch when it goes out of scope.
     let denied = |reason: &str| ended(ToolStatus::Denied, format!("denied: {reason}"), reason);

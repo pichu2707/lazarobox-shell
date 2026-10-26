@@ -13,10 +13,14 @@ use super::{
 };
 use crate::core::{
     ai::{
-        chat::{approval::ApprovalAsk, review::TOO_LARGE},
+        chat::{
+            approval::ApprovalAsk,
+            review::{BatchEvent, TOO_LARGE},
+        },
         tools::{
             paths::REFUSED,
             registry::{Family, FamilySet},
+            report::RunReport,
             stage::StageKey,
         },
     },
@@ -371,25 +375,147 @@ async fn nothing_is_staged_while_a_batch_waits_for_the_user() {
     waiting.abort();
 }
 
-// Spec (code-write, Propose batch): a turn cancelled while the batch waits
-// for the user must not leave the pane's batch sealed for good.
+// Spec (code-write, Orphan, close and quit): a call dropped while its batch
+// waits (the turn was cancelled, or a CLI timed out) leaves the batch proposed
+// for the user: an orphan that stays until the user answers or the pane closes.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn a_call_dropped_while_its_batch_waits_frees_the_pane() {
+async fn a_call_dropped_while_its_batch_waits_leaves_a_proposed_orphan() {
     let w = world();
-    let (d, _rx) = w.turn(Arc::new(super::tests::Waiting));
+    let (d, mut rx) = w.turn(Arc::new(super::tests::Waiting));
     assert!(!d.call(write("a.txt", "hello")).await.is_error);
     let mut propose = d.call(Call::ProposeBatch);
-    assert!(futures::poll!(&mut propose).is_pending());
+    // Until the ask is announced the user has seen nothing.
+    loop {
+        tokio::select! {
+            _ = &mut propose => panic!("nobody answered"),
+            event = rx.recv() => match event {
+                Some(StreamEvent::ToolCall { ref name, .. }) if name == "propose_batch" => break,
+                other => assert!(other.is_some(), "the channel closed"),
+            },
+        }
+    }
     let during = d.call(write("b.txt", "late")).await;
     assert!(during.text.contains("waiting for review"), "{during:?}");
-    // The turn is cancelled: its future is dropped before any answer.
     drop(propose);
+    assert_eq!(w.staged(), 1, "the orphan stays");
+    let after = d.call(write("b.txt", "again")).await;
+    assert!(after.text.contains("waiting for review"), "{after:?}");
+    // The user can still review it, as the same batch.
+    let (id, review) = w
+        .host
+        .review_batch(key(), false)
+        .expect("an orphan to review");
+    assert_eq!(review.counts(), "1 file, +1 -0");
+    let BatchEvent::Done { shown, .. } = w.host.discard_batch(id) else {
+        panic!("a discard is done");
+    };
+    assert_eq!(shown, "discarded 1 staged entry");
     assert_eq!(w.staged(), 0);
-    let again = d.call(write("b.txt", "again")).await;
-    assert!(!again.is_error, "{again:?}");
-    let sealed = futures::poll!(&mut d.call(Call::ProposeBatch));
-    assert!(sealed.is_pending(), "{sealed:?}");
+}
+
+// The turn ended while the ask was open (a CLI timeout, a cancel that reached
+// the approver first): the answer is `ENDED`, which is no user's no.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_ended_turn_keeps_its_batch_but_a_user_no_discards_it() {
+    use crate::runtime::tools::approver::ENDED;
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Denied(ENDED)));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(out.is_error && out.text.contains(ENDED), "{out:?}");
+    assert_eq!(w.staged(), 1);
+    let (id, _) = w.host.review_batch(key(), false).unwrap();
+    w.host.discard_batch(id);
+    let (d, _rx) = w.turn(Script::new(Decision::Denied("no")));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    assert!(d.call(Call::ProposeBatch).await.is_error);
+    assert_eq!(w.staged(), 0, "a user's no closes the batch");
+}
+
+// A run report is no answer to a batch: the call is denied, and the batch is
+// closed, not left as an orphan (only a call dropped while it waits is one).
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_report_answering_a_batch_denies_it_and_closes_the_batch() {
+    use crate::core::ai::tools::settle::End;
+    let w = world();
+    let report = RunReport {
+        number: 1,
+        end: End::Settled,
+        cwd: None,
+        cd_target: None,
+        output: None,
+    };
+    let (d, _rx) = w.turn(Arc::new(super::tests::Ran(report)));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(out.is_error, "{out:?}");
+    assert_eq!(w.staged(), 0, "a denied batch is not an orphan");
+    assert!(w.host.review_batch(key(), false).is_none());
+}
+
+// The command was typed but the turn ended: that is no user's no, but it is
+// no orphan either: the batch of a call that ran something is closed.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_ran_ended_answer_discards_the_batch() {
+    use crate::runtime::tools::approver::RAN_ENDED;
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Denied(RAN_ENDED)));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    assert!(d.call(Call::ProposeBatch).await.is_error);
+    assert_eq!(w.staged(), 0);
+}
+
+// A batch the turn never proposed is a staging orphan: reviewing it seals it.
+// What the user is told holds counts only, never the staged text.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_unproposed_batch_is_sealed_when_the_user_reviews_it() {
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(
+        !d.call(write("a.txt", "sk-ant-api03-SECRETSECRET"))
+            .await
+            .is_error
+    );
+    assert!(!d.call(folder("sub")).await.is_error);
+    let (id, review) = w.host.review_batch(key(), false).expect("a staging orphan");
+    assert_eq!(review.counts(), "2 files, +1 -0");
+    assert_eq!(
+        w.host.review_batch(key(), false).map(|(again, _)| again),
+        Some(id)
+    );
+    let after = d.call(write("b.txt", "x")).await;
+    assert!(after.text.contains("waiting for review"), "{after:?}");
+    let BatchEvent::Done { shown, told } = w.host.apply_batch(id, false) else {
+        panic!("an apply is done");
+    };
+    assert_eq!(shown, "applied 2 paths");
+    // Model-facing: counts only, never the staged text.
+    let told = told.expect("the model is told");
+    assert_eq!(
+        told,
+        "The user applied the batch you left staged: applied 2 paths."
+    );
+    assert!(!told.contains("SECRET") && !shown.contains("SECRET"));
+    assert_eq!(
+        std::fs::read_to_string(w.proj.join("a.txt")).unwrap(),
+        "sk-ant-api03-SECRETSECRET"
+    );
+    assert!(w.proj.join("sub").is_dir());
+    let gone = BatchEvent::Done {
+        shown: "that batch is no longer there".into(),
+        told: None,
+    };
+    assert_eq!(w.host.apply_batch(id, false), gone);
+    assert_eq!(w.host.discard_batch(id), gone);
+    assert!(
+        w.host.review_batch(key(), false).is_none(),
+        "nothing to review"
+    );
 }
 
 // The same for a call whose channel is gone before it can announce: the batch
@@ -960,4 +1086,105 @@ async fn an_applied_edit_reports_its_path_and_counts() {
         std::fs::read_to_string(w.proj.join("e.txt")).unwrap(),
         "a\nc\n"
     );
+}
+
+// The host is the trust boundary: an orphan the user could not have reviewed
+// (a truncated diff) is refused here, whatever the caller sends. Nothing is
+// written and the batch stays for the user to discard.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_unreviewable_orphan_is_not_applied() {
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(
+        !d.call(write("long.txt", &"x\n".repeat(3000)))
+            .await
+            .is_error
+    );
+    let (id, review) = w.host.review_batch(key(), false).unwrap();
+    assert!(!review.doc().reviewable());
+    let event = w.host.apply_batch(id, false);
+    assert_eq!(
+        event,
+        BatchEvent::Done {
+            shown: TOO_LARGE.into(),
+            told: None
+        }
+    );
+    assert!(!w.proj.join("long.txt").exists());
+    assert_eq!(w.staged(), 1, "the batch stays for the user to discard");
+}
+
+// A turn of the pane is live: the batch is the model's, so an apply that
+// arrives anyway writes nothing.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_orphan_is_not_applied_while_a_turn_of_the_pane_is_live() {
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    let (id, _) = w.host.review_batch(key(), false).unwrap();
+    let event = w.host.apply_batch(id, true);
+    assert_eq!(
+        event,
+        BatchEvent::Done {
+            shown: super::orphan::LIVE.into(),
+            told: None
+        }
+    );
+    assert!(!w.proj.join("a.txt").exists());
+    assert_eq!(w.staged(), 1);
+}
+
+// User decision: a drifted apply writes nothing, leaves the batch proposed
+// for the user, and does not tell the model.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_drifted_orphan_apply_leaves_the_batch_proposed_and_tells_nothing() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "foo\n").unwrap();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(!d.call(edit("b.txt", "foo", "bar")).await.is_error);
+    let (id, _) = w.host.review_batch(key(), false).unwrap();
+    std::fs::write(w.proj.join("b.txt"), "changed\n").unwrap();
+    let BatchEvent::Done { shown, told } = w.host.apply_batch(id, false) else {
+        panic!("done");
+    };
+    assert!(shown.starts_with("refused"), "{shown}");
+    assert_eq!(told, None);
+    assert_eq!(
+        std::fs::read_to_string(w.proj.join("b.txt")).unwrap(),
+        "changed\n"
+    );
+    assert_eq!(w.staged(), 1);
+    let stages = w.host.stages.lock().unwrap();
+    assert_eq!(
+        stages.batch(key()).map(|b| b.state()),
+        Some(crate::core::ai::tools::stage::State::Proposed)
+    );
+}
+
+// Model-facing text of an orphan answer carries counts only: the base of an
+// edit (disk text the model never saw) reaches neither line.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_orphan_answer_never_tells_the_model_the_base_or_the_diff() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "key=sk-ant-api03-BASESECRET\nfoo\n").unwrap();
+    for apply in [true, false] {
+        let (d, _rx) = w.turn(Script::new(Decision::Sent));
+        assert!(!d.call(edit("b.txt", "foo", "bar")).await.is_error);
+        let (id, _) = w.host.review_batch(key(), false).unwrap();
+        let event = if apply {
+            w.host.apply_batch(id, false)
+        } else {
+            w.host.discard_batch(id)
+        };
+        let BatchEvent::Done { shown, told } = event else {
+            panic!("done");
+        };
+        let all = format!("{shown} {}", told.expect("told"));
+        assert!(!all.contains("BASESECRET") && !all.contains("foo"), "{all}");
+        std::fs::write(w.proj.join("b.txt"), "key=sk-ant-api03-BASESECRET\nfoo\n").unwrap();
+    }
 }

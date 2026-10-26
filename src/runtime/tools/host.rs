@@ -398,6 +398,10 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     if scope.events.send(announce).await.is_err() {
         return gone();
     }
+    // From here the user may see the ask: a batch dropped now is an orphan.
+    if let Some(batch) = sealed.as_mut() {
+        batch.announced();
+    }
     // Only an announced call owes a result.
     let owed = Owed {
         id,
@@ -411,6 +415,12 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 Some(pending) => pending.await,
                 None => Decision::Sent.into(),
             };
+            // Resumed, so not dropped by a cancel: from here the batch is
+            // kept only where `answered` says so, and no early return below
+            // can leave an orphan.
+            if let Some(batch) = sealed.as_mut() {
+                batch.resumed();
+            }
             let decision = match answer {
                 Answer::Decided(decision) => {
                     if let (Some(shown), Decision::Sent) = (approves, decision) {
@@ -487,6 +497,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
 }
 
 mod files;
+mod orphan;
 
 #[cfg(test)]
 mod external_tests;

@@ -51,13 +51,14 @@ use crate::core::{
                 Answer, CallId, ChatError, ChatRequest, Decision, StreamEvent, Tools, locality,
             },
             gemini::GeminiDecoder,
+            review::{Badge, BatchEvent},
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
         config::McpServer,
         sanitize::{StreamSanitizer, Utf8Stream, clean},
         tools::{
             report::RunReport,
-            stage::StageKey,
+            stage::{BatchId, StageKey},
             summary::clip,
             wiring::{McpWire, Secret},
         },
@@ -860,6 +861,48 @@ impl Chats {
     /// The session of `pane`, while it has one.
     pub fn session(&self, pane: PaneId) -> Option<&Started> {
         self.tooling.as_ref()?.started.get(&pane)
+    }
+
+    /// Discards the batch `pane` holds because the chat closed: how many
+    /// entries were lost, `None` when there was nothing worth a notice. Unlike
+    /// [`Chats::cancel`], which leaves a batch as an orphan for the user.
+    pub fn close_batch(&mut self, pane: PaneId) -> Option<usize> {
+        self.tooling
+            .as_ref()?
+            .host
+            .close_batch(StageKey::Pane(pane))
+    }
+
+    /// The batch a turn of `pane` left behind (cancelled, timed out, or never
+    /// proposed), sealed for the user to review. `None` while a turn runs,
+    /// because then the batch is the model's.
+    pub fn review_batch(&self, pane: PaneId) -> Option<BatchEvent> {
+        let live = self.turns.get(&pane).is_some_and(|t| !t.is_finished());
+        let host = &self.tooling.as_ref()?.host;
+        let (id, review) = host.review_batch(StageKey::Pane(pane), live)?;
+        Some(BatchEvent::Review(id, review))
+    }
+
+    /// What each chat's pane shows of its batch: staged while a turn of the
+    /// pane runs, an orphan once none does. Empty without tooling, or while
+    /// the store is busy (the next poll shows it).
+    pub fn batch_badges(&self) -> Option<HashMap<PaneId, Badge>> {
+        let tooling = self.tooling.as_ref()?;
+        let live = |pane| self.turns.get(&pane).is_some_and(|t| !t.is_finished());
+        tooling.host.badges(live)
+    }
+
+    /// Applies an orphan the user approved; the host refuses it while a turn
+    /// of the pane runs, as it does a review.
+    pub fn apply_batch(&self, id: BatchId) -> Option<BatchEvent> {
+        let StageKey::Pane(pane) = id.key;
+        let live = self.turns.get(&pane).is_some_and(|t| !t.is_finished());
+        Some(self.tooling.as_ref()?.host.apply_batch(id, live))
+    }
+
+    /// Discards an orphan the user rejected.
+    pub fn discard_batch(&self, id: BatchId) -> Option<BatchEvent> {
+        Some(self.tooling.as_ref()?.host.discard_batch(id))
     }
 
     /// Stops the turn of `pane`, if any. Returns at once.

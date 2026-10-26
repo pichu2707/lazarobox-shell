@@ -204,15 +204,15 @@ Spec: code-write "create_dir and write_file staging", "edit_file staging", "Prop
 
 ### W-g: runtime chat lifecycle (PR 23, ~400, host.rs slice: spike a seam first)
 Spec: code-write "Orphan, close and quit", "Apply"; chat-pane "Closing discards a batch".
-- [ ] Wg.1 RED: closing a pane calls `Stages.discard(key)` with a notice. ~130.
-- [ ] Wg.2 RED: turn cancelled or CLI timeout leaves Proposed-orphan; unproposed batch at turn end is Staging-orphan; `Effect::BatchReview/Apply/Discard` routed via Chats. ~170.
-- [ ] Wg.3 RED: the model learns of a user-side apply/discard through a system line on its next turn. ~100.
+- [x] Wg.1 RED: closing a pane calls `Stages.discard(key)` with a notice. ~130.
+- [x] Wg.2 RED: turn cancelled or CLI timeout leaves Proposed-orphan; unproposed batch at turn end is Staging-orphan; `Effect::BatchReview/Apply/Discard` routed via Chats. ~170.
+- [x] Wg.3 RED: the model learns of a user-side apply/discard through a system line on its next turn. ~100.
 
 ### W-h: badge, Ctrl+G, quit notice (PR 24, ~450, host.rs slice: spike a seam first)
 Spec: chat-pane "Staged batch indicator"; code-write "Orphan, close and quit".
-- [ ] Wh.1 RED: pane badge for staged/orphan batches (`ui/components/chat.rs`, insta). ~200.
-- [ ] Wh.2 RED: Ctrl+G opens the orphan review; check against the chat key table for conflicts (with Ctrl+O from S1e-1a). ~120.
-- [ ] Wh.3 RED: quit discards batches with a notice (`app/notes.rs`). ~130.
+- [x] Wh.1 RED: pane badge for staged/orphan batches (`ui/components/chat.rs`, insta). ~200.
+- [x] Wh.2 RED: Ctrl+G opens the orphan review; check against the chat key table for conflicts (with Ctrl+O from S1e-1a). ~120.
+- [x] Wh.3 RED: quit discards batches with a notice (`app/notes.rs`). ~130.
 
 Go/no-go checkpoint on review UX after W-h (design rollout).
 
