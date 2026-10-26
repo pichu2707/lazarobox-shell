@@ -47,3 +47,13 @@ Sections, items and tabs MUST come from static descriptor tables; adding a secti
 - GIVEN the Settings tab snapshots
 - WHEN regenerated
 - THEN `Notify` and `Sound` appear on the Settings tab and not on the AI tab
+
+## ADDED Requirements
+
+### Requirement: Local models next to a running llama-server
+With llamacpp managed, the llamacpp model picker MUST list the local model files (marked `lazarobox starts it`, the managed one first) also when a llama-server already answers on the managed port, and choosing one MUST make it the managed model as when the server is stopped: each model gets a server of its own (see chat-engines, Managed llama-server lifecycle). Unmanaged, a running llama-server lists its own models as before.
+
+#### Scenario: Another server answers [auto]
+- GIVEN llamacpp managed with `/m/b.gguf`, the files `/m/a.gguf` and `/m/b.gguf`, and a llama-server serving `/m/x.gguf` on the port
+- WHEN the llamacpp models of a task are listed
+- THEN the rows are `b.gguf` (current) and `a.gguf`, both `lazarobox starts it`, and choosing `b.gguf` makes it the managed model

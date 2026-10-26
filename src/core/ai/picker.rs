@@ -119,12 +119,15 @@ fn has_status(detection: Option<&Detection>, id: &str, status: Status) -> bool {
 /// The mark of a model a stopped llama-server can be started with.
 pub const MANAGED_MARK: &str = "lazarobox starts it";
 
-/// The models lazarobox can start a stopped llama-server with: `managed`
+/// The models lazarobox can start a stopped llama-server with, or, managed,
+/// one of its own next to a llama-server answering on the port: `managed`
 /// first, then the files found on the machine, each once. Only paths that are
 /// text, since the choice is saved as a string. Empty for any other engine or
 /// state.
 fn local_files(engine: &str, managed: Option<&Path>, detection: &Detection) -> Vec<String> {
-    if engine != "llamacpp" || !has_status(Some(detection), engine, Status::NotRunning) {
+    let startable = has_status(Some(detection), engine, Status::NotRunning)
+        || (managed.is_some() && has_status(Some(detection), engine, Status::Available));
+    if engine != "llamacpp" || !startable {
         return Vec::new();
     }
     let mut files: Vec<String> = Vec::new();
@@ -345,12 +348,15 @@ pub fn model_rows(
         .engines
         .iter()
         .find(|s| s.id == engine && s.status == Status::Available);
+    let managed = draft.managed().map(|s| s.model.as_path());
+    let files = local_files(engine, managed, detection);
+    // Managed, each model gets a server of its own: one already answering on
+    // the port (another lazarobox's, or the user's) never hides the files.
+    let state = state.filter(|_| managed.is_none() || files.is_empty());
     let Some(state) = state else {
         // A stopped llama-server: lazarobox starts it with the model chosen
         // here, the managed one first, then the files found on the machine.
         // Managed, every saved name works too (llama-server ignores it).
-        let managed = draft.managed().map(|s| s.model.as_path());
-        let files = local_files(engine, managed, detection);
         if !files.is_empty() {
             let mut rows: Vec<PickRow> = files
                 .iter()
@@ -1594,6 +1600,24 @@ mod tests {
         let mut draft = managed_draft("/m/b.gguf");
         assign(&mut draft, Task::Chat, "llamacpp", Some("/m/b.gguf"));
         let d = stopped_llamacpp_with(&["/m/a.gguf", "/m/b.gguf"]);
+        let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
+        assert_eq!(
+            rows,
+            vec![local("/m/b.gguf", true), local("/m/a.gguf", false)]
+        );
+    }
+
+    // Spec S12 (managed-llama-server-followups): a llama-server of another
+    // lazarobox, or of the user, answering on the port never hides the local
+    // models: each model gets a server of its own.
+    #[test]
+    fn managed_a_running_llama_server_still_offers_the_local_models() {
+        let mut draft = managed_draft("/m/b.gguf");
+        assign(&mut draft, Task::Chat, "llamacpp", Some("/m/b.gguf"));
+        let d = Detection {
+            engines: vec![state("llamacpp", Status::Available, &["/m/x.gguf"])],
+            local_models: vec!["/m/a.gguf".into(), "/m/b.gguf".into()],
+        };
         let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
         assert_eq!(
             rows,
