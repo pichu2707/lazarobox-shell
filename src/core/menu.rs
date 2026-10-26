@@ -10,8 +10,12 @@ use super::{
     ai::{
         Detection,
         config::{AiConfig, NotifyMode, Task, ToolToggle},
+        hf::{Answer, Ask, Job},
         menu::AiMenu,
-        picker::{Level, Mark, NOT_IN_LIST, Outcome, PickKey, PickRow, Picker, Target},
+        picker::{
+            HINT_CANCEL, Level, Mark, NOT_IN_LIST, Outcome, PickKey, PickRow, Picker, QUERY_HINT,
+            Running, Screen, Target,
+        },
     },
     config::{BarPosition, Config, ConfigEdit, LLAMACPP_TABLE, MEMORY_TABLE},
 };
@@ -392,6 +396,13 @@ pub enum MenuCommand {
         mode: NotifyMode,
         sound: bool,
     },
+    /// Send this request to the Hub; the reply comes back through
+    /// [`MenuState::hub_reply`].
+    HubAsk(Ask),
+    /// Start this Hugging Face download (`y` on the Confirm screen).
+    Download(Box<Job>),
+    /// Stop the Hugging Face download that runs.
+    CancelDownload,
 }
 
 const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
@@ -610,6 +621,28 @@ impl MenuState {
             .is_none_or(|(cols, rows)| fits_size(cols, rows, MENU_BODY))
     }
 
+    /// The Hugging Face download that runs when the menu opens.
+    pub fn with_download(mut self, download: Option<Running>) -> Self {
+        self.set_download(download);
+        self
+    }
+
+    /// The Hugging Face download that runs, `None` once it ended.
+    pub fn set_download(&mut self, download: Option<Running>) {
+        if let Some(ai) = &mut self.ai {
+            ai.set_download(download);
+        }
+    }
+
+    /// A reply of the Hub. The picker keeps it only while it waits for that
+    /// request; a failure it waited for becomes the footer error.
+    pub fn hub_reply(&mut self, ask: Ask, answer: Result<Answer, String>) {
+        let error = self.ai.as_mut().and_then(|ai| ai.hub_reply(&ask, answer));
+        if let Some(message) = error {
+            self.error = Some(message);
+        }
+    }
+
     /// Adds the AI section, editing a draft of `ai` against `engines`.
     pub fn with_ai(mut self, ai: AiConfig, engines: Option<Detection>) -> Self {
         self.ai = Some(AiMenu::new(ai, engines));
@@ -788,6 +821,7 @@ impl MenuState {
             Level::Models { engine } | Level::Custom { engine, .. } => {
                 format!("Model for {row} ({engine})")
             }
+            Level::Hub(hub) => hub.title(),
         };
         if let Some(counter) = picker.counter(all.len()) {
             title = format!("{title} {counter}");
@@ -795,6 +829,11 @@ impl MenuState {
         let mut rows = vec![Row::Title(Cow::Owned(title))];
         if let Some(text) = picker.text() {
             rows.push(Row::Field(text.to_owned()));
+            return Some(rows);
+        }
+        if let Some(text) = picker.hub().and_then(|hub| hub.text()) {
+            rows.push(Row::Field(text.to_owned()));
+            rows.push(Row::Text(Cow::Borrowed(QUERY_HINT)));
             return Some(rows);
         }
         for index in picker.visible(all.len()) {
@@ -1107,6 +1146,20 @@ impl MenuState {
             return MenuCommand::None;
         };
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        if ai.picker().is_some_and(Picker::asks_cancel) {
+            // Only a plain `y` cancels; any other key keeps the download.
+            if repeat {
+                return MenuCommand::None;
+            }
+            let yes = plain && key.code == KeyCode::Char('y');
+            return match ai.drive(|p, _, _| p.answer_cancel(yes)) {
+                Outcome::CancelDownload => MenuCommand::CancelDownload,
+                _ => MenuCommand::None,
+            };
+        }
+        if ai.picker().is_some_and(|p| p.hub().is_some()) {
+            return Self::on_hub_key(ai, key, repeat);
+        }
         // The custom field is checked before the modifier guard: Ctrl+U
         // clears it, and every letter, shortcuts included, is typed.
         if ai.picker().is_some_and(|p| p.text().is_some()) {
@@ -1155,6 +1208,60 @@ impl MenuState {
             _ => {}
         }
         MenuCommand::None
+    }
+
+    /// Keys on the Hugging Face screens. Esc goes back one screen, also
+    /// while a request runs; every other key waits for its reply. Only `y`
+    /// on the Confirm screen downloads; no key here saves or edits the
+    /// config.
+    fn on_hub_key(ai: &mut AiMenu, key: &KeyEvent, repeat: bool) -> MenuCommand {
+        let Some(hub) = ai.picker().and_then(Picker::hub) else {
+            return MenuCommand::None;
+        };
+        let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        if key.code == KeyCode::Esc {
+            if !repeat {
+                ai.drive(Picker::back);
+            }
+            return MenuCommand::None;
+        }
+        if hub.asking().is_some() {
+            return MenuCommand::None;
+        }
+        let outcome = match (hub.screen(), key.code) {
+            (Screen::Query(_), KeyCode::Char('u')) if key.modifiers == KeyModifiers::CONTROL => {
+                ai.edit(Picker::clear_text);
+                Outcome::Stay
+            }
+            _ if !plain => Outcome::Stay,
+            (Screen::Query(_), KeyCode::Char(c)) => {
+                ai.edit(|p| p.type_char(c));
+                Outcome::Stay
+            }
+            (Screen::Query(_), KeyCode::Backspace) => {
+                ai.edit(Picker::backspace);
+                Outcome::Stay
+            }
+            (Screen::Query(_), _) if key.code != KeyCode::Enter => Outcome::Stay,
+            (_, KeyCode::Char('j') | KeyCode::Down) => {
+                ai.edit_with(|p, d, e| p.step(true, d, e));
+                Outcome::Stay
+            }
+            (_, KeyCode::Char('k') | KeyCode::Up) => {
+                ai.edit_with(|p, d, e| p.step(false, d, e));
+                Outcome::Stay
+            }
+            _ if repeat => Outcome::Stay,
+            (_, KeyCode::Enter) => ai.drive(Picker::enter),
+            (Screen::Confirm(_), KeyCode::Char('y')) => ai.drive(Picker::hub_download),
+            (Screen::Confirm(_), KeyCode::Char('n')) => ai.drive(Picker::back),
+            _ => Outcome::Stay,
+        };
+        match outcome {
+            Outcome::Ask(ask) => MenuCommand::HubAsk(ask),
+            Outcome::Download(job) => MenuCommand::Download(job),
+            _ => MenuCommand::None,
+        }
     }
 
     /// Moves to the next (or previous) tab, wrapping. Each tab remembers its
@@ -1364,7 +1471,8 @@ impl MenuState {
             .collect()
     }
 
-    /// A paste: goes to the custom field when it is focused, else ignored.
+    /// A paste: goes to the custom field or the Hugging Face search when
+    /// one is focused, else ignored.
     pub fn on_paste(&mut self, text: &str) {
         if let Some(ai) = &mut self.ai {
             ai.edit(|p| p.paste(text));
@@ -1386,6 +1494,20 @@ impl MenuState {
         }
         let ai = self.ai.as_ref();
         let picker = ai.and_then(AiMenu::picker);
+        if picker.is_some_and(Picker::asks_cancel) {
+            return Footer::Hint(Cow::Borrowed(HINT_CANCEL));
+        }
+        if let Some(hub) = picker.and_then(Picker::hub) {
+            return match hub.screen() {
+                Screen::Confirm(confirm) if hub.asking().is_none() => {
+                    match confirm.short.as_deref() {
+                        Some(short) => Footer::Error(short),
+                        None => Footer::Hint(Cow::Borrowed(hub.hint())),
+                    }
+                }
+                _ => Footer::Hint(Cow::Borrowed(hub.hint())),
+            };
+        }
         if picker.is_some_and(|p| p.text().is_some()) {
             return Footer::Hint(Cow::Borrowed(HINT_CUSTOM));
         }
@@ -1878,3 +2000,6 @@ mod context_tests;
 mod mouse_tests;
 #[cfg(test)]
 mod update_tests;
+
+#[cfg(test)]
+mod hub_tests;

@@ -119,6 +119,62 @@ pub struct License {
     pub link: String,
 }
 
+/// A request of the picker's Hugging Face screens. The reply names the
+/// request it answers, so the picker keeps only the one it still waits for.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Ask {
+    /// The GGUF repos a search finds.
+    Search(String),
+    /// The files of a valid repo id.
+    Files(String),
+}
+
+/// What the runtime found for an [`Ask`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Answer {
+    Repos(Vec<RepoHit>),
+    Files(Box<Listing>),
+}
+
+/// What the Files and Confirm screens show of a repo: its choices, plus
+/// where a download goes and the room there, read by the runtime.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Listing {
+    pub files: RepoFiles,
+    /// The hub cache folder; `None` when no folder could be found.
+    pub hub: Option<PathBuf>,
+    /// The bytes free on the hub cache's filesystem, when known.
+    pub free: Option<u64>,
+    /// The bytes each choice still needs, in choice order: a partial file
+    /// counts as far as it goes.
+    pub missing: Vec<u64>,
+}
+
+/// How a download ended.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum End {
+    /// The path llama-server is started with: the snapshot link of the
+    /// first file.
+    Done(PathBuf),
+    Cancelled,
+    Failed(String),
+}
+
+/// What a download that cannot find a hub cache folder reads as.
+pub const NO_HUB: &str = "download failed: no Hugging Face cache folder (set HF_HOME)";
+
+/// Whether `need` bytes fit in `free`. An unknown free space never blocks.
+pub fn space_check(need: u64, free: Option<u64>) -> Result<(), String> {
+    match free {
+        Some(free) if free < need => Err(format!(
+            "not enough disk space: {} needed, {} free",
+            size_label(need),
+            size_label(free)
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// The environment the token is looked up in.
 pub struct TokenEnv {
     pub hf_token: Option<String>,

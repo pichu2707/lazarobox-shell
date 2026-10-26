@@ -88,6 +88,12 @@ fn curl(base: &str, token: Option<&str>) -> Curl {
     }
 }
 
+/// The sha256 of `bytes` in hex: the object id the Hub gives an LFS file.
+fn sha(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    format!("{:x}", sha2::Sha256::digest(bytes))
+}
+
 fn oid(n: u8) -> String {
     format!("{n:02x}").repeat(32)
 }
@@ -296,7 +302,9 @@ async fn a_download_lands_in_the_hub_layout() {
     need_curl!();
     let (base, _) = file_server(b"GGUF-model-bytes");
     let hub = tempfile::tempdir().unwrap();
-    let job = job(&[("a-Q4_K_M.gguf", 16, 1)]);
+    let mut job = job(&[("a-Q4_K_M.gguf", 16, 1)]);
+    let id = sha(b"GGUF-model-bytes");
+    job.choice.files[0].oid = id.clone();
     let mut seen = Vec::new();
     let end = download(
         &curl(&base, None),
@@ -312,13 +320,13 @@ async fn a_download_lands_in_the_hub_layout() {
     assert_eq!(std::fs::read(&snapshot).unwrap(), b"GGUF-model-bytes");
     assert_eq!(
         std::fs::read_link(&snapshot).unwrap(),
-        PathBuf::from(format!("../../blobs/{}", oid(1)))
+        PathBuf::from(format!("../../blobs/{}", id))
     );
     assert_eq!(
         std::fs::read_to_string(repo.join("refs/main")).unwrap(),
         COMMIT
     );
-    assert!(!repo.join(format!("blobs/{}.incomplete", oid(1))).exists());
+    assert!(!repo.join(format!("blobs/{}.incomplete", id)).exists());
     assert_eq!(seen.last(), Some(&(16, 16)));
     // The local model scan lists it.
     let found = crate::runtime::gguf::find(&[hub.path().to_path_buf()]);
@@ -333,11 +341,13 @@ async fn a_partial_download_resumes_from_where_it_stopped() {
     let hub = tempfile::tempdir().unwrap();
     let blobs = hub.path().join("models--o--r/blobs");
     std::fs::create_dir_all(&blobs).unwrap();
-    std::fs::write(blobs.join(format!("{}.incomplete", oid(1))), b"0123").unwrap();
-    let job = job(&[("a.gguf", 10, 1)]);
+    let mut job = job(&[("a.gguf", 10, 1)]);
+    let id = sha(b"0123456789");
+    job.choice.files[0].oid = id.clone();
+    std::fs::write(blobs.join(format!("{id}.incomplete")), b"0123").unwrap();
     let end = download(&curl(&base, None), hub.path(), &job, |_, _| {}, no_cancel()).await;
     assert!(matches!(end, End::Done(_)), "{end:?}");
-    assert_eq!(std::fs::read(blobs.join(oid(1))).unwrap(), b"0123456789");
+    assert_eq!(std::fs::read(blobs.join(id)).unwrap(), b"0123456789");
     let request = seen.lock().unwrap()[0].clone();
     assert_eq!(header(&request, "range"), Some("bytes=4-"));
 }
@@ -377,6 +387,28 @@ async fn a_cancelled_download_keeps_its_partial_file_and_no_link() {
             .join(format!("models--o--r/snapshots/{COMMIT}"))
             .exists()
     );
+}
+
+#[tokio::test]
+async fn a_corrupt_download_is_removed_and_never_linked() {
+    need_curl!();
+    let (base, _) = file_server(b"0123456789");
+    let hub = tempfile::tempdir().unwrap();
+    let mut job = job(&[("a.gguf", 10, 1)]);
+    job.choice.files[0].oid = sha(b"9876543210");
+    let end = download(&curl(&base, None), hub.path(), &job, |_, _| {}, no_cancel()).await;
+    assert_eq!(
+        end,
+        End::Failed("download failed: checksum mismatch".into())
+    );
+    let repo = hub.path().join("models--o--r");
+    assert!(
+        !repo
+            .join(format!("blobs/{}.incomplete", sha(b"9876543210")))
+            .exists()
+    );
+    assert!(!repo.join(format!("blobs/{}", sha(b"9876543210"))).exists());
+    assert!(!repo.join("snapshots").exists());
 }
 
 #[tokio::test]

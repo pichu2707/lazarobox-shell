@@ -58,7 +58,7 @@ While a request runs, the footer reads `asking Hugging Face…` and keys other t
 - THEN the picker stays on the level Esc went to
 
 ### Requirement: Download in the status bar
-While a download runs, the status bar MUST show `↓ <percent>%` after the other right-hand marks. When it ends, the status bar shows `downloaded <file>` (or the failure message) for a few seconds and the engines are detected again. A cancel shows `download cancelled · run it again to resume`.
+While a download runs, the status bar MUST show `↓ <percent>%` after the other right-hand marks. When it ends, the status bar shows `downloaded <file>` (or the failure message) as a notice until the next key, and the engines are detected again. A cancel shows `download cancelled · run it again to resume`.
 
 #### Scenario: Progress then done [auto]
 - GIVEN a download started from the picker
