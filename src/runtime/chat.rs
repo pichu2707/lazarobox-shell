@@ -31,7 +31,7 @@ pub(crate) use cli::{
     trusted_cargo_path, trusted_real_path,
 };
 pub use live::LiveServers;
-pub use managed::Managed;
+pub use managed::{Lease, Managed};
 
 use self::external::{Externals, Start};
 use super::{
@@ -385,7 +385,7 @@ pub fn runner_live(live: LiveServers, cli: CliEnv, tools: Option<Arc<ToolHost>>)
         Box::pin(async move {
             let _tools = tools;
             // Held until the turn ends: the idle stop never cuts it.
-            let _lease = match managed {
+            let lease = match managed {
                 Some(managed) => match managed.lease().await {
                     Ok(lease) => Some(lease),
                     Err(reason) => {
@@ -408,7 +408,12 @@ pub fn runner_live(live: LiveServers, cli: CliEnv, tools: Option<Arc<ToolHost>>)
                     path,
                     body,
                 } => {
-                    let port = port.unwrap_or(catalog_port);
+                    // The managed server's port is known once it runs.
+                    let port = lease
+                        .as_ref()
+                        .map(Lease::port)
+                        .or(port)
+                        .unwrap_or(catalog_port);
                     // Only a turn that offers tools has a dispatch to loop on.
                     match (adapter, &request.tools, ollama::current()) {
                         (Adapter::Ollama, Tools::On { .. }, Some(dispatch)) => {

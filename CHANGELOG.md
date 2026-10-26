@@ -12,6 +12,15 @@ baseline.
 
 ### Added
 
+- The quit prompt names `llama-server (shared)` when the managed llama-server
+  this lazarobox started is answering another lazarobox, since quitting cuts
+  that reply; the idle stop waits for such a reply and counts the idle time from
+  it. Tabs and panes of one lazarobox share its server and never count.
+- Managed llama-server: one server per model, each on its own port (the
+  configured one and the seven after it). A second lazarobox, or a
+  `llama-server` you started in a terminal, serving the same model file is used
+  as it is and never stopped by lazarobox; another model starts its own server
+  on the next free port. Only a listening socket of your own user is used.
 - The quit prompt names what still runs in the panes (jobs started with `&`,
   `nohup` or `disown`, or a program in the foreground):
   `Quit? still running: sleep 77, npm run dev (y/n)`, three names at most and
@@ -35,6 +44,12 @@ baseline.
 
 ### Changed
 
+- Managed llama-server: a port where something else already answers no longer
+  fails the turn with `another program answers on 127.0.0.1:<port>`; the next
+  free port is used, and the turn fails only when all eight are taken (`no free
+  port on 127.0.0.1 from <port> to <port+7>`). With llamacpp managed, the model
+  picker keeps listing the local models while another llama-server answers on
+  the port.
 - The managed llama-server checks its model file before each start. When
   it is missing nothing starts and the chat reads `llama-server not
   started: model file not found: <path>`, instead of the last line of a

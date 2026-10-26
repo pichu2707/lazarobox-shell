@@ -31,13 +31,14 @@ impl LiveServers {
         })))
     }
 
-    /// The port of every server engine now.
+    /// The port of every server engine now: llamacpp's is the managed
+    /// server's, which moves to the port it runs on once it starts.
     pub fn ports(&self) -> ServerPorts {
-        self.0
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .ports
-            .clone()
+        let state = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        match &state.managed {
+            Some(managed) => state.ports.clone().with("llamacpp", managed.port()),
+            None => state.ports.clone(),
+        }
     }
 
     /// The llama-server llamacpp turns start now, if any.
@@ -71,7 +72,6 @@ impl LiveServers {
     /// it replaces is returned, for the caller to retire.
     pub fn manage(&self, managed: Arc<Managed>) -> Option<Arc<Managed>> {
         let mut state = self.0.write().unwrap_or_else(PoisonError::into_inner);
-        state.ports = state.ports.clone().with("llamacpp", managed.port());
         state.managed.replace(managed)
     }
 }

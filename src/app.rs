@@ -174,6 +174,9 @@ pub enum AppEvent {
     /// What still runs in the panes (see `Effect::ListRunning`): one
     /// command per job, for the quit prompt.
     StillRunning(Vec<String>),
+    /// The llama-server this lazarobox started is answering another
+    /// lazarobox (see `Effect::ListRunning`): quitting cuts that reply.
+    ServerAnswersOthers,
     /// The runtime prepared the system prompt of a chat pane (see
     /// `Effect::PreparePrompt`): the resolved prompt with the workspace
     /// block, and the notices of the override files it skipped.
@@ -345,13 +348,19 @@ pub enum Effect {
     /// changed it); `None` never stops it.
     ManagedIdle(Option<Duration>),
     /// Name the jobs still running in the panes, for the quit prompt; the
-    /// runtime answers with one `AppEvent::StillRunning`.
+    /// runtime answers with one `AppEvent::StillRunning`, and with
+    /// `AppEvent::ServerAnswersOthers` when its llama-server is answering
+    /// another lazarobox.
     ListRunning,
     Quit,
 }
 
 /// Display columns of one job named by the quit prompt.
 const JOB_NAME_MAX: usize = 24;
+
+/// How the quit prompt names a llama-server this lazarobox started that is
+/// answering another lazarobox.
+const SHARED_SERVER: &str = "llama-server (shared)";
 
 /// Pane size for a terminal of `cols` x `rows`: the bottom row is the
 /// statusline, and the pane is never smaller than 1x1.
@@ -605,6 +614,9 @@ pub struct App {
     notice: Option<String>,
     /// What still runs in the panes, named by the open quit prompt.
     still_running: Vec<String>,
+    /// Whether the open quit prompt also names the llama-server, answering
+    /// another lazarobox now.
+    serving_others: bool,
     /// The newer released version, when the update check knows one.
     update: Option<String>,
     /// How this binary was installed, for Enter on the Updates row.
@@ -725,6 +737,7 @@ impl App {
             input: InputMode::default(),
             notice: None,
             still_running: Vec::new(),
+            serving_others: false,
             update: None,
             install_env: None,
             cargo_check: |_| false,
@@ -981,12 +994,18 @@ impl App {
     /// columns. Three jobs at most, each shortened to [`JOB_NAME_MAX`]
     /// columns; fewer when they do not fit, then only how many.
     pub fn status_label(&self, room: usize) -> Option<String> {
-        if self.input != InputMode::Confirm(Confirm::Quit) || self.still_running.is_empty() {
+        let running: Vec<&str> = self
+            .still_running
+            .iter()
+            .map(String::as_str)
+            .chain(self.serving_others.then_some(SHARED_SERVER))
+            .collect();
+        if self.input != InputMode::Confirm(Confirm::Quit) || running.is_empty() {
             return None;
         }
-        let total = self.still_running.len();
+        let total = running.len();
         let named = (1..=total.min(3)).rev().map(|shown| {
-            let names: Vec<String> = self.still_running[..shown]
+            let names: Vec<String> = running[..shown]
                 .iter()
                 .map(|name| fit(name, JOB_NAME_MAX))
                 .collect();
@@ -1536,6 +1555,12 @@ impl App {
                 Vec::new()
             }
             AppEvent::StillRunning(_) => Vec::new(),
+            AppEvent::ServerAnswersOthers if self.input == InputMode::Confirm(Confirm::Quit) => {
+                self.serving_others = true;
+                self.dirty = true;
+                Vec::new()
+            }
+            AppEvent::ServerAnswersOthers => Vec::new(),
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
             AppEvent::MemoryTick => self.on_memory_tick(),
@@ -1895,6 +1920,7 @@ impl App {
                 PrefixAction::RequestQuit | PrefixAction::ClosePane | PrefixAction::CloseTab,
             ) if self.input == InputMode::Confirm(Confirm::Quit) => {
                 self.still_running.clear();
+                self.serving_others = false;
                 vec![Effect::ListRunning]
             }
             // The literal is a byte for a child; a chat has none, so it swallows it.
@@ -3111,6 +3137,49 @@ mod app_tests {
             Some("Quit? still running: sleep 77, npm run dev (y/n)")
         );
         assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+    }
+
+    // Spec S13 (managed-llama-server-followups): "avisarle cuando vaya a
+    // cerrar": the llama-server this lazarobox started, answering another
+    // lazarobox, is named after the jobs, once, whatever the order.
+    #[test]
+    fn the_quit_prompt_names_a_shared_llama_server_that_is_answering() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(AppEvent::ServerAnswersOthers);
+        a.update(names(&["sleep 77"]));
+        a.update(AppEvent::ServerAnswersOthers);
+        assert_eq!(
+            a.status_label(WIDE).as_deref(),
+            Some("Quit? still running: sleep 77, llama-server (shared) (y/n)")
+        );
+        assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+    }
+
+    #[test]
+    fn a_shared_llama_server_alone_is_named() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(names(&[]));
+        a.update(AppEvent::ServerAnswersOthers);
+        assert_eq!(
+            a.status_label(WIDE).as_deref(),
+            Some("Quit? still running: llama-server (shared) (y/n)")
+        );
+    }
+
+    // Spec S13: an answer that comes after the prompt closed is dropped, and
+    // the next prompt asks again.
+    #[test]
+    fn a_late_shared_server_answer_is_dropped() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(AppEvent::ServerAnswersOthers);
+        a.update(key('n'));
+        a.update(AppEvent::ServerAnswersOthers);
+        a.update(ctrl_space());
+        assert_eq!(a.update(key('q')), vec![Effect::ListRunning]);
+        assert_eq!(a.status_label(WIDE), None);
     }
 
     #[test]

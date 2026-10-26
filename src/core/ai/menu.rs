@@ -154,13 +154,16 @@ impl AiMenu {
         }
         let model = PathBuf::from(assignment.model.as_deref()?);
         let detection = self.engines.as_ref()?;
-        let stopped = detection
-            .engines
-            .iter()
-            .any(|s| s.id == "llamacpp" && s.status == Status::NotRunning);
+        // Managed, a server answering on the port (another lazarobox's, or
+        // the user's) does not stop the model from getting one of its own.
+        let managed = self.draft.managed().is_some();
+        let startable = detection.engines.iter().any(|s| {
+            s.id == "llamacpp"
+                && (s.status == Status::NotRunning || (managed && s.status == Status::Available))
+        });
         let known = self.draft.managed().is_some_and(|s| s.model == model)
             || detection.local_models.contains(&model);
-        (stopped && known).then_some(model)
+        (startable && known).then_some(model)
     }
 
     /// Moves every task whose own model is one lazarobox starts to `model`:

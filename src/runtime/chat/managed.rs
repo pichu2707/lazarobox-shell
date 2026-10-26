@@ -11,9 +11,18 @@
 //!   by that absolute path with that `PATH`, one argv element per argument:
 //!   `--host 127.0.0.1 --port <port> -m <model>`, then the extra `args` of
 //!   the config. No shell parses the model path or the arguments.
-//! - Before a start, the port must be silent. A server that already answers
-//!   there was not started by us and is never treated as ours: the turn fails
-//!   and nothing is started.
+//! - One server per model, each on its own port: the configured port and the
+//!   seven after it are looked at in order. A ready llama-server there that
+//!   serves the same model file (its `/props` `model_path`), behind a socket
+//!   of this same user, is used as it is: another lazarobox's, or one the user
+//!   started. It is never ours to stop; when it goes away the next turn starts
+//!   ours. Anything else that answers (another model, a server still loading,
+//!   another program, a socket of another user) is left alone, and ours starts
+//!   on the first silent port. With none silent, the turn fails and nothing
+//!   starts.
+//! - Ours, used by another lazarobox, is still ours to stop. The idle stop
+//!   waits while it answers a request that is none of our turns (`/slots`),
+//!   and the quit prompt names it then: quitting cuts that reply.
 //! - Before a start, after the program is found, the model file must exist;
 //!   it is checked on every start, never at load.
 //! - It runs in its own process group, so stopping it takes its children too.
@@ -37,7 +46,7 @@ use std::{
     process::Stdio,
     sync::{
         Arc, PoisonError,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -62,13 +71,84 @@ const TAIL: usize = 4096;
 /// Why a turn that still holds a replaced server does not start it.
 pub const REPLACED: &str = "llama-server was switched to another model; send again";
 
-/// The status of `GET /v1/models` on a port, `None` when nothing answers. A
-/// seam so the start logic is tested without a real server.
-pub type Probe = Arc<dyn Fn(u16) -> BoxFuture<'static, Option<u16>> + Send + Sync>;
+/// How many ports, from the configured one, a server may run on.
+const PORTS: u16 = 8;
 
-/// The real probe: the detection's loopback GET.
+/// What answers on a port.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Seen {
+    /// Nothing.
+    Silent,
+    /// Something that is not ready: a server still loading, another program.
+    Busy,
+    /// A ready server (`GET /v1/models` is 200), with the model file it serves
+    /// when it is a llama-server of this user that says so.
+    Ready(Option<PathBuf>),
+}
+
+/// What answers on a port. A seam so the start logic is tested without a real
+/// server.
+pub type Probe = Arc<dyn Fn(u16) -> BoxFuture<'static, Seen> + Send + Sync>;
+
+/// The real probe: the detection's loopback GET, then `/props` for the model
+/// of a server whose socket is this user's.
 pub fn models_probe() -> Probe {
-    Arc::new(|port| Box::pin(async move { http_get(port, "/v1/models").await.map(|(s, _)| s) }))
+    Arc::new(|port| {
+        Box::pin(async move {
+            match http_get(port, "/v1/models").await {
+                None => Seen::Silent,
+                Some((200, _)) => {
+                    let ours = tokio::task::spawn_blocking(move || owner::is_ours(port))
+                        .await
+                        .unwrap_or(false);
+                    let model = match http_get(port, "/props").await {
+                        Some((200, body)) if ours => served_model(&body),
+                        _ => None,
+                    };
+                    Seen::Ready(model)
+                }
+                Some(_) => Seen::Busy,
+            }
+        })
+    })
+}
+
+/// How many requests a llama-server answers now, `None` when it does not
+/// say. A seam so the checks are tested without a real server.
+pub type Slots = Arc<dyn Fn(u16) -> BoxFuture<'static, Option<usize>> + Send + Sync>;
+
+/// The real one: the slots of `GET /slots` that are processing.
+pub fn slots_probe() -> Slots {
+    Arc::new(|port| {
+        Box::pin(async move {
+            match http_get(port, "/slots").await {
+                Some((200, body)) => processing(&body),
+                _ => None,
+            }
+        })
+    })
+}
+
+/// How many slots of a `/slots` answer are processing.
+fn processing(body: &[u8]) -> Option<usize> {
+    let slots: Vec<serde_json::Value> = serde_json::from_slice(body).ok()?;
+    let busy = |slot: &&serde_json::Value| slot.get("is_processing") == Some(&true.into());
+    Some(slots.iter().filter(busy).count())
+}
+
+/// The model file a llama-server's `/props` names (`model_path`).
+fn served_model(body: &[u8]) -> Option<PathBuf> {
+    let props: serde_json::Value = serde_json::from_slice(body).ok()?;
+    Some(PathBuf::from(props.get("model_path")?.as_str()?))
+}
+
+/// Whether `a` and `b` name the same model file: the same file once links are
+/// followed, or the same path when either cannot be read.
+fn same_model(a: &Path, b: &Path) -> bool {
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
 }
 
 /// The OS side of a started server. `group` is declared before `child` so it
@@ -94,11 +174,16 @@ pub struct Managed {
     program: OsString,
     path: OsString,
     model: PathBuf,
-    port: u16,
+    /// The first port it may run on.
+    base: u16,
+    /// The port it runs on, or that the server it uses runs on; `base` until
+    /// it is known.
+    port: AtomicU16,
     /// Extra arguments, after the ones lazarobox sets.
     args: Vec<String>,
     log: Option<PathBuf>,
     probe: Probe,
+    slots: Slots,
     wait: Duration,
     running: Mutex<Option<Process>>,
     /// Replaced by another model: it never starts again.
@@ -113,6 +198,13 @@ pub struct Managed {
 /// the idle time starts again.
 pub struct Lease(Arc<Managed>);
 
+impl Lease {
+    /// The port of the server the turn talks to.
+    pub fn port(&self) -> u16 {
+        self.0.port()
+    }
+}
+
 impl Drop for Lease {
     fn drop(&mut self) {
         // The clock resets first, so an idle check never sees the turn
@@ -123,8 +215,8 @@ impl Drop for Lease {
 }
 
 impl Managed {
-    /// The server lazarobox starts on `port` with `model`, writing to `log`,
-    /// found on `path`.
+    /// The server lazarobox starts with `model` on `port` or one of the seven
+    /// after it, writing to `log`, found on `path`.
     pub fn new(path: OsString, model: PathBuf, port: u16, log: Option<PathBuf>) -> Self {
         Self::with(
             OsString::from("llama-server"),
@@ -144,6 +236,23 @@ impl Managed {
         self
     }
 
+    /// The same server, asking `slots` how many requests it answers.
+    #[cfg(test)]
+    pub(crate) fn with_slots(mut self, slots: Slots) -> Self {
+        self.slots = slots;
+        self
+    }
+
+    /// Whether the server we started answers a request that is none of our
+    /// turns: another lazarobox uses it, and stopping it now cuts that reply.
+    pub async fn answering_others(&self) -> bool {
+        if self.running.lock().await.is_none() {
+            return false;
+        }
+        let answering = (self.slots)(self.port()).await.unwrap_or(0);
+        answering > self.busy.load(Ordering::SeqCst)
+    }
+
     /// [`Managed::new`] with the program, the probe and the start wait given.
     pub(crate) fn with(
         program: OsString,
@@ -158,10 +267,12 @@ impl Managed {
             program,
             path,
             model,
-            port,
+            base: port,
+            port: AtomicU16::new(port),
             args: Vec::new(),
             log,
             probe,
+            slots: slots_probe(),
             wait,
             running: Mutex::new(None),
             retired: AtomicBool::new(false),
@@ -170,9 +281,10 @@ impl Managed {
         }
     }
 
-    /// The port it runs on.
+    /// The port it runs on, or that the server it uses runs on: known once
+    /// [`Managed::ensure`] is Ok.
     pub fn port(&self) -> u16 {
-        self.port
+        self.port.load(Ordering::SeqCst)
     }
 
     /// [`Managed::ensure`] for a turn: the server counts as in use from now
@@ -187,8 +299,9 @@ impl Managed {
         Ok(lease)
     }
 
-    /// Stops the server when no turn holds it and none used it for `idle` up
-    /// to `now`; the next turn starts it again. `true` when it stopped one.
+    /// Stops the server when no turn holds it, none used it for `idle` up to
+    /// `now` and it answers no other lazarobox; the next turn starts it
+    /// again. `true` when it stopped one.
     pub async fn stop_if_idle(&self, idle: Duration, now: Instant) -> bool {
         // Held while it stops: a turn waiting to start never meets the old
         // server still answering on the port.
@@ -200,7 +313,13 @@ impl Managed {
             .last_used
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if now.saturating_duration_since(last) < idle {
+        if now.saturating_duration_since(last) < idle || running.is_none() {
+            return false;
+        }
+        // Another lazarobox that uses it is being answered: never cut it, and
+        // count the idle time from now.
+        if (self.slots)(self.port()).await.unwrap_or(0) > 0 {
+            self.touch();
             return false;
         }
         let Some(process) = running.take() else {
@@ -217,8 +336,9 @@ impl Managed {
             .unwrap_or_else(PoisonError::into_inner) = Instant::now();
     }
 
-    /// Ok once the server we started answers; it is started first when it is
-    /// not running. The error is the one reason, already safe to show.
+    /// Ok once the server we started answers, or a server of this user with
+    /// the same model does; ours is started first when there is neither. The
+    /// error is the one reason, already safe to show.
     pub async fn ensure(&self) -> Result<(), String> {
         let mut running = self.running.lock().await;
         // Read under the lock: `retire` sets it before taking the lock, so a
@@ -233,21 +353,40 @@ impl Managed {
             }
             *running = None;
         }
-        if (self.probe)(self.port).await.is_some() {
-            return Err(format!(
-                "llama-server not started: another program answers on 127.0.0.1:{}",
-                self.port
-            ));
+        let mut free = None;
+        for port in self.ports() {
+            match (self.probe)(port).await {
+                Seen::Ready(Some(model)) if same_model(&model, &self.model) => {
+                    self.port.store(port, Ordering::SeqCst);
+                    return Ok(());
+                }
+                Seen::Silent if free.is_none() => free = Some(port),
+                _ => {}
+            }
         }
+        let Some(port) = free else {
+            let last = self.ports().last().unwrap_or(self.base);
+            return Err(format!(
+                "llama-server not started: no free port on 127.0.0.1 from {} to {last}",
+                self.base
+            ));
+        };
+        self.port.store(port, Ordering::SeqCst);
         // Held here until it answers: a cancelled turn drops it, which kills it.
-        let mut process = self.spawn()?;
+        let mut process = self.spawn(port)?;
         let deadline = Instant::now() + self.wait;
         loop {
             sleep(START_POLL).await;
             if process.ended() {
+                // Another lazarobox started the same model on this port first.
+                if let Seen::Ready(Some(model)) = (self.probe)(port).await
+                    && same_model(&model, &self.model)
+                {
+                    return Ok(());
+                }
                 return Err(self.failure("llama-server stopped"));
             }
-            if (self.probe)(self.port).await == Some(200) {
+            if let Seen::Ready(_) = (self.probe)(port).await {
                 *running = Some(process);
                 // The idle time counts from the start, also one the menu made.
                 self.touch();
@@ -263,7 +402,13 @@ impl Managed {
         }
     }
 
-    fn spawn(&self) -> Result<Process, String> {
+    /// The ports it may run on, in order.
+    fn ports(&self) -> impl Iterator<Item = u16> + use<> {
+        let base = self.base;
+        (0..PORTS).filter_map(move |step| base.checked_add(step))
+    }
+
+    fn spawn(&self, port: u16) -> Result<Process, String> {
         const MISSING: &str = "could not start llama-server: is it on the PATH?";
         let program = self
             .program
@@ -291,7 +436,7 @@ impl Managed {
             .arg("--host")
             .arg("127.0.0.1")
             .arg("--port")
-            .arg(self.port.to_string())
+            .arg(port.to_string())
             .arg("-m")
             .arg(&self.model)
             .args(&self.args)
@@ -404,5 +549,6 @@ fn log_tail(path: &Path) -> Option<Vec<u8>> {
     Some(bytes[bytes.len().saturating_sub(TAIL)..].to_vec())
 }
 
+mod owner;
 #[cfg(test)]
 mod tests;

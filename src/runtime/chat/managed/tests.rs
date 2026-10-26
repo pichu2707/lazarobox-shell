@@ -67,6 +67,8 @@ impl Lab {
             probe,
             wait,
         )
+        // Never the real `/slots`: a lazarobox of the user may run on the port.
+        .with_slots(slots(None))
     }
 
     fn starts(&self) -> Vec<String> {
@@ -76,17 +78,35 @@ impl Lab {
     }
 }
 
-/// Answers 200 once `ready` exists, like a server that has loaded its model.
+/// Ready once `ready` exists, like a server that has loaded its model; silent
+/// before. Every port reads the same.
 fn answers_once(ready: &Path) -> Probe {
     let ready = ready.to_owned();
     Arc::new(move |_| {
         let up = ready.exists();
-        Box::pin(async move { up.then_some(200) })
+        Box::pin(async move { if up { Seen::Ready(None) } else { Seen::Silent } })
     })
 }
 
-fn answers(status: Option<u16>) -> Probe {
-    Arc::new(move |_| Box::pin(async move { status }))
+/// `seen` on every port.
+fn answers(seen: Seen) -> Probe {
+    Arc::new(move |_| {
+        let seen = seen.clone();
+        Box::pin(async move { seen })
+    })
+}
+
+/// `answering` requests on every port.
+fn slots(answering: Option<usize>) -> Slots {
+    Arc::new(move |_| Box::pin(async move { answering }))
+}
+
+/// What `on` says each port shows, read when it is probed.
+fn by_port(on: impl Fn(u16) -> Seen + Send + Sync + 'static) -> Probe {
+    Arc::new(move |port| {
+        let seen = on(port);
+        Box::pin(async move { seen })
+    })
 }
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -157,18 +177,188 @@ async fn shutdown_stops_the_server_and_its_children() {
     assert_eq!(managed.pid().await, None);
 }
 
-// Spec: A port that already answers is not ours.
+// Spec S12 (managed-llama-server-followups): a llama-server of this user
+// with the same model, from another lazarobox or started by hand, is used as
+// it is: nothing starts, and it is never ours to stop.
 #[tokio::test]
-async fn a_port_that_already_answers_is_refused_and_nothing_starts() {
-    for status in [200, 404, 503] {
+async fn a_running_server_with_the_same_model_is_used_and_nothing_starts() {
+    let lab = Lab::new();
+    let model = lab.model();
+    let managed = Arc::new(lab.managed(
+        "exec sleep 30",
+        by_port(move |port| match port {
+            39281 => Seen::Ready(Some(model.clone())),
+            _ => Seen::Silent,
+        }),
+        WAIT,
+    ));
+    drop(managed.lease().await.expect("used"));
+    assert_eq!(managed.port(), 39281);
+    assert_eq!(lab.starts(), Vec::<String>::new());
+    assert_eq!(managed.pid().await, None);
+    let later = Instant::now() + IDLE * 2;
+    assert!(!managed.stop_if_idle(IDLE, later).await, "not ours to stop");
+}
+
+// Spec S12: "si no es bloqueante para usar otros modelos": another model on
+// the port gets ours started on the next free one.
+#[tokio::test]
+async fn another_model_on_the_port_starts_ours_on_the_next_free_one() {
+    let lab = Lab::new();
+    let record = lab.record();
+    let managed = lab.managed(
+        "exec sleep 30",
+        by_port(move |port| match port {
+            39281 => Seen::Ready(Some(PathBuf::from("/m/other.gguf"))),
+            39282 if record.exists() => Seen::Ready(None),
+            _ => Seen::Silent,
+        }),
+        WAIT,
+    );
+    assert_eq!(managed.ensure().await, Ok(()));
+    assert_eq!(managed.port(), 39282);
+    assert_eq!(
+        lab.starts(),
+        vec![format!(
+            "--host 127.0.0.1 --port 39282 -m {}",
+            lab.model().display()
+        )]
+    );
+    managed.shutdown().await;
+}
+
+// Spec S12: detection probes the port the managed server runs on.
+#[tokio::test]
+async fn detection_reads_the_port_the_server_runs_on() {
+    let lab = Lab::new();
+    let record = lab.record();
+    let managed = Arc::new(lab.managed(
+        "exec sleep 30",
+        by_port(move |port| match port {
+            39281 => Seen::Ready(Some(PathBuf::from("/m/other.gguf"))),
+            39282 if record.exists() => Seen::Ready(None),
+            _ => Seen::Silent,
+        }),
+        WAIT,
+    ));
+    let ports = crate::core::ai::ServerPorts::default().with("llamacpp", 39281);
+    let live = crate::runtime::chat::LiveServers::new(ports, Some(Arc::clone(&managed)));
+    assert_eq!(live.ports().port("llamacpp"), Some(39281));
+    assert_eq!(managed.ensure().await, Ok(()));
+    assert_eq!(live.ports().port("llamacpp"), Some(39282));
+    managed.shutdown().await;
+}
+
+// Spec S12: the same model is found past a port that is busy or free.
+#[tokio::test]
+async fn the_same_model_is_found_past_other_ports() {
+    let lab = Lab::new();
+    let model = lab.model();
+    let managed = lab.managed(
+        "exec sleep 30",
+        by_port(move |port| match port {
+            39281 => Seen::Busy,
+            39283 => Seen::Ready(Some(model.clone())),
+            _ => Seen::Silent,
+        }),
+        WAIT,
+    );
+    assert_eq!(managed.ensure().await, Ok(()));
+    assert_eq!(managed.port(), 39283);
+    assert_eq!(lab.starts(), Vec::<String>::new());
+}
+
+// Spec S12: a server lazarobox cannot tell is its model (another program, a
+// server still loading, one of another user, another model) is never used,
+// and with every port taken nothing starts.
+#[tokio::test]
+async fn with_every_port_taken_nothing_starts() {
+    for seen in [
+        Seen::Busy,
+        Seen::Ready(None),
+        Seen::Ready(Some(PathBuf::from("/m/other.gguf"))),
+    ] {
         let lab = Lab::new();
-        let managed = lab.managed("exec sleep 30", answers(Some(status)), WAIT);
+        let managed = lab.managed("exec sleep 30", answers(seen.clone()), WAIT);
         assert_eq!(
             managed.ensure().await,
-            Err("llama-server not started: another program answers on 127.0.0.1:39281".into())
+            Err("llama-server not started: no free port on 127.0.0.1 from 39281 to 39288".into()),
+            "{seen:?}"
         );
-        assert_eq!(lab.starts(), Vec::<String>::new(), "{status}");
+        assert_eq!(lab.starts(), Vec::<String>::new(), "{seen:?}");
     }
+}
+
+// Spec S12: when the server it used is gone, the next turn starts its own.
+#[tokio::test]
+async fn a_used_server_that_went_away_is_replaced_by_ours() {
+    let lab = Lab::new();
+    let (model, shared, record) = (lab.model(), lab.dir.path().join("shared"), lab.record());
+    fs::write(&shared, "").unwrap();
+    let flag = shared.clone();
+    let managed = lab.managed(
+        "exec sleep 30",
+        by_port(move |port| match port {
+            39281 if flag.exists() => Seen::Ready(Some(model.clone())),
+            39281 if record.exists() => Seen::Ready(None),
+            _ => Seen::Silent,
+        }),
+        WAIT,
+    );
+    assert_eq!(managed.ensure().await, Ok(()));
+    assert_eq!(managed.pid().await, None);
+    fs::remove_file(&shared).unwrap();
+    assert_eq!(managed.ensure().await, Ok(()));
+    assert_eq!(managed.port(), 39281);
+    assert_eq!(lab.starts().len(), 1);
+    assert!(managed.pid().await.is_some(), "ours now");
+    managed.shutdown().await;
+}
+
+// Spec S12: two lazarobox starting the same model at once: the one that
+// loses the port uses the other's server.
+#[tokio::test]
+async fn a_start_that_lost_the_port_to_the_same_model_uses_that_server() {
+    let lab = Lab::new();
+    let (model, record) = (lab.model(), lab.record());
+    let managed = lab.managed(
+        "exit 1",
+        by_port(move |port| match port {
+            39281 if record.exists() => Seen::Ready(Some(model.clone())),
+            _ => Seen::Silent,
+        }),
+        WAIT,
+    );
+    assert_eq!(managed.ensure().await, Ok(()));
+    assert_eq!(managed.port(), 39281);
+    assert_eq!(managed.pid().await, None);
+    assert_eq!(lab.starts().len(), 1);
+}
+
+// Spec S12: the model is the same file, whatever path names it.
+#[test]
+fn the_same_file_through_a_link_is_the_same_model() {
+    let lab = Lab::new();
+    fs::write(lab.model(), b"GGUF").unwrap();
+    let link = lab.dir.path().join("link.gguf");
+    std::os::unix::fs::symlink(lab.model(), &link).unwrap();
+    assert!(same_model(&lab.model(), &link));
+    assert!(!same_model(&lab.model(), Path::new("/m/other.gguf")));
+    assert!(same_model(
+        Path::new("/m/none.gguf"),
+        Path::new("/m/none.gguf")
+    ));
+}
+
+// Spec S12: the model a llama-server serves is the `model_path` of `/props`.
+#[test]
+fn the_served_model_is_read_from_props() {
+    assert_eq!(
+        served_model(br#"{"model_path":"/m/q.gguf","model_alias":"mine"}"#),
+        Some(PathBuf::from("/m/q.gguf"))
+    );
+    assert_eq!(served_model(br#"{"total_slots":1}"#), None);
+    assert_eq!(served_model(b"not json"), None);
 }
 
 // Spec: A failed start says why.
@@ -177,7 +367,7 @@ async fn a_server_that_exits_says_so_with_the_last_line_of_its_log() {
     let lab = Lab::new();
     let managed = lab.managed(
         "echo 'loading' ; echo 'error: failed to open /m/q.gguf' >&2 ; exit 1",
-        answers(None),
+        answers(Seen::Silent),
         WAIT,
     );
     assert_eq!(
@@ -212,7 +402,7 @@ async fn a_server_that_exits_during_its_start_leaves_no_child() {
     let lab = Lab::new();
     let child = lab.dir.path().join("child");
     let body = format!("sleep 30 & echo $! > '{}'\nexit 1", child.display());
-    let managed = lab.managed(&body, answers(None), WAIT);
+    let managed = lab.managed(&body, answers(Seen::Silent), WAIT);
     assert!(
         managed
             .ensure()
@@ -272,7 +462,7 @@ async fn a_server_that_never_answers_is_stopped_after_the_wait() {
     let lab = Lab::new();
     let pid_file = lab.dir.path().join("pid");
     let body = format!("echo $$ > '{}'\nexec sleep 30", pid_file.display());
-    let managed = lab.managed(&body, answers(None), Duration::from_secs(1));
+    let managed = lab.managed(&body, answers(Seen::Silent), Duration::from_secs(1));
     assert_eq!(
         managed.ensure().await,
         Err("llama-server did not answer within 1 s".into())
@@ -377,7 +567,7 @@ async fn the_live_idle_time_decides_and_none_never_stops() {
 #[tokio::test]
 async fn nothing_running_has_nothing_to_stop() {
     let lab = Lab::new();
-    let managed = lab.managed("exec sleep 30", answers(None), WAIT);
+    let managed = lab.managed("exec sleep 30", answers(Seen::Silent), WAIT);
     let later = std::time::Instant::now() + IDLE;
     assert!(!managed.stop_if_idle(IDLE, later).await);
 }
@@ -426,7 +616,7 @@ async fn the_extra_args_follow_the_ones_lazarobox_sets() {
 #[tokio::test]
 async fn a_missing_model_file_starts_nothing_and_says_so() {
     let lab = Lab::new();
-    let managed = lab.managed("exec sleep 30", answers(None), WAIT);
+    let managed = lab.managed("exec sleep 30", answers(Seen::Silent), WAIT);
     fs::remove_file(lab.model()).unwrap();
     assert_eq!(
         managed.ensure().await,
@@ -453,7 +643,7 @@ async fn a_missing_program_says_it_is_not_on_the_path() {
         PathBuf::from("/m/q.gguf"),
         39281,
         None,
-        answers(None),
+        answers(Seen::Silent),
         WAIT,
     );
     assert_eq!(
@@ -604,7 +794,7 @@ async fn quit_before_the_old_server_is_retired_leaves_nothing_running() {
     let live = super::super::LiveServers::new(Default::default(), Some(Arc::clone(&old)));
     drop(old);
     let lab2 = Lab::new();
-    let new = Arc::new(lab2.managed("exec sleep 30", answers(None), WAIT));
+    let new = Arc::new(lab2.managed("exec sleep 30", answers(Seen::Silent), WAIT));
     let replaced = live.manage(Arc::clone(&new)).unwrap();
     // The task the manager spawns, never polled before the quit.
     let task = tokio::spawn(async move {
@@ -626,4 +816,90 @@ async fn quit_before_the_old_server_is_retired_leaves_nothing_running() {
 /// Gone or a zombie waiting to be reaped: either way no longer running.
 fn dead(pid: u32) -> bool {
     matches!(process_state(pid as libc::pid_t), None | Some('Z'))
+}
+
+/// A started server whose `/slots` says it answers `answering` requests.
+async fn shared_lab(answering: Option<usize>) -> (Lab, Arc<Managed>) {
+    let lab = Lab::new();
+    let managed = Arc::new(
+        lab.managed("exec sleep 30", answers_once(&lab.record()), WAIT)
+            .with_slots(slots(answering)),
+    );
+    drop(managed.lease().await.expect("starts"));
+    (lab, managed)
+}
+
+// Spec S13 (managed-llama-server-followups): "avisarle cuando vaya a cerrar":
+// our server answering more requests than our turns is answering another
+// lazarobox.
+#[tokio::test]
+async fn our_server_answering_beyond_our_turns_answers_another_lazarobox() {
+    let (_lab, managed) = shared_lab(Some(1)).await;
+    assert!(managed.answering_others().await);
+    // Our own turn takes that slot.
+    let lease = managed.lease().await.expect("runs");
+    assert!(!managed.answering_others().await);
+    drop(lease);
+    managed.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_server_that_answers_nothing_or_does_not_say_answers_nobody_else() {
+    for answering in [Some(0), None] {
+        let (_lab, managed) = shared_lab(answering).await;
+        assert!(!managed.answering_others().await, "{answering:?}");
+        managed.shutdown().await;
+    }
+}
+
+// Spec S13: a server we only use is not ours to warn about.
+#[tokio::test]
+async fn a_server_we_only_use_is_never_reported() {
+    let lab = Lab::new();
+    let model = lab.model();
+    let managed = lab
+        .managed(
+            "exec sleep 30",
+            by_port(move |_| Seen::Ready(Some(model.clone()))),
+            WAIT,
+        )
+        .with_slots(slots(Some(3)));
+    assert_eq!(managed.ensure().await, Ok(()));
+    assert!(!managed.answering_others().await);
+}
+
+// Spec S13, derived from S8 ("a reply in progress is never cut"): the idle
+// stop waits while another lazarobox is answered, and the idle time counts
+// again from then.
+#[tokio::test]
+async fn the_idle_stop_waits_while_another_lazarobox_is_answered() {
+    let lab = Lab::new();
+    let answering = Arc::new(AtomicUsize::new(1));
+    let probe: Slots = {
+        let answering = Arc::clone(&answering);
+        Arc::new(move |_| {
+            let now = answering.load(Ordering::SeqCst);
+            Box::pin(async move { Some(now) })
+        })
+    };
+    let managed = Arc::new(
+        lab.managed("exec sleep 30", answers_once(&lab.record()), WAIT)
+            .with_slots(probe),
+    );
+    drop(managed.lease().await.expect("starts"));
+    let pid = managed.pid().await.expect("running");
+    assert!(!managed.stop_if_idle(IDLE, Instant::now() + IDLE * 2).await);
+    assert_eq!(managed.pid().await, Some(pid));
+    answering.store(0, Ordering::SeqCst);
+    assert!(!managed.stop_if_idle(IDLE, Instant::now() + IDLE / 2).await);
+    assert!(managed.stop_if_idle(IDLE, Instant::now() + IDLE * 2).await);
+    assert!(ends(pid).await, "the server is left");
+}
+
+// Spec S13: the slots that are processing, from `/slots`.
+#[test]
+fn processing_slots_are_counted() {
+    let body = br#"[{"id":0,"is_processing":true},{"id":1,"is_processing":false},{"id":2}]"#;
+    assert_eq!(processing(body), Some(1));
+    assert_eq!(processing(b"{}"), None);
 }
