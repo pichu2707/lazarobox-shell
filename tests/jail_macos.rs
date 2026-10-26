@@ -748,11 +748,16 @@ fn the_state_folder_and_its_packages_cannot_be_renamed_replaced_or_edited() {
     }
     // Each attack runs alone in a fresh world, so one failure names itself.
     // `mv state tmp/old` then `mv tmp/evil state` is the replacement attack:
-    // its first step must already fail (the second would fail on a
-    // non-empty folder whatever the jail does, so it proves nothing alone).
+    // its first step must already fail. The second step alone proves nothing:
+    // `mv tmp/evil state` with an existing `state` moves `evil` inside it,
+    // which the jail allows. Planting the tree inside `packages` is the move
+    // that must fail.
     let attacks: [(&str, &str); 9] = [
         ("rename the state folder away", r#"/bin/mv "$1" "$2/old""#),
-        ("rename a planted tree over it", r#"/bin/mv "$2/evil" "$1""#),
+        (
+            "move a planted tree into packages",
+            r#"/bin/mv "$2/evil" "$1/packages/evil""#,
+        ),
         ("rename packages", r#"/bin/mv "$1/packages" "$1/p2""#),
         ("remove packages", r#"/bin/rm -rf "$1/packages""#),
         (
@@ -801,6 +806,8 @@ fn the_state_folder_and_its_packages_cannot_be_renamed_replaced_or_edited() {
             "{ctx}"
         );
         assert!(!s.packages.join("hard").exists(), "{ctx}");
+        assert!(!s.packages.join("evil").exists(), "{ctx}");
+        assert!(s.tmp.join("evil/packages/bin").exists(), "{ctx}");
         assert!(!s.tmp.join("hard").exists(), "{ctx}");
         drop(s.w);
     }
