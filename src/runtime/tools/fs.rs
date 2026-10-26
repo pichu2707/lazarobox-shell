@@ -227,7 +227,12 @@ pub fn execute_over(
             super::search::grep_over(pattern, dir.as_deref(), env, limits, cancel, view)
         }
         // A user tool runs on its own server, never here.
-        Call::RunInPane { .. } | Call::External { .. } => Err(Failure::NotReadTool),
+        Call::RunInPane { .. }
+        | Call::External { .. }
+        | Call::CreateDir { .. }
+        | Call::WriteFile { .. }
+        | Call::EditFile { .. }
+        | Call::ProposeBatch => Err(Failure::NotReadTool),
     }
 }
 

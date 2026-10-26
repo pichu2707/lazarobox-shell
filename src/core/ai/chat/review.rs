@@ -17,12 +17,15 @@
 use std::fmt;
 use std::ops::Range;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use crate::core::ai::chat::wrap::{clusters, expand_tabs, row_end, text_width};
 use crate::core::ai::tools::diff::{self, Diff, Kind, escape};
-use crate::core::ai::tools::stage::{Batch, Entry};
+use crate::core::ai::tools::stage::{Batch, BatchId, Entry};
 
 /// What a line of the review is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -193,9 +196,98 @@ impl ReviewDoc {
     }
 }
 
+/// The batch a [`ApprovalAsk::Batch`](super::approval::ApprovalAsk) asks the
+/// user about: its review doc, shared by the ask and the view.
+///
+/// Same invariant as the doc: no `Display`, no `Serialize`, and `Debug` is
+/// counts only. What the model is told comes from [`BatchReview::counts`] and
+/// [`TOO_LARGE`], never from the lines.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BatchReview {
+    doc: ReviewDoc,
+}
+
+impl BatchReview {
+    pub fn new(doc: ReviewDoc) -> Self {
+        Self { doc }
+    }
+
+    pub fn doc(&self) -> &ReviewDoc {
+        &self.doc
+    }
+
+    /// `2 files, +3 -1`: counts only, safe to show and to send.
+    pub fn counts(&self) -> String {
+        let s = if self.doc.files == 1 { "" } else { "s" };
+        format!(
+            "{} file{s}, +{} -{}",
+            self.doc.files, self.doc.added, self.doc.removed
+        )
+    }
+}
+
+/// What the runtime reports about a chat's batch outside a model turn. The
+/// review view is only held for the user: nothing here goes to the model.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum BatchEvent {
+    /// The chat closed and its batch of this many entries was discarded.
+    Closed(usize),
+    /// An orphan, sealed and ready for the user to review and answer.
+    Review(BatchId, Arc<BatchReview>),
+    /// The user applied or discarded an orphan. `shown` is the line for the
+    /// user; `told` is what the model hears on its next turn, only when the
+    /// batch is closed. Both hold counts only: never a path's content or a
+    /// diff row.
+    Done { shown: String, told: Option<String> },
+}
+
+/// What the pane says of its chat's batch. Counts only.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Badge {
+    /// A batch the model is still staging, or that waits for the user's `y`.
+    Staged(usize),
+    /// A batch left behind by a turn that ended: the user can review it.
+    Orphan(usize),
+}
+
+impl Badge {
+    /// The text of the badge that fits `room` columns, widest first: the
+    /// count with the review key, the count, a letter and the count.
+    pub fn text(self, room: usize) -> Option<String> {
+        let (word, letter, key) = match self {
+            Self::Staged(_) => ("staged", 'S', ""),
+            Self::Orphan(_) => ("orphan", 'O', " · Ctrl+G"),
+        };
+        let (Self::Staged(n) | Self::Orphan(n)) = self;
+        [
+            format!(" {word} {n}{key} "),
+            format!(" {word} {n} "),
+            format!(" {letter}{n} "),
+        ]
+        .into_iter()
+        .find(|text| text.chars().count() <= room)
+    }
+}
+
+/// Shown on Ctrl+G when there is no orphan batch to review: the chat wears no
+/// orphan badge, or the badge went stale.
+pub const NO_ORPHAN: &str = "no orphan batch to review";
+
+/// The notice of a close that discarded `entries` staged entries.
+pub fn closed_notice(entries: usize) -> String {
+    let s = if entries == 1 { "y" } else { "ies" };
+    format!("discarded {entries} staged entr{s}")
+}
+
+/// The answer to the model for a batch the user could not review: nothing was
+/// written, and the change must be proposed in smaller batches.
+pub const TOO_LARGE: &str =
+    "the batch was too large to review: split the change into smaller batches";
+
 const WARN_BUILD: &str = "warning: build file: it can run code when the project is built";
 const WARN_COARSE: &str = "warning: coarse diff: the whole file is shown as replaced";
-const WARN_TRUNCATED: &str = "warning: too large to review: reject it and ask for smaller changes";
+pub const WARN_TRUNCATED: &str =
+    "warning: too large to review: reject it and ask for smaller changes";
 
 /// How long `y` stays disabled after the view opens. Other asks keep 400 ms.
 pub const ARM_DELAY: Duration = Duration::from_millis(800);
@@ -223,7 +315,6 @@ pub struct Row {
 impl Row {
     /// The text of the row, FOR THE REVIEW RENDERER ONLY. It may hold text the
     /// model never saw: never send it to the model, a log or a tool result.
-    #[allow(dead_code)] // used by the review view (We4.2)
     pub(crate) fn text_for_review_renderer_only(&self) -> &str {
         &self.text
     }
@@ -248,7 +339,6 @@ pub struct Layout {
 
 impl Layout {
     /// The rows, FOR THE REVIEW RENDERER ONLY.
-    #[allow(dead_code)] // used by the review view (We4.2)
     pub(crate) fn rows(&self) -> &[Row] {
         &self.rows
     }
@@ -324,20 +414,41 @@ pub struct Coverage {
     /// Rows shown at `width`, per row of that layout.
     shown: Vec<bool>,
     width: Option<usize>,
-    opened: Instant,
+    /// When the view was first drawn; `None` until then.
+    opened: Option<Instant>,
 }
 
 impl Coverage {
-    /// `opened` is when the view opened; `y` arms [`ARM_DELAY`] after it.
-    pub fn new(doc: &ReviewDoc, opened: Instant) -> Coverage {
+    /// A coverage of `doc` whose delay has not started: [`Coverage::start`]
+    /// starts it.
+    pub fn new(doc: &ReviewDoc) -> Coverage {
         Coverage {
             doc: doc.id,
             seen: vec![false; doc.lines.len()],
             reviewable: doc.reviewable(),
             shown: Vec::new(),
             width: None,
-            opened,
+            opened: None,
         }
+    }
+
+    /// A coverage whose delay started at `at`.
+    #[cfg(test)]
+    pub fn started_at(doc: &ReviewDoc, at: Instant) -> Coverage {
+        let mut coverage = Coverage::new(doc);
+        coverage.start(at);
+        coverage
+    }
+
+    /// The view was first drawn at `at`: `y` arms [`ARM_DELAY`] after it.
+    /// Only the first call counts.
+    pub fn start(&mut self, at: Instant) {
+        self.opened.get_or_insert(at);
+    }
+
+    /// When the view was first drawn.
+    pub fn started(&self) -> Option<Instant> {
+        self.opened
     }
 
     /// Marks the rows `rows` of `layout` as shown (clamped to the layout).
@@ -380,12 +491,14 @@ impl Coverage {
     }
 
     /// Whether `y` may approve at `now`: the doc is reviewable, every line
-    /// seen and [`ARM_DELAY`] elapsed since the view opened. `now` comes from the caller's clock; a
-    /// clock that went back does not arm.
+    /// seen and [`ARM_DELAY`] elapsed since the view was first drawn. `now`
+    /// comes from the caller's clock; a clock that went back does not arm.
     pub fn can_approve(&self, now: Instant) -> bool {
         self.reviewable
             && self.remaining() == 0
-            && now.saturating_duration_since(self.opened) >= ARM_DELAY
+            && self
+                .opened
+                .is_some_and(|opened| now.saturating_duration_since(opened) >= ARM_DELAY)
     }
 }
 
@@ -583,7 +696,7 @@ mod tests {
         let doc = ReviewDoc::build(&b);
         let l = layout(&doc, 40);
         let t0 = start();
-        let mut c = Coverage::new(&doc, t0);
+        let mut c = Coverage::started_at(&doc, t0);
         c.show(&l, 0..l.rows().len());
         assert_eq!(c.remaining(), 0, "every visible row was shown");
         assert!(!c.can_approve(t0 + Duration::from_secs(60)));
@@ -595,7 +708,7 @@ mod tests {
         assert!(!doc.reviewable());
         let l = layout(&doc, 40);
         let t0 = start();
-        let mut c = Coverage::new(&doc, t0);
+        let mut c = Coverage::started_at(&doc, t0);
         c.show(&l, 0..l.rows().len());
         assert!(!c.can_approve(t0 + Duration::from_secs(60)));
     }
@@ -813,7 +926,7 @@ mod tests {
         let l = layout(&doc, 2);
         let wide = l.rows().iter().position(|r| r.text.contains('日')).unwrap();
         assert!(!l.rows()[wide].fits(2) && l.rows()[wide].fits(3));
-        let mut c = Coverage::new(&doc, start());
+        let mut c = Coverage::started_at(&doc, start());
         c.show(&l, 0..l.rows().len());
         assert_eq!(c.remaining(), 1, "only the wide line is unseen");
         let l = layout(&doc, 4);
@@ -825,7 +938,7 @@ mod tests {
     fn a_layout_of_another_doc_is_ignored_and_never_panics() {
         let big = layout(&doc_of(&["a", "b", "c", "d", "e", "f"]), 20);
         let small = doc_of(&["a"]);
-        let mut c = Coverage::new(&small, start());
+        let mut c = Coverage::started_at(&small, start());
         let before = c.remaining();
         c.show(&big, 0..big.rows().len());
         assert_eq!(c.remaining(), before);
@@ -865,7 +978,7 @@ mod tests {
         let doc = doc_of(&["abcdefghij"]);
         let l = layout(&doc, 4);
         let row = l.rows().iter().position(|r| r.text == "+abc").unwrap();
-        let mut c = Coverage::new(&doc, start());
+        let mut c = Coverage::started_at(&doc, start());
         let before = c.remaining();
         c.show(&l, row..row + 3);
         assert_eq!(c.remaining(), before, "three of four rows is not enough");
@@ -877,7 +990,7 @@ mod tests {
     fn showing_every_row_sees_every_line() {
         let doc = doc_of(&["a", "b", "c"]);
         let l = layout(&doc, 20);
-        let mut c = Coverage::new(&doc, start());
+        let mut c = Coverage::started_at(&doc, start());
         assert_eq!(c.total(), doc.lines().len());
         assert_eq!(c.remaining(), c.total());
         c.show(&l, 0..l.rows().len());
@@ -888,7 +1001,7 @@ mod tests {
     fn a_range_past_the_end_is_clamped() {
         let doc = doc_of(&["a"]);
         let l = layout(&doc, 20);
-        let mut c = Coverage::new(&doc, start());
+        let mut c = Coverage::started_at(&doc, start());
         c.show(&l, 0..1_000);
         assert_eq!(c.remaining(), 0);
     }
@@ -897,7 +1010,7 @@ mod tests {
     fn coverage_survives_a_resize() {
         let doc = doc_of(&["aaaaaaaaaaaa", "bbbbbbbbbbbb", "cc"]);
         let wide = layout(&doc, 40);
-        let mut c = Coverage::new(&doc, start());
+        let mut c = Coverage::started_at(&doc, start());
         c.show(&wide, 0..wide.rows().len());
         assert_eq!(c.remaining(), 0);
         let narrow = layout(&doc, 5);
@@ -910,7 +1023,7 @@ mod tests {
     fn a_resize_keeps_seen_lines_and_drops_half_seen_rows() {
         let doc = doc_of(&["aaaaaaaaaaaa", "b"]);
         let wide = layout(&doc, 40);
-        let mut c = Coverage::new(&doc, start());
+        let mut c = Coverage::started_at(&doc, start());
         let b = wide.rows().iter().position(|r| r.text == "+b").unwrap();
         c.show(&wide, b..b + 1);
         let seen = c.total() - c.remaining();
@@ -932,7 +1045,7 @@ mod tests {
         let t0 = start();
         let doc = doc_of(&["a", "b"]);
         let l = layout(&doc, 20);
-        let mut c = Coverage::new(&doc, t0);
+        let mut c = Coverage::started_at(&doc, t0);
         let ms = Duration::from_millis;
         assert!(!c.can_approve(t0 + ms(5_000)), "unseen lines block y");
         c.show(&l, 0..l.rows().len());
@@ -948,7 +1061,7 @@ mod tests {
         let t0 = start() + Duration::from_secs(10);
         let doc = doc_of(&["a"]);
         let l = layout(&doc, 20);
-        let mut c = Coverage::new(&doc, t0);
+        let mut c = Coverage::started_at(&doc, t0);
         c.show(&l, 0..l.rows().len());
         assert!(!c.can_approve(t0 - Duration::from_secs(5)));
     }
@@ -960,7 +1073,7 @@ mod tests {
         let (w30, w31) = (layout(&doc, 30), layout(&doc, 31));
         assert_eq!(w30.rows().len(), w31.rows().len());
         let first = |l: &Layout| l.rows().iter().position(|r| r.line == 3).unwrap();
-        let mut c = Coverage::new(&doc, start());
+        let mut c = Coverage::started_at(&doc, start());
         let before = c.remaining();
         c.show(&w30, first(&w30)..first(&w30) + 1);
         c.show(&w31, first(&w31) + 1..first(&w31) + 3);
