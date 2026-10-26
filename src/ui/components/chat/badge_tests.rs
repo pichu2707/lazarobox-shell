@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use super::*;
+use crate::core::ai::chat::review::Badge;
 use crate::core::ai::{
     chat::{
         SendOutcome,
@@ -188,4 +189,106 @@ fn the_run_badge_snapshot() {
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!("run_badge_30x5", shot);
+}
+
+// The batch badge (spec chat-pane, "Staged batch indicator"): top left, so it
+// never meets the mode badge or the scroll badge on the right.
+
+fn with_batch(mode: ApprovalMode, badge: Badge) -> ChatState {
+    let mut chat = chat_in(mode);
+    chat.set_batch_badge(Some(badge));
+    chat
+}
+
+fn shot_of(buf: &Buffer) -> String {
+    (0..buf.area.height)
+        .map(|y| row(buf, y).trim_end().to_owned())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn a_staged_batch_shows_its_count_top_left() {
+    let buf = draw(&with_batch(ApprovalMode::Ask, Badge::Staged(3)), 40, 5);
+    assert!(row(&buf, 0).starts_with(" staged 3 "), "{:?}", row(&buf, 0));
+    assert_eq!(buf[(1, 0)].bg, theme().info_blue);
+    assert!(buf[(1, 0)].modifier.contains(Modifier::BOLD));
+    insta::assert_snapshot!("staged_badge_40x5", shot_of(&buf));
+}
+
+#[test]
+fn an_orphan_wears_a_distinct_badge_with_its_review_key() {
+    let buf = draw(&with_batch(ApprovalMode::Ask, Badge::Orphan(2)), 40, 5);
+    assert!(
+        row(&buf, 0).starts_with(" orphan 2 · Ctrl+G "),
+        "{:?}",
+        row(&buf, 0)
+    );
+    assert_eq!(buf[(1, 0)].bg, theme().warning_orange);
+    insta::assert_snapshot!("orphan_badge_40x5", shot_of(&buf));
+}
+
+#[test]
+fn the_batch_badge_and_the_mode_badge_share_the_row_without_touching() {
+    let buf = draw(&with_batch(ApprovalMode::Auto, Badge::Orphan(12)), 40, 5);
+    let top = row(&buf, 0);
+    assert!(top.starts_with(" orphan 12 · Ctrl+G "), "{top:?}");
+    assert!(top.ends_with(" AUTO "), "{top:?}");
+    insta::assert_snapshot!("orphan_and_auto_badges_40x5", shot_of(&buf));
+}
+
+#[test]
+fn the_batch_badge_gets_shorter_before_it_meets_the_mode_badge() {
+    let at = |width| row(&draw(&with_batch(ApprovalMode::Run, Badge::Orphan(2)), width, 4), 0);
+    // Wide enough for the whole text, then for the count only, then for a letter.
+    assert!(at(30).starts_with(" orphan 2 · Ctrl+G "), "{:?}", at(30));
+    assert!(at(22).starts_with(" orphan 2 "), "{:?}", at(22));
+    assert!(!at(22).contains("Ctrl+G"), "{:?}", at(22));
+    assert!(at(15).starts_with(" O2 "), "{:?}", at(15));
+    assert!(at(15).ends_with(" RUN "), "{:?}", at(15));
+    // No room left: only the mode badge.
+    let narrow = draw(&with_batch(ApprovalMode::Run, Badge::Orphan(2)), 9, 4);
+    assert!(row(&narrow, 0).ends_with(" RUN "));
+    assert!((0..4).all(|x| narrow[(x, 0)].bg != theme().warning_orange));
+}
+
+#[test]
+fn the_batch_badge_shows_in_every_view_but_the_review() {
+    let badge = Badge::Staged(1);
+    let mut list = with_batch(ApprovalMode::Ask, badge);
+    list.open_list();
+    assert!(row(&draw(&list, 40, 8), 0).starts_with(" staged 1 "));
+    let mut editor = with_batch(ApprovalMode::Ask, badge);
+    editor.open_note_editor().expect("an answer to save");
+    assert!(row(&draw(&editor, 40, 10), 0).starts_with(" staged 1 "));
+    let mut none = chat_in(ApprovalMode::Ask);
+    none.set_batch_badge(None);
+    assert!(!row(&draw(&none, 40, 5), 0).contains("staged"));
+}
+
+#[test]
+fn the_batch_badge_degrades_on_tiny_areas() {
+    for badge in [Badge::Staged(7), Badge::Orphan(120)] {
+        let chat = with_batch(ApprovalMode::Auto, badge);
+        for width in 1..=24 {
+            for height in 1..=2 {
+                draw(&chat, width, height);
+            }
+        }
+    }
+}
+
+#[test]
+fn the_review_owns_the_pane_and_hides_the_batch_badge() {
+    use crate::core::ai::chat::{
+        approval::{ApprovalAsk, Origin},
+        review_view::{ReviewView, testing::numbered},
+    };
+    let mut chat = with_batch(ApprovalMode::Ask, Badge::Orphan(3));
+    let ask = ApprovalAsk::Batch(numbered(3));
+    chat.approvals_mut().request(ask, Origin::Block).unwrap();
+    chat.approvals_mut()
+        .set_review(ReviewView::new(numbered(3), (40, 8)));
+    let buf = draw(&chat, 40, 8);
+    assert!(!row(&buf, 0).contains("orphan"), "{:?}", row(&buf, 0));
 }

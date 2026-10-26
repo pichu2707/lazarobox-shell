@@ -1,0 +1,7 @@
+---
+source: src/ui/components/chat/badge_tests.rs
+expression: shot_of(&buf)
+---
+ orphan 2 · Ctrl+G
+
+an answer

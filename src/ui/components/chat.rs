@@ -20,6 +20,7 @@ use crate::{
             approval::ApprovalPrompt,
             composer::ComposerPlan,
             guidance::guidance_rows,
+            review::Badge,
             transcript::{Line, LineKind},
             wrap::wrap_words,
         },
@@ -34,6 +35,10 @@ pub struct ChatLayout {
     pub transcript: Rect,
     pub composer: Rect,
 }
+
+/// Columns the batch badge leaves free on the right of the pane: the widest
+/// mode badge (` AUTO `) and a gap.
+const BATCH_BADGE_ROOM: usize = 8;
 
 /// A chat pane as a widget.
 pub struct ChatView<'a> {
@@ -172,6 +177,11 @@ impl Widget for ChatView<'_> {
         {
             self.draw_mode_badge(mode, area, buf);
         }
+        if let Some(badge) = self.chat.batch_badge()
+            && !self.review_shown()
+        {
+            self.draw_batch_badge(badge, area, buf);
+        }
     }
 }
 
@@ -203,6 +213,25 @@ impl ChatView<'_> {
             usize::from(width),
             style,
         );
+    }
+
+    /// The staged batch of the chat over the top-left cells of the pane, in
+    /// every view: the mode and scroll badges own the right side, so it leaves
+    /// their room and gets shorter before it would meet them.
+    fn draw_batch_badge(&self, badge: Badge, area: Rect, buf: &mut Buffer) {
+        let room = usize::from(area.width).saturating_sub(BATCH_BADGE_ROOM);
+        let Some(text) = badge.text(room) else {
+            return;
+        };
+        let colour = match badge {
+            Badge::Staged(_) => self.theme.info_blue,
+            Badge::Orphan(_) => self.theme.warning_orange,
+        };
+        let style = Style::default()
+            .fg(self.theme.bg_base)
+            .bg(colour)
+            .add_modifier(Modifier::BOLD);
+        buf.set_stringn(area.x, area.y, text, room, style);
     }
 
     /// Whether the batch review is the view drawn: the tag editor, the list,

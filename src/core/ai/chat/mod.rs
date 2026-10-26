@@ -42,7 +42,10 @@ use std::{
 };
 
 use crate::core::{
-    ai::config::{ApprovalMode, Profile},
+    ai::{
+        config::{ApprovalMode, Profile},
+        tools::stage::BatchId,
+    },
     layout::PaneId,
 };
 use composer::Composer;
@@ -324,6 +327,10 @@ pub struct ChatState {
     /// The lines the turn in flight carries, until the engine produces its
     /// first event: a turn that ends before that puts them back in `told`.
     told_sent: Vec<String>,
+    /// What the pane says of the chat's batch, from the runtime's last poll.
+    batch_badge: Option<review::Badge>,
+    /// The orphan whose review is open: `y` applies it, `n` discards it.
+    orphan: Option<BatchId>,
 }
 
 impl ChatState {
@@ -367,6 +374,8 @@ impl ChatState {
             run_fallbacks: 0,
             told: Vec::new(),
             told_sent: Vec::new(),
+            batch_badge: None,
+            orphan: None,
         }
     }
 
@@ -427,6 +436,24 @@ impl ChatState {
     /// Whether the runtime may hold a tool session for this chat.
     pub fn tool_session(&self) -> bool {
         self.tool_session
+    }
+
+    /// The badge for the chat's batch, counts only.
+    pub fn batch_badge(&self) -> Option<review::Badge> {
+        self.batch_badge
+    }
+
+    pub fn set_batch_badge(&mut self, badge: Option<review::Badge>) {
+        self.batch_badge = badge;
+    }
+
+    /// The orphan whose review is open.
+    pub fn orphan(&self) -> Option<BatchId> {
+        self.orphan
+    }
+
+    pub fn set_orphan(&mut self, id: Option<BatchId>) {
+        self.orphan = id;
     }
 
     /// Queues a line for the model's next request (counts and paths only).
