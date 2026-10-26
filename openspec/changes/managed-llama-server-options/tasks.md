@@ -12,5 +12,5 @@
 - [x] 4.1 RED/GREEN: the same model on a port of this user is used and never stopped; another model starts ours on the next free port; the same model is found past busy ports; every port taken refuses with the message; a used server that went away is replaced by ours; a start that lost the port to the same model uses that server; the turn and detection use the port it runs on; listeners are read with their owner.
 - [x] 4.2 RED/GREEN: managed, the picker lists the local models and choosing one manages it while another llama-server answers.
 - [x] 4.3 Docs (README, CHANGELOG).
-- [ ] 4.4 [manual] Live: two lazarobox, same model shared, then another model on the next port.
+- [x] 4.4 [manual] Live: two lazarobox, same model shared, then another model on the next port.
 - [ ] 4.5 [manual] macOS: `lsof` finds the user's own listener.
