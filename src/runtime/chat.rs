@@ -883,9 +883,12 @@ impl Chats {
         Some(BatchEvent::Review(id, review))
     }
 
-    /// Applies an orphan the user approved.
+    /// Applies an orphan the user approved; the host refuses it while a turn
+    /// of the pane runs, as it does a review.
     pub fn apply_batch(&self, id: BatchId) -> Option<BatchEvent> {
-        Some(self.tooling.as_ref()?.host.apply_batch(id))
+        let StageKey::Pane(pane) = id.key;
+        let live = self.turns.get(&pane).is_some_and(|t| !t.is_finished());
+        Some(self.tooling.as_ref()?.host.apply_batch(id, live))
     }
 
     /// Discards an orphan the user rejected.

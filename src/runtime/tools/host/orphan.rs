@@ -9,7 +9,7 @@ use std::{path::Path, sync::Arc};
 use super::{ToolHost, files::lock};
 use crate::{
     core::ai::{
-        chat::review::{BatchEvent, BatchReview, closed_notice},
+        chat::review::{BatchEvent, BatchReview, ReviewDoc, TOO_LARGE, closed_notice},
         tools::stage::{BatchId, StageKey},
     },
     runtime::tools::fs::load_roots,
@@ -17,6 +17,10 @@ use crate::{
 
 /// Shown when the batch an answer names is not there any more.
 pub const GONE: &str = "that batch is no longer there";
+
+/// Shown when an apply arrives while a turn of the chat still runs: then the
+/// batch is the model's, not an orphan.
+pub const LIVE: &str = "a turn of this chat is still running";
 
 impl ToolHost {
     /// Drops the batch of `key` because its pane closed. How many entries were
@@ -37,14 +41,25 @@ impl ToolHost {
         Some((id, Arc::new(review)))
     }
 
-    /// Applies the orphan `id` after the user's `y`. A drifted or refused
-    /// batch stays for the user to discard, and the model is told only when
-    /// the batch is closed.
-    pub fn apply_batch(&self, id: BatchId) -> BatchEvent {
+    /// Applies the orphan `id` after the user's `y`. The host is the trust
+    /// boundary, so it refuses what the user could not have approved: a batch
+    /// of a pane whose turn is live, or one that is not reviewable. A drifted
+    /// or refused batch stays for the user to discard, and the model is told
+    /// only when the batch is closed.
+    pub fn apply_batch(&self, id: BatchId, turn_live: bool) -> BatchEvent {
+        if turn_live {
+            return refused(LIVE);
+        }
         let Ok(roots) = load_roots(&self.env(Path::new("/"))) else {
             return gone();
         };
         let mut stages = lock(&self.stages);
+        let Some(batch) = stages.batch(id.key).filter(|batch| batch.id() == id) else {
+            return gone();
+        };
+        if !ReviewDoc::build(batch).reviewable() {
+            return refused(TOO_LARGE);
+        }
         let Ok(result) = stages.apply(id, &roots) else {
             return gone();
         };
@@ -52,8 +67,10 @@ impl ToolHost {
         let first = text.lines().next().unwrap_or_default();
         let shown = first.trim_end_matches(':').to_owned();
         let closed = stages.batch(id.key).is_none();
-        let told = closed.then(|| format!("The user applied the batch you left staged: {shown}."));
-        BatchEvent::Done { shown, told }
+        BatchEvent::Done {
+            shown,
+            told: closed.then(|| result.told()),
+        }
     }
 
     /// Discards the orphan `id`; nothing is written.
@@ -79,6 +96,14 @@ impl ToolHost {
 fn gone() -> BatchEvent {
     BatchEvent::Done {
         shown: GONE.to_owned(),
+        told: None,
+    }
+}
+
+/// Nothing was applied and the model hears nothing: the batch is still there.
+fn refused(why: &str) -> BatchEvent {
+    BatchEvent::Done {
+        shown: why.to_owned(),
         told: None,
     }
 }

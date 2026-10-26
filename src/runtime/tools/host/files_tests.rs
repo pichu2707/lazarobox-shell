@@ -19,8 +19,8 @@ use crate::core::{
         },
         tools::{
             paths::REFUSED,
-            report::RunReport,
             registry::{Family, FamilySet},
+            report::RunReport,
             stage::StageKey,
         },
     },
@@ -490,7 +490,7 @@ async fn an_unproposed_batch_is_sealed_when_the_user_reviews_it() {
     );
     let after = d.call(write("b.txt", "x")).await;
     assert!(after.text.contains("waiting for review"), "{after:?}");
-    let BatchEvent::Done { shown, told } = w.host.apply_batch(id) else {
+    let BatchEvent::Done { shown, told } = w.host.apply_batch(id, false) else {
         panic!("an apply is done");
     };
     assert_eq!(shown, "applied 2 paths");
@@ -510,7 +510,7 @@ async fn an_unproposed_batch_is_sealed_when_the_user_reviews_it() {
         shown: "that batch is no longer there".into(),
         told: None,
     };
-    assert_eq!(w.host.apply_batch(id), gone);
+    assert_eq!(w.host.apply_batch(id, false), gone);
     assert_eq!(w.host.discard_batch(id), gone);
     assert!(
         w.host.review_batch(key(), false).is_none(),
@@ -1088,6 +1088,82 @@ async fn an_applied_edit_reports_its_path_and_counts() {
     );
 }
 
+// The host is the trust boundary: an orphan the user could not have reviewed
+// (a truncated diff) is refused here, whatever the caller sends. Nothing is
+// written and the batch stays for the user to discard.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_unreviewable_orphan_is_not_applied() {
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(
+        !d.call(write("long.txt", &"x\n".repeat(3000)))
+            .await
+            .is_error
+    );
+    let (id, review) = w.host.review_batch(key(), false).unwrap();
+    assert!(!review.doc().reviewable());
+    let event = w.host.apply_batch(id, false);
+    assert_eq!(
+        event,
+        BatchEvent::Done {
+            shown: TOO_LARGE.into(),
+            told: None
+        }
+    );
+    assert!(!w.proj.join("long.txt").exists());
+    assert_eq!(w.staged(), 1, "the batch stays for the user to discard");
+}
+
+// A turn of the pane is live: the batch is the model's, so an apply that
+// arrives anyway writes nothing.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_orphan_is_not_applied_while_a_turn_of_the_pane_is_live() {
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    let (id, _) = w.host.review_batch(key(), false).unwrap();
+    let event = w.host.apply_batch(id, true);
+    assert_eq!(
+        event,
+        BatchEvent::Done {
+            shown: super::orphan::LIVE.into(),
+            told: None
+        }
+    );
+    assert!(!w.proj.join("a.txt").exists());
+    assert_eq!(w.staged(), 1);
+}
+
+// User decision: a drifted apply writes nothing, leaves the batch proposed
+// for the user, and does not tell the model.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_drifted_orphan_apply_leaves_the_batch_proposed_and_tells_nothing() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "foo\n").unwrap();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(!d.call(edit("b.txt", "foo", "bar")).await.is_error);
+    let (id, _) = w.host.review_batch(key(), false).unwrap();
+    std::fs::write(w.proj.join("b.txt"), "changed\n").unwrap();
+    let BatchEvent::Done { shown, told } = w.host.apply_batch(id, false) else {
+        panic!("done");
+    };
+    assert!(shown.starts_with("refused"), "{shown}");
+    assert_eq!(told, None);
+    assert_eq!(
+        std::fs::read_to_string(w.proj.join("b.txt")).unwrap(),
+        "changed\n"
+    );
+    assert_eq!(w.staged(), 1);
+    let stages = w.host.stages.lock().unwrap();
+    assert_eq!(
+        stages.batch(key()).map(|b| b.state()),
+        Some(crate::core::ai::tools::stage::State::Proposed)
+    );
+}
+
 // Model-facing text of an orphan answer carries counts only: the base of an
 // edit (disk text the model never saw) reaches neither line.
 #[cfg(target_os = "linux")]
@@ -1100,7 +1176,7 @@ async fn an_orphan_answer_never_tells_the_model_the_base_or_the_diff() {
         assert!(!d.call(edit("b.txt", "foo", "bar")).await.is_error);
         let (id, _) = w.host.review_batch(key(), false).unwrap();
         let event = if apply {
-            w.host.apply_batch(id)
+            w.host.apply_batch(id, false)
         } else {
             w.host.discard_batch(id)
         };
