@@ -1071,7 +1071,7 @@ mod tests {
 
     // We2.1: the real disk
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     mod on_disk {
         use super::*;
 
