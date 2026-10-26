@@ -112,19 +112,22 @@ impl GroupKill {
     /// The leader's exit status once it has exited on its own, `None` while
     /// it runs. Before reaping it, the group gets SIGKILL for what the
     /// leader left in it: until the reap, the leader's pid (the group id)
-    /// cannot be reused. Disarms once reaped.
+    /// cannot be reused. A leader already reaped, or one the check cannot
+    /// see, is only reaped and disarmed: its pid may be another process's
+    /// by now. Disarms once reaped.
     pub fn reap_if_exited(
         &mut self,
         child: &mut tokio::process::Child,
     ) -> Option<std::io::Result<std::process::ExitStatus>> {
-        let exited = child
+        let state = child
             .id()
             .and_then(|pid| libc::pid_t::try_from(pid).ok())
-            .is_none_or(exited_unreaped);
-        if !exited {
-            return None;
+            .and_then(exited_unreaped);
+        match state {
+            Some(false) => return None,
+            Some(true) => self.kill(),
+            None => {}
         }
-        self.kill();
         let status = child.try_wait();
         self.disarm();
         match status {
@@ -135,9 +138,9 @@ impl GroupKill {
     }
 }
 
-/// Whether the child `pid` has exited, without reaping it. A failed check
-/// (no such child) counts as exited, so the caller reaps and disarms.
-fn exited_unreaped(pid: libc::pid_t) -> bool {
+/// Whether the child `pid` has exited, without reaping it. `None` when it
+/// cannot be told (no such child: reaped elsewhere).
+fn exited_unreaped(pid: libc::pid_t) -> Option<bool> {
     // SAFETY: an all-zero siginfo_t is a valid value.
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
     // SAFETY: `info` is a writable siginfo_t; WNOWAIT leaves the child
@@ -151,7 +154,7 @@ fn exited_unreaped(pid: libc::pid_t) -> bool {
         )
     };
     // SAFETY: waitid filled `info` (or left it zeroed, with WNOHANG).
-    read == -1 || unsafe { info.si_pid() } != 0
+    (read == 0).then(|| unsafe { info.si_pid() } != 0)
 }
 
 impl Drop for GroupKill {
@@ -360,6 +363,36 @@ mod tests {
         assert_eq!(status.signal(), Some(libc::SIGTERM));
         assert!(!group.is_armed(), "reaping disarms the guard");
         assert_eq!(child.id(), None, "reaped");
+    }
+
+    // A leader already reaped elsewhere: its pid may belong to another
+    // process now, so the guard is only disarmed, never fired.
+    #[tokio::test]
+    async fn reap_if_exited_never_signals_a_leader_reaped_elsewhere() {
+        let mut child = tokio::process::Command::new("true")
+            .process_group(0)
+            .spawn()
+            .expect("true starts");
+        let pid = child.id().expect("a pid") as libc::pid_t;
+        let mut group = GroupKill::new(pid).expect("a fresh group is a valid target");
+        child.wait().await.expect("reaped");
+        // A fake target: a signal here would show up as a dead sentinel.
+        let mut sentinel = tokio::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .expect("sleep starts");
+        let target = sentinel.id().expect("a pid") as libc::pid_t;
+        group.0 = Some(target);
+        assert!(group.reap_if_exited(&mut child).is_some());
+        assert!(!group.is_armed(), "disarmed");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            sentinel.try_wait().expect("try_wait").is_none(),
+            "the group was signalled"
+        );
+        crate::runtime::watch::unregister(pid);
     }
 
     #[cfg(target_os = "linux")]
