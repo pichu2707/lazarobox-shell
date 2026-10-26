@@ -4,13 +4,20 @@
 //! store, never a wait across an await. The lines returned are for the user
 //! and hold counts only.
 
-use std::{path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Arc, TryLockError},
+};
 
 use super::{ToolHost, files::lock};
 use crate::{
-    core::ai::{
-        chat::review::{BatchEvent, BatchReview, ReviewDoc, TOO_LARGE, closed_notice},
-        tools::stage::{BatchId, StageKey},
+    core::{
+        ai::{
+            chat::review::{Badge, BatchEvent, BatchReview, ReviewDoc, TOO_LARGE, closed_notice},
+            tools::stage::{BatchId, StageKey},
+        },
+        layout::PaneId,
     },
     runtime::tools::fs::load_roots,
 };
@@ -27,6 +34,17 @@ impl ToolHost {
     /// lost; `None` when there was nothing worth a notice.
     pub fn close_batch(&self, key: StageKey) -> Option<usize> {
         lock(&self.stages).discard_key(key)
+    }
+
+    /// What the panes show of their batches (see `Stages::badges`). It never
+    /// waits: `None` while an apply holds the store, so the caller keeps what
+    /// it showed and asks again on the next poll.
+    pub fn badges(&self, live: impl Fn(PaneId) -> bool) -> Option<HashMap<PaneId, Badge>> {
+        match self.stages.try_lock() {
+            Ok(stages) => Some(stages.badges(live)),
+            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner().badges(live)),
+            Err(TryLockError::WouldBlock) => None,
+        }
     }
 
     /// The orphan of `key` for the user to review. A batch the turn never

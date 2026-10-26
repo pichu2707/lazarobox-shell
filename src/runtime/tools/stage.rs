@@ -15,12 +15,13 @@ use super::{
     staged::StagedView,
 };
 use crate::core::ai::{
-    chat::review::{BatchReview, ReviewDoc},
+    chat::review::{Badge, BatchReview, ReviewDoc},
     tools::{
         paths::SecretRoots,
         stage::{Batch, BatchId, Outcome, StageError, StageKey, State},
     },
 };
+use crate::core::layout::PaneId;
 
 /// The generation counter ran out: no new batch can be made.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -86,6 +87,27 @@ impl Stages {
                 Ok((slot.insert(Batch::new(BatchId { key, generation })), true))
             }
         }
+    }
+
+    /// What each pane with a batch shows: the entries it holds, an orphan
+    /// when `live` says no turn of the pane runs. An empty batch shows nothing.
+    pub fn badges(&self, live: impl Fn(PaneId) -> bool) -> HashMap<PaneId, Badge> {
+        let mut out = HashMap::new();
+        for (&StageKey::Pane(pane), batch) in &self.batches {
+            let n = batch.entries().len();
+            if n > 0 {
+                let orphan = batch.orphan(live(pane)).is_some();
+                out.insert(
+                    pane,
+                    if orphan {
+                        Badge::Orphan(n)
+                    } else {
+                        Badge::Staged(n)
+                    },
+                );
+            }
+        }
+        out
     }
 
     pub fn batch(&self, key: StageKey) -> Option<&Batch> {
@@ -238,6 +260,31 @@ mod tests {
         fn delete_dir(&self, _: &Path) -> Result<(), WriteError> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn badges_count_the_entries_and_call_an_orphan_only_when_no_turn_runs() {
+        use crate::core::ai::chat::review::Badge;
+        let mut stages = Stages::default();
+        assert!(stages.badges(|_| false).is_empty());
+        put(&mut stages, key(1), "a.txt");
+        put(&mut stages, key(1), "b.txt");
+        let id = put(&mut stages, key(2), "c.txt");
+        // An empty batch is nothing to show.
+        stages.stage(key(3)).unwrap();
+        let live = |pane: PaneId| pane == PaneId::for_test(1);
+        let badges = stages.badges(live);
+        assert_eq!(badges.len(), 2, "{badges:?}");
+        assert_eq!(badges[&PaneId::for_test(1)], Badge::Staged(2));
+        assert_eq!(badges[&PaneId::for_test(2)], Badge::Orphan(1));
+        // A sealed batch whose ask is gone is an orphan too; answered, it goes.
+        stages.seal(id).unwrap();
+        assert_eq!(
+            stages.badges(|_| false)[&PaneId::for_test(2)],
+            Badge::Orphan(1)
+        );
+        stages.discard(id).unwrap();
+        assert!(!stages.badges(|_| false).contains_key(&PaneId::for_test(2)));
     }
 
     #[test]

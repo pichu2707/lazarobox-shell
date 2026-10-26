@@ -720,3 +720,33 @@ async fn an_orphan_is_reviewed_applied_or_discarded_through_the_chats() {
     assert_eq!(chats.close_batch(pane(2)), None);
     assert_eq!(chats.review_batch(pane(3)), None);
 }
+
+// The pane badge (chat-pane, "Staged batch indicator") is polled from the
+// store: a batch is staged while a turn of its pane runs and an orphan once
+// no turn does; closing the chat clears it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_badges_follow_the_batches_and_the_turns_of_the_panes() {
+    use crate::core::ai::chat::review::Badge;
+    let lab = lab();
+    let (mut chats, _rx) = tooled(&lab, idle());
+    assert!(chats.batch_badges().unwrap().is_empty());
+    let (bare, _rx) = (Chats::new(idle(), mpsc::channel(APP_CHANNEL).0), ());
+    assert_eq!(bare.batch_badges(), None, "no tooling, nothing to poll");
+    let one = stager(&lab, pane(1));
+    stage(&one, "a.txt", "x").await;
+    stage(&one, "b.txt", "y").await;
+    let two = stager(&lab, pane(2));
+    stage(&two, "c.txt", "z").await;
+
+    chats.send(pane(1), 1, request(""));
+    let badges = chats.batch_badges().unwrap();
+    assert_eq!(badges[&pane(1)], Badge::Staged(2), "its turn runs");
+    assert_eq!(badges[&pane(2)], Badge::Orphan(1), "no turn runs");
+    chats.cancel(pane(1));
+    assert_eq!(chats.batch_badges().unwrap()[&pane(1)], Badge::Orphan(2));
+    chats.close_batch(pane(1));
+    let badges = chats.batch_badges().unwrap();
+    assert!(!badges.contains_key(&pane(1)), "{badges:?}");
+    assert_eq!(badges.len(), 1);
+}

@@ -7877,7 +7877,10 @@ mod app_tests {
             assert_eq!((a.tab_count(), a.focused()), (1, chat_id()));
             press(&mut a, "wq");
             assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
-            assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+            assert_eq!(
+                a.update(key('y')),
+                vec![Effect::BatchClose(chat_id()), Effect::Quit]
+            );
         }
 
         // 1.4: the UI asks for a view, not for an emulator.
@@ -8297,10 +8300,13 @@ mod app_tests {
         }
 
         #[test]
-        fn quitting_asks_the_runtime_to_stop_and_emits_no_per_chat_effect() {
+        fn quitting_asks_the_runtime_to_stop_and_emits_only_the_batch_close() {
             let mut a = streaming();
             press(&mut a, "q");
-            assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+            assert_eq!(
+                a.update(key('y')),
+                vec![Effect::BatchClose(chat_id()), Effect::Quit]
+            );
             // The runtime stops every turn on Quit; the state stays readable.
             assert_eq!(
                 chat_of(&a, chat_id()).phase(),

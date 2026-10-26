@@ -241,6 +241,38 @@ pub enum BatchEvent {
     Done { shown: String, told: Option<String> },
 }
 
+/// What the pane says of its chat's batch. Counts only.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Badge {
+    /// A batch the model is still staging, or that waits for the user's `y`.
+    Staged(usize),
+    /// A batch left behind by a turn that ended: the user can review it.
+    Orphan(usize),
+}
+
+impl Badge {
+    /// The text of the badge that fits `room` columns, widest first: the
+    /// count with the review key, the count, a letter and the count.
+    pub fn text(self, room: usize) -> Option<String> {
+        let (word, letter, key) = match self {
+            Self::Staged(_) => ("staged", 'S', ""),
+            Self::Orphan(_) => ("orphan", 'O', " · Ctrl+G"),
+        };
+        let (Self::Staged(n) | Self::Orphan(n)) = self;
+        [
+            format!(" {word} {n}{key} "),
+            format!(" {word} {n} "),
+            format!(" {letter}{n} "),
+        ]
+        .into_iter()
+        .find(|text| text.chars().count() <= room)
+    }
+}
+
+/// Shown on Ctrl+G when there is no orphan batch to review: the chat wears no
+/// orphan badge, or the badge went stale.
+pub const NO_ORPHAN: &str = "no orphan batch to review";
+
 /// The notice of a close that discarded `entries` staged entries.
 pub fn closed_notice(entries: usize) -> String {
     let s = if entries == 1 { "y" } else { "ies" };

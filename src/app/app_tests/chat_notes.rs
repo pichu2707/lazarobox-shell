@@ -1098,7 +1098,10 @@ fn closing_the_pane_ends_the_session_with_the_note_titles() {
 fn quitting_ends_the_session_before_the_quit() {
     let mut a = wrote_two();
     press(&mut a, "q");
-    assert_eq!(a.update(key('y')), vec![end("Notes: A; B"), Effect::Quit]);
+    assert_eq!(
+        a.update(key('y')),
+        vec![end("Notes: A; B"), Effect::BatchClose(id2()), Effect::Quit]
+    );
 }
 
 #[test]
@@ -1124,7 +1127,10 @@ fn a_chat_that_never_wrote_sends_no_end() {
     );
     let mut b = with_answer(true, "x");
     press(&mut b, "q");
-    assert_eq!(b.update(key('y')), vec![Effect::Quit]);
+    assert_eq!(
+        b.update(key('y')),
+        vec![Effect::BatchClose(id2()), Effect::Quit]
+    );
 }
 
 #[test]

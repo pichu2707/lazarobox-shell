@@ -230,6 +230,7 @@ A batch orphaned by a cancelled turn MUST stay staged in the chat, and the pane 
 - The host is the trust boundary: an orphan apply is refused, writing nothing, when the batch is not reviewable or a turn of its pane is live.
 - What the model hears of a user-side answer is a fixed line with counts only, never a path. It is sent once with the next request. A turn that ends (cancel, failure at start) before the engine produced any event did not deliver it, so it is queued again for the following request. A drifted apply leaves the batch proposed and tells the model nothing (user decision).
 - Accepted UI cost: orphan review and apply run on the runtime thread under the `Stages` lock, so a close or discard can wait for an in-flight W-f `spawn_blocking` apply. That apply is bounded to 50 entries and 1 MiB.
+- A signal exit (SIGTERM or SIGHUP) prints no discard notice: the loop is left without the quit effects, so no `BatchClose` runs. Nothing is written either way, because the batch lives in memory only.
 
 ### Requirement: Worker batches
 A batch staged by an orchestrator worker MUST be reviewed and applied by the user through the approval queue of the orchestrator (S3). A worker MUST NOT apply a batch itself. The interaction details are pinned by design.
