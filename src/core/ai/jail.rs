@@ -739,7 +739,7 @@ const BROAD_MACOS: &[&str] = &[
 /// otherwise run `ld.so /usr/bin/curl`. `/bin` is a link to `/usr/bin` on
 /// most systems, which is why it is not listed. `/lib` and `/lib64` are
 /// libraries (and links to `/usr/lib`).
-const LINUX_RO: [&str; 7] = [
+pub(crate) const LINUX_RO: [&str; 7] = [
     "/usr/lib",
     "/usr/share",
     "/lib",
@@ -750,17 +750,17 @@ const LINUX_RO: [&str; 7] = [
 ];
 
 /// Every system but macOS: `/proc` files that runtimes read for the CPU and memory count.
-const LINUX_RO_FILES: [&str; 3] = ["/proc/cpuinfo", "/proc/meminfo", "/proc/stat"];
+pub(crate) const LINUX_RO_FILES: [&str; 3] = ["/proc/cpuinfo", "/proc/meminfo", "/proc/stat"];
 
 /// Device files every system gives a jailed CLI: randomness, read-only.
-const DEV_RO_FILES: [&str; 2] = ["/dev/urandom", "/dev/random"];
+pub(crate) const DEV_RO_FILES: [&str; 2] = ["/dev/urandom", "/dev/random"];
 
 /// The device file every system gives a jailed CLI to write to.
-const DEV_RW_FILE: &str = "/dev/null";
+pub(crate) const DEV_RW_FILE: &str = "/dev/null";
 
 /// Files under `/etc` that name resolution and TLS clocks need, and that a
 /// distribution may link to another place.
-const ETC_LINKS: [&str; 4] = [
+pub(crate) const ETC_LINKS: [&str; 4] = [
     "/etc/resolv.conf",
     "/etc/hosts",
     "/etc/nsswitch.conf",
@@ -874,6 +874,16 @@ fn too_broad(path: &Path, homes: &[&Path], cli: Cli, os: Os) -> bool {
             .any(|home| too_broad_for_home(path, &fold(home, os), cli, os))
 }
 
+/// Whether a project root or toolchain folder is a broad place, for any CLI's
+/// credential folder: `$HOME` or above it, a scratch folder, a system folder,
+/// or a credential folder of any CLI. Linux rules; `homes` holds both
+/// spellings of `$HOME`.
+pub(crate) fn broad_place(path: &Path, homes: &[&Path]) -> bool {
+    [Cli::Claude, Cli::Codex, Cli::Gemini]
+        .into_iter()
+        .any(|cli| too_broad(path, homes, cli, Os::Linux))
+}
+
 /// `path` in lower case on macOS, where the file system ignores letter case;
 /// unchanged elsewhere. Both sides of a comparison go through it.
 fn fold(path: &Path, os: Os) -> PathBuf {
@@ -928,7 +938,7 @@ pub enum SpecError {
     Overlap { rx: PathBuf, rw: PathBuf },
 }
 
-fn is_canonical_form(path: &Path) -> bool {
+pub(crate) fn is_canonical_form(path: &Path) -> bool {
     path.is_absolute()
         && !path
             .as_os_str()
@@ -1004,7 +1014,7 @@ pub struct JailSpec {
 /// binaries (`packages/standalone/releases/<version>/bin`).
 const CODEX_PACKAGES: &str = "packages";
 
-fn push_unique(list: &mut Vec<PathBuf>, path: PathBuf) {
+pub(crate) fn push_unique(list: &mut Vec<PathBuf>, path: PathBuf) {
     if !list.contains(&path) {
         list.push(path);
     }
