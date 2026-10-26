@@ -179,6 +179,68 @@ async fn a_server_that_exits_says_so_with_the_last_line_of_its_log() {
     assert_eq!(mode & 0o777, 0o600);
 }
 
+/// The pid a fake wrote to `path`, once it is there.
+async fn child_of(path: &Path) -> u32 {
+    wait_for_pid(path).await
+}
+
+/// Waits up to 2 s for `pid` to be gone.
+async fn ends(pid: u32) -> bool {
+    for _ in 0..100 {
+        if gone(pid) {
+            return true;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
+// Spec: nothing lazarobox started outlives it (verifier A2): a server that
+// ends during its start leaves nothing running in its group.
+#[tokio::test]
+async fn a_server_that_exits_during_its_start_leaves_no_child() {
+    let lab = Lab::new();
+    let child = lab.dir.path().join("child");
+    let body = format!("sleep 30 & echo $! > '{}'\nexit 1", child.display());
+    let managed = lab.managed(&body, answers(None), WAIT);
+    assert!(
+        managed
+            .ensure()
+            .await
+            .is_err_and(|e| e.starts_with("llama-server stopped"))
+    );
+    assert!(ends(child_of(&child).await).await, "its child is left");
+}
+
+// Spec: the same for a server that ended after it answered.
+#[tokio::test]
+async fn a_server_that_ended_leaves_no_child_once_the_next_ensure_sees_it() {
+    let lab = Lab::new();
+    let child = lab.dir.path().join("child");
+    let body = format!("sleep 30 & echo $! > '{}'\nwait", child.display());
+    let managed = lab.managed(&body, answers_once(&lab.record()), WAIT);
+    assert_eq!(managed.ensure().await, Ok(()));
+    let pid = managed.pid().await.expect("running");
+    let grandchild = child_of(&child).await;
+    // SAFETY: a plain signal to the fake this test started (not its group).
+    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    for _ in 0..100 {
+        if process_state(pid as libc::pid_t) == Some('Z') {
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !gone(grandchild),
+        "the child outlives its leader until seen"
+    );
+    fs::remove_file(lab.record()).unwrap();
+    fs::remove_file(&child).unwrap();
+    assert_eq!(managed.ensure().await, Ok(()));
+    assert!(ends(grandchild).await, "its child is left");
+    managed.shutdown().await;
+}
+
 // Spec: The log is private to the user, also one left by an earlier start.
 #[tokio::test]
 async fn an_existing_log_is_made_private_and_emptied() {

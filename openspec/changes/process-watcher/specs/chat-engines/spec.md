@@ -49,3 +49,8 @@ When lazarobox quits (the quit key, SIGTERM or SIGHUP), right after it restores 
 - GIVEN lazarobox with a child running in its own group
 - WHEN lazarobox gets SIGKILL
 - THEN the child is gone within the grace and the watcher has exited
+
+#### Scenario: A managed llama-server that ends on its own [auto]
+- GIVEN the managed llama-server left a child in its group
+- WHEN the server exits during its start, or after it answered and the next llamacpp turn sees it ended
+- THEN the child gets SIGKILL before the server is reaped (its group id cannot be reused until then)

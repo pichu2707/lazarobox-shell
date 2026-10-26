@@ -10,6 +10,15 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- The quit prompt names what still runs in the panes (jobs started with `&`,
+  `nohup` or `disown`, or a program in the foreground):
+  `Quit? still running: sleep 77, npm run dev (y/n)`, three names at most and
+  fitted to the width. After quitting, the same jobs are written to stderr
+  with their process group, also after `exit` in the last pane. lazarobox
+  still never stops them: a pane behaves like any terminal.
+
 ### Fixed
 
 - Nothing lazarobox starts is left running once it ends, however it ends.
@@ -31,6 +40,9 @@ baseline.
   cut at its next line. A group whose leader ends gets SIGKILL at once for
   what it left behind. If lazarobox is killed during the quit, the watcher
   repeats the same stop, where what a leader left behind gets the grace too.
+- A managed llama-server that ends on its own, during its start or later,
+  no longer leaves its children running: they get SIGKILL before the server
+  is reaped.
 
 ## [0.23.0] - 2026-10-25
 

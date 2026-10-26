@@ -13,9 +13,11 @@ use crate::core::{
             ChatState, Follow, Phase,
             copy::ChatCopy,
             engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, StreamEvent},
+            list::fit,
             notify::{Ended, body, plays_sound, should_notify},
             prompts::Resolved,
             store::{StoreCmd, StoreReply},
+            wrap::text_width,
         },
         config::{AiConfig, ManagedServer, NotifyMode, Profile, Task},
         gguf,
@@ -169,6 +171,9 @@ pub enum AppEvent {
     /// The background update check answered (or the cache was read): the
     /// newer version to announce, if any. Never carries an action.
     UpdateChecked(Option<String>),
+    /// What still runs in the panes (see `Effect::ListRunning`): one
+    /// command per job, for the quit prompt.
+    StillRunning(Vec<String>),
     /// The runtime prepared the system prompt of a chat pane (see
     /// `Effect::PreparePrompt`): the resolved prompt with the workspace
     /// block, and the notices of the override files it skipped.
@@ -336,8 +341,14 @@ pub enum Effect {
     /// Turn the host terminal's mouse capture on (`true`) or off. Emitted
     /// only when the wanted state differs from the one last asked for.
     MouseCapture(bool),
+    /// Name the jobs still running in the panes, for the quit prompt; the
+    /// runtime answers with one `AppEvent::StillRunning`.
+    ListRunning,
     Quit,
 }
+
+/// Display columns of one job named by the quit prompt.
+const JOB_NAME_MAX: usize = 24;
 
 /// Pane size for a terminal of `cols` x `rows`: the bottom row is the
 /// statusline, and the pane is never smaller than 1x1.
@@ -589,6 +600,8 @@ pub struct App {
     input: InputMode,
     /// Shown in the statusline path segment until the next key press.
     notice: Option<String>,
+    /// What still runs in the panes, named by the open quit prompt.
+    still_running: Vec<String>,
     /// The newer released version, when the update check knows one.
     update: Option<String>,
     /// How this binary was installed, for Enter on the Updates row.
@@ -708,6 +721,7 @@ impl App {
             ids,
             input: InputMode::default(),
             notice: None,
+            still_running: Vec::new(),
             update: None,
             install_env: None,
             cargo_check: |_| false,
@@ -957,6 +971,31 @@ impl App {
 
     pub fn input(&self) -> InputMode {
         self.input
+    }
+
+    /// The statusline label when it says more than [`InputMode::label`]: the
+    /// quit prompt naming what still runs in the panes, in at most `room`
+    /// columns. Three jobs at most, each shortened to [`JOB_NAME_MAX`]
+    /// columns; fewer when they do not fit, then only how many.
+    pub fn status_label(&self, room: usize) -> Option<String> {
+        if self.input != InputMode::Confirm(Confirm::Quit) || self.still_running.is_empty() {
+            return None;
+        }
+        let total = self.still_running.len();
+        let named = (1..=total.min(3)).rev().map(|shown| {
+            let names: Vec<String> = self.still_running[..shown]
+                .iter()
+                .map(|name| fit(name, JOB_NAME_MAX))
+                .collect();
+            let more = match total - shown {
+                0 => String::new(),
+                n => format!(" +{n} more"),
+            };
+            format!("Quit? still running: {}{more} (y/n)", names.join(", "))
+        });
+        named
+            .chain([format!("Quit? {total} still running (y/n)")])
+            .find(|label| text_width(label) <= room)
     }
 
     /// The open menu, if any.
@@ -1487,6 +1526,13 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            // Only the open quit prompt shows it; a late answer is dropped.
+            AppEvent::StillRunning(names) if self.input == InputMode::Confirm(Confirm::Quit) => {
+                self.still_running = names;
+                self.dirty = true;
+                Vec::new()
+            }
+            AppEvent::StillRunning(_) => Vec::new(),
             AppEvent::PromptReady(id, resolved) => self.on_prompt_ready(id, resolved),
             AppEvent::AnimTick => self.on_anim_tick(),
             AppEvent::MemoryTick => self.on_memory_tick(),
@@ -1836,6 +1882,13 @@ impl App {
             ) => InputMode::Terminal,
         };
         match step {
+            // The quit prompt names what still runs in the panes.
+            Step::Run(
+                PrefixAction::RequestQuit | PrefixAction::ClosePane | PrefixAction::CloseTab,
+            ) if self.input == InputMode::Confirm(Confirm::Quit) => {
+                self.still_running.clear();
+                vec![Effect::ListRunning]
+            }
             // The literal is a byte for a child; a chat has none, so it swallows it.
             Step::Run(PrefixAction::SendPrefixLiteral) if self.focused_pty().is_some() => {
                 self.return_to_live();
@@ -2904,7 +2957,7 @@ mod app_tests {
     #[test]
     fn prefix_q_asks_for_confirmation() {
         let mut a = in_prefix();
-        assert_eq!(a.update(key('q')), vec![]);
+        assert_eq!(a.update(key('q')), vec![Effect::ListRunning]);
         assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
     }
 
@@ -3010,7 +3063,7 @@ mod app_tests {
         assert_eq!(a.input(), InputMode::Prefix);
 
         let shift_q = AppEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::SHIFT));
-        assert_eq!(a.update(shift_q), vec![]);
+        assert_eq!(a.update(shift_q), vec![Effect::ListRunning]);
         assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
     }
 
@@ -3019,6 +3072,97 @@ mod app_tests {
         let mut a = in_prefix();
         a.update(key('q'));
         assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+    }
+
+    /// Room for any quit prompt label.
+    const WIDE: usize = 200;
+
+    fn names(list: &[&str]) -> AppEvent {
+        AppEvent::StillRunning(list.iter().map(|n| (*n).to_owned()).collect())
+    }
+
+    // Spec S7: the quit prompt asks the runtime what still runs in the panes.
+    #[test]
+    fn asking_to_quit_asks_what_still_runs() {
+        let mut a = in_prefix();
+        assert_eq!(a.update(key('q')), vec![Effect::ListRunning]);
+        assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
+        // Nothing listed yet, or nothing runs: the plain prompt.
+        assert_eq!(a.status_label(WIDE), None);
+        a.update(names(&[]));
+        assert_eq!(a.status_label(WIDE), None);
+    }
+
+    #[test]
+    fn the_quit_prompt_names_what_still_runs() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(names(&["sleep 77", "npm run dev"]));
+        assert_eq!(
+            a.status_label(WIDE).as_deref(),
+            Some("Quit? still running: sleep 77, npm run dev (y/n)")
+        );
+        assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+    }
+
+    #[test]
+    fn the_quit_prompt_names_three_jobs_at_most_and_shortens_long_ones() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(names(&[
+            "a",
+            "python -m http.server --bind 127.0.0.1 8000",
+            "c",
+            "d",
+            "e",
+        ]));
+        assert_eq!(
+            a.status_label(WIDE).as_deref(),
+            Some("Quit? still running: a, python -m http.server -…, c +2 more (y/n)")
+        );
+    }
+
+    #[test]
+    fn closing_the_last_pane_or_tab_asks_what_still_runs_too() {
+        for group in ['w', 't'] {
+            let mut a = launched(80, 25);
+            a.update(ctrl_space());
+            a.update(key(group));
+            let close = if group == 'w' { 'q' } else { 'c' };
+            assert_eq!(a.update(key(close)), vec![Effect::ListRunning], "{group}");
+            assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
+        }
+    }
+
+    #[test]
+    fn a_narrow_quit_prompt_names_fewer_jobs_then_only_how_many() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(names(&["sleep 77", "npm run dev", "cargo watch"]));
+        let label = |room| a.status_label(room);
+        assert_eq!(
+            label(60).as_deref(),
+            Some("Quit? still running: sleep 77, npm run dev +1 more (y/n)")
+        );
+        assert_eq!(
+            label(45).as_deref(),
+            Some("Quit? still running: sleep 77 +2 more (y/n)")
+        );
+        assert_eq!(label(30).as_deref(), Some("Quit? 3 still running (y/n)"));
+        assert_eq!(label(10), None);
+    }
+
+    #[test]
+    fn a_list_that_comes_after_the_prompt_is_ignored() {
+        let mut a = in_prefix();
+        a.update(key('q'));
+        a.update(key('n'));
+        a.update(names(&["sleep 77"]));
+        assert_eq!(a.status_label(WIDE), None);
+        // A new prompt does not show the old list before its own arrives.
+        a.update(ctrl_space());
+        a.update(key('q'));
+        assert_eq!(a.status_label(WIDE), None);
     }
 
     #[test]

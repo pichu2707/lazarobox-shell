@@ -31,6 +31,7 @@ pub mod desktop;
 pub mod engram;
 pub mod gguf;
 pub mod jail;
+pub mod jobs;
 pub mod login_path;
 pub mod loopback;
 pub mod mcp;
@@ -513,6 +514,8 @@ pub async fn run() -> io::Result<()> {
     //    processes), each inside its own bound; the chats only once step 1
     //    is over, so nothing is killed before its grace.
     // 5. The PTY children are stopped with whatever is left of the one bound.
+    // 6. The jobs the panes leave running (a pane is a terminal: lazarobox
+    //    never stops them) are named on stderr.
     let polite = tokio::task::spawn_blocking(|| watch::stop_listed(watch::QUIT_GRACE));
     panes.shutdown_store(STORE_JOIN_BOUND);
     let started = Instant::now();
@@ -525,7 +528,15 @@ pub async fn run() -> io::Result<()> {
             QUIT_KILL_BOUND,
         )
         .await;
+    let sessions = std::mem::take(&mut panes.sessions);
     panes.shutdown(QUIT_KILL_BOUND.saturating_sub(started.elapsed()));
+    let left =
+        tokio::task::spawn_blocking(move || jobs::left_running(&sessions, jobs::HANGUP_SETTLE))
+            .await
+            .unwrap_or_default();
+    if let Some(report) = jobs::report(&left) {
+        eprint!("{report}");
+    }
     result
 }
 
@@ -905,6 +916,7 @@ fn spawn_prepare_with(
 
 /// Builds the child of a pane; the production one is `spawn_portable`.
 type SpawnFn = Box<dyn FnMut(&SpawnSpec, PtySink) -> io::Result<Box<dyn PtyHandle>>>;
+type ListFn = dyn Fn(&[jobs::Session]) -> Vec<jobs::Job>;
 
 /// Whether the loop keeps running after a batch of effects.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -963,6 +975,12 @@ struct Panes {
     memory: Memory,
     /// The chat history thread. `None` ignores the store effects (unit tests).
     store: Option<StoreHandle>,
+    /// The session of every pane spawned, closed ones included: their jobs
+    /// are what the quit prompt names.
+    sessions: Vec<jobs::Session>,
+    /// Names the jobs of `sessions`; [`jobs::running`] unless a test
+    /// installs another one with `with_lister`.
+    list_running: Box<ListFn>,
 }
 
 impl Panes {
@@ -987,7 +1005,16 @@ impl Panes {
             run_checks: None,
             memory: Memory::off(),
             store: None,
+            sessions: Vec::new(),
+            list_running: Box::new(jobs::running),
         }
+    }
+
+    /// Sets what names the jobs still running in the panes.
+    #[cfg(test)]
+    fn with_lister(mut self, list: impl Fn(&[jobs::Session]) -> Vec<jobs::Job> + 'static) -> Self {
+        self.list_running = Box::new(list);
+        self
     }
 
     /// Moves a pending bell into the host bytes, after whatever is already
@@ -1117,6 +1144,13 @@ impl Panes {
     /// Starts the child of pane `id`, tagging everything it emits with `id`.
     fn spawn_pane(&mut self, id: PaneId, spec: &SpawnSpec) -> io::Result<()> {
         let handle = (self.spawn)(spec, tagged_sink(id, self.tx.clone()))?;
+        // The shell leads its own session; its start time tells it from a
+        // later process given the same pid.
+        if let Some(sid) = handle.pid().and_then(|pid| libc::pid_t::try_from(pid).ok())
+            && let Some(start) = proc::start_time(sid)
+        {
+            self.sessions.push(jobs::Session { sid, start });
+        }
         self.handles.insert(id, handle);
         Ok(())
     }
@@ -1328,6 +1362,12 @@ impl Panes {
                 Effect::MouseCapture(on) => {
                     self.host_out
                         .extend_from_slice(if on { CAPTURE_ON } else { CAPTURE_OFF });
+                }
+                Effect::ListRunning => {
+                    let jobs = (self.list_running)(&self.sessions);
+                    feedback.push(AppEvent::StillRunning(
+                        jobs.into_iter().map(|job| job.command).collect(),
+                    ));
                 }
                 Effect::Quit => outcome = Outcome::Quit,
             }
@@ -2338,6 +2378,62 @@ mod tests {
     fn quit_effect_is_reported() {
         let (mut panes, _rx, _rec) = fake_panes(None);
         assert_eq!(panes.apply(vec![Effect::Quit]).0, Outcome::Quit);
+    }
+
+    // Spec S7: the quit prompt names the jobs of every pane's session.
+    #[test]
+    fn listing_what_runs_names_the_jobs_of_the_spawned_panes() {
+        let (tx, _rx) = mpsc::channel(PTY_CHANNEL);
+        let spawn: SpawnFn = Box::new(|_, _| {
+            Ok(Box::new(FakePty {
+                pid: Some(std::process::id()),
+                ..FakePty::default()
+            }))
+        });
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut panes = Panes::new(tx, spawn).with_lister({
+            let seen = Arc::clone(&seen);
+            move |sessions: &[jobs::Session]| {
+                seen.lock().unwrap().extend_from_slice(sessions);
+                vec![jobs::Job {
+                    pgid: 77,
+                    command: "sleep 77".into(),
+                }]
+            }
+        });
+        panes.apply(vec![Effect::SpawnPane(id(1), spec())]);
+        let (outcome, feedback) = panes.apply(vec![Effect::ListRunning]);
+        assert_eq!(outcome, Outcome::Continue);
+        assert_eq!(
+            feedback,
+            vec![AppEvent::StillRunning(vec!["sleep 77".into()])]
+        );
+        let me = std::process::id() as libc::pid_t;
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [jobs::Session {
+                sid: me,
+                start: proc::start_time(me).unwrap(),
+            }]
+        );
+    }
+
+    // A pane closed before the quit still had a session: its jobs count.
+    #[test]
+    fn a_closed_pane_keeps_its_session_listed() {
+        let (tx, _rx) = mpsc::channel(PTY_CHANNEL);
+        let spawn: SpawnFn = Box::new(|_, _| {
+            Ok(Box::new(FakePty {
+                pid: Some(std::process::id()),
+                ..FakePty::default()
+            }))
+        });
+        let mut panes = Panes::new(tx, spawn);
+        panes.apply(vec![
+            Effect::SpawnPane(id(1), spec()),
+            Effect::ClosePane(id(1)),
+        ]);
+        assert_eq!(panes.sessions.len(), 1);
     }
 
     // Spec: spawn failure is fed back, not fatal.

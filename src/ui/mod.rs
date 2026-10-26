@@ -119,7 +119,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
     let thinking = pick_stream(&streams, focused)
         .map(|(stream, others)| ThinkingView::new(stream, others, app.anim_frame(), app.now()));
     let right = app.status_right();
-    let line = |path| {
+    let plain = |path| {
         StatusLine::input(theme, app.input(), path, &right)
             .chat(app.focused_is_chat())
             .memory(app.status_memory())
@@ -129,6 +129,8 @@ pub fn render(frame: &mut Frame, app: &App, theme: &LazaroboxTheme) {
             .copy_position(app.scroll_position())
             .marker(app.copy_selection_kind())
     };
+    let label = app.status_label(plain("").label_room(status.width));
+    let line = |path| plain(path).label(label.as_deref());
     let path = app.status_path(line("").path_budget(status.width));
     frame.render_widget(line(&path), status);
 
@@ -529,6 +531,24 @@ mod tests {
             !line.contains("window") && !line.contains("quit"),
             "{line:?}"
         );
+    }
+
+    // Spec S7: the quit prompt names what still runs, fitted to the width.
+    #[test]
+    fn the_quit_prompt_names_what_still_runs_within_the_width() {
+        let jobs = AppEvent::StillRunning(vec!["sleep 77".into(), "npm run dev".into()]);
+        for (cols, shown) in [
+            (100, "Quit? still running: sleep 77, npm run dev (y/n)"),
+            (40, "Quit? 2 still running (y/n)"),
+            (20, "Quit? (y/n)"),
+        ] {
+            let mut app = App::new(cols, 3);
+            press(&mut app, ' ', KeyModifiers::CONTROL);
+            keys(&mut app, "q");
+            app.update(jobs.clone());
+            let line = status(&app);
+            assert!(line.contains(shown), "{cols}: {line:?}");
+        }
     }
 
     // Spec: Root hint clipped and cleared; Narrow width.
