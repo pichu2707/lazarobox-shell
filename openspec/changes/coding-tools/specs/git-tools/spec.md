@@ -42,6 +42,8 @@ Every git call MUST run in the root through the runner (same jail, no shell, cle
 - WHEN `git_status` and `git_diff` run
 - THEN neither script runs
 
+Hardening details (design, Git section): hooks run only from the repo's own `.git/hooks` (`core.hooksPath` is pinned; the commit review says so when the repo sets another one, because a worktree hook dir can be written by the model); the user's global git config is never loaded, and the commit identity is passed as `user.name`/`user.email` read by the preflight, refused when it has control or format characters, a newline or is too long; GPG and signature display are off; the secret names and the secret folders are excluded by `:(exclude,glob,icase)` pathspec. Residual risk: filter drivers (clean/process) from the repo config still run, bounded by the jail.
+
 #### Scenario: Not a repository [auto]
 - GIVEN a root without a repository
 - WHEN `git_status` runs
@@ -53,7 +55,7 @@ Every git call MUST run in the root through the runner (same jail, no shell, cle
 - THEN it sits inside the untrusted-data wrapper
 
 ### Requirement: Read verbs
-`git_status` MUST return a parsed, bounded status. `git_diff` MUST return a unified diff of the working tree or of the staged changes, bounded in size, with the secret file names excluded by pathspec so a modified tracked `.env` is not printed. `git_log` MUST be bounded in entries and use a fixed format. The read verbs MUST run without approval on a Local engine and MUST need an explicit `y` on a Cloud engine, because repository text goes to the provider. (This follows the read-tool rule of agent-tools. The user confirmed it on 2026-10-22.)
+`git_status` MUST return a parsed, bounded status. `git_diff` MUST return a unified diff of the working tree or of the staged changes, bounded in size, with the secret file names excluded by pathspec so a modified tracked `.env` is not printed. `git_log` MUST be bounded in entries (default 20, at most 50) and use a fixed format. Paths and names printed to the model MUST NOT carry control or bidi characters, and a secret name (also as the old name of a rename) MUST NOT be listed. The read verbs MUST run without approval on a Local engine and MUST need an explicit `y` on a Cloud engine, because repository text goes to the provider. (This follows the read-tool rule of agent-tools. The user confirmed it on 2026-10-22.)
 
 #### Scenario: Status [auto]
 - GIVEN one modified, one staged and one untracked file
@@ -76,7 +78,7 @@ Every git call MUST run in the root through the runner (same jail, no shell, cle
 - THEN an approval is shown and nothing runs until `y`
 
 ### Requirement: add
-`git_add` MUST stage the named paths, which MUST be inside the root, MUST NOT match the secret lists, and MUST NOT be inside `.git/`. It MUST be refused while unproposed staged changes exist in the batch store (`propose them first`) and MUST need an explicit `y` as a one-line prompt showing the paths.
+`git_add` MUST stage the named paths, which MUST be inside the root, MUST NOT match the secret lists (names or folders), and MUST NOT be inside `.git/`. A folder or `.` MUST NOT stage the secret files below it (secret pathspec excludes). It MUST be refused while unproposed staged changes exist in the batch store (`propose them first`) and MUST need an explicit `y` as a one-line prompt showing the paths.
 
 #### Scenario: Add a file [auto]
 - GIVEN an untracked `src/a.rs`
