@@ -89,7 +89,8 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         assert!(is_ours(port));
+        // Not checked once it closes: a test running alongside may take the
+        // same port at once. `listeners` covers a port nobody listens on.
         drop(listener);
-        assert!(!is_ours(port), "nothing listens");
     }
 }

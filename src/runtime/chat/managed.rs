@@ -20,6 +20,9 @@
 //!   another program, a socket of another user) is left alone, and ours starts
 //!   on the first silent port. With none silent, the turn fails and nothing
 //!   starts.
+//! - Ours, used by another lazarobox, is still ours to stop. The idle stop
+//!   waits while it answers a request that is none of our turns (`/slots`),
+//!   and the quit prompt names it then: quitting cuts that reply.
 //! - Before a start, after the program is found, the model file must exist;
 //!   it is checked on every start, never at load.
 //! - It runs in its own process group, so stopping it takes its children too.
@@ -110,6 +113,29 @@ pub fn models_probe() -> Probe {
     })
 }
 
+/// How many requests a llama-server answers now, `None` when it does not
+/// say. A seam so the checks are tested without a real server.
+pub type Slots = Arc<dyn Fn(u16) -> BoxFuture<'static, Option<usize>> + Send + Sync>;
+
+/// The real one: the slots of `GET /slots` that are processing.
+pub fn slots_probe() -> Slots {
+    Arc::new(|port| {
+        Box::pin(async move {
+            match http_get(port, "/slots").await {
+                Some((200, body)) => processing(&body),
+                _ => None,
+            }
+        })
+    })
+}
+
+/// How many slots of a `/slots` answer are processing.
+fn processing(body: &[u8]) -> Option<usize> {
+    let slots: Vec<serde_json::Value> = serde_json::from_slice(body).ok()?;
+    let busy = |slot: &&serde_json::Value| slot.get("is_processing") == Some(&true.into());
+    Some(slots.iter().filter(busy).count())
+}
+
 /// The model file a llama-server's `/props` names (`model_path`).
 fn served_model(body: &[u8]) -> Option<PathBuf> {
     let props: serde_json::Value = serde_json::from_slice(body).ok()?;
@@ -157,6 +183,7 @@ pub struct Managed {
     args: Vec<String>,
     log: Option<PathBuf>,
     probe: Probe,
+    slots: Slots,
     wait: Duration,
     running: Mutex<Option<Process>>,
     /// Replaced by another model: it never starts again.
@@ -209,6 +236,23 @@ impl Managed {
         self
     }
 
+    /// The same server, asking `slots` how many requests it answers.
+    #[cfg(test)]
+    pub(crate) fn with_slots(mut self, slots: Slots) -> Self {
+        self.slots = slots;
+        self
+    }
+
+    /// Whether the server we started answers a request that is none of our
+    /// turns: another lazarobox uses it, and stopping it now cuts that reply.
+    pub async fn answering_others(&self) -> bool {
+        if self.running.lock().await.is_none() {
+            return false;
+        }
+        let answering = (self.slots)(self.port()).await.unwrap_or(0);
+        answering > self.busy.load(Ordering::SeqCst)
+    }
+
     /// [`Managed::new`] with the program, the probe and the start wait given.
     pub(crate) fn with(
         program: OsString,
@@ -228,6 +272,7 @@ impl Managed {
             args: Vec::new(),
             log,
             probe,
+            slots: slots_probe(),
             wait,
             running: Mutex::new(None),
             retired: AtomicBool::new(false),
@@ -254,8 +299,9 @@ impl Managed {
         Ok(lease)
     }
 
-    /// Stops the server when no turn holds it and none used it for `idle` up
-    /// to `now`; the next turn starts it again. `true` when it stopped one.
+    /// Stops the server when no turn holds it, none used it for `idle` up to
+    /// `now` and it answers no other lazarobox; the next turn starts it
+    /// again. `true` when it stopped one.
     pub async fn stop_if_idle(&self, idle: Duration, now: Instant) -> bool {
         // Held while it stops: a turn waiting to start never meets the old
         // server still answering on the port.
@@ -267,7 +313,13 @@ impl Managed {
             .last_used
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if now.saturating_duration_since(last) < idle {
+        if now.saturating_duration_since(last) < idle || running.is_none() {
+            return false;
+        }
+        // Another lazarobox that uses it is being answered: never cut it, and
+        // count the idle time from now.
+        if (self.slots)(self.port()).await.unwrap_or(0) > 0 {
+            self.touch();
             return false;
         }
         let Some(process) = running.take() else {

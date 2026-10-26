@@ -280,6 +280,7 @@ pub async fn run() -> io::Result<()> {
     let (update_tx, update_rx) = mpsc::channel(1);
     let (notified_tx, notified_rx) = mpsc::channel(4);
     let (managed_tx, managed_rx) = mpsc::channel(4);
+    let (shared_tx, shared_rx) = mpsc::channel(1);
     let update_cache = update::cache_path(
         env::var_os("XDG_DATA_HOME").as_deref(),
         env::var_os("HOME").as_deref(),
@@ -396,6 +397,21 @@ pub async fn run() -> io::Result<()> {
             let live = live.clone();
             move |idle| live.set_idle(idle)
         }))
+        // The quit prompt names the llama-server when quitting would cut a
+        // reply to another lazarobox that uses it.
+        .with_shared_check(Box::new({
+            let live = live.clone();
+            move || {
+                let (live, tx) = (live.clone(), shared_tx.clone());
+                tokio::spawn(async move {
+                    if let Some(managed) = live.managed()
+                        && managed.answering_others().await
+                    {
+                        let _ = tx.send(()).await;
+                    }
+                });
+            }
+        }))
         // A save that turns the managed llama-server on: the next turns and
         // detections use it at once; the one it replaces stops for good.
         .with_manager(Box::new({
@@ -503,6 +519,7 @@ pub async fn run() -> io::Result<()> {
         run: run_rx,
         notified: notified_rx,
         managed: managed_rx,
+        shared: shared_rx,
     };
     // The first pane is spawned before the UI starts: a failure is fatal.
     panes.spawn_pane(id, &spec)?;
@@ -666,6 +683,8 @@ struct Inbox {
     notified: mpsc::Receiver<String>,
     /// How the start of a llama-server the menu turned on went.
     managed: mpsc::Receiver<Result<(), String>>,
+    /// The llama-server lazarobox started is answering another lazarobox.
+    shared: mpsc::Receiver<()>,
 }
 
 async fn event_loop(
@@ -711,6 +730,7 @@ async fn run_loop(
         run: mut run_rx,
         notified: mut notified_rx,
         managed: mut managed_rx,
+        shared: mut shared_rx,
     } = inbox;
     let theme = LazaroboxTheme::default();
     let mut events = EventStream::new();
@@ -815,6 +835,11 @@ async fn run_loop(
             }
             Some(started) = managed_rx.recv() => {
                 if step(&mut app, AppEvent::ManagedStarted(started), panes) {
+                    return Ok(());
+                }
+            }
+            Some(()) = shared_rx.recv() => {
+                if step(&mut app, AppEvent::ServerAnswersOthers, panes) {
                     return Ok(());
                 }
             }
@@ -982,6 +1007,10 @@ struct Panes {
     /// Sets how long the managed llama-server may sit unused. A no-op unless
     /// `with_idle` installs one.
     set_idle: Box<IdleFn>,
+    /// Asks, in the background, whether the llama-server lazarobox started is
+    /// answering another lazarobox; a yes comes back on its channel. A no-op
+    /// unless `with_shared_check` installs one.
+    check_shared: Box<dyn FnMut()>,
     /// Starts one AI engine detection; the answer arrives on the AI channel.
     /// A no-op unless `with_detector` installs the production one.
     detect: Box<dyn FnMut(bool)>,
@@ -1025,6 +1054,7 @@ impl Panes {
             test_send: Box::new(|_, _, _| {}),
             manage: Box::new(|_, _| {}),
             set_idle: Box::new(|_| {}),
+            check_shared: Box::new(|| {}),
             detect: Box::new(|_| {}),
             check_update: Box::new(|| {}),
             prepare: Box::new(|_, _, _, _| {}),
@@ -1147,6 +1177,13 @@ impl Panes {
     /// Sets what changes the idle time of the managed llama-server.
     fn with_idle(mut self, set_idle: Box<IdleFn>) -> Self {
         self.set_idle = set_idle;
+        self
+    }
+
+    /// Sets what asks whether the managed llama-server answers another
+    /// lazarobox.
+    fn with_shared_check(mut self, check_shared: Box<dyn FnMut()>) -> Self {
+        self.check_shared = check_shared;
         self
     }
 
@@ -1398,6 +1435,7 @@ impl Panes {
                         .extend_from_slice(if on { CAPTURE_ON } else { CAPTURE_OFF });
                 }
                 Effect::ListRunning => {
+                    (self.check_shared)();
                     let jobs = (self.list_running)(&self.sessions);
                     feedback.push(AppEvent::StillRunning(
                         jobs.into_iter().map(|job| job.command).collect(),
@@ -2423,6 +2461,28 @@ mod tests {
             panes.apply(vec![Effect::ManagedIdle(thirty), Effect::ManagedIdle(None)]);
         assert_eq!((outcome, feedback), (Outcome::Continue, vec![]));
         assert_eq!(*set.lock().unwrap(), [thirty, None]);
+    }
+
+    // Spec S13 (managed-llama-server-followups): asking to quit also asks
+    // whether the managed llama-server answers another lazarobox.
+    #[test]
+    fn listing_what_runs_also_asks_about_the_shared_llama_server() {
+        let (tx, _rx) = mpsc::channel(PTY_CHANNEL);
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut panes = Panes::new(tx, Box::new(|_, _| Err(io::Error::other("no spawn"))))
+            .with_lister(|_: &[jobs::Session]| Vec::new())
+            .with_shared_check(Box::new({
+                let asked = Arc::clone(&asked);
+                move || {
+                    asked.fetch_add(1, Ordering::SeqCst);
+                }
+            }));
+        let (outcome, feedback) = panes.apply(vec![Effect::ListRunning]);
+        assert_eq!(
+            (outcome, feedback),
+            (Outcome::Continue, vec![AppEvent::StillRunning(Vec::new())])
+        );
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -80,12 +80,17 @@ Before it starts the managed llama-server, once the program is found, lazarobox 
 - THEN llama-server starts
 
 ### Requirement: An idle managed llama-server stops
-The managed llama-server MUST stop once no llamacpp turn has used it for the idle time (`[ai.servers.llamacpp] idle_minutes`, default 15; 0 never stops it), checked at least every 30 s, and the next llamacpp turn MUST start it again. A turn in progress MUST keep it running; the idle time MUST count from the end of the last turn, or from the start of the server. A new idle time saved from the menu MUST apply at once, with no restart.
+The managed llama-server MUST stop once no llamacpp turn has used it for the idle time (`[ai.servers.llamacpp] idle_minutes`, default 15; 0 never stops it), checked at least every 30 s, and the next llamacpp turn MUST start it again. A turn in progress MUST keep it running, and so MUST a request it answers that is none of this lazarobox's turns (another lazarobox that uses it, as `GET /slots` says); the idle time MUST count from the end of the last turn, from the start of the server, or from the last check that saw such a request. A new idle time saved from the menu MUST apply at once, with no restart.
 
 #### Scenario: Idle [auto]
 - GIVEN a running managed server that no turn used for the idle time
 - WHEN the idle check runs
 - THEN the server is stopped, and the next llamacpp turn starts it again
+
+#### Scenario: Another lazarobox is answered [auto]
+- GIVEN a server past its idle time whose `/slots` shows a slot processing and no turn of this lazarobox
+- WHEN the idle check runs
+- THEN the server keeps running, and it stops at a later check once nothing is processing and the idle time passed again
 
 #### Scenario: A long answer [auto]
 - GIVEN a turn still streaming past the idle time

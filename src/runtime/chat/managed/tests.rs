@@ -67,6 +67,8 @@ impl Lab {
             probe,
             wait,
         )
+        // Never the real `/slots`: a lazarobox of the user may run on the port.
+        .with_slots(slots(None))
     }
 
     fn starts(&self) -> Vec<String> {
@@ -92,6 +94,11 @@ fn answers(seen: Seen) -> Probe {
         let seen = seen.clone();
         Box::pin(async move { seen })
     })
+}
+
+/// `answering` requests on every port.
+fn slots(answering: Option<usize>) -> Slots {
+    Arc::new(move |_| Box::pin(async move { answering }))
 }
 
 /// What `on` says each port shows, read when it is probed.
@@ -809,4 +816,90 @@ async fn quit_before_the_old_server_is_retired_leaves_nothing_running() {
 /// Gone or a zombie waiting to be reaped: either way no longer running.
 fn dead(pid: u32) -> bool {
     matches!(process_state(pid as libc::pid_t), None | Some('Z'))
+}
+
+/// A started server whose `/slots` says it answers `answering` requests.
+async fn shared_lab(answering: Option<usize>) -> (Lab, Arc<Managed>) {
+    let lab = Lab::new();
+    let managed = Arc::new(
+        lab.managed("exec sleep 30", answers_once(&lab.record()), WAIT)
+            .with_slots(slots(answering)),
+    );
+    drop(managed.lease().await.expect("starts"));
+    (lab, managed)
+}
+
+// Spec S13 (managed-llama-server-followups): "avisarle cuando vaya a cerrar":
+// our server answering more requests than our turns is answering another
+// lazarobox.
+#[tokio::test]
+async fn our_server_answering_beyond_our_turns_answers_another_lazarobox() {
+    let (_lab, managed) = shared_lab(Some(1)).await;
+    assert!(managed.answering_others().await);
+    // Our own turn takes that slot.
+    let lease = managed.lease().await.expect("runs");
+    assert!(!managed.answering_others().await);
+    drop(lease);
+    managed.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_server_that_answers_nothing_or_does_not_say_answers_nobody_else() {
+    for answering in [Some(0), None] {
+        let (_lab, managed) = shared_lab(answering).await;
+        assert!(!managed.answering_others().await, "{answering:?}");
+        managed.shutdown().await;
+    }
+}
+
+// Spec S13: a server we only use is not ours to warn about.
+#[tokio::test]
+async fn a_server_we_only_use_is_never_reported() {
+    let lab = Lab::new();
+    let model = lab.model();
+    let managed = lab
+        .managed(
+            "exec sleep 30",
+            by_port(move |_| Seen::Ready(Some(model.clone()))),
+            WAIT,
+        )
+        .with_slots(slots(Some(3)));
+    assert_eq!(managed.ensure().await, Ok(()));
+    assert!(!managed.answering_others().await);
+}
+
+// Spec S13, derived from S8 ("a reply in progress is never cut"): the idle
+// stop waits while another lazarobox is answered, and the idle time counts
+// again from then.
+#[tokio::test]
+async fn the_idle_stop_waits_while_another_lazarobox_is_answered() {
+    let lab = Lab::new();
+    let answering = Arc::new(AtomicUsize::new(1));
+    let probe: Slots = {
+        let answering = Arc::clone(&answering);
+        Arc::new(move |_| {
+            let now = answering.load(Ordering::SeqCst);
+            Box::pin(async move { Some(now) })
+        })
+    };
+    let managed = Arc::new(
+        lab.managed("exec sleep 30", answers_once(&lab.record()), WAIT)
+            .with_slots(probe),
+    );
+    drop(managed.lease().await.expect("starts"));
+    let pid = managed.pid().await.expect("running");
+    assert!(!managed.stop_if_idle(IDLE, Instant::now() + IDLE * 2).await);
+    assert_eq!(managed.pid().await, Some(pid));
+    answering.store(0, Ordering::SeqCst);
+    assert!(!managed.stop_if_idle(IDLE, Instant::now() + IDLE / 2).await);
+    assert!(managed.stop_if_idle(IDLE, Instant::now() + IDLE * 2).await);
+    assert!(ends(pid).await, "the server is left");
+}
+
+// Spec S13: the slots that are processing, from `/slots`.
+#[test]
+fn processing_slots_are_counted() {
+    let body = br#"[{"id":0,"is_processing":true},{"id":1,"is_processing":false},{"id":2}]"#;
+    assert_eq!(processing(body), Some(1));
+    assert_eq!(processing(b"{}"), None);
 }

@@ -12,6 +12,10 @@ baseline.
 
 ### Added
 
+- The quit prompt names `llama-server (shared)` when the managed llama-server
+  this lazarobox started is answering another lazarobox, since quitting cuts
+  that reply; the idle stop waits for such a reply and counts the idle time from
+  it. Tabs and panes of one lazarobox share its server and never count.
 - Managed llama-server: one server per model, each on its own port (the
   configured one and the seven after it). A second lazarobox, or a
   `llama-server` you started in a terminal, serving the same model file is used
