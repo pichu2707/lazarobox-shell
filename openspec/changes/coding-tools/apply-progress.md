@@ -636,3 +636,16 @@ A fresh review found nothing critical. Six confirmed items, one commit each:
 
 Note: the W-h note above says quit only closes badged chats; superseded by item 2.
 
+
+## Batch 16: slice M5-a (docs for search and write, PR 25, branch feat/coding-tools-m5a, base feat/coding-tools-wh)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| M5a README: search, write, toggles, review keys, Ctrl+G row, threat model | done | docs(readme) |
+| M5a CHANGELOG `[Unreleased]` entries for write | done | docs(changelog) |
+
+Notes:
+- README is mostly Spanish (a few older English subsections); the new section is neutral Spanish. It sits before "Tools with Ollama" as `### Herramientas de búsqueda y escritura`; Ctrl+G row added to the chat key table; the Ollama round cap sentence now mentions 24.
+- CHANGELOG: search already ships in 0.23.0 on main (toggles, glob, grep, read_file paging), so only write goes under `## [Unreleased]` (Added, Changed). No version header, no compare links.
+- Verification: `cargo test --doc` ok (0 doc tests); no test reads README or CHANGELOG; no links added.
+- Inconsistencies: spec "Root policy" says the origin is refused only for HOME/ancestor/system/missing, design D12 and code also refuse an origin outside HOME (docs follow D12). The `closed_notice` text is `discarded N staged entries`. The `staged N` badge is shown while the turn is live and `orphan N` once it is gone (spec says orphan is for a cancelled turn only).
