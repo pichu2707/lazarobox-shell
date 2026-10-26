@@ -5,6 +5,8 @@
 
 pub mod adapters;
 pub mod approval;
+#[cfg(test)]
+mod approval_batch_tests;
 pub mod approval_rows;
 pub mod claude;
 pub mod cli;
@@ -20,6 +22,8 @@ pub mod memory;
 pub mod note;
 pub mod notify;
 pub mod prompts;
+pub mod review;
+pub mod review_view;
 pub mod store;
 pub mod stream;
 pub mod streams;
@@ -38,7 +42,10 @@ use std::{
 };
 
 use crate::core::{
-    ai::config::{ApprovalMode, Profile},
+    ai::{
+        config::{ApprovalMode, Profile},
+        tools::stage::BatchId,
+    },
     layout::PaneId,
 };
 use composer::Composer;
@@ -314,6 +321,16 @@ pub struct ChatState {
     auto_typed: u8,
     /// Consecutive grammar or policy fallbacks of `run` (D23).
     run_fallbacks: u8,
+    /// What the model has yet to hear about a user-side answer to a batch it
+    /// left behind: sent once with the next request, never stored.
+    told: Vec<String>,
+    /// The lines the turn in flight carries, until the engine produces its
+    /// first event: a turn that ends before that puts them back in `told`.
+    told_sent: Vec<String>,
+    /// What the pane says of the chat's batch, from the runtime's last poll.
+    batch_badge: Option<review::Badge>,
+    /// The orphan whose review is open: `y` applies it, `n` discards it.
+    orphan: Option<BatchId>,
 }
 
 impl ChatState {
@@ -355,6 +372,10 @@ impl ChatState {
             approval_mode: ApprovalMode::default(),
             auto_typed: 0,
             run_fallbacks: 0,
+            told: Vec::new(),
+            told_sent: Vec::new(),
+            batch_badge: None,
+            orphan: None,
         }
     }
 
@@ -415,6 +436,29 @@ impl ChatState {
     /// Whether the runtime may hold a tool session for this chat.
     pub fn tool_session(&self) -> bool {
         self.tool_session
+    }
+
+    /// The badge for the chat's batch, counts only.
+    pub fn batch_badge(&self) -> Option<review::Badge> {
+        self.batch_badge
+    }
+
+    pub fn set_batch_badge(&mut self, badge: Option<review::Badge>) {
+        self.batch_badge = badge;
+    }
+
+    /// The orphan whose review is open.
+    pub fn orphan(&self) -> Option<BatchId> {
+        self.orphan
+    }
+
+    pub fn set_orphan(&mut self, id: Option<BatchId>) {
+        self.orphan = id;
+    }
+
+    /// Queues a line for the model's next request (counts and paths only).
+    pub fn tell(&mut self, line: String) {
+        self.told.push(line);
     }
 
     pub fn set_tool_session(&mut self, on: bool) {
@@ -753,13 +797,20 @@ impl ChatState {
         self.request_engine = engine.clone();
         self.generation += 1;
         self.scroll = Scroll::Follow;
+        let told = std::mem::take(&mut self.told);
+        self.told_sent.clone_from(&told);
+        let system = std::iter::once(system)
+            .chain(told.iter().map(String::as_str))
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
         SendOutcome::Sent {
             turn: self.turn,
             request: ChatRequest {
                 families: crate::core::ai::tools::registry::FamilySet::LEGACY,
                 engine: engine.clone(),
                 model: model.clone(),
-                system: system.to_owned(),
+                system,
                 memory,
                 tools: Tools::Off,
                 messages: context.messages,
@@ -809,6 +860,13 @@ impl ChatState {
         }
         if !matches!(event, StreamEvent::ThinkingDelta(_)) {
             self.generation += 1;
+        }
+        // The engine answered: the model has heard the lines of the request.
+        if !matches!(
+            event,
+            StreamEvent::Slow | StreamEvent::Notice(_) | StreamEvent::Error(_)
+        ) {
+            self.told_sent.clear();
         }
         match event {
             StreamEvent::Slow => {
@@ -976,6 +1034,13 @@ impl ChatState {
     /// Ends the turn: the partial answer, if any, gets `status`, and an
     /// optional system line is added.
     fn finish(&mut self, status: MsgStatus, line: Option<String>, now: Instant) {
+        // Ended before any event: the lines did not get through, so the next
+        // request carries them again, ahead of any newer one.
+        if !self.told_sent.is_empty() {
+            let mut lines = std::mem::take(&mut self.told_sent);
+            lines.append(&mut self.told);
+            self.told = lines;
+        }
         self.collapse_reasoning(now);
         self.settle_tool_rows();
         // Only the answer text is saved: reasoning is not a message, and a

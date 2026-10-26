@@ -175,7 +175,10 @@ fn a_resume_that_writes_nothing_ends_nothing() {
     assert_eq!(end_of(&effects), Vec::new(), "{effects:?}");
     let mut b = resumed_chat(Some((STORED_SESSION, STORED_PROJECT)));
     press(&mut b, "q");
-    assert_eq!(b.update(key('y')), vec![Effect::Quit]);
+    assert_eq!(
+        b.update(key('y')),
+        vec![Effect::BatchClose(id2()), Effect::Quit]
+    );
 }
 
 // Pane close, tab close and quit end the stored session once, with the titles

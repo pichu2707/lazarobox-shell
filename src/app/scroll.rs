@@ -2,6 +2,7 @@
 //! in the statusline.
 
 use super::*;
+use crate::core::ai::chat::review_view::Move;
 use crate::core::mouse::{PaneFacts, WHEEL_STEP, WheelAction, WheelDir, route_wheel};
 use ratatui::crossterm::event::MouseEventKind;
 
@@ -82,6 +83,16 @@ impl App {
         else {
             return Vec::new();
         };
+        // A review covers the pane: the wheel reads it, nothing is hidden
+        // under it to scroll and no other mouse event reaches it.
+        if self.batch_pending(id) {
+            let by = match dir {
+                WheelDir::Up => Move::Up,
+                WheelDir::Down => Move::Down,
+            };
+            self.scroll_review(id, by);
+            return Vec::new();
+        }
         let (col, row) = (mouse.column - rect.x, mouse.row - rect.y);
         let Some(facts) = self.wheel_facts(id) else {
             return Vec::new();

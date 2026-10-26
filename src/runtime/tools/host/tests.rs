@@ -393,7 +393,7 @@ async fn an_auto_typed_run_names_the_pane_in_its_result_row() {
 }
 
 /// Answers with the report of a run the app made.
-struct Ran(RunReport);
+pub(super) struct Ran(pub(super) RunReport);
 
 impl Approver for Ran {
     fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
@@ -1151,4 +1151,16 @@ mod answered {
             .count();
         assert_eq!(calls, 0, "the read is the only call of the turn");
     }
+}
+
+/// A poll that finds the store held by an apply says so with `None`, so the
+/// pane keeps its badge instead of losing it for one tick.
+#[test]
+fn a_contended_badge_poll_answers_none_and_a_free_one_answers() {
+    let (_dir, _home, host) = fixture();
+    assert_eq!(host.badges(|_| false), Some(Default::default()));
+    let held = host.stages.lock().unwrap();
+    assert_eq!(host.badges(|_| false), None, "the store is held");
+    drop(held);
+    assert!(host.badges(|_| false).is_some());
 }
