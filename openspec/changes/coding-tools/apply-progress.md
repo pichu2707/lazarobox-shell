@@ -583,3 +583,15 @@ About 295 production lines (`host/orphan.rs` 84, `app.rs` ~28, `app/review.rs` ~
 ### Checks (W-g)
 
 `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib` (5776), `cargo +1.88 check --all-targets` green; no `.snap.new`.
+
+### W-g review round
+
+Fresh review found no critical issues; confirmed fixes, strict TDD:
+
+- A: the early return on `Answer::Ran` leaked a Proposed orphan (RED: `a_report_answering_a_batch_denies_it_and_closes_the_batch`, staged 1). `Sealed::resumed()` clears `keep` as soon as the wait resumes, so `keep` only survives a drop by cancellation and no explicit return can leak. `RAN_ENDED` for `ProposeBatch` is a discard (`a_ran_ended_answer_discards_the_batch`).
+- B: `ToolHost::apply_batch(id, turn_live)` refuses a live turn (`LIVE`) and a non-reviewable doc (`TOO_LARGE`), writing nothing and keeping the batch. `Chats::apply_batch` derives `turn_live` from the pane's task.
+- C: `ApplyResult::told()` holds fixed templates with counts only (no paths); unit test over every variant. Lives in `apply.rs`, so `orphan.rs` still names no `apply` module (audit).
+- D: implemented (about 17 production lines). `ChatState.told_sent` keeps what the request in flight carries; any engine event other than Slow/Notice/Error clears it; `finish` without that puts it back ahead of newer lines.
+- E: drift leaves `told` None and the batch Proposed (`a_drifted_orphan_apply_leaves_the_batch_proposed_and_tells_nothing`).
+- Spec notes added to code-write: accepted UI cost of the Stages lock vs. an in-flight W-f apply (50 entries, 1 MiB).
+
