@@ -547,6 +547,80 @@ async fn a_denied_cloud_edit_stages_nothing_and_a_denial_is_not_remembered() {
     assert_eq!(w.staged(), 0);
 }
 
+// A path the ask could not show as it is opened is refused before any ask: the
+// user never approves a path that differs from the one that is used.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cloud_edit_of_an_unshowable_path_is_refused_without_an_ask() {
+    let w = world();
+    let approver = Script::new(Decision::Sent);
+    let (d, _rx) = w.cloud(approver.clone());
+    for path in ["b\u{202e}.txt", "b\u{200b}.txt"] {
+        for _ in 0..2 {
+            let out = d.call(edit(path, "foo", "x")).await;
+            assert!(out.is_error && out.text == UNSHOWABLE, "{out:?}");
+        }
+    }
+    // Nothing was remembered either: the refusal repeats and nothing asks.
+    assert!(approver.asks().is_empty());
+    assert_eq!(w.staged(), 0);
+}
+
+// Spelling does not matter: the key is the path as `display_target` resolves
+// it. A read records into `allowed` like an edit; a read never consults it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn different_spellings_of_one_path_share_a_single_cloud_ask() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "foo bar baz").unwrap();
+    std::fs::create_dir_all(w.proj.join("sub")).unwrap();
+    let approver = Script::new(Decision::Sent);
+    let (d, _rx) = w.cloud(approver.clone());
+    assert!(!d.call(edit("b.txt", "foo", "1")).await.is_error);
+    for (path, old) in [
+        ("./b.txt", "bar"),
+        ("sub/../b.txt", "baz"),
+        ("~/proj/b.txt", "1"),
+    ] {
+        // The staging path may refuse these spellings; only the asks count.
+        d.call(edit(path, old, "2")).await;
+    }
+    assert_eq!(approver.asks().len(), 1);
+
+    w.host.stages.lock().unwrap().discard_key(key());
+    // A read of one spelling allows an edit of another.
+    let mixed = Script::new(Decision::Sent);
+    let (d2, _rx2) = w.cloud(mixed.clone());
+    assert!(!d2.call(read("./b.txt")).await.is_error);
+    assert!(!d2.call(edit("b.txt", "foo", "y")).await.is_error);
+    assert_eq!(mixed.asks().len(), 1);
+
+    w.host.stages.lock().unwrap().discard_key(key());
+    // A read does not consult `allowed`: it asks even after an allowed edit.
+    let reverse = Script::new(Decision::Sent);
+    let (d3, _rx3) = w.cloud(reverse.clone());
+    assert!(!d3.call(edit("b.txt", "foo", "z")).await.is_error);
+    assert!(!d3.call(read("b.txt")).await.is_error);
+    assert_eq!(reverse.asks().len(), 2);
+}
+
+// Only `Sent` is remembered: a busy answer (and any other non-`Sent` one)
+// leaves the next edit of the file asking again.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_busy_cloud_edit_stages_nothing_and_is_not_remembered() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "foo bar").unwrap();
+    let approver = Script::new(Decision::Busy(2));
+    let (d, _rx) = w.cloud(approver.clone());
+    for _ in 0..2 {
+        let out = d.call(edit("b.txt", "foo", "x")).await;
+        assert!(out.is_error, "{out:?}");
+    }
+    assert_eq!(approver.asks().len(), 2);
+    assert_eq!(w.staged(), 0);
+}
+
 // Spec (code-write, Propose batch; design D6/unreviewable): a batch whose diff
 // is truncated is sealed, the user can only reject it, and `Sent` never
 // applies it.
