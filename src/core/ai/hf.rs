@@ -85,6 +85,33 @@ impl Choice {
     }
 }
 
+/// What the picker shows of a repo: its commit, license and GGUF choices.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RepoFiles {
+    pub repo: Repo,
+    pub license: License,
+    pub choices: Vec<Choice>,
+}
+
+impl RepoFiles {
+    pub fn new(repo: Repo, files: &[HubFile]) -> Self {
+        RepoFiles {
+            license: license(&repo),
+            choices: choices(files),
+            repo,
+        }
+    }
+}
+
+/// A model to download: one choice of a repo at a commit.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Job {
+    pub id: String,
+    pub commit: String,
+    pub choice: Choice,
+    pub license: License,
+}
+
 /// A model's license and where to read it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct License {
@@ -366,8 +393,13 @@ pub fn tree_path(id: &str, commit: &str) -> String {
 
 /// Where a file of a repo is downloaded from.
 pub fn resolve_url(id: &str, commit: &str, path: &str) -> String {
+    format!("{HUB}{}", resolve_path(id, commit, path))
+}
+
+/// [`resolve_url`] without the host.
+pub fn resolve_path(id: &str, commit: &str, path: &str) -> String {
     let path: Vec<String> = path.split('/').map(encode).collect();
-    format!("{HUB}/{id}/resolve/{commit}/{}", path.join("/"))
+    format!("/{id}/resolve/{commit}/{}", path.join("/"))
 }
 
 /// Percent-encodes everything but the unreserved characters.
