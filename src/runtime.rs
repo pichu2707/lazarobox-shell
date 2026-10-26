@@ -44,6 +44,7 @@ pub mod tools;
 pub mod update;
 pub mod workspace;
 
+use crate::core::ai::chat::review::BatchEvent;
 use ai_detect::spawn_detection;
 use chat::Chats;
 use chat_store::StoreHandle;
@@ -1248,6 +1249,15 @@ impl Panes {
                     if let Some(chats) = self.chats.as_mut() {
                         chats.end_session(pane);
                     }
+                }
+                // One short hold of the store: the chat closed, so its batch
+                // goes, and the app hears how many entries were lost.
+                Effect::BatchClose(pane) => {
+                    let lost = self
+                        .chats
+                        .as_mut()
+                        .and_then(|chats| chats.close_batch(pane));
+                    feedback.extend(lost.map(|n| AppEvent::Batch(pane, BatchEvent::Closed(n))));
                 }
                 // Returns at once: the worker owns the queue and the timeouts.
                 Effect::Memory(cmd) => self.memory.send(cmd),
@@ -3748,6 +3758,9 @@ mod tests {
         assert!(session(&panes), "a stale decision changes nothing");
         panes.apply(vec![Effect::EndToolSession(id(1))]);
         assert!(!session(&panes));
+        // A close with no batch says nothing; the effect needs no live pane.
+        let (_, feedback) = panes.apply(vec![Effect::BatchClose(id(1))]);
+        assert!(feedback.is_empty(), "{feedback:?}");
         let rec = rec.borrow();
         for log in &rec.logs {
             let log = log.lock().unwrap();

@@ -624,3 +624,52 @@ async fn a_turn_on_ollama_closes_the_cli_session_the_pane_had() {
     assert!(chats.session(pane(1)).is_none());
     assert!(!socket.exists(), "the old socket is still there");
 }
+
+// Spec (chat-pane, Closing discards a batch): a closed chat loses its staged
+// batch and says how many entries; the disk is untouched and other chats keep
+// theirs.
+fn stager(lab: &Lab, pane: PaneId) -> Arc<dyn Dispatch> {
+    let (tx, rx) = mpsc::channel(64);
+    // Nothing reads the events of a staging call: the channel only has to stay open.
+    std::mem::forget(rx);
+    let proj = lab.home.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let mut scope = TurnScope::new(tx, crate::core::ai::tools::Locality::Local, proj);
+    scope.families = crate::core::ai::tools::registry::FamilySet::LEGACY
+        .with(crate::core::ai::tools::registry::Family::Write);
+    scope.stage_key = Some(StageKey::Pane(pane));
+    lab.host.dispatch(scope)
+}
+
+async fn stage(dispatch: &Arc<dyn Dispatch>, path: &str, content: &str) {
+    let call = crate::core::ai::tools::Call::WriteFile {
+        path: path.into(),
+        content: content.into(),
+    };
+    let out = dispatch.call(call).await;
+    assert!(!out.is_error, "{out:?}");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn closing_a_chat_discards_its_batch_and_counts_the_entries() {
+    let lab = lab();
+    let (mut chats, _rx) = tooled(&lab, idle());
+    let one = stager(&lab, pane(1));
+    stage(&one, "a.txt", "x").await;
+    stage(&one, "b.txt", "y").await;
+    let two = stager(&lab, pane(2));
+    stage(&two, "c.txt", "z").await;
+    assert_eq!(chats.close_batch(pane(1)), Some(2));
+    assert_eq!(chats.close_batch(pane(1)), None, "nothing left to discard");
+    assert!(
+        !lab.home.join("proj/a.txt").exists(),
+        "the close writes nothing"
+    );
+    assert_eq!(
+        chats.close_batch(pane(2)),
+        Some(1),
+        "the other chat kept its batch"
+    );
+    assert_eq!(chats.close_batch(pane(3)), None);
+}

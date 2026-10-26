@@ -135,12 +135,12 @@ impl Stages {
         Ok(())
     }
 
-    /// Drops whatever `key` holds (a pane close or an app quit). Whether
-    /// something worth a notice was dropped: an empty batch is no loss.
-    pub fn discard_key(&mut self, key: StageKey) -> bool {
-        self.batches
-            .remove(&key)
-            .is_some_and(|batch| !batch.entries().is_empty())
+    /// Drops whatever `key` holds (a pane close or an app quit). How many
+    /// entries were lost; `None` when nothing worth a notice was: an empty
+    /// batch is no loss.
+    pub fn discard_key(&mut self, key: StageKey) -> Option<usize> {
+        let lost = self.batches.remove(&key)?.entries().len();
+        (lost > 0).then_some(lost)
     }
 
     /// The live batch with exactly this id.
@@ -372,11 +372,16 @@ mod tests {
     #[test]
     fn a_pane_close_discards_the_batch_and_says_whether_there_was_one() {
         let mut stages = Stages::default();
-        assert!(!stages.discard_key(key(1)));
+        assert_eq!(stages.discard_key(key(1)), None);
         stages.stage(key(1)).unwrap();
-        assert!(!stages.discard_key(key(1)), "an empty batch is no loss");
+        assert_eq!(
+            stages.discard_key(key(1)),
+            None,
+            "an empty batch is no loss"
+        );
         let id = put(&mut stages, key(1), "a.txt");
-        assert!(stages.discard_key(key(1)));
+        put(&mut stages, key(1), "b.txt");
+        assert_eq!(stages.discard_key(key(1)), Some(2));
         assert!(stages.batch(key(1)).is_none());
         assert_eq!(stages.discard(id), Err(StageError::Stale));
     }

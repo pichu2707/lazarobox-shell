@@ -862,6 +862,16 @@ impl Chats {
         self.tooling.as_ref()?.started.get(&pane)
     }
 
+    /// Discards the batch `pane` holds because the chat closed: how many
+    /// entries were lost, `None` when there was nothing worth a notice. Unlike
+    /// [`Chats::cancel`], which leaves a batch as an orphan for the user.
+    pub fn close_batch(&mut self, pane: PaneId) -> Option<usize> {
+        self.tooling
+            .as_ref()?
+            .host
+            .close_batch(StageKey::Pane(pane))
+    }
+
     /// Stops the turn of `pane`, if any. Returns at once.
     pub fn cancel(&mut self, pane: PaneId) {
         if let Some(task) = self.turns.remove(&pane) {

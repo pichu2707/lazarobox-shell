@@ -15,6 +15,7 @@ use crate::core::{
             engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, StreamEvent},
             notify::{Ended, body, plays_sound, should_notify},
             prompts::Resolved,
+            review::BatchEvent,
             store::{StoreCmd, StoreReply},
         },
         config::{AiConfig, ManagedServer, NotifyMode, Profile, Task},
@@ -192,6 +193,9 @@ pub enum AppEvent {
     /// How the start of the llama-server a menu save turned on went: the
     /// error is the one reason, already safe to show.
     ManagedStarted(Result<(), String>),
+    /// What happened to the batch of chat `.0` outside a model turn (close,
+    /// orphan review, apply, discard).
+    Batch(PaneId, BatchEvent),
 }
 
 /// How the menu closed.
@@ -294,6 +298,9 @@ pub enum Effect {
     /// Close the tool session of chat `pane`: its socket goes and every call
     /// it holds is denied. Emitted with `ChatCancel` for a chat that had one.
     EndToolSession(PaneId),
+    /// Chat `.0` closed: discard its staged batch. The runtime answers with
+    /// `AppEvent::Batch(.., Closed(n))` when entries were lost.
+    BatchClose(PaneId),
     /// Ask the memory worker for something. Returns at once: the answer comes
     /// back as one `AppEvent::Memory`, or never when memory is not active.
     Memory(MemCmd),
@@ -1515,6 +1522,7 @@ impl App {
                 self.window_focused = focused;
                 Vec::new()
             }
+            AppEvent::Batch(_, event) => self.on_batch_event(event),
         };
         debug_assert_eq!(
             self.menu.is_some(),
@@ -2326,7 +2334,10 @@ impl App {
         let session = (self.panes.get(&id))
             .and_then(PaneState::chat_state)
             .is_some_and(ChatState::tool_session);
-        Self::stop_chat(id, session)
+        // A cancel keeps a batch as an orphan; a close discards it.
+        let mut effects = Self::stop_chat(id, session);
+        effects.push(Effect::BatchClose(id));
+        effects
     }
 
     fn on_copy_key(&mut self, mut state: CopyState, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
@@ -7608,9 +7619,22 @@ mod app_tests {
                 vec![
                     Effect::ResizePty(PaneId::FIRST, sized(24, 80)),
                     Effect::ChatCancel(chat_id()),
+                    Effect::BatchClose(chat_id()),
                 ]
             );
             assert_eq!(a.focused(), PaneId::FIRST);
+        }
+
+        // Spec (chat-pane, Closing discards a batch): the notice names the
+        // entries the close discarded.
+        #[test]
+        fn a_closed_chat_that_lost_a_batch_shows_a_notice_with_the_count() {
+            use crate::core::ai::chat::review::BatchEvent;
+            let mut a = launched(80, 25);
+            a.update(AppEvent::Batch(chat_id(), BatchEvent::Closed(2)));
+            assert_eq!(a.notice(), Some("discarded 2 staged entries"));
+            a.update(AppEvent::Batch(chat_id(), BatchEvent::Closed(1)));
+            assert_eq!(a.notice(), Some("discarded 1 staged entry"));
         }
 
         #[test]

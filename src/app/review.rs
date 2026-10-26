@@ -15,11 +15,24 @@ use super::{
 use crate::core::ai::chat::{
     approval::Reply,
     engine::Decision,
-    review::{BatchReview, TOO_LARGE},
+    review::{BatchEvent, BatchReview, TOO_LARGE, closed_notice},
     review_view::{Move, ReviewView},
 };
 
 impl App {
+    /// What the runtime reports about a batch outside a model turn. A closed
+    /// chat and an answered orphan only show a line; the orphan review view
+    /// opens from the event in W-h.
+    pub(super) fn on_batch_event(&mut self, event: BatchEvent) -> Vec<Effect> {
+        match event {
+            BatchEvent::Closed(entries) => self.notice = Some(closed_notice(entries)),
+            BatchEvent::Done(line) => self.notice = Some(line),
+            BatchEvent::Review(..) => {}
+        }
+        self.dirty = true;
+        Vec::new()
+    }
+
     /// Whether chat `id` has a batch under review.
     pub(super) fn batch_pending(&self, id: PaneId) -> bool {
         self.panes

@@ -17,12 +17,15 @@
 use std::fmt;
 use std::ops::Range;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use crate::core::ai::chat::wrap::{clusters, expand_tabs, row_end, text_width};
 use crate::core::ai::tools::diff::{self, Diff, Kind, escape};
-use crate::core::ai::tools::stage::{Batch, Entry};
+use crate::core::ai::tools::stage::{Batch, BatchId, Entry};
 
 /// What a line of the review is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -221,6 +224,24 @@ impl BatchReview {
             self.doc.files, self.doc.added, self.doc.removed
         )
     }
+}
+
+/// What the runtime reports about a chat's batch outside a model turn. The
+/// review view is only held for the user: nothing here goes to the model.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum BatchEvent {
+    /// The chat closed and its batch of this many entries was discarded.
+    Closed(usize),
+    /// An orphan, sealed and ready for the user to review and answer.
+    Review(BatchId, Arc<BatchReview>),
+    /// The user applied or discarded an orphan: the line to show.
+    Done(String),
+}
+
+/// The notice of a close that discarded `entries` staged entries.
+pub fn closed_notice(entries: usize) -> String {
+    let s = if entries == 1 { "y" } else { "ies" };
+    format!("discarded {entries} staged entr{s}")
 }
 
 /// The answer to the model for a batch the user could not review: nothing was
