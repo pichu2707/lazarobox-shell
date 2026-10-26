@@ -833,3 +833,11 @@ Notes:
 - Deviations: pathspec is `:(exclude,glob,icase)` (spec says `exclude,glob`) so a tracked `.ENV` is excluded like the case-insensitive path guard; `.env` and `.env.*` are added to SECRET_FILES because the guard treats env names separately. `git_diff`/`git_log` path is `:(literal)` and checked (relative, no `..`, no `.git`, no secret component). `git log` with a path appends excludes too. Default log count 20 (design leaves it open).
 - Pure helpers also in the module: `env(read)`, `check_message` (non-empty, <= 4096 bytes, no control except `\n`/`\t`, no bidi), `render_status`, `render_log`, status entries cap 200.
 - Checks: fmt, clippy -D warnings, `cargo test --lib` (5828), `cargo +1.88 check --all-targets` green.
+
+### G-a review round (feat/coding-tools-ga; commits 7b38111, 54ed578)
+- C1: `add_argv` appends `excludes()` (a folder or `.` no longer stages secrets); temp-repo test (skips without git) pins it.
+- Hardening: `--no-show-signature`, diff `--ignore-submodules=all`, `-c gpg.program=false`, env `GIT_ATTR_NOSYSTEM`, `GIT_CONFIG_SYSTEM=/dev/null`, `GIT_CONFIG_GLOBAL=/dev/null`; log always has `--`; commit `--cleanup=whitespace`.
+- User decisions: `GitDir` (absolute clean path) is a parameter of every builder and pins `core.hooksPath=<git-dir>/hooks`; `hooks_notice(dir, configured)` for the commit review; `Identity` (name, email) gives `-c user.name/user.email`, validated. G-b: read the identity from the global config in the preflight, read `core.hooksPath`, resolve the git dir.
+- Parse/render: rename orig record always consumed (no forged entry); entries with a secret path/old path/secret folder dropped; `tidy` replaces control/format chars with `?` in rendered text. Secret folders (SECRET_DIRS, CREDENTIAL_DIRS) excluded as `**/<dir>/**` and refused by `check`. `.claude/` is in CREDENTIAL_DIRS, so a repo's own `.claude/` is excluded from add/diff/status.
+- TDD: tests first for the review items (7 RED), then the identity/hooks tests (RED = compile errors), then code. Spec and design updated.
+- Production lines now about 567 (with docs and blanks) vs 390 before: over 500.
