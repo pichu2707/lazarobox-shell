@@ -30,6 +30,7 @@ mod config_write;
 pub mod desktop;
 pub mod engram;
 pub mod gguf;
+pub mod hf;
 pub mod jail;
 pub mod jobs;
 pub mod login_path;
