@@ -57,6 +57,11 @@ impl Sealed {
     pub(super) fn announced(&mut self) {
         self.keep = true;
     }
+
+    /// The wait ended with an answer, not with a drop: nothing is left open.
+    pub(super) fn resumed(&mut self) {
+        self.keep = false;
+    }
 }
 
 impl Drop for Sealed {

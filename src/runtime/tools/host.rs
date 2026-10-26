@@ -415,6 +415,12 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 Some(pending) => pending.await,
                 None => Decision::Sent.into(),
             };
+            // Resumed, so not dropped by a cancel: from here the batch is
+            // kept only where `answered` says so, and no early return below
+            // can leave an orphan.
+            if let Some(batch) = sealed.as_mut() {
+                batch.resumed();
+            }
             let decision = match answer {
                 Answer::Decided(decision) => {
                     if let (Some(shown), Decision::Sent) = (approves, decision) {

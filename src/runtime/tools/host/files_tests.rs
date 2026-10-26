@@ -19,6 +19,7 @@ use crate::core::{
         },
         tools::{
             paths::REFUSED,
+            report::RunReport,
             registry::{Family, FamilySet},
             stage::StageKey,
         },
@@ -431,6 +432,41 @@ async fn an_ended_turn_keeps_its_batch_but_a_user_no_discards_it() {
     assert!(!d.call(write("a.txt", "hello")).await.is_error);
     assert!(d.call(Call::ProposeBatch).await.is_error);
     assert_eq!(w.staged(), 0, "a user's no closes the batch");
+}
+
+// A run report is no answer to a batch: the call is denied, and the batch is
+// closed, not left as an orphan (only a call dropped while it waits is one).
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_report_answering_a_batch_denies_it_and_closes_the_batch() {
+    use crate::core::ai::tools::settle::End;
+    let w = world();
+    let report = RunReport {
+        number: 1,
+        end: End::Settled,
+        cwd: None,
+        cd_target: None,
+        output: None,
+    };
+    let (d, _rx) = w.turn(Arc::new(super::tests::Ran(report)));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(out.is_error, "{out:?}");
+    assert_eq!(w.staged(), 0, "a denied batch is not an orphan");
+    assert!(w.host.review_batch(key(), false).is_none());
+}
+
+// The command was typed but the turn ended: that is no user's no, but it is
+// no orphan either: the batch of a call that ran something is closed.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_ran_ended_answer_discards_the_batch() {
+    use crate::runtime::tools::approver::RAN_ENDED;
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Denied(RAN_ENDED)));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    assert!(d.call(Call::ProposeBatch).await.is_error);
+    assert_eq!(w.staged(), 0);
 }
 
 // A batch the turn never proposed is a staging orphan: reviewing it seals it.

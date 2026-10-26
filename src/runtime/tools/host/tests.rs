@@ -393,7 +393,7 @@ async fn an_auto_typed_run_names_the_pane_in_its_result_row() {
 }
 
 /// Answers with the report of a run the app made.
-struct Ran(RunReport);
+pub(super) struct Ran(pub(super) RunReport);
 
 impl Approver for Ran {
     fn ask(&self, _: CallId, _: &ApprovalAsk) -> BoxFuture<'static, Answer> {
