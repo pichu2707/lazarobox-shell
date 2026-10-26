@@ -2509,3 +2509,38 @@ fn retain_existing_drops_a_missing_exception() {
     assert!(kept.rw_except.is_empty());
     assert_eq!(spec.retain_existing(|_| true).rw_except.len(), 1);
 }
+
+#[test]
+fn every_write_exception_is_a_strict_descendant_of_an_rw_folder() {
+    let spec = jail_spec_for(Os::Macos, &standalone_codex(), &identity).unwrap();
+    assert_eq!(except_outside_rw(&spec), None);
+    let bad = JailSpec {
+        rw: paths(&["/Users/u/.codex"]),
+        rw_except: paths(&["/Users/u/.codex", "/Users/u/.codex2/packages"]),
+        ..JailSpec::default()
+    };
+    // The folder itself is not a descendant, and a sibling prefix is not either.
+    assert_eq!(except_outside_rw(&bad), Some(p("/Users/u/.codex")));
+    let bad = JailSpec {
+        rw_except: paths(&["/x"]),
+        ..JailSpec::default()
+    };
+    assert_eq!(except_outside_rw(&bad), Some(p("/x")));
+}
+
+#[test]
+fn a_helper_under_packages_does_not_open_the_exception_for_a_program_elsewhere() {
+    // The program is in the state dir outside packages (refused); a helper in
+    // packages must not turn the exception on and excuse nothing else.
+    let mut l = layout(Cli::Codex, "/Users/u/.codex/bin/codex", None);
+    l.home = p("/Users/u");
+    l.helpers = vec![p("/Users/u/.codex/packages/x/rg")];
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+    // A program elsewhere with a helper in packages: the helper is refused.
+    let mut l = nvm_codex();
+    l.home = p("/Users/u");
+    l.helpers = vec![p("/Users/u/.codex/packages/x/rg")];
+    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+}

@@ -1139,14 +1139,11 @@ pub fn jail_spec_for(
     // Codex's standalone installer keeps the binary inside the state dir. That
     // folder stays readable and executable, but never writable: a CLI that
     // could rewrite its own binary would escape on the next run. Only added
-    // when a program really lives there, so other layouts keep the same
+    // when the CLI itself (not a helper) lives there, so other layouts keep the same
     // profile, and only on macOS, the one system that can carve it out.
     if os == Os::Macos
         && let Some(packages) = packages
-        && spec
-            .rx
-            .iter()
-            .any(|x| fold(x, os).starts_with(fold(&packages, os)))
+        && fold(&layout.binary, os).starts_with(fold(&packages, os))
     {
         push_unique(&mut spec.rw_except, packages);
     }
@@ -1184,12 +1181,23 @@ pub fn jail_spec_for(
         }
         push_unique(&mut spec.rw_files, shim.socket.clone());
     }
+    debug_assert_eq!(except_outside_rw(&spec), None);
     if os == Os::Macos
         && let Some((rx, rw)) = writable_executable(&spec, os)
     {
         return Err(SpecError::Overlap { rx, rw });
     }
     Ok(spec)
+}
+
+/// The first write exception that is not a strict descendant of an `rw`
+/// folder. The profile pins the folders above an exception, and that only makes
+/// sense when an `rw` folder holds it.
+pub(crate) fn except_outside_rw(spec: &JailSpec) -> Option<PathBuf> {
+    spec.rw_except
+        .iter()
+        .find(|e| !spec.rw.iter().any(|w| *e != w && e.starts_with(w)))
+        .cloned()
 }
 
 /// The first execute path that is equal to, under or over a writable one,

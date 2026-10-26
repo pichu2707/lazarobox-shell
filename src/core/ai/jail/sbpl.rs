@@ -115,17 +115,39 @@ fn check(path: &Path) -> Result<(), SbplError> {
     Ok(())
 }
 
+/// The folders to pin against rename and removal: each `rw` folder that holds
+/// a write exception, and every folder between it and the exception, deepest
+/// first, without repeats.
+fn pinned_dirs(spec: &JailSpec) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for except in &spec.rw_except {
+        for rw in spec.rw.iter().filter(|rw| except.starts_with(rw)) {
+            for dir in except.ancestors().skip(1) {
+                if !dir.starts_with(rw) {
+                    break;
+                }
+                if !out.iter().any(|d| d == dir) {
+                    out.push(dir.to_path_buf());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Renders the profile for a spec. Folders (`rx`, `ro`, `rw`) match by
 /// `subpath`, which on a file matches just that file; `ro_files` and
 /// `rw_files` match by `literal`. `rw_except` folders are denied writing after
 /// all the allows.
 pub fn render(spec: &JailSpec) -> Result<Profile, SbplError> {
+    let pinned = pinned_dirs(spec);
     let count = spec.rx.len()
         + spec.ro.len()
         + spec.rw.len()
         + spec.ro_files.len()
         + spec.rw_files.len()
-        + spec.rw_except.len();
+        + spec.rw_except.len()
+        + pinned.len();
     if count > MAX_PARAMS {
         return Err(SbplError::TooMany(count));
     }
@@ -157,6 +179,16 @@ pub fn render(spec: &JailSpec) -> Result<Profile, SbplError> {
         check(path)?;
         let key = format!("WX_{n}");
         text.push_str(&format!("(deny file-write* (subpath (param \"{key}\")))\n"));
+        params.push((key, path.clone()));
+    }
+    // A rename is checked by name only, so the CLI could move the folder that
+    // holds an exception away and put a planted one in its place, never
+    // meeting the deny above. Pin the name of every folder from the rw one
+    // down to the exception's parent (a literal: its children stay writable).
+    for (n, path) in pinned.iter().enumerate() {
+        check(path)?;
+        let key = format!("WXP_{n}");
+        text.push_str(&format!("(deny file-write* (literal (param \"{key}\")))\n"));
         params.push((key, path.clone()));
     }
     // The shim socket is an `rw_files` literal; this is the only unix socket
