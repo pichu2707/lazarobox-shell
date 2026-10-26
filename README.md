@@ -234,6 +234,7 @@ Teclas dentro del chat:
 | `Ctrl+R`               | Muestra u oculta el razonamiento del modelo         |
 | `Ctrl+Y` / `Ctrl+B`    | Copia la última respuesta / su último bloque de código (OSC 52) |
 | `PageUp` / `PageDown`  | Desplaza la conversación                            |
+| `Ctrl+G`               | Abre la revisión de un lote huérfano (insignia `orphan N · Ctrl+G`) |
 
 **Perfiles y prompts:** `profile = "analyst"` o `"programmer"` (por defecto) en `[ai]`, o la fila Profile del menú de IA, elige el _system prompt_ integrado. Puedes sustituirlo con `~/.config/lazarobox/prompts/<perfil>/<tarea>.md` (después `general.md`; máx. 16 KiB). El prompt incluye un bloque de contexto del workspace (proyecto, rama, directorio relativo, SO, shell y fecha; nunca rutas absolutas ni contenido); se desactiva con `context = false` o la fila Context del menú.
 
@@ -504,12 +505,75 @@ Every message below says why a CLI cannot be used. None of them changes what the
 | `<cli> does not know the option <flag>: this <cli> is older than lazarobox needs; update it ... and try again` / `this <cli> is older than lazarobox needs: it rejected an option; ...` | The installed CLI is too old to know an option lazarobox passes. The flag is named only when it is one lazarobox itself passes, also when the CLI reports it with its value (`--model=<name>` names `--model`, never the value); any other word is not repeated. Update the CLI the way it was installed (`claude update`, `npm i -g @anthropic-ai/claude-code`, `brew upgrade`, ...). lazarobox never drops the option: it is part of what keeps the CLI text-only. |
 | `claude <version> is too old for lazarobox (it needs 2.1.259 or newer); update it: claude update, brew upgrade claude-code, or npm i -g @anthropic-ai/claude-code@latest; then refresh from the menu (Ctrl+Space m, then r)` | The detected claude predates `--permission-prompts none` (2.1.259), so its turn is refused before anything starts. Update claude. In the engine list of the menu the row reads `available · update needed: 2.1.259+`. An unreadable version never blocks. |
 
+### Herramientas de búsqueda y escritura (`[ai.tools]`)
+
+Además de leer, un modelo puede buscar en el proyecto y proponer cambios. Cada familia tiene su interruptor en `[ai.tools]`, **todos desactivados por defecto**, y solo actúa si `enabled = true` y el motor del chat tiene las herramientas verificadas:
+
+```toml
+[ai.tools]
+enabled = true
+search = true      # glob, grep y la lectura por ventanas de read_file
+write = false      # create_dir, write_file, edit_file, propose_batch
+```
+
+La pestaña **AI** del menú muestra las filas **Search**, **Write**, **Exec**, **Git** y **Git write** (`h`/`l` para cambiar, `s` para guardar); **Write**, **Exec** y **Git write** llevan una línea de aviso (`Can change files or run code`). Guardar solo escribe esas claves y conserva el resto de `config.toml`. Con todos los interruptores desactivados, las herramientas son las de siempre. Ollama admite 24 rondas de herramientas por turno cuando alguna de estas familias está activa (8 en caso contrario).
+
+#### Búsqueda: `glob` y `grep`
+
+Con `search = true` el modelo recibe dos herramientas, que trabajan dentro de la carpeta de origen del chat:
+
+- `glob` (`pattern`, y opcionalmente `path`) lista los ficheros cuya ruta relativa casa con un patrón (`*`, `?`, `**`, `[a-z]`). Devuelve solo nombres, ordenados y con un máximo de 100. Nunca pregunta, como `list_dir`.
+- `grep` (`pattern`, y opcionalmente `path`) busca una expresión regular en el texto de los ficheros, con un motor de tiempo lineal (sin _look-around_ ni referencias hacia atrás; el patrón admite hasta 512 bytes). Devuelve `ruta:línea:texto`, con un máximo de 100 coincidencias o 20 KiB, y 200 caracteres por línea; el resultado dice cuándo se ha recortado. Con un motor en la nube (claude, codex, gemini) **pide tu `y` en cada llamada**, en cualquier modo de aprobación (`search <patrón> in <carpeta>`); con un motor local se ejecuta sin preguntar.
+- Ambas se saltan los enlaces simbólicos, `.git`, `node_modules`, `target`, `dist`, `build`, `.venv` y `__pycache__`, y los ficheros binarios, no UTF-8 o de más de 1 MiB (en `grep`). Los nombres que parecen secretos se omiten y el resultado lo dice; `grep` compara contra el texto ya censurado, así que un patrón no puede servir para sondear un secreto.
+- `read_file` admite `start_line` y `max_lines` para leer una ventana de un fichero largo, e indica dónde empieza la siguiente.
+- Si hay un lote pendiente de revisar, las tres herramientas ven también los cambios en espera, marcados con `(pending, not on disk)`. El texto de un fichero no puede imitar esa marca.
+
+#### Escritura: lotes con revisión
+
+Con `write = true` el modelo recibe cuatro herramientas. **Ninguna toca el disco** hasta que apruebas el lote:
+
+| Herramienta                    | Qué hace                                                                                       |
+| :----------------------------- | :--------------------------------------------------------------------------------------------- |
+| `create_dir` (`path`)          | Prepara una carpeta nueva.                                                                     |
+| `write_file` (`path`, `content`) | Prepara un fichero entero (hasta 32 KiB): nuevo, o uno existente pequeño que se sustituye.   |
+| `edit_file` (`path`, `old`, `new`) | Prepara el cambio de un texto que aparece exactamente una vez (`old` y `new`, hasta 16 KiB cada uno). Edita la versión preparada si la hay. |
+| `propose_batch`                | Cierra el lote y abre la revisión. Rechaza un lote vacío o de más de 50 entradas o 1 MiB (pide dividirlo). |
+
+El modelo puede preparar cambios a lo largo de varios turnos antes de proponer. Mientras un lote espera tu respuesta no admite más cambios. Un `write_file` sobre un fichero existente solo se acepta si mide hasta 64 KiB y su texto no cambia al censurar secretos; si no, el modelo debe usar `edit_file`.
+
+**La revisión.** Un lote propuesto abre una vista a panel completo dentro del chat: un fichero nuevo muestra su texto, una edición o sustitución muestra su diff y una carpeta nueva muestra su ruta. Un cambio en un fichero de construcción (`Makefile`, `build.rs`, `Cargo.toml`, `package.json`, `*.sh`, flujos de `.github/workflows`, etc.) lleva un aviso visible. La cabecera muestra cuántas líneas has visto y cuántas faltan.
+
+| Tecla                 | Acción                                                                                              |
+| :-------------------- | :-------------------------------------------------------------------------------------------------- |
+| `y`                   | Aprueba **todo** el lote. Solo actúa cuando has visto en pantalla todas las líneas (puerta de cobertura) y han pasado 800 ms desde el primer dibujo (armado). Antes, la cabecera dice `y locked` o `y in 0.4s`. |
+| `n` / `Esc`           | Rechaza **todo** el lote: no se escribe nada y el modelo recibe `denied`. También esperan los 800 ms de armado, salvo que el lote no se pueda revisar (demasiado grande), donde `n` actúa de inmediato. |
+| `Ctrl+C`              | Deniega la llamada (`cancelled`) y cancela el turno. El lote se queda como huérfano (ver abajo).    |
+| `↑` `↓` / `j` `k`, `PgUp` `PgDn`, `Home` `End`, rueda | Desplazan la revisión. Saltar con `Home`/`End` no cuenta las líneas que se saltan; solo cuenta lo que se dibuja. |
+
+Es todo o nada: no se aprueba un fichero suelto. Una línea que solo está en un panel oculto, en otra pestaña o fuera de pantalla no cuenta como vista. Si ya hay otra aprobación pendiente, `propose_batch` devuelve `denied` (`another approval is pending`).
+
+**Huérfanos.** Si cancelas el turno (o el CLI agota su tiempo) con un lote preparado o propuesto, el lote **se conserva** en el chat. El panel muestra una insignia arriba a la izquierda: ` staged 3 ` mientras el turno sigue vivo y el lote aún no se ha propuesto, y ` orphan 2 · Ctrl+G ` cuando el turno ya no existe (se estrecha a ` O2 ` si falta sitio). Con `Ctrl+G` se abre la revisión del huérfano, con las mismas reglas (cobertura, 800 ms): `y` lo aplica, `n` o `Esc` lo descarta y `Ctrl+C` solo cierra la vista. Un huérfano nunca se aplica mientras un turno de ese panel siga en curso. Al modelo se le avisa, en su siguiente turno, de que aplicaste o descartaste el lote (con cifras, sin rutas).
+
+Cerrar el panel del chat y salir de lazarobox **descartan** los lotes pendientes, con un aviso (`discarded N staged entries`). Nada se guarda: tras reiniciar no queda ningún lote.
+
+#### Modelo de amenazas de la escritura
+
+- **Nada toca el disco antes de `y`.** Preparar, buscar y proponer no crean, cambian ni borran nada; solo el paso de aplicar de un lote aprobado escribe.
+- **La raíz de escritura es la carpeta de origen del chat, siempre dentro de `$HOME`.** Se rechaza si el origen falta, es `$HOME`, un ancestro de `$HOME`, una carpeta del sistema o queda fuera de `$HOME`, y cualquier ruta que, tras resolver `..` y enlaces, salga de la raíz. También se rechaza todo lo que esté en `.git/` o `node_modules/` y los nombres de secretos (`.env`, `.npmrc`, `~/.ssh`...). Todos los rechazos devuelven el mismo texto, `path not available`, para no revelar si una ruta existe. Las lecturas de `.git/config` también se rechazan.
+- **Reglas de contenido: se rechaza, nunca se limpia.** El texto nuevo no puede tener UTF-8 inválido, caracteres de control, de dirección (_bidi_) o de ancho cero, ni finales de línea CRLF. `edit_file` rechaza un fichero que no sea UTF-8 o tenga CRLF o NUL. Límites: 32 KiB por `write_file`, 16 KiB por campo de `edit_file`, 1 MiB por fichero editado, 50 entradas y 1 MiB por lote.
+- **En motores en la nube, `edit_file` pregunta como `read_file`, una vez por fichero y turno.** Las respuestas de `old`/`diff` (existe, no existe, aparece varias veces) revelan qué contiene un fichero, así que el aviso es el mismo que el de `read_file`; si lo deniegas no se prepara nada. Un `read_file` permitido antes del mismo fichero también cubre la edición; un turno nuevo vuelve a preguntar. Un motor local nunca pregunta.
+- **El modelo no ve el diff ni la base de la edición.** Las filas del diff y el texto base solo se dibujan para ti; el modelo recibe cifras y rutas (`staged <ruta> (batch: N of 50 entries ...)`, `applied N paths`), nunca contenido del disco.
+- **Comprobación previa, diario y deshacer.** Al aprobar, lazarobox vuelve a abrir cada destino sin seguir enlaces (`openat2` con `RESOLVE_BENEATH` y `NO_SYMLINKS`) y compara su contenido con la copia de cuando se preparó. Si algo cambió (_drift_), se rechaza **todo** el lote y no se escribe nada. Después escribe cada fichero con un temporal en la misma carpeta y un renombrado atómico (sin escribir a través de enlaces simbólicos ni de ficheros con enlaces duros), y anota cada paso en un diario. Si un paso falla, deshace los anteriores en orden inverso. Si el deshacer también falla, el resultado es `partial` y lista exactamente las rutas que quedaron cambiadas, para que las revises a mano.
+- **Huérfanos y descarte.** Un lote cancelado o con tiempo agotado se conserva como huérfano y solo se aplica si lo revisas con `Ctrl+G` (con cobertura y 800 ms); no se aplica nunca con un turno del mismo panel en curso. Cerrar el panel y salir descartan el lote.
+- **Una salida por señal descarta en silencio.** Con `SIGTERM` o `SIGHUP` no se muestra el aviso de descarte, porque el lote vive solo en memoria y no se escribe nada de todas formas.
+- Solo Linux: en otras plataformas el aplicar devuelve `writes are not supported on this platform` y no escribe nada.
+
 ### Tools with Ollama
 
 Ollama no tiene un CLI que ejecute herramientas, así que lazarobox ejecuta el bucle él mismo sobre `/api/chat`: envía las herramientas en el campo `tools`, ejecuta las llamadas del modelo con el mismo registro, las mismas aprobaciones y el mismo modo (`ask`, `auto`, `run`) que los CLIs, y devuelve los resultados en una nueva petición del mismo turno. En la conversación se ven las mismas filas de herramienta que con cualquier otro motor.
 
 - Como Ollama es local, `find_dir`, `list_dir` y `read_file` se ejecutan sin preguntar; `run_in_pane` siempre espera tu `y` y nunca pulsa Enter.
-- Un turno hace como máximo 8 peticiones. Si el modelo sigue pidiendo herramientas, el turno termina con una línea de sistema y se conserva la respuesta parcial.
+- Un turno hace como máximo 8 peticiones (24 si hay activa alguna familia de `[ai.tools]`: búsqueda, escritura...). Si el modelo sigue pidiendo herramientas, el turno termina con una línea de sistema y se conserva la respuesta parcial.
 - Si el modelo no admite herramientas (el servidor responde con un 400 a la petición con `tools`), se repite una sola vez sin ellas (solo si aún no hubo ninguna ronda; después, un 400 es un error normal) y la respuesta llega como texto normal. El motor y el modelo asignados no cambian.
 - Los mensajes de herramienta viven solo en ese turno: no se guardan ni se envían en turnos posteriores. Los límites de tiempo, la sanitización y el tope de la respuesta son los de cualquier turno.
 - Solo hay herramientas si **Tools** está activado en el menú de IA (`[ai.tools] enabled`). Si lo desactivas a mitad de un turno, solo se deniegan las llamadas que piden aprobación, igual que con los CLIs.
