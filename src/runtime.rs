@@ -807,6 +807,11 @@ async fn run_loop(
                     }
                 }
                 app.wake_review();
+                // The panes wear the batches the store holds: a poll, because
+                // a model's staging has no event of its own.
+                if let Some(chats) = panes.chats.as_ref() {
+                    app.sync_batches(&chats.batch_badges());
+                }
                 if app.take_dirty() {
                     terminal.draw(|frame| ui::render(frame, &app, &theme))?;
                     app.frame_drawn();

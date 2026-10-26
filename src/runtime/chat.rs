@@ -51,7 +51,7 @@ use crate::core::{
                 Answer, CallId, ChatError, ChatRequest, Decision, StreamEvent, Tools, locality,
             },
             gemini::GeminiDecoder,
-            review::BatchEvent,
+            review::{Badge, BatchEvent},
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
         config::McpServer,
@@ -881,6 +881,17 @@ impl Chats {
         let host = &self.tooling.as_ref()?.host;
         let (id, review) = host.review_batch(StageKey::Pane(pane), live)?;
         Some(BatchEvent::Review(id, review))
+    }
+
+    /// What each chat's pane shows of its batch: staged while a turn of the
+    /// pane runs, an orphan once none does. Empty without tooling, or while
+    /// the store is busy (the next poll shows it).
+    pub fn batch_badges(&self) -> HashMap<PaneId, Badge> {
+        let Some(tooling) = self.tooling.as_ref() else {
+            return HashMap::new();
+        };
+        let live = |pane| self.turns.get(&pane).is_some_and(|t| !t.is_finished());
+        tooling.host.badges(live)
     }
 
     /// Applies an orphan the user approved; the host refuses it while a turn

@@ -559,3 +559,237 @@ fn the_scroll_badge_does_not_cover_the_review_counter() {
         .collect();
     assert!(row.contains("seen") && !row.contains("[+"), "{row:?}");
 }
+
+// The orphan review (chat-pane "Staged batch indicator", code-write "Orphan,
+// close and quit"): the badge comes from the runtime's poll, Ctrl+G asks the
+// runtime for the review, and the same view and gate answer with an id.
+
+mod orphan {
+    use super::*;
+    use crate::core::ai::{
+        chat::review::{Badge, BatchEvent},
+        tools::stage::{BatchId, StageKey},
+    };
+    use std::collections::HashMap;
+
+    fn batch_id() -> BatchId {
+        BatchId {
+            key: StageKey::Pane(id2()),
+            generation: 7,
+        }
+    }
+
+    fn badges(badge: Option<Badge>) -> HashMap<PaneId, Badge> {
+        badge.map(|b| (id2(), b)).into_iter().collect()
+    }
+
+    fn badge(a: &App) -> Option<Badge> {
+        chat(a, id2()).batch_badge()
+    }
+
+    /// A chat that holds an orphan of `n` rows, its turn over.
+    fn orphaned(n: usize) -> App {
+        let (mut a, _) = live();
+        a.update(ctrl('c'));
+        a.sync_batches(&badges(Some(Badge::Orphan(n))));
+        a
+    }
+
+    fn review_event(n: usize) -> AppEvent {
+        AppEvent::Batch(id2(), BatchEvent::Review(batch_id(), numbered(n)))
+    }
+
+    fn done(shown: &str) -> AppEvent {
+        AppEvent::Batch(
+            id2(),
+            BatchEvent::Done {
+                shown: shown.into(),
+                told: None,
+            },
+        )
+    }
+
+    #[test]
+    fn the_poll_sets_and_clears_the_badge_and_redraws_only_on_a_change() {
+        let (mut a, _) = live();
+        assert_eq!(badge(&a), None);
+        a.take_dirty();
+        a.sync_batches(&badges(Some(Badge::Staged(2))));
+        assert_eq!(badge(&a), Some(Badge::Staged(2)));
+        assert!(a.take_dirty());
+        a.sync_batches(&badges(Some(Badge::Staged(2))));
+        assert!(!a.take_dirty(), "the same poll draws nothing");
+        a.sync_batches(&badges(Some(Badge::Orphan(2))));
+        assert_eq!(badge(&a), Some(Badge::Orphan(2)));
+        a.sync_batches(&badges(None));
+        assert_eq!(badge(&a), None);
+        // A pane that is not a chat is not a place for a badge.
+        a.sync_batches(&HashMap::from([(PaneId::FIRST, Badge::Orphan(1))]));
+        assert_eq!(badge(&a), None);
+    }
+
+    #[test]
+    fn ctrl_g_asks_for_the_review_of_an_orphan_and_nothing_else() {
+        let mut a = orphaned(3);
+        assert_eq!(a.update(ctrl('g')), vec![Effect::BatchReview(id2())]);
+        // A batch the model is still staging is not the user's to review.
+        a.sync_batches(&badges(Some(Badge::Staged(3))));
+        assert_eq!(at(&mut a, 5_000, ctrl('g')), vec![]);
+        assert!(a.notice().is_some_and(|n| n.contains("orphan")));
+        a.sync_batches(&badges(None));
+        assert_eq!(at(&mut a, 10_000, ctrl('g')), vec![]);
+    }
+
+    #[test]
+    fn ctrl_g_never_types_and_a_held_one_asks_once() {
+        let mut a = orphaned(3);
+        let held = super::super::chat_live::repeat(KeyCode::Char('g'), KeyModifiers::CONTROL);
+        assert_eq!(a.update(held), vec![]);
+        assert_eq!(chat(&a, id2()).composer().text(), "");
+        assert_eq!(
+            at(&mut a, 5_000, ctrl('g')),
+            vec![Effect::BatchReview(id2())]
+        );
+    }
+
+    #[test]
+    fn the_review_event_opens_the_same_view_for_the_orphan() {
+        let mut a = orphaned(5);
+        assert_eq!(a.update(review_event(5)), vec![]);
+        assert!(review(&a).total() > 0);
+        assert_eq!(pending(&a).map(|p| p.1), Some(None), "no call waits");
+        // A second Ctrl+G is swallowed by the open view.
+        assert_eq!(a.update(ctrl('g')), vec![]);
+        paint_at(&mut a, 0);
+        assert!(chat(&a, id2()).orphan().is_some());
+    }
+
+    #[test]
+    fn y_applies_the_orphan_behind_the_same_gate() {
+        let mut a = orphaned(60);
+        a.update(review_event(60));
+        paint_at(&mut a, 0);
+        assert_eq!(at(&mut a, 60_000, key('y')), vec![], "rows unseen");
+        read_all(&mut a, 100);
+        assert_eq!(at(&mut a, ms(ARM_DELAY) - 1, key('y')), vec![]);
+        assert_eq!(
+            at(&mut a, ms(ARM_DELAY), key('y')),
+            vec![Effect::BatchApply {
+                pane: id2(),
+                id: batch_id()
+            }]
+        );
+        assert_eq!(pending(&a), None);
+        assert!(chat(&a, id2()).approvals().review().is_none());
+        assert_eq!(chat(&a, id2()).orphan(), None);
+    }
+
+    #[test]
+    fn n_and_esc_discard_the_orphan_after_the_delay() {
+        for rejecting in [key('n'), plain(KeyCode::Esc)] {
+            let mut a = orphaned(5);
+            a.update(review_event(5));
+            paint_at(&mut a, 0);
+            let wait = ms(ARM_DELAY);
+            assert_eq!(at(&mut a, wait - 1, rejecting.clone()), vec![]);
+            assert_eq!(
+                at(&mut a, wait, rejecting),
+                vec![Effect::BatchDiscard {
+                    pane: id2(),
+                    id: batch_id()
+                }]
+            );
+            assert_eq!(pending(&a), None);
+            assert_eq!(system_lines(&a), Vec::<String>::new(), "the notice speaks");
+        }
+    }
+
+    #[test]
+    fn ctrl_c_closes_the_view_and_leaves_the_orphan_alone() {
+        let mut a = orphaned(5);
+        a.update(review_event(5));
+        assert_eq!(a.update(ctrl('c')), vec![]);
+        assert_eq!(pending(&a), None);
+        assert_eq!(badge(&a), Some(Badge::Orphan(5)));
+        let again = at(&mut a, 5_000, ctrl('g'));
+        assert_eq!(again, vec![Effect::BatchReview(id2())]);
+    }
+
+    #[test]
+    fn a_review_event_is_refused_while_another_ask_waits_or_the_pane_is_gone() {
+        let (mut a, turn) = live();
+        announce_now(&mut a, turn, 1, super::super::tool_approval::run("ls"));
+        a.update(review_event(2));
+        assert!(matches!(pending(&a), Some((ApprovalAsk::Run { .. }, _))));
+        assert_eq!(chat(&a, id2()).orphan(), None);
+        assert!(a.notice().is_some());
+        // The event of a pane that is gone does nothing.
+        let gone = BatchEvent::Review(batch_id(), numbered(2));
+        a.update(AppEvent::Batch(PaneId::for_test(99), gone));
+    }
+
+    // A stale orphan id (the view went some other way) never turns the `y` of
+    // a model's batch into an apply by id.
+    #[test]
+    fn a_tool_batch_never_answers_through_a_stale_orphan_id() {
+        let (mut a, turn) = asked(2);
+        a.panes
+            .get_mut(&id2())
+            .and_then(PaneState::chat_mut)
+            .unwrap()
+            .set_orphan(Some(batch_id()));
+        assert_eq!(
+            at(&mut a, ms(ARM_DELAY), key('n')),
+            vec![decision(turn, 1, Decision::Denied(DECLINED))]
+        );
+        assert_eq!(chat(&a, id2()).orphan(), None);
+    }
+
+    // Cancel at the batch ask, the orphan badge, Ctrl+G, the review, `y`, the
+    // answer: the badge goes and the pane can stage again.
+    #[test]
+    fn cancel_at_the_ask_then_review_apply_and_the_badge_clears() {
+        let (mut a, turn) = asked_unseen(60);
+        paint_at(&mut a, 0);
+        assert_eq!(
+            at(&mut a, 0, ctrl('c')),
+            vec![
+                decision(turn, 1, Decision::Denied("cancelled")),
+                Effect::ChatCancel(id2())
+            ]
+        );
+        // The runtime kept the batch as an orphan and the poll says so.
+        a.sync_batches(&badges(Some(Badge::Orphan(1))));
+        assert_eq!(badge(&a), Some(Badge::Orphan(1)));
+        assert_eq!(a.update(ctrl('g')), vec![Effect::BatchReview(id2())]);
+        a.update(review_event(60));
+        paint_at(&mut a, 1);
+        read_all(&mut a, 100);
+        let apply = Effect::BatchApply {
+            pane: id2(),
+            id: batch_id(),
+        };
+        assert_eq!(at(&mut a, 100 + ms(ARM_DELAY), key('y')), vec![apply]);
+        a.update(done("applied 1 paths"));
+        assert_eq!(a.notice(), Some("applied 1 paths"));
+        a.sync_batches(&badges(None));
+        assert_eq!(badge(&a), None);
+        assert_eq!(a.update(ctrl('g')), vec![], "nothing left to review");
+    }
+
+    #[test]
+    fn cancel_then_discard_clears_the_badge_too() {
+        let mut a = orphaned(4);
+        a.update(ctrl('g'));
+        a.update(review_event(4));
+        paint_at(&mut a, 0);
+        let discard = Effect::BatchDiscard {
+            pane: id2(),
+            id: batch_id(),
+        };
+        assert_eq!(at(&mut a, ms(ARM_DELAY), key('n')), vec![discard]);
+        a.update(done("discarded 4 staged entries"));
+        a.sync_batches(&badges(None));
+        assert_eq!(badge(&a), None);
+    }
+}

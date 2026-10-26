@@ -154,9 +154,11 @@ impl App {
             .approvals_mut()
             .answer(approval_id, reply, Press::Press)?;
         chat.set_run_target(None);
-        // A tool call has its own result row; only the user's own action
-        // leaves a line behind.
-        if reply == Reply::Decline && approval.call().is_none() {
+        chat.set_orphan(None);
+        // A tool call has its own result row, and a batch review its notice;
+        // only the user's own action leaves a line behind.
+        let batch = matches!(approval.ask(), ApprovalAsk::Batch(_));
+        if reply == Reply::Decline && approval.call().is_none() && !batch {
             chat.push_system_line(RUN_CANCELLED.to_owned());
         }
         Some(approval)

@@ -239,7 +239,12 @@ fn the_batch_badge_and_the_mode_badge_share_the_row_without_touching() {
 
 #[test]
 fn the_batch_badge_gets_shorter_before_it_meets_the_mode_badge() {
-    let at = |width| row(&draw(&with_batch(ApprovalMode::Run, Badge::Orphan(2)), width, 4), 0);
+    let at = |width| {
+        row(
+            &draw(&with_batch(ApprovalMode::Run, Badge::Orphan(2)), width, 4),
+            0,
+        )
+    };
     // Wide enough for the whole text, then for the count only, then for a letter.
     assert!(at(30).starts_with(" orphan 2 · Ctrl+G "), "{:?}", at(30));
     assert!(at(22).starts_with(" orphan 2 "), "{:?}", at(22));

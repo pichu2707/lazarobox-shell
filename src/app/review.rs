@@ -6,7 +6,7 @@
 //! Nothing here reads the text of the batch: the answer to the model is a
 //! fixed reason and the system line holds counts only.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use super::{
     tool::{CANCELLED, DECLINED},
@@ -14,15 +14,19 @@ use super::{
 };
 use crate::core::ai::chat::{
     approval::Reply,
+    approval::{ApprovalAsk, Origin},
     engine::Decision,
-    review::{BatchEvent, BatchReview, TOO_LARGE, closed_notice},
+    review::{ARM_DELAY, Badge, BatchEvent, BatchReview, TOO_LARGE, closed_notice},
     review_view::{Move, ReviewView},
 };
+use crate::core::ai::tools::stage::BatchId;
+
+/// Shown on Ctrl+G when the chat wears no orphan badge.
+const NO_ORPHAN: &str = "no orphan batch to review";
 
 impl App {
     /// What the runtime reports about a batch outside a model turn. A closed
-    /// chat and an answered orphan only show a line; the orphan review view
-    /// opens from the event in W-h.
+    /// chat and an answered orphan show a line; a review opens the batch view.
     pub(super) fn on_batch_event(&mut self, pane: PaneId, event: BatchEvent) -> Vec<Effect> {
         match event {
             BatchEvent::Closed(entries) => self.notice = Some(closed_notice(entries)),
@@ -36,10 +40,66 @@ impl App {
                     chat.tell(line);
                 }
             }
-            BatchEvent::Review(..) => {}
+            BatchEvent::Review(batch, review) => self.open_orphan_review(pane, batch, review),
         }
         self.dirty = true;
         Vec::new()
+    }
+
+    /// The batches the runtime holds, by pane (it polls on its tick): each
+    /// chat wears the badge of its own, or none. Redraws only on a change.
+    pub fn sync_batches(&mut self, badges: &HashMap<PaneId, Badge>) {
+        let mut changed = false;
+        for (id, state) in &mut self.panes {
+            let Some(chat) = state.chat_mut() else {
+                continue;
+            };
+            let badge = badges.get(id).copied();
+            if chat.batch_badge() != badge {
+                chat.set_batch_badge(badge);
+                changed = true;
+            }
+        }
+        self.dirty |= changed;
+    }
+
+    /// Ctrl+G: asks the runtime for the review of the orphan chat `id` wears.
+    /// A batch the model still stages is not the user's to review.
+    pub(super) fn chat_review_orphan(&mut self, id: PaneId) -> Vec<Effect> {
+        let orphan = (self.panes.get(&id).and_then(PaneState::chat_state))
+            .is_some_and(|chat| matches!(chat.batch_badge(), Some(Badge::Orphan(_))));
+        if orphan {
+            return vec![Effect::BatchReview(id)];
+        }
+        self.notice = Some(NO_ORPHAN.to_owned());
+        self.dirty = true;
+        Vec::new()
+    }
+
+    /// Opens the review of the orphan `batch` as a batch ask without a call:
+    /// the same view and gate, but its answer goes to the batch by its id.
+    fn open_orphan_review(&mut self, id: PaneId, batch: BatchId, review: Arc<BatchReview>) {
+        let armed_at = (self.clock)() + ARM_DELAY;
+        let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
+            return;
+        };
+        let ask = ApprovalAsk::Batch(review.clone());
+        match chat.approvals_mut().request(ask, Origin::Block) {
+            Ok(_) => {
+                chat.set_armed_at(Some(armed_at));
+                chat.set_orphan(Some(batch));
+                self.open_review(id, review);
+            }
+            Err(refusal) => self.notice = Some(refusal.reason().to_owned()),
+        }
+    }
+
+    /// The orphan chat `id` is reviewing, when the pending batch ask is
+    /// that review and not a model's call.
+    fn reviewed_orphan(&self, id: PaneId) -> Option<BatchId> {
+        let chat = self.panes.get(&id)?.chat_state()?;
+        chat.approvals().pending()?.call().is_none().then_some(())?;
+        chat.orphan()
     }
 
     /// Whether chat `id` has a batch under review.
@@ -173,7 +233,15 @@ impl App {
         if !open {
             return Vec::new();
         }
-        self.close_approval(id, Reply::Approve)
+        let orphan = self.reviewed_orphan(id);
+        let closed = self.close_approval(id, Reply::Approve);
+        if let Some(batch) = orphan {
+            return vec![Effect::BatchApply {
+                pane: id,
+                id: batch,
+            }];
+        }
+        closed
             .and_then(|approval| Self::answer(id, &approval, Decision::Sent))
             .into_iter()
             .collect()
@@ -183,6 +251,13 @@ impl App {
     /// fixed words (too large, or declined), and the transcript gets a line
     /// with the counts.
     fn reject_batch(&mut self, id: PaneId) -> Vec<Effect> {
+        if let Some(batch) = self.reviewed_orphan(id) {
+            self.close_approval(id, Reply::Decline);
+            return vec![Effect::BatchDiscard {
+                pane: id,
+                id: batch,
+            }];
+        }
         let Some(view) = self.review_mut(id) else {
             return Vec::new();
         };
