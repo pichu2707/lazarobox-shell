@@ -100,6 +100,22 @@ impl<'a> StatusLine<'a> {
         self
     }
 
+    /// A label that says more than the mode's own (the quit prompt naming
+    /// what still runs), when there is one.
+    pub fn label(mut self, label: Option<&'a str>) -> Self {
+        if let Some(label) = label {
+            self.label = label;
+        }
+        self
+    }
+
+    /// Columns a label can take in a statusline `width` columns wide: the
+    /// width less the rest of the mode block.
+    pub fn label_room(&self, width: u16) -> usize {
+        let rest = self.mode_block_width() - Line::from(self.label).width();
+        usize::from(width).saturating_sub(rest)
+    }
+
     /// Over a focused chat pane the TERMINAL label reads `CHAT` (same color);
     /// every other mode keeps its label.
     pub fn chat(mut self, chat: bool) -> Self {

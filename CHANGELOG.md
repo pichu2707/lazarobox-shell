@@ -10,6 +10,15 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- The quit prompt names what still runs in the panes (jobs started with `&`,
+  `nohup` or `disown`, or a program in the foreground):
+  `Quit? still running: sleep 77, npm run dev (y/n)`, three names at most and
+  fitted to the width. After quitting, the same jobs are written to stderr
+  with their process group, also after `exit` in the last pane. lazarobox
+  still never stops them: a pane behaves like any terminal.
+
 ### Fixed
 
 - Nothing lazarobox starts is left running once it ends, however it ends.
