@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-26
+
 ### Added
 
 - The quit prompt names `llama-server (shared)` when the managed llama-server
@@ -27,14 +29,12 @@ baseline.
   fitted to the width. After quitting, the same jobs are written to stderr
   with their process group, also after `exit` in the last pane. lazarobox
   still never stops them: a pane behaves like any terminal.
-
 - `[ai.servers.llamacpp] args` passes extra arguments to the managed
   llama-server, after the ones lazarobox sets: for example
   `args = ["-ngl", "99", "-c", "16384"]`. Each entry is one argument, with
   no shell. A list that sets `--host`, `--port`, `-m` or `--model` (also as
   `--port=8080`), or that is not a list of strings, is ignored whole with a
   startup notice.
-
 - The managed llama-server stops after `[ai.servers.llamacpp] idle_minutes`
   without a turn (15 by default, 0 = never), freeing the GPU memory; the
   next llamacpp turn starts it again. A turn still answering is never cut:
@@ -60,11 +60,12 @@ baseline.
 
 - Nothing lazarobox starts is left running once it ends, however it ends.
   A small watcher (`lazarobox-shell __watch`, in its own session; `ps` on
-  Linux shows `/proc/self/exe __watch`) outlives it; every process group lazarobox starts (CLI chat turns, MCP servers, the
-  managed llama-server, short probes) is listed with it and taken off once
-  reaped. When lazarobox quits, crashes, is killed with SIGKILL or loses its
-  terminal, the watcher sends SIGHUP and SIGTERM to the groups still listed,
-  SIGKILL after 3 s, and exits. Before, a crash or SIGKILL left them all
+  Linux shows `/proc/self/exe __watch`) outlives it; every process group
+  lazarobox starts (CLI chat turns, MCP servers, the managed llama-server,
+  short probes) is listed with it and taken off once reaped. When lazarobox
+  quits, crashes, is killed with SIGKILL or loses its terminal, the watcher
+  sends SIGHUP and SIGTERM to the groups still listed, SIGKILL after 3 s, and
+  exits. Before, a crash or SIGKILL left them all
   running, and on macOS the managed llama-server then held its port so every
   later start failed. A group is only signalled while its leader is still the
   listed process (same start time) or gone, so a reused pid is never hit.
@@ -1106,7 +1107,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.20.0...v0.21.0
