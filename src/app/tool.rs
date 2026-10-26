@@ -8,8 +8,6 @@
 //! (`auto`, D18) or run after a check (`run`, D21). Only a `run` is ever
 //! routed: a read and a user tool always wait for `y`.
 
-use std::time::Duration;
-
 use super::*;
 use crate::core::ai::chat::{
     approval::{
@@ -26,9 +24,6 @@ use crate::core::ai::{
 /// other reason to give. Short, and it goes back to the model.
 pub(super) const DECLINED: &str = "the user declined";
 pub(super) const CANCELLED: &str = "cancelled";
-/// How long a prompt the model opened ignores `y`, `n` and Esc, so a key the
-/// user was already typing cannot answer it.
-pub(super) const ARM_DELAY: Duration = Duration::from_millis(400);
 const TOOLS_OFF: &str = "tools are off";
 const APPROVAL_CHAT_ONLY: &str = "The approval mode is for chat panes; open one with Ctrl+Space c";
 const APPROVAL_TOOLS_OFF: &str = "Tools are off: there is no approval mode to change";
@@ -145,7 +140,8 @@ impl App {
             // `run` can be typed or run by itself. It always opens the prompt.
             ApprovalAsk::Read { .. }
             | ApprovalAsk::Search { .. }
-            | ApprovalAsk::External { .. } => None,
+            | ApprovalAsk::External { .. }
+            | ApprovalAsk::Batch(_) => None,
         };
         let mut why = None;
         if let (ApprovalAsk::Run { command }, Some(target)) = (&ask, target) {
@@ -171,7 +167,11 @@ impl App {
         ask: ApprovalAsk,
         why: Option<String>,
     ) -> Vec<Effect> {
-        let armed_at = (self.clock)() + ARM_DELAY;
+        let armed_at = (self.clock)() + ask.arm_delay();
+        let batch = match &ask {
+            ApprovalAsk::Batch(review) => Some(review.clone()),
+            _ => None,
+        };
         let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) else {
             return Self::deny(id, turn, call, CHAT_GONE);
         };
@@ -179,6 +179,9 @@ impl App {
             Ok(_) => {
                 chat.set_run_target(target);
                 chat.set_armed_at(Some(armed_at));
+                if let Some(review) = batch {
+                    self.open_review(id, review);
+                }
                 self.dirty = true;
                 Vec::new()
             }

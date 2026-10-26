@@ -43,7 +43,7 @@ Tracker = `feat/coding-tools`. Rule: PR1 of the chain targets the tracker; each 
 | 11 | W-e1 ReviewDoc + layout + coverage core | ~400 | W-d branch | Ready |
 | 12 | W-e2 apply (journal, rollback, `WriteOps`) | ~450 | W-e1 branch | Ready |
 | 13 | W-e3 `Stages` store + `StagedView` | ~350 | W-e2 branch | Ready |
-| 14 | W-e4 review view (app + ui) | ~600 | W-e3 branch | Ready, likely size:exception |
+| 14 | W-e4 review view (app + ui) | ~600 | W-e3 branch | Done (apply), 542 production lines: size:exception or split |
 | 15 | X-a allow-list | ~350 | W-e4 branch | Ready |
 | 16 | X-b `Capture` + `RunOutcome` | ~350 | X-a branch | Ready |
 | 17 | X-c1 toolchain `JailSpec` (pure) | ~450 | X-b branch | Ready |
@@ -181,38 +181,38 @@ Obligations from the W-a review (the same as W-b, applied where the write happen
 
 ### W-e3: Stages store and StagedView (PR 13, ~350)
 Spec: code-search "Staged view"; code-write "Orphan, close and quit".
-- [ ] We3.1 RED: runtime `Stages` store keyed by `StageKey` (memory only, one batch per key), seal/apply/discard by `BatchId`. GREEN: `runtime/tools/stage.rs`. ~170. Dep: Wc, We2.
-- Obligation from the Wc review: the store MUST give each new batch of a key a monotonic, never-reused generation (`u64`, `checked_add`); `Batch` cannot check it, and a reused generation would let a stale answer hit a new batch.
-- [ ] We3.2 RED: `StagedView` snapshot overlay for `read_file`, `glob`, `grep`, `list_dir`, with the `(pending, not on disk)` marker. GREEN. ~180. Dep: M1.
+- [x] We3.1 RED: runtime `Stages` store keyed by `StageKey` (memory only, one batch per key), seal/apply/discard by `BatchId`. GREEN: `runtime/tools/stage.rs`. ~170. Dep: Wc, We2.
+- [x] Obligation from the Wc review: the store MUST give each new batch of a key a monotonic, never-reused generation (`u64`, `checked_add`); `Batch` cannot check it, and a reused generation would let a stale answer hit a new batch.
+- [x] We3.2 RED: `StagedView` snapshot overlay for `read_file`, `glob`, `grep`, `list_dir`, with the `(pending, not on disk)` marker. GREEN. ~180. Dep: M1.
 
 ### W-e4: review view (PR 14, ~600, likely size:exception)
 Spec: chat-pane "Batch review view"; code-write "Batch review and coverage gate".
-- [ ] We4.1 RED: `ApprovalAsk::Batch(Arc<BatchReview>)` routes `Prompt` in every mode; `n`/Esc rejects, `y` locked until coverage + 800 ms. GREEN: `chat/approval.rs`, `app/review.rs`. ~220. Dep: We1.
-- [ ] We4.2 RED (TestBackend + insta, fake clock): full-pane view with warnings, gate counter. GREEN: `ui/components/review.rs`. ~250 plus snapshots.
-- [ ] We4.3 RED: the other asks keep `ARM_DELAY` 400 ms. REFACTOR. ~130.
-- Unreviewable batch (decision from the We1 review): when `ReviewDoc::reviewable()` is false (a truncated diff, or no entry) `y` never arms, whatever was seen. The view offers only reject/discard, shows the "too large to review" warning, and the answer to the model says the batch was too large to review and tells it to split the change into smaller batches.
-- Cut line if it passes 500: put We4.3 and the snapshots in a follow-up commit and ask for the exception before opening the PR.
-- Obligation from the Wd review: diff rows (`Diff`, `Line`, and the `base` of `edit_file`) may hold secrets from a file the model never saw. They are shown ONLY to the user in the review view and NEVER go into a tool result or anything sent to the model. The review view MUST honour this and have a test for it. Render rows through `Line::display_text()` only; `raw_text()` is disk-exact and not for rendering. W-e1 gave `ReviewDoc` no `Display`/`Serialize`/`Into<String>` (and a counts-only `Debug`); the view MUST NOT add one, and the answer sent back to the model (`denied` or the apply result) carries counts and paths only, built from `ReviewDoc::files/added/removed`, never from `lines()`.
+- [x] We4.1 RED: `ApprovalAsk::Batch(Arc<BatchReview>)` routes `Prompt` in every mode; `n`/Esc rejects, `y` locked until coverage + 800 ms. GREEN: `chat/approval.rs`, `app/review.rs`. ~220. Dep: We1.
+- [x] We4.2 RED (TestBackend + insta, fake clock): full-pane view with warnings, gate counter. GREEN: `ui/components/review.rs`. ~250 plus snapshots.
+- [x] We4.3 RED: the other asks keep `ARM_DELAY` 400 ms. REFACTOR. ~130.
+- [x] Unreviewable batch (decision from the We1 review): when `ReviewDoc::reviewable()` is false (a truncated diff, or no entry) `y` never arms, whatever was seen. The view offers only reject/discard, shows the "too large to review" warning, and the answer to the model says the batch was too large to review and tells it to split the change into smaller batches.
+- Cut line if it passes 500: put We4.3 and the snapshots in a follow-up commit and ask for the exception before opening the PR. (Applied: We4.3 is the last commit; production is 542 lines, so the exception or a split is still needed.)
+- [x] Obligation from the Wd review: diff rows (`Diff`, `Line`, and the `base` of `edit_file`) may hold secrets from a file the model never saw. They are shown ONLY to the user in the review view and NEVER go into a tool result or anything sent to the model. The review view MUST honour this and have a test for it. Render rows through `Line::display_text()` only; `raw_text()` is disk-exact and not for rendering. W-e1 gave `ReviewDoc` no `Display`/`Serialize`/`Into<String>` (and a counts-only `Debug`); the view MUST NOT add one, and the answer sent back to the model (`denied` or the apply result) carries counts and paths only, built from `ReviewDoc::files/added/removed`, never from `lines()`.
 
 ### W-f: host staging tools (PR 22, ~450, host.rs slice: spike a seam first)
 Spec: code-write "create_dir and write_file staging", "edit_file staging", "Propose batch and size cap", "Nothing writes without approval"; lazarobox-mcp-server "Coding tools run in the app".
-- [ ] Wf.1 RED: `Call::{CreateDir, WriteFile, EditFile, ProposeBatch}` parse (family Write gate). ~100.
-- [ ] Wf.2 RED: `host.rs` stages without ask or disk touch; `ToolEnv` carries `StagedView`; `propose_batch` seals and asks. ~220.
-- [ ] Wf.3 RED: all-toggles-off golden stays green; a Write tool call with Write off is `UnknownTool`. ~130. Host re-checks the family as defense in depth.
-- Unreviewable batch: a staged batch whose diff is truncated cannot be approved (`ReviewDoc::reviewable()`). `propose_batch` still seals it, the user can only reject/discard it, and the result the model receives says the batch was too large to review and that it must split the change into smaller batches (counts and paths only).
-- Obligation from the Wd review: diff rows (`Diff`, `Line`, and the `base` of `edit_file`) may hold secrets from a file the model never saw. They are shown ONLY to the user in the review view and NEVER go into a tool result or anything sent to the model. The host tools MUST honour this and have a test for it. Render rows through `Line::display_text()` only; `raw_text()` is disk-exact and not for rendering. The `edit_file`, `write_file` and `propose_batch` results carry counts and paths only, never diff text.
+- [x] Wf.1 RED: `Call::{CreateDir, WriteFile, EditFile, ProposeBatch}` parse (family Write gate). ~100.
+- [x] Wf.2 RED: `host.rs` stages without ask or disk touch; the read tools get the `StagedView` (via `run_over`, `ToolEnv` unchanged); `propose_batch` seals and asks. ~220. Seam: `runtime/tools/host/files.rs`, see design "Host seam for the write family".
+- [x] Wf.3 RED: all-toggles-off golden stays green; a Write tool call with Write off is `UnknownTool`. ~130. Host re-checks the family as defense in depth.
+- [x] Unreviewable batch: a staged batch whose diff is truncated cannot be approved (`ReviewDoc::reviewable()`). `propose_batch` still seals it, the user can only reject/discard it, and the result the model receives says the batch was too large to review and that it must split the change into smaller batches (counts and paths only).
+- [x] Obligation from the Wd review: diff rows (`Diff`, `Line`, and the `base` of `edit_file`) may hold secrets from a file the model never saw. They are shown ONLY to the user in the review view and NEVER go into a tool result or anything sent to the model. The host tools MUST honour this and have a test for it. Render rows through `Line::display_text()` only; `raw_text()` is disk-exact and not for rendering. The `edit_file`, `write_file` and `propose_batch` results carry counts and paths only, never diff text.
 
 ### W-g: runtime chat lifecycle (PR 23, ~400, host.rs slice: spike a seam first)
 Spec: code-write "Orphan, close and quit", "Apply"; chat-pane "Closing discards a batch".
-- [ ] Wg.1 RED: closing a pane calls `Stages.discard(key)` with a notice. ~130.
-- [ ] Wg.2 RED: turn cancelled or CLI timeout leaves Proposed-orphan; unproposed batch at turn end is Staging-orphan; `Effect::BatchReview/Apply/Discard` routed via Chats. ~170.
-- [ ] Wg.3 RED: the model learns of a user-side apply/discard through a system line on its next turn. ~100.
+- [x] Wg.1 RED: closing a pane calls `Stages.discard(key)` with a notice. ~130.
+- [x] Wg.2 RED: turn cancelled or CLI timeout leaves Proposed-orphan; unproposed batch at turn end is Staging-orphan; `Effect::BatchReview/Apply/Discard` routed via Chats. ~170.
+- [x] Wg.3 RED: the model learns of a user-side apply/discard through a system line on its next turn. ~100.
 
 ### W-h: badge, Ctrl+G, quit notice (PR 24, ~450, host.rs slice: spike a seam first)
 Spec: chat-pane "Staged batch indicator"; code-write "Orphan, close and quit".
-- [ ] Wh.1 RED: pane badge for staged/orphan batches (`ui/components/chat.rs`, insta). ~200.
-- [ ] Wh.2 RED: Ctrl+G opens the orphan review; check against the chat key table for conflicts (with Ctrl+O from S1e-1a). ~120.
-- [ ] Wh.3 RED: quit discards batches with a notice (`app/notes.rs`). ~130.
+- [x] Wh.1 RED: pane badge for staged/orphan batches (`ui/components/chat.rs`, insta). ~200.
+- [x] Wh.2 RED: Ctrl+G opens the orphan review; check against the chat key table for conflicts (with Ctrl+O from S1e-1a). ~120.
+- [x] Wh.3 RED: quit discards batches with a notice (`app/notes.rs`). ~130.
 
 Go/no-go checkpoint on review UX after W-h (design rollout).
 

@@ -569,6 +569,65 @@ mod tests {
         );
     }
 
+    // Spec (code-write, Family and toggle): a route without the Write family
+    // does not list the four write tools and answers them as an unknown tool.
+    #[test]
+    fn a_route_without_the_write_family_lists_and_routes_no_write_tool() {
+        use crate::core::ai::tools::{
+            registry::{Family, FamilySet},
+            registry_with,
+        };
+        const WRITE: [&str; 4] = ["create_dir", "write_file", "edit_file", "propose_batch"];
+        let args = |name: &str| match name {
+            "create_dir" => json!({"path": "d"}),
+            "write_file" => json!({"path": "a", "content": "x"}),
+            "edit_file" => json!({"path": "a", "old": "x", "new": "y"}),
+            _ => json!({}),
+        };
+        let init = request(
+            json!(0),
+            "initialize",
+            json!({"protocolVersion": "2025-06-18", "capabilities": {}}),
+        );
+        let route = |set: FamilySet| {
+            let mut server = Server::new(registry_with(&[], set)).with_families(set);
+            reply(server.handle(&init));
+            server
+        };
+        for set in [FamilySet::LEGACY, FamilySet::LEGACY.with(Family::Search)] {
+            let mut server = route(set);
+            let listed = reply(server.handle(&request(json!(1), "tools/list", json!({}))));
+            let names: Vec<&str> = listed["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap())
+                .collect();
+            assert!(WRITE.iter().all(|name| !names.contains(name)), "{names:?}");
+            let unknown = reply(server.handle(&request(
+                json!(2),
+                "tools/call",
+                json!({"name": "nope", "arguments": {}}),
+            )));
+            for name in WRITE {
+                let params = json!({"name": name, "arguments": args(name)});
+                let out = reply(server.handle(&request(json!(2), "tools/call", params)));
+                assert_eq!(out, unknown, "{name}");
+                assert_eq!(out["result"]["content"][0]["text"], "unknown tool");
+            }
+        }
+        // With the family on the same four are listed and reach the host.
+        let mut server = route(FamilySet::LEGACY.with(Family::Write));
+        let listed = reply(server.handle(&request(json!(1), "tools/list", json!({}))));
+        let text = listed.to_string();
+        assert!(WRITE.iter().all(|name| text.contains(name)), "{text}");
+        let params = json!({"name": "write_file", "arguments": args("write_file")});
+        assert!(matches!(
+            server.handle(&request(json!(3), "tools/call", params)),
+            Action::Call { .. }
+        ));
+    }
+
     #[test]
     fn tools_call_hands_a_validated_call_to_the_host() {
         let mut server = initialized("2025-06-18");

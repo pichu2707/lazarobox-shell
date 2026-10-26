@@ -15,6 +15,7 @@ use crate::core::{
             engine::{CallId, ChatRequest, Decision, MCP_VERIFIED, StreamEvent},
             notify::{Ended, body, plays_sound, should_notify},
             prompts::Resolved,
+            review::BatchEvent,
             store::{StoreCmd, StoreReply},
         },
         config::{AiConfig, ManagedServer, NotifyMode, Profile, Task},
@@ -24,7 +25,7 @@ use crate::core::{
             offer::ServerOffer,
             port::{MemCmd, MemReply, Reason},
         },
-        tools::report::RunReport,
+        tools::{report::RunReport, stage::BatchId},
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{
@@ -50,6 +51,7 @@ mod context;
 mod history;
 mod notes;
 mod offer;
+mod review;
 mod run;
 mod scroll;
 mod summary;
@@ -191,6 +193,9 @@ pub enum AppEvent {
     /// How the start of the llama-server a menu save turned on went: the
     /// error is the one reason, already safe to show.
     ManagedStarted(Result<(), String>),
+    /// What happened to the batch of chat `.0` outside a model turn (close,
+    /// orphan review, apply, discard).
+    Batch(PaneId, BatchEvent),
 }
 
 /// How the menu closed.
@@ -293,6 +298,22 @@ pub enum Effect {
     /// Close the tool session of chat `pane`: its socket goes and every call
     /// it holds is denied. Emitted with `ChatCancel` for a chat that had one.
     EndToolSession(PaneId),
+    /// Chat `.0` closed: discard its staged batch. The runtime answers with
+    /// `AppEvent::Batch(.., Closed(n))` when entries were lost.
+    BatchClose(PaneId),
+    /// Review the batch a turn of chat `.0` left behind; the runtime answers
+    /// with `AppEvent::Batch(.., Review(..))` when there is one.
+    BatchReview(PaneId),
+    /// Apply the orphan `id` of chat `pane` after the user's `y`.
+    BatchApply {
+        pane: PaneId,
+        id: BatchId,
+    },
+    /// Discard the orphan `id` of chat `pane`.
+    BatchDiscard {
+        pane: PaneId,
+        id: BatchId,
+    },
     /// Ask the memory worker for something. Returns at once: the answer comes
     /// back as one `AppEvent::Memory`, or never when memory is not active.
     Memory(MemCmd),
@@ -1514,6 +1535,7 @@ impl App {
                 self.window_focused = focused;
                 Vec::new()
             }
+            AppEvent::Batch(pane, event) => self.on_batch_event(pane, event),
         };
         debug_assert_eq!(
             self.menu.is_some(),
@@ -2257,6 +2279,7 @@ impl App {
             if let Some(chat) = self.panes.get_mut(&id).and_then(PaneState::chat_mut) {
                 chat.rewrap(usize::from(old_cols), usize::from(cols), rows);
             }
+            self.refit_review(id);
         }
         self.sync_copy();
         effects
@@ -2324,7 +2347,10 @@ impl App {
         let session = (self.panes.get(&id))
             .and_then(PaneState::chat_state)
             .is_some_and(ChatState::tool_session);
-        Self::stop_chat(id, session)
+        // A cancel keeps a batch as an orphan; a close discards it.
+        let mut effects = Self::stop_chat(id, session);
+        effects.push(Effect::BatchClose(id));
+        effects
     }
 
     fn on_copy_key(&mut self, mut state: CopyState, key: &KeyEvent, repeat: bool) -> Vec<Effect> {
@@ -7459,6 +7485,9 @@ mod app_tests {
     /// Tool calls that need the user, answered through the same overlay.
     mod tool_approval;
 
+    /// The review view of a proposed write batch.
+    mod batch_review;
+
     /// The chat approval mode: where it comes from, when it resets.
     mod tool_auto;
 
@@ -7603,9 +7632,56 @@ mod app_tests {
                 vec![
                     Effect::ResizePty(PaneId::FIRST, sized(24, 80)),
                     Effect::ChatCancel(chat_id()),
+                    Effect::BatchClose(chat_id()),
                 ]
             );
             assert_eq!(a.focused(), PaneId::FIRST);
+        }
+
+        // Spec (chat-pane, Closing discards a batch): the notice names the
+        // entries the close discarded.
+        #[test]
+        fn a_closed_chat_that_lost_a_batch_shows_a_notice_with_the_count() {
+            use crate::core::ai::chat::review::BatchEvent;
+            let mut a = launched(80, 25);
+            a.update(AppEvent::Batch(chat_id(), BatchEvent::Closed(2)));
+            assert_eq!(a.notice(), Some("discarded 2 staged entries"));
+            a.update(AppEvent::Batch(chat_id(), BatchEvent::Closed(1)));
+            assert_eq!(a.notice(), Some("discarded 1 staged entry"));
+        }
+
+        // Spec (code-write, Orphan): the model hears of a user-side answer on
+        // its next turn, in the system text of that request.
+        #[test]
+        fn a_user_side_answer_to_an_orphan_is_told_to_the_model_on_its_next_turn() {
+            use crate::core::ai::chat::review::BatchEvent;
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            let told = "The user discarded the batch you left staged (2 entries).";
+            a.update(AppEvent::Batch(
+                chat_id(),
+                BatchEvent::Done {
+                    shown: "discarded 2 staged entries".into(),
+                    told: Some(told.into()),
+                },
+            ));
+            assert_eq!(a.notice(), Some("discarded 2 staged entries"));
+            let effects = a.chat_send(chat_id(), "carry on");
+            let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+                panic!("expected one ChatSend, got {effects:?}");
+            };
+            assert!(request.system.ends_with(told), "{}", request.system);
+            // Once: the turn after it hears nothing more.
+            a.update(AppEvent::Chat(
+                chat_id(),
+                1,
+                StreamEvent::Done(crate::core::ai::chat::engine::Finish::Stop),
+            ));
+            let effects = a.chat_send(chat_id(), "and then");
+            let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+                panic!("expected one ChatSend, got {effects:?}");
+            };
+            assert!(!request.system.contains(told));
         }
 
         #[test]
@@ -7801,7 +7877,10 @@ mod app_tests {
             assert_eq!((a.tab_count(), a.focused()), (1, chat_id()));
             press(&mut a, "wq");
             assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
-            assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+            assert_eq!(
+                a.update(key('y')),
+                vec![Effect::BatchClose(chat_id()), Effect::Quit]
+            );
         }
 
         // 1.4: the UI asks for a view, not for an emulator.
@@ -8221,10 +8300,13 @@ mod app_tests {
         }
 
         #[test]
-        fn quitting_asks_the_runtime_to_stop_and_emits_no_per_chat_effect() {
+        fn quitting_asks_the_runtime_to_stop_and_emits_only_the_batch_close() {
             let mut a = streaming();
             press(&mut a, "q");
-            assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+            assert_eq!(
+                a.update(key('y')),
+                vec![Effect::BatchClose(chat_id()), Effect::Quit]
+            );
             // The runtime stops every turn on Quit; the state stays readable.
             assert_eq!(
                 chat_of(&a, chat_id()).phase(),
