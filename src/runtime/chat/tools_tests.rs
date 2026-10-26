@@ -673,3 +673,43 @@ async fn closing_a_chat_discards_its_batch_and_counts_the_entries() {
     );
     assert_eq!(chats.close_batch(pane(3)), None);
 }
+
+// Spec (code-write, Orphan, close and quit): the user reviews, applies or
+// discards what a turn left behind, through the chats. While a turn runs the
+// batch is the model's, not an orphan.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_orphan_is_reviewed_applied_or_discarded_through_the_chats() {
+    let lab = lab();
+    let (mut chats, _rx) = tooled(&lab, idle());
+    let proj = lab.home.join("proj");
+    let one = stager(&lab, pane(1));
+    stage(&one, "a.txt", "x").await;
+    let two = stager(&lab, pane(2));
+    stage(&two, "b.txt", "y").await;
+
+    chats.send(pane(1), 1, request(""));
+    assert_eq!(chats.review_batch(pane(1)), None, "a running turn owns it");
+    chats.cancel(pane(1));
+    let Some(BatchEvent::Review(id, review)) = chats.review_batch(pane(1)) else {
+        panic!("a cancelled turn leaves an orphan");
+    };
+    assert_eq!(review.counts(), "1 file, +1 -0");
+    assert_eq!(
+        chats.apply_batch(id),
+        Some(BatchEvent::Done("applied 1 paths".into()))
+    );
+    assert_eq!(std::fs::read_to_string(proj.join("a.txt")).unwrap(), "x");
+
+    let Some(BatchEvent::Review(id, _)) = chats.review_batch(pane(2)) else {
+        panic!("an orphan");
+    };
+    let done = chats.discard_batch(id);
+    assert_eq!(
+        done,
+        Some(BatchEvent::Done("discarded 1 staged entry".into()))
+    );
+    assert!(!proj.join("b.txt").exists());
+    assert_eq!(chats.close_batch(pane(2)), None);
+    assert_eq!(chats.review_batch(pane(3)), None);
+}

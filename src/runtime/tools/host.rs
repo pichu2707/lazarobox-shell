@@ -398,6 +398,10 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     if scope.events.send(announce).await.is_err() {
         return gone();
     }
+    // From here the user may see the ask: a batch dropped now is an orphan.
+    if let Some(batch) = sealed.as_mut() {
+        batch.announced();
+    }
     // Only an announced call owes a result.
     let owed = Owed {
         id,

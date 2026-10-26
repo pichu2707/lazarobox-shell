@@ -371,25 +371,96 @@ async fn nothing_is_staged_while_a_batch_waits_for_the_user() {
     waiting.abort();
 }
 
-// Spec (code-write, Propose batch): a turn cancelled while the batch waits
-// for the user must not leave the pane's batch sealed for good.
+// Spec (code-write, Orphan, close and quit): a call dropped while its batch
+// waits (the turn was cancelled, or a CLI timed out) leaves the batch proposed
+// for the user: an orphan that stays until the user answers or the pane closes.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn a_call_dropped_while_its_batch_waits_frees_the_pane() {
+async fn a_call_dropped_while_its_batch_waits_leaves_a_proposed_orphan() {
     let w = world();
-    let (d, _rx) = w.turn(Arc::new(super::tests::Waiting));
+    let (d, mut rx) = w.turn(Arc::new(super::tests::Waiting));
     assert!(!d.call(write("a.txt", "hello")).await.is_error);
     let mut propose = d.call(Call::ProposeBatch);
-    assert!(futures::poll!(&mut propose).is_pending());
+    // Until the ask is announced the user has seen nothing.
+    loop {
+        tokio::select! {
+            _ = &mut propose => panic!("nobody answered"),
+            event = rx.recv() => match event {
+                Some(StreamEvent::ToolCall { ref name, .. }) if name == "propose_batch" => break,
+                other => assert!(other.is_some(), "the channel closed"),
+            },
+        }
+    }
     let during = d.call(write("b.txt", "late")).await;
     assert!(during.text.contains("waiting for review"), "{during:?}");
-    // The turn is cancelled: its future is dropped before any answer.
     drop(propose);
+    assert_eq!(w.staged(), 1, "the orphan stays");
+    let after = d.call(write("b.txt", "again")).await;
+    assert!(after.text.contains("waiting for review"), "{after:?}");
+    // The user can still review it, as the same batch.
+    let (id, review) = w
+        .host
+        .review_batch(key(), false)
+        .expect("an orphan to review");
+    assert_eq!(review.counts(), "1 file, +1 -0");
+    assert_eq!(w.host.discard_batch(id), "discarded 1 staged entry");
     assert_eq!(w.staged(), 0);
-    let again = d.call(write("b.txt", "again")).await;
-    assert!(!again.is_error, "{again:?}");
-    let sealed = futures::poll!(&mut d.call(Call::ProposeBatch));
-    assert!(sealed.is_pending(), "{sealed:?}");
+}
+
+// The turn ended while the ask was open (a CLI timeout, a cancel that reached
+// the approver first): the answer is `ENDED`, which is no user's no.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_ended_turn_keeps_its_batch_but_a_user_no_discards_it() {
+    use crate::runtime::tools::approver::ENDED;
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Denied(ENDED)));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    let out = d.call(Call::ProposeBatch).await;
+    assert!(out.is_error && out.text.contains(ENDED), "{out:?}");
+    assert_eq!(w.staged(), 1);
+    let (id, _) = w.host.review_batch(key(), false).unwrap();
+    w.host.discard_batch(id);
+    let (d, _rx) = w.turn(Script::new(Decision::Denied("no")));
+    assert!(!d.call(write("a.txt", "hello")).await.is_error);
+    assert!(d.call(Call::ProposeBatch).await.is_error);
+    assert_eq!(w.staged(), 0, "a user's no closes the batch");
+}
+
+// A batch the turn never proposed is a staging orphan: reviewing it seals it.
+// What the user is told holds counts only, never the staged text.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_unproposed_batch_is_sealed_when_the_user_reviews_it() {
+    let w = world();
+    let (d, _rx) = w.turn(Script::new(Decision::Sent));
+    assert!(
+        !d.call(write("a.txt", "sk-ant-api03-SECRETSECRET"))
+            .await
+            .is_error
+    );
+    assert!(!d.call(folder("sub")).await.is_error);
+    let (id, review) = w.host.review_batch(key(), false).expect("a staging orphan");
+    assert_eq!(review.counts(), "2 files, +1 -0");
+    assert_eq!(
+        w.host.review_batch(key(), false).map(|(again, _)| again),
+        Some(id)
+    );
+    let after = d.call(write("b.txt", "x")).await;
+    assert!(after.text.contains("waiting for review"), "{after:?}");
+    let line = w.host.apply_batch(id);
+    assert_eq!(line, "applied 2 paths");
+    assert!(!line.contains("SECRET"));
+    assert_eq!(
+        std::fs::read_to_string(w.proj.join("a.txt")).unwrap(),
+        "sk-ant-api03-SECRETSECRET"
+    );
+    assert!(w.proj.join("sub").is_dir());
+    assert_eq!(w.host.apply_batch(id), "that batch is no longer there");
+    assert!(
+        w.host.review_batch(key(), false).is_none(),
+        "nothing to review"
+    );
 }
 
 // The same for a call whose channel is gone before it can announce: the batch

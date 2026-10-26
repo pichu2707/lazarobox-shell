@@ -14,9 +14,12 @@ use super::{
     apply::{self, ApplyResult, Disk, WriteOps},
     staged::StagedView,
 };
-use crate::core::ai::tools::{
-    paths::SecretRoots,
-    stage::{Batch, BatchId, Outcome, StageError, StageKey, State},
+use crate::core::ai::{
+    chat::review::{BatchReview, ReviewDoc},
+    tools::{
+        paths::SecretRoots,
+        stage::{Batch, BatchId, Outcome, StageError, StageKey, State},
+    },
 };
 
 /// The generation counter ran out: no new batch can be made.
@@ -101,6 +104,19 @@ impl Stages {
     /// id, from a gone batch of the same key, is refused.
     pub fn seal(&mut self, id: BatchId) -> Result<BatchId, StageError> {
         self.current(id)?.propose()
+    }
+
+    /// The orphan of `key` for the user (see [`Batch::review_orphan`]): a
+    /// batch the turn never proposed is sealed now, a proposed one is shown
+    /// as it is. A live turn, an empty batch or no batch is an error.
+    pub fn review(
+        &mut self,
+        key: StageKey,
+        turn_live: bool,
+    ) -> Result<(BatchId, BatchReview), StageError> {
+        let batch = self.batches.get_mut(&key).ok_or(StageError::NotOrphan)?;
+        let id = batch.review_orphan(turn_live)?;
+        Ok((id, BatchReview::new(ReviewDoc::build(batch))))
     }
 
     /// Applies the proposed batch `id` to the disk below `roots`.

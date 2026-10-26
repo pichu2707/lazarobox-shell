@@ -25,7 +25,7 @@ use crate::core::{
             offer::ServerOffer,
             port::{MemCmd, MemReply, Reason},
         },
-        tools::report::RunReport,
+        tools::{report::RunReport, stage::BatchId},
     },
     config::{BarPosition, BarPositions, Config, ConfigEdit},
     copy::{
@@ -301,6 +301,19 @@ pub enum Effect {
     /// Chat `.0` closed: discard its staged batch. The runtime answers with
     /// `AppEvent::Batch(.., Closed(n))` when entries were lost.
     BatchClose(PaneId),
+    /// Review the batch a turn of chat `.0` left behind; the runtime answers
+    /// with `AppEvent::Batch(.., Review(..))` when there is one.
+    BatchReview(PaneId),
+    /// Apply the orphan `id` of chat `pane` after the user's `y`.
+    BatchApply {
+        pane: PaneId,
+        id: BatchId,
+    },
+    /// Discard the orphan `id` of chat `pane`.
+    BatchDiscard {
+        pane: PaneId,
+        id: BatchId,
+    },
     /// Ask the memory worker for something. Returns at once: the answer comes
     /// back as one `AppEvent::Memory`, or never when memory is not active.
     Memory(MemCmd),

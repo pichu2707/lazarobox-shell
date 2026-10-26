@@ -1259,6 +1259,26 @@ impl Panes {
                         .and_then(|chats| chats.close_batch(pane));
                     feedback.extend(lost.map(|n| AppEvent::Batch(pane, BatchEvent::Closed(n))));
                 }
+                // The three answer the app with one event, or with none when
+                // the chat has nothing to show (no tooling, no orphan).
+                Effect::BatchReview(pane) => {
+                    let seen = self
+                        .chats
+                        .as_ref()
+                        .and_then(|chats| chats.review_batch(pane));
+                    feedback.extend(seen.map(|event| AppEvent::Batch(pane, event)));
+                }
+                Effect::BatchApply { pane, id } => {
+                    let done = self.chats.as_ref().and_then(|chats| chats.apply_batch(id));
+                    feedback.extend(done.map(|event| AppEvent::Batch(pane, event)));
+                }
+                Effect::BatchDiscard { pane, id } => {
+                    let done = self
+                        .chats
+                        .as_ref()
+                        .and_then(|chats| chats.discard_batch(id));
+                    feedback.extend(done.map(|event| AppEvent::Batch(pane, event)));
+                }
                 // Returns at once: the worker owns the queue and the timeouts.
                 Effect::Memory(cmd) => self.memory.send(cmd),
                 // Returns at once: the thread owns the database, and a slow
@@ -3759,7 +3779,8 @@ mod tests {
         panes.apply(vec![Effect::EndToolSession(id(1))]);
         assert!(!session(&panes));
         // A close with no batch says nothing; the effect needs no live pane.
-        let (_, feedback) = panes.apply(vec![Effect::BatchClose(id(1))]);
+        let (_, feedback) =
+            panes.apply(vec![Effect::BatchClose(id(1)), Effect::BatchReview(id(1))]);
         assert!(feedback.is_empty(), "{feedback:?}");
         let rec = rec.borrow();
         for log in &rec.logs {

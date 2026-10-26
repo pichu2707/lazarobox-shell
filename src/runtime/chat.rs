@@ -51,13 +51,14 @@ use crate::core::{
                 Answer, CallId, ChatError, ChatRequest, Decision, StreamEvent, Tools, locality,
             },
             gemini::GeminiDecoder,
+            review::BatchEvent,
             stream::{ERROR_CAP, NdjsonSplitter, SseParser, StreamDecoder},
         },
         config::McpServer,
         sanitize::{StreamSanitizer, Utf8Stream, clean},
         tools::{
             report::RunReport,
-            stage::StageKey,
+            stage::{BatchId, StageKey},
             summary::clip,
             wiring::{McpWire, Secret},
         },
@@ -870,6 +871,28 @@ impl Chats {
             .as_ref()?
             .host
             .close_batch(StageKey::Pane(pane))
+    }
+
+    /// The batch a turn of `pane` left behind (cancelled, timed out, or never
+    /// proposed), sealed for the user to review. `None` while a turn runs,
+    /// because then the batch is the model's.
+    pub fn review_batch(&self, pane: PaneId) -> Option<BatchEvent> {
+        let live = self.turns.get(&pane).is_some_and(|t| !t.is_finished());
+        let host = &self.tooling.as_ref()?.host;
+        let (id, review) = host.review_batch(StageKey::Pane(pane), live)?;
+        Some(BatchEvent::Review(id, review))
+    }
+
+    /// Applies an orphan the user approved.
+    pub fn apply_batch(&self, id: BatchId) -> Option<BatchEvent> {
+        let line = self.tooling.as_ref()?.host.apply_batch(id);
+        Some(BatchEvent::Done(line))
+    }
+
+    /// Discards an orphan the user rejected.
+    pub fn discard_batch(&self, id: BatchId) -> Option<BatchEvent> {
+        let line = self.tooling.as_ref()?.host.discard_batch(id);
+        Some(BatchEvent::Done(line))
     }
 
     /// Stops the turn of `pane`, if any. Returns at once.
