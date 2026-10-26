@@ -604,6 +604,23 @@ async fn different_spellings_of_one_path_share_a_single_cloud_ask() {
     assert_eq!(reverse.asks().len(), 2);
 }
 
+// An edit with an empty `old` can only fail, so the user is not asked for it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cloud_edit_with_an_empty_old_is_refused_before_the_ask() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "foo bar").unwrap();
+    let approver = Script::new(Decision::Sent);
+    let (d, _rx) = w.cloud(approver.clone());
+    let out = d.call(edit("b.txt", "", "x")).await;
+    assert!(
+        out.is_error && out.text == "old must not be empty",
+        "{out:?}"
+    );
+    assert!(approver.asks().is_empty());
+    assert_eq!(w.staged(), 0);
+}
+
 // Only `Sent` is remembered: a busy answer (and any other non-`Sent` one)
 // leaves the next edit of the file asking again.
 #[cfg(target_os = "linux")]

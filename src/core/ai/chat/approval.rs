@@ -102,10 +102,9 @@ impl ApprovalAsk {
 }
 
 /// Which calls wait for the user's answer before they run (D17).
-/// `run_in_pane` always does. `read_file`, `grep` and `edit_file` do on a cloud engine,
-/// because the text they return goes to the provider, and run free on a local
-/// one. The
-/// directory tools never ask. The mode of the chat (ask or auto-type, D18) is
+/// `run_in_pane` always does. `read_file`, `grep` and `edit_file` do on a cloud
+/// engine, because the text they return goes to the provider, and run free on a
+/// local one. The directory tools never ask. The mode of the chat (ask or auto-type, D18) is
 /// not an input: the app applies it to the ask this returns.
 ///
 /// The path of a read ask is shown as it is: the caller passes the target

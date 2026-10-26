@@ -122,6 +122,13 @@ A write MUST be refused (with the refusal text) when the target is inside `.git/
 - THEN the user is asked as for `read_file` of `a.txt` (same prompt, same approval modes, never typed or run directly), and a denial stages nothing and returns the usual denied text
 - AND later edits of `a.txt` in the same turn do not ask again, nor do they after an allowed `read_file` of it; a new turn asks again; a Local engine never asks
 
+An `edit_file` with an empty `old` MUST be refused before the ask (with the usual `old must not be empty` text), so the user is never prompted for a call that is sure to fail. A missing or ambiguous `old` still asks: those answers are an oracle too, and that cost is accepted.
+
+Accepted behaviors of the once-per-file memory (the key is the path as shown, resolved by text alone):
+- Two concurrent edits of the same file in one model response may ask twice, since neither has been answered when the other checks. This over-asks, which is safe.
+- A symlink and its target are separate keys, so editing both asks twice.
+- A `read_file` records into the memory but never consults it: it asks even after an allowed edit of the same file.
+
 ### Requirement: Propose batch and size cap
 The model closes a batch by calling the propose tool. It MAY stage across several turns before calling it. The propose tool MUST refuse an empty batch and MUST refuse a batch over about 50 entries or 1 MiB of total staged content (whichever comes first), with a message that asks the model to split it. A refused proposal MUST leave the batch staged and unchanged. A proposed batch MUST NOT accept new staging until the user answers.
 

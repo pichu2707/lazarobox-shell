@@ -546,3 +546,9 @@ User decision: `edit_file` is a content oracle, so on Cloud it asks like `read_f
 - Host: the path is shown through `display_target` as for a read (unshowable: refused). `TurnScope.allowed: Mutex<HashSet<String>>` (per turn, since a scope is built per turn) is filled when a read or edit ask is answered `Sent`; an edit of an allowed path does not ask. A read does not consult it. A denial is not remembered and stages nothing.
 - RED: `a cloud edit asks` (ask_for returned None), `[]` (no ask recorded), and a denied edit returned `staged b.txt (...)`.
 - Known cost: an edit of a file the batch itself created also asks on Cloud (the host does not tell it from a disk file).
+
+### W-f review round 2 (edit_file cloud ask edges)
+
+- Pinned by tests: an unshowable path is refused with zero asks and nothing staged; `b.txt`, `./b.txt`, `sub/../b.txt` and `~/proj/b.txt` share one ask; a read of `./b.txt` then an edit of `b.txt` asks once, while an edit then a read asks twice (a read does not consult `allowed`); a `Busy` answer is not remembered.
+- Fix: an empty `old` is refused in the host pre-check (text of `EditError::EmptyOld`) before the ask. RED: the ask was recorded for it. Missing/ambiguous `old` still asks (accepted, documented in the code-write spec together with the concurrent-edit and symlink behaviors).
+- `ask_for` doc comment reflowed.

@@ -39,7 +39,9 @@ use crate::{
             engine::{Answer, CallId, Decision, StreamEvent, ToolStatus},
         },
         tools::{
-            Call, Locality, command, label,
+            Call, Locality, command,
+            edit::EditError,
+            label,
             paths::display_target,
             registry::FamilySet,
             report::{self, RunReport},
@@ -335,6 +337,11 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     }
                     None => checked = Err(UNSHOWABLE.into()),
                 }
+            }
+            // An edit that can only fail is refused before it asks. A missing
+            // or ambiguous `old` still asks: it too tells whether a text occurs.
+            (Call::EditFile { old, .. }, Locality::Cloud) if old.is_empty() => {
+                checked = Err(EditError::EmptyOld.to_string().into());
             }
             // An edit of a file asks like a read of it, once per file per turn.
             (Call::EditFile { path, .. }, Locality::Cloud) => {
