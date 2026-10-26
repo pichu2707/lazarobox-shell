@@ -42,6 +42,7 @@ pub(crate) mod refused_port;
 mod run_check;
 pub mod tools;
 pub mod update;
+pub mod watch;
 pub mod workspace;
 
 use ai_detect::spawn_detection;
@@ -198,6 +199,9 @@ impl Drop for QuitGuard {
 
 /// Runs the terminal pane until the child exits or the user quits.
 pub async fn run() -> io::Result<()> {
+    // First, before any child or pane exists: from here on every process
+    // group lazarobox starts is stopped once it ends, however it ends.
+    watch::start();
     // Probed off the async threads: macOS spawns `sandbox-exec` for it.
     let jail_probe = tokio::task::spawn_blocking(jail::probe);
     // Asked first so the shell runs while the rest of the start-up goes on.

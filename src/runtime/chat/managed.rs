@@ -20,7 +20,8 @@
 //! - On Linux the kernel kills it when lazarobox dies without quitting (a
 //!   crash, SIGKILL): it is started with a parent-death signal. That signal
 //!   follows the thread that started it, which is a runtime worker that lives
-//!   as long as lazarobox. macOS has no such signal.
+//!   as long as lazarobox. macOS has no such signal; there, and as a second
+//!   line on Linux, the watcher stops its group (see `runtime::watch`).
 //! - Its output goes to a log file in lazarobox's state folder, emptied on
 //!   each start and never followed through a symlink. A failed start shows its
 //!   last line, sanitized.

@@ -36,7 +36,10 @@ impl GroupKill {
     pub fn new(pgid: libc::pid_t) -> Option<Self> {
         // SAFETY: getpgrp has no preconditions and cannot fail.
         let own = unsafe { libc::getpgrp() };
-        Self::checked(pgid, own)
+        let guard = Self::checked(pgid, own)?;
+        // The watcher stops it if lazarobox ends before it is reaped.
+        crate::runtime::watch::register(pgid);
+        Some(guard)
     }
 
     /// `new` with our own group given, so the refusal rules are testable.
@@ -63,7 +66,9 @@ impl GroupKill {
     /// Disarms the guard: neither `kill` nor drop signals the group any more.
     /// MANDATORY right after the leader is reaped.
     pub fn disarm(&mut self) {
-        self.0 = None;
+        if let Some(pgid) = self.0.take() {
+            crate::runtime::watch::unregister(pgid);
+        }
     }
 
     /// Whether `kill` and drop would still signal the group.
@@ -108,6 +113,35 @@ impl GroupKill {
 impl Drop for GroupKill {
     fn drop(&mut self) {
         self.kill();
+    }
+}
+
+/// When process `pid` started, in units only comparable with each other: what
+/// tells it apart from a later process that reuses its pid. A zombie still
+/// has one on Linux; `None` once it is gone, or where it cannot be read.
+pub fn start_time(pid: libc::pid_t) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        // pid (comm) state ppid ... starttime is field 22; comm may hold
+        // spaces and parentheses, so count from the last ')'.
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let after = stat.rsplit_once(')')?.1;
+        after.split_whitespace().nth(19)?.parse().ok()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        // SAFETY: `info` is a writable buffer of exactly `size` bytes.
+        let read = unsafe {
+            libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size)
+        };
+        (read == size).then(|| info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
     }
 }
 
@@ -309,5 +343,21 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         assert!(is_gone(grandchild), "the group's grandchild is killed");
+    }
+
+    #[test]
+    fn start_time_tells_a_process_apart_and_ends_with_it() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id() as libc::pid_t;
+        let first = start_time(pid).expect("a running child has one");
+        assert_eq!(start_time(pid), Some(first), "stable while it runs");
+        let own = start_time(std::process::id() as libc::pid_t).expect("ours too");
+        assert_ne!(own, 0);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(start_time(pid), None, "gone once reaped");
     }
 }
