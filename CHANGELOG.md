@@ -37,7 +37,11 @@ baseline.
 
 - On a cloud engine, `edit_file` asks like `read_file`, once per file per turn,
   because its answers reveal what a file contains.
-- Write is Linux only: elsewhere an approved batch writes nothing and says so.
+- Write works on Linux and macOS (APFS and HFS+); on any other system an
+  approved batch writes nothing and says so. On macOS, a filesystem without an
+  atomic no-replace rename (exFAT, SMB, NFS) answers "not supported" and nothing
+  is written, and replacing a file drops its extended attributes, ACLs,
+  quarantine flag and Finder tags.
 
 ## [0.22.0] - 2026-10-23
 
