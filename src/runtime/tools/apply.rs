@@ -131,6 +131,11 @@ pub enum ApplyResult {
 }
 
 impl ApplyResult {
+    /// Whether the whole batch is on disk.
+    pub fn applied(&self) -> bool {
+        matches!(self, ApplyResult::Applied(_))
+    }
+
     /// The text for the model: paths and counts, never file text or diff rows.
     pub fn summary(&self) -> String {
         let list = |paths: &[PathBuf]| -> String {
@@ -182,6 +187,40 @@ impl ApplyResult {
             ),
             ApplyResult::Unsupported => {
                 "writes are not supported on this platform, nothing was written".into()
+            }
+        }
+    }
+
+    /// What the model hears of an apply the user made that closed the batch.
+    /// Fixed templates and counts only: [`ApplyResult::summary`] names paths,
+    /// and the model must not learn the path of anything it did not write.
+    pub fn told(&self) -> String {
+        let s = |n: usize| if n == 1 { "" } else { "s" };
+        match self {
+            ApplyResult::Applied(changes) => format!(
+                "The user applied the batch you left staged: applied {} paths.",
+                changes.len()
+            ),
+            ApplyResult::Partial { changed } => format!(
+                "The user's apply of your staged batch failed part way; {} path{} still changed on disk.",
+                changed.len(),
+                s(changed.len())
+            ),
+            ApplyResult::Drifted(paths) => format!(
+                "The user's apply of your staged batch was refused; {} path{} changed since the review and nothing was written.",
+                paths.len(),
+                s(paths.len())
+            ),
+            ApplyResult::Failed { undone, .. } => format!(
+                "The user's apply of your staged batch failed; {}.",
+                if *undone {
+                    "every earlier change was undone"
+                } else {
+                    "nothing was written"
+                }
+            ),
+            ApplyResult::Invalid { .. } | ApplyResult::Unsupported => {
+                "The user's apply of your staged batch was refused; nothing was written.".to_owned()
             }
         }
     }
@@ -1199,5 +1238,39 @@ mod tests {
             );
             assert_eq!(std::fs::read_to_string(&user).unwrap(), "theirs");
         }
+    }
+
+    // The model-facing line of a refused or failed apply holds no path.
+    #[test]
+    fn the_told_line_of_a_refused_or_failed_apply_names_no_path() {
+        let path = PathBuf::from("/home/u/secret-project/key.txt");
+        let results = [
+            ApplyResult::Invalid { path: path.clone() },
+            ApplyResult::Failed {
+                path: path.clone(),
+                undone: true,
+            },
+            ApplyResult::Failed {
+                path: path.clone(),
+                undone: false,
+            },
+            ApplyResult::Drifted(vec![path.clone()]),
+            ApplyResult::Partial {
+                changed: vec![path.clone()],
+            },
+            ApplyResult::Unsupported,
+        ];
+        for result in results {
+            let line = result.told();
+            assert!(
+                !line.contains("secret") && !line.contains("key.txt"),
+                "{line}"
+            );
+            assert!(!line.contains('/'), "{line}");
+        }
+        assert_eq!(
+            ApplyResult::Invalid { path }.told(),
+            "The user's apply of your staged batch was refused; nothing was written."
+        );
     }
 }

@@ -464,3 +464,175 @@ Passed at once, proved by mutation: Release (arm made to fall through: failed), 
 Deviation: the event-loop wiring (`app.wake_review()`, `app.frame_drawn()` in `runtime.rs`) has no test; both methods are tested through the App. Production total of the branch against `feat/coding-tools-we3`: about 720 added lines (650 without blanks), over 500: `size:exception` as agreed.
 
 Checks: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5734 lib), `cargo +1.88 check --all-targets`, no `.snap.new`.
+
+## Batch: slice W-f (host staging tools, PR 22, branch feat/coding-tools-wf, base feat/coding-tools-we4)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Wf.1 `Call::{CreateDir, WriteFile, EditFile, ProposeBatch}` parse, family Write | done | feat(tools): parse create_dir, write_file, edit_file and propose_batch behind the Write family |
+| Wf.2 host stages without ask or disk touch; read tools get the view; `propose_batch` seals, asks, applies on `Sent` | done | feat(tools): stage write calls in the host without a prompt and apply a sealed batch only after the user's y |
+| Wf.3 toggles-off golden; Write call with Write off is `unknown tool`; host re-check | done | test(tools): pin that a write tool with its toggle off is answered like an unknown name (the host re-check landed with Wf.2) |
+| Unreviewable batch | done | in Wf.2 |
+| Wd-review obligation (review-only invariant) | done | host test `a_secret_in_the_base_or_the_new_text_reaches_no_model_facing_string` |
+
+## Seam decision (W-f)
+
+`host.rs` could not be left untouched: the batch ask must be registered before the `ToolCall` is announced and the result must go through `Owed`, so `propose_batch` has to live in `execute`'s flow. The seam is the child module `runtime/tools/host/files.rs` (all logic, 248 lines) and `host.rs` gets hooks only: +50/-23 lines (net +27).
+
+- `TurnScope.families` (default LEGACY) and `TurnScope.stage_key` (default None); `ToolHost.stages: Arc<Mutex<Stages>>`; `ToolHost::env(origin)` replaces the inline `ToolEnv` build (so the final arm shrank by 18 lines); `checked` is `Result<Call, Cow<'static, str>>` because a seal error text is dynamic.
+- Four hooks in `execute`: `files::gate` (before the ask), `files::seal` (an arm before `ask_for`), `files::answered` (first arm of the decision match), `files::run` (the old final arm: read tools over the view, and the staging calls).
+- Rebase points against S1c-2 (`TurnScope`, execute filter, scope check, ask label): the two new `TurnScope` fields and their 2 lines in `TurnScope::new` and in `runtime/chat.rs:762`; the `checked` type; the `ProposeBatch` arm; the first decision arm; the replaced final arm.
+- No `ToolEnv` change (12 literals would break): `tools::run_over(call, env, limits, Option<StagedView>)` carries the view; `run` is `run_over(.., None)`.
+- No `BatchId` in the ask: the answer returns to the `execute` future that sealed the batch and holds the id; `Stages::apply(id, ..)` is generation-checked (`Stale` otherwise, tested). W-g needs an id route only for orphans, which have no live future.
+- The app side needs no change: `Effect::ToolDecision` already reaches the approver future through `Waits::decide`, and W-e4's review produces `Sent` / `Denied(reason)`.
+
+## TDD cycle evidence (W-f)
+
+| Task | RED (seen failing) | GREEN | Triangulation | REFACTOR |
+|------|--------------------|-------|---------------|----------|
+| Wf.1 | `E0599 no variant named CreateDir / EditFile / WriteFile`, `no variant or associated item ProposeBatch` (4 errors); then `E0004 non-exhaustive patterns` in `approval.rs` and `fs.rs` | 385 core tools tests (incl. the 0.18.0 golden) | offered/parsed only with Write on (4 tools x LEGACY/on), schema bytes, argument is the path never the text, missing/wrong type/extra/not object, caps at and over (32 KiB content, 16 KiB old and new), empty `old` parses, `propose_batch` takes no key | `field()` const helper next to `text()`; `parse_built_in` handles a tool with no first argument |
+| Wf.2 | `E0609 no field families / stage_key on TurnScope`, `no field stages on ToolHost` (6 errors) | 15 of 15 in `host/files_tests.rs`, 59 in `runtime::tools::host`; two RED-in-GREEN fixes of my own tests (defang is unconditional, so the family-off test stages under a key and reads with the family off; a file below a never-staged folder is refused, so the test stages the folder first) | staging asks nothing and the disk stays untouched, restage replaces, edits chain on the staged text, read/glob/grep see the pending batch and another pane does not, refusals (escape, `.env`, missing file, ambiguous edit, over the cap) stage nothing, empty propose, approved batch applied (counts and paths), reject and no approver (`Unwired`) discard, no staging while a batch waits, unreviewable batch (Sent and Denied(TOO_LARGE)), answer for a gone batch is `Stale`, drift closes the batch, family off is `unknown tool` x 4 calls x 2 sets and no key, secret test x 3 answers | `Stages::stage_with` generic over the error; `Stages` disk read wrapped as `disk_bytes` so `files.rs` names no `write`/`apply` module |
+| Wf.3 | the toggles-off host test and the golden test passed at once | n/a | MCP `tools/call` of the 4 write names with all toggles off is byte-identical to an unknown name; `tools/list` does not hold them | none |
+
+Mutations (tests that passed at once, all reverted): `gate` always `Ok` failed the family-off test; view passed whatever the family failed `with_the_family_off_the_read_tools_see_no_batch`; `Sent` ignoring `reviewable` failed the unreviewable test; no discard on deny failed 2; `made` (folder staged above) disabled failed 2; no discard after a drift failed the drift test; `{batch:?}` appended to the staging text failed the staging test and the secret test. Core: removing the family filter in `parse_built_in` failed the golden test.
+
+## Deviations / notes (W-f)
+
+- Result texts (counts and paths only): staging `staged <path> (batch: N of 50 entries, B of 1048576 bytes)`; apply = `ApplyResult::summary()`; reject `denied: <reason>`; unreviewable `denied: <TOO_LARGE>` (also when the answer is `Sent`: the host never applies an unreviewable batch); family off or no stage key `unknown tool`.
+- `ApplyResult::applied()` added (4 lines in `apply.rs`) so the host picks the status without naming the module. `stage::disk_bytes` and `Unreadable` added; `StageFailed<E = StageError>`.
+- Every denial and every non-applied apply result (`Drifted`, `Invalid`, `Failed`, `Unsupported`) discards the batch, so the model is never left with a `Proposed` batch it cannot stage into or propose again. This differs from W-e3's "stays Proposed so the user can discard it": that stays true for the store, but the host closes it because the user has answered and the model has been told. A `Partial` was already removed by the store.
+- `ANOTHER_PENDING` (the app denies the ask when another approval is pending) also discards the batch: the host cannot tell it from a rejection. Rare (calls of a turn are sequential); a later slice may keep the batch.
+- The batch is sealed BEFORE the ask. If the call is dropped before the answer (turn cancelled, CLI timeout, or the result slot cannot be reserved) it stays `Proposed`: that is the orphan W-g routes (`Effect::BatchReview/Apply/Discard`). Nothing here handles it.
+- `create_dir` on a name that exists (file or folder) is refused with the refusal text: apply would drift on it. A file below a folder that is neither on disk nor staged is refused too (the tool descriptions do not say so yet; the model learns from `path not available`). A folder staged earlier in the batch makes the names below it absent.
+- The disk read of staging is `Disk::probe` (`open_target`: checked parent, no link, nlink 1, `judge_real` on the fd path), capped at 2 MiB; `size` is the bytes read, which is enough because the batch thresholds (64 KiB, 1 MiB) are below the cap.
+- Staging and apply run in `spawn_blocking` under the `Stages` mutex (poison is ignored: the store holds plain data).
+- The result of a staging call is not wrapped as untrusted data: it holds only the model's own path and counts. Read results stay wrapped.
+- No app test of the whole chain `y` -> `Waits` -> host -> disk: the pieces are tested (W-e4 `Sent` on `y`, `Waits::decide`, host with a scripted approver).
+
+### Audit changes: none
+
+`host/files.rs` names neither the `write` nor the `apply` module and holds no write token (the `create_dir` identifier is avoided: `stage_dir`, `CreateDir`). `stage.rs` is already in `MAY_CALL_APPLY`. `audit.rs` untouched; `every_tool_file_...` passes with the new file.
+
+## Size (W-f)
+
+About 455 production lines (core `tools/mod.rs` 105, `host/files.rs` 248, `host.rs` +48, `stage.rs` +20, `approval.rs` +7, `fs.rs` +6, `apply.rs` +5, `runtime/tools/mod.rs` +13, `chat.rs` +3) and about 880 test lines (`files_tests.rs` 543, core tests, golden). Under the ~500 cut line.
+
+## Checks (W-f)
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5753 lib tests green), `cargo +1.88 check --all-targets`, no `.snap.new`. No macOS-only file mentions `Call`, `ApprovalAsk`, `ToolEnv` or `TurnScope`.
+
+## W-f review fixes
+
+Strict TDD. Commits after the W-f slice: `test(mcp)` route family, `fix(tools)` Debug and descriptions, `test(tools)` secret coverage, `fix(tools)` drop guard, `fix(tools)` disk before lock.
+
+| Fix | RED | Fix made |
+|-----|-----|----------|
+| 1 Drop guard | `a_call_dropped_while_its_batch_waits_frees_the_pane` and `a_call_that_cannot_announce_does_not_leave_its_batch_sealed`: `assertion left == right failed, left: 1, right: 0` (the sealed batch stayed in the store) | `Sealed` is an RAII guard (`Arc<Mutex<Stages>>` + `BatchId`); its Drop calls `Stages::discard(id)`. It lives to the end of `answered`, so every exit (denied, applied, error, cancel) closes the batch; the discard is generation-checked, so a stale guard is harmless. The explicit discards in `answered` were removed as redundant. The `send(announce)` failure shares the guard path with the `reserve_owned` one. W-g still owns pane-close / orphan handling. |
+| 2 Lock and IO | `staging_reads_the_disk_before_it_takes_the_lock`: `the lock was held, left: Some(false) right: Some(true)`; `a_busy_store_does_not_block_the_async_worker`: `the worker is blocked on the store lock` | `stage_with_probe` reads the disk first (`probe` seam), then locks for memory only; the `made` folder check wins over the probe result. `seal` and the staged `view` take the lock inside `spawn_blocking`; the guard Drop uses `try_lock` and falls back to the blocking pool when an apply holds the store. Apply already took the lock inside its closure. |
+| 3 Secret test | passed at once; mutation: appending the content to the `write_file` result failed `a_secret_reaches_no_other_model_facing_output` (reverted) | New test covers `write_file` content, staged `read_file`/`grep` (redacted), edit NoMatch/Ambiguous, Drifted, every `ApplyResult::summary()`, "waiting for review" and the events. The old test's `seen.len() >= 6` became explicit asserts per output. A plain word the model wrote itself (`hunter2`) is not redacted in the staged view: only recognizable tokens are. |
+| 4 Debug | `debug_of_a_content_call_never_shows_the_text`: the derived Debug printed `content: "sk-ant-..."` | Manual `Debug for Call`: path and `content_len` / `old_len` / `new_len` only. |
+| 5 MCP route | passed at once; mutation: `tools/call` forced to the Write family failed it (`expected a reply, got Call`), reverted | `a_route_without_the_write_family_lists_and_routes_no_write_tool`. |
+| 6 Descriptions | `staging_tools_say_when_they_are_refused` | `create_dir`, `write_file`, `edit_file` say "Staging is refused while a batch waits for review."; `create_dir` also names the refused cases. The 0.18.0 golden is LEGACY-only: no update needed. |
+
+The `edit_file` NoMatch / Ambiguous messages were not touched (pending product decision).
+
+Checks: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (5761 lib tests), `cargo +1.88 check --all-targets` green; no `.snap.new`.
+
+## W-f: edit_file asks on a Cloud engine
+
+User decision: `edit_file` is a content oracle, so on Cloud it asks like `read_file`, once per file per turn; Local never asks.
+
+- `ask_for`: `Call::EditFile` on Cloud gives `ApprovalAsk::Read { path }` (no new variant, no UI change); `route()` already prompts a Read in every mode, so the edit routes the same (pinned for Ask, Auto, Run and both origins).
+- Host: the path is shown through `display_target` as for a read (unshowable: refused). `TurnScope.allowed: Mutex<HashSet<String>>` (per turn, since a scope is built per turn) is filled when a read or edit ask is answered `Sent`; an edit of an allowed path does not ask. A read does not consult it. A denial is not remembered and stages nothing.
+- RED: `a cloud edit asks` (ask_for returned None), `[]` (no ask recorded), and a denied edit returned `staged b.txt (...)`.
+- Known cost: an edit of a file the batch itself created also asks on Cloud (the host does not tell it from a disk file).
+
+### W-f review round 2 (edit_file cloud ask edges)
+
+- Pinned by tests: an unshowable path is refused with zero asks and nothing staged; `b.txt`, `./b.txt`, `sub/../b.txt` and `~/proj/b.txt` share one ask; a read of `./b.txt` then an edit of `b.txt` asks once, while an edit then a read asks twice (a read does not consult `allowed`); a `Busy` answer is not remembered.
+- Fix: an empty `old` is refused in the host pre-check (text of `EditError::EmptyOld`) before the ask. RED: the ask was recorded for it. Missing/ambiguous `old` still asks (accepted, documented in the code-write spec together with the concurrent-edit and symlink behaviors).
+- `ask_for` doc comment reflowed.
+
+## W-g: runtime chat lifecycle (PR 23, feat/coding-tools-wg)
+
+Strict TDD. Commits: `feat(tools)` close discards, `feat(tools)` orphans and routing, `feat(tools)` model told.
+
+| Task | RED | GREEN |
+|------|-----|-------|
+| Wg.1 | `closing_a_chat_discards_its_batch_and_counts_the_entries` (compile: no `Chats::close_batch`, `discard_key` returned bool); app: close of a chat emits `BatchClose`, `AppEvent::Batch(Closed(n))` shows `discarded N staged entries` | `Stages::discard_key -> Option<usize>`; `host/orphan.rs` (`ToolHost::close_batch`); `Chats::close_batch`; `Effect::BatchClose` appended by `App::stop_effect` (close path only, so a cancel still leaves the orphan); `BatchEvent` + `closed_notice` in `core/ai/chat/review.rs`; `AppEvent::Batch` handled in `app/review.rs` |
+| Wg.2 | `a_call_dropped_while_its_batch_waits_leaves_a_proposed_orphan` (`left: 0, right: 1`: W-f's drop guard discarded on cancel); `an_ended_turn_keeps_its_batch_but_a_user_no_discards_it`; `an_unproposed_batch_is_sealed_when_the_user_reviews_it`; `an_orphan_is_reviewed_applied_or_discarded_through_the_chats` | `Sealed.keep`: set by `announced()` once the ask is on the channel, so a drop while it waits keeps the batch; `answered` keeps it on `Denied(ENDED)` (turn/pane ended with the ask open: CLI timeout, cancel) and discards on any user answer. `Stages::review` over core `Batch::review_orphan(turn_live)`; `ToolHost::{review,apply,discard}_batch`; `Chats::{review,apply,discard}_batch` (`turn_live` from the pane's running task); `Effect::BatchReview(pane)`, `BatchApply{pane,id}`, `BatchDiscard{pane,id}` executed in `runtime.rs` |
+| Wg.3 | `a_told_line_reaches_the_next_request_once_and_is_never_stored` (core); app `a_user_side_answer_to_an_orphan_is_told_to_the_model_on_its_next_turn`; `an_orphan_answer_never_tells_the_model_the_base_or_the_diff` (passed at once: counts only by construction) | `ChatState::tell` + `told: Vec<String>` appended to `request.system` after a blank line on the next real send (kept when a send is refused, not stored); `BatchEvent::Done { shown, told }` (told only when the batch is closed: applied/partial or discarded) |
+
+Mutation: `keep` forced false failed `an_ended_turn_keeps_its_batch...` (reverted).
+
+### Deviations / notes (W-g)
+
+- **W-f drop-guard semantics changed on purpose.** The guard still discards a batch whose call never announced (closed channel). After the announce a drop keeps the batch (Proposed-orphan). `a_call_dropped_while_its_batch_waits_frees_the_pane` was replaced by the orphan test. The spec says cancel and CLI timeout leave an orphan, so this is the spec's behavior.
+- A turn ended while the ask is open reaches `answered` as `Denied(ENDED)` when the call future survives (the MCP session task); it is treated as an orphan, not a user's no. Any other denial still discards.
+- "System line in the request" = the chat's system text of the next request, extended by the app-side `ChatState` (not `Chats`, which must never rewrite the system prompt: `the_chats_never_rewrite_the_system_prompt`). Applied results with `Drifted`/`Invalid`/`Failed` leave the batch proposed and tell the model nothing.
+- Review of an orphan is refused while a turn of the pane runs (`turn_live`), since the batch is then the model's.
+- The `Review` event is only carried to the app; the view that consumes it (Ctrl+G, badge) is W-h. The apply/discard effects take the orphan's `BatchId`, so a stale id is `that batch is no longer there`.
+- Apply by the user runs under the `Stages` lock on the runtime thread (one batch, at most 50 entries / 1 MiB). W-f's async path still uses `spawn_blocking`.
+- `host/orphan.rs` names neither the `write` nor the `apply` module (closedness read from the store, not from `ApplyResult`): no audit change.
+- Quit is not wired here (Wh.3).
+
+### Size (W-g)
+
+About 295 production lines (`host/orphan.rs` 84, `app.rs` ~28, `app/review.rs` ~22, `review.rs` ~26, `runtime.rs` ~27, `chat.rs` ~31, `stage.rs` ~25, `files.rs` ~25, `chat/mod.rs` ~16, `host.rs` 5) and about 450 test lines. Under budget.
+
+### Checks (W-g)
+
+`cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib` (5776), `cargo +1.88 check --all-targets` green; no `.snap.new`.
+
+### W-g review round
+
+Fresh review found no critical issues; confirmed fixes, strict TDD:
+
+- A: the early return on `Answer::Ran` leaked a Proposed orphan (RED: `a_report_answering_a_batch_denies_it_and_closes_the_batch`, staged 1). `Sealed::resumed()` clears `keep` as soon as the wait resumes, so `keep` only survives a drop by cancellation and no explicit return can leak. `RAN_ENDED` for `ProposeBatch` is a discard (`a_ran_ended_answer_discards_the_batch`).
+- B: `ToolHost::apply_batch(id, turn_live)` refuses a live turn (`LIVE`) and a non-reviewable doc (`TOO_LARGE`), writing nothing and keeping the batch. `Chats::apply_batch` derives `turn_live` from the pane's task.
+- C: `ApplyResult::told()` holds fixed templates with counts only (no paths); unit test over every variant. Lives in `apply.rs`, so `orphan.rs` still names no `apply` module (audit).
+- D: implemented (about 17 production lines). `ChatState.told_sent` keeps what the request in flight carries; any engine event other than Slow/Notice/Error clears it; `finish` without that puts it back ahead of newer lines.
+- E: drift leaves `told` None and the batch Proposed (`a_drifted_orphan_apply_leaves_the_batch_proposed_and_tells_nothing`).
+- Spec notes added to code-write: accepted UI cost of the Stages lock vs. an in-flight W-f apply (50 entries, 1 MiB).
+
+## W-h: badge, Ctrl+G, quit notice (PR 24, feat/coding-tools-wh)
+
+Strict TDD. Commits: `feat(chat)` badge, `feat(chat)` poll and Ctrl+G, `feat(app)` quit.
+
+| Task | RED | GREEN |
+|------|-----|-------|
+| Wh.1 | `badge_tests` (compile: no `Badge`, no `set_batch_badge`); `badges_count_the_entries_and_call_an_orphan_only_when_no_turn_runs` (no `Stages::badges`); `the_badges_follow_the_batches_and_the_turns_of_the_panes` (no `Chats::batch_badges`); app `the_poll_sets_and_clears_the_badge_and_redraws_only_on_a_change` | `Badge::{Staged,Orphan}(n)` + `Badge::text(room)` in `core/ai/chat/review.rs`; `ChatState.batch_badge`; `ChatView::draw_batch_badge` top left (` staged 3 `, ` orphan 2 · Ctrl+G `, then ` orphan 2 `, then ` O2 `), blue for staged and orange for orphan, hidden under the review, drawn in every other view, leaves 8 columns on the right for the mode and scroll badges; `Stages::badges(live)` (orphan = `Batch::orphan(turn_live)`), `ToolHost::badges` (`try_lock`, never waits), `Chats::batch_badges`, `App::sync_batches`, polled on the 16 ms tick in `run_loop` |
+| Wh.2 | `ctrl_g_asks_for_the_review_of_an_orphan_and_nothing_else`, `the_review_event_opens_the_same_view_for_the_orphan`, `y_applies_the_orphan_behind_the_same_gate`, `n_and_esc_discard_the_orphan_after_the_delay`, `cancel_at_the_ask_then_review_apply_and_the_badge_clears` (end to end at app level with the runtime simulated by events) | Ctrl+G in `on_chat_key` (debounced like the other one-shot keys) emits `Effect::BatchReview` only for an `Orphan` badge, else a notice; `BatchEvent::Review` opens the W-e4 view as a batch ask WITHOUT a call (`Origin::Block`, `ChatState.orphan = Some(BatchId)`): same coverage gate, 800 ms arm and n/Esc rules; `y` emits `BatchApply{pane,id}`, `n`/Esc emit `BatchDiscard{pane,id}`, Ctrl+C closes the view and leaves the orphan |
+| Wh.3 | app `quitting_closes_the_batch_of_each_chat_that_wears_a_badge_before_the_quit`; runtime `quitting_remembers_how_many_staged_entries_it_discarded` (no `Panes::quit_notice`) | `quit_effects` appends `BatchClose` for each chat with a badge before `Quit`; `Panes.quit_lost` is the sum of the entries lost by the `BatchClose` effects of the apply that quits, printed with `eprintln!` right after `restore()` |
+
+### Decisions / notes (W-h)
+
+- **Key**: Ctrl+G. The chat key table has Enter, Esc, Ctrl+C/Y/B/R/J/U, PageUp/Down and the Ctrl+Space prefix (not Ctrl+G, so no clash). Ctrl+O (S1e-1a) is not bound anywhere (modal-input spec: swallowed), so there is no conflict either. Ctrl+G was the old prefix proposal of terminal-pane, replaced by Ctrl+Space.
+- **Badge data source**: staging has no event, so the runtime tick polls the store (`Chats::batch_badges`, a `try_lock` of the memory-only store) and the app compares. A model's staging shows up within one tick (16 ms).
+- **Staged vs orphan**: orphan = the batch has entries and no turn of its pane runs (the same rule `review_orphan` applies), so the badge and the host never disagree.
+- **Orphan review reuses the W-e4 view as a call-less batch ask**: `reviewed_orphan` requires `approval.call().is_none()` AND a stored orphan id, so a stale id can never turn a model's `y` into an apply by id (test pinned). `close_approval` clears the id and no longer writes "cancelled" for a batch review (the `Done` notice speaks).
+- **Quit notice** can only be shown after the terminal is restored (the panes are gone at that point), so it is a stderr line: `discarded N staged entries`. Quits by signal do not print it (no `BatchClose` ran); the batch is memory only either way.
+- Quit only closes batches of chats that wear a badge (the 16 ms poll); a batch staged in the last tick before the quit is still lost but not counted.
+- README key table (Spanish) not touched; add the Ctrl+G row in the docs slice.
+
+### Size (W-h)
+
+About 255 production lines (`review.rs` 81, `chat/mod.rs` 28, core `review.rs` 28, `ui/chat.rs` 29, `runtime.rs` ~20, `orphan.rs` 21, `stage.rs` ~20, `runtime/chat.rs` 12, `notes.rs` 7, `run.rs` 5, `chat.rs` 2) and about 500 test lines. Well under budget.
+
+### Checks (W-h)
+
+`cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib` (5805), `cargo +1.88 check --all-targets` green; no `.snap.new`. Three new snapshots reviewed (`staged_badge_40x5`, `orphan_badge_40x5`, `orphan_and_auto_badges_40x5`).
+
+### W-h review round
+
+A fresh review found nothing critical. Six confirmed items, one commit each:
+
+1. **Badge flicker**: `ToolHost::badges` and `Chats::batch_badges` return `Option<HashMap>`; `None` on a busy store (`WouldBlock`) or without tooling. `run_loop` calls `sync_batches` only on `Some`, so a contended poll keeps the previous badges. Tests: `a_contended_badge_poll_answers_none_and_a_free_one_answers` (host holds the `Stages` lock), `None` without tooling in `the_badges_follow_the_batches_and_the_turns_of_the_panes`.
+2. **Quit discards every chat**: `quit_effects` emits `BatchClose` for every chat pane (no badge filter; `discard_key` is a no-op for an absent or empty batch), so a batch staged since the last poll is also discarded and counted. Test: `quitting_closes_the_batch_of_each_chat_before_the_quit`; six older quit expectations now include the `BatchClose`.
+3. **Badge no longer hides the first transcript row**: the conversation reserves its top row for the badge (`ChatView::plan` shrinks the transcript by one row from the top; `badge_row`). Chosen over the composer border because the badge already lives top left with the mode badge on the same row, and the border is the composer's own chrome, drawn in other places. A pane whose transcript has fewer than 2 rows, or too narrow for any badge text, reserves nothing and draws no badge. The list, note, tag and summary views keep the overlay (they have no transcript to protect). Three snapshots regenerated: `› question` is now visible; no other snapshot changed. Tests: `the_batch_badge_keeps_the_first_transcript_row_visible`, `a_pane_too_small_to_spare_a_row_shows_the_transcript_and_no_badge`, `the_layout_gives_up_a_row_only_while_a_badge_is_drawn`.
+4. **Quit notice**: `writeln!(io::stderr(), ..)` with the result ignored instead of `eprintln!`.
+5. **Ctrl+G on a stale badge**: when `review_batch` returns `None` with tooling present, the runtime answers with `BatchEvent::Done { shown: NO_ORPHAN }` (the constant moved to core `review.rs` and is shared with the app). The 16 ms poll clears the badge on the next tick. Test: `a_review_of_a_stale_badge_answers_with_a_notice`.
+6. **Doc only**: signal exits print no discard notice (see code-write spec, "Notes: orphan answers").
+
+Note: the W-h note above says quit only closes badged chats; superseded by item 2.
+

@@ -18,10 +18,12 @@
 //! dispatch inside `chat::scoped`. The host catches nothing itself.
 
 use std::{
+    borrow::Cow,
+    collections::HashSet,
     ffi::OsString,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -29,7 +31,7 @@ use std::{
 use futures::{FutureExt, future::BoxFuture};
 use tokio::sync::mpsc;
 
-use super::{Limits, ToolEnv, run};
+use super::{Limits, ToolEnv, stage::Stages};
 use crate::{
     core::ai::{
         chat::{
@@ -37,9 +39,13 @@ use crate::{
             engine::{Answer, CallId, Decision, StreamEvent, ToolStatus},
         },
         tools::{
-            Call, Locality, command, label,
+            Call, Locality, command,
+            edit::EditError,
+            label,
             paths::display_target,
+            registry::FamilySet,
             report::{self, RunReport},
+            stage::StageKey,
             summary::clip,
         },
     },
@@ -90,6 +96,15 @@ pub struct TurnScope {
     /// The user's MCP servers this turn may call. Empty until the turn has
     /// started them: a server tool is then refused even after `y`.
     pub external: Slot,
+    /// The families this turn was offered. The write family is checked again
+    /// here: a call the parse should have refused is refused as unknown.
+    pub families: FamilySet,
+    /// Whose batch the write tools fill, and whose staged changes the read
+    /// tools show. `None` for a turn that cannot stage.
+    pub stage_key: Option<StageKey>,
+    /// The paths (as shown) the user allowed a read or an edit of in this
+    /// turn: a later `edit_file` of one does not ask again.
+    pub allowed: Mutex<HashSet<String>>,
 }
 
 impl TurnScope {
@@ -101,6 +116,9 @@ impl TurnScope {
             origin,
             approver: Arc::new(Unwired),
             external: Slot::default(),
+            families: FamilySet::LEGACY,
+            stage_key: None,
+            allowed: Mutex::default(),
         }
     }
 }
@@ -112,6 +130,8 @@ pub struct ToolHost {
     xdg_data_home: Option<OsString>,
     limits: Limits,
     next: AtomicU64,
+    /// The staged batches of every chat: in memory, never saved.
+    stages: Arc<Mutex<Stages>>,
 }
 
 impl ToolHost {
@@ -137,7 +157,18 @@ impl ToolHost {
             xdg_data_home,
             limits,
             next: AtomicU64::new(1),
+            stages: Arc::default(),
         })
+    }
+
+    /// What a call may see, for the chat whose origin directory is `origin`.
+    fn env(&self, origin: &Path) -> ToolEnv {
+        ToolEnv {
+            home: self.home.clone(),
+            xdg_config_home: self.xdg_config_home.clone(),
+            xdg_data_home: self.xdg_data_home.clone(),
+            origin: origin.to_path_buf(),
+        }
     }
 
     /// The dispatch of one turn.
@@ -274,15 +305,19 @@ async fn call_external(
 async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outcome {
     let id = CallId(host.next.fetch_add(1, Ordering::Relaxed));
     // The command is the sanitizer's, so the ask shows what would be typed.
-    let mut checked = match &call {
+    let mut checked: Result<Call, Cow<'static, str>> = match &call {
         Call::RunInPane { command } => command::validate(command)
             .map(|valid| Call::RunInPane {
                 command: valid.as_str().to_owned(),
             })
-            .map_err(|refusal| refusal.reason()),
-        other => Ok(other.clone()),
+            .map_err(|refusal| refusal.reason().into()),
+        other => files::gate(&scope, other)
+            .map(|()| other.clone())
+            .map_err(Cow::from),
     };
     let mut ask = None;
+    let mut sealed = None;
+    let mut approves = None;
     if let Ok(valid) = &checked {
         match (valid, scope.locality) {
             // A cloud read asks with the path as it will be opened: resolved,
@@ -291,6 +326,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 let home = host.home.as_deref().map(Path::new);
                 match home.and_then(|home| display_target(home, &scope.origin, path)) {
                     Some(shown) => {
+                        approves = Some(shown.clone());
                         ask = ask_for(
                             &Call::ReadFile {
                                 path: shown,
@@ -299,9 +335,37 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                             Locality::Cloud,
                         )
                     }
-                    None => checked = Err(UNSHOWABLE),
+                    None => checked = Err(UNSHOWABLE.into()),
                 }
             }
+            // An edit that can only fail is refused before it asks. A missing
+            // or ambiguous `old` still asks: it too tells whether a text occurs.
+            (Call::EditFile { old, .. }, Locality::Cloud) if old.is_empty() => {
+                checked = Err(EditError::EmptyOld.to_string().into());
+            }
+            // An edit of a file asks like a read of it, once per file per turn.
+            (Call::EditFile { path, .. }, Locality::Cloud) => {
+                let home = host.home.as_deref().map(Path::new);
+                match home.and_then(|home| display_target(home, &scope.origin, path)) {
+                    Some(shown) => {
+                        if !files::lock_set(&scope.allowed).contains(&shown) {
+                            ask = Some(ApprovalAsk::Read {
+                                path: shown.clone(),
+                            });
+                        }
+                        approves = Some(shown);
+                    }
+                    None => checked = Err(UNSHOWABLE.into()),
+                }
+            }
+            // A batch is sealed before the ask: the user reviews what was sealed.
+            (Call::ProposeBatch, _) => match files::seal(&host, &scope).await {
+                Ok((batch, review)) => {
+                    ask = Some(ApprovalAsk::Batch(review));
+                    sealed = Some(batch);
+                }
+                Err(why) => checked = Err(why.into()),
+            },
             (valid, locality) => ask = ask_for(valid, locality),
         }
     }
@@ -334,6 +398,10 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     if scope.events.send(announce).await.is_err() {
         return gone();
     }
+    // From here the user may see the ask: a batch dropped now is an orphan.
+    if let Some(batch) = sealed.as_mut() {
+        batch.announced();
+    }
     // Only an announced call owes a result.
     let owed = Owed {
         id,
@@ -341,14 +409,25 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     };
 
     let (outcome, status, summary) = match checked {
-        Err(reason) => ended(ToolStatus::Error, reason.to_owned(), reason),
+        Err(reason) => ended(ToolStatus::Error, reason.to_string(), &reason),
         Ok(call) => {
             let answer = match pending {
                 Some(pending) => pending.await,
                 None => Decision::Sent.into(),
             };
+            // Resumed, so not dropped by a cancel: from here the batch is
+            // kept only where `answered` says so, and no early return below
+            // can leave an orphan.
+            if let Some(batch) = sealed.as_mut() {
+                batch.resumed();
+            }
             let decision = match answer {
-                Answer::Decided(decision) => decision,
+                Answer::Decided(decision) => {
+                    if let (Some(shown), Decision::Sent) = (approves, decision) {
+                        files::lock_set(&scope.allowed).insert(shown);
+                    }
+                    decision
+                }
                 // Only a run is ever given a report.
                 Answer::Ran(_) if !matches!(call, Call::RunInPane { .. }) => {
                     let (outcome, status, summary) = ended(
@@ -366,6 +445,9 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                 }
             };
             match (decision, call) {
+                (decision, Call::ProposeBatch) => {
+                    files::answered(&host, &scope, sealed.take(), decision).await
+                }
                 (Decision::Denied(reason), _) => {
                     ended(ToolStatus::Denied, format!("denied: {reason}"), reason)
                 }
@@ -405,22 +487,7 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     _ => ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER),
                 },
                 (Decision::Sent | Decision::Typed(_), call) => {
-                    let env = ToolEnv {
-                        home: host.home.clone(),
-                        xdg_config_home: host.xdg_config_home.clone(),
-                        xdg_data_home: host.xdg_data_home.clone(),
-                        origin: scope.origin.clone(),
-                    };
-                    match run(call, env, host.limits.clone()).await {
-                        Ok(text) => {
-                            let summary = format!("{} bytes", text.len());
-                            ended(ToolStatus::Ok, text, &summary)
-                        }
-                        Err(failure) => {
-                            let reason = failure.message();
-                            ended(ToolStatus::Error, reason.to_owned(), reason)
-                        }
-                    }
+                    files::run(&host, &scope, call).await
                 }
             }
         }
@@ -429,7 +496,12 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
     outcome
 }
 
+mod files;
+mod orphan;
+
 #[cfg(test)]
 mod external_tests;
+#[cfg(test)]
+mod files_tests;
 #[cfg(test)]
 mod tests;

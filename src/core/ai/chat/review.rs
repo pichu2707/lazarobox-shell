@@ -17,12 +17,15 @@
 use std::fmt;
 use std::ops::Range;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use crate::core::ai::chat::wrap::{clusters, expand_tabs, row_end, text_width};
 use crate::core::ai::tools::diff::{self, Diff, Kind, escape};
-use crate::core::ai::tools::stage::{Batch, Entry};
+use crate::core::ai::tools::stage::{Batch, BatchId, Entry};
 
 /// What a line of the review is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -221,6 +224,59 @@ impl BatchReview {
             self.doc.files, self.doc.added, self.doc.removed
         )
     }
+}
+
+/// What the runtime reports about a chat's batch outside a model turn. The
+/// review view is only held for the user: nothing here goes to the model.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum BatchEvent {
+    /// The chat closed and its batch of this many entries was discarded.
+    Closed(usize),
+    /// An orphan, sealed and ready for the user to review and answer.
+    Review(BatchId, Arc<BatchReview>),
+    /// The user applied or discarded an orphan. `shown` is the line for the
+    /// user; `told` is what the model hears on its next turn, only when the
+    /// batch is closed. Both hold counts only: never a path's content or a
+    /// diff row.
+    Done { shown: String, told: Option<String> },
+}
+
+/// What the pane says of its chat's batch. Counts only.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Badge {
+    /// A batch the model is still staging, or that waits for the user's `y`.
+    Staged(usize),
+    /// A batch left behind by a turn that ended: the user can review it.
+    Orphan(usize),
+}
+
+impl Badge {
+    /// The text of the badge that fits `room` columns, widest first: the
+    /// count with the review key, the count, a letter and the count.
+    pub fn text(self, room: usize) -> Option<String> {
+        let (word, letter, key) = match self {
+            Self::Staged(_) => ("staged", 'S', ""),
+            Self::Orphan(_) => ("orphan", 'O', " · Ctrl+G"),
+        };
+        let (Self::Staged(n) | Self::Orphan(n)) = self;
+        [
+            format!(" {word} {n}{key} "),
+            format!(" {word} {n} "),
+            format!(" {letter}{n} "),
+        ]
+        .into_iter()
+        .find(|text| text.chars().count() <= room)
+    }
+}
+
+/// Shown on Ctrl+G when there is no orphan batch to review: the chat wears no
+/// orphan badge, or the badge went stale.
+pub const NO_ORPHAN: &str = "no orphan batch to review";
+
+/// The notice of a close that discarded `entries` staged entries.
+pub fn closed_notice(entries: usize) -> String {
+    let s = if entries == 1 { "y" } else { "ies" };
+    format!("discarded {entries} staged entr{s}")
 }
 
 /// The answer to the model for a batch the user could not review: nothing was

@@ -71,10 +71,22 @@ const GRACE: Duration = if cfg!(test) {
 /// already blocked (a hung open on a dead mount) cannot be interrupted and may
 /// still pin one blocking thread until the kernel returns.
 pub async fn run(call: Call, env: ToolEnv, limits: Limits) -> Result<String, Failure> {
+    run_over(call, env, limits, None).await
+}
+
+/// [`run`] that also shows the staged changes of `view`, marked as pending.
+pub async fn run_over(
+    call: Call,
+    env: ToolEnv,
+    limits: Limits,
+    view: Option<staged::StagedView>,
+) -> Result<String, Failure> {
     let cancel = Arc::new(AtomicBool::new(false));
     let _guard = CancelOnDrop(cancel.clone());
     let bound = limits.time + GRACE;
-    let work = tokio::task::spawn_blocking(move || fs::execute_with(&call, &env, &limits, &cancel));
+    let work = tokio::task::spawn_blocking(move || {
+        fs::execute_over(&call, &env, &limits, &cancel, view.as_ref())
+    });
     let text = tokio::time::timeout(bound, work)
         .await
         .map_err(|_| Failure::TimedOut)?

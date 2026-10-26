@@ -5,16 +5,23 @@
 //!
 //! Applying goes through [`apply`]; this file holds no write API.
 
-use std::collections::{HashMap, hash_map::Entry};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    path::Path,
+};
 
 use super::{
     apply::{self, ApplyResult, Disk, WriteOps},
     staged::StagedView,
 };
-use crate::core::ai::tools::{
-    paths::SecretRoots,
-    stage::{Batch, BatchId, Outcome, StageError, StageKey, State},
+use crate::core::ai::{
+    chat::review::{Badge, BatchReview, ReviewDoc},
+    tools::{
+        paths::SecretRoots,
+        stage::{Batch, BatchId, Outcome, StageError, StageKey, State},
+    },
 };
+use crate::core::layout::PaneId;
 
 /// The generation counter ran out: no new batch can be made.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -22,9 +29,20 @@ pub struct Exhausted;
 
 /// Why [`Stages::stage_with`] did not stage.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum StageFailed {
+pub enum StageFailed<E = StageError> {
     Exhausted,
-    Batch(StageError),
+    Batch(E),
+}
+
+/// The disk read of a path could not be made or is not allowed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Unreadable;
+
+/// What the file `real` holds now, for staging: `None` when the name is free.
+/// The same checked read the apply preflight makes, so staging and apply judge
+/// a path alike. It reads and never writes.
+pub fn disk_bytes(roots: &SecretRoots, real: &Path) -> Result<Option<Vec<u8>>, Unreadable> {
+    Disk::new(roots).probe(real).map_err(|_| Unreadable)
 }
 
 /// The live batches, by key.
@@ -46,11 +64,11 @@ impl Stages {
     /// Runs `staging` on the batch of `key`. When it fails and this call made
     /// the batch, the empty batch is removed again; a batch that was already
     /// there stays as it was.
-    pub fn stage_with<T>(
+    pub fn stage_with<T, E>(
         &mut self,
         key: StageKey,
-        staging: impl FnOnce(&mut Batch) -> Result<T, StageError>,
-    ) -> Result<T, StageFailed> {
+        staging: impl FnOnce(&mut Batch) -> Result<T, E>,
+    ) -> Result<T, StageFailed<E>> {
         let (batch, created) = self.open(key).map_err(|_| StageFailed::Exhausted)?;
         let result = staging(batch);
         if result.is_err() && created {
@@ -71,6 +89,27 @@ impl Stages {
         }
     }
 
+    /// What each pane with a batch shows: the entries it holds, an orphan
+    /// when `live` says no turn of the pane runs. An empty batch shows nothing.
+    pub fn badges(&self, live: impl Fn(PaneId) -> bool) -> HashMap<PaneId, Badge> {
+        let mut out = HashMap::new();
+        for (&StageKey::Pane(pane), batch) in &self.batches {
+            let n = batch.entries().len();
+            if n > 0 {
+                let orphan = batch.orphan(live(pane)).is_some();
+                out.insert(
+                    pane,
+                    if orphan {
+                        Badge::Orphan(n)
+                    } else {
+                        Badge::Staged(n)
+                    },
+                );
+            }
+        }
+        out
+    }
+
     pub fn batch(&self, key: StageKey) -> Option<&Batch> {
         self.batches.get(&key)
     }
@@ -87,6 +126,19 @@ impl Stages {
     /// id, from a gone batch of the same key, is refused.
     pub fn seal(&mut self, id: BatchId) -> Result<BatchId, StageError> {
         self.current(id)?.propose()
+    }
+
+    /// The orphan of `key` for the user (see [`Batch::review_orphan`]): a
+    /// batch the turn never proposed is sealed now, a proposed one is shown
+    /// as it is. A live turn, an empty batch or no batch is an error.
+    pub fn review(
+        &mut self,
+        key: StageKey,
+        turn_live: bool,
+    ) -> Result<(BatchId, BatchReview), StageError> {
+        let batch = self.batches.get_mut(&key).ok_or(StageError::NotOrphan)?;
+        let id = batch.review_orphan(turn_live)?;
+        Ok((id, BatchReview::new(ReviewDoc::build(batch))))
     }
 
     /// Applies the proposed batch `id` to the disk below `roots`.
@@ -121,12 +173,12 @@ impl Stages {
         Ok(())
     }
 
-    /// Drops whatever `key` holds (a pane close or an app quit). Whether
-    /// something worth a notice was dropped: an empty batch is no loss.
-    pub fn discard_key(&mut self, key: StageKey) -> bool {
-        self.batches
-            .remove(&key)
-            .is_some_and(|batch| !batch.entries().is_empty())
+    /// Drops whatever `key` holds (a pane close or an app quit). How many
+    /// entries were lost; `None` when nothing worth a notice was: an empty
+    /// batch is no loss.
+    pub fn discard_key(&mut self, key: StageKey) -> Option<usize> {
+        let lost = self.batches.remove(&key)?.entries().len();
+        (lost > 0).then_some(lost)
     }
 
     /// The live batch with exactly this id.
@@ -208,6 +260,31 @@ mod tests {
         fn delete_dir(&self, _: &Path) -> Result<(), WriteError> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn badges_count_the_entries_and_call_an_orphan_only_when_no_turn_runs() {
+        use crate::core::ai::chat::review::Badge;
+        let mut stages = Stages::default();
+        assert!(stages.badges(|_| false).is_empty());
+        put(&mut stages, key(1), "a.txt");
+        put(&mut stages, key(1), "b.txt");
+        let id = put(&mut stages, key(2), "c.txt");
+        // An empty batch is nothing to show.
+        stages.stage(key(3)).unwrap();
+        let live = |pane: PaneId| pane == PaneId::for_test(1);
+        let badges = stages.badges(live);
+        assert_eq!(badges.len(), 2, "{badges:?}");
+        assert_eq!(badges[&PaneId::for_test(1)], Badge::Staged(2));
+        assert_eq!(badges[&PaneId::for_test(2)], Badge::Orphan(1));
+        // A sealed batch whose ask is gone is an orphan too; answered, it goes.
+        stages.seal(id).unwrap();
+        assert_eq!(
+            stages.badges(|_| false)[&PaneId::for_test(2)],
+            Badge::Orphan(1)
+        );
+        stages.discard(id).unwrap();
+        assert!(!stages.badges(|_| false).contains_key(&PaneId::for_test(2)));
     }
 
     #[test]
@@ -358,11 +435,16 @@ mod tests {
     #[test]
     fn a_pane_close_discards_the_batch_and_says_whether_there_was_one() {
         let mut stages = Stages::default();
-        assert!(!stages.discard_key(key(1)));
+        assert_eq!(stages.discard_key(key(1)), None);
         stages.stage(key(1)).unwrap();
-        assert!(!stages.discard_key(key(1)), "an empty batch is no loss");
+        assert_eq!(
+            stages.discard_key(key(1)),
+            None,
+            "an empty batch is no loss"
+        );
         let id = put(&mut stages, key(1), "a.txt");
-        assert!(stages.discard_key(key(1)));
+        put(&mut stages, key(1), "b.txt");
+        assert_eq!(stages.discard_key(key(1)), Some(2));
         assert!(stages.batch(key(1)).is_none());
         assert_eq!(stages.discard(id), Err(StageError::Stale));
     }
@@ -408,7 +490,7 @@ mod tests {
         let _ = stages.stage_with(key(3), |_| Err::<(), _>(StageError::FileTooLarge));
         assert!(stages.batch(key(3)).is_some());
         // A success keeps its batch.
-        assert_eq!(stages.stage_with(key(4), |_| Ok(7)), Ok(7));
+        assert_eq!(stages.stage_with(key(4), |_| Ok::<_, StageError>(7)), Ok(7));
         assert!(stages.batch(key(4)).is_some());
     }
 }
