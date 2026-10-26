@@ -58,6 +58,7 @@ fn the_notify_rows_follow_mouse_in_settings_and_leave_the_ai_section() {
             "Mouse",
             "Notify",
             "Sound",
+            "llama-server idle",
             "Updates"
         ]
     );
@@ -72,9 +73,9 @@ fn the_notify_rows_follow_mouse_in_settings_and_leave_the_ai_section() {
 }
 
 #[test]
-fn the_tabs_hold_six_settings_rows_and_sixteen_ai_rows() {
+fn the_tabs_hold_seven_settings_rows_and_sixteen_ai_rows() {
     assert_eq!(AI_SECTION.items.len(), 16);
-    assert_eq!(SECTIONS[0].items.len(), 6);
+    assert_eq!(SECTIONS[0].items.len(), 7);
 }
 
 #[test]

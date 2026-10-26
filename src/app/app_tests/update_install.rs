@@ -50,9 +50,8 @@ fn on_updates(update: Option<&str>, env: Option<InstallEnv>) -> App {
 fn to_updates_row(a: &mut App) {
     a.update(ctrl_space());
     a.update(key('m'));
-    for _ in 0..5 {
-        a.update(key('j'));
-    }
+    // The last row of the Settings tab: `k` from the first wraps to it.
+    a.update(key('k'));
 }
 
 fn spawned(effects: &[Effect]) -> Vec<(&PaneId, &SpawnSpec)> {
@@ -172,9 +171,8 @@ fn closing_for_the_install_treats_an_unsaved_draft_as_esc_does() {
     let mut enter_app = fresh();
     enter_app.update(key('l'));
     assert_ne!(*enter_app.config(), original);
-    for _ in 0..5 {
-        enter_app.update(key('j'));
-    }
+    // From the first row `k` wraps to Updates, the last one.
+    enter_app.update(key('k'));
     let effects = enter_app.update(enter());
     assert_eq!(spawned(&effects).len(), 1, "{effects:?}");
     assert_eq!(*enter_app.config(), *esc_app.config(), "same as Esc");

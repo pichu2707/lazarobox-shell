@@ -14,3 +14,16 @@
 - GIVEN `args = ["-ngl", "99", "--port=8080"]`
 - WHEN the config loads
 - THEN no extra argument is used and the problem names "--port=8080"
+
+### Requirement: The idle time of the managed llama-server
+`[ai.servers.llamacpp] idle_minutes` MUST be read as a whole number of minutes from 0 (never) up, whether `managed` is on or not; a missing key is 15, and any other value falls back to 15 with the problem `ai.servers.llamacpp.idle_minutes: expected a whole number of minutes (0 = never)`. The Settings tab of the menu MUST have a `llama-server idle` row, after `Sound`, that steps through `5 min`, `15 min`, `30 min` and `never` (`l` forward, `h` back), shows a value between those as `<n> min` and steps from it to the next one each way, and saves only `idle_minutes`, written as a TOML integer.
+
+#### Scenario: Stepping [auto]
+- GIVEN the row on `15 min`
+- WHEN `l` is pressed four times
+- THEN it reads `30 min`, `never`, `5 min`, `15 min`
+
+#### Scenario: Saved as a number [auto]
+- GIVEN the row moved to `30 min`
+- WHEN the menu saves
+- THEN config.toml holds `idle_minutes = 30` under `[ai.servers.llamacpp]` and its other keys are kept

@@ -16,3 +16,16 @@ Before it starts the managed llama-server, once the program is found, lazarobox 
 - GIVEN the same config once the file exists (a drive mounted later)
 - WHEN the next llamacpp turn starts
 - THEN llama-server starts
+
+### Requirement: An idle managed llama-server stops
+The managed llama-server MUST stop once no llamacpp turn has used it for the idle time (`[ai.servers.llamacpp] idle_minutes`, default 15; 0 never stops it), checked at least every 30 s, and the next llamacpp turn MUST start it again. A turn in progress MUST keep it running; the idle time MUST count from the end of the last turn, or from the start of the server. A new idle time saved from the menu MUST apply at once, with no restart.
+
+#### Scenario: Idle [auto]
+- GIVEN a running managed server that no turn used for the idle time
+- WHEN the idle check runs
+- THEN the server is stopped, and the next llamacpp turn starts it again
+
+#### Scenario: A long answer [auto]
+- GIVEN a turn still streaming past the idle time
+- WHEN the idle check runs
+- THEN the server keeps running; it stops only once the idle time has passed after the turn ended

@@ -309,6 +309,79 @@ async fn a_server_that_ended_is_started_again_by_the_next_ensure() {
     managed.shutdown().await;
 }
 
+const IDLE: Duration = Duration::from_secs(15 * 60);
+
+/// A running managed server, shared like the runtime shares it.
+async fn idle_lab() -> (Lab, Arc<Managed>, u32) {
+    let lab = Lab::new();
+    let managed = Arc::new(lab.managed("exec sleep 30", answers_once(&lab.record()), WAIT));
+    drop(managed.lease().await.expect("starts"));
+    let pid = managed.pid().await.expect("running");
+    (lab, managed, pid)
+}
+
+// Spec S8: a server nobody used for the idle time stops; the next turn
+// starts it again.
+#[tokio::test]
+async fn a_server_unused_for_the_idle_time_stops_and_the_next_turn_restarts_it() {
+    let (lab, managed, pid) = idle_lab().await;
+    let soon = std::time::Instant::now() + IDLE - Duration::from_secs(60);
+    assert!(!managed.stop_if_idle(IDLE, soon).await, "stopped too early");
+    assert_eq!(managed.pid().await, Some(pid));
+    let later = std::time::Instant::now() + IDLE;
+    assert!(managed.stop_if_idle(IDLE, later).await);
+    assert_eq!(managed.pid().await, None);
+    assert!(gone(pid), "the server is left");
+    // Its record made the probe answer: silent again, like a stopped server.
+    fs::remove_file(lab.record()).unwrap();
+    let lease = managed.lease().await.expect("starts again");
+    assert_ne!(managed.pid().await, Some(pid));
+    drop(lease);
+    managed.shutdown().await;
+}
+
+// Spec S8: a turn in progress (a long answer) is never cut by the idle stop,
+// and the idle time counts from its end.
+#[tokio::test]
+async fn a_turn_in_progress_keeps_the_server_and_the_idle_time_counts_from_its_end() {
+    let (_lab, managed, pid) = idle_lab().await;
+    let lease = managed.lease().await.expect("running");
+    let later = std::time::Instant::now() + IDLE;
+    assert!(!managed.stop_if_idle(IDLE, later).await, "stopped mid-turn");
+    assert_eq!(managed.pid().await, Some(pid));
+    drop(lease);
+    assert!(!managed.stop_if_idle(IDLE, std::time::Instant::now()).await);
+    assert!(
+        managed
+            .stop_if_idle(IDLE, std::time::Instant::now() + IDLE)
+            .await
+    );
+    assert!(gone(pid));
+}
+
+// Spec S8: the idle time the runtime checks with is the one set last (the
+// menu changes it while running); none never stops the server.
+#[tokio::test]
+async fn the_live_idle_time_decides_and_none_never_stops() {
+    let (_lab, managed, pid) = idle_lab().await;
+    let live = super::super::LiveServers::new(Default::default(), Some(Arc::clone(&managed)));
+    let later = std::time::Instant::now() + IDLE;
+    assert!(!live.stop_if_idle(later).await, "no idle time: never");
+    live.set_idle(Some(Duration::from_secs(30 * 60)));
+    assert!(!live.stop_if_idle(later).await, "30 min not over");
+    live.set_idle(Some(IDLE));
+    assert!(live.stop_if_idle(later).await);
+    assert!(gone(pid));
+}
+
+#[tokio::test]
+async fn nothing_running_has_nothing_to_stop() {
+    let lab = Lab::new();
+    let managed = lab.managed("exec sleep 30", answers(None), WAIT);
+    let later = std::time::Instant::now() + IDLE;
+    assert!(!managed.stop_if_idle(IDLE, later).await);
+}
+
 // Spec S9: the extra arguments come after lazarobox's own, one each.
 #[tokio::test]
 async fn the_extra_args_follow_the_ones_lazarobox_sets() {

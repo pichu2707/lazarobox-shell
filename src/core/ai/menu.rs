@@ -7,6 +7,7 @@ use super::{
     Detection, Status,
     config::{
         AiConfig, ApprovalMode, Assignment, ManagedServer, NotifyMode, Profile, Task, ToolToggle,
+        cycled_idle,
     },
     picker::{Outcome, PickRow, Picker, Target, task_label},
 };
@@ -227,6 +228,18 @@ impl AiMenu {
     pub fn cycle_approval(&mut self, forward: bool) {
         let next = self.draft.approval().cycled(forward);
         self.draft.set_approval(next);
+    }
+
+    /// Steps the idle time of the managed llama-server in the draft.
+    pub fn cycle_idle(&mut self, forward: bool) {
+        let minutes = self.draft.managed_options().idle_minutes;
+        self.draft.set_idle_minutes(cycled_idle(minutes, forward));
+    }
+
+    /// The idle minutes in the draft, when they differ from the open ones.
+    pub fn changed_idle(&self) -> Option<u32> {
+        let minutes = self.draft.managed_options().idle_minutes;
+        (minutes != self.original.managed_options().idle_minutes).then_some(minutes)
     }
 
     /// The approval mode in the draft, when it differs from the open one.

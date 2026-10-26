@@ -36,8 +36,8 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+        Arc, PoisonError,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -103,6 +103,21 @@ pub struct Managed {
     running: Mutex<Option<Process>>,
     /// Replaced by another model: it never starts again.
     retired: AtomicBool,
+    /// Turns that hold a [`Lease`]: while any does, it is never idle.
+    busy: AtomicUsize,
+    /// When a turn last started or ended, or the server last started.
+    last_used: std::sync::Mutex<Instant>,
+}
+
+/// A turn's hold on the server: counted as in use until it is dropped, when
+/// the idle time starts again.
+pub struct Lease(Arc<Managed>);
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        self.0.busy.fetch_sub(1, Ordering::SeqCst);
+        self.0.touch();
+    }
 }
 
 impl Managed {
@@ -148,12 +163,56 @@ impl Managed {
             wait,
             running: Mutex::new(None),
             retired: AtomicBool::new(false),
+            busy: AtomicUsize::new(0),
+            last_used: std::sync::Mutex::new(Instant::now()),
         }
     }
 
     /// The port it runs on.
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// [`Managed::ensure`] for a turn: the server counts as in use from now
+    /// until the lease is dropped, so the idle stop never cuts the turn.
+    pub async fn lease(self: &Arc<Self>) -> Result<Lease, String> {
+        // Counted before the start: an idle check that runs meanwhile waits
+        // for the lock and then sees the turn.
+        self.busy.fetch_add(1, Ordering::SeqCst);
+        let lease = Lease(Arc::clone(self));
+        self.touch();
+        self.ensure().await?;
+        Ok(lease)
+    }
+
+    /// Stops the server when no turn holds it and none used it for `idle` up
+    /// to `now`; the next turn starts it again. `true` when it stopped one.
+    pub async fn stop_if_idle(&self, idle: Duration, now: Instant) -> bool {
+        // Held while it stops: a turn waiting to start never meets the old
+        // server still answering on the port.
+        let mut running = self.running.lock().await;
+        if self.busy.load(Ordering::SeqCst) > 0 {
+            return false;
+        }
+        let last = *self
+            .last_used
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if now.saturating_duration_since(last) < idle {
+            return false;
+        }
+        let Some(process) = running.take() else {
+            return false;
+        };
+        stop(process).await;
+        true
+    }
+
+    fn touch(&self) {
+        *self
+            .last_used
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Instant::now();
     }
 
     /// Ok once the server we started answers; it is started first when it is
@@ -188,6 +247,8 @@ impl Managed {
             }
             if (self.probe)(self.port).await == Some(200) {
                 *running = Some(process);
+                // The idle time counts from the start, also one the menu made.
+                self.touch();
                 return Ok(());
             }
             if Instant::now() >= deadline {

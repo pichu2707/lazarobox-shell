@@ -26,6 +26,13 @@ baseline.
   `--port=8080`), or that is not a list of strings, is ignored whole with a
   startup notice.
 
+- The managed llama-server stops after `[ai.servers.llamacpp] idle_minutes`
+  without a turn (15 by default, 0 = never), freeing the GPU memory; the
+  next llamacpp turn starts it again. A turn still answering is never cut:
+  the idle time counts from its end. The Settings tab of the menu has a
+  `llama-server idle` row (5 min, 15 min, 30 min, never) that applies at
+  once, with no restart.
+
 ### Changed
 
 - The managed llama-server checks its model file before each start. When

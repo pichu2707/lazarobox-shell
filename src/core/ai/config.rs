@@ -330,10 +330,56 @@ pub struct ManagedServer {
 
 /// How lazarobox runs its llama-server, from `[ai.servers.llamacpp]`. Read
 /// whether it is on or not, so turning it on from the menu keeps them.
-#[derive(Clone, Default, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ManagedOptions {
     /// Extra arguments, each one argv element, after the ones lazarobox sets.
     pub args: Vec<String>,
+    /// Minutes without a turn after which it stops; the next turn starts it
+    /// again. 0 never stops it.
+    pub idle_minutes: u32,
+}
+
+/// The idle stop of the managed llama-server unless `idle_minutes` is set.
+pub const DEFAULT_IDLE_MINUTES: u32 = 15;
+
+impl Default for ManagedOptions {
+    fn default() -> Self {
+        Self {
+            args: Vec::new(),
+            idle_minutes: DEFAULT_IDLE_MINUTES,
+        }
+    }
+}
+
+/// The idle times the menu steps through, in order; 0 is never.
+const IDLE_STEPS: [u32; 4] = [5, 15, 30, 0];
+
+/// The idle time after `minutes` in the menu's steps (`forward`), or before
+/// it. Never (0) comes after the longest step; a value of the config between
+/// steps moves to the next step each way.
+pub fn cycled_idle(minutes: u32, forward: bool) -> u32 {
+    // Never counts as the longest time.
+    let key = |m: u32| if m == 0 { u32::MAX } else { m };
+    let mut steps = IDLE_STEPS;
+    if !forward {
+        steps.reverse();
+    }
+    let after = |step: &&u32| {
+        if forward {
+            key(**step) > key(minutes)
+        } else {
+            key(**step) < key(minutes)
+        }
+    };
+    steps.iter().find(after).copied().unwrap_or(steps[0])
+}
+
+impl ManagedOptions {
+    /// How long it may sit unused, `None` when it never stops for that.
+    pub fn idle(&self) -> Option<std::time::Duration> {
+        (self.idle_minutes > 0)
+            .then(|| std::time::Duration::from_secs(u64::from(self.idle_minutes) * 60))
+    }
 }
 
 /// The llama-server options lazarobox sets itself; `args` cannot hold them.
@@ -459,6 +505,11 @@ impl AiConfig {
     /// How lazarobox runs its llama-server.
     pub fn managed_options(&self) -> &ManagedOptions {
         &self.managed_options
+    }
+
+    /// Sets the idle time of the managed llama-server; 0 never stops it.
+    pub fn set_idle_minutes(&mut self, minutes: u32) {
+        self.managed_options.idle_minutes = minutes;
     }
 
     /// Turns lazarobox's own llama-server on with `model`, as `managed = true`
@@ -916,7 +967,7 @@ fn string_list(value: Option<&Value>, keep: fn(&str) -> bool) -> Option<Vec<Stri
 }
 
 /// Reads `[ai.servers.<id>] port` for the server engines, and `managed`,
-/// `model` and `args` for llamacpp. A wrong port falls back on its own, with a problem:
+/// `model`, `args` and `idle_minutes` for llamacpp. A wrong port falls back on its own, with a problem:
 /// to the catalog port, or to [`MANAGED_PORT`] for a managed llama-server. A
 /// wrong `managed` or `model` leaves it unmanaged. Unknown ids and keys are
 /// ignored, like unknown names under `ai.tasks`. The menu writes only
@@ -968,12 +1019,29 @@ fn read_servers(
             managed = read_managed(server, problems);
             fallback = managed.as_ref().map(|_| MANAGED_PORT);
             options.args = read_managed_args(server, problems);
+            options.idle_minutes = read_idle_minutes(server, problems);
         }
         if let Some(port) = port.or(fallback) {
             ports = ports.with(id, port);
         }
     }
     (ports, managed, options)
+}
+
+/// `idle_minutes` of `[ai.servers.llamacpp]`: a whole number of minutes, 0
+/// for never; anything else falls back to [`DEFAULT_IDLE_MINUTES`].
+fn read_idle_minutes(server: &Table, problems: &mut Vec<String>) -> u32 {
+    match server.get("idle_minutes") {
+        None => DEFAULT_IDLE_MINUTES,
+        Some(Value::Integer(n)) if u32::try_from(*n).is_ok() => *n as u32,
+        Some(_) => {
+            problems.push(
+                "ai.servers.llamacpp.idle_minutes: expected a whole number of minutes (0 = never)"
+                    .to_owned(),
+            );
+            DEFAULT_IDLE_MINUTES
+        }
+    }
 }
 
 /// `args` of `[ai.servers.llamacpp]`: a list of strings, none of them an
@@ -1240,6 +1308,61 @@ mod tests {
                 (
                     vec![],
                     vec!["ai.servers.llamacpp.args: expected a list of strings".to_owned()]
+                ),
+                "{value}"
+            );
+        }
+    }
+
+    /// The idle stop minutes and the problems of `text`.
+    fn idle_of(text: &str) -> (u32, Vec<String>) {
+        let (ai, problems) = read_text(text);
+        (ai.managed_options().idle_minutes, problems)
+    }
+
+    // Spec S8: the managed llama-server stops after 15 idle minutes unless
+    // `idle_minutes` says otherwise; 0 never stops it.
+    #[test]
+    fn the_idle_stop_is_15_minutes_unless_set() {
+        assert_eq!(idle_of(""), (15, vec![]));
+        assert_eq!(DEFAULT_IDLE_MINUTES, 15);
+        let set = |n: &str| format!("[ai.servers.llamacpp]\nidle_minutes = {n}\n");
+        assert_eq!(idle_of(&set("45")), (45, vec![]));
+        assert_eq!(idle_of(&set("0")), (0, vec![]));
+        let idle = |minutes| ManagedOptions {
+            idle_minutes: minutes,
+            ..ManagedOptions::default()
+        };
+        assert_eq!(idle(0).idle(), None);
+        assert_eq!(idle(5).idle(), Some(std::time::Duration::from_secs(300)));
+    }
+
+    // Spec S8: the menu steps through 5, 15, 30 minutes and never; a value
+    // of the config between steps moves to the next one each way.
+    #[test]
+    fn the_idle_time_cycles_through_its_steps() {
+        let forward: Vec<u32> = [5, 15, 30, 0].map(|m| cycled_idle(m, true)).to_vec();
+        assert_eq!(forward, [15, 30, 0, 5]);
+        let back: Vec<u32> = [5, 15, 30, 0].map(|m| cycled_idle(m, false)).to_vec();
+        assert_eq!(back, [0, 5, 15, 30]);
+        assert_eq!((cycled_idle(45, true), cycled_idle(45, false)), (0, 30));
+        assert_eq!((cycled_idle(10, true), cycled_idle(10, false)), (15, 5));
+        assert_eq!((cycled_idle(3, true), cycled_idle(3, false)), (5, 0));
+    }
+
+    #[test]
+    fn a_wrong_idle_stop_falls_back_to_15_minutes_with_a_problem() {
+        for value in ["-1", "\"15\"", "1.5", "99999999999"] {
+            let text = format!("[ai.servers.llamacpp]\nidle_minutes = {value}\n");
+            assert_eq!(
+                idle_of(&text),
+                (
+                    15,
+                    vec![
+                        "ai.servers.llamacpp.idle_minutes: expected a whole number of minutes \
+                         (0 = never)"
+                            .to_owned()
+                    ]
                 ),
                 "{value}"
             );

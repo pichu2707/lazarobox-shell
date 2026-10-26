@@ -6,12 +6,13 @@ use super::picker_tests::{cursor_label, key, open, send};
 use super::*;
 use crate::core::ai::{Status, config::MemoryConfig};
 
-const SETTINGS: [&str; 6] = [
+const SETTINGS: [&str; 7] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
     "Notify",
     "Sound",
+    "llama-server idle",
     "Updates",
 ];
 
