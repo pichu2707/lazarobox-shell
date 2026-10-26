@@ -497,7 +497,7 @@ pub async fn run() -> io::Result<()> {
     // `rx` went away with the loop, so readers stuck on a full channel stopped.
     restore();
     if let Some(notice) = panes.quit_notice() {
-        eprintln!("{notice}");
+        let _ = writeln!(io::stderr(), "{notice}");
     }
     // Quit order, and why:
     // 1. The loop already returned, so the final Cancel and Append effects of
