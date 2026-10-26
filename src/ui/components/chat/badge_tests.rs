@@ -297,3 +297,46 @@ fn the_review_owns_the_pane_and_hides_the_batch_badge() {
     let buf = draw(&chat, 40, 8);
     assert!(!row(&buf, 0).contains("orphan"), "{:?}", row(&buf, 0));
 }
+
+// The badge owns a row of its own: it never covers the transcript.
+
+#[test]
+fn the_batch_badge_keeps_the_first_transcript_row_visible() {
+    for badge in [Badge::Staged(3), Badge::Orphan(2)] {
+        let buf = draw(&with_batch(ApprovalMode::Ask, badge), 40, 6);
+        assert!(row(&buf, 0).contains(if matches!(badge, Badge::Staged(_)) {
+            "staged"
+        } else {
+            "orphan"
+        }));
+        assert!(row(&buf, 1).starts_with("› question"), "{:?}", row(&buf, 1));
+        let bare = draw(&chat_in(ApprovalMode::Ask), 40, 6);
+        assert!(
+            row(&bare, 0).starts_with("› question"),
+            "{:?}",
+            row(&bare, 0)
+        );
+    }
+}
+
+#[test]
+fn a_pane_too_small_to_spare_a_row_shows_the_transcript_and_no_badge() {
+    // Transcript of one row: it keeps it, and the badge is not drawn.
+    let chat = with_batch(ApprovalMode::Ask, Badge::Orphan(2));
+    let buf = draw(&chat, 40, 2);
+    assert!(!row(&buf, 0).contains("orphan"), "{:?}", row(&buf, 0));
+    assert!(!row(&buf, 0).is_empty());
+    let layout = ChatView::new(&chat, &theme()).layout(Rect::new(0, 0, 40, 2));
+    assert_eq!(layout.transcript.height, 1);
+}
+
+#[test]
+fn the_layout_gives_up_a_row_only_while_a_badge_is_drawn() {
+    let area = Rect::new(0, 0, 40, 8);
+    let bare = ChatView::new(&chat_in(ApprovalMode::Ask), &theme()).layout(area);
+    let chat = with_batch(ApprovalMode::Ask, Badge::Staged(1));
+    let badged = ChatView::new(&chat, &theme()).layout(area);
+    assert_eq!(badged.transcript.y, bare.transcript.y + 1);
+    assert_eq!(badged.transcript.height + 1, bare.transcript.height);
+    assert_eq!(badged.composer, bare.composer);
+}
