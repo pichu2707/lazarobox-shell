@@ -295,6 +295,29 @@ echo out > "$2/f"; echo "outside=$?""#;
 }
 
 #[test]
+fn a_write_exception_inside_rw_is_read_only_and_the_rest_of_rw_stays_writable() {
+    if !jail_available() {
+        return;
+    }
+    let w = world();
+    let packages = w.rw.join("packages");
+    fs::create_dir(&packages).unwrap();
+    fs::write(packages.join("bin"), "kept\n").unwrap();
+    let script = r#"echo in > "$1/f"; echo "state=$?"
+echo out > "$2/f"; echo "packages=$?"
+read -r a < "$2/bin" && echo "read=$a""#;
+    let out = run(&bash_job(script, &[&w.rw, &packages], |s| {
+        s.rw.push(w.rw.clone());
+        s.rw_except.push(packages.clone());
+    }));
+    let text = stdout(&out);
+    assert!(text.contains("state=0"), "{}", report(&out));
+    assert!(text.contains("packages=1"), "{}", report(&out));
+    assert!(text.contains("read=kept"), "{}", report(&out));
+    assert!(!packages.join("f").exists());
+}
+
+#[test]
 fn an_exec_beyond_rx_is_denied_and_one_inside_it_runs() {
     if !jail_available() {
         return;

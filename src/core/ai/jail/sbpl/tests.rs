@@ -15,6 +15,7 @@ fn spec(rx: &[&str], ro: &[&str], rw: &[&str], rof: &[&str], rwf: &[&str]) -> Ja
         rw: list(rw),
         ro_files: list(rof),
         rw_files: list(rwf),
+        rw_except: Vec::new(),
     }
 }
 
@@ -408,4 +409,61 @@ fn a_file_under_homebrew_etc_still_gets_its_own_literal_rule() {
     // The fixed block never names the file or an openssl folder.
     assert!(!profile.text.contains("openssl"));
     assert!(!profile.text.contains("ca-certificates"));
+}
+
+#[test]
+fn a_write_exception_is_denied_after_every_allow_that_could_grant_it() {
+    let mut s = one_each();
+    s.rw = vec![p("/Users/u/.codex")];
+    s.rw_except = vec![p("/Users/u/.codex/packages")];
+    let profile = render(&s).unwrap();
+    let deny = "(deny file-write* (subpath (param \"WX_0\")))\n";
+    assert_eq!(profile.text.matches(deny).count(), 1);
+    // SBPL: the last matching rule wins, so the deny follows every file allow.
+    let at = profile.text.find(deny).unwrap();
+    let last_write_allow = profile.text.rfind("file-write*").unwrap();
+    assert!(profile.text.rfind("(allow file-read* file-write*").unwrap() < at);
+    assert_eq!(last_write_allow, at + "(deny ".len());
+    assert!(
+        profile
+            .params
+            .contains(&("WX_0".to_owned(), p("/Users/u/.codex/packages")))
+    );
+}
+
+#[test]
+fn a_write_exception_travels_as_a_param_like_any_other_path() {
+    let mut s = one_each();
+    s.rw_except = vec![p("/Users/u/it's \"a\")(\nfolder")];
+    let profile = render(&s).unwrap();
+    assert!(!profile.text.contains("it's"));
+    assert!(!profile.text.contains("folder"));
+    let args = sandbox_args(&profile);
+    assert!(args.contains(&OsString::from("WX_0=/Users/u/it's \"a\")(\nfolder")));
+}
+
+#[test]
+fn a_bad_write_exception_is_rejected_like_any_other_path() {
+    for bad in ["relative", "/a/../b", "/"] {
+        let mut s = one_each();
+        s.rw_except = vec![p(bad)];
+        assert!(render(&s).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn write_exceptions_count_toward_the_param_limit() {
+    let mut s = one_each();
+    s.rw_except = vec![p("/x"); MAX_PARAMS];
+    assert!(matches!(render(&s), Err(SbplError::TooMany(_))));
+}
+
+#[test]
+fn without_an_exception_the_profile_has_no_deny_rule() {
+    assert!(
+        !render(&one_each())
+            .unwrap()
+            .text
+            .contains("(deny file-write")
+    );
 }

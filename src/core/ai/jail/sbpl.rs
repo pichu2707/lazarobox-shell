@@ -117,10 +117,15 @@ fn check(path: &Path) -> Result<(), SbplError> {
 
 /// Renders the profile for a spec. Folders (`rx`, `ro`, `rw`) match by
 /// `subpath`, which on a file matches just that file; `ro_files` and
-/// `rw_files` match by `literal`.
+/// `rw_files` match by `literal`. `rw_except` folders are denied writing after
+/// all the allows.
 pub fn render(spec: &JailSpec) -> Result<Profile, SbplError> {
-    let count =
-        spec.rx.len() + spec.ro.len() + spec.rw.len() + spec.ro_files.len() + spec.rw_files.len();
+    let count = spec.rx.len()
+        + spec.ro.len()
+        + spec.rw.len()
+        + spec.ro_files.len()
+        + spec.rw_files.len()
+        + spec.rw_except.len();
     if count > MAX_PARAMS {
         return Err(SbplError::TooMany(count));
     }
@@ -145,6 +150,14 @@ pub fn render(spec: &JailSpec) -> Result<Profile, SbplError> {
             text.push_str(&format!("(allow {ops} ({filter} (param \"{key}\")))\n"));
             params.push((key, path.clone()));
         }
+    }
+    // Seatbelt takes the last matching rule, so the write exceptions come after
+    // every allow that could grant them. They keep their read access.
+    for (n, path) in spec.rw_except.iter().enumerate() {
+        check(path)?;
+        let key = format!("WX_{n}");
+        text.push_str(&format!("(deny file-write* (subpath (param \"{key}\")))\n"));
+        params.push((key, path.clone()));
     }
     // The shim socket is an `rw_files` literal; this is the only unix socket
     // a CLI may connect to besides the DNS one.

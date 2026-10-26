@@ -2,6 +2,13 @@
 //! system can confine a CLI, and exactly which paths a confined CLI may
 //! touch. Everything here is pure; the probe and the helper that applies the
 //! rules live in `runtime::jail`.
+//!
+//! On macOS a program that can be run must not be writable (Seatbelt unions
+//! its rules), so a layout whose binary sits in the writable state dir is
+//! refused. The one exception is codex's standalone install under
+//! `<state>/packages`: that folder is carved out of the state dir's write
+//! grant ([`JailSpec::rw_except`]), so codex runs there but cannot update
+//! itself inside the jail.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
@@ -983,7 +990,15 @@ pub struct JailSpec {
     pub rw: Vec<PathBuf>,
     pub ro_files: Vec<PathBuf>,
     pub rw_files: Vec<PathBuf>,
+    /// Folders inside an `rw` one that stay read-only. Only the macOS profile
+    /// can carve them out (a later `deny file-write*` beats the allow);
+    /// Landlock cannot, so Linux never gets one.
+    pub rw_except: Vec<PathBuf>,
 }
+
+/// The folder of a codex state dir that holds the standalone installer's
+/// binaries (`packages/standalone/releases/<version>/bin`).
+const CODEX_PACKAGES: &str = "packages";
 
 fn push_unique(list: &mut Vec<PathBuf>, path: PathBuf) {
     if !list.contains(&path) {
@@ -1087,6 +1102,7 @@ pub fn jail_spec_for(
         Cli::Gemini => (layout.home.join(".gemini"), None),
     };
     let state = resolved(state);
+    let packages = (layout.cli == Cli::Codex).then(|| resolved(state.join(CODEX_PACKAGES)));
     let state_file = state_file.map(resolved);
     for path in [Some(&state), state_file.as_ref()].into_iter().flatten() {
         if too_broad(path, &homes, layout.cli, os) {
@@ -1120,6 +1136,20 @@ pub fn jail_spec_for(
     }
     push_unique(&mut spec.rw, state);
     push_unique(&mut spec.rw, layout.tmp.clone());
+    // Codex's standalone installer keeps the binary inside the state dir. That
+    // folder stays readable and executable, but never writable: a CLI that
+    // could rewrite its own binary would escape on the next run. Only added
+    // when a program really lives there, so other layouts keep the same
+    // profile, and only on macOS, the one system that can carve it out.
+    if os == Os::Macos
+        && let Some(packages) = packages
+        && spec
+            .rx
+            .iter()
+            .any(|x| fold(x, os).starts_with(fold(&packages, os)))
+    {
+        push_unique(&mut spec.rw_except, packages);
+    }
     if os != Os::Macos {
         spec.ro_files.extend(LINUX_RO_FILES.map(PathBuf::from));
     }
@@ -1163,18 +1193,30 @@ pub fn jail_spec_for(
 }
 
 /// The first execute path that is equal to, under or over a writable one,
-/// without letter case on macOS (see [`fold`]).
+/// without letter case on macOS (see [`fold`]). An execute path under a write
+/// exception that is itself inside that writable folder is not writable, so it
+/// does not count; a writable file never gets that, and neither does a program
+/// over the folder.
 fn writable_executable(spec: &JailSpec, os: Os) -> Option<(PathBuf, PathBuf)> {
+    let excepted = |x: &Path, w: &Path| {
+        spec.rw_except.iter().any(|e| {
+            let e = fold(e, os);
+            e.starts_with(w) && x.starts_with(&e)
+        })
+    };
     spec.rx.iter().find_map(|rx| {
         let x = fold(rx, os);
-        spec.rw
-            .iter()
-            .chain(&spec.rw_files)
-            .find(|rw| {
+        let in_dir = spec.rw.iter().find(|rw| {
+            let w = fold(rw, os);
+            (x.starts_with(&w) && !excepted(&x, &w)) || w.starts_with(&x)
+        });
+        let in_file = || {
+            spec.rw_files.iter().find(|rw| {
                 let w = fold(rw, os);
                 x.starts_with(&w) || w.starts_with(&x)
             })
-            .map(|rw| (rx.clone(), rw.clone()))
+        };
+        in_dir.or_else(in_file).map(|rw| (rx.clone(), rw.clone()))
     })
 }
 
@@ -1188,6 +1230,7 @@ impl JailSpec {
             &mut self.rw,
             &mut self.ro_files,
             &mut self.rw_files,
+            &mut self.rw_except,
         ] {
             list.retain(|p| exists(p));
         }
@@ -1222,6 +1265,7 @@ impl JailArgs {
             ("--rw", &self.spec.rw),
             ("--ro-file", &self.spec.ro_files),
             ("--rw-file", &self.spec.rw_files),
+            ("--rw-except", &self.spec.rw_except),
         ];
         for (flag, paths) in lists {
             for path in paths {
@@ -1257,6 +1301,7 @@ pub fn parse_args(args: &[OsString]) -> Result<JailArgs, ArgError> {
             Some("--rw") => &mut spec.rw,
             Some("--ro-file") => &mut spec.ro_files,
             Some("--rw-file") => &mut spec.rw_files,
+            Some("--rw-except") => &mut spec.rw_except,
             _ => return Err(ArgError(ARG_UNKNOWN_FLAG)),
         };
         let path = PathBuf::from(value);
