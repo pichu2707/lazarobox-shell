@@ -484,19 +484,140 @@ pub fn status_message(id: &str, status: u16) -> String {
 /// `$HF_HOME/token`, else `huggingface/token` in the cache home. Trimmed; a
 /// blank one counts as none. Only absolute paths are read.
 pub fn token(env: &TokenEnv, read: impl Fn(&Path) -> Option<String>) -> Option<String> {
-    let clean = |t: String| Some(t.trim().to_owned()).filter(|t| !t.is_empty());
-    if let Some(t) = env.hf_token.clone().and_then(clean) {
-        return Some(t);
+    match env.hf_token.clone().and_then(clean) {
+        Some(t) => Some(t),
+        None => saved_token(env, read),
     }
+}
+
+/// A token trimmed; a blank one is none.
+fn clean(token: String) -> Option<String> {
+    Some(token.trim().to_owned()).filter(|t| !t.is_empty())
+}
+
+/// The token file of [`token`]'s lookup, the one `hf auth login` writes:
+/// `$HF_TOKEN_PATH`, else `$HF_HOME/token`, else `huggingface/token` in the
+/// cache home. Only absolute paths count.
+pub fn token_file(env: &TokenEnv) -> Option<PathBuf> {
     let absolute = |p: &Option<PathBuf>| p.clone().filter(|p| p.is_absolute());
-    let file = absolute(&env.hf_token_path)
+    absolute(&env.hf_token_path)
         .or_else(|| absolute(&env.hf_home).map(|h| h.join("token")))
         .or_else(|| {
             absolute(&env.xdg_cache_home)
                 .or_else(|| absolute(&env.home).map(|h| h.join(".cache")))
                 .map(|c| c.join("huggingface/token"))
-        })?;
-    read(&file).and_then(clean)
+        })
+}
+
+/// The token saved in [`token_file`], whatever `HF_TOKEN` says.
+pub fn saved_token(env: &TokenEnv, read: impl Fn(&Path) -> Option<String>) -> Option<String> {
+    read(&token_file(env)?).and_then(clean)
+}
+
+/// What lazarobox knows of the tokens when the menu opens: never a value.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct TokenFacts {
+    /// `HF_TOKEN` is set and not blank: it is the token in use.
+    pub env: bool,
+    /// The token file holds a token.
+    pub saved: bool,
+}
+
+/// The request that tells who a token belongs to.
+pub const WHOAMI_PATH: &str = "/api/whoami-v2";
+
+/// What a token the Hub refuses reads as.
+pub const REJECTED: &str = "Hugging Face did not accept the token";
+
+/// The account name of a whoami reply.
+pub fn parse_whoami(body: &str) -> Result<String, String> {
+    let value: Value = serde_json::from_str(body).map_err(|_| UNREADABLE.to_owned())?;
+    value
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| UNREADABLE.to_owned())
+}
+
+/// What a whoami status that is not 200 reads as.
+pub fn whoami_message(status: u16) -> String {
+    match status {
+        401 => REJECTED.to_owned(),
+        other => format!("Hugging Face request failed: HTTP {other}"),
+    }
+}
+
+/// A pasted token. It is never shown: its `Debug` hides it, and its bytes
+/// are zeroed when it is dropped.
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(token: String) -> Self {
+        Secret(token)
+    }
+
+    /// The token, to hand to curl's stdin.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    pub fn chars(&self) -> usize {
+        self.0.chars().count()
+    }
+
+    pub fn push(&mut self, c: char) {
+        self.0.push(c);
+    }
+
+    pub fn pop(&mut self) {
+        self.0.pop();
+    }
+
+    /// Empties it, zeroing what it held.
+    pub fn clear(&mut self) {
+        wipe(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Secret(<{} chars>)", self.chars())
+    }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        wipe(&mut self.0);
+    }
+}
+
+/// Empties `text`, zeroing its bytes first.
+pub fn wipe(text: &mut String) {
+    let mut bytes = std::mem::take(text).into_bytes();
+    bytes.fill(0);
+    std::hint::black_box(&bytes);
+}
+
+/// An account request of the menu's `Hugging Face` row.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum AccountAsk {
+    /// Check a pasted token and, once the Hub accepts it, save it.
+    Connect(Secret),
+    /// Who the saved token belongs to.
+    Check,
+    /// Delete the token file.
+    Disconnect,
+}
+
+/// What the runtime found for an [`AccountAsk`]: the account name, or why
+/// it failed. It never carries the token.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum AccountReply {
+    Connected(Result<String, String>),
+    Checked(Result<String, String>),
+    Disconnected(Result<(), String>),
 }
 
 /// The cache folder of one repo, in the Hugging Face hub layout.

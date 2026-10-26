@@ -17,7 +17,7 @@ use super::sanitize::is_format;
 use super::{CATALOG, Detection, Engine, Kind, Status, gguf, hf, start_command, status_text};
 
 mod hub;
-pub use hub::{Confirm, HF_ROW, HINT_CANCEL, Hub, QUERY_HINT, Running, Screen, shown};
+pub use hub::{Confirm, HF_ROW, HINT_ASKING, HINT_CANCEL, Hub, QUERY_HINT, Running, Screen, shown};
 
 /// What a picker is assigning to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

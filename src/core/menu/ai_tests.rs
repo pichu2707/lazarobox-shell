@@ -111,7 +111,7 @@ pub(super) fn selected_label(menu: &MenuState) -> &'static str {
     labels[0]
 }
 
-const ORDER: [&str; 23] = [
+const ORDER: [&str; 24] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
@@ -135,6 +135,7 @@ const ORDER: [&str; 23] = [
     "Git",
     "Git write",
     "Approval",
+    "Hugging Face",
 ];
 
 // Spec: Descriptor integrity, Sections and items are data.
@@ -328,6 +329,7 @@ fn the_ai_section_lists_the_task_rows_and_the_static_rows_with_their_values() {
             "Git=off",
             "Git write=off",
             "Approval=ask",
+            "Hugging Face=not connected",
         ]
     );
     assert_eq!(

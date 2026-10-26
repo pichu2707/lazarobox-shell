@@ -4,17 +4,19 @@
 
 use std::borrow::Cow;
 
+mod account;
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::{
     ai::{
         Detection,
         config::{AiConfig, NotifyMode, Task, ToolToggle},
-        hf::{Answer, Ask, Job},
+        hf::{AccountAsk, AccountReply, Answer, Ask, Job, TokenFacts},
         menu::AiMenu,
         picker::{
-            HINT_CANCEL, Level, Mark, NOT_IN_LIST, Outcome, PickKey, PickRow, Picker, QUERY_HINT,
-            Running, Screen, Target,
+            HINT_ASKING, HINT_CANCEL, Level, Mark, NOT_IN_LIST, Outcome, PickKey, PickRow, Picker,
+            QUERY_HINT, Running, Screen, Target,
         },
     },
     config::{BarPosition, Config, ConfigEdit, LLAMACPP_TABLE, MEMORY_TABLE},
@@ -70,6 +72,10 @@ pub enum ItemKind {
     /// Not a setting: `[updates] check` stays config-only. `h`/`l` do nothing
     /// here; Enter acts only when an update is available.
     Updates,
+    /// The Hugging Face account: who the saved token belongs to. Enter
+    /// connects one (a masked token field), checks it or disconnects it. It
+    /// never writes a config edit.
+    HfAccount,
 }
 
 /// The version shown on the Updates row. Tests see a fixed one, so a release
@@ -173,7 +179,7 @@ pub static SECTIONS: &[Section] = &[Section {
 /// The AI section, attached only by [`MenuState::with_ai`]. The labels of
 /// the task rows are the task ids; their key path is `Task::table`. The
 /// static rows follow the tasks: `Profile`, `Context`, `Memory`, `Tools`, the five
-/// family switches and `Approval`, in that order. `Notify`, `Sound` and
+/// family switches, `Approval` and `Hugging Face`, in that order. `Notify`, `Sound` and
 /// `llama-server idle` live in the Settings section.
 pub static AI_SECTION: Section = Section {
     title: "AI",
@@ -246,6 +252,10 @@ pub static AI_SECTION: Section = Section {
             label: "Approval",
             kind: ItemKind::Approval,
         },
+        Item {
+            label: "Hugging Face",
+            kind: ItemKind::HfAccount,
+        },
     ],
 };
 
@@ -302,7 +312,8 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
             | ItemKind::Approval
             | ItemKind::NotifySound
             | ItemKind::ManagedIdle
-            | ItemKind::Updates => None,
+            | ItemKind::Updates
+            | ItemKind::HfAccount => None,
         })
 }
 
@@ -403,6 +414,9 @@ pub enum MenuCommand {
     Download(Box<Job>),
     /// Stop the Hugging Face download that runs.
     CancelDownload,
+    /// Connect, check or disconnect the Hugging Face account; the answer
+    /// comes back through [`MenuState::account_reply`].
+    HfAccount(AccountAsk),
 }
 
 const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
@@ -500,6 +514,8 @@ pub struct MenuState {
     /// The version an install in this run put on disk; the running binary is
     /// still the old one, so the row says so until the restart.
     installed: Option<String>,
+    /// The `Hugging Face` row of the AI tab.
+    account: account::Account,
 }
 
 impl MenuState {
@@ -520,7 +536,72 @@ impl MenuState {
             current: RUNNING_VERSION.to_owned(),
             command_shown: None,
             installed: None,
+            account: account::Account::default(),
         }
+    }
+
+    /// What the runtime found of the Hugging Face tokens when the menu
+    /// opened, and the account known from earlier in this session.
+    pub fn with_hf(mut self, facts: TokenFacts, name: Option<String>) -> Self {
+        self.account = account::Account::new(facts, name);
+        self
+    }
+
+    /// What the runtime found for an account request of the `Hugging Face`
+    /// row; a failure it waited for becomes the footer error.
+    pub fn account_reply(&mut self, reply: AccountReply) {
+        if let Some(message) = self.account.reply(reply) {
+            self.error = Some(message);
+        }
+    }
+
+    /// Whether the selection is on the `Hugging Face` row.
+    fn on_account_row(&self) -> bool {
+        matches!(self.selected_kind(), Some(ItemKind::HfAccount))
+    }
+
+    /// The token field that replaces the rows while it is open: the token
+    /// drawn as one `•` per character, never as typed.
+    fn account_rows(&self) -> Option<Vec<Row>> {
+        let field = self.account.field()?;
+        Some(vec![
+            Row::Title(Cow::Borrowed(account::TOKEN_TITLE)),
+            Row::Field(field),
+            Row::Text(Cow::Borrowed(account::TOKEN_HINT)),
+        ])
+    }
+
+    /// Keys while the token field is open: every letter is typed, Ctrl+U
+    /// clears, Enter checks the token and Esc goes back to the row (also
+    /// while the check runs).
+    fn on_account_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
+        let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        match key.code {
+            KeyCode::Esc if !repeat => self.account.close(),
+            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => self.account.clear(),
+            _ if !plain => {}
+            KeyCode::Char(c) => self.account.type_char(c),
+            KeyCode::Backspace => self.account.backspace(),
+            KeyCode::Enter if !repeat => {
+                if let Some(ask) = self.account.submit() {
+                    return MenuCommand::HfAccount(ask);
+                }
+            }
+            _ => {}
+        }
+        MenuCommand::None
+    }
+
+    /// Keys while `disconnect <name>? (y/n)` waits: only a plain `y`
+    /// disconnects, any other key keeps the token.
+    fn on_account_prompt_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
+        if repeat {
+            return MenuCommand::None;
+        }
+        let yes = key.code == KeyCode::Char('y') && key.modifiers.is_empty();
+        self.account
+            .answer(yes)
+            .map_or(MenuCommand::None, MenuCommand::HfAccount)
     }
 
     /// Tells the menu a version was installed in this run, if any.
@@ -701,7 +782,9 @@ impl MenuState {
     /// warning, a picker level or the custom field. The tab keys are inert
     /// there.
     pub fn in_sub_level(&self) -> bool {
-        self.in_warning() || self.ai.as_ref().is_some_and(|ai| ai.picker().is_some())
+        self.in_warning()
+            || self.ai.as_ref().is_some_and(|ai| ai.picker().is_some())
+            || self.account.field().is_some()
     }
 
     /// Whether the menu has an AI section.
@@ -865,7 +948,8 @@ impl MenuState {
             | ItemKind::Approval
             | ItemKind::NotifySound
             | ItemKind::ManagedIdle
-            | ItemKind::Updates => None,
+            | ItemKind::Updates
+            | ItemKind::HfAccount => None,
         }
     }
 
@@ -892,6 +976,9 @@ impl MenuState {
             return Self::warning_rows();
         }
         if let Some(rows) = self.picker_rows() {
+            return rows;
+        }
+        if let Some(rows) = self.account_rows() {
             return rows;
         }
         let mut rows = Vec::new();
@@ -1056,6 +1143,16 @@ impl MenuState {
                         index += 1;
                         row
                     }
+                    ItemKind::HfAccount => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: Some(Cow::Owned(self.account.value())),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
                     ItemKind::Choice(choice) | ItemKind::Toggle(choice) => {
                         let row = Row::Item {
                             label: item.label,
@@ -1094,6 +1191,12 @@ impl MenuState {
         if self.in_warning() {
             return self.on_warning_key(key, repeat);
         }
+        if self.account.prompt().is_some() {
+            return self.on_account_prompt_key(key, repeat);
+        }
+        if self.account.field().is_some() {
+            return self.on_account_key(key, repeat);
+        }
         if self.ai.as_ref().is_some_and(|ai| ai.picker().is_some()) {
             return self.on_picker_key(key, repeat);
         }
@@ -1123,6 +1226,10 @@ impl MenuState {
                 }
             }
             KeyCode::Enter if !repeat && self.on_ai_row() => self.open_picker(),
+            KeyCode::Enter if self.on_account_row() => match self.account.enter() {
+                Some(ask) if !repeat => MenuCommand::HfAccount(ask),
+                _ => MenuCommand::None,
+            },
             KeyCode::Enter if repeat && (self.on_ai_row() || self.on_draft_row()) => {
                 MenuCommand::None
             }
@@ -1474,6 +1581,10 @@ impl MenuState {
     /// A paste: goes to the custom field or the Hugging Face search when
     /// one is focused, else ignored.
     pub fn on_paste(&mut self, text: &str) {
+        if self.account.field().is_some() {
+            self.account.paste(text);
+            return;
+        }
         if let Some(ai) = &mut self.ai {
             ai.edit(|p| p.paste(text));
         }
@@ -1491,6 +1602,15 @@ impl MenuState {
         }
         if self.in_warning() {
             return Footer::Hint(Cow::Borrowed(HINT_WARNING));
+        }
+        if let Some(prompt) = self.account.prompt() {
+            return Footer::Hint(Cow::Owned(prompt));
+        }
+        if self.account.asking() && (self.account.field().is_some() || self.on_account_row()) {
+            return Footer::Hint(Cow::Borrowed(HINT_ASKING));
+        }
+        if self.account.field().is_some() {
+            return Footer::Hint(Cow::Borrowed(account::HINT_TOKEN));
         }
         let ai = self.ai.as_ref();
         let picker = ai.and_then(AiMenu::picker);
@@ -1570,6 +1690,7 @@ impl MenuState {
             _ if picker.is_some() => Cow::Borrowed(HINT_PICKER),
             _ if in_ai_view => Cow::Borrowed(HINT_TASK),
             _ if self.on_updates_row() => Cow::Owned(self.updates_hint()),
+            _ if self.on_account_row() => Cow::Borrowed(self.account.hint()),
             _ if self.on_notify_row() => match &self.test_report {
                 Some(report) => Cow::Owned(report.clone()),
                 None => Cow::Borrowed(HINT_NOTIFY),
@@ -2003,3 +2124,6 @@ mod update_tests;
 
 #[cfg(test)]
 mod hub_tests;
+
+#[cfg(test)]
+mod account_tests;

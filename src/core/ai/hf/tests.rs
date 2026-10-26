@@ -349,3 +349,76 @@ fn the_cache_paths_follow_the_hub_layout() {
         PathBuf::from(format!("../../../blobs/{}", oid(1)))
     );
 }
+
+// Spec (model-download, Connect a Hugging Face account): the token file is
+// the one of the Token lookup.
+#[test]
+fn the_token_file_follows_the_lookup_and_ignores_hf_token() {
+    let mut env = TokenEnv {
+        hf_token: Some("t0".into()),
+        hf_token_path: Some("/t/path".into()),
+        hf_home: Some("/hf".into()),
+        xdg_cache_home: Some("/c".into()),
+        home: Some("/h".into()),
+    };
+    assert_eq!(token_file(&env), Some(PathBuf::from("/t/path")));
+    env.hf_token_path = Some("relative".into());
+    assert_eq!(token_file(&env), Some(PathBuf::from("/hf/token")));
+    env.hf_home = None;
+    assert_eq!(
+        token_file(&env),
+        Some(PathBuf::from("/c/huggingface/token"))
+    );
+    env.xdg_cache_home = None;
+    assert_eq!(
+        token_file(&env),
+        Some(PathBuf::from("/h/.cache/huggingface/token"))
+    );
+    env.home = Some("h".into());
+    assert_eq!(token_file(&env), None, "only absolute paths count");
+}
+
+#[test]
+fn the_saved_token_is_the_file_whatever_hf_token_says() {
+    let env = TokenEnv {
+        hf_token: Some("t0".into()),
+        hf_token_path: None,
+        hf_home: Some("/hf".into()),
+        xdg_cache_home: None,
+        home: None,
+    };
+    let read = |p: &Path| (p == Path::new("/hf/token")).then(|| " t2\n".to_owned());
+    assert_eq!(saved_token(&env, read).as_deref(), Some("t2"));
+    assert_eq!(token(&env, read).as_deref(), Some("t0"));
+    assert_eq!(saved_token(&env, |_| Some("  ".into())), None);
+}
+
+#[test]
+fn a_whoami_reply_gives_the_account_name() {
+    assert_eq!(
+        parse_whoami(r#"{"type":"user","name":"ana","orgs":[]}"#),
+        Ok("ana".to_owned())
+    );
+    for bad in ["{}", r#"{"name":""}"#, r#"{"name":3}"#, "[]", "nope"] {
+        assert_eq!(parse_whoami(bad), Err(UNREADABLE.to_owned()), "{bad}");
+    }
+}
+
+// Spec (Connect a Hugging Face account): a 401 reads as a refused token;
+// anything else as the failure of Hub requests.
+#[test]
+fn whoami_failures_read_by_status() {
+    assert_eq!(whoami_message(401), REJECTED);
+    assert_eq!(REJECTED, "Hugging Face did not accept the token");
+    assert_eq!(whoami_message(500), "Hugging Face request failed: HTTP 500");
+}
+
+#[test]
+fn a_secret_is_never_shown_by_debug() {
+    let mut secret = Secret::new("hf_abc".into());
+    let shown = format!("{secret:?} {:?}", AccountAsk::Connect(secret.clone()));
+    assert!(!shown.contains("hf_abc"), "{shown}");
+    assert_eq!(secret.chars(), 6);
+    secret.clear();
+    assert_eq!((secret.expose(), secret.chars()), ("", 0));
+}
