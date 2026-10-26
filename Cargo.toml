@@ -21,6 +21,8 @@ exclude = [
     "/.github/",
     "/cliff.toml",
     "/RELEASING.md",
+    "/odd/",
+    "/.codegraph/",
 ]
 
 [dependencies]
