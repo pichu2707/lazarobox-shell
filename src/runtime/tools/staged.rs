@@ -135,10 +135,10 @@ impl StagedView {
     }
 }
 
-// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+// Needs the file tools: they open files below HOME without a link, Linux and macOS.
 // `cfg(test)` stays on its own line: the audit drops exactly that attribute.
 #[cfg(test)]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tests {
     use super::*;
     use crate::core::ai::tools::{
