@@ -17,9 +17,16 @@ struct Lab {
 
 impl Lab {
     fn new() -> Self {
-        Self {
+        let lab = Self {
             dir: tempfile::tempdir().unwrap(),
-        }
+        };
+        fs::write(lab.model(), b"GGUF").unwrap();
+        lab
+    }
+
+    /// The model file the server is given; it exists.
+    fn model(&self) -> PathBuf {
+        self.dir.path().join("q.gguf")
     }
 
     fn record(&self) -> PathBuf {
@@ -54,7 +61,7 @@ impl Lab {
         Managed::with(
             OsString::from("llama-server"),
             self.path(),
-            PathBuf::from("/m/q.gguf"),
+            self.model(),
             39281,
             Some(self.log()),
             probe,
@@ -97,7 +104,10 @@ async fn the_first_ensure_starts_the_server_once_and_later_ones_reuse_it() {
     assert_eq!(managed.ensure().await, Ok(()));
     assert_eq!(
         lab.starts(),
-        vec!["--host 127.0.0.1 --port 39281 -m /m/q.gguf".to_owned()]
+        vec![format!(
+            "--host 127.0.0.1 --port 39281 -m {}",
+            lab.model().display()
+        )]
     );
     managed.shutdown().await;
 }
@@ -296,6 +306,27 @@ async fn a_server_that_ended_is_started_again_by_the_next_ensure() {
     assert_eq!(managed.ensure().await, Ok(()));
     assert_eq!(lab.starts().len(), 1, "started again");
     assert_ne!(managed.pid().await, Some(pid));
+    managed.shutdown().await;
+}
+
+// Spec S10: the model file is checked before each start.
+#[tokio::test]
+async fn a_missing_model_file_starts_nothing_and_says_so() {
+    let lab = Lab::new();
+    let managed = lab.managed("exec sleep 30", answers(None), WAIT);
+    fs::remove_file(lab.model()).unwrap();
+    assert_eq!(
+        managed.ensure().await,
+        Err(format!(
+            "llama-server not started: model file not found: {}",
+            lab.model().display()
+        ))
+    );
+    assert_eq!(lab.starts(), Vec::<String>::new());
+    // Back in place (a drive mounted later): the next turn starts it.
+    fs::write(lab.model(), b"GGUF").unwrap();
+    let managed = lab.managed("exec sleep 30", answers_once(&lab.record()), WAIT);
+    assert_eq!(managed.ensure().await, Ok(()));
     managed.shutdown().await;
 }
 

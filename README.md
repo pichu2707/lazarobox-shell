@@ -222,6 +222,7 @@ Al elegir uno y guardar, el menú escribe `managed = true` y ese `model` y lazar
 - Si algo ya responde en ese puerto, lazarobox no arranca nada y el chat lo dice: nunca toma como suyo un servidor que no lanzó.
 - Su salida queda en `~/.local/state/lazarobox/llama-server.log` (o `$XDG_STATE_HOME/lazarobox`), que se vacía en cada arranque. Si no arranca, el chat muestra su última línea.
 - `model` debe ser una ruta absoluta: `~` no se expande y una ruta relativa se leería desde la carpeta en que arrancaste lazarobox.
+- Antes de cada arranque se comprueba que el archivo de `model` existe. Si falta, no se arranca nada y el chat dice `llama-server not started: model file not found: <ruta>`. No se comprueba al cargar la configuración: si el modelo está en un disco que montas más tarde, el siguiente mensaje ya funciona.
 - `llama-server` se busca en el `PATH` de login que ya usa lazarobox (nunca en el directorio actual), así que funciona también si abres lazarobox desde el lanzador del escritorio. El nombre del modelo en la tarea del chat da igual (llama-server lo ignora); sin modelo asignado se envía la ruta.
 - Un valor incorrecto de `managed` o `model` se ignora con un aviso al arrancar, y el servidor no se gestiona.
 

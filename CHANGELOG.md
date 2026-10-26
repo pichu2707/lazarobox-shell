@@ -19,6 +19,14 @@ baseline.
   with their process group, also after `exit` in the last pane. lazarobox
   still never stops them: a pane behaves like any terminal.
 
+### Changed
+
+- The managed llama-server checks its model file before each start. When
+  it is missing nothing starts and the chat reads `llama-server not
+  started: model file not found: <path>`, instead of the last line of a
+  failed llama-server. It is not checked when the config loads, so a drive
+  mounted later works on the next turn.
+
 ### Fixed
 
 - Nothing lazarobox starts is left running once it ends, however it ends.

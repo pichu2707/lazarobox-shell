@@ -14,6 +14,8 @@
 //! - Before a start, the port must be silent. A server that already answers
 //!   there was not started by us and is never treated as ours: the turn fails
 //!   and nothing is started.
+//! - Before a start, after the program is found, the model file must exist;
+//!   it is checked on every start, never at load.
 //! - It runs in its own process group, so stopping it takes its children too.
 //!   Quitting lazarobox stops it ([`Managed::shutdown`]); dropping it kills the
 //!   group as a backstop, so a cancelled start leaves nothing running.
@@ -195,6 +197,14 @@ impl Managed {
             .to_str()
             .and_then(|name| find_on_path(name, &self.path))
             .ok_or_else(|| MISSING.to_owned())?;
+        // Checked on every start, never at load: a drive mounted later makes
+        // the next turn work.
+        if !self.model.is_file() {
+            return Err(format!(
+                "llama-server not started: model file not found: {}",
+                self.model.display()
+            ));
+        }
         let (stdout, stderr) = match self.log.as_deref().map(open_log) {
             Some(Ok(file)) => match file.try_clone() {
                 Ok(copy) => (Stdio::from(file), Stdio::from(copy)),
