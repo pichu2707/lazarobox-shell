@@ -10,6 +10,28 @@ baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- Nothing lazarobox starts is left running once it ends, however it ends.
+  A small watcher (`lazarobox-shell __watch`, in its own session; `ps` on
+  Linux shows `/proc/self/exe __watch`) outlives it; every process group lazarobox starts (CLI chat turns, MCP servers, the
+  managed llama-server, short probes) is listed with it and taken off once
+  reaped. When lazarobox quits, crashes, is killed with SIGKILL or loses its
+  terminal, the watcher sends SIGHUP and SIGTERM to the groups still listed,
+  SIGKILL after 3 s, and exits. Before, a crash or SIGKILL left them all
+  running, and on macOS the managed llama-server then held its port so every
+  later start failed. A group is only signalled while its leader is still the
+  listed process (same start time) or gone, so a reused pid is never hit.
+  `engram serve` is never listed.
+- Quitting is polite. It used to SIGKILL CLI chat turns, MCP servers and the
+  managed llama-server at once. Now, as soon as the terminal is restored,
+  everything lazarobox started gets SIGHUP and SIGTERM, and SIGKILL only if
+  it still runs 2 s later, while the history and the memory are saved. A
+  turn still streaming its answer keeps running until then instead of being
+  cut at its next line. A group whose leader ends gets SIGKILL at once for
+  what it left behind. If lazarobox is killed during the quit, the watcher
+  repeats the same stop, where what a leader left behind gets the grace too.
+
 ## [0.23.0] - 2026-10-25
 
 ### Added

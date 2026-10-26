@@ -93,6 +93,16 @@ Para una terminal desconocida se usa `<cmd> -e <lazarobox-shell>` y el comando l
 
 Cada panel de shell define `LAZAROBOX=<pid>` (el pid de la instancia que lo abrió), igual que tmux hace con `$TMUX`, y los programas lanzados desde un panel la heredan. Si ejecutas `lazarobox-shell` dentro de un panel, no arranca: imprime `lazarobox-shell is already running in this terminal; use --force to nest anyway` y sale con código 1, antes de tocar la terminal. Para anidar a propósito usa `lazarobox-shell --force`; ten en cuenta que ambas instancias compartirán la misma tecla de prefijo.
 
+### Al cerrar lazarobox
+
+Al arrancar, lazarobox lanza un vigilante (`lazarobox-shell __watch`, un proceso pequeño en su propia sesión; en Linux `ps` lo muestra como `/proc/self/exe __watch`) que le sobrevive. Cada grupo de procesos que lazarobox arranca (los turnos de claude, codex y gemini, tus servidores MCP, el `llama-server` gestionado y las comprobaciones cortas, como `--version`) se apunta en él, y se borra cuando lazarobox lo recoge. Cuando lazarobox termina, sea como sea (al salir, si se cae, con `kill -9` o al cerrar la pestaña de la terminal; en Linux y en macOS), el vigilante manda `SIGHUP` y `SIGTERM` a los grupos que quedan apuntados, les da 3 s, manda `SIGKILL` a lo que siga vivo y sale.
+
+- **Al salir, lazarobox hace lo mismo él mismo, con suavidad:** en cuanto te devuelve la pantalla manda `SIGHUP` y `SIGTERM` a todo lo que lanzó y solo manda `SIGKILL` a lo que siga en marcha 2 s después, mientras guarda el historial y la memoria. Un programa que termina al recibir la señal no espera nada más; lo que dejó detrás (sus hijos) recibe entonces `SIGKILL`. Un turno que sigue escribiendo su respuesta no se corta antes de esos 2 s. Si cierras la pestaña o matan a lazarobox a mitad de la salida, el vigilante repite la misma secuencia, y ahí también los hijos que dejó un programa tienen esos segundos para terminar.
+- Solo toca un grupo si su proceso líder sigue siendo el que se apuntó (misma hora de arranque) o ya no tiene líder: un pid reutilizado por otro programa nunca recibe la señal.
+- `engram serve` no se apunta nunca: es tu servidor de memoria, lo comparten otras herramientas y sigue en marcha a propósito.
+- Los shells de los paneles no pasan por el vigilante: al cerrarse la terminal de lazarobox reciben `SIGHUP`, como en cualquier terminal.
+- Si el vigilante no puede arrancar, lazarobox funciona igual que antes: al salir para lo que lanzó, pero una caída puede dejarlo en marcha.
+
 ---
 
 ## 📋 Modo COPY
@@ -205,7 +215,7 @@ Al elegir uno y guardar, el menú escribe `managed = true` y ese `model` y lazar
 - En el selector de modelos, el `model` configurado aparece como `lazarobox starts it` aunque el servidor no esté en marcha, y se puede elegir.
 - Arrancar lazarobox no lanza nada. El primer mensaje del chat con llamacpp (o guardar el menú tras elegir un modelo, arriba) arranca `llama-server --host 127.0.0.1 --port 39281 -m <modelo>` y espera a que responda (hasta 90 s mientras carga el modelo); los siguientes mensajes reutilizan el mismo servidor.
 - Usa el puerto 39281, poco habitual a propósito; `port` lo cambia.
-- Se para al salir de lazarobox, también si cierras la pestaña de la terminal. En Linux, además, muere con lazarobox si este se cae; en macOS un cierre forzado puede dejarlo en marcha.
+- Se para al salir de lazarobox, también si cierras la pestaña de la terminal. Si lazarobox se cae o se fuerza su cierre, lo para el vigilante (ver «Al cerrar lazarobox»), también en macOS; en Linux, además, el núcleo lo mata con lazarobox.
 - Si algo ya responde en ese puerto, lazarobox no arranca nada y el chat lo dice: nunca toma como suyo un servidor que no lanzó.
 - Su salida queda en `~/.local/state/lazarobox/llama-server.log` (o `$XDG_STATE_HOME/lazarobox`), que se vacía en cada arranque. Si no arranca, el chat muestra su última línea.
 - `model` debe ser una ruta absoluta: `~` no se expande y una ruta relativa se leería desde la carpeta en que arrancaste lazarobox.

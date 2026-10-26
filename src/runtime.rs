@@ -42,6 +42,7 @@ pub(crate) mod refused_port;
 mod run_check;
 pub mod tools;
 pub mod update;
+pub mod watch;
 pub mod workspace;
 
 use ai_detect::spawn_detection;
@@ -198,6 +199,9 @@ impl Drop for QuitGuard {
 
 /// Runs the terminal pane until the child exits or the user quits.
 pub async fn run() -> io::Result<()> {
+    // First, before any child or pane exists: from here on every process
+    // group lazarobox starts is stopped once it ends, however it ends.
+    watch::start();
     // Probed off the async threads: macOS spawns `sandbox-exec` for it.
     let jail_probe = tokio::task::spawn_blocking(jail::probe);
     // Asked first so the shell runs while the rest of the start-up goes on.
@@ -492,21 +496,34 @@ pub async fn run() -> io::Result<()> {
         Err(error) => Err(error),
     };
 
-    // The user gets the prompt back first; the children are killed after.
+    // The user gets the prompt back first; the children are stopped after.
     // `rx` went away with the loop, so readers stuck on a full channel stopped.
     restore();
     // Quit order, and why:
-    // 1. The loop already returned, so the final Cancel and Append effects of
+    // 1. Everything lazarobox started (turns, MCP servers, the managed
+    //    llama-server) is asked to end with SIGHUP and SIGTERM at once, on a
+    //    blocking thread; only what still runs after QUIT_GRACE gets SIGKILL.
+    //    The steps below run meanwhile. If lazarobox is killed now (a terminal
+    //    closed in a hurry), the watcher repeats the same polite stop.
+    // 2. The loop already returned, so the final Cancel and Append effects of
     //    every open turn were applied (they must be emitted before the store
     //    is shut down, or the last messages are lost).
-    // 2. The store thread drains what is queued, inside STORE_JOIN_BOUND.
-    // 3. Memory flush and chat shutdown run together (network vs local
-    //    processes), each inside its own bound.
-    // 4. The PTY children are killed with whatever is left of the one bound.
+    // 3. The store thread drains what is queued, inside STORE_JOIN_BOUND.
+    // 4. Memory flush and chat shutdown run together (network vs local
+    //    processes), each inside its own bound; the chats only once step 1
+    //    is over, so nothing is killed before its grace.
+    // 5. The PTY children are stopped with whatever is left of the one bound.
+    let polite = tokio::task::spawn_blocking(|| watch::stop_listed(watch::QUIT_GRACE));
     panes.shutdown_store(STORE_JOIN_BOUND);
     let started = Instant::now();
     panes
-        .shutdown_engines(MEMORY_QUIT_BOUND, QUIT_KILL_BOUND)
+        .shutdown_engines_after(
+            async {
+                let _ = polite.await;
+            },
+            MEMORY_QUIT_BOUND,
+            QUIT_KILL_BOUND,
+        )
         .await;
     panes.shutdown(QUIT_KILL_BOUND.saturating_sub(started.elapsed()));
     result
@@ -991,13 +1008,32 @@ impl Panes {
         self
     }
 
+    /// [`Self::shutdown_engines_after`] with nothing to wait for first.
+    #[cfg(test)]
+    async fn shutdown_engines(&mut self, memory_bound: Duration, chats_bound: Duration) {
+        self.shutdown_engines_after(async {}, memory_bound, chats_bound)
+            .await;
+    }
+
     /// Flushes the memory and stops the chat turns at the same time: the flush
     /// waits on the network, the chat shutdown on local processes, and neither
-    /// needs the other. Each keeps its own bound.
-    async fn shutdown_engines(&mut self, memory_bound: Duration, chats_bound: Duration) {
+    /// needs the other. Each keeps its own bound. The chats are stopped only
+    /// once `polite` is over (the SIGHUP and SIGTERM of everything lazarobox
+    /// started, then its grace), inside `chats_bound` all the same.
+    async fn shutdown_engines_after(
+        &mut self,
+        polite: impl std::future::Future<Output = ()>,
+        memory_bound: Duration,
+        chats_bound: Duration,
+    ) {
         let chats = async {
+            // The tokio clock, so a paused test sees the polite stop's time.
+            let started = tokio::time::Instant::now();
+            let _ = timeout(chats_bound, polite).await;
             if let Some(chats) = self.chats.as_mut() {
-                chats.shutdown(chats_bound).await;
+                chats
+                    .shutdown(chats_bound.saturating_sub(started.elapsed()))
+                    .await;
             }
         };
         tokio::join!(self.memory.shutdown(memory_bound), chats);
@@ -4322,6 +4358,101 @@ mod tests {
         );
         let dropped = dropped_at.lock().unwrap().expect("the turn was stopped");
         assert_eq!(dropped, start, "the chat stopped at once, not after memory");
+    }
+
+    // Spec S6: the turns are stopped only once the polite stop (SIGHUP and
+    // SIGTERM, then the grace) is over, and the memory flushes meanwhile.
+    #[tokio::test(start_paused = true)]
+    async fn quit_stops_the_chats_only_after_the_polite_stop() {
+        use std::sync::Mutex;
+        use tokio::time::Instant as Clock;
+
+        struct Dropped(Arc<Mutex<Option<Clock>>>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                *self.0.lock().unwrap() = Some(Clock::now());
+            }
+        }
+
+        let dropped_at = Arc::new(Mutex::new(None));
+        let seen = Arc::clone(&dropped_at);
+        let runner: chat::Runner = Arc::new(move |_request, tx| {
+            let guard = Dropped(Arc::clone(&seen));
+            Box::pin(async move {
+                let (_guard, _tx) = (guard, tx);
+                std::future::pending::<()>().await;
+            })
+        });
+        let (mut panes, _chat_rx) = panes_with_chats(runner);
+        panes.apply(vec![chat_send(id(1), 1)]);
+        tokio::task::yield_now().await;
+
+        let polite = Duration::from_millis(500);
+        let start = Clock::now();
+        panes
+            .shutdown_engines_after(
+                tokio::time::sleep(polite),
+                MEMORY_QUIT_BOUND,
+                QUIT_KILL_BOUND,
+            )
+            .await;
+        let dropped = dropped_at.lock().unwrap().expect("the turn was stopped");
+        assert_eq!(
+            dropped,
+            start + polite,
+            "the turn was killed before the grace"
+        );
+    }
+
+    // Spec S6 (verifier B1): a turn still streaming when the app stops
+    // listening is not dropped (its group killed) before the polite stop.
+    #[tokio::test(start_paused = true)]
+    async fn quit_lets_a_streaming_turn_run_until_the_polite_stop_is_over() {
+        use std::sync::Mutex;
+        use tokio::time::Instant as Clock;
+
+        struct Dropped(Arc<Mutex<Option<Clock>>>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                *self.0.lock().unwrap() = Some(Clock::now());
+            }
+        }
+
+        let dropped_at = Arc::new(Mutex::new(None));
+        let seen = Arc::clone(&dropped_at);
+        let runner: chat::Runner = Arc::new(move |_request, tx| {
+            let guard = Dropped(Arc::clone(&seen));
+            Box::pin(async move {
+                let _guard = guard;
+                loop {
+                    if tx.send(StreamEvent::Slow).await.is_err() {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+        });
+        let (mut panes, mut chat_rx) = panes_with_chats(runner);
+        panes.apply(vec![chat_send(id(1), 1)]);
+        recv(&mut chat_rx).await.unwrap();
+        // The loop is gone: nobody reads the turn's events any more.
+        drop(chat_rx);
+
+        let polite = Duration::from_millis(500);
+        let start = Clock::now();
+        panes
+            .shutdown_engines_after(
+                tokio::time::sleep(polite),
+                MEMORY_QUIT_BOUND,
+                QUIT_KILL_BOUND,
+            )
+            .await;
+        let dropped = dropped_at.lock().unwrap().expect("the turn was stopped");
+        assert_eq!(
+            dropped,
+            start + polite,
+            "the turn was killed before the grace"
+        );
     }
 
     // Memory turned on in the menu during a run has no worker: the pane that
