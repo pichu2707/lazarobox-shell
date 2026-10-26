@@ -266,8 +266,8 @@ Spec: command-runner "Refusals before start", "Process rules"; agent-tools "Appr
 
 ### G-a: git argv and parse (pure) (PR 20, ~350)
 Spec: git-tools "Verb boundary", "Hardened execution", "Read verbs".
-- [ ] Ga.1 RED: argv templates for status/diff/log/add/commit with the fixed `-c` hardening, `:(exclude,glob)` pathspecs from SECRET_FILES, `:(literal)` for add. GREEN: `tools/git.rs`. ~200.
-- [ ] Ga.2 RED: porcelain v2 `-z` parse, log `%x1f` parse, `max_count` <= 50. ~150.
+- [x] Ga.1 RED: argv templates for status/diff/log/add/commit with the fixed `-c` hardening, `:(exclude,glob)` pathspecs from SECRET_FILES, `:(literal)` for add. GREEN: `tools/git.rs`. ~200.
+- [x] Ga.2 RED: porcelain v2 `-z` parse, log `%x1f` parse, `max_count` <= 50. ~150.
 
 ### G-b: git runtime (PR 21, ~350)
 - [ ] Gb.1 RED: git `JailSpec` (run spec without caches, ro `~/.gitconfig` and XDG git files, rw on `--absolute-git-dir` and `--git-common-dir` via a jailed read-only `rev-parse` preflight; linked worktrees). GREEN: `runtime/tools/git.rs`. ~200. Dep: X-c3.

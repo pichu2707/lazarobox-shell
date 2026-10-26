@@ -820,3 +820,16 @@ API changes for X-d1:
 - `Kind::Crowded` is now `Kind::Unchecked` (still `Copy`): `after` holds the reason text ("hooks dir has N entries", "config not understood: line 3: line continuation", "more watched places than the bound allows", ...). Show it as "could not verify git hooks/config after this run", with no diff and no revert. It is reported on every run, whatever changed, and also when only the before-snapshot was unchecked.
 - `Unreported` may fill shortly after a cancelled `run_jailed`, not at the drop: drain it again later (before a commit or push). If the thread cannot start, a `Kind::Unchecked` change is pushed.
 - No other signature changed (`snapshot`, `compare`, `Change`, `Ran`, `Job`).
+## Batch: slice G-a (git argv and parse, PR 20, branch feat/coding-tools-ga, base feat/coding-tools-m5a)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Ga.1 argv templates (status, diff, log, add, commit), `-c` hardening, `:(exclude,glob,icase)` from SECRET_FILES, `:(literal)` | done | feat(tools): add pure git argv templates and porcelain/log parsing |
+| Ga.2 porcelain v2 `-z` parse, log `%x1f` parse, `max_count` <= 50 | done | same commit |
+
+Notes:
+- `core/ai/tools/git.rs` (pure, about 390 production lines with docs). `SECRET_FILES` in `paths.rs` is now `pub(crate)` (one-word change); `pub mod git;` in `tools/mod.rs`.
+- Strict TDD: tests and code were written in one pass in one file, not as a separate red run; one test expectation was wrong and fixed at the first run.
+- Deviations: pathspec is `:(exclude,glob,icase)` (spec says `exclude,glob`) so a tracked `.ENV` is excluded like the case-insensitive path guard; `.env` and `.env.*` are added to SECRET_FILES because the guard treats env names separately. `git_diff`/`git_log` path is `:(literal)` and checked (relative, no `..`, no `.git`, no secret component). `git log` with a path appends excludes too. Default log count 20 (design leaves it open).
+- Pure helpers also in the module: `env(read)`, `check_message` (non-empty, <= 4096 bytes, no control except `\n`/`\t`, no bidi), `render_status`, `render_log`, status entries cap 200.
+- Checks: fmt, clippy -D warnings, `cargo test --lib` (5828), `cargo +1.88 check --all-targets` green.
