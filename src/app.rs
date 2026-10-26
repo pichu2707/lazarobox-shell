@@ -341,6 +341,9 @@ pub enum Effect {
     /// Turn the host terminal's mouse capture on (`true`) or off. Emitted
     /// only when the wanted state differs from the one last asked for.
     MouseCapture(bool),
+    /// How long the managed llama-server may sit unused now (a menu save
+    /// changed it); `None` never stops it.
+    ManagedIdle(Option<Duration>),
     /// Name the jobs still running in the panes, for the quit prompt; the
     /// runtime answers with one `AppEvent::StillRunning`.
     ListRunning,
@@ -1682,7 +1685,8 @@ impl App {
             match outcome {
                 Outcome::Reverted => self.config = menu.original(),
                 Outcome::Saved => {
-                    saved_over = Some(self.ai.managed().cloned());
+                    saved_over =
+                        Some((self.ai.managed().cloned(), self.ai.managed_options().idle()));
                     self.ai = menu.ai_draft();
                 }
             }
@@ -1697,7 +1701,11 @@ impl App {
         let mut effects = self.apply_config();
         effects.extend(self.sync_tools());
         // Last, so its notice is the one shown.
-        if let Some(before) = saved_over {
+        if let Some((before, idle)) = saved_over {
+            let now = self.ai.managed_options().idle();
+            if now != idle {
+                effects.push(Effect::ManagedIdle(now));
+            }
             effects.extend(self.start_managed(before.as_ref()));
         }
         effects

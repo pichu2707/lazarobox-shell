@@ -540,16 +540,20 @@ async fn run_managed(
 }
 
 /// A managed llama-server whose program is `program` (its folder is the
-/// `PATH`), with a probe that answers 200 once `ready` exists.
+/// `PATH`) and a model file next to it, with a probe that answers 200 once
+/// `ready` exists.
 fn managed_at(program: &std::path::Path, port: u16, ready: std::path::PathBuf) -> Arc<Managed> {
     let probe: managed::Probe = Arc::new(move |_| {
         let up = ready.exists();
         Box::pin(async move { up.then_some(200) })
     });
+    // The model is checked before a start: one next to the program.
+    let model = program.with_file_name("q.gguf");
+    std::fs::write(&model, b"GGUF").unwrap();
     Arc::new(Managed::with(
         program.file_name().unwrap().to_owned(),
         format!("{}:/usr/bin:/bin", program.parent().unwrap().display()).into(),
-        "/m/q.gguf".into(),
+        model,
         port,
         None,
         probe,

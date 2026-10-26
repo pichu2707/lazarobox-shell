@@ -137,6 +137,7 @@ Dentro de tmux, OSC 52 necesita `set -g set-clipboard on` en `tmux.conf`.
 | `Mouse` | Captura del ratón | `mouse` |
 | `Notify` | Aviso al terminar una respuesta del chat (`off`, `auto`, `desktop`, `bell`); `t` lo prueba | `[ai] notify` |
 | `Sound` | Sonido propio del aviso; `t` lo prueba | `[ai] notify_sound` |
+| `llama-server idle` | Minutos sin uso tras los que se para el llama-server gestionado: `5 min`, `15 min`, `30 min` o `never` | `[ai.servers.llamacpp] idle_minutes` |
 | `Updates` | Versión en ejecución y actualización disponible (ver abajo) | `[updates] check` (solo en el fichero) |
 
 `Notify` y `Sound` antes estaban en la sección **AI**; solo cambian de sitio, y sus claves y su comportamiento siguen igual.
@@ -205,6 +206,8 @@ Un servidor instalado (su binario está en el `PATH`) que no responde aparece en
 [ai.servers.llamacpp]
 managed = true
 model = "/ruta/al/modelo.gguf"
+args = ["-ngl", "99", "-c", "16384"]   # opcional
+idle_minutes = 15                       # opcional: 0 = no pararlo nunca
 ```
 
 **Desde el menú, sin editar nada.** Con `llama-server` instalado pero sin responder, el selector de modelos de llamacpp lista, marcados `lazarobox starts it`, los `.gguf` que encuentra en:
@@ -218,10 +221,13 @@ Al elegir uno y guardar, el menú escribe `managed = true` y ese `model` y lazar
 - En el selector de modelos, el `model` configurado aparece como `lazarobox starts it` aunque el servidor no esté en marcha, y se puede elegir.
 - Arrancar lazarobox no lanza nada. El primer mensaje del chat con llamacpp (o guardar el menú tras elegir un modelo, arriba) arranca `llama-server --host 127.0.0.1 --port 39281 -m <modelo>` y espera a que responda (hasta 90 s mientras carga el modelo); los siguientes mensajes reutilizan el mismo servidor.
 - Usa el puerto 39281, poco habitual a propósito; `port` lo cambia.
+- `args` añade argumentos a `llama-server` detrás de los que pone lazarobox, por ejemplo `-ngl 99` (capas en la GPU), `-c 16384` (contexto) o `--jinja`. Cada elemento de la lista es un argumento tal cual, sin pasar por ninguna shell (`"--alias", "mi modelo"` son dos). Solo se configura en el archivo; el menú no lo toca. Si la lista incluye algo que fija lazarobox (`--host`, `--port`, `-m` o `--model`, también como `--port=8080`) o no es una lista de textos, se ignora entera con un aviso al arrancar.
+- Se para solo tras `idle_minutes` minutos sin usarlo (15 por defecto), para liberar la memoria de la GPU; el siguiente mensaje lo arranca otra vez y espera a que cargue el modelo. Un mensaje que aún se está respondiendo nunca se corta: el tiempo cuenta desde que termina. `0` no lo para nunca. En el menú, la fila `llama-server idle` de Settings pasa por `5 min`, `15 min`, `30 min` y `never` (`h`/`l`) y se guarda con `s`; el cambio vale al momento, sin reiniciar. Un valor del archivo fuera de esos pasos (por ejemplo `45`) se muestra tal cual. Un valor incorrecto se cambia por 15 con un aviso al arrancar.
 - Se para al salir de lazarobox, también si cierras la pestaña de la terminal. Si lazarobox se cae o se fuerza su cierre, lo para el vigilante (ver «Al cerrar lazarobox»), también en macOS; en Linux, además, el núcleo lo mata con lazarobox.
 - Si algo ya responde en ese puerto, lazarobox no arranca nada y el chat lo dice: nunca toma como suyo un servidor que no lanzó.
 - Su salida queda en `~/.local/state/lazarobox/llama-server.log` (o `$XDG_STATE_HOME/lazarobox`), que se vacía en cada arranque. Si no arranca, el chat muestra su última línea.
 - `model` debe ser una ruta absoluta: `~` no se expande y una ruta relativa se leería desde la carpeta en que arrancaste lazarobox.
+- Antes de cada arranque se comprueba que el archivo de `model` existe. Si falta, no se arranca nada y el chat dice `llama-server not started: model file not found: <ruta>`. No se comprueba al cargar la configuración: si el modelo está en un disco que montas más tarde, el siguiente mensaje ya funciona.
 - `llama-server` se busca en el `PATH` de login que ya usa lazarobox (nunca en el directorio actual), así que funciona también si abres lazarobox desde el lanzador del escritorio. El nombre del modelo en la tarea del chat da igual (llama-server lo ignora); sin modelo asignado se envía la ruta.
 - Un valor incorrecto de `managed` o `model` se ignora con un aviso al arrancar, y el servidor no se gestiona.
 

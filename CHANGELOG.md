@@ -19,6 +19,28 @@ baseline.
   with their process group, also after `exit` in the last pane. lazarobox
   still never stops them: a pane behaves like any terminal.
 
+- `[ai.servers.llamacpp] args` passes extra arguments to the managed
+  llama-server, after the ones lazarobox sets: for example
+  `args = ["-ngl", "99", "-c", "16384"]`. Each entry is one argument, with
+  no shell. A list that sets `--host`, `--port`, `-m` or `--model` (also as
+  `--port=8080`), or that is not a list of strings, is ignored whole with a
+  startup notice.
+
+- The managed llama-server stops after `[ai.servers.llamacpp] idle_minutes`
+  without a turn (15 by default, 0 = never), freeing the GPU memory; the
+  next llamacpp turn starts it again. A turn still answering is never cut:
+  the idle time counts from its end. The Settings tab of the menu has a
+  `llama-server idle` row (5 min, 15 min, 30 min, never) that applies at
+  once, with no restart.
+
+### Changed
+
+- The managed llama-server checks its model file before each start. When
+  it is missing nothing starts and the chat reads `llama-server not
+  started: model file not found: <path>`, instead of the last line of a
+  failed llama-server. It is not checked when the config loads, so a drive
+  mounted later works on the next turn.
+
 ### Fixed
 
 - Nothing lazarobox starts is left running once it ends, however it ends.

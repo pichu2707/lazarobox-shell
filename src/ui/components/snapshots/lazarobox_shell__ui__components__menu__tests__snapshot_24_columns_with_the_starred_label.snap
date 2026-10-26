@@ -9,8 +9,8 @@ expression: "text(&draw(MIN_WIDTH, MIN_HEIGHT, &with_update()))"
 │ Mouse             on │
 │ Notify           off │
 │ Sound             on │
+│ llama-server idle  … │
 │ * Updates  0.16.0 a… │
-│                      │
 │                      │
 │                      │
 │                      │

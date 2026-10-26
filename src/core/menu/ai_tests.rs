@@ -111,12 +111,13 @@ pub(super) fn selected_label(menu: &MenuState) -> &'static str {
     labels[0]
 }
 
-const ORDER: [&str; 22] = [
+const ORDER: [&str; 23] = [
     "Statusline position",
     "Tab bar position",
     "Mouse",
     "Notify",
     "Sound",
+    "llama-server idle",
     "Updates",
     "Set all tasks",
     "general",
@@ -141,7 +142,7 @@ const ORDER: [&str; 22] = [
 fn the_ai_descriptors_are_well_formed() {
     assert_eq!(AI_SECTION.title, "AI");
     let labels: Vec<_> = AI_SECTION.items.iter().map(|i| i.label).collect();
-    assert_eq!(labels, ORDER[6..]);
+    assert_eq!(labels, ORDER[7..]);
     let mut paths: Vec<&str> = Vec::new();
     for (item, task) in AI_SECTION.items[1..6].iter().zip(Task::ALL) {
         match item.kind {
@@ -176,7 +177,7 @@ fn the_ai_descriptors_are_well_formed() {
 // Spec: Task rows in order, Wrap (tab-local), Mouse row is selectable.
 #[test]
 fn navigation_visits_each_tab_in_order_and_wraps_inside_it() {
-    let (settings, ai) = ORDER.split_at(6);
+    let (settings, ai) = ORDER.split_at(7);
     let mut m = menu(None, None, Some(machine()));
     for (rows, tab) in [(settings, 0), (ai, 1)] {
         let mut visited = vec![selected_label(&m)];

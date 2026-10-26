@@ -58,6 +58,10 @@ pub enum ItemKind {
     /// The notification sound flag (`ai.notify_sound`): an on/off row over
     /// the AI draft.
     NotifySound,
+    /// The idle stop of the managed llama-server
+    /// (`ai.servers.llamacpp.idle_minutes`): 5, 15, 30 min or never over the
+    /// AI draft; a value of the config between them is shown as it is.
+    ManagedIdle,
     /// The running version, and the newer one when the update check found it.
     /// Not a setting: `[updates] check` stays config-only. `h`/`l` do nothing
     /// here; Enter acts only when an update is available.
@@ -81,7 +85,7 @@ pub struct MemoryRow {
 impl ItemKind {
     /// Whether the row edits the AI draft, so it needs the AI section.
     const fn needs_ai(&self) -> bool {
-        matches!(self, Self::Notify | Self::NotifySound)
+        matches!(self, Self::Notify | Self::NotifySound | Self::ManagedIdle)
     }
 }
 
@@ -152,6 +156,10 @@ pub static SECTIONS: &[Section] = &[Section {
             kind: ItemKind::NotifySound,
         },
         Item {
+            label: "llama-server idle",
+            kind: ItemKind::ManagedIdle,
+        },
+        Item {
             label: "Updates",
             kind: ItemKind::Updates,
         },
@@ -161,7 +169,8 @@ pub static SECTIONS: &[Section] = &[Section {
 /// The AI section, attached only by [`MenuState::with_ai`]. The labels of
 /// the task rows are the task ids; their key path is `Task::table`. The
 /// static rows follow the tasks: `Profile`, `Context`, `Memory`, `Tools`, the five
-/// family switches and `Approval`, in that order. `Notify` and `Sound` live in the Settings section.
+/// family switches and `Approval`, in that order. `Notify`, `Sound` and
+/// `llama-server idle` live in the Settings section.
 pub static AI_SECTION: Section = Section {
     title: "AI",
     items: &[
@@ -288,6 +297,7 @@ fn choices() -> impl Iterator<Item = (&'static Item, &'static Choice)> {
             | ItemKind::Family(_)
             | ItemKind::Approval
             | ItemKind::NotifySound
+            | ItemKind::ManagedIdle
             | ItemKind::Updates => None,
         })
 }
@@ -705,6 +715,7 @@ impl MenuState {
                     | ItemKind::Family(_)
                     | ItemKind::Approval
                     | ItemKind::NotifySound
+                    | ItemKind::ManagedIdle
             )
         )
     }
@@ -814,6 +825,7 @@ impl MenuState {
             | ItemKind::Family(_)
             | ItemKind::Approval
             | ItemKind::NotifySound
+            | ItemKind::ManagedIdle
             | ItemKind::Updates => None,
         }
     }
@@ -952,6 +964,21 @@ impl MenuState {
                                 } else {
                                     "off"
                                 })
+                            }),
+                            selected: self.selected == Some(index),
+                            enabled: true,
+                        };
+                        index += 1;
+                        row
+                    }
+                    ItemKind::ManagedIdle => {
+                        let row = Row::Item {
+                            label: item.label,
+                            value: self.ai.as_ref().map(|ai| {
+                                match ai.draft().managed_options().idle_minutes {
+                                    0 => Cow::Borrowed("never"),
+                                    minutes => Cow::Owned(format!("{minutes} min")),
+                                }
                             }),
                             selected: self.selected == Some(index),
                             enabled: true,
@@ -1184,6 +1211,7 @@ impl MenuState {
                     Some(ItemKind::Approval) => ai.cycle_approval(forward),
                     Some(ItemKind::Notify) => ai.cycle_notify(forward),
                     Some(ItemKind::NotifySound) => ai.toggle_notify_sound(),
+                    Some(ItemKind::ManagedIdle) => ai.cycle_idle(forward),
                     _ => ai.toggle_context(),
                 }
             }
@@ -1293,6 +1321,15 @@ impl MenuState {
             .as_ref()
             .and_then(AiMenu::changed_approval)
             .map(ConfigEdit::approval);
+        let idle = self
+            .ai
+            .as_ref()
+            .and_then(AiMenu::changed_idle)
+            .map(|minutes| ConfigEdit {
+                table: LLAMACPP_TABLE,
+                key: "idle_minutes",
+                value: Cow::Owned(minutes.to_string()),
+            });
         let managed = self
             .ai
             .as_ref()
@@ -1322,6 +1359,7 @@ impl MenuState {
             .chain(tools)
             .chain(families)
             .chain(approval)
+            .chain(idle)
             .chain(managed)
             .collect()
     }
@@ -1789,6 +1827,8 @@ mod family_tests;
 
 #[cfg(test)]
 mod approval_tests;
+#[cfg(test)]
+mod idle_tests;
 
 #[cfg(test)]
 mod copy_tests;

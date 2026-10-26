@@ -384,12 +384,17 @@ pub fn runner_live(live: LiveServers, cli: CliEnv, tools: Option<Arc<ToolHost>>)
         let managed = live.managed().filter(|_| request.engine == "llamacpp");
         Box::pin(async move {
             let _tools = tools;
-            if let Some(managed) = managed
-                && let Err(reason) = managed.ensure().await
-            {
-                let _ = tx.send(StreamEvent::Error(ChatError::Failed(reason))).await;
-                return;
-            }
+            // Held until the turn ends: the idle stop never cuts it.
+            let _lease = match managed {
+                Some(managed) => match managed.lease().await {
+                    Ok(lease) => Some(lease),
+                    Err(reason) => {
+                        let _ = tx.send(StreamEvent::Error(ChatError::Failed(reason))).await;
+                        return;
+                    }
+                },
+                None => None,
+            };
             let Some(adapter) = adapter_for(&request.engine) else {
                 let _ = tx
                     .send(StreamEvent::Error(ChatError::Failed(NO_ADAPTER.into())))

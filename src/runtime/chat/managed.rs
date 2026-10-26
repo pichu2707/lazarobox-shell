@@ -9,11 +9,13 @@
 //! - The program is `llama-server`, looked up in the login `PATH` lazarobox
 //!   gives its tools (absolute entries only, never the current folder) and run
 //!   by that absolute path with that `PATH`, one argv element per argument:
-//!   `--host 127.0.0.1 --port <port> -m <model>`. No shell parses the model
-//!   path.
+//!   `--host 127.0.0.1 --port <port> -m <model>`, then the extra `args` of
+//!   the config. No shell parses the model path or the arguments.
 //! - Before a start, the port must be silent. A server that already answers
 //!   there was not started by us and is never treated as ours: the turn fails
 //!   and nothing is started.
+//! - Before a start, after the program is found, the model file must exist;
+//!   it is checked on every start, never at load.
 //! - It runs in its own process group, so stopping it takes its children too.
 //!   Quitting lazarobox stops it ([`Managed::shutdown`]); dropping it kills the
 //!   group as a backstop, so a cancelled start leaves nothing running.
@@ -34,8 +36,8 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+        Arc, PoisonError,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -93,12 +95,31 @@ pub struct Managed {
     path: OsString,
     model: PathBuf,
     port: u16,
+    /// Extra arguments, after the ones lazarobox sets.
+    args: Vec<String>,
     log: Option<PathBuf>,
     probe: Probe,
     wait: Duration,
     running: Mutex<Option<Process>>,
     /// Replaced by another model: it never starts again.
     retired: AtomicBool,
+    /// Turns that hold a [`Lease`]: while any does, it is never idle.
+    busy: AtomicUsize,
+    /// When a turn last started or ended, or the server last started.
+    last_used: std::sync::Mutex<Instant>,
+}
+
+/// A turn's hold on the server: counted as in use until it is dropped, when
+/// the idle time starts again.
+pub struct Lease(Arc<Managed>);
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        // The clock resets first, so an idle check never sees the turn
+        // over with its old last use.
+        self.0.touch();
+        self.0.busy.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Managed {
@@ -116,6 +137,13 @@ impl Managed {
         )
     }
 
+    /// The same server, started with `args` after the arguments lazarobox
+    /// sets (`[ai.servers.llamacpp] args`).
+    pub fn with_args(mut self, args: Vec<String>) -> Self {
+        self.args = args;
+        self
+    }
+
     /// [`Managed::new`] with the program, the probe and the start wait given.
     pub(crate) fn with(
         program: OsString,
@@ -131,17 +159,62 @@ impl Managed {
             path,
             model,
             port,
+            args: Vec::new(),
             log,
             probe,
             wait,
             running: Mutex::new(None),
             retired: AtomicBool::new(false),
+            busy: AtomicUsize::new(0),
+            last_used: std::sync::Mutex::new(Instant::now()),
         }
     }
 
     /// The port it runs on.
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// [`Managed::ensure`] for a turn: the server counts as in use from now
+    /// until the lease is dropped, so the idle stop never cuts the turn.
+    pub async fn lease(self: &Arc<Self>) -> Result<Lease, String> {
+        // Counted before the start: an idle check that runs meanwhile waits
+        // for the lock and then sees the turn.
+        self.busy.fetch_add(1, Ordering::SeqCst);
+        let lease = Lease(Arc::clone(self));
+        self.touch();
+        self.ensure().await?;
+        Ok(lease)
+    }
+
+    /// Stops the server when no turn holds it and none used it for `idle` up
+    /// to `now`; the next turn starts it again. `true` when it stopped one.
+    pub async fn stop_if_idle(&self, idle: Duration, now: Instant) -> bool {
+        // Held while it stops: a turn waiting to start never meets the old
+        // server still answering on the port.
+        let mut running = self.running.lock().await;
+        if self.busy.load(Ordering::SeqCst) > 0 {
+            return false;
+        }
+        let last = *self
+            .last_used
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if now.saturating_duration_since(last) < idle {
+            return false;
+        }
+        let Some(process) = running.take() else {
+            return false;
+        };
+        stop(process).await;
+        true
+    }
+
+    fn touch(&self) {
+        *self
+            .last_used
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Instant::now();
     }
 
     /// Ok once the server we started answers; it is started first when it is
@@ -176,6 +249,8 @@ impl Managed {
             }
             if (self.probe)(self.port).await == Some(200) {
                 *running = Some(process);
+                // The idle time counts from the start, also one the menu made.
+                self.touch();
                 return Ok(());
             }
             if Instant::now() >= deadline {
@@ -195,6 +270,14 @@ impl Managed {
             .to_str()
             .and_then(|name| find_on_path(name, &self.path))
             .ok_or_else(|| MISSING.to_owned())?;
+        // Checked on every start, never at load: a drive mounted later makes
+        // the next turn work.
+        if !self.model.is_file() {
+            return Err(format!(
+                "llama-server not started: model file not found: {}",
+                self.model.display()
+            ));
+        }
         let (stdout, stderr) = match self.log.as_deref().map(open_log) {
             Some(Ok(file)) => match file.try_clone() {
                 Ok(copy) => (Stdio::from(file), Stdio::from(copy)),
@@ -211,6 +294,7 @@ impl Managed {
             .arg(self.port.to_string())
             .arg("-m")
             .arg(&self.model)
+            .args(&self.args)
             .stdin(Stdio::null())
             .stdout(stdout)
             .stderr(stderr)

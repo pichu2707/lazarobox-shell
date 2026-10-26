@@ -102,6 +102,8 @@ const PTY_CHANNEL: usize = 256;
 const EVENT_BUDGET: usize = 256;
 /// Time between reads of the child's working directory.
 const CWD_POLL: Duration = Duration::from_secs(1);
+/// How often the managed llama-server is checked for its idle stop.
+const IDLE_CHECK: Duration = Duration::from_secs(30);
 /// Longest a quit waits for the children to die: HUP grace (300 ms) plus the
 /// reap wait (2 s) plus margin.
 const QUIT_KILL_BOUND: Duration = Duration::from_secs(3);
@@ -337,17 +339,35 @@ pub async fn run() -> io::Result<()> {
         .map(|dir| dir.join("llama-server.log"));
     // The llama-server lazarobox starts itself, when `managed = true`: only a
     // llamacpp turn starts it, on llamacpp's port, and quitting stops it.
+    // Its extra arguments, read at startup like the ports: the menu does not
+    // write them.
+    let managed_args = app.ai().managed_options().args.clone();
     let managed = app.ai().managed().map(|server| {
-        Arc::new(chat::Managed::new(
-            cli_env.path.clone(),
-            server.model.clone(),
-            server_ports
-                .port("llamacpp")
-                .expect("llamacpp is a catalog server"),
-            managed_log.clone(),
-        ))
+        Arc::new(
+            chat::Managed::new(
+                cli_env.path.clone(),
+                server.model.clone(),
+                server_ports
+                    .port("llamacpp")
+                    .expect("llamacpp is a catalog server"),
+                managed_log.clone(),
+            )
+            .with_args(managed_args.clone()),
+        )
     });
     let live = chat::LiveServers::new(server_ports, managed);
+    // The idle stop: checked now and then, with the time the menu set last.
+    live.set_idle(app.ai().managed_options().idle());
+    tokio::spawn({
+        let live = live.clone();
+        async move {
+            let mut check = tokio::time::interval(IDLE_CHECK);
+            loop {
+                check.tick().await;
+                live.stop_if_idle(Instant::now()).await;
+            }
+        }
+    });
     // What the machine offers for notifications (display, bus, notify-send,
     // sound players), probed once now in the background: a slow lookup never
     // delays a send, it just fills the slot later. The `t` test refreshes it.
@@ -372,18 +392,20 @@ pub async fn run() -> io::Result<()> {
                 );
             }
         }))
+        .with_idle(Box::new({
+            let live = live.clone();
+            move |idle| live.set_idle(idle)
+        }))
         // A save that turns the managed llama-server on: the next turns and
         // detections use it at once; the one it replaces stops for good.
         .with_manager(Box::new({
             let live = live.clone();
             let path = cli_env.path.clone();
             move |model, port| {
-                let server = Arc::new(chat::Managed::new(
-                    path.clone(),
-                    model,
-                    port,
-                    managed_log.clone(),
-                ));
+                let server = Arc::new(
+                    chat::Managed::new(path.clone(), model, port, managed_log.clone())
+                        .with_args(managed_args.clone()),
+                );
                 let old = live.manage(Arc::clone(&server));
                 let tx = managed_tx.clone();
                 tokio::spawn(async move {
@@ -852,6 +874,7 @@ type TestSendFn = dyn FnMut(NotifyMode, bool, Option<Arc<AtomicBool>>);
 
 /// Starts the managed llama-server with a model on a port.
 type ManageFn = dyn FnMut(PathBuf, u16);
+type IdleFn = dyn FnMut(Option<Duration>);
 
 /// Starts a prompt preparation: pane, profile, origin cwd, context flag.
 type PrepareFn = dyn FnMut(PaneId, Profile, Option<PathBuf>, bool);
@@ -956,6 +979,9 @@ struct Panes {
     /// Starts the managed llama-server the menu turned on; the outcome comes
     /// back on its channel. A no-op unless `with_manager` installs one.
     manage: Box<ManageFn>,
+    /// Sets how long the managed llama-server may sit unused. A no-op unless
+    /// `with_idle` installs one.
+    set_idle: Box<IdleFn>,
     /// Starts one AI engine detection; the answer arrives on the AI channel.
     /// A no-op unless `with_detector` installs the production one.
     detect: Box<dyn FnMut(bool)>,
@@ -998,6 +1024,7 @@ impl Panes {
             sound_send: Box::new(|| {}),
             test_send: Box::new(|_, _, _| {}),
             manage: Box::new(|_, _| {}),
+            set_idle: Box::new(|_| {}),
             detect: Box::new(|_| {}),
             check_update: Box::new(|| {}),
             prepare: Box::new(|_, _, _, _| {}),
@@ -1114,6 +1141,12 @@ impl Panes {
     /// Sets what starts the managed llama-server the menu turns on.
     fn with_manager(mut self, manage: Box<ManageFn>) -> Self {
         self.manage = manage;
+        self
+    }
+
+    /// Sets what changes the idle time of the managed llama-server.
+    fn with_idle(mut self, set_idle: Box<IdleFn>) -> Self {
+        self.set_idle = set_idle;
         self
     }
 
@@ -1351,6 +1384,7 @@ impl Panes {
                 // has one), the rest in the background with a report.
                 // Returns at once: the start runs on its own task.
                 Effect::StartManaged { model, port } => (self.manage)(model, port),
+                Effect::ManagedIdle(idle) => (self.set_idle)(idle),
                 Effect::NotifyTest { mode, sound } => {
                     self.bell |= rings_at_once(mode);
                     let fallback =
@@ -2372,6 +2406,23 @@ mod tests {
         let mut pending = Vec::new();
         flush_host(&mut out, &mut pending).unwrap();
         assert_eq!((out.bytes, out.writes, out.flushes), (vec![], 0, 0));
+    }
+
+    // Spec S8: a menu save hands the new idle time to the runtime.
+    #[test]
+    fn a_new_idle_time_reaches_the_runtime() {
+        let (tx, _rx) = mpsc::channel(PTY_CHANNEL);
+        let set = Arc::new(Mutex::new(Vec::new()));
+        let mut panes = Panes::new(tx, Box::new(|_, _| Err(io::Error::other("no spawn"))))
+            .with_idle(Box::new({
+                let set = Arc::clone(&set);
+                move |idle| set.lock().unwrap().push(idle)
+            }));
+        let thirty = Some(Duration::from_secs(30 * 60));
+        let (outcome, feedback) =
+            panes.apply(vec![Effect::ManagedIdle(thirty), Effect::ManagedIdle(None)]);
+        assert_eq!((outcome, feedback), (Outcome::Continue, vec![]));
+        assert_eq!(*set.lock().unwrap(), [thirty, None]);
     }
 
     #[test]

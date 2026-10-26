@@ -10,8 +10,8 @@ expression: frame
          │ Mouse                                                   on │
          │ Notify                                                 off │
          │ Sound                                                   on │
+         │ llama-server idle                                   15 min │
          │ * Updates                                 0.16.0 available │
-         │                                                            │
          │                                                            │
          │                                                            │
          │                                                            │
