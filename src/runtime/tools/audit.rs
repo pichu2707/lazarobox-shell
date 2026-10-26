@@ -136,6 +136,7 @@ const WRITE_LIBC_ALLOWED: &[&str] = &[
     "RENAME_EXCL",
     "getentropy",
     "ENOTSUP",
+    "EOPNOTSUPP",
     "EINVAL",
     "EPERM",
     "EACCES",

@@ -33,8 +33,11 @@ pub enum WriteError {
     Missing,
     /// A folder removal found the folder not empty.
     NotEmpty,
-    /// No safe write on this platform.
+    /// No safe write on this platform or volume.
     Unsupported,
+    /// The system denied the change (`EPERM`/`EACCES`, for example macOS TCC).
+    /// Not drift and not `Unsupported`: the batch fails, the user is told.
+    Denied,
     /// A replace found other bytes than the ones the user reviewed.
     Drifted,
     /// Anything else the system reported.
@@ -138,9 +141,10 @@ mod unix {
         let (dir, name) = open_parent(roots, real)?;
         // SAFETY: `name` is NUL-terminated and `dir` is an open descriptor.
         if unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), 0o777) } != 0 {
-            return Err(match io::Error::last_os_error().raw_os_error() {
+            let errno = io::Error::last_os_error().raw_os_error();
+            return Err(match errno {
                 Some(libc::EEXIST) => WriteError::Exists,
-                _ => denied_or(WriteError::Io),
+                _ => denied_or(errno, WriteError::Io),
             });
         }
         sync_dir(&dir);
@@ -224,10 +228,11 @@ mod unix {
         if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), flags) } == 0 {
             return Ok(());
         }
-        Err(match io::Error::last_os_error().kind() {
+        let error = io::Error::last_os_error();
+        Err(match error.kind() {
             io::ErrorKind::NotFound => WriteError::Missing,
             io::ErrorKind::DirectoryNotEmpty => WriteError::NotEmpty,
-            _ => denied_or(WriteError::Io),
+            _ => denied_or(error.raw_os_error(), WriteError::Io),
         })
     }
 
@@ -334,7 +339,7 @@ mod unix {
             };
             match owned(fd) {
                 Err(error) if error.raw_os_error() == Some(libc::EEXIST) => continue,
-                Err(_) => return Err(denied_or(WriteError::Io)),
+                Err(error) => return Err(denied_or(error.raw_os_error(), WriteError::Io)),
                 Ok(fd) => {
                     let temp = Temp {
                         dir: dir.as_raw_fd(),
@@ -371,7 +376,9 @@ mod unix {
             if unsafe { libc::renameat(fd, temp.name.as_ptr(), fd, to.as_ptr()) } == 0 {
                 Ok(())
             } else {
-                Err(denied_or(WriteError::Io))
+                // Read at once: nothing may run between the call and `errno`.
+                let errno = io::Error::last_os_error().raw_os_error();
+                Err(denied_or(errno, WriteError::Io))
             }
         };
         if done.is_ok() {
@@ -381,14 +388,13 @@ mod unix {
         done
     }
 
-    /// [`WriteError::Refused`] when the last OS error is a denial the system
-    /// raises on macOS (`EPERM`/`EACCES`: TCC, a data vault), else `otherwise`.
-    /// A denial is a refusal, never `Unsupported`: `apply` turns that into a
-    /// whole-batch answer. On Linux the answer is always `otherwise`.
-    fn denied_or(otherwise: WriteError) -> WriteError {
-        let errno = io::Error::last_os_error().raw_os_error();
+    /// [`WriteError::Denied`] when `errno` (read right next to the failing call)
+    /// is a denial macOS raises (`EPERM`/`EACCES`: TCC, a data vault), else
+    /// `otherwise`. A denial is neither drift nor `Unsupported`, which `apply`
+    /// would turn into a whole-batch answer. On Linux it is always `otherwise`.
+    fn denied_or(errno: Option<i32>, otherwise: WriteError) -> WriteError {
         if cfg!(target_os = "macos") && matches!(errno, Some(libc::EPERM | libc::EACCES)) {
-            WriteError::Refused
+            WriteError::Denied
         } else {
             otherwise
         }
@@ -713,8 +719,25 @@ mod unix {
             ));
         }
 
+        #[test]
+        fn only_macos_reads_eperm_and_eacces_as_a_denial() {
+            let expected = if cfg!(target_os = "macos") {
+                WriteError::Denied
+            } else {
+                WriteError::Io
+            };
+            for errno in [libc::EPERM, libc::EACCES] {
+                assert_eq!(denied_or(Some(errno), WriteError::Io), expected);
+            }
+            assert_eq!(
+                denied_or(Some(libc::ENOSPC), WriteError::Io),
+                WriteError::Io
+            );
+            assert_eq!(denied_or(None, WriteError::Io), WriteError::Io);
+        }
+
         // macOS only (unverified on a Mac): a denial such as TCC's EPERM/EACCES is
-        // a refusal, never `Unsupported`, which `apply` would turn into a
+        // `Denied`, never `Unsupported`, which `apply` would turn into a
         // whole-batch answer. A read-only folder stands in for the denial.
         #[cfg(target_os = "macos")]
         #[test]
@@ -728,7 +751,7 @@ mod unix {
             let denied = std::fs::write(locked.join("probe"), "").is_err();
             std::fs::set_permissions(&locked, Permissions::from_mode(0o755)).unwrap();
             if denied {
-                assert_eq!(got.unwrap_err(), WriteError::Refused);
+                assert_eq!(got.unwrap_err(), WriteError::Denied);
             }
         }
 
@@ -873,8 +896,9 @@ mod macos_sys {
 
     /// Renames `from` to `to` in `fd`, refusing a taken name with
     /// [`WriteError::Exists`]. A filesystem without `RENAME_EXCL` (exFAT, SMB,
-    /// NFS) answers `ENOTSUP` or `EINVAL`: [`WriteError::Unsupported`], with no
-    /// `linkat` fallback. A denial (TCC) is a refusal.
+    /// NFS) answers `ENOTSUP`, `EOPNOTSUPP` or `EINVAL`:
+    /// [`WriteError::Unsupported`], with no `linkat` fallback. A denial (TCC) is
+    /// [`WriteError::Denied`].
     pub fn rename_noreplace(fd: RawFd, from: &CString, to: &CString) -> Result<(), WriteError> {
         // SAFETY: both names are NUL-terminated and `fd` is an open descriptor.
         let done =
@@ -884,8 +908,8 @@ mod macos_sys {
         }
         Err(match io::Error::last_os_error().raw_os_error() {
             Some(libc::EEXIST) => WriteError::Exists,
-            Some(libc::ENOTSUP | libc::EINVAL) => WriteError::Unsupported,
-            Some(libc::EPERM | libc::EACCES) => WriteError::Refused,
+            Some(libc::ENOTSUP | libc::EOPNOTSUPP | libc::EINVAL) => WriteError::Unsupported,
+            Some(libc::EPERM | libc::EACCES) => WriteError::Denied,
             _ => WriteError::Io,
         })
     }

@@ -1037,6 +1037,14 @@ async fn a_secret_reaches_no_other_model_facing_output() {
         ApplyResult::Partial {
             changed: vec![named.clone()],
         },
+        ApplyResult::Denied {
+            path: named.clone(),
+            undone: true,
+        },
+        ApplyResult::VolumeUnsupported {
+            path: named.clone(),
+            undone: true,
+        },
         ApplyResult::Unsupported,
     ] {
         clean("summary", &result.summary());
