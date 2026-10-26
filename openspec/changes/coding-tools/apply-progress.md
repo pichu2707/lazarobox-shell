@@ -691,3 +691,24 @@ Notes:
 Review fixes (slice X-b):
 - `Capture::text()` decodes, cleans and redacts head and tail separately when the output was cut, then joins them with the omitted marker, so an unterminated OSC/DCS/APC in the head cannot swallow the marker or the tail. An uncut output stays one stream, so a secret straddling the 4 KiB boundary is still redacted.
 - The size budget now applies after decode + redaction (U+FFFD is 3 bytes for 1): the leading side of the tail is trimmed to fit `label::OUTPUT_CAP`, with a `[... output shortened ...]` note, so `label::wrap` never drops the end. Tests: unterminated OSC at the head boundary, 0xFF-heavy output (cut and uncut), secret across the boundary.
+
+## Batch 19: slice X-c1 (toolchain JailSpec, PR 17, branch feat/coding-tools-xc1, base feat/coding-tools-xb)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Xc1.2 `JailSpec.rwx`, `check_exec` (R29 amended), SBPL refuses `rwx` | done | feat(jail): let a JailSpec carry one rwx root and refuse it on macOS |
+| Xc1.1 `core/ai/toolchain.rs` `toolchain_spec` | done | feat(jail): build the toolchain jail spec from a canonical program path and a fake-able file system |
+| Xc1.3 `toolchain/env.rs` `scrub` | done | feat(jail): scrub the environment of a toolchain run down to a short list and a clean PATH |
+
+Order: Xc1.2 first (Xc1.1 builds on `rwx`).
+
+TDD evidence: Xc1.2 RED = `E0560 no field rwx`, `E0599 no method check_exec / exec_paths`, `E0433 ExecFault`, `no variant SbplError::Rwx` (22 errors); 8 tests green at once. Xc1.1 RED = `cannot find Layout / Refusal / Vars / toolchain_spec` (13 errors); 12 tests, 3 failed on MY expectations (cache order, `.npm` listed for every tool, a GOROOT that does not contain the program is correctly refused): tests fixed, code untouched. Mutations: Never check without the "over" direction failed 1; InRoot always-true failed 1. Xc1.3 RED = `E0425 cannot find function scrub`; 5 green after fixing one test (single-letter secret values matched the Debug text). Mutations: PATH root filter off and relative filter off each failed 2.
+
+Notes:
+- macOS DECISION: refuse, do not render. `JailSpec::check_exec(Os::Macos)` gives `ExecFault::Macos` for any `rwx`; `sbpl::render` gives `SbplError::Rwx`. The macOS overlap check `writable_executable` never sees `rwx`. CLI specs never carry `rwx` (test on Linux/Macos/Other). This branch does NOT have 0.25.1 (`rw_except`, literal pins): rebase point, `rwx` must be added next to them in `sbpl::render` count and classes when the chain meets main.
+- API: `JailSpec.rwx`, `exec_paths()`, `check_exec(os)`, `ExecFault{ManyRwx,NotCanonical,TooBroad,Macos}`; `jail::broad_place(path, homes)` (too_broad for all three CLIs, Linux rules), `LINUX_RO*`, `DEV_*`, `ETC_LINKS`, `push_unique`, `is_canonical_form` now `pub(crate)`. `toolchain::{Layout{tool: Program, home, root, program, tmp, vars}, Vars{cargo_home, rustup_home, goroot}, Refusal{NotCanonical, Root, InRoot, Program, Never}, toolchain_spec(&Layout, resolve)}`; `toolchain::env::scrub(read, root, tmp) -> Vec<(OsString, OsString)>`.
+- The spec has no `rw_files` for tmp; caches (`~/.npm`, `~/.cache/{pip,yarn,go-build,pre-commit}`, `~/go/pkg/mod`, `~/.local/share/pnpm`, `$CARGO_HOME/{registry,git}`) are added only when `resolve` finds them, for every tool. `GOCACHE`/`GOMODCACHE` env are passed through but do not move the cache grants (open).
+- `JailArgs::render` and Landlock `rules()` ignore `rwx` until X-c2 (fewer rights, never more). X-c2 must add `--rwx` render/parse and a Landlock rule with execute for it, and call `check_exec`.
+- X-c3 needs: `scrub` output as the child env, a `resolve` backed by `fs::canonicalize`, PATH search over the scrubbed PATH to get `Layout.program`.
+- Open questions in design.md: macOS run_command (needs a Seatbelt toolchain slice, user decision), pytest `--user` site-packages read access.
+- Size: ~375 production lines (jail.rs 63, sbpl 6, toolchain.rs 236 incl. 3 doc lines, env.rs 69, mod 1), ~455 test lines. Checks: fmt, clippy -D warnings, cargo test --lib (5874), +1.88 check --all-targets.

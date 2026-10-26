@@ -235,9 +235,9 @@ Spec: command-runner "Output capture and RunOutcome".
 
 ### X-c1: toolchain JailSpec (pure) (PR 17, ~450)
 Spec: command-runner "Jail profile".
-- [ ] Xc1.1 RED: `core/ai/toolchain.rs` builds rx/rwx/rw/never classes from a fake FS and canonical program path (cargo, rustup, nvm/volta/fnm, GOROOT, pytest venv rule). ~250.
-- [ ] Xc1.2 RED: `JailSpec` gains `rwx` in `core/ai/jail.rs`; invariant R29 amended: Execute only in `rx` or the single `rwx` root. ~120.
-- [ ] Xc1.3 RED: env scrub table (passed, fixed, never-passed vars; PATH relative/under-root entries removed). ~80.
+- [x] Xc1.1 RED: `core/ai/toolchain.rs` builds rx/rwx/rw/never classes from a fake FS and canonical program path (cargo, rustup, nvm/volta/fnm, GOROOT, pytest venv rule). ~250.
+- [x] Xc1.2 RED: `JailSpec` gains `rwx` in `core/ai/jail.rs`; invariant R29 amended: Execute only in `rx` or the single `rwx` root. ~120.
+- [x] Xc1.3 RED: env scrub table (passed, fixed, never-passed vars; PATH relative/under-root entries removed). ~80.
 
 ### X-c2: helper flags (PR 18, ~400)
 - [ ] Xc2.1 RED (skip when ABI < 3): `--rwx` lets exec work in the root; `~/.ssh` unreadable. GREEN: `runtime/jail.rs`. ~200.
