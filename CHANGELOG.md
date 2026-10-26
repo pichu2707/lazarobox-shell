@@ -27,8 +27,10 @@ baseline.
   managed llama-server at once. Now, as soon as the terminal is restored,
   everything lazarobox started gets SIGHUP and SIGTERM, and SIGKILL only if
   it still runs 2 s later, while the history and the memory are saved. A
-  group whose leader ends gets SIGKILL at once for what it left behind. If
-  lazarobox is killed during the quit, the watcher repeats the same stop.
+  turn still streaming its answer keeps running until then instead of being
+  cut at its next line. A group whose leader ends gets SIGKILL at once for
+  what it left behind. If lazarobox is killed during the quit, the watcher
+  repeats the same stop, where what a leader left behind gets the grace too.
 
 ## [0.23.0] - 2026-10-25
 

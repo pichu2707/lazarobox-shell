@@ -4404,6 +4404,57 @@ mod tests {
         );
     }
 
+    // Spec S6 (verifier B1): a turn still streaming when the app stops
+    // listening is not dropped (its group killed) before the polite stop.
+    #[tokio::test(start_paused = true)]
+    async fn quit_lets_a_streaming_turn_run_until_the_polite_stop_is_over() {
+        use std::sync::Mutex;
+        use tokio::time::Instant as Clock;
+
+        struct Dropped(Arc<Mutex<Option<Clock>>>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                *self.0.lock().unwrap() = Some(Clock::now());
+            }
+        }
+
+        let dropped_at = Arc::new(Mutex::new(None));
+        let seen = Arc::clone(&dropped_at);
+        let runner: chat::Runner = Arc::new(move |_request, tx| {
+            let guard = Dropped(Arc::clone(&seen));
+            Box::pin(async move {
+                let _guard = guard;
+                loop {
+                    if tx.send(StreamEvent::Slow).await.is_err() {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+        });
+        let (mut panes, mut chat_rx) = panes_with_chats(runner);
+        panes.apply(vec![chat_send(id(1), 1)]);
+        recv(&mut chat_rx).await.unwrap();
+        // The loop is gone: nobody reads the turn's events any more.
+        drop(chat_rx);
+
+        let polite = Duration::from_millis(500);
+        let start = Clock::now();
+        panes
+            .shutdown_engines_after(
+                tokio::time::sleep(polite),
+                MEMORY_QUIT_BOUND,
+                QUIT_KILL_BOUND,
+            )
+            .await;
+        let dropped = dropped_at.lock().unwrap().expect("the turn was stopped");
+        assert_eq!(
+            dropped,
+            start + polite,
+            "the turn was killed before the grace"
+        );
+    }
+
     // Memory turned on in the menu during a run has no worker: the pane that
     // asks is told at once, nothing starts and nothing is read or called.
     #[tokio::test]

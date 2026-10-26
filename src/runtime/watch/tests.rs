@@ -196,3 +196,28 @@ fn quitting_with_nothing_listed_ends_at_once() {
     Listed::default().stop(GRACE);
     assert!(started.elapsed() < Duration::from_millis(100));
 }
+
+// Spec S6 (verifier A1): once lazarobox is gone, what a leader left behind
+// still gets the grace to end on its own.
+#[test]
+fn the_watcher_gives_the_rest_of_a_group_the_grace_after_its_leader_ends() {
+    let lab = tempfile::tempdir().unwrap();
+    let done = lab.path().join("done");
+    let body = format!(
+        "trap 'exit 0' HUP TERM
+        (trap 'sleep 0.3; echo graceful > \"{}\"; exit 0' HUP TERM
+         echo ready
+         while :; do sleep 0.05; done) &
+        wait",
+        done.display()
+    );
+    let mut child = group(&body);
+    ready(&mut child);
+    watch(Cursor::new(listed(&child)), Duration::from_secs(1));
+    let _ = child.wait();
+    assert_eq!(
+        std::fs::read_to_string(&done).ok().as_deref(),
+        Some("graceful\n"),
+        "the rest of the group was killed before its grace"
+    );
+}

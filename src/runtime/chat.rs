@@ -541,6 +541,7 @@ async fn run_turn(
     let run = AssertUnwindSafe(scoped(adapter)).catch_unwind().fuse();
     tokio::pin!(run);
     let mut running = true;
+    let mut listening = true;
     let mut pipe = Pipe::new();
     loop {
         let event = tokio::select! {
@@ -560,9 +561,13 @@ async fn run_turn(
             None => pipe.end_without_final(),
         };
         let ended = pipe.is_over();
+        // Once the app stops listening (lazarobox is quitting), the events
+        // are dropped but the turn keeps running: returning would drop the
+        // adapter and SIGKILL its group before the polite stop is over. Only
+        // `Chats::shutdown` (or the engine ending) stops it then.
         for event in out {
-            if app.send((pane, turn, event)).await.is_err() {
-                return;
+            if listening && app.send((pane, turn, event)).await.is_err() {
+                listening = false;
             }
         }
         if ended {

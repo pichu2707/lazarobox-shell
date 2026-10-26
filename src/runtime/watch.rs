@@ -164,7 +164,15 @@ pub fn watch(input: impl BufRead, grace: Duration) {
     }
     // SAFETY: getpgrp has no preconditions and cannot fail.
     let own = unsafe { libc::getpgrp() };
-    stop(&targets(&groups, own, start_time), grace, |_| true);
+    // Lazarobox is gone, so the watcher is nobody's parent here: a group
+    // lives while it has a member, and what a leader left behind gets the
+    // grace too.
+    stop(
+        &targets(&groups, own, start_time),
+        grace,
+        |pgid, _| signal(pgid, 0),
+        |_| true,
+    );
 }
 
 /// One line of the list: `+ <pgid> <start>` or `- <pgid>`.
@@ -202,12 +210,16 @@ fn targets(
         .collect()
 }
 
-/// SIGHUP and SIGTERM to each group, then up to `grace` for each leader to
-/// end. A group whose leader ended (a zombie counts: lazarobox may not have
-/// reaped it yet) gets SIGKILL at once for what it left behind, like a pane's
-/// shell; one whose leader still runs after `grace` gets it then. SIGKILL
-/// only goes to groups `still` listed.
-fn stop(groups: &[(libc::pid_t, u64)], grace: Duration, still: impl Fn(libc::pid_t) -> bool) {
+/// SIGHUP and SIGTERM to each group, then up to `grace` while it is
+/// `alive`. One that stops being alive gets SIGKILL at once for whatever is
+/// left in it; one still alive after `grace` gets it then. SIGKILL only goes
+/// to groups `still` listed.
+fn stop(
+    groups: &[(libc::pid_t, u64)],
+    grace: Duration,
+    alive: impl Fn(libc::pid_t, u64) -> bool,
+    still: impl Fn(libc::pid_t) -> bool,
+) {
     for &(pgid, _) in groups {
         signal(pgid, libc::SIGHUP);
         signal(pgid, libc::SIGTERM);
@@ -221,7 +233,7 @@ fn stop(groups: &[(libc::pid_t, u64)], grace: Duration, still: impl Fn(libc::pid
     let deadline = Instant::now() + grace;
     loop {
         left.retain(|&(pgid, start)| {
-            if running(pgid, start) {
+            if alive(pgid, start) {
                 return true;
             }
             kill(pgid);
@@ -258,13 +270,16 @@ impl Listed {
         self.lock().remove(&pgid);
     }
 
-    /// [`stop`] on a copy of the list. A group lazarobox reaps meanwhile
-    /// leaves the list and gets no SIGKILL: its pid may already be reused.
+    /// [`stop`] on a copy of the list. A group lives while its leader runs: a
+    /// leader that ended is a zombie until lazarobox reaps it, which keeps its
+    /// group, so what it left behind gets SIGKILL at once, like a pane's
+    /// shell. A group lazarobox reaps meanwhile leaves the list and gets no
+    /// SIGKILL: its pid may already be reused.
     pub(crate) fn stop(&self, grace: Duration) {
         let groups = self.lock().clone();
         // SAFETY: getpgrp has no preconditions and cannot fail.
         let own = unsafe { libc::getpgrp() };
-        stop(&targets(&groups, own, start_time), grace, |pgid| {
+        stop(&targets(&groups, own, start_time), grace, running, |pgid| {
             self.lock().contains_key(&pgid)
         });
     }
