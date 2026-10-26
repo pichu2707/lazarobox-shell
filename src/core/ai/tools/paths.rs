@@ -35,7 +35,7 @@ const SECRET_DIRS: &[&str] = &[
 /// File names that are never readable wherever they sit below `$HOME`:
 /// credential files, `.envrc`, `.npmrc` (denied at any depth on purpose, as a
 /// project file may hold a token) and shell or REPL histories.
-const SECRET_FILES: &[&str] = &[
+pub(crate) const SECRET_FILES: &[&str] = &[
     ".netrc",
     ".git-credentials",
     ".pgpass",

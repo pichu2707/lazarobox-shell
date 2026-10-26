@@ -8,6 +8,7 @@ pub mod content;
 pub mod diff;
 pub mod edit;
 pub mod exec;
+pub mod git;
 pub mod glob;
 #[cfg(test)]
 mod golden;
