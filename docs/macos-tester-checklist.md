@@ -47,6 +47,12 @@ If codex does not run, one of these appears in the chat. Copy it as it is.
 | `the macOS sandbox could not be applied` | `sandbox-exec` exited with 71. The jail was not in place. |
 | `the CLI did not start: its jail could not be enforced: <reason>` | The layout was refused (for example a folder that is too broad). |
 
+A codex installed with its official standalone installer lives under
+`~/.codex/packages`. The jail keeps that folder readable and executable but not
+writable, so the CLI can run there; the cost is that codex cannot update itself
+from inside the jail (update it outside, with its own installer). A binary
+anywhere else in `~/.codex` is still refused, as it would be writable.
+
 Also open the menu engine list and copy the row of codex (press `y` on it for the full reason).
 
 ## 5. Collect the sandbox log during the turn
