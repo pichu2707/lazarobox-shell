@@ -885,14 +885,12 @@ impl Chats {
 
     /// Applies an orphan the user approved.
     pub fn apply_batch(&self, id: BatchId) -> Option<BatchEvent> {
-        let line = self.tooling.as_ref()?.host.apply_batch(id);
-        Some(BatchEvent::Done(line))
+        Some(self.tooling.as_ref()?.host.apply_batch(id))
     }
 
     /// Discards an orphan the user rejected.
     pub fn discard_batch(&self, id: BatchId) -> Option<BatchEvent> {
-        let line = self.tooling.as_ref()?.host.discard_batch(id);
-        Some(BatchEvent::Done(line))
+        Some(self.tooling.as_ref()?.host.discard_batch(id))
     }
 
     /// Stops the turn of `pane`, if any. Returns at once.

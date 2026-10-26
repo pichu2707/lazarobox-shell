@@ -234,8 +234,11 @@ pub enum BatchEvent {
     Closed(usize),
     /// An orphan, sealed and ready for the user to review and answer.
     Review(BatchId, Arc<BatchReview>),
-    /// The user applied or discarded an orphan: the line to show.
-    Done(String),
+    /// The user applied or discarded an orphan. `shown` is the line for the
+    /// user; `told` is what the model hears on its next turn, only when the
+    /// batch is closed. Both hold counts only: never a path's content or a
+    /// diff row.
+    Done { shown: String, told: Option<String> },
 }
 
 /// The notice of a close that discarded `entries` staged entries.

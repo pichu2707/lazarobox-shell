@@ -23,10 +23,19 @@ impl App {
     /// What the runtime reports about a batch outside a model turn. A closed
     /// chat and an answered orphan only show a line; the orphan review view
     /// opens from the event in W-h.
-    pub(super) fn on_batch_event(&mut self, event: BatchEvent) -> Vec<Effect> {
+    pub(super) fn on_batch_event(&mut self, pane: PaneId, event: BatchEvent) -> Vec<Effect> {
         match event {
             BatchEvent::Closed(entries) => self.notice = Some(closed_notice(entries)),
-            BatchEvent::Done(line) => self.notice = Some(line),
+            BatchEvent::Done { shown, told } => {
+                self.notice = Some(shown);
+                // The model hears of it with the chat's next request.
+                if let (Some(line), Some(chat)) = (
+                    told,
+                    self.panes.get_mut(&pane).and_then(PaneState::chat_mut),
+                ) {
+                    chat.tell(line);
+                }
+            }
             BatchEvent::Review(..) => {}
         }
         self.dirty = true;

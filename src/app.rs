@@ -1535,7 +1535,7 @@ impl App {
                 self.window_focused = focused;
                 Vec::new()
             }
-            AppEvent::Batch(_, event) => self.on_batch_event(event),
+            AppEvent::Batch(pane, event) => self.on_batch_event(pane, event),
         };
         debug_assert_eq!(
             self.menu.is_some(),
@@ -7648,6 +7648,40 @@ mod app_tests {
             assert_eq!(a.notice(), Some("discarded 2 staged entries"));
             a.update(AppEvent::Batch(chat_id(), BatchEvent::Closed(1)));
             assert_eq!(a.notice(), Some("discarded 1 staged entry"));
+        }
+
+        // Spec (code-write, Orphan): the model hears of a user-side answer on
+        // its next turn, in the system text of that request.
+        #[test]
+        fn a_user_side_answer_to_an_orphan_is_told_to_the_model_on_its_next_turn() {
+            use crate::core::ai::chat::review::BatchEvent;
+            let mut a = launched(80, 25);
+            a.open_chat(None);
+            let told = "The user discarded the batch you left staged (2 entries).";
+            a.update(AppEvent::Batch(
+                chat_id(),
+                BatchEvent::Done {
+                    shown: "discarded 2 staged entries".into(),
+                    told: Some(told.into()),
+                },
+            ));
+            assert_eq!(a.notice(), Some("discarded 2 staged entries"));
+            let effects = a.chat_send(chat_id(), "carry on");
+            let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+                panic!("expected one ChatSend, got {effects:?}");
+            };
+            assert!(request.system.ends_with(told), "{}", request.system);
+            // Once: the turn after it hears nothing more.
+            a.update(AppEvent::Chat(
+                chat_id(),
+                1,
+                StreamEvent::Done(crate::core::ai::chat::engine::Finish::Stop),
+            ));
+            let effects = a.chat_send(chat_id(), "and then");
+            let [Effect::ChatSend { request, .. }] = effects.as_slice() else {
+                panic!("expected one ChatSend, got {effects:?}");
+            };
+            assert!(!request.system.contains(told));
         }
 
         #[test]

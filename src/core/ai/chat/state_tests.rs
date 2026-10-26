@@ -435,3 +435,27 @@ fn the_mode_changes_neither_the_request_nor_the_stored_messages() {
     assert_eq!(ask_request, auto_request);
     assert_eq!(ask.outbox, auto.outbox);
 }
+
+// Spec (code-write, Orphan, close and quit): the model learns of a user-side
+// apply or discard on its next turn, through a line after the system prompt.
+// The line is sent once, is not stored and is kept when a send is refused.
+#[test]
+fn a_told_line_reaches_the_next_request_once_and_is_never_stored() {
+    let mut state = chat();
+    state.tell("The user discarded the batch you left staged (2 entries).".to_owned());
+    let refused = state.send("   ", &ready(), SYSTEM);
+    assert_eq!(
+        refused,
+        SendOutcome::Refused,
+        "a refused send keeps the line"
+    );
+    let (_, request) = sent(&mut state, "go on");
+    assert_eq!(
+        request.system,
+        format!("{SYSTEM}\n\nThe user discarded the batch you left staged (2 entries).")
+    );
+    answered(&mut state, "ok");
+    let (_, again) = sent(&mut state, "and now");
+    assert_eq!(again.system, SYSTEM, "told once");
+    assert!(state.outbox.iter().all(|m| !m.text.contains("discarded")));
+}

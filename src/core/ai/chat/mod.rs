@@ -318,6 +318,9 @@ pub struct ChatState {
     auto_typed: u8,
     /// Consecutive grammar or policy fallbacks of `run` (D23).
     run_fallbacks: u8,
+    /// What the model has yet to hear about a user-side answer to a batch it
+    /// left behind: sent once with the next request, never stored.
+    told: Vec<String>,
 }
 
 impl ChatState {
@@ -359,6 +362,7 @@ impl ChatState {
             approval_mode: ApprovalMode::default(),
             auto_typed: 0,
             run_fallbacks: 0,
+            told: Vec::new(),
         }
     }
 
@@ -419,6 +423,11 @@ impl ChatState {
     /// Whether the runtime may hold a tool session for this chat.
     pub fn tool_session(&self) -> bool {
         self.tool_session
+    }
+
+    /// Queues a line for the model's next request (counts and paths only).
+    pub fn tell(&mut self, line: String) {
+        self.told.push(line);
     }
 
     pub fn set_tool_session(&mut self, on: bool) {
@@ -757,13 +766,19 @@ impl ChatState {
         self.request_engine = engine.clone();
         self.generation += 1;
         self.scroll = Scroll::Follow;
+        let told = std::mem::take(&mut self.told);
+        let system = std::iter::once(system)
+            .chain(told.iter().map(String::as_str))
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
         SendOutcome::Sent {
             turn: self.turn,
             request: ChatRequest {
                 families: crate::core::ai::tools::registry::FamilySet::LEGACY,
                 engine: engine.clone(),
                 model: model.clone(),
-                system: system.to_owned(),
+                system,
                 memory,
                 tools: Tools::Off,
                 messages: context.messages,

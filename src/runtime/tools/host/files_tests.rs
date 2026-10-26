@@ -13,7 +13,10 @@ use super::{
 };
 use crate::core::{
     ai::{
-        chat::{approval::ApprovalAsk, review::TOO_LARGE},
+        chat::{
+            approval::ApprovalAsk,
+            review::{BatchEvent, TOO_LARGE},
+        },
         tools::{
             paths::REFUSED,
             registry::{Family, FamilySet},
@@ -403,7 +406,10 @@ async fn a_call_dropped_while_its_batch_waits_leaves_a_proposed_orphan() {
         .review_batch(key(), false)
         .expect("an orphan to review");
     assert_eq!(review.counts(), "1 file, +1 -0");
-    assert_eq!(w.host.discard_batch(id), "discarded 1 staged entry");
+    let BatchEvent::Done { shown, .. } = w.host.discard_batch(id) else {
+        panic!("a discard is done");
+    };
+    assert_eq!(shown, "discarded 1 staged entry");
     assert_eq!(w.staged(), 0);
 }
 
@@ -448,15 +454,28 @@ async fn an_unproposed_batch_is_sealed_when_the_user_reviews_it() {
     );
     let after = d.call(write("b.txt", "x")).await;
     assert!(after.text.contains("waiting for review"), "{after:?}");
-    let line = w.host.apply_batch(id);
-    assert_eq!(line, "applied 2 paths");
-    assert!(!line.contains("SECRET"));
+    let BatchEvent::Done { shown, told } = w.host.apply_batch(id) else {
+        panic!("an apply is done");
+    };
+    assert_eq!(shown, "applied 2 paths");
+    // Model-facing: counts only, never the staged text.
+    let told = told.expect("the model is told");
+    assert_eq!(
+        told,
+        "The user applied the batch you left staged: applied 2 paths."
+    );
+    assert!(!told.contains("SECRET") && !shown.contains("SECRET"));
     assert_eq!(
         std::fs::read_to_string(w.proj.join("a.txt")).unwrap(),
         "sk-ant-api03-SECRETSECRET"
     );
     assert!(w.proj.join("sub").is_dir());
-    assert_eq!(w.host.apply_batch(id), "that batch is no longer there");
+    let gone = BatchEvent::Done {
+        shown: "that batch is no longer there".into(),
+        told: None,
+    };
+    assert_eq!(w.host.apply_batch(id), gone);
+    assert_eq!(w.host.discard_batch(id), gone);
     assert!(
         w.host.review_batch(key(), false).is_none(),
         "nothing to review"
@@ -1031,4 +1050,29 @@ async fn an_applied_edit_reports_its_path_and_counts() {
         std::fs::read_to_string(w.proj.join("e.txt")).unwrap(),
         "a\nc\n"
     );
+}
+
+// Model-facing text of an orphan answer carries counts only: the base of an
+// edit (disk text the model never saw) reaches neither line.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_orphan_answer_never_tells_the_model_the_base_or_the_diff() {
+    let w = world();
+    std::fs::write(w.proj.join("b.txt"), "key=sk-ant-api03-BASESECRET\nfoo\n").unwrap();
+    for apply in [true, false] {
+        let (d, _rx) = w.turn(Script::new(Decision::Sent));
+        assert!(!d.call(edit("b.txt", "foo", "bar")).await.is_error);
+        let (id, _) = w.host.review_batch(key(), false).unwrap();
+        let event = if apply {
+            w.host.apply_batch(id)
+        } else {
+            w.host.discard_batch(id)
+        };
+        let BatchEvent::Done { shown, told } = event else {
+            panic!("done");
+        };
+        let all = format!("{shown} {}", told.expect("told"));
+        assert!(!all.contains("BASESECRET") && !all.contains("foo"), "{all}");
+        std::fs::write(w.proj.join("b.txt"), "key=sk-ant-api03-BASESECRET\nfoo\n").unwrap();
+    }
 }

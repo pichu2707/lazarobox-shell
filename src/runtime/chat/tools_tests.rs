@@ -697,7 +697,10 @@ async fn an_orphan_is_reviewed_applied_or_discarded_through_the_chats() {
     assert_eq!(review.counts(), "1 file, +1 -0");
     assert_eq!(
         chats.apply_batch(id),
-        Some(BatchEvent::Done("applied 1 paths".into()))
+        Some(BatchEvent::Done {
+            shown: "applied 1 paths".into(),
+            told: Some("The user applied the batch you left staged: applied 1 paths.".into()),
+        })
     );
     assert_eq!(std::fs::read_to_string(proj.join("a.txt")).unwrap(), "x");
 
@@ -705,9 +708,13 @@ async fn an_orphan_is_reviewed_applied_or_discarded_through_the_chats() {
         panic!("an orphan");
     };
     let done = chats.discard_batch(id);
+    let told = "The user discarded the batch you left staged (1 entry).";
     assert_eq!(
         done,
-        Some(BatchEvent::Done("discarded 1 staged entry".into()))
+        Some(BatchEvent::Done {
+            shown: "discarded 1 staged entry".into(),
+            told: Some(told.into()),
+        })
     );
     assert!(!proj.join("b.txt").exists());
     assert_eq!(chats.close_batch(pane(2)), None);
