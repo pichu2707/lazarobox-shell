@@ -230,5 +230,7 @@ fn pytest_root(program: &Path, resolve: &dyn Fn(&Path) -> Option<PathBuf>) -> Pa
     venv.unwrap_or(program).to_path_buf()
 }
 
+pub mod env;
+
 #[cfg(test)]
 mod tests;
