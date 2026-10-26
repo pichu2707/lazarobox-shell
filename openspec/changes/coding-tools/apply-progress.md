@@ -623,3 +623,16 @@ About 255 production lines (`review.rs` 81, `chat/mod.rs` 28, core `review.rs` 2
 
 `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib` (5805), `cargo +1.88 check --all-targets` green; no `.snap.new`. Three new snapshots reviewed (`staged_badge_40x5`, `orphan_badge_40x5`, `orphan_and_auto_badges_40x5`).
 
+### W-h review round
+
+A fresh review found nothing critical. Six confirmed items, one commit each:
+
+1. **Badge flicker**: `ToolHost::badges` and `Chats::batch_badges` return `Option<HashMap>`; `None` on a busy store (`WouldBlock`) or without tooling. `run_loop` calls `sync_batches` only on `Some`, so a contended poll keeps the previous badges. Tests: `a_contended_badge_poll_answers_none_and_a_free_one_answers` (host holds the `Stages` lock), `None` without tooling in `the_badges_follow_the_batches_and_the_turns_of_the_panes`.
+2. **Quit discards every chat**: `quit_effects` emits `BatchClose` for every chat pane (no badge filter; `discard_key` is a no-op for an absent or empty batch), so a batch staged since the last poll is also discarded and counted. Test: `quitting_closes_the_batch_of_each_chat_before_the_quit`; six older quit expectations now include the `BatchClose`.
+3. **Badge no longer hides the first transcript row**: the conversation reserves its top row for the badge (`ChatView::plan` shrinks the transcript by one row from the top; `badge_row`). Chosen over the composer border because the badge already lives top left with the mode badge on the same row, and the border is the composer's own chrome, drawn in other places. A pane whose transcript has fewer than 2 rows, or too narrow for any badge text, reserves nothing and draws no badge. The list, note, tag and summary views keep the overlay (they have no transcript to protect). Three snapshots regenerated: `› question` is now visible; no other snapshot changed. Tests: `the_batch_badge_keeps_the_first_transcript_row_visible`, `a_pane_too_small_to_spare_a_row_shows_the_transcript_and_no_badge`, `the_layout_gives_up_a_row_only_while_a_badge_is_drawn`.
+4. **Quit notice**: `writeln!(io::stderr(), ..)` with the result ignored instead of `eprintln!`.
+5. **Ctrl+G on a stale badge**: when `review_batch` returns `None` with tooling present, the runtime answers with `BatchEvent::Done { shown: NO_ORPHAN }` (the constant moved to core `review.rs` and is shared with the app). The 16 ms poll clears the badge on the next tick. Test: `a_review_of_a_stale_badge_answers_with_a_notice`.
+6. **Doc only**: signal exits print no discard notice (see code-write spec, "Notes: orphan answers").
+
+Note: the W-h note above says quit only closes badged chats; superseded by item 2.
+
