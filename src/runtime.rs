@@ -3811,9 +3811,11 @@ mod tests {
         panes.apply(vec![Effect::EndToolSession(id(1))]);
         assert!(!session(&panes));
         // A close with no batch says nothing; the effect needs no live pane.
-        let (_, feedback) =
-            panes.apply(vec![Effect::BatchClose(id(1)), Effect::BatchReview(id(1))]);
+        let (_, feedback) = panes.apply(vec![Effect::BatchClose(id(1))]);
         assert!(feedback.is_empty(), "{feedback:?}");
+        // A review of a batch that is not there is answered, never silent.
+        let (_, feedback) = panes.apply(vec![Effect::BatchReview(id(1))]);
+        assert_eq!(feedback.len(), 1, "{feedback:?}");
         let rec = rec.borrow();
         for log in &rec.logs {
             let log = log.lock().unwrap();
