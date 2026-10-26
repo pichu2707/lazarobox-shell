@@ -35,6 +35,16 @@ fn pane(body: &str) -> (Child, Session) {
         sid,
         start: start_time(sid).unwrap(),
     };
+    // A job is a forked bash until it execs its program: wait for that.
+    for _ in 0..250 {
+        if running(&[session])
+            .iter()
+            .all(|job| !job.command.starts_with("bash"))
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
     (child, session)
 }
 
@@ -52,12 +62,24 @@ fn commands(jobs: &[Job]) -> Vec<&str> {
     jobs.iter().map(|job| job.command.as_str()).collect()
 }
 
+/// How `lines` read as job names: the command line on Linux, the program
+/// alone on macOS.
+fn named<'a>(lines: &[&'a str]) -> Vec<&'a str> {
+    lines
+        .iter()
+        .map(|line| match cfg!(target_os = "macos") {
+            true => line.split(' ').next().unwrap_or(line),
+            false => line,
+        })
+        .collect()
+}
+
 // Spec S7: the jobs of a pane are named, its shell is not.
 #[test]
 fn the_background_jobs_of_a_pane_are_named_and_its_shell_is_not() {
     let (child, session) = pane("sleep 31 & sleep 32 &");
     let jobs = running(&[session]);
-    assert_eq!(commands(&jobs), ["sleep 31", "sleep 32"]);
+    assert_eq!(commands(&jobs), named(&["sleep 31", "sleep 32"]));
     assert!(jobs.iter().all(|job| job.pgid != session.sid));
     end(child, &jobs);
 }
@@ -69,7 +91,7 @@ fn a_job_outlives_its_shell_and_is_still_named() {
     // The shell exits (like `exit` in the last pane); its job stays.
     child.kill().unwrap();
     child.wait().unwrap();
-    assert_eq!(commands(&running(&[session])), ["sleep 33"]);
+    assert_eq!(commands(&running(&[session])), named(&["sleep 33"]));
     end(child, &jobs);
 }
 
@@ -113,12 +135,13 @@ fn the_report_names_each_job_with_its_group() {
 
 #[test]
 fn what_is_left_running_is_read_again_after_the_hangup_settles() {
-    let (child, session) = pane("sleep 35 & sleep 0.2 &");
+    // `sleep 1` outlasts a slow runner's exec, and ends before the settle.
+    let (child, session) = pane("sleep 35 & sleep 1 &");
     let jobs = running(&[session]);
-    assert_eq!(commands(&jobs), ["sleep 35", "sleep 0.2"]);
+    assert_eq!(commands(&jobs), named(&["sleep 35", "sleep 1"]));
     assert_eq!(
-        commands(&left_running(&[session], Duration::from_millis(600))),
-        ["sleep 35"]
+        commands(&left_running(&[session], Duration::from_millis(1600))),
+        named(&["sleep 35"])
     );
     end(child, &jobs);
 }
