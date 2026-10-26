@@ -17,4 +17,4 @@
 - [x] 5.1 RED/GREEN: our server answering beyond our turns answers another lazarobox; nothing, no answer, or a server we only use never counts; the idle stop waits while another lazarobox is answered and counts from then; `/slots` processing slots are counted.
 - [x] 5.2 RED/GREEN: the quit prompt names `llama-server (shared)` after the jobs, once, in any order; a late answer is dropped; asking to quit asks the runtime.
 - [x] 5.3 Docs (README, CHANGELOG).
-- [ ] 5.4 [manual] Live: two lazarobox, a reply streaming in the second, the first's quit prompt names the server.
+- [x] 5.4 [manual] Live: two lazarobox, a reply streaming in the second, the first's quit prompt names the server.
