@@ -29,6 +29,28 @@ A proposed write batch, and a `git_commit` review, MUST open as a full-pane view
 - WHEN `n` is pressed
 - THEN the view closes, the batch is discarded and the transcript gets a system line
 
+#### Scenario: Reject waits like approve, except when it is the only exit [auto]
+- GIVEN a reviewable batch whose review was first drawn at t
+- WHEN `n` or Esc is pressed before t + 800 ms
+- THEN nothing happens, and at t + 800 ms (the same delay as `y`) they reject the batch
+- AND on a batch that cannot be reviewed (too large or empty) `n` and Esc reject at once
+
+#### Scenario: Only drawn rows count [auto]
+- GIVEN a review opened in a background tab, a hidden pane or under another chat view
+- WHEN the pane is resized or scrolled without being drawn
+- THEN no row counts as seen and the arm delay has not started, until a frame draws the review
+
+#### Scenario: The countdown ends on screen [auto]
+- GIVEN a drawn review counting down with no stream running
+- WHEN the arm delay elapses
+- THEN the screen is redrawn once more and the header reads `y ready`
+
+#### Scenario: The review owns the pane [auto, TestBackend]
+- GIVEN an open review in a pane with the AUTO badge or a scrolled transcript
+- WHEN the pane renders and the wheel turns over it
+- THEN the badges do not cover the counter row, the wheel scrolls the review and never the transcript, and other mouse events do nothing
+- AND the keys row cuts from the right with `n reject` first, then `y`, then the scroll hints
+
 ### Requirement: Staged batch indicator
 While the chat holds a staged batch the pane MUST show an indicator with the number of staged entries. An orphan batch (after a cancelled turn) MUST show a distinct indicator and MUST offer the keys to review it or discard it. The indicator MUST be visible in every chat view, focused or not, and MUST disappear when the batch is applied or discarded.
 

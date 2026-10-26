@@ -845,7 +845,7 @@ fn turning_tools_on_or_a_chat_without_a_session_ends_nothing() {
 
 mod guard {
     use super::*;
-    use crate::app::tool::ARM_DELAY;
+    use crate::core::ai::chat::approval::ASK_ARM_DELAY as ARM_DELAY;
 
     fn ms(d: std::time::Duration) -> u64 {
         u64::try_from(d.as_millis()).unwrap()

@@ -1,0 +1,18 @@
+---
+source: src/ui/components/review_tests.rs
+expression: "flat(&draw(&mut chat, at(0), 60, 14))"
+---
+1 file, +30 -0 · seen 12/33 · 21 remaining · y locked
+1 file, +30 -0
+create /home/u/proj/a.txt
+@@ -0,0 +1,30 @@
++row 0
++row 1
++row 2
++row 3
++row 4
++row 5
++row 6
++row 7
++row 8
+n reject · y locked · ↑↓ PgUp PgDn scroll

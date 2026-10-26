@@ -72,8 +72,9 @@ pub struct Lines {
     pub max: u32,
 }
 
-/// A validated tool call.
-#[derive(Clone, PartialEq, Eq, Debug)]
+/// A validated tool call. `Debug` is written by hand: it never prints the
+/// model's text of a write call, only its path and byte lengths.
+#[derive(Clone, PartialEq, Eq)]
 pub enum Call {
     FindDir {
         query: String,
@@ -99,6 +100,25 @@ pub enum Call {
     RunInPane {
         command: String,
     },
+    /// Stages a folder in the chat's batch. Nothing touches the disk.
+    CreateDir {
+        path: String,
+    },
+    /// Stages a whole file. `content` is the model's text: it never goes into
+    /// a row, a log or an error.
+    WriteFile {
+        path: String,
+        content: String,
+    },
+    /// Stages the replacement of one exact piece of text. `old` and `new` are
+    /// the model's text and are kept out of rows, logs and errors too.
+    EditFile {
+        path: String,
+        old: String,
+        new: String,
+    },
+    /// Closes the batch and asks the user to review it.
+    ProposeBatch,
     /// A tool of a user MCP server. It is always a write tool: every call
     /// needs the user's `y`. `name` is the qualified name the model used;
     /// `server` and `tool` come from the lookup (`servers::Qualified`), never
@@ -109,6 +129,59 @@ pub enum Call {
         tool: String,
         args: Value,
     },
+}
+
+impl std::fmt::Debug for Call {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Call::FindDir { query } => f.debug_struct("FindDir").field("query", query).finish(),
+            Call::ListDir { path } => f.debug_struct("ListDir").field("path", path).finish(),
+            Call::ReadFile { path, lines } => f
+                .debug_struct("ReadFile")
+                .field("path", path)
+                .field("lines", lines)
+                .finish(),
+            Call::Glob { pattern, dir } => f
+                .debug_struct("Glob")
+                .field("pattern", pattern)
+                .field("dir", dir)
+                .finish(),
+            Call::Grep { pattern, dir } => f
+                .debug_struct("Grep")
+                .field("pattern", pattern)
+                .field("dir", dir)
+                .finish(),
+            Call::RunInPane { command } => f
+                .debug_struct("RunInPane")
+                .field("command", command)
+                .finish(),
+            Call::CreateDir { path } => f.debug_struct("CreateDir").field("path", path).finish(),
+            Call::WriteFile { path, content } => f
+                .debug_struct("WriteFile")
+                .field("path", path)
+                .field("content_len", &content.len())
+                .finish(),
+            Call::EditFile { path, old, new } => f
+                .debug_struct("EditFile")
+                .field("path", path)
+                .field("old_len", &old.len())
+                .field("new_len", &new.len())
+                .finish(),
+            Call::ProposeBatch => f.write_str("ProposeBatch"),
+            Call::External {
+                name,
+                server,
+                tool,
+                args,
+            } => f
+                .debug_struct("External")
+                .field("name", name)
+                .field("server", server)
+                .field("tool", tool)
+                .field("args", args)
+                .finish(),
+        }
+    }
 }
 
 impl Call {
@@ -122,7 +195,22 @@ impl Call {
             Call::Glob { .. } => "glob",
             Call::Grep { .. } => "grep",
             Call::RunInPane { .. } => "run_in_pane",
+            Call::CreateDir { .. } => "create_dir",
+            Call::WriteFile { .. } => "write_file",
+            Call::EditFile { .. } => "edit_file",
+            Call::ProposeBatch => "propose_batch",
         }
+    }
+
+    /// Whether the call belongs to the Write family.
+    pub fn is_write(&self) -> bool {
+        matches!(
+            self,
+            Call::CreateDir { .. }
+                | Call::WriteFile { .. }
+                | Call::EditFile { .. }
+                | Call::ProposeBatch
+        )
     }
 
     /// The argument of the call: a query, a path or a command (a search adds the
@@ -131,7 +219,12 @@ impl Call {
     pub fn argument(&self) -> Cow<'_, str> {
         match self {
             Call::FindDir { query } => Cow::Borrowed(query),
-            Call::ListDir { path } | Call::ReadFile { path, .. } => Cow::Borrowed(path),
+            Call::ListDir { path }
+            | Call::ReadFile { path, .. }
+            | Call::CreateDir { path }
+            | Call::WriteFile { path, .. }
+            | Call::EditFile { path, .. } => Cow::Borrowed(path),
+            Call::ProposeBatch => Cow::Borrowed(""),
             Call::Glob { pattern, dir } | Call::Grep { pattern, dir } => match dir {
                 Some(dir) => Cow::Owned(format!("{pattern} in {dir}")),
                 None => Cow::Borrowed(pattern),
@@ -166,9 +259,19 @@ const fn text(name: &'static str) -> ArgDef {
 /// The most lines one `read_file` window may ask for (and the default).
 pub const READ_MAX_LINES: i64 = 2000;
 
+/// One string argument of a write tool, at most `max` bytes.
+const fn field(name: &'static str, max: usize) -> ArgDef {
+    ArgDef {
+        name,
+        kind: ArgKind::Str { max },
+        required: true,
+        gate: None,
+    }
+}
+
 /// The built-ins in offer order. `Access::Read` is only a classification,
 /// not an approval rule: see [`Access`].
-const BUILT_INS: [ToolDef; 6] = [
+const BUILT_INS: [ToolDef; 10] = [
     ToolDef {
         name: "find_dir",
         description: "Find directories under the user's home whose name contains the query. Names that look like secrets are left out and the result says so.",
@@ -261,6 +364,38 @@ const BUILT_INS: [ToolDef; 6] = [
         family: Family::Pane,
         args: &[text("command")],
     },
+    ToolDef {
+        name: "create_dir",
+        description: "Stage a new folder under the chat's root. A name that already exists, or a file under a folder that is neither on disk nor staged, is refused. Nothing is written until you call propose_batch and the user approves the whole batch. Staging is refused while a batch waits for review.",
+        access: Access::Write,
+        family: Family::Write,
+        args: &[text("path")],
+    },
+    ToolDef {
+        name: "write_file",
+        description: "Stage the whole text of a file under the chat's root (at most 32 KiB): a new file, or a small existing one that is replaced. Use edit_file for a large file or a change inside one. Nothing is written until you call propose_batch and the user approves the whole batch. Staging is refused while a batch waits for review.",
+        access: Access::Write,
+        family: Family::Write,
+        args: &[text("path"), field("content", stage::WRITE_FILE_MAX)],
+    },
+    ToolDef {
+        name: "edit_file",
+        description: "Stage the replacement of one piece of text in a file under the chat's root. `old` must occur exactly once (in the staged version of the file when it has one). Nothing is written until you call propose_batch and the user approves the whole batch. Staging is refused while a batch waits for review.",
+        access: Access::Write,
+        family: Family::Write,
+        args: &[
+            text("path"),
+            field("old", edit::FIELD_MAX),
+            field("new", edit::FIELD_MAX),
+        ],
+    },
+    ToolDef {
+        name: "propose_batch",
+        description: "Close the batch of staged changes and ask the user to review it. The user approves or rejects the whole batch; only an approved batch changes files. A batch of more than 50 entries or 1 MiB cannot be reviewed: split it. No change can be staged while a batch waits for the user.",
+        access: Access::Write,
+        family: Family::Write,
+        args: &[],
+    },
 ];
 
 /// The tools offered at [`FamilySet::LEGACY`], the 0.18.0 set: see
@@ -329,10 +464,18 @@ fn parse_built_in(name: &str, args: &Value, set: FamilySet) -> Result<Call, Tool
         .find(|def| def.name == name)
         .ok_or(ToolError::UnknownTool)?;
     let parsed = parse_args(def.args, args, set)?;
-    let Some(ArgValue::Str(text)) = def.args.first().and_then(|arg| parsed.get(arg.name)) else {
-        return Err(ToolError::MissingArgument);
+    // A tool without arguments (`propose_batch`) has no first text.
+    let text = match def.args.first() {
+        None => String::new(),
+        Some(first) => match parsed.get(first.name) {
+            Some(ArgValue::Str(text)) => text.clone(),
+            _ => return Err(ToolError::MissingArgument),
+        },
     };
-    let text = text.clone();
+    let field = |name| match parsed.get(name) {
+        Some(ArgValue::Str(value)) => value.clone(),
+        _ => String::new(),
+    };
     match name {
         "find_dir" => Ok(Call::FindDir { query: text }),
         "list_dir" => Ok(Call::ListDir { path: text }),
@@ -355,6 +498,17 @@ fn parse_built_in(name: &str, args: &Value, set: FamilySet) -> Result<Call, Tool
             },
         }),
         "run_in_pane" => Ok(Call::RunInPane { command: text }),
+        "create_dir" => Ok(Call::CreateDir { path: text }),
+        "write_file" => Ok(Call::WriteFile {
+            path: text,
+            content: field("content"),
+        }),
+        "edit_file" => Ok(Call::EditFile {
+            path: text,
+            old: field("old"),
+            new: field("new"),
+        }),
+        "propose_batch" => Ok(Call::ProposeBatch),
         // Unreachable: the name was found in `BUILT_INS` above and every
         // built-in has an arm. Kept so a new built-in cannot become a
         // `run_in_pane` by falling through.
@@ -1094,5 +1248,233 @@ mod tests {
             bad(json!({"pattern": "a", "path": "p".repeat(MAX_ARG_BYTES + 1)})),
             Err(ToolError::TooLong)
         );
+    }
+
+    fn write_set() -> FamilySet {
+        FamilySet::LEGACY.with(Family::Write)
+    }
+
+    fn parse_write(name: &str, args: Value, set: FamilySet) -> Result<Call, ToolError> {
+        parse_call_in(name, &args, &servers::Qualified::default(), set)
+    }
+
+    // The staging tools say they are refused while a batch awaits review;
+    // create_dir also says which names it refuses.
+    #[test]
+    fn staging_tools_say_when_they_are_refused() {
+        let on = registry_with(&[], write_set());
+        let text = |name: &str| {
+            on.iter()
+                .find(|t| t.name == name)
+                .unwrap()
+                .description
+                .clone()
+        };
+        for name in ["create_dir", "write_file", "edit_file"] {
+            assert!(
+                text(name).contains("while a batch waits for review"),
+                "{name}"
+            );
+        }
+        let dir = text("create_dir");
+        assert!(dir.contains("already exists"), "{dir}");
+        assert!(dir.contains("neither on disk nor staged"), "{dir}");
+    }
+
+    // A call prints its path and the byte counts of its text, never the text.
+    #[test]
+    fn debug_of_a_content_call_never_shows_the_text() {
+        let secret = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA";
+        let write = Call::WriteFile {
+            path: "a.txt".into(),
+            content: secret.into(),
+        };
+        let edit = Call::EditFile {
+            path: "b.txt".into(),
+            old: secret.into(),
+            new: "hunter2".into(),
+        };
+        let shown = format!("{write:?} {edit:?} {:?}", Some(&edit));
+        assert!(
+            !shown.contains("sk-ant") && !shown.contains("hunter2"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("a.txt") && shown.contains("b.txt"),
+            "{shown}"
+        );
+        assert!(shown.contains("content_len: 37"), "{shown}");
+        assert!(
+            shown.contains("old_len: 37") && shown.contains("new_len: 7"),
+            "{shown}"
+        );
+    }
+
+    // Spec (code-write, Family and toggle): the four write tools exist only
+    // with Write on, are write tools and say they change files only on approval.
+    #[test]
+    fn write_tools_are_offered_and_parsed_only_with_write_on() {
+        let off = registry_with(&[], FamilySet::LEGACY.with(Family::Search));
+        for name in ["create_dir", "write_file", "edit_file", "propose_batch"] {
+            assert!(!names(&off).contains(&name), "{name}");
+        }
+        let on = registry_with(&[], write_set());
+        assert_eq!(
+            names(&on),
+            [
+                "find_dir",
+                "list_dir",
+                "read_file",
+                "run_in_pane",
+                "create_dir",
+                "write_file",
+                "edit_file",
+                "propose_batch"
+            ]
+        );
+        for tool in on.iter().skip(4) {
+            assert_eq!(tool.access, Access::Write, "{}", tool.name);
+            assert!(tool.description.contains("propose_batch") || tool.name == "propose_batch");
+        }
+        let schema = |name: &str| on.iter().find(|t| t.name == name).unwrap().schema.clone();
+        assert_eq!(
+            schema("write_file"),
+            json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                "required": ["path", "content"],
+                "additionalProperties": false,
+            })
+        );
+        assert_eq!(
+            schema("edit_file")["required"],
+            json!(["path", "old", "new"])
+        );
+        assert_eq!(schema("propose_batch")["properties"], json!({}));
+        for (name, args) in [
+            ("create_dir", json!({"path": "d"})),
+            ("write_file", json!({"path": "a", "content": "x"})),
+            ("edit_file", json!({"path": "a", "old": "x", "new": "y"})),
+            ("propose_batch", json!({})),
+        ] {
+            assert_eq!(
+                parse_write(name, args.clone(), FamilySet::LEGACY),
+                Err(ToolError::UnknownTool),
+                "{name}"
+            );
+            assert_eq!(parse_call(name, &args), Err(ToolError::UnknownTool));
+            assert!(parse_write(name, args, write_set()).is_ok(), "{name}");
+        }
+    }
+
+    // The argument of a write call is the path, never the text: it is the
+    // row the user sees in the transcript.
+    #[test]
+    fn write_calls_parse_their_arguments_and_name_only_the_path() {
+        let dir = parse_write("create_dir", json!({"path": "src/util"}), write_set()).unwrap();
+        assert_eq!(
+            dir,
+            Call::CreateDir {
+                path: "src/util".into()
+            }
+        );
+        assert_eq!((dir.name(), &*dir.argument()), ("create_dir", "src/util"));
+        let file = parse_write(
+            "write_file",
+            json!({"path": "a.txt", "content": "sk-secret"}),
+            write_set(),
+        )
+        .unwrap();
+        assert_eq!(
+            file,
+            Call::WriteFile {
+                path: "a.txt".into(),
+                content: "sk-secret".into()
+            }
+        );
+        assert_eq!((file.name(), &*file.argument()), ("write_file", "a.txt"));
+        let edit = parse_write(
+            "edit_file",
+            json!({"path": "b.txt", "old": "hunter2", "new": "x"}),
+            write_set(),
+        )
+        .unwrap();
+        assert_eq!(
+            edit,
+            Call::EditFile {
+                path: "b.txt".into(),
+                old: "hunter2".into(),
+                new: "x".into()
+            }
+        );
+        assert_eq!((edit.name(), &*edit.argument()), ("edit_file", "b.txt"));
+        let propose = parse_write("propose_batch", json!({}), write_set()).unwrap();
+        assert_eq!(propose, Call::ProposeBatch);
+        assert_eq!(
+            (propose.name(), &*propose.argument()),
+            ("propose_batch", "")
+        );
+    }
+
+    // Spec (code-write, Caps) and (agent-tools): the shared parse order and
+    // the byte caps apply to the write tools.
+    #[test]
+    fn write_arguments_are_validated_through_the_table() {
+        let bad = |name, args: Value| parse_write(name, args, write_set());
+        assert_eq!(
+            bad("write_file", json!({"path": "a"})),
+            Err(ToolError::MissingArgument)
+        );
+        assert_eq!(
+            bad("write_file", json!({"path": "a", "content": 5})),
+            Err(ToolError::WrongType)
+        );
+        assert_eq!(
+            bad(
+                "write_file",
+                json!({"path": "a", "content": "x", "mode": 1})
+            ),
+            Err(ToolError::ExtraArgument)
+        );
+        assert_eq!(bad("edit_file", json!(["a"])), Err(ToolError::NotAnObject));
+        assert_eq!(
+            bad("propose_batch", json!({"path": "a"})),
+            Err(ToolError::ExtraArgument)
+        );
+        assert_eq!(bad("propose_batch", json!([])), Err(ToolError::NotAnObject));
+        let at = stage::WRITE_FILE_MAX;
+        assert!(
+            bad(
+                "write_file",
+                json!({"path": "a", "content": "x".repeat(at)})
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            bad(
+                "write_file",
+                json!({"path": "a", "content": "x".repeat(at + 1)})
+            ),
+            Err(ToolError::TooLong)
+        );
+        let field = edit::FIELD_MAX;
+        assert!(
+            bad(
+                "edit_file",
+                json!({"path": "a", "old": "x".repeat(field), "new": "y".repeat(field)})
+            )
+            .is_ok()
+        );
+        for (old, new) in [(field + 1, 1), (1, field + 1)] {
+            assert_eq!(
+                bad(
+                    "edit_file",
+                    json!({"path": "a", "old": "x".repeat(old), "new": "y".repeat(new)})
+                ),
+                Err(ToolError::TooLong)
+            );
+        }
+        // An empty `old` parses; the batch refuses it, so the model is told why.
+        assert!(bad("edit_file", json!({"path": "a", "old": "", "new": "y"})).is_ok());
     }
 }

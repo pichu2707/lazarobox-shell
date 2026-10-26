@@ -99,7 +99,7 @@ A write MUST be refused (with the refusal text) when the target is inside `.git/
 - THEN the batch holds one entry for `a.txt` with the latest content
 
 ### Requirement: edit_file staging
-`edit_file` MUST take a path, an exact `old` string and a `new` string. It MUST apply to the staged version when one exists, otherwise to the disk version. It MUST be refused with an error result when `old` is empty, matches zero times, or matches more than once. It MUST NOT touch the disk.
+`edit_file` MUST take a path, an exact `old` string and a `new` string. It MUST apply to the staged version when one exists, otherwise to the disk version. It MUST be refused with an error result when `old` is empty, matches zero times, or matches more than once. It MUST NOT touch the disk. Because its answers say whether a text occurs in a file, on a Cloud engine it MUST ask the user like `read_file`, once per file per turn.
 
 #### Scenario: Unique match [auto]
 - GIVEN `a.txt` holding `foo bar`
@@ -115,6 +115,19 @@ A write MUST be refused (with the refusal text) when the target is inside `.git/
 - GIVEN a staged edit of `a.txt`
 - WHEN a second `edit_file` targets text introduced by the first
 - THEN it matches the staged version
+
+#### Scenario: Cloud engine asks once per file [ask]
+- GIVEN a Cloud engine and `a.txt`, whose text the model has not been allowed to read
+- WHEN `edit_file` targets `a.txt`
+- THEN the user is asked as for `read_file` of `a.txt` (same prompt, same approval modes, never typed or run directly), and a denial stages nothing and returns the usual denied text
+- AND later edits of `a.txt` in the same turn do not ask again, nor do they after an allowed `read_file` of it; a new turn asks again; a Local engine never asks
+
+An `edit_file` with an empty `old` MUST be refused before the ask (with the usual `old must not be empty` text), so the user is never prompted for a call that is sure to fail. A missing or ambiguous `old` still asks: those answers are an oracle too, and that cost is accepted.
+
+Accepted behaviors of the once-per-file memory (the key is the path as shown, resolved by text alone):
+- Two concurrent edits of the same file in one model response may ask twice, since neither has been answered when the other checks. This over-asks, which is safe.
+- A symlink and its target are separate keys, so editing both asks twice.
+- A `read_file` records into the memory but never consults it: it asks even after an allowed edit of the same file.
 
 ### Requirement: Propose batch and size cap
 The model closes a batch by calling the propose tool. It MAY stage across several turns before calling it. The propose tool MUST refuse an empty batch and MUST refuse a batch over about 50 entries or 1 MiB of total staged content (whichever comes first), with a message that asks the model to split it. A refused proposal MUST leave the batch staged and unchanged. A proposed batch MUST NOT accept new staging until the user answers.
@@ -135,7 +148,7 @@ The model closes a batch by calling the propose tool. It MAY stage across severa
 - THEN the review holds all of them
 
 ### Requirement: Batch review and coverage gate
-A proposed batch MUST open a full-pane review view in the chat pane. It shows every change: a create shows the new text, an overwrite or edit shows a diff, a `create_dir` shows its path. The approving key MUST stay disabled until every row of the whole batch has been shown (the coverage gate), and it MUST stay disabled for the arm delay after the view opens (longer than the delay of other approvals, value pinned by design). The review is all-or-nothing: the user approves the whole batch or rejects the whole batch. A change to a build file (for example `Makefile`, `build.rs`, `package.json`) MUST carry a visible warning. A rejected, timed-out or cancelled review MUST end as `denied`, MUST write nothing, and MUST discard the batch. A pending approval of another kind MUST make the propose tool return `denied` (`another approval is pending`).
+A proposed batch MUST open a full-pane review view in the chat pane. It shows every change: a create shows the new text, an overwrite or edit shows a diff, a `create_dir` shows its path. The approving key MUST stay disabled until every row of the whole batch has been drawn on screen (the coverage gate; a row in a hidden pane does not count), and it MUST stay disabled for the arm delay after the view is first drawn (longer than the delay of other approvals, value pinned by design). The review is all-or-nothing: the user approves the whole batch or rejects the whole batch. A change to a build file (for example `Makefile`, `build.rs`, `package.json`) MUST carry a visible warning. A rejected, timed-out or cancelled review MUST end as `denied`, MUST write nothing, and MUST discard the batch. A pending approval of another kind MUST make the propose tool return `denied` (`another approval is pending`).
 
 #### Scenario: Gate blocks early approval [auto]
 - GIVEN a batch of 40 diff rows of which 12 have been shown
@@ -212,6 +225,12 @@ A batch orphaned by a cancelled turn MUST stay staged in the chat, and the pane 
 - GIVEN a staged batch
 - WHEN the pane is closed, and in another run the app quits
 - THEN the batch is discarded and a notice is shown each time
+
+#### Notes: orphan answers (accepted decisions)
+- The host is the trust boundary: an orphan apply is refused, writing nothing, when the batch is not reviewable or a turn of its pane is live.
+- What the model hears of a user-side answer is a fixed line with counts only, never a path. It is sent once with the next request. A turn that ends (cancel, failure at start) before the engine produced any event did not deliver it, so it is queued again for the following request. A drifted apply leaves the batch proposed and tells the model nothing (user decision).
+- Accepted UI cost: orphan review and apply run on the runtime thread under the `Stages` lock, so a close or discard can wait for an in-flight W-f `spawn_blocking` apply. That apply is bounded to 50 entries and 1 MiB.
+- A signal exit (SIGTERM or SIGHUP) prints no discard notice: the loop is left without the quit effects, so no `BatchClose` runs. Nothing is written either way, because the batch lives in memory only.
 
 ### Requirement: Worker batches
 A batch staged by an orchestrator worker MUST be reviewed and applied by the user through the approval queue of the orchestrator (S3). A worker MUST NOT apply a batch itself. The interaction details are pinned by design.
