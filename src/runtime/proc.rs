@@ -108,6 +108,50 @@ impl GroupKill {
         self.kill();
         self.reap(child).await
     }
+
+    /// The leader's exit status once it has exited on its own, `None` while
+    /// it runs. Before reaping it, the group gets SIGKILL for what the
+    /// leader left in it: until the reap, the leader's pid (the group id)
+    /// cannot be reused. Disarms once reaped.
+    pub fn reap_if_exited(
+        &mut self,
+        child: &mut tokio::process::Child,
+    ) -> Option<std::io::Result<std::process::ExitStatus>> {
+        let exited = child
+            .id()
+            .and_then(|pid| libc::pid_t::try_from(pid).ok())
+            .is_none_or(exited_unreaped);
+        if !exited {
+            return None;
+        }
+        self.kill();
+        let status = child.try_wait();
+        self.disarm();
+        match status {
+            Ok(Some(status)) => Some(Ok(status)),
+            Ok(None) => Some(Err(std::io::Error::other("exited but not reaped"))),
+            Err(error) => Some(Err(error)),
+        }
+    }
+}
+
+/// Whether the child `pid` has exited, without reaping it. A failed check
+/// (no such child) counts as exited, so the caller reaps and disarms.
+fn exited_unreaped(pid: libc::pid_t) -> bool {
+    // SAFETY: an all-zero siginfo_t is a valid value.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is a writable siginfo_t; WNOWAIT leaves the child
+    // waitable, so nothing is reaped here.
+    let read = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &raw mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    // SAFETY: waitid filled `info` (or left it zeroed, with WNOHANG).
+    read == -1 || unsafe { info.si_pid() } != 0
 }
 
 impl Drop for GroupKill {
@@ -291,6 +335,31 @@ mod tests {
         let status = group.reap(&mut child).await.expect("wait succeeds");
         assert!(status.success());
         assert!(!group.is_armed(), "reaping disarms the guard");
+    }
+
+    #[tokio::test]
+    async fn reap_if_exited_leaves_a_running_leader_alone_and_reaps_an_ended_one() {
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .expect("sleep starts");
+        let pid = child.id().expect("a pid") as libc::pid_t;
+        let mut group = GroupKill::new(pid).expect("a fresh group is a valid target");
+        assert!(group.reap_if_exited(&mut child).is_none());
+        assert!(group.is_armed(), "a running leader keeps the guard armed");
+        // SAFETY: a plain signal to the sleep this test started.
+        unsafe { libc::kill(pid, libc::SIGTERM) };
+        let status = loop {
+            if let Some(status) = group.reap_if_exited(&mut child) {
+                break status.expect("reaped");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        assert_eq!(status.signal(), Some(libc::SIGTERM));
+        assert!(!group.is_armed(), "reaping disarms the guard");
+        assert_eq!(child.id(), None, "reaped");
     }
 
     #[cfg(target_os = "linux")]

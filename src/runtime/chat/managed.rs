@@ -77,6 +77,17 @@ struct Process {
     child: tokio::process::Child,
 }
 
+impl Process {
+    /// Whether the server has ended. When it has, it is reaped (its pid is
+    /// never signalled again), after SIGKILL to what it left in its group.
+    fn ended(&mut self) -> bool {
+        match self.group.as_mut() {
+            Some(group) => group.reap_if_exited(&mut self.child).is_some(),
+            None => !matches!(self.child.try_wait(), Ok(None)),
+        }
+    }
+}
+
 pub struct Managed {
     program: OsString,
     path: OsString,
@@ -143,17 +154,11 @@ impl Managed {
             return Err(REPLACED.to_owned());
         }
         if let Some(process) = running.as_mut() {
-            match process.child.try_wait() {
-                // Ours and still running.
-                Ok(None) => return Ok(()),
-                // It ended (reaped now): its pid must not be signalled again.
-                _ => {
-                    if let Some(group) = process.group.as_mut() {
-                        group.disarm();
-                    }
-                    *running = None;
-                }
+            // Ours and still running.
+            if !process.ended() {
+                return Ok(());
             }
+            *running = None;
         }
         if (self.probe)(self.port).await.is_some() {
             return Err(format!(
@@ -166,10 +171,7 @@ impl Managed {
         let deadline = Instant::now() + self.wait;
         loop {
             sleep(START_POLL).await;
-            if let Ok(Some(_)) = process.child.try_wait() {
-                if let Some(group) = process.group.as_mut() {
-                    group.disarm();
-                }
+            if process.ended() {
                 return Err(self.failure("llama-server stopped"));
             }
             if (self.probe)(self.port).await == Some(200) {
