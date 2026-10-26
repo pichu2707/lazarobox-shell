@@ -671,3 +671,19 @@ Review fixes (slice X-a):
 - Node flags: also deny `--location`, `--registry`, `--config`/`--config.*`, `--store-dir`, `--global-folder` and any short bundle containing `g` (`-gD`).
 - `path_like` judges every `=`-separated tail, and the glued short-flag value of each tail (`-ldflags=-extld=/bin/sh`, `a=b=../c`).
 - pytest: any word starting with `@` is refused (argparse expands argsfiles also after `--`).
+
+## Batch 18: slice X-b (Capture and RunOutcome, PR 16, branch feat/coding-tools-xb, base feat/coding-tools-xa)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Xb.1 `Capture` ring (4 KiB head, tail, marker) | done | feat(tools): capture a run as a 4 KiB head and a tail ring and report it as a cleaned, redacted RunOutcome |
+| Xb.2 `RunOutcome`, digest, `text()`, `render()` | done | same commit (one file) |
+
+TDD evidence: RED = `E0433 cannot find type Capture / RunOutcome / Ended`, `E0425 HEAD / TAIL / CAP / DIGEST` (60 errors). 20 tests green at once after the implementation (no failing GREEN; the fillers of two tests were changed BEFORE implementing because `redact` takes long single-character runs for secrets). Mutations: tail not capped per chunk (equivalent mutant: the drain gives the same bytes), no redact, no clean, no char-boundary cut in the digest, tenths of second as hundredths, omitted forced to 0, head disabled: each failed 1-5 tests.
+
+Notes:
+- `core/ai/tools/run.rs` (pure). API: `Capture::{new, push, total, truncated, bytes, text}`, `Ended{exit, signal, timed_out, cancelled}` (Default), `RunOutcome{argv, exit, signal, timed_out, cancelled, truncated, total_bytes, duration, digest}` per design, `RunOutcome::{new(argv, Ended, &Capture, Duration), render(nonce, &Capture)}`. Constants `CAP` 32 KiB, `HEAD` 4 KiB, `TAIL`, `DIGEST` 2 KiB.
+- DEVIATION (small): `TAIL` is 28 KiB minus 64 bytes (`MARKER_ROOM`), not exactly 28 KiB, so head + marker + tail is at most 32 KiB and `label::wrap` (cap 32 KiB) never cuts the tail off. Marker is `\n[... N bytes omitted ...]\n`.
+- Decisions: `text()` = lossy UTF-8 of the kept bytes, then `clean`, then `redact` (the read tools' order); a character cut by the ring becomes U+FFFD. The digest is the last <= 2048 bytes of that text on a char boundary, so it is cleaned and redacted too. `render` returns one facts line (`exit code 101 after 2.4s`, `killed by signal 11 ...`, `timed out ...`, `cancelled ...`, plus `; output cut, N bytes in all`) followed by `label::wrap(nonce, text)`; the facts line carries no model-supplied text (argv is not echoed), and an empty output is `(no output)`. Durations show truncated tenths of a second. Pathological output (invalid UTF-8 growing 3x as U+FFFD) may still hit the wrapper cap; accepted.
+- Nothing wired: no `Call`, no runtime, no audit change; no `create_dir` identifier.
+- Size: ~170 production lines (150 non-blank), ~280 test lines. Checks: fmt, clippy -D warnings, cargo test --lib (5849), +1.88 check --all-targets.
