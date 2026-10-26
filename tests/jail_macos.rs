@@ -757,7 +757,7 @@ fn the_state_folder_and_its_packages_cannot_be_renamed_replaced_or_edited() {
         ("remove packages", r#"/bin/rm -rf "$1/packages""#),
         (
             "replace packages with a link",
-            r#"/bin/rm -rf "$1/packages"; /bin/ln -s "$2/evil/packages" "$1/packages""#,
+            r#"/bin/rm -rf "$1/packages" && /bin/ln -s "$2/evil/packages" "$1/packages""#,
         ),
         (
             "chmod a file under packages",
@@ -769,7 +769,7 @@ fn the_state_folder_and_its_packages_cannot_be_renamed_replaced_or_edited() {
         ),
         (
             "hard link a file out of packages",
-            r#"/bin/ln "$1/packages/bin" "$2/hard"; echo planted >> "$2/hard""#,
+            r#"/bin/ln "$1/packages/bin" "$2/hard" && echo planted >> "$2/hard""#,
         ),
         ("truncate a file under packages", r#": > "$1/packages/bin""#),
     ];

@@ -1102,7 +1102,12 @@ pub fn jail_spec_for(
         Cli::Gemini => (layout.home.join(".gemini"), None),
     };
     let state = resolved(state);
-    let packages = (layout.cli == Cli::Codex).then(|| resolved(state.join(CODEX_PACKAGES)));
+    // Only a real folder inside the state dir can be carved out: a link, or
+    // one that resolves elsewhere, would put the exception outside every rw
+    // dir, and its name could be replaced by the jail.
+    let packages = (layout.cli == Cli::Codex)
+        .then(|| state.join(CODEX_PACKAGES))
+        .filter(|packages| resolved(packages.clone()) == *packages);
     let state_file = state_file.map(resolved);
     for path in [Some(&state), state_file.as_ref()].into_iter().flatten() {
         if too_broad(path, &homes, layout.cli, os) {
@@ -1143,7 +1148,7 @@ pub fn jail_spec_for(
     // profile, and only on macOS, the one system that can carve it out.
     if os == Os::Macos
         && let Some(packages) = packages
-        && fold(&layout.binary, os).starts_with(fold(&packages, os))
+        && layout.binary.starts_with(&packages)
     {
         push_unique(&mut spec.rw_except, packages);
     }
@@ -1181,7 +1186,6 @@ pub fn jail_spec_for(
         }
         push_unique(&mut spec.rw_files, shim.socket.clone());
     }
-    debug_assert_eq!(except_outside_rw(&spec), None);
     if os == Os::Macos
         && let Some((rx, rw)) = writable_executable(&spec, os)
     {
@@ -1193,6 +1197,7 @@ pub fn jail_spec_for(
 /// The first write exception that is not a strict descendant of an `rw`
 /// folder. The profile pins the folders above an exception, and that only makes
 /// sense when an `rw` folder holds it.
+#[cfg(test)]
 pub(crate) fn except_outside_rw(spec: &JailSpec) -> Option<PathBuf> {
     spec.rw_except
         .iter()
@@ -1206,17 +1211,18 @@ pub(crate) fn except_outside_rw(spec: &JailSpec) -> Option<PathBuf> {
 /// does not count; a writable file never gets that, and neither does a program
 /// over the folder.
 fn writable_executable(spec: &JailSpec, os: Os) -> Option<(PathBuf, PathBuf)> {
-    let excepted = |x: &Path, w: &Path| {
-        spec.rw_except.iter().any(|e| {
-            let e = fold(e, os);
-            e.starts_with(w) && x.starts_with(&e)
-        })
+    // The exemption compares exactly: on a case-sensitive file system a case
+    // variant of the exception is another, writable folder the deny misses.
+    let excepted = |rx: &Path, rw: &Path| {
+        spec.rw_except
+            .iter()
+            .any(|e| e.starts_with(rw) && rx.starts_with(e))
     };
     spec.rx.iter().find_map(|rx| {
         let x = fold(rx, os);
         let in_dir = spec.rw.iter().find(|rw| {
             let w = fold(rw, os);
-            (x.starts_with(&w) && !excepted(&x, &w)) || w.starts_with(&x)
+            (x.starts_with(&w) && !excepted(rx, rw)) || w.starts_with(&x)
         });
         let in_file = || {
             spec.rw_files.iter().find(|rw| {

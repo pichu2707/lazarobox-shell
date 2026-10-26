@@ -2449,22 +2449,55 @@ fn a_program_over_the_state_dir_is_still_refused_on_macos() {
 }
 
 #[test]
-fn a_case_variant_of_the_state_dir_cannot_dodge_the_exception_on_macos() {
-    // APFS ignores case: `.CODEX/Packages` is the same folder as the exception.
-    let mut l = layout(
-        Cli::Codex,
+fn a_case_variant_of_packages_is_refused_not_exempted_on_macos() {
+    // On a case-sensitive APFS `.CODEX/Packages` is another, writable folder
+    // that the deny does not cover; the exemption compares exactly. Refusing
+    // still ignores case, so the variant is the state dir and is refused.
+    for binary in [
         "/Users/u/.CODEX/Packages/standalone/releases/1/bin/codex",
-        None,
-    );
-    l.home = p("/Users/u");
-    l.codex_home = Some(p("/Users/u/.codex"));
-    let spec = jail_spec_for(Os::Macos, &l, &identity).unwrap();
-    assert_eq!(spec.rw_except, paths(&["/Users/u/.codex/packages"]));
-    // But a case variant outside packages is the state dir: refused.
-    let mut l = layout(Cli::Codex, "/Users/u/.CODEX/Bin/codex", None);
-    l.home = p("/Users/u");
-    l.codex_home = Some(p("/Users/u/.codex"));
-    let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+        "/Users/u/.codex/Packages/standalone/releases/1/bin/codex",
+        "/Users/u/.CODEX/packages/standalone/releases/1/bin/codex",
+        "/Users/u/.CODEX/Bin/codex",
+    ] {
+        let mut l = layout(Cli::Codex, binary, None);
+        l.home = p("/Users/u");
+        l.codex_home = Some(p("/Users/u/.codex"));
+        let err = jail_spec_for(Os::Macos, &l, &identity).unwrap_err();
+        assert!(
+            matches!(err, SpecError::Overlap { .. }),
+            "{binary}: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn a_symlinked_packages_gets_no_exception_and_is_refused_without_panicking() {
+    // packages -> elsewhere: the exception would land outside every rw dir and
+    // the name could be replaced. Only a real folder inside the state dir counts.
+    let resolve = |path: &Path| -> Option<PathBuf> {
+        Some(if path == Path::new("/Users/u/.codex/packages") {
+            p("/Users/u/elsewhere/packages")
+        } else {
+            path.to_path_buf()
+        })
+    };
+    let err = jail_spec_for(Os::Macos, &standalone_codex(), &resolve).unwrap_err();
+    assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
+    // A binary under the link's target: no exception outside the rw dirs (and
+    // no debug_assert) either; the spec just has nothing to carve out.
+    let mut l = standalone_codex();
+    l.binary = p("/Users/u/elsewhere/packages/standalone/releases/1/bin/codex");
+    let spec = jail_spec_for(Os::Macos, &l, &resolve).unwrap();
+    assert!(spec.rw_except.is_empty());
+    // The same when the link points to a folder inside the state dir.
+    let resolve = |path: &Path| -> Option<PathBuf> {
+        Some(if path == Path::new("/Users/u/.codex/packages") {
+            p("/Users/u/.codex/real")
+        } else {
+            path.to_path_buf()
+        })
+    };
+    let err = jail_spec_for(Os::Macos, &standalone_codex(), &resolve).unwrap_err();
     assert!(matches!(err, SpecError::Overlap { .. }), "{err:?}");
 }
 
