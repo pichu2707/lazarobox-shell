@@ -131,6 +131,14 @@ const WRITE_LIBC_ALLOWED: &[&str] = &[
     "RENAME_NOREPLACE",
     "getrandom",
     "GRND_NONBLOCK",
+    // macOS: the no-replace rename and the random bytes of a temp name.
+    "renameatx_np",
+    "RENAME_EXCL",
+    "getentropy",
+    "ENOTSUP",
+    "EINVAL",
+    "EPERM",
+    "EACCES",
     "getpid",
     "O_WRONLY",
     "O_CREAT",
@@ -696,6 +704,16 @@ mod tests {
         let named = "use super::apply::{self, ApplyResult};";
         assert_eq!(planted(&[("stage.rs", named)]), Vec::<String>::new());
         assert!(!planted(&[("host/stage.rs", named)]).is_empty());
+    }
+
+    #[test]
+    fn the_macos_write_calls_belong_to_the_write_file_only() {
+        let mac = "fn f() { libc::renameatx_np(a, p, a, q, libc::RENAME_EXCL); \
+                   libc::getentropy(b, 16) }";
+        assert_eq!(planted(&[("write.rs", mac)]), Vec::<String>::new());
+        for file in ["open.rs", "fs.rs", "search.rs"] {
+            assert!(!planted(&[(file, mac)]).is_empty(), "{file}");
+        }
     }
 
     #[test]

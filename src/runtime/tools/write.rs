@@ -11,8 +11,14 @@
 //!
 //! Kept out of `open.rs` on purpose: the audit in `audit.rs` bans every write
 //! API from the read-side tool files, and this file is the one place that may
-//! use them. Nothing in `fs.rs` may reach it. Linux only: elsewhere every call
+//! use them. Nothing in `fs.rs` may reach it. Linux and macOS: elsewhere every call
 //! returns [`WriteError::Unsupported`].
+//!
+//! Only three things differ per system, each in a small seam: the random bytes
+//! of a temp name (`getrandom` / `getentropy`), the rename that refuses a taken
+//! name (`renameat2(RENAME_NOREPLACE)` / `renameatx_np(RENAME_EXCL)`) and which
+//! errors mean "denied". macOS has no fallback for a filesystem without
+//! `RENAME_EXCL` (exFAT, SMB, NFS): there a create answers `Unsupported`.
 
 use crate::core::ai::tools::paths::SecretRoots;
 
@@ -35,13 +41,17 @@ pub enum WriteError {
     Io,
 }
 
-#[cfg(target_os = "linux")]
-pub use linux::*;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub use other::*;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub use unix::*;
 
-#[cfg(target_os = "linux")]
-mod linux {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unix {
+    #[cfg(target_os = "linux")]
+    use super::linux_sys::{fill_random, rename_noreplace};
+    #[cfg(target_os = "macos")]
+    use super::macos_sys::{fill_random, rename_noreplace};
     use super::{SecretRoots, WriteError};
     use crate::runtime::tools::{
         fs::{Failure, open_checked},
@@ -130,7 +140,7 @@ mod linux {
         if unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), 0o777) } != 0 {
             return Err(match io::Error::last_os_error().raw_os_error() {
                 Some(libc::EEXIST) => WriteError::Exists,
-                _ => WriteError::Io,
+                _ => denied_or(WriteError::Io),
             });
         }
         sync_dir(&dir);
@@ -217,7 +227,7 @@ mod linux {
         Err(match io::Error::last_os_error().kind() {
             io::ErrorKind::NotFound => WriteError::Missing,
             io::ErrorKind::DirectoryNotEmpty => WriteError::NotEmpty,
-            _ => WriteError::Io,
+            _ => denied_or(WriteError::Io),
         })
     }
 
@@ -263,17 +273,7 @@ mod linux {
     /// `.lbx-<32 random hex digits>.tmp`: unpredictable, and short enough for
     /// any file name limit whatever the target is called.
     fn temp_name() -> io::Result<CString> {
-        temp_name_from(random_bytes(|buf| {
-            // SAFETY: the buffer is valid for `len` bytes. `GRND_NONBLOCK`
-            // keeps an uninitialised pool from blocking the call.
-            let got =
-                unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), libc::GRND_NONBLOCK) };
-            if usize::try_from(got) == Ok(buf.len()) {
-                Ok(())
-            } else {
-                Err(io::Error::last_os_error())
-            }
-        }))
+        temp_name_from(random_bytes(fill_random))
     }
 
     fn temp_name_from(random: [u8; 16]) -> io::Result<CString> {
@@ -334,7 +334,7 @@ mod linux {
             };
             match owned(fd) {
                 Err(error) if error.raw_os_error() == Some(libc::EEXIST) => continue,
-                Err(_) => return Err(WriteError::Io),
+                Err(_) => return Err(denied_or(WriteError::Io)),
                 Ok(fd) => {
                     let temp = Temp {
                         dir: dir.as_raw_fd(),
@@ -364,30 +364,34 @@ mod linux {
         noreplace: bool,
     ) -> Result<(), WriteError> {
         let fd = dir.as_raw_fd();
-        // SAFETY: both names are NUL-terminated and `fd` is an open descriptor.
-        let done = unsafe {
-            if noreplace {
-                libc::syscall(
-                    libc::SYS_renameat2,
-                    fd,
-                    temp.name.as_ptr(),
-                    fd,
-                    to.as_ptr(),
-                    libc::RENAME_NOREPLACE,
-                )
+        let done = if noreplace {
+            rename_noreplace(fd, &temp.name, to)
+        } else {
+            // SAFETY: both names are NUL-terminated and `fd` is an open descriptor.
+            if unsafe { libc::renameat(fd, temp.name.as_ptr(), fd, to.as_ptr()) } == 0 {
+                Ok(())
             } else {
-                libc::renameat(fd, temp.name.as_ptr(), fd, to.as_ptr()) as libc::c_long
+                Err(denied_or(WriteError::Io))
             }
         };
-        if done == 0 {
+        if done.is_ok() {
             // The temp name is gone: the guard has nothing to remove.
             temp.renamed = true;
-            return Ok(());
         }
-        Err(match io::Error::last_os_error().raw_os_error() {
-            Some(libc::EEXIST) if noreplace => WriteError::Exists,
-            _ => WriteError::Io,
-        })
+        done
+    }
+
+    /// [`WriteError::Refused`] when the last OS error is a denial the system
+    /// raises on macOS (`EPERM`/`EACCES`: TCC, a data vault), else `otherwise`.
+    /// A denial is a refusal, never `Unsupported`: `apply` turns that into a
+    /// whole-batch answer. On Linux the answer is always `otherwise`.
+    fn denied_or(otherwise: WriteError) -> WriteError {
+        let errno = io::Error::last_os_error().raw_os_error();
+        if cfg!(target_os = "macos") && matches!(errno, Some(libc::EPERM | libc::EACCES)) {
+            WriteError::Refused
+        } else {
+            otherwise
+        }
     }
 
     /// Best effort: some filesystems cannot sync a folder.
@@ -633,13 +637,26 @@ mod linux {
         fn replace_never_copies_setuid_setgid_or_sticky() {
             let f = fx();
             let path = f.home.join("proj/tool");
-            for (from, to) in [(0o4755, 0o755), (0o2750, 0o750), (0o1777, 0o777)] {
-                std::fs::write(&path, "old").unwrap();
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(from)).unwrap();
-                replace_file(&f.roots, &path, b"old", b"new").unwrap();
-                let mode = std::fs::metadata(&path).unwrap().mode() & 0o7777;
-                assert_eq!(mode, to, "{from:o}");
+            for (from, to) in [(0o4755, 0o755), (0o2750, 0o750)] {
+                assert_replace_drops_special_bits(&f, &path, from, to);
             }
+        }
+
+        // Linux only: a regular file with the sticky bit is refused by chmod on
+        // macOS for a non-root user (EFTYPE).
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn replace_never_copies_the_sticky_bit() {
+            let f = fx();
+            assert_replace_drops_special_bits(&f, &f.home.join("proj/tool"), 0o1777, 0o777);
+        }
+
+        fn assert_replace_drops_special_bits(f: &Fx, path: &Path, from: u32, to: u32) {
+            std::fs::write(path, "old").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(from)).unwrap();
+            replace_file(&f.roots, path, b"old", b"new").unwrap();
+            let mode = std::fs::metadata(path).unwrap().mode() & 0o7777;
+            assert_eq!(mode, to, "{from:o}");
         }
 
         #[test]
@@ -694,6 +711,25 @@ mod linux {
             assert!(crate::core::ai::tools::paths::is_temp_name(
                 name.to_str().unwrap()
             ));
+        }
+
+        // macOS only (unverified on a Mac): a denial such as TCC's EPERM/EACCES is
+        // a refusal, never `Unsupported`, which `apply` would turn into a
+        // whole-batch answer. A read-only folder stands in for the denial.
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn a_denied_write_is_a_refusal_and_never_unsupported() {
+            let f = fx();
+            let locked = f.home.join("proj/locked");
+            std::fs::create_dir(&locked).unwrap();
+            std::fs::set_permissions(&locked, Permissions::from_mode(0o555)).unwrap();
+            let got = create_file(&f.roots, &locked.join("a.txt"), b"x");
+            // Root is never denied: a plain write into the folder tells.
+            let denied = std::fs::write(locked.join("probe"), "").is_err();
+            std::fs::set_permissions(&locked, Permissions::from_mode(0o755)).unwrap();
+            if denied {
+                assert_eq!(got.unwrap_err(), WriteError::Refused);
+            }
         }
 
         // We2.2: the undo primitives
@@ -774,8 +810,89 @@ mod linux {
     }
 }
 
+/// The Linux seams: `getrandom` and `renameat2(RENAME_NOREPLACE)`.
+#[cfg(target_os = "linux")]
+mod linux_sys {
+    use super::WriteError;
+    use std::{ffi::CString, io, os::fd::RawFd};
+
+    /// Fills `buf` from `getrandom`. `GRND_NONBLOCK` keeps an uninitialised
+    /// pool from blocking the call.
+    pub fn fill_random(buf: &mut [u8; 16]) -> io::Result<()> {
+        // SAFETY: the buffer is valid for `len` bytes.
+        let got =
+            unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), libc::GRND_NONBLOCK) };
+        if usize::try_from(got) == Ok(buf.len()) {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    /// Renames `from` to `to` in `fd`, refusing a taken name (even a dangling
+    /// link) with [`WriteError::Exists`].
+    pub fn rename_noreplace(fd: RawFd, from: &CString, to: &CString) -> Result<(), WriteError> {
+        // SAFETY: both names are NUL-terminated and `fd` is an open descriptor.
+        let done = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                fd,
+                from.as_ptr(),
+                fd,
+                to.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if done == 0 {
+            return Ok(());
+        }
+        Err(match io::Error::last_os_error().raw_os_error() {
+            Some(libc::EEXIST) => WriteError::Exists,
+            _ => WriteError::Io,
+        })
+    }
+}
+
+/// The macOS seams: `getentropy` and `renameatx_np(RENAME_EXCL)`. Written
+/// without a macOS compiler at hand (type-checked in a scratch crate): keep it
+/// small. `File::sync_all` already issues `F_FULLFSYNC` on Apple targets.
+#[cfg(target_os = "macos")]
+mod macos_sys {
+    use super::WriteError;
+    use std::{ffi::CString, io, os::fd::RawFd};
+
+    /// Fills `buf` from `getentropy` (it never blocks and takes up to 256 bytes).
+    pub fn fill_random(buf: &mut [u8; 16]) -> io::Result<()> {
+        // SAFETY: the buffer is valid for 16 bytes.
+        if unsafe { libc::getentropy(buf.as_mut_ptr().cast(), buf.len()) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    /// Renames `from` to `to` in `fd`, refusing a taken name with
+    /// [`WriteError::Exists`]. A filesystem without `RENAME_EXCL` (exFAT, SMB,
+    /// NFS) answers `ENOTSUP` or `EINVAL`: [`WriteError::Unsupported`], with no
+    /// `linkat` fallback. A denial (TCC) is a refusal.
+    pub fn rename_noreplace(fd: RawFd, from: &CString, to: &CString) -> Result<(), WriteError> {
+        // SAFETY: both names are NUL-terminated and `fd` is an open descriptor.
+        let done =
+            unsafe { libc::renameatx_np(fd, from.as_ptr(), fd, to.as_ptr(), libc::RENAME_EXCL) };
+        if done == 0 {
+            return Ok(());
+        }
+        Err(match io::Error::last_os_error().raw_os_error() {
+            Some(libc::EEXIST) => WriteError::Exists,
+            Some(libc::ENOTSUP | libc::EINVAL) => WriteError::Unsupported,
+            Some(libc::EPERM | libc::EACCES) => WriteError::Refused,
+            _ => WriteError::Io,
+        })
+    }
+}
+
 /// Without `openat2` and `renameat2` nothing can be written safely.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod other {
     use super::{SecretRoots, WriteError};
     use std::{fs::File, path::Path};
