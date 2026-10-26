@@ -10,6 +10,19 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- Download GGUF models from Hugging Face without leaving lazarobox (#282). The llamacpp model list ends in `download from Hugging Face…`:
+  - search the Hub or paste `owner/repo`, then pick a quantization (split models count as one);
+  - a confirmation shows the file, its size, the license with a link to read it, the target folder and the free space, and nothing downloads before `y`;
+  - the download runs in the background with the system `curl` (HTTPS only), with progress in the list and the status bar, and it can be cancelled and resumed;
+  - each file's size and sha256 are checked before it lands in the standard Hugging Face cache (`~/.cache/huggingface/hub`), where the model list finds it and the managed llama-server runs it.
+- A `Hugging Face` row at the end of the AI tab connects an account for gated or private repos. The pasted token is checked with the Hub and saved where `hf auth login` saves it (`~/.cache/huggingface/token`, mode 0600), never in `config.toml` and never on a command line. `HF_TOKEN` still wins when set.
+
+### Changed
+
+- lazarobox may now download a model, but only from that Hugging Face flow and only after you confirm it. It still never pulls a model through a server.
+
 ## [0.24.0] - 2026-10-26
 
 ### Added

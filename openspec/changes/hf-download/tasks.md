@@ -15,6 +15,6 @@ Feature document: `odd/tasks/hf-download.md` (local, not in the package).
 - [x] 4.3 RED/GREEN: status bar progress, done, failure and cancel; redetect once on success.
 - [x] 6.1 RED/GREEN: connect: whoami check with the pasted token on stdin only; token file written 0600 through a temporary file; rejected token writes nothing; disconnect deletes the file after y.
 - [x] 6.2 RED/GREEN: the `Hugging Face` AI row (after Tools), its values, the masked field, the disconnect prompt; no config edit.
-- [ ] 5.1 Docs: README (flow, token, what is sent, where it is stored, how to delete), CHANGELOG, footers.
+- [x] 5.1 Docs: README (flow, token, what is sent, where it is stored, how to delete), CHANGELOG, footers.
 - [ ] 5.2 [manual] Live: real download of `Qwen/Qwen2.5-0.5B-Instruct-GGUF` `Q2_K`, cancel and resume, listed by the picker, chat answers through the managed llama-server.
 - [ ] 5.3 [manual] Live: a gated repo without a token says `set HF_TOKEN`; with `HF_TOKEN` it downloads.
