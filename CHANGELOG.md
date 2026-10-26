@@ -23,6 +23,12 @@ baseline.
   later start failed. A group is only signalled while its leader is still the
   listed process (same start time) or gone, so a reused pid is never hit.
   `engram serve` is never listed.
+- Quitting is polite. It used to SIGKILL CLI chat turns, MCP servers and the
+  managed llama-server at once. Now, as soon as the terminal is restored,
+  everything lazarobox started gets SIGHUP and SIGTERM, and SIGKILL only if
+  it still runs 2 s later, while the history and the memory are saved. A
+  group whose leader ends gets SIGKILL at once for what it left behind. If
+  lazarobox is killed during the quit, the watcher repeats the same stop.
 
 ## [0.23.0] - 2026-10-25
 

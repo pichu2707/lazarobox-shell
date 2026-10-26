@@ -33,7 +33,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::runtime::proc::start_time;
+use crate::runtime::proc::{running, start_time};
 
 /// The hidden first argument that runs the watcher.
 pub const SUBCOMMAND: &str = "__watch";
@@ -43,8 +43,18 @@ pub const GRACE: Duration = Duration::from_secs(3);
 /// How often the watcher asks whether the groups ended.
 const POLL: Duration = Duration::from_millis(50);
 
-/// The write end of the watcher's stdin, once started.
-static WATCHER: OnceLock<Mutex<ChildStdin>> = OnceLock::new();
+/// How long quitting gives the groups after SIGHUP and SIGTERM: less than
+/// the quit bound, so what was killed is still reaped inside it.
+pub const QUIT_GRACE: Duration = Duration::from_secs(2);
+
+/// What [`start`] sets up: the groups lazarobox has not reaped yet, and the
+/// write end of the watcher's stdin when it started.
+struct State {
+    listed: Listed,
+    watcher: Option<Mutex<ChildStdin>>,
+}
+
+static STATE: OnceLock<State> = OnceLock::new();
 
 /// The watcher process: lists the groups lazarobox sends on stdin and stops
 /// the ones still listed when stdin ends.
@@ -53,13 +63,32 @@ pub fn main(_args: &[std::ffi::OsString]) -> i32 {
     0
 }
 
-/// Starts the watcher for this process, once. Must run before any pane
-/// exists. A watcher that cannot start leaves lazarobox as it was without it.
+/// Starts listing the groups lazarobox starts, and the watcher, once. Must
+/// run before any pane exists. A watcher that cannot start leaves only the
+/// list, which [`stop_listed`] still uses when quitting.
 pub fn start() {
-    if WATCHER.get().is_some() {
+    if STATE.get().is_some() {
         return;
     }
-    let Some(exe) = own_exe() else { return };
+    let _ = STATE.set(State {
+        listed: Listed::default(),
+        watcher: spawn_watcher().map(Mutex::new),
+    });
+}
+
+/// SIGHUP and SIGTERM to every group lazarobox started and has not reaped,
+/// up to `grace` for them to end, then SIGKILL to the ones still listed.
+/// Blocking: quitting runs it on its own thread.
+pub fn stop_listed(grace: Duration) {
+    if let Some(state) = STATE.get() {
+        state.listed.stop(grace);
+    }
+}
+
+/// `lazarobox-shell __watch` in its own session, with a non-blocking pipe
+/// to its stdin.
+fn spawn_watcher() -> Option<ChildStdin> {
+    let exe = own_exe()?;
     let mut command = Command::new(exe);
     command
         .arg(SUBCOMMAND)
@@ -77,21 +106,16 @@ pub fn start() {
         });
     }
     // Never waited on: it ends after lazarobox does.
-    let Ok(mut child) = command.spawn() else {
-        return;
-    };
-    let Some(stdin) = child.stdin.take() else {
-        return;
-    };
+    let stdin = command.spawn().ok()?.stdin.take()?;
     // SAFETY: fcntl on a pipe descriptor we own.
     unsafe {
         let fd = stdin.as_raw_fd();
         let flags = libc::fcntl(fd, libc::F_GETFL);
         if flags == -1 || libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) == -1 {
-            return;
+            return None;
         }
     }
-    let _ = WATCHER.set(Mutex::new(stdin));
+    Some(stdin)
 }
 
 /// This program, as the jail helper finds it: `/proc/self/exe` on Linux
@@ -103,17 +127,24 @@ fn own_exe() -> Option<PathBuf> {
     std::env::current_exe().and_then(std::fs::canonicalize).ok()
 }
 
-/// Lists group `pgid` with the watcher, when there is one.
+/// Lists group `pgid`, and with the watcher when there is one. Nothing
+/// before [`start`], so tests never list anything.
 pub(crate) fn register(pgid: libc::pid_t) {
-    let Some(watcher) = WATCHER.get() else { return };
-    if let Some(start) = start_time(pgid) {
+    let Some(state) = STATE.get() else { return };
+    let Some(start) = start_time(pgid) else {
+        return;
+    };
+    state.listed.add(pgid, start);
+    if let Some(watcher) = &state.watcher {
         send(watcher, &format!("+ {pgid} {start}\n"));
     }
 }
 
-/// Takes group `pgid` off the watcher's list, when there is one.
+/// Takes group `pgid` off the list, and off the watcher's.
 pub(crate) fn unregister(pgid: libc::pid_t) {
-    if let Some(watcher) = WATCHER.get() {
+    let Some(state) = STATE.get() else { return };
+    state.listed.remove(pgid);
+    if let Some(watcher) = &state.watcher {
         send(watcher, &format!("- {pgid}\n"));
     }
 }
@@ -133,7 +164,7 @@ pub fn watch(input: impl BufRead, grace: Duration) {
     }
     // SAFETY: getpgrp has no preconditions and cannot fail.
     let own = unsafe { libc::getpgrp() };
-    stop(&targets(&groups, own, start_time), grace);
+    stop(&targets(&groups, own, start_time), grace, |_| true);
 }
 
 /// One line of the list: `+ <pgid> <start>` or `- <pgid>`.
@@ -154,41 +185,55 @@ fn apply(groups: &mut BTreeMap<libc::pid_t, u64>, line: &str) {
     }
 }
 
-/// The listed groups that may be signalled: never 0, 1 or `own`, and only
-/// while the leader is the listed one or gone (`started` reads its start).
+/// The listed groups that may be signalled, with their leader's start: never
+/// 0, 1 or `own`, and only while the leader is the listed one or gone
+/// (`started` reads its start).
 fn targets(
     groups: &BTreeMap<libc::pid_t, u64>,
     own: libc::pid_t,
     started: impl Fn(libc::pid_t) -> Option<u64>,
-) -> Vec<libc::pid_t> {
+) -> Vec<(libc::pid_t, u64)> {
     groups
         .iter()
         .filter(|&(&pgid, &start)| {
             pgid > 1 && pgid != own && started(pgid).is_none_or(|now| now == start)
         })
-        .map(|(&pgid, _)| pgid)
+        .map(|(&pgid, &start)| (pgid, start))
         .collect()
 }
 
-/// SIGHUP and SIGTERM to each group, up to `grace` for them to end, then
-/// SIGKILL to the ones left.
-fn stop(groups: &[libc::pid_t], grace: Duration) {
-    for &pgid in groups {
+/// SIGHUP and SIGTERM to each group, then up to `grace` for each leader to
+/// end. A group whose leader ended (a zombie counts: lazarobox may not have
+/// reaped it yet) gets SIGKILL at once for what it left behind, like a pane's
+/// shell; one whose leader still runs after `grace` gets it then. SIGKILL
+/// only goes to groups `still` listed.
+fn stop(groups: &[(libc::pid_t, u64)], grace: Duration, still: impl Fn(libc::pid_t) -> bool) {
+    for &(pgid, _) in groups {
         signal(pgid, libc::SIGHUP);
         signal(pgid, libc::SIGTERM);
     }
+    let kill = |pgid| {
+        if still(pgid) {
+            signal(pgid, libc::SIGKILL);
+        }
+    };
     let mut left = groups.to_vec();
     let deadline = Instant::now() + grace;
     loop {
-        // Signal 0 only asks whether the group still has a member.
-        left.retain(|&pgid| signal(pgid, 0));
+        left.retain(|&(pgid, start)| {
+            if running(pgid, start) {
+                return true;
+            }
+            kill(pgid);
+            false
+        });
         if left.is_empty() || Instant::now() >= deadline {
             break;
         }
         std::thread::sleep(POLL);
     }
-    for pgid in left {
-        signal(pgid, libc::SIGKILL);
+    for (pgid, _) in left {
+        kill(pgid);
     }
 }
 
@@ -197,6 +242,36 @@ fn signal(pgid: libc::pid_t, sig: libc::c_int) -> bool {
     // SAFETY: killpg only sends a signal; `targets` refused 0, 1 and our
     // own group.
     unsafe { libc::killpg(pgid, sig) == 0 }
+}
+
+/// The groups lazarobox started and has not reaped yet, with their leader's
+/// start time: what quitting stops politely.
+#[derive(Default)]
+pub(crate) struct Listed(Mutex<BTreeMap<libc::pid_t, u64>>);
+
+impl Listed {
+    pub(crate) fn add(&self, pgid: libc::pid_t, start: u64) {
+        self.lock().insert(pgid, start);
+    }
+
+    pub(crate) fn remove(&self, pgid: libc::pid_t) {
+        self.lock().remove(&pgid);
+    }
+
+    /// [`stop`] on a copy of the list. A group lazarobox reaps meanwhile
+    /// leaves the list and gets no SIGKILL: its pid may already be reused.
+    pub(crate) fn stop(&self, grace: Duration) {
+        let groups = self.lock().clone();
+        // SAFETY: getpgrp has no preconditions and cannot fail.
+        let own = unsafe { libc::getpgrp() };
+        stop(&targets(&groups, own, start_time), grace, |pgid| {
+            self.lock().contains_key(&pgid)
+        });
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<libc::pid_t, u64>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 #[cfg(test)]

@@ -11,11 +11,11 @@ In scope:
 - Every `GroupKill` lists its group with the watcher (pgid and leader start time) and takes it off when disarmed (reaped).
 - When the watcher's stdin ends (lazarobox ended), it sends SIGHUP and SIGTERM to the groups still listed, SIGKILL after 3 s, and exits.
 - A group is signalled only while its leader is the listed process (same start time) or gone; never 0, 1 or the watcher's own group.
+- Polite quit: the quit sends SIGHUP and SIGTERM to every listed group as soon as the terminal is restored, gives them 2 s, and SIGKILLs only the groups still listed; the chats are shut down only after that. A group whose leader ended (a zombie included) gets SIGKILL at once for what it left behind.
 
 Out of scope:
 - `engram serve`: the user's shared memory server, left running on purpose.
 - Pane shells: they get SIGHUP from their terminal when lazarobox's PTY closes.
-- Making quit return without waiting for the children (next task of this change).
 
 ## Approach
 

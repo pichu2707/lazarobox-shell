@@ -7,6 +7,19 @@ Tags as in `chat-engines`: [auto] = `cargo test`; [manual] = real machine.
 ### Requirement: Nothing lazarobox started outlives it
 At start, before any pane or child process exists, lazarobox MUST start a watcher (`lazarobox-shell __watch`) in its own session. Every process group lazarobox guards with `GroupKill` MUST be listed with the watcher with its leader's start time, and taken off when lazarobox reaps it. When lazarobox ends in any way, the watcher MUST send SIGHUP and SIGTERM to every group still listed, SIGKILL after 3 s to the groups that still have members, and exit. It MUST NOT signal a group whose leader is a process other than the listed one, nor groups 0, 1 or its own. `engram serve` MUST NOT be listed. A watcher that cannot start leaves lazarobox working as before.
 
+### Requirement: Quitting is polite
+When lazarobox quits (the quit key, SIGTERM or SIGHUP), right after it restores the terminal it MUST send SIGHUP and SIGTERM to every group it started and has not reaped, and SIGKILL only to the groups still listed after 2 s; a group whose leader has ended (a zombie included) MUST get SIGKILL at once for what it left behind. The chats MUST be shut down only after that, inside the existing quit bound, while the store and the memory flush.
+
+#### Scenario: A program that ends when asked [auto]
+- GIVEN a listed group whose leader exits on SIGHUP or SIGTERM
+- WHEN lazarobox quits
+- THEN it exits on its own, not by SIGKILL, and the quit does not wait the grace
+
+#### Scenario: The chats wait for the polite stop [auto]
+- GIVEN an open chat turn
+- WHEN lazarobox quits with a polite stop that takes 500 ms
+- THEN the turn is stopped at 500 ms, not at once
+
 #### Scenario: A crash leaves nothing behind [auto]
 - GIVEN a listed group with a child of its own
 - WHEN the watcher's input ends

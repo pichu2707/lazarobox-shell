@@ -120,13 +120,26 @@ impl Drop for GroupKill {
 /// tells it apart from a later process that reuses its pid. A zombie still
 /// has one on Linux; `None` once it is gone, or where it cannot be read.
 pub fn start_time(pid: libc::pid_t) -> Option<u64> {
+    stat(pid).map(|(start, _)| start)
+}
+
+/// Whether `pid` is still the process that started at `start` and has not
+/// ended: false for a zombie, a reused pid or a process that is gone.
+pub fn running(pid: libc::pid_t, start: u64) -> bool {
+    stat(pid) == Some((start, false))
+}
+
+/// The start time of `pid` and whether it is a zombie.
+fn stat(pid: libc::pid_t) -> Option<(u64, bool)> {
     #[cfg(target_os = "linux")]
     {
         // pid (comm) state ppid ... starttime is field 22; comm may hold
         // spaces and parentheses, so count from the last ')'.
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let after = stat.rsplit_once(')')?.1;
-        after.split_whitespace().nth(19)?.parse().ok()
+        let mut fields = stat.rsplit_once(')')?.1.split_whitespace();
+        let state = fields.next()?;
+        let start = fields.nth(18)?.parse().ok()?;
+        Some((start, matches!(state, "Z" | "X")))
     }
     #[cfg(target_os = "macos")]
     {
@@ -136,7 +149,10 @@ pub fn start_time(pid: libc::pid_t) -> Option<u64> {
         let read = unsafe {
             libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size)
         };
-        (read == size).then(|| info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
+        (read == size).then(|| {
+            let start = info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec;
+            (start, info.pbi_status == libc::SZOMB)
+        })
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
@@ -359,5 +375,28 @@ mod tests {
         child.kill().unwrap();
         child.wait().unwrap();
         assert_eq!(start_time(pid), None, "gone once reaped");
+    }
+
+    #[test]
+    fn running_is_false_for_a_zombie_and_for_another_start() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id() as libc::pid_t;
+        let start = start_time(pid).unwrap();
+        assert!(running(pid, start));
+        assert!(
+            !running(pid, start + 1),
+            "a reused pid is not the same process"
+        );
+        // SAFETY: kill only sends a signal to our own child.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        while process_state(pid) != Some('Z') {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!running(pid, start), "a zombie has ended");
+        child.wait().unwrap();
+        assert!(!running(pid, start));
     }
 }

@@ -129,5 +129,70 @@ fn groups_0_1_and_the_watcher_s_own_are_never_targets() {
         80 => None,
         _ => Some(1),
     };
-    assert_eq!(targets(&groups, 60, started), vec![50, 80]);
+    assert_eq!(targets(&groups, 60, started), vec![(50, 1), (80, 1)]);
+}
+
+/// Waits for the line `sh` prints once its traps are set.
+fn ready(child: &mut Child) {
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+}
+
+fn listed_with(child: &Child) -> Listed {
+    let listed = Listed::default();
+    listed.add(pgid(child), start_time(pgid(child)).unwrap());
+    listed
+}
+
+// Spec S6: quitting asks first, so a program can end on its own.
+#[test]
+fn quitting_asks_a_listed_group_to_end_before_any_kill() {
+    let mut child = group("trap 'exit 7' HUP TERM; echo ready; sleep 30 & wait");
+    ready(&mut child);
+    let started = Instant::now();
+    listed_with(&child).stop(Duration::from_secs(2));
+    // Its leader is our child, a zombie until we reap it: that is an end.
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "it waited the grace"
+    );
+    let status = child.wait().unwrap();
+    assert_eq!(status.code(), Some(7), "it was killed: {status:?}");
+}
+
+#[test]
+fn quitting_kills_a_group_that_ignores_the_polite_signals_after_the_grace() {
+    let mut child = group("trap '' HUP TERM; echo ready; exec sleep 30");
+    ready(&mut child);
+    let started = Instant::now();
+    listed_with(&child).stop(SHORT);
+    assert!(started.elapsed() >= SHORT, "SIGKILL came before the grace");
+    assert_eq!(ended_by(child), Some(libc::SIGKILL));
+}
+
+#[test]
+fn a_group_reaped_during_the_grace_gets_no_kill() {
+    let mut child = group("trap '' HUP TERM; echo ready; exec sleep 30");
+    ready(&mut child);
+    let listed = std::sync::Arc::new(listed_with(&child));
+    let pid = pgid(&child);
+    let remover = {
+        let listed = std::sync::Arc::clone(&listed);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            listed.remove(pid);
+        })
+    };
+    listed.stop(SHORT);
+    remover.join().unwrap();
+    assert!(still_running(&mut child), "a group off the list was killed");
+}
+
+#[test]
+fn quitting_with_nothing_listed_ends_at_once() {
+    let started = Instant::now();
+    Listed::default().stop(GRACE);
+    assert!(started.elapsed() < Duration::from_millis(100));
 }
