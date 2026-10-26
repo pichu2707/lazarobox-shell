@@ -10,6 +10,16 @@ baseline.
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-10-26
+
+### Fixed
+
+- On macOS, codex installed with its official standalone installer now runs in the jail (#180). That installer puts the binary under `~/.codex/packages/standalone/releases/<version>/bin`, inside codex's own state folder, so the jail refused to start with `… would be both run and written by the jail`.
+  - `~/.codex` stays writable, but `~/.codex/packages` is now read and run only.
+  - The state folder and the folders above `packages` cannot be renamed, removed or replaced from inside the jail, so a planted tree can never take the binary's place.
+  - The exception applies only when the program itself is in a real `packages` folder with that exact spelling. Every other layout where the program could be written is still refused.
+  - Inside the jail codex cannot update itself. Run it directly to update; lazarobox picks up the new version on its next start.
+
 ## [0.25.0] - 2026-10-26
 
 ### Added
@@ -1122,7 +1132,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.25.1...HEAD
+[0.25.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.22.0...v0.23.0
