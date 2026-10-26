@@ -10,7 +10,6 @@ use std::{
     collections::VecDeque,
     ffi::OsStr,
     ffi::OsString,
-    fs::FileType,
     io::Read,
     os::{
         fd::{AsRawFd, OwnedFd},
@@ -456,16 +455,38 @@ fn window_text(mut bytes: Vec<u8>, window: Lines, limits: &Limits) -> Result<Str
     Ok(out)
 }
 
+/// What a directory entry is, as far as the tools care. A symlink is its own
+/// kind: it is reported as such, never followed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Kind {
+    Dir,
+    File,
+    Link,
+    Other,
+}
+
+impl Kind {
+    pub(super) fn is_dir(self) -> bool {
+        self == Kind::Dir
+    }
+    pub(super) fn is_file(self) -> bool {
+        self == Kind::File
+    }
+    pub(super) fn is_symlink(self) -> bool {
+        self == Kind::Link
+    }
+}
+
 /// The entries of an open directory, at most `max` of them, and whether more
-/// were left. Read through `/proc/self/fd`, so it is the opened directory and
-/// not a path that is listed. A symlink is reported as such, never followed.
+/// were left. Read through the descriptor itself (see `read_dir_fd`), so it is
+/// the opened directory and not a path that is listed. A symlink is reported as
+/// such, never followed.
 pub(super) fn entries(
     fd: &OwnedFd,
     max: usize,
     budget: &Budget,
-) -> Result<(Vec<(OsString, FileType)>, bool), Failure> {
-    let dir = std::fs::read_dir(format!("/proc/self/fd/{}", fd.as_raw_fd()))
-        .map_err(|_| Failure::Unreadable)?;
+) -> Result<(Vec<(OsString, Kind)>, bool), Failure> {
+    let dir = read_dir_fd(fd).map_err(|_| Failure::Unreadable)?;
     let mut out = Vec::new();
     for entry in dir {
         if out.len() == max || budget.spent() {
@@ -473,13 +494,105 @@ pub(super) fn entries(
         }
         #[cfg(test)]
         std::thread::sleep(budget.entry_delay);
-        let entry = entry.map_err(|_| Failure::Unreadable)?;
-        out.push((
-            entry.file_name(),
-            entry.file_type().map_err(|_| Failure::Unreadable)?,
-        ));
+        out.push(entry.map_err(|_| Failure::Unreadable)?);
     }
     Ok((out, false))
+}
+
+/// Linux: the descriptor is listed through `/proc/self/fd`.
+#[cfg(target_os = "linux")]
+fn read_dir_fd(
+    fd: &OwnedFd,
+) -> std::io::Result<impl Iterator<Item = std::io::Result<(OsString, Kind)>>> {
+    let dir = std::fs::read_dir(format!("/proc/self/fd/{}", fd.as_raw_fd()))?;
+    Ok(dir.map(|entry| {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let kind = if kind.is_dir() {
+            Kind::Dir
+        } else if kind.is_file() {
+            Kind::File
+        } else if kind.is_symlink() {
+            Kind::Link
+        } else {
+            Kind::Other
+        };
+        Ok((entry.file_name(), kind))
+    }))
+}
+
+/// macOS: `fdopendir` on a duplicate of the descriptor. Written without a macOS
+/// compiler at hand: keep it small.
+#[cfg(target_os = "macos")]
+fn read_dir_fd(
+    fd: &OwnedFd,
+) -> std::io::Result<impl Iterator<Item = std::io::Result<(OsString, Kind)>>> {
+    use std::{ffi::CStr, os::unix::ffi::OsStrExt};
+
+    struct Dir(*mut libc::DIR);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` came from `fdopendir` and is closed once, here.
+            unsafe { libc::closedir(self.0) };
+        }
+    }
+    impl Iterator for Dir {
+        type Item = std::io::Result<(OsString, Kind)>;
+        fn next(&mut self) -> Option<Self::Item> {
+            loop {
+                // SAFETY: `readdir` returns NULL at the end or on an error, told
+                // apart by `errno`; the entry is read before the next call.
+                let entry = unsafe {
+                    *libc::__error() = 0;
+                    libc::readdir(self.0)
+                };
+                if entry.is_null() {
+                    // SAFETY: `__error` points at this thread's `errno`.
+                    return match unsafe { *libc::__error() } {
+                        0 => None,
+                        errno => Some(Err(std::io::Error::from_raw_os_error(errno))),
+                    };
+                }
+                // SAFETY: a non-NULL entry has a NUL-terminated `d_name`.
+                let (name, d_type) = unsafe {
+                    let entry = &*entry;
+                    (
+                        CStr::from_ptr(entry.d_name.as_ptr()).to_bytes(),
+                        entry.d_type,
+                    )
+                };
+                if name == b"." || name == b".." {
+                    continue;
+                }
+                // An unknown type is `Other`: the walkers skip it (fail closed).
+                let kind = match d_type {
+                    libc::DT_DIR => Kind::Dir,
+                    libc::DT_REG => Kind::File,
+                    libc::DT_LNK => Kind::Link,
+                    _ => Kind::Other,
+                };
+                return Some(Ok((OsStr::from_bytes(name).to_os_string(), kind)));
+            }
+        }
+    }
+
+    // SAFETY: `dup` and `fdopendir` take no pointers; a failed `dup` is -1.
+    let copy = unsafe { libc::dup(fd.as_raw_fd()) };
+    if copy < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: on success `fdopendir` owns `copy`; on failure it is still ours.
+    let dir = unsafe { libc::fdopendir(copy) };
+    if dir.is_null() {
+        let error = std::io::Error::last_os_error();
+        // SAFETY: `copy` is a descriptor this function owns.
+        unsafe { libc::close(copy) };
+        return Err(error);
+    }
+    // The duplicate shares its offset with `fd`: start from the top.
+    // SAFETY: `dir` is a valid open stream.
+    unsafe { libc::rewinddir(dir) };
+    Ok(Dir(dir))
 }
 
 /// Whether `dir/name` may be shown. A link is judged by where it leads, and a
@@ -489,7 +602,7 @@ pub(super) fn visible(
     budget: &Budget,
     dir: &Path,
     name: &OsStr,
-    kind: FileType,
+    kind: Kind,
 ) -> bool {
     if is_excluded_name(&name.to_string_lossy()) {
         return false;
@@ -694,10 +807,10 @@ fn find_dir(
     Ok(out)
 }
 
-// Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
+// Needs the file tools: they open files below HOME without a link, Linux and macOS.
 // `cfg(test)` stays on its own line: the audit drops exactly that attribute.
 #[cfg(test)]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::symlink};
@@ -1426,8 +1539,8 @@ mod tests {
 
     // Spec (agent-tools, approval model): `execute_with` never asks; asking is
     // the host's job (`ask_for`), so a Local grep, which has no ask, runs here.
-    // Needs the file tools: they open files with `openat2` and `/proc/self/fd`, Linux only.
-    #[cfg(target_os = "linux")]
+    // Needs the file tools: they open files below HOME without a link, Linux and macOS.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn grep_and_glob_are_dispatched_through_execute_with() {
         let f = fixture();
