@@ -50,7 +50,9 @@ If codex does not run, one of these appears in the chat. Copy it as it is.
 A codex installed with its official standalone installer lives under
 `~/.codex/packages`. The jail keeps that folder readable and executable but not
 writable, so the CLI can run there; the cost is that codex cannot update itself
-from inside the jail (update it outside, with its own installer). A binary
+from inside the jail (update it outside, with its own installer). For the same
+reason the codex state dir itself cannot be renamed, removed or replaced from
+inside the jail (files and folders in it can still be created and edited). A binary
 anywhere else in `~/.codex` is still refused, as it would be writable.
 
 Also open the menu engine list and copy the row of codex (press `y` on it for the full reason).
