@@ -309,6 +309,46 @@ async fn a_server_that_ended_is_started_again_by_the_next_ensure() {
     managed.shutdown().await;
 }
 
+// Spec S9: the extra arguments come after lazarobox's own, one each.
+#[tokio::test]
+async fn the_extra_args_follow_the_ones_lazarobox_sets() {
+    let lab = Lab::new();
+    let argv = lab.dir.path().join("argv");
+    let body = format!(
+        "printf '%s\\n' \"$@\" > '{}'\nexec sleep 30",
+        argv.display()
+    );
+    let managed = lab
+        .managed(&body, answers_once(&lab.record()), WAIT)
+        .with_args(vec![
+            "-ngl".into(),
+            "99".into(),
+            "--alias".into(),
+            "my model".into(),
+        ]);
+    assert_eq!(managed.ensure().await, Ok(()));
+    managed.shutdown().await;
+    let model = lab.model().display().to_string();
+    assert_eq!(
+        fs::read_to_string(argv)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        [
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "39281",
+            "-m",
+            &model,
+            "-ngl",
+            "99",
+            "--alias",
+            "my model"
+        ]
+    );
+}
+
 // Spec S10: the model file is checked before each start.
 #[tokio::test]
 async fn a_missing_model_file_starts_nothing_and_says_so() {

@@ -19,6 +19,13 @@ baseline.
   with their process group, also after `exit` in the last pane. lazarobox
   still never stops them: a pane behaves like any terminal.
 
+- `[ai.servers.llamacpp] args` passes extra arguments to the managed
+  llama-server, after the ones lazarobox sets: for example
+  `args = ["-ngl", "99", "-c", "16384"]`. Each entry is one argument, with
+  no shell. A list that sets `--host`, `--port`, `-m` or `--model` (also as
+  `--port=8080`), or that is not a list of strings, is ignored whole with a
+  startup notice.
+
 ### Changed
 
 - The managed llama-server checks its model file before each start. When

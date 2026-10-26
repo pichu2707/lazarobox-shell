@@ -9,8 +9,8 @@
 //! - The program is `llama-server`, looked up in the login `PATH` lazarobox
 //!   gives its tools (absolute entries only, never the current folder) and run
 //!   by that absolute path with that `PATH`, one argv element per argument:
-//!   `--host 127.0.0.1 --port <port> -m <model>`. No shell parses the model
-//!   path.
+//!   `--host 127.0.0.1 --port <port> -m <model>`, then the extra `args` of
+//!   the config. No shell parses the model path or the arguments.
 //! - Before a start, the port must be silent. A server that already answers
 //!   there was not started by us and is never treated as ours: the turn fails
 //!   and nothing is started.
@@ -95,6 +95,8 @@ pub struct Managed {
     path: OsString,
     model: PathBuf,
     port: u16,
+    /// Extra arguments, after the ones lazarobox sets.
+    args: Vec<String>,
     log: Option<PathBuf>,
     probe: Probe,
     wait: Duration,
@@ -118,6 +120,13 @@ impl Managed {
         )
     }
 
+    /// The same server, started with `args` after the arguments lazarobox
+    /// sets (`[ai.servers.llamacpp] args`).
+    pub fn with_args(mut self, args: Vec<String>) -> Self {
+        self.args = args;
+        self
+    }
+
     /// [`Managed::new`] with the program, the probe and the start wait given.
     pub(crate) fn with(
         program: OsString,
@@ -133,6 +142,7 @@ impl Managed {
             path,
             model,
             port,
+            args: Vec::new(),
             log,
             probe,
             wait,
@@ -221,6 +231,7 @@ impl Managed {
             .arg(self.port.to_string())
             .arg("-m")
             .arg(&self.model)
+            .args(&self.args)
             .stdin(Stdio::null())
             .stdout(stdout)
             .stderr(stderr)

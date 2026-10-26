@@ -337,15 +337,21 @@ pub async fn run() -> io::Result<()> {
         .map(|dir| dir.join("llama-server.log"));
     // The llama-server lazarobox starts itself, when `managed = true`: only a
     // llamacpp turn starts it, on llamacpp's port, and quitting stops it.
+    // Its extra arguments, read at startup like the ports: the menu does not
+    // write them.
+    let managed_args = app.ai().managed_options().args.clone();
     let managed = app.ai().managed().map(|server| {
-        Arc::new(chat::Managed::new(
-            cli_env.path.clone(),
-            server.model.clone(),
-            server_ports
-                .port("llamacpp")
-                .expect("llamacpp is a catalog server"),
-            managed_log.clone(),
-        ))
+        Arc::new(
+            chat::Managed::new(
+                cli_env.path.clone(),
+                server.model.clone(),
+                server_ports
+                    .port("llamacpp")
+                    .expect("llamacpp is a catalog server"),
+                managed_log.clone(),
+            )
+            .with_args(managed_args.clone()),
+        )
     });
     let live = chat::LiveServers::new(server_ports, managed);
     // What the machine offers for notifications (display, bus, notify-send,
@@ -378,12 +384,10 @@ pub async fn run() -> io::Result<()> {
             let live = live.clone();
             let path = cli_env.path.clone();
             move |model, port| {
-                let server = Arc::new(chat::Managed::new(
-                    path.clone(),
-                    model,
-                    port,
-                    managed_log.clone(),
-                ));
+                let server = Arc::new(
+                    chat::Managed::new(path.clone(), model, port, managed_log.clone())
+                        .with_args(managed_args.clone()),
+                );
                 let old = live.manage(Arc::clone(&server));
                 let tx = managed_tx.clone();
                 tokio::spawn(async move {

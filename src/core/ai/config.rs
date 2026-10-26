@@ -312,6 +312,7 @@ pub struct AiConfig {
     mcp_servers: Vec<McpServer>,
     servers: ServerPorts,
     managed: Option<ManagedServer>,
+    managed_options: ManagedOptions,
     pub memory: MemoryConfig,
 }
 
@@ -327,6 +328,17 @@ pub struct ManagedServer {
     pub model: PathBuf,
 }
 
+/// How lazarobox runs its llama-server, from `[ai.servers.llamacpp]`. Read
+/// whether it is on or not, so turning it on from the menu keeps them.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct ManagedOptions {
+    /// Extra arguments, each one argv element, after the ones lazarobox sets.
+    pub args: Vec<String>,
+}
+
+/// The llama-server options lazarobox sets itself; `args` cannot hold them.
+const MANAGED_ARGS: &[&str] = &["--host", "--port", "-m", "--model"];
+
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
@@ -341,6 +353,7 @@ impl Default for AiConfig {
             mcp_servers: Vec::new(),
             servers: ServerPorts::default(),
             managed: None,
+            managed_options: ManagedOptions::default(),
             memory: MemoryConfig::default(),
         }
     }
@@ -441,6 +454,11 @@ impl AiConfig {
     /// The llama-server lazarobox starts itself, when it is turned on.
     pub fn managed(&self) -> Option<&ManagedServer> {
         self.managed.as_ref()
+    }
+
+    /// How lazarobox runs its llama-server.
+    pub fn managed_options(&self) -> &ManagedOptions {
+        &self.managed_options
     }
 
     /// Turns lazarobox's own llama-server on with `model`, as `managed = true`
@@ -676,7 +694,7 @@ pub fn read_with_port_env(
     config.approval = read_approval(table, problems);
     config.toggles = read_toggles(table, problems);
     config.mcp_servers = read_mcp_servers(table, problems);
-    (config.servers, config.managed) = read_servers(table, problems);
+    (config.servers, config.managed, config.managed_options) = read_servers(table, problems);
     config.memory = read_memory(table, problems, port_env);
     config
 }
@@ -897,23 +915,27 @@ fn string_list(value: Option<&Value>, keep: fn(&str) -> bool) -> Option<Vec<Stri
     }
 }
 
-/// Reads `[ai.servers.<id>] port` for the server engines, and `managed` and
-/// `model` for llamacpp. A wrong port falls back on its own, with a problem:
+/// Reads `[ai.servers.<id>] port` for the server engines, and `managed`,
+/// `model` and `args` for llamacpp. A wrong port falls back on its own, with a problem:
 /// to the catalog port, or to [`MANAGED_PORT`] for a managed llama-server. A
 /// wrong `managed` or `model` leaves it unmanaged. Unknown ids and keys are
 /// ignored, like unknown names under `ai.tasks`. The menu writes only
 /// `managed` and `model` of llamacpp, when a local model is chosen.
-fn read_servers(table: &Table, problems: &mut Vec<String>) -> (ServerPorts, Option<ManagedServer>) {
+fn read_servers(
+    table: &Table,
+    problems: &mut Vec<String>,
+) -> (ServerPorts, Option<ManagedServer>, ManagedOptions) {
     let mut ports = ServerPorts::default();
     let mut managed = None;
+    let mut options = ManagedOptions::default();
     let section = match table.get("ai").and_then(Value::as_table) {
-        None => return (ports, managed),
+        None => return (ports, managed, options),
         Some(ai) => match ai.get("servers") {
-            None => return (ports, managed),
+            None => return (ports, managed, options),
             Some(Value::Table(section)) => section,
             Some(_) => {
                 problems.push("ai.servers: expected a table".to_owned());
-                return (ports, managed);
+                return (ports, managed, options);
             }
         },
     };
@@ -945,12 +967,43 @@ fn read_servers(table: &Table, problems: &mut Vec<String>) -> (ServerPorts, Opti
         if id == "llamacpp" {
             managed = read_managed(server, problems);
             fallback = managed.as_ref().map(|_| MANAGED_PORT);
+            options.args = read_managed_args(server, problems);
         }
         if let Some(port) = port.or(fallback) {
             ports = ports.with(id, port);
         }
     }
-    (ports, managed)
+    (ports, managed, options)
+}
+
+/// `args` of `[ai.servers.llamacpp]`: a list of strings, none of them an
+/// option lazarobox sets itself (also as `--port=<n>`). A wrong list is
+/// ignored whole, with a problem: dropping one entry would leave its value
+/// behind as an argument of its own.
+fn read_managed_args(server: &Table, problems: &mut Vec<String>) -> Vec<String> {
+    let args: Option<Vec<String>> = match server.get("args") {
+        None => return Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| item.as_str().map(str::to_owned))
+            .collect(),
+        Some(_) => None,
+    };
+    let Some(args) = args else {
+        problems.push("ai.servers.llamacpp.args: expected a list of strings".to_owned());
+        return Vec::new();
+    };
+    let clash = args.iter().find(|arg| {
+        let name = arg.split_once('=').map_or(arg.as_str(), |(name, _)| name);
+        MANAGED_ARGS.contains(&name)
+    });
+    if let Some(clash) = clash {
+        problems.push(format!(
+            "ai.servers.llamacpp.args: \"{clash}\" is set by lazarobox"
+        ));
+        return Vec::new();
+    }
+    args
 }
 
 /// `managed` and `model` of `[ai.servers.llamacpp]`: `Some` only with
@@ -1131,6 +1184,66 @@ mod tests {
         Some(ManagedServer {
             model: PathBuf::from(model),
         })
+    }
+
+    /// The extra llama-server arguments and the problems of `text`.
+    fn args_of(text: &str) -> (Vec<String>, Vec<String>) {
+        let (ai, problems) = read_text(text);
+        (ai.managed_options().args.clone(), problems)
+    }
+
+    // Spec S9: extra llama-server arguments, one argv element each.
+    #[test]
+    fn the_managed_llama_server_reads_its_extra_args() {
+        let text = "[ai.servers.llamacpp]\nmanaged = true\nmodel = \"/m/q.gguf\"\n\
+                    args = [\"-ngl\", \"99\", \"-c\", \"16384\", \"--jinja\"]\n";
+        assert_eq!(
+            args_of(text),
+            (
+                vec!["-ngl", "99", "-c", "16384", "--jinja"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                vec![]
+            )
+        );
+        // Kept while it is off, so turning it on from the menu uses them.
+        let off = "[ai.servers.llamacpp]\nargs = [\"-ngl\", \"99\"]\n";
+        assert_eq!(args_of(off).0, ["-ngl", "99"]);
+        assert_eq!(args_of(""), (vec![], vec![]));
+    }
+
+    // Spec S9: entries that clash with what lazarobox sets are refused.
+    #[test]
+    fn extra_args_that_set_the_host_port_or_model_are_refused_whole() {
+        for clash in ["--host", "--port", "-m", "--model", "--port=8080"] {
+            let text = format!("[ai.servers.llamacpp]\nargs = [\"-ngl\", \"99\", \"{clash}\"]\n");
+            assert_eq!(
+                args_of(&text),
+                (
+                    vec![],
+                    vec![format!(
+                        "ai.servers.llamacpp.args: \"{clash}\" is set by lazarobox"
+                    )]
+                ),
+                "{clash}"
+            );
+        }
+    }
+
+    #[test]
+    fn extra_args_that_are_not_a_list_of_strings_are_ignored_with_a_problem() {
+        for value in ["\"-ngl 99\"", "[\"-ngl\", 99]"] {
+            let text = format!("[ai.servers.llamacpp]\nargs = {value}\n");
+            assert_eq!(
+                args_of(&text),
+                (
+                    vec![],
+                    vec!["ai.servers.llamacpp.args: expected a list of strings".to_owned()]
+                ),
+                "{value}"
+            );
+        }
     }
 
     // Spec: A managed llama-server is opt-in.
