@@ -8,7 +8,8 @@
 
 use std::path::{Component, Path};
 
-use super::paths::{SECRET_FILES, is_excluded_name};
+use super::paths::{SECRET_DIRS, SECRET_FILES, is_excluded_name};
+use crate::core::ai::jail::CREDENTIAL_DIRS;
 use crate::core::ai::sanitize::is_format;
 
 /// The most log entries a call returns, whatever the model asks for.
@@ -21,13 +22,15 @@ pub const MAX_STATUS_ENTRIES: usize = 200;
 pub const MAX_MESSAGE_BYTES: usize = 4096;
 /// Most paths one `add` takes.
 pub const MAX_ADD_PATHS: usize = 64;
+/// The longest commit name or email, in bytes.
+pub const MAX_IDENTITY_BYTES: usize = 256;
 
 /// The unit separator that splits the fields of a log record.
 const FIELD: char = '\u{1f}';
 
 /// The settings in front of every verb. They turn off the config keys that
 /// run a program, the pager, prompts and the network.
-const HARDENING: [&str; 7] = [
+const HARDENING: [&str; 8] = [
     "core.fsmonitor=false",
     "core.untrackedCache=false",
     "core.pager=cat",
@@ -35,6 +38,7 @@ const HARDENING: [&str; 7] = [
     "protocol.allow=never",
     "credential.helper=",
     "core.sshCommand=false",
+    "gpg.program=false",
 ];
 
 /// Why an argument was refused. Short and content-free: it goes to a model.
@@ -48,6 +52,11 @@ pub enum GitError {
     /// A commit message that is empty, too long, or holds a control or bidi
     /// character.
     Message,
+    /// A git dir that is not an absolute, clean path.
+    GitDir,
+    /// A commit name or email that is empty, long, or holds a control or bidi
+    /// character.
+    Identity,
 }
 
 impl GitError {
@@ -57,13 +66,90 @@ impl GitError {
             Self::Path => "path not available",
             Self::PathCount => "give between 1 and 64 paths",
             Self::Message => "invalid commit message",
+            Self::GitDir => "invalid git dir",
+            Self::Identity => "invalid commit identity",
         }
     }
 }
 
-/// The `-c` hardening, the pager switch and nothing else: the start of every argv.
-fn base() -> Vec<String> {
-    let mut argv = Vec::new();
+/// Whether text is one clean line: no control and no format character.
+fn clean_line(text: &str) -> bool {
+    !text.chars().any(|c| c.is_control() || is_format(c))
+}
+
+/// The absolute git dir of the repository (`rev-parse --absolute-git-dir`,
+/// resolved by the runtime preflight). Hooks are pinned to its `hooks` folder:
+/// that is the repo's own `.git/hooks`, which the write tools refuse to touch,
+/// so a hooks folder the model could write (husky, a worktree dir) never runs.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GitDir(String);
+
+impl GitDir {
+    /// Accepts an absolute path with no control or format character and no
+    /// `..`, other than `/`.
+    pub fn new(path: &str) -> Result<Self, GitError> {
+        let ok = path.starts_with('/')
+            && path.len() > 1
+            && clean_line(path)
+            && !path.split('/').any(|part| part == "..");
+        if ok {
+            Ok(Self(path.trim_end_matches('/').to_owned()))
+        } else {
+            Err(GitError::GitDir)
+        }
+    }
+
+    fn hooks(&self) -> String {
+        format!("{}/hooks", self.0)
+    }
+}
+
+/// The commit author, read by the runtime from the user's global git config
+/// (the config itself is never loaded in the jail).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Identity {
+    name: String,
+    email: String,
+}
+
+impl Identity {
+    /// Both must be non-empty, at most [`MAX_IDENTITY_BYTES`], one clean line;
+    /// the email holds an `@` and no whitespace.
+    pub fn new(name: &str, email: &str) -> Result<Self, GitError> {
+        let fits =
+            |text: &str| !text.is_empty() && text.len() <= MAX_IDENTITY_BYTES && clean_line(text);
+        let ok = fits(name)
+            && fits(email)
+            && email.contains('@')
+            && !email.chars().any(char::is_whitespace);
+        if ok {
+            Ok(Self {
+                name: name.to_owned(),
+                email: email.to_owned(),
+            })
+        } else {
+            Err(GitError::Identity)
+        }
+    }
+}
+
+/// The notice for the commit review when the repo sets `core.hooksPath`
+/// elsewhere than its own hooks folder, or `None` when there is nothing to
+/// say. The runtime (G-b) reads the configured value.
+pub fn hooks_notice(dir: &GitDir, configured: &str) -> Option<String> {
+    let configured = configured.trim_end_matches('/');
+    if configured.is_empty() || configured == dir.hooks() {
+        return None;
+    }
+    Some(format!(
+        "this repo sets core.hooksPath to {}; lazarobox runs only .git/hooks",
+        tidy(configured)
+    ))
+}
+
+/// The `-c` hardening, the hooks pin and the pager switch: the start of every argv.
+fn base(dir: &GitDir) -> Vec<String> {
+    let mut argv = vec!["-c".to_owned(), format!("core.hooksPath={}", dir.hooks())];
     for setting in HARDENING {
         argv.push("-c".to_owned());
         argv.push(setting.to_owned());
@@ -76,6 +162,9 @@ fn base() -> Vec<String> {
 pub fn env(read: bool) -> Vec<(&'static str, &'static str)> {
     let mut pairs = vec![
         ("GIT_CONFIG_NOSYSTEM", "1"),
+        ("GIT_CONFIG_SYSTEM", "/dev/null"),
+        ("GIT_CONFIG_GLOBAL", "/dev/null"),
+        ("GIT_ATTR_NOSYSTEM", "1"),
         ("GIT_TERMINAL_PROMPT", "0"),
         ("GIT_EDITOR", "true"),
     ];
@@ -86,14 +175,21 @@ pub fn env(read: bool) -> Vec<(&'static str, &'static str)> {
 }
 
 /// The `:(exclude,glob,icase)` pathspecs for the secret names: every
-/// [`SECRET_FILES`] entry, `.env` and `.env.*`, at any depth. `icase` follows
+/// [`SECRET_FILES`] entry, `.env`, `.env.*` and the temp files, plus the
+/// contents of every secret folder, at any depth. `icase` follows
 /// the case-insensitive rule of the path guard.
 pub fn excludes() -> Vec<String> {
-    let mut specs: Vec<String> = [".env", ".env.*"]
+    let mut specs: Vec<String> = [".env", ".env.*", ".lbx-*.tmp"]
         .iter()
         .chain(SECRET_FILES)
         .map(|name| format!(":(exclude,glob,icase)**/{name}"))
         .collect();
+    specs.extend(
+        SECRET_DIRS
+            .iter()
+            .chain(CREDENTIAL_DIRS)
+            .map(|dir| format!(":(exclude,glob,icase)**/{dir}/**")),
+    );
     specs.sort();
     specs
 }
@@ -104,19 +200,39 @@ fn check(path: &str) -> Result<(), GitError> {
     if path.is_empty() || path.contains('\0') {
         return Err(GitError::Path);
     }
+    let mut names = Vec::new();
     for part in Path::new(path).components() {
         match part {
-            Component::Normal(name) => {
-                let name = name.to_string_lossy();
-                if name.eq_ignore_ascii_case(".git") || is_excluded_name(&name) {
-                    return Err(GitError::Path);
-                }
-            }
+            Component::Normal(name) => names.push(name.to_string_lossy()),
             Component::CurDir => {}
             _ => return Err(GitError::Path),
         }
     }
+    if names.iter().any(|name| name.eq_ignore_ascii_case(".git")) || secret_names(&names) {
+        return Err(GitError::Path);
+    }
     Ok(())
+}
+
+/// Whether the names hold a secret file name or a secret folder (ASCII
+/// case-insensitive, component by component, at any depth).
+fn secret_names<S: AsRef<str>>(names: &[S]) -> bool {
+    names.iter().any(|name| is_excluded_name(name.as_ref()))
+        || SECRET_DIRS.iter().chain(CREDENTIAL_DIRS).any(|root| {
+            let parts: Vec<&str> = root.split('/').collect();
+            names.windows(parts.len()).any(|window| {
+                window
+                    .iter()
+                    .zip(&parts)
+                    .all(|(name, part)| part.eq_ignore_ascii_case(name.as_ref()))
+            })
+        })
+}
+
+/// Whether a path from git output names a secret.
+fn secret_path(path: &str) -> bool {
+    let names: Vec<&str> = path.split('/').collect();
+    secret_names(&names)
 }
 
 /// The pathspec of one path: literal, so `:` and glob characters are inert.
@@ -125,8 +241,8 @@ fn literal(path: &str) -> String {
 }
 
 /// `git status`: parsed by [`parse_status`].
-pub fn status_argv() -> Vec<String> {
-    let mut argv = base();
+pub fn status_argv(dir: &GitDir) -> Vec<String> {
+    let mut argv = base(dir);
     argv.extend(
         [
             "status",
@@ -144,7 +260,7 @@ pub fn status_argv() -> Vec<String> {
 }
 
 /// `git diff` of the working tree, or of the index when `staged`.
-pub fn diff_argv(staged: bool, path: Option<&str>) -> Result<Vec<String>, GitError> {
+pub fn diff_argv(dir: &GitDir, staged: bool, path: Option<&str>) -> Result<Vec<String>, GitError> {
     let target = match path {
         Some(path) => {
             check(path)?;
@@ -152,12 +268,21 @@ pub fn diff_argv(staged: bool, path: Option<&str>) -> Result<Vec<String>, GitErr
         }
         None => ".".to_owned(),
     };
-    let mut argv = base();
+    let mut argv = base(dir);
     argv.push("diff".to_owned());
     if staged {
         argv.push("--cached".to_owned());
     }
-    argv.extend(["--no-ext-diff", "--no-textconv", "--no-color", "--"].map(str::to_owned));
+    argv.extend(
+        [
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=all",
+            "--no-color",
+            "--",
+        ]
+        .map(str::to_owned),
+    );
     argv.push(target);
     argv.extend(excludes());
     Ok(argv)
@@ -174,35 +299,42 @@ pub fn clamp_count(requested: Option<u64>) -> usize {
 }
 
 /// `git log`: a fixed format, never a patch.
-pub fn log_argv(max_count: Option<u64>, path: Option<&str>) -> Result<Vec<String>, GitError> {
-    let mut argv = base();
+pub fn log_argv(
+    dir: &GitDir,
+    max_count: Option<u64>,
+    path: Option<&str>,
+) -> Result<Vec<String>, GitError> {
+    let mut argv = base(dir);
     argv.extend([
         "log".to_owned(),
         "-n".to_owned(),
         clamp_count(max_count).to_string(),
         "--no-color".to_owned(),
+        "--no-show-signature".to_owned(),
         "--format=%H%x1f%an%x1f%aI%x1f%s".to_owned(),
+        "--".to_owned(),
     ]);
     if let Some(path) = path {
         check(path)?;
-        argv.push("--".to_owned());
         argv.push(literal(path));
-        argv.extend(excludes());
     }
+    argv.extend(excludes());
     Ok(argv)
 }
 
 /// `git add` of literal paths.
-pub fn add_argv(paths: &[&str]) -> Result<Vec<String>, GitError> {
+pub fn add_argv(dir: &GitDir, paths: &[&str]) -> Result<Vec<String>, GitError> {
     if paths.is_empty() || paths.len() > MAX_ADD_PATHS {
         return Err(GitError::PathCount);
     }
     for path in paths {
         check(path)?;
     }
-    let mut argv = base();
+    let mut argv = base(dir);
     argv.extend(["add", "--"].map(str::to_owned));
     argv.extend(paths.iter().map(|path| literal(path)));
+    // A folder or `.` would stage the secrets below it: exclude them too.
+    argv.extend(excludes());
     Ok(argv)
 }
 
@@ -218,10 +350,18 @@ pub fn check_message(message: &str) -> Result<(), GitError> {
 }
 
 /// `git commit` with signing off. No hook is skipped: they run in the jail.
-pub fn commit_argv(message: &str) -> Result<Vec<String>, GitError> {
+pub fn commit_argv(dir: &GitDir, who: &Identity, message: &str) -> Result<Vec<String>, GitError> {
     check_message(message)?;
-    let mut argv = base();
-    argv.extend(["-c", "commit.gpgsign=false", "commit", "-m"].map(str::to_owned));
+    let mut argv = base(dir);
+    for setting in [
+        "commit.gpgsign=false".to_owned(),
+        format!("user.name={}", who.name),
+        format!("user.email={}", who.email),
+    ] {
+        argv.push("-c".to_owned());
+        argv.push(setting);
+    }
+    argv.extend(["commit", "--cleanup=whitespace", "-m"].map(str::to_owned));
     argv.push(message.to_owned());
     Ok(argv)
 }
@@ -271,12 +411,16 @@ pub fn parse_status(raw: &str) -> Status {
             header_line(&mut status, header);
             continue;
         }
+        // A rename is followed by its old path, whether or not it parsed:
+        // the old path must never be read as a record of its own.
+        let from = if record.starts_with('2') {
+            records.next().map(str::to_owned)
+        } else {
+            None
+        };
         let entry = match record.as_bytes().first() {
             Some(b'1') => fields(record, 9).map(|f| (Kind::Changed, f[1], f[8], None)),
-            Some(b'2') => fields(record, 10).map(|f| {
-                let from = records.next().map(str::to_owned);
-                (Kind::Renamed, f[1], f[9], from)
-            }),
+            Some(b'2') => fields(record, 10).map(|f| (Kind::Renamed, f[1], f[9], from)),
             Some(b'u') => fields(record, 11).map(|f| (Kind::Unmerged, f[1], f[10], None)),
             Some(b'?') => record
                 .strip_prefix("? ")
@@ -286,6 +430,9 @@ pub fn parse_status(raw: &str) -> Status {
         let Some((kind, xy, path, from)) = entry else {
             continue;
         };
+        if secret_path(path) || from.as_deref().is_some_and(secret_path) {
+            continue;
+        }
         if status.entries.len() >= MAX_STATUS_ENTRIES {
             status.omitted += 1;
             continue;
@@ -323,15 +470,32 @@ fn header_line(status: &mut Status, header: &str) {
     }
 }
 
+/// Text from git as one safe line: control, format and bidi characters
+/// become `?`, so a name cannot forge a line or hide text.
+fn tidy(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() || is_format(c) {
+                '?'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 /// The text of a status for the model.
 pub fn render_status(status: &Status) -> String {
     let mut out = String::new();
     match (&status.branch, &status.upstream) {
         (Some(branch), Some(up)) => out.push_str(&format!(
-            "branch {branch} (upstream {up}, ahead {}, behind {})\n",
-            status.ahead, status.behind
+            "branch {} (upstream {}, ahead {}, behind {})\n",
+            tidy(branch),
+            tidy(up),
+            status.ahead,
+            status.behind
         )),
-        (Some(branch), None) => out.push_str(&format!("branch {branch}\n")),
+        (Some(branch), None) => out.push_str(&format!("branch {}\n", tidy(branch))),
         _ => {}
     }
     if status.entries.is_empty() {
@@ -340,8 +504,13 @@ pub fn render_status(status: &Status) -> String {
     }
     for entry in &status.entries {
         match &entry.from {
-            Some(from) => out.push_str(&format!("{} {} <- {from}\n", entry.xy, entry.path)),
-            None => out.push_str(&format!("{} {}\n", entry.xy, entry.path)),
+            Some(from) => out.push_str(&format!(
+                "{} {} <- {}\n",
+                entry.xy,
+                tidy(&entry.path),
+                tidy(from)
+            )),
+            None => out.push_str(&format!("{} {}\n", entry.xy, tidy(&entry.path))),
         }
     }
     if status.omitted > 0 {
@@ -384,8 +553,13 @@ pub fn render_log(commits: &[Commit]) -> String {
     commits
         .iter()
         .map(|c| {
-            let short: String = c.hash.chars().take(12).collect();
-            format!("{short} {} {} {}", c.date, c.author, c.subject)
+            let short: String = tidy(&c.hash).chars().take(12).collect();
+            format!(
+                "{short} {} {} {}",
+                tidy(&c.date),
+                tidy(&c.author),
+                tidy(&c.subject)
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -394,6 +568,14 @@ pub fn render_log(commits: &[Commit]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gd() -> GitDir {
+        GitDir::new("/home/u/repo/.git").unwrap()
+    }
+
+    fn who() -> Identity {
+        Identity::new("Ana Pérez", "ana@example.com").unwrap()
+    }
 
     fn has(argv: &[String], word: &str) -> bool {
         argv.iter().any(|a| a == word)
@@ -406,11 +588,11 @@ mod tests {
     #[test]
     fn every_verb_carries_the_hardening() {
         let all = [
-            status_argv(),
-            diff_argv(false, None).unwrap(),
-            log_argv(None, None).unwrap(),
-            add_argv(&["a.rs"]).unwrap(),
-            commit_argv("msg").unwrap(),
+            status_argv(&gd()),
+            diff_argv(&gd(), false, None).unwrap(),
+            log_argv(&gd(), None, None).unwrap(),
+            add_argv(&gd(), &["a.rs"]).unwrap(),
+            commit_argv(&gd(), &who(), "msg").unwrap(),
         ];
         for argv in &all {
             for setting in HARDENING {
@@ -424,7 +606,7 @@ mod tests {
 
     #[test]
     fn status_template() {
-        let argv = status_argv();
+        let argv = status_argv(&gd());
         let at = argv.iter().position(|a| a == "status").unwrap();
         assert_eq!(
             argv[at..at + 7],
@@ -453,21 +635,21 @@ mod tests {
 
     #[test]
     fn diff_templates() {
-        let wt = diff_argv(false, None).unwrap();
+        let wt = diff_argv(&gd(), false, None).unwrap();
         assert!(!has(&wt, "--cached"));
         assert!(has(&wt, "--no-ext-diff") && has(&wt, "--no-textconv") && has(&wt, "--no-color"));
         let sep = wt.iter().position(|a| a == "--").unwrap();
         assert_eq!(wt[sep + 1], ".");
         assert!(wt[sep + 2..].iter().all(|a| a.starts_with(":(exclude")));
 
-        let staged = diff_argv(true, Some("src/a.rs")).unwrap();
+        let staged = diff_argv(&gd(), true, Some("src/a.rs")).unwrap();
         assert!(has(&staged, "--cached"));
         assert!(has(&staged, ":(literal)src/a.rs"));
     }
 
     #[test]
     fn log_template_and_clamp() {
-        let argv = log_argv(Some(500), None).unwrap();
+        let argv = log_argv(&gd(), Some(500), None).unwrap();
         let n = argv.iter().position(|a| a == "-n").unwrap();
         assert_eq!(argv[n + 1], "50");
         assert!(has(&argv, "--format=%H%x1f%an%x1f%aI%x1f%s"));
@@ -480,18 +662,18 @@ mod tests {
 
     #[test]
     fn log_path_is_literal_and_excluded() {
-        let argv = log_argv(Some(3), Some("src")).unwrap();
+        let argv = log_argv(&gd(), Some(3), Some("src")).unwrap();
         assert!(has(&argv, ":(literal)src"));
         assert!(has(&argv, ":(exclude,glob,icase)**/.env"));
     }
 
     #[test]
     fn add_is_literal_and_refuses_secrets() {
-        let argv = add_argv(&["a.rs", ":(top)x", "*.rs"]).unwrap();
+        let argv = add_argv(&gd(), &["a.rs", ":(top)x", "*.rs"]).unwrap();
         let sep = argv.iter().position(|a| a == "--").unwrap();
         assert_eq!(argv[sep - 1], "add");
         assert_eq!(
-            argv[sep + 1..],
+            argv[sep + 1..sep + 4],
             [":(literal)a.rs", ":(literal):(top)x", ":(literal)*.rs"]
         );
         for bad in [
@@ -504,32 +686,41 @@ mod tests {
             "../x",
             "a\0b",
         ] {
-            assert_eq!(add_argv(&["ok", bad]), Err(GitError::Path), "{bad:?}");
+            assert_eq!(
+                add_argv(&gd(), &["ok", bad]),
+                Err(GitError::Path),
+                "{bad:?}"
+            );
         }
-        assert_eq!(add_argv(&[]), Err(GitError::PathCount));
+        assert_eq!(add_argv(&gd(), &[]), Err(GitError::PathCount));
         let many = vec!["a"; MAX_ADD_PATHS + 1];
-        assert_eq!(add_argv(&many), Err(GitError::PathCount));
+        assert_eq!(add_argv(&gd(), &many), Err(GitError::PathCount));
     }
 
     #[test]
     fn commit_disables_signing() {
-        let argv = commit_argv("fix: a\n\nbody\twith tab").unwrap();
+        let argv = commit_argv(&gd(), &who(), "fix: a\n\nbody\twith tab").unwrap();
         assert!(pair(&argv, "commit.gpgsign=false"));
         let at = argv.iter().position(|a| a == "commit").unwrap();
-        assert_eq!(argv[at + 1], "-m");
-        assert_eq!(argv[at + 2], "fix: a\n\nbody\twith tab");
-        assert_eq!(argv.len(), at + 3);
+        assert_eq!(argv[at + 1], "--cleanup=whitespace");
+        assert_eq!(argv[at + 2], "-m");
+        assert_eq!(argv[at + 3], "fix: a\n\nbody\twith tab");
+        assert_eq!(argv.len(), at + 4);
         assert!(!has(&argv, "--no-verify"));
     }
 
     #[test]
     fn commit_message_rules() {
         for bad in ["", "  \n", "a\u{1b}[31m", "a\u{202e}b", "a\0b", "a\rb"] {
-            assert_eq!(commit_argv(bad), Err(GitError::Message), "{bad:?}");
+            assert_eq!(
+                commit_argv(&gd(), &who(), bad),
+                Err(GitError::Message),
+                "{bad:?}"
+            );
         }
-        assert!(commit_argv(&"x".repeat(MAX_MESSAGE_BYTES)).is_ok());
-        assert!(commit_argv(&"x".repeat(MAX_MESSAGE_BYTES + 1)).is_err());
-        assert!(commit_argv("-leading dash").is_ok());
+        assert!(commit_argv(&gd(), &who(), &"x".repeat(MAX_MESSAGE_BYTES)).is_ok());
+        assert!(commit_argv(&gd(), &who(), &"x".repeat(MAX_MESSAGE_BYTES + 1)).is_err());
+        assert!(commit_argv(&gd(), &who(), "-leading dash").is_ok());
     }
 
     #[test]
@@ -548,16 +739,19 @@ mod tests {
     #[test]
     fn no_other_verb_exists() {
         let verbs = [
-            status_argv(),
-            diff_argv(true, None).unwrap(),
-            log_argv(None, None).unwrap(),
-            add_argv(&["a"]).unwrap(),
-            commit_argv("m").unwrap(),
+            status_argv(&gd()),
+            diff_argv(&gd(), true, None).unwrap(),
+            log_argv(&gd(), None, None).unwrap(),
+            add_argv(&gd(), &["a"]).unwrap(),
+            commit_argv(&gd(), &who(), "m").unwrap(),
         ]
         .map(|argv| {
             let at = argv.iter().position(|a| a == "--no-pager").unwrap();
-            let skip = if argv[at + 1] == "-c" { 3 } else { 1 };
-            argv[at + skip].clone()
+            let mut verb = at + 1;
+            while argv[verb] == "-c" {
+                verb += 2;
+            }
+            argv[verb].clone()
         });
         assert_eq!(verbs, ["status", "diff", "log", "add", "commit"]);
     }
@@ -655,5 +849,205 @@ u UU N... 1 2 3 4 aaa bbb ccc conflict.rs\0\
             render_log(&commits),
             "000000000000 2026-01-01T00:00:00+00:00 Ana hi"
         );
+    }
+
+    #[test]
+    fn add_appends_the_secret_excludes_after_the_paths() {
+        let argv = add_argv(&gd(), &["."]).unwrap();
+        let ex = excludes();
+        assert_eq!(argv[argv.len() - ex.len()..], ex[..]);
+        assert_eq!(argv[argv.len() - ex.len() - 1], ":(literal).");
+    }
+
+    /// Runs git in `dir` with the argv of a verb; `None` when git is missing.
+    fn git(dir: &std::path::Path, argv: &[String]) -> Option<String> {
+        let out = std::process::Command::new("git")
+            .args(argv)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .ok()?;
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    #[test]
+    fn add_of_a_folder_stages_no_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        if git(dir.path(), &args(&["init", "-q"])).is_none() {
+            return;
+        }
+        for file in [
+            "ok.txt",
+            ".env",
+            "src/.ENV.local",
+            "n/.env.prod",
+            "x/.aws/creds",
+            "y/.config/gh/hosts.yml",
+            "z/.npmrc",
+            "src/keep.rs",
+        ] {
+            let path = dir.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "x").unwrap();
+        }
+        git(dir.path(), &add_argv(&gd(), &["."]).unwrap());
+        let staged = git(dir.path(), &args(&["diff", "--cached", "--name-only"])).unwrap();
+        let mut names: Vec<_> = staged.lines().collect();
+        names.sort();
+        assert_eq!(names, ["ok.txt", "src/keep.rs"]);
+        git(dir.path(), &add_argv(&gd(), &["src"]).unwrap());
+        let staged = git(dir.path(), &args(&["diff", "--cached", "--name-only"])).unwrap();
+        assert!(!staged.contains(".ENV"));
+    }
+
+    #[test]
+    fn extra_flags_and_environment() {
+        let log = log_argv(&gd(), None, None).unwrap();
+        assert!(has(&log, "--no-show-signature"));
+        let sep = log
+            .iter()
+            .position(|a| a == "--")
+            .expect("log always has --");
+        assert_eq!(sep, log.len() - excludes().len() - 1);
+        assert!(log[sep + 1..].iter().all(|a| a.starts_with(":(exclude")));
+        assert!(has(
+            &diff_argv(&gd(), false, None).unwrap(),
+            "--ignore-submodules=all"
+        ));
+        assert!(has(
+            &commit_argv(&gd(), &who(), "m").unwrap(),
+            "--cleanup=whitespace"
+        ));
+        assert!(pair(
+            &commit_argv(&gd(), &who(), "m").unwrap(),
+            "gpg.program=false"
+        ));
+        for p in [
+            ("GIT_ATTR_NOSYSTEM", "1"),
+            ("GIT_CONFIG_SYSTEM", "/dev/null"),
+        ] {
+            assert!(env(true).contains(&p) && env(false).contains(&p));
+        }
+        assert!(env(false).contains(&("GIT_CONFIG_GLOBAL", "/dev/null")));
+    }
+
+    #[test]
+    fn rendering_cannot_forge_lines_or_hide_text() {
+        let raw = "# branch.head ma\x1b[31min\0? a\nb\u{202e}c\0\
+2 R. N... 1 1 1 a b R100 new\rname\0old\nforged\0";
+        let out = render_status(&parse_status(raw));
+        assert_eq!(out.lines().count(), 3, "{out:?}");
+        assert!(!out.contains(['\r', '\x1b', '\u{202e}']));
+        let commits = parse_log("h\u{1f}An\na\u{1f}d\u{1f}sub\x1b[2Jject\u{202e}\n");
+        let out = render_log(&commits);
+        assert_eq!(out.lines().count(), 1);
+        assert!(!out.contains(['\x1b', '\u{202e}']));
+    }
+
+    #[test]
+    fn a_hostile_orig_path_cannot_forge_an_entry() {
+        let raw = "2 short\x001 .M N... 1 1 1 a b forged.rs\0? real\0";
+        let s = parse_status(raw);
+        let paths: Vec<_> = s.entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["real"]);
+    }
+
+    #[test]
+    fn status_drops_secret_names_old_and_new() {
+        let raw = "1 .M N... 1 1 1 a b .env\0\
+2 R. N... 1 1 1 a b R100 ok.rs\0.env\0\
+2 R. N... 1 1 1 a b R100 .npmrc\0old.rs\0\
+? sub/.ENV.local\0? x/.aws/c\0? fine\0";
+        let s = parse_status(raw);
+        let paths: Vec<_> = s.entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["fine"]);
+    }
+
+    #[test]
+    fn secret_directories_are_excluded_and_refused() {
+        let specs = excludes();
+        for dir in [".ssh", ".gnupg", ".config/gh", ".aws", ".claude"] {
+            assert!(
+                specs.contains(&format!(":(exclude,glob,icase)**/{dir}/**")),
+                "{dir}"
+            );
+        }
+        assert!(specs.contains(&":(exclude,glob,icase)**/.lbx-*.tmp".to_owned()));
+        for bad in ["a/.ssh/id_rsa", ".SSH/x", "q/.Config/GH/hosts", ".aws"] {
+            assert_eq!(add_argv(&gd(), &[bad]), Err(GitError::Path), "{bad}");
+        }
+        assert!(add_argv(&gd(), &[".config/other/x", "gh/x"]).is_ok());
+    }
+
+    #[test]
+    fn hooks_are_pinned_to_the_repo_git_dir() {
+        let all = [
+            status_argv(&gd()),
+            diff_argv(&gd(), false, None).unwrap(),
+            log_argv(&gd(), None, None).unwrap(),
+            add_argv(&gd(), &["a"]).unwrap(),
+            commit_argv(&gd(), &who(), "m").unwrap(),
+        ];
+        for argv in &all {
+            assert!(
+                pair(argv, "core.hooksPath=/home/u/repo/.git/hooks"),
+                "{argv:?}"
+            );
+        }
+        for bad in ["", "rel/.git", "/a\0b", "/a\n/.git", "/a/\u{202e}"] {
+            assert_eq!(GitDir::new(bad), Err(GitError::GitDir), "{bad:?}");
+        }
+        assert!(GitDir::new("/").is_err());
+    }
+
+    #[test]
+    fn hooks_notice_names_a_foreign_hooks_path() {
+        let dir = gd();
+        assert_eq!(hooks_notice(&dir, "/home/u/repo/.git/hooks"), None);
+        assert_eq!(hooks_notice(&dir, ""), None);
+        let text = hooks_notice(&dir, ".husky/_\nforged").unwrap();
+        assert_eq!(
+            text,
+            "this repo sets core.hooksPath to .husky/_?forged; lazarobox runs only .git/hooks"
+        );
+    }
+
+    #[test]
+    fn commit_carries_the_identity() {
+        let argv = commit_argv(&gd(), &who(), "m").unwrap();
+        assert!(pair(&argv, "user.name=Ana Pérez"));
+        assert!(pair(&argv, "user.email=ana@example.com"));
+        let commit = argv.iter().position(|a| a == "commit").unwrap();
+        assert!(
+            argv.iter()
+                .position(|a| a == "user.name=Ana Pérez")
+                .unwrap()
+                < commit
+        );
+    }
+
+    #[test]
+    fn identity_rules() {
+        assert!(Identity::new("A", "a@b").is_ok());
+        let long = "x".repeat(MAX_IDENTITY_BYTES + 1);
+        for (name, email) in [
+            ("", "a@b"),
+            ("A", ""),
+            ("A\nB", "a@b"),
+            ("A\u{202e}", "a@b"),
+            ("A", "a@b\x1b"),
+            ("A", "a @b"),
+            ("A", "ab"),
+            (long.as_str(), "a@b"),
+            ("A", long.as_str()),
+        ] {
+            assert_eq!(
+                Identity::new(name, email),
+                Err(GitError::Identity),
+                "{name:?} {email:?}"
+            );
+        }
     }
 }
