@@ -1,10 +1,10 @@
-//! The Hugging Face download of the llamacpp picker (config-menu): the
-//! requests go out as effects, the replies and the progress come back as
-//! events. One download at a time; its progress is a status bar mark and its
-//! end a notice.
+//! The Hugging Face download of the llamacpp picker and the account of the
+//! `Hugging Face` row (config-menu): the requests go out as effects, the
+//! replies and the progress come back as events. One download at a time; its
+//! progress is a status bar mark and its end a notice.
 
 use super::{App, Effect};
-use crate::core::ai::hf::{Answer, Ask, End, Job};
+use crate::core::ai::hf::{AccountReply, Answer, Ask, End, Job};
 use crate::core::ai::picker::Running;
 
 /// The notice of a cancelled download.
@@ -93,5 +93,24 @@ impl App {
                 Vec::new()
             }
         }
+    }
+
+    /// What the runtime found for an account request of the `Hugging Face`
+    /// row.
+    /// The account is kept for the session, so a menu opened later shows
+    /// it; the open menu learns it at once.
+    pub(super) fn on_account_reply(&mut self, reply: AccountReply) -> Vec<Effect> {
+        match &reply {
+            AccountReply::Connected(Ok(name)) | AccountReply::Checked(Ok(name)) => {
+                self.hf_account = Some(name.clone());
+            }
+            AccountReply::Disconnected(Ok(())) => self.hf_account = None,
+            _ => {}
+        }
+        if let Some(menu) = self.menu.as_mut() {
+            menu.account_reply(reply);
+            self.dirty = true;
+        }
+        Vec::new()
     }
 }

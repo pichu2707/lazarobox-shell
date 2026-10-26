@@ -13,6 +13,8 @@ Feature document: `odd/tasks/hf-download.md` (local, not in the package).
 - [x] 4.1 RED/GREEN: one download at a time (runtime wiring); `download from Hugging Face…` row last on the llamacpp model level; progress row while running; cancel prompt.
 - [x] 4.2 RED/GREEN: Query, Repos, Files and Confirm levels; repo id vs search; info rows; footers; errors stay on their level; late replies dropped; nothing downloads before `y`.
 - [x] 4.3 RED/GREEN: status bar progress, done, failure and cancel; redetect once on success.
-- [ ] 5.1 Docs: README (flow, token, what is sent, where it is stored, how to delete), CHANGELOG, footers.
+- [x] 6.1 RED/GREEN: connect: whoami check with the pasted token on stdin only; token file written 0600 through a temporary file; rejected token writes nothing; disconnect deletes the file after y.
+- [x] 6.2 RED/GREEN: the `Hugging Face` AI row (after Tools), its values, the masked field, the disconnect prompt; no config edit.
+- [x] 5.1 Docs: README (flow, token, what is sent, where it is stored, how to delete), CHANGELOG, footers.
 - [ ] 5.2 [manual] Live: real download of `Qwen/Qwen2.5-0.5B-Instruct-GGUF` `Q2_K`, cancel and resume, listed by the picker, chat answers through the managed llama-server.
 - [ ] 5.3 [manual] Live: a gated repo without a token says `set HF_TOKEN`; with `HF_TOKEN` it downloads.

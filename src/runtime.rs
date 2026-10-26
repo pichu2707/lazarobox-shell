@@ -243,6 +243,7 @@ pub async fn run() -> io::Result<()> {
         ))
         .with_session_ids(engram::worker::new_session_id)
         .with_token_check(token_in_env)
+        .with_hf_tokens(hf::token_facts)
         .with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
     let (id, spec) = app.initial_spawn();
 
@@ -519,7 +520,7 @@ pub async fn run() -> io::Result<()> {
         .with_hub(hf::Hub::new(
             cli_env.path.clone(),
             hub_dir(),
-            hf::env_token,
+            hf::token_env,
             hub_tx,
         ));
     let inbox = Inbox {
@@ -1484,6 +1485,11 @@ impl Panes {
                 Effect::CancelDownload => {
                     if let Some(hub) = self.hub.as_mut() {
                         hub.cancel();
+                    }
+                }
+                Effect::HfAccount(ask) => {
+                    if let Some(hub) = &self.hub {
+                        hub.account(ask);
                     }
                 }
                 Effect::NotifyTest { mode, sound } => {

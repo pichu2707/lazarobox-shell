@@ -21,7 +21,7 @@ use crate::core::{
         },
         config::{AiConfig, ManagedServer, NotifyMode, Profile, Task},
         gguf,
-        hf::{Answer, Ask, End, Job},
+        hf::{AccountAsk, AccountReply, Answer, Ask, End, Job, TokenFacts},
         jail::{JailOff, JailSupport},
         memory::{
             offer::ServerOffer,
@@ -211,6 +211,8 @@ pub enum AppEvent {
     },
     /// The running Hugging Face download ended.
     DownloadEnd(End),
+    /// What the runtime found for `Effect::HfAccount`.
+    HfAccount(AccountReply),
 }
 
 /// How the menu closed.
@@ -368,6 +370,10 @@ pub enum Effect {
     Download(Box<Job>),
     /// Stop the running Hugging Face download; its partial file stays.
     CancelDownload,
+    /// Connect, check or disconnect the Hugging Face account of the menu's
+    /// `Hugging Face` row; the runtime answers with one
+    /// `AppEvent::HfAccount`.
+    HfAccount(AccountAsk),
     /// Name the jobs still running in the panes, for the quit prompt; the
     /// runtime answers with one `AppEvent::StillRunning`, and with
     /// `AppEvent::ServerAnswersOthers` when its llama-server is answering
@@ -689,6 +695,13 @@ pub struct App {
     /// ever learns that a token is present, never its value. The default says
     /// no.
     token_check: fn() -> bool,
+    /// What the runtime finds of the Hugging Face tokens (`HF_TOKEN` set, a
+    /// token file saved), read when the menu opens; never a token. The
+    /// default finds none.
+    hf_tokens: fn() -> TokenFacts,
+    /// The Hugging Face account of the saved token, once a connect or a
+    /// check found it in this session.
+    hf_account: Option<String>,
     /// What each delete in flight from a conversation list does with the
     /// notes of its conversation (see `history::NoteChoice`).
     note_choices: Vec<(PaneId, i64, history::NoteChoice)>,
@@ -783,6 +796,8 @@ impl App {
             clock: Instant::now,
             session_id: || None,
             token_check: || false,
+            hf_tokens: TokenFacts::default,
+            hf_account: None,
             note_choices: Vec::new(),
             engines: None,
             detecting: false,
@@ -894,6 +909,13 @@ impl App {
     /// it no token counts as present.
     pub fn with_token_check(mut self, token_check: fn() -> bool) -> Self {
         self.token_check = token_check;
+        self
+    }
+
+    /// Injects what the runtime finds of the Hugging Face tokens, read each
+    /// time the menu opens.
+    pub fn with_hf_tokens(mut self, hf_tokens: fn() -> TokenFacts) -> Self {
+        self.hf_tokens = hf_tokens;
         self
     }
 
@@ -1604,6 +1626,7 @@ impl App {
             AppEvent::HubReply(ask, answer) => self.on_hub_reply(ask, answer),
             AppEvent::DownloadProgress { done, total } => self.on_download_progress(done, total),
             AppEvent::DownloadEnd(end) => self.on_download_end(end),
+            AppEvent::HfAccount(reply) => self.on_account_reply(reply),
             AppEvent::NotifyTested(report) => {
                 if let Some(menu) = self.menu.as_mut() {
                     menu.set_test_report(report);
@@ -1713,7 +1736,8 @@ impl App {
                 .with_ai(self.ai.clone(), self.engines.clone())
                 .with_update(self.update.clone())
                 .with_installed(self.installed.clone())
-                .with_download(self.download.clone()),
+                .with_download(self.download.clone())
+                .with_hf((self.hf_tokens)(), self.hf_account.clone()),
         );
         self.input = InputMode::Menu;
         let mut effects = self.apply_config();
@@ -1819,6 +1843,7 @@ impl App {
             MenuCommand::HubAsk(ask) => vec![Effect::HubAsk(ask)],
             MenuCommand::Download(job) => self.start_download(job),
             MenuCommand::CancelDownload => self.cancel_download(),
+            MenuCommand::HfAccount(ask) => vec![Effect::HfAccount(ask)],
             MenuCommand::None => Vec::new(),
         }
     }
@@ -7771,6 +7796,9 @@ mod app_tests {
 
     /// A Hugging Face download from the llamacpp picker (config-menu).
     mod hf_download;
+
+    /// The Hugging Face account row of the AI tab (config-menu).
+    mod hf_account;
 
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.

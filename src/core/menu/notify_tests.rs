@@ -73,8 +73,8 @@ fn the_notify_rows_follow_mouse_in_settings_and_leave_the_ai_section() {
 }
 
 #[test]
-fn the_tabs_hold_seven_settings_rows_and_sixteen_ai_rows() {
-    assert_eq!(AI_SECTION.items.len(), 16);
+fn the_tabs_hold_seven_settings_rows_and_seventeen_ai_rows() {
+    assert_eq!(AI_SECTION.items.len(), 17);
     assert_eq!(SECTIONS[0].items.len(), 7);
 }
 

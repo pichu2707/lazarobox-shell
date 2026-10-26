@@ -864,14 +864,14 @@ mod tests {
     // Spec: tabs: Bar forced with one tab (render); the popup is drawn last.
     #[test]
     fn menu_popup_is_drawn_over_the_panes_after_the_bars() {
-        // 24 rows: the popup with its AI section is 22 rows high, centred.
-        let app = menu_app(64, 24);
-        let (buf, _) = draw_at(&app, 64, 24);
+        // 25 rows: the popup with its AI section is 23 rows high, centred.
+        let app = menu_app(64, 25);
+        let (buf, _) = draw_at(&app, 64, 25);
         assert!(row(&buf, 0).contains(" 1 "), "{:?}", row(&buf, 0));
         assert!(row(&buf, 1).contains(" Menu "), "{:?}", row(&buf, 1));
-        assert!(row(&buf, 23).contains("MENU"), "{:?}", row(&buf, 23));
+        assert!(row(&buf, 24).contains("MENU"), "{:?}", row(&buf, 24));
         insta::assert_snapshot!(
-            (0..24)
+            (0..25)
                 .map(|y| row(&buf, y).trim_end().to_string())
                 .collect::<Vec<_>>()
                 .join("\n")

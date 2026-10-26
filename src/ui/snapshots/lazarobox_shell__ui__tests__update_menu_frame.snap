@@ -20,10 +20,10 @@ expression: frame
          │                                                            │
          │                                                            │
          │                                                            │
+         │                                                            │
          │ lazarobox 0.16.0 is available.                             │
          │ Go to Updates and press Enter.                             │
          │                                                            │
          │ j/k move · h/l change · s save · Esc cancel                │
          └────────────────────────────────────────────────────────────┘
-
  ◐ MENU                                                   sh · update 0.16.0

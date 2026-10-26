@@ -1473,8 +1473,8 @@ mod tests {
     }
 
     #[test]
-    fn the_popup_is_twenty_two_rows_on_both_tabs_and_in_every_sub_level() {
-        assert_eq!(POPUP_H, 22);
+    fn the_popup_is_twenty_three_rows_on_both_tabs_and_in_every_sub_level() {
+        assert_eq!(POPUP_H, 23);
         let mut views = vec![mixed(), ai_tab(), with_update()];
         views.extend(sub_levels());
         for menu in &views {
@@ -1483,7 +1483,7 @@ mod tests {
                 .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
                 .collect();
             assert_eq!(border.len(), 2);
-            assert_eq!(border[1] - border[0] + 1, 22);
+            assert_eq!(border[1] - border[0] + 1, 23);
         }
     }
 
@@ -1491,21 +1491,21 @@ mod tests {
     fn the_update_note_sits_in_the_last_two_body_rows_of_settings_only() {
         let l = lines(&draw(62, POPUP_H, &with_update()));
         assert!(
-            l[17].contains("lazarobox 0.16.0 is available."),
-            "{}",
-            l[17]
-        );
-        assert!(
-            l[18].contains("Go to Updates and press Enter."),
+            l[18].contains("lazarobox 0.16.0 is available."),
             "{}",
             l[18]
         );
+        assert!(
+            l[19].contains("Go to Updates and press Enter."),
+            "{}",
+            l[19]
+        );
         assert_eq!(
-            l[19].trim_matches(|c| c == '│' || c == ' '),
+            l[20].trim_matches(|c| c == '│' || c == ' '),
             "",
             "blank row"
         );
-        assert!(l[20].contains("s save"), "footer: {}", l[20]);
+        assert!(l[21].contains("s save"), "footer: {}", l[21]);
         let mut menu = with_update();
         tab_key(&mut menu);
         let shown = text(&draw(62, POPUP_H, &menu));
@@ -1524,10 +1524,10 @@ mod tests {
         menu.show_update_command(crate::core::update::Fallback::UntrustedCargo);
         let l = lines(&draw(80, POPUP_H, &menu));
         let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
-        assert_eq!(body(&l[17]), "lazarobox cannot update itself here. Run:");
-        assert_eq!(body(&l[18]), "cargo install lazarobox-shell --locked");
+        assert_eq!(body(&l[18]), "lazarobox cannot update itself here. Run:");
+        assert_eq!(body(&l[19]), "cargo install lazarobox-shell --locked");
         assert_eq!(
-            body(&l[20]),
+            body(&l[21]),
             "Enter or y copies it \u{b7} Rust folder is too open"
         );
     }
@@ -1539,10 +1539,10 @@ mod tests {
         menu.show_update_command(crate::core::update::Fallback::NoCargo);
         let l = lines(&draw(80, POPUP_H, &menu));
         let body = |row: &str| row.trim_matches(|c| c == '\u{2502}' || c == ' ').to_owned();
-        assert_eq!(body(&l[17]), "Install Rust first (rustup.rs), then run:");
-        assert_eq!(body(&l[18]), "cargo install lazarobox-shell --locked");
+        assert_eq!(body(&l[18]), "Install Rust first (rustup.rs), then run:");
+        assert_eq!(body(&l[19]), "cargo install lazarobox-shell --locked");
         assert_eq!(
-            body(&l[20]),
+            body(&l[21]),
             "Enter or y copies it \u{b7} Rust is not installed"
         );
     }
@@ -1615,6 +1615,39 @@ mod tests {
     #[test]
     fn snapshot_ai_tab() {
         insta::assert_snapshot!(text(&draw(62, POPUP_H, &ai_tab())));
+    }
+
+    // Spec (config-menu, Hugging Face account row): Account row.
+    #[test]
+    fn snapshot_the_account_row_is_last_and_not_connected() {
+        let mut menu = ai_tab();
+        menu.goto("Hugging Face");
+        let shown = text(&draw(62, POPUP_H, &menu));
+        let at = |label: &str| {
+            shown
+                .lines()
+                .position(|l| l.contains(label))
+                .unwrap_or_else(|| panic!("no {label}"))
+        };
+        assert!(at("Approval") < at("Hugging Face"));
+        let row = shown.lines().nth(at("Hugging Face")).unwrap();
+        assert!(row.contains("not connected"), "{row}");
+        insta::assert_snapshot!(shown);
+    }
+
+    // Spec (config-menu, Hugging Face account row): The field hides the token.
+    #[test]
+    fn snapshot_the_token_field_hides_the_token() {
+        let mut menu = ai_tab();
+        menu.goto("Hugging Face");
+        press(&mut menu, &[KeyCode::Enter]);
+        menu.on_paste("hf_abc");
+        let shown = text(&draw(62, POPUP_H, &menu));
+        assert!(shown.contains(" ••••••"), "{shown}");
+        assert!(shown.contains("paste a Hugging Face token"), "{shown}");
+        // No run of cells holds the token, nor any part of it.
+        assert!(!shown.contains("hf_"), "{shown}");
+        insta::assert_snapshot!(shown);
     }
 
     // Spec (config-menu): `run` only changes the value of the row, never the

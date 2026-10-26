@@ -489,3 +489,197 @@ fn the_missing_bytes_must_fit_in_the_free_space() {
     // A folder that does not exist yet is measured on its nearest parent.
     assert!(free_space(&hub.path().join("not/yet")).is_some());
 }
+
+/// The token lookup of a test: only `$HF_HOME`, plus `HF_TOKEN` when given.
+fn env_at(hf_home: &Path, hf_token: Option<&str>) -> TokenEnv {
+    TokenEnv {
+        hf_token: hf_token.map(str::to_owned),
+        hf_token_path: None,
+        hf_home: Some(hf_home.to_owned()),
+        xdg_cache_home: None,
+        home: None,
+    }
+}
+
+/// A worker whose requests go to the local server at `base`, with the token
+/// file under `hf_home`.
+fn account_worker(
+    base: &str,
+    hf_home: &Path,
+    hf_token: Option<&'static str>,
+) -> (Hub, tokio::sync::mpsc::Receiver<AppEvent>) {
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    let (base, home) = (base.to_owned(), hf_home.to_owned());
+    let hub = Hub::new(OsString::new(), None, move || env_at(&home, hf_token), tx)
+        .with_curl(move |token| curl(&base, token.as_deref()));
+    (hub, rx)
+}
+
+async fn account_reply(
+    hub: &Hub,
+    ask: AccountAsk,
+    rx: &mut mpsc::Receiver<AppEvent>,
+) -> AccountReply {
+    hub.account(ask);
+    match tokio::time::timeout(Duration::from_secs(20), rx.recv()).await {
+        Ok(Some(AppEvent::HfAccount(reply))) => reply,
+        other => panic!("no account reply: {other:?}"),
+    }
+}
+
+fn mode(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+// Spec (model-download, Connect a Hugging Face account): Connect.
+#[tokio::test]
+async fn a_connect_saves_the_accepted_token_0600_and_sends_it_only_on_stdin() {
+    need_curl!();
+    let (base, seen) = serve(Box::new(|_| ok(r#"{"type":"user","name":"ana"}"#)));
+    let dir = tempfile::tempdir().unwrap();
+    // A missing folder is made, with mode 0700.
+    let hf_home = dir.path().join("cache/huggingface");
+    let (hub, mut rx) = account_worker(&base, &hf_home, None);
+    let reply = account_reply(
+        &hub,
+        AccountAsk::Connect(Secret::new("hf_abc".into())),
+        &mut rx,
+    )
+    .await;
+    assert_eq!(reply, AccountReply::Connected(Ok("ana".to_owned())));
+    let file = hf_home.join("token");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "hf_abc");
+    assert_eq!(mode(&file), 0o600);
+    assert_eq!(mode(&hf_home), 0o700);
+    assert_eq!(mode(&dir.path().join("cache")), 0o700);
+    // Only the token file is left: the temporary file was renamed.
+    let names: Vec<_> = std::fs::read_dir(&hf_home)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["token"]);
+    // The request carried it once, as curl's stdin config made it.
+    let requests = seen.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0].starts_with("GET /api/whoami-v2 "),
+        "{}",
+        requests[0]
+    );
+    assert_eq!(header(&requests[0], "authorization"), Some("Bearer hf_abc"));
+    // Spec (Token): never in argv.
+    let args = curl(&base, Some("hf_abc")).api_args(hf::WHOAMI_PATH);
+    assert!(!args.iter().any(|a| a.contains("hf_abc")), "{args:?}");
+    assert!(args.windows(2).any(|w| w == ["--config", "-"]), "{args:?}");
+    let production = Curl::hub("/usr/bin".into(), Some("hf_abc".into())).api_args(hf::WHOAMI_PATH);
+    assert_eq!(
+        production.last().map(String::as_str),
+        Some("https://huggingface.co/api/whoami-v2")
+    );
+    assert!(!production.iter().any(|a| a.contains("hf_abc")));
+}
+
+// Spec (Connect a Hugging Face account): Rejected token.
+#[tokio::test]
+async fn a_rejected_token_writes_nothing() {
+    need_curl!();
+    let (base, _) = serve(Box::new(|_| {
+        reply(
+            "401 Unauthorized",
+            br#"{"error":"Invalid username or password."}"#,
+        )
+    }));
+    let dir = tempfile::tempdir().unwrap();
+    let hf_home = dir.path().join("hf");
+    let (hub, mut rx) = account_worker(&base, &hf_home, None);
+    let reply = account_reply(
+        &hub,
+        AccountAsk::Connect(Secret::new("hf_bad".into())),
+        &mut rx,
+    )
+    .await;
+    assert_eq!(
+        reply,
+        AccountReply::Connected(Err("Hugging Face did not accept the token".to_owned()))
+    );
+    assert!(!hf_home.exists(), "nothing is written");
+}
+
+#[tokio::test]
+async fn a_connect_replaces_a_saved_token_and_writes_through_a_symlink() {
+    need_curl!();
+    use std::os::unix::fs::PermissionsExt;
+    let (base, _) = serve(Box::new(|_| ok(r#"{"name":"ana"}"#)));
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("real-token");
+    std::fs::write(&real, "old").unwrap();
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let hf_home = dir.path().join("hf");
+    std::fs::create_dir(&hf_home).unwrap();
+    std::os::unix::fs::symlink(&real, hf_home.join("token")).unwrap();
+    let (hub, mut rx) = account_worker(&base, &hf_home, None);
+    let reply = account_reply(
+        &hub,
+        AccountAsk::Connect(Secret::new("hf_new".into())),
+        &mut rx,
+    )
+    .await;
+    assert_eq!(reply, AccountReply::Connected(Ok("ana".to_owned())));
+    assert!(
+        std::fs::symlink_metadata(hf_home.join("token"))
+            .unwrap()
+            .is_symlink()
+    );
+    assert_eq!(std::fs::read_to_string(&real).unwrap(), "hf_new");
+    assert_eq!(mode(&real), 0o600);
+}
+
+// Spec (Connect a Hugging Face account): Disconnect.
+#[tokio::test]
+async fn a_disconnect_deletes_the_token_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("token");
+    std::fs::write(&file, "hf_abc").unwrap();
+    let (hub, mut rx) = account_worker("http://127.0.0.1:9", dir.path(), None);
+    let reply = account_reply(&hub, AccountAsk::Disconnect, &mut rx).await;
+    assert_eq!(reply, AccountReply::Disconnected(Ok(())));
+    assert!(!file.exists());
+    // A file already gone is no failure.
+    let again = account_reply(&hub, AccountAsk::Disconnect, &mut rx).await;
+    assert_eq!(again, AccountReply::Disconnected(Ok(())));
+}
+
+// Spec (config-menu, Hugging Face account row): the check made when the row
+// is opened asks with the saved token, not `HF_TOKEN`.
+#[tokio::test]
+async fn a_check_asks_who_the_saved_token_belongs_to() {
+    need_curl!();
+    let (base, seen) = serve(Box::new(|_| ok(r#"{"name":"ana"}"#)));
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("token"), "hf_saved\n").unwrap();
+    let (hub, mut rx) = account_worker(&base, dir.path(), Some("hf_env"));
+    let reply = account_reply(&hub, AccountAsk::Check, &mut rx).await;
+    assert_eq!(reply, AccountReply::Checked(Ok("ana".to_owned())));
+    let request = seen.lock().unwrap()[0].clone();
+    assert_eq!(header(&request, "authorization"), Some("Bearer hf_saved"));
+}
+
+#[test]
+fn the_facts_say_whether_hf_token_is_set_and_a_token_is_saved() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(facts(&env_at(dir.path(), None)), TokenFacts::default());
+    assert_eq!(
+        facts(&env_at(dir.path(), Some(" "))),
+        TokenFacts::default(),
+        "a blank HF_TOKEN is none"
+    );
+    std::fs::write(dir.path().join("token"), "hf_abc").unwrap();
+    assert_eq!(
+        facts(&env_at(dir.path(), Some("t0"))),
+        TokenFacts {
+            env: true,
+            saved: true
+        }
+    );
+}

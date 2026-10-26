@@ -9,6 +9,7 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -20,8 +21,8 @@ use tokio::sync::mpsc;
 
 use crate::app::AppEvent;
 use crate::core::ai::hf::{
-    self, Answer, Ask, HubFile, Job, Listing, RepoCache, RepoFiles, RepoHit, link_target,
-    status_message,
+    self, AccountAsk, AccountReply, Answer, Ask, HubFile, Job, Listing, RepoCache, RepoFiles,
+    RepoHit, Secret, TokenEnv, TokenFacts, link_target, status_message,
 };
 pub use crate::core::ai::hf::{End, space_check};
 use crate::core::ai::sanitize;
@@ -270,6 +271,112 @@ pub async fn repo_files(curl: &Curl, id: &str) -> Result<RepoFiles, String> {
     Ok(RepoFiles::new(repo, &files))
 }
 
+/// Who `curl`'s token belongs to: the account name, or why it failed. A
+/// refused token reads as [`hf::REJECTED`].
+pub async fn whoami(curl: &Curl) -> Result<String, String> {
+    match curl.get(hf::WHOAMI_PATH).await? {
+        (200, body) => hf::parse_whoami(&body),
+        (code, _) => Err(hf::whoami_message(code)),
+    }
+}
+
+/// What a connect that finds no token file reads as.
+pub const NO_TOKEN_FILE: &str = "Hugging Face token not saved: no token file (set HF_HOME)";
+
+/// Checks the pasted `token` with `curl` (which carries it) and, once the
+/// Hub accepts it, saves it in the token file of `env`.
+async fn connect(curl: &Curl, env: &TokenEnv, token: Secret) -> Result<String, String> {
+    let name = whoami(curl).await?;
+    let path = hf::token_file(env).ok_or_else(|| NO_TOKEN_FILE.to_owned())?;
+    let saved = tokio::task::spawn_blocking(move || save_token(&path, token.expose())).await;
+    match saved {
+        Ok(Ok(())) => Ok(name),
+        Ok(Err(e)) => Err(format!("Hugging Face token not saved: {e}")),
+        Err(_) => Err("Hugging Face token not saved: interrupted".to_owned()),
+    }
+}
+
+/// Deletes the token file of `env`; a missing one is already gone.
+fn disconnect(env: &TokenEnv) -> Result<(), String> {
+    let failed = |e: io::Error| format!("Hugging Face token not deleted: {e}");
+    let Some(path) = hf::token_file(env) else {
+        return Ok(());
+    };
+    // A symlinked file is deleted where it points: the token is there.
+    let target = resolve_link(&path).map_err(failed)?;
+    match std::fs::remove_file(&target) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(failed(e)),
+        _ => Ok(()),
+    }
+}
+
+/// Most symlinks followed when the target does not exist yet.
+const MAX_LINK_HOPS: usize = 8;
+
+/// The file `path` really names: an existing one through `canonicalize`, a
+/// dangling symlink followed by hand (as the config save does), so a write
+/// creates its target instead of replacing the link.
+fn resolve_link(path: &Path) -> io::Result<PathBuf> {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return Ok(real);
+    }
+    let mut current = path.to_owned();
+    for _ in 0..=MAX_LINK_HOPS {
+        if !std::fs::symlink_metadata(&current).is_ok_and(|meta| meta.is_symlink()) {
+            return Ok(current);
+        }
+        let link = std::fs::read_link(&current)?;
+        current = current.parent().map_or(link.clone(), |dir| dir.join(link));
+    }
+    Err(io::Error::other("too many symlink levels"))
+}
+
+/// Writes `token` to the token file `path` with mode 0600, through a
+/// temporary file in the same folder and a rename. A missing folder is made
+/// with mode 0700; a symlinked file is written through.
+fn save_token(path: &Path, token: &str) -> io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let target = resolve_link(path)?;
+    let (Some(dir), Some(name)) = (target.parent(), target.file_name()) else {
+        return Err(io::Error::other("no token file"));
+    };
+    if std::fs::symlink_metadata(dir).is_err() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+    }
+    let temp = dir.join(format!(
+        ".{}.{}.tmp",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+    let create = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)
+    };
+    // A stale temporary file from a crashed run is replaced once.
+    let mut file = match create() {
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            std::fs::remove_file(&temp)?;
+            create()?
+        }
+        other => other?,
+    };
+    let written = file
+        .write_all(token.as_bytes())
+        .and_then(|()| file.sync_all())
+        .and_then(|()| std::fs::rename(&temp, &target));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
+}
+
 /// Downloads every file of `job` into the hub cache `hub`, calling
 /// `progress(done, total)` about every [`TICK`], until it ends or `cancel`
 /// fires (or its sender is dropped). A cancel keeps the partial file, so the
@@ -461,18 +568,38 @@ pub fn free_space(path: &Path) -> Option<u64> {
 /// Most bytes of a token file read.
 const TOKEN_CAP: u64 = 4 * 1024;
 
-/// The Hugging Face token of this process's environment (see
-/// [`hf::token`]). Read at each request, never stored or shown.
-pub fn env_token() -> Option<String> {
+/// Where this process's environment says the Hugging Face token is (see
+/// [`hf::token`]). Read at each request; the token is never stored or shown.
+pub fn token_env() -> TokenEnv {
     let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
-    let env = hf::TokenEnv {
+    TokenEnv {
         hf_token: std::env::var("HF_TOKEN").ok(),
         hf_token_path: var("HF_TOKEN_PATH"),
         hf_home: var("HF_HOME"),
         xdg_cache_home: var("XDG_CACHE_HOME"),
         home: var("HOME"),
-    };
-    hf::token(&env, read_token_file)
+    }
+}
+
+/// Whether `HF_TOKEN` is set and the token file holds a token: all the menu
+/// learns of the tokens when it opens.
+pub fn token_facts() -> TokenFacts {
+    facts(&token_env())
+}
+
+fn facts(env: &TokenEnv) -> TokenFacts {
+    let mut saved = hf::saved_token(env, read_token_file);
+    let found = saved.is_some();
+    if let Some(token) = saved.as_mut() {
+        hf::wipe(token);
+    }
+    TokenFacts {
+        env: env
+            .hf_token
+            .as_deref()
+            .is_some_and(|t| !t.trim().is_empty()),
+        saved: found,
+    }
 }
 
 /// A token file, up to [`TOKEN_CAP`] bytes.
@@ -515,41 +642,80 @@ fn listing(hub: Option<&Path>, files: RepoFiles) -> Listing {
     }
 }
 
+/// Builds the curl of one request, carrying this token.
+type MakeCurl = Arc<dyn Fn(Option<String>) -> Curl + Send + Sync>;
+
+/// Reads where the token is, at each request.
+type ReadEnv = Arc<dyn Fn() -> TokenEnv + Send + Sync>;
+
 /// Runs the requests and the one download of the picker's Hugging Face
-/// screens in the background, and sends what they find to the event loop.
+/// screens, and the account requests of the menu's `Hugging Face` row, in
+/// the background, and sends what they find to the event loop.
 pub struct Hub {
-    /// The `PATH` curl is looked up in.
-    path: OsString,
+    make: MakeCurl,
+    env: ReadEnv,
     /// The hub cache folder; `None` when none could be found.
     hub: Option<PathBuf>,
-    /// Reads the token at each request.
-    token: fn() -> Option<String>,
     events: mpsc::Sender<AppEvent>,
     /// The cancel of the running download, open while it runs.
     cancel: Option<oneshot::Sender<()>>,
 }
 
 impl Hub {
+    /// A worker running curl from `path` (the `PATH` it is looked up in).
     pub fn new(
         path: OsString,
         hub: Option<PathBuf>,
-        token: fn() -> Option<String>,
+        env: impl Fn() -> TokenEnv + Send + Sync + 'static,
         events: mpsc::Sender<AppEvent>,
     ) -> Self {
         Hub {
-            path,
+            make: Arc::new(move |token| Curl::hub(path.clone(), token)),
+            env: Arc::new(env),
             hub,
-            token,
             events,
             cancel: None,
         }
     }
 
+    /// Tests: every request goes through the curl `make` builds.
+    #[cfg(test)]
+    fn with_curl(mut self, make: impl Fn(Option<String>) -> Curl + Send + Sync + 'static) -> Self {
+        self.make = Arc::new(make);
+        self
+    }
+
     /// What builds the curl of one request, off the event loop: the token
     /// file is read there.
     fn curl(&self) -> impl FnOnce() -> Curl + Send + 'static {
-        let (path, token) = (self.path.clone(), self.token);
-        move || Curl::hub(path, token())
+        let (make, env) = (Arc::clone(&self.make), Arc::clone(&self.env));
+        move || make(hf::token(&env(), read_token_file))
+    }
+
+    /// Runs one account request of the `Hugging Face` row; one
+    /// `AppEvent::HfAccount` answers it. A pasted token goes only to curl's
+    /// stdin and to the token file, and is dropped once the check is done.
+    pub fn account(&self, ask: AccountAsk) {
+        let (make, env, events) = (
+            Arc::clone(&self.make),
+            Arc::clone(&self.env),
+            self.events.clone(),
+        );
+        tokio::spawn(async move {
+            let env = env();
+            let reply = match ask {
+                AccountAsk::Connect(token) => {
+                    let curl = make(Some(token.expose().to_owned()));
+                    AccountReply::Connected(connect(&curl, &env, token).await)
+                }
+                AccountAsk::Check => {
+                    let curl = make(hf::saved_token(&env, read_token_file));
+                    AccountReply::Checked(whoami(&curl).await)
+                }
+                AccountAsk::Disconnect => AccountReply::Disconnected(disconnect(&env)),
+            };
+            let _ = events.send(AppEvent::HfAccount(reply)).await;
+        });
     }
 
     /// Sends `ask` to the Hub; one `AppEvent::HubReply` answers it.
@@ -633,14 +799,20 @@ mod hub_tests {
         }
     }
 
-    fn no_token() -> Option<String> {
-        None
+    fn no_env() -> TokenEnv {
+        TokenEnv {
+            hf_token: None,
+            hf_token_path: None,
+            hf_home: None,
+            xdg_cache_home: None,
+            home: None,
+        }
     }
 
     /// A worker whose curl can never be found.
     fn worker(hub: Option<PathBuf>) -> (Hub, mpsc::Receiver<AppEvent>) {
         let (tx, rx) = mpsc::channel(8);
-        (Hub::new(OsString::new(), hub, no_token, tx), rx)
+        (Hub::new(OsString::new(), hub, no_env, tx), rx)
     }
 
     #[tokio::test]
