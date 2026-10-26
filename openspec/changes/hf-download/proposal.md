@@ -43,5 +43,5 @@ The ai-task-models rule "lazarobox MUST NOT download, pull or install any model"
 ## Risks
 
 - Credentials: the token must never leak. It is passed to curl on stdin (`--config -`), never in argv. curl drops the `Authorization` header on a redirect to another host.
-- A shared cache: it is written only under the chosen repo's folder, with a partial file named `.incomplete` that the model scan never lists. The final size is checked before the file is linked into the snapshot.
+- A shared cache: it is written only under the chosen repo's folder, with a partial file named `.incomplete` that the model scan never lists. The final size and the LFS sha256 are checked before the file is linked into the snapshot (the `sha2` crate, already in the lock file, becomes a direct dependency).
 - Disk space: checked before the download starts.

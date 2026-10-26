@@ -307,8 +307,12 @@ pub async fn download(
                     return end;
                 }
             }
-            if let Err(end) = keep(&partial, &blob, file) {
-                return end;
+            let (from, to, checked) = (partial.clone(), blob.clone(), file.clone());
+            let kept = tokio::task::spawn_blocking(move || keep(&from, &to, &checked)).await;
+            match kept {
+                Ok(Ok(())) => {}
+                Ok(Err(end)) => return end,
+                Err(_) => return End::Failed("download failed: checksum interrupted".to_owned()),
             }
         }
         if let Err(e) = link(&cache, &job.commit, file) {
@@ -360,14 +364,36 @@ async fn fetch(
     }
 }
 
-/// Moves a finished `partial` file to its blob once its size is right; a
-/// wrong size removes it, since resuming it would only grow the mistake.
+/// Moves a finished `partial` file to its blob once its size and, for an
+/// LFS file, its sha256 are right. A wrong file is removed, since resuming
+/// it would only grow the mistake. Reads the whole file: run it off the
+/// event loop.
 fn keep(partial: &Path, blob: &Path, file: &HubFile) -> Result<(), End> {
-    if !has_size(partial, file.size) {
+    let failed = |why: &str| {
         let _ = std::fs::remove_file(partial);
-        return Err(End::Failed("download failed: size mismatch".to_owned()));
+        Err(End::Failed(format!("download failed: {why}")))
+    };
+    if !has_size(partial, file.size) {
+        return failed("size mismatch");
+    }
+    // A 64-digit id is the LFS sha256; a git object id (40 digits) hashes a
+    // header too, and GGUF files are always LFS.
+    if file.oid.len() == 64 {
+        match sha256(partial) {
+            Ok(sum) if sum == file.oid => {}
+            Ok(_) => return failed("checksum mismatch"),
+            Err(e) => return Err(End::Failed(format!("download failed: {e}"))),
+        }
     }
     std::fs::rename(partial, blob).map_err(|e| End::Failed(format!("download failed: {e}")))
+}
+
+/// The sha256 of a file, in lowercase hex.
+fn sha256(path: &Path) -> io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    io::copy(&mut std::fs::File::open(path)?, &mut hasher)?;
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// Points `snapshots/<commit>/<path>` at the file's blob, replacing an older

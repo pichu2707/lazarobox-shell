@@ -76,7 +76,7 @@ The download line keeps naming the license while it runs.
 ### Requirement: Download into the Hugging Face cache
 A download MUST write only under `<hub>/models--<owner>--<repo>/`. `<hub>` is `$HF_HUB_CACHE`, else `$HF_HOME/hub`, else `$XDG_CACHE_HOME/huggingface/hub`, else `~/.cache/huggingface/hub`, all absolute. For each file of the choice:
 1. curl fetches `https://huggingface.co/<owner>/<repo>/resolve/<commit>/<path>` with `--location`, `--fail` and `--continue-at -` into `blobs/<lfs.oid>.incomplete`.
-2. When it ends, the file size MUST equal the listed size. Otherwise it fails with `download failed: size mismatch` and the partial file is removed.
+2. When it ends, the file size MUST equal the listed size and, for an LFS file, its sha256 MUST equal `lfs.oid`. Otherwise it fails with `download failed: size mismatch` or `download failed: checksum mismatch`, and the partial file is removed.
 3. It is renamed to `blobs/<lfs.oid>`.
 4. `snapshots/<commit>/<path>` becomes a relative link to it, replacing an older link.
 
@@ -92,6 +92,11 @@ When it ends, the engines are detected again and the status bar reads `downloade
 - GIVEN a fake curl that writes the listed bytes
 - WHEN choice `Q4_K_M` of `o/r` at commit `c1` is downloaded
 - THEN `models--o--r/blobs/<oid>` exists with that size, `snapshots/c1/a-Q4_K_M.gguf` links to `../../blobs/<oid>`, `refs/main` reads `c1`, no `.incomplete` file is left, and the local model scan lists the snapshot file
+
+#### Scenario: Corrupt file [auto, fake curl]
+- GIVEN a download whose bytes have the listed size but another sha256
+- WHEN it ends
+- THEN it reads `download failed: checksum mismatch`, no blob, partial file or snapshot link is left
 
 #### Scenario: Resume and cancel [auto, fake curl]
 - GIVEN a download cancelled halfway
