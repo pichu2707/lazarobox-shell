@@ -148,6 +148,9 @@ mod unix {
     /// Opens the existing `name` of the folder `dirfd` for reading, with fixed
     /// flags: never created, never written, no link in the last place. The
     /// write module cannot choose flags, so it cannot open for writing here.
+    // Only the write module calls it, and it writes on macOS from the next
+    // slice on.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub(in crate::runtime::tools) fn open_existing_at(
         dirfd: RawFd,
         name: &CString,
