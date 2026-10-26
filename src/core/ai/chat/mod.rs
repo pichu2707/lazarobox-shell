@@ -321,6 +321,9 @@ pub struct ChatState {
     /// What the model has yet to hear about a user-side answer to a batch it
     /// left behind: sent once with the next request, never stored.
     told: Vec<String>,
+    /// The lines the turn in flight carries, until the engine produces its
+    /// first event: a turn that ends before that puts them back in `told`.
+    told_sent: Vec<String>,
 }
 
 impl ChatState {
@@ -363,6 +366,7 @@ impl ChatState {
             auto_typed: 0,
             run_fallbacks: 0,
             told: Vec::new(),
+            told_sent: Vec::new(),
         }
     }
 
@@ -767,6 +771,7 @@ impl ChatState {
         self.generation += 1;
         self.scroll = Scroll::Follow;
         let told = std::mem::take(&mut self.told);
+        self.told_sent.clone_from(&told);
         let system = std::iter::once(system)
             .chain(told.iter().map(String::as_str))
             .filter(|part| !part.is_empty())
@@ -828,6 +833,13 @@ impl ChatState {
         }
         if !matches!(event, StreamEvent::ThinkingDelta(_)) {
             self.generation += 1;
+        }
+        // The engine answered: the model has heard the lines of the request.
+        if !matches!(
+            event,
+            StreamEvent::Slow | StreamEvent::Notice(_) | StreamEvent::Error(_)
+        ) {
+            self.told_sent.clear();
         }
         match event {
             StreamEvent::Slow => {
@@ -995,6 +1007,13 @@ impl ChatState {
     /// Ends the turn: the partial answer, if any, gets `status`, and an
     /// optional system line is added.
     fn finish(&mut self, status: MsgStatus, line: Option<String>, now: Instant) {
+        // Ended before any event: the lines did not get through, so the next
+        // request carries them again, ahead of any newer one.
+        if !self.told_sent.is_empty() {
+            let mut lines = std::mem::take(&mut self.told_sent);
+            lines.append(&mut self.told);
+            self.told = lines;
+        }
         self.collapse_reasoning(now);
         self.settle_tool_rows();
         // Only the answer text is saved: reasoning is not a message, and a

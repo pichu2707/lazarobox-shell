@@ -459,3 +459,29 @@ fn a_told_line_reaches_the_next_request_once_and_is_never_stored() {
     assert_eq!(again.system, SYSTEM, "told once");
     assert!(state.outbox.iter().all(|m| !m.text.contains("discarded")));
 }
+
+// A turn that ends before the engine produced anything (a cancel, a failure at
+// start) did not carry the line to the model: the next request carries it, and
+// still only once. A turn that got an event heard it, so it is not repeated.
+#[test]
+fn a_told_line_survives_a_turn_that_ended_before_any_event() {
+    let line = "The user discarded the batch you left staged (2 entries).";
+    let with_line = format!("{SYSTEM}\n\n{line}");
+    let mut state = chat();
+    state.tell(line.to_owned());
+    let (_, first) = sent(&mut state, "one");
+    assert_eq!(first.system, with_line);
+    state.cancel();
+    let (turn, second) = sent(&mut state, "two");
+    assert_eq!(second.system, with_line, "the cancelled turn lost it");
+    state.apply(
+        turn,
+        StreamEvent::Error(ChatError::Failed("no route".to_owned())),
+    );
+    let (turn, third) = sent(&mut state, "three");
+    assert_eq!(third.system, with_line, "a start error lost it");
+    state.apply(turn, StreamEvent::Delta("hi".to_owned()));
+    state.cancel();
+    let (_, fourth) = sent(&mut state, "four");
+    assert_eq!(fourth.system, SYSTEM, "the model heard it once");
+}
