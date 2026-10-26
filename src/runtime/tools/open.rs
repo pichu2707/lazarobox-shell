@@ -316,7 +316,15 @@ mod unix {
             let (_dir, home) = tree();
             std::fs::write(home.join("README.md"), "x").unwrap();
             let Ok(fd) = open_beneath(&home, Path::new("readme.md"), false) else {
-                eprintln!("probe (c): case-sensitive volume, `readme.md` does not open");
+                // GitHub's macOS runners are case-insensitive APFS: a green run
+                // there must mean this was tested, not skipped.
+                assert!(
+                    cfg!(not(target_os = "macos")) || std::env::var_os("CI").is_none(),
+                    "probe (c) NOT TESTED: the CI volume is case-sensitive, `readme.md` does not open"
+                );
+                eprintln!(
+                    "probe (c) SKIPPED (not CI): case-sensitive volume, `readme.md` does not open"
+                );
                 return;
             };
             let after = fd_path(&fd);
@@ -326,6 +334,58 @@ mod unix {
                 "probe (c) UNSAFE: the alias reports something other than the on-disk spelling: {after:?}"
             );
             eprintln!("probe (c) case-insensitive volume, fd_path: {after:?}");
+        }
+
+        // Probe (d): F_GETPATH must give the firmlink spelling (`/Users/x`), never
+        // `/System/Volumes/Data/...`, or every normal HOME would be refused.
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn a_real_home_reports_its_canonical_path_not_the_data_volume() {
+            let canonical = |p: &str| Path::new(p).canonicalize().unwrap();
+            let mut cases = vec![(canonical("/"), "Users")];
+            if let Some(home) = std::env::var_os("HOME") {
+                cases.push((canonical("/"), ""));
+                let home = Path::new(&home).canonicalize().unwrap();
+                cases.push((home, ""));
+            }
+            for (base, rel) in cases {
+                let fd = open_beneath(&base, Path::new(rel), true).unwrap();
+                let got = fd_path(&fd);
+                assert_eq!(
+                    got.as_ref().ok(),
+                    Some(&base.join(rel)),
+                    "probe (d) firmlink: base {base:?} rel {rel:?} gave {got:?}"
+                );
+            }
+        }
+
+        // Probe (e): a real path longer than MAXPATHLEN opens (the walk is per
+        // component) but `F_GETPATH` cannot hold it. It must fail or be exact,
+        // never a truncated path that could equal another one.
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn a_real_path_longer_than_maxpathlen_fails_closed() {
+            let (_dir, home) = tree();
+            let mut rel = PathBuf::new();
+            let mut at = open_with(Strategy::Walk, &home, Path::new(""), true).unwrap();
+            let name = "d".repeat(60);
+            while home.join(&rel).as_os_str().len() <= libc::MAXPATHLEN as usize + 64 {
+                let c = cstring(name.as_bytes()).unwrap();
+                // SAFETY: `c` is NUL-terminated and `at` is an open folder.
+                assert_eq!(
+                    unsafe { libc::mkdirat(at.as_raw_fd(), c.as_ptr(), 0o700) },
+                    0
+                );
+                at = open_raw(at.as_raw_fd(), &c, flags(true)).unwrap();
+                rel.push(&name);
+            }
+            let fd = open_beneath(&home, &rel, true).unwrap();
+            let got = fd_path(&fd);
+            assert!(
+                !got.as_ref().is_ok_and(|p| *p != home.join(&rel)),
+                "probe (e) UNSAFE: a path over MAXPATHLEN came back altered: {got:?}"
+            );
+            eprintln!("probe (e) fd_path over MAXPATHLEN is err: {}", got.is_err());
         }
 
         #[test]
