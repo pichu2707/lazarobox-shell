@@ -269,6 +269,10 @@ impl Badge {
     }
 }
 
+/// Shown on Ctrl+G when there is no orphan batch to review: the chat wears no
+/// orphan badge, or the badge went stale.
+pub const NO_ORPHAN: &str = "no orphan batch to review";
+
 /// The notice of a close that discarded `entries` staged entries.
 pub fn closed_notice(entries: usize) -> String {
     let s = if entries == 1 { "y" } else { "ies" };

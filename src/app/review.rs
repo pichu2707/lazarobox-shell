@@ -16,13 +16,10 @@ use crate::core::ai::chat::{
     approval::Reply,
     approval::{ApprovalAsk, Origin},
     engine::Decision,
-    review::{ARM_DELAY, Badge, BatchEvent, BatchReview, TOO_LARGE, closed_notice},
+    review::{ARM_DELAY, Badge, BatchEvent, BatchReview, NO_ORPHAN, TOO_LARGE, closed_notice},
     review_view::{Move, ReviewView},
 };
 use crate::core::ai::tools::stage::BatchId;
-
-/// Shown on Ctrl+G when the chat wears no orphan badge.
-const NO_ORPHAN: &str = "no orphan batch to review";
 
 impl App {
     /// What the runtime reports about a batch outside a model turn. A closed

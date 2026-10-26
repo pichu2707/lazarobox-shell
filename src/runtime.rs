@@ -44,7 +44,7 @@ pub mod tools;
 pub mod update;
 pub mod workspace;
 
-use crate::core::ai::chat::review::{BatchEvent, closed_notice};
+use crate::core::ai::chat::review::{BatchEvent, NO_ORPHAN, closed_notice};
 use ai_detect::spawn_detection;
 use chat::Chats;
 use chat_store::StoreHandle;
@@ -1281,7 +1281,15 @@ impl Panes {
                         .chats
                         .as_ref()
                         .and_then(|chats| chats.review_batch(pane));
+                    // A stale badge (the batch is gone, or a turn took it back)
+                    // still gets its answer; the next poll clears the badge.
+                    let stale = seen.is_none() && self.chats.is_some();
                     feedback.extend(seen.map(|event| AppEvent::Batch(pane, event)));
+                    if stale {
+                        let shown = NO_ORPHAN.to_owned();
+                        let told = None;
+                        feedback.push(AppEvent::Batch(pane, BatchEvent::Done { shown, told }));
+                    }
                 }
                 Effect::BatchApply { pane, id } => {
                     let done = self.chats.as_ref().and_then(|chats| chats.apply_batch(id));
@@ -4625,6 +4633,28 @@ mod tests {
         for (pane, turn, event) in late {
             assert_eq!(app.update(AppEvent::Chat(pane, turn, event)), vec![]);
         }
+    }
+
+    // A Ctrl+G on a badge gone stale (the batch is gone, or a turn took it
+    // back) is answered with a notice, never with silence.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_review_of_a_stale_badge_answers_with_a_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let host = tools::ToolHost::new(Some(home.into()), None, None, tools::Limits::default());
+        let (panes, _pty_rx, _rec) = fake_panes(None);
+        let (tx, _rx) = mpsc::channel(chat::APP_CHANNEL);
+        let runner: chat::Runner = Arc::new(|_request, _tx| Box::pin(std::future::pending()));
+        let chats = Chats::new(runner, tx).with_tools(host, vec![dir.path().join("run")]);
+        let mut panes = panes.with_chats(chats);
+        let (_, feedback) = panes.apply(vec![Effect::BatchReview(id(1))]);
+        let notice = BatchEvent::Done {
+            shown: crate::core::ai::chat::review::NO_ORPHAN.to_owned(),
+            told: None,
+        };
+        assert_eq!(feedback, vec![AppEvent::Batch(id(1), notice)]);
     }
 
     // Spec (chat-pane, "Closing discards a batch"): quitting discards the
