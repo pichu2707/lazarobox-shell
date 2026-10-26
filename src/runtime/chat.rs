@@ -886,10 +886,8 @@ impl Chats {
     /// What each chat's pane shows of its batch: staged while a turn of the
     /// pane runs, an orphan once none does. Empty without tooling, or while
     /// the store is busy (the next poll shows it).
-    pub fn batch_badges(&self) -> HashMap<PaneId, Badge> {
-        let Some(tooling) = self.tooling.as_ref() else {
-            return HashMap::new();
-        };
+    pub fn batch_badges(&self) -> Option<HashMap<PaneId, Badge>> {
+        let tooling = self.tooling.as_ref()?;
         let live = |pane| self.turns.get(&pane).is_some_and(|t| !t.is_finished());
         tooling.host.badges(live)
     }

@@ -1152,3 +1152,15 @@ mod answered {
         assert_eq!(calls, 0, "the read is the only call of the turn");
     }
 }
+
+/// A poll that finds the store held by an apply says so with `None`, so the
+/// pane keeps its badge instead of losing it for one tick.
+#[test]
+fn a_contended_badge_poll_answers_none_and_a_free_one_answers() {
+    let (_dir, _home, host) = fixture();
+    assert_eq!(host.badges(|_| false), Some(Default::default()));
+    let held = host.stages.lock().unwrap();
+    assert_eq!(host.badges(|_| false), None, "the store is held");
+    drop(held);
+    assert!(host.badges(|_| false).is_some());
+}

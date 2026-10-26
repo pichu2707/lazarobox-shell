@@ -37,12 +37,13 @@ impl ToolHost {
     }
 
     /// What the panes show of their batches (see `Stages::badges`). It never
-    /// waits: a store held by an apply answers on the next poll.
-    pub fn badges(&self, live: impl Fn(PaneId) -> bool) -> HashMap<PaneId, Badge> {
+    /// waits: `None` while an apply holds the store, so the caller keeps what
+    /// it showed and asks again on the next poll.
+    pub fn badges(&self, live: impl Fn(PaneId) -> bool) -> Option<HashMap<PaneId, Badge>> {
         match self.stages.try_lock() {
-            Ok(stages) => stages.badges(live),
-            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner().badges(live),
-            Err(TryLockError::WouldBlock) => HashMap::new(),
+            Ok(stages) => Some(stages.badges(live)),
+            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner().badges(live)),
+            Err(TryLockError::WouldBlock) => None,
         }
     }
 
