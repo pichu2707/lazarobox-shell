@@ -115,8 +115,10 @@ pub struct Lease(Arc<Managed>);
 
 impl Drop for Lease {
     fn drop(&mut self) {
-        self.0.busy.fetch_sub(1, Ordering::SeqCst);
+        // The clock resets first, so an idle check never sees the turn
+        // over with its old last use.
         self.0.touch();
+        self.0.busy.fetch_sub(1, Ordering::SeqCst);
     }
 }
 

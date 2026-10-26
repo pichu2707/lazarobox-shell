@@ -8,4 +8,4 @@
 - [x] 3.2 RED/GREEN: a lease keeps a turn's server; `stop_if_idle` stops it only past the idle time after the last turn; the live idle time decides, none never stops; the next turn starts it again.
 - [x] 3.3 RED/GREEN: a menu save that changes the idle time emits `ManagedIdle`, which reaches the runtime; the row's edit is written as a TOML integer and reads back.
 - [x] 3.4 Docs (README, CHANGELOG).
-- [ ] 3.5 [manual] Live: a real llama-server stops after the idle time and the next turn starts it.
+- [x] 3.5 [manual] Live: a real llama-server stops after the idle time and the next turn starts it.
