@@ -36,12 +36,22 @@ pub fn model_dirs(env: &DirsEnv) -> Vec<PathBuf> {
     if env.macos {
         dirs.push(under_home("Library/Caches/llama.cpp"));
     }
-    dirs.push(
-        absolute(&env.hf_hub_cache)
-            .or_else(|| absolute(&env.hf_home).map(|h| h.join("hub")))
-            .or_else(|| cache.map(|c| c.join("huggingface/hub"))),
-    );
+    dirs.push(hub_dir(env));
     dirs.into_iter().flatten().collect()
+}
+
+/// The Hugging Face hub cache: `$HF_HUB_CACHE`, else `$HF_HOME/hub`, else
+/// `huggingface/hub` in the cache home. Downloads go there (model-download)
+/// and the model scan reads it.
+pub fn hub_dir(env: &DirsEnv) -> Option<PathBuf> {
+    let absolute = |p: &Option<PathBuf>| p.clone().filter(|p| p.is_absolute());
+    absolute(&env.hf_hub_cache)
+        .or_else(|| absolute(&env.hf_home).map(|h| h.join("hub")))
+        .or_else(|| {
+            absolute(&env.xdg_cache_home)
+                .or_else(|| absolute(&env.home).map(|h| h.join(".cache")))
+                .map(|c| c.join("huggingface/hub"))
+        })
 }
 
 /// Whether a file named `name` is a model llama-server can load: a `.gguf`
@@ -62,7 +72,7 @@ pub fn is_model_file(name: &str) -> bool {
 }
 
 /// The part number of a split model's stem `<name>-NNNNN-of-NNNNN`.
-fn split_part(stem: &str) -> Option<u32> {
+pub(crate) fn split_part(stem: &str) -> Option<u32> {
     let (rest, total) = stem.rsplit_once("-of-")?;
     let (_, part) = rest.rsplit_once('-')?;
     let digits = |s: &str| s.len() == 5 && s.bytes().all(|b| b.is_ascii_digit());
