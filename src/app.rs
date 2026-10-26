@@ -7877,7 +7877,10 @@ mod app_tests {
             assert_eq!((a.tab_count(), a.focused()), (1, chat_id()));
             press(&mut a, "wq");
             assert_eq!(a.input(), InputMode::Confirm(Confirm::Quit));
-            assert_eq!(a.update(key('y')), vec![Effect::Quit]);
+            assert_eq!(
+                a.update(key('y')),
+                vec![Effect::BatchClose(chat_id()), Effect::Quit]
+            );
         }
 
         // 1.4: the UI asks for a view, not for an emulator.

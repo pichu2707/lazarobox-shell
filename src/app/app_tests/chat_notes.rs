@@ -1127,7 +1127,10 @@ fn a_chat_that_never_wrote_sends_no_end() {
     );
     let mut b = with_answer(true, "x");
     press(&mut b, "q");
-    assert_eq!(b.update(key('y')), vec![Effect::Quit]);
+    assert_eq!(
+        b.update(key('y')),
+        vec![Effect::BatchClose(id2()), Effect::Quit]
+    );
 }
 
 #[test]
@@ -1137,7 +1140,11 @@ fn the_end_is_not_sent_twice() {
     let first = a.update(key('y'));
     assert!(first.contains(&end("Notes: A; B")));
     press(&mut a, "q");
-    assert_eq!(a.update(key('y')), vec![Effect::Quit], "the pane is gone");
+        vec![Effect::Quit],
+        a.update(key('y')),
+        vec![Effect::BatchClose(id2()), Effect::Quit],
+        "the pane is gone"
+    );
 }
 
 #[test]
