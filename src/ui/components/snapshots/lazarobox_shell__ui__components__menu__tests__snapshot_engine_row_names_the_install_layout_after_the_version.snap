@@ -6,7 +6,7 @@ expression: shown
 │ Settings │ AI                                              │
 │ Engine for general                                         │
 │ none                                                       │
-│ codex available · no jail: Landlock ABI 2, needs 3+ ●      │
+│ codex available · 0.153.4 · standalone ●                   │
 │                                                            │
 │                                                            │
 │                                                            │
@@ -23,5 +23,5 @@ expression: shown
 │                                                            │
 │                                                            │
 │                                                            │
-│ j/k move · Enter choose · y copies the reason · Esc back   │
+│ j/k move · Enter choose · r refresh · Esc back · s save    │
 └────────────────────────────────────────────────────────────┘

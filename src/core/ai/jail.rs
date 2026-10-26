@@ -432,7 +432,23 @@ impl JailRefusal {
     /// The sentence for the chat: what refused and what to do. Paths are
     /// shown with `~` for `home` and sanitized.
     pub fn hint(&self, home: Option<&Path>) -> String {
+        self.hint_for(home, None)
+    }
+
+    /// [`Self::hint`] naming the CLI and how it is installed, as `(cli,
+    /// layout)`. The layout is text for the person: no rule reads it.
+    pub fn hint_for(&self, home: Option<&Path>, layout: Option<(&str, &str)>) -> String {
         let at = |p: &Path| shown(p, home);
+        if let (Self::Overlap(path), Some((cli, how))) = (self, layout) {
+            return format!(
+                "{cli} ({how}) is installed in a layout the jail cannot isolate: {} would be \
+                 both run and written; reinstall it with the official installer, npm or Homebrew",
+                at(path)
+            );
+        }
+        if let Some((cli, how)) = layout {
+            return format!("{cli} ({how}): {}", self.hint(home));
+        }
         match self {
             Self::Unsupported(off) => off.text(),
             Self::NoHome => {

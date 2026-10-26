@@ -442,3 +442,28 @@ fn an_unmanaged_llamacpp_that_is_not_running_is_undetected() {
         Availability::Undetected { .. }
     ));
 }
+
+#[test]
+fn a_jail_required_cli_whose_layout_is_refused_is_not_ready() {
+    let c = cfg(Task::Chat, Some("codex"), None);
+    let mut codex = state("codex", Status::Available, &["default"]);
+    codex.diagnostics.jail = Some("…/bin is run and written".to_owned());
+    codex.diagnostics.jail_full = Some("codex (standalone) cannot be isolated".to_owned());
+    let d = detected(vec![codex]);
+    assert_eq!(
+        availability(&c, Some(&d), JAIL),
+        Availability::Refused {
+            engine: "codex".to_owned(),
+            reason: "codex (standalone) cannot be isolated".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn a_claude_with_a_jail_note_still_runs_bare() {
+    let c = cfg(Task::Chat, Some("claude"), None);
+    let mut claude = state("claude", Status::Available, &["default"]);
+    claude.diagnostics.jail = Some("no Landlock".to_owned());
+    let d = detected(vec![claude]);
+    assert_eq!(availability(&c, Some(&d), JAIL), ready("claude", None));
+}

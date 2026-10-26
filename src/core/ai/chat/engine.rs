@@ -239,6 +239,12 @@ pub enum Availability {
         /// Why this system cannot jail it, with what to do.
         reason: String,
     },
+    /// The system can jail, but the jail refuses this CLI's layout.
+    Refused {
+        engine: String,
+        /// Which layout and what to do about it.
+        reason: String,
+    },
     GatedOff {
         engine: String,
     },
@@ -271,7 +277,7 @@ pub fn availability(
 const GATED_OFF: &[&str] = &[];
 
 /// CLIs that must never start without a working jail.
-const JAIL_REQUIRED: &[&str] = &["codex", "gemini"];
+pub(crate) const JAIL_REQUIRED: &[&str] = &["codex", "gemini"];
 
 /// `availability` with an explicit list of CLIs whose manual check failed and
 /// the test that says which engines have an adapter (so the jail and gate
@@ -333,6 +339,20 @@ pub fn availability_with(
         return Availability::NoJail {
             engine,
             reason: off.text_required(),
+        };
+    }
+    // The system can jail, but this CLI's layout is refused: it would not
+    // start. The reason names the layout and what to do.
+    if JAIL_REQUIRED.contains(&engine.as_str())
+        && let Some(reason) = &state.diagnostics.jail
+    {
+        return Availability::Refused {
+            engine,
+            reason: state
+                .diagnostics
+                .jail_full
+                .clone()
+                .unwrap_or_else(|| reason.clone()),
         };
     }
     if gated_off.contains(&engine.as_str()) {

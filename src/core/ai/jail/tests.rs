@@ -1279,6 +1279,26 @@ fn any_other_helper_text_shows_the_old_fixed_message() {
 }
 
 #[test]
+fn an_overlap_names_the_layout_and_what_to_do() {
+    let overlap = JailRefusal::Overlap("/home/u/.codex/bin".into());
+    let plain = overlap.hint(home());
+    assert_eq!(overlap.hint_for(home(), None), plain);
+    assert_eq!(
+        overlap.hint_for(home(), Some(("codex", "standalone"))),
+        "codex (standalone) is installed in a layout the jail cannot isolate: \
+         ~/.codex/bin would be both run and written; reinstall it with the official \
+         installer, npm or Homebrew"
+    );
+    assert_eq!(overlap.short(home()), "~/.codex/bin is run and written");
+    // Another refusal keeps its own sentence behind the layout.
+    let broad = JailRefusal::RootTooBroad("/home/u".into());
+    assert_eq!(
+        broad.hint_for(home(), Some(("codex", "npm"))),
+        format!("codex (npm): {}", broad.hint(home()))
+    );
+}
+
+#[test]
 fn a_kernel_without_the_abi_says_what_to_upgrade_to() {
     let abi2 = JailRefusal::Unsupported(JailOff::NoLandlock(2));
     assert_eq!(

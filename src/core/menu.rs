@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::{
     ai::{
-        Detection,
+        Detection, REFUSED,
         config::{AiConfig, NotifyMode, Task, ToolToggle},
         hf::{AccountAsk, AccountReply, Answer, Ask, Job, TokenFacts},
         menu::AiMenu,
@@ -513,6 +513,7 @@ const HINT_NOTIFY: &str = "j/k move · h/l change · t test · s save · Esc can
 const HINT_TASK: &str = "j/k move · Enter pick · r refresh · s save · Esc cancel";
 const HINT_PICKER: &str = "j/k move · Enter choose · r refresh · Esc back · s save";
 const HINT_NOTE: &str = "Enter or y copies the full reason · Esc back";
+const HINT_ENGINE_REFUSED: &str = "j/k move · y copies the reason · Esc back";
 const HINT_ENGINE_REASON: &str = "j/k move · Enter choose · y copies the reason · Esc back";
 const HINT_WARNING: &str = "y accept (then s to save) · any other key declines";
 /// The privacy warning: the three facts, each line short enough for the AI
@@ -2014,6 +2015,12 @@ impl MenuState {
             .is_some_and(|r| matches!(r.key, PickKey::Note { .. }))
         {
             return Footer::Hint(Cow::Borrowed(HINT_NOTE));
+        }
+        if let (Some(row), Some(picker)) = (&cursor, picker)
+            && matches!(picker.level, Level::Engines)
+            && matches!(row.mark, Mark::Status(ref t) if t.starts_with(REFUSED))
+        {
+            return Footer::Hint(Cow::Borrowed(HINT_ENGINE_REFUSED));
         }
         if let (Some(row), Some(picker)) = (&cursor, picker)
             && matches!(picker.level, Level::Engines)
