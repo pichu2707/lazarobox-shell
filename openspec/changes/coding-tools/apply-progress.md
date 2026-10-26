@@ -649,3 +649,19 @@ Notes:
 - CHANGELOG: search already ships in 0.23.0 on main (toggles, glob, grep, read_file paging), so only write goes under `## [Unreleased]` (Added, Changed). No version header, no compare links.
 - Verification: `cargo test --doc` ok (0 doc tests); no test reads README or CHANGELOG; no links added.
 - Inconsistencies: spec "Root policy" says the origin is refused only for HOME/ancestor/system/missing, design D12 and code also refuse an origin outside HOME (docs follow D12). The `closed_notice` text is `discarded N staged entries`. The `staged N` badge is shown while the turn is live and `orphan N` once it is gone (spec says orphan is for a cancelled turn only).
+
+
+## Batch 17: slice X-a (allow-list, PR 15, branch feat/coding-tools-xa, base feat/coding-tools-m5a)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Xa.1 allow table per program and verb, denied flags | done | feat(tools): allow only six programs, their verbs and no config, path or escape flags for run_command |
+| Xa.2 paths, cwd, `parse_run` with timeout clamp | done | same commit (one file) |
+
+TDD evidence: RED = `E0425 cannot find function check`, `E0433 Program/Refusal` (41 errors), then `E0425 parse_run`, `RunError`, `RunRequest` (13). 13 table tests green at once, 19 after Xa.2; one test expectation fixed (`x:/y` is a drive path, refused on purpose). Mutations: install accepts packages, backslash split removed (survived until `..\x` tests were added), `=value` check removed, default 121: each failed a test; `+ 0` equivalent mutant survived.
+
+Notes:
+- `core/ai/tools/allow.rs` (pure). API: `Program`, `Refusal{Program,Verb,Flag,Path}` with fixed `text()` ("path not available" for Path), `check(program, &[String]) -> Result<Program, Refusal>` (order: program, verb, flags, paths), `RUN_ARGS` (ArgDef table: program, args up to 64 x 512 B, cwd, timeout_secs), `parse_run(&Value) -> Result<RunRequest{program,args,cwd,timeout}, RunError{Shape(ToolError),Refused}>`, `TIMEOUT_DEFAULT` 120, `TIMEOUT_MAX` 600.
+- DECISIONS: flags are judged only before `--` (for go also before `-args`): what follows belongs to the program run. Paths are judged in every arg, in the word, the `--flag=value` value and the value glued to a short flag (`-c/etc/x`); `/`, `\` and `C:\` starts are absolute; `..` is a path part, so `a..b` passes. Timeout is CLAMPED (1..=600, 0 and negatives become 1, huge values 600). `cwd` is judged by text only (`plain_relative`); the real-disk root check stays in X-d1. `install`/`ci` refuse any non-dash arg (package args), `run` needs a script word. `cargo fmt` needs `--check` anywhere. Extra denied flags beyond the design table: cargo `--allow-staged`, `--allow-no-vcs`; node `--userconfig`, `--globalconfig`, `--cwd`, `--dir`, `-C`; go `-overlay`, `-vettool`, `-C`.
+- `RUN_ARGS` is not yet a `ToolDef` in the registry and `Call::RunCommand` does not exist: X-d1 wires them. Nothing in runtime/, host.rs or audit.rs touched.
+- Size: ~290 production lines (267 non-blank), ~330 test lines. Checks: fmt, clippy -D warnings, cargo test --lib (5829), +1.88 check --all-targets.
