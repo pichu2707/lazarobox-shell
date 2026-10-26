@@ -10,6 +10,7 @@ pub mod config;
 pub mod gguf;
 pub mod hf;
 pub mod http;
+pub mod install;
 pub mod jail;
 pub mod memory;
 pub mod menu;
