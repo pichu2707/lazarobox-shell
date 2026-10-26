@@ -41,7 +41,8 @@ baseline.
   approved batch writes nothing and says so. On macOS, a filesystem without an
   atomic no-replace rename (exFAT, SMB, NFS) answers "not supported" and nothing
   is written, and replacing a file drops its extended attributes, ACLs,
-  quarantine flag and Finder tags.
+  quarantine flag and Finder tags, and the new file takes its group from the
+  parent folder (BSD semantics).
 
 ## [0.22.0] - 2026-10-23
 
