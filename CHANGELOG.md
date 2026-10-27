@@ -10,6 +10,8 @@ baseline.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-10-27
+
 ### Added
 
 - Hugging Face downloads open on a list you pick from with `j`/`k` and
@@ -1219,7 +1221,8 @@ First release published to crates.io.
 - `s` saves the choice to the `[ai]` and `[ai.tasks.*]` tables of
   `config.toml`; `Esc` discards it. `Enter` never saves.
 
-[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/pichu2707/lazarobox-shell/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.25.1...v0.26.0
 [0.25.1]: https://github.com/pichu2707/lazarobox-shell/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/pichu2707/lazarobox-shell/compare/v0.24.0...v0.25.0
