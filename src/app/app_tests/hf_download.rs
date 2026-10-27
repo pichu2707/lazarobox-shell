@@ -38,6 +38,7 @@ fn stopped_llamacpp() -> Detection {
         local_models: vec![PathBuf::from("/m/b.gguf")],
         data_home: None,
         vulkan_icd: false,
+        ..Default::default()
     }
 }
 

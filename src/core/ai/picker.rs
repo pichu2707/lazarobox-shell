@@ -1706,6 +1706,7 @@ mod tests {
             local_models: models.iter().map(std::path::PathBuf::from).collect(),
             data_home: None,
             vulkan_icd: false,
+            ..Default::default()
         }
     }
 
@@ -1838,6 +1839,7 @@ mod tests {
             local_models: vec!["/m/a.gguf".into(), "/m/b.gguf".into()],
             data_home: None,
             vulkan_icd: false,
+            ..Default::default()
         };
         let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
         assert_eq!(
@@ -1874,6 +1876,7 @@ mod tests {
             local_models: vec![std::path::PathBuf::from("/m/a.gguf")],
             data_home: None,
             vulkan_icd: false,
+            ..Default::default()
         };
         let rows = model_rows(
             "llamacpp",

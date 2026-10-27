@@ -18,6 +18,7 @@ pub mod parse;
 pub mod picker;
 pub mod sanitize;
 pub mod tools;
+pub mod window;
 
 /// How an engine is detected.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -256,6 +257,18 @@ pub struct Detection {
     /// Whether a Vulkan driver is registered on this machine: the install
     /// plan offers the Vulkan build only then.
     pub vulkan_icd: bool,
+    /// The context window in tokens of the engines that report one (a
+    /// running llama-server), by engine id.
+    pub windows: Vec<(&'static str, usize)>,
+}
+
+impl Detection {
+    /// The context window of engine `id` in tokens, when it reported one.
+    pub fn window(&self, id: &str) -> Option<usize> {
+        self.windows
+            .iter()
+            .find_map(|(other, window)| (*other == id).then_some(*window))
+    }
 }
 
 /// Raw facts gathered by the runtime for one engine.

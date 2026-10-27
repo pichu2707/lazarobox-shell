@@ -31,6 +31,7 @@ use crate::core::ai::{
     parse::sanitize,
     reduce,
     sanitize::redact_tokens,
+    window,
 };
 
 /// Room for the status line and headers above the 1 MiB body cap.
@@ -531,7 +532,34 @@ pub async fn detect_all(
         .and_then(Path::parent)
         .map(Path::to_path_buf);
     detection.vulkan_icd = crate::runtime::llama_install::installer::has_vulkan_icd();
+    // The two do not wait on each other: the model scan is off the executor
+    // and the `/props` probe is on the network.
+    let (models, windows) = tokio::join!(
+        local_models(&detection, model_dirs),
+        windows(&detection, ports)
+    );
+    detection.local_models = models;
+    detection.windows = windows;
     detection
+}
+
+/// The context windows of the servers that are up and say theirs: a running
+/// llama-server's `n_ctx` (`GET /props`). Ollama is left out: its window sits
+/// behind a POST (`/api/show`), which this GET-only probe does not make.
+async fn windows(detection: &Detection, ports: &ServerPorts) -> Vec<(&'static str, usize)> {
+    let up = detection
+        .engines
+        .iter()
+        .any(|s| s.id == "llamacpp" && s.status == Status::Available);
+    let Some(port) = ports.port("llamacpp").filter(|_| up) else {
+        return Vec::new();
+    };
+    match http_get(port, "/props").await {
+        Some((200, body)) => window::llamacpp_n_ctx(&body)
+            .map(|n| vec![("llamacpp", n)])
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
 }
 
 /// The llama.cpp model files in `dirs`, looked for only when llama-server is
@@ -1475,12 +1503,48 @@ mod tests {
         assert_eq!(llamacpp.status, Status::Available);
         assert_eq!(llamacpp.models, ["m"]);
         let seen = requests.lock().unwrap();
-        assert_eq!(seen.len(), 1);
+        // The detection, then the window of the server it found.
+        assert_eq!(seen.len(), 2);
         assert!(
             seen[0].starts_with(b"GET /v1/models HTTP/1."),
             "{:?}",
             String::from_utf8_lossy(&seen[0])
         );
+        assert!(
+            seen[1].starts_with(b"GET /props HTTP/1."),
+            "{:?}",
+            String::from_utf8_lossy(&seen[1])
+        );
+    }
+
+    // chat-memory S1: a running llama-server's `n_ctx` is the window.
+    #[tokio::test]
+    async fn a_running_llama_server_reports_its_context_window() {
+        let body = r#"{"data":[{"id":"m","owned_by":"llamacpp"}],"default_generation_settings":{"n_ctx":8192}}"#;
+        let reply = format!(
+            "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let (port, _) = fake_server(Some(reply.into_bytes())).await;
+        let lab = lab();
+        let env = env_of(&lab, false);
+        let ports = ServerPorts::default().with("llamacpp", port);
+        let d = detect_all(&env, &real_cache(), false, &ports, &[]).await;
+        assert_eq!(d.window("llamacpp"), Some(8_192));
+        assert_eq!(d.window("ollama"), None);
+    }
+
+    #[tokio::test]
+    async fn a_server_that_is_not_running_has_no_window_and_costs_no_request() {
+        let (port, requests) = fake_server(None).await;
+        // Nothing listens on the port the Ollama row would use, and the
+        // silent fake never answers llamacpp's detection.
+        let lab = lab();
+        let env = env_of(&lab, false);
+        let ports = ServerPorts::default().with("llamacpp", port);
+        let d = detect_all(&env, &real_cache(), false, &ports, &[]).await;
+        assert_eq!(d.window("llamacpp"), None);
+        assert_eq!(requests.lock().unwrap().len(), 1, "only the detection");
     }
 
     // Spec S2: the local models are listed only when llama-server is there.

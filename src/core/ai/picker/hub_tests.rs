@@ -12,6 +12,7 @@ fn llamacpp(status: Status, models: &[&str]) -> Detection {
         local_models: models.iter().map(PathBuf::from).collect(),
         data_home: None,
         vulkan_icd: false,
+        ..Default::default()
     }
 }
 
