@@ -184,3 +184,40 @@ Notes:
 - Spec scenario "Layout after install" fixed to D5 (`<tag>/llama-server`).
 - For PR6: call `activate::install(owned_root(data_home), release, archive, login_path)` after
   `download_verified`, then emit `Detect{force:true}`; `activate::remove(binary, data_home)`.
+
+### PR4 review fixes
+
+Commit: `fix(ai): make llama.cpp unpack, activate and remove robust against hostile modes and blocking`.
+
+- Closed folders (mode 000/0500): `make_owner_rwx` (iterative, `symlink_metadata`, never follows a
+  link) runs after `tar -x`, before the walk. `remove_tree` (same chmod, then `remove_dir_all`,
+  error returned) now deletes staging, tags, prune and remove. A failed staging cleanup is appended
+  to a failing install's message; after a successful install it is left for the next sweep.
+- Blocking work: `lock`, `sweep_staging`, staging creation, staging removal, tag undo and `prune`
+  run in `spawn_blocking` (`blocking` helper). `remove` is now `async` and runs whole on the
+  blocking pool (API change: `remove(binary, data_home).await`).
+- Listing: a member name with `" link to "` or `" -> "` is refused outright; a hardlink target
+  with a second `" link to "` is refused; symlink targets are now judged from the verbose listing
+  before anything is written (GNU tar itself refused a write through an absolute symlink dir, but
+  our checks did not; now they do). A newline in a name is refused by `check_member` (GNU prints
+  it escaped as a backslash). The nlink census stays.
+- Same-tag reinstall: the tag `current` points at is refused with "<tag> is already installed".
+  Reinstalling the kept previous tag still works (old folder moved aside, put back on failure).
+- `remove`: a symlink or dangling-symlink root is removed as a link before any lock; contents go
+  first, then `.lock`, then the root (a waiter that lost the lock fails on the missing folder).
+- `with_owned_path`: verified, the premise was only partly true: only the lone empty entry of a
+  fully empty PATH is dropped (correct); empty and `.` entries in a longer PATH were already kept.
+  Comment added and a test that pins it (no RED possible: it passed on the unchanged code).
+- Cross-process lock: tested with `flock(1)` holding `.lock` from a child process group (skips with
+  a message when `flock` is absent).
+
+Mutation/RED evidence (each test fails without its fix): chmod off -> 2 closed-folder tests fail;
+`remove_tree` chmod off -> 2 fail; link-like name check off -> 1 fails; current-tag guard off -> 1
+fails; lock-before-symlink order -> dangling root test (+3) fail. Symlink-then-write test was RED
+before the listing check (`tar failed`, not our refusal).
+
+Risks:
+- bsdtar (macOS) is UNVERIFIED: its listing format (`-tzv` columns, raw newlines in names, `->`
+  and `link to` separators) was not run; only GNU tar 1.35. A newline in a name is only caught on
+  GNU (escaped); on bsdtar the fragments are judged as separate names.
+- Cleanup of a failed staging after a successful install is silent (swept next time).
