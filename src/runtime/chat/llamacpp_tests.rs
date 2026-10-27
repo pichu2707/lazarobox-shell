@@ -162,16 +162,19 @@ fn no_jinja() -> Step {
 }
 
 #[test]
-fn the_openai_profile_rejects_4xx_and_5xx_that_name_tools_or_jinja() {
+fn the_openai_profile_rejects_only_4xx_and_5xx_that_name_the_jinja_flag() {
     for text in [
-        "HTTP 400: tools are not supported",
-        "HTTP 422: unprocessable, Jinja template",
+        "HTTP 400: tools param requires --jinja flag",
+        "HTTP 422: start it with --JINJA",
         "HTTP 500: {\"error\":{\"message\":\"tools param requires --jinja flag\"}}",
     ] {
         assert!(Profile::OpenAi.rejected(text), "{text}");
     }
     for text in [
         "HTTP 500: boom",
+        "HTTP 400: tools are not supported",
+        "HTTP 422: unprocessable, Jinja template",
+        "HTTP 500: Jinja Exception: Conversation roles must alternate user/assistant",
         "HTTP 404: model not found",
         "HTTP 200: tools",
         "the stream broke: tools",
@@ -212,10 +215,10 @@ async fn the_recorded_no_jinja_reply_retries_once_as_text_with_one_notice() {
 }
 
 #[tokio::test]
-async fn a_400_422_or_500_naming_tools_or_jinja_retries() {
+async fn a_4xx_or_5xx_naming_the_jinja_flag_retries() {
     for (code, body) in [
-        (400, "tools not supported"),
-        (422, "needs jinja"),
+        (400, "tools param requires --jinja flag"),
+        (422, "needs --jinja"),
         (500, "tools param requires --jinja flag"),
     ] {
         let fake = fake(vec![
@@ -227,6 +230,24 @@ async fn a_400_422_or_500_naming_tools_or_jinja_retries() {
         let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
         assert_eq!(notices(&events), [NO_TOOLS_NOTICE], "{code}");
         assert_eq!(fake.bodies().len(), 2, "{code}");
+    }
+}
+
+#[tokio::test]
+async fn a_template_exception_or_a_tools_400_is_the_real_error_with_no_retry() {
+    for (code, body) in [
+        (500, "Jinja Exception: Conversation roles must alternate"),
+        (400, "tools[0].function.parameters is invalid"),
+    ] {
+        let fake = fake(vec![super::ollama_tests::status(code, body)]).await;
+        let lab = lab(fake.port);
+        let events = turn(&lab, fake.port, Profile::OpenAi, true).await;
+        assert!(
+            matches!(events.last(), Some(StreamEvent::Error(ChatError::Failed(t))) if t.contains(body)),
+            "{code}: {events:?}"
+        );
+        assert!(notices(&events).is_empty(), "{code}");
+        assert_eq!(fake.bodies().len(), 1, "{code}");
     }
 }
 
