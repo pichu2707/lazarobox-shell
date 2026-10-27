@@ -98,15 +98,16 @@ impl Profile {
 
     /// Whether the error text of a reply says the server refused `tools`.
     /// Ollama answers a plain 400. llama-server answers a 4xx or 5xx whose
-    /// message names `tools` or `jinja` (500 without `--jinja`); the status
-    /// prefix keeps an in-stream error from matching.
+    /// message names the `--jinja` flag (recorded: 500 `tools param requires
+    /// --jinja flag`); a template exception or any other 4xx/5xx is a real
+    /// error. The status prefix keeps an in-stream error from matching.
     pub(super) fn rejected(self, text: &str) -> bool {
         match self {
             Profile::Ollama => text.starts_with(REJECTED),
             Profile::OpenAi => {
                 let lower = text.to_lowercase();
                 (text.starts_with("HTTP 4") || text.starts_with("HTTP 5"))
-                    && (lower.contains("tools") || lower.contains("jinja"))
+                    && lower.contains("--jinja")
             }
         }
     }
@@ -189,6 +190,9 @@ async fn rounds(
     // The next text follows earlier text that did not end its line.
     let mut gap = false;
     let mut history: Vec<ToolRound> = Vec::new();
+    // Decided per turn: a server without `--jinja` costs one refused request
+    // every turn (the notice is deduped by the chat); a per-pane memory is a
+    // follow-up.
     let mut offer = true;
     let mut requests = 0;
     let limit = max_rounds(request.families);

@@ -629,6 +629,7 @@ pub type Wires = Arc<dyn Fn(&ChatRequest) -> bool + Send + Sync>;
 /// llama.cpp) runs them in-process; a CLI only when it will run jailed. The user's
 /// servers are started only for such a turn: for a bare CLI the wiring is
 /// dropped, so a server would run, and be announced, for nothing.
+// The llamacpp arm is inert until `MCP_VERIFIED` lists it (PR3).
 pub fn wires_tools(cli: &CliEnv, request: &ChatRequest) -> bool {
     match adapter_for(&request.engine) {
         Some(Adapter::Ollama | Adapter::Llamacpp) => true,

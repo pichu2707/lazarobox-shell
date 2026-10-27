@@ -65,3 +65,9 @@ Gotcha: a test that collects events only after `tool_turn_with` returns deadlock
 PR2 production vs PR1 head (c5cac58): chat.rs +21/-4, ollama.rs +98/-15. Tests: llamacpp_tests.rs +660, ollama_tests.rs +63/-29. Gates: fmt, clippy -D warnings, `cargo test` 6142 lib passed, all green.
 
 Remaining: PR3 (T3.0 manual gate, T3.1-T3.3).
+
+## PR2 review fixes
+
+- D8 narrowed: `Profile::OpenAi.rejected()` now needs `HTTP 4xx/5xx` AND lowercase `--jinja` (recorded F3 text). A 500 "Jinja Exception: roles must alternate" and a 400 mentioning only `tools` are real errors: no retry, no notice. RED first (`test(chat): narrow the llama.cpp tools rejection to the --jinja message`), then the fix. Spec, design D8/D9 and tasks T2.4 updated to match.
+- Retry every turn accepted as designed: code comment at `offer` in `ollama.rs`, cost documented in design D9 (one refused request per turn on a server without `--jinja`; per-pane memory is a follow-up).
+- `wires_tools` comment: llamacpp arm inert until `MCP_VERIFIED` lists it (PR3). tasks.md PR3 note: flip `MCP_VERIFIED` and `src/core/ai/chat/engine/tools_tests.rs:9` together.
