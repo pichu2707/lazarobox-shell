@@ -112,3 +112,34 @@ Deviations / notes for later PRs:
   PR4/PR6 must pass the owned root (`install::owned_root(data_home)`) as `root`; the
   `.download` dir lives inside it, so `remove` deletes it too.
 - Unknown size (0) skips the size check and resume shortcut; the digest still guards.
+
+## PR3 review fixes
+
+Commit `fix(ai): harden the llama.cpp download and attestation checks` (Strict TDD, RED
+observed: 5 unresolved items at compile time, then 29 passed x10 consecutive runs).
+
+- gh attestation timeout no longer deletes the digest-verified archive:
+  `Attestation::Unchecked` -> `Fetched::Failed("could not check the attestation: timed out")`
+  (`UNCHECKED_TIMEOUT`), archive kept. Only a nonzero `gh attestation verify` deletes it.
+- `gh auth status --hostname github.com`; logged-out is told from other failures by the
+  stderr line ("not logged in" / "gh auth login") -> `GH_LOGGED_OUT`; anything else or a
+  timeout -> a "gh could not check its login (...)" warning (`Skipped`). gh children clear
+  `GH_HOST`, `GH_ENTERPRISE_TOKEN`, `GH_REPO` (`gh_command`).
+- GitHub download only: `--max-filesize <size>` (omitted when size 0), `--max-redirs 5`,
+  `--speed-limit 1 --speed-time 60` via `Curl::download_args_within(path, out, Some(size))`;
+  `fetch` takes `bound: Option<u64>` (Hub passes `None`; its args are unchanged).
+  `download_args` is now `#[cfg(test)]`.
+- `.download` created 0700; a symlink at `.download` or at the archive is refused before any
+  read/remove/write (`refuse_links`, `create_dir`).
+- gh gets the archive as an absolute path (`std::path::absolute`).
+- Flake: the cancel test polls the fake gh log for `attestation verify`; ETXTBSY retry is
+  10 x 50 ms.
+
+Notes for later PRs:
+- PR4 MUST re-hash (or re-check size + sha256 of) the archive right before extraction: the
+  digest is checked at download, and `.download` is only private to the user, not immutable.
+- PR4/PR6: `Fetched::Failed` can now leave the archive on disk (timeout); a retry
+  re-verifies it without a download.
+- Follow-up: `--signer-workflow ggml-org/llama.cpp/.github/workflows/release.yml` is NOT
+  added: that path is not confirmed in the repo docs or notes. Verify upstream's release
+  workflow path before pinning it.
