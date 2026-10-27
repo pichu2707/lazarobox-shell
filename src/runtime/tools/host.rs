@@ -366,8 +366,8 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
             (Call::RunCommand { .. }, locality) => match exec::plan(&host, &scope, valid).await {
                 Ok(plan) => {
                     ask = ask_for(valid, locality);
-                    if let Some(ApprovalAsk::Exec { script, .. }) = ask.as_mut() {
-                        script.clone_from(&plan.pin.as_ref().and_then(|pin| pin.shown.clone()));
+                    if let Some(ask) = ask.as_mut() {
+                        exec::fill(&host, &plan, ask);
                     }
                     pinned = plan.pin;
                 }

@@ -22,12 +22,12 @@ use super::{
 };
 use crate::{
     core::ai::{
-        chat::approval::script_line,
+        chat::approval::{ApprovalAsk, script_line},
         jail::{Backend, JailSupport},
         sanitize::clean,
         toolchain::{Layout, Refusal, Vars, env::scrub, toolchain_spec},
         tools::{
-            Call, Locality, ToolError,
+            Call, ToolError,
             allow::{Program, RunError, RunRequest, parse_run},
             label,
             mcp::refusal_text,
@@ -49,8 +49,6 @@ use crate::{
 
 /// The refusal of a run on a system with no Landlock jail (design D18).
 pub(super) const NO_JAIL: &str = "commands need the Linux sandbox (Landlock ABI 3+)";
-/// Removed by X-d2 with the check in [`plan`].
-const CLOUD: &str = "commands run only with a local model for now";
 const PROPOSE_FIRST: &str = "staged changes are not proposed: propose them first";
 const IN_REVIEW: &str = "a batch is waiting for the user's review";
 /// Text the prompt could not show exactly as it will run.
@@ -145,11 +143,6 @@ pub(super) async fn plan(
     let (Some(key), Call::RunCommand { args }) = (scope.stage_key, call) else {
         return Err(refusal_text(ToolError::UnknownTool));
     };
-    // REMOVED BY X-d2: delete this check and `CLOUD` when the `.env` notice
-    // lands. Until then the output of a command never goes to a provider.
-    if scope.locality == Locality::Cloud {
-        return Err(CLOUD);
-    }
     if !host.exec.jailed() {
         return Err(NO_JAIL);
     }
@@ -173,6 +166,51 @@ pub(super) async fn plan(
         cwd,
         key,
     })
+}
+
+/// Fills in what only the host knows: the script bodies, the timeout the run
+/// will have and what an earlier cancelled run changed.
+pub(super) fn fill(host: &ToolHost, plan: &Plan, ask: &mut ApprovalAsk) {
+    if let ApprovalAsk::Exec {
+        script,
+        timeout_secs,
+        earlier,
+        ..
+    } = ask
+    {
+        script.clone_from(&plan.pin.as_ref().and_then(|pin| pin.shown.clone()));
+        *timeout_secs = plan.request.timeout.as_secs();
+        *earlier = earlier_note(&host.exec.sink(plan.key).peek());
+    }
+}
+
+/// One line about the changes a cancelled run left in the sink: the names are
+/// the program's, so they are cleaned and capped. `None` when there are none.
+fn earlier_note(changes: &[Change]) -> Option<String> {
+    const NAMES: usize = 3;
+    let mut parts: Vec<String> = changes
+        .iter()
+        .take(NAMES)
+        .map(|change| {
+            let what = match change.kind {
+                Kind::Added => "added",
+                Kind::Changed => "changed",
+                Kind::Removed => "removed",
+                _ => return "could not verify git hooks and config".to_owned(),
+            };
+            clean(&format!("{what} {}", change.path.display()))
+        })
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    if changes.len() > NAMES {
+        parts.push(format!("and {} more", changes.len() - NAMES));
+    }
+    Some(format!(
+        "cancelled, it left git hooks or config touched (not reverted): {}",
+        parts.join(", ")
+    ))
 }
 
 /// The root policy of the chat origin, the folder, the allow-list and what the

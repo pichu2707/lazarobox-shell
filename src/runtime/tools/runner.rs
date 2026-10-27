@@ -87,7 +87,13 @@ impl Unreported {
         std::mem::take(&mut *self.lock())
     }
 
-    fn push(&self, changes: Vec<Change>) {
+    /// A copy of what is held, left in place: the user is told of it, and the
+    /// next result still carries it for the model.
+    pub fn peek(&self) -> Vec<Change> {
+        self.lock().clone()
+    }
+
+    pub(crate) fn push(&self, changes: Vec<Change>) {
         self.lock().extend(changes);
     }
 

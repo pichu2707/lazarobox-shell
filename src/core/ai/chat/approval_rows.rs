@@ -13,6 +13,8 @@ use super::{ChatState, approval::ApprovalPrompt, wrap::wrap_ranges};
 
 /// The most rows of the command drawn.
 pub const MAX_COMMAND_ROWS: usize = 6;
+/// The most rows of notice `wanted` plans for.
+const NOTICE_ROOM: usize = 12;
 /// What the prompt says when it cannot show the whole text.
 pub const TOO_SMALL: &str = "pane too small to show it all: enlarge it or press n";
 /// The keys line while the prompt does not answer yet.
@@ -28,6 +30,9 @@ pub enum Part {
     /// Why a `run` command was not run directly. Advice only: it is drawn
     /// when there is a spare row and never changes whether the command fits.
     Why(String),
+    /// A fact the user must see before answering (see
+    /// [`ApprovalPrompt::notice`]); counted by [`fits`].
+    Notice(String),
     Marker(String),
     Keys(String),
 }
@@ -74,16 +79,30 @@ fn clip(text: &str, width: usize) -> String {
 /// The rows when the whole command fits in `height` rows, else `None`.
 fn full_rows(prompt: &ApprovalPrompt, width: usize, height: usize) -> Option<Vec<Part>> {
     let rows = command_rows(&prompt.command, width.max(1));
+    let notes = prompt
+        .notice
+        .as_deref()
+        .map(|text| command_rows(text, width.max(1)))
+        .unwrap_or_default();
     let head = Part::Head(prompt.target.clone());
+    // The notice has its own budget on top of the command's.
+    let room = |height: usize| {
+        (height - 2)
+            .saturating_sub(notes.len())
+            .min(MAX_COMMAND_ROWS)
+    };
     match height {
         0 | 1 => None,
-        2 if rows.len() == 1 => Some(vec![head, Part::Command(rows[0].clone())]),
+        2 if rows.len() == 1 && notes.is_empty() => {
+            Some(vec![head, Part::Command(rows[0].clone())])
+        }
         2 => None,
-        _ if rows.len() > (height - 2).min(MAX_COMMAND_ROWS) => None,
+        _ if height - 2 < notes.len() || rows.len() > room(height) => None,
         _ => {
-            let spare = rows.len() < (height - 2).min(MAX_COMMAND_ROWS);
+            let spare = rows.len() < room(height);
             let mut out = vec![head];
             out.extend(rows.into_iter().map(Part::Command));
+            out.extend(notes.into_iter().map(Part::Notice));
             if let Some(why) = prompt.why.as_deref().filter(|_| spare) {
                 out.push(Part::Why(clip(why, width)));
             }
@@ -110,7 +129,7 @@ pub fn parts(prompt: &ApprovalPrompt, width: usize, height: usize) -> Vec<Part> 
 
 /// The rows the whole prompt wants at `width`.
 pub fn wanted(prompt: &ApprovalPrompt, width: usize) -> usize {
-    full_rows(prompt, width, MAX_COMMAND_ROWS + 3).map_or(2, |rows| rows.len())
+    full_rows(prompt, width, MAX_COMMAND_ROWS + 3 + NOTICE_ROOM).map_or(2, |rows| rows.len())
 }
 
 /// Whether the prompt shows all of its text in a chat pane `width` x
@@ -135,6 +154,7 @@ mod tests {
             keys: RUN_KEYS,
             armed: true,
             why: None,
+            notice: None,
         }
     }
 
@@ -152,7 +172,64 @@ mod tests {
             keys: READ_KEYS,
             armed: true,
             why: None,
+            notice: None,
         }
+    }
+
+    fn noticed(command: &str, notice: &str) -> ApprovalPrompt {
+        ApprovalPrompt {
+            notice: Some(notice.into()),
+            ..run(command)
+        }
+    }
+
+    // The notice is not advice: it is part of what the user approves, so the
+    // prompt that cannot show it all is not answerable.
+    #[test]
+    fn a_notice_is_drawn_after_the_command_and_counts_for_fits() {
+        let p = noticed("cargo test", "network is on\nthe output goes to the model");
+        let rows = parts(&p, 60, 12);
+        assert_eq!(
+            rows,
+            [
+                Part::Head("run in pane 1".into()),
+                Part::Command("cargo test".into()),
+                Part::Notice("network is on".into()),
+                Part::Notice("the output goes to the model".into()),
+                Part::Keys(RUN_KEYS.to_owned()),
+            ]
+        );
+        assert!(fits(&p, 60, 12));
+        assert_eq!(wanted(&p, 60), 5);
+        // head + command + two notice rows + keys = 5 rows.
+        assert!(!fits(&p, 60, 4));
+    }
+
+    #[test]
+    fn a_full_command_budget_still_leaves_room_for_the_notice() {
+        let six = (1..=6)
+            .map(|n| format!("echo {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let p = noticed(&six, "one\ntwo");
+        assert!(fits(&p, 60, 20));
+        let seven = noticed("1\n2\n3\n4\n5\n6\n7", "one");
+        assert!(!fits(&seven, 60, 20));
+    }
+
+    #[test]
+    fn a_notice_wider_than_the_pane_wraps_and_is_never_cut() {
+        let p = noticed("ls", &"word ".repeat(10));
+        let rows = parts(&p, 20, 20);
+        let drawn: String = rows
+            .iter()
+            .filter_map(|r| match r {
+                Part::Notice(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        assert_eq!(drawn.split_whitespace().count(), 10, "{rows:?}");
     }
 
     #[test]

@@ -260,12 +260,12 @@ async fn an_argument_with_a_control_character_is_refused() {
     }
 }
 
-// A command's output can carry secrets and would go to the provider: until the
-// `.env` notice (X-d2) lands, commands run only with a local model.
+// Spec (agent-tools, Approval): a cloud engine runs commands too, after a
+// prompt that says the output goes to its provider.
 #[tokio::test]
-async fn a_cloud_chat_is_refused_before_it_asks() {
+async fn a_cloud_chat_asks_with_the_provider_notice_instead_of_refusing() {
     let w = world();
-    let asks = Asks::new(Decision::Sent);
+    let asks = Asks::new(Decision::Denied("the user declined"));
     let (tx, _rx) = mpsc::channel(32);
     let mut scope = TurnScope::new(tx, Locality::Cloud, w.proj.clone());
     scope.approver = asks.clone();
@@ -276,9 +276,75 @@ async fn a_cloud_chat_is_refused_before_it_asks() {
         .dispatch(scope)
         .call(command("cargo", &["test"], None))
         .await;
-    assert!(out.is_error, "{out:?}");
-    assert_eq!(out.text, "commands run only with a local model for now");
-    assert!(asks.asked().is_empty());
+    assert_eq!(out.text, "denied: the user declined");
+    let [ApprovalAsk::Exec { cloud, .. }] = &asks.asked()[..] else {
+        panic!("{:?}", asks.asked());
+    };
+    assert!(*cloud);
+}
+
+#[tokio::test]
+async fn a_local_chat_asks_without_the_cloud_flag() {
+    let w = world();
+    let asks = Asks::new(Decision::Denied("the user declined"));
+    let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
+    d.call(command("cargo", &["test"], None)).await;
+    let [ApprovalAsk::Exec { cloud, .. }] = &asks.asked()[..] else {
+        panic!("{:?}", asks.asked());
+    };
+    assert!(!*cloud);
+}
+
+// The prompt shows the timeout the run will have, clamped like the run.
+#[tokio::test]
+async fn the_ask_carries_the_timeout_the_run_will_have() {
+    let w = world();
+    for (given, want) in [(None, 120), (Some(30), 30), (Some(600), 600)] {
+        let asks = Asks::new(Decision::Denied("the user declined"));
+        let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
+        let mut call = command("cargo", &["test"], None);
+        if let (Call::RunCommand { args }, Some(secs)) = (&mut call, given) {
+            args["timeout_secs"] = Value::from(secs);
+        }
+        d.call(call).await;
+        let [ApprovalAsk::Exec { timeout_secs, .. }] = &asks.asked()[..] else {
+            panic!("{:?}", asks.asked());
+        };
+        assert_eq!(*timeout_secs, want, "{given:?}");
+    }
+}
+
+// Changes a cancelled run left in the sink reach the user at the next ask.
+#[tokio::test]
+async fn the_changes_of_a_cancelled_run_are_told_in_the_next_ask_and_still_reach_the_model() {
+    use crate::runtime::tools::integrity::Kind;
+    let w = world();
+    w.host
+        .exec
+        .sink(key())
+        .push(vec![change(Kind::Added, ".git/hooks/pre-commit")]);
+    let asks = Asks::new(Decision::Denied("the user declined"));
+    let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
+    d.call(command("cargo", &["test"], None)).await;
+    let [ApprovalAsk::Exec { earlier, .. }] = &asks.asked()[..] else {
+        panic!("{:?}", asks.asked());
+    };
+    let earlier = earlier.clone().expect("told");
+    assert!(earlier.contains("added .git/hooks/pre-commit"), "{earlier}");
+    // Peeked, not taken: the next result still carries it for the model.
+    assert_eq!(w.host.exec.sink(key()).drain().len(), 1);
+}
+
+#[tokio::test]
+async fn an_ask_with_no_earlier_changes_says_nothing_about_them() {
+    let w = world();
+    let asks = Asks::new(Decision::Denied("the user declined"));
+    let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
+    d.call(command("cargo", &["test"], None)).await;
+    let [ApprovalAsk::Exec { earlier, .. }] = &asks.asked()[..] else {
+        panic!("{:?}", asks.asked());
+    };
+    assert_eq!(*earlier, None);
 }
 
 // Scenario "Unproposed staged changes".
@@ -341,6 +407,9 @@ async fn a_valid_command_asks_and_a_no_starts_nothing() {
             args: vec!["test".into(), "-p".into(), "x".into()],
             cwd: ".".into(),
             script: None,
+            timeout_secs: 120,
+            cloud: false,
+            earlier: None,
         }]
     );
     let (_, ask, status, _) = super::tests::pair(&super::tests::events(&mut rx));
