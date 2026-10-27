@@ -332,7 +332,16 @@ async fn a_dropped_run_removes_its_private_folder_too() {
         _ = run_jailed(job, &parent) => panic!("it ends only when killed"),
         _ = ready => {}
     }
-    assert!(!tmp.exists());
+    // Removed on a detached thread: it goes shortly after the drop.
+    let mut gone = false;
+    for _ in 0..500 {
+        gone = !tmp.exists();
+        if gone {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(gone, "the private folder outlived the dropped run");
 }
 
 #[tokio::test]
@@ -471,6 +480,55 @@ async fn dropped_after(job: Job, marker: &std::path::Path) {
     }
 }
 
+/// What the sink holds once a detached drop-time snapshot has pushed it
+/// (bounded: it never waits more than a few seconds).
+async fn drained_within(unreported: &Unreported) -> Vec<Change> {
+    for _ in 0..500 {
+        let found = unreported.drain();
+        if !found.is_empty() {
+            return found;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Vec::new()
+}
+
+#[test]
+fn the_drop_does_not_wait_for_the_snapshot_and_the_sink_fills_after() {
+    let fx = fixture();
+    let unreported = Unreported::default();
+    let before = integrity::snapshot(&fx.root);
+    std::fs::write(fx.root.join(".git/hooks/pre-commit"), "x").unwrap();
+    let guard = AfterOnDrop {
+        root: fx.root.clone(),
+        before: Some(before),
+        unreported: unreported.clone(),
+    };
+    // Holding the sink's lock stalls the snapshot's push: a drop that does
+    // the work itself would never return.
+    let held = unreported.lock();
+    let (done, wait) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(guard);
+        let _ = done.send(());
+    });
+    assert!(
+        wait.recv_timeout(Duration::from_secs(5)).is_ok(),
+        "the drop waited for the snapshot"
+    );
+    drop(held);
+    let mut found = Vec::new();
+    for _ in 0..500 {
+        found = unreported.drain();
+        if !found.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].kind, Kind::Added);
+}
+
 #[tokio::test]
 async fn a_dropped_run_still_takes_its_after_snapshot_and_hands_it_over() {
     let fx = fixture();
@@ -480,7 +538,8 @@ async fn a_dropped_run_still_takes_its_after_snapshot_and_hands_it_over() {
     );
     let unreported = job.unreported.clone();
     dropped_after(job, &fx.root.join("ready")).await;
-    let found = unreported.drain();
+    // The snapshot is taken off the runtime, so it lands shortly after.
+    let found = drained_within(&unreported).await;
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0].kind, Kind::Added);
     assert_eq!(found[0].path, PathBuf::from(".git/hooks/pre-commit"));
@@ -527,7 +586,16 @@ async fn dropped_after_reading(job: Job, info: &std::path::Path) {
     let told = told.into_inner();
     let mut lines = told.lines();
     let gotmp = PathBuf::from(lines.next().unwrap());
-    assert!(!gotmp.exists(), "the Go folder outlived the run");
+    // Removed off the runtime, so it goes shortly after the drop.
+    let mut gone = false;
+    for _ in 0..500 {
+        gone = !gotmp.exists();
+        if gone {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(gone, "the Go folder outlived the run");
     let pids: Vec<libc::pid_t> = lines.map(|l| l.parse().unwrap()).collect();
     for pid in &pids {
         assert!(wait_gone(*pid).await, "{pid} lives");

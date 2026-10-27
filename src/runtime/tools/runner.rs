@@ -69,6 +69,12 @@ pub struct Job {
 /// is dropped and pushes the diff here; X-d1 drains it (it is a shared handle:
 /// clone it into the [`Job`], keep the clone) and treats what it finds like
 /// the `changes` of a run that finished. A run that finishes never pushes.
+///
+/// The drop-time snapshot reads the file system, so it runs on its own
+/// detached thread, never on the runtime's: the sink may fill shortly after
+/// the drop, not at it. Drain it again later (before a commit or a push, say)
+/// and not only right after the cancellation. If that thread cannot start, a
+/// [`Kind::Unchecked`] change is pushed instead.
 #[derive(Clone, Debug, Default)]
 pub struct Unreported(Arc<Mutex<Vec<Change>>>);
 
@@ -88,10 +94,13 @@ impl Unreported {
 }
 
 /// Holds the "before" of a run. If the run is dropped (or fails) before it
-/// took its own "after", this does it, synchronously, as it drops: the group
-/// is already signalled by then (the spawn future drops first), so what a
-/// program wrote before it died is seen; a write in the instant between the
-/// signal and the death can still be missed (a documented limit).
+/// took its own "after", this takes it as it drops, on a detached thread (the
+/// drop may run on a runtime thread, which must not block on the file
+/// system): the group is already signalled by then (the spawn future drops
+/// first), so what a program wrote before it died is seen; a write in the
+/// instant between the signal and the death can still be missed (a
+/// documented limit). The result reaches [`Job::unreported`] when the thread
+/// is done.
 struct AfterOnDrop {
     root: PathBuf,
     before: Option<integrity::Snapshot>,
@@ -110,10 +119,52 @@ impl Drop for AfterOnDrop {
         let Some(before) = self.before.take() else {
             return;
         };
-        let changes = integrity::compare(&before, &integrity::snapshot(&self.root));
-        if !changes.is_empty() {
-            self.unreported.push(changes);
+        let root = self.root.clone();
+        let sink = self.unreported.clone();
+        let spawned = std::thread::Builder::new()
+            .name("lbx-after-snapshot".to_owned())
+            .spawn(move || {
+                let changes = integrity::compare(&before, &integrity::snapshot(&root));
+                if !changes.is_empty() {
+                    sink.push(changes);
+                }
+            });
+        if spawned.is_err() {
+            // Fail closed: nothing was compared.
+            self.unreported.push(vec![Change {
+                path: PathBuf::from(".git"),
+                kind: integrity::Kind::Unchecked,
+                before: None,
+                after: Some(b"could not take the after-snapshot of a dropped run".to_vec()),
+                mode: (None, None),
+            }]);
         }
+    }
+}
+
+/// The private folders of a run. Whatever way the run ends they are removed:
+/// by [`Cleanup::finish`] when it ended normally (the caller runs it off the
+/// runtime), and by a detached thread when the guard is dropped (the run was
+/// cancelled or failed to start), so no runtime thread waits on the removal.
+struct Cleanup(Vec<Scratch>);
+
+impl Cleanup {
+    fn take(&mut self) -> Vec<Scratch> {
+        std::mem::take(&mut self.0)
+    }
+}
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let folders = self.take();
+        if folders.is_empty() {
+            return;
+        }
+        // If no thread can start, the closure (and the folders) drop here:
+        // the removal then runs inline rather than not at all.
+        let _ = std::thread::Builder::new()
+            .name("lbx-scratch-cleanup".to_owned())
+            .spawn(move || drop(folders));
     }
 }
 
@@ -146,17 +197,16 @@ pub async fn run_jailed(
     job: Job,
     read: &(dyn Fn(&str) -> Option<OsString> + Sync),
 ) -> io::Result<Ran> {
-    let mut env = scrub(read, &job.root, job.scratch.path());
+    let tmp = job.scratch.path().to_path_buf();
+    let mut cleanup = Cleanup(vec![job.scratch]);
+    let mut env = scrub(read, &job.root, &tmp);
     // `go run` and `go test` execute what they build, and the private TMPDIR
     // never executes: they get a folder under the `rwx` root.
-    let gotmp = match job.tool {
-        Program::Go => {
-            let gotmp = Scratch::unique(&job.root, ".lbx-gotmp")?;
-            env.push((OsString::from("GOTMPDIR"), gotmp.path().into()));
-            Some(gotmp)
-        }
-        _ => None,
-    };
+    if job.tool == Program::Go {
+        let gotmp = Scratch::unique(&job.root, ".lbx-gotmp")?;
+        env.push((OsString::from("GOTMPDIR"), gotmp.path().into()));
+        cleanup.0.push(gotmp);
+    }
     let args = JailArgs {
         min_abi: None,
         // The proxies (`cargo`, `go`) run under their own name, whatever they
@@ -181,8 +231,15 @@ pub async fn run_jailed(
     .await?;
     let after = watched(&job.root).await;
     let changes = integrity::compare(&guard.disarm(), &after);
-    let mut leftovers = job.scratch.finish();
-    leftovers.extend(gotmp.into_iter().flat_map(Scratch::finish));
+    let folders = cleanup.take();
+    let leftovers = tokio::task::spawn_blocking(move || {
+        folders
+            .into_iter()
+            .flat_map(Scratch::finish)
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default();
     Ok(Ran {
         done,
         changes,
