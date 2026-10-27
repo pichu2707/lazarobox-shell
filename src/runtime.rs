@@ -51,6 +51,7 @@ pub mod watch;
 pub mod workspace;
 
 use crate::core::ai::chat::review::{BatchEvent, NO_ORPHAN, closed_notice};
+use crate::core::menu::feedback::{Issue, SendReply};
 use ai_detect::spawn_detection;
 use chat::Chats;
 use chat_store::StoreHandle;
@@ -293,6 +294,8 @@ pub async fn run() -> io::Result<()> {
     // Off (`[updates] check = false`) nothing is read, asked or shown.
     let (update_tx, update_rx) = mpsc::channel(1);
     let (notified_tx, notified_rx) = mpsc::channel(4);
+    let (issue_tx, issue_rx) = mpsc::channel(1);
+    let (open_failed_tx, open_failed_rx) = mpsc::channel(4);
     let (managed_tx, managed_rx) = mpsc::channel(4);
     let (shared_tx, shared_rx) = mpsc::channel(1);
     let (hub_tx, hub_rx) = mpsc::channel(HUB_CHANNEL);
@@ -473,9 +476,31 @@ pub async fn run() -> io::Result<()> {
                 });
             }
         }))
+        // An opener that fails comes back as `AppEvent::OpenFailed`: the
+        // app copies the link instead.
         .with_opener(Box::new(move |url| {
             if let Some(opener) = &opener {
-                let _ = opener.open(url);
+                let tx = open_failed_tx.clone();
+                let link = url.to_owned();
+                let failed = move || {
+                    let _ = tx.try_send(link);
+                };
+                if opener.open(url, failed).is_err() {
+                    let _ = open_failed_tx.try_send(url.to_owned());
+                }
+            }
+        }))
+        // The Feedback issue: the user's own `gh`, found on the same PATH as
+        // the engines, on a task of its own; the answer comes back on its
+        // channel. The app sends one at a time.
+        .with_issue_sender(Box::new({
+            let path = cli_env.path.clone();
+            move |issue| {
+                let path = path.clone();
+                let tx = issue_tx.clone();
+                tokio::spawn(async move {
+                    let _ = tx.send(gh::send(&path, &issue).await).await;
+                });
             }
         }))
         .with_notify_test(Box::new({
@@ -546,6 +571,8 @@ pub async fn run() -> io::Result<()> {
         update: update_rx,
         run: run_rx,
         notified: notified_rx,
+        issue: issue_rx,
+        open_failed: open_failed_rx,
         managed: managed_rx,
         shared: shared_rx,
         hub: hub_rx,
@@ -728,6 +755,10 @@ struct Inbox {
     run: mpsc::Receiver<(PaneId, RunEvent)>,
     /// What the notification test did.
     notified: mpsc::Receiver<String>,
+    /// What became of the Feedback issue sent with `gh`.
+    issue: mpsc::Receiver<SendReply>,
+    /// A link the opener failed to open.
+    open_failed: mpsc::Receiver<String>,
     /// How the start of a llama-server the menu turned on went.
     managed: mpsc::Receiver<Result<(), String>>,
     /// The llama-server lazarobox started is answering another lazarobox.
@@ -778,6 +809,8 @@ async fn run_loop(
         update: mut update_rx,
         run: mut run_rx,
         notified: mut notified_rx,
+        issue: mut issue_rx,
+        open_failed: mut open_failed_rx,
         managed: mut managed_rx,
         shared: mut shared_rx,
         hub: mut hub_rx,
@@ -880,6 +913,16 @@ async fn run_loop(
             }
             Some(report) = notified_rx.recv() => {
                 if step(&mut app, AppEvent::NotifyTested(report), panes) {
+                    return Ok(());
+                }
+            }
+            Some(reply) = issue_rx.recv() => {
+                if step(&mut app, AppEvent::IssueSent(reply), panes) {
+                    return Ok(());
+                }
+            }
+            Some(url) = open_failed_rx.recv() => {
+                if step(&mut app, AppEvent::OpenFailed(url), panes) {
                     return Ok(());
                 }
             }
@@ -1071,6 +1114,10 @@ struct Panes {
     /// Starts the host's opener on a link, without waiting for it. Does
     /// nothing unless `with_opener` installs the production one.
     open_url: Box<dyn FnMut(&str)>,
+    /// Starts sending the Feedback issue with `gh`, without waiting; the
+    /// answer comes back on its channel. Does nothing unless
+    /// `with_issue_sender` installs the production one.
+    send_issue: Box<dyn FnMut(Issue)>,
     /// Starts the managed llama-server the menu turned on; the outcome comes
     /// back on its channel. A no-op unless `with_manager` installs one.
     manage: Box<ManageFn>,
@@ -1127,6 +1174,7 @@ impl Panes {
             sound_send: Box::new(|| {}),
             test_send: Box::new(|_, _, _| {}),
             open_url: Box::new(|_| {}),
+            send_issue: Box::new(|_| {}),
             manage: Box::new(|_, _| {}),
             set_idle: Box::new(|_| {}),
             check_shared: Box::new(|| {}),
@@ -1244,6 +1292,12 @@ impl Panes {
         self
     }
 
+    /// Sets what sends the Feedback issue.
+    fn with_issue_sender(mut self, send: Box<dyn FnMut(Issue)>) -> Self {
+        self.send_issue = send;
+        self
+    }
+
     /// Sets what runs the test action of the Notify row.
     fn with_notify_test(mut self, test: Box<TestSendFn>) -> Self {
         self.test_send = test;
@@ -1351,6 +1405,8 @@ impl Panes {
                 Effect::SetClipboard(bytes) => self.host_out.extend_from_slice(&bytes),
                 // Returns at once: the opener is reaped on its own thread.
                 Effect::OpenUrl(url) => (self.open_url)(&url),
+                // Returns at once: `gh` runs on its own task.
+                Effect::SendIssue(issue) => (self.send_issue)(*issue),
                 // Returns at once: the probes run on their own tasks.
                 Effect::DetectEngines => (self.detect)(false),
                 Effect::RedetectEngines => (self.detect)(true),
@@ -2484,6 +2540,26 @@ mod tests {
             sound: true,
         }]);
         assert_eq!(*plays.borrow(), 1);
+    }
+
+    // Spec (open-links S4): the send effect is handed to the sender, which
+    // returns at once.
+    #[test]
+    fn a_send_issue_effect_is_handed_to_the_sender() {
+        let (panes, _rx, _rec) = fake_panes(None);
+        let seen: Rc<RefCell<Vec<Issue>>> = Rc::default();
+        let log = Rc::clone(&seen);
+        let mut panes =
+            panes.with_issue_sender(Box::new(move |issue| log.borrow_mut().push(issue)));
+        let issue = Issue {
+            repo: "o/r".to_owned(),
+            title: "t".to_owned(),
+            body: "b".to_owned(),
+            labels: vec!["bug".to_owned()],
+        };
+        panes.apply(vec![Effect::SendIssue(Box::new(issue.clone()))]);
+        assert_eq!(*seen.borrow(), vec![issue]);
+        assert!(panes.host_out.is_empty());
     }
 
     #[test]

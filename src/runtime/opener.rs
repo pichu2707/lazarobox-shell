@@ -7,14 +7,22 @@ use std::io;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::core::opener::{candidates, is_web_url};
 use crate::runtime::desktop::which;
+
+/// How long after its start an opener's error still means the link did
+/// not open. `xdg-open` that finds no browser fails at once; one that runs
+/// the browser in the foreground exits with it, much later.
+const LAUNCH: Duration = Duration::from_secs(5);
 
 /// The program that opens links on this host.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Opener {
     program: PathBuf,
+    /// See [`LAUNCH`].
+    launch: Duration,
 }
 
 impl Opener {
@@ -29,12 +37,19 @@ impl Opener {
         candidates(os, wsl)
             .iter()
             .find_map(|cmd| lookup(cmd))
-            .map(|program| Self { program })
+            .map(|program| Self {
+                program,
+                launch: LAUNCH,
+            })
     }
 
     /// Starts the opener on `url`. A link [`is_web_url`] refuses is never
-    /// handed over.
-    pub fn open(&self, url: &str) -> io::Result<()> {
+    /// handed over. `failed` runs, on the reaping thread, when the opener
+    /// exits with an error within [`LAUNCH`]: it found no browser (an SSH
+    /// session, a desktop with no default). A later exit is the browser's.
+    /// `explorer.exe` exits 1 even when it opened the link, so its exit says
+    /// nothing.
+    pub fn open(&self, url: &str, failed: impl FnOnce() + Send + 'static) -> io::Result<()> {
         if !is_web_url(url) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -47,8 +62,17 @@ impl Opener {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
+        let trust_exit = self.program.file_name() != Some(OsStr::new("explorer.exe"));
+        let started = Instant::now();
+        let launch = self.launch;
         thread::spawn(move || {
-            let _ = child.wait();
+            if let Ok(status) = child.wait()
+                && !status.success()
+                && trust_exit
+                && started.elapsed() < launch
+            {
+                failed();
+            }
         });
         Ok(())
     }
@@ -93,7 +117,10 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
-        Opener { program }
+        Opener {
+            program,
+            launch: LAUNCH,
+        }
     }
 
     fn wait_for(path: &Path) -> String {
@@ -112,7 +139,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("args");
         let url = "https://github.com/o/r/issues/new?title=a%20b&body=$(id)`x`;y";
-        fake(dir.path(), &out).open(url).unwrap();
+        fake(dir.path(), &out).open(url, || {}).unwrap();
         assert_eq!(wait_for(&out), format!("{url}\n"));
     }
 
@@ -120,9 +147,56 @@ mod tests {
     fn a_link_that_is_not_https_is_never_handed_over() {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("args");
-        let error = fake(dir.path(), &out).open("--help").unwrap_err();
+        let error = fake(dir.path(), &out).open("--help", || {}).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         thread::sleep(Duration::from_millis(50));
         assert!(!out.exists());
+    }
+
+    /// A fake opener named `name` that exits with `code`.
+    fn exiting(dir: &Path, name: &str, code: i32) -> Opener {
+        let program = dir.join(name);
+        fs::write(&program, format!("#!/bin/sh\nexit {code}\n")).unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        Opener {
+            program,
+            launch: LAUNCH,
+        }
+    }
+
+    fn failed_after(opener: &Opener) -> bool {
+        let (tx, rx) = std::sync::mpsc::channel();
+        opener
+            .open("https://example.com/", move || {
+                let _ = tx.send(());
+            })
+            .unwrap();
+        rx.recv_timeout(Duration::from_secs(2)).is_ok()
+    }
+
+    // Review finding (late exit): an opener that runs the browser in the
+    // foreground exits when the browser does, maybe with an error, long
+    // after the link opened: only a failure at launch is reported.
+    #[test]
+    fn a_failure_after_the_launch_is_not_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("xdg-open");
+        fs::write(&program, "#!/bin/sh\nsleep 0.5\nexit 1\n").unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        let opener = Opener {
+            program,
+            launch: Duration::from_millis(200),
+        };
+        assert!(!failed_after(&opener));
+    }
+
+    // Review finding (opener failure): an opener that exits with an error
+    // is reported; `explorer.exe`, which exits 1 even when it opened the
+    // link, is not.
+    #[test]
+    fn an_opener_that_fails_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(failed_after(&exiting(dir.path(), "xdg-open", 3)));
+        assert!(!failed_after(&exiting(dir.path(), "explorer.exe", 1)));
     }
 }
