@@ -20,6 +20,7 @@ fn codex(models: Option<&str>, jail: Option<&str>) -> Detection {
         engines: CATALOG
             .iter()
             .map(|e| EngineState {
+                binary: None,
                 id: e.id,
                 status: if e.id == "codex" {
                     Status::Available

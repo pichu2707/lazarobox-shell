@@ -518,6 +518,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: if e.id == "ollama" {
                         Status::Available
@@ -587,6 +588,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: match e.id {
                         "ollama" | "claude" => Status::Available,
@@ -683,6 +685,8 @@ mod tests {
         press(&mut menu, &[KeyCode::Char('j')]);
         insta::assert_snapshot!(text(&draw(MIN_WIDTH, MIN_HEIGHT, &menu)));
     }
+
+    mod install;
 
     #[test]
     fn snapshot_level_one_lists_the_engines() {
@@ -1110,6 +1114,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: Status::Available,
                     models: if e.id == "ollama" {
@@ -1149,6 +1154,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: if e.id == "codex" {
                         Status::Available
@@ -1266,6 +1272,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: if e.id == "claude" {
                         Status::Available
@@ -1328,6 +1335,7 @@ mod tests {
             engines: CATALOG
                 .iter()
                 .map(|e| EngineState {
+                    binary: None,
                     id: e.id,
                     status: Status::Available,
                     models: vec!["m".to_owned()],

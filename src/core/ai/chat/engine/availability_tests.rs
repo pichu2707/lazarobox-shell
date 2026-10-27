@@ -25,6 +25,7 @@ fn cfg(task: Task, engine: Option<&str>, model: Option<&str>) -> AiConfig {
 
 fn state(id: &'static str, status: Status, models: &[&str]) -> EngineState {
     EngineState {
+        binary: None,
         id,
         status,
         models: models.iter().map(|m| (*m).to_owned()).collect(),

@@ -42,45 +42,45 @@ Chain strategy: stacked-to-main
 
 ## PR2: Pure logic + binary field
 
-- [ ] 2.1 RED: `src/core/ai/install.rs` tests: `pick_release` newest tag, numeric compare (b999 vs b1000), no usable release, missing/malformed digest; `asset_name` per platform; Vulkan with/without ICD; unsupported platform.
-- [ ] 2.2 GREEN: create `install.rs` (`Variant`, `Platform`, `asset_name`, `Release`, `pick_release`) (~150).
-- [ ] 2.3 RED: `check_member` (traversal, absolute, control chars, `\`, wrong top), symlink rule (bare name ok, escaping rejected), `needed_bytes`, newer-tag compare, update-check opt-out (A2).
-- [ ] 2.4 GREEN: implement those in `install.rs` (~120).
-- [ ] 2.5 RED: `Probe::Server.binary`, `EngineState.binary`, `start_command` absolute path only when owned (chat-engines "Owned binary spawned", "System binary preferred").
-- [ ] 2.6 GREEN: `src/core/ai/mod.rs` + `src/runtime/ai_detect.rs` report found path (~80).
+- [x] 2.1 RED: `src/core/ai/install.rs` tests: `pick_release` newest tag, numeric compare (b999 vs b1000), no usable release, missing/malformed digest; `asset_name` per platform; Vulkan with/without ICD; unsupported platform.
+- [x] 2.2 GREEN: create `install.rs` (`Variant`, `Platform`, `asset_name`, `Release`, `pick_release`) (~150).
+- [x] 2.3 RED: `check_member` (traversal, absolute, control chars, `\`, wrong top), symlink rule (bare name ok, escaping rejected), `needed_bytes`, newer-tag compare, update-check opt-out (A2).
+- [x] 2.4 GREEN: implement those in `install.rs` (~120).
+- [x] 2.5 RED: `Probe::Server.binary`, `EngineState.binary`, `start_command` absolute path only when owned (chat-engines "Owned binary spawned", "System binary preferred").
+- [x] 2.6 GREEN: `src/core/ai/mod.rs` + `src/runtime/ai_detect.rs` report found path (~80).
 
 ## PR3: Download and verify (needs PR2)
 
-- [ ] 3.1 RED: `src/runtime/hf/tests.rs`-style tests with local HTTP server: label in errors, 403/429 message, resolve picks newest with asset, no usable release.
-- [ ] 3.2 GREEN: `src/runtime/hf.rs` `Curl.label`, `github_api`/`github`, `pub(super)` helpers (~80).
-- [ ] 3.3 RED: `src/runtime/llama_install.rs` tests: digest match, mismatch deletes archive, missing digest aborts, insufficient space, cancel keeps `.download`, resume.
-- [ ] 3.4 GREEN: resolve + download + size/sha256 in `llama_install.rs` (~140).
-- [ ] 3.5 RED: attestation: failure aborts; `gh` absent or logged out warns and continues (fake `gh` on PATH).
-- [ ] 3.6 GREEN: `gh attestation verify` step (~80).
+- [x] 3.1 RED: `src/runtime/hf/tests.rs`-style tests with local HTTP server: label in errors, 403/429 message, resolve picks newest with asset, no usable release.
+- [x] 3.2 GREEN: `src/runtime/hf.rs` `Curl.label`, `github_api`/`github`, `pub(super)` helpers (~80).
+- [x] 3.3 RED: `src/runtime/llama_install.rs` tests: digest match, mismatch deletes archive, missing digest aborts, insufficient space, cancel keeps `.download`, resume.
+- [x] 3.4 GREEN: resolve + download + size/sha256 in `llama_install.rs` (~140).
+- [x] 3.5 RED: attestation: failure aborts; `gh` absent or logged out warns and continues (fake `gh` on PATH).
+- [x] 3.6 GREEN: `gh attestation verify` step (~80).
 
 ## PR4: Extract, activate, remove (needs PR2, PR3)
 
-- [ ] 4.1 RED: fixture tarballs: valid, `../` member, absolute member/symlink, `..` symlink, extra top dir, bare-name symlink ok, ownership not preserved, tar missing.
-- [ ] 4.2 GREEN: `tar -tzf`/`-xzf` + Rust walk in `llama_install.rs` (~130).
-- [ ] 4.3 RED: fake `llama-server` script: version pass/fail (failure keeps previous install, removes tag dir), layout `<tag>/`+`current`, XDG fallback, prune keeps previous tag (A1), lock refusal, stale staging sweep, remove deletes owned dir only.
-- [ ] 4.4 GREEN: activate (atomic symlink swap), prune, flock, remove (~120).
-- [ ] 4.5 RED: PATH plug-in: owned appended last, none changes nothing, forced re-detection finds/loses binary, system wins.
-- [ ] 4.6 GREEN: `src/runtime.rs` (l.266-270) append `current` to login PATH (~80).
+- [x] 4.1 RED: fixture tarballs: valid, `../` member, absolute member/symlink, `..` symlink, extra top dir, bare-name symlink ok, ownership not preserved, tar missing.
+- [x] 4.2 GREEN: `tar -tzf`/`-xzf` + Rust walk in `llama_install.rs` (~130).
+- [x] 4.3 RED: fake `llama-server` script: version pass/fail (failure keeps previous install, removes tag dir), layout `<tag>/`+`current`, XDG fallback, prune keeps previous tag (A1), lock refusal, stale staging sweep, remove deletes owned dir only.
+- [x] 4.4 GREEN: activate (atomic symlink swap), prune, flock, remove (~120).
+- [x] 4.5 RED: PATH plug-in: owned appended last, none changes nothing, forced re-detection finds/loses binary, system wins.
+- [x] 4.6 GREEN: `src/runtime.rs` (l.266-270) append `current` to login PATH (~80).
 
 ## PR5: Wizard state machine (needs PR2)
 
-- [ ] 5.1 RED: `src/core/ai/picker/install.rs` tests: no step without consent, Esc backs out, copy-only row never emits an ask, variant rows, offers order (managed then HF).
-- [ ] 5.2 GREEN: pure `Wizard`/`Screen`, `InstallAsk` outcomes, `Level::Install` in `picker.rs` (~200).
+- [x] 5.1 RED: `src/core/ai/picker/install.rs` tests: no step without consent, Esc backs out, copy-only row never emits an ask, variant rows, offers order (managed then HF).
+- [x] 5.2 GREEN: pure `Wizard`/`Screen`, `InstallAsk` outcomes, `Level::Install` in `picker.rs` (~200).
 
 ## PR6: Plumbing and rendering (needs PR3, PR4, PR5)
 
-- [ ] 6.1 RED: `src/app/install.rs` tests: Outcome -> `MenuCommand` -> `Effect::Install`; `AppEvent::Install{Progress,Reply}` -> `install_reply`; Done emits `Effect::Detect{force:true}`.
-- [ ] 6.2 GREEN: `src/app.rs`, `src/app/install.rs`, `src/core/menu.rs`, `src/runtime.rs` worker + inbox (~140).
-- [ ] 6.3 RED/GREEN: `src/ui/components/menu.rs` snapshot tests per wizard screen, then render (~80).
+- [x] 6.1 RED: `src/app/install.rs` tests: Outcome -> `MenuCommand` -> `Effect::Install`; `AppEvent::Install{Progress,Reply}` -> `install_reply`; Done emits `Effect::Detect{force:true}`.
+- [x] 6.2 GREEN: `src/app.rs`, `src/app/install.rs`, `src/core/menu.rs`, `src/runtime.rs` worker + inbox (~140).
+- [x] 6.3 RED/GREEN: `src/ui/components/menu.rs` snapshot tests per wizard screen, then render (~80).
 - [ ] 6.4 [manual] Real download, Linux x64 Vulkan, clean host (spec "Clean host end to end"). macOS arm64/x64 unverified (D12).
 
 ## PR7: Manage rows and docs (needs PR6)
 
-- [ ] 7.1 RED: `picker.rs` tests: install entry when absent; remove entry with owned; none with system binary; newer notice once per run, offline silent, silent when `[updates] check = false`.
-- [ ] 7.2 GREEN: manage rows + `CheckNewer` wiring (~110).
-- [ ] 7.3 `README.md` (Spanish) exception note, `core/ai/mod.rs` doc l.100-102 (~40).
+- [x] 7.1 RED: `picker.rs` tests: install entry when absent; remove entry with owned; none with system binary; newer notice once per run, offline silent, silent when `[updates] check = false`.
+- [x] 7.2 GREEN: manage rows + `CheckNewer` wiring (~110).
+- [x] 7.3 `README.md` (Spanish) exception note, `core/ai/mod.rs` doc l.100-102 (~40).
