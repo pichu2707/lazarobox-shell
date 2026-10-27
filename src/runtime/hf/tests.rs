@@ -781,6 +781,26 @@ fn the_github_requests_are_https_only_and_end_with_the_url() {
         download.windows(2).any(|w| w == ["--continue-at", "-"]),
         "{download:?}"
     );
+    // The GitHub download is bounded: its size, its redirects, a stall.
+    let bounded = github.download_args_within(
+        "/ggml-org/llama.cpp/releases/download/b9000/a.tar.gz",
+        Path::new("/x/a.tar.gz"),
+        Some(1234),
+    );
+    for flag in [
+        ["--max-filesize", "1234"],
+        ["--max-redirs", "5"],
+        ["--speed-limit", "1"],
+        ["--speed-time", "60"],
+    ] {
+        assert!(bounded.windows(2).any(|w| w == flag), "{bounded:?}");
+    }
+    // The Hub download keeps its own arguments.
+    assert!(
+        !download
+            .iter()
+            .any(|a| a.starts_with("--max-") || a.starts_with("--speed-"))
+    );
     // No GitHub token is ever read or sent.
     for args in [api, download] {
         assert!(!args.iter().any(|a| a == "--config"), "{args:?}");

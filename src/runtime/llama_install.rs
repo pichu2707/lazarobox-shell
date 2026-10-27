@@ -40,6 +40,10 @@ const REPO: &str = "ggml-org/llama.cpp";
 /// What a missing `gh` reads as: the install goes on.
 pub const NO_GH: &str = "gh is not installed: the archive's attestation was not verified";
 
+/// What a `gh` that timed out checking the attestation reads as: the archive
+/// stays, the install does not go on.
+pub const UNCHECKED_TIMEOUT: &str = "could not check the attestation: timed out";
+
 /// What a `gh` without a login reads as: the install goes on.
 pub const GH_LOGGED_OUT: &str = "gh is not logged in: the archive's attestation was not verified";
 
@@ -101,6 +105,9 @@ pub async fn download(
     let archive = archive_path(root, release);
     let size = release.size;
     // Longer than the archive: it cannot be resumed, so it starts over.
+    if let Err(why) = refuse_links(root, &archive) {
+        return failed(&why);
+    }
     if size > 0 && file_len(&archive) > size {
         let _ = std::fs::remove_file(&archive);
     }
@@ -108,13 +115,13 @@ pub async fn download(
     if let Err(message) = space_check(need, free_space(root)) {
         return End::Failed(message);
     }
-    if let Err(e) = std::fs::create_dir_all(root.join(PARTIAL_DIR)) {
-        return failed(&e.to_string());
+    if let Err(why) = create_dir(root) {
+        return failed(&why);
     }
     if size == 0 || !has_size(&archive, size) {
         let path = format!("{DOWNLOAD_DIR}/{}/{}", release.tag, release.asset);
         let total = |on_disk| if size > 0 { size } else { on_disk };
-        if let Some(end) = fetch(curl, &path, &archive, cancel, |on_disk| {
+        if let Some(end) = fetch(curl, &path, &archive, Some(size), cancel, |on_disk| {
             progress(on_disk, total(on_disk));
         })
         .await
@@ -130,6 +137,36 @@ pub async fn download(
     }
     progress(file_len(&archive), file_len(&archive));
     End::Done(archive)
+}
+
+/// Refuses a symlink at `<root>/.download` or at `archive`, before anything
+/// is read, removed or written through it. (The archive is hashed here;
+/// whoever unpacks it must re-check it first.)
+fn refuse_links(root: &Path, archive: &Path) -> Result<(), String> {
+    let is_link = |path: &Path| {
+        std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
+    };
+    if is_link(&root.join(PARTIAL_DIR)) || is_link(archive) {
+        return Err("refusing a symlink in the download directory".to_owned());
+    }
+    Ok(())
+}
+
+/// Creates `<root>/.download`, private to the user.
+fn create_dir(root: &Path) -> Result<(), String> {
+    use std::os::unix::fs::DirBuilderExt;
+    let dir = root.join(PARTIAL_DIR);
+    std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e.to_string()),
+    }
+    if std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir()) {
+        Ok(())
+    } else {
+        Err("the download directory is not a directory".to_owned())
+    }
 }
 
 /// Checks the size and the SHA-256 of `archive` against `release`. A wrong
@@ -164,8 +201,9 @@ pub enum Fetched {
 }
 
 /// The download step as the wizard runs it: the archive, held to its digest
-/// and then to its attestation. Either failure deletes the archive; a cancel
-/// keeps it for a resume.
+/// and then to its attestation. A failed digest or a failed verification
+/// deletes the archive; a cancel, or a check that could not finish (a
+/// timeout), keeps it: the archive is intact, only unchecked.
 pub async fn download_verified(
     curl: &Curl,
     gh_path: &OsStr,
@@ -174,12 +212,24 @@ pub async fn download_verified(
     progress: impl FnMut(u64, u64),
     cancel: &mut oneshot::Receiver<()>,
 ) -> Fetched {
+    download_verified_within(curl, gh_path, root, release, progress, cancel, GH_TIMEOUT).await
+}
+
+async fn download_verified_within(
+    curl: &Curl,
+    gh_path: &OsStr,
+    root: &Path,
+    release: &Release,
+    progress: impl FnMut(u64, u64),
+    cancel: &mut oneshot::Receiver<()>,
+    timeout: Duration,
+) -> Fetched {
     let archive = match download(curl, root, release, progress, cancel).await {
         End::Done(archive) => archive,
         End::Cancelled => return Fetched::Cancelled,
         End::Failed(message) => return Fetched::Failed(message),
     };
-    match attest(gh_path, &archive, cancel).await {
+    match attest_within(gh_path, &archive, cancel, timeout).await {
         Attestation::Verified => Fetched::Done {
             archive,
             warning: None,
@@ -189,6 +239,7 @@ pub async fn download_verified(
             warning: Some(warning),
         },
         Attestation::Cancelled => Fetched::Cancelled,
+        Attestation::Unchecked(message) => Fetched::Failed(message),
         Attestation::Failed(message) => {
             let _ = std::fs::remove_file(&archive);
             Fetched::Failed(message)
@@ -202,17 +253,18 @@ enum Attestation {
     Verified,
     /// `gh` is missing or logged out: the reason, shown as a warning.
     Skipped(String),
+    /// `gh` ran the verification but did not finish it: the archive is not
+    /// proven bad, so it is kept.
+    Unchecked(String),
+    /// `gh` ran the verification and it failed.
     Failed(String),
     Cancelled,
 }
 
 /// Runs `gh attestation verify <archive> --repo ggml-org/llama.cpp` with the
 /// `gh` found on `path`, when there is one and `gh auth status` says it is
-/// logged in. No shell; nothing it prints but its last error line is kept.
-async fn attest(path: &OsStr, archive: &Path, cancel: &mut oneshot::Receiver<()>) -> Attestation {
-    attest_within(path, archive, cancel, GH_TIMEOUT).await
-}
-
+/// logged in to github.com. No shell; nothing it prints but its last error
+/// line is kept.
 async fn attest_within(
     path: &OsStr,
     archive: &Path,
@@ -222,11 +274,18 @@ async fn attest_within(
     let Some(gh) = which("gh", Some(path)) else {
         return Attestation::Skipped(NO_GH.to_owned());
     };
-    match run_gh(&gh, &["auth".into(), "status".into()], cancel, timeout).await {
+    let auth = ["auth", "status", "--hostname", "github.com"].map(OsString::from);
+    match run_gh(&gh, &auth, cancel, timeout).await {
         Gh::Done => {}
         Gh::Cancelled => return Attestation::Cancelled,
-        Gh::Failed(_) | Gh::TimedOut => return Attestation::Skipped(GH_LOGGED_OUT.to_owned()),
+        Gh::Failed(why) if logged_out(&why) => {
+            return Attestation::Skipped(GH_LOGGED_OUT.to_owned());
+        }
+        Gh::Failed(why) => return Attestation::Skipped(unchecked_login(&why)),
+        Gh::TimedOut => return Attestation::Skipped(unchecked_login("timed out")),
     }
+    // Absolute, so the path can never read as a flag.
+    let archive = std::path::absolute(archive).unwrap_or_else(|_| archive.to_path_buf());
     let args = [
         "attestation".into(),
         "verify".into(),
@@ -238,8 +297,38 @@ async fn attest_within(
         Gh::Done => Attestation::Verified,
         Gh::Cancelled => Attestation::Cancelled,
         Gh::Failed(why) => Attestation::Failed(format!("attestation failed: {why}")),
-        Gh::TimedOut => Attestation::Failed("attestation failed: gh timed out".to_owned()),
+        Gh::TimedOut => Attestation::Unchecked(UNCHECKED_TIMEOUT.to_owned()),
     }
+}
+
+/// Whether the last error line of `gh auth status` says there is no login.
+fn logged_out(line: &str) -> bool {
+    let line = line.to_ascii_lowercase();
+    line.contains("not logged in") || line.contains("gh auth login")
+}
+
+/// The warning for a `gh auth status` that failed for another reason.
+fn unchecked_login(why: &str) -> String {
+    format!("gh could not check its login ({why}): the archive's attestation was not verified")
+}
+
+/// The `gh` process for `args`: the user's `GH_HOST`, `GH_REPO` and
+/// `GH_ENTERPRISE_TOKEN` must not point it at another host or repo.
+fn gh_command(gh: &Path, args: &[OsString]) -> Command {
+    let mut command = Command::new(gh);
+    command
+        .args(args)
+        .env_remove("GH_HOST")
+        .env_remove("GH_ENTERPRISE_TOKEN")
+        .env_remove("GH_REPO")
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .process_group(0);
+    command
 }
 
 /// How one `gh` run ended.
@@ -261,21 +350,12 @@ async fn run_gh(
 ) -> Gh {
     let mut attempt = 0;
     let mut child = loop {
-        let started = Command::new(gh)
-            .args(args)
-            .env("GH_PROMPT_DISABLED", "1")
-            .env("GH_NO_UPDATE_NOTIFIER", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .process_group(0)
-            .spawn();
+        let started = gh_command(gh, args).spawn();
         match started {
             // A binary that is being written fails with ETXTBSY for a moment.
-            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 4 => {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 10 => {
                 attempt += 1;
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
             Err(e) => return Gh::Failed(e.to_string()),
             Ok(child) => break child,

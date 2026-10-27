@@ -159,8 +159,38 @@ impl Curl {
     }
 
     /// A download of `path` into `out`, resuming what `out` already holds.
+    #[cfg(test)]
     pub(super) fn download_args(&self, path: &str, out: &Path) -> Vec<String> {
+        self.download_args_within(path, out, None)
+    }
+
+    /// Like [`Self::download_args`]; with `Some(size)` the download is also
+    /// bounded, for a host the Hub's trust does not cover: at most `size`
+    /// bytes (`0` for an unknown size sets no cap), five redirects, and a
+    /// stop when it moves under 1 byte/s for a minute.
+    pub(super) fn download_args_within(
+        &self,
+        path: &str,
+        out: &Path,
+        size: Option<u64>,
+    ) -> Vec<String> {
         let mut args = self.common();
+        if let Some(size) = size {
+            if size > 0 {
+                args.extend(["--max-filesize".to_owned(), size.to_string()]);
+            }
+            args.extend(
+                [
+                    "--max-redirs",
+                    "5",
+                    "--speed-limit",
+                    "1",
+                    "--speed-time",
+                    "60",
+                ]
+                .map(str::to_owned),
+            );
+        }
         args.extend(
             [
                 "--location",
@@ -483,7 +513,7 @@ pub async fn download(
             }
             if !has_size(&partial, file.size) {
                 let path = hf::resolve_path(&job.id, &job.commit, &file.path);
-                let fetched = fetch(curl, &path, &partial, &mut cancel, |on_disk| {
+                let fetched = fetch(curl, &path, &partial, None, &mut cancel, |on_disk| {
                     progress(done + on_disk, total);
                 })
                 .await;
@@ -517,10 +547,14 @@ pub(super) async fn fetch(
     curl: &Curl,
     path: &str,
     partial: &Path,
+    bound: Option<u64>,
     cancel: &mut oneshot::Receiver<()>,
     mut on_disk: impl FnMut(u64),
 ) -> Option<End> {
-    let (mut child, mut guard) = match curl.spawn(&curl.download_args(path, partial)).await {
+    let (mut child, mut guard) = match curl
+        .spawn(&curl.download_args_within(path, partial, bound))
+        .await
+    {
         Ok(started) => started,
         Err(message) => return Some(End::Failed(message)),
     };

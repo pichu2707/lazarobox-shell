@@ -393,10 +393,15 @@ async fn an_oversized_partial_archive_starts_over() {
 /// A `gh` that logs its arguments to `log`, answers `auth status` with exit
 /// code `auth` and runs `verify` for `attestation verify`.
 fn fake_gh(dir: &Path, log: &Path, auth: i32, verify: &str) {
+    fake_gh_auth(dir, log, &format!("exit {auth}"), verify);
+}
+
+/// Like [`fake_gh`], with a shell snippet for `auth status`.
+fn fake_gh_auth(dir: &Path, log: &Path, auth: &str, verify: &str) {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let script = format!(
-        "#!/bin/sh\necho \"$@\" >> '{}'\nif [ \"$1\" = auth ]; then exit {auth}; fi\n{verify}\n",
+        "#!/bin/sh\necho \"$@\" >> '{}'\nif [ \"$1\" = auth ]; then {auth}; fi\n{verify}\n",
         log.display()
     );
     let mut file = std::fs::OpenOptions::new()
@@ -441,7 +446,7 @@ async fn a_passing_attestation_continues_without_a_warning() {
         }
     );
     let calls = logged(&log);
-    assert_eq!(calls[0], "auth status");
+    assert_eq!(calls[0], "auth status --hostname github.com");
     assert_eq!(
         calls[1],
         format!(
@@ -495,7 +500,12 @@ async fn a_logged_out_gh_warns_and_continues() {
     need_curl!();
     let (root, bin) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let log = bin.path().join("log");
-    fake_gh(bin.path(), &log, 1, "exit 1");
+    fake_gh_auth(
+        bin.path(),
+        &log,
+        "echo 'You are not logged into any GitHub hosts. To log in, run: gh auth login' >&2\nexit 1",
+        "exit 1",
+    );
     let got = fetched(root.path(), bin.path().as_os_str(), &release(BODY)).await;
     assert_eq!(
         got,
@@ -504,7 +514,7 @@ async fn a_logged_out_gh_warns_and_continues() {
             warning: Some(GH_LOGGED_OUT.to_owned())
         }
     );
-    assert_eq!(logged(&log), ["auth status"]);
+    assert_eq!(logged(&log), ["auth status --hostname github.com"]);
 }
 
 // A digest mismatch stops before gh is run.
@@ -543,8 +553,14 @@ async fn a_cancel_stops_a_running_attestation() {
         |_, _| {},
         &mut rx,
     );
+    // Cancel once gh is running `verify`, not after a fixed wait.
     let cancel = async {
-        tokio::time::sleep(Duration::from_millis(700)).await;
+        while !logged(&log)
+            .iter()
+            .any(|l| l.starts_with("attestation verify"))
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         tx.send(()).unwrap();
     };
     let (got, ()) =
@@ -574,8 +590,189 @@ async fn a_gh_that_hangs_is_stopped_after_its_time() {
     )
     .await
     .expect("the time limit stops gh");
+    assert_eq!(got, Attestation::Unchecked(UNCHECKED_TIMEOUT.to_owned()));
+}
+
+// A timeout is not a verification failure: the digest-verified archive stays.
+#[tokio::test]
+async fn an_attestation_timeout_keeps_the_archive_and_says_so() {
+    need_curl!();
+    let (root, bin) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let log = bin.path().join("log");
+    fake_gh(bin.path(), &log, 0, "sleep 30");
+    let (base, _) = file_server(BODY);
+    let curl = Curl::github(path()).local(&base);
+    let got = tokio::time::timeout(
+        Duration::from_secs(10),
+        download_verified_within(
+            &curl,
+            bin.path().as_os_str(),
+            root.path(),
+            &release(BODY),
+            |_, _| {},
+            &mut no_cancel(),
+            Duration::from_millis(300),
+        ),
+    )
+    .await
+    .expect("the time limit stops gh");
     assert_eq!(
         got,
-        Attestation::Failed("attestation failed: gh timed out".to_owned())
+        Fetched::Failed("could not check the attestation: timed out".to_owned())
     );
+    assert!(archive_of(root.path()).exists());
+}
+
+// A gh that exits nonzero without saying it is logged out (offline, a broken
+// secondary host) is a failed check, not a logged-out gh.
+#[tokio::test]
+async fn an_auth_check_that_fails_otherwise_is_a_could_not_check_warning() {
+    let (bin, dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let log = bin.path().join("log");
+    fake_gh_auth(
+        bin.path(),
+        &log,
+        "echo 'error connecting to api.github.com' >&2\nexit 1",
+        "exit 0",
+    );
+    let archive = dir.path().join("a.tar.gz");
+    std::fs::write(&archive, BODY).unwrap();
+    let got = attest_within(
+        bin.path().as_os_str(),
+        &archive,
+        &mut no_cancel(),
+        Duration::from_secs(10),
+    )
+    .await;
+    let Attestation::Skipped(warning) = got else {
+        panic!("{got:?}");
+    };
+    assert!(warning.contains("could not check"), "{warning}");
+    assert!(warning.contains("error connecting"), "{warning}");
+    assert_ne!(warning, GH_LOGGED_OUT);
+    assert_eq!(logged(&log), ["auth status --hostname github.com"]);
+}
+
+#[tokio::test]
+async fn an_auth_check_that_hangs_is_a_could_not_check_warning() {
+    let (bin, dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let log = bin.path().join("log");
+    fake_gh_auth(bin.path(), &log, "sleep 30", "exit 0");
+    let archive = dir.path().join("a.tar.gz");
+    std::fs::write(&archive, BODY).unwrap();
+    let got = tokio::time::timeout(
+        Duration::from_secs(10),
+        attest_within(
+            bin.path().as_os_str(),
+            &archive,
+            &mut no_cancel(),
+            Duration::from_millis(300),
+        ),
+    )
+    .await
+    .expect("the time limit stops gh");
+    let Attestation::Skipped(warning) = got else {
+        panic!("{got:?}");
+    };
+    assert!(warning.contains("could not check"), "{warning}");
+    assert!(warning.contains("timed out"), "{warning}");
+}
+
+// gh must not be pointed elsewhere by the user's environment.
+#[test]
+fn gh_runs_without_host_repo_or_enterprise_token_overrides() {
+    let command = gh_command(Path::new("/usr/bin/gh"), &["auth".into()]);
+    let envs: Vec<_> = command.as_std().get_envs().collect();
+    for name in ["GH_HOST", "GH_ENTERPRISE_TOKEN", "GH_REPO"] {
+        assert!(
+            envs.iter()
+                .any(|(k, v)| *k == std::ffi::OsStr::new(name) && v.is_none()),
+            "{name} is not cleared: {envs:?}"
+        );
+    }
+}
+
+// The archive reaches gh as an absolute path, so it can never read as a flag.
+#[tokio::test]
+async fn a_relative_archive_path_reaches_gh_as_an_absolute_one() {
+    let bin = tempfile::tempdir().unwrap();
+    let log = bin.path().join("log");
+    fake_gh(bin.path(), &log, 0, "exit 0");
+    let got = attest_within(
+        bin.path().as_os_str(),
+        Path::new("-rf.tar.gz"),
+        &mut no_cancel(),
+        Duration::from_secs(10),
+    )
+    .await;
+    assert_eq!(got, Attestation::Verified);
+    let calls = logged(&log);
+    let verify: Vec<&str> = calls[1].split(' ').collect();
+    assert!(Path::new(verify[2]).is_absolute(), "{calls:?}");
+}
+
+// A symlink planted at `.download` or at the archive path is refused before
+// curl writes through it.
+#[tokio::test]
+async fn a_symlink_at_the_download_dir_or_the_archive_is_refused() {
+    need_curl!();
+    use std::os::unix::fs::symlink;
+    let target = tempfile::tempdir().unwrap();
+    // At `.download`.
+    let root = tempfile::tempdir().unwrap();
+    symlink(target.path(), root.path().join(".download")).unwrap();
+    let (base, seen) = file_server(BODY);
+    let curl = Curl::github(path()).local(&base);
+    let got = download(
+        &curl,
+        root.path(),
+        &release(BODY),
+        |_, _| {},
+        &mut no_cancel(),
+    )
+    .await;
+    assert!(matches!(got, End::Failed(m) if m.contains("symlink")));
+    assert!(std::fs::read_dir(target.path()).unwrap().next().is_none());
+    assert!(seen.lock().unwrap().is_empty());
+    // At the archive path.
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join(".download")).unwrap();
+    let victim = target.path().join("victim");
+    std::fs::write(&victim, b"keep").unwrap();
+    symlink(&victim, archive_of(root.path())).unwrap();
+    let got = download(
+        &curl,
+        root.path(),
+        &release(BODY),
+        |_, _| {},
+        &mut no_cancel(),
+    )
+    .await;
+    assert!(matches!(got, End::Failed(m) if m.contains("symlink")));
+    assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+// The download dir is private to the user.
+#[tokio::test]
+async fn the_download_dir_is_created_private() {
+    need_curl!();
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let (base, _) = file_server(BODY);
+    let curl = Curl::github(path()).local(&base);
+    let got = download(
+        &curl,
+        root.path(),
+        &release(BODY),
+        |_, _| {},
+        &mut no_cancel(),
+    )
+    .await;
+    assert!(matches!(got, End::Done(_)));
+    let mode = std::fs::metadata(root.path().join(".download"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700);
 }
