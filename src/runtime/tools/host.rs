@@ -494,6 +494,10 @@ async fn execute(host: Arc<ToolHost>, scope: Arc<TurnScope>, call: Call) -> Outc
                     }
                     _ => ended(ToolStatus::Error, NO_SERVER.to_owned(), NO_SERVER),
                 },
+                // Only after `y`: the sandbox starts here and nowhere else.
+                (Decision::Sent, call @ Call::RunCommand { .. }) => {
+                    exec::run(&host, &scope, &call).await
+                }
                 (Decision::Sent | Decision::Typed(_), call) => {
                     files::run(&host, &scope, call).await
                 }

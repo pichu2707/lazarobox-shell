@@ -5,31 +5,45 @@
 //! spawn core is `runner.rs`.
 
 use std::{
+    collections::HashMap,
+    ffi::{OsStr, OsString},
     fs,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
 };
 
 use serde_json::Value;
 
 use super::{
-    TurnScope,
+    Outcome, ToolHost, ToolStatus, TurnScope, ended,
     files::lock,
     gate::{CHAT_BUSY, RunGate},
 };
 use crate::{
     core::ai::{
-        jail::{Backend, JailSupport},
+        jail::{Backend, JailSupport, NOT_ENFORCED_EXIT, NOT_ENFORCED_MARKER},
         sanitize::clean,
+        toolchain::{Layout, Refusal, Vars, env::scrub, toolchain_spec},
         tools::{
             Call, ToolError,
-            allow::{RunError, RunRequest, parse_run},
+            allow::{Program, RunError, RunRequest, parse_run},
+            label,
             mcp::refusal_text,
             paths::{REFUSED, plain_relative},
+            run::RunOutcome,
             stage::{StageKey, State},
         },
     },
-    runtime::tools::{ToolEnv, fs::load_roots, stage::Stages},
+    runtime::tools::{
+        ToolEnv,
+        fs::load_roots,
+        integrity::{Change, Kind},
+        new_nonce,
+        runner::{Job, Unreported, run_jailed},
+        scratch::Scratch,
+        stage::Stages,
+    },
 };
 
 /// The refusal of a run on a system with no Landlock jail (design D18).
@@ -39,8 +53,15 @@ const IN_REVIEW: &str = "a batch is waiting for the user's review";
 /// Text the prompt could not show exactly as it will run.
 const UNSHOWABLE: &str = "command cannot be shown safely";
 const COULD_NOT: &str = "could not run";
+const NOT_FOUND: &str = "the program was not found on the PATH";
+const NO_PLACE: &str = "the program is not in a place the sandbox can grant";
+const NO_SANDBOX: &str = "the sandbox could not be built for this run";
+const NOT_ENFORCED: &str = "the Linux sandbox could not be applied";
 /// The most bytes of `package.json` read to find its scripts.
 const PACKAGE_MAX: u64 = 256 * 1024;
+
+/// The parent's environment, by name.
+pub(super) type Reader = Arc<dyn Fn(&str) -> Option<OsString> + Send + Sync>;
 
 /// What the host knows about running commands: who may run, and the system
 /// facts a test replaces.
@@ -48,6 +69,12 @@ pub(super) struct Exec {
     pub(super) gate: RunGate,
     /// What the jail probe says now.
     pub(super) jail: Box<dyn Fn() -> JailSupport + Send + Sync>,
+    /// The `lazarobox` binary that serves `__jail-exec`.
+    pub(super) helper: Option<PathBuf>,
+    /// The environment the child's own is rebuilt from.
+    pub(super) read: Reader,
+    /// Changes of runs that were dropped before they ended, by chat.
+    pub(super) sinks: Mutex<HashMap<StageKey, Unreported>>,
 }
 
 impl Exec {
@@ -56,7 +83,18 @@ impl Exec {
         Self {
             gate: RunGate::default(),
             jail: Box::new(crate::runtime::jail::probe),
+            helper: std::env::current_exe().and_then(fs::canonicalize).ok(),
+            read: Arc::new(|name| std::env::var_os(name)),
+            sinks: Mutex::default(),
         }
+    }
+
+    /// The sink of `key`'s runs that were dropped before they ended (a shared
+    /// handle): X-d2 drains it for the user's notice, and every result drains
+    /// it for the model.
+    pub(super) fn sink(&self, key: StageKey) -> Unreported {
+        let mut sinks = self.sinks.lock().unwrap_or_else(PoisonError::into_inner);
+        sinks.entry(key).or_default().clone()
     }
 
     fn jailed(&self) -> bool {
@@ -82,7 +120,7 @@ pub(super) struct Plan {
 /// Judges a call. The checks come in the order of the spec; the first refusal
 /// is the text the model gets.
 pub(super) async fn plan(
-    host: &super::ToolHost,
+    host: &ToolHost,
     scope: &TurnScope,
     call: &Call,
 ) -> Result<Plan, &'static str> {
@@ -173,4 +211,189 @@ fn scripts(dir: &Path) -> Vec<String> {
                 .map(|s| s.keys().cloned().collect())
         })
         .unwrap_or_default()
+}
+
+/// Runs an approved command: judged again, then one run per chat and two in
+/// the app, then the jail. A non-zero exit is an ok result.
+pub(super) async fn run(
+    host: &ToolHost,
+    scope: &TurnScope,
+    call: &Call,
+) -> (Outcome, ToolStatus, String) {
+    let fail = |why: &str| ended(ToolStatus::Error, why.to_owned(), why);
+    // Without a nonce the output cannot be wrapped, so nothing may start.
+    let Some(nonce) = new_nonce() else {
+        return fail(COULD_NOT);
+    };
+    let plan = match plan(host, scope, call).await {
+        Ok(plan) => plan,
+        Err(why) => return fail(why),
+    };
+    let permit = match host.exec.gate.acquire(plan.key).await {
+        Ok(permit) => permit,
+        Err(refused) => return fail(refused.text()),
+    };
+    let done = go(host, plan, &nonce).await;
+    drop(permit);
+    done.unwrap_or_else(fail)
+}
+
+async fn go(
+    host: &ToolHost,
+    plan: Plan,
+    nonce: &str,
+) -> Result<(Outcome, ToolStatus, String), &'static str> {
+    let Some(helper) = host.exec.helper.clone() else {
+        return Err(NO_SANDBOX);
+    };
+    let unreported = host.exec.sink(plan.key);
+    let read = host.exec.read.clone();
+    let parent = scratch_parent(host);
+    let argv_text: Vec<String> = std::iter::once(plan.request.program.name().to_owned())
+        .chain(plan.request.args.iter().cloned())
+        .collect();
+    let job = {
+        let (read, unreported) = (read.clone(), unreported.clone());
+        let home = host.home.clone();
+        tokio::task::spawn_blocking(move || job(&*read, home, parent, plan, helper, unreported))
+            .await
+            .map_err(|_| COULD_NOT)??
+    };
+    let ran = run_jailed(job, &*read).await.map_err(|_| COULD_NOT)?;
+    let capture = &ran.done.capture;
+    let enforced = ran.done.ended.exit == Some(NOT_ENFORCED_EXIT)
+        && capture
+            .text()
+            .lines()
+            .any(|l| l.starts_with(NOT_ENFORCED_MARKER));
+    if enforced {
+        return Err(NOT_ENFORCED);
+    }
+    let outcome = RunOutcome::new(argv_text, ran.done.ended, capture, ran.done.duration);
+    let mut text = outcome.render(nonce, capture);
+    let summary = text.lines().next().unwrap_or_default().to_owned();
+    let mut changes = ran.changes;
+    changes.extend(unreported.drain());
+    if let Some(note) = changes_note(&changes, nonce) {
+        text.push_str(&note);
+    }
+    if !ran.leftovers.is_empty() {
+        text.push_str("\nsome private temporary files could not be removed");
+    }
+    Ok(ended(ToolStatus::Ok, text, &summary))
+}
+
+/// Where the private temp folders go: `$XDG_RUNTIME_DIR`, else the data folder.
+fn scratch_parent(host: &ToolHost) -> Option<PathBuf> {
+    let absolute = |path: OsString| Some(PathBuf::from(path)).filter(|p| p.is_absolute());
+    if let Some(runtime) = (host.exec.read)("XDG_RUNTIME_DIR").and_then(absolute) {
+        return Some(runtime.join("lazarobox-run"));
+    }
+    let data = host.xdg_data_home.clone().and_then(absolute).or_else(|| {
+        let home = host.home.clone().and_then(absolute)?;
+        Some(home.join(".local/share"))
+    })?;
+    Some(data.join("lazarobox/run"))
+}
+
+/// Builds the job: the scratch folder, the program found on the scrubbed
+/// `PATH`, and the sandbox rules. Reads and makes folders: blocking.
+fn job(
+    read: &(dyn Fn(&str) -> Option<OsString> + Sync),
+    home: Option<OsString>,
+    parent: Option<PathBuf>,
+    plan: Plan,
+    helper: PathBuf,
+    unreported: Unreported,
+) -> Result<Job, &'static str> {
+    let canonical = |path: OsString| fs::canonicalize(path).ok();
+    let home = home.and_then(canonical).ok_or(REFUSED)?;
+    let scratch = Scratch::unique(&parent.ok_or(NO_SANDBOX)?, "run").map_err(|_| COULD_NOT)?;
+    let tool = plan.request.program;
+    let env = scrub(read, &plan.root, scratch.path());
+    let path = env.iter().find(|(name, _)| name == "PATH").map(|(_, v)| v);
+    let program = find(tool, &plan.root, path.map(OsString::as_os_str)).ok_or(NOT_FOUND)?;
+    let var = |name: &str| read(name).and_then(canonical);
+    let layout = Layout {
+        tool,
+        home,
+        root: plan.root.clone(),
+        program: program.clone(),
+        tmp: scratch.path().to_path_buf(),
+        vars: Vars {
+            cargo_home: var("CARGO_HOME"),
+            rustup_home: var("RUSTUP_HOME"),
+            goroot: var("GOROOT"),
+        },
+    };
+    let spec = toolchain_spec(&layout, &|p| crate::runtime::jail::resolve(p))
+        .map_err(|why| sandbox_text(&why))?;
+    Ok(Job {
+        helper,
+        spec,
+        tool,
+        program,
+        argv: plan.request.args.iter().map(OsString::from).collect(),
+        root: plan.root,
+        cwd: plan.cwd,
+        scratch,
+        timeout: plan.request.timeout,
+        unreported,
+    })
+}
+
+fn sandbox_text(why: &Refusal) -> &'static str {
+    match why {
+        Refusal::Root(_) => REFUSED,
+        Refusal::Program(_) | Refusal::InRoot(_) => NO_PLACE,
+        _ => NO_SANDBOX,
+    }
+}
+
+/// The executable file `tool` names: the project's pytest venv first, then the
+/// first hit on `path`, with every link followed.
+fn find(tool: Program, root: &Path, path: Option<&OsStr>) -> Option<PathBuf> {
+    let venv = (tool == Program::Pytest).then(|| root.join(".venv/bin/pytest"));
+    let listed = path.into_iter().flat_map(std::env::split_paths);
+    venv.into_iter()
+        .chain(listed.map(|dir| dir.join(tool.name())))
+        .find_map(|candidate| {
+            let real = fs::canonicalize(candidate).ok()?;
+            let meta = fs::metadata(&real).ok()?;
+            (meta.is_file() && meta.permissions().mode() & 0o111 != 0).then_some(real)
+        })
+}
+
+/// What the run did to the watched git places, as text for the model: the
+/// names are the program's, so they sit inside the data wrapper. This is the
+/// one place that reads an integrity kind.
+fn changes_note(changes: &[Change], nonce: &str) -> Option<String> {
+    if changes.is_empty() {
+        return None;
+    }
+    let checked = |kind: Kind| matches!(kind, Kind::Added | Kind::Changed | Kind::Removed);
+    let list: Vec<String> = changes
+        .iter()
+        .filter(|change| checked(change.kind))
+        .map(|change| {
+            let what = match change.kind {
+                Kind::Added => "added",
+                Kind::Changed => "changed",
+                _ => "removed",
+            };
+            format!("{what} {}", change.path.display())
+        })
+        .collect();
+    let mut note = String::new();
+    if changes.iter().any(|change| !checked(change.kind)) {
+        note.push_str(
+            "\ncould not verify git hooks and config after this run: treat the project as \
+             tainted and tell the user.",
+        );
+    }
+    if !list.is_empty() {
+        note.push_str("\ngit hooks or config changed during the run (not reverted):\n");
+        note.push_str(&label::wrap(nonce, &list.join("\n")));
+    }
+    Some(note)
 }

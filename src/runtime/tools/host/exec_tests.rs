@@ -59,7 +59,13 @@ pub(super) fn key() -> StageKey {
 }
 
 pub(super) fn world_with(exec: impl FnOnce(Exec) -> Exec) -> World {
-    let dir = tempfile::tempdir().unwrap();
+    // Not in `/tmp`: the sandbox refuses a project in a scratch folder.
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    std::fs::create_dir_all(&target).unwrap();
+    let dir = tempfile::Builder::new()
+        .prefix("lbx-exec-")
+        .tempdir_in(target)
+        .unwrap();
     let home = dir.path().canonicalize().unwrap().join("home");
     let proj = home.join("proj");
     std::fs::create_dir_all(&proj).unwrap();
@@ -305,4 +311,303 @@ async fn a_valid_command_asks_and_a_no_starts_nothing() {
     assert!(ask.is_some());
     assert_eq!(status, ToolStatus::Denied);
     assert!(!w.host.exec.gate.is_busy(key()));
+}
+
+// --- an approved command runs through the sandbox helper ---
+//
+// The helper is a shell script that runs what follows `--`, so these tests
+// need no Landlock; the real helper is covered by `runner` and `tests/jail.rs`.
+
+use std::{ffi::OsString, os::unix::fs::PermissionsExt, time::Duration};
+
+use super::gate::RunGate;
+
+const HELPER: &str = "#!/bin/sh\nwhile [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"\n";
+const BAD_HELPER: &str =
+    "#!/bin/sh\necho 'lazarobox-jail: jail not enforced: a rule failed' >&2\nexit 125\n";
+/// A `cargo` that does what its third argument says.
+const CARGO: &str = "#!/bin/sh\n\
+    case \"$3\" in\n\
+    env) env;;\n\
+    fail) echo 'error: boom'; exit 101;;\n\
+    hook) echo evil > .git/hooks/pre-commit; echo hooked;;\n\
+    sleep) sleep 30;;\n\
+    *) echo \"args: $*\"; pwd; echo \"tmp: $TMPDIR\";;\n\
+    esac\n";
+
+fn script(path: &Path, text: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// A world where `cargo` is a script under `$CARGO_HOME/bin` and the helper
+/// is `helper`. `.git/hooks` exists in the project.
+fn runnable(helper: &str, gate: RunGate) -> World {
+    world_with(|exec| Exec {
+        jail: Box::new(|| LANDLOCK),
+        gate,
+        ..exec
+    })
+    .with_toolchain(helper)
+}
+
+impl World {
+    fn base(&self) -> PathBuf {
+        self.home.parent().unwrap().to_path_buf()
+    }
+
+    fn with_toolchain(mut self, helper: &str) -> World {
+        let base = self.base();
+        script(&base.join("helper"), helper);
+        script(&base.join("cargo/bin/cargo"), CARGO);
+        std::fs::create_dir_all(self.proj.join(".git/hooks")).unwrap();
+        std::fs::write(self.proj.join(".git/config"), "[core]\n").unwrap();
+        let (home, cargo, run) = (self.home.clone(), base.join("cargo"), base.join("run"));
+        let path = format!("{}:/usr/bin:/bin", cargo.join("bin").display());
+        let host = Arc::get_mut(&mut self.host).unwrap();
+        host.exec.helper = Some(base.join("helper"));
+        host.exec.read = Arc::new(move |name| match name {
+            "PATH" => Some(OsString::from(&path)),
+            "HOME" => Some(home.clone().into()),
+            "CARGO_HOME" => Some(cargo.clone().into()),
+            "XDG_RUNTIME_DIR" => Some(run.clone().into()),
+            "SECRET_TOKEN" => Some("hunter2".into()),
+            _ => None,
+        });
+        self
+    }
+
+    /// Runs `call` for a user who says `y`.
+    async fn run(&self, call: Call) -> (Outcome, Vec<StreamEvent>) {
+        let asks = Asks::new(Decision::Sent);
+        let (d, mut rx) = self.turn(&self.proj, asks, exec_set());
+        let out = d.call(call).await;
+        (out, super::tests::events(&mut rx))
+    }
+}
+
+fn gate() -> RunGate {
+    RunGate::new(2, Duration::from_millis(50))
+}
+
+fn after_dashes(word: &str) -> Call {
+    command("cargo", &["test", "--", word], None)
+}
+
+// Scenario "Failure is an outcome", "Output is data", "No shell string": the
+// run is an ok result with the exit code and the output wrapped as data.
+#[tokio::test]
+async fn an_approved_command_runs_in_the_folder_and_its_output_is_data() {
+    let w = runnable(HELPER, gate());
+    std::fs::create_dir_all(w.proj.join("sub")).unwrap();
+    let call = command("cargo", &["test", "--", "x; rm -rf ~"], Some("sub"));
+    let (out, events) = w.run(call).await;
+    assert!(!out.is_error, "{out:?}");
+    assert!(out.text.starts_with("exit code 0 after "), "{}", out.text);
+    assert!(
+        out.text.contains("<untrusted-tool-output id=\""),
+        "{}",
+        out.text
+    );
+    assert!(
+        out.text.contains("args: test -- x; rm -rf ~"),
+        "{}",
+        out.text
+    );
+    assert!(
+        out.text.contains(&format!("{}/sub\n", w.proj.display())),
+        "{}",
+        out.text
+    );
+    let (_, _, status, summary) = super::tests::pair(&events);
+    assert_eq!(status, ToolStatus::Ok);
+    assert!(summary.starts_with("exit code 0"), "{summary}");
+    assert!(!w.host.exec.gate.is_busy(key()));
+}
+
+// The private TMPDIR is the run's own and is gone after it.
+#[tokio::test]
+async fn the_private_temp_folder_is_removed_after_the_run() {
+    let w = runnable(HELPER, gate());
+    let (out, _) = w.run(after_dashes("go")).await;
+    let tmp = out
+        .text
+        .lines()
+        .find_map(|l| l.strip_prefix("tmp: "))
+        .unwrap();
+    assert!(
+        tmp.starts_with(&w.base().join("run").display().to_string()),
+        "{tmp}"
+    );
+    assert!(!Path::new(tmp).exists());
+}
+
+#[tokio::test]
+async fn a_non_zero_exit_is_a_result_and_not_a_tool_error() {
+    let w = runnable(HELPER, gate());
+    let (out, events) = w.run(after_dashes("fail")).await;
+    assert!(!out.is_error, "{out:?}");
+    assert!(out.text.starts_with("exit code 101 after "), "{}", out.text);
+    assert!(out.text.contains("error: boom"));
+    let (_, _, status, _) = super::tests::pair(&events);
+    assert_eq!(status, ToolStatus::Ok);
+}
+
+// Scenario "Clean environment".
+#[tokio::test]
+async fn the_child_sees_none_of_the_parents_secrets() {
+    let w = runnable(HELPER, gate());
+    let (out, _) = w.run(after_dashes("env")).await;
+    assert!(out.text.contains("CI=1"), "{}", out.text);
+    assert!(!out.text.contains("hunter2") && !out.text.contains("SECRET_TOKEN"));
+}
+
+// Scenario "Timeout kills the group" and "Timeout bounds".
+#[tokio::test]
+async fn a_command_that_outlives_its_timeout_is_killed_and_says_so() {
+    let w = runnable(HELPER, gate());
+    let call = Call::RunCommand {
+        args: json!({"program": "cargo", "args": ["test", "--", "sleep"], "timeout_secs": 1}),
+    };
+    let started = std::time::Instant::now();
+    let (out, _) = w.run(call).await;
+    assert!(!out.is_error, "{out:?}");
+    assert!(out.text.starts_with("timed out after "), "{}", out.text);
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+// Scenario "One run per chat" while it runs, and "Cancel kills": dropping the
+// call frees the chat.
+#[tokio::test]
+async fn a_second_call_of_a_running_chat_is_refused_and_a_cancel_frees_it() {
+    let w = Arc::new(runnable(HELPER, gate()));
+    let first = {
+        let w = w.clone();
+        tokio::spawn(async move { w.run(after_dashes("sleep")).await })
+    };
+    for _ in 0..500 {
+        if w.host.exec.gate.is_busy(key()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(w.host.exec.gate.is_busy(key()));
+    let (second, _) = w.run(after_dashes("go")).await;
+    assert!(second.is_error && second.text == "a command is already running in this chat");
+    first.abort();
+    let _ = first.await;
+    assert!(!w.host.exec.gate.is_busy(key()));
+}
+
+// Scenario "Global cap": the prompt opens, `y` is given, and with no slot
+// free the call is refused after the wait.
+#[tokio::test]
+async fn with_every_slot_taken_an_approved_command_is_refused_after_the_wait() {
+    let w = runnable(HELPER, gate());
+    let _a = w
+        .host
+        .exec
+        .gate
+        .acquire(StageKey::Pane(PaneId::for_test(8)))
+        .await
+        .unwrap();
+    let _b = w
+        .host
+        .exec
+        .gate
+        .acquire(StageKey::Pane(PaneId::for_test(9)))
+        .await
+        .unwrap();
+    let (out, events) = w.run(after_dashes("go")).await;
+    assert!(
+        out.is_error && out.text.contains("too many commands"),
+        "{out:?}"
+    );
+    let (_, ask, status, _) = super::tests::pair(&events);
+    assert!(ask.is_some());
+    assert_eq!(status, ToolStatus::Error);
+    assert!(!w.host.exec.gate.is_busy(key()));
+}
+
+// Integrity (user decision 5B): a hook the run wrote is told, not reverted.
+#[tokio::test]
+async fn a_hook_written_by_the_run_is_reported_inside_the_data_wrapper() {
+    let w = runnable(HELPER, gate());
+    let (out, _) = w.run(after_dashes("hook")).await;
+    assert!(!out.is_error, "{out:?}");
+    assert!(
+        out.text.contains("git hooks or config changed"),
+        "{}",
+        out.text
+    );
+    assert!(
+        out.text.contains("added .git/hooks/pre-commit"),
+        "{}",
+        out.text
+    );
+    let wrapped = out
+        .text
+        .rsplit_once("git hooks or config changed")
+        .unwrap()
+        .1;
+    assert!(
+        wrapped.contains("<untrusted-tool-output id=\""),
+        "{wrapped}"
+    );
+    assert!(w.proj.join(".git/hooks/pre-commit").exists());
+}
+
+#[tokio::test]
+async fn a_run_that_changed_nothing_says_nothing_of_hooks() {
+    let w = runnable(HELPER, gate());
+    let (out, _) = w.run(after_dashes("go")).await;
+    assert!(!out.text.contains("git hooks"), "{}", out.text);
+}
+
+// The helper could not apply the rules: not "exit 125" of the program.
+#[tokio::test]
+async fn a_sandbox_that_was_not_enforced_is_an_error_and_not_an_exit_code() {
+    let w = runnable(BAD_HELPER, gate());
+    let (out, _) = w.run(after_dashes("go")).await;
+    assert!(
+        out.is_error && out.text.contains("sandbox could not be applied"),
+        "{out:?}"
+    );
+}
+
+/// The world with `PATH` set to `path` and the usual `$CARGO_HOME`.
+fn on_path(w: &mut World, path: String) {
+    let (home, run, cargo) = (w.home.clone(), w.base().join("run"), w.base().join("cargo"));
+    let host = Arc::get_mut(&mut w.host).unwrap();
+    host.exec.read = Arc::new(move |name| match name {
+        "PATH" => Some(OsString::from(&path)),
+        "HOME" => Some(home.clone().into()),
+        "CARGO_HOME" => Some(cargo.clone().into()),
+        "XDG_RUNTIME_DIR" => Some(run.clone().into()),
+        _ => None,
+    });
+}
+
+#[tokio::test]
+async fn a_program_that_is_not_installed_is_refused() {
+    let mut w = runnable(HELPER, gate());
+    let path = w.base().join("cargo/bin").display().to_string();
+    on_path(&mut w, path);
+    let (out, _) = w.run(command("go", &["test"], None)).await;
+    assert!(out.is_error && out.text.contains("not found"), "{out:?}");
+}
+
+// A `cargo` the sandbox has no toolchain place for (not under `$CARGO_HOME/bin`).
+#[tokio::test]
+async fn a_program_in_no_known_toolchain_place_is_refused() {
+    let mut w = runnable(HELPER, gate());
+    script(&w.base().join("elsewhere/cargo"), CARGO);
+    let path = w.base().join("elsewhere").display().to_string();
+    on_path(&mut w, path);
+    let (out, _) = w.run(command("cargo", &["test"], None)).await;
+    assert!(
+        out.is_error && out.text.contains("not in a place"),
+        "{out:?}"
+    );
 }
