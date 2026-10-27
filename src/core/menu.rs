@@ -619,6 +619,9 @@ pub struct MenuState {
     feedback_done: Option<Done>,
     /// The host has a program that opens links in the browser.
     opener: bool,
+    /// The system has no Landlock jail, so commands will be refused (D18).
+    /// Unknown counts as fine: only the app, which probed, says otherwise.
+    no_sandbox: bool,
 }
 
 /// What became of the Feedback form.
@@ -663,7 +666,15 @@ impl MenuState {
             feedback: None,
             feedback_done: None,
             opener: false,
+            no_sandbox: false,
         }
+    }
+
+    /// Whether commands can run on this system: without the Linux sandbox the
+    /// Exec row says so.
+    pub fn with_sandbox(mut self, sandbox: bool) -> Self {
+        self.no_sandbox = !sandbox;
+        self
     }
 
     /// Whether the host has a program that opens links in the browser:
@@ -1472,10 +1483,12 @@ impl MenuState {
                         let row = Row::Item {
                             label: item.label,
                             value: self.ai.as_ref().map(|ai| {
-                                Cow::Borrowed(if ai.draft().toggle(*toggle) {
-                                    "on"
-                                } else {
-                                    "off"
+                                Cow::Borrowed(match (ai.draft().toggle(*toggle), toggle) {
+                                    (false, _) => "off",
+                                    (true, ToolToggle::Exec) if self.no_sandbox => {
+                                        "on · needs Linux sandbox"
+                                    }
+                                    (true, _) => "on",
                                 })
                             }),
                             selected: self.selected == Some(index),

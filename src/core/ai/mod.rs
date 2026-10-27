@@ -17,6 +17,7 @@ pub mod menu;
 pub mod parse;
 pub mod picker;
 pub mod sanitize;
+pub mod toolchain;
 pub mod tools;
 pub mod window;
 

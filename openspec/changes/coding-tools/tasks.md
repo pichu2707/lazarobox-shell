@@ -223,51 +223,57 @@ Go/no-go checkpoint on review UX after W-h (design rollout).
 
 ### X-a: allow-list (PR 15, ~350)
 Spec: command-runner "Argv input and allow-list", "Refusals before start".
-- [ ] Xa.1 RED: table tests per program/verb: cargo, npm/pnpm/yarn, pytest, go; denied flags (`--config`, `-Z`, `--manifest-path`, `--target-dir`, `-g`, `-modfile`, ...). GREEN: `tools/allow.rs`. ~220.
-- [ ] Xa.2 RED: absolute path or `..` in any arg refused; `cwd` outside root refused; `run_command` args parse (`timeout_secs` clamp 120 default/600 max). GREEN. ~130.
+- [x] Xa.1 RED: table tests per program/verb: cargo, npm/pnpm/yarn, pytest, go; denied flags (`--config`, `-Z`, `--manifest-path`, `--target-dir`, `-g`, `-modfile`, ...). GREEN: `tools/allow.rs`. ~220.
+- [x] Xa.2 RED: absolute path or `..` in any arg refused; `cwd` outside root refused; `run_command` args parse (`timeout_secs` clamp 120 default/600 max). GREEN. ~130.
+- [x] Xa.3 review fixes: yarn/pnpm `run` only for scripts of `package.json` (`check`/`parse_run` take them; X-d must pass them), node `--location/--registry/--config.*/--store-dir/--global-folder` and `-g` bundles denied, every `=` tail judged as a path, pytest `@argsfile` refused.
 
 ### X-b: Capture and RunOutcome (PR 16, ~350)
 Spec: command-runner "Output capture and RunOutcome".
-- [ ] Xb.1 RED: 4 KiB head + 28 KiB tail ring with `[... N bytes omitted ...]`. GREEN: `tools/run.rs`. ~170.
-- [ ] Xb.2 RED: `RunOutcome` (exit, signal, timed_out, cancelled, truncated, total_bytes, duration, digest <= 2 KiB tail); lossy UTF-8, `clean`, `redact`, `label::wrap`. GREEN. ~180.
+- [x] Xb.1 RED: 4 KiB head + 28 KiB tail ring with `[... N bytes omitted ...]`. GREEN: `tools/run.rs`. ~170.
+- [x] Xb.2 RED: `RunOutcome` (exit, signal, timed_out, cancelled, truncated, total_bytes, duration, digest <= 2 KiB tail); lossy UTF-8, `clean`, `redact`, `label::wrap`. GREEN. ~180.
+- [x] Xb.3 review fixes: head and tail decoded apart (an open OSC in the head cannot swallow the marker or tail); the 32 KiB budget is applied after decode + redaction, trimming the tail's leading side.
 
 ### X-c1: toolchain JailSpec (pure) (PR 17, ~450)
 Spec: command-runner "Jail profile".
-- [ ] Xc1.1 RED: `core/ai/toolchain.rs` builds rx/rwx/rw/never classes from a fake FS and canonical program path (cargo, rustup, nvm/volta/fnm, GOROOT, pytest venv rule). ~250.
-- [ ] Xc1.2 RED: `JailSpec` gains `rwx` in `core/ai/jail.rs`; invariant R29 amended: Execute only in `rx` or the single `rwx` root. ~120.
-- [ ] Xc1.3 RED: env scrub table (passed, fixed, never-passed vars; PATH relative/under-root entries removed). ~80.
+- [x] Xc1.1 RED: `core/ai/toolchain.rs` builds rx/rwx/rw/never classes from a fake FS and canonical program path (cargo, rustup, nvm/volta/fnm, GOROOT, pytest venv rule). ~250.
+- [x] Xc1.2 RED: `JailSpec` gains `rwx` in `core/ai/jail.rs`; invariant R29 amended: Execute only in `rx` or the single `rwx` root. ~120.
+- [x] Xc1.3 RED: env scrub table (passed, fixed, never-passed vars; PATH relative/under-root entries removed). ~80.
+- [x] Xc1.4 review fixes: R29 on Linux (cache dropped, else `WritableExec`), `go_root` skipped when `rx` covers the program, `check_exec` rejects broad roots, X-c3 notes in design.md.
 
 ### X-c2: helper flags (PR 18, ~400)
-- [ ] Xc2.1 RED (skip when ABI < 3): `--rwx` lets exec work in the root; `~/.ssh` unreadable. GREEN: `runtime/jail.rs`. ~200.
-- [ ] Xc2.2 RED: `--net-bind open` (listen allowed), `--rlimits toolchain` (CORE 0, FSIZE 4 GiB, CPU 1200 s) set before exec. GREEN. ~200.
-- Check the pathname UNIX socket residual risk against the kernel docs here and record it (accepted risk; seccomp is follow-up).
+- [x] Xc2.1 RED (skip when ABI < 3): `--rwx` lets exec work in the root; `~/.ssh` unreadable. GREEN: `runtime/jail.rs`. ~200.
+- [x] Xc2.2 RED: `--net-bind open` (listen allowed), `--rlimits toolchain` (CORE 0, FSIZE 4 GiB, CPU 1200 s) set before exec. GREEN. ~200.
+- [x] Check the pathname UNIX socket residual risk against the kernel docs here and record it (accepted risk; seccomp is follow-up). Recorded in design.md (Landlock ABI limits) and apply-progress batch 20.
+- [x] Xc2.3 review fixes: helper refuses a symlinked or broad `rwx` root, `set_limits` keeps a lower parent hard limit and never maps an overflow to infinity, test no longer assumes an inherited core limit, `RLIMIT_REASON` in the safe-reasons vector.
 
 ### X-c3: runner (PR 19, ~450)
 Spec: command-runner "Process rules".
-- [ ] Xc3.1 RED (`/bin/sh` scripts below the allow-list): spawn core on `std::io::pipe`, shared stdout/stderr, stdin `/dev/null`, `process_group(0)` + `GroupKill`. GREEN: `runtime/tools/runner.rs`. ~220.
-- [ ] Xc3.2 RED: timeout, cancel-by-drop, group kill of grandchildren, normal exit `kill_and_reap` then 500 ms drain. ~140.
-- [ ] Xc3.3 RED: env scrub and private TMPDIR removed after run, ring truncation integration. ~90.
+- [x] Xc3.1 RED (`/bin/sh` scripts below the allow-list): spawn core on `std::io::pipe`, shared stdout/stderr, stdin `/dev/null`, `process_group(0)` + `GroupKill`. GREEN: `runtime/tools/runner.rs`. ~220.
+- [x] Xc3.2 RED: timeout, cancel-by-drop, group kill of grandchildren, normal exit `kill_and_reap` then 500 ms drain. ~140.
+- [x] Xc3.3 RED: env scrub and private TMPDIR removed after run, ring truncation integration. ~90. Also done here: exec-capable `GOTMPDIR`, `net_bind` Open + `rlimits` Toolchain on every run, the git integrity snapshot/compare (`integrity.rs`, user decision 5B). X-d1 must show `Ran.changes`.
 
 ### X-d1: host `run_command` (PR 26, ~450, host.rs slice: spike a seam first)
 Spec: command-runner "Refusals before start", "Process rules"; agent-tools "Approval model".
-- [ ] Xd1.1 RED: refused with no jail ("commands need the Linux sandbox (Landlock ABI 3+)"); refused while the key has a staged/proposed batch ("propose them first"). ~150.
-- [ ] Xd1.2 RED: `RunGate`: 1 per `StageKey` ("a command is already running in this chat") and global `Semaphore(2)` with a 60 s wait cap, taken after `y`, before spawn. ~170.
-- [ ] Xd1.3 RED: `host.rs` wiring, Exec family gate, golden stays green. ~130.
+- [x] Xd1.1 RED: refused with no jail ("commands need the Linux sandbox (Landlock ABI 3+)"); refused while the key has a staged/proposed batch ("propose them first"). ~150.
+- [x] Xd1.2 RED: `RunGate`: 1 per `StageKey` ("a command is already running in this chat") and global `Semaphore(2)` with a 60 s wait cap, taken after `y`, before spawn. ~170.
+- [x] Xd1.3 RED: `host.rs` wiring, Exec family gate, golden stays green. ~130.
 
 ### X-d2: Exec ask and notice (PR 27, ~400, host.rs slice: spike a seam first)
-- [ ] Xd2.1 RED: `ApprovalAsk::Exec` prompts every command in every mode; the exfiltration notice about `.env`; tier-B warnings shown. ~200.
-- [ ] Xd2.2 RED: app/menu row shows the "no jail" reason; global-wait shown on the row. ~200 (menu snapshots).
+- [x] Xd2.1 RED: `ApprovalAsk::Exec` prompts every command in every mode; the exfiltration notice about `.env`; tier-B warnings shown. ~200.
+- [x] Xd2.2 (no-jail reason done; the live global-wait row is deferred, see apply-progress X-d2) RED: app/menu row shows the "no jail" reason; global-wait shown on the row. ~200 (menu snapshots).
 
 ## Phase M4: git (0.22)
 
 ### G-a: git argv and parse (pure) (PR 20, ~350)
 Spec: git-tools "Verb boundary", "Hardened execution", "Read verbs".
-- [ ] Ga.1 RED: argv templates for status/diff/log/add/commit with the fixed `-c` hardening, `:(exclude,glob)` pathspecs from SECRET_FILES, `:(literal)` for add. GREEN: `tools/git.rs`. ~200.
-- [ ] Ga.2 RED: porcelain v2 `-z` parse, log `%x1f` parse, `max_count` <= 50. ~150.
+- [x] Ga.1 RED: argv templates for status/diff/log/add/commit with the fixed `-c` hardening, `:(exclude,glob)` pathspecs from SECRET_FILES, `:(literal)` for add. GREEN: `tools/git.rs`. ~200.
+- [x] Ga.2 RED: porcelain v2 `-z` parse, log `%x1f` parse, `max_count` <= 50. ~150.
+- [x] Ga.3 review fixes: parse/render split into `tools/git/parse.rs`; identity = repo's effective identity (G-b reads it); log keeps history simplification (no `--full-history`); hooks pinned to `<common-dir>/hooks` via `GitDir::new(git_dir, common_dir)`; status `--untracked-files=normal --renames`; `parse_log` validates hash/date; `check` refuses control/format chars; `add .` temp-repo test. G-b gets a checklist in design.md (see apply-progress).
+- [x] Gb.3 (G-b, from the G-a review): the preflight reads `git config user.name/user.email` in the repo and `--absolute-git-dir` + `--git-common-dir`; assert cleared env and git >= 2.32; never pass `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, `GIT_ASKPASS`, `GIT_SSH`, `GIT_CONFIG_COUNT`/`KEY_*`, `GIT_CONFIG_PARAMETERS`, `GIT_DIR`, `GIT_WORK_TREE`; treat truncated status output as truncated.
 
 ### G-b: git runtime (PR 21, ~350)
-- [ ] Gb.1 RED: git `JailSpec` (run spec without caches, ro `~/.gitconfig` and XDG git files, rw on `--absolute-git-dir` and `--git-common-dir` via a jailed read-only `rev-parse` preflight; linked worktrees). GREEN: `runtime/tools/git.rs`. ~200. Dep: X-c3.
-- [ ] Gb.2 RED (temp repo, skipped without git): a planted `core.fsmonitor`/`diff.external` must NOT create its marker file; env `GIT_CONFIG_NOSYSTEM`, `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`. ~150.
+- [x] Gb.1 RED: git `JailSpec` (run spec without caches, ro XDG git ignore/attributes (identity travels as `-c`), rw on `--absolute-git-dir` and `--git-common-dir` via a jailed read-only `rev-parse` preflight; linked worktrees). GREEN: `runtime/tools/git.rs`. ~200. Dep: X-c3.
+- [x] Gb.2 RED (temp repo, skipped without git): a planted `core.fsmonitor`/`diff.external` must NOT create its marker file; env `GIT_CONFIG_NOSYSTEM`, `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`. ~150.
 
 ### G-c: host git read verbs (PR 28, ~300, host.rs slice: spike a seam first)
 - [ ] Gc.1 RED: `git_status`/`git_log` no ask; `git_diff` prompts on Cloud, free on Local; refused while a batch is staged. ~150.
