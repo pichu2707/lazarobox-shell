@@ -321,6 +321,7 @@ async fn a_valid_command_asks_and_a_no_starts_nothing() {
 use std::{ffi::OsString, os::unix::fs::PermissionsExt, time::Duration};
 
 use super::gate::RunGate;
+use crate::core::ai::tools::allow::Program;
 
 const HELPER: &str = "#!/bin/sh\nwhile [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"\n";
 /// A helper that could not apply the rules: it says so on its status
@@ -648,4 +649,58 @@ async fn a_program_in_no_known_toolchain_place_is_refused() {
         out.is_error && out.text.contains("not in a place"),
         "{out:?}"
     );
+}
+
+// --- which executable a name stands for ---
+
+fn pytest_in(root: &Path) -> Option<PathBuf> {
+    exec::find(Program::Pytest, root, None)
+}
+
+fn venv_bin(root: &Path) -> PathBuf {
+    let bin = root.join(".venv/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    bin
+}
+
+#[test]
+fn the_projects_own_venv_pytest_is_found() {
+    let w = world();
+    let root = w.proj.canonicalize().unwrap();
+    script(&venv_bin(&root).join("pytest"), "#!/bin/sh\n");
+    assert_eq!(pytest_in(&root), Some(root.join(".venv/bin/pytest")));
+}
+
+// A venv link is a plain file in the project only if its target stays inside.
+#[test]
+fn a_venv_pytest_that_links_out_of_the_project_is_not_used() {
+    let w = world();
+    let root = w.proj.canonicalize().unwrap();
+    std::os::unix::fs::symlink("/bin/sh", venv_bin(&root).join("pytest")).unwrap();
+    assert_eq!(pytest_in(&root), None);
+}
+
+#[test]
+fn a_venv_pytest_that_links_inside_the_project_is_used() {
+    let w = world();
+    let root = w.proj.canonicalize().unwrap();
+    script(&root.join("tools/real-pytest"), "#!/bin/sh\n");
+    std::os::unix::fs::symlink(
+        root.join("tools/real-pytest"),
+        venv_bin(&root).join("pytest"),
+    )
+    .unwrap();
+    assert_eq!(pytest_in(&root), Some(root.join("tools/real-pytest")));
+}
+
+// Refused venv: the search goes on to the PATH.
+#[test]
+fn a_refused_venv_pytest_falls_through_to_the_path() {
+    let w = world();
+    let root = w.proj.canonicalize().unwrap();
+    std::os::unix::fs::symlink("/bin/sh", venv_bin(&root).join("pytest")).unwrap();
+    let bin = w.base().join("bin");
+    script(&bin.join("pytest"), "#!/bin/sh\n");
+    let found = exec::find(Program::Pytest, &root, Some(bin.as_os_str()));
+    assert_eq!(found, Some(bin.join("pytest")));
 }

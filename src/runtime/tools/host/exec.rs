@@ -363,17 +363,24 @@ fn sandbox_text(why: &Refusal) -> &'static str {
 }
 
 /// The executable file `tool` names: the project's pytest venv first, then the
-/// first hit on `path`, with every link followed.
-fn find(tool: Program, root: &Path, path: Option<&OsStr>) -> Option<PathBuf> {
-    let venv = (tool == Program::Pytest).then(|| root.join(".venv/bin/pytest"));
-    let listed = path.into_iter().flat_map(std::env::split_paths);
-    venv.into_iter()
-        .chain(listed.map(|dir| dir.join(tool.name())))
-        .find_map(|candidate| {
-            let real = fs::canonicalize(candidate).ok()?;
-            let meta = fs::metadata(&real).ok()?;
-            (meta.is_file() && meta.permissions().mode() & 0o111 != 0).then_some(real)
-        })
+/// first hit on `path`, with every link followed. The venv is the project's
+/// own, so it counts only while it stays in the project: a link to `/bin/sh`
+/// there is a shell, and the model chooses the arguments.
+pub(super) fn find(tool: Program, root: &Path, path: Option<&OsStr>) -> Option<PathBuf> {
+    let executable = |candidate: PathBuf| {
+        let real = fs::canonicalize(candidate).ok()?;
+        let meta = fs::metadata(&real).ok()?;
+        (meta.is_file() && meta.permissions().mode() & 0o111 != 0).then_some(real)
+    };
+    let venv = (tool == Program::Pytest)
+        .then(|| executable(root.join(".venv/bin/pytest")))
+        .flatten()
+        .filter(|real| real.starts_with(root));
+    venv.or_else(|| {
+        path.into_iter()
+            .flat_map(std::env::split_paths)
+            .find_map(|dir| executable(dir.join(tool.name())))
+    })
 }
 
 /// What the run did to the watched git places, as text for the model: the
