@@ -436,6 +436,7 @@ async fn the_newer_check_asks_nothing_without_an_owned_install() {
 }
 
 /// The releases list holding only the Vulkan build of `tag`.
+#[cfg(target_os = "linux")]
 fn vulkan_releases_of(tag: &str) -> String {
     let asset = asset_name(tag, Platform::CURRENT, Variant::Vulkan).expect("a vulkan build here");
     format!(
