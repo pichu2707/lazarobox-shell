@@ -52,13 +52,14 @@ pub struct Curl {
     https_only: bool,
     /// Test requests must not go through the developer's proxy.
     noproxy: bool,
-    token: Option<String>,
+    /// Zeroed when the curl is dropped, like every copy made from it.
+    token: Option<Secret>,
     user_agent: String,
 }
 
 impl Curl {
     /// The production curl: the Hub over HTTPS only.
-    pub fn hub(path: OsString, token: Option<String>) -> Self {
+    pub fn hub(path: OsString, token: Option<Secret>) -> Self {
         Curl {
             program: "curl".into(),
             path,
@@ -137,13 +138,13 @@ impl Curl {
 
     /// The config line curl reads on stdin: the token as a header. `None`
     /// without a token, or with one that cannot be a header value.
-    pub fn stdin_config(&self) -> Option<String> {
-        let token = self.token.as_deref()?;
+    pub fn stdin_config(&self) -> Option<Secret> {
+        let token = self.token.as_ref()?.expose();
         let fits = !token.is_empty()
             && token
                 .bytes()
                 .all(|b| b.is_ascii_graphic() && b != b'"' && b != b'\\');
-        fits.then(|| format!("header = \"Authorization: Bearer {token}\"\n"))
+        fits.then(|| Secret::new(format!("header = \"Authorization: Bearer {token}\"\n")))
     }
 
     /// Starts curl with `args` in its own process group, writing the token
@@ -180,7 +181,7 @@ impl Curl {
             .and_then(GroupKill::new);
         if let (Some(config), Some(mut stdin)) = (config, child.stdin.take()) {
             // Dropped at the end of the block: curl sees the end of its config.
-            let _ = stdin.write_all(config.as_bytes()).await;
+            let _ = stdin.write_all(config.expose().as_bytes()).await;
         }
         Ok((child, guard))
     }
@@ -656,7 +657,7 @@ fn listing(hub: Option<&Path>, files: RepoFiles) -> Listing {
 }
 
 /// Builds the curl of one request, carrying this token.
-type MakeCurl = Arc<dyn Fn(Option<String>) -> Curl + Send + Sync>;
+type MakeCurl = Arc<dyn Fn(Option<Secret>) -> Curl + Send + Sync>;
 
 /// Reads where the token is, at each request.
 type ReadEnv = Arc<dyn Fn() -> TokenEnv + Send + Sync>;
@@ -693,7 +694,7 @@ impl Hub {
 
     /// Tests: every request goes through the curl `make` builds.
     #[cfg(test)]
-    fn with_curl(mut self, make: impl Fn(Option<String>) -> Curl + Send + Sync + 'static) -> Self {
+    fn with_curl(mut self, make: impl Fn(Option<Secret>) -> Curl + Send + Sync + 'static) -> Self {
         self.make = Arc::new(make);
         self
     }
@@ -702,7 +703,7 @@ impl Hub {
     /// file is read there.
     fn curl(&self) -> impl FnOnce() -> Curl + Send + 'static {
         let (make, env) = (Arc::clone(&self.make), Arc::clone(&self.env));
-        move || make(hf::token(&env(), read_token_file))
+        move || make(hf::token(&env(), read_token_file).map(Secret::new))
     }
 
     /// Runs one account request of the `Hugging Face` row; one
@@ -718,11 +719,11 @@ impl Hub {
             let env = env();
             let reply = match ask {
                 AccountAsk::Connect(token) => {
-                    let curl = make(Some(token.expose().to_owned()));
+                    let curl = make(Some(token.clone()));
                     AccountReply::Connected(connect(&curl, &env, token).await)
                 }
                 AccountAsk::Check => {
-                    let curl = make(hf::saved_token(&env, read_token_file));
+                    let curl = make(hf::saved_token(&env, read_token_file).map(Secret::new));
                     AccountReply::Checked(whoami(&curl).await)
                 }
                 AccountAsk::Disconnect => AccountReply::Disconnected(disconnect(&env)),

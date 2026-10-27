@@ -493,9 +493,11 @@ pub fn token(env: &TokenEnv, read: impl Fn(&Path) -> Option<String>) -> Option<S
     }
 }
 
-/// A token trimmed; a blank one is none.
-fn clean(token: String) -> Option<String> {
-    Some(token.trim().to_owned()).filter(|t| !t.is_empty())
+/// A token trimmed; a blank one is none. The untrimmed text is zeroed.
+fn clean(mut token: String) -> Option<String> {
+    let trimmed = token.trim().to_owned();
+    wipe(&mut token);
+    Some(trimmed).filter(|t| !t.is_empty())
 }
 
 /// The token file of [`token`]'s lookup, the one `hf auth login` writes:

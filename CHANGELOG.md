@@ -27,6 +27,11 @@ baseline.
 - A relative `HF_TOKEN_PATH` is read from the working directory, as
   `huggingface_hub` reads it, instead of being ignored.
 
+### Security
+
+- Every copy of the Hugging Face token that curl is given (the token and its
+  header line) is zeroed when it is dropped, as the pasted token already was.
+
 ## [0.25.1] - 2026-10-26
 
 ### Fixed

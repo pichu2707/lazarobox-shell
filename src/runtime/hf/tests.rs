@@ -83,7 +83,7 @@ fn curl(base: &str, token: Option<&str>) -> Curl {
         base: base.to_owned(),
         https_only: false,
         noproxy: true,
-        token: token.map(str::to_owned),
+        token: token.map(|t| Secret::new(t.to_owned())),
         user_agent: "lazarobox-shell/9.9.9".to_owned(),
     }
 }
@@ -132,7 +132,7 @@ fn header<'a>(request: &'a str, name: &str) -> Option<&'a str> {
 // Spec (model-download, Hub requests): Only HTTPS to the Hub.
 #[test]
 fn the_hub_requests_are_https_only_and_end_with_the_url() {
-    let hub = Curl::hub("/usr/bin".into(), Some("secret-123".into()));
+    let hub = Curl::hub("/usr/bin".into(), Some(Secret::new("secret-123".into())));
     let api = hub.api_args("/api/models/o/r");
     assert_eq!(api[0], "-q");
     for flag in [["--proto", "=https"], ["--proto-redir", "=https"]] {
@@ -161,7 +161,7 @@ fn the_hub_requests_are_https_only_and_end_with_the_url() {
         assert!(args.windows(2).any(|w| w == ["--config", "-"]), "{args:?}");
     }
     assert_eq!(
-        hub.stdin_config().as_deref(),
+        hub.stdin_config().as_ref().map(Secret::expose),
         Some("header = \"Authorization: Bearer secret-123\"\n")
     );
     // Without a token, nothing is read from stdin.
@@ -174,7 +174,7 @@ fn the_hub_requests_are_https_only_and_end_with_the_url() {
 fn a_token_that_cannot_be_a_header_is_not_sent() {
     for bad in ["a\"b", "a\\b", "a b", "a\nb"] {
         assert_eq!(
-            Curl::hub("/usr/bin".into(), Some(bad.into())).stdin_config(),
+            Curl::hub("/usr/bin".into(), Some(Secret::new(bad.into()))).stdin_config(),
             None,
             "{bad:?}"
         );
@@ -532,7 +532,7 @@ fn account_worker(
     let (tx, rx) = tokio::sync::mpsc::channel(8);
     let (base, home) = (base.to_owned(), hf_home.to_owned());
     let hub = Hub::new(OsString::new(), None, move || env_at(&home, hf_token), tx)
-        .with_curl(move |token| curl(&base, token.as_deref()));
+        .with_curl(move |token| curl(&base, token.as_ref().map(Secret::expose)));
     (hub, rx)
 }
 
@@ -593,7 +593,8 @@ async fn a_connect_saves_the_accepted_token_0600_and_sends_it_only_on_stdin() {
     let args = curl(&base, Some("hf_abc")).api_args(hf::WHOAMI_PATH);
     assert!(!args.iter().any(|a| a.contains("hf_abc")), "{args:?}");
     assert!(args.windows(2).any(|w| w == ["--config", "-"]), "{args:?}");
-    let production = Curl::hub("/usr/bin".into(), Some("hf_abc".into())).api_args(hf::WHOAMI_PATH);
+    let production =
+        Curl::hub("/usr/bin".into(), Some(Secret::new("hf_abc".into()))).api_args(hf::WHOAMI_PATH);
     assert_eq!(
         production.last().map(String::as_str),
         Some("https://huggingface.co/api/whoami-v2")
