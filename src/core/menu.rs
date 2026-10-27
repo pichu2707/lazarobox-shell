@@ -5,6 +5,7 @@
 use std::borrow::Cow;
 
 mod account;
+pub mod feedback;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -2138,3 +2139,6 @@ mod hub_tests;
 
 #[cfg(test)]
 mod account_tests;
+
+#[cfg(test)]
+mod feedback_tests;
