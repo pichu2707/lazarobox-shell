@@ -6,9 +6,13 @@ pub mod approver;
 #[cfg(test)]
 mod audit;
 pub mod fs;
+pub mod git;
 pub mod host;
+pub mod integrity;
 pub mod open;
 pub mod pending;
+pub mod runner;
+pub mod scratch;
 pub mod search;
 pub mod stage;
 pub mod staged;
