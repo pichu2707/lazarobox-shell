@@ -4,7 +4,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::feedback::{
     DESCRIPTION_REQUIRED, Facts, Feedback, Field, Kind, Outcome, REDACTED, TITLE_REQUIRED,
-    TOO_LONG, host,
+    TOO_LONG, gh_message, host, issue_url,
 };
 
 const ISSUES: &str = "https://github.com/pichu2707/lazarobox-shell/issues/new";
@@ -265,4 +265,40 @@ fn the_host_facts_come_from_the_environment() {
         None,
     );
     assert_eq!(long.terminal.map(|t| t.chars().count()), Some(40));
+}
+
+// Spec (open-links S7): gh's message is shown on one line, with no control
+// character, capped at the footer's 48 columns.
+#[test]
+fn gh_messages_are_one_capped_line() {
+    assert_eq!(
+        gh_message("\u{1b}[1;31mHTTP 422:\tValidation\r\nFailed\u{7}\n"),
+        "gh: HTTP 422: Validation Failed"
+    );
+    assert_eq!(gh_message(" \n\u{1b}[0m"), "gh failed");
+    let long = gh_message(&"x".repeat(200));
+    assert_eq!(long.chars().count(), 48);
+    assert!(long.starts_with("gh: xxx") && long.ends_with('…'), "{long}");
+}
+
+// Spec (open-links S7): only a one-line link to an issue of this
+// repository counts as the created issue.
+#[test]
+fn only_an_issue_link_of_the_repository_is_accepted() {
+    let repo = "pichu2707/lazarobox-shell";
+    let url = "https://github.com/pichu2707/lazarobox-shell/issues/42";
+    assert_eq!(issue_url(&format!("{url}\n"), repo), Some(url.to_owned()));
+    for bad in [
+        "",
+        "created",
+        "https://github.com/other/repo/issues/42",
+        "https://github.com/pichu2707/lazarobox-shell/issues/",
+        "https://github.com/pichu2707/lazarobox-shell/issues/4a",
+        "https://github.com/pichu2707/lazarobox-shell/pull/42",
+        "http://github.com/pichu2707/lazarobox-shell/issues/42",
+        "https://github.com/pichu2707/lazarobox-shell/issues/42\nmore",
+        "https://github.com/pichu2707/lazarobox-shell/issues/42 x",
+    ] {
+        assert_eq!(issue_url(bad, repo), None, "{bad:?}");
+    }
 }
