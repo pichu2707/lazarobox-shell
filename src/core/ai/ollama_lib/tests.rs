@@ -154,14 +154,17 @@ fn the_popular_list_holds_at_most_twenty() {
 
 #[test]
 fn the_requests_are_built_from_checked_names() {
-    assert_eq!(library_url(), "https://ollama.com/library?sort=popular");
     assert_eq!(
-        manifest_url("llama3.2", "3b"),
+        format!("{LIBRARY}{}", library_path()),
+        "https://ollama.com/library?sort=popular"
+    );
+    assert_eq!(
+        format!("{REGISTRY}{}", manifest_path("llama3.2", "3b")),
         "https://registry.ollama.ai/v2/library/llama3.2/manifests/3b"
     );
     let digest = format!("sha256:{}", "a".repeat(64));
     assert_eq!(
-        blob_url("llama3.2", &digest),
+        format!("{REGISTRY}{}", blob_path("llama3.2", &digest)),
         format!("https://registry.ollama.ai/v2/library/llama3.2/blobs/{digest}")
     );
     assert_eq!(

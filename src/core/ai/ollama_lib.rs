@@ -126,16 +126,19 @@ pub fn popular(cards: Vec<Card>, ram: Option<u64>) -> Vec<Pick> {
         .collect()
 }
 
-pub fn library_url() -> String {
-    format!("{LIBRARY}/library?sort=popular")
+/// The library page, on [`LIBRARY`].
+pub fn library_path() -> &'static str {
+    "/library?sort=popular"
 }
 
-pub fn manifest_url(model: &str, tag: &str) -> String {
-    format!("{REGISTRY}/v2/library/{model}/manifests/{tag}")
+/// A manifest, on [`REGISTRY`].
+pub fn manifest_path(model: &str, tag: &str) -> String {
+    format!("/v2/library/{model}/manifests/{tag}")
 }
 
-pub fn blob_url(model: &str, digest: &str) -> String {
-    format!("{REGISTRY}/v2/library/{model}/blobs/{digest}")
+/// A blob, on [`REGISTRY`].
+pub fn blob_path(model: &str, digest: &str) -> String {
+    format!("/v2/library/{model}/blobs/{digest}")
 }
 
 /// The page to read a model's license on.
