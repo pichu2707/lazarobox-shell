@@ -767,3 +767,30 @@ Manual checks (throwaway test, removed): a real `cargo check` in the real jail w
 OPEN for X-d1 (risk): the helper execs with `arg0 = program` and `Layout.program` is the CANONICAL path, so `~/.cargo/bin/cargo` (a rustup proxy) becomes `rustup` and would run as rustup, not cargo. By reading the code only (not run): X-d1 must pass the proxy name as arg0 or resolve the real toolchain binary. `toolchain_spec` only accepts cargo under `$CARGO_HOME/bin`, so the toolchain-dir binary is refused today. My manual check used `rustup run stable cargo ...`.
 
 Size: see report. Checks green: fmt, clippy --all-targets -D warnings, cargo test.
+
+
+## X-c3 review fixes
+
+Eleven confirmed review findings fixed on `feat/coding-tools-xc3` (strict TDD: each test seen red, by a failing assertion or a compile error on the new API, before the code).
+
+| # | Fix | Where |
+|---|-----|-------|
+| 1 | Hooks are never capped silently: every entry is read; more than `HOOKS_ABSURD` (1024) in one folder gives a `Kind::Crowded` change on every run (`after` = "hooks dir has N entries") | `integrity.rs` |
+| 2 | `.git` is judged with `symlink_metadata` first: a link or a file is recorded and never entered; every read goes through `open_beneath` (openat2 BENEATH + NO_SYMLINKS, O_NOFOLLOW walk as fallback) | `integrity.rs` |
+| 3 | Watch list adds `core.hooksPath`, `include.path` / `includeIf.*.path` (chains, depth 6) when they resolve inside the root, `.git/modules/**/{config,hooks/*}` (nested module names too), `.git/config.worktree`, and the `gitdir:` target of a `.git` file when inside the root | `integrity.rs` |
+| 4 | `Scratch::unique` names are pid + counter + nanos and a taken name is skipped (16 tries, then `AlreadyExists`) | `scratch.rs` |
+| 5 | A failed `remove_dir_all` chmods the tree's folders (never links) to 0700 and retries once; what is still there is returned (`Scratch::finish`, `Ran.leftovers`) | `scratch.rs`, `runner.rs` |
+| 6 | `AfterOnDrop` guard holds `before`; a dropped or failed run takes a synchronous after-snapshot and pushes the diff to `Job.unreported` (`Unreported`) | `runner.rs` |
+| 7 | `NetBind::Open` kept; decision and port-squatting risk recorded in design.md (resolved list, D15) | `design.md` |
+| 8 | `JailArgs.arg0` / `--arg0 <name>`: plain name only (no `/`, no NUL, not empty); the helper runs `Command::new(canonical).arg0(name)`; `run_jailed` passes `Program::name()`. Linux only (sandbox-exec starts the program under its path) | `core/ai/jail.rs`, `runtime/jail.rs`, `runner.rs` |
+| 9 | The final `kill_and_reap` is bounded at 5 s (`REAP`) and is an error when it is not met | `runner.rs` |
+| 10 | `scratch.rs` has its own narrow allow list (`DirBuilder`, `remove_dir_all`, `set_permissions`, libc `getpid`); `DirBuilder` joins `FS_WRITE` (it was not banned anywhere); an aliased `fs` stays banned there | `audit.rs` |
+| 11 | `safe_path` canonicalizes each PATH entry before the in-root check (the entry is kept as written) | `core/ai/toolchain/env.rs` |
+
+Tests: the timeout test uses a ready marker (5 s deadline instead of 400 ms) and checks the leader is reaped; a Go dropped-run test (GOTMPDIR removed, group killed, leader reaped); a real-helper test that a `bash` started with `--arg0 cargo` reads `cargo` in `/proc/self/cmdline`.
+
+API for X-d1:
+- `Ran { done, changes: Vec<Change>, leftovers: Vec<PathBuf> }`. Surface `changes`; a `Kind::Crowded` change means "too many entries to see": treat the run as tainted, no diff, no revert. Say so when `leftovers` is not empty.
+- `Job.unreported: Unreported` (shared handle, `Clone`): keep a clone, call `unreported.drain()` after a cancelled run and treat the result like `Ran.changes`. A run that finishes never pushes.
+- `arg0` is set by `run_jailed` from `Job.tool.name()` (`cargo`, `go`, ...): X-d1 passes `Layout.program` as the canonical path and needs nothing else. This closes the OPEN risk of Batch 21 (`~/.cargo/bin/cargo` canonicalizing to rustup). `$RUSTUP_HOME` stays in `rx`.
+- Limit: the drop snapshot is taken right after the group is signalled, so a write in the instant between the signal and the death can be missed.
