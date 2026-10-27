@@ -9,7 +9,7 @@ use crate::core::ai::{
     chat::{
         approval::{
             Approval, ApprovalAsk, ApprovalPrompt, EXTERNAL_KEYS, Origin, Press, READ_KEYS,
-            RUN_CANCELLED, RUN_KEYS, Reply, SEARCH_KEYS, run_sent_line,
+            RUN_CANCELLED, RUN_KEYS, Reply, SEARCH_KEYS, exec_notice, run_sent_line,
         },
         approval_rows::fits,
         engine::{CallId, Decision},
@@ -444,6 +444,7 @@ impl App {
                     keys: RUN_KEYS,
                     armed,
                     why,
+                    notice: None,
                 })
             }
             // The path was resolved and made safe to show before it was asked.
@@ -453,6 +454,7 @@ impl App {
                 keys: READ_KEYS,
                 armed,
                 why: None,
+                notice: None,
             }),
             // The pattern and the folder were made one clean line when asked.
             ApprovalAsk::Search { pattern, dir } => Some(ApprovalPrompt {
@@ -461,15 +463,19 @@ impl App {
                 keys: SEARCH_KEYS,
                 armed,
                 why: None,
+                notice: None,
             }),
             // The program, arguments and folder are what will run, and the host
-            // refused text that would not show as it is. X-d2 adds the network
-            // and `.env` notice.
+            // refused text that would not show as it is. The notice is part of
+            // what is approved, so the pane must fit it (it is not `why`).
             ApprovalAsk::Exec {
                 program,
                 args,
                 cwd,
                 script,
+                timeout_secs,
+                cloud,
+                earlier,
             } => {
                 // One logical line per fact, so the folder and the script are
                 // rows `fits` checks, not a clipped head. Arguments are quoted
@@ -489,6 +495,13 @@ impl App {
                     keys: EXTERNAL_KEYS,
                     armed,
                     why: None,
+                    notice: Some(exec_notice(
+                        program,
+                        args,
+                        *timeout_secs,
+                        *cloud,
+                        earlier.as_deref(),
+                    )),
                 })
             }
             // The review view draws a batch; it has no overlay.
@@ -501,6 +514,7 @@ impl App {
                 keys: EXTERNAL_KEYS,
                 armed,
                 why: None,
+                notice: None,
             }),
         }
     }
@@ -527,7 +541,7 @@ fn display_word(word: &str) -> String {
     let plain = !word.is_empty()
         && !word
             .chars()
-            .any(|c| c.is_whitespace() || "'\"\\$`".contains(c));
+            .any(|c| c.is_whitespace() || "'\"\\$`;|&<>()*?#~{}![]^".contains(c));
     if plain {
         word.to_owned()
     } else {

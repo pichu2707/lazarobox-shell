@@ -201,7 +201,7 @@ async fn yarn_run_needs_a_script_declared_in_the_package_json_of_the_folder() {
     let missing = command("yarn", &["run", "build"], None);
     assert_eq!(
         refused(&w, missing).await,
-        ("subcommand not allowed".into(), false)
+        ("run it from the folder that has package.json".into(), false)
     );
     let asks = Asks::new(Decision::Denied("the user declined"));
     let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
@@ -260,12 +260,12 @@ async fn an_argument_with_a_control_character_is_refused() {
     }
 }
 
-// A command's output can carry secrets and would go to the provider: until the
-// `.env` notice (X-d2) lands, commands run only with a local model.
+// Spec (agent-tools, Approval): a cloud engine runs commands too, after a
+// prompt that says the output goes to its provider.
 #[tokio::test]
-async fn a_cloud_chat_is_refused_before_it_asks() {
+async fn a_cloud_chat_asks_with_the_provider_notice_instead_of_refusing() {
     let w = world();
-    let asks = Asks::new(Decision::Sent);
+    let asks = Asks::new(Decision::Denied("the user declined"));
     let (tx, _rx) = mpsc::channel(32);
     let mut scope = TurnScope::new(tx, Locality::Cloud, w.proj.clone());
     scope.approver = asks.clone();
@@ -276,12 +276,80 @@ async fn a_cloud_chat_is_refused_before_it_asks() {
         .dispatch(scope)
         .call(command("cargo", &["test"], None))
         .await;
-    assert!(out.is_error, "{out:?}");
-    assert_eq!(out.text, "commands run only with a local model for now");
-    assert!(asks.asked().is_empty());
+    assert_eq!(out.text, "denied: the user declined");
+    let [ApprovalAsk::Exec { cloud, .. }] = &asks.asked()[..] else {
+        panic!("{:?}", asks.asked());
+    };
+    assert!(*cloud);
 }
 
-// Scenario "Unproposed staged changes".
+#[tokio::test]
+async fn a_local_chat_asks_without_the_cloud_flag() {
+    let w = world();
+    let asks = Asks::new(Decision::Denied("the user declined"));
+    let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
+    d.call(command("cargo", &["test"], None)).await;
+    let [ApprovalAsk::Exec { cloud, .. }] = &asks.asked()[..] else {
+        panic!("{:?}", asks.asked());
+    };
+    assert!(!*cloud);
+}
+
+// The prompt shows the timeout the run will have, clamped like the run.
+#[tokio::test]
+async fn the_ask_carries_the_timeout_the_run_will_have() {
+    let w = world();
+    for (given, want) in [(None, 120), (Some(30), 30), (Some(600), 600)] {
+        let asks = Asks::new(Decision::Denied("the user declined"));
+        let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
+        let mut call = command("cargo", &["test"], None);
+        if let (Call::RunCommand { args }, Some(secs)) = (&mut call, given) {
+            args["timeout_secs"] = Value::from(secs);
+        }
+        d.call(call).await;
+        let [ApprovalAsk::Exec { timeout_secs, .. }] = &asks.asked()[..] else {
+            panic!("{:?}", asks.asked());
+        };
+        assert_eq!(*timeout_secs, want, "{given:?}");
+    }
+}
+
+// Changes a cancelled run left in the sink reach the user at the next ask.
+#[tokio::test]
+async fn the_changes_of_a_cancelled_run_are_told_in_the_next_ask_and_still_reach_the_model() {
+    use crate::runtime::tools::integrity::Kind;
+    let w = world();
+    w.host
+        .exec
+        .sink(key())
+        .push(vec![change(Kind::Added, ".git/hooks/pre-commit")]);
+    let asks = Asks::new(Decision::Denied("the user declined"));
+    let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
+    d.call(command("cargo", &["test"], None)).await;
+    let [ApprovalAsk::Exec { earlier, .. }] = &asks.asked()[..] else {
+        panic!("{:?}", asks.asked());
+    };
+    let earlier = earlier.clone().expect("told");
+    assert!(earlier.contains("added .git/hooks/pre-commit"), "{earlier}");
+    // Peeked, not taken: the next result still carries it for the model.
+    assert_eq!(w.host.exec.sink(key()).drain().len(), 1);
+}
+
+#[tokio::test]
+async fn an_ask_with_no_earlier_changes_says_nothing_about_them() {
+    let w = world();
+    let asks = Asks::new(Decision::Denied("the user declined"));
+    let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
+    d.call(command("cargo", &["test"], None)).await;
+    let [ApprovalAsk::Exec { earlier, .. }] = &asks.asked()[..] else {
+        panic!("{:?}", asks.asked());
+    };
+    assert_eq!(*earlier, None);
+}
+
+// Scenario "Unproposed staged changes". Staging reads the disk through the
+// safe write primitives, which exist on Linux only (macOS refuses by design).
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_chat_with_staged_changes_must_propose_them_first() {
     let w = world();
@@ -341,6 +409,9 @@ async fn a_valid_command_asks_and_a_no_starts_nothing() {
             args: vec!["test".into(), "-p".into(), "x".into()],
             cwd: ".".into(),
             script: None,
+            timeout_secs: 120,
+            cloud: false,
+            earlier: None,
         }]
     );
     let (_, ask, status, _) = super::tests::pair(&super::tests::events(&mut rx));
@@ -860,4 +931,180 @@ fn an_unchecked_place_says_the_project_may_be_tainted() {
     assert!(both.contains("tainted"), "{both}");
     assert!(both.contains("changed .git/config"), "{both}");
     assert_eq!(exec::changes_note(&[], "n0nce"), None);
+}
+
+// --- install scripts and the folder of package.json ---
+
+#[tokio::test]
+async fn the_ask_for_an_install_shows_the_lifecycle_scripts_of_the_project() {
+    let w = world();
+    package(
+        &w,
+        r#"{"postinstall": "node setup.js", "prepare": "husky", "build": "tsc"}"#,
+    );
+    for verb in ["install", "ci"] {
+        let asks = Asks::new(Decision::Denied("the user declined"));
+        let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
+        d.call(command("npm", &[verb], None)).await;
+        let [ApprovalAsk::Exec { script, .. }] = &asks.asked()[..] else {
+            panic!("{:?}", asks.asked());
+        };
+        assert_eq!(
+            script.as_deref(),
+            Some("postinstall: node setup.js\nprepare: husky"),
+            "{verb}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_install_with_no_lifecycle_script_shows_no_script() {
+    let w = world();
+    package(&w, r#"{"build": "tsc"}"#);
+    let asks = Asks::new(Decision::Denied("the user declined"));
+    let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
+    d.call(command("pnpm", &["install"], None)).await;
+    let [ApprovalAsk::Exec { script, .. }] = &asks.asked()[..] else {
+        panic!("{:?}", asks.asked());
+    };
+    assert_eq!(*script, None);
+}
+
+#[tokio::test]
+async fn a_lifecycle_script_edited_while_the_install_question_is_open_is_refused() {
+    let w = world();
+    package(&w, r#"{"postinstall": "true"}"#);
+    let (d, _rx) = w.turn(
+        &w.proj,
+        Arc::new(Rewrites(w.proj.join("package.json"))),
+        exec_set(),
+    );
+    let out = d.call(command("npm", &["install"], None)).await;
+    assert!(
+        out.is_error && out.text.contains("package.json changed"),
+        "{out:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_and_run_need_the_folder_that_has_package_json() {
+    let w = world();
+    std::fs::create_dir(w.proj.join("sub")).unwrap();
+    package(&w, r#"{"build": "tsc"}"#);
+    for args in [
+        &["test"][..],
+        &["run", "build"][..],
+        &["install"][..],
+        &["ci"][..],
+    ] {
+        for program in ["npm", "yarn", "pnpm"] {
+            assert_eq!(
+                refused(&w, command(program, args, Some("sub"))).await,
+                ("run it from the folder that has package.json".into(), false),
+                "{program} {args:?}"
+            );
+        }
+    }
+}
+
+// --- review fixes: what the ask shows for an install ---
+
+async fn script_of(w: &World, program: &str, args: &[&str]) -> Option<String> {
+    let asks = Asks::new(Decision::Denied("the user declined"));
+    let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
+    d.call(command(program, args, None)).await;
+    let [ApprovalAsk::Exec { script, .. }] = &asks.asked()[..] else {
+        panic!("{:?}", asks.asked());
+    };
+    script.clone()
+}
+
+#[tokio::test]
+async fn an_install_that_skips_scripts_shows_no_bodies() {
+    let w = world();
+    package(
+        &w,
+        r#"{"postinstall": "node setup.js", "prepare": "husky"}"#,
+    );
+    for verb in ["install", "ci"] {
+        assert_eq!(
+            script_of(&w, "npm", &[verb, "--ignore-scripts"]).await,
+            None
+        );
+    }
+    // `=false` and `--no-ignore-scripts` do not skip them.
+    for flag in ["--ignore-scripts=false", "--no-ignore-scripts"] {
+        assert!(
+            script_of(&w, "npm", &["install", flag]).await.is_some(),
+            "{flag}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_ask_for_an_install_also_shows_the_hooks_of_each_manager() {
+    let w = world();
+    package(
+        &w,
+        r#"{"preprepare": "a", "prepare": "b", "postprepare": "c", "prepublish": "d"}"#,
+    );
+    assert_eq!(
+        script_of(&w, "npm", &["install"]).await.as_deref(),
+        Some("preprepare: a\nprepare: b\npostprepare: c")
+    );
+    assert_eq!(
+        script_of(&w, "yarn", &["install"]).await.as_deref(),
+        Some("prepublish: d\nprepare: b")
+    );
+}
+
+// --- review fixes: the line about an earlier cancelled run ---
+
+#[test]
+fn the_line_about_an_earlier_run_is_capped_however_long_the_paths_are() {
+    use crate::runtime::tools::integrity::Kind;
+    use unicode_width::UnicodeWidthStr;
+    let long = format!(".git/{}", "d/".repeat(300));
+    let many: Vec<_> = (0..40).map(|_| change(Kind::Added, &long)).collect();
+    let line = exec::earlier_note(&many).expect("told");
+    assert!(line.width() <= 240, "{} columns", line.width());
+    assert!(
+        line.starts_with("40 places under .git were touched by a cancelled run"),
+        "{line}"
+    );
+    assert!(line.ends_with('\u{2026}'), "{line}");
+    let one = exec::earlier_note(&[change(Kind::Changed, ".git/config")]).unwrap();
+    assert!(
+        one.starts_with("1 place under .git was touched by a cancelled run"),
+        "{one}"
+    );
+    assert!(one.contains("changed .git/config"), "{one}");
+    assert!(!one.contains('\u{2026}'), "{one}");
+}
+
+// --- review fixes: a run that fails once it has started ---
+
+// The helper cannot be started: `run_jailed` returns an error. The model still
+// gets what an earlier cancelled run changed, in an error result.
+#[tokio::test]
+async fn a_run_that_cannot_start_is_an_error_that_still_reports_the_sink() {
+    use crate::runtime::tools::integrity::Kind;
+    let mut w = runnable(HELPER, gate());
+    let missing = w.base().join("no-such-helper");
+    Arc::get_mut(&mut w.host).unwrap().exec.helper = Some(missing);
+    w.host
+        .exec
+        .sink(key())
+        .push(vec![change(Kind::Added, ".git/hooks/pre-commit")]);
+    let (out, _) = w.run(after_dashes("go")).await;
+    assert!(
+        out.is_error && out.text.starts_with("could not run"),
+        "{out:?}"
+    );
+    assert!(
+        out.text.contains("added .git/hooks/pre-commit"),
+        "{}",
+        out.text
+    );
+    assert!(w.host.exec.sink(key()).drain().is_empty());
 }

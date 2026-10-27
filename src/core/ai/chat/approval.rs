@@ -21,7 +21,7 @@ use crate::core::ai::{
     config::ApprovalMode,
     sanitize::clean,
     tools::{
-        Call, Locality,
+        Call, Locality, allow,
         command::Refusal,
         exec::{self, Fallback, SafeCommand},
     },
@@ -96,6 +96,14 @@ pub enum ApprovalAsk {
         args: Vec<String>,
         cwd: String,
         script: Option<String>,
+        /// The seconds the run may take, as the host will enforce them.
+        /// [`ask_for`] puts the default; the host fills in the clamped value.
+        timeout_secs: u64,
+        /// The engine is a cloud one: its provider sees the output.
+        cloud: bool,
+        /// What a run of this chat that was cancelled left changed in the
+        /// watched git places, as one sanitized line the host fills in.
+        earlier: Option<String>,
     },
     /// Write a proposed batch of files. The user reads it in the review view;
     /// it is never routed by the approval mode, so no mode approves it.
@@ -144,6 +152,9 @@ pub fn ask_for(call: &Call, locality: Locality) -> Option<ApprovalAsk> {
                 args: args.into_iter().map(str::to_owned).collect(),
                 cwd: cwd.unwrap_or(".").to_owned(),
                 script: None,
+                timeout_secs: u64::try_from(allow::TIMEOUT_DEFAULT).unwrap_or(120),
+                cloud: locality == Locality::Cloud,
+                earlier: None,
             })
         }
         // A user tool always asks, on any engine and in any approval mode:
@@ -207,6 +218,49 @@ fn flat(text: &str, cap: usize) -> (String, usize) {
     let mut cut: String = line.chars().take(cap).collect();
     cut.push('\u{2026}');
     (cut, total - cap)
+}
+
+/// What a command prompt must say before the user answers: the timeout, that
+/// the network is on and a test can read `.env`, where the output goes, which
+/// project files the program runs (tier B) and, for an install, that the
+/// scripts of the dependencies run too. One line per fact.
+pub fn exec_notice(
+    program: &str,
+    args: &[String],
+    timeout_secs: u64,
+    cloud: bool,
+    earlier: Option<&str>,
+) -> String {
+    let mut lines = vec![format!(
+        "timeout {timeout_secs} s · network is on · a test can read .env and send it out"
+    )];
+    lines.push(
+        if cloud {
+            "the output goes to the model and to its cloud provider: .env text or tokens in logs"
+        } else {
+            "the output goes to the model"
+        }
+        .to_owned(),
+    );
+    if let Some(files) = allow::runs_files(program) {
+        lines.push(format!("runs project code: {files}"));
+    }
+    if allow::installs(program, args) {
+        if allow::skips_scripts(args) {
+            lines.push("install scripts are skipped".to_owned());
+        } else {
+            lines.push(
+                "runs the install scripts of the project and, depending on the package \
+                 manager, its dependencies"
+                    .to_owned(),
+            );
+            lines.push("`--ignore-scripts` skips them".to_owned());
+        }
+    }
+    if let Some(earlier) = earlier {
+        lines.push(earlier.to_owned());
+    }
+    lines.join("\n")
 }
 
 /// The most characters of one script body an ask shows.
@@ -504,6 +558,10 @@ pub struct ApprovalPrompt {
     pub armed: bool,
     /// Why a `run` command was not run directly, as one line.
     pub why: Option<String>,
+    /// Facts the user must see before answering, one per line. Unlike `why`
+    /// this is not advice: the prompt is answerable only while all of it is
+    /// on screen.
+    pub notice: Option<String>,
 }
 
 /// The keys of a run prompt.
@@ -1366,10 +1424,134 @@ mod tests {
                         args: vec!["test".into(), "-p".into(), "x y".into()],
                         cwd: shown.into(),
                         script: None,
+                        timeout_secs: 120,
+                        cloud: locality == Locality::Cloud,
+                        earlier: None,
                     })
                 );
             }
         }
+    }
+
+    fn words(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| (*a).to_owned()).collect()
+    }
+
+    // Spec (command-runner, Approval on every command): the prompt says that
+    // network is on, that a test can read `.env`, and that the output goes to
+    // the model.
+    #[test]
+    fn the_notice_names_the_timeout_the_network_the_env_file_and_the_model() {
+        let notice = exec_notice("cargo", &words(&["test"]), 45, false, None);
+        assert!(notice.contains("timeout 45 s"), "{notice}");
+        assert!(notice.contains("network is on"), "{notice}");
+        assert!(notice.contains(".env"), "{notice}");
+        assert!(notice.contains("output goes to the model"), "{notice}");
+        assert!(!notice.contains("provider"), "{notice}");
+    }
+
+    #[test]
+    fn on_a_cloud_engine_the_notice_says_the_provider_sees_the_output() {
+        let notice = exec_notice("cargo", &words(&["test"]), 120, true, None);
+        assert!(notice.contains("provider"), "{notice}");
+        assert!(notice.contains("tokens in logs"), "{notice}");
+    }
+
+    // Tier B (design D12): the files a command runs are named.
+    #[test]
+    fn the_notice_warns_about_the_build_files_each_program_runs() {
+        for (program, file) in [
+            ("cargo", "build.rs"),
+            ("npm", "package.json"),
+            ("yarn", "package.json"),
+            ("pnpm", "package.json"),
+            ("pytest", "conftest.py"),
+            ("go", "go.mod"),
+        ] {
+            let notice = exec_notice(program, &words(&["test"]), 120, false, None);
+            assert!(notice.contains(file), "{program}: {notice}");
+        }
+    }
+
+    #[test]
+    fn an_install_says_it_runs_the_scripts_and_maybe_those_of_the_dependencies() {
+        for verb in ["install", "ci"] {
+            let notice = exec_notice("npm", &words(&[verb]), 120, false, None);
+            assert!(
+                notice.contains(
+                    "runs the install scripts of the project and, depending on the package \
+                     manager, its dependencies"
+                ),
+                "{notice}"
+            );
+            assert!(notice.contains("`--ignore-scripts` skips them"), "{notice}");
+        }
+        let test = exec_notice("npm", &words(&["test"]), 120, false, None);
+        assert!(!test.contains("install scripts"), "{test}");
+    }
+
+    #[test]
+    fn an_install_with_ignore_scripts_says_they_are_skipped() {
+        let notice = exec_notice(
+            "pnpm",
+            &words(&["install", "--ignore-scripts"]),
+            120,
+            false,
+            None,
+        );
+        assert!(notice.contains("install scripts are skipped"), "{notice}");
+        assert!(!notice.contains("dependencies"), "{notice}");
+        let again = exec_notice(
+            "pnpm",
+            &words(&["install", "--ignore-scripts", "--no-ignore-scripts"]),
+            120,
+            false,
+            None,
+        );
+        assert!(!again.contains("are skipped"), "{again}");
+    }
+
+    #[test]
+    fn the_notice_names_the_config_file_each_manager_reads() {
+        for (program, file, other) in [
+            ("npm", ".npmrc", ".yarnrc.yml"),
+            ("pnpm", ".npmrc", ".yarnrc.yml"),
+            ("yarn", ".yarnrc.yml", ".npmrc"),
+        ] {
+            let notice = exec_notice(program, &words(&["test"]), 120, false, None);
+            assert!(notice.contains(file), "{program}: {notice}");
+            assert!(!notice.contains(other), "{program}: {notice}");
+        }
+    }
+
+    #[test]
+    fn an_exec_ask_prompts_in_every_mode_and_origin() {
+        let ask = ApprovalAsk::Exec {
+            program: "cargo".into(),
+            args: words(&["test"]),
+            cwd: ".".into(),
+            script: None,
+            timeout_secs: 120,
+            cloud: false,
+            earlier: None,
+        };
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            for origin in [Origin::Tool, Origin::Block] {
+                assert_eq!(route(&ask, origin, mode, FREE), Route::Prompt(None));
+            }
+        }
+    }
+
+    #[test]
+    fn an_earlier_cancelled_run_that_changed_git_files_is_told() {
+        let notice = exec_notice(
+            "go",
+            &words(&["test"]),
+            120,
+            false,
+            Some("changed .git/config"),
+        );
+        assert!(notice.contains("changed .git/config"), "{notice}");
     }
 
     #[test]

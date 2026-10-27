@@ -158,8 +158,13 @@ fn what_cannot_be_removed_is_reported_not_swallowed() {
     assert!(path.exists());
 }
 
-/// A chain of `levels` one-letter folders under `base`, as deep as a path
-/// can go (`PATH_MAX` allows about two thousand).
+/// How deep the deep trees go: as deep as a path can go. `PATH_MAX` is 4096
+/// on Linux (about two thousand levels) and 1024 on macOS, where a tree of
+/// 1500 levels cannot even be made (`ENAMETOOLONG`); 400 levels is 800 bytes
+/// of name plus the temp folder.
+const DEEP: usize = if cfg!(target_os = "macos") { 400 } else { 1500 };
+
+/// A chain of `levels` one-letter folders under `base`.
 fn deep(base: &Path, levels: usize) -> PathBuf {
     let mut path = base.to_path_buf();
     for _ in 0..levels {
@@ -174,7 +179,7 @@ fn the_chmod_walk_uses_no_recursion_so_a_deep_tree_cannot_overflow_the_stack() {
     let parent = tempfile::tempdir().unwrap();
     let base = parent.path().join("t");
     std::fs::create_dir(&base).unwrap();
-    let bottom = deep(&base, 1500);
+    let bottom = deep(&base, DEEP);
     std::fs::set_permissions(&bottom, std::fs::Permissions::from_mode(0o500)).unwrap();
     // A small stack: one frame per level would not fit in it.
     let walker = base.clone();
@@ -193,7 +198,7 @@ fn a_deep_read_only_tree_is_removed_by_a_scratch_finish() {
     let parent = tempfile::tempdir().unwrap();
     let scratch = Scratch::unique(parent.path(), "run").unwrap();
     let path = scratch.path().to_path_buf();
-    let bottom = deep(&path, 1500);
+    let bottom = deep(&path, DEEP);
     std::fs::set_permissions(&bottom, std::fs::Permissions::from_mode(0o500)).unwrap();
     std::fs::set_permissions(path.join("d"), std::fs::Permissions::from_mode(0o500)).unwrap();
     assert_eq!(scratch.finish(), Vec::<PathBuf>::new());

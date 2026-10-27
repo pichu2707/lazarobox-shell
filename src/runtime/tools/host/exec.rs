@@ -22,13 +22,16 @@ use super::{
 };
 use crate::{
     core::ai::{
-        chat::approval::script_line,
-        jail::{Backend, JailSupport},
+        chat::{
+            approval::{ApprovalAsk, script_line},
+            approval_rows::clip,
+        },
+        jail::JailSupport,
         sanitize::clean,
         toolchain::{Layout, Refusal, Vars, env::scrub, toolchain_spec},
         tools::{
-            Call, Locality, ToolError,
-            allow::{Program, RunError, RunRequest, parse_run},
+            Call, ToolError,
+            allow::{self, Program, RunError, RunRequest, parse_run},
             label,
             mcp::refusal_text,
             paths::{REFUSED, plain_relative},
@@ -49,8 +52,6 @@ use crate::{
 
 /// The refusal of a run on a system with no Landlock jail (design D18).
 pub(super) const NO_JAIL: &str = "commands need the Linux sandbox (Landlock ABI 3+)";
-/// Removed by X-d2 with the check in [`plan`].
-const CLOUD: &str = "commands run only with a local model for now";
 const PROPOSE_FIRST: &str = "staged changes are not proposed: propose them first";
 const IN_REVIEW: &str = "a batch is waiting for the user's review";
 /// Text the prompt could not show exactly as it will run.
@@ -60,6 +61,7 @@ const NOT_FOUND: &str = "the program was not found on the PATH";
 const NO_PLACE: &str = "the program is not in a place the sandbox can grant";
 const NO_SANDBOX: &str = "the sandbox could not be built for this run";
 const NOT_ENFORCED: &str = "the Linux sandbox could not be applied";
+const NO_PACKAGE: &str = "run it from the folder that has package.json";
 const PACKAGE_CHANGED: &str = "package.json changed after the question; ask again";
 /// The most bytes of `package.json` read to find its scripts.
 const PACKAGE_MAX: u64 = 256 * 1024;
@@ -94,7 +96,7 @@ impl Exec {
     }
 
     /// The sink of `key`'s runs that were dropped before they ended (a shared
-    /// handle): X-d2 drains it for the user's notice, and every result drains
+    /// handle): the next ask peeks at it for the user's notice, and every result drains
     /// it for the model.
     pub(super) fn sink(&self, key: StageKey) -> Unreported {
         let mut sinks = self.sinks.lock().unwrap_or_else(PoisonError::into_inner);
@@ -102,13 +104,7 @@ impl Exec {
     }
 
     fn jailed(&self) -> bool {
-        matches!(
-            (self.jail)(),
-            JailSupport::Available {
-                backend: Backend::Landlock,
-                ..
-            }
-        )
+        (self.jail)().runs_commands()
     }
 }
 
@@ -144,11 +140,6 @@ pub(super) async fn plan(
     let (Some(key), Call::RunCommand { args }) = (scope.stage_key, call) else {
         return Err(refusal_text(ToolError::UnknownTool));
     };
-    // REMOVED BY X-d2: delete this check and `CLOUD` when the `.env` notice
-    // lands. Until then the output of a command never goes to a provider.
-    if scope.locality == Locality::Cloud {
-        return Err(CLOUD);
-    }
     if !host.exec.jailed() {
         return Err(NO_JAIL);
     }
@@ -174,6 +165,63 @@ pub(super) async fn plan(
     })
 }
 
+/// Fills in what only the host knows: the script bodies, the timeout the run
+/// will have and what an earlier cancelled run changed.
+pub(super) fn fill(host: &ToolHost, plan: &Plan, ask: &mut ApprovalAsk) {
+    if let ApprovalAsk::Exec {
+        script,
+        timeout_secs,
+        earlier,
+        ..
+    } = ask
+    {
+        script.clone_from(&plan.pin.as_ref().and_then(|pin| pin.shown.clone()));
+        *timeout_secs = plan.request.timeout.as_secs();
+        *earlier = earlier_note(&host.exec.sink(plan.key).peek());
+    }
+}
+
+/// The most columns of one path in the earlier-run line, and of the line.
+const PATH_COLUMNS: usize = 60;
+const EARLIER_COLUMNS: usize = 240;
+
+/// One line about the changes a cancelled run left in the sink: the names are
+/// the program's, so they are cleaned and each is cut at [`PATH_COLUMNS`], and
+/// the line at [`EARLIER_COLUMNS`], so it cannot push the rest of the prompt
+/// out of the pane. `None` when there are none.
+pub(super) fn earlier_note(changes: &[Change]) -> Option<String> {
+    const NAMES: usize = 3;
+    if changes.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<String> = changes
+        .iter()
+        .take(NAMES)
+        .map(|change| {
+            let what = match change.kind {
+                Kind::Added => "added",
+                Kind::Changed => "changed",
+                Kind::Removed => "removed",
+                _ => return "could not verify git hooks and config".to_owned(),
+            };
+            let path = clip(&clean(&change.path.display().to_string()), PATH_COLUMNS);
+            format!("{what} {path}")
+        })
+        .collect();
+    if changes.len() > NAMES {
+        parts.push("\u{2026}".to_owned());
+    }
+    let (count, places, was) = match changes.len() {
+        1 => (1, "place", "was"),
+        n => (n, "places", "were"),
+    };
+    let line = format!(
+        "{count} {places} under .git {was} touched by a cancelled run (not reverted): {}",
+        parts.join(", ")
+    );
+    Some(clip(&line, EARLIER_COLUMNS))
+}
+
 /// The root policy of the chat origin, the folder, the allow-list and what the
 /// prompt can show. Reads the disk.
 fn inspect(
@@ -197,6 +245,11 @@ fn inspect(
         .filter(|cwd| cwd.starts_with(&root) && cwd.is_dir() && roots.judge_real(cwd))
         .ok_or(REFUSED)?;
     let package = Package::read(&cwd);
+    // A manager walks up to a parent `package.json` that nothing here would
+    // show or pin, so a script runs only from the folder that has its own.
+    if package.missing && runs_scripts(args) {
+        return Err(NO_PACKAGE);
+    }
     let request = parse_run(args, &package.names()).map_err(|why| match why {
         RunError::Shape(shape) => refusal_text(shape),
         RunError::Refused(refusal) => refusal.text(),
@@ -223,31 +276,50 @@ fn staged(stages: &Arc<std::sync::Mutex<Stages>>, key: StageKey) -> Result<(), &
 
 /// The `scripts` of the `package.json` in a folder: none when it is missing,
 /// not a plain file, too big or not JSON.
-#[derive(Default)]
-struct Package(serde_json::Map<String, Value>);
+struct Package {
+    scripts: serde_json::Map<String, Value>,
+    /// There is no plain `package.json` in the folder.
+    missing: bool,
+}
+
+/// Whether `args` is a `npm`, `yarn` or `pnpm` call. Any of them walks up to a
+/// parent `package.json` (and its unseen scripts) when the folder has none.
+fn runs_scripts(args: &Value) -> bool {
+    args["program"]
+        .as_str()
+        .and_then(Program::parse)
+        .is_some_and(|p| matches!(p, Program::Npm | Program::Pnpm | Program::Yarn))
+}
 
 impl Package {
     fn read(dir: &Path) -> Self {
         let path = dir.join("package.json");
+        let none = || Self {
+            scripts: Default::default(),
+            missing: true,
+        };
         let Ok(meta) = fs::symlink_metadata(&path) else {
-            return Self::default();
+            return none();
         };
         if !meta.is_file() || meta.len() > PACKAGE_MAX {
-            return Self::default();
+            return none();
         }
         let text = fs::read_to_string(&path).unwrap_or_default();
         let scripts = serde_json::from_str::<Value>(&text)
             .ok()
             .and_then(|json| json["scripts"].as_object().cloned());
-        Self(scripts.unwrap_or_default())
+        Self {
+            scripts: scripts.unwrap_or_default(),
+            missing: false,
+        }
     }
 
     fn names(&self) -> Vec<String> {
-        self.0.keys().cloned().collect()
+        self.scripts.keys().cloned().collect()
     }
 
     fn body(&self, name: &str) -> Option<&str> {
-        self.0.get(name).and_then(Value::as_str)
+        self.scripts.get(name).and_then(Value::as_str)
     }
 }
 
@@ -260,19 +332,46 @@ fn pin(request: &RunRequest, package: &Package) -> Option<Pin> {
     ) {
         return None;
     }
-    let name = match request.args.first().map(String::as_str) {
-        Some("test") => Some("test"),
-        Some("run") => request.args.get(1).map(String::as_str),
-        _ => None,
+    // `install` and `ci` run the lifecycle scripts of the project (and, for
+    // some managers, of its dependencies, which the prompt says in general
+    // terms); `--ignore-scripts` runs none, so there is no body to show.
+    let keys: Vec<String> = match request.args.first().map(String::as_str) {
+        Some("test") => vec!["pretest".into(), "test".into(), "posttest".into()],
+        Some("run") => request
+            .args
+            .get(1)
+            .into_iter()
+            .flat_map(|name| [format!("pre{name}"), name.clone(), format!("post{name}")])
+            .collect(),
+        Some("install" | "ci") if allow::skips_scripts(&request.args) => Vec::new(),
+        Some("install" | "ci") => {
+            let (npm, yarn) = (
+                request.program == Program::Npm,
+                request.program == Program::Yarn,
+            );
+            [
+                (true, "preinstall"),
+                (true, "install"),
+                (true, "postinstall"),
+                (yarn, "prepublish"),
+                (npm, "preprepare"),
+                (true, "prepare"),
+                (npm, "postprepare"),
+            ]
+            .into_iter()
+            .filter(|(used, _)| *used)
+            .map(|(_, name)| name.to_owned())
+            .collect()
+        }
+        _ => Vec::new(),
     };
-    let lines: Vec<String> = name
+    let lines: Vec<String> = keys
         .into_iter()
-        .flat_map(|name| [format!("pre{name}"), name.to_owned(), format!("post{name}")])
         .filter_map(|key| package.body(&key).map(|body| script_line(&key, body)))
         .collect();
     Some(Pin {
         shown: (!lines.is_empty()).then(|| lines.join("\n")),
-        scripts: Value::Object(package.0.clone()).to_string(),
+        scripts: Value::Object(package.scripts.clone()).to_string(),
     })
 }
 

@@ -912,3 +912,39 @@ Known gaps / notes:
 TDD evidence: RED seen for 1 (runner test `a_helper_that_reports_on_the_status_channel_is_not_enforced`, jail integration tests, 3 host tests), 2 (3 venv tests), 3 (2 host tests, 1 allow test), 5 (5 app tests, 1 host test). 4, 6 and the `script_line` test were written together with the code (they passed at first run).
 
 API notes for X-d2: `Plan` has `pin: Option<Pin>`; `exec::run` takes the ask-time `Option<Pin>`; `ApprovalAsk::Exec` has `script`; `ask_for` leaves it `None` and the host fills it. The prompt command is now `cmd\nin cwd[\nscript ...]` and the target is the fixed "run a command in the sandbox": the X-d2 notice goes in `why`, not the head. Remove the cloud check in `exec::plan`. `runner::spawn_with` is private; `Ran` gained `not_enforced`; `spawn_core`/`Run`/`Done` unchanged (git.rs untouched).
+
+## Batch: slice X-d2 (Exec ask and notice, branch feat/coding-tools-xd2, base feat/coding-tools-xd1)
+
+| Task | Status | Commit |
+|------|--------|--------|
+| Audit 3: a run that fails after it started reports its git changes (`after_failure` takes the after-snapshot before returning the error) | done | fix(tools): report git changes of a run that failed after it started |
+| Audit 1+2: install/ci show the lifecycle scripts (pinned like other scripts); npm/yarn/pnpm `test`/`run` refused without a `package.json` in the cwd | done | fix(tools): show install scripts and run npm scripts only beside package.json |
+| Xd2.1 notice, timeout, tier-B, cloud flag, earlier-run note; cloud refusal removed | done | feat(tools): ask for every command with the env, network and output notice |
+| Xd2.2 Exec menu row reason | done (no-jail); global-wait row DEFERRED | feat(menu): say on the Exec row that commands need the Linux sandbox |
+
+Decisions / deviations:
+- The notice is NOT in `ApprovalPrompt.why`: `why` is advice that is dropped when the pane is short, and the spec says the notice MUST be visible. `ApprovalPrompt` gained `notice: Option<String>`, drawn as `Part::Notice` rows after the command and counted by `fits` (own budget on top of `MAX_COMMAND_ROWS`), so a pane too small for it does not let `y` through.
+- `ApprovalAsk::Exec` gained `timeout_secs` (host fills the clamped value), `cloud` (`ask_for` sets it from the locality) and `earlier` (host fills from `Unreported::peek`, the sink stays intact for the model). `exec::fill` replaces the inline script fill in `host.rs` (net fewer lines there).
+- Tier-B: static per-program line of the project files the program runs (`allow::runs_files`), plus the install line (`allow::installs`). It does not look at which files the chat wrote.
+- Audit 2 chose the refusal: "run it from the folder that has package.json". The old yarn test now expects that text.
+- `JailSupport::runs_commands` is the single Landlock-only check (host `jailed()` and the menu share it). `MenuState::with_sandbox` default is "fine" so existing menu snapshots are untouched; the app passes its probe.
+- DEFERRED: the live "waiting for a slot" state of the global cap. The wait happens in `RunGate::acquire` after `y`; showing it needs a new stream event (the transcript row has no update channel). The refusal after 60 s already reads "too many commands are running; try again later".
+- README has no Exec/coding-tools section on this branch, so it was not touched; CHANGELOG `[Unreleased]` was written.
+- Optional LOW done: `display_word` quotes `; | & < > ( ) * ? # ~ { } !`.
+
+TDD evidence: audit 3 RED = `E0425 no function after_failure`; audit 1/2 RED = 2 host tests failing (install script not shown, no refusal outside the package folder); Xd2.1 RED = compile errors on the new `Exec` fields, `exec_notice`, `Part::Notice`, `ApprovalPrompt.notice`, `peek`; Xd2.2 RED = `E0599 no method with_sandbox`.
+
+### X-d2 review fixes (feat/coding-tools-xd2)
+
+| # | Finding | Fix |
+|---|---------|-----|
+| 1 | MEDIUM: `npm/yarn/pnpm install\|ci` outside a `package.json` folder ran unseen parent scripts | `runs_scripts` is now any package-manager call: with no `package.json` in the cwd it is refused ("run it from the folder that has package.json"). Test loops test, run, install and ci. |
+| 2 | MEDIUM: unbounded paths in `earlier_note` could push the notice past the row cap and disable `y` for the chat | Each path is cut at 60 columns, the line at 240: "N places under .git were touched by a cancelled run (not reverted): a, b, c, …". `exec_notice` no longer prefixes it. Tests: very long paths stay within 240 columns and the prompt fits at 80 and 100 columns. |
+| 3 | LOW: `--ignore-scripts` | `allow::skips_scripts` (flag present and not turned off by `=...` or `--no-ignore...`): the notice says "install scripts are skipped" and the pin shows no bodies; otherwise "and, depending on the package manager, its dependencies" plus "`--ignore-scripts` skips them". |
+| 4 | LOW: `pin()` hooks | Install also shows `preprepare`/`postprepare` (npm) and `prepublish` (yarn). |
+| 5 | LOW: tier-B | `.npmrc` for npm/pnpm, `.yarnrc.yml` for yarn (`allow::runs_files`). |
+| 6 | LOW: `wanted` cap by width | When the text would fit the row cap at a wide pane, the marker says "widen the pane" (`TOO_WIDE_TEXT`); otherwise the old marker. Still fail-closed: `fits` unchanged. |
+| 7 | LOW: `display_word` | Also quotes `[`, `]`, `^`. |
+| 8 | Tests | `a_run_that_cannot_start_is_an_error_that_still_reports_the_sink` (missing helper -> `run_jailed` Err arm; fails if the arm propagates the error); `route` of an Exec ask in every mode and origin; app test that every approval mode prompts with the notice. |
+
+TDD evidence: RED = `E0603 earlier_note is private` (compile), then mutation checks on the finished code: restoring the `test|run` filter in `runs_scripts` fails `test_and_run_need_the_folder_that_has_package_json`; replacing the Err arm by `return Err(COULD_NOT)` fails the new Err-arm test. Pure additions on the notice/marker side were written with the code.

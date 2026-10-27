@@ -942,6 +942,9 @@ fn exec(program: &str, args: &[&str], cwd: &str) -> ApprovalAsk {
         args: args.iter().map(|a| (*a).to_owned()).collect(),
         cwd: cwd.into(),
         script: None,
+        timeout_secs: 120,
+        cloud: false,
+        earlier: None,
     }
 }
 
@@ -1001,6 +1004,9 @@ fn the_script_a_package_manager_will_run_is_shown_under_the_command() {
         args: vec!["run".into(), "build".into()],
         cwd: ".".into(),
         script: Some("prebuild: rm -rf dist\nbuild: tsc".into()),
+        timeout_secs: 120,
+        cloud: false,
+        earlier: None,
     };
     assert_eq!(
         shown(ask).command,
@@ -1023,4 +1029,148 @@ fn a_long_folder_is_checked_by_fits_and_not_clipped() {
             .any(|row| matches!(row, Part::Command(t) if t.contains("deep"))),
         "{rows:?}"
     );
+}
+
+// Spec (command-runner, Approval on every command): the prompt shows the
+// network and `.env` notice, whatever the approval mode.
+#[test]
+fn the_prompt_carries_the_notice_and_nothing_hides_it_from_fits() {
+    use crate::core::ai::chat::approval_rows::{Part, fits, parts};
+    let prompt = shown(exec("cargo", &["test"], "."));
+    let notice = prompt
+        .notice
+        .clone()
+        .expect("a command prompt has a notice");
+    assert!(
+        notice.contains(".env") && notice.contains("network is on"),
+        "{notice}"
+    );
+    assert!(fits(&prompt, 100, 20));
+    // A pane too short for the command AND the notice does not let `y` through.
+    assert!(!fits(&prompt, 100, 5));
+    let rows = parts(&prompt, 100, 20);
+    assert!(
+        rows.iter()
+            .any(|row| matches!(row, Part::Notice(t) if t.contains(".env"))),
+        "{rows:?}"
+    );
+}
+
+// The notice is on screen whatever the approval mode: every mode asks.
+#[test]
+fn a_command_prompts_with_the_notice_in_every_approval_mode() {
+    use crate::core::ai::config::ApprovalMode;
+    for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+        let (mut a, turn) = live();
+        super::tool_run::chat_mut(&mut a).set_approval_mode(mode);
+        assert_eq!(
+            announce(&mut a, turn, 1, exec("cargo", &["test"], ".")),
+            Vec::new()
+        );
+        let prompt = a.approval_prompt(id2()).unwrap();
+        let notice = prompt.notice.expect("a notice");
+        assert!(notice.contains("network is on"), "{mode:?}: {notice}");
+        assert_eq!(a.update(key('y')), vec![decision(turn, 1, Decision::Sent)]);
+    }
+}
+
+// The host caps the earlier-run line at 240 columns whatever the paths are
+// (see `exec_tests`); a line of that size must leave the prompt answerable in
+// a normal pane.
+#[test]
+fn a_prompt_with_a_capped_earlier_run_line_still_fits_a_normal_pane() {
+    use crate::core::ai::chat::approval_rows::fits;
+    let mut ask = exec("npm", &["install"], ".");
+    if let ApprovalAsk::Exec { earlier, .. } = &mut ask {
+        *earlier = Some("p".repeat(240));
+    }
+    let prompt = shown(ask);
+    assert!(fits(&prompt, 100, 30), "{:?}", prompt.notice);
+    assert!(fits(&prompt, 80, 30), "{:?}", prompt.notice);
+}
+
+#[test]
+fn a_cloud_command_prompt_names_the_provider() {
+    let mut ask = exec("cargo", &["test"], ".");
+    if let ApprovalAsk::Exec { cloud, .. } = &mut ask {
+        *cloud = true;
+    }
+    let notice = shown(ask).notice.unwrap();
+    assert!(notice.contains("provider"), "{notice}");
+}
+
+#[test]
+fn the_prompt_shows_the_timeout_of_the_run() {
+    let mut ask = exec("go", &["test"], ".");
+    if let ApprovalAsk::Exec { timeout_secs, .. } = &mut ask {
+        *timeout_secs = 600;
+    }
+    assert!(shown(ask).notice.unwrap().contains("timeout 600 s"));
+}
+
+#[test]
+fn an_argument_a_shell_would_read_is_shown_quoted() {
+    for arg in [
+        ";", "a|b", "a&b", "<x", "(x)", "*", "a?", "#c", "~", "{a,b}", "!x", "[a]", "a]", "^x",
+    ] {
+        let shown = shown(exec("cargo", &["test", arg], ".")).command;
+        assert!(
+            shown.starts_with(&format!("cargo test '{arg}'")),
+            "{arg}: {shown}"
+        );
+    }
+}
+
+fn exec_row(a: &App) -> Option<String> {
+    use crate::core::menu::Row;
+    a.menu
+        .as_ref()?
+        .all_rows(&a.config)
+        .into_iter()
+        .find_map(|row| match row {
+            Row::Item {
+                label: "Exec",
+                value: Some(value),
+                ..
+            } => Some(value.into_owned()),
+            _ => None,
+        })
+}
+
+fn menu_with_exec_on(jail: crate::core::ai::jail::JailSupport) -> App {
+    use crate::core::ai::config::ToolToggle;
+    let mut ai = crate::core::ai::config::AiConfig::default();
+    ai.set_toggle(ToolToggle::Exec, true);
+    let mut a = App::new(80, 25).with_ai(ai).with_jail(jail);
+    a.update(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char(' '),
+        KeyModifiers::CONTROL,
+    )));
+    a.update(key('m'));
+    a
+}
+
+// Design D18: the menu row says what the refusal will say.
+#[test]
+fn the_exec_row_says_why_when_the_system_has_no_landlock_jail() {
+    use crate::core::ai::jail::{Backend, JailOff, JailSupport};
+    let landlock = JailSupport::Available {
+        backend: Backend::Landlock,
+        abi: 4,
+    };
+    assert_eq!(
+        exec_row(&menu_with_exec_on(landlock)).as_deref(),
+        Some("on")
+    );
+    for off in [
+        JailSupport::Unavailable(JailOff::NoLandlock(2)),
+        JailSupport::Unavailable(JailOff::NoBackend),
+        JailSupport::Unavailable(JailOff::NotProbed),
+    ] {
+        assert_eq!(
+            exec_row(&menu_with_exec_on(off)).as_deref(),
+            Some("on · needs Linux sandbox"),
+            "{off:?}"
+        );
+    }
 }

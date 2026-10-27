@@ -259,8 +259,8 @@ Spec: command-runner "Refusals before start", "Process rules"; agent-tools "Appr
 - [x] Xd1.3 RED: `host.rs` wiring, Exec family gate, golden stays green. ~130.
 
 ### X-d2: Exec ask and notice (PR 27, ~400, host.rs slice: spike a seam first)
-- [ ] Xd2.1 RED: `ApprovalAsk::Exec` prompts every command in every mode; the exfiltration notice about `.env`; tier-B warnings shown. ~200.
-- [ ] Xd2.2 RED: app/menu row shows the "no jail" reason; global-wait shown on the row. ~200 (menu snapshots).
+- [x] Xd2.1 RED: `ApprovalAsk::Exec` prompts every command in every mode; the exfiltration notice about `.env`; tier-B warnings shown. ~200.
+- [x] Xd2.2 (no-jail reason done; the live global-wait row is deferred, see apply-progress X-d2) RED: app/menu row shows the "no jail" reason; global-wait shown on the row. ~200 (menu snapshots).
 
 ## Phase M4: git (0.22)
 
