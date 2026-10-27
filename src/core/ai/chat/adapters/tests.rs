@@ -1614,3 +1614,112 @@ fn pin_tools_on_sends_the_registry_byte_for_byte_after_the_stream_flag() {
     let off = ollama_round_body(&on, &[], false);
     assert!(golden.as_bytes().starts_with(&off[..off.len() - 1]));
 }
+
+// llamacpp-tools T1.9: the OpenAI-shaped round body.
+fn exchange(name: &str, id: Option<&str>, arguments: Value, result: &str) -> ToolExchange {
+    ToolExchange {
+        name: name.into(),
+        id: id.map(Into::into),
+        index: None,
+        arguments,
+        result: result.into(),
+    }
+}
+
+#[test]
+fn the_openai_follow_up_sends_string_arguments_and_matching_call_ids() {
+    let rounds = [
+        ToolRound {
+            thinking: Some("hm".into()),
+            text: String::new(),
+            exchanges: vec![
+                exchange(
+                    "find_dir",
+                    Some("srv1"),
+                    json!({"query": "curso"}),
+                    "/home/u/curso",
+                ),
+                exchange("list_dir", None, json!({"path": "/home/u"}), "a\nb"),
+            ],
+        },
+        ToolRound {
+            thinking: None,
+            text: "Looking.".into(),
+            exchanges: vec![exchange("read_file", None, json!({"path": "/x"}), "text")],
+        },
+    ];
+    let body = body_of(openai_round_body(&request(""), &rounds, true));
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3 + 3 + 2);
+    assert_eq!(
+        messages[3..],
+        [
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"id": "srv1", "type": "function",
+                 "function": {"name": "find_dir", "arguments": "{\"query\":\"curso\"}"}},
+                {"id": "call_0_1", "type": "function",
+                 "function": {"name": "list_dir", "arguments": "{\"path\":\"/home/u\"}"}},
+            ]}),
+            json!({"role": "tool", "tool_call_id": "srv1", "content": "/home/u/curso"}),
+            json!({"role": "tool", "tool_call_id": "call_0_1", "content": "a\nb"}),
+            json!({"role": "assistant", "content": "Looking.", "tool_calls": [
+                {"id": "call_1_0", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{\"path\":\"/x\"}"}},
+            ]}),
+            json!({"role": "tool", "tool_call_id": "call_1_0", "content": "text"}),
+        ]
+    );
+}
+
+#[test]
+fn the_openai_body_never_echoes_reasoning_or_sets_call_options() {
+    let round = ToolRound {
+        thinking: Some("secret reasoning".into()),
+        text: "t".into(),
+        exchanges: vec![exchange("find_dir", None, json!({"query": "a"}), "r")],
+    };
+    let body = body_of(openai_round_body(&request(""), &[round], true));
+    // The registry text may say "secret"; the messages and options may not.
+    let text = format!(
+        "{}{}",
+        body["messages"],
+        body.as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<String>()
+    );
+    for key in [
+        "thinking",
+        "reasoning",
+        "secret",
+        "parallel_tool_calls",
+        "tool_choice",
+        "tool_name",
+    ] {
+        assert!(!text.contains(key), "{key}");
+    }
+}
+
+#[test]
+fn the_openai_body_offers_the_same_tools_as_ollama_and_tools_off_is_tool_less() {
+    let req = request("be brief");
+    let on = body_of(openai_round_body(&req, &[], true));
+    assert_eq!(
+        on["tools"],
+        body_of(ollama_round_body(&req, &[], true))["tools"]
+    );
+    assert_eq!(on["stream"], true);
+    assert_eq!(on["model"], "llama3:8b");
+    assert_eq!(openai_round_body(&req, &[], false), ollama_body(&req));
+    let rounds = [ToolRound {
+        thinking: None,
+        text: String::new(),
+        exchanges: vec![exchange("find_dir", None, json!({"query": "a"}), "r")],
+    }];
+    assert!(
+        body_of(openai_round_body(&req, &rounds, false))
+            .get("tools")
+            .is_none()
+    );
+}

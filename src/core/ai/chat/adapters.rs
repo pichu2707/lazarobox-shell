@@ -326,6 +326,50 @@ pub fn ollama_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: boo
             message
         }));
     }
+    finish_body(request, messages, tools)
+}
+
+/// The id of call `n` of round `round` (both from 0) when the server sent
+/// none. One helper feeds the assistant entry and its tool message, so the
+/// two always match.
+fn call_id(round: usize, n: usize) -> String {
+    format!("call_{round}_{n}")
+}
+
+/// The request after `rounds` of tool calls on the OpenAI wire (llama.cpp):
+/// the assistant message holds `tool_calls` with string arguments, then one
+/// `role: "tool"` message per call carrying its `tool_call_id`. No reasoning
+/// is echoed, and no `parallel_tool_calls` or `tool_choice` is set.
+pub fn openai_round_body(request: &ChatRequest, rounds: &[ToolRound], tools: bool) -> Vec<u8> {
+    let mut messages = base_messages(request);
+    for (r, round) in rounds.iter().enumerate() {
+        let ids: Vec<String> = (round.exchanges.iter().enumerate())
+            .map(|(n, x)| x.id.clone().unwrap_or_else(|| call_id(r, n)))
+            .collect();
+        let calls: Vec<Value> = round
+            .exchanges
+            .iter()
+            .zip(&ids)
+            .map(|(x, id)| {
+                let function = json!({"name": x.name, "arguments": x.arguments.to_string()});
+                json!({"id": id, "type": "function", "function": function})
+            })
+            .collect();
+        messages.push(json!({"role": "assistant", "content": round.text, "tool_calls": calls}));
+        messages.extend(
+            round
+                .exchanges
+                .iter()
+                .zip(&ids)
+                .map(|(x, id)| json!({"role": "tool", "tool_call_id": id, "content": x.result})),
+        );
+    }
+    finish_body(request, messages, tools)
+}
+
+/// The body both round wires end with: model, messages, stream flag and, when
+/// asked, the registry.
+fn finish_body(request: &ChatRequest, messages: Vec<Value>, tools: bool) -> Vec<u8> {
     let mut body = json!({
         "model": request.model.as_deref().unwrap_or(""),
         "messages": messages,
