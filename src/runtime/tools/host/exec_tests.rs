@@ -323,14 +323,20 @@ use std::{ffi::OsString, os::unix::fs::PermissionsExt, time::Duration};
 use super::gate::RunGate;
 
 const HELPER: &str = "#!/bin/sh\nwhile [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"\n";
-const BAD_HELPER: &str =
-    "#!/bin/sh\necho 'lazarobox-jail: jail not enforced: a rule failed' >&2\nexit 125\n";
+/// A helper that could not apply the rules: it says so on its status
+/// descriptor, the one place the program cannot write. `hook` first plants a
+/// hook, to see what is still reported when the run is an error.
+const BAD_HELPER: &str = "#!/bin/sh\n\
+    case \"$*\" in *hook*) echo evil > .git/hooks/pre-commit;; esac\n\
+    eval \"echo 'lazarobox-jail: jail not enforced: a rule failed' >&$LAZAROBOX_JAIL_STATUS_FD\"\n\
+    exit 125\n";
 /// A `cargo` that does what its third argument says.
 const CARGO: &str = "#!/bin/sh\n\
     case \"$3\" in\n\
     env) env;;\n\
     fail) echo 'error: boom'; exit 101;;\n\
     hook) echo evil > .git/hooks/pre-commit; echo hooked;;\n\
+    forge) echo 'lazarobox-jail: jail not enforced: x'; echo evil > .git/hooks/pre-commit; exit 125;;\n\
     sleep) sleep 30;;\n\
     *) echo \"args: $*\"; pwd; echo \"tmp: $TMPDIR\";;\n\
     esac\n";
@@ -573,6 +579,38 @@ async fn a_sandbox_that_was_not_enforced_is_an_error_and_not_an_exit_code() {
     assert!(
         out.is_error && out.text.contains("sandbox could not be applied"),
         "{out:?}"
+    );
+}
+
+// The marker is the program's own output here: it proves nothing, and the hook
+// it planted is still reported (a build script must not hide one this way).
+#[tokio::test]
+async fn a_program_that_forges_the_marker_and_exits_125_is_a_result_with_its_changes() {
+    let w = runnable(HELPER, gate());
+    let (out, _) = w.run(after_dashes("forge")).await;
+    assert!(!out.is_error, "{out:?}");
+    assert!(out.text.starts_with("exit code 125 after "), "{}", out.text);
+    assert!(!out.text.contains("sandbox could not be applied"));
+    assert!(
+        out.text.contains("added .git/hooks/pre-commit"),
+        "{}",
+        out.text
+    );
+}
+
+// An error still tells what the run changed before it failed.
+#[tokio::test]
+async fn a_sandbox_error_still_reports_what_changed() {
+    let w = runnable(BAD_HELPER, gate());
+    let (out, _) = w.run(after_dashes("hook")).await;
+    assert!(
+        out.is_error && out.text.contains("sandbox could not be applied"),
+        "{out:?}"
+    );
+    assert!(
+        out.text.contains("added .git/hooks/pre-commit"),
+        "{}",
+        out.text
     );
 }
 

@@ -11,7 +11,8 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::future::Future;
 use std::io;
-use std::os::fd::OwnedFd;
+use std::io::Read;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -22,7 +23,9 @@ use tokio::io::AsyncReadExt;
 use tokio::net::unix::pipe::Receiver;
 use tokio::process::Command;
 
-use crate::core::ai::jail::{JailArgs, JailSpec, NetBind, Rlimits};
+use crate::core::ai::jail::{
+    JailArgs, JailSpec, NOT_ENFORCED_MARKER, NetBind, Rlimits, STATUS_FD, STATUS_FD_VAR,
+};
 use crate::core::ai::toolchain::env::scrub;
 use crate::core::ai::tools::allow::Program;
 use crate::core::ai::tools::run::{Capture, Ended};
@@ -194,6 +197,10 @@ pub struct Ran {
     /// What of the private folders could not be removed (their paths): say
     /// so, do not assume they are gone.
     pub leftovers: Vec<PathBuf>,
+    /// What the helper said on its status channel when it could not apply the
+    /// rules. The program cannot write there, so unlike its output this can
+    /// be believed.
+    pub not_enforced: Option<String>,
 }
 
 /// The two settings every toolchain run gets, whatever the spec says: TCP
@@ -239,14 +246,20 @@ pub async fn run_jailed(
         watched(&job.root, &[]).await,
         job.unreported,
     );
-    let done = spawn_core(Run {
-        program: job.helper,
-        argv: args.render(),
-        cwd: job.cwd,
-        env,
-        timeout: job.timeout,
-    })
+    // The helper's own channel: the program is started with it closed.
+    let (status, report) = io::pipe()?;
+    let done = spawn_with(
+        Run {
+            program: job.helper,
+            argv: args.render(),
+            cwd: job.cwd,
+            env,
+            timeout: job.timeout,
+        },
+        Some(report),
+    )
     .await?;
+    let not_enforced = said(status);
     let after = watched(&job.root, &[]).await;
     let changes = integrity::compare(&guard.disarm(), &after);
     let folders = cleanup.take();
@@ -262,7 +275,26 @@ pub async fn run_jailed(
         done,
         changes,
         leftovers,
+        not_enforced,
     })
+}
+
+/// What the helper wrote on its status pipe, when it is the "not enforced"
+/// line. Called after the run ended, so every writer is gone and the read ends
+/// at once; it never waits.
+fn said(reader: io::PipeReader) -> Option<String> {
+    // SAFETY: the descriptor is owned by `reader`, which outlives the call.
+    unsafe {
+        let flags = libc::fcntl(reader.as_raw_fd(), libc::F_GETFL);
+        libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+    }
+    let mut text = Vec::new();
+    // At most a line is read; an error or "would block" is "nothing said".
+    let _ = reader.take(4096).read_to_end(&mut text);
+    String::from_utf8_lossy(&text)
+        .lines()
+        .find(|line| line.starts_with(NOT_ENFORCED_MARKER))
+        .map(str::to_owned)
 }
 
 /// [`integrity::snapshot_with_git_dirs`] off the event loop.
@@ -287,6 +319,12 @@ const CHUNK: usize = 16 * 1024;
 /// Starts `run`, reads its output until it ends and reaps it. Dropping the
 /// future kills the whole process group.
 pub async fn spawn_core(run: Run) -> io::Result<Done> {
+    spawn_with(run, None).await
+}
+
+/// [`spawn_core`], handing the program `status` as descriptor [`STATUS_FD`]
+/// (its number in [`STATUS_FD_VAR`]) for the jail helper to report on.
+async fn spawn_with(run: Run, status: Option<io::PipeWriter>) -> io::Result<Done> {
     let started = Instant::now();
     let (reader, writer) = io::pipe()?;
     let mut command = Command::new(&run.program);
@@ -300,9 +338,30 @@ pub async fn spawn_core(run: Run) -> io::Result<Done> {
         .stderr(writer)
         .kill_on_drop(true)
         .process_group(0);
+    if let Some(status) = &status {
+        command.env(STATUS_FD_VAR, STATUS_FD.to_string());
+        let fd = status.as_raw_fd();
+        // SAFETY: between fork and exec only `dup2` and `fcntl` run (both
+        // async-signal-safe), on a descriptor the parent keeps open.
+        unsafe {
+            command.pre_exec(move || {
+                // `dup2` onto itself keeps the close-on-exec flag: clear it.
+                if fd == STATUS_FD {
+                    let flags = libc::fcntl(fd, libc::F_GETFD);
+                    if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                } else if libc::dup2(fd, STATUS_FD) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
     let mut child = spawn(&mut command).await?;
     // The command holds the write ends: until it is gone the pipe never ends.
     drop(command);
+    drop(status);
     let pid = child.id().and_then(|id| libc::pid_t::try_from(id).ok());
     // Declared after `child`, so it drops first and kills the group.
     let Some(mut group) = pid.and_then(GroupKill::new) else {

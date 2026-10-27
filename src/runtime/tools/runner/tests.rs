@@ -637,3 +637,40 @@ async fn the_final_reap_is_bounded_and_says_so() {
     let failed = bounded(async { Err::<(), _>(io::Error::other("x")) }, REAP).await;
     assert_eq!(failed.unwrap_err().to_string(), "x");
 }
+
+// --- the helper's own channel for "the jail was not applied" ---
+
+use crate::core::ai::jail::NOT_ENFORCED_MARKER;
+
+/// A helper that cannot apply the rules: it says so on the status descriptor.
+const REFUSING: &str = "#!/bin/sh\n\
+    eval \"echo 'lazarobox-jail: jail not enforced: a rule failed' >&$LAZAROBOX_JAIL_STATUS_FD\"\n\
+    exit 125\n";
+
+fn with_helper(fx: &mut Fixture, text: &str) {
+    std::fs::write(&fx.helper, text).unwrap();
+}
+
+#[tokio::test]
+async fn a_helper_that_reports_on_the_status_channel_is_not_enforced() {
+    let mut fx = fixture();
+    with_helper(&mut fx, REFUSING);
+    let ran = run_jailed(fx.job(Program::Cargo, "true"), &parent)
+        .await
+        .unwrap();
+    let said = ran.not_enforced.expect("the helper reported");
+    assert!(said.starts_with(NOT_ENFORCED_MARKER), "{said}");
+    assert_eq!(ran.done.ended.exit, Some(125));
+}
+
+// A program can print the marker and exit 125 itself: that is its own output.
+#[tokio::test]
+async fn a_program_that_prints_the_marker_and_exits_125_is_not_believed() {
+    let fx = fixture();
+    let script = format!("echo '{NOT_ENFORCED_MARKER}: x'; exit 125");
+    let ran = run_jailed(fx.job(Program::Cargo, &script), &parent)
+        .await
+        .unwrap();
+    assert_eq!(ran.not_enforced, None);
+    assert_eq!(ran.done.ended.exit, Some(125));
+}

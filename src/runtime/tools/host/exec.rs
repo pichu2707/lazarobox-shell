@@ -22,7 +22,7 @@ use super::{
 };
 use crate::{
     core::ai::{
-        jail::{Backend, JailSupport, NOT_ENFORCED_EXIT, NOT_ENFORCED_MARKER},
+        jail::{Backend, JailSupport},
         sanitize::clean,
         toolchain::{Layout, Refusal, Vars, env::scrub, toolchain_spec},
         tools::{
@@ -259,21 +259,24 @@ async fn go(
             .await
             .map_err(|_| COULD_NOT)??
     };
-    let ran = run_jailed(job, &*read).await.map_err(|_| COULD_NOT)?;
-    let capture = &ran.done.capture;
-    let enforced = ran.done.ended.exit == Some(NOT_ENFORCED_EXIT)
-        && capture
-            .text()
-            .lines()
-            .any(|l| l.starts_with(NOT_ENFORCED_MARKER));
-    if enforced {
-        return Err(NOT_ENFORCED);
+    // What the run changed is told on every path, an error included: the
+    // watched places are read whatever the program did, and a run that is
+    // dropped hands its changes over through the sink.
+    let ran = match run_jailed(job, &*read).await {
+        Ok(ran) => ran,
+        Err(_) => return Ok(failed(COULD_NOT, unreported.drain(), nonce)),
+    };
+    let mut changes = ran.changes;
+    changes.extend(unreported.drain());
+    // Only the helper's own status channel says the jail was not applied: the
+    // program's output (and its exit 125) can be forged by the program.
+    if ran.not_enforced.is_some() {
+        return Ok(failed(NOT_ENFORCED, changes, nonce));
     }
+    let capture = &ran.done.capture;
     let outcome = RunOutcome::new(argv_text, ran.done.ended, capture, ran.done.duration);
     let mut text = outcome.render(nonce, capture);
     let summary = text.lines().next().unwrap_or_default().to_owned();
-    let mut changes = ran.changes;
-    changes.extend(unreported.drain());
     if let Some(note) = changes_note(&changes, nonce) {
         text.push_str(&note);
     }
@@ -281,6 +284,15 @@ async fn go(
         text.push_str("\nsome private temporary files could not be removed");
     }
     Ok(ended(ToolStatus::Ok, text, &summary))
+}
+
+/// An error result that still says what the run changed.
+fn failed(why: &str, changes: Vec<Change>, nonce: &str) -> (Outcome, ToolStatus, String) {
+    let mut text = why.to_owned();
+    if let Some(note) = changes_note(&changes, nonce) {
+        text.push_str(&note);
+    }
+    ended(ToolStatus::Error, text, why)
 }
 
 /// Where the private temp folders go: `$XDG_RUNTIME_DIR`, else the data folder.
