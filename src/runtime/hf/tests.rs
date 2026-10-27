@@ -78,6 +78,7 @@ fn ok(body: &str) -> Vec<u8> {
 /// A test curl: plain HTTP to the local server, never through a proxy.
 fn curl(base: &str, token: Option<&str>) -> Curl {
     Curl {
+        label: "Hugging Face",
         program: "curl".into(),
         path: std::env::var_os("PATH").unwrap_or_default(),
         base: base.to_owned(),
@@ -745,4 +746,79 @@ fn a_relative_token_path_resolves_against_the_working_directory() {
         Path::new("/work"),
     );
     assert_eq!(absolute.hf_token_path, Some(PathBuf::from("/t")));
+}
+
+// Spec (llama-server-install, Release resolution): GitHub only over HTTPS,
+// with the URL built by the caller and no token.
+#[test]
+fn the_github_requests_are_https_only_and_end_with_the_url() {
+    let api = Curl::github_api("/usr/bin".into())
+        .api_args("/repos/ggml-org/llama.cpp/releases?per_page=10");
+    assert_eq!(api[0], "-q");
+    for flag in [["--proto", "=https"], ["--proto-redir", "=https"]] {
+        assert!(api.windows(2).any(|w| w == flag), "{api:?}");
+    }
+    assert_eq!(
+        api[api.len() - 2..],
+        [
+            "--",
+            "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10"
+        ]
+    );
+    let github = Curl::github("/usr/bin".into());
+    let download = github.download_args(
+        "/ggml-org/llama.cpp/releases/download/b9000/a.tar.gz",
+        Path::new("/x/a.tar.gz"),
+    );
+    assert_eq!(
+        download[download.len() - 2..],
+        [
+            "--",
+            "https://github.com/ggml-org/llama.cpp/releases/download/b9000/a.tar.gz"
+        ]
+    );
+    assert!(
+        download.windows(2).any(|w| w == ["--continue-at", "-"]),
+        "{download:?}"
+    );
+    // No GitHub token is ever read or sent.
+    for args in [api, download] {
+        assert!(!args.iter().any(|a| a == "--config"), "{args:?}");
+    }
+    assert_eq!(github.stdin_config(), None);
+}
+
+// Spec (llama-server-install, Errors): tool-missing reads with the service.
+#[tokio::test]
+async fn a_github_request_without_curl_names_github() {
+    let missing = Curl::github_api(OsString::new());
+    assert_eq!(
+        missing.get("/x").await,
+        Err("GitHub needs curl on the PATH".to_owned())
+    );
+    // The Hub keeps its own words.
+    assert_eq!(NO_CURL, "Hugging Face needs curl on the PATH");
+}
+
+#[tokio::test]
+async fn a_failed_github_request_carries_the_github_label() {
+    need_curl!();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    // Nothing listens on port 1.
+    let refused = Curl::github_api(path.clone()).local("http://127.0.0.1:1");
+    let message = refused.get("/x").await.unwrap_err();
+    assert!(message.starts_with("GitHub request failed: "), "{message}");
+    // A reply that is not text.
+    let (base, _) = serve(Box::new(|_| reply("200 OK", &[0xff, 0xfe])));
+    let unreadable = Curl::github_api(path).local(&base).get("/x").await;
+    assert_eq!(
+        unreadable,
+        Err("GitHub request failed: unreadable reply".to_owned())
+    );
+    // The Hub label is untouched.
+    let (base, _) = serve(Box::new(|_| reply("200 OK", &[0xff, 0xfe])));
+    assert_eq!(
+        curl(&base, None).get("/x").await,
+        Err(hf::UNREADABLE.to_owned())
+    );
 }
