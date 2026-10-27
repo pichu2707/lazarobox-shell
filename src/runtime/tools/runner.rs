@@ -248,7 +248,7 @@ pub async fn run_jailed(
     );
     // The helper's own channel: the program is started with it closed.
     let (status, report) = io::pipe()?;
-    let done = spawn_with(
+    let started = spawn_with(
         Run {
             program: job.helper,
             argv: args.render(),
@@ -258,7 +258,15 @@ pub async fn run_jailed(
         },
         Some(report),
     )
-    .await?;
+    .await;
+    let done = match started {
+        Ok(done) => done,
+        Err(error) => {
+            // The program may have run before the error: say what it changed.
+            after_failure(guard).await;
+            return Err(error);
+        }
+    };
     let not_enforced = said(status);
     let after = watched(&job.root, &[]).await;
     let changes = integrity::compare(&guard.disarm(), &after);
@@ -277,6 +285,18 @@ pub async fn run_jailed(
         leftovers,
         not_enforced,
     })
+}
+
+/// Takes the "after" of a run that failed once it had started and hands the
+/// changes to the sink before the error is returned. The drop of the guard
+/// would do it on a detached thread, which the caller cannot wait for: it
+/// drains the sink right after the error.
+async fn after_failure(mut guard: AfterOnDrop) {
+    let after = watched(&guard.root, &guard.extra).await;
+    let changes = integrity::compare(&guard.disarm(), &after);
+    if !changes.is_empty() {
+        guard.unreported.push(changes);
+    }
 }
 
 /// What the helper wrote on its status pipe, when it is the "not enforced"

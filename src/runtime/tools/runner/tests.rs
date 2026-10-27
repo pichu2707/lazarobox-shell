@@ -674,3 +674,30 @@ async fn a_program_that_prints_the_marker_and_exits_125_is_not_believed() {
     assert_eq!(ran.not_enforced, None);
     assert_eq!(ran.done.ended.exit, Some(125));
 }
+
+// A run that fails after it started (the group could not be owned, the reap
+// timed out) hands its changes over before it returns the error: the caller
+// drains the sink right away, and a detached drop-time snapshot would not be
+// there yet.
+#[tokio::test]
+async fn a_run_that_failed_after_it_started_hands_its_changes_over_at_once() {
+    let fx = fixture();
+    let unreported = Unreported::default();
+    let before = watched(&fx.root, &[]).await;
+    std::fs::write(fx.root.join(".git/hooks/pre-commit"), "x").unwrap();
+    let guard = AfterOnDrop::new(fx.root.clone(), Vec::new(), before, unreported.clone());
+    after_failure(guard).await;
+    let found = unreported.drain();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].kind, Kind::Added);
+}
+
+#[tokio::test]
+async fn a_failed_run_that_changed_nothing_hands_nothing_over() {
+    let fx = fixture();
+    let unreported = Unreported::default();
+    let before = watched(&fx.root, &[]).await;
+    let guard = AfterOnDrop::new(fx.root.clone(), Vec::new(), before, unreported.clone());
+    after_failure(guard).await;
+    assert_eq!(unreported.drain(), []);
+}
