@@ -34,7 +34,7 @@ Spec: "llama.cpp native tools" (request wire, response decode); design D2-D7.
 
 ### Fixture recording (FIRST task, manual, needs the user's GPU and model)
 
-- [ ] T1.0 [manual] Record F1, F2, F3 against the b11935 Vulkan build. No code. Output: `tests/fixtures/llamacpp/qwen2.5-7b-tool-call.sse` (F1), `qwen2.5-7b-tool-result.sse` (F2), `no-jinja-tools.http` (F3). Commit in its own `test(fixtures)` commit. Steps (from design.md):
+- [x] T1.0 [manual] (recorded by the orchestrator with the design.md commands, committed as `test(chat): record llama.cpp b11935 tool-call fixtures`) Record F1, F2, F3 against the b11935 Vulkan build. No code. Output: `tests/fixtures/llamacpp/qwen2.5-7b-tool-call.sse` (F1), `qwen2.5-7b-tool-result.sse` (F2), `no-jinja-tools.http` (F3). Commit in its own `test(fixtures)` commit. Steps (from design.md):
   1. `~/.local/bin/llama-server --list-devices`; pick the RTX 4080 SUPER (expected `Vulkan0`; the Intel iGPU is the other). Run the binary in place (RUNPATH=`$ORIGIN`).
   2. `~/.local/bin/llama-server --host 127.0.0.1 --port 39300 -m <Qwen2.5-7B-Instruct-Q4_K_M.gguf> -c 16384 -ngl 99 --device Vulkan0`. The log must show a native chat format (Hermes/Qwen), not `Generic`.
   3. F1: `curl -sN http://127.0.0.1:39300/v1/chat/completions -H 'Content-Type: application/json' -d @req1.json > qwen2.5-7b-tool-call.sse`. `req1.json`: `stream:true`, one user message ("Find the directory named src under /tmp/lab using a tool"), `tools` with the real `find_dir` and `list_dir` schemas. No `--raw` (curl de-chunks).
@@ -43,7 +43,7 @@ Spec: "llama.cpp native tools" (request wire, response decode); design D2-D7.
   6. Replace the model path in all fixtures with `/models/<file>.gguf`, as the b11815 fixture does.
   Maps to: scenarios "Recorded b11935 fixture", "Rejected tools fall back..." (F3 pins the status), "Live server with --no-jinja".
 
-- [ ] T1.1 Fixture review and spec/design adjustment (no production code; edit design.md/spec text if needed). Confirm from F1-F3 and record the answers in the commit message:
+- [x] T1.1 (answers a-e recorded in design.md Open Questions; F3 rendering pinned in `runtime/loopback/tests.rs`; spec unchanged) Fixture review and spec/design adjustment (no production code; edit design.md/spec text if needed). Confirm from F1-F3 and record the answers in the commit message:
   - a. Fragment shape: is the first fragment `index`+`id`+`function.name` with empty `arguments`, then argument pieces? Any `type` field? Text deltas mixed in?
   - b. `id`/`index` presence: does every fragment carry `index`? Is `id` always present (else the synthesized `call_{round}_{n}` path is exercised for real)?
   - c. No-jinja (F3): status (400/500/200-ignoring `tools`) and body. The keyword `tools` or `jinja` MUST fall within the first 200 characters (`ERROR_MESSAGE_CAP`) of the sanitized message, or D8 must change. If the server ignores `tools`, no notice fires (acceptable; adjust PR2 expectations).

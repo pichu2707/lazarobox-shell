@@ -88,8 +88,10 @@ No migration. PR 1 and PR 2 are dormant until PR 3. Revert PR 3 alone to switch 
 
 ## Open Questions
 
-- [ ] Status and body of F3: does b11935 reject with 400 or 500, or does it ignore `tools`? If it ignores them, no notice fires (acceptable).
-- [ ] F2: does llama.cpp accept `content:""` on an assistant message that has `tool_calls`? If not, use `null`.
+Closed by the T1.0 recording (real b11935, Vulkan0 RTX 4080 SUPER, Qwen2.5-7B-Instruct Q4_K_M, `-c 16384 -ngl 99`; fixtures in `tests/fixtures/llamacpp/`):
+
+- [x] F3 status and body: `HTTP/1.1 500 Internal Server Error`, body `{"error":{"code":500,"message":"tools param requires --jinja flag","type":"server_error"}}`. Ollama's `HTTP 400` match would miss it, so D8 (4xx or 5xx plus `tools`/`jinja`) is confirmed. The runtime renders it as `HTTP 500: {"error":...}` (status prefix + flattened body); `tools` is at char 42 and `jinja` at 65, well inside `ERROR_MESSAGE_CAP` (200). Pinned by `the_recorded_no_jinja_rejection_keeps_tools_and_jinja_inside_the_cap` (`runtime/loopback/tests.rs`).
+- [x] F2: llama.cpp accepted assistant `content:""` and `content:null` next to `tool_calls` (both HTTP 200, finish `stop`). D7 keeps `""`.
+- [x] F1 shape: the first fragment carries `index:0`, `id` (32 chars), `type:"function"` and `function.name` with a first `arguments` piece (`"{"`); the next fragments carry only `{index:0, function:{arguments:"<piece>"}}`. Every fragment has `index`; `id` only on the first. No text deltas were mixed in (the opening chunk has `role:"assistant"`, `content:null`). It ends with `finish_reason:"tool_calls"` and an empty delta, then `[DONE]`. Assembled arguments: `{"query": "src"}` (note the space after the colon). D3, D5 and D6 hold as designed.
 - [ ] A non-jinja server pays one rejected request per turn. Caching that per pane is a follow-up.
 - [ ] The tool schemas grow the prompt. A context-overflow 400 does not mention `tools`, so it surfaces as an error. That is acceptable, and the README recommends `-c` of 16384 or more.
-- [ ] D8 matches inside the first 200 characters of the error (`ERROR_MESSAGE_CAP`). F3 must show that the keyword falls within them.
