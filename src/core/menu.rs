@@ -1229,6 +1229,7 @@ impl MenuState {
                 format!("Model for {row} ({engine})")
             }
             Level::Hub(hub) => hub.title(),
+            Level::Install(wizard) => wizard.title(),
         };
         if let Some(counter) = picker.counter(all.len()) {
             title = format!("{title} {counter}");

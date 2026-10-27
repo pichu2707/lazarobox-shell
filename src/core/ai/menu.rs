@@ -364,7 +364,8 @@ impl AiMenu {
             | Outcome::Copy(_)
             | Outcome::Ask(_)
             | Outcome::Download(_)
-            | Outcome::CancelDownload => {}
+            | Outcome::CancelDownload
+            | Outcome::Install(_) => {}
         }
         outcome
     }

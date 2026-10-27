@@ -69,8 +69,8 @@ Chain strategy: stacked-to-main
 
 ## PR5: Wizard state machine (needs PR2)
 
-- [ ] 5.1 RED: `src/core/ai/picker/install.rs` tests: no step without consent, Esc backs out, copy-only row never emits an ask, variant rows, offers order (managed then HF).
-- [ ] 5.2 GREEN: pure `Wizard`/`Screen`, `InstallAsk` outcomes, `Level::Install` in `picker.rs` (~200).
+- [x] 5.1 RED: `src/core/ai/picker/install.rs` tests: no step without consent, Esc backs out, copy-only row never emits an ask, variant rows, offers order (managed then HF).
+- [x] 5.2 GREEN: pure `Wizard`/`Screen`, `InstallAsk` outcomes, `Level::Install` in `picker.rs` (~200).
 
 ## PR6: Plumbing and rendering (needs PR3, PR4, PR5)
 

@@ -17,7 +17,9 @@ use super::sanitize::is_format;
 use super::{CATALOG, Detection, Engine, Kind, Status, gguf, hf, start_command, status_text};
 
 mod hub;
+mod install;
 pub use hub::{Confirm, HF_ROW, HINT_ASKING, HINT_CANCEL, Hub, QUERY_HINT, Running, Screen, shown};
+pub use install::{InstallAsk, Reply as InstallReply, Wizard};
 
 /// What a picker is assigning to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -653,6 +655,8 @@ pub enum Level {
     },
     /// The Hugging Face screens, over llamacpp's model rows.
     Hub(Hub),
+    /// The llama-server install wizard, over llamacpp's model rows.
+    Install(Wizard),
 }
 
 /// What a picker action asks of the caller.
@@ -676,6 +680,8 @@ pub enum Outcome {
     Download(Box<hf::Job>),
     /// Stop the download that runs.
     CancelDownload,
+    /// Run this install step; the picker waits for its reply.
+    Install(InstallAsk),
 }
 
 /// The picker state: where it is and where the cursor is. Rows are never
@@ -729,6 +735,7 @@ impl Picker {
                 rows
             }
             Level::Hub(hub) => hub.rows(),
+            Level::Install(wizard) => wizard.rows(),
         }
     }
 
@@ -810,6 +817,7 @@ impl Picker {
                 }
             }
             Level::Hub(_) => self.hub_enter(),
+            Level::Install(_) => self.install_enter(draft, detection),
             Level::Custom { engine, text } => match validate_custom(&text) {
                 Some(model) => Outcome::Commit(Assignment {
                     engine: Some(engine),
@@ -824,7 +832,10 @@ impl Picker {
     /// whole text; an engine row gives its no-jail reason, if it has one.
     /// Anything else, and the custom field, copies nothing.
     pub fn copy(&self, draft: &AiConfig, detection: Option<&Detection>) -> Outcome {
-        if matches!(self.level, Level::Custom { .. } | Level::Hub(_)) {
+        if matches!(
+            self.level,
+            Level::Custom { .. } | Level::Hub(_) | Level::Install(_)
+        ) {
             return Outcome::Stay;
         }
         let rows = self.rows(draft, detection);
@@ -864,6 +875,7 @@ impl Picker {
                 Outcome::Stay
             }
             Level::Hub(_) => self.hub_back(draft, detection),
+            Level::Install(_) => self.install_back(draft, detection),
         }
     }
 
@@ -962,7 +974,7 @@ impl Picker {
     /// `r`: ask for a new detection, except where `r` is typed.
     pub fn refresh(&self) -> Outcome {
         match self.level {
-            Level::Custom { .. } | Level::Hub(_) => Outcome::Stay,
+            Level::Custom { .. } | Level::Hub(_) | Level::Install(_) => Outcome::Stay,
             _ => Outcome::Refresh,
         }
     }
@@ -974,6 +986,8 @@ mod assign_tests;
 mod custom_tests;
 #[cfg(test)]
 mod hub_tests;
+#[cfg(test)]
+mod install_tests;
 #[cfg(test)]
 mod machine_tests;
 #[cfg(test)]

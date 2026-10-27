@@ -221,3 +221,21 @@ Risks:
   and `link to` separators) was not run; only GNU tar 1.35. A newline in a name is only caught on
   GNU (escaped); on bsdtar the fragments are judged as separate names.
 - Cleanup of a failed staging after a successful install is silent (swept next time).
+## PR5: Wizard state machine (branch feat/llama-server-install-pr5, base PR2)
+
+Status: 2/2 tasks done (5.1, 5.2).
+
+- `src/core/ai/picker/install.rs` (new): pure `Wizard` + `Screen` (Plan, Resolving,
+  ConfirmDownload, Downloading{cancel prompt}, ConfirmInstall, Installing, OfferHf, Failed),
+  own `InstallAsk` (Resolve/Download/Install/Cancel), `Reply` (Resolved/Downloaded/Installed;
+  failure is the `Err` text) and `Step` enums. Decoupled from PR3/PR4 types.
+- Consent: choosing a variant row is the consent to resolve; y/n gates download and install;
+  the copy-only row yields `Step::Copy` and never an ask; Esc backs out (download asks first,
+  install step cannot be interrupted); stale/wrong-kind replies are dropped.
+- `picker.rs`: `Level::Install(Wizard)`, `Outcome::Install(InstallAsk)`, `open_install`,
+  `install_answer(yes)`, `install_reply`, `install_progress`. `hub.rs`: `info`, `item`,
+  `leave_hub` made `pub(super)`. `menu.rs` files: only the new match arms (no-op / title).
+
+For PR6: route `y`/`n` keys to `Picker::install_answer`, Esc to `back`; `asks_cancel` on the
+wizard drives the cancel footer. `Remove`/`CheckNewer` asks are left for PR7. Entry
+(`open_install`) is not reachable from the UI until PR7 adds the manage row.

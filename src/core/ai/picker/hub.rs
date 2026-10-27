@@ -268,7 +268,7 @@ fn marked(label: String, big: bool) -> String {
 }
 
 /// A row that cannot be chosen, with a Hub label.
-fn info(label: String) -> PickRow {
+pub(super) fn info(label: String) -> PickRow {
     PickRow {
         key: PickKey::Info,
         label: shown(&label),
@@ -279,7 +279,7 @@ fn info(label: String) -> PickRow {
 }
 
 /// A repo or a choice, by its index in the reply.
-fn item(index: usize, label: String) -> PickRow {
+pub(super) fn item(index: usize, label: String) -> PickRow {
     PickRow {
         key: PickKey::Hub(index),
         label: shown(&label),
@@ -451,7 +451,7 @@ impl Picker {
     }
 
     /// Back to llamacpp's model level, the cursor on the entry row.
-    fn leave_hub(&mut self, draft: &AiConfig, detection: Option<&Detection>) {
+    pub(super) fn leave_hub(&mut self, draft: &AiConfig, detection: Option<&Detection>) {
         self.level = Level::Models {
             engine: "llamacpp".to_owned(),
         };
