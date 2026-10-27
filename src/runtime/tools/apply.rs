@@ -132,8 +132,8 @@ pub enum ApplyResult {
         path: PathBuf,
         undone: bool,
     },
-    /// A create at `path` found a volume without an atomic no-replace rename
-    /// (exFAT, SMB, NFS on macOS); whatever was done is undone.
+    /// A create at `path` found a system or volume without a safe no-replace
+    /// write (on macOS: exFAT, SMB, NFS); whatever was done is undone.
     VolumeUnsupported {
         path: PathBuf,
         undone: bool,
@@ -197,7 +197,7 @@ impl ApplyResult {
                 undo_note(*undone)
             ),
             ApplyResult::VolumeUnsupported { path, undone } => format!(
-                "failed at {}: this volume does not support a safe no-replace rename (for example exFAT, SMB or NFS), {}",
+                "failed at {}: this system or volume does not support a safe no-replace write, {}",
                 escape(&path.to_string_lossy()),
                 undo_note(*undone)
             ),
@@ -246,7 +246,7 @@ impl ApplyResult {
                 undo_note(*undone)
             ),
             ApplyResult::VolumeUnsupported { undone, .. } => format!(
-                "The user's apply of your staged batch failed: the volume does not support a safe no-replace rename; {}.",
+                "The user's apply of your staged batch failed: the system or volume does not support a safe no-replace write; {}.",
                 undo_note(*undone)
             ),
             ApplyResult::Invalid { .. } | ApplyResult::Unsupported => {
@@ -873,7 +873,7 @@ mod tests {
         assert_eq!(fake.text("/h/p/a"), None);
         let said = got.summary();
         assert!(
-            said.contains("no-replace rename") && said.contains("exFAT"),
+            said.contains("no-replace write") && !said.contains("exFAT"),
             "{said}"
         );
         assert!(!got.told().contains('/'), "{}", got.told());

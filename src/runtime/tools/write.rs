@@ -57,7 +57,7 @@ mod unix {
     use super::macos_sys::{fill_random, rename_noreplace};
     use super::{SecretRoots, WriteError};
     use crate::runtime::tools::{
-        fs::{Failure, open_checked},
+        fs::{Failure, open_checked_errno},
         open::{cstring, fd_path, open_existing_at, owned},
     };
     use std::{
@@ -85,14 +85,23 @@ mod unix {
         if !roots.judge_real(real) {
             return Err(WriteError::Refused);
         }
-        let fd = open_checked(roots, dir, true).map_err(|failure| match failure {
-            Failure::Unreadable => WriteError::Unsupported,
-            _ => WriteError::Refused,
-        })?;
+        let fd = open_checked_errno(roots, dir, true)
+            .map_err(|(failure, errno)| parent_failure(failure, errno))?;
         Ok((
             fd,
             cstring(name.as_bytes()).map_err(|_| WriteError::Refused)?,
         ))
+    }
+
+    /// What a failed open of the parent folder means. No safe open at all is
+    /// `Unsupported`; a macOS denial (TCC on Desktop, Documents, Downloads) is
+    /// `Denied`, not `Refused`, which `apply` would report as drift; anything
+    /// else is `Refused`.
+    fn parent_failure(failure: Failure, errno: Option<i32>) -> WriteError {
+        match failure {
+            Failure::Unreadable => WriteError::Unsupported,
+            _ => denied_or(errno, WriteError::Refused),
+        }
     }
 
     fn io_error<E>(_: E) -> WriteError {
@@ -736,6 +745,49 @@ mod unix {
             assert_eq!(denied_or(None, WriteError::Io), WriteError::Io);
         }
 
+        #[test]
+        fn a_failed_parent_open_is_a_denial_only_on_macos_and_unsupported_without_a_safe_open() {
+            let denied = if cfg!(target_os = "macos") {
+                WriteError::Denied
+            } else {
+                WriteError::Refused
+            };
+            for errno in [libc::EPERM, libc::EACCES] {
+                assert_eq!(parent_failure(Failure::Refused, Some(errno)), denied);
+            }
+            assert_eq!(
+                parent_failure(Failure::Refused, Some(libc::ELOOP)),
+                WriteError::Refused
+            );
+            assert_eq!(parent_failure(Failure::Refused, None), WriteError::Refused);
+            assert_eq!(
+                parent_failure(Failure::Unreadable, Some(libc::EACCES)),
+                WriteError::Unsupported
+            );
+        }
+
+        // The parent folder itself cannot be opened (before any temp file):
+        // a denial on macOS (TCC), the usual refusal on Linux.
+        #[test]
+        fn an_unopenable_parent_folder_is_denied_on_macos_and_refused_elsewhere() {
+            let f = fx();
+            let locked = f.home.join("proj/locked");
+            std::fs::create_dir(&locked).unwrap();
+            std::fs::set_permissions(&locked, Permissions::from_mode(0o000)).unwrap();
+            let got = create_file(&f.roots, &locked.join("a.txt"), b"x");
+            // Root can open anything: a plain listing tells.
+            let blocked = std::fs::read_dir(&locked).is_err();
+            std::fs::set_permissions(&locked, Permissions::from_mode(0o755)).unwrap();
+            if blocked {
+                let expected = if cfg!(target_os = "macos") {
+                    WriteError::Denied
+                } else {
+                    WriteError::Refused
+                };
+                assert_eq!(got.unwrap_err(), expected);
+            }
+        }
+
         // macOS only (unverified on a Mac): a denial such as TCC's EPERM/EACCES is
         // `Denied`, never `Unsupported`, which `apply` would turn into a
         // whole-batch answer. A read-only folder stands in for the denial.
@@ -908,6 +960,9 @@ mod macos_sys {
         }
         Err(match io::Error::last_os_error().raw_os_error() {
             Some(libc::EEXIST) => WriteError::Exists,
+            // EINVAL is what a filesystem without `RENAME_EXCL` answers when it
+            // rejects the flag outright; the names here are plain, so no other
+            // cause of EINVAL is expected.
             Some(libc::ENOTSUP | libc::EOPNOTSUPP | libc::EINVAL) => WriteError::Unsupported,
             Some(libc::EPERM | libc::EACCES) => WriteError::Denied,
             _ => WriteError::Io,

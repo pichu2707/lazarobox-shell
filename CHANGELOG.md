@@ -39,10 +39,11 @@ baseline.
   because its answers reveal what a file contains.
 - Write works on Linux and macOS (APFS and HFS+); on any other system an
   approved batch writes nothing and says so. On macOS, a filesystem without an
-  atomic no-replace rename (exFAT, SMB, NFS) answers "not supported" and nothing
-  is written, and replacing a file drops its extended attributes, ACLs,
-  quarantine flag and Finder tags, and the new file takes its group from the
-  parent folder (BSD semantics).
+  atomic no-replace rename (exFAT, SMB, NFS) answers "this system or volume does
+  not support a safe no-replace write" and whatever was done is undone, and
+  replacing a file drops its extended attributes, ACLs, quarantine flag and
+  Finder tags, and the new file takes its group from the parent folder (BSD
+  semantics).
 
 ## [0.22.0] - 2026-10-23
 

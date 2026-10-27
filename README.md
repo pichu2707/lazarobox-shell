@@ -567,9 +567,9 @@ Cerrar el panel del chat y salir de lazarobox **descartan** los lotes pendientes
 - **Huérfanos y descarte.** Un lote cancelado o con tiempo agotado se conserva como huérfano y solo se aplica si lo revisas con `Ctrl+G` (con cobertura y 800 ms); no se aplica nunca con un turno del mismo panel en curso. Cerrar el panel y salir descartan el lote.
 - **Una salida por señal descarta en silencio.** Con `SIGTERM` o `SIGHUP` no se muestra el aviso de descarte, porque el lote vive solo en memoria y no se escribe nada de todas formas.
 - **Linux y macOS.** En macOS no hay `openat2`: cada carpeta se abre componente a componente con `O_NOFOLLOW` y se comprueba su ruta real con `F_GETPATH`, y un create usa `renameatx_np` con `RENAME_EXCL` (que no pisa un nombre ocupado). Un denegado del sistema (`EPERM` o `EACCES`, por ejemplo TCC) se trata como un rechazo.
-- **macOS: sistemas de ficheros sin renombrado atómico.** Solo APFS y HFS+ admiten `RENAME_EXCL`. En exFAT, SMB o NFS el aplicar devuelve `writes are not supported on this platform` y no escribe nada.
+- **macOS: sistemas de ficheros sin renombrado atómico.** Solo APFS y HFS+ admiten `RENAME_EXCL`. En exFAT, SMB o NFS el aplicar devuelve `this system or volume does not support a safe no-replace write` y deshace lo ya hecho.
 - **macOS: metadatos.** Reemplazar un fichero crea uno nuevo y lo renombra encima, así que se pierden sus atributos extendidos, las ACL, la marca de cuarentena y las etiquetas del Finder (en Linux se pierden los atributos extendidos). Además, el fichero nuevo toma el grupo de la carpeta que lo contiene (semántica BSD).
-- Otras plataformas: el aplicar devuelve `writes are not supported on this platform` y no escribe nada.
+- Otras plataformas: el aplicar devuelve `this system or volume does not support a safe no-replace write` y deshace lo ya hecho.
 
 ### Tools with Ollama
 

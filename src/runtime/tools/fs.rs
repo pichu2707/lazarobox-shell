@@ -262,20 +262,34 @@ pub(crate) fn load_roots(env: &ToolEnv) -> Result<SecretRoots, Failure> {
 /// swapped in after the judgment fails the open; the descriptor's own path is
 /// read back and judged against the same snapshot of roots.
 pub fn open_checked(roots: &SecretRoots, real: &Path, dir: bool) -> Result<OwnedFd, Failure> {
+    open_checked_errno(roots, real, dir).map_err(|(failure, _)| failure)
+}
+
+/// [`open_checked`] that also gives the `errno` of a failed open (`None` for
+/// a refusal made before or after the open), for a caller that tells a macOS
+/// denial apart from a refusal.
+pub fn open_checked_errno(
+    roots: &SecretRoots,
+    real: &Path,
+    dir: bool,
+) -> Result<OwnedFd, (Failure, Option<i32>)> {
     if !roots.judge_real(real) {
-        return Err(Failure::Refused);
+        return Err((Failure::Refused, None));
     }
     let rel = real
         .strip_prefix(roots.home())
-        .map_err(|_| Failure::Refused)?;
-    let fd = open_beneath(roots.home(), rel, dir).map_err(|error| match error.kind() {
-        // No safe open on this platform: the tool cannot work at all.
-        std::io::ErrorKind::Unsupported => Failure::Unreadable,
-        _ => Failure::Refused,
+        .map_err(|_| (Failure::Refused, None))?;
+    let fd = open_beneath(roots.home(), rel, dir).map_err(|error| {
+        let failure = match error.kind() {
+            // No safe open on this platform: the tool cannot work at all.
+            std::io::ErrorKind::Unsupported => Failure::Unreadable,
+            _ => Failure::Refused,
+        };
+        (failure, error.raw_os_error())
     })?;
     match fd_path(&fd) {
         Ok(opened) if opened == real && roots.judge_real(&opened) => Ok(fd),
-        _ => Err(Failure::Refused),
+        _ => Err((Failure::Refused, None)),
     }
 }
 
