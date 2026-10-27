@@ -82,3 +82,129 @@ async fn a_program_that_does_not_exist_is_an_error() {
     run.program = PathBuf::from("/nonexistent/lbx-program");
     assert!(spawn_core(run).await.is_err());
 }
+
+/// No such process, or only a zombie nobody has collected yet.
+fn gone(pid: libc::pid_t) -> bool {
+    matches!(crate::runtime::proc::process_state(pid), None | Some('Z'))
+}
+
+/// Polls until `pid` is gone; the group was signalled, so this is quick.
+async fn wait_gone(pid: libc::pid_t) -> bool {
+    for _ in 0..2000 {
+        if gone(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
+fn first_pid(done: &Done) -> libc::pid_t {
+    done.capture
+        .text()
+        .lines()
+        .next()
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_timeout_kills_the_group_with_its_grandchild_and_says_so() {
+    let mut run = script("sleep 300 & echo $!; wait");
+    run.timeout = Duration::from_millis(300);
+    let done = spawn_core(run).await.unwrap();
+    assert!(done.ended.timed_out);
+    assert_eq!((done.ended.exit, done.ended.signal), (None, Some(9)));
+    assert!(done.duration < Duration::from_secs(10));
+    // What it printed before the deadline is kept.
+    assert!(wait_gone(first_pid(&done)).await, "the grandchild lives");
+}
+
+#[tokio::test]
+async fn a_run_that_ends_in_time_is_not_a_timeout() {
+    let mut run = script("echo fast");
+    run.timeout = Duration::from_secs(20);
+    let done = spawn_core(run).await.unwrap();
+    assert!(!done.ended.timed_out);
+    assert_eq!(done.ended.exit, Some(0));
+}
+
+#[tokio::test]
+async fn a_leader_that_exits_takes_the_grandchildren_it_left_with_it() {
+    let done = run("sleep 300 >/dev/null 2>&1 & echo $!; exit 0").await;
+    assert_eq!(done.ended.exit, Some(0));
+    assert!(!done.ended.timed_out);
+    assert!(wait_gone(first_pid(&done)).await, "the grandchild lives");
+}
+
+#[tokio::test]
+async fn dropping_the_future_kills_the_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let pids = dir.path().join("pids");
+    let text = format!(
+        "sleep 300 & echo $! > '{p}.tmp'; echo $$ >> '{p}.tmp'; mv '{p}.tmp' '{p}'; wait",
+        p = pids.display()
+    );
+    let ready = async {
+        while !pids.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::select! {
+        _ = spawn_core(script(&text)) => panic!("the script ends only when killed"),
+        _ = ready => {}
+    }
+    // The future is gone now: both processes must follow it.
+    let read = std::fs::read_to_string(&pids).unwrap();
+    for pid in read.lines().map(|l| l.parse::<libc::pid_t>().unwrap()) {
+        assert!(wait_gone(pid).await, "{pid} lives");
+    }
+}
+
+#[tokio::test]
+async fn what_the_leader_wrote_last_is_read_after_it_exits() {
+    // Far over the 64 KiB of a pipe: the end is still in it when the leader goes.
+    let done = run("head -c 300000 /dev/zero | tr '\\0' x").await;
+    assert_eq!(done.capture.total(), 300_000);
+    assert!(done.capture.truncated());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_grandchild_that_left_the_group_cannot_hold_the_run() {
+    let started = std::time::Instant::now();
+    // The leader waits until the escapee has really left its group.
+    let done = run("setsid sleep 300 & p=$!; echo $p; \
+         while [ \"$(ps -o pgid= -p $p | tr -d ' ')\" = \"$$\" ]; do sleep 0.05; done; echo out")
+    .await;
+    let pid = first_pid(&done);
+    // Reached the end although the pipe never closed: the drain is bounded.
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(done.capture.text().ends_with("out\n"));
+    // A documented limit: it survives. Clean it up.
+    assert!(
+        !gone(pid),
+        "setsid left the group, the kill cannot reach it"
+    );
+    // SAFETY: a signal to the sleep this test started.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+}
+
+#[tokio::test]
+async fn the_drain_reads_what_is_left_and_stops_at_its_bound_when_the_pipe_stays_open() {
+    use std::io::Write;
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    writer.write_all(b"left over").unwrap();
+    let file = std::fs::File::from(std::os::fd::OwnedFd::from(reader));
+    let mut pipe = Receiver::from_file(file).unwrap();
+    let mut capture = Capture::new();
+    let started = std::time::Instant::now();
+    drain(&mut pipe, &mut capture, &mut [0u8; 64]).await;
+    // The writer is still open: only the bound ended it, and not early.
+    assert_eq!(capture.text(), "left over");
+    assert!(started.elapsed() >= Duration::from_millis(400));
+    assert!(started.elapsed() < Duration::from_secs(10));
+    drop(writer);
+}

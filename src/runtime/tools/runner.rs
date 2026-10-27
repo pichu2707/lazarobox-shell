@@ -77,7 +77,9 @@ pub async fn spawn_core(run: Run) -> io::Result<Done> {
     let mut buf = vec![0u8; CHUNK];
     let mut open = true;
     let exit = wait_exit_unreaped(pid);
-    tokio::pin!(exit);
+    let deadline = tokio::time::sleep(run.timeout);
+    tokio::pin!(exit, deadline);
+    let mut timed_out = false;
     loop {
         tokio::select! {
             read = pipe.read(&mut buf), if open => match read {
@@ -85,9 +87,14 @@ pub async fn spawn_core(run: Run) -> io::Result<Done> {
                 _ => open = false,
             },
             _ = &mut exit => break,
+            _ = &mut deadline => {
+                timed_out = true;
+                break;
+            }
         }
     }
-    // The leader is still unreaped, so its group is still ours to kill.
+    // The leader is still unreaped, so its group is still ours to kill: on a
+    // timeout, and on a normal exit too, for what the leader left behind.
     let status = group.kill_and_reap(&mut child).await?;
     if open {
         drain(&mut pipe, &mut capture, &mut buf).await;
@@ -96,7 +103,7 @@ pub async fn spawn_core(run: Run) -> io::Result<Done> {
         ended: Ended {
             exit: status.code(),
             signal: status.signal(),
-            timed_out: false,
+            timed_out,
             cancelled: false,
         },
         capture,
