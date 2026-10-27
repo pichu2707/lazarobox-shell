@@ -942,3 +942,47 @@ fn text_before_the_call_still_streams_and_take_calls_drains() {
     assert_eq!(decoder.take_calls().len(), 1);
     assert!(decoder.take_calls().is_empty(), "drained");
 }
+
+// llamacpp-tools T1.4: only a clean end releases calls.
+fn one_call() -> String {
+    frag(r#"{"index":0,"id":"a","function":{"name":"find_dir","arguments":"{\"query\":\"x\"}"}}"#)
+}
+
+#[test]
+fn a_truncated_stream_releases_no_call() {
+    let input = one_call();
+    let (events, calls) = oa_run(&[input.as_bytes()]);
+    assert_eq!(events, [StreamEvent::Error(ChatError::Interrupted)]);
+    assert!(calls.is_empty());
+    // Cut in the middle of the closing event too.
+    let cut = format!("{input}data: {{\"choices\":[{{\"delta\":{{}},\"finish_re");
+    assert!(oa_run(&[cut.as_bytes()]).1.is_empty());
+}
+
+#[test]
+fn an_error_payload_or_malformed_data_releases_no_call() {
+    for tail in ["data: {\"error\":\"boom\"}\n\n", "data: not json\n\n"] {
+        let input = format!("{}{tail}{TOOLS_END}", one_call());
+        let (events, calls) = oa_run(&[input.as_bytes()]);
+        assert!(
+            matches!(events.as_slice(), [StreamEvent::Error(_)]),
+            "{events:?}"
+        );
+        assert!(calls.is_empty(), "{tail}");
+    }
+}
+
+#[test]
+fn nothing_is_released_before_the_end_and_a_late_fragment_is_ignored() {
+    let mut decoder = OpenAiToolDecoder::server();
+    decoder.feed(one_call().as_bytes());
+    assert!(decoder.take_calls().is_empty(), "no end yet");
+    decoder.feed(TOOLS_END.as_bytes());
+    let late = frag(r#"{"index":1,"id":"z","function":{"name":"find_dir","arguments":"{}"}}"#);
+    decoder.feed(late.as_bytes());
+    assert_eq!(
+        decoder.take_calls().len(),
+        1,
+        "the ended stream ignores more"
+    );
+}
