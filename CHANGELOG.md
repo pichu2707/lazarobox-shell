@@ -10,6 +10,35 @@ baseline.
 
 ## [Unreleased]
 
+### Added
+
+- With `[ai.tools] write = true`, chats get four tools to change files in the
+  project: `create_dir`, `write_file`, `edit_file` and `propose_batch`.
+  Nothing touches the disk while the model stages; `propose_batch` opens a
+  full-pane review of the whole batch (new text, diffs, a warning on build
+  files), and only `y` applies it, all or nothing:
+  - `y` stays locked until every line has been drawn on screen and 800 ms have
+    passed; `n` or `Esc` rejects the whole batch; `Ctrl+C` cancels the turn.
+  - Writes stay beneath `$HOME`, inside the chat's folder, never through links,
+    and never in `.git`, `node_modules` or secret files. Invalid UTF-8,
+    control, bidi or zero-width characters and CRLF are refused, not cleaned.
+  - Apply checks every target again and refuses the whole batch if one
+    changed, writes through same-folder temp files and atomic renames, and
+    undoes the files already written if a step fails (`partial` lists what
+    could not be undone).
+  - A batch left by a cancelled or timed-out turn stays as an orphan: the pane
+    shows ` staged N ` or ` orphan N · Ctrl+G `, and `Ctrl+G` opens its review.
+    Closing the pane or quitting discards the batches with a notice.
+  - `read_file`, `glob` and `grep` see the staged changes, marked
+    `(pending, not on disk)`. The model gets counts and paths, never the diff.
+- The chat key table lists `Ctrl+G`.
+
+### Changed
+
+- On a cloud engine, `edit_file` asks like `read_file`, once per file per turn,
+  because its answers reveal what a file contains.
+- Write is Linux only: elsewhere an approved batch writes nothing and says so.
+
 ## [0.26.0] - 2026-10-27
 
 ### Added
