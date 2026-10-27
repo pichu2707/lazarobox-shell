@@ -425,6 +425,10 @@ pub enum MenuCommand {
     /// Connect, check or disconnect the Hugging Face account; the answer
     /// comes back through [`MenuState::account_reply`].
     HfAccount(AccountAsk),
+    /// Open this link in the browser. Only made when the host has an
+    /// opener (see [`MenuState::with_opener`]); without one the link is a
+    /// [`MenuCommand::Copy`].
+    Open(String),
 }
 
 const HINT_SETTINGS: &str = "j/k move · h/l change · s save · Esc cancel";
@@ -531,8 +535,18 @@ pub struct MenuState {
     facts: feedback::Facts,
     /// The Feedback form, while it is open.
     feedback: Option<feedback::Feedback>,
-    /// The form made its link: the view says how to use it until Esc.
-    feedback_copied: bool,
+    /// The form made its link: the view says what was done with it until
+    /// Esc.
+    feedback_done: Option<Done>,
+    /// The host has a program that opens links in the browser.
+    opener: bool,
+}
+
+/// What the Feedback form did with its link.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Done {
+    Copied,
+    Opened,
 }
 
 impl MenuState {
@@ -559,7 +573,24 @@ impl MenuState {
                 ..feedback::Facts::default()
             },
             feedback: None,
-            feedback_copied: false,
+            feedback_done: None,
+            opener: false,
+        }
+    }
+
+    /// Whether the host has a program that opens links in the browser:
+    /// Ctrl+O then opens a link, else it copies it.
+    pub fn with_opener(mut self, opener: bool) -> Self {
+        self.opener = opener;
+        self
+    }
+
+    /// `url` opened when the host can, else copied.
+    fn open_or_copy(&self, url: String) -> MenuCommand {
+        if self.opener {
+            MenuCommand::Open(url)
+        } else {
+            MenuCommand::Copy(url)
         }
     }
 
@@ -576,15 +607,15 @@ impl MenuState {
 
     /// Whether the Feedback form, or what it says after its copy, is shown.
     fn feedback_open(&self) -> bool {
-        self.feedback.is_some() || self.feedback_copied
+        self.feedback.is_some() || self.feedback_done.is_some()
     }
 
     /// The Feedback view that replaces the rows while it is open.
     fn feedback_rows(&self) -> Option<Vec<Row>> {
-        let lines = if self.feedback_copied {
-            feedback::COPIED.iter().map(|l| (*l).to_owned()).collect()
-        } else {
-            self.feedback.as_ref()?.lines()
+        let lines = match self.feedback_done {
+            Some(Done::Copied) => feedback::COPIED.iter().map(|l| (*l).to_owned()).collect(),
+            Some(Done::Opened) => feedback::OPENED.iter().map(|l| (*l).to_owned()).collect(),
+            None => self.feedback.as_ref()?.lines(),
         };
         let mut rows = vec![Row::Title(Cow::Borrowed("Feedback"))];
         rows.extend(lines.into_iter().map(|line| Row::Text(Cow::Owned(line))));
@@ -592,11 +623,12 @@ impl MenuState {
     }
 
     /// Keys while the Feedback view is open: every one goes to the form;
-    /// once its link is copied, only Esc (back to the row) does anything.
+    /// once its link is copied or opened, only Esc (back to the row) does
+    /// anything.
     fn on_feedback_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
-        if self.feedback_copied {
+        if self.feedback_done.is_some() {
             if key.code == KeyCode::Esc && !repeat {
-                self.feedback_copied = false;
+                self.feedback_done = None;
             }
             return MenuCommand::None;
         }
@@ -611,8 +643,17 @@ impl MenuState {
             }
             feedback::Outcome::Copy(link) => {
                 self.feedback = None;
-                self.feedback_copied = true;
+                self.feedback_done = Some(Done::Copied);
                 MenuCommand::Copy(link)
+            }
+            feedback::Outcome::Open(link) => {
+                self.feedback = None;
+                let command = self.open_or_copy(link);
+                self.feedback_done = Some(match command {
+                    MenuCommand::Open(_) => Done::Opened,
+                    _ => Done::Copied,
+                });
+                command
             }
         }
     }
@@ -652,8 +693,9 @@ impl MenuState {
     }
 
     /// Keys while the token field is open: every letter is typed, Ctrl+U
-    /// clears, Enter checks the token and Esc goes back to the row (also
-    /// while the check runs, which it stops).
+    /// clears, Ctrl+O opens the link to create a token, Enter checks the
+    /// token and Esc goes back to the row (also while the check runs, which
+    /// it stops).
     fn on_account_key(&mut self, key: &KeyEvent, repeat: bool) -> MenuCommand {
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
         match key.code {
@@ -663,6 +705,11 @@ impl MenuState {
                 }
             }
             KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => self.account.clear(),
+            KeyCode::Char('o') if key.modifiers == KeyModifiers::CONTROL => {
+                if !repeat {
+                    return self.open_or_copy(account::TOKEN_URL.to_owned());
+                }
+            }
             _ if !plain => {}
             KeyCode::Char(c) => self.account.type_char(c),
             KeyCode::Backspace => self.account.backspace(),
@@ -1726,9 +1773,13 @@ impl MenuState {
             return Footer::Hint(Cow::Borrowed(HINT_ASKING));
         }
         if self.account.field().is_some() {
-            return Footer::Hint(Cow::Borrowed(account::HINT_TOKEN));
+            return Footer::Hint(match (&self.copied, self.opener) {
+                (Some(copied), _) => Cow::Owned(copied.clone()),
+                (None, true) => Cow::Borrowed(account::HINT_TOKEN),
+                (None, false) => Cow::Borrowed(account::HINT_TOKEN_COPY),
+            });
         }
-        if self.feedback_copied {
+        if self.feedback_done.is_some() {
             return Footer::Hint(match &self.copied {
                 Some(copied) => Cow::Owned(copied.clone()),
                 None => Cow::Borrowed(feedback::HINT_DONE),

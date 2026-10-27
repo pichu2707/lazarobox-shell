@@ -16,8 +16,10 @@ pub const TOKEN_HINT: &str = "paste a Hugging Face token";
 /// line of its own so terminals that detect URLs keep it clickable.
 pub const TOKEN_URL_HINT: &str = "create a read token at:";
 pub const TOKEN_URL: &str = "https://huggingface.co/settings/tokens/new?tokenType=read";
-/// The footer of the token field.
-pub const HINT_TOKEN: &str = "Enter connect · Ctrl+U clear · Esc back";
+/// The footer of the token field: Ctrl+O opens [`TOKEN_URL`] in the browser,
+/// or copies it on a host with no opener.
+pub const HINT_TOKEN: &str = "Enter connect · Ctrl+O open link · Ctrl+U clear · Esc back";
+pub const HINT_TOKEN_COPY: &str = "Enter connect · Ctrl+O copy link · Ctrl+U clear · Esc back";
 /// The footer of the row, by what Enter does there.
 pub const HINT_CONNECT: &str = "Enter connect · j/k move · s save · Esc cancel";
 pub const HINT_CHECK: &str = "Enter check · d disconnect · j/k move · s save · Esc cancel";

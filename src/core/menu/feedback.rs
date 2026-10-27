@@ -1,7 +1,8 @@
 //! The `Feedback` form of the menu (config-menu, Feedback): a bug report or
 //! an idea, a title and a description, with the environment attached. Pure:
-//! Ctrl+S builds the prefilled GitHub new-issue link for the app to copy.
-//! Nothing is sent from here: the user opens the link in a browser.
+//! Ctrl+S builds the prefilled GitHub new-issue link for the app to copy,
+//! Ctrl+O the same link for the app to open in the browser. Nothing is sent
+//! from here: the user reviews and sends the issue on GitHub.
 //!
 //! The title and the description go through the redaction pass before any
 //! link is made; a change stays in the form, so the user sees what was
@@ -27,11 +28,17 @@ pub const TOO_LONG: &str = "Too long for a link: shorten the description";
 
 /// The footer, by the focused field; each fits the 48 columns of the
 /// narrow popup.
-pub const HINT_KIND: &str = "←/→ kind · Tab next · Ctrl+S link · Esc back";
-pub const HINT_TEXT: &str = "Tab next · Ctrl+S link · Esc back";
-pub const HINT_ATTACH: &str = "Space attach · Tab next · Ctrl+S link · Esc back";
+pub const HINT_KIND: &str = "←/→ kind · Tab · Ctrl+S copy · Ctrl+O open · Esc";
+pub const HINT_TEXT: &str = "Tab next · Ctrl+S copy · Ctrl+O open · Esc back";
+pub const HINT_ATTACH: &str = "Space attach · Ctrl+S copy · Ctrl+O open · Esc";
 /// The footer once the link is copied.
 pub const HINT_DONE: &str = "Esc back";
+
+/// What the form says once the link is opened in the browser.
+pub const OPENED: [&str; 2] = [
+    "Opened in your browser. GitHub shows the issue",
+    "form filled in, for you to review and send.",
+];
 
 /// What the form says once the link is copied.
 pub const COPIED: [&str; 3] = [
@@ -180,6 +187,8 @@ pub enum Outcome {
     Handled,
     /// The link to copy.
     Copy(String),
+    /// The link to open in the browser.
+    Open(String),
     /// Esc: back to the row.
     Close,
 }
@@ -287,7 +296,12 @@ impl Feedback {
         match code {
             KeyCode::Char('s') if mods == KeyModifiers::CONTROL => {
                 if !repeat {
-                    return self.link();
+                    return self.link().map_or(Outcome::Handled, Outcome::Copy);
+                }
+            }
+            KeyCode::Char('o') if mods == KeyModifiers::CONTROL => {
+                if !repeat {
+                    return self.link().map_or(Outcome::Handled, Outcome::Open);
                 }
             }
             KeyCode::Tab if plain => self.move_field(true),
@@ -357,8 +371,8 @@ impl Feedback {
         self.error = None;
     }
 
-    /// Ctrl+S: the link, or why there is none.
-    fn link(&mut self) -> Outcome {
+    /// Ctrl+S or Ctrl+O: the link, or `None` with why there is none.
+    fn link(&mut self) -> Option<String> {
         let (title, description) = (self.title(), self.description());
         let missing = if title.trim().is_empty() {
             Some((TITLE_REQUIRED, Field::Title))
@@ -370,14 +384,14 @@ impl Feedback {
         if let Some((error, field)) = missing {
             self.error = Some(error);
             self.field = field;
-            return Outcome::Handled;
+            return None;
         }
         let (safe_title, safe_description) = (redact(&title).text, redact(&description).text);
         if safe_title != title || safe_description != description {
             replace(&mut self.title, &safe_title);
             replace(&mut self.description, &safe_description);
             self.error = Some(REDACTED);
-            return Outcome::Handled;
+            return None;
         }
         let (form, field) = self.kind.form();
         let mut link = format!(
@@ -391,9 +405,9 @@ impl Feedback {
         }
         if link.len() > MAX_LINK {
             self.error = Some(TOO_LONG);
-            return Outcome::Handled;
+            return None;
         }
-        Outcome::Copy(link)
+        Some(link)
     }
 }
 

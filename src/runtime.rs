@@ -38,6 +38,7 @@ pub mod login_path;
 pub mod loopback;
 pub mod mcp;
 pub mod notify;
+pub mod opener;
 pub mod proc;
 pub mod prompts;
 #[cfg(test)]
@@ -265,6 +266,9 @@ pub async fn run() -> io::Result<()> {
         .await
         .unwrap_or_else(|_| login_path::sanitize(&process_path));
     let cli_env = chat::CliEnv::from_env(jail).with_path(path);
+    // Looked up once, on the same PATH as the engines.
+    let opener = opener::Opener::find(&cli_env.path);
+    app = app.with_opener(opener.is_some());
     // Detection reads codex's model list through the same jail as its chat.
     let detect_env = cli_env.clone();
     // The codex model list is reused for 10 minutes across runs (`r` re-lists).
@@ -466,6 +470,11 @@ pub async fn run() -> io::Result<()> {
                     busy: Arc::clone(&busy),
                     plan: plan.clone(),
                 });
+            }
+        }))
+        .with_opener(Box::new(move |url| {
+            if let Some(opener) = &opener {
+                let _ = opener.open(url);
             }
         }))
         .with_notify_test(Box::new({
@@ -1058,6 +1067,9 @@ struct Panes {
     /// Starts the test action in the background: mode, sound, and the
     /// fallback flag for `desktop`. The report comes back on its channel.
     test_send: Box<TestSendFn>,
+    /// Starts the host's opener on a link, without waiting for it. Does
+    /// nothing unless `with_opener` installs the production one.
+    open_url: Box<dyn FnMut(&str)>,
     /// Starts the managed llama-server the menu turned on; the outcome comes
     /// back on its channel. A no-op unless `with_manager` installs one.
     manage: Box<ManageFn>,
@@ -1113,6 +1125,7 @@ impl Panes {
             desktop_send: Box::new(|_, _| {}),
             sound_send: Box::new(|| {}),
             test_send: Box::new(|_, _, _| {}),
+            open_url: Box::new(|_| {}),
             manage: Box::new(|_, _| {}),
             set_idle: Box::new(|_| {}),
             check_shared: Box::new(|| {}),
@@ -1224,6 +1237,12 @@ impl Panes {
         self
     }
 
+    /// Sets what opens a link in the browser.
+    fn with_opener(mut self, open: Box<dyn FnMut(&str)>) -> Self {
+        self.open_url = open;
+        self
+    }
+
     /// Sets what runs the test action of the Notify row.
     fn with_notify_test(mut self, test: Box<TestSendFn>) -> Self {
         self.test_send = test;
@@ -1329,6 +1348,8 @@ impl Panes {
                     });
                 }
                 Effect::SetClipboard(bytes) => self.host_out.extend_from_slice(&bytes),
+                // Returns at once: the opener is reaped on its own thread.
+                Effect::OpenUrl(url) => (self.open_url)(&url),
                 // Returns at once: the probes run on their own tasks.
                 Effect::DetectEngines => (self.detect)(false),
                 Effect::RedetectEngines => (self.detect)(true),
