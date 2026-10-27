@@ -138,3 +138,19 @@ fn a_path_entry_that_links_into_the_project_is_dropped() {
     let kept = safe_path(&OsString::from(raw), &root).unwrap();
     assert_eq!(kept, OsString::from(base.join("other")));
 }
+
+#[test]
+fn a_root_given_through_a_link_still_judges_entries_by_its_real_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().canonicalize().unwrap();
+    std::fs::create_dir_all(base.join("proj/bin")).unwrap();
+    std::fs::create_dir(base.join("other")).unwrap();
+    std::os::unix::fs::symlink(base.join("proj"), base.join("rootlink")).unwrap();
+    let raw = format!(
+        "{}:{}",
+        base.join("proj/bin").display(),
+        base.join("other").display()
+    );
+    let kept = safe_path(&OsString::from(raw), &base.join("rootlink")).unwrap();
+    assert_eq!(kept, OsString::from(base.join("other")));
+}
