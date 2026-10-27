@@ -123,10 +123,14 @@ impl App {
         }
     }
 
-    /// A frame was drawn: every review counts the rows that frame showed, and
-    /// the first frame starts its delay. A review in a hidden pane was not
-    /// drawn, so it counts nothing.
+    /// A frame was drawn: an install prompt becomes answerable, every review
+    /// counts the rows that frame showed, and the first frame starts its
+    /// delay. A review in a hidden pane was not drawn, so it counts nothing.
     pub fn frame_drawn(&mut self) {
+        // The install wizard's prompts accept `y`/`n` only once drawn.
+        if let Some(menu) = self.menu.as_mut() {
+            menu.install_arm();
+        }
         for state in self.panes.values_mut() {
             let redraw = state
                 .chat_mut()

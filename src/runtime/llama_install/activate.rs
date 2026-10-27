@@ -33,6 +33,8 @@ const VERSION_CAP: usize = 64 * 1024;
 const LOCK_FILE: &str = ".lock";
 const STAGING_PREFIX: &str = ".staging-";
 const CURRENT: &str = "current";
+/// Next to `current`: `vulkan` when the installed build is the Vulkan one.
+const VARIANT_FILE: &str = "variant";
 
 /// Holds the `flock` on `<root>/.lock` until dropped.
 struct Lock {
@@ -179,8 +181,24 @@ fn prune(root: &Path, keep: &str, previous: Option<&str>) {
     }
 }
 
+/// Records which build is active, for the newer-build check. Best effort: a
+/// missing record only makes that check compare the default build.
+fn note_variant(root: &Path, release: &Release) {
+    let file = root.join(VARIANT_FILE);
+    if install::is_vulkan_asset(&release.asset) {
+        let _ = fs::write(&file, "vulkan");
+    } else {
+        let _ = fs::remove_file(&file);
+    }
+}
+
+/// Whether the active install is the Vulkan build.
+pub fn installed_vulkan(root: &Path) -> bool {
+    fs::read_to_string(root.join(VARIANT_FILE)).is_ok_and(|text| text.trim() == "vulkan")
+}
+
 /// The tag `current` points at, when it is one.
-fn current_tag(root: &Path) -> Option<String> {
+pub fn current_tag(root: &Path) -> Option<String> {
     let target = fs::read_link(root.join(CURRENT)).ok()?;
     let name = target.to_str()?.to_owned();
     install::tag_number(&name).map(|_| name)
@@ -270,6 +288,7 @@ async fn place(
         undo(&tag_dir, &aside, true, replaced).await;
         return Err(format!("cannot switch to the new install: {e}"));
     }
+    note_variant(root, release);
     let (root, keep) = (root.to_owned(), release.tag.clone());
     let _ = blocking(move || {
         prune(&root, &keep, previous.as_deref());

@@ -100,7 +100,9 @@ pub const CATALOG: &[Engine] = &[
 
 /// How to start the server engine `id` by hand so that it listens on
 /// `127.0.0.1:port`; `None` for an engine that is not a server. Shown, never
-/// run: lazarobox does not start servers. `<model…>` is for the user to fill.
+/// run: this text starts and installs nothing. The one program lazarobox
+/// installs, and only when asked, is `llama-server` (the guided wizard in
+/// `picker/install.rs`). `<model…>` is for the user to fill.
 /// `binary` is where the engine's binary was found: an owned `llama-server`
 /// (the guided install) is not on the user's PATH, so it is named by its
 /// absolute path; a system one is named bare.
@@ -251,6 +253,9 @@ pub struct Detection {
     /// The data home an owned install lives under; `None` when it is not
     /// known (nothing is owned then).
     pub data_home: Option<std::path::PathBuf>,
+    /// Whether a Vulkan driver is registered on this machine: the install
+    /// plan offers the Vulkan build only then.
+    pub vulkan_icd: bool,
 }
 
 /// Raw facts gathered by the runtime for one engine.

@@ -69,18 +69,18 @@ Chain strategy: stacked-to-main
 
 ## PR5: Wizard state machine (needs PR2)
 
-- [ ] 5.1 RED: `src/core/ai/picker/install.rs` tests: no step without consent, Esc backs out, copy-only row never emits an ask, variant rows, offers order (managed then HF).
-- [ ] 5.2 GREEN: pure `Wizard`/`Screen`, `InstallAsk` outcomes, `Level::Install` in `picker.rs` (~200).
+- [x] 5.1 RED: `src/core/ai/picker/install.rs` tests: no step without consent, Esc backs out, copy-only row never emits an ask, variant rows, offers order (managed then HF).
+- [x] 5.2 GREEN: pure `Wizard`/`Screen`, `InstallAsk` outcomes, `Level::Install` in `picker.rs` (~200).
 
 ## PR6: Plumbing and rendering (needs PR3, PR4, PR5)
 
-- [ ] 6.1 RED: `src/app/install.rs` tests: Outcome -> `MenuCommand` -> `Effect::Install`; `AppEvent::Install{Progress,Reply}` -> `install_reply`; Done emits `Effect::Detect{force:true}`.
-- [ ] 6.2 GREEN: `src/app.rs`, `src/app/install.rs`, `src/core/menu.rs`, `src/runtime.rs` worker + inbox (~140).
-- [ ] 6.3 RED/GREEN: `src/ui/components/menu.rs` snapshot tests per wizard screen, then render (~80).
+- [x] 6.1 RED: `src/app/install.rs` tests: Outcome -> `MenuCommand` -> `Effect::Install`; `AppEvent::Install{Progress,Reply}` -> `install_reply`; Done emits `Effect::Detect{force:true}`.
+- [x] 6.2 GREEN: `src/app.rs`, `src/app/install.rs`, `src/core/menu.rs`, `src/runtime.rs` worker + inbox (~140).
+- [x] 6.3 RED/GREEN: `src/ui/components/menu.rs` snapshot tests per wizard screen, then render (~80).
 - [ ] 6.4 [manual] Real download, Linux x64 Vulkan, clean host (spec "Clean host end to end"). macOS arm64/x64 unverified (D12).
 
 ## PR7: Manage rows and docs (needs PR6)
 
-- [ ] 7.1 RED: `picker.rs` tests: install entry when absent; remove entry with owned; none with system binary; newer notice once per run, offline silent, silent when `[updates] check = false`.
-- [ ] 7.2 GREEN: manage rows + `CheckNewer` wiring (~110).
-- [ ] 7.3 `README.md` (Spanish) exception note, `core/ai/mod.rs` doc l.100-102 (~40).
+- [x] 7.1 RED: `picker.rs` tests: install entry when absent; remove entry with owned; none with system binary; newer notice once per run, offline silent, silent when `[updates] check = false`.
+- [x] 7.2 GREEN: manage rows + `CheckNewer` wiring (~110).
+- [x] 7.3 `README.md` (Spanish) exception note, `core/ai/mod.rs` doc l.100-102 (~40).
