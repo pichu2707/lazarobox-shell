@@ -127,6 +127,10 @@ fn has_status(detection: Option<&Detection>, id: &str, status: Status) -> bool {
 /// The mark of a model a stopped llama-server can be started with.
 pub const MANAGED_MARK: &str = "lazarobox starts it";
 
+/// The Models level of llamacpp without llama-server: what is missing and
+/// what to do about it.
+const LLAMA_SERVER_MISSING: &str = "llama-server not installed: install it to use these models";
+
 /// The note on the Hugging Face entry while llama-server is not installed:
 /// the download works, running the model needs the server.
 pub const HF_NEEDS_SERVER: &str = "needs llama-server to run";
@@ -441,6 +445,11 @@ fn listed_models(
             });
         match start {
             Some(full) => rows.extend(note_rows(&full)),
+            None if engine == "llamacpp"
+                && has_status(Some(detection), engine, Status::NotInstalled) =>
+            {
+                rows.push(info(LLAMA_SERVER_MISSING, Mark::Plain));
+            }
             None => rows.push(info("engine not detected", Mark::Plain)),
         }
         return rows;
@@ -1642,7 +1651,10 @@ mod tests {
         let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
         assert_eq!(
             rows,
-            vec![info("engine not detected"), hf_entry_needing_server()]
+            vec![
+                info("llama-server not installed: install it to use these models"),
+                hf_entry_needing_server()
+            ]
         );
         // Another stopped server is not managed by lazarobox.
         let d = detection(vec![state("vllm", Status::NotRunning, &[])]);
@@ -1684,7 +1696,8 @@ mod tests {
         let d = detection(vec![state("llamacpp", Status::NotInstalled, &[])]);
         let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
         assert_eq!(rows.last(), Some(&hf_entry_needing_server()), "{rows:?}");
-        // Still reachable when the engine is missing from the detection.
+        // The real detector always emits llamacpp (`reduce` walks the whole
+        // catalog); this only covers a detection that lacks the entry.
         let d = detection(vec![state("ollama", Status::Available, &[])]);
         let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
         assert_eq!(rows.last(), Some(&hf_entry_needing_server()), "{rows:?}");
@@ -1866,12 +1879,12 @@ mod tests {
         );
         want.push(hf_entry());
         assert_eq!(rows, want);
-        // A server that is not installed keeps the plain line.
+        // A server that is not installed says what is missing.
         let d = detection(vec![state("llamacpp", Status::NotInstalled, &[])]);
         let rows = model_rows("llamacpp", Target::Task(Task::Chat), &draft, Some(&d));
         assert!(
             rows.iter()
-                .any(|r| r.key == PickKey::Info && r.label == "engine not detected"),
+                .any(|r| r.key == PickKey::Info && r.label == LLAMA_SERVER_MISSING),
             "{rows:?}"
         );
     }
