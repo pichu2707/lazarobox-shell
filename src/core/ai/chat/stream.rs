@@ -214,11 +214,6 @@ fn ndjson_decode(line: &[u8]) -> (Vec<StreamEvent>, Option<Value>) {
     (events, Some(value))
 }
 
-/// Events of one SSE `data` payload.
-fn sse_event(data: &[u8]) -> Vec<StreamEvent> {
-    sse_decode(data).0
-}
-
 /// Events of one SSE `data` payload, and its JSON when it parsed and is not an
 /// error. One parse feeds both, so events and tool calls cannot disagree.
 fn sse_decode(data: &[u8]) -> (Vec<StreamEvent>, Option<Value>) {
@@ -504,6 +499,8 @@ pub struct SseParser {
     data: Option<Vec<u8>>,
     cap: usize,
     ended: bool,
+    /// Collects `delta.tool_calls`; `None` for a text-only stream.
+    calls: Option<openai::Calls>,
 }
 
 impl SseParser {
@@ -513,6 +510,7 @@ impl SseParser {
             data: None,
             cap: event_cap,
             ended: false,
+            calls: None,
         }
     }
 
@@ -545,7 +543,13 @@ impl SseParser {
 
     fn dispatch(&mut self) -> Vec<StreamEvent> {
         match self.data.take() {
-            Some(data) if !data.is_empty() => sse_event(&data),
+            Some(data) if !data.is_empty() => {
+                let (events, value) = sse_decode(&data);
+                if let (Some(calls), Some(value)) = (self.calls.as_mut(), value) {
+                    calls.collect(&value);
+                }
+                events
+            }
             _ => vec![],
         }
     }
@@ -585,6 +589,9 @@ impl StreamDecoder for SseParser {
         finish_with(&mut self.ended, out)
     }
 }
+
+mod openai;
+pub use openai::OpenAiToolDecoder;
 
 #[cfg(test)]
 mod tests;

@@ -842,7 +842,7 @@ fn sse_decode_hands_back_the_json_only_for_a_healthy_payload() {
     for data in [&b"[DONE]"[..], b"nope", b"{\"error\":\"x\"}"] {
         assert!(sse_decode(data).1.is_none(), "{data:?}");
     }
-    assert_eq!(sse_event(b"[DONE]"), [StreamEvent::Done(Finish::Stop)]);
+    assert_eq!(sse_decode(b"[DONE]").0, [StreamEvent::Done(Finish::Stop)]);
 }
 
 #[test]
@@ -856,4 +856,89 @@ fn the_ollama_decoder_gives_its_calls_through_the_shared_trait() {
     decoder.finish();
     assert_eq!(drain(&mut decoder).len(), 1);
     assert!(drain(&mut decoder).is_empty(), "drained");
+}
+
+// llamacpp-tools T1.3: the OpenAI tool decoder.
+fn frag(entries: &str) -> String {
+    format!("data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{entries}]}}}}]}}\n\n")
+}
+
+const TOOLS_END: &str =
+    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n";
+
+fn oa_run(chunks: &[&[u8]]) -> (Vec<StreamEvent>, Vec<ToolRequest>) {
+    let mut decoder = OpenAiToolDecoder::server();
+    let events = run(&mut decoder, chunks);
+    (events, decoder.take_calls())
+}
+
+fn interleaved() -> String {
+    [
+        frag(r#"{"index":0,"id":"a","type":"function","function":{"name":"find_dir","arguments":"{\"query\":"}}"#),
+        frag(r#"{"index":1,"id":"b","type":"function","function":{"name":"list_dir","arguments":"{\"path\":"}}"#),
+        frag(r#"{"index":0,"function":{"arguments":"\"x\"}"}}"#),
+        frag(r#"{"index":1,"function":{"arguments":"\"/a\"}"}}"#),
+        TOOLS_END.to_owned(),
+    ]
+    .concat()
+}
+
+#[test]
+fn fragments_are_accumulated_per_index_at_every_split() {
+    let input = interleaved();
+    let bytes = input.as_bytes();
+    let check = |chunks: &[&[u8]], at: usize| {
+        let (events, calls) = oa_run(chunks);
+        assert_eq!(events, [StreamEvent::Done(Finish::Stop)], "cut at {at}");
+        assert_eq!(calls.len(), 2, "cut at {at}");
+        assert_eq!(calls[0].call, Ok(Call::FindDir { query: "x".into() }));
+        assert_eq!(
+            (calls[0].id.as_deref(), calls[0].index, &calls[0].arguments),
+            (Some("a"), Some(0), &serde_json::json!({"query": "x"}))
+        );
+        assert_eq!(
+            (
+                calls[1].name.as_str(),
+                calls[1].id.as_deref(),
+                calls[1].index
+            ),
+            ("list_dir", Some("b"), Some(1))
+        );
+    };
+    check(&[bytes], 0);
+    for at in 0..=bytes.len() {
+        let (a, b) = bytes.split_at(at);
+        check(&[a, b], at);
+    }
+}
+
+#[test]
+fn a_clean_end_is_a_finish_reason_or_a_bare_done() {
+    let call = frag(
+        r#"{"index":0,"id":"a","function":{"name":"find_dir","arguments":"{\"query\":\"x\"}"}}"#,
+    );
+    let finish = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n";
+    for end in [finish, "data: [DONE]\n\n"] {
+        let (_, calls) = oa_run(&[format!("{call}{end}").as_bytes()]);
+        assert_eq!(calls.len(), 1, "{end}");
+    }
+}
+
+#[test]
+fn text_before_the_call_still_streams_and_take_calls_drains() {
+    let text = "data: {\"choices\":[{\"delta\":{\"content\":\"Let me look\"}}]}\n\n";
+    let call = frag(
+        r#"{"index":0,"id":"a","function":{"name":"find_dir","arguments":"{\"query\":\"x\"}"}}"#,
+    );
+    let mut decoder = OpenAiToolDecoder::server();
+    let events = run(
+        &mut decoder,
+        &[format!("{text}{call}{TOOLS_END}").as_bytes()],
+    );
+    assert_eq!(
+        events,
+        [delta("Let me look"), StreamEvent::Done(Finish::Stop)]
+    );
+    assert_eq!(decoder.take_calls().len(), 1);
+    assert!(decoder.take_calls().is_empty(), "drained");
 }
