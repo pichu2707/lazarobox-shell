@@ -1595,26 +1595,22 @@ fn pin_one_round_with_ids_index_and_thinking() {
     );
 }
 
+// Registry text is part of the golden on purpose: changing a tool description
+// or schema changes what the model sees, so it must update this pin knowingly.
 #[test]
-fn pin_tools_on_is_the_tools_off_bytes_plus_the_tools_key_last() {
+fn pin_tools_on_sends_the_registry_byte_for_byte_after_the_stream_flag() {
     let mut on = request("be brief");
     on.tools = Tools::On {
         origin: None,
         external: Default::default(),
         mcp: None,
     };
-    let off_bytes = ollama_round_body(&on, &[], false);
-    let on_bytes = ollama_round_body(&on, &[], true);
-    // Sorted keys put `tools` after `stream`: the only difference is a suffix.
-    let head = &off_bytes[..off_bytes.len() - 1];
-    assert!(on_bytes.starts_with(head));
-    assert!(on_bytes.ends_with(b"}"));
+    let golden = r#"{"messages":[{"content":"be brief","role":"system"},{"content":"hi","role":"user"},{"content":"hello","role":"assistant"},{"content":"and now?","role":"user"}],"model":"llama3:8b","stream":true,"tools":[{"function":{"description":"Find directories under the user's home whose name contains the query. Names that look like secrets are left out and the result says so.","name":"find_dir","parameters":{"additionalProperties":false,"properties":{"query":{"type":"string"}},"required":["query"],"type":"object"}},"type":"function"},{"function":{"description":"List the entries of a directory under the user's home. Names that look like secrets are left out and the result says so.","name":"list_dir","parameters":{"additionalProperties":false,"properties":{"path":{"type":"string"}},"required":["path"],"type":"object"}},"type":"function"},{"function":{"description":"Read a text file under the user's home.","name":"read_file","parameters":{"additionalProperties":false,"properties":{"path":{"type":"string"}},"required":["path"],"type":"object"}},"type":"function"},{"function":{"description":"Type a shell command into the user's pane. The result says whether it was only typed or typed and run, and carries the output of a command that ran, which may be \"not available\". A single cd, pwd, ls, tree or mkdir with plain or quoted paths (no &&, ;, |, $ or redirections) can run directly when the user allows it; anything else waits for the user to approve it and press Enter. Prefer one simple command per call. You cannot change files yourself. Only mkdir can run directly; any other change needs a command the user reviews and runs.","name":"run_in_pane","parameters":{"additionalProperties":false,"properties":{"command":{"type":"string"}},"required":["command"],"type":"object"}},"type":"function"}]}"#;
     assert_eq!(
-        &on_bytes[head.len()..head.len() + 9],
-        br#","tools":"#.as_slice()
+        String::from_utf8(ollama_round_body(&on, &[], true)).unwrap(),
+        golden
     );
-    let tools: Value =
-        serde_json::from_slice(&on_bytes[head.len() + 9..on_bytes.len() - 1]).unwrap();
-    assert_eq!(tools[0]["function"]["name"], "find_dir");
-    assert_eq!(tools[0]["type"], "function");
+    // Tools off stays the tool-less bytes: the prefix of the tools-on body.
+    let off = ollama_round_body(&on, &[], false);
+    assert!(golden.as_bytes().starts_with(&off[..off.len() - 1]));
 }
