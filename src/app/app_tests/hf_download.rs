@@ -78,6 +78,10 @@ fn at_llamacpp() -> App {
 }
 
 fn listing() -> Listing {
+    listing_named("a-Q4_K_M.gguf")
+}
+
+fn listing_named(path: &str) -> Listing {
     let repo = Repo {
         id: "o/a".to_owned(),
         commit: "c1".to_owned(),
@@ -86,7 +90,7 @@ fn listing() -> Listing {
         files: Vec::new(),
     };
     let file = HubFile {
-        path: "a-Q4_K_M.gguf".to_owned(),
+        path: path.to_owned(),
         size: 4 * GB,
         oid: "a".repeat(64),
     };
@@ -101,6 +105,10 @@ fn listing() -> Listing {
 /// Pastes `o/a`, gets its files and presses `y` on its only choice: the
 /// effects of every step, in order.
 fn start_download(a: &mut App) -> Vec<Effect> {
+    start_download_of(a, listing())
+}
+
+fn start_download_of(a: &mut App, listing: Listing) -> Vec<Effect> {
     goto_pick(a, HF_ROW);
     let mut effects = a.update(enter());
     effects.extend(a.update(AppEvent::Paste("o/a".to_owned())));
@@ -109,7 +117,7 @@ fn start_download(a: &mut App) -> Vec<Effect> {
     effects.extend(asked);
     effects.extend(a.update(AppEvent::HubReply(
         Ask::Files("o/a".to_owned()),
-        Ok(Answer::Files(Box::new(listing()))),
+        Ok(Answer::Files(Box::new(listing))),
     )));
     effects.extend(a.update(enter()));
     effects.extend(a.update(key('y')));
@@ -253,4 +261,17 @@ fn a_menu_opened_during_a_download_shows_its_progress() {
     goto_pick(&mut a, "llamacpp");
     a.update(enter());
     goto_pick(&mut a, "↓ 25% a-Q4_K_M.gguf · apache-2.0");
+}
+
+// A file name from the Hub is drawn safe in the end notice too: a format
+// character (here a right-to-left override) shows as `?`.
+#[test]
+fn the_done_notice_draws_the_file_name_safe() {
+    let mut a = at_llamacpp();
+    let effects = start_download_of(&mut a, listing_named("a\u{202e}b-Q4_K_M.gguf"));
+    assert_eq!(downloads(&effects), 1);
+    a.update(AppEvent::DownloadEnd(End::Done(PathBuf::from(
+        "/hub/x.gguf",
+    ))));
+    assert_eq!(a.notice(), Some("downloaded a?b-Q4_K_M.gguf"));
 }

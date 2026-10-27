@@ -16,6 +16,17 @@ baseline.
   (`https://huggingface.co/settings/tokens/new?tokenType=read`) on a line of
   its own, so terminals that detect URLs keep it clickable.
 
+### Fixed
+
+- The `downloaded <file>` notice draws control and format characters of the
+  file name as `?`, like the rest of the Hugging Face screens.
+- A repo id with `--`, or a part ending in `-` or `.`, is refused, as the Hub
+  refuses it.
+- A partial download longer than its file is removed and fetched again
+  instead of failing on every resume.
+- A relative `HF_TOKEN_PATH` is read from the working directory, as
+  `huggingface_hub` reads it, instead of being ignored.
+
 ## [0.25.1] - 2026-10-26
 
 ### Fixed

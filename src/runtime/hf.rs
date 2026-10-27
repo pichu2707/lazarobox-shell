@@ -404,6 +404,10 @@ pub async fn download(
         let blob = cache.blob(&file.oid);
         if !has_size(&blob, file.size) {
             let partial = cache.incomplete(&file.oid);
+            // Longer than the file: it cannot be resumed, so it starts over.
+            if file_len(&partial) > file.size {
+                let _ = std::fs::remove_file(&partial);
+            }
             if !has_size(&partial, file.size) {
                 let path = hf::resolve_path(&job.id, &job.commit, &file.path);
                 let fetched = fetch(curl, &path, &partial, &mut cancel, |on_disk| {
@@ -571,13 +575,22 @@ const TOKEN_CAP: u64 = 4 * 1024;
 /// Where this process's environment says the Hugging Face token is (see
 /// [`hf::token`]). Read at each request; the token is never stored or shown.
 pub fn token_env() -> TokenEnv {
-    let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    let cwd = std::env::current_dir().unwrap_or_default();
+    token_env_from(|name| std::env::var_os(name), &cwd)
+}
+
+/// [`token_env`] from the variables `var` gives. A relative
+/// `HF_TOKEN_PATH` is read from `cwd`, as `huggingface_hub` reads it.
+fn token_env_from(var: impl Fn(&str) -> Option<OsString>, cwd: &Path) -> TokenEnv {
+    let path = |name: &str| var(name).map(PathBuf::from);
     TokenEnv {
-        hf_token: std::env::var("HF_TOKEN").ok(),
-        hf_token_path: var("HF_TOKEN_PATH"),
-        hf_home: var("HF_HOME"),
-        xdg_cache_home: var("XDG_CACHE_HOME"),
-        home: var("HOME"),
+        hf_token: var("HF_TOKEN").and_then(|t| t.into_string().ok()),
+        hf_token_path: path("HF_TOKEN_PATH")
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| cwd.join(p)),
+        hf_home: path("HF_HOME"),
+        xdg_cache_home: path("XDG_CACHE_HOME"),
+        home: path("HOME"),
     }
 }
 

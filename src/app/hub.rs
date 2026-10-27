@@ -5,7 +5,7 @@
 
 use super::{App, Effect};
 use crate::core::ai::hf::{AccountReply, Answer, Ask, End, Job};
-use crate::core::ai::picker::Running;
+use crate::core::ai::picker::{Running, shown};
 
 /// The notice of a cancelled download.
 const CANCELLED: &str = "download cancelled · run it again to resume";
@@ -79,7 +79,7 @@ impl App {
         self.sync_download();
         match end {
             End::Done(_) => {
-                self.notice = Some(format!("downloaded {}", download.file));
+                self.notice = Some(format!("downloaded {}", shown(&download.file)));
                 let effects = self.request_forced_detection();
                 self.sync_checking();
                 effects

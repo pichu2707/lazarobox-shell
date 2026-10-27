@@ -27,7 +27,7 @@ Each API request has a 15 s limit and a reply cap of 4 MiB. Failures read:
 ### Requirement: Token
 The token MUST be read, in this order, from:
 1. `HF_TOKEN` (non-empty);
-2. the file named by `HF_TOKEN_PATH`;
+2. the file named by `HF_TOKEN_PATH` (a relative path is read from the working directory lazarobox started in, as `huggingface_hub` reads it);
 3. `$HF_HOME/token`;
 4. `$XDG_CACHE_HOME/huggingface/token`, else `~/.cache/huggingface/token`.
 

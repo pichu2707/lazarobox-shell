@@ -395,13 +395,16 @@ pub fn license(repo: &Repo) -> License {
 }
 
 /// Whether `text` is a repo id: `<owner>/<name>`, each of ASCII letters,
-/// digits, `.`, `_` and `-`, not starting with `.` or `-`, and no `..`.
+/// digits, `.`, `_` and `-`, not starting or ending with `.` or `-`, with
+/// no `..` and no `--` (the separator of the cache folder), as on the Hub.
 pub fn is_repo_id(text: &str) -> bool {
     let part = |p: &str| {
         !p.is_empty()
             && p.len() <= 96
             && !p.starts_with(['.', '-'])
+            && !p.ends_with(['.', '-'])
             && !p.contains("..")
+            && !p.contains("--")
             && p.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
     };

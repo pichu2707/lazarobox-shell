@@ -352,6 +352,27 @@ async fn a_partial_download_resumes_from_where_it_stopped() {
     assert_eq!(header(&request, "range"), Some("bytes=4-"));
 }
 
+// A partial file longer than the file cannot be resumed: it is removed and
+// the download starts over.
+#[tokio::test]
+async fn an_oversized_partial_file_is_removed_and_fetched_again() {
+    need_curl!();
+    let (base, seen) = file_server(b"0123456789");
+    let hub = tempfile::tempdir().unwrap();
+    let blobs = hub.path().join("models--o--r/blobs");
+    std::fs::create_dir_all(&blobs).unwrap();
+    let mut job = job(&[("a.gguf", 10, 1)]);
+    let id = sha(b"0123456789");
+    job.choice.files[0].oid = id.clone();
+    std::fs::write(blobs.join(format!("{id}.incomplete")), b"0123456789xx").unwrap();
+    let end = download(&curl(&base, None), hub.path(), &job, |_, _| {}, no_cancel()).await;
+    assert!(matches!(end, End::Done(_)), "{end:?}");
+    assert_eq!(std::fs::read(blobs.join(&id)).unwrap(), b"0123456789");
+    assert!(!blobs.join(format!("{id}.incomplete")).exists());
+    let request = seen.lock().unwrap()[0].clone();
+    assert_eq!(header(&request, "range"), None);
+}
+
 #[tokio::test]
 async fn a_cancelled_download_keeps_its_partial_file_and_no_link() {
     need_curl!();
@@ -682,4 +703,24 @@ fn the_facts_say_whether_hf_token_is_set_and_a_token_is_saved() {
             saved: true
         }
     );
+}
+
+// A relative `HF_TOKEN_PATH` is read from the working directory, as
+// `huggingface_hub` reads it; the other paths stay as they are.
+#[test]
+fn a_relative_token_path_resolves_against_the_working_directory() {
+    let vars = |name: &str| match name {
+        "HF_TOKEN_PATH" => Some(OsString::from("tok/en")),
+        "HF_HOME" => Some(OsString::from("/hf")),
+        _ => None,
+    };
+    let env = token_env_from(vars, Path::new("/work"));
+    assert_eq!(env.hf_token_path, Some(PathBuf::from("/work/tok/en")));
+    assert_eq!(env.hf_home, Some(PathBuf::from("/hf")));
+    assert_eq!(env.hf_token, None);
+    let absolute = token_env_from(
+        |name: &str| (name == "HF_TOKEN_PATH").then(|| OsString::from("/t")),
+        Path::new("/work"),
+    );
+    assert_eq!(absolute.hf_token_path, Some(PathBuf::from("/t")));
 }
