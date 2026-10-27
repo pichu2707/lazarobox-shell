@@ -2,12 +2,12 @@
 
 ## Purpose
 
-Defines what an orchestrator run records so the project can be checked for being on course: a handoff per worker and per phase (done, left, decisions), stored in engram like `sdd/*/apply-progress`, a compact in-memory ledger that lets orchestrator turns continue past the engine turn cap, and the on-course check. It also fixes the degraded mode when memory is off. Slice tags as in agent-orchestrator; handoffs are [S4]. Tags: [auto] = `cargo test` (fake engram, fake `Runner`, paused time); [manual] = real machine.
+Defines what an orchestrator run records so the project can be checked for being on course: a handoff per worker and per ODD step (done, left, decisions), the feature document of a large goal, the RDD receipts, stored in engram like `sdd/*/apply-progress`, a compact in-memory ledger that lets orchestrator turns continue past the engine turn cap, and the on-course check. It also fixes the degraded mode when memory is off. Slice tags as in agent-orchestrator; handoffs are [S4]. Tags: [auto] = `cargo test` (fake engram, fake `Runner`, paused time); [manual] = real machine.
 
 ## Requirements
 
 ### Requirement: Handoff content [S4]
-Every worker that reaches a terminal state and every closed phase MUST produce one handoff with: run id, worker id or phase name, kind, engine>model, status, `done` (what was done), `left` (what remains), `decisions` (decisions taken and why), and the on-course verdict. A handoff with an empty `done`, `left` or `decisions` MUST store the explicit text `none` rather than omit the field.
+Every worker that reaches a terminal state and every closed ODD step MUST produce one handoff with: run id, worker id or step name, kind, engine>model, status, `done` (what was done), `left` (what remains), `decisions` (decisions taken and why), and the on-course verdict. A handoff with an empty `done`, `left` or `decisions` MUST store the explicit text `none` rather than omit the field.
 
 #### Scenario: Handoff for a finished worker [auto]
 - GIVEN a `review` worker that ends `done`
@@ -20,7 +20,7 @@ Every worker that reaches a terminal state and every closed phase MUST produce o
 - THEN `decisions` reads `none`
 
 ### Requirement: Handoffs live in engram [S4]
-When chat memory is on and engram is reachable, each handoff MUST be saved as an engram note through the existing note path (opt-in, redaction pass, project resolution), with a topic key that is stable per run and worker or phase, so a repeated handoff for the same unit updates the note instead of duplicating it. Handoff notes MUST be distinguishable from user notes by their category and topic-key family.
+When chat memory is on and engram is reachable, each handoff MUST be saved as an engram note through the existing note path (opt-in, redaction pass, project resolution), with a topic key that is stable per run and worker or step, so a repeated handoff for the same unit (worker, step, feature document or receipt) updates the note instead of duplicating it. Handoff notes MUST be distinguishable from user notes by their category and topic-key family.
 
 #### Scenario: Saved with a stable key [auto]
 - GIVEN memory on and a fake engram
@@ -37,13 +37,18 @@ When chat memory is on and engram is reachable, each handoff MUST be saved as an
 - WHEN the notes are listed
 - THEN the handoff is identifiable by its category and topic-key family
 
-### Requirement: Degraded mode when memory is off [S4]
-When chat memory is off, or engram is down or errors, the run MUST still start and complete. Handoffs MUST then be kept in memory for the run, nothing MUST be written to engram, and the pane MUST show `handoffs not persisted`. A save failure mid-run MUST switch that run to the same mode, MUST NOT stop the run, and MUST NOT retry in a way that blocks the UI.
+### Requirement: Memory turned on for the run, degraded mode as fallback [S4]
+When chat memory is off, the run MUST turn memory on for its own handoffs only, for that run only: the menu setting and the saved configuration MUST NOT change, and other chat notes stay off. When engram is down, the run MUST try to start it as the chat memory does. In both cases the pane MUST say once that memory was turned on for this run (`memory on for this run`). When engram still cannot be reached, or errors, the run MUST still start and complete: handoffs MUST then be kept in memory for the run, nothing MUST be written to engram, and the pane MUST show `handoffs not persisted`. A save failure mid-run MUST switch that run to the same mode, MUST NOT stop the run, and MUST NOT retry in a way that blocks the UI.
 
-#### Scenario: Memory off [auto]
-- GIVEN chat memory off
+#### Scenario: Memory off is turned on for the run [auto]
+- GIVEN chat memory off and engram reachable
 - WHEN a run completes a worker
-- THEN the handoff is in the in-memory ledger, no engram request was made and `handoffs not persisted` is shown
+- THEN the handoff is saved to engram, `memory on for this run` was shown once, and the menu still shows memory off
+
+#### Scenario: Engram unreachable [auto]
+- GIVEN chat memory off and engram that cannot be started
+- WHEN a run completes a worker
+- THEN the handoff is in the in-memory ledger, no engram save succeeded and `handoffs not persisted` is shown
 
 #### Scenario: Engram dies mid-run [auto]
 - GIVEN memory on and engram failing on the second save
@@ -51,7 +56,7 @@ When chat memory is off, or engram is down or errors, the run MUST still start a
 - THEN the run continues, `handoffs not persisted` is shown and the first handoff stays in engram
 
 ### Requirement: Compact run ledger [S4]
-The run MUST keep an in-memory ledger with the run goal (verbatim), and per worker the id, kind, status and a short summary, plus the phases and their status. A continuation orchestrator turn (after the engine turn cap or a restart of the turn) MUST be built from this ledger and MUST NOT include worker transcripts. The ledger MUST be bounded in size; the oldest summaries are shortened before the goal or any unresolved failure is.
+The run MUST keep an in-memory ledger with the run goal (verbatim), and per worker the id, kind, status and a short summary, plus the ODD steps and their status, and for a large goal the task ids with their `S#` and status. A continuation orchestrator turn (after the engine turn cap or a restart of the turn) MUST be built from this ledger and MUST NOT include worker transcripts. The ledger MUST be bounded in size; the oldest summaries are shortened before the goal or any unresolved failure is.
 
 #### Scenario: Continuation from the ledger [auto]
 - GIVEN a run whose first orchestrator turn hit the total turn timeout with two finished workers
@@ -81,13 +86,26 @@ At every handoff the run MUST record a verdict `on_course`, `off_course` or `blo
 - WHEN a handoff is written
 - THEN its verdict is `blocked` whatever the orchestrator said
 
-### Requirement: Phase handoffs [S5]
-Each closed SDD/TDD phase MUST have a handoff, and a phase is not closed before it exists (even in degraded mode, in the ledger). Handoff notes of phases MUST follow the same content rules and, when persisted, the same stable-key rule.
+### Requirement: Step handoffs and the feature document [S5]
+Each closed ODD step MUST have a handoff, and a step is not closed before it exists (even in degraded mode, in the ledger). Step handoffs MUST follow the same content rules and, when persisted, the same stable-key rule. The feature document of a large goal MUST be one handoff with a stable key per run; a change of requirement MUST append a verbatim `Log` entry and rewrite only the affected `S#`, never the whole document.
 
-#### Scenario: Phase needs a handoff [auto]
-- GIVEN a `spec` worker that finished and no handoff written
-- WHEN the orchestrator tries to close phase `spec`
+#### Scenario: Step needs a handoff [auto]
+- GIVEN an `explore` worker that finished and no handoff written
+- WHEN the orchestrator tries to close step `explore`
 - THEN it is refused until the handoff exists
+
+#### Scenario: A correction keeps the log [auto]
+- GIVEN a feature document with `S1` and `S2` and a user correction to `S2`
+- WHEN the document is updated
+- THEN `L1` is unchanged, a new `Log` entry holds the correction verbatim, `S2` is rewritten and `S1` is byte for byte the same
+
+### Requirement: RDD receipts [S7b]
+Each receipt-driven review MUST end in one receipt handoff with: the change (worker and staged paths), the tier and its source (rules or raised by the orchestrator, with the reason), the consent answer, the lenses and why, each finding with its severity and whether it blocked, the refuter verdicts, the correction (or `none`) and the outcome. A receipt MUST be stored like any handoff and MUST NOT be able to answer an approval.
+
+#### Scenario: Declined consent still leaves a receipt [S7b, auto]
+- GIVEN a `high` change and a declined consent
+- WHEN the run goes on
+- THEN a receipt exists with consent `declined`, no lenses and outcome `not reviewed`
 
 ### Requirement: Handoffs are inert data [S4]
 Handoff text read back from engram MUST be treated as untrusted data like any engram context: wrapped, never executed, never able to answer an approval or change the scope.

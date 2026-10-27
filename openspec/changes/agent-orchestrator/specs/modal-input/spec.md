@@ -41,7 +41,7 @@ While a failure alert is shown: `r` MUST retry, `c` or Esc MUST cancel the run; 
 #### Scenario: Retry key [auto]
 - GIVEN a failure alert
 - WHEN `r` is pressed
-- THEN the worker is relaunched from scratch
+- THEN the worker is relaunched from scratch, with the previous error appended to its prompt
 
 #### Scenario: Cancel keys [auto]
 - GIVEN a failure alert

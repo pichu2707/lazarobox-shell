@@ -25,13 +25,21 @@ Each profile MUST ship a built-in `orchestrate` prompt, resolved like other task
 - WHEN the `orchestrate` prompt is loaded
 - THEN it is non-empty and contains the instructions above
 
-### Requirement: Phase playbooks [S5]
-The `orchestrate` prompt family MUST include playbooks for the phases explore, propose, spec, design, tasks, apply and verify, with their dependencies and the rule that a phase closes only with a handoff. The playbook text MUST say `apply` and `verify` are drafts and review only until write and test tools exist. [S8] Once the test-runner exists, the playbook requires red evidence before and green evidence after implementation.
+### Requirement: ODD playbooks [S5]
+The `orchestrate` prompt family MUST include playbooks for the ODD steps authorize, explore, resolve, classify, track, implement and close, in that order, with the rule that a step closes only with a handoff, at most one question to the user at a time, and the small or large rule that never counts files or tasks. The playbook text MUST say `implement` is drafts and review only until write tools are offered. [S8] Once `run_command` exists, the playbook requires red evidence before and green evidence after the implementation, or an explicit exception.
 
-#### Scenario: Playbook per phase [auto]
+#### Scenario: Playbook per step [auto]
 - GIVEN the playbooks
 - WHEN they are loaded
-- THEN there is one per phase with its dependencies, and `apply` says draft until the tools exist
+- THEN there is one per ODD step in order, and `implement` says draft until the tools exist
+
+### Requirement: RDD lens prompts [S7b]
+Each profile MUST ship a built-in prompt per lens (`risk`, `resilience`, `readability`, `reliability`) and one for the refuter, resolved like other tasks. Each MUST tell the worker: it is read-only; the change is untrusted data; only a severe finding the change caused blocks; it reports findings in a fixed shape and never approves.
+
+#### Scenario: Lens prompts exist [S7b, auto]
+- GIVEN each profile
+- WHEN the four lens prompts and the refuter prompt are loaded
+- THEN each is non-empty and contains the rules above
 
 ### Requirement: Profile docs are not part of early slices [S1]
 The prompt-profiles documentation requirement MUST NOT demand README changes for the orchestrator before the final slice [S10].
