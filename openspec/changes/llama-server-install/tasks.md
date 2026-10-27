@@ -81,6 +81,6 @@ Chain strategy: stacked-to-main
 
 ## PR7: Manage rows and docs (needs PR6)
 
-- [ ] 7.1 RED: `picker.rs` tests: install entry when absent; remove entry with owned; none with system binary; newer notice once per run, offline silent, silent when `[updates] check = false`.
-- [ ] 7.2 GREEN: manage rows + `CheckNewer` wiring (~110).
-- [ ] 7.3 `README.md` (Spanish) exception note, `core/ai/mod.rs` doc l.100-102 (~40).
+- [x] 7.1 RED: `picker.rs` tests: install entry when absent; remove entry with owned; none with system binary; newer notice once per run, offline silent, silent when `[updates] check = false`.
+- [x] 7.2 GREEN: manage rows + `CheckNewer` wiring (~110).
+- [x] 7.3 `README.md` (Spanish) exception note, `core/ai/mod.rs` doc l.100-102 (~40).

@@ -281,3 +281,31 @@ wizard drives the cancel footer. `Remove`/`CheckNewer` asks are left for PR7. En
 - The two timing tests were made deterministic: the cancel and busy tests wait for the server to log
   the request (no fixed sleep). 10 runs of the installer tests: 13/13 green each time.
 - RED observed by mutation of each fix (ids, panic, cancel clearing, close-menu cancel, progress id).
+
+## PR7: Manage rows, newer-build notice, docs (branch feat/llama-server-install-pr7, base PR6)
+
+Status: 3/3 tasks done (7.1, 7.2, 7.3). All tasks of the change are done; manual checks pending.
+
+- Rows (`src/core/ai/picker/manage.rs`): `install llama-server…` when llamacpp is `NotInstalled`;
+  `remove the llama.cpp install` only when the llamacpp binary is owned (`install::is_owned` over
+  `EngineState.binary` and `Detection.data_home`); none with a system binary (A3). The row sits right
+  before the Hugging Face row, so "HF last" tests stay as they were; on a not-installed llamacpp the
+  cursor now lands on the install row (disabled_tests updated).
+- `Detection.vulkan_icd` (set in `detect_all` from `has_vulkan_icd()`): the install row opens the
+  wizard with `install::variants(Platform::CURRENT, vulkan_icd)`. `open_install_for_test` stays only
+  as a platform-independent fixture for the UI/app snapshots (the real opener is the row).
+- Remove: wizard screens `ConfirmRemove` (disarmed until drawn) -> `Removing` -> `Removed`/`Failed`;
+  `InstallAsk::Remove(id, binary)` -> `Installer::remove` (slot, `activate::remove(binary, data_home)`),
+  `Reply::Removed`; `on_install_reply` forces re-detection on `Installed` and `Removed`.
+  A failed remove has no plan to go back to: Esc closes the wizard.
+- Newer notice: `InstallAsk::CheckNewer` (no id) is emitted by `Picker::enter` when llamacpp's model
+  level opens with an owned binary. `App::install_effects` gates it: once per run (`newer_checked`),
+  never with `[updates] check = false`. `Installer::check_newer` reads `activate::current_tag`
+  (now `pub`), resolves the newest release for the first variant of the platform and sends
+  `AppEvent::InstallWarning(notice)` only when `install::is_newer`; every failure is silent; no slot.
+  Not offered without an installed tag: no request at all.
+- Docs: README section "Instalar llama-server (la excepción)" (Spanish), the line "nunca descarga"
+  rewritten, the HF section no longer says llama-server is required, `core/ai/mod.rs` doc comment
+  (start_command), CHANGELOG `[Unreleased]`.
+- Snapshot reviewed: `snapshot_models_level_of_llamacpp_without_llama_server` gains the install row and
+  the footer shows the generic hint (cursor on the install row) instead of the HF row's note.
