@@ -699,6 +699,8 @@ pub struct App {
     /// token file saved), read when the menu opens; never a token. The
     /// default finds none.
     hf_tokens: fn() -> TokenFacts,
+    /// What the Feedback form attaches about this host (the runtime probe).
+    host: crate::core::menu::feedback::Facts,
     /// The Hugging Face account of the saved token, once a connect or a
     /// check found it in this session.
     hf_account: Option<String>,
@@ -797,6 +799,11 @@ impl App {
             session_id: || None,
             token_check: || false,
             hf_tokens: TokenFacts::default,
+            host: crate::core::menu::feedback::Facts {
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+                os: std::env::consts::OS.to_owned(),
+                ..Default::default()
+            },
             hf_account: None,
             note_choices: Vec::new(),
             engines: None,
@@ -909,6 +916,12 @@ impl App {
     /// it no token counts as present.
     pub fn with_token_check(mut self, token_check: fn() -> bool) -> Self {
         self.token_check = token_check;
+        self
+    }
+
+    /// Injects what the runtime found of this host, for the Feedback form.
+    pub fn with_host(mut self, host: crate::core::menu::feedback::Facts) -> Self {
+        self.host = host;
         self
     }
 
@@ -1737,7 +1750,14 @@ impl App {
                 .with_update(self.update.clone())
                 .with_installed(self.installed.clone())
                 .with_download(self.download.clone())
-                .with_hf((self.hf_tokens)(), self.hf_account.clone()),
+                .with_hf((self.hf_tokens)(), self.hf_account.clone())
+                .with_feedback(crate::core::menu::feedback::Facts {
+                    engines: self
+                        .engines
+                        .as_ref()
+                        .map(crate::core::menu::feedback::engines),
+                    ..self.host.clone()
+                }),
         );
         self.input = InputMode::Menu;
         let mut effects = self.apply_config();
@@ -7799,6 +7819,9 @@ mod app_tests {
 
     /// The Hugging Face account row of the AI tab (config-menu).
     mod hf_account;
+
+    /// The Feedback row of the Settings tab (config-menu).
+    mod feedback;
 
     /// Pane-kind seam (ai-chat C1). Characterization of the PTY paths the seam
     /// must leave untouched, then the chat-pane behaviour.

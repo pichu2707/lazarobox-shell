@@ -444,7 +444,7 @@ mod tests {
     // Spec: Settings rows; Footer hint.
     #[test]
     fn snapshot_settings_popup_at_the_wanted_size() {
-        insta::assert_snapshot!(text(&draw(51, 8, &fresh())));
+        insta::assert_snapshot!(text(&draw(51, 9, &fresh())));
     }
 
     #[test]
@@ -455,12 +455,12 @@ mod tests {
     // Spec: the blank row is dropped first on a short height.
     #[test]
     fn snapshot_short_height_drops_the_blank_row() {
-        insta::assert_snapshot!(text(&draw(51, 8, &fresh())));
+        insta::assert_snapshot!(text(&draw(51, 9, &fresh())));
     }
 
     #[test]
     fn selected_row_is_reversed_and_the_others_are_not() {
-        let buf = draw(51, 8, &fresh());
+        let buf = draw(51, 9, &fresh());
         let reversed = |y| buf[(2, y)].modifier.contains(Modifier::REVERSED);
         assert!(!reversed(1));
         assert!(reversed(2));
@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn the_mouse_row_is_drawn_like_the_other_settings() {
-        let buf = draw(51, 8, &fresh());
+        let buf = draw(51, 9, &fresh());
         let theme = LazaroboxTheme::default();
         assert_ne!(buf[(2, 4)].fg, theme.text_muted);
         assert_eq!(buf[(2, 4)].fg, buf[(2, 3)].fg);
@@ -480,7 +480,7 @@ mod tests {
     fn snapshot_error_replaces_the_hint_and_is_clipped() {
         let mut menu = fresh();
         menu.set_error("config.toml: statusline is not a table; fix it before saving".into());
-        let buf = draw(51, 8, &menu);
+        let buf = draw(51, 9, &menu);
         assert!(!text(&buf).contains("j/k move"));
         insta::assert_snapshot!(text(&buf));
     }
@@ -506,11 +506,11 @@ mod tests {
     }
 
     #[test]
-    fn exactly_24_by_8_shows_the_full_popup() {
-        let buf = draw(24, 8, &fresh());
+    fn exactly_24_by_9_shows_the_full_popup() {
+        let buf = draw(24, 9, &fresh());
         assert!(text(&buf).contains("Settings"));
         assert!(!text(&buf).contains("MENU"));
-        let below = draw(23, 8, &fresh());
+        let below = draw(23, 9, &fresh());
         assert!(!text(&below).contains("Settings"));
         assert!(text(&below).contains("MENU"));
     }
@@ -1467,7 +1467,7 @@ mod tests {
 
     #[test]
     fn titles_are_still_drawn_for_a_single_tab() {
-        let shown = lines(&draw(51, 8, &fresh()));
+        let shown = lines(&draw(51, 9, &fresh()));
         assert!(shown[1].starts_with("│ Settings"), "{}", shown[1]);
         assert!(!shown[1].contains("│ Settings │"), "no bar: {}", shown[1]);
     }
@@ -1587,7 +1587,7 @@ mod tests {
         let border: Vec<usize> = (0..l.len())
             .filter(|y| l[*y].contains('┌') || l[*y].contains('└'))
             .collect();
-        assert_eq!(border[1] - border[0] + 1, 9, "5 rows and the chrome");
+        assert_eq!(border[1] - border[0] + 1, 10, "6 rows and the chrome");
     }
 
     #[test]
@@ -1653,6 +1653,29 @@ mod tests {
         );
         // No run of cells holds the token, nor any part of it.
         assert!(!shown.contains("hf_"), "{shown}");
+        insta::assert_snapshot!(shown);
+    }
+
+    // Spec (config-menu, Feedback): the form fits the narrow popup, with what
+    // is attached shown.
+    #[test]
+    fn snapshot_the_feedback_form_in_the_narrow_popup() {
+        let mut menu =
+            MenuState::open(&Config::default()).with_feedback(crate::core::menu::feedback::Facts {
+                version: "0.25.1".to_owned(),
+                os: "linux".to_owned(),
+                wsl: true,
+                shell: Some("zsh".to_owned()),
+                terminal: Some("WezTerm".to_owned()),
+                engines: Some(vec!["ollama 0.12.3 available".to_owned()]),
+            });
+        menu.goto("Feedback");
+        press(&mut menu, &[KeyCode::Enter, KeyCode::Tab]);
+        menu.on_paste("Scroll jumps to the top");
+        press(&mut menu, &[KeyCode::Tab]);
+        menu.on_paste("When a long answer streams, the view jumps back to the first line.");
+        let shown = text(&draw(51, 24, &menu));
+        assert!(shown.contains("› Description"), "{shown}");
         insta::assert_snapshot!(shown);
     }
 

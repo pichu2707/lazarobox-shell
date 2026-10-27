@@ -245,6 +245,7 @@ pub async fn run() -> io::Result<()> {
         .with_session_ids(engram::worker::new_session_id)
         .with_token_check(token_in_env)
         .with_hf_tokens(hf::token_facts)
+        .with_host(feedback::host_facts())
         .with_env(shell.as_deref(), env::var_os("HOME").map(Into::into), cwd);
     let (id, spec) = app.initial_spawn();
 

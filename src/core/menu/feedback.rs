@@ -11,6 +11,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::core::ai::chat::composer::Composer;
 use crate::core::ai::memory::{redact::redact, route::percent_encode};
+use crate::core::ai::{Detection, Status};
 
 /// The most characters of a title.
 pub const TITLE_CAP: usize = 120;
@@ -23,6 +24,27 @@ pub const TITLE_REQUIRED: &str = "Title is required";
 pub const DESCRIPTION_REQUIRED: &str = "Description is required";
 pub const REDACTED: &str = "Secrets were masked; review and press Ctrl+S again";
 pub const TOO_LONG: &str = "Too long for a link: shorten the description";
+
+/// The footer, by the focused field; each fits the 48 columns of the
+/// narrow popup.
+pub const HINT_KIND: &str = "←/→ kind · Tab next · Ctrl+S link · Esc back";
+pub const HINT_TEXT: &str = "Tab next · Ctrl+S link · Esc back";
+pub const HINT_ATTACH: &str = "Space attach · Tab next · Ctrl+S link · Esc back";
+/// The footer once the link is copied.
+pub const HINT_DONE: &str = "Esc back";
+
+/// What the form says once the link is copied.
+pub const COPIED: [&str; 3] = [
+    "Link copied. Paste it in your browser:",
+    "GitHub opens the issue form filled in, for you",
+    "to review and send.",
+];
+
+/// The columns the form wraps its text to: the narrow popup's 48, less the
+/// indent.
+const TEXT_WIDTH: usize = 46;
+/// The rows of the description shown; it scrolls with the cursor.
+const DESCRIPTION_ROWS: usize = 6;
 
 /// Where new issues are opened.
 const NEW_ISSUE: &str = concat!(env!("CARGO_PKG_REPOSITORY"), "/issues/new");
@@ -84,6 +106,26 @@ impl Facts {
         };
         format!("{}\nengines: {engines}", first.join(" · "))
     }
+}
+
+/// The detected engines, as attached: `<id> [<version>] <status>`. An
+/// engine that is not installed is left out.
+pub fn engines(detection: &Detection) -> Vec<String> {
+    detection
+        .engines
+        .iter()
+        .filter_map(|engine| {
+            let status = match engine.status {
+                Status::Available => "available",
+                Status::NotRunning => "not running",
+                Status::NotInstalled => return None,
+            };
+            Some(match engine.version.as_deref().and_then(name) {
+                Some(version) => format!("{} {version} {status}", engine.id),
+                None => format!("{} {status}", engine.id),
+            })
+        })
+        .collect()
 }
 
 /// The longest shell or terminal name attached.
@@ -191,13 +233,39 @@ impl Feedback {
         self.description.text()
     }
 
-    /// The composers, to draw them with their cursor.
-    pub fn title_composer(&self) -> &Composer {
-        &self.title
+    /// The lines of the form under its title: the focused field marked
+    /// with `›`, and the cursor drawn as `▏` in the focused text field.
+    pub fn lines(&self) -> Vec<String> {
+        let mark = |field| if self.field == field { "› " } else { "  " };
+        let mut lines = vec![format!("{}Kind: {}", mark(Field::Kind), self.kind.label())];
+        lines.push(format!("{}Title", mark(Field::Title)));
+        lines.extend(text_rows(&self.title, self.field == Field::Title, 1));
+        lines.push(format!("{}Description", mark(Field::Description)));
+        lines.extend(text_rows(
+            &self.description,
+            self.field == Field::Description,
+            DESCRIPTION_ROWS,
+        ));
+        let check = if self.attach { "[x]" } else { "[ ]" };
+        lines.push(format!(
+            "{}{check} Attach the environment",
+            mark(Field::Attach)
+        ));
+        if self.attach {
+            for line in self.facts.text().lines() {
+                lines.extend(pack(line).into_iter().map(|l| format!("      {l}")));
+            }
+        }
+        lines
     }
 
-    pub fn description_composer(&self) -> &Composer {
-        &self.description
+    /// The footer for the focused field.
+    pub fn hint(&self) -> &'static str {
+        match self.field {
+            Field::Kind => HINT_KIND,
+            Field::Title | Field::Description => HINT_TEXT,
+            Field::Attach => HINT_ATTACH,
+        }
     }
 
     /// Why the last Ctrl+S made no link; cleared by the next edit.
@@ -327,6 +395,45 @@ impl Feedback {
         }
         Outcome::Copy(link)
     }
+}
+
+/// The columns a facts line gets under its indent, in the narrow popup.
+const FACTS_WIDTH: usize = 42;
+
+/// A facts line cut between its ` · ` items into lines of at most
+/// [`FACTS_WIDTH`], so no fact is cut; a single longer item keeps a line of
+/// its own.
+fn pack(line: &str) -> Vec<String> {
+    let mut packed: Vec<String> = Vec::new();
+    for item in line.split(" · ") {
+        match packed.last_mut() {
+            Some(last) if last.chars().count() + 3 + item.chars().count() <= FACTS_WIDTH => {
+                last.push_str(" · ");
+                last.push_str(item);
+            }
+            _ => packed.push(item.to_owned()),
+        }
+    }
+    packed
+}
+
+/// The rows of a text field, indented, with `▏` at the cursor when
+/// `focused`.
+fn text_rows(composer: &Composer, focused: bool, max_rows: usize) -> Vec<String> {
+    let view = composer.view(TEXT_WIDTH, max_rows);
+    let mut rows = if view.rows.is_empty() {
+        vec![String::new()]
+    } else {
+        view.rows
+    };
+    if focused && let Some(row) = rows.get_mut(view.cursor_row) {
+        let at = row
+            .char_indices()
+            .nth(view.cursor_col)
+            .map_or(row.len(), |(i, _)| i);
+        row.insert(at, '▏');
+    }
+    rows.into_iter().map(|row| format!("  {row}")).collect()
 }
 
 /// Puts `text` in `composer`, the cursor at its end.
