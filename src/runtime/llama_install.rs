@@ -4,11 +4,19 @@
 //! the system `curl`, through the same [`Curl`] (https only, resume, the
 //! process group killed on a cancel). Nothing here reads a GitHub token.
 
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
 
+use tokio::process::Command;
 use tokio::sync::oneshot;
 
-use super::hf::{Curl, End, fetch, file_len, free_space, has_size, sha256, space_check};
+use super::desktop::which;
+use super::hf::{
+    Curl, End, error_line, fetch, file_len, finish, free_space, has_size, sha256, space_check,
+};
+use super::proc::GroupKill;
 use crate::core::ai::install::{self, Platform, Release, Variant};
 
 /// What a GitHub 403 or 429 reads as (the API allows 60 requests an hour
@@ -25,6 +33,18 @@ const DOWNLOAD_DIR: &str = "/ggml-org/llama.cpp/releases/download";
 
 /// Where archives wait, inside the owned root, so a cancel can resume.
 const PARTIAL_DIR: &str = ".download";
+
+/// The repo whose releases carry the attestation of an archive.
+const REPO: &str = "ggml-org/llama.cpp";
+
+/// What a missing `gh` reads as: the install goes on.
+pub const NO_GH: &str = "gh is not installed: the archive's attestation was not verified";
+
+/// What a `gh` without a login reads as: the install goes on.
+pub const GH_LOGGED_OUT: &str = "gh is not logged in: the archive's attestation was not verified";
+
+/// How long one `gh` run may take before it is stopped.
+const GH_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The release to install for `platform` and `variant`: the newest build tag
 /// that has the asset, with its size and digest.
@@ -69,7 +89,7 @@ pub async fn download(
     root: &Path,
     release: &Release,
     mut progress: impl FnMut(u64, u64),
-    mut cancel: oneshot::Receiver<()>,
+    cancel: &mut oneshot::Receiver<()>,
 ) -> End {
     let failed = |why: &str| End::Failed(format!("download failed: {why}"));
     if !names_are_safe(release) {
@@ -94,7 +114,7 @@ pub async fn download(
     if size == 0 || !has_size(&archive, size) {
         let path = format!("{DOWNLOAD_DIR}/{}/{}", release.tag, release.asset);
         let total = |on_disk| if size > 0 { size } else { on_disk };
-        if let Some(end) = fetch(curl, &path, &archive, &mut cancel, |on_disk| {
+        if let Some(end) = fetch(curl, &path, &archive, cancel, |on_disk| {
             progress(on_disk, total(on_disk));
         })
         .await
@@ -127,6 +147,161 @@ fn verify(archive: &Path, release: &Release) -> Result<(), End> {
         Ok(sum) if sum.eq_ignore_ascii_case(&release.sha256) => Ok(()),
         Ok(_) => failed("checksum mismatch"),
         Err(e) => Err(End::Failed(format!("download failed: {e}"))),
+    }
+}
+
+/// What the download step ends with.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Fetched {
+    /// The archive passed the digest and, when `gh` could check it, its
+    /// attestation. `warning` says why the attestation was skipped.
+    Done {
+        archive: PathBuf,
+        warning: Option<String>,
+    },
+    Cancelled,
+    Failed(String),
+}
+
+/// The download step as the wizard runs it: the archive, held to its digest
+/// and then to its attestation. Either failure deletes the archive; a cancel
+/// keeps it for a resume.
+pub async fn download_verified(
+    curl: &Curl,
+    gh_path: &OsStr,
+    root: &Path,
+    release: &Release,
+    progress: impl FnMut(u64, u64),
+    cancel: &mut oneshot::Receiver<()>,
+) -> Fetched {
+    let archive = match download(curl, root, release, progress, cancel).await {
+        End::Done(archive) => archive,
+        End::Cancelled => return Fetched::Cancelled,
+        End::Failed(message) => return Fetched::Failed(message),
+    };
+    match attest(gh_path, &archive, cancel).await {
+        Attestation::Verified => Fetched::Done {
+            archive,
+            warning: None,
+        },
+        Attestation::Skipped(warning) => Fetched::Done {
+            archive,
+            warning: Some(warning),
+        },
+        Attestation::Cancelled => Fetched::Cancelled,
+        Attestation::Failed(message) => {
+            let _ = std::fs::remove_file(&archive);
+            Fetched::Failed(message)
+        }
+    }
+}
+
+/// What the attestation check found.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Attestation {
+    Verified,
+    /// `gh` is missing or logged out: the reason, shown as a warning.
+    Skipped(String),
+    Failed(String),
+    Cancelled,
+}
+
+/// Runs `gh attestation verify <archive> --repo ggml-org/llama.cpp` with the
+/// `gh` found on `path`, when there is one and `gh auth status` says it is
+/// logged in. No shell; nothing it prints but its last error line is kept.
+async fn attest(path: &OsStr, archive: &Path, cancel: &mut oneshot::Receiver<()>) -> Attestation {
+    attest_within(path, archive, cancel, GH_TIMEOUT).await
+}
+
+async fn attest_within(
+    path: &OsStr,
+    archive: &Path,
+    cancel: &mut oneshot::Receiver<()>,
+    timeout: Duration,
+) -> Attestation {
+    let Some(gh) = which("gh", Some(path)) else {
+        return Attestation::Skipped(NO_GH.to_owned());
+    };
+    match run_gh(&gh, &["auth".into(), "status".into()], cancel, timeout).await {
+        Gh::Done => {}
+        Gh::Cancelled => return Attestation::Cancelled,
+        Gh::Failed(_) | Gh::TimedOut => return Attestation::Skipped(GH_LOGGED_OUT.to_owned()),
+    }
+    let args = [
+        "attestation".into(),
+        "verify".into(),
+        archive.into(),
+        "--repo".into(),
+        REPO.into(),
+    ];
+    match run_gh(&gh, &args, cancel, timeout).await {
+        Gh::Done => Attestation::Verified,
+        Gh::Cancelled => Attestation::Cancelled,
+        Gh::Failed(why) => Attestation::Failed(format!("attestation failed: {why}")),
+        Gh::TimedOut => Attestation::Failed("attestation failed: gh timed out".to_owned()),
+    }
+}
+
+/// How one `gh` run ended.
+enum Gh {
+    Done,
+    /// It failed: its last error line, or why it did not start.
+    Failed(String),
+    TimedOut,
+    Cancelled,
+}
+
+/// Runs `gh` with `args`, in its own process group, stopped by `cancel` or
+/// after `timeout`.
+async fn run_gh(
+    gh: &Path,
+    args: &[OsString],
+    cancel: &mut oneshot::Receiver<()>,
+    timeout: Duration,
+) -> Gh {
+    let mut attempt = 0;
+    let mut child = loop {
+        let started = Command::new(gh)
+            .args(args)
+            .env("GH_PROMPT_DISABLED", "1")
+            .env("GH_NO_UPDATE_NOTIFIER", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .process_group(0)
+            .spawn();
+        match started {
+            // A binary that is being written fails with ETXTBSY for a moment.
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 4 => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(e) => return Gh::Failed(e.to_string()),
+            Ok(child) => break child,
+        }
+    };
+    let mut guard = child
+        .id()
+        .and_then(|pid| libc::pid_t::try_from(pid).ok())
+        .and_then(GroupKill::new);
+    tokio::select! {
+        biased;
+        _ = &mut *cancel => {
+            let _ = finish(&mut child, &mut guard, true).await;
+            Gh::Cancelled
+        }
+        () = tokio::time::sleep(timeout) => {
+            let _ = finish(&mut child, &mut guard, true).await;
+            Gh::TimedOut
+        }
+        (line, status) = async {
+            let line = error_line(&mut child).await;
+            (line, finish(&mut child, &mut guard, false).await)
+        } => match status {
+            Ok(status) if status.success() => Gh::Done,
+            _ => Gh::Failed(line),
+        },
     }
 }
 

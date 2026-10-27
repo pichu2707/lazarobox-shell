@@ -187,7 +187,7 @@ async fn a_matching_digest_keeps_the_archive_and_reports_progress() {
         root.path(),
         &release(BODY),
         |done, total| last = (done, total),
-        no_cancel(),
+        &mut no_cancel(),
     )
     .await;
     assert_eq!(end, End::Done(archive_of(root.path())));
@@ -212,7 +212,7 @@ async fn a_digest_mismatch_deletes_the_archive() {
     let mut wrong = release(BODY);
     wrong.sha256 = sha(b"9876543210");
     let curl = Curl::github(path()).local(&base);
-    let end = download(&curl, root.path(), &wrong, |_, _| {}, no_cancel()).await;
+    let end = download(&curl, root.path(), &wrong, |_, _| {}, &mut no_cancel()).await;
     assert_eq!(
         end,
         End::Failed("download failed: checksum mismatch".to_owned())
@@ -229,7 +229,7 @@ async fn a_wrong_size_deletes_the_archive_before_hashing() {
     let mut longer = release(BODY);
     longer.size = 12;
     let curl = Curl::github(path()).local(&base);
-    let end = download(&curl, root.path(), &longer, |_, _| {}, no_cancel()).await;
+    let end = download(&curl, root.path(), &longer, |_, _| {}, &mut no_cancel()).await;
     assert_eq!(
         end,
         End::Failed("download failed: size mismatch".to_owned())
@@ -247,7 +247,7 @@ async fn a_release_without_a_digest_aborts_before_the_network() {
     for bad in ["", "abc", &"g".repeat(64)] {
         let mut release = release(BODY);
         release.sha256 = bad.to_owned();
-        let end = download(&curl, root.path(), &release, |_, _| {}, no_cancel()).await;
+        let end = download(&curl, root.path(), &release, |_, _| {}, &mut no_cancel()).await;
         let End::Failed(message) = end else {
             panic!("{bad:?} did not fail: {end:?}")
         };
@@ -274,7 +274,7 @@ async fn a_release_with_an_unsafe_name_aborts_before_the_network() {
         let mut odd = release(BODY);
         odd.tag = tag.to_owned();
         odd.asset = asset.to_owned();
-        let end = download(&curl, root.path(), &odd, |_, _| {}, no_cancel()).await;
+        let end = download(&curl, root.path(), &odd, |_, _| {}, &mut no_cancel()).await;
         assert!(matches!(end, End::Failed(_)), "{tag} {asset}: {end:?}");
     }
     assert!(seen.lock().unwrap().is_empty());
@@ -289,7 +289,7 @@ async fn too_little_room_blocks_the_download_and_names_the_shortfall() {
     let mut huge = release(BODY);
     huge.size = u64::MAX / 8;
     let curl = Curl::github(path()).local(&base);
-    let end = download(&curl, root.path(), &huge, |_, _| {}, no_cancel()).await;
+    let end = download(&curl, root.path(), &huge, |_, _| {}, &mut no_cancel()).await;
     let End::Failed(message) = end else {
         panic!("{end:?}")
     };
@@ -309,10 +309,10 @@ async fn a_cancel_keeps_the_partial_archive() {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join(".download")).unwrap();
     std::fs::write(archive_of(root.path()), b"0123").unwrap();
-    let (tx, rx) = oneshot::channel();
+    let (tx, mut rx) = oneshot::channel();
     let curl = Curl::github(path()).local(&base);
     let wanted = release(BODY);
-    let task = download(&curl, root.path(), &wanted, |_, _| {}, rx);
+    let task = download(&curl, root.path(), &wanted, |_, _| {}, &mut rx);
     let cancel = async {
         tokio::time::sleep(Duration::from_millis(300)).await;
         tx.send(()).unwrap();
@@ -335,7 +335,14 @@ async fn a_partial_archive_resumes_from_where_it_stopped() {
     std::fs::create_dir_all(root.path().join(".download")).unwrap();
     std::fs::write(archive_of(root.path()), b"0123").unwrap();
     let curl = Curl::github(path()).local(&base);
-    let end = download(&curl, root.path(), &release(BODY), |_, _| {}, no_cancel()).await;
+    let end = download(
+        &curl,
+        root.path(),
+        &release(BODY),
+        |_, _| {},
+        &mut no_cancel(),
+    )
+    .await;
     assert_eq!(end, End::Done(archive_of(root.path())));
     assert_eq!(std::fs::read(archive_of(root.path())).unwrap(), BODY);
     let request = seen.lock().unwrap()[0].clone();
@@ -350,7 +357,14 @@ async fn a_complete_archive_is_checked_without_a_request() {
     std::fs::create_dir_all(root.path().join(".download")).unwrap();
     std::fs::write(archive_of(root.path()), BODY).unwrap();
     let curl = Curl::github(path()).local(&base);
-    let end = download(&curl, root.path(), &release(BODY), |_, _| {}, no_cancel()).await;
+    let end = download(
+        &curl,
+        root.path(),
+        &release(BODY),
+        |_, _| {},
+        &mut no_cancel(),
+    )
+    .await;
     assert_eq!(end, End::Done(archive_of(root.path())));
     assert!(seen.lock().unwrap().is_empty());
 }
@@ -363,8 +377,205 @@ async fn an_oversized_partial_archive_starts_over() {
     std::fs::create_dir_all(root.path().join(".download")).unwrap();
     std::fs::write(archive_of(root.path()), b"0123456789xx").unwrap();
     let curl = Curl::github(path()).local(&base);
-    let end = download(&curl, root.path(), &release(BODY), |_, _| {}, no_cancel()).await;
+    let end = download(
+        &curl,
+        root.path(),
+        &release(BODY),
+        |_, _| {},
+        &mut no_cancel(),
+    )
+    .await;
     assert_eq!(end, End::Done(archive_of(root.path())));
     assert_eq!(std::fs::read(archive_of(root.path())).unwrap(), BODY);
     assert_eq!(header(&seen.lock().unwrap()[0], "range"), None);
+}
+
+/// A `gh` that logs its arguments to `log`, answers `auth status` with exit
+/// code `auth` and runs `verify` for `attestation verify`.
+fn fake_gh(dir: &Path, log: &Path, auth: i32, verify: &str) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let script = format!(
+        "#!/bin/sh\necho \"$@\" >> '{}'\nif [ \"$1\" = auth ]; then exit {auth}; fi\n{verify}\n",
+        log.display()
+    );
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o755)
+        .open(dir.join("gh"))
+        .unwrap();
+    file.write_all(script.as_bytes()).unwrap();
+}
+
+fn logged(log: &Path) -> Vec<String> {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Downloads `BODY` through a local server and attests it with the `gh`
+/// found in `gh_path`.
+async fn fetched(root: &Path, gh_path: &std::ffi::OsStr, release: &Release) -> Fetched {
+    let (base, _) = file_server(BODY);
+    let curl = Curl::github(path()).local(&base);
+    download_verified(&curl, gh_path, root, release, |_, _| {}, &mut no_cancel()).await
+}
+
+// Spec (Optional attestation): `gh attestation verify` after the digest.
+#[tokio::test]
+async fn a_passing_attestation_continues_without_a_warning() {
+    need_curl!();
+    let (root, bin) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let log = bin.path().join("log");
+    fake_gh(bin.path(), &log, 0, "exit 0");
+    let got = fetched(root.path(), bin.path().as_os_str(), &release(BODY)).await;
+    assert_eq!(
+        got,
+        Fetched::Done {
+            archive: archive_of(root.path()),
+            warning: None
+        }
+    );
+    let calls = logged(&log);
+    assert_eq!(calls[0], "auth status");
+    assert_eq!(
+        calls[1],
+        format!(
+            "attestation verify {} --repo ggml-org/llama.cpp",
+            archive_of(root.path()).display()
+        )
+    );
+}
+
+// Spec (Attestation failure aborts): archive deleted, nothing installed.
+#[tokio::test]
+async fn a_failing_attestation_deletes_the_archive() {
+    need_curl!();
+    let (root, bin) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let log = bin.path().join("log");
+    fake_gh(
+        bin.path(),
+        &log,
+        0,
+        "echo 'no matching attestations found' >&2\nexit 1",
+    );
+    let got = fetched(root.path(), bin.path().as_os_str(), &release(BODY)).await;
+    assert_eq!(
+        got,
+        Fetched::Failed("attestation failed: no matching attestations found".to_owned())
+    );
+    assert!(!archive_of(root.path()).exists());
+    assert!(nothing_installed(root.path()));
+}
+
+// Spec (gh absent warns): the flow continues.
+#[tokio::test]
+async fn without_gh_the_flow_continues_with_a_warning() {
+    need_curl!();
+    let (root, empty) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let got = fetched(root.path(), empty.path().as_os_str(), &release(BODY)).await;
+    assert_eq!(
+        got,
+        Fetched::Done {
+            archive: archive_of(root.path()),
+            warning: Some(NO_GH.to_owned())
+        }
+    );
+    assert!(archive_of(root.path()).exists());
+}
+
+// D3: a gh that is logged out warns and continues, and is never asked to
+// verify.
+#[tokio::test]
+async fn a_logged_out_gh_warns_and_continues() {
+    need_curl!();
+    let (root, bin) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let log = bin.path().join("log");
+    fake_gh(bin.path(), &log, 1, "exit 1");
+    let got = fetched(root.path(), bin.path().as_os_str(), &release(BODY)).await;
+    assert_eq!(
+        got,
+        Fetched::Done {
+            archive: archive_of(root.path()),
+            warning: Some(GH_LOGGED_OUT.to_owned())
+        }
+    );
+    assert_eq!(logged(&log), ["auth status"]);
+}
+
+// A digest mismatch stops before gh is run.
+#[tokio::test]
+async fn a_digest_mismatch_never_reaches_gh() {
+    need_curl!();
+    let (root, bin) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let log = bin.path().join("log");
+    fake_gh(bin.path(), &log, 0, "exit 0");
+    let mut wrong = release(BODY);
+    wrong.sha256 = sha(b"9876543210");
+    let got = fetched(root.path(), bin.path().as_os_str(), &wrong).await;
+    assert_eq!(
+        got,
+        Fetched::Failed("download failed: checksum mismatch".to_owned())
+    );
+    assert!(logged(&log).is_empty());
+}
+
+// A cancel while gh runs stops it and keeps the verified archive.
+#[tokio::test]
+async fn a_cancel_stops_a_running_attestation() {
+    need_curl!();
+    let (root, bin) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let log = bin.path().join("log");
+    fake_gh(bin.path(), &log, 0, "sleep 30");
+    let (base, _) = file_server(BODY);
+    let curl = Curl::github(path()).local(&base);
+    let (tx, mut rx) = oneshot::channel();
+    let wanted = release(BODY);
+    let run = download_verified(
+        &curl,
+        bin.path().as_os_str(),
+        root.path(),
+        &wanted,
+        |_, _| {},
+        &mut rx,
+    );
+    let cancel = async {
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        tx.send(()).unwrap();
+    };
+    let (got, ()) =
+        tokio::time::timeout(Duration::from_secs(10), async { tokio::join!(run, cancel) })
+            .await
+            .expect("the cancel stops gh");
+    assert_eq!(got, Fetched::Cancelled);
+    assert!(archive_of(root.path()).exists());
+}
+
+// A gh that never answers does not hang the install.
+#[tokio::test]
+async fn a_gh_that_hangs_is_stopped_after_its_time() {
+    let (bin, dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let log = bin.path().join("log");
+    fake_gh(bin.path(), &log, 0, "sleep 30");
+    let archive = dir.path().join("a.tar.gz");
+    std::fs::write(&archive, BODY).unwrap();
+    let got = tokio::time::timeout(
+        Duration::from_secs(10),
+        attest_within(
+            bin.path().as_os_str(),
+            &archive,
+            &mut no_cancel(),
+            Duration::from_millis(300),
+        ),
+    )
+    .await
+    .expect("the time limit stops gh");
+    assert_eq!(
+        got,
+        Attestation::Failed("attestation failed: gh timed out".to_owned())
+    );
 }

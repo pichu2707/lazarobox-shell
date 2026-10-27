@@ -258,7 +258,7 @@ impl Curl {
 }
 
 /// Reaps curl and disarms its guard; with `kill`, the group goes first.
-async fn finish(
+pub(super) async fn finish(
     child: &mut Child,
     guard: &mut Option<GroupKill>,
     kill: bool,
@@ -276,7 +276,7 @@ async fn finish(
 }
 
 /// The last line curl wrote on stderr, cleaned for the screen.
-async fn error_line(child: &mut Child) -> String {
+pub(super) async fn error_line(child: &mut Child) -> String {
     let mut err = Vec::new();
     if let Some(stderr) = child.stderr.take() {
         let _ = stderr.take(ERROR_CAP).read_to_end(&mut err).await;
