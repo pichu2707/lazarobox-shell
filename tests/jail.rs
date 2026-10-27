@@ -590,8 +590,10 @@ fn the_jail_that_runs_the_shim_still_denies_curl_and_the_ssh_dir() {
 
 /// A canonical project root with a copy of `/usr/bin/true` in it, and a
 /// sibling `home/.ssh/id` the jail never grants.
+/// It lives under the build's own tmp folder: a root under `/tmp` is a broad
+/// place the helper refuses.
 fn project_root() -> (tempfile::TempDir, PathBuf, PathBuf) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let base = fs::canonicalize(dir.path()).unwrap();
     let root = base.join("proj");
     fs::create_dir(&root).unwrap();
@@ -687,10 +689,6 @@ fn the_toolchain_rlimits_are_set_before_the_program_runs() {
         return;
     }
     let script = "ulimit -c; ulimit -f; ulimit -t";
-    let out = run(&job("/bin/sh", &["-c", script], |_| {}));
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert!(!stdout(&out).starts_with("0\n"), "{}", stdout(&out));
-
     let out = run(&job("/bin/sh", &["-c", script], |s| {
         s.rlimits = Rlimits::Toolchain
     }));
@@ -705,4 +703,70 @@ fn the_toolchain_rlimits_are_set_before_the_program_runs() {
             && lines[2] == "1200",
         "{lines:?}"
     );
+}
+
+#[test]
+fn a_lower_parent_hard_limit_is_kept_not_an_error() {
+    use std::os::unix::process::CommandExt;
+
+    if !jail_available() {
+        return;
+    }
+    let mut spec_job = job("/bin/sh", &["-c", "ulimit -f"], |s| {
+        s.rlimits = Rlimits::Toolchain
+    });
+    spec_job.min_abi = None;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_lazarobox-shell"));
+    command
+        .args(spec_job.render())
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null());
+    // SAFETY: the closure only calls setrlimit, which is async-signal-safe.
+    unsafe {
+        command.pre_exec(|| {
+            let lower = libc::rlimit {
+                rlim_cur: 1 << 20,
+                rlim_max: 1 << 20,
+            };
+            if libc::setrlimit(libc::RLIMIT_FSIZE, &lower) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let out = command.output().expect("the helper starts");
+    assert!(out.status.success(), "{}", stderr(&out));
+    // 1 MiB in 512-byte (dash) or 1024-byte (bash) blocks: the lower bound wins.
+    let said = stdout(&out);
+    assert!(["2048", "1024"].contains(&said.trim()), "{said:?}");
+}
+
+#[test]
+fn the_helper_refuses_a_symlinked_or_a_broad_rwx_root() {
+    use std::os::unix::fs::symlink;
+
+    if !jail_available() {
+        return;
+    }
+    let (dir, root, _ssh) = project_root();
+    let link = fs::canonicalize(dir.path()).unwrap().join("link");
+    symlink(&root, &link).unwrap();
+    let marker = root.join("marker");
+    let mut roots = vec![link.clone(), PathBuf::from("/usr"), PathBuf::from("/home")];
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        roots.push(home);
+    }
+    for rwx in roots {
+        let out = run(&job("/usr/bin/touch", &[marker.to_str().unwrap()], |s| {
+            s.rwx = vec![rwx.clone()]
+        }));
+        assert_eq!(out.status.code(), Some(125), "{rwx:?}: {}", stderr(&out));
+        assert_jail_error(&out);
+        assert!(!marker.exists(), "the program must not run for {rwx:?}");
+    }
+    // The real path of the same root runs.
+    let out = run(&job("/usr/bin/touch", &[marker.to_str().unwrap()], |s| {
+        s.rwx = vec![root.clone()]
+    }));
+    assert!(out.status.success() && marker.exists(), "{}", stderr(&out));
 }

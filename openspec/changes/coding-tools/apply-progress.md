@@ -738,3 +738,9 @@ Notes:
 - `ulimit -f` is 512-byte blocks in dash and 1024 in bash, so the rlimit test accepts either value for 4 GiB.
 - Size: ~125 production lines (jail.rs 81, runtime/jail.rs 38, sbpl.rs 6), ~255 test lines. Checks: fmt, clippy --all-targets -D warnings, cargo test (5880 lib, 19 jail).
 
+
+Review fixes (slice X-c2):
+- Helper `check_rwx`: `check_exec(Os::Linux, homes)` with `$HOME` (both spellings) plus a `fs::canonicalize(root) == root` test, so a symlinked or broad `rwx` root is refused with `RWX_REASON`. Integration fixtures now live under `CARGO_TARGET_TMPDIR` because `/tmp` is a broad place.
+- `set_limits`: `min(getrlimit hard, value)` (a lower parent hard limit no longer gives EPERM); an out-of-range value is `RLIMIT_REASON`, never `RLIM_INFINITY`.
+- Tests: the rlimit test drops the inherited `ulimit -c` baseline, a lowered parent hard limit and symlinked/broad roots are end-to-end, `RLIMIT_REASON` is in the safe-reasons vector.
+- design.md: ABI bullets list restored (the X-c3 notes now follow it), helper rules and the in-root secrets/hooks residual risk stated.

@@ -244,6 +244,7 @@ Spec: command-runner "Jail profile".
 - [x] Xc2.1 RED (skip when ABI < 3): `--rwx` lets exec work in the root; `~/.ssh` unreadable. GREEN: `runtime/jail.rs`. ~200.
 - [x] Xc2.2 RED: `--net-bind open` (listen allowed), `--rlimits toolchain` (CORE 0, FSIZE 4 GiB, CPU 1200 s) set before exec. GREEN. ~200.
 - [x] Check the pathname UNIX socket residual risk against the kernel docs here and record it (accepted risk; seccomp is follow-up). Recorded in design.md (Landlock ABI limits) and apply-progress batch 20.
+- [x] Xc2.3 review fixes: helper refuses a symlinked or broad `rwx` root, `set_limits` keeps a lower parent hard limit and never maps an overflow to infinity, test no longer assumes an inherited core limit, `RLIMIT_REASON` in the safe-reasons vector.
 
 ### X-c3: runner (PR 19, ~450)
 Spec: command-runner "Process rules".

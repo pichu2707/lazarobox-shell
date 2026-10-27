@@ -135,12 +135,26 @@ mod imp {
         if let JailSupport::Unavailable(off) = support_from_abi(abi) {
             return Err(Failure::NotEnforced(off.text()));
         }
-        job.spec
-            .check_exec(Os::Linux, &[])
-            .map_err(|_| Failure::NotEnforced(RWX_REASON.to_owned()))?;
+        check_rwx(&job.spec).map_err(|_| Failure::NotEnforced(RWX_REASON.to_owned()))?;
         set_limits(&job.spec).map_err(Failure::NotEnforced)?;
         enforce(&job.spec, abi).map_err(Failure::NotEnforced)?;
         launch(&job)
+    }
+
+    /// The `rwx` root must pass `check_exec` (with `$HOME` in both of its
+    /// spellings, so a broad root is refused) and be its own canonical path:
+    /// a root that is a link would grant its target, not what was checked.
+    fn check_rwx(spec: &JailSpec) -> Result<(), ()> {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let real = home.as_deref().and_then(|h| fs::canonicalize(h).ok());
+        let homes: Vec<&Path> = home.iter().chain(&real).map(PathBuf::as_path).collect();
+        spec.check_exec(Os::Linux, &homes).map_err(|_| ())?;
+        for root in &spec.rwx {
+            if fs::canonicalize(root).ok().as_deref() != Some(root.as_path()) {
+                return Err(());
+            }
+        }
+        Ok(())
     }
 
     fn launch(job: &JailArgs) -> Result<Infallible, Failure> {
@@ -160,7 +174,19 @@ mod imp {
                 Limit::FileSize => libc::RLIMIT_FSIZE,
                 Limit::CpuSeconds => libc::RLIMIT_CPU,
             };
-            let value = libc::rlim_t::try_from(*value).unwrap_or(libc::RLIM_INFINITY);
+            // A value this platform cannot hold is an error, never "no limit".
+            let value = libc::rlim_t::try_from(*value).map_err(|_| RLIMIT_REASON.to_owned())?;
+            let mut current = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: `current` is a valid struct that outlives the call.
+            if unsafe { libc::getrlimit(resource, &mut current) } != 0 {
+                return Err(RLIMIT_REASON.to_owned());
+            }
+            // A hard limit the parent already lowered stays: raising it is
+            // EPERM, and the lower bound is the stricter one anyway.
+            let value = value.min(current.rlim_max);
             let rlim = libc::rlimit {
                 rlim_cur: value,
                 rlim_max: value,

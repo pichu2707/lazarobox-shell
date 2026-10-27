@@ -58,15 +58,17 @@ Landlock ABI limits:
 - Below 4 (6.7), TCP is not mediated at all. That is acceptable because the network stays on.
 - 6 (6.12) adds the signal and abstract-socket scope, which `enforce` already applies.
 - **No ABI up to 8 mediates `connect()` to existing pathname UNIX sockets**, for example the gpg-agent or D-Bus sockets under `/run/user/$UID`. This is an accepted, documented residual risk; a seccomp AF_UNIX filter is a later hardening option. Checked in X-c2: ABI 9 adds `LANDLOCK_ACCESS_FS_RESOLVE_UNIX` (landlock crate 0.4.7, `AccessFs::ResolveUnix`: "connect to a pathname UNIX domain socket"), which the helper already handles through `AccessFs::from_all` on an ABI 9 kernel, so there a socket needs a rule. The local kernel headers (6.19) do not define it, so on ABI <= 8 (this machine included) the only guard is that `$HOME` secrets and `SSH_AUTH_SOCK`/`DBUS_*` env are not passed (env scrub). Scoping applies only to abstract sockets (ABI 6).
+- Below ABI 6, a child can also signal same-uid processes (DoS only).
+- Daemonizing grandchildren (`setsid`) escape `killpg`. This is a documented limit.
+- rlimits are set in the helper before `exec`: CORE 0, FSIZE 4 GiB, CPU 1200 s.
+- The helper refuses an `rwx` root that is a broad place (`$HOME`, `/home`, `/usr`, `/tmp`, ...) or whose `canonicalize` differs from the given path (a symlinked root), and lowers an rlimit to `min(parent hard limit, value)` instead of failing with EPERM; a value the platform cannot hold is an error, never "no limit".
+- Residual risk (accepted): the `rwx` root is readable and writable as a whole, so a `.env` or hooks inside it (`.git/hooks`) are reachable by the toolchain; see the X-c3 notes below for the integrity check.
 
 Toolchain run notes (recorded in X-c1 for X-c3, not implemented):
 - `go test` and `go run` build and start binaries, so they need an exec-capable `GOTMPDIR` under the `rwx` root (for example `<root>/.lbx-gotmp`, created before and removed after the run); the private TMPDIR is `rw` only and never executable.
 - cargo writes `$CARGO_HOME/.package-cache` and `$CARGO_HOME/.global-cache`; they are not in the cache list, so check by hand that a run with a populated registry still works, and add them as `rw_files` if it does not.
 - USER DECISION: before and after each `run_command`, X-c3 compares `.git/hooks/`, `.git/config` and `.gitmodules` in the root; on a change it warns with a diff and offers to revert. The program can write them (the root is `rwx`) and a hook runs later outside the jail.
 - Accepted residual risk: a `.env` or any other secret file INSIDE the `rwx` root is readable by the toolchain (the root is readable as a whole), and so are in-root hooks until the integrity check above runs.
-- Below ABI 6, a child can also signal same-uid processes (DoS only).
-- Daemonizing grandchildren (`setsid`) escape `killpg`. This is a documented limit.
-- rlimits are set in the helper before `exec`: CORE 0, FSIZE 4 GiB, CPU 1200 s.
 
 Env scrub: `env_clear`, then:
 - passed through: `PATH` (relative entries and entries under the root removed), `HOME`, `USER`, `LANG`, `LC_ALL`, and `CARGO_HOME`, `RUSTUP_HOME`, `GOPATH`, `GOROOT`, `GOCACHE` and `GOMODCACHE` when they are set;

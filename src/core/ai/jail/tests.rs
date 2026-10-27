@@ -1527,6 +1527,7 @@ fn the_fixed_texts_of_the_macos_helper_are_safe_reasons() {
         PROFILE_REASON,
         EXEC_FAILED_REASON,
         RWX_REASON,
+        RLIMIT_REASON,
     ];
     texts.extend(ARG_REASONS);
     for text in texts {
