@@ -246,10 +246,19 @@ pub fn exec_notice(
         lines.push(format!("runs project code: {files}"));
     }
     if allow::installs(program, args) {
-        lines.push("runs the install scripts of the project and its dependencies".to_owned());
+        if allow::skips_scripts(args) {
+            lines.push("install scripts are skipped".to_owned());
+        } else {
+            lines.push(
+                "runs the install scripts of the project and, depending on the package \
+                 manager, its dependencies"
+                    .to_owned(),
+            );
+            lines.push("`--ignore-scripts` skips them".to_owned());
+        }
     }
     if let Some(earlier) = earlier {
-        lines.push(format!("an earlier run: {earlier}"));
+        lines.push(earlier.to_owned());
     }
     lines.join("\n")
 }
@@ -1465,16 +1474,72 @@ mod tests {
     }
 
     #[test]
-    fn an_install_says_it_runs_the_scripts_of_the_dependencies_too() {
+    fn an_install_says_it_runs_the_scripts_and_maybe_those_of_the_dependencies() {
         for verb in ["install", "ci"] {
             let notice = exec_notice("npm", &words(&[verb]), 120, false, None);
             assert!(
-                notice.contains("runs the install scripts of the project and its dependencies"),
+                notice.contains(
+                    "runs the install scripts of the project and, depending on the package \
+                     manager, its dependencies"
+                ),
                 "{notice}"
             );
+            assert!(notice.contains("`--ignore-scripts` skips them"), "{notice}");
         }
         let test = exec_notice("npm", &words(&["test"]), 120, false, None);
         assert!(!test.contains("install scripts"), "{test}");
+    }
+
+    #[test]
+    fn an_install_with_ignore_scripts_says_they_are_skipped() {
+        let notice = exec_notice(
+            "pnpm",
+            &words(&["install", "--ignore-scripts"]),
+            120,
+            false,
+            None,
+        );
+        assert!(notice.contains("install scripts are skipped"), "{notice}");
+        assert!(!notice.contains("dependencies"), "{notice}");
+        let again = exec_notice(
+            "pnpm",
+            &words(&["install", "--ignore-scripts", "--no-ignore-scripts"]),
+            120,
+            false,
+            None,
+        );
+        assert!(!again.contains("are skipped"), "{again}");
+    }
+
+    #[test]
+    fn the_notice_names_the_config_file_each_manager_reads() {
+        for (program, file, other) in [
+            ("npm", ".npmrc", ".yarnrc.yml"),
+            ("pnpm", ".npmrc", ".yarnrc.yml"),
+            ("yarn", ".yarnrc.yml", ".npmrc"),
+        ] {
+            let notice = exec_notice(program, &words(&["test"]), 120, false, None);
+            assert!(notice.contains(file), "{program}: {notice}");
+            assert!(!notice.contains(other), "{program}: {notice}");
+        }
+    }
+
+    #[test]
+    fn an_exec_ask_prompts_in_every_mode_and_origin() {
+        let ask = ApprovalAsk::Exec {
+            program: "cargo".into(),
+            args: words(&["test"]),
+            cwd: ".".into(),
+            script: None,
+            timeout_secs: 120,
+            cloud: false,
+            earlier: None,
+        };
+        for mode in [ApprovalMode::Ask, ApprovalMode::Auto, ApprovalMode::Run] {
+            for origin in [Origin::Tool, Origin::Block] {
+                assert_eq!(route(&ask, origin, mode, FREE), Route::Prompt(None));
+            }
+        }
     }
 
     #[test]
@@ -1486,10 +1551,7 @@ mod tests {
             false,
             Some("changed .git/config"),
         );
-        assert!(
-            notice.contains("an earlier run: changed .git/config"),
-            "{notice}"
-        );
+        assert!(notice.contains("changed .git/config"), "{notice}");
     }
 
     #[test]

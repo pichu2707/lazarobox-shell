@@ -933,3 +933,18 @@ Decisions / deviations:
 - Optional LOW done: `display_word` quotes `; | & < > ( ) * ? # ~ { } !`.
 
 TDD evidence: audit 3 RED = `E0425 no function after_failure`; audit 1/2 RED = 2 host tests failing (install script not shown, no refusal outside the package folder); Xd2.1 RED = compile errors on the new `Exec` fields, `exec_notice`, `Part::Notice`, `ApprovalPrompt.notice`, `peek`; Xd2.2 RED = `E0599 no method with_sandbox`.
+
+### X-d2 review fixes (feat/coding-tools-xd2)
+
+| # | Finding | Fix |
+|---|---------|-----|
+| 1 | MEDIUM: `npm/yarn/pnpm install\|ci` outside a `package.json` folder ran unseen parent scripts | `runs_scripts` is now any package-manager call: with no `package.json` in the cwd it is refused ("run it from the folder that has package.json"). Test loops test, run, install and ci. |
+| 2 | MEDIUM: unbounded paths in `earlier_note` could push the notice past the row cap and disable `y` for the chat | Each path is cut at 60 columns, the line at 240: "N places under .git were touched by a cancelled run (not reverted): a, b, c, …". `exec_notice` no longer prefixes it. Tests: very long paths stay within 240 columns and the prompt fits at 80 and 100 columns. |
+| 3 | LOW: `--ignore-scripts` | `allow::skips_scripts` (flag present and not turned off by `=...` or `--no-ignore...`): the notice says "install scripts are skipped" and the pin shows no bodies; otherwise "and, depending on the package manager, its dependencies" plus "`--ignore-scripts` skips them". |
+| 4 | LOW: `pin()` hooks | Install also shows `preprepare`/`postprepare` (npm) and `prepublish` (yarn). |
+| 5 | LOW: tier-B | `.npmrc` for npm/pnpm, `.yarnrc.yml` for yarn (`allow::runs_files`). |
+| 6 | LOW: `wanted` cap by width | When the text would fit the row cap at a wide pane, the marker says "widen the pane" (`TOO_WIDE_TEXT`); otherwise the old marker. Still fail-closed: `fits` unchanged. |
+| 7 | LOW: `display_word` | Also quotes `[`, `]`, `^`. |
+| 8 | Tests | `a_run_that_cannot_start_is_an_error_that_still_reports_the_sink` (missing helper -> `run_jailed` Err arm; fails if the arm propagates the error); `route` of an Exec ask in every mode and origin; app test that every approval mode prompts with the notice. |
+
+TDD evidence: RED = `E0603 earlier_note is private` (compile), then mutation checks on the finished code: restoring the `test|run` filter in `runs_scripts` fails `test_and_run_need_the_folder_that_has_package_json`; replacing the Err arm by `return Err(COULD_NOT)` fails the new Err-arm test. Pure additions on the notice/marker side were written with the code.

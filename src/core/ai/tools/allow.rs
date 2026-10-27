@@ -134,12 +134,23 @@ pub fn installs(program: &str, args: &[String]) -> bool {
         && matches!(args.first().map(String::as_str), Some("install" | "ci"))
 }
 
+/// Whether the install `args` end up with `--ignore-scripts` on: the flag is
+/// there and nothing turns it off again (`--ignore-scripts=false`,
+/// `--no-ignore-scripts`).
+pub fn skips_scripts(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--ignore-scripts")
+        && !args
+            .iter()
+            .any(|arg| arg.starts_with("--ignore-scripts=") || arg.starts_with("--no-ignore"))
+}
+
 /// The project files (tier B, design D12) a run of `program` executes, as the
 /// words of the prompt warning. `None` for a name outside the allow-list.
 pub fn runs_files(program: &str) -> Option<&'static str> {
     Some(match Program::parse(program)? {
         Program::Cargo => "build.rs, tests, Cargo.toml and .cargo/config",
-        Program::Npm | Program::Pnpm | Program::Yarn => "the scripts of package.json and its tests",
+        Program::Npm | Program::Pnpm => "the scripts of package.json and its tests, and .npmrc",
+        Program::Yarn => "the scripts of package.json and its tests, and .yarnrc.yml",
         Program::Pytest => "conftest.py, tests and pyproject.toml",
         Program::Go => "tests, go.mod and go:generate directives",
     })

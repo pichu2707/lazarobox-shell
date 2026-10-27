@@ -989,7 +989,12 @@ async fn test_and_run_need_the_folder_that_has_package_json() {
     let w = world();
     std::fs::create_dir(w.proj.join("sub")).unwrap();
     package(&w, r#"{"build": "tsc"}"#);
-    for args in [&["test"][..], &["run", "build"][..]] {
+    for args in [
+        &["test"][..],
+        &["run", "build"][..],
+        &["install"][..],
+        &["ci"][..],
+    ] {
         for program in ["npm", "yarn", "pnpm"] {
             assert_eq!(
                 refused(&w, command(program, args, Some("sub"))).await,
@@ -998,4 +1003,106 @@ async fn test_and_run_need_the_folder_that_has_package_json() {
             );
         }
     }
+}
+
+// --- review fixes: what the ask shows for an install ---
+
+async fn script_of(w: &World, program: &str, args: &[&str]) -> Option<String> {
+    let asks = Asks::new(Decision::Denied("the user declined"));
+    let (d, _rx) = w.turn(&w.proj, asks.clone(), exec_set());
+    d.call(command(program, args, None)).await;
+    let [ApprovalAsk::Exec { script, .. }] = &asks.asked()[..] else {
+        panic!("{:?}", asks.asked());
+    };
+    script.clone()
+}
+
+#[tokio::test]
+async fn an_install_that_skips_scripts_shows_no_bodies() {
+    let w = world();
+    package(
+        &w,
+        r#"{"postinstall": "node setup.js", "prepare": "husky"}"#,
+    );
+    for verb in ["install", "ci"] {
+        assert_eq!(
+            script_of(&w, "npm", &[verb, "--ignore-scripts"]).await,
+            None
+        );
+    }
+    // `=false` and `--no-ignore-scripts` do not skip them.
+    for flag in ["--ignore-scripts=false", "--no-ignore-scripts"] {
+        assert!(
+            script_of(&w, "npm", &["install", flag]).await.is_some(),
+            "{flag}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_ask_for_an_install_also_shows_the_hooks_of_each_manager() {
+    let w = world();
+    package(
+        &w,
+        r#"{"preprepare": "a", "prepare": "b", "postprepare": "c", "prepublish": "d"}"#,
+    );
+    assert_eq!(
+        script_of(&w, "npm", &["install"]).await.as_deref(),
+        Some("preprepare: a\nprepare: b\npostprepare: c")
+    );
+    assert_eq!(
+        script_of(&w, "yarn", &["install"]).await.as_deref(),
+        Some("prepublish: d\nprepare: b")
+    );
+}
+
+// --- review fixes: the line about an earlier cancelled run ---
+
+#[test]
+fn the_line_about_an_earlier_run_is_capped_however_long_the_paths_are() {
+    use crate::runtime::tools::integrity::Kind;
+    use unicode_width::UnicodeWidthStr;
+    let long = format!(".git/{}", "d/".repeat(300));
+    let many: Vec<_> = (0..40).map(|_| change(Kind::Added, &long)).collect();
+    let line = exec::earlier_note(&many).expect("told");
+    assert!(line.width() <= 240, "{} columns", line.width());
+    assert!(
+        line.starts_with("40 places under .git were touched by a cancelled run"),
+        "{line}"
+    );
+    assert!(line.ends_with('\u{2026}'), "{line}");
+    let one = exec::earlier_note(&[change(Kind::Changed, ".git/config")]).unwrap();
+    assert!(
+        one.starts_with("1 place under .git was touched by a cancelled run"),
+        "{one}"
+    );
+    assert!(one.contains("changed .git/config"), "{one}");
+    assert!(!one.contains('\u{2026}'), "{one}");
+}
+
+// --- review fixes: a run that fails once it has started ---
+
+// The helper cannot be started: `run_jailed` returns an error. The model still
+// gets what an earlier cancelled run changed, in an error result.
+#[tokio::test]
+async fn a_run_that_cannot_start_is_an_error_that_still_reports_the_sink() {
+    use crate::runtime::tools::integrity::Kind;
+    let mut w = runnable(HELPER, gate());
+    let missing = w.base().join("no-such-helper");
+    Arc::get_mut(&mut w.host).unwrap().exec.helper = Some(missing);
+    w.host
+        .exec
+        .sink(key())
+        .push(vec![change(Kind::Added, ".git/hooks/pre-commit")]);
+    let (out, _) = w.run(after_dashes("go")).await;
+    assert!(
+        out.is_error && out.text.starts_with("could not run"),
+        "{out:?}"
+    );
+    assert!(
+        out.text.contains("added .git/hooks/pre-commit"),
+        "{}",
+        out.text
+    );
+    assert!(w.host.exec.sink(key()).drain().is_empty());
 }

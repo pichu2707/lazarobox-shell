@@ -22,13 +22,16 @@ use super::{
 };
 use crate::{
     core::ai::{
-        chat::approval::{ApprovalAsk, script_line},
+        chat::{
+            approval::{ApprovalAsk, script_line},
+            approval_rows::clip,
+        },
         jail::JailSupport,
         sanitize::clean,
         toolchain::{Layout, Refusal, Vars, env::scrub, toolchain_spec},
         tools::{
             Call, ToolError,
-            allow::{Program, RunError, RunRequest, parse_run},
+            allow::{self, Program, RunError, RunRequest, parse_run},
             label,
             mcp::refusal_text,
             paths::{REFUSED, plain_relative},
@@ -178,10 +181,19 @@ pub(super) fn fill(host: &ToolHost, plan: &Plan, ask: &mut ApprovalAsk) {
     }
 }
 
+/// The most columns of one path in the earlier-run line, and of the line.
+const PATH_COLUMNS: usize = 60;
+const EARLIER_COLUMNS: usize = 240;
+
 /// One line about the changes a cancelled run left in the sink: the names are
-/// the program's, so they are cleaned and capped. `None` when there are none.
-fn earlier_note(changes: &[Change]) -> Option<String> {
+/// the program's, so they are cleaned and each is cut at [`PATH_COLUMNS`], and
+/// the line at [`EARLIER_COLUMNS`], so it cannot push the rest of the prompt
+/// out of the pane. `None` when there are none.
+pub(super) fn earlier_note(changes: &[Change]) -> Option<String> {
     const NAMES: usize = 3;
+    if changes.is_empty() {
+        return None;
+    }
     let mut parts: Vec<String> = changes
         .iter()
         .take(NAMES)
@@ -192,19 +204,22 @@ fn earlier_note(changes: &[Change]) -> Option<String> {
                 Kind::Removed => "removed",
                 _ => return "could not verify git hooks and config".to_owned(),
             };
-            clean(&format!("{what} {}", change.path.display()))
+            let path = clip(&clean(&change.path.display().to_string()), PATH_COLUMNS);
+            format!("{what} {path}")
         })
         .collect();
-    if parts.is_empty() {
-        return None;
-    }
     if changes.len() > NAMES {
-        parts.push(format!("and {} more", changes.len() - NAMES));
+        parts.push("\u{2026}".to_owned());
     }
-    Some(format!(
-        "cancelled, it left git hooks or config touched (not reverted): {}",
+    let (count, places, was) = match changes.len() {
+        1 => (1, "place", "was"),
+        n => (n, "places", "were"),
+    };
+    let line = format!(
+        "{count} {places} under .git {was} touched by a cancelled run (not reverted): {}",
         parts.join(", ")
-    ))
+    );
+    Some(clip(&line, EARLIER_COLUMNS))
 }
 
 /// The root policy of the chat origin, the folder, the allow-list and what the
@@ -267,13 +282,13 @@ struct Package {
     missing: bool,
 }
 
-/// Whether `args` is a `npm`, `yarn` or `pnpm` call of `test` or `run`.
+/// Whether `args` is a `npm`, `yarn` or `pnpm` call. Any of them walks up to a
+/// parent `package.json` (and its unseen scripts) when the folder has none.
 fn runs_scripts(args: &Value) -> bool {
-    let manager = args["program"]
+    args["program"]
         .as_str()
         .and_then(Program::parse)
-        .is_some_and(|p| matches!(p, Program::Npm | Program::Pnpm | Program::Yarn));
-    manager && matches!(args["args"][0].as_str(), Some("test" | "run"))
+        .is_some_and(|p| matches!(p, Program::Npm | Program::Pnpm | Program::Yarn))
 }
 
 impl Package {
@@ -317,8 +332,9 @@ fn pin(request: &RunRequest, package: &Package) -> Option<Pin> {
     ) {
         return None;
     }
-    // `install` and `ci` run the lifecycle scripts of the project (and of its
-    // dependencies, which the prompt says in general terms).
+    // `install` and `ci` run the lifecycle scripts of the project (and, for
+    // some managers, of its dependencies, which the prompt says in general
+    // terms); `--ignore-scripts` runs none, so there is no body to show.
     let keys: Vec<String> = match request.args.first().map(String::as_str) {
         Some("test") => vec!["pretest".into(), "test".into(), "posttest".into()],
         Some("run") => request
@@ -327,9 +343,26 @@ fn pin(request: &RunRequest, package: &Package) -> Option<Pin> {
             .into_iter()
             .flat_map(|name| [format!("pre{name}"), name.clone(), format!("post{name}")])
             .collect(),
-        Some("install" | "ci") => ["preinstall", "install", "postinstall", "prepare"]
-            .map(str::to_owned)
-            .to_vec(),
+        Some("install" | "ci") if allow::skips_scripts(&request.args) => Vec::new(),
+        Some("install" | "ci") => {
+            let (npm, yarn) = (
+                request.program == Program::Npm,
+                request.program == Program::Yarn,
+            );
+            [
+                (true, "preinstall"),
+                (true, "install"),
+                (true, "postinstall"),
+                (yarn, "prepublish"),
+                (npm, "preprepare"),
+                (true, "prepare"),
+                (npm, "postprepare"),
+            ]
+            .into_iter()
+            .filter(|(used, _)| *used)
+            .map(|(_, name)| name.to_owned())
+            .collect()
+        }
         _ => Vec::new(),
     };
     let lines: Vec<String> = keys
