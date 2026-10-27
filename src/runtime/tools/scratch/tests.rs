@@ -152,6 +152,6 @@ fn what_cannot_be_removed_is_reported_not_swallowed() {
     std::fs::set_permissions(&fence, std::fs::Permissions::from_mode(0o500)).unwrap();
     let left = scratch.finish();
     std::fs::set_permissions(&fence, std::fs::Permissions::from_mode(0o700)).unwrap();
-    assert_eq!(left, [path.clone()]);
+    assert_eq!(left, std::slice::from_ref(&path));
     assert!(path.exists());
 }
