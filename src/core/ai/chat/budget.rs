@@ -31,13 +31,26 @@ pub enum Budget {
     Tokens { room: usize, window: usize },
 }
 
+/// The tokens a turn reserves for the tool schemas: the flat reserve when the
+/// turn offers tools, nothing otherwise.
+fn tools_reserve(tools: bool) -> usize {
+    if tools { TOOLS_RESERVE_TOKENS } else { 0 }
+}
+
 /// The budget of a turn on `engine`. `window` is its context window in tokens
-/// when known (zero counts as unknown).
-pub fn budget(engine: &str, window: Option<usize>, system: &str, memory: &str) -> Budget {
+/// when known (zero counts as unknown); `tools` is whether the turn offers
+/// tools, which is what the reserve is for.
+pub fn budget(
+    engine: &str,
+    window: Option<usize>,
+    system: &str,
+    memory: &str,
+    tools: bool,
+) -> Budget {
     match window.filter(|&w| w > 0) {
         None => Budget::Chars(history_chars(engine).saturating_sub(memory.chars().count())),
         Some(window) => {
-            let fixed = estimate_tokens(system) + estimate_tokens(memory) + TOOLS_RESERVE_TOKENS;
+            let fixed = estimate_tokens(system) + estimate_tokens(memory) + tools_reserve(tools);
             Budget::Tokens {
                 room: (window * PROMPT_SHARE / 100).saturating_sub(fixed),
                 window,
@@ -63,31 +76,23 @@ impl Fill {
     }
 }
 
-/// How full a turn's context is: the system prompt, the memory block and the
-/// sent `messages` against the window, or against the character cap in tokens
-/// when the window is unknown (there the system prompt is not counted, as the
-/// cap does not count it).
+/// How full a turn's context is: the system prompt, the memory block, the
+/// tool reserve (when tools are offered) and the sent `messages` against the
+/// window. `None` when the window is unknown: against the character cap the
+/// share would say nothing about the real context.
 pub fn fill(
-    engine: &str,
     window: Option<usize>,
     system: &str,
     memory: &str,
+    tools: bool,
     messages: &[ChatMessage],
-) -> Fill {
+) -> Option<Fill> {
+    let capacity = window.filter(|&w| w > 0)?;
     let history: usize = messages.iter().map(|m| estimate_tokens(&m.content)).sum();
-    match window.filter(|&w| w > 0) {
-        None => Fill {
-            used: history + estimate_tokens(memory),
-            capacity: history_chars(engine) / CHARS_PER_TOKEN,
-        },
-        Some(capacity) => Fill {
-            used: history
-                + estimate_tokens(system)
-                + estimate_tokens(memory)
-                + TOOLS_RESERVE_TOKENS,
-            capacity,
-        },
-    }
+    Some(Fill {
+        used: history + estimate_tokens(system) + estimate_tokens(memory) + tools_reserve(tools),
+        capacity,
+    })
 }
 
 #[cfg(test)]

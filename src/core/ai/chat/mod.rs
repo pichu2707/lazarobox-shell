@@ -249,6 +249,14 @@ pub(crate) fn sendable_indices(all: &[&Msg]) -> Vec<usize> {
         .collect()
 }
 
+/// The fill of a request's context and where the request went.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct ContextFill {
+    fill: budget::Fill,
+    engine: String,
+    model: Option<String>,
+}
+
 /// The state of one chat pane.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ChatState {
@@ -298,8 +306,11 @@ pub struct ChatState {
     outbox: Vec<store::StoredMessage>,
     /// The engine's context window in tokens, when the runtime knows it.
     window: Option<usize>,
-    /// How full the context of the last request was.
-    fill: Option<budget::Fill>,
+    /// How full the context of the last request was, and the engine and model
+    /// it was sent to.
+    fill: Option<ContextFill>,
+    /// The turn about to be sent offers tools.
+    tools_offered: bool,
     /// The engine of the request in flight, as sent.
     request_engine: String,
     /// `close_stream` already queued the answer in progress.
@@ -368,6 +379,7 @@ impl ChatState {
             outbox: Vec::new(),
             window: None,
             fill: None,
+            tools_offered: false,
             request_engine: String::new(),
             closing: false,
             reprepare_prompt: false,
@@ -391,10 +403,20 @@ impl ChatState {
         self.window = window;
     }
 
-    /// How full the context of the last request was, in percent; `None`
-    /// before the first send.
-    pub fn context_percent(&self) -> Option<u8> {
-        self.fill.map(budget::Fill::percent)
+    /// Whether the next turn offers tools, which reserves room for their
+    /// schemas in the budget.
+    pub fn set_tools_offered(&mut self, offered: bool) {
+        self.tools_offered = offered;
+    }
+
+    /// How full the context of the last request was, in percent, when it went
+    /// to `engine` and `model` (a fill of another engine means nothing now)
+    /// and its window was known; `None` otherwise, and before the first send.
+    pub fn context_percent(&self, engine: &str, model: Option<&str>) -> Option<u8> {
+        self.fill
+            .as_ref()
+            .filter(|f| f.engine == engine && f.model.as_deref() == model)
+            .map(|f| f.fill.percent())
     }
 
     /// What a model's `run_in_pane` does in this chat.
@@ -658,6 +680,11 @@ impl ChatState {
         self.started
     }
 
+    /// The engine of the request as sent; empty when idle.
+    pub fn stream_engine(&self) -> &str {
+        &self.request_engine
+    }
+
     /// The model of the request as sent; empty when idle or when the engine
     /// picked its own.
     pub fn stream_model(&self) -> &str {
@@ -809,17 +836,28 @@ impl ChatState {
             .collect::<Vec<_>>()
             .join("\n\n");
         let memory_text = memory.as_deref().unwrap_or_default();
-        let context = match budget::budget(engine, self.window, &system, memory_text) {
-            budget::Budget::Chars(max) => build_context(&history, max),
-            budget::Budget::Tokens { room, .. } => build_context_tokens(&history, room),
-        };
-        self.fill = Some(budget::fill(
+        let context = match budget::budget(
             engine,
             self.window,
             &system,
             memory_text,
+            self.tools_offered,
+        ) {
+            budget::Budget::Chars(max) => build_context(&history, max),
+            budget::Budget::Tokens { room, .. } => build_context_tokens(&history, room),
+        };
+        self.fill = budget::fill(
+            self.window,
+            &system,
+            memory_text,
+            self.tools_offered,
             &context.messages,
-        ));
+        )
+        .map(|fill| ContextFill {
+            fill,
+            engine: engine.clone(),
+            model: model.clone(),
+        });
         let oldest = sendable[history.len() - context.messages.len()];
         self.place_marker(oldest, context.omitted);
         self.turn += 1;
@@ -932,6 +970,13 @@ impl ChatState {
                 Follow::Nothing
             }
             StreamEvent::Done(_) => {
+                // The answer now sits in the context the next turn carries.
+                let answer = self
+                    .answer_mut()
+                    .map_or(0, |a| budget::estimate_tokens(&a.text));
+                if let Some(f) = self.fill.as_mut() {
+                    f.fill.used += answer;
+                }
                 let line = (self.phase != Phase::Streaming).then(|| NO_ANSWER.to_owned());
                 self.finish(MsgStatus::Complete, line, now);
                 Follow::Nothing

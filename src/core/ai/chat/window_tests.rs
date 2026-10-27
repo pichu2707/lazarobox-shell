@@ -2,7 +2,7 @@
 //! and the fill of the context is kept for the status line (S2).
 
 use super::{
-    engine::{Finish, SERVER_HISTORY_CHARS, StreamEvent},
+    engine::{ChatError, Finish, SERVER_HISTORY_CHARS, StreamEvent},
     state_tests::{SYSTEM, chat, ready},
     *,
 };
@@ -27,7 +27,7 @@ fn history_chars_of(request: &ChatRequest) -> usize {
 
 #[test]
 fn a_chat_that_never_sent_has_no_fill() {
-    assert_eq!(chat().context_percent(), None);
+    assert_eq!(chat().context_percent("ollama", Some("llama3:8b")), None);
 }
 
 #[test]
@@ -66,6 +66,7 @@ fn a_known_window_lets_more_history_through_than_the_cap() {
 fn a_small_window_drops_history_the_cap_would_have_kept() {
     let mut state = chat();
     state.set_window(Some(4_096));
+    state.set_tools_offered(true);
     let long = "x".repeat(2_000);
     let mut last = exchange(&mut state, &long);
     for _ in 0..4 {
@@ -82,19 +83,61 @@ fn a_small_window_drops_history_the_cap_would_have_kept() {
     );
 }
 
+const ENGINE: &str = "ollama";
+const MODEL: Option<&str> = Some("llama3:8b");
+
 #[test]
-fn the_fill_is_a_percent_of_the_known_window() {
+fn the_fill_counts_the_request_until_the_answer_lands() {
     let mut state = chat();
     state.set_window(Some(10_000));
-    exchange(&mut state, &"x".repeat(4_000));
+    state.set_tools_offered(true);
+    let SendOutcome::Sent { turn, .. } = state.send(&"x".repeat(4_000), &ready(), SYSTEM) else {
+        panic!("refused");
+    };
     // 1000 history + 4 system + 1500 tools = 2504 of 10000.
-    assert_eq!(state.context_percent(), Some(25));
+    assert_eq!(state.context_percent(ENGINE, MODEL), Some(25));
+    state.apply(turn, StreamEvent::Delta("a".repeat(4_000)));
+    state.apply(turn, StreamEvent::Done(Finish::Stop));
+    // The 1000 tokens of the answer are in the context now: 3504.
+    assert_eq!(state.context_percent(ENGINE, MODEL), Some(35));
 }
 
 #[test]
-fn the_fill_without_a_window_is_a_percent_of_the_cap() {
+fn the_fill_leaves_the_tools_reserve_out_when_no_tools_are_offered() {
+    let mut state = chat();
+    state.set_window(Some(10_000));
+    exchange(&mut state, &"x".repeat(4_000));
+    // 1000 history + 4 system + 1000 answer = 2004.
+    assert_eq!(state.context_percent(ENGINE, MODEL), Some(20));
+}
+
+#[test]
+fn the_fill_without_a_window_is_not_shown() {
     let mut state = chat();
     exchange(&mut state, &"x".repeat(6_000));
-    // 1500 of the 3000 tokens the 12k cap stands for.
-    assert_eq!(state.context_percent(), Some(50));
+    assert_eq!(state.context_percent(ENGINE, MODEL), None);
+}
+
+#[test]
+fn the_fill_of_another_engine_or_model_is_not_shown() {
+    let mut state = chat();
+    state.set_window(Some(10_000));
+    exchange(&mut state, &"x".repeat(4_000));
+    assert!(state.context_percent(ENGINE, MODEL).is_some());
+    assert_eq!(state.context_percent("llamacpp", MODEL), None);
+    assert_eq!(state.context_percent(ENGINE, Some("qwen")), None);
+    assert_eq!(state.context_percent(ENGINE, None), None);
+}
+
+#[test]
+fn a_turn_that_does_not_finish_adds_no_answer_to_the_fill() {
+    let mut state = chat();
+    state.set_window(Some(10_000));
+    let SendOutcome::Sent { turn, .. } = state.send(&"x".repeat(4_000), &ready(), SYSTEM) else {
+        panic!("refused");
+    };
+    state.apply(turn, StreamEvent::Delta("a".repeat(4_000)));
+    state.apply(turn, StreamEvent::Error(ChatError::Interrupted));
+    // 1000 history + 4 system, no tools.
+    assert_eq!(state.context_percent(ENGINE, MODEL), Some(10));
 }

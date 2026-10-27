@@ -4,7 +4,7 @@
 use super::*;
 use crate::core::ai::chat::{
     SendOutcome,
-    engine::{Availability, availability},
+    engine::{Availability, Tools, availability, tools_for},
     guidance::guidance,
     memory::MemBadge,
     prompts::Resolved,
@@ -88,9 +88,12 @@ impl App {
 
     /// How full the focused chat's context was at its last send, in percent.
     pub fn status_context(&self) -> Option<u8> {
+        let Availability::Ready { engine, model } = self.chat_availability() else {
+            return None;
+        };
         self.focused_state()
             .chat_state()
-            .and_then(ChatState::context_percent)
+            .and_then(|chat| chat.context_percent(&engine, model.as_deref()))
     }
 
     /// The animation frame the indicator is drawn at.
@@ -330,6 +333,14 @@ impl App {
             return Vec::new();
         };
         chat.set_window(window);
+        // The tool schemas weigh on the budget only when the turn offers them.
+        let tools = match availability {
+            Availability::Ready { engine, .. } => {
+                tools_for(engine, self.ai.tools_enabled(), None, self.tool_engines) != Tools::Off
+            }
+            _ => false,
+        };
+        chat.set_tools_offered(tools);
         match chat.send(text, availability, &system) {
             SendOutcome::Sent { turn, mut request } => {
                 chat.composer_mut().clear();

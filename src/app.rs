@@ -2388,6 +2388,14 @@ impl App {
             _ => Ended::Error,
         };
         let tool = ToolEvent::of(&event);
+        // A llama-server that fails may be gone or restarted with another
+        // window: detect again, so the next turn is sized by what it says now.
+        let llamacpp_failed = live
+            && chat.stream_engine() == "llamacpp"
+            && matches!(
+                event,
+                StreamEvent::Error(crate::core::ai::chat::engine::ChatError::Failed(_))
+            );
         let follow = chat.apply(turn, event);
         let finished = live && chat.phase() == Phase::Idle;
         self.dirty |= live;
@@ -2398,6 +2406,9 @@ impl App {
             effects.extend(self.cancel_chat(id));
         }
         effects.extend(self.on_tool_event(id, turn, (live, finished), tool));
+        if llamacpp_failed {
+            effects.extend(self.request_detection());
+        }
         // A turn ends once: later events of it are dropped above, so a pane
         // rings at most once per answer.
         let focus = self.tab().focus;

@@ -524,8 +524,14 @@ pub async fn detect_all(
 ) -> Detection {
     let lister = Lister { env, cache, force };
     let mut detection = detect_in(&ports.catalog(), &env.path, Some(lister)).await;
-    detection.local_models = local_models(&detection, model_dirs).await;
-    detection.windows = windows(&detection, ports).await;
+    // The two do not wait on each other: the model scan is off the executor
+    // and the `/props` probe is on the network.
+    let (models, windows) = tokio::join!(
+        local_models(&detection, model_dirs),
+        windows(&detection, ports)
+    );
+    detection.local_models = models;
+    detection.windows = windows;
     detection
 }
 
